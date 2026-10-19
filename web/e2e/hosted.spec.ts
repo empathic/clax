@@ -13,7 +13,10 @@
 // content key guards. A fourth has a member's agent token connect over
 // /mcp/json as an MCP client, the owner's Send menu name it as the
 // member's, who approves first, and the member allow the owner from the
-// approval card in their own inbox. With CLAX_E2E_SHOTS set it writes
+// approval card in their own inbox. A daemon showing the bundled Terms of
+// Service and Privacy Policy says so under each sign-in button, serves
+// both, links them under the gallery and in the artifact view's more menu,
+// and asks a person who has not agreed. With CLAX_E2E_SHOTS set it writes
 // screenshots to target/hosted-shots/.
 import { createServer } from "node:net";
 import { type Browser, type Page } from "@playwright/test";
@@ -33,10 +36,10 @@ function freePort(): Promise<number> {
   });
 }
 
-async function hostedDaemon() {
+async function hostedDaemon(extra = "") {
   const port = await freePort();
   const origin = `http://localhost:${port}`;
-  const config = `${NO_KEY_CONFIG}[hosted]\npublic_origin = "${origin}"\nsetup_secret_env = "CLAX_E2E_SETUP_SECRET"\n`;
+  const config = `${NO_KEY_CONFIG}[hosted]\npublic_origin = "${origin}"\nsetup_secret_env = "CLAX_E2E_SETUP_SECRET"\n${extra}`;
   const d = await startDaemon({ config, port, env: { CLAX_E2E_SETUP_SECRET: SECRET } });
   test.skip(d.port !== port, `the daemon took port ${d.port}, not ${port}: its public origin would not match`);
   return { d, origin };
@@ -454,6 +457,57 @@ test("People's hosted part shows a refusal as a sentence", async ({ browser }) =
     const alert = owner.getByRole("alert");
     await expect(alert).toHaveText("Too many tokens made from this address.");
     await shots(owner, "hosted-refusal");
+  } finally {
+    await d.stop();
+  }
+});
+
+test("the bundled Terms of Service and Privacy Policy: notices, pages, links and the prompt", async ({ browser }) => {
+  const { d, origin } = await hostedDaemon('legal = "bundled"\n');
+  try {
+    const owner = await page(browser);
+    await owner.goto(`${origin}/setup?secret=${encodeURIComponent(SECRET)}`);
+    await expect(owner.getByTestId("legal-notice")).toHaveText("By setting up this Clax, you agree to the Terms of Service and the Privacy Policy.");
+    await owner.getByLabel("Your name").fill("Ada");
+    await owner.getByRole("button", { name: "Create the first person" }).click();
+    await owner.waitForURL(`${origin}/`);
+    const links = owner.getByRole("navigation", { name: "Terms and privacy" });
+    await expect(links.getByRole("link", { name: "Terms of Service" })).toHaveAttribute("href", "/terms");
+    await expect(owner.getByTestId("legal-prompt"), "setup agreed").toHaveCount(0);
+    await shots(owner, "legal-gallery");
+
+    // The documents are public: a browser that never signed in reads both.
+    const anon = await page(browser);
+    await anon.goto(`${origin}/terms`);
+    await expect(anon.getByRole("heading", { level: 1 })).toHaveText("Terms of Service");
+    await anon.getByRole("link", { name: "Privacy Policy" }).first().click();
+    await expect(anon.getByRole("heading", { level: 1 })).toHaveText("Privacy Policy");
+    await anon.goto(`${origin}/signin`);
+    await expect(anon.getByText("Terms of Service · Privacy Policy")).toBeVisible();
+
+    // The artifact view's more menu links both.
+    const aid = (await publish(d.base, d.token, "Plan", { "index.html": "<title>Plan</title><h1>Plan</h1>" })).artifact.id;
+    await owner.goto(`${origin}/a/${aid}`);
+    await owner.getByRole("button", { name: "More" }).click();
+    await expect(owner.getByRole("menuitem", { name: "Privacy Policy" })).toHaveAttribute("href", "/privacy");
+    await owner.keyboard.press("Escape");
+
+    // A person who has not agreed to the current version (here, as the
+    // daemon would answer after a material change) is asked once, and
+    // Continue records it with the daemon.
+    await owner.route("**/api/hosted/me", async r => {
+      const res = await r.fetch();
+      const body = await res.json();
+      await r.fulfill({ response: res, json: { ...body, legal: { ...body.legal, agreed: false } } });
+    });
+    await owner.goto(`${origin}/`);
+    const prompt = owner.getByTestId("legal-prompt");
+    await expect(prompt.getByRole("dialog")).toBeVisible();
+    await shots(owner, "legal-prompt");
+    const agreed = owner.waitForResponse(r => r.url().endsWith("/api/hosted/legal/agree"));
+    await prompt.getByRole("button", { name: "Continue" }).click();
+    expect((await agreed).status()).toBe(204);
+    await expect(prompt).toHaveCount(0);
   } finally {
     await d.stop();
   }

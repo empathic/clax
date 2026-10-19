@@ -80,6 +80,17 @@ fn entry(web: &dyn FileTree, req: &HeaderMap, name: &str) -> Result<Response, Ap
     }
 }
 
+/// A page of the bundled Terms of Service or Privacy Policy
+/// (`terms.html`, `privacy.html`, rendered from `docs/legal` by the web
+/// build).
+pub fn legal_page(
+    s: &clax_http::state::AppState,
+    req: &HeaderMap,
+    name: &str,
+) -> Result<Response, ApiError> {
+    entry(&*s.web, req, name)
+}
+
 /// `/`, `/inbox` and `/people`: the gallery's entry, which shows the
 /// gallery, the inbox or People by its path.
 pub async fn gallery_page(

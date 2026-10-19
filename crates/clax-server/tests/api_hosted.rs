@@ -59,6 +59,23 @@ impl Site {
         Site { ts, clock, origin }
     }
 
+    /// [`Site::new`] showing `legal`'s Terms of Service and Privacy Policy.
+    async fn with_legal(legal: clax_core::config::Legal) -> Site {
+        let clock = Arc::new(ManualClock::at("2026-10-12T10:00:00Z"));
+        let ts = TestServer::spawn_hosted_with(clock.clone(), Some(SECRET), |s| {
+            s.hosted = s.hosted.take().map(|h| {
+                Arc::new(
+                    Arc::try_unwrap(h)
+                        .expect("hosted is not shared yet")
+                        .with_legal(Some(legal)),
+                )
+            });
+        })
+        .await;
+        let origin = format!("http://localhost:{}", ts.addr.port());
+        Site { ts, clock, origin }
+    }
+
     fn url(&self, path: &str) -> String {
         format!("{}{path}", self.ts.base)
     }
@@ -5073,4 +5090,92 @@ async fn a_live_pages_clip_is_named_by_no_address() {
     site.ts.state.live_ids.insert(&aid, "http://localhost:5173");
     let t = read().await;
     assert!(t.get("clip").is_none(), "{t}");
+}
+
+#[tokio::test]
+async fn an_instance_without_documents_shows_none_and_takes_no_agreement() {
+    let site = Site::new().await;
+    let owner = site.owner().await;
+    let (s, v) = site.get(&owner, "/api/hosted/me").await;
+    assert_eq!((s, &v["legal"]), (200, &Value::Null), "{v}");
+    let (s, v) = site
+        .post(&owner, "/api/hosted/legal/agree", json!({"version": "1"}))
+        .await;
+    assert_eq!((s, code(&v)), (404, "not_found"), "{v}");
+}
+
+#[tokio::test]
+async fn signing_in_under_the_notice_agrees_and_the_prompt_records_the_rest() {
+    let site = Site::with_legal(clax_core::config::Legal::Own {
+        terms_url: "https://example.org/terms".into(),
+        privacy_url: "https://example.org/privacy".into(),
+        version: "3".into(),
+    })
+    .await;
+    let (s, v) = site.get(&Browser::default(), "/api/hosted/me").await;
+    assert_eq!(s, 200);
+    assert_eq!(
+        v["legal"],
+        json!({"terms_url": "https://example.org/terms", "privacy_url": "https://example.org/privacy", "version": "3", "agreed": null})
+    );
+    // Setup, an invite and a sign-in link each sign in under the notice.
+    let owner = site.owner().await;
+    let bo = site.member(&owner, "Bo").await;
+    let (s, v) = site.post(&bo, "/api/hosted/signin-links", json!({})).await;
+    assert_eq!(s, 200, "{v}");
+    let code_of = v["url"]
+        .as_str()
+        .unwrap()
+        .rsplit('/')
+        .next()
+        .unwrap()
+        .to_string();
+    let mut laptop = Browser::default();
+    site.sign_in(
+        &mut laptop,
+        &format!("/api/hosted/signin-links/{code_of}/accept"),
+        json!({}),
+    )
+    .await;
+    for b in [&owner, &bo, &laptop] {
+        let (_, v) = site.get(b, "/api/hosted/me").await;
+        assert_eq!(v["legal"]["agreed"], true, "{v}");
+    }
+    // A person with no agreement (one who joined before the documents were
+    // shown) is asked, and agreeing to an older text is refused.
+    let conn = rusqlite::Connection::open(site.ts.home.db_path()).unwrap();
+    conn.execute(
+        "DELETE FROM legal_agreements WHERE viewer_id = (SELECT id FROM viewers WHERE display_name = 'Bo')",
+        [],
+    )
+    .unwrap();
+    let (_, v) = site.get(&bo, "/api/hosted/me").await;
+    assert_eq!(v["legal"]["agreed"], false, "{v}");
+    let (s, v) = site
+        .post(&bo, "/api/hosted/legal/agree", json!({"version": "2"}))
+        .await;
+    assert_eq!((s, code(&v)), (409, "legal_changed"), "{v}");
+    let (s, _) = site
+        .post(&bo, "/api/hosted/legal/agree", json!({"version": "3"}))
+        .await;
+    assert_eq!(s, 204);
+    let (_, v) = site.get(&bo, "/api/hosted/me").await;
+    assert_eq!(v["legal"]["agreed"], true, "{v}");
+    let via: String = conn
+        .query_row(
+            "SELECT via FROM legal_agreements WHERE viewer_id = (SELECT id FROM viewers WHERE display_name = 'Bo')",
+            [],
+            |r| r.get(0),
+        )
+        .unwrap();
+    assert_eq!(via, "prompt");
+    // No session agrees to nothing.
+    let (s, _) = site
+        .post(
+            &Browser::default(),
+            "/api/hosted/legal/agree",
+            json!({"version": "3"}),
+        )
+        .await;
+    assert_ne!(s, 204);
 }

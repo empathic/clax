@@ -85,6 +85,9 @@ button:disabled { opacity: .5; cursor: default; }
 .gbar button.icon:not(:disabled):hover { background-color: var(--hover); }
 .search { margin-left: auto; width: 260px; min-width: 0; max-width: 50%; }
 .gal { max-width: 1360px; margin: 0 auto; padding: 28px 32px 40px; }
+/* A hosted Clax's Terms of Service and Privacy Policy, under the gallery, the inbox and People. */
+.glegal { margin-top: 32px; text-align: center; font-size: 12.5px; color: var(--muted); }
+.glegal a { color: inherit; text-decoration: underline; }
 .grp { margin-bottom: 34px; min-width: 0; }
 .grp h2 { display: flex; align-items: center; gap: 10px; margin: 0 0 4px; font-size: 17px; line-height: 1.2; padding-bottom: 10px; border-bottom: 1px solid var(--border); }
 .grp h2 { white-space: nowrap; }

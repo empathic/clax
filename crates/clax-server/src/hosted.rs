@@ -77,13 +77,125 @@ fn browser_only(headers: &HeaderMap) -> Result<(), ApiError> {
     }
 }
 
-/// `GET /api/hosted/me` → `{origin, setup_open, signed_in, person}`.
+/// The version of the documents a sign-in now agrees to, when the
+/// instance shows any ([`clax_http::hosted::Hosted::with_legal`]).
+fn legal_version(h: &Hosted) -> Option<String> {
+    h.legal.as_ref().map(|l| l.version().to_string())
+}
+
+/// Records a browser sign-in under the sign-in page's notice as its person
+/// agreeing to `version` of the documents (`None`: the instance shows
+/// none). A guest agrees to nothing.
+pub(crate) fn agree_at_sign_in(
+    st: &clax_store::Store,
+    signed: &clax_store::hosted::SignedIn,
+    version: Option<&str>,
+) -> clax_core::Result<()> {
+    match version {
+        Some(v) if !signed.who.guest => st.legal_agree(
+            &signed.who.viewer.id,
+            v,
+            clax_store::legal::AgreedVia::SignIn,
+        ),
+        _ => Ok(()),
+    }
+}
+
+#[derive(Deserialize)]
+#[serde(deny_unknown_fields)]
+struct AgreeBody {
+    version: String,
+}
+
+/// `POST /api/hosted/legal/agree {version}` (a signed-in person, in a
+/// browser): records them agreeing to the documents' current `version`
+/// from the signed-in prompt; 204. 404 `not_found` when the instance shows
+/// no documents; 409 `legal_changed` when `version` is not the current one
+/// (the person read an older text); 403 for a guest or no session.
+async fn legal_agree(
+    State(s): State<AppState>,
+    headers: HeaderMap,
+    Extension(r): Extension<HostedRequest>,
+    req: Result<Json<AgreeBody>, JsonRejection>,
+) -> Result<Response, ApiError> {
+    browser_only(&headers)?;
+    let h = hosted_of(&s);
+    let Some(current) = legal_version(&h) else {
+        return Err(ApiError::not_found());
+    };
+    let Some(who) = r.session.as_ref().filter(|v| !v.guest) else {
+        return Err(ApiError::forbidden(
+            "forbidden",
+            "sign in as a person to agree to the documents",
+        ));
+    };
+    let b = crate::routes::artifacts::body(req)?;
+    if b.version != current {
+        return Err(ApiError::new(
+            StatusCode::CONFLICT,
+            "legal_changed",
+            "the documents changed since they were shown: read them again",
+        ));
+    }
+    let id = who.viewer.id.clone();
+    s.store_call(move |st| st.legal_agree(&id, &current, clax_store::legal::AgreedVia::Prompt))
+        .await?;
+    Ok(StatusCode::NO_CONTENT.into_response())
+}
+
+/// `GET /terms` and `GET /privacy`: the bundled documents
+/// ([`clax_core::config::Legal::Bundled`]); 404 on an instance that shows
+/// none or its own.
+async fn legal_page(
+    State(s): State<AppState>,
+    uri: axum::http::Uri,
+    req: HeaderMap,
+) -> Result<Response, ApiError> {
+    if !hosted_of(&s).serves_legal() {
+        return Err(ApiError::not_found());
+    }
+    let file = if uri.path() == "/privacy" {
+        "privacy.html"
+    } else {
+        "terms.html"
+    };
+    crate::shell::legal_page(&s, &req, file)
+}
+
+/// `GET /api/hosted/me` → `{origin, setup_open, github, signed_in, person,
+/// legal}`; `legal` is null when the instance shows no documents, else
+/// `{terms_url, privacy_url, version, agreed}`, `agreed` null for a guest
+/// or no session.
 async fn me(
     State(s): State<AppState>,
     Extension(r): Extension<HostedRequest>,
 ) -> Result<Response, ApiError> {
     let h = hosted_of(&s);
     let open = h.setup_secret.is_some() && s.store_call(|st| st.hosted_needs_setup()).await?;
+    let legal = match &h.legal {
+        None => serde_json::Value::Null,
+        Some(l) => {
+            let version = l.version().to_string();
+            let person = r
+                .session
+                .as_ref()
+                .filter(|v| !v.guest)
+                .map(|v| v.viewer.id.clone());
+            let agreed = match person {
+                Some(id) => Some(
+                    s.store_call(move |st| st.legal_agreed(&id, &version))
+                        .await?,
+                ),
+                None => None,
+            };
+            json!({
+                "terms_url": l.terms_url(),
+                "privacy_url": l.privacy_url(),
+                "version": l.version(),
+                "agreed": agreed,
+            })
+        }
+    };
     Ok(no_store(
         Json(json!({
             "origin": h.origin,
@@ -91,6 +203,7 @@ async fn me(
             "github": h.github.is_some(),
             "signed_in": r.session.is_some(),
             "person": r.session.as_ref().map(person_view),
+            "legal": legal,
         }))
         .into_response(),
     ))
@@ -121,10 +234,12 @@ async fn setup(
         return Err(ApiError::not_found());
     }
     let old = session_token(&headers, h.cookie_name());
+    let legal = legal_version(&h);
     let signed = s
         .store_call(move |st| {
             let ctx = audit.resolve(st)?;
             let signed = st.hosted_setup(&ctx, &b.name)?;
+            agree_at_sign_in(st, &signed, legal.as_deref())?;
             end_replaced(st, &ctx, old)?;
             Ok(signed)
         })
@@ -212,10 +327,12 @@ async fn accept_invite(
         return Err(session_exists(current));
     }
     let old = session_token(&headers, h.cookie_name());
+    let legal = legal_version(&h);
     let signed = s
         .store_call(move |st| {
             let ctx = audit.resolve(st)?;
             let signed = st.redeem_invite_in_browser(&ctx, &code)?;
+            agree_at_sign_in(st, &signed, legal.as_deref())?;
             end_replaced(st, &ctx, old)?;
             Ok(signed)
         })
@@ -325,10 +442,12 @@ async fn accept_signin_link(
         }
     }
     let old = session_token(&headers, h.cookie_name());
+    let legal = legal_version(&h);
     let signed = s
         .store_call(move |st| {
             let ctx = audit.resolve(st)?;
             let signed = st.redeem_signin_link(&ctx, &code)?;
+            agree_at_sign_in(st, &signed, legal.as_deref())?;
             end_replaced(st, &ctx, old)?;
             Ok(signed)
         })
@@ -1077,7 +1196,10 @@ pub fn router(state: AppState) -> Router {
         .route("/signin", get(signin_page))
         .route("/signin/{code}", get(signin_page))
         .route("/join/{code}", get(signin_page))
+        .route("/terms", get(legal_page))
+        .route("/privacy", get(legal_page))
         .route("/api/hosted/me", get(me))
+        .route("/api/hosted/legal/agree", post(legal_agree))
         .route("/api/hosted/setup", post(setup))
         .route("/api/hosted/invites/{code}", get(peek_invite))
         .route("/api/hosted/invites/{code}/accept", post(accept_invite))

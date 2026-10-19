@@ -131,6 +131,9 @@ pub struct Hosted {
     /// ([`Hosted::with_public_gallery`]); off, nothing is listed and no
     /// one may list a page.
     pub public_gallery: bool,
+    /// The Terms of Service and Privacy Policy shown and agreed to
+    /// ([`Hosted::with_legal`]); `None` shows none.
+    pub legal: Option<clax_core::config::Legal>,
 }
 
 impl std::fmt::Debug for Hosted {
@@ -141,6 +144,7 @@ impl std::fmt::Debug for Hosted {
             .field("setup_open", &self.setup_secret.is_some())
             .field("behind_cloudflare", &self.behind_cloudflare)
             .field("github", &self.github)
+            .field("legal", &self.legal)
             .finish()
     }
 }
@@ -307,6 +311,7 @@ impl Hosted {
             github: None,
             member_caps: Default::default(),
             public_gallery: false,
+            legal: None,
         })
     }
 
@@ -364,6 +369,22 @@ impl Hosted {
         }
     }
 
+    /// This hosted mode showing `legal`'s Terms of Service and Privacy
+    /// Policy: linked from the sign-in pages, each browser sign-in under
+    /// their notice recorded as the person agreeing to `legal`'s version,
+    /// and a signed-in person who has not agreed to it asked to. With
+    /// [`Legal::Bundled`](clax_core::config::Legal::Bundled), `/terms` and
+    /// `/privacy` serve the bundled documents.
+    pub fn with_legal(self, legal: Option<clax_core::config::Legal>) -> Hosted {
+        Hosted { legal, ..self }
+    }
+
+    /// Whether this hosted mode serves the bundled documents at `/terms`
+    /// and `/privacy`.
+    pub fn serves_legal(&self) -> bool {
+        matches!(self.legal, Some(clax_core::config::Legal::Bundled))
+    }
+
     /// This hosted mode with its attempts counted on `clock`.
     pub fn with_clock(self, clock: std::sync::Arc<dyn clax_core::working::Clock>) -> Hosted {
         Hosted {
@@ -399,6 +420,7 @@ impl Hosted {
             h.behind_cloudflare(c.behind_cloudflare)
                 .with_github(github, c.member_max_artifacts)
                 .with_public_gallery(c.public_gallery)
+                .with_legal(c.legal.clone())
         })
     }
 
@@ -1536,7 +1558,8 @@ pub async fn gate(State(s): State<AppState>, mut req: Request, next: Next) -> Re
         || path.starts_with("/signin/")
         || path.starts_with("/join/")
         || path == "/auth/github"
-        || path == crate::github::CALLBACK_PATH;
+        || path == crate::github::CALLBACK_PATH
+        || (h.serves_legal() && (path == "/terms" || path == "/privacy"));
     if let Some(m) = member.as_ref().filter(|_| !open && !own) {
         return member_gate(&s, m, req, next).await;
     }

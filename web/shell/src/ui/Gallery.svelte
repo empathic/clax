@@ -15,6 +15,9 @@
   // page is People (its own chunk, through the lazy module, with the page's
   // stream), and no artifacts are fetched. **People** is in the header for
   // the owner and for a connected person, once the lazy module has loaded.
+  // On a hosted Clax that shows Terms of Service and a Privacy Policy, every
+  // one of these pages ends with links to them, and a person who has not
+  // agreed to them is asked to (hosted/legal.ts).
   import { onDestroy, onMount } from "svelte";
   import { ApiError, type Artifact, type AttentionSummary, deleteArtifact, getAttention, getToken, listArtifacts, patchArtifact } from "../api";
   import { REQUEST_STUCK, connTrouble } from "../conn-notice";
@@ -30,8 +33,10 @@
   let token = $state<string | null>(null);
   // A hosted daemon's gallery names its site rather than "local artifacts":
   // the owner's browser holds its shell token (`cxo_`), anyone else asks
-  // `GET /api/hosted/me` (404 on a local daemon).
+  // `GET /api/hosted/me` (404 on a local daemon); both ask it for the
+  // documents to link (`legal`).
   let site = $state<string | null>(null);
+  let legal = $state<{ terms_url: string; privacy_url: string } | null>(null);
   let query = $state("");
   // This browser's viewer (`GET /api/viewers/me`): its name, public ID, and
   // whether it is a connected person's.
@@ -103,7 +108,7 @@
   const g = $derived(shown && gw && !query.trim() ? gw.groups(shown, att) : null);
   // This browser's viewer, asked once (after the token: on this machine that makes it the owner's).
   let mine: Promise<import("../people/PeopleLink.svelte").Viewer>;
-  onMount(() => { mine = getToken().then(t => { token = t; if (t?.startsWith("cxo_")) site = location.host; else if (!t) void fetch("/api/hosted/me").then(r => { if (r.ok && !destroyed) site = location.host; }, () => {}); return fetch("/api/viewers/me"); }).then(r => r.json()).then(b => (viewer = b?.viewer), () => null); if (inbox) void lazy().then(loadQ, () => {}); else if (people) void lazy().then(m => { void loadQ(m); if (!destroyed) unPeople = m.peoplePage(document.querySelector("main.gal")!); }, () => {}); else void refresh(true); });
+  onMount(() => { mine = getToken().then(t => { token = t; if (t?.startsWith("cxo_")) site = location.host; if (!t || t.startsWith("cxo_")) void fetch("/api/hosted/me").then(r => r.ok && r.json()).then((h: import("../hosted/api").HostedMe | false) => { if (h && !destroyed) { site = location.host; legal = h.legal ?? null; if (legal) void import("../hosted/legal").then(m => m.ask(h.legal!)); } }, () => {}); return fetch("/api/viewers/me"); }).then(r => r.json()).then(b => (viewer = b?.viewer), () => null); if (inbox) void lazy().then(loadQ, () => {}); else if (people) void lazy().then(m => { void loadQ(m); if (!destroyed) unPeople = m.peoplePage(document.querySelector("main.gal")!); }, () => {}); else void refresh(true); });
   onDestroy(() => { destroyed = true; unPeople?.(); life.dispose(); cancelStart?.(); sync?.stop(); Q?.stop(); });
 </script>
 
@@ -145,4 +150,5 @@
   {/if}
   {#if artifacts && gw}<gw.HaikuLine footer />{/if}
   {/if}
+  {#if legal}<nav class="glegal" aria-label="Terms and privacy"><a href={legal.terms_url}>Terms of Service</a> · <a href={legal.privacy_url}>Privacy Policy</a></nav>{/if}
 </main>

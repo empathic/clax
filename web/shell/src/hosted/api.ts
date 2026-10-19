@@ -12,8 +12,12 @@ export { Refused };
 
 /** Who the browser is signed in as. */
 export type HostedPerson = { public_id: string; display_name: string | null; owner: boolean; guest: boolean };
-/** `GET /api/hosted/me`. */
-export type HostedMe = { origin: string; setup_open: boolean; signed_in: boolean; person: HostedPerson | null; github?: boolean };
+/** The Terms of Service and Privacy Policy an instance shows; `agreed` is
+ * whether this browser's person agreed to `version` (null for a guest or
+ * no session). */
+export type HostedLegal = { terms_url: string; privacy_url: string; version: string; agreed: boolean | null };
+/** `GET /api/hosted/me`; `legal` is null on an instance that shows no documents. */
+export type HostedMe = { origin: string; setup_open: boolean; signed_in: boolean; person: HostedPerson | null; github?: boolean; legal?: HostedLegal | null };
 /** An agent token, without its token. */
 export type AgentToken = { id: string; label: string; status: string; created_at: string; last_used_at: string | null; ended_at: string | null };
 /** A new agent token: `token` and the commands that carry it are shown this once. */
@@ -49,6 +53,8 @@ const e = encodeURIComponent;
 export async function me(): Promise<HostedMe | null> {
   try { return await call<HostedMe>("/api/hosted/me"); } catch (x) { if (x instanceof Refused && x.status === 404) return null; throw x; }
 }
+/** Records this browser's person agreeing to `version` of the documents (409 `legal_changed` when they changed since). */
+export const agreeLegal = (version: string) => call<object>("/api/hosted/legal/agree", "POST", { version });
 export const setup = (secret: string, name: string) => call<{ person: HostedPerson }>("/api/hosted/setup", "POST", { secret, name });
 export const peekInvite = (code: string) => call<{ name: string | null; expires_at: string }>(`/api/hosted/invites/${e(code)}`);
 /** Redeems an invite; `replace` confirms ending the browser's current session (else 409 `session_exists`). */

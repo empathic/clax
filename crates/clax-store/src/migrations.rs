@@ -1163,6 +1163,19 @@ pub const MIGRATIONS: &[&str] = &[
     ALTER TABLE sessions ADD COLUMN queued_since_turn INTEGER NOT NULL DEFAULT 0;
     ALTER TABLE sessions ADD COLUMN delivered_written_at TEXT;
     ALTER TABLE sessions ADD COLUMN delivered_act TEXT;",
+    // 39: a person agreeing to a hosted Clax's Terms of Service and Privacy
+    // Policy (`crate::legal`): one row per viewer row and version of the
+    // documents, kept when the documents change, with when and how
+    // (`signin`: a browser sign-in under the sign-in page's notice;
+    // `prompt`: the signed-in prompt). No foreign key, as for
+    // `browser_sessions`. A local daemon writes none.
+    "CREATE TABLE legal_agreements (
+        viewer_id TEXT NOT NULL,
+        version TEXT NOT NULL,
+        agreed_at TEXT NOT NULL,
+        via TEXT NOT NULL,
+        PRIMARY KEY (viewer_id, version)
+    );",
 ];
 
 /// The audit journal's migration, as a schema version (the

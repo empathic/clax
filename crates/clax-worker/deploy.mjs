@@ -46,6 +46,13 @@
 // secret is read from GITHUB_CLIENT_SECRET, else asked on a terminal, and
 // uploaded with the deploy when given or when the Worker has none yet.
 // The OAuth App's callback URL is https://<public host>/auth/github/callback.
+//
+// Terms of Service and Privacy Policy: --legal bundled serves the documents
+// in docs/legal at /terms and /privacy (the service Empathic operates);
+// --terms-url <URL> --privacy-url <URL> --legal-version <v> links a
+// deployment's own instead. Kept in the record, like GitHub's; without
+// either the instance shows none. Changing the version asks every person
+// to agree again.
 
 import { spawn } from "node:child_process";
 import { randomBytes } from "node:crypto";
@@ -85,7 +92,7 @@ const PAID_LIMIT_KIB = 10 * 1024;
 
 function parseArgs(argv) {
   const o = { store: "artifacts", name: "clax", wait: 600, diag: false, build: true, dryRun: false, yes: false, rotate: false };
-  const takes = new Set(["--public", "--content", "--zone", "--store", "--name", "--account", "--wait", "--github-client-id", "--owner-github"]);
+  const takes = new Set(["--public", "--content", "--zone", "--store", "--name", "--account", "--wait", "--github-client-id", "--owner-github", "--legal", "--terms-url", "--privacy-url", "--legal-version"]);
   for (let i = 0; i < argv.length; i++) {
     const a = argv[i];
     const [flag, inline] = a.includes("=") ? a.split(/=(.*)/s) : [a, undefined];
@@ -108,6 +115,23 @@ function parseArgs(argv) {
 }
 
 const step = (s) => console.log(`\n== ${s}`);
+
+// The Terms of Service and Privacy Policy settings: this deploy's flags,
+// else the record's. The Worker checks them again at start
+// (Legal::from_settings).
+function legalSettings(o, early) {
+  const own = ["terms-url", "privacy-url", "legal-version"];
+  if (o.legal !== undefined || own.some((f) => o[f] !== undefined)) {
+    if (o.legal !== undefined && o.legal !== "bundled") throw new Error(`--legal takes bundled, not ${o.legal}`);
+    if (o.legal !== undefined && own.some((f) => o[f] !== undefined)) throw new Error("--legal bundled takes no --terms-url, --privacy-url or --legal-version");
+    if (o.legal === "bundled") return { legal: "bundled" };
+    if (own.some((f) => !o[f])) throw new Error("--terms-url, --privacy-url and --legal-version go together");
+    return { terms_url: o["terms-url"], privacy_url: o["privacy-url"], legal_version: o["legal-version"] };
+  }
+  if (early.legal) return { legal: early.legal };
+  if (early.terms_url) return { terms_url: early.terms_url, privacy_url: early.privacy_url, legal_version: early.legal_version };
+  return {};
+}
 const info = (s) => console.log(`   ${s}`);
 
 /** Runs wrangler with `args`; resolves {code, out, err}. `show` streams its
@@ -256,7 +280,7 @@ async function secretNames(account) {
   }
 }
 
-function deployConfig(o, pub, content, account, github) {
+function deployConfig(o, pub, content, account, github, legal) {
   const c = baseConfig();
   delete c.$schema;
   // The config lives in target/deploy/, so its paths name the crate's files.
@@ -285,6 +309,8 @@ function deployConfig(o, pub, content, account, github) {
     CLAX_DIAG_ROUTES: o.diag ? "1" : "0",
     ...(github.client_id ? { GITHUB_CLIENT_ID: github.client_id } : {}),
     ...(github.owner ? { OWNER_GITHUB: github.owner } : {}),
+    ...(legal.legal ? { LEGAL: legal.legal } : {}),
+    ...(legal.terms_url ? { TERMS_URL: legal.terms_url, PRIVACY_URL: legal.privacy_url, LEGAL_VERSION: legal.legal_version } : {}),
   };
   if (o.store === "memory") {
     // No Artifacts: neither its binding nor its events' queue.
@@ -398,7 +424,9 @@ async function main() {
     owner: o["owner-github"] ?? early.owner_github,
   };
   if (github.client_id) info(`GitHub sign-in: OAuth App ${github.client_id}, owner ${github.owner ? `@${github.owner}` : "(none named)"}`);
-  const config = deployConfig(o, pub, content, account, github);
+  const legal = legalSettings(o, early);
+  info(`Terms and Privacy: ${legal.legal ? "the bundled documents" : legal.terms_url ? `${legal.terms_url}, ${legal.privacy_url} (version ${legal.legal_version})` : "none"}`);
+  const config = deployConfig(o, pub, content, account, github, legal);
   info(`wrote ${DEPLOY_CONFIG} (worker ${config.name}, REPO_STORE=${o.store}, diagnostics ${o.diag ? "on" : "off"})`);
   if (o.diag) diagReminder(pub);
 
@@ -515,6 +543,7 @@ async function main() {
     deployed_at: new Date().toISOString(),
     ...(github.client_id ? { github_client_id: github.client_id } : {}),
     ...(github.owner ? { owner_github: github.owner } : {}),
+    ...legal,
     ...(secrets?.SETUP_SECRET ? { setup_secret: secrets.SETUP_SECRET, setup_done: false } : {}),
     ...(secrets?.CLAX_TOKEN ? { owner_token: secrets.CLAX_TOKEN } : {}),
   };

@@ -93,6 +93,7 @@ npm_script_build(
         ":files_app",
         ":node_modules",
         "//:cargo_toml",
+        "//docs:legal",
     ],
     out_dirs = [
         "dist",

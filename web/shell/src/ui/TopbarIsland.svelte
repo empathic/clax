@@ -25,7 +25,7 @@
   import { fromStore } from "svelte/store";
   import { getToken } from "../api";
   import { type ArtifactController, viewReady } from "../view/artifact-controller";
-  import { clone, cloneOpen, moreMenu, publish, publishOpen, share, shareOpen, who } from "./more-menu.svelte";
+  import { clone, cloneOpen, legal, moreMenu, publish, publishOpen, share, shareOpen, who } from "./more-menu.svelte";
   import SampleCount from "./SampleCount.svelte";
   import ThemeSwitch from "./ThemeSwitch.svelte";
   import VersionMenu from "./VersionMenu.svelte";
@@ -73,7 +73,7 @@
   {#if Clone && !live && !s.deleted}<Clone id={ctl.id} />{/if}
   {#if Publish && ownerShell && !live && !s.deleted}<Publish id={ctl.id} title={s.data.artifact.title} {latest} />{/if}
   {#if MoreMenu}
-    <MoreMenu rawHref={s.deleted ? null : ctl.rawHref(s)} canCopy={!!navigator.clipboard && !s.deleted} onCopy={() => ctl.copyLink()} onVersions={() => ctl.openMenu("versions")} pageHref={live?.page_url} onFork={forkable && !forking ? () => fork(shown) : undefined} onClone={live || s.deleted ? null : cloneOpen.current} onShare={s.deleted ? null : shareOpen.current} onPublish={live || s.deleted ? null : publishOpen.current} />
+    <MoreMenu rawHref={s.deleted ? null : ctl.rawHref(s)} canCopy={!!navigator.clipboard && !s.deleted} onCopy={() => ctl.copyLink()} onVersions={() => ctl.openMenu("versions")} pageHref={live?.page_url} onFork={forkable && !forking ? () => fork(shown) : undefined} onClone={live || s.deleted ? null : cloneOpen.current} onShare={s.deleted ? null : shareOpen.current} onPublish={live || s.deleted ? null : publishOpen.current} legal={legal.current} />
   {:else}
     <span class="more-slot"></span>
   {/if}
