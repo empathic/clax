@@ -289,6 +289,12 @@ body {
 /* Room to scroll by while a drag is on, so the drop zone opening above
  * the grid never moves the tiles under the finger. */
 .h-page[data-dragging] { padding-bottom: 100vh; }
+/* The kit's reduced motion gives every element a 1 ms transition of every
+ * property. What the page uses in the render that changes it changes at
+ * once: the room below, which the drag's render scrolls the page into, and
+ * a group's name field (its visibility inherited by the input), shown and
+ * focused in the same render. */
+@media (prefers-reduced-motion: reduce) { .h-page, .h-name, .h-name-input { transition-property: none; } }
 /* New app steps aside while a tile is dragged, leaving its corner free. */
 .h-fab { transition: opacity var(--k-fast) var(--k-ease); }
 .h-page[data-dragging] .h-fab { opacity: 0; pointer-events: none; }

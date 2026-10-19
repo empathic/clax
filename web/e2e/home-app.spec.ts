@@ -244,7 +244,11 @@ test.describe("over a fake host", () => {
     await expect(page.locator('.h-section[data-section="starred"] [data-id="app-notes"]')).toHaveCount(1);
   });
 
-  test("a mouse held over another app makes a group and offers its name; a tap fans the group out", async ({ page }) => {
+  // With reduced motion too: the drag opens the Starred drop zone above the
+  // grid and the page scrolls with it, so the pointer stays on the app it is
+  // held over in the top rows, and the new group's name field takes focus.
+  for (const reduced of [false, true]) test(`${reduced ? "with reduced motion, " : ""}a mouse held over another app makes a group and offers its name; a tap fans the group out`, async ({ page }) => {
+    if (reduced) await page.emulateMedia({ reducedMotion: "reduce" });
     await page.clock.install();
     await serve(page, { makes: [] });
     await expect(page.locator(".h-tile[data-id]")).toHaveCount(8);
