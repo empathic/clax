@@ -507,7 +507,23 @@ scripts/pin-release.sh v0.4.0     # PINNED_VERSION and the four SHA256 values, i
 just ci
 git commit -am "Pin the plugins to Clax 0.4.0"
 git push origin main
+# once CI passes on that commit: Actions, Publish Pi package, Run workflow (dry_run off)
 ```
+
+The Pi package, `@empathic/clax-pi` on npm, is published from the pin
+commit, not the tag: its wrapper must pin the release that shares its
+version, which `.github/workflows/publish-pi.yml` checks before it
+typechecks, packs and publishes with provenance through npm trusted
+publishing. npm lets a package name a trusted publisher only once it
+exists, so the first version is published by hand from `plugins/pi`
+(`npm login`, then `npm publish`; `publishConfig` makes it public), and
+the package's settings on npmjs.com then name this repository and
+`publish-pi.yml`. After that first publish, `README.md` and
+`plugins/pi/README.md` lead their Pi install with `pi install
+npm:@empathic/clax-pi`. `scripts/test-plugins.sh` keeps the package
+publishable: public, tagged `pi-package` for Pi's gallery, Pi's own
+modules as optional `"*"` peers (Pi provides them; installed, they would
+add a second Pi of about 200 MB), no `.qual` files, and a `LICENSE`.
 
 A plugin pins the release its wrapper names (`PINNED_VERSION` and one
 `SHA256_*` per target in `scripts/ensure-clax.sh`; `scripts/pin-release.sh`

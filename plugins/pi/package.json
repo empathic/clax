@@ -2,13 +2,31 @@
   "name": "@empathic/clax-pi",
   "version": "0.5.0",
   "description": "Clax tools for the Pi coding agent: publish HTML pages to a local Clax server",
+  "keywords": [
+    "pi-package",
+    "clax",
+    "artifacts",
+    "html",
+    "comments"
+  ],
   "license": "GPL-2.0-only",
+  "author": {
+    "name": "Empathic, Inc.",
+    "email": "alex@empathic.dev"
+  },
+  "homepage": "https://github.com/empathic/clax/tree/main/plugins/pi#readme",
+  "bugs": {
+    "url": "https://github.com/empathic/clax/issues"
+  },
   "packageManager": "pnpm@12.3.4",
   "type": "module",
   "repository": {
     "type": "git",
     "url": "https://github.com/empathic/clax",
     "directory": "plugins/pi"
+  },
+  "publishConfig": {
+    "access": "public"
   },
   "pi": {
     "extensions": [
@@ -21,15 +39,24 @@
   "files": [
     "src/",
     "skills/",
-    "scripts/"
+    "scripts/",
+    "!**/.qual"
   ],
   "scripts": {
     "typecheck": "tsc --noEmit",
     "test": "vitest run"
   },
   "peerDependencies": {
-    "@mariozechner/pi-coding-agent": "^0.73",
+    "@mariozechner/pi-coding-agent": "*",
     "typebox": "*"
+  },
+  "peerDependenciesMeta": {
+    "@mariozechner/pi-coding-agent": {
+      "optional": true
+    },
+    "typebox": {
+      "optional": true
+    }
   },
   "devDependencies": {
     "@mariozechner/pi-ai": "0.73.1",

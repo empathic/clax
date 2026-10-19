@@ -329,6 +329,33 @@ sys.exit(0 if "scripts/" in json.load(open(sys.argv[1])).get("files", []) else 1
 PY
 then pass "plugins/pi/package.json ships scripts/ (the wrapper)"; else fail "plugins/pi/package.json must list scripts/ in files"; fi
 
+# The Pi package is ready for npm (.github/workflows/publish-pi.yml): public
+# under its scope, listed in Pi's gallery (keyword pi-package), Pi's own
+# packages as "*" peers (Pi's docs/packages.md, "Dependencies") marked
+# optional, so `npm install -g`, which Pi runs, does not install a second Pi
+# (about 200 MB) beside the package, no .qual files, and a LICENSE that
+# carries the GPL-2.0 text of LICENSES/.
+if out="$(python3 - plugins/pi/package.json plugins/pi/LICENSE LICENSES/GPL-2.0-only.txt 2>&1 <<'PY'
+import json, sys
+d = json.load(open(sys.argv[1]))
+lic, gpl = open(sys.argv[2]).read(), open(sys.argv[3]).read()
+bad = []
+if d.get("publishConfig", {}).get("access") != "public": bad.append('publishConfig.access is not "public"')
+if "pi-package" not in d.get("keywords", []): bad.append("keywords lack pi-package")
+if d.get("license") != "GPL-2.0-only": bad.append("license is not GPL-2.0-only")
+peers = d.get("peerDependencies", {})
+if any(v != "*" for v in peers.values()): bad.append('a peerDependencies range is not "*": %s' % peers)
+meta = d.get("peerDependenciesMeta", {})
+if any(not meta.get(n, {}).get("optional") for n in peers): bad.append("a peer is not optional in peerDependenciesMeta")
+if "!**/.qual" not in d.get("files", []): bad.append('files lacks "!**/.qual"')
+if not (lic.startswith("Clax for Pi") and "Copyright (C) 2026 Empathic, Inc." in lic and lic.endswith(gpl)):
+    bad.append("plugins/pi/LICENSE does not end with LICENSES/GPL-2.0-only.txt under its copyright header")
+print("; ".join(bad))
+sys.exit(1 if bad else 0)
+PY
+)"; then pass 'plugins/pi is ready for npm: public, pi-package, optional "*" peers, no .qual, LICENSE'
+else fail "plugins/pi is not ready for npm: $out"; fi
+
 for gate in plugins/claude-code/scripts/tool-hook.sh plugins/clax/scripts/tool-hook.sh; do
     if cmp -s scripts/tool-hook.sh "$gate"; then
         pass "$gate matches scripts/tool-hook.sh"
