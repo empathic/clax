@@ -7,7 +7,8 @@
   // live seat free, spec 2026-10-11-clax-dev-hosted-design §16.1) sees a
   // banner saying so, with Join live once a seat is free. The drafts' banner
   // and the spectator's are lazy chunks (view/drafts.ts, view/spectator.ts),
-  // loaded the first time there is a draft or the view is a spectator.
+  // loaded the first time there is a draft or the view is a spectator, as
+  // is the consent dialog the first time a page asks.
   import type { Component } from "svelte";
   import { fromStore } from "svelte/store";
   import { INDEX_FILE } from "../../../bridge/src/protocol";
@@ -15,8 +16,8 @@
   import { shellPath } from "../route";
   import { type ArtifactController, viewReady } from "../view/artifact-controller";
   import Composer from "./Composer.svelte";
+  import type { Ask } from "../view/prompt-queue";
   import Pins from "./Pins.svelte";
-  import PromptDialog from "./PromptDialog.svelte";
 
   // An island's controller is fixed for its lifetime: the mount passes it once.
   let { ctl }: { ctl: ArtifactController } = $props();
@@ -43,6 +44,19 @@
     if (s.sheet !== "keys" || KeysSheet || loading) return;
     loading = true;
     import("./KeysSheet.svelte").then(m => { KeysSheet = m.default; }, () => ctl.sheetFailed()).finally(() => { loading = false; });
+  });
+  // The consent dialog's code loads the first time a page asks. Until it is
+  // here the shell's keys stay off (the controller holds them while an ask
+  // is open) and "Allow" is armed only after the dialog's own first paint;
+  // if it cannot load, the ask is dismissed (nothing granted), and the next
+  // ask tries again.
+  let PromptDialog: Component<{ ask: Ask }> | null = $state(null);
+  let asking = false;
+  $effect(() => {
+    const ask = s.ask;
+    if (!ask || PromptDialog || asking) return;
+    asking = true;
+    import("./PromptDialog.svelte").then(m => { PromptDialog = m.default; }, () => ask.answer("dismiss")).finally(() => { asking = false; });
   });
   // A spectator's banner loads with spectator mode, the first time the view is one.
   let SpectatorBanner: Component<{ code: string; joinable: boolean; onJoin(): void }> | null = $state(null);
@@ -87,6 +101,6 @@
   {#if s.notice}
     <div class="banner notice" role="alert"><span>{s.notice}</span><button onclick={() => ctl.dismissNotice()}>Dismiss</button></div>
   {/if}
-  {#if s.ask}<PromptDialog ask={s.ask} />{/if}
+  {#if s.ask && PromptDialog}<PromptDialog ask={s.ask} />{/if}
   {#if s.sheet === "keys" && KeysSheet}<KeysSheet onClose={() => ctl.closeSheet()} />{/if}
 {/if}
