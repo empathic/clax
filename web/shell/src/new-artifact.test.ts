@@ -66,7 +66,7 @@ describe("NewArtifactDialog", () => {
   it("creates from a title and a brief, lists the live agents and sends the brief to the one picked, then opens the artifact", async () => {
     const calls = stubFetch({
       "POST /api/artifacts:new": [201, started],
-      "GET /api/agents": { agents: [{ handle: "a_mine", name: "clax", person: null, live: true }] },
+      "GET /api/agents?artifact=abc": { agents: [{ handle: "a_mine", name: "clax", person: null, live: true }] },
       "POST /api/artifacts/abc/threads/t1/send": { thread: { id: "t1", feedback_state: { state: "sent" } } },
     });
     const assign = vi.fn();
@@ -93,7 +93,7 @@ describe("NewArtifactDialog", () => {
 
   it("with no live agent, shows the prompt to paste into one and opens the artifact on Close", async () => {
     vi.useFakeTimers({ toFake: ["setInterval", "clearInterval"] });
-    stubFetch({ "POST /api/artifacts:new": [201, started], "GET /api/agents": { agents: [] } });
+    stubFetch({ "POST /api/artifacts:new": [201, started], "GET /api/agents?artifact=abc": { agents: [] } });
     const assign = vi.fn();
     (await import("./nav")).nav.assign = assign;
     const onClose = vi.fn();
@@ -106,7 +106,7 @@ describe("NewArtifactDialog", () => {
     const prompt = m.root.querySelector('pre[aria-label="Prompt"]')!.textContent!;
     expect(prompt).toContain(`${location.origin}/a/abc`);
     // An agent that connects is listed.
-    stubFetch({ "GET /api/agents": { agents: [{ handle: "a_new", name: "late", person: null, live: true }] } });
+    stubFetch({ "GET /api/agents?artifact=abc": { agents: [{ handle: "a_new", name: "late", person: null, live: true }] } });
     vi.advanceTimersByTime(3000);
     await settle();
     expect(m.root.querySelector("button.agent")!.textContent).toContain("late");
@@ -130,7 +130,7 @@ describe("NewArtifactDialog", () => {
   it("shows why a pick was refused and lets the person pick again", async () => {
     stubFetch({
       "POST /api/artifacts:new": [201, started],
-      "GET /api/agents": { agents: [{ handle: null, name: "sam-claude", person: "p_sam", live: true }] },
+      "GET /api/agents?artifact=abc": { agents: [{ handle: null, name: "sam-claude", person: "p_sam", live: true }] },
       "GET /api/viewers?ids=p_sam": { viewers: [{ id: "p_sam", display_name: "Sam" }] },
       "POST /api/artifacts/abc/threads/t1/send": [400, { error: { code: "agent_cannot_read", message: "sam-claude may not read this artifact; nothing was sent" } }],
     });
@@ -147,5 +147,82 @@ describe("NewArtifactDialog", () => {
     expect(m.root.querySelector('[role="alert"]')!.textContent).toContain("may not read this artifact");
     expect(assign).not.toHaveBeenCalled();
     expect(m.root.querySelector("button.agent")!.getAttribute("aria-disabled")).toBe("false");
+  });
+
+  it("reads the list again when the agent picked has gone", async () => {
+    let reads = 0;
+    stubFetch({
+      "POST /api/artifacts:new": [201, started],
+      "GET /api/agents?artifact=abc": () => (++reads === 1
+        ? { agents: [{ handle: "a_gone", name: "gone", person: null, live: true }, { handle: "a_here", name: "here", person: null, live: true }] }
+        : { agents: [{ handle: "a_here", name: "here", person: null, live: true }] }),
+      "POST /api/artifacts/abc/threads/t1/send": [400, { error: { code: "unknown_agent", message: "no live agent that may watch this artifact has that name or handle" } }],
+    });
+    const m = mount(NewArtifactDialog, { me: { owner: true }, onClose: vi.fn() });
+    type(m.root.querySelector<HTMLInputElement>("#na-name")!, "Q3 chart");
+    type(m.root.querySelector<HTMLTextAreaElement>("#na-brief")!, "A bar chart");
+    submit(m.root);
+    await settle();
+    expect(m.root.querySelectorAll("button.agent")).toHaveLength(2);
+    click(m.root.querySelector("button.agent")!);
+    await settle();
+    expect(m.root.querySelector('[role="alert"]')!.textContent).toContain("no live agent");
+    expect([...m.root.querySelectorAll("button.agent")].map(b => b.querySelector(".nm")!.textContent)).toEqual(["here"]);
+  });
+
+  it("closed while Create is in flight, lands on the artifact made and polls nothing", async () => {
+    let answer: (r: Response) => void = () => {};
+    const calls: string[] = [];
+    vi.stubGlobal("fetch", vi.fn((url: string) => {
+      calls.push(url);
+      if (url === "/api/artifacts:new") return new Promise<Response>(r => { answer = r; });
+      return Promise.resolve(new Response("{}", { status: 404 }));
+    }));
+    const setInt = vi.spyOn(globalThis, "setInterval");
+    const assign = vi.fn();
+    (await import("./nav")).nav.assign = assign;
+    const onClose = vi.fn();
+    const m = mount(NewArtifactDialog, { me: { owner: true }, onClose });
+    type(m.root.querySelector<HTMLInputElement>("#na-name")!, "Q3 chart");
+    type(m.root.querySelector<HTMLTextAreaElement>("#na-brief")!, "A bar chart");
+    submit(m.root);
+    await settle();
+    click([...m.root.querySelectorAll("button")].find(b => b.textContent === "Cancel")!);
+    expect(onClose).toHaveBeenCalled();
+    m.unmount();
+    answer(new Response(JSON.stringify(started), { status: 201 }));
+    await settle();
+    expect(assign).toHaveBeenCalledWith("/a/abc");
+    expect(setInt).not.toHaveBeenCalled();
+    expect(calls.some(u => u.startsWith("/api/agents"))).toBe(false);
+    setInt.mockRestore();
+  });
+
+  it("retries Create with the same key after a lost answer, and a new one after a refusal", async () => {
+    const keys: (string | null)[] = [];
+    let n = 0;
+    vi.stubGlobal("fetch", vi.fn(async (url: string, init?: RequestInit) => {
+      if (url !== "/api/artifacts:new") return new Response("{}", { status: 404 });
+      keys.push(new Headers(init?.headers).get("idempotency-key"));
+      n++;
+      if (n === 1) throw new TypeError("Failed to fetch");
+      return new Response(JSON.stringify({ error: { code: "invalid_title", message: "bad title" } }), { status: 400 });
+    }));
+    const m = mount(NewArtifactDialog, { me: { owner: true }, onClose: vi.fn() });
+    type(m.root.querySelector<HTMLInputElement>("#na-name")!, "Q3 chart");
+    type(m.root.querySelector<HTMLTextAreaElement>("#na-brief")!, "A bar chart");
+    for (let i = 0; i < 3; i++) { submit(m.root); await settle(); }
+    expect(keys).toHaveLength(3);
+    expect(keys[0]).toBeTruthy();
+    expect(keys[1]).toBe(keys[0]);
+    expect(keys[2]).not.toBe(keys[1]);
+  });
+});
+
+describe("titles", () => {
+  it("take the zero-width non-joiner and joiner", () => {
+    expect(formProblem("می‌خواهم", "x")).toBeNull();
+    expect(formProblem("Team \u{1f468}‍\u{1f469}", "x")).toBeNull();
+    expect(formProblem("a​b", "x")).toBe("A title is one line of plain text.");
   });
 });

@@ -14,7 +14,7 @@
   // Close closes it and focus goes back.
   import { onMount } from "svelte";
   import { nav } from "../nav";
-  import { connectPrompt, formProblem, liveAgents, personNames, pickGroups, sendBrief, start, type Me, type PickGroup, type Started } from "../view/new-artifact";
+  import { connectPrompt, formProblem, liveAgents, newKey, personNames, pickGroups, Refused, sendBrief, start, type Me, type PickGroup, type Started } from "../view/new-artifact";
   import { inertOutside, trapTab } from "./modal";
 
   let { me, onClose }: { me: Me; onClose(): void } = $props();
@@ -32,6 +32,12 @@
   let sending = $state<string | null>(null);
   let copied = $state(false);
   let poll: ReturnType<typeof setInterval> | undefined;
+  // One key per form: a retry of Create answers the artifact a first
+  // request made, if it made one.
+  let key = newKey();
+  // Unmounted: nothing more is set or started, and an artifact made after
+  // Close is landed on.
+  let destroyed = false;
   let copyTimer: ReturnType<typeof setTimeout> | undefined;
   const problem = $derived(formProblem(title, brief));
   const prompt = $derived(started ? connectPrompt(new URL(started.url, location.origin).href, started.artifact.title) : "");
@@ -40,6 +46,7 @@
   onMount(() => {
     const undo = backdrop ? inertOutside(backdrop) : () => {};
     return () => {
+      destroyed = true;
       undo();
       clearInterval(poll);
       clearTimeout(copyTimer);
@@ -47,11 +54,19 @@
     };
   });
 
-  /** The live agents, grouped, with other people named. */
-  async function agents(): Promise<PickGroup[]> {
-    const list = await liveAgents();
+  /** The agents the daemon says a send of the brief may name, grouped,
+   * with other people named. */
+  async function agents(aid: string): Promise<PickGroup[]> {
+    const list = await liveAgents(aid);
     const others = list.map(a => a.person).filter((p): p is string => !!p && p !== me?.public_id);
     return pickGroups(list, me, await personNames(others));
+  }
+
+  /** Reads the agents again for the artifact made. */
+  async function refresh() {
+    if (!started) return;
+    const g = await agents(started.artifact.id).catch(() => null);
+    if (g && !destroyed) groups = g;
   }
 
   async function create(e: SubmitEvent) {
@@ -61,12 +76,18 @@
     busy = true;
     error = "";
     try {
-      started = await start(title, brief);
-      groups = await agents();
-      // With none live, look again until one connects.
-      if (!groups.length) poll = setInterval(() => { void agents().then(g => { if (g.length) { groups = g; clearInterval(poll); } }, () => {}); }, 3000);
+      const made = await start(title, brief, key);
+      // Closed while Create was in flight: land on what it made.
+      if (destroyed) { nav.assign(made.url); return; }
+      started = made;
+      await refresh();
+      // Agents come and go: the list follows them, so one that connects
+      // after the prompt was copied is listed.
+      if (!destroyed) poll = setInterval(() => { void refresh(); }, 3000);
     } catch (x) {
-      error = x instanceof Error ? x.message : "The artifact was not made";
+      // The daemon refused: nothing was made, so the next Create is new.
+      if (x instanceof Refused) key = newKey();
+      if (!destroyed) error = x instanceof Error ? x.message : "The artifact was not made";
     } finally { busy = false; }
   }
 
@@ -83,9 +104,14 @@
     } catch (x) {
       error = x instanceof Error ? x.message : "The brief was not sent";
       sending = null;
+      // The agent has gone, or may no longer reach the artifact: the list
+      // shows who can be picked now.
+      if (x instanceof Refused && (x.code === "unknown_agent" || x.code === "agent_cannot_read")) await refresh();
     }
   }
 
+  /** Every way out once the artifact exists lands on it; a Close while
+   * Create is in flight lands on it once it is made. */
   function close() { if (started) open(); else onClose(); }
 
   function copy() {

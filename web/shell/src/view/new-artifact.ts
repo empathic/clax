@@ -33,7 +33,8 @@ export function formProblem(title: string, brief: string): string | null {
   const t = title.trim();
   if (!t) return "Give it a title.";
   if ([...t].length > MAX_TITLE) return `A title is at most ${MAX_TITLE} characters.`;
-  if (/[\p{Cc}\p{Cf}]/u.test(t)) return "A title is one line of plain text.";
+  // Zero-width non-joiner and joiner (Persian and Indic words, emoji) are text.
+  if (/(?![\u200c\u200d])[\p{Cc}\p{Cf}]/u.test(t)) return "A title is one line of plain text.";
   if (!brief.trim()) return "Say what you want built.";
   if ([...brief.trim()].length > MAX_BRIEF) return `A brief is at most ${MAX_BRIEF.toLocaleString("en-US")} characters.`;
   return null;
@@ -77,25 +78,37 @@ async function headers(): Promise<Record<string, string>> {
   return h;
 }
 
-/** The daemon's reason for a refusal, else the status. */
-async function reason(res: Response): Promise<string> {
-  const b = await res.json().catch(() => null) as { error?: { message?: string } } | null;
-  return b?.error?.message ?? (res.statusText || `HTTP ${res.status}`);
+/** A refusal from the daemon: its reason, and its code when it gave one. */
+export class Refused extends Error {
+  constructor(message: string, public code: string | null) { super(message); }
 }
 
-/** Starts an artifact titled `title` from `brief`. Throws with the
- * daemon's reason when it refuses. */
-export async function start(title: string, brief: string): Promise<Started> {
-  const res = await fetch("/api/artifacts:new", { method: "POST", headers: await headers(), body: JSON.stringify({ title: title.trim(), brief: brief.trim() }) });
-  if (!res.ok) throw new Error(await reason(res));
+/** The daemon's refusal as a [`Refused`]: its reason, else the status. */
+async function refused(res: Response): Promise<Refused> {
+  const b = await res.json().catch(() => null) as { error?: { message?: string; code?: string } } | null;
+  return new Refused(b?.error?.message ?? (res.statusText || `HTTP ${res.status}`), b?.error?.code ?? null);
+}
+
+/** A key for one form's Create: a retry with it (the answer was lost, or
+ * Create was pressed again) answers the artifact the first request made. */
+export function newKey(): string {
+  return globalThis.crypto?.randomUUID?.() ?? `${Date.now().toString(36)}-${Math.random().toString(36).slice(2)}`;
+}
+
+/** Starts an artifact titled `title` from `brief`, under idempotency key
+ * `key`. Throws a [`Refused`] when the daemon refuses. */
+export async function start(title: string, brief: string, key: string): Promise<Started> {
+  const res = await fetch("/api/artifacts:new", { method: "POST", headers: { ...await headers(), "idempotency-key": key }, body: JSON.stringify({ title: title.trim(), brief: brief.trim() }) });
+  if (!res.ok) throw await refused(res);
   return res.json() as Promise<Started>;
 }
 
-/** Every live agent this browser may see (`GET /api/agents`); none when it
- * may not list them. */
-export async function liveAgents(): Promise<ListedAgent[]> {
+/** The live agents a send of a thread of artifact `aid` from this browser
+ * may name (`GET /api/agents?artifact=`: those the daemon says it would
+ * reach); none when it may name none or may not list them. */
+export async function liveAgents(aid: string): Promise<ListedAgent[]> {
   const t = await getToken();
-  const res = await fetch("/api/agents", { headers: t ? { authorization: `Bearer ${t}` } : {}, cache: "no-store" }).catch(() => null);
+  const res = await fetch(`/api/agents?artifact=${encodeURIComponent(aid)}`, { headers: t ? { authorization: `Bearer ${t}` } : {}, cache: "no-store" }).catch(() => null);
   if (!res?.ok) return [];
   const b = await res.json().catch(() => null) as { agents?: ListedAgent[] } | null;
   return (b?.agents ?? []).filter(a => a.live);
@@ -118,10 +131,10 @@ export async function personNames(ids: string[]): Promise<Map<string, string>> {
 export type Sent = { waiting: boolean };
 
 /** Sends the brief thread `tid` of artifact `aid` to the agent `to` names,
- * which then watches the artifact. Throws with the daemon's reason. */
+ * which then watches the artifact. Throws a [`Refused`]. */
 export async function sendBrief(aid: string, tid: string, to: string): Promise<Sent> {
   const res = await fetch(`/api/artifacts/${encodeURIComponent(aid)}/threads/${encodeURIComponent(tid)}/send`, { method: "POST", headers: await headers(), body: JSON.stringify({ to }) });
-  if (!res.ok) throw new Error(await reason(res));
+  if (!res.ok) throw await refused(res);
   const b = await res.json().catch(() => null) as { thread?: { feedback_state?: { state?: string } | string | null } } | null;
   const fs = b?.thread?.feedback_state;
   const state = typeof fs === "string" ? fs : fs?.state;
