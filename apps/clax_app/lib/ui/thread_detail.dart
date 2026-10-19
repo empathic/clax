@@ -6,6 +6,7 @@ import 'package:flutter/material.dart';
 import '../agent/failure.dart';
 import '../clax/api.dart';
 import '../platform/voice.dart';
+import 'user_message.dart';
 
 /// Where a thread stands, as the thread page shows it.
 enum ThreadStatus {
@@ -510,7 +511,7 @@ class _ThreadDetailState extends State<ThreadDetail> {
         setState(
           () => _voiceNote = e is VoiceError
               ? 'Dictation stopped: ${e.message}'
-              : '$e',
+              : 'Dictation stopped. ${logUserMessage('dictation', e)}',
         );
       },
       onDone: () {

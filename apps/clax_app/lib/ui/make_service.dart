@@ -2,11 +2,11 @@ import 'dart:async';
 
 import 'package:flutter/foundation.dart';
 
-import '../agent/backend.dart';
 import '../agent/progress.dart';
 import '../daemon/clock.dart';
 import '../platform/pending_make.dart';
 import 'making_screen.dart';
+import 'user_message.dart';
 
 /// One new app's first run, which goes on whether or not a build view
 /// shows it: leaving the build view leaves it running, and only [cancel]
@@ -45,8 +45,12 @@ class MakeSession extends ChangeNotifier {
   /// The new app, once the first run made it.
   String? aid;
 
-  /// Why the last attempt failed, while it stands.
+  /// Why the last attempt failed, while it stands, as one plain line
+  /// (`userMessage`).
   String? failure;
+
+  /// The raw text of the last attempt's failure, for Developer tools.
+  String? failureDetail;
 
   /// Whether [cancel] stopped the make.
   var cancelled = false;
@@ -105,6 +109,7 @@ class MakeSession extends ChangeNotifier {
     log = MakingLog();
     planKey = null;
     failure = null;
+    failureDetail = null;
     lastChangedHtml = false;
     startedAt = _clock.now();
     waitingForConnection = false;
@@ -143,7 +148,8 @@ class MakeSession extends ChangeNotifier {
       if (!current()) return;
       _running = false;
       waitingForConnection = false;
-      failure = e is AgentError ? e.message : '$e';
+      failure = logUserMessage('make', e);
+      failureDetail = rawError(e);
     }
     notifyListeners();
   }

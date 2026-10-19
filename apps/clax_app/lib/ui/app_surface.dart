@@ -44,17 +44,19 @@ abstract interface class AppSurface {
   void dispose();
 }
 
-/// The page's document failed to load: [description] says how. When
-/// [reloading], the surface is loading it again by itself; otherwise it
-/// gave up and waits for [AppSurface.reload].
+/// The page's document failed to load: [detail] is the WebView's raw
+/// description (such as `net::ERR_CONNECTION_REFUSED`), for the log and
+/// Developer tools; `userMessage` says it plainly. When [reloading], the
+/// surface is loading it again by itself; otherwise it gave up and waits
+/// for [AppSurface.reload].
 class SurfaceFault {
-  const SurfaceFault(this.description, {required this.reloading});
+  const SurfaceFault(this.detail, {required this.reloading});
 
-  final String description;
+  final String detail;
   final bool reloading;
 
   @override
-  String toString() => 'SurfaceFault($description, reloading: $reloading)';
+  String toString() => 'SurfaceFault($detail, reloading: $reloading)';
 }
 
 /// An image of a surface's page: [png] at the device's pixels, of a view

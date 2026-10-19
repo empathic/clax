@@ -7,6 +7,7 @@ import 'package:clax_app/bundle/updater.dart';
 import 'package:clax_app/clax/api.dart';
 import 'package:clax_app/platform/settings_store.dart';
 import 'package:clax_app/ui/bundle_sheets.dart';
+import 'package:clax_app/ui/developer.dart';
 import 'package:flutter/material.dart';
 import 'package:flutter_test/flutter_test.dart';
 
@@ -56,11 +57,16 @@ void main() {
   /// sheet is up.
   Future<void> run(
     WidgetTester tester,
-    Future<void> Function(BuildContext context) flow,
-  ) async {
+    Future<void> Function(BuildContext context) flow, {
+    bool developer = false,
+  }) async {
     await tester.pumpWidget(
       MaterialApp(
         key: UniqueKey(),
+        builder: (_, child) => DeveloperScope(
+          notifier: ValueNotifier(developer),
+          child: child!,
+        ),
         home: Builder(
           builder: (context) => Scaffold(
             body: Center(
@@ -149,32 +155,42 @@ void main() {
     expect(opened, [aid]);
   });
 
-  testWidgets('an updater that throws ends the progress sheet with a '
-      'failure', (tester) async {
-    late Uint8List v2;
-    await tester.runAsync(() async {
-      await me.ready();
-      final v1 = await makeBundle(lineage: lineageA);
-      await me.installer.install(await me.installer.open(v1.bytes));
-      v2 = (await makeBundle(
-        lineage: lineageA,
-        version: 2,
-        files: {'index.html': '<p>v2</p>'},
-      )).bytes;
+  for (final developer in [false, true]) {
+    testWidgets('an updater that throws ends the progress sheet with a '
+        'failure; its raw text is under Details only with Developer tools '
+        '(developer: $developer)', (tester) async {
+      late Uint8List v2;
+      await tester.runAsync(() async {
+        await me.ready();
+        final v1 = await makeBundle(lineage: lineageA);
+        await me.installer.install(await me.installer.open(v1.bytes));
+        v2 = (await makeBundle(
+          lineage: lineageA,
+          version: 2,
+          files: {'index.html': '<p>v2</p>'},
+        )).bytes;
+      });
+      flows = BundleFlows(
+        exporter: me.exporter,
+        installer: me.installer,
+        updater: _ThrowingUpdater(me),
+        files: files,
+        settings: settings,
+        open: opened.add,
+      );
+      await run(tester, (c) => flows.openBytes(c, v2), developer: developer);
+      await tester.tap(find.text('Update'));
+      await settle(tester);
+      expect(find.text('The update could not finish.'), findsOneWidget);
+      expect(find.textContaining('Bad state'), findsNothing);
+      expect(find.text('Details'), developer ? findsOneWidget : findsNothing);
+      if (developer) {
+        await tester.tap(find.text('Details'));
+        await settle(tester);
+        expect(find.text('Bad state: broken'), findsOneWidget);
+      }
     });
-    flows = BundleFlows(
-      exporter: me.exporter,
-      installer: me.installer,
-      updater: _ThrowingUpdater(me),
-      files: files,
-      settings: settings,
-      open: opened.add,
-    );
-    await run(tester, (c) => flows.openBytes(c, v2));
-    await tester.tap(find.text('Update'));
-    await settle(tester);
-    expect(find.text('The update could not finish.'), findsOneWidget);
-  });
+  }
 
   testWidgets('a modified copy: Keep mine stops updates', (tester) async {
     late String aid;

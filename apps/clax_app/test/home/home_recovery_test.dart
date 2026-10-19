@@ -223,4 +223,19 @@ void main() {
     await rec.reset();
     expect(told, 2);
   });
+
+  test('a failure Undo or Reset cannot name reads as one plain line', () {
+    expect(
+      recoveryFailure(StateError('no element')),
+      'Something went wrong. Try again.',
+    );
+    expect(
+      recoveryFailure(const SocketException('refused')),
+      'Clax’s service didn’t answer.',
+    );
+    expect(
+      recoveryFailure(const HomeRecoveryError('Nothing to undo.')),
+      'Nothing to undo.',
+    );
+  });
 }

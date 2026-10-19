@@ -26,7 +26,9 @@ import '../platform/bundle_key.dart' show keyFingerprint;
 import '../platform/device/device_grants.dart';
 import '../platform/settings_store.dart';
 import 'app_icon.dart';
+import 'developer.dart';
 import 'layout.dart';
+import 'user_message.dart';
 
 /// Shows [sheet] over [context]: a bottom sheet at the compact size class,
 /// a dialog from medium. [dismissible] false keeps it up until
@@ -1041,7 +1043,11 @@ class BundleFlows {
       plan = await exporter.plan(aid);
     } on Object catch (e) {
       if (!context.mounted) return;
-      await _fail(context, "Couldn't read this app to share it.", ['$e']);
+      await _fail(
+        context,
+        "Couldn't read this app to share it.",
+        _raw(DeveloperScope.of(context), 'share', e),
+      );
       return;
     }
     if (!context.mounted) return;
@@ -1083,7 +1089,7 @@ class BundleFlows {
       await _fail(
         context,
         toFile ? "Couldn't save the file." : "Couldn't share the file.",
-        ['$e'],
+        _raw(DeveloperScope.of(context), toFile ? 'save' : 'share', e),
       );
     }
   }
@@ -1095,7 +1101,11 @@ class BundleFlows {
       bytes = await files.pick();
     } on Object catch (e) {
       if (!context.mounted) return;
-      await _fail(context, "Couldn't read that file.", ['$e']);
+      await _fail(
+        context,
+        "Couldn't read that file.",
+        _raw(DeveloperScope.of(context), 'import', e),
+      );
       return;
     }
     if (bytes == null || !context.mounted) return;
@@ -1247,6 +1257,7 @@ class BundleFlows {
       BundleProgressSheet(progress: progress),
       dismissible: false,
     );
+    final developer = DeveloperScope.of(context);
     UpdateOutcome outcome;
     try {
       outcome = await u.update(
@@ -1256,7 +1267,10 @@ class BundleFlows {
             progress.value = BundleWorking(checking, updateStepLabel(s)),
       );
     } on Object catch (e) {
-      outcome = UpdateRefused('The update could not finish.', details: ['$e']);
+      outcome = UpdateRefused(
+        'The update could not finish.',
+        details: _raw(developer, 'update', e),
+      );
     }
     progress.value = switch (outcome) {
       UpdateLanded(:final version, :final truncated) => BundlePassed(
@@ -1302,6 +1316,7 @@ class BundleFlows {
       BundleProgressSheet(progress: progress),
       dismissible: false,
     ).whenComplete(() => up = false);
+    final developer = DeveloperScope.of(context);
     try {
       final r = await work();
       if (up) nav.pop();
@@ -1310,7 +1325,10 @@ class BundleFlows {
     } on BundleFailure catch (e) {
       progress.value = BundleFailed(e.message, details: e.details);
     } on Object catch (e) {
-      progress.value = BundleFailed('Something went wrong.', details: ['$e']);
+      progress.value = BundleFailed(
+        userMessage(e),
+        details: _raw(developer, 'bundle', e),
+      );
     }
     await shown;
     return null;
@@ -1326,6 +1344,14 @@ class BundleFlows {
       progress: ValueNotifier(BundleFailed(message, details: details)),
     ),
   );
+}
+
+/// Logs [e]'s raw text, and answers it as Details' lines only with
+/// Developer tools on ([developer]).
+List<String> _raw(bool developer, String where, Object e) {
+  final raw = rawError(e);
+  debugPrint('clax bundles: $where: $raw');
+  return developer ? [raw] : const [];
 }
 
 /// At most this many bytes in a `.clax` file read from a path (§6.1).

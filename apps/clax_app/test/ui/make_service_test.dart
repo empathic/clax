@@ -107,4 +107,16 @@ void main() {
       [('habits', false, true), ('runs', true, false)],
     );
   });
+
+  test('a make that failed with a StateError reads as one plain line, '
+      'never Bad state', () async {
+    final makes = MakeService(
+      (_, _, _) async =>
+          throw StateError('The Claude API said: overloaded (529)'),
+    );
+    final s = makes.start('a');
+    await Future<void>.delayed(Duration.zero);
+    expect(s.failure, 'Claude is busy right now. Try again in a minute.');
+    expect(s.failureDetail, 'Bad state: The Claude API said: overloaded (529)');
+  });
 }

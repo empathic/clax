@@ -7,6 +7,7 @@ import 'package:flutter/foundation.dart';
 import '../bundle/installer.dart';
 import '../bundle/lineage_store.dart';
 import '../clax/api.dart';
+import '../ui/user_message.dart';
 import 'home_install.dart';
 import 'home_settings.dart';
 
@@ -207,5 +208,5 @@ String recoveryFailure(Object e) => switch (e) {
     'Your home screen changed meanwhile. Try again.',
   ClaxApiError(:final message) => message,
   BundleFailure(:final message) => message,
-  _ => '$e',
+  _ => logUserMessage('home', e),
 };

@@ -266,7 +266,7 @@ class WebViewInspector implements Inspector {
     });
     final faults = surface.faults.listen((f) {
       if (!f.reloading && !ready.isCompleted) {
-        ready.completeError(InspectorError(f.description));
+        ready.completeError(InspectorError(f.detail));
       }
     });
     Future<T> within<T>(Future<T> f, Duration limit, String why) =>

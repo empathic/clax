@@ -11,6 +11,7 @@ import 'package:flutter/material.dart';
 import '../agent/plan.dart';
 import '../agent/progress.dart';
 import '../agent/worker.dart';
+import 'user_message.dart';
 
 /// What the build UI needs of the worker's builds ([FeedbackWorker]).
 abstract interface class BuildControl {
@@ -439,7 +440,12 @@ class _PlanChecklistState extends State<PlanChecklist> {
       // The field keeps the text, to add again.
       if (mounted) {
         ScaffoldMessenger.maybeOf(context)?.showSnackBar(
-          SnackBar(content: Text('Couldn’t add it to the plan: $e')),
+          SnackBar(
+            content: Text(
+              'Couldn’t add it to the plan. '
+              '${logUserMessage('plan', e)}',
+            ),
+          ),
         );
       }
       return;

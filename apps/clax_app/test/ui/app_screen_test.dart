@@ -13,6 +13,7 @@ import 'package:clax_app/ui/app_menu.dart';
 import 'package:clax_app/ui/app_screen.dart';
 import 'package:clax_app/ui/app_surface.dart';
 import 'package:clax_app/ui/change_sheet.dart';
+import 'package:clax_app/ui/developer.dart';
 import 'package:clax_app/ui/host_protocol.dart';
 import 'package:clax_app/ui/theme.dart';
 import 'package:clax_app/ui/thread_detail.dart';
@@ -171,6 +172,7 @@ void main() {
     Clock? clock,
     Future<(FakeClaxApi, String)> Function()? seed,
     bool pushed = false,
+    bool developer = false,
   }) async {
     phone(tester, size: size);
     final (api, aid) = await (seed ?? _seeded)();
@@ -209,6 +211,10 @@ void main() {
     await tester.pumpWidget(
       MaterialApp(
         theme: claxTheme(Brightness.light, defaultTargetPlatform),
+        builder: (_, child) => DeveloperScope(
+          notifier: ValueNotifier(developer),
+          child: child!,
+        ),
         // [pushed]: over a launcher, as the app opens it.
         home: pushed ? const Scaffold(body: Text('Launcher')) : screen,
       ),
@@ -1019,6 +1025,24 @@ void main() {
       expect(find.byKey(const ValueKey('app-cover')), findsNothing);
     },
   );
+
+  testWidgets('a page that gave up says so plainly; its raw text shows only '
+      'with Developer tools on', (tester) async {
+    for (final developer in [false, true]) {
+      final rig = await pumpScreen(tester, developer: developer);
+      rig.surface.push(rig.ready());
+      await tester.pump();
+      rig.surface.fault(
+        const SurfaceFault('net::ERR_CONNECTION_REFUSED', reloading: false),
+      );
+      await tester.pump();
+      expect(find.text('Clax’s service didn’t answer.'), findsOneWidget);
+      expect(
+        find.text('net::ERR_CONNECTION_REFUSED'),
+        developer ? findsOneWidget : findsNothing,
+      );
+    }
+  });
 
   testWidgets(
     'a reloaded page with the panel open turns comment mode on again',

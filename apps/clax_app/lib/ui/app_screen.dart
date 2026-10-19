@@ -22,11 +22,13 @@ import 'change_sheet.dart';
 import 'change_tracker.dart';
 import 'comment_bar.dart';
 import 'comment_composer.dart';
+import 'developer.dart';
 import 'host_protocol.dart';
 import 'layout.dart';
 import 'swipe.dart';
 import 'thread_detail.dart';
 import 'threads_panel.dart';
+import 'user_message.dart';
 import 'versions_tab.dart';
 import 'working_chip.dart';
 
@@ -353,6 +355,9 @@ class _AppScreenState extends State<AppScreen> with WidgetsBindingObserver {
   // The page.
   var _covered = true;
   String? _gaveUp;
+
+  /// The raw text of the fault [_gaveUp] says plainly, for Developer tools.
+  String? _gaveUpDetail;
   Ready? _ready;
 
   // The shell's state.
@@ -1098,7 +1103,8 @@ class _AppScreenState extends State<AppScreen> with WidgetsBindingObserver {
     if (!mounted) return;
     setState(() {
       _covered = true;
-      _gaveUp = f.reloading ? null : f.description;
+      _gaveUp = f.reloading ? null : logUserMessage('page', f);
+      _gaveUpDetail = f.detail;
     });
     if (!f.reloading) widget.onStoppedLoading?.call();
   }
@@ -1273,7 +1279,9 @@ class _AppScreenState extends State<AppScreen> with WidgetsBindingObserver {
       f = await b.addToPlan(widget.aid, text);
     } on Object catch (e) {
       // The composer keeps the text, to send or add again.
-      if (mounted) _snack('Couldn’t add it to the plan: $e');
+      if (mounted) {
+        _snack('Couldn’t add it to the plan. ${logUserMessage('plan', e)}');
+      }
       return;
     }
     _call(const CancelDraft());
@@ -1659,7 +1667,9 @@ class _AppScreenState extends State<AppScreen> with WidgetsBindingObserver {
         if (!mounted) return;
         setState(
           () => _dictation = Dictation(
-            error: e is VoiceError ? 'Dictation stopped: ${e.message}' : '$e',
+            error: e is VoiceError
+                ? 'Dictation stopped: ${e.message}'
+                : 'Dictation stopped. ${logUserMessage('dictation', e)}',
           ),
         );
       },
@@ -2089,6 +2099,18 @@ class _AppScreenState extends State<AppScreen> with WidgetsBindingObserver {
                         color: theme.colorScheme.onSurfaceVariant,
                       ),
                     ),
+                    if (_gaveUpDetail case final d?
+                        when DeveloperScope.of(context)) ...[
+                      const SizedBox(height: 8),
+                      SelectableText(
+                        d,
+                        key: const ValueKey('app-cover-detail'),
+                        textAlign: TextAlign.center,
+                        style: theme.textTheme.labelSmall?.copyWith(
+                          color: theme.colorScheme.onSurfaceVariant,
+                        ),
+                      ),
+                    ],
                     const SizedBox(height: 20),
                     FilledButton.icon(
                       onPressed: _reload,
