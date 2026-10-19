@@ -37,6 +37,25 @@ pub fn web_ui_dir() -> Option<&'static str> {
     dir
 }
 
+#[cfg(test)]
+mod watched {
+    /// `build.rs` names every directory a web UI file comes from, so a new
+    /// file in the web build rebuilds the crate.
+    #[test]
+    fn the_build_script_watches_every_web_ui_directory() {
+        let watched: Vec<&str> = include_str!(concat!(env!("OUT_DIR"), "/plugin-dirs.txt"))
+            .lines()
+            .collect();
+        for p in super::web_ui_paths() {
+            for d in std::path::Path::new(&p).ancestors().skip(1) {
+                let d = std::path::Path::new("web/dist").join(d);
+                let d = d.to_str().unwrap().trim_end_matches('/');
+                assert!(watched.contains(&d), "{d} (for {p}) is not watched");
+            }
+        }
+    }
+}
+
 /// Only a build that embeds its web UI has something to check: a debug
 /// build that reads it from disk compiles no tests here.
 #[cfg(all(test, any(not(debug_assertions), clax_embedded)))]

@@ -9,7 +9,8 @@
 //! binary adapts these functions. A release build embeds every file; a
 //! debug build reads them from the checkout on each call, unless it embeds
 //! them too (`clax_embedded`, as Bazel's does). `build.rs` names every
-//! embedded directory, so a new file rebuilds the crate.
+//! embedded directory, where it is embedded from, so a new file rebuilds
+//! the crate.
 
 mod extension;
 mod plugins;
