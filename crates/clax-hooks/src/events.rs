@@ -8,12 +8,25 @@ use serde_json::{Value, json};
 use std::time::Duration;
 
 /// The pending-feedback request `session_start` makes after joining is
-/// abandoned after this long, so the join context is printed within the
-/// hook's deadline.
+/// abandoned after this long at most, and sooner when less is left before
+/// the hook's deadline ([`Daemon::time_left`]).
 pub const START_FEEDBACK_TIMEOUT: Duration = Duration::from_secs(1);
+
+/// A request that takes feedback is not made with less than this left
+/// before the hook's deadline ([`Daemon::time_left`]): the daemon marks
+/// what it hands over delivered before it answers, so a take whose answer
+/// comes too late to print loses it. Left undelivered, it waits for the
+/// next hook.
+pub const MIN_TAKE_TIME: Duration = Duration::from_millis(500);
 
 /// The daemon operations hooks need.
 pub trait Daemon {
+    /// How long a request may still take for its answer to be printed
+    /// before the hook's deadline (the time kept for printing already taken
+    /// off); `None` when the hook has no deadline.
+    fn time_left(&self) -> Option<Duration> {
+        None
+    }
     fn browser_url(&self, path: &str) -> String;
     fn get(&self, path: &str) -> anyhow::Result<Value>;
     /// [`Daemon::get`], abandoned with an error after `timeout`.
@@ -106,8 +119,9 @@ fn refused_field(e: &anyhow::Error) -> Option<&'static str> {
 /// first, cover a wrapper shell between the hook and the harness). The
 /// context names the daemon and, when the joined session has pending
 /// `prompt_hook` feedback, appends its rendered text. That feedback request is
-/// bounded by [`START_FEEDBACK_TIMEOUT`]; when it fails or times out the
-/// context is returned without it. `codex_home`, when given, is recorded for
+/// bounded by [`START_FEEDBACK_TIMEOUT`] and by what is left before the
+/// hook's deadline, and not made when that is less than [`MIN_TAKE_TIME`];
+/// when it fails or times out the context is returned without it. `codex_home`, when given, is recorded for
 /// the session so the daemon can run `codex queue` against that Codex home.
 pub fn session_start(
     harness: &str,
@@ -174,9 +188,10 @@ pub fn session_start_with(
         context.push_str(&line);
     }
     if let Some(sid) = joined["session"]["id"].as_str()
-        && let Ok(res) = daemon.get_with_timeout(
+        && let Ok(Some(res)) = take(
+            daemon,
             &format!("/api/sessions/{sid}/feedback?tier=prompt_hook"),
-            START_FEEDBACK_TIMEOUT,
+            Some(START_FEEDBACK_TIMEOUT),
         )
         && let Some(text) = rendered_text(&res)
     {
@@ -276,12 +291,43 @@ pub(crate) fn live_session(
         .map(str::to_string))
 }
 
-/// The rendered feedback the daemon hands over for `query`, if any, as the
-/// agent is handed it ([`Daemon::agent_text`]: a remote daemon's clips
-/// fetched and their lines rewritten; otherwise the daemon's text as it is).
-fn feedback_text(daemon: &dyn Daemon, sid: &str, query: &str) -> anyhow::Result<Option<String>> {
-    let res = daemon.get(&format!("/api/sessions/{sid}/feedback?{query}"))?;
-    Ok(rendered_text(&res).map(|t| daemon.agent_text(t)))
+/// `GET path` for a request that takes feedback: made only while at least
+/// [`MIN_TAKE_TIME`] is left before the hook's deadline, and abandoned
+/// once what is left, or `cap`, runs out, so an answer that arrives is
+/// printed. `Ok(None)` when it was not made.
+fn take(daemon: &dyn Daemon, path: &str, cap: Option<Duration>) -> anyhow::Result<Option<Value>> {
+    let timeout = match (daemon.time_left(), cap) {
+        (Some(left), _) if left < MIN_TAKE_TIME => return Ok(None),
+        (Some(left), Some(c)) => Some(left.min(c)),
+        (Some(left), None) => Some(left),
+        (None, c) => c,
+    };
+    match timeout {
+        Some(t) => daemon.get_with_timeout(path, t),
+        None => daemon.get(path),
+    }
+    .map(Some)
+}
+
+/// The rendered feedback the daemon hands over for `query`, as the agent
+/// is handed it ([`Daemon::agent_text`]: a remote daemon's clips fetched
+/// and their lines rewritten; otherwise the daemon's text as it is):
+/// `Some(None)` when none is pending, `None` when too little time was left
+/// to ask ([`take`]).
+fn feedback_text(
+    daemon: &dyn Daemon,
+    sid: &str,
+    query: &str,
+) -> anyhow::Result<Option<Option<String>>> {
+    let Some(res) = take(
+        daemon,
+        &format!("/api/sessions/{sid}/feedback?{query}"),
+        None,
+    )?
+    else {
+        return Ok(None);
+    };
+    Ok(Some(rendered_text(&res).map(|t| daemon.agent_text(t))))
 }
 
 /// The non-empty `text` of a feedback response.
@@ -386,8 +432,11 @@ pub fn stop_with(
     };
     let resends = !input.stop_hook_active.unwrap_or(false);
     match feedback_text(daemon, &sid, &format!("tier=stop_hook&resends={resends}"))? {
-        Some(text) => Ok(HookOutput::block(&text)),
-        None => {
+        // Too late to ask: the stop goes ahead, the turn's working records
+        // and any pending feedback left for the next hook.
+        None => Ok(HookOutput::none()),
+        Some(Some(text)) => Ok(HookOutput::block(&text)),
+        Some(None) => {
             if let Some(w) = wake
                 && let Ok(Some(reason)) = unwoken(harness, &sid, daemon, w)
             {
@@ -545,8 +594,8 @@ pub fn prompt(harness: &str, input: &HookInput, daemon: &dyn Daemon) -> anyhow::
     };
     let text = feedback_text(daemon, &sid, "tier=prompt_hook&prompt=true")?;
     Ok(match text {
-        Some(text) => HookOutput::additional_context("UserPromptSubmit", &text),
-        None => HookOutput::none(),
+        Some(Some(text)) => HookOutput::additional_context("UserPromptSubmit", &text),
+        Some(None) | None => HookOutput::none(),
     })
 }
 
@@ -800,11 +849,7 @@ mod tests {
                 text.replace("Clip: clax-clip:a/b", "Clip: /cache/a-b.png")
             }
         }
-        let d = Rewriting(FeedbackFake {
-            text: Some("[clax] x\nClip: clax-clip:a/b\nMia: hi"),
-            seen: RefCell::new(vec![]),
-            posts: RefCell::new(vec![]),
-        });
+        let d = Rewriting(fake(Some("[clax] x\nClip: clax-clip:a/b\nMia: hi")));
         for out in [
             stop("claude", &input("s1"), &d).unwrap(),
             prompt("claude", &input("s1"), &d).unwrap(),
@@ -845,8 +890,15 @@ mod tests {
         text: Option<&'static str>,
         seen: RefCell<Vec<String>>,
         posts: RefCell<Vec<String>>,
+        /// What [`Daemon::time_left`] answers.
+        left: Option<Duration>,
+        /// Each bounded request's path and timeout.
+        bounded: RefCell<Vec<(String, Duration)>>,
     }
     impl Daemon for FeedbackFake {
+        fn time_left(&self) -> Option<Duration> {
+            self.left
+        }
         fn browser_url(&self, path: &str) -> String {
             format!("http://h:1{path}")
         }
@@ -862,7 +914,8 @@ mod tests {
                 json!({"feedback": if self.text.is_some() { json!([{}]) } else { json!([]) }, "text": self.text, "waited_s": 0}),
             )
         }
-        fn get_with_timeout(&self, path: &str, _: Duration) -> anyhow::Result<Value> {
+        fn get_with_timeout(&self, path: &str, t: Duration) -> anyhow::Result<Value> {
+            self.bounded.borrow_mut().push((path.to_string(), t));
             self.get(path)
         }
         fn post(&self, path: &str, _: &Value) -> anyhow::Result<Value> {
@@ -878,7 +931,85 @@ mod tests {
             text,
             seen: RefCell::new(vec![]),
             posts: RefCell::new(vec![]),
+            left: None,
+            bounded: RefCell::new(vec![]),
         }
+    }
+
+    fn takes(d: &FeedbackFake) -> Vec<String> {
+        d.seen
+            .borrow()
+            .iter()
+            .filter(|p| p.contains("/feedback?"))
+            .cloned()
+            .collect()
+    }
+
+    #[test]
+    fn no_hook_takes_feedback_with_too_little_time_left_to_print_it() {
+        let short = MIN_TAKE_TIME - Duration::from_millis(1);
+        let late = || FeedbackFake {
+            left: Some(short),
+            ..fake(Some("PENDING"))
+        };
+        let d = late();
+        assert_eq!(
+            prompt("claude", &input("s1"), &d).unwrap(),
+            HookOutput::none()
+        );
+        assert!(takes(&d).is_empty(), "{:?}", d.seen.borrow());
+        let d = late();
+        assert_eq!(
+            stop("claude", &input("s1"), &d).unwrap(),
+            HookOutput::none()
+        );
+        assert!(takes(&d).is_empty(), "{:?}", d.seen.borrow());
+        assert!(
+            d.posts.borrow().is_empty(),
+            "a stop that could not ask ends no working records"
+        );
+        let d = late();
+        let out = session_start("claude", 1, &[], &input("s1"), None, &d).unwrap();
+        assert!(takes(&d).is_empty(), "{:?}", d.seen.borrow());
+        let text = out.value().unwrap()["hookSpecificOutput"]["additionalContext"]
+            .as_str()
+            .unwrap()
+            .to_string();
+        assert!(
+            text.contains("http://h:1/") && !text.contains("PENDING"),
+            "{text}"
+        );
+    }
+
+    #[test]
+    fn a_hook_takes_feedback_bounded_by_the_time_it_has_left() {
+        let left = Duration::from_millis(700);
+        let d = FeedbackFake {
+            left: Some(left),
+            ..fake(Some("PENDING"))
+        };
+        let out = prompt("claude", &input("s1"), &d).unwrap();
+        assert!(out.to_line().unwrap().contains("PENDING"));
+        assert_eq!(
+            *d.bounded.borrow(),
+            [(
+                "/api/sessions/S/feedback?tier=prompt_hook&prompt=true".to_string(),
+                left
+            )]
+        );
+        // At session start, the shorter of its own bound and what is left.
+        let d = FeedbackFake {
+            left: Some(Duration::from_secs(3)),
+            ..fake(Some("PENDING"))
+        };
+        session_start("claude", 1, &[], &input("s1"), None, &d).unwrap();
+        assert_eq!(
+            *d.bounded.borrow(),
+            [(
+                "/api/sessions/S/feedback?tier=prompt_hook".to_string(),
+                START_FEEDBACK_TIMEOUT
+            )]
+        );
     }
 
     #[test]
