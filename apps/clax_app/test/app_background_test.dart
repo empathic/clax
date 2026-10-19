@@ -138,10 +138,16 @@ class _Work implements BackgroundWork {
   String? launch;
   final _opened = StreamController<String>.broadcast();
 
+  final _stopped = StreamController<void>.broadcast();
+
   void tap(String aid) => _opened.add(aid);
 
+  /// The platform says the service stopped (Android) or that the runs
+  /// must pause now (iOS, [pausesRuns]).
+  void stopNow() => _stopped.add(null);
+
   @override
-  Stream<void> get stopped => const Stream.empty();
+  Stream<void> get stopped => _stopped.stream;
 
   @override
   Future<bool> start(String title, String step) async {
@@ -185,14 +191,17 @@ class _Work implements BackgroundWork {
   Stream<String> get opened => _opened.stream;
 
   @override
-  bool get pausesRuns => false;
+  bool pausesRuns = false;
 
   @override
   Future<void> paused(String title, String? artifactId) async =>
-      calls.add('paused($title)');
+      calls.add('paused($title, $artifactId)');
 
   @override
   Future<void> pauseDone() async => calls.add('pauseDone');
+
+  @override
+  Future<void> clearPaused() async => calls.add('clearPaused');
 }
 
 void main() {
@@ -672,6 +681,76 @@ void main() {
       'stop',
       'ready(Runs changed, Tap to see it)',
     ]);
+  });
+
+  group('when the platform pauses the runs', () {
+    late String aid;
+    late Completer<void> gate;
+
+    /// A change on Groceries in flight in the background: its first run
+    /// streams until it is cancelled or [gate] opens; a second run lands.
+    Future<void> changeAway(WidgetTester tester) async {
+      aid = api.seedArtifact('Groceries', {'index.html': _page});
+      await pumpApp(tester);
+      await pumpUntil(tester, () => api.waitingPolls == 1);
+      gate = Completer<void>();
+      agent.steps
+        ..add((r) async {
+          await Future.any([?r.cancelled, gate.future]);
+          if (gate.isCompleted) {
+            return change(edits: [edit('<h1>Runs</h1>', '<h1>My runs</h1>')]);
+          }
+          throw const AgentError.cancelled();
+        })
+        ..add(
+          (_) async =>
+              change(edits: [edit('<h1>Runs</h1>', '<h1>My runs</h1>')]),
+        );
+      api.sendComment(aid, 'Call it My runs');
+      await pumpUntil(tester, () => agent.runs == 1);
+      await pumpUntil(
+        tester,
+        () => work.calls.contains(
+          'update(Changing Groceries, Working on your comment)',
+        ),
+      );
+      leave(tester);
+    }
+
+    testWidgets('on iOS the change is paused with one notice, then '
+        'pauseDone; on return the notice goes and the change lands', (
+      tester,
+    ) async {
+      work.pausesRuns = true;
+      await changeAway(tester);
+      work.stopNow();
+      await pumpUntil(tester, () => work.calls.contains('pauseDone'));
+      final pauses = work.calls.where((c) => c.startsWith('paused')).toList();
+      expect(pauses, ['paused(Groceries, $aid)']);
+      expect(
+        work.calls.indexOf('pauseDone'),
+        greaterThan(work.calls.indexOf(pauses.single)),
+      );
+      expect(agent.runs, 1, reason: 'held while the app is away');
+
+      comeBack(tester);
+      await pumpUntil(tester, () => api.currentVersion(aid) == 2);
+      expect(work.calls, contains('clearPaused'));
+      expect(agent.runs, 2);
+      expect(work.calls.where((c) => c.startsWith('pauseDone')), hasLength(1));
+      expect(work.calls.where((c) => c.startsWith('failed')), isEmpty);
+    });
+
+    testWidgets('elsewhere the same stop pauses nothing', (tester) async {
+      await changeAway(tester);
+      work.stopNow();
+      await tester.pump(const Duration(milliseconds: 50));
+      gate.complete();
+      await pumpUntil(tester, () => api.currentVersion(aid) == 2);
+      expect(agent.runs, 1, reason: 'the run was not aborted');
+      expect(work.calls.where((c) => c.startsWith('paused')), isEmpty);
+      expect(work.calls, isNot(contains('pauseDone')));
+    });
   });
 
   testWidgets('a cancelled make stops the service and posts nothing, even '

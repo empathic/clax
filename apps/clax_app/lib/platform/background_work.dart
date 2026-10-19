@@ -56,6 +56,9 @@ abstract interface class BackgroundWork {
   /// Tells the platform the runs are paused, so it may end its background
   /// time.
   Future<void> pauseDone();
+
+  /// Removes the paused notice [paused] posted, if any: the runs go on.
+  Future<void> clearPaused();
 }
 
 /// [BackgroundWork] where there is none (macOS, tests): nothing runs and
@@ -91,6 +94,8 @@ class NoBackgroundWork implements BackgroundWork {
   Future<void> paused(String title, String? artifactId) async {}
   @override
   Future<void> pauseDone() async {}
+  @override
+  Future<void> clearPaused() async {}
 }
 
 /// [BackgroundWork] over the `dev.empathic.clax/background` channel, which
@@ -183,6 +188,9 @@ class ChannelBackgroundWork implements BackgroundWork {
 
   @override
   Future<void> pauseDone() async {}
+
+  @override
+  Future<void> clearPaused() async {}
 }
 
 /// [BackgroundWork] on iOS: `start` {title, text} → bool, `update` {title,
@@ -301,17 +309,33 @@ class IosBackgroundWork implements BackgroundWork {
 
   @override
   Future<void> pauseDone() => _call<void>('pauseDone');
+
+  @override
+  Future<void> clearPaused() async {
+    try {
+      await _hub.cancel(pausedId);
+    } on Object {
+      // Best effort, as every BackgroundWork call.
+    }
+  }
 }
 
 /// One run [BackgroundRuns.begin] is showing.
 final class BackgroundRun {
-  BackgroundRun._(this.title, this.step);
+  BackgroundRun._(this.title, this.step, this.app, this.artifactId);
 
   /// What the notification calls the run ("Making “a run tracker”…").
   String title;
 
   /// What the run is doing now.
   String step;
+
+  /// The name of the app the run makes or changes, once known: what the
+  /// paused notice is titled.
+  String? app;
+
+  /// The artifact the run works on; null for a make until it is made.
+  final String? artifactId;
   bool _ended = false;
 }
 
@@ -399,9 +423,19 @@ class BackgroundRuns {
     unawaited(_work.update(title, step));
   }
 
-  /// Starts showing a run called [title], doing [step].
-  BackgroundRun begin(String title, String step) {
-    final run = BackgroundRun._(title, step);
+  /// The newest run still going, which the notification shows; null when
+  /// none is.
+  BackgroundRun? get newest => _active.lastOrNull;
+
+  /// Starts showing a run called [title], doing [step], on [artifactId]'s
+  /// app named [app] when known.
+  BackgroundRun begin(
+    String title,
+    String step, {
+    String? app,
+    String? artifactId,
+  }) {
+    final run = BackgroundRun._(title, step, app, artifactId);
     _active.add(run);
     if (_service) {
       _update();
@@ -430,9 +464,11 @@ class BackgroundRuns {
   }
 
   /// Shows that [run] is now doing [text], and is called [title] when
-  /// given; ignored once it ended.
-  void step(BackgroundRun run, String text, {String? title}) {
-    if (run._ended || run.step == text && (title ?? run.title) == run.title) {
+  /// given, on the app named [app] when given; ignored once it ended.
+  void step(BackgroundRun run, String text, {String? title, String? app}) {
+    if (run._ended) return;
+    run.app = app ?? run.app;
+    if (run.step == text && (title ?? run.title) == run.title) {
       return;
     }
     run.step = text;

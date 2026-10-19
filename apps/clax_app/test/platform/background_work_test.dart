@@ -63,6 +63,9 @@ class RecordingWork implements BackgroundWork {
 
   @override
   Future<void> pauseDone() async => calls.add('pauseDone');
+
+  @override
+  Future<void> clearPaused() async => calls.add('clearPaused');
 }
 
 void main() {
@@ -128,6 +131,22 @@ void main() {
         'stop',
       ]);
     });
+
+    test('the newest run going names its app and artifact, once told', () {
+      final runs = BackgroundRuns(RecordingWork(), foreground: () => true);
+      expect(runs.newest, isNull);
+      final a = runs.begin('Changing your app', 's', artifactId: 'a1');
+      expect((runs.newest?.app, runs.newest?.artifactId), (null, 'a1'));
+      runs.step(a, 's', title: 'Changing Groceries', app: 'Groceries');
+      final b = runs.begin('Making “runs…”', 's', app: '“runs…”');
+      expect((runs.newest?.app, runs.newest?.artifactId), ('“runs…”', null));
+      runs.end(b, const RunQuiet());
+      expect(
+        (runs.newest?.app, runs.newest?.artifactId),
+        ('Groceries', 'a1'),
+      );
+    });
+
     test('while Clax waits on the person, the notification says Clax needs '
         'your OK, then the run’s step again', () {
       final w = RecordingWork();
@@ -366,6 +385,15 @@ void main() {
       ]);
     });
 
+    test('clearPaused removes the paused notice through the hub, and '
+        'reaches no channel', () async {
+      final w = IosBackgroundWork(hub);
+      await w.paused('Groceries', 'a1');
+      await w.clearPaused();
+      expect(plugin.cancelled, [IosBackgroundWork.pausedId]);
+      expect(calls, isEmpty);
+    });
+
     test('ready and failed post through the hub, keyed by the artifact, '
         'and never reach the channel', () async {
       final w = IosBackgroundWork(hub);
@@ -479,4 +507,6 @@ class _GatedStart implements BackgroundWork {
       inner.paused(title, artifactId);
   @override
   Future<void> pauseDone() => inner.pauseDone();
+  @override
+  Future<void> clearPaused() => inner.clearPaused();
 }

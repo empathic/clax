@@ -18,6 +18,8 @@ class AppPresence {
   bool _foreground;
   int _leaves = 0;
   Completer<void>? _back;
+  bool _paused = false;
+  Completer<void>? _pause;
 
   /// Visible: [AppLifecycleState.resumed] or `inactive` (a dialog, the
   /// notification shade or the app switcher over it).
@@ -36,6 +38,7 @@ class AppPresence {
     if (!front) {
       _leaves++;
     } else {
+      _paused = false;
       _back?.complete();
       _back = null;
     }
@@ -44,7 +47,46 @@ class AppPresence {
   /// Completes when the app is in the foreground: at once when it is.
   Future<void> get whenForeground =>
       _foreground ? Future.value() : (_back ??= Completer<void>()).future;
+
+  /// Pauses the runs while the app is out of the foreground (iOS, when
+  /// its background time is nearly spent): every turn or request in flight
+  /// is aborted as a background cut is and held until [whenForeground],
+  /// then sent again. Does nothing in the foreground.
+  void pause() {
+    if (_foreground || _paused) return;
+    _paused = true;
+    _pause?.complete();
+    _pause = null;
+  }
+
+  /// Whether [pause] was called since the app last left the foreground
+  /// (false again once it is back).
+  bool get paused => _paused;
+
+  /// Completes at the next [pause]; at once while [paused].
+  Future<void> get whenPaused =>
+      _paused ? Future.value() : (_pause ??= Completer<void>()).future;
 }
+
+/// [request] with [cancelled] in place of its own signal.
+AgentRequest _withCancelled(AgentRequest request, Future<void> cancelled) =>
+    AgentRequest(
+      kind: request.kind,
+      model: request.model,
+      systemPrompt: request.systemPrompt,
+      userText: request.userText,
+      image: request.image,
+      cancelled: cancelled,
+      onProgress: request.onProgress,
+      fromBundle: request.fromBundle,
+    );
+
+/// Whether [e], thrown by an attempt [pause] aborted, is the pause's doing
+/// (the attempt saw its cancel, or its connection was cut on the way out)
+/// rather than an answer of the API.
+bool _endedByPause(AgentError e, Completer<void> pause) =>
+    pause.isCompleted &&
+    (e.kind == AgentErrorKind.cancelled || isNetworkCut(e));
 
 /// Whether [e] says the model could not be reached at all, or the
 /// connection broke ([AgentErrorKind.network]): what a run sees when
@@ -63,10 +105,15 @@ bool isNetworkCut(AgentError e) => e.kind == AgentErrorKind.network;
 ///   ([onResume]); these waits are not counted against [maxResumes]. A run
 ///   that starts while the API is known unreachable waits before it is
 ///   sent at all.
+/// - when the app pauses the runs ([AppPresence.pause]), the request in
+///   flight is aborted and run again once the app is back in the
+///   foreground ([onPause], [onResume]); a request asked for while paused
+///   waits for the foreground before it is run. A pause is not counted
+///   against [maxResumes].
 ///
 /// Any other failure, and a network failure in front without a
 /// [connection], is thrown as before. A cancel while paused throws
-/// [AgentError.cancelled].
+/// [AgentError.cancelled]; a pause is not a cancel.
 ///
 /// Resending here is a transport retry: a network failure means no answer
 /// was used, so nothing was applied. A backend that applies work during a
@@ -115,10 +162,25 @@ class ResumingBackend implements AgentBackend {
         cancel.check();
         onResume?.call();
       }
+      if (presence.paused) {
+        await _holdPaused(cancel);
+        continue;
+      }
       final leaves = presence.leaves;
+      final pause = Completer<void>();
+      unawaited(presence.whenPaused.then((_) => _fire(pause)));
       try {
-        return await inner.run(request);
+        return await inner.run(
+          _withCancelled(
+            request,
+            Future.any([?request.cancelled, pause.future]),
+          ),
+        );
       } on AgentError catch (e) {
+        if (!cancel.isCancelled && _endedByPause(e, pause)) {
+          await _holdPaused(cancel);
+          continue;
+        }
         if (!isNetworkCut(e)) rethrow;
         final cutByBackground =
             !presence.foreground || presence.leaves != leaves;
@@ -139,6 +201,20 @@ class ResumingBackend implements AgentBackend {
       onResume?.call();
     }
   }
+
+  /// Holds a paused run until the app is in the foreground, or until
+  /// [cancel] fires (then throws [AgentError.cancelled]).
+  Future<void> _holdPaused(CancelWatch cancel) async {
+    cancel.check();
+    onPause?.call();
+    await Future.any([presence.whenForeground, cancel.whenCancelled]);
+    cancel.check();
+    onResume?.call();
+  }
+}
+
+void _fire(Completer<void> c) {
+  if (!c.isCompleted) c.complete();
 }
 
 /// A [TurnBackend] that waits out a network cut, turn by turn.
@@ -166,9 +242,15 @@ class ResumingBackend implements AgentBackend {
 /// does not send the turn over and over. Without a [connection], a network
 /// failure in front is thrown as before.
 ///
+/// **A pause.** When the app pauses the runs ([AppPresence.pause]), the
+/// attempt in flight is aborted and the turn held as for a cut in the
+/// background, then sent again; a turn that starts while paused is held
+/// before it is sent. A pause is not counted against [maxResumes], so a
+/// person who leaves Clax over and over during one turn does not fail it.
+///
 /// Every cut attempt that reached the API (its stream sent an event) is
 /// told to [TurnHolds.onCutAttempt] before it is sent again, for the run
-/// to count what it was billed.
+/// to count what it was billed; an attempt a pause aborted is one.
 ///
 /// A hold has no time limit: it ends when the app is back in the
 /// foreground or the connection is back, then the turn is sent again, or
@@ -238,13 +320,23 @@ class ResumingTurns implements TurnBackend {
     }
     var cuts = 0;
     for (var resumes = 0; ;) {
+      if (presence.paused) {
+        cancel.check();
+        holds.pauseClock();
+        await _hold(holds, cancel);
+        onResume?.call();
+        continue;
+      }
       final leaves = presence.leaves;
       final watch = _StallWatch(this, holds);
+      final pause = Completer<void>();
+      unawaited(presence.whenPaused.then((_) => _fire(pause)));
       var offline = false;
+      var paused = false;
       try {
         final t = await inner.turn(
           r.watched(
-            cancelled: Future.any([?r.cancelled, watch.stalled]),
+            cancelled: Future.any([?r.cancelled, watch.stalled, pause.future]),
             onActivity: () {
               watch.activity();
               r.onActivity?.call();
@@ -255,7 +347,12 @@ class ResumingTurns implements TurnBackend {
         if (watch.isStalled) holds.resumeClock();
         return t;
       } on AgentError catch (e) {
-        if (watch.isStalled) {
+        if (!cancel.isCancelled && _endedByPause(e, pause)) {
+          // Held as a cut in the background is, uncounted; a stall seen
+          // first has already paused the run's clock.
+          paused = true;
+          if (!watch.isStalled) holds.pauseClock();
+        } else if (watch.isStalled) {
           // The watch paused the run's clock from the last event.
           offline = watch.offline;
           if (cancel.isCancelled || (!offline && resumes >= maxResumes)) {
@@ -282,7 +379,9 @@ class ResumingTurns implements TurnBackend {
         watch.stop();
       }
       if (watch.events > 0) holds.onCutAttempt?.call(watch.events);
-      if (offline) {
+      if (paused) {
+        await _hold(holds, cancel);
+      } else if (offline) {
         cuts++;
         final nudge = cuts > maxOfflineResends;
         if (nudge) cuts = 0;

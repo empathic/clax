@@ -548,6 +548,10 @@ class _AppRootState extends State<AppRoot> with WidgetsBindingObserver {
   StreamSubscription<DaemonState>? _states;
   StreamSubscription<WorkerEvent>? _worker;
   StreamSubscription<String>? _opened;
+  StreamSubscription<void>? _pauses;
+
+  /// Whether the paused notice is up, until Clax is back in front.
+  var _pausedNotice = false;
   StreamSubscription<AppNoticeTap>? _taps;
   StreamSubscription<ReminderTap>? _reminderTaps;
   StreamSubscription<StreamEvent>? _deletions;
@@ -775,6 +779,9 @@ class _AppRootState extends State<AppRoot> with WidgetsBindingObserver {
     _builds = _runtime.worker.builds.listen(_buildNotices.onBuild);
     _runtime.attach();
     _opened = _s.background.opened.listen(_onNews);
+    if (_s.background.pausesRuns) {
+      _pauses = _s.background.stopped.listen((_) => unawaited(_pauseRuns()));
+    }
     unawaited(
       _s.background.launchArtifact().then((aid) {
         if (aid != null && mounted) _onNews(aid);
@@ -807,6 +814,7 @@ class _AppRootState extends State<AppRoot> with WidgetsBindingObserver {
     unawaited(_builds?.cancel());
     _buildNotices.dispose();
     unawaited(_opened?.cancel());
+    unawaited(_pauses?.cancel());
     unawaited(_taps?.cancel());
     unawaited(_reminderTaps?.cancel());
     unawaited(_deletions?.cancel());
@@ -1278,6 +1286,10 @@ class _AppRootState extends State<AppRoot> with WidgetsBindingObserver {
         // also a turn that stopped resending until now.
         _s.connection.nudge();
         _runs.onForeground();
+        if (_pausedNotice) {
+          _pausedNotice = false;
+          unawaited(_s.background.clearPaused());
+        }
       case AppLifecycleState.inactive:
         // On its way to the background (or behind a system sheet): the
         // home screen as it is now is the one the next start shows.
@@ -1289,6 +1301,21 @@ class _AppRootState extends State<AppRoot> with WidgetsBindingObserver {
       case _:
         break;
     }
+  }
+
+  /// The platform's background time is nearly spent ([BackgroundWork]'s
+  /// `stopped` where it [BackgroundWork.pausesRuns]): every run is held
+  /// where it is ([AppPresence.pause]), one notice names the newest run's
+  /// app, and the platform is told the runs are paused. Each run goes on
+  /// by itself when Clax is back in front.
+  Future<void> _pauseRuns() async {
+    _presence.pause();
+    if (!_presence.paused) return;
+    if (_runs.newest case final run?) {
+      _pausedNotice = true;
+      await _s.background.paused(run.app ?? 'Clax', run.artifactId);
+    }
+    await _s.background.pauseDone();
   }
 
   /// The app is about to quit (macOS: Quit, ⌘Q, or closing the last
@@ -1389,6 +1416,7 @@ class _AppRootState extends State<AppRoot> with WidgetsBindingObserver {
     final run = _runs.begin(
       'Making ${makingTitle(request)}',
       MakeStage.starting.label,
+      app: makingTitle(request),
     );
     // Progress hook: anything that knows the run's step (these stages, or
     // streamed steps) shows it with `_runs.step(run, text)`.
@@ -1566,11 +1594,12 @@ class _AppRootState extends State<AppRoot> with WidgetsBindingObserver {
       final run = _changes[aid] = _runs.begin(
         'Changing your app',
         'Working on your comment',
+        artifactId: aid,
       );
       unawaited(
         _titleOf(aid, fallback: '').then((t) {
           if (t.isNotEmpty) {
-            _runs.step(run, run.step, title: 'Changing $t');
+            _runs.step(run, run.step, title: 'Changing $t', app: t);
           }
         }),
       );

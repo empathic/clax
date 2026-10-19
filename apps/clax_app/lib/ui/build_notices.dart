@@ -49,7 +49,11 @@ class BuildNotices {
     final aid = s.appId;
     if (buildGoing(s)) {
       if (!_runs.containsKey(aid)) {
-        _runs[aid] = runs.begin('Building your app', 'Up next');
+        _runs[aid] = runs.begin(
+          'Building your app',
+          'Up next',
+          artifactId: aid,
+        );
         _subs[aid] = plans.watch(aid).listen((p) => _plans[aid] = p);
         if (!_titles.containsKey(aid)) {
           unawaited(
@@ -119,7 +123,8 @@ class BuildNotices {
     final s = _latest[aid];
     if (run == null || s == null) return;
     _shown[aid] = s;
-    final name = _titles[aid] ?? 'your app';
+    final known = _titles[aid];
+    final name = known ?? 'your app';
     final plan = _plans[aid];
     final count = plan == null ? null : planCount(plan);
     final feature = buildFeature(plan, s);
@@ -130,6 +135,7 @@ class BuildNotices {
       title: count == null || count.total == 0
           ? 'Building $name'
           : 'Building $name · ${count.done}/${count.total}',
+      app: known,
     );
   }
 }
