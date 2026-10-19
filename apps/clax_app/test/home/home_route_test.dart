@@ -490,7 +490,7 @@ void main() {
       await tester.pump();
     }
 
-    final banner = find.text('Your home screen couldn’t load');
+    final banner = find.text('Your home screen didn’t load');
 
     testWidgets('no shown within 10 s: the built-in screen with the banner', (
       tester,

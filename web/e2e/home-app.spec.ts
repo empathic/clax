@@ -53,7 +53,7 @@ test.describe("its tests in the inspect view", () => {
     const tests = (await ofType(page, "tests"))[0] as HostMessage & { passed: number; failed: unknown[]; skipped: number };
     expect(tests.failed).toEqual([]);
     expect(tests.skipped).toBe(0);
-    expect(tests.passed).toBe(93);
+    expect(tests.passed).toBe(102);
   });
 });
 
@@ -382,6 +382,33 @@ test.describe("dark colours", () => {
       return getComputedStyle(face).boxShadow;
     });
     expect(shadow).toContain("rgb(58, 58, 54) 0px 0px 0px 1px");
+  });
+});
+
+test.describe("on a desktop", () => {
+  test.use({ viewport: { width: 1280, height: 800 }, colorScheme: "light" });
+
+  test("the grid is centred at most 960 wide, and a notice at most 560", async ({ page }) => {
+    await serve(page, {});
+    await expect(page.locator(".h-tile")).toHaveCount(11);
+    const grid = (await page.locator(".h-grid").first().boundingBox())!;
+    expect(grid.width).toBeLessThanOrEqual(960);
+    expect(Math.abs(grid.x - (1280 - grid.x - grid.width))).toBeLessThanOrEqual(1);
+    await page.evaluate(() => { (window as unknown as { fakeHome: { open: () => Promise<never> } }).fakeHome.open = () => Promise.reject({ code: "unavailable" }); });
+    await page.locator('[data-id="app-run"]').click();
+    const notice = (await page.locator(".h-notice").boundingBox())!;
+    expect(Math.round(notice.width)).toBe(560);
+  });
+
+  test("a tile lifts under a fine pointer: scale 1.03 and level 1", async ({ page }) => {
+    await serve(page, {});
+    await expect(page.locator(".h-tile")).toHaveCount(11);
+    const face = page.locator('[data-id="app-habits"] .h-face');
+    await face.evaluate(el => { (el as HTMLElement).style.transition = "none"; });
+    await page.locator('[data-id="app-habits"]').hover();
+    const lifted = await face.evaluate(el => ({ transform: getComputedStyle(el).transform, shadow: getComputedStyle(el).boxShadow }));
+    expect(lifted.transform).toBe("matrix(1.03, 0, 0, 1.03, 0, 0)");
+    expect(lifted.shadow).toContain("rgba(20, 20, 15, 0.05) 0px 4px 16px");
   });
 });
 

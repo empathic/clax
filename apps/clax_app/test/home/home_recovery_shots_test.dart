@@ -1,4 +1,4 @@
-// Renders the built-in home screen with the "Your home screen couldn't
+// Renders the built-in home screen with the "Your home screen didn't
 // load" banner, and Settings scrolled to its Home screen section, at phone
 // width, light and dark, for a person to look at. Off by default; run with
 //   CLAX_HOME_SHOTS=1 flutter test --update-goldens test/home/home_recovery_shots_test.dart

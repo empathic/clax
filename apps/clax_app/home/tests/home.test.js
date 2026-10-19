@@ -1558,3 +1558,121 @@ test("the home screen takes the brand's colours", async () => {
     else html.setAttribute('data-theme', theme);
   }
 });
+
+/** Runs `fn` with the page in light colours, whatever the system's. */
+async function inLight(fn) {
+  const html = document.documentElement;
+  const theme = html.getAttribute('data-theme');
+  html.setAttribute('data-theme', 'light');
+  try { await fn(); } finally {
+    if (theme === null) html.removeAttribute('data-theme');
+    else html.setAttribute('data-theme', theme);
+  }
+}
+
+test('every glyph is a filled Material Symbol: no Lucide strokes anywhere', async () => {
+  await show({
+    needsKey: true,
+    makes: [
+      { id: 'm1', request: 'A water reminder', state: 'offline', progress: null },
+      { id: 'm2', request: 'A sleep log', state: 'waiting', progress: null },
+      { id: 'm3', request: 'A chore chart', state: 'interrupted', progress: null },
+      { id: 'm4', request: 'A tide table', state: 'failed', progress: null },
+    ],
+  });
+  const svgs = [...document.querySelectorAll('.h-page svg:not(.clax-mark):not(.h-ring svg):not(.h-spinner svg)')];
+  expect(svgs.length > 8).toBe(true);
+  expect(svgs.filter((s) => s.hasAttribute('stroke-linecap') || s.getAttribute('viewBox') !== '0 -960 960 960').length).toBe(0);
+  expect(document.querySelectorAll('[stroke-linecap]').length).toBe(0);
+});
+
+test('the bar shows the mark at 24 px and "Clax" in title-1, 56 px high', async () => {
+  await show();
+  const mark = document.querySelector('.h-bar .clax-mark');
+  expect(!!mark).toBe(true);
+  expect(Math.round(mark.getBoundingClientRect().width)).toBe(24);
+  expect(ui.text('.h-bar .h-title')).toBe('Clax');
+  const title = getComputedStyle(document.querySelector('.h-title'));
+  expect([title.fontWeight, title.fontSize, title.lineHeight]).toEqual(['600', '22px', '28px']);
+  const bar = document.querySelector('.h-bar');
+  expect(Math.round(bar.getBoundingClientRect().height - parseFloat(getComputedStyle(bar).paddingTop))).toBe(56);
+});
+
+test("the bar's last button leaves 8 px for its focus ring", async () => {
+  await show();
+  const bar = document.querySelector('.h-bar').getBoundingClientRect();
+  const last = [...document.querySelectorAll('.h-bar .h-action')].at(-1).getBoundingClientRect();
+  expect(Math.round(bar.right - last.right)).toBe(8);
+  const rules = [...document.styleSheets].flatMap((s) => { try { return [...s.cssRules]; } catch { return []; } });
+  const rule = rules.find((r) => r.selectorText?.includes('.h-action:focus-visible'));
+  expect(rule?.style.outlineStyle).toBe('solid');
+  expect(parseFloat(rule.style.outlineOffset) + parseFloat(rule.style.outlineWidth)).toBe(4);
+});
+
+test('the inbox badge counts to 99, then reads 99+', async () => {
+  const home = await show({ unread: 120 });
+  expect(ui.text('.h-badge')).toBe('99+');
+  expect(ui.exists('[aria-label="Inbox, 120 unread"]')).toBeTruthy();
+  home.set({ unread: 99 });
+  await wait(() => ui.text('.h-badge') === '99');
+});
+
+test('New app is an extended button on accent-tint with a mic', async () => {
+  await show();
+  await inLight(async () => {
+    const fab = document.querySelector('.h-fab');
+    const s = getComputedStyle(fab);
+    expect([s.backgroundColor, s.color, s.borderRadius]).toEqual(['rgb(232, 241, 230)', 'rgb(47, 111, 42)', '16px']);
+    expect(fab.textContent.trim()).toBe('New app');
+    expect(fab.querySelector('svg').getAttribute('viewBox')).toBe('0 -960 960 960');
+  });
+});
+
+test('the key banner is a banner on card, its key glyph leading, within the content width', async () => {
+  await show({ needsKey: true });
+  await inLight(async () => {
+    const banner = document.querySelector('.h-key');
+    expect(banner.classList.contains('h-banner')).toBe(true);
+    const s = getComputedStyle(banner);
+    expect([s.backgroundColor, s.borderRadius]).toEqual(['rgb(255, 255, 255)', '16px']);
+    expect(banner.firstElementChild.classList.contains('h-banner-icon')).toBe(true);
+    expect(banner.getBoundingClientRect().width <= 720).toBe(true);
+  });
+});
+
+test('renaming a folder selects all of its name, scrolled to its start', async () => {
+  const layout = groupLayout();
+  layout.groups.g1.name = 'Groceries, errands and the weekly shop';
+  await show({ makes: [] }, { layout });
+  await ui.click('.h-group');
+  await wait(() => ui.exists('.h-folder'));
+  await ui.click('.h-folder-name');
+  const input = document.querySelector('.h-folder input[aria-label="Group name"]');
+  await wait(() => document.activeElement === input);
+  expect(input.scrollWidth > input.clientWidth).toBe(true);
+  expect([input.selectionStart, input.selectionEnd]).toEqual([0, input.value.length]);
+  expect(input.scrollLeft).toBe(0);
+});
+
+test("an open folder's panel is raised at level 2 over the brand's scrim", async () => {
+  await show({ makes: [] }, { layout: groupLayout() });
+  await ui.click('.h-group');
+  await wait(() => ui.exists('.h-folder'));
+  await inLight(async () => {
+    expect(getComputedStyle(document.querySelector('.h-folder-scrim')).backgroundColor).toBe('rgba(20, 20, 15, 0.4)');
+    const panel = getComputedStyle(document.querySelector('.h-folder-panel'));
+    expect(panel.backgroundColor).toBe('rgb(255, 255, 255)');
+    expect(panel.boxShadow).toContain('rgba(20, 20, 15, 0.1) 0px 8px 24px');
+  });
+});
+
+test('a notice spans the page less 16 px each side, at most 560 wide', async () => {
+  const home = await show({ makes: [] });
+  home.open = () => Promise.reject({ code: 'unavailable' });
+  await ui.click('[data-id="app-run"]');
+  await wait(() => ui.exists('.h-notice'));
+  const r = document.querySelector('.h-notice').getBoundingClientRect();
+  const width = document.documentElement.clientWidth;
+  expect(Math.round(r.width)).toBe(Math.min(560, width - 32));
+  expect(Math.abs(r.left - (width - r.right)) <= 1).toBe(true);
+});

@@ -18,9 +18,12 @@ import 'build_plan.dart';
 import 'bundle_sheets.dart';
 import 'inbox_screen.dart';
 import 'kit/kit.dart';
+import 'layout.dart';
 import 'make_service.dart';
 import 'making_screen.dart';
 import 'new_sheet.dart';
+import 'theme.dart';
+import 'tokens.g.dart';
 
 /// The home screen: the owner's apps, newest first, live from the daemon's
 /// events, and the New app button.
@@ -61,7 +64,7 @@ import 'new_sheet.dart';
 /// Plan tab shows the app's plan.
 ///
 /// With [banner] (the home app failed), a banner above the apps says "Your
-/// home screen couldn't load", with Undo last change and Reset.
+/// home screen didn't load", with Undo last change and Reset.
 class Launcher extends StatefulWidget {
   const Launcher({
     super.key,
@@ -255,14 +258,20 @@ class _LauncherState extends State<Launcher> {
           slivers: [
             SliverAppBar(
               pinned: true,
-              title: const Text('Clax'),
+              title: const Row(
+                mainAxisSize: MainAxisSize.min,
+                children: [
+                  ClaxMark(size: 24),
+                  SizedBox(width: 10),
+                  Text('Clax'),
+                ],
+              ),
               actions: [
                 IconButton(
                   tooltip: 'Inbox',
                   onPressed: _actions.openInbox,
-                  icon: Badge.count(
+                  icon: ClaxBadge(
                     count: unread,
-                    isLabelVisible: unread > 0,
                     child: const Icon(Icons.inbox_outlined),
                   ),
                 ),
@@ -284,7 +293,7 @@ class _LauncherState extends State<Launcher> {
                       ),
                     ],
                   ),
-                const SizedBox(width: 4),
+                const SizedBox(width: 8),
               ],
             ),
             if (widget.banner case final b?)
@@ -336,41 +345,48 @@ class _LauncherState extends State<Launcher> {
                 ),
               )
             else
-              SliverPadding(
-                padding: const EdgeInsets.fromLTRB(16, 8, 16, 112),
-                sliver: SliverGrid.builder(
-                  gridDelegate: SliverGridDelegateWithMaxCrossAxisExtent(
-                    maxCrossAxisExtent: _AppTile.maxWidth,
-                    mainAxisSpacing: 8,
-                    crossAxisSpacing: 4,
-                    mainAxisExtent: _AppTile.extent(context),
-                  ),
-                  itemCount: _makes.makes.length + apps.length,
-                  itemBuilder: (context, i) {
-                    final makes = _makes.makes;
-                    if (i < makes.length) {
-                      final m = makes[i];
-                      return MakingTile(
-                        key: ObjectKey(m),
-                        session: m,
-                        link: widget.build,
-                        onTap: () => _actions.openMake(_host.makeIdOf(m)),
-                      );
-                    }
-                    i -= makes.length;
-                    return _AppTile(
-                      key: ValueKey('build-${apps[i].id}'),
-                      app: apps[i],
-                      icons: _icons,
-                      building: _host.buildOf(apps[i].id),
-                      onTap: () => widget.open(apps[i].id),
-                      // The menu is a bottom sheet: no anchor.
-                      onLongPress: () => unawaited(
-                        _actions.menu(apps[i].id, Rect.zero, const []),
+              // Centred, at most ClaxLayout.grid wide, inside 16 dp gutters.
+              SliverLayoutBuilder(
+                builder: (context, c) {
+                  final side = ((c.crossAxisExtent - ClaxLayout.grid) / 2)
+                      .clamp(16.0, double.infinity);
+                  return SliverPadding(
+                    padding: EdgeInsets.fromLTRB(side, 8, side, 112),
+                    sliver: SliverGrid.builder(
+                      gridDelegate: SliverGridDelegateWithMaxCrossAxisExtent(
+                        maxCrossAxisExtent: _AppTile.maxWidth,
+                        mainAxisSpacing: 8,
+                        crossAxisSpacing: 4,
+                        mainAxisExtent: _AppTile.extent(context),
                       ),
-                    );
-                  },
-                ),
+                      itemCount: _makes.makes.length + apps.length,
+                      itemBuilder: (context, i) {
+                        final makes = _makes.makes;
+                        if (i < makes.length) {
+                          final m = makes[i];
+                          return MakingTile(
+                            key: ObjectKey(m),
+                            session: m,
+                            link: widget.build,
+                            onTap: () => _actions.openMake(_host.makeIdOf(m)),
+                          );
+                        }
+                        i -= makes.length;
+                        return _AppTile(
+                          key: ValueKey('build-${apps[i].id}'),
+                          app: apps[i],
+                          icons: _icons,
+                          building: _host.buildOf(apps[i].id),
+                          onTap: () => widget.open(apps[i].id),
+                          // The menu is a bottom sheet: no anchor.
+                          onLongPress: () => unawaited(
+                            _actions.menu(apps[i].id, Rect.zero, const []),
+                          ),
+                        );
+                      },
+                    ),
+                  );
+                },
               ),
           ],
         ),
@@ -411,7 +427,7 @@ class _HomeCell extends StatelessWidget {
         padding: const EdgeInsets.fromLTRB(4, _AppTile._top, 4, 4),
         child: Column(
           children: [
-            SizedBox.square(dimension: _AppTile.iconSize, child: icon),
+            SizedBox.square(dimension: _AppTile.iconSize(context), child: icon),
             const SizedBox(height: _AppTile._gap),
             label,
           ],
@@ -444,11 +460,12 @@ class _AppTile extends StatelessWidget {
     this.building,
   });
 
-  /// The side of a cell's icon.
-  static const iconSize = 60.0;
+  /// The side of a cell's icon: 60 on a phone, 64 from `ClaxWidth.medium`.
+  static double iconSize(BuildContext context) =>
+      ClaxWidth.of(context) >= ClaxWidth.medium ? 64 : 60;
 
-  /// The corner radius of a cell's icon.
-  static const iconRadius = 15.0;
+  /// The corner radius of a cell's icon: a quarter of its side.
+  static double iconRadius(BuildContext context) => iconSize(context) / 4;
 
   static const _top = 8.0;
   static const _gap = 8.0;
@@ -463,7 +480,7 @@ class _AppTile extends StatelessWidget {
     final style = _labelStyle(context);
     final size = MediaQuery.textScalerOf(context).scale(style.fontSize!);
     final line = (size * style.height!).ceilToDouble();
-    return _top + iconSize + _gap + line * 2 + 4;
+    return _top + iconSize(context) + _gap + line * 2 + 4;
   }
 
   final ArtifactSummary app;
@@ -490,14 +507,14 @@ class _AppTile extends StatelessWidget {
           LiveAppBadge(
             app: app,
             icons: icons,
-            size: iconSize,
-            radius: iconRadius,
+            size: iconSize(context),
+            radius: iconRadius(context),
           ),
           if (b != null)
             DecoratedBox(
               decoration: BoxDecoration(
                 color: scheme.surface.withValues(alpha: 0.82),
-                borderRadius: BorderRadius.circular(iconRadius),
+                borderRadius: BorderRadius.circular(iconRadius(context)),
               ),
               child: Center(
                 child: _BuildRing(done: b.done, total: b.total),
@@ -572,7 +589,7 @@ class MakingTile extends StatelessWidget {
       icon: DecoratedBox(
         decoration: BoxDecoration(
           color: failed ? scheme.errorContainer : scheme.primaryContainer,
-          borderRadius: BorderRadius.circular(_AppTile.iconRadius),
+          borderRadius: BorderRadius.circular(_AppTile.iconRadius(context)),
         ),
         child: Center(
           child: !said
@@ -762,7 +779,7 @@ ColorScheme tileScheme(String id, Brightness b) => _tileSchemes.putIfAbsent((
   b,
 ), () => ColorScheme.fromSeed(seedColor: tileSeed(id), brightness: b));
 
-/// "Your home screen couldn't load", with Undo last change and Reset; a
+/// "Your home screen didn't load", with Undo last change and Reset; a
 /// failed action's sentence shows under the title, and both buttons wait
 /// while one runs.
 class _RecoveryBanner extends StatefulWidget {
@@ -792,82 +809,31 @@ class _RecoveryBannerState extends State<_RecoveryBanner> {
   }
 
   @override
-  Widget build(BuildContext context) {
-    final theme = Theme.of(context);
-    final scheme = theme.colorScheme;
-    final on = scheme.onErrorContainer;
-    return Padding(
-      key: const ValueKey('home-recovery-banner'),
-      padding: const EdgeInsets.fromLTRB(16, 0, 16, 8),
-      child: Material(
-        color: scheme.errorContainer,
-        borderRadius: BorderRadius.circular(20),
-        child: Padding(
-          padding: const EdgeInsets.fromLTRB(16, 14, 8, 6),
-          child: Column(
-            crossAxisAlignment: CrossAxisAlignment.start,
-            children: [
-              Padding(
-                padding: const EdgeInsets.only(right: 8),
-                child: Row(
-                  children: [
-                    Icon(Icons.home_repair_service_outlined, color: on),
-                    const SizedBox(width: 12),
-                    Expanded(
-                      child: Text(
-                        'Your home screen couldn’t load',
-                        style: theme.textTheme.titleSmall?.copyWith(color: on),
-                      ),
-                    ),
-                  ],
-                ),
-              ),
-              if (_error case final e?)
-                Padding(
-                  padding: const EdgeInsets.fromLTRB(36, 6, 8, 0),
-                  child: Text(
-                    e,
-                    style: theme.textTheme.bodySmall?.copyWith(color: on),
-                  ),
-                ),
-              Align(
-                alignment: Alignment.centerRight,
-                child: Wrap(
-                  spacing: 4,
-                  crossAxisAlignment: WrapCrossAlignment.center,
-                  children: [
-                    if (_busy)
-                      Padding(
-                        padding: const EdgeInsets.only(right: 8),
-                        child: SizedBox.square(
-                          dimension: 16,
-                          child: CircularProgressIndicator(
-                            strokeWidth: 2,
-                            color: on,
-                          ),
-                        ),
-                      ),
-                    TextButton(
-                      style: TextButton.styleFrom(foregroundColor: on),
-                      onPressed: _busy ? null : () => _run(widget.actions.undo),
-                      child: const Text('Undo last change'),
-                    ),
-                    TextButton(
-                      style: TextButton.styleFrom(foregroundColor: on),
-                      onPressed: _busy
-                          ? null
-                          : () => _run(widget.actions.reset),
-                      child: const Text('Reset'),
-                    ),
-                  ],
-                ),
-              ),
-            ],
+  Widget build(BuildContext context) => Padding(
+    key: const ValueKey('home-recovery-banner'),
+    padding: const EdgeInsets.fromLTRB(16, 0, 16, 8),
+    child: ClaxBanner(
+      icon: Icons.home_rounded,
+      iconColor: claxPalette(context).danger,
+      title: 'Your home screen didn’t load',
+      body: _error,
+      actions: [
+        if (_busy)
+          const SizedBox.square(
+            dimension: 16,
+            child: CircularProgressIndicator(strokeWidth: 2),
           ),
+        ClaxButton(
+          label: 'Undo last change',
+          onPressed: _busy ? null : () => _run(widget.actions.undo),
         ),
-      ),
-    );
-  }
+        ClaxButton(
+          label: 'Reset',
+          onPressed: _busy ? null : () => _run(widget.actions.reset),
+        ),
+      ],
+    ),
+  );
 }
 
 class _KeyBanner extends StatelessWidget {
@@ -876,36 +842,16 @@ class _KeyBanner extends StatelessWidget {
   final VoidCallback? onAdd;
 
   @override
-  Widget build(BuildContext context) {
-    final theme = Theme.of(context);
-    final scheme = theme.colorScheme;
-    return Padding(
-      padding: const EdgeInsets.fromLTRB(16, 0, 16, 8),
-      child: Material(
-        color: scheme.secondaryContainer,
-        borderRadius: BorderRadius.circular(20),
-        child: Padding(
-          padding: const EdgeInsets.fromLTRB(16, 12, 8, 12),
-          child: Row(
-            children: [
-              Icon(Icons.key_rounded, color: scheme.onSecondaryContainer),
-              const SizedBox(width: 12),
-              Expanded(
-                child: Text(
-                  'Add your Claude API key to start making apps',
-                  style: theme.textTheme.bodyMedium?.copyWith(
-                    color: scheme.onSecondaryContainer,
-                  ),
-                ),
-              ),
-              if (onAdd != null)
-                TextButton(onPressed: onAdd, child: const Text('Add key')),
-            ],
-          ),
-        ),
-      ),
-    );
-  }
+  Widget build(BuildContext context) => Padding(
+    padding: const EdgeInsets.fromLTRB(16, 0, 16, 8),
+    child: ClaxBanner(
+      icon: Icons.key_rounded,
+      title: 'Add your Claude API key to start making apps',
+      actions: [
+        if (onAdd != null) ClaxButton(label: 'Add key', onPressed: onAdd),
+      ],
+    ),
+  );
 }
 
 /// The Material icon for an artifact's icon word (`chart`, `calendar`,

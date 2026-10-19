@@ -4,6 +4,7 @@ import 'package:clax_app/agent/backend.dart';
 import 'package:clax_app/agent/timings.dart';
 import 'package:clax_app/clax/api.dart';
 import 'package:clax_app/clax/fake_api.dart';
+import 'package:clax_app/home/home_route.dart' show HomeBanner;
 import 'package:clax_app/ui/app_icon.dart';
 import 'package:clax_app/ui/app_menu.dart';
 import 'package:clax_app/ui/inbox_screen.dart';
@@ -637,6 +638,98 @@ void main() {
     expect(find.text('Add key'), findsNothing);
   });
 
+  group('look', () {
+    Future<void> pumpAt(
+      WidgetTester tester,
+      Size size, {
+      bool needsKey = false,
+      HomeBanner? banner,
+    }) async {
+      tester.view.physicalSize = size;
+      tester.view.devicePixelRatio = 1;
+      addTearDown(tester.view.reset);
+      final api = _api();
+      for (var i = 0; i < 12; i++) {
+        api.seedArtifact('App $i', _page);
+      }
+      await tester.pumpWidget(
+        MaterialApp(
+          theme: claxTheme(Brightness.light, TargetPlatform.android),
+          home: Launcher(
+            api: api,
+            open: opened.add,
+            make: (_, _, _) async => 'x',
+            voice: FakeVoice.unsupported('No speech here'),
+            openSettings: () {},
+            needsKey: needsKey,
+            banner: banner,
+          ),
+        ),
+      );
+      await tester.pumpAndSettle();
+    }
+
+    /// The box the grid's cells fill: the union of their rects.
+    Rect gridBox(WidgetTester tester) => find
+        .descendant(of: find.byType(SliverGrid), matching: find.byType(InkWell))
+        .evaluate()
+        .map((e) => tester.getRect(find.byWidget(e.widget)))
+        .reduce((a, b) => a.expandToInclude(b));
+
+    testWidgets('the bar shows the mark and "Clax"', (tester) async {
+      await pumpAt(tester, const Size(412, 892));
+      final bar = find.byType(SliverAppBar);
+      expect(
+        find.descendant(of: bar, matching: find.byType(ClaxMark)),
+        findsOneWidget,
+      );
+      expect(tester.getSize(find.byType(ClaxMark)).width, 24);
+      expect(find.descendant(of: bar, matching: find.text('Clax')), findsOne);
+    });
+
+    testWidgets('on a 1280 screen the grid is centred, at most 960 wide, '
+        'with 64 dp icons', (tester) async {
+      await pumpAt(tester, const Size(1280, 800));
+      final grid = gridBox(tester);
+      expect(grid.width, lessThanOrEqualTo(960));
+      expect(grid.left, closeTo(1280 - grid.right, 1));
+      expect(tester.getSize(find.byType(LiveAppBadge).first).width, 64);
+    });
+
+    testWidgets('on a phone icons are 60 dp in cells at most 112 wide', (
+      tester,
+    ) async {
+      await pumpAt(tester, const Size(412, 892));
+      expect(tester.getSize(find.byType(LiveAppBadge).first).width, 60);
+      final grid = gridBox(tester);
+      expect(grid.width, closeTo(412 - 32, 1));
+    });
+
+    testWidgets('the key and recovery banners are ClaxBanners', (
+      tester,
+    ) async {
+      await pumpAt(
+        tester,
+        const Size(412, 892),
+        needsKey: true,
+        banner: HomeBanner(undo: () async => null, reset: () async => null),
+      );
+      expect(find.byType(ClaxBanner), findsNWidgets(2));
+      expect(find.text('Your home screen didn’t load'), findsOneWidget);
+      final recovery = tester.widget<ClaxBanner>(
+        find.ancestor(
+          of: find.text('Your home screen didn’t load'),
+          matching: find.byType(ClaxBanner),
+        ),
+      );
+      expect(recovery.icon, Icons.home_rounded);
+      expect(
+        recovery.iconColor,
+        claxPalette(tester.element(find.byType(Launcher))).danger,
+      );
+    });
+  });
+
   group('tiles', () {
     ArtifactSummary app(String id, String title, [String? icon]) =>
         ArtifactSummary(
@@ -786,6 +879,12 @@ void main() {
       ),
     );
 
+    /// The inbox button's badge, which ClaxBadge leaves out at 0.
+    final noBadge = find.descendant(
+      of: find.byTooltip('Inbox'),
+      matching: find.byType(Badge),
+    );
+
     testWidgets('the inbox button shows the unread count', (tester) async {
       final api = _api();
       final aid = api.seedArtifact('Runs', _page);
@@ -807,7 +906,7 @@ void main() {
 
     testWidgets('no unread items: no count on the button', (tester) async {
       await pumpWithInbox(tester, _api());
-      expect(badge(tester).isLabelVisible, isFalse);
+      expect(noBadge, findsNothing);
     });
 
     testWidgets('the count follows inbox events', (tester) async {
@@ -822,7 +921,7 @@ void main() {
       );
       await api.markInboxRead(item.id);
       await tester.pumpAndSettle();
-      expect(badge(tester).isLabelVisible, isFalse);
+      expect(noBadge, findsNothing);
       api.emitStream(
         const StreamEvent(
           topic: 'inbox',

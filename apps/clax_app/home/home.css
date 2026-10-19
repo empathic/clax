@@ -54,46 +54,63 @@
 html, body { background: var(--h-surface); color: var(--h-on-surface); }
 body {
   font: 400 14px/1.25 var(--k-font);
-  letter-spacing: 0.25px;
+  letter-spacing: 0;
   min-height: 100vh;
 }
 
 .h-glyph { display: inline-grid; line-height: 0; }
 .h-page { min-height: 100vh; }
 
-/* Top bar. */
+/* Top bar: 56 px, the mark and "Clax" in title-1, then the actions. Its
+ * end keeps 8 px, so a focused action's ring (2 px, 2 px out) is never
+ * clipped. */
 .h-bar {
   position: sticky; top: 0; z-index: 2;
   display: flex; align-items: center;
-  height: calc(56px + var(--k-safe-top)); padding: var(--k-safe-top) 4px 0 16px;
-  background: var(--h-surface);
+  height: calc(56px + var(--k-safe-top)); padding: var(--k-safe-top) 8px 0 16px;
+  background: var(--bg);
 }
-.h-title { flex: 1; margin: 0; font: 400 22px/28px var(--k-font); letter-spacing: 0; }
+.h-title {
+  flex: 1; min-width: 0; margin: 0;
+  display: flex; align-items: center; gap: 10px;
+  font: var(--type-title-1); color: var(--fg);
+}
+.h-title .h-mark { flex: none; }
 .h-actions { display: flex; align-items: center; }
 .h-action {
   width: 48px; height: 48px; display: grid; place-items: center;
-  border: 0; border-radius: 50%; background: transparent; color: var(--h-on-variant);
+  border: 0; border-radius: 50%; background: transparent; color: var(--muted);
   cursor: pointer; padding: 0;
 }
-.h-action:active, .h-action:hover { background: var(--h-state); }
+.h-action:active { background: var(--hover); }
+@media (hover: hover) { .h-action:hover { background: var(--hover); } }
+.h-action:focus { outline: none; }
+/* Longhands, so the ring's size reads back without its colour's var(). */
+.h-action:focus-visible { outline-width: 2px; outline-style: solid; outline-color: var(--focus); outline-offset: 2px; }
 .h-badged { position: relative; display: inline-grid; }
+/* The app's ClaxBadge: `you`, caption, hidden at 0, "99+" above 99. */
 .h-badge {
-  position: absolute; top: -4px; left: 12px;
-  min-width: 16px; height: 16px; padding: 0 4px; border-radius: 8px;
-  background: var(--h-error); color: var(--h-on-error);
-  font: 500 11px/16px var(--k-font); letter-spacing: 0.5px; text-align: center;
+  position: absolute; top: -5px; left: 12px;
+  min-width: 16px; height: 16px; padding: 0 5px; border-radius: var(--radius-full);
+  background: var(--you); color: var(--on-you);
+  font: 500 11px/16px var(--font); text-align: center; white-space: nowrap;
 }
 .h-more { position: relative; }
 .h-scrim { position: fixed; inset: 0; z-index: 3; border: 0; background: transparent; cursor: default; }
 .h-menu {
   position: absolute; top: 40px; right: 0; z-index: 4;
-  width: max-content; min-width: 112px; max-width: 280px; padding: 8px 0; border-radius: 4px;
-  background: var(--h-menu-bg); box-shadow: var(--h-menu-shadow);
+  width: max-content; min-width: 112px; max-width: 280px; padding: 8px 0; border-radius: var(--radius);
+  background: var(--overlay); box-shadow: var(--elev-2);
 }
+/* Level 2 in dark is outlined too: a shadow barely shows there. */
+@media (prefers-color-scheme: dark) {
+  :root:not([data-theme="light"]) :is(.h-menu, .h-folder-panel) { box-shadow: var(--elev-2), 0 0 0 1px var(--border-hover); }
+}
+:root[data-theme="dark"] :is(.h-menu, .h-folder-panel) { box-shadow: var(--elev-2), 0 0 0 1px var(--border-hover); }
 .h-menu-item {
   display: block; width: 100%; height: 48px; padding: 0 12px; border: 0;
   background: transparent; color: var(--h-on-surface); text-align: left; white-space: nowrap;
-  font: 500 14px/20px var(--k-font); letter-spacing: 0.1px; cursor: pointer;
+  font: var(--type-body); cursor: pointer;
 }
 /* On the menu's own fill: in dark the page's hover is the menu's colour. */
 .h-menu-item:hover { background: var(--h-menu-hover); }
@@ -101,22 +118,35 @@ body {
 .h-menu-check { display: flex; align-items: center; justify-content: space-between; gap: 16px; }
 .h-menu-check .h-glyph { color: var(--h-primary); }
 
-/* Key banner. */
-.h-key {
-  display: flex; align-items: center; gap: 12px;
-  margin: 0 16px 8px; padding: 12px 8px 12px 16px; border-radius: 20px;
-  background: var(--h-sc); color: var(--h-on-sc);
+/* Banners (the key banner): the app's ClaxBanner, a radius-lg card on
+ * `card` within the reading width, the glyph leading, its actions under the
+ * text at the end on a phone and beside it from 600 px. */
+.h-banner {
+  display: flex; flex-wrap: wrap; align-items: flex-start; column-gap: 16px; row-gap: 8px;
+  width: calc(100% - 32px); max-width: 720px; margin: 0 auto 8px; padding: 16px 16px 8px;
+  border: 1px solid var(--border); border-radius: var(--radius-lg);
+  background: var(--card); color: var(--fg);
 }
-.h-key-text { flex: 1; }
+.h-banner-icon { flex: none; margin-top: -2px; color: var(--agent); }
+.h-banner-icon.h-danger { color: var(--danger); }
+.h-banner-text { flex: 1; min-width: 0; }
+.h-banner-title { margin: 0; font: var(--type-title-3); }
+.h-banner-body { margin: 4px 0 0; font: var(--type-body); color: var(--muted); }
+.h-banner-actions { flex-basis: 100%; display: flex; flex-wrap: wrap; justify-content: flex-end; gap: 8px; }
+@media (min-width: 600px) {
+  .h-banner { flex-wrap: nowrap; align-items: center; padding-bottom: 16px; }
+  .h-banner-icon { margin-top: 0; }
+  .h-banner-actions { flex-basis: auto; margin: -8px 0; }
+}
 .h-text-button {
-  height: 40px; padding: 0 12px; border: 0; border-radius: 20px; background: transparent;
-  color: var(--h-primary); font: 500 14px/20px var(--k-font); letter-spacing: 0.1px; cursor: pointer;
+  height: 40px; padding: 0 12px; border: 0; border-radius: var(--radius-sm); background: transparent;
+  color: var(--agent-ink); font: 500 14px/20px var(--font); cursor: pointer;
 }
 .h-text-button:active, .h-text-button:hover { background: var(--h-pc); }
 @supports (color: color-mix(in srgb, red, red)) { .h-text-button:active, .h-text-button:hover { background: color-mix(in srgb, var(--h-primary) 10%, transparent); } }
 
-/* The grid. */
-.h-grid-wrap { padding: 8px 16px 112px; }
+/* The grid: centred, at most 960 wide, inside 16 px gutters. */
+.h-grid-wrap { max-width: calc(960px + 32px); margin-inline: auto; padding: 8px 16px 112px; }
 .h-grid {
   display: grid; grid-template-columns: repeat(var(--cols, 4), minmax(0, 1fr));
   column-gap: 4px; row-gap: 8px; grid-auto-rows: 116px;
@@ -126,13 +156,13 @@ body {
 .h-heading {
   margin: 8px 0 4px calc((100% - (var(--cols, 4) - 1) * 4px) / var(--cols, 4) / 2 - 30px);
   color: var(--h-on-variant);
-  font: 500 14px/20px var(--k-font); letter-spacing: 0.1px;
+  font: 500 14px/20px var(--k-font);
 }
 .h-new {
   position: absolute; top: -6px; left: -6px; z-index: 1;
   height: 18px; padding: 0 6px; border-radius: 9px;
   background: var(--h-primary); color: var(--h-surface);
-  font: 500 11px/18px var(--k-font); letter-spacing: 0.5px;
+  font: 500 11px/18px var(--k-font);
 }
 .h-tile {
   display: flex; flex-direction: column; align-items: center;
@@ -192,7 +222,7 @@ body {
 .h-ring-arc, .h-spin-arc { stroke: var(--h-primary); stroke-width: 3; stroke-linecap: round; }
 .h-ring-text {
   position: absolute; inset: 0; display: grid; place-items: center;
-  color: var(--h-on-surface); font: 600 11px/16px var(--k-font); letter-spacing: 0.5px;
+  color: var(--h-on-surface); font: 600 11px/16px var(--k-font);
   font-variant-numeric: tabular-nums;
 }
 .h-spinner { width: 36px; height: 36px; padding: 4px; display: block; }
@@ -215,7 +245,7 @@ body {
 .h-away .h-message { min-height: 100vh; }
 .h-message > * { max-width: 360px; }
 .h-message-glyph { color: var(--muted); }
-.h-message-mark { display: block; height: auto; }
+.h-message .h-mark { display: block; height: auto; }
 .h-message-title { margin: 16px 0 0; font: var(--type-title-2); color: var(--fg); text-wrap: balance; }
 .h-message-hint { margin: 8px 0 0; color: var(--muted); font: var(--type-body); text-wrap: balance; }
 .h-message .h-text-button, .h-message .h-filled-button { margin-top: 20px; }
@@ -223,23 +253,38 @@ body {
   display: inline-flex; align-items: center; justify-content: center; gap: 8px;
   min-height: 40px; padding: 0 20px; border: 0; border-radius: 20px;
   background: var(--fg); color: var(--bg);
-  font: 500 14px/20px var(--k-font); letter-spacing: 0.1px; cursor: pointer;
+  font: 500 14px/20px var(--k-font); cursor: pointer;
 }
 .h-filled-button.h-message-new { padding-left: 16px; }
 .h-filled-button:active { transform: scale(0.97); }
 @media (prefers-reduced-motion: reduce) { .h-filled-button:active { transform: none; } }
 
-/* New app. */
+/* New app: an extended FAB on accent-tint, in agent-ink, with a mic. */
 .h-fab {
   position: fixed; z-index: 2;
   right: 16px; bottom: calc(16px + var(--k-safe-bottom));
-  display: flex; align-items: center; gap: 8px;
-  height: 56px; padding: 0 20px 0 16px; border: 0; border-radius: 16px;
-  background: var(--h-pc); color: var(--h-on-pc); box-shadow: var(--h-fab-shadow);
-  font: 500 14px/20px var(--k-font); letter-spacing: 0.1px; cursor: pointer;
+  display: flex; align-items: center; gap: 12px;
+  height: 56px; padding: 0 20px 0 16px; border: 0; border-radius: var(--radius-lg);
+  background: var(--accent-tint); color: var(--agent-ink); box-shadow: var(--elev-2);
+  font: 600 14px/20px var(--font); cursor: pointer;
 }
+.h-fab:focus { outline: none; }
+.h-fab:focus-visible, .h-filled-button:focus-visible, .h-text-button:focus-visible { outline: 2px solid var(--focus); outline-offset: 2px; }
 .h-fab:active { background: var(--h-pc); filter: brightness(0.94); }
 @supports (color: color-mix(in srgb, red, red)) { .h-fab:active { background: color-mix(in srgb, var(--h-on-pc) 10%, var(--h-pc)); filter: none; } }
+
+/* Under a fine pointer a tile lifts as it is hovered: 1.03 and level 1. */
+@media (hover: hover) and (pointer: fine) {
+  .h-page:not([data-dragging]) .h-tile:not([data-held]):not([data-grouping]):hover .h-icon > .h-face,
+  .h-page:not([data-dragging]) .h-tile:not([data-held]):not([data-grouping]):hover .h-icon > .h-pile-face { transform: scale(1.03); }
+  .h-page:not([data-dragging]) .h-tile:not([data-held]):not([data-grouping]):hover .h-icon > .h-face { box-shadow: var(--elev-1); }
+}
+@media (hover: hover) and (pointer: fine) and (prefers-color-scheme: dark) {
+  :root:not([data-theme="light"]) .h-page:not([data-dragging]) .h-tile:not([data-held]):not([data-grouping]):hover .h-icon > .h-face { box-shadow: var(--elev-1), 0 0 0 1px var(--border); }
+}
+@media (hover: hover) and (pointer: fine) {
+  :root[data-theme="dark"] .h-page:not([data-dragging]) .h-tile:not([data-held]):not([data-grouping]):hover .h-icon > .h-face { box-shadow: var(--elev-1), 0 0 0 1px var(--border); }
+}
 
 /* A press held long enough to lift the tile: it grows and casts a shadow,
  * and stays so while it is dragged, above its neighbours. */
@@ -274,7 +319,7 @@ body {
   border: 2px dashed var(--h-primary);
   display: flex; flex-direction: column; justify-content: center; align-items: flex-start; gap: 4px;
   padding: 0 20px; color: var(--h-on-variant);
-  font: 500 14px/20px var(--k-font); letter-spacing: 0.1px;
+  font: 500 14px/20px var(--k-font);
 }
 .h-drop[data-side="end"] { align-items: flex-end; }
 .h-drop[data-over] { background: var(--h-pc); color: var(--h-primary); }
@@ -284,13 +329,14 @@ body {
 }
 @media (prefers-reduced-motion: reduce) { .h-icon > * { transition: none; } }
 
-/* What an action that failed says, and Tap again to retry it. */
+/* What an action that failed says, and Tap again to retry it: the app's
+ * ClaxToast, the page's width less 16 px each side, at most 560. */
 .h-notice {
-  position: fixed; z-index: 8; left: 50%; transform: translateX(-50%);
-  bottom: calc(88px + var(--k-safe-bottom)); max-width: min(560px, calc(100vw - 32px));
-  padding: 14px 16px; border: 0; border-radius: 4px;
-  background: var(--h-inverse); color: var(--h-on-inverse); box-shadow: var(--h-menu-shadow);
-  font: 400 14px/20px var(--k-font); letter-spacing: 0.25px; text-align: left; cursor: pointer;
+  position: fixed; z-index: 8; left: 16px; right: 16px; margin-inline: auto;
+  bottom: calc(88px + var(--k-safe-bottom)); max-width: 560px;
+  padding: 14px 16px; border: 0; border-radius: var(--radius-sm);
+  background: var(--fg); color: var(--bg); box-shadow: var(--elev-2);
+  font: var(--type-body); text-align: left; cursor: pointer;
 }
 
 /* Search: the field under the bar, staying there as the page scrolls. */
@@ -300,6 +346,7 @@ html { overscroll-behavior-y: contain; }
   padding: 4px 16px 8px; background: var(--h-surface);
 }
 .h-search-box {
+  max-width: 960px; margin-inline: auto;
   display: flex; align-items: center; gap: 12px;
   height: 48px; padding: 0 4px 0 16px; border-radius: 24px;
   background: var(--h-sc); color: var(--h-on-sc); cursor: text;
@@ -309,7 +356,7 @@ html { overscroll-behavior-y: contain; }
 .h-search-input, .h-search-hint {
   flex: 1; min-width: 0; height: 100%; padding: 0; border: 0; outline: none;
   background: transparent; color: var(--h-on-surface);
-  font: 400 16px/24px var(--k-font); letter-spacing: 0.5px;
+  font: 400 16px/24px var(--k-font);
 }
 .h-search-hint { display: flex; align-items: center; }
 .h-search-input::placeholder, .h-search-hint { color: var(--h-on-variant); opacity: 1; }
@@ -330,7 +377,7 @@ html[data-pulling] .h-search-ghost { visibility: visible; }
 html[data-pulling] :is(.h-key, .h-grid-wrap, .h-message) { transform: translateY(calc(var(--pull, 0) * 60px)); }
 .h-results-empty {
   margin: 48px 16px 0; text-align: center; color: var(--h-on-variant);
-  font: 400 16px/24px var(--k-font); letter-spacing: 0.5px;
+  font: 400 16px/24px var(--k-font);
 }
 
 /* Groups. A folder tile: up to four small icons on a tonal square. */
@@ -365,15 +412,16 @@ html[data-pulling] :is(.h-key, .h-grid-wrap, .h-message) { transform: translateY
   display: grid; place-items: center;
   padding: calc(16px + var(--k-safe-top)) 16px calc(16px + var(--k-safe-bottom));
 }
-.h-scrim.h-folder-scrim { z-index: 0; background: rgba(0, 0, 0, 0.32); }
+.h-scrim.h-folder-scrim { z-index: 0; background: var(--scrim); }
+/* The panel: `raised`, at level 2. */
 .h-folder-panel {
   position: relative; max-width: min(480px, calc(100vw - 32px)); padding: 12px 0 8px;
-  border-radius: 28px; background: var(--h-menu-bg); box-shadow: var(--h-menu-shadow);
+  border-radius: var(--radius-xl); background: var(--raised); box-shadow: var(--elev-2);
   transition: background var(--k-fast) var(--k-ease), box-shadow var(--k-fast) var(--k-ease);
 }
 /* A dragged app past the edge leaves the group on release: the panel fades. */
 .h-folder[data-out] .h-folder-panel { background: transparent; box-shadow: none; }
-@supports (color: color-mix(in srgb, red, red)) { .h-folder[data-out] .h-folder-panel { background: color-mix(in srgb, var(--h-menu-bg) 50%, transparent); } }
+@supports (color: color-mix(in srgb, red, red)) { .h-folder[data-out] .h-folder-panel { background: color-mix(in srgb, var(--raised) 50%, transparent); } }
 .h-folder-head { display: flex; justify-content: center; padding: 0 16px 8px; min-height: 40px; }
 .h-folder-name {
   display: inline-flex; align-items: center; gap: 8px;

@@ -6,6 +6,7 @@ import 'dart:async';
 import 'dart:io';
 
 import 'package:clax_app/clax/fake_api.dart';
+import 'package:clax_app/home/home_route.dart' show HomeBanner;
 import 'package:clax_app/platform/secure_key.dart';
 import 'package:clax_app/platform/settings_store.dart';
 import 'package:clax_app/ui/app_icon.dart';
@@ -101,6 +102,34 @@ void main() {
     // The making ring spins, so pump a while rather than settle.
     await s.settle(10);
     await s.take('launcher');
+  });
+
+  shots('launcher-banners', (s) async {
+    final api = FakeClaxApi(clock: () => '2026-10-12T00:00:00Z');
+    for (final e in _icons.entries) {
+      api.seedArtifact(e.key, {
+        'index.html': '<p>x</p>',
+        'icon.svg': File(
+          appPath('test/fixtures/icons/${e.value}.svg'),
+        ).readAsStringSync(),
+      });
+    }
+    await s.tester.pumpWidget(
+      s.app(
+        Launcher(
+          api: api,
+          open: (_) {},
+          make: (r, cancelled, stage) => throw StateError('unused'),
+          voice: FakeVoice.unsupported('No speech here'),
+          icons: AppIcons(api),
+          openSettings: () {},
+          needsKey: true,
+          banner: HomeBanner(undo: () async => null, reset: () async => null),
+        ),
+      ),
+    );
+    await s.settle();
+    await s.take('launcher-banners');
   });
 
   shots('thread', (s) async {

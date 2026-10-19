@@ -32,7 +32,7 @@
 // {db, clock})` mounts it over any objects with the same calls (the tests
 // pass kit/fake-home.js's fakeHome and fakeDb).
 import { html, render, useState, useEffect, useLayoutEffect, useRef, useCallback, useMemo } from './kit/preact.js';
-import { icon as kitIcon } from './kit/icons.js';
+import { symbol } from './symbols.js';
 import {
   reconcile, normalize, sections, star, unstar, opened, isNew, moveTo, isGroupKey, groupOf,
   groupNameOf, makeGroup, addToGroup, removeFromGroup, moveInGroup, renameGroup, setLook, ungroup,
@@ -45,24 +45,9 @@ import { createPress } from './drag.js';
 import { createMotion } from './motion.js';
 import { search } from './search.js';
 
-// Lucide glyphs the kit does not carry (lucide-static 0.460.0, ISC; see
-// kit/LICENSES.txt).
-const EXTRA = {
-  hourglass: '<path d="M5 22h14"/><path d="M5 2h14"/><path d="M17 22v-4.172a2 2 0 0 0-.586-1.414L12 12l-4.414 4.414A2 2 0 0 0 7 17.828V22"/><path d="M7 2v4.172a2 2 0 0 0 .586 1.414L12 12l4.414-4.414A2 2 0 0 0 17 6.172V2"/>',
-  cloudOff: '<path d="m2 2 20 20"/><path d="M5.782 5.782A7 7 0 0 0 9 19h8.5a4.5 4.5 0 0 0 1.307-.193"/><path d="M21.532 16.5A4.5 4.5 0 0 0 17.5 10h-1.79A7.008 7.008 0 0 0 10 5.07"/>',
-  rotateCcw: '<path d="M3 12a9 9 0 1 0 9-9 9.75 9.75 0 0 0-6.74 2.74L3 8"/><path d="M3 3v5h5"/>',
-  alertCircle: '<circle cx="12" cy="12" r="10"/><line x1="12" x2="12" y1="8" y2="12"/><line x1="12" x2="12.01" y1="16" y2="16"/>',
-  key: '<path d="M2.586 17.414A2 2 0 0 0 2 18.828V21a1 1 0 0 0 1 1h3a1 1 0 0 0 1-1v-1a1 1 0 0 1 1-1h1a1 1 0 0 0 1-1v-1a1 1 0 0 1 1-1h.172a2 2 0 0 0 1.414-.586l.814-.814a6.5 6.5 0 1 0-4-4z"/><circle cx="16.5" cy="7.5" r=".5" fill="currentColor"/>',
-};
-
-function svg(name, size = 24, stroke = 2) {
-  const extra = EXTRA[name];
-  if (extra === undefined) return kitIcon(name, { size, stroke });
-  return `<svg xmlns="http://www.w3.org/2000/svg" width="${size}" height="${size}" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="${stroke}" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true">${extra}</svg>`;
-}
-
-const Glyph = ({ name, size = 24, stroke = 2, class: cls }) =>
-  html`<span class=${`h-glyph ${cls || ''}`} dangerouslySetInnerHTML=${{ __html: svg(name, size, stroke) }} />`;
+/** Material Symbol `name` (symbols.js) in a span, `size` px square. */
+const Glyph = ({ name, size = 24, class: cls }) =>
+  html`<span class=${`h-glyph ${cls || ''}`} dangerouslySetInnerHTML=${{ __html: symbol(name, size) }} />`;
 
 // ---------------------------------------------------------------------------
 // Tile colours.
@@ -98,39 +83,40 @@ const toneStyle = (hue) => {
   return `--t-a:${a};--t-b:${b}`;
 };
 
-// The kit glyph for an app's icon word, as the launcher maps words to icons.
+// The filled Material Symbol for an app's icon word, as the launcher maps
+// words to icons (lib/ui/launcher.dart `iconFor`).
 const WORDS = [
-  [['chart', 'graph', 'stats', 'analytics'], 'barChart'],
-  [['calendar', 'schedule', 'date'], 'calendar'],
-  [['recipe', 'food', 'cooking', 'meal'], 'utensils'],
-  [['run', 'running', 'fitness', 'workout', 'exercise'], 'activity'],
-  [['list', 'todo', 'checklist', 'tasks', 'task'], 'checkSquare'],
-  [['note', 'notes', 'journal', 'diary', 'text'], 'pencil'],
-  [['money', 'budget', 'finance', 'expense', 'expenses'], 'piggyBank'],
-  [['shopping', 'cart', 'groceries', 'grocery'], 'cart'],
-  [['timer', 'clock', 'time', 'stopwatch'], 'timer'],
-  [['map', 'location', 'travel', 'trip'], 'map'],
-  [['book', 'books', 'reading', 'library'], 'bookOpen'],
-  [['music', 'song', 'audio'], 'music'],
-  [['photo', 'image', 'camera', 'gallery'], 'image'],
-  [['game', 'games', 'puzzle'], 'target'],
-  [['habit', 'habits', 'streak'], 'flame'],
-  [['water', 'drink'], 'droplet'],
-  [['sleep', 'moon'], 'moon'],
-  [['health', 'medical', 'heart'], 'heart'],
-  [['weather', 'sun'], 'sun'],
-  [['home', 'house'], 'home'],
-  [['people', 'contacts', 'team', 'person'], 'users'],
-  [['chat', 'message', 'mail', 'email'], 'message'],
-  [['code', 'dev', 'terminal'], 'file'],
-  [['calculator', 'math'], 'grid'],
-  [['dashboard', 'home-screen'], 'grid'],
-  [['plant', 'garden', 'plants'], 'leaf'],
-  [['pet', 'dog', 'cat'], 'heart'],
-  [['car', 'drive', 'fuel'], 'car'],
-  [['star', 'favorite', 'rating'], 'star'],
-  [['settings', 'tool', 'tools'], 'settings'],
-  [['app', 'apps', 'widget'], 'grid'],
+  [['chart', 'graph', 'stats', 'analytics'], 'insert_chart_fill'],
+  [['calendar', 'schedule', 'date'], 'calendar_month_fill'],
+  [['recipe', 'food', 'cooking', 'meal'], 'restaurant_fill'],
+  [['run', 'running', 'fitness', 'workout', 'exercise'], 'directions_run_fill'],
+  [['list', 'todo', 'checklist', 'tasks', 'task'], 'checklist_fill'],
+  [['note', 'notes', 'journal', 'diary', 'text'], 'edit_note_fill'],
+  [['money', 'budget', 'finance', 'expense', 'expenses'], 'savings_fill'],
+  [['shopping', 'cart', 'groceries', 'grocery'], 'shopping_cart_fill'],
+  [['timer', 'clock', 'time', 'stopwatch'], 'timer_fill'],
+  [['map', 'location', 'travel', 'trip'], 'map_fill'],
+  [['book', 'books', 'reading', 'library'], 'menu_book_fill'],
+  [['music', 'song', 'audio'], 'music_note_fill'],
+  [['photo', 'image', 'camera', 'gallery'], 'photo_fill'],
+  [['game', 'games', 'puzzle'], 'sports_esports_fill'],
+  [['habit', 'habits', 'streak'], 'local_fire_department_fill'],
+  [['water', 'drink'], 'water_drop_fill'],
+  [['sleep', 'moon'], 'bedtime_fill'],
+  [['health', 'medical', 'heart'], 'favorite_fill'],
+  [['weather', 'sun'], 'wb_sunny_fill'],
+  [['home', 'house'], 'home_fill'],
+  [['people', 'contacts', 'team', 'person'], 'group_fill'],
+  [['chat', 'message', 'mail', 'email'], 'chat_bubble_fill'],
+  [['code', 'dev', 'terminal'], 'code_fill'],
+  [['calculator', 'math'], 'calculate_fill'],
+  [['dashboard', 'home-screen'], 'dashboard_fill'],
+  [['plant', 'garden', 'plants'], 'local_florist_fill'],
+  [['pet', 'dog', 'cat'], 'pets_fill'],
+  [['car', 'drive', 'fuel'], 'directions_car_fill'],
+  [['star', 'favorite', 'rating'], 'star_fill'],
+  [['settings', 'tool', 'tools'], 'build_fill'],
+  [['app', 'apps', 'widget'], 'widgets_fill'],
 ];
 const WORD_GLYPH = new Map(WORDS.flatMap(([words, g]) => words.map((w) => [w, g])));
 
@@ -182,7 +168,7 @@ function AppFace({ app }) {
   return html`<span class="h-face" data-kind=${face.kind} style=${style}>
     ${face.kind === 'url' && html`<img src=${face.url} alt="" width="60" height="60" draggable="false" onError=${() => setBroken(true)} />`}
     ${face.kind === 'emoji' && html`<span class="h-emoji">${face.emoji}</span>`}
-    ${face.kind === 'word' && html`<${Glyph} name=${face.glyph} size=${28} stroke=${2.25} />`}
+    ${face.kind === 'word' && html`<${Glyph} name=${face.glyph} size=${28} />`}
     ${face.kind === 'monogram' && html`<span class="h-mono">${face.letters}</span>`}
   </span>`;
 }
@@ -270,7 +256,7 @@ function GroupTile({ entry, cell, dragging, fanned, ctl, onOpenGroup, onFanGroup
 }
 
 const MAKE_STATUS = { making: 'Making…', offline: 'Offline', waiting: 'Waiting…', interrupted: 'Interrupted', failed: 'Couldn’t make it' };
-const MAKE_GLYPH = { offline: 'cloudOff', waiting: 'hourglass', interrupted: 'rotateCcw', failed: 'alertCircle' };
+const MAKE_GLYPH = { offline: 'cloud_off_fill', waiting: 'hourglass_empty', interrupted: 'replay', failed: 'error' };
 
 function MakeTile({ make, cell, act }) {
   const state = MAKE_STATUS[make.state] ? make.state : 'making';
@@ -291,7 +277,7 @@ function MakeTile({ make, cell, act }) {
 }
 
 /** The Clax mark at rest, ) · (, drawn as mark.css describes. */
-const Mark = ({ size = 24 }) => html`<svg class="clax-mark h-message-mark" viewBox="0 0 22 16" style=${`width: ${size}px`} aria-hidden="true">
+const Mark = ({ size = 24 }) => html`<svg class="clax-mark h-mark" viewBox="0 0 22 16" style=${`width: ${size}px`} aria-hidden="true">
   <path class="clax-mark-you" d="M1.5 2.5a5.5 5.5 0 0 1 0 11"/>
   <circle class="clax-mark-dot" cx="11" cy="8" r="1.7"/>
   <path class="clax-mark-agent" d="M20.5 2.5a5.5 5.5 0 0 0 0 11"/>
@@ -309,6 +295,21 @@ function Message({ glyph, title, hint, action }) {
   </div>`;
 }
 
+/** A standing message above the grid, as the app's ClaxBanner draws it: a
+ * leading glyph (`glyph`, in `agent`, or `danger` with `danger`), the
+ * title, an optional muted `body`, and `actions`, beside the text when the
+ * page is wide and under it, at the end, when narrow. */
+function Banner({ class: cls, glyph, danger, title, body, actions }) {
+  return html`<div class=${`h-banner ${cls || ''}`}>
+    <${Glyph} name=${glyph} class=${`h-banner-icon${danger ? ' h-danger' : ''}`} />
+    <div class="h-banner-text">
+      <p class="h-banner-title">${title}</p>
+      ${body && html`<p class="h-banner-body">${body}</p>`}
+    </div>
+    ${actions && html`<div class="h-banner-actions">${actions}</div>`}
+  </div>`;
+}
+
 /** The ⋮ menu: Import app…, Refresh, and, once the arrangement is read
  * (`bigOn` not null), the Big tiles for apps you use switch (`onBigTiles(on)`). */
 function More({ act, refresh, bigOn, onBigTiles }) {
@@ -321,7 +322,7 @@ function More({ act, refresh, bigOn, onBigTiles }) {
   }, [open]);
   return html`<span class="h-more">
     <button type="button" class="h-action" aria-label="More" aria-haspopup="menu" aria-expanded=${open} onClick=${() => setOpen(!open)}>
-      <${Glyph} name="moreVertical" />
+      <${Glyph} name="more_vert" />
     </button>
     ${open && html`<button type="button" class="h-scrim" aria-label="Close menu" onClick=${() => setOpen(false)} />
       <div class="h-menu" role="menu">
@@ -335,15 +336,21 @@ function More({ act, refresh, bigOn, onBigTiles }) {
   </span>`;
 }
 
+/** What the inbox's badge reads for `n` unread: the count to 99, then
+ * "99+" (the app's ClaxBadge). */
+export const badgeText = (n) => (n > 99 ? '99+' : String(n));
+
+/** The top bar: the mark and "Clax", then Search, Inbox (with the unread
+ * count), Settings and the ⋮ menu. */
 function Bar({ act, refresh, unread, onSearch, bigOn, onBigTiles }) {
   return html`<header class="h-bar">
-    <h1 class="h-title">Clax</h1>
+    <h1 class="h-title"><${Mark} size=${24} /><span>Clax</span></h1>
     <div class="h-actions">
       <button type="button" class="h-action" aria-label="Search" onClick=${onSearch}><${Glyph} name="search" /></button>
       <button type="button" class="h-action" aria-label=${unread > 0 ? `Inbox, ${unread} unread` : 'Inbox'} onClick=${() => act('openInbox', [], 'open the inbox')}>
         <span class="h-badged">
           <${Glyph} name="inbox" />
-          ${unread > 0 && html`<span class="h-badge">${unread > 999 ? '999+' : unread}</span>`}
+          ${unread > 0 && html`<span class="h-badge">${badgeText(unread)}</span>`}
         </span>
       </button>
       <button type="button" class="h-action" aria-label="Settings" onClick=${() => act('openSettings', [], 'open Settings')}><${Glyph} name="settings" /></button>
@@ -354,6 +361,9 @@ function Bar({ act, refresh, unread, onSearch, bigOn, onBigTiles }) {
 
 /** The launcher's column count for a grid `width` wide: cells at most 112
  * px, 4 px apart (Flutter's SliverGridDelegateWithMaxCrossAxisExtent). */
+/** The widest the grid is drawn, centred (home.css `.h-grid-wrap`). */
+const GRID_MAX = 960;
+
 const columnsFor = (width) => Math.max(1, Math.ceil(width / (112 + 4)));
 
 /** The launcher's column count for the element `ref` holds, following its width. */
@@ -1359,7 +1369,7 @@ function SearchField({ query, setQuery, onGo, onClose }) {
           if (e.key === 'Enter') { e.preventDefault(); onGo(); }
           else if (e.key === 'Backspace' && e.currentTarget.value === '') { e.preventDefault(); onClose(); }
         }} />
-      <button type="button" class="h-search-close" aria-label="Close search" onClick=${onClose}><${Glyph} name="x" /></button>
+      <button type="button" class="h-search-close" aria-label="Close search" onClick=${onClose}><${Glyph} name="close" /></button>
     </label>
   </div>`;
 }
@@ -1368,9 +1378,11 @@ function SearchField({ query, setQuery, onGo, onClose }) {
  * leave the group. */
 const OUT_PX = 24;
 
-/** An open folder's measures for a page `width` wide: the home grid's
+/** An open folder's measures for a page `page` wide: the home grid's
  * cell width and the folder's columns (the grid's, at most 4). */
-function folderMeasures(width) {
+function folderMeasures(page) {
+  // The grid's own width: at most GRID_MAX inside its gutters.
+  const width = Math.min(page, GRID_MAX + 32);
   const cols = columnsFor(width);
   const cellW = (width - 32 - 4 * (cols - 1)) / cols;
   const n = Math.min(4, cols);
@@ -1593,8 +1605,13 @@ function Folder({ group, apps, layout, motion, clock, change, onOpen, onMenu, cl
   });
   useLayoutEffect(() => {
     if (!editing) return;
-    field.current?.focus();
-    field.current?.select();
+    const f = field.current;
+    if (!f) return;
+    f.focus();
+    // All of the name selected, from its start: a long one shows its first
+    // words, not its last.
+    f.setSelectionRange(0, f.value.length, 'backward');
+    f.scrollLeft = 0;
   }, [editing]);
   // Before the page can paint, so a press right after the folder opens is followed.
   useLayoutEffect(() => {
@@ -1654,7 +1671,7 @@ function Folder({ group, apps, layout, motion, clock, change, onOpen, onMenu, cl
               }}
               onBlur=${(e) => rename(e.currentTarget.value)} />`
           : html`<button type="button" class="h-folder-name" onClick=${() => { done.current = false; setEditing(true); }}>
-              <span class="h-folder-name-text">${name}</span><${Glyph} name="pencil" size=${18} />
+              <span class="h-folder-name-text">${name}</span><${Glyph} name="edit" size=${18} />
             </button>`}
       </div>
       <div class="h-grid">
@@ -2258,7 +2275,7 @@ function Home({ home, db, clock }) {
 
   if (!home || (appsError && isRefused(appsError))) {
     return html`<main class="h-page h-away">
-      <${Message} glyph="home" title="This is a Clax home screen." hint="Open it in the Clax app." />
+      <${Message} glyph="home_fill" title="This is a Clax home screen." hint="Open it in the Clax app." />
     </main>`;
   }
   const list = Array.isArray(apps) && layout !== null ? apps : null;
@@ -2271,7 +2288,7 @@ function Home({ home, db, clock }) {
   if (!list && appsError) {
     fab = false;
     // Every app is on this device, from Clax's own service: no cloud.
-    body = html`<${Message} glyph="grid" title="Couldn’t show your apps" hint="Clax’s service didn’t answer."
+    body = html`<${Message} glyph="apps" title="Couldn’t show your apps" hint="Clax’s service didn’t answer."
       action=${html`<button type="button" class="h-filled-button" onClick=${reloadApps}>Try again</button>`} />`;
   } else if (!list) {
     body = null;
@@ -2283,7 +2300,7 @@ function Home({ home, db, clock }) {
     fab = false;
     body = html`<${Message} glyph="mark" title="Say what you need, and Clax makes it." hint="Like “a tracker for my runs, with a weekly total.”"
       action=${html`<button type="button" class="h-filled-button h-message-new" onClick=${() => act('newApp', [], 'make a new app')}>
-        <${Glyph} name="mic" size=${18} /><span>New app</span>
+        <${Glyph} name="mic_fill" size=${18} /><span>New app</span>
       </button>`} />`;
   } else {
     body = html`<${Grid} layout=${layout} apps=${list} makes=${going} motion=${motion} reduced=${reduced} clock=${clock} change=${change} fan=${fan}
@@ -2299,18 +2316,15 @@ function Home({ home, db, clock }) {
     ${searching
       ? html`<${SearchField} query=${query} setQuery=${setQuery} onGo=${() => goFirst.current()} onClose=${closeSearch} />`
       : list && html`<${SearchGhost} />`}
-    ${needsKey === true && html`<div class="h-key">
-      <${Glyph} name="key" />
-      <span class="h-key-text">Add your Claude API key to start making apps</span>
-      <button type="button" class="h-text-button" onClick=${() => act('openSettings', [], 'open Settings')}>Add key</button>
-    </div>`}
+    ${needsKey === true && html`<${Banner} class="h-key" glyph="key_fill" title="Add your Claude API key to start making apps"
+      actions=${html`<button type="button" class="h-text-button" onClick=${() => act('openSettings', [], 'open Settings')}>Add key</button>`} />`}
     ${body}
     ${open && html`<${Folder} key=${folder.gid} group=${open.group} apps=${open.apps} layout=${layout} motion=${motion} clock=${clock}
       change=${change} onOpen=${openApp} onMenu=${menuOf} close=${closeGroup} editing=${folder.editing} />`}
     ${menuFor && html`<${GroupMenu} group=${menuFor.group} rect=${groupMenu.rect} pick=${pickGroup} close=${closeGroupMenu} />`}
     ${notice && html`<button type="button" class="h-notice" role="status">${notice.text}</button>`}
     ${fab && html`<button type="button" class="h-fab" aria-label="New app" onClick=${() => act('newApp', [], 'make a new app')}>
-      <${Glyph} name="mic" />
+      <${Glyph} name="mic_fill" />
       <span>New app</span>
     </button>`}
   </main>`;
