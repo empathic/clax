@@ -1297,6 +1297,16 @@ viewer comment on it is sent too, to the agent the thread was last sent to
 while that agent's session is live (see below). A viewer comment on a
 resolved thread reopens it.
 
+**Auto-send.** The threads panel's **Send new comments to <agent>** box,
+off by default, is this viewer's choice per artifact, remembered in the
+browser (`clax.autoSend.<artifact ID>`, as the chosen target is). While it is
+on, a thread the viewer creates (on a spot or on the whole artifact) is sent
+as soon as it is posted, as a press of Send would send it: to the chosen
+target, else to the viewer's own most recently active live agent, which
+becomes the target. With no agent to name the thread stays plain: an
+auto-send never goes out without naming an agent. It is the shell's: the
+daemon sees an ordinary send.
+
 A drag in comment mode that starts where no text is under the pointer (empty
 space, padding, an image, a canvas, an inline SVG), or any drag with Shift
 held, draws a rectangle instead of selecting text; a drag that starts over

@@ -42,4 +42,4 @@
   selection={s.selection} batchNote={s.batchNote} batchBusy={s.batchBusy} sendTo={target}
   onToggle={(t, shift, order) => ctl.toggleSelect(t, shift, order)} onClear={() => ctl.clearSelection()} onNote={v => ctl.setBatchNote(v)}
   compose={s.spectator ? undefined : { version: ctl.shown(s), host: ctl }} readOnly={!!s.spectator} live={s.spectator ? undefined : live}
-  onSendSelection={() => go(() => ctl.sendSelection())} onSendUnsent={() => go(() => ctl.sendUnsent())} onChoose={h => ctl.chooseTarget(h)} {above} />
+  onSendSelection={() => go(() => ctl.sendSelection())} onSendUnsent={() => go(() => ctl.sendUnsent())} onChoose={h => ctl.chooseTarget(h)} autoSend={s.autoSend} onAutoSend={on => ctl.setAutoSend(on)} {above} />

@@ -80,6 +80,10 @@
     onSendUnsent?(): void;
     /** The agent picker chose `handle`. */
     onChoose?(handle: string): void;
+    /** Auto-send is on, and the box that turns it on or off; without
+     * `onAutoSend` there is no box (the extension's side panel). */
+    autoSend?: boolean;
+    onAutoSend?(on: boolean): void;
     /** The pins' numbers, when `threads` is a filtered part of the threads they were counted over. */
     numbers?: Map<string, number>;
     /** Fetches a thread's clip, for a host that cannot load `clip_url` itself (the side panel). */
@@ -227,6 +231,11 @@
       <NewComment version={c.version} host={c.host} onText={p.live ? text => p.live!.onText(null, text) : undefined} />
     {/await}
   {/if}
+  {#if p.onAutoSend && !p.readOnly}
+    <!-- Auto-send: each new thread of this viewer's goes to the Send target as it is posted. -->
+    <label class="auto-send muted small"><input type="checkbox" checked={p.autoSend ?? false}
+      onchange={e => p.onAutoSend?.((e.currentTarget as HTMLInputElement).checked)} /> Send new comments to {target}</label>
+  {/if}
   <!-- New comments others are writing, on a spot or the whole artifact. -->
   {#if p.live}<div class="new-writers">{@render p.live.writers(null)}</div>{/if}
   {#each newestFirst(p.working ?? []) as w (w.key)}
@@ -298,6 +307,7 @@
     button.primary.send-unsent { background: var(--accent); color: var(--on-accent); border-color: var(--accent); }
     button.primary.send-unsent:not(:disabled):hover { background: var(--accent-hover); border-color: var(--accent-hover); }
     .send-unsent { width: 100%; margin-bottom: 4px; }
+    .auto-send { display: flex; align-items: center; gap: 6px; margin: 2px 2px 6px; cursor: pointer; }
     .send-unsent.pick { display: flex; } .send-unsent.pick .send, .send-unsent.pick .send > button:first-child { flex: 1; }
     @media (max-width: 700px) { .send-unsent { min-height: 40px; } }
   }

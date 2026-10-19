@@ -997,6 +997,48 @@ describe("ArtifactController", { timeout: MOUNT_TIMEOUT_MS }, () => {
     });
   });
 
+  describe("auto-send", () => {
+    const sends = () => (fetch as unknown as ReturnType<typeof vi.fn>).mock.calls.filter(([u]) => /\/threads\/[^/]+\/send$/.test(String(u)));
+    const autoSeed = (agents: { handle: string; harness: string; live: boolean }[]): Seed => ({
+      threads: [],
+      artifact: { participants: { people: [], agents } },
+      routes: (url, init) => (init?.method === "POST" && /\/threads\/t9\/send$/.test(String(url)) ? { thread: thread("t9", { sent_to_agent: true }) } : undefined),
+    });
+    afterEach(() => localStorage.clear());
+
+    it("is off by default: a new thread stays plain", async () => {
+      const { ctl } = await started(autoSeed([{ handle: "a_cl", harness: "claude", live: true }]));
+      await vi.waitFor(() => expect(ctl.state.get().agents.length).toBe(1));
+      expect(ctl.state.get().autoSend).toBe(false);
+      ctl.threadCreated(thread("t9"));
+      await new Promise(r => setTimeout(r, 20));
+      expect(sends()).toEqual([]);
+      ctl.dispose();
+    });
+
+    it("sends a new thread at once to the agent a Send would name, which becomes the target, and is remembered", async () => {
+      const { ctl } = await started(autoSeed([{ handle: "a_cl", harness: "claude", live: true }]));
+      await vi.waitFor(() => expect(ctl.state.get().agents.length).toBe(1));
+      ctl.setAutoSend(true);
+      ctl.threadCreated(thread("t9"));
+      await vi.waitFor(() => expect(sends().length).toBe(1));
+      expect(JSON.parse((sends()[0][1] as RequestInit).body as string)).toEqual({ to: "a_cl" });
+      await vi.waitFor(() => expect(ctl.state.get().threads.find(t => t.id === "t9")?.sent_to_agent).toBe(true));
+      expect(ctl.state.get().sendTo).toBe("a_cl");
+      expect(localStorage.getItem(`clax.autoSend.${ID}`)).toBe("1");
+      ctl.dispose();
+    });
+
+    it("leaves the thread plain when no agent is live: an auto-send never goes without to", async () => {
+      const { ctl } = await started(autoSeed([]));
+      ctl.setAutoSend(true);
+      ctl.threadCreated(thread("t9"));
+      await new Promise(r => setTimeout(r, 20));
+      expect(sends()).toEqual([]);
+      ctl.dispose();
+    });
+  });
+
   it("tells the capability host the page left at a bye, at a load with no hello since, and at a hello it does not welcome", async () => {
     const { ctl, frame } = await started();
     const { CapabilityHost } = await import("../caps/host");

@@ -18,3 +18,16 @@ export function defaultTarget(aid: string, agents: AgentView[]): string | null {
   try { last = localStorage.getItem(key(aid)); } catch { /* none */ }
   return last && liveAgents(agents).some(a => a.handle === last) ? last : null;
 }
+
+// Auto-send (contract "Comments and feedback"): this viewer's choice that a
+// thread they create on the artifact is sent at once, as a press of Send
+// would send it. Off unless chosen; remembered per browser like the target.
+const autoKey = (aid: string) => `clax.autoSend.${aid}`;
+
+export function autoSendOn(aid: string): boolean {
+  try { return localStorage.getItem(autoKey(aid)) === "1"; } catch { return false; }
+}
+
+export function rememberAutoSend(aid: string, on: boolean): void {
+  try { if (on) localStorage.setItem(autoKey(aid), "1"); else localStorage.removeItem(autoKey(aid)); } catch { /* this page only */ }
+}
