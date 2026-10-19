@@ -811,6 +811,14 @@ void main() {
       100,
       scrollable: _list,
     );
+    // Mid-screen, clear of the pinned bar and the screen's edge.
+    await tester.runAsync(
+      () => Scrollable.ensureVisible(
+        tester.element(find.byKey(const Key('licences'))),
+        alignment: 0.5,
+      ),
+    );
+    await tester.pumpAndSettle();
     expect(find.text('About'), findsOneWidget);
     await tester.tap(find.byKey(const Key('licences')));
     await tester.pump();
