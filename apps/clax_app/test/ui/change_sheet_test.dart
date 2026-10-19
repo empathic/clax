@@ -138,4 +138,58 @@ void main() {
     );
     expect(find.textContaining('Tap Keep going'), findsNothing);
   });
+
+  group('after the change ends', () {
+    ChangeTracker failed(String tid, String reason) =>
+        ChangeTracker(timings: const NoTimings(), artifact: 'a')
+          ..sent(tid)
+          ..workerWorking([tid])
+          ..workerFailed(reason);
+    final ends = <String, ChangeTracker Function(String)>{
+      'failed': (tid) => failed(tid, 'the connection dropped'),
+      'limit-stopped': (tid) =>
+          failed(tid, limitFailureReason('10 turns', leftUsd: 6)),
+      'spent': (tid) => failed(tid, limitFailureReason('10 turns', leftUsd: 0)),
+      'stopped': (tid) =>
+          ChangeTracker(timings: const NoTimings(), artifact: 'a')
+            ..sent(tid)
+            ..workerWorking([tid])
+            ..stopped(),
+    };
+    for (final MapEntry(key: name, value: end) in ends.entries) {
+      testWidgets('a $name change shows what was asked and Open thread', (
+        tester,
+      ) async {
+        await _show(tester, end);
+        await tester.pump();
+        expect(find.text('Waiting for the comment…'), findsNothing);
+        expect(find.textContaining('Show this week'), findsOneWidget);
+        expect(
+          find.byKey(const ValueKey('change-open-thread')),
+          findsOneWidget,
+        );
+      });
+    }
+
+    testWidgets('a failure says “Couldn’t make that change” once', (
+      tester,
+    ) async {
+      await _show(
+        tester,
+        (tid) => failed(tid, limitFailureReason('10 turns', leftUsd: 6)),
+      );
+      expect(find.textContaining('Couldn’t make that change'), findsOneWidget);
+      final line = tester.widget<Text>(
+        find.byKey(const ValueKey('change-step')),
+      );
+      expect(line.data, startsWith('It was too big for one go'));
+    });
+
+    testWidgets('a limit stop that spent the change’s limit offers Done, '
+        'not Retry', (tester) async {
+      await _show(tester, ends['spent']!);
+      expect(find.byKey(const ValueKey('change-retry')), findsNothing);
+      expect(find.byKey(const ValueKey('change-done')), findsOneWidget);
+    });
+  });
 }

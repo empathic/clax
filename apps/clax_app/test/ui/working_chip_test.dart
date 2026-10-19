@@ -313,6 +313,20 @@ void main() {
     expect(rig.log, ['retry']);
   });
 
+  testWidgets('a limit stop that spent the change’s limit offers no Retry', (
+    tester,
+  ) async {
+    phone(tester);
+    final rig = _Rig();
+    rig.tracker
+      ..workerWorking(const ['t1'])
+      ..workerFailed(limitFailureReason('10 turns', leftUsd: 0));
+    await tester.pumpWidget(rig.build());
+    expect(find.textContaining('so it can’t keep going'), findsOneWidget);
+    expect(find.byKey(const ValueKey('retry-change')), findsNothing);
+    expect(find.text('Retry'), findsNothing);
+  });
+
   testWidgets('without a retry hook a failed change offers no Retry', (
     tester,
   ) async {

@@ -2,7 +2,7 @@ import 'dart:async';
 
 import 'package:flutter/material.dart';
 
-import '../agent/failure.dart' show offersKeepGoing;
+import '../agent/failure.dart' show offersKeepGoing, parseFailureReply;
 import '../agent/plan.dart';
 import '../agent/worker.dart';
 import '../daemon/clock.dart';
@@ -249,7 +249,9 @@ class _WorkingChipState extends State<WorkingChip> {
     final retry =
         (outcome == ChangeOutcome.failed || outcome == ChangeOutcome.stopped) &&
             widget.onRetry != null &&
-            c.failedThreads.isNotEmpty
+            c.failedThreads.isNotEmpty &&
+            // A change that spent its limit has nothing to run again.
+            !parseFailureReply(c.outcomeText).spentLimit
         ? FilledButton.icon(
             key: const ValueKey('retry-change'),
             style: FilledButton.styleFrom(

@@ -104,6 +104,9 @@ class ChangeTracker {
 
   // Retry of a failed change.
   var _failed = const <String>[];
+
+  /// The threads of the change that last ended other than by landing.
+  var _ended = const <String>[];
   var _retrying = false;
 
   /// The running change said it waits for the connection.
@@ -156,6 +159,12 @@ class ChangeTracker {
   List<String> get threads =>
       _running.isNotEmpty ? running : List.unmodifiable(_changes.keys);
 
+  /// The threads of the change that ended with [outcome] (failed,
+  /// answered, stopped, or its send failed), so the change sheet can show
+  /// what was asked and open the thread; empty once dismissed or new work
+  /// starts. Unlike [failedThreads], a refused Retry keeps them.
+  List<String> get ended => _ended;
+
   /// The version the last change landed as, until new work starts; null
   /// when the last change did not land.
   int? get landed => _landed;
@@ -200,6 +209,7 @@ class ChangeTracker {
       text.isEmpty ? 'Couldn’t send the comment' : text,
     );
     _retry = thread;
+    _ended = [thread];
   }
 
   void workerWorking(List<String> threads) {
@@ -338,6 +348,7 @@ class ChangeTracker {
       'Stopped. It waits until you run it again or add to the comment.',
     );
     _failed = kept;
+    _ended = kept;
   }
 
   /// The shell's `ready`: a frame shows [version], pinned or following.
@@ -364,6 +375,7 @@ class ChangeTracker {
       _outcome = null;
       _retry = null;
       _failed = const [];
+      _ended = const [];
       _retrying = false;
     } else {
       _hidden = true;
@@ -401,11 +413,13 @@ class ChangeTracker {
   }
 
   void _endRunning(ChangeOutcome outcome, String text) {
-    for (final t in _takeRunning()) {
+    final threads = _takeRunning();
+    for (final t in threads) {
       _changes.remove(t);
     }
     _idle();
     _end(outcome, text);
+    _ended = List.unmodifiable(threads);
   }
 
   void _end(ChangeOutcome outcome, String text) {
@@ -413,6 +427,7 @@ class ChangeTracker {
     _outcomeText = text;
     _retry = null;
     _failed = const [];
+    _ended = const [];
     _retrying = false;
   }
 
@@ -422,6 +437,7 @@ class ChangeTracker {
     _outcome = null;
     _retry = null;
     _failed = const [];
+    _ended = const [];
     _retrying = false;
   }
 

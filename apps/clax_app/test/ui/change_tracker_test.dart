@@ -455,6 +455,29 @@ void main() {
     expect(t.threads, ['t1', 't2']);
   });
 
+  test('ended keeps the threads of a change that failed or stopped until '
+      'dismissed or new work starts', () {
+    t
+      ..sent('t1')
+      ..workerWorking(['t1'])
+      ..workerFailed('x');
+    expect(t.threads, isEmpty);
+    expect(t.ended, ['t1']);
+    t
+      ..retryStarted()
+      ..retryRefused();
+    expect(t.ended, ['t1'], reason: 'a refused Retry keeps what was asked');
+    t.dismiss();
+    expect(t.ended, isEmpty);
+    t
+      ..sent('t2')
+      ..workerWorking(['t2'])
+      ..stopped();
+    expect(t.ended, ['t2']);
+    t.sent('t3');
+    expect(t.ended, isEmpty);
+  });
+
   test('landed keeps the version until new work starts', () {
     t
       ..sent('t1')

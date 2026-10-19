@@ -3,7 +3,8 @@ import 'dart:typed_data';
 
 import 'package:flutter/material.dart';
 
-import '../agent/failure.dart' show keepGoingIn, offersKeepGoing;
+import '../agent/failure.dart'
+    show keepGoingIn, offersKeepGoing, parseFailureReply;
 import '../agent/loop.dart' show pendingComments;
 import '../clax/api.dart';
 import '../daemon/clock.dart';
@@ -99,8 +100,9 @@ Future<void> showChangeSheet(
 /// It reads [changes] each time [updates] fires, so it follows the change
 /// live. When the change lands it says "Landed · vN" and closes itself
 /// after [closeAfter]; when it fails, is answered or stops, it stays with
-/// the outcome and a Done button (and Retry for a failure, when [onRetry]
-/// is given; Open thread lands on Clax's reply for an answer).
+/// the outcome, the change's threads and a Done button (and Retry for a
+/// failure, when [onRetry] is given and the change has not spent its
+/// limit; Open thread lands on Clax's reply for an answer).
 class ChangeSheet extends StatefulWidget {
   const ChangeSheet({
     super.key,
@@ -202,7 +204,7 @@ class _ChangeSheetState extends State<ChangeSheet> {
   }
 
   void _sync() {
-    final now = _c.threads;
+    final now = _c.threads.isNotEmpty ? _c.threads : _c.ended;
     if (now.isNotEmpty && !_same(now, _threads)) {
       _threads = List.of(now);
       unawaited(_load());
@@ -381,7 +383,13 @@ class _ChangeSheetState extends State<ChangeSheet> {
       ChangeOutcome.failed || ChangeOutcome.sendFailed => (
         Icon(Icons.error_outline, color: scheme.error, size: 22),
         'Couldn’t make that change',
-        keepGoingIn(_c.outcomeText, ClaxVerbs.of(context)),
+        // The title says it; the line gives the reason as a sentence.
+        keepGoingIn(
+          outcome == ChangeOutcome.failed
+              ? parseFailureReply(_c.outcomeText).line
+              : _c.outcomeText,
+          ClaxVerbs.of(context),
+        ),
       ),
       ChangeOutcome.replied => (
         Icon(Icons.forum_outlined, color: scheme.primary, size: 22),
@@ -763,7 +771,9 @@ class _ChangeSheetState extends State<ChangeSheet> {
           (outcome == ChangeOutcome.failed ||
                   outcome == ChangeOutcome.stopped) &&
               widget.onRetry != null &&
-              _c.failedThreads.isNotEmpty
+              _c.failedThreads.isNotEmpty &&
+              // A change that spent its limit has nothing to run again.
+              !parseFailureReply(_c.outcomeText).spentLimit
           ? ClaxButton(
               key: const ValueKey('change-retry'),
               kind: ClaxButtonKind.primary,
