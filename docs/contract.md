@@ -5723,7 +5723,7 @@ the body below.
 | `artifact.create` | `title, kind (html\|live), icon, capabilities, contract_version`; `forked_from{artifact_id, n}` on a fork | first publish, a fork, or a live page's creation |
 | `version.publish` | `n, label, note, title, files{path:{sha256,size,content_type}}, content_sha256, carried[paths], addresses[thread IDs], by_page`; `source{artifact_id, n}` on a fork's version 1 | every version write |
 | `version.push_refused` | `commit, person, session, reason (unknown_person\|person_revoked\|not_a_person\|no_right\|session_ended\|foreign_session\|grant_ended)` (`system:daemon`) | a commit pushed to an artifact's repository left unrecorded because its pusher may not publish the artifact, once per commit |
-| `artifact.update` | `fields{title?, description?, icon?, pinned?, capabilities?}` | pin, unpin, metadata edits |
+| `artifact.update` | `fields{title?, description?, icon?, pinned?, capabilities?, share?{op (set\|remove), id, person, github_login, access?, reason? (owner)}}` | pin, unpin, metadata edits; a share set or removed (`reason: owner` when a share is dropped because it reached the owner, at the owner's GitHub sign-in or a viewer folded into the owner) |
 | `artifact.delete` | `title, current_version` | delete |
 | `asset.upload` | `asset_id, path, sha256, size, content_type` | asset store writes |
 | `asset.delete` | `asset_id, path, size, content_type` | asset deletes |
