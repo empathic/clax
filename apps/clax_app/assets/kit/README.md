@@ -10,11 +10,11 @@ files).
 | `preact.js` | Preact, its hooks and htm as one ES module | preact 10.29.8 (MIT), htm 3.1.1 (Apache-2.0) |
 | `dates.js` | dayjs with the relativeTime plugin, as an ES module | dayjs 1.11.23 (MIT) |
 | `icons.js` | 109 icons as functions returning SVG markup | Lucide, lucide-static 0.460.0 (ISC) |
-| `kit.css` | the design system: tokens, type, components | Clax |
-| `kit.js` | Preact components over `kit.css` | Clax |
-| `chart.js` | SVG line, area, bar, pie, donut and sparkline charts | Clax |
-| `map.js` | `MapView`, a slippy map: tiles fetched through the `net` capability and shown as `blob:` images, markers, a "you are here" dot; its styles are added by the module | Clax |
-| `fake-home.js` | `fakeHome(state)`, a stand-in for the home screen's `home` capability with sample apps and makes, and `fakeDb(docs)`, one for `db`'s documents, for a home app's tests and the agent's renders (`add_kit` part `home`) | Clax |
+| `kit.css` | the design system: tokens, type, components | Clax (0BSD) |
+| `kit.js` | Preact components over `kit.css` | Clax (0BSD) |
+| `chart.js` | SVG line, area, bar, pie, donut and sparkline charts | Clax (0BSD) |
+| `map.js` | `MapView`, a slippy map: tiles fetched through the `net` capability and shown as `blob:` images, markers, a "you are here" dot; its styles are added by the module | Clax (0BSD) |
+| `fake-home.js` | `fakeHome(state)`, a stand-in for the home screen's `home` capability with sample apps and makes, and `fakeDb(docs)`, one for `db`'s documents, for a home app's tests and the agent's renders (`add_kit` part `home`) | Clax (0BSD) |
 
 The shipped home app (`apps/clax_app/home/`) carries its own copies of
 the kit files its `manifest.json` names: every build of the app packs them
@@ -45,9 +45,13 @@ circle, zoomed to show it. The watch ends on a second tap or when the map
 unmounts; a `stopped` end leaves the button to tap again, and a refusal
 shows a short message.
 
-Each vendored file opens with a comment naming its packages, versions,
-licences and copyright holders; `LICENSES.txt` holds the full licence
-texts and `add_kit` copies it with every vendored file.
+Clax's own kit files are under the Zero-Clause BSD licence (0BSD,
+`LICENSES/0BSD.txt` at the repository's root), unlike the rest of the
+app (GPL-2.0-only), so the apps the kit is copied into carry no
+obligation from it. Each vendored file opens with a comment naming its
+packages, versions, licences and copyright holders; `LICENSES.txt` holds
+the 0BSD text and the vendored packages' full licence texts, and
+`add_kit` copies it with every part.
 
 ## How the vendored files were built
 

@@ -1,5 +1,25 @@
-Licences of the third-party code in the Clax kit.
-kit.css, kit.js and chart.js are part of Clax.
+Licences of the code in the Clax kit.
+
+Clax's own files in the kit (kit.css, kit.js, chart.js, map.js,
+fake-home.js) are under the Zero-Clause BSD licence below: use them in
+any app, with or without this notice. The vendored files that follow
+(preact.js, dates.js, icons.js) keep their own licences.
+
+================================================================
+Clax kit: Zero-Clause BSD (0BSD)
+================================================================
+Copyright (C) 2026 Empathic, Inc.
+
+Permission to use, copy, modify, and/or distribute this software for any
+purpose with or without fee is hereby granted.
+
+THE SOFTWARE IS PROVIDED "AS IS" AND THE AUTHOR DISCLAIMS ALL WARRANTIES
+WITH REGARD TO THIS SOFTWARE INCLUDING ALL IMPLIED WARRANTIES OF
+MERCHANTABILITY AND FITNESS. IN NO EVENT SHALL THE AUTHOR BE LIABLE FOR
+ANY SPECIAL, DIRECT, INDIRECT, OR CONSEQUENTIAL DAMAGES OR ANY DAMAGES
+WHATSOEVER RESULTING FROM LOSS OF USE, DATA OR PROFITS, WHETHER IN AN
+ACTION OF CONTRACT, NEGLIGENCE OR OTHER TORTIOUS ACTION, ARISING OUT OF
+OR IN CONNECTION WITH THE USE OR PERFORMANCE OF THIS SOFTWARE.
 
 ================================================================
 preact.js: Preact 10.29.8
