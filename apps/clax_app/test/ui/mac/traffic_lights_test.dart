@@ -66,6 +66,7 @@ class _Preview implements PreviewView {
   void dispose() {}
 }
 
+/// The fonts the shots draw with, from `flutter test`'s FLUTTER_ROOT.
 Future<void> _fonts() async {
   Future<ByteData> f(String path) async =>
       ByteData.sublistView(await File(path).readAsBytes());
@@ -152,7 +153,7 @@ void main() {
   /// [screen] pushed over a first route, so it has Back, in a 1200 x 800
   /// Mac window under its toolbar row.
   Future<void> pumpMac(WidgetTester tester, Widget screen) async {
-    await tester.runAsync(_fonts);
+    if (_shots) await tester.runAsync(_fonts);
     tester.view.physicalSize = const Size(1200, 800) * 2;
     tester.view.devicePixelRatio = 2;
     addTearDown(tester.view.reset);
