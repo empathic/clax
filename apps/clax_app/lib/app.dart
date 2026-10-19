@@ -78,6 +78,7 @@ import 'ui/host_protocol.dart'
         StateMsg,
         ThreadsMsg;
 import 'ui/inspector_surface.dart';
+import 'ui/kit/mark.dart';
 import 'ui/launcher.dart';
 import 'ui/licences.dart';
 import 'ui/make_service.dart';
@@ -85,7 +86,9 @@ import 'ui/making_screen.dart';
 import 'ui/question_sheet.dart';
 import 'ui/read_consent_dialog.dart';
 import 'ui/settings_screen.dart';
+import 'ui/splash.dart';
 import 'ui/theme.dart';
+import 'ui/tokens.g.dart';
 
 /// Everything [AppRoot] needs. `main` builds it for the platform; tests
 /// give fakes.
@@ -2224,7 +2227,7 @@ class _AppRootState extends State<AppRoot> with WidgetsBindingObserver {
           onPainted: _snapshotPainted,
         );
       }
-      return const _Splash(key: ValueKey('splash'));
+      return ClaxSplash(key: const ValueKey('splash'), clock: _s.clock);
     }
     // The route's own build says otherwise when it shows the home app.
     _homeCovered = true;
@@ -2456,52 +2459,30 @@ class _AppPageState extends State<_AppPage> {
   }
 }
 
-class _Splash extends StatelessWidget {
-  const _Splash({super.key});
+/// What an app's screen shows while an update runs on it: no page.
+class _UpdatingCover extends StatelessWidget {
+  const _UpdatingCover();
 
   @override
   Widget build(BuildContext context) {
-    final theme = Theme.of(context);
+    final p = claxPalette(context);
     return Scaffold(
       body: Center(
         child: Column(
           mainAxisSize: MainAxisSize.min,
           children: [
-            Text('Clax', style: theme.textTheme.displaySmall),
-            const SizedBox(height: 24),
-            const SizedBox.square(
-              dimension: 24,
-              child: CircularProgressIndicator(strokeWidth: 3),
-            ),
-            const SizedBox(height: 16),
+            const ClaxMark(size: 48, state: ClaxMarkState.working),
+            const SizedBox(height: ClaxSpace.s16),
             Text(
-              'Starting…',
-              style: theme.textTheme.bodyLarge?.copyWith(
-                color: theme.colorScheme.onSurfaceVariant,
-              ),
+              'Updating…',
+              style: ClaxType.of(
+                ClaxRole.callout,
+                Theme.of(context).platform,
+              ).copyWith(color: p.muted),
             ),
           ],
         ),
       ),
     );
   }
-}
-
-/// What an app's screen shows while an update runs on it: no page.
-class _UpdatingCover extends StatelessWidget {
-  const _UpdatingCover();
-
-  @override
-  Widget build(BuildContext context) => const Scaffold(
-    body: Center(
-      child: Column(
-        mainAxisSize: MainAxisSize.min,
-        children: [
-          CircularProgressIndicator(),
-          SizedBox(height: 16),
-          Text('Updating…'),
-        ],
-      ),
-    ),
-  );
 }

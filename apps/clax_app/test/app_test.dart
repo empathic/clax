@@ -166,9 +166,12 @@ void main() {
     await tester.pump();
   }
 
+  /// Brings the daemon up, then lets the splash's breath come due, so the
+  /// wait it started on the wall clock is not left pending.
   Future<void> up(WidgetTester tester, {int port = 7999, int pid = 100}) async {
     rig.supervisor.set(Up(endpoint(port: port, pid: pid)));
     await tester.pumpAndSettle();
+    await tester.pump(const Duration(milliseconds: 600));
   }
 
   /// Pumps through a route transition, without waiting for the page's

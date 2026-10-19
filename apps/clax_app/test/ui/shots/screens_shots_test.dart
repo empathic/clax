@@ -1,6 +1,7 @@
 // Existing screens in the brand's theme, rendered in every form and theme
 // into CLAX_SHOTS_DIR (skipped without it): Settings with a key in its
-// field, the launcher with apps, icons and makes, and a thread.
+// field, the launcher with apps, icons and makes, a thread, and the splash
+// at rest and once it breathes.
 import 'dart:async';
 import 'dart:io';
 
@@ -11,7 +12,9 @@ import 'package:clax_app/ui/app_icon.dart';
 import 'package:clax_app/ui/launcher.dart';
 import 'package:clax_app/ui/make_service.dart';
 import 'package:clax_app/ui/settings_screen.dart';
+import 'package:clax_app/ui/splash.dart';
 import 'package:clax_app/ui/thread_detail.dart';
+import 'package:flutter/widgets.dart';
 import 'package:flutter_test/flutter_test.dart';
 
 import '../../support/fake_voice.dart';
@@ -128,5 +131,25 @@ void main() {
     );
     await s.settle();
     await s.take('thread');
+  });
+
+  shots('splash', (s) async {
+    await s.tester.pumpWidget(s.app(const ClaxSplash()));
+    await s.take('splash');
+    // Past the breath, so nothing is left waiting when the test ends.
+    await s.tester.pumpWidget(const SizedBox());
+    await s.tester.pump(const Duration(milliseconds: 600));
+  });
+
+  shots('splash-starting', (s) async {
+    await s.tester.pumpWidget(s.app(const ClaxSplash()));
+    // 600 ms to the breath, then frames to 700 ms: the dot on its way
+    // toward Clax, "Starting…" a third faded in.
+    await s.tester.pump(const Duration(milliseconds: 600));
+    for (var i = 0; i < 4; i++) {
+      await s.tester.pump(const Duration(milliseconds: 25));
+    }
+    await s.take('splash-starting');
+    await s.tester.pumpWidget(const SizedBox());
   });
 }
