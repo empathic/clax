@@ -131,12 +131,14 @@ see "What reaches an agent") and `notes` (notes from Clax itself, such as what a
 session's idle end released), each present only when not empty, and each
 also told in the trailing text block.
 
-The one exception: arguments that fail the tool's schema (a wrong type, a
-missing required argument, or an unknown argument, since every schema rejects
-unknown fields) are refused before the tool runs. Over MCP that is a
-protocol-level invalid-params error, not a tool result, so it has no
-`error.code` and no `feedback`. Pi reports it as an error result whose text is
-Pi's own validation message (`Validation failed for tool ...`), not JSON.
+Arguments that fail the tool's schema (a wrong type, a missing required
+argument, or an unknown argument, since every schema rejects unknown fields)
+are refused before the tool runs. Over MCP (the stdio shim and `/mcp`) that
+is an error result like any other, `invalid_args` with the deserializer's
+reason as its `message` (such as `failed to deserialize parameters: unknown
+field ...`). The one exception is Pi, which validates arguments itself and
+reports a failure as an error result whose text is Pi's own validation
+message (`Validation failed for tool ...`), not JSON.
 
 ### Error codes every tool can return
 

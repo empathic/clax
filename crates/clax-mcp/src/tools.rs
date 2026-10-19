@@ -1130,10 +1130,9 @@ impl ClaxTools {
     /// `tools/call` without an rmcp service around it, for a transport
     /// that answers JSON-RPC itself (`crate::http`): the named tool's
     /// method called directly, under its own call ID and reported, as
-    /// [`ServerHandler::call_tool`] runs it. The answers are the tool
-    /// router's: arguments that do not deserialize are an error result
-    /// naming why, and a name that is no tool is `invalid_params` "tool not
-    /// found".
+    /// [`ServerHandler::call_tool`] runs it. Arguments that do not
+    /// deserialize are an `invalid_args` error result naming why, and a
+    /// name that is no tool is `invalid_params` "tool not found".
     pub async fn call_direct(
         &self,
         request: rmcp::model::CallToolRequestParams,
@@ -2914,9 +2913,10 @@ macro_rules! direct_tools {
         const DIRECT: &[&str] = &[$(stringify!($tool)),*];
 
         impl ClaxTools {
-            /// Calls tool `name`'s method with `arguments`, as the tool
-            /// router does: arguments that do not deserialize are an error
-            /// result naming why, not a protocol error.
+            /// Calls tool `name`'s method with `arguments`: arguments that
+            /// do not deserialize are an `invalid_args` error result naming
+            /// why, shaped as every other error result, not a protocol
+            /// error.
             async fn invoke(
                 &self,
                 name: &str,
@@ -2926,9 +2926,7 @@ macro_rules! direct_tools {
                 let res = match name {
                     $(stringify!($tool) => match parse_json_object(arguments) {
                         Ok(args) => self.$tool(Parameters(args)).await,
-                        Err(e) => Ok(CallToolResult::error(vec![
-                            rmcp::model::ContentBlock::text(e.message),
-                        ])),
+                        Err(e) => Ok(invalid(e.message)),
                     },)*
                     _ => return Err(McpError::invalid_params("tool not found", None)),
                 };
@@ -3425,7 +3423,9 @@ impl ServerHandler for ClaxTools {
     /// Runs a tool call under its own call ID and argument hash (spec §6.7):
     /// every request the tool makes carries them, and once the result is
     /// ready the call is reported in the background, so the report never
-    /// delays the result. A name that is no tool is passed on unrecorded.
+    /// delays the result. Arguments that do not deserialize are an
+    /// `invalid_args` error result ([`ClaxTools::invoke`]). A name that is
+    /// no tool is passed on unrecorded.
     async fn call_tool(
         &self,
         request: rmcp::model::CallToolRequestParams,
@@ -3439,11 +3439,10 @@ impl ServerHandler for ClaxTools {
                 .await;
         }
         let call = self.begin_call(&request.name, request.arguments.as_ref());
-        self.reported(call, async |tools: ClaxTools| {
-            tools
-                .tool_router
-                .call(ToolCallContext::new(&tools, request, context))
-                .await
+        let name = request.name;
+        let arguments = request.arguments.unwrap_or_default();
+        self.reported(call, async move |tools: ClaxTools| {
+            tools.invoke(&name, arguments).await
         })
         .await
     }
