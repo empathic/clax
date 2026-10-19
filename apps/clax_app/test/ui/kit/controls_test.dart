@@ -43,6 +43,37 @@ void main() {
       expect(find.byIcon(Icons.inbox), findsOneWidget);
     });
 
+    testWidgets('at 200% text a badge covers no more of its icon than at '
+        '100%, its count inside it', (tester) async {
+      Future<(double, double)> measure(double scale) async {
+        tester.platformDispatcher.textScaleFactorTestValue = scale;
+        await tester.pumpWidget(
+          _app(
+            const Center(
+              child: ClaxBadge(count: 2, child: Icon(Icons.forum_outlined)),
+            ),
+          ),
+        );
+        final icon = tester.getRect(find.byIcon(Icons.forum_outlined));
+        final count = tester.getRect(find.text('2'));
+        final over = icon.intersect(count);
+        final covered = over.width <= 0 || over.height <= 0
+            ? 0.0
+            : over.width * over.height;
+        return (count.height, covered);
+      }
+
+      addTearDown(tester.platformDispatcher.clearTextScaleFactorTestValue);
+      final (_, atOne) = await measure(1);
+      final (height, atTwo) = await measure(2);
+      expect(height, lessThanOrEqualTo(16), reason: 'inside the badge');
+      expect(
+        atTwo,
+        lessThanOrEqualTo(atOne * 1.25),
+        reason: 'the icon stays readable',
+      );
+    });
+
     testWidgets('a badge is you on on-you', (tester) async {
       await tester.pumpWidget(_app(const ClaxBadge(count: 120)));
       expect(find.text('99+'), findsOneWidget);

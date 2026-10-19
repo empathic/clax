@@ -20,6 +20,9 @@ class ClaxBadge extends StatelessWidget {
   /// What the badge reads in place of [count].
   final String? label;
 
+  /// The most a badge's text grows with the system's text size.
+  static const maxTextScale = 1.3;
+
   /// The badge's text for [count]: '' at 0 (and below), the count to 99,
   /// then '99+'.
   static String text(int count) => count <= 0
@@ -34,13 +37,20 @@ class ClaxBadge extends StatelessWidget {
     final p = claxPalette(context);
     final platform = Theme.of(context).platform;
     return Badge(
-      label: Text(label ?? text(count)),
+      // A count grows with the text only so far (130%), and sets solid
+      // (no leading), so at 200% it still fits the 16 point badge at its
+      // icon's corner instead of covering the icon.
+      label: MediaQuery.withClampedTextScaling(
+        maxScaleFactor: maxTextScale,
+        child: Text(label ?? text(count)),
+      ),
       backgroundColor: p.you,
       textColor: p.onYou,
       // The theme's caption carries its family; the bare role does not.
       textStyle:
-          Theme.of(context).textTheme.labelSmall ??
-          ClaxType.of(ClaxRole.caption, platform),
+          (Theme.of(context).textTheme.labelSmall ??
+                  ClaxType.of(ClaxRole.caption, platform))
+              .copyWith(height: 1),
       largeSize: 16,
       padding: const EdgeInsets.symmetric(horizontal: 5),
       child: child,
