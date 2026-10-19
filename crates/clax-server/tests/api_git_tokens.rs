@@ -35,6 +35,15 @@ struct FakeRemotes {
     by_holder: Mutex<Vec<(Option<String>, Option<String>)>>,
     /// Whether its pushes name no pusher (`names_pushers` is `false`).
     anonymous: std::sync::atomic::AtomicBool,
+    /// When set, the next mint says it has begun on the first sender and
+    /// keeps its token unregistered until the second channel releases it:
+    /// a mint in flight.
+    gate: Mutex<
+        Option<(
+            tokio::sync::oneshot::Sender<()>,
+            tokio::sync::oneshot::Receiver<()>,
+        )>,
+    >,
 }
 
 impl FakeRemotes {
@@ -76,6 +85,11 @@ impl GitRemotes for FakeRemotes {
         holder: &'a Holder,
     ) -> RemoteFuture<'a, Minted> {
         Box::pin(async move {
+            let gate = self.gate.lock().unwrap().take();
+            if let Some((begun, release)) = gate {
+                let _ = begun.send(());
+                let _ = release.await;
+            }
             let mut rows = self.rows.lock().unwrap();
             let id = format!("cxt_{}", rows.len() + 1);
             rows.push(Row {
@@ -651,6 +665,97 @@ async fn a_persons_tokens_are_revoked_when_their_rights_narrow_or_they_are_revok
         .unwrap();
     assert_eq!(r.status(), 200, "{}", r.text().await.unwrap());
     assert!(fake.row("cxt_3").revoked);
+}
+
+/// Asks for a token of `scope` on `aid` with `cookie` while the fake's mint
+/// is held: answers once `meanwhile`, run while the mint is in flight, is
+/// done and the mint released.
+async fn mint_across<F: std::future::Future<Output = ()>>(
+    ts: &TestServer,
+    fake: &FakeRemotes,
+    aid: &str,
+    scope: &str,
+    cookie: &str,
+    meanwhile: F,
+) -> (u16, Value) {
+    let (begun_tx, begun) = tokio::sync::oneshot::channel();
+    let (release, release_rx) = tokio::sync::oneshot::channel();
+    *fake.gate.lock().unwrap() = Some((begun_tx, release_rx));
+    let asking = {
+        let (base, client) = (ts.base.clone(), ts.client.clone());
+        let (aid, scope, cookie) = (aid.to_string(), scope.to_string(), cookie.to_string());
+        tokio::spawn(async move {
+            let r = client
+                .post(format!("{base}/api/artifacts/{aid}/git-token"))
+                .header("cookie", cookie)
+                .json(&json!({"scope": scope}))
+                .send()
+                .await
+                .unwrap();
+            let status = r.status().as_u16();
+            (status, r.json::<Value>().await.unwrap_or(Value::Null))
+        })
+    };
+    begun.await.unwrap();
+    meanwhile.await;
+    release.send(()).unwrap();
+    asking.await.unwrap()
+}
+
+#[tokio::test]
+async fn a_narrowing_that_lands_while_a_token_is_minted_refuses_and_revokes_it() {
+    let (ts, fake) = served().await;
+    let owners = aid_of(&ts.publish("Owner's", &[("index.html", "<p>x</p>")]).await);
+    let hers = aid_of(&ts.publish("Rae's", &[("index.html", "<p>r</p>")]).await);
+    let rae = ts.person("Rae").await;
+    let db = rusqlite::Connection::open(ts.home.db_path()).unwrap();
+    db.busy_timeout(Duration::from_secs(10)).unwrap();
+    db.execute(
+        "UPDATE artifacts SET person = ?2 WHERE id = ?1",
+        rusqlite::params![hers, rae.public_id],
+    )
+    .unwrap();
+    drop(db);
+    let cookie = format!("clax_viewer={}", rae.cookie);
+    // Rae passed the rights check and the host is minting her token, not
+    // yet listed as held: a change now reaches it neither by holder nor by
+    // recheck.
+    let (status, v) = mint_across(&ts, &fake, &hers, "write", &cookie, async {
+        let r = ts
+            .client
+            .put(format!("{}/api/people/{}/rights", ts.base, rae.public_id))
+            .header("cookie", ts.owner_cookie())
+            .json(&json!({"rights": ["clax:reader"]}))
+            .send()
+            .await
+            .unwrap();
+        assert_eq!(r.status(), 200, "{}", r.text().await.unwrap());
+    })
+    .await;
+    assert_eq!(
+        (status, v["error"]["code"].as_str()),
+        (403, Some("not_permitted")),
+        "{v}"
+    );
+    assert!(fake.row("cxt_1").revoked, "{:?}", fake.rows());
+
+    let (status, v) = mint_across(&ts, &fake, &owners, "read", &cookie, async {
+        let r = ts
+            .client
+            .delete(format!("{}/api/people/{}", ts.base, rae.public_id))
+            .header("cookie", ts.owner_cookie())
+            .send()
+            .await
+            .unwrap();
+        assert_eq!(r.status(), 200, "{}", r.text().await.unwrap());
+    })
+    .await;
+    assert_eq!(
+        (status, v["error"]["code"].as_str()),
+        (403, Some("not_permitted")),
+        "{v}"
+    );
+    assert!(fake.row("cxt_2").revoked, "{:?}", fake.rows());
 }
 
 #[tokio::test]
