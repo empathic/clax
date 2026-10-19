@@ -1,7 +1,8 @@
 """Builds a Cargo package's targets the way Cargo does.
 
 A package's BUILD.bazel calls cargo_package(). The package's facts (version,
-targets, default features, path dependencies, its build script) come from bazel/workspace.bzl, which
+targets, default features, path dependencies, its build script, its own
+lints) come from bazel/workspace.bzl, which
 scripts/bazel-sync.sh derives from `cargo metadata`; its third-party
 dependencies come from its Cargo.toml through crate_universe; and its sources
 are globbed. So a BUILD file changes only for what Cargo knows by convention
@@ -107,7 +108,10 @@ def cargo_package(
         "--check-cfg=cfg(docsrs,test)",
         "--check-cfg=cfg(feature,values(%s))" % ",".join(['"%s"' % f for f in crate["features"]]),
     ]
-    rustc_flags = WORKSPACE_RUSTC_FLAGS + check_cfg + ["--cfg", "clax_embedded"] + select({
+    # The workspace's lints, or the crate's own [lints.rust] when it has
+    # one (only crates/clax-ios: scripts/check-no-unsafe.sh).
+    lint_flags = crate.get("lint_flags", WORKSPACE_RUSTC_FLAGS)
+    rustc_flags = lint_flags + check_cfg + ["--cfg", "clax_embedded"] + select({
         # Cargo's dev profile keeps line tables, which panics and
         # backtraces use (docs/bazel.md, "Differences from Cargo").
         "//bazel:fastbuild": ["-Cdebuginfo=line-tables-only"],
@@ -131,7 +135,7 @@ def cargo_package(
             edition = crate["edition"],
             deps = all_crate_deps(build = True),
             proc_macro_deps = all_crate_deps(build_proc_macro = True),
-            rustc_flags = WORKSPACE_RUSTC_FLAGS + check_cfg,
+            rustc_flags = lint_flags + check_cfg,
             version = crate["version"],
         )
         build_deps = [":build_script"]

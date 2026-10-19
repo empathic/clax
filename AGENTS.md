@@ -44,6 +44,7 @@ run it through the command the plugin's session context gives.
   for tests.
 - No `unsafe`: the workspace lints forbid it (`unsafe_code = "forbid"` in
   `Cargo.toml`).
+- One exception, approved by the owner: `crates/clax-ios` denies `unsafe_code` instead of forbidding it, and allows it only on the `#[unsafe(no_mangle)]` of its four exported C functions (`clax_start`, `clax_stop`, `clax_state`, `clax_trim_memory`), whose arguments are scalars; `//scripts:no_unsafe` fails on any other `unsafe`, any other `allow(unsafe_code)`, and any other crate that does not take the workspace's lints.
 - Never create hard links, in code, tests or scripts.
 - Tests are fast and load-tolerant: no sleeps standing in for a condition,
   no wall-clock budgets in any check, injected clocks for timing rules.

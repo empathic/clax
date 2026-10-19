@@ -207,10 +207,18 @@ sh_test(
     ],
 )
 
+# No `unsafe` but clax-ios's four exported C functions, and every other
+# crate on the workspace's lints (AGENTS.md); and the check's own test.
 sh_test(
     name = "no_unsafe",
     srcs = ["check-no-unsafe.sh"],
-    data = RUST_SOURCES,
+    data = RUST_SOURCES + CRATE_MANIFESTS + ["//:Cargo.toml"],
+)
+
+sh_test(
+    name = "no_unsafe_test",
+    srcs = ["test-check-no-unsafe.sh"],
+    data = [":all"],
 )
 
 # The checks' own tests; the scans of every tracked file read git and run

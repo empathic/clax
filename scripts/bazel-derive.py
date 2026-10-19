@@ -14,8 +14,8 @@ Run by scripts/bazel-sync.sh, which writes or compares the output:
 
 workspace: each workspace crate's version, targets, default features, path
 dependencies and dev-dependencies (refusing one that turns features on),
-and whether it has a build script; and the rustc flags of
-[workspace.lints.rust].
+whether it has a build script, and the rustc flags of its own [lints.rust]
+when it has one; and the rustc flags of [workspace.lints.rust].
 """
 
 import json
@@ -55,9 +55,10 @@ def starlark(value):
     return text.replace(": true", ": True").replace(": false", ": False")
 
 
-def lint_flags():
-    """rustc flags for [workspace.lints.rust]."""
-    lints = tomllib.loads(read("Cargo.toml")).get("workspace", {}).get("lints", {}).get("rust", {})
+def lint_flags(lints=None, table="[workspace.lints.rust]"):
+    """rustc flags for a [lints.rust] table: the workspace's by default."""
+    if lints is None:
+        lints = tomllib.loads(read("Cargo.toml")).get("workspace", {}).get("lints", {}).get("rust", {})
     flags = []
     for name, spec in sorted(lints.items()):
         level = spec if isinstance(spec, str) else spec.get("level")
@@ -65,7 +66,7 @@ def lint_flags():
         if name == "unexpected_cfgs":
             flags += ["--check-cfg=" + c for c in extra.pop("check-cfg", [])]
         if extra or level not in ("forbid", "deny", "warn", "allow"):
-            sys.exit("error: scripts/bazel-derive.py: [workspace.lints.rust] %s = %r: add its mapping to scripts/bazel-derive.py" % (name, spec))
+            sys.exit("error: scripts/bazel-derive.py: %s %s = %r: add its mapping to scripts/bazel-derive.py" % (table, name, spec))
         flags.append({"forbid": "-F", "deny": "-D", "warn": "-W", "allow": "-A"}[level] + name.replace("-", "_"))
     return flags
 
@@ -149,6 +150,13 @@ def workspace():
             "dev_deps": sorted(deps["dev_deps"]),
             "has_build_script": any("custom-build" in t["kind"] for t in p["targets"]),
         }
+
+        # A crate with a [lints.rust] of its own rather than the
+        # workspace's (scripts/check-no-unsafe.sh says which may).
+        with open(p["manifest_path"], "rb") as f:
+            lints = tomllib.load(f).get("lints", {})
+        if lints.get("workspace") is not True and "rust" in lints:
+            crates[directory]["lint_flags"] = lint_flags(lints["rust"], "%s/Cargo.toml [lints.rust]" % directory)
 
     out = [
         '"""The Cargo workspace, as bazel/cargo.bzl needs it.',
