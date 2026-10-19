@@ -266,6 +266,17 @@ final class WindowToolbar: NSObject, NSToolbarDelegate {
     return out
   }
 
+  /// Whether [id] is one of the items over the sidebar. These and the
+  /// sidebar's edge are navigational: from macOS 14 AppKit puts navigational
+  /// items before the window's title and every other item at the trailing
+  /// end, so without it they and the edge's spacer would sit at the end.
+  private func overSidebar(_ id: NSToolbarItem.Identifier) -> Bool {
+    guard let edge else { return false }
+    return specs.prefix(edge.leading).contains {
+      ($0.group.map(Self.groupIdentifier) ?? NSToolbarItem.Identifier($0.id)) == id
+    }
+  }
+
   private static func groupIdentifier(_ name: String) -> NSToolbarItem.Identifier {
     NSToolbarItem.Identifier(groupPrefix + name)
   }
@@ -289,6 +300,7 @@ final class WindowToolbar: NSObject, NSToolbarDelegate {
       spacer.view = view
       spacer.label = ""
       spacer.isBordered = false
+      if #available(macOS 14.0, *) { spacer.isNavigational = true }
       made[id] = spacer
       return spacer
     }
@@ -302,7 +314,7 @@ final class WindowToolbar: NSObject, NSToolbarDelegate {
         labels: group.map(\.label), target: self, action: #selector(segmentClicked(_:)))
       if choice { g.controlRepresentation = .expanded }
       if #available(macOS 14.0, *) {
-        g.isNavigational = id == Self.groupIdentifier(Self.navigation)
+        g.isNavigational = id == Self.groupIdentifier(Self.navigation) || overSidebar(id)
       }
       item = g
     } else if specs.first(where: { $0.id == id.rawValue })?.search == true {
@@ -320,6 +332,9 @@ final class WindowToolbar: NSObject, NSToolbarDelegate {
       item.action = #selector(itemClicked(_:))
     }
     item.autovalidates = false
+    if #available(macOS 14.0, *), !(item is NSToolbarItemGroup) {
+      item.isNavigational = overSidebar(id)
+    }
     made[id] = item
     configure(item, id)
     return item

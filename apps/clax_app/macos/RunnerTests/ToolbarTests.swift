@@ -126,6 +126,14 @@ final class ToolbarTests: XCTestCase {
        NSToolbarItem.Identifier.flexibleSpace.rawValue, "comment", "threads", "share"])
     let spacer = bar.toolbar.items[1].view as! SidebarEdgeView
     XCTAssertEqual(spacer.edge, 220)
+    // AppKit puts navigational items before the title and the rest at the
+    // trailing end: the items over the sidebar and its edge lead.
+    if #available(macOS 14.0, *) {
+      XCTAssertTrue(bar.item("sidebar")!.isNavigational)
+      XCTAssertTrue(bar.toolbar.items[1].isNavigational)
+      XCTAssertTrue(bar.item("back")!.isNavigational)
+      XCTAssertFalse(bar.item("comment")!.isNavigational)
+    }
     // A new width moves the same spacer; the items stay.
     let comment = bar.item("comment")
     call("setItems", ["view": 1, "items": [sidebar] + items, "leading": 1, "edge": 260])
@@ -136,6 +144,9 @@ final class ToolbarTests: XCTestCase {
     call("setItems", ["view": 1, "items": [sidebar] + items])
     XCTAssertFalse(bar.identifiers.contains(WindowToolbar.sidebarEdge))
     XCTAssertEqual(bar.identifiers.first?.rawValue, "sidebar")
+    if #available(macOS 14.0, *) {
+      XCTAssertFalse(bar.item("sidebar")!.isNavigational)
+    }
   }
 
   func testTheEdgeSpacerReachesTheSidebarsEdgeFromWhereItStarts() {
