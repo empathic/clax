@@ -10,9 +10,10 @@ repository root.
 
 ## Install
 
-From a clone of the Clax repository (nothing needs building):
-`codex plugin marketplace add <clone>`, then `codex plugin add clax@clax`,
-and start a new session. `just install` in the clone instead builds and
+`codex plugin marketplace add empathic/clax`, then `codex plugin add
+clax@clax`, and start a new session. Codex fetches the marketplace from
+GitHub; a clone of the Clax repository works in place of `empathic/clax`
+(nothing needs building). `just install` in the clone instead builds and
 installs `clax` into `~/.cargo/bin` and runs `clax init`, which registers
 this plugin (the copy built into that binary, written to
 `~/.clax/marketplace/`) and points it at that binary.

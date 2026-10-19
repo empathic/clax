@@ -15,8 +15,9 @@ Clax release it pins on first use (see "Which clax the plugins run" below).
 
 - Claude Code: `/plugin marketplace add empathic/clax`, then
   `/plugin install clax@clax`.
-- Codex, from a clone of this repository (nothing needs building):
-  `codex plugin marketplace add <clone>`, then `codex plugin add clax@clax`.
+- Codex: `codex plugin marketplace add empathic/clax`, then
+  `codex plugin add clax@clax` (a clone works in place of
+  `empathic/clax`).
 - Grok Build, from a clone: `grok plugin install <clone>/plugins/clax-grok --trust`.
 - Pi, from a clone: `pi install <clone>/plugins/pi`.
 

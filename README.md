@@ -33,7 +33,20 @@ them. To allow them all, add `"mcp__plugin_clax_clax__*"` to
 with `/permissions`. The [plugin's README](plugins/claude-code/README.md#allowing-the-tools)
 lists the read-only tools if you'd rather allow just those.
 
-### Codex, Pi and Grok Build
+### Codex
+
+```sh
+codex plugin marketplace add empathic/clax
+codex plugin add clax@clax
+```
+
+Then start a new session. Like the Claude Code plugin, it downloads the
+Clax release it needs on first use. Codex runs most Clax tools without
+asking, but stops before the six that replace or remove data; the
+[plugin's README](plugins/clax/README.md#tool-approval) has the lines that
+approve them.
+
+### Pi, Grok Build, or every harness at once
 
 Install the `clax` command, then let it set up every harness it finds on
 your `PATH`:
