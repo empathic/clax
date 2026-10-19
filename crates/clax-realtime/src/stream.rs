@@ -342,8 +342,13 @@ struct Item {
 struct Shared {
     /// Topics that fell behind, with the sequence of the first event dropped.
     lagged: Mutex<Vec<(Arc<str>, u64)>>,
+    /// Topics the stream left when its seat was released while its queue
+    /// was full ([`Hub::unseat`]): each topic, its `unseated` block and the
+    /// sequence at the release.
+    unseated: Mutex<Vec<(Arc<str>, Bytes, u64)>>,
     notify: Notify,
-    /// Set when a frame is queued or a topic falls behind, cleared by
+    /// Set when a frame is queued, a topic falls behind or is left
+    /// unannounced, cleared by
     /// [`Conn::drain`]: whether the connection has anything to take.
     pending: std::sync::atomic::AtomicBool,
 }
@@ -352,6 +357,21 @@ impl Shared {
     fn mark_pending(&self) {
         self.pending
             .store(true, std::sync::atomic::Ordering::Release);
+    }
+
+    /// Whether a topic fell behind or was left unannounced since the
+    /// connection last looked.
+    fn out_of_band(&self) -> bool {
+        !self
+            .lagged
+            .lock()
+            .unwrap_or_else(|e| e.into_inner())
+            .is_empty()
+            || !self
+                .unseated
+                .lock()
+                .unwrap_or_else(|e| e.into_inner())
+                .is_empty()
     }
 }
 
@@ -920,6 +940,9 @@ impl Hub {
     /// Stream `id`'s seat on `aid` was released (`code`: why): the stream
     /// leaves the artifact's live topics, and an attached one is sent
     /// `unseated` (`{topic, code}`) for each, so its page turns spectator.
+    /// A full queue does not lose it: the connection takes it out of band,
+    /// as it takes `resync`, before the topic's events still queued, which
+    /// it then skips. A topic it leaves is no longer `resync`ed.
     pub fn unseat(&self, id: &str, aid: &str, code: &str) {
         let mut g = self.lock();
         let seq = g.seq;
@@ -944,14 +967,29 @@ impl Hub {
                 s.key,
                 &t.chans(&s.caller, s.person.as_deref(), s.drafts),
             );
-            if let Some(tx) = &s.tx
-                && tx
-                    .try_send(Arc::new(unseated_item(seq, &t.name(), code)))
-                    .is_ok()
-            {
-                s.shared.mark_pending();
-                queued = true;
+            let name = t.name();
+            s.shared
+                .lagged
+                .lock()
+                .unwrap_or_else(|e| e.into_inner())
+                .retain(|(l, _)| **l != *name);
+            let Some(tx) = &s.tx else { continue };
+            match tx.try_send(Arc::new(unseated_item(seq, &name, code))) {
+                Ok(()) => {}
+                Err(mpsc::error::TrySendError::Full(_)) => {
+                    let mut block = unseated_frame(&name, code).to_vec();
+                    block.push(b'\n');
+                    s.shared
+                        .unseated
+                        .lock()
+                        .unwrap_or_else(|e| e.into_inner())
+                        .push((name.into(), Bytes::from(block), seq));
+                    s.shared.notify.notify_one();
+                }
+                Err(mpsc::error::TrySendError::Closed(_)) => continue,
             }
+            s.shared.mark_pending();
+            queued = true;
         }
         if let Some(seats) = seats {
             seats.leave(aid, &seat_conn(id));
@@ -1743,7 +1781,8 @@ impl Conn {
     /// Takes every frame the connection has now, without waiting: what
     /// [`Conn::next`] would hand out before it next waits (the `ready` and
     /// prelude first, then each queued event with its `id:` line, `resync`
-    /// for a topic fallen behind), each frame a whole SSE block ending in a
+    /// for a topic fallen behind, `unseated` for a topic left while the
+    /// queue was full), each frame a whole SSE block ending in a
     /// blank line. No keep-alive is made: the host keeps its connection
     /// alive its own way. `None` once the stream has ended (a newer
     /// connection took it over, or the extension credential it was opened
@@ -1756,13 +1795,7 @@ impl Conn {
         let mut block = Vec::new();
         let mut ended = false;
         loop {
-            let lagged = !self
-                .shared
-                .lagged
-                .lock()
-                .unwrap_or_else(|e| e.into_inner())
-                .is_empty();
-            if lagged {
+            if self.shared.out_of_band() {
                 self.take_lagged();
             }
             if let Some(b) = self.out.pop_front() {
@@ -1807,7 +1840,17 @@ impl Conn {
         &self.id
     }
 
+    /// Takes what reached the stream out of band: each topic left while
+    /// the queue was full (its events still queued are skipped), then each
+    /// topic fallen behind.
     fn take_lagged(&mut self) {
+        let unseated =
+            std::mem::take(&mut *self.shared.unseated.lock().unwrap_or_else(|e| e.into_inner()));
+        for (topic, block, seq) in unseated {
+            self.out.push_back(block);
+            let d = self.dropped.entry(topic).or_insert(seq);
+            *d = (*d).max(seq);
+        }
         let lagged =
             std::mem::take(&mut *self.shared.lagged.lock().unwrap_or_else(|e| e.into_inner()));
         for (topic, seq) in lagged {
@@ -2262,6 +2305,66 @@ mod tests {
         hub.clear_lag(&o.id, o.epoch, "artifact:7q3k9mzx2b4t");
         hub.dispatch(&version(999));
         assert_eq!(drain(&mut o).len(), 1);
+    }
+
+    #[tokio::test]
+    async fn a_full_queue_still_hears_it_was_unseated_and_no_resync_after() {
+        let hub = Hub::new(Default::default());
+        let c = viewer(Level::Interact, Some("p1"));
+        let o = hub.open(c.clone(), true, None, None);
+        let id = o.id.clone();
+        hub.update(
+            &id,
+            &c,
+            &[
+                Topic::Artifact(A.into()),
+                Topic::Presence(A.into()),
+                Topic::Gallery,
+            ],
+            &[],
+        )
+        .unwrap();
+        let (_tx, shutdown) = tokio::sync::watch::channel(false);
+        let mut conn = Conn::new(hub.clone(), o, Duration::from_secs(15), shutdown);
+        // The `ready` frame, then a queue filled past its bound.
+        conn.drain().unwrap();
+        for n in 0..(QUEUE as u32 + 4) {
+            hub.dispatch(&version(n));
+        }
+        hub.unseat(&id, A, "idle");
+        assert!(!hub.holds_live(&id, A));
+        hub.dispatch(&version(999));
+        let frames: Vec<String> = conn
+            .drain()
+            .unwrap()
+            .iter()
+            .map(|b| String::from_utf8_lossy(b).to_string())
+            .collect();
+        let unseated: Vec<&String> = frames
+            .iter()
+            .filter(|f| f.starts_with("event: unseated\n"))
+            .collect();
+        assert_eq!(unseated.len(), 2, "{frames:?}");
+        assert!(
+            unseated.iter().any(|f| f.contains("artifact:7q3k9mzx2b4t")),
+            "{unseated:?}"
+        );
+        assert!(unseated.iter().all(|f| f.contains("idle") && f.ends_with("\n\n")));
+        assert!(
+            !frames
+                .iter()
+                .any(|f| f.starts_with("event: resync") && f.contains("artifact:")),
+            "no resync for a topic the stream left: {frames:?}"
+        );
+        assert!(
+            !frames.iter().any(|f| f.contains("\"topic\":\"artifact:")
+                && f.starts_with("event: version")),
+            "the left topic's queued events are skipped: {frames:?}"
+        );
+        assert!(
+            frames.iter().any(|f| f.starts_with("event: resync") && f.contains("gallery")),
+            "the gallery fell behind and is resynced: {frames:?}"
+        );
     }
 
     #[test]
