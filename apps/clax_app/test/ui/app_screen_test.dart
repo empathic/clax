@@ -591,7 +591,12 @@ void main() {
           // The field has focus as the composer opens (no dictation).
           expect(
             tester
-                .widget<TextField>(find.byKey(const ValueKey('composer-field')))
+                .widget<TextField>(
+                  find.descendant(
+                    of: find.byKey(const ValueKey('composer-field')),
+                    matching: find.byType(TextField),
+                  ),
+                )
                 .focusNode!
                 .hasFocus,
             isTrue,
@@ -1704,6 +1709,36 @@ void main() {
         expect(bar, findsNothing, reason: 'nothing stays over the app');
       },
     );
+
+    testWidgets('a slow page: the bar says Waiting for the page… from '
+        'pageWait until it ends, and the page is quiet in comment mode', (
+      tester,
+    ) async {
+      final rig = await pumpScreen(tester, notice: FakeAppNotice());
+      rig.surface.push(rig.ready());
+      await tester.pump();
+      bool quiet() => ClaxQuiet.of(
+        tester.element(find.byKey(const ValueKey('fake-surface'))),
+      );
+      expect(quiet(), isFalse);
+      await comment(tester, rig);
+      expect(quiet(), isTrue);
+      final waiting = find.text('Waiting for the page…');
+      // The test font is wide: the bar may take its short form.
+      final tap = find.textContaining(RegExp(r'^Tap .*to comment'));
+      expect(tap, findsOneWidget);
+      rig.surface.push(const PageWaitMsg(waiting: true));
+      await tester.pump();
+      expect(waiting, findsOneWidget);
+      expect(tap, findsNothing);
+      rig.surface.push(const PageWaitMsg(waiting: false));
+      await tester.pump();
+      expect(waiting, findsNothing);
+      expect(tap, findsOneWidget);
+      await tester.tap(find.byKey(const ValueKey('comment-bar-close')));
+      await tester.pumpAndSettle();
+      expect(quiet(), isFalse);
+    });
 
     testWidgets('Comment while the panel is open puts the bar in its place, '
         'still commenting', (tester) async {

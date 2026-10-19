@@ -133,7 +133,7 @@ class AppPanel extends StatelessWidget {
               Icon(
                 Icons.touch_app_outlined,
                 size: 36,
-                color: theme.colorScheme.primary,
+                color: theme.colorScheme.tertiary,
               ),
               const SizedBox(height: 12),
               Text(

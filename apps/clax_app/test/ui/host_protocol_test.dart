@@ -97,6 +97,17 @@ void main() {
       ) as StateMsg;
       expect(whole.draft!.wholeApp, isTrue);
       expect(whole.draft!.quote, isNull);
+      expect(s.draft!.byPage, isFalse);
+      final byPage = HostMessage.parse(
+        '{"type":"state","commenting":false,"draft":{"key":"g","kind":"custom","label":"Rate this","quote":null,"text":"","clip":"none","byPage":true},"busy":false}',
+      ) as StateMsg;
+      expect(byPage.draft!.byPage, isTrue);
+      expect(
+        HostMessage.parse(
+          '{"type":"state","commenting":false,"draft":{"label":"x","text":"","clip":"none","byPage":"yes"},"busy":false}',
+        ),
+        isNull,
+      );
 
       final clip = HostMessage.parse(
         jsonEncode({'type': 'draftClip', 'key': 'p1', 'png': 'AQID'}),

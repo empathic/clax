@@ -4,6 +4,7 @@ import 'dart:ui' as ui;
 
 import 'package:clax_app/ui/comment_composer.dart';
 import 'package:clax_app/ui/host_protocol.dart';
+import 'package:clax_app/ui/kit/text_field.dart';
 import 'package:clax_app/ui/theme.dart';
 import 'package:flutter/foundation.dart';
 import 'package:flutter/material.dart';
@@ -55,6 +56,7 @@ void main() {
     double scale = 1.0,
     bool plan = false,
     bool sending = false,
+    Widget? appIcon,
   }) async {
     tester.view.devicePixelRatio = 3;
     tester.view.physicalSize = Size(width, 700) * 3;
@@ -78,6 +80,7 @@ void main() {
                 onSend: () => pressed.add('send'),
                 onCancel: () => pressed.add('cancel'),
                 onAddToPlan: plan ? () => pressed.add('plan') : null,
+                appIcon: appIcon,
               ),
             ),
           ),
@@ -100,13 +103,60 @@ void main() {
     (tester) async {
       await pump(tester, _element);
       expect(find.byKey(const ValueKey('snippet-clip')), findsOneWidget);
-      expect(find.text('Picked'), findsOneWidget);
+      expect(find.text('Your pick'), findsOneWidget);
       expect(words(tester), '“Mon 5 km”');
       final thumb = tester.getRect(find.byKey(const ValueKey('snippet-clip')));
       expect(thumb.width, lessThanOrEqualTo(96));
       expect(thumb.height, lessThanOrEqualTo(72));
     },
   );
+
+  testWidgets("the quote's rule is people's red-orange, and the field is "
+      "the kit's", (tester) async {
+    await pump(tester, _element);
+    final scheme = claxTheme(Brightness.light, defaultTargetPlatform)
+        .colorScheme;
+    final rule = find.ancestor(
+      of: find.byKey(const ValueKey('snippet-words')),
+      matching: find.byType(Container),
+    );
+    final box = tester.widget<Container>(rule.first).decoration!
+        as BoxDecoration;
+    expect((box.border! as BorderDirectional).start.color, scheme.tertiary);
+    expect(
+      find.descendant(
+        of: find.byKey(const ValueKey('composer')),
+        matching: find.byType(ClaxTextField),
+      ),
+      findsOneWidget,
+    );
+  });
+
+  testWidgets('a composer the page opened says From this app, with the '
+      "app's icon, never Your pick", (tester) async {
+    await pump(
+      tester,
+      const Draft(
+        key: 'g1',
+        kind: 'custom',
+        label: 'Rate this run',
+        text: '',
+        clip: DraftClip.none,
+        byPage: true,
+      ),
+      appIcon: const SizedBox(key: ValueKey('the-app-icon')),
+    );
+    expect(find.text('From this app'), findsOneWidget);
+    expect(find.text('Your pick'), findsNothing);
+    expect(
+      find.descendant(
+        of: find.byKey(const ValueKey('snippet')),
+        matching: find.byKey(const ValueKey('the-app-icon')),
+      ),
+      findsOneWidget,
+    );
+    expect(words(tester), 'Rate this run');
+  });
 
   testWidgets('a screenshot still being taken has a placeholder', (
     tester,
@@ -210,7 +260,12 @@ void main() {
     );
     expect(
       tester
-          .widget<TextField>(find.byKey(const ValueKey('composer-field')))
+          .widget<TextField>(
+            find.descendant(
+              of: find.byKey(const ValueKey('composer-field')),
+              matching: find.byType(TextField),
+            ),
+          )
           .enabled,
       isFalse,
     );

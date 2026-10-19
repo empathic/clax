@@ -65,17 +65,17 @@ export interface ModeHooks {
 }
 
 // Shell tokens do not reach this shadow root, so the values repeat them:
-// #ed5439 is --pin, #2f0b04 --on-pin, #ffffff --pin-ring. The red-orange
-// border sits between a white outer and a brown inner hairline, so one of the
+// #e0532f is --pin, #141413 --on-pin, #ffffff --pin-ring. The red-orange
+// border sits between a white outer and a near-black inner hairline, so one of the
 // two keeps at least 3:1 against any page colour.
 const CSS = `:host{all:initial}
-.o,.a,.f{position:fixed;box-sizing:border-box;pointer-events:none;border:2px solid #ed5439;border-radius:0;box-shadow:0 0 0 1px #fff,inset 0 0 0 1px #2f0b04;background:var(--ax-tint,rgba(237,84,57,.16));z-index:2147483647;display:none}
+.o,.a,.f{position:fixed;box-sizing:border-box;pointer-events:none;border:2px solid #e0532f;border-radius:0;box-shadow:0 0 0 1px #fff,inset 0 0 0 1px #141413;background:var(--ax-tint,rgba(224,83,47,.16));z-index:2147483647;display:none}
 .a.capturing,.f{border-style:dashed;background:none}
 .o.flash,.f.flash{animation:f .9s ease-out 2}
-.c{position:fixed;pointer-events:auto;display:none;z-index:2147483647;margin:0;padding:0 16px;min-height:40px;border:1.5px solid #fff;border-radius:20px;background:#ed5439;color:#2f0b04;font:600 15px/40px system-ui,sans-serif;box-shadow:0 1px 4px rgba(47,11,4,.45);cursor:pointer;-webkit-tap-highlight-color:transparent}
-.pin{position:fixed;pointer-events:none;width:18px;height:18px;margin:-20px 0 0 4px;border-radius:50% 50% 50% 0;background:#ed5439;border:1.5px solid #fff;box-sizing:border-box;box-shadow:0 1px 3px rgba(47,11,4,.45);z-index:2147483647;display:none}
-@keyframes f{50%{background:rgba(237,84,57,.4)}}
-@media (prefers-reduced-motion:reduce){.o.flash,.f.flash{animation:none;background:rgba(237,84,57,.3)}}`;
+.c{position:fixed;pointer-events:auto;display:none;z-index:2147483647;margin:0;padding:0 16px;min-height:40px;border:1.5px solid #fff;border-radius:20px;background:#e0532f;color:#141413;font:600 15px/40px system-ui,sans-serif;box-shadow:0 1px 4px rgba(20,20,19,.45);cursor:pointer;-webkit-tap-highlight-color:transparent}
+.pin{position:fixed;pointer-events:none;width:18px;height:18px;margin:-20px 0 0 4px;border-radius:50% 50% 50% 0;background:#e0532f;border:1.5px solid #fff;box-sizing:border-box;box-shadow:0 1px 3px rgba(20,20,19,.45);z-index:2147483647;display:none}
+@keyframes f{50%{background:rgba(224,83,47,.4)}}
+@media (prefers-reduced-motion:reduce){.o.flash,.f.flash{animation:none;background:rgba(224,83,47,.3)}}`;
 
 /** Added to the page while comment mode is on: a long-press opens no link
  * callout (it has no effect on a mouse). */

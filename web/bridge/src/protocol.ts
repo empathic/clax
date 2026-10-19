@@ -259,6 +259,11 @@ export type BridgeToShell =
    * to the root, else white; sent soon after the welcome and whenever
    * either changes. Only the app shell reads it, for the system bars. */
   | { type: "clax:chrome"; top: string; bottom: string }
+  /** A need of the shell's (comment mode, a capability's members) came
+   * before the page had parsed and waits for it (`waiting: true`, once per
+   * document), and the parse has ended (`waiting: false`). Only the app
+   * shell reads it, to say the page is slow. */
+  | { type: "clax:wait"; waiting: boolean }
   /** The answer to `clax:inspect` (`inspect.ts`): the viewport as a PNG,
    * the page's errors and failed loads, an outline of its text, its title
    * and height; or why there is none. The page can post this too, so the
@@ -276,4 +281,4 @@ export type BridgeToShell =
   | CallRequest;
 
 export const SHELL_TYPES: ReadonlySet<string> = new Set(["clax:welcome", "clax:comment-mode", "clax:hash", "clax:greet", "clax:back", "clax:resolve-anchors", "clax:scroll-to", "clax:focus", "clax:key", "clax:pick-refused", "clax:composer-ready", "clax:inspect", "clax:test", "clax:migrate", "clax:peers", "clax:use-result", "clax:call-result", "clax:event"]);
-export const BRIDGE_TYPES: ReadonlySet<string> = new Set(["clax:hello", "clax:hover", "clax:pick-start", "clax:pick", "clax:anchors", "clax:cancel", "clax:bye", "clax:navigate", "clax:hash", "clax:degraded", "clax:cursor", "clax:peer-at", "clax:scroll", "clax:route", "clax:chrome", "clax:inspection", "clax:tests", "clax:migration", "clax:use", "clax:call"]);
+export const BRIDGE_TYPES: ReadonlySet<string> = new Set(["clax:hello", "clax:hover", "clax:pick-start", "clax:pick", "clax:anchors", "clax:cancel", "clax:bye", "clax:navigate", "clax:hash", "clax:degraded", "clax:cursor", "clax:peer-at", "clax:scroll", "clax:route", "clax:chrome", "clax:wait", "clax:inspection", "clax:tests", "clax:migration", "clax:use", "clax:call"]);

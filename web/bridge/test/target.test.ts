@@ -37,19 +37,19 @@ describe("outlineColors", () => {
     return 0.2126 * c[0] + 0.7152 * c[1] + 0.0722 * c[2];
   };
   const contrast = (a: number, b: number) => (Math.max(a, b) + 0.05) / (Math.min(a, b) + 0.05);
-  it("keeps 3:1 on any grey through one of its white and brown halos", () => {
+  it("keeps 3:1 on any grey through one of its white and near-black halos", () => {
     for (let v = 0; v <= 255; v += 5) {
       const g = `#${v.toString(16).padStart(2, "0").repeat(3)}`;
-      expect(Math.max(contrast(lum("#ffffff"), lum(g)), contrast(lum("#2f0b04"), lum(g))), g).toBeGreaterThanOrEqual(3);
+      expect(Math.max(contrast(lum("#ffffff"), lum(g)), contrast(lum("#141413"), lum(g))), g).toBeGreaterThanOrEqual(3);
     }
   });
   it("is the comment colour on every ground, tinted more over dark ones", () => {
     for (const bg of ["rgb(255, 255, 255)", "rgb(128, 128, 128)", "rgb(0, 0, 0)", "rgba(0, 0, 0, 0)"]) {
-      expect(outlineColors(bg).border, bg).toBe("#ed5439");
-      expect(outlineColors(bg).tint, bg).toMatch(/^rgba\(237, 84, 57, /);
+      expect(outlineColors(bg).border, bg).toBe("#e0532f");
+      expect(outlineColors(bg).tint, bg).toMatch(/^rgba\(224, 83, 47, /);
     }
-    expect(outlineColors("rgb(0, 0, 0)").tint).toBe("rgba(237, 84, 57, 0.24)");
-    expect(outlineColors("rgb(255, 255, 255)").tint).toBe("rgba(237, 84, 57, 0.16)");
+    expect(outlineColors("rgb(0, 0, 0)").tint).toBe("rgba(224, 83, 47, 0.24)");
+    expect(outlineColors("rgb(255, 255, 255)").tint).toBe("rgba(224, 83, 47, 0.16)");
   });
   it("keeps at least 3:1 against light and dark page backgrounds, with a visible tint", () => {
     for (const [bg, hex] of [["rgb(255, 255, 255)", "#ffffff"], ["rgb(243, 243, 235)", "#f3f3eb"], ["rgba(0, 0, 0, 0)", "#ffffff"]] as const) {

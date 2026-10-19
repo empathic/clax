@@ -58,7 +58,9 @@
  * claude.use() of it the shell grants (`room` and `sample` each in a part of
  * its own, the rest in `caps`). A part that cannot load is reported to the
  * shell once (clax:degraded). Waiting for the parse keeps the parts' module
- * loads from ever coming before the page's own import maps.
+ * loads from ever coming before the page's own import maps; the shell hears
+ * of the first need that waits for it and of the parse's end (clax:wait),
+ * so a page slow to parse can be named as the wait.
  */
 import { loadParts } from "clax-bridge-parts";
 import { now } from "../../shell/src/clock";
@@ -138,10 +140,19 @@ type PartName = keyof Parts;
   };
   // Each part loads on need, never before the page has parsed (so never
   // before the page's own import maps), within a time limit, and again on a
-  // later need after a failure (part-loader.ts).
+  // later need after a failure (part-loader.ts). The shell hears of the
+  // first need that waits for the parse, and of the parse's end
+  // (`clax:wait`).
+  let waited = false;
+  const wait = () => {
+    if (waited || shellOrigin === null) return;
+    waited = true;
+    post({ type: "clax:wait", waiting: true });
+    void whenDone.then(() => post({ type: "clax:wait", waiting: false }));
+  };
   const onNeed = <T>(name: PartName, load: (attempt: number) => Promise<T>) => {
     const next = retrying(name, load, failed(name), clock);
-    return () => parsed ? next() : whenDone.then(next);
+    return () => parsed ? next() : (wait(), whenDone.then(next));
   };
   const parts = { comment: onNeed("comment", loaders.comment), clip: onNeed("clip", loaders.clip), caps: onNeed("caps", loaders.caps), room: onNeed("room", loaders.room), sample: onNeed("sample", loaders.sample), live: onNeed("live", loaders.live), test: onNeed("test", loaders.test) };
   const clips = () => parts.clip();

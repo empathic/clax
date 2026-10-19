@@ -35,6 +35,7 @@ class ClaxTextField extends StatelessWidget {
     this.keyboardType,
     this.textCapitalization = TextCapitalization.none,
     this.autocorrect = true,
+    this.enabled = true,
   });
 
   final TextEditingController? controller;
@@ -74,6 +75,9 @@ class ClaxTextField extends StatelessWidget {
   /// Whether the keyboard corrects and suggests; off for keys and paths.
   final bool autocorrect;
 
+  /// Whether the field takes input; a disabled field waits, greyed.
+  final bool enabled;
+
   @override
   Widget build(BuildContext context) {
     final lines = obscure ? 1 : maxLines;
@@ -85,6 +89,7 @@ class ClaxTextField extends StatelessWidget {
       return TextField(
         controller: controller,
         focusNode: focusNode,
+        enabled: enabled,
         autofocus: autofocus,
         obscureText: obscure,
         maxLines: lines,
@@ -131,6 +136,7 @@ class ClaxTextField extends StatelessWidget {
           child: TextField(
             controller: controller,
             focusNode: focusNode,
+            enabled: enabled,
             autofocus: autofocus,
             obscureText: obscure,
             maxLines: lines,

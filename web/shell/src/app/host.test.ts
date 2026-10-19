@@ -916,6 +916,43 @@ describe("app mode's host channel", { timeout: MOUNT_TIMEOUT_MS }, () => {
     expect(ofType("chrome").at(-1)).toEqual({ type: "chrome", top: "#000000", bottom: "#fafafa" });
   });
 
+  it("tells the app of a page slow to take comment mode or use() as pageWait, once it has waited PAGE_WAIT_MS, and of the wait's end", async () => {
+    const { frame, host, m } = await appView({ init: false });
+    hello(frame, 1);
+    const wait = (waiting: unknown) => fromFrame(frame.contentWindow!, { type: "clax:wait", waiting });
+    const told = () => ofType("pageWait").map(p => p.waiting);
+    vi.useFakeTimers({ toFake: ["setTimeout", "clearTimeout"] });
+    try {
+      // A short wait is never told.
+      wait(true);
+      vi.advanceTimersByTime(m.PAGE_WAIT_MS - 1);
+      wait(false);
+      vi.advanceTimersByTime(m.PAGE_WAIT_MS);
+      // One under way at init is told then, under the nonce.
+      wait(true);
+      vi.advanceTimersByTime(m.PAGE_WAIT_MS);
+      expect(raw).toEqual([]);
+      host.init({ nonce: NONCE });
+      expect(told()).toEqual([true]);
+      expect(raw.filter(r => JSON.parse(r).type === "pageWait").map(r => JSON.parse(r).nonce)).toEqual([NONCE]);
+      wait(true);
+      wait("yes");
+      expect(told()).toEqual([true]);
+      wait(false);
+      expect(told()).toEqual([true, false]);
+      wait(false);
+      expect(told()).toEqual([true, false]);
+      // A page that goes away while it waits ends the wait.
+      wait(true);
+      vi.advanceTimersByTime(m.PAGE_WAIT_MS);
+      expect(told()).toEqual([true, false, true]);
+      fromFrame(frame.contentWindow!, { type: "clax:bye" });
+      expect(told()).toEqual([true, false, true, false]);
+    } finally {
+      vi.useRealTimers();
+    }
+  });
+
   it("ignores an init without a well-formed nonce", async () => {
     const { host } = await appView({ init: false });
     for (const bad of [undefined, {}, { nonce: 5 }, { nonce: "short" }, { nonce: "has spaces in it 0123456789" }, { nonce: "x".repeat(129) }]) host.init(bad as never);

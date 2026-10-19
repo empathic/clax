@@ -428,6 +428,10 @@ class _AppScreenState extends State<AppScreen> with WidgetsBindingObserver {
   // The shell's state.
   var _commenting = false;
   Draft? _draft;
+
+  /// Whether the page is slow to take comment mode or a capability (the
+  /// shell's `pageWait`): the comment bar says so meanwhile.
+  var _pageWait = false;
   var _busy = false;
   List<ThreadSummary> _threads = const [];
 
@@ -908,6 +912,7 @@ class _AppScreenState extends State<AppScreen> with WidgetsBindingObserver {
         widget.device?.stopWatches(_deviceView, asking: true);
         setState(() {
           _ready = m;
+          _pageWait = false;
           _covered = false;
           _gaveUp = null;
           _changes.shown(m.version, pinned: m.pinned);
@@ -1051,9 +1056,8 @@ class _AppScreenState extends State<AppScreen> with WidgetsBindingObserver {
       case AskCancelMsg(:final id):
         // Shown, it is taken down; waiting, it is passed over in its turn.
         _asks.remove(id)?.complete();
-      case PageWaitMsg():
-        // A slow page is the shell's to show.
-        break;
+      case PageWaitMsg(:final waiting):
+        if (waiting != _pageWait) setState(() => _pageWait = waiting);
       case DraftMsg(:final state):
         if (!_gone) setState(() => _draftState = state);
       case GoneMsg():
@@ -1993,6 +1997,10 @@ class _AppScreenState extends State<AppScreen> with WidgetsBindingObserver {
     onSend: _send,
     onCancel: _cancelDraft,
     onAddToPlan: widget.build == null ? null : () => unawaited(_addToPlan()),
+    appIcon: switch (_app) {
+      final app? => LiveAppBadge(app: app, icons: _icons, size: 16, radius: 4),
+      null => null,
+    },
     docked: docked,
     compact: compact,
     bottomInset: bottom,
@@ -2156,18 +2164,22 @@ class _AppScreenState extends State<AppScreen> with WidgetsBindingObserver {
                   // Else the bar under the page, or the panel, holds the
                   // bottom inset, and the navigation band is not drawn.
                   final holdsBottom = !bar && (!shown || wide);
+                  // No whimsy over the page while the person comments.
                   final page = MediaQuery(
                     data: _pageMedia(context),
-                    child: Stack(
-                      fit: StackFit.expand,
-                      children: [
-                        SafeArea(
-                          bottom: holdsBottom,
-                          right: !shown || !wide,
-                          child: _pageStack(context),
-                        ),
-                        _top(context, watches),
-                      ],
+                    child: ClaxQuiet(
+                      quiet: _wantComment || _draft != null,
+                      child: Stack(
+                        fit: StackFit.expand,
+                        children: [
+                          SafeArea(
+                            bottom: holdsBottom,
+                            right: !shown || !wide,
+                            child: _pageStack(context),
+                          ),
+                          _top(context, watches),
+                        ],
+                      ),
                     ),
                   );
                   return MediaQuery.removePadding(
@@ -2195,6 +2207,7 @@ class _AppScreenState extends State<AppScreen> with WidgetsBindingObserver {
                 dictate: _dictate,
                 onVoice: _toggleDictate,
                 onClose: () => _setBar(false),
+                waiting: _pageWait,
               ),
           ],
         ),

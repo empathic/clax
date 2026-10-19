@@ -3,6 +3,7 @@ import 'dart:typed_data';
 import 'package:flutter/material.dart';
 
 import 'host_protocol.dart';
+import 'kit/text_field.dart';
 
 /// Where dictation into the open composer stands.
 class Dictation {
@@ -102,18 +103,24 @@ class ClipThumb extends StatelessWidget {
 
 /// What a comment is on, as the composer shows it before Send: the
 /// screenshot of the picked element or drawn area (a placeholder while it
-/// is taken) beside the words it quotes, in the app's own quote marks;
-/// for selected text, more of the text; for the whole app, a small
-/// "Whole app" chip.
+/// is taken) beside the words it quotes, in the app's own quote marks,
+/// under a rule in people's red-orange (`tertiary`); for selected text,
+/// more of the text; for the whole app, a small "Whole app" chip. A
+/// composer the app's page opened ([Draft.byPage]) is captioned "From this
+/// app" with [appIcon], so the page's words never pass for Clax's.
 class SnippetCard extends StatelessWidget {
   const SnippetCard({
     super.key,
     required this.draft,
     this.clip,
     this.compact = false,
+    this.appIcon,
   });
 
   final Draft draft;
+
+  /// The app's icon, small, beside "From this app".
+  final Widget? appIcon;
 
   /// The draft's screenshot, once it has come.
   final Uint8List? clip;
@@ -129,11 +136,13 @@ class SnippetCard extends StatelessWidget {
     return d.label.isEmpty ? 'New comment' : d.label;
   }
 
-  static String _caption(Draft d) => switch (d.kind) {
-    'range' => 'Selected text',
-    'area' => 'Area',
-    _ => 'Picked',
-  };
+  static String _caption(Draft d) => d.byPage
+      ? 'From this app'
+      : switch (d.kind) {
+          'range' => 'Selected text',
+          'area' => 'Area',
+          _ => 'Your pick',
+        };
 
   @override
   Widget build(BuildContext context) {
@@ -230,19 +239,32 @@ class SnippetCard extends StatelessWidget {
               mainAxisSize: MainAxisSize.min,
               crossAxisAlignment: CrossAxisAlignment.start,
               children: [
-                if (!compact)
-                  Text(
-                    _caption(d),
-                    style: theme.textTheme.labelSmall?.copyWith(
-                      color: scheme.onSurfaceVariant,
-                    ),
+                if (!compact || d.byPage)
+                  Row(
+                    mainAxisSize: MainAxisSize.min,
+                    children: [
+                      if (d.byPage && appIcon != null) ...[
+                        SizedBox.square(dimension: 16, child: appIcon),
+                        const SizedBox(width: 6),
+                      ],
+                      Flexible(
+                        child: Text(
+                          _caption(d),
+                          maxLines: 1,
+                          overflow: TextOverflow.ellipsis,
+                          style: theme.textTheme.labelSmall?.copyWith(
+                            color: scheme.onSurfaceVariant,
+                          ),
+                        ),
+                      ),
+                    ],
                   ),
                 Container(
-                  margin: EdgeInsets.only(top: compact ? 0 : 2),
+                  margin: EdgeInsets.only(top: compact && !d.byPage ? 0 : 2),
                   padding: const EdgeInsetsDirectional.only(start: 8),
                   decoration: BoxDecoration(
                     border: BorderDirectional(
-                      start: BorderSide(color: scheme.primary, width: 3),
+                      start: BorderSide(color: scheme.tertiary, width: 3),
                     ),
                   ),
                   child: Text(
@@ -289,10 +311,14 @@ class CommentComposer extends StatelessWidget {
     this.docked = true,
     this.compact = false,
     this.bottomInset = 0,
+    this.appIcon,
   });
 
   final Draft draft;
   final Uint8List? clip;
+
+  /// The app's icon, for a composer its page opened ([SnippetCard]).
+  final Widget? appIcon;
   final TextEditingController controller;
   final FocusNode? focusNode;
 
@@ -331,7 +357,12 @@ class CommentComposer extends StatelessWidget {
         mainAxisSize: MainAxisSize.min,
         crossAxisAlignment: CrossAxisAlignment.stretch,
         children: [
-          SnippetCard(draft: draft, clip: clip, compact: compact),
+          SnippetCard(
+            draft: draft,
+            clip: clip,
+            compact: compact,
+            appIcon: appIcon,
+          ),
           const SizedBox(height: 8),
           Row(
             crossAxisAlignment: CrossAxisAlignment.end,
@@ -356,30 +387,16 @@ class CommentComposer extends StatelessWidget {
               ),
               const SizedBox(width: 8),
               Expanded(
-                child: TextField(
+                child: ClaxTextField(
                   key: const ValueKey('composer-field'),
                   controller: controller,
                   focusNode: focusNode,
                   enabled: !sending,
-                  minLines: 1,
+                  label: 'Comment',
                   maxLines: compact ? 2 : 4,
                   keyboardType: TextInputType.multiline,
                   textCapitalization: TextCapitalization.sentences,
-                  decoration: InputDecoration(
-                    isDense: true,
-                    filled: true,
-                    fillColor: scheme.surfaceContainerLowest,
-                    hintText: x.listening
-                        ? 'Listening…'
-                        : 'What should change?',
-                    border: OutlineInputBorder(
-                      borderRadius: BorderRadius.circular(12),
-                    ),
-                    contentPadding: const EdgeInsets.symmetric(
-                      horizontal: 12,
-                      vertical: 10,
-                    ),
-                  ),
+                  hint: x.listening ? 'Listening…' : 'What should change?',
                 ),
               ),
             ],

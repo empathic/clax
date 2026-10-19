@@ -51,7 +51,7 @@ void main() {
     // A tap on the page is the default; the general comment is one
     // labelled button.
     expect(find.text('Tap anything to comment on it'), findsOneWidget);
-    expect(find.text('Comment on the whole app'), findsOneWidget);
+    expect(find.text('Whole app'), findsOneWidget);
     expect(find.text('Threads (2)'), findsOneWidget);
     await tester.tap(find.byKey(const ValueKey('comment-whole-app')));
     await tester.tap(find.byKey(const ValueKey('comment-threads')));
@@ -92,6 +92,99 @@ void main() {
     await mouse.removePointer();
   });
 
+  Future<void> pumpBar(
+    WidgetTester tester, {
+    double width = 390,
+    bool waiting = false,
+    Brightness brightness = Brightness.light,
+  }) async {
+    tester.view.devicePixelRatio = 1;
+    tester.view.physicalSize = Size(width, 700);
+    addTearDown(tester.view.reset);
+    await tester.pumpWidget(
+      MaterialApp(
+        theme: claxTheme(brightness, TargetPlatform.android),
+        home: Scaffold(
+          bottomNavigationBar: CommentBar(
+            threadCount: 12,
+            waiting: waiting,
+            onWholeApp: () {},
+            onThreads: () {},
+            dictate: false,
+            onVoice: () {},
+            onClose: () {},
+          ),
+        ),
+      ),
+    );
+  }
+
+  for (final brightness in Brightness.values) {
+    testWidgets('comment mode is people’s red-orange: the top rule and the '
+        'touch icon are tertiary (${brightness.name})', (tester) async {
+      await pumpBar(tester, width: 800, brightness: brightness);
+      final scheme = claxTheme(brightness, TargetPlatform.android).colorScheme;
+      final bar = tester.widget<Material>(
+        find.byKey(const ValueKey('comment-bar')),
+      );
+      expect((bar.shape! as Border).top.color, scheme.tertiary);
+      final touch = tester.widget<Icon>(find.byIcon(Icons.touch_app_outlined));
+      expect(touch.color, scheme.tertiary);
+    });
+  }
+
+  for (final width in [340.0, 390.0, 412.0]) {
+    testWidgets('one row of 48 dp targets with 24 dp glyphs at $width dp', (
+      tester,
+    ) async {
+      await pumpBar(tester, width: width);
+      final keys = [
+        'comment-whole-app',
+        'comment-threads',
+        'comment-voice',
+        'comment-bar-close',
+      ];
+      final rects = [
+        for (final k in keys) tester.getRect(find.byKey(ValueKey(k))),
+      ];
+      final hint = tester.getRect(find.byKey(const ValueKey('comment-hint')));
+      for (final (i, r) in rects.indexed) {
+        expect(r.width, greaterThanOrEqualTo(48), reason: keys[i]);
+        expect(r.height, greaterThanOrEqualTo(48), reason: keys[i]);
+        // In order, after the instruction, on one line.
+        expect(r.left, greaterThanOrEqualTo(hint.right), reason: keys[i]);
+        if (i > 0) expect(r.left, greaterThanOrEqualTo(rects[i - 1].right));
+        expect(r.center.dy, closeTo(rects[0].center.dy, 0.5));
+      }
+      for (final k in keys.skip(2)) {
+        final icon = tester.widget<Icon>(
+          find.descendant(
+            of: find.byKey(ValueKey(k)),
+            matching: find.byType(Icon),
+          ),
+        );
+        expect(icon.size ?? 24, 24, reason: k);
+      }
+      // Below 360 dp Threads is its icon and count only.
+      if (width < 360) {
+        expect(find.text('Threads (12)'), findsNothing);
+        expect(find.byTooltip('Threads (12)'), findsOneWidget);
+        expect(find.text('12'), findsOneWidget);
+      }
+      expect(tester.takeException(), isNull);
+    });
+  }
+
+  testWidgets('a slow page: the bar says Waiting for the page… in the '
+      'instruction’s place', (tester) async {
+    await pumpBar(tester, waiting: true);
+    expect(find.text('Waiting for the page…'), findsOneWidget);
+    expect(find.text('Tap anything to comment on it'), findsNothing);
+    await pumpBar(tester);
+    expect(find.text('Waiting for the page…'), findsNothing);
+    expect(find.text('Tap anything to comment on it'), findsOneWidget);
+  });
+
   group('the comment bar fits', () {
     setUpAll(() async {
       if (_fonts != null) await _loadRoboto();
@@ -100,6 +193,7 @@ void main() {
     for (final (width, scale) in [
       (320.0, 1.0),
       (320.0, 1.3),
+      (340.0, 1.0),
       (390.0, 1.0),
       (390.0, 1.3),
       (1100.0, 1.0),
@@ -133,23 +227,39 @@ void main() {
             ),
           ),
         );
-        for (final t in [
-          'Comment on the whole app',
-          'Tap anything to comment on it',
-        ]) {
-          final p = tester.renderObject<RenderParagraph>(find.text(t));
-          expect(p.didExceedMaxLines, isFalse, reason: '"$t" is cut');
+        // The instruction keeps its words, in full where the row has
+        // room for them at the text size, else as "Tap to comment".
+        final hint = tester.renderObject<RenderParagraph>(
+          find.byKey(const ValueKey('comment-hint')),
+        );
+        expect(hint.didExceedMaxLines, isFalse, reason: 'the hint is cut');
+        if (width >= 340 || scale == 1.0) {
+          expect(find.text('Tap anything to comment on it'), findsOneWidget);
+        } else {
+          expect(find.text('Tap to comment'), findsOneWidget);
         }
-        // Threads keeps its label where it fits beside the general
-        // comment's, else it is an icon named by its tooltip.
+        // The general comment keeps its label where it fits, else it is
+        // an icon named by its tooltip.
+        if (find.text(CommentBar.wholeApp).evaluate().isNotEmpty) {
+          final p = tester.renderObject<RenderParagraph>(
+            find.text(CommentBar.wholeApp),
+          );
+          expect(p.didExceedMaxLines, isFalse, reason: 'Whole app is cut');
+        } else {
+          expect(find.byTooltip(CommentBar.wholeAppTip), findsOneWidget);
+          expect(width < 360 || scale > 1, isTrue);
+        }
+        // Threads keeps its label where it fits, else it is an icon with
+        // its count, named by its tooltip; always so below 360 dp.
         if (find.text('Threads (12)').evaluate().isNotEmpty) {
+          expect(width, greaterThanOrEqualTo(360));
           final p = tester.renderObject<RenderParagraph>(
             find.text('Threads (12)'),
           );
           expect(p.didExceedMaxLines, isFalse, reason: 'Threads is cut');
         } else {
           expect(find.byTooltip('Threads (12)'), findsOneWidget);
-          expect(width, lessThan(CommentBar.wideWidth));
+          expect(find.text('12'), findsOneWidget);
         }
         final bar = tester.getRect(find.byKey(const ValueKey('comment-bar')));
         // On a phone the composer's peek takes the bar's place at the
@@ -181,8 +291,12 @@ void main() {
             expect(r.overlaps(o), isFalse, reason: '$r overlaps $o');
           }
         }
-        // The general comment's button is a real target.
-        expect(rects[1].height, greaterThanOrEqualTo(36));
+        // One row, and every control a 48 dp target.
+        for (final r in rects.skip(1)) {
+          expect(r.width, greaterThanOrEqualTo(48));
+          expect(r.height, greaterThanOrEqualTo(48));
+          expect(r.center.dy, closeTo(rects[2].center.dy, 0.5));
+        }
         expect(tester.takeException(), isNull);
       }, skip: _fonts == null);
     }

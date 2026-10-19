@@ -2298,6 +2298,7 @@ drops them. Every message carries `nonce`:
 | `draft` | `state`: `null`, `{kind: "drafting", by, note?}` or `{kind: "showing", by, base, detail}` | With `draft` native: whenever the draft banner's text would change. `by` is the agent's name ("Clax" for the app's own). |
 | `gone` | none | When `init` gave `native` (even an empty list): once, when the artifact is deleted. |
 | `chrome` | `top`, `bottom` (`#rrggbb`, lowercase) | The page's background at the middle of the viewport's top and bottom edges (the first opaque background from the element there up to the root, else white), which the app paints the system's status and navigation bars in: on the page's first paint, whenever either changes, and the latest again at `init`. |
+| `pageWait` | `waiting` | `true` once a page still parsing (its own scripts slow the parse) has held up what the view asked of it, such as comment mode or a `use()`, for 400 ms, and again at `init` while it does; `false` when the parse ends or the page goes. A shorter wait is never posted. |
 | `inspection` | `png`, `errors`, `failed`, `text`, `title`, `height`; or `error` | The answer to `inspect`. |
 | `tests` | `passed`, `failed: [{name, error}]`, `skipped`; or `error` | The answer to `runTests`. |
 | `migration` | `ok: true`; or `ok: false`, `error` | The answer to `runMigration`. |

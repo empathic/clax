@@ -146,12 +146,18 @@
 //   on its first paint and whenever either changes; the host posts them as
 //   `chrome {top, bottom}` (`#rrggbb`, lowercase), and the latest again at
 //   `init`. The app paints the status and navigation bars in them.
+// - A slow page: while a page still parsing holds up what the view asked
+//   of it, comment mode or a `use()` say (the bridge's `clax:wait`), the
+//   host posts `pageWait {waiting: true}` once the wait has lasted
+//   `PAGE_WAIT_MS`, and `pageWait {waiting: false}` when it ends or the
+//   page goes; a wait under way at `init` is posted then. A shorter wait
+//   is never posted.
 // Its styles go in with it: the shell links no stylesheet a lazy chunk
 // imports (`vite.shell.config.ts`, `inlineCss`).
 import appCss from "./app.css?inline";
 import { getArtifact, getToken } from "../api";
 import { replayJournal } from "../caps/db";
-import { acceptFromFrame } from "../bridge-link";
+import { acceptByeFromFrame, acceptFromFrame } from "../bridge-link";
 import { type DeviceCall, deviceLink, PLATFORMS } from "../caps/device-link";
 import { CapError } from "../caps/errors";
 import type { PromptKind } from "../caps/grants";
@@ -239,12 +245,17 @@ export type HostMessage =
   /** The page's background at the viewport's top and bottom edges
    * (`#rrggbb`), for the system bars (see The system bars above). */
   | { type: "chrome"; top: string; bottom: string }
+  /** The page is slow to take comment mode or a `use()` (see A slow page
+   * above). */
+  | { type: "pageWait"; waiting: boolean }
   /** A device capability call of the page, for the app to make and answer
    * with `deviceResult` (see Device capabilities above). */
   | ({ type: "device" } & DeviceCall);
 /** The drafts' banner, for the app: an agent (`by`, by its name) drafting,
  * or its draft shown over version `base`, `detail` saying what changed. */
 export type DraftState = { kind: "drafting"; by: string; note?: string } | { kind: "showing"; by: string; base: number; detail: string };
+/** How long a page's wait for its parse lasts before the app hears of it. */
+export const PAGE_WAIT_MS = 400;
 /** The overlays the app may draw itself (`init`'s `native`). */
 const NATIVE = ["ask", "questions", "notice", "draft"] as const;
 export type NativeOverlay = (typeof NATIVE)[number];
@@ -459,6 +470,19 @@ export function installHost(win: Window, ctl: ArtifactController): () => void {
 
   // The page's edge colours as last reported, posted again at `init`.
   let chrome: HostMessage | null = null;
+  // The page's wait for its parse: the timer until it is told, and whether
+  // it was (and is told again at `init`).
+  let waitTimer: ReturnType<typeof setTimeout> | undefined;
+  let toldWait = false;
+  const pageWaiting = (on: boolean) => {
+    if (on) {
+      if (!toldWait) waitTimer ??= setTimeout(() => post({ type: "pageWait", waiting: toldWait = true }), PAGE_WAIT_MS);
+      return;
+    }
+    clearTimeout(waitTimer);
+    waitTimer = undefined;
+    if (toldWait) post({ type: "pageWait", waiting: toldWait = false });
+  };
   // The page's last reported scroll position, per page.
   const scrolled = new Map<string, number>();
   // The app's own history: the pages, fragments and pushState routes the
@@ -699,7 +723,13 @@ export function installHost(win: Window, ctl: ArtifactController): () => void {
   // element is (the controller has taken the start by now: the draft's
   // label is posted again with it).
   const onMessage = (e: MessageEvent) => {
-    const m = acceptFromFrame(e, ctl.frame?.el?.contentWindow ?? null, s().origin ?? null);
+    const frameWin = ctl.frame?.el?.contentWindow ?? null;
+    if (acceptByeFromFrame(e, frameWin, s().origin ?? null)) return pageWaiting(false);
+    const m = acceptFromFrame(e, frameWin, s().origin ?? null);
+    if (m?.type === "clax:wait") {
+      if (typeof m.waiting === "boolean") pageWaiting(m.waiting);
+      return;
+    }
     if (m?.type === "clax:inspection") {
       if (!inspection || m.requestId !== inspection.requestId) return;
       const { maxBytes } = inspection;
@@ -979,6 +1009,7 @@ export function installHost(win: Window, ctl: ArtifactController): () => void {
       postQuestions();
       postHistory();
       if (chrome) post(chrome);
+      if (toldWait) post({ type: "pageWait", waiting: true });
       for (const c of deviceQueue.splice(0)) post({ type: "device", ...c });
     },
     enterCommentMode: () => { if (!inspecting && !s().commenting) ctl.toggleComment(); },
@@ -1151,6 +1182,7 @@ export function installHost(win: Window, ctl: ArtifactController): () => void {
 
   return () => {
     unsubscribe();
+    clearTimeout(waitTimer);
     if (deviceLink.call === deviceCall) {
       deviceLink.call = null;
       deviceLink.home = undefined;

@@ -13,7 +13,11 @@
 // (`app-comment-tab`), and its menu open over a change under way
 // (`app-comment-tab-menu`); and the Rally of 10 a moment into its rally
 // (`app-rally`). On the dark page, the Comment tab too
-// (`app-comment-tab-dark-page`). The status and gesture bar stand-ins draw
+// (`app-comment-tab-dark-page`). Comment mode, on the phone and the Mac:
+// its bar under the page (`app-comment-bar`, and at 340 dp,
+// `app-comment-bar-narrow`), the bar while the page is slow
+// (`app-comment-waiting`), a pick's composer (`app-composer`) and a
+// composer the page opened (`app-composer-page`). The status and gesture bar stand-ins draw
 // their icons in the brightness the screen's bands ask the system for
 // (`SystemChrome.latestStyle`), not the theme's.
 import 'dart:async';
@@ -236,6 +240,8 @@ Future<void> _open(
   DeviceHost? device,
   Future<void> Function(String aid)? before,
   FutureOr<void> Function()? after,
+  Stream<AppAction>? actions,
+  bool bands = true,
 }) async {
     final api = FakeClaxApi();
     final aid = api.seedArtifact('Runs', {'index.html': '<h1>Runs</h1>'});
@@ -261,6 +267,7 @@ Future<void> _open(
               firstRunHint: hint,
               build: build,
               device: device,
+              actions: actions,
             ),
             IgnorePointer(child: _Bars(style, s.form)),
           ],
@@ -284,8 +291,10 @@ Future<void> _open(
     }
     style.value = SystemChrome.latestStyle;
     await s.tester.pump();
-    expect(style.value!.statusBarIconBrightness, status);
-    expect(style.value!.systemNavigationBarIconBrightness, navigation);
+    if (bands) {
+      expect(style.value!.statusBarIconBrightness, status);
+      expect(style.value!.systemNavigationBarIconBrightness, navigation);
+    }
     await s.take(surfaceName);
     // Past a change chip's delayed open, so nothing is left waiting.
     await s.tester.pumpWidget(const SizedBox());
@@ -514,5 +523,104 @@ void main() {
       before: (_) async => gestureZone(s),
     ),
     forms: const [phone],
+  );
+  // Comment mode: the app's Comment action, then what the shell says.
+  Future<void> commenting(
+    Shot s,
+    String name, {
+    List<HostMessage> then = const [],
+  }) async {
+    final actions = StreamController<AppAction>.broadcast(sync: true);
+    addTearDown(actions.close);
+    final surface = _PageSurface();
+    await _open(
+      s,
+      name,
+      surface,
+      const ChromeMsg(_blue, Colors.white),
+      status: Brightness.light,
+      navigation: Brightness.dark,
+      actions: actions.stream,
+      bands: false,
+      after: () async {
+        actions.add(AppAction.comment);
+        await s.settle();
+        then.forEach(surface.push);
+      },
+    );
+  }
+
+  shots(
+    'app-comment-bar',
+    (s) => commenting(
+      s,
+      'app-comment-bar',
+      then: const [StateMsg(commenting: true, draft: null, busy: false)],
+    ),
+    forms: const [phone, mac],
+    textScales: _both,
+  );
+  shots('app-comment-bar-narrow', (s) async {
+    s.tester.view.physicalSize = Size(340 * s.form.dpr, 915 * s.form.dpr);
+    await commenting(
+      s,
+      'app-comment-bar-narrow',
+      then: const [StateMsg(commenting: true, draft: null, busy: false)],
+    );
+  }, forms: const [phone]);
+  shots(
+    'app-comment-waiting',
+    (s) => commenting(
+      s,
+      'app-comment-waiting',
+      then: const [
+        StateMsg(commenting: true, draft: null, busy: false),
+        PageWaitMsg(waiting: true),
+      ],
+    ),
+    forms: const [phone, mac],
+  );
+  shots(
+    'app-composer',
+    (s) => commenting(
+      s,
+      'app-composer',
+      then: const [
+        StateMsg(
+          commenting: false,
+          draft: Draft(
+            key: 'p1',
+            label: '“Wed 8.0 km”',
+            quote: 'Wed  8.0 km',
+            text: '',
+            clip: DraftClip.pending,
+          ),
+          busy: false,
+        ),
+      ],
+    ),
+    forms: const [phone, mac],
+  );
+  shots(
+    'app-composer-page',
+    (s) => commenting(
+      s,
+      'app-composer-page',
+      then: const [
+        StateMsg(
+          commenting: false,
+          draft: Draft(
+            key: 'g1',
+            kind: 'custom',
+            label: 'How did this run feel?',
+            text: '',
+            clip: DraftClip.none,
+            byPage: true,
+          ),
+          busy: false,
+        ),
+      ],
+    ),
+    forms: const [phone, mac],
   );
 }

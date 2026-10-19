@@ -166,6 +166,7 @@ final class Draft {
     this.key = '',
     this.kind = 'element',
     this.quote,
+    this.byPage = false,
   });
 
   factory Draft.fromJson(Map<String, Object?> j) => Draft(
@@ -173,6 +174,7 @@ final class Draft {
     kind: j['kind'] as String? ?? 'element',
     label: j['label'] as String,
     quote: j['quote'] as String?,
+    byPage: j['byPage'] as bool? ?? false,
     text: j['text'] as String,
     clip: switch (j['clip']) {
       'pending' => DraftClip.pending,
@@ -200,6 +202,11 @@ final class Draft {
   final String? quote;
   final String text;
   final DraftClip clip;
+
+  /// Whether the app's page opened this composer (its comments
+  /// capability) rather than the person's pick: its [label] is the page's
+  /// own words.
+  final bool byPage;
 
   /// Whether this is a comment on the whole app.
   bool get wholeApp => kind == 'artifact';

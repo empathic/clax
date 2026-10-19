@@ -1,7 +1,8 @@
 // Every control on the phone's main screens is at least 48×48 dp to touch
 // (Android's tap-target guideline): the launcher with its banners and a
-// tile's menu, an open app with and without a change's chip, the inbox,
-// a thread and Settings, each in the app's theme on an Android phone.
+// tile's menu, an open app with and without a change's chip, comment mode
+// with its bar and its composer, the inbox, a thread and Settings, each in
+// the app's theme on an Android phone.
 import 'dart:async';
 import 'dart:io';
 
@@ -11,6 +12,7 @@ import 'package:clax_app/clax/fake_api.dart';
 import 'package:clax_app/home/home_route.dart' show HomeBanner;
 import 'package:clax_app/platform/secure_key.dart';
 import 'package:clax_app/platform/settings_store.dart';
+import 'package:clax_app/platform/app_notice.dart' show AppAction;
 import 'package:clax_app/ui/app_screen.dart';
 import 'package:clax_app/ui/host_protocol.dart';
 import 'package:clax_app/ui/inbox_screen.dart';
@@ -154,6 +156,60 @@ void main() {
       // The chip's delayed open runs out after the screen goes.
       await tester.pumpWidget(const SizedBox());
       await tester.pump(const Duration(seconds: 5));
+    });
+  }
+
+  for (final (width, dark) in [(412.0, false), (412.0, true), (340.0, false)]) {
+    testWidgets('comment mode: the bar, then the composer '
+        '(${width.toInt()} dp, ${dark ? 'dark' : 'light'})', (tester) async {
+      final api = FakeClaxApi();
+      final aid = api.seedArtifact('Runs', _page);
+      final surface = FakeAppSurface();
+      final actions = StreamController<AppAction>.broadcast(sync: true);
+      addTearDown(actions.close);
+      final worker = StreamController<WorkerEvent>.broadcast(sync: true);
+      addTearDown(worker.close);
+      await _pump(
+        tester,
+        AppScreen(
+          aid: aid,
+          base: Uri.parse('http://127.0.0.1:7999/'),
+          api: api,
+          surface: surface,
+          voice: FakeVoice(),
+          settings: AppSettings(),
+          timings: const NoTimings(),
+          worker: worker.stream,
+          actions: actions.stream,
+        ),
+        dark: dark,
+      );
+      tester.view.physicalSize = Size(width * 2.625, 2400);
+      surface.push(
+        const Ready(artifact: 'x', version: 1, latest: 1, file: 'index.html'),
+      );
+      await _settle(tester);
+      actions.add(AppAction.comment);
+      await _settle(tester);
+      expect(find.byKey(const ValueKey('comment-bar')), findsOneWidget);
+      await expectLater(tester, meetsGuideline(_guideline));
+      // A pick opens the composer.
+      surface.push(
+        const StateMsg(
+          commenting: true,
+          draft: Draft(
+            key: 'p1',
+            label: '“Runs”',
+            quote: 'Runs',
+            text: '',
+            clip: DraftClip.none,
+          ),
+          busy: false,
+        ),
+      );
+      await _settle(tester);
+      expect(find.byKey(const ValueKey('composer')), findsOneWidget);
+      await expectLater(tester, meetsGuideline(_guideline));
     });
   }
 

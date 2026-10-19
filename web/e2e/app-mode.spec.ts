@@ -600,6 +600,30 @@ claude.use("permissions").then(async perm => { document.getElementById("out").te
     expect(await ofType(page, "ask")).toEqual([]);
   });
 
+  test("a page slow to parse holds up its use(): the host hears pageWait, then its end once the page has parsed", async ({ page }) => {
+    // The page asks for a capability, then its parse waits on a script the
+    // test holds back, so the capability's members wait for the parse.
+    const html = `<!doctype html><html><head><title>Slow</title></head><body><p>slow</p>
+<script>claude.use("net").then(net => { window.ready = net !== null; });</script>
+<script src="slow.js"></script><p id="after">parsed</p></body></html>`;
+    const s = await registerSession(d.base, d.token, "app");
+    const { artifact } = await api(d.base, d.token, "/api/artifacts", { method: "POST", session: s.id, body: JSON.stringify({ title: "Native slow page", capabilities: NET_CAPS, files: { "index.html": { content: html, encoding: "utf8" } } }) }) as { artifact: { id: string } };
+    let release!: () => void;
+    const held = new Promise<void>(r => { release = r; });
+    await page.route("**/slow.js", async route => { await held; await route.fulfill({ contentType: "text/javascript", body: "window.slow = true;" }); });
+    await hostChannel(page);
+    await record(page);
+    await page.goto(`${d.base}/a/${artifact.id}?app=1`);
+    await initHost(page, { native: ALL, platform: "android" });
+    const waits = async () => (await ofType(page, "pageWait")).map(m => m.waiting);
+    await expect.poll(waits, { timeout: 10_000 }).toEqual([true]);
+    release();
+    await expect.poll(waits, { timeout: 10_000 }).toEqual([true, false]);
+    const frame = await contentFrame(page, artifact.id, 1);
+    await expect(frame.locator("#after")).toHaveText("parsed");
+    await expect.poll(() => frame.evaluate(() => (window as unknown as { ready?: boolean }).ready === true)).toBe(true);
+  });
+
   test("with no native, the app's view draws every overlay as before", async ({ page }) => {
     const { frame } = await openApp(page, "Native none", "subdomain", true, { html: NET, capabilities: NET_CAPS });
     await netReady(frame);

@@ -150,10 +150,10 @@ describe("CommentMode", () => {
     fire(document.querySelector("h3")!, "mousemove");
     await nextFrame();
     const host = document.querySelector<HTMLElement>("clax-overlay")!;
-    expect(host.style.getPropertyValue("--ax-tint")).toBe("rgba(237, 84, 57, 0.24)");
+    expect(host.style.getPropertyValue("--ax-tint")).toBe("rgba(224, 83, 47, 0.24)");
     fire(document.getElementById("l")!, "mousemove");
     await nextFrame();
-    expect(host.style.getPropertyValue("--ax-tint")).toBe("rgba(237, 84, 57, 0.16)");
+    expect(host.style.getPropertyValue("--ax-tint")).toBe("rgba(224, 83, 47, 0.16)");
   });
 
   it("keeps the outline of an oversized element inside the viewport", async () => {
