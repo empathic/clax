@@ -144,8 +144,10 @@ fn approval_record(kind: AuditKind, at: &str, a: &Approval) -> AuditRecord {
 /// `approval_requests_by_target`, so the requests a busy pair piles up
 /// (withdrawn and approved ones) are never walked. A decline is in force
 /// until an approval of its approver and author covering thread `?3` is
-/// made or revoked after it, the rule a thread's delivery state reads
-/// declines by (`crate::feedback::DECLINES`).
+/// made or revoked after it. For a request about the thread that is the
+/// rule a thread's delivery state reads declines by
+/// (`crate::feedback::DECLINES`); a decline of a request about the whole
+/// artifact counts here, while `DECLINES` reads thread requests only.
 pub(crate) const REQUEST_STATE: &str = "SELECT COALESCE(MAX(status = 'open'), 0),
             COALESCE(MAX(status = 'declined' AND NOT EXISTS (SELECT 1 FROM approvals a
                WHERE COALESCE(a.approver, '') = COALESCE(?1, '')
