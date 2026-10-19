@@ -250,8 +250,10 @@ artifact reached inside it, until it is reloaded.
 Title on create: a new artifact needs a title. When `title` is omitted, the
 tool uses the text of the page's first `<title>` element: the tag name in any
 case, attributes allowed; `&amp;`, `&lt;`, `&gt;`, `&quot;` and `&apos;`
-decoded once (other entities kept as written); runs of whitespace collapsed to
-one space; trimmed; cut to 200 characters. A page sent as base64 (a
+decoded once (other entities kept as written); control characters other than
+whitespace and hidden format characters (bidi embeddings, overrides and
+isolates, zero-width spaces, U+FEFF, soft hyphens, tag characters) dropped;
+runs of whitespace collapsed to one space; trimmed; cut to 200 characters. A page sent as base64 (a
 `file_path` that is not UTF-8 or lacks a text extension), or one with no
 closed `<title>` holding non-blank text, gives none, and the call fails with
 `invalid_args`. An explicit `title` always wins; an explicit blank one on
@@ -4047,8 +4049,9 @@ versions is a snapshot of the page, taken when a comment is posted.
   wait; an identical snapshot links nothing), and creates the thread on that version as the request's viewer,
   with the anchor's `route` from `url`. An `@agent` mention sends it, as on
   any thread. The page's title is the `title` field with whitespace
-  collapsed and other control characters dropped, cut to 200 characters (the
-  page URL when nothing is left). It answers `201 {thread, page, version,
+  collapsed and other control characters and hidden format characters
+  dropped, cut to 200 characters (the page URL, cut the same way, when
+  nothing is left). It answers `201 {thread, page, version,
   clip_error?}`; a clip that fails the thread clip rules is dropped and
   reported in `clip_error`. With `pick_id`, the request is idempotent for an
   hour: when that pick already made a thread on the page `url` names, and

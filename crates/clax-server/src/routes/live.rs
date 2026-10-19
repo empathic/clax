@@ -34,8 +34,8 @@ use std::collections::HashMap;
 pub const LIVE_THREAD_LIMIT: usize = 24 * 1024 * 1024;
 /// The largest snapshot accepted, in bytes.
 pub const MAX_SNAPSHOT: usize = 8 * 1024 * 1024;
-/// The longest page title kept, in characters.
-pub const MAX_TITLE: usize = 200;
+/// The longest page title kept, in characters: an artifact title's bound.
+pub const MAX_TITLE: usize = clax_core::publish::MAX_TITLE_CHARS;
 
 /// Host names that always name this machine.
 const LOCAL_NAMES: [&str; 3] = ["localhost", "127.0.0.1", "[::1]"];
@@ -82,31 +82,32 @@ pub(crate) fn page_url(s: &AppState, raw: &str) -> Result<PageUrl, ApiError> {
 }
 
 /// A title as a page gave it, fit to store (spec §8.3): whitespace
-/// collapsed, other control characters dropped, cut to [`MAX_TITLE`]
-/// characters; `fallback` when nothing is left.
+/// collapsed, other control characters and hidden format characters
+/// ([`clax_core::text::is_hidden_char`]) dropped, cut to [`MAX_TITLE`]
+/// characters, so it passes `clax_core::publish::check_meta_text`;
+/// `fallback`, cleaned the same way, when nothing is left.
 pub(crate) fn clean_title(t: &str, fallback: &str) -> String {
-    let spaced: String = t
-        .chars()
-        .filter_map(|c| {
-            if c.is_whitespace() {
-                Some(' ')
-            } else if c.is_control() {
-                None
-            } else {
-                Some(c)
-            }
-        })
-        .collect();
-    let t: String = clax_core::anchor::collapse(&spaced)
-        .chars()
-        .take(MAX_TITLE)
-        .collect();
-    let t = t.trim_end().to_string();
-    if t.is_empty() {
-        fallback.to_string()
-    } else {
-        t
-    }
+    let clean = |t: &str| -> String {
+        let spaced: String = t
+            .chars()
+            .filter_map(|c| {
+                if c.is_whitespace() {
+                    Some(' ')
+                } else if c.is_control() || clax_core::text::is_hidden_char(c) {
+                    None
+                } else {
+                    Some(c)
+                }
+            })
+            .collect();
+        let t: String = clax_core::anchor::collapse(&spaced)
+            .chars()
+            .take(MAX_TITLE)
+            .collect();
+        t.trim_end().to_string()
+    };
+    let t = clean(t);
+    if t.is_empty() { clean(fallback) } else { t }
 }
 
 /// The view of a live page the routes answer with: its key, `page_url`,
@@ -1107,7 +1108,7 @@ pub async fn add_rule(
                 };
                 return Ok((rule, created, page, Vec::new(), remaining));
             }
-            let title = canonical.key.page_url();
+            let title = clean_title("", &canonical.key.page_url());
             let (to, made) = target_page(
                 st,
                 &rc.audit,
@@ -1241,5 +1242,13 @@ mod tests {
             MAX_TITLE
         );
         assert_eq!(clean_title("a\u{2028}b", "f"), "a b");
+        assert_eq!(clean_title("a\u{200B}b\u{FEFF}\u{AD}\u{202E}c", "f"), "abc");
+        assert_eq!(clean_title("\u{200B}\u{FEFF}", "f"), "f");
+        let long = format!("https://example.com/{}", "p".repeat(250));
+        assert_eq!(clean_title("", &long).chars().count(), MAX_TITLE);
+        for t in ["a\u{200B}b", "", " \u{202E}"] {
+            let title = clean_title(t, &long);
+            clax_core::publish::check_meta_text(Some(&title), None, None).unwrap();
+        }
     }
 }
