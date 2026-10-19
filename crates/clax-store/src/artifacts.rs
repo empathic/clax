@@ -1025,7 +1025,10 @@ impl Store {
             },
         };
         self.check_quota(creator.as_deref())?;
+        #[cfg(test)]
+        self.point("artifact.create.insert");
         self.with_tx(|tx| {
+            self.check_quota_in(tx, creator.as_deref())?;
             tx.execute(
                 "INSERT INTO artifacts (id, title, description, icon, created_at, updated_at, current_version,
                     pinned, capabilities_json, contract_version, owner_session_id, person)

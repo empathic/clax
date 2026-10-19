@@ -212,7 +212,14 @@ pub struct Store {
     resumed_at: Mutex<String>,
     /// Each GitHub member's caps ([`Store::set_member_caps`]).
     member_caps: RwLock<Option<github::MemberCaps>>,
+    /// The tests' hooks at named points of a method ([`Store::at_point`]).
+    #[cfg(test)]
+    test_points: Mutex<Vec<(&'static str, TestPoint)>>,
 }
+
+/// A test's hook at a named point of a store method, run once.
+#[cfg(test)]
+pub(crate) type TestPoint = Box<dyn FnOnce(&Store) + Send>;
 
 impl Store {
     /// Opens (creating when missing) the home's database, migrates it to
@@ -342,6 +349,8 @@ impl Store {
             pushed_listener: RwLock::new(None),
             resumed_at: Mutex::new(stamp(clock.now())),
             member_caps: RwLock::new(None),
+            #[cfg(test)]
+            test_points: Mutex::new(Vec::new()),
             clock,
         })
     }
@@ -598,6 +607,34 @@ impl Store {
     /// any earlier listener.
     pub fn set_request_listener(&self, f: impl Fn(Vec<i64>) + Send + Sync + 'static) {
         *self.request_listener.write().unwrap() = Some(Arc::new(f));
+    }
+
+    /// Runs `hook` the next time a method of this store reaches the point
+    /// named `name` ([`Store::point`]), once: a test steps another write
+    /// in there, where a concurrent caller's could land.
+    #[cfg(test)]
+    pub(crate) fn at_point(&self, name: &'static str, hook: impl FnOnce(&Store) + Send + 'static) {
+        self.test_points
+            .lock()
+            .unwrap()
+            .push((name, Box::new(hook)));
+    }
+
+    /// Runs (and forgets) the hook a test set at the point named `name`,
+    /// if any. Called outside any transaction or lock a hook's own write
+    /// would wait on.
+    #[cfg(test)]
+    pub(crate) fn point(&self, name: &'static str) {
+        let hook = {
+            let mut points = self.test_points.lock().unwrap();
+            points
+                .iter()
+                .position(|(n, _)| *n == name)
+                .map(|i| points.remove(i).1)
+        };
+        if let Some(hook) = hook {
+            hook(self);
+        }
     }
 
     /// Runs `f` on the write connection outside a transaction, for

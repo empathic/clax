@@ -135,6 +135,8 @@ impl Store {
         let now = self.now();
         let files_json = serde_json::to_string(&files).expect("serialisable map");
         let content_sha256 = content_manifest_sha256(&files);
+        #[cfg(test)]
+        self.point("artifact.fork.insert");
         let result = self.with_tx(|tx| {
             let creator: Option<String> = match person {
                 Some(p) => Some(p.to_string()),
@@ -148,6 +150,7 @@ impl Store {
                     .flatten(),
             }
             .filter(|p| p != OWNER);
+            self.check_quota_in(tx, creator.as_deref())?;
             // Each file keeps the authors it had in the source version;
             // each text field the source's authors of it.
             let file_map: BTreeMap<String, Vec<Option<String>>> = files
