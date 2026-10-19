@@ -28,11 +28,18 @@ const DRAIN_TIMEOUT: Duration = Duration::from_secs(5);
 /// How long shutdown waits for the journal appender to close its segment.
 /// The appender stops as shutdown begins, beside the connection drain
 /// ([`DRAIN_TIMEOUT`]), and catches up for at most 0.5 s; a wedged one is
-/// left on its own thread, which the process exit ends. The whole shutdown
-/// stays within 6.5 s, inside the 7 s a replacing client waits before it
-/// sends SIGTERM; what the journal does not write, the next start writes
-/// from the table.
+/// left on its own thread, which the process exit ends. The drain and the
+/// journal's stop take at most 6.5 s, inside the 7 s a replacing client
+/// waits before it sends SIGTERM; what the journal does not write, the next
+/// start writes from the table.
 const JOURNAL_STOP_TIMEOUT: Duration = Duration::from_millis(1500);
+/// How long shutdown then waits for the store's queued calls to finish and
+/// its threads to stop ([`stop_store`]); calls still running are left on
+/// their threads, which the process exit ends, and a write cut short rolls
+/// back. A stop signal once shutdown has begun ends the process at once
+/// ([`on_signals`]), so the SIGTERM a replacing client sends after 7 s
+/// stops the daemon whatever is left.
+const STORE_STOP_TIMEOUT: Duration = Duration::from_secs(2);
 /// How often grants due to expire are expired and the nonce caches swept.
 const GRANT_SWEEP_INTERVAL: Duration = Duration::from_secs(60);
 
@@ -459,7 +466,31 @@ pub async fn serve(
     });
 
     let (fired_tx, fired_rx) = oneshot::channel::<()>();
-    let mut sigterm = tokio::signal::unix::signal(tokio::signal::unix::SignalKind::terminate())?;
+    // SIGTERM and Ctrl-C, for the process's whole life: the first begins
+    // shutdown, and any once it has begun ends the process.
+    use tokio::signal::unix::{SignalKind, signal};
+    let mut sigterm = signal(SignalKind::terminate())?;
+    let mut sigint = signal(SignalKind::interrupt())?;
+    let (signal_tx, signal_rx) = tokio::sync::mpsc::unbounded_channel();
+    let forward_signals = tokio::spawn(async move {
+        loop {
+            let got = tokio::select! {
+                s = sigterm.recv() => s,
+                s = sigint.recv() => s,
+            };
+            if got.is_none() || signal_tx.send(()).is_err() {
+                return;
+            }
+        }
+    });
+    let exit_home = cfg.home.clone();
+    let signals = tokio::spawn(on_signals(signal_rx, shutdown_tx.clone(), move || {
+        tracing::warn!("a stop signal while shutting down; exiting now");
+        if read_daemon_info(&exit_home).map(|i| i.pid) == Some(std::process::id()) {
+            remove_daemon_info(&exit_home);
+        }
+        std::process::exit(1);
+    }));
     let server = axum::serve(
         clax_http::auth::TunedListener(listener),
         app.into_make_service_with_connect_info::<clax_http::auth::Conn>(),
@@ -474,8 +505,6 @@ pub async fn serve(
                 }
             } => {}
             _ = stale => {}
-            _ = tokio::signal::ctrl_c() => {}
-            _ = sigterm.recv() => {}
         }
         // Tell open SSE streams to end, and start the drain deadline.
         let _ = shutdown_tx.send(true);
@@ -504,13 +533,52 @@ pub async fn serve(
         let _ = tokio::time::timeout(JOURNAL_STOP_TIMEOUT, stopped).await;
     }
     // Let queued store calls finish and the database threads stop.
-    if let Err(e) = tokio::task::spawn_blocking(move || drain_store.shutdown()).await {
-        tracing::warn!(error = %e, "store shutdown failed");
+    if !stop_store(drain_store, STORE_STOP_TIMEOUT).await {
+        tracing::warn!("store calls did not finish in time; exiting");
     }
     if read_daemon_info(&cfg.home).map(|i| i.pid) == Some(std::process::id()) {
         remove_daemon_info(&cfg.home);
     }
+    signals.abort();
+    forward_signals.abort();
     Ok(())
+}
+
+/// Handles the stop signals `signals` delivers: the first begins shutdown
+/// (sends `true` on `shutdown`); one once shutdown has begun, by a signal
+/// or by `POST /api/admin/shutdown`, calls `exit`, so a drain that does not
+/// end never outlasts a second request to stop.
+async fn on_signals(
+    mut signals: tokio::sync::mpsc::UnboundedReceiver<()>,
+    shutdown: watch::Sender<bool>,
+    exit: impl FnOnce(),
+) {
+    while signals.recv().await.is_some() {
+        if *shutdown.borrow() {
+            exit();
+            return;
+        }
+        shutdown.send_replace(true);
+    }
+}
+
+/// Stops `store` ([`Store::shutdown`]), waiting at most `within` for its
+/// queued calls to finish and its threads to stop: false when they had not
+/// by then, and are left running on their own threads.
+async fn stop_store(store: Arc<Store>, within: Duration) -> bool {
+    match tokio::time::timeout(
+        within,
+        tokio::task::spawn_blocking(move || store.shutdown()),
+    )
+    .await
+    {
+        Ok(Ok(())) => true,
+        Ok(Err(e)) => {
+            tracing::warn!(error = %e, "store shutdown failed");
+            true
+        }
+        Err(_) => false,
+    }
 }
 
 #[cfg(test)]
@@ -524,6 +592,66 @@ mod tests {
         assert!(!slept(m + SLEEP_SLACK, m), "within the slack");
         assert!(slept(Duration::from_secs(3600), m), "an hour asleep");
         assert!(!slept(Duration::ZERO, m), "a clock set back");
+    }
+
+    #[tokio::test]
+    async fn a_signal_begins_shutdown_and_one_after_it_has_begun_exits() {
+        let (tx, rx) = tokio::sync::mpsc::unbounded_channel();
+        let (shutdown, mut begun) = watch::channel(false);
+        let (exited_tx, exited) = oneshot::channel();
+        let task = tokio::spawn(on_signals(rx, shutdown, move || {
+            let _ = exited_tx.send(());
+        }));
+        tx.send(()).unwrap();
+        begun.wait_for(|v| *v).await.unwrap();
+        tx.send(()).unwrap();
+        exited.await.expect("the second signal exits");
+        task.await.unwrap();
+    }
+
+    #[tokio::test]
+    async fn a_signal_after_a_requested_shutdown_exits() {
+        let (tx, rx) = tokio::sync::mpsc::unbounded_channel();
+        let (shutdown, _begun) = watch::channel(false);
+        // `POST /api/admin/shutdown` sends on the same sender.
+        shutdown.send_replace(true);
+        let (exited_tx, exited) = oneshot::channel();
+        let task = tokio::spawn(on_signals(rx, shutdown, move || {
+            let _ = exited_tx.send(());
+        }));
+        tx.send(()).unwrap();
+        exited.await.expect("a signal during shutdown exits");
+        task.await.unwrap();
+    }
+
+    // Real time: a paused clock does not advance while a blocking task runs.
+    #[tokio::test]
+    async fn the_store_stop_gives_up_on_a_call_that_does_not_finish() {
+        let dir = tempfile::tempdir().unwrap();
+        let home = Home::at(dir.path().join("ax"));
+        home.ensure_dirs().unwrap();
+        let store = Arc::new(Store::open(&home).unwrap());
+        let (started_tx, started) = oneshot::channel();
+        let (release, held) = std::sync::mpsc::channel::<()>();
+        let call = tokio::spawn({
+            let store = store.clone();
+            async move {
+                store
+                    .call(move |_| {
+                        let _ = started_tx.send(());
+                        let _ = held.recv();
+                        Ok(())
+                    })
+                    .await
+            }
+        });
+        started.await.unwrap();
+        assert!(
+            !stop_store(store, Duration::from_millis(50)).await,
+            "a call still running is not waited for past the bound"
+        );
+        release.send(()).unwrap();
+        call.await.unwrap().unwrap();
     }
 
     #[test]
