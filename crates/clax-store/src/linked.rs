@@ -29,6 +29,9 @@
 //!   keeps the mirrored threads as read-only history (`unlinked_at`), and
 //!   their unsent outbox rows until the owner drops them
 //!   ([`Store::drop_unsent`]).
+//! - **Deleting a linked thread** here ends its pairing alone
+//!   (`unlinked_at`) and drops its unsent writes: its twin on the remote
+//!   stays there and is not written here again.
 //!
 //! On a hosted daemon, `comment_keys` keeps the idempotency key an agent
 //! token's comment or new thread named and what it made
@@ -1568,6 +1571,55 @@ mod tests {
         assert_eq!((v.origin.as_str(), v.twin, v.state), ("remote", true, None));
         assert_eq!(v.comments[&made.id].author_name.as_deref(), Some("Sam"));
         // Nothing mirrored goes back up.
+        assert_eq!(w.st.scan_linked(&w.rid).unwrap(), 0);
+    }
+
+    #[test]
+    fn deleting_a_linked_thread_ends_its_pairing_and_drops_its_unsent_writes() {
+        let w = world();
+        let l = link(&w, (1, 1));
+        let t =
+            w.st.mirror_thread(
+                &AuditCtx::DAEMON,
+                &l,
+                ("clax.example", "https://clax.example"),
+                1,
+                true,
+                MirrorThread {
+                    remote_thread_id: "rt1".into(),
+                    remote_version: 1,
+                    anchor: whole(),
+                    first: mirror("hi", "rc1"),
+                },
+            )
+            .unwrap();
+        w.clock.advance(1);
+        w.st.add_comment(
+            &AuditCtx::DAEMON,
+            &t.id,
+            NewComment {
+                author_kind: AUTHOR_VIEWER,
+                author_name: "Owner".into(),
+                author_public_id: Some(w.owner.clone()),
+                via_session_id: None,
+                body: "unsent".into(),
+                via_page: false,
+            },
+        )
+        .unwrap();
+        assert_eq!(w.st.scan_linked(&w.rid).unwrap(), 1);
+        w.st.delete_thread(&AuditCtx::DAEMON, &t.id).unwrap();
+        let lt =
+            w.st.linked_thread_by_remote(&w.rid, "rt1")
+                .unwrap()
+                .unwrap();
+        assert_eq!(lt.thread_id, t.id);
+        assert!(
+            lt.unlinked_at.is_some(),
+            "ended, so it is not written again"
+        );
+        assert!(w.st.outbox_of(&w.rid).unwrap().is_empty());
+        assert!(!w.st.has_linked_comment(&w.rid, "rc1").unwrap());
         assert_eq!(w.st.scan_linked(&w.rid).unwrap(), 0);
     }
 

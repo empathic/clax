@@ -961,6 +961,58 @@ async fn unlinking_keeps_read_only_history_and_unsent_rows_until_dropped() {
     );
 }
 
+#[tokio::test]
+async fn a_mirrored_thread_deleted_here_stays_gone_and_the_link_keeps_syncing() {
+    let p = Pair::new().await;
+    let r1 = p.hosted_thread("first", whole(), None).await;
+    p.backstop().await;
+    let tid = until("the thread comes down", || async {
+        p.local_threads()
+            .await
+            .first()
+            .map(|t| t["id"].as_str().unwrap().to_string())
+    })
+    .await;
+    p.sleeper.wait_for(BACKSTOP, 1).await;
+    let (s, v) = p
+        .local_req(
+            reqwest::Method::DELETE,
+            &format!("/api/artifacts/{}/threads/{tid}", p.aid),
+            json!(null),
+            None,
+        )
+        .await;
+    assert_eq!(s, 200, "{v}");
+    // A comment there on the thread deleted here, and a new thread there.
+    let (s, v) = p
+        .public
+        .browser(
+            reqwest::Method::POST,
+            &format!(
+                "/api/artifacts/{}/threads/{}/comments",
+                p.raid,
+                r1["id"].as_str().unwrap()
+            ),
+            json!({"body": "still here?"}),
+        )
+        .await;
+    assert_eq!(s, 201, "{v}");
+    p.hosted_thread("second", whole(), None).await;
+    p.backstop().await;
+    until("the second thread comes down", || async {
+        let ts = p.local_threads().await;
+        ts.iter().any(|t| bodies(t) == ["second"]).then_some(())
+    })
+    .await;
+    // The cycle ended well: the sync waits for its backstop, not a backoff.
+    p.sleeper.wait_for(BACKSTOP, 1).await;
+    assert_eq!(p.local.state.linked.status(&p.remote).last_error, None);
+    // The deleted thread did not come back.
+    let ts = p.local_threads().await;
+    assert_eq!(ts.len(), 1, "{ts:?}");
+    assert_eq!(bodies(&ts[0]), ["second"]);
+}
+
 /// An `ask` of one choice question.
 fn ask_body(artifact: Option<&str>, text: &str) -> Value {
     let mut b = json!({"source": "ask", "questions": [{"question": text, "header": "Pick",

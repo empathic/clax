@@ -1732,7 +1732,11 @@ impl Store {
 
     /// Deletes thread `thread_id`'s rows, recording `thread.delete`; returns
     /// the thread as it was and the sessions that held undelivered rows of
-    /// it.
+    /// it. A linked thread's pairing stays, ended (`unlinked_at`), so its
+    /// twin on the remote is not written here again; its comments'
+    /// pairings and its unsent writes go. A hosted daemon's `comment_keys`
+    /// rows stay: a resend under a key that made the thread finds it gone
+    /// rather than making it again.
     fn delete_thread_rows(
         &self,
         ctx: &AuditCtx,
@@ -1766,6 +1770,12 @@ impl Store {
             tx.execute("DELETE FROM comments WHERE thread_id = ?1", params![thread_id])?;
             tx.execute("DELETE FROM threads WHERE id = ?1", params![thread_id])?;
             let now = self.now();
+            tx.execute(
+                "UPDATE linked_threads SET unlinked_at = COALESCE(unlinked_at, ?2) WHERE thread_id = ?1",
+                params![thread_id, now],
+            )?;
+            tx.execute("DELETE FROM linked_comments WHERE thread_id = ?1", params![thread_id])?;
+            tx.execute("DELETE FROM linked_outbox WHERE thread_id = ?1", params![thread_id])?;
             let rec = thread_record(AuditKind::ThreadDelete, &now, &t.artifact_id, thread_id)
                 .with("moved", false);
             self.record_audit(tx, ctx, rec)?;

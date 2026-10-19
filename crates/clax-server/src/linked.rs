@@ -1529,6 +1529,11 @@ impl Sync {
                     return Ok(None);
                 }
                 let tid = lt.thread_id.clone();
+                // A twin deleted here (its pairing kept from before deletes
+                // ended it) is not written again.
+                if st.get_thread(&tid)?.is_none() {
+                    return Ok(None);
+                }
                 let mut added = Vec::new();
                 for (_, c) in &comments {
                     if let Some(made) = st.mirror_comment(&audit, &tid, &rid, c)? {
