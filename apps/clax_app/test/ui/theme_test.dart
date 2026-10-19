@@ -111,7 +111,9 @@ void main() {
     expect(t.badgeTheme.backgroundColor, ClaxTokens.light.you);
     expect(t.badgeTheme.textColor, ClaxTokens.light.onYou);
     expect(t.snackBarTheme.behavior, SnackBarBehavior.floating);
-    expect(t.snackBarTheme.width, 560);
+    expect(t.snackBarTheme.width, isNull);
+    expect(t.snackBarTheme.insetPadding?.left, 16);
+    expect(t.snackBarTheme.insetPadding?.right, 16);
     expect(
       t.listTileTheme.contentPadding,
       const EdgeInsets.symmetric(horizontal: 16),
