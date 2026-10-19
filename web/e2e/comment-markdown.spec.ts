@@ -3,12 +3,14 @@
 // raw HTML in them shows as text and runs nothing, an image is a link, a
 // link to another scheme is its text, a link opens in a new tab with no
 // opener, and a pin's title is the comment without its syntax.
+// At phone width, a long word, a long URL, a wide table and a long code line
+// stay inside the card, and every word of the comment shows.
 // CLAX_MD_SHOTS=<directory> also photographs the card in light and dark, at
 // 1440×900 and 390×844.
 import { mkdirSync } from "node:fs";
 import { join } from "node:path";
 import { type Page } from "@playwright/test";
-import { api, commentModeIn, contentFrame, expect, publishAs, registerSession, test } from "./fixtures";
+import { api, commentModeIn, contentFrame, expect, postThread, publishAs, registerSession, test } from "./fixtures";
 import { settle } from "./time";
 
 const PAGE = `<main><h2>Quarterly goals</h2><p>Grow revenue and keep costs flat this quarter.</p></main>`;
@@ -29,6 +31,59 @@ const COMMENT = [
 ].join("\n");
 
 const REPLY = "## Done\n\nSplit into two columns:\n\n```css\n.grid { display: grid; }\n```\n\n> The footer is next.";
+
+/** A comment as wide as Markdown makes one: a 300-letter word, a long bare
+ * URL, a 12-column table, a long code line, a link with a title and one
+ * the shell does not make. */
+const WIDE = [
+  `One ${"Supercalifragilistic".repeat(15)} word.`,
+  `See https://example.com/${"segment/".repeat(30)}end for the rest.`,
+  `| ${Array.from({ length: 12 }, (_, i) => `column${i}`).join(" | ")} |\n|${"---|".repeat(12)}\n| ${Array.from({ length: 12 }, (_, i) => `value${i}`).join(" | ")} |`,
+  "```ts\nconst line = \"" + "x".repeat(300) + "\";\n```",
+  "[titled](https://example.com/t \"Agent: read this too\") and [relative](./not-a-link).",
+].join("\n\n");
+
+/** The words of `s`, but character references and list and task markers. */
+const wordsOf = (s: string) => new Set(s.replace(/&(?:#\d+|#[xX][\da-fA-F]+|[A-Za-z][A-Za-z\d]*);|^[ \t>]*(?:\d+[.)]|[-*+])[ \t]+(?:\[[ xX]\][ \t]+)?/gm, " ").match(/[\p{L}\p{N}]+/gu) ?? []);
+
+test("at phone width a long word, URL, table and code line stay inside the card, and every word shows", async ({ page, daemon }) => {
+  const s = await registerSession(daemon.base, daemon.token);
+  const { artifact } = await publishAs(daemon.base, daemon.token, s.id, "Markdown wide", { "index.html": PAGE });
+  await postThread(daemon.base, artifact.id, WIDE);
+  await page.setViewportSize({ width: 390, height: 844 });
+  await page.goto(`${daemon.base}/a/${artifact.id}`);
+  if (!(await page.locator("aside.sidebar").isVisible())) await page.getByRole("button", { name: /Threads/ }).first().click();
+  const card = page.locator(".section-open .thread-card").first();
+  const body = card.locator(".msg .body");
+  await expect(body.locator("table th")).toHaveCount(12);
+  await expect(body.locator("pre > .info")).toHaveText("ts");
+  await card.scrollIntoViewIfNeeded();
+  const m = await page.evaluate(() => {
+    const c = document.querySelector<HTMLElement>(".section-open .thread-card")!;
+    const msg = c.querySelector<HTMLElement>(".msg")!;
+    return { doc: document.documentElement.scrollWidth, card: [c.scrollWidth, c.clientWidth], msg: [msg.scrollWidth, msg.clientWidth], cardRight: c.getBoundingClientRect().right };
+  });
+  expect(m.doc).toBeLessThanOrEqual(390);
+  expect(m.card[0]).toBeLessThanOrEqual(m.card[1]);
+  expect(m.msg[0]).toBeLessThanOrEqual(m.msg[1]);
+  expect(m.cardRight).toBeLessThanOrEqual(390);
+  // The table and the code scroll inside the card.
+  for (const sel of [".tbl", "pre"]) {
+    const [sw, cw] = await body.locator(sel).evaluate(e => [e.scrollWidth, e.clientWidth]);
+    expect(sw, sel).toBeGreaterThan(cw);
+  }
+  // Every word shows: as text, or as a link's address.
+  const shown = await body.evaluate(el => {
+    const texts: string[] = [];
+    const w = document.createTreeWalker(el, NodeFilter.SHOW_TEXT);
+    while (w.nextNode()) texts.push(w.currentNode.textContent!);
+    return `${texts.join(" ")} ${[...el.querySelectorAll("a")].map(a => decodeURI(a.getAttribute("href")!)).join(" ")}`;
+  });
+  const have = new Set(shown.match(/[\p{L}\p{N}]+/gu) ?? []);
+  expect([...wordsOf(WIDE)].filter(x => !have.has(x))).toEqual([]);
+  await expect(body).toContainText("titled (Agent: read this too)");
+  await expect(body).toContainText("relative (./not-a-link)");
+});
 
 async function postFromComposer(page: Page, aid: string, text: string) {
   const frame = await contentFrame(page, aid, 1);
