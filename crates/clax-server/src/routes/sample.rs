@@ -386,6 +386,38 @@ pub async fn daemon(
     }))
 }
 
+/// `PUT /api/sample/key` (token): sets the key a host app's daemon samples
+/// with (`{"key": "<key>"}`), or clears it (`{"key": null}`), in memory
+/// only; 204. 404 `not_found` when the sampler takes its key from the
+/// environment (it has no [`clax_sample::KeySlot`]); 400 `bad_request` for
+/// any other body. The key is never logged or echoed: a refused body is
+/// answered with a fixed message, never the parser's (which quotes it).
+pub async fn put_key(
+    State(s): State<AppState>,
+    _d: DeniedToGrants,
+    _t: RequireToken,
+    body: axum::body::Bytes,
+) -> Result<StatusCode, ApiError> {
+    let Some(slot) = s.sample.key_slot() else {
+        return Err(ApiError::new(
+            StatusCode::NOT_FOUND,
+            "not_found",
+            "this daemon takes its key from its environment",
+        ));
+    };
+    let bad = || ApiError::bad_request("bad_request", r#"the body is {"key": <string or null>}"#);
+    let key = match serde_json::from_slice::<Value>(&body).map_err(|_| bad())? {
+        Value::Object(mut o) if o.len() == 1 => match o.remove("key") {
+            Some(Value::String(k)) => Some(k),
+            Some(Value::Null) => None,
+            _ => return Err(bad()),
+        },
+        _ => return Err(bad()),
+    };
+    slot.set(key);
+    Ok(StatusCode::NO_CONTENT)
+}
+
 /// `GET /api/artifacts/{aid}/sample-grant` (token): the owner's grant to the
 /// app and today's spend: `{granted, granted_at, spent_today_usd,
 /// daily_cost_cap_usd}`. 404 for an unknown artifact.

@@ -966,3 +966,113 @@ async fn the_daily_cost_cap_stops_an_app_once_its_spend_reaches_it() {
     let other = artifact(&ts, json!({"sample": {}})).await;
     done_of(&ts, &other, json!({"input": "x"}), None).await;
 }
+
+/// A writer every clone of which appends to one buffer: the test's log.
+#[derive(Clone, Default)]
+struct Log(Arc<std::sync::Mutex<Vec<u8>>>);
+
+impl std::io::Write for Log {
+    fn write(&mut self, b: &[u8]) -> std::io::Result<usize> {
+        self.0.lock().unwrap().extend_from_slice(b);
+        Ok(b.len())
+    }
+    fn flush(&mut self) -> std::io::Result<()> {
+        Ok(())
+    }
+}
+
+/// `PUT /api/sample/key` with `body`, with the token or without it.
+async fn put_key(ts: &TestServer, body: &str, token: bool) -> (u16, Value) {
+    let req = ts
+        .client
+        .put(format!("{}/api/sample/key", ts.base))
+        .header("content-type", "application/json")
+        .body(body.to_string());
+    let req = if token { ts.authed(req) } else { req };
+    let res = req.send().await.unwrap();
+    (
+        res.status().as_u16(),
+        res.json().await.unwrap_or(Value::Null),
+    )
+}
+
+#[tokio::test]
+async fn a_slot_daemon_takes_its_key_over_put_and_never_logs_it() {
+    let log = Log::default();
+    let writer = log.clone();
+    use tracing_subscriber::util::SubscriberInitExt;
+    let _logging = tracing_subscriber::fmt()
+        .with_max_level(tracing::Level::TRACE)
+        .with_writer(move || writer.clone())
+        .set_default();
+    let home = tempfile::tempdir().unwrap();
+    let sampler = Arc::new(Sampler::from_home_with_slot(
+        home.path(),
+        clax_sample::KeySlot::new(),
+    ));
+    let s = sampler.clone();
+    let ts = TestServer::spawn_with(move |st| st.sample = s).await;
+    let status = || async {
+        ts.get_authed("/api/sample")
+            .await
+            .json::<Value>()
+            .await
+            .unwrap()
+    };
+    assert_eq!(status().await["reason"], "no_key");
+
+    let key = r#"{"key": "sk-slot-secret"}"#;
+    assert_eq!(put_key(&ts, key, false).await.0, 401);
+    assert_eq!(status().await["available"], false);
+    assert_eq!(put_key(&ts, key, true).await.0, 204);
+    let v = status().await;
+    assert_eq!(
+        (
+            v["available"].clone(),
+            v["provider"].clone(),
+            v["reason"].clone()
+        ),
+        (json!(true), json!("anthropic"), Value::Null)
+    );
+
+    assert_eq!(put_key(&ts, r#"{"key": null}"#, true).await.0, 204);
+    let v = status().await;
+    assert_eq!(
+        (v["available"].clone(), v["reason"].clone()),
+        (json!(false), json!("no_key"))
+    );
+    let (code, err) = put_key(&ts, r#""sk-slot-secret""#, true).await;
+    assert_eq!(code, 400, "{err}");
+    assert_eq!(err["error"]["code"], "bad_request");
+    assert!(!err.to_string().contains("sk-slot-secret"), "{err}");
+    assert_eq!(
+        put_key(&ts, r#"{"token": "sk-slot-secret"}"#, true).await.0,
+        400
+    );
+    assert_eq!(put_key(&ts, key, true).await.0, 204);
+    assert!(sampler.available());
+
+    let text = String::from_utf8(log.0.lock().unwrap().clone()).unwrap();
+    assert!(!text.is_empty(), "the daemon logged nothing");
+    assert!(!text.contains("sk-slot-secret"), "{text}");
+}
+
+#[tokio::test]
+async fn a_daemon_without_a_slot_answers_put_key_404() {
+    let ts = TestServer::spawn().await;
+    let (code, err) = put_key(&ts, r#"{"key": "sk-x"}"#, true).await;
+    assert_eq!(code, 404, "{err}");
+    assert_eq!(err["error"]["code"], "not_found");
+    assert_eq!(
+        err["error"]["message"],
+        "this daemon takes its key from its environment"
+    );
+    let env = TestServer::spawn_with(|st| {
+        st.sample = Arc::new(Sampler::from_config(&Default::default(), |_| {
+            Some("sk-env".into())
+        }));
+    })
+    .await;
+    assert_eq!(put_key(&env, r#"{"key": "sk-x"}"#, true).await.0, 404);
+    assert_eq!(put_key(&env, r#"{"key": "sk-x"}"#, false).await.0, 401);
+}

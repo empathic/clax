@@ -82,6 +82,7 @@ mod l10 {
         ("sessions::push_status", NoArtifact),
         ("sessions::tool_call_ids", NoArtifact),
         ("sample::daemon", Token),
+        ("sample::put_key", Token),
         ("threads::list_all", GrantsKept),
         ("working::roster", Filtered),
         ("working::for_session", AgentPath),
@@ -450,6 +451,10 @@ mod l10 {
             "debug builds only; shifts the working clock (the lapses it causes are recorded by the sweep as system:ttl)",
         ),
         ("extension::mint", "an extension credential grant (§6.11)"),
+        (
+            "sample::put_key",
+            "sets the key a host app's daemon samples with, in memory only; no history changes, and the key is never recorded",
+        ),
         (
             "git_token::mint",
             "a repository credential, kept in the host's token ledger; what its pushes make is recorded as versions",

@@ -4379,6 +4379,7 @@ router), and a test fails when it differs:
 | `DELETE /api/remotes/{id}` | Denied | yes: 403 `not_for_agents` |
 | `POST /api/remotes/{id}/poll` | Denied | yes: 403 `not_for_agents` |
 | `GET /api/sample` | Denied | no |
+| `PUT /api/sample/key` | Denied | no |
 | `DELETE /api/sessions/{id}/live-watches` | Denied | no |
 | `PUT /api/sessions/{id}/live-watches` | Denied | no |
 | `GET /api/stream` | Denied | yes: 403 `not_for_agents` |
@@ -5772,6 +5773,7 @@ routes itself.
 | `POST /api/artifacts/<aid>/sample` | SameOrigin, token, owner cookie | `{input, verb, model_tier, tools, images, cache}` | `text/event-stream` |
 | `POST /api/artifacts/<aid>/sample/<call_id>/tool_result` | SameOrigin, token, owner cookie | `{id, content, is_error}` | 204 |
 | `GET /api/sample` | token | — | `{available, provider, reason, detail, key_env, daily_call_cap}` (`clax doctor`) |
+| `PUT /api/sample/key` | token | `{key}` (a string, or `null` to clear it) | 204; the key is kept in memory only and never logged; 404 `not_found` on a daemon that takes its key from its environment (only a host app's in-process daemon has a key slot); 400 `bad_request` for any other body |
 | `GET /api/artifacts/<aid>/sample-grant` | token | — | `{granted, granted_at, spent_today_usd, daily_cost_cap_usd}` (`granted_at` null without a grant) |
 | `PUT /api/artifacts/<aid>/sample-grant` | token | — | as `GET`; 403 `not_declared` when the artifact does not declare `sample`; recorded as `artifact.update` (`fields.sample_grant: "grant"`) |
 | `DELETE /api/artifacts/<aid>/sample-grant` | token | — | `{revoked}` (`false` when there was none); the day's spend stays |

@@ -17,10 +17,37 @@ use tokio_stream::wrappers::ReceiverStream;
 
 pub const API_VERSION: &str = "2023-06-01";
 
+/// Where the `anthropic` provider reads its key on each call.
+pub enum KeySource {
+    /// A key read once, when the daemon started.
+    Fixed(String),
+    /// The slot a host app's daemon fills over loopback; read on every call.
+    Slot(crate::KeySlot),
+}
+
+impl KeySource {
+    /// The key a call sends now; `None` while a slot is empty.
+    fn key(&self) -> Option<String> {
+        match self {
+            KeySource::Fixed(k) => Some(k.clone()),
+            KeySource::Slot(slot) => slot.get(),
+        }
+    }
+}
+
+impl std::fmt::Debug for KeySource {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        match self {
+            KeySource::Fixed(_) => f.write_str("Fixed(..)"),
+            KeySource::Slot(slot) => f.debug_tuple("Slot").field(slot).finish(),
+        }
+    }
+}
+
 pub struct AnthropicProvider {
     client: reqwest::Client,
     base_url: String,
-    api_key: String,
+    key: KeySource,
 }
 
 impl std::fmt::Debug for AnthropicProvider {
@@ -33,10 +60,16 @@ impl std::fmt::Debug for AnthropicProvider {
 
 impl AnthropicProvider {
     pub fn new(base_url: impl Into<String>, api_key: impl Into<String>) -> AnthropicProvider {
+        AnthropicProvider::with_source(base_url, KeySource::Fixed(api_key.into()))
+    }
+
+    /// A provider reading its key from `key` on every call; a call made
+    /// while a slot is empty ends in one `sampling_disabled` error.
+    pub fn with_source(base_url: impl Into<String>, key: KeySource) -> AnthropicProvider {
         AnthropicProvider {
             client: client(),
             base_url: base_url.into().trim_end_matches('/').to_string(),
-            api_key: api_key.into(),
+            key,
         }
     }
 }
@@ -380,10 +413,16 @@ impl super::provider::SampleProvider for AnthropicProvider {
 
     fn stream(&self, req: ProviderRequest) -> EventStream {
         let (tx, rx) = mpsc::channel(64);
-        let (client, url, key) = (
+        let Some(key) = self.key.key() else {
+            let _ = tx.try_send(ProviderEvent::Error {
+                code: ProviderErrorCode::Unavailable,
+                message: "no API key is set on this machine".into(),
+            });
+            return Box::pin(ReceiverStream::new(rx));
+        };
+        let (client, url) = (
             self.client.clone(),
             format!("{}/v1/messages", self.base_url),
-            self.api_key.clone(),
         );
         clax_rt::spawn(async move {
             let closed = tx.clone();
