@@ -216,25 +216,43 @@ export function commentsLocals(rpc: Pick<Rpc, "call" | "on">, config: unknown, e
   };
 
   // Clax extensions (clax-extensions.d.ts): who is working, read-only, under
-  // either declaration form. One shell subscription serves every `onWorking`.
+  // either declaration form. One shell subscription serves every `onWorking`;
+  // a watch the shell refuses fails every `onWorking` waiting on it and
+  // leaves no subscription, so the next one asks again.
   const workingFns = new Set<(s: unknown) => void>();
   let offWorking: (() => void) | null = null;
+  let watch: Promise<unknown> | null = null;
   const working = () => rpc.call("comments", "working", []);
   const onWorking = async (fn: unknown) => {
     if (typeof fn !== "function") throw invalid("onWorking takes a function");
     const f = fn as (s: unknown) => void;
     workingFns.add(f);
-    if (!offWorking) {
+    const first = !watch;
+    if (!watch) {
       offWorking = rpc.on("comments", "working", d => { for (const g of workingFns) { try { g(d); } catch { /* the page's own error */ } } });
-      await rpc.call("comments", "watchWorking", []);
-    } else {
+      watch = rpc.call("comments", "watchWorking", []);
+    }
+    const w = watch;
+    try {
+      await w;
+    } catch (e) {
+      workingFns.delete(f);
+      if (watch === w) {
+        offWorking?.();
+        offWorking = null;
+        watch = null;
+      }
+      throw e;
+    }
+    if (!first) {
       try { f(await working()); } catch { /* the page's own error */ }
     }
     return () => {
       workingFns.delete(f);
-      if (workingFns.size === 0 && offWorking) {
-        offWorking();
+      if (workingFns.size === 0 && watch) {
+        offWorking?.();
         offWorking = null;
+        watch = null;
         void rpc.call("comments", "unwatchWorking", []).catch(() => {});
       }
     };
