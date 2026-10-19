@@ -273,6 +273,10 @@ enum Shape {
     /// unread counts, newest group first, the groups whose newest `seq` is
     /// below the query's `before`, one past its limit ([`group_page`]).
     Groups,
+    /// A page of one group's rows: as `Page`, driven by the artifact
+    /// whatever the read filter, so each group reaches its own rows
+    /// rather than walking every unread item for them.
+    GroupRows,
 }
 
 /// The index that drives a statement: the one filter it walks, after the
@@ -331,6 +335,8 @@ fn kinds_of(q: &InboxQuery) -> Vec<Kind> {
 fn driver(q: &InboxQuery, text: bool, kinds: usize, shape: Shape) -> Driver {
     if text {
         Driver::Text
+    } else if shape == Shape::GroupRows && (q.artifact.is_some() || q.no_artifact) {
+        Driver::Artifact
     } else if shape == Shape::MarkAll || q.read == ReadFilter::Unread {
         Driver::Unread
     } else if q.artifact.is_some() || q.no_artifact {
@@ -410,16 +416,16 @@ fn build(q: &InboxQuery, shape: Shape, now: &str) -> Built {
             // (spec 2026-10-08 §9.5): deciding reads it.
             wh.push(format!("NOT {UNDECIDED}"));
         }
-        Shape::Page | Shape::Count(_) | Shape::Groups => {
+        Shape::Page | Shape::GroupRows | Shape::Count(_) | Shape::Groups => {
             let what = match shape {
-                Shape::Page => COLUMNS,
+                Shape::Page | Shape::GroupRows => COLUMNS,
                 Shape::Groups => {
                     "i.seq AS seq, i.artifact_id AS aid, i.created_at AS at, i.read_at IS NULL AS u"
                 }
                 _ => "1",
             };
             let before = match shape {
-                Shape::Page => q.before.unwrap_or(i64::MAX),
+                Shape::Page | Shape::GroupRows => q.before.unwrap_or(i64::MAX),
                 _ => i64::MAX,
             };
             let r = arg(
@@ -516,7 +522,7 @@ fn build(q: &InboxQuery, shape: Shape, now: &str) -> Built {
         sql.push_str(w);
     }
     match shape {
-        Shape::Page => {
+        Shape::Page | Shape::GroupRows => {
             let order = if text.is_some() { "f.rowid" } else { "i.seq" };
             let p = arg(Sql::Integer(i64::from(page_size(q.limit)) + 1), &mut args);
             sql.push_str(&format!(" ORDER BY {order} DESC LIMIT {p}"));
@@ -560,9 +566,10 @@ fn group_page(limit: u32) -> u32 {
     }
 }
 
-/// A page of items matching `q` on connection `c`, and the next page's cursor.
-fn page_on(c: &Connection, q: &InboxQuery) -> Result<(Vec<ItemRow>, Option<i64>)> {
-    let b = build(q, Shape::Page, "");
+/// A page of items matching `q` on connection `c` (`shape`: `Page` or
+/// `GroupRows`), and the next page's cursor.
+fn page_on(c: &Connection, q: &InboxQuery, shape: Shape) -> Result<(Vec<ItemRow>, Option<i64>)> {
+    let b = build(q, shape, "");
     let size = page_size(q.limit) as usize;
     let mut items = (|| -> Result<Vec<ItemRow>> {
         let mut st = c.prepare_cached(&b.sql)?;
@@ -889,6 +896,7 @@ pub(super) fn shapes() -> Vec<(String, Built)> {
             (" count", Shape::Count(10_001)),
             (" mark all", Shape::MarkAll),
             (" groups", Shape::Groups),
+            (" group rows", Shape::GroupRows),
         ] {
             out.push((format!("{name}{suffix}"), build(&q, shape, now)));
         }
@@ -1563,7 +1571,7 @@ impl Store {
     /// # Errors
     /// `invalid_query` when the search text cannot be used.
     pub fn inbox_list(&self, q: &InboxQuery) -> Result<(Vec<ItemRow>, Option<i64>)> {
-        self.with_read(|c| page_on(c, q))
+        self.with_read(|c| page_on(c, q, Shape::Page))
     }
 
     /// The items matching `q` grouped by artifact, one group for the items
@@ -1616,7 +1624,7 @@ impl Store {
                     limit: rows,
                     ..q.clone()
                 };
-                (g.items, g.next) = page_on(c, &one)?;
+                (g.items, g.next) = page_on(c, &one, Shape::GroupRows)?;
             }
             Ok((groups, next))
         })
@@ -3448,6 +3456,22 @@ mod tests {
             vec![(Some(a.as_str().to_string()), 1)]
         );
         assert_eq!(found[0].items[0].kind, Kind::Reply);
+        // A group's rows are reached by its artifact, unread or not.
+        for q in [
+            InboxQuery {
+                read: ReadFilter::Unread,
+                artifact: Some(a.as_str().into()),
+                ..Default::default()
+            },
+            InboxQuery {
+                read: ReadFilter::Unread,
+                no_artifact: true,
+                ..Default::default()
+            },
+        ] {
+            assert_eq!(build(&q, Shape::GroupRows, "").driver, Driver::Artifact);
+            assert_eq!(build(&q, Shape::Page, "").driver, Driver::Unread);
+        }
     }
 
     #[test]
