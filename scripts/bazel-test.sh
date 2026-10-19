@@ -41,12 +41,15 @@ done
 if [ "$ci" = 1 ]; then rust=1; web=1; fi
 if [ "$web" = 0 ] && [ "$ci" = 0 ]; then rust=1; fi
 
-bazel="$(command -v bazelisk || command -v bazel || true)"
-if [ -z "$bazel" ]; then
-    echo "error: bazelisk not found; install it (brew install bazelisk)," \
+# Bazel as scripts/run.sh picks it: Bazelisk, or a bazel at .bazelversion.
+# shellcheck source=scripts/lib/build-system.sh
+. scripts/lib/build-system.sh
+if ! _bazel_usable; then
+    echo "error: $_bazel_why; install Bazelisk ($(build_system_install_hint))," \
         "or run the native checks: just ci-native" >&2
     exit 1
 fi
+bazel="$BAZEL"
 
 ./scripts/bazel-sync.sh --check || exit 1
 
