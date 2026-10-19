@@ -151,12 +151,23 @@ pub fn http_error(status: u16, body: &str, key: &str) -> ProviderEvent {
     }
 }
 
+/// The round's stop. An answer cut off by the context window
+/// (`model_context_window_exceeded`) is cut short like one cut off by
+/// `max_tokens`; a reason this does not know is logged and read as the end
+/// of the turn.
 fn stop_from(reason: &str) -> Stop {
     match reason {
-        "max_tokens" => Stop::MaxTokens,
+        "max_tokens" | "model_context_window_exceeded" => Stop::MaxTokens,
         "tool_use" => Stop::ToolUse,
         "refusal" => Stop::Refusal,
-        _ => Stop::EndTurn,
+        "end_turn" | "stop_sequence" | "pause_turn" => Stop::EndTurn,
+        other => {
+            tracing::warn!(
+                stop_reason = other,
+                "unknown stop reason, read as the end of the turn"
+            );
+            Stop::EndTurn
+        }
     }
 }
 
@@ -516,7 +527,9 @@ mod tests {
     fn stop_reasons_and_stream_errors_map_to_the_contract() {
         for (reason, stop) in [
             ("max_tokens", Stop::MaxTokens),
+            ("model_context_window_exceeded", Stop::MaxTokens),
             ("refusal", Stop::Refusal),
+            ("end_turn", Stop::EndTurn),
             ("stop_sequence", Stop::EndTurn),
             ("pause_turn", Stop::EndTurn),
         ] {
