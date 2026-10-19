@@ -79,15 +79,6 @@ export function centreUnder(cells, g, x, y, radius = 24) {
   return dist <= radius ? best : -1;
 }
 
-/** The tilt, in degrees from −8 to 8, of the `i`th icon of group `gid`'s
- * pile: from a hash of both (FNV-1a), so a pile looks the same each time. */
-export function tiltOf(gid, i) {
-  const s = `${gid}:${i}`;
-  let h = 0x811c9dc5;
-  for (let k = 0; k < s.length; k++) h = Math.imul(h ^ s.charCodeAt(k), 0x01000193) >>> 0;
-  return (h % 1601) / 100 - 8;
-}
-
 /** How a tile's label of `text` lays out in `width` px, at most `lines`
  * lines (2 by default), where `measure(s)` is the drawn width of `s`:
  * `{lines, ellipsis}`, `ellipsis` when the last line is cut. Lines break

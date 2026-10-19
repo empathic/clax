@@ -53,7 +53,7 @@ test.describe("its tests in the inspect view", () => {
     const tests = (await ofType(page, "tests"))[0] as HostMessage & { passed: number; failed: unknown[]; skipped: number };
     expect(tests.failed).toEqual([]);
     expect(tests.skipped).toBe(0);
-    expect(tests.passed).toBe(96);
+    expect(tests.passed).toBe(94);
   });
 });
 
@@ -244,7 +244,7 @@ test.describe("over a fake host", () => {
     await expect(page.locator('.h-section[data-section="starred"] [data-id="app-notes"]')).toHaveCount(1);
   });
 
-  test("a mouse held over another app makes a folder, and a tap opens it", async ({ page }) => {
+  test("a mouse held over another app makes a group and offers its name; a tap fans the group out", async ({ page }) => {
     await page.clock.install();
     await serve(page, { makes: [] });
     await expect(page.locator(".h-tile[data-id]")).toHaveCount(8);
@@ -261,19 +261,55 @@ test.describe("over a fake host", () => {
     await expect(page.locator('[data-id="app-habits"][data-grouping]')).toHaveCount(1);
     await page.mouse.up();
     await page.clock.runFor(1500);
-    await expect(page.locator('.h-group[data-look="folder"]')).toHaveCount(1);
+    await expect(page.locator(".h-group")).toHaveCount(1);
+    await expect(page.locator(".h-group .h-folder-face > .h-face")).toHaveCount(2);
     await expect(page.locator(".h-group .h-label")).toHaveText("Group");
+    const name = page.getByRole("textbox", { name: "Group name" });
+    await expect(name).toBeFocused();
+    await expect(name).toHaveValue("Group");
+    await page.keyboard.type("Moods");
+    await page.keyboard.press("Enter");
+    await expect(name).toHaveCount(0);
+    await expect(page.locator(".h-group .h-label")).toHaveText("Moods");
     await page.locator(".h-group").click();
-    await expect(page.locator(".h-folder .h-tile[data-id]")).toHaveCount(2);
-    await expect(page.locator(".h-folder .h-folder-name")).toHaveText("Group");
+    await page.clock.runFor(1000);
+    await expect(page.locator(".h-fan .h-tile[data-id]")).toHaveCount(2);
   });
 
-  test("a tap fans a pile out below it, and a tap on the top bar gathers it", async ({ page }) => {
+  test("with reduced motion an app dropped on a group goes straight in, with no flight", async ({ page }) => {
+    await page.emulateMedia({ reducedMotion: "reduce" });
     await page.clock.install();
     const ids = ["app-run", "app-groceries", "app-habits", "app-recipes", "app-budget", "app-plants", "app-mood", "app-notes"];
-    const layout = { v: 1, starred: [], order: ["app-run", "g:g1", ...ids.filter(id => !["app-run", "app-groceries", "app-notes"].includes(id))], groups: { g1: { name: "Lists", look: "pile", apps: ["app-groceries", "app-notes"] } }, seen: ids };
+    // A starred app, so the drag opens no zone to star by dropping, and
+    // the group clear of the band at the top where a drag scrolls the page.
+    const layout = { v: 1, starred: ["app-run"], order: ["app-habits", "app-recipes", "app-budget", "g:g1", "app-plants", "app-mood"], groups: { g1: { name: "Lists", apps: ["app-groceries", "app-notes"] } }, seen: ids };
     await serve(page, { makes: [], docs: { "layout/main": layout } });
-    await expect(page.locator('.h-group[data-look="pile"] .h-pile-card')).toHaveCount(2);
+    await expect(page.locator(".h-group")).toHaveCount(1);
+    await page.evaluate(() => {
+      const w = window as unknown as { flew: boolean };
+      w.flew = false;
+      new MutationObserver(() => { if (document.querySelector(".h-gather")) w.flew = true; }).observe(document.body, { childList: true });
+    });
+    const from = (await page.locator('[data-id="app-plants"]').boundingBox())!;
+    const to = (await page.locator(".h-group .h-folder-face").boundingBox())!;
+    await page.mouse.move(from.x + from.width / 2, from.y + from.height / 2);
+    await page.mouse.down();
+    await page.mouse.move(from.x + from.width / 2 + 30, from.y + from.height / 2, { steps: 2 });
+    await page.mouse.move(to.x + to.width / 2, to.y + to.height / 2, { steps: 4 });
+    await page.clock.runFor(650);
+    await expect(page.locator(".h-group[data-grouping]")).toHaveCount(1);
+    await page.mouse.up();
+    await page.clock.runFor(100);
+    await expect(page.locator('.h-group [data-app="app-plants"]')).toBeVisible();
+    expect(await page.evaluate(() => (window as unknown as { flew: boolean }).flew)).toBe(false);
+  });
+
+  test("a tap fans a group out below it, and a tap on the top bar gathers it", async ({ page }) => {
+    await page.clock.install();
+    const ids = ["app-run", "app-groceries", "app-habits", "app-recipes", "app-budget", "app-plants", "app-mood", "app-notes"];
+    const layout = { v: 1, starred: [], order: ["app-run", "g:g1", ...ids.filter(id => !["app-run", "app-groceries", "app-notes"].includes(id))], groups: { g1: { name: "Lists", apps: ["app-groceries", "app-notes"] } }, seen: ids };
+    await serve(page, { makes: [], docs: { "layout/main": layout } });
+    await expect(page.locator(".h-group .h-folder-face > .h-face")).toHaveCount(2);
     const before = (await page.locator('[data-id="app-mood"]').boundingBox())!;
     await page.locator(".h-group").tap();
     await page.clock.runFor(1000);
@@ -316,7 +352,7 @@ test.describe("over a fake host", () => {
 
   test("Rename from a group's menu opened over search leaves one entry, which one back pops", async ({ page }) => {
     const ids = ["app-run", "app-groceries", "app-habits", "app-recipes", "app-budget", "app-plants", "app-mood", "app-notes"];
-    const layout = { v: 1, starred: [], order: ["app-run", "g:g1", ...ids.filter(id => !["app-run", "app-groceries", "app-notes"].includes(id))], groups: { g1: { name: "Lists", look: "folder", apps: ["app-groceries", "app-notes"] } }, seen: ids };
+    const layout = { v: 1, starred: [], order: ["app-run", "g:g1", ...ids.filter(id => !["app-run", "app-groceries", "app-notes"].includes(id))], groups: { g1: { name: "Lists", apps: ["app-groceries", "app-notes"] } }, seen: ids };
     await serve(page, { makes: [], docs: { "layout/main": layout } });
     await expect(page.locator(".h-group")).toHaveCount(1);
     const hash = () => page.evaluate(() => location.hash);
@@ -327,11 +363,11 @@ test.describe("over a fake host", () => {
     await expect(page.locator(".h-group-menu")).toBeVisible();
     await expect.poll(hash).toBe("#menu");
     await page.getByRole("menuitem", { name: "Rename" }).click();
-    await expect(page.locator('.h-folder input[aria-label="Group name"]')).toBeVisible();
+    await expect(page.getByRole("textbox", { name: "Group name" })).toBeFocused();
     await expect(page.locator(".h-search")).toHaveCount(0);
-    await expect.poll(hash).toBe("#group");
+    await expect.poll(hash).toBe("#name");
     await page.goBack();
-    await expect(page.locator(".h-folder")).toHaveCount(0);
+    await expect(page.locator(".h-name")).toHaveCount(0);
     await expect.poll(hash).toBe("");
     await expect(page.locator(".h-search, .h-group-menu")).toHaveCount(0);
   });
@@ -489,9 +525,9 @@ test.describe("renders", () => {
           await expect.poll(() => page.locator(".h-tile[data-id]:not([data-dragging])").evaluateAll(els => els.every(e => !(e as HTMLElement).style.transform))).toBe(true);
           await page.screenshot({ path: join(shots, `home-drop-${size}-${scheme}.png`), animations: "disabled" });
           await page.mouse.up();
-          // Two starred apps, a folder of three and a pile of four, then
-          // the folder open, then the pile fanned out, then an app held
-          // over another, outlined to group.
+          // Two starred apps, a group of three and a group of four, then
+          // the second fanned out, then an app held over another, on a
+          // folder's backing to group.
           await page.evaluate(async () => {
             const { mount } = await import(`${location.origin}/home.js`);
             const { fakeHome, fakeDb, SAMPLE } = await import(`${location.origin}/kit/fake-home.js`);
@@ -503,24 +539,18 @@ test.describe("renders", () => {
             const ids = apps.map((a: { id: string }) => a.id);
             const layout = {
               v: 1, starred: ["app-run", "app-notes"], order: ["g:g1", "app-steps", "g:g2", "app-water"], seen: ids,
-              groups: { g1: { name: "Lists", look: "folder", apps: ["app-groceries", "app-budget", "app-plants"] }, g2: { name: "Fun", look: "pile", apps: ["app-habits", "app-recipes", "app-mood", "app-tide"] } },
+              groups: { g1: { name: "Lists", apps: ["app-groceries", "app-budget", "app-plants"] }, g2: { name: "Fun", apps: ["app-habits", "app-recipes", "app-mood", "app-tide"] } },
             };
             mount(document.getElementById("app"), fakeHome({ makes: [], apps }), { db: fakeDb({ "layout/main": layout }) });
           });
           await expect(page.locator(".h-group")).toHaveCount(2);
           await page.evaluate(() => Promise.all([...document.images].map(i => i.decode().catch(() => {}))));
           await page.screenshot({ path: join(shots, `home-groups-${size}-${scheme}.png`), animations: "disabled" });
-          await page.locator('.h-group[data-group="g1"]').click();
-          await expect(page.locator(".h-folder .h-tile[data-id]")).toHaveCount(3);
-          await page.evaluate(() => Promise.all([...document.images].map(i => i.decode().catch(() => {}))));
-          await page.screenshot({ path: join(shots, `home-folder-${size}-${scheme}.png`), animations: "disabled" });
-          await page.locator(".h-folder-scrim").click({ position: { x: 4, y: 4 } });
-          await expect(page.locator(".h-folder")).toHaveCount(0);
           await page.locator('.h-group[data-group="g2"]').click();
           await expect(page.locator(".h-fan .h-tile[data-id]")).toHaveCount(4);
           await expect.poll(() => page.locator(".h-tile[data-key]").evaluateAll(els => els.every(e => !(e as HTMLElement).style.transform))).toBe(true);
           await page.evaluate(() => Promise.all([...document.images].map(i => i.decode().catch(() => {}))));
-          await page.screenshot({ path: join(shots, `home-pile-${size}-${scheme}.png`), animations: "disabled" });
+          await page.screenshot({ path: join(shots, `home-fan-${size}-${scheme}.png`), animations: "disabled" });
           // One of its apps caught mid-drag out of the row, the row closed
           // up behind it; the page losing focus then puts it back.
           const recipes = (await page.locator('.h-fan [data-id="app-recipes"]').boundingBox())!;
@@ -530,7 +560,7 @@ test.describe("renders", () => {
           await expect(page.locator('.h-fan [data-id="app-recipes"][data-dragging]')).toHaveCount(1);
           await expect.poll(() => page.locator(".h-fan .h-tile:not([data-dragging])").evaluateAll(els => els.every(e => !(e as HTMLElement).style.marginLeft))).toBe(true);
           await expect.poll(() => page.locator(".h-tile[data-id]:not([data-dragging])").evaluateAll(els => els.every(e => !(e as HTMLElement).style.transform))).toBe(true);
-          await page.screenshot({ path: join(shots, `home-pile-drag-${size}-${scheme}.png`), animations: "disabled" });
+          await page.screenshot({ path: join(shots, `home-fan-drag-${size}-${scheme}.png`), animations: "disabled" });
           await page.evaluate(() => dispatchEvent(new Event("blur")));
           await page.mouse.up();
           await expect(page.locator(".h-page[data-dragging]")).toHaveCount(0);
@@ -548,8 +578,8 @@ test.describe("renders", () => {
           await expect.poll(() => page.locator(".h-tile[data-key]:not([data-dragging])").evaluateAll(els => els.every(e => !(e as HTMLElement).style.transform))).toBe(true);
           await page.screenshot({ path: join(shots, `home-grouping-${size}-${scheme}.png`), animations: "disabled" });
           await page.mouse.up();
-          // Search for "re" over a starred app, a folder and the rest:
-          // one match from each, the folder's named under it; then a
+          // Search for "re" over a starred app, a group and the rest:
+          // one match from each, the group's named under it; then a
           // query that matches nothing; then a pull caught midway.
           await page.evaluate(async () => {
             const { mount } = await import(`${location.origin}/home.js`);
@@ -557,7 +587,7 @@ test.describe("renders", () => {
             const ids = SAMPLE.apps.map((a: { id: string }) => a.id);
             const layout = {
               v: 1, starred: ["app-recipes", "app-notes"], order: ["app-run", "g:g1", "app-habits", "app-mood"], seen: ids,
-              groups: { g1: { name: "Lists", look: "folder", apps: ["app-groceries", "app-budget", "app-plants"] } },
+              groups: { g1: { name: "Lists", apps: ["app-groceries", "app-budget", "app-plants"] } },
             };
             mount(document.getElementById("app"), fakeHome({ makes: [] }), { db: fakeDb({ "layout/main": layout }) });
           });
@@ -579,7 +609,7 @@ test.describe("renders", () => {
           await expect(page.locator(".h-search-ghost")).toBeVisible();
           await page.screenshot({ path: join(shots, `home-search-pull-${size}-${scheme}.png`), animations: "disabled" });
           await page.evaluate(() => { document.documentElement.removeAttribute("data-pulling"); document.documentElement.style.removeProperty("--pull"); });
-          // A starred app, a folder and eight apps, every tile in one
+          // A starred app, a group and eight apps, every tile in one
           // cell, from a layout an earlier release wrote with big tiles
           // on; then one tile caught mid-drag.
           await page.evaluate(async () => {

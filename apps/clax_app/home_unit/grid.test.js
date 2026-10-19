@@ -1,5 +1,5 @@
 import { describe, expect, test } from 'vitest';
-import { pack, geometry, cellBox, slotAt, centreUnder, iconCentre, tiltOf } from '../home/grid.js';
+import { pack, geometry, cellBox, slotAt, centreUnder, iconCentre } from '../home/grid.js';
 
 const at = (r) => r.cells.map((c) => `${c.key}@${c.col},${c.row}${c.span === 2 ? '×2' : ''}`);
 
@@ -59,12 +59,4 @@ test("centreUnder aims at the icon's centre, near the top of a 1×1 cell and of 
   expect(centreUnder(cells, g, a.x + a.w / 2, 38)).toBe(0);
   expect(centreUnder(cells, g, b.x + b.w / 2, 68)).toBe(1);
   expect(centreUnder(cells, g, b.x + b.w / 2, b.y + b.h / 2)).toBe(-1);
-});
-
-test('a pile tilts the same way every time, within 8°', () => {
-  const a = [0, 1, 2, 3, 4].map((i) => tiltOf('g1', i));
-  expect([0, 1, 2, 3, 4].map((i) => tiltOf('g1', i))).toEqual(a);
-  expect(a.every((d) => d >= -8 && d <= 8)).toBe(true);
-  expect(new Set(a).size).toBeGreaterThan(1);
-  expect(tiltOf('g2', 0)).not.toBe(tiltOf('g1', 0));
 });

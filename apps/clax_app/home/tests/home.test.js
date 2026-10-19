@@ -811,12 +811,15 @@ test('tiles are reported once they come to rest, not while they move', async () 
   expect(run.rect).toEqual({ x: r.x, y: r.y, w: r.width, h: r.height });
 });
 
-const groupLayout = (look = 'folder') => {
+/** Run tracker, then a group of Groceries and Notes ("Lists"), then the
+ * rest; `look` (a field earlier releases wrote) when given. */
+const groupLayout = (look) => {
   const ids = SAMPLE.apps.map((a) => a.id);
-  return { v: 1, starred: [], order: ['app-run', 'g:g1', ...ids.filter((id) => !['app-run', 'app-groceries', 'app-notes'].includes(id))], groups: { g1: { name: 'Lists', look, apps: ['app-groceries', 'app-notes'] } }, seen: ids };
+  return { v: 1, starred: [], order: ['app-run', 'g:g1', ...ids.filter((id) => !['app-run', 'app-groceries', 'app-notes'].includes(id))], groups: { g1: { name: 'Lists', ...(look ? { look } : {}), apps: ['app-groceries', 'app-notes'] } }, seen: ids };
 };
+const nameField = () => document.querySelector('.h-name input[aria-label="Group name"]');
 
-test('holding a tile 600 ms over another app outlines a group, and dropping makes a folder named Group', async () => {
+test('holding a tile 600 ms over another app grows it onto a folder backing; a drop makes a group named Group, its name offered at once', async () => {
   const clock = manualClock();
   await show({ makes: [] }, { clock });
   await wait(async () => !!(await stored()));
@@ -831,13 +834,65 @@ test('holding a tile 600 ms over another app outlines a group, and dropping make
   expect(ui.exists('[data-grouping]')).toBe(false);
   clock.advance(1);
   await wait(() => ui.exists('[data-id="app-habits"][data-grouping]'));
+  expect(ui.exists('[data-id="app-habits"][data-grouping] .h-icon > .h-folder-back')).toBe(true);
   el.dispatchEvent(pointer('pointerup', t)); clock.advance(1500);
-  await wait(() => ui.exists('.h-group[data-look="folder"]'));
+  await wait(() => ui.exists('.h-group'));
   const l = await stored();
   const [gid] = Object.keys(l.groups);
-  expect(l.groups[gid]).toEqual({ name: 'Group', look: 'folder', apps: ['app-habits', 'app-mood'] });
+  expect(l.groups[gid]).toEqual({ name: 'Group', apps: ['app-habits', 'app-mood'] });
   expect(ui.text('.h-group .h-label')).toBe('Group');
   expect(ui.exists('[data-grouping]')).toBe(false);
+  // The suggested name, all of it selected, ready to type over.
+  await wait(() => nameField() && document.activeElement === nameField());
+  const input = nameField();
+  expect(input.value).toBe('Group');
+  expect([input.selectionStart, input.selectionEnd]).toEqual([0, 5]);
+  expect(history.state?.clax).toBe('name');
+  input.dispatchEvent(new KeyboardEvent('keydown', { key: 'Escape', bubbles: true, cancelable: true }));
+  await wait(() => !ui.exists('.h-name') && history.state?.clax !== 'name');
+  expect((await stored()).groups[gid].name).toBe('Group');
+});
+
+test('a group made of apps whose icon words share a category is offered its name; Enter keeps an edit', async () => {
+  const clock = manualClock();
+  const at = SAMPLE.apps[0].updatedAt;
+  const apps = [
+    { id: 'app-run', title: 'Run tracker', updatedAt: at, build: null, icon: { word: 'run' } },
+    { id: 'app-gym', title: 'Gym log', updatedAt: at, build: null, icon: { word: 'workout' } },
+    { id: 'app-budget', title: 'Weekly budget', updatedAt: at, build: null, icon: { word: 'money' } },
+  ];
+  await show({ makes: [], apps }, { clock, layout: { v: 1, starred: [], order: ['app-run', 'app-budget', 'app-gym'], seen: apps.map((a) => a.id) } });
+  await drag(clock, 'app-gym', faceCentre('app-run'), { pause: 700 });
+  await wait(() => nameField() && document.activeElement === nameField());
+  expect(nameField().value).toBe('Fitness');
+  const [gid] = Object.keys((await stored()).groups);
+  expect((await stored()).groups[gid]).toEqual({ name: 'Fitness', apps: ['app-run', 'app-gym'] });
+  nameField().value = 'Training';
+  nameField().dispatchEvent(new Event('input', { bubbles: true }));
+  nameField().dispatchEvent(new KeyboardEvent('keydown', { key: 'Enter', bubbles: true, cancelable: true }));
+  await wait(() => !ui.exists('.h-name'));
+  await wait(() => ui.text('.h-group .h-label') === 'Training');
+  await wait(async () => (await stored()).groups[gid].name === 'Training');
+});
+
+test("a dropped app flies from where it was let go into its place in the group's preview, which shows it once it lands", async () => {
+  const clock = manualClock();
+  await show({ makes: [] }, { clock, layout: groupLayout() });
+  const g = document.querySelector('.h-group .h-face').getBoundingClientRect();
+  // What shows as the flight starts: its icon over the page, its place in the preview empty.
+  const seen = [];
+  const watch = new MutationObserver(() => {
+    const ghost = document.querySelector('.h-gather');
+    if (ghost && !seen.length) seen.push([!!ghost.querySelector('.h-face'), document.querySelector('.h-group [data-app="app-plants"]')?.style.visibility]);
+  });
+  watch.observe(document.body, { childList: true });
+  await drag(clock, 'app-plants', { x: g.x + g.width / 2, y: g.y + g.height / 2 }, { pause: 700 });
+  await wait(() => seen.length > 0);
+  watch.disconnect();
+  expect(seen[0]).toEqual([true, 'hidden']);
+  const slot = () => document.querySelector('.h-group [data-app="app-plants"]');
+  await wait(() => !ui.exists('.h-gather') && slot()?.style.visibility === '');
+  expect([...document.querySelectorAll('.h-group .h-folder-face > .h-face')].map((f) => f.dataset.app)).toEqual(['app-groceries', 'app-notes', 'app-plants']);
 });
 
 test('a release on an app before 600 ms is an ordinary drop into its slot', async () => {
@@ -849,7 +904,7 @@ test('a release on an app before 600 ms is an ordinary drop into its slot', asyn
   expect(Object.keys((await stored()).groups)).toEqual([]);
 });
 
-test('an app held over a starred app makes the folder first in All apps, scrolled into view', async () => {
+test('an app held over a starred app makes the group first in All apps, scrolled into view', async () => {
   const clock = manualClock();
   const at = SAMPLE.apps[7].updatedAt;
   const extra = Array.from({ length: 40 }, (_, i) => ({ id: `app-x${i}`, title: `Extra ${i}`, updatedAt: at, build: null, icon: { monogram: 'X', hue: 9 * i } }));
@@ -869,6 +924,9 @@ test('an app held over a starred app makes the folder first in All apps, scrolle
   expect(l.order[0]).toBe(`g:${gid}`);
   const r = document.querySelector('.h-group').getBoundingClientRect();
   expect(r.top >= 0 && r.bottom <= innerHeight).toBe(true);
+  await wait(() => nameField());
+  nameField().dispatchEvent(new KeyboardEvent('keydown', { key: 'Escape', bubbles: true, cancelable: true }));
+  await wait(() => !ui.exists('.h-name'));
   scrollTo(0, 0);
 });
 
@@ -988,60 +1046,51 @@ test('a group drags like an app, never into another group', async () => {
   expect((await stored()).groups.g1.apps).toEqual(['app-groceries', 'app-notes']);
 });
 
-test('a tap opens the folder over a dimmed grid; its name renames; back closes it', async () => {
-  const home = await show({ makes: [] }, { layout: groupLayout() });
-  await ui.click('.h-group');
-  await wait(() => ui.exists('.h-folder'));
-  expect(ui.exists('.h-folder-scrim')).toBe(true);
-  expect([...document.querySelectorAll('.h-folder .h-tile[data-id]')].map((t) => t.dataset.id)).toEqual(['app-groceries', 'app-notes']);
-  await ui.click('.h-folder-name');
-  const input = document.querySelector('.h-folder input[aria-label="Group name"]');
-  input.value = 'Shopping';
-  input.dispatchEvent(new Event('input', { bubbles: true }));
-  input.dispatchEvent(new KeyboardEvent('keydown', { key: 'Enter', bubbles: true }));
-  await wait(async () => (await stored()).groups.g1.name === 'Shopping');
-  await wait(() => ui.text('.h-folder-name') === 'Shopping');
-  await ui.click('.h-folder [data-id="app-notes"]');
-  await wait(() => home.calls.some((c) => c.method === 'open'));
-  history.back();
-  await wait(() => !ui.exists('.h-folder'));
-});
-
-test('Escape cancels a rename; the scrim closes the folder', async () => {
-  await show({ makes: [] }, { layout: groupLayout() });
-  await ui.click('.h-group');
-  await wait(() => ui.exists('.h-folder'));
-  await ui.click('.h-folder-name');
-  const input = document.querySelector('.h-folder input[aria-label="Group name"]');
-  input.value = 'Nope';
-  input.dispatchEvent(new KeyboardEvent('keydown', { key: 'Escape', bubbles: true }));
-  await wait(() => ui.exists('.h-folder-name'));
-  expect(ui.exists('.h-folder')).toBe(true);
-  expect((await stored()).groups.g1.name).toBe('Lists');
-  await ui.click('.h-folder-scrim');
-  await wait(() => !ui.exists('.h-folder'));
-});
-
-test("the group's own menu renames, switches its look and ungroups", async () => {
+test("the group's own menu renames and ungroups", async () => {
   await show({ makes: [] }, { layout: groupLayout() });
   document.querySelector('.h-group').dispatchEvent(new MouseEvent('contextmenu', { bubbles: true, cancelable: true }));
   await wait(() => ui.exists('.h-group-menu'));
-  expect([...document.querySelectorAll('.h-group-menu [role="menuitem"]')].map((b) => b.textContent)).toEqual(['Rename', 'Show as pile', 'Ungroup']);
-  await ui.click('Show as pile');
-  await wait(async () => (await stored()).groups.g1.look === 'pile');
-  expect(ui.exists('.h-group-menu')).toBe(false);
-  document.querySelector('.h-group').dispatchEvent(new MouseEvent('contextmenu', { bubbles: true, cancelable: true }));
-  await wait(() => ui.exists('.h-group-menu'));
-  expect(ui.text('.h-group-menu')).toContain('Show as folder');
+  expect([...document.querySelectorAll('.h-group-menu [role="menuitem"]')].map((b) => b.textContent)).toEqual(['Rename', 'Ungroup']);
   await ui.click('Rename');
-  await wait(() => ui.exists('.h-folder input[aria-label="Group name"]'));
-  await ui.click('.h-folder-scrim');
-  await wait(() => !ui.exists('.h-folder'));
+  await wait(() => nameField() && document.activeElement === nameField());
+  expect(ui.exists('.h-group-menu')).toBe(false);
+  expect(nameField().value).toBe('Lists');
+  nameField().value = 'Shopping';
+  nameField().dispatchEvent(new Event('input', { bubbles: true }));
+  nameField().dispatchEvent(new KeyboardEvent('keydown', { key: 'Enter', bubbles: true, cancelable: true }));
+  await wait(async () => (await stored()).groups.g1.name === 'Shopping');
+  await wait(() => ui.text('.h-group .h-label') === 'Shopping' && !ui.exists('.h-name'));
   document.querySelector('.h-group').dispatchEvent(new MouseEvent('contextmenu', { bubbles: true, cancelable: true }));
   await wait(() => ui.exists('.h-group-menu'));
   await ui.click('Ungroup');
   await wait(async () => Object.keys((await stored()).groups).length === 0);
   expect(section('all').slice(0, 3)).toEqual(['app-run', 'app-groceries', 'app-notes']);
+});
+
+test("Escape and back leave a group's name as it was; a tap away keeps what the field says", async () => {
+  const rename = async () => {
+    document.querySelector('.h-group').dispatchEvent(new MouseEvent('contextmenu', { bubbles: true, cancelable: true }));
+    await wait(() => ui.exists('.h-group-menu'));
+    await ui.click('Rename');
+    await wait(() => nameField() && document.activeElement === nameField());
+    nameField().value = 'Nope';
+    nameField().dispatchEvent(new Event('input', { bubbles: true }));
+  };
+  await show({ makes: [] }, { layout: groupLayout() });
+  await rename();
+  nameField().dispatchEvent(new KeyboardEvent('keydown', { key: 'Escape', bubbles: true, cancelable: true }));
+  await wait(() => !ui.exists('.h-name') && history.state?.clax !== 'name');
+  await rename();
+  history.back();
+  await wait(() => !ui.exists('.h-name'));
+  expect((await stored()).groups.g1.name).toBe('Lists');
+  expect(ui.text('.h-group .h-label')).toBe('Lists');
+  await rename();
+  nameField().value = 'Errands';
+  nameField().dispatchEvent(new Event('input', { bubbles: true }));
+  await ui.click('.h-name-scrim');
+  await wait(async () => (await stored()).groups.g1.name === 'Errands');
+  await wait(() => !ui.exists('.h-name') && history.state?.clax !== 'name');
 });
 
 test("back closes the group's own menu, and only it; Escape leaves its history entry too", async () => {
@@ -1057,9 +1106,9 @@ test("back closes the group's own menu, and only it; Escape leaves its history e
   await wait(() => ui.exists('.h-group-menu'));
   document.dispatchEvent(new KeyboardEvent('keydown', { key: 'Escape', bubbles: true }));
   await wait(() => !ui.exists('.h-group-menu') && history.state?.clax !== 'menu');
-  // Over a fanned pile, back closes the menu and leaves the pile fanned.
+  // Over a fanned group, back closes the menu and leaves the group fanned.
   const clock = manualClock();
-  await show({ makes: [] }, { clock, layout: groupLayout('pile') });
+  await show({ makes: [] }, { clock, layout: groupLayout() });
   await ui.click('.h-group');
   clock.advance(1000);
   await wait(() => ui.exists('.h-fan'));
@@ -1074,43 +1123,21 @@ test("back closes the group's own menu, and only it; Escape leaves its history e
   await wait(() => !ui.exists('.h-fan') && history.state?.clax !== 'group');
 });
 
-test('an app in a group offers Remove from group in its menu', async () => {
-  const home = await show({ makes: [] }, { layout: groupLayout() });
+test('an app in a fanned group offers Remove from group in its menu', async () => {
+  const clock = manualClock();
+  const home = await show({ makes: [] }, { clock, layout: groupLayout() });
   await ui.click('.h-group');
-  await wait(() => ui.exists('.h-folder'));
+  clock.advance(1000);
+  await wait(() => ui.exists('.h-fan'));
   home.menuPick = 'remove';
-  document.querySelector('.h-folder [data-id="app-notes"]').dispatchEvent(new MouseEvent('contextmenu', { bubbles: true, cancelable: true }));
+  document.querySelector('.h-fan [data-id="app-notes"]').dispatchEvent(new MouseEvent('contextmenu', { bubbles: true, cancelable: true }));
   await wait(async () => !(await stored()).groups.g1);
   expect(home.calls.at(-1).args[2]).toEqual({ items: [{ id: 'star', label: 'Star' }, { id: 'remove', label: 'Remove from group' }] });
-  await wait(() => !ui.exists('.h-folder'));
+  // Left with one app, the group gives way to it, and its row goes.
+  await wait(() => !ui.exists('.h-fan') && !ui.exists('.h-group'));
 });
 
-test('dragging inside the folder reorders its apps', async () => {
-  const clock = manualClock();
-  await show({ makes: [] }, { clock, layout: { ...groupLayout(), groups: { g1: { name: 'Lists', look: 'folder', apps: ['app-groceries', 'app-notes', 'app-plants'] } } } });
-  await ui.click('.h-group');
-  await wait(() => ui.exists('.h-folder'));
-  await drag(clock, 'app-plants', centre('app-groceries'));
-  await wait(async () => (await stored()).groups.g1.apps.join() === 'app-plants,app-groceries,app-notes');
-  expect([...document.querySelectorAll('.h-folder .h-tile[data-id]')].map((t) => t.dataset.id)).toEqual(['app-plants', 'app-groceries', 'app-notes']);
-  await ui.click('.h-folder-scrim');
-  await wait(() => !ui.exists('.h-folder'));
-});
-
-test('dragging an app out past the folder edge takes it out of the group', async () => {
-  const clock = manualClock();
-  await show({ makes: [] }, { clock, layout: { ...groupLayout(), groups: { g1: { name: 'Lists', look: 'folder', apps: ['app-groceries', 'app-notes', 'app-plants'] } } } });
-  await ui.click('.h-group');
-  await wait(() => ui.exists('.h-folder'));
-  const panel = document.querySelector('.h-folder-panel').getBoundingClientRect();
-  await drag(clock, 'app-plants', { x: panel.x + panel.width / 2, y: panel.bottom + 60 });
-  await wait(async () => !(await stored()).groups.g1.apps.includes('app-plants'));
-  expect(ui.exists('.h-folder')).toBe(false);
-  // Out of the group, it goes right after it.
-  await wait(() => section('all').join() === 'app-run,app-plants,app-habits,app-recipes,app-budget,app-mood');
-});
-
-test('tiles() leaves group tiles out, and while a folder is open gives only its apps', async () => {
+test('tiles() leaves group tiles out', async () => {
   const home = fakeHome({ makes: [] });
   const reports = [];
   home.tiles = async (list) => { reports.push(list.map((t) => t.id)); };
@@ -1119,51 +1146,63 @@ test('tiles() leaves group tiles out, and while a folder is open gives only its 
   await wait(() => reports.length >= 1);
   expect(reports.at(-1).includes('app-groceries')).toBe(false);
   expect(reports.at(-1).every((id) => id.startsWith('app-'))).toBe(true);
-  await ui.click('.h-group');
-  await wait(() => reports.at(-1).join() === 'app-groceries,app-notes');
-  await ui.click('.h-folder-scrim');
-  await wait(() => !ui.exists('.h-folder'));
 });
 
-test('Alt+arrows move a focused app within an open folder, and two presses before the write both count', async () => {
-  await show({ makes: [] }, { layout: { ...groupLayout(), groups: { g1: { name: 'Lists', look: 'folder', apps: ['app-groceries', 'app-notes', 'app-plants'] } } } });
-  await ui.click('.h-group');
-  await wait(() => ui.exists('.h-folder'));
-  const inFolder = () => [...document.querySelectorAll('.h-folder .h-tile[data-id]')].map((t) => t.dataset.id).join();
-  const el = document.querySelector('.h-folder [data-id="app-groceries"]');
-  el.focus();
-  el.dispatchEvent(new KeyboardEvent('keydown', { key: 'ArrowRight', altKey: true, bubbles: true }));
-  el.dispatchEvent(new KeyboardEvent('keydown', { key: 'ArrowRight', altKey: true, bubbles: true }));
-  await wait(async () => (await stored()).groups.g1.apps.join() === 'app-notes,app-plants,app-groceries');
-  await wait(() => inFolder() === 'app-notes,app-plants,app-groceries');
-  expect(document.activeElement.dataset.id).toBe('app-groceries');
-  document.activeElement.dispatchEvent(new KeyboardEvent('keydown', { key: 'ArrowLeft', altKey: true, bubbles: true }));
-  await wait(async () => (await stored()).groups.g1.apps.join() === 'app-notes,app-groceries,app-plants');
-  expect(ui.exists('.h-folder')).toBe(true);
-  await ui.click('.h-folder-scrim');
-  await wait(() => !ui.exists('.h-folder'));
-});
-
-test('a pile shows up to five tilted icons, the same tilt every load', async () => {
+test("a group's tile shows its first four apps' icons, two by two; fewer apps fill fewer cells", async () => {
   const ids = SAMPLE.apps.map((a) => a.id);
-  const layout = { v: 1, starred: [], order: ['g:p1', 'app-mood', 'app-notes'], groups: { p1: { name: 'Lots', look: 'pile', apps: ids.filter((id) => !['app-mood', 'app-notes'].includes(id)) } }, seen: ids };
+  const six = ids.filter((id) => !['app-mood', 'app-notes'].includes(id));
+  const layout = { v: 1, starred: [], order: ['g:p1', 'app-mood', 'app-notes'], groups: { p1: { name: 'Lots', apps: six } }, seen: ids };
   await show({ makes: [] }, { layout });
-  const tilts = () => [...document.querySelectorAll('.h-pile-card')].map((c) => c.style.transform);
-  expect(tilts().length).toBe(5);
-  expect(new Set(tilts()).size).toBeGreaterThan(1);
-  expect(ui.text('.h-group[data-look="pile"] .h-label')).toBe('Lots');
-  const first = tilts();
-  await show({ makes: [] }, { layout });
-  expect(tilts()).toEqual(first);
+  const preview = (gid) => [...document.querySelectorAll(`.h-group[data-group="${gid}"] .h-folder-face > .h-face`)].map((f) => f.dataset.app);
+  expect(preview('p1')).toEqual(six.slice(0, 4));
+  expect(ui.text('.h-group .h-label')).toBe('Lots');
+  expect(document.querySelector('.h-group').getAttribute('aria-label')).toBe('Lots, group of 6 apps');
+  await show({ makes: [] }, { layout: groupLayout() });
+  expect(preview('g1')).toEqual(['app-groceries', 'app-notes']);
 });
 
-test('a tap fans the pile out in a row below it, pushing the grid down; a tap outside gathers it', async () => {
+test('groups an earlier release stored as a folder or a pile load as one look, their look kept', async () => {
+  const ids = SAMPLE.apps.map((a) => a.id);
+  const layout = {
+    v: 1, starred: [], order: ['g:f', 'g:p', 'app-mood', 'app-notes'], seen: ids,
+    groups: { f: { name: 'Folder', look: 'folder', apps: ['app-run', 'app-groceries', 'app-habits'] }, p: { name: 'Pile', look: 'pile', apps: ['app-recipes', 'app-budget', 'app-plants'] } },
+  };
   const clock = manualClock();
-  const home = await show({ makes: [] }, { clock, layout: groupLayout('pile') });
+  await show({ makes: [] }, { clock, layout });
+  expect([...document.querySelectorAll('.h-group')].map((g) => [g.dataset.group, g.querySelectorAll('.h-folder-face > .h-face').length, g.hasAttribute('data-look')])).toEqual([['f', 3, false], ['p', 3, false]]);
+  expect(ui.exists('.h-pile-face, .h-pile-card')).toBe(false);
+  for (const gid of ['f', 'p']) {
+    await ui.click(`.h-group[data-group="${gid}"]`);
+    clock.advance(1000);
+    await wait(() => ui.exists(`.h-fan[data-group="${gid}"]`));
+    // Escape gathers it once the page listens for it, a frame or so after the row shows.
+    await wait(() => {
+      document.dispatchEvent(new KeyboardEvent('keydown', { key: 'Escape', bubbles: true }));
+      clock.advance(1000);
+      return !ui.exists('.h-fan');
+    });
+  }
+  // A change keeps each look as it was stored.
+  document.querySelector('.h-group[data-group="p"]').dispatchEvent(new MouseEvent('contextmenu', { bubbles: true, cancelable: true }));
+  await wait(() => ui.exists('.h-group-menu'));
+  await ui.click('Rename');
+  await wait(() => nameField());
+  nameField().value = 'Kept';
+  nameField().dispatchEvent(new KeyboardEvent('keydown', { key: 'Enter', bubbles: true, cancelable: true }));
+  await wait(async () => (await stored()).groups.p.name === 'Kept');
+  const l = await stored();
+  expect(l.groups.f.look).toBe('folder');
+  expect(l.groups.p.look).toBe('pile');
+});
+
+test('a tap fans a group out in a row below it, pushing the grid down; a tap outside gathers it', async () => {
+  const clock = manualClock();
+  const home = await show({ makes: [] }, { clock, layout: groupLayout() });
   const below = document.querySelector('[data-id="app-mood"]').getBoundingClientRect().y;
   await ui.click('.h-group');
   clock.advance(1000);
   await wait(() => ui.exists('.h-fan[data-group="g1"]'));
+  expect(document.querySelector('.h-group').getAttribute('aria-expanded')).toBe('true');
   expect([...document.querySelectorAll('.h-fan .h-tile[data-id]')].map((t) => t.dataset.id)).toEqual(['app-groceries', 'app-notes']);
   expect(document.querySelector('[data-id="app-mood"]').getBoundingClientRect().y).toBeGreaterThan(below);
   await ui.click('.h-fan [data-id="app-notes"]');
@@ -1175,11 +1214,11 @@ test('a tap fans the pile out in a row below it, pushing the grid down; a tap ou
   await wait(() => document.querySelector('[data-id="app-mood"]').getBoundingClientRect().y === below);
 });
 
-test("tiles() reports a fanned pile's apps", async () => {
+test("tiles() reports a fanned group's apps", async () => {
   const home = fakeHome({ makes: [] });
   const reports = [];
   home.tiles = async (list) => { reports.push(list.map((t) => t.id)); };
-  db = fakeDb({ [LAYOUT]: groupLayout('pile') });
+  db = fakeDb({ [LAYOUT]: groupLayout() });
   const clock = manualClock();
   mount(root(), home, { db, clock });
   await wait(() => reports.length >= 1);
@@ -1191,16 +1230,16 @@ test("tiles() reports a fanned pile's apps", async () => {
   await wait(() => !ui.exists('.h-fan'));
 });
 
-const pileOfThree = () => ({
-  ...groupLayout('pile'),
+const groupOfThree = () => ({
+  ...groupLayout(),
   order: ['app-run', 'g:g1', 'app-habits', 'app-recipes', 'app-budget', 'app-mood'],
-  groups: { g1: { name: 'Lists', look: 'pile', apps: ['app-groceries', 'app-notes', 'app-plants'] } },
+  groups: { g1: { name: 'Lists', apps: ['app-groceries', 'app-notes', 'app-plants'] } },
 });
 const fanned = () => [...document.querySelectorAll('.h-fan .h-tile[data-id]')].map((t) => t.dataset.id).join();
 
-test("an app dragged along a fanned pile's row reorders the group, and the pile stays fanned", async () => {
+test("an app dragged along a fanned group's row reorders the group, which stays fanned", async () => {
   const clock = manualClock();
-  await show({ makes: [] }, { clock, layout: pileOfThree() });
+  await show({ makes: [] }, { clock, layout: groupOfThree() });
   await ui.click('.h-group');
   clock.advance(1000);
   await wait(() => ui.exists('.h-fan'));
@@ -1214,9 +1253,9 @@ test("an app dragged along a fanned pile's row reorders the group, and the pile 
   await wait(() => !ui.exists('.h-fan'));
 });
 
-test("an app dragged out of a fanned pile's row into the grid leaves the group there", async () => {
+test("an app dragged out of a fanned group's row into the grid leaves the group there", async () => {
   const clock = manualClock();
-  await show({ makes: [] }, { clock, layout: pileOfThree() });
+  await show({ makes: [] }, { clock, layout: groupOfThree() });
   await ui.click('.h-group');
   clock.advance(1000);
   await wait(() => ui.exists('.h-fan'));
@@ -1229,9 +1268,9 @@ test("an app dragged out of a fanned pile's row into the grid leaves the group t
   await wait(() => !ui.exists('.h-fan'));
 });
 
-test("an app dragged out of a fanned pile whose write fails shows in the row again", async () => {
+test("an app dragged out of a fanned group whose write fails shows in the row again", async () => {
   const clock = manualClock();
-  const base = fakeDb({ [LAYOUT]: pileOfThree() });
+  const base = fakeDb({ [LAYOUT]: groupOfThree() });
   const failing = { doc: (path) => ({ ...base.doc(path), set: () => Promise.reject({ code: 'failed', message: 'disk full' }) }) };
   mount(root(), fakeHome({ makes: [] }), { db: failing, clock });
   await wait(() => ui.exists('.h-group'));
@@ -1254,13 +1293,13 @@ test("an app dragged out of a fanned pile whose write fails shows in the row aga
   });
 });
 
-test("a drag while a pile is fanned keeps it fanned and drops where the tiles show, past the fan's row", async () => {
+test("a drag while a group is fanned keeps it fanned and drops where the tiles show, past the fan's row", async () => {
   const clock = manualClock();
   const at = SAMPLE.apps[7].updatedAt;
   const extra = Array.from({ length: 10 }, (_, i) => ({ id: `app-a${i + 1}`, title: `Extra ${i + 1}`, updatedAt: at, build: null, icon: { monogram: 'A', hue: 30 * i } }));
   const apps = [SAMPLE.apps[1], SAMPLE.apps[7], ...extra];
   const ids = apps.map((a) => a.id);
-  const layout = { v: 1, starred: [], order: ['g:g1', ...extra.map((a) => a.id)], groups: { g1: { name: 'Lists', look: 'pile', apps: ['app-groceries', 'app-notes'] } }, seen: ids };
+  const layout = { v: 1, starred: [], order: ['g:g1', ...extra.map((a) => a.id)], groups: { g1: { name: 'Lists', apps: ['app-groceries', 'app-notes'] } }, seen: ids };
   await show({ makes: [], apps }, { clock, layout });
   await ui.click('.h-group');
   clock.advance(1000);
@@ -1281,9 +1320,9 @@ test("a drag while a pile is fanned keeps it fanned and drops where the tiles sh
   await wait(() => !ui.exists('.h-fan'));
 });
 
-test('Alt+arrows move a focused app along a fanned pile', async () => {
+test('Alt+arrows move a focused app along a fanned group', async () => {
   const clock = manualClock();
-  await show({ makes: [] }, { clock, layout: groupLayout('pile') });
+  await show({ makes: [] }, { clock, layout: groupLayout() });
   await ui.click('.h-group');
   clock.advance(1000);
   await wait(() => ui.exists('.h-fan'));
@@ -1399,11 +1438,11 @@ test('a pull down from the top past 64 px opens search, and a short one does not
   await wait(() => !ui.exists('.h-search'));
 });
 
-test("a sideways swipe on a fanned pile's row is the row's, however it drifts down; a pull is taken only once it is mostly down", async () => {
+test("a sideways swipe on a fanned group's row is the row's, however it drifts down; a pull is taken only once it is mostly down", async () => {
   if (typeof Touch !== 'function') return;
   const clock = manualClock();
   const ids = SAMPLE.apps.map((a) => a.id);
-  const layout = { v: 1, starred: [], order: ['g:p1', ...ids.slice(6)], groups: { p1: { name: 'Lots', look: 'pile', apps: ids.slice(0, 6) } }, seen: ids };
+  const layout = { v: 1, starred: [], order: ['g:p1', ...ids.slice(6)], groups: { p1: { name: 'Lots', apps: ids.slice(0, 6) } }, seen: ids };
   await show({ makes: [] }, { clock, layout });
   scrollTo(0, 0);
   await ui.click('.h-group');
@@ -1441,7 +1480,7 @@ test("a sideways swipe on a fanned pile's row is the row's, however it drifts do
   send(document.body, 'touchend', 204, 140);
   await new Promise((done) => setTimeout(done, 0));
   expect(ui.exists('.h-search')).toBe(false);
-  // Escape gathers the pile once the page listens for it, a frame or so after the row shows.
+  // Escape gathers the group once the page listens for it, a frame or so after the row shows.
   await wait(() => {
     document.dispatchEvent(new KeyboardEvent('keydown', { key: 'Escape', bubbles: true }));
     clock.advance(1000);
@@ -1582,30 +1621,29 @@ test('the key banner is a banner on card, its key glyph leading, within the cont
   });
 });
 
-test('renaming a folder selects all of its name, scrolled to its start', async () => {
+test("renaming a group selects all of its name, scrolled to its start, in a field raised at level 2 over the tile's name", async () => {
   const layout = groupLayout();
   layout.groups.g1.name = 'Groceries, errands and the weekly shop';
   await show({ makes: [] }, { layout });
-  await ui.click('.h-group');
-  await wait(() => ui.exists('.h-folder'));
-  await ui.click('.h-folder-name');
-  const input = document.querySelector('.h-folder input[aria-label="Group name"]');
-  await wait(() => document.activeElement === input);
+  document.querySelector('.h-group').dispatchEvent(new MouseEvent('contextmenu', { bubbles: true, cancelable: true }));
+  await wait(() => ui.exists('.h-group-menu'));
+  await ui.click('Rename');
+  await wait(() => nameField() && document.activeElement === nameField());
+  const input = nameField();
   expect(input.scrollWidth > input.clientWidth).toBe(true);
   expect([input.selectionStart, input.selectionEnd]).toEqual([0, input.value.length]);
   expect(input.scrollLeft).toBe(0);
-});
-
-test("an open folder's panel is raised at level 2 over the brand's scrim", async () => {
-  await show({ makes: [] }, { layout: groupLayout() });
-  await ui.click('.h-group');
-  await wait(() => ui.exists('.h-folder'));
+  const tile = document.querySelector('.h-group').getBoundingClientRect();
+  const field = input.getBoundingClientRect();
+  expect(Math.abs((field.left + field.right) / 2 - (tile.left + tile.right) / 2) <= 1).toBe(true);
+  expect(field.top > tile.top + 40 && field.top < tile.bottom).toBe(true);
   await inLight(async () => {
-    expect(getComputedStyle(document.querySelector('.h-folder-scrim')).backgroundColor).toBe('rgba(20, 20, 15, 0.4)');
-    const panel = getComputedStyle(document.querySelector('.h-folder-panel'));
-    expect(panel.backgroundColor).toBe('rgb(255, 255, 255)');
-    expect(panel.boxShadow).toContain('rgba(20, 20, 15, 0.1) 0px 8px 24px');
+    const f = getComputedStyle(input);
+    expect(f.backgroundColor).toBe('rgb(255, 255, 255)');
+    expect(f.boxShadow).toContain('rgba(20, 20, 15, 0.1) 0px 8px 24px');
   });
+  input.dispatchEvent(new KeyboardEvent('keydown', { key: 'Escape', bubbles: true, cancelable: true }));
+  await wait(() => !ui.exists('.h-name'));
 });
 
 test('a notice spans the page less 16 px each side, at most 560 wide', async () => {

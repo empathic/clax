@@ -314,15 +314,16 @@ starts the person's apps. Changing it is a change like any other.
   a new app they make must show.
 - The shipped home app keeps the person's arrangement in one document of
   its own, `layout/main`:
-  `{v: 1, starred: [appId], order: [appId | "g:<groupId>"], groups: {groupId: {name, look: "folder" | "pile", apps: [appId]}}, seen: [appId], opens: {appId: {n, last, days: {"YYYY-MM-DD": n}}}}`.
+  `{v: 1, starred: [appId], order: [appId | "g:<groupId>"], groups: {groupId: {name, apps: [appId]}}, seen: [appId], opens: {appId: {n, last, days: {"YYYY-MM-DD": n}}}}`.
   `starred` is the Starred section in order; `order` is All apps; `seen`
   lists the apps opened from the home screen (the rest show "New");
   `opens` counts those opens. Keep it readable by the shipped home app:
   add fields, never change the meaning of one, and keep every field you do
   not use when you write it, so stepping back a version never loses the
-  arrangement. Show any app the document does not place. `groups`
-  (folders and piles) and `g:<groupId>` entries in `order` are shown by the
-  shipped home app from release 1.3.0.
+  arrangement. Show any app the document does not place. `groups` and
+  `g:<groupId>` entries in `order` are shown by the shipped home app from
+  release 1.3.0; a group's `look`, which earlier releases wrote, is kept
+  and read by nothing.
 - `use("home")` resolves null in a browser, in your renders and tests, and
   in every other app: show "This is a Clax home screen. Open it in the Clax
   app." then. Test it with the kit's `home` part: mount the page over

@@ -1,5 +1,6 @@
 import { describe, expect, test } from 'vitest';
-import { normalize, reconcile, sections, moveTo, star, unstar, opened, isNew, groupOf, groupKey, groupNameOf, makeGroup, addToGroup, removeFromGroup, moveInGroup, renameGroup, setLook, ungroup, keepNewer } from '../home/arrange.js';
+import { normalize, reconcile, sections, moveTo, star, unstar, opened, isNew, groupOf, groupKey, groupNameOf, categoryOf, makeGroup, addToGroup, removeFromGroup, moveInGroup, renameGroup, ungroup, keepNewer } from '../home/arrange.js';
+import { WORDS } from '../home/words.js';
 
 const app = (id, hoursAgo = 0, icon = {}) => ({ id, title: id.toUpperCase(), updatedAt: new Date(Date.UTC(2026, 9, 16, 12) - hoursAgo * 3600e3).toISOString(), build: null, icon });
 const A = app('a', 1), B = app('b', 2), C = app('c', 3), D = app('d', 4);
@@ -18,7 +19,7 @@ describe('normalize', () => {
     const n = normalize({ starred: ['a', 'a', 3, ''], order: 'b', groups: { x: { apps: ['c'], look: 7 }, '': {} }, opens: { a: { n: -1, days: { '2026-10-16': 2, nope: 1 } } } });
     expect(n.starred).toEqual(['a']);
     expect(n.order).toEqual([]);
-    expect(n.groups).toEqual({ x: { name: 'Group', look: 'folder', apps: ['c'] } });
+    expect(n.groups).toEqual({ x: { name: 'Group', look: 7, apps: ['c'] } });
     expect(n.opens.a).toEqual({ n: 0, last: null, days: { '2026-10-16': 2 } });
   });
 });
@@ -77,7 +78,7 @@ describe('sections', () => {
     const s = sections(l, [A, B, C, D]);
     expect(s.starred.map((e) => e.key)).toEqual(['d']);
     expect(s.all.map((e) => e.key)).toEqual(['a', 'g:x']);
-    expect(s.all[1].group).toEqual({ id: 'x', name: 'Tools', look: 'folder' });
+    expect(s.all[1].group).toEqual({ id: 'x', name: 'Tools' });
     expect(s.all[1].apps.map((a) => a.id)).toEqual(['b', 'c']);
   });
 });
@@ -133,16 +134,42 @@ describe('groups', () => {
   const apps = [A, B, C, D];
   const base = () => reconcile({ starred: ['d'], order: ['a', 'b', 'c'], seen: ['a', 'b', 'c', 'd'] }, apps);
 
-  test('a group is named from the common icon word, else Group', () => {
-    expect(groupNameOf(app('x', 0, { word: 'Money' }), app('y', 0, { word: 'money ' }))).toBe('Money');
-    expect(groupNameOf(app('x', 0, { word: 'money' }), app('y', 0, { word: 'chart' }))).toBe('Group');
-    expect(groupNameOf(app('x', 0, { emoji: '🍲' }), app('y', 0, {}))).toBe('Group');
+  test("each icon word's category, by the launcher's words; none for no word or one it does not know", () => {
+    expect(categoryOf(app('x', 0, { word: 'Run' }))).toBe('Fitness');
+    expect(categoryOf(app('x', 0, { word: ' workout ' }))).toBe('Fitness');
+    expect(categoryOf(app('x', 0, { word: 'budget' }))).toBe('Money');
+    expect(categoryOf(app('x', 0, { word: 'recipe' }))).toBe('Food');
+    expect(categoryOf(app('x', 0, { word: 'groceries' }))).toBe('Food');
+    expect(categoryOf(app('x', 0, { word: 'calculator' }))).toBe('Tools');
+    expect(categoryOf(app('x', 0, { word: 'puzzle' }))).toBe('Games');
+    expect(categoryOf(app('x', 0, { word: 'tide' }))).toBe(null);
+    expect(categoryOf(app('x', 0, { emoji: '🍲' }))).toBe(null);
+    expect(categoryOf(null)).toBe(null);
+  });
+
+  test('every icon word the launcher knows has a category', () => {
+    for (const [words] of WORDS) for (const word of words) expect(categoryOf(app('x', 0, { word }))).toMatch(/^[A-Z][a-z]+$/);
+  });
+
+  test("a new group's suggested name: the category all its apps share, else the icon word all share, else Group", () => {
+    const w = (word) => app(word, 0, { word });
+    expect(groupNameOf([w('run'), w('workout')])).toBe('Fitness');
+    expect(groupNameOf([w('money'), w('expenses'), w('budget')])).toBe('Money');
+    expect(groupNameOf([w('recipe'), w('groceries')])).toBe('Food');
+    expect(groupNameOf([w('timer'), w('settings')])).toBe('Tools');
+    expect(groupNameOf([w('game'), w('puzzle')])).toBe('Games');
+    expect(groupNameOf([app('x', 0, { word: 'Tide' }), app('y', 0, { word: 'tide ' })])).toBe('Tide');
+    expect(groupNameOf([w('money'), w('chart')])).toBe('Group');
+    expect(groupNameOf([w('run'), app('y', 0, { emoji: '🏃' })])).toBe('Group');
+    expect(groupNameOf([app('x', 0, { emoji: '🍲' }), app('y', 0, {})])).toBe('Group');
+    expect(groupNameOf([w('run')])).toBe('Group');
+    expect(groupNameOf([])).toBe('Group');
   });
 
   test("dropping an app on another makes a folder at the target's place, target first", () => {
     const l = reconcile(makeGroup(base(), 'b', 'a', 'g1', 'Group'), apps);
     expect(l.order).toEqual(['g:g1', 'c']);
-    expect(l.groups.g1).toEqual({ name: 'Group', look: 'folder', apps: ['b', 'a'] });
+    expect(l.groups.g1).toEqual({ name: 'Group', apps: ['b', 'a'] });
     expect(reconcile(makeGroup(base(), 'c', 'a', 'g1', 'G'), apps).order).toEqual(['b', 'g:g1']);
   });
 
@@ -156,7 +183,7 @@ describe('groups', () => {
     expect(addToGroup(g, 'g1', 'g:g1')).toEqual(g);
   });
 
-  test('add, move inside, remove, rename, look, ungroup', () => {
+  test('add, move inside, remove, rename, ungroup', () => {
     let l = reconcile(makeGroup(base(), 'a', 'b', 'g1', 'G'), apps);
     l = reconcile(addToGroup(l, 'g1', 'c'), apps);
     expect(l.groups.g1.apps).toEqual(['a', 'b', 'c']);
@@ -168,7 +195,6 @@ describe('groups', () => {
     expect(renameGroup(l, 'g1', '  Tools  ').groups.g1.name).toBe('Tools');
     expect(renameGroup(l, 'g1', '   ').groups.g1.name).toBe('G');
     expect(renameGroup(l, 'g1', 'x'.repeat(60)).groups.g1.name).toHaveLength(40);
-    expect(setLook(l, 'g1', 'pile').groups.g1.look).toBe('pile');
     const u = reconcile(ungroup(l, 'g1'), apps);
     expect(u.order).toEqual(['c', 'b', 'a']);
     expect(u.groups).toEqual({});
@@ -195,13 +221,16 @@ describe('bigTiles and big, which earlier releases wrote', () => {
 describe('a layout a later release wrote', () => {
   const now = new Date(Date.UTC(2026, 9, 16, 12));
 
-  test('keeps a look it does not know, shown as a folder until a known look is set', () => {
-    const later = { order: ['g:x'], groups: { x: { name: 'Tools', look: 'stack', apps: ['a', 'b'] } }, seen: ['a', 'b'] };
-    const l = reconcile(later, [A, B]);
-    expect(l.groups.x.look).toBe('stack');
-    expect(sections(l, [A, B]).all[0].group.look).toBe('folder');
-    expect(star(l, 'c').groups.x.look).toBe('stack');
-    expect(setLook(l, 'x', 'pile').groups.x.look).toBe('pile');
+  test("keeps a group's stored look, any look, untouched through every change, and reads nothing from it", () => {
+    for (const look of ['folder', 'pile', 'stack', 7]) {
+      const old = { order: ['g:x', 'c'], groups: { x: { name: 'Tools', look, apps: ['a', 'b'] } }, seen: ['a', 'b', 'c', 'd'] };
+      let l = reconcile(old, [A, B, C, D]);
+      expect(l.groups.x.look).toBe(look);
+      expect(sections(l, [A, B, C, D]).all.find((e) => e.group)).toEqual({ key: 'g:x', group: { id: 'x', name: 'Tools' }, apps: [A, B] });
+      l = renameGroup(addToGroup(star(l, 'c'), 'x', 'd'), 'x', 'Kit');
+      l = moveInGroup(removeFromGroup(l, 'b'), 'x', 'd', 0);
+      expect(l.groups.x).toEqual({ name: 'Kit', look, apps: ['d', 'a'] });
+    }
   });
 
   test('keeps order entries of kinds it does not know in place, and does not show them', () => {

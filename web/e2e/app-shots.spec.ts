@@ -90,15 +90,16 @@ async function serve(page: Page, files: Record<string, string>, home?: Record<st
   await page.goto(`${ORIGIN}/index.html`);
 }
 
-/** Waits for fonts and images, then writes the render and checks that
- * neither the page nor `frame` scrolls sideways. */
-async function take(page: Page, scene: string, form: Form, theme: string, frame?: Frame) {
+/** Waits for fonts and images, then writes the render (with `animations`
+ * "allow", as they stand) and checks that neither the page nor `frame`
+ * scrolls sideways. */
+async function take(page: Page, scene: string, form: Form, theme: string, frame?: Frame, animations: "disabled" | "allow" = "disabled") {
   await page.evaluate(() => document.fonts.ready);
   for (const f of [page.mainFrame(), ...(frame ? [frame] : [])]) {
     await f.evaluate(() => Promise.all([...document.images].map(i => i.decode().catch(() => {}))));
   }
   mkdirSync(OUT, { recursive: true });
-  await page.screenshot({ path: join(OUT, `${scene}-${form}-${theme}.png`), animations: "disabled" });
+  await page.screenshot({ path: join(OUT, `${scene}-${form}-${theme}.png`), animations });
   for (const f of [page.mainFrame(), ...(frame ? [frame] : [])]) {
     const { scroll, inner } = await f.evaluate(() => ({ scroll: document.documentElement.scrollWidth, inner: innerWidth }));
     expect(scroll, `${f.url()} scrolls sideways`).toBeLessThanOrEqual(inner);
@@ -109,14 +110,14 @@ async function take(page: Page, scene: string, form: Form, theme: string, frame?
 const IDS = ["app-run", "app-groceries", "app-habits", "app-recipes", "app-budget", "app-plants", "app-mood", "app-notes"];
 const GROUPED = {
   v: 1, starred: ["app-run", "app-notes"], order: ["g:g1", "g:g2"], seen: IDS,
-  groups: { g1: { name: "Lists", look: "folder", apps: ["app-groceries", "app-budget", "app-plants"] }, g2: { name: "Fun", look: "pile", apps: ["app-habits", "app-recipes", "app-mood"] } },
+  groups: { g1: { name: "Lists", apps: ["app-groceries", "app-budget", "app-plants", "app-mood"] }, g2: { name: "Fun", apps: ["app-habits", "app-recipes"] } },
 };
-/** Home scenes over a stored arrangement: two starred apps, a folder and a
- * pile (then the folder open, the ⋮ menu open, a search for "re"); and a
- * tile under the mouse. */
+/** Home scenes over a stored arrangement: two starred apps, a group of four
+ * and one of two (then the first fanned out, the ⋮ menu open, a search for
+ * "re"); and a tile under the mouse. */
 const ARRANGED: Record<string, unknown> = {
   "home-groups": GROUPED,
-  "home-folder": GROUPED,
+  "home-fan": GROUPED,
   "home-menu": GROUPED,
   "home-search": GROUPED,
   "home-hover": { v: 1, starred: [], order: IDS, seen: IDS },
@@ -221,7 +222,10 @@ for (const form of Object.keys(FORMS) as Form[]) {
         test(`${scene} ${form} ${theme}`, async ({ page }) => {
           await serve(page, homeFiles(), { makes: [], docs: { "layout/main": layout } });
           await expect(page.locator(".h-tile[data-key]").first()).toBeVisible();
-          if (scene === "home-folder") await page.locator('.h-group[data-group="g1"]').click();
+          if (scene === "home-fan") {
+            await page.locator('.h-group[data-group="g1"]').click();
+            await expect(page.locator(".h-fan .h-tile[data-id]")).toHaveCount(4);
+          }
           if (scene === "home-menu") await page.getByRole("button", { name: "More" }).click();
           if (scene === "home-search") {
             await page.getByRole("button", { name: "Search", exact: true }).click();
@@ -233,6 +237,49 @@ for (const form of Object.keys(FORMS) as Form[]) {
           await take(page, scene, form, theme);
         });
       }
+
+      // Gathering: Step counter dragged onto Gym log, held until the target
+      // grows onto a folder's backing; then, with motion, dropped and caught
+      // mid-flight into the new group's preview; then the group with its
+      // suggested name offered.
+      test(`home-gather ${form} ${theme}`, async ({ page }) => {
+        await page.emulateMedia({ reducedMotion: "no-preference" });
+        const made = "2026-10-16T08:00:00.000Z";
+        const apps = [
+          { id: "app-gym", title: "Gym log", updatedAt: made, build: null, icon: { word: "workout" } },
+          { id: "app-steps", title: "Step counter", updatedAt: made, build: null, icon: { word: "fitness" } },
+          { id: "app-budget", title: "Weekly budget", updatedAt: made, build: null, icon: { word: "money" } },
+          { id: "app-mood", title: "Mood journal", updatedAt: made, build: null, icon: { monogram: "MJ", hue: 270 } },
+        ];
+        const ids = apps.map(a => a.id);
+        await serve(page, homeFiles(), { makes: [], apps, docs: { "layout/main": { v: 1, starred: [], order: ids, seen: ids } } });
+        await expect(page.locator(".h-tile[data-id]")).toHaveCount(4);
+        const box = async (sel: string) => (await page.locator(sel).boundingBox())!;
+        const from = await box('[data-id="app-steps"] .h-face');
+        const to = await box('[data-id="app-gym"] .h-face');
+        await page.mouse.move(from.x + from.width / 2, from.y + from.height / 2);
+        await page.mouse.down();
+        await page.mouse.move(from.x + from.width / 2 + 20, from.y + from.height / 2, { steps: 2 });
+        await page.mouse.move(to.x + to.width / 2 + 6, to.y + to.height / 2 + 4, { steps: 4 });
+        await expect(page.locator('[data-id="app-gym"][data-grouping]')).toHaveCount(1);
+        await expect.poll(() => page.locator(".h-tile[data-key]:not([data-dragging])").evaluateAll(els => els.every(e => !(e as HTMLElement).style.transform))).toBe(true);
+        await take(page, "home-target", form, theme);
+        // Each animation held at its middle as it starts.
+        await page.evaluate(() => {
+          new MutationObserver((_, o) => {
+            if (!document.querySelector(".h-gather")) return;
+            o.disconnect();
+            for (const a of document.getAnimations()) { a.pause(); a.currentTime = 130; }
+          }).observe(document.body, { childList: true });
+        });
+        await page.mouse.up();
+        await expect(page.locator(".h-gather")).toHaveCount(1);
+        await take(page, "home-gather", form, theme, undefined, "allow");
+        await page.evaluate(() => { for (const a of document.getAnimations()) a.finish(); });
+        await expect(page.locator(".h-gather")).toHaveCount(0);
+        await expect(page.getByRole("textbox", { name: "Group name" })).toHaveValue("Fitness");
+        await take(page, "home-name", form, theme);
+      });
 
       test(`kit ${form} ${theme}`, async ({ page }) => {
         await serve(page, exampleFiles());

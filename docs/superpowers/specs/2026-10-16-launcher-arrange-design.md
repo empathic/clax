@@ -128,6 +128,8 @@ Alt+arrows move it one cell.
 
 ## 5. Groups
 
+> Changed by the owner on 2026-10-19: one look, a folder tile showing its first four apps' icons two by two, that fans out in place like the pile did (no folder over the grid, no Show as pile / Show as folder); a drop on an app or a group flies the app into the preview, a new group is named from its apps' icon-word category (else "Group") and its name is offered for editing at once; a stored `look` is kept and ignored.
+
 - **Folder look**: a tile showing up to four small icons and the name. A
   tap opens the group over a dimmed grid: its name (tap to rename), its
   apps in a grid, drag inside to reorder, drag out to the edge to take an

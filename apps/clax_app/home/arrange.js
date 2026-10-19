@@ -3,18 +3,20 @@
 // page or the store. Every function returns a new layout and keeps what
 // it does not know, so a layout a later release wrote survives an earlier
 // one's write (add fields, never change the meaning of one): unknown
-// fields, at the top and in a group or an open count; a group's unknown
-// look (shown as a folder); an order entry of an unknown kind (a string
+// fields, at the top and in a group or an open count; an order entry of
+// an unknown kind (a string
 // "<kind>:…" other than "g:…", or an object), in place and not shown; and
 // a `v` above 1, never lowered. keepNewer puts back, before a write, the
 // known fields of such a layout that this release cannot read.
 //
 //   {v: 1, starred: [appId], order: [appId | "g:<groupId>"],
-//    groups: {groupId: {name, look: "folder" | "pile", apps: [appId]}},
+//    groups: {groupId: {name, apps: [appId]}},
 //    seen: [appId], opens: {appId: {n, last, days: {"YYYY-MM-DD": n}}}}
 //
-// `bigTiles` and `big`, which earlier releases wrote, are unknown
-// fields here: kept as they are and read by nothing.
+// `bigTiles` and `big`, and a group's `look` ("folder" or "pile"), which
+// earlier releases wrote, are unknown fields here: kept as they are and
+// read by nothing. Every group shows one way.
+import { WORDS, wordOf } from './words.js';
 
 export const LAYOUT_PATH = 'layout/main';
 /** The days `opens[id].days` keeps, today included. */
@@ -50,7 +52,7 @@ export function normalize(body) {
   const groups = {};
   for (const [gid, g] of Object.entries(obj(b.groups) ?? {})) {
     if (!isId(gid) || !obj(g)) continue;
-    groups[gid] = { ...g, name: typeof g.name === 'string' && g.name.trim() ? g.name : 'Group', look: typeof g.look === 'string' && g.look ? g.look : 'folder', apps: ids(g.apps) };
+    groups[gid] = { ...g, name: typeof g.name === 'string' && g.name.trim() ? g.name : 'Group', apps: ids(g.apps) };
   }
   const opens = {};
   for (const [id, o] of Object.entries(obj(b.opens) ?? {})) {
@@ -129,7 +131,7 @@ export function reconcile(layout, apps, { first = false } = {}) {
 }
 
 /** What the page shows: Starred's entries and All apps', in order, each
- * `{key, app}` or, for a group, `{key, group: {id, name, look}, apps}`. */
+ * `{key, app}` or, for a group, `{key, group: {id, name}, apps}`. */
 export function sections(layout, apps) {
   const byId = new Map(apps.map((a) => [a.id, a]));
   const appEntry = (id) => (byId.has(id) ? { key: id, app: byId.get(id) } : null);
@@ -141,7 +143,7 @@ export function sections(layout, apps) {
       const gid = gidOf(key);
       const g = layout.groups[gid];
       const list = g ? g.apps.map((id) => byId.get(id)).filter(Boolean) : [];
-      return list.length ? { key, group: { id: gid, name: g.name, look: g.look === 'pile' ? 'pile' : 'folder' }, apps: list } : null;
+      return list.length ? { key, group: { id: gid, name: g.name }, apps: list } : null;
     }).filter(Boolean),
   };
 }
@@ -198,17 +200,30 @@ export const isNew = (layout, id) => !layout.seen.includes(id);
 /** The longest a group's name may be, in characters. */
 const NAME_MAX = 40;
 
-/** A new group's name: the icon word `a` and `b` share, capitalised, else "Group". */
-export function groupNameOf(a, b) {
-  const word = (x) => (typeof x?.icon?.word === 'string' ? x.icon.word.trim().toLowerCase() : '');
-  const w = word(a);
-  return w && w === word(b) ? w[0].toUpperCase() + w.slice(1) : 'Group';
+const CATEGORY = new Map(WORDS.flatMap(([words, , category]) => words.map((w) => [w, category])));
+
+/** The category of app `app`'s icon word (words.js), or null. */
+export const categoryOf = (app) => CATEGORY.get(wordOf(app)) ?? null;
+
+/** The name a new group of `apps` (two or more) is offered: the category
+ * every one's icon word is in, else the icon word every one has,
+ * capitalised, else "Group". */
+export function groupNameOf(apps) {
+  if (!Array.isArray(apps) || apps.length < 2) return 'Group';
+  const same = (f) => {
+    const v = f(apps[0]);
+    return v && apps.every((a) => f(a) === v) ? v : null;
+  };
+  const category = same(categoryOf);
+  if (category) return category;
+  const word = same(wordOf);
+  return word ? word[0].toUpperCase() + word.slice(1) : 'Group';
 }
 
-/** App `draggedId` dropped on app `targetId`: a new folder `gid` named
+/** App `draggedId` dropped on app `targetId`: a new group `gid` named
  * `name`, holding the target then the dragged app, at the target's place
  * in All apps; a target in Starred leaves it (groups are not starred), and
- * the folder goes first in All apps, right under Starred. A group dropped
+ * the group goes first in All apps, right under Starred. A group dropped
  * on anything, or on itself, makes nothing; so does a `gid` already in use. */
 export function makeGroup(layout, targetId, draggedId, gid, name) {
   const l = normalize(layout);
@@ -221,7 +236,7 @@ export function makeGroup(layout, targetId, draggedId, gid, name) {
   return {
     ...out,
     order: at >= 0 ? [...order.slice(0, at), groupKey(gid), ...order.slice(at)] : insertShown(order, groupKey(gid), 0),
-    groups: { ...out.groups, [gid]: { name, look: 'folder', apps: [targetId, draggedId] } },
+    groups: { ...out.groups, [gid]: { name, apps: [targetId, draggedId] } },
   };
 }
 
@@ -256,13 +271,6 @@ export function renameGroup(layout, gid, name) {
   const n = [...String(name ?? '').trim()].slice(0, NAME_MAX).join('');
   if (!n || !l.groups[gid]) return l;
   return { ...l, groups: { ...l.groups, [gid]: { ...l.groups[gid], name: n } } };
-}
-
-/** Group `gid` shown as a folder or as a pile; any other look changes nothing. */
-export function setLook(layout, gid, look) {
-  const l = normalize(layout);
-  if (!l.groups[gid] || (look !== 'folder' && look !== 'pile')) return l;
-  return { ...l, groups: { ...l.groups, [gid]: { ...l.groups[gid], look } } };
 }
 
 /** Group `gid` gone, its apps in its place in All apps, in its order. */

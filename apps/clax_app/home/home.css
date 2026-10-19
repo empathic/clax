@@ -107,9 +107,9 @@ body {
 }
 /* Level 2 in dark is outlined too: a shadow barely shows there. */
 @media (prefers-color-scheme: dark) {
-  :root:not([data-theme="light"]) :is(.h-menu, .h-folder-panel) { box-shadow: var(--elev-2), 0 0 0 1px var(--border-hover); }
+  :root:not([data-theme="light"]) :is(.h-menu, .h-name-input) { box-shadow: var(--elev-2), 0 0 0 1px var(--border-hover); }
 }
-:root[data-theme="dark"] :is(.h-menu, .h-folder-panel) { box-shadow: var(--elev-2), 0 0 0 1px var(--border-hover); }
+:root[data-theme="dark"] :is(.h-menu, .h-name-input) { box-shadow: var(--elev-2), 0 0 0 1px var(--border-hover); }
 .h-menu-item {
   display: block; width: 100%; height: 48px; padding: 0 12px; border: 0;
   background: transparent; color: var(--h-on-surface); text-align: left; white-space: nowrap;
@@ -263,8 +263,7 @@ body {
 
 /* Under a fine pointer a tile lifts as it is hovered: 1.03 and level 1. */
 @media (hover: hover) and (pointer: fine) {
-  .h-page:not([data-dragging]) .h-tile:not([data-held]):not([data-grouping]):hover .h-icon > .h-face,
-  .h-page:not([data-dragging]) .h-tile:not([data-held]):not([data-grouping]):hover .h-icon > .h-pile-face { transform: scale(1.03); }
+  .h-page:not([data-dragging]) .h-tile:not([data-held]):not([data-grouping]):hover .h-icon > .h-face { transform: scale(1.03); }
   .h-page:not([data-dragging]) .h-tile:not([data-held]):not([data-grouping]):hover .h-icon > .h-face { box-shadow: var(--elev-1); }
 }
 @media (hover: hover) and (pointer: fine) and (prefers-color-scheme: dark) {
@@ -368,79 +367,62 @@ html[data-pulling] :is(.h-key, .h-grid-wrap, .h-message) { transform: translateY
   font: 400 16px/24px var(--k-font);
 }
 
-/* Groups. A folder tile: up to four small icons on a tonal square. */
+/* Groups. A group's tile: a rounded square on the highest surface tone
+ * (Material's folder backing), showing up
+ * to four of its apps' icons, two by two, filled from the top left. */
 .h-face.h-folder-face, :root[data-theme="dark"] .h-face.h-folder-face {
-  background: var(--h-sc); color: var(--h-on-sc);
+  background: var(--surface-container-highest); color: var(--fg);
   display: grid; grid-template-columns: repeat(2, 26px); grid-auto-rows: 26px;
   gap: 2px; padding: 3px; place-content: start;
 }
 @media (prefers-color-scheme: dark) {
-  :root:not([data-theme="light"]) .h-face.h-folder-face { background: var(--h-sc); color: var(--h-on-sc); }
+  :root:not([data-theme="light"]) .h-face.h-folder-face { background: var(--surface-container-highest); color: var(--fg); }
 }
-.h-folder-face .h-face { width: 26px; height: 26px; border-radius: 7px; }
+.h-folder-face .h-face { width: 26px; height: 26px; border-radius: 7px; transition: opacity var(--k-fast) var(--k-ease); }
 .h-folder-face .h-face img { width: 26px; height: 26px; }
 .h-folder-face .h-glyph svg { width: 14px; height: 14px; }
 .h-folder-face .h-mono { font-size: 10px; }
 .h-folder-face .h-emoji { font-size: 14px; }
-/* The ring around the app a dragged one would group with. */
-.h-icon > .h-group-outline {
-  position: absolute; inset: -6px; border-radius: calc(var(--face, 60px) / 4 + 5px); pointer-events: none;
-  border: 3px solid var(--h-primary);
-  opacity: 0; transform: scale(0.94);
-  transition: opacity 120ms var(--k-ease), transform 120ms var(--k-ease);
-}
-.h-tile[data-grouping] .h-icon > .h-group-outline { opacity: 1; transform: scale(1.06); }
-.h-tile[data-grouping] .h-icon > .h-face { transform: scale(1.06); }
-.h-tile[data-grouping-with] .h-label { visibility: hidden; }
-@media (prefers-reduced-motion: reduce) { .h-icon > .h-group-outline { transition: none; } }
+/* Fanned out, its apps are in the row below: the preview stays, faint. */
+.h-group[data-fanned] .h-folder-face > .h-face { opacity: 0.35; }
 
-/* An open folder over the dimmed home screen. */
-.h-folder {
-  position: fixed; inset: 0; z-index: 6; overflow-y: auto; outline: none;
-  display: grid; place-items: center;
-  padding: calc(16px + var(--k-safe-top)) 16px calc(16px + var(--k-safe-bottom));
+/* Where a dragged app would make a group: the app under it grows onto a
+ * folder's backing, ringed in `agent`; a group under it grows, ringed. */
+.h-icon > .h-folder-back {
+  position: absolute; inset: -7px; z-index: -1; pointer-events: none;
+  border-radius: calc((var(--face, 60px) + 14px) / 4);
+  background: var(--surface-container-highest);
+  opacity: 0; transform: scale(0.8);
+  transition: opacity 140ms var(--k-ease), transform 140ms var(--k-ease);
 }
-.h-scrim.h-folder-scrim { z-index: 0; background: var(--scrim); }
-/* The panel: `raised`, at level 2. */
-.h-folder-panel {
-  position: relative; max-width: min(480px, calc(100vw - 32px)); padding: 12px 0 8px;
-  border-radius: var(--radius-xl); background: var(--raised); box-shadow: var(--elev-2);
-  transition: background var(--k-fast) var(--k-ease), box-shadow var(--k-fast) var(--k-ease);
+.h-tile[data-grouping] .h-icon > .h-folder-back { opacity: 1; transform: scale(1.06); box-shadow: 0 0 0 2px var(--h-primary); }
+.h-tile[data-grouping] .h-icon > .h-face { transform: scale(1.08); }
+.h-group[data-grouping] .h-icon > .h-folder-face { transform: scale(1.14); box-shadow: 0 0 0 2px var(--h-primary); }
+.h-tile[data-grouping-with] .h-label { visibility: hidden; }
+@media (prefers-reduced-motion: reduce) { .h-icon > .h-folder-back, .h-folder-face .h-face { transition: none; } }
+
+/* A dropped app on its way into a group's preview (home.js gatherInto). */
+.h-gather {
+  position: fixed; z-index: 6; pointer-events: none;
+  width: var(--face, 60px); height: var(--face, 60px);
 }
-/* A dragged app past the edge leaves the group on release: the panel fades. */
-.h-folder[data-out] .h-folder-panel { background: transparent; box-shadow: none; }
-@supports (color: color-mix(in srgb, red, red)) { .h-folder[data-out] .h-folder-panel { background: color-mix(in srgb, var(--raised) 50%, transparent); } }
-.h-folder-head { display: flex; justify-content: center; padding: 0 16px 8px; min-height: 40px; }
-.h-folder-name {
-  display: inline-flex; align-items: center; gap: 8px;
-  max-width: 100%; padding: 6px 12px 6px 16px; border: 0; border-radius: 20px;
-  background: var(--h-state); color: var(--h-on-surface); cursor: text;
-  font: 400 22px/28px var(--k-font); letter-spacing: 0;
-}
-@supports (color: color-mix(in srgb, red, red)) { .h-folder-name { background: color-mix(in srgb, var(--h-on-surface) 6%, transparent); } }
-.h-folder-name-text { overflow: hidden; white-space: nowrap; text-overflow: ellipsis; }
-.h-folder-name .h-glyph { color: var(--h-on-variant); flex: none; }
-.h-folder-name:hover, .h-folder-name:active { background: var(--h-state); }
-.h-folder-input {
-  width: 100%; max-width: 320px; padding: 6px 8px; border: 0; border-radius: 0;
+.h-gather > .h-face { box-shadow: var(--h-lift-shadow); }
+
+/* A group's name, in a field over its tile's name. */
+.h-scrim.h-name-scrim { z-index: 6; }
+.h-name { position: absolute; z-index: 7; }
+.h-name-input {
+  display: block; width: 100%; height: 40px; padding: 0 12px; border: 0; border-radius: var(--radius-sm);
   border-bottom: 2px solid var(--h-primary); outline: none;
-  background: transparent; color: var(--h-on-surface); text-align: center;
-  font: 400 22px/28px var(--k-font); letter-spacing: 0;
+  background: var(--raised); color: var(--h-on-surface); box-shadow: var(--elev-2); text-align: center;
+  font: 400 16px/24px var(--k-font); letter-spacing: 0;
 }
 
 /* A group's own menu, at its tile. */
 .h-scrim.h-group-scrim { z-index: 6; }
 .h-menu.h-group-menu { position: fixed; top: auto; right: auto; z-index: 7; min-width: 200px; }
 
-/* A pile: up to five icons stacked, each a little turned, the first on
- * top; an outline of the page's colour parts each from the one under it. */
-.h-pile-face { position: relative; display: block; width: 60px; height: 60px; }
-.h-pile-card { position: absolute; inset: 0; transition: transform var(--k-fast) var(--k-ease); }
-.h-pile-card .h-face { outline: 1px solid var(--h-surface); box-shadow: 0 1px 3px rgba(0, 0, 0, 0.24); }
-/* Fanned out, the pile stays as a lighter outline of itself. */
-.h-group[data-fanned] .h-pile-face { opacity: 0.4; }
-.h-tile[data-grouping] .h-icon > .h-pile-face { transform: scale(1.06); }
-/* A fanned pile's apps, in the row under it: cells as wide as the grid's,
+/* A fanned group's apps, in the row under it: cells as wide as the grid's,
  * scrolling sideways when there are more than fit. */
 .h-fan {
   display: flex; gap: 4px; overflow-x: auto; overflow-y: hidden;
@@ -453,4 +435,3 @@ html[data-pulling] :is(.h-key, .h-grid-wrap, .h-message) { transform: translateY
   flex: 0 0 calc((100% - (var(--cols, 4) - 1) * 4px) / var(--cols, 4));
   scroll-snap-align: start;
 }
-@media (prefers-reduced-motion: reduce) { .h-pile-card { transition: none; } }
