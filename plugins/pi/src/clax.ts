@@ -1927,8 +1927,11 @@ export function claxExtension(opts: ClaxOptions = {}): (pi: ExtensionAPI) => voi
           }
         }
       })().catch(() => {
-        // Pi refused the message (its runtime went stale as the session
-        // ended): the loop ends, and a later start may begin another.
+        // Any throw ends the loop: Pi refusing the message once the session's
+        // runtime is stale (/new, /resume, /fork, quit), or an unexpected
+        // failure. Nothing is reported: the extension has no log of its own,
+        // and Pi's notify needs a session context the loop does not hold. A
+        // later start may begin another loop.
         abort.abort();
         if (stopInject === stop) stopInject = undefined;
       });
