@@ -4,7 +4,7 @@
 // key so a saved API key is never touched.
 //
 //   flutter build macos --debug -t tool/secure_key_probe.dart
-//   build/macos/Build/Products/Debug/clax_app.app/Contents/MacOS/clax_app
+//   build/macos/Build/Products/Debug/Clax.app/Contents/MacOS/Clax
 //
 // Prints one line per step and PASS or FAIL; exits 0 on PASS.
 import 'dart:io';

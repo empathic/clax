@@ -1,7 +1,8 @@
 #!/usr/bin/env bash
 # macos-app-check.sh ZIP HOME: checks the Bazel-built macOS app (a zip of
-# clax_app.app) against what `flutter build macos` makes: its bundle ID,
-# version and executable, Flutter's frameworks, the sandbox entitlements of
+# Clax.app) against what `flutter build macos` makes: its bundle ID, name,
+# copyright, version and executable, the app menu's About, Hide and Quit
+# items named Clax, Flutter's frameworks, the sandbox entitlements of
 # Runner/Release.entitlements, and clax in Contents/Resources signed as a
 # sandboxed helper (Runner/ClaxHelper.entitlements), and the home bundle
 # HOME (the one //apps/clax_app:home_bundle built) and the third-party
@@ -14,8 +15,8 @@ bad() { echo "FAIL: $1"; fails=1; }
 dir="$(mktemp -d "${TEST_TMPDIR:-${TMPDIR:-/tmp}}/macos-app.XXXXXX")"
 trap 'rm -rf "$dir"' EXIT
 unzip -q "$zip" -d "$dir"
-app="$dir/clax_app.app"
-[ -d "$app" ] || { echo "FAIL: no clax_app.app in $zip"; exit 1; }
+app="$dir/Clax.app"
+[ -d "$app" ] || { echo "FAIL: no Clax.app in $zip"; exit 1; }
 # The third-party notices the licences page lists (NOTICES.Z, from
 # //apps/clax_app:notices): more than 500 kB, with entries for pub packages,
 # the engine's components and the embedded clax's Rust crates.
@@ -30,9 +31,18 @@ check_notices() { # check_notices NOTICES.Z
 }
 plist() { /usr/libexec/PlistBuddy -c "Print :$1" "$app/Contents/Info.plist" 2>/dev/null || true; }
 if [ "$(plist CFBundleIdentifier)" = dev.empathic.clax ]; then ok "bundle ID"; else bad "bundle ID: $(plist CFBundleIdentifier)"; fi
+if [ "$(plist CFBundleName)" = Clax ]; then ok "bundle name"; else bad "bundle name: $(plist CFBundleName)"; fi
+copyright="Copyright (C) 2026 Empathic, Inc."
+if [ "$(plist NSHumanReadableCopyright)" = "$copyright" ]; then ok "copyright"; else bad "copyright: $(plist NSHumanReadableCopyright)"; fi
 if [ "$(plist CFBundleShortVersionString)" = "$VERSION_NAME" ]; then ok "version name"; else bad "version name: $(plist CFBundleShortVersionString)"; fi
 if [ "$(plist CFBundleVersion)" = "$VERSION_CODE" ]; then ok "build number"; else bad "build number: $(plist CFBundleVersion)"; fi
 if [ -x "$app/Contents/MacOS/$(plist CFBundleExecutable)" ]; then ok "executable"; else bad "executable"; fi
+nib="$app/Contents/Resources/Base.lproj/MainMenu.nib"
+[ -d "$nib" ] && nib="$nib/keyedobjects.nib"
+for t in "About Clax" "Hide Clax" "Quit Clax" "showAbout:"; do
+    if [ -f "$nib" ] && grep -aq "$t" "$nib"; then ok "the menu has $t"; else bad "the menu has $t"; fi
+done
+if [ -f "$nib" ] && ! grep -aq APP_NAME "$nib"; then ok "the menu names no APP_NAME"; else bad "the menu names no APP_NAME"; fi
 for f in Frameworks/FlutterMacOS.framework/FlutterMacOS Frameworks/App.framework/App; do
     if [ -e "$app/Contents/$f" ]; then ok "$f"; else bad "$f"; fi
 done

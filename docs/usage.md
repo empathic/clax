@@ -582,10 +582,10 @@ run.
   phone (`scripts/app-phone.sh`, a dry run without
   `--i-know-what-i-am-doing`), with the SDK's `adb` Bazel fetches; a
   checkout with changes is built from a clean copy of HEAD.
-- `just app-macos` builds the release (sandboxed) app, `clax_app.app`, and
+- `just app-macos` builds the release (sandboxed) app, `Clax.app`, and
   prints its path (`//apps/clax_app:macos_app`, a zip);
   `just app-macos-native` builds it with Xcode, at
-  `apps/clax_app/build/macos/Build/Products/Release/clax_app.app`.
+  `apps/clax_app/build/macos/Build/Products/Release/Clax.app`.
 - `just app-clax` builds the embedded `clax` on its own: with Bazel the
   Android binaries (`//crates/clax-cli:clax_android_arm64`,
   `:clax_android_x86_64`) and the host one (`:clax_opt`), printing their
@@ -941,7 +941,7 @@ screen up for a second (the snapshot is taken shortly after it is
 drawn, and whenever it is covered or put away) before the next launch.
 On macOS, `CLAX_APP_DIR=<dir inside ~/Library/Containers/dev.empathic.clax/Data>`
 in the environment of the app's executable
-(`clax_app.app/Contents/MacOS/clax_app`) gives it a scratch support and
+(`Clax.app/Contents/MacOS/Clax`) gives it a scratch support and
 cache directory, so a measured build leaves your own apps alone.
 
 ### Clax on iPhone and iPad

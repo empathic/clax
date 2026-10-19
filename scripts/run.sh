@@ -280,7 +280,7 @@ _native() {
             _run ./scripts/build-app-clax.sh macos &&
                 _run ./scripts/build-home-bundle.sh --i-know-what-i-am-doing &&
                 _run bash -c 'cd apps/clax_app && flutter build macos --release' &&
-                { [ "$dry" = 1 ] || echo "$PWD/apps/clax_app/build/macos/Build/Products/Release/clax_app.app"; }
+                { [ "$dry" = 1 ] || echo "$PWD/apps/clax_app/build/macos/Build/Products/Release/Clax.app"; }
             ;;
         app-clax) _run ./scripts/build-app-clax.sh "$@" ;;
         home-bundle)

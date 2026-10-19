@@ -222,7 +222,8 @@ macOS) and the two keys below.
 | `dart_analyze` | `flutter analyze`: the app's library, and its tests, integration tests and tools (`:checked_sources`), by `analysis_options.yaml`; any diagnostic fails | `flutter analyze` |
 | `prompt_sync`, `version_sync` | the prompt's copies of the contract; pubspec.yaml's version is the one the BUILD file gives the APK and the macOS app | `scripts/sync-app-prompt.sh --check` |
 | `apk`, `apk_test` | the release APK for arm64-v8a and x86_64 (`bazel/flutter/android.bzl`), and a check of it against what Gradle makes | `flutter build apk` |
-| `macos_app`, `macos_app_test` | `clax_app.app` (a zip) with the embedded `clax` signed as a sandboxed helper (`bazel/flutter/macos.bzl`), and a check of it; macOS only | `flutter build macos` |
+| `macos_app`, `macos_app_test` | `Clax.app` (a zip) with the embedded `clax` signed as a sandboxed helper (`bazel/flutter/macos.bzl`), and a check of it; macOS only | `flutter build macos` |
+| `macos_about_test` | the About panel's credits (`macos/Runner/About.swift`), an XCTest bundle run by `xcodebuild`; macOS only | none |
 | `integration_<name>` (manual) | `integration_test/<name>_test.dart` in the debug app, run in the logged-in session | `flutter test <file> -d macos` |
 | `home_bundle`, `home_version_test` | the home app's bundle, `assets/home/home.clax` and `release.json`, packed from `home/` by `pack_home` (compiled by rules_dart) and signed: an asset of `app`, so of the APK and the macOS app; and a check of how its version is chosen | `scripts/build-home-bundle.sh` |
 | `//crates/clax-cli:clax_android_arm64`, `:clax_android_x86_64` | `clax` optimized and stripped for each Android CPU with the NDK, as `<abi>/libclax.so` (`bazel/android/clax.bzl`) | `scripts/build-app-clax.sh android` |

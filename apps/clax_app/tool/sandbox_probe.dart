@@ -4,7 +4,7 @@
 // configuration) and run the binary from a terminal:
 //
 //   flutter build macos --release -t tool/sandbox_probe.dart
-//   build/macos/Build/Products/Release/clax_app.app/Contents/MacOS/clax_app
+//   build/macos/Build/Products/Release/Clax.app/Contents/MacOS/Clax
 //
 // It runs Contents/Resources/clax --version, then starts `clax serve` with
 // a CLAX_HOME in the app's container on a free loopback port, waits up to

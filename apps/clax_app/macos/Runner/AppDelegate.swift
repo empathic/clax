@@ -16,6 +16,13 @@ class AppDelegate: FlutterAppDelegate {
     return true
   }
 
+  /// Clax › About Clax: the standard About panel, whose name, version and
+  /// copyright are Info.plist's, with a haiku as its credits, a new one each
+  /// time it opens.
+  @IBAction func showAbout(_ sender: Any?) {
+    NSApp.orderFrontStandardAboutPanel(options: [.credits: About.credits(seed: nil)])
+  }
+
   override func applicationWillFinishLaunching(_ notification: Notification) {
     super.applicationWillFinishLaunching(notification)
     installBundles()
