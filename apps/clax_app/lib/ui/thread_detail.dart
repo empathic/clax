@@ -253,7 +253,12 @@ class ThreadDetail extends StatefulWidget {
     this.onTryNow,
     this.isStopped,
     this.appTitle,
+    this.onOpenApp,
   });
+
+  /// Opens the app at this thread; null offers no Open app (the page is
+  /// over the app already).
+  final VoidCallback? onOpenApp;
 
   /// The app's name, for the title; null reads it from the daemon.
   final String? appTitle;
@@ -671,6 +676,12 @@ class _ThreadDetailState extends State<ThreadDetail> {
       title: widget.appTitle ?? _appTitle ?? '',
       subtitle: t == null ? null : threadSubtitle(label!, t.versionN),
       actions: [
+        if (widget.onOpenApp case final open?)
+          TextButton(
+            key: const ValueKey('thread-open-app'),
+            onPressed: open,
+            child: const Text('Open app'),
+          ),
         if (t != null && t.isOpen)
           TextButton(
             key: const ValueKey('thread-resolve'),

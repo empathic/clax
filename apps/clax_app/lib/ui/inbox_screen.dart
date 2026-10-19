@@ -1,6 +1,7 @@
 import 'dart:async';
 import 'dart:math';
 
+import 'package:flutter/foundation.dart';
 import 'package:flutter/material.dart';
 
 import '../clax/api.dart';
@@ -35,6 +36,12 @@ import 'user_message.dart';
 ///
 /// With nothing left to read it says "All caught up." over a haiku, a new
 /// one each visit; a long-press (Option-click on the Mac) shows another.
+///
+/// As a [pane] (the list of an `InboxSplit`) it is the list alone, under
+/// its search and chips, with the [selected] item's row highlighted; with
+/// a [query] from elsewhere (the Mac Inbox window's toolbar) it draws no
+/// search or chips and follows that query instead, the text after the
+/// same pause in typing.
 class InboxScreen extends StatefulWidget {
   const InboxScreen({
     super.key,
@@ -48,7 +55,24 @@ class InboxScreen extends StatefulWidget {
     this.haikus,
     this.random,
     this.icons,
+    this.pane = false,
+    this.selected,
+    this.query,
+    this.filters = InboxFilter.values,
   });
+
+  /// Whether it is a list pane beside the item shown, not a screen.
+  final bool pane;
+
+  /// The ID of the item shown beside the pane, whose row is highlighted.
+  final String? selected;
+
+  /// The chip and the search text, set from elsewhere; the screen then
+  /// draws neither.
+  final ValueListenable<InboxQuery>? query;
+
+  /// The chips offered, in order.
+  final List<InboxFilter> filters;
 
   final ClaxApi api;
 
@@ -104,7 +128,33 @@ enum InboxFilter {
   final List<String>? kinds;
 }
 
-class _InboxScreenState extends State<InboxScreen> {
+/// What an inbox shows, when it is chosen outside it: the chip, and the
+/// search text.
+@immutable
+final class InboxQuery {
+  const InboxQuery({this.filter = InboxFilter.all, this.text = ''});
+
+  final InboxFilter filter;
+  final String text;
+
+  InboxQuery copyWith({InboxFilter? filter, String? text}) =>
+      InboxQuery(filter: filter ?? this.filter, text: text ?? this.text);
+
+  @override
+  bool operator ==(Object other) =>
+      other is InboxQuery && other.filter == filter && other.text == text;
+
+  @override
+  int get hashCode => Object.hash(filter, text);
+}
+
+/// What an inbox does for a window's toolbar.
+abstract interface class InboxMarking {
+  /// Marks every unread item matching the current view read.
+  Future<void> markAllRead();
+}
+
+class _InboxScreenState extends State<InboxScreen> implements InboxMarking {
   ClaxStream? _stream;
   StreamSubscription<StreamEvent>? _events;
 
@@ -142,8 +192,29 @@ class _InboxScreenState extends State<InboxScreen> {
   @override
   void initState() {
     super.initState();
+    if (widget.query case final q?) {
+      _filter = q.value.filter;
+      _query = q.value.text.trim();
+      _search.text = q.value.text;
+      q.addListener(_queryChanged);
+    }
     unawaited(_start());
     unawaited(_loadHaikus());
+  }
+
+  /// The query set from outside changed: a chip at once, text after the
+  /// pause in typing.
+  void _queryChanged() {
+    final q = widget.query!.value;
+    if (q.filter != _filter) {
+      _searchTimer?.cancel();
+      _setFilter(() {
+        _filter = q.filter;
+        _query = q.text.trim();
+      });
+      return;
+    }
+    _onSearch(q.text);
   }
 
   /// Reads the haikus apart from the list, so a slow one never holds the
@@ -188,6 +259,7 @@ class _InboxScreenState extends State<InboxScreen> {
 
   @override
   void dispose() {
+    widget.query?.removeListener(_queryChanged);
     _searchTimer?.cancel();
     _search.dispose();
     unawaited(_events?.cancel());
@@ -356,6 +428,9 @@ class _InboxScreenState extends State<InboxScreen> {
     widget.onOpen(item);
   }
 
+  @override
+  Future<void> markAllRead() => _markAllRead();
+
   Future<void> _markAllRead() async {
     final items = _items;
     if (items == null || items.isEmpty) return;
@@ -386,6 +461,30 @@ class _InboxScreenState extends State<InboxScreen> {
     final items = _items;
     final now = (widget.now ?? DateTime.now)();
     final anyUnread = items?.any((i) => !i.read) ?? false;
+    if (widget.pane) {
+      return Material(
+        color: claxPalette(context).bg,
+        child: RefreshIndicator(
+          onRefresh: _refresh,
+          child: CustomScrollView(
+            slivers: [
+              // Below the status bar, where a window has one.
+              SliverToBoxAdapter(
+                child: SizedBox(height: MediaQuery.paddingOf(context).top),
+              ),
+              if (widget.query == null)
+                SliverToBoxAdapter(
+                  child: Padding(
+                    padding: const EdgeInsets.only(top: ClaxSpace.s12),
+                    child: _filters(context),
+                  ),
+                ),
+              ..._content(items, now),
+            ],
+          ),
+        ),
+      );
+    }
     return RefreshIndicator(
       onRefresh: _refresh,
       edgeOffset: 152,
@@ -402,62 +501,69 @@ class _InboxScreenState extends State<InboxScreen> {
         ],
         slivers: [
           SliverToBoxAdapter(child: _filters(context)),
-          if ((items, _loadError) case (null, final e?))
-            SliverFillRemaining(
-              hasScrollBody: true,
-              child: ClaxEmpty(
-                key: const ValueKey('inbox-error'),
-                icon: Icons.inbox_outlined,
-                title: 'Couldn’t show your inbox',
-                body: logUserMessage('inbox', e),
-                actions: [
-                  ClaxButton(
-                    label: 'Try again',
-                    kind: ClaxButtonKind.primary,
-                    icon: Icons.refresh_rounded,
-                    onPressed: () => unawaited(_refresh()),
-                  ),
-                ],
-              ),
-            )
-          else if (items == null)
-            const SliverFillRemaining(
-              hasScrollBody: false,
-              child: Center(child: CircularProgressIndicator()),
-            )
-          else if (items.isEmpty)
-            SliverFillRemaining(hasScrollBody: true, child: _empty())
-          else
-            SliverPadding(
-              padding: const EdgeInsets.only(bottom: ClaxSpace.s24),
-              sliver: SliverList.builder(
-                itemCount: items.length + (_next != null ? 1 : 0),
-                itemBuilder: (context, i) {
-                  if (i == items.length) {
-                    if (!_pageError) unawaited(_loadMore());
-                    return _PageEnd(
-                      failed: _pageError,
-                      onRetry: () {
-                        setState(() => _pageError = false);
-                        unawaited(_loadMore());
-                      },
-                    );
-                  }
-                  final item = items[i];
-                  return InboxRow(
-                    key: ValueKey(item.id),
-                    item: item,
-                    now: now,
-                    icons: widget.icons,
-                    onTap: () => _tap(item),
-                  );
-                },
-              ),
-            ),
+          ..._content(items, now),
         ],
       ),
     );
   }
+
+  /// The list, or what shows in its place: the error, the wait, the empty
+  /// state.
+  List<Widget> _content(List<InboxItem>? items, DateTime now) => [
+    if ((items, _loadError) case (null, final e?))
+      SliverFillRemaining(
+        hasScrollBody: true,
+        child: ClaxEmpty(
+          key: const ValueKey('inbox-error'),
+          icon: Icons.inbox_outlined,
+          title: 'Couldn’t show your inbox',
+          body: logUserMessage('inbox', e),
+          actions: [
+            ClaxButton(
+              label: 'Try again',
+              kind: ClaxButtonKind.primary,
+              icon: Icons.refresh_rounded,
+              onPressed: () => unawaited(_refresh()),
+            ),
+          ],
+        ),
+      )
+    else if (items == null)
+      const SliverFillRemaining(
+        hasScrollBody: false,
+        child: Center(child: CircularProgressIndicator()),
+      )
+    else if (items.isEmpty)
+      SliverFillRemaining(hasScrollBody: true, child: _empty())
+    else
+      SliverPadding(
+        padding: const EdgeInsets.only(bottom: ClaxSpace.s24),
+        sliver: SliverList.builder(
+          itemCount: items.length + (_next != null ? 1 : 0),
+          itemBuilder: (context, i) {
+            if (i == items.length) {
+              if (!_pageError) unawaited(_loadMore());
+              return _PageEnd(
+                failed: _pageError,
+                onRetry: () {
+                  setState(() => _pageError = false);
+                  unawaited(_loadMore());
+                },
+              );
+            }
+            final item = items[i];
+            return InboxRow(
+              key: ValueKey(item.id),
+              item: item,
+              now: now,
+              icons: widget.icons,
+              selected: item.id == widget.selected,
+              onTap: () => _tap(item),
+            );
+          },
+        ),
+      ),
+  ];
 
   Widget _filters(BuildContext context) {
     final gutter = ClaxBreakpoints.gutter(context);
@@ -505,7 +611,7 @@ class _InboxScreenState extends State<InboxScreen> {
           padding: EdgeInsets.fromLTRB(gutter, 0, gutter, ClaxSpace.s8),
           child: Row(
             children: [
-              for (final f in InboxFilter.values) ...[
+              for (final f in widget.filters) ...[
                 FilterChip(
                   label: Text(f.label),
                   selected: _filter == f,
@@ -514,7 +620,7 @@ class _InboxScreenState extends State<InboxScreen> {
                     if (_filter != f) _setFilter(() => _filter = f);
                   },
                 ),
-                if (f != InboxFilter.values.last)
+                if (f != widget.filters.last)
                   const SizedBox(width: ClaxSpace.s8),
               ],
             ],
@@ -718,7 +824,8 @@ String inboxTime(String createdAt, DateTime now) {
 
 /// One row of the inbox: the app's 40 dp icon, its title in `headline`,
 /// the kind's line ([inboxLine]) and the time trailing. Unread is a bold
-/// title and an 8 dp dot in `you`; no row is tinted.
+/// title and an 8 dp dot in `you`; no row is tinted for it. The row shown
+/// beside a list pane ([selected]) is filled in a raised surface.
 class InboxRow extends StatelessWidget {
   const InboxRow({
     super.key,
@@ -726,11 +833,15 @@ class InboxRow extends StatelessWidget {
     required this.now,
     required this.onTap,
     this.icons,
+    this.selected = false,
   });
 
   final InboxItem item;
   final DateTime now;
   final VoidCallback onTap;
+
+  /// Whether the item is the one shown beside the list.
+  final bool selected;
 
   /// The apps' icons; null draws the app's tile face.
   final AppIcons? icons;
@@ -753,9 +864,12 @@ class InboxRow extends StatelessWidget {
     final gutter = ClaxBreakpoints.gutter(context);
     return Semantics(
       button: true,
+      selected: selected,
       label: [if (unread) 'Unread', title, line, time].join('. '),
       excludeSemantics: true,
-      child: InkWell(
+      child: Material(
+        color: selected ? p.surfaceContainers[3] : Colors.transparent,
+        child: InkWell(
         onTap: onTap,
         child: ConstrainedBox(
           constraints: const BoxConstraints(minHeight: 72),
@@ -825,6 +939,7 @@ class InboxRow extends StatelessWidget {
               ],
             ),
           ),
+        ),
         ),
       ),
     );
