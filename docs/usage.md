@@ -1065,6 +1065,43 @@ every input from it and fails naming whatever is missing or refused. To
 build: `bazelisk build //apps/clax_app:ipa_dev -c opt
 --ios_multi_cpus=arm64` (or `:ipa_appstore`).
 
+**On a device, and to TestFlight.** From the checkout:
+
+```
+just app-iphone                   # build, install on the iPhone or iPad, launch
+just app-iphone-testflight        # build and upload to TestFlight
+scripts/app-iphone.sh             # a dry run: prints each step's command
+scripts/app-iphone.sh --testflight
+```
+
+Both build HEAD exactly: with uncommitted changes they build a clean copy
+of HEAD at `target/app-iphone/tree` (and say so). They stop before
+building when a file of this directory is missing, naming each one.
+
+`just app-iphone` builds the development-signed app (`:ipa_dev`, `-c opt
+--ios_multi_cpus=arm64`, stripped), then installs it with `xcrun devicectl
+device install app` on the connected or paired device, keeping the app's
+data, launches it and reads `daemon.json` from its data container until it
+names the launched PID. The device need not be connected until the build
+is done (it then waits up to 15 minutes, `APP_IPHONE_WAIT` seconds); with
+more than one, `APP_IPHONE_DEVICE` names the one to use (its name or
+UDID). The device must be in the development profile, trust this Mac, and
+have Developer Mode on (Settings › Privacy & Security).
+
+`just app-iphone-testflight` (or `just app-iphone --testflight`) builds
+the App Store-signed app (`:ipa_appstore`) with the next build number and
+uploads it with `xcrun altool --upload-package` and the API key above,
+then prints the build number and the App Store Connect link; the build
+shows in TestFlight once App Store Connect has processed it. The build
+numbers are this Mac's: `builds` in this directory holds one line per
+marketing version (`pubspec.yaml`'s version name), `<version> <last
+number>`. Each upload takes the next number and writes it there before
+uploading, so no number is given twice, even after a failed upload;
+nothing is committed. Keep the file with the rest of the directory: a
+Mac without it starts each version at 1 again, which App Store Connect
+refuses once that number is uploaded. When `altool` refuses an upload,
+Transporter (the app) uploads the same `.ipa`, whose path it prints.
+
 ## Releasing
 
 A release is what the plugins download, and what `install.sh` installs.

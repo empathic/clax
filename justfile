@@ -131,6 +131,15 @@ app-phone-native:
 app-ios:
     ./scripts/app-ios.sh --i-know-what-i-am-doing
 
+# Build HEAD's iOS app signed for a device and install it on the plugged-in or paired iPhone or iPad (APP_IPHONE_DEVICE picks one), keeping its data; --testflight uploads instead
+[positional-arguments]
+app-iphone *ARGS:
+    ./scripts/app-iphone.sh --i-know-what-i-am-doing "$@"
+
+# Build HEAD's iOS app signed for the App Store and upload it to TestFlight, with the next build number of ~/.config/clax/apple/builds
+app-iphone-testflight:
+    ./scripts/app-iphone.sh --testflight --i-know-what-i-am-doing
+
 # Build the home app's bundle (apps/clax_app/home), as every app build does, and print its path
 home-bundle:
     ./scripts/run.sh home-bundle

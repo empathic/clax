@@ -9,7 +9,7 @@ only iOS build. `clax_ios_integration_tests` runs the app's simulator
 integration tests.
 """
 
-load("@rules_apple//apple:versioning.bzl", "apple_bundle_version")
+load("@rules_apple//apple:providers.bzl", "apple_provider")
 load("@rules_cc//cc:cc_library.bzl", "cc_library")
 load("@rules_flutter//flutter:defs.bzl", "flutter_application")
 load("@rules_flutter//flutter:ios.bzl", "flutter_ios_app", "flutter_ios_simulator_build")
@@ -26,6 +26,33 @@ IOS_BUNDLE_ID = "dev.empathic.clax"
 # daemon's static libraries built for a newer one.
 IOS_MINIMUM_OS = "17.0"
 
+def _bundle_version_impl(ctx):
+    build = ctx.var.get("clax_build_number", ctx.attr.build_version)
+    if not build.isdigit():
+        fail("--define=clax_build_number=%s: a build number is a whole number" % build)
+    out = ctx.actions.declare_file(ctx.label.name + ".bundle_version")
+    ctx.actions.write(out, json.encode({
+        "build_version": build,
+        "short_version_string": ctx.attr.short_version_string,
+    }))
+    return [
+        apple_provider.make_apple_bundle_version_info(version_file = out),
+        DefaultInfo(files = depset([out])),
+    ]
+
+# rules_apple's apple_bundle_version takes the build number as a fixed
+# string; this one lets `--define=clax_build_number=<n>` replace it, so a
+# TestFlight build carries the number scripts/app-iphone.sh takes from its
+# ledger while every other build keeps pubspec.yaml's.
+_bundle_version = rule(
+    implementation = _bundle_version_impl,
+    attrs = {
+        "build_version": attr.string(mandatory = True),
+        "short_version_string": attr.string(mandatory = True),
+    },
+    doc = "CFBundleVersion and CFBundleShortVersionString, as AppleBundleVersionInfo.",
+)
+
 def clax_ios_app(name, version_name, version_code):
     """The iOS app and its checks, in apps/clax_app.
 
@@ -36,7 +63,9 @@ def clax_ios_app(name, version_name, version_code):
       ios_plugin_frameworks
                     the system frameworks the plugins' Objective-C needs
                     and rules_flutter's generated libraries do not link
-      ios_version   apple_bundle_version from pubspec.yaml's version
+      ios_version   the bundle version: pubspec.yaml's version name, and its
+                    build number unless `--define=clax_build_number=<n>`
+                    gives another (scripts/app-iphone.sh --testflight)
       ios_app_sim   the simulator app built -c dbg (flutter_ios_simulator_build)
       ios_app_test  tool/ios-app-check.sh over it (macOS only)
       ipa_dev, ipa_appstore
@@ -76,7 +105,7 @@ def clax_ios_app(name, version_name, version_code):
         target_compatible_with = ["@platforms//os:ios"],
     )
 
-    apple_bundle_version(
+    _bundle_version(
         name = "ios_version",
         build_version = version_code,
         short_version_string = version_name,

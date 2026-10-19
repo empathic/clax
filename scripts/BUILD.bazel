@@ -319,6 +319,16 @@ sh_test(
     data = ["app-ios.sh"],
 )
 
+# scripts/app-iphone.sh (just app-iphone) on a PATH of stub xcrun and
+# bazelisk: its dry run, its device steps in order, and the TestFlight
+# build-number ledger. It reads devicectl's JSON with plutil, so macOS only.
+sh_test(
+    name = "app_iphone",
+    srcs = ["test-app-iphone.sh"],
+    data = ["app-iphone.sh"],
+    target_compatible_with = ["@platforms//os:macos"],
+)
+
 # scripts/run.sh's choice of build system, on a PATH of stub tools.
 sh_test(
     name = "run_choice",
