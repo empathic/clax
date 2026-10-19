@@ -185,6 +185,8 @@ bazel-gc *ARGS:
 # Assemble the `clax` crates.io package in target/crate-package/clax (scripts/crate-package.py, after building the web UI), pack it with `cargo package` and check the packed crate with `cargo check --locked` (no binary is written, so target/debug/clax is left alone); nothing is uploaded
 crate-package: web
     ./scripts/crate-package.py
+    # cargo package keeps earlier versions' archives, which the clax-*.crate glob below would also match.
+    rm -rf target/crate-package/pack/package
     cd target/crate-package/clax && cargo package --allow-dirty --no-verify --target-dir ../pack
     rm -rf target/crate-package/unpacked && mkdir target/crate-package/unpacked
     tar -xzf target/crate-package/pack/package/clax-*.crate -C target/crate-package/unpacked
