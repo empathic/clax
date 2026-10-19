@@ -879,6 +879,7 @@ pub(crate) mod test_util {
             file: "index.html".into(),
             route: None,
             label: None,
+            name: None,
         }
     }
 }

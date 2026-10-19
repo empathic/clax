@@ -164,6 +164,16 @@ describe("area anchors", () => {
     expect(a).toMatchObject({ kind: "area", selector: "#s", quote: null, custom_name: null, file: "source.html", area: { x: 0.25, y: 0.25, w: 0.5, h: 0.25 } });
     expect(a.rect).toEqual({ x: 100, y: 150, w: 200, h: 50, scrollX: window.scrollX, scrollY: window.scrollY, viewportW: window.innerWidth });
     expect(a.html_hash).toMatch(/^sha256:[0-9a-f]{64}$/);
+    expect(a.name).toBe("a");
+  });
+  it("name the containing element as it was when drawn, and the document not at all", () => {
+    document.body.innerHTML = `<h2>p95 by four-hour window</h2><div><canvas id="c"></canvas></div>`;
+    const c = document.querySelector("#c")!;
+    place(c, { left: 0, top: 100, width: 400, height: 200 });
+    d.elementsFromPoint = () => [c, document.body];
+    expect(buildAreaAnchor(document, { left: 100, top: 150, width: 200, height: 50 }).name).toBe("Chart under ‘p95 by four-hour window’");
+    d.elementsFromPoint = () => [document.documentElement];
+    expect("name" in buildAreaAnchor(document, { left: 100, top: 150, width: 200, height: 50 })).toBe(false);
   });
   it("re-anchor by selector after content is added above, and detach when the element is gone", () => {
     document.body.innerHTML = `<main><section id="s"><p>a</p></section></main>`;

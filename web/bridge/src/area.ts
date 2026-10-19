@@ -8,7 +8,7 @@
 // (`html`, its whole scrollable size). Holding Option (Alt) targets the
 // enclosing element of the hovered target, one ancestor more per Up press.
 
-import { OVERLAY_TAG, cssPath, fingerprint, htmlHash } from "./anchor";
+import { OVERLAY_TAG, cssPath, fingerprint, htmlHash, named } from "./anchor";
 import { blockAncestor } from "./block";
 import { type Anchor, type AnchorArea, type Box, INDEX_FILE } from "./protocol";
 import { caretAt } from "./target";
@@ -133,6 +133,7 @@ export function buildAreaAnchor(doc: Document, r: AreaRect, file: string = INDEX
     kind: "area", selector: el === doc.documentElement ? "html" : cssPath(el), quote: null, prefix: null, suffix: null, html_hash: el === doc.documentElement ? null : htmlHash(el),
     rect: { x: r.left, y: r.top, w: r.width, h: r.height, scrollX: win.scrollX, scrollY: win.scrollY, viewportW: win.innerWidth },
     custom_name: null, area: el === doc.documentElement ? areaFractions(r, boxOf(el)) : { ...areaFractions(r, boxOf(el)), ...fingerprint(el) }, file,
+    ...(el === doc.documentElement ? {} : named(el)),
   };
 }
 

@@ -4,6 +4,7 @@
 // registered custom name ("custom"); otherwise the anchor is detached.
 
 import { type Anchor, type AnchorRect, INDEX_FILE, type ResolveMethod } from "./protocol";
+import { nameOf } from "./describe";
 import { sha256Hex } from "./sha256";
 
 export const AFFIX = 32;
@@ -165,6 +166,12 @@ function labelOf(idx: TextIndex, start: number, quote: string): { label?: string
   return label && label !== quote.replace(/\s+/g, " ").trim() ? { label } : {};
 }
 
+/** `{ name }`, what `el` is called (`nameOf`), when it has a name; else nothing. */
+export function named(el: Element): { name?: string } {
+  const name = nameOf(el);
+  return name ? { name } : {};
+}
+
 /** An anchor on `el` of the page published at `file`. */
 export function buildElementAnchor(doc: Document, el: Element, file: string = INDEX_FILE): Anchor {
   const idx = textIndex(doc.body);
@@ -178,7 +185,7 @@ export function buildElementAnchor(doc: Document, el: Element, file: string = IN
     ({ prefix, suffix } = affixes(idx, s[0], quote));
     label = labelOf(idx, s[0], quote);
   }
-  return { kind: "element", selector: cssPath(el), quote, prefix, suffix, html_hash: htmlHash(el), rect: anchorRect(el, doc.defaultView!), custom_name: null, file, ...label };
+  return { kind: "element", selector: cssPath(el), quote, prefix, suffix, html_hash: htmlHash(el), rect: anchorRect(el, doc.defaultView!), custom_name: null, file, ...label, ...named(el) };
 }
 
 /** An anchor on `range` of the page published at `file`. */
@@ -189,7 +196,7 @@ export function buildRangeAnchor(doc: Document, range: Range, file: string = IND
   const quote = cut(idx.text, start, Math.min(end, start + MAX_QUOTE));
   const c = range.commonAncestorContainer;
   const el = c.nodeType === Node.ELEMENT_NODE ? (c as Element) : c.parentElement!;
-  return { kind: "range", selector: cssPath(el), quote, ...affixes(idx, start, quote), html_hash: htmlHash(el), rect: anchorRect(range, doc.defaultView!), custom_name: null, file, ...labelOf(idx, start, quote) };
+  return { kind: "range", selector: cssPath(el), quote, ...affixes(idx, start, quote), html_hash: htmlHash(el), rect: anchorRect(range, doc.defaultView!), custom_name: null, file, ...labelOf(idx, start, quote), ...named(el) };
 }
 
 const commonSuffix = (a: string, b: string) => { let n = 0; while (n < a.length && n < b.length && a[a.length - 1 - n] === b[b.length - 1 - n]) n++; return n; };

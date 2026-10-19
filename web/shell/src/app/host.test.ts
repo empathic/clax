@@ -1002,12 +1002,12 @@ describe("app mode's host channel", { timeout: MOUNT_TIMEOUT_MS }, () => {
     const icon = { kind: "element", selector: "body > main > div.run > svg", quote: null, prefix: null, suffix: null, html_hash: null, rect: null, custom_name: null, file: "index.html" };
     fromFrame(frame.contentWindow!, { type: "clax:pick-start", pickId: "d1", version: 1, anchor: icon, desc: { tag: "svg", role: "button", name: "Delete run" } });
     await waitFor(() => ofType("state").at(-1)?.draft, "a draft");
-    expect(ofType("state").at(-1)!.draft!.label).toBe("the button “Delete run”");
+    expect(ofType("state").at(-1)!.draft!.label).toBe("“Delete run”");
     // The viewer's own pick is not marked as the page's.
     expect(ofType("state").at(-1)!.draft!.byPage).toBeUndefined();
     expect(JSON.stringify(toHost)).not.toContain("div.run");
     // The shell's own composer says the same, not the selector.
-    await waitFor(() => document.querySelector(".composer-quote")?.textContent === "the button “Delete run”", "the composer's words");
+    await waitFor(() => document.querySelector(".composer-quote")?.textContent === "“Delete run”", "the composer's words");
   });
 
   it("shows a pick's spaced text in place of its run-together quote, for its draft and the threads with that quote", async () => {
@@ -1058,8 +1058,8 @@ describe("app mode's host channel", { timeout: MOUNT_TIMEOUT_MS }, () => {
     hello(frame, 1);
     const base = { quote: null, prefix: null, suffix: null, html_hash: null, rect: null, file: "index.html" };
     ctl.commentsUi.openComposer({ anchor: { kind: "element", selector: "#save", custom_name: null, ...base }, version: 1, clip: null, clipError: "anchored by the page" });
-    await waitFor(() => document.querySelector(".composer-quote")?.textContent === "this spot", "the composer's words");
-    expect(ofType("state").at(-1)!.draft).toMatchObject({ label: "this spot", byPage: true });
+    await waitFor(() => document.querySelector(".composer-quote")?.textContent === "A spot on the page", "the composer's words");
+    expect(ofType("state").at(-1)!.draft).toMatchObject({ label: "A spot on the page", byPage: true });
     expect(JSON.stringify(toHost)).not.toContain("#save");
     ctl.cancelDraft();
     ctl.commentsUi.openComposer({ anchor: { kind: "custom", selector: null, custom_name: "Week 3", ...base }, version: 1, clip: null, clipError: "anchored by the page" });

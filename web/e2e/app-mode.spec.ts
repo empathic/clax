@@ -156,7 +156,7 @@ test(`a long-press picks and Send sends to the app session${frames ? "" : ", wit
   const t = await api(d.base, d.token, `/api/artifacts/${id}/threads/${thread}`) as { thread: { sent_to_agent: boolean; has_clip: boolean; anchor: { kind: string; quote: string }; comments: { body: string }[] } };
   expect(t.thread.sent_to_agent).toBe(true);
   expect(t.thread.comments[0].body).toBe("make it blue");
-  expect(t.thread.anchor).toMatchObject({ kind: "element", quote: "Quarterly goals" });
+  expect(t.thread.anchor).toMatchObject({ kind: "element", quote: "Quarterly goals", name: "Quarterly goals" });
   expect(t.thread.has_clip).toBe(true);
   await expect.poll(async () => ((await ofType(page, "threads")).at(-1)?.threads as { id: string; clip: boolean }[] | undefined)?.find(x => x.id === thread)?.clip).toBe(true);
   // The app's thread list names what the thread is on, in words.

@@ -1588,12 +1588,26 @@ composer, the app's thread labels and the anchor summary show the label in
 place of the quote when there is one, and the quote otherwise (as for
 threads made before it existed).
 
+An element, range or area anchor may also carry `name`: what the picked
+element is called, read by the bridge at pick time. It is the element's
+accessible name (`aria-label`, `aria-labelledby`, `alt`, `title`, a table's
+or figure's caption), else the first 60 characters of its text as a reader
+sees it, else its kind word ("Chart", "Table", "Image", …) followed by
+` under ‘<heading>’`, the nearest heading before it, or the kind word alone;
+it is left out when the element has none of these (an area drawn on the
+document has none). The daemon stores it with the anchor and returns it
+with the thread; it is optional, at most 120 characters, not blank, with no
+control characters or line separators, or the thread is refused with
+`invalid_anchor`. The app titles a thread that quotes nothing by it, and
+never by its selector; a thread made before it existed reads by its kind
+word, else "A spot on the page".
+
 A comment can also be about the whole artifact ("make the colours warmer")
 rather than a spot on it. The threads panel opens with a **New comment** box
 for it: pressing it opens the usual composer in the panel, labelled "The
 whole artifact", with no screenshot. Its thread's anchor is `{"kind":
 "artifact"}`: every target field (`selector`, `quote`, `prefix`, `suffix`,
-`html_hash`, `rect`, `custom_name`, `area`, `route`, `label`) is null and `file` is
+`html_hash`, `rect`, `custom_name`, `area`, `route`, `label`, `name`) is null and `file` is
 empty, `""`, since it is on no page. A create may send the anchor without
 `file` (read as `index.html`) or with `file: ""`; the daemon stores `""`.
 An `artifact` anchor with any target field or another `file` is refused

@@ -14,6 +14,8 @@ pub const MAX_SELECTOR: usize = 1024;
 pub const MAX_QUOTE: usize = 2000;
 /// Longest accepted prefix or suffix, in characters.
 pub const MAX_AFFIX: usize = 64;
+/// Longest accepted `name`, in characters.
+pub const MAX_NAME: usize = 120;
 /// Characters of the quote shown by [`Anchor::summary`].
 const SUMMARY_QUOTE: usize = 120;
 /// Longest accepted `file`, in bytes.
@@ -149,6 +151,13 @@ pub struct Anchor {
     /// absent on anchors made without one, which show the quote.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub label: Option<String>,
+    /// What the element is called, as the bridge read it when it was picked:
+    /// its accessible name, else the start of its text, else its kind with
+    /// the nearest heading ("Chart under ‘p95 by four-hour window’"). Shown
+    /// as a thread's title where the anchor quotes nothing; absent on
+    /// anchors made without one.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub name: Option<String>,
 }
 
 fn bad(message: impl Into<String>) -> CoreError {
@@ -204,14 +213,15 @@ impl Anchor {
     /// `custom_name`; an area anchor needs an `area` whose fractions lie in 0
     /// to 1 with some width and height, within the element's box, and only area
     /// anchors carry one; selectors and names hold no control characters and no
-    /// U+2028 or U+2029 line or paragraph separators; lengths
-    /// are capped by [`MAX_SELECTOR`], [`MAX_QUOTE`], and [`MAX_AFFIX`].
+    /// U+2028 or U+2029 line or paragraph separators, and a `name` is not
+    /// blank; lengths are capped by [`MAX_SELECTOR`], [`MAX_QUOTE`],
+    /// [`MAX_AFFIX`], and [`MAX_NAME`].
     /// `file` is a safe relative path ([`crate::publish::check_path`]) of at
     /// most [`MAX_FILE`] bytes; whether
     /// the version holds it is the store's check.
     ///
     /// An `artifact` anchor carries no selector, quote, prefix, suffix,
-    /// `html_hash`, `rect`, `custom_name`, `area`, `route`, or `label`, and its `file`
+    /// `html_hash`, `rect`, `custom_name`, `area`, `route`, `label`, or `name`, and its `file`
     /// is empty ([`Anchor::normalized`] empties the index default).
     ///
     /// # Errors
@@ -256,6 +266,7 @@ impl Anchor {
             ("selector", &self.selector),
             ("custom_name", &self.custom_name),
             ("html_hash", &self.html_hash),
+            ("name", &self.name),
         ] {
             if v.as_deref().is_some_and(|s| {
                 s.chars()
@@ -269,6 +280,10 @@ impl Anchor {
         check_len("selector", &self.selector, MAX_SELECTOR)?;
         check_len("custom_name", &self.custom_name, MAX_SELECTOR)?;
         check_len("html_hash", &self.html_hash, 80)?;
+        check_len("name", &self.name, MAX_NAME)?;
+        if self.name.as_deref().is_some_and(|n| n.trim().is_empty()) {
+            return Err(bad("name is empty"));
+        }
         check_len("quote", &self.quote, MAX_QUOTE)?;
         check_len("prefix", &self.prefix, MAX_AFFIX)?;
         check_len("suffix", &self.suffix, MAX_AFFIX)?;
@@ -321,10 +336,11 @@ impl Anchor {
             || self.custom_name.is_some()
             || self.area.is_some()
             || self.route.is_some()
-            || self.label.is_some();
+            || self.label.is_some()
+            || self.name.is_some();
         if targets {
             return Err(bad(
-                "artifact anchors carry no selector, quote, prefix, suffix, html_hash, rect, custom_name, area, route, or label",
+                "artifact anchors carry no selector, quote, prefix, suffix, html_hash, rect, custom_name, area, route, label, or name",
             ));
         }
         if self.file != WHOLE_FILE {
@@ -631,6 +647,48 @@ mod tests {
         assert!(no_quote.validate().is_err(), "a label needs a quote");
         let whole: Anchor =
             serde_json::from_value(json!({"kind": "artifact", "file": "", "label": "x"})).unwrap();
+        assert!(whole.validate().is_err());
+    }
+
+    #[test]
+    fn a_name_is_kept_as_plain_short_text() {
+        let v = json!({"kind": "area", "selector": "main > canvas", "area": {"x": 0.1, "y": 0.1, "w": 0.5, "h": 0.5},
+            "name": "Chart under ‘p95 by four-hour window’"});
+        let a: Anchor = serde_json::from_value(v).unwrap();
+        a.validate().unwrap();
+        assert_eq!(
+            serde_json::to_value(&a).unwrap()["name"],
+            "Chart under ‘p95 by four-hour window’"
+        );
+        let old: Anchor =
+            serde_json::from_value(json!({"kind": "element", "selector": "body > div"})).unwrap();
+        old.validate().unwrap();
+        assert!(serde_json::to_value(&old).unwrap().get("name").is_none());
+        let with = |name: &str| {
+            let mut a = a.clone();
+            a.name = Some(name.into());
+            a.validate()
+        };
+        assert!(with(&"n".repeat(MAX_NAME)).is_ok());
+        for bad in [
+            with(&"n".repeat(MAX_NAME + 1)),
+            with("Save\nnow"),
+            with("Save\u{2028}now"),
+            with("  "),
+        ] {
+            assert!(
+                matches!(
+                    bad,
+                    Err(CoreError::Invalid {
+                        code: "invalid_anchor",
+                        ..
+                    })
+                ),
+                "{bad:?}"
+            );
+        }
+        let whole: Anchor =
+            serde_json::from_value(json!({"kind": "artifact", "file": "", "name": "x"})).unwrap();
         assert!(whole.validate().is_err());
     }
 

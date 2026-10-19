@@ -227,7 +227,7 @@ test.describe("app mode", () => {
     for (const [k, v] of Object.entries({ x: from.x - fb.x, y: from.y - fb.y, w: 150, h: 120 })) expect(Math.abs(pick.anchor.rect[k] - v), k).toBeLessThanOrEqual(1);
     expect(pick.clipError).toBeUndefined();
     expect(await frame.evaluate(() => scrollY)).toBe(0);
-    await expect.poll(async () => (await ofType(page, "state")).at(-1)?.draft).toMatchObject({ kind: "area", label: "this area", quote: null });
+    await expect.poll(async () => (await ofType(page, "state")).at(-1)?.draft).toMatchObject({ kind: "area", label: "Area on the page", quote: null });
   });
 
   test("a drag with no attested press is refused", async ({ page }) => {

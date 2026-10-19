@@ -81,6 +81,22 @@ describe("range anchors", () => {
   });
 });
 
+describe("names", () => {
+  it("record what the picked element is called, at pick time", () => {
+    document.body.innerHTML = `<button aria-label="Save">💾</button><div>${"word ".repeat(16)}</div><h2>p95 by four-hour window</h2><canvas></canvas>`;
+    expect(buildElementAnchor(document, document.querySelector("button")!).name).toBe("Save");
+    expect(buildElementAnchor(document, document.querySelector("div")!).name).toBe("word ".repeat(12).trimEnd());
+    expect(buildElementAnchor(document, document.querySelector("canvas")!).name).toBe("Chart under ‘p95 by four-hour window’");
+    const r = document.createRange();
+    r.selectNodeContents(document.querySelector("h2")!);
+    expect(buildRangeAnchor(document, r).name).toBe("p95 by four-hour window");
+  });
+  it("are left out when the element has none", () => {
+    document.body.innerHTML = `<div><span></span></div>`;
+    expect("name" in buildElementAnchor(document, document.querySelector("span")!)).toBe(false);
+  });
+});
+
 describe("labels", () => {
   it("space the quote where its text runs from one element into another, and are left out when it needs none", () => {
     document.body.innerHTML = `<div><b>Mon</b><span>5 km</span></div><p>Run <b>far</b>, then rest.</p>`;

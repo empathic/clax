@@ -35,7 +35,28 @@ export interface Anchor {
    * element into another (the quote is not, for re-anchoring); shown in
    * place of the quote. Absent when it would read as the quote. */
   label?: string;
+  /** What the picked element is called, read at pick time (`describe.ts`
+   * `nameOf`): its accessible name, else the start of its text, else its
+   * kind word with the nearest heading before it ("Chart under ‘p95 by
+   * four-hour window’"), at most `MAX_NAME` characters of plain text. Absent
+   * when it has none, and on anchors made before names were recorded. */
+  name?: string;
 }
+/** The longest `Anchor.name`, in characters (the daemon's limit). */
+export const MAX_NAME = 120;
+/** The word for what an element is, by its ARIA role or else its tag, as a
+ * thread's title gives it when the element has no name of its own: the
+ * bridge writes it into `Anchor.name` ("Chart under ‘…’") and the app reads
+ * only these words outside quote marks. */
+export const KIND_WORDS: Readonly<Record<string, string>> = {
+  table: "Table", grid: "Table", canvas: "Chart", svg: "Chart", img: "Image", image: "Image", picture: "Image",
+  video: "Video", audio: "Audio player", iframe: "Embedded page", button: "Button", a: "Link", link: "Link",
+  input: "Field", textarea: "Text box", textbox: "Text box", select: "Menu", combobox: "Menu", checkbox: "Checkbox",
+  radio: "Option", switch: "Switch", slider: "Slider", heading: "Heading", h1: "Heading", h2: "Heading", h3: "Heading",
+  h4: "Heading", h5: "Heading", h6: "Heading", p: "Paragraph", ul: "List", ol: "List", list: "List", li: "List item",
+  listitem: "List item", form: "Form", figure: "Figure", nav: "Navigation", navigation: "Navigation", dialog: "Dialog",
+  progress: "Progress bar", progressbar: "Progress bar", blockquote: "Quote", pre: "Code block", code: "Code",
+};
 /** A rectangle in the content frame's viewport pixels. */
 export interface Box { x: number; y: number; w: number; h: number }
 export type ResolveMethod = "exact" | "selector" | "quote" | "custom";
