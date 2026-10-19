@@ -121,12 +121,21 @@ fn project(cwd: &str) -> &str {
 /// a person's view leaves out live pages (L10). `unread` counts the
 /// caller's unread inbox items from the agent. 403 for a LAN viewer or no
 /// credential.
+///
+/// `?artifact=<aid>` lists only the live agents the caller's send of a
+/// thread there may name (`POST …/threads/<tid>/send {to}`): those that
+/// own or watch it or, from a person, any that may read and watch it
+/// ([`super::threads::named_agent_reaches`]); none when the caller may not
+/// send there (`clax-comments` `send`). An artifact the caller may not read
+/// is as one that does not exist: 404 (a connected person on a local
+/// daemon gets an empty list).
 pub async fn list_agents(
     State(s): State<AppState>,
     a: clax_http::agent::Agent<clax_http::agent::AgentsList>,
     _o: SameOrigin,
     extensions: axum::http::Extensions,
     headers: axum::http::HeaderMap,
+    q: Result<axum::extract::Query<AgentsQuery>, axum::extract::rejection::QueryRejection>,
 ) -> Result<Json<Value>, ApiError> {
     use clax_http::views::thread::Handles;
     let handles = Handles::of(&a.caller);
@@ -136,6 +145,29 @@ pub async fn list_agents(
             "only the owner, a connected person or an agent lists agents",
         ));
     }
+    let q = q
+        .map(|axum::extract::Query(q)| q)
+        .map_err(|e| ApiError::bad_request("invalid_query", e.body_text()))?;
+    let target = match q.artifact.as_deref() {
+        Some(raw) => Some(a.named_artifact(&s, raw).await?),
+        None => None,
+    };
+    let reach = target.map(|id| {
+        let live = s.live_ids.contains(id.as_str());
+        (id, live)
+    });
+    let sender = a.caller.clone();
+    let send_right = match (&reach, a.member()) {
+        (Some((id, _)), Some(m)) => {
+            m.allows(
+                &s,
+                (clax_core::rights::RightType::Comments, "send"),
+                id.as_str(),
+            )
+            .await?
+        }
+        _ => true,
+    };
     let agent = matches!(
         a.caller,
         Caller::OwnerAgent { .. } | Caller::PersonAgent { .. }
@@ -162,9 +194,32 @@ pub async fn list_agents(
                     .collect()
             };
             let vis = vf.build(st)?;
+            // With `?artifact`, whether the caller may send there and as a
+            // person (who may name an agent that does not watch it yet).
+            let attach = match &reach {
+                Some((id, live)) => Some((
+                    id,
+                    *live,
+                    send_right && may_send_at(st, &sender, id)?,
+                    matches!(sender, Caller::Owner { .. } | Caller::Person { .. }),
+                )),
+                None => None,
+            };
             let mut out = Vec::new();
             for r in st.roster()? {
                 let x = &r.session;
+                if let Some((id, live, may, person)) = &attach {
+                    if !*may || x.ended_at.is_some() {
+                        continue;
+                    }
+                    let watching = st.live_agent(id, &x.agent_handle)?.is_some();
+                    let reaches = super::threads::named_agent_reaches(st, &x.id, id, *live)?;
+                    if reaches == super::threads::Reach::CannotRead
+                        || !(watching || (*person && reaches == super::threads::Reach::Yes))
+                    {
+                        continue;
+                    }
+                }
                 let mine = match &handles {
                     Handles::All => true,
                     Handles::Of(p) => x.person == *p,
@@ -253,6 +308,39 @@ pub async fn list_agents(
         })
         .await?;
     Ok(Json(v))
+}
+
+/// `GET /api/agents` query.
+#[derive(Deserialize, Default)]
+#[serde(deny_unknown_fields)]
+pub struct AgentsQuery {
+    /// Only the agents a send there may name.
+    artifact: Option<String>,
+}
+
+/// Whether `caller` may send threads of artifact `id` (`clax-comments`
+/// `send`, `own` the artifacts their person made): the owner and the
+/// owner's agents always; a connected person and a person's agent by their
+/// rights; anyone else not. A connected person who may not read it may not.
+fn may_send_at(st: &Store, caller: &Caller, id: &clax_core::ArtifactId) -> clax_core::Result<bool> {
+    use clax_core::rights::RightType;
+    let (rights, person) = match caller {
+        Caller::Owner { .. } | Caller::OwnerAgent { .. } => return Ok(true),
+        Caller::PersonAgent { rights, person, .. } => ((**rights).clone(), person.clone()),
+        Caller::Person { viewer } => (
+            st.person_rights(&viewer.public_id)?,
+            Some(viewer.public_id.clone()),
+        ),
+        Caller::Viewer { .. } | Caller::Anonymous => return Ok(false),
+    };
+    let own = |x: &str| {
+        st.artifact_created_by(x, person.as_deref())
+            .unwrap_or(false)
+    };
+    Ok(
+        rights.allows(RightType::Artifacts, "read", Some(id.as_str()), &own)
+            && rights.allows(RightType::Comments, "send", Some(id.as_str()), &own),
+    )
 }
 
 /// Installs the store's agents listener: each committed write that starts,
