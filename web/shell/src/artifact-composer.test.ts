@@ -114,6 +114,55 @@ describe("ArtifactView", { timeout: MOUNT_TIMEOUT_MS }, () => {
     expect(root.querySelector(".composer")!.textContent).toContain("No screenshot: first");
   });
 
+  it("files a viewer's pick on the page the frame greeted and the version shown, and refuses a start for another version or a kind no pick makes", async () => {
+    const forms: FormData[] = [];
+    const view = await mountView(async () => new Response(JSON.stringify(artifact(1))),
+      async (url, init) => {
+        if (url.startsWith("/api/viewers/")) return new Response(JSON.stringify(viewer));
+        if (init?.method === "POST") {
+          forms.push(init.body as FormData);
+          return new Response(JSON.stringify({ error: { code: "internal", message: "kept for the test" } }), { status: 500 });
+        }
+        return new Response(JSON.stringify({ threads: [], next_cursor: null }));
+      });
+    const root = view.root;
+    const frame = await waitFor(() => root.querySelector<HTMLIFrameElement>("iframe.frame"), "viewer");
+    const win = frame.contentWindow!;
+    const posted: { type: string; pickId?: string }[] = [];
+    win.postMessage = ((m: { type: string }) => { posted.push(m); }) as typeof win.postMessage;
+    const refused = (id: string) => posted.some(m => m.type === "clax:pick-refused" && m.pickId === id);
+    fromFrame(win, { type: "clax:hello", artifact: ID, version: 1, file: "index.html" });
+    const comment = buttonNamed(root, "Comment");
+    comment.click();
+    await waitFor(() => comment.getAttribute("aria-pressed") === "true", "comment mode");
+    const real = pick("x", "Goals").anchor;
+    for (const [id, m] of [
+      ["other-version", { pickId: "other-version", version: 2, anchor: real }],
+      ["custom", { pickId: "custom", version: 1, anchor: { ...real, kind: "custom", selector: null, custom_name: "shape-1" } }],
+      ["artifact", { pickId: "artifact", version: 1, anchor: { ...real, kind: "artifact", selector: null, file: "" } }],
+      ["no-selector", { pickId: "no-selector", version: 1, anchor: { ...real, selector: 7 } }],
+    ] as const) {
+      gestureIn(frame);
+      fromFrame(win, startOf(m));
+      await waitFor(() => refused(id), `${id} refused`);
+      expect(root.querySelector(".composer")).toBeNull();
+      expect(comment.getAttribute("aria-pressed")).toBe("true");
+    }
+    // A start naming another page, with fields no anchor holds: the composer
+    // opens, and the thread is filed on the greeted page, field by field.
+    gestureIn(frame);
+    fromFrame(win, startOf({ pickId: "elsewhere", version: 1, anchor: { ...real, file: "secret.html", route: "?x", extra: 1 } }));
+    const textarea = await waitFor(() => root.querySelector<HTMLTextAreaElement>(".composer textarea"), "composer");
+    textarea.value = "mine";
+    textarea.dispatchEvent(new Event("input", { bubbles: true }));
+    await waitFor(() => postReady(root), "post enabled");
+    buttonNamed(root, "Post comment").click();
+    await waitFor(() => forms.length === 1, "the post");
+    expect(forms[0].get("version")).toBe("1");
+    const anchor = JSON.parse(String(forms[0].get("anchor")));
+    expect(anchor).toEqual({ ...real, file: "index.html" });
+  });
+
   it("opens the composer at the viewer's pick start, focused and taking the screenshot, and takes no text from the page", async () => {
     const view = await mountView(async () => new Response(JSON.stringify(artifact(1))));
     const root = view.root;

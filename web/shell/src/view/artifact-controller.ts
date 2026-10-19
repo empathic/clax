@@ -1,11 +1,12 @@
 // The artifact view's state and behaviour, framework-free. Components render
 // `state` and call the intent methods; the frame is a FrameHost the mount
 // gives it.
-import { type AnchorResult, INDEX_FILE, type ShellToBridge } from "../../../bridge/src/protocol";
+import { type Anchor, type AnchorResult, INDEX_FILE, type ShellToBridge } from "../../../bridge/src/protocol";
 import { ApiError, type Artifact, type Attention, type SampleStatus, type Version, getArtifact, getToken } from "../api";
 import { getDrafts, getSampleStatus, putLooked, putSeen } from "./view-api";
 import { acceptByeFromFrame, acceptFromFrame, helloMatches, sendToFrame } from "../bridge-link";
 import type { Declared } from "../caps/availability";
+import { pageAnchor } from "../caps/comments";
 import { HINT_MS, frameGesture, onShieldPress, pickHintAllowed, setForwardedKeys } from "../caps/gesture";
 import { CapabilityHost, type CommentsUi } from "../caps/host";
 import { REQUEST_STUCK, connTrouble } from "../conn-notice";
@@ -1248,12 +1249,18 @@ export class ArtifactController {
         if (!this.s.commenting) { refuse(); break; }
         this.pendingPick = null;
         if (!frameGesture()) { refuse(); if (pickHintAllowed()) this.showHint(MOVE_TO_PICK); break; }
-        if (!m.anchor || typeof m.anchor !== "object" || typeof m.version !== "number") { refuse(); break; }
+        // The page's script can post a start too: the thread goes on the page
+        // the frame greeted as and the version the view shows, with an anchor
+        // rebuilt field by field, of a kind a pick makes.
+        const file = this.s.file;
+        if (m.version !== this.shown() || !file) { refuse(); break; }
+        let anchor: Anchor;
+        try { anchor = pageAnchor(m.anchor, file, { area: true }); } catch { refuse(); break; }
         const pickId = m.pickId;
         this.pendingPick = { pickId, at: Date.now() };
         this.set({ commenting: false });
         this.resumeAfter = pickId;
-        this.set({ draft: { pickId, anchor: m.anchor, version: m.version, clip: null, capturing: true, clipToken: pickId } });
+        this.set({ draft: { pickId, anchor, version: this.shown(), clip: null, capturing: true, clipToken: pickId } });
         break;
       }
       case "clax:pick": {

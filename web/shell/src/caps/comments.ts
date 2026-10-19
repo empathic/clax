@@ -24,7 +24,7 @@
 // budgeted, so a page polling on a timer is soon cut off. Clax has no public links: every view
 // that serves the declaration gets the namespace.
 import { AFFIX, MAX_QUOTE, MAX_SELECTOR } from "../../../bridge/src/anchor";
-import { type Anchor, type AnchorRect, type Box, INDEX_FILE } from "../../../bridge/src/protocol";
+import { type Anchor, type AnchorArea, type AnchorRect, type Box, INDEX_FILE } from "../../../bridge/src/protocol";
 import { nameProblem, textProblem } from "../../../bridge/src/text-rule";
 import { ApiError, getArtifact } from "../api";
 import type { ArtifactEvent } from "../events";
@@ -57,6 +57,8 @@ export const MAX_LABEL_BYTES = 128;
 export const MAX_CLIP_BYTES = 5 * 1024 * 1024;
 /** How long a `canSendToClaude` answer is reused when no event says the sessions changed. */
 export const CAN_SEND_TTL_MS = 30_000;
+/** Longest area fingerprint `tag` or `text` (the daemon's `MAX_FINGERPRINT`). */
+const MAX_FINGERPRINT = 64;
 const HTML_HASH = /^sha256:[0-9a-f]{64}$/;
 const CONTROL = /[\p{Cc}\p{Zl}\p{Zp}]/u;
 
@@ -101,12 +103,29 @@ const optText = (v: unknown, max: number, name: string): string | null => {
 };
 const finite = (v: unknown) => typeof v === "number" && Number.isFinite(v);
 
-/** A DOM anchor the page built (element or range), rebuilt field by field on
+/** An area's placement, rebuilt field by field: its fractions and its
+ * optional fingerprint (the daemon checks their ranges). */
+function pickedArea(v: unknown): AnchorArea {
+  const r = v as Record<string, unknown> | null;
+  if (!r || typeof r !== "object" || !["x", "y", "w", "h"].every(k => finite(r[k]))) throw invalid("anchor.area holds finite fractions");
+  const area: AnchorArea = { x: r.x as number, y: r.y as number, w: r.w as number, h: r.h as number };
+  if (r.tag !== undefined) area.tag = optText(r.tag, MAX_FINGERPRINT, "area.tag") ?? undefined;
+  if (r.text !== undefined) area.text = optText(r.text, MAX_FINGERPRINT, "area.text") ?? undefined;
+  if (r.children !== undefined) {
+    if (!Number.isInteger(r.children) || (r.children as number) < 0) throw invalid("anchor.area.children is a count");
+    area.children = r.children as number;
+  }
+  return area;
+}
+
+/** A DOM anchor the page built (element or range, and with `opts.area` an
+ * area, which only the viewer's own pick makes), rebuilt field by field on
  * page `file`; `invalid` for anything else. */
-export function pageAnchor(a: unknown, file: string): Anchor {
+export function pageAnchor(a: unknown, file: string, opts: { area?: boolean } = {}): Anchor {
   if (!a || typeof a !== "object") throw invalid("anchor is an object");
   const x = a as Record<string, unknown>;
-  if (x.kind !== "element" && x.kind !== "range") throw invalid("anchor.kind is element or range");
+  const area = x.kind === "area" && opts.area ? pickedArea(x.area) : null;
+  if (x.kind !== "element" && x.kind !== "range" && !area) throw invalid(opts.area ? "anchor.kind is element, range or area" : "anchor.kind is element or range");
   if (typeof x.selector !== "string" || !x.selector || x.selector.length > MAX_SELECTOR || CONTROL.test(x.selector)) {
     throw invalid(`anchor.selector is a CSS path of at most ${MAX_SELECTOR} characters`);
   }
@@ -120,7 +139,7 @@ export function pageAnchor(a: unknown, file: string): Anchor {
     rect = Object.fromEntries(keys.map(k => [k, r[k]])) as unknown as AnchorRect;
   }
   return {
-    kind: x.kind,
+    kind: area ? "area" : (x.kind as "element" | "range"),
     selector: x.selector,
     quote: optText(x.quote, MAX_QUOTE, "quote"),
     prefix: optText(x.prefix, AFFIX, "prefix"),
@@ -128,6 +147,7 @@ export function pageAnchor(a: unknown, file: string): Anchor {
     html_hash: (hash as string | null | undefined) ?? null,
     rect,
     custom_name: null,
+    ...(area ? { area } : {}),
     file,
   };
 }
