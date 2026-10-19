@@ -2933,7 +2933,8 @@ pub(crate) mod tests {
         else {
             panic!()
         };
-        // The owner revokes the grant while the answer is being recorded.
+        // The owner revokes the grant just before the answer is recorded:
+        // the answer's one transaction then finds no live grant.
         let gid = g.id.clone();
         st.at_point("people.owner_answer.approve", move |st| {
             st.revoke_grant(DAEMON, &gid, EndedBy::Owner).unwrap();
