@@ -65,13 +65,37 @@ const NESTING = 20;
 /** Thrown by `nest` past `NESTING`. */
 class TooDeep extends Error {}
 
-// Linear in the length of its input (CommonMark's delimiter algorithm), so
-// no comment can stall the page that shows it. Bare URLs and email
-// addresses become links; a bare domain (`README.md`) does not. A link
-// reference definition (`[x]: https://…`) is not read as one: it would
-// show nothing, and `[//]: # (…)` would hide its text from the people
-// reading a comment that agents read whole. It shows as its text.
-const md = new MarkdownIt("default", { html: false, linkify: true, typographer: false, breaks: false, maxNesting: NESTING }).disable("reference");
+// markdown-it reads emphasis, links and code in time linear in the length
+// of its input (CommonMark's delimiter algorithm). Tables are the
+// exception: every row is padded to its header's columns, so a 4 KB body
+// of a 500-column header and bare `|` lines is 66,000 cells. A body whose
+// tables could hold more than `MAX_CELLS` cells, or a row more than
+// `MAX_COLUMNS`, is read with tables off (`plainMd`): its table lines show
+// as text. Bare URLs and email addresses become links; a bare domain
+// (`README.md`) does not. A link reference definition (`[x]: https://…`)
+// is not read as one: it would show nothing, and `[//]: # (…)` would hide
+// its text from the people reading a comment that agents read whole. It
+// shows as its text.
+const OPTIONS = { html: false, linkify: true, typographer: false, breaks: false, maxNesting: NESTING } as const;
+const md = new MarkdownIt("default", OPTIONS).disable("reference");
+const plainMd = new MarkdownIt("default", OPTIONS).disable(["reference", "table"]);
+
+/** The most cells a comment's tables may have, and columns a table may. */
+export const MAX_CELLS = 1500;
+export const MAX_COLUMNS = 24;
+
+// A table's delimiter row (`|---|:-:|`), possibly in a quote or a list.
+const DELIMITER = /^[ \t>*+\-\d.)]*\|?[ \t]*:?-+:?[ \t]*(?:\|[ \t]*:?-+:?[ \t]*)*\|?[ \t]*$/;
+
+/** Whether `src`'s tables could hold more than `MAX_CELLS` cells (each row
+ * is padded to its header's columns, and any line may be a row) or more
+ * than `MAX_COLUMNS` columns. */
+function tooWide(src: string): boolean {
+  const lines = src.split("\n");
+  let cols = 0;
+  for (const l of lines) if (l.includes("|") && l.includes("-") && DELIMITER.test(l)) cols = Math.max(cols, l.replace(/^[^|]*?(?=\|)|\|[ \t]*$/g, "").split("|").filter(c => c.trim()).length);
+  return cols > MAX_COLUMNS || cols * lines.length > MAX_CELLS;
+}
 
 /** The words of `s`: its runs of letters and digits. */
 const words = (s: string): string[] => s.match(/[\p{L}\p{N}]+/gu) ?? [];
@@ -228,9 +252,23 @@ const MARKUP = /&(?:#\d+|#[xX][\da-fA-F]+|[A-Za-z][A-Za-z\d]*);|^[ \t>]*(?:\d+[.
  * is one paragraph of its text: nothing in a comment is hidden from the
  * people reading it, while agents read it whole. */
 export function parse(src: string): Block[] {
+  const hit = cache.get(src);
+  if (hit) return hit;
+  const bs = read(src);
+  if (cache.size >= CACHED) cache.delete(cache.keys().next().value!);
+  cache.set(src, bs);
+  return bs;
+}
+
+/** The bodies read most recently, so previews and cards share a reading. */
+const cache = new Map<string, Block[]>();
+const CACHED = 256;
+
+function read(src: string): Block[] {
   const asText = (): Block[] => (src.trim() ? [{ t: "p", c: [{ t: "text", v: src }] }] : []);
   try {
-    const ts = md.parse(src, {});
+    let ts = (tooWide(src) ? plainMd : md).parse(src, {});
+    if (ts.filter(t => t.type === "th_open" || t.type === "td_open").length > MAX_CELLS) ts = plainMd.parse(src, {});
     if (ts.some(t => t.level >= NESTING - 1)) return asText();
     const bs = blocks(nest(ts));
     return said(src.replace(MARKUP, " "), bs.map(blockText).join("\n")) ? bs : asText();

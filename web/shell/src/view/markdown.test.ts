@@ -1,7 +1,7 @@
 import { beforeAll, describe, expect, it } from "vitest";
 import Markdown from "../ui/Markdown.svelte";
 import { flush, mount } from "../test/svelte";
-import { type Block, parse, plain, safeHref } from "./markdown";
+import { type Block, MAX_CELLS, MAX_COLUMNS, parse, plain, safeHref } from "./markdown";
 import { loadMarkdown, md, plainText } from "./md-load.svelte";
 import { itemText } from "../q/inbox-model";
 import type { InboxItem } from "../api";
@@ -127,6 +127,26 @@ describe("parse: untrusted text stays text", () => {
     for (const src of ["[](https://example.com/x)", "[ ](https://example.com/x)", "[![](https://example.com/x)](https://example.com/x)"]) {
       expect(render(src).querySelector("a")?.textContent, src).toBe("https://example.com/x");
     }
+  });
+
+  it("reads no table past its bounds: a wide header padding every line shows as text", () => {
+    const cells = (src: string) => parse(src).filter(b => b.t === "table").reduce((n, b) => n + (b.t === "table" ? b.head.length * (1 + b.rows.length) : 0), 0);
+    // 500 columns, then bare rows to 4096 bytes: 66,000 cells if read.
+    const head = `|${"a|".repeat(500)}\n|${"-|".repeat(500)}\n`;
+    const wide = head + "|\n".repeat((4096 - head.length) / 2);
+    expect(cells(wide)).toBe(0);
+    expect(parse(wide)).toHaveLength(1);
+    // Within the column bound, a header padding many lines.
+    const tall = `|${"a|".repeat(MAX_COLUMNS)}\n|${"-|".repeat(MAX_COLUMNS)}\n${"|\n".repeat(1000)}`;
+    expect(cells(tall)).toBeLessThanOrEqual(MAX_CELLS);
+    // A table of ordinary size is still a table.
+    expect(cells("| a | b |\n|---|---|\n| 1 | 2 |\n| 3 | 4 |")).toBe(6);
+    expect(cells(`|${" a |".repeat(12)}\n|${"---|".repeat(12)}\n|${" 1 |".repeat(12)}`)).toBe(24);
+  });
+
+  it("reads a body once for its card and its previews", () => {
+    const src = "**cached** body";
+    expect(parse(src)).toBe(parse(src));
   });
 
   it("shows a link reference definition as its text, hiding none of it", () => {
