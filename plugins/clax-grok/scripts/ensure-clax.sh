@@ -4,6 +4,8 @@
 #
 # Usage:
 #   ensure-clax.sh                   print the path of the clax that would run
+#   ensure-clax.sh which             the same, but never installs: a pinned
+#                                    release not yet installed is the error
 #   ensure-clax.sh exec mcp <args>   run the MCP server
 #   ensure-clax.sh exec hook <args>  run a hook (always exits 0)
 #   ensure-clax.sh exec <args>       run any other clax command
@@ -100,6 +102,7 @@ ARGV="$*"
 
 case "${1:-}" in
     "") MODE=print ;;
+    which) MODE=which ;;
     pinned-version) echo "$PINNED_VERSION"; exit 0 ;;
     exec)
         case "${2:-}" in
@@ -128,7 +131,7 @@ case "${1:-}" in
             *) export CLAX_CHANNEL=agent ;;
         esac
         ;;
-    *) echo "usage: ensure-clax.sh [exec <clax arguments...> | pinned-version]" >&2; exit 2 ;;
+    *) echo "usage: ensure-clax.sh [which | exec <clax arguments...> | pinned-version]" >&2; exit 2 ;;
 esac
 AGENT=-
 prev=""
@@ -526,7 +529,11 @@ resolve() {
     TRIED="managed $dest/clax: $why"
     if [ "$may" != install ]; then
         PENDING="$why"
-        REASON="clax $PINNED_VERSION, which this plugin runs, is not installed in $dest yet ($why); the clax MCP server installs it when it starts."
+        if [ "$MODE" = which ]; then
+            REASON="clax $PINNED_VERSION, which this plugin runs, is not installed in $dest yet ($why); it is installed when a clax command first needs it."
+        else
+            REASON="clax $PINNED_VERSION, which this plugin runs, is not installed in $dest yet ($why); the clax MCP server installs it when it starts."
+        fi
         return 1
     fi
     if [ "$MODE" = mcp ]; then
@@ -750,13 +757,13 @@ main() {
         exit 0
     fi
     local may=install
-    if [ "$MODE" = hook ]; then may=""; fi
+    if [ "$MODE" = hook ] || [ "$MODE" = which ]; then may=""; fi
     if resolve "$may"; then
         if [ "$SOURCE" != managed ] && [ "$GOT_VERSION" != "clax $CLAX_VERSION" ]; then
             WARNING="$BIN is $GOT_VERSION, but this plugin is clax $CLAX_VERSION; build and install the matching clax (\`just install\` in a Clax checkout), or clear the override so the plugin runs the release it pins"
         fi
         case "$MODE" in
-            print) echo "$BIN"; exit 0 ;;
+            print|which) echo "$BIN"; exit 0 ;;
             hook) shift; run_hook "$BIN" "$@" ;;
             mcp)
                 if [ -n "$WARNING" ]; then log "clax: warning: $WARNING"; fi

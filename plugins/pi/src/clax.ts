@@ -19,7 +19,7 @@ import { checkClip, CLIP_MAX_BYTES, loadRemote, rewriteClipItems, rewriteClipTex
  * over (spec §16); a clip not fetched by then reads `Clip: unavailable
  * (timed out)`. */
 export const CLIP_FETCH_MS = 5_000;
-import { binaryVersion, claxHome, discover, endpointOf, ensure, findBinary, logPath, upgradeHeld } from "./daemon.ts";
+import { binaryVersion, claxHome, discover, endpointOf, ensure, installedBinary, logPath, upgradeHeld } from "./daemon.ts";
 
 /** Default cap on the bytes `read` returns. */
 export const DEFAULT_READ_MAX_BYTES = 200_000;
@@ -1331,10 +1331,11 @@ class Tools {
     // Version skew between these tools and the daemon they call.
     if (h.version !== null && h.version !== VERSION) out.daemon_version = h.version ?? null;
     // Which binary the extension runs: CLAX_BIN, else the bin setting, else
-    // the pinned release (see findBinary).
+    // the pinned release (see findBinary). Status installs nothing: a pinned
+    // release not installed yet is reported as the error.
     let path: string | null = null;
     try {
-      path = await findBinary(this.home, this.env);
+      path = await installedBinary(this.home, this.env);
     } catch (e) {
       out.binary = { path: null, version: null, error: (e as Error).message };
     }
