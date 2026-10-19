@@ -21,7 +21,9 @@ import 'package:clax_app/ui/ai_consent_sheet.dart';
 import 'package:clax_app/ui/app_screen.dart';
 import 'package:clax_app/ui/host_protocol.dart';
 import 'package:clax_app/ui/inspector_surface.dart';
+import 'package:clax_app/ui/inbox/inbox_split.dart';
 import 'package:clax_app/ui/launcher.dart';
+import 'package:clax_app/ui/mac/windows.dart';
 import 'package:clax_app/ui/making_screen.dart'
     show MakingScreen, sayFirstOutput;
 import 'package:clax_app/ui/questions/question_card.dart';
@@ -170,10 +172,14 @@ class _Rig {
 void main() {
   late _Rig rig;
 
-  Future<void> pumpApp(WidgetTester tester, _Rig r) async {
+  Future<void> pumpApp(
+    WidgetTester tester,
+    _Rig r, {
+    WindowContents? windows,
+  }) async {
     rig = r;
     addTearDown(r.dispose);
-    await tester.pumpWidget(AppRoot(services: r.services()));
+    await tester.pumpWidget(AppRoot(services: r.services(), windows: windows));
     await tester.pump();
   }
 
@@ -695,6 +701,58 @@ void main() {
       // Home closes it, down to the grid.
       await choose(ClaxCommand.home);
       expect(find.byType(SettingsScreen), findsNothing);
+    },
+    variant: TargetPlatformVariant.only(TargetPlatform.macOS),
+  );
+
+  testWidgets(
+    'on macOS Settings… and Inbox open their own windows, which show the '
+    'tabs and the inbox over the same services; without a window they are '
+    'screens again',
+    (tester) async {
+      final opened = <Object?>[];
+      var answer = true;
+      tester.binding.defaultBinaryMessenger.setMockMethodCallHandler(
+        MacWindows.channel,
+        (call) async {
+          if (call.method != 'open') return null;
+          opened.add((call.arguments as Map)['kind']);
+          return answer;
+        },
+      );
+      addTearDown(
+        () => tester.binding.defaultBinaryMessenger.setMockMethodCallHandler(
+          MacWindows.channel,
+          null,
+        ),
+      );
+      Future<void> choose(ClaxCommand c) async {
+        await tester.binding.defaultBinaryMessenger.handlePlatformMessage(
+          MacMenu.channel.name,
+          MacMenu.channel.codec.encodeMethodCall(MethodCall('command', c.tag)),
+          (_) {},
+        );
+        await tester.pumpAndSettle();
+      }
+
+      final windows = WindowContents();
+      addTearDown(windows.dispose);
+      await pumpApp(tester, _Rig(key: 'sk-ant-x'), windows: windows);
+      await up(tester);
+
+      await choose(ClaxCommand.settings);
+      expect(opened, ['settings']);
+      expect(find.byType(SettingsScreen), findsNothing, reason: 'a window');
+      expect(windows.build('settings', 1), isNotNull);
+      expect(windows.build('inbox', 1), isNotNull);
+
+      await choose(ClaxCommand.inbox);
+      expect(opened, ['settings', 'inbox']);
+      expect(find.byType(InboxSplit), findsNothing);
+
+      answer = false;
+      await choose(ClaxCommand.settings);
+      expect(find.byType(SettingsScreen), findsOneWidget);
     },
     variant: TargetPlatformVariant.only(TargetPlatform.macOS),
   );

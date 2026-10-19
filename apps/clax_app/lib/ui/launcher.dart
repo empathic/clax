@@ -1021,6 +1021,7 @@ class HomeFlows implements HomeActions {
     required this.openApp,
     required this.voice,
     this.showSettings,
+    this.showInbox,
     this.onOpenTarget,
     this.onOpenQuestion,
     this.timings,
@@ -1037,6 +1038,10 @@ class HomeFlows implements HomeActions {
 
   /// Opens app [aid], as a tile's tap does.
   final void Function(String aid) openApp;
+
+  /// Shows the inbox in a window of its own (the Mac's), answering whether
+  /// it could; the inbox is pushed when it could not, or when null.
+  final Future<bool> Function()? showInbox;
   final VoiceInput voice;
 
   /// Shows Settings; null shows none.
@@ -1329,8 +1334,11 @@ class HomeFlows implements HomeActions {
   }
 
   @override
-  void openInbox() {
-    if (mounted) unawaited(_openInbox());
+  void openInbox() => unawaited(_inboxWindowOrScreen());
+
+  Future<void> _inboxWindowOrScreen() async {
+    if (await showInbox?.call() ?? false) return;
+    if (mounted) await _openInbox();
   }
 
   @override

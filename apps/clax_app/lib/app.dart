@@ -95,6 +95,8 @@ import 'ui/make_service.dart';
 import 'ui/making_screen.dart';
 import 'ui/questions/questions_sheet.dart';
 import 'ui/read_consent_dialog.dart';
+import 'ui/inbox/inbox_split.dart';
+import 'ui/settings/settings_tabs.dart';
 import 'ui/settings_screen.dart';
 import 'ui/shortcuts.dart' show ClaxCommand;
 import 'ui/splash.dart';
@@ -285,15 +287,21 @@ class AppServices {
 
 /// Runs the app with [services], with Clax's own licence on the licences
 /// page ([registerClaxLicence]). On the Mac the engine draws a view for
-/// each window ([ClaxViews]), and the main window's is the app.
+/// each window ([ClaxViews]): the main window's is the app, and the
+/// Settings and Inbox windows show what the app gives them.
 Future<void> runClaxApp(AppServices services) async {
   registerClaxLicence();
-  final app = AppRoot(services: services);
   if (hasDesktopWindowChrome) {
+    final further = WindowContents();
     MacWindows.install();
-    runWidget(ClaxViews(main: app));
+    runWidget(
+      ClaxViews(
+        main: AppRoot(services: services, windows: further),
+        further: further,
+      ),
+    );
   } else {
-    runApp(app);
+    runApp(AppRoot(services: services));
   }
 }
 
@@ -551,11 +559,18 @@ class AgentRuntime {
 /// - **macOS.** The menu bar is `MainMenu.xib`'s, whose Clax commands
 ///   [ClaxMenuBar] enables and runs: Settings…, New App…, Import App…,
 ///   Inbox, Back and Home; the open app screen registers View › Comment
-///   and View › Show Threads.
+///   and View › Show Threads. Settings (⌘,) and the Inbox (⇧⌘I) open as
+///   windows of their own ([windows]), sharing this root's services; Open
+///   app in the Inbox window brings the main window forward with that app.
 class AppRoot extends StatefulWidget {
-  const AppRoot({super.key, required this.services});
+  const AppRoot({super.key, required this.services, this.windows});
 
   final AppServices services;
+
+  /// Where the root gives the Mac's Settings and Inbox windows their
+  /// content; with none, Settings and the Inbox are screens of this
+  /// window.
+  final WindowContents? windows;
 
   @override
   State<AppRoot> createState() => _AppRootState();
@@ -770,6 +785,7 @@ class _AppRootState extends State<AppRoot> with WidgetsBindingObserver {
     openApp: _open,
     voice: _s.voice,
     showSettings: () => unawaited(_openSettings()),
+    showInbox: widget.windows == null ? null : () => MacWindows.open('inbox'),
     onOpenTarget: _openTarget,
     onOpenQuestion: _openQuestion,
     timings: _s.timings,
@@ -893,6 +909,81 @@ class _AppRootState extends State<AppRoot> with WidgetsBindingObserver {
     }
     _start();
     unawaited(_loadSettings());
+    if (widget.windows case final w?) {
+      w.set('settings', (_) => _window(_settingsWindow()));
+      w.set('inbox', (_) => _window(_inboxWindow()));
+    }
+  }
+
+  /// [home] as a further window's app, in the app's themes, under the same
+  /// Developer switch and pointer as the main window.
+  Widget _window(Widget home) => DeveloperScope(
+    notifier: _developer,
+    child: ClaxPointerScope(
+      child: MaterialApp(
+        title: 'Clax',
+        debugShowCheckedModeBanner: false,
+        theme: claxTheme(Brightness.light, defaultTargetPlatform),
+        darkTheme: claxTheme(Brightness.dark, defaultTargetPlatform),
+        highContrastTheme: claxTheme(
+          Brightness.light,
+          defaultTargetPlatform,
+          highContrast: true,
+        ),
+        highContrastDarkTheme: claxTheme(
+          Brightness.dark,
+          defaultTargetPlatform,
+          highContrast: true,
+        ),
+        home: home,
+      ),
+    ),
+  );
+
+  /// The Settings window: its tabs, General first; the main window reads
+  /// the settings again as each is saved and once it closes.
+  Widget _settingsWindow() => SettingsTabs(
+    tab: SettingsTab.general,
+    screen: (tab) => _settingsScreen(tab: tab),
+    onClosed: () => unawaited(_loadSettings()),
+  );
+
+  /// The Inbox window, once the home screen's host (its stream and icons)
+  /// is up; the unread count is read again when it closes.
+  Widget _inboxWindow() => ListenableBuilder(
+    listenable: _revision,
+    builder: (context, _) {
+      final host = _homeHost;
+      if (host == null) {
+        return ClaxSplash(key: const ValueKey('splash'), clock: _s.clock);
+      }
+      return InboxSplit(
+        api: _api,
+        stream: host.stream,
+        voice: _s.voice,
+        icons: host.icons,
+        autoDictate: _settings.dictateComments,
+        toolbar: true,
+        onOpenApp: _openFromWindow,
+        onOpenQuestion: (qid) {
+          unawaited(MacWindows.open('main'));
+          _openQuestion(qid);
+        },
+        onClosed: () => unawaited(host.loadUnread()),
+      );
+    },
+  );
+
+  /// Opens app [aid] in the main window, brought forward, from another
+  /// window.
+  void _openFromWindow(
+    String aid, {
+    String? thread,
+    int? version,
+    String? comment,
+  }) {
+    unawaited(MacWindows.open('main'));
+    _openTarget(aid, thread: thread, version: version, comment: comment);
   }
 
   @override
@@ -1489,8 +1580,9 @@ class _AppRootState extends State<AppRoot> with WidgetsBindingObserver {
   /// second one.
   var _settingsUp = false;
 
-  /// Shows Settings, unless it is already up.
+  /// Shows Settings, unless it is already up: on the Mac its own window.
   Future<void> _openSettings() async {
+    if (widget.windows != null && await MacWindows.open('settings')) return;
     if (_settingsUp) return;
     _settingsUp = true;
     try {
@@ -1502,13 +1594,27 @@ class _AppRootState extends State<AppRoot> with WidgetsBindingObserver {
 
   Future<void> _showSettings() async {
     await _nav.currentState?.push(
-      MaterialPageRoute<void>(
-        builder: (_) => SettingsScreen(
+      MaterialPageRoute<void>(builder: (_) => _settingsScreen()),
+    );
+    await _loadSettings();
+  }
+
+  /// Whether the Mac lets Clax show notifications.
+  static Future<bool> _macNotificationsAllowed() async =>
+      await SettingsScreen.native.invokeMethod<bool>('notificationsAllowed') ??
+      false;
+
+  /// Settings over this root's services: one [tab], or all of them.
+  SettingsScreen _settingsScreen({SettingsTab? tab}) => SettingsScreen(
+          tab: tab,
+          onSaved: () => unawaited(_loadSettings()),
           store: _s.settings,
           secureKey: _s.key,
           cliSupported: _s.cliSupported,
           asksAiConsent: _s.aiConsent.required,
-          notificationsAllowed: _notice?.allowed,
+          notificationsAllowed:
+              _notice?.allowed ??
+              (widget.windows != null ? _macNotificationsAllowed : null),
           timings: _s.timings.recent(10),
           fingerprint: _s.bundleKey == null
               ? null
@@ -1530,11 +1636,7 @@ class _AppRootState extends State<AppRoot> with WidgetsBindingObserver {
             ),
             null => null,
           },
-        ),
-      ),
-    );
-    await _loadSettings();
-  }
+        );
 
   /// Makes an app from [request]; with [keepGoing], goes on with the make
   /// that stopped at a limit with its draft kept under that key
