@@ -363,6 +363,11 @@ void main() {
 
   testWidgets('no snapshot is taken in comment mode, nor when a sheet opens '
       'over home; a screen over home takes one', (tester) async {
+    // A phone's window, where Settings is pushed over home (a wider
+    // Android window shows it beside the rail).
+    tester.view.physicalSize = const Size(412, 915);
+    tester.view.devicePixelRatio = 1;
+    addTearDown(tester.view.reset);
     final clock = _Clock();
     final store = HomeSnapshotStore(Directory('${dir.path}/cache'));
     final page = await start(

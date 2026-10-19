@@ -219,7 +219,12 @@ void main() {
   });
   tearDown(() => dir.deleteSync(recursive: true));
 
+  /// Pumps the app in an Android phone's window, where a screen opens over
+  /// the home screen (a wider one lays out as a split window).
   Future<void> pumpApp(WidgetTester tester) async {
+    tester.view.physicalSize = const Size(412, 915);
+    tester.view.devicePixelRatio = 1;
+    addTearDown(tester.view.reset);
     await tester.pumpWidget(
       AppRoot(
         services: AppServices(
