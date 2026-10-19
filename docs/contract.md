@@ -3228,7 +3228,7 @@ cursor or body) and 404 `not_found`.
   - `q`: search text. Every word must start a word of the item. FTS5
     operators are taken as text, so no search text is an error.
   - `kind`: comma-separated kinds.
-  - `artifact`: an artifact ID.
+  - `artifact`: an artifact ID, or `none` for the items about no artifact.
   - `agent`: a harness, or an agent handle (`a_…`).
   - `since`, `until`: a `YYYY-MM-DD` date (UTC) or an RFC 3339 time. An
     `until` date covers the whole day.
@@ -3245,6 +3245,24 @@ cursor or body) and 404 `not_found`.
   - `unread` and `total` are read just after the page, so under concurrent
     writes they may differ from it by the changes the `inbox` topic then
     announces.
+- **`GET /api/inbox?group=artifact`**, with any of the parameters above,
+  → `{groups, next_cursor, unread, total?}`: the matches grouped by the
+  artifact they are about, one group (`artifact: null`) for the items
+  about none, newest group (by its newest match) first. Each group is
+  `{artifact, total, unread, newest_at, items, next_cursor}`:
+  - `artifact` is the artifact as its items name it (`{id, title, kind,
+    page_url}`), or null.
+  - `total` counts every match in the group and `unread` those of them
+    unread, not only the items listed.
+  - `newest_at` is its newest match's time.
+  - `items` are its newest matches, `rows` of them (default 3, clamped
+    to 1..20).
+  - `next_cursor` is the `before` of the rest, listed by the plain query
+    with `artifact=<its ID>` (or `artifact=none`), or null.
+
+  `limit` is groups per page (default 20, clamped to 1..100), `before` the
+  top-level `next_cursor`, and `total` is the plain list's. `rows` without
+  `group=artifact` is 400 `invalid_query`.
 - **`GET /api/inbox?group=agent`**, with no other parameter, → `{agents,
   unread}`: the agent strip. One entry per agent with unread items for the
   caller or an open question or approval request waiting on them:
@@ -3275,7 +3293,8 @@ cursor or body) and 404 `not_found`.
 - **`POST /api/inbox/read`** → `{marked, unread}`. The body is one of:
   - `{ids: [...]}`: at most 500 item IDs.
   - `{all: true, filter?: {q, kind, artifact, agent, since, until}, upto?}`:
-    every unread item matching the filter. With `upto` (the newest `seq`
+    every unread item matching the filter (`artifact: "none"`: those
+    about no artifact, as a group's **Mark read** sends). With `upto` (the newest `seq`
     the client showed), only items up to it, so an item made since is not
     marked unseen. `kind` may be a comma-separated string or an array.
 

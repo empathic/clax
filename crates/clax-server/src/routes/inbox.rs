@@ -20,7 +20,10 @@ use clax_http::identity::Identity;
 use clax_http::state::AppState;
 use clax_http::viewer::SameOrigin;
 use clax_http::views::inbox::{recipient_of, view as inbox_view, views as inbox_views};
-use clax_store::inbox::{Agent, InboxQuery, Kind, MAX_PAGE, ReadFilter, is_item_id, stored_time};
+use clax_store::inbox::{
+    Agent, InboxQuery, Kind, MAX_GROUP_ROWS, MAX_GROUPS, MAX_PAGE, ReadFilter, is_item_id,
+    stored_time,
+};
 use clax_store::questions::ListStatus;
 use serde::Deserialize;
 use serde_json::{Value, json};
@@ -33,6 +36,10 @@ pub const MAX_MARK_IDS: usize = 500;
 pub const SUMMARY_LATEST: u32 = 5;
 /// Open questions the summary shows at most.
 pub const SUMMARY_QUESTIONS: u32 = 200;
+/// Items each group of `group=artifact` lists when `rows` is not given.
+pub const GROUP_ROWS: u32 = 3;
+/// The `artifact` filter's value for the items about no artifact.
+pub const NO_ARTIFACT: &str = "none";
 
 fn invalid(msg: impl Into<String>) -> ApiError {
     ApiError::bad_request("invalid_query", msg)
@@ -66,9 +73,10 @@ pub enum Kinds {
 
 impl Filter {
     /// The query these filters make over `recipient`'s items. 400
-    /// `invalid_query` for an unknown kind, an artifact that is not an
-    /// artifact ID, or a date or time that is not RFC 3339 (`since`/`until`
-    /// are normalised to the stored form).
+    /// `invalid_query` for an unknown kind, an artifact that is neither an
+    /// artifact ID nor `none` (the items about no artifact), or a date or
+    /// time that is not RFC 3339 (`since`/`until` are normalised to the
+    /// stored form).
     fn query(self, recipient: Option<String>) -> Result<InboxQuery, ApiError> {
         let names: Vec<String> = match self.kind {
             None => Vec::new(),
@@ -84,10 +92,15 @@ impl Filter {
                 ))
             })?);
         }
-        let artifact = match self.artifact.as_deref().filter(|a| !a.is_empty()) {
+        let no_artifact = self.artifact.as_deref() == Some(NO_ARTIFACT);
+        let artifact = match self
+            .artifact
+            .as_deref()
+            .filter(|a| !a.is_empty() && !no_artifact)
+        {
             Some(a) => Some(
                 ArtifactId::parse(a)
-                    .map_err(|_| invalid(format!("'{a}' is not an artifact ID")))?
+                    .map_err(|_| invalid(format!("'{a}' is not an artifact ID or {NO_ARTIFACT}")))?
                     .as_str()
                     .to_string(),
             ),
@@ -115,6 +128,7 @@ impl Filter {
             text: self.q.filter(|q| !q.trim().is_empty()),
             kinds,
             artifact,
+            no_artifact,
             agent,
             since: time(self.since, false)?,
             until: time(self.until, true)?,
@@ -144,9 +158,13 @@ pub struct ListQuery {
     before: Option<String>,
     #[serde(default)]
     limit: Option<String>,
-    /// `agent`: the agent strip instead of items.
+    /// `agent`: the agent strip instead of items; `artifact`: the items
+    /// grouped by artifact.
     #[serde(default)]
     group: Option<String>,
+    /// `group=artifact`: items listed in each group.
+    #[serde(default)]
+    rows: Option<String>,
 }
 
 impl ListQuery {
@@ -162,6 +180,7 @@ impl ListQuery {
             &self.read,
             &self.before,
             &self.limit,
+            &self.rows,
         ]
         .iter()
         .any(|p| p.is_some())
@@ -226,6 +245,19 @@ fn query_of<T>(q: Result<Query<T>, QueryRejection>) -> Result<T, ApiError> {
 /// ones first, longest blocked first, then by newest unread item; another
 /// `group` is 400 `invalid_query`.
 ///
+/// With `group=artifact` (and any of the parameters above, `rows=` too) →
+/// `{groups, next_cursor, unread, total?}`: the matches grouped by the
+/// artifact they are about, one group (`artifact: null`) for those about
+/// none, newest group (by its newest match) first. Each group is
+/// `{artifact, total, unread, newest_at, items, next_cursor}`: the
+/// artifact as its items name it, how many match and how many of those are
+/// unread (every match counted, not only those listed), its newest match's
+/// time, its `rows` newest matches (default 3, 1 to 20), and the `before`
+/// of the rest, which the plain list pages with `artifact=<its ID>` (or
+/// `artifact=none`). `limit` is groups per page (default 20, at most 100)
+/// and `before` the top-level `next_cursor`. `total` is as for the plain
+/// list. `rows` without `group=artifact` is 400 `invalid_query`.
+///
 /// (the owner, or a connected person: their own items) → `{items,
 /// next_cursor, unread, total?}`: items newest first,
 /// `limit` (default 50, at most 200) a page, `next_cursor` the `before` of
@@ -249,6 +281,7 @@ pub async fn list(
     let q = query_of(q)?;
     match q.group.as_deref() {
         None => {}
+        Some("artifact") => {}
         Some("agent") => {
             if q.filters() {
                 return Err(invalid("group=agent takes no other parameter"));
@@ -264,8 +297,23 @@ pub async fn list(
                 .await?;
             return Ok(Json(out));
         }
-        Some(g) => return Err(invalid(format!("'{g}' is not a grouping: agent"))),
+        Some(g) => {
+            return Err(invalid(format!(
+                "'{g}' is not a grouping: agent or artifact"
+            )));
+        }
     }
+    let grouped = q.group.is_some();
+    let rows = match (grouped, q.rows.as_deref().filter(|r| !r.is_empty())) {
+        (false, None) => 0,
+        (false, Some(_)) => return Err(invalid("rows goes with group=artifact")),
+        (true, None) => GROUP_ROWS,
+        (true, Some(r)) => r
+            .parse::<u32>()
+            .map_err(|_| invalid(format!("rows is 1 to {MAX_GROUP_ROWS}")))?
+            .clamp(1, MAX_GROUP_ROWS),
+    };
+    let most = if grouped { MAX_GROUPS } else { MAX_PAGE };
     let mut iq = Filter {
         q: q.q,
         kind: q.kind.map(Kinds::Comma),
@@ -294,33 +342,55 @@ pub async fn list(
         None => 0,
         Some(l) => l
             .parse::<u32>()
-            .map_err(|_| invalid(format!("limit is 1 to {MAX_PAGE}")))?
-            .clamp(1, MAX_PAGE),
+            .map_err(|_| invalid(format!("limit is 1 to {most}")))?
+            .clamp(1, most),
     };
     let filtered = iq.text.is_some()
         || !iq.kinds.is_empty()
         || iq.artifact.is_some()
+        || iq.no_artifact
         || iq.agent.is_some()
         || iq.since.is_some()
         || iq.until.is_some()
         || iq.read != ReadFilter::All;
-    // A filtered list (a search included) also counts what matches, which
-    // reads up to the whole inbox, so it waits in the bulk lane; an
-    // unfiltered page reads one page and the unread count.
+    // A filtered list (a search included) also counts what matches, and a
+    // grouping groups every match; each reads up to the whole inbox, so it
+    // waits in the bulk lane. An unfiltered page reads one page and the
+    // unread count.
     let job = move |db: &clax_store::Store| {
         let mut iq = iq;
         if iq.text.is_some() {
             iq.text_withheld_at =
                 clax_http::views::inbox::text_withheld_at(db, me.as_deref(), hosted)?;
         }
-        let (rows, next) = db.inbox_list(&iq)?;
-        let items = inbox_views(db, &rows, hosted)?;
-        let unread = db.inbox_unread(me.as_deref())?;
-        let mut out = json!({
-            "items": items,
-            "next_cursor": next.map(|n| n.to_string()),
-            "unread": unread,
-        });
+        let mut out = if grouped {
+            let (groups, next) = db.inbox_groups(&iq, rows)?;
+            let mut views = Vec::with_capacity(groups.len());
+            for g in &groups {
+                let items = inbox_views(db, &g.items, hosted)?;
+                // The artifact as its items name it (a deleted one by its ID alone).
+                let artifact = match &g.artifact_id {
+                    Some(_) => items.first().map_or(Value::Null, |i| i["artifact"].clone()),
+                    None => Value::Null,
+                };
+                views.push(json!({
+                    "artifact": artifact,
+                    "total": g.total,
+                    "unread": g.unread,
+                    "newest_at": g.newest_at,
+                    "items": items,
+                    "next_cursor": g.next.map(|n| n.to_string()),
+                }));
+            }
+            json!({"groups": views, "next_cursor": next.map(|n| n.to_string())})
+        } else {
+            let (rows, next) = db.inbox_list(&iq)?;
+            json!({
+                "items": inbox_views(db, &rows, hosted)?,
+                "next_cursor": next.map(|n| n.to_string()),
+            })
+        };
+        out["unread"] = json!(db.inbox_unread(me.as_deref())?);
         if filtered {
             let n = db.inbox_count(&iq, TOTAL_CAP + 1)?;
             out["total"] = if n > TOTAL_CAP {
@@ -331,7 +401,7 @@ pub async fn list(
         }
         Ok(out)
     };
-    let out = if filtered {
+    let out = if filtered || grouped {
         s.store_call_bulk(job).await?
     } else {
         s.store_call(job).await?

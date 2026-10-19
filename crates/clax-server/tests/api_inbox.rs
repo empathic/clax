@@ -1043,3 +1043,129 @@ async fn the_summary_lists_a_waiting_connection_request() {
     assert_eq!(latest.len(), 1, "{summary}");
     assert_eq!(latest[0]["kind"], "connection");
 }
+
+#[tokio::test]
+async fn group_by_artifact_counts_every_match_and_pages_each_group() {
+    let ts = TestServer::spawn().await;
+    let (sid, aid, tid) = owner_thread(&ts).await;
+    for i in 0..5 {
+        ts.reply_as_agent(&sid, &aid, &tid, &format!("note {i}"))
+            .await;
+    }
+    let other = ts.publish_as(&sid, "Pricing", "<h1>Pricing</h1>").await;
+    let other = other["artifact"]["id"].as_str().unwrap().to_string();
+    // A question about no page: the group without an artifact.
+    let q = ts
+        .ask(
+            &sid,
+            json!({"source": "ask", "questions": [{"question": "Which?", "header": "Pick",
+                "options": [{"label": "A"}, {"label": "B"}]}]}),
+        )
+        .await;
+    assert!(q["question"]["artifact"].is_null(), "{q}");
+    ts.reply_as_agent(&sid, &aid, &tid, "the newest note").await;
+
+    let g = get(&ts, "/api/inbox?group=artifact&read=unread&rows=2").await;
+    let groups = g["groups"].as_array().unwrap();
+    let shape: Vec<_> = groups
+        .iter()
+        .map(|g| {
+            (
+                g["artifact"]["id"].as_str().map(str::to_string),
+                g["total"].as_u64().unwrap(),
+                g["unread"].as_u64().unwrap(),
+                g["items"].as_array().unwrap().len(),
+            )
+        })
+        .collect();
+    assert_eq!(
+        shape,
+        vec![
+            (Some(aid.clone()), 7, 7, 2),
+            (None, 1, 1, 1),
+            (Some(other.clone()), 1, 1, 1),
+        ],
+        "Board: its publication and six replies; newest group first: {g}"
+    );
+    assert_eq!(groups[0]["artifact"]["title"], "Board");
+    assert_eq!(groups[0]["items"][0]["reply"]["body"], "the newest note");
+    assert_eq!(groups[0]["newest_at"], groups[0]["items"][0]["created_at"]);
+    assert_eq!(groups[1]["items"][0]["kind"], "question");
+    assert_eq!(
+        (g["total"].as_u64(), g["unread"].as_u64()),
+        (Some(9), Some(9))
+    );
+    assert!(g["next_cursor"].is_null());
+
+    // The rest of a group: the plain list with its artifact and cursor.
+    let next = groups[0]["next_cursor"].as_str().unwrap();
+    let rest = get(
+        &ts,
+        &format!("/api/inbox?read=unread&artifact={aid}&before={next}"),
+    )
+    .await;
+    assert_eq!(rest["items"].as_array().unwrap().len(), 5);
+    let none = get(&ts, "/api/inbox?artifact=none").await;
+    assert_eq!(none["total"], 1);
+    assert_eq!(none["items"][0]["kind"], "question");
+
+    // Groups page by their newest match.
+    let one = get(&ts, "/api/inbox?group=artifact&limit=2").await;
+    assert_eq!(one["groups"].as_array().unwrap().len(), 2);
+    let next = one["next_cursor"].as_str().unwrap();
+    let two = get(
+        &ts,
+        &format!("/api/inbox?group=artifact&limit=2&before={next}"),
+    )
+    .await;
+    assert_eq!(two["groups"][0]["artifact"]["id"], other.as_str());
+    assert!(two["next_cursor"].is_null());
+
+    // A group's mark-all reads that group alone; the page filter gives one group.
+    let marked = |filter: Value| {
+        let ts = &ts;
+        async move {
+            ts.post_json("/api/inbox/read", json!({"all": true, "filter": filter}))
+                .await
+                .json::<Value>()
+                .await
+                .unwrap()
+        }
+    };
+    let r = marked(json!({"artifact": aid})).await;
+    assert_eq!(
+        (r["marked"].as_u64(), r["unread"].as_u64()),
+        (Some(7), Some(2))
+    );
+    let r = marked(json!({"artifact": "none"})).await;
+    assert_eq!(
+        (r["marked"].as_u64(), r["unread"].as_u64()),
+        (Some(1), Some(1))
+    );
+    let read = get(
+        &ts,
+        &format!("/api/inbox?group=artifact&read=read&artifact={aid}"),
+    )
+    .await;
+    let groups = read["groups"].as_array().unwrap();
+    assert_eq!(groups.len(), 1);
+    assert_eq!(
+        (groups[0]["total"].as_u64(), groups[0]["unread"].as_u64()),
+        (Some(7), Some(0))
+    );
+    assert_eq!(
+        groups[0]["items"].as_array().unwrap().len(),
+        3,
+        "three rows by default"
+    );
+
+    for bad in [
+        "/api/inbox?rows=2",
+        "/api/inbox?group=artifact&rows=x",
+        "/api/inbox?group=agent&rows=2",
+        "/api/inbox?group=page",
+        "/api/inbox?artifact=nothing",
+    ] {
+        assert_eq!(ts.get_authed(bad).await.status(), 400, "{bad}");
+    }
+}

@@ -469,9 +469,11 @@ fn check_inbox(c: &Connection, stats: &str) {
             );
         }
         if let Some(d) = drivers.get(&name) {
-            // A page, count or mark-all never sorts (items by seq sorts only the seqs given).
+            // A page, count or mark-all never sorts (items by seq sorts
+            // only the seqs given); a grouping sorts its matches by
+            // artifact and its groups by their newest.
             assert!(
-                !text.contains("TEMP B-TREE"),
+                name.ends_with(" groups") || !text.contains("TEMP B-TREE"),
                 "{name} ({stats}) sorts:\n{text}"
             );
             // Driven by its one index, whatever the statistics say.
