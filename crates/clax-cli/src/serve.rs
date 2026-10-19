@@ -38,6 +38,7 @@ pub fn run(home: &Home, a: ServeArgs) -> anyhow::Result<()> {
         web,
         hosted: hosted(home)?,
         require_credential: a.require_credential,
+        stop: clax_server::serve::StopOn::Signals,
     };
     rt.block_on(serve(cfg, None))
 }

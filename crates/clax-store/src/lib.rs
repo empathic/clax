@@ -162,6 +162,15 @@ pub const ANALYSIS_LIMIT: u32 = 400;
 /// How often the daemon refreshes planner statistics ([`Store::optimize`]).
 pub const OPTIMIZE_INTERVAL: std::time::Duration = std::time::Duration::from_secs(3600);
 
+/// What [`Store::trim_memory`] did: the WAL's frames and how many the
+/// `PASSIVE` checkpoint copied into the database (equal when no reader held
+/// an older snapshot; both -1 when the database is not in WAL mode).
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
+pub struct TrimReport {
+    pub wal_frames: i64,
+    pub checkpointed: i64,
+}
+
 /// The installed inbox listener, cloned out of its lock to be called.
 type SharedListener = Arc<dyn Fn(Vec<InboxChange>) + Send + Sync>;
 
@@ -372,6 +381,19 @@ impl Store {
                 "PRAGMA analysis_limit={ANALYSIS_LIMIT}; PRAGMA optimize;"
             ))?;
             Ok(())
+        })
+    }
+
+    /// Releases what SQLite caches on every connection (`PRAGMA
+    /// shrink_memory`) and runs one `PASSIVE` checkpoint, so a process
+    /// killed afterwards loses nothing committed. Blocks the caller; must
+    /// not be called from inside a [`Store::call`] job. A reader running a
+    /// read meanwhile keeps its cache.
+    pub fn trim_memory(&self) -> Result<TrimReport> {
+        let (wal_frames, checkpointed) = self.exec.trim()?;
+        Ok(TrimReport {
+            wal_frames,
+            checkpointed,
         })
     }
 

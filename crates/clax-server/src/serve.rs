@@ -15,7 +15,7 @@ use clax_core::daemon::remove_daemon_info;
 use clax_core::daemon::write_daemon_info;
 use clax_core::daemon::write_starting_info;
 use clax_http::state::AppState;
-use clax_store::Store;
+use clax_store::{Store, TrimReport};
 use std::io;
 use std::net::{IpAddr, SocketAddr};
 use std::sync::Arc;
@@ -214,6 +214,95 @@ pub struct ServeConfig {
     /// Serve nothing but `/healthz`, static files and content by ID without
     /// a credential ([`clax_http::state::AppState::require_credential`]).
     pub require_credential: bool,
+    /// How the daemon is asked to stop. `Signals` is `clax serve`'s: SIGTERM,
+    /// Ctrl-C and the shutdown route. `Embedded` is a daemon inside another
+    /// app's process: only its control and the shutdown route, and no signal
+    /// handler is installed, since the process's signals are the app's.
+    pub stop: StopOn,
+}
+
+/// How the daemon is asked to stop. `Signals` is `clax serve`'s: SIGTERM,
+/// Ctrl-C and the shutdown route. `Embedded` is a daemon inside another
+/// app's process: only its control and the shutdown route, and no signal
+/// handler is installed, since the process's signals are the app's.
+pub enum StopOn {
+    Signals,
+    Embedded(EmbeddedControl),
+}
+
+/// What a host app holds to drive a daemon in its own process.
+pub struct EmbeddedControl {
+    /// `true` asks the daemon to stop, as SIGTERM does for `clax serve`;
+    /// so does dropping the sender.
+    pub stop: watch::Receiver<bool>,
+    /// Each sender asks for one [`clax_store::Store::trim_memory`]; its
+    /// report is sent back on it ([`TrimReport::default`] when the trim
+    /// failed).
+    pub trim: tokio::sync::mpsc::Receiver<std::sync::mpsc::Sender<TrimReport>>,
+}
+
+/// A stop asked of the daemon other than through the shutdown route.
+type StopAsked = std::pin::Pin<Box<dyn std::future::Future<Output = ()> + Send>>;
+
+/// The future that completes when `stop` asks the daemon to stop. Under
+/// [`StopOn::Signals`] the SIGTERM and SIGINT handlers are installed here,
+/// at once, so a signal sent once the daemon is ready is never missed;
+/// under [`StopOn::Embedded`] none is, and a task answering the control's
+/// trim requests is started on `store`.
+fn stop_asked(
+    stop: StopOn,
+    store: &Arc<Store>,
+) -> io::Result<(StopAsked, Option<tokio::task::JoinHandle<()>>)> {
+    use tokio::signal::unix::{SignalKind, signal};
+    match stop {
+        StopOn::Signals => {
+            let mut term = signal(SignalKind::terminate())?;
+            let mut int = signal(SignalKind::interrupt())?;
+            let asked = async move {
+                tokio::select! {
+                    _ = term.recv() => {}
+                    _ = int.recv() => {}
+                }
+            };
+            Ok((Box::pin(asked), None))
+        }
+        StopOn::Embedded(EmbeddedControl {
+            stop: mut rx,
+            mut trim,
+        }) => {
+            let store = store.clone();
+            let trimmer = tokio::spawn(async move {
+                while let Some(reply) = trim.recv().await {
+                    let st = store.clone();
+                    let report = match tokio::task::spawn_blocking(move || st.trim_memory()).await {
+                        Ok(Ok(r)) => r,
+                        Ok(Err(e)) => {
+                            tracing::warn!(error = %e, "memory trim failed");
+                            TrimReport::default()
+                        }
+                        Err(e) => {
+                            tracing::warn!(error = %e, "memory trim failed");
+                            TrimReport::default()
+                        }
+                    };
+                    tracing::info!(
+                        wal_frames = report.wal_frames,
+                        checkpointed = report.checkpointed,
+                        "trimmed memory"
+                    );
+                    let _ = reply.send(report);
+                }
+            });
+            let asked = async move {
+                while !*rx.borrow_and_update() {
+                    if rx.changed().await.is_err() {
+                        break;
+                    }
+                }
+            };
+            Ok((Box::pin(asked), Some(trimmer)))
+        }
+    }
 }
 
 /// Binds the first port of [`port_range`]`(start)` that no other program
@@ -246,7 +335,8 @@ async fn bind_first_free(bind: IpAddr, start: u16) -> io::Result<tokio::net::Tcp
 
 /// Runs the daemon until shutdown is requested, a newer daemon takes over,
 /// `daemon.json` is missing on two consecutive stale checks (its home directory
-/// was deleted), or a termination signal arrives.
+/// was deleted), or [`ServeConfig::stop`] asks it to: a termination signal
+/// under [`StopOn::Signals`], its control under [`StopOn::Embedded`].
 ///
 /// `daemon.json` is written exactly once, at startup. That write-once invariant is what
 /// makes the stale watcher race-free: a different live pid in the file can only mean
@@ -368,6 +458,7 @@ pub async fn serve(
     let grant_state = state.clone();
     let sweep_state = state.clone();
     let (drafts_store, drafts_cache) = (state.store.clone(), state.wrap_cache.clone());
+    let (asked, trimmer) = stop_asked(cfg.stop, &state.store)?;
     let app = crate::router::build_router_with_shutdown(state, shutdown_tx.clone());
     if let Some(tx) = ready {
         let _ = tx.send(info.clone());
@@ -487,7 +578,6 @@ pub async fn serve(
     });
 
     let (fired_tx, fired_rx) = oneshot::channel::<()>();
-    let mut sigterm = tokio::signal::unix::signal(tokio::signal::unix::SignalKind::terminate())?;
     let server = axum::serve(
         clax_http::auth::TunedListener(listener),
         app.into_make_service_with_connect_info::<clax_http::auth::Conn>(),
@@ -502,8 +592,7 @@ pub async fn serve(
                 }
             } => {}
             _ = stale => {}
-            _ = tokio::signal::ctrl_c() => {}
-            _ = sigterm.recv() => {}
+            _ = asked => {}
         }
         // Tell open SSE streams to end, and start the drain deadline.
         let _ = shutdown_tx.send(true);
@@ -527,6 +616,9 @@ pub async fn serve(
     optimizer.abort();
     sweeper.abort();
     drafts_sweeper.abort();
+    if let Some(t) = trimmer {
+        t.abort();
+    }
     // The journal has closed its segment (it began to as shutdown began)
     // before the store stops.
     if let Some(stopped) = journal_stopped {
