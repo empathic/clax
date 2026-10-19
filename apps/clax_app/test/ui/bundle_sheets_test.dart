@@ -334,6 +334,39 @@ void main() {
   });
 
   group('InstallSheet', () {
+    // An iPhone (402×874 pt, a 34 pt home indicator) and an Android phone
+    // under three-button navigation (a 48 dp bar), at 100% and 200% text.
+    for (final (name, platform, size, top, bottom) in [
+      ('iOS', TargetPlatform.iOS, const Size(402, 874), 62.0, 34.0),
+      ('Android', TargetPlatform.android, const Size(412, 915), 24.0, 48.0),
+    ]) {
+      for (final scale in [1.0, 2.0]) {
+        testWidgets('on $name at ${(scale * 100).round()}% Cancel and Install '
+            'clear the bottom inset', (tester) async {
+          tester.view.padding = FakeViewPadding(top: top, bottom: bottom);
+          tester.view.viewPadding = FakeViewPadding(top: top, bottom: bottom);
+          tester.platformDispatcher.textScaleFactorTestValue = scale;
+          addTearDown(tester.platformDispatcher.clearTextScaleFactorTestValue);
+          await _show(
+            tester,
+            const InstallSheet(bundle: _bundle, kind: InstallKind.install),
+            size: size,
+          );
+          final install = find.widgetWithText(ClaxButton, 'Install');
+          await tester.ensureVisible(install);
+          await tester.pumpAndSettle();
+          for (final label in ['Cancel', 'Install']) {
+            final b = tester.getRect(find.widgetWithText(ClaxButton, label));
+            expect(
+              b.bottom,
+              lessThanOrEqualTo(size.height - bottom),
+              reason: '$label at $b',
+            );
+          }
+        }, variant: TargetPlatformVariant.only(platform));
+      }
+    }
+
     testWidgets('who, what it can ask for, and its documents', (tester) async {
       final answers = await _show(
         tester,

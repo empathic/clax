@@ -50,6 +50,17 @@ const phone = ShotForm(
   bottom: 16,
 );
 
+/// An iPhone: 402×874 pt at 3×, a 62 pt status bar around the Dynamic
+/// Island and a 34 pt home indicator.
+const iphone = ShotForm(
+  'iphone',
+  Size(402, 874),
+  3,
+  TargetPlatform.iOS,
+  top: 62,
+  bottom: 34,
+);
+
 /// An Android tablet, foldable or Chromebook window: 1280×800 dp at 2×.
 const wide = ShotForm(
   'wide',
@@ -158,7 +169,8 @@ class Shot {
   }
 }
 
-/// Stand-ins for Android's status bar and gesture bar over the insets.
+/// Stand-ins for the status bar and the gesture bar (or home indicator)
+/// over the insets.
 class SystemBars extends StatelessWidget {
   const SystemBars({super.key, required this.top, required this.bottom});
   final double top;

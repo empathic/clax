@@ -349,6 +349,18 @@ class IosRig {
     );
   }
 
+  /// Waits until the route that holds [of] has finished coming in (a
+  /// sheet's slide), so a [shot] shows where it settles. Frames come only
+  /// when the test pumps, so a route found the frame it was pushed is
+  /// still at the start of its animation.
+  Future<void> routeIn(WidgetTester tester, Finder of) => until<bool>(
+    tester,
+    'the route of $of in place',
+    () =>
+        of.evaluate().isNotEmpty &&
+        (ModalRoute.of(of.evaluate().first)?.animation?.isCompleted ?? true),
+  );
+
   /// A screenshot of the simulator, `<name>.png` among the test's outputs.
   Future<void> shot(WidgetTester tester, String name) async {
     await tester.pump();

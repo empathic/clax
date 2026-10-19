@@ -9,6 +9,7 @@ import 'dart:io';
 
 import 'package:clax_app/bundle/bundle_writer.dart';
 import 'package:clax_app/ui/bundle_sheets.dart';
+import 'package:clax_app/ui/kit/kit.dart';
 import 'package:flutter_test/flutter_test.dart';
 import 'package:integration_test/integration_test.dart';
 
@@ -49,6 +50,16 @@ void main() {
       find.descendant(of: find.byType(InstallSheet), matching: find.text(_title)),
       findsWidgets,
     );
+    // Shot where the sheet settles, its actions above the home indicator.
+    await rig.routeIn(tester, find.byType(InstallSheet));
+    final view = tester.view;
+    final floor =
+        (view.physicalSize.height - view.viewPadding.bottom) /
+        view.devicePixelRatio;
+    for (final label in ['Cancel', 'Install']) {
+      final b = tester.getRect(find.widgetWithText(ClaxButton, label));
+      expect(b.bottom, lessThanOrEqualTo(floor), reason: '$label at $b');
+    }
     await rig.shot(tester, 'open-bundle');
     await rig.end(tester);
   }, timeout: const Timeout(Duration(minutes: 5)));

@@ -63,6 +63,13 @@ void main() {
     await rig.reloadNewer(tester, 2);
     final page = await rig.pageAt(tester, aid, 2);
     expect(page['origin'], 'http://$aid.localhost:${after.port}');
+    // The page shows version 2, so the New version toast goes (Reload's
+    // tap started its exit, which runs as frames are pumped).
+    await rig.until(
+      tester,
+      'the New version toast gone',
+      () => find.byKey(const ValueKey('newer-toast')).evaluate().isEmpty,
+    );
     await rig.shot(tester, 'background-back');
     await rig.end(tester);
   }, timeout: const Timeout(Duration(minutes: 5)));

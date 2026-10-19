@@ -1,5 +1,6 @@
 // The bundle sheets rendered in every form and theme into CLAX_SHOTS_DIR
-// (skipped without it), the phone's update sheet also at 200%: export
+// (skipped without it), the phone's update sheet also at 200%, the
+// install sheet also on an iPhone at 100% and 200%: export
 // (own and a modified copy), install, update (as received and changed),
 // the update check in progress, its failure with Details open, and a
 // refused file.
@@ -116,6 +117,16 @@ void main() {
       'bundle-install',
       const InstallSheet(bundle: _bundle, kind: InstallKind.install),
     ),
+  );
+  shots(
+    'bundle-install',
+    (s) => _sheet(
+      s,
+      'bundle-install',
+      const InstallSheet(bundle: _bundle, kind: InstallKind.install),
+    ),
+    forms: const [iphone],
+    textScales: const [1, 2],
   );
   shots(
     'bundle-update',
