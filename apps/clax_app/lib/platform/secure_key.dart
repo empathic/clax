@@ -14,7 +14,12 @@ abstract interface class SecureKey {
 }
 
 /// [SecureKey] over `flutter_secure_storage`: the Android Keystore-backed
-/// store, and on macOS the login keychain.
+/// store, on iOS the Keychain, and on macOS the login keychain.
+///
+/// On iOS the item is readable from the first unlock after a restart, on
+/// this device only ([iOSOptions]): a change that finishes in the
+/// background after the person locks the phone can still reach the key,
+/// and the key is never in a backup or on another device.
 ///
 /// macOS uses the login keychain (`usesDataProtectionKeychain: false`)
 /// because the data protection keychain needs a `keychain-access-groups`
@@ -29,13 +34,24 @@ abstract interface class SecureKey {
 /// Wrap it in a [CachedSecureKey] so a process reads the keychain once.
 class FlutterSecureKey implements SecureKey {
   FlutterSecureKey({FlutterSecureStorage? storage})
-    : _storage = storage ?? const FlutterSecureStorage(mOptions: macOsOptions);
+    : _storage = storage ?? defaultStorage;
 
   /// The storage key the API key is saved under.
   static const storageKey = 'anthropic_api_key';
 
   /// The macOS options every read and write uses.
   static const macOsOptions = MacOsOptions(usesDataProtectionKeychain: false);
+
+  /// The iOS options every read and write uses.
+  static const iOSOptions = IOSOptions(
+    accessibility: KeychainAccessibility.first_unlock_this_device,
+  );
+
+  /// The storage with this platform's options.
+  static const defaultStorage = FlutterSecureStorage(
+    iOptions: iOSOptions,
+    mOptions: macOsOptions,
+  );
 
   final FlutterSecureStorage _storage;
 

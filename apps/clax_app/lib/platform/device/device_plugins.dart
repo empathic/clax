@@ -16,16 +16,23 @@ import 'package:share_plus/share_plus.dart';
 import 'package:timezone/data/latest.dart' as tzdata;
 import 'package:timezone/timezone.dart' as tz;
 
+import '../local_notifications.dart';
 import 'device_ports.dart';
 
 bool get _android => defaultTargetPlatform == TargetPlatform.android;
+bool get _iOS => defaultTargetPlatform == TargetPlatform.iOS;
 bool get _macOS => defaultTargetPlatform == TargetPlatform.macOS;
 
-/// Notifications through flutter_local_notifications: the app's reminders
+/// Notifications through flutter_local_notifications, by way of the app's
+/// one [NotificationHub] (payloads of kind `reminder`): the app's reminders
 /// channel on Android (inexact alarms allowed while idle, so no exact-alarm
-/// permission is needed), the notification center on macOS.
+/// permission is needed), the notification center on iOS and macOS.
 class PluginNotifier implements NotifierPort {
-  final _plugin = FlutterLocalNotificationsPlugin();
+  PluginNotifier(this._hub);
+
+  final NotificationHub _hub;
+  static const _kind = 'reminder';
+  StreamSubscription<String>? _taps;
   static const _channel = AndroidNotificationDetails(
     'reminders',
     'Reminders',
@@ -36,7 +43,7 @@ class PluginNotifier implements NotifierPort {
 
   @override
   Future<void> init(void Function(String payload) onTap) async {
-    if (!_android && !_macOS) {
+    if (!_android && !_iOS && !_macOS) {
       throw const DeviceError.unavailable('no notifications on this platform');
     }
     tzdata.initializeTimeZones();
@@ -46,47 +53,16 @@ class PluginNotifier implements NotifierPort {
     } on Object {
       // The zone is unknown: times are taken as UTC.
     }
-    const darwin = DarwinInitializationSettings(
-      requestAlertPermission: false,
-      requestSoundPermission: false,
-      requestBadgePermission: false,
-    );
-    await _plugin.initialize(
-      settings: const InitializationSettings(
-        android: AndroidInitializationSettings('@mipmap/ic_launcher'),
-        macOS: darwin,
-      ),
-      onDidReceiveNotificationResponse: (r) {
-        if (r.payload case final p?) onTap(p);
-      },
-    );
+    await _hub.ready;
+    unawaited(_taps?.cancel());
+    _taps = _hub.taps(_kind).listen(onTap);
   }
 
   @override
-  Future<String?> launchPayload() async {
-    final d = await _plugin.getNotificationAppLaunchDetails();
-    if (d == null || !d.didNotificationLaunchApp) return null;
-    return d.notificationResponse?.payload;
-  }
+  Future<String?> launchPayload() => _hub.launch(_kind);
 
   @override
-  Future<bool> requestPermission() async {
-    if (_android) {
-      final a = _plugin
-          .resolvePlatformSpecificImplementation<
-            AndroidFlutterLocalNotificationsPlugin
-          >();
-      return await a?.requestNotificationsPermission() ?? false;
-    }
-    if (_macOS) {
-      final m = _plugin
-          .resolvePlatformSpecificImplementation<
-            MacOSFlutterLocalNotificationsPlugin
-          >();
-      return await m?.requestPermissions(alert: true, sound: true) ?? false;
-    }
-    return false;
-  }
+  Future<bool> requestPermission() => _hub.requestPermission();
 
   @override
   Future<void> schedule({
@@ -96,13 +72,14 @@ class PluginNotifier implements NotifierPort {
     required DateTime at,
     Repeat? repeat,
     required String payload,
-  }) => _plugin.zonedSchedule(
+  }) => _hub.plugin.zonedSchedule(
     id: id,
     title: title,
     body: body.isEmpty ? null : body,
     scheduledDate: tz.TZDateTime.from(at, tz.local),
     notificationDetails: const NotificationDetails(
       android: _channel,
+      iOS: DarwinNotificationDetails(),
       macOS: DarwinNotificationDetails(),
     ),
     androidScheduleMode: AndroidScheduleMode.inexactAllowWhileIdle,
@@ -111,11 +88,11 @@ class PluginNotifier implements NotifierPort {
       Repeat.daily => DateTimeComponents.time,
       Repeat.weekly => DateTimeComponents.dayOfWeekAndTime,
     },
-    payload: payload,
+    payload: NotificationHub.payload(_kind, payload),
   );
 
   @override
-  Future<void> cancel(int id) => _plugin.cancel(id: id);
+  Future<void> cancel(int id) => _hub.cancel(id);
 }
 
 class PluginShare implements SharePort {

@@ -183,6 +183,16 @@ class _Work implements BackgroundWork {
 
   @override
   Stream<String> get opened => _opened.stream;
+
+  @override
+  bool get pausesRuns => false;
+
+  @override
+  Future<void> paused(String title, String? artifactId) async =>
+      calls.add('paused($title)');
+
+  @override
+  Future<void> pauseDone() async => calls.add('pauseDone');
 }
 
 void main() {

@@ -1,8 +1,11 @@
 import 'dart:async';
 
 import 'package:clax_app/platform/background_work.dart';
+import 'package:clax_app/platform/local_notifications.dart';
 import 'package:flutter/services.dart';
 import 'package:flutter_test/flutter_test.dart';
+
+import 'fake_notifications.dart';
 
 /// Records every call, as `method(args…)`.
 class RecordingWork implements BackgroundWork {
@@ -50,6 +53,16 @@ class RecordingWork implements BackgroundWork {
 
   @override
   Stream<String> get opened => const Stream.empty();
+
+  @override
+  bool get pausesRuns => false;
+
+  @override
+  Future<void> paused(String title, String? artifactId) async =>
+      calls.add('paused($title, $artifactId)');
+
+  @override
+  Future<void> pauseDone() async => calls.add('pauseDone');
 }
 
 void main() {
@@ -291,6 +304,117 @@ void main() {
       expect(await ChannelBackgroundWork().start('T', 'S'), isFalse);
     });
   });
+  group('pausesRuns', () {
+    test('only iOS pauses the runs on stopped', () async {
+      final hub = await NotificationHub.init(plugin: FakeNotificationsPlugin());
+      expect(IosBackgroundWork(hub).pausesRuns, isTrue);
+      expect(ChannelBackgroundWork().pausesRuns, isFalse);
+      expect(const NoBackgroundWork().pausesRuns, isFalse);
+    });
+  });
+
+  group('IosBackgroundWork', () {
+    late List<MethodCall> calls;
+    late FakeNotificationsPlugin plugin;
+    late NotificationHub hub;
+    setUp(() async {
+      calls = [];
+      messenger.setMockMethodCallHandler(channel, (call) async {
+        calls.add(call);
+        return call.method == 'start' ? true : null;
+      });
+      plugin = FakeNotificationsPlugin();
+      hub = await NotificationHub.init(plugin: plugin);
+    });
+    tearDown(() => messenger.setMockMethodCallHandler(channel, null));
+
+    test('the paused notice is titled by the app, and a second replaces '
+        'the first', () async {
+      final w = IosBackgroundWork(hub);
+      await w.paused('Groceries', 'a1');
+      await w.paused('Runs', 'a2');
+      expect(plugin.shown, [
+        '${IosBackgroundWork.pausedId}|Groceries|'
+            'Paused — open Clax to keep building.|run:a1',
+        '${IosBackgroundWork.pausedId}|Runs|'
+            'Paused — open Clax to keep building.|run:a2',
+      ]);
+    });
+
+    test('ready and failed post through the hub, keyed by the artifact, '
+        'and never reach the channel', () async {
+      final w = IosBackgroundWork(hub);
+      await w.ready('Groceries is ready', 'Tap to open it', 'a1');
+      await w.failed("Couldn't change Groceries", 'no key', artifactId: 'a1');
+      await w.failed("Couldn't make it", 'no key');
+      final id = IosBackgroundWork.newsId('a1');
+      expect(plugin.shown, [
+        '$id|Groceries is ready|Tap to open it|run:a1',
+        "$id|Couldn't change Groceries|no key|run:a1",
+        "${IosBackgroundWork.newsId(null)}|Couldn't make it|no key|run:",
+      ]);
+      expect(calls, isEmpty);
+    });
+
+    test('a notice ID is the same in every process', () {
+      expect(IosBackgroundWork.newsId('a1'), IosBackgroundWork.newsId('a1'));
+      expect(IosBackgroundWork.newsId('a1'), isNot(IosBackgroundWork.pausedId));
+      expect(IosBackgroundWork.newsId('a1'), lessThan(1 << 20));
+    });
+
+    test('taps on run notices open their artifact; one for no artifact '
+        'opens nothing', () async {
+      final w = IosBackgroundWork(hub);
+      final got = <String>[];
+      final sub = w.opened.listen(got.add);
+      await hub.ready;
+      plugin.tap('run:a1');
+      plugin.tap('run:');
+      plugin.tap('reminder:{}');
+      await pumpEventQueue();
+      expect(got, ['a1']);
+      await sub.cancel();
+    });
+
+    test('the run notice that launched the app is its launch '
+        'artifact', () async {
+      plugin.launchedBy = 'run:a3';
+      expect(await IosBackgroundWork(hub).launchArtifact(), 'a3');
+    });
+
+    test('start, update, stop and pauseDone go over the channel', () async {
+      final w = IosBackgroundWork(hub);
+      expect(await w.start('T', 'S'), isTrue);
+      await w.update('T', 'S2');
+      await w.stop();
+      await w.pauseDone();
+      expect(
+        [for (final c in calls) '${c.method} ${c.arguments}'],
+        [
+          'start {title: T, text: S}',
+          'update {title: T, text: S2}',
+          'stop null',
+          'pauseDone null',
+        ],
+      );
+    });
+
+    test('a stopped call from Swift arrives on stopped', () async {
+      final w = IosBackgroundWork(hub);
+      var stops = 0;
+      final sub = w.stopped.listen((_) => stops++);
+      await messenger.handlePlatformMessage(
+        ChannelBackgroundWork.channelName,
+        const StandardMethodCodec().encodeMethodCall(
+          const MethodCall('stopped'),
+        ),
+        (_) {},
+      );
+      await pumpEventQueue();
+      expect(stops, 1);
+      await sub.cancel();
+    });
+  });
 }
 
 /// [RecordingWork] whose start answers [answer] instead.
@@ -323,4 +447,11 @@ class _GatedStart implements BackgroundWork {
   Stream<String> get opened => inner.opened;
   @override
   Stream<void> get stopped => inner.stopped;
+  @override
+  bool get pausesRuns => inner.pausesRuns;
+  @override
+  Future<void> paused(String title, String? artifactId) =>
+      inner.paused(title, artifactId);
+  @override
+  Future<void> pauseDone() => inner.pauseDone();
 }

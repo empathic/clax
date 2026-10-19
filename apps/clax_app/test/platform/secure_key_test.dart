@@ -2,6 +2,7 @@ import 'dart:async';
 
 import 'package:clax_app/daemon/daemon_key.dart';
 import 'package:clax_app/platform/secure_key.dart';
+import 'package:flutter_secure_storage/flutter_secure_storage.dart';
 import 'package:flutter_test/flutter_test.dart';
 
 /// A [SecureKey] that counts the storage reads and writes, and can fail or
@@ -38,6 +39,22 @@ class CountingKey implements SecureKey {
 }
 
 void main() {
+  test('on iOS the key is readable from the first unlock, on this device '
+      'only', () {
+    expect(
+      FlutterSecureKey.iOSOptions.accessibility,
+      KeychainAccessibility.first_unlock_this_device,
+    );
+    expect(
+      FlutterSecureKey.defaultStorage.iOptions.accessibility,
+      KeychainAccessibility.first_unlock_this_device,
+    );
+    expect(
+      FlutterSecureKey.defaultStorage.mOptions,
+      FlutterSecureKey.macOsOptions,
+    );
+  });
+
   test('reads storage once, a saved key and no key alike', () async {
     final some = CountingKey('sk-a');
     final cached = CachedSecureKey(some);

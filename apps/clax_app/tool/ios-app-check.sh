@@ -13,7 +13,8 @@
 # must hold Flutter's two frameworks and the home bundle HOME_BUNDLE (the
 # one //apps/clax_app:home_bundle built) in Flutter's assets. The main
 # binary must be built for the iOS simulator (platform 7) at minos
-# $IOS_MINIMUM_OS and export the daemon's four C functions. Every object of
+# $IOS_MINIMUM_OS, export the daemon's four C functions and hold the
+# background channel's name and its tasks' names. Every object of
 # each STATIC_LIB that names an iOS must name one no newer than
 # $IOS_MINIMUM_OS, so a mismatch fails here rather than warning at link.
 set -euo pipefail
@@ -65,6 +66,11 @@ if [ -f "$bin" ]; then
     exported="$(nm -gU "$bin" | awk '{ print $NF }')"
     for s in _clax_start _clax_stop _clax_state _clax_trim_memory; do
         if grep -qx "$s" <<<"$exported"; then ok "the binary has $s"; else bad "the binary has $s"; fi
+    done
+    # ios/Runner/Background.swift: its channel and its two background tasks.
+    texts="$(strings -a "$bin")"
+    for t in dev.empathic.clax/background "Clax trim" "Clax run"; do
+        if grep -qxF "$t" <<<"$texts"; then ok "the binary holds \"$t\""; else bad "the binary holds \"$t\""; fi
     done
 else
     bad "executable"

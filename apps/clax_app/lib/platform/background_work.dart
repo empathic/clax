@@ -2,6 +2,8 @@ import 'dart:async';
 
 import 'package:flutter/services.dart';
 
+import 'local_notifications.dart';
+
 /// The platform's side of runs that go on while the person is elsewhere:
 /// on Android, a `dataSync` foreground service with an ongoing progress
 /// notification (which keeps the process and its network alive in the
@@ -39,8 +41,21 @@ abstract interface class BackgroundWork {
 
   /// An event each time the service stopped on its own: its start was
   /// refused, the system's time limit for it was spent, or the app's task
-  /// was removed.
+  /// was removed. On iOS ([pausesRuns]), that the background time is nearly
+  /// spent and the runs must pause now.
   Stream<void> get stopped;
+
+  /// Whether [stopped] means "pause the runs now" (iOS: the background time
+  /// is nearly spent) rather than "the service stopped" (Android).
+  bool get pausesRuns;
+
+  /// Posts the paused notice for [title], replacing any earlier one;
+  /// tapping it opens [artifactId]'s build view (or the app when null).
+  Future<void> paused(String title, String? artifactId);
+
+  /// Tells the platform the runs are paused, so it may end its background
+  /// time.
+  Future<void> pauseDone();
 }
 
 /// [BackgroundWork] where there is none (macOS, tests): nothing runs and
@@ -70,6 +85,12 @@ class NoBackgroundWork implements BackgroundWork {
   Stream<String> get opened => const Stream.empty();
   @override
   Stream<void> get stopped => const Stream.empty();
+  @override
+  bool get pausesRuns => false;
+  @override
+  Future<void> paused(String title, String? artifactId) async {}
+  @override
+  Future<void> pauseDone() async {}
 }
 
 /// [BackgroundWork] over the `dev.empathic.clax/background` channel, which
@@ -153,6 +174,133 @@ class ChannelBackgroundWork implements BackgroundWork {
 
   @override
   Stream<void> get stopped => _stoppedEvents.stream;
+
+  @override
+  bool get pausesRuns => false;
+
+  @override
+  Future<void> paused(String title, String? artifactId) async {}
+
+  @override
+  Future<void> pauseDone() async {}
+}
+
+/// [BackgroundWork] on iOS: `start` {title, text} → bool, `update` {title,
+/// text}, `stop` and `pauseDone` over the `dev.empathic.clax/background`
+/// channel that `ios/Runner/Background.swift` serves, which holds a
+/// background task while runs go on and calls `stopped` when the time it
+/// was given is nearly spent ([pausesRuns]). The news (ready, failed,
+/// paused), the permission and the taps go through [NotificationHub], with
+/// payload `run:<artifact ID>` (`run:` alone for none).
+class IosBackgroundWork implements BackgroundWork {
+  IosBackgroundWork(
+    this._hub, {
+    this._channel = const MethodChannel(ChannelBackgroundWork.channelName),
+  }) {
+    _channel.setMethodCallHandler(_onCall);
+  }
+
+  /// The notification ID of the paused notice: one, replaced each time.
+  static const pausedId = 1;
+
+  /// The text of the paused notice.
+  static const pausedText = 'Paused — open Clax to keep building.';
+
+  /// The notification ID of the news about [artifactId], the same in every
+  /// process (so a later notice replaces an earlier one), below the
+  /// reminders' IDs (`firstReminderId`) and apart from [pausedId].
+  static int newsId(String? artifactId) {
+    // FNV-1a over the UTF-16 code units: String.hashCode differs between
+    // runs.
+    var h = 0x811c9dc5;
+    for (final c in (artifactId ?? '').codeUnits) {
+      h = ((h ^ c) * 0x01000193) & 0xffffffff;
+    }
+    return 1000 + (h & 0xffff);
+  }
+
+  static const _kind = 'run';
+
+  final NotificationHub _hub;
+  final MethodChannel _channel;
+  final _stoppedEvents = StreamController<void>.broadcast();
+
+  Future<Object?> _onCall(MethodCall call) async {
+    if (call.method == 'stopped') _stoppedEvents.add(null);
+    return null;
+  }
+
+  Future<T?> _call<T>(String method, [Map<String, Object?>? args]) async {
+    try {
+      return await _channel.invokeMethod<T>(method, args);
+    } on PlatformException {
+      return null;
+    } on MissingPluginException {
+      return null;
+    }
+  }
+
+  Future<void> _post(int id, String title, String body, String? aid) async {
+    try {
+      await _hub.show(id, title, body, kind: _kind, data: aid ?? '');
+    } on Object {
+      // Best effort, as every BackgroundWork call.
+    }
+  }
+
+  @override
+  Future<bool> start(String title, String step) async =>
+      await _call<bool>('start', {'title': title, 'text': step}) ?? false;
+
+  @override
+  Future<void> update(String title, String step) =>
+      _call<void>('update', {'title': title, 'text': step});
+
+  @override
+  Future<void> stop() => _call<void>('stop');
+
+  @override
+  Future<void> ready(String title, String text, String artifactId) =>
+      _post(newsId(artifactId), title, text, artifactId);
+
+  @override
+  Future<void> failed(String title, String reason, {String? artifactId}) =>
+      _post(newsId(artifactId), title, reason, artifactId);
+
+  @override
+  Future<bool> requestPermission() async {
+    try {
+      return await _hub.requestPermission();
+    } on Object {
+      return false;
+    }
+  }
+
+  @override
+  Future<String?> launchArtifact() async {
+    try {
+      final aid = await _hub.launch(_kind);
+      return (aid == null || aid.isEmpty) ? null : aid;
+    } on Object {
+      return null;
+    }
+  }
+
+  @override
+  Stream<String> get opened => _hub.taps(_kind).where((aid) => aid.isNotEmpty);
+
+  @override
+  Stream<void> get stopped => _stoppedEvents.stream;
+
+  @override
+  bool get pausesRuns => true;
+
+  @override
+  Future<void> paused(String title, String? artifactId) =>
+      _post(pausedId, title, pausedText, artifactId);
+
+  @override
+  Future<void> pauseDone() => _call<void>('pauseDone');
 }
 
 /// One run [BackgroundRuns.begin] is showing.

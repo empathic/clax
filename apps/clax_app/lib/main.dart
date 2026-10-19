@@ -36,6 +36,7 @@ import 'platform/device/device_plugins.dart';
 import 'platform/device/reminders.dart';
 import 'platform/external_links.dart';
 import 'platform/install_id.dart';
+import 'platform/local_notifications.dart';
 import 'platform/pending_make.dart';
 import 'platform/secure_key.dart';
 import 'platform/settings_store.dart';
@@ -165,6 +166,9 @@ Future<AppServices> platformServices({DateTime? launched}) async {
     _ => null,
   };
   const links = ExternalLinks();
+  // The one notifications plugin (iOS allows one delegate): reminders, and
+  // on iOS the run notices too. Initialised on first use.
+  final notifications = NotificationHub();
   final settings = SettingsStore(File('${support.path}/settings.json'));
   return AppServices(
     supervisor: supervisor,
@@ -207,13 +211,17 @@ Future<AppServices> platformServices({DateTime? launched}) async {
     ),
     runner: runner == null ? null : () => runner,
     cliSupported: cliSupported,
-    background: android ? ChannelBackgroundWork() : const NoBackgroundWork(),
+    background: android
+        ? ChannelBackgroundWork()
+        : Platform.isIOS
+        ? IosBackgroundWork(notifications)
+        : const NoBackgroundWork(),
     notice: android ? ChannelAppNotice() : null,
     device: (consent) => DeviceHost(
       grants: FileDeviceGrants(File('${support.path}/device-grants.json')),
       consent: consent,
       reminders: Reminders(
-        PluginNotifier(),
+        PluginNotifier(notifications),
         file: File('${support.path}/device-reminders.json'),
       ),
       share: PluginShare(),
