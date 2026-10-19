@@ -1,6 +1,9 @@
 import 'package:clax_app/clax/fake_api.dart';
 import 'package:clax_app/ui/app_inspector.dart';
+import 'package:clax_app/clax/api.dart';
 import 'package:clax_app/ui/app_inspector_code.dart';
+import 'package:clax_app/ui/developer.dart';
+import 'package:clax_app/ui/kit/mark.dart';
 import 'package:clax_app/ui/launcher.dart';
 import 'package:clax_app/ui/read_consent_dialog.dart';
 import 'package:clax_app/ui/theme.dart';
@@ -41,19 +44,36 @@ const _files = {
   return (api: api, runs: runs, dash: dash, weather: weather);
 }
 
+/// Pumps [child] in the app's theme, with Developer tools on when
+/// [developer].
 Future<void> _pump(
   WidgetTester tester,
   Widget child, {
   Size size = const Size(400, 860),
+  bool developer = false,
 }) async {
   tester.view.physicalSize = size * 2;
   tester.view.devicePixelRatio = 2;
   addTearDown(tester.view.reset);
+  final on = ValueNotifier(developer);
+  addTearDown(on.dispose);
   await tester.pumpWidget(
-    MaterialApp(theme: claxTheme(Brightness.light, defaultTargetPlatform), home: child),
+    DeveloperScope(
+      notifier: on,
+      child: MaterialApp(
+        theme: claxTheme(Brightness.light, defaultTargetPlatform),
+        home: child,
+      ),
+    ),
   );
   await tester.pumpAndSettle();
 }
+
+List<String> _tabs(WidgetTester tester) => [
+  for (final t in tester.widgetList<Tab>(find.byType(Tab))) t.text!,
+];
+
+const _boom = ClaxApiError(status: 500, code: 'internal', message: 'boom');
 
 Future<void> _tab(WidgetTester tester, String name) async {
   await tester.ensureVisible(find.widgetWithText(Tab, name));
@@ -63,6 +83,123 @@ Future<void> _tab(WidgetTester tester, String name) async {
 }
 
 void main() {
+  testWidgets('four plain tabs, and Files, Code and Data with Developer on', (
+    tester,
+  ) async {
+    final s = _seed();
+    await _pump(tester, AppInspector(api: s.api, aid: s.runs));
+    expect(_tabs(tester), ['Overview', 'Versions', 'Permissions', 'Plan']);
+    await _pump(
+      tester,
+      AppInspector(key: const ValueKey('dev'), api: s.api, aid: s.runs),
+      developer: true,
+    );
+    expect(_tabs(tester), [
+      'Overview',
+      'Versions',
+      'Permissions',
+      'Plan',
+      'Files',
+      'Code',
+      'Data',
+    ]);
+  });
+
+  testWidgets('the bar says Inspect and the hero names the app once', (
+    tester,
+  ) async {
+    final s = _seed();
+    await _pump(tester, AppInspector(api: s.api, aid: s.runs));
+    expect(
+      find.descendant(of: find.byType(AppBar), matching: find.text('Inspect')),
+      findsOneWidget,
+    );
+    expect(find.text('Runs'), findsOneWidget);
+    expect(find.text('Inspector'), findsNothing);
+  });
+
+  testWidgets('the plain tabs read no file texts', (tester) async {
+    final s = _seed();
+    await _pump(tester, AppInspector(api: s.api, aid: s.runs));
+    for (final t in ['Versions', 'Permissions', 'Plan', 'Overview']) {
+      await _tab(tester, t);
+    }
+    expect(s.api.callNames, isNot(contains('readFiles')));
+  });
+
+  testWidgets('a failed read of the files shows Try again in Files and Code '
+      'alone, while Overview renders', (tester) async {
+    final s = _seed();
+    s.api.failNext('readFiles', _boom);
+    await _pump(
+      tester,
+      AppInspector(api: s.api, aid: s.runs),
+      developer: true,
+    );
+    expect(find.text(s.runs), findsOneWidget, reason: 'Overview renders');
+    expect(find.text('Try again'), findsNothing);
+    await _tab(tester, 'Files');
+    expect(find.text('Try again'), findsOneWidget);
+    await _tab(tester, 'Data');
+    expect(find.text('runs'), findsOneWidget);
+    expect(find.text('Try again'), findsNothing);
+    await _tab(tester, 'Files');
+    await tester.tap(find.text('Try again'));
+    await tester.pumpAndSettle();
+    expect(find.text('app.js'), findsOneWidget);
+    expect(find.text('Try again'), findsNothing);
+  });
+
+  testWidgets('a failed read of the data shows Try again in Data alone', (
+    tester,
+  ) async {
+    final s = _seed();
+    s.api.failNext('collections', _boom);
+    await _pump(
+      tester,
+      AppInspector(api: s.api, aid: s.runs),
+      developer: true,
+    );
+    expect(find.text(s.runs), findsOneWidget, reason: 'Overview renders');
+    await _tab(tester, 'Files');
+    expect(find.text('app.js'), findsOneWidget);
+    await _tab(tester, 'Data');
+    expect(find.text('Try again'), findsOneWidget);
+    await tester.tap(find.text('Try again'));
+    await tester.pumpAndSettle();
+    expect(find.text('runs'), findsOneWidget);
+  });
+
+  testWidgets('Overview says what the app does in plain words', (
+    tester,
+  ) async {
+    final api = FakeClaxApi();
+    final aid = api.seedArtifact(
+      'Weather',
+      {'index.html': '<p>w</p>'},
+      capabilities: {
+        'db': <String, Object?>{},
+        'net': {
+          'hosts': ['api.weather.example'],
+        },
+        'notify': <String, Object?>{},
+      },
+    );
+    await _pump(tester, AppInspector(api: api, aid: aid));
+    expect(find.text('Saves its own data'), findsOneWidget);
+    expect(find.text('Uses the internet: api.weather.example'), findsOneWidget);
+    expect(find.text('Sends notifications'), findsOneWidget);
+    expect(find.textContaining('db, net'), findsNothing);
+    expect(
+      capabilityLines({
+        'net': <String, Object?>{},
+        'sample': <String, Object?>{},
+        'comments': <String, Object?>{},
+      }),
+      ['Uses the internet', 'Uses AI'],
+    );
+  });
+
   testWidgets('Overview shows the facts and copies the ID', (tester) async {
     final s = _seed();
     String? copied;
@@ -76,9 +213,13 @@ void main() {
       },
     );
     await _pump(tester, AppInspector(api: s.api, aid: s.runs));
-    expect(find.text('Runs'), findsWidgets);
+    expect(find.text('Runs'), findsOneWidget);
     expect(find.text(s.runs), findsOneWidget);
-    expect(find.text('Versions'), findsOneWidget);
+    final body = find.byType(TabBarView);
+    expect(
+      find.descendant(of: body, matching: find.text('Versions')),
+      findsOneWidget,
+    );
     expect(find.text('Documents'), findsOneWidget);
     expect(find.text('4'), findsOneWidget, reason: 'four documents');
     expect(find.textContaining('4 documents in 2 collections'), findsOneWidget);
@@ -111,8 +252,9 @@ void main() {
     expect(find.byKey(const ValueKey('app-face')), findsOneWidget);
   });
 
-  testWidgets('Overview opens the version history; a version opens the app '
-      'there', (tester) async {
+  testWidgets('Versions lists the history; a version opens the app there', (
+    tester,
+  ) async {
     final s = _seed();
     final opened = <(String, int)>[];
     await _pump(
@@ -123,9 +265,7 @@ void main() {
         onOpenVersion: (aid, n) => opened.add((aid, n)),
       ),
     );
-    await tester.tap(find.byKey(const ValueKey('history')));
-    await tester.pumpAndSettle();
-    expect(find.text('Version history'), findsOneWidget);
+    await _tab(tester, 'Versions');
     expect(find.text('v1'), findsOneWidget);
     expect(find.byKey(const ValueKey('restore-1')), findsNothing);
     await tester.tap(find.byKey(const ValueKey('version-1')));
@@ -139,7 +279,11 @@ void main() {
     tester,
   ) async {
     final s = _seed();
-    await _pump(tester, AppInspector(api: s.api, aid: s.runs));
+    await _pump(
+      tester,
+      AppInspector(api: s.api, aid: s.runs),
+      developer: true,
+    );
     await _tab(tester, 'Files');
     expect(find.text('kit/'), findsOneWidget);
     expect(find.text('index.html'), findsOneWidget);
@@ -163,11 +307,38 @@ void main() {
     expect(find.byType(TextField), findsNothing, reason: 'read-only');
   });
 
-  testWidgets('Data lists collections, pages documents and shows JSON', (
+  testWidgets('Code shows the app\u2019s text files, one at a time', (
     tester,
   ) async {
     final s = _seed();
-    await _pump(tester, AppInspector(api: s.api, aid: s.runs));
+    await _pump(
+      tester,
+      AppInspector(api: s.api, aid: s.runs),
+      developer: true,
+    );
+    await _tab(tester, 'Code');
+    bool shows(String text) => find
+        .byWidgetPredicate(
+          (w) => w is RichText && w.text.toPlainText().contains(text),
+        )
+        .evaluate()
+        .isNotEmpty;
+    expect(find.byType(CodeView), findsOneWidget);
+    expect(shows('<title>Runs</title>'), isTrue, reason: 'index.html first');
+    await tester.tap(find.byKey(const ValueKey('code-app.js')));
+    await tester.pumpAndSettle();
+    expect(shows('const total = 42;'), isTrue);
+    expect(shows('<title>Runs</title>'), isFalse);
+  });
+
+  testWidgets('Data lists collections and shows documents as key/value '
+      'tables, the raw JSON behind a toggle', (tester) async {
+    final s = _seed();
+    await _pump(
+      tester,
+      AppInspector(api: s.api, aid: s.runs),
+      developer: true,
+    );
     await _tab(tester, 'Data');
     expect(find.text('runs'), findsOneWidget);
     expect(find.text('3'), findsOneWidget);
@@ -179,7 +350,32 @@ void main() {
     expect(find.text('r1'), findsOneWidget);
     expect(find.text('r3'), findsOneWidget);
     expect(find.byKey(const ValueKey('load-more')), findsNothing);
+    final r2 = find.byKey(const ValueKey('doc-r2'));
+    expect(
+      find.descendant(of: r2, matching: find.text('km')),
+      findsOneWidget,
+    );
+    expect(
+      find.descendant(of: r2, matching: find.text('10')),
+      findsOneWidget,
+    );
+    expect(
+      find.descendant(of: r2, matching: find.text('run 2')),
+      findsOneWidget,
+    );
+    expect(find.textContaining('"km"'), findsNothing, reason: 'no JSON yet');
+    await tester.tap(find.byKey(const ValueKey('raw-json')));
+    await tester.pumpAndSettle();
+    expect(find.textContaining('"km": 10'), findsOneWidget);
+    await tester.tap(find.byKey(const ValueKey('raw-json')));
+    await tester.pumpAndSettle();
+    expect(find.textContaining('"km"'), findsNothing);
+
     await tester.tap(find.text('r2'));
+    await tester.pumpAndSettle();
+    expect(find.byType(CodeView), findsNothing);
+    expect(find.text('run 2'), findsOneWidget);
+    await tester.tap(find.byKey(const ValueKey('raw-json')));
     await tester.pumpAndSettle();
     expect(find.byType(CodeView), findsOneWidget);
     expect(
@@ -213,7 +409,7 @@ void main() {
     expect(pages.map((c) => c.args['cursor']), [null, '2']);
   });
 
-  testWidgets('Permissions lists grants both ways and the agent consents, '
+  testWidgets('Permissions lists grants both ways and Clax\u2019s consents, '
       'revokes one, and hides the coming kinds without Developer', (
     tester,
   ) async {
@@ -230,6 +426,16 @@ void main() {
       size: const Size(400, 1400),
     );
     await _tab(tester, 'Permissions');
+    expect(find.text('Clax reads'), findsOneWidget);
+    expect(find.text('Agent reads'), findsNothing);
+    expect(find.byIcon(Icons.smart_toy_outlined), findsNothing);
+    expect(
+      find.ancestor(
+        of: find.byType(ClaxMark),
+        matching: find.byKey(const ValueKey('section-agent')),
+      ),
+      findsOneWidget,
+    );
     expect(find.text('Reads Weather'), findsOneWidget);
     expect(find.text('Dashboard reads this app'), findsOneWidget);
     expect(find.text('Reads Weather while building this app'), findsOneWidget);
@@ -301,7 +507,7 @@ void main() {
     await tester.tap(find.byKey(const ValueKey('inspect')));
     await tester.pumpAndSettle();
     expect(find.byType(AppInspector), findsOneWidget);
-    expect(find.text('Inspector'), findsOneWidget);
+    expect(find.text('Inspect'), findsWidgets);
     expect(find.text(s.runs), findsOneWidget);
   });
 

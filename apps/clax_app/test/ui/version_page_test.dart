@@ -1,5 +1,6 @@
 import 'package:clax_app/clax/api.dart';
 import 'package:clax_app/clax/fake_api.dart';
+import 'package:clax_app/ui/kit/button.dart';
 import 'package:clax_app/ui/theme.dart';
 import 'package:clax_app/ui/version_page.dart';
 import 'package:clax_app/ui/versions_tab.dart';
@@ -82,6 +83,7 @@ void main() {
 
     expect(find.text('Version 2'), findsOneWidget);
     expect(find.text('Name the tenth row'), findsOneWidget);
+    expect(find.byKey(const ValueKey('version-note')), findsOneWidget);
     expect(find.textContaining('tenth'), findsWidgets);
     expect(r.api.callNames, containsAll(['getArtifact', 'readFiles']));
     final reads = [
@@ -315,6 +317,49 @@ void main() {
     expect(find.byKey(const ValueKey('file-a.txt')), findsOneWidget);
     expect(find.byKey(const ValueKey('file-b.txt')), findsNothing);
     expect(find.byKey(const ValueKey('file-index.html')), findsNothing);
+    // Its size did not change, so the row says only that it changed.
+    final row = find.byKey(const ValueKey('file-a.txt'));
+    expect(
+      find.descendant(of: row, matching: find.text('Changed')),
+      findsOneWidget,
+    );
+    expect(
+      find.descendant(of: row, matching: find.textContaining(' to ')),
+      findsNothing,
+    );
+  });
+
+  testWidgets('a version without a note shows no note heading', (
+    tester,
+  ) async {
+    final api = FakeClaxApi(clock: () => '2026-10-12T09:30:00Z');
+    final aid = api.seedArtifact('Runs', {'index.html': page(v1Body)});
+    await api.registerAppSession(installId: 'i', pid: 1);
+    await api.publish(
+      aid,
+      PublishRequest(
+        ifVersion: 1,
+        files: {
+          'index.html': page([...v1Body, '<p>more</p>']),
+        },
+      ),
+    );
+    await tester.pumpWidget(_Rig(api, aid).versionPage(2));
+    await tester.pumpAndSettle();
+    expect(find.text('Version 2'), findsOneWidget);
+    expect(find.text('No note'), findsNothing);
+    expect(find.byKey(const ValueKey('version-note')), findsNothing);
+  });
+
+  testWidgets('Preview is a tonal ClaxButton', (tester) async {
+    final r = await _rig();
+    await tester.pumpWidget(r.versionPage(2));
+    await tester.pumpAndSettle();
+    final preview = tester.widget<ClaxButton>(
+      find.byKey(const ValueKey('preview')),
+    );
+    expect(preview.kind, ClaxButtonKind.tonal);
+    expect(preview.label, 'Preview');
   });
 
   testWidgets('a change of line endings or final newline only says so', (

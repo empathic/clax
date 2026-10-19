@@ -1,7 +1,7 @@
 // The views the Developer tools switch shows and hides, rendered with it
 // off and on in every form and theme into CLAX_SHOTS_DIR (skipped without
 // it): Settings scrolled to its Developer section, and the inspector's
-// Overview, Files and Permissions.
+// Overview and Permissions, and its Files tab, which shows only when on.
 import 'dart:io';
 
 import 'package:clax_app/agent/timings.dart';
@@ -89,7 +89,7 @@ void main() {
       await s.take('developer-settings-$mode');
     });
 
-    for (final tab in ['Overview', 'Files', 'Permissions']) {
+    for (final tab in ['Overview', if (developer) 'Files', 'Permissions']) {
       final surface = 'developer-inspector-${tab.toLowerCase()}-$mode';
       shots(surface, (s) async {
         final api = FakeClaxApi(clock: () => '2026-10-12T08:30:00Z');

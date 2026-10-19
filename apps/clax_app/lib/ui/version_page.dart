@@ -4,6 +4,7 @@ import 'package:flutter/foundation.dart';
 import 'package:flutter/material.dart';
 
 import '../clax/api.dart';
+import 'kit/button.dart';
 import 'line_diff.dart';
 import 'theme.dart';
 import 'tokens.g.dart';
@@ -336,11 +337,12 @@ class _VersionPageState extends State<VersionPage> {
                 spacing: 8,
                 runSpacing: 8,
                 children: [
-                  FilledButton.tonalIcon(
+                  ClaxButton(
                     key: const ValueKey('preview'),
+                    kind: ClaxButtonKind.tonal,
                     onPressed: () => widget.onPreview(widget.n),
-                    icon: const Icon(Icons.visibility_outlined),
-                    label: const Text('Preview'),
+                    icon: Icons.visibility_outlined,
+                    label: 'Preview',
                   ),
                   if (!isLatest)
                     OutlinedButton.icon(
@@ -376,7 +378,10 @@ class _VersionPageState extends State<VersionPage> {
   }
 
   List<Widget> _header(ThemeData theme, VersionInfo info, bool isLatest) {
-    final note = info.note?.trim();
+    final note = switch (info.note?.trim()) {
+      final n? when n.isNotEmpty => n,
+      _ => info.n == 1 ? 'First version' : null,
+    };
     final label = info.label?.trim();
     return [
       Row(
@@ -398,13 +403,14 @@ class _VersionPageState extends State<VersionPage> {
           ],
         ],
       ),
-      const SizedBox(height: 6),
-      Text(
-        note != null && note.isNotEmpty
-            ? note
-            : (info.n == 1 ? 'First version' : 'No note'),
-        style: theme.textTheme.titleMedium,
-      ),
+      if (note != null) ...[
+        const SizedBox(height: 6),
+        Text(
+          note,
+          key: const ValueKey('version-note'),
+          style: theme.textTheme.titleMedium,
+        ),
+      ],
       if (label != null && label.isNotEmpty) ...[
         const SizedBox(height: 6),
         Align(
@@ -516,7 +522,7 @@ class _VersionPageState extends State<VersionPage> {
 
 /// The platform's monospace family (`ClaxType.mono`), at the size of the
 /// text around it.
-TextStyle _monoFamily(BuildContext context) {
+TextStyle monoFamily(BuildContext context) {
   final mono = ClaxType.mono(Theme.of(context).platform);
   return TextStyle(
     fontFamily: mono.fontFamily,
@@ -528,7 +534,7 @@ TextStyle _monoFamily(BuildContext context) {
 /// in the platform's monospace; [dirStyle] sets the directory's size and
 /// colour.
 Widget _pathTitle(BuildContext context, FileChange c, TextStyle? dirStyle) {
-  final mono = _monoFamily(context);
+  final mono = monoFamily(context);
   return Column(
     crossAxisAlignment: CrossAxisAlignment.start,
     mainAxisSize: MainAxisSize.min,
@@ -578,9 +584,11 @@ class _FileRow extends StatelessWidget {
         'Changed',
       ),
     };
+    // A change that kept the size says only that it changed.
     final sizes = switch (c.kind) {
       FileChangeKind.added => formatBytes(c.toSize!),
       FileChangeKind.removed => formatBytes(c.fromSize!),
+      FileChangeKind.changed when c.fromSize == c.toSize => null,
       FileChangeKind.changed =>
         '${formatBytes(c.fromSize!)} to ${formatBytes(c.toSize!)}',
     };
@@ -596,7 +604,10 @@ class _FileRow extends StatelessWidget {
       subtitle: Row(
         children: [
           Text(word, style: TextStyle(color: color)),
-          Flexible(child: Text(' · $sizes', overflow: TextOverflow.ellipsis)),
+          if (sizes != null)
+            Flexible(
+              child: Text(' · $sizes', overflow: TextOverflow.ellipsis),
+            ),
         ],
       ),
       trailing: const Icon(Icons.chevron_right),

@@ -2,7 +2,7 @@
 /// lists it: one [PermissionSource] per kind of permission, each listing
 /// its [Permission]s for an app and revoking them.
 ///
-/// The db read grants, the agent's remembered read consents, the device
+/// The db read grants, Clax's remembered read consents, the device
 /// capabilities' answers ([DevicePermissions]), the network hosts
 /// ([NetPermissions]) and AI use ([AiPermissions]) are here. A kind no
 /// source is given for shows as coming ([plannedPermissionKinds]).
@@ -75,7 +75,9 @@ abstract interface class PermissionSource {
   /// One line under the heading saying what the kind covers.
   String get description;
 
-  IconData get icon;
+  /// The heading's icon; null draws the Clax mark, for what Clax itself
+  /// is allowed.
+  IconData? get icon;
 
   /// The app's permissions of this kind, newest last. An empty list shows
   /// "None".
@@ -170,9 +172,10 @@ class DbGrantPermissions implements PermissionSource {
   }
 }
 
-/// The agent's "Always for this app" read consents: while it works on this
-/// app it may read another app's data, or while it works on another app it
-/// may read this one's. Revoking one makes the agent ask again.
+/// Clax's "Always for this app" read consents: while it works on this app
+/// it may read another app's data, or while it works on another app it may
+/// read this one's. Revoking one makes Clax ask again. Its heading carries
+/// the Clax mark.
 class AgentReadPermissions implements PermissionSource {
   const AgentReadPermissions(this.memory);
 
@@ -182,14 +185,14 @@ class AgentReadPermissions implements PermissionSource {
   String get kind => 'agent';
 
   @override
-  String get title => 'Agent reads';
+  String get title => 'Clax reads';
 
   @override
   String get description =>
-      'Data the agent may read while it builds, without asking again.';
+      'Data Clax may read while it builds, without asking again.';
 
   @override
-  IconData get icon => Icons.smart_toy_outlined;
+  IconData? get icon => null;
 
   @override
   Future<List<Permission>> load(InspectedApp app) async {

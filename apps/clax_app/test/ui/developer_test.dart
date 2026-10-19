@@ -203,13 +203,16 @@ void main() {
         expect(find.text('db, notify'), shown);
       });
 
-      testWidgets('MIME types show only with Developer on ($mode)', (
+      testWidgets('Files, Code and Data show only with Developer on ($mode)', (
         tester,
       ) async {
         await pump(tester, developer: developer);
+        for (final t in ['Files', 'Code', 'Data']) {
+          expect(find.widgetWithText(Tab, t), shown);
+        }
+        if (!developer) return;
         await _tab(tester, 'Files');
-        expect(find.text('2 lines'), developer ? findsNothing : findsOneWidget);
-        expect(find.text('2 lines · text/html; charset=utf-8'), shown);
+        expect(find.text('2 lines · text/html; charset=utf-8'), findsOneWidget);
       });
 
       testWidgets('the Coming rows show only with Developer on ($mode)', (

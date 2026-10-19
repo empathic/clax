@@ -6,6 +6,8 @@ library;
 import 'package:flutter/material.dart';
 import 'package:flutter/services.dart';
 
+import 'tokens.g.dart';
+
 /// The language a file's lines are highlighted as.
 enum CodeLanguage { html, css, js, json, plain }
 
@@ -201,9 +203,10 @@ class _CodeViewState extends State<CodeView> {
     final theme = Theme.of(context);
     final scheme = theme.colorScheme;
     final dark = theme.brightness == Brightness.dark;
-    const base = TextStyle(
-      fontFamily: 'monospace',
-      fontFamilyFallback: ['Menlo', 'Roboto Mono', 'Courier'],
+    final mono = ClaxType.mono(theme.platform);
+    final base = TextStyle(
+      fontFamily: mono.fontFamily,
+      fontFamilyFallback: mono.fontFamilyFallback,
       fontSize: 13,
       height: 1.5,
     );

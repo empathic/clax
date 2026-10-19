@@ -14,32 +14,48 @@ import '../bundle/lineage_store.dart';
 import '../clax/api.dart';
 import '../platform/bundle_key.dart' show keyFingerprint;
 import 'app_icon.dart';
-import 'bundle_sheets.dart';
-import 'developer.dart';
 import 'app_inspector_code.dart';
 import 'app_inspector_permissions.dart';
-import 'version_page.dart' show formatBytes, versionTime;
+import 'bundle_sheets.dart';
+import 'developer.dart';
+import 'kit/button.dart';
+import 'kit/empty.dart';
+import 'kit/mark.dart';
+import 'user_message.dart';
+import 'version_page.dart' show formatBytes, monoFamily, versionTime;
 import 'versions_tab.dart';
 
 export 'app_inspector_permissions.dart';
 
-/// A full screen for app [aid] with five tabs:
+/// A full screen for app [aid], titled "Inspect", with four tabs, and three
+/// more with [DeveloperScope] on. Each tab reads what it shows itself, and
+/// a failed read shows Try again in that tab alone.
 ///
-/// - **Overview**: title, ID (copyable), created and updated, versions,
-///   the live version's file count and size, the document count, the
-///   declared capabilities' names (with [DeveloperScope] on), and the
-///   version history; with [bundles], a Share app (Export…) button, and,
-///   for an app with a lineage ([lineage]), its [sharingLine].
-/// - **Files**: the live version's files as a tree with sizes (and MIME
-///   types, with [DeveloperScope] on); a text file opens in a read-only
-///   [CodePage].
-/// - **Data**: the collections with their counts; a collection lists its
-///   documents a page at a time; a document opens as pretty JSON.
+/// - **Overview**: the app's icon and title, then what it does in plain
+///   words ([capabilityLines]), its ID (copyable), created and updated,
+///   versions, the live version's file count and size, the document
+///   count, the declared capabilities' names (with [DeveloperScope] on);
+///   with [bundles], a Share app (Export…) button, and, for an app with a
+///   lineage ([lineage]), its [sharingLine].
+/// - **Versions**: the version history.
 /// - **Permissions**: one group per [PermissionSource] in [permissions]
 ///   (the db read grants always come first), each permission revocable
 ///   where it can be; with [DeveloperScope] on, kinds of
 ///   [plannedPermissionKinds] no source covers show as coming.
 /// - **Plan**: [plan] when given, else "No plan".
+///
+/// With [DeveloperScope] on:
+///
+/// - **Files**: the live version's files as a tree with sizes and MIME
+///   types; a text file opens in a read-only [CodePage].
+/// - **Code**: the live version's text files, one at a time in a
+///   [CodeView], `index.html` first.
+/// - **Data**: the collections with their counts; a collection lists its
+///   documents a page at a time as key/value tables, with the raw JSON
+///   behind a toggle.
+///
+/// Files and Code read the live version's texts the first time either
+/// shows; the other tabs never read them.
 ///
 /// Opening a version from the history calls [onOpenVersion] (the app at
 /// that version, where it can be restored); without it, the history only
@@ -68,7 +84,8 @@ class AppInspector extends StatefulWidget {
 
   final void Function(String aid, int version)? onOpenVersion;
 
-  /// The tab shown first (0 Overview … 4 Plan).
+  /// The tab shown first: 0 Overview, 1 Versions, 2 Permissions, 3 Plan,
+  /// and with [DeveloperScope] on 4 Files, 5 Code, 6 Data.
   final int initialTab;
 
   /// Shares the app as a `.clax` file; null offers no button.
@@ -81,18 +98,32 @@ class AppInspector extends StatefulWidget {
   State<AppInspector> createState() => _AppInspectorState();
 }
 
+/// One read a tab shows: its value once read, or why it failed.
+class _Read<T> {
+  T? value;
+  Object? error;
+  bool started = false;
+
+  bool get done => value != null || error != null;
+}
+
 class _AppInspectorState extends State<AppInspector> {
   ArtifactDetail? _detail;
-  List<CollectionInfo>? _collections;
-  Map<String, String>? _texts;
   Map<String, String> _titles = const {};
   Object? _error;
   LineageEntry? _lineage;
+
+  /// The live version's `icon.svg`, cleaned; null without one.
+  String? _icon;
+
+  final _collections = _Read<List<CollectionInfo>>();
+  final _texts = _Read<Map<String, String>>();
 
   @override
   void initState() {
     super.initState();
     unawaited(_load());
+    unawaited(_loadCollections());
     unawaited(_loadLineage());
   }
 
@@ -113,64 +144,87 @@ class _AppInspectorState extends State<AppInspector> {
     await _loadLineage();
   }
 
+  /// The app and its versions, and every app's title (for naming the
+  /// other side of a permission; without them, a short ID stands in).
   Future<void> _load() async {
     try {
+      final titles = widget.api.listArtifacts().then(
+        (all) => {for (final a in all) a.id: a.title},
+        onError: (Object _) => const <String, String>{},
+      );
       final detail = await widget.api.getArtifact(widget.aid);
-      final results = await Future.wait<Object>([
-        widget.api.collections(widget.aid),
-        widget.api.readFiles(widget.aid, detail.artifact.currentVersion),
-        widget.api.listArtifacts(),
-      ]);
+      final t = await titles;
       if (!mounted) return;
       setState(() {
         _detail = detail;
-        _collections = results[0] as List<CollectionInfo>;
-        _texts = results[1] as Map<String, String>;
-        _titles = {
-          for (final a in results[2] as List<ArtifactSummary>) a.id: a.title,
-        };
+        _titles = t;
         _error = null;
       });
+      unawaited(_loadIcon(detail.artifact.currentVersion));
     } catch (e) {
       if (mounted) setState(() => _error = e);
     }
   }
 
+  Future<void> _loadIcon(int version) async {
+    String? svg;
+    try {
+      svg = switch (await widget.api.readFile(
+        widget.aid,
+        version,
+        appIconPath,
+      )) {
+        final t? => cleanIcon(t),
+        null => null,
+      };
+    } on Object {
+      svg = null;
+    }
+    if (mounted && svg != null) setState(() => _icon = svg);
+  }
+
+  /// Runs [read] into [into], marking it started at once (without a
+  /// rebuild, so a tab can start it while it builds).
+  Future<void> _run<T>(_Read<T> into, Future<T> Function() read) async {
+    into
+      ..started = true
+      ..error = null;
+    try {
+      final v = await read();
+      if (mounted) setState(() => into.value = v);
+    } catch (e) {
+      if (mounted) setState(() => into.error = e);
+    }
+  }
+
+  Future<void> _loadCollections() =>
+      _run(_collections, () => widget.api.collections(widget.aid));
+
+  Future<void> _loadTexts(int version) =>
+      _run(_texts, () => widget.api.readFiles(widget.aid, version));
+
   @override
   Widget build(BuildContext context) {
-    final theme = Theme.of(context);
+    final developer = DeveloperScope.of(context);
     final d = _detail;
-    final title = d?.artifact.title ?? '';
+    final tabs = [
+      'Overview',
+      'Versions',
+      'Permissions',
+      'Plan',
+      if (developer) ...['Files', 'Code', 'Data'],
+    ];
     return DefaultTabController(
-      length: 5,
-      initialIndex: widget.initialTab,
+      key: ValueKey(tabs.length),
+      length: tabs.length,
+      initialIndex: widget.initialTab.clamp(0, tabs.length - 1),
       child: Scaffold(
         appBar: AppBar(
-          title: Column(
-            crossAxisAlignment: CrossAxisAlignment.start,
-            children: [
-              Text(
-                title.isEmpty ? 'App' : title,
-                overflow: TextOverflow.ellipsis,
-              ),
-              Text(
-                'Inspector',
-                style: theme.textTheme.bodySmall?.copyWith(
-                  color: theme.colorScheme.onSurfaceVariant,
-                ),
-              ),
-            ],
-          ),
-          bottom: const TabBar(
+          title: const Text('Inspect'),
+          bottom: TabBar(
             isScrollable: true,
             tabAlignment: TabAlignment.start,
-            tabs: [
-              Tab(text: 'Overview'),
-              Tab(text: 'Files'),
-              Tab(text: 'Data'),
-              Tab(text: 'Permissions'),
-              Tab(text: 'Plan'),
-            ],
+            tabs: [for (final t in tabs) Tab(text: t)],
           ),
         ),
         body: switch ((d, _error)) {
@@ -178,36 +232,8 @@ class _AppInspectorState extends State<AppInspector> {
           (null, _) => const Center(child: CircularProgressIndicator()),
           (final d?, _) => TabBarView(
             children: [
-              _Overview(
-                detail: d,
-                icon: _icon,
-                collections: _collections!,
-                onHistory: () => _openHistory(d),
-                shareLabel: widget.bundles?.shareLabel,
-                onShare: widget.bundles == null
-                    ? null
-                    : () => unawaited(_share(_icon)),
-                sharing: sharingLine(_lineage),
-              ),
-              _Files(version: d.versions.last, texts: _texts!),
-              _Data(
-                api: widget.api,
-                aid: widget.aid,
-                collections: _collections!,
-              ),
-              _Permissions(
-                app: InspectedApp(
-                  id: d.artifact.id,
-                  title: d.artifact.title,
-                  capabilities: d.artifact.capabilities,
-                  titles: _titles,
-                ),
-                sources: [
-                  DbGrantPermissions(widget.api),
-                  ...widget.permissions,
-                ],
-              ),
-              widget.plan?.call(context, widget.aid) ?? const _NoPlan(),
+              for (final t in _tabs(d, developer))
+                t.wide ? t.child : _Column(child: t.child),
             ],
           ),
         },
@@ -215,38 +241,160 @@ class _AppInspectorState extends State<AppInspector> {
     );
   }
 
-  String? get _icon => switch (_texts?[appIconPath]) {
-    final t? => cleanIcon(t),
-    null => null,
-  };
+  /// Each tab's body, and whether it takes the window's full width (code
+  /// does; the rest keep a readable column).
+  List<({Widget child, bool wide})> _tabs(ArtifactDetail d, bool developer) {
+    ({Widget child, bool wide}) column(Widget c) => (child: c, wide: false);
+    void texts() => unawaited(_loadTexts(d.artifact.currentVersion));
+    return [
+      column(
+        _Overview(
+          detail: d,
+          icon: _icon,
+          collections: _collections.value,
+          onHistory: () => DefaultTabController.of(context).animateTo(1),
+          shareLabel: widget.bundles?.shareLabel,
+          onShare: widget.bundles == null
+              ? null
+              : () => unawaited(_share(_icon)),
+          sharing: sharingLine(_lineage),
+        ),
+      ),
+      column(_versions(d)),
+      column(
+        _Permissions(
+          app: InspectedApp(
+            id: d.artifact.id,
+            title: d.artifact.title,
+            capabilities: d.artifact.capabilities,
+            titles: _titles,
+          ),
+          sources: [DbGrantPermissions(widget.api), ...widget.permissions],
+        ),
+      ),
+      column(widget.plan?.call(context, widget.aid) ?? const _NoPlan()),
+      if (developer) ...[
+        column(
+          _Reading(
+            read: _texts,
+            start: texts,
+            title: 'Couldn’t read this app’s files',
+            child: (t) => _Files(version: d.versions.last, texts: t),
+          ),
+        ),
+        (
+          wide: true,
+          child: _Reading(
+            read: _texts,
+            start: texts,
+            title: 'Couldn’t read this app’s files',
+            child: (t) => _Code(texts: t),
+          ),
+        ),
+        column(
+          _Reading(
+            read: _collections,
+            start: () => unawaited(_loadCollections()),
+            title: 'Couldn’t read this app’s data',
+            child: (collections) => _Data(
+              api: widget.api,
+              aid: widget.aid,
+              collections: collections,
+            ),
+          ),
+        ),
+      ],
+    ];
+  }
 
-  void _openHistory(ArtifactDetail d) {
+  Widget _versions(ArtifactDetail d) {
     final open = widget.onOpenVersion;
-    final nav = Navigator.of(context);
     void show(int? n) {
       if (open == null) return;
-      nav.popUntil((r) => r.isFirst);
+      Navigator.of(context).popUntil((r) => r.isFirst);
       open(widget.aid, n ?? d.artifact.currentVersion);
     }
 
-    nav.push(
-      MaterialPageRoute<void>(
-        builder: (_) => Scaffold(
-          appBar: AppBar(title: const Text('Version history')),
-          body: VersionsTab(
-            api: open == null ? null : widget.api,
-            detail: d,
-            error: null,
-            shown: d.artifact.currentVersion,
-            // Restoring belongs to the open app; here it opens the version.
-            busy: true,
-            onPreview: show,
-            onRestore: show,
-            onRetry: () {},
-          ),
-        ),
-      ),
+    return VersionsTab(
+      api: open == null ? null : widget.api,
+      detail: d,
+      error: null,
+      shown: d.artifact.currentVersion,
+      // Restoring belongs to the open app; here it opens the version.
+      busy: true,
+      onPreview: show,
+      onRestore: show,
+      onRetry: () {},
     );
+  }
+}
+
+/// [child] in a centred column at most 760 wide, so a wide window keeps
+/// its lines readable.
+class _Column extends StatelessWidget {
+  const _Column({required this.child});
+
+  final Widget child;
+
+  @override
+  Widget build(BuildContext context) => Center(
+    child: ConstrainedBox(
+      constraints: const BoxConstraints(maxWidth: 760),
+      child: child,
+    ),
+  );
+}
+
+/// A tab showing [read]: it starts the read when it first shows and the
+/// read has not started, shows progress until it ends, then [child] of
+/// its value, or [title] with Try again when it failed.
+class _Reading<T> extends StatefulWidget {
+  const _Reading({
+    super.key,
+    required this.read,
+    required this.start,
+    required this.title,
+    required this.child,
+  });
+
+  final _Read<T> read;
+  final VoidCallback start;
+  final String title;
+  final Widget Function(T value) child;
+
+  @override
+  State<_Reading<T>> createState() => _ReadingState<T>();
+}
+
+class _ReadingState<T> extends State<_Reading<T>> {
+  @override
+  void initState() {
+    super.initState();
+    if (!widget.read.started) widget.start();
+  }
+
+  @override
+  Widget build(BuildContext context) {
+    final r = widget.read;
+    if (r.value case final v?) return widget.child(v);
+    if (r.error case final e?) {
+      return ClaxEmpty(
+        icon: Icons.error_outline_rounded,
+        title: widget.title,
+        body: userMessage(e),
+        actions: [
+          ClaxButton(
+            label: 'Try again',
+            kind: ClaxButtonKind.primary,
+            onPressed: () {
+              widget.start();
+              setState(() {});
+            },
+          ),
+        ],
+      );
+    }
+    return const Center(child: CircularProgressIndicator());
   }
 }
 
@@ -256,34 +404,64 @@ class _Failed extends StatelessWidget {
   final Object error;
   final Future<void> Function() retry;
 
+  bool get _gone => error is ClaxApiError && (error as ClaxApiError).isNotFound;
+
   @override
-  Widget build(BuildContext context) => Center(
-    child: Padding(
-      padding: const EdgeInsets.all(32),
-      child: Column(
-        mainAxisSize: MainAxisSize.min,
-        children: [
-          Icon(
-            Icons.cloud_off_rounded,
-            size: 40,
-            color: Theme.of(context).colorScheme.error,
-          ),
-          const SizedBox(height: 12),
-          Text(
-            error is ClaxApiError && (error as ClaxApiError).isNotFound
-                ? 'This app no longer exists'
-                : 'Couldn’t read this app',
-            style: Theme.of(context).textTheme.titleMedium,
-          ),
-          const SizedBox(height: 12),
-          OutlinedButton(onPressed: retry, child: const Text('Try again')),
-        ],
+  Widget build(BuildContext context) => ClaxEmpty(
+    icon: Icons.error_outline_rounded,
+    title: _gone ? 'This app no longer exists' : 'Couldn’t read this app',
+    body: _gone ? null : userMessage(error),
+    actions: [
+      ClaxButton(
+        label: 'Try again',
+        kind: ClaxButtonKind.primary,
+        onPressed: () => unawaited(retry()),
       ),
-    ),
+    ],
   );
 }
 
 // --- Overview ---
+
+/// The icon and words for each capability in [capabilities] a person
+/// would want to know of, in a fixed order; capabilities every app has
+/// (comments, its own identity) say nothing.
+List<(IconData, String)> _capabilityRows(Map<String, Object?> capabilities) {
+  final hosts = switch (capabilities['net']) {
+    {'hosts': final List<Object?> h} => h.whereType<String>().toList(),
+    _ => const <String>[],
+  };
+  const words = <String, (IconData, String)>{
+    'db': (Icons.save_outlined, 'Saves its own data'),
+    'notify': (Icons.notifications_outlined, 'Sends notifications'),
+    'sample': (Icons.auto_awesome_outlined, 'Uses AI'),
+    'assets': (Icons.attach_file_rounded, 'Keeps files you add'),
+    'downloads': (Icons.download_rounded, 'Gives you files to save'),
+    'share': (Icons.ios_share_rounded, 'Shares through other apps'),
+    'file': (Icons.folder_open_rounded, 'Opens and saves files you choose'),
+    'camera': (Icons.photo_camera_outlined, 'Uses the camera'),
+    'location': (Icons.place_outlined, 'Sees where your device is'),
+  };
+  return [
+    if (capabilities.containsKey('db')) words['db']!,
+    if (capabilities.containsKey('net'))
+      (
+        Icons.public_rounded,
+        hosts.isEmpty
+            ? 'Uses the internet'
+            : 'Uses the internet: ${hosts.join(', ')}',
+      ),
+    for (final k in words.keys.skip(1))
+      if (capabilities.containsKey(k)) words[k]!,
+  ];
+}
+
+/// What an app with [capabilities] does, one plain line each, as the
+/// inspector's Overview says it: "Saves its own data", "Uses the internet:
+/// api.weather.example", "Sends notifications".
+List<String> capabilityLines(Map<String, Object?> capabilities) => [
+  for (final (_, line) in _capabilityRows(capabilities)) line,
+];
 
 /// The inspector's line about [entry]'s lineage: `Shared as v<N>` for an
 /// app this install authors, `From <who>, v<N> · <fingerprint>` for an
@@ -319,7 +497,10 @@ class _Overview extends StatelessWidget {
 
   /// The live version's `icon.svg`, cleaned; null shows the tile face.
   final String? icon;
-  final List<CollectionInfo> collections;
+
+  /// The app's collections; null while they load or when they could not
+  /// be read.
+  final List<CollectionInfo>? collections;
   final VoidCallback onHistory;
 
   @override
@@ -329,8 +510,10 @@ class _Overview extends StatelessWidget {
     final a = detail.artifact;
     final live = detail.versions.last;
     final size = live.files.values.fold<int>(0, (s, f) => s + f.size);
-    final docs = collections.fold<int>(0, (s, c) => s + c.count);
+    final cs = collections;
+    final docs = cs?.fold<int>(0, (s, c) => s + c.count);
     final caps = a.capabilities.keys.toList()..sort();
+    final does = _capabilityRows(a.capabilities);
     return ListView(
       padding: const EdgeInsets.fromLTRB(16, 20, 16, 32),
       children: [
@@ -393,9 +576,24 @@ class _Overview extends StatelessWidget {
             const SizedBox(width: 8),
             _Stat(value: formatBytes(size), label: 'Size'),
             const SizedBox(width: 8),
-            _Stat(value: '$docs', label: docs == 1 ? 'Document' : 'Documents'),
+            _Stat(
+              value: docs == null ? '–' : '$docs',
+              label: docs == 1 ? 'Document' : 'Documents',
+            ),
           ],
         ),
+        if (does.isNotEmpty) ...[
+          const SizedBox(height: 20),
+          _Group(
+            children: [
+              for (final (icon, line) in does)
+                ListTile(
+                  leading: Icon(icon, color: scheme.onSurfaceVariant),
+                  title: Text(line),
+                ),
+            ],
+          ),
+        ],
         const SizedBox(height: 20),
         _Group(
           children: [
@@ -425,13 +623,14 @@ class _Overview extends StatelessWidget {
               label: 'Files',
               value: '${live.files.length} · ${formatBytes(size)}',
             ),
-            _Fact(
-              label: 'Data',
-              value:
-                  '$docs ${docs == 1 ? 'document' : 'documents'} in '
-                  '${collections.length} '
-                  '${collections.length == 1 ? 'collection' : 'collections'}',
-            ),
+            if (cs != null)
+              _Fact(
+                label: 'Data',
+                value:
+                    '$docs ${docs == 1 ? 'document' : 'documents'} in '
+                    '${cs.length} '
+                    '${cs.length == 1 ? 'collection' : 'collections'}',
+              ),
             if (DeveloperScope.of(context))
               _Fact(
                 label: 'Capabilities',
@@ -556,10 +755,7 @@ class _Fact extends StatelessWidget {
             child: SelectableText(
               value,
               style: mono
-                  ? theme.textTheme.bodyMedium?.copyWith(
-                      fontFamily: 'monospace',
-                      fontFamilyFallback: const ['Menlo', 'Roboto Mono'],
-                    )
+                  ? theme.textTheme.bodyMedium?.merge(monoFamily(context))
                   : theme.textTheme.bodyMedium,
             ),
           ),
@@ -765,6 +961,77 @@ class _FileTile extends StatelessWidget {
   }
 }
 
+// --- Code ---
+
+/// The live version's text files, one at a time: a row of their paths
+/// (`index.html` first, then by path) over the chosen one's [CodeView].
+class _Code extends StatefulWidget {
+  const _Code({required this.texts});
+
+  final Map<String, String> texts;
+
+  @override
+  State<_Code> createState() => _CodeState();
+}
+
+class _CodeState extends State<_Code> {
+  String? _shown;
+
+  List<String> get _paths => widget.texts.keys.toList()
+    ..sort(
+      (a, b) => a == 'index.html'
+          ? -1
+          : b == 'index.html'
+          ? 1
+          : a.compareTo(b),
+    );
+
+  @override
+  Widget build(BuildContext context) {
+    final paths = _paths;
+    if (paths.isEmpty) {
+      return const _Empty(
+        icon: Icons.code_rounded,
+        text: 'No text files',
+        hint: 'This version has no files to read as text.',
+      );
+    }
+    final shown = paths.contains(_shown) ? _shown! : paths.first;
+    final mono = monoFamily(context);
+    return Column(
+      crossAxisAlignment: CrossAxisAlignment.stretch,
+      children: [
+        SingleChildScrollView(
+          scrollDirection: Axis.horizontal,
+          padding: const EdgeInsets.fromLTRB(12, 12, 12, 8),
+          child: Row(
+            children: [
+              for (final p in paths)
+                Padding(
+                  padding: const EdgeInsets.only(right: 8),
+                  child: ChoiceChip(
+                    key: ValueKey('code-$p'),
+                    label: Text(p, style: mono),
+                    selected: p == shown,
+                    onSelected: (_) => setState(() => _shown = p),
+                  ),
+                ),
+            ],
+          ),
+        ),
+        const Divider(height: 1),
+        Expanded(
+          child: CodeView(
+            key: ValueKey('code-view-$shown'),
+            text: widget.texts[shown]!,
+            language: languageOf(shown),
+          ),
+        ),
+      ],
+    );
+  }
+}
+
 // --- Data ---
 
 class _Data extends StatelessWidget {
@@ -802,10 +1069,7 @@ class _Data extends StatelessWidget {
                 ),
                 title: Text(
                   c.path,
-                  style: theme.textTheme.bodyLarge?.copyWith(
-                    fontFamily: 'monospace',
-                    fontFamilyFallback: const ['Menlo', 'Roboto Mono'],
-                  ),
+                  style: theme.textTheme.bodyLarge?.merge(monoFamily(context)),
                 ),
                 trailing: Row(
                   mainAxisSize: MainAxisSize.min,
@@ -837,8 +1101,101 @@ class _Data extends StatelessWidget {
   }
 }
 
-/// The documents of [collection], [pageSize] at a time with Load more;
-/// a document opens as pretty JSON.
+/// The raw JSON toggle of a collection or a document: on, documents show
+/// as pretty JSON; off, as key/value tables.
+class _RawToggle extends StatelessWidget {
+  const _RawToggle({required this.raw, required this.onChanged});
+
+  final bool raw;
+  final ValueChanged<bool> onChanged;
+
+  @override
+  Widget build(BuildContext context) => IconButton(
+    key: const ValueKey('raw-json'),
+    tooltip: raw ? 'Show as a table' : 'Show raw JSON',
+    isSelected: raw,
+    icon: const Icon(Icons.data_object_rounded),
+    onPressed: () => onChanged(!raw),
+  );
+}
+
+/// [v] as one line of a key/value table: a string as itself, anything
+/// else as compact JSON.
+String _cell(Object? v) => v is String ? v : jsonEncode(v);
+
+/// [data]'s top-level keys and values as a table, the first [limit] rows
+/// (all when null) with a count of the rest.
+class _DocTable extends StatelessWidget {
+  const _DocTable({required this.data, this.limit});
+
+  final Map<String, Object?> data;
+  final int? limit;
+
+  @override
+  Widget build(BuildContext context) {
+    final theme = Theme.of(context);
+    final muted = theme.colorScheme.onSurfaceVariant;
+    final rows = data.entries.toList();
+    final shown = limit == null ? rows : rows.take(limit!).toList();
+    final more = rows.length - shown.length;
+    final selectable = limit == null;
+    if (rows.isEmpty) {
+      return Text(
+        'Empty',
+        style: theme.textTheme.bodyMedium?.copyWith(color: muted),
+      );
+    }
+    return Column(
+      crossAxisAlignment: CrossAxisAlignment.start,
+      children: [
+        for (final e in shown)
+          Padding(
+            padding: const EdgeInsets.symmetric(vertical: 3),
+            child: Row(
+              crossAxisAlignment: CrossAxisAlignment.start,
+              children: [
+                SizedBox(
+                  width: 112,
+                  child: Text(
+                    e.key,
+                    maxLines: 1,
+                    overflow: TextOverflow.ellipsis,
+                    style: theme.textTheme.bodyMedium?.copyWith(color: muted),
+                  ),
+                ),
+                const SizedBox(width: 12),
+                Expanded(
+                  child: selectable
+                      ? SelectableText(
+                          _cell(e.value),
+                          style: theme.textTheme.bodyMedium,
+                        )
+                      : Text(
+                          _cell(e.value),
+                          maxLines: 2,
+                          overflow: TextOverflow.ellipsis,
+                          style: theme.textTheme.bodyMedium,
+                        ),
+                ),
+              ],
+            ),
+          ),
+        if (more > 0)
+          Padding(
+            padding: const EdgeInsets.only(top: 3),
+            child: Text(
+              '$more more',
+              style: theme.textTheme.bodySmall?.copyWith(color: muted),
+            ),
+          ),
+      ],
+    );
+  }
+}
+
+/// The documents of [collection], [pageSize] at a time with Load more,
+/// each a key/value table, or pretty JSON with the raw toggle on; a
+/// document opens on a page of its own.
 class CollectionPage extends StatefulWidget {
   const CollectionPage({
     super.key,
@@ -864,6 +1221,7 @@ class _CollectionPageState extends State<CollectionPage> {
   String? _cursor;
   bool _done = false;
   bool _loading = false;
+  bool _raw = false;
   Object? _error;
 
   @override
@@ -916,6 +1274,9 @@ class _CollectionPageState extends State<CollectionPage> {
             ),
           ],
         ),
+        actions: [
+          _RawToggle(raw: _raw, onChanged: (on) => setState(() => _raw = on)),
+        ],
       ),
       body: ListView.separated(
         padding: const EdgeInsets.fromLTRB(16, 8, 16, 32),
@@ -949,17 +1310,10 @@ class _CollectionPageState extends State<CollectionPage> {
           final d = _docs[i];
           return _DocCard(
             doc: d,
-            json: pretty(d),
+            json: _raw ? pretty(d) : null,
             onTap: () => Navigator.of(context).push(
               MaterialPageRoute<void>(
-                builder: (_) => CodePage(
-                  title: d.id,
-                  subtitle:
-                      '${formatBytes(utf8.encode(jsonEncode(d.data)).length)}'
-                      ' · v${d.version} · ${versionTime(d.updatedAt)}',
-                  text: pretty(d),
-                  language: CodeLanguage.json,
-                ),
+                builder: (_) => _DocPage(doc: d, raw: _raw),
               ),
             ),
           );
@@ -969,17 +1323,102 @@ class _CollectionPageState extends State<CollectionPage> {
   }
 }
 
+/// [doc]'s size, version and time, as a document's subtitle.
+String _docAbout(Doc doc) =>
+    '${formatBytes(utf8.encode(jsonEncode(doc.data)).length)}'
+    ' · v${doc.version} · ${versionTime(doc.updatedAt)}';
+
+/// One document: its key/value table, or its pretty JSON with the raw
+/// toggle on.
+class _DocPage extends StatefulWidget {
+  const _DocPage({required this.doc, required this.raw});
+
+  final Doc doc;
+
+  /// Whether the raw JSON shows first.
+  final bool raw;
+
+  @override
+  State<_DocPage> createState() => _DocPageState();
+}
+
+class _DocPageState extends State<_DocPage> {
+  late bool _raw = widget.raw;
+
+  @override
+  Widget build(BuildContext context) {
+    final theme = Theme.of(context);
+    final d = widget.doc;
+    final json = _CollectionPageState.pretty(d);
+    return Scaffold(
+      appBar: AppBar(
+        title: Column(
+          crossAxisAlignment: CrossAxisAlignment.start,
+          children: [
+            Text(
+              d.id,
+              overflow: TextOverflow.ellipsis,
+              style: monoFamily(context),
+            ),
+            Text(
+              _docAbout(d),
+              style: theme.textTheme.bodySmall?.copyWith(
+                color: theme.colorScheme.onSurfaceVariant,
+              ),
+            ),
+          ],
+        ),
+        actions: [
+          if (_raw)
+            IconButton(
+              tooltip: 'Copy',
+              icon: const Icon(Icons.copy_rounded),
+              onPressed: () async {
+                await Clipboard.setData(ClipboardData(text: json));
+                if (context.mounted) {
+                  ScaffoldMessenger.of(
+                    context,
+                  ).showSnackBar(const SnackBar(content: Text('Copied')));
+                }
+              },
+            ),
+          _RawToggle(raw: _raw, onChanged: (on) => setState(() => _raw = on)),
+        ],
+      ),
+      body: _raw
+          ? CodeView(text: json, language: CodeLanguage.json)
+          : ListView(
+              padding: const EdgeInsets.fromLTRB(16, 16, 16, 32),
+              children: [
+                _Group(
+                  children: [
+                    Padding(
+                      padding: const EdgeInsets.all(16),
+                      child: _DocTable(data: d.data),
+                    ),
+                  ],
+                ),
+              ],
+            ),
+    );
+  }
+}
+
 class _DocCard extends StatelessWidget {
   const _DocCard({required this.doc, required this.json, required this.onTap});
 
   final Doc doc;
-  final String json;
+
+  /// The document's pretty JSON when the raw toggle is on; null shows its
+  /// table.
+  final String? json;
   final VoidCallback onTap;
 
   @override
   Widget build(BuildContext context) {
     final theme = Theme.of(context);
-    final preview = json.split('\n').take(6).join('\n');
+    final mono = monoFamily(context);
+    final j = json;
     return Material(
       color: theme.colorScheme.surfaceContainerLow,
       borderRadius: BorderRadius.circular(16),
@@ -998,10 +1437,7 @@ class _DocCard extends StatelessWidget {
                     child: Text(
                       doc.id,
                       overflow: TextOverflow.ellipsis,
-                      style: theme.textTheme.titleSmall?.copyWith(
-                        fontFamily: 'monospace',
-                        fontFamilyFallback: const ['Menlo', 'Roboto Mono'],
-                      ),
+                      style: theme.textTheme.titleSmall?.merge(mono),
                     ),
                   ),
                   Text(
@@ -1013,18 +1449,21 @@ class _DocCard extends StatelessWidget {
                 ],
               ),
               const SizedBox(height: 6),
-              Text(
-                preview,
-                maxLines: 6,
-                overflow: TextOverflow.fade,
-                softWrap: false,
-                style: theme.textTheme.bodySmall?.copyWith(
-                  fontFamily: 'monospace',
-                  fontFamilyFallback: const ['Menlo', 'Roboto Mono'],
-                  color: theme.colorScheme.onSurfaceVariant,
-                  height: 1.4,
+              if (j == null)
+                _DocTable(data: doc.data, limit: 6)
+              else
+                Text(
+                  j.split('\n').take(6).join('\n'),
+                  maxLines: 6,
+                  overflow: TextOverflow.fade,
+                  softWrap: false,
+                  style: theme.textTheme.bodySmall
+                      ?.merge(mono)
+                      .copyWith(
+                        color: theme.colorScheme.onSurfaceVariant,
+                        height: 1.4,
+                      ),
                 ),
-              ),
             ],
           ),
         ),
@@ -1111,6 +1550,7 @@ class _PermissionsState extends State<_Permissions> {
       children: [
         for (final s in widget.sources) ...[
           _SectionHead(
+            key: ValueKey('section-${s.kind}'),
             icon: s.icon,
             title: s.title,
             description: s.description,
@@ -1157,15 +1597,18 @@ class _PermissionsState extends State<_Permissions> {
   }
 }
 
+/// A permission kind's heading: its icon (the Clax mark when [icon] is
+/// null), title, and what it covers.
 class _SectionHead extends StatelessWidget {
   const _SectionHead({
+    super.key,
     required this.icon,
     required this.title,
     required this.description,
     this.badge,
   });
 
-  final IconData icon;
+  final IconData? icon;
   final String title;
   final String description;
   final String? badge;
@@ -1180,7 +1623,18 @@ class _SectionHead extends StatelessWidget {
       child: Row(
         crossAxisAlignment: CrossAxisAlignment.start,
         children: [
-          Icon(icon, size: 22, color: dim ? scheme.outline : scheme.primary),
+          switch (icon) {
+            final i? => Icon(
+              i,
+              size: 22,
+              color: dim ? scheme.outline : scheme.primary,
+            ),
+            null => const SizedBox(
+              width: 22,
+              height: 22,
+              child: Center(child: ClaxMark(size: 22)),
+            ),
+          },
           const SizedBox(width: 12),
           Expanded(
             child: Column(
