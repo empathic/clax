@@ -15,6 +15,7 @@ import '../clax/api.dart';
 import '../platform/bundle_key.dart' show keyFingerprint;
 import 'app_icon.dart';
 import 'bundle_sheets.dart';
+import 'developer.dart';
 import 'app_inspector_code.dart';
 import 'app_inspector_permissions.dart';
 import 'version_page.dart' show formatBytes, versionTime;
@@ -26,17 +27,18 @@ export 'app_inspector_permissions.dart';
 ///
 /// - **Overview**: title, ID (copyable), created and updated, versions,
 ///   the live version's file count and size, the document count, the
-///   declared capabilities, and the version history; with [bundles], a
-///   Share app (Export…) button, and, for an app with a lineage
-///   ([lineage]), its [sharingLine].
-/// - **Files**: the live version's files as a tree with sizes; a text file
-///   opens in a read-only [CodePage].
+///   declared capabilities' names (with [DeveloperScope] on), and the
+///   version history; with [bundles], a Share app (Export…) button, and,
+///   for an app with a lineage ([lineage]), its [sharingLine].
+/// - **Files**: the live version's files as a tree with sizes (and MIME
+///   types, with [DeveloperScope] on); a text file opens in a read-only
+///   [CodePage].
 /// - **Data**: the collections with their counts; a collection lists its
 ///   documents a page at a time; a document opens as pretty JSON.
 /// - **Permissions**: one group per [PermissionSource] in [permissions]
 ///   (the db read grants always come first), each permission revocable
-///   where it can be; kinds of [plannedPermissionKinds] no source covers
-///   show as coming.
+///   where it can be; with [DeveloperScope] on, kinds of
+///   [plannedPermissionKinds] no source covers show as coming.
 /// - **Plan**: [plan] when given, else "No plan".
 ///
 /// Opening a version from the history calls [onOpenVersion] (the app at
@@ -430,10 +432,11 @@ class _Overview extends StatelessWidget {
                   '${collections.length} '
                   '${collections.length == 1 ? 'collection' : 'collections'}',
             ),
-            _Fact(
-              label: 'Capabilities',
-              value: caps.isEmpty ? 'None' : caps.join(', '),
-            ),
+            if (DeveloperScope.of(context))
+              _Fact(
+                label: 'Capabilities',
+                value: caps.isEmpty ? 'None' : caps.join(', '),
+              ),
           ],
         ),
         const SizedBox(height: 16),
@@ -716,19 +719,23 @@ class _FileTile extends StatelessWidget {
   Widget build(BuildContext context) {
     final theme = Theme.of(context);
     final t = text;
+    final mime = DeveloperScope.of(context) ? meta.contentType : null;
+    final about = [?(t == null ? null : _lines(t)), ?mime].join(' · ');
     return ListTile(
       key: ValueKey('file-$path'),
       contentPadding: EdgeInsets.only(left: 12.0 + depth * 16, right: 16),
       leading: Icon(_icon(path), color: theme.colorScheme.onSurfaceVariant),
       title: Text(name, style: theme.textTheme.bodyLarge),
-      subtitle: Text(
-        t == null ? meta.contentType : '${_lines(t)} · ${meta.contentType}',
-        maxLines: 1,
-        overflow: TextOverflow.ellipsis,
-        style: theme.textTheme.bodySmall?.copyWith(
-          color: theme.colorScheme.onSurfaceVariant,
-        ),
-      ),
+      subtitle: about.isEmpty
+          ? null
+          : Text(
+              about,
+              maxLines: 1,
+              overflow: TextOverflow.ellipsis,
+              style: theme.textTheme.bodySmall?.copyWith(
+                color: theme.colorScheme.onSurfaceVariant,
+              ),
+            ),
       trailing: Text(
         formatBytes(meta.size),
         style: theme.textTheme.labelMedium?.copyWith(
@@ -1095,8 +1102,9 @@ class _PermissionsState extends State<_Permissions> {
   Widget build(BuildContext context) {
     final covered = {for (final s in widget.sources) s.kind};
     final coming = [
-      for (final k in plannedPermissionKinds)
-        if (!covered.contains(k.kind)) k,
+      if (DeveloperScope.of(context))
+        for (final k in plannedPermissionKinds)
+          if (!covered.contains(k.kind)) k,
     ];
     return ListView(
       padding: const EdgeInsets.fromLTRB(16, 16, 16, 32),

@@ -6,13 +6,17 @@ import '../home/home_recovery.dart';
 import '../home/home_settings.dart';
 import '../platform/secure_key.dart';
 import '../platform/settings_store.dart';
+import 'developer.dart';
+import 'kit/kit.dart' show ClaxSwitch;
 import 'licences.dart';
 
 /// Settings: the Claude API key, the agent (where `claude -p` can run), the
 /// model, dictation (whether it starts on its own, and its sounds and
 /// vibration), the Claude Code path, sharing (the name bundles carry and
-/// the sharing key's fingerprint), the home screen ([home]), the last ten
-/// measured timings, and About (the licences page, [showClaxLicences]).
+/// the sharing key's fingerprint), the home screen ([home]), Developer:
+/// the "Developer tools" switch ([AppSettings.developer], which also sets
+/// the [DeveloperScope] above), with the last ten measured timings while
+/// it is on, and About (the licences page, [showClaxLicences]).
 ///
 /// Every choice is saved to [store] as it is made. The key is saved only
 /// through [secureKey], on Save key, and is never shown back: a saved key
@@ -271,8 +275,22 @@ class _SettingsScreenState extends State<SettingsScreen> {
                   const _Header('Home screen'),
                   _HomeSection(controls: h),
                 ],
-                const _Header('Recent timings'),
-                ..._timings(context),
+                const _Header('Developer'),
+                Padding(
+                  padding: const EdgeInsets.symmetric(horizontal: 16),
+                  child: ClaxSwitch(
+                    label: 'Developer tools',
+                    value: s.developer,
+                    onChanged: (v) {
+                      DeveloperScope.set(context, v);
+                      _change((s) => s.developer = v);
+                    },
+                  ),
+                ),
+                if (s.developer) ...[
+                  const _Header('Recent timings'),
+                  ..._timings(context),
+                ],
                 const _Header('About'),
                 ListTile(
                   key: const Key('licences'),
@@ -508,6 +526,7 @@ String timingLabel(String name) => switch (name) {
   longpressLanded => 'Long-press → landed',
   homeUsable => 'Launch → home usable',
   homeCover => 'Launch → home snapshot',
+  sendFirstStep => 'Send → first step',
   _ => name,
 };
 

@@ -63,6 +63,7 @@ import 'ui/app_inspector_permissions.dart';
 import 'ui/app_screen.dart';
 import 'ui/build_notices.dart';
 import 'ui/build_plan.dart';
+import 'ui/developer.dart';
 import 'ui/bundle_sheets.dart';
 import 'ui/app_surface.dart';
 import 'ui/error_screen.dart';
@@ -619,6 +620,9 @@ class _AppRootState extends State<AppRoot> with WidgetsBindingObserver {
   AppSettings _settings = AppSettings();
   var _needsKey = false;
 
+  /// [AppSettings.developer], for the [DeveloperScope] over every screen.
+  final _developer = ValueNotifier(false);
+
   /// The makes going on, which outlive their build views.
   late final _makes = MakeService(
     _make,
@@ -794,6 +798,7 @@ class _AppRootState extends State<AppRoot> with WidgetsBindingObserver {
   @override
   void dispose() {
     WidgetsBinding.instance.removeObserver(this);
+    _developer.dispose();
     unawaited(_states?.cancel());
     unawaited(_worker?.cancel());
     unawaited(_builds?.cancel());
@@ -1304,6 +1309,7 @@ class _AppRootState extends State<AppRoot> with WidgetsBindingObserver {
     }
     if (!mounted) return;
     _settings = s;
+    _developer.value = s.developer;
     _needsKey = key == null && _s.backend(s, _s.key).name == backendMessagesApi;
     _homeHost?.needsKey = _needsKey;
     _revision.value++;
@@ -2301,6 +2307,7 @@ class _AppRootState extends State<AppRoot> with WidgetsBindingObserver {
         _ => null,
       },
     );
+    app = DeveloperScope(notifier: _developer, child: app);
     if (macOS) {
       app = ClaxMenuBar(comments: _comments, back: _back, child: app);
     }

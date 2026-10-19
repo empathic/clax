@@ -214,7 +214,9 @@ void main() {
   });
 
   testWidgets('Permissions lists grants both ways and the agent consents, '
-      'revokes one, and shows the coming kinds', (tester) async {
+      'revokes one, and hides the coming kinds without Developer', (
+    tester,
+  ) async {
     final s = _seed();
     final memory = MemoryConsentMemory();
     await memory.allow(s.runs, s.weather);
@@ -232,9 +234,9 @@ void main() {
     expect(find.text('Dashboard reads this app'), findsOneWidget);
     expect(find.text('Reads Weather while building this app'), findsOneWidget);
     for (final t in ['Device', 'Network', 'AI']) {
-      expect(find.text(t), findsOneWidget);
+      expect(find.text(t), findsNothing);
     }
-    expect(find.text('Coming'), findsNWidgets(3));
+    expect(find.text('Coming'), findsNothing);
 
     final row = find.ancestor(
       of: find.text('Dashboard reads this app'),

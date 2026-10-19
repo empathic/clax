@@ -282,10 +282,14 @@ void main() {
     expect(find.text('A key is saved'), findsNothing);
   });
 
-  testWidgets('recent timings are listed', (tester) async {
+  testWidgets('recent timings are listed with Developer tools on', (
+    tester,
+  ) async {
+    final store = SettingsStore(file);
+    await store.save(AppSettings(developer: true));
     await pumpSettings(
       tester,
-      store: SettingsStore(file),
+      store: store,
       key: FakeKey(),
       timings: [
         TimingRecord(

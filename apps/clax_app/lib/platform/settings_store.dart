@@ -37,6 +37,7 @@ class AppSettings {
     this.claudePath,
     this.appHintSeen = false,
     String? authorName,
+    this.developer = false,
   }) : model = model ?? defaultModel,
        authorName = cleanAuthorName(authorName);
 
@@ -66,6 +67,11 @@ class AppSettings {
   /// trimmed, 1 to [maxAuthorName] characters; null for none.
   String? authorName;
 
+  /// Whether Clax shows its developer views (`DeveloperScope`): recent
+  /// timings, raw JSON, MIME types, capability names and the planned
+  /// permission kinds. Shown as "Developer tools"; off by default.
+  bool developer;
+
   AppSettings copy() => AppSettings(
     backend: backend,
     model: model,
@@ -74,6 +80,7 @@ class AppSettings {
     claudePath: claudePath,
     appHintSeen: appHintSeen,
     authorName: authorName,
+    developer: developer,
   );
 
   Map<String, Object?> toJson() => {
@@ -84,6 +91,7 @@ class AppSettings {
     'claude_path': claudePath,
     'app_hint_seen': appHintSeen,
     'author_name': authorName,
+    'developer': developer,
   };
 
   /// Reads [j], keeping the default for any value that is missing, of the
@@ -108,6 +116,8 @@ class AppSettings {
     if (name is String && name.trim().runes.length <= maxAuthorName) {
       s.authorName = cleanAuthorName(name);
     }
+    final developer = j['developer'];
+    if (developer is bool) s.developer = developer;
     return s;
   }
 }

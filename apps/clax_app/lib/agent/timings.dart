@@ -15,6 +15,11 @@ const homeUsable = 'home-usable';
 /// screen's last snapshot.
 const homeCover = 'home-cover';
 
+/// Send in the composer to the first step of that change the Working chip
+/// shows (docs/superpowers/specs/2026-10-12-flutter-app-round2-design.md
+/// R§6.5).
+const sendFirstStep = 'send-first-step';
+
 /// One measured interval.
 class TimingRecord {
   const TimingRecord({
@@ -24,7 +29,8 @@ class TimingRecord {
     this.extra = const {},
   });
 
-  /// [sayUsable], [longpressLanded], [homeUsable] or [homeCover].
+  /// [sayUsable], [longpressLanded], [homeUsable], [homeCover] or
+  /// [sendFirstStep].
   final String name;
   final Duration elapsed;
 

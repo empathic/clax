@@ -3,11 +3,6 @@ import 'dart:typed_data';
 import '../agent/progress.dart';
 import '../agent/timings.dart';
 
-/// Send in the composer to the first step of that change the Working chip
-/// shows (docs/superpowers/specs/2026-10-12-flutter-app-round2-design.md
-/// R§6.5).
-const sendFirstStep = 'send-first-step';
-
 /// The last render of the running change: its screenshot and the number of
 /// uncaught errors it logged.
 typedef Inspection = ({Uint8List png, int errors});
