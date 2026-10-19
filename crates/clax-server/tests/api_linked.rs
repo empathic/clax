@@ -624,6 +624,21 @@ async fn a_resent_keyed_write_does_the_sends_its_first_write_did_not_reach() {
         v["session"]["id"].as_str().unwrap().to_string(),
         v["session_secret"].as_str().unwrap().to_string(),
     );
+    // The agent watches the artifact, so what is sent there reaches it.
+    let (s, v) = json_of(
+        req(
+            reqwest::Method::PUT,
+            &format!("/api/sessions/{sid}/watches/{}", p.raid),
+        )
+        .header("x-clax-session", &sid)
+        .header(clax_core::remote::SESSION_SECRET_HEADER, &secret)
+        .json(&json!({}))
+        .send()
+        .await
+        .unwrap(),
+    )
+    .await;
+    assert!(s < 300, "{s} {v}");
     // Each first write ended after its transaction, before its sends.
     let aid = clax_core::ArtifactId::parse(&p.raid).unwrap();
     let made = st
@@ -718,6 +733,62 @@ async fn a_resent_keyed_write_does_the_sends_its_first_write_did_not_reach() {
     assert_eq!(
         bodies(&p.hosted_thread_by(otid).await),
         ["plain", "@agent this too"]
+    );
+    // An agent reply whose first write ended before it acknowledged what
+    // its session was sent is acknowledged by its resend.
+    let plain = other["comments"][0]["id"].as_str().unwrap().to_string();
+    let unacked = || {
+        st.feedback_rows(otid)
+            .unwrap()
+            .into_iter()
+            .filter(|f| f.comment_id == plain && f.target_session_id.as_deref() == Some(&sid))
+            .map(|f| f.acknowledged_at.is_none())
+            .collect::<Vec<_>>()
+    };
+    assert_eq!(unacked(), [true]);
+    let made = st
+        .add_agent_reply_keyed(
+            &clax_core::audit::AuditCtx::DAEMON,
+            otid,
+            NewComment {
+                author_kind: clax_store::threads::AUTHOR_AGENT,
+                author_name: "claude".into(),
+                author_public_id: None,
+                via_session_id: Some(sid.clone()),
+                body: "on it".into(),
+                via_page: false,
+            },
+            None,
+            Some((&grant, "clax-linked:comment:k3")),
+        )
+        .unwrap()
+        .0;
+    let clax_store::linked::Keyed::Made(r) = made else {
+        panic!("the reply is made");
+    };
+    let (s, v) = json_of(
+        req(
+            reqwest::Method::POST,
+            &format!("/api/artifacts/{}/threads/{otid}/comments", p.raid),
+        )
+        .header("x-clax-session", &sid)
+        .header(clax_core::remote::SESSION_SECRET_HEADER, &secret)
+        .header("idempotency-key", "clax-linked:comment:k3")
+        .json(&json!({"body": "on it", "author_kind": "agent"}))
+        .send()
+        .await
+        .unwrap(),
+    )
+    .await;
+    assert_eq!(
+        (s, v["comment"]["id"].as_str()),
+        (201, Some(r.id.as_str())),
+        "{v}"
+    );
+    assert_eq!(unacked(), [false]);
+    assert_eq!(
+        bodies(&p.hosted_thread_by(otid).await),
+        ["plain", "@agent this too", "on it"]
     );
 }
 

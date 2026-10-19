@@ -873,9 +873,9 @@ pub async fn create(
             if !via_page {
                 check_named_reads(st, &id, text.as_deref().unwrap_or_default(), live_page)?;
             }
-            // The key is checked again, and recorded, in the thread's own
-            // transaction: a resend that raced the check above answers the
-            // thread the first made.
+            // The key is checked, and recorded, in the thread's own
+            // transaction: a resend answers the thread the first write made
+            // and does the sends that write may not have reached.
             let (thread, unresolved) = create_thread_keyed_now(
                 st,
                 &ctx,
