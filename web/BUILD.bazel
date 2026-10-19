@@ -242,7 +242,8 @@ npm_script_test(
 # The browser tests (pnpm run e2e), one target per Playwright project, on
 # the pinned Chromium (bazel/playwright) and the warmed clax. The binary and
 # the browsers are read where Bazel put them, not copied
-# (web/e2e/bazel-env.ts).
+# (web/e2e/bazel-env.ts). `e2e_shots` renders the app's web pieces into
+# CLAX_SHOTS_DIR (e2e/app-shots.spec.ts) and is run on demand only.
 E2E_DATA = [
     "//apps/clax_app:home",
     "//apps/clax_app:kit",
@@ -282,12 +283,13 @@ E2E_SKIPS = ["crates/clax-cli/clax"]
     tags = [
         "cpu:8",
         "no-sandbox",
-    ],
+    ] + (["manual"] if project == "shots" else []),
     script = "e2e",
 ) for project in [
     "gesture",
     "chrome-overlay",
     "rest",
+    "shots",
 ]]
 
 # Time to usable (pnpm run perf), on demand only (`just perf`): alone; it
