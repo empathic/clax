@@ -828,10 +828,11 @@ class _NewApp extends StatelessWidget {
           clipBehavior: Clip.antiAlias,
           child: InkWell(
             onTap: onPressed,
-            child: SizedBox(
-              width: 56,
-              height: 56,
+            // 56 square, taller as larger text needs.
+            child: ConstrainedBox(
+              constraints: const BoxConstraints(minWidth: 56, minHeight: 56),
               child: Column(
+                mainAxisSize: MainAxisSize.min,
                 mainAxisAlignment: MainAxisAlignment.center,
                 children: [
                   Icon(Icons.mic_none, color: p.agentInk),

@@ -661,6 +661,26 @@ void main() {
     expect(count('0'), findsNothing);
   }, variant: _android);
 
+  testWidgets('at 200% text the rail\'s New app grows to hold its label', (
+    tester,
+  ) async {
+    tester.platformDispatcher.textScaleFactorTestValue = 2;
+    addTearDown(tester.platformDispatcher.clearTextScaleFactorTestValue);
+    await pumpShell(tester, size: const Size(1280, 800));
+    expect(tester.takeException(), isNull);
+    final button = tester.getRect(find.byKey(const ValueKey('rail-new')));
+    expect(button.width, greaterThanOrEqualTo(56));
+    for (final part in [find.text('New'), find.byIcon(Icons.mic_none)]) {
+      final r = tester.getRect(
+        find.descendant(
+          of: find.byKey(const ValueKey('rail-new')),
+          matching: part,
+        ),
+      );
+      expect(button.intersect(r), r, reason: '$part');
+    }
+  }, variant: _android);
+
   testWidgets('New app on the rail opens the New app sheet', (tester) async {
     await pumpShell(tester, size: const Size(1280, 800));
     await tester.tap(find.byKey(const ValueKey('rail-new')));
