@@ -6,6 +6,7 @@ use crate::calls::CallScope;
 use crate::git::GitCapture;
 use clax_core::RegisterSession;
 use clax_core::audit::ToolCallReport;
+use clax_core::feedback::MAX_ACK_IDS;
 use clax_core::model::Session;
 #[cfg(not(target_arch = "wasm32"))]
 use clax_core::remote::{
@@ -1717,31 +1718,35 @@ impl DaemonClient {
     }
 
     /// `POST /api/sessions/<sid>/feedback/ack` `{comment_ids}`: acknowledges
-    /// only the rows for those comments; `{acknowledged}`.
+    /// only the rows for those comments, in requests of at most
+    /// [`MAX_ACK_IDS`] IDs; `{acknowledged}`, summed over the requests.
     pub async fn ack_comments(&self, comment_ids: &[String]) -> Result<Value> {
-        let body = json!({"comment_ids": comment_ids});
-        self.json(|c| {
-            c.request(
-                reqwest::Method::POST,
-                &format!("{}/feedback/ack", c.session_path()),
-            )
-            .json(&body)
-        })
-        .await
+        self.ack_by("comment_ids", comment_ids).await
     }
 
     /// `POST /api/sessions/<sid>/feedback/ack` `{thread_ids}`: acknowledges
-    /// every row on those threads; `{acknowledged}`.
+    /// every row on those threads, in requests of at most [`MAX_ACK_IDS`]
+    /// IDs; `{acknowledged}`, summed over the requests.
     pub async fn ack(&self, thread_ids: &[String]) -> Result<Value> {
-        let body = json!({"thread_ids": thread_ids});
-        self.json(|c| {
-            c.request(
-                reqwest::Method::POST,
-                &format!("{}/feedback/ack", c.session_path()),
-            )
-            .json(&body)
-        })
-        .await
+        self.ack_by("thread_ids", thread_ids).await
+    }
+
+    async fn ack_by(&self, key: &str, ids: &[String]) -> Result<Value> {
+        let mut acknowledged = 0;
+        for chunk in ids.chunks(MAX_ACK_IDS) {
+            let body = json!({ key: chunk });
+            let r = self
+                .json(|c| {
+                    c.request(
+                        reqwest::Method::POST,
+                        &format!("{}/feedback/ack", c.session_path()),
+                    )
+                    .json(&body)
+                })
+                .await?;
+            acknowledged += r["acknowledged"].as_u64().unwrap_or(0);
+        }
+        Ok(json!({"acknowledged": acknowledged}))
     }
 
     /// `PATCH /api/sessions/<id>` `{"heartbeat": true}` for a managed client's

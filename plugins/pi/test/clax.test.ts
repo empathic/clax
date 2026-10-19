@@ -8,7 +8,7 @@ import { join } from "node:path";
 import type { ExtensionContext } from "@mariozechner/pi-coding-agent";
 import { afterAll, afterEach, beforeAll, describe, expect, it, vi } from "vitest";
 import { artifactRef, claxExtension, handedOver, handoverOf, htmlTitle, INJECT_RETRY_MS, isText, RENEW_EVERY_MS, START_BUDGET_MS, target, textPrefix, ToolError } from "../src/clax.ts";
-import { DaemonClient, END_TIMEOUT_MS } from "../src/client.ts";
+import { DaemonClient, END_TIMEOUT_MS, MAX_ACK_IDS } from "../src/client.ts";
 import { discover, endpointOf, ensure } from "../src/daemon.ts";
 import { api, claxBin, startDaemon, type TestDaemon } from "./daemon-fixture.ts";
 import { FakePi, fakeContext, json } from "./fake-api.ts";
@@ -692,6 +692,21 @@ describe("comments", () => {
     const again = await pi.callToolAsPi("clax_list", {}, ctx);
     expect(again.content).toHaveLength(1);
     expect(parts(again).json.feedback).toEqual([]);
+  });
+
+  it("acknowledges more IDs than one request may carry in chunks", async () => {
+    const { pi, ctx } = load(daemon.home, "pi-ack-chunks");
+    let client: DaemonClient | undefined;
+    const real = DaemonClient.prototype.feedback;
+    vi.spyOn(DaemonClient.prototype, "feedback").mockImplementation(function (this: DaemonClient, ...args: Parameters<DaemonClient["feedback"]>) {
+      client = this;
+      return real.apply(this, args);
+    });
+    await pi.callToolAsPi("clax_list", {}, ctx);
+    expect(client).toBeDefined();
+    const ids = Array.from({ length: MAX_ACK_IDS + 1 }, (_, i) => `01J${String(i).padStart(23, "0")}`);
+    expect(await client!.ackComments(ids)).toEqual({ acknowledged: 0 });
+    expect(await client!.ack(ids)).toEqual({ acknowledged: 0 });
   });
 
   it("read, reply, resolve, and watch match the MCP tools", async () => {

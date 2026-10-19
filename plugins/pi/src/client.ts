@@ -17,6 +17,9 @@ export const END_TIMEOUT_MS = 3_000;
 export const CONNECT_TIMEOUT_MS = 2_000;
 /** Deadline for a tool call's report, sent in the background. */
 export const REPORT_TIMEOUT_MS = 3_000;
+/** Most IDs each list of one `POST /api/sessions/<sid>/feedback/ack` names
+ * (the daemon's `MAX_ACK_IDS`). */
+export const MAX_ACK_IDS = 500;
 /** The channel the extension names on every request (`x-clax-via`, spec
  * 2026-10-06-toolpath-audit-design §6.9). */
 export const VIA = "pi";
@@ -840,15 +843,26 @@ export class DaemonClient {
   }
 
   /** `POST /api/sessions/<sid>/feedback/ack` `{thread_ids}`: acknowledges every
-   * row of the session on these threads. */
-  ack(threadIds: string[]): Promise<any> {
-    return this.json(() => `${this.sessionPath()}/feedback/ack`, this.jsonBody("POST", { thread_ids: threadIds }));
+   * row of the session on these threads, in requests of at most
+   * `MAX_ACK_IDS` IDs; `{acknowledged}`, summed over the requests. */
+  ack(threadIds: string[]): Promise<{ acknowledged: number }> {
+    return this.ackBy("thread_ids", threadIds);
   }
 
   /** `POST /api/sessions/<sid>/feedback/ack` `{comment_ids}`: acknowledges the
-   * session's rows for these comments only. */
-  ackComments(commentIds: string[]): Promise<any> {
-    return this.json(() => `${this.sessionPath()}/feedback/ack`, this.jsonBody("POST", { comment_ids: commentIds }));
+   * session's rows for these comments only, in requests of at most
+   * `MAX_ACK_IDS` IDs; `{acknowledged}`, summed over the requests. */
+  ackComments(commentIds: string[]): Promise<{ acknowledged: number }> {
+    return this.ackBy("comment_ids", commentIds);
+  }
+
+  private async ackBy(key: "thread_ids" | "comment_ids", ids: string[]): Promise<{ acknowledged: number }> {
+    let acknowledged = 0;
+    for (let i = 0; i < ids.length; i += MAX_ACK_IDS) {
+      const r = await this.json(() => `${this.sessionPath()}/feedback/ack`, this.jsonBody("POST", { [key]: ids.slice(i, i + MAX_ACK_IDS) }));
+      if (typeof r?.acknowledged === "number") acknowledged += r.acknowledged;
+    }
+    return { acknowledged };
   }
 
   /** `POST /api/sessions/<sid>/tool-calls`: reports a finished tool call

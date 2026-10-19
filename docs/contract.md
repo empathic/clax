@@ -2343,6 +2343,11 @@ apply only to watches with `replies_armed`. While `stop_hook_active` is set,
 the Stop hook blocks only for comments never handed over before, so each
 comment blocks a stop at most once.
 
+`POST /api/sessions/<sid>/feedback/ack` takes `thread_ids` (every row of
+the session on those threads), `comment_ids` (only the rows for those
+comments), or both, each at most 500 IDs (400 `invalid_json` beyond); a
+client with more sends them over several requests.
+
 Feedback polls also tell the daemon where the person is, and tell the agent
 where to ask them (`where_to_ask`, under "Agent questions"):
 

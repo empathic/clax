@@ -540,6 +540,32 @@ async fn a_comment_added_between_read_and_ack_is_still_delivered() {
 }
 
 #[tokio::test]
+async fn acknowledgements_past_the_daemons_cap_go_in_chunks() {
+    let ts = TestServer::spawn().await;
+    let (proxy, base) = Proxy::start(&ts.base).await;
+    let sid = ts.register_session("claude", "tools-ack").await["id"]
+        .as_str()
+        .unwrap()
+        .to_string();
+    let client = DaemonClient::new(base, ts.token.clone(), Some(sid));
+    let max = clax_core::feedback::MAX_ACK_IDS;
+    let ids: Vec<String> = (0..=max).map(|i| format!("01J{i:023}")).collect();
+    for key in ["comment_ids", "thread_ids"] {
+        let r = if key == "comment_ids" {
+            client.ack_comments(&ids).await
+        } else {
+            client.ack(&ids).await
+        };
+        assert_eq!(r.unwrap()["acknowledged"], 0, "{key}");
+        let sent: Vec<usize> = std::mem::take(&mut *proxy.acks.lock().unwrap())
+            .iter()
+            .map(|b| b[key].as_array().unwrap().len())
+            .collect();
+        assert_eq!(sent, [max, 1], "{key}");
+    }
+}
+
+#[tokio::test]
 async fn a_failed_piggyback_fetch_leaves_the_result_a_success() {
     let ts = TestServer::spawn().await;
     let (proxy, base) = Proxy::start(&ts.base).await;

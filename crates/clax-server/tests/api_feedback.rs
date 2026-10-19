@@ -158,6 +158,37 @@ async fn ack_acknowledges_threads() {
 }
 
 #[tokio::test]
+async fn ack_takes_at_most_its_cap_of_ids_per_list() {
+    let ts = TestServer::spawn().await;
+    let (sid, aid, tid) = sent_thread(&ts).await;
+    ts.send_thread(&aid, &tid).await;
+    let max = clax_core::feedback::MAX_ACK_IDS;
+    let ack = |body: Value| {
+        ts.authed(
+            ts.client
+                .post(format!("{}/api/sessions/{sid}/feedback/ack", ts.base)),
+        )
+        .json(&body)
+        .send()
+    };
+    let mut over = vec![tid.clone(); max];
+    over.push("01J00000000000000000000000".into());
+    for key in ["thread_ids", "comment_ids"] {
+        let res = ack(serde_json::json!({ key: over })).await.unwrap();
+        assert_eq!(res.status(), 400, "{key}");
+        let v = res.json::<Value>().await.unwrap();
+        assert_eq!(v["error"]["code"], "invalid_json", "{key}: {v}");
+    }
+    // The cap itself is taken, and the refused requests acknowledged
+    // nothing: the thread is acknowledged now.
+    let res = ack(serde_json::json!({"thread_ids": vec![tid.clone(); max]}))
+        .await
+        .unwrap();
+    assert_eq!(res.status(), 200);
+    assert_eq!(res.json::<Value>().await.unwrap()["acknowledged"], 1);
+}
+
+#[tokio::test]
 async fn ack_by_comment_ids_leaves_later_comments_pending() {
     let ts = TestServer::spawn().await;
     let (sid, aid, tid) = sent_thread(&ts).await;

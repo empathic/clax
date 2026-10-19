@@ -652,11 +652,13 @@ impl Sync {
             let c = self.client.as_ref().expect("connected");
             let sid = c.session().map(|s| s.0.clone()).unwrap_or_default();
             let ids = std::mem::take(&mut self.acks);
-            let _ = crate::public::sendable(c.post(
-                &format!("/api/sessions/{sid}/feedback/ack"),
-                &json!({"thread_ids": ids}),
-            ))
-            .await;
+            for chunk in ids.chunks(clax_core::feedback::MAX_ACK_IDS) {
+                let _ = crate::public::sendable(c.post(
+                    &format!("/api/sessions/{sid}/feedback/ack"),
+                    &json!({"thread_ids": chunk}),
+                ))
+                .await;
+            }
         }
         Ok(())
     }

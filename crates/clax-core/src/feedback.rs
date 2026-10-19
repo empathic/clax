@@ -494,6 +494,11 @@ pub fn render_delivery(items: &[FeedbackItem], placeholders: &[Placeholder]) -> 
 /// Characters of a quote shown in tool results.
 pub const SHORT_QUOTE_CHARS: usize = 200;
 
+/// Most IDs each list of one `POST /api/sessions/<sid>/feedback/ack` names
+/// (`thread_ids` and `comment_ids` alike); a client with more sends them in
+/// chunks of at most this many.
+pub const MAX_ACK_IDS: usize = 500;
+
 /// A quote as tool results show it: whitespace collapsed, at most
 /// [`SHORT_QUOTE_CHARS`] characters, then `…`.
 pub fn short_quote(q: &str) -> String {
