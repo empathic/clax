@@ -665,6 +665,7 @@ pub async fn patch(
     if let Some(c) = &b.capabilities {
         clax_core::capabilities::validate(c)?;
     }
+    clax_core::publish::check_update_title(b.title.as_deref())?;
     clax_core::publish::check_meta_text(
         b.title.as_deref(),
         b.description.as_deref(),
@@ -784,6 +785,7 @@ pub async fn publish(
         Ok(validate(r)?)
     })
     .await?;
+    clax_core::publish::check_update_title(p.title.as_deref())?;
     let truncated = p.note_truncated;
     let session = session_header(&headers)?;
     let grant = a.grant().map(str::to_string);

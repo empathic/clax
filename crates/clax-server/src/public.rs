@@ -1189,16 +1189,7 @@ pub async fn push(
     } else {
         Vec::new()
     };
-    let meta = json!({
-        "title": artifact.title,
-        "description": artifact.description,
-        "icon": artifact.icon,
-        "capabilities": artifact
-            .capabilities
-            .as_object()
-            .filter(|m| !m.is_empty())
-            .map(|_| artifact.capabilities.clone()),
-    });
+    let meta = outgoing_meta(&artifact);
     let mut pushed = Vec::new();
     let mut referenced_any: BTreeSet<String> = BTreeSet::new();
     let out = async {
@@ -1332,9 +1323,59 @@ pub async fn revoke(remote: &Remote, token: Secret) -> Result<(), ApiError> {
     Ok(())
 }
 
+/// The metadata a push sends: the artifact's, its text fit to the checks
+/// the public daemon makes (`clax_core::publish::fit_meta_text`), so that
+/// metadata stored before those checks does not refuse the push.
+fn outgoing_meta(artifact: &clax_core::model::Artifact) -> Value {
+    use clax_core::publish::{
+        MAX_DESCRIPTION_CHARS, MAX_ICON_CHARS, MAX_TITLE_CHARS, fit_meta_text,
+    };
+    let fit = |t: Option<&str>, max| t.and_then(|t| fit_meta_text(t, max));
+    json!({
+        "title": fit(Some(&artifact.title), MAX_TITLE_CHARS),
+        "description": fit(artifact.description.as_deref(), MAX_DESCRIPTION_CHARS),
+        "icon": fit(artifact.icon.as_deref(), MAX_ICON_CHARS),
+        "capabilities": artifact
+            .capabilities
+            .as_object()
+            .filter(|m| !m.is_empty())
+            .map(|_| artifact.capabilities.clone()),
+    })
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn outgoing_metadata_is_fit_to_the_public_daemons_checks() {
+        let mut a: clax_core::model::Artifact = serde_json::from_value(json!({
+            "id": A, "title": "x", "created_at": "t", "updated_at": "t",
+            "current_version": 1, "pinned": false, "capabilities": {},
+            "contract_version": "0.2.61",
+        }))
+        .unwrap();
+        a.title = format!("Old\ttitle {}", "t".repeat(300));
+        a.description = Some("two\nlines\u{202E}".into());
+        a.icon = Some("\u{200B}".into());
+        let m = outgoing_meta(&a);
+        let (title, description) = (
+            m["title"].as_str().unwrap(),
+            m["description"].as_str().unwrap(),
+        );
+        assert!(title.starts_with("Old title "), "{title}");
+        assert_eq!(description, "two lines");
+        assert_eq!(m["icon"], Value::Null);
+        clax_core::publish::check_meta_text(Some(title), Some(description), None).unwrap();
+        clax_core::publish::validate(
+            serde_json::from_value(json!({
+                "title": m["title"], "description": m["description"], "icon": m["icon"],
+                "files": {"index.html": {"content": "<p>"}},
+            }))
+            .unwrap(),
+        )
+        .unwrap();
+    }
 
     /// A remote at a local port that answers every request 200 with a
     /// chunked body of `n` bytes of `fill` and then never ends it.

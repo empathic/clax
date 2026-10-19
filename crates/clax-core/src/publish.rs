@@ -298,6 +298,41 @@ pub fn require_title(title: Option<&str>) -> Result<()> {
     }
 }
 
+/// `text` fit to pass [`check_meta_text`] as a field bounded by `max`
+/// characters: control characters other than whitespace and hidden format
+/// characters ([`crate::text::is_hidden_char`]) dropped, runs of whitespace
+/// made one space, trimmed, cut to `max`. `None` when nothing is left. For
+/// metadata stored before those checks, sent on to a daemon that makes them.
+pub fn fit_meta_text(text: &str, max: usize) -> Option<String> {
+    let kept: String = text
+        .chars()
+        .filter(|&c| c.is_whitespace() || !(c.is_control() || crate::text::is_hidden_char(c)))
+        .collect();
+    let one: String = kept
+        .split_whitespace()
+        .collect::<Vec<_>>()
+        .join(" ")
+        .chars()
+        .take(max)
+        .collect();
+    let one = one.trim_end().to_string();
+    (!one.is_empty()).then_some(one)
+}
+
+/// A title given on an update: absent keeps the artifact's, and a blank one
+/// is refused rather than stored.
+///
+/// # Errors
+/// `invalid_args` when `title` is blank.
+pub fn check_update_title(title: Option<&str>) -> Result<()> {
+    match title {
+        Some(t) if t.trim().is_empty() => {
+            Err(CoreError::invalid("invalid_args", "title cannot be blank"))
+        }
+        _ => Ok(()),
+    }
+}
+
 /// Checks an artifact's text metadata, as a publish or a metadata edit sets
 /// it: `title` at most [`MAX_TITLE_CHARS`] characters, `description`
 /// [`MAX_DESCRIPTION_CHARS`] and `icon` [`MAX_ICON_CHARS`], and none holding
@@ -305,7 +340,8 @@ pub fn require_title(title: Option<&str>) -> Result<()> {
 /// character ([`crate::text::is_hidden_char`]: bidi controls, zero-width
 /// spaces, tags), which would make listings and one-line views read
 /// differently from what was stored. Absent fields pass, and so does a
-/// blank title, which [`require_title`] refuses where a title is needed.
+/// blank title, which [`require_title`] refuses on create and
+/// [`check_update_title`] on an update.
 ///
 /// # Errors
 /// `title_too_long`, `description_too_long` or `icon_too_long` past the
@@ -631,6 +667,33 @@ mod tests {
                 ..
             }
         ));
+    }
+
+    #[test]
+    fn fitted_metadata_passes_the_checks() {
+        let title = format!("a\n\tb\u{202E}\u{200B} {}", "t".repeat(300));
+        let t = fit_meta_text(&title, MAX_TITLE_CHARS).unwrap();
+        assert!(t.starts_with("a b "), "{t}");
+        assert_eq!(t.chars().count(), MAX_TITLE_CHARS);
+        let d = fit_meta_text("line one\r\nline two\u{7}", MAX_DESCRIPTION_CHARS).unwrap();
+        assert_eq!(d, "line one line two");
+        check_meta_text(Some(&t), Some(&d), None).unwrap();
+        assert_eq!(fit_meta_text(" \n\u{FEFF}", MAX_ICON_CHARS), None);
+    }
+
+    #[test]
+    fn a_blank_title_is_refused_on_an_update() {
+        for blank in ["", " ", "\n\t"] {
+            assert!(matches!(
+                check_update_title(Some(blank)),
+                Err(CoreError::Invalid {
+                    code: "invalid_args",
+                    ..
+                })
+            ));
+        }
+        assert!(check_update_title(None).is_ok());
+        assert!(check_update_title(Some("T")).is_ok());
     }
 
     #[test]
