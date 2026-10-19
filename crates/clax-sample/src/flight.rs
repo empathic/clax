@@ -75,15 +75,20 @@ impl Flight {
         Arc::default()
     }
 
-    /// Appends a frame; a `Done` or `Error` ends the flight (later pushes are ignored).
+    /// Appends a frame; a `Done` or `Error` ends the flight (later pushes are
+    /// ignored). `finished` is read and set under the frames lock, so two
+    /// racing ending frames leave exactly one.
     pub fn push(&self, o: Out) {
-        if self.is_finished() {
-            return;
-        }
-        let ends = o.ends();
-        self.frames.lock().expect("frames lock").push(o);
-        if ends {
-            self.finished.store(true, Ordering::SeqCst);
+        {
+            let mut frames = self.frames.lock().expect("frames lock");
+            if self.is_finished() {
+                return;
+            }
+            let ends = o.ends();
+            frames.push(o);
+            if ends {
+                self.finished.store(true, Ordering::SeqCst);
+            }
         }
         self.notify.notify_waiters();
     }
@@ -421,6 +426,38 @@ mod tests {
             }
         ));
         assert!(task.await.unwrap_err().is_cancelled());
+    }
+
+    /// Ending frames pushed from many threads at once leave exactly one.
+    #[test]
+    fn racing_ending_frames_leave_one() {
+        for _ in 0..50 {
+            let f = Flight::new();
+            let barrier = Arc::new(std::sync::Barrier::new(8));
+            let threads: Vec<_> = (0..8)
+                .map(|i| {
+                    let (f, b) = (f.clone(), barrier.clone());
+                    std::thread::spawn(move || {
+                        b.wait();
+                        if i % 2 == 0 {
+                            fail(&f, "upstream_error", "stopped");
+                        } else {
+                            f.push(Out::Done(Done {
+                                text: String::new(),
+                                truncated: false,
+                                model_tier_applied: Tier::Default,
+                                value: None,
+                            }));
+                        }
+                    })
+                })
+                .collect();
+            for t in threads {
+                t.join().unwrap();
+            }
+            let frames = f.frames.lock().unwrap();
+            assert_eq!(frames.len(), 1, "{frames:?}");
+        }
     }
 
     #[test]
