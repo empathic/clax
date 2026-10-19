@@ -672,12 +672,6 @@ fn question_queries() -> Vec<Hot> {
             vec![t("Q00040"), t("x")],
             &["sqlite_autoindex_questions_1"],
         ),
-        (
-            "move a thread's questions",
-            q::MOVE_THREAD.into(),
-            vec![t("art0001t0"), t("art0002")],
-            &["questions_by_thread"],
-        ),
     ]
 }
 

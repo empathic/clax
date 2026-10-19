@@ -1176,11 +1176,6 @@ pub const MIGRATIONS: &[&str] = &[
         via TEXT NOT NULL,
         PRIMARY KEY (viewer_id, version)
     );",
-    // 40: the questions of a thread, which a thread's move to another page
-    // carries (`crate::questions::MOVE_THREAD`), found without a walk of
-    // every question. Most questions are in no thread, so only those that
-    // are go in it.
-    "CREATE INDEX questions_by_thread ON questions(thread_id, id) WHERE thread_id IS NOT NULL;",
 ];
 
 /// The audit journal's migration, as a schema version (the
@@ -1884,8 +1879,6 @@ mod tests {
                 "questions_by_artifact",
                 "questions_by_session",
                 "questions_by_status",
-                // Migration 40's.
-                "questions_by_thread",
                 "questions_by_tool_use",
                 "questions_closed",
                 // Migration 26's.
