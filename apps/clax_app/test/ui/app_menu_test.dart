@@ -201,6 +201,85 @@ void main() {
     expect(menuCalls, isEmpty);
   }, variant: TargetPlatformVariant.only(TargetPlatform.android));
 
+  /// [key] pressed with Control (Command with [meta]) and, with [shift],
+  /// Shift held.
+  Future<void> press(
+    WidgetTester tester,
+    LogicalKeyboardKey key, {
+    bool shift = false,
+    bool meta = false,
+  }) async {
+    final mod = meta
+        ? LogicalKeyboardKey.metaLeft
+        : LogicalKeyboardKey.controlLeft;
+    await tester.sendKeyDownEvent(mod);
+    if (shift) await tester.sendKeyDownEvent(LogicalKeyboardKey.shiftLeft);
+    await tester.sendKeyEvent(key);
+    if (shift) await tester.sendKeyUpEvent(LogicalKeyboardKey.shiftLeft);
+    await tester.sendKeyUpEvent(mod);
+    await tester.pumpAndSettle();
+  }
+
+  testWidgets('on Android (a Chromebook\'s keyboard) Control runs the '
+      'commands: Control-K toggles threads, Control-Shift-K comments, '
+      'Control-N makes, Control-[ goes back', (tester) async {
+    final s = await pumpPushed(tester);
+    final ran = <String>[];
+    s.comments.register(
+      () => ran.add('threads'),
+      comment: () => ran.add('comment'),
+    );
+    await tester.pump();
+    await press(tester, LogicalKeyboardKey.keyK);
+    expect(ran, ['threads']);
+    await press(tester, LogicalKeyboardKey.keyK, shift: true);
+    expect(ran, ['threads', 'comment']);
+    await press(tester, LogicalKeyboardKey.keyN);
+    expect(s.actions.ran, ['newApp']);
+    // Command is not Clax's off the Apple family.
+    await press(tester, LogicalKeyboardKey.keyK, meta: true);
+    expect(ran, ['threads', 'comment']);
+    await press(tester, LogicalKeyboardKey.bracketLeft);
+    expect(find.text('pushed'), findsNothing);
+    expect(find.text('apps'), findsOneWidget);
+  }, variant: TargetPlatformVariant.only(TargetPlatform.android));
+
+  testWidgets('a key whose command has nothing to run is not taken', (
+    tester,
+  ) async {
+    final s = await pumpPushed(tester);
+    final heard = <LogicalKeyboardKey>[];
+    await tester.pumpWidget(
+      ClaxMenuBar(
+        comments: s.comments,
+        navigator: () => s.nav.currentState,
+        child: MaterialApp(
+          navigatorKey: s.nav,
+          home: Focus(
+            autofocus: true,
+            onKeyEvent: (_, e) {
+              if (e is KeyDownEvent) heard.add(e.logicalKey);
+              return KeyEventResult.ignored;
+            },
+            child: const Text('apps'),
+          ),
+        ),
+      ),
+    );
+    await tester.pump();
+    await press(tester, LogicalKeyboardKey.keyK);
+    expect(heard, contains(LogicalKeyboardKey.keyK));
+  }, variant: TargetPlatformVariant.only(TargetPlatform.android));
+
+  testWidgets('on an iPad Command runs them', (tester) async {
+    final s = await pumpPushed(tester);
+    final ran = <String>[];
+    s.comments.register(() => ran.add('threads'));
+    await tester.pump();
+    await press(tester, LogicalKeyboardKey.keyK, meta: true);
+    expect(ran, ['threads']);
+  }, variant: TargetPlatformVariant.only(TargetPlatform.iOS));
+
   testWidgets('App › Home goes to the grid from two screens deep', (
     tester,
   ) async {

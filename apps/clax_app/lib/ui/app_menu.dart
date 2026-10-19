@@ -1,5 +1,6 @@
 import 'dart:async';
 
+import 'package:flutter/foundation.dart';
 import 'package:flutter/services.dart';
 import 'package:flutter/widgets.dart';
 
@@ -94,8 +95,11 @@ class CommentsCommand extends ChangeNotifier {
 /// (Clax, File, Edit, View, App, Window, Help): it enables the items of
 /// Clax's own commands and runs each the person chooses ([MacMenu]), and
 /// takes Edit's items for the focused Flutter field ([MacEdit]). Edit's
-/// items go to a page's WebView natively. Off the Mac it only gives
-/// [ClaxCommandIntent] the same commands.
+/// items go to a page's WebView natively. Off the Mac it gives
+/// [ClaxCommandIntent] the same commands, and the keys of [claxShortcuts]
+/// by the platform's family ([ClaxFamily.forPlatform]): Control on Material, as on a
+/// Chromebook, Command on an iPad. A key whose command has nothing to run
+/// is not taken.
 ///
 /// - Settings… (⌘,) runs [settings].
 /// - New App… (⌘N), Import App… (⌘O) and Inbox (⇧⌘I) run [home]'s flows.
@@ -260,17 +264,43 @@ class _ClaxMenuBarState extends State<ClaxMenuBar> {
   }
 
   @override
-  Widget build(BuildContext context) => Actions(
-    actions: {
-      ClaxCommandIntent: CallbackAction<ClaxCommandIntent>(
-        onInvoke: (i) {
-          _run(i.command);
-          return null;
-        },
-      ),
-    },
-    child: widget.child,
-  );
+  Widget build(BuildContext context) {
+    Widget child = widget.child;
+    // Where no menu bar delivers the keys: Control on Material (a
+    // Chromebook's keyboard), Command on an iPad's. The bar is above the
+    // app's theme, so the family is the platform's.
+    if (!hasDesktopWindowChrome) {
+      child = Shortcuts(
+        shortcuts: claxShortcuts(
+          ClaxFamily.forPlatform(defaultTargetPlatform),
+        ),
+        child: child,
+      );
+    }
+    return Actions(
+      actions: {ClaxCommandIntent: _MenuCommand(this)},
+      child: child,
+    );
+  }
+}
+
+/// A [ClaxCommandIntent] run by a [ClaxMenuBar]: enabled while the command
+/// has something to run, so a key with nothing to run goes on to the
+/// focused widget's ancestors.
+class _MenuCommand extends Action<ClaxCommandIntent> {
+  _MenuCommand(this.bar);
+
+  final _ClaxMenuBarState bar;
+
+  @override
+  bool isEnabled(ClaxCommandIntent intent) =>
+      bar.mounted && bar._handler(intent.command) != null;
+
+  @override
+  Object? invoke(ClaxCommandIntent intent) {
+    bar._run(intent.command);
+    return null;
+  }
 }
 
 /// Edit's items on the Mac while the Flutter view has the keyboard focus:

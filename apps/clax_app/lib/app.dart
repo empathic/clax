@@ -2915,38 +2915,38 @@ class _AppRootState extends State<AppRoot> with WidgetsBindingObserver {
     // the window.
     app = ClaxPointerScope(child: app);
     app = DeveloperScope(notifier: _developer, child: app);
-    if (macOS) {
-      // The home screen's flows exist once the daemon is up, which bumps
-      // the revision.
-      final inner = app;
-      app = ListenableBuilder(
-        listenable: Listenable.merge([_revision, _sidebarShown, _selection]),
-        builder: (context, _) => ClaxMenuBar(
-          comments: _comments,
-          navigator: () => _nav.currentState,
-          home: _homeHost?.actions,
-          settings: () => unawaited(_openSettings()),
-          toggleSidebar: _sidebarShown.value == null
-              ? null
-              : () => _splitKey.currentState?.toggleSidebar(),
-          // With Home selected in a split window, the home screen's
-          // Refresh (the toolbar carries its other items there).
-          reload: _sidebarShown.value == null ||
-                  _selection.value is! HomeSelected
-              ? null
-              : () => unawaited(_homeHost?.refresh()),
-          titles: {
-            ClaxCommand.reload:
-                _sidebarShown.value != null && _selection.value is HomeSelected
-                ? 'Refresh'
-                : 'Reload App',
-            if (_sidebarShown.value case final shown?)
-              ClaxCommand.toggleSidebar: shown ? 'Hide Sidebar' : 'Show Sidebar',
-          },
-          child: inner,
-        ),
-      );
-    }
+    // The Mac's menu bar; elsewhere the same commands on the keyboard's
+    // keys (Control on a Chromebook, Command on an iPad). The home
+    // screen's flows exist once the daemon is up, which bumps the
+    // revision.
+    final inner = app;
+    app = ListenableBuilder(
+      listenable: Listenable.merge([_revision, _sidebarShown, _selection]),
+      builder: (context, _) => ClaxMenuBar(
+        comments: _comments,
+        navigator: () => _nav.currentState,
+        home: _homeHost?.actions,
+        settings: () => unawaited(_openSettings()),
+        toggleSidebar: _sidebarShown.value == null
+            ? null
+            : () => _splitKey.currentState?.toggleSidebar(),
+        // With Home selected in a split window, the home screen's
+        // Refresh (the toolbar carries its other items there).
+        reload: _sidebarShown.value == null ||
+                _selection.value is! HomeSelected
+            ? null
+            : () => unawaited(_homeHost?.refresh()),
+        titles: {
+          ClaxCommand.reload:
+              _sidebarShown.value != null && _selection.value is HomeSelected
+              ? 'Refresh'
+              : 'Reload App',
+          if (_sidebarShown.value case final shown?)
+            ClaxCommand.toggleSidebar: shown ? 'Hide Sidebar' : 'Show Sidebar',
+        },
+        child: inner,
+      ),
+    );
     return app;
   }
 }
