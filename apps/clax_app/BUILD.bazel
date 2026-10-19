@@ -245,6 +245,28 @@ APP_ASSETS = glob(
     ":home_bundle",
 ]
 
+# What scripts/build-app-icons.sh writes (the icons, the text files beside
+# them and the source hash), for its checks (//design:icons_sync,
+# //scripts:build_app_icons). The PNGs' pixels are never compared.
+filegroup(
+    name = "icon_outputs",
+    srcs = glob(
+        [
+            "android/app/src/main/res/drawable/ic_launcher_*.xml",
+            "android/app/src/main/res/mipmap-*/ic_launcher*",
+            "android/app/src/main/res/values/ic_launcher_colors.xml",
+            "icons/**",
+            "macos/Runner/AppIcon.icon/**",
+            "macos/Runner/Assets.xcassets/AppIcon.appiconset/**",
+        ],
+        exclude = ["**/.qual"],
+    ),
+    visibility = [
+        "//design:__pkg__",
+        "//scripts:__pkg__",
+    ],
+)
+
 # What scripts/sync-tokens.py writes into the app (design/tokens.json), for
 # its checks (//design:tokens_sync, //scripts:sync_tokens).
 filegroup(

@@ -1,7 +1,8 @@
 #!/usr/bin/env bash
 # apk-check.sh APK AAPT2 APKSIGNER HOME: checks the Bazel-built APK against what
 # the app's Gradle build makes (apps/clax_app/android/app/build.gradle.kts):
-# its package and version, SDK levels, launcher activity, a release build
+# its package and version, SDK levels, launcher activity, the adaptive
+# launcher icon with its monochrome layer, a release build
 # (not debuggable, shrunk by R8) that extracts its native libraries, the engine, the app's
 # AOT code and the embedded clax for both CPUs, the home bundle HOME (the
 # one //apps/clax_app:home_bundle built), the third-party notices, and a
@@ -31,6 +32,15 @@ check "package and version" "$badging" "package: name='dev.empathic.clax' versio
 check "minimum SDK" "$badging" "minSdkVersion:'29'"
 check "target SDK" "$badging" "targetSdkVersion:'36'"
 check "launcher activity, in the app's namespace" "$badging" "launchable-activity: name='dev.empathic.clax_app.MainActivity'  label='' icon=''"
+check "the adaptive icon, as the app's icon" "$badging" "application: label='Clax' icon='res/mipmap-anydpi-v26/ic_launcher.xml'"
+for icon in ic_launcher ic_launcher_round; do
+    layers="$("$aapt2" dump xmltree --file "res/mipmap-anydpi-v26/$icon.xml" "$apk" | sed -n 's/^ *E: \([a-z-]*\).*/\1/p' | tr '\n' ' ')"
+    if [ "$layers" = "adaptive-icon background foreground monochrome " ]; then
+        ok "$icon is adaptive with a monochrome layer"
+    else
+        bad "$icon is adaptive with a monochrome layer (elements: $layers)"
+    fi
+done
 check "the embedded daemon's network permission" "$badging" "uses-permission: name='android.permission.INTERNET'"
 check "both native ABIs" "$badging" "native-code: 'arm64-v8a' 'x86_64'"
 if grep -q '^application-debuggable' <<<"$badging"; then bad "a release build is not debuggable"; else ok "a release build is not debuggable"; fi

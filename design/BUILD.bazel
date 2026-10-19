@@ -25,3 +25,17 @@ sh_test(
         "//web:token_inputs",
     ],
 )
+
+# The committed app icons were rendered from design/mark.json and the
+# colours they use (scripts/build-app-icons.sh --check): the source hash in
+# apps/clax_app/icons/SOURCE.sha256 and the generated text files, never the
+# pixels, so a renderer upgrade cannot fail it.
+sh_test(
+    name = "icons_sync",
+    srcs = ["icons-sync.sh"],
+    data = [
+        ":tokens",
+        "//apps/clax_app:icon_outputs",
+        "//scripts:build-app-icons.sh",
+    ],
+)

@@ -14,9 +14,13 @@ exports_files(
     visibility = ["//apps/clax_app:__pkg__"],
 )
 
-# The brand's token generator, which //design:tokens_sync runs with --check.
+# The brand's token generator and the app icons' renderer, which
+# //design:tokens_sync and //design:icons_sync run with --check.
 exports_files(
-    ["sync-tokens.py"],
+    [
+        "build-app-icons.sh",
+        "sync-tokens.py",
+    ],
     visibility = ["//design:__pkg__"],
 )
 
@@ -206,6 +210,19 @@ sh_test(
         "//apps/clax_app:token_outputs",
         "//design:tokens",
         "//web:token_inputs",
+    ],
+)
+
+# scripts/build-app-icons.sh on a copy of its sources and outputs: in step,
+# a stale mark or colour, a hand-edited output, a missing renderer, and
+# every PNG rendered at its size.
+sh_test(
+    name = "build_app_icons",
+    srcs = ["test-build-app-icons.sh"],
+    data = [
+        ":all",
+        "//apps/clax_app:icon_outputs",
+        "//design:tokens",
     ],
 )
 
