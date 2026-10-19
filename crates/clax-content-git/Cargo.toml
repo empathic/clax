@@ -2,7 +2,7 @@
 name = "clax-content-git"
 version.workspace = true
 edition.workspace = true
-license.workspace = true
+license = "GPL-2.0-only OR AGPL-3.0-only"
 description = "Clax artifact content kept in git repositories, one per artifact, over any clax-git RepoHost"
 # Every file in tests/ is a module of the one integration test binary.
 autotests = false

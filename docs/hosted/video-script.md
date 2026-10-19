@@ -309,7 +309,7 @@ On screen: the gallery.
 > Next: running it against Cloudflare Artifacts on a deployment, which has
 > not happened yet; syncing a laptop's
 > Clax with the hosted one; and merging a fork back. The source is
-> Apache-2.0, and `just hosted-demo` runs everything you saw on a laptop,
+> AGPL and GPL, and `just hosted-demo` runs everything you saw on a laptop,
 > without a Cloudflare account. Thanks.
 
 ## Recording notes

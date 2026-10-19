@@ -2,7 +2,7 @@
 name = "clax-core"
 version.workspace = true
 edition.workspace = true
-license.workspace = true
+license = "GPL-2.0-only OR AGPL-3.0-only"
 
 [lints]
 workspace = true

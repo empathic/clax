@@ -2,7 +2,7 @@
 name = "clax-worker"
 version = "0.0.0"
 edition = "2024"
-license = "Apache-2.0"
+license = "AGPL-3.0-only"
 publish = false
 description = "A Cloudflare Worker that runs the Clax server in a Durable Object per instance, its database in the object's own storage"
 

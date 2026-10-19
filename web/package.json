@@ -1,6 +1,7 @@
 {
   "name": "clax-web",
   "private": true,
+  "license": "AGPL-3.0-only AND GPL-2.0-only",
   "packageManager": "pnpm@12.3.4",
   "type": "module",
   "scripts": {

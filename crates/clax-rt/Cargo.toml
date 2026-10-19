@@ -2,7 +2,7 @@
 name = "clax-rt"
 version.workspace = true
 edition.workspace = true
-license.workspace = true
+license = "GPL-2.0-only OR AGPL-3.0-only"
 description = "The async runtime seam of the Clax server: tokio natively, the Worker's event loop on wasm32"
 
 [lints]

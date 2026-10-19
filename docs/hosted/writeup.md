@@ -1,6 +1,6 @@
 # Clax on Cloudflare: a git platform for artifacts people and their agents work on together
 
-**Source:** this repository, Apache-2.0 (`LICENSE`, `NOTICE`). The Worker is
+**Source:** this repository: the Worker and web app AGPL-3.0, the local programs GPL-2.0 (`LICENSE`). The Worker is
 `crates/clax-worker`; its [README](../../crates/clax-worker/README.md) covers
 developing, the bindings and deploying. Run the whole demo locally, without a
 Cloudflare account, with `just hosted-demo`. Video script:

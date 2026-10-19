@@ -2,7 +2,7 @@
 name = "clax-git"
 version.workspace = true
 edition.workspace = true
-license.workspace = true
+license = "GPL-2.0-only OR AGPL-3.0-only"
 # Every file in tests/ is a module of the one integration test binary.
 autotests = false
 description = "Git objects, packs, smart-HTTP client and server, and version storage for Clax artifacts, without I/O of its own"

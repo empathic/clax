@@ -2,7 +2,7 @@
 name = "clax-do-vfs"
 version = "0.0.0"
 edition = "2024"
-license = "Apache-2.0"
+license = "AGPL-3.0-only"
 publish = false
 description = "A SQLite VFS that keeps a database's pages in a page store, such as a Durable Object's SQL storage"
 

@@ -24,7 +24,7 @@ exclude = ["crates/clax-worker"]
 [workspace.package]
 version = "0.5.0"
 edition = "2024"
-license = "Apache-2.0"
+license = "GPL-2.0-only"
 repository = "https://github.com/empathic/clax"
 
 [workspace.lints.rust]
