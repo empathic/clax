@@ -111,8 +111,11 @@ _pass() {
         failed+=("$name")
         return
     fi
+    # The query names each target, so a target only for another platform
+    # (//crates/clax-ios's, only for iOS) is skipped as a pattern would
+    # skip it, not refused.
     # shellcheck disable=SC2086  # one label per word
-    "${awake[@]+"${awake[@]}"}" "$bazel" test --keep_going "${flags[@]}" "${test_flags[@]}" "$@" $targets 2>&1 | tee "$output"
+    "${awake[@]+"${awake[@]}"}" "$bazel" test --keep_going --skip_incompatible_explicit_targets "${flags[@]}" "${test_flags[@]}" "$@" $targets 2>&1 | tee "$output"
     status="${PIPESTATUS[0]}"
     [ "$status" -eq 0 ] || failed+=("$name")
     echo "── bazel: $name took $((SECONDS - start))s ──"
