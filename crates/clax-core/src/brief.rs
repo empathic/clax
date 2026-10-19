@@ -12,7 +12,9 @@ pub const MAX_TITLE_CHARS: usize = crate::publish::MAX_DERIVED_TITLE_CHARS;
 /// The title, trimmed: `invalid_title` when it is blank, longer than
 /// [`MAX_TITLE_CHARS`], or holds a control or invisible format character
 /// (a line break, a bidi control), which would make one-line views read
-/// differently from what was typed.
+/// differently from what was typed. The zero-width non-joiner and joiner
+/// (U+200C, U+200D), which Persian and Indic words and emoji sequences
+/// need, are allowed.
 ///
 /// # Errors
 /// As above.
@@ -27,7 +29,15 @@ pub fn check_title(title: &str) -> Result<String> {
             format!("a title is at most {MAX_TITLE_CHARS} characters"),
         ));
     }
-    crate::gitctx::text("the title", t).map_err(|m| CoreError::invalid("invalid_title", m))?;
+    let joiner = |c: char| c == '\u{200C}' || c == '\u{200D}';
+    if t.chars()
+        .any(|c| c.is_control() || (crate::text::is_format_char(c) && !joiner(c)))
+    {
+        return Err(CoreError::invalid(
+            "invalid_title",
+            "the title holds a control or format character",
+        ));
+    }
     Ok(t.to_string())
 }
 
@@ -109,6 +119,11 @@ mod tests {
         assert_eq!(code(check_title("   ")), "invalid_title");
         assert_eq!(code(check_title("a\nb")), "invalid_title");
         assert_eq!(code(check_title("a\u{202e}b")), "invalid_title");
+        assert_eq!(code(check_title("a\u{200b}b")), "invalid_title");
+        assert_eq!(code(check_title("a\u{2066}b")), "invalid_title");
+        // Persian 'mi‌xaham' needs ZWNJ; a family emoji is joined with ZWJ.
+        assert!(check_title("می\u{200c}خواهم").is_ok());
+        assert!(check_title("Team \u{1f468}\u{200d}\u{1f469}\u{200d}\u{1f467}").is_ok());
         assert_eq!(
             code(check_title(&"é".repeat(MAX_TITLE_CHARS + 1))),
             "invalid_title"
