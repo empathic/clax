@@ -28,6 +28,8 @@ import 'package:clax_app/ui/questions/question_card.dart';
 import 'package:clax_app/ui/questions/questions_sheet.dart';
 import 'package:clax_app/ui/settings_screen.dart';
 import 'package:clax_app/ui/shortcuts.dart';
+import 'package:clax_app/ui/split/sidebar.dart';
+import 'package:clax_app/ui/split/split_shell.dart';
 import 'package:clax_app/ui/thread_detail.dart' show ThreadDetail;
 import 'package:flutter/material.dart';
 import 'package:flutter/services.dart';
@@ -495,6 +497,51 @@ void main() {
     expect(find.byType(AppScreen), findsNothing);
     expect(find.text('New app'), findsOneWidget);
   }, variant: TargetPlatformVariant.only(TargetPlatform.macOS));
+
+  testWidgets('a wide Mac window is a split one: an app chosen in the sidebar '
+      'opens beside it, and Back goes to Home', (tester) async {
+    TestDefaultBinaryMessengerBinding.instance.defaultBinaryMessenger
+        .setMockMethodCallHandler(SystemChannels.menu, (_) async => null);
+    addTearDown(
+      () => TestDefaultBinaryMessengerBinding.instance.defaultBinaryMessenger
+          .setMockMethodCallHandler(SystemChannels.menu, null),
+    );
+    tester.view.physicalSize = const Size(1200, 800);
+    tester.view.devicePixelRatio = 1;
+    addTearDown(tester.view.reset);
+    await pumpApp(tester, _Rig(key: 'sk-ant-x'));
+    final aid = rig.api.seedArtifact('Runs', {'index.html': _page});
+    await up(tester);
+    rig.api.emit(ClaxEvent(type: 'version', data: {'artifact_id': aid}));
+    await tester.pumpAndSettle();
+    expect(find.byType(SplitShell), findsOneWidget);
+    await tester.tap(
+      find.descendant(of: find.byType(ClaxSidebar), matching: find.text('Runs')),
+    );
+    await pumpRoute(tester);
+    expect(find.byType(AppScreen), findsOneWidget);
+    // Beside the sidebar, not a route over it.
+    expect(find.byType(ClaxSidebar), findsOneWidget);
+    expect(tester.state<NavigatorState>(find.byType(Navigator).first).canPop(), isFalse);
+    await tester.binding.handlePopRoute();
+    await pumpRoute(tester);
+    expect(find.byType(AppScreen), findsNothing);
+    expect(find.text('New app'), findsOneWidget);
+  }, variant: TargetPlatformVariant.only(TargetPlatform.macOS));
+
+  testWidgets('an Android phone has no split window, and an app opens over '
+      'the home screen', (tester) async {
+    tester.view.physicalSize = const Size(412, 915);
+    tester.view.devicePixelRatio = 1;
+    addTearDown(tester.view.reset);
+    await pumpApp(tester, _Rig(key: 'sk-ant-x'));
+    final aid = rig.api.seedArtifact('Runs', {'index.html': _page});
+    await up(tester);
+    expect(find.byType(SplitShell), findsNothing);
+    await openApp(tester, aid);
+    expect(find.byType(AppScreen), findsOneWidget);
+    expect(tester.state<NavigatorState>(find.byType(Navigator).first).canPop(), isTrue);
+  });
 
   testWidgets('without an API key the launcher asks for one; Claude Code '
       'needs none', (tester) async {

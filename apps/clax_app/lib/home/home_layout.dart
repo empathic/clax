@@ -400,6 +400,11 @@ class HomeLayout extends ChangeNotifier {
   Future<void> star(String id) =>
       _change((l) => moveLayout(l, id, LayoutSection.starred, null));
 
+  /// App [id] to [index] among Starred, clamped, out of any group and out
+  /// of All apps.
+  Future<void> starAt(String id, int index) =>
+      _change((l) => moveLayout(l, id, LayoutSection.starred, index));
+
   /// App [id] first in All apps.
   Future<void> unstar(String id) =>
       _change((l) => moveLayout(l, id, LayoutSection.all, 0));

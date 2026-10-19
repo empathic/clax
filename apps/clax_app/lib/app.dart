@@ -83,6 +83,8 @@ import 'ui/host_protocol.dart'
         StateMsg,
         ThreadsMsg;
 import 'ui/inspector_surface.dart';
+import 'ui/kit/button.dart';
+import 'ui/kit/empty.dart';
 import 'ui/kit/family.dart';
 import 'ui/kit/mark.dart';
 import 'ui/kit/verbs.dart';
@@ -94,7 +96,11 @@ import 'ui/making_screen.dart';
 import 'ui/questions/questions_sheet.dart';
 import 'ui/read_consent_dialog.dart';
 import 'ui/settings_screen.dart';
+import 'ui/shortcuts.dart' show ClaxCommand;
 import 'ui/splash.dart';
+import 'ui/split/sidebar.dart' show makeStateLine;
+import 'ui/split/sidebar_model.dart';
+import 'ui/split/split_shell.dart';
 import 'ui/theme.dart';
 import 'ui/tokens.g.dart';
 
@@ -687,6 +693,21 @@ class _AppRootState extends State<AppRoot> with WidgetsBindingObserver {
   /// screen, from the daemon's first Up.
   HomeHost? _homeHost;
 
+  /// What a split window's sidebar lists, over [_homeHost], and what it
+  /// has selected (kept across size classes).
+  SidebarModel? _sidebar;
+  final _selection = ValueNotifier<SidebarSelection>(const HomeSelected());
+
+  /// The home screen's route, kept when the window becomes a split one or
+  /// stops being one.
+  final _homeRouteKey = GlobalKey();
+  final _splitKey = GlobalKey<SplitShellState>();
+
+  /// Whether the home screen was last laid out as a split window, and
+  /// whether its sidebar shows (null without one).
+  var _split = false;
+  final _sidebarShown = ValueNotifier<bool?>(null);
+
   /// Undo and Reset of the home app, made with [_homeHost].
   HomeRecovery? _homeRecovery;
 
@@ -900,6 +921,9 @@ class _AppRootState extends State<AppRoot> with WidgetsBindingObserver {
     }
     _makes.dispose();
     unawaited(_runtime.close());
+    _sidebar?.dispose();
+    _selection.dispose();
+    _sidebarShown.dispose();
     _homeHost?.dispose();
     _homeRecovery?.dispose();
     _homeKeeper?.dispose();
@@ -1317,6 +1341,7 @@ class _AppRootState extends State<AppRoot> with WidgetsBindingObserver {
             needsKey: _needsKey,
           );
           _homeFlows.host = _homeHost!..setChrome(_chrome);
+          _sidebar = SidebarModel(host: _homeHost!, selected: _selection);
           _watchHome(_homeHost!);
           _homeRecovery = HomeRecovery(
             api: _api,
@@ -2204,6 +2229,23 @@ class _AppRootState extends State<AppRoot> with WidgetsBindingObserver {
   }) {
     final nav = _nav.currentState;
     if (nav == null) return;
+    // A split window shows the app beside its sidebar; one opened at a
+    // thread, a version or a comment, or to take an action, is pushed.
+    final sidebar = _sidebar;
+    if (_split &&
+        sidebar != null &&
+        thread == null &&
+        version == null &&
+        comment == null) {
+      final s = _homeHost?.settings;
+      final isHome = s != null && !s.builtin && s.homeAppId == aid;
+      if (isHome || action == null) {
+        nav.popUntil((r) => r.isFirst);
+        sidebar.select(isHome ? const HomeSelected() : AppSelected(aid));
+        if (isHome && action != null) _homeActions.add(action);
+        return;
+      }
+    }
     if (thread == null &&
         version == null &&
         comment == null &&
@@ -2306,6 +2348,7 @@ class _AppRootState extends State<AppRoot> with WidgetsBindingObserver {
     String? thread,
     String? comment,
     AppMode mode = AppMode.app,
+    VoidCallback? leave,
   }) => ValueListenableBuilder<Set<String>>(
     valueListenable: _updating,
     builder: (_, updating, child) =>
@@ -2351,6 +2394,7 @@ class _AppRootState extends State<AppRoot> with WidgetsBindingObserver {
         final b? => (context, files) => b.share(context, aid, via: files),
         null => null,
       },
+      leave: leave,
     ),
   );
 
@@ -2450,7 +2494,10 @@ class _AppRootState extends State<AppRoot> with WidgetsBindingObserver {
 
   /// The home app [aid]'s page, as the home screen ([AppMode.home]).
   Widget _homeApp(BuildContext context, String aid, HomePageHooks hooks) {
-    _homeCovered = hooks.covered;
+    // In a split window another selection covers the home app.
+    final covered =
+        hooks.covered || (_split && _selection.value is! HomeSelected);
+    _homeCovered = covered;
     return _AppPage(
       aid: aid,
       endpoint: _endpoint,
@@ -2464,7 +2511,7 @@ class _AppRootState extends State<AppRoot> with WidgetsBindingObserver {
         mode: AppMode.home,
         onReady: (r) => _onReady(aid, r),
         onStoppedLoading: hooks.onStoppedLoading,
-        covered: hooks.covered,
+        covered: covered,
       ),
     );
   }
@@ -2527,10 +2574,67 @@ class _AppRootState extends State<AppRoot> with WidgetsBindingObserver {
       }
       return ClaxSplash(key: const ValueKey('splash'), clock: _s.clock);
     }
+    // Laid out as a split window first: the home app's cover follows the
+    // selection.
+    final sidebar = _sidebar;
+    _split = sidebar != null && SplitShell.fits(context);
+    if (!_split) {
+      WidgetsBinding.instance.addPostFrameCallback((_) {
+        if (!mounted || _split) return;
+        _sidebarShown.value = null;
+        // A narrow window shows the home screen; an app opens over it.
+        _selection.value = const HomeSelected();
+      });
+    }
     // The route's own build says otherwise when it shows the home app.
     _homeCovered = true;
-    return HomeRoute(
+    final route = KeyedSubtree(
       key: const ValueKey('home'),
+      child: _homeRoute(host, cover),
+    );
+    if (!_split) return route;
+    return SplitShell(
+      key: _splitKey,
+      model: sidebar!,
+      home: route,
+      detailFor: _splitDetail,
+      sidebarWidth: _settings.sidebarWidth,
+      onSidebarWidth: (w) => unawaited(_keep((s) => s.sidebarWidth = w)),
+      onMenu: (id, anchor) =>
+          unawaited(host.actions.menu(id, anchor, const [])),
+      onSidebarShown: (shown) => _sidebarShown.value = shown,
+    );
+  }
+
+  /// What a split window shows beside its sidebar for [s]: the app's
+  /// screen, or the make's state with a way to its build view.
+  Widget _splitDetail(SidebarSelection s) => switch (s) {
+    AppSelected(:final id) => _AppPage(
+      aid: id,
+      endpoint: _endpoint,
+      surface: (base) => _s.surface(base),
+      screen: (base, surface) => _appScreen(
+        aid: id,
+        base: base,
+        surface: surface,
+        settings: _settings,
+        actions: const Stream.empty(),
+        onReady: (r) => _onReady(id, r),
+        leave: () => _sidebar?.select(const HomeSelected()),
+      ),
+    ),
+    MakeSelected(:final id) => _MakeDetail(
+      make: _homeHost?.state.makes.where((m) => m.id == id).firstOrNull,
+      open: () => _homeHost?.actions.openMake(id),
+    ),
+    HomeSelected() => const SizedBox.shrink(),
+  };
+
+  /// The home screen's route over [host]: the home app, or the built-in
+  /// home screen, under the launch's [cover] while it shows.
+  Widget _homeRoute(HomeHost host, HomeSnapshotCover? cover) {
+    return HomeRoute(
+      key: _homeRouteKey,
       host: host,
       app: _homeApp,
       recovery: _homeRecovery,
@@ -2587,7 +2691,7 @@ class _AppRootState extends State<AppRoot> with WidgetsBindingObserver {
         highContrast: true,
       ),
       home: ListenableBuilder(
-        listenable: _revision,
+        listenable: Listenable.merge([_revision, _selection]),
         builder: (context, _) => _home(context),
       ),
       builder: (context, child) => HomeChromeReport(
@@ -2612,12 +2716,19 @@ class _AppRootState extends State<AppRoot> with WidgetsBindingObserver {
       // the revision.
       final inner = app;
       app = ListenableBuilder(
-        listenable: _revision,
+        listenable: Listenable.merge([_revision, _sidebarShown]),
         builder: (context, _) => ClaxMenuBar(
           comments: _comments,
           navigator: () => _nav.currentState,
           home: _homeHost?.actions,
           settings: () => unawaited(_openSettings()),
+          toggleSidebar: _sidebarShown.value == null
+              ? null
+              : () => _splitKey.currentState?.toggleSidebar(),
+          titles: {
+            if (_sidebarShown.value case final shown?)
+              ClaxCommand.toggleSidebar: shown ? 'Hide Sidebar' : 'Show Sidebar',
+          },
           child: inner,
         ),
       );
@@ -2805,6 +2916,44 @@ class _UpdatingCover extends StatelessWidget {
                 Theme.of(context).platform,
               ).copyWith(color: p.muted),
             ),
+          ],
+        ),
+      ),
+    );
+  }
+}
+
+/// A make in a split window's detail: its request and state, and Show
+/// progress, which opens its build view; [make] is null once it is gone.
+class _MakeDetail extends StatelessWidget {
+  const _MakeDetail({required this.make, required this.open});
+
+  final HomeMake? make;
+  final VoidCallback open;
+
+  @override
+  Widget build(BuildContext context) {
+    final m = make;
+    final progress = m?.progress;
+    return Scaffold(
+      body: Center(
+        child: ClaxEmpty(
+          icon: Icons.hourglass_top_rounded,
+          title: m?.request ?? 'This make has ended.',
+          body: m == null
+              ? null
+              : makeStateLine(m.state) ??
+                    (progress == null
+                        ? 'Making…'
+                        : 'Making: ${progress.done} of ${progress.total} done'),
+          actions: [
+            if (m != null)
+              ClaxButton(
+                label: 'Show progress',
+                kind: ClaxButtonKind.primary,
+                isDefault: true,
+                onPressed: open,
+              ),
           ],
         ),
       ),

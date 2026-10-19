@@ -467,6 +467,23 @@ void main() {
       expect(layout.sections.order, ['b', 'e', 'a', 'c', 'd']);
     });
 
+    test('starAt puts an app at a place in Starred, out of All apps', () async {
+      await seed({
+        'starred': ['b'],
+        'order': ['a', 'c', 'd', 'e'],
+      });
+      await layout.load(apps);
+      await layout.starAt('d', 0);
+      var now = (await stored())!.data;
+      expect(now['starred'], ['d', 'b']);
+      expect(now['order'], ['a', 'c', 'e']);
+      await layout.starAt('a', 9);
+      now = (await stored())!.data;
+      expect(now['starred'], ['d', 'b', 'a']);
+      expect(writes(), hasLength(3));
+      expect(layout.sections.starred, ['d', 'b', 'a']);
+    });
+
     test('a write overtaken by another re-reads and lands once, with both changes', () async {
       await seed({
         'starred': <String>[],

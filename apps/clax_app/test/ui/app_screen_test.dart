@@ -192,6 +192,7 @@ void main() {
     bool pushed = false,
     bool developer = false,
     Future<void> Function(BuildContext, BundleFiles)? share,
+    VoidCallback? leave,
   }) async {
     phone(tester, size: size);
     final (api, aid) = await (seed ?? _seeded)();
@@ -229,6 +230,7 @@ void main() {
       initialThread: initialThread,
       initialComment: initialComment,
       share: share,
+      leave: leave,
     );
     await tester.pumpWidget(
       MaterialApp(
@@ -3345,6 +3347,26 @@ void main() {
       await tester.pumpAndSettle();
       expect(find.byType(AppScreen), findsNothing);
       expect(find.text('Launcher'), findsOneWidget);
+      expect(rig.surface.hostCalls.whereType<GoBack>(), hasLength(1));
+    });
+
+    testWidgets('in a split window\'s detail, back past the page\'s history '
+        'leaves through leave and the route stays', (tester) async {
+      var left = 0;
+      final rig = await pumpScreen(tester, leave: () => left++);
+      rig.surface.push(rig.ready());
+      rig.surface.push(const HistoryMsg(back: true));
+      await tester.pump();
+      await tester.binding.handlePopRoute();
+      await tester.pumpAndSettle();
+      expect(rig.surface.hostCalls.whereType<GoBack>(), hasLength(1));
+      expect(left, 0);
+      rig.surface.push(const HistoryMsg(back: false));
+      await tester.pump();
+      await tester.binding.handlePopRoute();
+      await tester.pumpAndSettle();
+      expect(left, 1);
+      expect(find.byType(AppScreen), findsOneWidget);
       expect(rig.surface.hostCalls.whereType<GoBack>(), hasLength(1));
     });
 

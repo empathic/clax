@@ -275,7 +275,14 @@ class AppScreen extends StatefulWidget {
     this.covered = false,
     this.icons,
     this.share,
+    this.leave,
   });
+
+  /// What leaving the screen does where it is not a route of its own (a
+  /// split window's detail, `SplitShell`): Back with nothing over the page
+  /// and no page history calls it, as do Back to Home and the cover's
+  /// Back, in place of popping the route. Null pops the route.
+  final VoidCallback? leave;
 
   /// Shares the app as a `.clax` file sent through the files it is given;
   /// null offers no Share. The Mac's toolbar Share item passes
@@ -958,7 +965,9 @@ class _AppScreenState extends State<AppScreen> with WidgetsBindingObserver {
   List<ToolbarItemSpec> _toolbarItems(BuildContext context) {
     final closes = _wantComment || _questionsShowing || _draft != null;
     final leaves =
-        widget.mode == AppMode.app && (Navigator.maybeOf(context)?.canPop() ?? false);
+        widget.mode == AppMode.app &&
+        (widget.leave != null ||
+            (Navigator.maybeOf(context)?.canPop() ?? false));
     return [
       ToolbarItemSpec(
         'back',
@@ -2337,16 +2346,19 @@ class _AppScreenState extends State<AppScreen> with WidgetsBindingObserver {
     if (macOS && own != null) {
       screen = ClaxMenuBar(comments: own, child: screen);
     }
+    final leavable =
+        _gone ||
+        (!_wantComment && !_questionsShowing && _draft == null && !_canGoBack);
+    final leave = widget.leave;
     return PopScope(
-      canPop:
-          widget.covered ||
-          _gone ||
-          (!_wantComment &&
-              !_questionsShowing &&
-              _draft == null &&
-              !_canGoBack),
+      canPop: widget.covered || (leave == null && leavable),
       onPopInvokedWithResult: (didPop, _) {
-        if (!didPop && !widget.covered) _back();
+        if (didPop || widget.covered) return;
+        if (leave != null && leavable) {
+          leave();
+        } else {
+          _back();
+        }
       },
       child: screen,
     );
@@ -2524,13 +2536,14 @@ class _AppScreenState extends State<AppScreen> with WidgetsBindingObserver {
           icon: Icons.delete_outline_rounded,
           title: 'This app was deleted.',
           actions: [
-            if (widget.mode == AppMode.app && nav.canPop())
+            if (widget.mode == AppMode.app &&
+                (widget.leave != null || nav.canPop()))
               ClaxButton(
                 key: const ValueKey('app-gone-back'),
                 label: 'Back to Home',
                 kind: ClaxButtonKind.primary,
                 isDefault: true,
-                onPressed: () => nav.pop(),
+                onPressed: widget.leave ?? () => nav.pop(),
               ),
           ],
         ),
@@ -2730,9 +2743,9 @@ class _AppScreenState extends State<AppScreen> with WidgetsBindingObserver {
       failure: _gaveUp,
       detail: DeveloperScope.of(context) ? _gaveUpDetail : null,
       onTryAgain: _reload,
-      onBack: widget.mode == AppMode.app && nav.canPop()
-          ? () => nav.pop()
-          : null,
+      onBack: widget.mode != AppMode.app
+          ? null
+          : widget.leave ?? (nav.canPop() ? () => nav.pop() : null),
       clock: widget.clock,
     );
   }

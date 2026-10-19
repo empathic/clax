@@ -227,6 +227,34 @@ void main() {
     expect(s.actions.ran, ['importApp', 'newApp', 'openInbox']);
   }, variant: _mac);
 
+  testWidgets('View › Show Sidebar runs the split window\'s toggle, with the '
+      'title it is given; without a toggle it is disabled', (tester) async {
+    var toggled = 0;
+    Widget bar({VoidCallback? toggle, String title = 'Hide Sidebar'}) =>
+        ClaxMenuBar(
+          comments: CommentsCommand(),
+          toggleSidebar: toggle,
+          titles: {ClaxCommand.toggleSidebar: title},
+          child: const MaterialApp(home: Text('apps')),
+        );
+    await tester.pumpWidget(bar(toggle: () => toggled++));
+    await tester.pump();
+    expect(enabled(ClaxCommand.toggleSidebar), isTrue);
+    expect(
+      menuCalls.where((c) => c.method == 'setTitle').last.arguments,
+      containsPair('title', 'Hide Sidebar'),
+    );
+    await choose(tester, ClaxCommand.toggleSidebar);
+    expect(toggled, 1);
+    await tester.pumpWidget(bar(title: 'Show Sidebar'));
+    await tester.pump();
+    expect(enabled(ClaxCommand.toggleSidebar), isFalse);
+    expect(
+      menuCalls.where((c) => c.method == 'setTitle').last.arguments,
+      containsPair('title', 'Show Sidebar'),
+    );
+  }, variant: _mac);
+
   testWidgets('without the home screen’s flows New App…, Import App… and '
       'Inbox are disabled', (tester) async {
     await tester.pumpWidget(

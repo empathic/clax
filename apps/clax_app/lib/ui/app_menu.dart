@@ -104,6 +104,8 @@ class CommentsCommand extends ChangeNotifier {
 /// - Back (⌘[) goes back as the platform's back would: the open app's page
 ///   steps back in its own history first (its `PopScope`), then the screen
 ///   closes. Home (⇧⌘H) closes every screen down to the grid.
+/// - Show Sidebar or Hide Sidebar (⌃⌘S) runs [toggleSidebar], while a
+///   split window (`SplitShell`) has a sidebar to toggle.
 ///
 /// The other commands' items stay disabled. Key equivalents are the menu's,
 /// so they work while a page's WebView has the keyboard focus; Esc is the
@@ -116,6 +118,7 @@ class ClaxMenuBar extends StatefulWidget {
     this.navigator,
     this.home,
     this.settings,
+    this.toggleSidebar,
     this.titles = const {},
   });
 
@@ -131,6 +134,9 @@ class ClaxMenuBar extends StatefulWidget {
 
   /// Shows Settings; null disables Settings….
   final VoidCallback? settings;
+
+  /// Hides or shows the split window's sidebar; null disables the item.
+  final VoidCallback? toggleSidebar;
 
   /// Titles in place of `MainMenu.xib`'s.
   final Map<ClaxCommand, String> titles;
@@ -214,6 +220,7 @@ class _ClaxMenuBarState extends State<ClaxMenuBar> {
     ClaxCommand.newApp => widget.home?.newApp,
     ClaxCommand.importApp => widget.home?.importApp,
     ClaxCommand.inbox => widget.home?.openInbox,
+    ClaxCommand.toggleSidebar => widget.toggleSidebar,
     ClaxCommand.comment => widget.comments.comment,
     ClaxCommand.toggleThreads => widget.comments.toggle,
     ClaxCommand.back => _hasNavigator ? _back : null,

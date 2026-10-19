@@ -47,6 +47,7 @@ class AppSettings {
     List<String>? rallied,
     this.showCommentTab = false,
     this.commentTabAt = 0.62,
+    this.sidebarWidth = 220,
   }) : model = model ?? defaultModel,
        authorName = cleanAuthorName(authorName),
        rallied = rallied ?? [];
@@ -101,6 +102,10 @@ class AppSettings {
   /// height, from 0 to 1; the person moves it with a long-press and drag.
   double commentTabAt;
 
+  /// The split window's sidebar width in logical pixels, from 180 to 320
+  /// (`ClaxLayout.sidebarMin` to `sidebarMax`); the person drags its edge.
+  double sidebarWidth;
+
   AppSettings copy() => AppSettings(
     backend: backend,
     model: model,
@@ -114,6 +119,7 @@ class AppSettings {
     rallied: List.of(rallied),
     showCommentTab: showCommentTab,
     commentTabAt: commentTabAt,
+    sidebarWidth: sidebarWidth,
   );
 
   Map<String, Object?> toJson() => {
@@ -129,6 +135,7 @@ class AppSettings {
     'rallied': rallied,
     'show_comment_tab': showCommentTab,
     'comment_tab_at': commentTabAt,
+    'sidebar_width': sidebarWidth,
   };
 
   /// Reads [j], keeping the default for any value that is missing, of the
@@ -163,6 +170,10 @@ class AppSettings {
     if (tab is bool) s.showCommentTab = tab;
     final at = j['comment_tab_at'];
     if (at is num && at >= 0 && at <= 1) s.commentTabAt = at.toDouble();
+    final width = j['sidebar_width'];
+    if (width is num && width >= 180 && width <= 320) {
+      s.sidebarWidth = width.toDouble();
+    }
     return s;
   }
 }

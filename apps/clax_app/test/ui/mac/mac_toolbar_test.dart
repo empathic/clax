@@ -114,6 +114,44 @@ void main() {
     expect([for (final c in calls) (c.arguments as Map)['view']], [1, 2]);
   });
 
+  test('a window\'s leading items go before what its owner declares, and '
+      'only while it declares any', () async {
+    const sidebar = ToolbarItemSpec(
+      'sidebar',
+      symbol: 'sidebar.left',
+      label: 'Sidebar',
+    );
+    List<Object?> ids() => [
+      for (final i in (calls.last.arguments as Map)['items'] as List)
+        (i as Map)['id'],
+    ];
+    MacToolbar.setLeading(const [sidebar], view: 1);
+    await pumpEventQueue();
+    expect(calls, isEmpty);
+    MacToolbar.setItems(owner, const [back, threads], view: 1);
+    await pumpEventQueue();
+    expect(ids(), ['sidebar', 'back', 'threads']);
+    MacToolbar.setLeading(const [
+      ToolbarItemSpec('sidebar', symbol: 'sidebar.left', label: 'Sidebar', on: true),
+    ], view: 1);
+    await pumpEventQueue();
+    expect(calls, hasLength(2));
+    expect(((calls.last.arguments as Map)['items'] as List).first, {
+      'id': 'sidebar',
+      'symbol': 'sidebar.left',
+      'label': 'Sidebar',
+      'enabled': true,
+      'on': true,
+    });
+    MacToolbar.clear(owner, view: 1);
+    await pumpEventQueue();
+    expect(ids(), isEmpty);
+    MacToolbar.setLeading(const [], view: 1);
+    MacToolbar.setItems(owner, const [back], view: 1);
+    await pumpEventQueue();
+    expect(ids(), ['back']);
+  });
+
   test('a click from the native side reaches clicks', () async {
     final clicks = <ToolbarClick>[];
     final sub = MacToolbar.clicks.listen(clicks.add);

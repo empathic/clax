@@ -191,6 +191,22 @@ void main() {
       expect((await store.load()).commentTabAt, 1.0, reason: 'an int is a number');
     });
 
+    test("the split window's sidebar width round trips; one outside 180 to "
+        '320 is the default', () async {
+      final store = SettingsStore(file);
+      expect((await store.load()).sidebarWidth, 220);
+      await store.save(AppSettings(sidebarWidth: 260));
+      expect(
+        jsonDecode(file.readAsStringSync()),
+        containsPair('sidebar_width', 260.0),
+      );
+      expect((await store.load()).copy().sidebarWidth, 260);
+      for (final bad in [100, 400, 'wide']) {
+        file.writeAsStringSync(jsonEncode({'sidebar_width': bad}));
+        expect((await store.load()).sidebarWidth, 220, reason: '$bad');
+      }
+    });
+
     test('last is the defaults, then what was last loaded or saved', () async {
       final store = SettingsStore(file);
       expect(store.last.dictationCues, isTrue);

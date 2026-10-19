@@ -102,7 +102,9 @@ final class ToolbarClick {
 /// the row (`ClaxScaffold`'s Mac header, the launcher) declare none. Each
 /// window has one declaring owner at a time, the last to call
 /// [setItems]; [clear] by any other owner changes nothing, so a screen
-/// going away cannot take the next screen's items.
+/// going away cannot take the next screen's items. A window's leading
+/// items ([setLeading], such as the sidebar's toggle) go before its
+/// owner's, while it has an owner that declares any.
 ///
 /// - `setItems` {view, items: [ToolbarItemSpec.toMap…]}: the window's
 ///   items, in order; none hides the title.
@@ -114,6 +116,8 @@ abstract final class MacToolbar {
 
   static final _clicks = StreamController<ToolbarClick>.broadcast();
   static final _owners = <int, Object>{};
+  static final _declared = <int, List<ToolbarItemSpec>>{};
+  static final _leading = <int, List<ToolbarItemSpec>>{};
   static final _sent = <int, List<ToolbarItemSpec>>{};
   static var _listening = false;
 
@@ -137,17 +141,33 @@ abstract final class MacToolbar {
     if (!hasDesktopWindowChrome) return;
     _listen();
     _owners[view] = owner;
-    _send(view, items);
+    _declared[view] = List.of(items);
+    _send(view);
+  }
+
+  /// Makes [items] the ones [view]'s window shows before its owner's
+  /// ([setItems]); none while no owner declares any.
+  static void setLeading(List<ToolbarItemSpec> items, {required int view}) {
+    if (!hasDesktopWindowChrome) return;
+    _listen();
+    _leading[view] = List.of(items);
+    if (_owners.containsKey(view)) _send(view);
   }
 
   /// Takes [owner]'s items off [view]'s window, if it still declares them.
   static void clear(Object owner, {required int view}) {
     if (!hasDesktopWindowChrome || !owns(owner, view: view)) return;
     _owners.remove(view);
-    _send(view, const []);
+    _declared.remove(view);
+    _send(view);
   }
 
-  static void _send(int view, List<ToolbarItemSpec> items) {
+  static void _send(int view) {
+    final own = _declared[view] ?? const <ToolbarItemSpec>[];
+    final items = [
+      if (own.isNotEmpty) ...?_leading[view],
+      ...own,
+    ];
     final last = _sent[view];
     if (last != null && listEquals(last, items)) return;
     _sent[view] = List.of(items);
@@ -206,6 +226,8 @@ abstract final class MacToolbar {
   @visibleForTesting
   static void reset() {
     _owners.clear();
+    _declared.clear();
+    _leading.clear();
     _sent.clear();
     _listening = false;
   }
