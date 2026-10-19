@@ -2726,16 +2726,16 @@ mod tests {
                 include_str!("../tests/fixtures/old-migrations/rust-int-fc6a2add6.sql"),
             ),
             (
-                "main-ac3ee2d4f",
-                include_str!("../tests/fixtures/old-migrations/main-ac3ee2d4f.sql"),
+                "main-086356acb",
+                include_str!("../tests/fixtures/old-migrations/main-086356acb.sql"),
             ),
             (
-                "main-27fbe8882",
-                include_str!("../tests/fixtures/old-migrations/main-27fbe8882.sql"),
+                "main-396a8dad5",
+                include_str!("../tests/fixtures/old-migrations/main-396a8dad5.sql"),
             ),
             (
-                "main-47e94e36b",
-                include_str!("../tests/fixtures/old-migrations/main-47e94e36b.sql"),
+                "main-96137d133",
+                include_str!("../tests/fixtures/old-migrations/main-96137d133.sql"),
             ),
             (
                 "pre-main-rebase-95d2a88db",

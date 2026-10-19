@@ -317,12 +317,12 @@ harness's configuration.
 ## 4. Spec trace
 
 Each row names the tests that pin a section. The specs were removed from the
-tree after commit `d9e9a5f60`; read one with `git show
-d9e9a5f60:docs/superpowers/specs/<file>`. Other paths are relative to the
+tree after commit `472e8c948`; read one with `git show
+472e8c948:docs/superpowers/specs/<file>`. Other paths are relative to the
 repository root; `name` is the Rust function or the Playwright and Vitest
 title, `:N` its line.
 
-### 4.1 `d9e9a5f60:docs/superpowers/specs/2026-09-28-clax-design.md`
+### 4.1 `472e8c948:docs/superpowers/specs/2026-09-28-clax-design.md`
 
 | § | Section | Tests that pin it |
 |---|---|---|
@@ -345,7 +345,7 @@ title, `:N` its line.
 | 15 | Error handling | `crates/clax-server/tests/api_timeout.rs:5` `slow_api_requests_time_out_with_json_408`; `api_artifacts.rs:65` |
 | 17 | Phase 5: room and sample | `crates/clax-server/tests/api_room.rs:135` `presence_and_messages_reach_every_peer_with_sender_fields`; `api_sample.rs:126` `streams_text_then_done_under_the_framing_and_the_tier_model`; `web/e2e/room.spec.ts:13`; `web/e2e/sample.spec.ts:29` "consent once, progressive text, and the call count", `:96` "use("sample") resolves null …"; section 2.3 |
 
-### 4.2 `d9e9a5f60:docs/superpowers/specs/2026-10-01-echo-design.md`
+### 4.2 `472e8c948:docs/superpowers/specs/2026-10-01-echo-design.md`
 
 | § | Section | Tests that pin it |
 |---|---|---|
@@ -478,7 +478,7 @@ for c in $(git rev-list --reverse origin/main..main); do
   (section 2.3).
 - **Spec §18 open items**: Safari's `*.localhost` behaviour (D5) and whether a
   later Codex delivers a held message to a re-attached `codex exec` thread
-  (`d9e9a5f60:docs/superpowers/specs/2026-09-28-clax-design.md:2206-2210`, `:2214-2218`).
+  (`472e8c948:docs/superpowers/specs/2026-09-28-clax-design.md:2206-2210`, `:2214-2218`).
 
 ### 6.2 Owner decisions still open
 
@@ -499,7 +499,7 @@ for c in $(git rev-list --reverse origin/main..main); do
   `docs/contract.md:2503-2507`).
 - **A Grok tool-use renewal hook.** Grok has no `PostToolUse` hook, so a Grok
   session's working mark lapses after 2 minutes of tool calls that are not
-  Clax calls (`d9e9a5f60:docs/superpowers/specs/2026-09-28-clax-design.md:1826-1830`).
+  Clax calls (`472e8c948:docs/superpowers/specs/2026-09-28-clax-design.md:1826-1830`).
   The proposal is one hand-over for Claude Code and Grok together
   (`docs/follow-ups.md:101-106`, Q5).
 
@@ -524,7 +524,7 @@ so none was rerun alone; one clean run is not evidence that they are fixed.
 - 48 `web/e2e/shots.spec.ts` screenshot tests skip in every gate run by
   design (`web/e2e/shots.spec.ts:16`). The spec asks that every UI change be
   checked in screenshots, light and dark, desktop and phone
-  (`d9e9a5f60:docs/superpowers/specs/2026-09-28-clax-design.md:2095-2103`); that check
+  (`472e8c948:docs/superpowers/specs/2026-09-28-clax-design.md:2095-2103`); that check
   is manual and was not repeated here.
 - The Codex plugin validator (6.1).
 - `scripts/test-install.sh:215` skips its `shasum` fallback where `shasum`
@@ -596,7 +596,7 @@ daemon does not compress responses (6.5).
 
 ## 8. Clax in Chrome
 
-The Chrome overlay (spec `d9e9a5f60:docs/superpowers/specs/2026-10-05-chrome-overlay-design.md`,
+The Chrome overlay (spec `472e8c948:docs/superpowers/specs/2026-10-05-chrome-overlay-design.md`,
 main spec D19), on branch `chrome-overlay`. Machine as above: macOS 26.6.2,
 arm64, Node v26.8.2; Playwright 1.63.0 with its Chromium 153.0.8010.12
 (`channel: "chromium"`, new headless).
@@ -914,7 +914,7 @@ and a `.crx` signed with the key when a Chromium is found (skipped under
 
 ## 9. Agent questions and the inbox
 
-Spec `d9e9a5f60:docs/superpowers/specs/2026-10-06-agent-questions-and-inbox-design.md`,
+Spec `472e8c948:docs/superpowers/specs/2026-10-06-agent-questions-and-inbox-design.md`,
 branch `agent-questions`. Commit under test: `0924bca` (the tests and smoke
 script; this record is the commit after it). Run on 2026-10-08, machine as
 above (macOS 26.6.2, arm64, Node v26.8.2), Playwright 1.63.0, Claude Code
@@ -1034,7 +1034,7 @@ load; every lane but **plugins** passed in at least one run, and each
 other failure passed when run alone:
 
 - **plugins** failed in every run: "the plugins pin 'nothing', but the
-  newest release tag is v0.3.1". `v0.3.1` (`1f2c5d1`, 2026-10-07) is a tag
+  newest release tag is v0.3.1". `v0.3.1` (`978fc2f`, 2026-10-07) is a tag
   on main that this branch does not contain; it clears when the branch is
   rebased onto main and the pin is moved, which is not this task's.
 - **web unit** (`snapshot.test.ts` "linear time", 5 s timeout) once:
@@ -1076,7 +1076,7 @@ inbox alone    GET /api/inbox/summary          21       1.7            ok
 
 ## 10. Toolpath audit
 
-Spec `d9e9a5f60:docs/superpowers/specs/2026-10-06-toolpath-audit-design.md`, branch
+Spec `472e8c948:docs/superpowers/specs/2026-10-06-toolpath-audit-design.md`, branch
 `toolpath-audit`; the contract is "Toolpath journal and export" in
 `docs/contract.md`. Build under test: `d436b13`, the commit before this
 record (`clax version --verbose`: `clax 0.4.0`, `commit
@@ -1198,7 +1198,7 @@ that ran: `session-start` 107 ms, `prompt`, `call-id` 5 ms, `tool`, `stop`
 
 ### 10.2 Performance against main
 
-`just perf`'s three stages, for main at `527db6c` (a detached worktree
+`just perf`'s three stages, for main at `b263bbf` (a detached worktree
 with its own web build and release build) and for this branch at
 `d436b13`, each with its own scripts and its unchanged budget files. The
 runs were interleaved stage by stage (daemon main, daemon branch, clients
@@ -1206,7 +1206,7 @@ main, clients branch, time to usable main, time to usable branch) between
 21:21 and 21:27 on 2026-10-09, under a load average of 7 to 26 from other
 work. Every stage passed on both.
 
-| Measure | main `527db6c` | branch `d436b13` |
+| Measure | main `b263bbf` | branch `d436b13` |
 |---|---|---|
 | `perf-daemon.sh`: verdict | every probe within budget | every probe within budget |
 | idle p95 `/healthz`, `/a/<id>` (ms) | 0.6, 1.9 | 1.9, 3.8 |
@@ -1226,8 +1226,8 @@ are higher across the board, the idle rows included. Its subdomain comment
 ready (86 ms) sat exactly on the limit, which the gate allows. The
 branch's perf scripts are the ones it was rebased with: main has since
 changed `scripts/perf-daemon.py` and `scripts/perf-clients.py` (the
-calibration read inside the daemon, `527db6c`; the delivery p95 over at
-least 40 writes, `e6d06cd`), so main's run reports calibrations inside
+calibration read inside the daemon, `b263bbf`; the delivery p95 over at
+least 40 writes, `02350e8`), so main's run reports calibrations inside
 the daemon and an "enough writes for p95" line that the branch's does not.
 
 ### 10.3 Gates

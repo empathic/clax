@@ -5655,7 +5655,7 @@ abandoned and retried the same way, with a notice.
 
 Clax records every change to its artifacts as
 [Toolpath](https://toolpath.net) provenance. The design is
-`git show d9e9a5f60:docs/superpowers/specs/2026-10-06-toolpath-audit-design.md`; this section
+`git show 472e8c948:docs/superpowers/specs/2026-10-06-toolpath-audit-design.md`; this section
 is the contract a reader relies on. Clax only writes the records: it
 imports and correlates nothing.
 

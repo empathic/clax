@@ -1,7 +1,7 @@
--- Migrations 24 to 26 as commit 47e94e36ba6e (2026-10-15, branch main)
--- wrote them in crates/clax-core/src/store/migrations.rs (blob 871c54076d18). Migrations 1 to 23 there
+-- Migrations 24 to 26 as commit 086356acba75 (2026-10-13, branch main)
+-- wrote them in crates/clax-core/src/store/migrations.rs (blob 1ba6f3462d44). Migrations 1 to 23 there
 -- are the current ones, character for character.
--- Differs from the current schema: viewer_cookies without replaced_at.
+-- Differs from the current schema: session_elevations without version; no viewer_cookies; no approval_requests_by_target or _by_thread; no feedback.no_access_at.
 -- first: 24
 -- user_version: 26
 
@@ -9,14 +9,6 @@
 ALTER TABLE viewers ADD COLUMN person INTEGER NOT NULL DEFAULT 0;
     ALTER TABLE viewers ADD COLUMN person_revoked_at TEXT;
     ALTER TABLE viewers ADD COLUMN rights_json TEXT;
-
-    CREATE TABLE viewer_cookies (
-        sha256 TEXT PRIMARY KEY,
-        viewer_id TEXT NOT NULL REFERENCES viewers(id),
-        created_at TEXT NOT NULL,
-        legacy INTEGER NOT NULL DEFAULT 0
-    );
-    CREATE INDEX viewer_cookies_by_viewer ON viewer_cookies(viewer_id);
 
     CREATE TABLE invites (
         id TEXT PRIMARY KEY,
@@ -78,8 +70,7 @@ ALTER TABLE viewers ADD COLUMN person INTEGER NOT NULL DEFAULT 0;
         session_id TEXT NOT NULL,
         granter TEXT,
         access_json TEXT NOT NULL,
-        created_at TEXT NOT NULL,
-        version TEXT NOT NULL DEFAULT ''
+        created_at TEXT NOT NULL
     );
     CREATE UNIQUE INDEX session_elevations_key ON session_elevations(session_id, COALESCE(granter, ''));
     CREATE INDEX session_elevations_by_granter ON session_elevations(granter) WHERE granter IS NOT NULL;
@@ -134,9 +125,6 @@ CREATE TABLE approvals (
         COALESCE(approver, ''), author, artifact_id, COALESCE(thread_id, ''))
         WHERE status = 'open';
     CREATE INDEX approval_requests_by_session ON approval_requests(session_id, status);
-    CREATE INDEX approval_requests_by_target ON approval_requests(
-        COALESCE(approver, ''), artifact_id, author, status);
-    CREATE INDEX approval_requests_by_thread ON approval_requests(thread_id, status);
 
     CREATE TABLE doc_authors (
         artifact_id TEXT NOT NULL,
@@ -151,7 +139,6 @@ CREATE TABLE approvals (
         PRIMARY KEY (kind, id, author)
     );
     ALTER TABLE feedback ADD COLUMN placeholder_at TEXT;
-    ALTER TABLE feedback ADD COLUMN no_access_at TEXT;
     ALTER TABLE artifacts ADD COLUMN text_authors_json TEXT;
     ALTER TABLE send_batches ADD COLUMN sender TEXT;
     ALTER TABLE threads ADD COLUMN resolved_by_person TEXT;

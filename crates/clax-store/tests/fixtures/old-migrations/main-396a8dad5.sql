@@ -1,4 +1,4 @@
--- Migrations 24 to 26 as commit 27fbe888238e (2026-10-14, branch main)
+-- Migrations 24 to 26 as commit 396a8dad5913 (2026-10-14, branch main)
 -- wrote them in crates/clax-core/src/store/migrations.rs (blob 700fd024c658). Migrations 1 to 23 there
 -- are the current ones, character for character.
 -- Differs from the current schema: no viewer_cookies; no approval_requests_by_target or _by_thread; no feedback.no_access_at.

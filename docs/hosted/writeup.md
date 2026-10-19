@@ -5,9 +5,9 @@
 developing, the bindings and deploying. Run the whole demo locally, without a
 Cloudflare account, with `just hosted-demo`. Video script:
 [`video-script.md`](video-script.md). Designs:
-[`2026-10-11-clax-dev-hosted-design.md`](https://github.com/empathic/clax/blob/d9e9a5f60899f49ddd857beb0ffc3947be7c2fc8/docs/superpowers/specs/2026-10-11-clax-dev-hosted-design.md)
+[`2026-10-11-clax-dev-hosted-design.md`](https://github.com/empathic/clax/blob/472e8c9489507bfe82a0c68d7d174ed81ba88b2b/docs/superpowers/specs/2026-10-11-clax-dev-hosted-design.md)
 (hosted Clax, live collaboration) and
-[`2026-10-08-multi-agent-multi-person-design.md`](https://github.com/empathic/clax/blob/d9e9a5f60899f49ddd857beb0ffc3947be7c2fc8/docs/superpowers/specs/2026-10-08-multi-agent-multi-person-design.md)
+[`2026-10-08-multi-agent-multi-person-design.md`](https://github.com/empathic/clax/blob/472e8c9489507bfe82a0c68d7d174ed81ba88b2b/docs/superpowers/specs/2026-10-08-multi-agent-multi-person-design.md)
 (people, rights, the visibility filter).
 
 ## The problem
