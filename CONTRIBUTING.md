@@ -21,7 +21,8 @@ problem with one harness).
    Empathic the license it needs to distribute your contribution as part of
    Clax. If your employer has rights in what you write, get its permission
    first (section 4 of the agreement). Signed agreements are kept by
-   Empathic and are not published.
+   Empathic and are not published; the
+   [Privacy Policy](docs/legal/privacy.md) covers the details they carry.
 2. **Build and test it.** [Developing Clax](docs/usage.md#developing-clax)
    covers building from source, the tests and the checks. Run `just check`
    before you open the pull request.

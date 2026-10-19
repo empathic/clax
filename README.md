@@ -126,7 +126,10 @@ command.
 - [The contract](docs/contract.md): every tool's arguments and results, the
   page contract and the security model, for anyone building an integration.
 - [Clax on Cloudflare](docs/hosted/writeup.md): the same server as a hosted,
-  multi-person service.
+  multi-person service. Empathic's hosted Clax has its own
+  [Terms of Service](docs/legal/terms.md) and
+  [Privacy Policy](docs/legal/privacy.md); Clax on your own machine sends
+  Empathic nothing.
 - [Contributing](CONTRIBUTING.md): reporting problems, sending changes,
   and the contributor license agreement. [Developing
   Clax](docs/usage.md#developing-clax) covers building from source, tests
