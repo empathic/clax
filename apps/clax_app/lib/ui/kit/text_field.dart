@@ -2,6 +2,7 @@ import 'package:flutter/material.dart';
 
 import '../theme.dart';
 import '../tokens.g.dart';
+import 'dialog.dart';
 import 'family.dart';
 
 /// A labelled text field in its family's form.
@@ -36,6 +37,10 @@ class ClaxTextField extends StatelessWidget {
 
   /// The most lines the field grows to; 1 is a single line, null unbounded.
   final int? maxLines;
+
+  /// Called when Return is pressed in a single-line field; without it, a
+  /// single-line field in a sheet or dialog presses the surface's default
+  /// action ([ClaxDefaultAction]).
   final ValueChanged<String>? onSubmitted;
   final bool autofocus;
   final FocusNode? focusNode;
@@ -43,6 +48,10 @@ class ClaxTextField extends StatelessWidget {
   @override
   Widget build(BuildContext context) {
     final lines = obscure ? 1 : maxLines;
+    final surfaceDefault = ClaxDefaultAction.maybeOf(context);
+    final submit =
+        onSubmitted ??
+        (lines == 1 && surfaceDefault != null ? (_) => surfaceDefault() : null);
     if (ClaxFamily.of(context) == ClaxFamily.material) {
       return TextField(
         controller: controller,
@@ -51,7 +60,7 @@ class ClaxTextField extends StatelessWidget {
         obscureText: obscure,
         maxLines: lines,
         minLines: lines == 1 ? null : 1,
-        onSubmitted: onSubmitted,
+        onSubmitted: submit,
         decoration: InputDecoration(labelText: label, hintText: hint),
       );
     }
@@ -82,7 +91,7 @@ class ClaxTextField extends StatelessWidget {
             obscureText: obscure,
             maxLines: lines,
             minLines: lines == 1 ? null : 1,
-            onSubmitted: onSubmitted,
+            onSubmitted: submit,
             style: text.copyWith(color: p.fg),
             cursorHeight: text.fontSize! + 2,
             decoration: InputDecoration(

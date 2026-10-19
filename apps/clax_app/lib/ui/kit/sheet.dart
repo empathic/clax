@@ -1,9 +1,11 @@
+import 'dart:math' as math;
+
 import 'package:flutter/material.dart';
-import 'package:flutter/services.dart';
 
 import '../layout.dart';
 import '../theme.dart';
 import '../tokens.g.dart';
+import 'button.dart';
 import 'dialog.dart';
 import 'family.dart';
 
@@ -16,7 +18,10 @@ abstract final class ClaxSheet {
 
   /// Shows [builder]'s content under [title], with [actions] (in reading
   /// order, Cancel first and the default last) at the bottom right, and
-  /// completes with what the content popped with.
+  /// completes with what the content popped with. Return presses the
+  /// focused button, or else the default: the last enabled [ClaxButton]
+  /// among [actions] marked `isDefault` that is not destructive; a
+  /// single-line [ClaxTextField] in the content submits to it too.
   ///
   /// At compact width it is a modal bottom sheet with top corners
   /// `radius-xl` and a drag handle, never a close button. From medium, the
@@ -34,30 +39,37 @@ abstract final class ClaxSheet {
   }) {
     final wide = ClaxWidth.of(context) >= ClaxWidth.medium;
     final apple = ClaxFamily.of(context) == ClaxFamily.apple;
+    final onDefault = _defaultOf(actions);
     if (!wide) {
       return showModalBottomSheet<T>(
         context: context,
         isScrollControlled: true,
         useSafeArea: true,
         showDragHandle: true,
-        builder: (context) => _SheetBody(
-          title: title,
-          actions: actions,
-          handle: true,
-          child: Builder(builder: builder),
+        builder: (context) => ClaxSurfaceKeys(
+          onDefault: onDefault,
+          child: _SheetBody(
+            title: title,
+            actions: actions,
+            handle: true,
+            child: Builder(builder: builder),
+          ),
         ),
       );
     }
     if (!apple) {
       return showDialog<T>(
         context: context,
-        builder: (context) => Dialog(
-          child: ConstrainedBox(
-            constraints: const BoxConstraints(maxWidth: ClaxLayout.sheet),
-            child: _SheetBody(
-              title: title,
-              actions: actions,
-              child: Builder(builder: builder),
+        builder: (context) => ClaxSurfaceKeys(
+          onDefault: onDefault,
+          child: Dialog(
+            child: ConstrainedBox(
+              constraints: const BoxConstraints(maxWidth: ClaxLayout.sheet),
+              child: _SheetBody(
+                title: title,
+                actions: actions,
+                child: Builder(builder: builder),
+              ),
             ),
           ),
         ),
@@ -88,12 +100,30 @@ abstract final class ClaxSheet {
           ),
         );
       },
-      pageBuilder: (context, _, _) => _AppleSheet(
-        title: title,
-        actions: actions,
-        child: Builder(builder: builder),
+      pageBuilder: (context, _, _) => ClaxSurfaceKeys(
+        onDefault: onDefault,
+        onEscape: () => Navigator.of(context).maybePop(),
+        child: _AppleSheet(
+          title: title,
+          actions: actions,
+          child: Builder(builder: builder),
+        ),
       ),
     );
+  }
+
+  /// The press of the last enabled, non-destructive [ClaxButton] in
+  /// [actions] marked `isDefault`, or null.
+  static VoidCallback? _defaultOf(List<Widget> actions) {
+    for (final a in actions.reversed) {
+      if (a is ClaxButton &&
+          a.isDefault &&
+          a.kind != ClaxButtonKind.destructive &&
+          a.onPressed != null) {
+        return a.onPressed;
+      }
+    }
+    return null;
   }
 }
 
@@ -113,7 +143,14 @@ class _SheetBody extends StatelessWidget {
   @override
   Widget build(BuildContext context) {
     final theme = Theme.of(context);
-    final bottom = MediaQuery.viewInsetsOf(context).bottom;
+    // A bottom sheet runs under the navigation bar (edge to edge), so its
+    // actions clear the bar, or the keyboard when that is taller.
+    final bottom = handle
+        ? math.max(
+            MediaQuery.viewInsetsOf(context).bottom,
+            MediaQuery.viewPaddingOf(context).bottom,
+          )
+        : MediaQuery.viewInsetsOf(context).bottom;
     return Padding(
       padding: EdgeInsets.fromLTRB(
         ClaxSpace.s24,
@@ -161,59 +198,50 @@ class _AppleSheet extends StatelessWidget {
       ClaxLayout.appleSheetMin,
       ClaxLayout.appleSheetMax,
     );
-    return CallbackShortcuts(
-      bindings: {
-        const SingleActivator(LogicalKeyboardKey.escape): () =>
-            Navigator.of(context).maybePop(),
-      },
-      child: Focus(
-        autofocus: true,
-        child: Align(
-          alignment: Alignment.topCenter,
-          child: Padding(
-            padding: EdgeInsets.only(top: MediaQuery.paddingOf(context).top),
-            child: ConstrainedBox(
-              key: ClaxSheet.appleSheetKey,
-              constraints: BoxConstraints(
-                minWidth: width,
-                maxWidth: width,
-                maxHeight: size.height * 0.85,
+    return Align(
+      alignment: Alignment.topCenter,
+      child: Padding(
+        padding: EdgeInsets.only(top: MediaQuery.paddingOf(context).top),
+        child: ConstrainedBox(
+          key: ClaxSheet.appleSheetKey,
+          constraints: BoxConstraints(
+            minWidth: width,
+            maxWidth: width,
+            maxHeight: size.height * 0.85,
+          ),
+          child: DecoratedBox(
+            decoration: ClaxElevation.of(
+              3,
+              theme.brightness,
+              p,
+              radius: const BorderRadius.vertical(
+                bottom: Radius.circular(ClaxRadius.md),
               ),
-              child: DecoratedBox(
-                decoration: ClaxElevation.of(
-                  3,
-                  theme.brightness,
-                  p,
-                  radius: const BorderRadius.vertical(
-                    bottom: Radius.circular(ClaxRadius.md),
-                  ),
-                ),
-                child: Material(
-                  type: MaterialType.transparency,
-                  child: Padding(
-                    padding: const EdgeInsets.all(ClaxSpace.s20),
-                    child: Column(
-                      mainAxisSize: MainAxisSize.min,
-                      crossAxisAlignment: CrossAxisAlignment.stretch,
-                      children: [
-                        if (title != null) ...[
-                          Text(
-                            title!,
-                            style: ClaxType.of(
-                              ClaxRole.headline,
-                              theme.platform,
-                            ).copyWith(color: p.fg),
-                          ),
-                          const SizedBox(height: ClaxSpace.s12),
-                        ],
-                        Flexible(child: child),
-                        if (actions.isNotEmpty) ...[
-                          const SizedBox(height: ClaxSpace.s20),
-                          ClaxActionBar(children: actions),
-                        ],
-                      ],
-                    ),
-                  ),
+            ),
+            child: Material(
+              type: MaterialType.transparency,
+              child: Padding(
+                padding: const EdgeInsets.all(ClaxSpace.s20),
+                child: Column(
+                  mainAxisSize: MainAxisSize.min,
+                  crossAxisAlignment: CrossAxisAlignment.stretch,
+                  children: [
+                    if (title != null) ...[
+                      Text(
+                        title!,
+                        style: ClaxType.of(
+                          ClaxRole.headline,
+                          theme.platform,
+                        ).copyWith(color: p.fg),
+                      ),
+                      const SizedBox(height: ClaxSpace.s12),
+                    ],
+                    Flexible(child: child),
+                    if (actions.isNotEmpty) ...[
+                      const SizedBox(height: ClaxSpace.s20),
+                      ClaxActionBar(children: actions),
+                    ],
+                  ],
                 ),
               ),
             ),

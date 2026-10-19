@@ -22,8 +22,10 @@ class ClaxDialogAction {
 abstract final class ClaxDialog {
   /// Shows [title], [body] and [actions] (in reading order, the default
   /// last), and completes with the index of the action pressed. Return
-  /// presses [defaultIndex]; Escape, a tap outside and Back answer
-  /// [cancelIndex] (null when there is none).
+  /// presses the focused button, or [defaultIndex] when no button has
+  /// focus; a [defaultIndex] naming a destructive action is ignored, since
+  /// a destructive action is never the default. Escape, a tap outside and
+  /// Back answer [cancelIndex] (null when there is none).
   ///
   /// The Material family draws an `AlertDialog` with its actions on the
   /// right, stacked full-width (the default on top) when one label does not
@@ -41,11 +43,10 @@ abstract final class ClaxDialog {
     assert(actions.isNotEmpty);
     assert(defaultIndex == null || defaultIndex < actions.length);
     assert(cancelIndex == null || cancelIndex < actions.length);
-    assert(
-      defaultIndex == null ||
-          actions[defaultIndex].kind != ClaxButtonKind.destructive,
-      'a destructive action is never the default',
-    );
+    if (defaultIndex != null &&
+        actions[defaultIndex].kind == ClaxButtonKind.destructive) {
+      defaultIndex = null;
+    }
     final apple = ClaxFamily.of(context) == ClaxFamily.apple;
     final int? got;
     if (apple) {
@@ -117,7 +118,7 @@ abstract final class ClaxDialog {
   );
 }
 
-/// Return answers the default action, whatever has focus in the dialog.
+/// Return answers the default action when no button has focus.
 class _Keys extends StatelessWidget {
   const _Keys({required this.defaultIndex, required this.child});
   final int? defaultIndex;
@@ -126,16 +127,78 @@ class _Keys extends StatelessWidget {
   @override
   Widget build(BuildContext context) {
     final i = defaultIndex;
-    if (i == null) return child;
-    void press() => Navigator.of(context).pop(i);
-    return CallbackShortcuts(
-      bindings: {
-        const SingleActivator(LogicalKeyboardKey.enter): press,
-        const SingleActivator(LogicalKeyboardKey.numpadEnter): press,
-      },
-      child: Focus(autofocus: true, child: child),
+    return ClaxSurfaceKeys(
+      onDefault: i == null ? null : () => Navigator.of(context).pop(i),
+      child: child,
     );
   }
+}
+
+/// The keys of a sheet or dialog around [child]: Return presses the focused
+/// button, or runs [onDefault] when no button has focus (a single-line
+/// ClaxTextField inside submits to it too, through [ClaxDefaultAction]),
+/// and Escape runs [onEscape]. Focus starts inside the surface without taking it from a
+/// field there that asks for it.
+class ClaxSurfaceKeys extends StatelessWidget {
+  const ClaxSurfaceKeys({
+    super.key,
+    required this.child,
+    this.onDefault,
+    this.onEscape,
+  });
+
+  final Widget child;
+  final VoidCallback? onDefault;
+  final VoidCallback? onEscape;
+
+  @override
+  Widget build(BuildContext context) {
+    void enter() {
+      final focused = FocusManager.instance.primaryFocus?.context;
+      if (focused != null &&
+          Actions.maybeFind<ButtonActivateIntent>(focused) != null) {
+        Actions.maybeInvoke(focused, const ButtonActivateIntent());
+        return;
+      }
+      onDefault?.call();
+    }
+
+    return ClaxDefaultAction(
+      onDefault: onDefault,
+      child: CallbackShortcuts(
+        bindings: {
+          const SingleActivator(LogicalKeyboardKey.enter): enter,
+          const SingleActivator(LogicalKeyboardKey.numpadEnter): enter,
+          const SingleActivator(LogicalKeyboardKey.escape): ?onEscape,
+        },
+        // A scope rather than a focus node: it takes the route's first focus
+        // so the keys above hear Return and Escape, and a field inside that
+        // asks for focus still gets it, its request being the first in this
+        // scope.
+        child: FocusScope(autofocus: true, child: child),
+      ),
+    );
+  }
+}
+
+/// The default action of the sheet or dialog around a widget, which a
+/// single-line field there submits to.
+class ClaxDefaultAction extends InheritedWidget {
+  const ClaxDefaultAction({
+    super.key,
+    required this.onDefault,
+    required super.child,
+  });
+
+  final VoidCallback? onDefault;
+
+  /// The default action around [context], or null.
+  static VoidCallback? maybeOf(BuildContext context) => context
+      .dependOnInheritedWidgetOfExactType<ClaxDefaultAction>()
+      ?.onDefault;
+
+  @override
+  bool updateShouldNotify(ClaxDefaultAction old) => old.onDefault != onDefault;
 }
 
 /// The Apple family's alert: 280 wide, the title and body centred, and

@@ -6,6 +6,7 @@ import 'package:clax_app/ui/kit/dialog.dart';
 import 'package:clax_app/ui/kit/menu.dart';
 import 'package:clax_app/ui/kit/scaffold.dart';
 import 'package:clax_app/ui/kit/sheet.dart';
+import 'package:clax_app/ui/kit/text_field.dart';
 import 'package:clax_app/ui/kit/toast.dart';
 import 'package:clax_app/ui/theme.dart';
 import 'package:flutter/foundation.dart';
@@ -244,6 +245,92 @@ void main() {
     });
   });
 
+  group('ClaxSheet keys and insets', () {
+    testWidgets('on a wide Mac a field that asks for focus gets it', (
+      tester,
+    ) async {
+      window(tester, const Size(1200, 800));
+      await tester.pumpWidget(
+        page(
+          platform: TargetPlatform.macOS,
+          (c) => ClaxSheet.show<void>(
+            c,
+            title: 'Rename',
+            builder: (_) => const ClaxTextField(label: 'Name', autofocus: true),
+          ),
+        ),
+      );
+      await tester.tap(find.text('Go'));
+      await tester.pumpAndSettle();
+      final field = tester.widget<EditableText>(find.byType(EditableText));
+      expect(field.focusNode.hasFocus, isTrue);
+    });
+
+    for (final (platform, size) in [
+      (TargetPlatform.android, const Size(412, 915)),
+      (TargetPlatform.android, const Size(900, 800)),
+      (TargetPlatform.macOS, const Size(1200, 800)),
+    ]) {
+      testWidgets('on $platform at ${size.width} Return presses the default '
+          'action, and in a field too', (tester) async {
+        window(tester, size);
+        var shared = 0;
+        await tester.pumpWidget(
+          page(
+            platform: platform,
+            (c) => ClaxSheet.show<void>(
+              c,
+              title: 'Share',
+              builder: (_) => const ClaxTextField(label: 'To'),
+              actions: [
+                ClaxButton(label: 'Cancel', onPressed: () {}),
+                ClaxButton(
+                  label: 'Share',
+                  kind: ClaxButtonKind.primary,
+                  isDefault: true,
+                  onPressed: () => shared++,
+                ),
+              ],
+            ),
+          ),
+        );
+        await tester.tap(find.text('Go'));
+        await tester.pumpAndSettle();
+        await tester.sendKeyEvent(LogicalKeyboardKey.enter);
+        await tester.pump();
+        expect(shared, 1);
+        await tester.showKeyboard(find.byType(EditableText));
+        await tester.testTextInput.receiveAction(TextInputAction.done);
+        await tester.pump();
+        expect(shared, 2);
+      });
+    }
+
+    testWidgets('on a phone the actions clear a 48 dp navigation bar', (
+      tester,
+    ) async {
+      window(tester, const Size(412, 915));
+      tester.view.padding = const FakeViewPadding(top: 24, bottom: 48);
+      tester.view.viewPadding = const FakeViewPadding(top: 24, bottom: 48);
+      await tester.pumpWidget(
+        page(
+          (c) => ClaxSheet.show<void>(
+            c,
+            title: 'Share',
+            builder: (_) => const Text('content'),
+            actions: [ClaxButton(label: 'Done', onPressed: () {})],
+          ),
+        ),
+      );
+      await tester.tap(find.text('Go'));
+      await tester.pumpAndSettle();
+      expect(
+        tester.getRect(find.widgetWithText(TextButton, 'Done')).bottom,
+        lessThanOrEqualTo(915 - 48),
+      );
+    });
+  });
+
   group('ClaxDialog', () {
     for (final platform in [TargetPlatform.android, TargetPlatform.macOS]) {
       testWidgets('on $platform it answers the tapped index', (tester) async {
@@ -321,6 +408,67 @@ void main() {
         await tester.sendKeyEvent(LogicalKeyboardKey.enter);
         await tester.pumpAndSettle();
         expect(got, 1);
+      });
+    }
+
+    for (final platform in [TargetPlatform.android, TargetPlatform.macOS]) {
+      testWidgets('on $platform Return presses the focused button, not the '
+          'default', (tester) async {
+        window(tester, const Size(800, 800));
+        int? got = -1;
+        await tester.pumpWidget(
+          page(platform: platform, (c) async {
+            got = await ClaxDialog.show(
+              c,
+              title: 'Update Groceries?',
+              actions: const [
+                ClaxDialogAction('Keep mine'),
+                ClaxDialogAction('Update', kind: ClaxButtonKind.primary),
+              ],
+              defaultIndex: 1,
+            );
+          }),
+        );
+        await tester.tap(find.text('Go'));
+        await tester.pumpAndSettle();
+        Focus.of(tester.element(find.text('Keep mine'))).requestFocus();
+        await tester.pump();
+        await tester.sendKeyEvent(LogicalKeyboardKey.enter);
+        await tester.pumpAndSettle();
+        expect(got, 0);
+      });
+
+      testWidgets('on $platform a destructive default is no default', (
+        tester,
+      ) async {
+        window(tester, const Size(800, 800));
+        int? got = -1;
+        await tester.pumpWidget(
+          page(platform: platform, (c) async {
+            got = await ClaxDialog.show(
+              c,
+              title: 'Delete Groceries?',
+              actions: const [
+                ClaxDialogAction('Cancel'),
+                ClaxDialogAction('Delete', kind: ClaxButtonKind.destructive),
+              ],
+              defaultIndex: 1,
+              cancelIndex: 0,
+            );
+          }),
+        );
+        await tester.tap(find.text('Go'));
+        await tester.pumpAndSettle();
+        await tester.sendKeyEvent(LogicalKeyboardKey.enter);
+        await tester.pumpAndSettle();
+        expect(find.text('Delete Groceries?'), findsOneWidget);
+        expect(
+          tester.widget<ClaxButton>(find.widgetWithText(ClaxButton, 'Delete')).isDefault,
+          isFalse,
+        );
+        await tester.tap(find.text('Cancel'));
+        await tester.pumpAndSettle();
+        expect(got, 0);
       });
     }
 
