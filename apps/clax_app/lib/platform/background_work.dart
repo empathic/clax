@@ -358,6 +358,9 @@ final class RunQuiet extends RunEnd {
 /// Progress hook: a run's step text comes from [step]; any source of steps
 /// (the making screen's stages, the agent's streamed steps) calls it with
 /// the run's handle.
+///
+/// While Clax waits on the person ([needsOk]), the notification says
+/// [needsOkTitle] with the question, over every run's steps.
 class BackgroundRuns {
   BackgroundRuns(this._work, {required this._foreground}) {
     _stopped = _work.stopped.listen((_) => _down());
@@ -366,7 +369,13 @@ class BackgroundRuns {
   final BackgroundWork _work;
   final bool Function() _foreground;
   final _active = <BackgroundRun>[];
+
+  /// The questions waiting on the person, the newest last.
+  final _asks = <_Ask>[];
   late final StreamSubscription<void> _stopped;
+
+  /// What the notification says while a question waits on the person.
+  static const needsOkTitle = 'Clax needs your OK';
 
   /// Whether the service was asked to run and has not been refused or
   /// stopped since.
@@ -379,16 +388,45 @@ class BackgroundRuns {
   /// Whether any run is going.
   bool get busy => _active.isNotEmpty;
 
+  /// What the notification shows: the newest question, else the newest
+  /// run's title and step.
+  (String, String) get _shown => _asks.isNotEmpty
+      ? (needsOkTitle, _asks.last.question)
+      : (_active.last.title, _active.last.step);
+
+  void _update() {
+    final (title, step) = _shown;
+    unawaited(_work.update(title, step));
+  }
+
   /// Starts showing a run called [title], doing [step].
   BackgroundRun begin(String title, String step) {
     final run = BackgroundRun._(title, step);
     _active.add(run);
     if (_service) {
-      unawaited(_work.update(title, step));
+      _update();
     } else {
       _start(run);
     }
     return run;
+  }
+
+  /// Shows that a run waits on the person's answer to [question] ("Let
+  /// Clax read Groceries?"), titled [needsOkTitle], until the returned
+  /// callback runs (once; later calls do nothing). Nothing shows while no
+  /// run is going.
+  void Function() needsOk(String question) {
+    final ask = _Ask(question);
+    _asks.add(ask);
+    if (_service && _active.isNotEmpty) _update();
+    var done = false;
+    return () {
+      if (done) return;
+      done = true;
+      final wasShown = identical(_asks.last, ask);
+      _asks.remove(ask);
+      if (wasShown && _service && _active.isNotEmpty) _update();
+    };
   }
 
   /// Shows that [run] is now doing [text], and is called [title] when
@@ -399,7 +437,7 @@ class BackgroundRuns {
     }
     run.step = text;
     run.title = title ?? run.title;
-    if (_service && identical(_active.last, run)) {
+    if (_service && identical(_active.last, run) && _asks.isEmpty) {
       unawaited(_work.update(run.title, text));
     }
   }
@@ -413,8 +451,8 @@ class BackgroundRuns {
     if (_active.isEmpty) {
       _down();
       unawaited(_work.stop());
-    } else if (wasShown && _service) {
-      unawaited(_work.update(_active.last.title, _active.last.step));
+    } else if (wasShown && _service && _asks.isEmpty) {
+      _update();
     }
     if (_foreground()) return;
     switch (how) {
@@ -439,8 +477,9 @@ class BackgroundRuns {
   void _start(BackgroundRun run) {
     _service = true;
     final generation = ++_generation;
+    final (title, step) = _asks.isEmpty ? (run.title, run.step) : _shown;
     unawaited(
-      _work.start(run.title, run.step).then((started) {
+      _work.start(title, step).then((started) {
         if (!started && generation == _generation) _service = false;
       }),
     );
@@ -450,4 +489,10 @@ class BackgroundRuns {
     _service = false;
     _generation++;
   }
+}
+
+/// A question [BackgroundRuns.needsOk] shows, one object per ask.
+final class _Ask {
+  _Ask(this.question);
+  final String question;
 }

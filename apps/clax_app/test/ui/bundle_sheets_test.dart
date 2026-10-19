@@ -2,8 +2,11 @@ import 'package:clax_app/bundle/exporter.dart' show ExportMode, ExportPlan;
 import 'package:clax_app/bundle/lineage_store.dart';
 import 'package:clax_app/bundle/updater.dart' show CapabilityDelta;
 import 'package:clax_app/clax/models.dart';
+import 'package:clax_app/bundle/updater.dart' show UpdateStep;
 import 'package:clax_app/ui/bundle_sheets.dart';
+import 'package:clax_app/ui/kit/kit.dart';
 import 'package:flutter/material.dart';
+import 'package:flutter/services.dart';
 import 'package:flutter_test/flutter_test.dart';
 
 const _app = ArtifactSummary(
@@ -165,22 +168,26 @@ void main() {
   });
 
   group('ExportSheet', () {
-    ExportSheet own({bool fits = true, bool askName = false}) => ExportSheet(
-      plan: _plan(fits: fits),
-      askName: askName,
-    );
+    ExportSheet own({bool fits = true, bool askName = false, int docs = 7}) =>
+        ExportSheet(
+          plan: _plan(fits: fits, docs: docs),
+          askName: askName,
+        );
 
-    testWidgets('shows what goes; data is off unless switched on', (
-      tester,
-    ) async {
+    testWidgets('shows what goes; Share sends no data, and nothing sits '
+        'above the buttons to include it', (tester) async {
       final answers = await _show(tester, own());
       expect(find.text('Plant log'), findsOneWidget);
       expect(find.text('v3 · 4 files, 12 KB'), findsOneWidget);
-      expect(find.text('7 documents'), findsOneWidget);
-      final sw = tester.widget<SwitchListTile>(
-        find.byKey(const ValueKey('include-data')),
+      expect(find.text('Include my data'), findsNothing);
+      expect(find.byType(Switch), findsNothing);
+      expect(
+        find.text(
+          'Share sends it without your data. “Share a copy with my data” '
+          'adds its 7 documents.',
+        ),
+        findsOneWidget,
       );
-      expect(sw.value, isFalse);
       await tester.tap(find.text('Share'));
       await tester.pumpAndSettle();
       final c = answers.single! as ExportChoice;
@@ -189,31 +196,32 @@ void main() {
       expect(c.name, isNull);
     });
 
-    testWidgets('Include my data and a typed name go with the choice', (
-      tester,
-    ) async {
+    testWidgets('Share a copy with my data sends the documents, with a '
+        'typed name', (tester) async {
       final answers = await _show(tester, own(askName: true));
-      await tester.tap(find.text('Include my data'));
-      await tester.pump();
       await tester.enterText(
         find.byKey(const ValueKey('export-name')),
         ' Sam ',
       );
-      await tester.tap(find.byKey(const ValueKey('export-own')));
+      await tester.tap(find.text('Share a copy with my data'));
       await tester.pumpAndSettle();
       final c = answers.single! as ExportChoice;
+      expect(c.mode, ExportMode.own);
       expect(c.includeData, isTrue);
       expect(c.name, 'Sam');
     });
 
-    testWidgets('too much data: the switch is off and says so', (tester) async {
+    testWidgets('too much data, or none: no data button', (tester) async {
       await _show(tester, own(fits: false));
-      expect(find.text('Too much data to include'), findsOneWidget);
-      final sw = tester.widget<SwitchListTile>(
-        find.byKey(const ValueKey('include-data')),
+      expect(
+        find.text('It goes without your data: there is too much to include.'),
+        findsOneWidget,
       );
-      expect(sw.onChanged, isNull);
+      expect(find.byKey(const ValueKey('export-own-data')), findsNothing);
       expect(find.byKey(const ValueKey('export-name')), findsNothing);
+      await _show(tester, own(docs: 0));
+      expect(find.byKey(const ValueKey('export-own-data')), findsNothing);
+      expect(find.textContaining('too much'), findsNothing);
     });
 
     testWidgets('on the Mac it exports', (tester) async {
@@ -224,10 +232,11 @@ void main() {
       );
       expect(find.byType(Dialog), findsOneWidget);
       expect(find.text('Export'), findsOneWidget);
+      expect(find.text('Export a copy with my data'), findsOneWidget);
       expect(find.text('Share'), findsNothing);
     });
 
-    testWidgets('an unmodified copy goes as received, with no data switch', (
+    testWidgets('an unmodified copy goes as received, with no data button', (
       tester,
     ) async {
       final answers = await _show(
@@ -238,7 +247,7 @@ void main() {
         ),
       );
       expect(find.text('Shares Alex’s v2 as you received it.'), findsOneWidget);
-      expect(find.byKey(const ValueKey('include-data')), findsNothing);
+      expect(find.textContaining('with my data'), findsNothing);
       await tester.tap(find.text('Share'));
       await tester.pumpAndSettle();
       expect(find.byKey(const ValueKey('export-name')), findsNothing);
@@ -246,9 +255,8 @@ void main() {
       expect((answers.single! as ExportChoice).includeData, isFalse);
     });
 
-    testWidgets('a modified copy: the original, or mine as a new app', (
-      tester,
-    ) async {
+    testWidgets('a modified copy: the original, or mine as a new app, with '
+        'or without my data, its version shown', (tester) async {
       final sheet = ExportSheet(
         plan: _plan(
           modes: const [ExportMode.reshare, ExportMode.fork],
@@ -257,20 +265,54 @@ void main() {
         ),
       );
       var answers = await _show(tester, sheet);
+      expect(find.text('Yours goes as v1 · 4 files, 12 KB'), findsOneWidget);
       expect(find.text('Share Alex’s v2'), findsOneWidget);
-      await tester.tap(find.text('Share my version as a new app'));
+      await tester.tap(find.text('Share mine'));
       await tester.pumpAndSettle();
-      expect((answers.single! as ExportChoice).mode, ExportMode.fork);
+      var c = answers.single! as ExportChoice;
+      expect((c.mode, c.includeData), (ExportMode.fork, false));
 
       answers = await _show(tester, sheet);
-      await tester.tap(find.text('Include my data'));
-      await tester.pump();
+      await tester.tap(find.text('Share mine with my data'));
+      await tester.pumpAndSettle();
+      c = answers.single! as ExportChoice;
+      expect((c.mode, c.includeData), (ExportMode.fork, true));
+
+      answers = await _show(tester, sheet);
       await tester.tap(find.text('Share Alex’s v2'));
       await tester.pumpAndSettle();
-      final c = answers.single! as ExportChoice;
+      c = answers.single! as ExportChoice;
       expect(c.mode, ExportMode.reshare);
       expect(c.includeData, isFalse, reason: 'never data in their bundle');
     });
+
+    for (final size in const [Size(320, 640), Size(412, 915), Size(1280, 800)]) {
+      testWidgets('at ${size.width.round()} wide its buttons sit in one row '
+          'or stack full width, never in two rows', (tester) async {
+        for (final sheet in [
+          own(),
+          ExportSheet(
+            plan: _plan(
+              modes: const [ExportMode.reshare, ExportMode.fork],
+              version: 1,
+              had: 2,
+            ),
+          ),
+        ]) {
+          await _show(tester, sheet, size: size);
+          final rects = [
+            for (final e in find.byType(ClaxButton).evaluate())
+              tester.getRect(find.byWidget(e.widget)),
+          ];
+          expect(rects.length, greaterThanOrEqualTo(3));
+          final row = rects.every((r) => r.top == rects.first.top);
+          final stacked =
+              rects.map((r) => r.top).toSet().length == rects.length &&
+              rects.every((r) => r.width == rects.first.width);
+          expect(row || stacked, isTrue, reason: '$rects');
+        }
+      });
+    }
   });
 
   group('InstallSheet', () {
@@ -291,6 +333,17 @@ void main() {
       );
       expect(find.text('Comes with 12 documents'), findsOneWidget);
       await tester.tap(find.text('Install'));
+      await tester.pumpAndSettle();
+      expect(answers, [true]);
+    });
+
+    testWidgets('wide, Return presses Install, the default', (tester) async {
+      final answers = await _show(
+        tester,
+        const InstallSheet(bundle: _bundle, kind: InstallKind.install),
+        size: const Size(1280, 800),
+      );
+      await tester.sendKeyEvent(LogicalKeyboardKey.enter);
       await tester.pumpAndSettle();
       expect(answers, [true]);
     });
@@ -380,25 +433,62 @@ void main() {
       expect(answers, [null]);
     });
 
-    testWidgets('a modified copy: replace the changes or keep them', (
-      tester,
-    ) async {
+    testWidgets('a modified copy: Keep mine or Update, the body saying '
+        'what each does', (tester) async {
       var answers = await _show(
         tester,
         const UpdateSheet(bundle: _bundle, have: 2, added: [], modified: true),
       );
       expect(find.text('You changed Plant log since v2'), findsOneWidget);
-      await tester.tap(find.text('Keep mine (stop updates for this app)'));
+      expect(
+        find.text(
+          'Update replaces your changes with v3. Keep mine keeps your '
+          'version and stops updates for this app.',
+        ),
+        findsOneWidget,
+      );
+      await tester.tap(find.text('Keep mine'));
       await tester.pumpAndSettle();
       expect(answers, [UpdateChoice.keepMine]);
 
       answers = await _show(
         tester,
-        const UpdateSheet(bundle: _bundle, have: 2, added: [], modified: true),
+        const UpdateSheet(
+          bundle: _bundle,
+          have: 2,
+          added: [],
+          modified: true,
+          keepStopsUpdates: false,
+        ),
       );
-      await tester.tap(find.text('Update (replaces your changes)'));
+      expect(
+        find.textContaining('skips this update; the next one asks again.'),
+        findsOneWidget,
+      );
+      await tester.tap(find.text('Update'));
       await tester.pumpAndSettle();
       expect(answers, [UpdateChoice.update]);
+    });
+
+    testWidgets('Keep mine and Update sit side by side on a phone, and '
+        'stack full width when they do not fit', (tester) async {
+      const sheet = UpdateSheet(
+        bundle: _bundle,
+        have: 2,
+        added: [],
+        modified: true,
+      );
+      Rect at(String key) => tester.getRect(find.byKey(ValueKey(key)));
+      await _show(tester, sheet, size: const Size(412, 915));
+      expect(at('keep-mine').top, at('update').top);
+      expect(at('keep-mine').right, lessThan(at('update').left));
+
+      tester.platformDispatcher.textScaleFactorTestValue = 2;
+      addTearDown(tester.platformDispatcher.clearTextScaleFactorTestValue);
+      await _show(tester, sheet, size: const Size(320, 640));
+      expect(at('update').bottom, lessThanOrEqualTo(at('keep-mine').top));
+      expect(at('update').width, at('keep-mine').width);
+      expect(at('update').width, 320 - 2 * 24);
     });
 
     testWidgets('stopped updates ask the same, saying when', (tester) async {
@@ -415,7 +505,7 @@ void main() {
         find.text('You kept your changes on 2 October 2026.'),
         findsOneWidget,
       );
-      expect(find.text('Update (replaces your changes)'), findsOneWidget);
+      expect(find.text('Keep mine'), findsOneWidget);
     });
   });
 
@@ -431,9 +521,13 @@ void main() {
       await tester.tapAt(const Offset(10, 10));
       await tester.pump();
       expect(find.text('Data'), findsOneWidget);
-      p.value = const BundleWorking('Checking v3 against your data…', 'Tests');
+      p.value = BundleWorking(
+        'Checking v3 against your data…',
+        updateStepLabel(UpdateStep.tests),
+      );
       await tester.pump();
-      expect(find.text('Tests'), findsOneWidget);
+      expect(find.text('Running its checks'), findsOneWidget);
+      expect(find.textContaining('test'), findsNothing);
       p.value = const BundlePassed('Updated to v3');
       await tester.pump();
       await tester.tap(find.text('Open'));
@@ -441,26 +535,47 @@ void main() {
       expect(answers, [true]);
     });
 
-    testWidgets('a failure says the app is unchanged, with Details', (
-      tester,
-    ) async {
+    testWidgets('while working it offers Cancel, which asks once and says '
+        'Cancelling…; at the publish it cannot cancel', (tester) async {
+      final p = ValueNotifier<BundleProgress>(
+        const BundleWorking('Checking v3 against your data…', 'Copying'),
+      );
+      var asked = 0;
+      await _showWorking(tester, p, onCancel: () => asked++);
+      final cancel = find.byKey(const ValueKey('cancel'));
+      expect(cancel, findsOneWidget);
+      await tester.tap(cancel);
+      await tester.pump();
+      expect(asked, 1);
+      expect(find.text('Cancelling…'), findsOneWidget);
+      expect(tester.widget<ClaxButton>(cancel).onPressed, isNull);
+
+      p.value = const BundleWorking('Checking…', 'Publishing', false);
+      await _showWorking(tester, p, onCancel: () => asked++);
+      expect(tester.widget<ClaxButton>(cancel).onPressed, isNull);
+    });
+
+    testWidgets('a failure says the app is unchanged, with Details as a '
+        'disclosure', (tester) async {
       final p = ValueNotifier<BundleProgress>(
         updateCheckFailed(
           3,
-          'a test failed',
+          'a check failed',
           details: ['adds a plant: expected 1, got 0'],
         ),
       );
       final answers = await _showWorking(tester, p);
       expect(
         find.text(
-          "v3 didn't pass its checks on your data: a test failed. "
+          'v3 didn’t pass its checks on your data: a check failed. '
           'Your app is unchanged.',
         ),
         findsOneWidget,
       );
+      expect(find.widgetWithText(ClaxButton, 'Details'), findsNothing);
+      expect(find.byType(ClaxButton), findsOneWidget);
       expect(find.text('adds a plant: expected 1, got 0'), findsNothing);
-      await tester.tap(find.text('Details'));
+      await tester.tap(find.byKey(const ValueKey('details-toggle')));
       await tester.pump();
       expect(find.text('adds a plant: expected 1, got 0'), findsOneWidget);
       await tester.tap(find.text('Keep current'));
@@ -554,11 +669,13 @@ void main() {
 
 Future<List<Object?>> _showWorking(
   WidgetTester tester,
-  ValueNotifier<BundleProgress> p,
-) async {
+  ValueNotifier<BundleProgress> p, {
+  VoidCallback? onCancel,
+}) async {
   final answers = <Object?>[];
   await tester.pumpWidget(
     MaterialApp(
+      key: UniqueKey(),
       home: Builder(
         builder: (context) => Scaffold(
           body: Center(
@@ -566,7 +683,7 @@ Future<List<Object?>> _showWorking(
               onPressed: () async => answers.add(
                 await showBundleSheet<bool>(
                   context,
-                  BundleProgressSheet(progress: p),
+                  BundleProgressSheet(progress: p, onCancel: onCancel),
                   dismissible: false,
                 ),
               ),

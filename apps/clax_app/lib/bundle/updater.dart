@@ -131,6 +131,12 @@ class UpdateRolledBack extends UpdateOutcome {
   final bool restored;
 }
 
+/// The person cancelled the update during its check: the draft is gone
+/// and nothing was published.
+class UpdateCancelled extends UpdateOutcome {
+  const UpdateCancelled();
+}
+
 /// An update put back, or waiting for the person, at start (§8.4).
 ///
 /// [restored]: it was interrupted during its live migration and is back
@@ -209,10 +215,15 @@ class Updater {
 
   /// Updates app [aid] to [bundle] (§8.2), telling [onStep] each step.
   /// Never throws: a failed check, a refusal or an error is the outcome.
+  ///
+  /// When [cancelled] completes before the publish step, the check stops
+  /// (each inspector run is told), its draft is deleted and the outcome is
+  /// [UpdateCancelled]; from [UpdateStep.publish] on, the update finishes.
   Future<UpdateOutcome> update(
     String aid,
     Bundle bundle, {
     void Function(UpdateStep step)? onStep,
+    Future<void>? cancelled,
   }) async {
     try {
       if (_busy(aid)) {
@@ -227,7 +238,7 @@ class Updater {
       return await _hold(aid, () async {
         updating.value = {...updating.value, aid};
         try {
-          return await _update(aid, bundle, onStep);
+          return await _update(aid, bundle, onStep, cancelled);
         } finally {
           updating.value = {...updating.value}..remove(aid);
         }
@@ -257,7 +268,10 @@ class Updater {
     String aid,
     Bundle bundle,
     void Function(UpdateStep step)? onStep,
+    Future<void>? cancelled,
   ) async {
+    var stop = false;
+    cancelled?.then((_) => stop = true, onError: (Object _) => stop = true);
     final m = bundle.manifest;
     final entry = await store.entry(aid);
     if (_mismatch(entry, m) case final why?) return UpdateRefused(why);
@@ -280,6 +294,7 @@ class Updater {
     ]..sort();
 
     // 1–5: the check, on a draft with a copy of the documents.
+    if (stop) return const UpdateCancelled();
     onStep?.call(UpdateStep.data);
     final DraftInfo draft;
     try {
@@ -308,6 +323,7 @@ class Updater {
         from: from,
         to: m.version,
         onStep: onStep,
+        cancelled: cancelled,
       );
     } finally {
       try {
@@ -316,6 +332,7 @@ class Updater {
         _log('deleting update draft ${draft.id} failed: $e');
       }
     }
+    if (stop) return const UpdateCancelled();
     if (failed != null) {
       final (step, reason, details) = failed;
       return UpdateCheckFailed(
@@ -680,18 +697,19 @@ class Updater {
     required int from,
     required int to,
     void Function(UpdateStep)? onStep,
+    Future<void>? cancelled,
   }) async {
     final url = _page(draftId);
     if (hasMigration) {
       onStep?.call(UpdateStep.migrate);
-      final error = await _migrate(url, from, to);
+      final error = await _migrate(url, from, to, cancelled: cancelled);
       if (error != null) {
         return (UpdateStep.migrate, 'its data step failed', [error]);
       }
     }
     onStep?.call(UpdateStep.page);
     try {
-      final seen = await inspector.inspect(url);
+      final seen = await inspector.inspect(url, cancelled: cancelled);
       final uncaught = seen.uncaught.toList();
       if (uncaught.isNotEmpty) {
         return (
@@ -711,25 +729,26 @@ class Updater {
           files: tests,
           perTest: perTestLimit,
           total: testLimit,
+          cancelled: cancelled,
         );
         if (run.failed.isNotEmpty) {
           return (
             UpdateStep.tests,
             run.failed.length == 1
-                ? 'a test failed'
-                : '${run.failed.length} tests failed',
+                ? 'a check failed'
+                : '${run.failed.length} checks failed',
             [for (final f in run.failed) '${f.name}: ${f.error}'],
           );
         }
         if (run.skipped > 0) {
           return (
             UpdateStep.tests,
-            'its tests did not all run',
-            ['${run.skipped} tests did not run in time'],
+            'its checks did not all run',
+            ['${run.skipped} checks did not run in time'],
           );
         }
       } on InspectorError catch (e) {
-        return (UpdateStep.tests, 'its tests did not run', [e.message]);
+        return (UpdateStep.tests, 'its checks did not run', [e.message]);
       }
     }
     return null;
@@ -742,6 +761,7 @@ class Updater {
     int from,
     int to, {
     Future<void> Function(MigrationWrite w)? onWrite,
+    Future<void>? cancelled,
   }) async {
     try {
       final run = await inspector.runMigration(
@@ -750,6 +770,7 @@ class Updater {
         to: to,
         total: migrationLimit,
         onWrite: onWrite,
+        cancelled: cancelled,
       );
       return run.ok ? null : (run.error ?? 'the migration failed');
     } on InspectorError catch (e) {

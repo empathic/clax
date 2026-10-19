@@ -1,15 +1,15 @@
-import 'dart:async';
-
 import 'package:flutter/material.dart';
 
+import '../../ui/kit/kit.dart';
 import 'device_grants.dart';
 import 'device_host.dart';
 
-/// [DeviceConsent] in a dialog over the app: "Let “Plant care” send you
-/// notifications and reminders?" with Allow and Don't allow; for location,
-/// Precise, Approximate and Don't allow, none of them set apart. Dismissing
-/// it is no answer ([DeviceAnswer.dismissed]: kept nowhere, the next call
-/// asks again); so is having no navigator (the app not up yet).
+/// [DeviceConsent] in a `ClaxDialog` over the app: "Let “Plant care” send
+/// you notifications and reminders?" with Don’t allow and **Allow**; for
+/// location, Precise (chosen at first) and Approximate as radios in the
+/// body. Dismissing it is no answer ([DeviceAnswer.dismissed]: kept
+/// nowhere, the next call asks again); so is having no navigator (the app
+/// not up yet).
 class DialogDeviceConsent implements DeviceConsent {
   DialogDeviceConsent({required this.navigator, required this.title});
 
@@ -17,6 +17,9 @@ class DialogDeviceConsent implements DeviceConsent {
 
   /// App [aid]'s title, for the question; empty when unknown.
   final Future<String> Function(String aid) title;
+
+  static const _keep =
+      'It keeps this until you take it back in the app inspector.';
 
   @override
   Future<DeviceAnswer> ask(String aid, String cap) async {
@@ -28,134 +31,61 @@ class DialogDeviceConsent implements DeviceConsent {
     }
     final nav = navigator();
     if (nav == null || !nav.mounted) return DeviceAnswer.dismissed;
-    final answer = await nav.push<DeviceAnswer>(
-      DialogRoute<DeviceAnswer>(
-        context: nav.context,
-        builder: (_) => DeviceConsentDialog(app: name, cap: cap),
-      ),
+    final who = name.trim().isEmpty ? 'this app' : '“${name.trim()}”';
+    final location = cap == 'location';
+    final precise = ValueNotifier(true);
+    final got = await ClaxDialog.ask(
+      nav.context,
+      title: 'Let $who ${deviceCapWords[cap] ?? 'use $cap'}?',
+      body: _keep,
+      content: location ? _Precision(precise) : null,
+      actions: const [
+        ClaxDialogAction('Don’t allow'),
+        ClaxDialogAction('Allow', kind: ClaxButtonKind.primary),
+      ],
+      defaultIndex: 1,
     );
-    return answer ?? DeviceAnswer.dismissed;
+    final exact = precise.value;
+    WidgetsBinding.instance.addPostFrameCallback((_) => precise.dispose());
+    return switch (got.index) {
+      0 => DeviceAnswer.deny,
+      1 when location && !exact => DeviceAnswer.approximate,
+      1 => DeviceAnswer.allow,
+      _ => DeviceAnswer.dismissed,
+    };
   }
 }
 
-/// The question itself; pops with the [DeviceAnswer].
-class DeviceConsentDialog extends StatelessWidget {
-  const DeviceConsentDialog({super.key, required this.app, required this.cap});
-
-  final String app;
-  final String cap;
-
-  static const _keep =
-      'It keeps this until you take it back in the app inspector.';
+/// Location's two precisions, each saying how exactly the app would see
+/// where the device is.
+class _Precision extends StatelessWidget {
+  const _Precision(this.precise);
+  final ValueNotifier<bool> precise;
 
   @override
-  Widget build(BuildContext context) {
-    final who = app.trim().isEmpty ? 'this app' : '“${app.trim()}”';
-    final title = Text('Let $who ${deviceCapWords[cap] ?? 'use $cap'}?');
-    void answer(DeviceAnswer a) => Navigator.of(context).pop(a);
-    if (cap == 'location') return _location(context, title, answer);
-    return AlertDialog(
-      title: title,
-      content: const Text(_keep),
-      actions: [
-        TextButton(
-          onPressed: () => answer(DeviceAnswer.deny),
-          child: const Text("Don't allow"),
+  Widget build(BuildContext context) => ValueListenableBuilder(
+    valueListenable: precise,
+    builder: (context, exact, _) => Column(
+      mainAxisSize: MainAxisSize.min,
+      crossAxisAlignment: CrossAxisAlignment.stretch,
+      children: [
+        ClaxRadio<bool>(
+          key: const ValueKey('consent-precise'),
+          value: true,
+          group: exact,
+          onChanged: (v) => precise.value = v,
+          label: 'Precise',
+          detail: 'Your exact location, within a few metres',
         ),
-        FilledButton(
-          onPressed: () => answer(DeviceAnswer.allow),
-          child: const Text('Allow'),
+        ClaxRadio<bool>(
+          key: const ValueKey('consent-approximate'),
+          value: false,
+          group: exact,
+          onChanged: (v) => precise.value = v,
+          label: 'Approximate',
+          detail: 'Only your area, within about 2 km',
         ),
       ],
-    );
-  }
-
-  /// Location's three answers, one under the other and alike, each saying
-  /// how exactly the app would see where the device is.
-  Widget _location(
-    BuildContext context,
-    Widget title,
-    void Function(DeviceAnswer) answer,
-  ) {
-    final text = Theme.of(context).textTheme;
-    Widget choice({
-      required Key key,
-      required IconData icon,
-      required String label,
-      required String detail,
-      required DeviceAnswer value,
-    }) {
-      final child = Row(
-        children: [
-          Icon(icon, size: 22),
-          const SizedBox(width: 12),
-          Expanded(
-            child: Column(
-              crossAxisAlignment: CrossAxisAlignment.start,
-              children: [
-                Text(label, style: text.labelLarge),
-                Text(detail, style: text.bodySmall),
-              ],
-            ),
-          ),
-        ],
-      );
-      final style = ButtonStyle(
-        alignment: Alignment.centerLeft,
-        shape: const WidgetStatePropertyAll(
-          RoundedRectangleBorder(
-            borderRadius: BorderRadius.all(Radius.circular(16)),
-          ),
-        ),
-        padding: const WidgetStatePropertyAll(
-          EdgeInsets.symmetric(horizontal: 16, vertical: 10),
-        ),
-        foregroundColor: WidgetStatePropertyAll(
-          Theme.of(context).colorScheme.onSurface,
-        ),
-      );
-      return Padding(
-        padding: const EdgeInsets.only(top: 8),
-        child: OutlinedButton(
-          key: key,
-          style: style,
-          onPressed: () => answer(value),
-          child: child,
-        ),
-      );
-    }
-
-    return AlertDialog(
-      title: title,
-      content: Column(
-        mainAxisSize: MainAxisSize.min,
-        crossAxisAlignment: CrossAxisAlignment.stretch,
-        children: [
-          choice(
-            key: const ValueKey('consent-precise'),
-            icon: Icons.my_location_rounded,
-            label: 'Precise',
-            detail: 'Your exact location, within a few metres',
-            value: DeviceAnswer.allow,
-          ),
-          choice(
-            key: const ValueKey('consent-approximate'),
-            icon: Icons.location_searching_rounded,
-            label: 'Approximate',
-            detail: 'Only your area, within about 2 km',
-            value: DeviceAnswer.approximate,
-          ),
-          choice(
-            key: const ValueKey('consent-deny'),
-            icon: Icons.location_disabled_rounded,
-            label: "Don't allow",
-            detail: 'The app gets no location',
-            value: DeviceAnswer.deny,
-          ),
-          const SizedBox(height: 12),
-          Text(_keep, style: text.bodySmall),
-        ],
-      ),
-    );
-  }
+    ),
+  );
 }

@@ -1,3 +1,4 @@
+import 'dart:async';
 import 'dart:io';
 
 import 'package:clax_app/agent/inspector.dart';
@@ -150,6 +151,34 @@ void main() {
     expect((out as UpdateCheckFailed).step, UpdateStep.tests);
     expect(out.details, ['a: expected 1']);
     await expectUnchanged(out);
+  });
+
+  test('a cancel during the check stops it: the draft goes, nothing is '
+      'published', () async {
+    me.inspector.hangTests();
+    final cancel = Completer<void>();
+    final out = await me.updater.update(
+      aid,
+      await v2(tests: true),
+      cancelled: cancel.future,
+      onStep: (s) {
+        if (s == UpdateStep.tests) cancel.complete();
+      },
+    );
+    expect(out, isA<UpdateCancelled>());
+    expect(me.inspector.testCalls.single.cancelled, isNotNull);
+    await expectUnchanged(out);
+    expect(me.snapshots.has(aid), isFalse);
+  });
+
+  test('a cancel before the check starts makes no draft', () async {
+    final out = await me.updater.update(
+      aid,
+      await v2(),
+      cancelled: Future<void>.value(),
+    );
+    expect(out, isA<UpdateCancelled>());
+    expect(me.api.callNames, isNot(contains('createDraft')));
   });
 
   test('tests that did not run fail the check', () async {

@@ -31,28 +31,38 @@ abstract final class ClaxSheet {
   ///
   /// The content is laid out in the space left: one that can grow taller
   /// than the window scrolls itself.
+  ///
+  /// When [dismissible] is false (work in progress), neither a tap outside,
+  /// a drag, Back nor Escape closes it: only its content pops it.
   static Future<T?> show<T>(
     BuildContext context, {
     required WidgetBuilder builder,
     String? title,
     List<Widget> actions = const [],
+    bool dismissible = true,
   }) {
     final wide = ClaxWidth.of(context) >= ClaxWidth.medium;
     final apple = ClaxFamily.of(context) == ClaxFamily.apple;
     final onDefault = _defaultOf(actions);
+    Widget content(BuildContext context) => PopScope(
+      canPop: dismissible,
+      child: Builder(builder: builder),
+    );
     if (!wide) {
       return showModalBottomSheet<T>(
         context: context,
         isScrollControlled: true,
         useSafeArea: true,
         showDragHandle: true,
+        isDismissible: dismissible,
+        enableDrag: dismissible,
         builder: (context) => ClaxSurfaceKeys(
           onDefault: onDefault,
           child: _SheetBody(
             title: title,
             actions: actions,
             handle: true,
-            child: Builder(builder: builder),
+            child: content(context),
           ),
         ),
       );
@@ -60,6 +70,7 @@ abstract final class ClaxSheet {
     if (!apple) {
       return showDialog<T>(
         context: context,
+        barrierDismissible: dismissible,
         builder: (context) => ClaxSurfaceKeys(
           onDefault: onDefault,
           child: Dialog(
@@ -68,7 +79,7 @@ abstract final class ClaxSheet {
               child: _SheetBody(
                 title: title,
                 actions: actions,
-                child: Builder(builder: builder),
+                child: content(context),
               ),
             ),
           ),
@@ -106,7 +117,7 @@ abstract final class ClaxSheet {
         child: _AppleSheet(
           title: title,
           actions: actions,
-          child: Builder(builder: builder),
+          child: content(context),
         ),
       ),
     );

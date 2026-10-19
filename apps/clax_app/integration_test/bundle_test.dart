@@ -253,7 +253,7 @@ void main() {
       'update to v3',
       updater.update(rid, opened3.bundle),
     );
-    expect(_describe(up3), startsWith('check failed at tests: a test failed'));
+    expect(_describe(up3), startsWith('check failed at tests: a check failed'));
     final afterV3 = await recipientApi.getArtifact(rid);
     expect(afterV3.artifact.currentVersion, afterV2.artifact.currentVersion);
     expect(afterV3.current!.contentSha256, v2.manifest.contentSha256);
@@ -558,6 +558,7 @@ String _describe(UpdateOutcome o) => switch (o) {
   UpdateRolledBack(:final backOn, :final restored, :final details) =>
     'rolled back to v$backOn, ${restored ? 'restored' : 'not restored'} '
         '$details',
+  UpdateCancelled() => 'cancelled',
 };
 
 /// Waits for [f], pumping frames meanwhile (the inspector's WebView is in

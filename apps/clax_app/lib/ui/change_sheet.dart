@@ -3,16 +3,18 @@ import 'dart:typed_data';
 
 import 'package:flutter/material.dart';
 
-import '../agent/failure.dart' show offersKeepGoing;
+import '../agent/failure.dart' show keepGoingIn, offersKeepGoing;
 import '../agent/loop.dart' show pendingComments;
 import '../clax/api.dart';
 import '../daemon/clock.dart';
 import 'change_tracker.dart';
+import 'kit/kit.dart';
 import 'layout.dart';
 import 'thread_detail.dart' show anchorWords;
 
-/// Shows the change in progress over an app: a bottom sheet at the compact
-/// size class, a panel at the right from medium (`ClaxWidth`). See [ChangeSheet]
+/// Shows the change in progress over an app: a bottom sheet with a drag
+/// handle and no close button at the compact size class, a panel at the
+/// right with a close button from medium (`ClaxWidth`). See [ChangeSheet]
 /// for the rest of the parameters.
 Future<void> showChangeSheet(
   BuildContext context, {
@@ -145,7 +147,8 @@ class ChangeSheet extends StatefulWidget {
   /// What thread `tid` is anchored to in the shell's words, if known.
   final String? Function(String tid)? labelOf;
 
-  /// Whether it shows as a side panel (no drag handle above it).
+  /// Whether it shows as a side panel: no drag handle above it, so a close
+  /// button in its header.
   final bool side;
 
   /// How long "Landed" shows before the sheet closes.
@@ -378,7 +381,7 @@ class _ChangeSheetState extends State<ChangeSheet> {
       ChangeOutcome.failed || ChangeOutcome.sendFailed => (
         Icon(Icons.error_outline, color: scheme.error, size: 22),
         'Couldn’t make that change',
-        _c.outcomeText,
+        keepGoingIn(_c.outcomeText, ClaxVerbs.of(context)),
       ),
       ChangeOutcome.replied => (
         Icon(Icons.forum_outlined, color: scheme.primary, size: 22),
@@ -388,7 +391,7 @@ class _ChangeSheetState extends State<ChangeSheet> {
       ChangeOutcome.stopped => (
         Icon(Icons.pause_circle_outline, color: scheme.onSurfaceVariant),
         'Stopped',
-        _c.outcomeText,
+        keepGoingIn(_c.outcomeText, ClaxVerbs.of(context)),
       ),
     };
     return Padding(
@@ -429,12 +432,16 @@ class _ChangeSheetState extends State<ChangeSheet> {
               ],
             ),
           ),
-          IconButton(
-            key: const ValueKey('change-close'),
-            tooltip: 'Close',
-            onPressed: _dismiss,
-            icon: const Icon(Icons.close),
-          ),
+          // The phone's sheet has a drag handle instead.
+          if (widget.side)
+            IconButton(
+              key: const ValueKey('change-close'),
+              tooltip: 'Close',
+              onPressed: _dismiss,
+              icon: const Icon(Icons.close),
+            )
+          else
+            const SizedBox(width: 12),
         ],
       ),
     );
@@ -680,36 +687,28 @@ class _ChangeSheetState extends State<ChangeSheet> {
             ),
           ),
         ),
-        const SizedBox(height: 6),
-        SizedBox(
-          width: 96,
-          child: Row(
-            mainAxisAlignment: MainAxisAlignment.center,
-            children: [
-              Icon(
-                shot.errors == 0
-                    ? Icons.check_circle_outline
-                    : Icons.error_outline,
-                size: 14,
-                color: shot.errors == 0 ? scheme.primary : scheme.error,
-              ),
-              const SizedBox(width: 4),
-              Flexible(
-                child: Text(
-                  switch (shot.errors) {
-                    0 => 'No errors',
-                    1 => '1 error',
-                    final n => '$n errors',
-                  },
-                  key: const ValueKey('change-render-errors'),
-                  style: theme.textTheme.labelSmall?.copyWith(
-                    color: scheme.onSurfaceVariant,
+        if (shot.errors > 0) ...[
+          const SizedBox(height: 6),
+          SizedBox(
+            width: 96,
+            child: Row(
+              mainAxisAlignment: MainAxisAlignment.center,
+              children: [
+                Icon(Icons.error_outline, size: 14, color: scheme.error),
+                const SizedBox(width: 4),
+                Flexible(
+                  child: Text(
+                    shot.errors == 1 ? '1 error' : '${shot.errors} errors',
+                    key: const ValueKey('change-render-errors'),
+                    style: theme.textTheme.labelSmall?.copyWith(
+                      color: scheme.onSurfaceVariant,
+                    ),
                   ),
                 ),
-              ),
-            ],
+              ],
+            ),
           ),
-        ),
+        ],
       ],
     );
     return Row(
@@ -728,37 +727,32 @@ class _ChangeSheetState extends State<ChangeSheet> {
   }
 
   Widget _actions(BuildContext context) {
-    final scheme = Theme.of(context).colorScheme;
     final outcome = _c.outcome;
     final first = _threads.firstOrNull;
     final replied = outcome == ChangeOutcome.replied;
     final openThread = first == null
         ? null
-        : FilledButton.tonalIcon(
+        : ClaxButton(
             key: const ValueKey('change-open-thread'),
+            kind: ClaxButtonKind.tonal,
+            icon: Icons.forum_outlined,
             onPressed: () => _openThread(first, reply: replied),
-            icon: const Icon(Icons.forum_outlined, size: 18),
-            label: Text(
-              replied
-                  ? 'See the reply'
-                  : _threads.length > 1
-                  ? 'Open threads'
-                  : 'Open thread',
-            ),
+            label: replied
+                ? 'See the reply'
+                : _threads.length > 1
+                ? 'Open threads'
+                : 'Open thread',
           );
     final List<Widget> buttons;
     if (_running) {
       buttons = [
         if (widget.onStop != null)
-          OutlinedButton.icon(
+          ClaxButton(
             key: const ValueKey('change-stop'),
-            style: OutlinedButton.styleFrom(
-              foregroundColor: scheme.error,
-              side: BorderSide(color: scheme.error.withValues(alpha: 0.6)),
-            ),
+            kind: ClaxButtonKind.destructive,
+            icon: Icons.stop_circle_outlined,
             onPressed: () => _thenClose(widget.onStop!),
-            icon: const Icon(Icons.stop_circle_outlined, size: 18),
-            label: const Text('Stop'),
+            label: 'Stop',
           ),
         ?openThread,
       ];
@@ -770,38 +764,35 @@ class _ChangeSheetState extends State<ChangeSheet> {
                   outcome == ChangeOutcome.stopped) &&
               widget.onRetry != null &&
               _c.failedThreads.isNotEmpty
-          ? FilledButton.icon(
+          ? ClaxButton(
               key: const ValueKey('change-retry'),
+              kind: ClaxButtonKind.primary,
+              isDefault: true,
+              icon: Icons.refresh,
               onPressed: _c.retrying ? null : () => _thenClose(widget.onRetry!),
-              icon: const Icon(Icons.refresh, size: 18),
-              label: Text(
-                outcome == ChangeOutcome.stopped
-                    ? 'Run again'
-                    : offersKeepGoing(_c.outcomeText)
-                    ? 'Keep going'
-                    : 'Retry',
-              ),
+              label: outcome == ChangeOutcome.stopped
+                  ? 'Run again'
+                  : offersKeepGoing(_c.outcomeText)
+                  ? 'Keep going'
+                  : 'Retry',
             )
           : null;
       buttons = [
         ?openThread,
         ?retry,
         if (retry == null)
-          FilledButton(
+          ClaxButton(
             key: const ValueKey('change-done'),
+            kind: ClaxButtonKind.primary,
+            isDefault: true,
             onPressed: _dismiss,
-            child: const Text('Done'),
+            label: 'Done',
           ),
       ];
     }
     return Padding(
       padding: const EdgeInsets.fromLTRB(20, 8, 20, 16),
-      child: Wrap(
-        alignment: WrapAlignment.end,
-        spacing: 10,
-        runSpacing: 8,
-        children: buttons,
-      ),
+      child: ClaxActionBar(children: buttons),
     );
   }
 }

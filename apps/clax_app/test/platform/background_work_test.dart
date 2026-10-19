@@ -128,6 +128,31 @@ void main() {
         'stop',
       ]);
     });
+    test('while Clax waits on the person, the notification says Clax needs '
+        'your OK, then the run’s step again', () {
+      final w = RecordingWork();
+      final runs = BackgroundRuns(w, foreground: () => false);
+      final a = runs.begin('Changing Runs', 'Reading');
+      final done = runs.needsOk('Let Clax read Groceries?');
+      runs.step(a, 'Writing'); // under the question
+      final second = runs.begin('Changing Week', 'Starting');
+      done();
+      done(); // once only
+      runs.end(second, const RunQuiet());
+      final again = runs.needsOk('Let Clax read Plants?');
+      runs.end(a, const RunQuiet());
+      again();
+      expect(w.calls, [
+        'start(Changing Runs, Reading)',
+        'update(Clax needs your OK, Let Clax read Groceries?)',
+        'update(Clax needs your OK, Let Clax read Groceries?)',
+        'update(Changing Week, Starting)',
+        'update(Changing Runs, Writing)',
+        'update(Clax needs your OK, Let Clax read Plants?)',
+        'stop',
+      ]);
+    });
+
     test('runs of several apps at once keep one service up until the last '
         'ends, in any order', () {
       final w = RecordingWork();

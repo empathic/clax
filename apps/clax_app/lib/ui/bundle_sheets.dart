@@ -1,9 +1,8 @@
 /// The sheets of sharing an app as a bundle and of opening one (bundles
 /// spec §3, §12.1): [ExportSheet], [InstallSheet], [UpdateSheet],
 /// [BundleProgressSheet] and [BundleNoticeSheet], each shown by
-/// [showBundleSheet]: a bottom sheet at the compact size class, a dialog
-/// from medium (`ClaxWidth`). They show what they are given and answer
-/// the person's choice; the bundle services do the work.
+/// [showBundleSheet] as a `ClaxSheet`. They show what they are given and
+/// answer the person's choice; the bundle services do the work.
 library;
 
 import 'package:file_picker/file_picker.dart';
@@ -27,42 +26,24 @@ import '../platform/device/device_grants.dart';
 import '../platform/settings_store.dart';
 import 'app_icon.dart';
 import 'developer.dart';
-import 'layout.dart';
+import 'kit/kit.dart';
+import 'theme.dart';
+import 'tokens.g.dart';
 import 'user_message.dart';
 
-/// Shows [sheet] over [context]: a bottom sheet at the compact size class,
-/// a dialog from medium. [dismissible] false keeps it up until
+/// Shows [sheet] over [context] as a `ClaxSheet`: a bottom sheet with a
+/// handle at the compact size class, a dialog from medium, a sheet from
+/// under the toolbar on the Mac. [dismissible] false keeps it up until
 /// the sheet pops itself (a check in progress).
 Future<T?> showBundleSheet<T>(
   BuildContext context,
   Widget sheet, {
   bool dismissible = true,
-}) {
-  if (ClaxWidth.of(context) >= ClaxWidth.medium) {
-    return showDialog<T>(
-      context: context,
-      barrierDismissible: dismissible,
-      builder: (_) => PopScope(
-        canPop: dismissible,
-        child: Dialog(
-          clipBehavior: Clip.antiAlias,
-          child: ConstrainedBox(
-            constraints: const BoxConstraints(maxWidth: 480),
-            child: sheet,
-          ),
-        ),
-      ),
-    );
-  }
-  return showModalBottomSheet<T>(
-    context: context,
-    isScrollControlled: true,
-    useSafeArea: true,
-    isDismissible: dismissible,
-    enableDrag: dismissible,
-    builder: (_) => PopScope(canPop: dismissible, child: sheet),
-  );
-}
+}) => ClaxSheet.show<T>(
+  context,
+  dismissible: dismissible,
+  builder: (_) => sheet,
+);
 
 /// What declared capabilities let an app do, in words, one per
 /// capability (and per `net` declaration, its hosts by name).
@@ -156,7 +137,9 @@ class BundleFace extends StatelessWidget {
 }
 
 /// The frame every bundle sheet shares: a face, a title and a line under
-/// it, a body, and the actions at the end.
+/// it, a body, and the actions at the end, side by side when they fit and
+/// otherwise stacked full width, the default on top. Return presses the
+/// focused button, or else the last enabled default among [actions].
 class _Frame extends StatelessWidget {
   const _Frame({
     required this.face,
@@ -172,11 +155,25 @@ class _Frame extends StatelessWidget {
   final List<Widget> body;
   final List<Widget> actions;
 
+  static VoidCallback? _defaultOf(List<Widget> actions) {
+    for (final a in actions.reversed) {
+      if (a is ClaxButton &&
+          a.isDefault &&
+          a.kind != ClaxButtonKind.destructive &&
+          a.onPressed != null) {
+        return a.onPressed;
+      }
+    }
+    return null;
+  }
+
   @override
   Widget build(BuildContext context) {
     final theme = Theme.of(context);
-    return SingleChildScrollView(
-      padding: const EdgeInsets.fromLTRB(24, 24, 24, 16),
+    final p = claxPalette(context);
+    return ClaxSurfaceKeys(
+      onDefault: _defaultOf(actions),
+      child: SingleChildScrollView(
       child: Column(
         mainAxisSize: MainAxisSize.min,
         crossAxisAlignment: CrossAxisAlignment.stretch,
@@ -194,7 +191,7 @@ class _Frame extends StatelessWidget {
                       Text(
                         s,
                         style: theme.textTheme.bodyMedium?.copyWith(
-                          color: theme.colorScheme.onSurfaceVariant,
+                          color: p.muted,
                         ),
                       ),
                   ],
@@ -202,16 +199,14 @@ class _Frame extends StatelessWidget {
               ),
             ],
           ),
-          if (body.isNotEmpty) const SizedBox(height: 16),
+          if (body.isNotEmpty) const SizedBox(height: ClaxSpace.s16),
           ...body,
-          const SizedBox(height: 20),
-          Wrap(
-            alignment: WrapAlignment.end,
-            spacing: 8,
-            runSpacing: 8,
-            children: actions,
-          ),
+          if (actions.isNotEmpty) ...[
+            const SizedBox(height: ClaxSpace.s20),
+            ClaxActionBar(children: actions),
+          ],
         ],
+      ),
       ),
     );
   }
@@ -231,7 +226,7 @@ class _Para extends StatelessWidget {
         text,
         style: small
             ? theme.textTheme.bodySmall?.copyWith(
-                color: theme.colorScheme.onSurfaceVariant,
+                color: claxPalette(context).muted,
               )
             : theme.textTheme.bodyMedium,
       ),
@@ -281,11 +276,12 @@ class ExportChoice {
   final String? name;
 }
 
-/// Share app / Export… (§3.1, §3.5) for [plan]: what goes, the data switch
-/// (off), and, without a saved name ([askName]), a Your name field. An
-/// unmodified installed app re-shares its kept original with no switch; a
-/// modified one offers the original or a fork. Pops an [ExportChoice], or
-/// null.
+/// Share app / Export… (§3.1, §3.5) for [plan]: what goes and, without a
+/// saved name ([askName]), a Your name field. Its own app goes as **Share**
+/// (no data) or "Share a copy with my data"; an unmodified installed app
+/// re-shares its kept original; a modified one offers the original, or
+/// the person's version as a new app with or without their data. Pops an
+/// [ExportChoice], or null.
 class ExportSheet extends StatefulWidget {
   const ExportSheet({
     super.key,
@@ -311,7 +307,6 @@ class ExportSheet extends StatefulWidget {
 }
 
 class _ExportSheetState extends State<ExportSheet> {
-  var _data = false;
   final _name = TextEditingController();
 
   @override
@@ -322,13 +317,13 @@ class _ExportSheetState extends State<ExportSheet> {
 
   String get _verb => widget.toFile ? 'Export' : 'Share';
 
-  void _done(ExportMode mode) {
+  void _done(ExportMode mode, {bool data = false}) {
     final typed = _name.text.trim();
     final reshare = mode == ExportMode.reshare;
     Navigator.of(context).pop(
       ExportChoice(
         mode: mode,
-        includeData: !reshare && _data && widget.plan.dataAllowed,
+        includeData: !reshare && data && widget.plan.dataAllowed,
         name: !reshare && widget.askName && typed.isNotEmpty ? typed : null,
       ),
     );
@@ -343,9 +338,9 @@ class _ExportSheetState extends State<ExportSheet> {
       word: p.iconWord,
       svg: widget.svg,
     );
-    final cancel = TextButton(
+    final cancel = ClaxButton(
+      label: 'Cancel',
       onPressed: () => Navigator.of(context).pop(),
-      child: const Text('Cancel'),
     );
     final what = '${_count(p.fileCount, 'file')}, ${byteSize(p.fileBytes)}';
     final author = switch (p.entry) {
@@ -362,69 +357,76 @@ class _ExportSheetState extends State<ExportSheet> {
         body: [_Para('Shares $author’s v$original as you received it.')],
         actions: [
           cancel,
-          FilledButton(
+          ClaxButton(
             key: const ValueKey('export-original'),
+            kind: ClaxButtonKind.primary,
+            isDefault: true,
+            label: _verb,
             onPressed: () => _done(ExportMode.reshare),
-            child: Text(_verb),
           ),
         ],
       );
     }
     final fork = p.modes.contains(ExportMode.fork);
+    final data = p.dataAllowed && p.docCount > 0;
+    final mine = fork ? '$_verb mine' : _verb;
+    final mineData = fork
+        ? '$_verb mine with my data'
+        : '$_verb a copy with my data';
+    final theirs = '$_verb $author’s v$original';
+    final mode = fork ? ExportMode.fork : ExportMode.own;
     return _Frame(
       face: face,
       title: p.title,
-      subtitle: fork ? null : 'v${p.version} · $what',
+      subtitle: fork ? 'Yours goes as v${p.version} · $what' : 'v${p.version} · $what',
       body: [
         if (fork)
           _Para(
-            'You changed ${p.title} since $author’s v$original. Share '
-            'theirs as you received it, or yours as a new app ($what).',
+            'You changed ${p.title} since $author’s v$original. “$theirs” '
+            'sends theirs as you received it; “$mine” sends yours as a new '
+            'app.',
           ),
-        SwitchListTile(
-          key: const ValueKey('include-data'),
-          contentPadding: EdgeInsets.zero,
-          title: const Text('Include my data'),
-          subtitle: Text(
-            p.dataAllowed
-                ? _count(p.docCount, 'document')
-                : 'Too much data to include',
+        if (data)
+          _Para(
+            '${fork ? '“$mine”' : _verb} sends it without your data. '
+            '“$mineData” adds its ${_count(p.docCount, 'document')}.',
+          )
+        else if (!p.dataAllowed)
+          const _Para(
+            'It goes without your data: there is too much to include.',
+            small: true,
           ),
-          value: _data && p.dataAllowed,
-          onChanged: p.dataAllowed ? (v) => setState(() => _data = v) : null,
-        ),
         if (widget.askName)
-          TextField(
+          ClaxTextField(
             key: const ValueKey('export-name'),
             controller: _name,
             maxLength: maxAuthorName,
             textCapitalization: TextCapitalization.words,
-            decoration: const InputDecoration(
-              labelText: 'Your name (optional)',
-              helperText: 'Shown to the people you share with',
-              counterText: '',
-            ),
+            label: 'Your name (optional)',
+            helper: 'Shown to the people you share with',
           ),
       ],
       actions: [
         cancel,
-        if (fork) ...[
-          OutlinedButton(
+        if (fork)
+          ClaxButton(
             key: const ValueKey('export-original'),
+            label: theirs,
             onPressed: () => _done(ExportMode.reshare),
-            child: Text('$_verb $author’s v$original'),
           ),
-          FilledButton(
-            key: const ValueKey('export-fork'),
-            onPressed: () => _done(ExportMode.fork),
-            child: Text('$_verb my version as a new app'),
+        if (data)
+          ClaxButton(
+            key: ValueKey(fork ? 'export-fork-data' : 'export-own-data'),
+            label: mineData,
+            onPressed: () => _done(mode, data: true),
           ),
-        ] else
-          FilledButton(
-            key: const ValueKey('export-own'),
-            onPressed: () => _done(ExportMode.own),
-            child: Text(_verb),
-          ),
+        ClaxButton(
+          key: ValueKey(fork ? 'export-fork' : 'export-own'),
+          kind: ClaxButtonKind.primary,
+          isDefault: true,
+          label: mine,
+          onPressed: () => _done(mode),
+        ),
       ],
     );
   }
@@ -550,16 +552,16 @@ class InstallSheet extends StatelessWidget {
           _Para('Comes with ${_count(d, 'document')}'),
       ],
       actions: [
-        TextButton(
+        ClaxButton(
+          label: 'Cancel',
           onPressed: () => Navigator.of(context).pop(),
-          child: const Text('Cancel'),
         ),
-        FilledButton(
+        ClaxButton(
           key: const ValueKey('install'),
+          kind: ClaxButtonKind.primary,
+          isDefault: true,
+          label: kind == InstallKind.install ? 'Install' : 'Install separately',
           onPressed: () => Navigator.of(context).pop(true),
-          child: Text(
-            kind == InstallKind.install ? 'Install' : 'Install separately',
-          ),
         ),
       ],
     );
@@ -579,8 +581,9 @@ enum UpdateChoice {
 }
 
 /// The update sheet (§3.3): an unmodified copy asks Update / Not now; a
-/// modified one (or one whose updates were stopped) asks to replace the
-/// changes or keep them. Pops an [UpdateChoice], or null for Not now.
+/// modified one (or one whose updates were stopped) asks Keep mine /
+/// Update, its body saying what each does. Pops an [UpdateChoice], or null
+/// for Not now.
 class UpdateSheet extends StatelessWidget {
   const UpdateSheet({
     super.key,
@@ -605,9 +608,8 @@ class UpdateSheet extends StatelessWidget {
   /// When the person chose Keep mine before; the sheet then asks again.
   final DateTime? stoppedAt;
 
-  /// Whether Keep mine stops every later update of the app ("Keep mine
-  /// (stop updates for this app)"), or only this one, the next asking
-  /// again ("Keep mine (skip this update)").
+  /// Whether Keep mine stops every later update of the app, or skips only
+  /// this one, the next asking again; the body says which.
   final bool keepStopsUpdates;
 
   static String _date(DateTime t) {
@@ -640,41 +642,34 @@ class UpdateSheet extends StatelessWidget {
         if (stoppedAt case final t?)
           _Para('You kept your changes on ${_date(t)}.'),
         if (added.isNotEmpty) _Bullets('This version also asks to:', added),
-        if (!mine)
+        if (mine)
+          _Para(
+            'Update replaces your changes with v${b.version}. Keep mine '
+            'keeps your version and '
+            '${keepStopsUpdates ? 'stops updates for this app.' : 'skips this update; the next one asks again.'}',
+          )
+        else
           const _Para(
-            'It is checked against your data first; your documents stay.',
+            'It’s checked against a copy of your data first; your documents '
+            'stay.',
             small: true,
           ),
       ],
-      actions: mine
-          ? [
-              OutlinedButton(
-                key: const ValueKey('keep-mine'),
-                onPressed: () =>
-                    Navigator.of(context).pop(UpdateChoice.keepMine),
-                child: Text(
-                  keepStopsUpdates
-                      ? 'Keep mine (stop updates for this app)'
-                      : 'Keep mine (skip this update)',
-                ),
-              ),
-              FilledButton(
-                key: const ValueKey('update'),
-                onPressed: () => Navigator.of(context).pop(UpdateChoice.update),
-                child: const Text('Update (replaces your changes)'),
-              ),
-            ]
-          : [
-              TextButton(
-                onPressed: () => Navigator.of(context).pop(),
-                child: const Text('Not now'),
-              ),
-              FilledButton(
-                key: const ValueKey('update'),
-                onPressed: () => Navigator.of(context).pop(UpdateChoice.update),
-                child: const Text('Update'),
-              ),
-            ],
+      actions: [
+        ClaxButton(
+          key: ValueKey(mine ? 'keep-mine' : 'not-now'),
+          label: mine ? 'Keep mine' : 'Not now',
+          onPressed: () =>
+              Navigator.of(context).pop(mine ? UpdateChoice.keepMine : null),
+        ),
+        ClaxButton(
+          key: const ValueKey('update'),
+          kind: ClaxButtonKind.primary,
+          isDefault: true,
+          label: 'Update',
+          onPressed: () => Navigator.of(context).pop(UpdateChoice.update),
+        ),
+      ],
     );
   }
 }
@@ -686,11 +681,13 @@ sealed class BundleProgress {
   const BundleProgress();
 }
 
-/// Going: a [headline] ("Checking v3 against your data…") and its [step].
+/// Going: a [headline] ("Checking v3 against your data…") and its [step];
+/// [cancellable] false once Cancel can no longer stop it (the publish).
 class BundleWorking extends BundleProgress {
-  const BundleWorking(this.headline, [this.step]);
+  const BundleWorking(this.headline, [this.step, this.cancellable = true]);
   final String headline;
   final String? step;
+  final bool cancellable;
 }
 
 /// Done: [headline] ("Updated to v3"), an optional [note], and Open when
@@ -724,19 +721,24 @@ BundleFailed updateCheckFailed(
   String reason, {
   List<String> details = const [],
 }) => BundleFailed(
-  "v$version didn't pass its checks on your data: $reason. "
+  'v$version didn’t pass its checks on your data: $reason. '
   'Your app is unchanged.',
   details: details,
   closeLabel: 'Keep current',
 );
 
 /// The sheet over a build, install or update check, following
-/// [progress]. It cannot be dismissed while working; it pops true for
-/// Open, else null.
+/// [progress]. It cannot be dismissed while working; with [onCancel] it
+/// offers Cancel then, which runs it once and says "Cancelling…". It pops
+/// true for Open, else null. A failure's details are behind a Details
+/// disclosure.
 class BundleProgressSheet extends StatefulWidget {
-  const BundleProgressSheet({super.key, required this.progress});
+  const BundleProgressSheet({super.key, required this.progress, this.onCancel});
 
   final ValueListenable<BundleProgress> progress;
+
+  /// Asks the work to stop; null offers no Cancel.
+  final VoidCallback? onCancel;
 
   @override
   State<BundleProgressSheet> createState() => _BundleProgressSheetState();
@@ -744,45 +746,64 @@ class BundleProgressSheet extends StatefulWidget {
 
 class _BundleProgressSheetState extends State<BundleProgressSheet> {
   var _details = false;
+  var _cancelling = false;
 
   @override
   Widget build(BuildContext context) => ValueListenableBuilder(
     valueListenable: widget.progress,
     builder: (context, p, _) {
       final theme = Theme.of(context);
+      final palette = claxPalette(context);
       return switch (p) {
-        BundleWorking(:final headline, :final step) => _Frame(
-          face: const SizedBox.square(
-            dimension: 32,
-            child: CircularProgressIndicator(strokeWidth: 3),
+        BundleWorking(:final headline, :final step, :final cancellable) =>
+          _Frame(
+            face: const SizedBox.square(
+              dimension: 32,
+              child: CircularProgressIndicator(strokeWidth: 3),
+            ),
+            title: headline,
+            subtitle: _cancelling ? 'Cancelling…' : step,
+            actions: [
+              if (widget.onCancel case final cancel?)
+                ClaxButton(
+                  key: const ValueKey('cancel'),
+                  label: 'Cancel',
+                  onPressed: cancellable && !_cancelling
+                      ? () {
+                          setState(() => _cancelling = true);
+                          cancel();
+                        }
+                      : null,
+                ),
+            ],
           ),
-          title: headline,
-          subtitle: step,
-          actions: const [],
-        ),
         BundlePassed(:final headline, :final note, :final canOpen) => _Frame(
           face: Icon(
             Icons.check_circle_rounded,
             size: 32,
-            color: theme.colorScheme.primary,
+            color: palette.agent,
           ),
           title: headline,
           subtitle: note,
           actions: [
             if (canOpen) ...[
-              TextButton(
+              ClaxButton(
+                label: 'Close',
                 onPressed: () => Navigator.of(context).pop(),
-                child: const Text('Close'),
               ),
-              FilledButton(
+              ClaxButton(
                 key: const ValueKey('open'),
+                kind: ClaxButtonKind.primary,
+                isDefault: true,
+                label: 'Open',
                 onPressed: () => Navigator.of(context).pop(true),
-                child: const Text('Open'),
               ),
             ] else
-              FilledButton(
+              ClaxButton(
+                kind: ClaxButtonKind.primary,
+                isDefault: true,
+                label: 'Done',
                 onPressed: () => Navigator.of(context).pop(),
-                child: const Text('Done'),
               ),
           ],
         ),
@@ -791,17 +812,22 @@ class _BundleProgressSheetState extends State<BundleProgressSheet> {
             face: Icon(
               Icons.error_outline_rounded,
               size: 32,
-              color: theme.colorScheme.error,
+              color: palette.danger,
             ),
             title: message,
             body: [
-              if (_details)
+              if (details.isNotEmpty)
+                _Disclosure(
+                  open: _details,
+                  onToggle: () => setState(() => _details = !_details),
+                ),
+              if (details.isNotEmpty && _details)
                 Container(
                   key: const ValueKey('details'),
-                  padding: const EdgeInsets.all(12),
+                  padding: const EdgeInsets.all(ClaxSpace.s12),
                   decoration: BoxDecoration(
-                    color: theme.colorScheme.surfaceContainerHighest,
-                    borderRadius: BorderRadius.circular(8),
+                    color: palette.surfaceContainers[4],
+                    borderRadius: BorderRadius.circular(ClaxRadius.sm),
                   ),
                   child: SelectableText(
                     details.join('\n'),
@@ -812,21 +838,58 @@ class _BundleProgressSheetState extends State<BundleProgressSheet> {
                 ),
             ],
             actions: [
-              if (details.isNotEmpty && !_details)
-                TextButton(
-                  onPressed: () => setState(() => _details = true),
-                  child: const Text('Details'),
-                ),
-              FilledButton(
+              ClaxButton(
                 key: const ValueKey('close'),
+                kind: ClaxButtonKind.primary,
+                isDefault: true,
+                label: closeLabel,
                 onPressed: () => Navigator.of(context).pop(),
-                child: Text(closeLabel),
               ),
             ],
           ),
       };
     },
   );
+}
+
+/// "Details", with a chevron that turns as it opens: a press shows or
+/// hides what follows it.
+class _Disclosure extends StatelessWidget {
+  const _Disclosure({required this.open, required this.onToggle});
+  final bool open;
+  final VoidCallback onToggle;
+
+  @override
+  Widget build(BuildContext context) {
+    final theme = Theme.of(context);
+    final p = claxPalette(context);
+    return Semantics(
+      button: true,
+      expanded: open,
+      child: InkWell(
+        key: const ValueKey('details-toggle'),
+        onTap: onToggle,
+        borderRadius: BorderRadius.circular(ClaxRadius.sm),
+        child: ConstrainedBox(
+          constraints: const BoxConstraints(minHeight: 40),
+          child: Row(
+            children: [
+              AnimatedRotation(
+                turns: open ? 0.25 : 0,
+                duration: ClaxMotion.fast,
+                child: Icon(Icons.chevron_right_rounded, color: p.muted),
+              ),
+              const SizedBox(width: ClaxSpace.s4),
+              Text(
+                'Details',
+                style: theme.textTheme.labelLarge?.copyWith(color: p.muted),
+              ),
+            ],
+          ),
+        ),
+      ),
+    );
+  }
 }
 
 // ---------------------------------------------------------------- Notice
@@ -892,20 +955,24 @@ class BundleNoticeSheet extends StatelessWidget {
     body: [_Para(message)],
     actions: [
       if (canOpen) ...[
-        TextButton(
+        ClaxButton(
+          label: 'Close',
           onPressed: () => Navigator.of(context).pop(),
-          child: const Text('Close'),
         ),
-        FilledButton(
+        ClaxButton(
           key: const ValueKey('open'),
+          kind: ClaxButtonKind.primary,
+          isDefault: true,
+          label: 'Open',
           onPressed: () => Navigator.of(context).pop(true),
-          child: const Text('Open'),
         ),
       ] else
-        FilledButton(
+        ClaxButton(
           key: const ValueKey('close'),
+          kind: ClaxButtonKind.primary,
+          isDefault: true,
+          label: 'Close',
           onPressed: () => Navigator.of(context).pop(),
-          child: const Text('Close'),
         ),
     ],
   );
@@ -932,15 +999,17 @@ class KeptUpdateSheet extends StatelessWidget {
       ),
     ],
     actions: [
-      TextButton(
+      ClaxButton(
         key: const ValueKey('discard'),
+        label: 'Discard',
         onPressed: () => Navigator.of(context).pop(false),
-        child: const Text('Discard'),
       ),
-      FilledButton(
+      ClaxButton(
         key: const ValueKey('restore'),
+        kind: ClaxButtonKind.primary,
+        isDefault: true,
+        label: 'Restore',
         onPressed: () => Navigator.of(context).pop(true),
-        child: const Text('Restore'),
       ),
     ],
   );
@@ -1252,19 +1321,31 @@ class BundleFlows {
     }
     final checking = 'Checking v${m.version} against your data…';
     final progress = ValueNotifier<BundleProgress>(BundleWorking(checking));
+    final cancel = Completer<void>();
+    final nav = Navigator.of(context);
+    var up = true;
     final shown = showBundleSheet<bool>(
       context,
-      BundleProgressSheet(progress: progress),
+      BundleProgressSheet(
+        progress: progress,
+        onCancel: () {
+          if (!cancel.isCompleted) cancel.complete();
+        },
+      ),
       dismissible: false,
-    );
+    ).whenComplete(() => up = false);
     final developer = DeveloperScope.of(context);
     UpdateOutcome outcome;
     try {
       outcome = await u.update(
         aid,
         opened.bundle,
-        onStep: (s) =>
-            progress.value = BundleWorking(checking, updateStepLabel(s)),
+        cancelled: cancel.future,
+        onStep: (s) => progress.value = BundleWorking(
+          checking,
+          updateStepLabel(s),
+          s != UpdateStep.publish && s != UpdateStep.liveMigrate,
+        ),
       );
     } on Object catch (e) {
       outcome = UpdateRefused(
@@ -1272,22 +1353,24 @@ class BundleFlows {
         details: _raw(developer, 'update', e),
       );
     }
-    progress.value = switch (outcome) {
-      UpdateLanded(:final version, :final truncated) => BundlePassed(
-        'Updated to v$version',
-        note: truncated ? 'Checked against part of your data' : null,
-      ),
-      UpdateCheckFailed(:final reason, :final details) => updateCheckFailed(
-        m.version,
-        reason,
-        details: details,
-      ),
-      UpdateRefused(:final message, :final details) => BundleFailed(
-        message,
-        details: details,
-      ),
-      UpdateRolledBack(:final backOn, :final details, :final restored) =>
-        BundleFailed(
+    final BundleProgress end;
+    switch (outcome) {
+      case UpdateCancelled():
+        // Cancelled: the app is as it was, and the sheet goes.
+        if (up) nav.pop();
+        await shown;
+        return;
+      case UpdateLanded(:final version, :final truncated):
+        end = BundlePassed(
+          'Updated to v$version',
+          note: truncated ? 'Checked against part of your data' : null,
+        );
+      case UpdateCheckFailed(:final reason, :final details):
+        end = updateCheckFailed(m.version, reason, details: details);
+      case UpdateRefused(:final message, :final details):
+        end = BundleFailed(message, details: details);
+      case UpdateRolledBack(:final backOn, :final details, :final restored):
+        end = BundleFailed(
           restored
               ? "The update's data step failed on your data; ${m.title} is "
                     'back on v$backOn with your data as it was.'
@@ -1295,8 +1378,9 @@ class BundleFlows {
                     '${m.title} back did not finish. Clax tries again at '
                     'its next start.',
           details: details,
-        ),
-    };
+        );
+    }
+    progress.value = end;
     if (await shown == true) open(aid);
   }
 
@@ -1362,7 +1446,7 @@ String updateStepLabel(UpdateStep s) => switch (s) {
   UpdateStep.data => 'Copying your data',
   UpdateStep.migrate => 'Upgrading the copy of your data',
   UpdateStep.page => 'Loading the page',
-  UpdateStep.tests => 'Running its tests',
+  UpdateStep.tests => 'Running its checks',
   UpdateStep.publish => 'Publishing',
   UpdateStep.liveMigrate => 'Upgrading your data',
 };

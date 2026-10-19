@@ -747,6 +747,7 @@ class _AppRootState extends State<AppRoot> with WidgetsBindingObserver {
       DialogReadConsent(
         navigator: () => _nav.currentState,
         memory: _consentMemory,
+        waiting: _runs.needsOk,
       );
 
   @override

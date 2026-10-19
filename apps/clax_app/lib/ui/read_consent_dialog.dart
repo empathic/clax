@@ -1,15 +1,15 @@
-/// The owner's consent for the agent to read another app's documents,
+/// The owner's consent for Clax to read another app's documents,
 /// asked in a dialog and remembered per pair of apps when the owner says
 /// so.
 library;
 
-import 'dart:async';
 import 'dart:convert';
 import 'dart:io';
 
 import 'package:flutter/material.dart';
 
 import '../agent/read_consent.dart';
+import 'kit/kit.dart';
 
 /// The pairs of apps whose reads the owner allowed always: the agent
 /// working on `reader` may read `source`'s documents.
@@ -107,20 +107,30 @@ class FileConsentMemory implements ConsentMemory {
   }
 }
 
-/// [AgentReadConsent] in a dialog over the app: "Let the agent read
-/// “Runs” while it works on “Dashboard”?" with Allow once, Always for this app
-/// (not for a new app, which has no ID to remember it by) and Don't allow.
+/// [AgentReadConsent] in a `ClaxDialog` over the app: "Let Clax read
+/// Runs?", its body naming the app Clax works on, with Don’t allow, **Allow
+/// once** and an "Always for this app" checkbox (not for a new app, which
+/// has no ID to remember it by); Allow once with it ticked answers
+/// [ConsentAnswer.always].
 ///
 /// An "always" answered before is answered again from [memory] without a
-/// dialog. Dismissing the dialog is Don't allow. A cancelled run takes its
-/// dialog down and is answered Don't allow. Without a navigator (the app
-/// not up yet) the answer is Don't allow.
+/// dialog. Dismissing the dialog is Don’t allow. A cancelled run takes its
+/// dialog down and is answered Don’t allow. Without a navigator (the app
+/// not up yet) the answer is Don’t allow. While the dialog is up,
+/// [waiting] is told its question (the background run's notification
+/// shows it, `BackgroundRuns.needsOk`) and the callback it returns runs
+/// once it is answered.
 class DialogReadConsent implements AgentReadConsent {
-  DialogReadConsent({required this.navigator, required this.memory});
+  DialogReadConsent({
+    required this.navigator,
+    required this.memory,
+    this.waiting,
+  });
 
   /// The navigator to show the dialog on.
   final NavigatorState? Function() navigator;
   final ConsentMemory memory;
+  final void Function() Function(String question)? waiting;
 
   @override
   Future<ConsentAnswer> ask({
@@ -135,87 +145,48 @@ class DialogReadConsent implements AgentReadConsent {
     }
     final nav = navigator();
     if (nav == null || !nav.mounted) return ConsentAnswer.denied;
-    final answer = Completer<ConsentAnswer>();
-    final route = DialogRoute<ConsentAnswer>(
-      context: nav.context,
-      builder: (context) => ReadConsentDialog(
-        source: sourceTitle,
-        app: readerTitle,
-        canRemember: reader != null,
-      ),
-    );
-    unawaited(
-      nav.push(route).then((a) {
-        if (!answer.isCompleted) answer.complete(a ?? ConsentAnswer.denied);
-      }),
-    );
-    unawaited(
-      cancelled?.then((_) {
-        if (answer.isCompleted) return;
-        answer.complete(ConsentAnswer.denied);
-        if (route.isActive) route.navigator?.removeRoute(route);
-      }),
-    );
-    final a = await answer.future;
-    if (a == ConsentAnswer.always && reader != null) {
-      await memory.allow(reader, source);
+    final question = readConsentTitle(sourceTitle);
+    final answered = waiting?.call(question);
+    final ClaxDialogAnswer got;
+    try {
+      got = await ClaxDialog.ask(
+        nav.context,
+        title: question,
+        body: readConsentBody(readerTitle),
+        suppression: reader == null ? null : 'Always for this app',
+        actions: const [
+          ClaxDialogAction('Don’t allow'),
+          ClaxDialogAction('Allow once', kind: ClaxButtonKind.primary),
+        ],
+        defaultIndex: 1,
+        cancelIndex: 0,
+        dismissed: cancelled,
+      );
+    } finally {
+      answered?.call();
     }
-    return a;
+    if (got.index != 1) return ConsentAnswer.denied;
+    if (got.suppressed && reader != null) {
+      await memory.allow(reader, source);
+      return ConsentAnswer.always;
+    }
+    return ConsentAnswer.once;
   }
 }
 
-/// The question itself; pops with the [ConsentAnswer] chosen.
-class ReadConsentDialog extends StatelessWidget {
-  const ReadConsentDialog({
-    super.key,
-    required this.source,
-    required this.app,
-    required this.canRemember,
-  });
+/// The consent's title, on one line: "Let Clax read Runs?".
+String readConsentTitle(String source) {
+  final name = source.trim();
+  return 'Let Clax read ${name.isEmpty ? 'another app' : name}?';
+}
 
-  /// The title of the app whose documents the agent would read.
-  final String source;
-
-  /// The title of the app the agent works on; null for a new app.
-  final String? app;
-
-  /// Whether to offer Always for this app.
-  final bool canRemember;
-
-  static String _name(String title) =>
-      title.trim().isEmpty ? 'another app' : '“${title.trim()}”';
-
-  @override
-  Widget build(BuildContext context) {
-    final working = switch (app) {
-      final a? when a.trim().isNotEmpty => _name(a),
-      _ => app == null ? 'your new app' : 'this app',
-    };
-    void answer(ConsentAnswer a) => Navigator.of(context).pop(a);
-    return AlertDialog(
-      title: Text(
-        'Let the agent read ${_name(source)} while it works on '
-        '$working?',
-      ),
-      content: const Text(
-        'It reads that app’s data to use in this one. It never changes '
-        'another app’s data.',
-      ),
-      actions: [
-        TextButton(
-          onPressed: () => answer(ConsentAnswer.denied),
-          child: const Text('Don’t allow'),
-        ),
-        if (canRemember)
-          TextButton(
-            onPressed: () => answer(ConsentAnswer.always),
-            child: const Text('Always for this app'),
-          ),
-        FilledButton(
-          onPressed: () => answer(ConsentAnswer.once),
-          child: const Text('Allow once'),
-        ),
-      ],
-    );
-  }
+/// The consent's body, naming the app Clax works on ([app], null for a new
+/// one).
+String readConsentBody(String? app) {
+  final working = switch (app?.trim()) {
+    final a? when a.isNotEmpty => a,
+    _ => app == null ? 'your new app' : 'this app',
+  };
+  return 'Clax would use its data in $working. It never changes another '
+      'app’s data.';
 }

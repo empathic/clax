@@ -180,8 +180,12 @@ void main() {
     );
     await tester.tap(find.text('show'));
     await tester.pumpAndSettle();
-    expect(find.text('Keep mine (stop updates for this app)'), findsNothing);
-    await tester.tap(find.text('Keep mine (skip this update)'));
+    expect(find.textContaining('stops updates for this app'), findsNothing);
+    expect(
+      find.textContaining('skips this update; the next one asks again.'),
+      findsOneWidget,
+    );
+    await tester.tap(find.text('Keep mine'));
     await tester.pumpAndSettle();
     expect(answers, [UpdateChoice.keepMine]);
   });

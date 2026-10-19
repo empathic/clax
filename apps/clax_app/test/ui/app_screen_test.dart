@@ -2222,7 +2222,8 @@ void main() {
       await tester.tap(chip);
       await frames(tester);
       expect(sheet(), findsOneWidget);
-      await tester.tap(find.byKey(const ValueKey('change-close')));
+      // The phone's sheet has no close button: a tap outside closes it.
+      await tester.tapAt(const Offset(5, 5));
       await frames(tester);
       clock.lapse();
       await tester.pump();
@@ -2249,7 +2250,8 @@ void main() {
       await tester.tap(find.byKey(const ValueKey('chip-working')));
       await frames(tester);
       expect(sheet(), findsOneWidget);
-      await tester.tap(find.byKey(const ValueKey('change-close')));
+      // The phone's sheet has no close button: a tap outside closes it.
+      await tester.tapAt(const Offset(5, 5));
       await frames(tester);
       expect(sheet(), findsNothing);
 

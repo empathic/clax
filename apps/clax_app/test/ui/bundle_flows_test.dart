@@ -192,6 +192,39 @@ void main() {
     });
   }
 
+  testWidgets('Cancel on the progress sheet stops the update and takes the '
+      'sheet down', (tester) async {
+    late Uint8List v2;
+    await tester.runAsync(() async {
+      await me.ready();
+      final v1 = await makeBundle(lineage: lineageA);
+      await me.installer.install(await me.installer.open(v1.bytes));
+      v2 = (await makeBundle(lineage: lineageA, version: 2)).bytes;
+    });
+    final hanging = _HangingUpdater(me);
+    flows = BundleFlows(
+      exporter: me.exporter,
+      installer: me.installer,
+      updater: hanging,
+      files: files,
+      settings: settings,
+      open: opened.add,
+    );
+    await run(tester, (c) => flows.openBytes(c, v2));
+    await tester.tap(find.text('Update'));
+    // The check's spinner never settles: pump through the sheet's entrance.
+    for (var i = 0; i < 10; i++) {
+      await tester.runAsync(() => Future<void>.delayed(Duration.zero));
+      await tester.pump(const Duration(milliseconds: 50));
+    }
+    expect(find.text('Running its checks'), findsOneWidget);
+    await tester.tap(find.byKey(const ValueKey('cancel')));
+    await settle(tester);
+    expect(hanging.cancels, 1);
+    expect(find.byType(BundleProgressSheet), findsNothing);
+    expect(opened, isEmpty);
+  });
+
   testWidgets('a modified copy: Keep mine stops updates', (tester) async {
     late String aid;
     late Uint8List v2;
@@ -207,7 +240,7 @@ void main() {
     });
     await run(tester, (c) => flows.openBytes(c, v2));
     expect(find.text('You changed Plant log since v1'), findsOneWidget);
-    await tester.tap(find.text('Keep mine (stop updates for this app)'));
+    await tester.tap(find.text('Keep mine'));
     await settle(tester);
     await tester.runAsync(() async {
       expect((await me.store.entry(aid))?.updatesStopped, isTrue);
@@ -267,5 +300,33 @@ class _ThrowingUpdater extends Updater {
     String aid,
     Bundle bundle, {
     void Function(UpdateStep step)? onStep,
+    Future<void>? cancelled,
   }) async => throw StateError('broken');
+}
+
+/// An [Updater] whose check runs until it is cancelled, recording that.
+class _HangingUpdater extends Updater {
+  _HangingUpdater(Install me)
+    : super(
+        api: me.api,
+        store: me.store,
+        inspector: me.inspector,
+        baseUrl: () => Uri.parse('http://127.0.0.1:9/'),
+        snapshots: me.snapshots,
+      );
+
+  var cancels = 0;
+
+  @override
+  Future<UpdateOutcome> update(
+    String aid,
+    Bundle bundle, {
+    void Function(UpdateStep step)? onStep,
+    Future<void>? cancelled,
+  }) async {
+    onStep?.call(UpdateStep.tests);
+    await cancelled;
+    cancels++;
+    return const UpdateCancelled();
+  }
 }

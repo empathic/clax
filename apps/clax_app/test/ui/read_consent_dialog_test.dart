@@ -2,6 +2,7 @@ import 'dart:async';
 import 'dart:io';
 
 import 'package:clax_app/agent/read_consent.dart';
+import 'package:clax_app/ui/kit/kit.dart';
 import 'package:clax_app/ui/read_consent_dialog.dart';
 import 'package:flutter/material.dart';
 import 'package:flutter_test/flutter_test.dart';
@@ -16,10 +17,20 @@ void main() {
     ),
   );
 
-  DialogReadConsent consent([ConsentMemory? memory]) => DialogReadConsent(
+  DialogReadConsent consent([
+    ConsentMemory? memory,
+    void Function() Function(String question)? waiting,
+  ]) => DialogReadConsent(
     navigator: () => nav.currentState,
     memory: memory ?? MemoryConsentMemory(),
+    waiting: waiting,
   );
+
+  /// Ticks "Always for this app".
+  Future<void> always(WidgetTester tester) async {
+    await tester.tap(find.text('Always for this app'));
+    await tester.pump();
+  }
 
   Future<ConsentAnswer> ask(
     DialogReadConsent c, {
@@ -34,19 +45,27 @@ void main() {
     cancelled: cancelled,
   );
 
-  testWidgets('the dialog names both apps and offers the three answers', (
+  testWidgets('the title is one line naming Clax and the source, the body '
+      'the app it works on; Don’t allow, Allow once and an Always checkbox', (
     tester,
   ) async {
     await pumpApp(tester);
     final c = consent();
     final answer = ask(c);
     await tester.pumpAndSettle();
+    expect(find.text('Let Clax read Runs?'), findsOneWidget);
     expect(
-      find.text('Let the agent read “Runs” while it works on “Dashboard”?'),
+      find.text(
+        'Clax would use its data in Dashboard. It never changes another '
+        'app’s data.',
+      ),
       findsOneWidget,
     );
+    expect(find.textContaining('agent'), findsNothing);
     expect(find.text('Allow once'), findsOneWidget);
-    expect(find.text('Always for this app'), findsOneWidget);
+    expect(find.byType(ClaxCheckbox), findsOneWidget);
+    expect(find.widgetWithText(ClaxButton, 'Always for this app'), findsNothing);
+    expect(find.byType(ClaxButton), findsNWidgets(2));
     expect(find.text('Don’t allow'), findsOneWidget);
     await tester.tap(find.text('Allow once'));
     await tester.pumpAndSettle();
@@ -77,7 +96,8 @@ void main() {
     final c = consent();
     var answer = ask(c);
     await tester.pumpAndSettle();
-    await tester.tap(find.text('Always for this app'));
+    await always(tester);
+    await tester.tap(find.text('Allow once'));
     await tester.pumpAndSettle();
     expect(await answer, ConsentAnswer.always);
 
@@ -99,10 +119,8 @@ void main() {
     await pumpApp(tester);
     final answer = ask(consent(), reader: null, readerTitle: null);
     await tester.pumpAndSettle();
-    expect(
-      find.text('Let the agent read “Runs” while it works on your new app?'),
-      findsOneWidget,
-    );
+    expect(find.text('Let Clax read Runs?'), findsOneWidget);
+    expect(find.textContaining('in your new app.'), findsOneWidget);
     expect(find.text('Always for this app'), findsNothing);
     await tester.tap(find.text('Allow once'));
     await tester.pumpAndSettle();
@@ -122,6 +140,38 @@ void main() {
     expect(find.byType(AlertDialog), findsNothing);
     expect(await answer, ConsentAnswer.denied);
     expect(find.text('home'), findsOneWidget);
+  });
+
+  testWidgets('Always ticked with Don’t allow denies and remembers nothing', (
+    tester,
+  ) async {
+    await pumpApp(tester);
+    final memory = MemoryConsentMemory();
+    final answer = ask(consent(memory));
+    await tester.pumpAndSettle();
+    await always(tester);
+    await tester.tap(find.text('Don’t allow'));
+    await tester.pumpAndSettle();
+    expect(await answer, ConsentAnswer.denied);
+    expect(await memory.pairs(), isEmpty);
+  });
+
+  testWidgets('while the dialog waits, the run’s notification says Clax '
+      'needs your OK', (tester) async {
+    await pumpApp(tester);
+    final log = <String>[];
+    final answer = ask(
+      consent(null, (q) {
+        log.add(q);
+        return () => log.add('answered');
+      }),
+    );
+    await tester.pumpAndSettle();
+    expect(log, ['Let Clax read Runs?']);
+    await tester.tap(find.text('Allow once'));
+    await tester.pumpAndSettle();
+    expect(await answer, ConsentAnswer.once);
+    expect(log, ['Let Clax read Runs?', 'answered']);
   });
 
   test('without a navigator the answer is denied', () async {

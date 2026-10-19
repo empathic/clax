@@ -1014,7 +1014,8 @@ void main() {
     });
 
     testWidgets("a change that reads another app's documents asks the owner "
-        'in a dialog first; Always is kept for the pair', (tester) async {
+        'in a dialog first, its notification saying Clax needs your OK; '
+        'Always is kept for the pair', (tester) async {
       turns = _Turns();
       final week = api.seedArtifact('Week', {'index.html': _page});
       final aid = api.seedArtifact('Runs', {'index.html': _page});
@@ -1034,18 +1035,18 @@ void main() {
           ]);
         });
       api.sendComment(aid, 'Show my week here');
-      await pumpUntil(
-        tester,
-        () => find.byType(ReadConsentDialog).evaluate().isNotEmpty,
-      );
-      expect(
-        find.text('Let the agent read “Week” while it works on “Runs”?'),
-        findsOneWidget,
-      );
+      final question = find.text('Let Clax read Week?');
+      await pumpUntil(tester, () => question.evaluate().isNotEmpty);
       expect(turns!.turns, 1, reason: 'the run waits for the answer');
+      expect(
+        work.calls,
+        contains('update(Clax needs your OK, Let Clax read Week?)'),
+      );
       await tester.tap(find.text('Always for this app'));
+      await tester.pump();
+      await tester.tap(find.text('Allow once'));
       await pumpUntil(tester, () => work.calls.contains('stop'));
-      expect(find.byType(ReadConsentDialog), findsNothing);
+      expect(question, findsNothing);
       expect(result, isNot(contains('did not allow')));
       await settleFiles(tester);
       expect(

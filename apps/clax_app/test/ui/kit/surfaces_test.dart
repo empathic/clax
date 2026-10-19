@@ -8,6 +8,7 @@ import 'package:clax_app/ui/kit/scaffold.dart';
 import 'package:clax_app/ui/kit/sheet.dart';
 import 'package:clax_app/ui/kit/text_field.dart';
 import 'package:clax_app/ui/kit/toast.dart';
+import 'package:clax_app/ui/kit/toggles.dart';
 import 'package:clax_app/ui/theme.dart';
 import 'package:flutter/foundation.dart';
 import 'package:flutter/material.dart';
@@ -243,6 +244,36 @@ void main() {
       ).first;
       expect(tester.getSize(panel).width, lessThanOrEqualTo(560));
     });
+
+    for (final (name, size, platform) in const [
+      ('a phone', Size(412, 915), TargetPlatform.android),
+      ('a wide window', Size(1280, 800), TargetPlatform.android),
+      ('a Mac', Size(1200, 800), TargetPlatform.macOS),
+    ]) {
+      testWidgets('on $name one that is not dismissible stays on a tap '
+          'outside, Back and Escape', (tester) async {
+        window(tester, size);
+        await tester.pumpWidget(
+          page(
+            platform: platform,
+            (c) => ClaxSheet.show<void>(
+              c,
+              dismissible: false,
+              builder: (_) => const Text('working'),
+            ),
+          ),
+        );
+        await tester.tap(find.text('Go'));
+        await tester.pumpAndSettle();
+        await tester.tapAt(const Offset(4, 4));
+        await tester.pumpAndSettle();
+        await tester.sendKeyEvent(LogicalKeyboardKey.escape);
+        await tester.pumpAndSettle();
+        await tester.binding.handlePopRoute();
+        await tester.pumpAndSettle();
+        expect(find.text('working'), findsOneWidget);
+      });
+    }
 
     testWidgets('it answers what its content pops with', (tester) async {
       window(tester, const Size(412, 915));
@@ -520,6 +551,71 @@ void main() {
         await tester.tap(find.text('Cancel'));
         await tester.pumpAndSettle();
         expect(got, 0);
+      });
+    }
+
+    for (final platform in [TargetPlatform.android, TargetPlatform.macOS]) {
+      testWidgets('on $platform ask shows its content and suppression '
+          'checkbox, and answers both', (tester) async {
+        window(tester, const Size(800, 800));
+        ClaxDialogAnswer? got;
+        await tester.pumpWidget(
+          page(platform: platform, (c) async {
+            got = await ClaxDialog.ask(
+              c,
+              title: 'Let Clax read Groceries?',
+              body: 'It never changes Groceries’ data.',
+              content: const Text('a choice'),
+              suppression: 'Always for this app',
+              actions: const [
+                ClaxDialogAction('Don’t allow'),
+                ClaxDialogAction('Allow once', kind: ClaxButtonKind.primary),
+              ],
+              defaultIndex: 1,
+              cancelIndex: 0,
+            );
+          }),
+        );
+        await tester.tap(find.text('Go'));
+        await tester.pumpAndSettle();
+        expect(find.text('a choice'), findsOneWidget);
+        expect(find.byType(ClaxCheckbox), findsOneWidget);
+        await tester.tap(find.text('Always for this app'));
+        await tester.pump();
+        await tester.tap(find.text('Allow once'));
+        await tester.pumpAndSettle();
+        expect(got?.index, 1);
+        expect(got?.suppressed, isTrue);
+      });
+
+      testWidgets('on $platform a dismissed future takes it down and answers '
+          'the cancel index', (tester) async {
+        window(tester, const Size(800, 800));
+        final gone = Completer<void>();
+        ClaxDialogAnswer? got;
+        await tester.pumpWidget(
+          page(platform: platform, (c) async {
+            got = await ClaxDialog.ask(
+              c,
+              title: 'Let Clax read Groceries?',
+              actions: const [
+                ClaxDialogAction('Don’t allow'),
+                ClaxDialogAction('Allow once', kind: ClaxButtonKind.primary),
+              ],
+              cancelIndex: 0,
+              dismissed: gone.future,
+            );
+          }),
+        );
+        await tester.tap(find.text('Go'));
+        await tester.pumpAndSettle();
+        expect(find.text('Let Clax read Groceries?'), findsOneWidget);
+        gone.complete();
+        await tester.pumpAndSettle();
+        expect(find.text('Let Clax read Groceries?'), findsNothing);
+        expect(find.text('Go'), findsOneWidget);
+        expect(got?.index, 0);
+        expect(got?.suppressed, isFalse);
       });
     }
 

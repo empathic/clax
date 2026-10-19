@@ -1,3 +1,4 @@
+import 'dart:async';
 import 'dart:math' as math;
 
 import 'package:flutter/material.dart';
@@ -8,6 +9,7 @@ import '../theme.dart';
 import '../tokens.g.dart';
 import 'button.dart';
 import 'family.dart';
+import 'toggles.dart';
 
 /// One button of a [ClaxDialog]: its [label] (at most three words) and
 /// its [kind]. A destructive action is never the dialog's default.
@@ -15,6 +17,16 @@ class ClaxDialogAction {
   const ClaxDialogAction(this.label, {this.kind = ClaxButtonKind.plain});
   final String label;
   final ClaxButtonKind kind;
+}
+
+/// What a [ClaxDialog.ask] was answered: the [index] of the action pressed
+/// (the cancel index, or null without one, when it was dismissed), and
+/// whether its suppression checkbox was checked.
+@immutable
+class ClaxDialogAnswer {
+  const ClaxDialogAnswer(this.index, {this.suppressed = false});
+  final int? index;
+  final bool suppressed;
 }
 
 /// A dialog that asks one question and answers with the index of the
@@ -39,6 +51,30 @@ abstract final class ClaxDialog {
     required List<ClaxDialogAction> actions,
     int? defaultIndex,
     int? cancelIndex,
+  }) async => (await ask(
+    context,
+    title: title,
+    body: body,
+    actions: actions,
+    defaultIndex: defaultIndex,
+    cancelIndex: cancelIndex,
+  )).index;
+
+  /// [show], with [content] (a choice, such as radios) under [body] and,
+  /// with [suppression], a checkbox of that label above the actions, off
+  /// at first (the Mac alert's suppression button); answers the action's
+  /// index with whether the checkbox was checked. When [dismissed]
+  /// completes first, the dialog is taken down and answers [cancelIndex].
+  static Future<ClaxDialogAnswer> ask(
+    BuildContext context, {
+    required String title,
+    String? body,
+    Widget? content,
+    String? suppression,
+    required List<ClaxDialogAction> actions,
+    int? defaultIndex,
+    int? cancelIndex,
+    Future<void>? dismissed,
   }) async {
     assert(actions.isNotEmpty);
     assert(defaultIndex == null || defaultIndex < actions.length);
@@ -48,11 +84,29 @@ abstract final class ClaxDialog {
       defaultIndex = null;
     }
     final apple = ClaxFamily.of(context) == ClaxFamily.apple;
-    final int? got;
+    final suppressed = ValueNotifier(false);
+    final navigator = Navigator.of(context, rootNavigator: true);
+    final themes = InheritedTheme.capture(
+      from: context,
+      to: navigator.context,
+    );
+    final extra = [
+      ?content,
+      if (suppression != null)
+        ValueListenableBuilder(
+          valueListenable: suppressed,
+          builder: (context, on, _) => ClaxCheckbox(
+            key: ClaxDialog.suppressionKey,
+            value: on,
+            onChanged: (v) => suppressed.value = v,
+            label: suppression,
+          ),
+        ),
+    ];
+    final PopupRoute<int> route;
     if (apple) {
       final p = claxPalette(context);
-      got = await showGeneralDialog<int>(
-        context: context,
+      route = RawDialogRoute<int>(
         barrierDismissible: true,
         barrierLabel: MaterialLocalizations.of(context).modalBarrierDismissLabel,
         barrierColor: p.scrim.withValues(alpha: p.scrim.a * 0.5),
@@ -73,19 +127,42 @@ abstract final class ClaxDialog {
                   ),
           );
         },
-        pageBuilder: (context, _, _) => _Keys(
-          defaultIndex: defaultIndex,
-          child: _AppleAlert(title: title, body: body, actions: actions, defaultIndex: defaultIndex),
+        pageBuilder: (context, _, _) => themes.wrap(
+          _Keys(
+            defaultIndex: defaultIndex,
+            child: _AppleAlert(
+              title: title,
+              body: body,
+              extra: extra,
+              actions: actions,
+              defaultIndex: defaultIndex,
+            ),
+          ),
         ),
       );
     } else {
-      got = await showDialog<int>(
+      route = DialogRoute<int>(
         context: context,
+        themes: themes,
+        barrierLabel: MaterialLocalizations.of(context).modalBarrierDismissLabel,
         builder: (context) => _Keys(
           defaultIndex: defaultIndex,
           child: AlertDialog(
             title: Text(title),
-            content: body == null ? null : Text(body),
+            content: body == null && extra.isEmpty
+                ? null
+                : SingleChildScrollView(
+                    child: Column(
+                      mainAxisSize: MainAxisSize.min,
+                      crossAxisAlignment: CrossAxisAlignment.stretch,
+                      children: [
+                        if (body != null) Text(body),
+                        if (body != null && extra.isNotEmpty)
+                          const SizedBox(height: ClaxSpace.s12),
+                        ...extra,
+                      ],
+                    ),
+                  ),
             constraints: const BoxConstraints(
               minWidth: 280,
               maxWidth: ClaxLayout.sheet,
@@ -102,8 +179,28 @@ abstract final class ClaxDialog {
         ),
       );
     }
-    return got ?? cancelIndex;
+    final answer = Completer<int?>();
+    unawaited(
+      navigator.push(route).then((i) {
+        if (!answer.isCompleted) answer.complete(i ?? cancelIndex);
+      }),
+    );
+    unawaited(
+      dismissed?.then((_) {
+        if (answer.isCompleted) return;
+        answer.complete(cancelIndex);
+        if (route.isActive) route.navigator?.removeRoute(route);
+      }),
+    );
+    final index = await answer.future;
+    final on = suppressed.value;
+    // The checkbox may still be on screen as the route animates away.
+    WidgetsBinding.instance.addPostFrameCallback((_) => suppressed.dispose());
+    return ClaxDialogAnswer(index, suppressed: on);
   }
+
+  /// The suppression checkbox of [ask], for tests.
+  static const suppressionKey = ValueKey('clax-dialog-suppression');
 
   static Widget _button(
     BuildContext context,
@@ -210,9 +307,14 @@ class _AppleAlert extends StatelessWidget {
     required this.body,
     required this.actions,
     required this.defaultIndex,
+    this.extra = const [],
   });
   final String title;
   final String? body;
+
+  /// The content and the suppression checkbox, between the text and the
+  /// buttons.
+  final List<Widget> extra;
   final List<ClaxDialogAction> actions;
   final int? defaultIndex;
 
@@ -255,6 +357,10 @@ class _AppleAlert extends StatelessWidget {
                         style: ClaxType.of(ClaxRole.caption, platform)
                             .copyWith(color: p.fg),
                       ),
+                    ],
+                    for (final w in extra) ...[
+                      const SizedBox(height: ClaxSpace.s12),
+                      w,
                     ],
                     const SizedBox(height: ClaxSpace.s20),
                     ClaxActionBar(
