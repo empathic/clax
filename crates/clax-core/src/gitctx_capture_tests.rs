@@ -848,7 +848,7 @@ fn every_command_runs_with_the_pins_and_a_cleared_environment() {
     let spy = clax_fake_exe::install(
         &bin.join("git"),
         &format!(
-            "#!/bin/sh\n{{ env | sort; echo ---; }} >> \"$(dirname \"$0\")/envs\"\nexec {} \"$@\"\n",
+            "#!/bin/sh\nenv > \"$(dirname \"$0\")/env.$$\"\nexec {} \"$@\"\n",
             git_bin().to_str().unwrap()
         ),
     );
@@ -856,10 +856,17 @@ fn every_command_runs_with_the_pins_and_a_cleared_environment() {
         capture(&root, soon(), &Git::assume_supported(&spy)),
         GitField::Ok(_)
     ));
-    let log = std::fs::read_to_string(bin.join("envs")).unwrap();
-    let runs: Vec<&str> = log
-        .split("---\n")
-        .filter(|r| !r.trim().is_empty())
+    // One file per run: the parts run in parallel, so a shared log
+    // would interleave them.
+    let runs: Vec<String> = std::fs::read_dir(&bin)
+        .unwrap()
+        .map(|e| e.unwrap().path())
+        .filter(|p| {
+            p.file_name()
+                .and_then(|n| n.to_str())
+                .is_some_and(|n| n.starts_with("env."))
+        })
+        .map(|p| std::fs::read_to_string(p).unwrap())
         .collect();
     assert!(runs.len() >= 5, "{} runs", runs.len());
     let allowed = [
@@ -878,7 +885,7 @@ fn every_command_runs_with_the_pins_and_a_cleared_environment() {
         "_",
         "OLDPWD",
     ];
-    for run in runs {
+    for run in &runs {
         let vars: std::collections::HashMap<&str, &str> =
             run.lines().filter_map(|l| l.split_once('=')).collect();
         for k in vars.keys() {
