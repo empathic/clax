@@ -1,8 +1,9 @@
 import '../platform/secure_key.dart';
 
 /// A [SecureKey] that tells the daemon about a new key: after each [write]
-/// it calls [onChanged] (the supervisor's restart, so the daemon starts
-/// again with the key in its environment for pages' `sample()` calls).
+/// it calls [onChanged] (the supervisor's `keyChanged`, which puts the key
+/// into an in-process daemon's memory, or restarts a child daemon with the
+/// key in its environment, for pages' `sample()` calls).
 class DaemonKey implements SecureKey {
   DaemonKey(this._inner, {required this.onChanged});
 

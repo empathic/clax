@@ -14,6 +14,7 @@ class FakeSupervisor implements DaemonSupervisor {
   int onResumeCalls = 0;
   int stopCalls = 0;
   int restartCalls = 0;
+  int keyChangedCalls = 0;
 
   @override
   Stream<DaemonState> get states => _states.stream;
@@ -52,6 +53,9 @@ class FakeSupervisor implements DaemonSupervisor {
 
   @override
   Future<void> restart() async => restartCalls++;
+
+  @override
+  Future<void> keyChanged() async => keyChangedCalls++;
 }
 
 /// An endpoint on [port] for daemon [pid].

@@ -10,6 +10,12 @@ import 'exe_locator.dart';
 import 'health.dart';
 import 'ports.dart';
 import 'process.dart';
+import 'sample_key.dart';
+
+/// How the daemon runs: a child process found by an [ExeLocator]
+/// (Android's `libclax.so`, the Mac's helper), or inside this process
+/// (iOS, `crates/clax-ios`), where nothing is spawned or signalled.
+enum DaemonHost { android, mac, inProcess }
 
 /// What the embedded daemon is doing.
 sealed class DaemonState {
@@ -101,7 +107,8 @@ class DaemonStopped implements Exception {
 
 /// Starts, watches and restarts the embedded `clax` daemon.
 ///
-/// The daemon runs as `<exe> --port <P> serve --foreground` with a clean
+/// As a child process ([DaemonHost.android], [DaemonHost.mac]) the daemon
+/// runs as `<exe> --port <P> serve --foreground` with a clean
 /// environment (`CLAX_HOME` = [home], `HOME` = the support directory,
 /// `TMPDIR` = the cache directory, a system `PATH`, `RUST_LOG=warn`, and
 /// `ANTHROPIC_API_KEY` when `apiKey` gives one, read at each start so pages'
@@ -123,6 +130,14 @@ class DaemonStopped implements Exception {
 /// seconds, [startFailAfter] starts in a row that never come up, or one
 /// exit with [migrationFailedExit], is [Failed]. After [stop] nothing
 /// restarts until [ensureUp].
+///
+/// Inside this process ([DaemonHost.inProcess]) the starter runs the
+/// daemon with no environment of its own: none is built and no key is put
+/// in it, and no PID is ever signalled (a `daemon.json` left by an earlier
+/// run of the app names a PID of that run). Instead, each time a start is
+/// [Up] the saved key is put into the daemon's memory over [SampleKeyPort],
+/// as it is on each [keyChanged]. Everything else holds: `config.toml`,
+/// the kept port, `daemon.json` and `/healthz`, the backoff and [Failed].
 class DaemonSupervisor {
   DaemonSupervisor({
     required this._exe,
@@ -134,11 +149,15 @@ class DaemonSupervisor {
     required this._health,
     required this._pids,
     this._clock = const SystemClock(),
-    this._android = false,
+    this._host = DaemonHost.mac,
+    SampleKeyPort? keyPort,
     this._apiKey,
     this._requireCredential = false,
   }) : _support = supportDir,
-       _cache = cacheDir;
+       _cache = cacheDir,
+       _keyPort =
+           keyPort ??
+           (_host == DaemonHost.inProcess ? HttpSampleKeyPort() : null);
 
   /// The variable the daemon reads the key from (`[sample] api_key_env`).
   static const keyEnv = 'ANTHROPIC_API_KEY';
@@ -195,8 +214,18 @@ complex = "claude-sonnet-5-5"
   final HealthProbe _health;
   final PidKiller _pids;
   final Clock _clock;
-  final bool _android;
+  final DaemonHost _host;
   final Future<String?> Function()? _apiKey;
+
+  /// Where an in-process daemon gets the key; null for a child daemon,
+  /// which reads it from its environment.
+  final SampleKeyPort? _keyPort;
+
+  /// The key puts, one after another, so the last one sent is the last
+  /// one made (each reads the saved key when it runs).
+  Future<void> _keyPuts = Future.value();
+
+  bool get _inProcess => _host == DaemonHost.inProcess;
 
   /// Starts the daemon with `--require-credential`: it answers nothing but
   /// `/healthz`, the web UI's static files and page content by artifact ID
@@ -287,6 +316,16 @@ complex = "claude-sonnet-5-5"
     _proc?.kill(ProcessSignal.sigkill);
   }
 
+  /// The saved key changed: an in-process daemon gets it over
+  /// [SampleKeyPort] (no restart; while it is starting or restarting, the
+  /// put at its next [Up] carries it); a child daemon restarts to read it
+  /// from its environment ([restart]).
+  Future<void> keyChanged() async {
+    if (!_inProcess) return restart();
+    final s = _state;
+    if (_loopDone != null && s is Up) await _putKey(s.endpoint);
+  }
+
   /// Stops the running daemon (SIGTERM, then SIGKILL after 3 s) and starts
   /// it again at once, so it reads the environment afresh (a changed API
   /// key). The exit counts toward no failure. Does nothing when no daemon
@@ -328,6 +367,7 @@ complex = "claude-sonnet-5-5"
           _failedStarts = 0;
           _writePort(endpoint.port);
           _set(Up(endpoint));
+          if (_inProcess) unawaited(_putKey(endpoint));
           final w = _waiter;
           _waiter = null;
           w?.complete(endpoint);
@@ -408,9 +448,12 @@ complex = "claude-sonnet-5-5"
       }
       final port = await _ports.pick(preferred: _readPort());
       _writeSampleConfig();
-      final environment = _environment();
-      final key = (await _keyOrNull())?.trim();
-      if (key != null && key.isNotEmpty) environment[keyEnv] = key;
+      final environment = <String, String>{};
+      if (!_inProcess) {
+        environment.addAll(_environment());
+        final key = (await _keyOrNull())?.trim();
+        if (key != null && key.isNotEmpty) environment[keyEnv] = key;
+      }
       if (_stopping) return null;
       final proc = p = await _starter.start(
         exe,
@@ -504,8 +547,10 @@ complex = "claude-sonnet-5-5"
   }
 
   /// Stops a live daemon that `daemon.json` names (one left by an earlier
-  /// run of the app): SIGTERM, then SIGKILL after [termGrace].
+  /// run of the app): SIGTERM, then SIGKILL after [termGrace]. An
+  /// in-process daemon ends with its app, so there is none to stop.
   Future<void> _stopStale() async {
+    if (_inProcess) return;
     final info = _readDaemonJson();
     final pid = info?.pid;
     if (pid == null || pid <= 0 || pid == io.pid) return;
@@ -539,6 +584,29 @@ complex = "claude-sonnet-5-5"
     }
   }
 
+  /// Puts the saved key (null when there is none) into the daemon at
+  /// [endpoint], after the puts before it; skipped when [endpoint] is no
+  /// longer the one up, since the next [Up] puts it. A put that fails
+  /// leaves `sample()` as it was until the next one.
+  Future<void> _putKey(DaemonEndpoint endpoint) {
+    final port = _keyPort;
+    if (port == null) return Future.value();
+    return _keyPuts = _keyPuts.then((_) async {
+      final s = _state;
+      if (s is! Up || !identical(s.endpoint, endpoint)) return;
+      final key = (await _keyOrNull())?.trim();
+      try {
+        await port.put(
+          endpoint.base,
+          endpoint.token,
+          key == null || key.isEmpty ? null : key,
+        );
+      } on Object {
+        // The key is in no message.
+      }
+    });
+  }
+
   /// Writes [sampleConfig] to `<home>/config.toml` when it differs.
   void _writeSampleConfig() {
     final f = File('$_home/config.toml');
@@ -554,7 +622,7 @@ complex = "claude-sonnet-5-5"
     'CLAX_HOME': _home,
     'HOME': _support,
     'TMPDIR': _cache,
-    'PATH': _android ? '/system/bin' : '/usr/bin:/bin',
+    'PATH': _host == DaemonHost.android ? '/system/bin' : '/usr/bin:/bin',
     'RUST_LOG': 'warn',
   };
 

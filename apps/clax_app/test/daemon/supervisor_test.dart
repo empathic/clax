@@ -2,7 +2,6 @@ import 'dart:async';
 import 'dart:convert';
 import 'dart:io';
 
-import 'package:clax_app/daemon/clock.dart';
 import 'package:clax_app/daemon/exe_locator.dart';
 import 'package:clax_app/daemon/health.dart';
 import 'package:clax_app/daemon/ports.dart';
@@ -11,45 +10,7 @@ import 'package:clax_app/daemon/supervisor.dart';
 import 'package:flutter/foundation.dart';
 import 'package:flutter_test/flutter_test.dart';
 
-/// A clock whose time moves only when the test advances it; each `delay`
-/// completes once the clock reaches its deadline.
-class FakeClock implements Clock {
-  DateTime _now = DateTime.utc(2026, 10, 12, 9);
-  final List<(DateTime, Completer<void>)> _timers = [];
-
-  @override
-  DateTime now() => _now;
-
-  @override
-  Future<void> delay(Duration d) {
-    final c = Completer<void>();
-    _timers.add((_now.add(d), c));
-    return c.future;
-  }
-
-  /// Moves time forward by [d], completing every delay due on the way, in
-  /// order, and letting the code they wake run before the next one.
-  Future<void> advance(Duration d) async {
-    final target = _now.add(d);
-    while (true) {
-      await settle();
-      _timers.sort((a, b) => a.$1.compareTo(b.$1));
-      if (_timers.isEmpty || _timers.first.$1.isAfter(target)) break;
-      final (at, c) = _timers.removeAt(0);
-      if (at.isAfter(_now)) _now = at;
-      c.complete();
-    }
-    _now = target;
-    await settle();
-  }
-}
-
-/// Runs the event loop until it has nothing left that is ready.
-Future<void> settle() async {
-  for (var i = 0; i < 50; i++) {
-    await Future<void>.delayed(Duration.zero);
-  }
-}
+import '../support/fake_clock.dart';
 
 class FakeProcess implements RunningProcess {
   FakeProcess(this.pid);
@@ -218,7 +179,7 @@ class Rig {
   );
 
   factory Rig({
-    bool android = false,
+    DaemonHost host = DaemonHost.mac,
     Future<String?> Function()? apiKey,
     bool requireCredential = false,
   }) {
@@ -240,7 +201,7 @@ class Rig {
       health: health,
       pids: pids,
       clock: clock,
-      android: android,
+      host: host,
       apiKey: apiKey,
       requireCredential: requireCredential,
     );
@@ -399,8 +360,24 @@ void main() {
     expect(rig.starter.calls, hasLength(6));
   });
 
+  test('keyChanged restarts a child daemon to read the key from its environment', () async {
+    var saved = 'sk-old';
+    rig = Rig(apiKey: () async => saved);
+    await rig.up();
+    saved = 'sk-new';
+    final r = rig.sup.keyChanged();
+    await rig.clock.advance(Duration.zero);
+    await r;
+    expect(rig.starter.calls, hasLength(2));
+    expect(rig.starter.calls.first.process.signals, [ProcessSignal.sigterm]);
+    expect(
+      rig.starter.calls.last.environment[DaemonSupervisor.keyEnv],
+      'sk-new',
+    );
+  });
+
   test('uses the Android PATH on Android', () async {
-    rig = Rig(android: true);
+    rig = Rig(host: DaemonHost.android);
     await rig.up();
     expect(rig.starter.calls.single.environment['PATH'], '/system/bin');
   });

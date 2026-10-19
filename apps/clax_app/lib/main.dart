@@ -107,7 +107,7 @@ Future<AppServices> platformServices({DateTime? launched}) async {
     ports: const LoopbackPortPicker(),
     health: HttpHealthProbe(),
     pids: IoPidKiller(),
-    android: android,
+    host: android ? DaemonHost.android : DaemonHost.mac,
     apiKey: secureKey.read,
     requireCredential: true,
   );
@@ -158,7 +158,7 @@ Future<AppServices> platformServices({DateTime? launched}) async {
         ),
     voice: DictationVoice.forSettings(SpeechToTextVoice(), settings),
     settings: settings,
-    key: DaemonKey(secureKey, onChanged: supervisor.restart),
+    key: DaemonKey(secureKey, onChanged: supervisor.keyChanged),
     timings: FileTimings(
       File('${support.path}/timings.jsonl'),
       started: {homeUsable: ?launched, homeCover: ?launched},
