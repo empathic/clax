@@ -380,15 +380,15 @@ export class DaemonClient {
   }
 
   /** Finds (or starts) the daemon and registers the session unless both are
-   * done. With `timeoutMs`, the registration request is cut off at that long
-   * after the call (finding the daemon is bounded by its own timeouts). */
-  ensureSession(timeoutMs?: number): Promise<void> {
-    return this.ensure(this.refreshFn, timeoutMs === undefined ? undefined : Date.now() + timeoutMs);
+   * done. With `budget`, the registration request is cancelled when it
+   * aborts (finding the daemon is bounded by its own timeouts). */
+  ensureSession(budget?: AbortSignal): Promise<void> {
+    return this.ensure(this.refreshFn, undefined, budget);
   }
 
-  private async ensure(find: Find, deadline?: number): Promise<void> {
+  private async ensure(find: Find, deadline?: number, budget?: AbortSignal): Promise<void> {
     if (this.endpoint && this.registered) return;
-    await this.refresh(this.stale(), find, deadline);
+    await this.refresh(this.stale(), find, deadline, budget);
   }
 
   private stale(): Stale {
@@ -398,8 +398,9 @@ export class DaemonClient {
   /** Re-discovers the daemon and registers the session there, unless another
    * caller already moved on from `stale` (the endpoint and session the failure
    * was seen with). Registering again after the session was ended inserts a
-   * new live row with the same harness session ID. */
-  private async refresh(stale: Stale, find: Find, deadline?: number): Promise<void> {
+   * new live row with the same harness session ID. The registration request
+   * is cut off at `deadline` (epoch ms), or when `budget` aborts. */
+  private async refresh(stale: Stale, find: Find, deadline?: number, budget?: AbortSignal): Promise<void> {
     while (this.refreshing) await this.refreshing.catch(() => {});
     if (this.endpoint && this.registered && (this.endpoint !== stale.endpoint || this.sessionId !== stale.sessionId)) return;
     const call = currentCall();
@@ -435,6 +436,7 @@ export class DaemonClient {
             headers: h,
             body: JSON.stringify(this.registration),
             timeoutMs: remaining(deadline, REQUEST_TIMEOUT_MS),
+            signal: budget,
           }, this.remote);
         } catch (e) {
           // A credential the daemon refuses, or whose session it has no row

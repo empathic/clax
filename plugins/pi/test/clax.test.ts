@@ -64,8 +64,13 @@ async function hungHome(hang: "register" | "patch") {
   mkdirSync(home, { recursive: true });
   const seen: string[] = [];
   const registrations: any[] = [];
+  /** Waiters for a request line, resolved when the daemon sees it. */
+  const waiters: { line: string; r: () => void }[] = [];
+  const saw = (line: string) => new Promise<void>(r => { if (seen.includes(line)) r(); else waiters.push({ line, r }); });
   const server = createHttpServer((req, res) => {
-    seen.push(`${req.method} ${req.url}`);
+    const line = `${req.method} ${req.url}`;
+    seen.push(line);
+    for (const w of waiters.filter(w => w.line === line)) w.r();
     const reply = (body: unknown) => { res.setHeader("content-type", "application/json"); res.end(JSON.stringify(body)); };
     if (req.url === "/healthz") return reply({ version: "0.1.0" });
     if (req.method === "POST" && req.url === "/api/sessions" && hang !== "register") {
@@ -84,7 +89,7 @@ async function hungHome(hang: "register" | "patch") {
   writeFileSync(join(home, "daemon.json"), JSON.stringify({
     port, pid: process.pid, token: "t", started_at: "2026-01-01T00:00:00Z", bind: "127.0.0.1", version: "0.1.0",
   }));
-  return { home, seen, registrations, close: () => { server.closeAllConnections(); server.close(); } };
+  return { home, seen, saw, registrations, close: () => { server.closeAllConnections(); server.close(); } };
 }
 
 async function sessions(): Promise<any[]> {
@@ -445,12 +450,20 @@ describe("clax Pi extension", () => {
     const hung = await hungHome("register");
     try {
       const pi = new FakePi();
-      // The daemon never answers, so session_start returns only by giving up.
-      claxExtension({ home: hung.home, env: withBin(join(scratch, "no-such-clax")), startBudgetMs: 50 })(pi.api);
+      // The daemon never answers, so session_start returns only by giving up,
+      // which it does when the budget runs out: here, once the daemon has
+      // the registration.
+      const budget = new AbortController();
+      claxExtension({ home: hung.home, env: withBin(join(scratch, "no-such-clax")), startBudget: () => budget.signal })(pi.api);
       const { ctx } = fakeContext(scratch, "pi-hung-start");
       loaded.push({ pi, ctx });
-      await pi.emit("session_start", { type: "session_start", reason: "startup" }, ctx);
-      expect(hung.seen).toContain("POST /api/sessions");
+      let returned = false;
+      const started = pi.emit("session_start", { type: "session_start", reason: "startup" }, ctx).then(() => { returned = true; });
+      await hung.saw("POST /api/sessions");
+      await new Promise(r => setImmediate(r));
+      expect(returned).toBe(false);
+      budget.abort();
+      await started;
     } finally {
       hung.close();
     }

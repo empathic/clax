@@ -836,9 +836,10 @@ export interface ClaxOptions {
   /** The injection loop's pause before it polls again;
    * [`INJECT_RETRY_MS`] when absent. */
   injectRetryMs?: number;
-  /** How long session_start may spend finding the daemon and registering;
-   * [`START_BUDGET_MS`] when absent. */
-  startBudgetMs?: number;
+  /** Gives, at each session_start, the signal that ends the time it may
+   * spend finding the daemon and registering (aborted: the time is spent);
+   * one that aborts [`START_BUDGET_MS`] later when absent. */
+  startBudget?: () => AbortSignal;
   /** How long session_shutdown may spend ending the session;
    * [`END_TIMEOUT_MS`] when absent. */
   endTimeoutMs?: number;
@@ -1883,7 +1884,7 @@ export function claxExtension(opts: ClaxOptions = {}): (pi: ExtensionAPI) => voi
     const wakers = new Set<() => void>();
     const wakeLoop = () => { for (const w of [...wakers]) w(); };
     const retryMs = opts.injectRetryMs ?? INJECT_RETRY_MS;
-    const startBudgetMs = opts.startBudgetMs ?? START_BUDGET_MS;
+    const startBudget = opts.startBudget ?? (() => AbortSignal.timeout(START_BUDGET_MS));
     const now = opts.now ?? (() => Date.now());
     const startInject = (c: DaemonClient) => {
       if (!live || stopInject) return;
@@ -1925,22 +1926,27 @@ export function claxExtension(opts: ClaxOptions = {}): (pi: ExtensionAPI) => voi
     };
 
     // Pi awaits this handler before it continues, so registration gets at most
-    // `startBudgetMs`; the first tool call registers when this did not.
+    // the start budget; the first tool call registers when this did not.
     pi.on("session_start", async (_event, ctx) => {
       live = true;
-      let timer: NodeJS.Timeout | undefined;
-      const budget = new Promise<"timeout">(r => { timer = setTimeout(() => r("timeout"), startBudgetMs); });
+      const signal = startBudget();
+      let spent: (() => void) | undefined;
+      const budget = new Promise<"timeout">(r => {
+        spent = () => r("timeout");
+        if (signal.aborted) spent();
+        else signal.addEventListener("abort", spent, { once: true });
+      });
       try {
         const client = tools.clientFor(ctx);
-        const registered = client.ensureSession(startBudgetMs);
-        // A registration still running when the budget ends may fail later,
-        // unobserved; the injection loop starts once it succeeds.
+        const registered = client.ensureSession(signal);
+        // A registration still finding the daemon when the budget ends may
+        // fail later, unobserved; the injection loop starts once it succeeds.
         registered.then(() => startInject(client), () => undefined);
         await Promise.race([registered, budget]);
       } catch (e) {
         if (ctx.hasUI) ctx.ui.notify(`clax: no daemon yet (${e instanceof Error ? e.message : String(e)})`, "warning");
       } finally {
-        clearTimeout(timer);
+        signal.removeEventListener("abort", spent!);
       }
     });
 
