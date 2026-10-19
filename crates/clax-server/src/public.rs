@@ -1331,8 +1331,11 @@ fn outgoing_meta(artifact: &clax_core::model::Artifact) -> Value {
         MAX_DESCRIPTION_CHARS, MAX_ICON_CHARS, MAX_TITLE_CHARS, fit_meta_text,
     };
     let fit = |t: Option<&str>, max| t.and_then(|t| fit_meta_text(t, max));
+    // Nothing left of a legacy title: named as a new artifact without one
+    // is, so a push that creates the public copy has a title.
+    let title = fit(Some(&artifact.title), MAX_TITLE_CHARS).unwrap_or_else(|| "Untitled".into());
     json!({
-        "title": fit(Some(&artifact.title), MAX_TITLE_CHARS),
+        "title": title,
         "description": fit(artifact.description.as_deref(), MAX_DESCRIPTION_CHARS),
         "icon": fit(artifact.icon.as_deref(), MAX_ICON_CHARS),
         "capabilities": artifact
@@ -1375,6 +1378,12 @@ mod tests {
             .unwrap(),
         )
         .unwrap();
+        for blank in ["", " \n", "\u{200B}\u{FEFF}"] {
+            a.title = blank.into();
+            let m = outgoing_meta(&a);
+            assert_eq!(m["title"], "Untitled", "{blank:?}");
+            clax_core::publish::require_title(m["title"].as_str()).unwrap();
+        }
     }
 
     /// A remote at a local port that answers every request 200 with a
