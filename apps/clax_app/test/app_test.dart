@@ -498,6 +498,31 @@ void main() {
     ]);
   });
 
+  testWidgets('an in-process daemon restarted on the same port and PID, with '
+      'a new token, reloads the open app', (tester) async {
+    await pumpApp(tester, _Rig(key: 'sk-ant-x'));
+    await up(tester);
+    final aid = rig.api.seedArtifact('Runs', {'index.html': _page});
+    await openApp(tester, aid);
+    final first = rig.surfaces.single;
+
+    rig.supervisor.set(const Restarting(1, Duration(milliseconds: 200)));
+    final e = endpoint();
+    rig.supervisor.set(
+      Up(
+        DaemonEndpoint(
+          base: e.base,
+          token: 'token-after-restart',
+          pid: e.pid,
+          port: e.port,
+        ),
+      ),
+    );
+    await pumpRoute(tester);
+    expect(first.reloads, 1);
+    expect(rig.surfaces, hasLength(1));
+  });
+
   testWidgets(
     'on macOS the app owns the menu bar; App > Threads works only with an '
     'app open',

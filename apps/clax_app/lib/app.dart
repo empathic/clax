@@ -2420,6 +2420,7 @@ class _AppPage extends StatefulWidget {
 class _AppPageState extends State<_AppPage> {
   late Uri _base;
   late int _pid;
+  late String _token;
   late AppSurface _surface;
   Uint8List? _cover;
   final _watch = <StreamSubscription<Object?>>[];
@@ -2430,6 +2431,7 @@ class _AppPageState extends State<_AppPage> {
     final e = widget.endpoint.value!;
     _base = e.base;
     _pid = e.pid;
+    _token = e.token;
     _cover = widget.cover;
     _surface = _watched(widget.surface(_base));
     widget.endpoint.addListener(_onEndpoint);
@@ -2470,18 +2472,23 @@ class _AppPageState extends State<_AppPage> {
     _watch.clear();
   }
 
+  /// A new daemon at the same address (a new PID, or an in-process
+  /// daemon started again in the same process with a new token) reloads
+  /// the page; a new address opens it there.
   void _onEndpoint() {
     final e = widget.endpoint.value;
-    if (e == null || e.pid == _pid && e.base == _base) return;
+    if (e == null || e.pid == _pid && e.base == _base && e.token == _token) {
+      return;
+    }
+    _pid = e.pid;
+    _token = e.token;
     if (e.base != _base) {
       // The screen keyed by the old address disposes the old surface.
       setState(() {
         _base = e.base;
-        _pid = e.pid;
         _surface = _watched(widget.surface(_base));
       });
     } else {
-      _pid = e.pid;
       unawaited(_surface.reload());
     }
   }
