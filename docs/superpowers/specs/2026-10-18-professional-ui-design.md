@@ -4,6 +4,17 @@ Date: 2026-10-18. Branch: `flutter-app`. Status: draft for the owner's review.
 Builds on `2026-10-16-home-screen-app-design.md` and
 `2026-10-16-launcher-arrange-design.md`.
 
+**Scope of this round (2026-10-18).** Implementation covers the Clax app
+only (`apps/clax_app` on Android and macOS): the app, the home app, the
+starter kit, and the shell's app-mode pieces that run inside the app's
+WebView. Browser-only items (the shell's own theming, browser agent naming,
+which makes Open question 1 moot, People and hosted features, the gallery
+and the browser's panels, composer and notices) are not planned now; the
+plan's "Out of scope: browser-only" lists them. Clax ships on iOS next: the
+shared components form a Material family and an Apple family, and the
+wide layouts follow the window's size class, so the iPad reuses the Mac's
+sidebar and detail (plan, "Ready for iOS").
+
 ## Goal
 
 Clax looks like one finished product on the Android phone, on Android
