@@ -2,6 +2,7 @@ import 'dart:async';
 import 'dart:ui'
     show FlutterView, ViewFocusDirection, ViewFocusEvent, ViewFocusState;
 
+import 'package:flutter/scheduler.dart';
 import 'package:flutter/services.dart';
 import 'package:flutter/widgets.dart';
 
@@ -73,14 +74,35 @@ abstract final class MacWindows {
 class WindowContents extends ChangeNotifier {
   final _builders = <String, Widget Function(int view)>{};
 
-  /// Makes [builder] what windows of [kind] show; null shows nothing.
+  /// Makes [builder] what windows of [kind] show; null shows nothing. Set
+  /// while widgets build (the app's root gives its windows their content
+  /// from its `initState`), the windows take it once that frame is done.
   void set(String kind, Widget Function(int view)? builder) {
     if (builder == null) {
       if (_builders.remove(kind) == null) return;
     } else {
       _builders[kind] = builder;
     }
-    notifyListeners();
+    final scheduler = SchedulerBinding.instance;
+    if (scheduler.schedulerPhase == SchedulerPhase.persistentCallbacks) {
+      if (_notifying) return;
+      _notifying = true;
+      scheduler.addPostFrameCallback((_) {
+        _notifying = false;
+        if (!_disposed) notifyListeners();
+      });
+    } else {
+      notifyListeners();
+    }
+  }
+
+  var _notifying = false;
+  var _disposed = false;
+
+  @override
+  void dispose() {
+    _disposed = true;
+    super.dispose();
   }
 
   /// What a window of [kind] showing [view] shows; null for nothing yet.

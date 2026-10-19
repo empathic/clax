@@ -67,6 +67,27 @@ void main() {
     expect(find.textContaining('settings in'), findsNothing);
   });
 
+  testWidgets('the main window\'s content may give a kind its content as '
+      'it is first built, as the app\'s root does', (tester) async {
+    kinds[tester.view.viewId] = 'main';
+    final further = WindowContents();
+    addTearDown(further.dispose);
+    await tester.pumpWidget(
+      ClaxViews(
+        further: further,
+        main: Directionality(
+          textDirection: TextDirection.ltr,
+          child: _GivesSettings(further),
+        ),
+      ),
+      wrapWithView: false,
+    );
+    await tester.pumpAndSettle();
+    expect(tester.takeException(), isNull);
+    expect(find.text('main window'), findsOneWidget);
+    expect(further.build('settings', 0), isA<Text>());
+  });
+
   test('open asks the native side for the window of a kind, and answers '
       'whether one shows', () async {
     expect(await MacWindows.open('inbox'), isTrue);
@@ -175,4 +196,25 @@ class _Counter extends StatefulWidget {
 class _CounterState extends State<_Counter> {
   @override
   Widget build(BuildContext context) => widget.child;
+}
+
+/// Gives Settings its content from its first build's initState.
+class _GivesSettings extends StatefulWidget {
+  const _GivesSettings(this.further);
+
+  final WindowContents further;
+
+  @override
+  State<_GivesSettings> createState() => _GivesSettingsState();
+}
+
+class _GivesSettingsState extends State<_GivesSettings> {
+  @override
+  void initState() {
+    super.initState();
+    widget.further.set('settings', (view) => Text('settings in $view'));
+  }
+
+  @override
+  Widget build(BuildContext context) => const Text('main window');
 }
