@@ -234,8 +234,11 @@ Widget _label(BuildContext context, String text, {required bool enabled}) {
 }
 
 /// A row a press anywhere on toggles: 48 dp high at least in the Material
-/// family, its control's own height in the Apple family.
-class _ToggleRow extends StatelessWidget {
+/// family, its control's own height in the Apple family. The row is the one
+/// focus stop (the control inside takes no focus of its own) and Space or
+/// Return toggles it; the Material row shows focus with its ink, the Apple
+/// row with a ring in the accent.
+class _ToggleRow extends StatefulWidget {
   const _ToggleRow({
     required this.onTap,
     required this.apple,
@@ -251,31 +254,69 @@ class _ToggleRow extends StatelessWidget {
   final CrossAxisAlignment crossAxisAlignment;
 
   @override
+  State<_ToggleRow> createState() => _ToggleRowState();
+}
+
+class _ToggleRowState extends State<_ToggleRow> {
+  var _ring = false;
+
+  @override
   Widget build(BuildContext context) {
-    final row = Row(
-      crossAxisAlignment: crossAxisAlignment,
-      children: children,
+    final onTap = widget.onTap;
+    final row = ExcludeFocus(
+      child: Row(
+        crossAxisAlignment: widget.crossAxisAlignment,
+        children: widget.children,
+      ),
     );
-    return semantics(
+    if (!widget.apple) {
+      return widget.semantics(
+        MergeSemantics(
+          child: InkWell(
+            onTap: onTap,
+            child: ConstrainedBox(
+              constraints: const BoxConstraints(minHeight: ClaxLayout.target),
+              child: row,
+            ),
+          ),
+        ),
+      );
+    }
+    final p = claxPalette(context);
+    return widget.semantics(
       MergeSemantics(
-        child: apple
-            ? GestureDetector(
-                behavior: HitTestBehavior.opaque,
-                onTap: onTap,
-                child: Padding(
-                  padding: const EdgeInsets.symmetric(vertical: 3),
-                  child: row,
-                ),
-              )
-            : InkWell(
-                onTap: onTap,
-                child: ConstrainedBox(
-                  constraints: const BoxConstraints(
-                    minHeight: ClaxLayout.target,
-                  ),
-                  child: row,
-                ),
-              ),
+        child: FocusableActionDetector(
+          enabled: onTap != null,
+          actions: {
+            ActivateIntent: CallbackAction<ActivateIntent>(
+              onInvoke: (_) => onTap?.call(),
+            ),
+            ButtonActivateIntent: CallbackAction<ButtonActivateIntent>(
+              onInvoke: (_) => onTap?.call(),
+            ),
+          },
+          onShowFocusHighlight: (v) => setState(() => _ring = v),
+          child: GestureDetector(
+            behavior: HitTestBehavior.opaque,
+            onTap: onTap,
+            child: Container(
+              padding: const EdgeInsets.symmetric(vertical: 3),
+              foregroundDecoration: _ring
+                  ? BoxDecoration(
+                      borderRadius: BorderRadius.circular(
+                        ClaxRadius.controlApple,
+                      ),
+                      border: Border.all(
+                        color: p.agent,
+                        width: 2,
+                        strokeAlign: BorderSide.strokeAlignOutside,
+                      ),
+                    )
+                  : null,
+              child: row,
+            ),
+          ),
+        ),
       ),
     );
   }

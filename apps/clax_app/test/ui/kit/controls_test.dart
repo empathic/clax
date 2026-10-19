@@ -3,6 +3,7 @@ import 'package:clax_app/ui/theme.dart';
 import 'package:clax_app/ui/tokens.g.dart';
 import 'package:flutter/gestures.dart';
 import 'package:flutter/material.dart';
+import 'package:flutter/services.dart';
 import 'package:flutter_test/flutter_test.dart';
 
 /// [child] in the app's light theme on [platform], under the root pointer
@@ -238,6 +239,68 @@ void main() {
         expect(got, 'precise', reason: '$platform');
       }
     });
+  });
+
+  group('toggle focus', () {
+    for (final platform in [TargetPlatform.android, TargetPlatform.macOS]) {
+      testWidgets('on $platform each row is one Tab stop, Space toggles it, '
+          'and focus shows', (tester) async {
+        bool? sync, always;
+        String? picked;
+        await tester.pumpWidget(
+          _app(
+            Column(
+              children: [
+                ClaxSwitch(value: false, onChanged: (v) => sync = v, label: 'Sync'),
+                ClaxCheckbox(
+                  value: false,
+                  onChanged: (v) => always = v,
+                  label: 'Always',
+                ),
+                ClaxRadio<String>(
+                  value: 'precise',
+                  group: null,
+                  onChanged: (v) => picked = v,
+                  label: 'Precise',
+                ),
+              ],
+            ),
+            platform: platform,
+          ),
+        );
+        final stops = <FocusNode>[];
+        for (var i = 0; i < 4; i++) {
+          await tester.sendKeyEvent(LogicalKeyboardKey.tab);
+          await tester.pump();
+          stops.add(FocusManager.instance.primaryFocus!);
+        }
+        expect(stops.take(3).toSet(), hasLength(3), reason: '$platform');
+        expect(stops[3], stops[0], reason: '$platform: three stops, then round');
+        // Focus is on the switch's row: Space toggles each row in turn.
+        await tester.sendKeyEvent(LogicalKeyboardKey.space);
+        await tester.pump();
+        expect(sync, isTrue, reason: '$platform');
+        if (platform == TargetPlatform.macOS) {
+          expect(
+            find.byWidgetPredicate(
+              (w) => w is Container && w.foregroundDecoration != null,
+            ),
+            findsOneWidget,
+            reason: 'the focused Mac row draws its ring',
+          );
+        }
+        await tester.sendKeyEvent(LogicalKeyboardKey.tab);
+        await tester.pump();
+        await tester.sendKeyEvent(LogicalKeyboardKey.space);
+        await tester.pump();
+        expect(always, isTrue, reason: '$platform');
+        await tester.sendKeyEvent(LogicalKeyboardKey.tab);
+        await tester.pump();
+        await tester.sendKeyEvent(LogicalKeyboardKey.space);
+        await tester.pump();
+        expect(picked, 'precise', reason: '$platform');
+      });
+    }
   });
 
   group('ClaxEmpty', () {
