@@ -273,6 +273,11 @@ pub async fn assemble(
                 _ => false,
             };
             artifact["may_fork"] = json!(may_fork);
+            // Who started it from a brief, as `GET /api/artifacts/<id>` says.
+            if let Some(by) = st.brief_starters(&[a.id.as_str()])?.remove(&a.id) {
+                artifact["brief"] =
+                    json!({"by": clax_core::feedback::display_name(by.as_deref().unwrap_or(""))});
+            }
             Ok(Some((a, artifact, versions, threads, viewer, attention)))
         })
         .await?;

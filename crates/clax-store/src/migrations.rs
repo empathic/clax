@@ -1176,6 +1176,17 @@ pub const MIGRATIONS: &[&str] = &[
         via TEXT NOT NULL,
         PRIMARY KEY (viewer_id, version)
     );",
+    // 40: artifacts a person started from a brief in their browser
+    // (`crate::briefs`): who started each (`starter`, their public ID, or
+    // `*owner`), and the `Idempotency-Key` the request named, unique per
+    // starter, so a retried request answers the artifact the first made.
+    "CREATE TABLE briefs (
+        artifact_id TEXT PRIMARY KEY,
+        starter TEXT NOT NULL,
+        key TEXT,
+        created_at TEXT NOT NULL
+    );
+    CREATE UNIQUE INDEX briefs_by_key ON briefs (starter, key) WHERE key IS NOT NULL;",
 ];
 
 /// The audit journal's migration, as a schema version (the

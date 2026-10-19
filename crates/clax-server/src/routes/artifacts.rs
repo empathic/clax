@@ -405,6 +405,10 @@ pub async fn list(
             .await?
         }
     };
+    let mut artifacts = artifacts;
+    if !a.caller.is_agent() {
+        mark_brief(&s, &mut artifacts).await?;
+    }
     let mut v = json!({"artifacts": artifacts});
     if !a.holds_token() {
         strip_sessions(&mut v);
@@ -542,13 +546,18 @@ pub(crate) fn brief_refusal(
 /// `Origin` is refused. 400 `invalid_title` (blank, over
 /// [`clax_core::brief::MAX_TITLE_CHARS`] characters, or holding a control
 /// or format character) and `invalid_brief` (blank, or longer than a
-/// comment may be).
+/// comment may be). An `Idempotency-Key` (1 to
+/// [`clax_store::briefs::MAX_BRIEF_KEY`] printable ASCII characters, else
+/// 400 `invalid_args`) makes a repeat by the same person answer 200 with
+/// the artifact, version 1 and brief thread the first request made, while
+/// that artifact exists ([`clax_store::briefs`]).
 pub async fn create_from_brief(
     State(s): State<AppState>,
     d: clax_http::agent::DeniedToGrants,
     _o: clax_http::viewer::SameOrigin,
     who: clax_http::identity::Identity,
     audit: clax_http::audit::DeferredAudit,
+    headers: HeaderMap,
     req: Result<Json<BriefBody>, JsonRejection>,
 ) -> Result<(StatusCode, Json<Value>), ApiError> {
     use clax_http::auth::Caller;
@@ -558,6 +567,27 @@ pub async fn create_from_brief(
     s.store_call(move |st| brief_refusal(st, &c))
         .await?
         .map_or(Ok(()), Err)?;
+    let key = match headers.get(IDEMPOTENCY_HEADER) {
+        None => None,
+        Some(v) => match v.to_str() {
+            Ok(k)
+                if !k.is_empty()
+                    && k.len() <= clax_store::briefs::MAX_BRIEF_KEY
+                    && k.bytes().all(|b| b.is_ascii_graphic()) =>
+            {
+                Some(k.to_string())
+            }
+            _ => {
+                return Err(ApiError::bad_request(
+                    "invalid_args",
+                    format!(
+                        "Idempotency-Key is at most {} printable ASCII characters",
+                        clax_store::briefs::MAX_BRIEF_KEY
+                    ),
+                ));
+            }
+        },
+    };
     let b = body(req)?;
     let title = clax_core::brief::check_title(&b.title)?;
     let brief = clax_core::brief::check_brief(&b.brief)?;
@@ -574,6 +604,9 @@ pub async fn create_from_brief(
         Caller::Person { viewer } => Some(viewer.public_id.clone()),
         _ => None,
     };
+    let starter = person
+        .clone()
+        .unwrap_or_else(|| clax_store::briefs::OWNER_STARTER.to_string());
     let html = clax_core::brief::placeholder_html(&title);
     let mut files = std::collections::BTreeMap::new();
     files.insert(
@@ -593,9 +626,30 @@ pub async fn create_from_brief(
     let ctx = s.feedback_ctx();
     let with_path = d.holds_token();
     let vf = VisFor::of(&caller, &s);
-    let (artifact, version, thread) = s
+    let (artifact, version, thread, again) = s
         .store_call_async(move |st| async move {
             let st = &*st;
+            if let Some(k) = &key
+                && let Some(aid) = st.brief_by_key(&starter, k)?
+            {
+                let id = ArtifactId::parse(&aid)?;
+                let first = match st.get_artifact(&id)? {
+                    Some(a) => Some((
+                        a,
+                        st.get_version(&id, 1)?,
+                        st.list_threads(&id, true, None, 1)?.0,
+                    )),
+                    None => None,
+                };
+                if let Some((a, Some(v), threads)) = first
+                    && let Some(t) = threads.first()
+                {
+                    let vis = vf.build(st)?;
+                    let (a, v) = vis.filter_published(st, &a, &v)?;
+                    let t = vis.filter_thread(st, t, ctx.codex_push(), with_path)?;
+                    return Ok((a, v, t, true));
+                }
+            }
             let audit = audit.resolve(st)?;
             let (author_name, author_public_id) = clax_http::viewer::author(st, &who)?;
             let (artifact, version) = st.create_artifact_async(&audit, p, None).await?;
@@ -644,22 +698,62 @@ pub async fn create_from_brief(
                     return Err(e);
                 }
             };
+            // Two requests racing with one key each make an artifact; the
+            // first recorded keeps the key.
+            st.record_brief(&artifact.id, &starter, key.as_deref())?;
             // The brief goes to no agent: `@` in it sends nothing.
             let (thread, _) =
                 super::threads::announce_new_thread(st, &ctx, &audit, thread, false, None, false)?;
             let vis = vf.build(st)?;
             let (a, v) = vis.filter_published(st, &artifact, &version)?;
             let t = vis.filter_thread(st, &thread, ctx.codex_push(), with_path)?;
-            Ok((a, v, t))
+            Ok((a, v, t, false))
         })
         .await?;
     let url = format!("/a/{}", artifact["id"].as_str().unwrap_or_default());
     let mut v = json!({"artifact": artifact, "version": version, "url": url, "thread": thread});
+    if let Some(a) = v.get_mut("artifact") {
+        mark_brief(&s, std::slice::from_mut(a)).await?;
+    }
     if !d.holds_token() {
         strip_sessions(&mut v);
     }
     clax_http::hosted::stamp_content_keys(&s, &mut v);
-    Ok((StatusCode::CREATED, Json(v)))
+    let status = if again {
+        StatusCode::OK
+    } else {
+        StatusCode::CREATED
+    };
+    Ok((status, Json(v)))
+}
+
+/// Adds `brief: {by}` to each of `views` (artifact views) started from a
+/// brief in a person's browser: who started it, by their display name now
+/// (`Viewer` without one, as their comments are signed). For people's views only: agents' leave it out.
+///
+/// # Errors
+/// The store's.
+pub(crate) async fn mark_brief(s: &AppState, views: &mut [Value]) -> Result<(), ApiError> {
+    let ids: Vec<String> = views
+        .iter()
+        .filter_map(|v| v["id"].as_str().map(str::to_string))
+        .collect();
+    if ids.is_empty() {
+        return Ok(());
+    }
+    let starters = s
+        .store_call(move |st| {
+            let refs: Vec<&str> = ids.iter().map(String::as_str).collect();
+            st.brief_starters(&refs)
+        })
+        .await?;
+    for v in views.iter_mut() {
+        if let Some(by) = v["id"].as_str().and_then(|id| starters.get(id)) {
+            v["brief"] =
+                json!({"by": clax_core::feedback::display_name(by.as_deref().unwrap_or(""))});
+        }
+    }
+    Ok(())
 }
 
 /// Who publishes for `caller` (spec §8.2): a person's agent's person (none
@@ -732,6 +826,11 @@ pub async fn get(
             Ok(v)
         })
         .await?;
+    if !a.caller.is_agent()
+        && let Some(art) = v.get_mut("artifact")
+    {
+        mark_brief(&s, std::slice::from_mut(art)).await?;
+    }
     if !a.holds_token() {
         strip_sessions(&mut v);
     }

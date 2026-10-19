@@ -99,6 +99,7 @@ pub mod attention;
 pub mod audit;
 pub mod backfill;
 pub mod batches;
+pub mod briefs;
 pub mod changelog;
 pub mod device;
 pub mod docs;
