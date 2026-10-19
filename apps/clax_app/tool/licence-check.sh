@@ -10,8 +10,8 @@ else
 fi
 app="$root/apps/clax_app/LICENSE"
 gpl="$root/LICENSES/GPL-2.0-only.txt"
-if [ "$(sed -n 2p "$app")" != 'Copyright (C) 2026 Empathic, Inc.' ]; then
-    echo "apps/clax_app/LICENSE lacks 'Copyright (C) 2026 Empathic, Inc.' as its second line" >&2
+if [ "$(sed -n 2p "$app")" != 'Copyright © 2026 Empathic, Inc.' ]; then
+    echo "apps/clax_app/LICENSE lacks 'Copyright © 2026 Empathic, Inc.' as its second line" >&2
     exit 1
 fi
 n="$(wc -c < "$gpl")"

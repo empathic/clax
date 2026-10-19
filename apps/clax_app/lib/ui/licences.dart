@@ -8,7 +8,7 @@ const claxLicenceAsset = 'LICENSE';
 
 /// The copyright and licence the licences page shows under the app's name.
 const claxLegalese =
-    'Copyright (C) 2026 Empathic, Inc.\n'
+    'Copyright © 2026 Empathic, Inc.\n'
     'Licensed under the GNU General Public License, version 2 only '
     '(GPL-2.0-only).';
 

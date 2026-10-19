@@ -40,7 +40,7 @@ void main() {
     expect(clax, hasLength(1));
     final text = clax!.single.paragraphs.map((p) => p.text).join('\n');
     expect(text, startsWith('Clax app (apps/clax_app)'));
-    expect(text, contains('Copyright (C) 2026 Empathic, Inc.'));
+    expect(text, contains('Copyright © 2026 Empathic, Inc.'));
     expect(text, contains('version 2 only (GPL-2.0-only)'));
     expect(text, contains('GNU GENERAL PUBLIC LICENSE'));
     expect(text, contains('Version 2, June 1991'));
@@ -125,6 +125,6 @@ void main() {
     await tester.pump(const Duration(seconds: 1));
     expect(find.byType(LicensePage), findsOneWidget);
     expect(find.text('Clax'), findsWidgets);
-    expect(find.textContaining('Copyright (C) 2026 Empathic, Inc.'), findsOneWidget);
+    expect(find.textContaining('Copyright © 2026 Empathic, Inc.'), findsOneWidget);
   });
 }

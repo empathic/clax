@@ -825,7 +825,7 @@ void main() {
     await tester.pump(const Duration(seconds: 1));
     expect(find.byType(LicensePage), findsOneWidget);
     expect(
-      find.textContaining('Copyright (C) 2026 Empathic, Inc.'),
+      find.textContaining('Copyright © 2026 Empathic, Inc.'),
       findsOneWidget,
     );
   });

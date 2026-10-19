@@ -8,7 +8,7 @@ any app, with or without this notice. The vendored files that follow
 ================================================================
 Clax kit: Zero-Clause BSD (0BSD)
 ================================================================
-Copyright (C) 2026 Empathic, Inc.
+Copyright © 2026 Empathic, Inc.
 
 Permission to use, copy, modify, and/or distribute this software for any
 purpose with or without fee is hereby granted.
