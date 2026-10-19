@@ -26,6 +26,8 @@ import 'package:clax_app/ui/making_screen.dart'
     show MakingScreen, sayFirstOutput;
 import 'package:clax_app/ui/questions/question_card.dart';
 import 'package:clax_app/ui/questions/questions_sheet.dart';
+import 'package:clax_app/ui/settings_screen.dart';
+import 'package:clax_app/ui/shortcuts.dart';
 import 'package:clax_app/ui/thread_detail.dart' show ThreadDetail;
 import 'package:flutter/material.dart';
 import 'package:flutter/services.dart';
@@ -582,39 +584,53 @@ void main() {
   });
 
   testWidgets(
-    'on macOS the app owns the menu bar; App > Threads works only with an '
-    'app open',
+    'on macOS the menu bar is the native one; View › Show Threads works only '
+    'with an app open, and Settings… opens Settings once',
     (tester) async {
-      final menus = <Object?>[];
+      final enabled = <int, bool>{};
       tester.binding.defaultBinaryMessenger.setMockMethodCallHandler(
-        SystemChannels.menu,
+        MacMenu.channel,
         (call) async {
-          if (call.method == 'Menu.setMenus') menus.add(call.arguments);
+          if (call.method == 'setEnabled') {
+            final args = call.arguments as Map<Object?, Object?>;
+            enabled[args['tag']! as int] = args['enabled']! as bool;
+          }
           return null;
         },
       );
-      addTearDown(
-        () => tester.binding.defaultBinaryMessenger.setMockMethodCallHandler(
-          SystemChannels.menu,
-          null,
-        ),
+      final flutterMenus = <MethodCall>[];
+      tester.binding.defaultBinaryMessenger.setMockMethodCallHandler(
+        SystemChannels.menu,
+        (call) async {
+          flutterMenus.add(call);
+          return null;
+        },
       );
+      addTearDown(() {
+        tester.binding.defaultBinaryMessenger
+          ..setMockMethodCallHandler(MacMenu.channel, null)
+          ..setMockMethodCallHandler(SystemChannels.menu, null);
+      });
+      Future<void> choose(ClaxCommand c) async {
+        await tester.binding.defaultBinaryMessenger.handlePlatformMessage(
+          MacMenu.channel.name,
+          MacMenu.channel.codec.encodeMethodCall(MethodCall('command', c.tag)),
+          (_) {},
+        );
+        await tester.pumpAndSettle();
+      }
+
       await pumpApp(tester, _Rig(key: 'sk-ant-x'));
       await up(tester);
-      expect(_findItem(menus.last, 'Threads')!['enabled'], isFalse);
+      expect(flutterMenus, isEmpty, reason: 'no PlatformMenuBar');
+      expect(enabled[ClaxCommand.toggleThreads.tag], isFalse);
+      expect(enabled[ClaxCommand.newApp.tag], isTrue);
+      expect(enabled[ClaxCommand.settings.tag], isTrue);
 
       final aid = rig.api.seedArtifact('Runs', {'index.html': _page});
       await openApp(tester, aid);
-      final item = _findItem(menus.last, 'Threads')!;
-      expect(item['enabled'], isTrue);
-      await tester.binding.defaultBinaryMessenger.handlePlatformMessage(
-        'flutter/menu',
-        SystemChannels.menu.codec.encodeMethodCall(
-          MethodCall('Menu.selectedCallback', item['id']),
-        ),
-        (_) {},
-      );
-      await tester.pumpAndSettle();
+      expect(enabled[ClaxCommand.toggleThreads.tag], isTrue);
+      await choose(ClaxCommand.toggleThreads);
       expect(find.byKey(const ValueKey('app-panel')), findsOneWidget);
 
       // Back closes the panel, then leaves the app.
@@ -623,7 +639,15 @@ void main() {
       await tester.binding.handlePopRoute();
       await tester.pumpAndSettle();
       expect(find.byType(AppScreen), findsNothing);
-      expect(_findItem(menus.last, 'Threads')!['enabled'], isFalse);
+      expect(enabled[ClaxCommand.toggleThreads.tag], isFalse);
+
+      await choose(ClaxCommand.settings);
+      expect(find.byType(SettingsScreen), findsOneWidget);
+      await choose(ClaxCommand.settings);
+      expect(find.byType(SettingsScreen), findsOneWidget);
+      // Home closes it, down to the grid.
+      await choose(ClaxCommand.home);
+      expect(find.byType(SettingsScreen), findsNothing);
     },
     variant: TargetPlatformVariant.only(TargetPlatform.macOS),
   );
@@ -1143,18 +1167,3 @@ void main() {
   });
 }
 
-Map<Object?, Object?>? _findItem(Object? tree, String label) {
-  if (tree is Map) {
-    if (tree['label'] == label) return tree;
-    for (final v in tree.values) {
-      final f = _findItem(v, label);
-      if (f != null) return f;
-    }
-  } else if (tree is List) {
-    for (final v in tree) {
-      final f = _findItem(v, label);
-      if (f != null) return f;
-    }
-  }
-  return null;
-}

@@ -60,8 +60,8 @@ import 'working_chip.dart';
 ///   on, the chip that says how a change ended, the brief toasts below and
 ///   the first-run hint. The ways in are the
 ///   app's [AppScreen.actions]: Comment and Threads on the open app's
-///   notice ([AppScreen.notice], Android) or App › Comment (⇧⌘K) and App ›
-///   Threads (⌘K) ([AppScreen.comments], macOS), and the two-finger swipe.
+///   notice ([AppScreen.notice], Android) or View › Comment (⇧⌘K) and View ›
+///   Show Threads (⌘K) ([AppScreen.comments], macOS), and the two-finger swipe.
 /// - **Notice.** While the screen is in front (the app resumed or
 ///   inactive, and its route on top) it shows the notice named after the
 ///   app, and clears it as it leaves, goes under another route or the app
@@ -124,7 +124,7 @@ import 'working_chip.dart';
 ///   [AppScreen.onHintShown] is called as it first shows.
 /// - **Panel.** A two-finger swipe left, Threads (the notice's or the
 ///   Comment tab's), or
-///   (macOS) App › Threads (⌘K) opens it and turns comment mode on; a swipe
+///   (macOS) View › Show Threads (⌘K) opens it and turns comment mode on; a swipe
 ///   right, back, Escape or ⌘K closes it and turns comment mode off (left
 ///   on while the comment bar is up, which the panel then shows again). While
 ///   the shell's composer is open comment mode is the shell's: opening or
@@ -311,7 +311,7 @@ class AppScreen extends StatefulWidget {
   /// with Try again.
   final VoidCallback? onStoppedLoading;
 
-  /// The app's App › Comment and App › Threads commands, which the screen
+  /// The app's View › Comment and View › Show Threads commands, which the screen
   /// registers its toggles with while it is shown. Without it, the screen
   /// installs its own macOS menu bar ([ClaxMenuBar]).
   final CommentsCommand? comments;
@@ -810,11 +810,11 @@ class _AppScreenState extends State<AppScreen> with WidgetsBindingObserver {
   /// it none.
   CommentsCommand? _ownComments;
 
-  /// App › Threads (⌘K): ends comment mode when the panel or the bar is
+  /// View › Show Threads (⌘K): ends comment mode when the panel or the bar is
   /// up, else opens the panel.
   void _toggleOpen() => _wantComment ? _closeTop() : _setOpen(true);
 
-  /// App › Comment (⇧⌘K): ends comment mode when the panel or the bar is
+  /// View › Comment (⇧⌘K): ends comment mode when the panel or the bar is
   /// up, else turns it on with the bar.
   void _toggleComment() {
     if (_wantComment) {

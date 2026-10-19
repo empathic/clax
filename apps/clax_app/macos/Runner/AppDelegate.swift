@@ -23,9 +23,49 @@ class AppDelegate: FlutterAppDelegate {
     NSApp.orderFrontStandardAboutPanel(options: [.credits: About.credits(seed: nil)])
   }
 
+  /// Help › Clax Help: the documentation, in the person's browser.
+  @IBAction func showClaxHelp(_ sender: Any?) {
+    if let url = URL(string: "https://github.com/empathic/clax/tree/main/docs") {
+      NSWorkspace.shared.open(url)
+    }
+  }
+
   override func applicationWillFinishLaunching(_ notification: Notification) {
     super.applicationWillFinishLaunching(notification)
     installBundles()
+    installMenus()
+  }
+
+  private var menuBridge: MenuBridge?
+  private var editBridge: EditBridge?
+
+  /// The menu bar's two bridges: Clax's own items over
+  /// `dev.empathic.clax/menu` (`MenuBridge`, `MacMenu` in
+  /// `lib/ui/shortcuts.dart`), and Edit's items for Flutter fields over
+  /// `dev.empathic.clax/edit` (`EditBridge`, `MacEdit` in
+  /// `lib/ui/app_menu.dart`).
+  private func installMenus() {
+    guard menuBridge == nil, let menu = NSApp.mainMenu,
+      let controller = mainFlutterWindow?.contentViewController as? FlutterViewController
+    else { return }
+    let messenger = controller.engine.binaryMessenger
+    let menuChannel = FlutterMethodChannel(name: "dev.empathic.clax/menu", binaryMessenger: messenger)
+    let menus = MenuBridge(send: { menuChannel.invokeMethod($0, arguments: $1) })
+    menuChannel.setMethodCallHandler { call, result in
+      let known = menus.handle(
+        call.method, call.arguments, reply: result,
+        fail: { result(FlutterError(code: "bad_arguments", message: $0, details: nil)) })
+      if !known { result(FlutterMethodNotImplemented) }
+    }
+    menus.install(in: menu)
+    menuBridge = menus
+
+    let editChannel = FlutterMethodChannel(name: "dev.empathic.clax/edit", binaryMessenger: messenger)
+    let edits = EditBridge(
+      send: { editChannel.invokeMethod($0, arguments: nil) },
+      isFlutter: { $0.contentViewController is FlutterViewController })
+    edits.install(in: menu)
+    editBridge = edits
   }
 
   /// `.clax` files the person opens in Clax (Finder, a double click, Open

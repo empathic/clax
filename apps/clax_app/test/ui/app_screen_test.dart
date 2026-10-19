@@ -17,6 +17,7 @@ import 'package:clax_app/ui/change_sheet.dart';
 import 'package:clax_app/ui/developer.dart';
 import 'package:clax_app/ui/host_protocol.dart';
 import 'package:clax_app/ui/kit/kit.dart';
+import 'package:clax_app/ui/shortcuts.dart';
 import 'package:clax_app/ui/theme.dart';
 import 'package:clax_app/ui/tokens.g.dart';
 import 'package:clax_app/ui/working_chip.dart';
@@ -2327,41 +2328,36 @@ void main() {
   });
 
   testWidgets(
-    'on macOS, App > Threads (Cmd-K) toggles the panel and Escape closes it; '
-    'App > Comment (Shift-Cmd-K) toggles comment mode',
+    'on macOS, View › Show Threads (⌘K) toggles the panel and Escape closes '
+    'it; View › Comment (⇧⌘K) toggles comment mode',
     (tester) async {
-      final menus = <Object?>[];
+      final enabled = <int, bool>{};
       tester.binding.defaultBinaryMessenger.setMockMethodCallHandler(
-        SystemChannels.menu,
+        MacMenu.channel,
         (call) async {
-          if (call.method == 'Menu.setMenus') menus.add(call.arguments);
+          if (call.method == 'setEnabled') {
+            final args = call.arguments as Map<Object?, Object?>;
+            enabled[args['tag']! as int] = args['enabled']! as bool;
+          }
           return null;
         },
       );
       addTearDown(
         () => tester.binding.defaultBinaryMessenger.setMockMethodCallHandler(
-          SystemChannels.menu,
+          MacMenu.channel,
           null,
         ),
       );
       final rig = await pumpScreen(tester, size: const Size(1200, 800));
       rig.surface.push(rig.ready());
-      await tester.pump();
+      await tester.pumpAndSettle();
 
-      final item = _findItem(menus.last, 'Threads');
-      expect(item, isNotNull);
-      expect(item!['shortcutTrigger'], LogicalKeyboardKey.keyK.keyId);
-      final comment = _findItem(menus.last, 'Comment');
-      expect(comment!['shortcutTrigger'], LogicalKeyboardKey.keyK.keyId);
-      expect(comment['enabled'], isTrue);
-      // The menus are sent again on each rebuild, with new IDs.
-      Future<void> select([String label = 'Threads']) async {
-        final id = _findItem(menus.last, label)!['id'];
+      expect(enabled[ClaxCommand.toggleThreads.tag], isTrue);
+      expect(enabled[ClaxCommand.comment.tag], isTrue);
+      Future<void> select([ClaxCommand c = ClaxCommand.toggleThreads]) async {
         await tester.binding.defaultBinaryMessenger.handlePlatformMessage(
-          'flutter/menu',
-          SystemChannels.menu.codec.encodeMethodCall(
-            MethodCall('Menu.selectedCallback', id),
-          ),
+          MacMenu.channel.name,
+          MacMenu.channel.codec.encodeMethodCall(MethodCall('command', c.tag)),
           (_) {},
         );
         await tester.pumpAndSettle();
@@ -2381,9 +2377,9 @@ void main() {
         'window.claxHost?.enterCommentMode()',
         'window.claxHost?.exitCommentMode()',
       ]);
-      await select('Comment');
+      await select(ClaxCommand.comment);
       expect(find.byKey(const ValueKey('comment-bar')), findsOneWidget);
-      await select('Comment');
+      await select(ClaxCommand.comment);
       expect(find.byKey(const ValueKey('comment-bar')), findsNothing);
     },
     variant: TargetPlatformVariant.only(TargetPlatform.macOS),
@@ -3399,18 +3395,3 @@ void main() {
   });
 }
 
-Map<Object?, Object?>? _findItem(Object? tree, String label) {
-  if (tree is Map) {
-    if (tree['label'] == label) return tree;
-    for (final v in tree.values) {
-      final f = _findItem(v, label);
-      if (f != null) return f;
-    }
-  } else if (tree is List) {
-    for (final v in tree) {
-      final f = _findItem(v, label);
-      if (f != null) return f;
-    }
-  }
-  return null;
-}

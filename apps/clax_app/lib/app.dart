@@ -533,8 +533,10 @@ class AgentRuntime {
 ///   either is presented). A question asked for (a notification's tap,
 ///   the inbox, a toast's View) takes the place of a sheet showing one
 ///   nobody asked for.
-/// - **macOS.** The app owns the menu bar ([ClaxMenuBar]); the open app
-///   screen registers App › Comment and App › Threads.
+/// - **macOS.** The menu bar is `MainMenu.xib`'s, whose Clax commands
+///   [ClaxMenuBar] enables and runs: Settings…, New App…, Import App…,
+///   Inbox, Back and Home; the open app screen registers View › Comment
+///   and View › Show Threads.
 class AppRoot extends StatefulWidget {
   const AppRoot({super.key, required this.services});
 
@@ -1445,7 +1447,22 @@ class _AppRootState extends State<AppRoot> with WidgetsBindingObserver {
     _revision.value++;
   }
 
+  /// Whether Settings is up, so a second ask (⌘, while it shows) pushes no
+  /// second one.
+  var _settingsUp = false;
+
+  /// Shows Settings, unless it is already up.
   Future<void> _openSettings() async {
+    if (_settingsUp) return;
+    _settingsUp = true;
+    try {
+      await _showSettings();
+    } finally {
+      _settingsUp = false;
+    }
+  }
+
+  Future<void> _showSettings() async {
     await _nav.currentState?.push(
       MaterialPageRoute<void>(
         builder: (_) => SettingsScreen(
@@ -2480,7 +2497,8 @@ class _AppRootState extends State<AppRoot> with WidgetsBindingObserver {
     );
   }
 
-  /// Goes back one screen, as the platform's back would.
+  /// Goes back one screen, as the platform's back would: the open app's
+  /// page steps back in its own history first.
   void _back() => unawaited(_nav.currentState?.maybePop());
 
   @override
@@ -2526,7 +2544,19 @@ class _AppRootState extends State<AppRoot> with WidgetsBindingObserver {
     app = ClaxPointerScope(child: app);
     app = DeveloperScope(notifier: _developer, child: app);
     if (macOS) {
-      app = ClaxMenuBar(comments: _comments, back: _back, child: app);
+      // The home screen's flows exist once the daemon is up, which bumps
+      // the revision.
+      final inner = app;
+      app = ListenableBuilder(
+        listenable: _revision,
+        builder: (context, _) => ClaxMenuBar(
+          comments: _comments,
+          navigator: () => _nav.currentState,
+          home: _homeHost?.actions,
+          settings: () => unawaited(_openSettings()),
+          child: inner,
+        ),
+      );
     }
     return app;
   }

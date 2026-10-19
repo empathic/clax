@@ -3,6 +3,10 @@ import 'dart:async';
 import 'package:flutter/services.dart';
 import 'package:flutter/widgets.dart';
 
+import '../home/home_host.dart';
+import 'kit/family.dart';
+import 'shortcuts.dart';
+
 /// Esc on macOS, as the app maps it ([escapeShortcuts]).
 class EscapeIntent extends Intent {
   const EscapeIntent();
@@ -42,7 +46,7 @@ void escapeOrBack(VoidCallback back) {
   back();
 }
 
-/// What App › Threads (⌘K) and App › Comment (⇧⌘K) run: the open app
+/// What View › Show Threads (⌘K) and View › Comment (⇧⌘K) run: the open app
 /// screen registers its panel toggle and its comment-mode toggle here, and
 /// the menu items are disabled while none is registered.
 ///
@@ -86,100 +90,201 @@ class CommentsCommand extends ChangeNotifier {
   }
 }
 
-/// The macOS menu bar: the app menu (About, Services, Hide, Quit, as the
-/// platform provides them), App › Comment (⇧⌘K) and App › Threads (⌘K)
-/// running [comments], and App › Back to Apps (⌘[) running [back]. They are
-/// the macOS way into comment mode, the threads panel and out of a screen,
-/// since nothing of Clax's is drawn over an app. Esc is the app's
-/// ([escapeShortcuts], [escapeActions], given to the MaterialApp): it does
-/// not reach Flutter while an app's page has the keyboard focus, where
-/// ⌘[ (a key equivalent of the menu) still does.
-/// Flutter allows one menu bar at a time, so the app installs one, above
-/// every screen. The key equivalent works while the WebView has the
-/// keyboard focus, where Flutter's shortcuts do not reach.
-class ClaxMenuBar extends StatelessWidget {
+/// Clax's commands on the Mac, whose menu bar is `MainMenu.xib`'s
+/// (Clax, File, Edit, View, App, Window, Help): it enables the items of
+/// Clax's own commands and runs each the person chooses ([MacMenu]), and
+/// takes Edit's items for the focused Flutter field ([MacEdit]). Edit's
+/// items go to a page's WebView natively. Off the Mac it only gives
+/// [ClaxCommandIntent] the same commands.
+///
+/// - Settings… (⌘,) runs [settings].
+/// - New App… (⌘N), Import App… (⌘O) and Inbox (⇧⌘I) run [home]'s flows.
+/// - Comment (⇧⌘K) and Show Threads (⌘K) run what the open app screen
+///   registered with [comments].
+/// - Back (⌘[) goes back as the platform's back would: the open app's page
+///   steps back in its own history first (its `PopScope`), then the screen
+///   closes. Home (⇧⌘H) closes every screen down to the grid.
+///
+/// The other commands' items stay disabled. Key equivalents are the menu's,
+/// so they work while a page's WebView has the keyboard focus; Esc is the
+/// app's ([escapeShortcuts], [escapeActions], given to the MaterialApp).
+class ClaxMenuBar extends StatefulWidget {
   const ClaxMenuBar({
     super.key,
     required this.comments,
     required this.child,
-    this.back,
+    this.navigator,
+    this.home,
+    this.settings,
+    this.titles = const {},
   });
 
   final CommentsCommand comments;
   final Widget child;
 
-  /// Goes back one screen (`Navigator.maybePop`); null disables the item.
-  final VoidCallback? back;
+  /// The navigator Back and Home act on; without it, the one above this
+  /// widget, if any.
+  final NavigatorState? Function()? navigator;
 
-  /// Back to Apps' key equivalent.
-  static const backShortcut = SingleActivator(
-    LogicalKeyboardKey.bracketLeft,
-    meta: true,
-  );
+  /// The home screen's flows, once there is a home screen.
+  final HomeActions? home;
 
-  static PlatformMenuItemGroup? _provided(
-    List<PlatformProvidedMenuItemType> types,
-  ) {
-    final items = [
-      for (final t in types)
-        if (PlatformProvidedMenuItem.hasMenu(t))
-          PlatformProvidedMenuItem(type: t),
-    ];
-    return items.isEmpty ? null : PlatformMenuItemGroup(members: items);
+  /// Shows Settings; null disables Settings….
+  final VoidCallback? settings;
+
+  /// Titles in place of `MainMenu.xib`'s.
+  final Map<ClaxCommand, String> titles;
+
+  /// The commands with an item in the menu bar.
+  static const menuCommands = [
+    ClaxCommand.settings,
+    ClaxCommand.newApp,
+    ClaxCommand.importApp,
+    ClaxCommand.shareApp,
+    ClaxCommand.toggleSidebar,
+    ClaxCommand.comment,
+    ClaxCommand.toggleThreads,
+    ClaxCommand.reload,
+    ClaxCommand.actualSize,
+    ClaxCommand.zoomIn,
+    ClaxCommand.zoomOut,
+    ClaxCommand.back,
+    ClaxCommand.forward,
+    ClaxCommand.home,
+    ClaxCommand.inspect,
+    ClaxCommand.versions,
+    ClaxCommand.star,
+    ClaxCommand.resumeBuild,
+    ClaxCommand.inbox,
+  ];
+
+  @override
+  State<ClaxMenuBar> createState() => _ClaxMenuBarState();
+}
+
+class _ClaxMenuBarState extends State<ClaxMenuBar> {
+  StreamSubscription<ClaxCommand>? _chosen;
+
+  /// What was last sent, so a state is sent only when it changes.
+  final _enabled = <ClaxCommand, bool>{};
+  final _titles = <ClaxCommand, String>{};
+
+  @override
+  void initState() {
+    super.initState();
+    widget.comments.addListener(_sync);
+    if (hasDesktopWindowChrome) {
+      _chosen = MacMenu.commands.listen(_run);
+      MacEdit.install();
+    }
+    WidgetsBinding.instance.addPostFrameCallback((_) => _sync());
   }
 
   @override
-  Widget build(BuildContext context) => ListenableBuilder(
-    listenable: comments,
-    child: child,
-    builder: (context, child) => PlatformMenuBar(
-      menus: [
-        PlatformMenu(
-          label: 'Clax',
-          menus: [
-            ?_provided(const [PlatformProvidedMenuItemType.about]),
-            ?_provided(const [PlatformProvidedMenuItemType.servicesSubmenu]),
-            ?_provided(const [
-              PlatformProvidedMenuItemType.hide,
-              PlatformProvidedMenuItemType.hideOtherApplications,
-              PlatformProvidedMenuItemType.showAllApplications,
-            ]),
-            ?_provided(const [PlatformProvidedMenuItemType.quit]),
-          ],
-        ),
-        PlatformMenu(
-          label: 'App',
-          menus: [
-            PlatformMenuItem(
-              label: 'Comment',
-              shortcut: const SingleActivator(
-                LogicalKeyboardKey.keyK,
-                meta: true,
-                shift: true,
-              ),
-              onSelected: comments.comment,
-            ),
-            PlatformMenuItem(
-              label: 'Threads',
-              shortcut: const SingleActivator(
-                LogicalKeyboardKey.keyK,
-                meta: true,
-              ),
-              onSelected: comments.toggle,
-            ),
-            PlatformMenuItemGroup(
-              members: [
-                PlatformMenuItem(
-                  label: 'Back to Apps',
-                  shortcut: backShortcut,
-                  onSelected: back,
-                ),
-              ],
-            ),
-          ],
-        ),
-      ],
-      child: child!,
-    ),
+  void didUpdateWidget(ClaxMenuBar old) {
+    super.didUpdateWidget(old);
+    if (old.comments != widget.comments) {
+      old.comments.removeListener(_sync);
+      widget.comments.addListener(_sync);
+    }
+    WidgetsBinding.instance.addPostFrameCallback((_) => _sync());
+  }
+
+  @override
+  void dispose() {
+    widget.comments.removeListener(_sync);
+    unawaited(_chosen?.cancel());
+    super.dispose();
+  }
+
+  NavigatorState? get _navigator {
+    if (widget.navigator case final nav?) return nav();
+    return mounted ? Navigator.maybeOf(context) : null;
+  }
+
+  bool get _hasNavigator =>
+      widget.navigator != null || Navigator.maybeOf(context) != null;
+
+  /// What [c] runs now, or null when it is disabled.
+  VoidCallback? _handler(ClaxCommand c) => switch (c) {
+    ClaxCommand.settings => widget.settings,
+    ClaxCommand.newApp => widget.home?.newApp,
+    ClaxCommand.importApp => widget.home?.importApp,
+    ClaxCommand.inbox => widget.home?.openInbox,
+    ClaxCommand.comment => widget.comments.comment,
+    ClaxCommand.toggleThreads => widget.comments.toggle,
+    ClaxCommand.back => _hasNavigator ? _back : null,
+    ClaxCommand.home => _hasNavigator ? _home : null,
+    _ => null,
+  };
+
+  void _back() => unawaited(_navigator?.maybePop());
+
+  void _home() => _navigator?.popUntil((r) => r.isFirst);
+
+  void _run(ClaxCommand c) {
+    if (mounted) _handler(c)?.call();
+  }
+
+  void _sync() {
+    if (!mounted || !hasDesktopWindowChrome) return;
+    for (final c in ClaxMenuBar.menuCommands) {
+      final on = _handler(c) != null;
+      if (_enabled[c] != on) MacMenu.setEnabled(c, on);
+      _enabled[c] = on;
+    }
+    for (final MapEntry(key: c, value: title) in widget.titles.entries) {
+      if (_titles[c] != title) MacMenu.setTitle(c, title);
+      _titles[c] = title;
+    }
+  }
+
+  @override
+  Widget build(BuildContext context) => Actions(
+    actions: {
+      ClaxCommandIntent: CallbackAction<ClaxCommandIntent>(
+        onInvoke: (i) {
+          _run(i.command);
+          return null;
+        },
+      ),
+    },
+    child: widget.child,
   );
+}
+
+/// Edit's items on the Mac while the Flutter view has the keyboard focus:
+/// `macos/Runner/EditBridge.swift` sends `cut`, `copy`, `paste`,
+/// `pasteAsPlainText`, `delete`, `selectAll`, `undo` or `redo` over the
+/// method channel `dev.empathic.clax/edit`, and the focused field (or
+/// selectable text) takes it as the matching text intent. Each answers
+/// whether something took it. A page's WebView gets them natively.
+abstract final class MacEdit {
+  static const channel = MethodChannel('dev.empathic.clax/edit');
+
+  /// Takes the channel's calls; called again, it changes nothing.
+  static void install() => channel.setMethodCallHandler(
+    (call) async => perform(call.method),
+  );
+
+  /// Runs Edit's [action] on the primary focus; whether it was taken.
+  static bool perform(String action) {
+    const cause = SelectionChangedCause.keyboard;
+    final Intent? intent = switch (action) {
+      'cut' => const CopySelectionTextIntent.cut(cause),
+      'copy' => CopySelectionTextIntent.copy,
+      'paste' || 'pasteAsPlainText' => const PasteTextIntent(cause),
+      'delete' => const DeleteCharacterIntent(forward: true),
+      'selectAll' => const SelectAllTextIntent(cause),
+      'undo' => const UndoTextIntent(cause),
+      'redo' => const RedoTextIntent(cause),
+      _ => null,
+    };
+    final context = FocusManager.instance.primaryFocus?.context;
+    if (intent == null || context == null) return false;
+    final found = Actions.maybeFind<Intent>(context, intent: intent);
+    if (found == null || !found.isEnabled(intent)) return false;
+    Actions.invoke(context, intent);
+    return true;
+  }
 }

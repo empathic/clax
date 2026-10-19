@@ -784,8 +784,8 @@ same signature and do not ask.
   API counts toward the run's turn and cost limits.
 - **Commenting.** Nothing of Clax's is drawn over an open app. On Android,
   a silent notification named after the app stays up while it is open,
-  with **Comment** and **Threads**; on macOS, App › Comment (⇧⌘K) and App ›
-  Threads (⌘K). A two-finger swipe left opens the threads too, and when
+  with **Comment** and **Threads**; on macOS, View › Comment (⇧⌘K) and View ›
+  Show Threads (⌘K). A two-finger swipe left opens the threads too, and when
   notifications are off, or you swiped the notice away, a thin handle on
   the right edge does. A first-run hint says where these are. Comment
   mode frames the page and puts a bar under it: "Tap anything to comment
