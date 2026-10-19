@@ -6,15 +6,18 @@ import 'package:clax_app/platform/device/device_consent_dialog.dart';
 import 'package:clax_app/platform/device/device_host.dart';
 import 'package:clax_app/ui/read_consent_dialog.dart';
 import 'package:flutter/material.dart';
+import 'package:flutter_test/flutter_test.dart';
 
 import 'rig.dart';
 
-/// Shows a page, runs [ask] with its navigator, and takes the shot.
+/// Shows a page, runs [ask] with its navigator, then [then], and takes
+/// the shot.
 Future<void> _over(
   Shot s,
   String surface,
-  void Function(NavigatorState nav) ask,
-) async {
+  void Function(NavigatorState nav) ask, {
+  Future<void> Function()? then,
+}) async {
   final nav = GlobalKey<NavigatorState>();
   await s.tester.pumpWidget(
     s.app(
@@ -31,23 +34,37 @@ Future<void> _over(
   );
   ask(nav.currentState!);
   await s.settle();
+  if (then != null) {
+    await then();
+    await s.settle();
+  }
   await s.take(surface);
 }
 
 void main() {
+  void read(NavigatorState nav) {
+    Future<ConsentAnswer> _ =
+        DialogReadConsent(
+          navigator: () => nav,
+          memory: MemoryConsentMemory(),
+        ).ask(
+          reader: 'a0000000000a',
+          readerTitle: 'Dashboard',
+          source: 'b0000000000b',
+          sourceTitle: 'Groceries',
+        );
+  }
+
+  shots('consent-read', (s) => _over(s, 'consent-read', read));
+  // "Always for this app" ticked: the button reads Always allow.
   shots(
-    'consent-read',
-    (s) => _over(s, 'consent-read', (nav) {
-      Future<ConsentAnswer> _ = DialogReadConsent(
-        navigator: () => nav,
-        memory: MemoryConsentMemory(),
-      ).ask(
-        reader: 'a0000000000a',
-        readerTitle: 'Dashboard',
-        source: 'b0000000000b',
-        sourceTitle: 'Groceries',
-      );
-    }),
+    'consent-read-always',
+    (s) => _over(
+      s,
+      'consent-read-always',
+      read,
+      then: () => s.tester.tap(find.text('Always for this app')),
+    ),
   );
   shots(
     'consent-location',

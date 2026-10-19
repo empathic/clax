@@ -156,7 +156,11 @@ class DialogReadConsent implements AgentReadConsent {
         suppression: reader == null ? null : 'Always for this app',
         actions: const [
           ClaxDialogAction('Don’t allow'),
-          ClaxDialogAction('Allow once', kind: ClaxButtonKind.primary),
+          ClaxDialogAction(
+            'Allow once',
+            kind: ClaxButtonKind.primary,
+            suppressedLabel: 'Always allow',
+          ),
         ],
         defaultIndex: 1,
         cancelIndex: 0,

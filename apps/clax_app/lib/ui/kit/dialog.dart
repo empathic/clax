@@ -1,6 +1,7 @@
 import 'dart:async';
 import 'dart:math' as math;
 
+import 'package:flutter/foundation.dart';
 import 'package:flutter/material.dart';
 import 'package:flutter/rendering.dart';
 import 'package:flutter/services.dart';
@@ -14,9 +15,18 @@ import 'toggles.dart';
 /// One button of a [ClaxDialog]: its [label] (at most three words) and
 /// its [kind]. A destructive action is never the dialog's default.
 class ClaxDialogAction {
-  const ClaxDialogAction(this.label, {this.kind = ClaxButtonKind.plain});
+  const ClaxDialogAction(
+    this.label, {
+    this.kind = ClaxButtonKind.plain,
+    this.suppressedLabel,
+  });
   final String label;
   final ClaxButtonKind kind;
+
+  /// The label while [ClaxDialog.ask]'s suppression checkbox is ticked,
+  /// when ticking it changes what this action does ("Allow once" becomes
+  /// "Always allow"); null keeps [label].
+  final String? suppressedLabel;
 }
 
 /// What a [ClaxDialog.ask] was answered: the [index] of the action pressed
@@ -86,10 +96,7 @@ abstract final class ClaxDialog {
     final apple = ClaxFamily.of(context) == ClaxFamily.apple;
     final suppressed = ValueNotifier(false);
     final navigator = Navigator.of(context, rootNavigator: true);
-    final themes = InheritedTheme.capture(
-      from: context,
-      to: navigator.context,
-    );
+    final themes = InheritedTheme.capture(from: context, to: navigator.context);
     final extra = [
       ?content,
       if (suppression != null)
@@ -108,7 +115,8 @@ abstract final class ClaxDialog {
       final p = claxPalette(context);
       route = RawDialogRoute<int>(
         barrierDismissible: true,
-        barrierLabel: MaterialLocalizations.of(context).modalBarrierDismissLabel,
+        barrierLabel: MaterialLocalizations.of(context)
+            .modalBarrierDismissLabel,
         barrierColor: p.scrim.withValues(alpha: p.scrim.a * 0.5),
         transitionDuration: ClaxMotion.base,
         transitionBuilder: (context, animation, _, child) {
@@ -136,6 +144,7 @@ abstract final class ClaxDialog {
               extra: extra,
               actions: actions,
               defaultIndex: defaultIndex,
+              suppressed: suppressed,
             ),
           ),
         ),
@@ -144,7 +153,8 @@ abstract final class ClaxDialog {
       route = DialogRoute<int>(
         context: context,
         themes: themes,
-        barrierLabel: MaterialLocalizations.of(context).modalBarrierDismissLabel,
+        barrierLabel: MaterialLocalizations.of(context)
+            .modalBarrierDismissLabel,
         builder: (context) => _Keys(
           defaultIndex: defaultIndex,
           child: AlertDialog(
@@ -171,7 +181,13 @@ abstract final class ClaxDialog {
               ClaxActionBar(
                 children: [
                   for (final (i, a) in actions.indexed)
-                    _button(context, a, i, isDefault: i == defaultIndex),
+                    _button(
+                      context,
+                      a,
+                      i,
+                      isDefault: i == defaultIndex,
+                      suppressed: suppressed,
+                    ),
                 ],
               ),
             ],
@@ -207,12 +223,21 @@ abstract final class ClaxDialog {
     ClaxDialogAction a,
     int index, {
     required bool isDefault,
-  }) => ClaxButton(
-    label: a.label,
-    kind: a.kind,
-    isDefault: isDefault,
-    onPressed: () => Navigator.of(context).pop(index),
-  );
+    required ValueListenable<bool> suppressed,
+  }) {
+    Widget button(String label) => ClaxButton(
+      label: label,
+      kind: a.kind,
+      isDefault: isDefault,
+      onPressed: () => Navigator.of(context).pop(index),
+    );
+    final other = a.suppressedLabel;
+    if (other == null) return button(a.label);
+    return ValueListenableBuilder(
+      valueListenable: suppressed,
+      builder: (_, on, _) => button(on ? other : a.label),
+    );
+  }
 }
 
 /// Return answers the default action when no button has focus.
@@ -307,6 +332,7 @@ class _AppleAlert extends StatelessWidget {
     required this.body,
     required this.actions,
     required this.defaultIndex,
+    required this.suppressed,
     this.extra = const [],
   });
   final String title;
@@ -317,6 +343,7 @@ class _AppleAlert extends StatelessWidget {
   final List<Widget> extra;
   final List<ClaxDialogAction> actions;
   final int? defaultIndex;
+  final ValueListenable<bool> suppressed;
 
   @override
   Widget build(BuildContext context) {
@@ -346,16 +373,20 @@ class _AppleAlert extends StatelessWidget {
                     Text(
                       title,
                       textAlign: TextAlign.center,
-                      style: ClaxType.of(ClaxRole.headline, platform)
-                          .copyWith(color: p.fg),
+                      style: ClaxType.of(
+                        ClaxRole.headline,
+                        platform,
+                      ).copyWith(color: p.fg),
                     ),
                     if (body != null) ...[
                       const SizedBox(height: ClaxSpace.s8),
                       Text(
                         body!,
                         textAlign: TextAlign.center,
-                        style: ClaxType.of(ClaxRole.caption, platform)
-                            .copyWith(color: p.fg),
+                        style: ClaxType.of(
+                          ClaxRole.caption,
+                          platform,
+                        ).copyWith(color: p.fg),
                       ),
                     ],
                     for (final w in extra) ...[
@@ -372,6 +403,7 @@ class _AppleAlert extends StatelessWidget {
                             a,
                             i,
                             isDefault: i == defaultIndex,
+                            suppressed: suppressed,
                           ),
                       ],
                     ),
@@ -409,9 +441,9 @@ class ClaxActionBar extends MultiChildRenderObjectWidget {
   @override
   void updateRenderObject(BuildContext context, RenderObject renderObject) =>
       (renderObject as _RenderActionBar)
-    ..spacing = spacing
-    ..fill = fill
-    ..textDirection = Directionality.of(context);
+        ..spacing = spacing
+        ..fill = fill
+        ..textDirection = Directionality.of(context);
 }
 
 class _ActionBarData extends ContainerBoxParentData<RenderBox> {}
@@ -445,7 +477,8 @@ class _RenderActionBar extends RenderBox
 
   @override
   void setupParentData(RenderBox child) {
-    if (child.parentData is! _ActionBarData) child.parentData = _ActionBarData();
+    if (child.parentData is! _ActionBarData)
+      child.parentData = _ActionBarData();
   }
 
   List<RenderBox> get _children => getChildrenAsList();
@@ -473,14 +506,15 @@ class _RenderActionBar extends RenderBox
 
   @override
   double computeMaxIntrinsicWidth(double height) =>
-      _children.fold(0.0, (a, c) => a + c.getMaxIntrinsicWidth(height)) +
-      _gaps;
+      _children.fold(0.0, (a, c) => a + c.getMaxIntrinsicWidth(height)) + _gaps;
 
   @override
-  double computeMinIntrinsicHeight(double width) => _height(width, (c, w) => c.getMinIntrinsicHeight(w));
+  double computeMinIntrinsicHeight(double width) =>
+      _height(width, (c, w) => c.getMinIntrinsicHeight(w));
 
   @override
-  double computeMaxIntrinsicHeight(double width) => _height(width, (c, w) => c.getMaxIntrinsicHeight(w));
+  double computeMaxIntrinsicHeight(double width) =>
+      _height(width, (c, w) => c.getMaxIntrinsicHeight(w));
 
   double _height(double width, double Function(RenderBox, double) of) {
     if (_fits(width)) {

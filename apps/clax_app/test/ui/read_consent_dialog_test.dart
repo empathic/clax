@@ -64,7 +64,10 @@ void main() {
     expect(find.textContaining('agent'), findsNothing);
     expect(find.text('Allow once'), findsOneWidget);
     expect(find.byType(ClaxCheckbox), findsOneWidget);
-    expect(find.widgetWithText(ClaxButton, 'Always for this app'), findsNothing);
+    expect(
+      find.widgetWithText(ClaxButton, 'Always for this app'),
+      findsNothing,
+    );
     expect(find.byType(ClaxButton), findsNWidgets(2));
     expect(find.text('Don’t allow'), findsOneWidget);
     await tester.tap(find.text('Allow once'));
@@ -97,7 +100,9 @@ void main() {
     var answer = ask(c);
     await tester.pumpAndSettle();
     await always(tester);
-    await tester.tap(find.text('Allow once'));
+    // The button says what it grants.
+    expect(find.text('Allow once'), findsNothing);
+    await tester.tap(find.text('Always allow'));
     await tester.pumpAndSettle();
     expect(await answer, ConsentAnswer.always);
 
@@ -113,6 +118,19 @@ void main() {
     await tester.tap(find.text('Don’t allow'));
     await tester.pumpAndSettle();
     expect(await answer, ConsentAnswer.denied);
+  });
+
+  testWidgets('unticking Always puts Allow once back', (tester) async {
+    await pumpApp(tester);
+    final answer = ask(consent());
+    await tester.pumpAndSettle();
+    await always(tester);
+    expect(find.text('Always allow'), findsOneWidget);
+    await always(tester);
+    expect(find.text('Always allow'), findsNothing);
+    await tester.tap(find.text('Allow once'));
+    await tester.pumpAndSettle();
+    expect(await answer, ConsentAnswer.once);
   });
 
   testWidgets('a new app is offered no Always', (tester) async {
@@ -199,18 +217,20 @@ void main() {
     expect(await FileConsentMemory(file).allowed('a', 'b'), isFalse);
   });
 
-  test('FileConsentMemory lists its pairs and forgets one across loads',
-      () async {
-    final dir = Directory.systemTemp.createTempSync('consent-');
-    addTearDown(() => dir.deleteSync(recursive: true));
-    final file = File('${dir.path}/agent-read-consent.json');
-    final m = FileConsentMemory(file);
-    await m.allow('a', 'b');
-    await m.allow('a', 'c');
-    expect(await m.pairs(), unorderedEquals([('a', 'b'), ('a', 'c')]));
-    await m.forget('a', 'b');
-    final again = FileConsentMemory(file);
-    expect(await again.pairs(), [('a', 'c')]);
-    expect(await again.allowed('a', 'b'), isFalse);
-  });
+  test(
+    'FileConsentMemory lists its pairs and forgets one across loads',
+    () async {
+      final dir = Directory.systemTemp.createTempSync('consent-');
+      addTearDown(() => dir.deleteSync(recursive: true));
+      final file = File('${dir.path}/agent-read-consent.json');
+      final m = FileConsentMemory(file);
+      await m.allow('a', 'b');
+      await m.allow('a', 'c');
+      expect(await m.pairs(), unorderedEquals([('a', 'b'), ('a', 'c')]));
+      await m.forget('a', 'b');
+      final again = FileConsentMemory(file);
+      expect(await again.pairs(), [('a', 'c')]);
+      expect(await again.allowed('a', 'b'), isFalse);
+    },
+  );
 }
