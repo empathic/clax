@@ -357,7 +357,8 @@ pub(super) fn name_owner_in(
 /// artifact shares ([`super::shares::fold_shares`]). The elevations it gave
 /// as an artifact's creator are dropped. A row of `from` left in any table
 /// with a `viewer_id` column fails the fold (see `assert_folded`), so a
-/// table added later cannot be missed silently.
+/// table added later cannot be missed silently. When `from` is the owner's
+/// row, `into` becomes the owner, as the owner's credentials move to it.
 fn fold(
     st: &Store,
     ctx: &AuditCtx,
@@ -369,6 +370,11 @@ fn fold(
     let into_owner: bool = tx.query_row(
         "SELECT owner FROM viewers WHERE id = ?1",
         params![into.id],
+        |r| r.get(0),
+    )?;
+    let from_owner: bool = tx.query_row(
+        "SELECT owner FROM viewers WHERE id = ?1",
+        params![from.id],
         |r| r.get(0),
     )?;
     let person = (!into_owner).then_some(new);
@@ -393,7 +399,7 @@ fn fold(
         )?;
     }
     fold_authorship(st, ctx, tx, old, new, into_owner)?;
-    fold_hosted(tx, from, into)?;
+    fold_hosted(tx, from, into, from_owner)?;
     super::shares::fold_shares(st, ctx, tx, (&from.id, old), (&into.id, new))?;
     tx.execute(
         "UPDATE comments SET author_public_id = ?2 WHERE author_public_id = ?1",
@@ -438,22 +444,28 @@ fn fold(
     forget_cookies(tx, &from.id)?;
     assert_folded(tx, &from.id)?;
     tx.execute("DELETE FROM viewers WHERE id = ?1", params![from.id])?;
+    if from_owner {
+        tx.execute(
+            "UPDATE viewers SET owner = 1 WHERE id = ?1",
+            params![into.id],
+        )?;
+    }
     Ok(())
 }
 
 /// Moves `from`'s hosted rows to `into` in a fold. The owner's row keeps
-/// its credentials: when `from` is the owner's, its browser sessions,
-/// unused sign-in links, setup and GitHub account move to `into`, which
-/// becomes the owner (a GitHub account `into` already has stays, and
-/// `from`'s is unlinked). Any other row's credentials are forgotten, as
+/// its credentials: when `from` is the owner's (`from_owner`), its browser
+/// sessions, unused sign-in links, setup and GitHub account move to
+/// `into`, which [`fold`] then makes the owner (a GitHub account `into`
+/// already has stays, and `from`'s is unlinked). Any other row's credentials are forgotten, as
 /// its cookies are, so a browser that held them does not become `into`.
 /// Its agreements to the legal documents move, `into`'s own kept.
-fn fold_hosted(tx: &rusqlite::Transaction<'_>, from: &Viewer, into: &Viewer) -> Result<()> {
-    let from_owner: bool = tx.query_row(
-        "SELECT owner FROM viewers WHERE id = ?1",
-        params![from.id],
-        |r| r.get(0),
-    )?;
+fn fold_hosted(
+    tx: &rusqlite::Transaction<'_>,
+    from: &Viewer,
+    into: &Viewer,
+    from_owner: bool,
+) -> Result<()> {
     let ids = params![from.id, into.id];
     if from_owner {
         for table in ["browser_sessions", "signin_links", "hosted_setup"] {
@@ -1495,6 +1507,19 @@ mod tests {
             .unwrap();
         assert!(!owner_flag, "the browser's viewer did not become the owner");
         assert!(claims(&st).is_empty(), "no claim is recorded");
+    }
+
+    #[test]
+    fn folding_the_owners_row_makes_its_successor_the_owner() {
+        let (_d, st) = store();
+        let cli = st.set_owner_name("Alex", false).unwrap();
+        let chrome = st.mint_viewer(&new_ulid(), true).unwrap();
+        st.with_tx(|tx| super::fold(&st, DAEMON, tx, &cli, &chrome))
+            .unwrap();
+        assert_eq!(
+            st.owner().unwrap().map(|o| o.public_id),
+            Some(chrome.public_id)
+        );
     }
 
     #[test]
