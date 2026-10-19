@@ -193,6 +193,25 @@ test('chrome() unavailable keeps the phone layout and says Tap', async () => {
   await wait(() => ui.text('.h-notice') === 'Tap again to open Groceries');
 });
 
+test('with the window\'s toolbar the page draws no bar, search or New app, and no big tiles while wide; back to a phone they return', async () => {
+  const toolbar = { platform: 'macos', form: 'wide', toolbar: true, pointer: 'mouse' };
+  const home = await show({ makes: [], chrome: toolbar }, { clock: busyClock(), layout: busy() });
+  await wait(() => ui.exists('.h-tile[data-id]') && !ui.exists('.h-bar'));
+  expect(ui.exists('.h-fab')).toBe(false);
+  expect(ui.exists('.h-search-ghost')).toBe(false);
+  expect(document.querySelectorAll('[data-big]').length).toBe(0);
+  home.set({ chrome: { platform: 'android', form: 'phone', toolbar: false, pointer: 'touch' } });
+  await wait(() => ui.exists('.h-bar') && ui.exists('.h-fab') && document.querySelectorAll('[data-big]').length === 3);
+  expect(ui.exists('.h-search-ghost')).toBe(true);
+  // Wide without the toolbar keeps the bar and New app, but no big tiles.
+  home.set({ chrome: { platform: 'android', form: 'wide', toolbar: false, pointer: 'touch' } });
+  await wait(() => document.querySelectorAll('[data-big]').length === 0);
+  expect(ui.exists('.h-bar')).toBe(true);
+  expect(ui.exists('.h-fab')).toBe(true);
+  // The stored arrangement keeps Big tiles on.
+  expect((await stored()).bigTiles === false).toBe(false);
+});
+
 test('an open or a menu retried from the notice keeps its change: the open counts, the picked Star stars', async () => {
   const seen = SAMPLE.apps.map((a) => a.id).filter((id) => id !== 'app-notes');
   const home = await show({ makes: [] }, { layout: { order: [], seen } });

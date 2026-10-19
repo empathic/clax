@@ -45,11 +45,13 @@ struct ToolbarSpec: Equatable {
 /// unified, icons only, empty and with the window's title hidden until Dart
 /// declares items for it, so the row is Flutter's to draw in.
 ///
-/// - `setItems` {view, items}: the items of that view's window, in order.
-///   Consecutive items of one `group` are one segmented control; the
-///   `navigation` group sits before the title. With items the window's title
-///   (and subtitle) shows after it and the other items sit at the trailing
-///   end; with none the title is hidden again.
+/// - `setItems` {view, items, leading?, edge?}: the items of that view's
+///   window, in order. Consecutive items of one `group` are one segmented
+///   control; the `navigation` group sits before the title. With items the
+///   window's title (and subtitle) shows after it and the other items sit at
+///   the trailing end; with none the title is hidden again. With `edge` the
+///   first `leading` items sit over a sidebar `edge` points wide, and a
+///   spacer ([SidebarEdgeView]) after them starts the rest past its edge.
 /// - `share` {view, item, path}: `NSSharingServicePicker` for the file at
 ///   `path`, shown from item `item`; answers whether a target was chosen.
 /// - It sends `clicked` {view, id} through [send] for an item clicked.
@@ -108,7 +110,9 @@ final class MacToolbar: NSObject {
         fail("each item takes a distinct id, a symbol and a label")
         return true
       }
-      bars[view]?.set(specs)
+      let leading = (map?["leading"] as? NSNumber)?.intValue ?? 0
+      let edge = CGFloat((map?["edge"] as? NSNumber)?.doubleValue ?? 0)
+      bars[view]?.set(specs, edge: leading > 0 && edge > 0 ? (leading, edge) : nil)
       reply(nil)
     case "share":
       guard let view, let item = map?["item"] as? String, let path = map?["path"] as? String,
@@ -141,12 +145,16 @@ final class WindowToolbar: NSObject, NSToolbarDelegate {
   private weak var window: NSWindow?
   private let clicked: (String) -> Void
   private var specs: [ToolbarSpec] = []
+  /// How many leading items sit over the sidebar, and its width.
+  private var edge: (leading: Int, width: CGFloat)?
   private var made: [NSToolbarItem.Identifier: NSToolbarItem] = [:]
   private var displayMode: NSKeyValueObservation?
   var onLayout: (() -> Void)?
 
   /// The `navigation` group's name: it sits before the window's title.
   static let navigation = "navigation"
+  /// The spacer after the items over the sidebar.
+  static let sidebarEdge = NSToolbarItem.Identifier("clax.sidebarEdge")
   private static let groupPrefix = "group:"
 
   init(view: Int64, window: NSWindow, clicked: @escaping (String) -> Void) {
@@ -179,14 +187,18 @@ final class WindowToolbar: NSObject, NSToolbarDelegate {
     return made[Self.groupIdentifier(group)]
   }
 
-  /// Shows [specs]: when the same items in the same groups were shown,
-  /// each is updated in place; otherwise the toolbar's items are replaced.
-  func set(_ specs: [ToolbarSpec]) {
+  /// Shows [specs], the first `edge.leading` of them over a sidebar
+  /// `edge.width` wide when [edge] is given: when the same items in the same
+  /// groups were shown, each is updated in place; otherwise the toolbar's
+  /// items are replaced.
+  func set(_ specs: [ToolbarSpec], edge: (leading: Int, width: CGFloat)? = nil) {
     let old = self.specs
-    let wanted = layout(specs)
+    let edge = edge.flatMap { $0.leading < specs.count ? $0 : nil }
+    let wanted = layout(specs, edge: edge)
     let same =
       specs.map(\.id) == old.map(\.id) && specs.map(\.group) == old.map(\.group)
-      && wanted.count == toolbar.items.count
+      && wanted == toolbar.items.map(\.itemIdentifier)
+    self.edge = edge
     if same {
       self.specs = specs
       for (id, item) in made { configure(item, id) }
@@ -197,15 +209,20 @@ final class WindowToolbar: NSObject, NSToolbarDelegate {
       made = [:]
       for (i, id) in wanted.enumerated() { toolbar.insertItem(withItemIdentifier: id, at: i) }
     }
+    (made[Self.sidebarEdge]?.view as? SidebarEdgeView)?.edge = edge?.width ?? 0
     window?.titleVisibility = specs.isEmpty ? .hidden : .visible
     onLayout?()
   }
 
-  /// The toolbar's identifiers for [specs]: each group once, a flexible
-  /// space after the navigation group, so the rest sits at the trailing end.
-  private func layout(_ specs: [ToolbarSpec]) -> [NSToolbarItem.Identifier] {
+  /// The toolbar's identifiers for [specs]: each group once, the sidebar's
+  /// edge after the first `edge.leading`, a flexible space after the
+  /// navigation group, so the rest sits at the trailing end.
+  private func layout(
+    _ specs: [ToolbarSpec], edge: (leading: Int, width: CGFloat)?
+  ) -> [NSToolbarItem.Identifier] {
     var out: [NSToolbarItem.Identifier] = []
-    for s in specs {
+    for (i, s) in specs.enumerated() {
+      if let edge, i == edge.leading { out.append(Self.sidebarEdge) }
       let id = s.group.map(Self.groupIdentifier) ?? NSToolbarItem.Identifier(s.id)
       if out.last != id { out.append(id) }
     }
@@ -232,6 +249,16 @@ final class WindowToolbar: NSObject, NSToolbarDelegate {
     _ toolbar: NSToolbar, itemForItemIdentifier id: NSToolbarItem.Identifier,
     willBeInsertedIntoToolbar flag: Bool
   ) -> NSToolbarItem? {
+    if id == Self.sidebarEdge {
+      let spacer = NSToolbarItem(itemIdentifier: id)
+      let view = SidebarEdgeView()
+      view.edge = edge?.width ?? 0
+      spacer.view = view
+      spacer.label = ""
+      spacer.isBordered = false
+      made[id] = spacer
+      return spacer
+    }
     let item: NSToolbarItem
     let group = members(of: id)
     if !group.isEmpty {
@@ -256,11 +283,11 @@ final class WindowToolbar: NSObject, NSToolbarDelegate {
   }
 
   func toolbarDefaultItemIdentifiers(_ toolbar: NSToolbar) -> [NSToolbarItem.Identifier] {
-    layout(specs)
+    layout(specs, edge: edge)
   }
 
   func toolbarAllowedItemIdentifiers(_ toolbar: NSToolbar) -> [NSToolbarItem.Identifier] {
-    layout(specs) + [.flexibleSpace]
+    layout(specs, edge: edge) + [.flexibleSpace, Self.sidebarEdge]
   }
 
   private func configure(_ item: NSToolbarItem, _ id: NSToolbarItem.Identifier) {
@@ -378,6 +405,71 @@ final class WindowToolbar: NSObject, NSToolbarDelegate {
       if let b = button(in: sub, target: target, label: label) { return b }
     }
     return nil
+  }
+}
+
+/// The empty space after the toolbar items over a sidebar: as wide as it
+/// takes for its trailing end to meet the sidebar's [edge], measured from
+/// the window's leading edge, so the items after it and the window's title
+/// start over the detail. AppKit's own (`NSTrackingSeparatorToolbarItem`)
+/// needs an `NSSplitView`, and the window's split is drawn by Flutter.
+final class SidebarEdgeView: NSView {
+  private lazy var width: NSLayoutConstraint = widthAnchor.constraint(equalToConstant: 0)
+  private var observers: [NSObjectProtocol] = []
+
+  /// The sidebar's width, from the window's leading edge.
+  var edge: CGFloat = 0 {
+    didSet { if edge != oldValue { update() } }
+  }
+
+  init() {
+    super.init(frame: NSRect(x: 0, y: 0, width: 0, height: 28))
+    translatesAutoresizingMaskIntoConstraints = false
+    postsFrameChangedNotifications = true
+    NSLayoutConstraint.activate([width, heightAnchor.constraint(equalToConstant: 28)])
+    setAccessibilityElement(false)
+  }
+
+  @available(*, unavailable)
+  required init?(coder: NSCoder) { fatalError("not from a nib") }
+
+  deinit { observers.forEach(NotificationCenter.default.removeObserver) }
+
+  /// The spacer's width for a sidebar [edge] wide when the spacer starts
+  /// [minX] from the window's leading edge: none once it starts past it.
+  static func width(edge: CGFloat, from minX: CGFloat) -> CGFloat {
+    max(0, (edge - minX).rounded())
+  }
+
+  /// The current width (for tests).
+  var widthConstant: CGFloat { width.constant }
+
+  override func viewDidMoveToWindow() {
+    super.viewDidMoveToWindow()
+    observers.forEach(NotificationCenter.default.removeObserver)
+    observers = []
+    guard let window else { return }
+    let center = NotificationCenter.default
+    for name in [
+      NSView.frameDidChangeNotification, NSWindow.didResizeNotification,
+      NSWindow.didEnterFullScreenNotification, NSWindow.didExitFullScreenNotification,
+    ] {
+      let object: AnyObject = name == NSView.frameDidChangeNotification ? self : window
+      observers.append(
+        center.addObserver(forName: name, object: object, queue: .main) { [weak self] _ in
+          self?.update()
+        })
+    }
+    update()
+  }
+
+  /// Sets the width from where the spacer starts in its window; nothing
+  /// changes while it is in none.
+  func update() {
+    guard window != nil else { return }
+    let minX = convert(bounds, to: nil).minX
+    let next = Self.width(edge: edge, from: minX)
+    if abs(next - width.constant) >= 0.5 { width.constant = next }
   }
 }
 

@@ -500,6 +500,61 @@ void main() {
     expect(host.latest.map((e) => e.name), contains('chrome'));
   });
 
+  test('while a holder holds the window\'s toolbar, chrome() answers toolbar '
+      'true and form wide; the last release gives back what the app set', () async {
+    final told = <HomeEvent>[];
+    host.events.listen(told.add);
+    await pumpEventQueue();
+    told.clear();
+    host.setChrome((
+      platform: 'macos',
+      form: 'phone',
+      toolbar: false,
+      pointer: 'mouse',
+    ));
+    final a = Object(), b = Object();
+    host.holdToolbar(a, true);
+    host.holdToolbar(b, true);
+    host.holdToolbar(a, true);
+    await pumpEventQueue();
+    const held = {
+      'platform': 'macos',
+      'form': 'wide',
+      'toolbar': true,
+      'pointer': 'mouse',
+    };
+    expect(await host.call(home, 'chrome', {}), held);
+    expect(host.chrome.toolbar, isTrue);
+    host.holdToolbar(a, false);
+    await pumpEventQueue();
+    expect(await host.call(home, 'chrome', {}), held);
+    // The app's own reports keep their toolbar: false under the hold.
+    host.setChrome((
+      platform: 'macos',
+      form: 'wide',
+      toolbar: false,
+      pointer: 'mouse',
+    ));
+    expect(host.chrome.toolbar, isTrue);
+    host.holdToolbar(b, false);
+    await pumpEventQueue();
+    final free = {
+      'platform': 'macos',
+      'form': 'wide',
+      'toolbar': false,
+      'pointer': 'mouse',
+    };
+    expect(await host.call(home, 'chrome', {}), free);
+    expect(
+      told.where((e) => e.name == 'chrome').map((e) => e.data),
+      [
+        {...free, 'form': 'phone'},
+        held,
+        free,
+      ],
+    );
+  });
+
   test('open, newApp and menu call the matching action', () async {
     final aid = api.seedArtifact('Runs', _page);
     await host.load();

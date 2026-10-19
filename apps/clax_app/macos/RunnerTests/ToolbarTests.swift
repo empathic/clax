@@ -116,6 +116,43 @@ final class ToolbarTests: XCTestCase {
     XCTAssertEqual(window.titleVisibility, .hidden)
   }
 
+  func testLeadingItemsOverASidebarAreFollowedByItsEdge() {
+    let sidebar: [String: Any] = ["id": "sidebar", "symbol": "sidebar.left", "label": "Hide Sidebar"]
+    XCTAssertNil(
+      call("setItems", ["view": 1, "items": [sidebar] + items, "leading": 1, "edge": 220]).failed)
+    XCTAssertEqual(
+      bar.identifiers.map(\.rawValue),
+      ["sidebar", WindowToolbar.sidebarEdge.rawValue, "group:navigation",
+       NSToolbarItem.Identifier.flexibleSpace.rawValue, "comment", "threads", "share"])
+    let spacer = bar.toolbar.items[1].view as! SidebarEdgeView
+    XCTAssertEqual(spacer.edge, 220)
+    // A new width moves the same spacer; the items stay.
+    let comment = bar.item("comment")
+    call("setItems", ["view": 1, "items": [sidebar] + items, "leading": 1, "edge": 260])
+    XCTAssertTrue(bar.toolbar.items[1].view === spacer)
+    XCTAssertTrue(bar.item("comment") === comment)
+    XCTAssertEqual(spacer.edge, 260)
+    // A hidden sidebar has no edge.
+    call("setItems", ["view": 1, "items": [sidebar] + items])
+    XCTAssertFalse(bar.identifiers.contains(WindowToolbar.sidebarEdge))
+    XCTAssertEqual(bar.identifiers.first?.rawValue, "sidebar")
+  }
+
+  func testTheEdgeSpacerReachesTheSidebarsEdgeFromWhereItStarts() {
+    XCTAssertEqual(SidebarEdgeView.width(edge: 220, from: 150), 70)
+    XCTAssertEqual(SidebarEdgeView.width(edge: 220, from: 150.4), 70)
+    XCTAssertEqual(SidebarEdgeView.width(edge: 180, from: 200), 0)
+    // In a window, from where it is drawn.
+    let host = NSView(frame: NSRect(x: 0, y: 0, width: 400, height: 40))
+    window.contentView!.addSubview(host)
+    let spacer = SidebarEdgeView()
+    spacer.edge = 220
+    host.addSubview(spacer)
+    spacer.setFrameOrigin(NSPoint(x: 140, y: 0))
+    spacer.update()
+    XCTAssertEqual(spacer.widthConstant, 80)
+  }
+
   func testAClickIsSentWithTheWindowsViewUnlessTheItemIsDisabled() {
     call("setItems", ["view": 1, "items": items])
     bar.itemClicked(bar.item("threads")!)

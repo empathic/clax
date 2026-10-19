@@ -153,6 +153,16 @@ for (const form of Object.keys(FORMS) as Form[]) {
         await take(page, "home", form, theme);
       });
 
+      // The detail of a Mac split window with Home selected: the window's
+      // toolbar, sidebar and menus carry the bar, search and New app.
+      if (form === "mac") test(`home-toolbar ${form} ${theme}`, async ({ page }) => {
+        await page.setViewportSize({ width: 1200 - 221, height: 800 });
+        await serve(page, homeFiles(), { chrome: { platform: "macos", form: "wide", toolbar: true, pointer: "mouse" } });
+        await expect(page.locator(".h-tile")).toHaveCount(11);
+        await expect(page.locator(".h-bar")).toHaveCount(0);
+        await take(page, "home-toolbar", form, theme);
+      });
+
       test(`home-making ${form} ${theme}`, async ({ page }) => {
         await serve(page, homeFiles(), { makes: MAKES, apps: MAKING_APPS });
         await expect(page.locator(".h-tile")).toHaveCount(MAKES.length + MAKING_APPS.length);

@@ -2160,6 +2160,9 @@ function Home({ home, db, clock }) {
   const [unread, , reloadUnread] = useTopic(home, 'unread', (h) => h.unread(), 0);
   const [needsKey, , reloadKey] = useTopic(home, 'key', (h) => h.needsKey(), false);
   const [chrome] = useTopic(home, 'chrome', chromeOf, PHONE_CHROME);
+  // With the window's toolbar (a split window's sidebar, menus and toolbar)
+  // the page draws no bar, search or New app of its own.
+  const ownBar = chrome?.toolbar !== true;
   const refresh = useCallback(
     () => Promise.all([reloadApps(), reloadMakes(), reloadUnread(), reloadKey()]),
     [reloadApps, reloadMakes, reloadUnread, reloadKey],
@@ -2335,7 +2338,9 @@ function Home({ home, db, clock }) {
   }, [home, drawn]);
   settled.current = useTiles(home, drawn, motion);
   const [dragging, setDragging] = useState(false);
-  usePullSearch(openSearch, !searching && drawn && !appsError);
+  usePullSearch(openSearch, ownBar && !searching && drawn && !appsError);
+  // Search goes with the bar.
+  useEffect(() => { if (!ownBar) closeSearch(); }, [ownBar]);
   const goFirst = useRef(() => {});
 
   if (!home || (appsError && isRefused(appsError))) {
@@ -2368,19 +2373,21 @@ function Home({ home, db, clock }) {
         <${Glyph} name="mic_fill" size=${18} /><span>New app</span>
       </button>`} />`;
   } else {
-    body = html`<${Grid} layout=${layout} apps=${list} makes=${going} motion=${motion} reduced=${reduced} clock=${clock} change=${change} fan=${fan}
+    // Big tiles are drawn on a phone only; the stored switch is kept.
+    const drawnLayout = chrome?.form === 'phone' ? layout : { ...layout, bigTiles: false };
+    body = html`<${Grid} layout=${drawnLayout} apps=${list} makes=${going} motion=${motion} reduced=${reduced} clock=${clock} change=${change} fan=${fan}
       onOpen=${openApp} onMenu=${menuOf} onOpenGroup=${openGroup} onFanGroup=${fanGroup} onGroupMenu=${showGroupMenu} act=${act} onDragging=${setDragging}
       gatherNow=${gatherNow} />`;
   }
   const entryOf = (gid) => (list ? sections(layout, list).all.find((e) => e.group?.id === gid) ?? null : null);
   const open = folder && entryOf(folder.gid);
   const menuFor = groupMenu && entryOf(groupMenu.gid);
-  return html`<main class="h-page" data-dragging=${dragging ? '' : undefined}>
-    <${Bar} act=${act} refresh=${refresh} unread=${typeof unread === 'number' ? unread : 0} onSearch=${openSearch}
-      bigOn=${layout ? layout.bigTiles !== false : null} onBigTiles=${onBigTiles} />
-    ${searching
+  return html`<main class="h-page" data-dragging=${dragging ? '' : undefined} data-toolbar=${ownBar ? undefined : ''}>
+    ${ownBar && html`<${Bar} act=${act} refresh=${refresh} unread=${typeof unread === 'number' ? unread : 0} onSearch=${openSearch}
+      bigOn=${layout ? layout.bigTiles !== false : null} onBigTiles=${onBigTiles} />`}
+    ${ownBar && (searching
       ? html`<${SearchField} query=${query} setQuery=${setQuery} onGo=${() => goFirst.current()} onClose=${closeSearch} />`
-      : list && html`<${SearchGhost} />`}
+      : list && html`<${SearchGhost} />`)}
     ${needsKey === true && html`<${Banner} class="h-key" glyph="key_fill" title="Add your Claude API key to start making apps"
       actions=${html`<button type="button" class="h-text-button" onClick=${() => act('openSettings', [], 'open Settings')}>Add key</button>`} />`}
     ${body}
@@ -2388,7 +2395,7 @@ function Home({ home, db, clock }) {
       change=${change} onOpen=${openApp} onMenu=${menuOf} close=${closeGroup} editing=${folder.editing} />`}
     ${menuFor && html`<${GroupMenu} group=${menuFor.group} rect=${groupMenu.rect} pick=${pickGroup} close=${closeGroupMenu} />`}
     ${notice && html`<button type="button" class="h-notice" role="status">${notice.text}</button>`}
-    ${fab && html`<button type="button" class="h-fab" aria-label="New app" onClick=${() => act('newApp', [], 'make a new app')}>
+    ${fab && ownBar && html`<button type="button" class="h-fab" aria-label="New app" onClick=${() => act('newApp', [], 'make a new app')}>
       <${Glyph} name="mic_fill" />
       <span>New app</span>
     </button>`}

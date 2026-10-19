@@ -28,6 +28,9 @@ import 'rig.dart';
 
 const _bar = WindowTitlebar(top: 52, leading: 79);
 
+/// The sidebar's width in the Mac renders.
+const double _sidebar = 220;
+
 /// The home app's grid as its page draws it, in the app's colours.
 class _Grid extends StatelessWidget {
   const _Grid();
@@ -154,9 +157,11 @@ class _Material extends StatelessWidget {
   );
 }
 
-/// The native toolbar's items over the row: the sidebar's toggle and
-/// Back and Forward after the window buttons, then the title, and
-/// Comment, Threads and (for an app) Share at the trailing end.
+/// The native toolbar's items over the row: the sidebar's toggle after
+/// the window buttons; past the sidebar's edge (the spacer
+/// `SidebarEdgeView` in macos/Runner/Toolbar.swift), Back and Forward,
+/// then the title; and Comment, Threads and (for an app) Share at the
+/// trailing end.
 class _Toolbar extends StatelessWidget {
   const _Toolbar({
     required this.title,
@@ -182,7 +187,8 @@ class _Toolbar extends StatelessWidget {
           children: [
             SizedBox(width: _bar.leading + 8),
             icon(Icons.view_sidebar_outlined),
-            const SizedBox(width: 4),
+            // To the sidebar's edge, then the toolbar's item spacing.
+            SizedBox(width: _sidebar - (_bar.leading + 8 + 35) + 8),
             icon(Icons.chevron_left),
             icon(Icons.chevron_right),
             const SizedBox(width: 10),

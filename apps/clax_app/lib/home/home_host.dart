@@ -422,16 +422,40 @@ class HomeHost extends ChangeNotifier {
   );
 
   HomeChrome _chrome = phoneChrome;
+  final _toolbarHolders = <Object>{};
 
-  /// What `chrome()` answers.
-  HomeChrome get chrome => _chrome;
+  /// What `chrome()` answers: what the app set ([setChrome]), with
+  /// `toolbar` true and `form` `wide` while any holder holds the window's
+  /// toolbar ([holdToolbar]).
+  HomeChrome get chrome => _toolbarHolders.isEmpty
+      ? _chrome
+      : (
+          platform: _chrome.platform,
+          form: 'wide',
+          toolbar: true,
+          pointer: _chrome.pointer,
+        );
 
   /// The app's window changed form, or the pointer in use changed: the
-  /// home app hears one `chrome` event when [c] differs from the last.
+  /// home app hears one `chrome` event when [chrome] changes with it.
   void setChrome(HomeChrome c) {
     if (c == _chrome) return;
     _chrome = c;
     _changed();
+  }
+
+  /// Whether [holder] holds the window's toolbar: while one does (a split
+  /// window's sidebar, menus and toolbar carry the home app's top bar,
+  /// search and New app), [chrome] answers `toolbar: true` and `form:
+  /// "wide"`; the home app hears one `chrome` event when that changes.
+  void holdToolbar(Object holder, bool hold) {
+    final before = _toolbarHolders.isEmpty;
+    if (hold) {
+      _toolbarHolders.add(holder);
+    } else {
+      _toolbarHolders.remove(holder);
+    }
+    if (before != _toolbarHolders.isEmpty) _changed();
   }
 
   /// Whether the API key is missing.
@@ -641,10 +665,10 @@ class HomeHost extends ChangeNotifier {
     'makes' => [for (final m in state.makes) m.toJson()],
     'unread' => state.unread,
     'chrome' => {
-      'platform': _chrome.platform,
-      'form': _chrome.form,
-      'toolbar': _chrome.toolbar,
-      'pointer': _chrome.pointer,
+      'platform': chrome.platform,
+      'form': chrome.form,
+      'toolbar': chrome.toolbar,
+      'pointer': chrome.pointer,
     },
     _ => state.needsKey,
   };

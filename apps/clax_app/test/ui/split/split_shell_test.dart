@@ -281,6 +281,31 @@ void main() {
     expect(toolbar, isEmpty);
   }, variant: _ipad);
 
+  testWidgets('a Mac window\'s split holds the toolbar for the home app: '
+      'chrome() says toolbar and wide while it shows, and not once it goes', (
+    tester,
+  ) async {
+    await pumpShell(tester, size: const Size(1200, 800));
+    expect(f.host.chrome.toolbar, isTrue);
+    expect(f.host.chrome.form, 'wide');
+    expect(
+      await tester.runAsync(() => f.host.call(f.home, 'chrome', {})),
+      containsPair('toolbar', true),
+    );
+    await tester.pumpWidget(const SizedBox());
+    await tester.pump();
+    expect(f.host.chrome.toolbar, isFalse);
+  }, variant: _mac);
+
+  testWidgets('without Mac window chrome the split leaves the home app its '
+      'own bar: an iPad, and Android at 1280', (tester) async {
+    await pumpShell(tester, size: const Size(1280, 800));
+    expect(find.byType(SplitShell), findsOneWidget);
+    expect(f.host.chrome.toolbar, isFalse);
+  }, variant: TargetPlatformVariant(
+    const {TargetPlatform.iOS, TargetPlatform.android},
+  ));
+
   testWidgets('the split fits by size class and family, never by platform', (
     tester,
   ) async {

@@ -152,6 +152,32 @@ void main() {
     expect(ids(), ['back']);
   });
 
+  test('leading items over a sidebar send its width, so what follows them '
+      'starts past its edge', () async {
+    const sidebar = ToolbarItemSpec(
+      'sidebar',
+      symbol: 'sidebar.left',
+      label: 'Hide Sidebar',
+    );
+    MacToolbar.setLeading(const [sidebar], view: 1, edge: 220);
+    MacToolbar.setItems(owner, const [back], view: 1);
+    await pumpEventQueue();
+    expect(calls.last.arguments, containsPair('leading', 1));
+    expect(calls.last.arguments, containsPair('edge', 220.0));
+    // A new width is sent; the same is not.
+    MacToolbar.setLeading(const [sidebar], view: 1, edge: 260);
+    MacToolbar.setLeading(const [sidebar], view: 1, edge: 260);
+    await pumpEventQueue();
+    expect(calls, hasLength(2));
+    expect(calls.last.arguments, containsPair('edge', 260.0));
+    // A hidden sidebar has no edge.
+    MacToolbar.setLeading(const [sidebar], view: 1);
+    await pumpEventQueue();
+    expect(calls, hasLength(3));
+    expect(calls.last.arguments, isNot(contains('edge')));
+    expect(calls.last.arguments, isNot(contains('leading')));
+  });
+
   test('a click from the native side reaches clicks', () async {
     final clicks = <ToolbarClick>[];
     final sub = MacToolbar.clicks.listen(clicks.add);

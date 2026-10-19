@@ -106,8 +106,11 @@ final class ToolbarClick {
 /// items ([setLeading], such as the sidebar's toggle) go before its
 /// owner's, while it has an owner that declares any.
 ///
-/// - `setItems` {view, items: [ToolbarItemSpec.toMap…]}: the window's
-///   items, in order; none hides the title.
+/// - `setItems` {view, items: [ToolbarItemSpec.toMap…], leading?, edge?}:
+///   the window's items, in order; none hides the title. With `edge` the
+///   first `leading` items sit over a sidebar `edge` points wide from the
+///   window's leading edge, and the rest (Back, Forward, the title) start
+///   past it.
 /// - `share` {view, item, path}: the share picker for the file at [path],
 ///   from item [item]; answers whether a target was chosen.
 /// - From the native side, `clicked` {view, id}: arrives on [clicks].
@@ -118,7 +121,8 @@ abstract final class MacToolbar {
   static final _owners = <int, Object>{};
   static final _declared = <int, List<ToolbarItemSpec>>{};
   static final _leading = <int, List<ToolbarItemSpec>>{};
-  static final _sent = <int, List<ToolbarItemSpec>>{};
+  static final _edge = <int, double>{};
+  static final _sent = <int, (List<ToolbarItemSpec>, double)>{};
   static var _listening = false;
 
   /// The items people click, in any window.
@@ -146,11 +150,18 @@ abstract final class MacToolbar {
   }
 
   /// Makes [items] the ones [view]'s window shows before its owner's
-  /// ([setItems]); none while no owner declares any.
-  static void setLeading(List<ToolbarItemSpec> items, {required int view}) {
+  /// ([setItems]); none while no owner declares any. With an [edge] above
+  /// 0 they sit over a sidebar that wide, and the owner's items start
+  /// past it.
+  static void setLeading(
+    List<ToolbarItemSpec> items, {
+    required int view,
+    double edge = 0,
+  }) {
     if (!hasDesktopWindowChrome) return;
     _listen();
     _leading[view] = List.of(items);
+    _edge[view] = edge;
     if (_owners.containsKey(view)) _send(view);
   }
 
@@ -164,17 +175,19 @@ abstract final class MacToolbar {
 
   static void _send(int view) {
     final own = _declared[view] ?? const <ToolbarItemSpec>[];
-    final items = [
-      if (own.isNotEmpty) ...?_leading[view],
-      ...own,
-    ];
+    final leading = own.isEmpty
+        ? const <ToolbarItemSpec>[]
+        : _leading[view] ?? const <ToolbarItemSpec>[];
+    final items = [...leading, ...own];
+    final edge = leading.isEmpty ? 0.0 : _edge[view] ?? 0.0;
     final last = _sent[view];
-    if (last != null && listEquals(last, items)) return;
-    _sent[view] = List.of(items);
+    if (last != null && last.$2 == edge && listEquals(last.$1, items)) return;
+    _sent[view] = (List.of(items), edge);
     unawaited(
       _invoke<void>('setItems', {
         'view': view,
         'items': [for (final i in items) i.toMap()],
+        if (edge > 0) ...{'leading': leading.length, 'edge': edge},
       }),
     );
   }
@@ -228,6 +241,7 @@ abstract final class MacToolbar {
     _owners.clear();
     _declared.clear();
     _leading.clear();
+    _edge.clear();
     _sent.clear();
     _listening = false;
   }

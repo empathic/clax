@@ -4,6 +4,7 @@ import 'dart:math' as math;
 import 'package:flutter/material.dart';
 import 'package:flutter/services.dart';
 
+import '../../home/home_host.dart';
 import '../kit/kit.dart';
 import '../layout.dart';
 import '../mac/mac_toolbar.dart';
@@ -37,7 +38,10 @@ import 'sidebar_model.dart';
 /// toggle ([MacToolbar.setLeading]) and the window's title follows the
 /// selection: the app's title, the make's request, "Clax" for Home. The
 /// detail's title bar ([WindowTitlebar]) is the window's, less what the
-/// sidebar covers of it.
+/// sidebar covers of it. There the shell also holds the window's toolbar
+/// for the home app ([HomeHost.holdToolbar]) while it is built, so the
+/// home app leaves its top bar, search and New app to the sidebar, the
+/// toolbar and the menu bar.
 class SplitShell extends StatefulWidget {
   const SplitShell({
     super.key,
@@ -94,6 +98,7 @@ class SplitShellState extends State<SplitShell> {
   bool? _wasWide;
   int? _view;
   double? _sentWidth;
+  double? _sentEdge;
   bool? _sentShown;
 
   static double _clamp(double w) =>
@@ -129,6 +134,9 @@ class SplitShellState extends State<SplitShell> {
   void didUpdateWidget(SplitShell oldWidget) {
     super.didUpdateWidget(oldWidget);
     if (oldWidget.model != widget.model) {
+      if (oldWidget.model.host != widget.model.host) {
+        _release(oldWidget.model.host);
+      }
       oldWidget.model.selected.removeListener(_onSelected);
       widget.model.selected.addListener(_onSelected);
     }
@@ -137,8 +145,14 @@ class SplitShellState extends State<SplitShell> {
     }
   }
 
+  /// Lets [host] go of the window's toolbar, after the frame being torn
+  /// down: the home host's listeners rebuild.
+  void _release(HomeHost host) =>
+      scheduleMicrotask(() => host.holdToolbar(this, false));
+
   @override
   void dispose() {
+    _release(widget.model.host);
     widget.model.selected.removeListener(_onSelected);
     unawaited(_clicks?.cancel());
     if (_view case final view?) {
@@ -178,6 +192,7 @@ class SplitShellState extends State<SplitShell> {
     _sentShown = shown;
     if (changed) widget.onSidebarShown?.call(shown);
     if (!hasDesktopWindowChrome) return;
+    widget.model.host.holdToolbar(this, true);
     final view = View.of(context).viewId;
     final moved = _view != view;
     _view = view;
@@ -185,14 +200,21 @@ class SplitShellState extends State<SplitShell> {
       _sentWidth = materialWidth;
       unawaited(MacWindow.setSidebarWidth(materialWidth, view: view));
     }
-    if (changed || moved) {
-      MacToolbar.setLeading([
-        ToolbarItemSpec(
-          'sidebar',
-          symbol: 'sidebar.left',
-          label: shown ? 'Hide Sidebar' : 'Show Sidebar',
-        ),
-      ], view: view);
+    if (changed || moved || _sentEdge != materialWidth) {
+      _sentEdge = materialWidth;
+      MacToolbar.setLeading(
+        [
+          ToolbarItemSpec(
+            'sidebar',
+            symbol: 'sidebar.left',
+            label: shown ? 'Hide Sidebar' : 'Show Sidebar',
+          ),
+        ],
+        view: view,
+        // Back, Forward and the title start past a beside-the-detail
+        // sidebar's edge.
+        edge: materialWidth,
+      );
     }
   }
 

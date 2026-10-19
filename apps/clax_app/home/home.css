@@ -60,6 +60,9 @@ body {
 
 .h-glyph { display: inline-grid; line-height: 0; }
 .h-page { min-height: 100vh; }
+/* Under the window's toolbar the page has no bar: the grid starts below
+ * the safe area the bar would have kept. */
+.h-page[data-toolbar] { padding-top: var(--k-safe-top); }
 
 /* Top bar: 56 px, the mark and "Clax" in title-1, then the actions. Its
  * end keeps 8 px, so a focused action's ring (2 px, 2 px out) is never
