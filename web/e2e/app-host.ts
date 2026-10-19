@@ -25,10 +25,12 @@ export const NONCE = "e2e-nonce-0123456789abcdef";
 /** What the shell posted with this load's nonce (the app drops the rest). */
 export const toHost = (page: Page) => quietEval<HostMessage[]>(page, `window.claxToHost.filter(m => m.nonce === ${JSON.stringify(NONCE)}).map(({ nonce, ...m }) => m)`);
 
-/** The app's `init`, once the shell's host module has loaded. */
-export async function initHost(page: Page) {
+/** The app's `init`, once the shell's host module has loaded: `native`, the
+ * overlays the app draws itself (none sent when absent, as an older app
+ * sends none), and its `platform`. */
+export async function initHost(page: Page, opts: { native?: string[]; platform?: string } = {}) {
   await expect.poll(() => quietEval<string>(page, "typeof window.claxHost")).toBe("object");
-  await quietEval(page, `window.claxHost.init({ nonce: ${JSON.stringify(NONCE)} })`);
+  await quietEval(page, `window.claxHost.init(${JSON.stringify({ nonce: NONCE, ...opts })})`);
 }
 
 /** The host messages of `type` posted so far, oldest first. */

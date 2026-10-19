@@ -2,10 +2,13 @@
 // app that hosts it, messages to the app's channel (`window.ClaxHost`), Send,
 // a newer version, published or restored, offered to the app and swapped in
 // place on its reloadLatest with the page's documents and scroll kept, and
-// the app's own history of pages, fragments and pushState routes. The app's side is ./app-host.ts.
+// the app's own history of pages, fragments and pushState routes, and the
+// overlays an app that names them `native` draws itself. The app's side is
+// ./app-host.ts.
 import { type CDPSession, type Frame, type Locator, type Page } from "@playwright/test";
 import { hostChannel, host, initHost, NONCE, noFrames, ofType, toHost } from "./app-host";
 import { test, expect, type Daemon, api, contentFrame, publishAs, publishNext, record, registerSession, streamLive } from "./fixtures";
+import { ask } from "./questions-helpers";
 import { advance, quietEval } from "./time";
 
 let d: Daemon;
@@ -392,3 +395,222 @@ show();
   await expect.poll(back).toBe(false);
 });
 
+
+// The overlays the app draws itself (spec 2026-10-18-professional-ui-design
+// §6): the app's `init` names them in `native`, and the shell posts each to
+// it instead of drawing it, answering the app's calls back.
+test.describe("native overlays", () => {
+  const ALL = ["ask", "questions", "notice", "draft"];
+  /** A page with the internet capability: `go()` fetches from its one
+   * declared host, which is under `.invalid`, so a granted fetch reaches the
+   * daemon and fails upstream (`upstream_error`), a refused one `not_granted`. */
+  const NET = `<!doctype html><html><head><title>Forecast</title></head><body><p>forecast</p>
+<script>
+claude.use("net").then(net => {
+  window.go = () => net.fetch("https://api.clax.invalid/today").then(r => "status:" + r.status, e => e.code);
+  window.ready = net !== null;
+});
+</script></body></html>`;
+  const NET_CAPS = { net: { hosts: ["api.clax.invalid"] } };
+
+  /** Opens `html` in the app's view and inits it with `native`. */
+  async function openNative(page: Page, title: string, opts: { html?: string; capabilities?: Record<string, unknown>; native?: string[]; platform?: string } = {}) {
+    const a = await openApp(page, title, "subdomain", true, { html: opts.html, capabilities: opts.capabilities, init: false });
+    await initHost(page, { native: opts.native ?? ALL, platform: opts.platform ?? "android" });
+    await expect.poll(async () => (await ofType(page, "ready")).length).toBeGreaterThan(0);
+    return a;
+  }
+  const netReady = (frame: Frame) => expect.poll(() => frame.evaluate(() => (window as unknown as { ready?: boolean }).ready === true)).toBe(true);
+  const go = (frame: Frame) => frame.evaluate(() => (window as unknown as { go(): Promise<string> }).go());
+  const granted = async (id: string) => (await api(d.base, d.token, `/api/artifacts/${id}/net-grants`) as { granted: boolean }).granted;
+  const asks = (page: Page) => ofType(page, "ask") as Promise<{ type: "ask"; id: string; [k: string]: unknown }[]>;
+
+  test("a prompt goes to the host as ask, with no dialog drawn; only its own ID's answer counts, and Allow resolves the page's call", async ({ page }) => {
+    const { id, frame } = await openNative(page, "Native ask", { html: NET, capabilities: NET_CAPS });
+    await netReady(frame);
+    // The page's edge colours reach the app as before.
+    await expect.poll(async () => (await ofType(page, "chrome")).length).toBeGreaterThan(0);
+    const answer = go(frame);
+    await expect.poll(async () => (await asks(page)).length).toBe(1);
+    const [asked] = await asks(page);
+    expect(asked).toEqual({
+      type: "ask", id: asked.id, kind: "capability",
+      title: "Let “Native ask” use the internet?",
+      body: "“Native ask” will send requests to api.clax.invalid, and read what they answer. You can take this back in the app's inspector.",
+      allow: "Allow", deny: "Don't allow", always: "Always for this app", armMs: 500,
+    });
+    await expect(page.getByRole("dialog")).toHaveCount(0);
+    // An answer for another prompt, or no answer at all, changes nothing:
+    // the Allow that follows is the one that counts.
+    await host(page, `askAnswer(${JSON.stringify(asked.id + "x")}, "deny")`);
+    await host(page, `askAnswer(${JSON.stringify(asked.id)}, "maybe")`);
+    await host(page, `askAnswer(${JSON.stringify(asked.id)}, "allow")`);
+    expect(await answer).toBe("upstream_error");
+    expect(await granted(id)).toBe(true);
+    // Answered, a second answer for it changes nothing, and nothing is asked again.
+    await host(page, `askAnswer(${JSON.stringify(asked.id)}, "deny")`);
+    expect(await go(frame)).toBe("upstream_error");
+    expect((await asks(page)).length).toBe(1);
+    expect(await ofType(page, "askCancel")).toEqual([]);
+  });
+
+  test("Don't allow from the host stands for the view", async ({ page }) => {
+    const { id, frame } = await openNative(page, "Native deny", { html: NET, capabilities: NET_CAPS });
+    await netReady(frame);
+    const answer = go(frame);
+    await expect.poll(async () => (await asks(page)).length).toBe(1);
+    await host(page, `askAnswer(${JSON.stringify((await asks(page))[0].id)}, "deny")`);
+    expect(await answer).toBe("not_granted");
+    expect(await go(frame)).toBe("not_granted");
+    expect((await asks(page)).length).toBe(1);
+    expect(await granted(id)).toBe(false);
+  });
+
+  test("a prompt the page raised before init goes to the host once it inits, and the host's always grants it", async ({ page }) => {
+    const html = `<!doctype html><html><head><title>Asks</title></head><body><pre id="out">waiting</pre><script>
+claude.use("permissions").then(async perm => { document.getElementById("out").textContent = JSON.stringify(await perm.request(["comments"])); });
+</script></body></html>`;
+    const { frame } = await openApp(page, "Native early ask", "subdomain", true, { html, capabilities: { comments: {} }, init: false });
+    await expect(page.getByRole("dialog")).toContainText("post comments on this artifact under your name");
+    await initHost(page, { native: ALL, platform: "android" });
+    await expect(page.getByRole("dialog")).toHaveCount(0);
+    await expect.poll(async () => (await asks(page)).length).toBe(1);
+    const [asked] = await asks(page);
+    expect(asked).toMatchObject({ kind: "comments", always: "Always for this app", armMs: 500 });
+    await host(page, `askAnswer(${JSON.stringify(asked.id)}, "always")`);
+    await expect(frame.locator("#out")).toHaveText(JSON.stringify({ comments: "granted" }));
+  });
+
+  test("a prompt whose page goes away is cancelled to the host, and a late answer to it grants nothing", async ({ page }) => {
+    const { id, sid, frame } = await openNative(page, "Native cancel", { html: NET, capabilities: NET_CAPS });
+    await netReady(frame);
+    void go(frame).catch(() => {});
+    await expect.poll(async () => (await asks(page)).length).toBe(1);
+    const [asked] = await asks(page);
+    await publishNext(d.base, d.token, sid, id, 1, { files: { "index.html": NET.replace("<p>forecast</p>", "<p>forecast, later</p>") } });
+    await expect.poll(async () => (await ofType(page, "newer")).length, { timeout: 10_000 }).toBe(1);
+    await host(page, "reloadLatest()");
+    await expect.poll(async () => (await ofType(page, "landed")).length, { timeout: 10_000 }).toBe(1);
+    await expect.poll(() => ofType(page, "askCancel")).toEqual([{ type: "askCancel", id: asked.id }]);
+    await host(page, `askAnswer(${JSON.stringify(asked.id)}, "allow")`);
+    expect(await granted(id)).toBe(false);
+    // The new version's page asks afresh, under another ID.
+    const v2 = await contentFrame(page, id, 2);
+    await netReady(v2);
+    const answer = go(v2);
+    await expect.poll(async () => (await asks(page)).length).toBe(2);
+    const second = (await asks(page))[1];
+    expect(second.id).not.toBe(asked.id);
+    await host(page, `askAnswer(${JSON.stringify(second.id)}, "deny")`);
+    expect(await answer).toBe("not_granted");
+    expect(await granted(id)).toBe(false);
+  });
+
+  test("a failed follow is a notice to the host, nothing drawn, and its Try again loads the latest", async ({ page }) => {
+    const { id, sid } = await openNative(page, "Native notice");
+    await publishNext(d.base, d.token, sid, id, 1, { files: { "index.html": PAGE.replace("Quarterly goals", "Quarterly goals, later") } });
+    await expect.poll(async () => (await ofType(page, "newer")).length, { timeout: 10_000 }).toBe(1);
+    const artifactUrl = new RegExp(`/api/artifacts/${id}(\\?.*)?$`);
+    await page.route(artifactUrl, route => route.fulfill({ status: 500, contentType: "application/json", body: JSON.stringify({ error: { code: "internal", message: "down" } }) }));
+    await host(page, "reloadLatest()");
+    await expect.poll(async () => (await ofType(page, "notice")).length).toBe(1);
+    const [notice] = await ofType(page, "notice");
+    expect(notice).toMatchObject({ tone: "error", action: { id: "retry", label: "Try again" } });
+    expect(notice.text).toMatch(/^Could not load the latest version/);
+    await expect(page.locator(".banner.notice")).toHaveCount(0);
+    expect(await ofType(page, "landed")).toEqual([]);
+    await page.unroute(artifactUrl);
+    // An action the notice did not carry does nothing; its own loads the latest.
+    await host(page, `noticeAction("other")`);
+    await host(page, `noticeAction("retry")`);
+    await expect.poll(() => ofType(page, "landed"), { timeout: 10_000 }).toEqual([{ type: "landed", version: 2 }]);
+    await expect((await contentFrame(page, id, 2)).locator("#t")).toHaveText("Quarterly goals, later");
+  });
+
+  test("an agent's draft is the host's banner: Show draft and Back from the host, then the artifact deleted is gone, once", async ({ page }) => {
+    const { id, sid } = await openNative(page, "Native draft");
+    await streamLive(page);
+    expect(await ofType(page, "draft")).toEqual([]);
+    await api(d.base, d.token, `/api/sessions/${sid}/drafts/${id}`, { method: "PUT", body: JSON.stringify({ files: { "index.html": { content: PAGE.replace("Quarterly goals", "Quarterly goals in May"), encoding: "utf8" } }, note: "rewording the goals" }) });
+    // The app's own agent is named Clax.
+    const latest = async () => ((await ofType(page, "draft")).at(-1) as { state: unknown } | undefined)?.state;
+    await expect.poll(latest, { timeout: 10_000 }).toEqual({ kind: "drafting", by: "Clax", note: "rewording the goals" });
+    await expect(page.locator(".banner.draft")).toHaveCount(0);
+    await host(page, `showDraft("Clax")`);
+    await expect.poll(latest, { timeout: 10_000 }).toMatchObject({ kind: "showing", by: "Clax", base: 1 });
+    await expect.poll(() => page.frames().some(f => /\/draft\/a_[^/]+\/[A-Za-z0-9_-]{22}\//.test(f.url())), { timeout: 10_000 }).toBe(true);
+    await expect(page.locator(".banner.draft")).toHaveCount(0);
+    await host(page, "hideDraft()");
+    await expect.poll(latest).toEqual({ kind: "drafting", by: "Clax", note: "rewording the goals" });
+
+    expect(await ofType(page, "gone")).toEqual([]);
+    await api(d.base, d.token, `/api/artifacts/${id}`, { method: "DELETE" });
+    await expect.poll(() => ofType(page, "gone"), { timeout: 10_000 }).toEqual([{ type: "gone" }]);
+    await expect.poll(latest).toBeNull();
+    await expect(page.locator("iframe.frame")).toHaveCount(0);
+    // Still once, after whatever else the view hears of the deletion.
+    await host(page, "reloadLatest()");
+    await expect.poll(async () => (await ofType(page, "notice")).length).toBeGreaterThan(0);
+    expect(await ofType(page, "gone")).toEqual([{ type: "gone" }]);
+  });
+
+  test("questions are the host's: no sheet is built, and each telling carries the open IDs, raising only a question new to the view", async ({ page }) => {
+    const s = await registerSession(d.base, d.token, "app");
+    const { artifact } = await publishAs(d.base, d.token, s.id, "Native questions", { "index.html": PAGE });
+    const first = (await ask(d.base, d.token, s.id, { source: "ask", artifact_id: artifact.id, questions: [{ question: "What should change?", header: "Change", options: [{ label: "Colours" }, { label: "Layout" }] }] })).question;
+    await hostChannel(page);
+    await page.goto(`${d.base}/a/${artifact.id}?app=1`);
+    await contentFrame(page, artifact.id, 1);
+    await initHost(page, { native: ALL, platform: "android" });
+    const latest = async () => (await ofType(page, "questions")).at(-1) ?? null;
+    // Open before the view: told, not raised.
+    await expect.poll(latest, { timeout: 15_000 }).toEqual({ type: "questions", open: 1, showing: false, ids: [first.id], raise: false });
+    await expect(page.locator(".app-questions")).toHaveCount(0);
+    // The app opens its own sheet: the shell's calls build none.
+    await host(page, "openQuestions()");
+    await expect(page.locator(".app-questions")).toHaveCount(0);
+    // A question asked while the view shows raises.
+    const second = (await ask(d.base, d.token, s.id, { source: "ask", artifact_id: artifact.id, questions: [{ question: "Ship it?", header: "Ship", options: [{ label: "Yes" }, { label: "No" }] }] })).question;
+    await expect.poll(latest, { timeout: 15_000 }).toMatchObject({ open: 2, showing: false, raise: true });
+    expect(((await latest())!.ids as string[]).slice().sort()).toEqual([first.id, second.id].sort());
+    // One closing raises nothing.
+    await api(d.base, d.token, `/api/sessions/${s.id}/questions/${second.id}/withdraw`, { method: "POST" });
+    await expect.poll(latest, { timeout: 15_000 }).toMatchObject({ open: 1, ids: [first.id], raise: false });
+  });
+
+  test("an overlay left out keeps its web version: a prompt the page raised before init arms once the app inits, and no ask is posted", async ({ page }) => {
+    await noFrames(page);
+    const html = `<!doctype html><html><head><title>Asks</title></head><body><pre id="out">waiting</pre><script>
+claude.use("permissions").then(async perm => { document.getElementById("out").textContent = JSON.stringify(await perm.request(["comments"])); });
+</script></body></html>`;
+    const { frame } = await openApp(page, "Native left out", "subdomain", true, { html, capabilities: { comments: {} }, init: false });
+    const dialog = page.getByRole("dialog");
+    await expect(dialog).toContainText("post comments on this artifact under your name");
+    const allow = dialog.getByRole("button", { name: "Allow", exact: true });
+    await expect.poll(() => quietEval<string>(page, "typeof window.claxHost")).toBe("object");
+    await advance(page, 5_000);
+    await expect(allow).toBeDisabled();
+    await initHost(page, { native: ["questions", "notice", "draft"], platform: "macos" });
+    await expect(allow).toBeEnabled();
+    // macOS: controls keep the arrow cursor.
+    expect(await quietEval<boolean>(page, "document.documentElement.classList.contains('mac')")).toBe(true);
+    expect(await allow.evaluate(b => getComputedStyle(b).cursor)).toBe("default");
+    await allow.tap();
+    await expect(frame.locator("#out")).toHaveText(JSON.stringify({ comments: "granted" }));
+    expect(await ofType(page, "ask")).toEqual([]);
+  });
+
+  test("with no native, the app's view draws every overlay as before", async ({ page }) => {
+    const { frame } = await openApp(page, "Native none", "subdomain", true, { html: NET, capabilities: NET_CAPS });
+    await netReady(frame);
+    const answer = go(frame);
+    const dialog = page.getByRole("dialog");
+    await expect(dialog).toContainText("Let “Native none” use the internet?");
+    const allow = dialog.getByRole("button", { name: "Allow", exact: true });
+    await advance(page, 1_000);
+    await expect(allow).toBeEnabled();
+    await allow.click();
+    expect(await answer).toBe("upstream_error");
+    expect(await ofType(page, "ask")).toEqual([]);
+  });
+});
