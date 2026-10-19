@@ -819,4 +819,207 @@ const host = { init: p => log.push('init'), setVisible: v => log.push('visible '
       );
     });
   });
+
+  group('native overlays', () {
+    HostMessage? parse(Map<String, Object?> m) => HostMessage.fromJson(m);
+    const ask = <String, Object?>{
+      'type': 'ask',
+      'id': 'a1',
+      'kind': 'crossRead',
+      'title': 'Read “Notes”?',
+      'body': 'This app wants to read another app’s data.',
+      'allow': 'Allow',
+      'deny': 'Don’t allow',
+      'always': 'Always allow',
+      'armMs': 500,
+    };
+
+    test('ask parses every kind, with and without always', () {
+      final m = parse(ask) as AskMsg;
+      expect(m.id, 'a1');
+      expect(m.kind, AskKind.crossRead);
+      expect(m.title, 'Read “Notes”?');
+      expect(m.body, 'This app wants to read another app’s data.');
+      expect(m.allow, 'Allow');
+      expect(m.deny, 'Don’t allow');
+      expect(m.always, 'Always allow');
+      expect(m.armMs, 500);
+      for (final k in AskKind.values) {
+        expect((parse({...ask, 'kind': k.name}) as AskMsg).kind, k);
+      }
+      expect((parse({...ask}..remove('always')) as AskMsg).always, isNull);
+    });
+
+    test('ask refuses bad shapes', () {
+      for (final bad in <Map<String, Object?>>[
+        {...ask}..remove('id'),
+        {...ask, 'kind': 'camera'},
+        {...ask}..remove('kind'),
+        {...ask, 'armMs': '500'},
+        {...ask, 'armMs': -1},
+        {...ask, 'title': 3},
+        {...ask, 'always': true},
+      ]) {
+        expect(parse(bad), isNull, reason: '$bad');
+      }
+    });
+
+    test('askCancel', () {
+      expect((parse({'type': 'askCancel', 'id': 'a1'}) as AskCancelMsg).id, 'a1');
+      expect(parse({'type': 'askCancel'}), isNull);
+      expect(parse({'type': 'askCancel', 'id': 1}), isNull);
+    });
+
+    test('questions carries ids and raise, and an older shell neither', () {
+      final m = parse({
+        'type': 'questions',
+        'open': 2,
+        'showing': false,
+        'ids': ['q1', 'q2'],
+        'raise': true,
+      }) as QuestionsMsg;
+      expect(m.open, 2);
+      expect(m.ids, ['q1', 'q2']);
+      expect(m.raise, isTrue);
+      final old = parse({'type': 'questions', 'open': 1}) as QuestionsMsg;
+      expect(old.ids, isEmpty);
+      expect(old.raise, isFalse);
+      for (final bad in <Object?>['q1', [1], ['q1', null]]) {
+        expect(
+          parse({'type': 'questions', 'open': 1, 'ids': bad}),
+          isNull,
+          reason: '$bad',
+        );
+      }
+      expect(parse({'type': 'questions', 'open': 1, 'raise': 'yes'}), isNull);
+    });
+
+    test('notice carries tone and an action', () {
+      final plain = parse({'type': 'notice', 'text': 'Saved'}) as Notice;
+      expect(plain.tone, NoticeTone.info);
+      expect(plain.action, isNull);
+      final m = parse({
+        'type': 'notice',
+        'text': 'Couldn’t post',
+        'tone': 'error',
+        'action': {'id': 'n1', 'label': 'Try again'},
+      }) as Notice;
+      expect(m.text, 'Couldn’t post');
+      expect(m.tone, NoticeTone.error);
+      expect(m.action, (id: 'n1', label: 'Try again'));
+      expect(
+        (parse({'type': 'notice', 'text': 't', 'tone': 'info', 'action': null})
+                as Notice)
+            .action,
+        isNull,
+      );
+      for (final bad in <Map<String, Object?>>[
+        {'type': 'notice', 'text': 't', 'tone': 'loud'},
+        {'type': 'notice', 'text': 't', 'action': {'label': 'Go'}},
+        {'type': 'notice', 'text': 't', 'action': 'n1'},
+      ]) {
+        expect(parse(bad), isNull, reason: '$bad');
+      }
+    });
+
+    test('draft: none, drafting and showing', () {
+      expect((parse({'type': 'draft', 'state': null}) as DraftMsg).state, isNull);
+      final d = (parse({
+        'type': 'draft',
+        'state': {'kind': 'drafting', 'by': 'Clax', 'note': 'Adding a chart'},
+      }) as DraftMsg).state as Drafting;
+      expect(d.by, 'Clax');
+      expect(d.note, 'Adding a chart');
+      final bare = (parse({
+        'type': 'draft',
+        'state': {'kind': 'drafting', 'by': 'Clax'},
+      }) as DraftMsg).state as Drafting;
+      expect(bare.note, isNull);
+      final s = (parse({
+        'type': 'draft',
+        'state': {
+          'kind': 'showing',
+          'by': 'Clax',
+          'base': 4,
+          'detail': '2 changes highlighted',
+        },
+      }) as DraftMsg).state as Showing;
+      expect(s.by, 'Clax');
+      expect(s.base, 4);
+      expect(s.detail, '2 changes highlighted');
+      for (final bad in <Object?>[
+        {'kind': 'other', 'by': 'Clax'},
+        {'kind': 'drafting'},
+        {'kind': 'showing', 'by': 'Clax', 'base': '4', 'detail': ''},
+        'drafting',
+      ]) {
+        expect(parse({'type': 'draft', 'state': bad}), isNull, reason: '$bad');
+      }
+      expect(parse({'type': 'draft'}), isNull, reason: 'state is required');
+    });
+
+    test('gone and pageWait', () {
+      expect(parse({'type': 'gone'}), isA<GoneMsg>());
+      expect((parse({'type': 'pageWait', 'waiting': true}) as PageWaitMsg).waiting, isTrue);
+      expect((parse({'type': 'pageWait', 'waiting': false}) as PageWaitMsg).waiting, isFalse);
+      expect(parse({'type': 'pageWait'}), isNull);
+      expect(parse({'type': 'pageWait', 'waiting': 1}), isNull);
+    });
+
+    test('the app’s answers', () {
+      expect(
+        const AskAnswer('a1', AskAnswerValue.always).toJs(),
+        'window.claxHost?.askAnswer("a1","always")',
+      );
+      expect(
+        const AskAnswer('a"2', AskAnswerValue.dismiss).toJs(),
+        r'window.claxHost?.askAnswer("a\"2","dismiss")',
+      );
+      expect(
+        const NoticeAction('n1').toJs(),
+        'window.claxHost?.noticeAction("n1")',
+      );
+      expect(const ShowDraft().toJs(), 'window.claxHost?.showDraft()');
+      expect(
+        const ShowDraft('Clax').toJs(),
+        'window.claxHost?.showDraft("Clax")',
+      );
+      expect(const HideDraft().toJs(), 'window.claxHost?.hideDraft()');
+    });
+
+    test('init declares the native overlays and the platform', () {
+      final js = const Init(
+        'n',
+        visible: true,
+        native: ['ask', 'questions', 'notice', 'draft'],
+        platform: 'android',
+      ).toJs();
+      expect(js, contains('native:["ask","questions","notice","draft"]'));
+      expect(js, contains('platform:"android"'));
+      expect(
+        js,
+        contains(
+          'h.init({nonce:n,native:["ask","questions","notice","draft"],'
+          'platform:"android"});',
+        ),
+      );
+      // None declared: init is as an older app's.
+      expect(
+        const Init('n', visible: true).toJs(),
+        contains('h.init({nonce:n});'),
+      );
+    });
+
+    test('the session hands its native overlays to every init', () {
+      final base = Uri.parse('http://127.0.0.1:7480');
+      final shell = Uri.parse('http://127.0.0.1:7480/a/0123456789ab?app=1');
+      final s = ShellSession(base, native: const ['ask'], platform: 'android')
+        ..documentStarted(shell);
+      final init = s.documentLoaded(shell)!;
+      expect(init.native, ['ask']);
+      expect(init.platform, 'android');
+      final none = ShellSession(base)..documentStarted(shell);
+      expect(none.documentLoaded(shell)!.native, isEmpty);
+    });
+  });
 }

@@ -978,6 +978,15 @@ class _AppScreenState extends State<AppScreen> with WidgetsBindingObserver {
           JournalRestoredMsg():
         // An app view is never inspected.
         break;
+      case AskMsg() ||
+          AskCancelMsg() ||
+          DraftMsg() ||
+          GoneMsg() ||
+          PageWaitMsg():
+        // This screen declares no overlay native (Init.native), so the
+        // shell draws the prompt and the draft banner itself; a deleted
+        // app and a slow page are the shell's to show.
+        break;
       case DeviceRequest():
         _device(m);
       case ChromeMsg():

@@ -57,7 +57,7 @@ sealed class HostMessage {
         'landed' => Landed(_int(m['version'])),
         'newer' => NewerMsg(_int(m['version'])),
         'history' => HistoryMsg(back: m['back'] as bool),
-        'notice' => Notice(m['text'] as String),
+        'notice' => Notice.fromJson(m),
         'sendFailed' => SendFailed(
           m['thread'] as String,
           text: m['text'] as String? ?? '',
@@ -79,9 +79,16 @@ sealed class HostMessage {
         'questions' => QuestionsMsg(
           _count(m['open']),
           showing: (m['showing'] ?? false) as bool,
+          ids: _strings(m['ids'] ?? const <Object?>[]),
+          raise: (m['raise'] ?? false) as bool,
         ),
         'device' => DeviceRequest.fromJson(m),
         'chrome' => ChromeMsg(_hex(m['top']), _hex(m['bottom'])),
+        'ask' => AskMsg.fromJson(m),
+        'askCancel' => AskCancelMsg(m['id'] as String),
+        'draft' => DraftMsg.fromJson(m),
+        'gone' => const GoneMsg(),
+        'pageWait' => PageWaitMsg(waiting: m['waiting'] as bool),
         _ => null,
       };
     } on TypeError {
@@ -90,6 +97,18 @@ sealed class HostMessage {
       return null;
     }
   }
+}
+
+/// The strings [v] lists; anything else is a [TypeError].
+List<String> _strings(Object? v) =>
+    List<String>.unmodifiable([for (final s in v as List) s as String]);
+
+/// The value of [values] named [v]; anything else is a [TypeError].
+T _named<T extends Enum>(List<T> values, Object? v) {
+  for (final e in values) {
+    if (e.name == v) return e;
+  }
+  throw TypeError();
 }
 
 int _count(Object? v) {
@@ -305,11 +324,35 @@ final class HistoryMsg extends HostMessage {
   final bool back;
 }
 
-/// A notice the shell shows (a post that failed, …).
+/// Whether a [Notice] tells of something done or something that failed.
+enum NoticeTone { info, error }
+
+/// A notice the shell shows (a post that failed, …), or, with `notice`
+/// declared native ([Init.native]), asks the app to show in its place.
+/// With [action], the notice offers it, and pressing it calls
+/// [NoticeAction] with its [id].
 final class Notice extends HostMessage {
-  const Notice(this.text);
+  const Notice(this.text, {this.tone = NoticeTone.info, this.action});
+
+  /// The message [m] holds; a [TypeError] for any other shape. A shell that
+  /// sends no `tone` sends an [NoticeTone.info] notice.
+  factory Notice.fromJson(Map<String, Object?> m) {
+    final a = m['action'];
+    return Notice(
+      m['text'] as String,
+      tone: _named(NoticeTone.values, m['tone'] ?? 'info'),
+      action: a == null
+          ? null
+          : (
+              id: (a as Map)['id'] as String,
+              label: a['label'] as String,
+            ),
+    );
+  }
 
   final String text;
+  final NoticeTone tone;
+  final ({String id, String label})? action;
 }
 
 /// The inspect view's answer to [Inspect]: the page as it settled, or
@@ -452,13 +495,25 @@ final class JournalRestoredMsg extends HostMessage {
 /// whether the shell's questions sheet is [showing]; posted whenever either
 /// changes.
 final class QuestionsMsg extends HostMessage {
-  const QuestionsMsg(this.open, {this.showing = false});
+  const QuestionsMsg(
+    this.open, {
+    this.showing = false,
+    this.ids = const [],
+    this.raise = false,
+  });
 
   final int open;
 
   /// Whether the questions sheet is up over the app (false when the shell
   /// does not say).
   final bool showing;
+
+  /// The open questions' IDs (empty when the shell does not say).
+  final List<String> ids;
+
+  /// Whether the shell would raise its sheet now: with `questions` declared
+  /// native ([Init.native]), the app shows its own.
+  final bool raise;
 }
 
 /// The page's background at the middle of the viewport's [top] and
@@ -469,6 +524,121 @@ final class ChromeMsg extends HostMessage {
   const ChromeMsg(this.top, this.bottom);
 
   final Color top, bottom;
+}
+
+/// What a permission prompt ([AskMsg]) asks for.
+enum AskKind { capability, download, crossRead, sample, comments }
+
+/// A permission prompt at the head of the shell's queue, for the app to show
+/// when `ask` is declared native ([Init.native]) and answer with
+/// [AskAnswer] under the same [id]. [allow] counts only from [armMs]
+/// milliseconds after the prompt first shows. [always], when given, labels
+/// a choice that allows and keeps the grant.
+final class AskMsg extends HostMessage {
+  const AskMsg({
+    required this.id,
+    required this.kind,
+    required this.title,
+    required this.body,
+    required this.allow,
+    required this.deny,
+    this.always,
+    required this.armMs,
+  });
+
+  /// The message [m] holds; a [TypeError] for any other shape.
+  factory AskMsg.fromJson(Map<String, Object?> m) => AskMsg(
+    id: m['id'] as String,
+    kind: _named(AskKind.values, m['kind']),
+    title: m['title'] as String,
+    body: m['body'] as String,
+    allow: m['allow'] as String,
+    deny: m['deny'] as String,
+    always: m['always'] as String?,
+    armMs: _count(m['armMs']),
+  );
+
+  final String id;
+  final AskKind kind;
+  final String title, body, allow, deny;
+  final String? always;
+  final int armMs;
+}
+
+/// The prompt [id] ([AskMsg]) is no longer asked (the view unloaded or the
+/// page went away): the app takes it down, and an answer to it changes
+/// nothing.
+final class AskCancelMsg extends HostMessage {
+  const AskCancelMsg(this.id);
+
+  final String id;
+}
+
+/// What the draft banner says: an agent's draft is being made, or one is
+/// shown in place of the app.
+sealed class DraftState {
+  const DraftState();
+
+  /// The state [j] holds; a [TypeError] for any other shape.
+  static DraftState fromJson(Map<String, Object?> j) => switch (j['kind']) {
+    'drafting' => Drafting(j['by'] as String, j['note'] as String?),
+    'showing' => Showing(
+      j['by'] as String,
+      _int(j['base']),
+      j['detail'] as String,
+    ),
+    _ => throw TypeError(),
+  };
+}
+
+/// Agent [by] (its display name) is drafting a change, with its [note]
+/// when it left one; [ShowDraft] shows the draft.
+final class Drafting extends DraftState {
+  const Drafting(this.by, this.note);
+
+  final String by;
+  final String? note;
+}
+
+/// Agent [by]'s draft, made on version [base], is shown in place of the
+/// app; [detail] says what changed. [HideDraft] goes back.
+final class Showing extends DraftState {
+  const Showing(this.by, this.base, this.detail);
+
+  final String by;
+  final int base;
+  final String detail;
+}
+
+/// The draft banner's text changed, to [state] (null: no banner), for the
+/// app to show when `draft` is declared native ([Init.native]).
+final class DraftMsg extends HostMessage {
+  const DraftMsg(this.state);
+
+  /// The message [m] holds; a [TypeError] for any other shape (`state`
+  /// must be present, null or a state).
+  factory DraftMsg.fromJson(Map<String, Object?> m) {
+    if (!m.containsKey('state')) throw TypeError();
+    final s = m['state'];
+    return DraftMsg(
+      s == null ? null : DraftState.fromJson((s as Map).cast<String, Object?>()),
+    );
+  }
+
+  final DraftState? state;
+}
+
+/// The artifact the view shows was deleted.
+final class GoneMsg extends HostMessage {
+  const GoneMsg();
+}
+
+/// Comment mode or a page's `use()` started ([waiting]) or stopped waiting
+/// on a slow page.
+final class PageWaitMsg extends HostMessage {
+  const PageWaitMsg({required this.waiting});
+
+  final bool waiting;
 }
 
 /// A device capability call of the page (`notify`, `share`, `files`,
@@ -515,6 +685,50 @@ String jsString(String s) =>
         .replaceAll(' ', r' ')
         .replaceAll(' ', r' ')
         .replaceAll('</', r'<\/');
+
+/// How the app answered a permission prompt: [always] allows and keeps the
+/// grant as the shell's own "always" choice does; [dismiss] (Escape, a tap
+/// outside) answers neither way and stores nothing.
+enum AskAnswerValue { allow, deny, always, dismiss }
+
+/// The app's answer to prompt [id] ([AskMsg]); the shell ignores it after
+/// [AskCancelMsg] or for a prompt it does not have.
+final class AskAnswer extends HostCall {
+  const AskAnswer(this.id, this.answer);
+  final String id;
+  final AskAnswerValue answer;
+  @override
+  String toJs() =>
+      'window.claxHost?.askAnswer(${jsString(id)},"${answer.name}")';
+}
+
+/// Runs the action [id] of a [Notice].
+final class NoticeAction extends HostCall {
+  const NoticeAction(this.id);
+  final String id;
+  @override
+  String toJs() => 'window.claxHost?.noticeAction(${jsString(id)})';
+}
+
+/// Shows a draft in place of the app, as the draft banner's Show draft
+/// does: the draft of the agent a [DraftState] names [by], or the one the
+/// banner offers when null.
+final class ShowDraft extends HostCall {
+  const ShowDraft([this.by]);
+  final String? by;
+  @override
+  String toJs() => by == null
+      ? 'window.claxHost?.showDraft()'
+      : 'window.claxHost?.showDraft(${jsString(by!)})';
+}
+
+/// Goes back from a shown draft to the app, as the draft banner's Back
+/// does.
+final class HideDraft extends HostCall {
+  const HideDraft();
+  @override
+  String toJs() => 'window.claxHost?.hideDraft()';
+}
 
 /// Turns comment mode on (nothing when it is on).
 final class EnterCommentMode extends HostCall {
@@ -620,11 +834,17 @@ final class Init extends HostCall {
     this.nonce, {
     required this.visible,
     this.waitMs = 10000,
+    this.native = const [],
     this.platform,
   });
   final String nonce;
   final bool visible;
   final int waitMs;
+
+  /// The overlays the app draws itself (any of `ask`, `questions`,
+  /// `notice` and `draft`), passed to `init` when there are any: the shell
+  /// posts those as messages and keeps its web version of every other.
+  final List<String> native;
 
   /// The app's platform (`ios`, `android`, `macos`), passed to `init` when
   /// given: on `ios` the shell makes camera, files, share and location
@@ -636,6 +856,7 @@ final class Init extends HostCall {
       '(function(n,v,t){$_visibleGlobal=v;'
       'function f(){var h=window.claxHost;'
       'if(h&&typeof h.init==="function"){h.init({nonce:n'
+      '${native.isEmpty ? '' : ',native:[${native.map(jsString).join(',')}]'}'
       '${platform == null ? '' : ',platform:${jsString(platform!)}'}});'
       'if(typeof h.setVisible==="function")'
       'h.setVisible($_visibleGlobal);return}'
@@ -906,11 +1127,18 @@ final class AttestPointer extends HostCall {
 /// - `claxHost` is called only in a shell document that was handed its
 ///   nonce ([canCall]).
 class ShellSession {
-  ShellSession(this.base, {Random? random, this.platform})
-    : _random = random ?? Random.secure();
+  ShellSession(
+    this.base, {
+    Random? random,
+    this.native = const [],
+    this.platform,
+  }) : _random = random ?? Random.secure();
 
   /// The daemon's base URL (`http://127.0.0.1:<port>`).
   final Uri base;
+
+  /// The overlays each [Init] declares native ([Init.native]).
+  final List<String> native;
 
   /// The platform each [Init] names ([Init.platform]).
   final String? platform;
@@ -990,7 +1218,7 @@ class ShellSession {
     final n = [for (final b in bytes) b.toRadixString(16).padLeft(2, '0')]
         .join();
     _nonce = n;
-    return Init(n, visible: _visible, platform: platform);
+    return Init(n, visible: _visible, native: native, platform: platform);
   }
 
   /// The app shows the page ([visible]) or not: the call telling the
