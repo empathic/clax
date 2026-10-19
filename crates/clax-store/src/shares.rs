@@ -218,8 +218,8 @@ pub(super) fn bind_github_shares(
 }
 
 /// Moves viewer row `from`'s shares (`from_public` its public ID) to row
-/// `into` (`into_public`), as [`give_shares`] does, and the shares `from`
-/// made to `into`'s name, when a viewer is folded into another.
+/// `into` (`into_public`), as [`give_shares`] does, and makes `into` the
+/// creator of the shares `from` made, when a viewer is folded into another.
 pub(super) fn fold_shares(
     st: &Store,
     ctx: &AuditCtx,
