@@ -28,6 +28,7 @@ import 'developer.dart';
 import 'host_protocol.dart';
 import 'layout.dart';
 import 'swipe.dart';
+import 'system_bands.dart';
 import 'thread_detail.dart';
 import 'threads_panel.dart';
 import 'user_message.dart';
@@ -123,13 +124,10 @@ import 'working_chip.dart';
 ///   ("Building · Export · 3/7") for [_AppScreenState.buildChipFor] after
 ///   the build starts, a feature starts or ends, or its phase changes (on
 ///   [AppScreen.clock]); then it folds into a small pill (a ring and "3/7")
-///   at the top right, in a strip ([AppScreen.pillStrip]) between the
-///   status bar and any display cutout (the top inset) and the page, inside
-///   the side insets, so it covers neither the system's icons nor the app's
-///   own header. The strip shows while a change, a build or a location
-///   watch goes, whether its chip is whole or folded, so the page moves
-///   only as work starts and ends. The change chip folds into a pill there
-///   too.
+///   floating over the page at the top right, 8 px under the status bar
+///   and any display cutout (the top inset) and inside the side insets, so
+///   it covers none of the system's icons. Nothing pushes the page down.
+///   The change chip folds into a pill there too.
 ///   A tap on the pill opens the chip again; a tap on the chip opens the
 ///   build sheet ([showBuildSheet]) with the plan and Stop or Resume. When the build
 ///   ends a toast says how: every feature built, the spending cap, stopped
@@ -152,7 +150,7 @@ import 'working_chip.dart';
 ///   screen is hidden (the app in the background, another route on top,
 ///   the screen closed) or a new document loads, and does not start again
 ///   by itself. While one runs a small location pill sits at the top left,
-///   in the pill strip; a tap on it stops location. A location call
+///   over the page; a tap on it stops location. A location call
 ///   that fails because Android will not ask again (`system_denied`) or the
 ///   device's location is off (`location_off`) shows a toast with Open
 ///   settings.
@@ -173,6 +171,13 @@ import 'working_chip.dart';
 ///   the comment bar), then goes back in the app's own history (its pages
 ///   and `#route`s, which the shell keeps: `history`, `back()`), and only
 ///   from the app's first page leaves the app.
+/// - **Edge to edge.** The page has the screen's whole height; the status
+///   bar's band over it is painted in the page's own top colour and the
+///   navigation bar's in its bottom colour, with the system's icons light
+///   or dark to suit ([SystemBands], from the shell's [ChromeMsg]), and in
+///   the palette's `bg` until the page says. The navigation band is drawn
+///   only while the page holds the bottom inset (not under the comment bar,
+///   the panel or the composer).
 ///
 /// The screen owns [surface] and disposes it.
 /// How an [AppScreen] stands among the app's screens.
@@ -334,13 +339,6 @@ class AppScreen extends StatefulWidget {
   /// nothing.
   final void Function(String aid)? openApp;
 
-  /// How tall the folded chips and the location pill are.
-  static const pillHeight = 24.0;
-
-  /// How tall the strip above the page that holds the pills is, while a
-  /// change, a build or a location watch goes.
-  static const pillStrip = pillHeight + 8;
-
   /// The app view's URL for [aid] under [base].
   static Uri appUrl(Uri base, String aid) {
     final path = base.path.endsWith('/') ? base.path : '${base.path}/';
@@ -410,6 +408,10 @@ class _AppScreenState extends State<AppScreen> with WidgetsBindingObserver {
   /// Whether the app's page has a page or fragment of its own to go back
   /// to (the shell's `history`).
   var _canGoBack = false;
+
+  /// The page's edge colours, for the system bars; null until the shell
+  /// first says.
+  ChromeMsg? _chrome;
 
   /// The newer version the shell offers and the page does not show yet,
   /// and the one its toast shows for while it shows.
@@ -506,13 +508,16 @@ class _AppScreenState extends State<AppScreen> with WidgetsBindingObserver {
     right: true,
     child: WorkingPill(
       changes: _changes,
-      height: AppScreen.pillHeight,
+      height: _pillHeight,
       onTap: _openChangeChip,
     ),
   );
 
-  /// A small pill in the strip between the top inset (the status bar and
-  /// any display cutout, which the system draws its icons in) and the page,
+  /// How tall the folded chips and the location pill are.
+  static const _pillHeight = 24.0;
+
+  /// A small pill over the page, 8 px under the top inset (the status bar
+  /// and any display cutout, which the system draws its icons in) and
   /// inside the side insets, at the top right, or the top left unless
   /// [right].
   Widget _topPill(
@@ -522,7 +527,7 @@ class _AppScreenState extends State<AppScreen> with WidgetsBindingObserver {
   }) {
     final pad = MediaQuery.paddingOf(context);
     return Positioned(
-      top: pad.top + (AppScreen.pillStrip - AppScreen.pillHeight) / 2,
+      top: pad.top + 8,
       right: right ? pad.right + 12 : null,
       left: right ? null : pad.left + 12,
       child: child,
@@ -975,6 +980,10 @@ class _AppScreenState extends State<AppScreen> with WidgetsBindingObserver {
         break;
       case DeviceRequest():
         _device(m);
+      case ChromeMsg():
+        if (m.top != _chrome?.top || m.bottom != _chrome?.bottom) {
+          setState(() => _chrome = m);
+        }
     }
   }
 
@@ -1116,7 +1125,7 @@ class _AppScreenState extends State<AppScreen> with WidgetsBindingObserver {
     context,
     right: false,
     child: LocationPill(
-      height: AppScreen.pillHeight,
+      height: _pillHeight,
       onTap: () => widget.device?.stopWatches(
         _deviceView,
         message: 'the person stopped location; start it again from a tap',
@@ -1269,7 +1278,7 @@ class _AppScreenState extends State<AppScreen> with WidgetsBindingObserver {
       plan: _plan,
       state: _build!,
       compact: true,
-      height: AppScreen.pillHeight,
+      height: _pillHeight,
       onTap: _openBuildChip,
     ),
   );
@@ -1926,29 +1935,33 @@ class _AppScreenState extends State<AppScreen> with WidgetsBindingObserver {
                     ? _deviceView.watching
                     : _noWatches,
                 builder: (context, watches, _) {
-                  final strip = _buildChip || _changeChip || watches > 0;
-                  return Stack(
-                    fit: StackFit.expand,
-                    children: [
-                      SafeArea(
-                        // The bar under the page, or the panel, holds the
-                        // bottom inset.
-                        bottom: !bar && (!shown || wide),
-                        right: !shown || !wide,
-                        // The pills' strip sits above the page, so they
-                        // never cover the app's own header.
-                        minimum: EdgeInsets.only(
-                          top: strip
-                              ? MediaQuery.paddingOf(context).top +
-                                    AppScreen.pillStrip
-                              : 0,
+                  // Else the bar under the page, or the panel, holds the
+                  // bottom inset, and the navigation band is not drawn.
+                  final holdsBottom = !bar && (!shown || wide);
+                  final page = MediaQuery(
+                    data: MediaQuery.of(context),
+                    child: Stack(
+                      fit: StackFit.expand,
+                      children: [
+                        SafeArea(
+                          bottom: holdsBottom,
+                          right: !shown || !wide,
+                          child: _pageStack(context),
                         ),
-                        child: _pageStack(context),
-                      ),
-                      if (_buildChip && !_buildOpen) _buildPill(context),
-                      if (_changeChip && !_changeOpen) _changePill(context),
-                      if (watches > 0) _locationPill(context),
-                    ],
+                        if (_buildChip && !_buildOpen) _buildPill(context),
+                        if (_changeChip && !_changeOpen) _changePill(context),
+                        if (watches > 0) _locationPill(context),
+                      ],
+                    ),
+                  );
+                  return MediaQuery.removePadding(
+                    context: context,
+                    removeBottom: !holdsBottom,
+                    child: SystemBands(
+                      top: _chrome?.top,
+                      bottom: _chrome?.bottom,
+                      child: page,
+                    ),
                   );
                 },
               ),

@@ -2290,6 +2290,7 @@ drops them. Every message carries `nonce`:
 | `history` | `back` | Whether `back()` has a page, fragment or route to go back to; at `init`, and whenever that changes. |
 | `device` | `id`, `cap`, `method`, `args` | The page called a device capability (see "Device capabilities in the Clax app" below). Calls made before `init` are posted by it. Not in the inspect view. |
 | `questions` | `open`, `showing` | How many of the owner's open questions are about the artifact, and whether the questions sheet shows; posted whenever either changes. |
+| `chrome` | `top`, `bottom` (`#rrggbb`, lowercase) | The page's background at the middle of the viewport's top and bottom edges (the first opaque background from the element there up to the root, else white), which the app paints the system's status and navigation bars in: on the page's first paint, whenever either changes, and the latest again at `init`. |
 | `inspection` | `png`, `errors`, `failed`, `text`, `title`, `height`; or `error` | The answer to `inspect`. |
 | `tests` | `passed`, `failed: [{name, error}]`, `skipped`; or `error` | The answer to `runTests`. |
 | `migration` | `ok: true`; or `ok: false`, `error` | The answer to `runMigration`. |

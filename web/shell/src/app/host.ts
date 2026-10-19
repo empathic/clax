@@ -130,6 +130,11 @@
 //   (`setVisible(false)`) ends their watches.
 // - `openRoute(hash)` moves the page to a fragment (`#route`), as a
 //   notification's tap asks.
+// - The system bars: the page's bridge samples its background at the
+//   viewport's top and bottom edges (`clax:chrome`, `bridge/src/chrome.ts`)
+//   on its first paint and whenever either changes; the host posts them as
+//   `chrome {top, bottom}` (`#rrggbb`, lowercase), and the latest again at
+//   `init`. The app paints the status and navigation bars in them.
 // Its styles go in with it: the shell links no stylesheet a lazy chunk
 // imports (`vite.shell.config.ts`, `inlineCss`).
 import appCss from "./app.css?inline";
@@ -207,6 +212,9 @@ export type HostMessage =
    * whether the questions sheet is `showing`, posted whenever either
    * changes (see Questions above). */
   | { type: "questions"; open: number; showing: boolean }
+  /** The page's background at the viewport's top and bottom edges
+   * (`#rrggbb`), for the system bars (see The system bars above). */
+  | { type: "chrome"; top: string; bottom: string }
   /** A device capability call of the page, for the app to make and answer
    * with `deviceResult` (see Device capabilities above). */
   | ({ type: "device" } & DeviceCall);
@@ -461,6 +469,8 @@ export function installHost(win: Window, ctl: ArtifactController): () => void {
   }
   const s = () => ctl.state.get();
 
+  // The page's edge colours as last reported, posted again at `init`.
+  let chrome: HostMessage | null = null;
   // The page's last reported scroll position, per page.
   const scrolled = new Map<string, number>();
   // The app's own history: the pages, fragments and pushState routes the
@@ -731,6 +741,12 @@ export function installHost(win: Window, ctl: ArtifactController): () => void {
       else if (Number.isInteger(m.depth) && m.depth >= 0) route(file, m.depth, m.hash);
       return;
     }
+    if (m?.type === "clax:chrome") {
+      const hex = (v: unknown) => typeof v === "string" && /^#[0-9a-f]{6}$/i.test(v) ? v.toLowerCase() : null;
+      const top = hex(m.top), bottom = hex(m.bottom);
+      if (top && bottom) post(chrome = { type: "chrome", top, bottom });
+      return;
+    }
     if (m?.type === "clax:pick-start" && typeof m.pickId === "string" && m.desc) {
       picked.clear();
       picked.set(m.pickId, m.desc);
@@ -949,6 +965,7 @@ export function installHost(win: Window, ctl: ArtifactController): () => void {
       lastQuestions = "";
       postQuestions();
       postHistory();
+      if (chrome) post(chrome);
       for (const c of deviceQueue.splice(0)) post({ type: "device", ...c });
     },
     enterCommentMode: () => { if (!inspecting && !s().commenting) ctl.toggleComment(); },

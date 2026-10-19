@@ -902,6 +902,20 @@ describe("app mode's host channel", { timeout: MOUNT_TIMEOUT_MS }, () => {
     expect(JSON.stringify(posted)).not.toContain(NONCE);
   });
 
+  it("relays the page's edge colours as chrome, the latest again at init, and drops any other shape", async () => {
+    const { frame, host } = await appView({ init: false });
+    hello(frame, 1);
+    fromFrame(frame.contentWindow!, { type: "clax:chrome", top: "#102030", bottom: "#ffffff" });
+    expect(raw).toEqual([]);
+    host.init({ nonce: NONCE });
+    expect(ofType("chrome")).toEqual([{ type: "chrome", top: "#102030", bottom: "#ffffff" }]);
+    expect(raw.filter(m => JSON.parse(m).type === "chrome").map(m => JSON.parse(m).nonce)).toEqual([NONCE]);
+    for (const bad of [{ top: "red", bottom: "#ffffff" }, { top: "#abc", bottom: "#ffffff" }, { top: "#102030" }, { top: 1, bottom: 2 }]) fromFrame(frame.contentWindow!, { type: "clax:chrome", ...bad });
+    expect(ofType("chrome")).toHaveLength(1);
+    fromFrame(frame.contentWindow!, { type: "clax:chrome", top: "#000000", bottom: "#FAFAFA" });
+    expect(ofType("chrome").at(-1)).toEqual({ type: "chrome", top: "#000000", bottom: "#fafafa" });
+  });
+
   it("ignores an init without a well-formed nonce", async () => {
     const { host } = await appView({ init: false });
     for (const bad of [undefined, {}, { nonce: 5 }, { nonce: "short" }, { nonce: "has spaces in it 0123456789" }, { nonce: "x".repeat(129) }]) host.init(bad as never);

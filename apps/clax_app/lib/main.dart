@@ -59,7 +59,25 @@ const scriptedAgentPath = String.fromEnvironment('CLAX_SCRIPTED_AGENT');
 Future<void> main() async {
   final launched = DateTime.now();
   WidgetsFlutterBinding.ensureInitialized();
+  await drawEdgeToEdge();
   await runClaxApp(await platformServices(launched: launched));
+}
+
+/// On Android, draws the app under the status and navigation bars, both
+/// transparent: each screen pads by `MediaQuery.padding` and sets the bars'
+/// icons for what is under them (`ClaxScaffold`, `SystemBands`).
+Future<void> drawEdgeToEdge() async {
+  if (defaultTargetPlatform != TargetPlatform.android) return;
+  await SystemChrome.setEnabledSystemUIMode(SystemUiMode.edgeToEdge);
+  SystemChrome.setSystemUIOverlayStyle(
+    const SystemUiOverlayStyle(
+      statusBarColor: Color(0x00000000),
+      systemNavigationBarColor: Color(0x00000000),
+      systemNavigationBarDividerColor: Color(0x00000000),
+      systemNavigationBarContrastEnforced: false,
+      systemStatusBarContrastEnforced: false,
+    ),
+  );
 }
 
 /// The services of the app on this device: the embedded daemon under the

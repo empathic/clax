@@ -7,6 +7,7 @@ library;
 import 'dart:convert';
 import 'dart:math';
 import 'dart:typed_data';
+import 'dart:ui' show Color;
 
 /// A message from the shell, posted as JSON on the `ClaxHost` channel.
 sealed class HostMessage {
@@ -80,6 +81,7 @@ sealed class HostMessage {
           showing: (m['showing'] ?? false) as bool,
         ),
         'device' => DeviceRequest.fromJson(m),
+        'chrome' => ChromeMsg(_hex(m['top']), _hex(m['bottom'])),
         _ => null,
       };
     } on TypeError {
@@ -94,6 +96,14 @@ int _count(Object? v) {
   final n = _int(v);
   if (n < 0) throw TypeError();
   return n;
+}
+
+/// The opaque colour `#rrggbb` [v] names; anything else is a [TypeError].
+Color _hex(Object? v) {
+  if (v is! String || !RegExp(r'^#[0-9a-fA-F]{6}$').hasMatch(v)) {
+    throw TypeError();
+  }
+  return Color(0xFF000000 | int.parse(v.substring(1), radix: 16));
 }
 
 int _int(Object? v) => switch (v) {
@@ -449,6 +459,16 @@ final class QuestionsMsg extends HostMessage {
   /// Whether the questions sheet is up over the app (false when the shell
   /// does not say).
   final bool showing;
+}
+
+/// The page's background at the middle of the viewport's [top] and
+/// [bottom] edges, which the system's status and navigation bars are
+/// painted in; posted on the page's first paint and whenever either changes
+/// (sampled by the page's bridge, `web/bridge/src/chrome.ts`).
+final class ChromeMsg extends HostMessage {
+  const ChromeMsg(this.top, this.bottom);
+
+  final Color top, bottom;
 }
 
 /// A device capability call of the page (`notify`, `share`, `files`,

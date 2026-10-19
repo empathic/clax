@@ -18,6 +18,7 @@ import 'package:clax_app/ui/developer.dart';
 import 'package:clax_app/ui/host_protocol.dart';
 import 'package:clax_app/ui/kit/kit.dart';
 import 'package:clax_app/ui/theme.dart';
+import 'package:clax_app/ui/tokens.g.dart';
 import 'package:clax_app/ui/thread_detail.dart';
 import 'package:flutter/gestures.dart';
 import 'package:flutter/foundation.dart';
@@ -2820,6 +2821,50 @@ void main() {
     });
   });
 
+  group('edge to edge', () {
+    Color band(WidgetTester tester, String edge) => tester
+        .widget<ColoredBox>(find.byKey(ValueKey('system-band-$edge')))
+        .color;
+
+    testWidgets('the status band takes the page\'s top colour, the '
+        'navigation band its bottom, and the icons follow', (tester) async {
+      final rig = await pumpScreen(tester);
+      tester.view.padding = const FakeViewPadding(top: 24 * 3, bottom: 16 * 3);
+      rig.surface.push(rig.ready());
+      await tester.pump();
+      expect(band(tester, 'top'), ClaxTokens.light.bg);
+      rig.surface.push(ChromeMsg(const Color(0xFF102030), Colors.white));
+      await tester.pump();
+      await tester.pump();
+      expect(band(tester, 'top'), const Color(0xFF102030));
+      expect(band(tester, 'bottom'), Colors.white);
+      expect(SystemChrome.latestStyle!.statusBarIconBrightness, Brightness.light);
+      expect(
+        SystemChrome.latestStyle!.systemNavigationBarIconBrightness,
+        Brightness.dark,
+      );
+      // The page is between the bands, and the screen is its whole height.
+      final page = tester.getRect(find.byKey(const ValueKey('fake-surface')));
+      expect(page.top, 24);
+      expect(page.bottom, 780 - 16);
+    });
+
+    testWidgets('the navigation band goes while the comment bar holds the '
+        'bottom inset', (tester) async {
+      final rig = await pumpScreen(tester);
+      tester.view.padding = const FakeViewPadding(top: 24 * 3, bottom: 16 * 3);
+      rig.surface.push(rig.ready());
+      rig.surface.push(ChromeMsg(const Color(0xFF102030), Colors.white));
+      await tester.pump();
+      expect(find.byKey(const ValueKey('system-band-bottom')), findsOneWidget);
+      rig.actions.add(AppAction.comment);
+      await tester.pumpAndSettle();
+      expect(find.byKey(const ValueKey('comment-bar')), findsOneWidget);
+      expect(find.byKey(const ValueKey('system-band-bottom')), findsNothing);
+      expect(find.byKey(const ValueKey('system-band-top')), findsOneWidget);
+    });
+  });
+
   group('the pills at the top', () {
     // Insets in logical pixels: a short status bar, a tall one, a punch-hole
     // cutout taller than the bar, and a landscape cutout on the left.
@@ -2857,16 +2902,15 @@ void main() {
         expect(pill.top, greaterThanOrEqualTo(pad.top));
         expect(pill.right, lessThanOrEqualTo(width - pad.right));
         expect(pill.left, greaterThanOrEqualTo(pad.left));
-        expect(pill.height, AppScreen.pillHeight);
-        // The page starts under the pill's strip, so the pill covers none
-        // of the app's own header.
+        expect(pill.height, 24);
+        expect(pill.top, pad.top + 8);
+        // Nothing pushes the page down: it starts at the top inset.
         final page = tester.getRect(find.byKey(const ValueKey('fake-surface')));
-        expect(page.top, greaterThanOrEqualTo(pill.bottom));
-        expect(page.top, pad.top + AppScreen.pillStrip);
+        expect(page.top, pad.top);
       });
     }
 
-    testWidgets('the page takes the strip back when nothing runs', (
+    testWidgets('the page keeps its place while work starts and ends', (
       tester,
     ) async {
       final clock = _Clock();
@@ -2879,19 +2923,11 @@ void main() {
       final tid = rig.api.sendComment(rig.aid, 'bigger').threadId;
       rig.surface.push(Sent(tid));
       await tester.pump();
-      // The strip shows while the chip is whole too, so the page does not
-      // move each time the chip opens or folds.
       expect(find.byKey(const ValueKey('chip-working')), findsOneWidget);
-      expect(tester.getRect(page).top, 24 + AppScreen.pillStrip);
+      expect(tester.getRect(page).top, 24);
       clock.lapse();
       await tester.pump();
-      expect(tester.getRect(page).top, 24 + AppScreen.pillStrip);
-      await tester.tap(find.byKey(const ValueKey('chip-working-pill')));
-      await tester.pump();
-      await tester.tap(find.byKey(const ValueKey('chip-dismiss')));
-      await tester.pump();
-      expect(find.byKey(const ValueKey('chip-working')), findsNothing);
-      expect(find.byKey(const ValueKey('chip-working-pill')), findsNothing);
+      expect(find.byKey(const ValueKey('chip-working-pill')), findsOneWidget);
       expect(tester.getRect(page).top, 24);
     });
   });

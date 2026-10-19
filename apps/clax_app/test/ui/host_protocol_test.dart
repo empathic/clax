@@ -1,5 +1,6 @@
 import 'dart:convert';
 import 'dart:io';
+import 'dart:ui' show Color;
 
 import 'package:clax_app/ui/host_protocol.dart';
 import 'package:flutter_test/flutter_test.dart';
@@ -17,6 +18,23 @@ void main() {
       expect(r.latest, 4);
       expect(r.file, 'index.html');
       expect(r.pinned, isTrue);
+    });
+
+    test('chrome: the page\'s top and bottom colours, #rrggbb only', () {
+      final m = HostMessage.parse(
+        '{"type":"chrome","top":"#a0b0c0","bottom":"#FFFFFF"}',
+      );
+      expect(m, isA<ChromeMsg>());
+      final c = m as ChromeMsg;
+      expect(c.top, const Color(0xFFA0B0C0));
+      expect(c.bottom, const Color(0xFFFFFFFF));
+      for (final bad in <Object?>['red', '#abc', '#a0b0c0ff', 'a0b0c0', 0xa0b0c0, null]) {
+        expect(
+          HostMessage.fromJson({'type': 'chrome', 'top': bad, 'bottom': '#ffffff'}),
+          isNull,
+          reason: '$bad',
+        );
+      }
     });
 
     test('state with a draft and without one', () {

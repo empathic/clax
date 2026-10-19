@@ -130,6 +130,16 @@ for (const mode of ["subdomain", "sandbox"] as const) {
   });
 }
 
+test("the page's edge colours reach the app as chrome, and again when they change", async ({ page }) => {
+  const html = `<!doctype html><html><head><style>body{margin:0}header{position:sticky;top:0;height:56px;background:#102030}main{height:3000px}nav{position:fixed;bottom:0;left:0;right:0;height:56px;background:transparent}</style></head>
+<body style="background:#fafafa"><header></header><main></main><nav><span>Tabs</span></nav></body></html>`;
+  const { frame } = await openApp(page, "App chrome colours", "subdomain", true, { html });
+  // The header's blue at the top; through the transparent tab bar, the body's colour.
+  await expect.poll(async () => (await ofType(page, "chrome")).at(-1)).toEqual({ type: "chrome", top: "#102030", bottom: "#fafafa" });
+  await frame.evaluate(() => { document.querySelector("header")!.style.background = "color-mix(in srgb, #ffffff 50%, #000000)"; document.body.style.background = "#000000"; });
+  await expect.poll(async () => (await ofType(page, "chrome")).at(-1)).toEqual({ type: "chrome", top: "#808080", bottom: "#000000" });
+});
+
 for (const frames of [true, false]) {
 test(`a long-press picks and Send sends to the app session${frames ? "" : ", with no animation frames"}`, async ({ page }) => {
   if (!frames) await noFrames(page);
