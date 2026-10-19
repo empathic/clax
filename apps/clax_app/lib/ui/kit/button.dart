@@ -26,10 +26,10 @@ enum ClaxButtonKind {
 /// [ClaxButtonKind.plain] a text button and [ClaxButtonKind.destructive] a
 /// text button in `danger`; each is 40 dp high in a 48 dp target.
 ///
-/// Apple: a 24 pt push button with a `radius-control-mac` bezel in 13 pt
-/// type: plain is borderless, destructive a bezel with its label in
-/// `danger`, and the rest a regular bezel, filled in the accent when
-/// [isDefault]. The surface holding a default button binds Return to it.
+/// Apple: a push button, 24 pt high at the default text size and taller
+/// as the text grows, with a `radius-control-mac` bezel in 13 pt type:
+/// plain is borderless, destructive a bezel with its label in `danger`,
+/// and the rest a regular bezel, filled in the accent when [isDefault]. The surface holding a default button binds Return to it.
 class ClaxButton extends StatelessWidget {
   const ClaxButton({
     super.key,
@@ -159,17 +159,14 @@ class ClaxButton extends StatelessWidget {
     final bezel = dark ? p.overlay : p.card;
     final style = ButtonStyle(
       // The Apple family's theme is compact; the push button keeps its own
-      // 24 pt.
+      // 24 pt, and grows with the label at larger text sizes.
       visualDensity: VisualDensity.standard,
       tapTargetSize: MaterialTapTargetSize.shrinkWrap,
       minimumSize: const WidgetStatePropertyAll(
         Size(ClaxLayout.appleTargetMin, ClaxLayout.appleTargetMin),
       ),
-      fixedSize: const WidgetStatePropertyAll(
-        Size.fromHeight(ClaxLayout.appleTargetMin),
-      ),
       padding: WidgetStatePropertyAll(
-        EdgeInsets.symmetric(horizontal: borderless ? 6 : 12),
+        EdgeInsets.symmetric(horizontal: borderless ? 6 : 12, vertical: 2),
       ),
       textStyle: WidgetStatePropertyAll(text),
       elevation: const WidgetStatePropertyAll(0),

@@ -140,6 +140,26 @@ void main() {
       expect(material.color, ClaxTokens.light.agent);
     });
 
+    testWidgets('on the Mac it grows with the text instead of clipping it', (
+      tester,
+    ) async {
+      tester.platformDispatcher.textScaleFactorTestValue = 2;
+      addTearDown(tester.platformDispatcher.clearTextScaleFactorTestValue);
+      await tester.pumpWidget(
+        _app(
+          Center(
+            child: ClaxButton(label: 'Save', onPressed: () {}, isDefault: true),
+          ),
+          platform: TargetPlatform.macOS,
+        ),
+      );
+      final button = tester.getRect(find.byType(ClaxButton));
+      final label = tester.getRect(find.text('Save'));
+      expect(button.height, greaterThan(24));
+      expect(label.top, greaterThanOrEqualTo(button.top));
+      expect(label.bottom, lessThanOrEqualTo(button.bottom));
+    });
+
     testWidgets('a press calls onPressed', (tester) async {
       var pressed = 0;
       await tester.pumpWidget(

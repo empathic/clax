@@ -356,11 +356,15 @@ void _surface(
 }
 
 void main() {
-  shots('kit-controls', (s) async {
-    await s.tester.pumpWidget(s.app(const _Controls(), title: 'Controls'));
-    await s.settle();
-    await s.take('kit-controls');
-  });
+  shots(
+    'kit-controls',
+    (s) async {
+      await s.tester.pumpWidget(s.app(const _Controls(), title: 'Controls'));
+      await s.settle();
+      await s.take('kit-controls');
+    },
+    textScales: const [1, 1.3, 2],
+  );
 
   shots('kit-mark', (s) async {
     final started = <ClaxMarkState>{};
