@@ -1,28 +1,28 @@
-/* Clax's home screen, over kit.css. The colours are the Clax app's own
- * Material 3 scheme (seed #4A5D8F), so the page reads as the launcher it
- * replaces; the kit's tokens are set to them for anything the kit draws. */
+/* Clax's home screen, over kit.css. The colours are the brand's, from
+ * tokens.css (generated from design/tokens.json, light and dark); the kit's
+ * tokens are set to them for anything the kit draws. */
 
 :root {
-  --h-surface: #faf8ff;
-  --h-on-surface: #1a1b21;
-  --h-on-variant: #45464f;
-  --h-primary: #485d92;
-  --h-pc: #dae2ff;
-  --h-on-pc: #304578;
-  --h-ec: #ffdad6;
-  --h-on-ec: #93000a;
-  --h-error: #ba1a1a;
-  --h-on-error: #ffffff;
-  --h-sc: #dce2f9;
-  --h-on-sc: #404659;
-  --h-track: #e2e2e9;
-  --h-menu-bg: #eeedf4;
-  --h-inverse: #2f3036;
-  --h-on-inverse: #f1f0f7;
-  --h-state: rgba(26, 27, 33, 0.1);
-  --h-fab-shadow: 0 1px 3px rgba(0, 0, 0, 0.3), 0 4px 8px 3px rgba(0, 0, 0, 0.15);
-  --h-menu-shadow: 0 1px 2px rgba(0, 0, 0, 0.3), 0 2px 6px 2px rgba(0, 0, 0, 0.15);
-  --h-lift-shadow: var(--h-fab-shadow);
+  --h-surface: var(--bg); /* alias for release 1.6; removed in 1.7 */
+  --h-on-surface: var(--fg); /* alias for release 1.6; removed in 1.7 */
+  --h-on-variant: var(--muted); /* alias for release 1.6; removed in 1.7 */
+  --h-primary: var(--agent); /* alias for release 1.6; removed in 1.7 */
+  --h-pc: var(--accent-tint); /* alias for release 1.6; removed in 1.7 */
+  --h-on-pc: var(--agent-ink); /* alias for release 1.6; removed in 1.7 */
+  --h-ec: var(--danger-tint); /* alias for release 1.6; removed in 1.7 */
+  --h-on-ec: var(--danger); /* alias for release 1.6; removed in 1.7 */
+  --h-error: var(--danger); /* alias for release 1.6; removed in 1.7 */
+  --h-on-error: var(--on-accent); /* alias for release 1.6; removed in 1.7 */
+  --h-sc: var(--hover); /* alias for release 1.6; removed in 1.7 */
+  --h-on-sc: var(--fg); /* alias for release 1.6; removed in 1.7 */
+  --h-track: var(--border); /* alias for release 1.6; removed in 1.7 */
+  --h-menu-bg: var(--overlay); /* alias for release 1.6; removed in 1.7 */
+  --h-inverse: var(--fg); /* alias for release 1.6; removed in 1.7 */
+  --h-on-inverse: var(--bg); /* alias for release 1.6; removed in 1.7 */
+  --h-state: var(--hover); /* alias for release 1.6; removed in 1.7 */
+  --h-fab-shadow: var(--elev-2); /* alias for release 1.6; removed in 1.7 */
+  --h-menu-shadow: var(--elev-2); /* alias for release 1.6; removed in 1.7 */
+  --h-lift-shadow: var(--elev-3); /* alias for release 1.6; removed in 1.7 */
 
   --k-bg: var(--h-surface);
   --k-surface: var(--h-surface);
@@ -30,51 +30,18 @@
   --k-fg-2: var(--h-on-variant);
   --k-accent: var(--h-primary);
   --k-danger: var(--h-error);
+
+  accent-color: var(--accent);
 }
 
 @media (prefers-color-scheme: dark) {
-  :root:not([data-theme="light"]) {
-    --h-surface: #121318;
-    --h-on-surface: #e2e2e9;
-    --h-on-variant: #c5c6d0;
-    --h-primary: #b2c5ff;
-    --h-pc: #304578;
-    --h-on-pc: #dae2ff;
-    --h-ec: #93000a;
-    --h-on-ec: #ffdad6;
-    --h-error: #ffb4ab;
-    --h-on-error: #690005;
-    --h-sc: #404659;
-    --h-on-sc: #dce2f9;
-    --h-track: #33343a;
-    --h-menu-bg: #1e1f25;
-    --h-inverse: #e2e2e9;
-    --h-on-inverse: #2f3036;
-    --h-state: rgba(226, 226, 233, 0.1);
-    --h-lift-shadow: 0 0 0 1px rgba(226, 226, 233, 0.22), 0 6px 16px 2px rgba(0, 0, 0, 0.6);
-  }
   :root:not([data-theme="light"]) .h-face { background: var(--t-b); color: var(--t-a); }
 }
 
-:root[data-theme="dark"] {
-  --h-surface: #121318;
-  --h-on-surface: #e2e2e9;
-  --h-on-variant: #c5c6d0;
-  --h-primary: #b2c5ff;
-  --h-pc: #304578;
-  --h-on-pc: #dae2ff;
-  --h-ec: #93000a;
-  --h-on-ec: #ffdad6;
-  --h-error: #ffb4ab;
-  --h-on-error: #690005;
-  --h-sc: #404659;
-  --h-on-sc: #dce2f9;
-  --h-track: #33343a;
-  --h-menu-bg: #1e1f25;
-  --h-inverse: #e2e2e9;
-  --h-on-inverse: #2f3036;
-  --h-state: rgba(226, 226, 233, 0.1);
-  --h-lift-shadow: 0 0 0 1px rgba(226, 226, 233, 0.22), 0 6px 16px 2px rgba(0, 0, 0, 0.6);
+::selection { background: var(--selection-bg); color: var(--fg); }
+
+@media (pointer: coarse) {
+  button { min-height: 44px; min-width: 44px; }
 }
 
 html, body { background: var(--h-surface); color: var(--h-on-surface); }

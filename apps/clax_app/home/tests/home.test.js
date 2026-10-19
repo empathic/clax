@@ -1513,3 +1513,21 @@ test('search shows a big app as a 1×1 result', async () => {
   await wait(() => !ui.exists('.h-search'));
   await wait(() => document.querySelectorAll('[data-big]').length === 3);
 });
+
+test("the home screen takes the brand's colours", async () => {
+  await show({ makes: [] });
+  const html = document.documentElement;
+  const theme = html.getAttribute('data-theme');
+  html.setAttribute('data-theme', 'light');
+  try {
+    const probe = document.createElement('span');
+    probe.style.color = 'var(--h-primary)';
+    root().appendChild(probe);
+    expect(getComputedStyle(probe).color).toBe('rgb(47, 111, 42)');
+    probe.remove();
+    expect(getComputedStyle(html).accentColor).toBe('rgb(47, 111, 42)');
+  } finally {
+    if (theme === null) html.removeAttribute('data-theme');
+    else html.setAttribute('data-theme', theme);
+  }
+});
