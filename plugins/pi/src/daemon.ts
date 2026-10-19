@@ -114,7 +114,7 @@ function readInfo(home: string): DaemonInfo | null {
 export async function discover(home: string): Promise<DaemonInfo | null> {
   const info = readInfo(home);
   if (!info || !pidAlive(info.pid)) return null;
-  return (await probe(`${endpointOf(info).base}/healthz`)) ? info : null;
+  return (await probe(endpointOf(info).base, "/healthz")) ? info : null;
 }
 
 function executable(path: string): boolean {

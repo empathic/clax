@@ -115,8 +115,10 @@ interface RequestOptions {
  * connection that was never established is `unreachable` and refreshable, a
  * request past its deadline is `timeout`, anything else (such as a connection
  * dropped mid-request) is `unreachable` but not retried, since the request may
- * have taken effect. Proxies are never used. */
-function send(url: string, opts: RequestOptions): Promise<RawResponse> {
+ * have taken effect. Proxies are never used. `path` (with its query) goes
+ * to the daemon at `base` (`http://<host>[:<port>]`) exactly as given. */
+function send(base: string, path: string, opts: RequestOptions): Promise<RawResponse> {
+  const url = `${base}${path}`;
   const deadline = AbortSignal.timeout(opts.timeoutMs ?? REQUEST_TIMEOUT_MS);
   const signal = opts.signal ? AbortSignal.any([deadline, opts.signal]) : deadline;
   return new Promise<RawResponse>((resolve, reject) => {
@@ -132,9 +134,8 @@ function send(url: string, opts: RequestOptions): Promise<RawResponse> {
     };
     // The path goes out as given, never normalized: a signed request
     // signs it as sent.
-    const u = new URL(url);
-    const path = url.slice(u.origin.length) || "/";
-    const target = { protocol: u.protocol, hostname: u.hostname.replace(/^\[|\]$/g, ""), port: u.port, path };
+    const u = new URL(base);
+    const target = { protocol: u.protocol, hostname: u.hostname.replace(/^\[|\]$/g, ""), port: u.port, path: path || "/" };
     const req = httpRequest({ ...target, method: opts.method, headers: opts.headers, signal }, res => {
       const chunks: Buffer[] = [];
       let size = 0;
@@ -196,7 +197,7 @@ export async function sendRemote(r: Remote, path: string, opts: RequestOptions):
   let backoffs = 0;
   for (;;) {
     const headers = signedHeaders(r, opts.method, path, body, opts.headers ?? {});
-    const res = await send(`${r.config.url}${path}`, { ...opts, headers, body, maxBytes });
+    const res = await send(r.config.url, path, { ...opts, headers, body, maxBytes });
     if (res.status !== 401 && res.status !== 429 && res.status !== 503) return res;
     const code = errorOf(res).code;
     if (res.status === 401 && code === "stale_request" && !staleRetried) {
@@ -228,7 +229,7 @@ function sessionRefused(status: number, error: Record<string, unknown>): boolean
  * object, refreshable when the local daemon refused its token (401), or
  * the session it named is not its to name ([`sessionRefused`]). */
 async function attempt(base: string, path: string, opts: RequestOptions, remote?: Remote): Promise<RawResponse> {
-  const res = remote ? await sendRemote(remote, path, opts) : await send(`${base}${path}`, opts);
+  const res = remote ? await sendRemote(remote, path, opts) : await send(base, path, opts);
   if (res.status >= 200 && res.status < 300) return res;
   const error = errorOf(res);
   const refreshable = (res.status === 401 && !remote) || sessionRefused(res.status, error);
@@ -250,10 +251,10 @@ function sessionOf(res: any): Session {
   return s as Session;
 }
 
-/** A GET to `url` with a 1 s deadline: true when it answers with a success status. */
-export async function probe(url: string): Promise<boolean> {
+/** A GET of `path` from the daemon at `base` with a 1 s deadline: true when it answers with a success status. */
+export async function probe(base: string, path: string): Promise<boolean> {
   try {
-    const res = await send(url, { method: "GET", timeoutMs: 1_000 });
+    const res = await send(base, path, { method: "GET", timeoutMs: 1_000 });
     return res.status >= 200 && res.status < 300;
   } catch {
     return false;

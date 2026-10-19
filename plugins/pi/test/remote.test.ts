@@ -357,6 +357,29 @@ describe("remote retries", () => {
     res.end(JSON.stringify({ error: { code, message: code } }));
   };
 
+  it("takes the daemon's URL as the Rust clients do, and sends each path as given whatever form the URL has", async () => {
+    const hostOf = (url: string) => loadRemote(connectedHome(url).home)!.config;
+    expect(hostOf("http://192.168.1.5")).toMatchObject({ url: "http://192.168.1.5", host: "192.168.1.5" });
+    expect(hostOf("http://1.2.3.4:80/")).toMatchObject({ url: "http://1.2.3.4", host: "1.2.3.4" });
+    expect(hostOf("http://[0:0:0:0:0:0:0:1]:7480")).toMatchObject({ url: "http://[::1]:7480", host: "[::1]:7480" });
+    for (const bad of ["http://clax.local:7480", "https://1.2.3.4:7480", "http://1.2.3.4:7480/x", "http://1.2.3.4:7480/?a", "http://1.2.3.4:7480#f", "http://u:p@1.2.3.4:7480", "1.2.3.4:7480"]) {
+      expect(() => loadRemote(connectedHome(bad).home), bad).toThrow(/the daemon URL is not http:\/\/<IP address>:<port>/);
+    }
+    const seen: { url?: string; host?: string }[] = [];
+    const server = createServer((req, res) => { seen.push({ url: req.url, host: req.headers.host }); req.resume(); req.on("end", () => res.end("{}")); });
+    await new Promise<void>(r => server.listen(0, "127.0.0.1", () => r()));
+    const port = (server.address() as { port: number }).port;
+    try {
+      const r = loadRemote(connectedHome(`http://127.000.000.001:${port}/`).home)!;
+      expect(r.config.host).toBe(`127.0.0.1:${port}`);
+      expect((await sendRemote(r, "/api/artifacts?limit=2", { method: "GET" })).status).toBe(200);
+      expect(seen).toEqual([{ url: "/api/artifacts?limit=2", host: `127.0.0.1:${port}` }]);
+    } finally {
+      server.closeAllConnections();
+      server.close();
+    }
+  });
+
   it("retries busy and limit_reached three times, after 1, 2 and 4 s with up to a quarter more, then gives up", async () => {
     for (const [status, code] of [[503, "busy"], [429, "limit_reached"]] as const) {
       const d = await daemonAnswering((_, res) => error(res, status, code));
