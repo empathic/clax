@@ -597,9 +597,9 @@ fn page_on(c: &Connection, q: &InboxQuery, shape: Shape) -> Result<(Vec<ItemRow>
 
 /// One artifact's matches in [`Store::inbox_groups`]: the artifact
 /// (`None` for the items about none), how many match and how many of
-/// those are unread, the newest one's `seq` and time, and its newest
-/// matches with the cursor of the rest in it (`before`, with `artifact`
-/// or `no_artifact` set) when there are more.
+/// those are unread, the newest one's `seq` and time, and its first
+/// rows, its unread matches newest first and then its read ones, with
+/// where the rest begins when there are more.
 #[derive(Clone, Debug, PartialEq)]
 pub struct ArtifactGroup {
     pub artifact_id: Option<String>,
@@ -608,7 +608,18 @@ pub struct ArtifactGroup {
     pub newest: i64,
     pub newest_at: String,
     pub items: Vec<ItemRow>,
-    pub next: Option<i64>,
+    pub next: Option<GroupNext>,
+}
+
+/// Where the rest of a group's rows begins, each part listed by the plain
+/// query with the group's artifact (or `no_artifact`) set.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum GroupNext {
+    /// More unread matches, before this `seq` (`read` unread).
+    Unread(i64),
+    /// Its read matches (`read` read), before this `seq`, or from the
+    /// newest when `None`.
+    Read(Option<i64>),
 }
 
 /// An SQL error from a search is the search text's fault (there should be
@@ -1585,8 +1596,9 @@ impl Store {
 
     /// The items matching `q` grouped by artifact, one group for the items
     /// about none: a page of groups, newest group (by its newest match)
-    /// first, each with its counts and its `rows` newest matches (1 to
-    /// [`MAX_GROUP_ROWS`]), and the cursor of the next page of groups (its
+    /// first, each with its counts and its first `rows` rows (1 to
+    /// [`MAX_GROUP_ROWS`]): its unread matches newest first, then its read
+    /// ones, and the cursor of the next page of groups (its
     /// `before`). `q.before` is that cursor, and `q.limit` the groups per
     /// page (0 for [`DEFAULT_GROUPS`], at most [`MAX_GROUPS`]). One
     /// snapshot; the grouping reads every match.
@@ -1626,14 +1638,34 @@ impl Store {
                 None
             };
             for g in &mut groups {
-                let one = InboxQuery {
+                let part = |read: ReadFilter, limit: u32| InboxQuery {
                     artifact: g.artifact_id.clone(),
                     no_artifact: g.artifact_id.is_none(),
+                    read,
                     before: None,
-                    limit: rows,
+                    limit,
                     ..q.clone()
                 };
-                (g.items, g.next) = page_on(c, &one, Shape::GroupRows)?;
+                // Its unread matches first, newest first, then its read ones.
+                let (mut items, mut next) = (Vec::new(), None);
+                if q.read != ReadFilter::Read && g.unread > 0 {
+                    let (u, more) = page_on(c, &part(ReadFilter::Unread, rows), Shape::GroupRows)?;
+                    items = u;
+                    next = more.map(GroupNext::Unread);
+                }
+                let read = g.total - g.unread;
+                if next.is_none() && q.read != ReadFilter::Unread && read > 0 {
+                    let left = rows - items.len() as u32;
+                    if left == 0 {
+                        next = Some(GroupNext::Read(None));
+                    } else {
+                        let (r, more) =
+                            page_on(c, &part(ReadFilter::Read, left), Shape::GroupRows)?;
+                        items.extend(r);
+                        next = more.map(|s| GroupNext::Read(Some(s)));
+                    }
+                }
+                (g.items, g.next) = (items, next);
             }
             Ok((groups, next))
         })
@@ -3388,15 +3420,36 @@ mod tests {
         assert_eq!(gs[0].newest, gs[0].items[0].seq);
         assert_eq!(gs[0].newest_at, gs[0].items[0].created_at);
         assert_eq!(gs[1].items[0].question_id.as_deref(), Some(qid.as_str()));
-        // The rest of a group pages with its artifact and its cursor.
+        // The rest of a group: its unread matches past the cursor, then its read ones.
+        let Some(GroupNext::Unread(at)) = gs[0].next else {
+            panic!("more unread: {:?}", gs[0].next)
+        };
         let (rest, none) = st
             .inbox_list(&InboxQuery {
                 artifact: Some(a.as_str().into()),
-                before: gs[0].next,
+                read: ReadFilter::Unread,
+                before: Some(at),
                 ..Default::default()
             })
             .unwrap();
-        assert_eq!((rest.len(), none), (3, None));
+        assert_eq!((rest.len(), none), (2, None));
+        // Unread first, then read, in the group's rows; the read part's start when the unread fill them.
+        let (wide, _) = groups(InboxQuery::default(), 5);
+        let reads: Vec<bool> = wide[0].items.iter().map(|i| i.read_at.is_some()).collect();
+        assert_eq!(
+            (reads, wide[0].next),
+            (vec![false, false, false, false, true], None)
+        );
+        let (four, _) = groups(InboxQuery::default(), 4);
+        assert_eq!(four[0].next, Some(GroupNext::Read(None)));
+        let (three, _) = groups(
+            InboxQuery {
+                read: ReadFilter::Read,
+                ..Default::default()
+            },
+            3,
+        );
+        assert_eq!((three[0].items.len(), three[0].next), (1, None));
         // Groups page by their newest item.
         let (one, next) = groups(
             InboxQuery {

@@ -3288,13 +3288,18 @@ cursor or body) and 404 `not_found`.
   - `total` counts every match in the group and `unread` those of them
     unread, not only the items listed.
   - `newest_at` is its newest match's time.
-  - `items` are its newest matches, `rows` of them (default 3, clamped
-    to 1..20).
-  - `next_cursor` is the `before` of the rest, or null. The rest is
-    listed by the plain query with the same parameters (`read`, `q`,
-    `kind`, `agent`, `since`, `until`), `artifact` set to the group's
-    `artifact_id` (or `none`) and `before` to this cursor; without them
-    the page is not the group's.
+  - `items` are its first rows, `rows` of them (default 3, clamped to
+    1..20): its unread matches newest first, then its read ones.
+  - `next_cursor` says where the rest begins, or is null:
+    - `u<seq>`: more unread ones, listed by the plain query with the same
+      parameters, `read=unread`, `artifact` set to the group's
+      `artifact_id` (or `none`) and `before=<seq>`;
+    - `r<seq>`: more read ones, listed the same way with `read=read`;
+    - `r`: its read ones, from the newest (`read=read`, no `before`).
+
+    Once the unread pages end, its read ones follow from `r` while
+    `total` exceeds `unread`. Without the grouping's other parameters the
+    page is not the group's.
 
   `limit` is groups per page (default 20, clamped to 1..100), `before` the
   top-level `next_cursor`, and `total` is the plain list's. `rows` without

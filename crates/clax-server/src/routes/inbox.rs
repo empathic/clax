@@ -231,6 +231,18 @@ fn strip_view(
     Ok(json!(out))
 }
 
+/// Where the rest of a group begins, as `group=artifact` gives it:
+/// `u<seq>` (more unread, before `seq`), `r<seq>` (more read, before
+/// `seq`) or `r` (its read items, from the newest).
+fn group_cursor(n: clax_store::inbox::GroupNext) -> String {
+    use clax_store::inbox::GroupNext;
+    match n {
+        GroupNext::Unread(s) => format!("u{s}"),
+        GroupNext::Read(Some(s)) => format!("r{s}"),
+        GroupNext::Read(None) => "r".into(),
+    }
+}
+
 fn query_of<T>(q: Result<Query<T>, QueryRejection>) -> Result<T, ApiError> {
     q.map(|Query(q)| q).map_err(|e| invalid(e.body_text()))
 }
@@ -253,9 +265,12 @@ fn query_of<T>(q: Result<Query<T>, QueryRejection>) -> Result<T, ApiError> {
 /// next_cursor}`: its key (the artifact's ID, null for none), the
 /// artifact as its items name it, how many match and how many of those are
 /// unread (every match counted, not only those listed), its newest match's
-/// time, its `rows` newest matches (default 3, 1 to 20), and the `before`
-/// of the rest, which the plain list pages with the same parameters,
-/// `artifact=<its ID>` (or `artifact=none`) and that `before`. `limit` is groups per page (default 20, at most 100)
+/// time, its first `rows` rows (default 3, 1 to 20): its unread matches
+/// newest first, then its read ones, and where the rest begins: `u<seq>`
+/// (more unread: the plain list with the same parameters, `read=unread`,
+/// `artifact=<its ID>` or `none`, and `before=<seq>`), `r<seq>` (more read:
+/// the same with `read=read`) or `r` (its read ones from the newest), or
+/// null. `limit` is groups per page (default 20, at most 100)
 /// and `before` the top-level `next_cursor`. `total` is as for the plain
 /// list. `rows` without `group=artifact` is 400 `invalid_query`.
 ///
@@ -381,7 +396,7 @@ pub async fn list(
                     "unread": g.unread,
                     "newest_at": g.newest_at,
                     "items": items,
-                    "next_cursor": g.next.map(|n| n.to_string()),
+                    "next_cursor": g.next.map(group_cursor),
                 }));
             }
             json!({"groups": views, "next_cursor": next.map(|n| n.to_string())})

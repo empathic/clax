@@ -1102,6 +1102,7 @@ async fn group_by_artifact_counts_every_match_and_pages_each_group() {
 
     // The rest of a group: the plain list with its artifact and cursor.
     let next = groups[0]["next_cursor"].as_str().unwrap();
+    let next = next.strip_prefix('u').expect("more unread");
     let rest = get(
         &ts,
         &format!("/api/inbox?read=unread&artifact={aid}&before={next}"),
@@ -1161,6 +1162,40 @@ async fn group_by_artifact_counts_every_match_and_pages_each_group() {
         3,
         "three rows by default"
     );
+    assert!(
+        groups[0]["next_cursor"].as_str().unwrap().starts_with('r'),
+        "{read}"
+    );
+    // Read and unread together: a group's unread rows first, then its read ones.
+    ts.reply_as_agent(&sid, &aid, &tid, "one more note").await;
+    let all = get(
+        &ts,
+        &format!("/api/inbox?group=artifact&artifact={aid}&rows=2"),
+    )
+    .await;
+    let g0 = &all["groups"][0];
+    assert_eq!(
+        (g0["total"].as_u64(), g0["unread"].as_u64()),
+        (Some(8), Some(1)),
+        "{all}"
+    );
+    assert_eq!(
+        (
+            g0["items"][0]["read"].as_bool(),
+            g0["items"][1]["read"].as_bool()
+        ),
+        (Some(false), Some(true))
+    );
+    assert!(
+        g0["next_cursor"].as_str().unwrap().starts_with('r'),
+        "{all}"
+    );
+    let all = get(
+        &ts,
+        &format!("/api/inbox?group=artifact&artifact={aid}&rows=1"),
+    )
+    .await;
+    assert_eq!(all["groups"][0]["next_cursor"], "r", "{all}");
 
     // A group's mark leaves the items it excepts (a question shown as a card) unread.
     ts.ask(
@@ -1188,7 +1223,7 @@ async fn group_by_artifact_counts_every_match_and_pages_each_group() {
         .json()
         .await
         .unwrap();
-    assert_eq!(r["marked"], 1, "{r}");
+    assert_eq!(r["marked"], 2, "the two replies, not the question: {r}");
     let left = get(&ts, &format!("/api/inbox?read=unread&artifact={aid}")).await;
     assert_eq!(left["items"][0]["id"], question);
     let res = ts
