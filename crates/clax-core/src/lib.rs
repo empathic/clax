@@ -21,6 +21,7 @@ pub mod drafts;
 pub mod embedded;
 pub mod error;
 pub mod events;
+pub mod exit;
 pub mod extension;
 pub mod feedback;
 pub mod gitctx;
