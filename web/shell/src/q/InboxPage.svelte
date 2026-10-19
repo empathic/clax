@@ -268,11 +268,11 @@
   const set = (k: "artifact" | "agent" | "since" | "until", v: string) => apply({ ...filter, [k]: v || undefined });
 
   /** Marks read the unread items matching `f` up to the newest of `shown`, then fetches the sections again. */
-  async function markUpTo(f: InboxFilter | undefined, shown: InboxItem[]): Promise<void> {
+  async function markUpTo(f: InboxFilter | undefined, shown: InboxItem[], except?: string[]): Promise<void> {
     busy = true;
     try {
       // Up to the newest item shown, so one made since stays unread.
-      await inbox.markAll(f, newestSeq(shown));
+      await inbox.markAll(f, newestSeq(shown), except);
       await load();
     } catch (e) {
       oops("mark them read")(e);
@@ -280,8 +280,10 @@
     busy = false;
   }
   const markAll = () => markUpTo(filtered ? { ...filter } : undefined, [...cardItems, ...(unread?.groups ?? []).flatMap(g => g.items)]);
-  /** A group's Mark read: its unread items, up to its newest shown. */
-  const markGroup = (g: Group) => markUpTo({ ...filter, artifact: g.key }, g.items);
+  /** A group's Mark read: the unread items it counts new, up to its newest
+   * shown; its page's items pinned above as cards stay unread. */
+  const markGroup = (g: Group) => markUpTo({ ...filter, artifact: g.key }, g.items,
+    cardItems.filter(i => !i.read && carded.has(i.id) && groupKey(i) === g.key).map(i => i.id));
 
   // Where an item leads; a question's (`/inbox?q=…`) is this page, whose card, if shown, takes focus.
   const go = (url: string) => {

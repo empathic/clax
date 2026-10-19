@@ -555,13 +555,18 @@ pub struct ReadBody {
     /// The newest `seq` the client showed: items made since stay unread.
     #[serde(default)]
     upto: Option<i64>,
+    /// Items to leave unread (at most 500 IDs): those the client shows
+    /// apart from what it marks, such as cards pinned above a group.
+    #[serde(default)]
+    except: Option<Vec<String>>,
 }
 
 /// `POST /api/inbox/read` (the owner, or a connected person: their own
 /// items; another's IDs mark nothing), body `{ids}` (at most 500 item IDs) or
-/// `{all: true, filter?: {q, kind, artifact, agent, since, until}, upto?}`
-/// (every unread item matching the filter, up to item `seq` `upto`, the
-/// newest the client showed) → `{marked, unread}`. 400 `invalid_query` for
+/// `{all: true, filter?: {q, kind, artifact, agent, since, until}, upto?,
+/// except?}` (every unread item matching the filter, up to item `seq`
+/// `upto`, the newest the client showed, but the item IDs `except`, at
+/// most 500) → `{marked, unread}`. 400 `invalid_query` for
 /// neither or both, too many IDs, or a bad filter.
 pub async fn read_many(
     State(s): State<AppState>,
@@ -580,8 +585,8 @@ pub async fn read_many(
     }
     let mark = match (b.ids, b.all) {
         (Some(ids), false) => {
-            if b.filter.is_some() || b.upto.is_some() {
-                return Err(invalid("filter and upto go with all"));
+            if b.filter.is_some() || b.upto.is_some() || b.except.is_some() {
+                return Err(invalid("filter, upto and except go with all"));
             }
             if ids.len() > MAX_MARK_IDS {
                 return Err(invalid(format!("at most {MAX_MARK_IDS} ids")));
@@ -594,6 +599,14 @@ pub async fn read_many(
         (None, true) => {
             let mut q = b.filter.unwrap_or_default().query(me.clone())?;
             q.upto = b.upto;
+            let except = b.except.unwrap_or_default();
+            if except.len() > MAX_MARK_IDS {
+                return Err(invalid(format!("at most {MAX_MARK_IDS} except IDs")));
+            }
+            if let Some(bad) = except.iter().find(|i| !is_item_id(i)) {
+                return Err(invalid(format!("'{bad}' is not an item ID")));
+            }
+            q.except = except;
             Mark::All(Box::new(q))
         }
         _ => return Err(invalid("give ids, or all: true")),

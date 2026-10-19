@@ -1162,6 +1162,40 @@ async fn group_by_artifact_counts_every_match_and_pages_each_group() {
         "three rows by default"
     );
 
+    // A group's mark leaves the items it excepts (a question shown as a card) unread.
+    ts.ask(
+        &sid,
+        json!({"source": "ask", "artifact_id": aid, "questions": [{"question": "Which?",
+            "header": "Pick", "options": [{"label": "A"}, {"label": "B"}]}]}),
+    )
+    .await;
+    ts.reply_as_agent(&sid, &aid, &tid, "after the question")
+        .await;
+    let page = get(&ts, &format!("/api/inbox?read=unread&artifact={aid}")).await;
+    let question = page["items"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .find(|i| i["kind"] == "question")
+        .unwrap()["id"]
+        .clone();
+    let r: Value = ts
+        .post_json(
+            "/api/inbox/read",
+            json!({"all": true, "filter": {"artifact": aid}, "except": [question]}),
+        )
+        .await
+        .json()
+        .await
+        .unwrap();
+    assert_eq!(r["marked"], 1, "{r}");
+    let left = get(&ts, &format!("/api/inbox?read=unread&artifact={aid}")).await;
+    assert_eq!(left["items"][0]["id"], question);
+    let res = ts
+        .post_json("/api/inbox/read", json!({"ids": [], "except": [question]}))
+        .await;
+    assert_eq!(res.status(), 400, "except goes with all");
+
     for bad in [
         "/api/inbox?rows=2",
         "/api/inbox?group=artifact&rows=x",

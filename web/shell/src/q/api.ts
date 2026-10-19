@@ -71,10 +71,11 @@ export const inboxAgents = () => get<{ agents: StripAgent[]; unread: number }>("
 export const markInbox = (id: string, read: boolean) =>
   post<{ item: InboxItem; unread: number }>(`/api/inbox/${encodeURIComponent(id)}/${read ? "read" : "unread"}`);
 /** Marks items read: these IDs, or every unread item matching `filter` up
- * to `upto` (the newest `seq` shown, so an item made since stays unread). */
-export function markInboxMany(m: { ids: string[] } | { all: true; filter?: InboxFilter; upto?: number }) {
+ * to `upto` (the newest `seq` shown, so an item made since stays unread)
+ * but the item IDs `except`. */
+export function markInboxMany(m: { ids: string[] } | { all: true; filter?: InboxFilter; upto?: number; except?: string[] }) {
   if ("ids" in m) return post<{ marked: number; unread: number }>("/api/inbox/read", { ids: m.ids });
   const f = m.filter ?? {};
   const filter = Object.fromEntries(Object.entries({ q: f.q?.trim() || undefined, kind: f.kind?.length ? f.kind : undefined, artifact: f.artifact, agent: f.agent, since: f.since, until: f.until }).filter(([, v]) => v !== undefined));
-  return post<{ marked: number; unread: number }>("/api/inbox/read", { all: true, ...Object.keys(filter).length && { filter }, ...m.upto !== undefined && { upto: m.upto } });
+  return post<{ marked: number; unread: number }>("/api/inbox/read", { all: true, ...Object.keys(filter).length && { filter }, ...m.upto !== undefined && { upto: m.upto }, ...m.except?.length && { except: m.except } });
 }

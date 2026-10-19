@@ -173,6 +173,10 @@ pub struct InboxQuery {
     /// Mark-all only: items up to this `seq` (the newest the owner was
     /// shown), so an item made since is not marked read unseen.
     pub upto: Option<i64>,
+    /// Mark-all only: items left unread whatever else matches (by item
+    /// ID): those the person is shown elsewhere, as an inbox group's Mark
+    /// read leaves the cards pinned above the groups.
+    pub except: Vec<String>,
     /// Artifacts whose comment text the recipient may not read: the search
     /// text matches none of their `reply`, `version` and `finished` items,
     /// whose index entries hold comment text, so a search cannot probe it.
@@ -411,6 +415,10 @@ fn build(q: &InboxQuery, shape: Shape, now: &str) -> Built {
             if let Some(u) = q.upto {
                 let p = arg(Sql::Integer(u), &mut args);
                 wh.push(format!("i.seq <= {p}"));
+            }
+            if !q.except.is_empty() {
+                let p = arg(Sql::Text(super::feedback::id_array(&q.except)), &mut args);
+                wh.push(format!("+i.id NOT IN (SELECT value FROM json_each({p}))"));
             }
             // An approval item stays unread until its request is decided
             // (spec 2026-10-08 §9.5): deciding reads it.
@@ -820,6 +828,7 @@ pub(super) fn shapes() -> Vec<(String, Built)> {
             InboxQuery {
                 upto: Some(5000),
                 artifact: Some("art0007".into()),
+                except: vec!["I00040".into(), "I00041".into()],
                 ..base.clone()
             },
         ),
@@ -3643,6 +3652,27 @@ mod tests {
         };
         assert_eq!(st.inbox_mark_all(&q).unwrap(), 1);
         assert_eq!(st.inbox_unread(None).unwrap(), 1);
+    }
+
+    #[test]
+    fn mark_all_leaves_the_items_it_is_told_to_except() {
+        let (_d, st) = store();
+        let sid = session(&st, "claude", "h1");
+        ask(&st, &sid, None);
+        ask(&st, &sid, None);
+        ask(&st, &sid, None);
+        let items = all(&st);
+        let q = InboxQuery {
+            except: vec![items[0].id.clone(), items[2].id.clone()],
+            ..Default::default()
+        };
+        assert_eq!(st.inbox_mark_all(&q).unwrap(), 1);
+        let unread: Vec<String> = all(&st)
+            .into_iter()
+            .filter(|i| i.read_at.is_none())
+            .map(|i| i.id)
+            .collect();
+        assert_eq!(unread, vec![items[0].id.clone(), items[2].id.clone()]);
     }
 
     #[test]

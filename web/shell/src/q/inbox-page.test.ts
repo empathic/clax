@@ -140,6 +140,17 @@ describe("InboxPage", () => {
     expect(other.querySelector("a.gtitle")).toBeNull();
   });
 
+  it("marks a group read but its page's question pinned as a card, which it does not count", async () => {
+    const calls = stubRoutes({ "": [Q, R] });
+    const { m } = page();
+    await settle();
+    const group = m.root.querySelector('.igroup[data-group="7q3k9mzx2b4t"]')!;
+    expect(group.querySelector(".gmeta")!.textContent).toBe("1 new · 5m");
+    click(group.querySelector(".gread")!);
+    await settle();
+    expect(calls.find(c => c.method === "POST")!.body).toEqual({ all: true, filter: { artifact: "7q3k9mzx2b4t" }, upto: 9, except: ["IQ"] });
+  });
+
   it("moves a group's new count as its items are read elsewhere, keeping the row where it is", async () => {
     const S = item("reply", { id: "IS", seq: 7 });
     stubRoutes({ "": [R, S] });

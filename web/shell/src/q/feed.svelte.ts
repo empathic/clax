@@ -266,9 +266,9 @@ export class InboxFeed {
   }
 
   /** Marks every unread item read, or every one matching `filter`, up to
-   * `upto` (the newest `seq` shown) when given. */
-  async markAll(filter?: InboxFilter, upto?: number): Promise<number> {
-    const r = await markInboxMany({ all: true, filter, upto });
+   * `upto` (the newest `seq` shown) when given, but the item IDs `except`. */
+  async markAll(filter?: InboxFilter, upto?: number, except?: string[]): Promise<number> {
+    const r = await markInboxMany({ all: true, filter, upto, except });
     if (r === "forbidden") throw forbidden();
     this.unread = r.unread;
     return r.marked;

@@ -3297,9 +3297,11 @@ cursor or body) and 404 `not_found`.
 - **`POST /api/inbox/<id>/unread`** → `{item, unread}`.
 - **`POST /api/inbox/read`** → `{marked, unread}`. The body is one of:
   - `{ids: [...]}`: at most 500 item IDs.
-  - `{all: true, filter?: {q, kind, artifact, agent, since, until}, upto?}`:
-    every unread item matching the filter (`artifact: "none"`: those
-    about no artifact, as a group's **Mark read** sends). With `upto` (the newest `seq`
+  - `{all: true, filter?: {q, kind, artifact, agent, since, until}, upto?,
+    except?}`: every unread item matching the filter (`artifact: "none"`:
+    those about no artifact), but the item IDs in `except` (at most 500).
+    A group's **Mark read** sends its artifact and, in `except`, the items
+    shown as cards above the groups, which it does not count. With `upto` (the newest `seq`
     the client showed), only items up to it, so an item made since is not
     marked unseen. `kind` may be a comma-separated string or an array.
 
