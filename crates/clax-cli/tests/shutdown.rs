@@ -98,12 +98,23 @@ fn answer(mut s: std::net::TcpStream) -> Option<(u16, String)> {
     Some((status, out.split_once("\r\n\r\n")?.1.to_string()))
 }
 
+/// What `/api/_test/slow_publish` logs once its store call has begun.
+const STARTED: &str = "slow publish started";
+
 #[test]
 fn shutdown_leaves_a_store_call_that_does_not_finish_to_the_exit() {
     let tmp = tempfile::tempdir().unwrap();
     let mut d = Daemon::start(tmp.path());
     // A store call that sleeps a minute, then publishes "slow".
     let slow = d.send("POST", "/api/_test/slow_publish/60000");
+    // The call is in the store before the shutdown is asked for.
+    let log = tmp.path().join("daemon.log");
+    let deadline = Instant::now() + Duration::from_secs(120);
+    let started = || std::fs::read_to_string(&log).is_ok_and(|t| t.contains(STARTED));
+    while !started() {
+        assert!(Instant::now() < deadline, "the slow publish never started");
+        std::thread::sleep(Duration::from_millis(20));
+    }
     let (code, body) = answer(d.send("POST", "/api/admin/shutdown")).unwrap();
     assert_eq!(code, 202, "{body}");
     // The hang guard only: the exit itself comes from the shutdown's bounds.

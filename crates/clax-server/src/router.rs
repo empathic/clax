@@ -643,6 +643,8 @@ async fn test_slow_publish(
     let sleep = test_sleep_ms(ms)?;
     let events = s.events.clone();
     s.store_call(move |st| {
+        // Tests of the binary wait for this line in its log.
+        tracing::info!("slow publish started");
         std::thread::sleep(sleep);
         let p = clax_core::publish::validate(
             serde_json::from_value(serde_json::json!({
