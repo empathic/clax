@@ -97,10 +97,12 @@ export function loadRemote(home: string, env: NodeJS.ProcessEnv = process.env): 
   };
 }
 
-/** The daemon's `host[:port]` in `url`, canonical as the Rust clients make it
- * (`clax_core::remote::DaemonUrl::parse`): an IP literal host, the port
- * left out when it is 80; null unless `url` is `http://<IP>[:<port>]` with
- * no path, query or credentials. */
+/** The daemon's `host[:port]` in `url`, in WHATWG URL's canonical form: an
+ * IP literal host, the port left out when it is 80; null unless `url` is
+ * `http://<IP>[:<port>]` with no path, query or credentials. That is the form
+ * the Rust clients make (`clax_core::remote::DaemonUrl::parse`) except for an
+ * IPv4-mapped IPv6 host, which Rust writes `[::ffff:1.2.3.4]` and WHATWG
+ * `[::ffff:102:304]`. */
 export function daemonHost(url: string): string | null {
   let u: URL;
   try {
