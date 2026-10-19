@@ -1195,44 +1195,64 @@ struct SendBody {
     to: Option<String>,
 }
 
-/// The live owner or watcher session of artifact `id` that agent handle `to`
-/// names; 400 `unknown_agent` when it names none, and 400
-/// `agent_cannot_read` when it names an agent that may not read the
-/// artifact (spec §10).
+/// The live session a send's `to` names on artifact `id`, if any: a live
+/// owner or watcher by its handle; 400 `unknown_agent` when it names none,
+/// and 400 `agent_cannot_read` when it names an agent that may not read the
+/// artifact (spec §10). For a person (`person`: the owner, or a connected
+/// person, in a browser or by hand) `to` may also name, by handle or name,
+/// any live agent that may read and watch the artifact, as an `@name` in
+/// their comment may ([`handoff_target`]); that agent is given a watch
+/// (recorded under `audit`, the sender's) when it has none.
 fn send_target(
     st: &Store,
+    audit: &AuditCtx,
     id: &ArtifactId,
     to: Option<&str>,
     live_page: bool,
+    person: bool,
 ) -> clax_core::Result<Option<String>> {
-    match to {
-        Some(h) if clax_core::is_agent_handle(h) => {
-            let sid = st.live_agent(id, h)?.ok_or_else(|| {
-                CoreError::invalid(
-                    "unknown_agent",
-                    "no live agent on this artifact has that handle",
-                )
-            })?;
-            if named_agent_reaches(st, &sid, id, live_page)? == Reach::CannotRead {
-                let name = st
-                    .get_session(&sid)?
-                    .map(|s| s.name.unwrap_or_else(|| h.to_string()))
-                    .unwrap_or_default();
-                return Err(cannot_read(&name));
-            }
-            Ok(Some(sid))
+    let Some(h) = to else {
+        return Ok(None);
+    };
+    let watching = if clax_core::is_agent_handle(h) {
+        st.live_agent(id, h)?
+    } else {
+        None
+    };
+    if let Some(sid) = watching {
+        if named_agent_reaches(st, &sid, id, live_page)? == Reach::CannotRead {
+            let name = st
+                .get_session(&sid)?
+                .map(|s| s.name.unwrap_or_else(|| h.to_string()))
+                .unwrap_or_default();
+            return Err(cannot_read(&name));
         }
-        Some(_) => Err(CoreError::invalid("unknown_agent", "not an agent handle")),
-        None => Ok(None),
+        return Ok(Some(sid));
     }
+    if person {
+        let sid = handoff_target(st, id, h, live_page)?;
+        st.ensure_watch(audit, &sid, id)?;
+        return Ok(Some(sid));
+    }
+    Err(if clax_core::is_agent_handle(h) {
+        CoreError::invalid(
+            "unknown_agent",
+            "no live agent on this artifact has that handle",
+        )
+    } else {
+        CoreError::invalid("unknown_agent", "not an agent handle")
+    })
 }
 
 /// Sets `sent_to_agent` and creates feedback rows; idempotent. An optional
 /// body `{"to": <agent handle>}` sends to that live agent only, and it becomes
 /// the thread's target (400 `unknown_agent` when it names no live owner or
 /// watcher, 400 `agent_cannot_read` when it names one that may not read the
-/// artifact). Without `to` the send goes to every live owner and watcher and
-/// clears the thread's target. The send routes (spec §9.2, M18): each
+/// artifact). From a person (the owner, or a connected person; not a guest
+/// and not an agent) `to` may name any live agent, by handle or name, that
+/// may read and watch the artifact: it is given a watch, as an `@name` in
+/// their comment gives one ([`send_target`]). Without `to` the send goes to
+/// every live owner and watcher and clears the thread's target. The send routes (spec §9.2, M18): each
 /// agent it reaches whose person has not approved an author of the
 /// thread's comments makes or joins a request to that person; a page's
 /// send (`x-clax-via: page`, a page's `sendToClaude`) names the page and
@@ -1262,12 +1282,21 @@ pub async fn send(
     let ctx = s.feedback_ctx();
     let with_path = a.holds_token();
     let vf = VisFor::of(&a.caller, &s);
+    let person = matches!(a.caller, Caller::Owner { .. } | Caller::Person { .. });
     let view = s
         .store_call(move |st| {
             let vis = vf.build(st)?;
-            thread_of(st, &id, &tid)?;
-            let to = send_target(st, &id, b.to.as_deref(), live_page)?;
+            let t = thread_of(st, &id, &tid)?;
             let audit = audit.resolve(st)?;
+            // A resolved thread is refused by the send below; it gives no watch.
+            let person = person && t.status != "resolved";
+            let to = send_target(st, &audit, &id, b.to.as_deref(), live_page, person)?;
+            if person && to.is_some() {
+                // The Send menu and roster show a watcher it may have gained.
+                ctx.events.publish(Event::Agents {
+                    artifacts: vec![id.as_str().to_string()],
+                });
+            }
             let (t, touched, _) = st.send_routed(
                 &audit,
                 &tid,
@@ -1442,8 +1471,9 @@ pub async fn send_batch(
         .store_call(move |st| {
             let vis = vf.build(st)?;
             st.get_artifact(&id)?.ok_or(CoreError::NotFound)?;
-            let to = send_target(st, &id, b.to.as_deref(), live_page)?;
             let audit = audit.resolve(st)?;
+            // A batch names only an agent that owns or watches the artifact.
+            let to = send_target(st, &audit, &id, b.to.as_deref(), live_page, false)?;
             let (sent_by, viewer) = author(st, &who)?;
             // The sender as an author of the note (spec §8.2).
             let sender = match agent_person {

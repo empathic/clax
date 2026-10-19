@@ -477,6 +477,191 @@ pub async fn create(
     Ok((StatusCode::CREATED, Json(v)))
 }
 
+/// `POST /api/artifacts:new` body.
+#[derive(Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct BriefBody {
+    title: String,
+    /// What the person wants built: the artifact's first thread.
+    brief: String,
+}
+
+/// Why `caller` may not start an artifact from a brief, or `None` when it
+/// may: the owner (in a browser or by hand) always; a connected person
+/// (`Caller::Person`, on a local daemon or signed in to a hosted one) when
+/// their rights create artifacts and would let them read the new one and
+/// comment on it (an artifact they made is their own, `own`); a guest (a
+/// viewer who is no connected person) never (403 `not_permitted`), and no
+/// credential 401. Agents are refused before this (they publish).
+pub(crate) fn brief_refusal(
+    st: &Store,
+    caller: &clax_http::auth::Caller,
+) -> clax_core::Result<Option<ApiError>> {
+    use clax_http::auth::Caller;
+    let no_create = || {
+        Some(ApiError::forbidden(
+            "not_permitted",
+            "your rights here do not let you create artifacts (clax-artifacts)",
+        ))
+    };
+    Ok(match caller {
+        Caller::Owner { .. } => None,
+        Caller::Person { viewer } => {
+            let rights = st.person_rights(&viewer.public_id)?;
+            // The new artifact matches no artifact a right names by ID, and
+            // is the person's own.
+            const NEW: &str = "new";
+            let own = |_: &str| true;
+            let ok = rights.allows(RightType::Artifacts, "create", None, &|_| false)
+                && rights.allows(RightType::Artifacts, "read", Some(NEW), &own)
+                && rights.allows(RightType::Comments, "write", Some(NEW), &own);
+            if ok { None } else { no_create() }
+        }
+        Caller::Viewer { .. } => Some(ApiError::forbidden(
+            "not_permitted",
+            "a guest cannot create artifacts: sign in as a person of this Clax first",
+        )),
+        Caller::Anonymous => Some(ApiError::unauthorized()),
+        Caller::OwnerAgent { .. } | Caller::PersonAgent { .. } => {
+            Some(clax_http::auth::not_for_agents())
+        }
+    })
+}
+
+/// `POST /api/artifacts:new {title, brief}` → 201 `{artifact, version, url,
+/// thread}`: a person starts an artifact from a brief in their browser
+/// (the gallery's New). Version 1 is a placeholder page naming the title
+/// ([`clax_core::brief::placeholder_html`]); the brief is its first thread,
+/// on the whole artifact, authored by the person and sent to no agent (a
+/// send naming an agent, `POST …/threads/<tid>/send {to}`, gives that agent
+/// its watch). The artifact is the person's (`person`; the owner's has
+/// none) and no session's. Who may ([`brief_refusal`]): the owner, and a
+/// connected person whose rights create artifacts; a guest is 403
+/// `not_permitted`, no credential 401, agents 403 (`forbidden` for a
+/// person's, `not_for_agents` for the owner's: agents publish). A foreign
+/// `Origin` is refused. 400 `invalid_title` (blank, over
+/// [`clax_core::brief::MAX_TITLE_CHARS`] characters, or holding a control
+/// or format character) and `invalid_brief` (blank, or longer than a
+/// comment may be).
+pub async fn create_from_brief(
+    State(s): State<AppState>,
+    d: clax_http::agent::DeniedToGrants,
+    _o: clax_http::viewer::SameOrigin,
+    who: clax_http::identity::Identity,
+    audit: clax_http::audit::DeferredAudit,
+    req: Result<Json<BriefBody>, JsonRejection>,
+) -> Result<(StatusCode, Json<Value>), ApiError> {
+    use clax_http::auth::Caller;
+    d.refuse_agents()?;
+    let caller = d.caller(&s).await?;
+    let c = caller.clone();
+    s.store_call(move |st| brief_refusal(st, &c))
+        .await?
+        .map_or(Ok(()), Err)?;
+    let b = body(req)?;
+    let title = clax_core::brief::check_title(&b.title)?;
+    let brief = clax_core::brief::check_brief(&b.brief)?;
+    if brief.chars().count() > clax_store::threads::MAX_BODY_CHARS {
+        return Err(ApiError::bad_request(
+            "invalid_brief",
+            format!(
+                "a brief is at most {} characters",
+                clax_store::threads::MAX_BODY_CHARS
+            ),
+        ));
+    }
+    let person = match &caller {
+        Caller::Person { viewer } => Some(viewer.public_id.clone()),
+        _ => None,
+    };
+    let html = clax_core::brief::placeholder_html(&title);
+    let mut files = std::collections::BTreeMap::new();
+    files.insert(
+        clax_core::publish::INDEX.to_string(),
+        Some(clax_core::publish::FileInput {
+            content: html,
+            encoding: clax_core::publish::Encoding::Utf8,
+            content_type: None,
+        }),
+    );
+    let mut p = validate(PublishRequest {
+        title: Some(title),
+        files,
+        ..Default::default()
+    })?;
+    p.person = person;
+    let ctx = s.feedback_ctx();
+    let with_path = d.holds_token();
+    let vf = VisFor::of(&caller, &s);
+    let (artifact, version, thread) = s
+        .store_call_async(move |st| async move {
+            let st = &*st;
+            let audit = audit.resolve(st)?;
+            let (author_name, author_public_id) = clax_http::viewer::author(st, &who)?;
+            let (artifact, version) = st.create_artifact_async(&audit, p, None).await?;
+            let aid = ArtifactId::parse(&artifact.id)?;
+            ctx.events.publish(Event::Version {
+                artifact_id: artifact.id.clone(),
+                n: version.n,
+                by_page: false,
+                title: Some(artifact.title.clone()),
+                at: Some(version.created_at.clone()),
+            });
+            let anchor = clax_core::Anchor {
+                kind: clax_core::anchor::AnchorKind::Artifact,
+                selector: None,
+                quote: None,
+                prefix: None,
+                suffix: None,
+                html_hash: None,
+                rect: None,
+                custom_name: None,
+                area: None,
+                file: clax_core::anchor::WHOLE_FILE.to_string(),
+                route: None,
+            };
+            let made = st
+                .create_thread_hiding_async(
+                    &audit,
+                    &aid,
+                    clax_store::threads::NewThread {
+                        version_n: version.n,
+                        anchor,
+                        author_name,
+                        author_public_id,
+                        body: brief,
+                        clip: None,
+                        via_page: false,
+                    },
+                    &[],
+                )
+                .await;
+            // A brief that cannot be written leaves no artifact behind.
+            let thread = match made {
+                Ok(t) => t,
+                Err(e) => {
+                    let _ = st.delete_artifact_async(&audit, &aid).await;
+                    return Err(e);
+                }
+            };
+            // The brief goes to no agent: `@` in it sends nothing.
+            let (thread, _) =
+                super::threads::announce_new_thread(st, &ctx, &audit, thread, false, None, false)?;
+            let vis = vf.build(st)?;
+            let (a, v) = vis.filter_published(st, &artifact, &version)?;
+            let t = vis.filter_thread(st, &thread, ctx.codex_push(), with_path)?;
+            Ok((a, v, t))
+        })
+        .await?;
+    let url = format!("/a/{}", artifact["id"].as_str().unwrap_or_default());
+    let mut v = json!({"artifact": artifact, "version": version, "url": url, "thread": thread});
+    if !d.holds_token() {
+        strip_sessions(&mut v);
+    }
+    clax_http::hosted::stamp_content_keys(&s, &mut v);
+    Ok((StatusCode::CREATED, Json(v)))
+}
+
 /// Who publishes for `caller` (spec §8.2): a person's agent's person (none
 /// for a grant of the owner's row); `None` otherwise, which takes the
 /// publishing session's person.

@@ -1477,6 +1477,64 @@ a new version) makes the publishing session watch the artifact with replies
 on (an existing watch keeps its setting); the `watch` tool adds or removes a watch. Agent replies and resolves need
 a live session and work only on sent threads.
 
+A person's send may also name a live agent that does not watch the
+artifact yet: `POST /api/artifacts/<aid>/threads/<tid>/send {to}` from the
+owner (a browser, or the token by hand) or a connected person (a browser)
+takes, in `to`, a live agent's handle or its name (ignoring case), as an
+`@name` in their comment does. When that agent may read and watch the
+artifact (the owner's agents always; a person's agent where its rights
+allow both, never on a live page) it is given a watch, recorded as the
+sender's, and the thread is sent to it; it routes as any send naming an
+agent (see "Approvals": another person's agent waits for that person's
+approval of the thread's authors, and the thread reads `withheld` until
+then). An agent that may not read the artifact is 400 `agent_cannot_read`,
+one that may read but not watch it, or no live agent, 400 `unknown_agent`,
+and a resolved thread 400 `thread_resolved`, each giving no watch. From
+anyone else (a guest, a LAN viewer, an agent, whose agents hand threads off
+instead) and in a batch send, `to` names only a live owner or watcher of the
+artifact, by handle, as before.
+
+### Starting an artifact from a brief
+
+The gallery's **New** starts an artifact from a brief in a person's
+browser, for an agent to build: `POST /api/artifacts:new {title, brief}`
+answers 201 `{artifact, version, url, thread}`. Version 1 is a placeholder
+page that follows the page contract, titled `title` and saying an agent
+has not built it yet; the brief becomes the artifact's first thread, on
+the whole artifact (`anchor.kind` `artifact`), the person's own comment,
+sent to no agent (an `@` in it sends nothing). The artifact is the
+person's (the owner's has no `person`), and no session's: none owns or
+watches it. `title` is trimmed, 1 to 200 characters of one line (no
+control or format character), else 400 `invalid_title`; `brief` is
+trimmed and non-blank, at most a comment's 10,000 characters, else 400
+`invalid_brief`.
+
+Who may: the owner (a browser, or the token by hand), and a connected
+person (in their browser, on a local daemon or signed in to a hosted one)
+whose rights create artifacts (`clax-artifacts` `create`) and would let
+them read and comment on (`clax-comments` `write`) an artifact of their
+own; anyone else with rights that do not is 403 `not_permitted`. A guest
+(a viewer who is no connected person) is 403 `not_permitted` (on a hosted
+daemon, 401 `sign_in_required`), no credential 401 `unauthorized`, a
+request from another origin 403 `forbidden_origin`, the owner's agents 403
+`not_for_agents` and a person's 403 `forbidden`: agents publish. A new
+artifact is its maker's own, so its live seat is reserved for them (see
+"Live seats and spectators"): a person who is a spectator on another
+artifact starts one, and writes and sends its brief, as anyone does.
+`GET /api/viewers/me` says whether this browser may, in `may_create`,
+and the gallery shows New only then.
+
+New opens a dialog asking for a title and a brief. Once the artifact is
+made, it lists the live agents this browser may send to (`GET
+/api/agents`): the person's own first, then the owner's, then each other
+person's, by name. Picking one sends the brief to it with `to` (above),
+which gives it its watch, and opens the artifact. With no live agent, it
+shows a prompt to paste into an agent (one with the Clax plugin) that
+names the artifact's address and asks the agent to watch it, read the
+brief thread and publish the page there; the list appears once an agent
+connects, and the artifact's Send reaches an agent once it watches.
+Closing the dialog after the artifact is made opens the artifact.
+
 ### Reopening and deleting threads
 
 `POST /api/artifacts/<aid>/threads/<tid>/reopen` sets a thread back to open
@@ -1540,7 +1598,7 @@ lists the viewer, so every open view shows the new name.
 
 The owner is made on first use. A browser of the owner's makes it, and its
 IDs are that browser's from then on. The token alone reads the owner
-without making one (`GET /api/viewers/me` answers `{"viewer": null}` before
+without making one (`GET /api/viewers/me` answers `"viewer": null` before
 it exists); acting (a reply, a resolve, a name) makes one, which gives way
 to the first browser claimed below: that browser keeps its user ID, and the
 earlier owner's history, private documents and name move to it.
@@ -3674,6 +3732,7 @@ router), and a test fails when it differs:
 | `POST /api/artifacts/{aid}/sample/{call}/tool_result` | Denied | no |
 | `GET /api/artifacts/{aid}/snapshot` | Denied | yes: 403 `not_for_agents` |
 | `POST /api/artifacts/{aid}/unsent:drop` | Denied | yes: 403 `not_for_agents` |
+| `POST /api/artifacts:new` | Denied | yes: 403 `not_for_agents` |
 | `GET /api/events` | Denied | yes: 403 `not_for_agents` |
 | `GET /api/extension` | Denied | no |
 | `DELETE /api/extension/credentials` | Denied | no |
@@ -5517,7 +5576,9 @@ ID>`. An artifact URL whose `#` fragment is neither is the artifact.
   sends to the agent the page would pick when nothing was picked before: the
   most recently active live agent on the artifact; with none live it sends
   without `to`, and the thread waits for the next agent that publishes or
-  watches the artifact. Errors are the routes': `thread_resolved` for a
+  watches the artifact. A `--to` naming a live agent that does not watch
+  the artifact gives it a watch, as the browser's send does (see "Comments
+  and feedback"). Errors are the routes': `thread_resolved` for a
   resolved thread, `unknown_agent` for a `--to` naming no live agent.
   `--json`: reply `{thread_id, ref, replied, comment_id, author_name,
   sent_to_agent}`; resolve `{thread_id, ref, resolved, status}`; reopen

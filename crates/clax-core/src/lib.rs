@@ -7,6 +7,7 @@
 
 pub mod anchor;
 pub mod audit;
+pub mod brief;
 pub mod capabilities;
 pub mod changelog;
 pub mod clips;

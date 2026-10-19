@@ -400,6 +400,7 @@ fn routes(state: AppState, shutdown: Option<tokio::sync::watch::Sender<bool>>) -
             post(artifacts::publish.layer(publish_limit)),
         )
         .route("/api/artifacts/{aid}/fork", post(artifacts::fork))
+        .route("/api/artifacts:new", post(artifacts::create_from_brief))
         // Remotes and pushes wait on a public Clax.
         .route("/api/remotes", get(remotes::list).post(remotes::add))
         .route("/api/remotes/{id}", delete(remotes::remove))

@@ -39,6 +39,11 @@ mod l10 {
         /// artifact: it names none that exists, so neither parses one from
         /// the request nor names one outside its path.
         Creates,
+        /// It takes `DeniedToGrants`, refuses the owner's agents
+        /// (`refuse_agents`), and makes a new artifact for a person: it
+        /// names none that exists, so neither parses one from the request
+        /// nor names one outside its path.
+        PersonCreates,
         /// It names no artifact.
         NoArtifact,
         /// A browser route (`browser_person`) that names an artifact only to
@@ -71,6 +76,7 @@ mod l10 {
         ("remotes::remove", Owner),
         ("artifacts::list", Filtered),
         ("artifacts::create", Creates),
+        ("artifacts::create_from_brief", PersonCreates),
         ("sessions::list", AgentPath),
         ("sessions::register", AgentPath),
         ("sessions::join", AgentPath),
@@ -714,6 +720,15 @@ mod l10 {
                     }
                     Creates => {
                         assert!(sig.contains("Agent<"), "{name} takes no Agent");
+                        for named in ["parse_id(", "named_artifact(", ".artifact()"] {
+                            assert!(!src.contains(named), "{name} names an artifact ({named})");
+                        }
+                    }
+                    PersonCreates => {
+                        assert!(
+                            sig.contains("DeniedToGrants") && src.contains(".refuse_agents()?"),
+                            "{name} does not refuse agents"
+                        );
                         for named in ["parse_id(", "named_artifact(", ".artifact()"] {
                             assert!(!src.contains(named), "{name} names an artifact ({named})");
                         }

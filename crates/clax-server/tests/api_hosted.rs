@@ -5218,6 +5218,144 @@ async fn signing_in_under_the_notice_agrees_and_the_prompt_records_the_rest() {
 }
 
 #[tokio::test]
+async fn people_start_artifacts_from_briefs_and_guests_may_not() {
+    let site = Site::new().await;
+    site.ts.seats.set_limits(clax_core::seats::SeatLimits {
+        people: 1,
+        guests: 1,
+        agents: 20,
+        idle_ms: 180_000,
+    });
+    let owner = site.owner().await;
+    let plan = site.titled("Plan").await;
+    let new = "/api/artifacts:new";
+    let brief = |title: &str| json!({"title": title, "brief": "A one-page roadmap for Q4"});
+    let may_create = async |b: &Browser| {
+        let (s, v) = site.get(b, "/api/viewers/me").await;
+        assert_eq!(s, 200, "{v}");
+        (v["may_create"].clone(), v["viewer"]["public_id"].clone())
+    };
+    // The owner's browser.
+    assert_eq!(may_create(&owner).await.0, json!(true));
+    let (s, v) = site.post(&owner, new, brief("Roadmap")).await;
+    assert_eq!(s, 201, "{v}");
+    assert!(v["version"]["content_key"].is_string(), "{v}");
+    assert_eq!(v["thread"]["anchor"]["kind"], "artifact");
+    // A person holding the default rights (their own space) starts one
+    // that is theirs, and reads it.
+    let mia = site.member(&owner, "Mia").await;
+    let (may, mia_id) = may_create(&mia).await;
+    assert_eq!(may, json!(true));
+    let (s, v) = site.post(&mia, new, brief("Mia's roadmap")).await;
+    assert_eq!(s, 201, "{v}");
+    let aid = v["artifact"]["id"].as_str().unwrap().to_string();
+    assert_eq!(v["thread"]["comments"][0]["author_public_id"], mia_id);
+    let (st, a, pid) = (
+        site.ts.store.clone(),
+        aid.clone(),
+        mia_id.as_str().unwrap().to_string(),
+    );
+    assert!(
+        tokio::task::spawn_blocking(move || st.artifact_created_by(&a, Some(&pid)))
+            .await
+            .unwrap()
+            .unwrap(),
+        "the artifact is Mia's"
+    );
+    let (s, got) = site.get(&mia, &format!("/api/artifacts/{aid}")).await;
+    assert_eq!(s, 200, "{got}");
+    let (s, threads) = site
+        .get(&mia, &format!("/api/artifacts/{aid}/threads"))
+        .await;
+    assert_eq!(s, 200, "{threads}");
+    assert_eq!(threads["threads"].as_array().unwrap().len(), 1);
+    // A reader may not, and is offered no New.
+    let (sam, _) = site
+        .person_with(&owner, "Sam", json!(["clax:reader"]))
+        .await;
+    assert_eq!(may_create(&sam).await.0, json!(false));
+    let (s, v) = site.post(&sam, new, brief("Nope")).await;
+    assert_eq!((s, code(&v)), (403, "not_permitted"), "{v}");
+    // Lee's stream takes Plan's one seat, so Kim is a spectator there; a
+    // new artifact is Kim's own, whose seat is hers: she starts it and
+    // sends its brief to an agent.
+    let lee = site.person(&owner, "Lee").await;
+    let res = site
+        .req(&lee, reqwest::Method::GET, "/api/stream")
+        .send()
+        .await
+        .unwrap();
+    let mut events = clax_testkit::EventReader::from_response(res);
+    let (_, ready) = events.next().await;
+    let sid = ready["stream"].as_str().unwrap().to_string();
+    let (s, v) = site
+        .post(
+            &lee,
+            &format!("/api/stream/{sid}"),
+            json!({"subscribe": [format!("artifact:{plan}")]}),
+        )
+        .await;
+    assert_eq!(s, 200, "{v}");
+    let kim = site.person(&owner, "Kim").await;
+    let (s, v) = site.thread(&kim, &plan, "on Plan").await;
+    assert_eq!((s, code(&v)), (403, "spectator"), "{v}");
+    let (s, v) = site.post(&kim, new, brief("Kim's roadmap")).await;
+    assert_eq!(s, 201, "{v}");
+    let (kaid, ktid) = (
+        v["artifact"]["id"].as_str().unwrap().to_string(),
+        v["thread"]["id"].as_str().unwrap().to_string(),
+    );
+    let agent = site.ts.register_session("claude", "hosted-brief").await;
+    let (s, v) = site
+        .post(
+            &kim,
+            &format!("/api/artifacts/{kaid}/threads/{ktid}/send"),
+            json!({"to": agent["name"]}),
+        )
+        .await;
+    assert_eq!(s, 200, "{v}");
+    let watching = site
+        .ts
+        .store
+        .list_watches(agent["id"].as_str().unwrap())
+        .unwrap();
+    assert!(
+        watching.iter().any(|w| w.artifact_id == kaid),
+        "{watching:?}"
+    );
+    // A guest of a page shared by link may comment there, never start one.
+    site.send(
+        &owner,
+        reqwest::Method::PUT,
+        &format!("/api/hosted/artifacts/{plan}/link"),
+        json!({"access": "commenter"}),
+    )
+    .await;
+    let mut guest = Browser::default();
+    site.sign_in_put(&mut guest, json!({"display_name": "Gil"}))
+        .await;
+    let (s, v) = site.post(&guest, new, brief("Nope")).await;
+    assert_eq!((s, code(&v)), (401, "sign_in_required"), "{v}");
+    let (s, v) = site.post(&Browser::default(), new, brief("Nope")).await;
+    assert_eq!((s, code(&v)), (401, "sign_in_required"), "{v}");
+    // The owner's session, from another site's page.
+    let cookie = format!("clax_session={}", owner.cookie.as_deref().unwrap());
+    for origin in [None, Some("http://evil.example")] {
+        let mut r = site
+            .ts
+            .client
+            .post(site.url(new))
+            .header(COOKIE, &cookie)
+            .json(&brief("Nope"));
+        if let Some(o) = origin {
+            r = r.header(ORIGIN, o);
+        }
+        let (s, v) = json_of(r.send().await.unwrap()).await;
+        assert_eq!((s, code(&v)), (403, "forbidden_origin"), "{origin:?}");
+    }
+}
+
+#[tokio::test]
 async fn an_artifacts_answer_with_a_signed_in_viewers_attention_is_private() {
     let site = Site::new().await;
     let owner = site.owner().await;
