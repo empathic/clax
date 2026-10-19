@@ -777,6 +777,38 @@ void main() {
     }, variant: TargetPlatformVariant.only(TargetPlatform.android));
   });
 
+  testWidgets('beside a wide Android rail the list pane\'s search filters the '
+      'built-in home screen\'s grid', (tester) async {
+    Finder inLauncher(Finder f) =>
+        find.descendant(of: find.byType(Launcher), matching: f);
+    await pumpApp(
+      tester,
+      _Rig(key: 'sk-ant-x'),
+      size: const Size(1280, 800),
+    );
+    rig.api.seedArtifact('Runs', {'index.html': _page});
+    rig.api.seedArtifact('Notes', {'index.html': _page});
+    await up(tester);
+    expect(inLauncher(find.text('Runs')), findsOneWidget);
+    expect(inLauncher(find.text('Notes')), findsOneWidget);
+    await tester.enterText(
+      find.byKey(const ValueKey('list-pane-search')),
+      'NOT',
+    );
+    await tester.pumpAndSettle();
+    expect(inLauncher(find.text('Runs')), findsNothing);
+    expect(inLauncher(find.text('Notes')), findsOneWidget);
+    await tester.enterText(
+      find.byKey(const ValueKey('list-pane-search')),
+      'tide',
+    );
+    await tester.pumpAndSettle();
+    expect(inLauncher(find.text('No apps match “tide”')), findsOneWidget);
+    await tester.enterText(find.byKey(const ValueKey('list-pane-search')), '');
+    await tester.pumpAndSettle();
+    expect(inLauncher(find.text('Runs')), findsOneWidget);
+  }, variant: TargetPlatformVariant.only(TargetPlatform.android));
+
   testWidgets('an Android phone has no split window, and an app opens over '
       'the home screen', (tester) async {
     await pumpApp(tester, _Rig(key: 'sk-ant-x'));

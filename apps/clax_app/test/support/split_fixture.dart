@@ -33,7 +33,7 @@ class RecordedActions implements HomeActions {
   @override
   void openSettings() {}
   @override
-  void importApp() {}
+  void importApp() => calls.add(('importApp', []));
 }
 
 /// The fixture: [ids] by title, and the host once [start]ed.

@@ -754,6 +754,18 @@ void main() {
     expect(find.descendant(of: pane, matching: find.text('Budget')), findsNothing);
   }, variant: _android);
 
+  testWidgets('the list pane\'s More offers Import app…', (tester) async {
+    await pumpShell(tester, size: const Size(1280, 800));
+    final pane = find.byType(ClaxListPane);
+    await tester.tap(
+      find.descendant(of: pane, matching: find.byTooltip('More')),
+    );
+    await tester.pumpAndSettle();
+    await tester.tap(find.text('Import app…'));
+    await tester.pumpAndSettle();
+    expect(f.actions.calls.single.$1, 'importApp');
+  }, variant: _android);
+
   testWidgets('wide Android holds the toolbar for the home app while the list '
       'pane carries Search and the rail New app, Inbox and Settings; at 700, '
       'with no Search beside the grid, the home app keeps its bar', (

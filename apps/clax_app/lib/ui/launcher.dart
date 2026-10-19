@@ -268,6 +268,21 @@ class _LauncherState extends State<Launcher> {
     // carries New app, Inbox and Settings, the launcher draws no bar and no
     // New app of its own (the Mac's toolbar row stays the launcher's).
     final railed = _host.chrome.toolbar && !hasDesktopWindowChrome;
+    // There the list pane's search is the grid's: only the apps and makes
+    // whose titles hold it show.
+    final query = railed ? _host.query.trim() : '';
+    bool hit(String title) =>
+        title.toLowerCase().contains(query.toLowerCase());
+    final shownApps = [
+      for (final a in apps ?? const <ArtifactSummary>[])
+        if (query.isEmpty || hit(a.title)) a,
+    ];
+    final shownMakes = query.isEmpty
+        ? _makes.makes
+        : [
+            for (final m in _makes.makes)
+              if (hit(m.request)) m,
+          ];
     return Scaffold(
       // A failed list offers no New app, and an empty one offers it in its
       // invitation.
@@ -391,6 +406,15 @@ class _LauncherState extends State<Launcher> {
                   ],
                 ),
               )
+            else if (shownApps.isEmpty && shownMakes.isEmpty)
+              SliverFillRemaining(
+                hasScrollBody: true,
+                child: ClaxEmpty(
+                  key: const ValueKey('launcher-no-match'),
+                  icon: Icons.search_off_rounded,
+                  title: 'No apps match “$query”',
+                ),
+              )
             else
               // Centred, at most ClaxLayout.grid wide, inside 16 dp gutters.
               SliverLayoutBuilder(
@@ -406,9 +430,9 @@ class _LauncherState extends State<Launcher> {
                         crossAxisSpacing: 4,
                         mainAxisExtent: _AppTile.extent(context),
                       ),
-                      itemCount: _makes.makes.length + apps.length,
+                      itemCount: shownMakes.length + shownApps.length,
                       itemBuilder: (context, i) {
-                        final makes = _makes.makes;
+                        final makes = shownMakes;
                         if (i < makes.length) {
                           final m = makes[i];
                           return MakingTile(
@@ -419,14 +443,15 @@ class _LauncherState extends State<Launcher> {
                           );
                         }
                         i -= makes.length;
+                        final app = shownApps[i];
                         return _AppTile(
-                          key: ValueKey('build-${apps[i].id}'),
-                          app: apps[i],
+                          key: ValueKey('build-${app.id}'),
+                          app: app,
                           icons: _icons,
-                          building: _host.buildOf(apps[i].id),
-                          onTap: () => widget.open(apps[i].id),
+                          building: _host.buildOf(app.id),
+                          onTap: () => widget.open(app.id),
                           onMenu: (at) => unawaited(
-                            _actions.menu(apps[i].id, at, const []),
+                            _actions.menu(app.id, at, const []),
                           ),
                         );
                       },

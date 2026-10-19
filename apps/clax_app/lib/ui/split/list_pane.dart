@@ -20,7 +20,9 @@ import 'sidebar_model.dart';
 ///
 /// The search narrows the rows ([SidebarModel.filter]) and gives the
 /// window's search to the home app's grid ([HomeHost.setQuery], heard
-/// while the shell holds its toolbar); [searchFocus] is its keyboard
+/// while the shell holds its toolbar); its More offers Import app…
+/// ([HomeActions.importApp]), which the home screen's own bar carries
+/// where it has one. [searchFocus] is its keyboard
 /// focus. [onSelected] runs after a row is chosen. A long press on an
 /// app, or a secondary click at the pointer, opens its menu ([onMenu]).
 class ClaxListPane extends StatefulWidget {
@@ -102,6 +104,17 @@ class _ClaxListPaneState extends State<ClaxListPane> {
                             _searched('');
                           },
                         ),
+                ),
+                PopupMenuButton<String>(
+                  key: const ValueKey('list-pane-more'),
+                  tooltip: 'More',
+                  onSelected: (_) => widget.model.host.actions.importApp(),
+                  itemBuilder: (_) => const [
+                    PopupMenuItem(
+                      value: 'import',
+                      child: Text('Import app…'),
+                    ),
+                  ],
                 ),
               ],
               onChanged: _searched,
