@@ -94,6 +94,23 @@ impl ViewerQueues {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use futures::FutureExt as _;
+    use std::future::Future;
+    use std::pin::Pin;
+
+    type Enter<'a> = Pin<Box<dyn Future<Output = Option<OwnedSemaphorePermit>> + 'a>>;
+
+    /// `n` calls to `enter("v")`, each polled once: each takes a place in
+    /// the queue and waits.
+    fn queued(q: &ViewerQueues, n: usize) -> Vec<Enter<'_>> {
+        (0..n)
+            .map(|_| {
+                let mut w: Enter<'_> = Box::pin(q.enter("v"));
+                assert!(w.as_mut().now_or_never().is_none(), "waits");
+                w
+            })
+            .collect()
+    }
 
     #[test]
     fn counts_are_per_artifact_per_day_and_stop_at_the_cap() {
@@ -113,49 +130,33 @@ mod tests {
 
     #[tokio::test]
     async fn two_run_four_wait_and_the_rest_are_refused() {
-        let q = Arc::new(ViewerQueues::default());
+        let q = ViewerQueues::default();
         let a = q.enter("v").await.unwrap();
         let _b = q.enter("v").await.unwrap();
-        let mut waiters = Vec::new();
-        for _ in 0..WAITING_PER_VIEWER {
-            let q = q.clone();
-            waiters.push(tokio::spawn(async move { q.enter("v").await.is_some() }));
-        }
-        tokio::time::sleep(std::time::Duration::from_millis(20)).await;
+        let mut waiters = queued(&q, WAITING_PER_VIEWER);
         assert!(q.enter("v").await.is_none());
         assert!(q.enter("w").await.is_some());
         drop(a);
-        tokio::time::sleep(std::time::Duration::from_millis(20)).await;
-        assert!(waiters.iter().filter(|w| w.is_finished()).count() >= 1);
-        for w in &waiters {
-            w.abort();
-        }
+        let first = waiters[0].as_mut().now_or_never();
+        assert!(matches!(first, Some(Some(_))), "the first waiter runs");
+        assert!(
+            waiters[1].as_mut().now_or_never().is_none(),
+            "the rest wait"
+        );
     }
 
     #[tokio::test]
     async fn a_waiter_that_gives_up_frees_its_place() {
-        let q = Arc::new(ViewerQueues::default());
+        let q = ViewerQueues::default();
         let _a = q.enter("v").await.unwrap();
         let _b = q.enter("v").await.unwrap();
-        let mut waiters: Vec<_> = (0..WAITING_PER_VIEWER)
-            .map(|_| {
-                let q = q.clone();
-                tokio::spawn(async move { q.enter("v").await.is_some() })
-            })
-            .collect();
-        tokio::time::sleep(std::time::Duration::from_millis(20)).await;
-        waiters.pop().unwrap().abort();
-        tokio::time::sleep(std::time::Duration::from_millis(20)).await;
-        let q2 = q.clone();
-        let again = tokio::spawn(async move { q2.enter("v").await.is_some() });
-        tokio::time::sleep(std::time::Duration::from_millis(20)).await;
+        let mut waiters = queued(&q, WAITING_PER_VIEWER);
+        assert!(q.enter("v").await.is_none(), "the queue is full");
+        drop(waiters.pop());
+        let mut again: Enter<'_> = Box::pin(q.enter("v"));
         assert!(
-            !again.is_finished(),
+            again.as_mut().now_or_never().is_none(),
             "the freed place is taken by a waiter, not refused"
         );
-        again.abort();
-        for w in &waiters {
-            w.abort();
-        }
     }
 }
