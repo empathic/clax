@@ -369,6 +369,108 @@ async fn asset_upload_returns_blob_urls() {
     assert_eq!(res.bytes().await.unwrap().as_ref(), [1u8, 2, 3]);
 }
 
+/// A file the daemon would refuse for its type is refused before any file
+/// is uploaded, naming it.
+#[tokio::test]
+async fn asset_upload_refuses_an_unsupported_file_before_uploading_any() {
+    let ts = TestServer::spawn().await;
+    let t = tools_for(&ts);
+    let id = ok(t.publish(Parameters(html("A", "<p>"))).await)["artifact_id"]
+        .as_str()
+        .unwrap()
+        .to_string();
+    let dir = tempfile::tempdir().unwrap();
+    let a = dir.path().join("a.png");
+    let b = dir.path().join("b.exe");
+    std::fs::write(&a, [1u8, 2, 3]).unwrap();
+    std::fs::write(&b, [0u8]).unwrap();
+    let b = b.to_string_lossy().to_string();
+    let e = err(t
+        .asset_upload(Parameters(AssetUploadArgs {
+            url_or_id: id.clone(),
+            file_path: None,
+            file_paths: Some(vec![a.to_string_lossy().into(), b.clone()]),
+        }))
+        .await);
+    assert_eq!(e["error"]["code"], "unsupported_type", "{e}");
+    assert_eq!(e["error"]["path"], b.as_str(), "{e}");
+    assert!(
+        ts.store
+            .list_assets(&clax_core::ArtifactId::parse(&id).unwrap())
+            .unwrap()
+            .is_empty(),
+        "nothing was uploaded"
+    );
+}
+
+/// A daemon refusal part way through names the file it refused and the
+/// assets already uploaded, so a retry sends only the rest.
+#[tokio::test]
+async fn asset_upload_failing_part_way_names_the_assets_already_uploaded() {
+    use axum::routing::post;
+    let uploads = std::sync::Arc::new(std::sync::atomic::AtomicUsize::new(0));
+    let app = axum::Router::new().route(
+        "/api/artifacts/{id}/assets",
+        post({
+            let uploads = uploads.clone();
+            move || async move {
+                use axum::http::StatusCode;
+                let n = uploads.fetch_add(1, std::sync::atomic::Ordering::SeqCst);
+                if n == 0 {
+                    (
+                        StatusCode::CREATED,
+                        axum::Json(serde_json::json!({
+                            "asset": {"id": "01K6AB7D2E3F4G5H6J7K8M9N0P", "content_type": "image/png", "size": 3},
+                            "url": "/_blob/01K6AB7D2E3F4G5H6J7K8M9N0P",
+                        })),
+                    )
+                } else {
+                    (
+                        StatusCode::INSUFFICIENT_STORAGE,
+                        axum::Json(serde_json::json!({
+                            "error": {"code": "storage_full", "message": "no room"},
+                        })),
+                    )
+                }
+            }
+        }),
+    );
+    let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
+    let port = listener.local_addr().unwrap().port();
+    tokio::spawn(async move { axum::serve(listener, app).await });
+    let dir = tempfile::tempdir().unwrap();
+    let t = ClaxTools::new(
+        DaemonClient::new(format!("http://127.0.0.1:{port}"), "t".into(), None),
+        format!("http://localhost:{port}"),
+        None,
+        dir.path().join("daemon.log"),
+    );
+    let a = dir.path().join("a.png");
+    let b = dir.path().join("b.png");
+    std::fs::write(&a, [1u8, 2, 3]).unwrap();
+    std::fs::write(&b, [4u8, 5, 6]).unwrap();
+    let b = b.to_string_lossy().to_string();
+    let e = err(t
+        .asset_upload(Parameters(AssetUploadArgs {
+            url_or_id: "7q3k9mzx2b4t".into(),
+            file_path: None,
+            file_paths: Some(vec![a.to_string_lossy().into(), b.clone()]),
+        }))
+        .await);
+    assert_eq!(e["error"]["code"], "storage_full", "{e}");
+    assert_eq!(e["error"]["path"], b.as_str(), "{e}");
+    assert_eq!(
+        e["error"]["uploaded"],
+        serde_json::json!([{
+            "id": "01K6AB7D2E3F4G5H6J7K8M9N0P",
+            "url": format!("http://localhost:{port}/_blob/01K6AB7D2E3F4G5H6J7K8M9N0P"),
+            "content_type": "image/png",
+            "size": 3,
+        }]),
+        "{e}"
+    );
+}
+
 #[tokio::test]
 async fn status_reports_the_daemon() {
     let ts = TestServer::spawn().await;

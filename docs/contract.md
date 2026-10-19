@@ -550,9 +550,13 @@ version; a page references one by the returned `url`.
 | `file_path` | string | at least one of `file_path`, `file_paths` | One local file. |
 | `file_paths` | array of string | at least one of `file_path`, `file_paths` | Several local files. |
 
-Paths resolve as for `publish`. Every file is read before any is uploaded;
-uploads then happen one at a time, so a failure part way leaves the earlier
-files uploaded. The content type is inferred from the file name.
+Paths resolve as for `publish`. Every file is read, and its type and size
+checked, before any is uploaded; uploads then happen one at a time, so a
+failure part way leaves the earlier files uploaded, and its error names
+the file that failed (`path`) and the assets already uploaded
+(`uploaded`, entries as in `assets`): retry with the rest only. The content
+type is inferred from the file name. (Pi checks the type and size only as
+each file is uploaded.)
 
 ```json
 {
@@ -575,8 +579,8 @@ Errors:
 - `invalid_id`, `file_unreadable` (extra field `path`), `not_found`.
 - `unsupported_type`: accepted types are `image/*`, `video/*`, `font/*`,
   `application/pdf`, `text/css`, `text/javascript`, `text/csv`,
-  `text/markdown`, `application/json`, `text/plain`.
-- `asset_too_large`: a file exceeds 20 MiB.
+  `text/markdown`, `application/json`, `text/plain` (extra field `path`).
+- `asset_too_large`: a file exceeds 20 MiB (extra field `path`).
 - `body_too_large`: the upload request exceeds 21 MiB.
 
 ### status

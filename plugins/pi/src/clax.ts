@@ -1243,11 +1243,19 @@ class Tools {
     if (paths.length === 0) throw invalid("pass file_path or file_paths");
     const files = paths.map(p => {
       const path = this.localPath(ctx, p);
-      return { name: basename(path) || "file", bytes: readLocal(path) };
+      return { p, name: basename(path) || "file", bytes: readLocal(path) };
     });
     const assets: Json[] = [];
-    for (const { name, bytes } of files) {
-      const res = await this.call(() => c.uploadAsset(id, name, undefined, bytes));
+    for (const { p, name, bytes } of files) {
+      let res: any;
+      try {
+        res = await this.call(() => c.uploadAsset(id, name, undefined, bytes));
+      } catch (e) {
+        // The files uploaded before this one stay uploaded: the error names
+        // them, so a retry sends only the rest.
+        if (e instanceof ToolError) throw new ToolError({ ...e.error, path: p, uploaded: assets });
+        throw e;
+      }
       const asset = res.asset ?? {};
       assets.push({
         id: asset.id ?? null,

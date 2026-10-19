@@ -127,6 +127,27 @@ pub fn check_path(path: &str) -> Result<()> {
     Ok(())
 }
 
+/// Largest accepted asset in bytes. The cap is inclusive: an asset of exactly this size is accepted.
+pub const MAX_ASSET_BYTES: u64 = 20 * 1024 * 1024;
+
+/// Whether `content_type` (parameters after `;` ignored) is an accepted asset type.
+pub fn is_asset_type(content_type: &str) -> bool {
+    let ct = content_type.split(';').next().unwrap_or("").trim();
+    ct.starts_with("image/")
+        || ct.starts_with("video/")
+        || ct.starts_with("font/")
+        || matches!(
+            ct,
+            "application/pdf"
+                | "text/css"
+                | "text/javascript"
+                | "text/csv"
+                | "text/markdown"
+                | "application/json"
+                | "text/plain"
+        )
+}
+
 /// Content type inferred from the path's extension (as [`std::path::Path::extension`]
 /// defines it, compared case-insensitively); JavaScript is always
 /// `text/javascript`, and paths with no or an unknown extension are

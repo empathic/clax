@@ -1692,6 +1692,9 @@ impl ClaxTools {
         if paths.is_empty() {
             return Err(invalid("pass file_path or file_paths"));
         }
+        // Every file is read and checked against the daemon's type and size
+        // rules before any is uploaded, so a refusal it would give part way
+        // is given before anything is stored.
         let mut files = Vec::with_capacity(paths.len());
         for p in &paths {
             let path = self.local_path(p)?;
@@ -1700,16 +1703,44 @@ impl ClaxTools {
                 .file_name()
                 .map(|n| n.to_string_lossy().into_owned())
                 .unwrap_or_else(|| "file".to_string());
-            files.push((name, bytes));
+            let content_type = clax_core::publish::content_type_for(&name);
+            if !clax_core::publish::is_asset_type(&content_type) {
+                return Err(render::error(
+                    "unsupported_type",
+                    format!("{p}: '{content_type}' is not an accepted asset type"),
+                    json!({"path": p}),
+                ));
+            }
+            if bytes.len() as u64 > clax_core::publish::MAX_ASSET_BYTES {
+                return Err(render::error(
+                    "asset_too_large",
+                    format!(
+                        "{p}: asset exceeds {} bytes",
+                        clax_core::publish::MAX_ASSET_BYTES
+                    ),
+                    json!({"path": p}),
+                ));
+            }
+            files.push((name, content_type, bytes));
         }
         let mut assets = Vec::with_capacity(files.len());
-        for (name, bytes) in files {
-            let content_type = clax_core::publish::content_type_for(&name);
-            let res = self
+        for ((name, content_type, bytes), p) in files.into_iter().zip(&paths) {
+            let res = match self
                 .client
                 .upload_asset(&id, &name, &content_type, bytes)
                 .await
-                .map_err(|e| self.fail(e))?;
+            {
+                Ok(res) => res,
+                // The files uploaded before this one stay uploaded: the
+                // error names them, so a retry sends only the rest.
+                Err(e) => {
+                    return Err(render::client_error_with(
+                        e,
+                        self.daemon_log(),
+                        json!({"path": p, "uploaded": assets}),
+                    ));
+                }
+            };
             let asset = &res["asset"];
             assets.push(json!({
                 "id": asset["id"],

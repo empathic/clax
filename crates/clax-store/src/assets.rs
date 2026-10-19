@@ -8,8 +8,7 @@ use clax_core::{ArtifactId, CoreError, Result, new_ulid};
 use rusqlite::{OptionalExtension, Row, params};
 use std::path::PathBuf;
 
-/// Largest accepted asset in bytes. The cap is inclusive: an asset of exactly this size is accepted.
-pub const MAX_ASSET_BYTES: u64 = 20 * 1024 * 1024;
+pub use clax_core::publish::MAX_ASSET_BYTES;
 
 fn row_to_asset(r: &Row<'_>) -> rusqlite::Result<Asset> {
     Ok(Asset {
@@ -43,23 +42,7 @@ pub(super) fn read_dir_or_empty(dir: &std::path::Path) -> Result<Vec<PathBuf>> {
     }
 }
 
-/// Whether `content_type` (parameters after `;` ignored) is an accepted asset type.
-pub fn is_supported(content_type: &str) -> bool {
-    let ct = content_type.split(';').next().unwrap_or("").trim();
-    ct.starts_with("image/")
-        || ct.starts_with("video/")
-        || ct.starts_with("font/")
-        || matches!(
-            ct,
-            "application/pdf"
-                | "text/css"
-                | "text/javascript"
-                | "text/csv"
-                | "text/markdown"
-                | "application/json"
-                | "text/plain"
-        )
-}
+pub use clax_core::publish::is_asset_type as is_supported;
 
 fn ext_for(content_type: &str) -> String {
     let ct = content_type.split(';').next().unwrap_or("").trim();
