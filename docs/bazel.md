@@ -224,6 +224,7 @@ macOS) and the two keys below.
 | `apk`, `apk_test` | the release APK for arm64-v8a and x86_64 (`bazel/flutter/android.bzl`), and a check of it against what Gradle makes | `flutter build apk` |
 | `macos_app`, `macos_app_test` | `Clax.app` (a zip) with the embedded `clax` signed as a sandboxed helper (`bazel/flutter/macos.bzl`), and a check of it; macOS only | `flutter build macos` |
 | `ios_app`, `ios_app_sim`, `ios_app_test` | `Clax.app` for iPhone and iPad (an `.ipa`; `manual`) with the daemon in its own process (`bazel/flutter/ios.bzl`), the simulator build of it (`-c dbg`), and a check of that build: its Info.plist, with pubspec.yaml's version (the iOS form of `:version_sync`), the `.clax` document type and the words of each permission prompt, Flutter's frameworks, each plugin's registration and privacy manifest, the home bundle, the daemon's four C functions, and every object of the daemon's static libraries for an iOS no newer than the app's minimum; macOS only | none |
+| `ipa_dev`, `ipa_appstore` (manual) | the iOS app signed for a device with the team's development profile, and for TestFlight with its App Store profile (`@clax_apple_signing`); built with `-c opt --ios_multi_cpus=arm64`, never cached | none |
 | `macos_about_test` | the About panel's credits (`macos/Runner/About.swift`), an XCTest bundle run by `xcodebuild`; macOS only | none |
 | `integration_<name>` (manual) | `integration_test/<name>_test.dart` in the debug app, run in the logged-in session | `flutter test <file> -d macos` |
 | `integration_ios_<name>` (manual) | `integration_test/ios_<name>_test.dart` in a debug iOS app of its own, installed fresh and run on the simulator "Clax iPhone" by `tool/ios-integration-run.sh` (`bazel/flutter/ios.bzl`); macOS only | none |
@@ -265,13 +266,20 @@ The integration tests open the app's window and take minutes each, so
   (`bazel/flutter/third_party`, added to it by the overlay in
   `bazel/flutter/plugin_overlays/speech_to_text`).
 
-Two inputs are this machine's, not pinned: the Android debug key
+Three inputs are this machine's, not pinned: the Android debug key
 (`~/.android/debug.keystore`, `bazel/android/debug_keystore.bzl`; without
 one, rules_android's own signs the APK, which then does not install over
-an APK signed on a developer's machine), and the home app's release
+an APK signed on a developer's machine); the home app's release
 (`bazel/flutter/home_release.bzl`, the `@clax_home_release` repository):
 its signing key, `~/.config/clax/home-bundle/key`, and the ledger of the
-versions this machine gave the home bundle, `releases` beside it.
+versions this machine gave the home bundle, `releases` beside it; and the
+iOS app's signing inputs (`bazel/apple/signing.bzl`, the
+`@clax_apple_signing` repository): the team ID, the two provisioning
+profiles and the App Store Connect API key in `~/.config/clax/apple/`
+(`docs/usage.md`, "Signing for a device and TestFlight"). Only `ipa_dev`
+and `ipa_appstore` use them, built here and never cached (`no-remote`,
+`no-cache`); without them those two stop, naming each missing file, and
+everything else builds.
 
 **The home bundle's version** is chosen at each build, with nothing to
 bump or commit: `apps/clax_app/tool/home-version.sh` takes a SHA-256 over
@@ -365,7 +373,8 @@ loopback (`NSAllowsLocalNetworking`) and to `localhost` with its
 subdomains, the apps' own origins (an exception domain in
 `ios/Runner/Info.plist`); nothing off the device. A simulator app builds
 only in debug (`bazelisk build //apps/clax_app:ios_app -c dbg`); a device
-build needs a provisioning profile.
+build is `ipa_dev` or `ipa_appstore`, signed with the team's profile
+(`bazel/apple/signing.bzl`).
 
 **The tests** are compiled a directory at a time (`tests_<dir>_all`,
 `manual`; `bazel/flutter/tests.bzl`): a `.dill` carries the whole app and

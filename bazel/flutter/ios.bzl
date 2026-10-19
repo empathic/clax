@@ -39,6 +39,11 @@ def clax_ios_app(name, version_name, version_code):
       ios_version   apple_bundle_version from pubspec.yaml's version
       ios_app_sim   the simulator app built -c dbg (flutter_ios_simulator_build)
       ios_app_test  tool/ios-app-check.sh over it (macOS only)
+      ipa_dev, ipa_appstore
+                    the app signed for a device with the team's development
+                    profile, and for TestFlight with its App Store profile
+                    (`@clax_apple_signing`, bazel/apple/signing.bzl); manual,
+                    never cached, and built with `--ios_multi_cpus=arm64`
 
     Args:
         name: The app's target name, a bare Swift identifier (the runner's
@@ -77,8 +82,7 @@ def clax_ios_app(name, version_name, version_code):
         short_version_string = version_name,
     )
 
-    flutter_ios_app(
-        name = name,
+    app = dict(
         app_name = "Clax",
         application = ":app",
         bundle_id = IOS_BUNDLE_ID,
@@ -94,9 +98,34 @@ def clax_ios_app(name, version_name, version_code):
             ":ios_daemon",
             ":ios_plugin_frameworks",
         ],
-        tags = ["manual"],
         version = ":ios_version",
     )
+
+    flutter_ios_app(
+        name = name,
+        tags = ["manual"],
+        **app
+    )
+
+    # The same app signed with the team's profiles. A device build needs the
+    # files of ~/.config/clax/apple (docs/usage.md, "Signing for a device and
+    # TestFlight"); without them @clax_apple_signing's targets fail, naming
+    # each missing file. Nothing else depends on these two, so the simulator
+    # app builds without the directory. Every action of theirs runs here and
+    # is kept out of every cache: the profiles and the signed app never
+    # leave this machine.
+    for kind, profile in [("dev", "development"), ("appstore", "appstore")]:
+        flutter_ios_app(
+            name = "ipa_" + kind,
+            entitlements = "@clax_apple_signing//:entitlements_" + profile,
+            provisioning_profile = "@clax_apple_signing//:" + profile,
+            tags = [
+                "manual",
+                "no-cache",
+                "no-remote",
+            ],
+            **app
+        )
 
     # The simulator engine runs only debug builds.
     flutter_ios_simulator_build(

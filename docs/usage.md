@@ -999,6 +999,72 @@ Clax iPhone" and leaves the simulator running; `scripts/app-ios.sh
 --udid` prints its UDID (for `xcrun simctl io <udid> screenshot`). It
 touches no other simulator.
 
+#### Signing for a device and TestFlight
+
+The simulator app is unsigned and needs none of this. A build for a
+device (`//apps/clax_app:ipa_dev`) or for TestFlight
+(`//apps/clax_app:ipa_appstore`) is signed with your Apple Developer
+team's files, which stay on your Mac in one directory,
+`~/.config/clax/apple/` (`CLAX_APPLE_DIR` names another). Bazel reads it
+through `@clax_apple_signing` (`bazel/apple/signing.bzl`); the builds that
+use it run on this Mac and are never cached, locally or remotely, so no
+profile, key or signed app leaves it. Never commit these files.
+
+Without them, the simulator builds as before, and a device or TestFlight
+build stops before it starts, naming each file it lacks and this
+directory. A device build needs `team-id` and
+`clax-development.mobileprovision`; a TestFlight build needs `team-id`,
+`clax-appstore.mobileprovision`, and the API key with its two IDs.
+
+Make the directory owner-only, and keep every file in it so:
+
+```
+mkdir -m 700 ~/.config/clax/apple
+chmod 600 ~/.config/clax/apple/*
+```
+
+A directory or file the group or others can read is refused, with its
+path and mode. Bazel sees a change to a file at once, but not a change to
+the directory's own mode: after `chmod 700` on it, run
+`bazelisk fetch --force --repo=@clax_apple_signing`.
+
+| File | What it is | How to get it |
+|---|---|---|
+| `team-id` | your team's 10-character ID, on one line | developer.apple.com › Account › Membership details, "Team ID" |
+| `clax-development.mobileprovision` | the development provisioning profile: the App ID, the Apple Development certificate and your devices | developer.apple.com › Certificates, Identifiers & Profiles › Profiles › +, "iOS App Development" |
+| `clax-appstore.mobileprovision` | the App Store provisioning profile: the App ID and the Apple Distribution certificate | the same page, "App Store Connect" under Distribution |
+| `AuthKey_<KEYID>.p8` | the App Store Connect API key the upload uses | App Store Connect › Users and Access › Integrations › App Store Connect API › Team Keys, +, with the Developer role. Apple lets you download it once |
+| `api-key-id` | that key's Key ID (the `<KEYID>` of its file name), on one line | the key's row on the same page |
+| `api-issuer-id` | your team's Issuer ID, on one line | above the keys on the same page |
+
+Before the profiles:
+
+1. **The certificates.** "Apple Development" and "Apple Distribution"
+   live in your login keychain, not in this directory: `codesign` reads
+   them there, and rules_apple picks the identity the profile names.
+   Create each in Xcode › Settings › Accounts › Manage Certificates, or
+   on developer.apple.com › Certificates with a request made by Keychain
+   Access › Certificate Assistant.
+2. **The App ID.** Under Identifiers, an explicit App ID for the bundle
+   ID `dev.empathic.clax` (`IOS_BUNDLE_ID` in `bazel/flutter/ios.bzl`),
+   with no extra capabilities: the app's entitlements ask for none but the
+   keychain group every app has.
+3. **The devices.** Under Devices, each iPhone and iPad by its UDID
+   (`xcrun devicectl list devices` shows it for a connected or paired
+   one). A device added later needs the development profile made again.
+4. **The app record.** For TestFlight, an app in App Store Connect › Apps
+   with that bundle ID.
+
+Download each profile and save it under the name above. The entitlements
+are made from `team-id`: `<team>.dev.empathic.clax` as the
+`application-identifier` and the keychain group, the team, and
+`get-task-allow` on the development build only.
+
+To check the directory: `bazelisk test //bazel/apple:signing_test` builds
+every input from it and fails naming whatever is missing or refused. To
+build: `bazelisk build //apps/clax_app:ipa_dev -c opt
+--ios_multi_cpus=arm64` (or `:ipa_appstore`).
+
 ## Releasing
 
 A release is what the plugins download, and what `install.sh` installs.

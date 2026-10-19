@@ -25,3 +25,32 @@ ios_platform_probe(
     name = "ios_platform_probe",
     visibility = ["//visibility:public"],
 )
+
+# The signing inputs' repository (signing.bzl) against fake directories:
+# complete, missing a file, and readable by others; then this machine's
+# own directory, when it exists (so it is `external`: never cached). It
+# runs Bazel on a scratch workspace with an output base of its own (BAZEL
+# names the binary, else bazelisk is looked for on PATH and in the usual
+# install directories).
+sh_test(
+    name = "signing_test",
+    srcs = ["signing-test.sh"],
+    args = [
+        "$(rootpath :signing.bzl)",
+        "$(rootpath //:.bazelversion)",
+    ],
+    data = [
+        "signing.bzl",
+        "//:.bazelversion",
+    ],
+    env_inherit = [
+        "BAZEL",
+        "HOME",
+    ],
+    tags = [
+        "external",
+        "manual",
+        "no-remote",
+        "no-sandbox",
+    ],
+)

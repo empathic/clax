@@ -365,6 +365,19 @@
         }
       }
     },
+    "//bazel/apple:signing.bzl%signing": {
+      "general": {
+        "bzlTransitiveDigest": "dX4GskQlvPC7O3yOKb8n2zgvkJMD2eX8pSGKh9dsHSA=",
+        "usagesDigest": "UweIiZSZ9ODzUrH2Rn6wHlfwqvFwjT1zYM4dWBltUTE=",
+        "recordedInputs": [],
+        "generatedRepoSpecs": {
+          "clax_apple_signing": {
+            "repoRuleId": "@@//bazel/apple:signing.bzl%_signing",
+            "attributes": {}
+          }
+        }
+      }
+    },
     "//bazel/flutter:home_release.bzl%home_release": {
       "general": {
         "bzlTransitiveDigest": "4v9FYcyhsM/1NlsSoy0QNZRrts2+AK/M4KcwDDnR+uE=",
