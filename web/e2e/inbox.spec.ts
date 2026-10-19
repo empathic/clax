@@ -58,6 +58,7 @@ test("groups the inbox by page: counts across pages, folding, a group's Mark rea
   const group = (key: string) => unread.locator(`.igroup[data-group="${key}"]`);
   // The question about no page is a card; its group, Other, has nothing else, so it does not show.
   await expect(unread.locator(".qcard")).toHaveCount(1);
+  await expect(unread.locator(".pinned-h")).toHaveText("Questions1");
   await expect(unread.locator(".igroup .gtitle")).toHaveText(["Sales dashboard", "Onboarding doc"]);
   // Five new on Sales (its publication and four replies), three listed, the rest a Show more away.
   await expect(group(sales).locator(".gmeta")).toHaveText(/^5 new · /);

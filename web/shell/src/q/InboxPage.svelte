@@ -8,7 +8,8 @@
   // dates) apply to both sections and are kept in the URL. **Unread** shows
   // every open question as a card, then approval requests (spec
   // 2026-10-08-multi-agent-multi-person §9.5) and connection requests
-  // (§3.2) as cards, then the other unread items grouped by the page they
+  // (§3.2) as cards, under one heading with their count ("Questions" when
+  // all are questions, else "Waiting on you"), then the other unread items grouped by the page they
   // are about (`InboxGroup`), newest group first, items about no page in
   // one group, "Other". A group says how many of its items are new and
   // how old its newest is, lists its three newest, pages the rest with
@@ -108,6 +109,8 @@
   /** Whether `i` is a decision's card: an approval request, or a machine's request to connect. */
   const decision = (i: InboxItem) => i.kind === "approval" || (i.kind === "connection" && i.connection?.via !== "invite");
   const decisions = $derived(cardItems.filter(decision).sort((a, b) => a.seq - b.seq));
+  // The cards pinned above the groups, under one heading: "Questions" when all are, else "Waiting on you".
+  const pinned = $derived(cards.length + decisions.length);
   // What the unread section shows as a card, so no group lists it as a row.
   const carded = $derived(new Set([...asCard, ...decisions.map(i => i.id)]));
   const rowsOf = (g: Group) => g.items.filter(i => !carded.has(i.id));
@@ -384,6 +387,7 @@
     {#if !unread}
       {#if !error}<p class="note">Loading…</p>{/if}
     {:else}
+      {#if pinned}<h4 class="pinned-h" id="inbox-pinned-h">{decisions.length ? "Waiting on you" : "Questions"}<span class="c">{fmt(pinned)}</span></h4>{/if}
       <QuestionList list={cards} feed={questions} now={p.now} />
       {@render decided(decisions)}
       {#if unreadGroups.length}<div class="groups">{#each unreadGroups as g (g.key)}{@render group("unread", g)}{/each}</div>{/if}
@@ -431,7 +435,8 @@
     .inbox .err { margin: 12px 0 0; color: var(--danger); font-size: 13px; }
     .inbox .sec { margin-top: 22px; min-width: 0; }
     .inbox .sec h3 { display: flex; align-items: baseline; gap: 8px; margin: 0 0 10px; font-size: 15px; }
-    .inbox .sec h3 .c { font: 400 12.5px var(--mono); color: var(--muted); font-variant-numeric: tabular-nums; }
+    .inbox .sec h3 .c, .inbox .pinned-h .c { font: 400 12.5px var(--mono); color: var(--muted); font-variant-numeric: tabular-nums; }
+    .inbox .pinned-h { display: flex; align-items: baseline; gap: 8px; margin: 0 0 8px; font: 600 13px/1.4 var(--font); color: var(--muted); }
     .inbox .sec .qlist { margin-bottom: 10px; }
     .inbox .dlist { display: grid; gap: 10px; margin-bottom: 10px; min-width: 0; }
     .inbox .rows { margin: 0; padding: 0; }

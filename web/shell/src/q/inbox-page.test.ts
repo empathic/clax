@@ -82,6 +82,8 @@ describe("InboxPage", () => {
     expect(unread.querySelector("h3")!.textContent).toBe("Unread3");
     const card = unread.querySelector(".qcard")!;
     expect(card.getAttribute("data-question")).toBe(view().id);
+    // The cards under their heading and count.
+    expect(unread.querySelector(".pinned-h")!.textContent).toBe("Questions1");
     // One group per page, newest first; the question shows as its card alone.
     const groups = [...unread.querySelectorAll(".igroup")];
     expect(groups.map(g => [g.querySelector(".gtitle")!.textContent, g.querySelector(".gmeta")!.textContent])).toEqual([["Quarterly Review", "1 new · 5m"], ["Sales dashboard", "1 new · 2h"]]);
@@ -128,6 +130,8 @@ describe("InboxPage", () => {
     click(group.querySelector(".gread")!);
     await settle();
     expect(calls.find(c => c.method === "POST")).toEqual({ url: "/api/inbox/read", method: "POST", body: { all: true, filter: { artifact: "7q3k9mzx2b4t" }, upto: 8 } });
+    // No card, no heading over the cards.
+    expect(m.root.querySelector(".pinned-h")).toBeNull();
     click(m.root.querySelector(".fold")!);
     await settle();
     // Read items about no page: one group, "Other", with no link.
@@ -286,6 +290,8 @@ describe("InboxPage", () => {
     const unread = m.root.querySelector('section[aria-labelledby="inbox-unread-h"]')!;
     const order = [...unread.querySelectorAll(".qcard, .acard, .ccard, .irow")].map(e => e.className.split(" ")[0] + (e.getAttribute("data-item") ? `:${e.getAttribute("data-item")}` : ""));
     expect(order).toEqual(["qcard", "acard", "ccard", "irow:IR", "irow:IJ", "irow:IE"]);
+    // Questions and requests together: what waits on the person.
+    expect(unread.querySelector(".pinned-h")!.textContent).toBe("Waiting on you3");
     expect(unread.querySelector('.irow[data-item="IJ"]')!.textContent).toContain("Kim connected from kim-pc");
     expect(unread.querySelector('.irow[data-item="IE"] .released a')!.textContent).toBe("Quarterly Review");
     // The connection request is a card: Other counts the two rows new.
