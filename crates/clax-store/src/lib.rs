@@ -522,6 +522,15 @@ impl Store {
     /// ([`Store::set_audit_nudge`]) fires after the commit. When `f` changed
     /// what agents may see ([`Store::visibility_changed`]), the visibility
     /// generation is bumped after the commit.
+    ///
+    /// The inbox and approval request listeners hear of every row change
+    /// the write connection's update hook saw. SQLite runs no hook when a
+    /// savepoint is rolled back to (only a whole transaction's rollback
+    /// clears the lists), so a job that rolls back to a savepoint after
+    /// writing `inbox_items` or `approval_requests` has those rows'
+    /// changes heard although they were undone: the listeners' readers
+    /// skip rows they do not find, and inbox changes are heard once per
+    /// `seq` (an item made after the rollback may take the undone one's).
     pub(crate) fn with_tx<T>(
         &self,
         f: impl FnOnce(&rusqlite::Transaction<'_>) -> Result<T>,
@@ -540,7 +549,7 @@ impl Store {
             // Taken inside the turn: the next writer's changes are its own.
             Ok((
                 out,
-                std::mem::take(&mut *self.inbox_changes.lock().unwrap()),
+                once_per_seq(std::mem::take(&mut *self.inbox_changes.lock().unwrap())),
                 std::mem::take(&mut *self.request_changes.lock().unwrap()),
                 self.audit.take_recorded(),
                 self.agents_changed.lock().unwrap().take(),
@@ -642,6 +651,23 @@ impl Store {
     pub(crate) fn with_write<T>(&self, f: impl FnOnce(&Connection) -> Result<T>) -> Result<T> {
         self.exec.write(|conn| f(conn))
     }
+}
+
+/// `changes` with one entry per `seq`, in the order each `seq` first
+/// changed, made when any of its changes made it.
+fn once_per_seq(changes: Vec<InboxChange>) -> Vec<InboxChange> {
+    let mut at: std::collections::HashMap<i64, usize> = std::collections::HashMap::new();
+    let mut out: Vec<InboxChange> = Vec::with_capacity(changes.len());
+    for c in changes {
+        match at.get(&c.seq) {
+            Some(&i) => out[i].made |= c.made,
+            None => {
+                at.insert(c.seq, out.len());
+                out.push(c);
+            }
+        }
+    }
+    out
 }
 
 /// The schema version (`user_version`) of `home`'s database, read without

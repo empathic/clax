@@ -3230,6 +3230,42 @@ mod tests {
         );
     }
 
+    /// A change a savepoint rolled back leaves no trace the rollback hook
+    /// clears: the item made after it takes the same `seq`, and is heard
+    /// once.
+    #[test]
+    fn a_seq_reused_after_a_savepoint_rollback_is_heard_once() {
+        let (_d, st) = store();
+        let heard = std::sync::Arc::new(std::sync::Mutex::new(Vec::new()));
+        let h = heard.clone();
+        st.set_inbox_listener(Box::new(move |c| h.lock().unwrap().extend(c)));
+        let insert = |tx: &rusqlite::Transaction<'_>, id: &str| -> clax_core::Result<()> {
+            tx.execute(
+                "INSERT INTO inbox_items (id, kind, key, created_at) VALUES (?1, 'version', ?1, 'x')",
+                params![id],
+            )?;
+            Ok(())
+        };
+        st.with_tx(|tx| {
+            tx.execute_batch("SAVEPOINT s")?;
+            insert(tx, "i1")?;
+            tx.execute_batch("ROLLBACK TO s; RELEASE s")?;
+            insert(tx, "i2")
+        })
+        .unwrap();
+        let seq: i64 = st
+            .with_read(|c| {
+                Ok(c.query_row("SELECT seq FROM inbox_items WHERE id = 'i2'", [], |r| {
+                    r.get(0)
+                })?)
+            })
+            .unwrap();
+        assert_eq!(
+            *heard.lock().unwrap(),
+            vec![InboxChange { seq, made: true }]
+        );
+    }
+
     #[test]
     fn only_the_owner_moving_a_question_reads_it_not_the_hooks_timer() {
         let (_d, st) = store();
