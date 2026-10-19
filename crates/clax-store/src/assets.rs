@@ -161,10 +161,10 @@ impl Store {
                 format!("asset exceeds {MAX_ASSET_BYTES} bytes"),
             ));
         }
-        #[cfg(test)]
-        self.point("asset.add.write");
         let _lock = self.lock_content(id).await?;
         self.get_artifact(id)?.ok_or(CoreError::NotFound)?;
+        #[cfg(test)]
+        self.point("asset.add.write");
         let asset = Asset {
             id: new_ulid(),
             artifact_id: id.as_str().to_string(),
@@ -465,18 +465,29 @@ mod tests {
 
     #[test]
     fn an_upload_racing_the_artifacts_delete_stores_nothing() {
-        let (_d, store) = store();
+        // The home's files, whose asset directory shows any bytes left.
+        let (_d, store) = pool_store();
         let id = crate::test_util::artifact(&store, None);
-        // The delete lands after the upload is accepted, before its bytes go in.
+        // The artifact is marked deleted after the upload's check, by a
+        // writer that does not take its content lock.
         let gone = id.clone();
         store.at_point("asset.add.write", move |st| {
-            st.delete_artifact(DAEMON, &gone).unwrap();
+            st.with_tx(|tx| {
+                tx.execute(
+                    "UPDATE artifacts SET deleted_at = 'x' WHERE id = ?1",
+                    rusqlite::params![gone.as_str()],
+                )?;
+                Ok(())
+            })
+            .unwrap();
         });
         assert!(matches!(
             store.add_asset(DAEMON, &id, "image/png", &[1, 2, 3]),
             Err(CoreError::NotFound)
         ));
         assert!(store.list_assets(&id).unwrap().is_empty());
+        let left = super::read_dir_or_empty(&store.home().assets_dir(&id)).unwrap();
+        assert!(left.is_empty(), "{left:?}");
     }
 
     #[test]
