@@ -12,6 +12,10 @@ import 'app_surface.dart';
 import 'daemon_cookie.dart';
 import 'host_protocol.dart';
 
+/// The overlays the app draws in place of the shell's ([Init.native]): the
+/// permission prompt (`ask`, drawn by `AppScreen` with `AskPrompt`).
+const nativeOverlays = ['ask'];
+
 /// [AppSurface] over a platform WebView (`webview_flutter`).
 ///
 /// - JavaScript runs unrestricted; the shell's messages arrive on the
@@ -24,6 +28,8 @@ import 'host_protocol.dart';
 ///   [openExternal] when it is a web or mail link off the device; frames
 ///   inside the page navigate freely.
 /// - `claxHost` is called only in the shell, after its nonce.
+/// - The shell's `init` names the overlays the app draws itself
+///   ([nativeOverlays]); the shell posts those and draws the rest.
 /// - A main frame that fails to load, or whose web content process ends,
 ///   is loaded again once; a second failure within [retryWindow] gives up
 ///   and waits for [reload]. Each is reported on [faults].
@@ -42,7 +48,11 @@ class WebViewAppSurface implements AppSurface, CapturableSurface {
     Color? background,
     WebViewController? controller,
   }) : controller = controller ?? WebViewController(),
-       _session = ShellSession(base, platform: shellPlatform()) {
+       _session = ShellSession(
+         base,
+         native: nativeOverlays,
+         platform: shellPlatform(),
+       ) {
     final c = this.controller;
     _loads = CookieLoads(
       keyCookie,

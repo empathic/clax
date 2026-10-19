@@ -38,6 +38,7 @@ class ClaxButton extends StatelessWidget {
     this.kind = ClaxButtonKind.plain,
     this.icon,
     this.isDefault = false,
+    this.autofocus = false,
   });
 
   final String label;
@@ -51,6 +52,10 @@ class ClaxButton extends StatelessWidget {
 
   /// Whether this is the surface's default action (Apple: the filled one).
   final bool isDefault;
+
+  /// Whether the button takes focus when it first shows, as nothing else
+  /// in its scope has.
+  final bool autofocus;
 
   @override
   Widget build(BuildContext context) =>
@@ -70,9 +75,15 @@ class ClaxButton extends StatelessWidget {
       case ClaxButtonKind.primary:
         final style = ButtonStyle(minimumSize: size, tapTargetSize: target);
         return leading == null
-            ? FilledButton(onPressed: onPressed, style: style, child: child)
+            ? FilledButton(
+                onPressed: onPressed,
+                autofocus: autofocus,
+                style: style,
+                child: child,
+              )
             : FilledButton.icon(
                 onPressed: onPressed,
+                autofocus: autofocus,
                 style: style,
                 icon: leading,
                 label: child,
@@ -105,11 +116,13 @@ class ClaxButton extends StatelessWidget {
         return leading == null
             ? FilledButton.tonal(
                 onPressed: onPressed,
+                autofocus: autofocus,
                 style: style,
                 child: child,
               )
             : FilledButton.tonalIcon(
                 onPressed: onPressed,
+                autofocus: autofocus,
                 style: style,
                 icon: leading,
                 label: child,
@@ -132,9 +145,15 @@ class ClaxButton extends StatelessWidget {
               : WidgetStatePropertyAll(colour.withValues(alpha: 0.08)),
         );
         return leading == null
-            ? TextButton(onPressed: onPressed, style: style, child: child)
+            ? TextButton(
+                onPressed: onPressed,
+                autofocus: autofocus,
+                style: style,
+                child: child,
+              )
             : TextButton.icon(
                 onPressed: onPressed,
+                autofocus: autofocus,
                 style: style,
                 icon: leading,
                 label: child,
@@ -221,6 +240,7 @@ class ClaxButton extends StatelessWidget {
           );
     final button = TextButton(
       onPressed: onPressed,
+      autofocus: autofocus,
       style: style,
       child: content,
     );

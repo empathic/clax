@@ -6,6 +6,7 @@ import 'package:flutter/material.dart';
 import 'package:flutter/rendering.dart';
 import 'package:flutter/services.dart';
 
+import '../../daemon/clock.dart';
 import '../theme.dart';
 import '../tokens.g.dart';
 import 'button.dart';
@@ -28,6 +29,27 @@ class ClaxDialogAction {
   /// when ticking it changes what this action does ("Allow once" becomes
   /// "Always allow"); null keeps [label].
   final String? suppressedLabel;
+}
+
+/// How a [ClaxDialog.ask]'s default action arms, for a question that a press
+/// meant for something else must not answer (a permission prompt): the
+/// action is disabled for [delay] from the dialog's first frame, with
+/// [waiting] under the actions until then, and counts only for a press that
+/// began after it armed.
+@immutable
+class ClaxArming {
+  const ClaxArming({
+    required this.delay,
+    required this.waiting,
+    this.clock = const SystemClock(),
+  });
+
+  final Duration delay;
+
+  /// The line under the actions until the default action arms ("Allow in a
+  /// moment…").
+  final String waiting;
+  final Clock clock;
 }
 
 /// What a [ClaxDialog.ask] was answered: the [index] of the action pressed
@@ -78,6 +100,13 @@ abstract final class ClaxDialog {
   /// completes first, the dialog is taken down and answers [cancelIndex].
   /// On the Mac, without [content], it is an `NSAlert` sheet
   /// ([NativeDialogs.alert]), its suppression button the checkbox.
+  /// [focusIndex] names the button that has focus on the first frame.
+  ///
+  /// With [arming], the default action arms as [ClaxArming] says: it counts
+  /// for a tap or click whose pointer went down after it armed, or a Space
+  /// on it whose key went down after; and Return answers it (not the
+  /// focused button, as in a Mac alert) only when Return went down after
+  /// it armed. A key held from before, repeating, answers nothing.
   static Future<ClaxDialogAnswer> ask(
     BuildContext context, {
     required String title,
@@ -87,9 +116,13 @@ abstract final class ClaxDialog {
     required List<ClaxDialogAction> actions,
     int? defaultIndex,
     int? cancelIndex,
+    int? focusIndex,
+    ClaxArming? arming,
     Future<void>? dismissed,
   }) async {
     assert(actions.isNotEmpty);
+    assert(focusIndex == null || focusIndex < actions.length);
+    assert(arming == null || defaultIndex != null);
     assert(defaultIndex == null || defaultIndex < actions.length);
     assert(cancelIndex == null || cancelIndex < actions.length);
     if (defaultIndex != null &&
@@ -105,6 +138,7 @@ abstract final class ClaxDialog {
         actions: actions,
         defaultIndex: defaultIndex,
         cancelIndex: cancelIndex,
+        armMs: arming?.delay.inMilliseconds,
         dismissed: dismissed,
       );
       if (got != null) return got;
@@ -114,6 +148,9 @@ abstract final class ClaxDialog {
     }
     final apple = ClaxFamily.of(context) == ClaxFamily.apple;
     final suppressed = ValueNotifier(false);
+    final arm = arming == null || defaultIndex == null
+        ? null
+        : _Arm(arming);
     final themes = InheritedTheme.capture(
       from: context,
       to: navigator.context,
@@ -158,13 +195,16 @@ abstract final class ClaxDialog {
         pageBuilder: (context, _, _) => themes.wrap(
           _Keys(
             defaultIndex: defaultIndex,
+            arm: arm,
             child: _AppleAlert(
               title: title,
               body: body,
               extra: extra,
               actions: actions,
               defaultIndex: defaultIndex,
+              focusIndex: focusIndex,
               suppressed: suppressed,
+              arm: arm,
             ),
           ),
         ),
@@ -176,6 +216,7 @@ abstract final class ClaxDialog {
         barrierLabel: MaterialLocalizations.of(context).modalBarrierDismissLabel,
         builder: (context) => _Keys(
           defaultIndex: defaultIndex,
+          arm: arm,
           child: AlertDialog(
             title: Text(title),
             content: body == null && extra.isEmpty
@@ -197,17 +238,23 @@ abstract final class ClaxDialog {
               maxWidth: ClaxLayout.sheet,
             ),
             actions: [
-              ClaxActionBar(
-                children: [
-                  for (final (i, a) in actions.indexed)
-                    _button(
-                      context,
-                      a,
-                      i,
-                      isDefault: i == defaultIndex,
-                      suppressed: suppressed,
-                    ),
-                ],
+              _withWaiting(
+                arm,
+                ClaxActionBar(
+                  children: [
+                    for (final (i, a) in actions.indexed)
+                      _button(
+                        context,
+                        a,
+                        i,
+                        isDefault: i == defaultIndex,
+                        focus: i == focusIndex,
+                        suppressed: suppressed,
+                        arm: i == defaultIndex ? arm : null,
+                      ),
+                  ],
+                ),
+                TextAlign.end,
               ),
             ],
           ),
@@ -230,7 +277,10 @@ abstract final class ClaxDialog {
     final index = await answer.future;
     final on = suppressed.value;
     // The checkbox may still be on screen as the route animates away.
-    WidgetsBinding.instance.addPostFrameCallback((_) => suppressed.dispose());
+    WidgetsBinding.instance.addPostFrameCallback((_) {
+      suppressed.dispose();
+      arm?.dispose();
+    });
     return ClaxDialogAnswer(index, suppressed: on);
   }
 
@@ -281,36 +331,187 @@ abstract final class ClaxDialog {
     ClaxDialogAction a,
     int index, {
     required bool isDefault,
+    required bool focus,
     required ValueListenable<bool> suppressed,
+    _Arm? arm,
   }) {
+    void pop() => Navigator.of(context).pop(index);
     Widget button(String label) => ClaxButton(
       label: label,
       kind: a.kind,
       isDefault: isDefault,
-      onPressed: () => Navigator.of(context).pop(index),
+      autofocus: focus,
+      onPressed: arm == null
+          ? pop
+          : arm.armed
+          ? () {
+              if (arm.pressCounts) pop();
+            }
+          : null,
     );
     final other = a.suppressedLabel;
-    if (other == null) return button(a.label);
-    return ValueListenableBuilder(
-      valueListenable: suppressed,
-      builder: (_, on, _) => button(on ? other : a.label),
+    Widget labelled() => other == null
+        ? button(a.label)
+        : ValueListenableBuilder(
+            valueListenable: suppressed,
+            builder: (_, on, _) => button(on ? other : a.label),
+          );
+    if (arm == null) return labelled();
+    return Listener(
+      onPointerDown: (_) => arm.press(),
+      child: ListenableBuilder(listenable: arm, builder: (_, _) => labelled()),
+    );
+  }
+
+  /// [bar] with [arm]'s waiting line under it, aligned to [align]. The line
+  /// keeps its room once armed, so the buttons do not move as it goes.
+  static Widget _withWaiting(_Arm? arm, Widget bar, TextAlign align) {
+    if (arm == null) return bar;
+    return Column(
+      mainAxisSize: MainAxisSize.min,
+      crossAxisAlignment: CrossAxisAlignment.stretch,
+      children: [
+        bar,
+        ListenableBuilder(
+          listenable: arm,
+          builder: (context, _) {
+            final p = claxPalette(context);
+            return Visibility(
+              visible: !arm.armed,
+              maintainSize: true,
+              maintainAnimation: true,
+              maintainState: true,
+              child: Padding(
+                padding: const EdgeInsets.only(top: ClaxSpace.s4),
+                child: Text(
+                  arm.arming.waiting,
+                  textAlign: align,
+                  style: ClaxType.of(
+                    ClaxRole.caption,
+                    Theme.of(context).platform,
+                  ).copyWith(color: p.muted),
+                ),
+              ),
+            );
+          },
+        ),
+      ],
     );
   }
 }
 
-/// Return answers the default action when no button has focus.
-class _Keys extends StatelessWidget {
-  const _Keys({required this.defaultIndex, required this.child});
+/// Return answers the default action when no button has focus; with
+/// [arm], Return answers it whatever has focus, once armed.
+class _Keys extends StatefulWidget {
+  const _Keys({required this.defaultIndex, required this.child, this.arm});
   final int? defaultIndex;
+  final _Arm? arm;
   final Widget child;
 
   @override
+  State<_Keys> createState() => _KeysState();
+}
+
+class _KeysState extends State<_Keys> {
+  @override
+  void initState() {
+    super.initState();
+    // The dialog's first frame: the arming delay runs from here.
+    widget.arm?.start();
+  }
+
+  @override
   Widget build(BuildContext context) {
-    final i = defaultIndex;
-    return ClaxSurfaceKeys(
-      onDefault: i == null ? null : () => Navigator.of(context).pop(i),
-      child: child,
+    final i = widget.defaultIndex;
+    final arm = widget.arm;
+    if (arm == null || i == null) {
+      return ClaxSurfaceKeys(
+        onDefault: i == null ? null : () => Navigator.of(context).pop(i),
+        child: widget.child,
+      );
+    }
+    void enter() {
+      arm.press();
+      if (arm.pressCounts) Navigator.of(context).pop(i);
+    }
+
+    return CallbackShortcuts(
+      bindings: {
+        const SingleActivator(LogicalKeyboardKey.enter, includeRepeats: false):
+            enter,
+        const SingleActivator(
+          LogicalKeyboardKey.numpadEnter,
+          includeRepeats: false,
+        ): enter,
+      },
+      child: FocusScope(
+        autofocus: true,
+        // Sees each key on a focused button before the app's shortcuts
+        // activate it: a Space or Return going down is a press, and a
+        // repeat (a key held from before) is swallowed.
+        child: Focus(
+          canRequestFocus: false,
+          skipTraversal: true,
+          onKeyEvent: (_, e) {
+            if (!_pressKeys.contains(e.logicalKey)) {
+              return KeyEventResult.ignored;
+            }
+            if (e is KeyRepeatEvent) return KeyEventResult.handled;
+            if (e is KeyDownEvent) arm.press();
+            return KeyEventResult.ignored;
+          },
+          child: widget.child,
+        ),
+      ),
     );
+  }
+
+  static final _pressKeys = {
+    LogicalKeyboardKey.space,
+    LogicalKeyboardKey.enter,
+    LogicalKeyboardKey.numpadEnter,
+  };
+}
+
+/// A [ClaxDialog.ask]'s arming: when it arms, and when the last press on
+/// its default action (a pointer or a key going down) began.
+class _Arm extends ChangeNotifier {
+  _Arm(this.arming);
+
+  final ClaxArming arming;
+  DateTime? _at;
+  DateTime? _press;
+  var _disposed = false;
+
+  /// Whether the default action is enabled.
+  bool armed = false;
+
+  /// Starts the delay; once only.
+  void start() {
+    if (_at != null) return;
+    _at = arming.clock.now().add(arming.delay);
+    unawaited(
+      arming.clock.delay(arming.delay).then((_) {
+        if (_disposed) return;
+        armed = true;
+        notifyListeners();
+      }),
+    );
+  }
+
+  /// A press began now.
+  void press() => _press = arming.clock.now();
+
+  /// Whether the last press began once armed.
+  bool get pressCounts {
+    final at = _at, p = _press;
+    return armed && at != null && p != null && !p.isBefore(at);
+  }
+
+  @override
+  void dispose() {
+    _disposed = true;
+    super.dispose();
   }
 }
 
@@ -391,6 +592,8 @@ class _AppleAlert extends StatelessWidget {
     required this.actions,
     required this.defaultIndex,
     required this.suppressed,
+    this.focusIndex,
+    this.arm,
     this.extra = const [],
   });
   final String title;
@@ -401,7 +604,9 @@ class _AppleAlert extends StatelessWidget {
   final List<Widget> extra;
   final List<ClaxDialogAction> actions;
   final int? defaultIndex;
+  final int? focusIndex;
   final ValueListenable<bool> suppressed;
+  final _Arm? arm;
 
   @override
   Widget build(BuildContext context) {
@@ -448,18 +653,24 @@ class _AppleAlert extends StatelessWidget {
                       w,
                     ],
                     const SizedBox(height: ClaxSpace.s20),
-                    ClaxActionBar(
-                      fill: true,
-                      children: [
-                        for (final (i, a) in actions.indexed)
-                          ClaxDialog._button(
-                            context,
-                            a,
-                            i,
-                            isDefault: i == defaultIndex,
-                            suppressed: suppressed,
-                          ),
-                      ],
+                    ClaxDialog._withWaiting(
+                      arm,
+                      ClaxActionBar(
+                        fill: true,
+                        children: [
+                          for (final (i, a) in actions.indexed)
+                            ClaxDialog._button(
+                              context,
+                              a,
+                              i,
+                              isDefault: i == defaultIndex,
+                              focus: i == focusIndex,
+                              suppressed: suppressed,
+                              arm: i == defaultIndex ? arm : null,
+                            ),
+                        ],
+                      ),
+                      TextAlign.center,
                     ),
                   ],
                 ),
