@@ -113,7 +113,6 @@ pub struct Hosted {
     /// The origin is `https`: the cookie is `Secure`.
     pub secure: bool,
     /// The setup secret's SHA-256; `None` keeps setup closed.
-    /// The setup secret, when one is set (`None`: setup stays closed).
     pub setup_secret: Option<[u8; 32]>,
     /// The daemon is behind Cloudflare, whose `CF-Connecting-IP` names the
     /// client ([`Hosted::client`]).
@@ -1077,16 +1076,15 @@ impl HostedRequest {
     }
 }
 
-/// The value of the one session cookie (named `name`) in `headers`; `None`
-/// when there is none, or more than one (another page set a cookie of the
-/// name).
-/// The value of the one cookie named `name`; `None` without one, or with
-/// more than one.
-pub fn cookie_value(headers: &HeaderMap, name: &str) -> Option<String> {
-    session_token(headers, name)
+/// The session cookie's value: [`cookie_value`] of the cookie named `name`
+/// ([`Hosted::cookie_name`]).
+pub fn session_token(headers: &HeaderMap, name: &str) -> Option<String> {
+    cookie_value(headers, name)
 }
 
-pub fn session_token(headers: &HeaderMap, name: &str) -> Option<String> {
+/// The value of the one cookie named `name` in `headers`; `None` without
+/// one, or with more than one (another page set a cookie of the name).
+pub fn cookie_value(headers: &HeaderMap, name: &str) -> Option<String> {
     let mut found = headers
         .get_all(header::COOKIE)
         .iter()
