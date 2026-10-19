@@ -43,6 +43,11 @@ pub struct Linked {
     /// Tests: the answers to this many up-sends are lost after the remote
     /// acted on them.
     pub lose_answers: AtomicUsize,
+    /// Tests: a read's page size and its pages per cycle, each in place
+    /// of the sync's own when not 0 ([`Linked::set_read_limits`]).
+    pub read_limits: [AtomicUsize; 2],
+    /// Tests: a read to go on waits while set, its page cursor kept.
+    pub hold_resumed: AtomicBool,
     pub started: AtomicBool,
 }
 
@@ -58,6 +63,8 @@ impl Linked {
             read_errors: Mutex::default(),
             offline: AtomicBool::new(false),
             lose_answers: AtomicUsize::new(0),
+            read_limits: Default::default(),
+            hold_resumed: AtomicBool::new(false),
             started: AtomicBool::new(false),
         }
     }
@@ -143,6 +150,30 @@ impl Linked {
             None => {
                 m.remove(&k);
             }
+        }
+    }
+
+    /// Tests: reads ask pages of `page` threads and take at most `pages`
+    /// pages a cycle; 0 keeps the sync's own.
+    #[cfg(debug_assertions)]
+    pub fn set_read_limits(&self, page: usize, pages: usize) {
+        for (a, n) in self.read_limits.iter().zip([page, pages]) {
+            a.store(n, std::sync::atomic::Ordering::SeqCst);
+        }
+    }
+
+    /// Tests: while `on`, a read that ran out of pages does not go on.
+    #[cfg(debug_assertions)]
+    pub fn hold_resumed(&self, on: bool) {
+        self.hold_resumed
+            .store(on, std::sync::atomic::Ordering::SeqCst);
+    }
+
+    /// Limit `i` of [`Linked::read_limits`], or `default` when unset.
+    pub fn read_limit(&self, i: usize, default: usize) -> usize {
+        match self.read_limits[i].load(std::sync::atomic::Ordering::SeqCst) {
+            0 => default,
+            n => n,
         }
     }
 

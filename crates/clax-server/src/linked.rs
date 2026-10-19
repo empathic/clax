@@ -84,6 +84,10 @@ const PAGE: usize = 200;
 /// The most pages one cycle's read of an artifact takes; a read with more
 /// goes on in the next cycle ([`Resume`]).
 const MAX_PAGES: usize = 50;
+/// The most cycles in a row that end with a read to go on before the
+/// task waits (for the feedback poll, a kick or the backstop) as after
+/// any other cycle.
+const MAX_RESUMED: usize = 8;
 /// How long one feedback long-poll waits there, in seconds.
 pub const WAIT_S: u64 = 25;
 /// The name of the sync's own session there, as its people see it.
@@ -320,6 +324,7 @@ async fn run(s: AppState, rid: String, kick: Arc<Notify>, retry: Arc<Notify>) {
     };
     let mut full = true;
     let mut backoff = Duration::ZERO;
+    let mut resumed = 0;
     loop {
         match sync.cycle(full).await {
             Ok(()) => {
@@ -384,10 +389,14 @@ async fn run(s: AppState, rid: String, kick: Arc<Notify>, retry: Arc<Notify>) {
             }
         }
         if std::mem::take(&mut sync.more) {
-            // A read ran out of pages: it goes on before anything waits.
-            full = false;
-            continue;
+            resumed += 1;
+            if resumed < MAX_RESUMED {
+                // A read ran out of pages: it goes on before anything waits.
+                full = false;
+                continue;
+            }
         }
+        resumed = 0;
         let poll = sync.poll();
         tokio::select! {
             r = poll => {
@@ -491,9 +500,9 @@ struct Sync {
     /// request each at a time (a remote holds few polls of one question),
     /// kept across feedback polls.
     copy_waits: HashMap<String, clax_rt::JoinHandle<()>>,
-    /// The reads that ran out of pages, by local artifact ID: the next
-    /// cycle goes on from where each stopped.
-    reading: HashMap<String, Resume>,
+    /// The reads that ran out of pages, by link (local and public
+    /// artifact IDs): the next cycle goes on from where each stopped.
+    reading: HashMap<(String, String), Resume>,
     /// A read ran out of pages this cycle: the next starts at once.
     more: bool,
 }
@@ -743,6 +752,12 @@ impl Sync {
         if scan(&self.s, &self.rid).await {
             publish_outbox(&self.s, &self.rid).await;
         }
+        // A read to go on of a link that ended or moved starts over.
+        self.reading.retain(|(aid, raid), _| {
+            links
+                .iter()
+                .any(|l| &l.artifact_id == aid && &l.remote_artifact_id == raid)
+        });
         self.connect(&links).await?;
         self.drain(&links).await?;
         self.questions(&links).await?;
@@ -1484,7 +1499,9 @@ impl Sync {
     /// last page. A page past the answer cap is asked again smaller, and
     /// the next page at full size. A read that runs out of pages
     /// ([`MAX_PAGES`]) writes what it read and goes on in the next cycle
-    /// from its page cursor ([`Resume`]).
+    /// from its page cursor ([`Resume`]). A page cursor the remote refuses
+    /// (a 4xx: its thread was deleted there, say) starts the read over
+    /// from the link's sync cursor.
     ///
     /// A thread whose page of one is past the answer cap stops this
     /// link's read for the cycle: what was read before it is written
@@ -1493,18 +1510,26 @@ impl Sync {
     /// other links go on. A read to the end clears it.
     async fn read(&mut self, l: &RemoteLink, full: bool) -> Result<(), Stop> {
         let c = self.client.as_ref().expect("connected");
-        let resume = self.reading.get(&l.artifact_id).cloned();
-        let since = match &resume {
+        let key = (l.artifact_id.clone(), l.remote_artifact_id.clone());
+        let (page, max_pages) = (
+            self.s.linked.read_limit(0, PAGE),
+            self.s.linked.read_limit(1, MAX_PAGES),
+        );
+        let mut resume = self.reading.get(&key).cloned();
+        if resume.is_some() && self.s.linked.hold_resumed.load(Ordering::SeqCst) {
+            return Ok(());
+        }
+        let mut since = match &resume {
             Some(r) => r.since.clone(),
             None if full => None,
             None => l.sync_cursor.clone(),
         };
         let mut threads: Vec<Value> = Vec::new();
         let mut cursor: Option<String> = resume.as_ref().and_then(|r| r.cursor.clone());
-        let mut limit = PAGE;
+        let mut limit = page;
         let mut cut_off = None;
         let mut done = false;
-        for _ in 0..MAX_PAGES {
+        for _ in 0..max_pages {
             let mut q = format!(
                 "/api/artifacts/{}/threads?include_resolved=true&limit={limit}",
                 l.remote_artifact_id
@@ -1520,6 +1545,24 @@ impl Sync {
                 Err(f) => match classify(&f) {
                     Some(why) => return Err(Stop::Unreachable(why)),
                     None if f.status == Some(404) => return Ok(()),
+                    // A refused page cursor of a read to go on: the read
+                    // starts over.
+                    None if resume.is_some()
+                        && f.status.is_some_and(|s| (400..500).contains(&s)) =>
+                    {
+                        tracing::debug!(
+                            artifact = %l.artifact_id,
+                            code = %f.code,
+                            "linked threads: a read to go on starts over"
+                        );
+                        self.reading.remove(&key);
+                        resume = None;
+                        since = if full { None } else { l.sync_cursor.clone() };
+                        cursor = None;
+                        threads.clear();
+                        limit = page;
+                        continue;
+                    }
                     // A page past the answer cap is asked again smaller.
                     None if f.code == "too_large" && limit > 1 => {
                         limit = (limit / 4).max(1);
@@ -1535,7 +1578,7 @@ impl Sync {
                     None => return Err(Stop::Unreachable(f.message)),
                 },
             };
-            limit = PAGE;
+            limit = page;
             threads.extend(v["threads"].as_array().cloned().unwrap_or_default());
             match v["next_cursor"].as_str() {
                 Some(n) if Some(n) != cursor.as_deref() => cursor = Some(n.to_string()),
@@ -1566,7 +1609,7 @@ impl Sync {
         }
         if !done {
             self.reading.insert(
-                l.artifact_id.clone(),
+                key,
                 Resume {
                     since,
                     cursor,
@@ -1576,7 +1619,7 @@ impl Sync {
             self.more = true;
             return Ok(());
         }
-        self.reading.remove(&l.artifact_id);
+        self.reading.remove(&key);
         if !newest.is_empty() && Some(&newest) != l.sync_cursor.as_ref() {
             let (aid, rid) = (l.artifact_id.clone(), self.rid.clone());
             self.s

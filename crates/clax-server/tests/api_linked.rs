@@ -1369,6 +1369,116 @@ async fn threads_after_a_run_of_large_ones_all_come_down() {
     assert_eq!(p.local.state.linked.status(&p.remote).last_error, None);
 }
 
+/// Threads `t 1`..=`t {n}` written straight to the public copy's store as
+/// the author of thread `first`, so nothing wakes the sync; their IDs.
+async fn more_threads(p: &Pair, first: &Value, n: usize) -> Vec<String> {
+    let owner = first["comments"][0]["author_public_id"]
+        .as_str()
+        .map(str::to_string);
+    let aid = clax_core::ArtifactId::parse(&p.raid).unwrap();
+    let mut ids = Vec::new();
+    for i in 1..=n {
+        let made = p
+            .public
+            .ts
+            .store
+            .create_thread_keyed_async(
+                &clax_core::audit::AuditCtx::DAEMON,
+                &aid,
+                clax_store::threads::NewThread {
+                    version_n: 1,
+                    anchor: serde_json::from_value(whole()).unwrap(),
+                    author_name: "Ada".into(),
+                    author_public_id: owner.clone(),
+                    body: format!("t {i}"),
+                    clip: None,
+                    via_page: false,
+                },
+                &[],
+                None,
+            )
+            .await
+            .unwrap();
+        let clax_store::linked::Keyed::Made(t) = made else {
+            panic!("an unkeyed thread is made");
+        };
+        ids.push(t.id);
+    }
+    ids
+}
+
+/// The first comments of the local threads, sorted.
+async fn local_firsts(p: &Pair) -> Vec<String> {
+    let mut b: Vec<String> = p
+        .local_threads()
+        .await
+        .iter()
+        .map(|t| t["comments"][0]["body"].as_str().unwrap().to_string())
+        .collect();
+    b.sort();
+    b
+}
+
+#[tokio::test]
+async fn a_read_past_its_pages_goes_on_in_the_next_cycles() {
+    let p = Pair::new().await;
+    // Pages of two threads, one page a cycle.
+    p.local.state.linked.set_read_limits(2, 1);
+    let first = p.hosted_thread("t 0", whole(), None).await;
+    until("the first thread comes down", || async {
+        (p.local_threads().await.len() == 1).then_some(())
+    })
+    .await;
+    p.settled().await;
+    more_threads(&p, &first, 5).await;
+    // One backstop: the read goes on, cycle after cycle, to its end.
+    p.backstop_settled().await;
+    p.settled().await;
+    assert_eq!(
+        local_firsts(&p).await,
+        ["t 0", "t 1", "t 2", "t 3", "t 4", "t 5"]
+    );
+    assert_eq!(p.local.state.linked.status(&p.remote).last_error, None);
+}
+
+#[tokio::test]
+async fn a_read_whose_page_cursor_is_deleted_there_starts_over() {
+    let p = Pair::new().await;
+    // Pages of two threads, one page a cycle; the read waits after its
+    // first.
+    p.local.state.linked.set_read_limits(2, 1);
+    p.local.state.linked.hold_resumed(true);
+    let first = p.hosted_thread("t 0", whole(), None).await;
+    until("the first thread comes down", || async {
+        (p.local_threads().await.len() == 1).then_some(())
+    })
+    .await;
+    p.settled().await;
+    let ids = more_threads(&p, &first, 5).await;
+    p.backstop_settled().await;
+    p.settled().await;
+    assert_eq!(local_firsts(&p).await, ["t 0", "t 1"]);
+    // The read stopped after `t 1`, which is then deleted there.
+    p.public
+        .ts
+        .store
+        .delete_thread(&clax_core::audit::AuditCtx::DAEMON, &ids[0])
+        .unwrap();
+    p.local.state.linked.hold_resumed(false);
+    p.backstop_settled().await;
+    // The cycle ends at the backstop, not in a backoff.
+    until("the cycle ends", || async {
+        (p.sleeper.waiting(BACKSTOP) + p.sleeper.waiting(BACKOFF_FIRST) == 1).then_some(())
+    })
+    .await;
+    assert_eq!(p.local.state.linked.status(&p.remote).last_error, None);
+    assert_eq!(
+        local_firsts(&p).await,
+        ["t 0", "t 1", "t 2", "t 3", "t 4", "t 5"]
+    );
+    assert_eq!(p.local.state.linked.status(&p.remote).last_error, None);
+}
+
 #[tokio::test]
 async fn a_thread_past_the_answer_cap_stops_its_links_read_not_the_remotes() {
     use clax_store::threads::{AUTHOR_VIEWER, NewComment};
