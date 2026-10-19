@@ -68,11 +68,14 @@ test("groups the inbox by page: counts across pages, folding, a group's Mark rea
   await expect(group(sales).locator(".irow")).toHaveCount(5);
   await expect(group(sales).getByRole("button", { name: "Show more" })).toHaveCount(0);
   // The title opens the page; the toggle folds the group.
-  await expect(group(sales).locator("a.gtitle")).toHaveAttribute("href", `/a/${sales}`);
-  await group(sales).getByRole("button", { name: "Hide Sales dashboard" }).click();
-  await expect(group(sales).locator(".irow")).toHaveCount(0);
-  await group(sales).getByRole("button", { name: "Show Sales dashboard" }).click();
-  await expect(group(sales).locator(".irow")).toHaveCount(5);
+  await expect(group(sales).getByRole("heading", { name: "Sales dashboard" }).getByRole("link")).toHaveAttribute("href", `/a/${sales}`);
+  const toggle = group(sales).getByRole("button", { name: "Sales dashboard", exact: true });
+  await expect(toggle).toHaveAttribute("aria-expanded", "true");
+  await toggle.click();
+  await expect(toggle).toHaveAttribute("aria-expanded", "false");
+  await expect(group(sales).locator(".irow:visible")).toHaveCount(0);
+  await toggle.click();
+  await expect(group(sales).locator(".irow:visible")).toHaveCount(5);
 
   // A reply arrives: its group counts it.
   await replyAsAgent(d.base, d.token, s.id, sales, tid, "Reply 5 on the chart");
@@ -101,9 +104,9 @@ test("groups the inbox by page: counts across pages, folding, a group's Mark rea
   await page.getByRole("button", { name: /Show \d+ read items?/ }).click();
   const read = page.locator("#inbox-read");
   await expect(read.locator(".igroup .gtitle")).toHaveText(["Onboarding doc", "Pricing page"]);
-  await expect(read.locator(".irow")).toHaveCount(0);
-  await read.getByRole("button", { name: "Show Pricing page" }).click();
-  await expect(read.locator(`.igroup[data-group="${pricing}"] .irow`)).toHaveCount(1);
+  await expect(read.locator(".irow:visible")).toHaveCount(0);
+  await read.getByRole("button", { name: "Pricing page", exact: true }).click();
+  await expect(read.locator(`.igroup[data-group="${pricing}"] .irow:visible`)).toHaveCount(1);
 
   // The Page filter: one group.
   await page.goto(`${d.base}/inbox?artifact=${sales}`);

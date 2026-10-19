@@ -87,7 +87,12 @@ describe("InboxPage", () => {
     // One group per page, newest first; the question shows as its card alone.
     const groups = [...unread.querySelectorAll(".igroup")];
     expect(groups.map(g => [g.querySelector(".gtitle")!.textContent, g.querySelector(".gmeta")!.textContent])).toEqual([["Quarterly Review", "1 new · 5m"], ["Sales dashboard", "1 new · 2h"]]);
-    expect(groups[0].querySelector("a.gtitle")!.getAttribute("href")).toBe("/a/7q3k9mzx2b4t");
+    expect(groups[0].querySelector("h4.gtitle a")!.getAttribute("href")).toBe("/a/7q3k9mzx2b4t");
+    // The toggle is named by the group's heading, its state in aria-expanded, and controls the body.
+    const first = groups[0].querySelector<HTMLButtonElement>(".gtoggle")!;
+    expect(document.getElementById(first.getAttribute("aria-labelledby")!)!.textContent).toBe("Quarterly Review");
+    expect(document.getElementById(first.getAttribute("aria-controls")!)!.classList.contains("gbody")).toBe(true);
+    expect(groups[0].closest("section[aria-label]")).toBeNull();
     expect([...groups[0].querySelectorAll(".irow")].map(r => r.getAttribute("data-item"))).toEqual(["IR"]);
     // A grouped row leaves its page out of its title.
     expect(groups[0].querySelector(".irow .title")!.textContent).toBe("claude replied");
@@ -97,7 +102,8 @@ describe("InboxPage", () => {
     expect(toggle.getAttribute("aria-expanded")).toBe("true");
     click(toggle);
     expect(toggle.getAttribute("aria-expanded")).toBe("false");
-    expect(groups[1].querySelector(".irow")).toBeNull();
+    expect(groups[1].querySelector<HTMLElement>(".gbody")!.hidden).toBe(true);
+    expect(toggle.getAttribute("aria-labelledby")).toBe(groups[1].querySelector("h4.gtitle")!.id);
     expect(m.root.querySelector(".ihead .icnt")!.textContent).toBe("2 unread");
     const fold = m.root.querySelector<HTMLButtonElement>(".fold")!;
     expect(fold.textContent!.trim()).toBe("Show 1,240 read items");
@@ -137,7 +143,7 @@ describe("InboxPage", () => {
     // Read items about no page: one group, "Other", with no link.
     const other = m.root.querySelector('#inbox-read .igroup[data-group="none"]')!;
     expect(other.querySelector(".gtitle")!.textContent).toBe("Other");
-    expect(other.querySelector("a.gtitle")).toBeNull();
+    expect(other.querySelector(".gtitle a")).toBeNull();
   });
 
   it("marks a group read but its page's question pinned as a card, which it does not count", async () => {
