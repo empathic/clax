@@ -533,6 +533,32 @@ by hand (Actions, Release, Run workflow), or a pull request that touches the
 release path, does everything except publish, and keeps the result as the
 `release-dist` artifact.
 
+### The crates.io package
+
+`cargo install clax` is not published yet; everything up to the upload is
+in place. crates.io takes a package holding only its own files, and the
+binary needs eleven workspace crates and the built web UI, extension and
+plugins, so `scripts/crate-package.py` assembles one package, `clax`, in
+`target/crate-package/clax`. The workspace crates the binary depends on
+become modules of it under `crates/<name>/src/`, their `crate::` and
+`clax_<name>::` paths rewritten to match; the files the sources and
+`clax-embedded` include are copied at their repository paths; the
+dependencies are the union of the crates' own, with the workspace's
+`Cargo.lock`; and `scripts/crate-package/build.rs` stands in for the
+crates' build scripts. Its license is `GPL-2.0-only AND AGPL-3.0-only`:
+GPL-2.0 Rust code with the AGPL-3.0 web UI embedded.
+
+```
+just crate-package                            # build the web UI, assemble, pack, and check the packed crate (uploads nothing)
+cd target/crate-package/clax && cargo publish --allow-dirty   # the upload, by a person, from the release tag
+```
+
+`just crate-package` checks the packed crate as `cargo install` would
+unpack it, with `cargo check --locked` into `target/` (no binary, so
+`target/debug/clax` is untouched), and is not part of `just ci`; run it
+before a release. The package records the commit it was
+assembled from in `BUILD_COMMIT`, so `clax --version` names it.
+
 ## Security model
 
 Clax traffic on the LAN is not encrypted: serve on the LAN (`clax serve --bind 0.0.0.0`) only on a network you trust.

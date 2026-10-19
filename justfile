@@ -181,6 +181,15 @@ bazel-sync:
 bazel-gc *ARGS:
     ./scripts/bazel-gc.sh {{ARGS}}
 
+# Assemble the `clax` crates.io package in target/crate-package/clax (scripts/crate-package.py, after building the web UI), pack it with `cargo package` and check the packed crate with `cargo check --locked` (no binary is written, so target/debug/clax is left alone); nothing is uploaded
+crate-package: web
+    ./scripts/crate-package.py
+    cd target/crate-package/clax && cargo package --allow-dirty --no-verify --target-dir ../pack
+    rm -rf target/crate-package/unpacked && mkdir target/crate-package/unpacked
+    tar -xzf target/crate-package/pack/package/clax-*.crate -C target/crate-package/unpacked
+    # The packed manifest has no [workspace] table (cargo strips it); unpacked inside this repository it needs one.
+    cd target/crate-package/unpacked/clax-* && printf '\n[workspace]\n' >> Cargo.toml && CARGO_TARGET_DIR="{{justfile_directory()}}/target" cargo check --locked
+
 # Run the hosted demo locally in one go (demo/local.ts): build the web UI and the Worker, a fresh `wrangler dev --local` in hosted mode on a free port with one live seat, seed, links, steps and a git clone command; Enter starts the demo agents (extra args: --native for the native daemon instead, --port, --seats, --agents, --pace, --no-build)
 [positional-arguments]
 hosted-demo *ARGS:
