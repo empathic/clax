@@ -3,6 +3,7 @@ import 'dart:io';
 import 'package:clax_app/ui/comment_bar.dart';
 import 'package:clax_app/ui/theme.dart';
 import 'package:clax_app/ui/threads_panel.dart';
+import 'package:flutter/foundation.dart';
 import 'package:flutter/material.dart';
 import 'package:flutter/rendering.dart';
 import 'package:flutter/services.dart';
@@ -76,8 +77,8 @@ void main() {
         addTearDown(tester.view.reset);
         await tester.pumpWidget(
           MaterialApp(
-            theme: claxTheme(Brightness.light).copyWith(
-              textTheme: claxTheme(Brightness.light).textTheme
+            theme: claxTheme(Brightness.light, defaultTargetPlatform).copyWith(
+              textTheme: claxTheme(Brightness.light, defaultTargetPlatform).textTheme
                   .apply(fontFamily: 'Roboto'),
             ),
             builder: (context, child) => MediaQuery(

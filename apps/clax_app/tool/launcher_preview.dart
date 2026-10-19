@@ -18,6 +18,7 @@ import 'package:clax_app/ui/launcher.dart';
 import 'package:clax_app/ui/making_screen.dart';
 import 'package:clax_app/ui/settings_screen.dart';
 import 'package:clax_app/ui/theme.dart';
+import 'package:flutter/foundation.dart';
 import 'package:flutter/material.dart';
 
 class _MemoryKey implements SecureKey {
@@ -45,8 +46,8 @@ void main() {
     MaterialApp(
       navigatorKey: nav,
       title: 'Clax',
-      theme: claxTheme(Brightness.light),
-      darkTheme: claxTheme(Brightness.dark),
+      theme: claxTheme(Brightness.light, defaultTargetPlatform),
+      darkTheme: claxTheme(Brightness.dark, defaultTargetPlatform),
       home: Launcher(
         api: api,
         voice: SpeechToTextVoice(),

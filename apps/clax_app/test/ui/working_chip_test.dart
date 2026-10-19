@@ -8,6 +8,7 @@ import 'package:clax_app/daemon/clock.dart';
 import 'package:clax_app/ui/change_tracker.dart';
 import 'package:clax_app/ui/theme.dart';
 import 'package:clax_app/ui/working_chip.dart';
+import 'package:flutter/foundation.dart';
 import 'package:flutter/material.dart';
 import 'package:flutter/rendering.dart';
 import 'package:flutter/services.dart';
@@ -47,7 +48,7 @@ class _Rig {
     Key? boundary,
   }) => MaterialApp(
     debugShowCheckedModeBanner: false,
-    theme: claxTheme(brightness),
+    theme: claxTheme(brightness, defaultTargetPlatform),
     home: MediaQuery.withClampedTextScaling(
       minScaleFactor: textScale,
       maxScaleFactor: textScale,

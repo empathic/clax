@@ -8,6 +8,7 @@ import 'package:clax_app/clax/fake_api.dart';
 import 'package:clax_app/ui/app_inspector.dart';
 import 'package:clax_app/ui/read_consent_dialog.dart';
 import 'package:clax_app/ui/theme.dart';
+import 'package:flutter/foundation.dart';
 import 'package:flutter/material.dart';
 import 'package:flutter/services.dart';
 import 'package:flutter_test/flutter_test.dart';
@@ -104,8 +105,8 @@ void main() {
       await tester.pumpWidget(
         MaterialApp(
           debugShowCheckedModeBanner: false,
-          theme: claxTheme(Brightness.light),
-          darkTheme: claxTheme(Brightness.dark),
+          theme: claxTheme(Brightness.light, defaultTargetPlatform),
+          darkTheme: claxTheme(Brightness.dark, defaultTargetPlatform),
           themeMode: dark ? ThemeMode.dark : ThemeMode.light,
           home: AppInspector(
             api: s.api,

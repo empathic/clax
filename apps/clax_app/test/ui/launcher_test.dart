@@ -10,6 +10,7 @@ import 'package:clax_app/ui/inbox_screen.dart';
 import 'package:clax_app/ui/launcher.dart';
 import 'package:clax_app/ui/making_screen.dart';
 import 'package:clax_app/ui/theme.dart';
+import 'package:flutter/foundation.dart';
 import 'package:flutter/material.dart';
 import 'package:flutter/rendering.dart';
 import 'package:flutter/services.dart';
@@ -293,8 +294,8 @@ void main() {
     api.seedArtifact('Runs', _page);
     await tester.pumpWidget(
       MaterialApp(
-        theme: claxTheme(Brightness.light),
-        darkTheme: claxTheme(Brightness.dark),
+        theme: claxTheme(Brightness.light, defaultTargetPlatform),
+        darkTheme: claxTheme(Brightness.dark, defaultTargetPlatform),
         themeMode: ThemeMode.dark,
         home: Launcher(
           api: api,

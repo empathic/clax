@@ -5,6 +5,8 @@ import 'package:flutter/material.dart';
 
 import '../clax/api.dart';
 import 'line_diff.dart';
+import 'theme.dart';
+import 'tokens.g.dart';
 
 /// A file larger than this shows its sizes only, never a line diff.
 const int diffMaxBytes = 256 * 1024;
@@ -512,26 +514,41 @@ class _VersionPageState extends State<VersionPage> {
   }
 }
 
-/// [c]'s file name over its directory, so a long path keeps the name.
-Widget _pathTitle(FileChange c, TextStyle? dirStyle) => Column(
-  crossAxisAlignment: CrossAxisAlignment.start,
-  mainAxisSize: MainAxisSize.min,
-  children: [
-    Text(
-      c.name,
-      style: const TextStyle(fontFamily: 'monospace'),
-      maxLines: 2,
-      overflow: TextOverflow.ellipsis,
-    ),
-    if (c.dir.isNotEmpty)
+/// The platform's monospace family (`ClaxType.mono`), at the size of the
+/// text around it.
+TextStyle _monoFamily(BuildContext context) {
+  final mono = ClaxType.mono(Theme.of(context).platform);
+  return TextStyle(
+    fontFamily: mono.fontFamily,
+    fontFamilyFallback: mono.fontFamilyFallback,
+  );
+}
+
+/// [c]'s file name over its directory, so a long path keeps the name, both
+/// in the platform's monospace; [dirStyle] sets the directory's size and
+/// colour.
+Widget _pathTitle(BuildContext context, FileChange c, TextStyle? dirStyle) {
+  final mono = _monoFamily(context);
+  return Column(
+    crossAxisAlignment: CrossAxisAlignment.start,
+    mainAxisSize: MainAxisSize.min,
+    children: [
       Text(
-        c.dir,
-        style: dirStyle,
-        maxLines: 1,
+        c.name,
+        style: mono,
+        maxLines: 2,
         overflow: TextOverflow.ellipsis,
       ),
-  ],
-);
+      if (c.dir.isNotEmpty)
+        Text(
+          c.dir,
+          style: mono.merge(dirStyle),
+          maxLines: 1,
+          overflow: TextOverflow.ellipsis,
+        ),
+    ],
+  );
+}
 
 class _FileRow extends StatelessWidget {
   const _FileRow({required this.change, required this.onTap});
@@ -572,11 +589,9 @@ class _FileRow extends StatelessWidget {
       contentPadding: EdgeInsets.zero,
       leading: Icon(icon, color: color),
       title: _pathTitle(
+        context,
         c,
-        theme.textTheme.bodySmall?.copyWith(
-          fontFamily: 'monospace',
-          color: scheme.onSurfaceVariant,
-        ),
+        theme.textTheme.bodySmall?.copyWith(color: scheme.onSurfaceVariant),
       ),
       subtitle: Row(
         children: [
@@ -590,10 +605,9 @@ class _FileRow extends StatelessWidget {
   }
 }
 
-/// The colours of added and removed lines, from the theme's scheme:
-/// removals take the error container; additions a green container made
-/// the same way as the scheme (Material 3 from a green seed, same
-/// brightness).
+/// The colours of added and removed lines, from the brand's palette:
+/// each line's fill is `agent` (added) or `danger` (removed) at 14% over
+/// `card`, its text `fg`; the count of added lines is in `agent-ink`.
 class DiffColors {
   const DiffColors({
     required this.add,
@@ -604,21 +618,20 @@ class DiffColors {
   });
 
   factory DiffColors.of(ThemeData theme) {
-    final scheme = theme.colorScheme;
-    final green = _greens[theme.brightness] ??= ColorScheme.fromSeed(
-      seedColor: const Color(0xFF2E7D32),
-      brightness: theme.brightness,
-    );
+    final p =
+        theme.extension<ClaxColors>()?.palette ??
+        (theme.brightness == Brightness.dark
+            ? ClaxTokens.dark
+            : ClaxTokens.light);
+    Color over(Color c) => Color.alphaBlend(c.withValues(alpha: 0.14), p.card);
     return DiffColors(
-      add: green.primaryContainer,
-      onAdd: green.onPrimaryContainer,
-      addInk: green.primary,
-      del: scheme.errorContainer,
-      onDel: scheme.onErrorContainer,
+      add: over(p.agent),
+      onAdd: p.fg,
+      addInk: p.agentInk,
+      del: over(p.danger),
+      onDel: p.fg,
     );
   }
-
-  static final Map<Brightness, ColorScheme> _greens = {};
 
   final Color add;
   final Color onAdd;
@@ -685,9 +698,9 @@ class FileDiffPage extends StatelessWidget {
     return Scaffold(
       appBar: AppBar(
         title: _pathTitle(
+          context,
           change,
           theme.textTheme.labelSmall?.copyWith(
-            fontFamily: 'monospace',
             color: theme.colorScheme.onSurfaceVariant,
           ),
         ),
@@ -752,10 +765,9 @@ class FileDiffPage extends StatelessWidget {
 
   Widget _lines(ThemeData theme, FileDiff d) {
     final colors = DiffColors.of(theme);
-    final mono = theme.textTheme.bodySmall?.copyWith(
-      fontFamily: 'monospace',
-      height: 1.35,
-    );
+    final mono = ClaxType.mono(
+      theme.platform,
+    ).copyWith(color: theme.colorScheme.onSurface);
     final rows = _rows(d);
     return ListView.builder(
       padding: const EdgeInsets.only(bottom: 24),

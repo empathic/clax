@@ -23,6 +23,7 @@ import 'change_tracker.dart';
 import 'comment_bar.dart';
 import 'comment_composer.dart';
 import 'host_protocol.dart';
+import 'layout.dart';
 import 'swipe.dart';
 import 'thread_detail.dart';
 import 'threads_panel.dart';
@@ -1763,7 +1764,8 @@ class _AppScreenState extends State<AppScreen> with WidgetsBindingObserver {
       resizeToAvoidBottomInset: !composing,
       body: LayoutBuilder(
         builder: (context, box) {
-          final wide = box.maxWidth >= 720;
+          final wide =
+              ClaxWidth.fromWidth(box.maxWidth) >= ClaxWidth.expanded;
           final bottomInset = MediaQuery.paddingOf(context).bottom;
           final keyboard = MediaQuery.viewInsetsOf(context).bottom;
           final shown = _open || composing;

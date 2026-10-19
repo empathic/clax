@@ -3,6 +3,7 @@ import 'package:clax_app/clax/fake_api.dart';
 import 'package:clax_app/ui/theme.dart';
 import 'package:clax_app/ui/version_page.dart';
 import 'package:clax_app/ui/versions_tab.dart';
+import 'package:flutter/foundation.dart';
 import 'package:flutter/material.dart';
 import 'package:flutter_test/flutter_test.dart';
 
@@ -19,7 +20,7 @@ class _Rig {
   final restores = <int>[];
 
   Widget versionPage(int n) => MaterialApp(
-    theme: claxTheme(Brightness.light),
+    theme: claxTheme(Brightness.light, defaultTargetPlatform),
     home: VersionPage(
       api: api,
       aid: aid,
@@ -119,7 +120,9 @@ void main() {
       find.descendant(of: add, matching: find.text('<p>row ten</p>')),
       findsOneWidget,
     );
-    final scheme = claxTheme(Brightness.light).colorScheme;
+    final colors = DiffColors.of(
+      claxTheme(Brightness.light, defaultTargetPlatform),
+    );
     Color? fill(Finder f) =>
         (tester
                     .widget<Container>(
@@ -130,9 +133,9 @@ void main() {
                     .decoration
                 as BoxDecoration?)
             ?.color;
-    expect(fill(del), scheme.errorContainer);
-    expect(fill(add), isNot(scheme.errorContainer));
-    expect(fill(add), isNotNull);
+    expect(fill(del), colors.del);
+    expect(fill(add), colors.add);
+    expect(colors.add, isNot(colors.del));
     expect(find.text('+1  −1', findRichText: true), findsOneWidget);
     // The unchanged runs before and after the hunk are folded.
     expect(find.text('8 unchanged lines'), findsOneWidget);
@@ -222,7 +225,7 @@ void main() {
     final previews = <int?>[];
     await tester.pumpWidget(
       MaterialApp(
-        theme: claxTheme(Brightness.light),
+        theme: claxTheme(Brightness.light, defaultTargetPlatform),
         home: Scaffold(
           body: VersionsTab(
             api: r.api,

@@ -4,6 +4,7 @@ import 'package:clax_app/ui/app_inspector_code.dart';
 import 'package:clax_app/ui/launcher.dart';
 import 'package:clax_app/ui/read_consent_dialog.dart';
 import 'package:clax_app/ui/theme.dart';
+import 'package:flutter/foundation.dart';
 import 'package:flutter/material.dart';
 import 'package:flutter/services.dart';
 import 'package:flutter_test/flutter_test.dart';
@@ -49,7 +50,7 @@ Future<void> _pump(
   tester.view.devicePixelRatio = 2;
   addTearDown(tester.view.reset);
   await tester.pumpWidget(
-    MaterialApp(theme: claxTheme(Brightness.light), home: child),
+    MaterialApp(theme: claxTheme(Brightness.light, defaultTargetPlatform), home: child),
   );
   await tester.pumpAndSettle();
 }

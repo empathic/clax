@@ -4,6 +4,7 @@ import 'package:clax_app/clax/api.dart';
 import 'package:clax_app/clax/fake_api.dart';
 import 'package:clax_app/ui/inbox_screen.dart';
 import 'package:clax_app/ui/theme.dart';
+import 'package:flutter/foundation.dart';
 import 'package:flutter/material.dart';
 import 'package:flutter_test/flutter_test.dart';
 
@@ -55,7 +56,7 @@ void main() {
   Future<void> pumpInbox(WidgetTester tester, {Brightness? brightness}) async {
     await tester.pumpWidget(
       MaterialApp(
-        theme: claxTheme(brightness ?? Brightness.light),
+        theme: claxTheme(brightness ?? Brightness.light, defaultTargetPlatform),
         home: InboxScreen(
           api: api,
           onOpen: opened.add,

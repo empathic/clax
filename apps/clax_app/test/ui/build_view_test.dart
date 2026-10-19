@@ -15,6 +15,7 @@ import 'package:clax_app/ui/making_preview.dart';
 import 'package:clax_app/ui/making_screen.dart';
 import 'package:clax_app/ui/theme.dart';
 import 'package:clax_app/ui/working_chip.dart';
+import 'package:flutter/foundation.dart';
 import 'package:flutter/material.dart';
 import 'package:flutter_test/flutter_test.dart';
 
@@ -126,7 +127,7 @@ void main() {
       phone(tester);
       await tester.pumpWidget(
         MaterialApp(
-          theme: claxTheme(Brightness.light),
+          theme: claxTheme(Brightness.light, defaultTargetPlatform),
           home: Scaffold(
             body: BuildWatch(
               link: link,
@@ -230,7 +231,7 @@ void main() {
       final handed = <String>[];
       await tester.pumpWidget(
         MaterialApp(
-          theme: claxTheme(Brightness.light),
+          theme: claxTheme(Brightness.light, defaultTargetPlatform),
           home: MakingScreen(
             request: 'a run tracker',
             make: (_, _, report) {
@@ -312,7 +313,7 @@ void main() {
       final results = <MakingResult?>[];
       await tester.pumpWidget(
         MaterialApp(
-          theme: claxTheme(Brightness.light),
+          theme: claxTheme(Brightness.light, defaultTargetPlatform),
           home: Builder(
             builder: (context) => TextButton(
               onPressed: () async => results.add(
@@ -379,7 +380,7 @@ void main() {
       await plans.set(aid, _features);
       await tester.pumpWidget(
         MaterialApp(
-          theme: claxTheme(Brightness.light),
+          theme: claxTheme(Brightness.light, defaultTargetPlatform),
           home: AppScreen(
             aid: aid,
             base: Uri.parse('http://127.0.0.1:7999'),

@@ -8,14 +8,11 @@ import '../agent/loop.dart' show pendingComments;
 import '../clax/api.dart';
 import '../daemon/clock.dart';
 import 'change_tracker.dart';
+import 'layout.dart';
 import 'thread_detail.dart' show anchorWords;
 
-/// From this width the change shows as a side panel rather than a bottom
-/// sheet.
-const changePanelBreakpoint = 720.0;
-
-/// Shows the change in progress over an app: a bottom sheet on a phone, a
-/// panel at the right from [changePanelBreakpoint] wide. See [ChangeSheet]
+/// Shows the change in progress over an app: a bottom sheet at the compact
+/// size class, a panel at the right from medium (`ClaxWidth`). See [ChangeSheet]
 /// for the rest of the parameters.
 Future<void> showChangeSheet(
   BuildContext context, {
@@ -45,7 +42,7 @@ Future<void> showChangeSheet(
     labelOf: labelOf,
     side: side,
   );
-  if (MediaQuery.sizeOf(context).width >= changePanelBreakpoint) {
+  if (ClaxWidth.of(context) >= ClaxWidth.medium) {
     return showGeneralDialog<void>(
       context: context,
       barrierDismissible: true,

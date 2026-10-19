@@ -206,9 +206,13 @@ void main() {
     final surface = _PageSurface();
     final worker = StreamController<WorkerEvent>.broadcast(sync: true);
     addTearDown(worker.close);
-    ThemeData theme(Brightness b) => claxTheme(
-      b,
-    ).copyWith(textTheme: claxTheme(b).textTheme.apply(fontFamily: 'Roboto'));
+    ThemeData theme(Brightness b) =>
+        claxTheme(b, defaultTargetPlatform).copyWith(
+          textTheme: claxTheme(
+            b,
+            defaultTargetPlatform,
+          ).textTheme.apply(fontFamily: 'Roboto'),
+        );
     await tester.pumpWidget(
       RepaintBoundary(
         key: const ValueKey('shot'),

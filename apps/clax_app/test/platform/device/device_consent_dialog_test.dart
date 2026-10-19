@@ -7,6 +7,7 @@ import 'dart:io';
 import 'package:clax_app/platform/device/device_consent_dialog.dart';
 import 'package:clax_app/platform/device/device_host.dart';
 import 'package:clax_app/ui/theme.dart';
+import 'package:flutter/foundation.dart';
 import 'package:flutter/material.dart';
 import 'package:flutter/services.dart';
 import 'package:flutter_test/flutter_test.dart';
@@ -41,7 +42,7 @@ Future<List<DeviceAnswer>> _show(
     MaterialApp(
       navigatorKey: nav,
       debugShowCheckedModeBanner: false,
-      theme: claxTheme(dark ? Brightness.dark : Brightness.light),
+      theme: claxTheme(dark ? Brightness.dark : Brightness.light, defaultTargetPlatform),
       home: const Scaffold(body: Center(child: Text('Plant care'))),
     ),
   );

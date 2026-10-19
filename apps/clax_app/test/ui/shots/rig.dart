@@ -103,8 +103,8 @@ class Shot {
       MaterialApp(
         debugShowCheckedModeBanner: false,
         title: title,
-        theme: claxTheme(Brightness.light),
-        darkTheme: claxTheme(Brightness.dark),
+        theme: claxTheme(Brightness.light, form.platform),
+        darkTheme: claxTheme(Brightness.dark, form.platform),
         themeMode: dark ? ThemeMode.dark : ThemeMode.light,
         builder: !chrome
             ? null

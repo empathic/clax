@@ -8,6 +8,7 @@ import 'package:clax_app/bundle/exporter.dart' show ExportMode, ExportPlan;
 import 'package:clax_app/bundle/lineage_store.dart';
 import 'package:clax_app/ui/bundle_sheets.dart';
 import 'package:clax_app/ui/theme.dart';
+import 'package:flutter/foundation.dart';
 import 'package:flutter/material.dart';
 import 'package:flutter/services.dart';
 import 'package:flutter_test/flutter_test.dart';
@@ -122,7 +123,7 @@ void main() {
           await tester.pumpWidget(
             MaterialApp(
               debugShowCheckedModeBanner: false,
-              theme: claxTheme(dark ? Brightness.dark : Brightness.light),
+              theme: claxTheme(dark ? Brightness.dark : Brightness.light, defaultTargetPlatform),
               home: Builder(
                 builder: (context) => Scaffold(
                   body: Center(

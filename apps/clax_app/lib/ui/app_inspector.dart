@@ -1180,10 +1180,14 @@ class _SectionHead extends StatelessWidget {
               children: [
                 Row(
                   children: [
-                    Text(
-                      title,
-                      style: theme.textTheme.titleMedium?.copyWith(
-                        color: dim ? scheme.onSurfaceVariant : null,
+                    Flexible(
+                      child: Text(
+                        title,
+                        maxLines: 1,
+                        overflow: TextOverflow.ellipsis,
+                        style: theme.textTheme.titleMedium?.copyWith(
+                          color: dim ? scheme.onSurfaceVariant : null,
+                        ),
                       ),
                     ),
                     if (badge != null) ...[

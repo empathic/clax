@@ -55,7 +55,7 @@ void main() {
   }) async {
     await tester.pumpWidget(
       MaterialApp(
-        theme: claxTheme(Brightness.light),
+        theme: claxTheme(Brightness.light, defaultTargetPlatform),
         home: ThreadDetail(
           key: ValueKey(tid),
           api: rig.api,
@@ -661,7 +661,7 @@ void main() {
       addTearDown(tester.view.reset);
       await tester.pumpWidget(
         MaterialApp(
-          theme: claxTheme(Brightness.light),
+          theme: claxTheme(Brightness.light, defaultTargetPlatform),
           home: ThreadDetail(
             api: rig.api,
             aid: rig.aid,

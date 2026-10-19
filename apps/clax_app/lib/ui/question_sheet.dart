@@ -5,11 +5,8 @@ import 'package:webview_flutter/webview_flutter.dart';
 
 import '../clax/api.dart';
 import 'daemon_cookie.dart';
+import 'layout.dart';
 import 'webview_surface.dart' show noPinchZoom;
-
-/// From this width the question shows as a dialog rather than a bottom
-/// sheet.
-const questionDialogBreakpoint = 720.0;
 
 /// The shell's inbox focused on question [qid] (`/inbox?q=<qid>`), on the
 /// daemon at [base]: the question's own card, answered in the shell.
@@ -93,8 +90,8 @@ class WebViewQuestionPage implements QuestionPage {
 }
 
 /// Shows question [questionId] of the daemon at [base] in the shell's
-/// question card, on [page]: a bottom sheet on a phone, a dialog from
-/// [questionDialogBreakpoint] wide. It closes by itself once [updates]
+/// question card, on [page]: a bottom sheet at the compact size class, a
+/// dialog from medium (`ClaxWidth`). It closes by itself once [updates]
 /// (the `questions` stream topic's views) shows the question no longer
 /// open, and completes as it closes.
 Future<void> showQuestionSheet(
@@ -111,7 +108,7 @@ Future<void> showQuestionSheet(
     questionId: questionId,
   );
   final size = MediaQuery.sizeOf(context);
-  if (size.width >= questionDialogBreakpoint) {
+  if (ClaxWidth.of(context) >= ClaxWidth.medium) {
     return showDialog<void>(
       context: context,
       builder: (_) => Dialog(

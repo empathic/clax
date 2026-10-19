@@ -2272,8 +2272,18 @@ class _AppRootState extends State<AppRoot> with WidgetsBindingObserver {
       navigatorObservers: [_coverWatch],
       shortcuts: macOS ? escapeShortcuts() : null,
       actions: macOS ? escapeActions(_back) : null,
-      theme: claxTheme(Brightness.light),
-      darkTheme: claxTheme(Brightness.dark),
+      theme: claxTheme(Brightness.light, defaultTargetPlatform),
+      darkTheme: claxTheme(Brightness.dark, defaultTargetPlatform),
+      highContrastTheme: claxTheme(
+        Brightness.light,
+        defaultTargetPlatform,
+        highContrast: true,
+      ),
+      highContrastDarkTheme: claxTheme(
+        Brightness.dark,
+        defaultTargetPlatform,
+        highContrast: true,
+      ),
       home: ListenableBuilder(
         listenable: _revision,
         builder: (context, _) => _home(context),

@@ -18,6 +18,7 @@ import 'package:clax_app/ui/host_protocol.dart';
 import 'package:clax_app/ui/theme.dart';
 import 'package:clax_app/ui/thread_detail.dart';
 import 'package:flutter/gestures.dart';
+import 'package:flutter/foundation.dart';
 import 'package:flutter/material.dart';
 import 'package:flutter/services.dart';
 import 'package:flutter_test/flutter_test.dart';
@@ -208,7 +209,7 @@ void main() {
     );
     await tester.pumpWidget(
       MaterialApp(
-        theme: claxTheme(Brightness.light),
+        theme: claxTheme(Brightness.light, defaultTargetPlatform),
         // [pushed]: over a launcher, as the app opens it.
         home: pushed ? const Scaffold(body: Text('Launcher')) : screen,
       ),
@@ -599,7 +600,7 @@ void main() {
             );
           }
           expect(find.byKey(const ValueKey('snippet-clip')), findsOneWidget);
-          if (size.width < 720) {
+          if (size.width < 840) {
             expect(
               tester.getRect(find.byKey(const ValueKey('composer'))).bottom,
               kb,

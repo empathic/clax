@@ -11,6 +11,7 @@ import 'package:clax_app/daemon/clock.dart';
 import 'package:clax_app/ui/making_preview.dart';
 import 'package:clax_app/ui/making_screen.dart';
 import 'package:clax_app/ui/theme.dart';
+import 'package:flutter/foundation.dart';
 import 'package:flutter/material.dart';
 import 'package:flutter/services.dart';
 import 'package:flutter_test/flutter_test.dart';
@@ -99,8 +100,8 @@ void main() {
       await tester.pumpWidget(
         MaterialApp(
           debugShowCheckedModeBanner: false,
-          theme: claxTheme(Brightness.light),
-          darkTheme: claxTheme(Brightness.dark),
+          theme: claxTheme(Brightness.light, defaultTargetPlatform),
+          darkTheme: claxTheme(Brightness.dark, defaultTargetPlatform),
           themeMode: dark ? ThemeMode.dark : ThemeMode.light,
           home: MakingScreen(
             request: 'a focus timer with a log of today’s sessions',

@@ -1,8 +1,8 @@
 /// The sheets of sharing an app as a bundle and of opening one (bundles
 /// spec §3, §12.1): [ExportSheet], [InstallSheet], [UpdateSheet],
 /// [BundleProgressSheet] and [BundleNoticeSheet], each shown by
-/// [showBundleSheet]: a bottom sheet on a phone, a dialog from
-/// [bundleDialogBreakpoint] wide. They show what they are given and answer
+/// [showBundleSheet]: a bottom sheet at the compact size class, a dialog
+/// from medium (`ClaxWidth`). They show what they are given and answer
 /// the person's choice; the bundle services do the work.
 library;
 
@@ -26,19 +26,17 @@ import '../platform/bundle_key.dart' show keyFingerprint;
 import '../platform/device/device_grants.dart';
 import '../platform/settings_store.dart';
 import 'app_icon.dart';
+import 'layout.dart';
 
-/// From this width the sheets show as dialogs.
-const bundleDialogBreakpoint = 600.0;
-
-/// Shows [sheet] over [context]: a bottom sheet on a phone, a dialog from
-/// [bundleDialogBreakpoint] wide. [dismissible] false keeps it up until
+/// Shows [sheet] over [context]: a bottom sheet at the compact size class,
+/// a dialog from medium. [dismissible] false keeps it up until
 /// the sheet pops itself (a check in progress).
 Future<T?> showBundleSheet<T>(
   BuildContext context,
   Widget sheet, {
   bool dismissible = true,
 }) {
-  if (MediaQuery.sizeOf(context).width >= bundleDialogBreakpoint) {
+  if (ClaxWidth.of(context) >= ClaxWidth.medium) {
     return showDialog<T>(
       context: context,
       barrierDismissible: dismissible,

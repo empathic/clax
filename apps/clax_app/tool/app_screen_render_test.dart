@@ -18,6 +18,7 @@ import 'package:clax_app/ui/app_screen.dart';
 import 'package:clax_app/ui/app_surface.dart';
 import 'package:clax_app/ui/host_protocol.dart';
 import 'package:clax_app/ui/theme.dart';
+import 'package:flutter/foundation.dart';
 import 'package:flutter/material.dart';
 import 'package:flutter/rendering.dart';
 import 'package:flutter/services.dart';
@@ -174,12 +175,12 @@ void main() {
         key: const ValueKey('shot'),
         child: MaterialApp(
           debugShowCheckedModeBanner: false,
-          theme: claxTheme(Brightness.light).copyWith(
-            textTheme: claxTheme(Brightness.light).textTheme
+          theme: claxTheme(Brightness.light, defaultTargetPlatform).copyWith(
+            textTheme: claxTheme(Brightness.light, defaultTargetPlatform).textTheme
                 .apply(fontFamily: 'Roboto'),
           ),
-          darkTheme: claxTheme(Brightness.dark).copyWith(
-            textTheme: claxTheme(Brightness.dark).textTheme
+          darkTheme: claxTheme(Brightness.dark, defaultTargetPlatform).copyWith(
+            textTheme: claxTheme(Brightness.dark, defaultTargetPlatform).textTheme
                 .apply(fontFamily: 'Roboto'),
           ),
           themeMode: brightness == Brightness.dark

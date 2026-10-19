@@ -1,10 +1,10 @@
 import 'dart:convert';
-import 'dart:typed_data';
 
 import 'package:clax_app/ui/comment_composer.dart';
 import 'package:clax_app/ui/host_protocol.dart';
 import 'package:clax_app/ui/theme.dart';
 import 'package:clax_app/ui/threads_panel.dart';
+import 'package:flutter/foundation.dart';
 import 'package:flutter/material.dart';
 import 'package:flutter_test/flutter_test.dart';
 
@@ -26,7 +26,7 @@ void main() {
     addTearDown(tester.view.reset);
     await tester.pumpWidget(
       MaterialApp(
-        theme: claxTheme(Brightness.light),
+        theme: claxTheme(Brightness.light, defaultTargetPlatform),
         home: Scaffold(
           body: Align(
             alignment: Alignment.centerRight,

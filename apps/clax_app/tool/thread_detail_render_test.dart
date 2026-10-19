@@ -16,6 +16,7 @@ import 'package:clax_app/ui/comment_composer.dart';
 import 'package:clax_app/ui/host_protocol.dart';
 import 'package:clax_app/ui/theme.dart';
 import 'package:clax_app/ui/thread_detail.dart';
+import 'package:flutter/foundation.dart';
 import 'package:flutter/material.dart';
 import 'package:flutter/rendering.dart';
 import 'package:flutter/services.dart';
@@ -88,8 +89,12 @@ Future<Uint8List> _clipPng() async {
   return bytes!.buffer.asUint8List();
 }
 
-ThemeData _theme(Brightness b) => claxTheme(b)
-    .copyWith(textTheme: claxTheme(b).textTheme.apply(fontFamily: 'Roboto'));
+ThemeData _theme(Brightness b) => claxTheme(b, defaultTargetPlatform).copyWith(
+  textTheme: claxTheme(
+    b,
+    defaultTargetPlatform,
+  ).textTheme.apply(fontFamily: 'Roboto'),
+);
 
 void main() {
   final out = Directory(
