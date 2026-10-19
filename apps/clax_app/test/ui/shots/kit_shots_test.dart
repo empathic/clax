@@ -1,6 +1,7 @@
 // The kit's components rendered in every form and theme into
 // CLAX_SHOTS_DIR (skipped without it): `kit-controls` is one page with
-// every control in each of its states.
+// every control in each of its states; `kit-surfaces-*` show a sheet, a
+// dialog, a menu and each place of toast over one screen.
 import 'package:clax_app/ui/kit/kit.dart';
 import 'package:clax_app/ui/layout.dart';
 import 'package:clax_app/ui/theme.dart';
@@ -207,10 +208,148 @@ class _Controls extends StatelessWidget {
   }
 }
 
+final _page = GlobalKey();
+final _more = GlobalKey();
+
+/// The screen the surfaces open over: a list of items in a scaffold, the
+/// first row with a "more" button the menu anchors to.
+class _Screen extends StatelessWidget {
+  const _Screen();
+
+  @override
+  Widget build(BuildContext context) => ClaxScaffold(
+    title: 'Groceries',
+    subtitle: 'Shared with Sam',
+    actions: [IconButton(onPressed: () {}, icon: const Icon(Icons.search))],
+    body: Builder(
+      key: _page,
+      builder: (context) => ListView(
+        children: [
+          for (final (i, item) in const [
+            'Oat milk',
+            'Sourdough',
+            'Lemons',
+            'Coffee beans',
+            'Spinach',
+            'Eggs',
+          ].indexed)
+            ListTile(
+              title: Text(item),
+              subtitle: const Text('Aisle 4'),
+              trailing: IconButton(
+                key: i == 0 ? _more : null,
+                onPressed: () {},
+                icon: const Icon(Icons.more_horiz),
+              ),
+            ),
+        ],
+      ),
+    ),
+  );
+}
+
+/// Renders [surface] with [open] run on the screen's body.
+void _surface(
+  String surface,
+  void Function(BuildContext context) open, {
+  bool timers = false,
+}) {
+  shots(surface, (s) async {
+    await s.tester.pumpWidget(s.app(const _Screen(), title: 'Groceries'));
+    await s.settle(2);
+    open(_page.currentContext!);
+    await s.settle();
+    await s.take(surface);
+    if (timers) {
+      // The toasts go by themselves; let them, so no timer outlives the test.
+      await s.tester.pump(const Duration(seconds: 5));
+      await s.tester.pump(const Duration(seconds: 1));
+    }
+  });
+}
+
 void main() {
   shots('kit-controls', (s) async {
     await s.tester.pumpWidget(s.app(const _Controls(), title: 'Controls'));
     await s.settle();
     await s.take('kit-controls');
   });
+
+  _surface(
+    'kit-surfaces-sheet',
+    (c) => ClaxSheet.show<void>(
+      c,
+      title: 'Share Groceries',
+      builder: (c) => Column(
+        mainAxisSize: MainAxisSize.min,
+        crossAxisAlignment: CrossAxisAlignment.start,
+        children: [
+          Text(
+            'Share sends the app without your list. Share a copy sends '
+            'it with everything on it.',
+            style: Theme.of(c).textTheme.bodyMedium!.copyWith(
+              color: claxPalette(c).muted,
+            ),
+          ),
+          const SizedBox(height: 16),
+          const ClaxTextField(label: 'Message', hint: 'Our weekly list'),
+        ],
+      ),
+      actions: [
+        ClaxButton(label: 'Cancel', onPressed: () {}),
+        ClaxButton(
+          label: 'Share',
+          onPressed: () {},
+          kind: ClaxButtonKind.primary,
+          isDefault: true,
+        ),
+      ],
+    ),
+  );
+
+  _surface(
+    'kit-surfaces-dialog',
+    (c) => ClaxDialog.show(
+      c,
+      title: 'Delete Groceries?',
+      body: 'Its list and its history go too. This can’t be undone.',
+      actions: const [
+        ClaxDialogAction('Cancel'),
+        ClaxDialogAction('Delete', kind: ClaxButtonKind.destructive),
+      ],
+      cancelIndex: 0,
+    ),
+  );
+
+  _surface(
+    'kit-surfaces-menu',
+    (c) {
+      final box = _more.currentContext!.findRenderObject()! as RenderBox;
+      ClaxMenu.show(
+        c,
+        anchor: box.localToGlobal(Offset.zero) & box.size,
+        items: const [
+          ClaxMenuItem('rename', 'Rename', icon: Icons.edit_outlined, key: '⌘R'),
+          ClaxMenuItem('share', 'Share…', icon: Icons.ios_share),
+          ClaxMenuItem('pin', 'Pin to Home', icon: Icons.push_pin_outlined, enabled: false),
+          ClaxMenuItem.separator(),
+          ClaxMenuItem('delete', 'Delete', icon: Icons.delete_outline, destructive: true),
+        ],
+      );
+    },
+  );
+
+  for (final place in ClaxToastPlace.values) {
+    _surface(
+      'kit-surfaces-toast-${place.name}',
+      (c) => ClaxToast.show(
+        c,
+        'Deleted Oat milk',
+        actionLabel: 'Undo',
+        onAction: () {},
+        place: place,
+      ),
+      timers: true,
+    );
+  }
 }
