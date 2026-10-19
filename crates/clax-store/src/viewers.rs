@@ -352,8 +352,12 @@ pub(super) fn name_owner_in(
 /// become NULL when `into` is the owner; documents' and pages' authors,
 /// batch senders, agents' resolves, versions' file authors and
 /// artifacts' text authors, which become `*owner`), its approvals given and received and its
-/// approval requests (see `fold_authorship`), and its invites and grants.
-/// The elevations it gave as an artifact's creator are dropped.
+/// approval requests (see `fold_authorship`), its invites, grants and
+/// device-code decisions, its hosted rows (see `fold_hosted`) and its
+/// artifact shares ([`super::shares::fold_shares`]). The elevations it gave
+/// as an artifact's creator are dropped. A row of `from` left in any table
+/// with a `viewer_id` column fails the fold (see `assert_folded`), so a
+/// table added later cannot be missed silently.
 fn fold(
     st: &Store,
     ctx: &AuditCtx,
@@ -382,13 +386,15 @@ fn fold(
             params![old, person],
         )?;
     }
-    for table in ["invites", "grants"] {
+    for table in ["invites", "grants", "device_codes"] {
         tx.execute(
             &format!("UPDATE {table} SET viewer_id = ?2 WHERE viewer_id = ?1"),
             params![from.id, into.id],
         )?;
     }
     fold_authorship(st, ctx, tx, old, new, into_owner)?;
+    fold_hosted(tx, from, into)?;
+    super::shares::fold_shares(st, ctx, tx, (&from.id, old), (&into.id, new))?;
     tx.execute(
         "UPDATE comments SET author_public_id = ?2 WHERE author_public_id = ?1",
         params![old, new],
@@ -430,7 +436,84 @@ fn fold(
     )?;
     move_private_docs(st, ctx, tx, old, new)?;
     forget_cookies(tx, &from.id)?;
+    assert_folded(tx, &from.id)?;
     tx.execute("DELETE FROM viewers WHERE id = ?1", params![from.id])?;
+    Ok(())
+}
+
+/// Moves `from`'s hosted rows to `into` in a fold. The owner's row keeps
+/// its credentials: when `from` is the owner's, its browser sessions,
+/// unused sign-in links, setup and GitHub account move to `into`, which
+/// becomes the owner (a GitHub account `into` already has stays, and
+/// `from`'s is unlinked). Any other row's credentials are forgotten, as
+/// its cookies are, so a browser that held them does not become `into`.
+/// Its agreements to the legal documents move, `into`'s own kept.
+fn fold_hosted(tx: &rusqlite::Transaction<'_>, from: &Viewer, into: &Viewer) -> Result<()> {
+    let from_owner: bool = tx.query_row(
+        "SELECT owner FROM viewers WHERE id = ?1",
+        params![from.id],
+        |r| r.get(0),
+    )?;
+    let ids = params![from.id, into.id];
+    if from_owner {
+        for table in ["browser_sessions", "signin_links", "hosted_setup"] {
+            tx.execute(
+                &format!("UPDATE {table} SET viewer_id = ?2 WHERE viewer_id = ?1"),
+                ids,
+            )?;
+        }
+        tx.execute(
+            "UPDATE OR IGNORE github_identities SET viewer_id = ?2 WHERE viewer_id = ?1",
+            ids,
+        )?;
+    }
+    for table in [
+        "browser_sessions",
+        "signin_links",
+        "hosted_setup",
+        "github_identities",
+    ] {
+        tx.execute(
+            &format!("DELETE FROM {table} WHERE viewer_id = ?1"),
+            params![from.id],
+        )?;
+    }
+    tx.execute(
+        "INSERT OR IGNORE INTO legal_agreements (viewer_id, version, agreed_at, via)
+         SELECT ?2, version, agreed_at, via FROM legal_agreements WHERE viewer_id = ?1",
+        ids,
+    )?;
+    tx.execute(
+        "DELETE FROM legal_agreements WHERE viewer_id = ?1",
+        params![from.id],
+    )?;
+    Ok(())
+}
+
+/// Fails unless no table with a `viewer_id` column has a row naming
+/// viewer row `id`: what a fold checks before it deletes the row.
+fn assert_folded(tx: &rusqlite::Transaction<'_>, id: &str) -> Result<()> {
+    let tables: Vec<String> = {
+        let mut stmt = tx.prepare(
+            "SELECT m.name FROM sqlite_master m, pragma_table_info(m.name) p
+              WHERE m.type = 'table' AND p.name = 'viewer_id' ORDER BY m.name",
+        )?;
+        stmt.query_map([], |r| r.get(0))?
+            .collect::<rusqlite::Result<_>>()?
+    };
+    for table in tables {
+        let left: bool = tx.query_row(
+            &format!("SELECT EXISTS (SELECT 1 FROM \"{table}\" WHERE viewer_id = ?1)"),
+            params![id],
+            |r| r.get(0),
+        )?;
+        if left {
+            return Err(CoreError::invalid(
+                "fold_incomplete",
+                format!("a folded viewer still has rows in {table}"),
+            ));
+        }
+    }
     Ok(())
 }
 
@@ -1240,6 +1323,178 @@ mod tests {
             st.owner().unwrap().unwrap().display_name.as_deref(),
             Some("Alex S")
         );
+    }
+
+    /// Every table with a `viewer_id` column, each of which `fold` handles.
+    /// A new one fails `every_table_holding_a_viewer_row_is_folded` until
+    /// `fold` handles it and it is listed here.
+    const FOLDED_TABLES: &[&str] = &[
+        "artifact_shares",
+        "browser_sessions",
+        "device_codes",
+        "github_identities",
+        "grants",
+        "hosted_setup",
+        "invites",
+        "legal_agreements",
+        "signin_links",
+        "viewer_cookies",
+        "viewer_seen",
+        "viewer_threads",
+    ];
+
+    #[test]
+    fn every_table_holding_a_viewer_row_is_folded() {
+        let (_d, st) = store();
+        let tables: Vec<String> = st
+            .with_read(|c| {
+                let mut stmt = c.prepare(
+                    "SELECT m.name FROM sqlite_master m, pragma_table_info(m.name) p
+                      WHERE m.type = 'table' AND p.name = 'viewer_id' ORDER BY m.name",
+                )?;
+                Ok(stmt
+                    .query_map([], |r| r.get(0))?
+                    .collect::<rusqlite::Result<_>>()?)
+            })
+            .unwrap();
+        assert_eq!(tables, FOLDED_TABLES);
+    }
+
+    #[test]
+    fn a_merged_viewers_hosted_rows_move_or_go_and_none_is_left() {
+        let (_d, st) = store();
+        let aid = artifact(&st, None);
+        let other = artifact(&st, None);
+        let owner = st.owner_viewer(true).unwrap();
+        let cookie = new_ulid();
+        let safari = st.mint_viewer(&cookie, true).unwrap();
+        st.with_write(|c| {
+            c.execute_batch(&format!(
+                "INSERT INTO browser_sessions (sha256, viewer_id, created_at, expires_at)
+                     VALUES ('s1', '{f}', 'x', 'y');
+                 INSERT INTO signin_links (sha256, viewer_id, created_at, expires_at)
+                     VALUES ('l1', '{f}', 'x', 'y');
+                 INSERT INTO github_identities (github_id, viewer_id, login, created_at, signed_in_at)
+                     VALUES (5, '{f}', 'safari', 'x', 'x');
+                 INSERT INTO legal_agreements (viewer_id, version, agreed_at, via)
+                     VALUES ('{f}', 'v1', 'safari', 'prompt'), ('{f}', 'v2', 'safari', 'prompt'),
+                            ('{o}', 'v1', 'owner', 'signin');
+                 INSERT INTO device_codes (device_sha256, user_sha256, client_name, peer_ip,
+                         status, viewer_id, created_at, expires_at)
+                     VALUES ('d1', 'u1', 'laptop', '127.0.0.1', 'denied', '{f}', 'x', 'y');
+                 INSERT INTO artifact_shares (id, artifact_id, viewer_id, access, created_at)
+                     VALUES ('sh1', '{a}', '{f}', 'editor', 'x');
+                 INSERT INTO artifact_shares (id, artifact_id, github_login, access, created_at, created_by)
+                     VALUES ('sh2', '{b}', 'mia', 'viewer', 'x', '{fp}');",
+                f = safari.id,
+                o = owner.id,
+                a = aid.as_str(),
+                b = other.as_str(),
+                fp = safari.public_id,
+            ))?;
+            Ok(())
+        })
+        .unwrap();
+        assert_eq!(
+            st.claim_for_owner(Via::Shell, &cookie).unwrap(),
+            Claim::Merged(safari.public_id.clone())
+        );
+        let count = |sql: &str, id: &str| -> i64 {
+            st.with_read(|c| Ok(c.query_row(sql, rusqlite::params![id], |r| r.get(0))?))
+                .unwrap()
+        };
+        for table in FOLDED_TABLES {
+            assert_eq!(
+                count(
+                    &format!("SELECT COUNT(*) FROM {table} WHERE viewer_id = ?1"),
+                    &safari.id
+                ),
+                0,
+                "{table}"
+            );
+        }
+        // Another browser's credentials do not become the owner's.
+        for table in ["browser_sessions", "signin_links", "github_identities"] {
+            assert_eq!(
+                count(
+                    &format!("SELECT COUNT(*) FROM {table} WHERE viewer_id = ?1"),
+                    &owner.id
+                ),
+                0,
+                "{table}"
+            );
+        }
+        let text = |sql: &str, id: &str| -> Option<String> {
+            st.with_read(|c| Ok(c.query_row(sql, rusqlite::params![id], |r| r.get(0))?))
+                .unwrap()
+        };
+        assert_eq!(
+            text(
+                "SELECT group_concat(version || ':' || agreed_at, ' ') FROM
+                   (SELECT * FROM legal_agreements WHERE viewer_id = ?1 ORDER BY version)",
+                &owner.id
+            )
+            .as_deref(),
+            Some("v1:owner v2:safari"),
+            "agreements move, the owner's own kept"
+        );
+        assert_eq!(
+            count(
+                "SELECT COUNT(*) FROM device_codes WHERE viewer_id = ?1",
+                &owner.id
+            ),
+            1
+        );
+        // The owner holds no share; one made by the folded viewer is now
+        // the owner's.
+        let shares: Vec<_> = [aid.as_str(), other.as_str()]
+            .iter()
+            .flat_map(|a| st.artifact_shares(a).unwrap())
+            .map(|s| (s.id, s.person, s.created_by))
+            .collect();
+        assert_eq!(
+            shares,
+            vec![("sh2".to_string(), None, Some(owner.public_id.clone()))]
+        );
+    }
+
+    #[test]
+    fn the_owner_rows_credentials_follow_it_when_a_browser_adopts_it() {
+        let (_d, st) = store();
+        let cli = st.set_owner_name("Alex", false).unwrap();
+        st.with_write(|c| {
+            c.execute_batch(&format!(
+                "INSERT INTO browser_sessions (sha256, viewer_id, created_at, expires_at)
+                     VALUES ('s1', '{f}', 'x', 'y');
+                 INSERT INTO hosted_setup (id, viewer_id, created_at) VALUES (1, '{f}', 'x');
+                 INSERT INTO github_identities (github_id, viewer_id, login, created_at, signed_in_at)
+                     VALUES (5, '{f}', 'alex', 'x', 'x');",
+                f = cli.id,
+            ))?;
+            Ok(())
+        })
+        .unwrap();
+        let cookie = new_ulid();
+        st.mint_viewer(&cookie, true).unwrap();
+        assert_eq!(
+            st.claim_for_owner(Via::Shell, &cookie).unwrap(),
+            Claim::Adopted {
+                retired: Some(cli.public_id.clone())
+            }
+        );
+        let owner = st.owner().unwrap().unwrap();
+        for table in ["browser_sessions", "hosted_setup", "github_identities"] {
+            let n: i64 = st
+                .with_read(|c| {
+                    Ok(c.query_row(
+                        &format!("SELECT COUNT(*) FROM {table} WHERE viewer_id = ?1"),
+                        rusqlite::params![owner.id],
+                        |r| r.get(0),
+                    )?)
+                })
+                .unwrap();
+            assert_eq!(n, 1, "{table}");
+        }
     }
 
     #[test]
