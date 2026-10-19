@@ -1,6 +1,6 @@
 import { afterEach, describe, expect, it } from "vitest";
 import { ownTarget, sendsFor } from "./send-menu";
-import { defaultTarget, liveAgents, rememberTarget } from "./send-target";
+import { autoSendOn, defaultTarget, liveAgents, rememberAutoSend, rememberTarget } from "./send-target";
 
 // As the daemon lists them: live first, most recently active first.
 const agents = [{ handle: "a_cx", harness: "codex", live: true }, { handle: "a_cl", harness: "claude", live: true }, { handle: "a_old", harness: "pi", live: false }];
@@ -19,6 +19,17 @@ describe("send-target", () => {
     rememberTarget("x", "a_old");
     expect(defaultTarget("x", [{ handle: "a_old", harness: "pi", live: false }])).toBeNull();
     expect(defaultTarget("x", [])).toBeNull();
+  });
+});
+
+describe("auto-send", () => {
+  it("is off unless chosen, per artifact, and off again once turned off", () => {
+    expect(autoSendOn("x")).toBe(false);
+    rememberAutoSend("x", true);
+    expect(autoSendOn("x")).toBe(true);
+    expect(autoSendOn("y")).toBe(false);
+    rememberAutoSend("x", false);
+    expect(autoSendOn("x")).toBe(false);
   });
 });
 
