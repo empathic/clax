@@ -686,6 +686,55 @@ async fn an_outage_queues_marks_rows_not_sent_at_the_cap_then_drains_in_order() 
     .await;
 }
 
+/// The live sessions of the by-hand harness the sync speaks in on the public Clax.
+fn sync_sessions(p: &Pair) -> usize {
+    p.public
+        .ts
+        .store
+        .list_sessions(true)
+        .unwrap()
+        .into_iter()
+        .filter(|s| s.harness == "clax")
+        .count()
+}
+
+#[tokio::test]
+async fn an_outage_keeps_the_syncs_one_session_there() {
+    let p = Pair::new().await;
+    assert_eq!(sync_sessions(&p), 1);
+    // The cycle meets an outage, and the next one the remote back.
+    p.local.state.linked.set_offline(true);
+    p.backstop().await;
+    p.sleeper.wait_for(BACKOFF_FIRST, 1).await;
+    p.local.state.linked.set_offline(false);
+    p.sleeper.fire(BACKOFF_FIRST);
+    p.sleeper.wait_for(BACKSTOP, 1).await;
+    assert_eq!(sync_sessions(&p), 1, "the session there was kept");
+    // A session the remote ended is replaced, not left behind.
+    let sid = p
+        .public
+        .ts
+        .store
+        .list_sessions(true)
+        .unwrap()
+        .into_iter()
+        .find(|s| s.name.as_deref() == Some("clax-sync"))
+        .unwrap()
+        .id;
+    p.public
+        .ts
+        .store
+        .end_session(&clax_core::audit::AuditCtx::DAEMON, &sid)
+        .unwrap();
+    p.local.state.linked.set_offline(true);
+    p.backstop().await;
+    p.sleeper.wait_for(BACKOFF_FIRST, 1).await;
+    p.local.state.linked.set_offline(false);
+    p.sleeper.fire(BACKOFF_FIRST);
+    p.sleeper.wait_for(BACKSTOP, 1).await;
+    assert_eq!(sync_sessions(&p), 1, "a new session, the ended one gone");
+}
+
 #[tokio::test]
 async fn a_reply_whose_answer_was_lost_before_an_outage_comes_back_as_itself() {
     let p = Pair::new().await;

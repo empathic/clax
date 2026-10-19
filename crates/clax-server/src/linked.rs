@@ -280,6 +280,7 @@ async fn run(s: AppState, rid: String, kick: Arc<Notify>, retry: Arc<Notify>) {
         s: s.clone(),
         rid: rid.clone(),
         client: None,
+        stale: false,
         watched: HashMap::new(),
         acks: Vec::new(),
         agents: HashMap::new(),
@@ -307,8 +308,7 @@ async fn run(s: AppState, rid: String, kick: Arc<Notify>, retry: Arc<Notify>) {
                 let local = matches!(stop, Stop::Local(_));
                 let why = stop.reason().to_string();
                 if !local {
-                    sync.client = None;
-                    sync.watched.clear();
+                    sync.stale = true;
                 }
                 backoff = if backoff.is_zero() {
                     BACKOFF_FIRST
@@ -359,8 +359,7 @@ async fn run(s: AppState, rid: String, kick: Arc<Notify>, retry: Arc<Notify>) {
                 if let Err(why) = r {
                     // The next cycle meets the outage itself.
                     tracing::debug!(remote = rid.as_str(), error = why.as_str(), "feedback poll failed");
-                    sync.client = None;
-                    sync.watched.clear();
+                    sync.stale = true;
                     tokio::select! {
                         _ = retry.notified() => {}
                         _ = s.linked.sleeper.sleep(BACKOFF_FIRST) => {}
@@ -430,8 +429,13 @@ fn publish_questions(
 struct Sync {
     s: AppState,
     rid: String,
-    /// The remote's client, speaking in the sync's session there.
+    /// The remote's client, speaking in the sync's session there. Kept
+    /// across an outage, so the session (and its watches and question
+    /// copies) is not left behind there for a new one.
     client: Option<Client>,
+    /// Whether the session there may have ended since it last answered
+    /// (an outage or a failed poll): the next connect asks it first.
+    stale: bool,
     /// The public artifacts the session watches, each with the local agent
     /// its watch names as the one it relays for (`None`: none, the sync's
     /// own name shows).
@@ -554,6 +558,31 @@ impl Sync {
     async fn connect(&mut self, links: &[RemoteLink]) -> Result<(), Stop> {
         if self.s.linked.offline.load(Ordering::SeqCst) {
             return Err(Stop::Unreachable("offline".into()));
+        }
+        if self.stale
+            && let Some(c) = self.client.as_ref()
+        {
+            // After an outage the session there is kept when it is still
+            // live, and replaced only when the remote no longer knows it
+            // (or refuses the token, which may have been replaced here).
+            let sid = c.session().map(|s| s.0.clone()).unwrap_or_default();
+            match clax_rt::sendable(c.call(
+                reqwest::Method::PATCH,
+                &format!("/api/sessions/{sid}"),
+                Some(&json!({"heartbeat": true})),
+            ))
+            .await
+            {
+                Ok(v) if v["session"]["ended_at"].is_null() => {}
+                Err(f) if f.status != Some(401) && classify(&f).is_some() => {
+                    return Err(Stop::Unreachable(classify(&f).unwrap_or_default()));
+                }
+                _ => {
+                    self.client = None;
+                    self.watched.clear();
+                }
+            }
+            self.stale = false;
         }
         if self.client.is_none() {
             let rid = self.rid.clone();
