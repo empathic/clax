@@ -561,6 +561,16 @@ run.
   not in `just ci`; run it in the background. `just app-integration-native`
   runs `flutter test <file> -d macos` for each file, into
   `apps/clax_app/build/macos`.
+- `just app-integration --ios` runs the simulator ones instead, the files
+  `integration_test/ios_*_test.dart` (`//apps/clax_app:integration_ios_<name>`):
+  a cold start with the daemon in the app's process, a cycle through the
+  background, a make paused when the background time is spent, and a
+  `.clax` opened in the app. Each installs its own debug app fresh on "Clax
+  iPhone" (`just app-ios` creates it), booting it when it is not running
+  and shutting it down after; `apps/clax_app/tool/ios-integration-run.sh`
+  takes the screenshots a test asks for into the test's outputs
+  (`bazel-testlogs/apps/clax_app/integration_ios_<name>/test.outputs/`).
+  Bazel only.
 - `just app-eval [--model ID] [--prompts a,b] [--max-spend USD] [--run
   NAME]` is the live build eval, run by hand and never by a gate: each
   prompt of `apps/clax_app/tool/eval/prompts.json` is built by the app's

@@ -57,6 +57,10 @@ class ScriptedCall {
 /// `write_file` a [PartialFile] of its whole content. A script that ends
 /// before the run did gives up, as a runner whose model stopped calling
 /// tools would.
+///
+/// Before each call the run waits on [hold] when one is set, so a pause of
+/// the app's runs holds a scripted run where it is, as `ResumingTurns`
+/// (lib/platform/network_pause.dart) holds a model's turn.
 class ScriptedRunner implements AgentRunner {
   ScriptedRunner(
     this.script, {
@@ -82,6 +86,11 @@ class ScriptedRunner implements AgentRunner {
   /// Every run's input, in order.
   final List<RunInput> inputs = [];
 
+  /// Awaited before each call: the run is held there until it completes,
+  /// or until the run's cancel fires. The app sets it to wait out a pause
+  /// of the runs (`AppPresence.pause`) until Clax is back in front.
+  Future<void> Function()? hold;
+
   static List<ScriptedCall> Function(RunInput) _next(
     List<List<ScriptedCall>> runs,
   ) =>
@@ -99,6 +108,10 @@ class ScriptedRunner implements AgentRunner {
         // A cancel that has already fired is seen after one turn of the
         // microtask queue.
         await Future<void>.value();
+        if (hold case final h?) {
+          final cancelled = state.ctx.cancelled;
+          await (cancelled == null ? h() : Future.any([h(), cancelled]));
+        }
         if (state.outcome case final o?) return o;
         if (cancel.isCancelled) return state.outcome ??= const RunCancelled();
         if (state.budget.hardStop case final cap?) {

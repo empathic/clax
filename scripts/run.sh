@@ -19,6 +19,7 @@
 #   scripts/run.sh rust-project      rust-project.json for rust-analyzer, from Bazel
 #   scripts/run.sh app-test          the Clax app's analysis and tests (apps/clax_app)
 #   scripts/run.sh app-integration   the Clax app's macOS integration tests (they open its window)
+#                                    (--ios: its simulator ones instead, on "Clax iPhone"; Bazel only)
 #   scripts/run.sh app-apk           the Clax app's release APK, and print its path
 #   scripts/run.sh app-macos         the Clax app's macOS app, and print its path
 #   scripts/run.sh app-clax [args]   the Clax app's embedded clax builds ([android|macos|all] [--debug] natively)
@@ -197,9 +198,15 @@ _bazel() {
             ;;
         app-test) _run "${b[@]}" test --lockfile_mode=error //apps/clax_app/... "$@" ;;
         app-integration)
-            local t targets=()
+            # The macOS tests, or with --ios the simulator ones (ios_*).
+            local t targets=() ios=""
+            if [ "${1:-}" = "--ios" ]; then ios=1; shift; fi
             for t in apps/clax_app/integration_test/*_test.dart; do
                 t="${t##*/}"
+                case "$t" in
+                    ios_*) [ -n "$ios" ] || continue ;;
+                    *) [ -z "$ios" ] || continue ;;
+                esac
                 targets+=("//apps/clax_app:integration_${t%_test.dart}")
             done
             _run "${b[@]}" test --lockfile_mode=error "${targets[@]}" "$@"
@@ -262,6 +269,10 @@ _native() {
                 _run bash -c 'bin="$(apps/clax_app/tool/test-bin.sh)" && cd apps/clax_app && CLAX_TEST_BIN="$bin" tool/check.sh'
             ;;
         app-integration)
+            if [ "${1:-}" = "--ios" ]; then
+                echo "app-integration --ios: the iOS app builds only with Bazel (brew install bazelisk)" >&2
+                return 2
+            fi
             # One file per flutter call: a second file in the same call fails to launch.
             _run ./scripts/build-app-clax.sh macos &&
                 _run ./scripts/build-home-bundle.sh --i-know-what-i-am-doing &&

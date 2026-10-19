@@ -24,6 +24,9 @@ import UserNotifications
       NativeChannel.install(registrar)
       Background.install(registrar)
       BundleIntake.install(registrar)
+      #if DEBUG
+      TestChannel.install(registrar)
+      #endif
     }
   }
 }

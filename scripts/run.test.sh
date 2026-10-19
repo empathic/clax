@@ -119,12 +119,16 @@ _expect "bazelisk: which says bazel" 0 "1x^bazel: Bazelisk found"
 # The Clax app's tasks: Bazel targets with Bazelisk; Flutter natively, and
 # refused without it.
 mkdir -p "$repo/apps/clax_app/integration_test"
-touch "$repo/apps/clax_app/integration_test/one_test.dart" "$repo/apps/clax_app/integration_test/rig.dart"
+touch "$repo/apps/clax_app/integration_test/one_test.dart" "$repo/apps/clax_app/integration_test/rig.dart" \
+    "$repo/apps/clax_app/integration_test/ios_two_test.dart"
 _try -- --dry-run app-test
 _expect "bazelisk: app-test tests the app's package" 0 "1xwould run: .*bazelisk test --lockfile_mode=error //apps/clax_app/...$"
 _try -- --dry-run app-integration
-_expect "bazelisk: app-integration runs a target per test file" 0 \
+_expect "bazelisk: app-integration runs a target per macOS test file" 0 \
     "1xwould run: .*bazelisk test --lockfile_mode=error //apps/clax_app:integration_one$"
+_try -- --dry-run app-integration --ios
+_expect "bazelisk: app-integration --ios runs a target per iOS test file" 0 \
+    "1xwould run: .*bazelisk test --lockfile_mode=error //apps/clax_app:integration_ios_two$"
 _try -- --dry-run app-apk
 _expect "bazelisk: app-apk builds the APK and names it" 0 \
     "1xwould run: .*bazelisk build --lockfile_mode=error //apps/clax_app:apk$" "1x<the output of //apps/clax_app:apk>"

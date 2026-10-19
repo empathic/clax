@@ -13,8 +13,9 @@ import os
 /// - "update" {title, text} replaces the title.
 /// - "stop" clears it and ends a held "Clax run" task.
 /// - "pauseDone" says the runs have paused (after "stopped").
-/// - DEBUG only: "expireBackgroundTask" pauses at once, as if the time were
-///   spent.
+///
+/// DEBUG only: `expire()` (the test channel's "expireBackgroundTask",
+/// `TestChannel.swift`) pauses at once, as if the time were spent.
 ///
 /// Swift to Dart: "stopped" when the background time is nearly spent: the
 /// runs must pause now.
@@ -101,11 +102,6 @@ final class Background {
     case "pauseDone":
       resume?()
       result(nil)
-    #if DEBUG
-      case "expireBackgroundTask":
-        pause(force: true)
-        result(nil)
-    #endif
     default:
       result(FlutterMethodNotImplemented)
     }
@@ -142,6 +138,13 @@ final class Background {
       if self.remaining() <= self.margin { self.pause(force: false) }
     }
   }
+
+  #if DEBUG
+    /// Pauses at once, as if the background time were spent.
+    func expire() {
+      pause(force: true)
+    }
+  #endif
 
   /// Asks the runs to pause, once per held task (any time with [force]),
   /// then trims and ends the task.

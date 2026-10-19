@@ -8,9 +8,13 @@ exports_files(
     visibility = ["//crates:__subpackages__"],
 )
 
-# The Clax app's prompt copies' check (//apps/clax_app:prompt_sync).
+# The Clax app's prompt copies' check (//apps/clax_app:prompt_sync), and
+# the simulator lookup of its iOS integration tests (app-ios.sh --udid).
 exports_files(
-    ["sync-app-prompt.sh"],
+    [
+        "app-ios.sh",
+        "sync-app-prompt.sh",
+    ],
     visibility = ["//apps/clax_app:__pkg__"],
 )
 

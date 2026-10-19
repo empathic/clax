@@ -89,7 +89,9 @@ def _integration_main_impl(ctx):
         fail("%s: srcs do not include %s" % (ctx.label, ctx.file.test.short_path))
     ctx.actions.write(out, """\
 // Generated (bazel/flutter/macos.bzl): runs {short} in the app, as
-// `flutter test` does on a device, then exits 0 when every test passed.
+// `flutter test` does on a device, then prints CLAX_INTEGRATION_RESULT=0
+// (every test passed) or =1, which the iOS runner reads from the console,
+// and exits with that status.
 import 'dart:io';
 
 import 'package:integration_test/integration_test.dart';
@@ -104,6 +106,8 @@ Future<void> main() async {{
     stderr.writeln('FAIL: ${{f.methodName}}\\n${{f.details}}');
   }}
   stdout.writeln(passed ? 'integration_test: all tests passed' : 'integration_test: tests failed');
+  stdout.writeln('CLAX_INTEGRATION_RESULT=${{passed ? 0 : 1}}');
+  await stdout.flush();
   exit(passed ? 0 : 1);
 }}
 """.format(test = test, short = ctx.file.test.short_path))
@@ -117,5 +121,5 @@ integration_main = rule(
     },
     # The entry point by its own label, `:<name>.dart`, for an app's `main`.
     outputs = {"main": "%{name}.dart"},
-    doc = "An app entry point that runs an integration test and exits with its result.",
+    doc = "An app entry point that runs an integration test, prints CLAX_INTEGRATION_RESULT=<0|1> and exits with it.",
 )

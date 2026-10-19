@@ -208,7 +208,8 @@ class AppServices {
   final ConsentMemory? consentMemory;
 
   /// The tool loop's runner in place of the Messages API's (a debug
-  /// build's [ScriptedRunner]); used only with an [inspector].
+  /// build's [ScriptedRunner]); used only with an [inspector]. A
+  /// [ScriptedRunner] is held before each call while the runs are paused.
   final AgentRunner Function()? runner;
 
   /// The clock of the runs' budgets and of [ResumingTurns], so a held turn
@@ -1186,20 +1187,30 @@ class _AppRootState extends State<AppRoot> with WidgetsBindingObserver {
         );
         return wrap == null ? resuming : wrap(resuming);
       },
-      runner: () =>
-          _s.runner?.call() ??
-          toolLoopRunner(
-            backend() as TurnBackend,
-            _presence,
-            clock: _s.clock,
-            connection: _s.connection,
-            onPause: onPause,
-            onOffline: onOffline,
-            onResume: onResume,
-          ),
+      runner: () {
+        final scripted = _s.runner?.call();
+        // A scripted run waits out a pause before its next call, as
+        // ResumingTurns holds a model's turn.
+        if (scripted is ScriptedRunner) scripted.hold = _heldWhilePaused;
+        return scripted ??
+            toolLoopRunner(
+              backend() as TurnBackend,
+              _presence,
+              clock: _s.clock,
+              connection: _s.connection,
+              onPause: onPause,
+              onOffline: onOffline,
+              onResume: onResume,
+            );
+      },
       log: (l) => debugPrint('clax agent: $l'),
     );
   }
+
+  /// Completes at once, or, while the runs are paused
+  /// ([AppPresence.pause]), when Clax is back in front.
+  Future<void> _heldWhilePaused() =>
+      _presence.paused ? _presence.whenForeground : Future.value();
 
   void _start() => unawaited(
     _s.supervisor.ensureUp().then<void>((_) {}, onError: (Object _) {}),

@@ -226,13 +226,14 @@ macOS) and the two keys below.
 | `ios_app`, `ios_app_sim`, `ios_app_test` | `Clax.app` for iPhone and iPad (an `.ipa`; `manual`) with the daemon in its own process (`bazel/flutter/ios.bzl`), the simulator build of it (`-c dbg`), and a check of that build: its Info.plist, with pubspec.yaml's version (the iOS form of `:version_sync`), the `.clax` document type and the words of each permission prompt, Flutter's frameworks, each plugin's registration and privacy manifest, the home bundle, the daemon's four C functions, and every object of the daemon's static libraries for an iOS no newer than the app's minimum; macOS only | none |
 | `macos_about_test` | the About panel's credits (`macos/Runner/About.swift`), an XCTest bundle run by `xcodebuild`; macOS only | none |
 | `integration_<name>` (manual) | `integration_test/<name>_test.dart` in the debug app, run in the logged-in session | `flutter test <file> -d macos` |
+| `integration_ios_<name>` (manual) | `integration_test/ios_<name>_test.dart` in a debug iOS app of its own, installed fresh and run on the simulator "Clax iPhone" by `tool/ios-integration-run.sh` (`bazel/flutter/ios.bzl`); macOS only | none |
 | `home_bundle`, `home_version_test` | the home app's bundle, `assets/home/home.clax` and `release.json`, packed from `home/` by `pack_home` (compiled by rules_dart) and signed: an asset of `app`, so of the APK and the macOS app; and a check of how its version is chosen | `scripts/build-home-bundle.sh` |
 | `//crates/clax-cli:clax_android_arm64`, `:clax_android_x86_64` | `clax` optimized and stripped for each Android CPU with the NDK, as `<abi>/libclax.so` (`bazel/android/clax.bzl`) | `scripts/build-app-clax.sh android` |
 | `//crates/clax-ios:clax_ios_c`, `:ios_build_test` | the in-process daemon as a static library for iOS (`libclax_ios.a`, optimized in the app's configuration) with its C header, and a check that it builds for iPhone and the simulator with every object for an iOS no newer than `--ios_minimum_os` (`bazel/apple/ios_rust.bzl`); macOS only | none |
 
 Everything but the integration tests is in `just ci` (`tests(//...)`).
 The integration tests open the app's window and take minutes each, so
-`just app-integration` runs them on demand.
+`just app-integration` runs them on demand (`--ios` the simulator ones).
 
 **What is fetched, and from where (`MODULE.bazel`).**
 
