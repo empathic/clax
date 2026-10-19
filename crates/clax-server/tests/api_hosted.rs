@@ -5428,6 +5428,102 @@ async fn a_member_who_may_not_send_attaches_no_agent_and_agent_tokens_start_noth
 }
 
 #[tokio::test]
+async fn a_persons_inbox_groups_hold_their_own_items_and_no_withheld_text() {
+    let site = Site::new().await;
+    let owner = site.owner().await;
+    let sid = site.ts.register_session("claude", "h1").await["id"]
+        .as_str()
+        .unwrap()
+        .to_string();
+    let mut pages = Vec::new();
+    for title in ["Plan", "Notes"] {
+        pages.push(
+            site.ts.publish_as(&sid, title, "<h1>Page</h1>").await["artifact"]["id"]
+                .as_str()
+                .unwrap()
+                .to_string(),
+        );
+    }
+    let (plan, notes) = (pages[0].clone(), pages[1].clone());
+    let reads = json!({"type": "clax-artifacts", "actions": ["read"], "locations": [plan, notes]});
+    let comments = |at: Value| json!({"type": "clax-comments", "actions": ["read", "write", "reply"], "locations": at});
+    let (mia, mia_id) = site
+        .person_with(
+            &owner,
+            "Mia",
+            json!([reads, comments(json!([plan, notes]))]),
+        )
+        .await;
+    // Mia asks on each page and the agent answers with a secret.
+    for at in [&plan, &notes] {
+        let (s, t) = site.thread(&mia, at, "a question").await;
+        assert_eq!(s, 201, "{t}");
+        let tid = t["thread"]["id"].as_str().unwrap().to_string();
+        let (s, v) = site
+            .post(
+                &owner,
+                &format!("/api/artifacts/{at}/threads/{tid}/send"),
+                json!({}),
+            )
+            .await;
+        assert_eq!(s, 200, "{v}");
+        site.ts
+            .reply_as_agent(&sid, at, &tid, "secret answer")
+            .await;
+    }
+    let keys = |v: &Value| -> Vec<(String, u64)> {
+        v["groups"]
+            .as_array()
+            .unwrap_or_else(|| panic!("groups: {v}"))
+            .iter()
+            .map(|g| {
+                (
+                    g["artifact_id"].as_str().unwrap_or("none").to_string(),
+                    g["total"].as_u64().unwrap(),
+                )
+            })
+            .collect()
+    };
+    // Her groups count her items alone, not the owner's on the same pages.
+    let (s, v) = site.get(&mia, "/api/inbox?group=artifact").await;
+    assert_eq!(s, 200, "{v}");
+    let (_, flat) = site.get(&mia, "/api/inbox").await;
+    let mine = flat["items"].as_array().unwrap();
+    assert!(!keys(&v).is_empty(), "{v}");
+    for (aid, total) in keys(&v) {
+        let n = mine
+            .iter()
+            .filter(|i| i["artifact"]["id"] == aid.as_str())
+            .count() as u64;
+        assert_eq!(total, n, "{aid}: {v}");
+    }
+    let (_, owners) = site.get(&owner, "/api/inbox?group=artifact").await;
+    assert_ne!(
+        keys(&owners),
+        keys(&v),
+        "the owner's groups are the owner's: {owners}"
+    );
+    let (s, v) = site.get(&mia, "/api/inbox?group=artifact&q=secret").await;
+    assert_eq!(s, 200, "{v}");
+    assert_eq!(keys(&v), vec![(notes.clone(), 1), (plan.clone(), 1)], "{v}");
+    // The owner takes Mia's comment read at Plan away: a search neither
+    // finds nor counts Plan's group by the text withheld from her.
+    let (s, v) = site
+        .send(
+            &owner,
+            reqwest::Method::PUT,
+            &format!("/api/people/{mia_id}/rights"),
+            json!({"rights": [reads, comments(json!([notes]))]}),
+        )
+        .await;
+    assert_eq!(s, 200, "{v}");
+    let (s, v) = site.get(&mia, "/api/inbox?group=artifact&q=secret").await;
+    assert_eq!(s, 200, "{v}");
+    assert_eq!(keys(&v), vec![(notes.clone(), 1)], "{v}");
+    assert_eq!(v["total"], 1, "{v}");
+}
+
+#[tokio::test]
 async fn an_artifacts_answer_with_a_signed_in_viewers_attention_is_private() {
     let site = Site::new().await;
     let owner = site.owner().await;
