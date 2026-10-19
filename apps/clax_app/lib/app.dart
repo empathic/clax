@@ -2254,6 +2254,9 @@ class _AppRootState extends State<AppRoot> with WidgetsBindingObserver {
       initialAction: action,
       firstRunHint: _notice != null && !settings.appHintSeen,
       onHintShown: () => unawaited(_keep((s) => s.appHintSeen = true)),
+      onRallied: (aid) => unawaited(
+        _keep((s) => s.rallied = {...s.rallied, aid}.toList()),
+      ),
       onDictateChanged: (on) => unawaited(_keep((s) => s.dictateComments = on)),
       icons: _icons,
     ),

@@ -19,10 +19,12 @@ import 'package:clax_app/ui/host_protocol.dart';
 import 'package:clax_app/ui/kit/kit.dart';
 import 'package:clax_app/ui/theme.dart';
 import 'package:clax_app/ui/tokens.g.dart';
+import 'package:clax_app/ui/working_chip.dart';
 import 'package:clax_app/ui/thread_detail.dart';
 import 'package:flutter/gestures.dart';
 import 'package:flutter/foundation.dart';
 import 'package:flutter/material.dart';
+import 'package:flutter/rendering.dart';
 import 'package:flutter/services.dart';
 import 'package:flutter_test/flutter_test.dart';
 
@@ -145,6 +147,13 @@ Future<(FakeClaxApi, String)> _seeded() async {
 /// The rig [pumpScreen] made last.
 late _Rig _current;
 
+/// The Clax pill saying [state] (anything, when null).
+Finder _pill([ClaxPillState? state]) => find.byWidgetPredicate(
+  (w) => w is ClaxPill && (state == null ? w.state != null : w.state == state),
+);
+
+final _working = _pill(ClaxPillState.working);
+
 void main() {
   /// A phone: 360 x 780 logical pixels at a device pixel ratio of 3, with
   /// a 24 px status bar.
@@ -165,6 +174,7 @@ void main() {
     AppAction? initialAction,
     bool firstRunHint = false,
     VoidCallback? onHintShown,
+    ValueChanged<String>? onRallied,
     ValueChanged<bool>? onDictateChanged,
     Future<bool> Function(String aid, String tid)? onRetry,
     void Function(String aid)? onStop,
@@ -203,6 +213,7 @@ void main() {
       initialAction: initialAction,
       firstRunHint: firstRunHint,
       onHintShown: onHintShown,
+      onRallied: onRallied,
       onDictateChanged: onDictateChanged,
       onRetry: onRetry,
       onStop: onStop,
@@ -723,21 +734,19 @@ void main() {
       rig.surface.push(const Sent('thread-1'));
       rig.surface.push(_Rig.noDraft);
       await tester.pump();
-      expect(find.text('Working…'), findsOneWidget);
+      expect(_working, findsOneWidget);
       expect(rig.voice.listening, isFalse);
 
       rig.worker.add(WorkerWorking(rig.aid, const ['thread-1']));
       rig.worker.add(WorkerLanded(rig.aid, 4));
       await tester.pump();
-      expect(
-        find.text('Loading the new version'),
-        findsOneWidget,
-        reason: 'until the frame shows it',
-      );
+      // The New version toast takes the pill's place until it goes.
+      expect(find.byKey(const ValueKey('newer-toast')), findsOneWidget);
+      expect(_pill(), findsNothing);
 
       rig.surface.push(const Landed(4));
       await tester.pump();
-      expect(find.byKey(const ValueKey('chip-working')), findsNothing);
+      expect(_working, findsNothing);
       expect(rig.timings.log, [
         'start $longpressLanded',
         'stop $longpressLanded',
@@ -759,7 +768,7 @@ void main() {
     rig.worker.add(WorkerWorking(rig.aid, const ['thread-1']));
     rig.worker.add(WorkerReplied(rig.aid));
     await tester.pump();
-    expect(find.byKey(const ValueKey('chip-working')), findsNothing);
+    expect(_working, findsNothing);
     await tester.pump(const Duration(milliseconds: 500));
     expect(find.text('Clax replied'), findsOneWidget);
     // A version landing later (a restore) is not this change's.
@@ -777,13 +786,13 @@ void main() {
       await tester.pump();
       rig.worker.add(WorkerFailed(rig.aid, 'The API key was refused'));
       await tester.pump();
-      expect(find.byKey(const ValueKey('chip-working')), findsNothing);
+      expect(_working, findsNothing);
       expect(find.byKey(const ValueKey('chip-failed')), findsOneWidget);
       expect(find.textContaining('The API key was refused'), findsOneWidget);
 
       rig.surface.push(const Sent('thread-2'));
       await tester.pump();
-      expect(find.text('Working…'), findsOneWidget);
+      expect(_working, findsOneWidget);
       rig.worker.add(WorkerCancelled(rig.aid));
       await tester.pump();
       expect(find.byKey(const ValueKey('chip-failed')), findsNothing);
@@ -800,7 +809,7 @@ void main() {
     rig.worker.add(WorkerReplied('other'));
     rig.worker.add(WorkerFailed('other', 'nope'));
     await tester.pump();
-    expect(find.text('Working…'), findsOneWidget);
+    expect(_working, findsOneWidget);
   });
 
   testWidgets(
@@ -813,7 +822,7 @@ void main() {
       rig.worker.add(WorkerWorking(rig.aid, const ['thread-1']));
       rig.worker.add(WorkerLanded(rig.aid, 4));
       await tester.pump();
-      expect(find.byKey(const ValueKey('chip-working')), findsNothing);
+      expect(_working, findsNothing);
       expect(find.text('Version 4 is ready'), findsOneWidget);
       await tester.pumpAndSettle();
       await tester.tap(find.text('Show'));
@@ -1193,7 +1202,7 @@ void main() {
         rig.surface.push(const Sent('thread-1'));
         rig.worker.add(WorkerWorking(rig.aid, const ['thread-1']));
         await tester.pump();
-        expect(find.text('Working…'), findsOneWidget);
+        expect(_working, findsOneWidget);
         expect(rig.timings.stepLog, ['start $sendFirstStep']);
 
         rig.worker.add(
@@ -1208,15 +1217,16 @@ void main() {
         );
         clock.t = clock.t.add(const Duration(seconds: 9));
         await tester.pump(const Duration(seconds: 1));
-        expect(find.text('Adding the weekly total'), findsOneWidget);
-        expect(find.text('9s'), findsOneWidget);
+        // The pill says Working; the steps are the change sheet's.
+        expect(_working, findsOneWidget);
+        expect(find.text('Adding the weekly total'), findsNothing);
         expect(rig.timings.stepLog, [
           'start $sendFirstStep',
           'stop $sendFirstStep ${rig.aid}',
         ]);
 
-        await tester.tap(find.byKey(const ValueKey('chip-working')));
-        await tester.pump();
+        await tester.tap(_working);
+        await frames(tester);
         expect(find.text('Changing index.html'), findsOneWidget);
 
         rig.worker.add(WorkerLanded(rig.aid, 4));
@@ -1224,7 +1234,7 @@ void main() {
         expect(find.byKey(const ValueKey('chip-expanded')), findsNothing);
         rig.surface.push(const Landed(4));
         await tester.pump();
-        expect(find.byKey(const ValueKey('chip-working')), findsNothing);
+        expect(_working, findsNothing);
       },
     );
 
@@ -1239,7 +1249,7 @@ void main() {
         WorkerProgress('other', const ['thread-1'], const Narration('Else')),
       );
       await tester.pump();
-      expect(find.text('Working…'), findsOneWidget);
+      expect(_working, findsOneWidget);
       expect(find.text('Other'), findsNothing);
       expect(find.text('Else'), findsNothing);
     });
@@ -1272,7 +1282,7 @@ void main() {
         answer.complete(true);
         await tester.pump();
         expect(find.byKey(const ValueKey('chip-failed')), findsNothing);
-        expect(find.text('Trying again…'), findsOneWidget);
+        expect(_working, findsOneWidget);
 
         rig.worker.add(WorkerWorking(rig.aid, const ['thread-1']));
         rig.worker.add(
@@ -1281,7 +1291,7 @@ void main() {
           ], const Narration('Changing the colour')),
         );
         await tester.pump();
-        expect(find.text('Changing the colour'), findsOneWidget);
+        expect(_working, findsOneWidget);
         expect(rig.timings.stepLog, isEmpty, reason: 'a Retry is not a Send');
       },
     );
@@ -1321,7 +1331,7 @@ void main() {
     rig.worker.add(WorkerFailed(rig.aid, 'The API key was refused'));
     rig.surface.push(const Sent('thread-1'));
     await tester.pump();
-    expect(find.byKey(const ValueKey('chip-working')), findsNothing);
+    expect(_working, findsNothing);
     expect(find.byKey(const ValueKey('chip-failed')), findsOneWidget);
   });
 
@@ -1334,11 +1344,11 @@ void main() {
     rig.worker.add(WorkerWorking(rig.aid, const ['thread-1']));
     rig.worker.add(WorkerLanded(rig.aid, 4));
     await tester.pump();
-    expect(find.text('Loading the new version'), findsOneWidget);
+    expect(find.byKey(const ValueKey('newer-toast')), findsOneWidget);
     rig.surface.fault(const SurfaceFault('gone', reloading: true));
     rig.surface.push(rig.ready(version: 4, latest: 4));
     await tester.pump();
-    expect(find.byKey(const ValueKey('chip-working')), findsNothing);
+    expect(_working, findsNothing);
     expect(rig.timings.log, [
       'start $longpressLanded',
       'stop $longpressLanded',
@@ -1362,23 +1372,26 @@ void main() {
     await frames(tester);
     rig.surface.push(const Landed(4));
     await tester.pump();
-    expect(find.text('Working…'), findsOneWidget);
+    expect(_working, findsOneWidget);
     expect(rig.timings.log, ['start $longpressLanded']);
   });
 
-  testWidgets('Working can be dismissed, and comes back with new work', (
-    tester,
-  ) async {
+  testWidgets('Working is a pill with no dismiss; how a change ended can be '
+      'dismissed', (tester) async {
     final rig = await pumpScreen(tester);
     rig.surface.push(rig.ready());
     rig.surface.push(const Sent('thread-1'));
     await tester.pump();
+    expect(_working, findsOneWidget);
+    expect(find.byKey(const ValueKey('chip-dismiss')), findsNothing);
+    rig.worker.add(WorkerWorking(rig.aid, const ['thread-1']));
+    rig.worker.add(WorkerCancelled(rig.aid));
+    await tester.pump();
+    expect(_working, findsNothing);
+    expect(find.byKey(const ValueKey('chip-stopped')), findsOneWidget);
     await tester.tap(find.byKey(const ValueKey('chip-dismiss')));
     await tester.pump();
-    expect(find.byKey(const ValueKey('chip-working')), findsNothing);
-    rig.worker.add(WorkerWorking(rig.aid, const ['thread-1']));
-    await tester.pump();
-    expect(find.text('Working…'), findsOneWidget);
+    expect(find.byKey(const ValueKey('chip-stopped')), findsNothing);
   });
 
   testWidgets(
@@ -1952,15 +1965,24 @@ void main() {
       },
     );
 
-    testWidgets('the toast fades on its own', (tester) async {
-      final rig = await pumpScreen(tester);
+    testWidgets('the toast shows at the top and fades on its own', (
+      tester,
+    ) async {
+      final clock = _Clock();
+      final rig = await pumpScreen(tester, clock: clock);
       rig.surface.push(rig.ready());
       await tester.pump();
       rig.worker.add(WorkerReplied(rig.aid));
       await tester.pump();
       await tester.pump(const Duration(milliseconds: 500));
       expect(find.text('Clax replied'), findsOneWidget);
-      await tester.pump(const Duration(seconds: 5));
+      // Under the 24 dp status bar, 16 dp from the sides: the page's own
+      // navigation at the bottom stays clear.
+      final card = tester.getRect(find.byKey(const ValueKey('app-toast')));
+      expect(card.top, 24 + 8);
+      expect(card.left, 16);
+      expect(card.right, 360 - 16);
+      clock.lapse();
       await tester.pumpAndSettle();
       expect(find.text('Clax replied'), findsNothing);
     });
@@ -2070,10 +2092,13 @@ void main() {
       expect(
         find.descendant(
           of: hint,
-          matching: find.textContaining('Pull down your notifications'),
+          matching: find.text('Pull down the shade to comment on this app.'),
         ),
         findsOneWidget,
       );
+      // One line at the top, 8 dp under the 24 dp status bar.
+      expect(tester.getRect(hint).top, 24 + 8);
+      expect(find.byKey(const ValueKey('hint-turn-on')), findsNothing);
       expect(shown, 1);
       await tester.tap(find.byKey(const ValueKey('hint-dismiss')));
       await tester.pumpAndSettle();
@@ -2086,20 +2111,84 @@ void main() {
       expect(shown, 1);
     });
 
-    testWidgets('with notifications off the hint points at the handle', (
-      tester,
-    ) async {
-      final rig = await pumpScreen(
-        tester,
-        notice: FakeAppNotice(allow: false),
-        firstRunHint: true,
-      );
+    Finder hintSays(String text) =>
+        find.descendant(of: hint, matching: find.text(text));
+    final turnOn = find.byKey(const ValueKey('hint-turn-on'));
+
+    testWidgets('with notifications off the hint offers Turn on, which turns '
+        'them on, puts the hint away and shows the notice', (tester) async {
+      final notice = FakeAppNotice(allow: false);
+      final rig = await pumpScreen(tester, notice: notice, firstRunHint: true);
       rig.surface.push(rig.ready());
       await tester.pumpAndSettle();
       expect(
-        find.descendant(of: hint, matching: find.textContaining('right edge')),
+        hintSays('Turn on notifications to comment from the shade.'),
         findsOneWidget,
       );
+      await tester.tap(turnOn);
+      await tester.pumpAndSettle();
+      expect(notice.calls, contains('turnOn'));
+      expect(hint, findsNothing);
+      expect(notice.shown, '${rig.aid} Runs');
+      expect(handle, findsNothing);
+    });
+
+    testWidgets('a refused Turn on points at the Comment tab', (tester) async {
+      final notice = FakeAppNotice(allow: false)
+        ..turnOnAnswer = NoticeTurnOn.refused;
+      final rig = await pumpScreen(tester, notice: notice, firstRunHint: true);
+      rig.surface.push(rig.ready());
+      await tester.pumpAndSettle();
+      await tester.tap(turnOn);
+      await tester.pumpAndSettle();
+      expect(
+        hintSays('Use the Comment tab on the right to comment.'),
+        findsOneWidget,
+      );
+      expect(turnOn, findsNothing);
+    });
+
+    testWidgets('Turn on that opens settings reads them on return', (
+      tester,
+    ) async {
+      final notice = FakeAppNotice(allow: false)
+        ..turnOnAnswer = NoticeTurnOn.settings;
+      final rig = await pumpScreen(tester, notice: notice, firstRunHint: true);
+      rig.surface.push(rig.ready());
+      await tester.pumpAndSettle();
+      await tester.tap(turnOn);
+      await tester.pumpAndSettle();
+      expect(turnOn, findsOneWidget, reason: 'until Clax is back in front');
+      // Back from settings with notifications still off.
+      tester.binding.handleAppLifecycleStateChanged(AppLifecycleState.paused);
+      tester.binding.handleAppLifecycleStateChanged(AppLifecycleState.resumed);
+      await tester.pumpAndSettle();
+      expect(
+        hintSays('Use the Comment tab on the right to comment.'),
+        findsOneWidget,
+      );
+      // Dismissed, it goes.
+      await tester.tap(find.byKey(const ValueKey('hint-dismiss')));
+      await tester.pumpAndSettle();
+      expect(hint, findsNothing);
+    });
+
+    testWidgets('Turn on in settings, back in front, puts the hint away', (
+      tester,
+    ) async {
+      final notice = FakeAppNotice(allow: false)
+        ..turnOnAnswer = NoticeTurnOn.settings;
+      final rig = await pumpScreen(tester, notice: notice, firstRunHint: true);
+      rig.surface.push(rig.ready());
+      await tester.pumpAndSettle();
+      await tester.tap(turnOn);
+      await tester.pumpAndSettle();
+      notice.allow = true;
+      tester.binding.handleAppLifecycleStateChanged(AppLifecycleState.paused);
+      tester.binding.handleAppLifecycleStateChanged(AppLifecycleState.resumed);
+      await tester.pumpAndSettle();
+      expect(hint, findsNothing);
+      expect(notice.shown, '${rig.aid} Runs');
     });
 
     testWidgets('a used action puts the hint away', (tester) async {
@@ -2219,8 +2308,8 @@ void main() {
         'follows the change live', (tester) async {
       final rig = await pumpScreen(tester);
       final tid = await start(tester, rig);
-      expect(find.text('Working…'), findsOneWidget);
-      await tester.tap(find.byKey(const ValueKey('chip-working')));
+      expect(_working, findsOneWidget);
+      await tester.tap(_working);
       await frames(tester);
       expect(sheet(), findsOneWidget);
       expect(find.text('Change in progress'), findsOneWidget);
@@ -2243,55 +2332,53 @@ void main() {
       expect(find.text('2 errors'), findsOneWidget);
     });
 
-    testWidgets('the chip shows whole at each step and outcome, then folds '
-        'into the pill; a tap on the pill opens it again', (tester) async {
+    testWidgets('one pill says Working and folds to the mark after 3 s; a '
+        'tap opens the change; how it ended stays as a chip', (tester) async {
       final clock = _Clock();
       final rig = await pumpScreen(tester, clock: clock);
       final tid = await start(tester, rig);
-      final chip = find.byKey(const ValueKey('chip-working'));
-      final pill = find.byKey(const ValueKey('chip-working-pill'));
-      expect(chip, findsOneWidget);
-      expect(pill, findsNothing);
+      final seen = find.byKey(const ValueKey('clax-pill'));
+      expect(_pill(), findsOneWidget);
+      expect(find.text('Working'), findsOneWidget);
+      // 8 dp under the 24 dp status bar, 32 dp high, 16 dp from the edge.
+      expect(tester.getRect(seen).top, 24 + 8);
+      expect(tester.getRect(seen).height, 32);
+      expect(tester.getRect(seen).right, 360 - 16);
       clock.lapse();
-      await tester.pump();
-      expect(chip, findsNothing);
-      expect(pill, findsOneWidget);
-      // The pill sits under the 24 px status bar, off the system's icons.
-      expect(tester.getRect(pill).top, greaterThanOrEqualTo(24));
+      await frames(tester);
+      expect(find.text('Working'), findsNothing);
+      expect(tester.getSize(seen), const Size(32, 32));
+      expect(tester.getRect(seen).right, 360 - 16);
 
+      // A step and its elapsed seconds do not open it: they are the sheet's.
       rig.worker.add(WorkerWorking(rig.aid, [tid]));
       rig.worker.add(
         WorkerProgress(rig.aid, [tid], const Narration('Reading the title')),
       );
-      await tester.pump();
-      expect(find.text('Reading the title'), findsOneWidget);
-      clock.lapse();
-      await tester.pump();
-      expect(pill, findsOneWidget);
-      // Elapsed seconds and a render do not open it.
       clock.t = clock.t.add(const Duration(seconds: 5));
-      await tester.pump(const Duration(seconds: 1));
-      expect(chip, findsNothing);
+      await frames(tester);
+      expect(find.text('Working'), findsNothing);
+      expect(find.text('Reading the title'), findsNothing);
 
-      await tester.tap(pill);
-      await tester.pump();
-      expect(chip, findsOneWidget);
-      await tester.tap(chip);
+      await tester.tap(_working);
       await frames(tester);
       expect(sheet(), findsOneWidget);
       // The phone's sheet has no close button: a tap outside closes it.
       await tester.tapAt(const Offset(5, 5));
       await frames(tester);
-      clock.lapse();
-      await tester.pump();
+      expect(sheet(), findsNothing);
 
       rig.worker.add(WorkerFailed(rig.aid, 'it broke'));
       await tester.pump();
+      expect(_pill(), findsNothing);
       expect(find.byKey(const ValueKey('chip-failed')), findsOneWidget);
       clock.lapse();
-      await tester.pump();
-      expect(find.byKey(const ValueKey('chip-failed')), findsNothing);
-      expect(pill, findsOneWidget);
+      await frames(tester);
+      expect(
+        find.byKey(const ValueKey('chip-failed')),
+        findsOneWidget,
+        reason: 'until it is dismissed',
+      );
     });
 
     testWidgets('it opens on a step and while the new version loads', (
@@ -2304,7 +2391,7 @@ void main() {
         WorkerProgress(rig.aid, [tid], const Narration('Reading the title')),
       );
       await tester.pump();
-      await tester.tap(find.byKey(const ValueKey('chip-working')));
+      await tester.tap(_working);
       await frames(tester);
       expect(sheet(), findsOneWidget);
       // The phone's sheet has no close button: a tap outside closes it.
@@ -2312,10 +2399,15 @@ void main() {
       await frames(tester);
       expect(sheet(), findsNothing);
 
+      // Landed, the New version toast takes the pill's place; once it
+      // goes, the pill still says Working until the frame shows v4.
       rig.worker.add(WorkerLanded(rig.aid, 4));
       await tester.pump();
-      expect(find.text('Loading the new version'), findsOneWidget);
-      await tester.tap(find.byKey(const ValueKey('chip-working')));
+      expect(find.byKey(const ValueKey('newer-toast')), findsOneWidget);
+      ClaxToast.current?.dismiss(now: true);
+      await tester.pump();
+      expect(_working, findsOneWidget);
+      await tester.tap(_working);
       await frames(tester);
       expect(sheet(), findsOneWidget);
 
@@ -2344,7 +2436,7 @@ void main() {
       final tid = await start(tester, rig);
       rig.worker.add(WorkerWorking(rig.aid, [tid]));
       await tester.pump();
-      await tester.tap(find.byKey(const ValueKey('chip-working')));
+      await tester.tap(_working);
       await frames(tester);
       await tester.tap(find.byKey(const ValueKey('change-stop')));
       await frames(tester);
@@ -2376,7 +2468,7 @@ void main() {
     testWidgets('without a stop hook it offers no Stop', (tester) async {
       final rig = await pumpScreen(tester);
       await start(tester, rig);
-      await tester.tap(find.byKey(const ValueKey('chip-working')));
+      await tester.tap(_working);
       await frames(tester);
       expect(find.byKey(const ValueKey('change-stop')), findsNothing);
     });
@@ -2398,9 +2490,10 @@ void main() {
         ..add(WorkerWorking(rig.aid, [tid]))
         ..add(WorkerProgress(rig.aid, [tid], const WaitingForConnection()));
       await tester.pump();
-      expect(find.text('Waiting for connection'), findsOneWidget);
-      await tester.tap(find.byKey(const ValueKey('chip-working')));
+      expect(_working, findsOneWidget);
+      await tester.tap(_working);
       await frames(tester);
+      expect(find.text('Waiting for connection'), findsWidgets);
       await tester.tap(find.byKey(const ValueKey('change-open-thread')));
       await frames(tester);
       expect(
@@ -2418,7 +2511,7 @@ void main() {
     testWidgets('Open thread opens the thread page', (tester) async {
       final rig = await pumpScreen(tester);
       final tid = await start(tester, rig);
-      await tester.tap(find.byKey(const ValueKey('chip-working')));
+      await tester.tap(_working);
       await frames(tester);
       await tester.tap(find.byKey(const ValueKey('change-open-thread')));
       await frames(tester);
@@ -2434,7 +2527,7 @@ void main() {
         for (final j in rig.surface.js)
           if (j.contains('focusThread')) j,
       ];
-      await tester.tap(find.byKey(const ValueKey('chip-working')));
+      await tester.tap(_working);
       await frames(tester);
       expect(focus(), [FocusThread(tid).toJs()]);
       await tester.tap(find.byKey(const ValueKey('change-open-thread')));
@@ -2456,7 +2549,7 @@ void main() {
       await start(tester, rig);
       rig.surface.push(const QuestionsMsg(1));
       await tester.pump();
-      await tester.tap(find.byKey(const ValueKey('chip-working')));
+      await tester.tap(_working);
       await frames(tester);
       expect(find.text('Clax has a question for you'), findsOneWidget);
       await tester.tap(find.byKey(const ValueKey('change-answer')));
@@ -2472,7 +2565,7 @@ void main() {
       final tid = await start(tester, rig);
       rig.worker.add(WorkerWorking(rig.aid, [tid]));
       await tester.pump();
-      await tester.tap(find.byKey(const ValueKey('chip-working')));
+      await tester.tap(_working);
       await frames(tester);
       await rig.api.replyAsAgent(rig.aid, tid, 'Which title?');
       rig.worker.add(WorkerReplied(rig.aid, [tid]));
@@ -2602,16 +2695,217 @@ void main() {
       await tester.pump();
       rig.worker.add(WorkerLanded(rig.aid, 4));
       await tester.pump();
-      expect(find.text('Loading the new version'), findsOneWidget);
+      expect(rig.timings.log, ['start $longpressLanded']);
       rig.surface.push(const NewerMsg(4));
       await tester.pump();
-      expect(find.byKey(const ValueKey('chip-working')), findsNothing);
+      expect(_working, findsNothing);
       expect(rig.timings.log, [
         'start $longpressLanded',
         'stop $longpressLanded',
       ]);
       expect(rig.timings.extras.last['version'], 4);
       expect(toast(), findsOneWidget);
+    });
+  });
+
+  group('Undo and Restore wait for their own reload', () {
+    final toast = find.byKey(const ValueKey('newer-toast'));
+
+    testWidgets('the shell’s newer for an Undo shows no New version until '
+        'the reload lands, which ends it', (tester) async {
+      final clock = _Clock();
+      final rig = await pumpScreen(tester, clock: clock);
+      rig.surface.push(rig.ready());
+      await openPanel(tester);
+      await tester.tap(find.text('Versions'));
+      await tester.pumpAndSettle();
+      await tester.tap(find.byKey(const ValueKey('undo')));
+      // The restored version is offered before the reload's frame.
+      rig.surface.push(const NewerMsg(4));
+      await frames(tester);
+      expect(rig.surface.js.last, 'window.claxHost?.reloadLatest()');
+      expect(toast, findsNothing);
+      expect(find.text('New version ready'), findsNothing);
+      expect(_pill(ClaxPillState.newVersion), findsNothing);
+      // The reload's frame.
+      rig.surface.push(const Landed(4));
+      await frames(tester);
+      expect(toast, findsNothing);
+      expect(_pill(ClaxPillState.newVersion), findsNothing);
+      // A later version is offered again.
+      rig.surface.push(const NewerMsg(5));
+      await frames(tester);
+      expect(toast, findsOneWidget);
+    });
+
+    testWidgets('a Restore that fails offers what the shell offered', (
+      tester,
+    ) async {
+      final rig = await pumpScreen(tester);
+      rig.surface.push(rig.ready());
+      await openPanel(tester);
+      await tester.tap(find.text('Versions'));
+      await tester.pumpAndSettle();
+      // Another client publishes meanwhile, and the shell offers it; the
+      // Undo puts the offer away and loses the race.
+      await rig.api.publish(
+        rig.aid,
+        PublishRequest(ifVersion: 3, files: _page),
+      );
+      rig.surface.push(const NewerMsg(4));
+      await tester.pump();
+      expect(toast, findsOneWidget);
+      rig.api.failNext(
+        'restoreVersion',
+        const ClaxApiError(status: 409, code: 'conflict', message: 'stale'),
+      );
+      await tester.tap(find.byKey(const ValueKey('undo')));
+      await frames(tester);
+      expect(find.text('The app changed meanwhile. Try again.'), findsOneWidget);
+      // That toast goes; the version is offered.
+      ClaxToast.current?.dismiss(now: true);
+      await frames(tester);
+      expect(toast, findsOneWidget);
+    });
+  });
+
+  group('Rally of 10', () {
+    final rally = find.text('Version 10. A rally!');
+
+    testWidgets('an app’s first version 10 plays the rally once, and it is '
+        'kept', (tester) async {
+      final kept = <String>[];
+      final settings = AppSettings();
+      final clock = _Clock();
+      final rig = await pumpScreen(
+        tester,
+        settings: settings,
+        clock: clock,
+        onRallied: (aid) => kept.add(aid),
+      );
+      rig.surface.push(rig.ready(version: 9, latest: 9));
+      await tester.pump();
+      rig.surface.push(const Landed(10));
+      await frames(tester);
+      expect(rally, findsOneWidget);
+      final mark = tester.widget<ClaxMark>(
+        find.byKey(const ValueKey('rally-mark')),
+      );
+      expect(mark.state, ClaxMarkState.rally);
+      expect(kept, [rig.aid]);
+      clock.lapse();
+      await tester.pumpAndSettle();
+      expect(rally, findsNothing);
+      // Again at 10 (a reload, an Undo and back): nothing.
+      rig.surface.push(const Landed(10));
+      await frames(tester);
+      expect(rally, findsNothing);
+      expect(kept, [rig.aid]);
+    });
+
+    testWidgets('version 10 offered by the shell rallies in its New version '
+        'toast, with Reload', (tester) async {
+      final rig = await pumpScreen(tester);
+      rig.surface.push(rig.ready(version: 9, latest: 9));
+      await tester.pump();
+      rig.surface.push(const NewerMsg(10));
+      await tester.pump();
+      expect(
+        find.descendant(
+          of: find.byKey(const ValueKey('newer-toast')),
+          matching: rally,
+        ),
+        findsOneWidget,
+      );
+      await tester.tap(find.text('Reload'));
+      await tester.pump();
+      rig.surface.push(const Landed(10));
+      await frames(tester);
+      expect(rally, findsNothing, reason: 'once');
+    });
+
+    testWidgets('an app that rallied before, or a version that is not 10, '
+        'says New version ready', (tester) async {
+      final settings = AppSettings();
+      final again = await pumpScreen(tester, settings: settings);
+      settings.rallied.add(again.aid);
+      again.surface.push(again.ready(version: 9, latest: 9));
+      await tester.pump();
+      again.surface.push(const NewerMsg(10));
+      await tester.pump();
+      expect(rally, findsNothing);
+      expect(find.text('New version ready'), findsOneWidget);
+      expect(find.byKey(const ValueKey('landed-mark')), findsOneWidget);
+    });
+
+    testWidgets('each app has its own rally', (tester) async {
+      final settings = AppSettings();
+      final kept = <String>[];
+      void keep(String aid) {
+        kept.add(aid);
+        settings.rallied = [...settings.rallied, aid];
+      }
+
+      final one = await pumpScreen(tester, settings: settings, onRallied: keep);
+      one.surface.push(one.ready(version: 9, latest: 9));
+      one.surface.push(const Landed(10));
+      await frames(tester);
+      expect(rally, findsOneWidget);
+      // The screen goes, and its toast with it.
+      await tester.pumpWidget(const SizedBox());
+      expect(rally, findsNothing);
+
+      final two = await pumpScreen(
+        tester,
+        settings: settings,
+        onRallied: keep,
+        seed: () async => (one.api, one.api.seedArtifact('Groceries', _page)),
+      );
+      two.surface.push(two.ready(version: 9, latest: 9));
+      two.surface.push(const Landed(10));
+      await frames(tester);
+      expect(rally, findsOneWidget);
+      expect(kept, [one.aid, two.aid]);
+      await tester.pumpWidget(const SizedBox());
+
+      final first = await pumpScreen(
+        tester,
+        settings: settings,
+        onRallied: keep,
+        seed: () async => (one.api, one.aid),
+      );
+      first.surface.push(first.ready(version: 9, latest: 9));
+      first.surface.push(const Landed(10));
+      await frames(tester);
+      expect(rally, findsNothing);
+      expect(kept, [one.aid, two.aid]);
+    });
+
+    testWidgets('each hit of the rally is a light tick, none in comment '
+        'mode', (tester) async {
+      final ticks = <Object?>[];
+      tester.binding.defaultBinaryMessenger.setMockMethodCallHandler(
+        SystemChannels.platform,
+        (call) async {
+          if (call.method == 'HapticFeedback.vibrate') ticks.add(call.arguments);
+          return null;
+        },
+      );
+      addTearDown(
+        () => tester.binding.defaultBinaryMessenger.setMockMethodCallHandler(
+          SystemChannels.platform,
+          null,
+        ),
+      );
+      final clock = _Clock();
+      final rig = await pumpScreen(tester, clock: clock);
+      rig.surface.push(rig.ready(version: 9, latest: 9));
+      rig.surface.push(const Landed(10));
+      await frames(tester);
+      expect(ticks, isEmpty, reason: 'on the clock');
+      clock.lapse();
+      await tester.pump();
+      expect(ticks, List.filled(10, 'HapticFeedbackType.selectionClick'));
     });
   });
 
@@ -2865,7 +3159,7 @@ void main() {
     });
   });
 
-  group('the pills at the top', () {
+  group('the pill at the top', () {
     // Insets in logical pixels: a short status bar, a tall one, a punch-hole
     // cutout taller than the bar, and a landscape cutout on the left.
     const insets = {
@@ -2875,8 +3169,8 @@ void main() {
       'landscape cutout': EdgeInsets.only(top: 24, left: 44, right: 16),
     };
     for (final MapEntry(key: name, value: pad) in insets.entries) {
-      testWidgets('the folded chip sits under the top inset and inside the '
-          'side insets: $name', (tester) async {
+      testWidgets('the pill sits 8 dp under the top inset and inside the '
+          'side insets, folded too: $name', (tester) async {
         final clock = _Clock();
         final landscape = pad.left > 0;
         final rig = await pumpScreen(
@@ -2893,22 +3187,74 @@ void main() {
         rig.surface.push(rig.ready());
         rig.surface.push(Sent(tid));
         await tester.pump();
-        clock.lapse();
-        await tester.pump();
-        final pill = tester.getRect(
-          find.byKey(const ValueKey('chip-working-pill')),
-        );
         final width = landscape ? 780.0 : 360.0;
-        expect(pill.top, greaterThanOrEqualTo(pad.top));
-        expect(pill.right, lessThanOrEqualTo(width - pad.right));
-        expect(pill.left, greaterThanOrEqualTo(pad.left));
-        expect(pill.height, 24);
-        expect(pill.top, pad.top + 8);
+        for (final folded in [false, true]) {
+          if (folded) {
+            clock.lapse();
+            await frames(tester);
+          }
+          final pill = tester.getRect(find.byKey(const ValueKey('clax-pill')));
+          final target = tester.getRect(
+            find.byKey(const ValueKey('clax-pill-target')),
+          );
+          expect(pill.top, pad.top + 8);
+          expect(pill.height, 32);
+          expect(pill.right, width - pad.right - 16);
+          expect(pill.left, greaterThanOrEqualTo(pad.left));
+          expect(target.height, greaterThanOrEqualTo(48));
+          expect(target.width, greaterThanOrEqualTo(48));
+          expect(target.top, greaterThanOrEqualTo(pad.top));
+        }
         // Nothing pushes the page down: it starts at the top inset.
         final page = tester.getRect(find.byKey(const ValueKey('fake-surface')));
         expect(page.top, pad.top);
       });
     }
+
+    testWidgets('one pill at a time: Working before Building before New '
+        'version before Location, and none while a toast is up', (
+      tester,
+    ) async {
+      final clock = _Clock();
+      final rig = await pumpScreen(tester, clock: clock);
+      rig.surface.push(rig.ready());
+      await tester.pump();
+      expect(_pill(), findsNothing, reason: 'nothing goes on');
+      rig.surface.push(const NewerMsg(4));
+      await tester.pump();
+      expect(find.byKey(const ValueKey('newer-toast')), findsOneWidget);
+      expect(_pill(), findsNothing, reason: 'the toast says it');
+      clock.lapse();
+      await frames(tester);
+      expect(find.byKey(const ValueKey('newer-toast')), findsNothing);
+      expect(_pill(ClaxPillState.newVersion), findsOneWidget);
+      expect(find.text('New version'), findsOneWidget);
+      clock.lapse();
+      await frames(tester);
+      expect(find.text('New version'), findsNothing, reason: 'folded');
+      final tid = rig.api.sendComment(rig.aid, 'bigger').threadId;
+      rig.surface.push(Sent(tid));
+      await tester.pump();
+      expect(_pill(), findsOneWidget);
+      expect(_working, findsOneWidget);
+      expect(find.text('Working'), findsOneWidget, reason: 'it opens again');
+    });
+
+    testWidgets('New version’s Show loads it', (tester) async {
+      final clock = _Clock();
+      final rig = await pumpScreen(tester, clock: clock);
+      rig.surface.push(rig.ready());
+      rig.surface.push(const NewerMsg(4));
+      await tester.pump();
+      clock.lapse();
+      await frames(tester);
+      await tester.tap(_pill(ClaxPillState.newVersion));
+      await tester.pump();
+      expect(rig.surface.hostCalls.whereType<ReloadLatest>(), hasLength(1));
+      rig.surface.push(rig.ready(version: 4, latest: 4));
+      await tester.pump();
+      expect(_pill(), findsNothing);
+    });
 
     testWidgets('the page keeps its place while work starts and ends', (
       tester,
@@ -2923,12 +3269,27 @@ void main() {
       final tid = rig.api.sendComment(rig.aid, 'bigger').threadId;
       rig.surface.push(Sent(tid));
       await tester.pump();
-      expect(find.byKey(const ValueKey('chip-working')), findsOneWidget);
+      expect(_working, findsOneWidget);
       expect(tester.getRect(page).top, 24);
       clock.lapse();
-      await tester.pump();
-      expect(find.byKey(const ValueKey('chip-working-pill')), findsOneWidget);
+      await frames(tester);
       expect(tester.getRect(page).top, 24);
+    });
+
+    testWidgets('at 200% text the pill’s words are whole', (tester) async {
+      final rig = await pumpScreen(tester);
+      tester.platformDispatcher.textScaleFactorTestValue = 2;
+      addTearDown(tester.platformDispatcher.clearTextScaleFactorTestValue);
+      rig.surface.push(rig.ready());
+      rig.surface.push(const Sent('thread-1'));
+      await frames(tester);
+      final words = find.text('Working');
+      final paragraph = tester.renderObject<RenderParagraph>(words);
+      expect(paragraph.didExceedMaxLines, isFalse);
+      expect(
+        tester.getSize(words).width,
+        closeTo(paragraph.getMaxIntrinsicWidth(double.infinity), 0.5),
+      );
     });
   });
 }

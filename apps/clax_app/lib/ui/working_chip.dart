@@ -2,11 +2,16 @@ import 'dart:async';
 
 import 'package:flutter/material.dart';
 
-import '../agent/failure.dart' show offersKeepGoing, parseFailureReply;
+import '../agent/failure.dart'
+    show keepGoingIn, offersKeepGoing, parseFailureReply;
 import '../agent/plan.dart';
 import '../agent/worker.dart';
 import '../daemon/clock.dart';
 import 'build_plan.dart';
+import 'kit/mark.dart';
+import 'kit/verbs.dart';
+import 'theme.dart';
+import 'tokens.g.dart';
 import 'change_tracker.dart';
 
 /// The Working chip over an app's page: what the agent is doing about the
@@ -14,13 +19,13 @@ import 'change_tracker.dart';
 /// (docs/superpowers/specs/2026-10-12-flutter-app-round2-design.md R§9.5,
 /// R§9.6). It reads [changes]; its parent rebuilds it when they change.
 ///
-/// - **Working.** A spinner, the running change's latest step ("Working…"
-///   before the first, "Trying again…" after a Retry the worker has not
-///   started yet, "Loading the new version" once it landed) and the
-///   seconds since the work began, ticking on [clock]. The app screen
-///   shows it whole for a few seconds at each of these, then as a
-///   [WorkingPill]. A tap, in any of these, calls [onOpen] (the app screen shows the change in progress:
-///   its comments, steps, render, Stop and Open thread).
+/// - **Working.** The breathing mark, the running change's latest step
+///   ("Working…" before the first, "Trying again…" after a Retry the
+///   worker has not started yet, "Loading the new version" once it landed)
+///   and the seconds since the work began, ticking on [clock]. A tap calls
+///   [onOpen] (the change in progress: its comments, steps, render, Stop
+///   and Open thread). Over an app on a phone the [ClaxPill] says this
+///   instead, and the chip shows only how a change ended.
 /// - **Failed.** The reason, and Retry when [onRetry] is given and the
 ///   change kept its threads; while it is queued the button reads
 ///   "Retrying…" and does nothing.
@@ -129,9 +134,9 @@ class _WorkingChipState extends State<WorkingChip> {
     return c.step ?? (c.again ? 'Trying again…' : 'Working…');
   }
 
-  Widget _spinner(Color color) => SizedBox.square(
-    dimension: 14,
-    child: CircularProgressIndicator(strokeWidth: 2, color: color),
+  /// The breathing mark, drawn on the chip's `fg`-like fill.
+  Widget _mark() => const ExcludeSemantics(
+    child: ClaxMark(size: 18, inverse: true, state: ClaxMarkState.working),
   );
 
   Widget _dismiss(Color color) => IconButton(
@@ -169,7 +174,7 @@ class _WorkingChipState extends State<WorkingChip> {
             child: Row(
               mainAxisSize: MainAxisSize.min,
               children: [
-                _spinner(fg),
+                _mark(),
                 const SizedBox(width: 10),
                 Flexible(
                   child: Semantics(
@@ -291,7 +296,7 @@ class _WorkingChipState extends State<WorkingChip> {
           )
         : null;
     final text = Text(
-      c.outcomeText,
+      keepGoingIn(c.outcomeText, ClaxVerbs.of(context)),
       maxLines: 4,
       overflow: TextOverflow.ellipsis,
       style: theme.textTheme.labelLarge?.copyWith(color: fg),
@@ -356,83 +361,248 @@ class _WorkingChipState extends State<WorkingChip> {
   }
 }
 
-/// The Working chip folded into a small pill of [height] for the status
-/// bar's band: a spinner while the change runs, else an icon for how it
-/// ended. A tap calls [onTap] (the app screen opens the chip whole).
-class WorkingPill extends StatelessWidget {
-  const WorkingPill({
+/// What the [ClaxPill] says.
+enum ClaxPillState {
+  /// A change is under way: the breathing mark and "Working".
+  working,
+
+  /// The app's build goes: "Building 2/5".
+  building,
+
+  /// A newer version is ready: "New version", with Show.
+  newVersion,
+
+  /// The page is using the device's location: its symbol and "Location".
+  location,
+}
+
+/// The one Clax control over an app's page on a phone: a floating pill
+/// that says what goes on ([state]), 32 dp to see in a 48 dp target, `fg`
+/// with `bg` words, at level 2. It shows its words for [foldAfter] on
+/// [clock] whenever what it says changes, then folds to a 32 dp circle
+/// with the mark (or the location symbol) alone. A tap calls [onTap], or
+/// [onShow] in [ClaxPillState.newVersion]. With [state] null nothing goes
+/// on and nothing shows.
+///
+/// The mark breathes while a change or a build runs, slides its dot into
+/// Clax's arc as a change starts ([ClaxMarkState.sent]), and nods at a new
+/// version ([ClaxMarkState.landed]). A screen reader hears the state as a
+/// live region ("Clax is working").
+class ClaxPill extends StatefulWidget {
+  const ClaxPill({
     super.key,
-    required this.changes,
-    required this.onTap,
-    this.height = 24,
+    required this.state,
+    this.progress,
+    this.onTap,
+    this.onShow,
+    this.clock = const SystemClock(),
   });
 
-  final ChangeTracker changes;
-  final VoidCallback onTap;
-  final double height;
+  final ClaxPillState? state;
+
+  /// The build's features done of all, for [ClaxPillState.building].
+  final ({int done, int total})? progress;
+  final VoidCallback? onTap;
+
+  /// Loads the new version; the tap in [ClaxPillState.newVersion].
+  final VoidCallback? onShow;
+  final Clock clock;
+
+  /// How long the pill shows its words before it folds.
+  static const foldAfter = Duration(seconds: 3);
+
+  /// How tall the pill is to see; its target is [ClaxLayout.target].
+  static const height = 32.0;
+
+  /// The pill's words in [state].
+  static String label(ClaxPillState state, ({int done, int total})? progress) =>
+      switch (state) {
+        ClaxPillState.working => 'Working',
+        ClaxPillState.building =>
+          progress == null || progress.total == 0
+              ? 'Building'
+              : 'Building ${progress.done}/${progress.total}',
+        ClaxPillState.newVersion => 'New version',
+        ClaxPillState.location => 'Location',
+      };
+
+  /// What a screen reader hears in [state].
+  static String spoken(
+    ClaxPillState state,
+    ({int done, int total})? progress,
+  ) => switch (state) {
+    ClaxPillState.working => 'Clax is working',
+    ClaxPillState.building => label(state, progress),
+    ClaxPillState.newVersion => 'New version ready',
+    ClaxPillState.location => 'Location in use',
+  };
+
+  @override
+  State<ClaxPill> createState() => _ClaxPillState();
+}
+
+class _ClaxPillState extends State<ClaxPill> {
+  var _folded = false;
+  var _fold = 0;
+
+  /// The words the pill last opened for.
+  String? _said;
+
+  /// The mark plays [ClaxMarkState.sent] as work starts, until this ends.
+  var _sending = false;
+
+  @override
+  void initState() {
+    super.initState();
+    _follow(null);
+  }
+
+  @override
+  void didUpdateWidget(ClaxPill old) {
+    super.didUpdateWidget(old);
+    _follow(old.state);
+  }
+
+  /// Opens the pill when what it says changed, and starts its fold.
+  void _follow(ClaxPillState? was) {
+    final state = widget.state;
+    final said = state == null ? null : ClaxPill.label(state, widget.progress);
+    if (said == _said) return;
+    _said = said;
+    if (state == null) return;
+    _folded = false;
+    final fold = ++_fold;
+    unawaited(
+      widget.clock.delay(ClaxPill.foldAfter).then((_) {
+        if (mounted && fold == _fold) setState(() => _folded = true);
+      }),
+    );
+    if (state == ClaxPillState.working && was != ClaxPillState.working) {
+      _sending = true;
+      unawaited(
+        widget.clock.delay(const Duration(milliseconds: 300)).then((_) {
+          if (mounted && _sending) setState(() => _sending = false);
+        }),
+      );
+    } else if (state != ClaxPillState.working) {
+      _sending = false;
+    }
+  }
 
   @override
   Widget build(BuildContext context) {
+    final state = widget.state;
+    if (state == null) return const SizedBox.shrink();
+    final p = claxPalette(context);
     final theme = Theme.of(context);
-    final scheme = theme.colorScheme;
-    final outcome = changes.outcome;
-    final (Color bg, Color fg) = switch (outcome) {
-      ChangeOutcome.failed || ChangeOutcome.sendFailed => (
-        scheme.errorContainer,
-        scheme.onErrorContainer,
+    final reduced = MediaQuery.disableAnimationsOf(context);
+    final words = theme.textTheme.labelLarge!.copyWith(
+      color: p.bg,
+      fontFeatures: const [FontFeature.tabularFigures()],
+    );
+    final Widget symbol = state == ClaxPillState.location
+        ? Icon(Icons.near_me_rounded, size: 16, color: p.bg)
+        : ClaxMark(
+            size: 20,
+            inverse: true,
+            state: switch (state) {
+              ClaxPillState.working when _sending => ClaxMarkState.sent,
+              ClaxPillState.working ||
+              ClaxPillState.building => ClaxMarkState.working,
+              ClaxPillState.newVersion => ClaxMarkState.landed,
+              ClaxPillState.location => ClaxMarkState.resting,
+            },
+          );
+    final open = !_folded;
+    final tap = state == ClaxPillState.newVersion
+        ? (widget.onShow ?? widget.onTap)
+        : widget.onTap;
+    final pill = DecoratedBox(
+      decoration: ClaxElevation.of(
+        2,
+        theme.brightness,
+        p,
+        color: p.fg,
+        radius: BorderRadius.circular(ClaxRadius.full),
       ),
-      _ => (
-        scheme.inverseSurface.withValues(alpha: 0.88),
-        scheme.onInverseSurface,
-      ),
-    };
-    final icon = switch (outcome) {
-      null => null,
-      ChangeOutcome.failed || ChangeOutcome.sendFailed => Icons.error_outline,
-      ChangeOutcome.stopped => Icons.pause_circle_outline,
-      ChangeOutcome.replied => Icons.forum_outlined,
-    };
-    final ring = height * 0.55;
-    final label = switch (outcome) {
-      null =>
-        changes.landing
-            ? 'Loading the new version'
-            : changes.step ?? (changes.again ? 'Trying again…' : 'Working…'),
-      _ => changes.outcomeText,
-    };
-    return Semantics(
-      button: true,
-      label: label,
-      onTapHint: 'Show the change',
-      excludeSemantics: true,
-      child: Material(
-        key: const ValueKey('chip-working-pill'),
-        color: bg,
-        shape: const StadiumBorder(),
-        child: InkWell(
-          customBorder: const StadiumBorder(),
-          onTap: onTap,
-          child: SizedBox(
-            height: height,
-            child: Padding(
-              padding: EdgeInsets.symmetric(horizontal: height * 0.3),
+      child: ConstrainedBox(
+        constraints: const BoxConstraints(
+          minHeight: ClaxPill.height,
+          minWidth: ClaxPill.height,
+        ),
+        child: AnimatedSize(
+          duration: reduced ? ClaxMotion.fast : ClaxMotion.base,
+          curve: ClaxMotion.standard,
+          alignment: AlignmentDirectional.centerEnd,
+          child: Padding(
+            padding: open
+                ? const EdgeInsetsDirectional.fromSTEB(10, 4, 14, 4)
+                : EdgeInsets.zero,
+            child: SizedBox(
+              height: open ? null : ClaxPill.height,
+              width: open ? null : ClaxPill.height,
               child: Row(
                 mainAxisSize: MainAxisSize.min,
+                mainAxisAlignment: MainAxisAlignment.center,
                 children: [
-                  if (icon == null)
-                    SizedBox.square(
-                      dimension: ring,
-                      child: CircularProgressIndicator(
-                        strokeWidth: 2,
-                        color: fg,
+                  symbol,
+                  if (open) ...[
+                    const SizedBox(width: ClaxSpace.s8),
+                    Flexible(
+                      child: Text(
+                        ClaxPill.label(state, widget.progress),
+                        maxLines: 1,
+                        softWrap: false,
+                        overflow: TextOverflow.ellipsis,
+                        style: words,
                       ),
-                    )
-                  else
-                    Icon(icon, size: ring + 2, color: fg),
-                  SizedBox(width: height * 0.22),
-                  Icon(Icons.edit_note, size: ring + 2, color: fg),
+                    ),
+                    if (state == ClaxPillState.newVersion) ...[
+                      const SizedBox(width: ClaxSpace.s12),
+                      Text(
+                        'Show',
+                        maxLines: 1,
+                        softWrap: false,
+                        style: words.copyWith(
+                          color: p.inversePrimary,
+                          fontWeight: FontWeight.w700,
+                        ),
+                      ),
+                    ],
+                  ],
                 ],
               ),
+            ),
+          ),
+        ),
+      ),
+    );
+    return Semantics(
+      container: true,
+      liveRegion: true,
+      button: tap != null,
+      label: ClaxPill.spoken(state, widget.progress),
+      onTap: tap,
+      excludeSemantics: true,
+      child: GestureDetector(
+        key: const ValueKey('clax-pill-target'),
+        behavior: HitTestBehavior.opaque,
+        onTap: tap,
+        child: ConstrainedBox(
+          constraints: const BoxConstraints(
+            minWidth: ClaxLayout.target,
+            minHeight: ClaxLayout.target,
+          ),
+          // Folded, the circle keeps the pill's end edge where it was.
+          child: Align(
+            alignment: AlignmentDirectional.centerEnd,
+            widthFactor: 1,
+            heightFactor: 1,
+            child: Padding(
+              padding: const EdgeInsets.symmetric(
+                vertical: (ClaxLayout.target - ClaxPill.height) / 2,
+              ),
+              child: KeyedSubtree(key: const ValueKey('clax-pill'), child: pill),
             ),
           ),
         ),
@@ -441,28 +611,21 @@ class WorkingPill extends StatelessWidget {
   }
 }
 
-/// The Working chip while an app's build goes (queued or running) and no
-/// change is in flight: "Building · Export · 3/7" ([planCount]). A tap
-/// calls [onTap]. It exists only while the build goes; its parent removes
-/// it after, and shows it [compact] between the build's steps.
-///
-/// [compact]: a small pill of [height], a ring filled to the features done
-/// and "3/7", for the status bar's band.
+/// The build's chip while an app's build goes (queued or running) and no
+/// change is in flight: "Building · Export · 3/7" ([planCount]), with the
+/// breathing mark. A tap calls [onTap]. It exists only while the build
+/// goes.
 class BuildChip extends StatelessWidget {
   const BuildChip({
     super.key,
     required this.plan,
     required this.state,
     required this.onTap,
-    this.compact = false,
-    this.height = 24,
   });
 
   final Plan? plan;
   final BuildState state;
   final VoidCallback onTap;
-  final bool compact;
-  final double height;
 
   /// The chip's text.
   static String label(Plan? plan, BuildState state) {
@@ -476,66 +639,7 @@ class BuildChip extends StatelessWidget {
   }
 
   @override
-  Widget build(BuildContext context) =>
-      compact ? _pill(context) : _full(context);
-
-  Widget _pill(BuildContext context) {
-    final theme = Theme.of(context);
-    final scheme = theme.colorScheme;
-    final fg = scheme.onInverseSurface;
-    final count = plan == null ? null : planCount(plan!);
-    final ring = height * 0.55;
-    return Semantics(
-      button: true,
-      label: label(plan, state),
-      onTapHint: 'Show the build',
-      excludeSemantics: true,
-      child: Material(
-        key: const ValueKey('chip-building-pill'),
-        color: scheme.inverseSurface.withValues(alpha: 0.88),
-        shape: const StadiumBorder(),
-        child: InkWell(
-          customBorder: const StadiumBorder(),
-          onTap: onTap,
-          child: SizedBox(
-            height: height,
-            child: Padding(
-              padding: EdgeInsets.symmetric(horizontal: height * 0.3),
-              child: Row(
-                mainAxisSize: MainAxisSize.min,
-                children: [
-                  SizedBox.square(
-                    dimension: ring,
-                    child: CircularProgressIndicator(
-                      value: count == null || count.total == 0
-                          ? null
-                          : (count.done / count.total).clamp(0.08, 1.0),
-                      strokeWidth: 2,
-                      color: fg,
-                      backgroundColor: fg.withValues(alpha: 0.25),
-                    ),
-                  ),
-                  if (count != null && count.total > 0) ...[
-                    SizedBox(width: height * 0.22),
-                    Text(
-                      '${count.done}/${count.total}',
-                      style: theme.textTheme.labelSmall?.copyWith(
-                        color: fg,
-                        fontWeight: FontWeight.w600,
-                        fontFeatures: const [FontFeature.tabularFigures()],
-                      ),
-                    ),
-                  ],
-                ],
-              ),
-            ),
-          ),
-        ),
-      ),
-    );
-  }
-
-  Widget _full(BuildContext context) {
+  Widget build(BuildContext context) {
     final theme = Theme.of(context);
     final scheme = theme.colorScheme;
     final fg = scheme.onInverseSurface;
@@ -556,9 +660,12 @@ class BuildChip extends StatelessWidget {
             child: Row(
               mainAxisSize: MainAxisSize.min,
               children: [
-                SizedBox.square(
-                  dimension: 14,
-                  child: CircularProgressIndicator(strokeWidth: 2, color: fg),
+                const ExcludeSemantics(
+                  child: ClaxMark(
+                    size: 18,
+                    inverse: true,
+                    state: ClaxMarkState.working,
+                  ),
                 ),
                 const SizedBox(width: 10),
                 Flexible(

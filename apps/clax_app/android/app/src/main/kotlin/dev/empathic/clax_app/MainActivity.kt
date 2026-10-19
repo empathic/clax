@@ -124,6 +124,7 @@ class MainActivity : FlutterActivity() {
     ) {
         super.onRequestPermissionsResult(requestCode, permissions, grantResults)
         background?.onPermissionResult(requestCode, grantResults)
+        notice?.onPermissionResult(requestCode, grantResults)
     }
 
     /**

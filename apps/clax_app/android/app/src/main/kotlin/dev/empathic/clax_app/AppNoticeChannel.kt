@@ -1,15 +1,19 @@
 package dev.empathic.clax_app
 
+import android.Manifest
 import android.app.Activity
 import android.app.Notification
 import android.app.NotificationChannel
 import android.app.NotificationManager
 import android.app.PendingIntent
+import android.content.ActivityNotFoundException
 import android.content.BroadcastReceiver
 import android.content.Context
 import android.content.Intent
 import android.content.IntentFilter
+import android.content.pm.PackageManager
 import android.os.Build
+import android.provider.Settings
 import android.graphics.drawable.Icon
 import io.flutter.plugin.common.BinaryMessenger
 import io.flutter.plugin.common.MethodCall
@@ -27,6 +31,11 @@ import io.flutter.plugin.common.MethodChannel
  * - `allowed` answers whether it can be seen: notifications are enabled for
  *   Clax (POST_NOTIFICATIONS on Android 13 and later) and the channel is not
  *   turned off.
+ * - `turnOn` answers `allowed` when they are; asks for POST_NOTIFICATIONS
+ *   while Android still lets Clax ask (never asked, or refused once) and
+ *   answers `allowed` or `refused`; else opens Clax's notification
+ *   settings and answers `settings` (`refused` when none opens). The
+ *   request's answer comes through [onPermissionResult].
  * - `launchTap` answers, once, the tap that launched the activity.
  *
  * Its body and its "Comment" and "Threads" actions are explicit, immutable
@@ -46,6 +55,7 @@ class AppNoticeChannel(private val activity: Activity, messenger: BinaryMessenge
     MethodChannel.MethodCallHandler {
     private val channel = MethodChannel(messenger, NAME)
     private var launchTap: Map<String, String>? = tapOf(activity.intent)
+    private var turnOnResult: MethodChannel.Result? = null
     private val dismissals = object : BroadcastReceiver() {
         override fun onReceive(context: Context, intent: Intent) {
             val aid = intent.getStringExtra(EXTRA_ARTIFACT) ?: return
@@ -84,12 +94,55 @@ class AppNoticeChannel(private val activity: Activity, messenger: BinaryMessenge
                 result.success(null)
             }
             "allowed" -> result.success(allowed(activity))
+            "turnOn" -> turnOn(result)
             "launchTap" -> {
                 result.success(launchTap)
                 launchTap = null
             }
             else -> result.notImplemented()
         }
+    }
+
+    private fun turnOn(result: MethodChannel.Result) {
+        if (allowed(activity)) {
+            result.success("allowed")
+            return
+        }
+        val permission = Manifest.permission.POST_NOTIFICATIONS
+        val prefs = activity.getSharedPreferences(
+            BackgroundWorkChannel.PREFS,
+            Activity.MODE_PRIVATE,
+        )
+        val canAsk = Build.VERSION.SDK_INT >= Build.VERSION_CODES.TIRAMISU &&
+            activity.checkSelfPermission(permission) != PackageManager.PERMISSION_GRANTED &&
+            (!prefs.getBoolean(BackgroundWorkChannel.ASKED, false) ||
+                activity.shouldShowRequestPermissionRationale(permission))
+        if (canAsk && turnOnResult == null) {
+            prefs.edit().putBoolean(BackgroundWorkChannel.ASKED, true).apply()
+            turnOnResult = result
+            activity.requestPermissions(arrayOf(permission), REQUEST)
+            return
+        }
+        // Android will not ask again, or notifications or the channel are
+        // off in settings: Clax's notification settings.
+        try {
+            activity.startActivity(
+                Intent(Settings.ACTION_APP_NOTIFICATION_SETTINGS)
+                    .putExtra(Settings.EXTRA_APP_PACKAGE, activity.packageName)
+                    .addFlags(Intent.FLAG_ACTIVITY_NEW_TASK)
+            )
+            result.success("settings")
+        } catch (e: ActivityNotFoundException) {
+            result.success("refused")
+        }
+    }
+
+    /** From the activity's `onRequestPermissionsResult`. */
+    fun onPermissionResult(requestCode: Int, grantResults: IntArray) {
+        if (requestCode != REQUEST) return
+        val granted = grantResults.firstOrNull() == PackageManager.PERMISSION_GRANTED
+        turnOnResult?.success(if (granted && allowed(activity)) "allowed" else "refused")
+        turnOnResult = null
     }
 
     /** From the activity's `onDestroy`. */
@@ -110,6 +163,7 @@ class AppNoticeChannel(private val activity: Activity, messenger: BinaryMessenge
 
     companion object {
         const val NAME = "dev.empathic.clax/app_notice"
+        private const val REQUEST = 7402
         const val CHANNEL = "open_app"
         const val NOTIFICATION = 2
         const val EXTRA_ARTIFACT = "dev.empathic.clax.notice.artifact"

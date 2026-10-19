@@ -44,8 +44,10 @@ class AppSettings {
     String? authorName,
     this.developer = false,
     this.aiConsent,
+    List<String>? rallied,
   }) : model = model ?? defaultModel,
-       authorName = cleanAuthorName(authorName);
+       authorName = cleanAuthorName(authorName),
+       rallied = rallied ?? [];
 
   /// [backendMessagesApi] or [backendClaudeCli]. The CLI is used only where
   /// `ClaudeCliBackend.supported` holds; elsewhere this setting is ignored.
@@ -84,6 +86,10 @@ class AppSettings {
   /// required (iOS) does a run wait for it.
   bool? aiConsent;
 
+  /// The IDs of the apps whose version 10 played Rally of 10, which shows
+  /// once per app.
+  List<String> rallied;
+
   AppSettings copy() => AppSettings(
     backend: backend,
     model: model,
@@ -94,6 +100,7 @@ class AppSettings {
     authorName: authorName,
     developer: developer,
     aiConsent: aiConsent,
+    rallied: List.of(rallied),
   );
 
   Map<String, Object?> toJson() => {
@@ -106,6 +113,7 @@ class AppSettings {
     'author_name': authorName,
     'developer': developer,
     'ai_consent': aiConsent,
+    'rallied': rallied,
   };
 
   /// Reads [j], keeping the default for any value that is missing, of the
@@ -134,6 +142,8 @@ class AppSettings {
     if (developer is bool) s.developer = developer;
     final consent = j['ai_consent'];
     if (consent is bool) s.aiConsent = consent;
+    final rallied = j['rallied'];
+    if (rallied is List) s.rallied = rallied.whereType<String>().toList();
     return s;
   }
 }

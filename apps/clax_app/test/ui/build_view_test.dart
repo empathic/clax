@@ -488,21 +488,23 @@ void main() {
       return (surface, aid);
     }
 
-    testWidgets('the chip shows the build while it goes; its sheet stops it '
+    testWidgets('the pill says Building while it goes; its sheet stops it '
         'and a toast says so', (tester) async {
       final (_, aid) = await pumpApp(tester);
-      expect(find.byType(BuildChip), findsNothing);
+      final pill = find.byWidgetPredicate(
+        (w) => w is ClaxPill && w.state == ClaxPillState.building,
+      );
+      expect(pill, findsNothing);
 
       control.emit(BuildState(aid, BuildPhase.running, featureId: 'f2'));
       await frames(tester);
-      expect(find.text('Building · Weekly chart · 1/4'), findsOneWidget);
+      expect(pill, findsOneWidget);
+      expect(find.text('Building 1/4'), findsOneWidget);
 
-      // It folds into the pill, and opens again on a new step or a tap.
-      await tester.pump(const Duration(seconds: 4));
+      // It folds to the mark, and opens again when a feature is done.
+      await tester.pump(ClaxPill.foldAfter);
       await frames(tester);
-      expect(find.byKey(const ValueKey('chip-building')), findsNothing);
-      expect(find.byKey(const ValueKey('chip-building-pill')), findsOneWidget);
-      expect(find.text('1/4'), findsOneWidget);
+      expect(find.text('Building 1/4'), findsNothing);
       control.emit(
         BuildState(
           aid,
@@ -513,20 +515,17 @@ void main() {
       );
       await frames(tester);
       expect(
-        find.byKey(const ValueKey('chip-building-pill')),
-        findsOneWidget,
+        find.text('Building 1/4'),
+        findsNothing,
         reason: 'progress within a feature does not open it',
       );
       await plans.mark(aid, 'f2', FeatureStatus.done);
       await frames(tester);
-      expect(find.byKey(const ValueKey('chip-building')), findsOneWidget);
-      await tester.pump(const Duration(seconds: 4));
+      expect(find.text('Building 2/4'), findsOneWidget);
+      await tester.pump(ClaxPill.foldAfter);
       await frames(tester);
-      await tester.tap(find.byKey(const ValueKey('chip-building-pill')));
-      await frames(tester);
-      expect(find.text('Building · Weekly chart · 2/4'), findsOneWidget);
 
-      await tester.tap(find.byKey(const ValueKey('chip-building')));
+      await tester.tap(pill);
       await frames(tester, 20);
       expect(find.byKey(const ValueKey('build-sheet')), findsOneWidget);
       expect(find.text('Plan · 2 of 4 done'), findsOneWidget);
@@ -536,8 +535,8 @@ void main() {
       expect(control.calls, ['stop $aid']);
       expect(find.byKey(const ValueKey('build-resume')), findsOneWidget);
       expect(find.text('Build stopped'), findsWidgets);
-      // The sheet says so while it is open; the chip is gone under it.
-      expect(find.byType(BuildChip), findsNothing);
+      // The sheet says so while it is open; the pill is gone under it.
+      expect(pill, findsNothing);
       await tester.pump(const Duration(seconds: 5));
     });
 
@@ -547,7 +546,11 @@ void main() {
       await frames(tester);
       control.emit(BuildState(aid, BuildPhase.done));
       await frames(tester);
-      expect(find.byType(BuildChip), findsNothing);
+      expect(find.byType(ClaxPill), findsOneWidget);
+      expect(
+        find.byWidgetPredicate((w) => w is ClaxPill && w.state != null),
+        findsNothing,
+      );
       expect(find.text('Every feature is built'), findsOneWidget);
       await tester.pump(const Duration(seconds: 5));
     });
@@ -576,6 +579,7 @@ void main() {
       expect(surface.hostCalls, isNot(contains(isA<SubmitDraft>())));
       expect(control.calls, ['resume $aid']);
       expect(find.text('Added “Add a dark mode” to the plan'), findsOneWidget);
+      await tester.pump(const Duration(seconds: 5));
     });
   });
 
@@ -618,6 +622,7 @@ void main() {
     expect(surface.hostCalls, isNot(contains(isA<CancelDraft>())));
     expect(find.textContaining('Couldn’t add it to the plan'), findsOneWidget);
     expect(control.calls, isEmpty);
+    await tester.pump(const Duration(seconds: 5));
   });
 
   testWidgets('Retry after a failed first run starts from its plan, the '

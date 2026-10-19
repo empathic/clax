@@ -1,3 +1,4 @@
+import 'dart:async';
 import 'dart:math' as math;
 
 import 'package:flutter/material.dart';
@@ -21,6 +22,30 @@ enum ClaxToastPlace {
   inline,
 }
 
+/// How a [ClaxToast] went.
+enum ClaxToastEnd {
+  /// Its time ran out.
+  timedOut,
+
+  /// Its action was used.
+  action,
+
+  /// Another toast took its place.
+  replaced,
+
+  /// It was put away ([ClaxToastHandle.dismiss]) or swiped away.
+  dismissed,
+}
+
+/// One toast that [ClaxToast.show] put up.
+abstract interface class ClaxToastHandle {
+  /// Completes as the toast goes, with how.
+  Future<ClaxToastEnd> get closed;
+
+  /// Puts the toast away: at once with [now], else with its exit.
+  void dismiss({bool now = false});
+}
+
 /// A short note that something happened, with at most one action.
 abstract final class ClaxToast {
   /// The toast's card or bar, for tests that measure it.
@@ -28,12 +53,18 @@ abstract final class ClaxToast {
 
   static _ToastHandle? _current;
 
+  /// The toast showing at the top or inline, if any.
+  static ClaxToastHandle? get current => _current;
+
   /// Shows [text] (with [actionLabel], which runs [onAction] and dismisses
   /// the toast) at [place], replacing any toast showing at the top or
-  /// inline. Each goes by itself after 4 s on [clock], except one with an
-  /// action while a screen reader is on (`MediaQuery.accessibleNavigation`),
-  /// which stays until it is used or replaced. Each is a live region, and
-  /// in the Apple family it is announced as well.
+  /// inline. Each goes by itself after [duration] on [clock], except one
+  /// with an action while a screen reader is on
+  /// (`MediaQuery.accessibleNavigation`), which stays until it is used or
+  /// replaced. Each is a live region, and in the Apple family it is
+  /// announced as well. [leading] (a [ClaxMark], say) goes before the
+  /// text at the top and inline; [key] names the card or bar (else
+  /// [cardKey]).
   ///
   /// [ClaxToastPlace.bottom] is a floating snack bar and
   /// [ClaxToastPlace.top] a card like it under the status bar: 16 from the
@@ -42,13 +73,16 @@ abstract final class ClaxToast {
   /// bar, sliding down. Where the window has its own toolbar
   /// ([hasDesktopWindowChrome]), every toast is the inline bar, under the
   /// toolbar.
-  static void show(
+  static ClaxToastHandle show(
     BuildContext context,
     String text, {
     String? actionLabel,
     VoidCallback? onAction,
     ClaxToastPlace place = ClaxToastPlace.bottom,
     Clock clock = const SystemClock(),
+    Duration duration = const Duration(seconds: 4),
+    Widget? leading,
+    Key? key,
   }) {
     if (hasDesktopWindowChrome &&
         ClaxFamily.of(context) == ClaxFamily.apple) {
@@ -61,24 +95,23 @@ abstract final class ClaxToast {
           ClaxLayout.sheet,
           MediaQuery.sizeOf(context).width - 2 * ClaxSpace.s16,
         );
-        messenger
-          ..hideCurrentSnackBar()
-          ..showSnackBar(
-            SnackBar(
-              key: cardKey,
-              content: Text(text),
-              behavior: SnackBarBehavior.floating,
-              width: width,
-              duration: const Duration(seconds: 4),
-              action: actionLabel == null
-                  ? null
-                  : SnackBarAction(
-                      label: actionLabel,
-                      onPressed: onAction ?? () {},
-                    ),
-            ),
-          );
-        return;
+        messenger.hideCurrentSnackBar();
+        final controller = messenger.showSnackBar(
+          SnackBar(
+            key: key ?? cardKey,
+            content: Text(text),
+            behavior: SnackBarBehavior.floating,
+            width: width,
+            duration: duration,
+            action: actionLabel == null
+                ? null
+                : SnackBarAction(
+                    label: actionLabel,
+                    onPressed: onAction ?? () {},
+                  ),
+          ),
+        );
+        return _SnackHandle(messenger, controller);
       }
       place = ClaxToastPlace.top;
     }
@@ -100,11 +133,12 @@ abstract final class ClaxToast {
       }
     }
 
-    _current?.dismiss();
+    _current?._end(ClaxToastEnd.replaced);
     final handle = _ToastHandle();
     _current = handle;
     final entry = OverlayEntry(
       builder: (_) => _OverlayToast(
+        cardKey: key ?? cardKey,
         handle: handle,
         place: place,
         pane: pane,
@@ -112,6 +146,7 @@ abstract final class ClaxToast {
         text: text,
         actionLabel: actionLabel,
         onAction: onAction,
+        leading: leading,
       ),
     );
     handle.remove = () {
@@ -129,22 +164,59 @@ abstract final class ClaxToast {
     final keep =
         actionLabel != null && MediaQuery.accessibleNavigationOf(context);
     if (!keep) {
-      clock.delay(const Duration(seconds: 4)).then((_) => handle.dismiss());
+      clock.delay(duration).then((_) => handle._end(ClaxToastEnd.timedOut));
     }
+    return handle;
   }
 }
 
-/// One toast's way out: [dismiss] runs its exit, then [remove].
-class _ToastHandle {
-  VoidCallback remove = () {};
-  VoidCallback? _exit;
+/// A bottom toast's handle: its snack bar in [messenger].
+class _SnackHandle implements ClaxToastHandle {
+  _SnackHandle(this.messenger, this.controller);
+  final ScaffoldMessengerState messenger;
+  final ScaffoldFeatureController<SnackBar, SnackBarClosedReason> controller;
   var _gone = false;
 
-  void dismiss() {
+  @override
+  Future<ClaxToastEnd> get closed => controller.closed.then(
+    (r) => switch (r) {
+      SnackBarClosedReason.action => ClaxToastEnd.action,
+      SnackBarClosedReason.timeout => ClaxToastEnd.timedOut,
+      SnackBarClosedReason.hide || SnackBarClosedReason.remove =>
+        _gone ? ClaxToastEnd.dismissed : ClaxToastEnd.replaced,
+      SnackBarClosedReason.swipe ||
+      SnackBarClosedReason.dismiss => ClaxToastEnd.dismissed,
+    },
+  );
+
+  @override
+  void dismiss({bool now = false}) {
+    if (_gone || !messenger.mounted) return;
+    _gone = true;
+    controller.close();
+  }
+}
+
+/// One overlay toast's way out: [_end] runs its exit (or, with `now`, none),
+/// then [remove], and completes [closed] with the first end.
+class _ToastHandle implements ClaxToastHandle {
+  VoidCallback remove = () {};
+  VoidCallback? _exit;
+  final _closed = Completer<ClaxToastEnd>();
+  var _gone = false;
+
+  @override
+  Future<ClaxToastEnd> get closed => _closed.future;
+
+  @override
+  void dismiss({bool now = false}) => _end(ClaxToastEnd.dismissed, now: now);
+
+  void _end(ClaxToastEnd how, {bool now = false}) {
     if (_gone) return;
     _gone = true;
+    _closed.complete(how);
     final exit = _exit;
-    if (exit == null) {
+    if (exit == null || now) {
       remove();
     } else {
       exit();
@@ -154,6 +226,7 @@ class _ToastHandle {
 
 class _OverlayToast extends StatefulWidget {
   const _OverlayToast({
+    required this.cardKey,
     required this.handle,
     required this.place,
     required this.pane,
@@ -161,7 +234,9 @@ class _OverlayToast extends StatefulWidget {
     required this.text,
     required this.actionLabel,
     required this.onAction,
+    required this.leading,
   });
+  final Key cardKey;
   final _ToastHandle handle;
   final ClaxToastPlace place;
   final Rect? pane;
@@ -169,6 +244,7 @@ class _OverlayToast extends StatefulWidget {
   final String text;
   final String? actionLabel;
   final VoidCallback? onAction;
+  final Widget? leading;
 
   @override
   State<_OverlayToast> createState() => _OverlayToastState();
@@ -213,8 +289,8 @@ class _OverlayToastState extends State<_OverlayToast>
       reverseCurve: ClaxMotion.accelerate,
     );
     void act() {
+      widget.handle._end(ClaxToastEnd.action);
       widget.onAction?.call();
-      widget.handle.dismiss();
     }
 
     Widget live(Widget child) =>
@@ -222,7 +298,7 @@ class _OverlayToastState extends State<_OverlayToast>
 
     if (widget.place == ClaxToastPlace.top) {
       final card = live(Material(
-        key: ClaxToast.cardKey,
+        key: widget.cardKey,
         color: p.fg,
         elevation: 2,
         shadowColor: Colors.black,
@@ -233,6 +309,10 @@ class _OverlayToastState extends State<_OverlayToast>
             constraints: const BoxConstraints(minHeight: 36),
             child: Row(
               children: [
+                if (widget.leading case final l?) ...[
+                  l,
+                  const SizedBox(width: ClaxSpace.s12),
+                ],
                 Expanded(
                   child: Text(
                     widget.text,
@@ -278,7 +358,7 @@ class _OverlayToastState extends State<_OverlayToast>
     }
 
     final bar = live(Material(
-      key: ClaxToast.cardKey,
+      key: widget.cardKey,
       color: p.overlay,
       child: Container(
         decoration: BoxDecoration(
@@ -291,6 +371,10 @@ class _OverlayToastState extends State<_OverlayToast>
         constraints: const BoxConstraints(minHeight: 36),
         child: Row(
           children: [
+            if (widget.leading case final l?) ...[
+              l,
+              const SizedBox(width: ClaxSpace.s12),
+            ],
             Expanded(
               child: Text(
                 widget.text,

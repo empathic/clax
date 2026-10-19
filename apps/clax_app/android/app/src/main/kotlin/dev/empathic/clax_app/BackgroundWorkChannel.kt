@@ -135,7 +135,8 @@ class BackgroundWorkChannel(private val activity: Activity, messenger: BinaryMes
     companion object {
         const val NAME = "dev.empathic.clax/background"
         private const val REQUEST = 7401
-        private const val PREFS = "clax_background"
-        private const val ASKED = "asked_post_notifications"
+        /** Where Clax keeps that it asked for POST_NOTIFICATIONS ([ASKED]). */
+        const val PREFS = "clax_background"
+        const val ASKED = "asked_post_notifications"
     }
 }

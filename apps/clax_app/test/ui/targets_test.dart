@@ -6,6 +6,7 @@ import 'dart:async';
 import 'dart:io';
 
 import 'package:clax_app/agent/timings.dart';
+import 'package:clax_app/agent/worker.dart';
 import 'package:clax_app/clax/fake_api.dart';
 import 'package:clax_app/home/home_route.dart' show HomeBanner;
 import 'package:clax_app/platform/secure_key.dart';
@@ -119,6 +120,8 @@ void main() {
       final api = FakeClaxApi();
       final aid = api.seedArtifact('Runs', _page);
       final surface = FakeAppSurface();
+      final worker = StreamController<WorkerEvent>.broadcast(sync: true);
+      addTearDown(worker.close);
       await _pump(
         tester,
         AppScreen(
@@ -129,7 +132,7 @@ void main() {
           voice: FakeVoice(),
           settings: AppSettings(),
           timings: const NoTimings(),
-          worker: const Stream.empty(),
+          worker: worker.stream,
         ),
         dark: dark,
       );
@@ -138,8 +141,13 @@ void main() {
       );
       await _settle(tester);
       await expectLater(tester, meetsGuideline(_guideline));
-      // A change under way, with its chip.
+      // A change under way, with the Clax pill.
       surface.push(const Sent('thread-1'));
+      await _settle(tester);
+      expect(find.byKey(const ValueKey('clax-pill')), findsOneWidget);
+      await expectLater(tester, meetsGuideline(_guideline));
+      // How it ended, with its chip.
+      worker.add(WorkerFailed(aid, 'it broke'));
       await _settle(tester);
       expect(find.byKey(const ValueKey('chip-dismiss')), findsOneWidget);
       await expectLater(tester, meetsGuideline(_guideline));

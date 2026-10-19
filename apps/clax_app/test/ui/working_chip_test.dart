@@ -6,6 +6,7 @@ import 'package:clax_app/agent/progress.dart';
 import 'package:clax_app/agent/timings.dart';
 import 'package:clax_app/daemon/clock.dart';
 import 'package:clax_app/ui/change_tracker.dart';
+import 'package:clax_app/ui/kit/verbs.dart';
 import 'package:clax_app/ui/theme.dart';
 import 'package:clax_app/ui/working_chip.dart';
 import 'package:flutter/foundation.dart';
@@ -46,9 +47,10 @@ class _Rig {
     double textScale = 1,
     bool retry = true,
     Key? boundary,
+    TargetPlatform? platform,
   }) => MaterialApp(
     debugShowCheckedModeBanner: false,
-    theme: claxTheme(brightness, defaultTargetPlatform),
+    theme: claxTheme(brightness, platform ?? defaultTargetPlatform),
     home: MediaQuery.withClampedTextScaling(
       minScaleFactor: textScale,
       maxScaleFactor: textScale,
@@ -311,6 +313,26 @@ void main() {
     expect(find.textContaining('more than 10 steps'), findsOneWidget);
     await tester.tap(find.byKey(const ValueKey('retry-change')));
     expect(rig.log, ['retry']);
+  });
+
+  testWidgets('a limit stop says Keep going in the pointer’s words', (
+    tester,
+  ) async {
+    phone(tester);
+    final rig = _Rig();
+    rig.tracker
+      ..workerWorking(const ['t1'])
+      ..workerFailed(limitFailureReason('10 turns', leftUsd: 6));
+    await tester.pumpWidget(rig.build(platform: TargetPlatform.android));
+    expect(find.textContaining(keepGoingHint), findsOneWidget);
+    await tester.pumpWidget(rig.build(platform: TargetPlatform.macOS));
+    // Past the theme's change.
+    await tester.pump(const Duration(milliseconds: 300));
+    expect(
+      find.textContaining(keepGoingHintFor(ClaxVerbs.mouse)),
+      findsOneWidget,
+    );
+    expect(find.textContaining('Tap Keep going'), findsNothing);
   });
 
   testWidgets('a limit stop that spent the change’s limit offers no Retry', (

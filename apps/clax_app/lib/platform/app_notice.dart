@@ -36,6 +36,20 @@ final class AppNoticeTap {
   String toString() => 'AppNoticeTap($artifact, ${action.name})';
 }
 
+/// How [AppNotice.turnOn] went.
+enum NoticeTurnOn {
+  /// Notifications are allowed (they were, or the person allowed them).
+  allowed,
+
+  /// The person refused, or the platform cannot ask.
+  refused,
+
+  /// The platform will not ask again, so its notification settings for
+  /// Clax opened; whether they were turned on shows when Clax is back in
+  /// front ([AppNotice.allowed]).
+  settings,
+}
+
 /// The platform's notice for the app on screen: on Android an ongoing,
 /// silent notification naming the app, with "Comment" and "Threads"
 /// actions, which is how the person reaches Clax's comment tools without
@@ -53,6 +67,10 @@ abstract interface class AppNotice {
   /// and for the notice's channel.
   Future<bool> allowed();
 
+  /// Turns notifications on for Clax: the platform's request when it may
+  /// still ask, else its notification settings for Clax.
+  Future<NoticeTurnOn> turnOn();
+
   /// Taps on the notice while Clax runs.
   Stream<AppNoticeTap> get taps;
 
@@ -67,7 +85,8 @@ abstract interface class AppNotice {
 /// `MainActivity` serves on Android.
 ///
 /// Dart to platform: `show` {artifact, title}, `clear`, `allowed` → bool,
-/// `launchTap` → {artifact, action}?. Platform to Dart: `tapped`
+/// `turnOn` → `allowed`, `refused` or `settings`, `launchTap` → {artifact,
+/// action}?. Platform to Dart: `tapped`
 /// {artifact, action}, the action `open`, `comment` or `threads`, and
 /// `dismissed` {artifact} when the notice is swiped away.
 class ChannelAppNotice implements AppNotice {
@@ -127,6 +146,14 @@ class ChannelAppNotice implements AppNotice {
   Future<bool> allowed() async => await _call<bool>('allowed') ?? false;
 
   @override
+  Future<NoticeTurnOn> turnOn() async =>
+      switch (await _call<String>('turnOn')) {
+        'allowed' => NoticeTurnOn.allowed,
+        'settings' => NoticeTurnOn.settings,
+        _ => NoticeTurnOn.refused,
+      };
+
+  @override
   Stream<AppNoticeTap> get taps => _taps.stream;
 
   @override
@@ -157,6 +184,15 @@ class AppNoticeSlot {
       return await notice.allowed();
     } on Object {
       return false;
+    }
+  }
+
+  /// Turns notifications on ([AppNotice.turnOn]); refused when it fails.
+  Future<NoticeTurnOn> turnOn() async {
+    try {
+      return await notice.turnOn();
+    } on Object {
+      return NoticeTurnOn.refused;
     }
   }
 

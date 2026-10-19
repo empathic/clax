@@ -9,6 +9,7 @@ import 'package:clax_app/platform/settings_store.dart';
 import 'package:clax_app/ui/app_screen.dart';
 import 'package:clax_app/ui/host_protocol.dart';
 import 'package:clax_app/ui/theme.dart';
+import 'package:clax_app/ui/working_chip.dart';
 import 'package:flutter/foundation.dart';
 import 'package:flutter/material.dart';
 import 'package:flutter/services.dart';
@@ -94,6 +95,18 @@ void main() {
     location: location,
   );
 
+  /// The Clax pill saying Location.
+  final locationPill = find.byWidgetPredicate(
+    (w) => w is ClaxPill && w.state == ClaxPillState.location,
+  );
+
+  /// Past a dialog's open or close; the loading cover never settles.
+  Future<void> settle(WidgetTester tester) async {
+    for (var i = 0; i < 6; i++) {
+      await tester.pump(const Duration(milliseconds: 100));
+    }
+  }
+
   DeviceRequest watch(String id) => DeviceRequest(
     id: 'req-$id',
     cap: 'location',
@@ -116,7 +129,7 @@ void main() {
       expect(surface.hostCalls.whereType<DeviceResult>().single.value, {
         'watching': true,
       });
-      expect(find.byKey(const ValueKey('location-pill')), findsOneWidget);
+      expect(locationPill, findsOneWidget);
       location.move(52.5, 13.4);
       await tester.pump();
       expect(surface.hostCalls.whereType<DeviceEvent>().single.value, {
@@ -136,7 +149,7 @@ void main() {
       final end = surface.hostCalls.whereType<DeviceEvent>().last;
       expect((end.watch, end.code), ('w', 'stopped'));
       expect(location.stream, isNull);
-      expect(find.byKey(const ValueKey('location-pill')), findsNothing);
+      expect(locationPill, findsNothing);
 
       // Back in front: no watch starts again by itself.
       tester.binding.handleAppLifecycleStateChanged(AppLifecycleState.hidden);
@@ -145,7 +158,9 @@ void main() {
       await tester.pump();
       expect(location.stream, isNull);
       expect(location.asked, hasLength(1));
-      expect(find.byKey(const ValueKey('location-pill')), findsNothing);
+      expect(locationPill, findsNothing);
+      // Past the pill's fold, which runs on the system clock here.
+      await tester.pump(const Duration(seconds: 5));
     },
   );
 
@@ -238,24 +253,36 @@ void main() {
       for (var i = 0; i < 4; i++) {
         await tester.pump();
       }
-      final pill = tester.getRect(find.byKey(const ValueKey('location-pill')));
-      expect(pill.top, greaterThanOrEqualTo(pad.top));
+      expect(locationPill, findsOneWidget);
+      final pill = tester.getRect(find.byKey(const ValueKey('clax-pill')));
+      expect(pill.top, pad.top + 8);
       expect(pill.left, greaterThanOrEqualTo(pad.left));
+      await tester.pump(const Duration(seconds: 5));
     });
   }
 
-  testWidgets('a tap on the location pill stops location', (tester) async {
+  testWidgets('a tap on the location pill tells what uses it; Stop location '
+      'stops it', (tester) async {
     final location = FakeLocation();
     final surface = await pump(tester, host(location));
     surface.push(watch('w'));
     await tester.pump();
     await tester.pump();
     await tester.pump();
-    await tester.tap(find.byKey(const ValueKey('location-pill')));
-    await tester.pump();
+    expect(find.text('Location'), findsOneWidget);
+    await tester.tap(locationPill);
+    await settle(tester);
+    expect(
+      find.text('Plants is using this device’s location.'),
+      findsOneWidget,
+    );
+    expect(location.stream, isNotNull, reason: 'telling stops nothing');
+    await tester.tap(find.text('Stop location'));
+    await settle(tester);
     expect(surface.hostCalls.whereType<DeviceEvent>().last.code, 'stopped');
     expect(location.stream, isNull);
-    expect(find.byKey(const ValueKey('location-pill')), findsNothing);
+    expect(locationPill, findsNothing);
+    await tester.pump(const Duration(seconds: 5));
   });
 
   testWidgets(
@@ -286,6 +313,7 @@ void main() {
       await tester.tap(find.text('Open settings'));
       await tester.pump();
       expect(location.opened, [LocationSettingsPage.app]);
+      await tester.pump(const Duration(seconds: 5));
     },
   );
 

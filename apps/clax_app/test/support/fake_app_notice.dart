@@ -2,12 +2,14 @@ import 'dart:async';
 
 import 'package:clax_app/platform/app_notice.dart';
 
-/// Records every [AppNotice] call as `show(aid, title)`, `clear` or
-/// `allowed`, answers [allowed] with [allow], and plays taps.
+/// Records every [AppNotice] call as `show(aid, title)`, `clear`,
+/// `allowed` or `turnOn`, answers [allowed] with [allow] and [turnOn] with
+/// [turnOnAnswer] (which, when allowed, allows), and plays taps.
 class FakeAppNotice implements AppNotice {
   FakeAppNotice({this.allow = true});
 
   bool allow;
+  NoticeTurnOn turnOnAnswer = NoticeTurnOn.allowed;
   final calls = <String>[];
   AppNoticeTap? launch;
   final _taps = StreamController<AppNoticeTap>.broadcast(sync: true);
@@ -46,6 +48,13 @@ class FakeAppNotice implements AppNotice {
   Future<bool> allowed() async {
     calls.add('allowed');
     return allow;
+  }
+
+  @override
+  Future<NoticeTurnOn> turnOn() async {
+    calls.add('turnOn');
+    if (turnOnAnswer == NoticeTurnOn.allowed) allow = true;
+    return turnOnAnswer;
   }
 
   @override

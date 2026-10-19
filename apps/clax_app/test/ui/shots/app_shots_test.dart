@@ -2,26 +2,91 @@
 // (skipped without it), drawn edge to edge: a light page whose header is
 // dark blue and whose tab bar is white (`app`), its status band in the
 // header's blue and its navigation band in the tab bar's white; a dark
-// page, black at the top and charcoal at the bottom (`app-dark-page`); and
-// the light page with a change under way and its chip (`app-working`). The
-// status and gesture bar stand-ins draw their icons in the brightness the
-// screen's bands ask the system for (`SystemChrome.latestStyle`), not the
-// theme's.
+// page, black at the top and charcoal at the bottom (`app-dark-page`). On
+// the light page, the Clax pill in each state, at 100% and 200% text: a
+// change under way (`app-working`), folded to the mark after its 3 s
+// (`app-working-folded`), the build (`app-building`), a new version once
+// its toast went (`app-new-version`) and location in use
+// (`app-location`); the New version toast at the top (`app-toast`); the
+// first-run hint with Turn on (`app-hint`); and the Rally of 10 a moment
+// into its rally (`app-rally`). The status and gesture bar stand-ins draw
+// their icons in the brightness the screen's bands ask the system for
+// (`SystemChrome.latestStyle`), not the theme's.
+import 'dart:async';
+
+import 'package:clax_app/agent/plan.dart';
 import 'package:clax_app/agent/timings.dart';
+import 'package:clax_app/agent/worker.dart';
 import 'package:clax_app/clax/fake_api.dart';
+import 'package:clax_app/daemon/clock.dart';
+import 'package:clax_app/platform/app_notice.dart';
+import 'package:clax_app/platform/device/device_grants.dart';
+import 'package:clax_app/platform/device/device_host.dart';
+import 'package:clax_app/platform/device/reminders.dart';
 import 'package:clax_app/platform/settings_store.dart';
 import 'package:clax_app/ui/app_screen.dart';
+import 'package:clax_app/ui/build_plan.dart';
 import 'package:clax_app/ui/host_protocol.dart';
 import 'package:flutter/foundation.dart';
 import 'package:flutter/material.dart';
 import 'package:flutter/services.dart';
 import 'package:flutter_test/flutter_test.dart';
 
+import '../../platform/device/device_host_test.dart'
+    show
+        FakeCamera,
+        FakeConsent,
+        FakeFiles,
+        FakeLocation,
+        FakeNotifier,
+        FakeShare;
+import '../../support/fake_app_notice.dart';
 import '../../support/fake_surface.dart';
 import '../../support/fake_voice.dart';
 import 'rig.dart';
 
+/// A clock whose delays end only when [lapse] ends them: a toast stays
+/// and the pill stays open until a shot lapses it.
+class _Clock implements Clock {
+  final _delays = <Completer<void>>[];
+  @override
+  DateTime now() => DateTime.utc(2026, 10, 19, 9, 41);
+  @override
+  Future<void> delay(Duration d) =>
+      (_delays..add(Completer<void>())).last.future;
+
+  void lapse() {
+    for (final c in List.of(_delays)) {
+      c.complete();
+    }
+    _delays.clear();
+  }
+}
+
+/// A build that runs, as the worker reports it.
+class _Builds implements BuildControl {
+  final _c = StreamController<BuildState>.broadcast(sync: true);
+  final states = <String, BuildState>{};
+
+  void emit(BuildState s) {
+    states[s.appId] = s;
+    _c.add(s);
+  }
+
+  @override
+  Stream<BuildState> get builds => _c.stream;
+  @override
+  BuildState? buildOf(String appId) => states[appId];
+  @override
+  Future<void> stopBuild(String appId) async {}
+  @override
+  Future<void> resumeBuild(String appId) async {}
+}
+
 const _blue = Color(0xFF102A4C);
+
+/// The text scales the pill's renders are taken at.
+const _both = [1.0, 2.0];
 
 /// The surface's page: a header in [head], rows in [ink] on [body], and a
 /// tab bar in [tabs].
@@ -159,11 +224,20 @@ Future<void> _open(
   required Brightness status,
   required Brightness navigation,
   List<HostMessage> then = const [],
+  int version = 1,
+  _Clock? clock,
+  FakeAppNotice? notice,
+  bool hint = false,
+  BuildLink? build,
+  DeviceHost? device,
+  Future<void> Function(String aid)? before,
+  void Function()? after,
 }) async {
     final api = FakeClaxApi();
     final aid = api.seedArtifact('Runs', {'index.html': '<h1>Runs</h1>'});
     final style = ValueNotifier<SystemUiOverlayStyle?>(null);
     addTearDown(style.dispose);
+    await before?.call(aid);
     await s.tester.pumpWidget(
       s.app(
         chrome: false,
@@ -178,6 +252,11 @@ Future<void> _open(
               settings: AppSettings(),
               timings: const NoTimings(),
               worker: const Stream.empty(),
+              clock: clock ?? _Clock(),
+              notice: notice == null ? null : AppNoticeSlot(notice),
+              firstRunHint: hint,
+              build: build,
+              device: device,
             ),
             IgnorePointer(child: _Bars(style, s.form)),
           ],
@@ -185,11 +264,20 @@ Future<void> _open(
       ),
     );
     surface.push(
-      const Ready(artifact: 'x', version: 1, latest: 1, file: 'index.html'),
+      Ready(
+        artifact: 'x',
+        version: version,
+        latest: version,
+        file: 'index.html',
+      ),
     );
     surface.push(chrome);
     then.forEach(surface.push);
     await s.settle();
+    if (after != null) {
+      after();
+      await s.settle();
+    }
     style.value = SystemChrome.latestStyle;
     await s.tester.pump();
     expect(style.value!.statusBarIconBrightness, status);
@@ -224,6 +312,140 @@ void main() {
       navigation: Brightness.dark,
       then: const [Sent('thread-1')],
     ),
+    forms: const [phone],
+    textScales: _both,
+  );
+  Future<void> page(
+    Shot s,
+    String name, {
+    List<HostMessage> then = const [],
+    int version = 1,
+    _Clock? clock,
+    FakeAppNotice? notice,
+    bool hint = false,
+    BuildLink? build,
+    DeviceHost? device,
+    Future<void> Function(String aid)? before,
+    void Function()? after,
+  }) => _open(
+    s,
+    name,
+    _PageSurface(),
+    const ChromeMsg(_blue, Colors.white),
+    status: Brightness.light,
+    navigation: Brightness.dark,
+    then: then,
+    version: version,
+    clock: clock,
+    notice: notice,
+    hint: hint,
+    build: build,
+    device: device,
+    before: before,
+    after: after,
+  );
+  shots(
+    'app-working-folded',
+    (s) {
+      final clock = _Clock();
+      return page(
+        s,
+        'app-working-folded',
+        clock: clock,
+        then: const [Sent('thread-1')],
+        after: clock.lapse,
+      );
+    },
+    forms: const [phone],
+  );
+  shots('app-building', (s) {
+    final plans = PlanStore();
+    final builds = _Builds();
+    return page(
+      s,
+      'app-building',
+      build: BuildLink(plans: plans, control: builds),
+      before: (aid) async {
+        await plans.set(aid, [
+          for (final (i, t) in const [
+            'Log a run',
+            'Weekly total',
+            'Weekly chart',
+            'Export',
+            'Dark mode',
+          ].indexed)
+            PlanFeature(
+              id: 'f$i',
+              title: t,
+              status: i < 2 ? FeatureStatus.done : FeatureStatus.todo,
+            ),
+        ]);
+        builds.emit(BuildState(aid, BuildPhase.running, featureId: 'f2'));
+      },
+    );
+  }, forms: const [phone], textScales: _both);
+  shots(
+    'app-new-version',
+    (s) {
+      final clock = _Clock();
+      return page(
+        s,
+        'app-new-version',
+        clock: clock,
+        then: const [NewerMsg(2)],
+        // The toast goes; the pill says it.
+        after: clock.lapse,
+      );
+    },
+    forms: const [phone],
+    textScales: _both,
+  );
+  shots(
+    'app-toast',
+    (s) => page(s, 'app-toast', then: const [NewerMsg(2)]),
+    forms: const [phone],
+    textScales: _both,
+  );
+  shots('app-location', (s) {
+    final location = FakeLocation();
+    return page(
+      s,
+      'app-location',
+      device: DeviceHost(
+        grants: MemoryDeviceGrants(),
+        consent: FakeConsent(),
+        reminders: Reminders(FakeNotifier()),
+        share: FakeShare(),
+        files: FakeFiles(),
+        camera: FakeCamera(),
+        location: location,
+      ),
+      then: const [
+        DeviceRequest(
+          id: 'req-w',
+          cap: 'location',
+          method: 'watch',
+          args: [
+            {'watch': 'w'},
+          ],
+        ),
+      ],
+    );
+  }, forms: const [phone], textScales: _both);
+  shots(
+    'app-hint',
+    (s) => page(
+      s,
+      'app-hint',
+      notice: FakeAppNotice(allow: false),
+      hint: true,
+    ),
+    forms: const [phone],
+    textScales: _both,
+  );
+  shots(
+    'app-rally',
+    (s) => page(s, 'app-rally', version: 9, then: const [Landed(10)]),
     forms: const [phone],
   );
   const black = Color(0xFF000000), charcoal = Color(0xFF1E1E1E);

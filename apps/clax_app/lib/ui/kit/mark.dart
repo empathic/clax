@@ -61,6 +61,7 @@ class ClaxMark extends StatefulWidget {
     this.size = 24,
     this.state = ClaxMarkState.resting,
     this.monochrome,
+    this.inverse = false,
     this.semanticsLabel,
   });
 
@@ -71,6 +72,11 @@ class ClaxMark extends StatefulWidget {
   /// One colour for all three shapes (icons, the pill on `fg`); null draws
   /// the arcs in `you` and `agent` and the dot in `fg`.
   final Color? monochrome;
+
+  /// Drawn on `fg` (the Clax pill, a toast): the arcs in the other
+  /// theme's `you` and `agent`, which hold their contrast on it, and the
+  /// dot in `bg`.
+  final bool inverse;
 
   /// What a screen reader says; null says [defaultLabel] of [state].
   final String? semanticsLabel;
@@ -84,8 +90,23 @@ class ClaxMark extends StatefulWidget {
     ClaxMarkState.asking => 'Clax has a question',
   };
 
+  /// When the dot meets an arc in [ClaxMarkState.rally], from its start:
+  /// ten hits, quickening.
+  static List<Duration> get rallyHits => [
+    for (final ms in _rallyHits) Duration(microseconds: (ms * 1000).round()),
+  ];
+
   @override
   State<ClaxMark> createState() => _ClaxMarkState();
+}
+
+/// The palette of the other brightness at the same contrast as [p].
+ClaxPalette _inverseOf(ClaxPalette p) {
+  if (identical(p, ClaxTokens.light)) return ClaxTokens.dark;
+  if (identical(p, ClaxTokens.dark)) return ClaxTokens.light;
+  if (identical(p, ClaxTokens.lightMore)) return ClaxTokens.darkMore;
+  if (identical(p, ClaxTokens.darkMore)) return ClaxTokens.lightMore;
+  return p.bg.computeLuminance() > 0.5 ? ClaxTokens.dark : ClaxTokens.light;
 }
 
 /// Where the mark's moving parts are: the dot's shift (−1 touches the
@@ -336,7 +357,8 @@ class _ClaxMarkState extends State<ClaxMark>
 
   @override
   Widget build(BuildContext context) {
-    final p = claxPalette(context);
+    final base = claxPalette(context);
+    final p = widget.inverse ? _inverseOf(base) : base;
     final mono = widget.monochrome;
     final pose = _drawn = _pose;
     final paint = CustomPaint(
@@ -347,7 +369,7 @@ class _ClaxMarkState extends State<ClaxMark>
       painter: ClaxMarkPainter(
         you: mono ?? p.you,
         agent: mono ?? p.agent,
-        dot: mono ?? p.fg,
+        dot: mono ?? (widget.inverse ? base.bg : p.fg),
         dotShift: pose.dotShift,
         agentScale: pose.agentScale,
         youScale: pose.youScale,

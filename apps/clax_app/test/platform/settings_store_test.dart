@@ -30,4 +30,20 @@ void main() {
     await SettingsStore(file).save(AppSettings(developer: true));
     expect((await SettingsStore(file).load()).developer, isTrue);
   });
+
+  test('the rallied apps round-trip, and anything but strings is dropped', () {
+    expect(AppSettings().rallied, isEmpty);
+    final s = AppSettings(rallied: ['a1', 'a2']);
+    expect(AppSettings.fromJson(s.toJson()).rallied, ['a1', 'a2']);
+    final copy = s.copy()..rallied.add('a3');
+    expect(s.rallied, ['a1', 'a2'], reason: 'a copy has a list of its own');
+    expect(copy.rallied, ['a1', 'a2', 'a3']);
+    expect(
+      AppSettings.fromJson({
+        'rallied': ['a1', 3, null, 'a2'],
+      }).rallied,
+      ['a1', 'a2'],
+    );
+    expect(AppSettings.fromJson({'rallied': 'a1'}).rallied, isEmpty);
+  });
 }
