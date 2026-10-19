@@ -2,15 +2,17 @@
 // strikethrough, task lists, bare URLs made links), with no images and no
 // raw HTML.
 //
-// The text is untrusted. `marked`'s lexer only tokenizes it; nothing here
-// makes HTML. `parse` turns the tokens into the closed tree below (`Block`,
-// `Inline`), which `ui/Markdown.svelte` renders as elements whose text is
-// always text. Raw HTML in a comment becomes text, an image becomes a link
-// to its address (no remote fetch), and a link is kept only when its
-// address is absolute `http:`, `https:` or `mailto:` (`safeHref`); any
-// other link is its text alone. This module is loaded on demand
-// (`md-load.svelte.ts`): the shell's entries do not carry the lexer.
-import { Lexer, type Token, type Tokens } from "marked";
+// The text is untrusted. markdown-it only parses it here (`html: false`,
+// so raw HTML is never a tag, only text); nothing here makes HTML. `parse`
+// turns its tokens into the closed tree below (`Block`, `Inline`), which
+// `ui/Markdown.svelte` renders as elements whose strings are always text.
+// An image becomes a link to its address (no remote fetch), and a link is
+// kept only when its address is absolute `http:`, `https:` or `mailto:`
+// (`safeHref`, on top of markdown-it's own refusal of `javascript:`,
+// `vbscript:`, `file:` and `data:`); any other link is its text alone. This
+// module is loaded on demand (`md-load.svelte.ts`): no entry carries the
+// parser.
+import MarkdownIt, { type Token } from "markdown-it";
 
 /** Text-level content. A `link`'s `href` has passed `safeHref`. */
 export type Inline =
@@ -22,7 +24,7 @@ export type Inline =
 
 export type Align = "left" | "center" | "right" | null;
 
-/** One item of a list: a task item has a read-only box. */
+/** One item of a list: a task item (`- [ ]`, `- [x]`) has a read-only box. */
 export type Item = { task: boolean; checked: boolean; c: Block[] };
 
 export type Level = 1 | 2 | 3 | 4 | 5 | 6;
@@ -41,30 +43,55 @@ export type Block =
 const SCHEMES = new Set(["http:", "https:", "mailto:"]);
 
 /** `raw` as a link address when it is an absolute `http:`, `https:` or
- * `mailto:` URL (as the URL parser reads it, so case, entities left
- * undecoded, whitespace and control characters cannot smuggle another
- * scheme through), else null. The address returned is the parser's own
- * serialization. */
+ * `mailto:` URL (as the URL parser reads it, so case, whitespace and
+ * control characters cannot smuggle another scheme through), else null.
+ * The address returned is the parser's own serialization. */
 export function safeHref(raw: string): string | null {
   let u: URL;
   try { u = new URL(raw); } catch { return null; }
   return SCHEMES.has(u.protocol) ? u.href : null;
 }
 
-// The named character references a comment is likely to hold; `marked`
-// decodes the numeric ones in text itself. Any other stays as typed.
-const NAMED: Record<string, string> = { amp: "&", lt: "<", gt: ">", quot: "\"", apos: "'", nbsp: " " };
-const decode = (s: string): string => s.replace(/&(amp|lt|gt|quot|apos|nbsp);/g, (_, n: string) => NAMED[n]);
+/** The deepest nesting read as Markdown. markdown-it leaves out what a
+ * container nests past it, and emphasis nests without limit, so a body
+ * that reaches it is shown as its text (`parse`): nothing in a comment is
+ * hidden from the people reading it, and the tree the renderer walks
+ * recursively stays shallow. */
+const NESTING = 20;
 
-/** Every `marked` option the lexer reads, so its global defaults (which
- * another module may change with `marked.use`) never apply. */
-const OPTIONS = { gfm: true, breaks: false, pedantic: false, silent: true, async: false } as const;
+/** Thrown by `nest` past `NESTING`. */
+class TooDeep extends Error {}
 
-/** Nesting deeper than this is shown as its source text: a tree the
- * renderer walks recursively stays shallow. */
-const DEPTH = 24;
+// Linear in the length of its input (CommonMark's delimiter algorithm), so
+// no comment can stall the page that shows it. Bare URLs and email
+// addresses become links; a bare domain (`README.md`) does not. A link
+// reference definition (`[x]: https://…`) is not read as one: it would
+// show nothing, and `[//]: # (…)` would hide its text from the people
+// reading a comment that agents read whole. It shows as its text.
+const md = new MarkdownIt("default", { html: false, linkify: true, typographer: false, breaks: false, maxNesting: NESTING }).disable("reference");
 
-function inline(tokens: Token[] | undefined, inLink: boolean, depth: number): Inline[] {
+/** `t`'s attribute `name`, "" when it has none. */
+const attr = (t: Token, name: string): string => String(t.attrGet(name) ?? "");
+
+/** A token with the tokens between it and its closing token. */
+type Node = { t: Token; c: Node[] };
+
+/** `ts`, a flat stream of opening, closing and whole tokens, as a tree;
+ * `TooDeep` past `NESTING`. */
+function nest(ts: readonly Token[]): Node[] {
+  const root: Node[] = [];
+  const stack: Node[][] = [root];
+  for (const t of ts) {
+    if (t.nesting === -1) { if (stack.length > 1) stack.pop(); continue; }
+    const n: Node = { t, c: [] };
+    stack[stack.length - 1].push(n);
+    if (t.nesting === 1) stack.push(n.c);
+    if (stack.length > NESTING) throw new TooDeep();
+  }
+  return root;
+}
+
+function inline(ns: Node[], inLink = false): Inline[] {
   const out: Inline[] = [];
   const text = (v: string) => {
     if (!v) return;
@@ -72,81 +99,93 @@ function inline(tokens: Token[] | undefined, inLink: boolean, depth: number): In
     if (last?.t === "text") last.v += v;
     else out.push({ t: "text", v });
   };
-  for (const tok of tokens ?? []) {
-    if (depth > DEPTH) { text(tok.raw); continue; }
-    switch (tok.type) {
-      case "text":
-        if ("tokens" in tok && tok.tokens?.length) out.push(...inline(tok.tokens, inLink, depth + 1));
-        else text(tok.escaped ? tok.text : decode(tok.text));
-        break;
-      case "escape": text(tok.text); break;
-      case "codespan": out.push({ t: "code", v: tok.text }); break;
-      case "br": out.push({ t: "br" }); break;
-      case "em": case "strong": case "del":
-        out.push({ t: tok.type, c: inline(tok.tokens, inLink, depth + 1) });
-        break;
-      case "link": {
-        const c = inline(tok.tokens, true, depth + 1);
-        const href = inLink ? null : safeHref(decode(tok.href));
-        if (href) out.push({ t: "link", href, c });
-        else for (const x of c) { if (x.t === "text") text(x.v); else out.push(x); }
+  const put = (xs: Inline[]) => { for (const x of xs) { if (x.t === "text") text(x.v); else out.push(x); } };
+  for (const { t, c } of ns) {
+    switch (t.type) {
+      case "softbreak": text("\n"); break;
+      case "hardbreak": out.push({ t: "br" }); break;
+      case "code_inline": out.push({ t: "code", v: t.content }); break;
+      case "em_open": out.push({ t: "em", c: inline(c, inLink) }); break;
+      case "strong_open": out.push({ t: "strong", c: inline(c, inLink) }); break;
+      case "s_open": out.push({ t: "del", c: inline(c, inLink) }); break;
+      case "link_open": {
+        const kids = inline(c, true);
+        const href = inLink ? null : safeHref(attr(t, "href"));
+        if (href) out.push({ t: "link", href, c: kids });
+        else put(kids);
         break;
       }
       case "image": {
         // Never an image: a link to it, named by its alt text or its address.
-        const label = (tok as Tokens.Image).text || tok.href;
-        const href = inLink ? null : safeHref(decode(tok.href));
+        const src = attr(t, "src");
+        const label = inlineText(inline(nest(t.children ?? []), true)) || src;
+        const href = inLink ? null : safeHref(src);
         if (href) out.push({ t: "link", href, c: [{ t: "text", v: label }] });
         else text(label);
         break;
       }
-      // Raw HTML, and anything else: its source, as text.
-      default: text(tok.raw);
+      // Text, escapes and entities (already decoded), and anything else: as text.
+      default: text(t.content); put(inline(c, inLink));
     }
   }
   return out;
 }
 
-const ALIGN = new Set(["left", "center", "right"]);
+const ALIGN = /text-align:\s*(left|center|right)/;
+const align = (t: Token): Align => (ALIGN.exec(attr(t, "style"))?.[1] as Align | undefined) ?? null;
+const cells = (row: Node): Node[] => row.c.filter(x => x.t.type === "th_open" || x.t.type === "td_open");
+const cellInline = (cell: Node): Inline[] => inline(nest(cell.c[0]?.t.children ?? []));
 
-function blocks(tokens: Token[], depth: number, tight = false): Block[] {
+/** A list item: `[ ]` or `[x]` and a space opening its first line make it a task. */
+function item(n: Node): Item {
+  const c = blocks(n.c);
+  const first = c[0];
+  if (first && (first.t === "p" || first.t === "line") && first.c[0]?.t === "text") {
+    const head = first.c[0];
+    const m = /^\[([ xX])\][ \t]+/.exec(head.v);
+    if (m) {
+      head.v = head.v.slice(m[0].length);
+      if (!head.v) first.c.shift();
+      return { task: true, checked: m[1] !== " ", c };
+    }
+  }
+  return { task: false, checked: false, c };
+}
+
+function blocks(ns: Node[]): Block[] {
   const out: Block[] = [];
-  for (const tok of tokens) {
-    if (depth > DEPTH) { if (tok.raw.trim()) out.push({ t: "p", c: [{ t: "text", v: tok.raw.trim() }] }); continue; }
-    switch (tok.type) {
-      case "space": case "def": case "checkbox": break;
-      case "paragraph": out.push({ t: tight ? "line" : "p", c: inline(tok.tokens, false, depth + 1) }); break;
-      case "text":
-        out.push({ t: tight ? "line" : "p", c: "tokens" in tok && tok.tokens ? inline(tok.tokens, false, depth + 1) : [{ t: "text", v: decode(tok.text) }] });
-        break;
-      case "heading":
-        out.push({ t: "h", level: Math.min(6, Math.max(1, tok.depth)) as Level, c: inline(tok.tokens, false, depth + 1) });
-        break;
-      case "code": out.push({ t: "pre", v: tok.text }); break;
-      case "blockquote": out.push({ t: "quote", c: blocks(tok.tokens ?? [], depth + 1) }); break;
-      case "hr": out.push({ t: "hr" }); break;
-      case "list": {
-        const l = tok as Tokens.List;
-        const start = l.ordered && typeof l.start === "number" && Number.isSafeInteger(l.start) && l.start !== 1 ? l.start : null;
-        out.push({
-          t: "list", ordered: l.ordered, start,
-          items: l.items.map(i => ({ task: !!i.task, checked: !!i.task && !!i.checked, c: blocks(i.tokens, depth + 1, !l.loose) })),
-        });
+  for (const { t, c } of ns) {
+    switch (t.type) {
+      case "paragraph_open": out.push({ t: t.hidden ? "line" : "p", c: inline(nest(c[0]?.t.children ?? [])) }); break;
+      case "heading_open": {
+        const n = Number(t.tag.slice(1));
+        out.push({ t: "h", level: (n >= 1 && n <= 6 ? n : 6) as Level, c: inline(nest(c[0]?.t.children ?? [])) });
         break;
       }
-      case "table": {
-        const t = tok as Tokens.Table;
+      case "fence": case "code_block": out.push({ t: "pre", v: t.content.replace(/\n$/, "") }); break;
+      case "blockquote_open": out.push({ t: "quote", c: blocks(c) }); break;
+      case "hr": out.push({ t: "hr" }); break;
+      case "bullet_list_open": case "ordered_list_open": {
+        const ordered = t.type === "ordered_list_open";
+        const s = ordered ? Number(attr(t, "start") || "1") : 1;
+        out.push({ t: "list", ordered, start: Number.isSafeInteger(s) && s !== 1 ? s : null, items: c.filter(x => x.t.type === "list_item_open").map(item) });
+        break;
+      }
+      case "table_open": {
+        const head = c.find(x => x.t.type === "thead_open")?.c.find(x => x.t.type === "tr_open");
+        const body = c.find(x => x.t.type === "tbody_open")?.c.filter(x => x.t.type === "tr_open") ?? [];
         out.push({
           t: "table",
-          align: t.align.map(a => (a && ALIGN.has(a) ? a : null)),
-          head: t.header.map(c => inline(c.tokens, false, depth + 1)),
-          rows: t.rows.map(r => r.map(c => inline(c.tokens, false, depth + 1))),
+          align: head ? cells(head).map(x => align(x.t)) : [],
+          head: head ? cells(head).map(cellInline) : [],
+          rows: body.map(r => cells(r).map(cellInline)),
         });
         break;
       }
-      // Raw HTML, and anything else: its source, as text.
+      case "inline": out.push({ t: "p", c: inline(nest(t.children ?? [])) }); break;
+      // Anything else: its source, as text.
       default: {
-        const v = tok.raw.replace(/\n+$/, "");
+        const v = t.content.replace(/\n+$/, "");
         if (v.trim()) out.push({ t: "p", c: [{ t: "text", v }] });
       }
     }
@@ -154,18 +193,20 @@ function blocks(tokens: Token[], depth: number, tight = false): Block[] {
   return out;
 }
 
-/** `src` as Markdown blocks; a body the lexer cannot read is one
- * paragraph of its text. */
+/** `src` as Markdown blocks; a body the parser cannot read, or nested
+ * as deep as `NESTING` (`TooDeep`), is one paragraph of its text. */
 export function parse(src: string): Block[] {
+  const asText = (): Block[] => (src.trim() ? [{ t: "p", c: [{ t: "text", v: src }] }] : []);
   try {
-    return blocks(new Lexer(OPTIONS).lex(src), 0);
+    const ts = md.parse(src, {});
+    return ts.some(t => t.level >= NESTING - 1) ? asText() : blocks(nest(ts));
   } catch {
-    return src.trim() ? [{ t: "p", c: [{ t: "text", v: src }] }] : [];
+    return asText();
   }
 }
 
 const inlineText = (c: Inline[]): string =>
-  c.map(x => (x.t === "text" || x.t === "code" ? x.v : x.t === "br" ? "\n" : x.t === "link" ? inlineText(x.c) : inlineText(x.c))).join("");
+  c.map(x => (x.t === "text" || x.t === "code" ? x.v : x.t === "br" ? "\n" : inlineText(x.c))).join("");
 
 function blockText(b: Block): string {
   switch (b.t) {

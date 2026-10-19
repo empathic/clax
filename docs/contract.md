@@ -1327,9 +1327,13 @@ images and no raw HTML: HTML in a comment shows as its text, an image
 nothing in a comment is fetched. A link is kept only for an absolute
 `http:`, `https:` or `mailto:` address and opens in a new tab with
 `rel="noopener noreferrer nofollow"`; a link to any other address shows as
-its text alone. Headings are set a step above the comment's text. Previews
-on one line (a folded thread, a pin's title, an inbox row, a notification,
-an approval request) show the text with the Markdown syntax taken away.
+its text alone. Nothing in a comment is hidden from the people reading it:
+a link reference definition (`[x]: https://…`, and so `[//]: # (…)`) shows
+as its text, and a comment nested 20 levels deep shows whole as its text.
+Headings are set a step above the comment's text. Previews on one line (a
+folded thread, a pin's title, an inbox row, a notification, a version's
+addressed threads) show the text with the Markdown syntax taken away; an
+approval request shows the withheld comments exactly as written.
 
 A drag in comment mode that starts where no text is under the pointer (empty
 space, padding, an image, a canvas, an inline SVG), or any drag with Shift

@@ -97,6 +97,43 @@ describe("parse: untrusted text stays text", () => {
     assertInert(render(src));
   });
 
+  // Unclosed delimiters are where parsers go quadratic; these are read in
+  // one pass. Each is rendered at a size a card shows, and parsed at the
+  // size of a long comment.
+  const PATHOLOGICAL: [string, (n: number) => string][] = [
+    ["emphasis openers", n => "*a ".repeat(n)],
+    ["underscore openers", n => "_a ".repeat(n)],
+    ["strikethrough openers", n => "~~a ".repeat(n)],
+    ["brackets", n => "[".repeat(n) + "x" + "](".repeat(n / 2)],
+    ["backticks", n => "`a ".repeat(n)],
+    ["links", n => "[a](https://example.com) ".repeat(n)],
+    ["nested lists", n => Array.from({ length: n / 10 }, (_, i) => `${"  ".repeat(i)}- x`).join("\n")],
+    ["nested quotes", n => `${"> ".repeat(n)}x`],
+    ["nested emphasis", n => `${"*".repeat(n)}x${"*".repeat(n)}`],
+    ["angle brackets", n => "<a ".repeat(n)],
+  ];
+
+  it.each(PATHOLOGICAL)("renders pathological input (%s) to inert elements, keeping its text", (_, make) => {
+    const el = render(make(100));
+    assertInert(el);
+    expect(el.textContent!.trim()).not.toBe("");
+  });
+
+  it.each(PATHOLOGICAL)("parses long pathological input (%s), keeping its text", (_, make) => {
+    expect(plain(make(8000)).trim()).not.toBe("");
+  });
+
+  it("shows a link reference definition as its text, hiding none of it", () => {
+    expect(render("[//]: # (only the agent reads this)\n\nHello").textContent).toBe("[//]: # (only the agent reads this)Hello");
+    expect(plain("[x]: https://example.com \"t\"\n\nsee [x]")).toBe("[x]: https://example.com \"t\"\nsee [x]");
+  });
+
+  it("shows a body nested past the parser's limit as its text, hiding none of it", () => {
+    const src = `${"> ".repeat(40)}the hidden part`;
+    expect(plain(src)).toBe(src);
+    expect(render(src).textContent).toBe(src);
+  });
+
   it("shows raw HTML as its text", () => {
     expect(render("<script>alert(1)</script>").textContent).toBe("<script>alert(1)</script>");
     expect(render("a <b onmouseover=alert(1)>b</b> c").textContent).toBe("a <b onmouseover=alert(1)>b</b> c");
@@ -104,8 +141,16 @@ describe("parse: untrusted text stays text", () => {
     expect(render("<iframe src=\"https://evil.example\"></iframe>").textContent).toBe("<iframe src=\"https://evil.example\"></iframe>");
   });
 
-  it("drops a link to another scheme, keeping its text", () => {
-    for (const src of ["[click](javascript:alert(1))", "[click](jAvAsCrIpT:alert(1))", "[click](&#106;avascript:alert(1))", "[click](data:text/html,x)", "[click](vbscript:x)"]) {
+  it("makes no link of a script address: the link's source shows as text", () => {
+    for (const src of ["[click](javascript:alert(1))", "[click](jAvAsCrIpT:alert(1))", "[click](&#106;avascript:alert(1))", "[click](data:text/html,x)", "[click](vbscript:x)", "[click](file:///etc/passwd)", "<javascript:alert(1)>"]) {
+      const el = render(src);
+      expect(el.querySelector("a"), src).toBeNull();
+      expect(el.textContent, src).toMatch(/click|javascript/);
+    }
+  });
+
+  it("drops a link to any other address but http(s) and mailto, keeping its text", () => {
+    for (const src of ["[click](/relative)", "[click](#top)", "[click](ftp://example.com/x)", "[click](data:image/png;base64,AAAA)", "[click](tel:123)"]) {
       const el = render(src);
       expect(el.querySelector("a"), src).toBeNull();
       expect(el.textContent, src).toBe("click");
@@ -118,9 +163,11 @@ describe("parse: untrusted text stays text", () => {
     expect(a.querySelector("a")!.getAttribute("href")).toBe("https://example.com/c.png");
     expect(a.querySelector("a")!.textContent).toBe("a chart");
     expect(render("![](https://example.com/c.png)").querySelector("a")!.textContent).toBe("https://example.com/c.png");
-    const b = render("![x](javascript:alert(1))");
-    expect(b.querySelector("a")).toBeNull();
-    expect(b.textContent).toBe("x");
+    for (const src of ["![x](javascript:alert(1))", "![x](data:image/png;base64,AAAA)", "![x](/relative.png)"]) {
+      const b = render(src);
+      expect(b.querySelector("a, img"), src).toBeNull();
+      expect(b.textContent, src).toContain("x");
+    }
   });
 
   it("never nests a link in a link", () => {
@@ -128,9 +175,9 @@ describe("parse: untrusted text stays text", () => {
     expect(el.querySelectorAll("a a")).toHaveLength(0);
   });
 
-  it("decodes the common named entities and the numeric ones in text, as text", () => {
-    const el = render("&lt;b&gt;x&lt;/b&gt; &amp; &#60;i&#62;");
-    expect(el.textContent).toBe("<b>x</b> & <i>");
+  it("decodes character references in text, as text", () => {
+    const el = render("&lt;b&gt;x&lt;/b&gt; &amp; &#60;i&#62; &copy;");
+    expect(el.textContent).toBe("<b>x</b> & <i> \u00a9");
     expect(el.querySelector("b, i")).toBeNull();
   });
 });
@@ -172,9 +219,9 @@ describe("parse: GitHub-flavored Markdown", () => {
     expect(el.querySelector("td strong")!.textContent).toBe("2");
   });
 
-  it("links bare URLs, www. addresses and email addresses, opening in a new tab", () => {
-    const el = render("see https://example.com/x, www.example.org and a@example.com");
-    expect([...el.querySelectorAll("a")].map(a => a.getAttribute("href"))).toEqual(["https://example.com/x", "http://www.example.org/", "mailto:a@example.com"]);
+  it("links bare URLs and email addresses, opening in a new tab, and no bare domain", () => {
+    const el = render("see https://example.com/x, a@example.com and README.md");
+    expect([...el.querySelectorAll("a")].map(a => a.getAttribute("href"))).toEqual(["https://example.com/x", "mailto:a@example.com"]);
     assertInert(el);
   });
 

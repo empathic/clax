@@ -24,6 +24,7 @@
     "ajv": "^8.20.0",
     "ajv-formats": "^3.0.1",
     "jsdom": "^26.0.0",
+    "marked": "18.0.14",
     "oxlint": "^1.86.0",
     "pako": "2.1.0",
     "svelte-check": "^4.7.6",
@@ -32,7 +33,7 @@
     "vitest": "^3.0.0"
   },
   "dependencies": {
-    "marked": "18.0.14",
+    "markdown-it": "15.0.2",
     "modern-screenshot": "^4.6.0",
     "svelte": "^5.57.1"
   }

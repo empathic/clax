@@ -1,4 +1,4 @@
-// The Markdown module (`markdown.ts`, with its lexer), loaded on demand so
+// The Markdown module (`markdown.ts`, with its parser), loaded on demand so
 // no entry carries it. Until it is here a comment shows as its text, as
 // typed; reading `md.m` in a template or `$derived` renders again once it
 // arrives.

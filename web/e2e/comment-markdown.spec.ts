@@ -24,8 +24,8 @@ const COMMENT = [
   "| left | 40% |",
   "",
   "Docs: https://example.com/grid and [the guide](https://example.com/guide).",
-  "![chart](https://example.com/chart.png) <img src=x onerror=\"window.__mdXss=1\"> <script>window.__mdXss=2</script>",
-  "[bad](javascript:window.__mdXss=3) [also bad](&#106;avascript:window.__mdXss=4)",
+  "![chart](https://example.com/chart.png) <img src=x onerror=\"window.mdXss=1\"> <script>window.mdXss=2</script>",
+  "[bad](javascript:window.mdXss=3) [also bad](&#106;avascript:window.mdXss=4)",
 ].join("\n");
 
 const REPLY = "## Done\n\nSplit into two columns:\n\n```css\n.grid { display: grid; }\n```\n\n> The footer is next.";
@@ -81,11 +81,11 @@ test("a Markdown comment and an agent's reply render as elements, with no image,
   ]);
   // No image, no script, no frame; the raw HTML reads as its text, and runs nothing.
   await expect(card.locator(".msg .body").locator("img, script, iframe, object, embed, svg")).toHaveCount(0);
-  await expect(body).toContainText("<img src=x onerror=\"window.__mdXss=1\">");
-  await expect(body).toContainText("<script>window.__mdXss=2</script>");
-  await expect(body).toContainText("bad also bad");
+  await expect(body).toContainText("<img src=x onerror=\"window.mdXss=1\">");
+  await expect(body).toContainText("<script>window.mdXss=2</script>");
+  await expect(body).toContainText("[bad](javascript:window.mdXss=3) [also bad](");
   expect(await body.evaluate(el => [...el.querySelectorAll("*")].flatMap(e => [...e.attributes].map(a => a.name)).filter(n => n.startsWith("on")))).toEqual([]);
-  expect(await page.evaluate(() => (window as { __mdXss?: number }).__mdXss ?? null)).toBeNull();
+  expect(await page.evaluate(() => (window as { mdXss?: number }).mdXss ?? null)).toBeNull();
 
   // The agent's reply renders the same way: its heading set under the page's.
   await card.getByRole("button", { name: /^Send to / }).click();
