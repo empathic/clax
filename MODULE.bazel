@@ -178,6 +178,7 @@ use_repo(
     "flutter_android_engine_arm64",
     "flutter_android_engine_x64",
     "flutter_macos_engine",
+    "flutter_sky_engine",
     "flutter_toolchains",
 )
 

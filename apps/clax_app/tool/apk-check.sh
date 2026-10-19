@@ -4,7 +4,8 @@
 # its package and version, SDK levels, launcher activity, a release build
 # (not debuggable, shrunk by R8) that extracts its native libraries, the engine, the app's
 # AOT code and the embedded clax for both CPUs, the home bundle HOME (the
-# one //apps/clax_app:home_bundle built), and a debug-key signature.
+# one //apps/clax_app:home_bundle built), the third-party notices, and a
+# debug-key signature.
 set -euo pipefail
 apk="$1" aapt2="$2" apksigner="$3" home="$4"
 fails=0
@@ -12,6 +13,18 @@ ok() { echo "PASS: $1"; }
 bad() { echo "FAIL: $1"; fails=1; }
 check() { # check DESCRIPTION OUTPUT LINE: OUTPUT has LINE as a whole line
     if grep -qxF -- "$3" <<<"$2"; then ok "$1"; else bad "$1 (no line: $3)"; fi
+}
+# The third-party notices the licences page lists (NOTICES.Z, from
+# //apps/clax_app:notices): more than 500 kB, with entries for pub packages,
+# the engine's components and the embedded clax's Rust crates.
+check_notices() { # check_notices NOTICES.Z
+    local text="$1.txt" n
+    if ! gunzip -c "$1" > "$text"; then bad "NOTICES.Z is gzip"; return; fi
+    n=$(( $(wc -c < "$text") ))
+    if [ "$n" -gt 500000 ]; then ok "NOTICES holds the third-party notices ($n bytes)"; else bad "NOTICES holds the third-party notices (only $n bytes)"; fi
+    for p in webview_flutter archive flutter skia ring tokio rusqlite; do
+        if grep -qxF "$p" "$text"; then ok "NOTICES names $p"; else bad "NOTICES names $p"; fi
+    done
 }
 badging="$("$aapt2" dump badging "$apk")"
 check "package and version" "$badging" "package: name='dev.empathic.clax' versionCode='$VERSION_CODE' versionName='$VERSION_NAME' platformBuildVersionName='16' platformBuildVersionCode='36' compileSdkVersion='36' compileSdkVersionCodename='16'"
@@ -44,6 +57,10 @@ if [ "$dexes" = 1 ] && [ "${dex_bytes:-0}" -gt 0 ] && [ "$dex_bytes" -lt 2000000
 else
     bad "one dex under 2 MB (found $dexes, classes.dex $dex_bytes bytes)"
 fi
+notices="$(mktemp -d "${TEST_TMPDIR:-${TMPDIR:-/tmp}}/notices.XXXXXX")"
+trap 'rm -rf "$notices"' EXIT
+unzip -p "$apk" assets/flutter_assets/NOTICES.Z > "$notices/NOTICES.Z"
+check_notices "$notices/NOTICES.Z"
 certs="$("$apksigner" verify --print-certs "$apk")"
 if grep -q 'certificate DN: C=US, O=Android, CN=Android Debug' <<<"$certs"; then ok "signed with a debug key"; else bad "signed with a debug key: $certs"; fi
 exit "$fails"

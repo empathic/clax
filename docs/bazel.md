@@ -291,8 +291,19 @@ the app's package, not the workspace, so an app below the root
 (`apps/clax_app`) finds `assets/kit/…`; a plugin gets the Android code of
 its pub dependencies (image_picker_android needs
 flutter_plugin_android_lifecycle's) and every Maven coordinate its Gradle
-build names, not only those rules_flutter lists; and `integration_test`
-comes from the Flutter SDK as `flutter_test` does.
+build names, not only those rules_flutter lists; `integration_test`
+comes from the Flutter SDK as `flutter_test` does; and each pub package's
+LICENSE, and the engine's, are exported (the hub's `<package>__license`).
+
+**The licences page.** `flutter build` puts every pub package's licence and
+the engine's into the bundle's NOTICES.Z; rules_flutter writes only the
+`license_files` it is given. `//apps/clax_app:notices`
+(`bazel/flutter/notices.bzl`) writes them in the form `LicenseRegistry`
+reads: the pub packages of `APP_PUB_PACKAGES`, which must be exactly those
+the app's Dart code reaches (the build names any it gains or loses), the
+engine's, and the licence files of the Rust crates linked into the embedded
+clax. The APK's and the macOS app's checks look for it; the Maven and
+Swift libraries' notices are not in it.
 
 **How the APK is assembled.** rules_flutter's `flutter_android_app` builds
 one ABI and compiles the runner's Kotlin without the app's resources, so

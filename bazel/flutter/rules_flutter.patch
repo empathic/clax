@@ -1,7 +1,7 @@
 diff --git a/flutter/extensions.bzl b/flutter/extensions.bzl
 --- a/flutter/extensions.bzl
 +++ b/flutter/extensions.bzl
-@@ -26,7 +26,10 @@ _DEFAULT_NAME = "flutter"
+@@ -26,7 +26,10 @@
  
  # Flutter SDK packages that exist as source under packages/ in the Flutter repo.
  # sky_engine is excluded — it provides dart:ui which is already in platform_strong.dill.
@@ -13,10 +13,97 @@ diff --git a/flutter/extensions.bzl b/flutter/extensions.bzl
  
  def _parse_version(v):
      """Splits a version string into a list of ints for comparison."""
+diff --git a/flutter/private/flutter_pub_package.bzl b/flutter/private/flutter_pub_package.bzl
+--- a/flutter/private/flutter_pub_package.bzl
++++ b/flutter/private/flutter_pub_package.bzl
+@@ -499,7 +499,12 @@
+     for coord in coords:
+         if coord in _MAVEN_COORDS_PROVIDED:
+             continue
+-        label = _MAVEN_COORD_TO_LABEL.get(coord)
++        # Any other coordinate names its rules_jvm_external target, which
++        # the workspace's `maven.install` of rules_android_maven must
++        # declare: a missing one fails the build by name instead of the
++        # plugin's compile (a patch Clax keeps:
++        # bazel/flutter/rules_flutter.patch).
++        label = _MAVEN_COORD_TO_LABEL.get(coord) or "@rules_android_maven//:" + coord.replace(".", "_").replace(":", "_").replace("-", "_")
+         if label and label not in seen:
+             seen[label] = True
+             labels.append(label)
+@@ -1609,7 +1614,7 @@
+             break
+ 
+     if overlay_content:
+-        ctx.file("BUILD.bazel", overlay_content)
++        ctx.file("BUILD.bazel", overlay_content + _LICENSE_EXPORT)
+ 
+         # When the overlay ships an `android/BUILD.bazel.tpl`, use it
+         # verbatim. Otherwise emit an empty stub so the hub's
+@@ -1719,6 +1724,17 @@
+             )
+             if android_src_dir or android_has_resources:
+                 android_extra_maven_labels = _resolve_plugin_maven_deps(ctx)
++
++                # The Android code of the pub packages this one depends on,
++                # as Gradle gives a plugin its pub dependencies' Android
++                # projects (image_picker_android needs
++                # flutter_plugin_android_lifecycle's FlutterLifecycleAdapter).
++                # Every spoke has an `android:lib`, empty without Android
++                # code (a patch Clax keeps: bazel/flutter/rules_flutter.patch).
++                android_extra_maven_labels = android_extra_maven_labels + [
++                    "@{hub}__{dep}//android:lib".format(hub = ctx.attr.hub_name, dep = dep)
++                    for dep in bazel_deps
++                ]
+                 android_manifest = _detect_android_manifest(ctx)
+                 android_consumer_proguard_specs = _detect_consumer_proguard_specs(ctx)
+ 
+@@ -1785,7 +1801,7 @@
+         android_has_resources = False
+         android_native_build = False
+ 
+-    ctx.file("BUILD.bazel", build_content)
++    ctx.file("BUILD.bazel", build_content + _LICENSE_EXPORT)
+ 
+     # Always emit `android/BUILD.bazel`. Bazel only loads it when something
+     # queries `@<spoke>//android:lib`, so non-Android workspaces don't pay
+@@ -1809,6 +1825,15 @@
+         )
+     ctx.file("android/BUILD.bazel", android_build_content)
+ 
++# The package's licence files, which an app's licences page (NOTICES)
++# carries (a patch Clax keeps: bazel/flutter/rules_flutter.patch).
++_LICENSE_EXPORT = """
++exports_files(
++    glob(["LICENSE*", "NOTICE*"], allow_empty = True),
++    visibility = ["//visibility:public"],
++)
++"""
++
+ flutter_pub_package = repository_rule(
+     implementation = _flutter_pub_package_impl,
+     attrs = {
+diff --git a/flutter/private/flutter_sky_engine_repo.bzl b/flutter/private/flutter_sky_engine_repo.bzl
+--- a/flutter/private/flutter_sky_engine_repo.bzl
++++ b/flutter/private/flutter_sky_engine_repo.bzl
+@@ -63,6 +63,14 @@
+     ),
+     visibility = ["//visibility:public"],
+ )
++
++# The engine's licences, in the form NOTICES takes, which an app's
++# licences page carries (a patch Clax keeps:
++# bazel/flutter/rules_flutter.patch).
++exports_files(
++    ["LICENSE"],
++    visibility = ["//visibility:public"],
++)
+ """
+ 
+ def _flutter_sky_engine_repo_impl(repository_ctx):
 diff --git a/flutter/private/flutter_asset_bundle.bzl b/flutter/private/flutter_asset_bundle.bzl
 --- a/flutter/private/flutter_asset_bundle.bzl
 +++ b/flutter/private/flutter_asset_bundle.bzl
-@@ -125,9 +125,17 @@ def flutter_asset_bundle_action(
+@@ -125,9 +125,17 @@
      asset_paths = []
      copies = {}
      for f in assets:
@@ -37,38 +124,45 @@ diff --git a/flutter/private/flutter_asset_bundle.bzl b/flutter/private/flutter_
  
      # Add extra copies with custom destination paths.
      extra_files = []
-diff --git a/flutter/private/flutter_pub_package.bzl b/flutter/private/flutter_pub_package.bzl
---- a/flutter/private/flutter_pub_package.bzl
-+++ b/flutter/private/flutter_pub_package.bzl
-@@ -499,7 +499,12 @@ def _resolve_plugin_maven_deps(ctx):
-     for coord in coords:
-         if coord in _MAVEN_COORDS_PROVIDED:
-             continue
--        label = _MAVEN_COORD_TO_LABEL.get(coord)
-+        # Any other coordinate names its rules_jvm_external target, which
-+        # the workspace's `maven.install` of rules_android_maven must
-+        # declare: a missing one fails the build by name instead of the
-+        # plugin's compile (a patch Clax keeps:
-+        # bazel/flutter/rules_flutter.patch).
-+        label = _MAVEN_COORD_TO_LABEL.get(coord) or "@rules_android_maven//:" + coord.replace(".", "_").replace(":", "_").replace("-", "_")
-         if label and label not in seen:
-             seen[label] = True
-             labels.append(label)
-@@ -1719,6 +1724,17 @@ def _flutter_pub_package_impl(ctx):
-             )
-             if android_src_dir or android_has_resources:
-                 android_extra_maven_labels = _resolve_plugin_maven_deps(ctx)
-+
-+                # The Android code of the pub packages this one depends on,
-+                # as Gradle gives a plugin its pub dependencies' Android
-+                # projects (image_picker_android needs
-+                # flutter_plugin_android_lifecycle's FlutterLifecycleAdapter).
-+                # Every spoke has an `android:lib`, empty without Android
-+                # code (a patch Clax keeps: bazel/flutter/rules_flutter.patch).
-+                android_extra_maven_labels = android_extra_maven_labels + [
-+                    "@{hub}__{dep}//android:lib".format(hub = ctx.attr.hub_name, dep = dep)
-+                    for dep in bazel_deps
-+                ]
-                 android_manifest = _detect_android_manifest(ctx)
-                 android_consumer_proguard_specs = _detect_consumer_proguard_specs(ctx)
+diff --git a/flutter/private/flutter_sdk_package.bzl b/flutter/private/flutter_sdk_package.bzl
+--- a/flutter/private/flutter_sdk_package.bzl
++++ b/flutter/private/flutter_sdk_package.bzl
+@@ -136,11 +136,19 @@
+         dep = dep,
+     ) for dep in bazel_deps]
  
++    # With the package's licence files exported, which an app's licences
++    # page (NOTICES) carries (a patch Clax keeps:
++    # bazel/flutter/rules_flutter.patch).
+     repository_ctx.file("BUILD.bazel", make_flutter_sdk_build_content(
+         name = package_name,
+         deps = dep_labels,
+         language_version = language_version,
+-    ))
++    ) + """
++exports_files(
++    glob(["LICENSE*", "NOTICE*"], allow_empty = True),
++    visibility = ["//visibility:public"],
++)
++""")
+ 
+     # Emit an empty `android/BUILD.bazel` so the hub's aggregator
+     # (`@<hub>//android:all_android_plugin_libs`) can depend on every
+diff --git a/flutter/private/flutter_pub_lock_hub.bzl b/flutter/private/flutter_pub_lock_hub.bzl
+--- a/flutter/private/flutter_pub_lock_hub.bzl
++++ b/flutter/private/flutter_pub_lock_hub.bzl
+@@ -34,6 +34,14 @@
+     name = "{pkg}",
+     actual = "@{spoke}__{pkg}//:{pkg}",
+     visibility = ["//visibility:public"],
++)
++
++# The package's LICENSE file, for an app's licences page (a patch Clax
++# keeps: bazel/flutter/rules_flutter.patch).
++alias(
++    name = "{pkg}__license",
++    actual = "@{spoke}__{pkg}//:LICENSE",
++    visibility = ["//visibility:public"],
+ )""".format(
+             pkg = pkg,
+             spoke = spoke_prefix,
