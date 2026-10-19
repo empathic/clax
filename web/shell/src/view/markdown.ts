@@ -30,11 +30,12 @@ export type Item = { task: boolean; checked: boolean; c: Block[] };
 export type Level = 1 | 2 | 3 | 4 | 5 | 6;
 
 /** Block-level content. `line` is a tight list item's text, set in the
- * item without a paragraph of its own. */
+ * item without a paragraph of its own; a `pre`'s `info` is what follows its
+ * opening fence (a language, or any words), shown with it. */
 export type Block =
   | { t: "p" | "line"; c: Inline[] }
   | { t: "h"; level: Level; c: Inline[] }
-  | { t: "pre"; v: string }
+  | { t: "pre"; v: string; info: string }
   | { t: "quote"; c: Block[] }
   | { t: "list"; ordered: boolean; start: number | null; items: Item[] }
   | { t: "table"; align: Align[]; head: Inline[][]; rows: Inline[][][] }
@@ -168,7 +169,7 @@ function blocks(ns: Node[]): Block[] {
         out.push({ t: "h", level: (n >= 1 && n <= 6 ? n : 6) as Level, c: inline(nest(c[0]?.t.children ?? [])) });
         break;
       }
-      case "fence": case "code_block": out.push({ t: "pre", v: t.content.replace(/\n$/, "") }); break;
+      case "fence": case "code_block": out.push({ t: "pre", v: t.content.replace(/\n$/, ""), info: t.type === "fence" ? t.info.trim() : "" }); break;
       case "blockquote_open": out.push({ t: "quote", c: blocks(c) }); break;
       case "hr": out.push({ t: "hr" }); break;
       case "bullet_list_open": case "ordered_list_open": {
@@ -217,7 +218,7 @@ const inlineText = (c: Inline[]): string =>
 function blockText(b: Block): string {
   switch (b.t) {
     case "p": case "line": case "h": return inlineText(b.c);
-    case "pre": return b.v;
+    case "pre": return [b.info, b.v].filter(Boolean).join("\n");
     case "quote": return b.c.map(blockText).join("\n");
     case "list": return b.items.map(i => i.c.map(blockText).join("\n")).join("\n");
     case "table": return [b.head, ...b.rows].map(r => r.map(inlineText).join(" ")).join("\n");

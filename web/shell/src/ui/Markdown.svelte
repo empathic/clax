@@ -22,7 +22,7 @@
 {#snippet blocks(bs: Block[])}{#each bs as b, i (i)}{@render block(b)}{/each}{/snippet}
 
 <!-- A comment's headings sit under the page's: # is h3, and so on to h6. -->
-{#snippet block(b: Block)}{#if b.t === "p"}<p>{@render inline(b.c)}</p>{:else if b.t === "line"}<span class="line">{@render inline(b.c)}</span>{:else if b.t === "h"}{#if b.level === 1}<h3 class="h1">{@render inline(b.c)}</h3>{:else if b.level === 2}<h4 class="h2">{@render inline(b.c)}</h4>{:else if b.level === 3}<h5 class="h3">{@render inline(b.c)}</h5>{:else}<h6 class={`h${b.level}`}>{@render inline(b.c)}</h6>{/if}{:else if b.t === "pre"}<pre><code>{b.v}</code></pre>{:else if b.t === "quote"}<blockquote>{@render blocks(b.c)}</blockquote>{:else if b.t === "list"}{#if b.ordered}<ol start={b.start ?? undefined}>{@render items(b.items)}</ol>{:else}<ul>{@render items(b.items)}</ul>{/if}{:else if b.t === "table"}<div class="tbl"><table><thead><tr>{#each b.head as c, j (j)}<th style:text-align={b.align[j]}>{@render inline(c)}</th>{/each}</tr></thead>{#if b.rows.length}<tbody>{#each b.rows as r, k (k)}<tr>{#each r as c, j (j)}<td style:text-align={b.align[j]}>{@render inline(c)}</td>{/each}</tr>{/each}</tbody>{/if}</table></div>{:else if b.t === "hr"}<hr />{/if}{/snippet}
+{#snippet block(b: Block)}{#if b.t === "p"}<p>{@render inline(b.c)}</p>{:else if b.t === "line"}<span class="line">{@render inline(b.c)}</span>{:else if b.t === "h"}{#if b.level === 1}<h3 class="h1">{@render inline(b.c)}</h3>{:else if b.level === 2}<h4 class="h2">{@render inline(b.c)}</h4>{:else if b.level === 3}<h5 class="h3">{@render inline(b.c)}</h5>{:else}<h6 class={`h${b.level}`}>{@render inline(b.c)}</h6>{/if}{:else if b.t === "pre"}<pre>{#if b.info}<span class="info">{b.info}</span>{/if}<code>{b.v}</code></pre>{:else if b.t === "quote"}<blockquote>{@render blocks(b.c)}</blockquote>{:else if b.t === "list"}{#if b.ordered}<ol start={b.start ?? undefined}>{@render items(b.items)}</ol>{:else}<ul>{@render items(b.items)}</ul>{/if}{:else if b.t === "table"}<div class="tbl"><table><thead><tr>{#each b.head as c, j (j)}<th style:text-align={b.align[j]}>{@render inline(c)}</th>{/each}</tr></thead>{#if b.rows.length}<tbody>{#each b.rows as r, k (k)}<tr>{#each r as c, j (j)}<td style:text-align={b.align[j]}>{@render inline(c)}</td>{/each}</tr>{/each}</tbody>{/if}</table></div>{:else if b.t === "hr"}<hr />{/if}{/snippet}
 
 {#snippet items(list: Item[])}{#each list as it, i (i)}<li class={[it.task && "task"]}>{#if it.task}<input type="checkbox" disabled checked={it.checked} />{/if}{@render blocks(it.c)}</li>{/each}{/snippet}
 
@@ -46,6 +46,7 @@
     .md code { font: 12.5px/1.4 var(--mono); padding: 1px 4px; border-radius: var(--radius-xs); background: var(--hover); }
     .md pre { margin: .5em 0; padding: 8px 10px; overflow-x: auto; white-space: pre; background: var(--bg); border: 1px solid var(--border); border-radius: var(--radius-sm); tab-size: 4; }
     .md pre code { padding: 0; background: none; font: 12px/1.45 var(--mono); }
+    .md pre .info { display: block; position: sticky; left: 0; margin: -2px 0 4px; font: 500 11px/1.4 var(--font); color: var(--muted); white-space: pre-wrap; overflow-wrap: anywhere; }
     .md :is(ul, ol) { margin: .35em 0; padding-left: 1.45em; }
     .md li + li { margin-top: .15em; }
     .md li > :is(ul, ol) { margin: .15em 0 0; }
