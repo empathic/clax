@@ -130,6 +130,17 @@
 //   (`setVisible(false)`) ends their watches.
 // - `openRoute(hash)` moves the page to a fragment (`#route`), as a
 //   notification's tap asks.
+// - Native overlays (spec 2026-10-18-professional-ui-design §6): `init`'s
+//   `native` names the overlays the app draws itself, any of `ask` (the
+//   consent prompt), `questions`, `notice` and `draft` (the drafts'
+//   banner). The shell draws none of those, and posts them instead
+//   (`native.ts`, loaded then): `ask`/`askCancel` answered by `askAnswer`,
+//   `notice {text, tone, action?}` by `noticeAction`, `draft {state}` by
+//   `showDraft`/`hideDraft`, and `gone` once the artifact is deleted. With
+//   `questions` named the sheet is never built and `questions` carries the
+//   open `ids` and `raise`. An overlay left out, and every one for an app
+//   that sends no `native`, keeps its web version. `platform: "macos"`
+//   gives controls the arrow cursor (`html.app.mac`, `app.css`).
 // - The system bars: the page's bridge samples its background at the
 //   viewport's top and bottom edges (`clax:chrome`, `bridge/src/chrome.ts`)
 //   on its first paint and whenever either changes; the host posts them as
@@ -143,6 +154,7 @@ import { replayJournal } from "../caps/db";
 import { acceptFromFrame } from "../bridge-link";
 import { type DeviceCall, deviceLink, PLATFORMS } from "../caps/device-link";
 import { CapError } from "../caps/errors";
+import type { PromptKind } from "../caps/grants";
 import type { DbJournal } from "../caps/host";
 import { hostArrival } from "../caps/gesture";
 import { visibility } from "../visibility";
@@ -181,7 +193,9 @@ export type HostMessage =
   /** Whether `back()` has a page or fragment of the app to go back to (see
    * The app's own history above). */
   | { type: "history"; back: boolean }
-  | { type: "notice"; text: string }
+  /** A shell notice. With `notice` native (see Native overlays above), its
+   * `tone` and the `action` `noticeAction` runs. */
+  | { type: "notice"; text: string; tone?: "info" | "error"; action?: { id: string; label: string } }
   /** A posted thread's send to the agent failed (`text` says why): it stays
    * unsent until `resend(thread)`. */
   | { type: "sendFailed"; thread: string; text: string }
@@ -210,21 +224,49 @@ export type HostMessage =
   | { type: "journalRestored"; ok: false; error: string }
   /** How many of the owner's questions about the artifact are `open`, and
    * whether the questions sheet is `showing`, posted whenever either
-   * changes (see Questions above). */
-  | { type: "questions"; open: number; showing: boolean }
+   * changes (see Questions above). With `questions` native, also the open
+   * questions' `ids`, and `raise`: one of them was not open before in
+   * this view (the first telling raises none) and the app shows the view. */
+  | { type: "questions"; open: number; showing: boolean; ids?: string[]; raise?: boolean }
+  /** The prompt at the head of the queue, with `ask` native (`native.ts`). */
+  | { type: "ask"; id: string; kind: PromptKind; title: string; body: string; allow: string; deny: string; always?: string; armMs: number }
+  /** Prompt `id` ended without the app's answer (`native.ts`). */
+  | { type: "askCancel"; id: string }
+  /** What the drafts' banner would say, with `draft` native (`native.ts`). */
+  | { type: "draft"; state: DraftState | null }
+  /** The artifact was deleted, once (`native.ts`). */
+  | { type: "gone" }
   /** The page's background at the viewport's top and bottom edges
    * (`#rrggbb`), for the system bars (see The system bars above). */
   | { type: "chrome"; top: string; bottom: string }
   /** A device capability call of the page, for the app to make and answer
    * with `deviceResult` (see Device capabilities above). */
   | ({ type: "device" } & DeviceCall);
+/** The drafts' banner, for the app: an agent (`by`, by its name) drafting,
+ * or its draft shown over version `base`, `detail` saying what changed. */
+export type DraftState = { kind: "drafting"; by: string; note?: string } | { kind: "showing"; by: string; base: number; detail: string };
+/** The overlays the app may draw itself (`init`'s `native`). */
+const NATIVE = ["ask", "questions", "notice", "draft"] as const;
+export type NativeOverlay = (typeof NATIVE)[number];
 /** What goes on the channel: a `HostMessage` with this load's nonce. */
 export type Posted = HostMessage & { nonce: string };
 
 export type ClaxHost = {
   /** Starts the channel with this load's `nonce` (16 to 128 characters of
-   * `A-Z a-z 0-9 _ -`); see the protocol above. Only the first valid call counts. */
-  init(p: { nonce: string; platform?: string }): void;
+   * `A-Z a-z 0-9 _ -`); see the protocol above. Only the first valid call
+   * counts. `native`: the overlays the app draws itself (see Native
+   * overlays above). */
+  init(p: { nonce: string; platform?: string; native?: string[] }): void;
+  /** Answers prompt `id` (an `ask`): `allow`, `deny`, `always` (an Allow)
+   * or `dismiss`. Any other ID or answer changes nothing. */
+  askAnswer(id: string, answer: "allow" | "deny" | "always" | "dismiss"): void;
+  /** Runs the action of a `notice` that carried one. */
+  noticeAction(id: string): void;
+  /** The drafts' banner's Show draft: the draft of the agent named `by`,
+   * else the first. */
+  showDraft(by?: string): void;
+  /** The drafts' banner's Back. */
+  hideDraft(): void;
   /** Whether the app shows this view (see the protocol above): visible from
    * `init` on unless told otherwise, before or after it. */
   setVisible(visible: boolean): void;
@@ -315,19 +357,13 @@ export const INSPECT_SETTLE_MS = 3000;
 const INSPECT_SETTLE_MAX_MS = 10_000;
 export const INSPECT_MAX_BYTES = 1024 * 1024;
 const INSPECT_MAX_BYTES_MAX = 16 * 1024 * 1024;
-/** What an inspection carries at most, whatever the page sends. */
-const INSPECT_ERRORS = 20;
-const INSPECT_ERROR_CHARS = 501;
-const INSPECT_TEXT_CHARS = 3072;
-const INSPECT_TITLE_CHARS = 200;
-const INSPECT_KINDS = new Set(["error", "unhandledrejection", "console"]);
+/** The longest error an answer of the inspect view carries. */
+export const INSPECT_ERROR_CHARS = 501;
 /** `runTests`' bounds, and what its answer carries at most. */
 export const TEST_FILES = 50;
 const TEST_FILE = /^tests\/[A-Za-z0-9_\-./]{1,200}\.test\.js$/;
 const TEST_MS_MAX = 30_000;
 const TEST_TOTAL_MS_MAX = 120_000;
-const TEST_FAILED = 50;
-const TEST_NAME_CHARS = 201;
 /** `runMigration`'s bounds. */
 export const MIGRATE_MS = 30_000;
 const MIGRATE_MS_MAX = 120_000;
@@ -378,55 +414,7 @@ const isId = (v: unknown): v is string => typeof v === "string" && v.length > 0 
 const ids = (v: unknown): string[] | null => (Array.isArray(v) && v.every(isId) ? v : null);
 
 const bounded = (v: unknown, lo: number, hi: number, dflt: number) => (typeof v === "number" && Number.isFinite(v) ? Math.min(hi, Math.max(lo, Math.round(v))) : dflt);
-const str = (v: unknown, n: number) => (typeof v === "string" ? v.slice(0, n) : "");
 
-/** The base64 of `buf`. */
-function base64(buf: ArrayBuffer): string {
-  const bytes = new Uint8Array(buf);
-  let bin = "";
-  for (let i = 0; i < bytes.length; i += 0x8000) bin += String.fromCharCode(...bytes.subarray(i, i + 0x8000));
-  return btoa(bin);
-}
-
-/** The host message for the page's answer `m` to an inspection: only the
- * fields and sizes `inspection` names, whatever else the page sent. */
-function inspected(m: Record<string, unknown>, maxBytes: number): HostMessage {
-  if (typeof m.error === "string") return { type: "inspection", error: m.error.slice(0, INSPECT_ERROR_CHARS) || "the inspection failed" };
-  const png = m.png;
-  if (!(png instanceof ArrayBuffer)) return { type: "inspection", error: "the page sent no screenshot" };
-  if (png.byteLength > maxBytes) return { type: "inspection", error: `the screenshot is over ${maxBytes} bytes` };
-  const errors = (Array.isArray(m.errors) ? m.errors : [])
-    .filter((e): e is InspectError => !!e && typeof e === "object" && INSPECT_KINDS.has(e.kind) && typeof e.text === "string")
-    .slice(-INSPECT_ERRORS)
-    .map(e => ({ kind: e.kind, text: e.text.slice(0, INSPECT_ERROR_CHARS) }));
-  const failed = (Array.isArray(m.failed) ? m.failed : []).filter((u): u is string => typeof u === "string").slice(-INSPECT_ERRORS).map(u => u.slice(0, INSPECT_ERROR_CHARS));
-  const height = typeof m.height === "number" && Number.isFinite(m.height) && m.height >= 0 ? m.height : 0;
-  return { type: "inspection", png: base64(png), errors, failed, text: str(m.text, INSPECT_TEXT_CHARS), title: str(m.title, INSPECT_TITLE_CHARS), height };
-}
-
-const count = (v: unknown) => (typeof v === "number" && Number.isInteger(v) && v >= 0 ? v : null);
-
-/** The host message for the page's answer `m` to a test run: only the fields
- * and sizes `tests` names, whatever else the page sent. */
-export function testsMessage(m: Record<string, unknown>): HostMessage {
-  if (typeof m.error === "string") return { type: "tests", error: m.error.slice(0, INSPECT_ERROR_CHARS) || "the test run failed" };
-  const passed = count(m.passed);
-  const skipped = count(m.skipped);
-  if (passed === null || skipped === null || !Array.isArray(m.failed)) return { type: "tests", error: "the page sent no test results" };
-  const failed = m.failed
-    .filter((f): f is { name: string; error: string } => !!f && typeof f === "object" && typeof f.name === "string" && typeof f.error === "string")
-    .slice(0, TEST_FAILED)
-    .map(f => ({ name: f.name.slice(0, TEST_NAME_CHARS), error: f.error.slice(0, INSPECT_ERROR_CHARS) }));
-  return { type: "tests", passed, failed, skipped };
-}
-
-/** The host message for the page's answer `m` to a migration run: only
- * `ok` or `error`, whatever else the page sent. */
-export function migrationMessage(m: Record<string, unknown>): HostMessage {
-  if (m.ok === true) return { type: "migration", ok: true };
-  if (m.ok === false && typeof m.error === "string") return { type: "migration", ok: false, error: m.error.slice(0, INSPECT_ERROR_CHARS) || "the migration failed" };
-  return { type: "migration", ok: false, error: "the page sent no migration result" };
-}
 
 /** Installs `window.claxHost` over `ctl`, and, from `init` on, posts every
  * `HostMessage` with the nonce to `window.ClaxHost` (the app's channel) when
@@ -696,7 +684,8 @@ export function installHost(win: Window, ctl: ArtifactController): () => void {
     }
     if (v.notice !== lastNotice) {
       lastNotice = v.notice;
-      if (v.notice) post({ type: "notice", text: v.notice });
+      // A native notice is `native.ts`'s.
+      if (v.notice && !v.native?.includes("notice")) post({ type: "notice", text: v.notice });
     }
     offerIfDue(v);
   };
@@ -715,13 +704,13 @@ export function installHost(win: Window, ctl: ArtifactController): () => void {
       if (!inspection || m.requestId !== inspection.requestId) return;
       const { maxBytes } = inspection;
       inspection = null;
-      post(inspected(m as unknown as Record<string, unknown>, maxBytes));
+      void answers().then(a => post(a.inspected(m as unknown as Record<string, unknown>, maxBytes)));
       return;
     }
     if (m?.type === "clax:tests") {
       if (testRun === null || m.requestId !== testRun) return;
       testRun = null;
-      post(testsMessage(m as unknown as Record<string, unknown>));
+      void answers().then(a => post(a.testsMessage(m as unknown as Record<string, unknown>)));
       return;
     }
     if (m?.type === "clax:migration") {
@@ -731,7 +720,7 @@ export function installHost(win: Window, ctl: ArtifactController): () => void {
       journalOpen = false;
       for (const wait of journalWaits.values()) wait.reject(new CapError("unavailable", "the migration has ended"));
       journalWaits.clear();
-      post(migrationMessage(m as unknown as Record<string, unknown>));
+      void answers().then(a => post(a.migrationMessage(m as unknown as Record<string, unknown>)));
       return;
     }
     if ((m?.type === "clax:hash" || m?.type === "clax:route") && typeof m.hash === "string" && validHash(m.hash)) {
@@ -755,6 +744,8 @@ export function installHost(win: Window, ctl: ArtifactController): () => void {
     if (m?.type !== "clax:scroll" || typeof m.file !== "string" || m.file !== s().file) return;
     if (typeof m.y === "number" && Number.isFinite(m.y) && m.y >= 0) scrolled.set(m.file, m.y);
   };
+  // The answers' shapes, loaded with the first answer (the inspect view's alone).
+  const answers = () => import("./inspect-answers");
   // The inspection asked of the page, until it answers.
   let inspection: { requestId: string; maxBytes: number } | null = null;
   let inspections = 0;
@@ -812,19 +803,24 @@ export function installHost(win: Window, ctl: ArtifactController): () => void {
   hostArrival.pending = () => live().size > 0;
   const composer = () => doc.querySelector<HTMLFormElement>(".stage form.composer");
 
-  // The questions sheet (none in the inspect view), and what the question
-  // module last told of the questions about the artifact: null until it has
-  // told anything.
-  const dock = inspecting ? null : doc.createElement("section");
+  // The questions sheet, built at `init` unless the app draws the questions
+  // (none in the inspect view), and what the question module last told of
+  // the questions about the artifact: null until it has told anything.
+  let dock: HTMLElement | null = null;
   let told: { open: string[]; closed: string[] } | null = null;
+  // With `questions` native: the IDs told open so far (null until the
+  // first telling), and whether the latest telling raises a new one.
+  let nativeQ = false;
+  let known: Set<string> | null = null;
+  let raise = false;
   let lastQuestions = "";
   // The question `openQuestions` waits to show, if any.
   let awaited: string | null = null;
   // Focuses a card once it is mounted (the module tells a change before rendering it).
   let mounting: MutationObserver | null = null;
   const postQuestions = () => {
-    if (nonce === null || told === null || !dock) return;
-    const m: HostMessage = { type: "questions", open: told.open.length, showing: !dock.hidden };
+    if (nonce === null || told === null || !(dock || nativeQ)) return;
+    const m: HostMessage = dock ? { type: "questions", open: told.open.length, showing: !dock.hidden } : { type: "questions", open: told.open.length, showing: false, ids: told.open, raise };
     const json = JSON.stringify(m);
     if (json === lastQuestions) return;
     lastQuestions = json;
@@ -839,19 +835,20 @@ export function installHost(win: Window, ctl: ArtifactController): () => void {
   const focusCard = (id: string | null) => {
     mounting?.disconnect();
     mounting = null;
-    if (!dock) return;
+    const sheet = dock;
+    if (!sheet) return;
     const a = doc.activeElement;
-    if (a && a !== dock && dock.contains(a) && !a.classList.contains("qcard")) return;
+    if (a && a !== sheet && sheet.contains(a) && !a.classList.contains("qcard")) return;
     const c = cardOf(id);
     if (c) { c.focus({ preventScroll: true }); return; }
     mounting = new MutationObserver(() => {
       const found = cardOf(id);
-      if (!found && !dock.hidden) return;
+      if (!found && !sheet.hidden) return;
       mounting?.disconnect();
       mounting = null;
-      if (found && !dock.hidden) found.focus({ preventScroll: true });
+      if (found && !sheet.hidden) found.focus({ preventScroll: true });
     });
-    mounting.observe(dock, { childList: true, subtree: true, attributes: true, attributeFilter: ["hidden"] });
+    mounting.observe(sheet, { childList: true, subtree: true, attributes: true, attributeFilter: ["hidden"] });
   };
   const showQuestions = (id: string | null) => {
     if (!dock) return;
@@ -882,15 +879,19 @@ export function installHost(win: Window, ctl: ArtifactController): () => void {
     const closed = ids(d?.closed);
     if (!open || !closed) return;
     told = { open, closed };
+    raise = !!known && hostHidden === false && open.some(id => !known!.has(id));
+    known = new Set([...(known ?? []), ...open]);
     if (awaited !== null && closed.includes(awaited)) awaited = null;
     if (!open.length && !closed.length) hideQuestions();
     else if (awaited !== null && open.includes(awaited)) showQuestions(awaited);
     postQuestions();
   };
-  if (dock) {
-    dock.className = "app-questions";
-    dock.hidden = true;
-    dock.setAttribute("aria-label", "Questions for you");
+  if (!inspecting) doc.addEventListener("clax-questions", onQuestions);
+  const buildDock = () => {
+    const el = doc.createElement("section");
+    el.className = "app-questions";
+    el.hidden = true;
+    el.setAttribute("aria-label", "Questions for you");
     const close = doc.createElement("button");
     close.type = "button";
     close.className = "ghost icon app-questions-close";
@@ -899,17 +900,17 @@ export function installHost(win: Window, ctl: ArtifactController): () => void {
     close.addEventListener("click", dismissQuestions);
     const slot = doc.createElement("div");
     slot.className = "questions-slot";
-    dock.append(close, slot);
-    dock.addEventListener("keydown", e => {
+    el.append(close, slot);
+    el.addEventListener("keydown", e => {
       if (e.key !== "Escape" || e.defaultPrevented) return;
       e.preventDefault();
       dismissQuestions();
     });
-    doc.body.append(dock);
-    doc.addEventListener("clax-questions", onQuestions);
+    doc.body.append(el);
     // A question module already showing the cards in the hidden sidebar moves them here.
     slot.dispatchEvent(new CustomEvent("clax-questions-slot", { bubbles: true }));
-  }
+    return el;
+  };
   // The app's word on visibility: null until `init` (the document's own applies).
   let hostHidden: boolean | null = null;
   // What `setVisible` said before `init`, which applies from `init` on.
@@ -922,6 +923,8 @@ export function installHost(win: Window, ctl: ArtifactController): () => void {
   // paint), so this chunk stays small: told of a change once it is in.
   let stream: typeof import("../stream") | null = null;
   let uninstalled = false;
+  // The native overlays (`native.ts`), once loaded.
+  let overlays: import("./native").NativeOverlays | null = null;
   // The inspect view follows no events: the page's stream forgets its
   // watchers and takes no new ones, for this document's life.
   let quieted: { watch: unknown } | null = null;
@@ -955,6 +958,16 @@ export function installHost(win: Window, ctl: ArtifactController): () => void {
       nonce = n;
       const platform = PLATFORMS.find(x => x === p.platform);
       if (!inspecting && platform) deviceLink.platform = platform;
+      if (platform === "macos") doc.documentElement.classList.add("mac");
+      const native = Array.isArray(p.native) ? NATIVE.filter(k => p.native!.includes(k)) : null;
+      if (native) ctl.set({ native });
+      nativeQ = !!native?.includes("questions");
+      if (!inspecting && !nativeQ) dock = buildDock();
+      if (!inspecting && native) {
+        void import("./native").then(m => {
+          if (!uninstalled) overlays = m.nativeOverlays({ win, ctl, post, native, retry: () => void follow(), followFailed: FOLLOW_FAILED });
+        }, () => {});
+      }
       visibleNow(!wanted);
       lastState = "";
       lastClip = null;
@@ -1114,6 +1127,10 @@ export function installHost(win: Window, ctl: ArtifactController): () => void {
       else awaited = id;
     },
     closeQuestions: () => { if (dock) dismissQuestions(); },
+    askAnswer: (id, a) => overlays?.askAnswer(id, a),
+    noticeAction: id => overlays?.noticeAction(id),
+    showDraft: by => overlays?.showDraft(by),
+    hideDraft: () => overlays?.hideDraft(),
     deviceResult: a => {
       const { id, ok, value, error } = (a && typeof a === "object" ? a : {}) as { id?: unknown; ok?: unknown; value?: unknown; error?: unknown };
       const p = typeof id === "string" ? devicePending.get(id) : undefined;
@@ -1154,13 +1171,14 @@ export function installHost(win: Window, ctl: ArtifactController): () => void {
     if (hostHidden !== null) visibility.changed();
     if (stream && hostHidden !== null) stream.pageStream().visibilityChanged();
     if (ctl.app) ctl.app = null;
+    doc.removeEventListener("clax-questions", onQuestions);
     if (dock) {
-      doc.removeEventListener("clax-questions", onQuestions);
       mounting?.disconnect();
       dock.remove();
     }
+    overlays?.dispose();
     delete w.claxHost;
-    doc.documentElement.classList.remove("app", "inspect");
+    doc.documentElement.classList.remove("app", "inspect", "mac");
     style.remove();
   };
 }

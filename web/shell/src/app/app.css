@@ -65,6 +65,9 @@ html.app .app-questions .gh { display: flex; align-items: center; gap: 8px; marg
 html.app .app-questions .gh .t { flex: 1; color: var(--agent-ink); }
 html.app .app-questions .gh .c { font: 400 12px var(--mono); color: var(--muted); font-variant-numeric: tabular-nums; }
 html.app .app-questions .gh .sw { width: 6px; height: 14px; flex: none; border-radius: 8px 0 0 8px; background: var(--agent); }
+/* On the Mac (`init`'s platform "macos", `html.app.mac`) controls show the
+   arrow, as AppKit's do; links keep the pointing hand. */
+html.app.mac button, html.app.mac [role="button"] { cursor: default; }
 /* The inspect view (`?app=1&inspect=1`, `html.app.inspect`): the page alone,
    with nothing of the comment UI or the shell's notices over it. */
 html.app.inspect .pins,

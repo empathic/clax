@@ -143,6 +143,9 @@ export type ViewState = {
   /** Other people's pointers, selections, typing and drafts (the live
    * layers); none until their code loads after the first paint. */
   live?: LiveUi;
+  /** The overlays the Clax app's host draws itself (`claxHost.init`'s
+   * `native`, `app/host.ts`): the stage draws no web version of these. */
+  native?: readonly string[];
 };
 
 /** The artifact is loaded and the frame mode decided: the islands show. */
@@ -653,7 +656,9 @@ export class ArtifactController {
     if (this.hostFor?.key !== key || this.hostFor.data !== s.data) {
       this.hostFor = { key, data: s.data };
       // A replaced host (another artifact, version, or view) and the host at
-      // dispose are disposed, so their timers and late results never reach a frame.
+      // dispose are disposed, so their timers and late results never reach a
+      // frame, and the prompts its page asked are dismissed.
+      if (this.host) this.prompt.cancel();
       this.host?.dispose();
       const data = s.data;
       this.host = new CapabilityHost(getToken().then(token => {

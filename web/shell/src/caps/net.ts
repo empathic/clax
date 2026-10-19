@@ -17,6 +17,7 @@
 // This module is a lazy chunk (registry.ts), loaded on the page's first call.
 import { inspectQuery } from "../route";
 import { CapError } from "./errors";
+import { ALWAYS } from "./grants";
 import type { HandlerFactory } from "./host";
 
 /** The codes a page may see from `net.fetch` (clax-extensions.d.ts `NetErrorCode`). */
@@ -86,10 +87,12 @@ export const netHandler: HandlerFactory = env => {
     // declares.
     const list = hosts.join(", ");
     const answer = await env.prompt({
+      kind: "capability",
       title: `Let “${a}” use the internet?`,
       body: `“${a}” will send requests to ${list}, and read what they answer. You can take this back in the app's inspector.`,
       allow: "Allow",
       deny: "Don't allow",
+      always: ALWAYS,
     });
     if (answer !== "allow") return false;
     const res = await fetch(`/api/artifacts/${env.aid}/net-grants`, { method: "PUT", headers: { "content-type": "application/json", ...auth }, body: JSON.stringify({ hosts }) }).catch(() => null);

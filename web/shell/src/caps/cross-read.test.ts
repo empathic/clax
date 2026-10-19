@@ -92,7 +92,7 @@ describe("db.artifact(id) in the shell", () => {
     const [one, two] = await Promise.all([cr.call(get("runs/r1")), cr.call(get("runs/r2"))]);
     expect(one).toEqual({ path: "runs/r1", id: "r1", data: { v: 1 }, version: 1 });
     expect(two).toMatchObject({ path: "runs/r2" });
-    expect(prompts).toEqual([{ title: "Let “Dashboard” read “Runs”'s data?", body: expect.stringContaining("cannot change"), allow: "Allow", deny: "Don't allow" }]);
+    expect(prompts).toEqual([{ kind: "crossRead", title: "Let “Dashboard” read “Runs”'s data?", body: expect.stringContaining("cannot change"), allow: "Allow", deny: "Don't allow", always: "Always for this app" }]);
     expect(requests.filter(r => r.method === "PUT")).toEqual([{ method: "PUT", url: `/api/artifacts/${A}/db-grants/${B}`, reader: null, auth: "Bearer tok" }]);
     const reads = requests.filter(r => r.url.includes("/docs"));
     expect(reads.every(r => r.reader === A && r.method === "GET")).toBe(true);
@@ -108,13 +108,21 @@ describe("db.artifact(id) in the shell", () => {
   });
 
   it("Don't allow rejects not_granted and is not asked again in the view", async () => {
-    for (const answer of ["deny", "dismiss"] as const) {
-      const { cr, requests, prompt } = setup({ answer });
-      await expect(cr.call(get("runs/r1"))).rejects.toMatchObject({ code: "not_granted" });
-      await expect(cr.call(get("runs/r1"))).rejects.toMatchObject({ code: "not_granted" });
-      expect(prompt).toHaveBeenCalledTimes(1);
-      expect(requests.some(r => r.method === "PUT")).toBe(false);
-    }
+    const { cr, requests, prompt } = setup({ answer: "deny" });
+    await expect(cr.call(get("runs/r1"))).rejects.toMatchObject({ code: "not_granted" });
+    await expect(cr.call(get("runs/r1"))).rejects.toMatchObject({ code: "not_granted" });
+    expect(prompt).toHaveBeenCalledTimes(1);
+    expect(requests.some(r => r.method === "PUT")).toBe(false);
+  });
+
+  it("a dismissed prompt rejects that read and keeps no refusal: the next read asks again", async () => {
+    const { cr, requests, prompt } = setup({ answer: "dismiss" });
+    await expect(cr.call(get("runs/r1"))).rejects.toMatchObject({ code: "not_granted" });
+    expect(requests.some(r => r.method === "PUT")).toBe(false);
+    prompt.mockImplementation(async () => "allow");
+    await expect(cr.call(get("runs/r1"))).resolves.toMatchObject({ path: "runs/r1" });
+    expect(prompt).toHaveBeenCalledTimes(2);
+    expect(requests.filter(r => r.method === "PUT")).toHaveLength(1);
   });
 
   it("in the app's inspect view, rejects not_granted without asking or granting", async () => {

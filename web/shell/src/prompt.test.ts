@@ -10,7 +10,7 @@ import { ALLOW_DELAY_MS, type Ask } from "./view/prompt-queue";
 import { visibility } from "./visibility";
 
 const button = (root: Element, name: string) => Array.from(root.querySelectorAll("button")).find(b => b.textContent === name)!;
-const askFor = (answer = vi.fn()): Ask => ({ prompt: { title: "Allow this page to act as you?", body: "b", allow: "Allow", deny: "Don't allow" }, answer });
+const askFor = (answer = vi.fn()): Ask => ({ id: "a-1", prompt: { kind: "capability", title: "Allow this page to act as you?", body: "b", allow: "Allow", deny: "Don't allow" }, answer });
 
 // Animation frames are held until the test runs them (jsdom has no
 // PointerEvent; a MouseEvent named pointerdown stands in): a frame is the

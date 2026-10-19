@@ -1,4 +1,5 @@
 import { describe, expect, it, vi } from "vitest";
+import type { Declared } from "./availability";
 import { Grants, grantsKey, type Prompt, type PromptAnswer } from "./grants";
 
 class MemoryStorage {
@@ -56,6 +57,18 @@ describe("Grants", () => {
     expect(dismissed.g.state("comments")).toBe("denied");
     expect(dismissed.g.refusal("comments")).toBe("consent_required");
     expect(denied.storage.data.size).toBe(0);
+  });
+
+  it("names each prompt's kind and offers an always choice, since an Allow is kept", async () => {
+    const asked = async (names: string[], d: Declared = declared, served = {}) => {
+      const ask = vi.fn(async (_p: Prompt) => "deny" as const);
+      await new Grants("k", new MemoryStorage() as unknown as Storage, d, true, ask, served).request(names);
+      return ask.mock.calls[0][0];
+    };
+    expect(await asked(["comments"])).toMatchObject({ kind: "comments", always: "Always for this app" });
+    expect(await asked(["comments", "sample"], { comments: {}, sample: {} }, { sample: true })).toMatchObject({ kind: "capability", always: "Always for this app" });
+    // The daemon keeps sample's grant once caps/sample.ts saves the Allow.
+    expect(await asked(["sample"], { sample: {} }, { sample: true })).toMatchObject({ kind: "sample", always: "Always for this app" });
   });
 
   it("works when storage throws", async () => {

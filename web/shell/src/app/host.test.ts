@@ -1275,10 +1275,12 @@ describe("app mode's inspect view", { timeout: MOUNT_TIMEOUT_MS }, () => {
     fromFrame(window, answer(ask.requestId as string));
     expect(ofType("inspection")).toEqual([]);
     fromFrame(frame.contentWindow!, answer(ask.requestId as string));
+    await waitFor(() => ofType("inspection").length, "inspection");
     expect(ofType("inspection")).toEqual([{ type: "inspection", png: b64, errors: [{ kind: "error", text: "boom" }], failed: ["https://cdn.test/a.png"], text: "# Groceries", title: "Groceries", height: 1200 }]);
     expect(raw.filter(r => r.includes("\"inspection\"")).every(r => JSON.parse(r).nonce === NONCE)).toBe(true);
     // Answered once.
     fromFrame(frame.contentWindow!, answer(ask.requestId as string));
+    await settle();
     expect(ofType("inspection")).toHaveLength(1);
     // The page never hears the nonce.
     expect(JSON.stringify(framed)).not.toContain(NONCE);
@@ -1295,6 +1297,7 @@ describe("app mode's inspect view", { timeout: MOUNT_TIMEOUT_MS }, () => {
     fromFrame(frame.contentWindow!, answer(asks[0].requestId as string));
     expect(ofType("inspection")).toEqual([]);
     fromFrame(frame.contentWindow!, { type: "clax:inspection", requestId: asks[1].requestId, error: "the screenshot took longer than 4000 ms" });
+    await waitFor(() => ofType("inspection").length, "inspection");
     expect(ofType("inspection")).toEqual([{ type: "inspection", error: "the screenshot took longer than 4000 ms" }]);
   });
 
@@ -1305,8 +1308,9 @@ describe("app mode's inspect view", { timeout: MOUNT_TIMEOUT_MS }, () => {
     const ask = async (over: Record<string, unknown>, maxBytes = 1 << 20) => {
       host.inspect({ maxBytes });
       const id = framed.filter(m => m.type === "clax:inspect").at(-1)!.requestId as string;
+      const n = ofType("inspection").length;
       fromFrame(frame.contentWindow!, answer(id, over));
-      return ofType("inspection").at(-1)!;
+      return waitFor(() => ofType("inspection").length > n && ofType("inspection").at(-1)!, "inspection");
     };
     const many = Array.from({ length: 30 }, (_, i) => ({ kind: "console", text: `e${i}` }));
     const odd = await ask({ errors: [...many, { kind: "alert", text: "x" }, { kind: "error", text: 5 }, "nope"], failed: ["a", 3, "b"], text: "t".repeat(5000), title: 7, height: Number.NaN });
@@ -1345,14 +1349,17 @@ describe("app mode's inspect view", { timeout: MOUNT_TIMEOUT_MS }, () => {
     fromFrame(window, { type: "clax:tests", requestId: ask.requestId, passed: 1, failed: [], skipped: 0 });
     expect(ofType("tests")).toEqual([]);
     fromFrame(frame.contentWindow!, { type: "clax:tests", requestId: ask.requestId, passed: 2, failed: [{ name: "adds", error: "Expected: 1 to be 2" }, { name: 3 }, "x"], skipped: 1, extra: true });
+    await waitFor(() => ofType("tests").length, "tests");
     expect(ofType("tests")).toEqual([{ type: "tests", passed: 2, failed: [{ name: "adds", error: "Expected: 1 to be 2" }], skipped: 1 }]);
     expect(raw.filter(r => r.includes("\"tests\"")).every(r => JSON.parse(r).nonce === NONCE)).toBe(true);
     // Answered once; a bad shape is an error.
     fromFrame(frame.contentWindow!, { type: "clax:tests", requestId: ask.requestId, passed: 3, failed: [], skipped: 0 });
+    await settle();
     expect(ofType("tests")).toHaveLength(1);
     host.runTests({ files: ["tests/a.test.js"] });
     const again = framed.filter(m => m.type === "clax:test").at(-1)!;
     fromFrame(frame.contentWindow!, { type: "clax:tests", requestId: again.requestId, passed: -1, failed: [], skipped: 0 });
+    await waitFor(() => ofType("tests").length === 2, "the second tests");
     expect(ofType("tests").at(-1)).toEqual({ type: "tests", error: "the page sent no test results" });
   });
 
@@ -1386,10 +1393,12 @@ describe("app mode's inspect view", { timeout: MOUNT_TIMEOUT_MS }, () => {
     fromFrame(window, { type: "clax:migration", requestId: ask.requestId, ok: true });
     expect(ofType("migration")).toEqual([]);
     fromFrame(frame.contentWindow!, { type: "clax:migration", requestId: ask.requestId, ok: false, error: "x".repeat(900), extra: 1 });
+    await waitFor(() => ofType("migration").length, "migration");
     expect(ofType("migration")).toEqual([{ type: "migration", ok: false, error: "x".repeat(501) }]);
     expect(raw.filter(r => r.includes("\"migration\"")).every(r => JSON.parse(r).nonce === NONCE)).toBe(true);
     // Answered once.
     fromFrame(frame.contentWindow!, { type: "clax:migration", requestId: ask.requestId, ok: true });
+    await settle();
     expect(ofType("migration")).toHaveLength(1);
     // Only the latest request's answer counts; a bad shape is an error.
     host.runMigration({ file: "migrate.js", from: 1, to: 2, totalMs: 500 });
@@ -1397,12 +1406,15 @@ describe("app mode's inspect view", { timeout: MOUNT_TIMEOUT_MS }, () => {
     const [first, second] = framed.filter(m => m.type === "clax:migrate").slice(1);
     expect([first.totalMs, second.totalMs, second.file]).toEqual([500, 120000, "lib/migrate.js"]);
     fromFrame(frame.contentWindow!, { type: "clax:migration", requestId: first.requestId, ok: true });
+    await settle();
     expect(ofType("migration")).toHaveLength(1);
     fromFrame(frame.contentWindow!, { type: "clax:migration", requestId: second.requestId, ok: "yes" });
+    await waitFor(() => ofType("migration").length === 2, "the second migration");
     expect(ofType("migration").at(-1)).toEqual({ type: "migration", ok: false, error: "the page sent no migration result" });
     host.runMigration({ file: "migrate.js", from: 1, to: 2 });
     const last = framed.filter(m => m.type === "clax:migrate").at(-1)!;
     fromFrame(frame.contentWindow!, { type: "clax:migration", requestId: last.requestId, ok: true });
+    await waitFor(() => ofType("migration").length === 3, "the third migration");
     expect(ofType("migration").at(-1)).toEqual({ type: "migration", ok: true });
   });
 
@@ -1893,5 +1905,234 @@ describe("app mode's device link", { timeout: MOUNT_TIMEOUT_MS }, () => {
     host.openRoute("javascript:alert(1)");
     host.openRoute(`#${"x".repeat(600)}`);
     expect(location.hash).toBe("#/plants/3");
+  });
+});
+
+describe("native overlays", { timeout: MOUNT_TIMEOUT_MS }, () => {
+  artifactViewHooks();
+  afterEach(() => {
+    delete (window as unknown as { ClaxHost?: unknown }).ClaxHost;
+    delete (window as unknown as { claxHost?: unknown }).claxHost;
+    document.documentElement.classList.remove("app", "inspect", "mac");
+    latest = 1;
+  });
+  const ALL = ["ask", "questions", "notice", "draft"];
+  /** Not the owner's browser: the question module never loads, so the test alone tells the host of questions. */
+  const notOwner = (url: string) => (url === "/api/token" ? new Response("{}", { status: 403 }) : undefined);
+  const tell = (open: string[], closed: string[] = []) => document.dispatchEvent(new CustomEvent("clax-questions", { detail: { open, closed } }));
+  type Prompt = import("../caps/grants").Prompt;
+  const promptOf = (ctl: unknown) => (ctl as { prompt(p: Prompt): Promise<string> }).prompt;
+  const netPrompt: Prompt = { kind: "capability", title: "Let “Weather” use the internet?", body: "…", allow: "Allow", deny: "Don't allow", always: "Always for this app" };
+  async function nativeView(native: string[] | undefined, opts: Parameters<typeof appView>[0] = {}) {
+    const v = await appView({ ...opts, init: false, api: opts.api ?? notOwner });
+    v.host.init(native === undefined ? { nonce: NONCE } : { nonce: NONCE, native });
+    return v;
+  }
+  const draft = { agent: "a_1111aaaa", harness: "app", base_version: 1, paths: ["index.html"], note: "bluer", updated_at: "2026-10-19T10:00:00.000Z", token: "t1" };
+
+  it("posts the prompt as ask, draws no dialog, and resolves it on askAnswer of its ID", async () => {
+    const { ctl, frame, host } = await nativeView(ALL);
+    hello(frame, 1);
+    const answer = promptOf(ctl)(netPrompt);
+    const ask = await waitFor(() => ofType("ask")[0], "ask posted");
+    expect(ask).toEqual({ type: "ask", id: expect.any(String), kind: "capability", title: netPrompt.title, body: "…", allow: "Allow", deny: "Don't allow", always: "Always for this app", armMs: 500 });
+    expect(raw.filter(m => JSON.parse(m).type === "ask").every(m => JSON.parse(m).nonce === NONCE)).toBe(true);
+    expect(document.querySelector(".prompt-backdrop")).toBeNull();
+    host.askAnswer(ask.id, "allow");
+    await expect(answer).resolves.toBe("allow");
+    expect(ofType("askCancel")).toEqual([]);
+  });
+
+  it("answers always as Allow, dismiss as a dismissal, and ignores an unknown answer", async () => {
+    const { ctl, frame, host } = await nativeView(ALL);
+    hello(frame, 1);
+    const answers: Promise<string>[] = [];
+    for (const a of ["always", "dismiss", "deny"] as const) {
+      answers.push(promptOf(ctl)(netPrompt));
+      const ask = await waitFor(() => ofType("ask")[answers.length - 1], `ask ${a}`);
+      host.askAnswer(ask.id, "maybe" as never);
+      host.askAnswer(ask.id, a);
+    }
+    await expect(Promise.all(answers)).resolves.toEqual(["allow", "dismiss", "deny"]);
+  });
+
+  it("resolves only the prompt shown, on its own ID: an answer to another ID changes nothing", async () => {
+    const { ctl, frame, host } = await nativeView(ALL);
+    hello(frame, 1);
+    let firstDone = false;
+    const first = promptOf(ctl)({ ...netPrompt, title: "first" }).then(a => { firstDone = true; return a; });
+    const second = promptOf(ctl)({ ...netPrompt, kind: "download", title: "second", always: undefined });
+    const a1 = await waitFor(() => ofType("ask")[0], "the first ask");
+    expect(ofType("ask")).toHaveLength(1);
+    // The second's ID, as the queue will name it, before it is shown.
+    const a2id = a1.id.replace(/\d+$/, n => String(Number(n) + 1));
+    host.askAnswer(a2id, "allow");
+    host.askAnswer("nope", "allow");
+    await settle();
+    expect(firstDone).toBe(false);
+    expect(ofType("ask")).toHaveLength(1);
+    host.askAnswer(a1.id, "deny");
+    await expect(first).resolves.toBe("deny");
+    const a2 = await waitFor(() => ofType("ask")[1], "the second ask");
+    expect(a2).toMatchObject({ id: a2id, kind: "download", title: "second" });
+    expect(a2).not.toHaveProperty("always");
+    host.askAnswer(a2.id, "allow");
+    await expect(second).resolves.toBe("allow");
+  });
+
+  it("posts askCancel when the view unloads, and an answer after it changes nothing", async () => {
+    const { ctl, frame, host, uninstall } = await nativeView(ALL);
+    hello(frame, 1);
+    let answered: string | null = null;
+    void promptOf(ctl)(netPrompt).then(a => { answered = a; });
+    const ask = await waitFor(() => ofType("ask")[0], "ask");
+    window.dispatchEvent(new Event("pagehide"));
+    expect(ofType("askCancel")).toEqual([{ type: "askCancel", id: ask.id }]);
+    host.askAnswer(ask.id, "allow");
+    await settle();
+    expect(answered).not.toBe("allow");
+    uninstall();
+    expect(ofType("askCancel")).toHaveLength(1);
+  });
+
+  it("posts askCancel when the page goes away before an answer (another version), and ignores a late answer", async () => {
+    const { ctl, frame, host } = await nativeView(ALL);
+    hello(frame, 1);
+    const answer = promptOf(ctl)(netPrompt);
+    const ask = await waitFor(() => ofType("ask")[0], "ask");
+    latest = 2;
+    host.reloadLatest();
+    await waitFor(() => ofType("askCancel").length, "askCancel");
+    expect(ofType("askCancel")).toEqual([{ type: "askCancel", id: ask.id }]);
+    await expect(answer).resolves.toBe("dismiss");
+    host.askAnswer(ask.id, "allow");
+    await settle();
+    expect(ctl.state.get().ask).toBeNull();
+  });
+
+  it("posts each notice with its tone and draws no banner", async () => {
+    const { ctl, frame } = await nativeView(ALL);
+    hello(frame, 1);
+    ctl.setNotice("The threads could not load. Reload to try again.");
+    await waitFor(() => ofType("notice").length, "notice");
+    expect(ofType("notice")).toEqual([{ type: "notice", text: "The threads could not load. Reload to try again.", tone: "error" }]);
+    await settle();
+    expect(document.querySelector(".banner.notice")).toBeNull();
+  });
+
+  it("offers Try again on a failed follow, which noticeAction runs", async () => {
+    let fail = false;
+    const { frame, host } = await nativeView(ALL, {
+      api: url => (url === "/api/token" ? new Response("{}", { status: 403 }) : fail && url === `/api/artifacts/${ID}` ? new Response(JSON.stringify({ error: { code: "internal", message: "down" } }), { status: 500 }) : undefined),
+    });
+    hello(frame, 1);
+    fail = true;
+    host.reloadLatest();
+    const n = await waitFor(() => ofType("notice").find(m => m.text.startsWith("Could not load the latest version")), "the follow's notice");
+    expect(n).toMatchObject({ tone: "error", action: { id: expect.any(String), label: "Try again" } });
+    fail = false;
+    latest = 2;
+    const before = requests.filter(r => r.url === `/api/artifacts/${ID}`).length;
+    host.noticeAction((n as { action: { id: string } }).action.id);
+    await waitFor(() => requests.filter(r => r.url === `/api/artifacts/${ID}`).length > before, "the follow tried again");
+    host.noticeAction("unknown");
+  });
+
+  it("posts the draft banner's state as draft, draws no banner, and showDraft and hideDraft act as its buttons", async () => {
+    const { ctl, frame, host } = await nativeView(ALL);
+    hello(frame, 1);
+    ctl.draftsChanged([draft]);
+    await waitFor(() => ofType("draft").length, "draft");
+    expect(ofType("draft")).toEqual([{ type: "draft", state: { kind: "drafting", by: "Clax", note: "bluer" } }]);
+    host.showDraft();
+    await waitFor(() => ofType("draft").length === 2, "showing");
+    expect(ctl.state.get().showDraft).toBe("a_1111aaaa");
+    expect(ofType("draft")[1]).toEqual({ type: "draft", state: { kind: "showing", by: "Clax", base: 1, detail: "index.html" } });
+    expect(document.querySelector(".banner.draft")).toBeNull();
+    host.hideDraft();
+    await waitFor(() => ofType("draft").length === 3, "back");
+    expect(ctl.state.get().showDraft).toBeNull();
+    host.showDraft("Clax");
+    expect(ctl.state.get().showDraft).toBe("a_1111aaaa");
+    ctl.draftsChanged([]);
+    await waitFor(() => ofType("draft").at(-1)!.state === null, "no draft");
+  });
+
+  it("posts questions with the open IDs and raise, and builds no sheet", async () => {
+    const { frame, host } = await nativeView(ALL);
+    hello(frame, 1);
+    expect(document.querySelector(".app-questions")).toBeNull();
+    tell(["Q1"]);
+    expect(ofType("questions")).toEqual([{ type: "questions", open: 1, showing: false, ids: ["Q1"], raise: false }]);
+    // A question asked while the app shows the view is raised; one asked while hidden is not.
+    tell(["Q1", "Q2"]);
+    expect(ofType("questions").at(-1)).toEqual({ type: "questions", open: 2, showing: false, ids: ["Q1", "Q2"], raise: true });
+    host.setVisible(false);
+    tell(["Q1", "Q2", "Q3"]);
+    expect(ofType("questions").at(-1)).toMatchObject({ ids: ["Q1", "Q2", "Q3"], raise: false });
+    host.setVisible(true);
+    tell(["Q2", "Q3"], ["Q1"]);
+    expect(ofType("questions").at(-1)).toEqual({ type: "questions", open: 2, showing: false, ids: ["Q2", "Q3"], raise: false });
+    host.openQuestions({ question: "Q2" });
+    expect(document.querySelector(".app-questions")).toBeNull();
+  });
+
+  it("posts gone once when the artifact is deleted", async () => {
+    const { ctl, frame } = await nativeView(ALL);
+    hello(frame, 1);
+    ctl.set({ deleted: true });
+    await waitFor(() => ofType("gone").length, "gone");
+    ctl.set({ notice: "x" });
+    await settle();
+    expect(ofType("gone")).toEqual([{ type: "gone" }]);
+  });
+
+  it("without native the shell draws every overlay, and posts none of their messages", async () => {
+    const { ctl, frame, host } = await nativeView(undefined);
+    hello(frame, 1);
+    void promptOf(ctl)(netPrompt);
+    await waitFor(() => document.querySelector(".prompt-backdrop"), "the web dialog");
+    ctl.state.get().ask!.answer("deny");
+    ctl.setNotice("The threads could not load. Reload to try again.");
+    await waitFor(() => document.querySelector(".banner.notice"), "the web notice");
+    expect(ofType("notice")).toEqual([{ type: "notice", text: "The threads could not load. Reload to try again." }]);
+    ctl.draftsChanged([draft]);
+    await waitFor(() => document.querySelector(".banner.draft"), "the web draft banner");
+    expect(document.querySelector(".app-questions")).not.toBeNull();
+    tell(["Q1"]);
+    host.openQuestions();
+    expect(document.querySelector<HTMLElement>(".app-questions")!.hidden).toBe(false);
+    expect(ofType("questions").at(-1)).toEqual({ type: "questions", open: 1, showing: true });
+    await settle();
+    expect(ofType("ask")).toEqual([]);
+    expect(ofType("draft")).toEqual([]);
+  });
+
+  it("draws the web version of each overlay the app leaves out", async () => {
+    const { ctl, frame } = await nativeView(["questions"]);
+    hello(frame, 1);
+    void promptOf(ctl)(netPrompt);
+    await waitFor(() => document.querySelector(".prompt-backdrop"), "the web dialog");
+    expect(ofType("ask")).toEqual([]);
+    expect(document.querySelector(".app-questions")).toBeNull();
+  });
+
+  it("marks the document for the Mac's cursors when the platform is macos", async () => {
+    const mac = await nativeView(ALL, {});
+    expect(document.documentElement.classList.contains("mac")).toBe(false);
+    mac.uninstall();
+    const v = await appView({ init: false, api: notOwner });
+    v.host.init({ nonce: NONCE, native: ALL, platform: "macos" });
+    expect(document.documentElement.classList.contains("mac")).toBe(true);
+    v.uninstall();
+    expect(document.documentElement.classList.contains("mac")).toBe(false);
+  });
+
+  it("in the inspect view still answers every prompt Don't allow, posting no ask", async () => {
+    const { ctl, frame } = await nativeView(ALL, { query: "?app=1&inspect=1" });
+    hello(frame, 1);
+    await expect(promptOf(ctl)(netPrompt)).resolves.toBe("deny");
+    await settle();
+    expect(ofType("ask")).toEqual([]);
   });
 });

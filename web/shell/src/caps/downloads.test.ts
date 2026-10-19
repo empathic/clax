@@ -51,7 +51,9 @@ describe("downloads in the shell", () => {
     const prompt = vi.fn(async (_p: unknown) => answers.shift()!);
     const h = downloadsHandler({ aid: "7q3k9mzx2b4t", prompt } as unknown as CapEnv, null as never);
     await expect(h.call("save", [{ filename: "report.csv", blob: new Blob(["a,b"]) }])).resolves.toEqual({ status: "saved" });
-    expect(prompt.mock.calls[0][0]).toMatchObject({ body: "report.csv (3 bytes)", allow: "Save" });
+    expect(prompt.mock.calls[0][0]).toMatchObject({ kind: "download", body: "report.csv (3 bytes)", allow: "Save" });
+    // A save is asked each time: nothing is kept to offer always for.
+    expect(prompt.mock.calls[0][0]).not.toHaveProperty("always");
     expect(clicks).toEqual(["report.csv"]);
     expect((created.mock.calls[0][0] as Blob).type).toBe("text/csv");
     await expect(h.call("save", [{ filename: "report.csv", blob: new Blob(["a"]) }])).rejects.toMatchObject({ code: "declined" });

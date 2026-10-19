@@ -7,8 +7,17 @@
 import { CAPABILITIES, type Declared, type Served, consentGated, isAvailable } from "./availability";
 
 export type PermissionState = "granted" | "prompt" | "denied" | "unavailable";
-export type Prompt = { title: string; body: string; allow: string; deny: string };
+/** What a prompt asks for: a capability (`comments` and `sample` asked
+ * alone have their own), a download, or a read of another app's data. */
+export type PromptKind = "capability" | "download" | "crossRead" | "sample" | "comments";
+/** A consent prompt. `always`, the label of an "always" choice, is given
+ * where an Allow is kept beyond this view (`ALWAYS`); the Clax app's host
+ * may draw it, and its answer is an Allow (`app/native.ts`). */
+export type Prompt = { kind: PromptKind; title: string; body: string; allow: string; deny: string; always?: string };
 export type PromptAnswer = "allow" | "deny" | "dismiss";
+
+/** The "always" choice's label, on prompts whose Allow is kept. */
+export const ALWAYS = "Always for this app";
 
 export const grantsKey = (aid: string, viewer: string) => `clax.grants.v1:${aid}:${viewer}`;
 
@@ -20,10 +29,12 @@ const ASKS: Record<string, string> = {
 /** The dialog of a capability asked on its own. */
 const ALONE: Record<string, Prompt> = {
   sample: {
+    kind: "sample",
     title: "Let this app ask Claude?",
     body: "Each request this app sends to Claude is paid for by this machine's Anthropic API key, within a daily spending cap for the app. Clax keeps your answer for this app until you revoke it.",
     allow: "Allow",
     deny: "Don't allow",
+    always: ALWAYS,
   },
 };
 
@@ -107,11 +118,14 @@ export class Grants {
       const askable = [...new Set(names)].filter(n => this.state(n) === "prompt");
       if (!askable.length) return;
       const alone = askable.length === 1 ? ALONE[askable[0]] : undefined;
+      // Allow is kept: in storage here, or by the daemon for sample.
       const answer = await this.ask(alone ?? {
+        kind: askable.length === 1 && askable[0] === "comments" ? "comments" : "capability",
         title: "Allow this page to act as you?",
         body: `This page asks to ${askable.map(n => ASKS[n] ?? `use ${n}`).join(" and ")}.`,
         allow: "Allow",
         deny: "Don't allow",
+        always: ALWAYS,
       });
       for (const n of askable) {
         if (answer === "allow") this.granted.add(n);

@@ -1,7 +1,9 @@
 <script lang="ts">
   // The stage island: the overlays over the frame (the empty states, the
   // gesture shield and hint, agents' drafts, the pins, the composer, the
-  // spectator banner, the failure notice and the consent dialog). Nothing else goes over the page: a newer version
+  // spectator banner, the failure notice and the consent dialog). In the
+  // Clax app the host may draw the drafts' banner, the notice and the
+  // dialog itself (`s.native`), and then they are not drawn here. Nothing else goes over the page: a newer version
   // and an older one shown are said in the top bar (decided: Q12). Shown
   // once the artifact is loaded and the frame mode decided. A spectator (no
   // live seat free, spec 2026-10-11-clax-dev-hosted-design §16.1) sees a
@@ -67,7 +69,7 @@
        newest-kind last, so no two of them cover each other (theme.css .stage-foot). -->
   <div class="stage-foot">
     {#if s.hint}<p class="gesture-hint" role="status">{s.hint}</p>{/if}
-    {#if drafts && !s.deleted}
+    {#if drafts && !s.deleted && !s.native?.includes("draft")}
       <drafts.Banner {s} {shown} onShow={a => ctl.showDraftOf(a)} onBack={() => ctl.backFromDraft()} />
     {/if}
     {#if s.spectator && SpectatorBanner}
@@ -84,9 +86,9 @@
         onCancel={() => ctl.cancelDraft()} onSubmit={body => ctl.submitDraft(body, draft)} onDropped={() => ctl.app?.dropped()} send={!!ctl.app} />
     {/key}
   {/if}
-  {#if s.notice}
+  {#if s.notice && !s.native?.includes("notice")}
     <div class="banner notice" role="alert"><span>{s.notice}</span><button onclick={() => ctl.dismissNotice()}>Dismiss</button></div>
   {/if}
-  {#if s.ask}<PromptDialog ask={s.ask} />{/if}
+  {#if s.ask && !s.native?.includes("ask")}<PromptDialog ask={s.ask} />{/if}
   {#if s.sheet === "keys" && KeysSheet}<KeysSheet onClose={() => ctl.closeSheet()} />{/if}
 {/if}

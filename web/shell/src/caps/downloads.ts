@@ -106,7 +106,7 @@ export const downloadsHandler: HandlerFactory = env => {
       open = true;
       let answer: PromptAnswer;
       try {
-        answer = await env.prompt({ title: "Save a file from this page?", body: `${name} (${formatBytes(blob.size)})`, allow: "Save", deny: "Cancel" });
+        answer = await env.prompt({ kind: "download", title: "Save a file from this page?", body: `${name} (${formatBytes(blob.size)})`, allow: "Save", deny: "Cancel" });
       } finally {
         open = false;
       }

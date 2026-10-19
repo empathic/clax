@@ -2251,7 +2251,7 @@ shell in subdomain mode and an opaque origin in sandbox mode):
 
 | Method | Effect |
 |---|---|
-| `init({nonce})` | Starts the channel with this load's nonce (16 to 128 characters of `A-Z a-z 0-9 _ -`); only the first valid call in a document counts. It posts the current `state` and `threads` at once, `ready` when a page has greeted, and the latest `questions` when the question module has told any. |
+| `init({nonce, platform?, native?})` | Starts the channel with this load's nonce (16 to 128 characters of `A-Z a-z 0-9 _ -`); only the first valid call in a document counts. It posts the current `state` and `threads` at once, `ready` when a page has greeted, and the latest `questions` when the question module has told any. `platform` names the app's platform (`"android"`, `"ios"`, `"macos"`); on `"macos"` the shell's controls show the arrow cursor. `native` lists the overlays the app draws itself (see "Native overlays" below). |
 | `setVisible(visible)` | Whether the app shows this view (see "Visibility" below). |
 | `enterCommentMode()` / `exitCommentMode()` | Turns comment mode on or off; nothing when it already is. |
 | `loadVersion(n)` | Shows version `n`, or the latest for `null`. |
@@ -2272,6 +2272,9 @@ shell in subdomain mode and an opaque origin in sandbox mode):
 | `deviceResult({id, ok, value})` / `deviceResult({id, ok: false, error: {code, message}})` | The app's answer to a `device` message; an ID no call waits on is dropped. |
 | `openRoute(hash)` | Moves the page to fragment `hash` (`#` and at most 511 more characters), as a tapped reminder asks. |
 | `back()` | Goes back in the app's own history (see "Back" above); nothing when there is nothing to go back to. |
+| `askAnswer(id, answer)` | Answers the prompt `ask` `id` posted: `"allow"`, `"deny"`, `"always"` (an Allow, kept as an Allow is) or `"dismiss"`. An ID other than the prompt shown, or one after its `askCancel`, changes nothing. |
+| `noticeAction(id)` | Runs the action a `notice` carried. |
+| `showDraft(by?)` / `hideDraft()` | The draft banner's Show draft (the draft of the agent named `by`, else the first) and Back. |
 
 **Messages to the app** go on the WebView's JavaScript channel `ClaxHost`
 (`window.ClaxHost.postMessage(<JSON>)`), and a page without it (a browser)
@@ -2286,10 +2289,14 @@ drops them. Every message carries `nonce`:
 | `sent` | `thread` | Send posted a thread and sent it to the agent. |
 | `sendFailed` | `thread`, `text` | The send failed; the thread stays posted and unsent until `resend`. |
 | `landed` | `version` | The page of a version auto-follow loaded has greeted. |
-| `notice` | `text` | A shell notice (a failed post, a failed follow, …). When the composer cancels a post it queued behind its screenshot (its text changed, or it moved to another anchor), a fresh `Not sent: …` notice each time, so the app's Send stops waiting on it. |
+| `notice` | `text`; with `notice` native, `tone` (`"error"` for every shell notice so far, or `"info"`) and `action?: {id, label}` | A shell notice (a failed post, a failed follow, …). When the composer cancels a post it queued behind its screenshot (its text changed, or it moved to another anchor), a fresh `Not sent: …` notice each time, so the app's Send stops waiting on it. A failed follow carries the action Try again. |
 | `history` | `back` | Whether `back()` has a page, fragment or route to go back to; at `init`, and whenever that changes. |
 | `device` | `id`, `cap`, `method`, `args` | The page called a device capability (see "Device capabilities in the Clax app" below). Calls made before `init` are posted by it. Not in the inspect view. |
-| `questions` | `open`, `showing` | How many of the owner's open questions are about the artifact, and whether the questions sheet shows; posted whenever either changes. |
+| `questions` | `open`, `showing`; with `questions` native, `ids` and `raise` | How many of the owner's open questions are about the artifact, and whether the questions sheet shows; posted whenever either changes. With `questions` native, `showing` is false, `ids` lists the open questions' IDs, and `raise` is true when one of them was not open before in this view and the app shows the view (`setVisible`); the first count of a load raises none. |
+| `ask` | `id`, `kind` (`"capability"`, `"download"`, `"crossRead"`, `"sample"`, `"comments"`), `title`, `body`, `allow`, `deny`, `always?`, `armMs` | With `ask` native: a page's consent prompt reached the head of the queue. `always` labels an "always" choice where an Allow is kept; `armMs` (500) is how long Allow stays disabled. `askAnswer` answers. |
+| `askCancel` | `id` | With `ask` native: prompt `id` ended without the app's answer (its page went away, or the view is unloading). |
+| `draft` | `state`: `null`, `{kind: "drafting", by, note?}` or `{kind: "showing", by, base, detail}` | With `draft` native: whenever the draft banner's text would change. `by` is the agent's name ("Clax" for the app's own). |
+| `gone` | none | When `init` gave `native` (even an empty list): once, when the artifact is deleted. |
 | `chrome` | `top`, `bottom` (`#rrggbb`, lowercase) | The page's background at the middle of the viewport's top and bottom edges (the first opaque background from the element there up to the root, else white), which the app paints the system's status and navigation bars in: on the page's first paint, whenever either changes, and the latest again at `init`. |
 | `inspection` | `png`, `errors`, `failed`, `text`, `title`, `height`; or `error` | The answer to `inspect`. |
 | `tests` | `passed`, `failed: [{name, error}]`, `skipped`; or `error` | The answer to `runTests`. |
@@ -2325,6 +2332,16 @@ no artifact, or about another app, the app shows in its own question
 sheet: a WebView of the shell's inbox at that one question
 (`/inbox?q=<question ID>`), whose top level may be only that inbox, which
 closes once the question is answered, declined or withdrawn.
+
+**Native overlays.** `init`'s `native` lists the overlays the app draws
+itself, any of `"ask"` (a page's consent prompt), `"questions"`,
+`"notice"` and `"draft"` (the draft banner). The shell draws none of
+those and posts them instead (`ask` and `askCancel`, `notice` with `tone`,
+`questions` with `ids` and `raise`, `draft`); with `"questions"` it builds
+no questions sheet, and the app never calls `openQuestions` or
+`closeQuestions`. An overlay the app leaves out keeps its web version, as
+every overlay does for an app that sends no `native`. The inspect view
+draws and posts none of them.
 
 **The inspect view.** With `inspect=1` beside `app=1`
 (`/a/<id>?app=1&inspect=1`), the app loads a draft (see "Drafts" below)
@@ -5580,7 +5597,8 @@ the `onSnapshot` error callback, reject with:
 In the owner's own browser, the first read of a source neither shared nor
 granted asks the owner once per source and page load ("Let “A” read “B”'s
 data?", Allow or Don't allow); Allow makes the grant and the read is tried
-again. A viewer who is not the owner is never asked. A page load holds at
+again. A dismissed prompt (Escape, a click outside) refuses that read only:
+the next read asks again. A viewer who is not the owner is never asked. A page load holds at
 most 64 subscriptions of other apps. When the owner withdraws a grant while
 the page runs, a live listener stops receiving that app's changes at once;
 its error callback gets `not_granted` at its next refresh (after a reconnect

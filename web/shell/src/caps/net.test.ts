@@ -69,7 +69,7 @@ describe("net in the shell", () => {
     const res = await h.call("fetch", [fetchCall("https://api.example.com/x", { method: "post", headers: { "content-type": "application/json" }, body: "{}" })]);
     expect(res).toEqual({ url: "https://api.example.com/x", status: 200, headers: { "content-type": "text/plain" }, body: "hi" });
     expect(prompts).toHaveLength(1);
-    expect(prompts[0].title).toBe("Let “Weather” use the internet?");
+    expect(prompts[0]).toMatchObject({ kind: "capability", title: "Let “Weather” use the internet?", always: "Always for this app" });
     expect(prompts[0].body).toContain("api.example.com, cdn.example.com");
     const posts = requests.filter(r => r.url.endsWith("net:fetch"));
     expect(posts).toHaveLength(2);

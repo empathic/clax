@@ -11,6 +11,8 @@
 // - a refusal (`not_granted`) in the owner shell asks the owner once per
 //   source and view ("Let “A” read “B”'s data?"); Allow makes the grant
 //   (`PUT /api/artifacts/<A>/db-grants/<B>`) and the read is tried again.
+//   A dismissed prompt refuses the reads waiting on it and is not kept: the
+//   next read asks again.
 //   A share in B's declaration, or an earlier grant, is served without
 //   asking. A viewer who is not the owner is never asked, nor is anyone in
 //   the app's inspect view (`?app=1&inspect=1`, `app/host.ts`), which
@@ -24,6 +26,7 @@ import { inspectQuery } from "../route";
 import { type StreamEvent, pageStream } from "../stream";
 import { type ApiDoc, MAX_SUBSCRIPTIONS, SNAPSHOT_DEBOUNCE_MS, type Spec, type WireDoc, checkPath, checkSpec, checkSubId, dbError, docUrl, runQuery, touches, wire } from "./db";
 import { CapError } from "./errors";
+import { ALWAYS } from "./grants";
 import type { CapEnv } from "./host";
 
 /** Follows stream topics until the returned function runs (`EventStream.watch`). */
@@ -100,11 +103,15 @@ export function crossRead(env: CapEnv, watch: Watch = (t, on) => pageStream().wa
     }
     const [a, b] = [a0.title || reader, b0.title || src];
     const answer = await env.prompt({
+      kind: "crossRead",
       title: `Let “${a}” read “${b}”'s data?`,
       body: `“${a}” will see the documents “${b}” keeps, and cannot change them. Documents private to one viewer stay private.`,
       allow: "Allow",
       deny: "Don't allow",
+      always: ALWAYS,
     });
+    // A dismissal (Escape, a tap outside) refuses this read only: the next one asks again.
+    if (answer === "dismiss") asked.delete(src);
     if (answer !== "allow") return false;
     const res = await fetch(`/api/artifacts/${reader}/db-grants/${src}`, { method: "PUT", headers: headers({}) }).catch(() => null);
     if (!res?.ok) {
