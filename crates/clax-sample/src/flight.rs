@@ -112,16 +112,17 @@ impl Flight {
                 let notified = flight.notify.notified();
                 tokio::pin!(notified);
                 notified.as_mut().enable();
-                if let Some(o) = flight
-                    .frames
-                    .lock()
-                    .expect("frames lock")
-                    .get(next)
-                    .cloned()
-                {
+                // Read under the frames lock with `finished`, which `push`
+                // sets under it too: a flight seen finished holds its ending
+                // frame, so it is yielded before the stream ends.
+                let (frame, finished) = {
+                    let frames = flight.frames.lock().expect("frames lock");
+                    (frames.get(next).cloned(), flight.is_finished())
+                };
+                if let Some(o) = frame {
                     return Some((o, (guard, next + 1)));
                 }
-                if flight.is_finished() {
+                if finished {
                     return None;
                 }
                 notified.await;
