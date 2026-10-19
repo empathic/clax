@@ -128,10 +128,60 @@ void main() {
       expect(find.text('row 0'), findsOneWidget);
     });
 
-    testWidgets('on the Mac the window\'s toolbar carries the title', (
-      tester,
-    ) async {
+    testWidgets('on the Mac, until the toolbar carries them, a header in '
+        'the content shows the title, Back and the actions', (tester) async {
       debugDefaultTargetPlatformOverride = TargetPlatform.macOS;
+      try {
+        var searched = false;
+        await tester.pumpWidget(
+          MaterialApp(
+            theme: claxTheme(Brightness.light, TargetPlatform.macOS),
+            home: Builder(
+              builder: (context) => TextButton(
+                onPressed: () => Navigator.of(context).push(
+                  MaterialPageRoute<void>(
+                    builder: (_) => ClaxScaffold(
+                      title: 'Settings',
+                      subtitle: 'Clax',
+                      actions: [
+                        IconButton(
+                          onPressed: () => searched = true,
+                          icon: const Icon(Icons.search),
+                        ),
+                      ],
+                      body: const Text('body'),
+                    ),
+                  ),
+                ),
+                child: const Text('Open'),
+              ),
+            ),
+          ),
+        );
+        await tester.tap(find.text('Open'));
+        await tester.pumpAndSettle();
+        expect(find.byType(AppBar), findsNothing);
+        expect(find.text('Settings'), findsOneWidget);
+        expect(find.text('Clax'), findsOneWidget);
+        expect(find.text('body'), findsOneWidget);
+        expect(
+          tester.getRect(find.text('Settings')).bottom,
+          lessThanOrEqualTo(tester.getRect(find.text('body')).top),
+        );
+        await tester.tap(find.byIcon(Icons.search));
+        expect(searched, isTrue);
+        await tester.tap(find.byType(BackButton));
+        await tester.pumpAndSettle();
+        expect(find.text('Open'), findsOneWidget);
+      } finally {
+        debugDefaultTargetPlatformOverride = null;
+      }
+    });
+
+    testWidgets('on the Mac, once the toolbar carries them, the content has '
+        'no header', (tester) async {
+      debugDefaultTargetPlatformOverride = TargetPlatform.macOS;
+      ClaxScaffold.toolbarCarriesTitle = true;
       try {
         await tester.pumpWidget(
           MaterialApp(
@@ -143,6 +193,7 @@ void main() {
         expect(find.text('Settings'), findsNothing);
         expect(find.text('body'), findsOneWidget);
       } finally {
+        ClaxScaffold.toolbarCarriesTitle = false;
         debugDefaultTargetPlatformOverride = null;
       }
     });
