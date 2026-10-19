@@ -58,7 +58,7 @@
 <style>
   :global {
     @media (min-width: 701px) {
-      .viewer .drawer { flex: none; border: 0 solid var(--border); border-left-width: 1px; width: min(var(--drawer-w, 392px), 100% - 320px); min-width: 280px; }
+      .viewer .drawer { border: 0 solid var(--border); border-left-width: 1px; width: min(var(--drawer-w, 392px), 100% - 320px); min-width: 280px; }
       [data-drawer="left"] .drawer { order: -1; border-width: 0 1px 0 0; }
       [data-drawer="bottom"] .viewer { flex-direction: column; }
       [data-drawer="bottom"] .drawer { width: auto; height: min(var(--drawer-h, 280px), 100% - 160px); min-height: 160px; border-width: 1px 0 0; }

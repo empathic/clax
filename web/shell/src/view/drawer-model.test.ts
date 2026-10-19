@@ -68,12 +68,15 @@ describe("drawer prefs", () => {
     }
   });
 
-  it("are laid out by the artifact page's head script before the first paint as applyPrefs lays them out", () => {
+  // The floating window is drawn only once the drawer's controls have
+  // loaded and laid it out again, so the head script lays out what the first
+  // paint needs: the layout and the docked sizes.
+  it("are laid out by the artifact page's head script before the first paint as applyPrefs lays out the layout and docked sizes", () => {
     const html = readFileSync(join(__dirname, "..", "..", "artifact.html"), "utf8");
     const head = /<script id="clax-drawer">([\s\S]*?)<\/script>/.exec(html)![1];
     const root = document.documentElement;
     const shown = () => [root.dataset.drawer ?? "", ...Array.from({ length: root.style.length }, (_, i) => root.style.item(i)).map(k => `${k}:${root.style.getPropertyValue(k)}`)];
-    for (const stored of [null, "{not json", "null", '{"layout":"left","w":500}', '{"layout":"float","w":400,"h":300,"x":1,"y":2,"fw":300,"fh":400}', '{"w":"1px;color:red","h":null}']) {
+    for (const stored of [null, "{not json", "null", '{"layout":"left","w":500}', '{"layout":"float","w":400,"h":300,"x":1,"y":2,"fw":300,"fh":400}', '{"w":"1px;color:red","h":null}', '{"w":1e999,"x":-1e999,"h":-1e999}', '{"w":1e999,"x":-1e999,"h":"280","fw":true,"fh":[400],"y":{}}', '{"layout":0,"w":-0,"h":1.5e2}', '{"layout":"","w":null}', '[]', '"text"', '7']) {
       if (stored === null) localStorage.removeItem(DRAWER_KEY);
       else localStorage.setItem(DRAWER_KEY, stored);
       root.removeAttribute("style");
@@ -83,7 +86,7 @@ describe("drawer prefs", () => {
       root.removeAttribute("style");
       delete root.dataset.drawer;
       applyPrefs(readPrefs());
-      expect(fromHead, stored ?? "nothing stored").toEqual(shown());
+      expect(fromHead, stored ?? "nothing stored").toEqual(shown().filter(v => !/^--drawer-(x|y|fw|fh):/.test(v)));
     }
   });
 

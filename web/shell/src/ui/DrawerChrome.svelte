@@ -146,7 +146,7 @@
     div.drawer { display: contents; }
     .drawer-bar, .drawer-handle { display: none; }
     @media (min-width: 701px) {
-      .viewer div.drawer { position: relative; display: flex; flex-direction: column; }
+      .viewer div.drawer { position: relative; display: flex; flex-direction: column; flex: none; }
       .drawer > .sidebar { flex: 1; width: auto; min-height: 0; border: 0; }
       /* Over the page, beneath the composer and the stage's banners; its
          place and size clamped to the viewer. */

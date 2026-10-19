@@ -1,8 +1,10 @@
 // The thread drawer's place and size wider than a phone, as this browser
 // remembers it for every artifact (localStorage; every access may throw:
 // private windows), and its moves and resizes. The artifact page's head
-// script (`clax-drawer`, shell/artifact.html) applies the stored prefs as
-// `applyPrefs` does before the first paint, unchecked, and the drawer's box
+// script (`clax-drawer`, shell/artifact.html) applies the stored layout and
+// docked sizes as `applyPrefs` does before the first paint (the floating
+// window is drawn only once the controls have loaded and applied the checked
+// prefs over them), and the drawer's box
 // (SidebarIsland.svelte, DrawerChrome.svelte) clamps every size to the
 // viewer; the drawer's controls (DrawerChrome.svelte, with the sidebar's
 // lazy chunk) check the prefs (`normal`) and clamp each drag and key with
@@ -26,7 +28,7 @@ export function readPrefs(): Partial<DrawerPrefs> {
  * as a custom property on the root, `--drawer-<field>`; the others removed. */
 export function applyPrefs(p: Partial<DrawerPrefs>): void {
   const root = document.documentElement;
-  root.dataset.drawer = p.layout ?? "";
+  root.dataset.drawer = p.layout || "";
   for (const k of ["w", "h", "x", "y", "fw", "fh"] as const) root.style.setProperty(`--drawer-${k}`, Number.isFinite(p[k]) ? `${p[k]}px` : "");
 }
 
