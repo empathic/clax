@@ -1,10 +1,12 @@
 // The thread drawer's place and size for its controls (DrawerChrome.svelte,
 // with the sidebar's lazy chunk): the prefs as this browser stored them
 // (which the artifact page's head script applied before the first paint),
-// checked, and each change applied to the page and remembered.
+// checked and applied in place of what the head script applied, and each
+// change applied to the page and remembered.
 import { type DrawerPrefs, DRAWER_KEY, applyPrefs, normal, readPrefs } from "../view/drawer-model";
 
 let prefs: DrawerPrefs = $state.raw(normal(readPrefs()));
+applyPrefs(prefs);
 
 export const drawer = {
   get prefs(): DrawerPrefs { return prefs; },

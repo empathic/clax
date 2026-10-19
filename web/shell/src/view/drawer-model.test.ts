@@ -1,6 +1,6 @@
 import { readFileSync } from "node:fs";
 import { join } from "node:path";
-import { afterEach, describe, expect, it } from "vitest";
+import { afterEach, describe, expect, it, vi } from "vitest";
 import {
   DEFAULTS, MAX_WIDTH, MIN_FLOAT_H, MIN_FLOAT_W, MIN_HEIGHT, MIN_STAGE_H, MIN_STAGE_W, MIN_WIDTH,
   DRAWER_KEY, applyPrefs, clampFloat, dockHeight, dockWidth, keyMove, moved, normal, readPrefs, reset, sizeOf,
@@ -35,6 +35,22 @@ describe("drawer prefs", () => {
     expect(normal({ layout: "top", w: "wide", h: null, x: 1 })).toEqual(DEFAULTS);
     expect(normal({ layout: "left", w: 9999, h: 3, x: -5, y: 2, fw: 10, fh: 10 }))
       .toEqual({ layout: "left", w: MAX_WIDTH, h: MIN_HEIGHT, x: 0, y: 2, fw: MIN_FLOAT_W, fh: MIN_FLOAT_H });
+  });
+
+  it("are checked and laid out again once the drawer's controls load, over what the head script applied", async () => {
+    const root = document.documentElement;
+    localStorage.setItem(DRAWER_KEY, '{"layout":"float","w":5000,"h":3,"x":900}');
+    // As the head script leaves the root: unchecked.
+    root.dataset.drawer = "float";
+    root.style.setProperty("--drawer-w", "5000px");
+    root.style.setProperty("--drawer-x", "900px");
+    vi.resetModules();
+    const fresh = (await import("../ui/drawer.svelte")).drawer;
+    expect(fresh.prefs).toEqual({ layout: "float", w: MAX_WIDTH, h: MIN_HEIGHT });
+    expect(root.style.getPropertyValue("--drawer-w")).toBe(`${MAX_WIDTH}px`);
+    expect(root.style.getPropertyValue("--drawer-h")).toBe(`${MIN_HEIGHT}px`);
+    // A place without a size is no place: the window's default.
+    expect(root.style.getPropertyValue("--drawer-x")).toBe("");
   });
 
   it("survive storage that throws", () => {
