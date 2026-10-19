@@ -317,7 +317,8 @@ fn from_extension(method: &Method, h: &HeaderMap, origin: &str) -> bool {
 ///
 /// A request of the extension's ([`from_extension`]: its `Origin` is
 /// `chrome-extension://<ID in effect>`, or a privileged GET without one)
-/// is admitted only from a loopback peer, only to [`rule`]'s
+/// is admitted only from a loopback peer ([`crate::auth::loopback_peer`]:
+/// never on a hosted daemon), only to [`rule`]'s
 /// routes, only with a live credential for that ID, and only for live pages;
 /// otherwise 403 `forbidden` (401 `unknown_credential` for a missing,
 /// unknown, expired or revoked credential; 404 for an artifact that is not
@@ -348,8 +349,7 @@ pub async fn gateway(State(s): State<AppState>, mut req: Request, next: Next) ->
         }
         return next.run(req).await;
     }
-    let loopback = crate::identity::peer_of(req.extensions()).is_some_and(crate::auth::is_loopback);
-    if !loopback {
+    if !crate::auth::loopback_peer(req.extensions()) {
         return refuse(
             ApiError::forbidden(
                 "forbidden",

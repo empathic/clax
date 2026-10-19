@@ -5093,6 +5093,30 @@ async fn a_live_pages_clip_is_named_by_no_address() {
 }
 
 #[tokio::test]
+async fn a_live_page_is_hidden_from_visitors_though_they_connect_from_loopback() {
+    // The test's client connects from 127.0.0.1, as every visitor does
+    // through a proxy on the hosted daemon's own machine.
+    let site = Site::new().await;
+    let owner = site.owner().await;
+    let aid = site.artifact().await;
+    let (s, v) = site
+        .send(
+            &owner,
+            reqwest::Method::PUT,
+            &format!("/api/hosted/artifacts/{aid}/link"),
+            json!({"access": "commenter"}),
+        )
+        .await;
+    assert_eq!(s, 200, "{v}");
+    let anon = Browser::default();
+    let (s, v) = site.get(&anon, &format!("/api/artifacts/{aid}")).await;
+    assert_eq!(s, 200, "{v}");
+    site.ts.state.live_ids.insert(&aid, "http://localhost:5173");
+    let (s, v) = site.get(&anon, &format!("/api/artifacts/{aid}")).await;
+    assert_eq!((s, code(&v)), (404, "not_found"), "{v}");
+}
+
+#[tokio::test]
 async fn an_instance_without_documents_shows_none_and_takes_no_agreement() {
     let site = Site::new().await;
     let owner = site.owner().await;
