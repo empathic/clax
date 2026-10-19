@@ -506,7 +506,11 @@ void main() {
       expect(find.byType(Launcher), findsOneWidget);
       expect(banner, findsOneWidget);
       expect(find.text('Undo last change'), findsOneWidget);
-      expect(find.text('Reset'), findsOneWidget);
+      expect(find.text('Reset home screen'), findsOneWidget);
+      expect(
+        find.textContaining('your apps, their data, stars and folders stay'),
+        findsOneWidget,
+      );
     });
 
     testWidgets('shown at 9.9 s: no fallback, then or later', (tester) async {

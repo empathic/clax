@@ -825,9 +825,10 @@ ColorScheme tileScheme(String id, Brightness b) => _tileSchemes.putIfAbsent((
   b,
 ), () => ColorScheme.fromSeed(seedColor: tileSeed(id), brightness: b));
 
-/// "Your home screen didn't load", with Undo last change and Reset; a
-/// failed action's sentence shows under the title, and both buttons wait
-/// while one runs.
+/// "Your home screen didn't load", with Undo last change and Reset home
+/// screen. Under the title it says that both change only the home screen
+/// (the apps and the arrangement stay), or the sentence of an action that
+/// failed; both buttons wait while one runs.
 class _RecoveryBanner extends StatefulWidget {
   const _RecoveryBanner({required this.actions});
 
@@ -862,7 +863,11 @@ class _RecoveryBannerState extends State<_RecoveryBanner> {
       icon: Icons.home_rounded,
       iconColor: claxPalette(context).danger,
       title: 'Your home screen didn’t load',
-      body: _error,
+      body:
+          _error ??
+          'Clax is showing a simpler one for now. Undo and Reset change only '
+              'the home screen: your apps, their data, stars and folders '
+              'stay.',
       actions: [
         if (_busy)
           const SizedBox.square(
@@ -874,7 +879,7 @@ class _RecoveryBannerState extends State<_RecoveryBanner> {
           onPressed: _busy ? null : () => _run(widget.actions.undo),
         ),
         ClaxButton(
-          label: 'Reset',
+          label: 'Reset home screen',
           onPressed: _busy ? null : () => _run(widget.actions.reset),
         ),
       ],
