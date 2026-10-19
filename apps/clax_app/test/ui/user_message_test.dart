@@ -123,6 +123,61 @@ void main() {
     );
   });
 
+  test('an AgentError carrying a raw backend report reads as Claude not '
+      'answering, and the raw text stays for the log', () {
+    const noReply = 'Claude couldn’t answer just now. Try again.';
+    for (final message in [
+      'Claude API error (HTTP 400): messages: text content blocks must be '
+          'non-empty',
+      'Claude API error (HTTP 500): Internal server error',
+      'Claude API error mid-answer (api_error): Internal server error',
+      'The Claude API answered with something other than a message',
+      'The answer had no text (stop reason: end_turn)',
+      'The result was malformed: files is not a list',
+      'claude reported an error: boom',
+      "claude's output is not JSON: <html>",
+      "Couldn't start claude (/usr/bin/claude): No such file",
+      'Bad state: No element',
+    ]) {
+      expect(userMessage(AgentError(message)), noReply, reason: message);
+    }
+    const raw = AgentError('Claude API error (HTTP 400): bad');
+    expect(rawError(raw), contains('Claude API error (HTTP 400): bad'));
+  });
+
+  test('an AgentError that could not reach Claude says so', () {
+    const unreachable =
+        'Claude couldn’t be reached. Check your connection and try again.';
+    expect(
+      userMessage(
+        const AgentError(
+          "Couldn't reach the Claude API: SocketException: Failed host lookup",
+        ),
+      ),
+      unreachable,
+    );
+    expect(
+      userMessage(
+        const AgentError(
+          'The answer stopped before it finished',
+          kind: AgentErrorKind.network,
+        ),
+      ),
+      unreachable,
+    );
+    expect(
+      userMessage(const AgentError('The Claude API timed out after 120 s')),
+      _tooLong,
+    );
+  });
+
+  test('a cancelled AgentError reads as its own message', () {
+    expect(
+      userMessage(const AgentError.cancelled()),
+      'Stopped before it finished',
+    );
+  });
+
   test('anything else reads as something going wrong', () {
     expect(userMessage(StateError('no element')), _unknown);
     expect(userMessage(const FormatException('Unexpected <')), _unknown);

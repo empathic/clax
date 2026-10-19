@@ -48,11 +48,42 @@ class VoiceResult {
 /// A recognizer error during a listen, delivered on [VoiceInput.listen]'s
 /// stream before it closes.
 class VoiceError implements Exception {
-  const VoiceError(this.message);
-  final String message;
+  const VoiceError(this.code);
+
+  /// The recognizer's own report, for the log: `speech_to_text`'s error
+  /// code (`error_no_match`, `error_network`, …) or the text of the
+  /// exception a listen failed to start with.
+  final String code;
+
+  /// One plain line for the person ([voiceErrorLine]).
+  String get message => voiceErrorLine(code);
 
   @override
-  String toString() => 'VoiceError: $message';
+  String toString() => 'VoiceError: $code';
+}
+
+/// The line a dictation error of [code] reads as: no speech heard, no
+/// permission, no network, the recognizer busy, or else that dictation
+/// stopped. [code] is `speech_to_text`'s error code or an exception's
+/// text, matched without regard to case.
+String voiceErrorLine(String code) {
+  final c = code.toLowerCase();
+  if (c.contains('no_match') || c.contains('speech_timeout')) {
+    return 'Dictation didn’t hear anything. Try again.';
+  }
+  if (c.contains('permission')) {
+    return 'Dictation needs microphone access. Turn it on in Settings.';
+  }
+  if (c.contains('network') || c.contains('server_disconnected')) {
+    return 'Dictation needs the internet. Check your connection and try '
+        'again.';
+  }
+  if (c.contains('busy') ||
+      c.contains('too_many_requests') ||
+      c.contains('multiplerequests')) {
+    return 'Dictation is busy. Try again in a moment.';
+  }
+  return 'Dictation stopped. Try again.';
 }
 
 /// Speech to text for the New sheet and for comments.
@@ -214,8 +245,9 @@ class _Listen {
       start(onDevice: false);
       return;
     }
-    if (e.errorMsg == 'error_no_match' ||
-        e.errorMsg == 'error_speech_timeout') {
+    if ((e.errorMsg == 'error_no_match' ||
+            e.errorMsg == 'error_speech_timeout') &&
+        (heard || stopping)) {
       close();
       return;
     }

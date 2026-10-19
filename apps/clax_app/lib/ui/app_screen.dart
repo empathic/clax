@@ -1696,7 +1696,7 @@ class _AppScreenState extends State<AppScreen> with WidgetsBindingObserver {
         setState(
           () => _dictation = Dictation(
             error: e is VoiceError
-                ? 'Dictation stopped. Try again.'
+                ? e.message
                 : 'Dictation stopped. ${logUserMessage('dictation', e)}',
           ),
         );

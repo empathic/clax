@@ -641,7 +641,7 @@ class _ThreadDetailState extends State<ThreadDetail> {
         if (e is VoiceError) logError('dictation', e);
         setState(
           () => _voiceNote = e is VoiceError
-              ? 'Dictation stopped. Try again.'
+              ? e.message
               : 'Dictation stopped. ${logUserMessage('dictation', e)}',
         );
       },
