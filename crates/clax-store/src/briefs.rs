@@ -161,8 +161,11 @@ mod tests {
         assert!(st.record_brief(&a, "p_rae", Some("k1")).unwrap());
         // Once it is deleted, the next artifact takes the key over, and the
         // deleted one still names its starter.
-        st.delete_artifact(&AuditCtx::DAEMON, &clax_core::ArtifactId::parse(&a).unwrap())
-            .unwrap();
+        st.delete_artifact(
+            &AuditCtx::DAEMON,
+            &clax_core::ArtifactId::parse(&a).unwrap(),
+        )
+        .unwrap();
         let c = make(&st, "C");
         assert!(st.record_brief(&c, "p_rae", Some("k1")).unwrap());
         assert_eq!(st.brief_by_key("p_rae", "k1").unwrap(), Some(c.clone()));
