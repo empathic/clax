@@ -269,7 +269,7 @@ function GroupTile({ entry, cell, dragging, fanned, ctl, onOpenGroup, onFanGroup
   </button>`;
 }
 
-const MAKE_STATUS = { making: 'Making…', offline: 'Offline', waiting: 'Waiting…', interrupted: 'Interrupted', failed: "Couldn't make it" };
+const MAKE_STATUS = { making: 'Making…', offline: 'Offline', waiting: 'Waiting…', interrupted: 'Interrupted', failed: 'Couldn’t make it' };
 const MAKE_GLYPH = { offline: 'cloudOff', waiting: 'hourglass', interrupted: 'rotateCcw', failed: 'alertCircle' };
 
 function MakeTile({ make, cell, act }) {
@@ -1786,7 +1786,7 @@ function useActions(home, verbs) {
         });
       }
       if (code === 'bad_request' && args.length) say('That app is no longer here');
-      else say(`Couldn't ${what}`);
+      else say(`Couldn’t ${what}`);
       return undefined;
     });
   }, [home]);
@@ -1957,7 +1957,7 @@ function useReducedMotion() {
 const LAYOUT_MS = 2000;
 
 /** What the page says when the arrangement could not be written. */
-const UNSAVED_TEXT = "Couldn't save your arrangement";
+const UNSAVED_TEXT = 'Couldn’t save your arrangement';
 
 /** The arrangement over `apps`: null until the apps and the stored layout
  * (or LAYOUT_MS without an answer) are in. `change(op)` applies `op` to

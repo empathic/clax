@@ -60,7 +60,7 @@ test('making tiles come first, each saying how it stands', async () => {
   expect(document.querySelector('[data-make="m3"]').getAttribute('aria-label')).toBe('A water reminder, Waiting for connection');
   expect(status('m4')).toBe('Waiting…');
   expect(status('m5')).toBe('Interrupted');
-  expect(status('m6')).toBe("Couldn't make it");
+  expect(status('m6')).toBe('Couldn’t make it');
 });
 
 test('an app whose build goes shows the 3/7 ring', async () => {
@@ -205,7 +205,7 @@ test('other failed actions say what went wrong', async () => {
   await ui.click('[data-id="app-groceries"]');
   await wait(() => ui.text('.h-notice') === 'That app is no longer here');
   await ui.click('New app');
-  await wait(() => ui.text('.h-notice') === "Couldn't make a new app");
+  await wait(() => ui.text('.h-notice') === 'Couldn’t make a new app');
 });
 
 test('Refresh in More loads everything again', async () => {
@@ -428,7 +428,7 @@ test('a Star whose write fails says so and leaves the app where it was', async (
   await wait(() => section('all').length === ids.length);
   home.menuPick = 'star';
   document.querySelector('[data-id="app-plants"]').dispatchEvent(new MouseEvent('contextmenu', { bubbles: true, cancelable: true }));
-  await wait(() => ui.text('.h-notice') === "Couldn't save your arrangement");
+  await wait(() => ui.text('.h-notice') === 'Couldn’t save your arrangement');
   expect(section('starred')).toEqual([]);
   expect(section('all')).toEqual(ids);
 });
@@ -447,7 +447,7 @@ test('the save-failure notice drops the kept call it replaces: a tap on it opens
   const el = document.querySelector('[data-id="app-run"]');
   el.focus();
   el.dispatchEvent(new KeyboardEvent('keydown', { key: 'ArrowRight', altKey: true, bubbles: true }));
-  await wait(() => ui.text('.h-notice') === "Couldn't save your arrangement");
+  await wait(() => ui.text('.h-notice') === 'Couldn’t save your arrangement');
   await ui.click('.h-notice');
   await new Promise((r) => setTimeout(r, 0));
   expect(opens).toBe(1);
@@ -458,11 +458,11 @@ test('a page whose db cannot be had says the arrangement cannot be saved, and a 
   home.menuPick = 'star';
   await start(root(), { use: async (name) => (name === 'home' ? home : Promise.reject(new Error('no db'))) });
   await wait(() => section('all').length === SAMPLE.apps.length);
-  await wait(() => ui.text('.h-notice') === "Couldn't save your arrangement");
+  await wait(() => ui.text('.h-notice') === 'Couldn’t save your arrangement');
   document.querySelector('[data-id="app-plants"]').dispatchEvent(new MouseEvent('contextmenu', { bubbles: true, cancelable: true }));
   await wait(() => home.calls.length === 1);
   await new Promise((r) => setTimeout(r, 0));
-  await wait(() => ui.text('.h-notice') === "Couldn't save your arrangement");
+  await wait(() => ui.text('.h-notice') === 'Couldn’t save your arrangement');
   expect(section('starred')).toEqual([]);
 });
 
@@ -1196,7 +1196,7 @@ test("an app dragged out of a fanned pile whose write fails shows in the row aga
   clock.advance(1000);
   const before = document.querySelector('.h-fan [data-id="app-notes"]');
   await drag(clock, 'app-notes', centre('app-mood'));
-  await wait(() => ui.text('.h-notice') === "Couldn't save your arrangement");
+  await wait(() => ui.text('.h-notice') === 'Couldn’t save your arrangement');
   await wait(() => fanned() === 'app-groceries,app-notes,app-plants' && !ui.exists('.h-grid > [data-id="app-notes"]'));
   // The drop's render took the hidden tile out of the row; the row draws it afresh.
   const after = document.querySelector('.h-fan [data-id="app-notes"]');

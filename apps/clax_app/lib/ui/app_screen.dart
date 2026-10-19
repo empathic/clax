@@ -1630,9 +1630,10 @@ class _AppScreenState extends State<AppScreen> with WidgetsBindingObserver {
         });
       }
     } on ClaxApiError catch (e) {
+      logError('versions', e);
       if (mounted) {
         setState(
-          () => _detailError = 'Couldn’t read the versions: ${e.message}',
+          () => _detailError = 'Couldn’t read the versions. Try again.',
         );
       }
     }
@@ -1646,10 +1647,11 @@ class _AppScreenState extends State<AppScreen> with WidgetsBindingObserver {
       await widget.api.restoreVersion(widget.aid, n, ifVersion: latest);
       _call(const ReloadLatest());
     } on ClaxApiError catch (e) {
+      if (!e.isConflict) logError('restore', e);
       _snack(
         e.isConflict
             ? 'The app changed meanwhile. Try again.'
-            : 'Couldn’t restore version $n: ${e.message}',
+            : 'Couldn’t restore version $n. Try again.',
       );
     } finally {
       if (mounted) setState(() => _restoring = false);
@@ -1690,10 +1692,11 @@ class _AppScreenState extends State<AppScreen> with WidgetsBindingObserver {
       },
       onError: (Object e) {
         if (!mounted) return;
+        if (e is VoiceError) logError('dictation', e);
         setState(
           () => _dictation = Dictation(
             error: e is VoiceError
-                ? 'Dictation stopped: ${e.message}'
+                ? 'Dictation stopped. Try again.'
                 : 'Dictation stopped. ${logUserMessage('dictation', e)}',
           ),
         );

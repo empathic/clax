@@ -366,7 +366,7 @@ class _InboxScreenState extends State<InboxScreen> {
       if (!mounted) return;
       ScaffoldMessenger.of(
         context,
-      ).showSnackBar(const SnackBar(content: Text("Couldn't mark them read")));
+      ).showSnackBar(const SnackBar(content: Text('Couldn’t mark them read')));
       unawaited(_refresh());
     }
   }

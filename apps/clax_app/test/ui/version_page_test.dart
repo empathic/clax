@@ -213,7 +213,8 @@ void main() {
     );
     await tester.pumpWidget(r.versionPage(2));
     await tester.pumpAndSettle();
-    expect(find.textContaining('disk on fire'), findsOneWidget);
+    expect(find.text('Couldn’t read version 2. Try again.'), findsOneWidget);
+    expect(find.textContaining('disk on fire'), findsNothing);
     await tester.tap(find.text('Retry'));
     await tester.pumpAndSettle();
     expect(find.byKey(const ValueKey('file-index.html')), findsOneWidget);

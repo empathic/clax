@@ -12,7 +12,7 @@ import '../ui/user_message.dart' show userMessage;
 import 'backend.dart' show AgentError;
 
 /// How a failure reply opens.
-const failurePrefix = "Couldn't make that change:";
+const failurePrefix = "Couldn't make that change:"; // copy-check: allow
 
 /// The same opening with a typographic apostrophe, as a person or a
 /// keyboard may have typed it.
@@ -45,7 +45,7 @@ const minKeepGoingUsd = 0.05;
 /// the stopped run's draft (the app changed under it, or it was not kept)
 /// and started again from the app as it is.
 const startedOverLine =
-    "Started again from the current app: the stopped run's draft could not "
+    'Started again from the current app: the stopped run’s draft could not '
     'be used.';
 
 /// A change that has stopped at a limit this many times is planned rather
@@ -85,7 +85,11 @@ String keepGoingIn(String text, ClaxVerbs v) =>
 
 /// What a limit stop's reply says once the change has spent
 /// [changeCapUsd] ([keepGoingLine]).
-const _spentWords = "so it can't keep going";
+const _spentWords = 'so it can’t keep going';
+
+/// [_spentWords] as replies stored before it took a typographic
+/// apostrophe say it.
+const _spentWordsStraight = "so it can't keep going"; // copy-check: allow
 
 /// A hard cap as [RunBudget.hardStop] names it ("10 turns", "120 seconds",
 /// "32000 output tokens", r"$1.50", or "3 renders") in the person's words:
@@ -195,7 +199,7 @@ String limitProgressText(LimitProgress p) {
     final latest = notes.length <= maxReplyNotes
         ? notes
         : notes.sublist(notes.length - maxReplyNotes);
-    b.write('\n\nThe agent\'s latest notes:');
+    b.write('\n\n$_notesHeading');
     for (final n in latest) {
       b.write('\n- $n');
     }
@@ -355,7 +359,7 @@ final _stoppedLine = RegExp(
 );
 final _fileItem = RegExp(r'^(.+?)(?: \((?:\+(\d+))? ?(?:−(\d+))?\))?$');
 final _moreItem = RegExp(r'^and (\d+) more$');
-const _notesHeading = "The agent's latest notes:";
+const _notesHeading = "The agent's latest notes:"; // copy-check: allow
 const _agentSaidLead = 'The agent said: ';
 
 /// [body], a reply of this app's agent, read back: what
@@ -435,6 +439,7 @@ FailureReply parseFailureReply(String body) {
     moreFiles: more,
     notes: notes,
     raw: raw,
-    saysSpent: head.contains(_spentWords),
+    saysSpent:
+        head.contains(_spentWords) || head.contains(_spentWordsStraight),
   );
 }

@@ -88,7 +88,7 @@ class BuildNotices {
             'It reached the build’s spending cap',
           ),
           BuildPhase.failed => RunFailed(
-            "Couldn't finish building $t",
+            'Couldn’t finish building $t',
             s.reason ?? 'The build stopped',
             artifactId: aid,
           ),

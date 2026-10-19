@@ -194,7 +194,7 @@ void main() {
     expect(send.onPressed, isNull);
   });
 
-  testWidgets('a reply that fails keeps its text and says why', (tester) async {
+  testWidgets('a reply that fails keeps its text and says it was not sent', (tester) async {
     final rig = await _seeded();
     final item = rig.api.sendComment(rig.aid, 'make it blue');
     await pumpDetail(tester, rig, item.threadId);
@@ -210,7 +210,8 @@ void main() {
     await tester.pump();
     await tester.tap(find.byKey(const ValueKey('reply-send')));
     await tester.pumpAndSettle();
-    expect(find.textContaining('connection refused'), findsOneWidget);
+    expect(find.text('Couldn’t send the reply. Try again.'), findsOneWidget);
+    expect(find.textContaining('connection refused'), findsNothing);
     final field = tester.widget<TextField>(
       find.byKey(const ValueKey('reply-field')),
     );

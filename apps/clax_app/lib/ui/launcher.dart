@@ -553,7 +553,7 @@ class MakingTile extends StatelessWidget {
     final failed = session.failure != null && !session.running;
     final offline = session.running && session.waitingForConnection;
     final status = failed
-        ? "Couldn't make it"
+        ? 'Couldn’t make it'
         : offline
         ? 'Offline'
         : session.interrupted
@@ -815,7 +815,7 @@ class _RecoveryBannerState extends State<_RecoveryBanner> {
                     const SizedBox(width: 12),
                     Expanded(
                       child: Text(
-                        "Your home screen couldn't load",
+                        'Your home screen couldn’t load',
                         style: theme.textTheme.titleSmall?.copyWith(color: on),
                       ),
                     ),

@@ -60,6 +60,7 @@ import 'platform/settings_store.dart';
 import 'platform/voice.dart';
 import 'ui/app_icon.dart';
 import 'ui/app_menu.dart';
+import 'ui/user_message.dart' show logUserMessage;
 import 'ui/app_inspector_permissions.dart';
 import 'ui/app_screen.dart';
 import 'ui/build_notices.dart';
@@ -353,7 +354,7 @@ class LocatedCliBackend implements AgentBackend {
     final exe = await ClaudeCliBackend.find(configured: configured);
     if (exe == null) {
       throw const AgentError(
-        "Claude Code wasn't found. Set its path in Settings.",
+        'Claude Code wasn’t found. Set its path in Settings.',
       );
     }
     return ClaudeCliBackend(executable: exe, scratch: scratch).run(request);
@@ -1087,7 +1088,7 @@ class _AppRootState extends State<AppRoot> with WidgetsBindingObserver {
             const BundleNoticeSheet(
               title: 'Shared apps',
               message:
-                  "Clax couldn't read which apps you shared or installed "
+                  'Clax couldn’t read which apps you shared or installed '
                   'from files. A later file of one of them installs as a '
                   'separate app.',
             ),
@@ -1471,11 +1472,14 @@ class _AppRootState extends State<AppRoot> with WidgetsBindingObserver {
         run,
         e.kind == AgentErrorKind.cancelled
             ? const RunQuiet()
-            : RunFailed("Couldn't make your app", e.message),
+            : RunFailed('Couldn’t make your app', e.message),
       );
       rethrow;
     } catch (e) {
-      _runs.end(run, RunFailed("Couldn't make your app", '$e'));
+      _runs.end(
+        run,
+        RunFailed('Couldn’t make your app', logUserMessage('make', e)),
+      );
       rethrow;
     } finally {
       unawaited(_s.pendingMake.clear(request));
@@ -1545,7 +1549,7 @@ class _AppRootState extends State<AppRoot> with WidgetsBindingObserver {
 
   /// Make [s] failed while no build view showed it; its tile shows why.
   void _failedAway(MakeSession s) => _toast(
-    "Couldn't make “${s.request}”",
+    'Couldn’t make “${s.request}”',
     SnackBarAction(
       label: 'Show',
       onPressed: () => unawaited(_nav.currentState?.push(_makingRoute(s))),
@@ -1621,7 +1625,7 @@ class _AppRootState extends State<AppRoot> with WidgetsBindingObserver {
             '${_verbs.tap} to read it',
           ),
           WorkerFailed(:final reason) => RunFailed(
-            "Couldn't change $t",
+            'Couldn’t change $t',
             reason,
             artifactId: aid,
           ),

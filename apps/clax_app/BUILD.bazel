@@ -433,6 +433,29 @@ flutter_notices(
     deps = [":clax_app"],
 )
 
+# The files whose user-facing copy scripts/check-copy.py checks
+# (//scripts:check_copy): the app's screens, the home app and the kit.
+# The kit's vendored bundles (preact.js, dates.js) are left out.
+filegroup(
+    name = "copy_sources",
+    srcs = glob(
+        [
+            "assets/kit/*.js",
+            "home/*.js",
+            "lib/agent/failure.dart",
+            "lib/app.dart",
+            "lib/home/**/*.dart",
+            "lib/ui/**/*.dart",
+        ],
+        exclude = [
+            "assets/kit/dates.js",
+            "assets/kit/preact.js",
+            "lib/ui/tokens.g.dart",
+        ],
+    ),
+    visibility = ["//scripts:__pkg__"],
+)
+
 flutter_application(
     name = "app",
     package_name = "clax_app",

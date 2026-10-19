@@ -194,7 +194,7 @@ void main() {
     await _settle(tester);
     expect(find.byType(CommentBar), findsNothing);
     await tester.scrollUntilVisible(
-      find.text('Reset to Clax\'s home screen'),
+      find.text('Reset to Clax’s home screen'),
       200,
       scrollable: find.byType(Scrollable).first,
     );

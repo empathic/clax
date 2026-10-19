@@ -39,17 +39,17 @@ const _jsKeywords = {
 final _patterns = <CodeLanguage, RegExp>{
   // 1 line comment, 2 block comment, 3 string, 4 number, 5 word.
   CodeLanguage.js: RegExp(
-    r'(//.*$)|(/\*.*?(?:\*/|$))|("(?:[^"\\]|\\.)*"?|'
+    r'(//.*$)|(/\*.*?(?:\*/|$))|("(?:[^"\\]|\\.)*"?|' // copy-check: allow
     r"'(?:[^'\\]|\\.)*'?|`(?:[^`\\]|\\.)*`?)|(\b\d[\d_.]*\b)|([A-Za-z_$][\w$]*)",
   ),
   // 1 comment, 2 string, 3 number or colour, 4 custom property or at-rule.
   CodeLanguage.css: RegExp(
-    r'(/\*.*?(?:\*/|$))|("(?:[^"\\]|\\.)*"?|'
+    r'(/\*.*?(?:\*/|$))|("(?:[^"\\]|\\.)*"?|' // copy-check: allow
     r"'(?:[^'\\]|\\.)*'?)|(#[0-9a-fA-F]{3,8}\b|\b\d[\d.]*(?:px|rem|em|%|vh|vw|ms|s|fr|deg)?)|(--[\w-]+|@[\w-]+)",
   ),
   // 1 string, 2 number, 3 literal.
   CodeLanguage.json: RegExp(
-    r'("(?:[^"\\]|\\.)*"?)|(-?\b\d[\d.eE+-]*)|(\btrue\b|\bfalse\b|\bnull\b)',
+    r'("(?:[^"\\]|\\.)*"?)|(-?\b\d[\d.eE+-]*)|(\btrue\b|\bfalse\b|\bnull\b)', // copy-check: allow
   ),
   // 1 comment, 2 attribute value, 3 tag.
   CodeLanguage.html: RegExp(

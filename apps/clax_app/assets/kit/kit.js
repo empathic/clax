@@ -344,10 +344,13 @@ export function Field({ label, type = 'text', value, onChange, options = [], pla
       min=${min} max=${max} step=${step} inputmode=${type === 'number' ? 'decimal' : undefined}
       onInput=${emit} autofocus=${autofocus} />`;
   }
+  // `error` is the app's own message for the field, not an exception.
+  const note = error ? html`<div class="k-field-error">${error}</div>` // copy-check: allow
+    : hint ? html`<div class="k-field-hint">${hint}</div>` : null;
   return html`<div class=${cx('k-field', error && 'k-invalid')}>
     ${label ? html`<label class="k-field-label" for=${id}>${label}</label>` : null}
     ${control}
-    ${error ? html`<div class="k-field-error">${error}</div>` : hint ? html`<div class="k-field-hint">${hint}</div>` : null}
+    ${note}
   </div>`;
 }
 

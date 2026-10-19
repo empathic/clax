@@ -472,7 +472,7 @@ void main() {
     await pumpUntil(tester, () => work.calls.last.startsWith('failed'));
     expect(
       work.calls.last,
-      "failed(Couldn't make your app, The API key was refused)",
+      'failed(Couldn’t make your app, The API key was refused)',
     );
   });
 

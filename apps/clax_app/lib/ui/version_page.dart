@@ -8,6 +8,7 @@ import 'kit/button.dart';
 import 'line_diff.dart';
 import 'theme.dart';
 import 'tokens.g.dart';
+import 'user_message.dart';
 
 /// A file larger than this shows its sizes only, never a line diff.
 const int diffMaxBytes = 256 * 1024;
@@ -301,8 +302,9 @@ class _VersionPageState extends State<VersionPage> {
       });
     } on ClaxApiError catch (e) {
       if (!mounted || load != _loads) return;
+      logError('version', e);
       setState(
-        () => _error = 'Couldn’t read version ${widget.n}: ${e.message}',
+        () => _error = 'Couldn’t read version ${widget.n}. Try again.',
       );
     }
   }
@@ -722,11 +724,10 @@ class FileDiffPage extends StatelessWidget {
           future: diff,
           builder: (context, snap) {
             if (snap.hasError) {
-              final e = snap.error;
               return _note(
                 theme,
-                'Couldn’t read the file: '
-                '${e is ClaxApiError ? e.message : e}',
+                'Couldn’t read the file. '
+                '${logUserMessage('file', snap.error!)}',
               );
             }
             final d = snap.data;

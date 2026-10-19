@@ -941,7 +941,7 @@ class BundleNoticeSheet extends StatelessWidget {
 
   /// A refused file, by error code ([refusalMessage]).
   factory BundleNoticeSheet.refused(String code) => BundleNoticeSheet(
-    title: "Couldn't open this file",
+    title: 'Couldn’t open this file',
     message: refusalMessage(code),
   );
 
@@ -1129,7 +1129,7 @@ class BundleFlows {
       if (!context.mounted) return;
       await _fail(
         context,
-        "Couldn't read this app to share it.",
+        'Couldn’t read this app to share it.',
         _raw(DeveloperScope.of(context), 'share', e),
       );
       return;
@@ -1176,7 +1176,7 @@ class BundleFlows {
       if (!context.mounted) return;
       await _fail(
         context,
-        toFile ? "Couldn't save the file." : "Couldn't share the file.",
+        toFile ? 'Couldn’t save the file.' : 'Couldn’t share the file.',
         _raw(DeveloperScope.of(context), toFile ? 'save' : 'share', e),
       );
     }
@@ -1191,7 +1191,7 @@ class BundleFlows {
       if (!context.mounted) return;
       await _fail(
         context,
-        "Couldn't read that file.",
+        'Couldn’t read that file.',
         _raw(DeveloperScope.of(context), 'import', e),
       );
       return;
@@ -1252,7 +1252,7 @@ class BundleFlows {
       if (!context.mounted) return;
       await showBundleSheet<bool>(
         context,
-        BundleNoticeSheet(title: "Couldn't open this file", message: e.message),
+        BundleNoticeSheet(title: 'Couldn’t open this file', message: e.message),
       );
       return;
     }
@@ -1391,9 +1391,9 @@ class BundleFlows {
       case UpdateRolledBack(:final backOn, :final details, :final restored):
         end = BundleFailed(
           restored
-              ? "The update's data step failed on your data; ${m.title} is "
+              ? 'The update’s data step failed on your data; ${m.title} is '
                     'back on v$backOn with your data as it was.'
-              : "The update's data step failed on your data, and putting "
+              : 'The update’s data step failed on your data, and putting '
                     '${m.title} back did not finish. Clax tries again at '
                     'its next start.',
           details: details,

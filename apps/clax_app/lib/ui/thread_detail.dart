@@ -315,11 +315,12 @@ class _ThreadDetailState extends State<ThreadDetail> {
           });
         } on ClaxApiError catch (e) {
           if (!mounted) return;
+          if (!e.isNotFound) logError('thread', e);
           setState(() {
             if (e.isNotFound) {
               _gone = true;
             } else {
-              _loadError = 'Couldn’t read this thread: ${e.message}';
+              _loadError = 'Couldn’t read this thread. Try again.';
             }
           });
         }
@@ -439,7 +440,8 @@ class _ThreadDetailState extends State<ThreadDetail> {
         if (a == _Action.reply) _reply.clear();
       });
     } on ClaxApiError catch (e) {
-      if (mounted) setState(() => _actionError = '$failed: ${e.message}');
+      logError('thread', e);
+      if (mounted) setState(() => _actionError = '$failed. Try again.');
     } finally {
       if (mounted) setState(() => _busy = null);
     }
@@ -514,9 +516,10 @@ class _ThreadDetailState extends State<ThreadDetail> {
       },
       onError: (Object e) {
         if (!mounted) return;
+        if (e is VoiceError) logError('dictation', e);
         setState(
           () => _voiceNote = e is VoiceError
-              ? 'Dictation stopped: ${e.message}'
+              ? 'Dictation stopped. Try again.'
               : 'Dictation stopped. ${logUserMessage('dictation', e)}',
         );
       },

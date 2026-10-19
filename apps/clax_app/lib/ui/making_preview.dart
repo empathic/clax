@@ -21,7 +21,7 @@ abstract interface class PreviewView {
 /// The Content-Security-Policy every preview document carries: no network
 /// of any kind; inline styles and `data:` images and fonts only.
 const previewPolicy =
-    "default-src 'none'; style-src 'unsafe-inline'; "
+    "default-src 'none'; style-src 'unsafe-inline'; " // copy-check: allow
     'img-src data: blob:; font-src data:; media-src data:';
 
 final _doctype = RegExp(r'^\s*<!doctype[^>]*>', caseSensitive: false);

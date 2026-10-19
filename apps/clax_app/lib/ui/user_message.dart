@@ -35,7 +35,7 @@ String userMessage(Object e) {
     if (code == 'authentication_error') return _badKey;
     return _unknown;
   }
-  final text = e is AgentError ? e.message : '$e';
+  final text = e is AgentError ? e.message : '$e'; // copy-check: allow
   if (_busyText.hasMatch(text)) return _busy;
   if (_keyText.hasMatch(text)) return _badKey;
   if (e is AgentError) return e.message;
@@ -46,13 +46,17 @@ String userMessage(Object e) {
 /// The raw text of [e], for the log and, with Developer tools on, Details.
 String rawError(Object e) => switch (e) {
   SurfaceFault(:final detail) => detail,
-  _ => '$e',
+  _ => '$e', // copy-check: allow
 };
+
+/// Logs [e]'s raw text under [where] with the app's logger.
+void logError(String where, Object e) =>
+    debugPrint('clax $where: ${rawError(e)}');
 
 /// Logs [e]'s raw text under [where] with the app's logger, and answers
 /// [userMessage] for the screen.
 String logUserMessage(String where, Object e) {
-  debugPrint('clax $where: ${rawError(e)}');
+  logError(where, e);
   return userMessage(e);
 }
 

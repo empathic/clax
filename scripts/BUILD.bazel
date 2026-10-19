@@ -213,6 +213,18 @@ sh_test(
     ],
 )
 
+# scripts/check-copy.py on its fixtures, then on the app's copy: no straight
+# apostrophes or quotes, no "..." and no raw errors in its UI strings.
+sh_test(
+    name = "check_copy",
+    srcs = ["test-check-copy.sh"],
+    args = ["$(rootpaths //apps/clax_app:copy_sources)"],
+    data = [
+        ":all",
+        "//apps/clax_app:copy_sources",
+    ],
+)
+
 # scripts/build-app-icons.sh on a copy of its sources and outputs: in step,
 # a stale mark or colour, a hand-edited output, a missing renderer, and
 # every PNG rendered at its size.

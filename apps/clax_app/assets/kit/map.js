@@ -285,7 +285,7 @@ const NOTES = {
 const LOC_ERRORS = {
   not_granted: 'Location is not allowed for this app.',
   system_denied: 'Location is off for Clax in settings.',
-  location_off: "The device's location is off.",
+  location_off: 'The device’s location is off.',
   unavailable: 'Your location is not available.',
 };
 

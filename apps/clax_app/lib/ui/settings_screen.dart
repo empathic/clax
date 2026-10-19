@@ -218,7 +218,7 @@ class _SettingsScreenState extends State<SettingsScreen> {
       await widget.secureKey.write(v);
     } catch (_) {
       messenger.showSnackBar(
-        const SnackBar(content: Text("Couldn't save the key")),
+        const SnackBar(content: Text('Couldn’t save the key')),
       );
       return;
     }
@@ -598,10 +598,10 @@ class _HomeSectionState extends State<_HomeSection> {
           onTap: () => _run((r) => r.undoLast(), 'Undid the last change'),
         ),
         ListTile(
-          title: const Text("Reset to Clax's home screen"),
+          title: const Text('Reset to Clax’s home screen'),
           subtitle: const Text('Your data and comments stay'),
           enabled: can,
-          onTap: () => _run((r) => r.reset(), "Reset to Clax's home screen"),
+          onTap: () => _run((r) => r.reset(), 'Reset to Clax’s home screen'),
         ),
         _SwitchRow(
           title: 'Use the built-in home screen',

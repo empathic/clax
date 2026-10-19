@@ -299,7 +299,7 @@ void main() {
 
   testWidgets('a damaged file: one sentence and Close', (tester) async {
     await run(tester, (c) => flows.openBytes(c, Uint8List.fromList([1, 2, 3])));
-    expect(find.text("Couldn't open this file"), findsOneWidget);
+    expect(find.text('Couldn’t open this file'), findsOneWidget);
     await tester.tap(find.text('Close'));
     await settle(tester);
     expect(find.byType(BundleNoticeSheet), findsNothing);

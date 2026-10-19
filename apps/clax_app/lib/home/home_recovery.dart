@@ -103,7 +103,7 @@ Future<PublishResult> reset(
       icon: m.icon.word,
       capabilities: m.capabilities,
       label: 'Reset to v${m.version}',
-      note: "Reset to Clax's home screen v${m.version}",
+      note: 'Reset to Clax’s home screen v${m.version}',
       entries: {
         for (final MapEntry(:key, :value) in m.files.entries)
           key: FileEntry.bytes(b.files[key]!, type: value.type),

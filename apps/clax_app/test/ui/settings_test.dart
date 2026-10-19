@@ -815,7 +815,7 @@ void main() {
       expect(find.text('Home screen'), findsOneWidget);
       expect(find.text('Open in comment mode'), findsOneWidget);
       expect(find.text('Undo last change'), findsOneWidget);
-      expect(find.text("Reset to Clax's home screen"), findsOneWidget);
+      expect(find.text('Reset to Clax’s home screen'), findsOneWidget);
     });
 
     testWidgets('Open opens the home app (in comment mode, by the caller)', (
