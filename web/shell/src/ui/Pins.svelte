@@ -25,6 +25,11 @@
   };
   let { threads, resolved, onSelect, onHover, width, file = INDEX_FILE, onit, addressed }: Props = $props();
   let measured = $state(0);
+  // A pin's title is its first comment as text, Markdown syntax taken
+  // away (`view/markdown.ts`, loaded when the pointer first comes to a
+  // pin; until then, as typed).
+  let plain = $state<((s: string) => string) | null>(null);
+  const titled = () => { if (!plain) void import("../view/markdown").then(m => { plain = m.plain; }, () => {}); };
   // The stage's width, followed while no fixed `width` is given.
   const measure = (el: HTMLElement) => {
     if (width !== undefined) return;
@@ -68,7 +73,7 @@
 
 <div class="pins" {@attach measure}>
   {#each places as p (p.thread.id)}
-    <button class="thread-pin" class:settling={settling.has(p.thread.id)} class:onit={onit?.has(p.thread.id)} class:addressed={addressed?.has(p.thread.id)} data-v={addressed?.has(p.thread.id) ? `v${addressed.get(p.thread.id)}` : undefined} title={p.thread.comments[0]?.body ?? ""} aria-label={`Thread ${p.n}`} style:left={`${p.left}px`} style:top={`${p.top}px`}
-      onclick={() => onSelect(p.thread)} onmouseenter={() => onHover?.(p.thread)} onmouseleave={() => onHover?.(null)}>{p.n}</button>
+    <button class="thread-pin" class:settling={settling.has(p.thread.id)} class:onit={onit?.has(p.thread.id)} class:addressed={addressed?.has(p.thread.id)} data-v={addressed?.has(p.thread.id) ? `v${addressed.get(p.thread.id)}` : undefined} title={(b => (plain ? plain(b) : b))(p.thread.comments[0]?.body ?? "")} aria-label={`Thread ${p.n}`} style:left={`${p.left}px`} style:top={`${p.top}px`}
+      onclick={() => onSelect(p.thread)} onmouseenter={() => { titled(); onHover?.(p.thread); }} onmouseleave={() => onHover?.(null)}>{p.n}</button>
   {/each}
 </div>

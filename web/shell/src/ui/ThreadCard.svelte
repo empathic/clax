@@ -7,6 +7,8 @@
   import { relativeTime } from "../format";
   import { type HistoryEvent, type VersionTag, addressedNote, commentVersion } from "../view/history-model";
   import Clip from "./Clip.svelte";
+  import Markdown from "./Markdown.svelte";
+  import { plainText } from "../view/md-load.svelte";
   import { SEEN_AFTER_MS, authorLabel, pageLabel } from "../view/sidebar-model";
   import { after } from "../clock";
   import { guardedAction, keyboardTrail } from "../view/trail";
@@ -151,7 +153,7 @@
   </header>
   {#if !open}
     <div class="fold-sum" id={body}>
-      <p class="fold-body">{t.comments[0]?.body ?? ""}</p>
+      <p class="fold-body">{plainText(t.comments[0]?.body ?? "")}</p>
       <p class="fold-meta"><span>{t.comments[0] ? authorLabel(t.comments[0], me) : ""}</span>{#if replies > 0}<span>{replies} {replies === 1 ? "reply" : "replies"}</span>{/if}{@render meta?.()}</p>
     </div>
   {:else}
@@ -166,7 +168,7 @@
       <div class={["msg", c.author_kind === "agent" ? "agent" : "you"]}>
         <p class="by"><b class="author">{ra ? ra.name : authorLabel(c, me)}{#if ra}<span class="link-tag sm" title={`On ${ra.remote}`}>{ra.remote}</span>{/if}{#if note}<span class="addressed muted">{` · addressed in v${note}`}</span>{/if}{#if c.via_page}<span class="via-page muted small">{" · via the page"}</span>{/if}</b
           >{#if v !== null}<span class="vt">v{v}</span>{/if}<time class="muted small" datetime={c.created_at} title={new Date(c.created_at).toLocaleString()}>{relativeTime(c.created_at, now)}</time></p>
-        <p class="body">{c.body}</p>
+        <Markdown text={c.body} class="body" />
         {#if cs}<p class={["link-state small", cs.failed && "failed"]}><span>{cs.text}</span>{#if cs.retry}{@render retryButton()}{/if}</p>{/if}
       </div>
     {/each}
@@ -252,7 +254,7 @@
     .msg.agent .by { justify-content: flex-end; }
     .msg .by .vt { align-self: center; }
     .msg .author { font: 600 13px/20px var(--font); }
-    .msg .body { margin: 0; font-size: 13.5px; line-height: 1.55; white-space: pre-wrap; overflow-wrap: anywhere; }
+    .msg .body { margin: 0; font-size: 13.5px; line-height: 1.55; overflow-wrap: anywhere; }
     .msg.you { border-left: 2px solid var(--you); padding: 1px 0 1px 10px; }
     .msg.agent { border-right: 2px solid var(--agent); padding: 1px 10px 1px 0; margin-left: 26px; text-align: right; }
     .msg.agent .author { color: var(--agent-ink); }

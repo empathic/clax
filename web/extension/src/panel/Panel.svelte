@@ -9,7 +9,11 @@
   // search over both (remembered per site), moving a thread to another page,
   // and merging pages (spec §7.1, owner decision 2026-10-06). Every action
   // goes to the worker, which alone talks to the daemon. Everything shown
-  // from the page or the daemon (titles, URLs, comments) is text, never markup.
+  // from the page or the daemon (titles, URLs, comments) is text, never
+  // markup; a comment's body is read as Markdown (`shell/src/view/markdown.ts`)
+  // into a closed set of elements whose strings are still text: its raw
+  // HTML shows as text, an image as a link, and a link only to an absolute
+  // http(s) or mailto address.
   // For the owner (the daemon takes the extension as the owner), two tabs
   // (spec 2026-10-06-agent-questions-and-inbox §9.6): **Page**, with the open
   // questions about the live page above its threads, and **Inbox** with the

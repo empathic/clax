@@ -14,6 +14,7 @@
   import type { InboxItem } from "../api";
   import { relativeTime } from "../format";
   import { approvalOf, itemText, itemTitle } from "./inbox-model";
+  import { loadMarkdown } from "../view/md-load.svelte";
 
   type Props = {
     item: InboxItem;
@@ -28,6 +29,8 @@
     grouped?: boolean;
   };
   const p: Props = $props();
+  // A reply's text shows its Markdown syntax taken away once the module is here.
+  void loadMarkdown();
   const title = $derived(itemTitle(p.item, p.others ?? [], { page: !p.grouped }));
   const text = $derived(p.item.gone ? "(deleted)" : itemText(p.item));
   // An approval request stays unread until it is decided (spec 2026-10-08 §9.5).

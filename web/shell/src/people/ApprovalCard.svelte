@@ -17,10 +17,13 @@
   import type { InboxApproval, InboxItem } from "../api";
   import { relativeTime } from "../format";
   import { approvalOf, heldAnchor, heldCount, personName } from "../q/inbox-model";
+  import { loadMarkdown, plainText } from "../view/md-load.svelte";
   import * as api from "./api";
 
   type Scope = "thread" | "artifact" | "everywhere" | "decline";
   let { item, now }: { item: InboxItem; now?: Date } = $props();
+  // The withheld comments show as text, their Markdown syntax taken away.
+  void loadMarkdown();
   // The decision made here, until the item itself says it.
   let made = $state<Pick<InboxApproval, "status" | "scope"> | null>(null);
   let busy = $state(false);
@@ -42,7 +45,7 @@
     if (!c) return [];
     if ("comments" in c) {
       // Every comment is the request's author's (or an agent of theirs).
-      return c.comments.flatMap(x => x.body.split(/\r?\n/).map((text, n) => (n ? { text } : { who: x.by_agent ? `${x.author_name ?? "An agent"} (${named}'s agent)` : author, text })));
+      return c.comments.flatMap(x => plainText(x.body).split(/\r?\n/).map((text, n) => (n ? { text } : { who: x.by_agent ? `${x.author_name ?? "An agent"} (${named}'s agent)` : author, text })));
     }
     const out: Line[] = [];
     if (c.title) out.push({ who: "Title", text: c.title });
