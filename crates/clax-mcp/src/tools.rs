@@ -899,6 +899,9 @@ pub struct ClaxTools {
     git: Option<crate::git::GitCapture>,
     /// The tool-call reports still being sent.
     reports: crate::calls::Reports,
+    /// Where a tool reads the time to keep within its wait (the system
+    /// clock unless [`ClaxTools::with_clock`] gives another).
+    clock: std::sync::Arc<dyn clax_core::working::Clock>,
     tool_router: std::sync::Arc<ToolRouter<Self>>,
 }
 
@@ -966,6 +969,7 @@ impl ClaxTools {
             ask_surface: Default::default(),
             git: None,
             reports: Default::default(),
+            clock: std::sync::Arc::new(clax_core::working::SystemClock),
             tool_router: std::sync::Arc::new(Self::tool_router()),
         }
     }
@@ -974,6 +978,12 @@ impl ClaxTools {
     /// that changes history (spec §9.3).
     pub fn with_git(mut self, git: crate::git::GitCapture) -> ClaxTools {
         self.git = Some(git);
+        self
+    }
+
+    /// These tools reading the time from `clock`.
+    pub fn with_clock(mut self, clock: std::sync::Arc<dyn clax_core::working::Clock>) -> ClaxTools {
+        self.clock = clock;
         self
     }
 
@@ -1582,7 +1592,14 @@ impl ClaxTools {
             .timeout_s
             .unwrap_or_else(|| default_ask_wait(&session.harness))
             .clamp(MIN_WAIT_S, max_ask_wait(&session.harness));
-        let started = std::time::Instant::now();
+        // A push after the person answers starts only while `wait` has
+        // time left (under Codex, so the call ends inside its tool
+        // timeout); else the next call makes it.
+        let started = self.clock.now();
+        let left = || {
+            let spent = (self.clock.now() - started).num_seconds().max(0) as u64;
+            wait.saturating_sub(spent)
+        };
         let mut body = json!({"remote": a.remote, "mode": a.mode, "question_id": a.question_id});
         loop {
             let res = self
@@ -1601,7 +1618,6 @@ impl ClaxTools {
                 }));
             }
             let qid = res["question_id"].as_str().unwrap_or_default().to_string();
-            let left = wait.saturating_sub(started.elapsed().as_secs());
             let pending = || {
                 json!({
                     "status": "approval_pending",
@@ -1611,16 +1627,26 @@ impl ClaxTools {
                     "note": "The person has not answered yet: call publish_public again with this question_id to keep waiting.",
                 })
             };
-            if left == 0 {
+            let wait_s = left();
+            if wait_s == 0 {
                 return Ok(pending());
             }
             let q = self
                 .client
-                .ask_wait(&qid, left)
+                .ask_wait(&qid, wait_s)
                 .await
                 .map_err(|e| self.fail(e))?;
             if q["question"]["status"] == "open" {
                 return Ok(pending());
+            }
+            if left() == 0 {
+                return Ok(json!({
+                    "status": "answered",
+                    "question_id": qid,
+                    "url": res["inbox_url"],
+                    "call_again": true,
+                    "note": "The person answered as this call's wait ran out: call publish_public again with this question_id to publish what they approved.",
+                }));
             }
             body["question_id"] = json!(qid);
         }

@@ -1192,7 +1192,7 @@ class Tools {
         };
       }
       const qid = String(res.question_id ?? "");
-      const left = Math.max(0, wait - Math.floor((Date.now() - started) / 1000));
+      const left = () => Math.max(0, wait - Math.floor((Date.now() - started) / 1000));
       const pending = {
         status: "approval_pending",
         question_id: qid,
@@ -1200,9 +1200,20 @@ class Tools {
         call_again: true,
         note: "The person has not answered yet: call publish_public again with this question_id to keep waiting.",
       };
-      if (left === 0) return pending;
-      const q = await this.call(() => c.askWait(qid, left));
+      const waitS = left();
+      if (waitS === 0) return pending;
+      const q = await this.call(() => c.askWait(qid, waitS));
       if (q.question?.status === "open") return pending;
+      // The push after an answer starts only while the wait has time left.
+      if (left() === 0) {
+        return {
+          status: "answered",
+          question_id: qid,
+          url: res.inbox_url ?? null,
+          call_again: true,
+          note: "The person answered as this call's wait ran out: call publish_public again with this question_id to publish what they approved.",
+        };
+      }
       body.question_id = qid;
     }
   }
