@@ -3,9 +3,9 @@
 
     scripts/check-crate-layers.py [ROOT]
 
-The layout (docs/superpowers/specs/2026-10-16-workspace-layout-design.md
-§2.1) orders the crates: each may depend only on the crates above it, never
-sideways or up. ALLOWED below is that picture, crate by crate. The check
+The layout (docs/usage.md, "Developing Clax") orders the crates: each may
+depend only on the crates above it, never sideways or up. ALLOWED below is
+that order, crate by crate. The check
 reads the workspace (default: the repository) through `cargo metadata
 --no-deps`, so every way a manifest can name a dependency counts: a
 `[dependencies]` line, a `[dependencies.<name>]` table, a
@@ -96,8 +96,8 @@ def main():
     for line in bad:
         print(f"error: {line}", file=sys.stderr)
     if bad:
-        print("The layering rule: a crate depends only on crates above it in "
-              "docs/superpowers/specs/2026-10-16-workspace-layout-design.md §2.1.", file=sys.stderr)
+        print("The layering rule: a crate depends only on the crates in its ALLOWED "
+              "set in scripts/check-crate-layers.py (docs/usage.md, \"Developing Clax\").", file=sys.stderr)
         return 1
     print(f"crate layers: {len(packages)} crates, every dependency in order")
     return 0

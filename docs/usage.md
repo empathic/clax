@@ -343,9 +343,13 @@ SQLite store), `clax-sample`, `clax-mcp` and `clax-hooks`; `clax-realtime`
 (the routes and `serve()`); `clax-commands` (every subcommand);
 `clax-embedded` (the files the binary carries); and `clax-cli`, the binary
 that wires them together. Test support is `clax-testkit` (the in-process
-test daemon, for integration tests only) and `clax-fake-exe`.
-`docs/superpowers/specs/2026-10-16-workspace-layout-design.md` §2 says what
-belongs where, and `scripts/check-crate-layers.py`, a quality gate, fails a
+test daemon, for integration tests only) and `clax-fake-exe`. Beside
+`clax-core` sit `clax-rt` (the async runtime seam: tokio natively, a
+Worker's event loop on wasm32) and `clax-git` (git objects, packs and smart
+HTTP, without I/O), with `clax-content-git` (artifact content kept in git)
+over both; the hosted Worker, `crates/clax-worker`, is a workspace of its
+own over the daemon crates. `scripts/check-crate-layers.py`, a quality
+gate, holds the rule crate by crate (its `ALLOWED` map) and fails a
 dependency out of order.
 
 Two loops, both on a home of their own, `~/.clax-dev`, whose daemon listens on
@@ -534,7 +538,5 @@ release path, does everything except publish, and keeps the result as the
 Clax traffic on the LAN is not encrypted: serve on the LAN (`clax serve --bind 0.0.0.0`) only on a network you trust.
 
 Writes, and reads of the session list (working directories, process IDs, harness session IDs), need the token in `~/.clax/daemon.json` (mode 0600, served only to localhost browsers), or a connected person's machine key. A LAN viewer who is not connected can read artifacts and comment on them, but not publish or change them. A connected person's agents publish, reply, resolve and write page data with that person's rights, as the owner set them. They sign every request with their machine's key, which never leaves that machine, so a request seen on the network cannot be replayed. Connecting machines, approvals, rights and raises change only in the owner's or the person's own browser: no agent, tool or CLI command can change them. What another person wrote reaches an agent only once that agent's person approves its author. An agent of the owner's that has a shell runs as the owner's OS user, and is trusted as the owner. Every `/api` route answers only to a `Host` of `localhost`, `127.0.0.1`, `[::1]`, or the exact IP and port the connection arrived on (403 `forbidden_host` otherwise), which defeats DNS rebinding. The comment routes need no token but refuse requests from another origin, including published pages. The viewer cookie never leaves the daemon; viewers are named by a public ID, comment threads carry no session IDs, and the daemon's `codex` path is served only with the token. Published content is isolated on `<id>.localhost` origins or sandboxed. Content and asset URLs are fetchable by anyone who knows the unguessable ID.
-
-Design: [docs/superpowers/specs/2026-09-28-clax-design.md](superpowers/specs/2026-09-28-clax-design.md)
 
 Runtime capabilities arrive in a later phase.

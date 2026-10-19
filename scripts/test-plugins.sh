@@ -159,12 +159,11 @@ sys.exit(0 if ok else 1)
 PY
 then pass "Stop, prompt and PostToolUse hooks are wired"; else fail "the Claude Stop/UserPromptSubmit/PostToolUse or Codex Stop/PostToolUse hooks are missing or misconfigured"; fi
 
-# Claude Code's AskUserQuestion is mirrored into Clax (agent questions spec
-# §6.6): `ask` before the call (3600 s, with its status message) and `asked`
+# Claude Code's AskUserQuestion is mirrored into Clax: `ask` before the call (3600 s, with its status message) and `asked`
 # after it (5 s), each matched to AskUserQuestion only. The Codex and Grok
 # plugins wire neither.
 if python3 - plugins/claude-code/hooks/hooks.json plugins/clax/hooks/hooks.json plugins/clax-grok/hooks/hooks.json \
-    docs/contract.md docs/superpowers/specs/2026-10-06-agent-questions-and-inbox-design.md 2>/dev/null <<'PY'
+    docs/contract.md 2>/dev/null <<'PY'
 import json, sys
 claude = json.load(open(sys.argv[1]))["hooks"]
 prefix = '"${CLAUDE_PLUGIN_ROOT}/scripts/ensure-clax.sh" exec hook --agent claude '
@@ -180,13 +179,13 @@ for other in sys.argv[2:4]:
     matchers = [entry.get("matcher") for e in hooks.values() for entry in e]
     ok = ok and "AskUserQuestion" not in matchers
     ok = ok and not any(c.split()[-1:] in (["ask"], ["asked"]) for c in cmds)
-# The contract and the spec quote the status message word for word.
+# The contract quotes the status message word for word.
 for doc in sys.argv[4:]:
     ok = ok and pre[0]["hooks"][0]["statusMessage"] in " ".join(open(doc).read().split())
 sys.exit(0 if ok else 1)
 PY
 then pass "the Claude Code plugin mirrors AskUserQuestion (ask, asked); Codex and Grok do not"
-else fail "the Claude Code PreToolUse/PostToolUse AskUserQuestion hooks are missing or misconfigured (spec §6.6)"; fi
+else fail "the Claude Code PreToolUse/PostToolUse AskUserQuestion hooks are missing or misconfigured"; fi
 
 # Claude Code reports its ID for each Clax tool call (audit spec §6.7):
 # `call-id` as a PostToolUse hook matched to Clax's MCP tools only, whether
@@ -468,36 +467,12 @@ if out="$(python3 scripts/sync-skill-tools.py --check 2>&1)"; then
     pass "the skills, docs/contract.md and the READMEs list exactly the fixture's tools"
 else fail "$out"; fi
 
-# The previous name appears only in the approved exceptions listed in
-# docs/superpowers/plans/2026-09-29-clax-rename.md: the plans written before
-# the rename, this rename's plan and the Svelte port plan written alongside
-# it, and the spec's name-history note. It is assembled from two halves so
-# this file is not an exception.
+# The previous name appears nowhere in the tree. It is assembled from two
+# halves so this file does not name it.
 OLD="arti""fax"
-name_exceptions=(
-    docs/superpowers/plans/2026-09-28-phase-1-daemon-publish-viewer.md
-    docs/superpowers/plans/2026-09-28-phase-2-mcp-and-plugins.md
-    docs/superpowers/plans/2026-09-28-phase-2-scoped.md
-    docs/superpowers/plans/2026-09-28-phase-3-comments-and-feedback.md
-    docs/superpowers/plans/2026-09-28-phase-4-runtime-capabilities.md
-    docs/superpowers/plans/2026-09-28-phase-5-room-and-sample.md
-    docs/superpowers/plans/2026-09-29-clax-rename.md
-    docs/superpowers/plans/2026-09-29-svelte-port.md
-    docs/superpowers/specs/2026-09-28-clax-design.md
-)
-excludes=()
-for f in "${name_exceptions[@]}"; do excludes+=(":(exclude)$f"); done
-stray="$(git grep -il "$OLD" -- . "${excludes[@]}"; git ls-files | grep -i "$OLD")"
-if [ -z "$stray" ]; then pass "the previous name appears only in the approved exceptions"
+stray="$(git grep -il "$OLD" -- .; git ls-files | grep -i "$OLD")"
+if [ -z "$stray" ]; then pass "the previous name appears nowhere"
 else fail "the previous name remains in: $(echo $stray | cut -c 1-2000)"; fi
-spec=docs/superpowers/specs/2026-09-28-clax-design.md
-stray="$(awk -v old="$OLD" '
-    /<!-- name-history:begin -->/ { on = 1; next }
-    /<!-- name-history:end -->/ { on = 0; next }
-    !on && index(tolower($0), old) { print NR }
-' "$spec" 2>/dev/null)"
-if [ -f "$spec" ] && [ -z "$stray" ]; then pass "$spec names the previous name only in its name-history note"
-else fail "$spec is missing or names the previous name outside its name-history note (lines: $(echo $stray))"; fi
 
 validator="$HOME/.codex/skills/.system/plugin-creator/scripts/validate_plugin.py"
 if [ -f "$validator" ]; then

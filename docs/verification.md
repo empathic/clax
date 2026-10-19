@@ -316,11 +316,13 @@ harness's configuration.
 
 ## 4. Spec trace
 
-Each row names the tests that pin a section. Paths are relative to the
+Each row names the tests that pin a section. The specs were removed from the
+tree after commit `d9e9a5f60`; read one with `git show
+d9e9a5f60:docs/superpowers/specs/<file>`. Other paths are relative to the
 repository root; `name` is the Rust function or the Playwright and Vitest
 title, `:N` its line.
 
-### 4.1 `docs/superpowers/specs/2026-09-28-clax-design.md`
+### 4.1 `d9e9a5f60:docs/superpowers/specs/2026-09-28-clax-design.md`
 
 | § | Section | Tests that pin it |
 |---|---|---|
@@ -343,7 +345,7 @@ title, `:N` its line.
 | 15 | Error handling | `crates/clax-server/tests/api_timeout.rs:5` `slow_api_requests_time_out_with_json_408`; `api_artifacts.rs:65` |
 | 17 | Phase 5: room and sample | `crates/clax-server/tests/api_room.rs:135` `presence_and_messages_reach_every_peer_with_sender_fields`; `api_sample.rs:126` `streams_text_then_done_under_the_framing_and_the_tier_model`; `web/e2e/room.spec.ts:13`; `web/e2e/sample.spec.ts:29` "consent once, progressive text, and the call count", `:96` "use("sample") resolves null …"; section 2.3 |
 
-### 4.2 `docs/superpowers/specs/2026-10-01-echo-design.md`
+### 4.2 `d9e9a5f60:docs/superpowers/specs/2026-10-01-echo-design.md`
 
 | § | Section | Tests that pin it |
 |---|---|---|
@@ -476,7 +478,7 @@ for c in $(git rev-list --reverse origin/main..main); do
   (section 2.3).
 - **Spec §18 open items**: Safari's `*.localhost` behaviour (D5) and whether a
   later Codex delivers a held message to a re-attached `codex exec` thread
-  (`docs/superpowers/specs/2026-09-28-clax-design.md:2206-2210`, `:2214-2218`).
+  (`d9e9a5f60:docs/superpowers/specs/2026-09-28-clax-design.md:2206-2210`, `:2214-2218`).
 
 ### 6.2 Owner decisions still open
 
@@ -497,7 +499,7 @@ for c in $(git rev-list --reverse origin/main..main); do
   `docs/contract.md:2503-2507`).
 - **A Grok tool-use renewal hook.** Grok has no `PostToolUse` hook, so a Grok
   session's working mark lapses after 2 minutes of tool calls that are not
-  Clax calls (`docs/superpowers/specs/2026-09-28-clax-design.md:1826-1830`).
+  Clax calls (`d9e9a5f60:docs/superpowers/specs/2026-09-28-clax-design.md:1826-1830`).
   The proposal is one hand-over for Claude Code and Grok together
   (`docs/follow-ups.md:101-106`, Q5).
 
@@ -522,7 +524,7 @@ so none was rerun alone; one clean run is not evidence that they are fixed.
 - 48 `web/e2e/shots.spec.ts` screenshot tests skip in every gate run by
   design (`web/e2e/shots.spec.ts:16`). The spec asks that every UI change be
   checked in screenshots, light and dark, desktop and phone
-  (`docs/superpowers/specs/2026-09-28-clax-design.md:2095-2103`); that check
+  (`d9e9a5f60:docs/superpowers/specs/2026-09-28-clax-design.md:2095-2103`); that check
   is manual and was not repeated here.
 - The Codex plugin validator (6.1).
 - `scripts/test-install.sh:215` skips its `shasum` fallback where `shasum`
@@ -594,7 +596,7 @@ daemon does not compress responses (6.5).
 
 ## 8. Clax in Chrome
 
-The Chrome overlay (spec `docs/superpowers/specs/2026-10-05-chrome-overlay-design.md`,
+The Chrome overlay (spec `d9e9a5f60:docs/superpowers/specs/2026-10-05-chrome-overlay-design.md`,
 main spec D19), on branch `chrome-overlay`. Machine as above: macOS 26.6.2,
 arm64, Node v26.8.2; Playwright 1.63.0 with its Chromium 153.0.8010.12
 (`channel: "chromium"`, new headless).
@@ -912,7 +914,7 @@ and a `.crx` signed with the key when a Chromium is found (skipped under
 
 ## 9. Agent questions and the inbox
 
-Spec `docs/superpowers/specs/2026-10-06-agent-questions-and-inbox-design.md`,
+Spec `d9e9a5f60:docs/superpowers/specs/2026-10-06-agent-questions-and-inbox-design.md`,
 branch `agent-questions`. Commit under test: `0924bca` (the tests and smoke
 script; this record is the commit after it). Run on 2026-10-08, machine as
 above (macOS 26.6.2, arm64, Node v26.8.2), Playwright 1.63.0, Claude Code
@@ -1074,7 +1076,7 @@ inbox alone    GET /api/inbox/summary          21       1.7            ok
 
 ## 10. Toolpath audit
 
-Spec `docs/superpowers/specs/2026-10-06-toolpath-audit-design.md`, branch
+Spec `d9e9a5f60:docs/superpowers/specs/2026-10-06-toolpath-audit-design.md`, branch
 `toolpath-audit`; the contract is "Toolpath journal and export" in
 `docs/contract.md`. Build under test: `d436b13`, the commit before this
 record (`clax version --verbose`: `clax 0.4.0`, `commit

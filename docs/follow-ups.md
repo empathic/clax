@@ -61,7 +61,7 @@ machine, so no agent runs them.
 
 ## Grok Build
 
-From the Grok Build plan (`docs/superpowers/plans/2026-10-01-grok-build.md`).
+From the Grok Build plan (`git show d9e9a5f60:docs/superpowers/plans/2026-10-01-grok-build.md`).
 Its provisional answers to Q1, Q2, Q3 and Q5 are recorded as `alternative`
 records on the code each would change.
 

@@ -162,8 +162,7 @@ sources include sit there too (the `*_bin` copies in the BUILD files).
 `clax-embedded` is the one such crate: it alone embeds the web UI, the
 extension and the plugins, so a web edit recompiles it and the binary, not
 the daemon. Which crate may depend on which is
-`scripts/check-crate-layers.py` (`//scripts:crate_layers`), from
-`docs/superpowers/specs/2026-10-16-workspace-layout-design.md` §2.1.
+`scripts/check-crate-layers.py` (`//scripts:crate_layers`).
 
 ## macOS first runs
 
@@ -384,9 +383,7 @@ clippy pass runs after it (from 70 s on the critical path to 8 s), the web
 UI's build no longer reads tests, and the slow checks outside Bazel are
 skipped when their inputs passed before.
 
-The tables above predate the crate layout
-(`docs/superpowers/specs/2026-10-16-workspace-layout-design.md`), which
-took the store out of clax-core, split clax-server into five crates, put
+The tables above predate the crate layout, which took the store out of clax-core, split clax-server into five crates, put
 every embedded file in clax-embedded and test support in clax-testkit, so
 no crate is compiled twice. `just test` after an edit, measured
 2026-10-16/17 on the same machine (1-minute load before → after):

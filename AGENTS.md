@@ -37,9 +37,9 @@ run it through the command the plugin's session context gives.
 
 ## Code
 
-- Each crate depends only on the crates above it in
-  `docs/superpowers/specs/2026-10-16-workspace-layout-design.md` §2.1
-  (`scripts/check-crate-layers.py` checks it). Test support lives in
+- Each crate depends only on the crates above it in the layering that
+  `docs/usage.md` ("Developing Clax") describes and the `ALLOWED` map in
+  `scripts/check-crate-layers.py` defines and checks. Test support lives in
   `clax-testkit` and `clax-fake-exe`; no crate turns on another's features
   for tests.
 - No `unsafe`: the workspace lints forbid it (`unsafe_code = "forbid"` in

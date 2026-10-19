@@ -500,7 +500,7 @@ mod tests {
     }
 
     /// The decisions observed from Codex 0.160 for each mode and each kind
-    /// of annotation (docs/superpowers/specs/2026-10-07-codex-permissions-design.md, §2.1).
+    /// of annotation.
     #[test]
     fn asks_matches_what_codex_did() {
         let none = None;

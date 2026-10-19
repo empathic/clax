@@ -60,8 +60,7 @@ crate.from_cargo(
     ],
 )
 
-# A Bazel debug build of clax embeds its web UI, extension and plugins
-# (docs/superpowers/specs/2026-10-15-bazel-overlay-design.md B11).
+# A Bazel debug build of clax embeds its web UI, extension and plugins.
 crate.annotation(
     crate = "rust-embed",
     crate_features = ["debug-embed"],
