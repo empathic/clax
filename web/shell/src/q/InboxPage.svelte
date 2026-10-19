@@ -314,7 +314,10 @@
     if (cardItems.some(x => x.id === item.id)) cardItems = cardItems.map(x => (x.id === item.id ? item : x));
     if (unread) unread = { ...unread, groups: takeItem(unread.groups, item, d) };
     if (read) read = { ...read, groups: takeItem(read.groups, item, 0) };
-    if (!was && !lists(read?.groups, item.id) && !item.read) soon();
+    // One not shown: a new unread item, or one of a shown group's past its
+    // listed rows, read or unread elsewhere, whose change in its group's
+    // count is unknown here: the sections are fetched again.
+    if (!was && !lists(read?.groups, item.id) && (!item.read || unread?.groups.some(g => g.key === groupKey(item)))) soon();
   }
 
   onMount(() => {

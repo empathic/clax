@@ -166,6 +166,23 @@ describe("InboxPage", () => {
     expect(m.root.querySelector('.irow[data-item="IS"]')!.hasAttribute("data-unread")).toBe(false);
   });
 
+  it("fetches the groups again when an item of a shown group, past its listed rows, is read elsewhere", async () => {
+    const more = [7, 6, 5, 4].map(n => item("reply", { id: `I${n}`, seq: n }));
+    const lists: Record<string, InboxItem[]> = { "": [R, ...more] };
+    stubRoutes(lists);
+    const inbox = new InboxFeed();
+    const m = mount(InboxPage, { inbox, questions: new QuestionFeed(), go: vi.fn(), now });
+    await settle();
+    const meta = () => m.root.querySelector(".igroup .gmeta")!.textContent;
+    expect(meta()).toBe("5 new · 5m");
+    // The fourth, not listed, is read in another tab.
+    lists[""] = [R, ...more.filter(i => i.id !== "I5")];
+    (inbox as unknown as { tell(c: unknown): void }).tell({ item: { ...more[2], read: true } });
+    await new Promise(r => setTimeout(r, 300));
+    await settle();
+    expect(meta()).toBe("4 new · 5m");
+  });
+
   it("keeps the search in the URL 250 ms after typing stops, and fetches both sections for it", async () => {
     vi.useFakeTimers();
     const calls = stubRoutes({ "": [Q, R], dash: [R] });

@@ -42,7 +42,7 @@ describe("inbox groups", () => {
     const read = { ...S, read: true };
     const [g] = takeItem([board()], read, -1);
     expect([g.items[1].read, g.unread, g.total]).toEqual([true, 2, 5]);
-    // Counted even when its group does not list it (a card, or past the rows shown).
+    // Counted by its group even when the group does not list it (a pinned card).
     const [h] = takeItem([board()], { ...item("reply", { id: "IX", seq: 2 }), read: true }, -1);
     expect([h.items.map(i => i.id), h.unread]).toEqual([["IR", "IS"], 2]);
     const gs = [board()];

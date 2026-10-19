@@ -52,8 +52,9 @@ export const appendRows = (groups: Group[], key: string, items: InboxItem[], nex
   groups.map(g => (g.key === key ? { ...g, items: [...g.items, ...items.filter(i => !g.items.some(x => x.id === i.id))], next } : g));
 
 /** `groups` with `item` as it is now: replaced where a group lists it, and
- * the unread count of its group moved by `delta` (an item known to match
- * that was read, or unread again, whether listed or not). */
+ * the unread count of its group moved by `delta`. The caller knows the
+ * delta only for an item it shows (a group's row or a pinned card) that
+ * was read, or unread again; it passes 0 otherwise. */
 export function takeItem(groups: Group[], item: InboxItem, delta: number): Group[] {
   const key = groupKey(item);
   return groups.map(g => {
