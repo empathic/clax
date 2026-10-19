@@ -79,4 +79,30 @@ describe("reportChrome", () => {
     expect(post).toHaveBeenCalledTimes(2);
     expect(CHROME_EVERY_MS).toBeGreaterThan(0);
   });
+
+  it("samples again when the light or dark appearance changes", () => {
+    const f = fakeTimers();
+    const post = vi.fn();
+    // A page whose colours follow prefers-color-scheme changes no DOM when
+    // the appearance flips: only the media query says so.
+    let listener: (() => void) | null = null;
+    const query = { matches: false, addEventListener: (_: string, fn: () => void) => { listener = fn; } };
+    const media = vi.spyOn(window, "matchMedia").mockImplementation(q => {
+      expect(q).toBe("(prefers-color-scheme: dark)");
+      return query as unknown as MediaQueryList;
+    });
+    try {
+      const at = page("<header>Runs</header>", "header { background: #ffffff }");
+      reportChrome(window, post, f.t, at("header", null));
+      f.fire();
+      expect(post).toHaveBeenCalledTimes(1);
+      document.head.innerHTML = "<style>header { background: #1d1d1f }</style>";
+      listener!();
+      expect(f.pending()).toBe(1);
+      f.fire();
+      expect(post.mock.calls.at(-1)).toEqual([{ type: "clax:chrome", top: "#1d1d1f", bottom: "#ffffff" }]);
+    } finally {
+      media.mockRestore();
+    }
+  });
 });

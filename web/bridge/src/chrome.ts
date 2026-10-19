@@ -38,7 +38,8 @@ export function sampleChrome(win: Window, at: At = (x, y) => win.document.elemen
 }
 
 /** Posts `clax:chrome` with the page's edge colours: soon after it starts,
- * then after the page changes, scrolls or resizes, at most once every
+ * then after the page changes, scrolls or resizes or the light or dark
+ * appearance changes, at most once every
  * `CHROME_EVERY_MS`, and only when a colour changed. It runs for the
  * document's life. */
 export function reportChrome(win: Window, post: (m: { type: "clax:chrome"; top: string; bottom: string }) => void, timers: Timers = windowTimers(win), at?: At): void {
@@ -54,5 +55,8 @@ export function reportChrome(win: Window, post: (m: { type: "clax:chrome"; top: 
   new MutationObserver(soon).observe(win.document, { subtree: true, childList: true, attributes: true, attributeFilter: ["class", "style"] });
   win.addEventListener("scroll", soon, { passive: true });
   win.addEventListener("resize", soon);
+  // A page styled for the light and the dark appearance changes no DOM when
+  // the appearance flips.
+  win.matchMedia?.("(prefers-color-scheme: dark)").addEventListener?.("change", soon);
   soon();
 }
