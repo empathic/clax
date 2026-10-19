@@ -2,8 +2,10 @@ import AppKit
 
 /// One toolbar item as Dart declares it (`ToolbarItemSpec` in
 /// `lib/ui/mac/mac_toolbar.dart`): {id, symbol, label, enabled, on, badge?,
-/// tint?, group?, search?}. A [search] item is a search field whose
-/// placeholder is its label.
+/// tint?, group?, search?, select?}. A [search] item is a search field
+/// whose placeholder is its label. A [select] item is one of a set of
+/// choices (a Settings window's tabs, a group's segments), shown selected
+/// while [on].
 struct ToolbarSpec: Equatable {
   let id: String
   let symbol: String
@@ -15,10 +17,12 @@ struct ToolbarSpec: Equatable {
   let tint: String?
   let group: String?
   let search: Bool
+  let select: Bool
 
   init(
     id: String, symbol: String, label: String, enabled: Bool = true, on: Bool = false,
-    badge: Int? = nil, tint: String? = nil, group: String? = nil, search: Bool = false
+    badge: Int? = nil, tint: String? = nil, group: String? = nil, search: Bool = false,
+    select: Bool = false
   ) {
     self.id = id
     self.symbol = symbol
@@ -29,6 +33,7 @@ struct ToolbarSpec: Equatable {
     self.tint = tint
     self.group = group
     self.search = search
+    self.select = select
   }
 
   init?(_ any: Any) {
@@ -39,7 +44,7 @@ struct ToolbarSpec: Equatable {
       id: id, symbol: symbol, label: label, enabled: map["enabled"] as? Bool ?? true,
       on: map["on"] as? Bool ?? false, badge: (map["badge"] as? NSNumber)?.intValue,
       tint: map["tint"] as? String, group: map["group"] as? String,
-      search: map["search"] as? Bool ?? false)
+      search: map["search"] as? Bool ?? false, select: map["select"] as? Bool ?? false)
   }
 }
 
@@ -47,7 +52,9 @@ struct ToolbarSpec: Equatable {
 /// `dev.empathic.clax/toolbar` (`MacToolbar` in
 /// `lib/ui/mac/mac_toolbar.dart`). Every window gets one with [attach]:
 /// unified, icons only, empty and with the window's title hidden until Dart
-/// declares items for it, so the row is Flutter's to draw in.
+/// declares items for it, so the row is Flutter's to draw in; a Settings
+/// window's is the preference style instead, its items tabs with their
+/// labels under the window's title.
 ///
 /// - `setItems` {view, items, leading?, edge?}: the items of that view's
 ///   window, in order. Consecutive items of one `group` are one segmented
@@ -78,8 +85,9 @@ final class MacToolbar: NSObject {
     self.changed = changed
   }
 
-  /// Gives [window], which shows [view], its toolbar.
-  func attach(_ window: NSWindow, view: Int64) {
+  /// Gives [window], which shows [view], its toolbar: with [preference],
+  /// a Settings window's, whose selectable items are its tabs.
+  func attach(_ window: NSWindow, view: Int64, preference: Bool = false) {
     let bar = WindowToolbar(
       view: view, window: window,
       clicked: { [weak self] in self?.send("clicked", ["view": view, "id": $0]) },
@@ -88,9 +96,11 @@ final class MacToolbar: NSObject {
       if let window { self?.changed(window) }
     }
     bars[view] = bar
-    window.toolbarStyle = .unified
+    window.toolbarStyle = preference ? .preference : .unified
     window.toolbar = bar.toolbar
-    window.titleVisibility = .hidden
+    bar.preference = preference
+    if preference { bar.toolbar.displayMode = .iconAndLabel }
+    window.titleVisibility = preference ? .visible : .hidden
   }
 
   /// [view]'s window's toolbar.
@@ -165,6 +175,8 @@ final class WindowToolbar: NSObject, NSToolbarDelegate {
   private var made: [NSToolbarItem.Identifier: NSToolbarItem] = [:]
   private var displayMode: NSKeyValueObservation?
   var onLayout: (() -> Void)?
+  /// A Settings window's toolbar: its title shows with no items too.
+  var preference = false
 
   /// The `navigation` group's name: it sits before the window's title.
   static let navigation = "navigation"
@@ -229,7 +241,9 @@ final class WindowToolbar: NSObject, NSToolbarDelegate {
       for (i, id) in wanted.enumerated() { toolbar.insertItem(withItemIdentifier: id, at: i) }
     }
     (made[Self.sidebarEdge]?.view as? SidebarEdgeView)?.edge = edge?.width ?? 0
-    window?.titleVisibility = specs.isEmpty ? .hidden : .visible
+    toolbar.selectedItemIdentifier = specs.first { $0.select && $0.on && $0.group == nil }
+      .map { NSToolbarItem.Identifier($0.id) }
+    window?.titleVisibility = specs.isEmpty && !preference ? .hidden : .visible
     onLayout?()
   }
 
@@ -281,9 +295,12 @@ final class WindowToolbar: NSObject, NSToolbarDelegate {
     let item: NSToolbarItem
     let group = members(of: id)
     if !group.isEmpty {
+      let choice = group.allSatisfy(\.select)
       let g = NSToolbarItemGroup(
-        itemIdentifier: id, images: group.map { Self.image($0) }, selectionMode: .momentary,
+        itemIdentifier: id, images: group.map { Self.image($0) },
+        selectionMode: choice ? .selectOne : .momentary,
         labels: group.map(\.label), target: self, action: #selector(segmentClicked(_:)))
+      if choice { g.controlRepresentation = .expanded }
       if #available(macOS 14.0, *) {
         g.isNavigational = id == Self.groupIdentifier(Self.navigation)
       }
@@ -316,6 +333,11 @@ final class WindowToolbar: NSObject, NSToolbarDelegate {
     layout(specs, edge: edge) + [.flexibleSpace, Self.sidebarEdge]
   }
 
+  /// The items that are choices on their own (tabs); a group's are its own.
+  func toolbarSelectableItemIdentifiers(_ toolbar: NSToolbar) -> [NSToolbarItem.Identifier] {
+    specs.filter { $0.select && $0.group == nil }.map { NSToolbarItem.Identifier($0.id) }
+  }
+
   private func configure(_ item: NSToolbarItem, _ id: NSToolbarItem.Identifier) {
     if let group = item as? NSToolbarItemGroup {
       let specs = members(of: id)
@@ -328,6 +350,9 @@ final class WindowToolbar: NSObject, NSToolbarDelegate {
       }
       group.label = specs.map(\.label).joined(separator: " and ")
       group.isEnabled = specs.contains(where: \.enabled)
+      if group.selectionMode == .selectOne {
+        group.selectedIndex = specs.firstIndex(where: \.on) ?? -1
+      }
       return
     }
     guard let spec = specs.first(where: { $0.id == id.rawValue }) else { return }
@@ -377,15 +402,16 @@ final class WindowToolbar: NSObject, NSToolbarDelegate {
     return image
   }
 
-  /// [spec]'s symbol: its `.fill` form while on, tinted when it has a tint.
+  /// [spec]'s symbol: its `.fill` form while on, tinted when it has a tint;
+  /// a choice ([ToolbarSpec.select]) shows as selected instead.
   static func image(_ spec: ToolbarSpec) -> NSImage {
-    let filled = spec.on
+    let filled = spec.on && !spec.select
       ? NSImage(systemSymbolName: spec.symbol + ".fill", accessibilityDescription: spec.label)
       : nil
     let image =
       filled ?? NSImage(systemSymbolName: spec.symbol, accessibilityDescription: spec.label)
       ?? NSImage()
-    guard spec.on, let tint = spec.tint.flatMap(color(hex:)) else { return image }
+    guard spec.on, !spec.select, let tint = spec.tint.flatMap(color(hex:)) else { return image }
     return image.withSymbolConfiguration(.init(paletteColors: [tint])) ?? image
   }
 

@@ -250,6 +250,40 @@ void main() {
     expect(await MacToolbar.focusSearch('other', view: 1), isFalse);
   });
 
+  test('a choice is sent as selectable, and differs from the same item that '
+      'is not', () async {
+    const tab = ToolbarItemSpec(
+      'general',
+      symbol: 'gearshape',
+      label: 'General',
+      on: true,
+      select: true,
+    );
+    MacToolbar.setItems(owner, const [tab], view: 2);
+    await pumpEventQueue();
+    expect((calls.single.arguments as Map)['items'], [
+      {
+        'id': 'general',
+        'symbol': 'gearshape',
+        'label': 'General',
+        'enabled': true,
+        'on': true,
+        'select': true,
+      },
+    ]);
+    expect(
+      tab,
+      isNot(
+        const ToolbarItemSpec(
+          'general',
+          symbol: 'gearshape',
+          label: 'General',
+          on: true,
+        ),
+      ),
+    );
+  });
+
   test('ToolbarShareFiles writes the bundle and shares its path from the '
       'Share item', () async {
     final files = ToolbarShareFiles(view: 1);

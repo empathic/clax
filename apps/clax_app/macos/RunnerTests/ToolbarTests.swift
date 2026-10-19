@@ -205,6 +205,59 @@ final class ToolbarTests: XCTestCase {
     XCTAssertNotNil(call("focusSearch", ["view": 1]).failed)
   }
 
+  func testSelectableItemsAreTabsWithTheOnOneSelected() {
+    let tabs: [[String: Any]] = [
+      ["id": "general", "symbol": "gearshape", "label": "General", "select": true, "on": true],
+      ["id": "claude", "symbol": "key", "label": "Claude", "select": true],
+    ]
+    XCTAssertNil(call("setItems", ["view": 1, "items": tabs]).failed)
+    XCTAssertEqual(
+      bar.toolbarSelectableItemIdentifiers(bar.toolbar).map(\.rawValue), ["general", "claude"])
+    XCTAssertEqual(bar.toolbar.selectedItemIdentifier?.rawValue, "general")
+    XCTAssertEqual(bar.item("general")?.image?.accessibilityDescription, "General")
+    var next = tabs
+    next[0]["on"] = false
+    next[1]["on"] = true
+    call("setItems", ["view": 1, "items": next])
+    XCTAssertEqual(bar.toolbar.selectedItemIdentifier?.rawValue, "claude")
+    bar.itemClicked(bar.item("general")!)
+    XCTAssertEqual(sent.last?.1["id"] as? String, "general")
+  }
+
+  func testASelectableGroupIsOneChoiceWithTheOnMemberSelected() {
+    let filter: [[String: Any]] = [
+      ["id": "all", "symbol": "tray", "label": "All", "group": "filter", "select": true],
+      [
+        "id": "unread", "symbol": "circle.inset.filled", "label": "Unread", "group": "filter",
+        "select": true, "on": true,
+      ],
+      [
+        "id": "questions", "symbol": "questionmark.bubble", "label": "Questions",
+        "group": "filter", "select": true,
+      ],
+    ]
+    XCTAssertNil(call("setItems", ["view": 1, "items": filter]).failed)
+    let group = bar.item("unread") as! NSToolbarItemGroup
+    XCTAssertEqual(group.selectionMode, .selectOne)
+    XCTAssertEqual(group.selectedIndex, 1)
+    XCTAssertEqual(group.controlRepresentation, .expanded)
+    group.selectedIndex = 2
+    bar.segmentClicked(group)
+    XCTAssertEqual(sent.last?.1["id"] as? String, "questions")
+  }
+
+  func testAPreferenceWindowShowsItsTabsWithLabelsAndItsTitle() {
+    let prefs = NSWindow(
+      contentRect: NSRect(x: 0, y: 0, width: 600, height: 400),
+      styleMask: [.titled, .closable], backing: .buffered, defer: false)
+    prefs.isReleasedWhenClosed = false
+    defer { prefs.close() }
+    toolbars.attach(prefs, view: 2, preference: true)
+    XCTAssertEqual(prefs.toolbarStyle, .preference)
+    XCTAssertEqual(toolbars.toolbar(of: 2)?.toolbar.displayMode, .iconAndLabel)
+    XCTAssertEqual(prefs.titleVisibility, .visible)
+  }
+
   func testBadItemsAreRefused() {
     XCTAssertNotNil(call("setItems", ["view": 1]).failed)
     XCTAssertNotNil(call("setItems", ["view": 1, "items": [["id": "x"]]]).failed)

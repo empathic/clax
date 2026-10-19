@@ -16,6 +16,9 @@ import '../kit/family.dart';
 /// sits before the window's title. A [search] item is a search field
 /// (`NSSearchToolbarItem`) whose placeholder is [label]; its text arrives
 /// on [MacToolbar.searches], and what was typed stays while the item does.
+/// A [select] item is one of a set of choices, shown selected while [on]:
+/// a Settings window's tabs, or a group's segments (All, Unread,
+/// Questions); its click arrives on [MacToolbar.clicks] like any other.
 @immutable
 final class ToolbarItemSpec {
   const ToolbarItemSpec(
@@ -28,10 +31,11 @@ final class ToolbarItemSpec {
     this.tint,
     this.group,
     this.search = false,
+    this.select = false,
   });
 
   final String id, symbol, label;
-  final bool enabled, on, search;
+  final bool enabled, on, search, select;
   final int? badge;
   final Color? tint;
   final String? group;
@@ -47,6 +51,7 @@ final class ToolbarItemSpec {
     if (tint case final t?) 'tint': _hex(t),
     'group': ?group,
     if (search) 'search': true,
+    if (select) 'select': true,
   };
 
   static String _hex(Color c) {
@@ -66,11 +71,23 @@ final class ToolbarItemSpec {
       other.badge == badge &&
       other.tint == tint &&
       other.group == group &&
-      other.search == search;
+      other.search == search &&
+      other.select == select;
 
   @override
   int get hashCode =>
-      Object.hash(id, symbol, label, enabled, on, badge, tint, group, search);
+      Object.hash(
+        id,
+        symbol,
+        label,
+        enabled,
+        on,
+        badge,
+        tint,
+        group,
+        search,
+        select,
+      );
 
   @override
   String toString() => 'ToolbarItemSpec($id)';
