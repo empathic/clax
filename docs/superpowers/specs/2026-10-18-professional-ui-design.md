@@ -136,6 +136,7 @@ Hex values are given as light / dark.
 | `raised` | #ffffff | #232321 | sheets, dialogs, popovers |
 | `overlay` **new** | #ffffff | #2a2a27 | menus (dark separates from `raised`) |
 | `hover` | #f2f2ef | #2a2a27 | hover and pressed fill |
+| `menu-hover`, `menu-press` | #f2f2ef, #e6e5e1 | #3a3a36, #46453f | a menu item's hover and press, on `overlay` |
 | `fg` | #1c1b19 | #ecebe7 | text; the primary button's fill ("ink") |
 | `muted` | #5f5d58 | #a9a69f | secondary text |
 | `border` | #e6e5e1 | #2c2c29 | hairlines, decoration |
@@ -151,7 +152,10 @@ Hex values are given as light / dark.
 | `on-you` | #141413 | #141413 | |
 | `comment-hl` | #fbe9e3 | #2e1e19 | people's containers, the comment quote |
 | `pink` / `selection-bg` | #f6d3c7 | (as light) | text selection |
+| `selection-fg` | #1c1b19 | (as light) | selected text on the web (`::selection`) |
+| `selection-tint` | #f6d3c7 | rgba(246,211,199,.28) | Flutter's selection, under text that keeps its colour |
 | `danger` | #b3261e | #ff8a80 | errors: icons, text, rules, destructive actions |
+| `on-danger` | #ffffff | #141413 | text on a `danger` fill |
 | `danger-tint` | #fbeceb | #3a1f1c | small error containers only (§9) |
 | `primary-hover` | #3a3935 | #d6d4ce | the ink button's hover |
 | `focus` | = `agent` | = `agent` | focus ring: web, Android. macOS uses the system accent (§4.10) |
@@ -168,7 +172,7 @@ Hex values are given as light / dark.
 | secondary / onSecondary | fg / bg | fg / bg |
 | tertiary / onTertiary | you / on-you | you / on-you |
 | tertiaryContainer / onTertiaryContainer | comment-hl / you-ink | comment-hl / you-ink |
-| error / onError | danger / #ffffff | danger / #141413 |
+| error / onError | danger / on-danger | danger / on-danger |
 | errorContainer / onErrorContainer | danger-tint / danger | danger-tint / danger |
 | surface / onSurface / onSurfaceVariant | bg / fg / muted | bg / fg / muted |
 | surfaceContainerLowest … Highest **new** | #ffffff, #fbfbf9, #f2f2ef, #ecebe7, #e6e5e1 | #0f0f0e, #1c1c1a, #232321, #2a2a27, #32322f |

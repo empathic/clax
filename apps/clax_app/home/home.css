@@ -20,6 +20,8 @@
   --h-inverse: var(--fg); /* alias for release 1.6; removed in 1.7 */
   --h-on-inverse: var(--bg); /* alias for release 1.6; removed in 1.7 */
   --h-state: var(--hover); /* alias for release 1.6; removed in 1.7 */
+  --h-menu-hover: var(--menu-hover);
+  --h-menu-press: var(--menu-press);
   --h-fab-shadow: var(--elev-2); /* alias for release 1.6; removed in 1.7 */
   --h-menu-shadow: var(--elev-2); /* alias for release 1.6; removed in 1.7 */
   --h-lift-shadow: var(--elev-3); /* alias for release 1.6; removed in 1.7 */
@@ -38,7 +40,12 @@
   :root:not([data-theme="light"]) .h-face { background: var(--t-b); color: var(--t-a); }
 }
 
-::selection { background: var(--selection-bg); color: var(--fg); }
+::selection { background: var(--selection-bg); color: var(--selection-fg); }
+
+/* Every color-mix() sits in @supports, after a plain fallback: a
+ * declaration that uses var() is accepted when parsed, so a WebView
+ * without color-mix() would drop it only when computing, and a fallback
+ * before it would never apply. */
 
 @media (pointer: coarse) {
   button { min-height: 44px; min-width: 44px; }
@@ -88,7 +95,9 @@ body {
   background: transparent; color: var(--h-on-surface); text-align: left; white-space: nowrap;
   font: 500 14px/20px var(--k-font); letter-spacing: 0.1px; cursor: pointer;
 }
-.h-menu-item:active, .h-menu-item:hover { background: var(--h-state); }
+/* On the menu's own fill: in dark the page's hover is the menu's colour. */
+.h-menu-item:hover { background: var(--h-menu-hover); }
+.h-menu-item:active { background: var(--h-menu-press); }
 .h-menu-check { display: flex; align-items: center; justify-content: space-between; gap: 16px; }
 .h-menu-check .h-glyph { color: var(--h-primary); }
 
@@ -103,7 +112,8 @@ body {
   height: 40px; padding: 0 12px; border: 0; border-radius: 20px; background: transparent;
   color: var(--h-primary); font: 500 14px/20px var(--k-font); letter-spacing: 0.1px; cursor: pointer;
 }
-.h-text-button:active, .h-text-button:hover { background: color-mix(in srgb, var(--h-primary) 10%, transparent); }
+.h-text-button:active, .h-text-button:hover { background: var(--h-pc); }
+@supports (color: color-mix(in srgb, red, red)) { .h-text-button:active, .h-text-button:hover { background: color-mix(in srgb, var(--h-primary) 10%, transparent); } }
 
 /* The grid. */
 .h-grid-wrap { padding: 8px 16px 112px; }
@@ -153,8 +163,9 @@ body {
 }
 .h-over {
   position: absolute; inset: 0; border-radius: calc(var(--face, 60px) / 4); display: grid; place-items: center;
-  background: color-mix(in srgb, var(--h-surface) 82%, transparent);
+  background: var(--h-surface);
 }
+@supports (color: color-mix(in srgb, red, red)) { .h-over { background: color-mix(in srgb, var(--h-surface) 82%, transparent); } }
 .h-label {
   margin-top: 8px; max-width: 100%; text-align: center; overflow: hidden;
   display: -webkit-box; -webkit-box-orient: vertical; overflow-wrap: anywhere;
@@ -214,13 +225,19 @@ body {
   background: var(--h-pc); color: var(--h-on-pc); box-shadow: var(--h-fab-shadow);
   font: 500 14px/20px var(--k-font); letter-spacing: 0.1px; cursor: pointer;
 }
-.h-fab:active { background: color-mix(in srgb, var(--h-on-pc) 10%, var(--h-pc)); }
+.h-fab:active { background: var(--h-pc); filter: brightness(0.94); }
+@supports (color: color-mix(in srgb, red, red)) { .h-fab:active { background: color-mix(in srgb, var(--h-on-pc) 10%, var(--h-pc)); filter: none; } }
 
 /* A press held long enough to lift the tile: it grows and casts a shadow,
  * and stays so while it is dragged, above its neighbours. */
 .h-icon > * { transition: transform var(--k-fast) var(--k-ease), box-shadow var(--k-fast) var(--k-ease); }
 .h-tile[data-held] .h-icon > * { transform: scale(1.08); }
 .h-tile[data-held] .h-face, .h-tile[data-dragging] .h-face { box-shadow: var(--h-lift-shadow); }
+/* In dark a shadow barely shows, so the lifted face is outlined as well. */
+@media (prefers-color-scheme: dark) {
+  :root:not([data-theme="light"]) :is(.h-tile[data-held], .h-tile[data-dragging]) .h-face { box-shadow: var(--h-lift-shadow), 0 0 0 1px var(--border-hover); }
+}
+:root[data-theme="dark"] :is(.h-tile[data-held], .h-tile[data-dragging]) .h-face { box-shadow: var(--h-lift-shadow), 0 0 0 1px var(--border-hover); }
 .h-tile[data-held], .h-tile[data-held]:active { background: transparent; }
 .h-tile[data-dragging] { z-index: 5; pointer-events: none; }
 .h-page[data-dragging] .h-tile:not([data-dragging]) { cursor: grabbing; }
@@ -241,13 +258,17 @@ body {
  * never covers them. */
 .h-drop {
   margin: 8px 4px; height: 116px; border-radius: 20px;
-  border: 2px dashed color-mix(in srgb, var(--h-primary) 60%, transparent);
+  border: 2px dashed var(--h-primary);
   display: flex; flex-direction: column; justify-content: center; align-items: flex-start; gap: 4px;
   padding: 0 20px; color: var(--h-on-variant);
   font: 500 14px/20px var(--k-font); letter-spacing: 0.1px;
 }
 .h-drop[data-side="end"] { align-items: flex-end; }
-.h-drop[data-over] { background: color-mix(in srgb, var(--h-primary) 10%, transparent); color: var(--h-primary); }
+.h-drop[data-over] { background: var(--h-pc); color: var(--h-primary); }
+@supports (color: color-mix(in srgb, red, red)) {
+  .h-drop { border-color: color-mix(in srgb, var(--h-primary) 60%, transparent); }
+  .h-drop[data-over] { background: color-mix(in srgb, var(--h-primary) 10%, transparent); }
+}
 @media (prefers-reduced-motion: reduce) { .h-icon > * { transition: none; } }
 
 /* What an action that failed says, and Tap again to retry it. */
@@ -338,14 +359,16 @@ html[data-pulling] :is(.h-key, .h-grid-wrap, .h-message) { transform: translateY
   transition: background var(--k-fast) var(--k-ease), box-shadow var(--k-fast) var(--k-ease);
 }
 /* A dragged app past the edge leaves the group on release: the panel fades. */
-.h-folder[data-out] .h-folder-panel { background: color-mix(in srgb, var(--h-menu-bg) 50%, transparent); box-shadow: none; }
+.h-folder[data-out] .h-folder-panel { background: transparent; box-shadow: none; }
+@supports (color: color-mix(in srgb, red, red)) { .h-folder[data-out] .h-folder-panel { background: color-mix(in srgb, var(--h-menu-bg) 50%, transparent); } }
 .h-folder-head { display: flex; justify-content: center; padding: 0 16px 8px; min-height: 40px; }
 .h-folder-name {
   display: inline-flex; align-items: center; gap: 8px;
   max-width: 100%; padding: 6px 12px 6px 16px; border: 0; border-radius: 20px;
-  background: color-mix(in srgb, var(--h-on-surface) 6%, transparent); color: var(--h-on-surface); cursor: text;
+  background: var(--h-state); color: var(--h-on-surface); cursor: text;
   font: 400 22px/28px var(--k-font); letter-spacing: 0;
 }
+@supports (color: color-mix(in srgb, red, red)) { .h-folder-name { background: color-mix(in srgb, var(--h-on-surface) 6%, transparent); } }
 .h-folder-name-text { overflow: hidden; white-space: nowrap; text-overflow: ellipsis; }
 .h-folder-name .h-glyph { color: var(--h-on-variant); flex: none; }
 .h-folder-name:hover, .h-folder-name:active { background: var(--h-state); }
@@ -373,8 +396,9 @@ html[data-pulling] :is(.h-key, .h-grid-wrap, .h-message) { transform: translateY
 .h-fan {
   display: flex; gap: 4px; overflow-x: auto; overflow-y: hidden;
   scroll-snap-type: x proximity; overscroll-behavior-x: contain; scrollbar-width: none;
-  border-radius: 20px; background: color-mix(in srgb, var(--h-sc) 50%, transparent);
+  border-radius: 20px; background: var(--h-sc);
 }
+@supports (color: color-mix(in srgb, red, red)) { .h-fan { background: color-mix(in srgb, var(--h-sc) 50%, transparent); } }
 .h-fan::-webkit-scrollbar { display: none; }
 .h-fan .h-tile {
   flex: 0 0 calc((100% - (var(--cols, 4) - 1) * 4px) / var(--cols, 4));

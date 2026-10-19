@@ -91,7 +91,7 @@ ColorScheme _scheme(Brightness b, ClaxPalette p) => ColorScheme(
   tertiaryContainer: p.commentHl,
   onTertiaryContainer: p.youInk,
   error: p.danger,
-  onError: p.onError,
+  onError: p.onDanger,
   errorContainer: p.dangerTint,
   onErrorContainer: p.danger,
   surface: p.bg,
@@ -183,7 +183,9 @@ ThemeData _buildTheme(
     extensions: [ClaxColors(p)],
     textSelectionTheme: TextSelectionThemeData(
       cursorColor: p.agent,
-      selectionColor: p.selectionBg,
+      // Flutter cannot recolour selected text, so the selection is a tint
+      // the text keeps reading on (opaque pink in light, translucent in dark).
+      selectionColor: p.selectionTint,
       selectionHandleColor: p.agent,
     ),
     pageTransitionsTheme: const PageTransitionsTheme(

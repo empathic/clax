@@ -343,6 +343,48 @@ test.describe("over a fake host", () => {
   });
 });
 
+test.describe("dark colours", () => {
+  test.use({ viewport: { width: 1280, height: 800 }, colorScheme: "dark" });
+
+  test("a menu item's hover and press differ from the menu and each other", async ({ page }) => {
+    await serve(page, {});
+    await page.getByRole("button", { name: "More" }).click();
+    const item = page.locator(".h-menu-item").first();
+    const bg = (sel: string) => page.locator(sel).first().evaluate(el => getComputedStyle(el).backgroundColor);
+    const menu = await bg(".h-menu");
+    await item.hover();
+    const hover = await bg(".h-menu-item");
+    const box = (await item.boundingBox())!;
+    await page.mouse.move(box.x + box.width / 2, box.y + box.height / 2);
+    await page.mouse.down();
+    const press = await bg(".h-menu-item");
+    await page.mouse.up();
+    expect(new Set([menu, hover, press]).size, `${menu} ${hover} ${press}`).toBe(3);
+  });
+
+  test("selected text is dark on the pink selection", async ({ page }) => {
+    await serve(page, {});
+    await expect(page.locator(".h-tile")).toHaveCount(11);
+    const sel = await page.locator(".h-label").first().evaluate(el => {
+      const s = getComputedStyle(el, "::selection");
+      return { fg: s.color, bg: s.backgroundColor };
+    });
+    expect(sel).toEqual({ fg: "rgb(28, 27, 25)", bg: "rgb(246, 211, 199)" });
+  });
+
+  test("a lifted tile carries a 1 px border-hover outline", async ({ page }) => {
+    await serve(page, {});
+    await expect(page.locator(".h-tile")).toHaveCount(11);
+    const shadow = await page.locator('[data-id="app-habits"]').evaluate(el => {
+      const face = el.querySelector(".h-face") as HTMLElement;
+      face.style.transition = "none";
+      el.setAttribute("data-held", "");
+      return getComputedStyle(face).boxShadow;
+    });
+    expect(shadow).toContain("rgb(58, 58, 54) 0px 0px 0px 1px");
+  });
+});
+
 test.describe("renders", () => {
   const sizes = { phone: { width: 412, height: 915 }, desktop: { width: 1280, height: 800 } } as const;
   for (const [size, viewport] of Object.entries(sizes)) {

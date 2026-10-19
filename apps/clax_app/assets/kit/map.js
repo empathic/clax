@@ -187,12 +187,12 @@ const tileUrl = (tmpl, z, x, y) => tmpl.replace('{z}', z).replace('{x}', x).repl
 
 const CSS = `
 .k-map { position: relative; overflow: hidden; touch-action: none; user-select: none; -webkit-user-select: none;
-  -webkit-touch-callout: none; background-color: var(--k-surface-3, #e9e9ef); border-radius: var(--k-radius, 14px);
+  -webkit-touch-callout: none; background-color: var(--k-surface-3, #e6e5e1); border-radius: var(--k-radius, 10px);
   cursor: grab; isolation: isolate; outline: none; contain: layout paint;
-  background-image: linear-gradient(var(--k-line, rgba(60,60,67,.16)) 1px, transparent 1px),
-    linear-gradient(90deg, var(--k-line, rgba(60,60,67,.16)) 1px, transparent 1px); }
+  background-image: linear-gradient(var(--k-line, #e6e5e1) 1px, transparent 1px),
+    linear-gradient(90deg, var(--k-line, #e6e5e1) 1px, transparent 1px); }
 .k-map:active { cursor: grabbing; }
-.k-map:focus-visible { box-shadow: 0 0 0 3px var(--k-accent-soft, rgba(59,91,219,.3)); }
+.k-map:focus-visible { box-shadow: 0 0 0 3px var(--k-accent-soft, #e8f1e6); }
 .k-map-tile, .k-map-up { position: absolute; left: 0; top: 0; transform-origin: 0 0; pointer-events: none; }
 .k-map-up { overflow: hidden; }
 .k-map-tile { animation: k-map-in 160ms ease-out; -webkit-user-drag: none; }
@@ -204,16 +204,16 @@ const CSS = `
 :root[data-theme="dark"] .k-map-dark .k-map-tile { filter: invert(1) hue-rotate(180deg) brightness(0.9) contrast(0.88); }
 .k-map-pin { position: absolute; left: 0; top: 0; padding: 0; margin: 0; border: 0; background: none; cursor: pointer;
   width: 30px; height: 40px; translate: -15px -38px; line-height: 0; filter: drop-shadow(0 2px 2px rgba(0,0,0,.3)); }
-.k-map-pin:focus-visible { outline: 2px solid var(--k-accent, #3b5bdb); outline-offset: 2px; border-radius: 8px; }
+.k-map-pin:focus-visible { outline: 2px solid var(--k-accent, #2f6f2a); outline-offset: 2px; border-radius: 8px; }
 .k-map-pin-glyph { position: absolute; left: 7px; top: 6px; width: 16px; height: 16px; display: grid; place-items: center; color: #fff; }
 .k-map-label { position: absolute; left: 50%; bottom: 44px; translate: -50% 0; white-space: nowrap; padding: 3px 8px;
-  border-radius: 999px; background: var(--k-surface, #fff); color: var(--k-fg, #111); font: 600 12px/1.3 var(--k-font, system-ui);
+  border-radius: 999px; background: var(--k-surface, #fff); color: var(--k-fg, #1c1b19); font: 600 12px/1.3 var(--k-font, system-ui);
   box-shadow: var(--k-shadow-2, 0 2px 8px rgba(0,0,0,.15)); }
 .k-map-here { position: absolute; left: 0; top: 0; pointer-events: none; }
 .k-map-here-ring { position: absolute; border-radius: 50%; background: rgba(10,132,255,.16); border: 1px solid rgba(10,132,255,.4); }
 .k-map-here-area { background: rgba(10,132,255,.12); border: 2px dashed rgba(10,132,255,.55); }
 .k-map-locate { position: absolute; right: 10px; top: 92px; z-index: 3; width: 36px; height: 36px; display: grid; place-items: center;
-  border: 0; padding: 0; margin: 0; border-radius: 10px; background: var(--k-surface, #fff); color: var(--k-fg, #111); cursor: pointer;
+  border: 0; padding: 0; margin: 0; border-radius: 10px; background: var(--k-surface, #fff); color: var(--k-fg, #1c1b19); cursor: pointer;
   box-shadow: var(--k-shadow-2, 0 2px 8px rgba(0,0,0,.15)); }
 .k-map-locate[aria-pressed="true"] { color: #0a84ff; }
 .k-map-here-dot { position: absolute; width: 16px; height: 16px; left: -8px; top: -8px; border-radius: 50%;
@@ -221,27 +221,38 @@ const CSS = `
 .k-map-zoom { position: absolute; right: 10px; top: 10px; display: flex; flex-direction: column; border-radius: 10px;
   overflow: hidden; background: var(--k-surface, #fff); box-shadow: var(--k-shadow-2, 0 2px 8px rgba(0,0,0,.15)); }
 .k-map-zoom button { width: 36px; height: 36px; display: grid; place-items: center; border: 0; padding: 0; margin: 0;
-  background: none; color: var(--k-fg, #111); cursor: pointer; }
-.k-map-zoom button + button { border-top: 1px solid var(--k-line, rgba(60,60,67,.16)); }
-.k-map-zoom button:active { background: var(--k-surface-3, #e9e9ef); }
+  background: none; color: var(--k-fg, #1c1b19); cursor: pointer; }
+.k-map-zoom button + button { border-top: 1px solid var(--k-line, #e6e5e1); }
+.k-map-zoom button:active { background: var(--k-surface-3, #e6e5e1); }
 .k-map-attr { position: absolute; right: 0; bottom: 0; padding: 2px 6px; border-top-left-radius: 6px; max-width: 80%;
-  background: color-mix(in srgb, var(--k-surface, #fff) 82%, transparent); color: var(--k-fg-2, #5c5c66);
+  background: var(--k-surface, #fff); color: var(--k-fg-2, #5f5d58);
   font: 400 11px/1.35 var(--k-font, system-ui); white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
 .k-map-note { position: absolute; left: 50%; top: 50%; translate: -50% -50%; width: min(280px, calc(100% - 32px));
   display: flex; flex-direction: column; align-items: center; gap: 6px; text-align: center; padding: 14px 16px;
-  border-radius: var(--k-radius, 14px); background: var(--k-surface, #fff); color: var(--k-fg, #111);
+  border-radius: var(--k-radius, 10px); background: var(--k-surface, #fff); color: var(--k-fg, #1c1b19);
   box-shadow: var(--k-shadow-2, 0 2px 8px rgba(0,0,0,.15)); font: 400 14px/1.35 var(--k-font, system-ui); }
 .k-map-note b { font-weight: 600; }
 .k-map-note, .k-map-zoom, .k-map-attr { z-index: 3; }
-.k-map-note span { color: var(--k-fg-2, #5c5c66); font-size: 13px; }
-.k-map-standin { background-color: var(--k-surface-3, #e9e9ef);
-  background-image: linear-gradient(var(--k-line, rgba(60,60,67,.16)) 1px, transparent 1px),
-    linear-gradient(90deg, var(--k-line, rgba(60,60,67,.16)) 1px, transparent 1px),
-    linear-gradient(color-mix(in srgb, var(--k-line, rgba(60,60,67,.16)) 45%, transparent) 1px, transparent 1px),
-    linear-gradient(90deg, color-mix(in srgb, var(--k-line, rgba(60,60,67,.16)) 45%, transparent) 1px, transparent 1px); }
+.k-map-note span { color: var(--k-fg-2, #5f5d58); font-size: 13px; }
+.k-map-standin { background-color: var(--k-surface-3, #e6e5e1);
+  background-image: linear-gradient(var(--k-line, #e6e5e1) 1px, transparent 1px),
+    linear-gradient(90deg, var(--k-line, #e6e5e1) 1px, transparent 1px); }
 .k-map-caption { position: absolute; left: 8px; top: 8px; z-index: 3; padding: 2px 8px; border-radius: 999px;
-  background: color-mix(in srgb, var(--k-surface, #fff) 82%, transparent); color: var(--k-fg-2, #5c5c66);
+  background: var(--k-surface, #fff); color: var(--k-fg-2, #5f5d58);
   font: 500 11px/1.4 var(--k-font, system-ui); pointer-events: none; }
+/* The translucent fills, where color-mix() is known: a declaration that
+ * uses var() is accepted when parsed, so a WebView without color-mix()
+ * would drop it only when computing and the plain fill before it would
+ * never apply. */
+@supports (color: color-mix(in srgb, red, red)) {
+  .k-map-attr, .k-map-caption { background: color-mix(in srgb, var(--k-surface, #fff) 82%, transparent); }
+  .k-map-standin {
+    background-image: linear-gradient(var(--k-line, #e6e5e1) 1px, transparent 1px),
+      linear-gradient(90deg, var(--k-line, #e6e5e1) 1px, transparent 1px),
+      linear-gradient(color-mix(in srgb, var(--k-line, #e6e5e1) 45%, transparent) 1px, transparent 1px),
+      linear-gradient(90deg, color-mix(in srgb, var(--k-line, #e6e5e1) 45%, transparent) 1px, transparent 1px);
+  }
+}
 .k-map-note-top { top: 10px; translate: -50% 0; flex-direction: row; padding: 6px 12px; width: auto; max-width: calc(100% - 100px); font-size: 13px; }
 `;
 
@@ -260,7 +271,7 @@ function addStyles() {
 
 /** A marker's pin; its fill is the button's `--k-map-pin` property, so a marker's color never enters markup. */
 const PIN_SVG = `<svg width="30" height="40" viewBox="0 0 30 40" aria-hidden="true">
-    <path d="M15 39C15 39 2 23.5 2 14.5 2 7 8 1.5 15 1.5S28 7 28 14.5C28 23.5 15 39 15 39Z" fill="var(--k-map-pin, var(--k-accent, #3b5bdb))" stroke="#fff" stroke-width="2"/>
+    <path d="M15 39C15 39 2 23.5 2 14.5 2 7 8 1.5 15 1.5S28 7 28 14.5C28 23.5 15 39 15 39Z" fill="var(--k-map-pin, var(--k-accent, #2f6f2a))" stroke="#fff" stroke-width="2"/>
   </svg>`;
 const DOT_SVG = '<svg width="8" height="8" aria-hidden="true"><circle cx="4" cy="4" r="4" fill="#fff"/></svg>';
 

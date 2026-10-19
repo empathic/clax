@@ -267,13 +267,16 @@ filegroup(
     ],
 )
 
-# What scripts/sync-tokens.py writes into the app (design/tokens.json), for
-# its checks (//design:tokens_sync, //scripts:sync_tokens).
+# What scripts/sync-tokens.py writes into the app (design/tokens.json), and
+# the stylesheets whose color-mix() guards it checks, for its checks
+# (//design:tokens_sync, //scripts:sync_tokens).
 filegroup(
     name = "token_outputs",
     srcs = [
         "assets/haiku.json",
         "assets/kit/kit.css",
+        "assets/kit/map.js",
+        "home/home.css",
         "home/mark.css",
         "home/tokens.css",
         "lib/ui/tokens.g.dart",

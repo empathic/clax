@@ -1,3 +1,5 @@
+import 'dart:math' as math;
+
 import 'package:clax_app/ui/theme.dart';
 import 'package:clax_app/ui/tokens.g.dart';
 import 'package:clax_app/ui/version_page.dart';
@@ -134,6 +136,25 @@ void main() {
       expect(c.addInk, p.agentInk);
       expect(c.onAdd, p.fg);
       expect(c.onDel, p.fg);
+    }
+  });
+
+  test('selected text reads on the selection in both themes', () {
+    double ratio(Color a, Color b) {
+      final la = a.computeLuminance(), lb = b.computeLuminance();
+      return (math.max(la, lb) + 0.05) / (math.min(la, lb) + 0.05);
+    }
+
+    for (final b in Brightness.values) {
+      final t = claxTheme(b, TargetPlatform.android);
+      final p = t.extension<ClaxColors>()!.palette;
+      for (final under in [p.bg, p.card, p.raised]) {
+        final selection = Color.alphaBlend(
+          t.textSelectionTheme.selectionColor!,
+          under,
+        );
+        expect(ratio(p.fg, selection), greaterThanOrEqualTo(4.5), reason: '$b');
+      }
     }
   });
 

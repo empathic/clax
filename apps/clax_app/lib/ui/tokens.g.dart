@@ -10,6 +10,8 @@ final class ClaxPalette {
     required this.raised,
     required this.overlay,
     required this.hover,
+    required this.menuHover,
+    required this.menuPress,
     required this.fg,
     required this.muted,
     required this.border,
@@ -25,14 +27,16 @@ final class ClaxPalette {
     required this.onYou,
     required this.commentHl,
     required this.selectionBg,
+    required this.selectionFg,
+    required this.selectionTint,
     required this.danger,
+    required this.onDanger,
     required this.dangerTint,
     required this.primaryHover,
     required this.scrim,
     required this.pin,
     required this.onPin,
     required this.pinRing,
-    required this.onError,
     required this.inversePrimary,
     required this.surfaceContainers,
   });
@@ -42,6 +46,8 @@ final class ClaxPalette {
   final Color raised;
   final Color overlay;
   final Color hover;
+  final Color menuHover;
+  final Color menuPress;
   final Color fg;
   final Color muted;
   final Color border;
@@ -57,14 +63,16 @@ final class ClaxPalette {
   final Color onYou;
   final Color commentHl;
   final Color selectionBg;
+  final Color selectionFg;
+  final Color selectionTint;
   final Color danger;
+  final Color onDanger;
   final Color dangerTint;
   final Color primaryHover;
   final Color scrim;
   final Color pin;
   final Color onPin;
   final Color pinRing;
-  final Color onError;
   final Color inversePrimary;
 
   /// Material's surface containers, lowest to highest.
@@ -80,6 +88,8 @@ abstract final class ClaxTokens {
     raised: Color(0xFFFFFFFF),
     overlay: Color(0xFFFFFFFF),
     hover: Color(0xFFF2F2EF),
+    menuHover: Color(0xFFF2F2EF),
+    menuPress: Color(0xFFE6E5E1),
     fg: Color(0xFF1C1B19),
     muted: Color(0xFF5F5D58),
     border: Color(0xFFE6E5E1),
@@ -95,14 +105,16 @@ abstract final class ClaxTokens {
     onYou: Color(0xFF141413),
     commentHl: Color(0xFFFBE9E3),
     selectionBg: Color(0xFFF6D3C7),
+    selectionFg: Color(0xFF1C1B19),
+    selectionTint: Color(0xFFF6D3C7),
     danger: Color(0xFFB3261E),
+    onDanger: Color(0xFFFFFFFF),
     dangerTint: Color(0xFFFBECEB),
     primaryHover: Color(0xFF3A3935),
     scrim: Color(0x6614140F),
     pin: Color(0xFFE0532F),
     onPin: Color(0xFF141413),
     pinRing: Color(0xFFFFFFFF),
-    onError: Color(0xFFFFFFFF),
     inversePrimary: Color(0xFF7CC36F),
     surfaceContainers: [Color(0xFFFFFFFF), Color(0xFFFBFBF9), Color(0xFFF2F2EF), Color(0xFFECEBE7), Color(0xFFE6E5E1)],
   );
@@ -113,6 +125,8 @@ abstract final class ClaxTokens {
     raised: Color(0xFF232321),
     overlay: Color(0xFF2A2A27),
     hover: Color(0xFF2A2A27),
+    menuHover: Color(0xFF3A3A36),
+    menuPress: Color(0xFF46453F),
     fg: Color(0xFFECEBE7),
     muted: Color(0xFFA9A69F),
     border: Color(0xFF2C2C29),
@@ -128,14 +142,16 @@ abstract final class ClaxTokens {
     onYou: Color(0xFF141413),
     commentHl: Color(0xFF2E1E19),
     selectionBg: Color(0xFFF6D3C7),
+    selectionFg: Color(0xFF1C1B19),
+    selectionTint: Color(0x47F6D3C7),
     danger: Color(0xFFFF8A80),
+    onDanger: Color(0xFF141413),
     dangerTint: Color(0xFF3A1F1C),
     primaryHover: Color(0xFFD6D4CE),
     scrim: Color(0x99000000),
     pin: Color(0xFFE0532F),
     onPin: Color(0xFF141413),
     pinRing: Color(0xFFFFFFFF),
-    onError: Color(0xFF141413),
     inversePrimary: Color(0xFF2F6F2A),
     surfaceContainers: [Color(0xFF0F0F0E), Color(0xFF1C1C1A), Color(0xFF232321), Color(0xFF2A2A27), Color(0xFF32322F)],
   );
@@ -146,6 +162,8 @@ abstract final class ClaxTokens {
     raised: Color(0xFFFFFFFF),
     overlay: Color(0xFFFFFFFF),
     hover: Color(0xFFF2F2EF),
+    menuHover: Color(0xFFF2F2EF),
+    menuPress: Color(0xFFE6E5E1),
     fg: Color(0xFF1C1B19),
     muted: Color(0xFF5F5D58),
     border: Color(0xFF85827B),
@@ -161,14 +179,16 @@ abstract final class ClaxTokens {
     onYou: Color(0xFF141413),
     commentHl: Color(0xFFFBE9E3),
     selectionBg: Color(0xFFF6D3C7),
+    selectionFg: Color(0xFF1C1B19),
+    selectionTint: Color(0xFFF6D3C7),
     danger: Color(0xFFB3261E),
+    onDanger: Color(0xFFFFFFFF),
     dangerTint: Color(0xFFFBECEB),
     primaryHover: Color(0xFF3A3935),
     scrim: Color(0x6614140F),
     pin: Color(0xFFE0532F),
     onPin: Color(0xFF141413),
     pinRing: Color(0xFFFFFFFF),
-    onError: Color(0xFFFFFFFF),
     inversePrimary: Color(0xFF7CC36F),
     surfaceContainers: [Color(0xFFFFFFFF), Color(0xFFFBFBF9), Color(0xFFF2F2EF), Color(0xFFECEBE7), Color(0xFFE6E5E1)],
   );
@@ -179,6 +199,8 @@ abstract final class ClaxTokens {
     raised: Color(0xFF232321),
     overlay: Color(0xFF2A2A27),
     hover: Color(0xFF2A2A27),
+    menuHover: Color(0xFF3A3A36),
+    menuPress: Color(0xFF46453F),
     fg: Color(0xFFECEBE7),
     muted: Color(0xFFA9A69F),
     border: Color(0xFF7C7972),
@@ -194,14 +216,16 @@ abstract final class ClaxTokens {
     onYou: Color(0xFF141413),
     commentHl: Color(0xFF2E1E19),
     selectionBg: Color(0xFFF6D3C7),
+    selectionFg: Color(0xFF1C1B19),
+    selectionTint: Color(0x47F6D3C7),
     danger: Color(0xFFFF8A80),
+    onDanger: Color(0xFF141413),
     dangerTint: Color(0xFF3A1F1C),
     primaryHover: Color(0xFFD6D4CE),
     scrim: Color(0x99000000),
     pin: Color(0xFFE0532F),
     onPin: Color(0xFF141413),
     pinRing: Color(0xFFFFFFFF),
-    onError: Color(0xFF141413),
     inversePrimary: Color(0xFF2F6F2A),
     surfaceContainers: [Color(0xFF0F0F0E), Color(0xFF1C1C1A), Color(0xFF232321), Color(0xFF2A2A27), Color(0xFF32322F)],
   );

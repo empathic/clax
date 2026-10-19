@@ -7,8 +7,12 @@
 # byte); an edited value in kit.css's generated region is stale; a kit.css
 # without its end marker fails; a color-mix() in kit.css outside an
 # @supports block fails; an edited design/mark.css makes the home app's
-# mark.css stale, an edited design/mark.json the Dart geometry; and a mark
-# path with a command other than M or A fails.
+# mark.css stale, an edited design/mark.json the Dart geometry; a mark
+# path with a command other than M or A fails; a kit token the source maps
+# that kit.css declares again outside its generated region fails (but not
+# inside @supports); a color-mix() outside @supports in the home app's
+# home.css or the map's stylesheet in map.js fails; and a contrast pair
+# below its minimum in a more-contrast palette fails.
 set -uo pipefail
 cd "$(dirname "$0")/.." || exit 1
 d="$(mktemp -d)"
@@ -32,10 +36,13 @@ OUTPUTS=(
 )
 # The kit's stylesheet: only the text between its markers is generated.
 KIT=apps/clax_app/assets/kit/kit.css
+# Checked, never written: their color-mix() declarations.
+HOME=apps/clax_app/home/home.css
+MAP=apps/clax_app/assets/kit/map.js
 
 _copy() {
     rm -rf "$d/w" && mkdir -p "$d/w"
-    for f in "${INPUTS[@]}" "${OUTPUTS[@]}" "$KIT"; do
+    for f in "${INPUTS[@]}" "${OUTPUTS[@]}" "$KIT" "$HOME" "$MAP"; do
         [ -f "$f" ] || continue
         mkdir -p "$d/w/$(dirname "$f")" && cp "$f" "$d/w/$f"
     done
@@ -167,5 +174,46 @@ _sub "$d/w/design/mark.json" 'M1.5 2.5a5.5' 'M1.5 2.5l0 1a5.5'
 _run --check
 { [ "$st" = 1 ] && _has "design/mark.json: you.d has a command other than M or A"; } ||
     _fail "a mark path with another command fails: $out"
+
+# 13. A kit token the source maps, declared again below the generated
+# region, overrides the brand: it fails, naming it and its line. Inside an
+# @supports block (the tints that follow an app's own accent) it does not.
+_copy
+_sub "$d/w/$KIT" '/* Base. */' ':root { --k-bg: #ffffff; }
+/* Base. */'
+_run --check
+{ [ "$st" = 1 ] && _has "kit.css: --k-bg is declared outside its generated region at line"; } ||
+    _fail "a mapped kit token declared again fails: $out"
+_copy
+_sub "$d/w/$KIT" '/* Base. */' '@supports (color: color-mix(in srgb, red, red)) { :root { --k-accent-soft: color-mix(in srgb, var(--k-accent) 9%, transparent); } }
+/* Base. */'
+_run --check
+[ "$st" = 0 ] || _fail "a mapped kit token inside @supports passes: $out"
+
+# 14. A color-mix() outside @supports in home.css fails.
+_copy
+printf '%s\n' '.h-x { background: color-mix(in srgb, var(--fg) 10%, transparent); }' >> "$d/w/$HOME"
+_run --check
+{ [ "$st" = 1 ] && _has "home.css: color-mix() outside @supports at line"; } || _fail "a bare color-mix in home.css fails: $out"
+
+# 15. A color-mix() outside @supports in map.js's stylesheet fails.
+_copy
+_sub "$d/w/$MAP" '.k-map:active {' '.k-map-x { background: color-mix(in srgb, red 10%, transparent); }
+.k-map:active {'
+_run --check
+{ [ "$st" = 1 ] && _has "map.js: color-mix() outside @supports at line"; } || _fail "a bare color-mix in map.js fails: $out"
+
+# 16. A pair below its minimum only with more contrast fails, naming the
+# palette.
+_copy
+python3 - "$d/w/design/tokens.json" <<'EOF'
+import json, sys
+f = sys.argv[1]
+t = json.load(open(f))
+t["contrastMore"]["muted"] = "border"
+open(f, "w").write(json.dumps(t, indent=2) + "\n")
+EOF
+_run --check
+{ [ "$st" = 1 ] && _has "contrast: muted on bg (light, more contrast) is"; } || _fail "a more-contrast pair below its minimum fails: $out"
 
 if [ "$fails" = 0 ]; then echo "sync tokens tests: all passed"; else echo "sync tokens tests: $fails failed"; exit 1; fi

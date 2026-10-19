@@ -18,11 +18,12 @@
   --k-bar: #ffffff;
   --k-fg: #1c1b19;
   --k-fg-2: #5f5d58;
-  --k-fg-3: #85827b;
+  --k-fg-3: #5f5d58;
   --k-line: #e6e5e1;
   --k-line-strong: #85827b;
   --k-accent: #2f6f2a;
   --k-on-accent: #ffffff;
+  --k-on-danger: #ffffff;
   --k-accent-soft: #e8f1e6;
   --k-danger: #b3261e;
   --k-scrim: rgba(20,20,15,.40);
@@ -58,11 +59,12 @@
     --k-bar: #1c1c1a;
     --k-fg: #ecebe7;
     --k-fg-2: #a9a69f;
-    --k-fg-3: #7c7972;
+    --k-fg-3: #a9a69f;
     --k-line: #2c2c29;
     --k-line-strong: #7c7972;
     --k-accent: #7cc36f;
     --k-on-accent: #141413;
+    --k-on-danger: #141413;
     --k-accent-soft: #1f2a1d;
     --k-danger: #ff8a80;
     --k-scrim: rgba(0,0,0,.60);
@@ -76,11 +78,12 @@
   --k-bar: #1c1c1a;
   --k-fg: #ecebe7;
   --k-fg-2: #a9a69f;
-  --k-fg-3: #7c7972;
+  --k-fg-3: #a9a69f;
   --k-line: #2c2c29;
   --k-line-strong: #7c7972;
   --k-accent: #7cc36f;
   --k-on-accent: #141413;
+  --k-on-danger: #141413;
   --k-accent-soft: #1f2a1d;
   --k-danger: #ff8a80;
   --k-scrim: rgba(0,0,0,.60);
@@ -326,7 +329,7 @@ a { color: var(--k-accent); text-decoration: none; }
 .k-tab:active .k-tab-icon { transform: scale(0.9); }
 .k-tab-badge {
   position: absolute; margin: -16px 0 0 22px; min-width: 16px; height: 16px; padding: 0 4px;
-  border-radius: 8px; background: var(--k-danger); color: #fff; font: 700 10px/16px var(--k-font);
+  border-radius: 8px; background: var(--k-danger); color: var(--k-on-danger); font: 700 10px/16px var(--k-font);
 }
 
 /* Buttons. */
@@ -345,7 +348,7 @@ a { color: var(--k-accent); text-decoration: none; }
 .k-btn.k-tonal { background: var(--k-accent-soft); color: var(--k-accent); }
 .k-btn.k-outline { background: transparent; color: var(--k-accent); box-shadow: inset 0 0 0 1.5px var(--k-line-strong); }
 .k-btn.k-plain { background: transparent; color: var(--k-accent); padding: 0 var(--k-s3); }
-.k-btn.k-danger { background: var(--k-danger); color: #fff; }
+.k-btn.k-danger { background: var(--k-danger); color: var(--k-on-danger); }
 .k-btn.k-danger.k-tonal { background: var(--k-surface-3); color: var(--k-danger); }
 @supports (color: color-mix(in srgb, red, red)) { .k-btn.k-danger.k-tonal { background: color-mix(in srgb, var(--k-danger) 14%, transparent); } }
 .k-btn.k-gradient { background: linear-gradient(135deg, var(--k-accent), var(--k-accent-2)); color: var(--k-on-accent); box-shadow: var(--k-shadow-2); }
@@ -412,7 +415,7 @@ button.k-item:active, a.k-item:active { background: var(--k-surface-3); }
 .k-list > li.k-has-lead + li.k-has-lead .k-item::before { left: 60px; }
 .k-item-lead {
   flex: none; width: 32px; height: 32px; border-radius: 8px; display: grid; place-items: center;
-  background: var(--k-accent); color: #fff;
+  background: var(--k-accent); color: var(--k-on-accent);
 }
 .k-item-lead.k-plain-lead { background: none; color: var(--k-accent); }
 .k-item-lead.k-avatar { border-radius: 50%; width: 36px; height: 36px; font: 600 15px/1 var(--k-font); }
