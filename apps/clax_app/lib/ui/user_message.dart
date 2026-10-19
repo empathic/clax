@@ -106,7 +106,7 @@ final _keyText = RegExp(
 /// MessagesApiBackend and NetworkPause write it (also read back from a
 /// failure reply, which keeps no kind).
 final _agentUnreachable = RegExp(
-  r"^Couldn't reach the Claude API|"
+  r"^Couldn't reach the Claude API|" // copy-check: allow
   r'^The connection to the Claude API (was lost|stalled)',
 );
 
@@ -125,6 +125,6 @@ final _agentRaw = RegExp(
   r'^The answer (was not a whole message|stopped before it finished|'
   r'had no text|broke off in a call)|'
   r'^The result (was not a JSON object|was malformed)|'
-  r"^claude[ ']|^Couldn't start claude|"
+  r"^claude[ ']|^Couldn't start claude|" // copy-check: allow
   r'^(Bad state|Invalid argument)|^\w*(Exception|Error)\b|HTTP \d{3}',
 );

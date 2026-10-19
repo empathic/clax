@@ -1127,7 +1127,7 @@ void main() {
       );
       await tester.tap(find.text('Always for this app'));
       await tester.pump();
-      await tester.tap(find.text('Allow once'));
+      await tester.tap(find.text('Always allow'));
       await pumpUntil(tester, () => work.calls.contains('stop'));
       expect(question, findsNothing);
       expect(result, isNot(contains('did not allow')));
