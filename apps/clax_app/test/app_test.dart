@@ -675,6 +675,108 @@ void main() {
     expect(nav().canPop(), isFalse, reason: 'beside the rail, not a route');
   }, variant: TargetPlatformVariant.only(TargetPlatform.android));
 
+  group('a split window opens an app aimed somewhere beside its sidebar', () {
+    ThreadSummary thread(String id) => ThreadSummary(
+      id: id,
+      status: 'open',
+      summary: 'Bigger',
+      sent: true,
+      comments: 2,
+      version: 1,
+    );
+    NavigatorState nav(WidgetTester tester) =>
+        tester.state<NavigatorState>(find.byType(Navigator).first);
+
+    Future<void> aimed(WidgetTester tester, Finder beside) async {
+      final aid = rig.api.seedArtifact('Runs', {'index.html': _page});
+      final launcher = tester.widget<Launcher>(find.byType(Launcher));
+
+      launcher.onOpenTarget!(aid, thread: 't1', comment: 'c7');
+      await pumpRoute(tester);
+      expect(find.byType(AppScreen), findsOneWidget);
+      expect(beside, findsOneWidget);
+      expect(nav(tester).canPop(), isFalse, reason: 'beside, not a route');
+      final screen = tester.widget<AppScreen>(find.byType(AppScreen));
+      expect((screen.initialThread, screen.initialComment), ('t1', 'c7'));
+      final page = rig.surfaces.last;
+      page.push(Ready(artifact: aid, version: 2, latest: 2, file: 'index.html'));
+      page.push(ThreadsMsg([thread('t1')]));
+      await pumpRoute(tester);
+      expect(page.js, contains(const OpenThread('t1').toJs()));
+
+      // The same app at a version: its page opens again there.
+      launcher.onOpenTarget!(aid, version: 1);
+      await pumpRoute(tester);
+      expect(nav(tester).canPop(), isFalse);
+      final again = rig.surfaces.last;
+      expect(again, isNot(same(page)));
+      expect(page.disposed, isTrue);
+      expect(find.byType(AppScreen), findsOneWidget);
+      again.push(Ready(artifact: aid, version: 2, latest: 2, file: 'index.html'));
+      await tester.pump();
+      expect(again.js, contains(const LoadVersion(1).toJs()));
+    }
+
+    testWidgets('on wide Android, at a thread or a version', (tester) async {
+      await pumpApp(
+        tester,
+        _Rig(key: 'sk-ant-x'),
+        size: const Size(1280, 800),
+      );
+      await up(tester);
+      await aimed(tester, find.byKey(const ValueKey('split-rail')));
+    }, variant: TargetPlatformVariant.only(TargetPlatform.android));
+
+    testWidgets('in a wide Mac window, at a thread or a version', (
+      tester,
+    ) async {
+      TestDefaultBinaryMessengerBinding.instance.defaultBinaryMessenger
+          .setMockMethodCallHandler(SystemChannels.menu, (_) async => null);
+      addTearDown(
+        () => TestDefaultBinaryMessengerBinding.instance.defaultBinaryMessenger
+            .setMockMethodCallHandler(SystemChannels.menu, null),
+      );
+      await pumpApp(
+        tester,
+        _Rig(key: 'sk-ant-x'),
+        size: const Size(1200, 800),
+      );
+      await up(tester);
+      await aimed(tester, find.byType(ClaxSidebar));
+    }, variant: TargetPlatformVariant.only(TargetPlatform.macOS));
+
+    testWidgets('on wide Android a notice\'s action opens its app beside the '
+        'rail, and a later one reaches that same screen', (tester) async {
+      final notice = FakeAppNotice();
+      await pumpApp(
+        tester,
+        _Rig(key: 'sk-ant-x', notice: notice),
+        size: const Size(1280, 800),
+      );
+      await up(tester);
+      final runs = rig.api.seedArtifact('Runs', {'index.html': _page});
+      notice.tap(runs, AppAction.comment);
+      await pumpRoute(tester);
+      expect(nav(tester).canPop(), isFalse, reason: 'beside, not a route');
+      expect(find.byKey(const ValueKey('split-rail')), findsOneWidget);
+      final screen = tester.widget<AppScreen>(find.byType(AppScreen));
+      expect((screen.aid, screen.initialAction), (runs, AppAction.comment));
+      rig.surfaces.last.push(
+        Ready(artifact: runs, version: 1, latest: 1, file: 'index.html'),
+      );
+      await tester.pumpAndSettle();
+      expect(find.byKey(const ValueKey('comment-bar')), findsOneWidget);
+      expect(notice.shown, '$runs Runs');
+
+      final surfaces = rig.surfaces.length;
+      notice.tap(runs, AppAction.threads);
+      await tester.pumpAndSettle();
+      expect(find.byKey(const ValueKey('app-panel')), findsOneWidget);
+      expect(rig.surfaces, hasLength(surfaces), reason: 'not opened again');
+      expect(find.byType(AppScreen), findsOneWidget);
+    }, variant: TargetPlatformVariant.only(TargetPlatform.android));
+  });
+
   testWidgets('an Android phone has no split window, and an app opens over '
       'the home screen', (tester) async {
     await pumpApp(tester, _Rig(key: 'sk-ant-x'));

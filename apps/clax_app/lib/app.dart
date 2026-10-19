@@ -717,6 +717,22 @@ class _AppRootState extends State<AppRoot> with WidgetsBindingObserver {
   /// selected while it follows the new app's build.
   ({String id, MakeSession session})? _paneMake;
 
+  /// Where the app last opened in a split window's detail ([_openInPane])
+  /// was aimed: at a thread (and a comment on it) or a version, with an
+  /// action to take once it is up. Each such open has a new [generation],
+  /// so the app opened again opens its page again there; it is forgotten
+  /// once another selection shows.
+  ({
+    String aid,
+    String? thread,
+    int? version,
+    String? comment,
+    AppAction? action,
+    int generation,
+  })?
+  _paneAim;
+  var _paneGeneration = 0;
+
   /// The home screen's route, kept when the window becomes a split one or
   /// stops being one.
   final _homeRouteKey = GlobalKey();
@@ -899,6 +915,7 @@ class _AppRootState extends State<AppRoot> with WidgetsBindingObserver {
   void initState() {
     super.initState();
     WidgetsBinding.instance.addObserver(this);
+    _selection.addListener(_forgetPaneAim);
     _api = _s.api(_currentEndpoint);
     _runtime = AgentRuntime(
       supervisor: _s.supervisor,
@@ -1057,6 +1074,7 @@ class _AppRootState extends State<AppRoot> with WidgetsBindingObserver {
     _makes.dispose();
     unawaited(_runtime.close());
     _sidebar?.dispose();
+    _selection.removeListener(_forgetPaneAim);
     _selection.dispose();
     _sidebarShown.dispose();
     _homeHost?.dispose();
@@ -2022,9 +2040,7 @@ class _AppRootState extends State<AppRoot> with WidgetsBindingObserver {
     }
     final top = _openApps.lastOrNull;
     if (top != null && top.aid == aid) {
-      if (toTop || action != null) {
-        _nav.currentState?.popUntil((r) => r == top.route);
-      }
+      if (toTop || action != null) top.toFront();
       if (action != null) top.actions.add(action);
       return;
     }
@@ -2182,7 +2198,7 @@ class _AppRootState extends State<AppRoot> with WidgetsBindingObserver {
       return;
     }
     final top = _openApps.lastOrNull;
-    if (top != null && top.route.isCurrent) {
+    if (top != null && top.isCurrent()) {
       final others = [
         for (final q in qs)
           if (q.artifactId != top.aid) q,
@@ -2321,7 +2337,7 @@ class _AppRootState extends State<AppRoot> with WidgetsBindingObserver {
       if (q == null && (!asked || _seenQuestions.contains(qid))) continue;
       if (asked) {
         _showQuestion(qid, asked: true);
-      } else if (_openApps.lastOrNull?.route.isCurrent ?? false) {
+      } else if (_openApps.lastOrNull?.isCurrent() ?? false) {
         told.add(q!);
       } else {
         _presentQuestion(q!);
@@ -2365,7 +2381,8 @@ class _AppRootState extends State<AppRoot> with WidgetsBindingObserver {
   /// takes [action] there once it is up. The home app shown as home (not
   /// covered by the built-in home screen) is not opened a second time:
   /// the screens over the home route close and [action] is taken there,
-  /// unless a thread or a version is asked for.
+  /// unless a thread or a version is asked for. In a split window any
+  /// other app opens in the detail beside the sidebar ([_openInPane]).
   void _open(
     String aid, {
     String? thread,
@@ -2375,21 +2392,29 @@ class _AppRootState extends State<AppRoot> with WidgetsBindingObserver {
   }) {
     final nav = _nav.currentState;
     if (nav == null) return;
-    // A split window shows the app beside its sidebar; one opened at a
-    // thread, a version or a comment, or to take an action, is pushed.
+    final aimed = thread != null || version != null || comment != null;
+    // A split window shows the app beside its sidebar, at a thread, a
+    // version or a comment, or taking an action, as asked. The home app is
+    // the grid there: one opened at a thread or a version is pushed.
     final sidebar = _sidebar;
-    if (_split &&
-        sidebar != null &&
-        thread == null &&
-        version == null &&
-        comment == null) {
+    if (_split && sidebar != null) {
       final s = _homeHost?.settings;
       final isHome = s != null && !s.builtin && s.homeAppId == aid;
-      if (isHome || action == null) {
+      if (isHome && !aimed) {
         nav.popUntil((r) => r.isFirst);
         _splitKey.currentState?.go(SplitPlace.home);
-        sidebar.select(isHome ? const HomeSelected() : AppSelected(aid));
-        if (isHome && action != null) _homeActions.add(action);
+        sidebar.select(const HomeSelected());
+        if (action != null) _homeActions.add(action);
+        return;
+      }
+      if (!isHome) {
+        _openInPane(
+          aid,
+          thread: thread,
+          version: version,
+          comment: comment,
+          action: action,
+        );
         return;
       }
     }
@@ -2412,6 +2437,54 @@ class _AppRootState extends State<AppRoot> with WidgetsBindingObserver {
         ),
       ),
     );
+  }
+
+  /// Shows app [aid] in the split window's detail, beside the sidebar,
+  /// with what was over the window closed: at [thread] (and [comment]) or
+  /// [version] when given, taking [action] once it is up. Shown there
+  /// already and opened at neither, it takes [action] where it is.
+  void _openInPane(
+    String aid, {
+    String? thread,
+    int? version,
+    String? comment,
+    AppAction? action,
+  }) {
+    _nav.currentState?.popUntil((r) => r.isFirst);
+    _splitKey.currentState?.go(SplitPlace.home);
+    final selected = AppSelected(aid);
+    final shown = _selection.value == selected;
+    if (shown && thread == null && version == null && comment == null) {
+      if (action == null) return;
+      for (final o in _openApps) {
+        if (o.route == null && o.aid == aid) {
+          o.actions.add(action);
+          return;
+        }
+      }
+    }
+    _paneAim = (
+      aid: aid,
+      thread: thread,
+      version: version,
+      comment: comment,
+      action: action,
+      generation: ++_paneGeneration,
+    );
+    if (shown) {
+      // The detail is built again, at the new aim.
+      _revision.value++;
+    } else {
+      _sidebar?.select(selected);
+    }
+  }
+
+  /// Forgets [_paneAim] once its app is no longer selected.
+  void _forgetPaneAim() {
+    if (_paneAim case final aim?
+        when _selection.value != AppSelected(aim.aid)) {
+      _paneAim = null;
+    }
   }
 
   /// Puts new app [aid] in the place of the making screen whose [context]
@@ -2466,7 +2539,15 @@ class _AppRootState extends State<AppRoot> with WidgetsBindingObserver {
         ),
       ),
     );
-    _openApps.add(open = _OpenApp(aid, route, actions));
+    _openApps.add(
+      open = _OpenApp(
+        aid,
+        actions,
+        route: route,
+        isCurrent: () => route.isCurrent,
+        toFront: () => _nav.currentState?.popUntil((r) => r == route),
+      ),
+    );
     _lastOpened = aid;
     unawaited(
       route.popped.whenComplete(() {
@@ -2776,23 +2857,68 @@ class _AppRootState extends State<AppRoot> with WidgetsBindingObserver {
   /// What a split window shows beside its sidebar for [s]: the app's
   /// screen, or the make's state with a way to its build view.
   Widget _splitDetail(SidebarSelection s) => switch (s) {
-    AppSelected(:final id) => _AppPage(
-      aid: id,
-      endpoint: _endpoint,
-      surface: (base) => _s.surface(base),
-      screen: (base, surface) => _appScreen(
-        aid: id,
-        base: base,
-        surface: surface,
-        settings: _settings,
-        actions: const Stream.empty(),
-        onReady: (r) => _onReady(id, r),
-        leave: () => _sidebar?.select(const HomeSelected()),
-      ),
-    ),
+    AppSelected(:final id) => _paneApp(id),
     MakeSelected(:final id) => _makeDetail(id),
     HomeSelected() => const SizedBox.shrink(),
   };
+
+  /// App [id]'s screen in the split window's detail, aimed as
+  /// [_paneAim] says; one of [_openApps] (the bottom one) while it is
+  /// built, which is current while the window shows it.
+  Widget _paneApp(String id) {
+    final aim = _paneAim?.aid == id ? _paneAim : null;
+    final selected = AppSelected(id);
+    return _OpenAppScope(
+      key: ValueKey(aim?.generation ?? 0),
+      open: () {
+        final open = _OpenApp(
+          id,
+          StreamController<AppAction>.broadcast(),
+          isCurrent: () =>
+              mounted &&
+              _split &&
+              _selection.value == selected &&
+              (_splitKey.currentState?.place ?? SplitPlace.home) ==
+                  SplitPlace.home &&
+              !(_nav.currentState?.canPop() ?? true),
+          toFront: () => _openInPane(id),
+        );
+        _openApps.insert(0, open);
+        _lastOpened = id;
+        return open;
+      },
+      close: (open) {
+        _openApps.remove(open);
+        unawaited(open.actions.close());
+      },
+      builder: (open) => _AppPage(
+        aid: id,
+        endpoint: _endpoint,
+        surface: (base) => open.surface = _aimed(
+          _s.surface(base),
+          id,
+          thread: aim?.thread,
+          version: aim?.version,
+        ),
+        screen: (base, surface) => _appScreen(
+          aid: id,
+          base: base,
+          surface: surface,
+          settings: _settings,
+          actions: open.actions.stream,
+          action: aim?.action,
+          thread: aim?.thread,
+          comment: aim?.comment,
+          onReady: (r) {
+            open.ready = true;
+            _onReady(id, r);
+            _openRoute(id);
+          },
+          leave: () => _sidebar?.select(const HomeSelected()),
+        ),
+      ),
+    );
+  }
 
   /// The detail of make [id]: its build view, or what is left to do with
   /// an interrupted make.
@@ -2969,15 +3095,61 @@ class _HomeCoverWatch extends NavigatorObserver {
 /// An open app page: app [aid]'s [route], and the [actions] its screen
 /// takes.
 class _OpenApp {
-  _OpenApp(this.aid, this.route, this.actions);
+  _OpenApp(
+    this.aid,
+    this.actions, {
+    this.route,
+    required this.isCurrent,
+    required this.toFront,
+  });
 
   final String aid;
-  final Route<void> route;
   final StreamController<AppAction> actions;
+
+  /// The page's route; null for the app in a split window's detail.
+  final Route<void>? route;
+
+  /// Whether the app's screen is what the window shows, with nothing over
+  /// it.
+  final bool Function() isCurrent;
+
+  /// Closes what is over the app's screen.
+  final VoidCallback toFront;
 
   /// The page's surface, once built, and whether its page is up.
   AppSurface? surface;
   var ready = false;
+}
+
+/// An [_OpenApp] made by [open] while this is built, and given to [close]
+/// once it goes; [builder] builds its screen.
+class _OpenAppScope extends StatefulWidget {
+  const _OpenAppScope({
+    super.key,
+    required this.open,
+    required this.close,
+    required this.builder,
+  });
+
+  final _OpenApp Function() open;
+  final void Function(_OpenApp open) close;
+  final Widget Function(_OpenApp open) builder;
+
+  @override
+  State<_OpenAppScope> createState() => _OpenAppScopeState();
+}
+
+class _OpenAppScopeState extends State<_OpenAppScope> {
+  late final _open = widget.open();
+
+  @override
+  void dispose() {
+    widget.close(_open);
+    super.dispose();
+  }
+
+  @override
+  Widget build(BuildContext context) => widget.builder(_open);
 }
 
 /// The open app's page: a surface for the daemon's address, loaded again
