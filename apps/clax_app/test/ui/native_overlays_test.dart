@@ -20,17 +20,30 @@ import 'package:flutter_test/flutter_test.dart';
 import '../support/fake_surface.dart';
 import '../support/fake_voice.dart';
 
-/// A clock that never moves: toasts stay up for the test.
+/// A clock that moves only when told: toasts stay up until [lapse].
 class _Still implements Clock {
+  final _delays = <Completer<void>>[];
+
   @override
   DateTime now() => DateTime.utc(2026, 10, 19);
 
   @override
-  Future<void> delay(Duration d) => Completer<void>().future;
+  Future<void> delay(Duration d) =>
+      (_delays..add(Completer<void>())).last.future;
+
+  /// Ends every delay asked for so far.
+  void lapse() {
+    for (final c in List.of(_delays)) {
+      c.complete();
+    }
+    _delays.clear();
+  }
 }
 
 void main() {
   late FakeAppSurface surface;
+  late _Still clock;
+  late GlobalKey<NavigatorState> nav;
 
   /// The app screen over a home route, its page ready; [width] in logical
   /// pixels.
@@ -45,7 +58,8 @@ void main() {
     surface = FakeAppSurface();
     final worker = StreamController<WorkerEvent>.broadcast();
     addTearDown(worker.close);
-    final nav = GlobalKey<NavigatorState>();
+    clock = _Still();
+    nav = GlobalKey<NavigatorState>();
     await tester.pumpWidget(
       MaterialApp(
         navigatorKey: nav,
@@ -65,7 +79,7 @@ void main() {
             settings: AppSettings(),
             timings: NoTimings(),
             worker: worker.stream,
-            clock: _Still(),
+            clock: clock,
           ),
         ),
       ),
@@ -126,6 +140,110 @@ void main() {
       final bar = tester.getRect(find.byKey(const ValueKey('app-notice')));
       expect(bar.left, 0);
       expect(bar.width, 900);
+    });
+
+    const failed = Notice(
+      'Couldn’t load the latest version',
+      tone: NoticeTone.error,
+      action: (id: 'retry', label: 'Try again'),
+    );
+
+    testWidgets('an info notice goes in time; one with an action or an '
+        'error stays until it is closed', (tester) async {
+      await pumpScreen(tester);
+      surface.push(const Notice('Saved'));
+      await tester.pumpAndSettle();
+      expect(find.byKey(ClaxToast.closeKey), findsNothing);
+      clock.lapse();
+      await tester.pumpAndSettle();
+      expect(find.text('Saved'), findsNothing);
+
+      for (final m in [
+        failed,
+        const Notice('Couldn’t save', tone: NoticeTone.error),
+        const Notice('Saved', action: (id: 'n1', label: 'Undo')),
+      ]) {
+        surface.push(m);
+        await tester.pumpAndSettle();
+        clock.lapse();
+        await tester.pumpAndSettle();
+        expect(find.text(m.text), findsOneWidget, reason: m.text);
+        await tester.tap(find.byKey(ClaxToast.closeKey));
+        await tester.pumpAndSettle();
+        expect(find.text(m.text), findsNothing, reason: m.text);
+      }
+      expect(surface.hostCalls.whereType<NoticeAction>(), isEmpty);
+    });
+
+    testWidgets('the next notice replaces one that stays', (tester) async {
+      await pumpScreen(tester);
+      surface.push(failed);
+      await tester.pumpAndSettle();
+      surface.push(const Notice('Saved'));
+      await tester.pumpAndSettle();
+      expect(find.text(failed.text), findsNothing);
+      clock.lapse();
+      await tester.pumpAndSettle();
+      expect(find.text('Saved'), findsNothing);
+      expect(find.text(failed.text), findsNothing);
+    });
+
+    testWidgets('a notice that stays comes back once another toast over it '
+        'goes, and Try again still calls noticeAction', (tester) async {
+      await pumpScreen(tester);
+      surface.push(const QuestionsMsg(1));
+      await tester.pump();
+      surface.push(failed);
+      await tester.pumpAndSettle();
+      surface.push(const QuestionsMsg(2));
+      await tester.pumpAndSettle();
+      expect(find.text('Clax has a question'), findsOneWidget);
+      expect(find.text(failed.text), findsNothing);
+      clock.lapse();
+      await tester.pumpAndSettle();
+      expect(find.text('Clax has a question'), findsNothing);
+      expect(find.text(failed.text), findsOneWidget);
+      await tester.tap(find.text('Try again'));
+      await tester.pumpAndSettle();
+      expect(surface.hostCalls.whereType<NoticeAction>().map((c) => c.id), [
+        'retry',
+      ]);
+      expect(find.text(failed.text), findsNothing);
+    });
+
+    testWidgets('a notice while the screen is not in front shows, the '
+        'latest only, when it is back', (tester) async {
+      await pumpScreen(tester);
+      unawaited(
+        nav.currentState!.push(
+          MaterialPageRoute<void>(
+            builder: (_) => const Scaffold(body: Text('over')),
+          ),
+        ),
+      );
+      await tester.pumpAndSettle();
+      surface.push(const Notice('Saved'));
+      surface.push(failed);
+      await tester.pump();
+      expect(find.text(failed.text), findsNothing);
+      nav.currentState!.pop();
+      await tester.pumpAndSettle();
+      expect(find.text(failed.text), findsOneWidget);
+      expect(find.text('Saved'), findsNothing);
+
+      // Up when the screen leaves, it shows again on the way back.
+      unawaited(
+        nav.currentState!.push(
+          MaterialPageRoute<void>(
+            builder: (_) => const Scaffold(body: Text('over')),
+          ),
+        ),
+      );
+      await tester.pumpAndSettle();
+      expect(find.text(failed.text), findsNothing);
+      nav.currentState!.pop();
+      await tester.pumpAndSettle();
+      expect(find.text(failed.text), findsOneWidget);
     });
   });
 

@@ -746,7 +746,10 @@ class _AppScreenState extends State<AppScreen> with WidgetsBindingObserver {
       }
       _catchUpHome();
       unawaited(_showNotice());
-      WidgetsBinding.instance.addPostFrameCallback((_) => _offerNewer());
+      WidgetsBinding.instance.addPostFrameCallback((_) {
+        _showHeldNotice();
+        _offerNewer();
+      });
     } else {
       if (widget.covered) _comments.unregister(_toggleOpen);
       widget.notice?.clear(this);
@@ -1073,10 +1076,36 @@ class _AppScreenState extends State<AppScreen> with WidgetsBindingObserver {
 
   /// Shows a shell notice (`notice` is native) as a toast at the top on a
   /// narrow window and a bar across the top from medium: an error leads
-  /// with the `danger` icon, and its action calls `noticeAction`.
+  /// with the `danger` icon, and its action calls `noticeAction`. Each
+  /// notice replaces the one before; one that comes while the screen is
+  /// not in front shows when it is.
   void _notice(Notice m) {
+    _heldNotice = m;
+    _showHeldNotice();
+  }
+
+  /// The latest shell notice still to be seen: one that came while the
+  /// screen was not in front, or one that [_stays] and was not yet acted
+  /// on, closed or replaced by the next notice.
+  Notice? _heldNotice;
+
+  /// The toast showing [_heldNotice], while it is up.
+  ClaxToastHandle? _noticeToast;
+
+  /// Whether notice [m] stays until it is acted on, closed or replaced by
+  /// the next notice: one with an action or an error does; an info notice
+  /// goes after [toastFor].
+  static bool _stays(Notice m) => m.action != null || m.tone == NoticeTone.error;
+
+  /// Shows [_heldNotice] while the screen is in front: a notice that
+  /// [_stays] is kept, and shown again when the screen comes back to front
+  /// or another of its toasts that took its place goes.
+  void _showHeldNotice() {
+    final m = _heldNotice;
+    if (m == null || _gone || !mounted || _toldVisible != true) return;
     final action = m.action;
-    _showToast(
+    final stays = _stays(m);
+    final toast = _showToast(
       m.text,
       key: const ValueKey('app-notice'),
       action: action?.label,
@@ -1085,6 +1114,23 @@ class _AppScreenState extends State<AppScreen> with WidgetsBindingObserver {
           ? ClaxToastPlace.inline
           : ClaxToastPlace.top,
       error: m.tone == NoticeTone.error,
+      stays: stays,
+    );
+    if (toast == null) return;
+    if (!stays) {
+      _heldNotice = null;
+      _noticeToast = null;
+      return;
+    }
+    _noticeToast = toast;
+    unawaited(
+      toast.closed.then((how) {
+        if (!identical(_noticeToast, toast)) return;
+        _noticeToast = null;
+        if (how != ClaxToastEnd.replaced && identical(_heldNotice, m)) {
+          _heldNotice = null;
+        }
+      }),
     );
   }
 
@@ -1092,6 +1138,7 @@ class _AppScreenState extends State<AppScreen> with WidgetsBindingObserver {
   /// with nothing of Clax's over it, and the home's lists drop it.
   void _onGone() {
     if (_gone) return;
+    _heldNotice = null;
     _putAwayToasts();
     _field.unfocus();
     unawaited(_stopDictation());
@@ -1613,6 +1660,7 @@ class _AppScreenState extends State<AppScreen> with WidgetsBindingObserver {
     Widget? leading,
     ClaxToastPlace place = ClaxToastPlace.top,
     bool error = false,
+    bool stays = false,
   }) {
     if (!mounted || _toldVisible != true) return null;
     final toast = ClaxToast.show(
@@ -1626,12 +1674,15 @@ class _AppScreenState extends State<AppScreen> with WidgetsBindingObserver {
       duration: duration,
       leading: leading,
       error: error,
+      stays: stays,
     );
     setState(() => _toastUp = toast);
     unawaited(
       toast.closed.then((_) {
         if (mounted && identical(_toastUp, toast)) {
           setState(() => _toastUp = null);
+          // A notice that stays comes back once the toast over it goes.
+          if (_noticeToast == null) _showHeldNotice();
         }
       }),
     );
@@ -1771,6 +1822,8 @@ class _AppScreenState extends State<AppScreen> with WidgetsBindingObserver {
   void _putAwayToasts() {
     _newerShown = null;
     _newerToast = null;
+    // A notice that stays is kept, and shows again with the screen.
+    _noticeToast = null;
     final toast = _toastUp;
     _toastUp = null;
     toast?.dismiss(now: true);

@@ -54,6 +54,9 @@ abstract final class ClaxToast {
   /// The icon an [error] toast leads with.
   static const errorIconKey = ValueKey('clax-toast-error');
 
+  /// The close button of a toast that [stays].
+  static const closeKey = ValueKey('clax-toast-close');
+
   static _ToastHandle? _current;
 
   /// The toast showing at the top or inline, if any.
@@ -64,7 +67,9 @@ abstract final class ClaxToast {
   /// inline. Each goes by itself after [duration] on [clock], except one
   /// with an action while a screen reader is on
   /// (`MediaQuery.accessibleNavigation`), which stays until it is used or
-  /// replaced. Each is a live region, and in the Apple family it is
+  /// replaced, and one that [stays], which goes only when its action is
+  /// used, it is closed (its close button, at the top and inline) or put
+  /// away, or another toast takes its place. Each is a live region, and in the Apple family it is
   /// announced as well. [leading] (a [ClaxMark], say) goes before the
   /// text at the top and inline; [key] names the card or bar (else
   /// [cardKey]). An [error] toast says something failed: without
@@ -89,6 +94,7 @@ abstract final class ClaxToast {
     Widget? leading,
     Key? key,
     bool error = false,
+    bool stays = false,
   }) {
     if (hasDesktopWindowChrome &&
         ClaxFamily.of(context) == ClaxFamily.apple) {
@@ -116,7 +122,8 @@ abstract final class ClaxToast {
                 : Text(text),
             behavior: SnackBarBehavior.floating,
             width: width,
-            duration: duration,
+            duration: stays ? const Duration(days: 365) : duration,
+            showCloseIcon: stays,
             action: actionLabel == null
                 ? null
                 : SnackBarAction(
@@ -162,6 +169,7 @@ abstract final class ClaxToast {
         onAction: onAction,
         leading: leading,
         error: error,
+        closes: stays,
       ),
     );
     handle.remove = () {
@@ -177,6 +185,7 @@ abstract final class ClaxToast {
       );
     }
     final keep =
+        stays ||
         actionLabel != null && MediaQuery.accessibleNavigationOf(context);
     if (!keep) {
       clock.delay(duration).then((_) => handle._end(ClaxToastEnd.timedOut));
@@ -270,6 +279,7 @@ class _OverlayToast extends StatefulWidget {
     required this.onAction,
     required this.leading,
     required this.error,
+    required this.closes,
   });
   final Key cardKey;
   final _ToastHandle handle;
@@ -281,6 +291,9 @@ class _OverlayToast extends StatefulWidget {
   final VoidCallback? onAction;
   final Widget? leading;
   final bool error;
+
+  /// Whether it has a close button, as a toast that stays does.
+  final bool closes;
 
   @override
   State<_OverlayToast> createState() => _OverlayToastState();
@@ -329,6 +342,16 @@ class _OverlayToastState extends State<_OverlayToast>
       widget.onAction?.call();
     }
 
+    Widget close(Color color) => IconButton(
+      key: ClaxToast.closeKey,
+      onPressed: widget.handle.dismiss,
+      tooltip: 'Dismiss',
+      color: color,
+      iconSize: 20,
+      visualDensity: VisualDensity.compact,
+      icon: const Icon(Icons.close),
+    );
+
     Widget live(Widget child) =>
         Semantics(container: true, liveRegion: true, child: child);
 
@@ -367,6 +390,7 @@ class _OverlayToastState extends State<_OverlayToast>
                     ),
                     child: Text(widget.actionLabel!),
                   ),
+                if (widget.closes) close(p.bg),
               ],
             ),
           ),
@@ -427,6 +451,7 @@ class _OverlayToastState extends State<_OverlayToast>
                 style: TextButton.styleFrom(foregroundColor: p.agentInk),
                 child: Text(widget.actionLabel!),
               ),
+            if (widget.closes) close(p.fg),
           ],
         ),
       ),
