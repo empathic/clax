@@ -1432,12 +1432,19 @@ impl Sync {
 
     /// Reads link `l`'s public threads (those changed since its cursor,
     /// or all when `full`) and writes here what changed.
+    ///
+    /// A thread whose page of one is past the answer cap stops this
+    /// link's read for the cycle: what was read before it is written
+    /// here, the cursor stays, and the link's read error says why
+    /// ([`clax_realtime::linked::Linked::read_error`]) while the remote's
+    /// other links go on. A read to the end clears it.
     async fn read(&mut self, l: &RemoteLink, full: bool) -> Result<(), Stop> {
         let c = self.client.as_ref().expect("connected");
         let since = if full { None } else { l.sync_cursor.clone() };
         let mut threads: Vec<Value> = Vec::new();
         let mut cursor: Option<String> = None;
         let mut limit = PAGE;
+        let mut cut_off = None;
         for _ in 0..MAX_PAGES {
             let mut q = format!(
                 "/api/artifacts/{}/threads?include_resolved=true&limit={limit}",
@@ -1459,6 +1466,13 @@ impl Sync {
                         limit = (limit / 4).max(1);
                         continue;
                     }
+                    None if f.code == "too_large" => {
+                        cut_off = Some(format!(
+                            "a thread there is past the {} MiB an answer may be",
+                            crate::public::MAX_ANSWER_BYTES >> 20
+                        ));
+                        break;
+                    }
                     None => return Err(Stop::Unreachable(f.message)),
                 },
             };
@@ -1476,6 +1490,13 @@ impl Sync {
                 newest = a;
             }
             self.mirror(l, rt).await?;
+        }
+        let stopped = cut_off.is_some();
+        self.s
+            .linked
+            .set_read_error(&l.artifact_id, &self.rid, cut_off);
+        if stopped {
+            return Ok(());
         }
         if !newest.is_empty() && Some(&newest) != l.sync_cursor.as_ref() {
             let (aid, rid) = (l.artifact_id.clone(), self.rid.clone());

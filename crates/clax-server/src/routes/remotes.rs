@@ -268,14 +268,15 @@ pub async fn remove(
 
 /// `GET /api/artifacts/<aid>/remotes` → `{links: [{remote_id, remote_name,
 /// origin, url, pushed_n, remote_n, auto, behind, download_only, sync,
-/// pending, failed, failed_questions}], remotes, unsent}`: the artifact's
-/// public twins (`behind`: local versions not pushed yet; `download_only`:
-/// local threads stay local; `sync`: how its linked threads' sync stands,
-/// with `unreachable_since`; `pending` and `failed`: its writes waiting to
-/// go up, and those not sent; `failed_questions`: its open questions whose
-/// copies were not sent, which Retry sends too), every connected remote,
-/// and `unsent`: the
-/// writes not sent to a remote the artifact is no longer linked to, which
+/// read_error, pending, failed, failed_questions}], remotes, unsent}`: the
+/// artifact's public twins (`behind`: local versions not pushed yet;
+/// `download_only`: local threads stay local; `sync`: how its remote's
+/// linked-threads sync stands, with `unreachable_since`; `read_error`: what
+/// the last cycle could not read of this link's threads, `null` when it
+/// read them all; `pending` and `failed`: its writes waiting to go up, and
+/// those not sent; `failed_questions`: its open questions whose copies were
+/// not sent, which Retry sends too), every connected remote, and `unsent`:
+/// the writes not sent to a remote the artifact is no longer linked to, which
 /// the owner may drop (`POST /api/artifacts/<aid>/unsent:drop`).
 pub async fn for_artifact(
     State(s): State<AppState>,
@@ -343,6 +344,7 @@ pub async fn for_artifact(
                 "pushed_at": l.pushed_at,
                 "download_only": l.download_only,
                 "sync": s.linked.status(&l.remote_id),
+                "read_error": s.linked.read_error(&l.artifact_id, &l.remote_id),
                 "pending": pending,
                 "failed": failed,
                 "failed_questions": failed_questions,

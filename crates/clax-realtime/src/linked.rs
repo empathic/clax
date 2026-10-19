@@ -35,6 +35,9 @@ pub struct Linked {
     /// Each linked artifact's remotes, as of the last supervision.
     pub artifacts: Mutex<HashMap<String, Vec<String>>>,
     pub status: Mutex<HashMap<String, SyncStatus>>,
+    /// What the last cycle could not read of each link, by its artifact
+    /// and remote: a link only, while its remote's other links sync.
+    pub read_errors: Mutex<HashMap<(String, String), String>>,
     /// Tests: requests to remotes fail as unreachable while set.
     pub offline: AtomicBool,
     /// Tests: the answers to this many up-sends are lost after the remote
@@ -52,6 +55,7 @@ impl Linked {
             tasks: Mutex::default(),
             artifacts: Mutex::default(),
             status: Mutex::default(),
+            read_errors: Mutex::default(),
             offline: AtomicBool::new(false),
             lose_answers: AtomicUsize::new(0),
             started: AtomicBool::new(false),
@@ -115,6 +119,31 @@ impl Linked {
     pub fn lose_next_answers(&self, n: usize) {
         self.lose_answers
             .store(n, std::sync::atomic::Ordering::SeqCst);
+    }
+
+    /// What the last cycle could not read of artifact `aid`'s link to
+    /// remote `rid`; `None` when it read it all.
+    pub fn read_error(&self, aid: &str, rid: &str) -> Option<String> {
+        self.read_errors
+            .lock()
+            .unwrap_or_else(|e| e.into_inner())
+            .get(&(aid.to_string(), rid.to_string()))
+            .cloned()
+    }
+
+    /// Sets, or with `None` clears, what the last cycle could not read of
+    /// artifact `aid`'s link to remote `rid`.
+    pub fn set_read_error(&self, aid: &str, rid: &str, e: Option<String>) {
+        let mut m = self.read_errors.lock().unwrap_or_else(|e| e.into_inner());
+        let k = (aid.to_string(), rid.to_string());
+        match e {
+            Some(e) => {
+                m.insert(k, e);
+            }
+            None => {
+                m.remove(&k);
+            }
+        }
     }
 
     /// Changes how remote `rid` stands.

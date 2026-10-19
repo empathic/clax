@@ -67,6 +67,21 @@ impl Pair {
         self.sleeper.fire(BACKSTOP);
     }
 
+    /// Returns once the sync waits out its backstop, however long its
+    /// cycle takes: a cycle reading answers of megabytes may.
+    async fn settled(&self) {
+        until("the sync's cycle ends", || async {
+            (self.sleeper.waiting(BACKSTOP) == 1).then_some(())
+        })
+        .await;
+    }
+
+    /// [`Pair::backstop`] after [`Pair::settled`].
+    async fn backstop_settled(&self) {
+        self.settled().await;
+        self.sleeper.fire(BACKSTOP);
+    }
+
     /// A thread the hosted owner's browser starts on the public copy.
     async fn hosted_thread(&self, body: &str, anchor: Value, clip: Option<&[u8]>) -> Value {
         let mut form = reqwest::multipart::Form::new()
@@ -1194,6 +1209,85 @@ async fn a_mirrored_thread_deleted_here_stays_gone_and_the_link_keeps_syncing() 
 }
 
 #[tokio::test]
+async fn a_thread_past_the_answer_cap_stops_its_links_read_not_the_remotes() {
+    use clax_store::threads::{AUTHOR_VIEWER, NewComment};
+    let p = Pair::new().await;
+    p.hosted_thread("small", whole(), None).await;
+    p.backstop_settled().await;
+    until("the small thread comes down", || async {
+        (p.local_threads().await.len() == 1).then_some(())
+    })
+    .await;
+    p.settled().await;
+    // One thread of about 4.5 MB: even a page of it alone passes the 4 MiB
+    // a remote's answer may be.
+    // Comments by the thread's own author, whom the sync's token sees.
+    let big = p.hosted_thread("big", whole(), None).await;
+    let owner = big["comments"][0]["author_public_id"]
+        .as_str()
+        .map(str::to_string);
+    let big = big["id"].as_str().unwrap().to_string();
+    let body = "x".repeat(9_000);
+    for _ in 0..500 {
+        p.public
+            .ts
+            .store
+            .add_comment(
+                &clax_core::audit::AuditCtx::DAEMON,
+                &big,
+                NewComment {
+                    author_kind: AUTHOR_VIEWER,
+                    author_name: "Ada".into(),
+                    author_public_id: owner.clone(),
+                    via_session_id: None,
+                    body: body.clone(),
+                    via_page: false,
+                },
+            )
+            .unwrap();
+    }
+    let links = || async {
+        let (s, v) = p
+            .local_req(
+                reqwest::Method::GET,
+                &format!("/api/artifacts/{}/remotes", p.aid),
+                json!(null),
+                None,
+            )
+            .await;
+        assert_eq!(s, 200, "{v}");
+        v["links"][0].clone()
+    };
+    p.backstop_settled().await;
+    // The link says what it could not read; the remote stands reachable.
+    let l = until("the link says what it could not read", || async {
+        let l = links().await;
+        l["read_error"].is_string().then_some(l)
+    })
+    .await;
+    assert!(
+        l["read_error"]
+            .as_str()
+            .is_some_and(|e| e.contains("4 MiB")),
+        "{l}"
+    );
+    assert_eq!(l["sync"]["last_error"], Value::Null, "{l}");
+    assert_eq!(l["sync"]["unreachable_since"], Value::Null, "{l}");
+    assert_eq!(p.local.state.linked.status(&p.remote).last_error, None);
+    // Without the thread there, the link reads to the end again.
+    p.public
+        .ts
+        .store
+        .delete_thread(&clax_core::audit::AuditCtx::DAEMON, &big)
+        .unwrap();
+    p.backstop_settled().await;
+    until("the link reads to the end again", || async {
+        links().await["read_error"].is_null().then_some(())
+    })
+    .await;
+}
+
+#[tokio::test]
 async fn a_page_of_threads_past_the_answer_cap_is_read_in_smaller_pages() {
     use clax_store::threads::{AUTHOR_VIEWER, NewComment};
     let p = Pair::new().await;
@@ -1203,6 +1297,9 @@ async fn a_page_of_threads_past_the_answer_cap_is_read_in_smaller_pages() {
     for i in 0..5 {
         let t = p.hosted_thread(&format!("big {i}"), whole(), None).await;
         let tid = t["id"].as_str().unwrap();
+        let owner = t["comments"][0]["author_public_id"]
+            .as_str()
+            .map(str::to_string);
         for _ in 0..100 {
             p.public
                 .ts
@@ -1213,7 +1310,7 @@ async fn a_page_of_threads_past_the_answer_cap_is_read_in_smaller_pages() {
                     NewComment {
                         author_kind: AUTHOR_VIEWER,
                         author_name: "Ada".into(),
-                        author_public_id: None,
+                        author_public_id: owner.clone(),
                         via_session_id: None,
                         body: body.clone(),
                         via_page: false,
@@ -1222,12 +1319,17 @@ async fn a_page_of_threads_past_the_answer_cap_is_read_in_smaller_pages() {
                 .unwrap();
         }
     }
-    p.backstop().await;
-    until("every thread comes down", || async {
-        (p.local_threads().await.len() == 5).then_some(())
+    p.backstop_settled().await;
+    until("every thread comes down whole", || async {
+        let ts = p.local_threads().await;
+        (ts.len() == 5
+            && ts
+                .iter()
+                .all(|t| t["comments"].as_array().is_some_and(|c| c.len() == 101)))
+        .then_some(())
     })
     .await;
-    p.sleeper.wait_for(BACKSTOP, 1).await;
+    p.settled().await;
     assert_eq!(p.local.state.linked.status(&p.remote).last_error, None);
 }
 
