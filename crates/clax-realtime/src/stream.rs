@@ -1844,8 +1844,13 @@ impl Conn {
     /// the queue was full (its events still queued are skipped), then each
     /// topic fallen behind.
     fn take_lagged(&mut self) {
-        let unseated =
-            std::mem::take(&mut *self.shared.unseated.lock().unwrap_or_else(|e| e.into_inner()));
+        let unseated = std::mem::take(
+            &mut *self
+                .shared
+                .unseated
+                .lock()
+                .unwrap_or_else(|e| e.into_inner()),
+        );
         for (topic, block, seq) in unseated {
             self.out.push_back(block);
             let d = self.dropped.entry(topic).or_insert(seq);
@@ -2270,8 +2275,14 @@ mod tests {
         hub.dispatch(&thread());
         let got = drain(&mut o);
         assert_eq!(got.len(), 1, "one version frame and no thread: {got:?}");
-        assert!(got[0].1.starts_with("event: version
-"), "{}", got[0].1);
+        assert!(
+            got[0].1.starts_with(
+                "event: version
+"
+            ),
+            "{}",
+            got[0].1
+        );
         // Back to loud: thread events reach it again, still once each.
         hub.update(&o.id, &c, &[Topic::Artifact(A.into())], &[])
             .unwrap();
@@ -2279,8 +2290,14 @@ mod tests {
         hub.dispatch(&thread());
         let got = drain(&mut o);
         assert_eq!(got.len(), 2, "{got:?}");
-        assert!(got[1].1.starts_with("event: thread
-"), "{}", got[1].1);
+        assert!(
+            got[1].1.starts_with(
+                "event: thread
+"
+            ),
+            "{}",
+            got[1].1
+        );
     }
 
     #[test]
@@ -2349,7 +2366,11 @@ mod tests {
             unseated.iter().any(|f| f.contains("artifact:7q3k9mzx2b4t")),
             "{unseated:?}"
         );
-        assert!(unseated.iter().all(|f| f.contains("idle") && f.ends_with("\n\n")));
+        assert!(
+            unseated
+                .iter()
+                .all(|f| f.contains("idle") && f.ends_with("\n\n"))
+        );
         assert!(
             !frames
                 .iter()
@@ -2357,12 +2378,15 @@ mod tests {
             "no resync for a topic the stream left: {frames:?}"
         );
         assert!(
-            !frames.iter().any(|f| f.contains("\"topic\":\"artifact:")
-                && f.starts_with("event: version")),
+            !frames
+                .iter()
+                .any(|f| f.contains("\"topic\":\"artifact:") && f.starts_with("event: version")),
             "the left topic's queued events are skipped: {frames:?}"
         );
         assert!(
-            frames.iter().any(|f| f.starts_with("event: resync") && f.contains("gallery")),
+            frames
+                .iter()
+                .any(|f| f.starts_with("event: resync") && f.contains("gallery")),
             "the gallery fell behind and is resynced: {frames:?}"
         );
     }

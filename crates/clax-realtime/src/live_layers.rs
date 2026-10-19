@@ -519,7 +519,10 @@ mod tests {
         let s = &got["senders"][0];
         assert!(s.get("cursor").is_some(), "whole: {s}");
         assert_eq!(s["draft"]["text"], format!("t{}", SOCKET_QUEUE - 1));
-        assert!(!armed(&h, "x"), "what b was owed is sent; nothing more is due");
+        assert!(
+            !armed(&h, "x"),
+            "what b was owed is sent; nothing more is due"
+        );
     }
 
     #[tokio::test]

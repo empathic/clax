@@ -82,8 +82,7 @@ mod tests {
         }))
         .to_string();
         assert!(
-            !e.chars()
-                .any(|c| c.is_control() || c == '\u{202e}'),
+            !e.chars().any(|c| c.is_control() || c == '\u{202e}'),
             "{e:?}"
         );
         assert!(e.contains("code") && e.contains("pe"), "{e:?}");

@@ -191,7 +191,10 @@ mod tests {
             page("https://evilclax.example.com/a/7q3k9mzx2b4t"),
             "a name that merely ends in the daemon's is another host"
         );
-        assert_eq!(t("https://CLAX.example.com/a/7q3k9mzx2b4t/v/2"), art(Some(2)));
+        assert_eq!(
+            t("https://CLAX.example.com/a/7q3k9mzx2b4t/v/2"),
+            art(Some(2))
+        );
         assert_eq!(
             t("https://content.clax.example.com/c/7q3k9mzx2b4t/v/1/x.html"),
             art(Some(1))

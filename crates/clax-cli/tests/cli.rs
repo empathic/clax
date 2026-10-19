@@ -654,7 +654,11 @@ fn file_spec_splits_only_when_the_source_exists() {
 #[test]
 fn publish_follows_the_publish_tools_rules() {
     let e = Env::new();
-    let index = write(e.dir.path(), "index.html", "<title>Rules</title><p>page</p>");
+    let index = write(
+        e.dir.path(),
+        "index.html",
+        "<title>Rules</title><p>page</p>",
+    );
     let other = write(e.dir.path(), "other.html", "<p>other</p>");
     e.cmd()
         .args(["publish", "--port", "0", "--file"])

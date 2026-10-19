@@ -1494,7 +1494,10 @@ mod tests {
             Some(cli.public_id.clone()),
             "the owner row and its flag are unchanged"
         );
-        let still = st.get_viewer(&cookie).unwrap().expect("the cookie still names its viewer");
+        let still = st
+            .get_viewer(&cookie)
+            .unwrap()
+            .expect("the cookie still names its viewer");
         assert_eq!(still.public_id, chrome.public_id);
         let owner_flag: bool = st
             .with_read(|c| {

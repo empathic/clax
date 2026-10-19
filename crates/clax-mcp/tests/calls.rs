@@ -265,9 +265,10 @@ async fn arguments_that_fail_the_schema_are_invalid_args() {
         );
         assert_eq!(v["feedback"], json!([]), "{v}");
         let r = tools
-            .call_direct(CallToolRequestParams::new("read").with_arguments(
-                args.as_object().unwrap().clone(),
-            ))
+            .call_direct(
+                CallToolRequestParams::new("read")
+                    .with_arguments(args.as_object().unwrap().clone()),
+            )
             .await
             .unwrap();
         let rmcp::model::CallToolResponse::Complete(r) = r else {
