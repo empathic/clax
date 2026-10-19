@@ -507,6 +507,14 @@ impl Relay {
         self.dirty = true;
     }
 
+    /// Forgets what receiver `socket` was sent, as [`Relay::resend`], without
+    /// marking the relay as having news: the next [`Relay::batches`] made for
+    /// another reason carries every sender whole to it, and none is due
+    /// until then or until the caller calls [`Relay::resend`].
+    pub fn forget(&mut self, socket: u64) {
+        self.sent.remove(&socket);
+    }
+
     /// Each receiver's batch, serialised, for the receivers whose view
     /// changed since they were last sent one, and marks what it answers as
     /// sent. A sender new to a receiver comes whole; after that only its
