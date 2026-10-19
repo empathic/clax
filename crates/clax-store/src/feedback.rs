@@ -4277,7 +4277,8 @@ mod delivery {
                 .all(|f| f.delivered_at.is_none() && f.acknowledged_at.is_none()),
             "held, not delivered"
         );
-        // Under a current view that sees it, it is acknowledged.
+        // Approved again: the same old view is rebuilt for the current
+        // generation, which sees the body, so the row is acknowledged.
         w.approve(&w.mia, Scope::Everywhere);
         w.st.acknowledge(DAEMON, &w.sid, std::slice::from_ref(&tid), &old, None)
             .unwrap();
