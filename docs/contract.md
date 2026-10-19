@@ -2191,7 +2191,9 @@ its text's author line, a batch's `sent_by`, `resolved_by_name`, and an
 artifact's `participants`. Through a session, reading acknowledges the returned comments of sent threads
 for that session (a comment added after the read stays pending).
 
-`comments_reply` posts the reply as the agent; people's views carry its
+`comments_reply` posts the reply as the agent, its `text` Markdown as
+any comment's (GitHub-flavoured, with no images and no raw HTML; see
+"Comments and feedback"); people's views carry its
 agent and person, from which the page shows `<name> (agent, via
 <harness>)` or `<name> (<person>'s agent, via <harness>)` for its viewer. An agent reads a reply's
 `author_name` as `<name> (agent, via <harness>)` when the replying agent is

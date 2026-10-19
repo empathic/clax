@@ -303,6 +303,8 @@ Tools:
 - `comments_reply` (`url_or_id`, `thread_id`, `text`; `addressed` on a live
   page): `replied: true`, or
   `replied: false` with `guidance` on a thread that was not sent to you.
+  `text` renders as GitHub-flavoured Markdown, with no images and no raw
+  HTML.
 - `comments_resolve` (`url_or_id`, `thread_id`): `resolved: true`, or
   `resolved: false` with `guidance` on a thread that was not sent to you.
 - `comments_handoff` (`url_or_id`, `thread_id`; optional `to`, a live

@@ -229,7 +229,7 @@ pub struct CommentsReplyArgs {
     pub url_or_id: String,
     /// The thread to reply to.
     pub thread_id: String,
-    /// The reply, shown to the person under its harness's name, such as `claude`.
+    /// The reply, in Markdown, shown to the person under its harness's name, such as `claude`.
     pub text: String,
     /// On a live page: the page now shows the fix, so the thread is listed as
     /// addressed in the page's next snapshot. Not for artifacts (publish with
@@ -3234,7 +3234,7 @@ impl ClaxTools {
     }
 
     #[tool(
-        description = "Reply to a comment thread as the agent; people and agents read its author as your name, your person and your harness, such as `clax-claude (agent, via claude)`. Only threads the person sent to the agent accept agent replies: on other threads the result has `replied: false` and `guidance`, and nothing is written. On a live page, pass `addressed: true` once the page shows your fix.",
+        description = "Reply to a comment thread as the agent; people and agents read its author as your name, your person and your harness, such as `clax-claude (agent, via claude)`. Only threads the person sent to the agent accept agent replies: on other threads the result has `replied: false` and `guidance`, and nothing is written. On a live page, pass `addressed: true` once the page shows your fix. The reply renders as GitHub-flavoured Markdown (lists, code blocks, tables, links), with no images and no raw HTML: an image shows as a link and HTML as its text.",
         annotations(
             read_only_hint = false,
             destructive_hint = false,
