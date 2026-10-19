@@ -1347,6 +1347,16 @@ class FakeClaxApi implements ClaxApi {
     return result;
   }
 
+  /// Places open question [qid] in thread [tid] of its artifact, as the
+  /// daemon's view shows a question asked in a thread (`thread: {id,
+  /// open}`), and announces it.
+  void placeQuestionInThread(String qid, String tid) {
+    final q = _questions[qid];
+    if (q == null) throw _notFound();
+    q.json['thread'] = {'id': tid, 'open': true};
+    _announceQuestion(q);
+  }
+
   /// When set, [questions] answers with the list as it was when called, only
   /// once this completes, so a test can land a question mid-request.
   Future<void>? holdQuestions;

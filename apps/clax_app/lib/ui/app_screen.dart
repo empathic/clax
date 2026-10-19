@@ -31,6 +31,7 @@ import 'host_protocol.dart';
 import 'kit/kit.dart';
 import 'layout.dart';
 import 'overlay_gate.dart';
+import 'questions/questions_sheet.dart';
 import 'swipe.dart';
 import 'system_bands.dart';
 import 'theme.dart';
@@ -90,12 +91,17 @@ import 'working_chip.dart';
 ///   is in front, and go when it leaves; the pill gives way while one is
 ///   up. A reply from the agent for this app, or a new question from it,
 ///   shows one that fades on its own: View opens the reply's thread (the
-///   panel when the change had several) or the shell's questions. A new
+///   panel when the change had several) or the questions sheet. A new
 ///   question also taps lightly.
-/// - **Questions.** The shell docks the open questions about the app in
-///   its own sheet (`openQuestions`), and says how many are open and
-///   whether the sheet shows ([QuestionsMsg]). While it shows, back and
-///   Escape close it (`closeQuestions`) before anything else.
+/// - **Questions.** The questions sheet is native ([QuestionsSheet]): the
+///   shell posts how many questions about the app are open, their IDs and
+///   whether to raise the sheet ([QuestionsMsg]), and the sheet reads and
+///   answers them through the daemon. A raise shows it once neither the
+///   composer nor a permission prompt is up ([OverlayGate]); a question
+///   that lands without one is told in a toast whose View shows it. A
+///   shell that still draws its own sheet says whether it shows, and while
+///   it does, back and Escape close it (`closeQuestions`) before anything
+///   else.
 /// - **First-run hint.** With [AppScreen.firstRunHint] and a notice, one
 ///   line at the top once the page is ready, with the pill under it: with
 ///   notifications off, "Turn on notifications to comment from the shade."
@@ -561,6 +567,13 @@ class _AppScreenState extends State<AppScreen> with WidgetsBindingObserver {
   /// or waiting their turn, by ID; each completer takes its prompt down.
   final _asks = <String, Completer<void>>{};
 
+  /// Each `questions` message, for the questions sheet to read again.
+  final _questionChanges = StreamController<void>.broadcast();
+
+  /// Whether the questions sheet is up, or waits its turn.
+  var _questionsUp = false;
+  var _questionsWaiting = false;
+
   /// The prompts waiting their turn, oldest first.
   final _waitingAsks = <AskMsg>[];
 
@@ -598,6 +611,10 @@ class _AppScreenState extends State<AppScreen> with WidgetsBindingObserver {
       )
       ..add(widget.surface.messages.listen(_onMessage))
       ..add(widget.surface.faults.listen(_onFault))
+          if (k == OverlayKind.questions && _questionsWaiting) {
+            _questionsWaiting = false;
+            unawaited(_showQuestions());
+          }
       ..add(widget.worker.listen(_onWorker));
     if (widget.actions case final actions?) _subs.add(actions.listen(_act));
     _subs.add(
@@ -851,6 +868,7 @@ class _AppScreenState extends State<AppScreen> with WidgetsBindingObserver {
     _text.dispose();
     _field.dispose();
     if (_listen != null) {
+    unawaited(_questionChanges.close());
       _listen!.cancel();
       unawaited(widget.voice.stop());
     }
@@ -930,6 +948,9 @@ class _AppScreenState extends State<AppScreen> with WidgetsBindingObserver {
         } else if (picked) {
           // Typing, then: the field takes focus (and the keyboard comes up).
           WidgetsBinding.instance.addPostFrameCallback((_) {
+        // The composer is the person's: the questions sheet waits for it.
+        if (picked) _overlays.request(OverlayKind.composer);
+        if (closed) _overlays.release(OverlayKind.composer);
             if (mounted && _draft != null) _field.requestFocus();
           });
         }
@@ -980,17 +1001,23 @@ class _AppScreenState extends State<AppScreen> with WidgetsBindingObserver {
         // A failed post says so in a notice; the composer may send again.
         if (_sending) setState(() => _sending = false);
         _snack(m.text);
-      case QuestionsMsg(:final open, :final showing):
-        // The shell shows the questions in its own sheet; one that lands
-        // while the app is open is told in a toast and a light tap.
+      case QuestionsMsg(:final open, :final showing, :final raise):
+        // The questions are drawn here (`questions` is native): the shell
+        // raises the sheet for a new one while the app shows, and one that
+        // lands otherwise is told in a toast and a light tap. A shell that
+        // still draws its own sheet says whether it shows.
         final before = _questions;
         _questions = open;
         if (showing != _questionsShowing) {
           setState(() => _questionsShowing = showing);
         }
-        if (before != null && open > before) {
+        _questionChanges.add(null);
+        if (raise) {
           if (_toldVisible == true) unawaited(HapticFeedback.lightImpact());
-          _toast('Clax has a question', () => _call(const OpenQuestions()));
+          _raiseQuestions();
+        } else if (before != null && open > before) {
+          if (_toldVisible == true) unawaited(HapticFeedback.lightImpact());
+          _toast('Clax has a question', _raiseQuestions);
         }
       case InspectionMsg() ||
           TestsMsg() ||
@@ -1005,9 +1032,9 @@ class _AppScreenState extends State<AppScreen> with WidgetsBindingObserver {
         // Shown, it is taken down; waiting, it is passed over in its turn.
         _asks.remove(id)?.complete();
       case DraftMsg() || GoneMsg() || PageWaitMsg():
-        // The surface declares only `ask` native (nativeOverlays), so the
-        // shell draws the draft banner itself; a deleted app and a slow
-        // page are the shell's to show.
+        // The surface declares only `ask` and `questions` native
+        // (nativeOverlays), so the shell draws the draft banner itself; a
+        // deleted app and a slow page are the shell's to show.
         break;
       case DeviceRequest():
         _device(m);
@@ -1025,6 +1052,39 @@ class _AppScreenState extends State<AppScreen> with WidgetsBindingObserver {
     _asks[m.id] = Completer<void>();
     if (_overlays.request(OverlayKind.ask)) {
       unawaited(_showAsk(m));
+  /// Shows the questions sheet now, or once the composer and any
+  /// permission prompt are down ([OverlayGate]); one up already reads the
+  /// questions again on the `questions` message that raised it.
+  void _raiseQuestions() {
+    if (_questionsUp || _questionsWaiting || !mounted) return;
+    if (_overlays.request(OverlayKind.questions)) {
+      unawaited(_showQuestions());
+    } else {
+      _questionsWaiting = true;
+    }
+  }
+
+  /// Shows the questions sheet, granted its turn, for this app's open
+  /// questions, read from the daemon ([QuestionsSheet]).
+  Future<void> _showQuestions() async {
+    if (!mounted) {
+      _overlays.release(OverlayKind.questions);
+      return;
+    }
+    _questionsUp = true;
+    try {
+      await QuestionsSheet.show(
+        context,
+        api: widget.api,
+        artifactId: widget.aid,
+        changes: _questionChanges.stream,
+      );
+    } finally {
+      _questionsUp = false;
+      if (mounted) _overlays.release(OverlayKind.questions);
+    }
+  }
+
     } else {
       _waitingAsks.add(m);
     }
@@ -1461,7 +1521,7 @@ class _AppScreenState extends State<AppScreen> with WidgetsBindingObserver {
                 setState(_changes.stopped);
               },
         questions: () => _questions ?? 0,
-        onQuestions: () => _call(const OpenQuestions()),
+        onQuestions: _raiseQuestions,
         onRetry: widget.onRetry == null
             ? null
             : () => unawaited(_retryChange()),

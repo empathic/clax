@@ -21,7 +21,8 @@ import 'package:clax_app/platform/settings_store.dart';
 import 'package:clax_app/ui/app_screen.dart';
 import 'package:clax_app/ui/host_protocol.dart' show Ready;
 import 'package:clax_app/ui/making_screen.dart' show MakingScreen;
-import 'package:clax_app/ui/question_sheet.dart';
+import 'package:clax_app/ui/questions/question_card.dart';
+import 'package:clax_app/ui/questions/questions_sheet.dart';
 import 'package:clax_app/ui/read_consent_dialog.dart';
 import 'package:flutter/material.dart';
 import 'package:flutter/services.dart';
@@ -115,21 +116,11 @@ ModelTurn _calls(List<(String, Map<String, Object?>)> calls) => ModelTurn(
   usage: const Usage(input: 100, output: 50),
 );
 
-/// A [QuestionPage] that adds what it loads to [loads].
-class _QuestionPage implements QuestionPage {
-  _QuestionPage(this.loads);
-
-  final List<Uri> loads;
-
-  @override
-  Widget build(BuildContext context) => const SizedBox.expand();
-
-  @override
-  Future<void> load(Uri url) async => loads.add(url);
-
-  @override
-  void dispose() {}
-}
+/// The questions the questions sheet shows, in order.
+List<String> _cards(WidgetTester tester) => [
+  for (final c in tester.widgetList<QuestionCard>(find.byType(QuestionCard)))
+    c.question.id,
+];
 
 /// Records every [BackgroundWork] call as `method(args…)`, and plays the
 /// platform's launch artifact and taps.
@@ -211,7 +202,6 @@ void main() {
   late _Agent agent;
   late _Work work;
   late List<FakeAppSurface> surfaces;
-  late List<Uri> questionLoads;
   _Turns? turns;
   late StepClock clock;
   late bool reachable;
@@ -226,7 +216,6 @@ void main() {
     agent = _Agent();
     work = _Work();
     surfaces = [];
-    questionLoads = [];
   });
   tearDown(() => dir.deleteSync(recursive: true));
 
@@ -247,7 +236,6 @@ void main() {
             surfaces.add(s);
             return s;
           },
-          questionPage: (_) => _QuestionPage(questionLoads),
           installId: 'install',
           supportDir: dir.path,
           prompts: PromptBuilder(rootBundle),
@@ -514,11 +502,11 @@ void main() {
     expect(work.calls, [
       'ready(Runs has a question, Which unit should distances use?)',
     ]);
-    expect(find.byType(QuestionWebSheet), findsNothing);
+    expect(find.byType(QuestionsSheetView), findsNothing);
     comeBack(tester);
     work.tap(work.targets.single);
     await pumpRoute(tester);
-    expect(find.byType(QuestionWebSheet), findsOneWidget);
+    expect(find.byType(QuestionsSheetView), findsOneWidget);
     expect(surfaces, isEmpty, reason: 'the sheet, not the app');
     expect(work.targets.single, 'question:${asked.question.id}');
   });
@@ -547,19 +535,18 @@ void main() {
       const QuestionAnswer(selected: ['km']).toJson(),
     ]);
     await tester.pump();
-    expect(find.byType(QuestionWebSheet), findsNothing);
+    expect(find.byType(QuestionsSheetView), findsNothing);
     comeBack(tester);
     await pumpRoute(tester);
-    expect(find.byType(QuestionWebSheet), findsOneWidget);
-    expect(questionLoads.single.queryParameters['q'], open);
+    expect(find.byType(QuestionsSheetView), findsOneWidget);
+    expect(_cards(tester), [open]);
     // The notification's tap names the question on show: no second sheet.
     work.tap(work.targets.last);
     await pumpRoute(tester);
-    expect(questionLoads, hasLength(1));
-    await tester.tap(find.byTooltip('Close'));
+    expect(find.byType(QuestionsSheetView), findsOneWidget);
+    await tester.binding.handlePopRoute();
     await pumpRoute(tester);
-    expect(find.byType(QuestionWebSheet), findsNothing);
-    expect(questionLoads, hasLength(1));
+    expect(find.byType(QuestionsSheetView), findsNothing);
   });
 
   testWidgets('a background question about another app is told in a toast '
@@ -585,7 +572,7 @@ void main() {
     await pumpUntil(tester, () => work.targets.isNotEmpty);
     comeBack(tester);
     await tester.pump();
-    expect(find.byType(QuestionWebSheet), findsNothing);
+    expect(find.byType(QuestionsSheetView), findsNothing);
     expect(find.text('Log has a question'), findsOneWidget);
   });
 
@@ -612,12 +599,11 @@ void main() {
     api.withdrawUnannounced(qid);
     comeBack(tester);
     await pumpRoute(tester);
-    expect(find.byType(QuestionWebSheet), findsNothing);
-    expect(questionLoads, isEmpty);
+    expect(find.byType(QuestionsSheetView), findsNothing);
   });
 
   testWidgets("a tapped question notification shows its question first, the "
-      'other background question after it', (tester) async {
+      'other background question about no app with it', (tester) async {
     await pumpApp(tester);
     leave(tester);
     final a = await askUnits();
@@ -626,10 +612,10 @@ void main() {
     comeBack(tester);
     work.tap('question:$b');
     await pumpRoute(tester);
-    expect(questionLoads.map((u) => u.queryParameters['q']), [b]);
-    await tester.tap(find.byTooltip('Close'));
+    expect(_cards(tester), [b, a]);
+    await tester.binding.handlePopRoute();
     await pumpRoute(tester);
-    expect(questionLoads.map((u) => u.queryParameters['q']), [b, a]);
+    expect(find.byType(QuestionsSheetView), findsNothing);
   });
 
   testWidgets('several background questions about other apps are told in one '
@@ -646,15 +632,15 @@ void main() {
     await pumpUntil(tester, () => work.targets.length == 2);
     comeBack(tester);
     await pumpRoute(tester);
-    expect(find.byType(QuestionWebSheet), findsNothing);
+    expect(find.byType(QuestionsSheetView), findsNothing);
     expect(find.text('Clax has 2 questions'), findsOneWidget);
     expect(find.text('Diary has a question'), findsNothing);
     await tester.tap(find.text('View'));
     await pumpRoute(tester);
-    expect(questionLoads.map((u) => u.queryParameters['q']), [first]);
-    await tester.tap(find.byTooltip('Close'));
+    expect(_cards(tester), [first]);
+    await tester.binding.handlePopRoute();
     await pumpRoute(tester);
-    expect(questionLoads.map((u) => u.queryParameters['q']), [first, second]);
+    expect(_cards(tester), [second]);
   });
 
   testWidgets('a change that lands in the background says so', (tester) async {

@@ -47,7 +47,6 @@ import 'platform/voice.dart';
 import 'platform/voice_cues.dart';
 import 'ui/daemon_cookie.dart';
 import 'ui/inspector_surface.dart';
-import 'ui/question_sheet.dart';
 import 'ui/read_consent_dialog.dart';
 import 'ui/webview_surface.dart';
 
@@ -218,8 +217,6 @@ Future<AppServices> platformServices({DateTime? launched}) async {
       openExternal: links.open,
       keyCookie: keyCookie,
     ),
-    questionPage: (base) =>
-        WebViewQuestionPage(base: base, keyCookie: keyCookie),
     installId: await loadInstallId(support),
     supportDir: support.path,
     prompts: PromptBuilder(rootBundle),

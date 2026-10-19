@@ -2069,7 +2069,12 @@ void main() {
       expect(find.text('Clax has a question'), findsOneWidget);
       await tester.tap(find.text('View'));
       await tester.pump();
-      expect(rig.surface.js.last, const OpenQuestions().toJs());
+      expect(
+        rig.api.calls.map((c) => c.name),
+        contains('questions'),
+        reason: 'the native sheet reads them from the daemon',
+      );
+      expect(rig.surface.js, isNot(contains(const OpenQuestions().toJs())));
     });
 
     testWidgets('a question that lands taps lightly', (tester) async {
@@ -2619,7 +2624,8 @@ void main() {
       await tester.tap(find.byKey(const ValueKey('change-answer')));
       await frames(tester);
       expect(sheet(), findsNothing);
-      expect(rig.surface.js, contains(const OpenQuestions().toJs()));
+      expect(rig.api.calls.map((c) => c.name), contains('questions'));
+      expect(rig.surface.js, isNot(contains(const OpenQuestions().toJs())));
     });
 
     testWidgets('a reply while it is open stays, with the way to the reply', (

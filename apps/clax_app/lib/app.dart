@@ -89,7 +89,7 @@ import 'ui/launcher.dart';
 import 'ui/licences.dart';
 import 'ui/make_service.dart';
 import 'ui/making_screen.dart';
-import 'ui/question_sheet.dart';
+import 'ui/questions/questions_sheet.dart';
 import 'ui/read_consent_dialog.dart';
 import 'ui/settings_screen.dart';
 import 'ui/splash.dart';
@@ -109,7 +109,6 @@ class AppServices {
     required this.timings,
     required this.agentTimings,
     required this.surface,
-    QuestionPage Function(Uri base)? questionPage,
     required this.installId,
     required this.supportDir,
     required this.prompts,
@@ -136,9 +135,7 @@ class AppServices {
     PendingMake? pendingMake,
     ApiConnection? connection,
     int? pid,
-  }) : questionPage =
-           questionPage ?? ((base) => WebViewQuestionPage(base: base)),
-       pid = pid ?? io.pid,
+  }) : pid = pid ?? io.pid,
        aiConsent =
            aiConsent ?? AiConsent(required: false, settings: settings),
        pendingMake = pendingMake ?? PendingMake(),
@@ -176,10 +173,6 @@ class AppServices {
 
   /// A new page surface for the daemon at `base`.
   final AppSurface Function(Uri base) surface;
-
-  /// A new page for the question sheet on the daemon at `base`; a WebView
-  /// unless given.
-  final QuestionPage Function(Uri base) questionPage;
 
   /// This install's ID, which the daemon finds the app session by.
   final String installId;
@@ -531,7 +524,7 @@ class AgentRuntime {
 ///   question sheet over another app (several at once in one toast, "Clax
 ///   has N questions", whose View shows each in turn), and shown in the
 ///   question sheet
-///   ([showQuestionSheet]) anywhere else: the making screen, the launcher,
+///   ([QuestionsSheet]) anywhere else: the making screen, the launcher,
 ///   the inbox. The inbox's questions open the sheet too. A question that
 ///   comes while the sheet shows another waits for it to close, and one
 ///   posted in the background is presented as above when Clax comes back
@@ -574,8 +567,9 @@ class _AppRootState extends State<AppRoot> with WidgetsBindingObserver {
   StreamSubscription<StreamEvent>? _deletions;
   StreamSubscription<StreamEvent>? _questionEvents;
 
-  /// The `questions` topic's views, for the question sheet.
-  final _questionViews = StreamController<QuestionView>.broadcast();
+  /// Each question event and `questions` resync, for the questions sheet
+  /// to read the questions again.
+  final _questionChanges = StreamController<void>.broadcast();
 
   /// The questions already seen on the stream, each presented once if
   /// open.
@@ -586,6 +580,12 @@ class _AppRootState extends State<AppRoot> with WidgetsBindingObserver {
 
   /// The question the sheet shows, while it shows one.
   String? _sheetQuestion;
+
+  /// Every question the sheet has shown a card for: it shows all the open
+  /// questions about [_sheetQuestion]'s app. Those queued unasked are not
+  /// presented again once it closes, unless a question asked for took its
+  /// place.
+  Set<String> _sheetShown = const {};
 
   /// Whether [_sheetQuestion] was asked for (a notification, the inbox or
   /// a toast's View named it), and the sheet's route.
@@ -876,7 +876,7 @@ class _AppRootState extends State<AppRoot> with WidgetsBindingObserver {
     unawaited(_questionEvents?.cancel());
     unawaited(_lineageDeletions?.cancel());
     unawaited(_intake?.cancel());
-    unawaited(_questionViews.close());
+    unawaited(_questionChanges.close());
     for (final o in _openApps) {
       unawaited(o.actions.close());
     }
@@ -1842,6 +1842,7 @@ class _AppRootState extends State<AppRoot> with WidgetsBindingObserver {
   void _onQuestionEvent(StreamEvent e) {
     if (e.topic == 'questions' && e.type == 'resync') {
       unawaited(_recheckQuestions());
+      _questionChanges.add(null);
       return;
     }
     if (e.type != 'question') return;
@@ -1851,7 +1852,7 @@ class _AppRootState extends State<AppRoot> with WidgetsBindingObserver {
     } on Object {
       return;
     }
-    _questionViews.add(q);
+    _questionChanges.add(null);
     if (q.status != 'open') {
       _seenQuestions.add(q.id);
       _openQuestions.remove(q.id);
@@ -1992,11 +1993,11 @@ class _AppRootState extends State<AppRoot> with WidgetsBindingObserver {
   /// for, which goes back to the queue right behind it.
   void _showQuestion(String qid, {required bool asked}) {
     _backgroundQuestions.remove(qid);
-    if (_sheetQuestion == qid) {
+    if (_sheetQuestion == qid || _sheetShown.contains(qid)) {
       if (asked) _sheetAsked = true;
       return;
     }
-    final base = _endpoint.value?.base;
+    final up = _endpoint.value != null;
     final nav = _nav.currentState;
     final shown = _sheetQuestion;
     final route = _sheetRoute;
@@ -2007,11 +2008,13 @@ class _AppRootState extends State<AppRoot> with WidgetsBindingObserver {
         firstNew < 0 ? _questionQueue.length : firstNew,
         [(qid: qid, asked: true), (qid: shown, asked: false)],
       );
+      // The questions it showed come back after [qid]'s sheet.
+      _sheetShown.clear();
       // Its completion shows the next in the queue: [qid].
       if (route.isActive) route.navigator?.removeRoute(route);
       return;
     }
-    if (_sheetQuestion != null || !_wasUp || base == null || nav == null) {
+    if (_sheetQuestion != null || !_wasUp || !up || nav == null) {
       final i = _questionQueue.indexWhere((e) => e.qid == qid);
       if (i >= 0) {
         if (!asked || _questionQueue[i].asked) return;
@@ -2028,16 +2031,22 @@ class _AppRootState extends State<AppRoot> with WidgetsBindingObserver {
     }
     _sheetQuestion = qid;
     _sheetAsked = asked;
+    final shownHere = _sheetShown = <String>{};
     unawaited(
-      showQuestionSheet(
+      QuestionsSheet.show(
         nav.context,
-        page: _s.questionPage(base),
-        base: base,
-        questionId: qid,
-        updates: _questionViews.stream,
+        api: _api,
+        artifactId: _openQuestions[qid]?.artifactId,
+        focus: qid,
+        changes: _questionChanges.stream,
+        onShown: shownHere.add,
       ).whenComplete(() {
         _sheetQuestion = null;
         _sheetRoute = null;
+        _sheetShown = const {};
+        _questionQueue.removeWhere(
+          (e) => !e.asked && shownHere.contains(e.qid),
+        );
         _nextQuestion();
       }),
     );

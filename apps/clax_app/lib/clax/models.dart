@@ -799,11 +799,13 @@ class QuestionView {
     this.agentHandle,
     this.agentHarness,
     this.agentProject,
+    this.threadId,
   });
 
   factory QuestionView.fromJson(Json j) {
     final artifact = j['artifact'] == null ? null : _map(j['artifact']);
     final agent = j['agent'] == null ? null : _map(j['agent']);
+    final thread = j['thread'] == null ? null : _map(j['thread']);
     return QuestionView(
       id: j['id'] as String,
       source: j['source'] as String,
@@ -826,6 +828,7 @@ class QuestionView {
       agentHandle: agent?['handle'] as String?,
       agentHarness: agent?['harness'] as String?,
       agentProject: agent?['project'] as String?,
+      threadId: thread?['id'] as String?,
     );
   }
 
@@ -855,6 +858,10 @@ class QuestionView {
   final String? agentHandle;
   final String? agentHarness;
   final String? agentProject;
+
+  /// The thread of [artifactId] it was asked in (the daemon's `thread`,
+  /// `{id, open}`), or null for none or a daemon that does not say.
+  final String? threadId;
 
   bool get isOpen => status == 'open';
   bool get isAnswered => status == 'answered';

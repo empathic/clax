@@ -60,15 +60,17 @@ class ClaxSwitch extends StatelessWidget {
   }
 }
 
-/// A checkbox with [label] after it; a press on the row toggles it.
-/// Material: the theme's green checkbox in a 48 dp row. Apple: the Mac's
-/// 14 pt rounded box, filled in the accent when checked.
+/// A checkbox with [label] and [detail] (a second line in `muted`) after
+/// it; a press on the row toggles it. Material: the theme's green checkbox
+/// in a 48 dp row. Apple: the Mac's 14 pt rounded box, filled in the
+/// accent when checked.
 class ClaxCheckbox extends StatelessWidget {
   const ClaxCheckbox({
     super.key,
     required this.value,
     required this.onChanged,
     required this.label,
+    this.detail,
   });
 
   final bool value;
@@ -76,6 +78,7 @@ class ClaxCheckbox extends StatelessWidget {
   /// Called with the new value; null disables the checkbox.
   final ValueChanged<bool>? onChanged;
   final String label;
+  final String? detail;
 
   @override
   Widget build(BuildContext context) {
@@ -95,18 +98,34 @@ class ClaxCheckbox extends StatelessWidget {
             value: value,
             onChanged: enabled ? (v) => onChanged!(v ?? false) : null,
           );
+    final more = detail;
     return _ToggleRow(
       onTap: enabled ? () => onChanged!(!value) : null,
       apple: apple,
+      crossAxisAlignment: more == null
+          ? CrossAxisAlignment.center
+          : CrossAxisAlignment.start,
       children: [
-        ExcludeSemantics(child: box),
+        ExcludeSemantics(
+          child: Padding(
+            // The box sits on the label's first line.
+            padding: EdgeInsets.only(
+              top: more == null ? 0 : (apple ? 1.5 : 0),
+            ),
+            child: box,
+          ),
+        ),
         SizedBox(width: apple ? ClaxSpace.s8 : ClaxSpace.s4),
-        Flexible(child: _label(context, label, enabled: enabled)),
+        Flexible(
+          child: more == null
+              ? _label(context, label, enabled: enabled)
+              : _labelAndDetail(context, label, more, enabled: enabled),
+        ),
       ],
       semantics: (child) => Semantics(
         checked: value,
         enabled: enabled,
-        label: label,
+        label: more == null ? label : '$label. $more',
         child: child,
       ),
     );
@@ -167,7 +186,6 @@ class ClaxRadio<T> extends StatelessWidget {
             child: Radio<T>(value: value, enabled: enabled),
           );
     final more = detail;
-    final theme = Theme.of(context);
     return _ToggleRow(
       onTap: enabled ? () => onChanged!(value) : null,
       apple: apple,
@@ -186,26 +204,9 @@ class ClaxRadio<T> extends StatelessWidget {
         ),
         SizedBox(width: apple ? ClaxSpace.s8 : ClaxSpace.s4),
         Flexible(
-          child: Padding(
-            padding: EdgeInsets.only(
-              top: more == null || apple ? 0 : ClaxSpace.s12,
-            ),
-            child: Column(
-              mainAxisSize: MainAxisSize.min,
-              crossAxisAlignment: CrossAxisAlignment.start,
-              children: [
-                _label(context, label, enabled: enabled),
-                if (more != null)
-                  Text(
-                    more,
-                    style: (apple
-                            ? ClaxType.of(ClaxRole.callout, theme.platform)
-                            : theme.textTheme.bodyMedium!)
-                        .copyWith(color: p.muted),
-                  ),
-              ],
-            ),
-          ),
+          child: more == null
+              ? _label(context, label, enabled: enabled)
+              : _labelAndDetail(context, label, more, enabled: enabled),
         ),
       ],
       semantics: (child) => Semantics(
@@ -217,6 +218,38 @@ class ClaxRadio<T> extends StatelessWidget {
       ),
     );
   }
+}
+
+/// [label] over [detail] in `muted`, the label's first line level with
+/// the control (the Material row is 48 dp, its control centred in it).
+Widget _labelAndDetail(
+  BuildContext context,
+  String label,
+  String detail, {
+  required bool enabled,
+}) {
+  final theme = Theme.of(context);
+  final p = claxPalette(context);
+  final apple = ClaxFamily.of(context) == ClaxFamily.apple;
+  return Padding(
+    padding: EdgeInsets.only(top: apple ? 0 : ClaxSpace.s12),
+    child: Column(
+      mainAxisSize: MainAxisSize.min,
+      crossAxisAlignment: CrossAxisAlignment.start,
+      children: [
+        _label(context, label, enabled: enabled),
+        ExcludeSemantics(
+          child: Text(
+            detail,
+            style: (apple
+                    ? ClaxType.of(ClaxRole.callout, theme.platform)
+                    : theme.textTheme.bodyMedium!)
+                .copyWith(color: p.muted),
+          ),
+        ),
+      ],
+    ),
+  );
 }
 
 Widget _label(BuildContext context, String text, {required bool enabled}) {

@@ -24,7 +24,8 @@ import 'package:clax_app/ui/inspector_surface.dart';
 import 'package:clax_app/ui/launcher.dart';
 import 'package:clax_app/ui/making_screen.dart'
     show MakingScreen, sayFirstOutput;
-import 'package:clax_app/ui/question_sheet.dart';
+import 'package:clax_app/ui/questions/question_card.dart';
+import 'package:clax_app/ui/questions/questions_sheet.dart';
 import 'package:clax_app/ui/thread_detail.dart' show ThreadDetail;
 import 'package:flutter/material.dart';
 import 'package:flutter/services.dart';
@@ -49,18 +50,12 @@ class _Key implements SecureKey {
   Future<void> write(String? key) async => value = key;
 }
 
-/// A [QuestionPage] that records what it loads.
-class _QuestionPage implements QuestionPage {
-  final loads = <Uri>[];
-
-  @override
-  Widget build(BuildContext context) => const SizedBox.expand();
-
-  @override
-  Future<void> load(Uri url) async => loads.add(url);
-
-  @override
-  void dispose() {}
+/// Reduced motion for the rest of the test: the questions sheet's mark
+/// breathes until then, which no frame settles.
+void _stillMotion(WidgetTester tester) {
+  tester.platformDispatcher.accessibilityFeaturesTestValue =
+      const FakeAccessibilityFeatures(disableAnimations: true);
+  addTearDown(tester.platformDispatcher.clearAccessibilityFeaturesTestValue);
 }
 
 /// Everything AppRoot is given, as fakes the test can reach.
@@ -105,7 +100,6 @@ class _Rig {
   final agentTimings = RecordingTimings();
   final surfaces = <FakeAppSurface>[];
   final surfaceBases = <Uri>[];
-  final questionPages = <_QuestionPage>[];
   final backendFor = <String>[];
 
   /// What the agent answers; its calls can be held at a gate.
@@ -147,11 +141,6 @@ class _Rig {
       final s = FakeAppSurface();
       surfaces.add(s);
       return s;
-    },
-    questionPage: (base) {
-      final p = _QuestionPage();
-      questionPages.add(p);
-      return p;
     },
     installId: 'install',
     supportDir: dir.path,
@@ -685,23 +674,36 @@ void main() {
     ];
 
     Future<String> ask(WidgetTester tester, {String? about}) async {
+      _stillMotion(tester);
       final s = await rig.api.registerAppSession(installId: 'i', pid: 1);
       final r = await rig.api.askQuestion(s.id, units, artifactId: about);
       await tester.pumpAndSettle();
       return r.question.id;
     }
 
-    final sheet = find.byType(QuestionWebSheet);
+    final sheet = find.byType(QuestionsSheetView);
 
-    testWidgets('a question about no app opens the question sheet; it '
+    /// The questions the sheet shows, in order.
+    List<String> cards(WidgetTester tester) => [
+      for (final c in tester.widgetList<QuestionCard>(
+        find.byType(QuestionCard),
+      ))
+        c.question.id,
+    ];
+
+    /// Closes the sheet as back does.
+    Future<void> close(WidgetTester tester) async {
+      await tester.binding.handlePopRoute();
+      await tester.pumpAndSettle();
+    }
+
+    testWidgets('a question about no app opens the questions sheet; it '
         'closes once answered', (tester) async {
       await pumpApp(tester, _Rig(key: 'sk-ant-x'));
       await up(tester);
       final qid = await ask(tester);
       expect(sheet, findsOneWidget);
-      expect(rig.questionPages.single.loads, [
-        Uri.parse('http://127.0.0.1:7999/inbox?q=$qid'),
-      ]);
+      expect(cards(tester), [qid]);
       await rig.api.answerQuestion(qid, [
         const QuestionAnswer(selected: ['km']).toJson(),
       ]);
@@ -727,40 +729,51 @@ void main() {
       await tester.tap(find.text('View'));
       await tester.pumpAndSettle();
       expect(sheet, findsOneWidget);
-      expect(rig.questionPages.single.loads.single.queryParameters['q'], qid);
+      expect(cards(tester), [qid], reason: 'only Log’s questions');
     });
 
-    testWidgets('questions asked while the sheet shows one wait for it to '
-        'close; one answered meanwhile is skipped', (tester) async {
+    testWidgets('questions asked while the sheet shows join it, and are not '
+        'shown again once it closes; one answered meanwhile leaves it', (
+      tester,
+    ) async {
       await pumpApp(tester, _Rig(key: 'sk-ant-x'));
       await up(tester);
       final a = await ask(tester);
       final b = await ask(tester);
       final c = await ask(tester);
-      expect(rig.questionPages, hasLength(1));
-      expect(rig.questionPages.single.loads.single.queryParameters['q'], a);
+      expect(cards(tester), [a, b, c]);
       await rig.api.answerQuestion(b, [
         const QuestionAnswer(selected: ['mi']).toJson(),
       ]);
       await tester.pumpAndSettle();
-      await tester.tap(find.byTooltip('Close'));
-      await tester.pumpAndSettle();
-      expect(sheet, findsOneWidget);
-      expect(rig.questionPages, hasLength(2));
-      expect(rig.questionPages.last.loads.single.queryParameters['q'], c);
-      await tester.tap(find.byTooltip('Close'));
-      await tester.pumpAndSettle();
+      expect(cards(tester), [a, c]);
+      await close(tester);
       expect(sheet, findsNothing);
-      expect(rig.questionPages, hasLength(2));
+    });
+
+    testWidgets('a question about another app waits for the sheet, and '
+        'shows in its own once it closes', (tester) async {
+      await pumpApp(tester, _Rig(key: 'sk-ant-x'));
+      await up(tester);
+      final other = rig.api.seedArtifact('Log', {'index.html': _page});
+      final a = await ask(tester);
+      final b = await ask(tester, about: other);
+      expect(cards(tester), [a]);
+      await close(tester);
+      expect(sheet, findsOneWidget);
+      expect(cards(tester), [b]);
+      await close(tester);
+      expect(sheet, findsNothing);
     });
 
     testWidgets('a queued question the daemon withdrew without a stream event '
         'is dropped on the questions resync', (tester) async {
       await pumpApp(tester, _Rig(key: 'sk-ant-x'));
       await up(tester);
+      final other = rig.api.seedArtifact('Log', {'index.html': _page});
       final a = await ask(tester);
-      final b = await ask(tester);
-      expect(rig.questionPages.single.loads.single.queryParameters['q'], a);
+      final b = await ask(tester, about: other);
+      expect(cards(tester), [a]);
       rig.api.withdrawUnannounced(b);
       rig.api.emitStream(
         const StreamEvent(
@@ -770,16 +783,15 @@ void main() {
         ),
       );
       await tester.pumpAndSettle();
-      await tester.tap(find.byTooltip('Close'));
-      await tester.pumpAndSettle();
+      await close(tester);
       expect(sheet, findsNothing);
-      expect(rig.questionPages, hasLength(1));
     });
 
     testWidgets('a question that lands while the recheck is in flight is '
         'kept', (tester) async {
       await pumpApp(tester, _Rig(key: 'sk-ant-x'));
       await up(tester);
+      final other = rig.api.seedArtifact('Log', {'index.html': _page});
       final a = await ask(tester);
       final gate = Completer<void>();
       rig.api.holdQuestions = gate.future;
@@ -791,44 +803,42 @@ void main() {
         ),
       );
       await tester.pump();
-      final b = await ask(tester);
+      final b = await ask(tester, about: other);
       rig.api.holdQuestions = null;
       gate.complete();
       await tester.pumpAndSettle();
-      expect(rig.questionPages.single.loads.single.queryParameters['q'], a);
-      await tester.tap(find.byTooltip('Close'));
-      await tester.pumpAndSettle();
+      expect(cards(tester), [a]);
+      await close(tester);
       expect(sheet, findsOneWidget);
-      expect(rig.questionPages.last.loads.single.queryParameters['q'], b);
+      expect(cards(tester), [b]);
     });
 
     testWidgets('after a daemon restart a queued question it withdrew is not '
         'shown', (tester) async {
       await pumpApp(tester, _Rig(key: 'sk-ant-x'));
       await up(tester);
+      final other = rig.api.seedArtifact('Log', {'index.html': _page});
       await ask(tester);
-      final b = await ask(tester);
+      final b = await ask(tester, about: other);
       rig.supervisor.set(const Failed('clax stopped', []));
       await tester.pumpAndSettle();
       expect(sheet, findsNothing);
       rig.api.withdrawUnannounced(b);
       await up(tester);
       expect(sheet, findsNothing);
-      expect(rig.questionPages, hasLength(1));
     });
 
     testWidgets('a question in the inbox opens the sheet', (tester) async {
       await pumpApp(tester, _Rig(key: 'sk-ant-x'));
       await up(tester);
       final qid = await ask(tester);
-      await tester.tap(find.byTooltip('Close'));
-      await tester.pumpAndSettle();
+      await close(tester);
       expect(sheet, findsNothing);
       final launcher = tester.widget<Launcher>(find.byType(Launcher));
       launcher.onOpenQuestion!(qid);
       await tester.pumpAndSettle();
       expect(sheet, findsOneWidget);
-      expect(rig.questionPages, hasLength(2));
+      expect(cards(tester), [qid]);
     });
   });
 
