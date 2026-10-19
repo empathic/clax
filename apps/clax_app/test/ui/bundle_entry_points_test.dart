@@ -6,12 +6,17 @@ import 'package:clax_app/platform/settings_store.dart';
 import 'package:clax_app/ui/app_inspector.dart';
 import 'package:clax_app/ui/bundle_sheets.dart';
 import 'package:clax_app/ui/launcher.dart';
+import 'package:clax_app/ui/tile_label.dart';
 import 'package:flutter/material.dart';
 import 'package:flutter_test/flutter_test.dart';
 
 import '../bundle/services_support.dart';
 import '../support/fake_voice.dart';
 import 'bundle_flows_test.dart' show FakeBundleFiles, settle;
+
+/// The launcher tile titled [title], found by its label.
+Finder _tile(String title) =>
+    find.byWidgetPredicate((w) => w is TileLabel && w.text == title);
 
 void main() {
   late Directory tmp;
@@ -58,7 +63,7 @@ void main() {
     await tester.runAsync(me.ready);
     me.api.seedArtifact('Plant log', {'index.html': '<p>hi</p>'});
     await pumpLauncher(tester, flows());
-    await tester.longPress(find.text('Plant log'));
+    await tester.longPress(_tile('Plant log'));
     await tester.pumpAndSettle();
     await tester.tap(find.byKey(const ValueKey('share-app')));
     await settle(tester);
@@ -71,7 +76,7 @@ void main() {
   testWidgets('on the Mac the menu says Export…', (tester) async {
     me.api.seedArtifact('Plant log', {'index.html': '<p>hi</p>'});
     await pumpLauncher(tester, flows(toFile: true));
-    await tester.longPress(find.text('Plant log'));
+    await tester.longPress(_tile('Plant log'));
     await tester.pumpAndSettle();
     expect(find.text('Export…'), findsOneWidget);
     expect(find.text('Share app'), findsNothing);
@@ -83,7 +88,7 @@ void main() {
     me.api.seedArtifact('Plant log', {'index.html': '<p>hi</p>'});
     await pumpLauncher(tester, null);
     expect(find.byKey(const ValueKey('launcher-more')), findsNothing);
-    await tester.longPress(find.text('Plant log'));
+    await tester.longPress(_tile('Plant log'));
     await tester.pumpAndSettle();
     expect(find.text('Share app'), findsNothing);
   });
