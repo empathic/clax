@@ -168,10 +168,10 @@ test("floating over the page, moved by its bar and resized by its edges, kept ac
   expect((await box(stage(page))).width).toBe(1440);
   await pinOnHeading(page, frame);
   let b = await box(drawer(page));
-  expect([b.x + b.width, b.y, b.height]).toEqual([viewer.x + viewer.width - 16, viewer.y + 16, viewer.height - 32]);
+  expect([b.x + b.width, b.y, b.height]).toEqual([viewer.x + viewer.width - 48, viewer.y + 16, viewer.height - 32]);
   await drag(page, page.locator(".drawer-title"), -500, 10);
   b = await box(drawer(page));
-  expect([b.x, b.y]).toEqual([viewer.x + viewer.width - 16 - 392 - 500, viewer.y + 26]);
+  expect([b.x, b.y]).toEqual([viewer.x + viewer.width - 48 - 392 - 500, viewer.y + 26]);
   // Moved past the viewer's edge, it stops there.
   await drag(page, page.locator(".drawer-title"), -2000, -400);
   b = await box(drawer(page));
@@ -206,7 +206,37 @@ test("floating over the page, moved by its bar and resized by its edges, kept ac
   // A double click on an edge puts the window back at its default place and size.
   await page.getByRole("separator", { name: "Resize threads window width" }).dblclick();
   b = await box(drawer(page));
-  expect([b.x + b.width, b.y, b.width]).toEqual([viewer.x + viewer.width - 16, viewer.y + 16, 392]);
+  expect([b.x + b.width, b.y, b.width]).toEqual([viewer.x + viewer.width - 48, viewer.y + 16, 392]);
+});
+
+const overlaps = (a: { x: number; y: number; width: number; height: number }, b: typeof a) =>
+  a.x < b.x + b.width && b.x < a.x + a.width && a.y < b.y + b.height && b.y < a.y + a.height;
+/** Whether the element topmost at the middle of `l` is in `l`. */
+const onTop = (l: Locator) => l.evaluate(e => { const r = e.getBoundingClientRect(); return e.contains(document.elementFromPoint(r.x + r.width / 2, r.y + r.height / 2)); });
+
+test("floating, the window leaves the pins clear by default, and the composer keeps beside it with the window's grip reachable", async ({ page }) => {
+  await page.setViewportSize(DESKTOP);
+  const { frame } = await open(page, "float-pins");
+  await page.getByRole("button", { name: "Float threads over the page" }).click();
+  const pin = page.locator("button.thread-pin").first();
+  await expect(pin).toBeVisible();
+  expect(overlaps(await box(pin), await box(drawer(page)))).toBe(false);
+  // Comment on the second heading: the composer opens beside the window, which stays above it.
+  await page.getByRole("button", { name: "Comment", exact: true }).click();
+  await expect.poll(() => frame.evaluate(() => document.documentElement.style.cursor)).toBe("crosshair");
+  await frame.locator("h2").nth(1).hover();
+  await frame.locator("h2").nth(1).click();
+  const composer = page.locator(".composer");
+  await expect(composer).toBeVisible();
+  expect(overlaps(await box(composer), await box(drawer(page)))).toBe(false);
+  expect(await onTop(page.locator('[data-grip="corner"]'))).toBe(true);
+  expect(await onTop(composer.locator("textarea"))).toBe(true);
+  // Moved to the left, the window takes the left's room and the composer goes back to the right.
+  await drag(page, page.locator(".drawer-title"), -900, 0);
+  const w = await box(drawer(page));
+  expect(w.x).toBeLessThan(400);
+  await expect.poll(async () => overlaps(await box(composer), await box(drawer(page)))).toBe(false);
+  expect((await box(composer)).x + (await box(composer)).width).toBe(DESKTOP.width - 16);
 });
 
 test("at phone width the threads are the full-screen sheet with the Page | Threads tabs, whatever the drawer's layout", async ({ page }) => {

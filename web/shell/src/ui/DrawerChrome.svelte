@@ -38,7 +38,22 @@
     const r = el.getBoundingClientRect();
     return { viewer, box: { x: r.left - v.left, y: r.top - v.top, w: r.width, h: r.height }, view: { w: v.width, h: v.height } };
   }
-  const follow = () => { const m = measure(); if (m) { box = m.box; view = m.view; } };
+  // The stage's room beside the floating window, on the root for the
+  // composer and the stage's foot to keep clear of it: on the side the
+  // window leans to, the distance from that edge of the viewer to the far
+  // side of the window.
+  const clear = (side: "left" | "right", px: number) => document.documentElement.style.setProperty(`--float-clear-${side}`, px ? `${Math.round(px)}px` : "");
+  const follow = () => {
+    const m = measure();
+    if (!m) return;
+    box = m.box;
+    view = m.view;
+    const right = box.x + box.w / 2 >= view.w / 2;
+    const floating = p.layout === "float";
+    clear("right", floating && right ? view.w - box.x : 0);
+    clear("left", floating && !right ? box.x + box.w : 0);
+  };
+  $effect(() => () => { clear("right", 0); clear("left", 0); });
   $effect(() => {
     const el = bar?.closest<HTMLElement>(".drawer");
     const viewer = el?.closest<HTMLElement>(".viewer");
@@ -148,12 +163,17 @@
     @media (min-width: 701px) {
       .viewer div.drawer { position: relative; display: flex; flex-direction: column; flex: none; }
       .drawer > .sidebar { flex: 1; width: auto; min-height: 0; border: 0; }
-      /* Over the page, beneath the composer and the stage's banners; its
-         place and size clamped to the viewer. */
+      /* Over the page and above the composer and the stage's banners, which
+         keep to the stage's room beside it (`--float-clear-*`); by default
+         48 px in from the right, clear of the pins (pins-model.ts keeps them
+         PIN_RIGHT_ROOM, 38 px, off the stage's right edge); its place and
+         size clamped to the viewer. */
       [data-drawer="float"] .viewer div.drawer { --fw: clamp(280px, var(--drawer-fw, 392px), 100%); --fh: clamp(200px, var(--drawer-fh, 100% - 32px), 100%);
-        position: absolute; z-index: 3; width: var(--fw); height: var(--fh); overflow: hidden;
-        left: clamp(0px, var(--drawer-x, 100% - var(--fw) - 16px), 100% - var(--fw)); top: clamp(0px, var(--drawer-y, 16px), 100% - var(--fh));
+        position: absolute; z-index: 6; width: var(--fw); height: var(--fh); overflow: hidden;
+        left: clamp(0px, var(--drawer-x, 100% - var(--fw) - 48px), 100% - var(--fw)); top: clamp(0px, var(--drawer-y, 16px), 100% - var(--fh));
         border: 1px solid var(--border-hover); border-radius: var(--radius); box-shadow: var(--elev-lg); }
+      [data-drawer="float"] .composer { right: clamp(16px, var(--float-clear-right, 0px) + 16px, 100% - min(360px, 100% - 32px) - 16px); }
+      [data-drawer="float"] .stage-foot { left: calc(var(--float-clear-left, 0px) + 16px); right: calc(var(--float-clear-right, 0px) + 16px); }
       .drawer-bar { display: flex; align-items: center; gap: 2px; flex: none; height: 40px; padding: 0 6px 0 14px; border-bottom: 1px solid var(--border); background: var(--bg); }
       [data-drawer="float"] .drawer .drawer-bar { cursor: move; background: var(--card); touch-action: none; }
       .drawer-title { flex: 1; min-width: 0; font: 600 13px/1.2 var(--font); color: var(--muted); }

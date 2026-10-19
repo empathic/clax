@@ -13,7 +13,8 @@ export type DrawerLayout = "right" | "left" | "bottom" | "float";
 /** `w`: the width docked left or right; `h`: the height docked at the
  * bottom; `x`, `y`, `fw`, `fh`: the floating window's place in the viewer
  * and size, all four or none (its default place: the viewer's top right,
- * 16 px in, its height less 32 px). */
+ * 48 px in from the right, clear of the pins, and 16 px down, its height
+ * less 32 px). */
 export type DrawerPrefs = { layout: DrawerLayout; w: number; h: number; x?: number; y?: number; fw?: number; fh?: number };
 export const DRAWER_KEY = "clax.drawer";
 
