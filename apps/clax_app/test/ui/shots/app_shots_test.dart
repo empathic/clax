@@ -1,10 +1,12 @@
 // An open app on the phone, rendered light and dark into CLAX_SHOTS_DIR
 // (skipped without it), drawn edge to edge: a light page whose header is
 // dark blue and whose tab bar is white (`app`), its status band in the
-// header's blue and its navigation band in the tab bar's white; and a dark
-// page, black at the top and charcoal at the bottom (`app-dark-page`). The status and gesture bar
-// stand-ins draw their icons in the brightness the screen's bands ask the
-// system for (`SystemChrome.latestStyle`), not the theme's.
+// header's blue and its navigation band in the tab bar's white; a dark
+// page, black at the top and charcoal at the bottom (`app-dark-page`); and
+// the light page with a change under way and its chip (`app-working`). The
+// status and gesture bar stand-ins draw their icons in the brightness the
+// screen's bands ask the system for (`SystemChrome.latestStyle`), not the
+// theme's.
 import 'package:clax_app/agent/timings.dart';
 import 'package:clax_app/clax/fake_api.dart';
 import 'package:clax_app/platform/settings_store.dart';
@@ -156,6 +158,7 @@ Future<void> _open(
   ChromeMsg chrome, {
   required Brightness status,
   required Brightness navigation,
+  List<HostMessage> then = const [],
 }) async {
     final api = FakeClaxApi();
     final aid = api.seedArtifact('Runs', {'index.html': '<h1>Runs</h1>'});
@@ -185,12 +188,16 @@ Future<void> _open(
       const Ready(artifact: 'x', version: 1, latest: 1, file: 'index.html'),
     );
     surface.push(chrome);
+    then.forEach(surface.push);
     await s.settle();
     style.value = SystemChrome.latestStyle;
     await s.tester.pump();
     expect(style.value!.statusBarIconBrightness, status);
     expect(style.value!.systemNavigationBarIconBrightness, navigation);
     await s.take(surfaceName);
+    // Past a change chip's delayed open, so nothing is left waiting.
+    await s.tester.pumpWidget(const SizedBox());
+    await s.tester.pump(const Duration(seconds: 5));
 }
 
 void main() {
@@ -203,6 +210,19 @@ void main() {
       const ChromeMsg(_blue, Colors.white),
       status: Brightness.light,
       navigation: Brightness.dark,
+    ),
+    forms: const [phone],
+  );
+  shots(
+    'app-working',
+    (s) => _open(
+      s,
+      'app-working',
+      _PageSurface(),
+      const ChromeMsg(_blue, Colors.white),
+      status: Brightness.light,
+      navigation: Brightness.dark,
+      then: const [Sent('thread-1')],
     ),
     forms: const [phone],
   );

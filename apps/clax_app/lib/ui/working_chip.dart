@@ -137,7 +137,6 @@ class _WorkingChipState extends State<WorkingChip> {
   Widget _dismiss(Color color) => IconButton(
     key: const ValueKey('chip-dismiss'),
     tooltip: 'Dismiss',
-    visualDensity: VisualDensity.compact,
     iconSize: 16,
     color: color,
     onPressed: widget.onDismiss,
@@ -165,7 +164,8 @@ class _WorkingChipState extends State<WorkingChip> {
           customBorder: const StadiumBorder(),
           onTap: open,
           child: Padding(
-            padding: const EdgeInsets.fromLTRB(14, 4, 4, 4),
+            // The dismiss button's 48 dp target sets the chip's height.
+            padding: const EdgeInsetsDirectional.only(start: 14),
             child: Row(
               mainAxisSize: MainAxisSize.min,
               children: [
@@ -260,7 +260,6 @@ class _WorkingChipState extends State<WorkingChip> {
               // Queued, not unavailable: it keeps its colours.
               disabledBackgroundColor: scheme.error,
               disabledForegroundColor: scheme.onError,
-              visualDensity: VisualDensity.compact,
             ),
             onPressed: c.retrying ? null : widget.onRetry,
             icon: c.retrying

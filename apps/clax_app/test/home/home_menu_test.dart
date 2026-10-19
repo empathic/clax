@@ -94,6 +94,23 @@ void main() {
     },
   );
 
+  testWidgets('the menu opens anchored at the rect the page gives, with no '
+      'bottom sheet', (tester) async {
+    await pump(tester);
+    const at = Rect.fromLTWH(120, 300, 80, 96);
+    final picked = flows.menu(app, at, const [(id: 'star', label: 'Star')]);
+    await tester.pumpAndSettle();
+    expect(find.byType(BottomSheet), findsNothing);
+    final star = tester.getRect(
+      find.ancestor(of: find.text('Star'), matching: find.byType(MenuItemButton)),
+    );
+    expect(star.top - at.bottom, inInclusiveRange(-8.0, 8.0));
+    expect((star.left - at.left).abs(), lessThanOrEqualTo(8.0));
+    await tester.tapAt(const Offset(10, 10));
+    await tester.pumpAndSettle();
+    expect(await picked, isNull);
+  });
+
   testWidgets('a menu for an app not listed resolves null and shows nothing', (
     tester,
   ) async {

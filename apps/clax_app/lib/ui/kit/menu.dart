@@ -5,12 +5,13 @@ import '../theme.dart';
 import '../tokens.g.dart';
 import 'family.dart';
 
-/// One row of a [ClaxMenu]: its [id] (what the menu answers), its [title],
-/// a [detail] after it in `muted` (such as a choice's model name), an
-/// [icon] where Flutter draws the menu and an SF Symbol name ([symbol])
-/// where the Mac does, a shortcut's label ([key], such as "⌘C", shown in the
-/// Apple family), whether it is the current choice ([checked], marked with
-/// a tick), [destructive] (drawn in `danger`) or [enabled]; or a separator.
+/// One row of a [ClaxMenu]: its [id] (what the menu answers, and the row's
+/// `ValueKey`), its [title], a [detail] after it in `muted` (such as a
+/// choice's model name), an [icon] where Flutter draws the menu and an SF
+/// Symbol name ([symbol]) where the Mac does, a shortcut's label ([key],
+/// such as "⌘C", shown in the Apple family), whether it is the current
+/// choice ([checked], marked with a tick), [destructive] (drawn in
+/// `danger`) or [enabled]; or a separator.
 class ClaxMenuItem {
   const ClaxMenuItem(
     this.id,
@@ -208,6 +209,7 @@ class _AnchoredMenuState extends State<_AnchoredMenu> {
                   const Divider(height: ClaxSpace.s8)
                 else
                   MenuItemButton(
+                    key: ValueKey(item.id),
                     closeOnActivate: false,
                     style: style(item),
                     leadingIcon: leading(item),

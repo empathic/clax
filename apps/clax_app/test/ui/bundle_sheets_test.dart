@@ -626,6 +626,10 @@ void main() {
       expect(find.widgetWithText(ClaxButton, 'Details'), findsNothing);
       expect(find.byType(ClaxButton), findsOneWidget);
       expect(find.text('adds a plant: expected 1, got 0'), findsNothing);
+      expect(
+        tester.getSize(find.byKey(const ValueKey('details-toggle'))).height,
+        greaterThanOrEqualTo(48),
+      );
       await tester.tap(find.byKey(const ValueKey('details-toggle')));
       await tester.pump();
       expect(find.text('adds a plant: expected 1, got 0'), findsOneWidget);

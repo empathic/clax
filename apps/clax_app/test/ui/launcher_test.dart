@@ -149,6 +149,34 @@ void main() {
     expect(find.text('Doomed'), findsNothing);
   });
 
+  testWidgets('a long-press opens a menu at the tile, not a bottom sheet', (
+    tester,
+  ) async {
+    final api = _api();
+    api.seedArtifact('Old runs', _page);
+    api.seedArtifact('Groceries', _page);
+    await pumpLauncher(tester, api);
+    await tester.longPress(_tile('Old runs'));
+    await tester.pumpAndSettle();
+    expect(find.byType(BottomSheet), findsNothing);
+    final cell = tester.getRect(
+      find.ancestor(of: _tile('Old runs'), matching: find.byType(InkWell)),
+    );
+    final first = tester.getRect(
+      find.ancestor(of: find.text('Open'), matching: find.byType(MenuItemButton)),
+    );
+    expect(
+      first.top - cell.bottom,
+      inInclusiveRange(-8.0, 8.0),
+      reason: 'the menu opens just under the tile, not at the screen’s edge',
+    );
+    expect((first.left - cell.left).abs(), lessThanOrEqualTo(8.0));
+    // Its rows read Open, Inspect, with no sheet title or subtitles.
+    expect(find.text('Files, data and permissions'), findsNothing);
+    final open = tester.getTopLeft(find.text('Open'));
+    expect(tester.getTopLeft(find.text('Inspect')).dy, greaterThan(open.dy));
+  });
+
   testWidgets('tapping a tile opens its app', (tester) async {
     final api = _api();
     final aid = api.seedArtifact('Runs', _page);

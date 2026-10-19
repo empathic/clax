@@ -379,9 +379,8 @@ class _LauncherState extends State<Launcher> {
                           icons: _icons,
                           building: _host.buildOf(apps[i].id),
                           onTap: () => widget.open(apps[i].id),
-                          // The menu is a bottom sheet: no anchor.
-                          onLongPress: () => unawaited(
-                            _actions.menu(apps[i].id, Rect.zero, const []),
+                          onLongPress: (at) => unawaited(
+                            _actions.menu(apps[i].id, at, const []),
                           ),
                         );
                       },
@@ -413,7 +412,10 @@ class _HomeCell extends StatelessWidget {
   final Widget icon;
   final Widget label;
   final VoidCallback onTap;
-  final VoidCallback? onLongPress;
+
+  /// Called with the cell's rect in global coordinates, where a menu
+  /// opens.
+  final ValueChanged<Rect>? onLongPress;
 
   @override
   Widget build(BuildContext context) => Semantics(
@@ -422,7 +424,13 @@ class _HomeCell extends StatelessWidget {
     excludeSemantics: true,
     child: InkWell(
       onTap: onTap,
-      onLongPress: onLongPress,
+      onLongPress: switch (onLongPress) {
+        final f? => () {
+          final box = context.findRenderObject()! as RenderBox;
+          f(box.localToGlobal(Offset.zero) & box.size);
+        },
+        null => null,
+      },
       borderRadius: BorderRadius.circular(20),
       child: Padding(
         padding: const EdgeInsets.fromLTRB(4, _AppTile._top, 4, 4),
@@ -473,7 +481,7 @@ class _AppTile extends StatelessWidget {
 
   final ArtifactSummary app;
   final VoidCallback onTap;
-  final VoidCallback onLongPress;
+  final ValueChanged<Rect> onLongPress;
   final AppIcons icons;
 
   /// How far the app's build is, while it goes.
@@ -1141,89 +1149,78 @@ class HomeFlows implements HomeActions {
         phase == BuildPhase.failed;
   }
 
-  /// Shows [app]'s menu: [items] first, then Clax's own. Resolves with the
-  /// picked item's ID as the sheet closes, or null for one of Clax's own
-  /// (whose action then runs) or a dismissal.
-  Future<String?> _menu(ArtifactSummary app, List<HomeMenuItem> items) async {
+  /// Shows [app]'s menu anchored at [anchor] (global coordinates): [items]
+  /// first, then Clax's own. Resolves with the picked item's ID as the menu
+  /// closes, or null for one of Clax's own (whose action then runs) or a
+  /// dismissal.
+  Future<String?> _menu(
+    ArtifactSummary app,
+    Rect anchor,
+    List<HomeMenuItem> items,
+  ) async {
     final resume = await _resumable(app.id);
     final at = contextOf();
     if (at == null || !at.mounted) return null;
-    final choice = await showModalBottomSheet<String>(
-      context: at,
-      builder: (context) => SafeArea(
-        child: Column(
-          mainAxisSize: MainAxisSize.min,
-          crossAxisAlignment: CrossAxisAlignment.start,
-          children: [
-            Padding(
-              padding: const EdgeInsets.fromLTRB(24, 0, 24, 8),
-              child: Text(
-                app.title,
-                style: Theme.of(context).textTheme.titleMedium,
-              ),
-            ),
-            for (final i in items)
-              ListTile(
-                key: ValueKey('home-item-${i.id}'),
-                title: Text(i.label),
-                onTap: () => Navigator.of(context).pop('item:${i.id}'),
-              ),
-            if (items.isNotEmpty) const Divider(),
-            ListTile(
-              leading: const Icon(Icons.open_in_new_rounded),
-              title: const Text('Open'),
-              onTap: () => Navigator.of(context).pop('open'),
-            ),
-            ListTile(
-              key: const ValueKey('inspect'),
-              leading: const Icon(Icons.manage_search_rounded),
-              title: const Text('Inspect'),
-              subtitle: const Text('Files, data and permissions'),
-              onTap: () => Navigator.of(context).pop('inspect'),
-            ),
-            if (bundles case final b?)
-              ListTile(
-                key: const ValueKey('share-app'),
-                leading: Icon(
-                  b.toFile ? Icons.save_alt_rounded : Icons.ios_share_rounded,
-                ),
-                title: Text(b.shareLabel),
-                subtitle: Text(
-                  b.toFile ? 'Save it as a .clax file' : 'Send it as a file',
-                ),
-                onTap: () => Navigator.of(context).pop('share'),
-              ),
-            if (resume)
-              ListTile(
-                key: const ValueKey('resume-build'),
-                leading: const Icon(Icons.play_arrow_rounded),
-                title: const Text('Resume build'),
-                subtitle: const Text('Build the rest of its plan'),
-                onTap: () => Navigator.of(context).pop('resume'),
-              ),
-            const SizedBox(height: 8),
-          ],
+    const own = 'home-item-';
+    final choice = await ClaxMenu.show(
+      at,
+      anchor: anchor,
+      items: [
+        for (final i in items) ClaxMenuItem('$own${i.id}', i.label),
+        if (items.isNotEmpty) const ClaxMenuItem.separator(),
+        const ClaxMenuItem(
+          'open',
+          'Open',
+          icon: Icons.open_in_new_rounded,
+          symbol: 'arrow.up.forward.app',
         ),
-      ),
+        const ClaxMenuItem(
+          'inspect',
+          'Inspect',
+          icon: Icons.manage_search_rounded,
+          symbol: 'magnifyingglass',
+        ),
+        if (bundles case final b?)
+          ClaxMenuItem(
+            'share-app',
+            b.shareLabel,
+            icon: b.toFile ? Icons.save_alt_rounded : Icons.ios_share_rounded,
+            symbol: 'square.and.arrow.up',
+          ),
+        if (resume)
+          const ClaxMenuItem(
+            'resume-build',
+            'Resume build',
+            icon: Icons.play_arrow_rounded,
+            symbol: 'play',
+          ),
+      ],
     );
-    if (choice != null && choice.startsWith('item:')) {
-      return choice.substring(5);
-    }
-    if (choice != null) unawaited(_act(app, choice));
+    if (choice == null) return null;
+    if (choice.startsWith(own)) return choice.substring(own.length);
+    unawaited(_act(app, choice, anchor));
     return null;
   }
 
-  /// Runs Clax's own menu item [choice] on [app].
-  Future<void> _act(ArtifactSummary app, String choice) async {
+  /// Runs Clax's own menu item [choice] on [app], whose menu opened at
+  /// [anchor].
+  Future<void> _act(ArtifactSummary app, String choice, Rect anchor) async {
     final c = contextOf();
     if (c == null || !c.mounted) return;
     switch (choice) {
       case 'open':
         openApp(app.id);
-      case 'resume':
+      case 'resume-build':
         await build?.control.resumeBuild(app.id);
-      case 'share':
-        await bundles?.share(c, app.id, svg: host.icons?.svgOf(app.id));
+      case 'share-app':
+        // The share sheet points at the tile, where the menu opened; a menu
+        // with no anchor leaves it the screen's centre.
+        await bundles?.share(
+          c,
+          app.id,
+          svg: host.icons?.svgOf(app.id),
+          origin: anchor.isEmpty ? null : anchor,
+        );
       case 'inspect':
         final target = onOpenTarget;
         await Navigator.of(c).push<void>(
@@ -1284,7 +1281,7 @@ class HomeFlows implements HomeActions {
   Future<String?> menu(String id, Rect anchor, List<HomeMenuItem> items) async {
     if (!mounted) return null;
     for (final a in host.summaries ?? const <ArtifactSummary>[]) {
-      if (a.id == id) return _menu(a, items);
+      if (a.id == id) return _menu(a, anchor, items);
     }
     return null;
   }

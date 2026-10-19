@@ -876,7 +876,12 @@ class _Disclosure extends StatelessWidget {
         onTap: onToggle,
         borderRadius: BorderRadius.circular(ClaxRadius.sm),
         child: ConstrainedBox(
-          constraints: const BoxConstraints(minHeight: 40),
+          // A 48 dp target in the Material family, 40 in the Apple one.
+          constraints: BoxConstraints(
+            minHeight: ClaxFamily.of(context) == ClaxFamily.apple
+                ? 40
+                : ClaxLayout.target,
+          ),
           child: Row(
             children: [
               AnimatedRotation(

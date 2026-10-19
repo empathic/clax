@@ -1,6 +1,7 @@
 // Existing screens in the brand's theme, rendered in every form and theme
 // into CLAX_SHOTS_DIR (skipped without it): Settings with a key in its
-// field, the launcher with apps, icons and makes, a thread, and the splash
+// field, the launcher with apps, icons and makes, a tile's long-press menu
+// on the phone, a thread, and the splash
 // at rest and once it breathes.
 import 'dart:async';
 import 'dart:io';
@@ -18,6 +19,7 @@ import 'package:clax_app/ui/make_service.dart';
 import 'package:clax_app/ui/settings_screen.dart';
 import 'package:clax_app/ui/splash.dart';
 import 'package:clax_app/ui/thread_detail.dart';
+import 'package:clax_app/ui/tile_label.dart';
 import 'package:flutter/widgets.dart';
 import 'package:flutter_test/flutter_test.dart';
 
@@ -180,6 +182,35 @@ void main() {
     await s.settle();
     await s.take('launcher-banners');
   });
+
+  shots('launcher-menu', (s) async {
+    final api = FakeClaxApi(clock: () => '2026-10-12T00:00:00Z');
+    for (final e in _icons.entries) {
+      api.seedArtifact(e.key, {
+        'index.html': '<p>x</p>',
+        'icon.svg': File(
+          appPath('test/fixtures/icons/${e.value}.svg'),
+        ).readAsStringSync(),
+      });
+    }
+    await s.tester.pumpWidget(
+      s.app(
+        Launcher(
+          api: api,
+          open: (_) {},
+          make: (r, cancelled, stage) => throw StateError('unused'),
+          voice: FakeVoice.unsupported('No speech here'),
+          icons: AppIcons(api),
+        ),
+      ),
+    );
+    await s.settle();
+    await s.tester.longPress(
+      find.byWidgetPredicate((w) => w is TileLabel && w.text == 'Recipes'),
+    );
+    await s.settle();
+    await s.take('launcher-menu');
+  }, forms: const [phone]);
 
   shots('thread', (s) async {
     final api = FakeClaxApi(clock: () => '2026-10-12T09:14:00Z');
