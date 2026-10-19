@@ -3,7 +3,7 @@
 //! every live one acts as the owner identity (spec L6).
 
 use super::Store;
-use clax_core::extension::{CREDENTIAL_TTL_DAYS, MAX_CREDENTIALS, credential_hash, new_credential};
+use clax_core::extension::{CREDENTIAL_TTL_DAYS, MAX_CREDENTIALS, new_credential};
 use clax_core::{Result, new_ulid};
 use rusqlite::params;
 
@@ -11,7 +11,7 @@ use rusqlite::params;
 #[derive(Clone)]
 pub struct MintedCredential {
     /// The credential itself: handed to the extension once, never stored.
-    pub credential: String,
+    pub credential: clax_core::secret::Secret,
     /// Its SHA-256 in lowercase hex, as stored.
     pub hash: String,
 }
@@ -43,7 +43,7 @@ impl Store {
     /// ones for that ID, the oldest are revoked, in the same transaction.
     pub fn mint_extension_credential(&self, extension_id: &str) -> Result<MintedCredential> {
         let credential = new_credential();
-        let hash = credential_hash(&credential);
+        let hash = credential.sha256_hex();
         self.with_tx(|tx| {
             let now = self.now();
             tx.execute(
@@ -133,7 +133,7 @@ mod tests {
         };
         let before = viewers();
         let first = st.mint_extension_credential(EXT).unwrap();
-        assert_eq!(first.hash, credential_hash(&first.credential));
+        assert_eq!(first.hash, credential_hash(first.credential.expose()));
         let mut last = first.clone();
         for _ in 0..MAX_CREDENTIALS {
             last = st.mint_extension_credential(EXT).unwrap();
@@ -166,7 +166,7 @@ mod tests {
             })
             .unwrap();
         assert!(
-            !stored.contains(&last.credential[4..]),
+            !stored.contains(&last.credential.expose()[4..]),
             "only the hash is stored"
         );
         assert_eq!(st.revoke_extension_credentials().unwrap(), MAX_CREDENTIALS);
@@ -179,7 +179,7 @@ mod tests {
         let (_dir, st) = store();
         let m = st.mint_extension_credential(EXT).unwrap();
         let shown = format!("{m:?}");
-        assert!(!shown.contains(&m.credential[4..]), "{shown}");
+        assert!(!shown.contains(&m.credential.expose()[4..]), "{shown}");
         assert!(shown.contains(&m.hash));
     }
 

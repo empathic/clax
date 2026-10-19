@@ -5,7 +5,6 @@
 //! `<home>/extension`. The daemon admits that origin only.
 
 use base64::Engine as _;
-use rand::RngCore as _;
 use sha2::{Digest, Sha256};
 use std::path::{Component, Path, PathBuf};
 
@@ -96,22 +95,17 @@ pub fn extension_id_in_effect(home: &Path) -> String {
         .unwrap_or_else(|| extension_id_from_path(&home.join("extension")))
 }
 
-/// A new credential: the prefix and 32 random bytes in unpadded base64url.
-pub fn new_credential() -> String {
-    let mut bytes = [0u8; 32];
-    rand::rng().fill_bytes(&mut bytes);
-    format!(
-        "{CREDENTIAL_PREFIX}{}",
-        base64::engine::general_purpose::URL_SAFE_NO_PAD.encode(bytes)
-    )
+/// A new credential: the prefix and 32 random bytes in unpadded base64url
+/// ([`crate::secret::token`]), a [`Secret`](crate::secret::Secret) exposed
+/// only where it is handed to the extension.
+pub fn new_credential() -> crate::secret::Secret {
+    crate::secret::token(CREDENTIAL_PREFIX)
 }
 
-/// A credential's SHA-256 in lowercase hex: all the store and the daemon keep.
+/// A credential's SHA-256 in lowercase hex ([`crate::secret::sha256_hex`]):
+/// all the store and the daemon keep.
 pub fn credential_hash(c: &str) -> String {
-    Sha256::digest(c.as_bytes())
-        .iter()
-        .map(|b| format!("{b:02x}"))
-        .collect()
+    crate::secret::sha256_hex(c)
 }
 
 /// Whether `c` has a credential's shape (the prefix and 43 base64url characters).
@@ -189,10 +183,12 @@ mod tests {
 
     #[test]
     fn credentials_have_their_shape_and_hash_without_revealing_themselves() {
-        let c = new_credential();
-        assert!(is_credential(&c), "{c}");
+        let secret = new_credential();
+        assert_eq!(format!("{secret:?}"), "Secret(…)");
+        let c = secret.expose();
+        assert!(is_credential(c), "{c}");
         assert_eq!(c.len(), 4 + 43);
-        assert_ne!(new_credential(), c);
+        assert_ne!(new_credential().expose(), c);
         let h = credential_hash(&c);
         assert_eq!(h.len(), 64);
         assert!(

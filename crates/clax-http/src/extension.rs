@@ -633,7 +633,7 @@ mod tests {
 
     #[test]
     fn only_a_well_formed_extension_credential_is_presented() {
-        let c = clax_core::extension::new_credential();
+        let c = clax_core::extension::new_credential().expose().to_string();
         let mut h = HeaderMap::new();
         h.insert(
             header::AUTHORIZATION,
@@ -663,7 +663,7 @@ mod tests {
                 extension_id: "abc".into()
             })
         );
-        assert_eq!(c.get(&a.credential), None, "keyed by hash only");
+        assert_eq!(c.get(a.credential.expose()), None, "keyed by hash only");
         c.refresh(&st, |st| st.revoke_extension_credentials())
             .unwrap();
         assert_eq!(c.get(&a.hash), None);
