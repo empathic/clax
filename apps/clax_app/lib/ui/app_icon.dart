@@ -177,21 +177,31 @@ class AppBadge extends StatelessWidget {
         borderRadius: BorderRadius.circular(radius),
       ),
       alignment: Alignment.center,
-      child: switch (tileFace(app)) {
-        EmojiFace(:final emoji) => Text(
-          emoji,
-          style: const TextStyle(fontSize: 28, height: 1),
-        ),
-        IconFace(:final icon) => Icon(icon, color: fg, size: 28),
-        MonogramFace(:final letters) => Text(
-          letters,
-          style: theme.textTheme.titleLarge?.copyWith(
-            color: fg,
-            fontWeight: FontWeight.w600,
-            height: 1,
+      // The face is drawn at the badge's size, never the text's, so a
+      // large text scale cannot spill it out of its square.
+      child: Padding(
+        padding: EdgeInsets.all(size * 0.12),
+        child: MediaQuery.withNoTextScaling(
+          child: FittedBox(
+            fit: BoxFit.scaleDown,
+            child: switch (tileFace(app)) {
+              EmojiFace(:final emoji) => Text(
+                emoji,
+                style: const TextStyle(fontSize: 28, height: 1),
+              ),
+              IconFace(:final icon) => Icon(icon, color: fg, size: 28),
+              MonogramFace(:final letters) => Text(
+                letters,
+                style: theme.textTheme.titleLarge?.copyWith(
+                  color: fg,
+                  fontWeight: FontWeight.w600,
+                  height: 1,
+                ),
+              ),
+            },
           ),
         ),
-      },
+      ),
     );
   }
 }

@@ -1041,8 +1041,12 @@ class HomeFlows implements HomeActions {
   Future<void> _openInbox() async {
     await Navigator.of(context).push<void>(
       MaterialPageRoute(
-        builder: (_) =>
-            InboxScreen(api: api, onOpen: _openItem, stream: host.stream),
+        builder: (_) => InboxScreen(
+          api: api,
+          onOpen: _openItem,
+          stream: host.stream,
+          icons: host.icons,
+        ),
       ),
     );
     if (mounted) await host.loadUnread();

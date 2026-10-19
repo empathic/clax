@@ -878,9 +878,9 @@ void main() {
         await pumpWithInbox(tester, api);
         await tester.tap(find.byTooltip('Inbox'));
         await tester.pumpAndSettle();
-        await tester.tap(find.text('Fixed'));
+        await tester.tap(find.text('Clax replied: Fixed'));
         await tester.pumpAndSettle();
-        await tester.tap(find.text('v4: Totals'));
+        await tester.tap(find.text('Version 4 is ready: Totals'));
         await tester.pumpAndSettle();
         await tester.tap(find.text('New app'));
         await tester.pumpAndSettle();
@@ -897,7 +897,7 @@ void main() {
       await pumpWithInbox(tester, api, targetHook: false);
       await tester.tap(find.byTooltip('Inbox'));
       await tester.pumpAndSettle();
-      await tester.tap(find.text('Fixed'));
+      await tester.tap(find.text('Clax replied: Fixed'));
       await tester.pumpAndSettle();
       expect(opened, [aid]);
     });
@@ -914,7 +914,7 @@ void main() {
       await pumpWithInbox(tester, api, questionHook: true);
       await tester.tap(find.byTooltip('Inbox'));
       await tester.pumpAndSettle();
-      await tester.tap(find.text('Units'));
+      await tester.tap(find.text('Clax asked: Which unit?'));
       await tester.pumpAndSettle();
       expect(questionsOpened, [asked.question.id]);
       expect(targets, isEmpty);
@@ -930,7 +930,7 @@ void main() {
       await pumpWithInbox(tester, api);
       await tester.tap(find.byTooltip('Inbox'));
       await tester.pumpAndSettle();
-      await tester.tap(find.text('Units'));
+      await tester.tap(find.text('Clax asked: Which unit?'));
       await tester.pumpAndSettle();
       expect(targets, [(aid, null, null)]);
     });

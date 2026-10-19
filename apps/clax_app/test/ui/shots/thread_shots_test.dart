@@ -48,19 +48,16 @@ Future<void> _thread(
     DeveloperScope(
       notifier: dev,
       child: s.app(
-        Scaffold(
-          appBar: AppBar(title: const Text('Runs')),
-          body: ThreadDetail(
-            api: api,
-            aid: aid,
-            tid: item.threadId,
-            voice: FakeVoice(),
-            autoDictate: false,
-            onPreview: (_) {},
-            onRetry: (_) async => true,
-            label: 'the weekly chart',
-            now: () => DateTime.utc(2026, 10, 16, 9, 20),
-          ),
+        ThreadDetail(
+          api: api,
+          aid: aid,
+          tid: item.threadId,
+          voice: FakeVoice(),
+          autoDictate: false,
+          onPreview: (_) {},
+          onRetry: (_) async => true,
+          label: 'the weekly chart',
+          now: () => DateTime.utc(2026, 10, 16, 9, 20),
         ),
       ),
     ),

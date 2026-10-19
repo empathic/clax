@@ -2,6 +2,7 @@ import 'dart:async';
 
 import 'package:clax_app/clax/api.dart';
 import 'package:clax_app/clax/fake_api.dart';
+import 'package:clax_app/ui/app_icon.dart';
 import 'package:clax_app/ui/haiku.dart';
 import 'package:clax_app/ui/inbox_screen.dart';
 import 'package:clax_app/ui/kit/kit.dart';
@@ -96,14 +97,14 @@ void main() {
     api.pushInbox('published', artifactId: aid);
     api.pushInbox('finished', artifactId: aid, message: 'All three fixed');
     await pumpInbox(tester);
-    expect(find.text('Added it'), findsOneWidget);
-    expect(find.text('v5: Weekly sum'), findsOneWidget);
+    expect(find.text('Clax replied: Added it'), findsOneWidget);
+    expect(find.text('Version 5 is ready: Weekly sum'), findsOneWidget);
     expect(find.text('New app'), findsOneWidget);
-    expect(find.text('Finished: All three fixed'), findsOneWidget);
+    expect(find.text('Clax finished: All three fixed'), findsOneWidget);
     expect(find.text('Run log'), findsNWidgets(4));
   });
 
-  testWidgets("a question's row shows its header", (tester) async {
+  testWidgets("a question's row says Clax asked it", (tester) async {
     final s = await api.registerAppSession(installId: 'i', pid: 1);
     await api.askQuestion(s.id, [
       {
@@ -116,33 +117,105 @@ void main() {
       },
     ], artifactId: aid);
     await pumpInbox(tester);
-    expect(find.text('Units'), findsOneWidget);
+    expect(
+      find.text('Clax asked: Which unit should distances use?'),
+      findsOneWidget,
+    );
   });
 
   testWidgets('shows the newest items first', (tester) async {
     api.pushInbox('finished', artifactId: aid, message: 'older');
     api.pushInbox('finished', artifactId: aid, message: 'newer');
     await pumpInbox(tester);
-    final older = tester.getTopLeft(find.text('Finished: older'));
-    final newer = tester.getTopLeft(find.text('Finished: newer'));
+    final older = tester.getTopLeft(find.text('Clax finished: older'));
+    final newer = tester.getTopLeft(find.text('Clax finished: newer'));
     expect(newer.dy, lessThan(older.dy));
   });
 
-  testWidgets('Unread and the kind chips change the query', (tester) async {
+  testWidgets('the chips All, Unread, Questions and Changes pick one view', (
+    tester,
+  ) async {
     await pumpInbox(tester);
+    final chips = tester.widgetList<FilterChip>(find.byType(FilterChip));
+    expect(
+      [for (final c in chips) (c.label as Text).data],
+      ['All', 'Unread', 'Questions', 'Changes'],
+    );
+    bool selected(String label) =>
+        tester.widget<FilterChip>(find.widgetWithText(FilterChip, label)).selected;
+    expect(selected('All'), isTrue);
     expect(lastInboxArgs()!['read'], 'all');
+    expect(lastInboxArgs()!['kinds'], isNull);
+
     await tester.tap(find.widgetWithText(FilterChip, 'Unread'));
     await tester.pumpAndSettle();
     expect(lastInboxArgs()!['read'], 'unread');
-    await tester.tap(find.widgetWithText(FilterChip, 'Replies'));
+    expect(lastInboxArgs()!['kinds'], isNull);
+    expect(selected('Unread'), isTrue);
+    expect(selected('All'), isFalse);
+
+    await tester.tap(find.widgetWithText(FilterChip, 'Questions'));
     await tester.pumpAndSettle();
-    expect(lastInboxArgs()!['kinds'], ['reply']);
-    await tester.tap(find.widgetWithText(FilterChip, 'Versions'));
+    expect(lastInboxArgs()!['read'], 'all');
+    expect(lastInboxArgs()!['kinds'], ['question']);
+
+    await tester.tap(find.widgetWithText(FilterChip, 'Changes'));
     await tester.pumpAndSettle();
-    expect(lastInboxArgs()!['kinds'], ['reply', 'version']);
-    await tester.tap(find.widgetWithText(FilterChip, 'Replies'));
+    expect(lastInboxArgs()!['kinds'], ['version', 'published', 'finished']);
+
+    await tester.tap(find.widgetWithText(FilterChip, 'All'));
     await tester.pumpAndSettle();
-    expect(lastInboxArgs()!['kinds'], ['version']);
+    expect(lastInboxArgs()!['read'], 'all');
+    expect(lastInboxArgs()!['kinds'], isNull);
+  });
+
+  testWidgets('the title is Inbox with no count, over a search bar', (
+    tester,
+  ) async {
+    api.pushInbox('reply', artifactId: aid, body: 'Hello');
+    await pumpInbox(tester);
+    // The large title and the bar's collapsed one.
+    expect(find.text('Inbox'), findsWidgets);
+    expect(find.textContaining('Inbox ·'), findsNothing);
+    expect(find.byType(SearchBar), findsOneWidget);
+    expect(tester.getSize(find.byType(SearchBar)).height, 56);
+  });
+
+  testWidgets('an unread row has a bold title and a dot in you, and no tint', (
+    tester,
+  ) async {
+    api.pushInbox('reply', artifactId: aid, body: 'Hello');
+    await pumpInbox(tester);
+    final row = find.byType(InboxRow);
+    final title = tester.widget<Text>(
+      find.descendant(of: row, matching: find.text('Run log')),
+    );
+    expect(title.style!.fontWeight, FontWeight.w700);
+    final dot = find.byKey(const ValueKey('inbox-unread-dot'));
+    expect(tester.getSize(dot), const Size(8, 8));
+    final context = tester.element(row);
+    expect(
+      (tester.widget<Container>(dot).decoration! as BoxDecoration).color,
+      claxPalette(context).you,
+    );
+    for (final m in tester.widgetList<Material>(
+      find.descendant(of: row, matching: find.byType(Material)),
+    )) {
+      expect(m.color, anyOf(isNull, Colors.transparent));
+    }
+    // The app's icon, 40 dp, never a kind glyph.
+    expect(
+      tester.getSize(find.descendant(of: row, matching: find.byType(AppBadge))),
+      const Size(40, 40),
+    );
+
+    await tester.tap(row);
+    await tester.pumpAndSettle();
+    expect(find.byKey(const ValueKey('inbox-unread-dot')), findsNothing);
+    final read = tester.widget<Text>(
+      find.descendant(of: row, matching: find.text('Run log')),
+    );
+    expect(read.style!.fontWeight, isNot(FontWeight.w700));
   });
 
   testWidgets('search waits for typing to pause', (tester) async {
@@ -170,7 +243,7 @@ void main() {
     await pumpInbox(tester);
     expect(lastInboxArgs()!['before'], isNull);
     await tester.scrollUntilVisible(
-      find.text('Finished: item 0'),
+      find.text('Clax finished: item 0'),
       400,
       scrollable: find.byType(Scrollable).first,
     );
@@ -180,7 +253,7 @@ void main() {
     );
     expect(paged, hasLength(1));
     expect(paged.single.args['before'], '11');
-    expect(find.text('Finished: item 0'), findsOneWidget);
+    expect(find.text('Clax finished: item 0'), findsOneWidget);
   });
 
   testWidgets('a tap marks the item read and opens it', (tester) async {
@@ -192,7 +265,7 @@ void main() {
     );
     await pumpInbox(tester);
     expect(find.bySemanticsLabel(RegExp(r'^Unread\. ')), findsOneWidget);
-    await tester.tap(find.text('Added it'));
+    await tester.tap(find.text('Clax replied: Added it'));
     await tester.pumpAndSettle();
     expect(
       api.calls.where((c) => c.name == 'markInboxRead').single.args['itemId'],
@@ -222,17 +295,17 @@ void main() {
   testWidgets('Mark all read sends the newest seq shown and the filter', (
     tester,
   ) async {
-    api.pushInbox('reply', artifactId: aid, body: 'a');
-    final newest = api.pushInbox('reply', artifactId: aid, body: 'b');
+    api.pushInbox('version', artifactId: aid, versionN: 1);
+    final newest = api.pushInbox('finished', artifactId: aid, message: 'b');
     await pumpInbox(tester);
-    await tester.tap(find.widgetWithText(FilterChip, 'Replies'));
+    await tester.tap(find.widgetWithText(FilterChip, 'Changes'));
     await tester.pumpAndSettle();
     await tester.tap(find.byTooltip('Mark all read'));
     await tester.pumpAndSettle();
     final call = api.calls.lastWhere((c) => c.name == 'markAllInboxRead');
     expect(call.args['upto'], newest.seq);
     expect(call.args['filter'], {
-      'kind': ['reply'],
+      'kind': ['version', 'published', 'finished'],
     });
     expect(find.bySemanticsLabel(RegExp(r'^Unread\. ')), findsNothing);
   });
@@ -242,9 +315,9 @@ void main() {
     await pumpInbox(tester);
     api.pushInbox('reply', artifactId: aid, body: 'Live reply');
     await tester.pumpAndSettle();
-    expect(find.text('Live reply'), findsOneWidget);
-    final live = tester.getTopLeft(find.text('Live reply'));
-    final first = tester.getTopLeft(find.text('Finished: first'));
+    expect(find.text('Clax replied: Live reply'), findsOneWidget);
+    final live = tester.getTopLeft(find.text('Clax replied: Live reply'));
+    final first = tester.getTopLeft(find.text('Clax finished: first'));
     expect(live.dy, lessThan(first.dy));
   });
 
@@ -254,7 +327,7 @@ void main() {
     expect(find.bySemanticsLabel(RegExp(r'^Unread\. ')), findsOneWidget);
     await api.markInboxRead(item.id);
     await tester.pumpAndSettle();
-    expect(find.text('Hello'), findsOneWidget);
+    expect(find.text('Clax replied: Hello'), findsOneWidget);
     expect(find.bySemanticsLabel(RegExp(r'^Unread\. ')), findsNothing);
   });
 
@@ -262,11 +335,11 @@ void main() {
     tester,
   ) async {
     await pumpInbox(tester);
-    await tester.tap(find.widgetWithText(FilterChip, 'Versions'));
+    await tester.tap(find.widgetWithText(FilterChip, 'Changes'));
     await tester.pumpAndSettle();
-    api.pushInbox('reply', artifactId: aid, body: 'Not a version');
+    api.pushInbox('reply', artifactId: aid, body: 'Not a change');
     await tester.pumpAndSettle();
-    expect(find.text('Not a version'), findsNothing);
+    expect(find.textContaining('Not a change'), findsNothing);
   });
 
   testWidgets('resync and inbox_read refetch', (tester) async {
@@ -296,7 +369,7 @@ void main() {
     api.pushInbox('reply', artifactId: aid, body: 'Hello');
     await pumpInbox(tester);
     final before = api.callNames.where((n) => n == 'inbox').length;
-    await tester.fling(find.text('Hello'), const Offset(0, 400), 1000);
+    await tester.fling(find.text('Clax replied: Hello'), const Offset(0, 400), 1000);
     await tester.pumpAndSettle();
     expect(api.callNames.where((n) => n == 'inbox').length, before + 1);
   });
@@ -338,7 +411,7 @@ void main() {
 
   testWidgets('no matches is plain, with no haiku', (tester) async {
     await pumpInbox(tester, haikus: ['a haiku']);
-    await tester.tap(find.widgetWithText(FilterChip, 'Replies'));
+    await tester.tap(find.widgetWithText(FilterChip, 'Questions'));
     await tester.pumpAndSettle();
     expect(find.text('No matches'), findsOneWidget);
     expect(find.byType(HaikuLine), findsNothing);
@@ -356,7 +429,7 @@ void main() {
     api.pushInbox('reply', artifactId: aid, body: 'Back');
     await tester.tap(find.text('Try again'));
     await tester.pumpAndSettle();
-    expect(find.text('Back'), findsOneWidget);
+    expect(find.text('Clax replied: Back'), findsOneWidget);
   });
 
   testWidgets('the open inbox is an owner surface until it closes', (
@@ -402,8 +475,8 @@ void main() {
     await tester.pump();
     held.pending!.complete();
     await tester.pumpAndSettle();
-    expect(find.text('Finished: before'), findsOneWidget);
-    expect(find.text('During the fetch'), findsOneWidget);
+    expect(find.text('Clax finished: before'), findsOneWidget);
+    expect(find.text('Clax replied: During the fetch'), findsOneWidget);
   });
 
   testWidgets('an unsubscribed topic is subscribed again with backoff', (
@@ -474,7 +547,10 @@ void main() {
       body: 'Done.\n\n**Distances** now read in `km`.',
     );
     await pumpInbox(tester);
-    expect(find.text('Done. Distances now read in km.'), findsOneWidget);
+    expect(
+      find.text('Clax replied: Done. Distances now read in km.'),
+      findsOneWidget,
+    );
   });
 }
 

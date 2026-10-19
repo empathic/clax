@@ -2,6 +2,7 @@ import 'package:clax_app/agent/failure.dart';
 import 'package:clax_app/clax/api.dart';
 import 'package:clax_app/clax/fake_api.dart';
 import 'package:clax_app/ui/developer.dart';
+import 'package:clax_app/ui/kit/kit.dart';
 import 'package:clax_app/ui/theme.dart';
 import 'package:clax_app/ui/thread_detail.dart';
 import 'package:clax_app/ui/tokens.g.dart';
@@ -116,7 +117,7 @@ void main() {
     expect(find.text('6 min ago'), findsNWidgets(3));
   });
 
-  testWidgets('shows the anchor label: the shell’s words, else the anchor’s', (
+  testWidgets('is titled by the app, with the anchor and version under it', (
     tester,
   ) async {
     final rig = await _seeded();
@@ -126,18 +127,38 @@ void main() {
       anchor: const {'kind': 'text', 'file': 'index.html', 'quote': 'Runs'},
     );
     await pumpDetail(tester, rig, a.threadId);
-    expect(find.text('“Runs”'), findsOneWidget);
-    expect(find.text('The page title'), findsNothing);
+    final bar = find.byType(AppBar);
+    expect(
+      find.descendant(of: bar, matching: find.text('Runs')),
+      findsOneWidget,
+    );
+    expect(
+      find.descendant(of: bar, matching: find.text('On “Runs” · Version 1')),
+      findsOneWidget,
+    );
+    expect(find.text('Thread'), findsNothing);
 
     final b = rig.api.sendComment(rig.aid, 'all of it');
     await pumpDetail(tester, rig, b.threadId, label: 'the page title');
-    // The title starts with a capital letter.
-    expect(find.text('The page title'), findsOneWidget);
+    expect(find.text('On the page title · Version 1'), findsOneWidget);
 
     final c = rig.api.sendComment(rig.aid, 'everything');
     await pumpDetail(tester, rig, c.threadId);
-    expect(find.text('Whole app'), findsOneWidget);
+    expect(find.text('Whole app · Version 1'), findsOneWidget);
 
+    final d = rig.api.sendComment(rig.aid, 'bigger');
+    await pumpDetail(tester, rig, d.threadId, label: 'Chart under “p95”');
+    expect(find.text('On the chart under “p95” · Version 1'), findsOneWidget);
+  });
+
+  test('a long anchor is cut so the version still shows', () {
+    final s = threadSubtitle('Chart under “p95 by four-hour window across the week”', 3);
+    expect(s, endsWith('…” · Version 3'));
+    expect(s.length, lessThan(64));
+    expect(threadSubtitle('“Runs”', 3), 'On “Runs” · Version 3');
+  });
+
+  test('anchorWords reads the quote, then the name, then a kind word', () {
     // An anchor's spaced label reads in place of its run-together quote.
     expect(
       anchorWords(const {
@@ -147,6 +168,67 @@ void main() {
       }),
       '“Mon 5 km”',
     );
+    expect(anchorWords(const {'kind': 'artifact'}), 'Whole app');
+    expect(
+      anchorWords(const {'kind': 'element', 'name': 'Save changes'}),
+      '“Save changes”',
+    );
+    expect(
+      anchorWords(const {'kind': 'element', 'name': 'Chart under ‘p95’'}),
+      'Chart under “p95”',
+    );
+    expect(anchorWords(const {'kind': 'element', 'name': 'Table'}), 'Table');
+    expect(
+      anchorWords(const {'kind': 'area', 'name': 'Chart under ‘p95’'}),
+      'Area on the chart under “p95”',
+    );
+    expect(
+      anchorWords(const {'kind': 'area', 'name': 'Totals'}),
+      'Area on “Totals”',
+    );
+    expect(
+      anchorWords(const {'kind': 'element', 'selector': 'main > div'}),
+      'A spot on the page',
+    );
+    expect(
+      anchorWords(const {'kind': 'element', 'selector': 'main > table.x'}),
+      'Table',
+    );
+    expect(
+      anchorWords(const {
+        'kind': 'area',
+        'selector': 'main > div',
+        'area': {'tag': 'canvas'},
+      }),
+      'Area on the chart',
+    );
+    // A name beats a kind word and the old "this spot".
+    expect(
+      anchorWords(const {
+        'kind': 'element',
+        'selector': 'main > button',
+        'name': 'Save',
+      }),
+      '“Save”',
+    );
+    expect(anchorWords(const {'kind': 'area'}), 'Area on the page');
+  });
+
+  testWidgets('at 1280 wide the conversation and reply bar are 720, centred', (
+    tester,
+  ) async {
+    tester.view.physicalSize = const Size(1280, 800);
+    tester.view.devicePixelRatio = 1;
+    addTearDown(tester.view.reset);
+    final rig = await _seeded();
+    final item = rig.api.sendComment(rig.aid, 'make it blue');
+    await pumpDetail(tester, rig, item.threadId);
+    final list = tester.getRect(find.byKey(const ValueKey('thread-list')));
+    expect(list.width, 720);
+    expect(list.center.dx, 640);
+    final reply = tester.getRect(find.byKey(const ValueKey('thread-reply-bar')));
+    expect(reply.width, 720);
+    expect(reply.center.dx, 640);
   });
 
   testWidgets('shows the clip when the thread has one', (tester) async {
@@ -952,7 +1034,15 @@ void main() {
       final opened = <String>[];
       final run = [a.threadId, b.threadId, c.threadId];
       await pumpFocus(tester, rig, b.threadId, run: run, onRun: opened.add);
-      expect(find.text('2 of 3 threads in this change'), findsOneWidget);
+      expect(find.text('Run 2 of 3'), findsOneWidget);
+      expect(
+        tester.widget(find.byKey(const ValueKey('thread-run-previous'))),
+        isA<IconButton>(),
+      );
+      expect(
+        tester.widget(find.byKey(const ValueKey('thread-run-next'))),
+        isA<IconButton>(),
+      );
       await tester.tap(find.byKey(const ValueKey('thread-run-next')));
       await tester.tap(find.byKey(const ValueKey('thread-run-previous')));
       expect(opened, [c.threadId, a.threadId]);
@@ -988,6 +1078,14 @@ void main() {
     );
     expect(find.text('Waiting for connection'), findsOneWidget);
     expect(find.text('Clax is working on it'), findsNothing);
+    expect(
+      tester.widget<ClaxButton>(find.byKey(const ValueKey('thread-try-now'))).kind,
+      ClaxButtonKind.tonal,
+    );
+    expect(
+      tester.widget<ClaxButton>(find.byKey(const ValueKey('thread-cancel'))).kind,
+      ClaxButtonKind.plain,
+    );
     await tester.tap(find.byKey(const ValueKey('thread-try-now')));
     expect(tries, 1);
 

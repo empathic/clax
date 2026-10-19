@@ -8,7 +8,9 @@ import '../clax/api.dart';
 import '../platform/voice.dart';
 import 'developer.dart';
 import 'kit/kit.dart';
+import 'layout.dart';
 import 'theme.dart';
+import 'tokens.g.dart';
 import 'user_message.dart';
 
 /// Where a thread stands, as the thread page shows it.
@@ -49,28 +51,127 @@ ThreadStatus threadStatus(ThreadView t) {
       : ThreadStatus.sent;
 }
 
-/// What [anchor] is about, in a person's words, for a thread the shell
-/// gave no label for: "Whole app", the quoted text (the anchor's spaced
-/// `label` when it has one), "this area" or "this spot". The shell's own label (`ThreadSummary.label`) says more and is
-/// preferred.
-String anchorWords(Map<String, Object?> anchor) {
-  if (anchor['kind'] == 'artifact') return 'Whole app';
-  final quote = anchor['label'] ?? anchor['quote'];
-  if (quote is String) {
-    final q = quote.replaceAll(RegExp(r'\s+'), ' ').trim();
-    if (q.isNotEmpty) {
-      final chars = q.runes.toList();
-      return chars.length > 60
-          ? '“${String.fromCharCodes(chars.take(60)).trimRight()}…”'
-          : '“$q”';
-    }
-  }
-  return anchor['kind'] == 'area' ? 'this area' : 'this spot';
+/// The word for what an element is, by its ARIA role or tag, as the
+/// bridge's names use them (`KIND_WORDS` in `web/bridge/src/protocol.ts`):
+/// a name that is one of these words, or one of them "under ‘…’" a
+/// heading, is the app's own words; any other name is the page's,
+/// and is quoted.
+const _kindOf = {
+  'table': 'Table', 'grid': 'Table', 'canvas': 'Chart', 'svg': 'Chart', //
+  'img': 'Image', 'image': 'Image', 'picture': 'Image', 'video': 'Video',
+  'audio': 'Audio player', 'iframe': 'Embedded page', 'button': 'Button',
+  'a': 'Link', 'link': 'Link', 'input': 'Field', 'textarea': 'Text box',
+  'textbox': 'Text box', 'select': 'Menu', 'combobox': 'Menu',
+  'checkbox': 'Checkbox', 'radio': 'Option', 'switch': 'Switch',
+  'slider': 'Slider', 'heading': 'Heading', 'h1': 'Heading',
+  'h2': 'Heading', 'h3': 'Heading', 'h4': 'Heading', 'h5': 'Heading',
+  'h6': 'Heading', 'p': 'Paragraph', 'ul': 'List', 'ol': 'List',
+  'list': 'List', 'li': 'List item', 'listitem': 'List item',
+  'form': 'Form', 'figure': 'Figure', 'nav': 'Navigation',
+  'navigation': 'Navigation', 'dialog': 'Dialog',
+  'progress': 'Progress bar', 'progressbar': 'Progress bar',
+  'blockquote': 'Quote', 'pre': 'Code block', 'code': 'Code',
+};
+
+final _kindWords = _kindOf.values.toSet();
+
+/// The kind word for the last tag in [selector] (`main > h2.x` → "Heading").
+String? _kindOfSelector(Object? selector) {
+  if (selector is! String) return null;
+  final last = selector.split(RegExp(r'[\s>+~]+')).where((p) => p.isNotEmpty);
+  if (last.isEmpty) return null;
+  final tag = RegExp(r'^[a-z][a-z0-9-]*', caseSensitive: false)
+      .firstMatch(last.last)?[0]
+      ?.toLowerCase();
+  return tag == null ? null : _kindOf[tag];
 }
 
-/// [s] with its first letter capitalised.
-String _sentence(String s) =>
-    s.isEmpty ? s : '${s[0].toUpperCase()}${s.substring(1)}';
+/// [s] on one line, quote marks made ', cut at 60 characters with "…";
+/// null when nothing is left.
+String? _fenced(Object? s) {
+  if (s is! String) return null;
+  final t = s
+      .replaceAll(RegExp(r'\s+'), ' ')
+      .replaceAll(RegExp('["“”„‟«»‹›＂]'), "'")
+      .trim();
+  if (t.isEmpty) return null;
+  final chars = t.runes.toList();
+  return chars.length > 60
+      ? '${String.fromCharCodes(chars.take(60)).trimRight()}…'
+      : t;
+}
+
+/// What [anchor] is about, in a person's words, for a thread the shell
+/// gave no label for, as the shell's own label reads (`anchorLabel` in
+/// `web/shell/src/app/label.ts`): "Whole app"; the quoted text (the
+/// anchor's spaced `label` when it has one); a custom anchor's name; the
+/// name the bridge recorded at pick time, quoted when it is the page's
+/// words ("“Save changes”") and not when it is a kind word ("Chart under
+/// “p95”"); the kind word of its element's tag ("Table"); else "A spot
+/// on the page". A drawn area reads "Area on …",
+/// else "Area on the page". The shell's own label
+/// (`ThreadSummary.label`) is preferred.
+String anchorWords(Map<String, Object?> anchor) {
+  final kind = anchor['kind'];
+  if (kind == 'artifact') return 'Whole app';
+  final quote = _fenced(anchor['label']) ?? _fenced(anchor['quote']);
+  if (quote != null) return '“$quote”';
+  if (kind == 'custom') {
+    if (_fenced(anchor['custom_name']) case final n?) return '“$n”';
+  }
+  final area = kind == 'area';
+  final name = anchor['name'];
+  if (name is String && name.trim().isNotEmpty) {
+    final t = name.trim();
+    final under = RegExp(r'^(.+?) under ‘(.+)’$').firstMatch(t);
+    final String what;
+    if (under != null && _kindWords.contains(under[1])) {
+      final heading = _fenced(under[2]);
+      what = heading == null ? under[1]! : '${under[1]} under “$heading”';
+    } else if (_kindWords.contains(t)) {
+      what = t;
+    } else {
+      final own = _fenced(t);
+      if (own != null) return area ? 'Area on “$own”' : '“$own”';
+      what = '';
+    }
+    if (what.isNotEmpty) return area ? _areaOn(what) : what;
+  }
+  final area0 = anchor['area'];
+  final tagged =
+      _kindOf[area0 is Map ? area0['tag'] : null] ??
+      _kindOfSelector(anchor['selector']);
+  if (tagged != null) return area ? _areaOn(tagged) : tagged;
+  return area ? 'Area on the page' : 'A spot on the page';
+}
+
+/// "Area on the …" with [what], a kind phrase ("Chart under “p95”"), in
+/// lower case.
+String _areaOn(String what) =>
+    'Area on the ${what[0].toLowerCase()}${what.substring(1)}';
+
+/// The thread page's subtitle: what [label] (the shell's label, or
+/// [anchorWords]) is on, then version [n]: "Whole app · Version 1", "On
+/// “Runs” · Version 3", "On the chart under “p95” · Version 3", "Area on
+/// the page · Version 2". A phrase longer than 48 characters is cut, so
+/// the version stays in a one-line subtitle.
+String threadSubtitle(String label, int n) {
+  final on = switch (label) {
+    'Whole app' || 'A spot on the page' => label,
+    _ when label.startsWith('Area on ') => label,
+    _ when label.startsWith('“') => 'On $label',
+    _ when _kindWords.any((w) => label == w || label.startsWith('$w ')) =>
+      'On the ${label[0].toLowerCase()}${label.substring(1)}',
+    _ => 'On $label',
+  };
+  // Long enough to say what it is, short enough that the version shows.
+  final chars = on.runes.toList();
+  if (chars.length <= 48) return '$on · Version $n';
+  final cut = String.fromCharCodes(chars.take(46)).trimRight();
+  // A quote cut open is closed again.
+  final open = '“'.allMatches(cut).length > '”'.allMatches(cut).length;
+  return '$cut…${open ? '”' : ''} · Version $n';
+}
 
 const _months = [
   'Jan', 'Feb', 'Mar', 'Apr', 'May', 'Jun', //
@@ -121,8 +222,12 @@ String relativeTime(String iso, DateTime now) {
 ///   by Clax) and highlights it briefly; without either, or when it is not
 ///   there, it lands at the newest comment, at the bottom.
 /// - **A run's threads.** With [run] of two or more thread IDs (the
-///   threads one change answered, this one among them), a bar reads
-///   "1 of 3" with Previous and Next, which call [onRun] with that thread.
+///   threads one change answered, this one among them), a switcher reads
+///   "‹ Run 1 of 3 ›", its arrows calling [onRun] with that thread.
+/// - **Layout.** The bar is titled by the app's name ([appTitle], else
+///   read from the daemon), with the anchor and the version under it
+///   ([threadSubtitle]). The conversation and the reply bar keep to a
+///   centred column at most [ClaxLayout.reading] wide.
 ///
 /// The thread is read again on every `thread`, `comment`,
 /// `thread_resolved`, `thread_deleted`, `feedback_state` and `version`
@@ -147,7 +252,11 @@ class ThreadDetail extends StatefulWidget {
     this.onCancel,
     this.onTryNow,
     this.isStopped,
+    this.appTitle,
   });
+
+  /// The app's name, for the title; null reads it from the daemon.
+  final String? appTitle;
 
   /// The comment to land on and highlight.
   final String? focusComment;
@@ -237,6 +346,9 @@ class _ThreadDetailState extends State<ThreadDetail> {
   /// The owner's public ID, once read; null before the owner exists.
   String? _owner;
 
+  /// The app's name, once read, when [ThreadDetail.appTitle] is null.
+  String? _appTitle;
+
   // Landing.
   final _scroll = ScrollController();
   var _landed = false;
@@ -268,6 +380,16 @@ class _ThreadDetailState extends State<ThreadDetail> {
         .listen((_) => unawaited(_load()), onError: (Object _) {});
     unawaited(_load());
     unawaited(_readOwner());
+    if (widget.appTitle == null) unawaited(_readAppTitle());
+  }
+
+  Future<void> _readAppTitle() async {
+    try {
+      final app = await widget.api.getArtifact(widget.aid);
+      if (mounted) setState(() => _appTitle = app.artifact.title);
+    } on Object {
+      // The title stays empty; the subtitle still says what this is.
+    }
   }
 
   Future<void> _readOwner() async {
@@ -540,86 +662,88 @@ class _ThreadDetailState extends State<ThreadDetail> {
   @override
   Widget build(BuildContext context) {
     final t = _thread;
-    final run = widget.run;
-    final at = run.indexOf(widget.tid);
-    return Scaffold(
-      appBar: AppBar(
-        title: const Text('Thread'),
-        bottom: run.length > 1 && at >= 0 && widget.onRun != null
-            ? _runBar(context, run, at)
-            : null,
-        actions: [
-          if (t != null && t.isOpen)
-            TextButton(
-              key: const ValueKey('thread-resolve'),
-              onPressed: _busy == null
-                  ? () => _act(
-                      _Action.resolve,
-                      () => widget.api.resolveAsOwner(widget.aid, widget.tid),
-                      'Couldn’t resolve it',
-                    )
-                  : null,
-              child: const Text('Resolve'),
-            )
-          else if (t != null)
-            TextButton(
-              key: const ValueKey('thread-reopen'),
-              onPressed: _busy == null
-                  ? () => _act(
-                      _Action.reopen,
-                      () => widget.api.reopenThread(widget.aid, widget.tid),
-                      'Couldn’t reopen it',
-                    )
-                  : null,
-              child: const Text('Reopen'),
-            ),
-          const SizedBox(width: 4),
-        ],
-      ),
+    final label = t == null
+        ? null
+        : (widget.label?.isNotEmpty ?? false)
+        ? widget.label!
+        : anchorWords(t.anchor);
+    return ClaxScaffold(
+      title: widget.appTitle ?? _appTitle ?? '',
+      subtitle: t == null ? null : threadSubtitle(label!, t.versionN),
+      actions: [
+        if (t != null && t.isOpen)
+          TextButton(
+            key: const ValueKey('thread-resolve'),
+            onPressed: _busy == null
+                ? () => _act(
+                    _Action.resolve,
+                    () => widget.api.resolveAsOwner(widget.aid, widget.tid),
+                    'Couldn’t resolve it',
+                  )
+                : null,
+            child: const Text('Resolve'),
+          )
+        else if (t != null)
+          TextButton(
+            key: const ValueKey('thread-reopen'),
+            onPressed: _busy == null
+                ? () => _act(
+                    _Action.reopen,
+                    () => widget.api.reopenThread(widget.aid, widget.tid),
+                    'Couldn’t reopen it',
+                  )
+                : null,
+            child: const Text('Reopen'),
+          ),
+      ],
       body: SafeArea(top: false, bottom: false, child: _body(context, t)),
     );
   }
 
-  PreferredSizeWidget _runBar(BuildContext context, List<String> run, int at) {
+  /// [child] in the centred reading column.
+  Widget _column(Widget child) => Align(
+    alignment: Alignment.topCenter,
+    child: ConstrainedBox(
+      constraints: const BoxConstraints(maxWidth: ClaxLayout.reading),
+      child: child,
+    ),
+  );
+
+  /// "‹ Run 2 of 3 ›": the place of this thread among the change's.
+  Widget _runSwitcher(BuildContext context, List<String> run, int at) {
     final theme = Theme.of(context);
-    return PreferredSize(
-      preferredSize: const Size.fromHeight(44),
-      child: Padding(
-        padding: const EdgeInsets.fromLTRB(16, 0, 8, 4),
-        child: Row(
-          children: [
-            Expanded(
-              child: Text(
-                '${at + 1} of ${run.length} threads in this change',
-                key: const ValueKey('thread-run-place'),
-                style: theme.textTheme.labelLarge?.copyWith(
-                  color: theme.colorScheme.onSurfaceVariant,
-                ),
-              ),
+    return Padding(
+      padding: const EdgeInsets.symmetric(horizontal: ClaxSpace.s8),
+      child: Row(
+        mainAxisAlignment: MainAxisAlignment.center,
+        children: [
+          IconButton(
+            key: const ValueKey('thread-run-previous'),
+            tooltip: 'Previous thread',
+            onPressed: at > 0 ? () => widget.onRun!(run[at - 1]) : null,
+            icon: const Icon(Icons.chevron_left_rounded),
+          ),
+          Text(
+            'Run ${at + 1} of ${run.length}',
+            key: const ValueKey('thread-run-place'),
+            style: theme.textTheme.labelLarge?.copyWith(
+              color: claxPalette(context).muted,
             ),
-            IconButton(
-              key: const ValueKey('thread-run-previous'),
-              tooltip: 'Previous thread',
-              onPressed: at > 0 ? () => widget.onRun!(run[at - 1]) : null,
-              icon: const Icon(Icons.chevron_left),
-            ),
-            TextButton.icon(
-              key: const ValueKey('thread-run-next'),
-              onPressed: at < run.length - 1
-                  ? () => widget.onRun!(run[at + 1])
-                  : null,
-              iconAlignment: IconAlignment.end,
-              icon: const Icon(Icons.chevron_right),
-              label: const Text('Next'),
-            ),
-          ],
-        ),
+          ),
+          IconButton(
+            key: const ValueKey('thread-run-next'),
+            tooltip: 'Next thread',
+            onPressed: at < run.length - 1
+                ? () => widget.onRun!(run[at + 1])
+                : null,
+            icon: const Icon(Icons.chevron_right_rounded),
+          ),
+        ],
       ),
     );
   }
 
   Widget _body(BuildContext context, ThreadView? t) {
-    final theme = Theme.of(context);
     if (_gone) {
       return _message(context, Icons.forum_outlined, 'This thread is gone');
     }
@@ -639,69 +763,64 @@ class _ThreadDetailState extends State<ThreadDetail> {
         ),
       );
     }
-    final label = (widget.label?.isNotEmpty ?? false)
-        ? widget.label!
-        : anchorWords(t.anchor);
     final now = widget.now();
+    final run = widget.run;
+    final at = run.indexOf(widget.tid);
+    final gutter = ClaxBreakpoints.gutter(context);
     return Column(
       children: [
+        if (run.length > 1 && at >= 0 && widget.onRun != null)
+          _column(_runSwitcher(context, run, at)),
         Expanded(
           // Laid out whole (a thread is short), so landing knows where its
           // end and each comment are.
-          child: SingleChildScrollView(
-            key: const ValueKey('thread-list'),
-            controller: _scroll,
-            padding: const EdgeInsets.fromLTRB(16, 8, 16, 16),
-            child: Column(
-              crossAxisAlignment: CrossAxisAlignment.stretch,
-              children: [
-                Text(_sentence(label), style: theme.textTheme.titleLarge),
-                const SizedBox(height: 2),
-                Text(
-                  'On version ${t.versionN}',
-                  style: theme.textTheme.bodySmall?.copyWith(
-                    color: theme.colorScheme.onSurfaceVariant,
-                  ),
-                ),
-                const SizedBox(height: 12),
-                if (widget.waitingForConnection case final w?)
-                  ValueListenableBuilder(
-                    valueListenable: w,
-                    builder: (context, waiting, _) =>
-                        _statusCard(
-                          context,
-                          t,
-                          offline: waiting.contains(widget.tid),
-                        ) ??
-                        const SizedBox.shrink(),
-                  )
-                else ?_statusCard(context, t),
-                if (_clip != null) ...[
-                  const SizedBox(height: 12),
-                  _clipView(context, _clip!),
-                ],
-                if (t.addressedIn.isNotEmpty) ...[
-                  const SizedBox(height: 12),
-                  Wrap(
-                    spacing: 8,
-                    runSpacing: 8,
-                    children: [
-                      for (final n in t.addressedIn)
-                        ActionChip(
-                          key: ValueKey('changed-in-$n'),
-                          avatar: const Icon(
-                            Icons.visibility_outlined,
-                            size: 18,
+          child: _column(
+            SingleChildScrollView(
+              key: const ValueKey('thread-list'),
+              controller: _scroll,
+              padding: EdgeInsets.fromLTRB(gutter, ClaxSpace.s8, gutter, 16),
+              child: Column(
+                crossAxisAlignment: CrossAxisAlignment.stretch,
+                children: [
+                  if (widget.waitingForConnection case final w?)
+                    ValueListenableBuilder(
+                      valueListenable: w,
+                      builder: (context, waiting, _) =>
+                          _statusCard(
+                            context,
+                            t,
+                            offline: waiting.contains(widget.tid),
+                          ) ??
+                          const SizedBox.shrink(),
+                    )
+                  else ?_statusCard(context, t),
+                  if (_clip != null) ...[
+                    const SizedBox(height: 12),
+                    _clipView(context, _clip!),
+                  ],
+                  if (t.addressedIn.isNotEmpty) ...[
+                    const SizedBox(height: 12),
+                    Wrap(
+                      spacing: 8,
+                      runSpacing: 8,
+                      children: [
+                        for (final n in t.addressedIn)
+                          ActionChip(
+                            key: ValueKey('changed-in-$n'),
+                            avatar: const Icon(
+                              Icons.visibility_outlined,
+                              size: 18,
+                            ),
+                            label: Text('Changed in v$n'),
+                            onPressed: () => widget.onPreview(n),
                           ),
-                          label: Text('Changed in v$n'),
-                          onPressed: () => widget.onPreview(n),
-                        ),
-                    ],
-                  ),
+                      ],
+                    ),
+                  ],
+                  const SizedBox(height: 16),
+                  for (final c in t.comments) _comment(context, t, c, now),
                 ],
-                const SizedBox(height: 16),
-                for (final c in t.comments) _comment(context, t, c, now),
-              ],
+              ),
             ),
           ),
         ),
@@ -776,8 +895,8 @@ class _ThreadDetailState extends State<ThreadDetail> {
       ),
       _ when waiting => (
         Icons.cloud_off_outlined,
-        scheme.secondaryContainer,
-        scheme.onSecondaryContainer,
+        scheme.surfaceContainerHighest,
+        scheme.onSurface,
         'Waiting for connection',
         'It goes to Clax by itself when the connection is back.',
       ),
@@ -836,22 +955,23 @@ class _ThreadDetailState extends State<ThreadDetail> {
               ),
       _ when waiting && (widget.onCancel != null || widget.onTryNow != null) =>
         Wrap(
-          spacing: 8,
+          spacing: ClaxSpace.s8,
           children: [
-            if (widget.onTryNow case final tryNow?)
-              TextButton(
-                key: const ValueKey('thread-try-now'),
-                onPressed: tryNow,
-                child: const Text('Try now'),
-              ),
             if (widget.onCancel case final cancel?)
-              OutlinedButton(
+              ClaxButton(
                 key: const ValueKey('thread-cancel'),
+                label: 'Cancel',
                 onPressed: () {
                   cancel();
                   setState(() {});
                 },
-                child: const Text('Cancel'),
+              ),
+            if (widget.onTryNow case final tryNow?)
+              ClaxButton(
+                key: const ValueKey('thread-try-now'),
+                label: 'Try now',
+                kind: ClaxButtonKind.tonal,
+                onPressed: tryNow,
               ),
           ],
         ),
@@ -1210,6 +1330,7 @@ class _ThreadDetailState extends State<ThreadDetail> {
     final p = claxPalette(context);
     final small = theme.textTheme.bodySmall?.copyWith(color: fg);
     final muted = theme.textTheme.bodySmall?.copyWith(color: p.muted);
+    final mono = _mono(context);
     Widget heading(String s) => Padding(
       padding: const EdgeInsets.only(top: 10, bottom: 4),
       child: Text(
@@ -1240,7 +1361,7 @@ class _ThreadDetailState extends State<ThreadDetail> {
                     Expanded(
                       child: Text(
                         f.path,
-                        style: small?.copyWith(fontFamily: 'monospace'),
+                        style: small?.merge(mono),
                         overflow: TextOverflow.ellipsis,
                       ),
                     ),
@@ -1263,13 +1384,14 @@ class _ThreadDetailState extends State<ThreadDetail> {
           ],
           if (r.notes.isNotEmpty) ...[
             heading('Notes'),
-            for (final n in r.notes) ..._markdown(n, small, bullet: true),
+            for (final n in r.notes)
+              ..._markdown(n, small, mono, bullet: true),
           ],
           if (raw != null) ...[
             heading('Error'),
             SelectableText(
               raw,
-              style: small?.copyWith(fontFamily: 'monospace'),
+              style: small?.merge(mono),
             ),
           ],
         ],
@@ -1287,78 +1409,81 @@ class _ThreadDetailState extends State<ThreadDetail> {
       color: scheme.surfaceContainerLow,
       child: SafeArea(
         top: false,
-        child: Padding(
-          padding: const EdgeInsets.fromLTRB(8, 8, 8, 8),
-          child: Column(
-            mainAxisSize: MainAxisSize.min,
-            crossAxisAlignment: CrossAxisAlignment.stretch,
-            children: [
-              if (note != null)
-                Padding(
-                  padding: const EdgeInsets.fromLTRB(8, 0, 8, 6),
-                  child: Text(
-                    note,
-                    key: const ValueKey('reply-note'),
-                    style: theme.textTheme.bodySmall?.copyWith(
-                      color: noteIsError ? scheme.error : null,
-                    ),
-                  ),
-                ),
-              Row(
-                crossAxisAlignment: CrossAxisAlignment.end,
-                children: [
-                  IconButton.filledTonal(
-                    key: const ValueKey('reply-mic'),
-                    tooltip: _listening ? 'Stop' : 'Dictate',
-                    style: _listening
-                        ? IconButton.styleFrom(
-                            backgroundColor: scheme.primary,
-                            foregroundColor: scheme.onPrimary,
-                          )
-                        : null,
-                    onPressed: () => unawaited(_toggleMic()),
-                    icon: Icon(_listening ? Icons.graphic_eq : Icons.mic_none),
-                  ),
-                  const SizedBox(width: 6),
-                  Expanded(
-                    child: TextField(
-                      key: const ValueKey('reply-field'),
-                      controller: _reply,
-                      focusNode: _focus,
-                      minLines: 1,
-                      maxLines: 5,
-                      textCapitalization: TextCapitalization.sentences,
-                      decoration: InputDecoration(
-                        hintText: _listening ? 'Listening…' : 'Reply',
-                        filled: true,
-                        fillColor: scheme.surfaceContainerHighest,
-                        isDense: true,
-                        contentPadding: const EdgeInsets.symmetric(
-                          horizontal: 14,
-                          vertical: 12,
-                        ),
-                        border: OutlineInputBorder(
-                          borderRadius: BorderRadius.circular(22),
-                          borderSide: BorderSide.none,
-                        ),
+        child: _column(
+          Padding(
+            key: const ValueKey('thread-reply-bar'),
+            padding: const EdgeInsets.fromLTRB(8, 8, 8, 8),
+            child: Column(
+              mainAxisSize: MainAxisSize.min,
+              crossAxisAlignment: CrossAxisAlignment.stretch,
+              children: [
+                if (note != null)
+                  Padding(
+                    padding: const EdgeInsets.fromLTRB(8, 0, 8, 6),
+                    child: Text(
+                      note,
+                      key: const ValueKey('reply-note'),
+                      style: theme.textTheme.bodySmall?.copyWith(
+                        color: noteIsError ? scheme.error : null,
                       ),
                     ),
                   ),
-                  const SizedBox(width: 6),
-                  IconButton.filled(
-                    key: const ValueKey('reply-send'),
-                    tooltip: 'Send',
-                    onPressed: canSend ? () => unawaited(_send()) : null,
-                    icon: _busy == _Action.reply
-                        ? const SizedBox.square(
-                            dimension: 18,
-                            child: CircularProgressIndicator(strokeWidth: 2),
-                          )
-                        : const Icon(Icons.send),
-                  ),
-                ],
-              ),
-            ],
+                Row(
+                  crossAxisAlignment: CrossAxisAlignment.end,
+                  children: [
+                    IconButton.filledTonal(
+                      key: const ValueKey('reply-mic'),
+                      tooltip: _listening ? 'Stop' : 'Dictate',
+                      style: _listening
+                          ? IconButton.styleFrom(
+                              backgroundColor: scheme.primary,
+                              foregroundColor: scheme.onPrimary,
+                            )
+                          : null,
+                      onPressed: () => unawaited(_toggleMic()),
+                      icon: Icon(_listening ? Icons.graphic_eq : Icons.mic_none),
+                    ),
+                    const SizedBox(width: 6),
+                    Expanded(
+                      child: TextField(
+                        key: const ValueKey('reply-field'),
+                        controller: _reply,
+                        focusNode: _focus,
+                        minLines: 1,
+                        maxLines: 5,
+                        textCapitalization: TextCapitalization.sentences,
+                        decoration: InputDecoration(
+                          hintText: _listening ? 'Listening…' : 'Reply',
+                          filled: true,
+                          fillColor: scheme.surfaceContainerHighest,
+                          isDense: true,
+                          contentPadding: const EdgeInsets.symmetric(
+                            horizontal: 14,
+                            vertical: 12,
+                          ),
+                          border: OutlineInputBorder(
+                            borderRadius: BorderRadius.circular(22),
+                            borderSide: BorderSide.none,
+                          ),
+                        ),
+                      ),
+                    ),
+                    const SizedBox(width: 6),
+                    IconButton.filled(
+                      key: const ValueKey('reply-send'),
+                      tooltip: 'Send',
+                      onPressed: canSend ? () => unawaited(_send()) : null,
+                      icon: _busy == _Action.reply
+                          ? const SizedBox.square(
+                              dimension: 18,
+                              child: CircularProgressIndicator(strokeWidth: 2),
+                            )
+                          : const Icon(Icons.send),
+                    ),
+                  ],
+                ),
+              ],
+            ),
           ),
         ),
       ),
@@ -1369,7 +1494,12 @@ class _ThreadDetailState extends State<ThreadDetail> {
 /// [md] as widgets: each line opening "- " or "* " a bullet, other lines
 /// paragraphs, `**bold**` and `` `code` `` inline. With [bullet], a
 /// paragraph line is a bullet too (one note of a list).
-List<Widget> _markdown(String md, TextStyle? style, {bool bullet = false}) {
+List<Widget> _markdown(
+  String md,
+  TextStyle? style,
+  TextStyle mono, {
+  bool bullet = false,
+}) {
   Widget item(String s, {required bool dot}) => Padding(
     padding: const EdgeInsets.symmetric(vertical: 1),
     child: dot
@@ -1377,10 +1507,10 @@ List<Widget> _markdown(String md, TextStyle? style, {bool bullet = false}) {
             crossAxisAlignment: CrossAxisAlignment.start,
             children: [
               SizedBox(width: 14, child: Text('•', style: style)),
-              Expanded(child: Text.rich(_inline(s, style))),
+              Expanded(child: Text.rich(_inline(s, style, mono))),
             ],
           )
-        : Text.rich(_inline(s, style)),
+        : Text.rich(_inline(s, style, mono)),
   );
   final lines = md
       .split('\n')
@@ -1398,8 +1528,18 @@ List<Widget> _markdown(String md, TextStyle? style, {bool bullet = false}) {
   ];
 }
 
-/// [s]'s `**bold**` and `` `code` `` spans in [style].
-TextSpan _inline(String s, TextStyle? style) {
+/// The platform's monospace family ([ClaxType.mono]), at the size of the
+/// text around it.
+TextStyle _mono(BuildContext context) {
+  final mono = ClaxType.mono(Theme.of(context).platform);
+  return TextStyle(
+    fontFamily: mono.fontFamily,
+    fontFamilyFallback: mono.fontFamilyFallback,
+  );
+}
+
+/// [s]'s `**bold**` and `` `code` `` spans in [style], code in [mono].
+TextSpan _inline(String s, TextStyle? style, TextStyle mono) {
   final spans = <TextSpan>[];
   var at = 0;
   for (final m in RegExp(r'\*\*(.+?)\*\*|`([^`]+)`').allMatches(s)) {
@@ -1410,10 +1550,7 @@ TextSpan _inline(String s, TextStyle? style) {
               text: m[1],
               style: const TextStyle(fontWeight: FontWeight.w600),
             )
-          : TextSpan(
-              text: m[2],
-              style: const TextStyle(fontFamily: 'monospace'),
-            ),
+          : TextSpan(text: m[2], style: mono),
     );
     at = m.end;
   }

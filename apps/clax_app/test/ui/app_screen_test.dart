@@ -951,7 +951,7 @@ void main() {
 
     // The page: the shell's label, the whole conversation, and Retry.
     expect(find.byType(ThreadDetail), findsOneWidget);
-    expect(find.text('The page title'), findsOneWidget);
+    expect(find.textContaining('On the page title · Version'), findsOneWidget);
     expect(find.text('make the title blue'), findsOneWidget);
     expect(find.text('Clax'), findsOneWidget);
     await tester.tap(find.byKey(const ValueKey('thread-retry')));
@@ -2507,7 +2507,7 @@ void main() {
       expect(page.tid, a);
       expect(page.focusLatestReply, isTrue);
       expect(page.run, [a, b]);
-      expect(find.text('1 of 2 threads in this change'), findsOneWidget);
+      expect(find.text('Run 1 of 2'), findsOneWidget);
       await tester.tap(find.byKey(const ValueKey('thread-run-next')));
       await tester.pumpAndSettle();
       page = tester.widget<ThreadDetail>(find.byType(ThreadDetail));

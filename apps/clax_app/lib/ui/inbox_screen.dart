@@ -4,9 +4,12 @@ import 'dart:math';
 import 'package:flutter/material.dart';
 
 import '../clax/api.dart';
+import 'app_icon.dart';
 import 'haiku.dart';
 import 'kit/kit.dart';
-import 'launcher.dart' show tileScheme;
+import 'layout.dart';
+import 'theme.dart';
+import 'tokens.g.dart';
 import 'user_message.dart';
 
 /// The owner's inbox across apps: the agents' replies, new versions, new
@@ -19,12 +22,12 @@ import 'user_message.dart';
 /// upserts its item by ID. `inbox_read` and `resync` refetch. Events that
 /// arrive while a fetch is in flight are applied again on its result.
 ///
-/// **Unread / All**, the kind chips and the search field (after a pause in
-/// typing of [searchDelay]) change the query; scrolling to the end fetches
-/// the next page with `before`. A new item that arrives live is added when
-/// it matches the read filter and the kind chips; while a search is
-/// active only items already shown are updated, since the daemon decides
-/// what a search matches.
+/// The chips (one of All, Unread, Questions and Changes, [InboxFilter])
+/// and the search bar (after a pause in typing of [searchDelay]) change the
+/// query; scrolling to the end fetches the next page with `before`. A new
+/// item that arrives live is added when it matches the chip; while a
+/// search is active only items already shown are updated, since the daemon
+/// decides what a search matches.
 ///
 /// A tap marks the item read and passes it to [onOpen]; an item whose
 /// source is gone is only marked read. **Mark all read** marks every unread
@@ -44,9 +47,13 @@ class InboxScreen extends StatefulWidget {
     this.retryDelay,
     this.haikus,
     this.random,
+    this.icons,
   });
 
   final ClaxApi api;
+
+  /// The apps' icons, drawn on each row; null draws each app's tile face.
+  final AppIcons? icons;
 
   /// The haikus "All caught up." picks from; null reads the app's list
   /// ([loadHaikus]).
@@ -79,14 +86,23 @@ class InboxScreen extends StatefulWidget {
   State<InboxScreen> createState() => _InboxScreenState();
 }
 
-/// The kind chips: each item kind and its chip's label.
-const inboxKinds = [
-  ('reply', 'Replies'),
-  ('version', 'Versions'),
-  ('published', 'New apps'),
-  ('question', 'Questions'),
-  ('finished', 'Finished'),
-];
+/// The inbox's views, one chip each: everything, the unread, Clax's
+/// questions, and the changes Clax made (new versions, new apps and
+/// finished work).
+enum InboxFilter {
+  all('All'),
+  unread('Unread'),
+  questions('Questions', ['question']),
+  changes('Changes', ['version', 'published', 'finished']);
+
+  const InboxFilter(this.label, [this.kinds]);
+
+  /// The chip's label.
+  final String label;
+
+  /// The item kinds the view shows; null for every kind.
+  final List<String>? kinds;
+}
 
 class _InboxScreenState extends State<InboxScreen> {
   ClaxStream? _stream;
@@ -94,13 +110,13 @@ class _InboxScreenState extends State<InboxScreen> {
 
   List<InboxItem>? _items;
   String? _next;
-  int _unread = 0;
   Object? _loadError;
   bool _pageError = false;
   bool _paging = false;
 
-  bool _unreadOnly = false;
-  final List<String> _kinds = [];
+  InboxFilter _filter = InboxFilter.all;
+  bool get _unreadOnly => _filter == InboxFilter.unread;
+  List<String>? get _kinds => _filter.kinds;
   final _search = TextEditingController();
   String _query = '';
   Timer? _searchTimer;
@@ -187,7 +203,7 @@ class _InboxScreenState extends State<InboxScreen> {
     try {
       final page = await widget.api.inbox(
         q: _query.isEmpty ? null : _query,
-        kinds: _kinds.isEmpty ? null : List.of(_kinds),
+        kinds: _kinds == null ? null : List.of(_kinds!),
         read: _read,
       );
       if (!mounted || load != _loads) return;
@@ -196,7 +212,6 @@ class _InboxScreenState extends State<InboxScreen> {
       setState(() {
         _items = page.items;
         _next = page.nextCursor;
-        _unread = page.unread;
         _loadError = null;
         _pageError = false;
         late.forEach(_upsert);
@@ -216,7 +231,7 @@ class _InboxScreenState extends State<InboxScreen> {
     try {
       final page = await widget.api.inbox(
         q: _query.isEmpty ? null : _query,
-        kinds: _kinds.isEmpty ? null : List.of(_kinds),
+        kinds: _kinds == null ? null : List.of(_kinds!),
         read: _read,
         before: next,
       );
@@ -228,7 +243,6 @@ class _InboxScreenState extends State<InboxScreen> {
           ...page.items.where((i) => !shown.contains(i.id)),
         ];
         _next = page.nextCursor;
-        _unread = page.unread;
       });
     } catch (_) {
       if (mounted && load == _loads) setState(() => _pageError = true);
@@ -257,7 +271,6 @@ class _InboxScreenState extends State<InboxScreen> {
         }
         _duringLoad?.add(item);
         setState(() {
-          if (e.data['unread'] case final num n) _unread = n.toInt();
           _upsert(item);
         });
     }
@@ -293,7 +306,7 @@ class _InboxScreenState extends State<InboxScreen> {
     }
     if (_query.isNotEmpty) return;
     if (_unreadOnly && item.read) return;
-    if (_kinds.isNotEmpty && !_kinds.contains(item.kind)) return;
+    if (_kinds case final kinds? when !kinds.contains(item.kind)) return;
     if (_next != null && items.isNotEmpty && item.seq < items.last.seq) {
       return;
     }
@@ -327,9 +340,7 @@ class _InboxScreenState extends State<InboxScreen> {
   void _markRead(InboxItem item) {
     if (item.read) return;
     setState(() => _upsert(_asRead(item)));
-    widget.api.markInboxRead(item.id).then((unread) {
-      if (mounted) setState(() => _unread = unread);
-    }, onError: (Object _) {});
+    widget.api.markInboxRead(item.id).ignore();
   }
 
   void _tap(InboxItem item) {
@@ -351,17 +362,16 @@ class _InboxScreenState extends State<InboxScreen> {
     final upto = items.map((i) => i.seq).reduce((a, b) => a > b ? a : b);
     final filter = <String, Object?>{
       if (_query.isNotEmpty) 'q': _query,
-      if (_kinds.isNotEmpty) 'kind': List.of(_kinds),
+      if (_kinds case final kinds?) 'kind': List.of(kinds),
     };
     setState(() {
       _items = [for (final i in items) i.seq <= upto ? _asRead(i) : i];
     });
     try {
-      final unread = await widget.api.markAllInboxRead(
+      await widget.api.markAllInboxRead(
         upto: upto,
         filter: filter.isEmpty ? null : filter,
       );
-      if (mounted) setState(() => _unread = unread);
     } catch (_) {
       if (!mounted) return;
       ScaffoldMessenger.of(
@@ -376,89 +386,87 @@ class _InboxScreenState extends State<InboxScreen> {
     final items = _items;
     final now = (widget.now ?? DateTime.now)();
     final anyUnread = items?.any((i) => !i.read) ?? false;
-    return Scaffold(
-      body: RefreshIndicator(
-        onRefresh: _refresh,
-        edgeOffset: 152,
-        child: CustomScrollView(
-          physics: const AlwaysScrollableScrollPhysics(),
-          slivers: [
-            SliverAppBar.large(
-              title: Text(_unread > 0 ? 'Inbox · $_unread' : 'Inbox'),
-              actions: [
-                IconButton(
-                  tooltip: 'Mark all read',
-                  onPressed: anyUnread ? _markAllRead : null,
-                  icon: const Icon(Icons.done_all_rounded),
-                ),
-                const SizedBox(width: 4),
-              ],
-            ),
-            SliverToBoxAdapter(child: _filters(context)),
-            if ((items, _loadError) case (null, final e?))
-              SliverFillRemaining(
-                hasScrollBody: true,
-                child: ClaxEmpty(
-                  key: const ValueKey('inbox-error'),
-                  icon: Icons.inbox_outlined,
-                  title: 'Couldn’t show your inbox',
-                  body: logUserMessage('inbox', e),
-                  actions: [
-                    ClaxButton(
-                      label: 'Try again',
-                      kind: ClaxButtonKind.primary,
-                      icon: Icons.refresh_rounded,
-                      onPressed: () => unawaited(_refresh()),
-                    ),
-                  ],
-                ),
-              )
-            else if (items == null)
-              const SliverFillRemaining(
-                hasScrollBody: false,
-                child: Center(child: CircularProgressIndicator()),
-              )
-            else if (items.isEmpty)
-              SliverFillRemaining(hasScrollBody: true, child: _empty())
-            else
-              SliverPadding(
-                padding: const EdgeInsets.only(bottom: 24),
-                sliver: SliverList.builder(
-                  itemCount: items.length + (_next != null ? 1 : 0),
-                  itemBuilder: (context, i) {
-                    if (i == items.length) {
-                      if (!_pageError) unawaited(_loadMore());
-                      return _PageEnd(
-                        failed: _pageError,
-                        onRetry: () {
-                          setState(() => _pageError = false);
-                          unawaited(_loadMore());
-                        },
-                      );
-                    }
-                    final item = items[i];
-                    return InboxRow(
-                      key: ValueKey(item.id),
-                      item: item,
-                      now: now,
-                      onTap: () => _tap(item),
-                    );
-                  },
-                ),
+    return RefreshIndicator(
+      onRefresh: _refresh,
+      edgeOffset: 152,
+      child: ClaxScaffold(
+        title: 'Inbox',
+        largeTitle: true,
+        contentWidth: ClaxLayout.reading,
+        actions: [
+          IconButton(
+            tooltip: 'Mark all read',
+            onPressed: anyUnread ? _markAllRead : null,
+            icon: const Icon(Icons.done_all_rounded),
+          ),
+        ],
+        slivers: [
+          SliverToBoxAdapter(child: _filters(context)),
+          if ((items, _loadError) case (null, final e?))
+            SliverFillRemaining(
+              hasScrollBody: true,
+              child: ClaxEmpty(
+                key: const ValueKey('inbox-error'),
+                icon: Icons.inbox_outlined,
+                title: 'Couldn’t show your inbox',
+                body: logUserMessage('inbox', e),
+                actions: [
+                  ClaxButton(
+                    label: 'Try again',
+                    kind: ClaxButtonKind.primary,
+                    icon: Icons.refresh_rounded,
+                    onPressed: () => unawaited(_refresh()),
+                  ),
+                ],
               ),
-          ],
-        ),
+            )
+          else if (items == null)
+            const SliverFillRemaining(
+              hasScrollBody: false,
+              child: Center(child: CircularProgressIndicator()),
+            )
+          else if (items.isEmpty)
+            SliverFillRemaining(hasScrollBody: true, child: _empty())
+          else
+            SliverPadding(
+              padding: const EdgeInsets.only(bottom: ClaxSpace.s24),
+              sliver: SliverList.builder(
+                itemCount: items.length + (_next != null ? 1 : 0),
+                itemBuilder: (context, i) {
+                  if (i == items.length) {
+                    if (!_pageError) unawaited(_loadMore());
+                    return _PageEnd(
+                      failed: _pageError,
+                      onRetry: () {
+                        setState(() => _pageError = false);
+                        unawaited(_loadMore());
+                      },
+                    );
+                  }
+                  final item = items[i];
+                  return InboxRow(
+                    key: ValueKey(item.id),
+                    item: item,
+                    now: now,
+                    icons: widget.icons,
+                    onTap: () => _tap(item),
+                  );
+                },
+              ),
+            ),
+        ],
       ),
     );
   }
 
   Widget _filters(BuildContext context) {
+    final gutter = ClaxBreakpoints.gutter(context);
     return Column(
       crossAxisAlignment: CrossAxisAlignment.stretch,
       children: [
         Padding(
-          padding: const EdgeInsets.fromLTRB(16, 0, 16, 8),
-          child: TextField(
+          padding: EdgeInsets.fromLTRB(gutter, 0, gutter, ClaxSpace.s12),
+          child: SearchBar(
             controller: _search,
             onChanged: _onSearch,
             onSubmitted: (_) {
@@ -466,10 +474,20 @@ class _InboxScreenState extends State<InboxScreen> {
               _commitSearch();
             },
             textInputAction: TextInputAction.search,
-            decoration: InputDecoration(
-              hintText: 'Search the inbox',
-              prefixIcon: const Icon(Icons.search_rounded),
-              suffixIcon: ListenableBuilder(
+            hintText: 'Search the inbox',
+            elevation: const WidgetStatePropertyAll(0),
+            constraints: const BoxConstraints(minHeight: 56, maxHeight: 56),
+            shape: const WidgetStatePropertyAll(
+              RoundedRectangleBorder(
+                borderRadius: BorderRadius.all(Radius.circular(ClaxRadius.xl)),
+              ),
+            ),
+            padding: const WidgetStatePropertyAll(
+              EdgeInsets.symmetric(horizontal: ClaxSpace.s16),
+            ),
+            leading: const Icon(Icons.search_rounded),
+            trailing: [
+              ListenableBuilder(
                 listenable: _search,
                 builder: (context, _) => _search.text.isEmpty
                     ? const SizedBox.shrink()
@@ -479,39 +497,25 @@ class _InboxScreenState extends State<InboxScreen> {
                         icon: const Icon(Icons.close_rounded),
                       ),
               ),
-              border: OutlineInputBorder(
-                borderRadius: BorderRadius.circular(28),
-                borderSide: BorderSide.none,
-              ),
-              contentPadding: const EdgeInsets.symmetric(vertical: 14),
-            ),
+            ],
           ),
         ),
         SingleChildScrollView(
           scrollDirection: Axis.horizontal,
-          padding: const EdgeInsets.fromLTRB(16, 0, 16, 8),
+          padding: EdgeInsets.fromLTRB(gutter, 0, gutter, ClaxSpace.s8),
           child: Row(
             children: [
-              FilterChip(
-                label: const Text('Unread'),
-                selected: _unreadOnly,
-                onSelected: (on) => _setFilter(() => _unreadOnly = on),
-              ),
-              Container(
-                width: 1,
-                height: 24,
-                margin: const EdgeInsets.symmetric(horizontal: 8),
-                color: Theme.of(context).colorScheme.outlineVariant,
-              ),
-              for (final (kind, label) in inboxKinds) ...[
+              for (final f in InboxFilter.values) ...[
                 FilterChip(
-                  label: Text(label),
-                  selected: _kinds.contains(kind),
-                  onSelected: (on) => _setFilter(() {
-                    on ? _kinds.add(kind) : _kinds.remove(kind);
-                  }),
+                  label: Text(f.label),
+                  selected: _filter == f,
+                  showCheckmark: false,
+                  onSelected: (_) {
+                    if (_filter != f) _setFilter(() => _filter = f);
+                  },
                 ),
-                const SizedBox(width: 8),
+                if (f != InboxFilter.values.last)
+                  const SizedBox(width: ClaxSpace.s8),
               ],
             ],
           ),
@@ -526,7 +530,7 @@ class _InboxScreenState extends State<InboxScreen> {
   }
 
   Widget _empty() {
-    if (_query.isNotEmpty || _kinds.isNotEmpty) {
+    if (_query.isNotEmpty || _kinds != null) {
       return const ClaxEmpty(
         key: ValueKey('inbox-no-matches'),
         icon: Icons.search_off_rounded,
@@ -581,29 +585,31 @@ InboxItem _asRead(InboxItem item) => InboxItem(
   workThreads: item.workThreads,
 );
 
-/// The line under an item's title: the reply's text, `v5: <note>`, "New
-/// app", the question's header, or `Finished: <message>`.
+/// The line under an item's title, naming its kind in words: "Clax
+/// replied: …" with the reply, "Version 5 is ready: …" with its note, "New
+/// app: …" with its description, "Clax asked: …" with the question, or
+/// "Clax finished: …" with its message.
 String inboxLine(InboxItem item) {
   if (item.gone) return 'No longer available';
+  String said(String lead, String text) =>
+      text.isEmpty ? lead : '$lead: $text';
   switch (item.kind) {
     case 'reply':
-      final body = plainPreview(item.replyBody ?? '');
-      return body.isEmpty ? 'Replied' : body;
+      return said('Clax replied', plainPreview(item.replyBody ?? ''));
     case 'version':
       final n = item.versionN;
-      final note = _oneLine(item.versionNote ?? '');
-      final v = n == null ? 'New version' : 'v$n';
-      return note.isEmpty ? v : '$v: $note';
+      return said(
+        n == null ? 'A new version is ready' : 'Version $n is ready',
+        _oneLine(item.versionNote ?? ''),
+      );
     case 'published':
-      return 'New app';
+      return said('New app', _oneLine(item.publishedDescription ?? ''));
     case 'question':
-      final q = item.question;
-      if (q == null || q.questions.isEmpty) return 'A question';
-      final header = _oneLine(q.questions.first.header);
-      return header.isEmpty ? _oneLine(q.questions.first.question) : header;
+      final q = item.question?.questions.firstOrNull;
+      final text = _oneLine(q?.question ?? '');
+      return said('Clax asked', text.isEmpty ? _oneLine(q?.header ?? '') : text);
     case 'finished':
-      final m = _oneLine(item.workMessage ?? '');
-      return m.isEmpty ? 'Finished' : 'Finished: $m';
+      return said('Clax finished', _oneLine(item.workMessage ?? ''));
     default:
       return item.kind;
   }
@@ -688,16 +694,6 @@ Future<bool> resubscribe(
   return false;
 }
 
-/// The icon of an item's kind.
-IconData inboxIcon(String kind) => switch (kind) {
-  'reply' => Icons.chat_bubble_rounded,
-  'version' => Icons.history_rounded,
-  'published' => Icons.auto_awesome_rounded,
-  'question' => Icons.help_rounded,
-  'finished' => Icons.task_alt_rounded,
-  _ => Icons.notifications_rounded,
-};
-
 const _months = [
   'Jan', 'Feb', 'Mar', 'Apr', 'May', 'Jun', //
   'Jul', 'Aug', 'Sep', 'Oct', 'Nov', 'Dec',
@@ -720,27 +716,32 @@ String inboxTime(String createdAt, DateTime now) {
   return at.year == now.toLocal().year ? day : '$day, ${at.year}';
 }
 
-/// One row of the inbox: a badge in the app's colour with the kind's icon,
-/// the app's title, the kind's line, the time and, while unread, a dot.
+/// One row of the inbox: the app's 40 dp icon, its title in `headline`,
+/// the kind's line ([inboxLine]) and the time trailing. Unread is a bold
+/// title and an 8 dp dot in `you`; no row is tinted.
 class InboxRow extends StatelessWidget {
   const InboxRow({
     super.key,
     required this.item,
     required this.now,
     required this.onTap,
+    this.icons,
   });
 
   final InboxItem item;
   final DateTime now;
   final VoidCallback onTap;
 
+  /// The apps' icons; null draws the app's tile face.
+  final AppIcons? icons;
+
+  static const _icon = 40.0;
+
   @override
   Widget build(BuildContext context) {
     final theme = Theme.of(context);
-    final scheme = theme.colorScheme;
+    final p = claxPalette(context);
     final unread = !item.read;
-    final aid = item.artifactId;
-    final tile = aid == null ? scheme : tileScheme(aid, theme.brightness);
     final title = item.gone
         ? 'Deleted'
         : (item.artifactTitle?.trim().isNotEmpty ?? false)
@@ -748,120 +749,122 @@ class InboxRow extends StatelessWidget {
         : 'Clax';
     final line = inboxLine(item);
     final time = inboxTime(item.createdAt, now);
+    final headline = ClaxType.of(ClaxRole.headline, theme.platform);
+    final gutter = ClaxBreakpoints.gutter(context);
     return Semantics(
       button: true,
       label: [if (unread) 'Unread', title, line, time].join('. '),
       excludeSemantics: true,
-      child: Material(
-        color: unread
-            ? scheme.secondaryContainer.withValues(alpha: 0.35)
-            : Colors.transparent,
-        child: InkWell(
-          onTap: onTap,
-          child: ConstrainedBox(
-            constraints: const BoxConstraints(minHeight: 76),
-            child: Padding(
-              padding: const EdgeInsets.fromLTRB(16, 12, 12, 12),
-              child: Row(
-                crossAxisAlignment: CrossAxisAlignment.start,
-                children: [
-                  Container(
-                    width: 44,
-                    height: 44,
-                    decoration: BoxDecoration(
-                      color: item.gone
-                          ? scheme.surfaceContainerHighest
-                          : tile.primaryContainer,
-                      borderRadius: BorderRadius.circular(14),
-                    ),
-                    alignment: Alignment.center,
-                    child: Icon(
-                      inboxIcon(item.kind),
-                      size: 22,
-                      color: item.gone
-                          ? scheme.onSurfaceVariant
-                          : tile.onPrimaryContainer,
-                    ),
-                  ),
-                  const SizedBox(width: 14),
-                  Expanded(
-                    child: Column(
-                      crossAxisAlignment: CrossAxisAlignment.start,
-                      children: [
-                        Row(
-                          crossAxisAlignment: CrossAxisAlignment.baseline,
-                          textBaseline: TextBaseline.alphabetic,
-                          children: [
-                            Expanded(
-                              child: Text(
-                                title,
-                                maxLines: 1,
-                                overflow: TextOverflow.ellipsis,
-                                style: theme.textTheme.titleMedium?.copyWith(
-                                  fontWeight: unread
-                                      ? FontWeight.w700
-                                      : FontWeight.w500,
-                                ),
-                              ),
-                            ),
-                            const SizedBox(width: 8),
-                            Text(
-                              time,
-                              style: theme.textTheme.labelMedium?.copyWith(
-                                color: unread
-                                    ? scheme.primary
-                                    : scheme.onSurfaceVariant,
-                                fontWeight: unread ? FontWeight.w700 : null,
-                              ),
-                            ),
-                          ],
+      child: InkWell(
+        onTap: onTap,
+        child: ConstrainedBox(
+          constraints: const BoxConstraints(minHeight: 72),
+          child: Padding(
+            padding: EdgeInsets.symmetric(
+              horizontal: gutter,
+              vertical: ClaxSpace.s12,
+            ),
+            child: Row(
+              crossAxisAlignment: CrossAxisAlignment.start,
+              children: [
+                _badge(context),
+                const SizedBox(width: ClaxSpace.s16),
+                Expanded(
+                  child: Column(
+                    crossAxisAlignment: CrossAxisAlignment.start,
+                    children: [
+                      Text(
+                        title,
+                        maxLines: 1,
+                        overflow: TextOverflow.ellipsis,
+                        style: headline.copyWith(
+                          color: p.fg,
+                          fontWeight: unread
+                              ? FontWeight.w700
+                              : FontWeight.w500,
                         ),
-                        const SizedBox(height: 2),
-                        Row(
-                          crossAxisAlignment: CrossAxisAlignment.start,
-                          children: [
-                            Expanded(
-                              child: Text(
-                                line,
-                                maxLines: 2,
-                                overflow: TextOverflow.ellipsis,
-                                style: theme.textTheme.bodyMedium?.copyWith(
-                                  color: unread
-                                      ? scheme.onSurface
-                                      : scheme.onSurfaceVariant,
-                                  fontStyle: item.gone
-                                      ? FontStyle.italic
-                                      : null,
-                                ),
-                              ),
-                            ),
-                            SizedBox(
-                              width: 20,
-                              height: 20,
-                              child: unread
-                                  ? Center(
-                                      child: Container(
-                                        width: 10,
-                                        height: 10,
-                                        decoration: BoxDecoration(
-                                          color: scheme.primary,
-                                          shape: BoxShape.circle,
-                                        ),
-                                      ),
-                                    )
-                                  : null,
-                            ),
-                          ],
+                      ),
+                      const SizedBox(height: ClaxSpace.s2),
+                      Text(
+                        line,
+                        maxLines: 1,
+                        overflow: TextOverflow.ellipsis,
+                        style: theme.textTheme.bodyMedium?.copyWith(
+                          color: unread ? p.fg : p.muted,
+                          fontStyle: item.gone ? FontStyle.italic : null,
                         ),
-                      ],
-                    ),
+                      ),
+                    ],
                   ),
-                ],
-              ),
+                ),
+                const SizedBox(width: ClaxSpace.s12),
+                Column(
+                  crossAxisAlignment: CrossAxisAlignment.end,
+                  children: [
+                    Text(
+                      time,
+                      style: ClaxType.of(
+                        ClaxRole.caption,
+                        theme.platform,
+                      ).copyWith(color: unread ? p.fg : p.muted),
+                    ),
+                    if (unread) ...[
+                      const SizedBox(height: ClaxSpace.s8),
+                      Container(
+                        key: const ValueKey('inbox-unread-dot'),
+                        width: 8,
+                        height: 8,
+                        decoration: BoxDecoration(
+                          color: p.you,
+                          shape: BoxShape.circle,
+                        ),
+                      ),
+                    ],
+                  ],
+                ),
+              ],
             ),
           ),
         ),
       ),
+    );
+  }
+
+  /// The app's icon; a neutral square for an item whose app is gone, and
+  /// the mark for one from no app.
+  Widget _badge(BuildContext context) {
+    final p = claxPalette(context);
+    final aid = item.artifactId;
+    final radius = ClaxRadius.tile(_icon);
+    if (item.gone || aid == null) {
+      return Container(
+        width: _icon,
+        height: _icon,
+        decoration: BoxDecoration(
+          color: p.card,
+          border: Border.all(color: p.border),
+          borderRadius: BorderRadius.circular(radius),
+        ),
+        alignment: Alignment.center,
+        child: item.gone
+            ? Icon(Icons.delete_outline_rounded, size: 20, color: p.muted)
+            : const ClaxMark(size: 20),
+      );
+    }
+    final app = ArtifactSummary(
+      id: aid,
+      title: item.artifactTitle ?? '',
+      currentVersion: item.versionN ?? 0,
+      updatedAt: item.createdAt,
+      kind: item.artifactKind ?? 'html',
+    );
+    final icons = this.icons;
+    Widget badge(String? svg) =>
+        AppBadge(app: app, svg: svg, size: _icon, radius: radius);
+    if (icons == null) return badge(null);
+    return ListenableBuilder(
+      listenable: icons,
+      builder: (context, _) => badge(icons.svgOf(aid)),
     );
   }
 }
