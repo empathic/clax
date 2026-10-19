@@ -428,6 +428,8 @@ pub(crate) const CLOSE: &str = "UPDATE questions SET status = ?3, answers_json =
     answered_via = ?5, closed_at = ?6 WHERE id = ?1 AND status = ?2";
 pub(crate) const TAKE: &str =
     "UPDATE questions SET taken_at = ?2 WHERE id = ?1 AND taken_at IS NULL";
+/// Thread `?1`'s questions are about artifact `?2`, its new page.
+pub(crate) const MOVE_THREAD: &str = "UPDATE questions SET artifact_id = ?2 WHERE thread_id = ?1";
 
 /// A row this code could not have written. The message names the column,
 /// never its content, so no question text reaches an error or a log.

@@ -701,10 +701,14 @@ fn commit_refile(
                     &now,
                 )?);
                 super::inbox::thread_moved(tx, &p.tid, &to.artifact_id)?;
-                // Its questions, and a session's last delivery from it,
-                // are about its new page.
+                // Its questions, its approval requests, and a session's
+                // last delivery from it, are about its new page.
                 tx.execute(
-                    "UPDATE questions SET artifact_id = ?2 WHERE thread_id = ?1",
+                    super::questions::MOVE_THREAD,
+                    params![p.tid, to.artifact_id],
+                )?;
+                tx.execute(
+                    "UPDATE approval_requests SET artifact_id = ?2 WHERE thread_id = ?1",
                     params![p.tid, to.artifact_id],
                 )?;
                 tx.execute(
@@ -2237,6 +2241,44 @@ mod tests {
                 s.delivered_thread_id.as_deref()
             ),
             (Some(b.as_str()), Some(t.id.as_str()))
+        );
+    }
+
+    #[test]
+    fn a_moved_threads_approval_requests_follow_it() {
+        let (_d, st) = store();
+        let a = page(&st, "/a", "<p>a");
+        let b = page(&st, "/b", "<p>b");
+        let t = thread(&st, &a, None);
+        let (sam, mia) = ("u_0000000000000000000000sam", "u_0000000000000000000000mia");
+        st.with_write(|c| {
+            c.execute(
+                "INSERT INTO approval_requests (id, approver, author, artifact_id, thread_id, cause,
+                    status, created_at, updated_at, decided_at)
+                 VALUES ('r1', ?1, ?2, ?3, ?4, 'routing', 'declined', '2026-01-01T00:00:00.000Z',
+                    '2026-01-01T00:00:01.000Z', '2026-01-01T00:00:01.000Z')",
+                params![sam, mia, a.as_str(), t.id],
+            )?;
+            Ok(())
+        })
+        .unwrap();
+        let state = |aid: &ArtifactId| {
+            st.request_state(Some(sam), aid.as_str(), &t.id, &[mia.to_string()])
+                .unwrap()
+        };
+        assert_eq!(
+            state(&a),
+            clax_core::visibility::placeholder::ApprovalState::Declined
+        );
+        st.refile_threads(DAEMON, &[to(&b, &t.id)], &by(KIND_MOVE), &[])
+            .unwrap();
+        assert_eq!(
+            state(&b),
+            clax_core::visibility::placeholder::ApprovalState::Declined
+        );
+        assert_eq!(
+            state(&a),
+            clax_core::visibility::placeholder::ApprovalState::None
         );
     }
 
