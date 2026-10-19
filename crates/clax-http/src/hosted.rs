@@ -133,6 +133,9 @@ pub struct Hosted {
     /// The Terms of Service and Privacy Policy shown and agreed to
     /// ([`Hosted::with_legal`]); `None` shows none.
     pub legal: Option<clax_core::config::Legal>,
+    /// A request for the public or content host came from a loopback peer
+    /// with `behind_cloudflare` off, and was logged ([`Hosted::note_peer`]).
+    proxy_noted: std::sync::atomic::AtomicBool,
 }
 
 impl std::fmt::Debug for Hosted {
@@ -311,6 +314,7 @@ impl Hosted {
             member_caps: Default::default(),
             public_gallery: false,
             legal: None,
+            proxy_noted: std::sync::atomic::AtomicBool::new(false),
         })
     }
 
@@ -449,6 +453,29 @@ impl Hosted {
             .flatten();
         cf.or_else(|| crate::identity::peer_of(extensions).map(|p| p.ip()))
             .unwrap_or(std::net::IpAddr::V6(std::net::Ipv6Addr::UNSPECIFIED))
+    }
+
+    /// Logs a warning, once, when a request for the public or content host
+    /// (`host`, its `Host` header) comes from a loopback peer and
+    /// `behind_cloudflare` is off: a proxy on this machine, for which
+    /// [`Hosted::client`] names every client by the proxy's address, so they
+    /// share one client's attempts ([`Hosted::attempt`]) and connections
+    /// (`crate::socket_caps`). The CLI and agents on this machine, which
+    /// name a local host, are not such requests. True when it warned.
+    pub fn note_peer(&self, host: &str, extensions: &axum::http::Extensions) -> bool {
+        use std::sync::atomic::Ordering;
+        let proxied = !self.behind_cloudflare
+            && (host.eq_ignore_ascii_case(&self.host) || self.is_content_host(host))
+            && crate::identity::peer_of(extensions).is_some_and(crate::auth::is_loopback);
+        if !proxied || self.proxy_noted.swap(true, Ordering::Relaxed) {
+            return false;
+        }
+        tracing::warn!(
+            host,
+            "hosted mode is reached from a loopback peer, as through a proxy on this machine: \
+             every client counts as that one address for sign-in limits and connection caps"
+        );
+        true
     }
 
     /// Takes one of the request's client's `what` attempts: 429
@@ -1467,6 +1494,7 @@ pub async fn gate(State(s): State<AppState>, mut req: Request, next: Next) -> Re
         )
         .into_response();
     }
+    h.note_peer(&host, req.extensions());
     let path = req.uri().path().to_string();
     let method = req.method().clone();
     let origin = headers.get(header::ORIGIN).and_then(|v| v.to_str().ok());
@@ -1746,6 +1774,33 @@ pub fn signed_in_response(h: &Hosted, signed: SignedIn, mut shape: Value, key: &
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn a_public_host_from_loopback_is_noted_once_and_only_off_cloudflare() {
+        let peer = |p: &str| {
+            let mut e = axum::http::Extensions::new();
+            e.insert(axum::extract::ConnectInfo(crate::auth::Conn {
+                peer: p.parse().unwrap(),
+                local: "127.0.0.1:7490".parse().unwrap(),
+            }));
+            e
+        };
+        let h = Hosted::new("https://clax.example", None).unwrap();
+        assert!(!h.note_peer("clax.example", &peer("203.0.113.9:5000")));
+        assert!(
+            !h.note_peer("localhost:7490", &peer("127.0.0.1:5000")),
+            "the CLI"
+        );
+        assert!(h.note_peer("clax.example", &peer("127.0.0.1:5000")));
+        assert!(
+            !h.note_peer("clax.example", &peer("127.0.0.1:5001")),
+            "once"
+        );
+        let cf = Hosted::new("https://clax.example", None)
+            .unwrap()
+            .behind_cloudflare(true);
+        assert!(!cf.note_peer("clax.example", &peer("127.0.0.1:5000")));
+    }
 
     #[test]
     fn hosted_modes_own_routes() {
