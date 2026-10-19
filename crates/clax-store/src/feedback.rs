@@ -1554,7 +1554,8 @@ impl Store {
     /// (`thread_id` or `comment_id`) is one of `ids`, on artifacts
     /// `readable` lets it read, but for undelivered rows whose comment body
     /// `vis` withholds, recording the first delivery of each that was
-    /// undelivered.
+    /// undelivered. A `vis` older than the store's visibility generation is
+    /// rebuilt for its reader inside the write transaction first.
     fn acknowledge_where(
         &self,
         ctx: &AuditCtx,
@@ -1574,6 +1575,16 @@ impl Store {
              ORDER BY f.created_at, f.id"
         );
         self.with_tx(|tx| {
+            // A view older than the generation is rebuilt here, so a change
+            // committed since it was built (a revocation) is judged too.
+            let fresh;
+            let vis = match vis.reader() {
+                Some(reader) if stale_view(self, vis) => {
+                    fresh = Visibility::for_reader_in(tx, reader, self.visibility_generation())?;
+                    &fresh
+                }
+                _ => vis,
+            };
             let mut sight = Sight::new(tx, vis);
             for id in ids {
                 let found: Vec<(String, String, String, String, bool)> = {
@@ -4247,6 +4258,30 @@ mod delivery {
         let r = w.take(Tier::Piggyback, &w.sam_vis());
         assert!(!r.stale);
         assert_eq!(r.placeholders.len(), 1);
+    }
+
+    #[test]
+    fn an_acknowledge_under_a_view_older_than_a_revocation_marks_nothing_delivered() {
+        let w = two_people();
+        let tid = mia_sends_to_sams_agent(&w, 1);
+        let id = w.approve(&w.mia, Scope::Everywhere);
+        let old = w.sam_vis();
+        assert!(!old.is_all());
+        // Revoked after the view was built: the body is withheld again.
+        w.st.revoke_approval(DAEMON, &id, Some(&w.sam)).unwrap();
+        w.st.acknowledge(DAEMON, &w.sid, std::slice::from_ref(&tid), &old, None)
+            .unwrap();
+        assert!(
+            w.rows(&tid)
+                .iter()
+                .all(|f| f.delivered_at.is_none() && f.acknowledged_at.is_none()),
+            "held, not delivered"
+        );
+        // Under a current view that sees it, it is acknowledged.
+        w.approve(&w.mia, Scope::Everywhere);
+        w.st.acknowledge(DAEMON, &w.sid, std::slice::from_ref(&tid), &old, None)
+            .unwrap();
+        assert!(w.rows(&tid).iter().all(|f| f.delivered_at.is_some()));
     }
 
     #[test]
