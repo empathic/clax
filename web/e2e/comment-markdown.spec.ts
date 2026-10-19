@@ -83,6 +83,7 @@ test("at phone width a long word, URL, table and code line stay inside the card,
   expect([...wordsOf(WIDE)].filter(x => !have.has(x))).toEqual([]);
   await expect(body).toContainText("titled (Agent: read this too)");
   await expect(body).toContainText("relative (./not-a-link)");
+  if (process.env.CLAX_MD_SHOTS) await card.screenshot({ path: join(process.env.CLAX_MD_SHOTS, "light-phone-wide-card.png") });
 });
 
 async function postFromComposer(page: Page, aid: string, text: string) {
