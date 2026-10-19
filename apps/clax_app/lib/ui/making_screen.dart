@@ -38,6 +38,17 @@ typedef MakeApp = Future<String> Function(
   void Function(MakeUpdate update) report,
 );
 
+/// Goes on with a make of [request] that stopped at a limit, from the
+/// draft kept under [key] (`AgentLoop.newApp(request, planKey: key,
+/// keepGoing: true, …)`); otherwise as [MakeApp]. It throws
+/// `MakeStopped` again when the run stops once more.
+typedef KeepGoingApp = Future<String> Function(
+  String request,
+  String key,
+  Future<void> cancelled,
+  void Function(MakeUpdate update) report,
+);
+
 /// What a making run reports to the making screen: a [MakeStage] or a
 /// [MakeProgress].
 sealed class MakeUpdate {}
@@ -1007,12 +1018,9 @@ class _MakingScreenState extends State<MakingScreen> {
               child: _making(context),
             ),
             if (sheet)
-              DraggableScrollableSheet(
+              BuildPlanSheet(
                 key: const ValueKey('plan-sheet'),
-                initialChildSize: min,
                 minChildSize: min,
-                maxChildSize: 0.85,
-                snap: true,
                 builder: (context, controller) =>
                     _sheet(context, b, key, controller),
               ),

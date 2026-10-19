@@ -18,6 +18,7 @@ import 'package:clax_app/ui/making_screen.dart';
 import 'package:clax_app/ui/theme.dart';
 import 'package:clax_app/ui/working_chip.dart';
 import 'package:flutter/foundation.dart';
+import 'package:flutter/gestures.dart';
 import 'package:flutter/material.dart';
 import 'package:flutter_test/flutter_test.dart';
 
@@ -134,10 +135,8 @@ void main() {
       await tester.pumpWidget(
         MaterialApp(
           theme: claxTheme(Brightness.light, defaultTargetPlatform),
-          builder: (context, child) => DeveloperScope(
-            notifier: ValueNotifier(developer),
-            child: child!,
-          ),
+          builder: (context, child) =>
+              DeveloperScope(notifier: ValueNotifier(developer), child: child!),
           home: Scaffold(
             body: BuildWatch(
               link: link,
@@ -455,6 +454,118 @@ void main() {
       made.complete('a1');
       await frames(tester);
       expect(handed, ['a1']);
+    });
+
+    /// The plan sheet's header's top, which rises as the sheet opens.
+    double sheetTop(WidgetTester tester) =>
+        tester.getRect(find.byKey(const ValueKey('plan-sheet-header'))).top;
+
+    Future<void> pumpPlan(WidgetTester tester, TargetPlatform platform) async {
+      phone(tester);
+      late void Function(MakeUpdate) report;
+      await tester.pumpWidget(
+        MaterialApp(
+          theme: claxTheme(Brightness.light, platform),
+          home: MakingScreen(
+            request: 'a run tracker',
+            make: (_, _, r) {
+              report = r;
+              return Completer<String>().future;
+            },
+            build: link,
+            preview: () => _Preview([]),
+          ),
+        ),
+      );
+      await frames(tester);
+      report(const MakePlanKey('new:1'));
+      await plans.set('new:1', _features);
+      await frames(tester);
+      expect(find.text('Plan · 1 of 4 done'), findsOneWidget);
+    }
+
+    for (final platform in [TargetPlatform.macOS, TargetPlatform.android]) {
+      testWidgets('on ${platform.name} a mouse click on the plan\'s header '
+          'opens the sheet and another closes it', (tester) async {
+        debugDefaultTargetPlatformOverride = platform;
+        try {
+          await pumpPlan(tester, platform);
+          final closed = sheetTop(tester);
+          await tester.tap(
+            find.text('Plan · 1 of 4 done'),
+            kind: PointerDeviceKind.mouse,
+          );
+          await frames(tester);
+          final open = sheetTop(tester);
+          expect(open, lessThan(closed - 300));
+          await tester.tap(
+            find.text('Plan · 1 of 4 done'),
+            kind: PointerDeviceKind.mouse,
+          );
+          await frames(tester);
+          expect(sheetTop(tester), closed);
+        } finally {
+          debugDefaultTargetPlatformOverride = null;
+        }
+      });
+    }
+
+    testWidgets('on the Mac the sheet shows a disclosure button, not a '
+        'drag handle, and opens by the wheel and a mouse drag', (tester) async {
+      debugDefaultTargetPlatformOverride = TargetPlatform.macOS;
+      try {
+        await pumpPlan(tester, TargetPlatform.macOS);
+        final closed = sheetTop(tester);
+        final toggle = find.byKey(const ValueKey('plan-sheet-toggle'));
+        expect(toggle, findsOneWidget);
+        expect(find.byTooltip('Show plan'), findsOneWidget);
+        // No 32 x 4 grabber.
+        expect(
+          find.byWidgetPredicate(
+            (w) =>
+                w is Container &&
+                w.constraints?.maxWidth == 32 &&
+                w.constraints?.maxHeight == 4,
+          ),
+          findsNothing,
+        );
+
+        await tester.tap(toggle, kind: PointerDeviceKind.mouse);
+        await frames(tester);
+        expect(sheetTop(tester), lessThan(closed - 300));
+        expect(find.byTooltip('Hide plan'), findsOneWidget);
+        await tester.tap(toggle, kind: PointerDeviceKind.mouse);
+        await frames(tester);
+        expect(sheetTop(tester), closed);
+
+        // The wheel over the header: down opens, up closes.
+        final at = tester.getCenter(find.text('Plan · 1 of 4 done'));
+        final mouse = TestPointer(1, PointerDeviceKind.mouse);
+        await tester.sendEventToBinding(mouse.hover(at));
+        await tester.sendEventToBinding(mouse.scroll(const Offset(0, 40)));
+        await frames(tester);
+        expect(sheetTop(tester), lessThan(closed - 300));
+        final up = tester.getCenter(find.text('Plan · 1 of 4 done'));
+        await tester.sendEventToBinding(mouse.hover(up));
+        await tester.sendEventToBinding(mouse.scroll(const Offset(0, -40)));
+        await frames(tester);
+        expect(sheetTop(tester), closed);
+
+        // A mouse drags the header up, and the sheet snaps open.
+        final drag = await tester.startGesture(
+          at,
+          kind: PointerDeviceKind.mouse,
+        );
+        for (var i = 0; i < 10; i++) {
+          await drag.moveBy(const Offset(0, -30));
+          await tester.pump(const Duration(milliseconds: 16));
+        }
+        await drag.up();
+        await frames(tester);
+        expect(sheetTop(tester), lessThan(closed - 300));
+      } finally {
+        debugDefaultTargetPlatformOverride = null;
+      }
     });
   });
 

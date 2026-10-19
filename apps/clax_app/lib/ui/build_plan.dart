@@ -6,6 +6,7 @@ library;
 
 import 'dart:async';
 
+import 'package:flutter/gestures.dart';
 import 'package:flutter/material.dart';
 
 import '../agent/plan.dart';
@@ -219,9 +220,148 @@ String buildHeadline(Plan? plan, BuildState? s) {
   };
 }
 
+/// The plan panel's sheet over the bottom of the build view:
+/// [minChildSize] of the space at rest, [maxChildSize] open, snapping to
+/// either. [builder] gets the sheet's scroll controller, for a
+/// [BuildPlanPanel] to pass on. The sheet opens and closes by any pointer:
+/// a drag (a touch, a pen or a trackpad anywhere in it, a mouse on the
+/// panel's header), a click or a tap on the header, and the scroll wheel
+/// over the header (down opens it, up closes it once the list is at its
+/// top). On the Mac the header shows a disclosure button in place of the
+/// drag handle.
+class BuildPlanSheet extends StatefulWidget {
+  const BuildPlanSheet({
+    super.key,
+    required this.minChildSize,
+    this.maxChildSize = 0.85,
+    required this.builder,
+  });
+
+  final double minChildSize;
+  final double maxChildSize;
+  final ScrollableWidgetBuilder builder;
+
+  @override
+  State<BuildPlanSheet> createState() => _BuildPlanSheetState();
+}
+
+class _BuildPlanSheetState extends State<BuildPlanSheet> {
+  final _sheet = DraggableScrollableController();
+  var _open = false;
+
+  @override
+  void initState() {
+    super.initState();
+    _sheet.addListener(_moved);
+  }
+
+  @override
+  void dispose() {
+    _sheet.removeListener(_moved);
+    _sheet.dispose();
+    super.dispose();
+  }
+
+  /// Whether the sheet is nearer open than closed.
+  bool get _nearerOpen =>
+      _sheet.isAttached &&
+      _sheet.size > (widget.minChildSize + widget.maxChildSize) / 2;
+
+  void _moved() {
+    final open = _nearerOpen;
+    if (open != _open) setState(() => _open = open);
+  }
+
+  void _to(bool open) {
+    if (!_sheet.isAttached) return;
+    unawaited(
+      _sheet.animateTo(
+        open ? widget.maxChildSize : widget.minChildSize,
+        duration: const Duration(milliseconds: 250),
+        curve: Curves.easeOutCubic,
+      ),
+    );
+  }
+
+  void _drag(double dy) {
+    if (!_sheet.isAttached) return;
+    _sheet.jumpTo(
+      (_sheet.size - _sheet.pixelsToSize(dy)).clamp(
+        widget.minChildSize,
+        widget.maxChildSize,
+      ),
+    );
+  }
+
+  /// Snaps to open or closed at the end of a drag going [velocity] down.
+  void _settle(double velocity) => _to(switch (velocity) {
+    < -300 => true,
+    > 300 => false,
+    _ => _nearerOpen,
+  });
+
+  @override
+  Widget build(BuildContext context) => DraggableScrollableSheet(
+    controller: _sheet,
+    initialChildSize: widget.minChildSize,
+    minChildSize: widget.minChildSize,
+    maxChildSize: widget.maxChildSize,
+    snap: true,
+    builder: (context, scroll) => _PlanSheetScope(
+      open: _open,
+      scroll: scroll,
+      sheet: this,
+      child: widget.builder(context, scroll),
+    ),
+  );
+}
+
+/// The [BuildPlanSheet] a [BuildPlanPanel] is in.
+class _PlanSheetScope extends InheritedWidget {
+  const _PlanSheetScope({
+    required this.open,
+    required this.scroll,
+    required this.sheet,
+    required super.child,
+  });
+
+  final bool open;
+  final ScrollController scroll;
+  final _BuildPlanSheetState sheet;
+
+  static _PlanSheetScope? of(BuildContext context) =>
+      context.dependOnInheritedWidgetOfExactType<_PlanSheetScope>();
+
+  void toggle() => sheet._to(!open);
+
+  /// The scroll wheel over the header: down opens the sheet, up closes it
+  /// once the list is at its top; otherwise the list scrolls.
+  void wheel(PointerSignalEvent e) {
+    if (e is! PointerScrollEvent) return;
+    final dy = e.scrollDelta.dy;
+    final atTop = !scroll.hasClients || scroll.offset <= 0;
+    final open = dy > 0 && !this.open
+        ? true
+        : dy < 0 && this.open && atTop
+        ? false
+        : null;
+    if (open == null) return;
+    GestureBinding.instance.pointerSignalResolver.register(
+      e,
+      (_) => sheet._to(open),
+    );
+  }
+
+  @override
+  bool updateShouldNotify(_PlanSheetScope old) =>
+      old.open != open || old.scroll != scroll || old.sheet != sheet;
+}
+
 /// The plan panel: a header (a handle, what the build does now, how far it
 /// is, Stop or Resume) over [PlanChecklist]. In a draggable sheet, pass its
-/// [controller] so a drag on the header moves the sheet.
+/// [controller] so a drag on the header moves the sheet; in a
+/// [BuildPlanSheet] the header also opens and closes it ([BuildPlanSheet]
+/// says how).
 ///
 /// - [onStop] and [onResume], when given, show Stop while the build goes
 ///   and Resume once it stopped or failed.
@@ -250,7 +390,8 @@ class BuildPlanPanel extends StatelessWidget {
   final VoidCallback? onStop;
   final VoidCallback? onResume;
 
-  /// Whether to draw a sheet's drag handle.
+  /// Whether to draw a sheet's drag handle. On the Mac a
+  /// [BuildPlanSheet]'s panel shows a disclosure button instead.
   final bool handle;
 
   @override
@@ -291,12 +432,28 @@ class BuildPlanPanel extends StatelessWidget {
       ),
       _ => null,
     };
-    return Padding(
+    final sheet = _PlanSheetScope.of(context);
+    final disclosure = sheet != null && hasDesktopWindowChrome;
+    final header = Padding(
       padding: const EdgeInsets.fromLTRB(20, 0, 12, 4),
       child: Column(
         crossAxisAlignment: CrossAxisAlignment.stretch,
         children: [
-          if (handle)
+          if (disclosure)
+            Center(
+              child: IconButton(
+                key: const ValueKey('plan-sheet-toggle'),
+                tooltip: sheet.open ? 'Hide plan' : 'Show plan',
+                visualDensity: VisualDensity.compact,
+                icon: Icon(
+                  sheet.open
+                      ? Icons.keyboard_arrow_down_rounded
+                      : Icons.keyboard_arrow_up_rounded,
+                ),
+                onPressed: sheet.toggle,
+              ),
+            )
+          else if (handle)
             Center(
               child: Container(
                 width: 32,
@@ -352,6 +509,33 @@ class BuildPlanPanel extends StatelessWidget {
           ),
           const SizedBox(height: 6),
         ],
+      ),
+    );
+    if (sheet == null) return header;
+    // A click or a tap anywhere on the header opens or closes the sheet; a
+    // mouse drags it here, as a touch or a trackpad drags it anywhere.
+    return Semantics(
+      button: true,
+      expanded: sheet.open,
+      onTapHint: sheet.open ? 'Hide plan' : 'Show plan',
+      child: MouseRegion(
+        cursor: SystemMouseCursors.click,
+        child: Listener(
+          onPointerSignal: sheet.wheel,
+          child: GestureDetector(
+            key: const ValueKey('plan-sheet-header'),
+            behavior: HitTestBehavior.opaque,
+            onTap: sheet.toggle,
+            child: GestureDetector(
+              behavior: HitTestBehavior.opaque,
+              supportedDevices: const {PointerDeviceKind.mouse},
+              onVerticalDragUpdate: (d) => sheet.sheet._drag(d.delta.dy),
+              onVerticalDragEnd: (d) =>
+                  sheet.sheet._settle(d.velocity.pixelsPerSecond.dy),
+              child: header,
+            ),
+          ),
+        ),
       ),
     );
   }
@@ -587,9 +771,7 @@ class _PlanChecklistState extends State<PlanChecklist> {
       ),
       FeatureStatus.doing => const SizedBox.square(
         dimension: 22,
-        child: Center(
-          child: ClaxMark(size: 22, state: ClaxMarkState.working),
-        ),
+        child: Center(child: ClaxMark(size: 22, state: ClaxMarkState.working)),
       ),
       FeatureStatus.todo => Icon(
         Icons.radio_button_unchecked_rounded,
