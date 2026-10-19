@@ -1,0 +1,9 @@
+<?xml version="1.0" encoding="utf-8"?>
+<!-- The brand's colours the window and the splash screen are drawn in, dark:
+     design/tokens.json's `bg`, and the mark's `you`, `agent` and `fg`. -->
+<resources>
+    <color name="clax_bg">#141413</color>
+    <color name="clax_you">#ff7a57</color>
+    <color name="clax_agent">#7cc36f</color>
+    <color name="clax_fg">#ecebe7</color>
+</resources>

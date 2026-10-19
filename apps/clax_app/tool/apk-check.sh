@@ -2,7 +2,7 @@
 # apk-check.sh APK AAPT2 APKSIGNER HOME: checks the Bazel-built APK against what
 # the app's Gradle build makes (apps/clax_app/android/app/build.gradle.kts):
 # its package and version, SDK levels, launcher activity, the adaptive
-# launcher icon with its monochrome layer, a release build
+# launcher icon with its monochrome layer, the splash theme, a release build
 # (not debuggable, shrunk by R8) that extracts its native libraries, the engine, the app's
 # AOT code and the embedded clax for both CPUs, the home bundle HOME (the
 # one //apps/clax_app:home_bundle built), the third-party notices, and a
@@ -40,6 +40,21 @@ for icon in ic_launcher ic_launcher_round; do
     else
         bad "$icon is adaptive with a monochrome layer (elements: $layers)"
     fi
+done
+# The splash screen (res/values/styles.xml): MainActivity opens on
+# LaunchTheme, Theme.Clax.Starting's alias, the mark on the brand's `bg`.
+resources="$("$aapt2" dump resources "$apk")"
+activity_theme="$("$aapt2" dump xmltree --file AndroidManifest.xml "$apk" | awk '/E: activity/ { t = "" } /android:theme/ { t = $0 } /android:name.*"dev.empathic.clax_app.MainActivity"/ { sub(/.*=@/, "", t); print t; exit }')"
+launch_id="$(sed -n 's/^ *resource \(0x[0-9a-f]*\) style\/LaunchTheme$/\1/p' <<<"$resources")"
+if [ -n "$launch_id" ] && [ "$activity_theme" = "$launch_id" ]; then ok "MainActivity opens on LaunchTheme"; else bad "MainActivity opens on LaunchTheme (theme $activity_theme, LaunchTheme ${launch_id:-missing})"; fi
+if sed -n '/ style\/LaunchTheme$/{n;p;}' <<<"$resources" | grep -q 'parent=style/Theme.Clax.Starting '; then
+    ok "LaunchTheme is the splash theme"
+else
+    bad "LaunchTheme is the splash theme (its parent is not Theme.Clax.Starting)"
+fi
+splash="$(sed -n '/ style\/Theme.Clax.Starting$/,/ resource /p' <<<"$resources")"
+for item in "postSplashScreenTheme(.*)=@style/Theme.Clax" "windowSplashScreenAnimatedIcon(.*)=@drawable/splash_mark" "windowSplashScreenBackground(.*)=@color/clax_bg"; do
+    if grep -q -- "$item\$" <<<"$splash"; then ok "Theme.Clax.Starting: ${item%%(*}"; else bad "Theme.Clax.Starting: ${item%%(*} (no $item)"; fi
 done
 check "the embedded daemon's network permission" "$badging" "uses-permission: name='android.permission.INTERNET'"
 check "both native ABIs" "$badging" "native-code: 'arm64-v8a' 'x86_64'"

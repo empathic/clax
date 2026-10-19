@@ -379,7 +379,7 @@ the test and exits with its result.
   whose Android build names a Maven coordinate not yet pinned fails naming
   `@rules_android_maven//:<group>_<artifact>`: add it with its version to
   `maven.install` in `MODULE.bazel`, then
-  `REPIN=1 bazelisk run @unpinned_rules_android_maven//:pin`. A plugin whose
+  `REPIN=1 bazelisk run @rules_android_maven//:pin`. A plugin whose
   Apple code needs a Swift package, or whose Android build compiles C with
   CMake, needs an overlay in `bazel/flutter/plugin_overlays/<package>/<major>/`
   (a copy of the BUILD file rules_flutter generates, with the

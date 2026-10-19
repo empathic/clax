@@ -1,0 +1,31 @@
+<?xml version="1.0" encoding="utf-8"?>
+<!-- The splash screen's icon (Theme.Clax.Starting): design/mark.json's arcs
+     and dot on the splash's 288 dp canvas, the mark's 22 x 16 box scaled to
+     132 dp wide (96 dp high) at the centre, inside the 192 dp circle the
+     splash screen shows. ClaxSplash (lib/ui/splash.dart) draws the same mark
+     at the same size and place in Flutter's first frame. -->
+<vector xmlns:android="http://schemas.android.com/apk/res/android"
+    android:width="288dp"
+    android:height="288dp"
+    android:viewportWidth="288"
+    android:viewportHeight="288">
+    <group
+        android:translateX="78"
+        android:translateY="96"
+        android:scaleX="6"
+        android:scaleY="6">
+        <path
+            android:pathData="M1.5 2.5a5.5 5.5 0 0 1 0 11"
+            android:strokeColor="@color/clax_you"
+            android:strokeWidth="2.6"
+            android:strokeLineCap="round"/>
+        <path
+            android:pathData="M20.5 2.5a5.5 5.5 0 0 0 0 11"
+            android:strokeColor="@color/clax_agent"
+            android:strokeWidth="2.6"
+            android:strokeLineCap="round"/>
+        <path
+            android:pathData="M9.3 8a1.7 1.7 0 1 0 3.4 0a1.7 1.7 0 1 0 -3.4 0"
+            android:fillColor="@color/clax_fg"/>
+    </group>
+</vector>

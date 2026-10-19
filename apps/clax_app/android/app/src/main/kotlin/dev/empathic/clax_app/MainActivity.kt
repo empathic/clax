@@ -5,7 +5,9 @@ import android.content.Intent
 import android.graphics.Bitmap
 import android.graphics.Canvas
 import android.net.Uri
+import android.os.Bundle
 import android.provider.Settings
+import androidx.core.splashscreen.SplashScreen.Companion.installSplashScreen
 import io.flutter.embedding.android.FlutterActivity
 import io.flutter.embedding.engine.FlutterEngine
 import io.flutter.plugin.common.MethodChannel
@@ -17,6 +19,15 @@ class MainActivity : FlutterActivity() {
     private var background: BackgroundWorkChannel? = null
     private var notice: AppNoticeChannel? = null
     private var bundles: BundleIntake? = null
+
+    // The window opens on Theme.Clax.Starting: the system's splash screen
+    // (androidx core-splashscreen's on API 29-30), the Clax mark on `bg`.
+    // It gives way at Flutter's first frame, which draws the same mark at
+    // the same size and place (ClaxSplash), so nothing is held on screen.
+    override fun onCreate(savedInstanceState: Bundle?) {
+        installSplashScreen().setKeepOnScreenCondition { false }
+        super.onCreate(savedInstanceState)
+    }
 
     override fun configureFlutterEngine(flutterEngine: FlutterEngine) {
         super.configureFlutterEngine(flutterEngine)

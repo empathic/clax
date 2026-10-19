@@ -219,11 +219,15 @@ maven = use_extension("@rules_jvm_external//:extensions.bzl", "maven")
 maven.install(
     name = "rules_android_maven",
     # What the app's plugins' Gradle builds declare (each plugin's
-    # android/build.gradle in apps/clax_app/pubspec.lock's versions).
+    # android/build.gradle in apps/clax_app/pubspec.lock's versions), and
+    # what the runner's own build.gradle.kts adds.
     artifacts = [
         "androidx.activity:activity:1.13.0",
         "androidx.annotation:annotation:1.10.0",
         "androidx.core:core-ktx:1.18.0",
+        # The runner's splash screen on API 29-30 (MainActivity.kt's
+        # installSplashScreen), not a plugin's.
+        "androidx.core:core-splashscreen:1.2.0",
         "androidx.core:core:1.18.0",
         "androidx.exifinterface:exifinterface:1.4.2",
         "androidx.media:media:1.7.1",
@@ -234,7 +238,7 @@ maven.install(
         "org.jetbrains.kotlinx:kotlinx-coroutines-android:1.11.0",
     ],
     # Every artifact pinned by its checksum; after changing the list:
-    # REPIN=1 bazelisk run @unpinned_rules_android_maven//:pin
+    # REPIN=1 bazelisk run @rules_android_maven//:pin
     lock_file = "//bazel/android:maven_install.json",
     repositories = [
         "https://maven.google.com",

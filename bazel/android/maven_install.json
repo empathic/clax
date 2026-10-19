@@ -5,6 +5,7 @@
     "androidx.annotation:annotation": 588494489,
     "androidx.core:core": 1216424513,
     "androidx.core:core-ktx": 1850683679,
+    "androidx.core:core-splashscreen": -413729492,
     "androidx.databinding:databinding-compiler": 783253192,
     "androidx.exifinterface:exifinterface": -1765990804,
     "androidx.fragment:fragment": -1178212687,
@@ -87,6 +88,7 @@
     "androidx.annotation:annotation": 868656630,
     "androidx.annotation:annotation-experimental:aar": -1989754810,
     "androidx.annotation:annotation-jvm": -406430039,
+    "androidx.appcompat:appcompat-resources:aar": -2011597403,
     "androidx.arch.core:core-common": -1126577169,
     "androidx.arch.core:core-runtime:aar": -1119571755,
     "androidx.collection:collection": -342351328,
@@ -96,6 +98,7 @@
     "androidx.compose.runtime:runtime-annotation-jvm": -1045644277,
     "androidx.concurrent:concurrent-futures": -1759151285,
     "androidx.core:core-ktx:aar": 1511033201,
+    "androidx.core:core-splashscreen:aar": 1710516563,
     "androidx.core:core-viewtree:aar": 1464319354,
     "androidx.core:core:aar": -1260420404,
     "androidx.customview:customview:aar": 1168788355,
@@ -135,6 +138,8 @@
     "androidx.test:core:aar": 166893259,
     "androidx.test:monitor:aar": 1830736233,
     "androidx.tracing:tracing:aar": 1675075698,
+    "androidx.vectordrawable:vectordrawable-animated:aar": 729934272,
+    "androidx.vectordrawable:vectordrawable:aar": -321194754,
     "androidx.versionedparcelable:versionedparcelable:aar": -1199433973,
     "androidx.viewpager:viewpager:aar": -1508055451,
     "androidx.webkit:webkit:aar": 2017834261,
@@ -378,6 +383,12 @@
       },
       "version": "1.10.0"
     },
+    "androidx.appcompat:appcompat-resources:aar": {
+      "shasums": {
+        "jar": "55b6778602680f3c288ce350a2c2d3dd158d97dbffc63476275826655582c388"
+      },
+      "version": "1.7.0"
+    },
     "androidx.arch.core:core-common": {
       "shasums": {
         "jar": "65308a06b1c00ee186cb9e19321383f043b993813f1522c47f4a3e3303bdba41"
@@ -431,6 +442,12 @@
         "jar": "c7c511e3df838fcbcb61ace36944de6bb7c10eb597be546974f001119939c85d"
       },
       "version": "1.18.0"
+    },
+    "androidx.core:core-splashscreen:aar": {
+      "shasums": {
+        "jar": "5ace865c4eb7e0f24369790d2c76eddafd0dbb1ebea3288f55c18d9605ea0ee0"
+      },
+      "version": "1.2.0"
     },
     "androidx.core:core-viewtree:aar": {
       "shasums": {
@@ -665,6 +682,18 @@
         "jar": "6faa90390d1fdbf0adb9a99bf99de67b94c6c6f35aea9510593a9d17973736a2"
       },
       "version": "1.2.0"
+    },
+    "androidx.vectordrawable:vectordrawable-animated:aar": {
+      "shasums": {
+        "jar": "76da2c502371d9c38054df5e2b248d00da87809ed058f3363eae87ce5e2403f8"
+      },
+      "version": "1.1.0"
+    },
+    "androidx.vectordrawable:vectordrawable:aar": {
+      "shasums": {
+        "jar": "46fd633ac01b49b7fcabc263bf098c5a8b9e9a69774d234edcca04fb02df8e26"
+      },
+      "version": "1.1.0"
     },
     "androidx.versionedparcelable:versionedparcelable:aar": {
       "shasums": {
@@ -1905,6 +1934,13 @@
     "androidx.annotation:annotation-jvm": [
       "org.jetbrains.kotlin:kotlin-stdlib"
     ],
+    "androidx.appcompat:appcompat-resources:aar": [
+      "androidx.annotation:annotation",
+      "androidx.collection:collection",
+      "androidx.core:core:aar",
+      "androidx.vectordrawable:vectordrawable-animated:aar",
+      "androidx.vectordrawable:vectordrawable:aar"
+    ],
     "androidx.arch.core:core-common": [
       "androidx.annotation:annotation"
     ],
@@ -1938,6 +1974,11 @@
     "androidx.core:core-ktx:aar": [
       "androidx.annotation:annotation",
       "androidx.core:core:aar",
+      "org.jetbrains.kotlin:kotlin-stdlib"
+    ],
+    "androidx.core:core-splashscreen:aar": [
+      "androidx.annotation:annotation",
+      "androidx.appcompat:appcompat-resources:aar",
       "org.jetbrains.kotlin:kotlin-stdlib"
     ],
     "androidx.core:core-viewtree:aar": [
@@ -2212,6 +2253,16 @@
     ],
     "androidx.tracing:tracing:aar": [
       "androidx.annotation:annotation"
+    ],
+    "androidx.vectordrawable:vectordrawable-animated:aar": [
+      "androidx.collection:collection",
+      "androidx.interpolator:interpolator:aar",
+      "androidx.vectordrawable:vectordrawable:aar"
+    ],
+    "androidx.vectordrawable:vectordrawable:aar": [
+      "androidx.annotation:annotation",
+      "androidx.collection:collection",
+      "androidx.core:core:aar"
     ],
     "androidx.versionedparcelable:versionedparcelable:aar": [
       "androidx.annotation:annotation",
@@ -5548,6 +5599,7 @@
       "androidx.annotation:annotation",
       "androidx.annotation:annotation-experimental:aar",
       "androidx.annotation:annotation-jvm",
+      "androidx.appcompat:appcompat-resources:aar",
       "androidx.arch.core:core-common",
       "androidx.arch.core:core-runtime:aar",
       "androidx.collection:collection",
@@ -5557,6 +5609,7 @@
       "androidx.compose.runtime:runtime-annotation-jvm",
       "androidx.concurrent:concurrent-futures",
       "androidx.core:core-ktx:aar",
+      "androidx.core:core-splashscreen:aar",
       "androidx.core:core-viewtree:aar",
       "androidx.core:core:aar",
       "androidx.customview:customview:aar",
@@ -5596,6 +5649,8 @@
       "androidx.test:core:aar",
       "androidx.test:monitor:aar",
       "androidx.tracing:tracing:aar",
+      "androidx.vectordrawable:vectordrawable-animated:aar",
+      "androidx.vectordrawable:vectordrawable:aar",
       "androidx.versionedparcelable:versionedparcelable:aar",
       "androidx.viewpager:viewpager:aar",
       "androidx.webkit:webkit:aar",
@@ -5804,6 +5859,7 @@
       "androidx.annotation:annotation",
       "androidx.annotation:annotation-experimental:aar",
       "androidx.annotation:annotation-jvm",
+      "androidx.appcompat:appcompat-resources:aar",
       "androidx.arch.core:core-common",
       "androidx.arch.core:core-runtime:aar",
       "androidx.collection:collection",
@@ -5813,6 +5869,7 @@
       "androidx.compose.runtime:runtime-annotation-jvm",
       "androidx.concurrent:concurrent-futures",
       "androidx.core:core-ktx:aar",
+      "androidx.core:core-splashscreen:aar",
       "androidx.core:core-viewtree:aar",
       "androidx.core:core:aar",
       "androidx.customview:customview:aar",
@@ -5852,6 +5909,8 @@
       "androidx.test:core:aar",
       "androidx.test:monitor:aar",
       "androidx.tracing:tracing:aar",
+      "androidx.vectordrawable:vectordrawable-animated:aar",
+      "androidx.vectordrawable:vectordrawable:aar",
       "androidx.versionedparcelable:versionedparcelable:aar",
       "androidx.viewpager:viewpager:aar",
       "androidx.webkit:webkit:aar",

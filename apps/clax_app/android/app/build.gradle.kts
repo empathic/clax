@@ -63,4 +63,7 @@ flutter {
 
 dependencies {
     coreLibraryDesugaring("com.android.tools:desugar_jdk_libs:2.1.4")
+    // The splash screen on API 29-30 (MainActivity.kt's installSplashScreen);
+    // the Bazel build pins the same version (MODULE.bazel's maven.install).
+    implementation("androidx.core:core-splashscreen:1.2.0")
 }

@@ -1,0 +1,11 @@
+<?xml version="1.0" encoding="utf-8"?>
+<!-- The brand's colours the window and the splash screen are drawn in,
+     light (values-night/clax_colors.xml has the dark ones): design/tokens.json's
+     `bg`, and the mark's `you`, `agent` and `fg` (§5.11 of
+     docs/superpowers/specs/2026-10-18-professional-ui-design.md). -->
+<resources>
+    <color name="clax_bg">#f7f7f5</color>
+    <color name="clax_you">#e0532f</color>
+    <color name="clax_agent">#2f6f2a</color>
+    <color name="clax_fg">#1c1b19</color>
+</resources>

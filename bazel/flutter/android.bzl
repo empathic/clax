@@ -9,7 +9,8 @@ rules_flutter's lower-level rules instead:
   Java classes once, from the first ABI;
 - each ABI's extra executables (`native_files`), packed at `lib/<abi>/`;
 - the runner's Kotlin, compiled with the app's resources under its own
-  namespace, and the generated plugin registrant;
+  namespace and against its own libraries (`runner_deps`), and the
+  generated plugin registrant;
 - every pub plugin's Android code (`@<pub>//android:all_android_plugin_libs`);
 - the manifest with the permissions the plugins declare lifted into it, as
   Gradle merges them.
@@ -94,6 +95,7 @@ def flutter_fat_apk(
         resources,
         kotlin_srcs,
         native_files = {},
+        runner_deps = [],
         pub_hub_name = "deps",
         abis = ["arm64", "x64"],
         manifest_values = {},
@@ -112,6 +114,9 @@ def flutter_fat_apk(
         kotlin_srcs: The runner's Kotlin sources.
         native_files: {label: "<abi>/<name>"} for each further native file,
             packed at lib/<abi>/<name>; each label gives one file.
+        runner_deps: Further libraries the runner's Kotlin and resources
+            use, such as Maven artifacts (@rules_android_maven//:…), which
+            Gradle's `dependencies` block names for the native build.
         pub_hub_name: The flutter.pub hub of the app's packages.
         abis: rules_flutter's ABI names; the first one's engine classes ship.
         manifest_values: Passed to android_binary, with applicationId added.
@@ -212,7 +217,7 @@ def flutter_fat_apk(
             "_%s_engine" % name,
             "_%s_registrant" % name,
             plugins,
-        ],
+        ] + runner_deps,
     )
 
     deps = [

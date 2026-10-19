@@ -499,7 +499,12 @@ flutter_fat_apk(
         "//bazel/flutter:flutter_proguard_rules.pro",
     ],
     pub_hub_name = "clax_app_pub",
-    resources = glob(["android/app/src/main/res/**"]),
+    resources = glob(
+        ["android/app/src/main/res/**"],
+        exclude = ["**/.qual"],
+    ),
+    # As android/app/build.gradle.kts's dependencies give them.
+    runner_deps = ["@rules_android_maven//:androidx_core_core_splashscreen"],
     shrink_resources = 1,
     tags = ["no-remote"],
 )
