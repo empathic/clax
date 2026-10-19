@@ -182,8 +182,9 @@ export type HostMessage =
    * or the label the page gave a composer it opened; `quote`: the text it
    * quotes as a reader sees it, for the app's own quote marks
    * (`anchorQuote`), null when none; `byPage`: the page opened this
-   * composer (its comments capability), not the viewer's pick. */
-  | { type: "state"; commenting: boolean; draft: { key: string; kind: Anchor["kind"]; label: string; quote: string | null; text: string; clip: "pending" | "ready" | "none"; byPage?: true } | null; busy: boolean }
+   * composer (its comments capability), not the viewer's pick; `at`: where
+   * the pick is in the shell's viewport (CSS pixels), when the bridge said. */
+  | { type: "state"; commenting: boolean; draft: { key: string; kind: Anchor["kind"]; label: string; quote: string | null; text: string; clip: "pending" | "ready" | "none"; byPage?: true; at?: { x: number; y: number; w: number; h: number } } | null; busy: boolean }
   /** The open composer's screenshot (`png`, base64), once for each
    * screenshot it takes, while composer `key` is open; at `init`, the open
    * one's again. */
@@ -647,6 +648,11 @@ export function installHost(win: Window, ctl: ArtifactController): () => void {
   let lastState = "";
   let lastThreads: Thread[] | null = null;
   let lastNotice: string | null = null;
+  /** Where draft place `at` (in the frame's viewport) is in the shell's. */
+  const inShell = (at: NonNullable<ViewState["draft"]>["at"]) => {
+    const f = ctl.frame?.el?.getBoundingClientRect();
+    return at && f ? { at: { x: at.x + f.left, y: at.y + f.top, w: at.w, h: at.h } } : {};
+  };
   const postState = (v: ViewState) => {
     const d = v.draft;
     const m: HostMessage = {
@@ -654,7 +660,7 @@ export function installHost(win: Window, ctl: ArtifactController): () => void {
       commenting: v.commenting,
       draft: d ? {
         key: d.pickId, kind: d.anchor.kind, label: d.label ?? anchorLabel(d.anchor, picked.get(d.pickId)), quote: anchorQuote(d.anchor, picked.get(d.pickId)),
-        text: ctl.composerText, clip: d.capturing ? "pending" : d.clip ? "ready" : "none", ...(d.byPage ? { byPage: true as const } : {}),
+        text: ctl.composerText, clip: d.capturing ? "pending" : d.clip ? "ready" : "none", ...(d.byPage ? { byPage: true as const } : {}), ...inShell(d.at),
       } : null,
       busy: v.busy > 0,
     };

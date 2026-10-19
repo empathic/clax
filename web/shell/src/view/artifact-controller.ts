@@ -22,7 +22,7 @@ import { AnchorHandles } from "./anchor-handles";
 import type { Decided } from "./changelog-model";
 import { rallyOnce } from "./rally";
 import { type Boot, rememberFrameMode } from "./boot";
-import { CAPTURE_LATE, type Draft, MAX_CLIP_BYTES, captureWait, nextDraft, respaced, withClip } from "./composer-model";
+import { CAPTURE_LATE, type Draft, MAX_CLIP_BYTES, boxOf, captureWait, nextDraft, respaced, withClip } from "./composer-model";
 import type { ArtifactStream } from "./artifact-stream";
 import { FrameGate } from "./frame-gate";
 import type { PresenceView } from "./presence-model";
@@ -1302,7 +1302,8 @@ export class ArtifactController {
         this.set({ commenting: false });
         this.resumeAfter = pickId;
         const shown = respaced(m.anchor.quote, m.desc?.text) ?? undefined;
-        this.set({ draft: { pickId, anchor: m.anchor, version: m.version, clip: null, capturing: true, clipToken: pickId, ...(shown ? { shown } : {}) } });
+        const at = boxOf(m.at);
+        this.set({ draft: { pickId, anchor: m.anchor, version: m.version, clip: null, capturing: true, clipToken: pickId, ...(shown ? { shown } : {}), ...(at ? { at } : {}) } });
         break;
       }
       case "clax:pick": {

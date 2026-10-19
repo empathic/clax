@@ -1061,6 +1061,25 @@ describe("app mode's host channel", { timeout: MOUNT_TIMEOUT_MS }, () => {
     await waitFor(() => document.querySelector(".composer-quote")?.textContent === "“Delete run”", "the composer's words");
   });
 
+  it("gives a pick's draft where the pick is in the shell's viewport, and none for a place that is not a rectangle", async () => {
+    const { frame, host } = await appView();
+    hello(frame, 1);
+    frame.getBoundingClientRect = () => ({ left: 10, top: 20, x: 10, y: 20, width: 800, height: 600, right: 810, bottom: 620, toJSON: () => ({}) });
+    host.enterCommentMode();
+    gestureIn(frame);
+    const row = { kind: "element", selector: "body > div", quote: "Mon", prefix: null, suffix: null, html_hash: null, rect: null, custom_name: null, file: "index.html" };
+    fromFrame(frame.contentWindow!, { type: "clax:pick-start", pickId: "a1", version: 1, anchor: row, at: { x: 5, y: 6, w: 30, h: 40 } });
+    await waitFor(() => ofType("state").at(-1)?.draft, "a draft");
+    expect(ofType("state").at(-1)!.draft!.at).toEqual({ x: 15, y: 26, w: 30, h: 40 });
+    host.cancelDraft();
+    await waitFor(() => ofType("state").at(-1)?.draft === null, "no draft");
+    host.enterCommentMode();
+    gestureIn(frame);
+    fromFrame(frame.contentWindow!, { type: "clax:pick-start", pickId: "a2", version: 1, anchor: row, at: { x: 5, y: Infinity, w: -3, h: 40 } });
+    await waitFor(() => ofType("state").at(-1)?.draft, "a draft");
+    expect(ofType("state").at(-1)!.draft!.at).toBeUndefined();
+  });
+
   it("shows a pick's spaced text in place of its run-together quote, for its draft and the threads with that quote", async () => {
     const { ctl, frame, host } = await appView();
     hello(frame, 1);

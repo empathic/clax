@@ -1,4 +1,4 @@
-import type { Anchor } from "../../../bridge/src/protocol";
+import type { Anchor, Box } from "../../../bridge/src/protocol";
 import { areaLabel, respaced } from "../threads";
 
 export { respaced };
@@ -12,7 +12,19 @@ export { respaced };
 /** `byPage`: the page opened (or moved) this composer through the `comments`
  * capability, not the viewer's own pick, so its Post takes only a pointer's
  * click (`guardedAction`). */
-export type Draft = { pickId: string; anchor: Anchor; version: number; clip: Blob | null; clipError?: string; label?: string; capturing?: boolean; clipToken?: string; byPage?: boolean; shown?: string };
+/** `at`: where the bridge said the pick is in the frame's viewport, CSS
+ * pixels (a rectangle of finite numbers, never negative in size). */
+export type Draft = { pickId: string; anchor: Anchor; version: number; clip: Blob | null; clipError?: string; label?: string; capturing?: boolean; clipToken?: string; byPage?: boolean; shown?: string; at?: Box };
+
+/** `v` when it is a rectangle {x, y, w, h} of finite numbers whose size is
+ * not negative, else undefined. */
+export function boxOf(v: unknown): Box | undefined {
+  const b = (v ?? null) as Partial<Record<keyof Box, unknown>> | null;
+  if (!b || typeof b !== "object") return undefined;
+  const { x, y, w, h } = b;
+  const ok = [x, y, w, h].every(n => typeof n === "number" && Number.isFinite(n)) && (w as number) >= 0 && (h as number) >= 0;
+  return ok ? { x: x as number, y: y as number, w: w as number, h: h as number } : undefined;
+}
 
 /** How long a composer waits for a screenshot still being taken before it
  * says none was taken (the bridge's clip limit plus a margin; settable for tests). */
