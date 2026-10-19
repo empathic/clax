@@ -648,6 +648,25 @@ fn file_spec_splits_only_when_the_source_exists() {
     e.stop();
 }
 
+/// `clax publish` runs the `publish` tool, so it follows the tool's rules:
+/// a `--file` published as index.html is refused, as the tool refuses a
+/// supporting file of that name, rather than replacing the page.
+#[test]
+fn publish_follows_the_publish_tools_rules() {
+    let e = Env::new();
+    let index = write(e.dir.path(), "index.html", "<title>Rules</title><p>page</p>");
+    let other = write(e.dir.path(), "other.html", "<p>other</p>");
+    e.cmd()
+        .args(["publish", "--port", "0", "--file"])
+        .arg(format!("{}=index.html", other.display()))
+        .arg(&index)
+        .assert()
+        .failure()
+        .stderr(predicate::str::contains("invalid_args"))
+        .stderr(predicate::str::contains("index.html"));
+    e.stop();
+}
+
 #[test]
 fn doctor_lists_the_new_checks() {
     let e = Env::new();

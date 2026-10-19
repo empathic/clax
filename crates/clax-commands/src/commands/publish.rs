@@ -1,7 +1,15 @@
+//! `clax publish`: builds the `publish` tool's arguments from the command
+//! line and runs the tool, so the CLI and the tool share one set of
+//! publish rules. Only what the tool has no counterpart for is here: the
+//! `--dir` walk and its mirroring, the default `if_version` of the owner's
+//! CLI, and the printing.
+
 use crate::client::Client;
 use anyhow::Context;
-use base64::Engine;
 use clax_core::Home;
+use clax_mcp::tools::{FileArg, PublishArgs};
+use rmcp::handler::server::wrapper::Parameters;
+use std::collections::BTreeMap;
 use std::path::{Path, PathBuf};
 
 #[derive(clap::Args)]
@@ -51,34 +59,27 @@ pub struct Args {
 /// Printed after the URL when no agent session owns the published artifact.
 const NO_SESSION_NOTE: &str = "note: published without an agent session; comments on this page will wait until an agent session watches it";
 
-const TEXT_EXT: &[&str] = &[
-    "html", "htm", "css", "js", "mjs", "json", "svg", "md", "txt", "csv", "xml", "map",
-];
+/// `path`, made absolute: the tool resolves no relative path without a
+/// session.
+fn absolute(path: &Path) -> anyhow::Result<String> {
+    Ok(std::path::absolute(path)
+        .with_context(|| format!("cannot resolve {}", path.display()))?
+        .to_string_lossy()
+        .into_owned())
+}
 
-pub fn file_entry(path: &Path) -> anyhow::Result<serde_json::Value> {
-    let bytes =
-        std::fs::read(path).map_err(|e| anyhow::anyhow!("cannot read {}: {e}", path.display()))?;
-    let ext = path
-        .extension()
-        .and_then(|e| e.to_str())
-        .unwrap_or("")
-        .to_ascii_lowercase();
-    Ok(if TEXT_EXT.contains(&ext.as_str()) {
-        match String::from_utf8(bytes) {
-            Ok(s) => serde_json::json!({"content": s, "encoding": "utf8"}),
-            Err(e) => {
-                serde_json::json!({"content": base64::engine::general_purpose::STANDARD.encode(e.into_bytes()), "encoding": "base64"})
-            }
-        }
-    } else {
-        serde_json::json!({"content": base64::engine::general_purpose::STANDARD.encode(bytes), "encoding": "base64"})
-    })
+/// A supporting file the tool reads from `path`.
+fn file_arg(path: &Path) -> anyhow::Result<Option<FileArg>> {
+    Ok(Some(FileArg {
+        path: Some(absolute(path)?),
+        ..Default::default()
+    }))
 }
 
 fn collect_dir(
     dir: &Path,
     base: &Path,
-    out: &mut serde_json::Map<String, serde_json::Value>,
+    out: &mut BTreeMap<String, Option<FileArg>>,
 ) -> anyhow::Result<()> {
     for entry in std::fs::read_dir(dir)? {
         let entry = entry?;
@@ -91,10 +92,10 @@ fn collect_dir(
             continue;
         }
         let rel = p.strip_prefix(base)?.to_string_lossy().replace('\\', "/");
-        if rel == "index.html" {
+        if rel == clax_core::publish::INDEX {
             continue;
         }
-        out.insert(rel, file_entry(&p)?);
+        out.insert(rel, file_arg(&p)?);
     }
     Ok(())
 }
@@ -117,95 +118,97 @@ fn split_file_spec(spec: &str) -> anyhow::Result<(PathBuf, String)> {
 }
 
 pub fn run(cli: &crate::Cli, home: &Home, a: &Args) -> anyhow::Result<()> {
-    let mut files = serde_json::Map::new();
-    files.insert("index.html".into(), file_entry(&a.index)?);
+    let mut files = BTreeMap::new();
     if let Some(dir) = &a.dir {
         collect_dir(dir, dir, &mut files)?;
     }
     for spec in &a.files {
         let (src, dest) = split_file_spec(spec)?;
-        files.insert(dest, file_entry(&src)?);
+        files.insert(dest, file_arg(&src)?);
     }
-    let c = Client::connect(home, cli.port_for(home)?)?;
     let target = match (&a.id, &a.url) {
         (Some(id), _) => Some(super::open::id_from(id)?),
         (_, Some(u)) => Some(super::open::id_from(u)?),
         _ => None,
     };
-    let title = match (&target, &a.title) {
-        (None, None) => Some(
-            files["index.html"]["content"]
-                .as_str()
-                .filter(|_| files["index.html"]["encoding"] == "utf8")
-                .and_then(clax_core::html_title)
-                .with_context(|| {
-                    format!(
-                        "a new artifact needs a title: pass --title, or give {} a non-empty <title>",
-                        a.index.display()
-                    )
-                })?,
-        ),
-        (_, t) => t.clone(),
-    };
-    let mut body = serde_json::json!({"files": files});
-    for (k, v) in [
-        ("title", &title),
-        ("description", &a.description),
-        ("icon", &a.icon),
-        ("label", &a.label),
-        ("note", &a.note),
-    ] {
-        if let Some(v) = v {
-            body[k] = serde_json::json!(v);
+    // The tool refuses a new artifact without a title too; this names the
+    // CLI's flag and file.
+    if target.is_none() && a.title.is_none() {
+        let page = std::fs::read(&a.index)
+            .map_err(|e| anyhow::anyhow!("cannot read {}: {e}", a.index.display()))?;
+        if std::str::from_utf8(&page)
+            .ok()
+            .and_then(clax_core::html_title)
+            .is_none()
+        {
+            anyhow::bail!(
+                "a new artifact needs a title: pass --title, or give {} a non-empty <title>",
+                a.index.display()
+            );
         }
     }
-    if !a.addresses.is_empty() {
-        body["addresses"] = serde_json::json!(a.addresses);
-    }
-    let res = match target {
-        None => c.post("/api/artifacts", &body)?,
-        Some(id) => {
-            let current = match a.if_version {
-                Some(v) => v,
-                None => c.get(&format!("/api/artifacts/{id}"))?["artifact"]["current_version"]
-                    .as_u64()
-                    .context("server response lacks artifact.current_version")?
-                    as u32,
-            };
-            if a.dir.is_some() {
-                let current_files = c.get(&format!("/api/artifacts/{id}/files"))?;
-                let existing = current_files["files"]
-                    .as_object()
-                    .context("server response lacks files")?;
-                for path in existing.keys() {
-                    if path != "index.html" && !files.contains_key(path) {
-                        body["files"][path] = serde_json::Value::Null;
-                    }
+    let c = Client::connect(home, cli.port_for(home)?)?;
+    let mut if_version = a.if_version;
+    if let Some(id) = &target {
+        // The owner's CLI: an update without --if-version is based on the
+        // current version.
+        if if_version.is_none() {
+            let current = c.get(&format!("/api/artifacts/{id}"))?["artifact"]["current_version"]
+                .as_u64()
+                .and_then(|n| u32::try_from(n).ok())
+                .context("server response lacks artifact.current_version")?;
+            if_version = Some(current);
+        }
+        if a.dir.is_some() {
+            let current_files = c.get(&format!("/api/artifacts/{id}/files"))?;
+            let existing = current_files["files"]
+                .as_object()
+                .context("server response lacks files")?;
+            for path in existing.keys() {
+                if path != clax_core::publish::INDEX && !files.contains_key(path) {
+                    files.insert(path.clone(), None);
                 }
             }
-            body["if_version"] = serde_json::json!(current);
-            c.post(&format!("/api/artifacts/{id}/versions"), &body)?
         }
+    }
+    let args = PublishArgs {
+        file_path: Some(absolute(&a.index)?),
+        files: (!files.is_empty()).then_some(files),
+        id: target,
+        if_version,
+        title: a.title.clone(),
+        description: a.description.clone(),
+        icon: a.icon.clone(),
+        label: a.label.clone(),
+        note: a.note.clone(),
+        addresses: (!a.addresses.is_empty()).then(|| a.addresses.clone()),
+        ..Default::default()
     };
-    let id = res["artifact"]["id"]
+    let res = super::tools::call_on(&c, home, move |t: clax_mcp::ClaxTools| async move {
+        t.publish(Parameters(args)).await
+    })?;
+    let id = res["artifact_id"]
         .as_str()
-        .context("server response lacks artifact.id")?
+        .context("the publish result lacks artifact_id")?
         .to_string();
-    let url = c.browser_url(&format!("/a/{id}"));
+    let url = res["url"].as_str().unwrap_or_default().to_string();
     // The session comments go to: the one this version is attributed to, else
     // the artifact's owner. The CLI attributes none of its own.
-    let session = res["version"]["session_id"]
-        .as_str()
-        .or(res["artifact"]["owner_session_id"].as_str());
+    let got = c.get(&format!("/api/artifacts/{id}"))?;
+    let session = got["versions"]
+        .as_array()
+        .and_then(|vs| vs.iter().find(|v| v["n"] == res["version"]))
+        .and_then(|v| v["session_id"].as_str())
+        .or(got["artifact"]["owner_session_id"].as_str());
     super::print(
         cli,
         serde_json::json!({
             "id": id,
             "url": url,
-            "version": res["version"]["n"],
+            "version": res["version"],
             "session": session,
-            "note": res["version"]["note"],
-            "addressed": res["version"]["addresses"],
+            "note": res["note"],
+            "addressed": res["addressed"],
         }),
         |j| {
             let mut text = format!(

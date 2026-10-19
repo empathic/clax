@@ -30,7 +30,16 @@ where
     Fut: Future<Output = Result<CallToolResult, rmcp::ErrorData>>,
 {
     let c = Client::connect(home, cli.port_for(home)?)?;
-    let tools = ClaxTools::new(daemon_client(&c), c.browser_url(""), None, home.log_path());
+    call_on(&c, home, f)
+}
+
+/// [`call`] for the daemon `c` already reaches.
+pub fn call_on<F, Fut>(c: &Client, home: &Home, f: F) -> anyhow::Result<serde_json::Value>
+where
+    F: FnOnce(ClaxTools) -> Fut,
+    Fut: Future<Output = Result<CallToolResult, rmcp::ErrorData>>,
+{
+    let tools = ClaxTools::new(daemon_client(c), c.browser_url(""), None, home.log_path());
     let rt = tokio::runtime::Builder::new_current_thread()
         .enable_all()
         .build()?;
