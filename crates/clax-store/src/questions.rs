@@ -513,8 +513,9 @@ impl Store {
     /// Withdraws session `sid`'s open questions inside the caller's
     /// transaction, its session having ended under `ctx` (the reaper's is
     /// `system:ttl`); returns their IDs. Each records `question.withdraw`
-    /// (reason `session_end`); an in-terminal question's inbox item is read,
-    /// nothing waiting in the terminal any more.
+    /// (reason `session_end`) and updates its inbox item, as every close
+    /// does (`inbox::question_changed`); an in-terminal question's item is
+    /// read, nothing waiting in the terminal any more.
     pub(crate) fn withdraw_session_questions(
         &self,
         tx: &Transaction<'_>,
@@ -527,7 +528,7 @@ impl Store {
             tx.execute(WITHDRAW_SESSION, params![sid, now])?;
             self.record_withdrawals(tx, ctx, &open, now, Reason::SessionEnd)?;
             for k in &open {
-                if let Some(q) = fetch(tx, &k.id)?.filter(|q| q.in_terminal) {
+                if let Some(q) = fetch(tx, &k.id)? {
                     super::inbox::question_changed(tx, &q, false, now)?;
                 }
             }
@@ -1093,7 +1094,8 @@ impl Store {
     /// At daemon start: withdraws every open `hook` question, whose hook
     /// was waiting on the previous daemon. Returns their IDs. Each records
     /// `question.withdraw` (reason `daemon_start`) as `system:daemon`,
-    /// naming the asking agent in `for_actor`.
+    /// naming the asking agent in `for_actor`, and updates its inbox item
+    /// (`inbox::question_changed`).
     pub fn withdraw_hook_questions_on_start(&self) -> Result<Vec<String>> {
         self.with_tx(|tx| {
             let open = open_keys(tx, OPEN_HOOKS, [])?;
@@ -1102,6 +1104,11 @@ impl Store {
                 tx.execute(WITHDRAW_HOOKS, params![now])?;
                 let ctx = AuditCtx::system(SystemReason::Daemon);
                 self.record_withdrawals(tx, &ctx, &open, &now, Reason::DaemonStart)?;
+                for k in &open {
+                    if let Some(q) = fetch(tx, &k.id)? {
+                        super::inbox::question_changed(tx, &q, false, &now)?;
+                    }
+                }
             }
             Ok(open.into_iter().map(|k| k.id).collect())
         })
@@ -1664,6 +1671,34 @@ mod tests {
             ids(st.take_late_answers(&s, |_| false).unwrap()),
             vec![held.id.clone()]
         );
+    }
+
+    /// A withdrawal at session end or daemon start updates the question's
+    /// inbox item, as every other close does, so the inbox listener hears
+    /// of it.
+    #[test]
+    fn session_end_and_daemon_start_withdrawals_touch_the_inbox_items() {
+        let (_d, st) = store();
+        let s = session(&st, "claude", "h1");
+        let (q, _) = st
+            .create_question(DAEMON, new(&s, Source::Ask, None))
+            .unwrap();
+        let (h, _) = st
+            .create_question(DAEMON, new(&s, Source::Hook, Some("t")))
+            .unwrap();
+        let seq_of = |id: &str| -> i64 {
+            st.with_read(|c| Ok(c.query_row(crate::inbox::OF_QUESTION, [id], |r| r.get(0))?))
+                .unwrap()
+        };
+        let (q_seq, h_seq) = (seq_of(&q.id), seq_of(&h.id));
+        let heard = std::sync::Arc::new(std::sync::Mutex::new(Vec::new()));
+        let got = heard.clone();
+        st.set_inbox_listener(Box::new(move |c| got.lock().unwrap().extend(c)));
+        let seqs = || -> Vec<i64> { heard.lock().unwrap().drain(..).map(|c| c.seq).collect() };
+        st.withdraw_hook_questions_on_start().unwrap();
+        assert_eq!(seqs(), vec![h_seq], "daemon start");
+        st.end_session(DAEMON, &s).unwrap();
+        assert!(seqs().contains(&q_seq), "session end");
     }
 
     #[test]
