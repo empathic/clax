@@ -183,6 +183,55 @@
         "daemon_base": "https://localhost",
         "id": "7q3k9mzx2b4t",
         "version": null
+      },
+      {
+        "input": "https://staging.example.com/",
+        "daemon_base": "https://clax.example.com",
+        "page": "https://staging.example.com/"
+      },
+      {
+        "input": "https://example.com/a/7q3k9mzx2b4t",
+        "daemon_base": "https://clax.example.com",
+        "page": "https://example.com/a/7q3k9mzx2b4t"
+      },
+      {
+        "input": "https://evilclax.example.com/a/7q3k9mzx2b4t",
+        "daemon_base": "https://clax.example.com",
+        "page": "https://evilclax.example.com/a/7q3k9mzx2b4t"
+      },
+      {
+        "input": "https://localhost/a/7q3k9mzx2b4t",
+        "daemon_base": "https://clax.example.com",
+        "page": "https://localhost/a/7q3k9mzx2b4t"
+      },
+      {
+        "input": "https://clax.example.com/a/7q3k9mzx2b4t/v/2",
+        "daemon_base": "https://clax.example.com",
+        "id": "7q3k9mzx2b4t",
+        "version": 2
+      },
+      {
+        "input": "https://content.clax.example.com/c/7q3k9mzx2b4t/v/1/x.html",
+        "daemon_base": "https://clax.example.com",
+        "id": "7q3k9mzx2b4t",
+        "version": 1
+      },
+      {
+        "input": "http://[::1]:7480/a/7q3k9mzx2b4t",
+        "daemon_base": "http://mac.local:7480",
+        "id": "7q3k9mzx2b4t",
+        "version": null
+      },
+      {
+        "input": "http://172.20.0.3:7480/a/7q3k9mzx2b4t",
+        "daemon_base": "http://mac.local:7480",
+        "id": "7q3k9mzx2b4t",
+        "version": null
+      },
+      {
+        "input": "http://example.com:7480/a/7q3k9mzx2b4t",
+        "daemon_base": "http://mac.local:7480",
+        "page": "http://example.com:7480/a/7q3k9mzx2b4t"
       }
     ]
   },

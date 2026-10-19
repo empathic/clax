@@ -433,9 +433,11 @@ export function artifactRef(urlOrId: string): { id: string; version?: number } {
 
 /** What a tool's `url_or_id` names (spec 2026-10-05 §6.2), for a daemon
  * reached at `daemonBase`: an http(s) URL on the daemon's port is an artifact
- * reference (whatever its host); any other http(s) URL is a page. An artifact
- * reference, and text without a scheme, are read as `artifactRef` reads them.
- * Anything else is `invalid_id`. */
+ * reference when its host is the daemon's (for a daemon on a local name, any
+ * local name; for a daemon on any other name, that name or a subdomain of
+ * it); any other http(s) URL is a page. An artifact reference, and text
+ * without a scheme, are read as `artifactRef` reads them. Anything else is
+ * `invalid_id`. */
 export function target(urlOrId: string, daemonBase: string): { kind: "artifact"; id: string; version?: number } | { kind: "page"; url: string } {
   const s = urlOrId.trim();
   const invalidId = () => toolError("invalid_id", `'${s}' is not an artifact ID, a Clax URL, or an http(s) page URL`);
@@ -448,13 +450,55 @@ export function target(urlOrId: string, daemonBase: string): { kind: "artifact";
     }
     if (u.protocol !== "http:" && u.protocol !== "https:") throw invalidId();
     const daemonPort = portOf(daemonBase);
-    if (daemonPort === undefined || portOf(s) !== daemonPort) return { kind: "page", url: s };
+    if (daemonPort === undefined || portOf(s) !== daemonPort || !sameHost(u, daemonBase)) {
+      return { kind: "page", url: s };
+    }
   }
   try {
     return { kind: "artifact", ...artifactRef(s) };
   } catch {
     throw invalidId();
   }
+}
+
+/** Whether `u` is on the host of the daemon at `daemonBase`: any local name
+ * when the daemon's is local (it answers on all of them), else the daemon's
+ * own name or a subdomain of it. */
+function sameHost(u: URL, daemonBase: string): boolean {
+  let d: string;
+  try {
+    d = new URL(daemonBase).hostname.replace(/\.$/, "");
+  } catch {
+    return false;
+  }
+  const h = u.hostname.replace(/\.$/, "");
+  if (isLocal(d)) return isLocal(h);
+  return h === d || h.endsWith(`.${d}`);
+}
+
+/** Whether a URL's `hostname` names this machine or its local network:
+ * `localhost` and `*.localhost`, a `*.local` or single-label name, or a
+ * loopback, private, link-local or unspecified address. */
+function isLocal(hostname: string): boolean {
+  if (hostname.startsWith("[")) {
+    const ip = hostname.slice(1, -1).toLowerCase();
+    if (ip === "::1" || ip === "::") return true;
+    const first = parseInt(ip.split(":")[0] || "0", 16);
+    return (first & 0xfe00) === 0xfc00 || (first & 0xffc0) === 0xfe80;
+  }
+  const v4 = /^(\d+)\.(\d+)\.(\d+)\.(\d+)$/.exec(hostname);
+  if (v4) {
+    const [a, b] = [Number(v4[1]), Number(v4[2])];
+    return (
+      a === 127 ||
+      a === 10 ||
+      hostname === "0.0.0.0" ||
+      (a === 172 && b >= 16 && b <= 31) ||
+      (a === 192 && b === 168) ||
+      (a === 169 && b === 254)
+    );
+  }
+  return hostname === "localhost" || hostname.endsWith(".localhost") || hostname.endsWith(".local") || !hostname.includes(".");
 }
 
 /** The port of an http(s) URL, the scheme's default when none is written. */
