@@ -774,6 +774,102 @@ void main() {
       expect(find.text('Copied the link'), findsNothing);
     });
 
+    for (final place in [ClaxToastPlace.top, ClaxToastPlace.inline]) {
+      testWidgets('$place under a screen reader keeps a toast with an action '
+          'until it is used, and still times out one without', (tester) async {
+        window(tester, const Size(1200, 800));
+        tester.platformDispatcher.accessibilityFeaturesTestValue =
+            const FakeAccessibilityFeatures(accessibleNavigation: true);
+        addTearDown(tester.platformDispatcher.clearAccessibilityFeaturesTestValue);
+        final clock = _ManualClock();
+        var undone = false;
+        await tester.pumpWidget(
+          page(
+            (c) => ClaxToast.show(
+              c,
+              'Deleted',
+              actionLabel: 'Undo',
+              onAction: () => undone = true,
+              place: place,
+              clock: clock,
+            ),
+          ),
+        );
+        await tester.tap(find.text('Go'));
+        await tester.pumpAndSettle();
+        clock.elapse(const Duration(seconds: 30));
+        await tester.pumpAndSettle();
+        expect(find.text('Deleted'), findsOneWidget);
+        await tester.tap(find.text('Undo'));
+        await tester.pumpAndSettle();
+        expect(undone, isTrue);
+        expect(find.text('Deleted'), findsNothing);
+
+        await tester.pumpWidget(
+          page(
+            (c) => ClaxToast.show(c, 'Copied', place: place, clock: clock),
+          ),
+        );
+        await tester.tap(find.text('Go'));
+        await tester.pumpAndSettle();
+        clock.elapse(const Duration(seconds: 4));
+        await tester.pumpAndSettle();
+        expect(find.text('Copied'), findsNothing);
+      });
+    }
+
+    for (final platform in [TargetPlatform.android, TargetPlatform.macOS]) {
+      testWidgets('on $platform an overlay toast is a live region, and on '
+          'the Mac is announced', (tester) async {
+        window(tester, const Size(1200, 800));
+        final said = <String>[];
+        tester.binding.defaultBinaryMessenger.setMockDecodedMessageHandler<
+          dynamic
+        >(SystemChannels.accessibility, (message) async {
+          final m = message as Map<Object?, Object?>;
+          if (m['type'] == 'announce') {
+            said.add((m['data']! as Map<Object?, Object?>)['message']! as String);
+          }
+          return null;
+        });
+        addTearDown(
+          () => tester.binding.defaultBinaryMessenger
+              .setMockDecodedMessageHandler<dynamic>(
+                SystemChannels.accessibility,
+                null,
+              ),
+        );
+        final handle = tester.ensureSemantics();
+        final clock = _ManualClock();
+        await tester.pumpWidget(
+          page(
+            platform: platform,
+            (c) => ClaxToast.show(
+              c,
+              'Copied the link',
+              place: ClaxToastPlace.top,
+              clock: clock,
+            ),
+          ),
+        );
+        await tester.tap(find.text('Go'));
+        await tester.pumpAndSettle();
+        expect(
+          tester
+              .getSemantics(find.byKey(ClaxToast.cardKey))
+              .getSemanticsData()
+              .flagsCollection
+              .isLiveRegion,
+          isTrue,
+        );
+        // Android reads a live region as it appears; VoiceOver is told.
+        expect(said, platform == TargetPlatform.macOS ? ['Copied the link'] : isEmpty);
+        clock.elapse(const Duration(seconds: 4));
+        await tester.pumpAndSettle();
+        handle.dispose();
+      });
+    }
+
     testWidgets('inline, by default, it goes after tester.pump(4 s)', (
       tester,
     ) async {

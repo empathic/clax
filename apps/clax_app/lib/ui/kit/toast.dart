@@ -1,6 +1,7 @@
 import 'dart:math' as math;
 
 import 'package:flutter/material.dart';
+import 'package:flutter/semantics.dart';
 
 import '../../daemon/clock.dart';
 import '../layout.dart';
@@ -29,7 +30,10 @@ abstract final class ClaxToast {
 
   /// Shows [text] (with [actionLabel], which runs [onAction] and dismisses
   /// the toast) at [place], replacing any toast showing at the top or
-  /// inline. Each goes by itself after 4 s on [clock].
+  /// inline. Each goes by itself after 4 s on [clock], except one with an
+  /// action while a screen reader is on (`MediaQuery.accessibleNavigation`),
+  /// which stays until it is used or replaced. Each is a live region, and
+  /// in the Apple family it is announced as well.
   ///
   /// [ClaxToastPlace.bottom] is a floating snack bar and
   /// [ClaxToastPlace.top] a card like it under the status bar: 16 from the
@@ -115,7 +119,18 @@ abstract final class ClaxToast {
       if (_current == handle) _current = null;
     };
     overlay.insert(entry);
-    clock.delay(const Duration(seconds: 4)).then((_) => handle.dismiss());
+    if (ClaxFamily.of(context) == ClaxFamily.apple) {
+      SemanticsService.sendAnnouncement(
+        View.of(context),
+        text,
+        Directionality.of(context),
+      );
+    }
+    final keep =
+        actionLabel != null && MediaQuery.accessibleNavigationOf(context);
+    if (!keep) {
+      clock.delay(const Duration(seconds: 4)).then((_) => handle.dismiss());
+    }
   }
 }
 
@@ -202,8 +217,11 @@ class _OverlayToastState extends State<_OverlayToast>
       widget.handle.dismiss();
     }
 
+    Widget live(Widget child) =>
+        Semantics(container: true, liveRegion: true, child: child);
+
     if (widget.place == ClaxToastPlace.top) {
-      final card = Material(
+      final card = live(Material(
         key: ClaxToast.cardKey,
         color: p.fg,
         elevation: 2,
@@ -233,7 +251,7 @@ class _OverlayToastState extends State<_OverlayToast>
             ),
           ),
         ),
-      );
+      ));
       return Positioned(
         left: ClaxSpace.s16,
         right: ClaxSpace.s16,
@@ -259,7 +277,7 @@ class _OverlayToastState extends State<_OverlayToast>
       );
     }
 
-    final bar = Material(
+    final bar = live(Material(
       key: ClaxToast.cardKey,
       color: p.overlay,
       child: Container(
@@ -288,7 +306,7 @@ class _OverlayToastState extends State<_OverlayToast>
           ],
         ),
       ),
-    );
+    ));
     final pane = widget.pane;
     return Positioned(
       left: pane?.left ?? 0,
