@@ -25,9 +25,11 @@ fn invalid(s: &str) -> CallToolResult {
 
 /// What `url_or_id` names, for a daemon reached at `daemon_base`. An
 /// http(s) URL on the daemon's port is an artifact reference when its host
-/// is the daemon's: for a daemon on a local name ([`is_local`]), any local
-/// name (`localhost`, `127.0.0.1`, a LAN address, or `<id>.localhost`); for
-/// a daemon on any other name, that name or a subdomain of it. Any other
+/// is the daemon's: for a daemon on a local name ([`is_local`]), any host
+/// (`localhost`, `127.0.0.1`, a LAN or tailnet address or name, or
+/// `<id>.localhost` all reach it); for a daemon on any other name (a
+/// remote or hosted Clax, often on https's default port), that name or a
+/// subdomain of it. Any other
 /// http(s) URL is a page. An artifact reference, and text without a
 /// scheme, are read as [`artifact_ref`] reads them: an ID, or a Clax path
 /// such as `localhost:7480/a/<id>` or `/c/<id>/v/<n>/…`.
@@ -56,15 +58,16 @@ pub fn target(url_or_id: &str, daemon_base: &str) -> Result<Target, CallToolResu
         .map_err(|_| invalid(s))
 }
 
-/// Whether `url` is on the host of the daemon at `daemon`: any local name
-/// when the daemon's is local (it answers on all of them), else the
-/// daemon's own name or a subdomain of it.
+/// Whether `url` is on the host of the daemon at `daemon`: any host when
+/// the daemon's is local (the machine is reached by many names, LAN and
+/// tailnet ones included, so its port alone tells), else the daemon's own
+/// name or a subdomain of it.
 fn same_host(url: &url::Url, daemon: &url::Url) -> bool {
     let (Some(h), Some(d)) = (url.host(), daemon.host()) else {
         return false;
     };
     if is_local(&d) {
-        return is_local(&h);
+        return true;
     }
     match (h, d) {
         (url::Host::Domain(h), url::Host::Domain(d)) => {
@@ -196,7 +199,7 @@ mod tests {
     }
 
     #[test]
-    fn a_daemon_on_a_local_name_owns_every_local_name_on_its_port() {
+    fn a_daemon_on_a_local_name_owns_every_host_on_its_port() {
         let t = |s: &str| target(s, "http://mac.local:7480").ok();
         let art = Some(Target::Artifact {
             id: "7q3k9mzx2b4t".into(),
@@ -205,11 +208,10 @@ mod tests {
         assert_eq!(t("http://127.0.0.1:7480/a/7q3k9mzx2b4t"), art);
         assert_eq!(t("http://[::1]:7480/a/7q3k9mzx2b4t"), art);
         assert_eq!(t("http://10.0.0.5:7480/a/7q3k9mzx2b4t"), art);
-        assert_eq!(
-            t("http://example.com:7480/a/7q3k9mzx2b4t"),
-            Some(Target::Page("http://example.com:7480/a/7q3k9mzx2b4t".into())),
-            "a public name on the daemon's port is a page"
-        );
+        // A tailnet's addresses and names reach the daemon too.
+        assert_eq!(t("http://100.101.102.103:7480/a/7q3k9mzx2b4t"), art);
+        assert_eq!(t("http://mac.tail1234.ts.net:7480/a/7q3k9mzx2b4t"), art);
+        assert_eq!(t("http://mac.home.arpa:7480/a/7q3k9mzx2b4t"), art);
     }
 
     #[test]

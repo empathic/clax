@@ -438,8 +438,8 @@ export function artifactRef(urlOrId: string): { id: string; version?: number } {
 /** What a tool's `url_or_id` names (spec 2026-10-05 §6.2), for a daemon
  * reached at `daemonBase`: an http(s) URL on the daemon's port is an artifact
  * reference when its host is the daemon's (for a daemon on a local name, any
- * local name; for a daemon on any other name, that name or a subdomain of
- * it); any other http(s) URL is a page. An artifact reference, and text
+ * host; for a daemon on any other name, that name or a subdomain of it); any
+ * other http(s) URL is a page. An artifact reference, and text
  * without a scheme, are read as `artifactRef` reads them. Anything else is
  * `invalid_id`. */
 export function target(urlOrId: string, daemonBase: string): { kind: "artifact"; id: string; version?: number } | { kind: "page"; url: string } {
@@ -465,9 +465,10 @@ export function target(urlOrId: string, daemonBase: string): { kind: "artifact";
   }
 }
 
-/** Whether `u` is on the host of the daemon at `daemonBase`: any local name
- * when the daemon's is local (it answers on all of them), else the daemon's
- * own name or a subdomain of it. */
+/** Whether `u` is on the host of the daemon at `daemonBase`: any host when
+ * the daemon's is local (the machine is reached by many names, LAN and
+ * tailnet ones included, so its port alone tells), else the daemon's own
+ * name or a subdomain of it. */
 function sameHost(u: URL, daemonBase: string): boolean {
   let d: string;
   try {
@@ -476,7 +477,7 @@ function sameHost(u: URL, daemonBase: string): boolean {
     return false;
   }
   const h = u.hostname.replace(/\.$/, "");
-  if (isLocal(d)) return isLocal(h);
+  if (isLocal(d)) return true;
   return h === d || h.endsWith(`.${d}`);
 }
 

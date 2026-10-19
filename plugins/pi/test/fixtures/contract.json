@@ -229,9 +229,22 @@
         "version": null
       },
       {
-        "input": "http://example.com:7480/a/7q3k9mzx2b4t",
-        "daemon_base": "http://mac.local:7480",
-        "page": "http://example.com:7480/a/7q3k9mzx2b4t"
+        "input": "http://100.101.102.103:7480/a/7q3k9mzx2b4t",
+        "daemon_base": "http://localhost:7480",
+        "id": "7q3k9mzx2b4t",
+        "version": null
+      },
+      {
+        "input": "http://mac.tail1234.ts.net:7480/a/7q3k9mzx2b4t/v/3",
+        "daemon_base": "http://localhost:7480",
+        "id": "7q3k9mzx2b4t",
+        "version": 3
+      },
+      {
+        "input": "http://mac.home.arpa:7480/a/7q3k9mzx2b4t",
+        "daemon_base": "http://127.0.0.1:7480",
+        "id": "7q3k9mzx2b4t",
+        "version": null
       }
     ]
   },

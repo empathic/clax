@@ -2110,10 +2110,11 @@ Which tool argument names what: an artifact ID, text without a scheme
 (`localhost:7480/a/<id>`, `/a/<id>`), and an `http(s)` URL on the daemon's
 port and host are Clax references, read as "Shell URLs" describes. For a
 daemon on a local name (`localhost`, `*.localhost`, `*.local`, a
-single-label name, or a loopback, private or link-local address) any local
-name is its host: `localhost`, `127.0.0.1`, a LAN address, or
-`<id>.localhost`; for a daemon on any other name (a remote or hosted Clax),
-only that name and its subdomains are. Any
+single-label name, or a loopback, private or link-local address) the port
+alone tells: any host on it is the daemon's (`localhost`, `127.0.0.1`,
+`<id>.localhost`, a LAN address or name, or a tailnet's `100.x` address or
+`*.ts.net` name); for a daemon on any other name (a remote or hosted Clax,
+often on https's default port), only that name and its subdomains are. Any
 other `http(s)` URL is a page URL, even one whose path holds `/a/<id>`. The
 comment tools, `working` and `wait_for_feedback` resolve a page URL to its
 live page (`invalid_id` when it has none yet), and so does every other tool
