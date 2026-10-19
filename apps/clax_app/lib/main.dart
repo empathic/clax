@@ -18,8 +18,10 @@ import 'clax/http_api.dart';
 import 'daemon/daemon_key.dart';
 import 'daemon/exe_locator.dart';
 import 'daemon/health.dart';
+import 'daemon/in_process.dart';
 import 'daemon/ports.dart';
 import 'daemon/process.dart';
+import 'daemon/sample_key.dart';
 import 'daemon/supervisor.dart';
 import 'agent/timings.dart';
 import 'home/home_install.dart';
@@ -93,21 +95,41 @@ Future<AppServices> platformServices({DateTime? launched}) async {
   support.createSync(recursive: true);
   cache.createSync(recursive: true);
   final snapshots = HomeSnapshotStore(Directory('${cache.path}/home'));
-  final home = Directory('${support.path}/clax-home')
-    ..createSync(recursive: true);
   final android = Platform.isAndroid;
+  // On iOS the daemon runs inside this process (crates/clax-ios): its home
+  // and log are where it puts them under the container, from $HOME.
+  final inProcess = Platform.isIOS;
+  final paths = inProcess
+      ? await const MethodChannel(
+          'dev.empathic.clax/native',
+        ).invokeMapMethod<String, String>('daemonPaths')
+      : null;
+  final home = Directory(paths?['home'] ?? '${support.path}/clax-home')
+    ..createSync(recursive: true);
   // One cached key for every reader: the keychain is read once a process.
   final secureKey = CachedSecureKey(FlutterSecureKey());
   final supervisor = DaemonSupervisor(
-    exe: android ? const AndroidExeLocator() : const MacExeLocator(),
+    exe: inProcess
+        ? const InProcessLocator()
+        : android
+        ? const AndroidExeLocator()
+        : const MacExeLocator(),
     home: home.path,
     supportDir: support.path,
     cacheDir: cache.path,
-    starter: const IoProcessStarter(),
+    starter: inProcess
+        ? InProcessStarter(logPath: paths!['log']!)
+        : const IoProcessStarter(),
     ports: const LoopbackPortPicker(),
     health: HttpHealthProbe(),
+    // Never called for a daemon in this process.
     pids: IoPidKiller(),
-    host: android ? DaemonHost.android : DaemonHost.mac,
+    host: inProcess
+        ? DaemonHost.inProcess
+        : android
+        ? DaemonHost.android
+        : DaemonHost.mac,
+    keyPort: inProcess ? HttpSampleKeyPort() : null,
     apiKey: secureKey.read,
     requireCredential: true,
   );

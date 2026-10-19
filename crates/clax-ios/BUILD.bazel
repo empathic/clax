@@ -51,6 +51,8 @@ ios_builds(
         "@apple_support//platforms:ios_sim_arm64",
     ],
     tags = ["manual"],
+    # //apps/clax_app:ios_app_test checks the archives against the app.
+    visibility = ["//apps/clax_app:__pkg__"],
 )
 
 # The daemon keeps building for iPhone and its simulator (iOS spec §3).

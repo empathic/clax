@@ -11,6 +11,7 @@ load("@rules_flutter//flutter:macos.bzl", "flutter_macos_app")
 load("@rules_shell//shell:sh_test.bzl", "sh_test")
 load("@rules_swift//swift:swift_library.bzl", "swift_library")
 load("//bazel/flutter:android.bzl", "flutter_fat_apk")
+load("//bazel/flutter:ios.bzl", "clax_ios_app")
 load("//bazel/flutter:macos.bzl", "debug_app", "integration_main", "macos_helper")
 load("//bazel/flutter:notices.bzl", "flutter_notices", "pub_licenses")
 load("//bazel/flutter:tests.bzl", "flutter_test_suite")
@@ -606,6 +607,15 @@ sh_test(
     },
     tags = ["no-remote"],
     target_compatible_with = ["@platforms//os:macos"],
+)
+
+# The iOS app (iPhone and iPad) with the daemon in its own process
+# (crates/clax-ios), its simulator build and :ios_app_test, a check of
+# both that is also the iOS form of :version_sync (bazel/flutter/ios.bzl).
+clax_ios_app(
+    name = "ios_app",
+    version_code = VERSION_CODE,
+    version_name = VERSION_NAME,
 )
 
 # The About panel's credits (macos/Runner/About.swift), on their own.

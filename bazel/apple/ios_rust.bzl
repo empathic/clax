@@ -111,7 +111,12 @@ def _ios_builds_impl(ctx):
         if len(archives) != 1:
             fail("%s for %s: expected one static library, got %s" % (label, key, archives))
         archive = archives[0]
-        files.append(archive)
+        # Under a name of its platform's: each build's archive has the same
+        # basename and package, so in a test's runfiles one would hide the
+        # other.
+        named = ctx.actions.declare_file("%s/%s/%s" % (ctx.label.name, Label(key).name, archive.basename))
+        ctx.actions.symlink(output = named, target_file = archive)
+        files.append(named)
         stamp = ctx.actions.declare_file("%s/%s.build_version" % (ctx.label.name, Label(key).name))
         apple_support.run(
             actions = ctx.actions,
@@ -132,7 +137,7 @@ def _ios_builds_impl(ctx):
 
 ios_builds = rule(
     implementation = _ios_builds_impl,
-    doc = "`lib` built for each of `platforms`, its archives the rule's outputs, each checked for its platform and an iOS no newer than --ios_minimum_os.",
+    doc = "`lib` built for each of `platforms`, its archives the rule's outputs (`<name>/<platform>/<archive>`), each checked for its platform and an iOS no newer than --ios_minimum_os.",
     fragments = ["apple"],
     attrs = apple_support.action_required_attrs() | {
         "lib": attr.label(mandatory = True, cfg = _platforms_split),

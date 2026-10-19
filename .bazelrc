@@ -35,6 +35,10 @@ build --ios_multi_cpus=sim_arm64
 # to rustc); //crates/clax-ios:ios_build_test fails on an object built for
 # a newer iOS.
 build --ios_minimum_os=17.0
+# An imported framework's module map is an input of Objective-C compiles,
+# so a plugin's `@import Flutter;` (image_picker_ios) finds the engine's
+# module in the sandbox. rules_apple keeps it out unless told.
+build --define=apple.incompatible.objc_framework_propagate_modulemap=true
 
 # Actions see a fixed environment, so their results can be shared.
 build --incompatible_strict_action_env

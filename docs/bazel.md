@@ -205,7 +205,7 @@ system libraries Chromium needs.
 
 ## The Clax app
 
-`apps/clax_app` (Flutter, for Android and macOS) builds and tests under
+`apps/clax_app` (Flutter, for Android, macOS, iPhone and iPad) builds and tests under
 Bazel with [rules_flutter](https://github.com/aran/rules_flutter) (0.0.6)
 and [rules_dart](https://github.com/aran/rules_dart) (0.7.3), patched and
 extended here (`bazel/flutter/`, `bazel/android/`). rules_flutter was
@@ -223,6 +223,7 @@ macOS) and the two keys below.
 | `prompt_sync`, `version_sync` | the prompt's copies of the contract; pubspec.yaml's version is the one the BUILD file gives the APK and the macOS app | `scripts/sync-app-prompt.sh --check` |
 | `apk`, `apk_test` | the release APK for arm64-v8a and x86_64 (`bazel/flutter/android.bzl`), and a check of it against what Gradle makes | `flutter build apk` |
 | `macos_app`, `macos_app_test` | `Clax.app` (a zip) with the embedded `clax` signed as a sandboxed helper (`bazel/flutter/macos.bzl`), and a check of it; macOS only | `flutter build macos` |
+| `ios_app`, `ios_app_sim`, `ios_app_test` | `Clax.app` for iPhone and iPad (an `.ipa`; `manual`) with the daemon in its own process (`bazel/flutter/ios.bzl`), the simulator build of it (`-c dbg`), and a check of that build: its Info.plist, with pubspec.yaml's version (the iOS form of `:version_sync`), Flutter's frameworks, the home bundle, the daemon's four C functions, and every object of the daemon's static libraries for an iOS no newer than the app's minimum; macOS only | none |
 | `macos_about_test` | the About panel's credits (`macos/Runner/About.swift`), an XCTest bundle run by `xcodebuild`; macOS only | none |
 | `integration_<name>` (manual) | `integration_test/<name>_test.dart` in the debug app, run in the logged-in session | `flutter test <file> -d macos` |
 | `home_bundle`, `home_version_test` | the home app's bundle, `assets/home/home.clax` and `release.json`, packed from `home/` by `pack_home` (compiled by rules_dart) and signed: an asset of `app`, so of the APK and the macOS app; and a check of how its version is chosen | `scripts/build-home-bundle.sh` |
@@ -347,6 +348,24 @@ build's "Embed clax" phase signs it (a debug app's helper without them).
 It is ad hoc signed throughout; a Developer ID identity is a native-build
 concern (`macos/Runner/Configs/AppInfo.xcconfig`, `Signing.xcconfig`).
 
+**The iOS app** is rules_flutter's `flutter_ios_app` (rules_apple) for
+iPhone and iPad from iOS 17.0, bundle ID `dev.empathic.clax`
+(`IOS_BUNDLE_ID` in `bazel/flutter/ios.bzl`), with pubspec.yaml's version.
+There is no Xcode project: `ios/Runner/` holds rules_flutter's runner
+templates (`AppDelegate.swift`, `SceneDelegate.swift`, `Info.plist`, the
+storyboards) and the app's own Swift, every `ios/Runner/*.swift` compiled
+into the runner. The daemon is not a process but `crates/clax-ios`, a static
+library built `-c opt` in the app's configuration, linked through
+`ios_daemon` (`ios/Daemon/ClaxDaemon.swift`, module `ClaxDaemon`, over the C
+header `ClaxIOS`); `ios/Runner/NativeChannel.swift` serves it to the Dart
+supervisor on `dev.empathic.clax/native` (`daemonStart`, `daemonState`,
+`daemonStop`, `daemonPaths`). App Transport Security allows plain HTTP to
+loopback (`NSAllowsLocalNetworking`) and to `localhost` with its
+subdomains, the apps' own origins (an exception domain in
+`ios/Runner/Info.plist`); nothing off the device. A simulator app builds
+only in debug (`bazelisk build //apps/clax_app:ios_app -c dbg`); a device
+build needs a provisioning profile.
+
 **The tests** are compiled a directory at a time (`tests_<dir>_all`,
 `manual`; `bazel/flutter/tests.bzl`): a `.dill` carries the whole app and
 Flutter, 64 MB, and one per file made 7.6 GB of them, written again to the
@@ -463,7 +482,7 @@ Performance gates nothing in either (`just perf` measures on demand).
 | crate layers | `//scripts:crate_layers` |
 | no hard links | `//scripts:no_hard_links` (the check's own test), and `scripts/check-no-hard-links.sh` over the tracked files outside Bazel |
 | pipefail pipes | `//scripts:pipefail_pipes`, and `scripts/check-pipefail-pipes.sh` over the tracked files outside Bazel |
-| app (flutter analyze + test) | `//apps/clax_app:dart_analyze` and the test files' targets, with `:prompt_sync`, `:version_sync`, `:apk_test` and `:macos_app_test` ("The Clax app") |
+| app (flutter analyze + test) | `//apps/clax_app:dart_analyze` and the test files' targets, with `:prompt_sync`, `:version_sync`, `:apk_test`, `:macos_app_test` and `:ios_app_test` ("The Clax app") |
 | build app clax | `//scripts:build_app_clax` (the native script's dry runs) |
 
 Bazel adds: `scripts/bazel-sync.sh --check` first, `//scripts:bazel_gc`,
