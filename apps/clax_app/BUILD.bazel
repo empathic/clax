@@ -557,6 +557,14 @@ sh_test(
     tags = ["no-remote"],
 )
 
+# apk-check.sh's reading of MainActivity's configChanges, without an APK.
+sh_test(
+    name = "apk_check_test",
+    srcs = ["tool/apk-check-test.sh"],
+    args = ["$(rootpath tool/apk-check.sh)"],
+    data = ["tool/apk-check.sh"],
+)
+
 # The macOS app, with the optimized host clax in its Resources, where the
 # app's supervisor starts it (lib/daemon/supervisor.dart), signed as a
 # sandboxed helper (bazel/flutter/macos.bzl).

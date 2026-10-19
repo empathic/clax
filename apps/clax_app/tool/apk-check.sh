@@ -7,12 +7,38 @@
 # (not debuggable, shrunk by R8) that extracts its native libraries, the engine, the app's
 # AOT code and the embedded clax for both CPUs, the home bundle HOME (the
 # one //apps/clax_app:home_bundle built), the third-party notices, and a
-# debug-key signature.
+# debug-key signature, and MainActivity's configChanges keeping the
+# activity through a resize (a Chromebook's window, a foldable unfolding).
+#
+# apk-check.sh --manifest DUMP checks only the configChanges, in DUMP, an
+# `aapt2 dump xmltree --file AndroidManifest.xml` output.
 set -euo pipefail
-apk="$1" aapt2="$2" apksigner="$3" home="$4"
 fails=0
 ok() { echo "PASS: $1"; }
 bad() { echo "FAIL: $1"; fails=1; }
+# check_config_changes MANIFEST: MainActivity's android:configChanges (aapt2
+# prints the flags' value) includes screenSize, smallestScreenSize,
+# screenLayout, orientation and density (AndroidManifest.xml), so a
+# resize never restarts the activity.
+check_config_changes() {
+    local value missing="" flag bit
+    value="$(awk '/E: activity/ { c = "" } /android:configChanges/ { c = $0 } /android:name.*"dev.empathic.clax_app.MainActivity"/ { n = 1 } n && c != "" { sub(/.*=/, "", c); print c; exit } /E: activity/ { n = 0 }' <<<"$1")"
+    if [ -z "$value" ]; then bad "MainActivity's configChanges keep it through a resize (none found)"; return; fi
+    for flag in screenSize:0x400 smallestScreenSize:0x800 screenLayout:0x100 orientation:0x80 density:0x1000; do
+        bit="${flag#*:}"
+        if (( (value & bit) == 0 )); then missing="$missing ${flag%%:*}"; fi
+    done
+    if [ -z "$missing" ]; then
+        ok "MainActivity's configChanges keep it through a resize ($value)"
+    else
+        bad "MainActivity's configChanges keep it through a resize ($value lacks$missing)"
+    fi
+}
+if [ "${1:-}" = "--manifest" ]; then
+    check_config_changes "$(cat "$2")"
+    exit "$fails"
+fi
+apk="$1" aapt2="$2" apksigner="$3" home="$4"
 check() { # check DESCRIPTION OUTPUT LINE: OUTPUT has LINE as a whole line
     if grep -qxF -- "$3" <<<"$2"; then ok "$1"; else bad "$1 (no line: $3)"; fi
 }
@@ -64,6 +90,7 @@ check "the embedded daemon's network permission" "$badging" "uses-permission: na
 check "both native ABIs" "$badging" "native-code: 'arm64-v8a' 'x86_64'"
 if grep -q '^application-debuggable' <<<"$badging"; then bad "a release build is not debuggable"; else ok "a release build is not debuggable"; fi
 if grep -q 'extractNativeLibs.*=true' <<<"$manifest"; then ok "native libraries are extracted"; else bad "native libraries are extracted"; fi
+check_config_changes "$manifest"
 # Predictive back: Android 13+ shows the back-to-home and in-app back
 # animations only for an application that opts in.
 if grep -q 'enableOnBackInvokedCallback.*=true' <<<"$manifest"; then ok "predictive back is on"; else bad "predictive back is on (no android:enableOnBackInvokedCallback=\"true\")"; fi
