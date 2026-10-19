@@ -16,7 +16,8 @@
 //!
 //! The index changes one grant at a time, in memory, after the change
 //! committed; it is read whole from the store only on start and, after an
-//! update that failed, on the next sweep.
+//! update that failed (one that panicked half made, or found its lock
+//! poisoned by a panic under it), on the next sweep.
 
 use crate::error::ApiError;
 use crate::state::AppState;
@@ -169,15 +170,26 @@ impl GrantIndex {
         self.fail_next.store(true, Ordering::SeqCst);
     }
 
+    /// Applies `f` under the write lock. A panic in `f` leaves the change
+    /// half made: it is caught, and the index marked stale. A lock poisoned
+    /// by a panic elsewhere under it marks the index stale too, as what that
+    /// left cannot be told; the change is still made.
     fn change(&self, f: impl FnOnce(&mut Tokens)) -> Result<(), IndexStale> {
         #[cfg(debug_assertions)]
         if self.fail_next.swap(false, Ordering::SeqCst) {
             self.stale.store(true, Ordering::SeqCst);
             return Err(IndexStale);
         }
-        let mut t = self.tokens.write().unwrap_or_else(|e| e.into_inner());
+        let mut t = self.tokens.write().unwrap_or_else(|e| {
+            self.stale.store(true, Ordering::SeqCst);
+            self.tokens.clear_poison();
+            e.into_inner()
+        });
         self.changes.fetch_add(1, Ordering::SeqCst);
-        f(&mut t);
+        if std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| f(&mut t))).is_err() {
+            self.stale.store(true, Ordering::SeqCst);
+            return Err(IndexStale);
+        }
         Ok(())
     }
 
@@ -291,6 +303,7 @@ impl GrantIndex {
             return Ok(false);
         }
         *t = fresh;
+        self.tokens.clear_poison();
         self.stale.store(false, Ordering::SeqCst);
         Ok(true)
     }
@@ -895,6 +908,49 @@ mod tests {
         assert!(index.ended("g_1").is_err());
         assert!(index.is_stale());
         assert!(index.ended("g_1").is_ok(), "only the next change fails");
+    }
+
+    #[test]
+    fn a_change_that_panics_marks_the_index_for_a_rebuild_and_the_next_one_applies() {
+        let index = GrantIndex::default();
+        let r = index.change(|t| {
+            t.ended.insert("g_half".into());
+            panic!("a change that fails half done");
+        });
+        assert!(r.is_err());
+        assert!(index.is_stale());
+        // The lock is usable, and the next change applies.
+        index
+            .issued(
+                "g_1",
+                [2u8; 32],
+                &secret("cxg_a"),
+                &secret("cxm_a"),
+                &secret("cxc_a"),
+            )
+            .unwrap();
+        assert_eq!(index.len(), 3);
+    }
+
+    #[test]
+    fn a_panic_under_the_lock_elsewhere_marks_the_index_for_a_rebuild_at_the_next_change() {
+        let index = GrantIndex::default();
+        index.ended("g_1").unwrap();
+        let panicked = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
+            index.forget_ended(|_| panic!("the store's answer failed"));
+        }));
+        assert!(panicked.is_err());
+        assert!(!index.is_stale());
+        index.ended("g_2").unwrap();
+        assert!(index.is_stale(), "a poisoned lock is noticed");
+        let (_d, _clock, st) = store();
+        assert!(index.rebuild_if_stale(&st).unwrap());
+        assert!(!index.is_stale());
+        index.ended("g_3").unwrap();
+        assert!(
+            !index.is_stale(),
+            "a change after the rebuild leaves it fresh"
+        );
     }
 
     #[test]
