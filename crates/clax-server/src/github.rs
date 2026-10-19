@@ -302,17 +302,21 @@ fn escape(s: &str) -> String {
         .replace('"', "&quot;")
 }
 
-/// The page a failed sign-in answers: `why`, a link to sign in again, and
-/// the instance's Terms of Service and Privacy Policy when it shows them.
+/// The page a failed sign-in answers: `why`, a link to sign in again, the
+/// instance's Terms of Service and Privacy Policy when it shows them, and
+/// Clax's source on GitHub.
 /// The flow cookie is cleared.
 fn failed(h: &Hosted, status: StatusCode, why: &str) -> Response {
     let legal = h.legal.as_ref().map_or(String::new(), |l| {
         format!(
-            "<footer><a href=\"{}\">Terms of Service</a> · <a href=\"{}\">Privacy Policy</a></footer>",
+            "<a href=\"{}\">Terms of Service</a> · <a href=\"{}\">Privacy Policy</a> · ",
             escape(l.terms_url()),
             escape(l.privacy_url())
         )
     });
+    let footer = format!(
+        "<footer>{legal}<a href=\"https://github.com/empathic/clax\" target=\"_blank\" rel=\"noopener\">Source on GitHub</a></footer>"
+    );
     let html = format!(
         "<!doctype html><html lang=\"en\"><head><meta charset=\"utf-8\"><meta name=\"viewport\" content=\"width=device-width, initial-scale=1\"><title>Sign in · Clax</title>\
 <style>:root{{color-scheme:light dark;--bg:#fafaf9;--fg:#1c1917;--muted:#57534e;--card:#fff;--border:#e7e5e4}}\
@@ -323,7 +327,7 @@ h1{{margin:0 0 10px;font-size:22px}}p{{margin:0 0 12px}}a{{color:var(--fg)}}\
 footer{{margin-top:16px;text-align:center;font-size:12.5px;color:var(--muted)}}footer a{{color:inherit}}</style></head>\
 <body><main><section><h1>Sign-in failed</h1><p>{}</p><p><a href=\"/auth/github\">Sign in again</a> · <a href=\"/signin\">Other ways to sign in</a></p></section>{}</main></body></html>",
         escape(why),
-        legal
+        footer
     );
     let mut res = (
         status,

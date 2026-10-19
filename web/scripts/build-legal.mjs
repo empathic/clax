@@ -89,7 +89,7 @@ footer a { color: var(--muted); }
 <div class="doc">
 ${body}</div>
 </main>
-<footer><a href="/terms">Terms of Service</a> · <a href="/privacy">Privacy Policy</a> · <a href="https://github.com/empathic/clax" target="_blank" rel="noopener noreferrer">Source</a></footer>
+<footer><a href="/terms">Terms of Service</a> · <a href="/privacy">Privacy Policy</a> · <a href="https://github.com/empathic/clax" target="_blank" rel="noopener noreferrer">Source on GitHub</a></footer>
 </body>
 </html>
 `;

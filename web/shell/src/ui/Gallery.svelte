@@ -15,9 +15,10 @@
   // page is People (its own chunk, through the lazy module, with the page's
   // stream), and no artifacts are fetched. **People** is in the header for
   // the owner and for a connected person, once the lazy module has loaded.
-  // On a hosted Clax that shows Terms of Service and a Privacy Policy, every
-  // one of these pages ends with links to them, and a person who has not
-  // agreed to them is asked to (hosted/legal.ts).
+  // Every one of these pages ends with a link to Clax's source on GitHub,
+  // and, on a hosted Clax that shows Terms of Service and a Privacy Policy,
+  // links to them; a person who has not agreed to them is asked to
+  // (hosted/legal.ts). The mark in the header links back to the gallery.
   import { onDestroy, onMount } from "svelte";
   import { ApiError, type Artifact, type AttentionSummary, deleteArtifact, getAttention, getToken, listArtifacts, patchArtifact } from "../api";
   import { REQUEST_STUCK, connTrouble } from "../conn-notice";
@@ -113,7 +114,7 @@
 </script>
 
 <header class="gbar">
-  <Mark /><h1>Clax</h1><span class="sub hide-sm">{site ?? "local artifacts"}{#if me}{` · seen as ${me}`}{/if}</span>
+  <a href="/" class="home" aria-label="Gallery"><Mark /></a><h1>Clax</h1><span class="sub hide-sm">{site ?? "local artifacts"}{#if me}{` · seen as ${me}`}{/if}</span>
   {#if !inbox && !people}<input type="search" class="search" placeholder="Search artifacts" aria-label="Search artifacts" value={query} oninput={e => { query = e.currentTarget.value; }} />{/if}
   {#if Q}<Q.InboxLink current={inbox} />{/if}
   {#if lm}<lm.PeopleLink current={people} owner={!!token} {viewer} />{/if}
@@ -150,5 +151,5 @@
   {/if}
   {#if artifacts && gw}<gw.HaikuLine footer />{/if}
   {/if}
-  {#if legal}<nav class="glegal" aria-label="Terms and privacy"><a href={legal.terms_url}>Terms of Service</a> · <a href={legal.privacy_url}>Privacy Policy</a></nav>{/if}
 </main>
+<nav class="glegal" aria-label="About Clax">{#if legal}<a href={legal.terms_url}>Terms of Service</a>{" · "}<a href={legal.privacy_url}>Privacy Policy</a>{" · "}{/if}<a href="https://github.com/empathic/clax" target="_blank" rel="noopener">Source on GitHub</a></nav>

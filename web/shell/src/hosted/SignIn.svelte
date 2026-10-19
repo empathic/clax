@@ -17,7 +17,8 @@
   // nothing. Where the instance shows Terms of Service and a Privacy
   // Policy (`me.legal`), each button that signs this browser in says that
   // doing so agrees to them, the server records it, and the page ends
-  // with links to both. Signed in, the browser goes to the gallery. Signed out, `/signin`
+  // with links to both. Every one ends with a link to Clax's source on
+  // GitHub, and the header's mark links to the gallery. Signed in, the browser goes to the gallery. Signed out, `/signin`
   // also lists the public gallery ("Public on Clax"), each artifact opening
   // through its link. The gallery's entry
   // loads this as a chunk of its own on these paths; the header's mark is
@@ -116,7 +117,7 @@
 </script>
 
 <header class="gbar">
-  <span class="mark" data-size="bar" role="img" aria-label="Clax"><svg class="mk" viewBox="0 0 40 24" aria-hidden="true" focusable="false"><path class="l" d="M2 2.5a9.5 9.5 0 0 1 0 19" fill="none" stroke-width="4.2"/><path class="r" d="M38 2.5a9.5 9.5 0 0 0 0 19" fill="none" stroke-width="4.2"/><circle cx="20" cy="12" r="2.6"/></svg></span><h1>Clax</h1><span class="gsp"></span><ThemeSwitch />
+  <a href="/" class="home" aria-label="Gallery"><span class="mark" data-size="bar" role="img" aria-label="Clax"><svg class="mk" viewBox="0 0 40 24" aria-hidden="true" focusable="false"><path class="l" d="M2 2.5a9.5 9.5 0 0 1 0 19" fill="none" stroke-width="4.2"/><path class="r" d="M38 2.5a9.5 9.5 0 0 0 0 19" fill="none" stroke-width="4.2"/><circle cx="20" cy="12" r="2.6"/></svg></span></a><h1>Clax</h1><span class="gsp"></span><ThemeSwitch />
 </header>
 <main class="signin">
   <section class="sicard" aria-labelledby="si-h">
@@ -212,9 +213,7 @@
       </ul>
     </section>
   {/if}
-  {#if legal}
-    <footer class="silegal"><a href={legal.terms_url}>Terms of Service</a> · <a href={legal.privacy_url}>Privacy Policy</a></footer>
-  {/if}
+  <footer class="silegal">{#if legal}<a href={legal.terms_url}>Terms of Service</a>{" · "}<a href={legal.privacy_url}>Privacy Policy</a>{" · "}{/if}<a href="https://github.com/empathic/clax" target="_blank" rel="noopener">Source on GitHub</a></footer>
 </main>
 
 <style>

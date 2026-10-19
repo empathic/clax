@@ -11,7 +11,7 @@
   // artifact on a hosted Clax (`onShare`), it lists Share; where the owner may publish the
   // artifact to a public Clax (`onPublish`), it lists Publish. On a hosted
   // Clax that shows Terms of Service and a Privacy Policy (`legal`), it ends
-  // with links to both. A menu button: opening
+  // with links to both and to Clax's source on GitHub. A menu button: opening
   // focuses the first item; Up, Down, Home and End move between the items;
   // Escape, Open raw and Copy link close it with focus back on the button; a
   // press outside, or Tab or focus leaving it, closes it. The items are out of
@@ -83,6 +83,7 @@
         <hr />
         <a role="menuitem" tabindex="-1" href={legal.terms_url} target="_blank" rel="noopener" onclick={close}>Terms of Service</a>
         <a role="menuitem" tabindex="-1" href={legal.privacy_url} target="_blank" rel="noopener" onclick={close}>Privacy Policy</a>
+        <a role="menuitem" tabindex="-1" href="https://github.com/empathic/clax" target="_blank" rel="noopener" onclick={close}>Source on GitHub</a>
       {/if}
     </div>
   {/if}

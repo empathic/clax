@@ -471,7 +471,7 @@ test("the bundled Terms of Service and Privacy Policy: notices, pages, links and
     await owner.getByLabel("Your name").fill("Ada");
     await owner.getByRole("button", { name: "Create the first person" }).click();
     await owner.waitForURL(`${origin}/`);
-    const links = owner.getByRole("navigation", { name: "Terms and privacy" });
+    const links = owner.getByRole("navigation", { name: "About Clax" });
     await expect(links.getByRole("link", { name: "Terms of Service" })).toHaveAttribute("href", "/terms");
     await expect(owner.getByTestId("legal-prompt"), "setup agreed").toHaveCount(0);
     await shots(owner, "legal-gallery");
@@ -483,7 +483,7 @@ test("the bundled Terms of Service and Privacy Policy: notices, pages, links and
     await anon.getByRole("link", { name: "Privacy Policy" }).first().click();
     await expect(anon.getByRole("heading", { level: 1 })).toHaveText("Privacy Policy");
     await anon.goto(`${origin}/signin`);
-    await expect(anon.getByText("Terms of Service · Privacy Policy")).toBeVisible();
+    await expect(anon.getByText("Terms of Service · Privacy Policy · Source on GitHub")).toBeVisible();
 
     // The artifact view's more menu links both.
     const aid = (await publish(d.base, d.token, "Plan", { "index.html": "<title>Plan</title><h1>Plan</h1>" })).artifact.id;
