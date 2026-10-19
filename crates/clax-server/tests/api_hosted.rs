@@ -5497,12 +5497,20 @@ async fn a_persons_inbox_groups_hold_their_own_items_and_no_withheld_text() {
             .count() as u64;
         assert_eq!(total, n, "{aid}: {v}");
     }
+    // The owner's items on the same pages (their publications) are not in hers.
+    let ids = |v: &Value| -> Vec<String> {
+        v["groups"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .flat_map(|g| g["items"].as_array().unwrap().iter())
+            .map(|i| i["id"].as_str().unwrap().to_string())
+            .collect()
+    };
     let (_, owners) = site.get(&owner, "/api/inbox?group=artifact").await;
-    assert_ne!(
-        keys(&owners),
-        keys(&v),
-        "the owner's groups are the owner's: {owners}"
-    );
+    let theirs = ids(&owners);
+    assert!(!theirs.is_empty(), "{owners}");
+    assert!(ids(&v).iter().all(|i| !theirs.contains(i)), "{v} {owners}");
     let (s, v) = site.get(&mia, "/api/inbox?group=artifact&q=secret").await;
     assert_eq!(s, 200, "{v}");
     assert_eq!(keys(&v), vec![(notes.clone(), 1), (plan.clone(), 1)], "{v}");
