@@ -142,9 +142,18 @@ fn approval_record(kind: AuditKind, at: &str, a: &Approval) -> AuditRecord {
 /// declined request of approver `?1` (`NULL`: the owner) at artifact `?2`,
 /// for thread `?3` or the whole artifact: through the index
 /// `approval_requests_by_target`, so the requests a busy pair piles up
-/// (withdrawn and approved ones) are never walked.
-pub(crate) const REQUEST_STATE: &str =
-    "SELECT COALESCE(MAX(status = 'open'), 0), COALESCE(MAX(status = 'declined'), 0)
+/// (withdrawn and approved ones) are never walked. A decline is in force
+/// until an approval of its approver and author covering thread `?3` is
+/// made or revoked after it, the rule a thread's delivery state reads
+/// declines by (`crate::feedback::DECLINES`).
+pub(crate) const REQUEST_STATE: &str = "SELECT COALESCE(MAX(status = 'open'), 0),
+            COALESCE(MAX(status = 'declined' AND NOT EXISTS (SELECT 1 FROM approvals a
+               WHERE COALESCE(a.approver, '') = COALESCE(?1, '')
+                 AND a.author = approval_requests.author
+                 AND (a.scope = 'everywhere' OR (a.scope = 'artifact' AND a.artifact_id = ?2)
+                      OR (a.scope = 'thread' AND a.thread_id = ?3))
+                 AND (a.created_at > approval_requests.decided_at
+                      OR a.revoked_at > approval_requests.decided_at))), 0)
        FROM approval_requests
       WHERE COALESCE(approver, '') = COALESCE(?1, '') AND artifact_id = ?2
         AND author IN (SELECT value FROM json_each(?4))
@@ -2881,6 +2890,44 @@ mod tests {
             (Cause::Ask, RequestStatus::Open)
         );
         assert_ne!(asked[0].id, rid);
+    }
+
+    #[test]
+    fn a_decline_ends_for_the_request_state_once_an_approval_is_made_or_revoked_after_it() {
+        let w = req_world();
+        let tid = w.thread_by(&w.mia, "please");
+        w.send_to_sam(&tid);
+        let rid = w.open(Some(&w.sam))[0].id.clone();
+        w.st.decide_request(DAEMON, &rid, Some(&w.sam), Decision::Decline, Via::Shell)
+            .unwrap();
+        let state = || {
+            w.st.request_state(
+                Some(&w.sam),
+                w.aid.as_str(),
+                &tid,
+                std::slice::from_ref(&w.mia),
+            )
+            .unwrap()
+        };
+        assert_eq!(state(), ApprovalState::Declined);
+        w.clock.advance(1);
+        let a =
+            w.st.approve(
+                DAEMON,
+                Some(&w.sam),
+                &w.mia,
+                Scope::Thread(tid.clone()),
+                Via::Shell,
+            )
+            .unwrap();
+        assert_eq!(state(), ApprovalState::None, "approved since");
+        w.clock.advance(1);
+        w.st.revoke_approval(DAEMON, &a.id, Some(&w.sam)).unwrap();
+        assert_eq!(
+            state(),
+            ApprovalState::None,
+            "revoked since: no decline in force"
+        );
     }
 
     #[test]
