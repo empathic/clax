@@ -700,9 +700,12 @@ start `claude`, so the Claude Code backend is offered only in a debug
 build, which runs without the App Sandbox:
 
 ```
-just app-clax-native macos
-cd apps/clax_app && flutter run -d macos   # or: flutter build macos --debug
+just app-macos-dev   # builds the embedded clax and the home bundle, then flutter run -d macos
 ```
+
+`just app-macos-dev` keeps you in `flutter run`, so `r` hot-reloads and `R`
+hot-restarts; run it again after changing Swift, the menus or
+`apps/clax_app/home`.
 
 In Settings choose "Claude Code on this Mac" (it uses your Claude Code
 login; set "Claude Code path" when `claude` is not on `PATH` or in

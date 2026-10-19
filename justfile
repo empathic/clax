@@ -156,6 +156,11 @@ app-macos:
 app-macos-native:
     CLAX_BUILD=native ./scripts/run.sh app-macos
 
+# Run the Clax app on this Mac with hot reload (r) and hot restart (R): builds the embedded clax and the home bundle natively, then flutter run -d macos (extra args go to flutter run)
+[positional-arguments]
+app-macos-dev *ARGS:
+    ./scripts/app-macos-dev.sh --i-know-what-i-am-doing "$@"
+
 # Try rooms and sample() in a scratch daemon (the stub provider unless ANTHROPIC_API_KEY is set)
 demo-room-sample:
     scripts/demo-room-sample.sh
