@@ -37,13 +37,13 @@ async function serve(page: Page) {
 /** WCAG 2.x contrast of #id's text on its own background, or on the
  * page's when its own is transparent. */
 function ratio(page: Page, id: string) {
-  return page.evaluate((id) => {
+  return page.evaluate((elId) => {
     const rgb = (s: string) => (s.match(/[\d.]+/g) ?? []).map(Number);
     const lum = ([r, g, b]: number[]) => {
       const c = (v: number) => { v /= 255; return v <= 0.04045 ? v / 12.92 : ((v + 0.055) / 1.055) ** 2.4; };
       return 0.2126 * c(r) + 0.7152 * c(g) + 0.0722 * c(b);
     };
-    const el = document.getElementById(id)!;
+    const el = document.getElementById(elId)!;
     const s = getComputedStyle(el);
     const own = rgb(s.backgroundColor);
     const bg = own.length === 4 && own[3] === 0 ? rgb(getComputedStyle(document.body).backgroundColor) : own;
