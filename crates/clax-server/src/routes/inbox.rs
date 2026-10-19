@@ -254,8 +254,8 @@ fn query_of<T>(q: Result<Query<T>, QueryRejection>) -> Result<T, ApiError> {
 /// artifact as its items name it, how many match and how many of those are
 /// unread (every match counted, not only those listed), its newest match's
 /// time, its `rows` newest matches (default 3, 1 to 20), and the `before`
-/// of the rest, which the plain list pages with `artifact=<its ID>` (or
-/// `artifact=none`). `limit` is groups per page (default 20, at most 100)
+/// of the rest, which the plain list pages with the same parameters,
+/// `artifact=<its ID>` (or `artifact=none`) and that `before`. `limit` is groups per page (default 20, at most 100)
 /// and `before` the top-level `next_cursor`. `total` is as for the plain
 /// list. `rows` without `group=artifact` is 400 `invalid_query`.
 ///

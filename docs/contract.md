@@ -3259,8 +3259,11 @@ cursor or body) and 404 `not_found`.
   - `newest_at` is its newest match's time.
   - `items` are its newest matches, `rows` of them (default 3, clamped
     to 1..20).
-  - `next_cursor` is the `before` of the rest, listed by the plain query
-    with `artifact=<its ID>` (or `artifact=none`), or null.
+  - `next_cursor` is the `before` of the rest, or null. The rest is
+    listed by the plain query with the same parameters (`read`, `q`,
+    `kind`, `agent`, `since`, `until`), `artifact` set to the group's
+    `artifact_id` (or `none`) and `before` to this cursor; without them
+    the page is not the group's.
 
   `limit` is groups per page (default 20, clamped to 1..100), `before` the
   top-level `next_cursor`, and `total` is the plain list's. `rows` without
