@@ -1484,12 +1484,17 @@ takes, in `to`, a live agent's handle or its name (ignoring case), as an
 `@name` in their comment does. When that agent may read and watch the
 artifact (the owner's agents always; a person's agent where its rights
 allow both, never on a live page) it is given a watch, recorded as the
-sender's, and the thread is sent to it; it routes as any send naming an
-agent (see "Approvals": another person's agent waits for that person's
-approval of the thread's authors, and the thread reads `withheld` until
-then). An agent that may not read the artifact is 400 `agent_cannot_read`,
-one that may read but not watch it, or no live agent, 400 `unknown_agent`,
-and a resolved thread 400 `thread_resolved`, each giving no watch. From
+sender's, in the send's own transaction, and the thread is sent to it; it
+routes as any send naming an agent (see "Approvals": another person's
+agent waits for that person's approval of the thread's authors, and the
+thread reads `withheld` until then). A resolved thread is 400
+`thread_resolved` whatever `to` names; an agent that may not read the
+artifact is 400 `agent_cannot_read`; one that may read but not watch it,
+or no live agent, 400 `unknown_agent`; none of them gives a watch. `GET
+/api/agents?artifact=<aid>` lists the live agents a send of the caller's
+there may name: those that own or watch it and, from the owner or a
+connected person, any that may read and watch it; none when the caller
+may not send there (`clax-comments` `send`). From
 anyone else (a guest, a LAN viewer, an agent, whose agents hand threads off
 instead) and in a batch send, `to` names only a live owner or watcher of the
 artifact, by handle, as before.
@@ -1505,9 +1510,24 @@ the whole artifact (`anchor.kind` `artifact`), the person's own comment,
 sent to no agent (an `@` in it sends nothing). The artifact is the
 person's (the owner's has no `person`), and no session's: none owns or
 watches it. `title` is trimmed, 1 to 200 characters of one line (no
-control or format character), else 400 `invalid_title`; `brief` is
-trimmed and non-blank, at most a comment's 10,000 characters, else 400
-`invalid_brief`.
+control or format character, but for the zero-width non-joiner and joiner,
+U+200C and U+200D, which Persian and Indic words and emoji sequences
+need), else 400 `invalid_title`; `brief` is trimmed and non-blank, at most
+the 10,000 characters a person's comment may hold (`invalid_comment`
+elsewhere; the 4096 bytes of the `comments` capability are a page's own
+writes' limit), else 400 `invalid_brief`.
+
+An `Idempotency-Key` header (1 to 128 printable ASCII characters, else 400
+`invalid_args`) makes the request repeatable: a repeat by the same person
+with the same key answers 200 with the artifact, version 1 and brief
+thread the first request made, while that artifact exists; the dialog
+makes one key per form and sends it again when it retries. Two requests
+racing with one key may each make an artifact. Every artifact started
+this way says so to people (not to agents): `brief: {by}` in `GET
+/api/artifacts`, `GET /api/artifacts/<id>`, the page's bootstrap and this
+route's answer, `by` the starter's display name now (`Viewer` without one, as their comments are signed).
+Its line under the title reads "started from a brief by <name>" until an
+agent's session owns it, and its gallery card names <name> where an agent's name would be.
 
 Who may: the owner (a browser, or the token by hand), and a connected
 person (in their browser, on a local daemon or signed in to a hosted one)
@@ -1525,15 +1545,18 @@ artifact starts one, and writes and sends its brief, as anyone does.
 and the gallery shows New only then.
 
 New opens a dialog asking for a title and a brief. Once the artifact is
-made, it lists the live agents this browser may send to (`GET
-/api/agents`): the person's own first, then the owner's, then each other
-person's, by name. Picking one sends the brief to it with `to` (above),
-which gives it its watch, and opens the artifact. With no live agent, it
-shows a prompt to paste into an agent (one with the Clax plugin) that
-names the artifact's address and asks the agent to watch it, read the
-brief thread and publish the page there; the list appears once an agent
-connects, and the artifact's Send reaches an agent once it watches.
-Closing the dialog after the artifact is made opens the artifact.
+made, it lists the live agents the daemon says the brief may be sent to
+(`GET /api/agents?artifact=<aid>`, above), read again every 3 seconds: the
+person's own first, then the owner's, then each other person's, by name.
+Picking one sends the brief to it with `to` (above), which gives it its
+watch, and opens the artifact; an agent that has gone by then is named in
+the refusal and the list is read again. With none, it shows a prompt to
+paste into an agent (one with the Clax plugin) that names the artifact's
+address and asks the agent to watch it, read the brief thread and publish
+the page there; the list appears once an agent connects, and the
+artifact's Send reaches an agent once it watches. Every way out of the
+dialog once the artifact is made opens it, a Close while Create is in
+flight included, once Create answers.
 
 ### Reopening and deleting threads
 
