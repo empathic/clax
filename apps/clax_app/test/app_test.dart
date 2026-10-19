@@ -647,6 +647,34 @@ void main() {
     expect(find.byType(InboxSplit), findsNothing);
   }, variant: TargetPlatformVariant.only(TargetPlatform.android));
 
+  testWidgets('beside a wide Android rail the built-in home screen leaves New '
+      'app, Inbox and Settings to the rail; at 700 its own Inbox opens the '
+      'rail\'s', (tester) async {
+    NavigatorState nav() =>
+        tester.state<NavigatorState>(find.byType(Navigator).first);
+    Finder inLauncher(Finder f) =>
+        find.descendant(of: find.byType(Launcher), matching: f);
+    await pumpApp(
+      tester,
+      _Rig(key: 'sk-ant-x'),
+      size: const Size(1280, 800),
+    );
+    await up(tester);
+    expect(find.byType(Launcher), findsOneWidget);
+    expect(inLauncher(find.byType(SliverAppBar)), findsNothing);
+    expect(inLauncher(find.byType(FloatingActionButton)), findsNothing);
+    await tester.pumpWidget(const SizedBox());
+
+    await pumpApp(tester, _Rig(key: 'sk-ant-x'), size: const Size(700, 900));
+    await up(tester);
+    expect(find.byType(SplitShell), findsOneWidget);
+    await tester.tap(inLauncher(find.byTooltip('Inbox')));
+    await pumpRoute(tester);
+    expect(find.byType(InboxSplit), findsOneWidget);
+    expect(find.byKey(const ValueKey('split-rail')), findsOneWidget);
+    expect(nav().canPop(), isFalse, reason: 'beside the rail, not a route');
+  }, variant: TargetPlatformVariant.only(TargetPlatform.android));
+
   testWidgets('an Android phone has no split window, and an app opens over '
       'the home screen', (tester) async {
     await pumpApp(tester, _Rig(key: 'sk-ant-x'));

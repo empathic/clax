@@ -12,6 +12,8 @@
 // <theme>` before anything is), and
 // `split-settings-<form>-<theme>` the Settings destination, at the medium
 // (720 dp), expanded (1000 dp) and large (`wide`, 1280 dp) size classes.
+// `split-launcher-<form>-<theme>` is the built-in home screen (the
+// fallback launcher) as Home's detail beside the rail.
 //
 // The Mac form is drawn under the main window's real toolbar row (52
 // points, the window buttons' corner 79 points across, as
@@ -36,6 +38,7 @@ import 'package:clax_app/platform/secure_key.dart';
 import 'package:clax_app/platform/settings_store.dart';
 import 'package:clax_app/ui/inbox/inbox_split.dart';
 import 'package:clax_app/ui/kit/kit.dart';
+import 'package:clax_app/ui/launcher.dart';
 import 'package:clax_app/ui/making_preview.dart';
 import 'package:clax_app/ui/making_screen.dart';
 import 'package:clax_app/ui/settings_screen.dart';
@@ -623,6 +626,31 @@ void main() {
       f.dispose();
     }, forms: [wide, if (scene != 'make') _medium]);
   }
+
+  shots('split-launcher', (s) async {
+    final (f, model) = await fixture(s.tester);
+    await s.tester.pumpWidget(
+      s.app(
+        SplitShell(
+          model: model,
+          home: Launcher(
+            api: f.api,
+            open: (_) {},
+            make: (r, cancelled, stage) async => throw StateError('unused'),
+            voice: FakeVoice(),
+            openSettings: () {},
+            host: f.host,
+          ),
+          detailFor: _detail,
+        ),
+      ),
+    );
+    await s.tester.runAsync(() => Future<void>.delayed(Duration.zero));
+    await s.settle(4);
+    await s.take('split-launcher');
+    model.dispose();
+    f.dispose();
+  }, forms: [_medium, _expanded, wide]);
 
   for (final place in [SplitPlace.inbox, SplitPlace.settings]) {
     shots('split-${place.name}', (s) async {

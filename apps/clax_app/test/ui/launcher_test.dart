@@ -21,6 +21,7 @@ import 'package:flutter_svg/flutter_svg.dart';
 import 'package:flutter_test/flutter_test.dart';
 
 import '../support/fake_voice.dart';
+import '../support/split_fixture.dart';
 
 const _page = {'index.html': '<!doctype html><title>x</title>'};
 
@@ -349,6 +350,42 @@ void main() {
     await pumpLauncher(tester, _api(), openSettings: () => settings++);
     await tester.tap(find.byTooltip('Settings'));
     expect(settings, 1);
+  });
+
+  testWidgets('while a split window holds the toolbar, the launcher draws no '
+      'bar and no New app of its own; it does again once let go', (
+    tester,
+  ) async {
+    final f = SplitFixture();
+    await tester.runAsync(() => f.start(making: false));
+    addTearDown(f.dispose);
+    await tester.pumpWidget(
+      MaterialApp(
+        home: Launcher(
+          api: f.api,
+          open: opened.add,
+          make: (r, cancelled, stage) async => throw StateError('unused'),
+          voice: FakeVoice.unsupported('No speech here'),
+          openSettings: () {},
+          host: f.host,
+        ),
+      ),
+    );
+    await tester.pumpAndSettle();
+    expect(find.byTooltip('Inbox'), findsOneWidget);
+    expect(find.byType(FloatingActionButton), findsOneWidget);
+    final holder = Object();
+    f.host.holdToolbar(holder, true);
+    await tester.pumpAndSettle();
+    expect(find.byType(SliverAppBar), findsNothing);
+    expect(find.byTooltip('Inbox'), findsNothing);
+    expect(find.byTooltip('Settings'), findsNothing);
+    expect(find.byType(FloatingActionButton), findsNothing);
+    expect(_tile('Runs'), findsOneWidget, reason: 'the grid stays');
+    f.host.holdToolbar(holder, false);
+    await tester.pumpAndSettle();
+    expect(find.byTooltip('Inbox'), findsOneWidget);
+    expect(find.byType(FloatingActionButton), findsOneWidget);
   });
 
   testWidgets('the launcher follows the dark theme', (tester) async {

@@ -49,10 +49,14 @@ import 'tokens.g.dart';
 /// when none is given. Coming back from the inbox loads the count again.
 /// The host's home app is left out of the grid.
 ///
-/// The top bar's inbox button shows the unread count and pushes
-/// [InboxScreen] on the same stream; an item opened there goes to
+/// The top bar's inbox button shows the unread count and opens the inbox
+/// through the host's actions (the [HomeFlows] of a host of its own push
+/// [InboxScreen] on the same stream); an item opened there goes to
 /// [onOpenQuestion] (a question, when given), else to [onOpenTarget] with
-/// its thread or version, else to [open].
+/// its thread or version, else to [open]. While the host's toolbar is held
+/// off the Mac (`HomeHost.chrome`'s `toolbar`: beside a wide Android
+/// window's rail, which carries New app, Inbox and Settings) the launcher
+/// draws neither the bar nor its New app button.
 ///
 /// A long press on a tile opens its menu: Open; Inspect, which pushes
 /// the [AppInspector] with [inspectorPermissions] (and a version opened
@@ -260,10 +264,14 @@ class _LauncherState extends State<Launcher> {
             child: const BackButton(),
           )
         : null;
+    // Beside a wide Android window's rail, which holds the toolbar and
+    // carries New app, Inbox and Settings, the launcher draws no bar and no
+    // New app of its own (the Mac's toolbar row stays the launcher's).
+    final railed = _host.chrome.toolbar && !hasDesktopWindowChrome;
     return Scaffold(
       // A failed list offers no New app, and an empty one offers it in its
       // invitation.
-      floatingActionButton: failed || empty
+      floatingActionButton: failed || empty || railed
           ? null
           : FloatingActionButton.extended(
               onPressed: _actions.newApp,
@@ -275,6 +283,13 @@ class _LauncherState extends State<Launcher> {
         child: CustomScrollView(
           physics: const AlwaysScrollableScrollPhysics(),
           slivers: [
+            if (railed)
+              SliverToBoxAdapter(
+                child: SizedBox(
+                  height: MediaQuery.paddingOf(context).top + ClaxSpace.s8,
+                ),
+              )
+            else
             SliverAppBar(
               pinned: true,
               primary: row == null,
