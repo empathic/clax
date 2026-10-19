@@ -54,19 +54,40 @@ where
         .ok_or_else(|| anyhow::anyhow!("the tool returned no text"))?;
     let value: serde_json::Value = serde_json::from_str(&text)?;
     if result.is_error == Some(true) {
-        let e = &value["error"];
-        anyhow::bail!(
-            "{}: {}",
-            e["code"].as_str().unwrap_or("error"),
-            e["message"].as_str().unwrap_or("the tool failed")
-        );
+        return Err(tool_error(&value));
     }
     Ok(value)
+}
+
+/// The error an error result `value` becomes: `<code>: <message>`. Both
+/// come from the daemon, so they are cleaned as the [`Client`]'s errors
+/// are: neither can move the cursor or reorder the line.
+fn tool_error(value: &serde_json::Value) -> anyhow::Error {
+    let e = &value["error"];
+    anyhow::anyhow!(
+        "{}: {}",
+        crate::term::clean_line(e["code"].as_str().unwrap_or("error")),
+        crate::term::clean_line(e["message"].as_str().unwrap_or("the tool failed"))
+    )
 }
 
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn a_tool_error_is_cleaned_of_control_characters() {
+        let e = tool_error(&serde_json::json!({
+            "error": {"code": "bad\x1b[2Jcode", "message": "no\u{202e}pe\nnext"}
+        }))
+        .to_string();
+        assert!(
+            !e.chars()
+                .any(|c| c.is_control() || c == '\u{202e}'),
+            "{e:?}"
+        );
+        assert!(e.contains("code") && e.contains("pe"), "{e:?}");
+    }
 
     /// The commands that run a tool (`read`, `db`, `asset`) mark their
     /// requests as the CLI does: an agent channel under a harness, the
