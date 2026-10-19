@@ -5411,7 +5411,8 @@ resolves `null` for them.
   MIME types), `save({name, mime, data})` where the person chooses. At most
   4 MB a file (`too_large`), for `share.file` too.
 - `camera`: `take()` and `pick()` → `{mime, data, width, height}`, a JPEG
-  downscaled to at most 1600 px a side.
+  downscaled to at most 1600 px a side. On the Mac `take()` shows Clax's
+  capture sheet on the window, a live preview with Cancel and Take Photo.
 - `location`: `current()` → `{lat, lon, accuracy, precise}` (degrees,
   metres). `watch(onUpdate, {minDistance?, onError?})` → `stop()`: a
   position at once, then at most once a second (the latest of a burst at
@@ -5423,7 +5424,8 @@ resolves `null` for them.
   the page's document goes, it ends with `onError({code: "stopped"})`
   and never starts again by itself; the page starts it again from a tap.
   While one runs the app shows a small location pill in the status bar's
-  band, and a tap on it stops location (`stopped` too).
+  band (on the Mac also a Location item in the window's toolbar), and a
+  tap on it stops location (`stopped` too).
 
 Every call except `notify.list`, `notify.cancel` and stopping a watch
 must come from the person's tap or key press in the page (the shell's
@@ -5439,23 +5441,23 @@ Permissions (revoking `notify` cancels that app's reminders, revoking
 does both). Closing the question without answering keeps nothing: the call
 rejects `dismissed` and the next one asks again. For location the answers are Precise, Approximate and
 Don't allow, and the inspector shows which. An app allowed Approximate,
-and any app while Android allows Clax only approximate location, gets the
+and any app while the system allows Clax only approximate location, gets the
 centre of a cell about 2 km across (on a grid shifted at random once per
 install and never redrawn), `accuracy` at least 2000 and `precise:
 false`; the same anywhere in the cell. After its first position, an
 approximate watch reports a new cell only once the device has been well
 inside it (a fifth of a cell from every edge) for 3 minutes, and at most
 once per 10 minutes, so an update marks neither when nor where an edge
-was crossed. Android asks
-its own runtime permission on top (notifications, location). Calls reject
+was crossed. Android and macOS ask
+their own permission on top (notifications, location, and on macOS the
+camera). Calls reject
 `{code, message}` with `not_granted` (not allowed, or the system
 permission refused), `cancelled` (the person closed the picker, sheet or
-camera), `unavailable` (no such feature here: macOS has no camera source,
-and location is not available in Clax on macOS yet), `bad_request`,
-`too_large`, `no_gesture`, and for location `system_denied` (Android will
-not ask again) and `location_off` (the device's location is off), for
-which the app shows a toast with Open settings, and `stopped` (a watch
-ended).
+camera), `unavailable` (no such feature here, such as a Mac with no
+camera), `bad_request`, `too_large`, `no_gesture`, and for location
+`system_denied` (Android or macOS will not ask again) and `location_off`
+(the device's location is off), for which the app shows a toast with
+Open settings, and `stopped` (a watch ended).
 
 ### The home screen's capability
 

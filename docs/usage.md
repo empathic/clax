@@ -855,9 +855,12 @@ same signature and do not ask.
   An app may follow your location only while it is on screen: a small
   location pill shows at the top left meanwhile, a tap on it stops it, and
   leaving the app stops it for good until the app asks again from a tap.
-  When Android will not ask again, or the phone's location is off, a toast
-  offers Open settings. Location is Android-only for now; on the Mac apps
-  are told it is not available.
+  On the Mac the window's toolbar also shows Location while an app follows
+  you, and a click on it stops it the same way. When Android or macOS will
+  not ask again, or the device's location is off, a toast offers Open
+  settings.
+- **Camera.** An app may take a photo when you let it: on the Mac Clax
+  shows a sheet with the camera's live picture, Cancel and Take Photo.
 - **Sharing an app.** Share app (Export… on the Mac) on a tile's long
   press or on the inspector's Overview makes the app a `.clax` file and
   hands it to the share sheet (on the Mac, a save panel). The sheet says

@@ -7,7 +7,7 @@ import 'dart:typed_data';
 
 /// A device call's coded failure, which the page's call rejects with:
 /// `not_granted`, `cancelled`, `unavailable`, `bad_request`, `too_large`,
-/// and for location `system_denied` (Android will not ask again: only
+/// and for location `system_denied` (Android or macOS will not ask again: only
 /// system settings can allow it), `location_off` (the device's location is
 /// off) and `stopped` (a watch ended because the app left the screen)
 /// (`web/contract/clax-extensions.d.ts`, `Device.ErrorCode`).
@@ -133,7 +133,7 @@ enum LocationSettingsPage { app, location }
 abstract interface class LocationPort {
   /// Where the device is now, asked at [precision]. Throws [DeviceError]
   /// `not_granted` when the system permission is refused, `system_denied`
-  /// when Android will not ask again, `location_off` when the device's
+  /// when Android or macOS will not ask again, `location_off` when the device's
   /// location is off, `unavailable` when there is none or it does not
   /// answer.
   Future<LocationFix> current(Precision precision);

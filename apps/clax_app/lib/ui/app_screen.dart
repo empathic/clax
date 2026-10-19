@@ -188,8 +188,11 @@ import 'working_chip.dart';
 ///   screen shows the app: it stops (the page hears `stopped`) when the
 ///   screen is hidden (the app in the background, another route on top,
 ///   the screen closed) or a new document loads, and does not start again
-///   by itself. While one runs the pill can say "Location". A location call
-///   that fails because Android will not ask again (`system_denied`) or the
+///   by itself. While one runs the pill can say "Location", and on the Mac
+///   the window's toolbar has a Location item, whatever the pill says. A
+///   location call that fails because the system will not ask again
+///   (`system_denied`; the toast names Android settings or System
+///   Settings) or the
 ///   device's location is off (`location_off`) shows a toast with Open
 ///   settings.
 /// - **New version.** A newer version published while the page shows the
@@ -717,6 +720,7 @@ class _AppScreenState extends State<AppScreen> with WidgetsBindingObserver {
       WidgetsBinding.instance.addPostFrameCallback((_) => _act(a));
     }
     WidgetsBinding.instance.addObserver(this);
+    _deviceView.watching.addListener(_watchesChanged);
     _lifecycleShown = _shownIn(WidgetsBinding.instance.lifecycleState);
     unawaited(widget.surface.load(AppScreen.appUrl(widget.base, widget.aid)));
   }
@@ -929,6 +933,7 @@ class _AppScreenState extends State<AppScreen> with WidgetsBindingObserver {
   /// On the Mac, the window's toolbar carries this screen while it is the
   /// top screen and not covered (whether Clax is in front or not): Back
   /// and Forward, the app's title and version as the window's title,
+  /// Location while a location watch runs (a click tells what uses it),
   /// Comment, Threads with the open threads' count, and Share. Otherwise
   /// it gives the toolbar back, empty, for the screen in front to draw its
   /// own bar in the row.
@@ -984,6 +989,14 @@ class _AppScreenState extends State<AppScreen> with WidgetsBindingObserver {
         enabled: false,
         group: 'navigation',
       ),
+      // While a location watch runs, whatever the Clax pill says.
+      if (widget.device != null && _deviceView.watching.value > 0)
+        const ToolbarItemSpec(
+          'location',
+          symbol: 'location',
+          label: 'Location',
+          on: true,
+        ),
       ToolbarItemSpec(
         'comment',
         symbol: 'text.bubble',
@@ -1014,6 +1027,8 @@ class _AppScreenState extends State<AppScreen> with WidgetsBindingObserver {
         // Through the PopScope: what is over the page, then the page's
         // history, then the screen.
         unawaited(Navigator.maybePop(context));
+      case 'location':
+        _locationDetails();
       case 'comment':
         _toggleComment();
       case 'threads':
@@ -1040,8 +1055,18 @@ class _AppScreenState extends State<AppScreen> with WidgetsBindingObserver {
     }
   }
 
+  /// On the Mac, the toolbar's Location item comes and goes with the
+  /// watches.
+  void _watchesChanged() {
+    if (!mounted || !hasDesktopWindowChrome) return;
+    WidgetsBinding.instance
+      ..addPostFrameCallback((_) => _reportToolbar())
+      ..scheduleFrame();
+  }
+
   @override
   void dispose() {
+    _deviceView.watching.removeListener(_watchesChanged);
     _putAwayToasts();
     widget.device?.stopWatches(_deviceView, asking: true);
     _deviceView.watching.dispose();
@@ -1501,7 +1526,11 @@ class _AppScreenState extends State<AppScreen> with WidgetsBindingObserver {
   /// clear; nothing for any other [code].
   void _locationToast(String code) {
     final text = switch (code) {
-      'system_denied' => 'Location is off for Clax in Android settings',
+      'system_denied' => switch (defaultTargetPlatform) {
+        TargetPlatform.macOS => 'Location is off for Clax in System Settings',
+        TargetPlatform.iOS => 'Location is off for Clax in Settings',
+        _ => 'Location is off for Clax in Android settings',
+      },
       'location_off' => 'Location is off on this device',
       _ => null,
     };

@@ -1,15 +1,18 @@
 #!/usr/bin/env bash
-# macos-app-check.sh ZIP HOME: checks the Bazel-built macOS app (a zip of
+# macos-app-check.sh ZIP HOME DEBUG_ENTITLEMENTS: checks the Bazel-built macOS app (a zip of
 # Clax.app) against what `flutter build macos` makes: its bundle ID, name,
-# copyright, version and executable, the app menu's About, Hide and Quit
+# copyright, version and executable, the camera's and location's usage
+# strings, the app menu's About, Hide and Quit
 # items named Clax, the whole menu bar (MainMenu.xib's items, keys,
-# actions and tags), Flutter's frameworks, the sandbox entitlements of
-# Runner/Release.entitlements, and clax in Contents/Resources signed as a
+# actions and tags), Flutter's frameworks, the sandbox, camera and location
+# entitlements of Runner/Release.entitlements, and clax in Contents/Resources signed as a
 # sandboxed helper (Runner/ClaxHelper.entitlements), and the home bundle
 # HOME (the one //apps/clax_app:home_bundle built) and the third-party
-# notices in Flutter's assets.
+# notices in Flutter's assets; and that the debug build's entitlements
+# (DEBUG_ENTITLEMENTS, Runner/DebugProfile.entitlements) allow the camera
+# and location too.
 set -euo pipefail
-zip="$1" home="$2"
+zip="$1" home="$2" debug_ents="$3"
 fails=0
 ok() { echo "PASS: $1"; }
 bad() { echo "FAIL: $1"; fails=1; }
@@ -38,6 +41,13 @@ if [ "$(plist NSHumanReadableCopyright)" = "$copyright" ]; then ok "copyright"; 
 if [ "$(plist CFBundleShortVersionString)" = "$VERSION_NAME" ]; then ok "version name"; else bad "version name: $(plist CFBundleShortVersionString)"; fi
 if [ "$(plist CFBundleVersion)" = "$VERSION_CODE" ]; then ok "build number"; else bad "build number: $(plist CFBundleVersion)"; fi
 if [ -x "$app/Contents/MacOS/$(plist CFBundleExecutable)" ]; then ok "executable"; else bad "executable"; fi
+# The usage strings macOS shows when Clax first asks for the camera and
+# location (Runner/Info.plist), in the iOS app's words.
+for k in "NSCameraUsageDescription=An app you made in Clax can take a photo when you let it." \
+    "NSLocationUsageDescription=An app you made in Clax can use your location when you let it." \
+    "NSLocationWhenInUseUsageDescription=An app you made in Clax can use your location when you let it."; do
+    if [ "$(plist "${k%%=*}")" = "${k#*=}" ]; then ok "usage string ${k%%=*}"; else bad "usage string ${k%%=*}: $(plist "${k%%=*}")"; fi
+done
 nib="$app/Contents/Resources/Base.lproj/MainMenu.nib"
 [ -d "$nib" ] && nib="$nib/keyedobjects.nib"
 for t in "About Clax" "Hide Clax" "Quit Clax" "showAbout:"; do
@@ -239,8 +249,12 @@ if [ -f "$assets/release.json" ]; then ok "the home bundle's release record"; el
 cp "$app/Contents/Frameworks/App.framework/Resources/flutter_assets/NOTICES.Z" "$dir/NOTICES.Z"
 check_notices "$dir/NOTICES.Z"
 ents="$(/usr/bin/codesign -d --entitlements - --xml "$app" 2>/dev/null || true)"
-for k in com.apple.security.app-sandbox com.apple.security.network.client com.apple.security.network.server; do
+for k in com.apple.security.app-sandbox com.apple.security.network.client com.apple.security.network.server \
+    com.apple.security.device.camera com.apple.security.personal-information.location; do
     if grep -q "$k" <<<"$ents"; then ok "app entitlement $k"; else bad "app entitlement $k"; fi
+done
+for k in com.apple.security.device.camera com.apple.security.personal-information.location; do
+    if [ "$(/usr/libexec/PlistBuddy -c "Print :$k" "$debug_ents" 2>/dev/null)" = true ]; then ok "debug entitlement $k"; else bad "debug entitlement $k"; fi
 done
 helper="$app/Contents/Resources/clax"
 if [ -x "$helper" ]; then ok "clax in Resources"; else bad "clax in Resources"; fi

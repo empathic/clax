@@ -19,6 +19,7 @@ import 'package:timezone/timezone.dart' as tz;
 import '../local_notifications.dart';
 import '../share_anchor.dart';
 import 'device_ports.dart';
+import 'mac_camera.dart';
 
 bool get _android => defaultTargetPlatform == TargetPlatform.android;
 bool get _iOS => defaultTargetPlatform == TargetPlatform.iOS;
@@ -162,8 +163,13 @@ String _mimeOf(String ext) => switch (ext) {
 };
 
 /// Photos through image_picker, downscaled by the platform to at most
-/// [CameraPort.maxSide] on each side. macOS has no camera source.
+/// [CameraPort.maxSide] on each side. image_picker has no camera source on
+/// macOS: there [take] is Clax's own capture sheet ([MacCamera]).
 class PluginCamera implements CameraPort {
+  PluginCamera({TargetPlatform? platform})
+    : _platform = platform ?? defaultTargetPlatform;
+
+  final TargetPlatform _platform;
   final _picker = ImagePicker();
 
   Future<Photo?> _get(ImageSource source) async {
@@ -195,49 +201,76 @@ class PluginCamera implements CameraPort {
   }
 
   @override
-  Future<Photo?> take() => _get(ImageSource.camera);
+  Future<Photo?> take() => _platform == TargetPlatform.macOS
+      ? const MacCamera().take()
+      : _get(ImageSource.camera);
 
   @override
   Future<Photo?> pick() => _get(ImageSource.gallery);
 }
 
-/// Location through geolocator, on Android and iOS. On macOS every call is
-/// `unavailable`: Mac location needs a usage description, the location
-/// entitlement and a signed build, which Clax does not have yet.
+/// Location through geolocator, on Android and macOS (and iOS, where the
+/// shell asks WebKit instead). macOS needs `NSLocationUsageDescription` in
+/// the Runner's Info.plist and the
+/// `com.apple.security.personal-information.location` entitlement, which
+/// the Runner has.
 ///
 /// Precise asks for high accuracy, Approximate for low power (Android's
 /// coarse location, iOS's reduced accuracy). A fix is precise only when it
 /// was asked precise and the system lets Clax have a precise location (the
-/// person may grant approximate only); on iOS a precise request while
-/// Clax has only reduced accuracy first asks for precise location this
-/// once ([preciseFix]).
+/// person may grant approximate only; the Mac has no such grant); on iOS a
+/// precise request while Clax has only reduced accuracy first asks for
+/// precise location this once ([preciseFix]).
 class PluginLocation implements LocationPort {
+  PluginLocation({TargetPlatform? platform, this._geolocator})
+    : _platform = platform ?? defaultTargetPlatform;
+
+  final TargetPlatform _platform;
+  final GeolocatorPlatform? _geolocator;
+
+  /// geolocator's platform side: the one given, else the registered one.
+  GeolocatorPlatform get _geo => _geolocator ?? GeolocatorPlatform.instance;
+
+  bool get _iOS => _platform == TargetPlatform.iOS;
+  bool get _macOS => _platform == TargetPlatform.macOS;
+  bool get _supported => _platform == TargetPlatform.android || _iOS || _macOS;
+
+  /// The system's own name for where Clax's location permission is set.
+  String get _settingsName => switch (_platform) {
+    TargetPlatform.iOS => 'iOS Settings',
+    TargetPlatform.macOS => 'System Settings',
+    _ => 'Android settings',
+  };
+
+  String get _systemName => switch (_platform) {
+    TargetPlatform.iOS => 'iOS',
+    TargetPlatform.macOS => 'macOS',
+    _ => 'Android',
+  };
+
   /// Checks the platform, the device's location and Clax's permission,
   /// asking for it when the system still may.
   Future<void> _ready() async {
-    if (!_android && !_iOS) {
-      throw DeviceError.unavailable(
-        _macOS
-            ? 'location is not available in Clax on macOS yet; it works in '
-                  'Clax on Android'
-            : 'location is not available on this platform',
+    if (!_supported) {
+      throw const DeviceError.unavailable(
+        'location is not available on this platform',
       );
     }
-    if (!await Geolocator.isLocationServiceEnabled()) {
+    if (!await _geo.isLocationServiceEnabled()) {
       throw const DeviceError(
         'location_off',
         'location is off on this device; turn it on in settings',
       );
     }
-    var p = await Geolocator.checkPermission();
+    var p = await _geo.checkPermission();
     if (p == LocationPermission.denied) {
-      p = await Geolocator.requestPermission();
+      p = await _geo.requestPermission();
     }
     if (p == LocationPermission.deniedForever) {
       throw DeviceError(
         'system_denied',
-        'location is off for Clax in system settings, and '
-            '${_iOS ? 'iOS' : 'Android'} will not ask again',
+        'location is off for Clax in $_settingsName, and $_systemName will '
+            'not ask again',
       );
     }
     if (p == LocationPermission.denied ||
@@ -247,12 +280,11 @@ class PluginLocation implements LocationPort {
   }
 
   /// Whether a fix asked at [precision] is precise.
-  static Future<bool> _precise(Precision precision) => preciseFix(
+  Future<bool> _precise(Precision precision) => preciseFix(
     precision,
     iOS: _iOS,
-    accuracy: Geolocator.getLocationAccuracy,
-    askTemporary: (key) =>
-        Geolocator.requestTemporaryFullAccuracy(purposeKey: key),
+    accuracy: _geo.getLocationAccuracy,
+    askTemporary: (key) => _geo.requestTemporaryFullAccuracy(purposeKey: key),
   );
 
   /// Whether a fix asked at [precision] is precise, given the system's
@@ -284,7 +316,7 @@ class PluginLocation implements LocationPort {
     await _ready();
     final precise = await _precise(precision);
     try {
-      final pos = await Geolocator.getCurrentPosition(
+      final pos = await _geo.getCurrentPosition(
         locationSettings: LocationSettings(
           accuracy: _accuracy(precision),
           timeLimit: const Duration(seconds: 20),
@@ -310,8 +342,8 @@ class PluginLocation implements LocationPort {
   }) async {
     await _ready();
     final precise = await _precise(precision);
-    return Geolocator.getPositionStream(
-      locationSettings: _iOS
+    return _geo.getPositionStream(
+      locationSettings: _iOS || _macOS
           ? AppleSettings(
               accuracy: _accuracy(precision),
               distanceFilter: minDistance.round(),
@@ -348,12 +380,12 @@ class PluginLocation implements LocationPort {
 
   @override
   Future<void> openSettings(LocationSettingsPage page) async {
-    if (!_android && !_iOS) return;
+    if (!_supported) return;
     switch (page) {
       case LocationSettingsPage.app:
-        await Geolocator.openAppSettings();
+        await _geo.openAppSettings();
       case LocationSettingsPage.location:
-        await Geolocator.openLocationSettings();
+        await _geo.openLocationSettings();
     }
   }
 }

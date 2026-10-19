@@ -8,6 +8,8 @@ import 'package:clax_app/platform/device/reminders.dart';
 import 'package:clax_app/platform/settings_store.dart';
 import 'package:clax_app/ui/app_screen.dart';
 import 'package:clax_app/ui/host_protocol.dart';
+import 'package:clax_app/ui/mac/mac_toolbar.dart';
+import 'package:clax_app/ui/mac/window_channel.dart';
 import 'package:clax_app/ui/theme.dart';
 import 'package:clax_app/ui/working_chip.dart';
 import 'package:flutter/foundation.dart';
@@ -316,6 +318,103 @@ void main() {
       await tester.pump(const Duration(seconds: 5));
     },
   );
+
+  group('on the Mac', () {
+    late List<List<String>> items;
+
+    void mockChannels(WidgetTester tester) {
+      MacToolbar.reset();
+      items = [];
+      final m = tester.binding.defaultBinaryMessenger;
+      m.setMockMethodCallHandler(MacToolbar.channel, (call) async {
+        if (call.method == 'setItems') {
+          final args = call.arguments as Map<Object?, Object?>;
+          items.add([
+            for (final i in args['items']! as List)
+              [
+                (i as Map<Object?, Object?>)['id'],
+                if (i['on'] == true) 'on',
+              ].join(' '),
+          ]);
+        }
+        return null;
+      });
+      m.setMockMethodCallHandler(MacWindow.channel, (call) async => null);
+      addTearDown(() {
+        m.setMockMethodCallHandler(MacToolbar.channel, null);
+        m.setMockMethodCallHandler(MacWindow.channel, null);
+      });
+    }
+
+    Future<void> click(WidgetTester tester, String id) async {
+      await tester.binding.defaultBinaryMessenger.handlePlatformMessage(
+        MacToolbar.channel.name,
+        MacToolbar.channel.codec.encodeMethodCall(
+          MethodCall('clicked', {'view': tester.view.viewId, 'id': id}),
+        ),
+        (_) {},
+      );
+      await settle(tester);
+    }
+
+    testWidgets(
+      'a watch shows Location in the window\'s toolbar, whatever the pill '
+      'says; a click tells what uses it, and Stop location takes it away',
+      (tester) async {
+        mockChannels(tester);
+        final location = FakeLocation();
+        final surface = await pump(tester, host(location));
+        await tester.pump();
+        expect(items.last, isNot(contains('location on')));
+        surface.push(watch('w'));
+        await tester.pump();
+        await tester.pump();
+        await tester.pump();
+        expect(items.last, contains('location on'));
+        // Before Comment, after Back and Forward.
+        expect(items.last.indexOf('location on'), 2);
+
+        await click(tester, 'location');
+        expect(
+          find.text('Plants is using this device’s location.'),
+          findsOneWidget,
+        );
+        await tester.tap(find.text('Stop location'));
+        await settle(tester);
+        expect(location.stream, isNull);
+        expect(items.last, isNot(contains('location on')));
+        await tester.pump(const Duration(seconds: 5));
+      },
+      variant: TargetPlatformVariant.only(TargetPlatform.macOS),
+    );
+
+    testWidgets(
+      'location macOS will not ask for again names System Settings',
+      (tester) async {
+        mockChannels(tester);
+        final location = FakeLocation()
+          ..error = const DeviceError('system_denied', 'never again');
+        final surface = await pump(tester, host(location));
+        surface.push(
+          const DeviceRequest(
+            id: 'd1',
+            cap: 'location',
+            method: 'current',
+            args: [],
+          ),
+        );
+        await tester.pump();
+        await tester.pump();
+        await tester.pump(const Duration(milliseconds: 500));
+        expect(
+          find.text('Location is off for Clax in System Settings'),
+          findsOneWidget,
+        );
+        await tester.pump(const Duration(seconds: 5));
+      },
+      variant: TargetPlatformVariant.only(TargetPlatform.macOS),
+    );
+  });
 
   testWidgets('without a device host every device call is unavailable', (
     tester,

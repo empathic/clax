@@ -172,9 +172,10 @@ declare namespace ClaxExtensions {
      *   `file.save`).
      * - `no_gesture`: called outside the person's tap or key press in the
      *   page; call it from a click handler.
-     * - `system_denied` (location): location is off for Clax in Android's
-     *   settings and Android will not ask again; Clax offers the person
-     *   Open settings. Say that location is off for Clax.
+     * - `system_denied` (location): location is off for Clax in the
+     *   system's settings (Android's, or the Mac's System Settings) and the
+     *   system will not ask again; Clax offers the person Open settings.
+     *   Say that location is off for Clax.
      * - `location_off` (location): the device's location is off; Clax
      *   offers Open settings.
      * - `stopped` (`location.watch`): the watch ended because the app left
@@ -246,7 +247,7 @@ declare namespace ClaxExtensions {
 
     /** Where the device is: degrees, and `accuracy` in metres. `precise`
      * is false when the person allowed the app only Approximate location
-     * (or Android allows Clax only that): then the position is the centre
+     * (or the system allows Clax only that): then the position is the centre
      * of an area about 2 km across, `accuracy` is at least 2000, and it
      * stays the same anywhere in that area. */
     interface Position {

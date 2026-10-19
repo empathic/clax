@@ -30,6 +30,7 @@
 		C1A0AB032E9F000100A1B0C1 /* NativeDialogs.swift in Sources */ = {isa = PBXBuildFile; fileRef = C1A0AB042E9F000100A1B0C1 /* NativeDialogs.swift */; };
 		C1A0AB052E9F000100A1B0C1 /* MenuBridge.swift in Sources */ = {isa = PBXBuildFile; fileRef = C1A0AB062E9F000100A1B0C1 /* MenuBridge.swift */; };
 		C1A0AB0B2E9F000100A1B0C1 /* Toolbar.swift in Sources */ = {isa = PBXBuildFile; fileRef = C1A0AB0C2E9F000100A1B0C1 /* Toolbar.swift */; };
+		C1A0CA0B2E9F000100A1B0C1 /* Camera.swift in Sources */ = {isa = PBXBuildFile; fileRef = C1A0CA0C2E9F000100A1B0C1 /* Camera.swift */; };
 		C1A0AB072E9F000100A1B0C1 /* EditBridge.swift in Sources */ = {isa = PBXBuildFile; fileRef = C1A0AB082E9F000100A1B0C1 /* EditBridge.swift */; };
 		C1A0AB092E9F000100A1B0C1 /* WindowBridge.swift in Sources */ = {isa = PBXBuildFile; fileRef = C1A0AB0A2E9F000100A1B0C1 /* WindowBridge.swift */; };
 		33CC11132044BFA00003C045 /* MainFlutterWindow.swift in Sources */ = {isa = PBXBuildFile; fileRef = 33CC11122044BFA00003C045 /* MainFlutterWindow.swift */; };
@@ -80,6 +81,7 @@
 		C1A0AB042E9F000100A1B0C1 /* NativeDialogs.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = NativeDialogs.swift; sourceTree = "<group>"; };
 		C1A0AB062E9F000100A1B0C1 /* MenuBridge.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = MenuBridge.swift; sourceTree = "<group>"; };
 		C1A0AB0C2E9F000100A1B0C1 /* Toolbar.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = Toolbar.swift; sourceTree = "<group>"; };
+		C1A0CA0C2E9F000100A1B0C1 /* Camera.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = Camera.swift; sourceTree = "<group>"; };
 		C1A0AB082E9F000100A1B0C1 /* EditBridge.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = EditBridge.swift; sourceTree = "<group>"; };
 		C1A0AB0A2E9F000100A1B0C1 /* WindowBridge.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = WindowBridge.swift; sourceTree = "<group>"; };
 		33CC11122044BFA00003C045 /* MainFlutterWindow.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = MainFlutterWindow.swift; sourceTree = "<group>"; };
@@ -184,6 +186,7 @@
 				C1A0AB042E9F000100A1B0C1 /* NativeDialogs.swift */,
 				C1A0AB062E9F000100A1B0C1 /* MenuBridge.swift */,
 				C1A0AB0C2E9F000100A1B0C1 /* Toolbar.swift */,
+				C1A0CA0C2E9F000100A1B0C1 /* Camera.swift */,
 				C1A0AB082E9F000100A1B0C1 /* EditBridge.swift */,
 				C1A0AB0A2E9F000100A1B0C1 /* WindowBridge.swift */,
 				33E51913231747F40026EE4D /* DebugProfile.entitlements */,
@@ -397,6 +400,7 @@
 				C1A0AB032E9F000100A1B0C1 /* NativeDialogs.swift in Sources */,
 				C1A0AB052E9F000100A1B0C1 /* MenuBridge.swift in Sources */,
 				C1A0AB0B2E9F000100A1B0C1 /* Toolbar.swift in Sources */,
+				C1A0CA0B2E9F000100A1B0C1 /* Camera.swift in Sources */,
 				C1A0AB072E9F000100A1B0C1 /* EditBridge.swift in Sources */,
 				C1A0AB092E9F000100A1B0C1 /* WindowBridge.swift in Sources */,
 				33CC10F12044A3C60003C045 /* AppDelegate.swift in Sources */,

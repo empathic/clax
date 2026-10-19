@@ -620,8 +620,10 @@ sh_test(
     args = [
         "$(rootpath :macos_app_zip)",
         "$(rootpath :assets/home/home.clax)",
+        "$(rootpath macos/Runner/DebugProfile.entitlements)",
     ],
     data = [
+        "macos/Runner/DebugProfile.entitlements",
         ":assets/home/home.clax",
         ":macos_app_zip",
     ],
@@ -739,6 +741,28 @@ macos_unit_test(
     tags = ["no-remote"],
     target_compatible_with = ["@platforms//os:macos"],
     deps = [":macos_toolbar_test_lib"],
+)
+
+# The capture sheet and its channel of macos/Runner/Camera.swift, on their
+# own, with the system and the sheet stood in for: no camera is opened.
+swift_library(
+    name = "macos_camera_test_lib",
+    testonly = True,
+    srcs = [
+        "macos/Runner/Camera.swift",
+        "macos/RunnerTests/CameraTests.swift",
+    ],
+    module_name = "CameraTests",
+    tags = ["manual"],
+    target_compatible_with = ["@platforms//os:macos"],
+)
+
+macos_unit_test(
+    name = "macos_camera_test",
+    minimum_os_version = "12.0",
+    tags = ["no-remote"],
+    target_compatible_with = ["@platforms//os:macos"],
+    deps = [":macos_camera_test_lib"],
 )
 
 # The home app's bundle, assets/home/home.clax, and its release record,

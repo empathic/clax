@@ -188,6 +188,7 @@ class MainFlutterWindow: NSWindow {
 
     installCues(engine)
     installDialogs(engine)
+    installCamera(engine)
 
     #if DEBUG
       installTestInput(engine, flutterViewController)
@@ -293,6 +294,29 @@ class MainFlutterWindow: NSWindow {
   }
 
   private var dialogs: NativeDialogs?
+
+  /// The `dev.empathic.clax/camera` channel for `MacCamera` in
+  /// `lib/platform/device/mac_camera.dart`: `take` shows the capture sheet
+  /// on the key window, the main window when none is (`Camera.swift`).
+  private func installCamera(_ engine: FlutterEngine) {
+    let windows = ClaxEngine.windows
+    let camera = CameraBridge(
+      window: { NSApp.keyWindow ?? windows.window(of: nil) },
+      bytes: { FlutterStandardTypedData(bytes: $0) })
+    self.camera = camera
+    let channel = FlutterMethodChannel(
+      name: "dev.empathic.clax/camera",
+      binaryMessenger: engine.binaryMessenger)
+    channel.setMethodCallHandler { call, result in
+      let known = camera.handle(
+        call.method, call.arguments, reply: result,
+        refuse: { result(FlutterError(code: $0, message: $1, details: nil)) },
+        fail: { result(FlutterError(code: "bad_arguments", message: $0, details: nil)) })
+      if !known { result(FlutterMethodNotImplemented) }
+    }
+  }
+
+  private var camera: CameraBridge?
 
   /// [image] drawn at [width] by [height] pixels, as PNG; nil when it
   /// cannot be drawn or encoded.
