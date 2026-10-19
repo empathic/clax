@@ -5248,7 +5248,8 @@ capability first and light features up when it resolves.
   actions `open`, `openMake`, `newApp`, `menu`, `openInbox`,
   `openSettings` and `importApp` (from a click handler, as for the device
   capabilities), `shown()` once the home screen is drawn, `tiles(list)`
-  after each render that moves its tiles, and `on(name, fn)`. Types: `ClaxExtensions.Home` in
+  after each render that moves its tiles, `chrome()` (the window's form
+  and the pointer in use), and `on(name, fn)`. Types: `ClaxExtensions.Home` in
   `clax-extensions.d.ts`. See "The home screen's capability" below.
 - `permissions`: `state()` and `request()`; the only prompt is the consent
   to the first page-written comment.
@@ -5462,14 +5463,17 @@ as `deviceEvent {cap: "home", name, data}`.
 | `menu(id, {x, y, w, h}, {items})` | Shows app `id`'s menu anchored at that rectangle, in CSS pixels from the viewport's top left: the page's `items` (at most 4 `{id, label}`, labels plain text of at most 32 characters) first, above a divider, then Clax's own (Open, Inspect, Share app, Resume build). Resolves with the picked item's `id`, or `null` for one of Clax's own or a dismissal. `items` may be left out. |
 | `openInbox()`, `openSettings()`, `importApp()` | Opens the inbox, Settings, or the system picker for a `.clax` file. |
 | `shown()` | Says the page has drawn the home screen (its apps, the empty state or the load error). Clax keeps its own home screen over the page until then, and shows its own with Undo last change and Reset when no `shown()` comes within 10 s of the page loading. Call it once per load, from an effect after that render. Resolves `{opened: id}` when Clax opened app `id` from a tap on the image of the home screen it showed until then (an open from the home screen, as a tap on the tile), else `null`. |
+| `chrome()` | `{platform, form, toolbar, pointer}`: `platform` `android`, `macos` or `ios`; `form` `phone` on a window narrower than 600 dp, else `wide`; `toolbar` whether the window's own toolbar carries the top bar, search and New app (the page then draws none of them); `pointer` `touch` or `mouse` (a mouse or a trackpad), the pointer in use, for "Tap" or "Click" in the page's words. A Clax without it rejects it (`unavailable`) or has no such member: read that as `{form: "phone", toolbar: false, pointer: "touch"}`. |
 | `tiles(list)` | Says where each app's tile is now: `list` is `[{id, rect: {x, y, w, h}}]` in CSS pixels from the viewport's top left, at most 512. Call it after each render that moves tiles, and on scroll and resize. Clax keeps the last list with an image of the page, shows that image at once on its next cold start until `shown()`, and then opens the app whose tile a tap on the image fell on, when that app is still in `apps()`. |
 
-`on(name, fn)` hears `apps`, `makes`, `unread` and `key` (the value of
-`needsKey()`), each the topic's whole latest value, from the page's first
-`home` call on, and returns `stop`; a page that was covered hears only the
-latest value of each. The calls that open something must come from the
-person's tap or key press in the page (`no_gesture` otherwise); the reads,
-`shown()` and `tiles()` need none. Calls reject `{code, message}` with `refused` (not the home
+`on(name, fn)` hears `apps`, `makes`, `unread`, `key` (the value of
+`needsKey()`) and `chrome` (the value of `chrome()`, when the window
+changes form or the pointer in use changes), each the topic's whole latest
+value, from the page's first `home` call on, and returns `stop`; a page
+that was covered hears only the latest value of each. The calls that open
+something must come from the person's tap or key press in the page
+(`no_gesture` otherwise); the reads, `chrome()`, `shown()` and `tiles()`
+need none. Calls reject `{code, message}` with `refused` (not the home
 app), `bad_request` (an unknown method, an ID not on the home screen, a
 malformed rectangle or menu items), `no_gesture` or `unavailable`.
 

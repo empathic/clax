@@ -81,7 +81,8 @@ change, and it lands in place with their data kept.
   `await window.claude.use("home")` (`apps()`, `makes()`, `unread()`,
   `needsKey()`, the actions `open`, `openMake`, `newApp`,
   `menu(id, {x, y, w, h}, {items})`, `openInbox`, `openSettings`,
-  `importApp`, `shown`, and `on(name, fn)`;
+  `importApp`, `shown`, `chrome` (the window's form and the pointer in
+  use: "Click" for `mouse`, "Tap" for `touch`), and `on(name, fn)`;
   types in `ClaxExtensions.Home` below).
 - Keep its `home.shown()` call, made once per load right after the grid
   (or the empty state, or the load error) is drawn: without it Clax treats

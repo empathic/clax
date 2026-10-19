@@ -5,6 +5,7 @@ import '../agent/worker.dart';
 import '../daemon/clock.dart';
 import '../platform/background_work.dart';
 import 'build_plan.dart';
+import 'kit/verbs.dart';
 
 /// Shows each going build as a background run ("Building Budget · 3/7" and
 /// the step), and ends it with news when it is done, capped or failed.
@@ -12,7 +13,8 @@ import 'build_plan.dart';
 /// A build's notification shows its first state at once, then at most one
 /// update each [every] on [clock], the latest state winning. The counts come
 /// from the plan as last watched in [plans], and the title from [title],
-/// asked once per app.
+/// asked once per app. A built app's notification says how to open it in
+/// the words of the pointer in use, as [verbs] gives them when it ends.
 class BuildNotices {
   BuildNotices({
     required this.runs,
@@ -20,12 +22,16 @@ class BuildNotices {
     required this.title,
     this.clock = const SystemClock(),
     this.every = const Duration(seconds: 1),
+    this.verbs = _touch,
   });
 
   final BackgroundRuns runs;
   final PlanStore plans;
   final Clock clock;
   final Duration every;
+  final ClaxVerbs Function() verbs;
+
+  static ClaxVerbs _touch() => ClaxVerbs.touch;
 
   /// App [aid]'s title, or [fallback] when it cannot be told.
   final Future<String> Function(String aid, {required String fallback}) title;
@@ -67,7 +73,11 @@ class BuildNotices {
     unawaited(
       title(aid, fallback: 'Your app').then(
         (t) => runs.end(run, switch (s.phase) {
-          BuildPhase.done => RunReady(aid, '$t is built', 'Tap to open it'),
+          BuildPhase.done => RunReady(
+            aid,
+            '$t is built',
+            '${verbs().tap} to open it',
+          ),
           BuildPhase.capped => RunReady(
             aid,
             '$t: build paused',

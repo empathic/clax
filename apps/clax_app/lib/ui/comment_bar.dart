@@ -1,10 +1,13 @@
 import 'package:flutter/material.dart';
 
+import 'kit/button.dart';
+import 'kit/verbs.dart';
 import 'threads_panel.dart';
 
 /// The bar under the page while comment mode is on, and only then. It
-/// says what the default is, "Tap anything to comment on it" (a tap on
-/// the page picks what it lands on), and offers the one other way in, a
+/// says what the default is, "Tap anything to comment on it" ("Click" with
+/// a mouse or trackpad, [hintFor]; a tap on the page picks what it lands
+/// on), and offers the one other way in, a
 /// labelled **Comment on the whole app** ([onWholeApp], a composer on no
 /// element); then the [onThreads] panel with [threadCount] open threads,
 /// [onVoice] (whether a pick starts dictation, [dictate]) and [onClose]
@@ -49,8 +52,9 @@ class CommentBar extends StatelessWidget {
   /// The width from which the bar is one line, when its text fits there.
   static const wideWidth = 600.0;
 
-  /// What a tap on the page does in comment mode.
-  static const hint = 'Tap anything to comment on it';
+  /// What a tap on the page does in comment mode, in [verbs]' words.
+  static String hintFor(ClaxVerbs verbs) =>
+      '${verbs.tap} anything to comment on it';
 
   /// The label of the general comment's button.
   static const wholeApp = 'Comment on the whole app';
@@ -62,10 +66,11 @@ class CommentBar extends StatelessWidget {
   /// as an icon.
   static const _icon = 40.0;
 
-  /// Room a labelled button needs beyond its text: its padding (12 a side
-  /// at compact density), an 18 px icon and its 8 px gap, and a few pixels
-  /// for rounding.
-  static const _button = 24 + 18 + 8 + 4.0;
+  /// Room the general comment's button ([ClaxButton]) needs beyond its
+  /// text: its padding (16 before the icon, 24 after the label), an 18 px
+  /// icon and its 8 px gap, and a few pixels for rounding. Without its icon
+  /// it needs less (24 a side).
+  static const _button = 16 + 24 + 18 + 8 + 4.0;
 
   /// Room a text button needs beyond its text.
   static const _text = 16 + 4.0;
@@ -82,7 +87,8 @@ class CommentBar extends StatelessWidget {
     final theme = Theme.of(context);
     final scheme = theme.colorScheme;
     final threads = threadCount > 0 ? 'Threads ($threadCount)' : 'Threads';
-    final m = _Measure(context, threads: threads);
+    final hint = hintFor(ClaxVerbs.of(context));
+    final m = _Measure(context, hint: hint, threads: threads);
 
     final instruction = Text(
       hint,
@@ -96,30 +102,14 @@ class CommentBar extends StatelessWidget {
       size: 20,
       color: scheme.primary,
     );
-    const wholeLabel = Text(
-      wholeApp,
-      maxLines: 1,
-      overflow: TextOverflow.ellipsis,
-    );
-    final wholeStyle = FilledButton.styleFrom(
-      visualDensity: VisualDensity.compact,
-      padding: const EdgeInsets.symmetric(horizontal: 12),
-    );
     // Its icon goes before its label does, where both do not fit.
-    Widget whole({required bool icon}) => icon
-        ? FilledButton.tonalIcon(
-            key: const ValueKey('comment-whole-app'),
-            style: wholeStyle,
-            onPressed: onWholeApp,
-            icon: const Icon(Icons.chat_bubble_outline, size: 18),
-            label: wholeLabel,
-          )
-        : FilledButton.tonal(
-            key: const ValueKey('comment-whole-app'),
-            style: wholeStyle,
-            onPressed: onWholeApp,
-            child: wholeLabel,
-          );
+    Widget whole({required bool icon}) => ClaxButton(
+      key: const ValueKey('comment-whole-app'),
+      kind: ClaxButtonKind.tonal,
+      label: wholeApp,
+      icon: icon ? Icons.chat_bubble_outline : null,
+      onPressed: onWholeApp,
+    );
     final voice = IconButton(
       key: const ValueKey('comment-voice'),
       visualDensity: VisualDensity.compact,
@@ -235,7 +225,11 @@ class CommentBar extends StatelessWidget {
 
 /// The widths of the bar's texts at the context's text scale.
 class _Measure {
-  _Measure(BuildContext context, {required String threads}) {
+  _Measure(
+    BuildContext context, {
+    required String hint,
+    required String threads,
+  }) {
     final theme = Theme.of(context);
     final scaler = MediaQuery.textScalerOf(context);
     final dir = Directionality.of(context);
@@ -256,7 +250,7 @@ class _Measure {
     }
 
     final label = theme.textTheme.labelLarge;
-    hint = width(CommentBar.hint, hintStyle);
+    this.hint = width(hint, hintStyle);
     whole = width(CommentBar.wholeApp, label);
     this.threads = width(threads, label);
   }

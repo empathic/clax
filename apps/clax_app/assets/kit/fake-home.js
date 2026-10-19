@@ -10,8 +10,10 @@
 // It answers what the real one does: `apps()` (newest first), `makes()`,
 // `unread()`, `needsKey()`, the actions `open(id)`, `openMake(id)`,
 // `newApp()`, `menu(id, {x, y, w, h})`, `openInbox()`, `openSettings()`,
-// `importApp()`, `shown()`, and `on(name, fn)` for `apps`, `makes`, `unread`
-// and `key`, which returns a function that stops the calls. Each action is
+// `importApp()`, `shown()`, `chrome()` (a phone by touch unless `state.chrome`
+// says otherwise; `chrome: null` rejects it `unavailable`, as an older Clax
+// does), and `on(name, fn)` for `apps`, `makes`, `unread`, `key` and
+// `chrome`, which returns a function that stops the calls. Each action is
 // kept in `home.calls` as `{method, args}` instead of opening anything;
 // `home.shownCount` counts the page's `shown()` calls (a test asserts the
 // page said once that it was drawn: `home.shownCount === 1`), which resolve
@@ -19,7 +21,8 @@
 // answers after opening it from a tap on its start-up image), else null; and
 // `home.set({apps, makes, unread, needsKey})` changes the state and calls
 // the listeners of what changed, as the app does when a make finishes or an
-// app changes.
+// app changes; `home.set({chrome})` as the window changes form or the
+// pointer in use changes.
 //
 // `menu(id, rect, {items})` checks the items as the app does (at most 4
 // `{id, label}`, labels of 1 to 32 characters; `bad_request` otherwise),
@@ -57,6 +60,7 @@ export const SAMPLE = Object.freeze({
   ],
   unread: 0,
   needsKey: false,
+  chrome: { platform: 'android', form: 'phone', toolbar: false, pointer: 'touch' },
 });
 
 const copy = (v) => JSON.parse(JSON.stringify(v));
@@ -86,7 +90,7 @@ function checkItems(options) {
 /** A fake `home` capability over `state` (missing fields from SAMPLE). */
 export function fakeHome(state = {}) {
   const s = { ...copy(SAMPLE), ...copy(state) };
-  const listeners = { apps: new Set(), makes: new Set(), unread: new Set(), key: new Set() };
+  const listeners = { apps: new Set(), makes: new Set(), unread: new Set(), key: new Set(), chrome: new Set() };
   const calls = [];
   let shown = 0;
   const act = (method) => async (...args) => { calls.push({ method, args: copy(args) }); return null; };
@@ -113,6 +117,10 @@ export function fakeHome(state = {}) {
     replayed: null,
     shown: async () => { shown++; return home.replayed ? { opened: home.replayed } : null; },
     get shownCount() { return shown; },
+    chrome: async () => {
+      if (s.chrome == null) throw { code: 'unavailable', message: 'chrome() is not in this Clax' };
+      return copy(s.chrome);
+    },
     on(name, fn) {
       if (!listeners[name]) throw new TypeError(`no home event named ${JSON.stringify(name)}`);
       listeners[name].add(fn);
@@ -125,6 +133,7 @@ export function fakeHome(state = {}) {
       if ('makes' in next) { s.makes = next.makes; emit('makes', s.makes); }
       if ('unread' in next) { s.unread = next.unread; emit('unread', s.unread); }
       if ('needsKey' in next) { s.needsKey = next.needsKey; emit('key', s.needsKey); }
+      if ('chrome' in next) { s.chrome = next.chrome; if (s.chrome != null) emit('chrome', s.chrome); }
     },
   };
   return home;

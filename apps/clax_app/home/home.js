@@ -1715,17 +1715,36 @@ function useTopic(home, event, load, initial) {
   return [value, error, reload];
 }
 
+/** What a Clax without `chrome()` (an older app) is taken to be: a phone
+ * by touch, with no toolbar of its own. */
+export const PHONE_CHROME = Object.freeze({ platform: 'android', form: 'phone', toolbar: false, pointer: 'touch' });
+
+/** `home.chrome()`'s answer, or PHONE_CHROME when it has none or refuses. */
+function chromeOf(home) {
+  if (typeof home.chrome !== 'function') return PHONE_CHROME;
+  return Promise.resolve()
+    .then(() => home.chrome())
+    .then((c) => (c && typeof c === 'object' ? { ...PHONE_CHROME, ...c } : PHONE_CHROME), () => PHONE_CHROME);
+}
+
+/** The words for pointing in `chrome`'s pointer: "Click" with a mouse or a
+ * trackpad, "Tap" by touch. */
+export const verbsOf = (chrome) => (chrome?.pointer === 'mouse' ? { tap: 'Click' } : { tap: 'Tap' });
+
 const NOTICE_MS = 4000;
 
 /** `act(method, args, what)`: calls `home[method](...args)` and resolves
  * its value, or `undefined` when it failed. `no_gesture` (the call did not
  * come with the person's tap) keeps the call for the next tap on the page
- * that lands on no other control, and says "Tap again to <what>"; the
+ * that lands on no other control, and says "Tap again to <what>" (in
+ * `verbs`' word: "Click again" with a mouse); the
  * promise then resolves with the retried call's value, or `undefined` once
  * the kept call is dropped. Another failure says so briefly. A new action,
  * a tap on another control, or the notice going drops a kept one. */
-function useActions(home) {
+function useActions(home, verbs) {
   const [notice, setNotice] = useState(null);
+  const tapWord = useRef(verbs.tap);
+  tapWord.current = verbs.tap;
   const pending = useRef(null);
   const timer = useRef(0);
   const drop = () => {
@@ -1752,7 +1771,7 @@ function useActions(home) {
       const code = codeOf(e);
       if (code === 'no_gesture') {
         return new Promise((resolve) => {
-          say(`Tap again to ${what}`);
+          say(`${tapWord.current} again to ${what}`);
           pending.current = { method, args, what, resolve };
         });
       }
@@ -2048,11 +2067,12 @@ function Home({ home, db, clock }) {
   const [makes, , reloadMakes] = useTopic(home, 'makes', (h) => h.makes(), []);
   const [unread, , reloadUnread] = useTopic(home, 'unread', (h) => h.unread(), 0);
   const [needsKey, , reloadKey] = useTopic(home, 'key', (h) => h.needsKey(), false);
+  const [chrome] = useTopic(home, 'chrome', chromeOf, PHONE_CHROME);
   const refresh = useCallback(
     () => Promise.all([reloadApps(), reloadMakes(), reloadUnread(), reloadKey()]),
     [reloadApps, reloadMakes, reloadUnread, reloadKey],
   );
-  const [act, notice, say] = useActions(home);
+  const [act, notice, say] = useActions(home, verbsOf(chrome));
   const store = useMemo(() => layoutStore(db, { clock }), [db, clock]);
   const [layout, change] = useLayout(store, apps, clock, useCallback(() => say(UNSAVED_TEXT), []));
   const onBigTiles = useCallback((on) => change((l) => setBigTiles(l, on)), [change]);

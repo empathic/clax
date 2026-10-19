@@ -6,6 +6,7 @@ import 'package:clax_app/agent/worker.dart';
 import 'package:clax_app/daemon/clock.dart';
 import 'package:clax_app/platform/background_work.dart';
 import 'package:clax_app/ui/build_notices.dart';
+import 'package:clax_app/ui/kit/verbs.dart';
 import 'package:flutter_test/flutter_test.dart';
 
 import '../platform/background_work_test.dart' show RecordingWork;
@@ -74,6 +75,23 @@ void main() {
     await pumpEventQueue();
     expect(work.calls, contains('ready(Runs is built, Tap to open it, a1)'));
     expect(work.calls, contains('stop'));
+    notices.dispose();
+  });
+
+  test('a built app says Click to open it while a mouse is in use', () async {
+    final work = RecordingWork();
+    final notices = BuildNotices(
+      runs: BackgroundRuns(work, foreground: () => false),
+      plans: PlanStore(),
+      clock: _Clock(),
+      title: (aid, {required fallback}) async => 'Runs',
+      verbs: () => ClaxVerbs.mouse,
+    );
+    notices.onBuild(const BuildState('a1', BuildPhase.queued));
+    await pumpEventQueue();
+    notices.onBuild(const BuildState('a1', BuildPhase.done));
+    await pumpEventQueue();
+    expect(work.calls, contains('ready(Runs is built, Click to open it, a1)'));
     notices.dispose();
   });
 }

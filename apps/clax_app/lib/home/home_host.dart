@@ -140,9 +140,22 @@ class HomeBadRequest implements Exception {
   String toString() => 'HomeBadRequest: $message';
 }
 
-/// One change for the home app: [name] is `apps`, `makes`, `unread` or
-/// `key`, and [data] the topic's whole latest value (as `apps()`,
-/// `makes()`, `unread()` or `needsKey()` would answer).
+/// What the home app is told of the window it is in: [platform]
+/// (`android`, `macos`, later `ios`), [form] (`phone` below
+/// `ClaxWidth.medium`, else `wide`), whether the window's [toolbar]
+/// carries the top bar, search and New app, and the [pointer] in use
+/// (`touch` or `mouse`, which also stands for a trackpad).
+typedef HomeChrome = ({
+  String platform,
+  String form,
+  bool toolbar,
+  String pointer,
+});
+
+/// One change for the home app: [name] is `apps`, `makes`, `unread`,
+/// `key` or `chrome`, and [data] the topic's whole latest value (as
+/// `apps()`, `makes()`, `unread()`, `needsKey()` or `chrome()` would
+/// answer).
 typedef HomeEvent = ({String name, Object? data});
 
 /// Follows `gallery` and `inbox` on [stream] (the app's shared stream; it
@@ -341,7 +354,29 @@ class HomeHost extends ChangeNotifier {
     ('makes', 'makes'),
     ('unread', 'unread'),
     ('needsKey', 'key'),
+    ('chrome', 'chrome'),
   ];
+
+  /// What `chrome()` answers until the app sets it: a phone by touch.
+  static const phoneChrome = (
+    platform: 'android',
+    form: 'phone',
+    toolbar: false,
+    pointer: 'touch',
+  );
+
+  HomeChrome _chrome = phoneChrome;
+
+  /// What `chrome()` answers.
+  HomeChrome get chrome => _chrome;
+
+  /// The app's window changed form, or the pointer in use changed: the
+  /// home app hears one `chrome` event when [c] differs from the last.
+  void setChrome(HomeChrome c) {
+    if (c == _chrome) return;
+    _chrome = c;
+    _changed();
+  }
 
   /// Whether the API key is missing.
   bool get needsKey => _needsKey;
@@ -406,6 +441,8 @@ class HomeHost extends ChangeNotifier {
         return _unread;
       case 'needsKey':
         return _needsKey;
+      case 'chrome':
+        return _json('chrome');
       case 'open':
         actions.open(_appId(args));
       case 'openMake':
@@ -547,6 +584,12 @@ class HomeHost extends ChangeNotifier {
     'apps' => [for (final a in state.apps) a.toJson()],
     'makes' => [for (final m in state.makes) m.toJson()],
     'unread' => state.unread,
+    'chrome' => {
+      'platform': _chrome.platform,
+      'form': _chrome.form,
+      'toolbar': _chrome.toolbar,
+      'pointer': _chrome.pointer,
+    },
     _ => state.needsKey,
   };
 

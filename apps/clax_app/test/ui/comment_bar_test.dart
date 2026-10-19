@@ -1,9 +1,12 @@
 import 'dart:io';
 
 import 'package:clax_app/ui/comment_bar.dart';
+import 'package:clax_app/ui/kit/button.dart';
+import 'package:clax_app/ui/kit/verbs.dart';
 import 'package:clax_app/ui/theme.dart';
 import 'package:clax_app/ui/threads_panel.dart';
 import 'package:flutter/foundation.dart';
+import 'package:flutter/gestures.dart';
 import 'package:flutter/material.dart';
 import 'package:flutter/rendering.dart';
 import 'package:flutter/services.dart';
@@ -55,6 +58,38 @@ void main() {
     await tester.tap(find.byKey(const ValueKey('comment-voice')));
     await tester.tap(find.byKey(const ValueKey('comment-bar-close')));
     expect(log, ['whole', 'threads', 'voice', 'close']);
+  });
+
+  testWidgets('the hint says Click once a mouse is in use, and the general '
+      'comment is a tonal button', (tester) async {
+    await tester.pumpWidget(
+      ClaxPointerScope(
+        child: MaterialApp(
+          theme: claxTheme(Brightness.light, TargetPlatform.android),
+          home: Scaffold(
+            bottomNavigationBar: CommentBar(
+              threadCount: 0,
+              onWholeApp: () {},
+              onThreads: () {},
+              dictate: false,
+              onVoice: () {},
+              onClose: () {},
+            ),
+          ),
+        ),
+      ),
+    );
+    expect(find.text('Tap anything to comment on it'), findsOneWidget);
+    final whole = tester.widget<ClaxButton>(
+      find.byKey(const ValueKey('comment-whole-app')),
+    );
+    expect(whole.kind, ClaxButtonKind.tonal);
+    final mouse = await tester.createGesture(kind: PointerDeviceKind.mouse);
+    await mouse.addPointer(location: const Offset(10, 10));
+    await mouse.moveTo(const Offset(20, 20));
+    await tester.pump();
+    expect(find.text('Click anything to comment on it'), findsOneWidget);
+    await mouse.removePointer();
   });
 
   group('the comment bar fits', () {

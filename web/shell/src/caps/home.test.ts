@@ -171,4 +171,20 @@ describe("the home capability", () => {
     }
     expect(posted.filter(m => m.type === "clax:event")).toEqual([{ type: "clax:event", ns: "home", topic: "unread", data: 3 }]);
   });
+
+  it("relays chrome() without a gesture and returns the app's answer, and passes chrome events on", async () => {
+    gesture = false;
+    const sent = link(true);
+    const { e, posted } = env({ home: {} });
+    const host = new CapabilityHost(Promise.resolve(e), REGISTRY, null);
+    const chrome = { platform: "android", form: "wide", toolbar: false, pointer: "mouse" };
+    const done = host.handle({ type: "clax:call", id: "c1", ns: "home", method: "chrome", args: [] });
+    await vi.waitFor(() => expect(sent).toHaveLength(1));
+    expect(sent[0]).toMatchObject({ cap: "home", method: "chrome", args: [] });
+    sent[0].resolve(chrome);
+    await done;
+    expect(posted.at(-1)).toEqual({ type: "clax:call-result", id: "c1", ok: true, value: chrome });
+    for (const f of [...deviceLink.events]) f({ cap: "home", name: "chrome", data: { ...chrome, pointer: "touch" } });
+    expect(posted.filter(m => m.type === "clax:event")).toEqual([{ type: "clax:event", ns: "home", topic: "chrome", data: { ...chrome, pointer: "touch" } }]);
+  });
 });

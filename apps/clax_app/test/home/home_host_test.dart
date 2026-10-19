@@ -318,6 +318,40 @@ void main() {
     expect(await host.call(home, 'unread', {}), 1);
   });
 
+  test('chrome() answers what the app set, and a change is one chrome event', () async {
+    expect(await host.call(home, 'chrome', {}), {
+      'platform': 'android',
+      'form': 'phone',
+      'toolbar': false,
+      'pointer': 'touch',
+    });
+    final told = <HomeEvent>[];
+    host.events.listen(told.add);
+    await pumpEventQueue();
+    told.clear();
+    const mouse = (
+      platform: 'android',
+      form: 'wide',
+      toolbar: false,
+      pointer: 'mouse',
+    );
+    host.setChrome(mouse);
+    host.setChrome(mouse);
+    await pumpEventQueue();
+    final wide = {
+      'platform': 'android',
+      'form': 'wide',
+      'toolbar': false,
+      'pointer': 'mouse',
+    };
+    expect(
+      told.where((e) => e.name == 'chrome').map((e) => e.data),
+      [wide],
+    );
+    expect(await host.call(home, 'chrome', {}), wide);
+    expect(host.latest.map((e) => e.name), contains('chrome'));
+  });
+
   test('open, newApp and menu call the matching action', () async {
     final aid = api.seedArtifact('Runs', _page);
     await host.load();

@@ -31,6 +31,7 @@ import 'agent/worker.dart';
 import 'bundle/doc_snapshot.dart';
 import 'bundle/exporter.dart';
 import 'bundle/installer.dart' show Installer, forgetDeleted, fromBundleOf;
+import 'home/home_chrome.dart';
 import 'home/home_host.dart';
 import 'home/home_install.dart';
 import 'home/home_keeper.dart';
@@ -80,6 +81,7 @@ import 'ui/host_protocol.dart'
         ThreadsMsg;
 import 'ui/inspector_surface.dart';
 import 'ui/kit/mark.dart';
+import 'ui/kit/verbs.dart';
 import 'ui/launcher.dart';
 import 'ui/licences.dart';
 import 'ui/make_service.dart';
@@ -865,7 +867,30 @@ class _AppRootState extends State<AppRoot> with WidgetsBindingObserver {
     plans: _plans,
     clock: _s.clock,
     title: _titleOf,
+    verbs: () => _verbs,
   );
+
+  /// The window's form and the pointer in use, as the root last reported
+  /// them ([HomeChromeReport]); the home app hears it through `chrome()`.
+  HomeChrome _chrome = (
+    platform: switch (defaultTargetPlatform) {
+      TargetPlatform.macOS => 'macos',
+      TargetPlatform.iOS => 'ios',
+      _ => 'android',
+    },
+    form: 'phone',
+    toolbar: false,
+    pointer: defaultTargetPlatform == TargetPlatform.macOS ? 'mouse' : 'touch',
+  );
+
+  /// The words for pointing in notifications: those of the pointer in use.
+  ClaxVerbs get _verbs =>
+      _chrome.pointer == 'mouse' ? ClaxVerbs.mouse : ClaxVerbs.touch;
+
+  void _onChrome(HomeChrome c) {
+    _chrome = c;
+    _homeHost?.setChrome(c);
+  }
 
   /// The lineages of shared and installed apps, and the update
   /// snapshots, in the support directory.
@@ -1194,7 +1219,7 @@ class _AppRootState extends State<AppRoot> with WidgetsBindingObserver {
             icons: _icons,
             needsKey: _needsKey,
           );
-          _homeFlows.host = _homeHost!;
+          _homeFlows.host = _homeHost!..setChrome(_chrome);
           _watchHome(_homeHost!);
           _homeRecovery = HomeRecovery(
             api: _api,
@@ -1420,7 +1445,10 @@ class _AppRootState extends State<AppRoot> with WidgetsBindingObserver {
     unawaited(
       _titleOf(aid, fallback: request).then(
         (title) =>
-            _runs.end(run, RunReady(aid, '$title is ready', 'Tap to open it')),
+            _runs.end(
+              run,
+              RunReady(aid, '$title is ready', '${_verbs.tap} to open it'),
+            ),
       ),
     );
     // The first run planned the app: the worker builds the rest. The
@@ -1543,11 +1571,15 @@ class _AppRootState extends State<AppRoot> with WidgetsBindingObserver {
     unawaited(
       _titleOf(aid, fallback: 'Your app').then(
         (t) => _runs.end(run, switch (e) {
-          WorkerLanded() => RunReady(aid, '$t changed', 'Tap to see it'),
+          WorkerLanded() => RunReady(
+            aid,
+            '$t changed',
+            '${_verbs.tap} to see it',
+          ),
           WorkerReplied() => RunReady(
             aid,
             'Claude replied on $t',
-            'Tap to read it',
+            '${_verbs.tap} to read it',
           ),
           WorkerFailed(:final reason) => RunFailed(
             "Couldn't change $t",
@@ -2297,16 +2329,22 @@ class _AppRootState extends State<AppRoot> with WidgetsBindingObserver {
         listenable: _revision,
         builder: (context, _) => _home(context),
       ),
-      builder: switch (_s.inspector) {
-        final WebViewInspector inspector => (context, child) => InspectorHost(
-          inspector: inspector,
-          size: inspectorSize(MediaQuery.sizeOf(context), desktop: _desktop),
-          cover: Theme.of(context).colorScheme.surface,
-          child: child ?? const SizedBox.shrink(),
-        ),
-        _ => null,
-      },
+      builder: (context, child) => HomeChromeReport(
+        onChrome: _onChrome,
+        child: switch (_s.inspector) {
+          final WebViewInspector inspector => InspectorHost(
+            inspector: inspector,
+            size: inspectorSize(MediaQuery.sizeOf(context), desktop: _desktop),
+            cover: Theme.of(context).colorScheme.surface,
+            child: child ?? const SizedBox.shrink(),
+          ),
+          _ => child ?? const SizedBox.shrink(),
+        },
+      ),
     );
+    // "Tap" or "Click" (ClaxVerbs) by the pointer last used anywhere in
+    // the window.
+    app = ClaxPointerScope(child: app);
     app = DeveloperScope(notifier: _developer, child: app);
     if (macOS) {
       app = ClaxMenuBar(comments: _comments, back: _back, child: app);

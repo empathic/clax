@@ -294,7 +294,7 @@ declare namespace ClaxExtensions {
    * Calls that open something (`open`, `openMake`, `newApp`, `menu`,
    * `openInbox`, `openSettings`, `importApp`) must come from the person's
    * tap or key press in the page, or they reject `no_gesture`; the reads,
-   * `shown` and `tiles` need none.
+   * `chrome`, `shown` and `tiles` need none.
    *
    * Clax keeps its own home screen over the page until the page calls
    * `shown()`, and shows its own, with Undo last change and Reset, when
@@ -341,12 +341,28 @@ declare namespace ClaxExtensions {
       h: number;
     }
 
+    /** The window the home screen is in, as `chrome()` answers it. */
+    interface Chrome {
+      /** The system Clax runs on. */
+      platform: "android" | "macos" | "ios";
+      /** `phone` on a narrow window (below 600 dp), `wide` on a tablet,
+       * a foldable opened, a Chromebook or a desktop window. */
+      form: "phone" | "wide";
+      /** Whether the window's own toolbar carries the top bar, search and
+       * New app, so the page draws none of them. */
+      toolbar: boolean;
+      /** The pointer in use: say "Click" for `mouse` (a mouse or a
+       * trackpad), "Tap" for `touch`. */
+      pointer: "touch" | "mouse";
+    }
+
     /** What `on(name)` hears: each topic's whole latest value. */
     interface Events {
       apps: App[];
       makes: Make[];
       unread: number;
       key: boolean;
+      chrome: Chrome;
     }
 
     /** An item a home app adds to an app's menu. */
@@ -395,6 +411,11 @@ declare namespace ClaxExtensions {
        * opens the app under a tap on that image once the page is shown. At
        * most 512 tiles. */
       tiles(tiles: { id: string; rect: Rect }[]): Promise<void>;
+      /** The window the page is in, and the pointer in use; `on("chrome")`
+       * hears each change. An older Clax rejects it (`unavailable`, or it
+       * is missing): treat that as `{form: "phone", toolbar: false,
+       * pointer: "touch"}`. */
+      chrome(): Promise<Chrome>;
       /** Calls `fn` with each change of topic `name`, after the page's
        * first `home` call; returns `stop`. A page that was covered hears
        * only the latest value. */

@@ -291,10 +291,12 @@ starts the person's apps. Changing it is a change like any other.
   `openMake(id)`, `newApp()`, `menu(id, {x, y, w, h}, {items})` (up to 4
   `{id, label}` items of the page's own, shown first; it resolves the picked
   item's `id`, or `null`), `openInbox()`, `openSettings()`, `importApp()`,
-  which Clax carries out (call them from a tap), and `shown()`.
-  `home.on(name, fn)` hears `apps`, `makes`, `unread` and `key`, each
-  topic's whole latest value; it returns `stop`. The types are
-  `ClaxExtensions.Home` below.
+  which Clax carries out (call them from a tap), `shown()`, and `chrome()`
+  (`{platform, form, toolbar, pointer}`: say "Click" for `pointer:
+  "mouse"`, "Tap" for `"touch"`; an older Clax rejects it, read that as a
+  phone by touch). `home.on(name, fn)` hears `apps`, `makes`, `unread`,
+  `key` and `chrome`, each topic's whole latest value; it returns `stop`.
+  The types are `ClaxExtensions.Home` below.
 - Call `home.shown()` once per load, from an effect right after the page
   first draws its grid with the apps (or its empty state, or its load
   error). Clax keeps its own home screen over the page until then, and a

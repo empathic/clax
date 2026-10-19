@@ -142,6 +142,26 @@ test('an action refused for want of a tap says so, and the next tap on the notic
   await wait(() => !ui.exists('.h-notice'));
 });
 
+test('says Tap again with a touch pointer and Click again with a mouse, following chrome', async () => {
+  const home = await show({ makes: [], chrome: { platform: 'android', form: 'phone', toolbar: false, pointer: 'touch' } });
+  home.open = () => Promise.reject({ code: 'no_gesture', message: 'tap' });
+  await ui.click('[data-id="app-groceries"]');
+  await wait(() => ui.text('.h-notice') === 'Tap again to open Groceries');
+  home.set({ chrome: { platform: 'android', form: 'wide', toolbar: false, pointer: 'mouse' } });
+  await ui.click('[data-id="app-notes"]');
+  await wait(() => ui.text('.h-notice') === 'Click again to open Notes');
+});
+
+test('chrome() unavailable keeps the phone layout and says Tap', async () => {
+  const home = await show({ makes: [], chrome: null });
+  expect(await home.chrome().then(() => null, (e) => e.code)).toBe('unavailable');
+  expect(ui.exists('.h-grid')).toBe(true);
+  expect(ui.exists('.h-fab')).toBe(true);
+  home.open = () => Promise.reject({ code: 'no_gesture', message: 'tap' });
+  await ui.click('[data-id="app-groceries"]');
+  await wait(() => ui.text('.h-notice') === 'Tap again to open Groceries');
+});
+
 test('an open or a menu retried from the notice keeps its change: the open counts, the picked Star stars', async () => {
   const seen = SAMPLE.apps.map((a) => a.id).filter((id) => id !== 'app-notes');
   const home = await show({ makes: [] }, { layout: { order: [], seen } });

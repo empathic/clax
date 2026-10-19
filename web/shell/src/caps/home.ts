@@ -3,7 +3,7 @@
 // screen shows and the screens it opens, answered by the app only for its
 // home app (CapabilityHost asks `home.available` before granting it, and
 // the app refuses every call from any other app). Reads (`apps`, `makes`,
-// `unread`, `needsKey`) need no gesture; every call that opens something
+// `unread`, `needsKey`, `chrome`) need no gesture; every call that opens something
 // must come from the viewer's tap or key in the page (`no_gesture`
 // otherwise); `shown` and `tiles` need none either. Positional arguments go
 // to the app as one object: `open(id)` and `openMake(id)` as `{id}`,
@@ -12,20 +12,20 @@
 // MAX_LABEL characters) and as `{id, rect}` without items; it resolves the
 // picked item's ID, or null. `tiles(list)` goes as `{tiles: [{id, rect}]}`
 // (at most MAX_TILES). The app's changes (`deviceEvent({cap: "home", name, data})`, name
-// `apps`, `makes`, `unread` or `key`) reach the page as `home`/<name>
+// `apps`, `makes`, `unread`, `key` or `chrome`) reach the page as `home`/<name>
 // events once the handler is loaded.
 import { deviceLink } from "./device-link";
 import { CapError } from "./errors";
 import { frameGesture } from "./gesture";
 import type { HandlerFactory } from "./host";
 
-export const HOME_METHODS = ["apps", "makes", "unread", "needsKey", "open", "openMake", "newApp", "menu", "openInbox", "openSettings", "importApp", "shown", "tiles"] as const;
+export const HOME_METHODS = ["apps", "makes", "unread", "needsKey", "open", "openMake", "newApp", "menu", "openInbox", "openSettings", "importApp", "shown", "tiles", "chrome"] as const;
 
-const READS = new Set<string>(["apps", "makes", "unread", "needsKey", "shown", "tiles"]);
+const READS = new Set<string>(["apps", "makes", "unread", "needsKey", "shown", "tiles", "chrome"]);
 
 /** The most tiles one `tiles` call may give. */
 export const MAX_TILES = 512;
-export const HOME_EVENTS = new Set<string>(["apps", "makes", "unread", "key"]);
+export const HOME_EVENTS = new Set<string>(["apps", "makes", "unread", "key", "chrome"]);
 
 const id = (method: string, v: unknown): string => {
   if (typeof v !== "string" || v.length === 0 || v.length > 64) throw new CapError("bad_request", `home.${method} takes an app ID`);
