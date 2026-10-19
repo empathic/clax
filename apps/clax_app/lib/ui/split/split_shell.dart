@@ -1,5 +1,6 @@
 import 'dart:async';
 import 'dart:math' as math;
+import 'dart:ui' show DisplayFeatureType;
 
 import 'package:flutter/material.dart';
 import 'package:flutter/services.dart';
@@ -42,6 +43,11 @@ import 'sidebar_model.dart';
 /// unless the destination takes it first ([SplitShellState.takeBack]).
 /// Without [inbox] or [settings] the rail asks [HomeActions.openInbox] or
 /// [HomeActions.openSettings]. Selecting an app or a make goes Home.
+///
+/// On a foldable, with a vertical hinge or fold in the window's display
+/// features, the split between the sidebar (or the list pane) and the
+/// detail sits on it ([hingeOf]) in place of the usual width, and the
+/// Apple family's edge does not resize it.
 ///
 /// [toggleSidebar] hides and shows it, as ⌃⌘S (Control-S on Material)
 /// does. ⌘F (Control-F) shows it and puts the keyboard in its filter;
@@ -120,6 +126,34 @@ class SplitShell extends StatefulWidget {
   /// The shell [context] is in, if any.
   static SplitShellState? maybeOf(BuildContext context) =>
       context.findAncestorStateOfType<SplitShellState>();
+
+  /// Where a pane that starts [start] from the window's left edge ends,
+  /// and the pane after it starts, on a foldable: the left and the width
+  /// of the vertical hinge or fold in [MediaQuery.displayFeaturesOf] (one
+  /// taller than it is wide), the left made the first pane's width less
+  /// its 1 point hairline. Null without one, or when it would leave the
+  /// first pane narrower than [ClaxLayout.sidebarMin] or the second
+  /// narrower than [ClaxLayout.listPane]. A wide window's panes start at
+  /// the window's left edge, as the app's home does.
+  static ({double left, double width})? hingeOf(
+    BuildContext context, {
+    double start = 0,
+  }) {
+    final window = MediaQuery.sizeOf(context).width;
+    for (final f in MediaQuery.displayFeaturesOf(context)) {
+      final b = f.bounds;
+      if (f.type == DisplayFeatureType.cutout || b.height <= b.width) {
+        continue;
+      }
+      final first = b.left - start - 1;
+      if (first < ClaxLayout.sidebarMin ||
+          window - b.right < ClaxLayout.listPane) {
+        continue;
+      }
+      return (left: first, width: b.width);
+    }
+    return null;
+  }
 
   @override
   State<SplitShell> createState() => SplitShellState();
@@ -457,7 +491,13 @@ class SplitShellState extends State<SplitShell> {
     }
     final beside = wide && !_hidden;
     final over = !wide && _over;
-    final sideWidth = apple ? _width : ClaxLayout.listPane;
+    final hinge = beside
+        ? SplitShell.hingeOf(context, start: apple ? 0 : ClaxLayout.rail)
+        : null;
+    // On a hinge the hairline ends at its left edge, and the detail starts
+    // at its right.
+    final sideWidth =
+        hinge?.left ?? (apple ? _width : ClaxLayout.listPane);
     final material = hasDesktopWindowChrome && apple && beside ? _width : 0.0;
     WidgetsBinding.instance.addPostFrameCallback((_) {
       if (mounted) _report(material);
@@ -506,10 +546,12 @@ class SplitShellState extends State<SplitShell> {
                 width: 1,
                 child: ColoredBox(color: claxPalette(context).border),
               ),
+              if (hinge != null && hinge.width > 0)
+                SizedBox(width: hinge.width),
               Expanded(child: detail),
             ],
           ),
-          if (apple)
+          if (apple && hinge == null)
             Positioned(
               left: sideWidth - 3,
               width: 7,

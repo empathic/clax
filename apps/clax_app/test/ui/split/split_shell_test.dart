@@ -1,3 +1,6 @@
+import 'dart:ui'
+    show DisplayFeature, DisplayFeatureState, DisplayFeatureType;
+
 import 'package:clax_app/ui/kit/kit.dart';
 import 'package:clax_app/ui/kit/native_dialogs.dart';
 import 'package:clax_app/ui/mac/mac_toolbar.dart';
@@ -542,6 +545,76 @@ void main() {
       find.text('detail of AppSelected(${f.ids['Groceries']})'),
       findsOneWidget,
     );
+  }, variant: _android);
+
+  testWidgets('on a foldable at 1280 the split between the list and the '
+      'detail sits on a vertical hinge', (tester) async {
+    tester.view.displayFeatures = [
+      const DisplayFeature(
+        bounds: Rect.fromLTWH(640, 0, 0, 800),
+        type: DisplayFeatureType.hinge,
+        state: DisplayFeatureState.postureFlat,
+      ),
+    ];
+    addTearDown(tester.view.resetDisplayFeatures);
+    await pumpShell(tester, size: const Size(1280, 800));
+    final detail = find.byKey(const ValueKey('split-detail'));
+    expect(tester.getTopLeft(detail).dx, 640);
+    expect(tester.getTopRight(detail).dx, 1280);
+    expect(
+      tester.getTopRight(find.byKey(const ValueKey('split-sidebar'))).dx,
+      639,
+      reason: 'the hairline ends on the hinge',
+    );
+
+    // A hinge with a width of its own: the list ends at its left, the
+    // detail starts at its right.
+    tester.view.displayFeatures = [
+      const DisplayFeature(
+        bounds: Rect.fromLTWH(630, 0, 20, 800),
+        type: DisplayFeatureType.hinge,
+        state: DisplayFeatureState.postureFlat,
+      ),
+    ];
+    await tester.pump();
+    expect(tester.getTopLeft(detail).dx, 650);
+    expect(
+      tester.getTopRight(find.byKey(const ValueKey('split-sidebar'))).dx,
+      629,
+    );
+  }, variant: _android);
+
+  testWidgets('a horizontal fold, a cutout or a hinge too near an edge leaves '
+      'the list pane 360', (tester) async {
+    await pumpShell(tester, size: const Size(1280, 800));
+    final detail = find.byKey(const ValueKey('split-detail'));
+    for (final feature in const [
+      DisplayFeature(
+        bounds: Rect.fromLTWH(0, 400, 1280, 0),
+        type: DisplayFeatureType.fold,
+        state: DisplayFeatureState.postureHalfOpened,
+      ),
+      DisplayFeature(
+        bounds: Rect.fromLTWH(600, 0, 80, 30),
+        type: DisplayFeatureType.cutout,
+        state: DisplayFeatureState.unknown,
+      ),
+      DisplayFeature(
+        bounds: Rect.fromLTWH(200, 0, 0, 800),
+        type: DisplayFeatureType.hinge,
+        state: DisplayFeatureState.postureFlat,
+      ),
+      DisplayFeature(
+        bounds: Rect.fromLTWH(1100, 0, 0, 800),
+        type: DisplayFeatureType.hinge,
+        state: DisplayFeatureState.postureFlat,
+      ),
+    ]) {
+      tester.view.displayFeatures = [feature];
+      await tester.pump();
+      expect(tester.getTopLeft(detail).dx, 441, reason: '$feature');
+    }
+    tester.view.resetDisplayFeatures();
   }, variant: _android);
 
   testWidgets('on Android at 700 the rail and one pane: the grid, and an app '
