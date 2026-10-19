@@ -137,13 +137,18 @@ const align = (t: Token): Align => (ALIGN.exec(attr(t, "style"))?.[1] as Align |
 const cells = (row: Node): Node[] => row.c.filter(x => x.t.type === "th_open" || x.t.type === "td_open");
 const cellInline = (cell: Node): Inline[] => inline(nest(cell.c[0]?.t.children ?? []));
 
-/** A list item: `[ ]` or `[x]` and a space opening its first line make it a task. */
+const TASK = /^\[([ xX])\][ \t]+/;
+
+/** A list item: `[ ]` or `[x]` and a space opening its first line, as
+ * written (not `\[ ]` or `&#91; ]`, which are the author's brackets), make
+ * it a task. */
 function item(n: Node): Item {
   const c = blocks(n.c);
   const first = c[0];
-  if (first && (first.t === "p" || first.t === "line") && first.c[0]?.t === "text") {
+  const source = n.c[0]?.t.type === "paragraph_open" ? n.c[0].c[0]?.t.content ?? "" : "";
+  if (TASK.test(source) && first && (first.t === "p" || first.t === "line") && first.c[0]?.t === "text") {
     const head = first.c[0];
-    const m = /^\[([ xX])\][ \t]+/.exec(head.v);
+    const m = TASK.exec(head.v);
     if (m) {
       head.v = head.v.slice(m[0].length);
       if (!head.v) first.c.shift();

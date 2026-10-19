@@ -211,6 +211,15 @@ describe("parse: GitHub-flavored Markdown", () => {
     expect([...el.querySelectorAll("li.task")].map(li => li.textContent)).toEqual(["todo", "done"]);
   });
 
+  it("makes no task of brackets the author escaped or wrote as references", () => {
+    for (const src of ["- \\[ ] escaped", "- &#91; ] written", "- \\[x] escaped", "- &lbrack;x] written"]) {
+      const el = render(src);
+      expect(el.querySelector("input"), src).toBeNull();
+      expect(el.querySelector("li")!.textContent, src).toMatch(/^\[[ x]\] (escaped|written)$/);
+      expect(plain(src), src).toMatch(/^\[[ x]\] (escaped|written)$/);
+    }
+  });
+
   it("reads blockquotes, headings set under the page's, and rules", () => {
     const el = render("# Title\n\n## Sub\n\n#### Deep\n\n> quoted\n\n---\n\nafter");
     expect([...el.querySelectorAll("h3, h4, h5, h6")].map(h => [h.tagName, h.className, h.textContent])).toEqual([["H3", "h1", "Title"], ["H4", "h2", "Sub"], ["H6", "h4", "Deep"]]);
