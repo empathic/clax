@@ -144,11 +144,24 @@ _bazel() {
             ;;
         test) _run ./scripts/bazel-test.sh --rust "$@" ;;
         lint)
+            # Cargo reads a crate's clippy.toml from beside its Cargo.toml;
+            # Bazel takes one per command, so each crate that has one is
+            # linted alone with it (as scripts/bazel-test.sh does), and the
+            # rest with the root one.
+            local toml crate own=() rest=(//crates/...)
+            for toml in crates/*/clippy.toml; do
+                [ -f "$toml" ] || continue
+                crate="$(dirname "$toml")"
+                own+=("$crate")
+                rest+=("-//$crate/...")
+            done
             _run "${b[@]}" build --lockfile_mode=error --config=fmt //crates/... &&
-                _run "${b[@]}" build --lockfile_mode=error --config=clippy -- //crates/... -//crates/clax-commands/... &&
+                _run "${b[@]}" build --lockfile_mode=error --config=clippy -- "${rest[@]}" || return $?
+            for crate in "${own[@]+"${own[@]}"}"; do
                 _run "${b[@]}" build --lockfile_mode=error --config=clippy \
-                    --@rules_rust//rust/settings:clippy.toml=//crates/clax-commands:clippy.toml //crates/clax-commands/... &&
-                _run "${b[@]}" test --lockfile_mode=error //web:lint
+                    "--@rules_rust//rust/settings:clippy.toml=//$crate:clippy.toml" "//$crate/..." || return $?
+            done
+            _run "${b[@]}" test --lockfile_mode=error //web:lint
             ;;
         web-test) _run "${b[@]}" test --lockfile_mode=error //web:lint //web:typecheck //web:unit //web:bundle_size "$@" ;;
         pi-test) _run "${b[@]}" test --lockfile_mode=error //plugins/pi:typecheck //plugins/pi:test "$@" ;;
