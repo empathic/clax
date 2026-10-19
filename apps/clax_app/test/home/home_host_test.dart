@@ -284,6 +284,22 @@ void main() {
     expect([for (final a in told.last.data as List) (a as Map)['id']], [fresh]);
   });
 
+  test('forget drops a deleted app at once, and its stream delete then '
+      'changes nothing', () async {
+    final aid = api.seedArtifact('Runs', _page);
+    final kept = api.seedArtifact('Kept', _page);
+    await host.load();
+    var heard = 0;
+    host.addListener(() => heard++);
+    host.forget(aid);
+    expect(host.state.apps.map((a) => a.id), [kept]);
+    expect(heard, 1);
+    api.emit(ClaxEvent(type: 'artifact_deleted', data: {'artifact_id': aid}));
+    await pumpEventQueue();
+    expect(host.state.apps.map((a) => a.id), [kept]);
+    expect(heard, 1);
+  });
+
   test('gallery events before the first list answers wait for it: apps() '
       'and the apps event never carry a partial list', () async {
     final gated = _GatedApi();

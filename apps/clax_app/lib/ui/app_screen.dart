@@ -102,6 +102,19 @@ import 'working_chip.dart';
 ///   shell that still draws its own sheet says whether it shows, and while
 ///   it does, back and Escape close it (`closeQuestions`) before anything
 ///   else.
+/// - **Shell notices** (`notice` is native). Each is a toast at the top on
+///   a narrow window and a bar across the top from medium width; an error
+///   leads with the `danger` icon, and its action (Try again) calls
+///   `noticeAction`.
+/// - **The draft banner** (`draft` is native). While an agent drafts a
+///   change, a 48 dp [ClaxBanner] under the status bar says "Clax is
+///   drafting…" with Show draft (`showDraft`); while its draft shows,
+///   "Showing Clax’s draft" with Back (`hideDraft`). It pushes the page
+///   down rather than cover its heading, and the status bar's band over it
+///   is `bg`.
+/// - **A deleted app** (`gone`). "This app was deleted." covers the page,
+///   with Back to Home; nothing of Clax's stays over it, back leaves, and
+///   the home's lists drop the app at once ([HomeHost.forget]).
 /// - **First-run hint.** With [AppScreen.firstRunHint] and a notice, one
 ///   line at the top once the page is ready, with the pill under it: with
 ///   notifications off, "Turn on notifications to comment from the shade."
@@ -418,6 +431,13 @@ class _AppScreenState extends State<AppScreen> with WidgetsBindingObserver {
   var _busy = false;
   List<ThreadSummary> _threads = const [];
 
+  /// What the shell's draft banner says (`draft` is native), or null for
+  /// no banner.
+  DraftState? _draftState;
+
+  /// The app was deleted (the shell's `gone`).
+  var _gone = false;
+
   // The comment bar, and whether a composer opened the panel while the bar
   // was up (closing the composer then closes the panel again).
   var _bar = false;
@@ -563,16 +583,16 @@ class _AppScreenState extends State<AppScreen> with WidgetsBindingObserver {
   /// through it.
   final _overlays = OverlayGate();
 
-  /// The permission prompts the shell has asked and not cancelled, shown
-  /// or waiting their turn, by ID; each completer takes its prompt down.
-  final _asks = <String, Completer<void>>{};
-
   /// Each `questions` message, for the questions sheet to read again.
   final _questionChanges = StreamController<void>.broadcast();
 
   /// Whether the questions sheet is up, or waits its turn.
   var _questionsUp = false;
   var _questionsWaiting = false;
+
+  /// The permission prompts the shell has asked and not cancelled, shown
+  /// or waiting their turn, by ID; each completer takes its prompt down.
+  final _asks = <String, Completer<void>>{};
 
   /// The prompts waiting their turn, oldest first.
   final _waitingAsks = <AskMsg>[];
@@ -607,14 +627,14 @@ class _AppScreenState extends State<AppScreen> with WidgetsBindingObserver {
           if (k == OverlayKind.ask && _waitingAsks.isNotEmpty) {
             unawaited(_showAsk(_waitingAsks.removeAt(0)));
           }
-        }),
-      )
-      ..add(widget.surface.messages.listen(_onMessage))
-      ..add(widget.surface.faults.listen(_onFault))
           if (k == OverlayKind.questions && _questionsWaiting) {
             _questionsWaiting = false;
             unawaited(_showQuestions());
           }
+        }),
+      )
+      ..add(widget.surface.messages.listen(_onMessage))
+      ..add(widget.surface.faults.listen(_onFault))
       ..add(widget.worker.listen(_onWorker));
     if (widget.actions case final actions?) _subs.add(actions.listen(_act));
     _subs.add(
@@ -864,11 +884,11 @@ class _AppScreenState extends State<AppScreen> with WidgetsBindingObserver {
       c.complete();
     }
     _asks.clear();
+    unawaited(_questionChanges.close());
     _overlays.dispose();
     _text.dispose();
     _field.dispose();
     if (_listen != null) {
-    unawaited(_questionChanges.close());
       _listen!.cancel();
       unawaited(widget.voice.stop());
     }
@@ -943,14 +963,14 @@ class _AppScreenState extends State<AppScreen> with WidgetsBindingObserver {
             _peekFromBar = false;
           }
         });
+        // The composer is the person's: the questions sheet waits for it.
+        if (picked) _overlays.request(OverlayKind.composer);
+        if (closed) _overlays.release(OverlayKind.composer);
         if (picked && _dictate) {
           unawaited(_startDictation());
         } else if (picked) {
           // Typing, then: the field takes focus (and the keyboard comes up).
           WidgetsBinding.instance.addPostFrameCallback((_) {
-        // The composer is the person's: the questions sheet waits for it.
-        if (picked) _overlays.request(OverlayKind.composer);
-        if (closed) _overlays.release(OverlayKind.composer);
             if (mounted && _draft != null) _field.requestFocus();
           });
         }
@@ -1000,7 +1020,7 @@ class _AppScreenState extends State<AppScreen> with WidgetsBindingObserver {
       case Notice():
         // A failed post says so in a notice; the composer may send again.
         if (_sending) setState(() => _sending = false);
-        _snack(m.text);
+        _notice(m);
       case QuestionsMsg(:final open, :final showing, :final raise):
         // The questions are drawn here (`questions` is native): the shell
         // raises the sheet for a new one while the app shows, and one that
@@ -1031,11 +1051,13 @@ class _AppScreenState extends State<AppScreen> with WidgetsBindingObserver {
       case AskCancelMsg(:final id):
         // Shown, it is taken down; waiting, it is passed over in its turn.
         _asks.remove(id)?.complete();
-      case DraftMsg() || GoneMsg() || PageWaitMsg():
-        // The surface declares only `ask` and `questions` native
-        // (nativeOverlays), so the shell draws the draft banner itself; a
-        // deleted app and a slow page are the shell's to show.
+      case PageWaitMsg():
+        // A slow page is the shell's to show.
         break;
+      case DraftMsg(:final state):
+        if (!_gone) setState(() => _draftState = state);
+      case GoneMsg():
+        _onGone();
       case DeviceRequest():
         _device(m);
       case ChromeMsg():
@@ -1045,13 +1067,40 @@ class _AppScreenState extends State<AppScreen> with WidgetsBindingObserver {
     }
   }
 
-  /// The shell asks permission ([AskMsg]): the prompt shows once no other
-  /// prompt does ([OverlayGate]).
-  void _ask(AskMsg m) {
-    if (_asks.containsKey(m.id)) return;
-    _asks[m.id] = Completer<void>();
-    if (_overlays.request(OverlayKind.ask)) {
-      unawaited(_showAsk(m));
+  /// Shows a shell notice (`notice` is native) as a toast at the top on a
+  /// narrow window and a bar across the top from medium: an error leads
+  /// with the `danger` icon, and its action calls `noticeAction`.
+  void _notice(Notice m) {
+    final action = m.action;
+    _showToast(
+      m.text,
+      key: const ValueKey('app-notice'),
+      action: action?.label,
+      onAction: action == null ? null : () => _call(NoticeAction(action.id)),
+      place: ClaxWidth.of(context) >= ClaxWidth.medium
+          ? ClaxToastPlace.inline
+          : ClaxToastPlace.top,
+      error: m.tone == NoticeTone.error,
+    );
+  }
+
+  /// The app was deleted: its page goes under "This app was deleted.",
+  /// with nothing of Clax's over it, and the home's lists drop it.
+  void _onGone() {
+    if (_gone) return;
+    _putAwayToasts();
+    _field.unfocus();
+    unawaited(_stopDictation());
+    setState(() {
+      _gone = true;
+      _draftState = null;
+      _hint = false;
+      _bar = false;
+      _open = false;
+    });
+    widget.home?.forget(widget.aid);
+  }
+
   /// Shows the questions sheet now, or once the composer and any
   /// permission prompt are down ([OverlayGate]); one up already reads the
   /// questions again on the `questions` message that raised it.
@@ -1085,6 +1134,13 @@ class _AppScreenState extends State<AppScreen> with WidgetsBindingObserver {
     }
   }
 
+  /// The shell asks permission ([AskMsg]): the prompt shows once no other
+  /// prompt does ([OverlayGate]).
+  void _ask(AskMsg m) {
+    if (_asks.containsKey(m.id)) return;
+    _asks[m.id] = Completer<void>();
+    if (_overlays.request(OverlayKind.ask)) {
+      unawaited(_showAsk(m));
     } else {
       _waitingAsks.add(m);
     }
@@ -1551,6 +1607,8 @@ class _AppScreenState extends State<AppScreen> with WidgetsBindingObserver {
     VoidCallback? onAction,
     Duration duration = toastFor,
     Widget? leading,
+    ClaxToastPlace place = ClaxToastPlace.top,
+    bool error = false,
   }) {
     if (!mounted || _toldVisible != true) return null;
     final toast = ClaxToast.show(
@@ -1559,10 +1617,11 @@ class _AppScreenState extends State<AppScreen> with WidgetsBindingObserver {
       key: key,
       actionLabel: action,
       onAction: onAction,
-      place: ClaxToastPlace.top,
+      place: place,
       clock: widget.clock,
       duration: duration,
       leading: leading,
+      error: error,
     );
     setState(() => _toastUp = toast);
     unawaited(
@@ -2049,6 +2108,7 @@ class _AppScreenState extends State<AppScreen> with WidgetsBindingObserver {
     return PopScope(
       canPop:
           widget.covered ||
+          _gone ||
           (!_wantComment &&
               !_questionsShowing &&
               _draft == null &&
@@ -2078,7 +2138,7 @@ class _AppScreenState extends State<AppScreen> with WidgetsBindingObserver {
 
   Widget _page(BuildContext context, bool wide) {
     final scheme = Theme.of(context).colorScheme;
-    final bar = _bar && !_open && _draft == null && !_covered;
+    final bar = _bar && !_open && _draft == null && !_covered && !_gone;
     final shown = _open || _draft != null;
     return KeyedSubtree(
       key: _pageKey,
@@ -2097,7 +2157,7 @@ class _AppScreenState extends State<AppScreen> with WidgetsBindingObserver {
                   // bottom inset, and the navigation band is not drawn.
                   final holdsBottom = !bar && (!shown || wide);
                   final page = MediaQuery(
-                    data: MediaQuery.of(context),
+                    data: _pageMedia(context),
                     child: Stack(
                       fit: StackFit.expand,
                       children: [
@@ -2114,9 +2174,11 @@ class _AppScreenState extends State<AppScreen> with WidgetsBindingObserver {
                     context: context,
                     removeBottom: !holdsBottom,
                     child: SystemBands(
-                      top: _chrome?.top,
-                      bottom: _chrome?.bottom,
-                      child: page,
+                      // The draft banner's strip and the deleted app's
+                      // state are on `bg`, under bands of its colour.
+                      top: _draftState == null && !_gone ? _chrome?.top : null,
+                      bottom: _gone ? null : _chrome?.bottom,
+                      child: _withBanners(context, page),
                     ),
                   );
                 },
@@ -2133,6 +2195,105 @@ class _AppScreenState extends State<AppScreen> with WidgetsBindingObserver {
                 dictate: _dictate,
                 onVoice: _toggleDictate,
                 onClose: () => _setBar(false),
+              ),
+          ],
+        ),
+      ),
+    );
+  }
+
+  /// The page's media: under the draft banner, which holds the top inset,
+  /// it has none.
+  MediaQueryData _pageMedia(BuildContext context) {
+    final m = MediaQuery.of(context);
+    return _draftState == null ? m : m.removePadding(removeTop: true);
+  }
+
+  /// [page] under the draft banner, which pushes it down, or covered by
+  /// the deleted app's state.
+  Widget _withBanners(BuildContext context, Widget page) {
+    if (_gone) {
+      return Stack(
+        fit: StackFit.expand,
+        children: [page, Positioned.fill(child: _goneView(context))],
+      );
+    }
+    final state = _draftState;
+    if (state == null) return page;
+    final pad = MediaQuery.paddingOf(context);
+    final apple = ClaxFamily.of(context) == ClaxFamily.apple;
+    return Column(
+      crossAxisAlignment: CrossAxisAlignment.stretch,
+      children: [
+        ColoredBox(
+          color: claxPalette(context).bg,
+          child: Padding(
+            padding: apple
+                ? EdgeInsets.only(top: pad.top)
+                : EdgeInsets.fromLTRB(
+                    pad.left + ClaxSpace.s16,
+                    pad.top + ClaxSpace.s8,
+                    pad.right + ClaxSpace.s16,
+                    ClaxSpace.s8,
+                  ),
+            child: _draftBanner(state),
+          ),
+        ),
+        Expanded(child: page),
+      ],
+    );
+  }
+
+  /// The shell's draft banner, native: an agent drafting, with Show draft,
+  /// or its draft shown in place of the app, with Back.
+  Widget _draftBanner(DraftState state) => switch (state) {
+    Drafting(:final by) => ClaxBanner(
+      key: const ValueKey('draft-banner'),
+      dense: true,
+      icon: Icons.edit_note_rounded,
+      title: '$by is drafting…',
+      actions: [
+        ClaxButton(
+          key: const ValueKey('draft-show'),
+          label: 'Show draft',
+          onPressed: () => _call(ShowDraft(by)),
+        ),
+      ],
+    ),
+    Showing(:final by) => ClaxBanner(
+      key: const ValueKey('draft-banner'),
+      dense: true,
+      icon: Icons.visibility_outlined,
+      title: 'Showing $by’s draft',
+      actions: [
+        ClaxButton(
+          key: const ValueKey('draft-back'),
+          label: 'Back',
+          onPressed: () => _call(const HideDraft()),
+        ),
+      ],
+    ),
+  };
+
+  /// The deleted app: "This app was deleted.", with Back to Home where
+  /// there is a home to go back to.
+  Widget _goneView(BuildContext context) {
+    final nav = Navigator.of(context);
+    return ColoredBox(
+      key: const ValueKey('app-gone'),
+      color: claxPalette(context).bg,
+      child: SafeArea(
+        child: ClaxEmpty(
+          icon: Icons.delete_outline_rounded,
+          title: 'This app was deleted.',
+          actions: [
+            if (widget.mode == AppMode.app && nav.canPop())
+              ClaxButton(
+                key: const ValueKey('app-gone-back'),
+                label: 'Back to Home',
+                kind: ClaxButtonKind.primary,
+                isDefault: true,
+                onPressed: () => nav.pop(),
               ),
           ],
         ),

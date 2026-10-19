@@ -789,17 +789,25 @@ class HomeHost extends ChangeNotifier {
     }
   }
 
+  /// App [aid] was deleted, as its own page said (the shell's `gone`):
+  /// it leaves the lists at once, as an `artifact_deleted` from the stream
+  /// would remove it; that event, when it comes, changes nothing more.
+  void forget(String aid) {
+    if (_summaries == null) {
+      _early[aid] = null;
+      return;
+    }
+    if (!_summaries!.any((a) => a.id == aid)) return;
+    _summaries = _summaries!.where((a) => a.id != aid).toList();
+    _syncPlans();
+    _changed();
+  }
+
   Future<void> _onGallery(StreamEvent e) async {
     final aid = e.data['artifact_id'];
     if (aid is! String) return;
     if (e.type == 'artifact_deleted') {
-      if (_summaries == null) {
-        _early[aid] = null;
-        return;
-      }
-      _summaries = _summaries!.where((a) => a.id != aid).toList();
-      _syncPlans();
-      _changed();
+      forget(aid);
       return;
     }
     try {

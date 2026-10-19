@@ -16,6 +16,10 @@ import 'family.dart';
 /// Apple: an inline bar the width of its pane with a hairline under it, for
 /// the top of the pane under the toolbar, its actions always at the end of
 /// its row.
+///
+/// [dense] (Material) makes it one row at least 48 high, its actions at the
+/// end of the row at every width, for a banner over an app's page; the
+/// Apple bar is one row already.
 class ClaxBanner extends StatelessWidget {
   const ClaxBanner({
     super.key,
@@ -24,6 +28,7 @@ class ClaxBanner extends StatelessWidget {
     required this.title,
     this.body,
     this.actions = const [],
+    this.dense = false,
   });
 
   final IconData icon;
@@ -31,6 +36,7 @@ class ClaxBanner extends StatelessWidget {
   final String title;
   final String? body;
   final List<Widget> actions;
+  final bool dense;
 
   @override
   Widget build(BuildContext context) {
@@ -57,7 +63,8 @@ class ClaxBanner extends StatelessWidget {
         ],
       ],
     );
-    final inline = apple || ClaxWidth.of(context) >= ClaxWidth.medium;
+    final inline =
+        apple || dense || ClaxWidth.of(context) >= ClaxWidth.medium;
     final buttons = Wrap(
       spacing: ClaxSpace.s8,
       runSpacing: ClaxSpace.s8,
@@ -66,16 +73,24 @@ class ClaxBanner extends StatelessWidget {
       children: actions,
     );
     final leading = Padding(
-      padding: EdgeInsets.only(top: apple ? 0 : 2),
-      child: Icon(icon, size: apple ? 16 : 24, color: iconColor ?? p.agent),
+      padding: EdgeInsets.only(top: apple || dense ? 0 : 2),
+      child: Icon(
+        icon,
+        size: apple ? 16 : (dense ? 20 : 24),
+        color: iconColor ?? p.agent,
+      ),
     );
     final row = Row(
-      crossAxisAlignment: apple
+      crossAxisAlignment: apple || dense
           ? CrossAxisAlignment.center
           : CrossAxisAlignment.start,
       children: [
         leading,
-        SizedBox(width: apple ? ClaxSpace.s8 : ClaxSpace.s16),
+        SizedBox(
+          width: apple
+              ? ClaxSpace.s8
+              : (dense ? ClaxSpace.s12 : ClaxSpace.s16),
+        ),
         Expanded(child: text),
         if (inline && actions.isNotEmpty) ...[
           const SizedBox(width: ClaxSpace.s16),
@@ -113,7 +128,16 @@ class ClaxBanner extends StatelessWidget {
               borderRadius: BorderRadius.circular(ClaxRadius.lg),
               border: Border.all(color: p.border),
             ),
-            padding: EdgeInsets.fromLTRB(
+            constraints: BoxConstraints(minHeight: dense ? 48 : 0),
+            alignment: dense ? AlignmentDirectional.centerStart : null,
+            padding: dense
+                ? const EdgeInsetsDirectional.fromSTEB(
+                    ClaxSpace.s16,
+                    ClaxSpace.s4,
+                    ClaxSpace.s4,
+                    ClaxSpace.s4,
+                  )
+                : EdgeInsets.fromLTRB(
               ClaxSpace.s16,
               ClaxSpace.s16,
               ClaxSpace.s16,

@@ -12,11 +12,12 @@ import 'app_surface.dart';
 import 'daemon_cookie.dart';
 import 'host_protocol.dart';
 
-/// The overlays the app draws in place of the shell's ([Init.native]): the
-/// permission prompt (`ask`, drawn by `AppScreen` with `AskPrompt`) and
-/// the questions sheet (`questions`, `QuestionsSheet`, which reads and
-/// answers the questions through the daemon).
-const nativeOverlays = ['ask', 'questions'];
+/// The overlays the app draws in place of the shell's ([Init.native]), all
+/// in `AppScreen`: the permission prompt (`ask`, with `AskPrompt`), the
+/// questions sheet (`questions`, `QuestionsSheet`, which reads and answers
+/// the questions through the daemon), the shell's notices (`notice`, as
+/// toasts) and the draft banner (`draft`, a `ClaxBanner`).
+const nativeOverlays = ['ask', 'questions', 'notice', 'draft'];
 
 /// [AppSurface] over a platform WebView (`webview_flutter`).
 ///

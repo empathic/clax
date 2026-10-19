@@ -51,6 +51,9 @@ abstract final class ClaxToast {
   /// The toast's card or bar, for tests that measure it.
   static const cardKey = ValueKey('clax-toast');
 
+  /// The icon an [error] toast leads with.
+  static const errorIconKey = ValueKey('clax-toast-error');
+
   static _ToastHandle? _current;
 
   /// The toast showing at the top or inline, if any.
@@ -64,7 +67,9 @@ abstract final class ClaxToast {
   /// replaced. Each is a live region, and in the Apple family it is
   /// announced as well. [leading] (a [ClaxMark], say) goes before the
   /// text at the top and inline; [key] names the card or bar (else
-  /// [cardKey]).
+  /// [cardKey]). An [error] toast says something failed: without
+  /// [leading] it leads with the `danger` error icon, in the colour that
+  /// reads on its surface.
   ///
   /// [ClaxToastPlace.bottom] is a floating snack bar and
   /// [ClaxToastPlace.top] a card like it under the status bar: 16 from the
@@ -83,6 +88,7 @@ abstract final class ClaxToast {
     Duration duration = const Duration(seconds: 4),
     Widget? leading,
     Key? key,
+    bool error = false,
   }) {
     if (hasDesktopWindowChrome &&
         ClaxFamily.of(context) == ClaxFamily.apple) {
@@ -99,7 +105,15 @@ abstract final class ClaxToast {
         final controller = messenger.showSnackBar(
           SnackBar(
             key: key ?? cardKey,
-            content: Text(text),
+            content: error
+                ? Row(
+                    children: [
+                      _errorIcon(context, onInverse: true),
+                      const SizedBox(width: ClaxSpace.s12),
+                      Expanded(child: Text(text)),
+                    ],
+                  )
+                : Text(text),
             behavior: SnackBarBehavior.floating,
             width: width,
             duration: duration,
@@ -147,6 +161,7 @@ abstract final class ClaxToast {
         actionLabel: actionLabel,
         onAction: onAction,
         leading: leading,
+        error: error,
       ),
     );
     handle.remove = () {
@@ -167,6 +182,25 @@ abstract final class ClaxToast {
       clock.delay(duration).then((_) => handle._end(ClaxToastEnd.timedOut));
     }
     return handle;
+  }
+
+  /// The error icon in `danger`: on the inverse surface of a top card or
+  /// snack bar ([onInverse]), the other brightness's `danger`, which reads
+  /// on it.
+  static Widget _errorIcon(BuildContext context, {required bool onInverse}) {
+    final dark = Theme.of(context).brightness == Brightness.dark;
+    final color = !onInverse
+        ? claxPalette(context).danger
+        : dark
+        ? ClaxTokens.light.danger
+        : ClaxTokens.dark.danger;
+    return Icon(
+      Icons.error_outline_rounded,
+      key: errorIconKey,
+      size: 20,
+      color: color,
+      semanticLabel: 'Error',
+    );
   }
 }
 
@@ -235,6 +269,7 @@ class _OverlayToast extends StatefulWidget {
     required this.actionLabel,
     required this.onAction,
     required this.leading,
+    required this.error,
   });
   final Key cardKey;
   final _ToastHandle handle;
@@ -245,6 +280,7 @@ class _OverlayToast extends StatefulWidget {
   final String? actionLabel;
   final VoidCallback? onAction;
   final Widget? leading;
+  final bool error;
 
   @override
   State<_OverlayToast> createState() => _OverlayToastState();
@@ -296,7 +332,11 @@ class _OverlayToastState extends State<_OverlayToast>
     Widget live(Widget child) =>
         Semantics(container: true, liveRegion: true, child: child);
 
-    if (widget.place == ClaxToastPlace.top) {
+    final top = widget.place == ClaxToastPlace.top;
+    final leading =
+        widget.leading ??
+        (widget.error ? ClaxToast._errorIcon(context, onInverse: top) : null);
+    if (top) {
       final card = live(Material(
         key: widget.cardKey,
         color: p.fg,
@@ -309,7 +349,7 @@ class _OverlayToastState extends State<_OverlayToast>
             constraints: const BoxConstraints(minHeight: 36),
             child: Row(
               children: [
-                if (widget.leading case final l?) ...[
+                if (leading case final l?) ...[
                   l,
                   const SizedBox(width: ClaxSpace.s12),
                 ],
@@ -371,7 +411,7 @@ class _OverlayToastState extends State<_OverlayToast>
         constraints: const BoxConstraints(minHeight: 36),
         child: Row(
           children: [
-            if (widget.leading case final l?) ...[
+            if (leading case final l?) ...[
               l,
               const SizedBox(width: ClaxSpace.s12),
             ],
