@@ -356,6 +356,34 @@ async fn github_signs_in_the_owner_and_makes_members_of_their_own_space() {
         site.publish(&token, "Third").await,
         Err("quota_exceeded".to_string())
     );
+    // A brief started in the browser counts against the same cap, and
+    // leaves nothing behind when refused.
+    let res = site
+        .http
+        .post(format!("{}/api/artifacts:new", site.ts.base))
+        .header(HOST, &site.host)
+        .header(ORIGIN, format!("http://{}", site.host))
+        .header(COOKIE, &grace)
+        .json(&json!({"title": "Third", "brief": "A chart"}))
+        .send()
+        .await
+        .unwrap();
+    let status = res.status().as_u16();
+    let v: Value = res.json().await.unwrap();
+    assert_eq!(
+        (status, v["error"]["code"].as_str()),
+        (403, Some("quota_exceeded")),
+        "{v}"
+    );
+    let list: Value = site
+        .get("/api/artifacts", Some(&grace))
+        .send()
+        .await
+        .unwrap()
+        .json()
+        .await
+        .unwrap();
+    assert_eq!(list["artifacts"].as_array().unwrap().len(), 2, "{list}");
 
     // People shows each person's GitHub login; revoking blocks the account.
     let people: Value = site

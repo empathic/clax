@@ -183,6 +183,9 @@ pub struct Store {
     /// One per agent token's idempotency key, held across a keyed
     /// publish ([`Store::lock_publish_key`]).
     publish_key_locks: ArtifactLocks,
+    /// One per starter's brief idempotency key, held across a keyed
+    /// `POST /api/artifacts:new` ([`Store::lock_brief_key`]).
+    brief_key_locks: ArtifactLocks,
     /// Set by [`Store::shutdown`].
     shut_down: AtomicBool,
     /// Changes to `inbox_items` in the write transaction under way, recorded
@@ -342,6 +345,7 @@ impl Store {
             content,
             content_locks: ArtifactLocks::default(),
             publish_key_locks: ArtifactLocks::default(),
+            brief_key_locks: ArtifactLocks::default(),
             shut_down: AtomicBool::new(false),
             inbox_changes,
             inbox_listener: RwLock::new(None),

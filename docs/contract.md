@@ -1542,9 +1542,12 @@ writes' limit), else 400 `invalid_brief`.
 An `Idempotency-Key` header (1 to 128 printable ASCII characters, else 400
 `invalid_args`) makes the request repeatable: a repeat by the same person
 with the same key answers 200 with the artifact, version 1 and brief
-thread the first request made, while that artifact exists; the dialog
-makes one key per form and sends it again when it retries. Two requests
-racing with one key may each make an artifact. Every artifact started
+thread the first request made, while that artifact exists (a key whose
+artifact was deleted makes a new one); the dialog makes one key per form
+and sends it again when it retries. The same request sent while the first
+is still running waits for it, then answers what it made (within one
+daemon process). A member's artifact cap applies as to a publish (403
+`quota_exceeded`). Every artifact started
 this way says so to people (not to agents): `brief: {by}` in `GET
 /api/artifacts`, `GET /api/artifacts/<id>`, the page's bootstrap and this
 route's answer, `by` the starter's display name now (`Viewer` without one, as their comments are signed).

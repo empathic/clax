@@ -632,6 +632,43 @@ async fn a_repeat_with_its_key_answers_the_first_artifact() {
     assert_eq!((s, code(&v)), (400, "invalid_args"), "{v}");
     let (_, list) = json_of(ts.get_authed("/api/artifacts").await).await;
     assert_eq!(list["artifacts"].as_array().unwrap().len(), 3, "{list}");
+    // Once its artifact is deleted, the key makes a new one, which says who
+    // started it, and a repeat answers the new one.
+    let first_id = first["artifact"]["id"].as_str().unwrap();
+    let res = ts
+        .authed(
+            ts.client
+                .delete(format!("{}/api/artifacts/{first_id}", ts.base)),
+        )
+        .send()
+        .await
+        .unwrap();
+    assert!(res.status().is_success(), "{}", res.text().await.unwrap());
+    let (s, renewed) = call_with(&ts, Some(&owner), "POST", NEW, brief("Once"), &key).await;
+    assert_eq!(s, 201, "{renewed}");
+    assert_ne!(renewed["artifact"]["id"], first["artifact"]["id"]);
+    assert!(renewed["artifact"]["brief"].is_object(), "{renewed}");
+    let (s, again) = call_with(&ts, Some(&owner), "POST", NEW, brief("Once"), &key).await;
+    assert_eq!(s, 200, "{again}");
+    assert_eq!(again["artifact"]["id"], renewed["artifact"]["id"]);
+}
+
+#[tokio::test]
+async fn the_same_keyed_brief_sent_twice_at_once_makes_one_artifact() {
+    let ts = TestServer::spawn().await;
+    let owner = ts.owner_cookie();
+    let key = [("idempotency-key", "k-race")];
+    let (a, b) = tokio::join!(
+        call_with(&ts, Some(&owner), "POST", NEW, brief("Once"), &key),
+        call_with(&ts, Some(&owner), "POST", NEW, brief("Once"), &key),
+    );
+    let mut statuses = [a.0, b.0];
+    statuses.sort_unstable();
+    assert_eq!(statuses, [200, 201], "{} {}", a.1, b.1);
+    assert_eq!(a.1["artifact"]["id"], b.1["artifact"]["id"]);
+    assert_eq!(a.1["thread"]["id"], b.1["thread"]["id"]);
+    let (_, list) = json_of(ts.get_authed("/api/artifacts").await).await;
+    assert_eq!(list["artifacts"].as_array().unwrap().len(), 1, "{list}");
 }
 
 #[tokio::test]

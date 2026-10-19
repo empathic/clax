@@ -550,7 +550,10 @@ pub(crate) fn brief_refusal(
 /// [`clax_store::briefs::MAX_BRIEF_KEY`] printable ASCII characters, else
 /// 400 `invalid_args`) makes a repeat by the same person answer 200 with
 /// the artifact, version 1 and brief thread the first request made, while
-/// that artifact exists ([`clax_store::briefs`]).
+/// that artifact exists ([`clax_store::briefs`]); the same request sent
+/// while the first is running waits for it. A member's artifact cap
+/// (`quota_exceeded`) is counted in the transaction that inserts the
+/// artifact, as for a publish.
 pub async fn create_from_brief(
     State(s): State<AppState>,
     d: clax_http::agent::DeniedToGrants,
@@ -629,21 +632,27 @@ pub async fn create_from_brief(
     let (artifact, version, thread, again) = s
         .store_call_async(move |st| async move {
             let st = &*st;
+            // Held until the key is recorded: the same request sent again
+            // meanwhile waits, then answers what this one made.
+            let _keyed = match &key {
+                Some(k) => Some(st.lock_brief_key(&starter, k).await),
+                None => None,
+            };
             if let Some(k) = &key
                 && let Some(aid) = st.brief_by_key(&starter, k)?
             {
                 let id = ArtifactId::parse(&aid)?;
-                let first = match st.get_artifact(&id)? {
-                    Some(a) => Some((
-                        a,
-                        st.get_version(&id, 1)?,
-                        st.list_threads(&id, true, None, 1)?.0,
-                    )),
-                    None => None,
-                };
-                if let Some((a, Some(v), threads)) = first
-                    && let Some(t) = threads.first()
-                {
+                // A key whose artifact is gone makes a new one
+                // (`record_brief` takes it over); a live one is answered.
+                if let Some(a) = st.get_artifact(&id)? {
+                    let v = st.get_version(&id, 1)?;
+                    let threads = st.list_threads(&id, true, None, 1)?.0;
+                    let (Some(v), Some(t)) = (v, threads.first()) else {
+                        return Err(CoreError::invalid(
+                            "invalid_args",
+                            "this Idempotency-Key named an artifact whose brief is gone",
+                        ));
+                    };
                     let vis = vf.build(st)?;
                     let (a, v) = vis.filter_published(st, &a, &v)?;
                     let t = vis.filter_thread(st, t, ctx.codex_push(), with_path)?;
@@ -698,9 +707,20 @@ pub async fn create_from_brief(
                     return Err(e);
                 }
             };
-            // Two requests racing with one key each make an artifact; the
-            // first recorded keeps the key.
-            st.record_brief(&artifact.id, &starter, key.as_deref())?;
+            // The key's lock serialises this process's requests; one key
+            // recorded by another process first leaves no artifact here.
+            let recorded = match st.record_brief(&artifact.id, &starter, key.as_deref()) {
+                Ok(true) => Ok(()),
+                Ok(false) => Err(CoreError::invalid(
+                    "invalid_args",
+                    "this Idempotency-Key named another request, which made an artifact first",
+                )),
+                Err(e) => Err(e),
+            };
+            if let Err(e) = recorded {
+                let _ = st.delete_artifact_async(&audit, &aid).await;
+                return Err(e);
+            }
             // The brief goes to no agent: `@` in it sends nothing.
             let (thread, _) =
                 super::threads::announce_new_thread(st, &ctx, &audit, thread, false, None, false)?;
