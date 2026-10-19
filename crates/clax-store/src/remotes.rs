@@ -614,11 +614,14 @@ impl Store {
 }
 
 /// Records, in `tx` (the transaction recording the version), that the
-/// publish keyed `key` made version `n` of `aid`.
+/// publish keyed `key` made version `n` of `aid`. A key whose recorded
+/// artifact is gone (deleted, or never recorded) is taken over: the
+/// publish it names is made again, as [`Store::publish_key`]'s callers
+/// replay only a version that still exists.
 ///
 /// # Errors
-/// `publish_key_used` when the key is recorded already (another process's
-/// publish with the key made a version first).
+/// `publish_key_used` when the key is recorded for a live artifact
+/// already (another process's publish with the key made a version first).
 pub(super) fn record_publish_key_in(
     tx: &rusqlite::Connection,
     key: &PublishKey,
@@ -627,8 +630,12 @@ pub(super) fn record_publish_key_in(
     now: &str,
 ) -> Result<()> {
     let made = tx.execute(
-        "INSERT OR IGNORE INTO publish_keys (grant_id, key, artifact_id, n, created_at)
-         VALUES (?1, ?2, ?3, ?4, ?5)",
+        "INSERT INTO publish_keys (grant_id, key, artifact_id, n, created_at)
+         VALUES (?1, ?2, ?3, ?4, ?5)
+         ON CONFLICT (grant_id, key) DO UPDATE SET artifact_id = excluded.artifact_id,
+             n = excluded.n, created_at = excluded.created_at
+         WHERE NOT EXISTS (SELECT 1 FROM artifacts
+                           WHERE id = publish_keys.artifact_id AND deleted_at IS NULL)",
         params![key.grant_id, key.key, aid, n, now],
     )?;
     if made == 0 {
@@ -813,6 +820,32 @@ mod tests {
             "publish_key_used"
         );
         assert_eq!(st.get_artifact(&id).unwrap().unwrap().current_version, 2);
+        assert_eq!(st.publish_key("g1", "k1").unwrap(), Some((a.id, 1)));
+    }
+
+    #[test]
+    fn a_publish_key_whose_artifact_was_deleted_makes_a_new_one() {
+        let (_d, st) = store();
+        let ctx = &clax_core::audit::AuditCtx::DAEMON;
+        let (a, _) = st.create_artifact(ctx, keyed("k1", None), None).unwrap();
+        let id = clax_core::ArtifactId::parse(&a.id).unwrap();
+        st.delete_artifact(ctx, &id).unwrap();
+        let (b, _) = st.create_artifact(ctx, keyed("k1", None), None).unwrap();
+        assert_ne!(a.id, b.id);
+        assert_eq!(st.publish_key("g1", "k1").unwrap(), Some((b.id, 1)));
+        assert!(st.zero_version_artifacts().unwrap().is_empty());
+    }
+
+    #[test]
+    fn a_create_whose_key_is_taken_leaves_no_artifact() {
+        let (_d, st) = store();
+        let ctx = &clax_core::audit::AuditCtx::DAEMON;
+        let (a, _) = st.create_artifact(ctx, keyed("k1", None), None).unwrap();
+        assert_eq!(
+            code_of(st.create_artifact(ctx, keyed("k1", None), None)),
+            "publish_key_used"
+        );
+        assert!(st.zero_version_artifacts().unwrap().is_empty());
         assert_eq!(st.publish_key("g1", "k1").unwrap(), Some((a.id, 1)));
     }
 

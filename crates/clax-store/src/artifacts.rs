@@ -572,12 +572,22 @@ impl Store {
         let ids = self.zero_version_artifacts()?;
         let mut n = 0;
         for id in ids {
-            let aid = ArtifactId::parse(&id).ok();
-            let _lock = match &aid {
-                Some(aid) => Some(self.lock_content(aid).await?),
-                None => None,
-            };
-            let removed = self.with_tx(|tx| {
+            if self.delete_zero_version_async(&id).await? {
+                n += 1;
+            }
+        }
+        Ok(n)
+    }
+
+    /// Deletes artifact `id`'s rows (and any files) under its content lock
+    /// while it has no version and is not deleted; whether it did.
+    async fn delete_zero_version_async(&self, id: &str) -> Result<bool> {
+        let aid = ArtifactId::parse(id).ok();
+        let _lock = match &aid {
+            Some(aid) => Some(self.lock_content(aid).await?),
+            None => None,
+        };
+        let removed = self.with_tx(|tx| {
                 let still: bool = tx.query_row(
                     "SELECT EXISTS (SELECT 1 FROM artifacts
                         WHERE id = ?1 AND current_version = 0 AND deleted_at IS NULL)",
@@ -613,14 +623,12 @@ impl Store {
                     params![id],
                 )?)
             })?;
-            if removed > 0 {
-                n += 1;
-                if let Some(aid) = &aid {
-                    self.content.delete_artifact(aid).await?;
-                }
-            }
+        if removed > 0
+            && let Some(aid) = &aid
+        {
+            self.content.delete_artifact(aid).await?;
         }
-        Ok(n)
+        Ok(removed > 0)
     }
 
     /// Deletes the [`Store::corrupt_rows`] that belong to soft-deleted
@@ -1052,11 +1060,22 @@ impl Store {
             )?;
             Ok(())
         })?;
-        self.write_version_then_async(ctx, &id, 0, &p, &BTreeMap::new(), session_id, |tx, n| {
-            self.record_key_in(tx, &p, &id, n)
-        })
-        .await
-        .map(|(a, v, ())| (a, v))
+        let made = self
+            .write_version_then_async(ctx, &id, 0, &p, &BTreeMap::new(), session_id, |tx, n| {
+                self.record_key_in(tx, &p, &id, n)
+            })
+            .await;
+        if made.is_err()
+            && let Err(e) = self.delete_zero_version_async(id.as_str()).await
+        {
+            // Left for `clax doctor --fix` (Store::delete_zero_version_artifacts).
+            tracing::warn!(
+                artifact = id.as_str(),
+                error = %e,
+                "could not remove an artifact whose first version failed"
+            );
+        }
+        made.map(|(a, v, ())| (a, v))
     }
 
     /// Records `p`'s idempotency key, when it names one, as having made
