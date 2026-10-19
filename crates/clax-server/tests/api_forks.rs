@@ -132,6 +132,37 @@ async fn an_agent_session_forks_and_watches_its_fork() {
 }
 
 #[tokio::test]
+async fn a_persons_browser_cannot_fork_as_an_owner_agent_session() {
+    let ts = TestServer::spawn().await;
+    let aid = ts.publish("Plan", &[("index.html", "<p>one")]).await["artifact"]["id"]
+        .as_str()
+        .unwrap()
+        .to_string();
+    let sid = ts.register_session("claude", "fork-2").await["id"]
+        .as_str()
+        .unwrap()
+        .to_string();
+    let rae = ts.person("Rae").await;
+    let (s, v) = json_of(
+        ts.client
+            .post(format!("{}/api/artifacts/{aid}/fork", ts.base))
+            .header("cookie", format!("clax_viewer={}", rae.cookie))
+            .header("x-clax-session", &sid)
+            .json(&json!({}))
+            .send()
+            .await
+            .unwrap(),
+    )
+    .await;
+    assert_eq!(s, 201, "{v}");
+    let fid = v["artifact"]["id"].as_str().unwrap();
+    let (_, got) = json_of(ts.get_authed(&format!("/api/artifacts/{fid}")).await).await;
+    assert!(got["artifact"]["owner_session_id"].is_null(), "{got}");
+    let (_, w) = json_of(ts.get_authed(&format!("/api/sessions/{sid}/watches")).await).await;
+    assert!(!w.to_string().contains(fid), "{w}");
+}
+
+#[tokio::test]
 async fn a_connected_persons_browser_forks_within_their_rights_and_a_guest_may_not() {
     let ts = TestServer::spawn().await;
     let aid = ts.publish("Plan", &[("index.html", "<p>one")]).await["artifact"]["id"]

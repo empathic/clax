@@ -1058,13 +1058,11 @@ pub struct ForkBody {
 /// a person beyond the live seats forks as one within them. A person's agent
 /// forks from a session, as its person; the fork is the forking person's,
 /// and the session, when one is named, watches it.
-#[allow(clippy::too_many_arguments)]
 pub async fn fork(
     State(s): State<AppState>,
     a: Agent<clax_http::agent::ArtifactsFork>,
     _o: clax_http::viewer::SameOrigin,
     audit: AuditCtx,
-    headers: HeaderMap,
     req: Result<Json<ForkBody>, JsonRejection>,
 ) -> Result<(StatusCode, Json<Value>), ApiError> {
     use clax_http::auth::Caller;
@@ -1091,7 +1089,9 @@ pub async fn fork(
     // A spectator forks too: a fork writes nothing of the source's (spec
     // 2026-10-11-clax-dev-hosted-design §7: beyond the seats one reads and
     // forks).
-    let session = session_header(&headers)?;
+    // The session the verified caller speaks for: an agent's alone. A
+    // browser's X-Clax-Session names no session of its own.
+    let session = a.caller.session().map(str::to_string);
     let grant = a.grant().map(str::to_string);
     let events = s.events.clone();
     let vf = VisFor::of(&a.caller, &s);
