@@ -91,7 +91,11 @@ abstract interface class QueueRun {
 final class QueueHost implements QueueRun {
   QueueHost._(this._client);
 
-  /// Spawns the worker on the open core [coreHandle].
+  /// Spawns the worker on the open core [coreHandle]. With [importJson]
+  /// the worker imports the app's JSON state files in [supportDir] once it
+  /// holds the queue, before it loads the jobs, and deletes them
+  /// (lib/core/json_import.dart); leave it off while anything else still
+  /// reads or writes those files.
   static QueueHost start({
     required int coreHandle,
     required String supportDir,
@@ -102,13 +106,14 @@ final class QueueHost implements QueueRun {
     void Function(Effect effect)? onEffect,
     Clock clock = const SystemClock(),
     CoreCalls Function(int handle) attach = attachCore,
+    bool importJson = false,
   }) => QueueHost._(
     IsolateQueueClient.start(
       coreHandle: coreHandle,
       supportDir: supportDir,
       settings: settings,
       apiKey: apiKey,
-      runner: _runnerOf(agent),
+      runner: _runnerOf(agent, importJson: importJson),
       clock: clock,
       attach: attach,
       render: render,
@@ -135,13 +140,17 @@ final class QueueHost implements QueueRun {
 }
 
 /// The worker's runner over [agent]: a closure over a sendable function
-/// only, so the worker isolate can be spawned with it.
-RunnerFactory _runnerOf(WorkerAgentFactory agent) => (context) {
+/// and a flag only, so the worker isolate can be spawned with it.
+RunnerFactory _runnerOf(
+  WorkerAgentFactory agent, {
+  required bool importJson,
+}) => (context) {
   final a = agent(context);
   return EffectRunner.forWorker(
     context,
     agent: a.agent,
     probeClaude: a.probeClaude,
     session: a.session,
+    importJson: importJson,
   );
 };

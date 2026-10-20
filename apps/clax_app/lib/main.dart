@@ -179,6 +179,9 @@ Future<AppServices> platformServices({DateTime? launched}) async {
   final prompts = PromptBuilder(rootBundle);
   // Read once, at the queue's first start, not before the first frame.
   Future<WorkerAgentAssets>? assets;
+  // Without importJson: the feedback worker in the UI isolate still keeps
+  // change-ledger.json, asked.json, stopped.json, unfinished.json,
+  // plans.json and agent-read-consent.json, which the import would delete.
   Future<QueueHost> startQueue(QueueWiring w) async => QueueHost.start(
     coreHandle: core.handle,
     supportDir: support.path,

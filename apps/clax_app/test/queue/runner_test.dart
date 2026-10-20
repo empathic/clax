@@ -4,8 +4,10 @@ import 'dart:io';
 import 'dart:isolate';
 
 import 'package:clax_app/agent/backend.dart';
+import 'package:clax_app/clax/transport.dart';
 import 'package:clax_app/core/core_transport.dart';
 import 'package:clax_app/core/frame.dart';
+import 'package:clax_app/core/json_import.dart';
 import 'package:clax_app/queue/codec.dart';
 import 'package:clax_app/queue/effect.dart';
 import 'package:clax_app/queue/model.dart';
@@ -17,6 +19,7 @@ import 'package:flutter_test/flutter_test.dart' hide Retry;
 
 import '../support/fake_core.dart';
 import '../support/fake_core_jobs.dart';
+import '../support/paths.dart';
 
 /// The effect runner over [FakeCore]'s job routes: here, and not in
 /// `update`'s tests, the routes, the owner's header and the bodies are
@@ -33,8 +36,13 @@ void main() {
   late EffectRunner runner;
   var probe = true;
 
-  EffectRunner runnerOn(FakeCore c, List<Msg> out, {KillHook? kill}) =>
-      EffectRunner(
+  EffectRunner runnerOn(
+    FakeCore c,
+    List<Msg> out, {
+    KillHook? kill,
+    Future<ImportSummary?> Function(ClaxTransport core, String token)?
+    importState,
+  }) => EffectRunner(
     core: CoreTransport(
       c,
       timer: timers.make,
@@ -47,6 +55,7 @@ void main() {
     session: () async => 's1',
     send: out.add,
     kill: kill,
+    importState: importState,
   );
 
   setUp(() {
@@ -219,6 +228,79 @@ void main() {
         ),
       );
       expect(j.questionOf(1, 'a')?.answer, const Answered(['red']));
+    });
+
+    group('the JSON import', () {
+      late Directory support;
+      setUp(() {
+        support = scratchRoot().createTempSync('runner-import-');
+        addTearDown(() => support.deleteSync(recursive: true));
+        File('${support.path}/pending-make.json')
+            .writeAsStringSync('{"requests":["laps"],"waiting":[]}');
+      });
+
+      EffectRunner importing(List<String> tokens) => runnerOn(
+        core,
+        sent,
+        importState: (c, token) {
+          tokens.add(token);
+          return importJsonState(
+            supportDir: support.path,
+            core: c,
+            ownerToken: token,
+          );
+        },
+      );
+
+      test('LoadJobs first imports the files under the claim\'s token, then '
+          'loads the jobs the import made', () async {
+        core.on('POST', '/api/client-imports/{key}', (req, _) {
+          jobs.seed('json-0123', state: 'queued');
+          return FakeCore.json({
+            'import': {
+              'already': false,
+              'jobs': 1,
+              'consents': 0,
+              'skipped': <String>[],
+              'left_out': <String>[],
+              'done_at': 'x',
+            },
+          });
+        });
+        await runner.close();
+        final tokens = <String>[];
+        runner = importing(tokens);
+        final token = await claimed();
+        runner.run(const LoadJobs(2));
+        await pumpEventQueue();
+        expect(tokens, [token]);
+        final paths = [
+          for (final r in core.requests) Uri.parse(r.path).path,
+        ];
+        expect(
+          paths.indexOf('/api/client-imports/app-json-v1'),
+          lessThan(paths.indexOf('/api/jobs')),
+        );
+        expect(only<JobsLoaded>().jobs.map((j) => j.id), ['json-0123']);
+        expect(File('${support.path}/pending-make.json').existsSync(), isFalse);
+      });
+
+      test('an import the core refuses leaves the files, and the jobs load',
+          () async {
+        core.on(
+          'POST',
+          '/api/client-imports/{key}',
+          (req, _) => FakeCore.error(500, 'internal', 'no'),
+        );
+        jobs.seed('j1', state: 'queued');
+        await runner.close();
+        runner = importing([]);
+        await claimed();
+        runner.run(const LoadJobs(2));
+        await pumpEventQueue();
+        expect(only<JobsLoaded>().jobs.map((j) => j.id), ['j1']);
+        expect(File('${support.path}/pending-make.json').existsSync(), isTrue);
+      });
     });
 
     test('ReadJob answers the row, or null for none', () async {

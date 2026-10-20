@@ -7,6 +7,7 @@ library;
 
 import 'dart:async';
 import 'dart:convert';
+import 'dart:developer' as developer;
 import 'dart:io';
 import 'dart:typed_data';
 
@@ -17,6 +18,7 @@ import '../clax/api.dart' show ClaxApiError;
 import '../clax/sse.dart' show SseMessage;
 import '../clax/transport.dart';
 import '../core/core_transport.dart';
+import '../core/json_import.dart';
 import 'codec.dart'
     show RenderAnswered, RenderGone, RenderRequest, ToUi, UiEffect;
 import 'effect.dart';
@@ -187,6 +189,12 @@ final class _ToUi implements UiPort {
 /// row, which says whether the commit landed; a creation asks again,
 /// which the core answers once for its ID and body.
 ///
+/// With [importState], each [LoadJobs] first runs it with the claim's
+/// token (the app's one-time JSON import, lib/core/json_import.dart),
+/// before it reads the jobs, so the jobs it makes load with the rest. Its
+/// failure ([Exception]) is logged and the jobs load anyway; the files it
+/// left are sent again at the next load.
+///
 /// Work (a turn, a tool call, a render) is dropped by [cancelJob]: what it
 /// answers afterwards is never sent. An [Error] the agent throws is not
 /// caught: a bug ends the worker.
@@ -203,6 +211,7 @@ class EffectRunner implements WorkerRunner {
     this.requestTimeout = const Duration(seconds: 35),
     this.stepTimeout = const Duration(seconds: 125),
     this.kill,
+    this.importState,
   });
 
   /// The runner of the worker [context] belongs to, subscribed to the
@@ -210,13 +219,15 @@ class EffectRunner implements WorkerRunner {
   /// [CoreTransport], its answers to [WorkerContext.send], its renders to
   /// the worker's [WorkerContext.render] (unless [render] is given), and
   /// `Notice` and `KeepAlive` to [WorkerContext.toUi] as the codec's
-  /// [UiEffect]s.
+  /// [UiEffect]s. With [importJson], it runs [importJsonState] on the
+  /// worker's support directory before each load of the jobs.
   factory EffectRunner.forWorker(
     WorkerContext context, {
     required AgentPort agent,
     RenderPort? render,
     required Future<bool> Function() probeClaude,
     required Future<String> Function() session,
+    bool importJson = false,
   }) => EffectRunner(
     core: CoreTransport(context.core),
     agent: agent,
@@ -226,6 +237,14 @@ class EffectRunner implements WorkerRunner {
     session: session,
     send: context.send,
     kill: KillHook.fromEnvironment(context.start.supportDir),
+    importState: importJson
+        ? (core, token) => importJsonState(
+            supportDir: context.start.supportDir,
+            core: core,
+            ownerToken: token,
+            clock: context.start.clock,
+          )
+        : null,
   )..start();
 
   final ClaxTransport core;
@@ -252,6 +271,11 @@ class EffectRunner implements WorkerRunner {
 
   /// A debug build's kill hook, which holds a `Publish` at its point.
   final KillHook? kill;
+
+  /// What runs before each load of the jobs, with [core] and the claim's
+  /// token: the app's JSON import, when the worker runs it.
+  final Future<ImportSummary?> Function(ClaxTransport core, String token)?
+  importState;
 
   static const ownerHeader = 'x-clax-jobs-owner';
 
@@ -497,6 +521,15 @@ class EffectRunner implements WorkerRunner {
   // ------------------------------------------------------------ reads
 
   Future<void> _load(LoadJobs e) async {
+    if ((importState, _token) case (final run?, final token?)) {
+      try {
+        if (await run(core, token) case final s?) {
+          developer.log('imported the JSON state: $s', name: 'clax queue');
+        }
+      } on Exception catch (err) {
+        developer.log('the JSON state import failed: $err', name: 'clax queue');
+      }
+    }
     while (!_closed) {
       final a = await _call(
         'GET',
