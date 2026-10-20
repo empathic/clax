@@ -7,8 +7,8 @@ permissions: { contents: read }
 jobs:
   bazel:
     runs-on: ubuntu-latest
-    # A run with nothing restored compiles every dependency; until a green
-    # push to main has saved a cache, every run is one.
+    # A run with nothing restored compiles every dependency; until a push
+    # to main that built has saved a cache, every run is one.
     timeout-minutes: 60
     steps:
       # The full history and its tags: scripts/test-plugins.sh checks the
@@ -17,7 +17,7 @@ jobs:
         with: { fetch-depth: 0, persist-credentials: false }
 
       # Bazelisk, and Bazel's disk cache and downloads from main's newest
-      # green run. A pull request reads that cache and saves nothing.
+      # run that built. A pull request reads that cache and saves nothing.
       - id: bazel
         uses: ./.github/actions/setup-bazel
 
@@ -39,7 +39,10 @@ jobs:
       # web and Pi checks, the script gates and the checks run outside
       # Bazel. Performance is measured on demand (`just perf`), not here.
       # Each phase's time goes to the job summary.
+      # Its output `built` is true when the one `bazel test` built every
+      # target, whether or not every test passed.
       - name: Run scripts/bazel-test.sh --ci
+        id: checks
         run: scripts/bazel-test.sh --ci
 
       # Also after a timeout, when the logs matter most.
@@ -64,13 +67,16 @@ jobs:
       # trimmed to the `ci` config's bound before it is saved, least
       # recently used first.
       - name: Trim the cache
-        if: ${{ success() && github.event_name == 'push' && github.ref == 'refs/heads/main' }}
+        if: ${{ !cancelled() && steps.checks.outputs.built == 'true' && github.event_name == 'push' && github.ref == 'refs/heads/main' }}
         run: BAZEL_GC_MAX_SIZE_GB=6 scripts/bazel-gc.sh --report
 
-      # Main's cache, saved only after every step passed, is what every
-      # later run starts from.
+      # Main's cache is what every later run starts from. Every push to main
+      # whose build succeeded saves one under its commit, even when a test
+      # failed: Bazel caches only actions that succeeded (a failed test's
+      # result is not kept), so a red run's cache holds nothing a green run
+      # would not. Pull requests never get here; they only restore.
       - name: Save the cache
-        if: ${{ success() && github.event_name == 'push' && github.ref == 'refs/heads/main' }}
+        if: ${{ !cancelled() && steps.checks.outputs.built == 'true' && github.event_name == 'push' && github.ref == 'refs/heads/main' }}
         uses: actions/cache/save@55cc8345863c7cc4c66a329aec7e433d2d1c52a9 # v6.1.0
         with:
           path: |

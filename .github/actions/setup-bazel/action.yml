@@ -6,7 +6,7 @@ description: >-
 
 outputs:
   cache-key:
-    description: The key to save the cache under after a passing run.
+    description: The key to save the cache under after a run on main that built.
     value: ${{ steps.key.outputs.key }}
 
 runs:

@@ -287,9 +287,16 @@ CI (`.github/workflows/ci.yml`) runs `scripts/bazel-test.sh --ci` on a
 GitHub-hosted runner. `.github/actions/setup-bazel` installs Bazelisk and
 restores `~/.cache/bazel-disk` and `~/.cache/bazel-repo` with
 `actions/cache`, keyed by the lockfiles and the commit, falling back to the
-newest cache of the same lockfiles and then of any; only a passing push to
-main saves one, after `scripts/bazel-gc.sh` trims the disk cache to 6 GB
-(Bazel trims only while its server sits idle, which a job never does). `common --config=ci` (`.bazelrc`) bounds the cache to what
+newest cache of the same lockfiles and then of any. Every push to main whose
+build succeeded saves one, after `scripts/bazel-gc.sh` trims the disk cache
+to 6 GB (Bazel trims only while its server sits idle, which a job never
+does), even when tests failed: `scripts/bazel-test.sh --ci` sets the step
+output `built` from its one `bazel test`'s exit status (0, or 3: built, some
+tests failed). A format or clippy finding fails an action, so a run with one
+does not save. A failed run's cache cannot carry a failure into later runs:
+Bazel keeps only actions that succeeded, and never a failed test's result.
+Only main writes; pull requests restore main's cache and save nothing, so
+no branch's code reaches what main builds from. `common --config=ci` (`.bazelrc`) bounds the cache to what
 fits a runner and fails on a stale lockfile. The native gates stay as a
 manual workflow (`native-check.yml`). A second job, `worker`, runs what
 Bazel does not build, natively: `scripts/check-wasm.sh` over the crates a

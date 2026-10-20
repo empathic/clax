@@ -12,6 +12,8 @@
 #          -D warnings, the Rust tests, the web and Pi checks, the script
 #          gates (performance is measured on demand, `just perf`, and gates
 #          nothing)
+#          (under GitHub Actions, the step output `built` says whether
+#          it built everything, failed tests aside)
 #       4. clippy on each crate with its own clippy.toml
 #       5. the checks that run outside Bazel (docs/bazel.md, "Run outside Bazel")
 #   scripts/bazel-test.sh [...] ARGS   # ARGS go to every `bazel test`
@@ -98,9 +100,13 @@ _build() {
     _summary "$name" $((SECONDS - start))
 }
 
-# _pass <name> <query> [bazel test arguments...]
+# _pass <name> <query> [bazel test arguments...]: sets pass_status to
+# `bazel test`'s exit status (0: all passed, 3: built, some tests failed;
+# anything else: not built), or 2 when the targets could not be listed.
+pass_status=2
 _pass() {
     local name="$1" query="$2" start=$SECONDS targets testlogs label status
+    pass_status=2
     shift 2
     echo "── bazel: $name ──"
     if ! targets="$("$bazel" query --lockfile_mode=error "$query" 2>"$output")"; then
@@ -117,6 +123,7 @@ _pass() {
     # shellcheck disable=SC2086  # one label per word
     "${awake[@]+"${awake[@]}"}" "$bazel" test --keep_going "${flags[@]}" "${test_flags[@]}" "$@" $targets 2>&1 | tee "$output"
     status="${PIPESTATUS[0]}"
+    pass_status="$status"
     [ "$status" -eq 0 ] || failed+=("$name")
     echo "── bazel: $name took $((SECONDS - start))s ──"
     _summary "$name" $((SECONDS - start))
@@ -204,6 +211,18 @@ if [ "$ci" = 1 ]; then
     _pass "every check" \
         '//crates/... + //web:playwright + tests(//...) except attr(tags, "\bmanual\b", //...)' \
         --config=fmt --config=clippy "$@"
+    # Whether everything built (Bazel's exit status 0, or 3: built, some
+    # tests failed), as the step output `built` for CI, which saves its
+    # cache on main when it is true even if a test failed
+    # (docs/bazel.md, "CI"). A format or clippy finding is a failed action,
+    # so it counts as not built.
+    if [ -n "${GITHUB_OUTPUT:-}" ]; then
+        if [ "$pass_status" = 0 ] || [ "$pass_status" = 3 ]; then
+            echo "built=true" >> "$GITHUB_OUTPUT"
+        else
+            echo "built=false" >> "$GITHUB_OUTPUT"
+        fi
+    fi
     # Cargo reads a crate's clippy.toml from beside its Cargo.toml. Bazel
     # takes one for the whole command, so each crate that has one is also
     # linted on its own, with it, after the invocation above has built
