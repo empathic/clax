@@ -284,6 +284,24 @@ void main() {
     expect(fake.cancelled.single.path, '/api/slow');
   });
 
+  test('the relay refuses no path itself: the core\'s 404 not_in_app for a '
+      'held-open route is answered as any other answer', () async {
+    relay.handle(call(9, 'GET', '/api/stream?x=1#y'));
+    await pumpEventQueue();
+    expect(fake.requests.single.path, '/api/stream?x=1#y');
+    final (method, args) = calls().single;
+    expect(method, 'callResult');
+    final r = args[2]! as Map;
+    expect(r['status'], 404);
+    expect(r['headers'], [
+      ['content-type', 'application/json'],
+    ]);
+    expect((jsonDecode(r['body']! as String) as Map)['error'], {
+      'code': 'not_in_app',
+      'message': '/api/stream is not served in the app',
+    });
+  });
+
   test('a call the core cannot answer is answered with its error', () async {
     fake.close();
     relay.handle(call(8, 'GET', '/api/x'));
