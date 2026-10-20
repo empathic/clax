@@ -55,6 +55,9 @@ struct Registered {
     /// Where the core's open events go, for a core: an open that
     /// re-attaches to it moves them ([`reattach`]).
     events: Option<Arc<Mutex<OpenPort>>>,
+    /// The calls in flight by port and tag, until each has its answer, for
+    /// a cancel frame to abort ([`ffi_call`]).
+    calls: Arc<Mutex<HashMap<(i64, i64), tokio::task::AbortHandle>>>,
 }
 
 /// Where a core's open events are posted, and the latest one posted.
@@ -69,7 +72,11 @@ static CORES: LazyLock<Mutex<HashMap<u64, Registered>>> = LazyLock::new(Default:
 static NEXT: AtomicU64 = AtomicU64::new(1);
 
 fn cores() -> std::sync::MutexGuard<'static, HashMap<u64, Registered>> {
-    CORES.lock().unwrap_or_else(|e| e.into_inner())
+    lock(&CORES)
+}
+
+fn lock<T>(m: &Mutex<T>) -> std::sync::MutexGuard<'_, T> {
+    m.lock().unwrap_or_else(|e| e.into_inner())
 }
 
 fn registered(core: u64) -> Option<Registered> {
@@ -91,30 +98,62 @@ fn register(
             post,
             port,
             events,
+            calls: Arc::default(),
         },
     );
     handle
 }
 
-/// The handle of the core this process holds `home` with, unless it is
-/// closing, its open events moved to `port`, which hears the latest one at
-/// once (`ready`, or where opening has got to).
-fn reattach(home: &std::path::Path, post: &dyn Post, port: i64) -> Option<u64> {
+/// Opens, one at a time: an open's [`Embed::open`] and its registration
+/// happen under it, so an open of a home this process holds finds that
+/// home's core registered ([`reattach`]), never a home held with no
+/// handle yet.
+static OPENING: Mutex<()> = Mutex::new(());
+
+/// The message a re-attach posts to a core's open port to learn whether
+/// its client lives: no open event (spec §2.2), and the client ignores it.
+const PROBE: &[u8] = br#"{"type":"probe"}"#;
+
+/// What [`reattach`] found.
+enum Reattach {
+    /// The core's handle: its open events now go to the new port.
+    To(u64),
+    /// The core's client lives (its open port takes a post).
+    InUse,
+    /// No registered core holds the home: its core is closing.
+    Closing,
+}
+
+/// The handle of the core this process holds `home` with, when its
+/// client is gone, its open events moved to `port`, which hears the
+/// latest one at once (`ready`, or where opening has got to). A core
+/// whose open failed or that is closing is not re-attached to; nor is one
+/// whose client still lives: a post to its open port fails only once the
+/// isolate that opened it is gone ([`PROBE`]).
+fn reattach(home: &std::path::Path, post: &dyn Post, port: i64) -> Reattach {
     let key = crate::core::home_key(home);
     let mut cores = cores();
-    let (handle, r) = cores.iter_mut().find(|(_, r)| {
+    let found = cores.iter_mut().find(|(_, r)| {
         r.embed
             .as_ref()
-            .is_some_and(|e| e.home() == key && !e.closing())
-    })?;
-    let events = r.events.as_ref()?;
-    let mut to = events.lock().unwrap_or_else(|e| e.into_inner());
+            .is_some_and(|e| e.home() == key && e.holds_home() && !e.closing())
+    });
+    let Some((handle, r)) = found else {
+        return Reattach::Closing;
+    };
+    let Some(events) = r.events.as_ref() else {
+        return Reattach::Closing;
+    };
+    let mut to = lock(events);
+    if post_bytes(&*r.post, to.port, PROBE) {
+        return Reattach::InUse;
+    }
     to.port = port;
     r.port = port;
     if let Some(last) = &to.last {
         post_bytes(post, port, last);
     }
-    Some(*handle)
+    Reattach::To(*handle)
 }
 
 /// `f`'s answer, or `on_panic`'s when `f` panics (and `last` when that
@@ -170,12 +209,14 @@ fn origins(home: &std::path::Path) -> Option<clax_http::state::EmbedOrigins> {
 
 /// [`ffi::clax_embed_open`]'s safe half: opens the core on the home at
 /// `home` (UTF-8), posting its [`OpenEvent`]s to `port` as JSON, and
-/// returns its handle. A home this process holds already (an isolate that
-/// restarted without closing it) is not opened again: the open
-/// re-attaches to its core ([`reattach`]) and returns that core's handle.
-/// 0, with `failed` posted (`open_failed`, or `home_in_use` for a home
-/// whose core is closing), when `home` is not UTF-8 or that home's core
-/// is closing. An open that fails before a core exists (no readable
+/// returns its handle. A home this process holds already is not opened
+/// again: when the client that opened it is gone (an isolate that
+/// restarted without closing it) the open re-attaches to its core
+/// ([`reattach`]) and returns that core's handle. 0, with `failed`
+/// posted, when `home` is not UTF-8 (`open_failed`), when that home's
+/// core has a live client (`home_in_use`, the home open in this app), or
+/// when it is closing (`home_in_use`). Opens are taken one at a time
+/// ([`OPENING`]), so two at once get one handle and one refusal. An open that fails before a core exists (no readable
 /// `embed.json`: `no_origins`; a runtime that does not start or a panic:
 /// `internal`) posts `failed` and still returns a handle, which
 /// [`ffi_close`] closes as any other.
@@ -200,6 +241,7 @@ pub fn ffi_open(home: &[u8], post: Arc<dyn Post>, port: i64) -> u64 {
     guarded(
         "clax_embed_open",
         || {
+            let _opening = lock(&OPENING);
             let Some(origins) = origins(&home) else {
                 let message = format!("{} has no readable embed.json", home.display());
                 return failed(
@@ -229,8 +271,14 @@ pub fn ffi_open(home: &[u8], post: Arc<dyn Post>, port: i64) -> u64 {
             match opened {
                 Ok(embed) => register(Some(embed), post.clone(), port, Some(events)),
                 Err(OpenError::HomeInUse) => match reattach(&home, &*post, port) {
-                    Some(handle) => handle,
-                    None => refused("home_in_use", "this app is closing its core on this home"),
+                    Reattach::To(handle) => handle,
+                    Reattach::InUse => refused(
+                        "home_in_use",
+                        "this home is open in this app already, by another of its clients",
+                    ),
+                    Reattach::Closing => {
+                        refused("home_in_use", "this app is closing its core on this home")
+                    }
                 },
                 Err(OpenError::NotUtf8) => refused("open_failed", "the home's path is not UTF-8"),
                 Err(OpenError::Runtime(e)) => failed(
@@ -249,14 +297,39 @@ pub fn ffi_open(home: &[u8], post: Arc<dyn Post>, port: i64) -> u64 {
 /// not parse answers 400 `bad_frame`, a handle whose open failed 503
 /// `core_failed`, a panic 500 `internal`), 1 for an unknown handle, 2 for
 /// bytes that are not a frame.
+///
+/// A cancel frame (`{"cancel": <tag>}`, spec §2.3) is answered 204 at
+/// once, under its own tag, after it aborts the call sent to `port` with
+/// that tag if the call is still running: the call's task is dropped at
+/// its next await, so a write that has not committed does not happen, and
+/// the call is never answered. A cancel of a call already answered, or
+/// never sent, does nothing more.
 pub fn ffi_call(core: u64, req: &[u8], port: i64, tag: i64) -> i32 {
     let Some(r) = registered(core) else {
         return 1;
     };
-    if frame::split(req).is_err() {
+    let Ok((head, _)) = frame::split(req) else {
         return 2;
-    }
+    };
+    let key = (port, tag);
     let tag = frame::tag(tag);
+    if let Some(target) = frame::cancel_of(head) {
+        if let Some(call) = lock(&r.calls).remove(&(port, target)) {
+            call.abort();
+        }
+        let done = frame::encode_after(
+            &tag,
+            &frame::ResponseHead {
+                status: 204,
+                headers: vec![],
+            },
+            &[],
+        );
+        if !post_bytes(&*r.post, port, &done) {
+            tracing::debug!(port, "a cancel's port closed before its answer");
+        }
+        return 0;
+    }
     let answer = |status, code, message: &str| {
         if !post_bytes(
             &*r.post,
@@ -279,10 +352,16 @@ pub fn ffi_call(core: u64, req: &[u8], port: i64, tag: i64) -> i32 {
             let post = r.post.clone();
             // Counted until its answer is posted, so `closed` follows it.
             let counted = embed.count_call();
-            embed.spawn(async move {
+            let calls = r.calls.clone();
+            // Locked until the call is in `calls`, so its task, which
+            // takes it out once it has its answer, cannot do so first.
+            let mut in_flight = lock(&r.calls);
+            let task = embed.spawn(async move {
                 let answered = AssertUnwindSafe(call.call_owned(req, tag.to_vec()))
                     .catch_unwind()
                     .await;
+                // Answered: a cancel from here on finds nothing to abort.
+                lock(&calls).remove(&key);
                 let bytes = match answered {
                     Ok(Ok(a)) => a,
                     Ok(Err(e)) => error_frame_after(&tag, 400, "bad_frame", &format!("{e:?}")),
@@ -298,6 +377,7 @@ pub fn ffi_call(core: u64, req: &[u8], port: i64, tag: i64) -> i32 {
                 }
                 drop(counted);
             });
+            in_flight.insert(key, task.abort_handle());
             0
         },
         || {

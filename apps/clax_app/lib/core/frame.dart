@@ -85,6 +85,12 @@ class CoreRequest {
 final class RequestFrame {
   RequestFrame._(this._head, this._body);
 
+  /// A cancel frame: the header `{"cancel": <tag>}` and no body. Sent on
+  /// the port of the call sent with [tag], it aborts that call if the core
+  /// is still running it; the core answers the cancel itself 204.
+  factory RequestFrame.cancel(int tag) =>
+      RequestFrame._(utf8.encode(jsonEncode({'cancel': tag})), Uint8List(0));
+
   final Uint8List _head;
   final Uint8List _body;
 
@@ -203,6 +209,7 @@ final class CoreAnswered extends CoreAnswer {
 /// - `core_failed`: the core did not open.
 /// - `frame_refused`: the core could not read the request frame.
 /// - `malformed`: what came back is not a response frame.
+/// - `cancelled`: the caller cancelled the call ([CoreCalls.cancel]).
 final class CoreUnanswered extends CoreAnswer {
   const CoreUnanswered(this.code, this.message);
 

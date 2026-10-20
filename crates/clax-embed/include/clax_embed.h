@@ -30,7 +30,10 @@ uint64_t clax_embed_open(const uint8_t *home, size_t home_len,
 // an unknown handle, 2 for a frame that does not parse or a NULL `req`.
 // The response frame is posted to `port` as one Uint8List: `tag` (8
 // bytes, little endian) then the frame. A call made before "ready" waits
-// for it.
+// for it. A cancel frame, {"cancel": <tag>}, is answered 204 at once
+// under its own `tag`, after it aborts the call sent to this `port` with
+// that tag, if the core is still running it: that call is never
+// answered, and a write it had not committed does not happen.
 int32_t clax_embed_call(uint64_t core, const uint8_t *req, size_t req_len,
                         int64_t port, int64_t tag);
 

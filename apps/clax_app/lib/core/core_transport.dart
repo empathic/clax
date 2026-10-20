@@ -19,7 +19,9 @@ import 'frame.dart';
 /// [ClaxApiError.unreachable] with the core's reason (`core_closed`,
 /// `core_failed`, `frame_refused`, `malformed`) in its body and message,
 /// or [ClaxApiError.timeout] when no answer came within the call's limit
-/// (on [timer]).
+/// (on [timer]); the core is then told to cancel the call
+/// ([CoreCalls.cancel]), as a loopback timeout aborts its request, so a
+/// call it has not finished does not take effect.
 class CoreTransport implements ClaxTransport {
   CoreTransport(
     this._core, {
@@ -67,9 +69,10 @@ class CoreTransport implements ClaxTransport {
           message: '$method $path had no answer within ${timeout.inSeconds} s',
         ),
       );
+      _core.cancel(call.tag);
     });
     unawaited(
-      call.then((answer) {
+      call.answer.then((answer) {
         deadline.cancel();
         if (out.isCompleted) return;
         switch (answer) {

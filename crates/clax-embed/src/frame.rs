@@ -1,5 +1,6 @@
 //! The bytes `clax_embed_call` takes and posts (spec §2.3): `CLX1`, a
-//! u32 little-endian header length, the header's JSON, the body.
+//! u32 little-endian header length, the header's JSON, the body. A frame
+//! whose header is `{"cancel": <tag>}` is a cancel, not a request.
 
 /// The four bytes every frame starts with.
 pub const MAGIC: &[u8; 4] = b"CLX1";
@@ -30,6 +31,22 @@ pub struct RequestHead {
     /// The artifact ID a `content` request's origin names.
     #[serde(default)]
     pub host: Option<String>,
+}
+
+/// A cancel frame's header: the tag of the call it cancels, one sent to
+/// the same port.
+#[derive(Debug, PartialEq, Eq, serde::Deserialize, serde::Serialize)]
+#[serde(deny_unknown_fields)]
+pub struct CancelHead {
+    pub cancel: i64,
+}
+
+/// The tag a frame's `head` (its header's bytes) cancels, when it is a
+/// cancel frame's.
+pub fn cancel_of(head: &[u8]) -> Option<i64> {
+    serde_json::from_slice::<CancelHead>(head)
+        .ok()
+        .map(|c| c.cancel)
 }
 
 /// A response frame's header.
@@ -143,6 +160,15 @@ mod tests {
             decode_request(b"CLX1\x02\0\0\0{]").unwrap_err(),
             FrameError::Header(_)
         ));
+    }
+
+    #[test]
+    fn a_cancel_names_its_tag_and_nothing_else() {
+        assert_eq!(cancel_of(br#"{"cancel":7}"#), Some(7));
+        assert_eq!(cancel_of(br#"{"cancel":-1}"#), Some(-1));
+        assert_eq!(cancel_of(br#"{"cancel":7,"method":"GET"}"#), None);
+        assert_eq!(cancel_of(br#"{"method":"GET","path":"/","as":"owner"}"#), None);
+        assert_eq!(cancel_of(b"{]"), None);
     }
 
     #[test]

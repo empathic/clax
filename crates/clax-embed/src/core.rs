@@ -167,6 +167,15 @@ struct Shared {
     panic_at: Option<PanicAt>,
 }
 
+/// Aborts a task when dropped; once the task is done, that does nothing.
+struct AbortOnDrop(tokio::task::AbortHandle);
+
+impl Drop for AbortOnDrop {
+    fn drop(&mut self) {
+        self.0.abort();
+    }
+}
+
 /// One call counted in [`Shared::in_flight`] while it lives.
 struct InFlight<'a>(&'a watch::Sender<usize>);
 
@@ -355,6 +364,8 @@ impl Embed {
         Ok(self.answered(head, body, prefix).await)
     }
 
+    /// The answer, on a task of its own so a panic answers 500; dropping
+    /// this future (a cancelled call) aborts that task too.
     async fn answered(&self, head: RequestHead, body: Bytes, prefix: Vec<u8>) -> Vec<u8> {
         let task = self.inner.handle.spawn(answer(
             self.inner.shared.clone(),
@@ -362,6 +373,7 @@ impl Embed {
             body,
             prefix.clone(),
         ));
+        let _abort = AbortOnDrop(task.abort_handle());
         match task.await {
             Ok(answer) => answer,
             Err(e) if e.is_panic() => error_frame_after(
@@ -428,8 +440,11 @@ impl Embed {
     }
 
     /// Spawns `fut` on the core's runtime.
-    pub fn spawn<F: std::future::Future<Output = ()> + Send + 'static>(&self, fut: F) {
-        self.inner.handle.spawn(fut);
+    pub fn spawn<F: std::future::Future<Output = ()> + Send + 'static>(
+        &self,
+        fut: F,
+    ) -> tokio::task::JoinHandle<()> {
+        self.inner.handle.spawn(fut)
     }
 
     /// Stops the core as `clax serve` stops on SIGTERM: new calls answer

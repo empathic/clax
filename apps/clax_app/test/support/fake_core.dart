@@ -52,6 +52,11 @@ class FakeCore implements CoreCalls {
 
   final List<CoreRequest> requests = [];
 
+  /// The calls [cancel]led while they waited for their handler.
+  final List<CoreRequest> cancelled = [];
+  final Map<int, (CoreRequest, Completer<CoreAnswer>)> _waiting = {};
+  int _tag = 0;
+
   /// Hears each call no handler answers.
   final void Function(Object failure) unrouted;
   final List<(String, List<String>, CoreHandler)> _routes = [];
@@ -92,11 +97,35 @@ class FakeCore implements CoreCalls {
   /// What a handler's response becomes, as [CoreClient] reads it: a 503
   /// `core_closed` or `core_failed` is [CoreUnanswered].
   @override
-  Future<CoreAnswer> call(CoreRequest r) async {
+  CoreCall call(CoreRequest r) {
+    final tag = _tag++;
     if (_closed) {
-      return const CoreUnanswered('core_closed', 'the core is closed');
+      return CoreCall(
+        tag,
+        Future.value(const CoreUnanswered('core_closed', 'the core is closed')),
+      );
     }
-    return CoreAnswer.of(await _respond(r));
+    final out = Completer<CoreAnswer>();
+    _waiting[tag] = (r, out);
+    _respond(r).then(
+      (res) {
+        if (_waiting.remove(tag) != null) out.complete(CoreAnswer.of(res));
+      },
+      onError: (Object e, StackTrace st) {
+        if (_waiting.remove(tag) != null) out.completeError(e, st);
+      },
+    );
+    return CoreCall(tag, out.future);
+  }
+
+  /// Records the call in [cancelled] and answers it `cancelled`, as
+  /// [CoreClient] does; its handler's later response is dropped.
+  @override
+  void cancel(int tag) {
+    final (r, out) = _waiting.remove(tag) ?? (null, null);
+    if (r == null || out == null) return;
+    cancelled.add(r);
+    out.complete(const CoreUnanswered('cancelled', 'the call was cancelled'));
   }
 
   Future<CoreResponse> _respond(CoreRequest r) async {
@@ -482,6 +511,10 @@ typedef FakeOpen = ({String home, SendPort port, String? embedJson});
 /// goes.
 typedef FakeLibCall = ({int core, CoreRequest request, SendPort port, int tag});
 
+/// One cancel frame [FakeCoreLib.call] took: the handle, the [target]
+/// tag it cancels, and its own port and tag.
+typedef FakeLibCancel = ({int core, int target, SendPort port, int tag});
+
 /// One [FakeCoreLib.subscribe].
 typedef FakeLibSubscription = ({int core, SendPort port});
 
@@ -497,6 +530,7 @@ class FakeCoreLib implements CoreLib {
 
   final List<FakeOpen> opens = [];
   final List<FakeLibCall> calls = [];
+  final List<FakeLibCancel> cancels = [];
   final List<FakeLibSubscription> subscriptions = [];
   final List<int> closes = [];
 
@@ -516,7 +550,11 @@ class FakeCoreLib implements CoreLib {
     if (callAnswer == 0) {
       final bytes = Uint8List(frame.length);
       frame.writeTo(bytes);
-      calls.add((core: core, request: decodeRequest(bytes), port: port, tag: tag));
+      if (cancelOf(bytes) case final target?) {
+        cancels.add((core: core, target: target, port: port, tag: tag));
+      } else {
+        calls.add((core: core, request: decodeRequest(bytes), port: port, tag: tag));
+      }
     }
     return callAnswer;
   }
@@ -583,6 +621,16 @@ Uint8List responseFrame(
     ...head,
     ...body,
   ]);
+}
+
+/// The tag a cancel frame names, as crates/clax-embed/src/frame.rs
+/// `cancel_of` reads one; null for a request frame.
+int? cancelOf(Uint8List frame) {
+  final n = ByteData.sublistView(frame).getUint32(4, Endian.little);
+  return switch (jsonDecode(utf8.decode(frame.sublist(8, 8 + n)))) {
+    {'cancel': final int tag} => tag,
+    _ => null,
+  };
 }
 
 /// A request frame read back, as crates/clax-embed/src/frame.rs reads one.

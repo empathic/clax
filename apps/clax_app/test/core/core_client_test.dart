@@ -105,7 +105,7 @@ void main() {
         final core = open();
         // The core posts failed before it answers 0.
         lib.postState({'type': 'failed', 'code': code, 'message': message});
-        final r = await core.call(const CoreRequest('GET', '/api/artifacts'));
+        final r = await core.call(const CoreRequest('GET', '/api/artifacts')).answer;
         expect(unanswered(r), 'core_failed');
         expect(lib.calls, isEmpty);
         final sub = core.subscribe();
@@ -147,7 +147,7 @@ void main() {
       lib.postState({'type': 'ready'});
       final states = <CoreOpen>[];
       core.states.listen(states.add);
-      final r = core.call(const CoreRequest('GET', '/api/artifacts'));
+      final r = core.call(const CoreRequest('GET', '/api/artifacts')).answer;
       expect(lib.calls.single.core, 9);
       lib.answer(lib.calls.single, 200, body: '{}');
       expect(answered(await r).status, 200);
@@ -158,11 +158,11 @@ void main() {
   group('call', () {
     test('answers concurrent calls by tag, in any order', () async {
       final core = open();
-      final a = core.call(const CoreRequest('GET', '/api/a'));
+      final a = core.call(const CoreRequest('GET', '/api/a')).answer;
       final b = core.call(
         CoreRequest('POST', '/api/b', body: utf8.encode('{"x":1}')),
-      );
-      final c = core.call(const CoreRequest('GET', '/api/c'));
+      ).answer;
+      final c = core.call(const CoreRequest('GET', '/api/c')).answer;
       expect(lib.calls.map((c) => c.request.path), ['/api/a', '/api/b', '/api/c']);
       expect(lib.calls.map((c) => c.core).toSet(), {core.handle});
       expect(lib.calls.map((c) => c.tag).toSet(), hasLength(3));
@@ -178,25 +178,59 @@ void main() {
       );
     });
 
+    test('a cancel ends the call as cancelled and sends the core a cancel of its tag', () async {
+      final core = open();
+      final call = core.call(const CoreRequest('GET', '/api/poll'));
+      final sent = lib.calls.single;
+      expect(sent.tag, call.tag);
+      core.cancel(call.tag);
+      expect(unanswered(await call.answer), 'cancelled');
+      final cancel = lib.cancels.single;
+      expect(cancel.core, core.handle);
+      expect(cancel.target, call.tag);
+      expect(cancel.port, sent.port, reason: 'the port the call was sent on');
+      expect(cancel.tag, isNot(call.tag));
+      // The call's own late answer and the cancel's 204 are dropped.
+      lib.answer(sent, 200, body: 'late');
+      lib.answer(
+        (core: cancel.core, request: sent.request, port: cancel.port, tag: cancel.tag),
+        204,
+      );
+      await pumpEventQueue();
+      final next = core.call(const CoreRequest('GET', '/api/next'));
+      lib.answer(lib.calls.last, 200, body: 'next');
+      expect(utf8.decode(answered(await next.answer).body), 'next');
+    });
+
+    test('a cancel of a call already answered, or of no call, sends nothing', () async {
+      final core = open();
+      final call = core.call(const CoreRequest('GET', '/api/a'));
+      lib.answer(lib.calls.single, 200, body: 'a');
+      expect(answered(await call.answer).status, 200);
+      core.cancel(call.tag);
+      core.cancel(999);
+      expect(lib.cancels, isEmpty);
+    });
+
     test('an unknown handle goes unanswered as core_closed', () async {
       final core = open();
       lib.callAnswer = 1;
-      final r = await core.call(const CoreRequest('GET', '/api/a'));
+      final r = await core.call(const CoreRequest('GET', '/api/a')).answer;
       expect(unanswered(r), 'core_closed');
     });
 
     test('a frame the core refuses goes unanswered as frame_refused', () async {
       final core = open();
       lib.callAnswer = 2;
-      final r = await core.call(const CoreRequest('GET', '/api/a'));
+      final r = await core.call(const CoreRequest('GET', '/api/a')).answer;
       expect(unanswered(r), 'frame_refused');
     });
 
     test("the core's own 503 core_closed and core_failed are unanswered", () async {
       final core = open();
-      final closed = core.call(const CoreRequest('GET', '/api/a'));
-      final failed = core.call(const CoreRequest('GET', '/api/b'));
-      final busy = core.call(const CoreRequest('GET', '/api/c'));
+      final closed = core.call(const CoreRequest('GET', '/api/a')).answer;
+      final failed = core.call(const CoreRequest('GET', '/api/b')).answer;
+      final busy = core.call(const CoreRequest('GET', '/api/c')).answer;
       String error(String code) =>
           jsonEncode({'error': {'code': code, 'message': 'from the core'}});
       const json = [('content-type', 'application/json')];
@@ -214,7 +248,7 @@ void main() {
 
     test('an answer that is not a frame goes unanswered as malformed', () async {
       final core = open();
-      final r = core.call(const CoreRequest('GET', '/api/a'));
+      final r = core.call(const CoreRequest('GET', '/api/a')).answer;
       final c = lib.calls.single;
       c.port.send(Uint8List.fromList([
         ...(ByteData(8)..setInt64(0, c.tag, Endian.little)).buffer.asUint8List(),
@@ -225,14 +259,14 @@ void main() {
 
     test('a failed open ends every call, sent or not, as core_failed', () async {
       final core = open();
-      final pending = core.call(const CoreRequest('GET', '/api/a'));
+      final pending = core.call(const CoreRequest('GET', '/api/a')).answer;
       lib.postState({
         'type': 'failed',
         'code': 'open_failed',
         'message': 'no store',
       });
       expect(unanswered(await pending), 'core_failed');
-      final after = await core.call(const CoreRequest('GET', '/api/b'));
+      final after = await core.call(const CoreRequest('GET', '/api/b')).answer;
       expect(unanswered(after), 'core_failed');
       expect(lib.calls, hasLength(1), reason: 'a failed core is not called');
       // The core's own late answer to the first call is dropped.
@@ -247,15 +281,15 @@ void main() {
       final states = <CoreOpen>[];
       core.states.listen(states.add);
       lib.postState({'type': 'ready'});
-      final drained = core.call(const CoreRequest('GET', '/api/drained'));
-      final cut = core.call(const CoreRequest('GET', '/api/cut'));
+      final drained = core.call(const CoreRequest('GET', '/api/drained')).answer;
+      final cut = core.call(const CoreRequest('GET', '/api/cut')).answer;
       core.close();
       expect(lib.closes, [core.handle]);
       core.close();
       expect(lib.closes, [core.handle], reason: 'close is idempotent');
 
       // A call after close never reaches the core.
-      final late = await core.call(const CoreRequest('GET', '/api/late'));
+      final late = await core.call(const CoreRequest('GET', '/api/late')).answer;
       expect(unanswered(late), 'core_closed');
       expect(lib.calls, hasLength(2));
 
@@ -275,7 +309,7 @@ void main() {
 
     test('an attached client closes only its own door', () async {
       final core = CoreClient.attach(7, lib: lib);
-      final pending = core.call(const CoreRequest('GET', '/api/a'));
+      final pending = core.call(const CoreRequest('GET', '/api/a')).answer;
       expect(lib.calls.single.core, 7);
       core.close();
       expect(unanswered(await pending), 'core_closed');
@@ -367,7 +401,7 @@ void main() {
     test('a status outside 100-599, or not an integer, is malformed', () async {
       final core = open();
       for (final status in ['0', '99', '600', '1e400', '200.5', '"200"', 'null']) {
-        final r = core.call(const CoreRequest('GET', '/api/a'));
+        final r = core.call(const CoreRequest('GET', '/api/a')).answer;
         postHead(lib.calls.last, '{"status":$status,"headers":[]}');
         expect(unanswered(await r), 'malformed', reason: status);
       }
@@ -381,7 +415,7 @@ void main() {
         lib: lib,
         log: logs.add,
       );
-      final r = core.call(const CoreRequest('GET', '/api/a'));
+      final r = core.call(const CoreRequest('GET', '/api/a')).answer;
       lib.calls.single.port.send(Uint8List(3));
       lib.calls.single.port.send('not bytes');
       await pumpEventQueue();
@@ -393,7 +427,7 @@ void main() {
 
     test('a frame too short for its head, after a tag, is malformed', () async {
       final core = open();
-      final r = core.call(const CoreRequest('GET', '/api/a'));
+      final r = core.call(const CoreRequest('GET', '/api/a')).answer;
       final c = lib.calls.single;
       c.port.send(Uint8List.fromList([
         ...(ByteData(8)..setInt64(0, c.tag, Endian.little)).buffer.asUint8List(),

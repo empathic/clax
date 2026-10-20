@@ -81,11 +81,28 @@ final class CoreClosed extends CoreOpen {
   String toString() => 'CoreClosed()';
 }
 
+/// One call sent to the core: its [tag], which [CoreCalls.cancel] takes,
+/// and what became of it.
+final class CoreCall {
+  const CoreCall(this.tag, this.answer);
+
+  final int tag;
+
+  /// The core's response, or [CoreUnanswered] when no answer came. It
+  /// always completes, and never with an error.
+  final Future<CoreAnswer> answer;
+}
+
 /// What one isolate calls the core with.
 abstract interface class CoreCalls {
-  /// What became of [r]: the core's response, or [CoreUnanswered] when no
-  /// answer came. The future always completes, and never with an error.
-  Future<CoreAnswer> call(CoreRequest r);
+  /// Sends [r]; its [CoreCall.answer] says what became of it.
+  CoreCall call(CoreRequest r);
+
+  /// Gives up on the call sent as [tag]: its answer is
+  /// [CoreUnanswered] `cancelled` at once, and the core is told to abort
+  /// it, so a call it has not finished does not take effect. Nothing
+  /// happens for a call already answered.
+  void cancel(int tag);
 
   /// The core's SSE blocks (text), each subscription its own stream, until
   /// an `event: end` block ([endBlock]) or [CoreSubscription.cancel].
@@ -190,9 +207,9 @@ final class CoreClient implements CoreCalls {
       _owner ? _stateOut.stream : const Stream.empty();
 
   @override
-  Future<CoreAnswer> call(CoreRequest r) {
-    if (_refusal case final refusal?) return Future.value(refusal);
+  CoreCall call(CoreRequest r) {
     final tag = _tag++;
+    if (_refusal case final refusal?) return CoreCall(tag, Future.value(refusal));
     final answer = Completer<CoreAnswer>();
     _pending[tag] = answer;
     final code = _lib.call(handle, r.frame(), _answers.sendPort, tag);
@@ -200,7 +217,18 @@ final class CoreClient implements CoreCalls {
       _pending.remove(tag);
       answer.complete(code == 1 ? _closedAnswer : _refusedAnswer);
     }
-    return answer.future;
+    return CoreCall(tag, answer.future);
+  }
+
+  /// Sends a cancel frame for [tag] on the answers port the call went to,
+  /// under a tag of its own whose 204 nothing waits for.
+  @override
+  void cancel(int tag) {
+    final waiting = _pending.remove(tag);
+    if (waiting == null) return;
+    waiting.complete(_cancelledAnswer);
+    if (_refusal != null) return;
+    _lib.call(handle, RequestFrame.cancel(tag), _answers.sendPort, _tag++);
   }
 
   /// A resume point is not carried by `clax_embed_subscribe` yet, so
@@ -339,6 +367,10 @@ final class CoreClient implements CoreCalls {
   static const _failedAnswer = CoreUnanswered(
     'core_failed',
     'the core did not open',
+  );
+  static const _cancelledAnswer = CoreUnanswered(
+    'cancelled',
+    'the call was cancelled',
   );
   static const _refusedAnswer = CoreUnanswered(
     'frame_refused',

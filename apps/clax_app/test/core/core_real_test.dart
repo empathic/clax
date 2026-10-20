@@ -74,7 +74,7 @@ void main() {
     });
 
     // A call made before `ready` waits for it.
-    final early = core.call(const CoreRequest('GET', '/api/artifacts'));
+    final early = core.call(const CoreRequest('GET', '/api/artifacts')).answer;
     await ready.future.timeout(const Duration(minutes: 1));
     final migrating = states.whereType<CoreOpening>().where(
       (s) => s.phase == 'migrating',
@@ -96,7 +96,7 @@ void main() {
     // The core, not the caller, decides what a frame may reach.
     final refused = switch (await core.call(
       const CoreRequest('GET', '/api/artifacts', as: CallAs.shellPage),
-    )) {
+    ).answer) {
       CoreAnswered(:final response) => response,
       final u => throw TestFailure('$u'),
     };
@@ -119,7 +119,7 @@ void main() {
     expect(blocks.last, endBlock('core_closed'));
     await closed.future;
     expect(states.last, const CoreClosed());
-    final after = await core.call(const CoreRequest('GET', '/api/artifacts'));
+    final after = await core.call(const CoreRequest('GET', '/api/artifacts')).answer;
     expect(after, isA<CoreUnanswered>());
     expect((after as CoreUnanswered).code, 'core_closed');
     expect(File('${home.path}/embed.json').readAsStringSync(), contains('clax://{id}.c'));
@@ -163,7 +163,7 @@ void main() {
 
     final r = switch (await second.call(
       const CoreRequest('GET', '/api/artifacts'),
-    )) {
+    ).answer) {
       CoreAnswered(:final response) => response,
       final u => throw TestFailure('$u'),
     };

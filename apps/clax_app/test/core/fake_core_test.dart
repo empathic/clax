@@ -23,7 +23,7 @@ void main() {
   test('dispatches on method and path, and records every request', () async {
     final core = FakeCore()
       ..on('GET', '/api/artifacts/{aid}', (r, p) => FakeCore.json({'id': p['aid']}));
-    final r = await core.call(const CoreRequest('GET', '/api/artifacts/a%2Fb?x=1'));
+    final r = await core.call(const CoreRequest('GET', '/api/artifacts/a%2Fb?x=1')).answer;
     expect(jsonOf(r), {'id': 'a/b'});
     expect(core.requests.map((r) => r.path), ['/api/artifacts/a%2Fb?x=1']);
   });
@@ -59,7 +59,7 @@ void main() {
         false,
       ),
     ]) {
-      final (status, res) = statusOf(await core.call(r));
+      final (status, res) = statusOf(await core.call(r).answer);
       if (admitted) {
         expect(status, 200, reason: '$r');
       } else {
@@ -73,7 +73,7 @@ void main() {
     final unrouted = <Object>[];
     final core = FakeCore(unrouted: unrouted.add);
     await expectLater(
-      core.call(const CoreRequest('POST', '/api/artifacts/x')),
+      core.call(const CoreRequest('POST', '/api/artifacts/x')).answer,
       throwsA(isA<TestFailure>()),
     );
     expect(unrouted.single.toString(), contains('POST /api/artifacts/x'));
@@ -93,7 +93,7 @@ void main() {
     final live = core.subscribe();
     core.close();
     expect(await live.blocks.last, endBlock('core_closed'));
-    final r = await core.call(const CoreRequest('GET', '/api/a'));
+    final r = await core.call(const CoreRequest('GET', '/api/a')).answer;
     expect((r as CoreUnanswered).code, 'core_closed');
     expect(core.requests, isEmpty, reason: 'a closed core is not called');
     expect(await core.subscribe().blocks.toList(), [endBlock('core_closed')]);
@@ -126,7 +126,7 @@ void main() {
           'pid': 1,
         })),
       ),
-    );
+    ).answer;
     final sid = Session.fromJson((jsonOf(s)['session']! as Map).cast()).id;
 
     final created = await core.call(
@@ -145,13 +145,13 @@ void main() {
           ),
         ),
       ),
-    );
+    ).answer;
     final published = PublishResult.fromJson(jsonOf(created));
     final aid = published.artifact.id;
     expect(published.version.files['a.bin']!.contentType, 'application/x');
     expect(await api.readFileBytes(aid, 1, 'a.bin'), utf8.encode('xy'));
 
-    final list = await core.call(const CoreRequest('GET', '/api/artifacts'));
+    final list = await core.call(const CoreRequest('GET', '/api/artifacts')).answer;
     expect(
       [for (final a in jsonOf(list)['artifacts']! as List) ArtifactSummary.fromJson((a as Map).cast()).title],
       ['Tea'],
@@ -160,7 +160,7 @@ void main() {
     final item = api.sendComment(aid, 'bigger');
     final polled = await core.call(
       CoreRequest('GET', '/api/sessions/$sid/feedback?tier=wait&wait=20'),
-    );
+    ).answer;
     expect(FeedbackBatch.fromJson(jsonOf(polled)).items.single.body, 'bigger');
 
     final commented = await core.call(
@@ -169,7 +169,7 @@ void main() {
         '/api/artifacts/$aid/threads/${item.threadId}/comments',
         body: utf8.encode('{"body":"and blue"}'),
       ),
-    );
+    ).answer;
     final thread = ThreadView.fromJson((jsonOf(commented)['thread']! as Map).cast());
     expect(thread.comments.map((c) => c.body), ['bigger', 'and blue']);
 
@@ -183,7 +183,7 @@ void main() {
           ],
         })),
       ),
-    );
+    ).answer;
     expect(statusOf(batch).$1, 200);
     expect((await api.getDoc(aid, 'notes/n1'))!.data, {'t': 1});
 
@@ -195,7 +195,7 @@ void main() {
           PublishRequest(ifVersion: 9, files: {'index.html': 'x'}).toJson(),
         )),
       ),
-    );
+    ).answer;
     expect(statusOf(stale).$1, 409);
     expect((jsonOf(stale)['error']! as Map)['code'], 'conflict');
   });

@@ -21,7 +21,11 @@ class _Unanswering implements CoreCalls {
   final String code;
 
   @override
-  Future<CoreAnswer> call(CoreRequest r) async => CoreUnanswered(code, 'gone');
+  CoreCall call(CoreRequest r) =>
+      CoreCall(0, Future.value(CoreUnanswered(code, 'gone')));
+
+  @override
+  void cancel(int tag) {}
 
   @override
   CoreSubscription subscribe({String? lastEventId}) =>
@@ -202,6 +206,38 @@ void main() {
             .having((e) => e.status, 'status', 0)
             .having((e) => e.code, 'code', ClaxApiError.timeout)
             .having((e) => e.unanswered, 'unanswered', isTrue),
+      );
+    });
+
+    test('a call with no answer within its limit is cancelled in the core', () async {
+      final timers = <(Duration, void Function())>[];
+      final hanging = FakeCore()
+        ..on(
+          'GET',
+          '/api/sessions/{sid}/feedback',
+          (r, p) => Completer<CoreResponse>().future,
+        );
+      final slow = HttpClaxApi.over(
+        CoreTransport(
+          hanging,
+          timer: (d, f) {
+            timers.add((d, f));
+            return _HeldTimer();
+          },
+        ),
+      );
+      Object? failure;
+      final poll = slow
+          .pollFeedback('s1', wait: const Duration(seconds: 20))
+          .then<void>((_) {}, onError: (Object e) => failure = e);
+      await pumpEventQueue();
+      expect(hanging.cancelled, isEmpty);
+      timers.single.$2();
+      await poll;
+      expect(failure, isA<ClaxApiError>().having((e) => e.code, 'code', ClaxApiError.timeout));
+      expect(
+        hanging.cancelled.map((r) => Uri.parse(r.path).path),
+        ['/api/sessions/s1/feedback'],
       );
     });
 

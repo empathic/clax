@@ -249,7 +249,10 @@ uint64_t clax_embed_open(const uint8_t *home, size_t home_len,
 // an unknown handle, 2 for a frame that does not parse or a NULL `req`.
 // The response frame is posted to `port` as one Uint8List: `tag` (8
 // bytes, little endian) then the frame. A call made before "ready" waits
-// for it.
+// for it. A cancel frame, {"cancel": <tag>}, is answered 204 at once
+// under its own `tag`, after it aborts the call sent to this `port` with
+// that tag, if the core is still running it: that call is never
+// answered, and a write it had not committed does not happen.
 int32_t clax_embed_call(uint64_t core, const uint8_t *req, size_t req_len,
                         int64_t port, int64_t tag);
 
@@ -303,6 +306,19 @@ into credentials:
 | `owner` | Dart (the app's own code and agent), and shell calls the host relays (§5) | `Authorization: Bearer <token>` unless the frame carries an `Authorization` (an agent session's own); `Host: localhost`; `ConnectInfo` of a loopback peer | everything but `/api/admin/shutdown` and the routes that hold their connection open (`clax_server::router::held_open`: `/api/stream`, `/api/events`, `/api/artifacts/{aid}/room`, `/api/artifacts/{aid}/live`, `/mcp`), since a call's body is read whole; events go by `subscribe`, and `POST /api/stream/{id}` is allowed |
 | `shell-page` | the host, for a scheme request to the shell's origin (§4.2) | `Host: localhost`; for the shell document (`/a/…`) alone, the owner cookie (`clax_owner_80`), so the shell document is the owner's browser's (§4.3), and no credential for the rest; of the frame's headers, only `Range`, `If-None-Match`, `If-Modified-Since`, `Accept` and `Service-Worker` | the shell document and what the core serves it only: `/a/…`, `/_clax/…` (the web UI's files), `/c/…`, `/_blob/…`; never `/api/` |
 | `content` | the host, for a scheme request to an artifact's origin | `Host: <host>.localhost`; no credential; of the frame's headers, only `Range`, `If-None-Match`, `If-Modified-Since`, `Accept` and `Service-Worker` | what `rewrite_artifact_host` admits on an artifact host (`/v/…`, `/draft/…`, `/_blob/…`, `/_clax/…`) |
+
+A **cancel frame** is a frame whose JSON is `{"cancel": <tag>}`, with no
+body, sent through `clax_embed_call` on the port of the call it names:
+the core keeps each call's task by port and tag until the call has its
+answer, and a cancel aborts that task (dropping the router's future at
+its next await, so a long poll that has not taken its batch takes none,
+and the call is never answered), then answers the cancel 204 under the
+cancel's own tag. A cancel of a call already answered, or of none, is
+answered 204 and does nothing more. A call the caller gives up on is
+cancelled this way, so cancelling needs no fifth C function: Dart's
+`CoreCalls.call` answers a `CoreCall` (its tag and its answer) and
+`CoreCalls.cancel(tag)` sends the frame, and `CoreTransport` cancels a
+call whose time limit passes, as a loopback timeout aborts its request.
 
 A response frame is `CLX1`, a length, JSON `{"status":200,"headers":[…]}`,
 then the body. Bodies are read whole up to 96 MiB (`PUBLISH_BODY_LIMIT`);
