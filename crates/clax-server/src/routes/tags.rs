@@ -142,7 +142,10 @@ pub async fn create(
                     description: b.description,
                 },
             )?;
-            events.publish(Event::Tags { artifact_id: None });
+            events.publish(Event::Tags {
+                artifact_id: None,
+                artifacts: vec![],
+            });
             Ok(tag)
         })
         .await?;
@@ -188,8 +191,21 @@ pub async fn update(
                     description: b.description,
                 },
             )?;
-            if before.as_ref() != Some(&tag) {
-                events.publish(Event::Tags { artifact_id: None });
+            if let Some(b) = before.as_ref().filter(|b| **b != tag) {
+                // The artifacts carrying it show its name and colour.
+                let artifacts = if b.name != tag.name || b.colour != tag.colour {
+                    st.list_artifacts()?
+                        .into_iter()
+                        .filter(|a| a.tags.iter().any(|t| t.id == tag.id))
+                        .map(|a| a.id.as_str().to_string())
+                        .collect()
+                } else {
+                    vec![]
+                };
+                events.publish(Event::Tags {
+                    artifact_id: None,
+                    artifacts,
+                });
             }
             Ok(tag)
         })
@@ -213,7 +229,10 @@ pub async fn delete(
     let carried = s
         .store_call(move |st| {
             let carried = st.delete_tag(&audit, &id)?;
-            events.publish(Event::Tags { artifact_id: None });
+            events.publish(Event::Tags {
+                artifact_id: None,
+                artifacts: carried.clone(),
+            });
             Ok(carried)
         })
         .await?;
@@ -267,6 +286,7 @@ async fn edit_artifact(
             if changed {
                 events.publish(Event::Tags {
                     artifact_id: Some(aid.as_str().to_string()),
+                    artifacts: vec![],
                 });
             }
             Ok(Some((aid.as_str().to_string(), after.tags, changed)))

@@ -176,6 +176,11 @@ async fn names_the_cookies_viewer_only() {
     assert_eq!(b["viewer"], me["viewer"]);
     assert!(b["artifact"]["artifact"]["participants"].is_object());
     assert_eq!(
+        b["artifact"]["artifact"]["may_tag"],
+        json!(false),
+        "a guest changes no artifact's tags"
+    );
+    assert_eq!(
         b["attention"]["open_in"],
         json!([]),
         "the cookie's viewer gets its attention"

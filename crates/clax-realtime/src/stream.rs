@@ -731,13 +731,17 @@ fn routes_loud(ev: &Event) -> Vec<(Chan, Gate)> {
         Event::People { .. } => vec![(Chan::People, Gate::Any)],
         // Tag names are the owner's, shown with every artifact anyone sees;
         // the event carries no name, only what to refetch.
-        Event::Tags { artifact_id } => match artifact_id {
-            Some(a) => vec![
-                (Chan::Gallery, Gate::Any),
-                (Chan::Artifact(a.clone()), Gate::Any),
-            ],
-            None => vec![(Chan::Gallery, Gate::Any)],
-        },
+        // A change to the list reaches the artifacts carrying the tag it
+        // touched, which show its name and colour.
+        Event::Tags {
+            artifact_id,
+            artifacts,
+        } => artifact_id
+            .iter()
+            .chain(artifacts)
+            .map(|a| (Chan::Artifact(a.clone()), Gate::Any))
+            .chain([(Chan::Gallery, Gate::Any)])
+            .collect(),
         // An agent started, ended or was renamed: the roster, and the Send
         // menus of the artifacts it watched.
         Event::Agents { artifacts } => artifacts
@@ -2832,8 +2836,12 @@ mod tests {
         .unwrap();
         hub.dispatch(&Event::Tags {
             artifact_id: Some(A.into()),
+            artifacts: vec![],
         });
-        hub.dispatch(&Event::Tags { artifact_id: None });
+        hub.dispatch(&Event::Tags {
+            artifact_id: None,
+            artifacts: vec![],
+        });
         let got = drain(&mut g);
         assert_eq!(got.len(), 2, "{got:?}");
         assert!(got[0].1.starts_with("event: tags\n"), "{}", got[0].1);
@@ -2846,6 +2854,18 @@ mod tests {
         let got = drain(&mut a);
         assert_eq!(got.len(), 1, "the list's change is the gallery's: {got:?}");
         assert!(got[0].1.contains(r#""topic":"artifact:"#), "{}", got[0].1);
+        assert!(drain(&mut other).is_empty());
+        // A rename, recolour or delete also reaches the artifacts carrying
+        // the tag, naming none of them.
+        hub.dispatch(&Event::Tags {
+            artifact_id: None,
+            artifacts: vec![A.into()],
+        });
+        assert_eq!(drain(&mut g).len(), 1);
+        let got = drain(&mut a);
+        assert_eq!(got.len(), 1, "{got:?}");
+        assert!(got[0].1.contains(r#""artifact_id":null"#), "{}", got[0].1);
+        assert!(!got[0].1.contains("artifacts"), "{}", got[0].1);
         assert!(drain(&mut other).is_empty());
     }
 

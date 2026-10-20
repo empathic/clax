@@ -1169,7 +1169,15 @@ visibility filter (see "What reaches an agent") leaves them alone.
 
 **The artifact's shape.** Every artifact view (`GET /api/artifacts`, `GET
 /api/artifacts/<aid>`, a publish's answer, the page's bootstrap) carries
-`tags: [{id, name, colour}]`, sorted by name (`[]` for none).
+`tags: [{id, name, colour}]`, sorted by name (`[]` for none). `GET
+/api/artifacts/<aid>` and the page's bootstrap also carry `may_tag`:
+whether the caller may set the artifact's tags (it administers the
+artifact, as below), which the web UI reads to offer its tag editor.
+
+The web UI shows each artifact's tags on its gallery card and under its
+title, filters the gallery and the inbox by them (`?tag=` in the page's
+address, match all), and lists them at `/tags`, where the owner makes,
+edits and deletes them.
 
 **Routes.**
 
@@ -4046,6 +4054,7 @@ router), and a test fails when it differs:
 | `ANY /mcp` | Denied | no |
 | `POST /mcp/json` | Denied | no |
 | `GET /people` | Denied | no |
+| `GET /tags` | Denied | no |
 <!-- route-table:end -->
 
 Beyond the table:
@@ -5169,10 +5178,11 @@ event's data names its `topic`. Events carry what changed:
 - `artifact_deleted`: `{topic, artifact_id}`.
 - `tags`: `{topic, artifact_id}`: the tags artifact `artifact_id` carries
   changed (on `gallery` and `artifact:<aid>`), or, with `artifact_id:
-  null` (on `gallery` alone), the list itself (a tag made, renamed,
-  recoloured or deleted). It names no tag: refetch `GET /api/tags`, and
-  the artifact (`GET /api/artifacts?artifact=<aid>`) or the gallery.
-  `/api/events` does not carry it.
+  null`, the list itself (a tag made, renamed, recoloured or deleted: on
+  `gallery`, and on the `artifact:<aid>` topic of each artifact carrying
+  a tag renamed, recoloured or deleted). It names no tag: refetch `GET
+  /api/tags`, and the artifact (`GET /api/artifacts?artifact=<aid>`) or
+  the gallery. `/api/events` does not carry it.
 - `thread` on `artifact:<aid>`: `{topic, artifact_id, thread}`, where
   `thread` is the thread view (as `GET /api/artifacts/<aid>/threads/<tid>`
   answers it without the token, and with no `feedback_state`: each reader

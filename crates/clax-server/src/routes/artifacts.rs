@@ -846,6 +846,9 @@ pub async fn get(
                 a.kind != KIND_LIVE
                     && fork_refusal(st, &caller, member.as_deref(), &a.id)?.is_none()
             );
+            // Whether the caller may change its tags (the shell's tag
+            // editor): those who administer it, as for its pin.
+            artifact["may_tag"] = json!(clax_http::agent::administers(st, &caller, a.id.as_str())?);
             let mut v = json!({
                 "artifact": artifact,
                 "versions": vis.filter_versions(&versions),

@@ -200,9 +200,15 @@ pub enum Event {
     /// recoloured or deleted, which every artifact carrying it shows).
     /// Clients refetch: `GET /api/tags`, and the gallery's artifacts or
     /// the one artifact. The `gallery` topic carries it, and an artifact's
-    /// own topic when it names one; `/api/events` never does.
+    /// own topic when it names one, or when it carries the tag a change to
+    /// the list renamed, recoloured or deleted (`artifacts`); `/api/events`
+    /// never does.
     Tags {
         artifact_id: Option<String>,
+        /// With `artifact_id` `None`: the artifacts carrying the tag the
+        /// change touched; never serialised.
+        #[serde(skip)]
+        artifacts: Vec<String>,
     },
 }
 
@@ -230,7 +236,7 @@ impl Event {
             | Event::People { .. }
             | Event::Agents { .. } => "",
             // A change to the list itself belongs to no artifact.
-            Event::Tags { artifact_id } => artifact_id.as_deref().unwrap_or(""),
+            Event::Tags { artifact_id, .. } => artifact_id.as_deref().unwrap_or(""),
         }
     }
 
@@ -532,7 +538,10 @@ mod tests {
             Event::People {
                 change: serde_json::json!({"what": "grant_requested"}),
             },
-            Event::Tags { artifact_id: None },
+            Event::Tags {
+                artifact_id: None,
+                artifacts: vec![],
+            },
         ] {
             assert_eq!(serde_json::to_value(&ev).unwrap()["type"], ev.name());
         }

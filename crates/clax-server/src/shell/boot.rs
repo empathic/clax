@@ -265,6 +265,13 @@ pub async fn assemble(
             {
                 artifact["forked_from"] = lineage;
             }
+            // Whether the caller may change its tags, as `GET
+            // /api/artifacts/<id>` says.
+            let may_tag = match &caller {
+                Ok(c) => clax_http::agent::administers(st, c, a.id.as_str())?,
+                Err(_) => false,
+            };
+            artifact["may_tag"] = json!(may_tag);
             let may_fork = match caller {
                 Ok(c) if a.kind != clax_core::live::KIND_LIVE => {
                     crate::routes::artifacts::fork_refusal(st, &c, member_rights.as_deref(), &a.id)?

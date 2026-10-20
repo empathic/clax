@@ -91,8 +91,8 @@ pub fn legal_page(
     entry(&*s.web, req, name)
 }
 
-/// `/`, `/inbox` and `/people`: the gallery's entry, which shows the
-/// gallery, the inbox or People by its path.
+/// `/`, `/inbox`, `/people` and `/tags`: the gallery's entry, which shows
+/// the gallery, the inbox, People or the tags by its path.
 pub async fn gallery_page(
     axum::extract::State(s): axum::extract::State<clax_http::state::AppState>,
     _d: clax_http::agent::DeniedToGrants,

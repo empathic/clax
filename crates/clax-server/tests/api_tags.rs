@@ -112,6 +112,7 @@ async fn the_owner_manages_the_list_and_each_change_is_announced() {
     }
     // The list: sorted by name, with counts, the palette, and who manages.
     let aid = new_artifact(&ts, "Plan").await;
+    let mut page = ts.stream_as_owner(&[&format!("artifact:{aid}")]).await;
     let (s, v) = owner(
         &ts,
         "PUT",
@@ -120,6 +121,8 @@ async fn the_owner_manages_the_list_and_each_change_is_announced() {
     )
     .await;
     assert_eq!(s, 200, "{v}");
+    let ev = page.next_named("tags").await;
+    assert_eq!(ev["artifact_id"], json!(aid), "{ev}");
     let (s, v) = owner(&ts, "GET", "/api/tags", None).await;
     assert_eq!(s, 200, "{v}");
     assert_eq!(names(&v["tags"]), ["Design", "draft"]);
@@ -138,6 +141,9 @@ async fn the_owner_manages_the_list_and_each_change_is_announced() {
     .await;
     assert_eq!(s, 200, "{v}");
     assert_eq!(v["tag"]["id"], json!(id));
+    // The artifact carrying it hears the change to the list on its own topic.
+    let ev = page.next_named("tags").await;
+    assert_eq!(ev["artifact_id"], Value::Null, "{ev}");
     let (_, a) = owner(&ts, "GET", &format!("/api/artifacts/{aid}"), None).await;
     assert_eq!(
         a["artifact"]["tags"],
@@ -162,6 +168,8 @@ async fn the_owner_manages_the_list_and_each_change_is_announced() {
     // Deleting removes it from every artifact.
     let (s, v) = owner(&ts, "DELETE", &format!("/api/tags/{id}"), None).await;
     assert_eq!((s, &v["artifacts"]), (200, &json!(1)), "{v}");
+    let ev = page.next_named("tags").await;
+    assert_eq!(ev["artifact_id"], Value::Null, "{ev}");
     let (_, a) = owner(&ts, "GET", &format!("/api/artifacts/{aid}"), None).await;
     assert_eq!(a["artifact"]["tags"], json!([]));
     let (s, _) = owner(&ts, "DELETE", &format!("/api/tags/{id}"), None).await;
@@ -655,4 +663,48 @@ async fn counts_follow_what_the_caller_sees_and_guests_see_only_tags_in_use() {
     .await;
     assert_eq!(s, 200, "{v}");
     assert_eq!(names(&v["artifact"]["tags"]), ["used"]);
+}
+
+#[tokio::test]
+async fn an_artifact_says_whether_its_viewer_may_change_its_tags() {
+    let w = World::two_people().await;
+    let ts = &w.ts;
+    let owners = new_artifact(ts, "Owner's").await;
+    let mias = w.read.artifact.clone();
+    let mia = format!("clax_viewer={}", w.mia_cookie);
+    let gil = ts.viewer(Some("Gil")).await;
+    let gil = format!("clax_viewer={}", gil.cookie);
+    let owner_cookie = ts.owner_cookie();
+    // The owner administers every artifact, Mia hers alone, a guest none;
+    // the page's bootstrap says the same as the API.
+    for (who, cookie, aid, may) in [
+        ("owner", &owner_cookie, &owners, true),
+        ("owner", &owner_cookie, &mias, true),
+        ("Mia", &mia, &mias, true),
+        ("Mia", &mia, &owners, false),
+        ("guest", &gil, &owners, false),
+    ] {
+        let (s, v) = browser(
+            ts,
+            cookie,
+            None,
+            "GET",
+            &format!("/api/artifacts/{aid}"),
+            None,
+        )
+        .await;
+        assert_eq!(s, 200, "{v}");
+        assert_eq!(v["artifact"]["may_tag"], json!(may), "{who} at {aid}: {v}");
+    }
+    let (_, v) = owner(ts, "GET", &format!("/api/artifacts/{owners}"), None).await;
+    assert_eq!(v["artifact"]["may_tag"], json!(true), "{v}");
+}
+
+#[tokio::test]
+async fn the_tags_page_is_the_gallery() {
+    let ts = TestServer::spawn().await;
+    let a = ts.get("/").await;
+    let b = ts.get("/tags").await;
+    assert_eq!(a.status(), b.status());
+    assert_eq!(a.text().await.unwrap(), b.text().await.unwrap());
 }
