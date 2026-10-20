@@ -83,7 +83,25 @@ log="$scratch/local-test.log"
 
 fails=0
 _ok() { echo "ok: $1"; }
-_fail() { echo "FAIL: $1" >&2; fails=$((fails + 1)); }
+# _fail: counts a failed step and shows why from the step's $log. The copy,
+# its Bazel output and the log are removed when the script exits, so what is
+# not printed here is lost.
+_fail() {
+    echo "FAIL: $1" >&2
+    fails=$((fails + 1))
+    [ -f "$log" ] || return 0
+    local failed
+    failed="$(grep -E '^[[:space:]]*(×|FAIL[[:space:]])' "$log" | sort -u | head -n 40)"
+    if [ -n "$failed" ]; then
+        echo "  failing tests and files:" >&2
+        sed 's/^/    /' <<<"$failed" >&2
+    fi
+    echo "  the last 60 lines of the step's log:" >&2
+    tail -n 60 "$log" | sed 's/^/    /' >&2
+}
+
+# _ran_probe: whether the step's log shows the probe's test file run.
+_ran_probe() { grep -q 'zzBazelProbe\.test' "$log"; }
 
 # _unit: runs the unit tests; the status is Bazel's, the log is in $log.
 _unit() {
@@ -102,17 +120,22 @@ it('zz bazel probe reads its module', () => {
 });
 TS
 
-if _unit && grep -q 'zzBazelProbe.test.ts' "$log"; then
-    _ok "a new test and its module are run"
+if _unit; then unit=0; else unit=1; fi
+if ! _ran_probe; then
+    _fail "a new test and its module were not run"
+elif [ "$unit" -ne 0 ]; then
+    _fail "the unit tests failed with a new test and its module present"
 else
-    _fail "a new test and its module were not run, or failed"
+    _ok "a new test and its module are run"
 fi
 
 rm -f "$module"
 if _unit; then
     _fail "the unit tests pass though a module one of them imports is deleted"
-else
+elif grep -Eq 'FAIL[[:space:]]+shell/src/zzBazelProbe\.test\.ts' "$log"; then
     _ok "deleting an imported module fails the target"
+else
+    _fail "the target failed, but not in the test whose module is deleted"
 fi
 
 # With the test gone the tree would be the one Bazel has already tested, and
@@ -120,10 +143,15 @@ fi
 # changes too, so the tests really run.
 rm -f "$test"
 echo "export const zzBazelProbeOther = $$;" > web/shell/src/zzBazelProbeOther.ts
-if _unit && grep -q 'Test Files' "$log" && ! grep -q 'zzBazelProbe.test' "$log"; then
-    _ok "a deleted test no longer runs"
+if _unit; then unit=0; else unit=1; fi
+if _ran_probe; then
+    _fail "a deleted test still runs"
+elif [ "$unit" -ne 0 ]; then
+    _fail "the unit tests failed with the probe's test deleted, for a reason other than the probe"
+elif ! grep -q 'Test Files' "$log"; then
+    _fail "the unit tests passed but report no test files: they did not run"
 else
-    _fail "a deleted test still runs, or the target fails without it"
+    _ok "a deleted test no longer runs"
 fi
 
 # `pako` deflates for the bundle gate (web/scripts/bundle-size.mjs); without
