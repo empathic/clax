@@ -568,8 +568,20 @@ async fn answer(sh: Arc<Shared>, head: RequestHead, body: Bytes, prefix: Vec<u8>
     }
 }
 
-/// The router's request for `head`: its headers but those the core sets,
-/// the `Host` and credential for who it speaks as, and a loopback peer.
+/// The headers a page's frame keeps (spec §4.2: what a scheme request
+/// carries that the answer depends on, and `Service-Worker`, which the
+/// kill switch reads); a page's frame drops every other.
+const PAGE_HEADERS: [&str; 5] = [
+    "range",
+    "if-none-match",
+    "if-modified-since",
+    "accept",
+    "service-worker",
+];
+
+/// The router's request for `head`: its headers but those the core sets
+/// (an owner frame's all; a page frame's only [`PAGE_HEADERS`]), the
+/// `Host` and credential for who it speaks as, and a loopback peer.
 pub(crate) fn request(
     head: &RequestHead,
     body: Bytes,
@@ -585,9 +597,11 @@ pub(crate) fn request(
     let mut length = false;
     for (k, v) in &head.headers {
         let name = k.to_ascii_lowercase();
+        if !owner && !PAGE_HEADERS.contains(&name.as_str()) {
+            continue;
+        }
         match name.as_str() {
             "host" => continue,
-            "authorization" | "cookie" if !owner => continue,
             "authorization" => authorized = true,
             "content-length" => length = true,
             _ => {}
@@ -891,6 +905,45 @@ mod tests {
         assert_eq!(&out[..8], &5i64.to_le_bytes());
         assert_eq!(status_and_body(&out[8..]), (200, vec![7u8; 1000]));
         assert_eq!(out.capacity(), out.len(), "no copy to grow it");
+    }
+
+    #[test]
+    fn a_page_frame_keeps_only_the_headers_a_scheme_request_carries() {
+        let sent = [
+            ("Range", "bytes=0-9"),
+            ("If-None-Match", "\"v1\""),
+            ("If-Modified-Since", "Mon, 19 Oct 2026 00:00:00 GMT"),
+            ("Accept", "text/html"),
+            ("Service-Worker", "script"),
+            ("x-clax-session", "s1"),
+            ("x-clax-via", "page"),
+            ("origin", "clax://app"),
+            ("sec-fetch-site", "same-origin"),
+            ("cookie", "clax_owner=x"),
+            ("authorization", "Bearer forged"),
+            ("host", "elsewhere"),
+        ];
+        for as_ in [As::Content, As::ShellPage] {
+            let mut h = head("GET", "/v/1/", as_, Some("7q3k9mzx2b4t"));
+            h.headers = sent
+                .iter()
+                .map(|(k, v)| (k.to_string(), v.to_string()))
+                .collect();
+            let req = request(&h, Bytes::new(), "t").unwrap();
+            let mut names: Vec<&str> = req.headers().keys().map(|k| k.as_str()).collect();
+            names.sort_unstable();
+            names.dedup();
+            let want = vec![
+                "accept",
+                "host",
+                "if-modified-since",
+                "if-none-match",
+                "range",
+                "service-worker",
+            ];
+            assert_eq!(names, want, "{as_:?}");
+            assert_ne!(req.headers()["host"], "elsewhere");
+        }
     }
 
     #[test]

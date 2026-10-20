@@ -291,8 +291,8 @@ into credentials:
 | `as` | Who sends it | What the core adds | Paths it may reach |
 |---|---|---|---|
 | `owner` | Dart (the app's own code and agent), and shell calls the host relays (§5) | `Authorization: Bearer <token>` unless the frame carries an `Authorization` (an agent session's own); `Host: localhost`; `ConnectInfo` of a loopback peer | everything but `/api/admin/shutdown` and the routes that hold their connection open (`clax_server::router::held_open`: `/api/stream`, `/api/events`, `/api/artifacts/{aid}/room`, `/api/artifacts/{aid}/live`, `/mcp`), since a call's body is read whole; events go by `subscribe`, and `POST /api/stream/{id}` is allowed |
-| `shell-page` | the host, for a scheme request to the shell's origin (§4.2) | `Host: localhost`; no credential | the shell's documents and assets only: `/a/…`, `/assets/…`, `/_clax/…`, `/c/…`, `/_blob/…`, `/favicon.ico`; never `/api/` |
-| `content` | the host, for a scheme request to an artifact's origin | `Host: <host>.localhost`; no credential | what `rewrite_artifact_host` admits on an artifact host (`/v/…`, `/draft/…`, `/_blob/…`, `/_clax/…`) |
+| `shell-page` | the host, for a scheme request to the shell's origin (§4.2) | `Host: localhost`; no credential; of the frame's headers, only `Range`, `If-None-Match`, `If-Modified-Since`, `Accept` and `Service-Worker` | the shell's documents and assets only: `/a/…`, `/assets/…`, `/_clax/…`, `/c/…`, `/_blob/…`, `/favicon.ico`; never `/api/` |
+| `content` | the host, for a scheme request to an artifact's origin | `Host: <host>.localhost`; no credential; of the frame's headers, only `Range`, `If-None-Match`, `If-Modified-Since`, `Accept` and `Service-Worker` | what `rewrite_artifact_host` admits on an artifact host (`/v/…`, `/draft/…`, `/_blob/…`, `/_clax/…`) |
 
 A response frame is `CLX1`, a length, JSON `{"status":200,"headers":[…]}`,
 then the body. Bodies are read whole up to 96 MiB (`PUBLISH_BODY_LIMIT`);
