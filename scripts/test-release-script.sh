@@ -146,6 +146,12 @@ case "$1 $2" in
             state="$(sed -n 1p "$S/$3")"
             if [ "$(wc -l < "$S/$3")" -gt 1 ]; then sed -i.bak 1d "$S/$3"; fi
         fi
+        # A Publish Pi package run that succeeds puts its commit's version on npm.
+        case "$3:$state" in
+            30?:"completed success")
+                sha="$(awk -F '\t' -v id="$3" '$1 == id { sub("Publish Pi package ", "", $2); print $2 }' "$S/publish-runs")"
+                origin show "$sha:plugins/pi/package.json" | sed -n 's/^  "version": "\(.*\)",$/\1/p' >> "$S/npm-versions" ;;
+        esac
         if [ "$3" = 101 ] && [ "$state" = "completed success" ] && [ ! -e "$S/release-success" ]; then
             : > "$S/release-success"
             echo "101 $(origin rev-parse "$(origin tag -l 'v*' --sort=-creatordate | sed -n 1p)^{commit}")" >> "$S/release-successes"
@@ -163,6 +169,40 @@ case "$1 $2" in
         esac ;;
     *) echo "fake gh: unexpected: $*" >&2; exit 2 ;;
 esac
+SH
+# npm: the Pi package exists at 0.5.0 unless $FAKE_STATE/npm-absent does;
+# $FAKE_STATE/npm-versions lists the versions it has besides; `npm whoami`
+# fails while $FAKE_STATE/npm-no-login exists. A publish logs the commit it
+# runs in and adds its package.json's version.
+fake_exe "$T/bin/npm" <<'SH'
+#!/bin/sh
+S="$FAKE_STATE"
+echo "npm $*" >> "$S/calls"
+absent() {
+    echo "npm error code E404" >&2
+    echo "npm error 404 Not Found - GET https://registry.npmjs.org/$1 - Not found" >&2
+    exit 1
+}
+case "$1" in
+    view)
+        [ ! -e "$S/npm-absent" ] || absent "$2"
+        case "$2" in
+            ?*@*) v="${2##*@}"; if grep -x "$v" "$S/npm-versions" 2>/dev/null; then :; fi ;;
+            *) echo 0.5.0 ;;
+        esac ;;
+    whoami)
+        if [ -e "$S/npm-no-login" ]; then echo "npm error code ENEEDAUTH" >&2; exit 1; fi
+        echo owner ;;
+    publish)
+        echo "npm publish at $(git rev-parse HEAD)" >> "$S/calls"
+        sed -n 's/^  "version": "\(.*\)",$/\1/p' package.json >> "$S/npm-versions"
+        rm -f "$S/npm-absent" ;;
+    *) echo "fake npm: unexpected: $*" >&2; exit 2 ;;
+esac
+SH
+fake_exe "$T/bin/pnpm" <<'SH'
+#!/bin/sh
+echo "pnpm $* (in $(basename "$(dirname "$PWD")")/$(basename "$PWD"))" >> "$FAKE_STATE/calls"
 SH
 FAKE_PATH="$T/bin:$PATH"
 # origin's pre-receive hook: refuses a push of main while
@@ -186,7 +226,7 @@ N=0
 new_case() {
     N=$((N + 1))
     C="$T/case$N"
-    mkdir -p "$C/state" "$C/repo/scripts" "$C/repo/bazel"
+    mkdir -p "$C/state" "$C/repo/scripts" "$C/repo/bazel" "$C/repo/plugins/pi/scripts"
     export FAKE_STATE="$C/state" FAKE_REMOTE="$C/origin.git"
     git init -q --bare -b main "$C/origin.git"
     git init -q -b main "$C/repo"
@@ -200,6 +240,8 @@ new_case() {
     cp "$HERE/scripts/release.sh" "$r/scripts/release.sh"
     printf 'target/\n' > "$r/.gitignore"
     printf 'CLAX_VERSION="0.5.0"\nPINNED_VERSION="0.5.0"\n' > "$r/scripts/ensure-clax.sh"
+    printf 'CLAX_VERSION="0.5.0"\nPINNED_VERSION="0.5.0"\n' > "$r/plugins/pi/scripts/ensure-clax.sh"
+    printf '{\n  "name": "@empathic/clax-pi",\n  "version": "0.5.0",\n  "type": "module"\n}\n' > "$r/plugins/pi/package.json"
     echo "version = 0.5.0" > "$r/bazel/workspace.bzl"
     echo "version = 0.5.0" > "$r/MODULE.bazel.lock"
     cat > "$r/scripts/check-version.sh" <<'SH'
@@ -214,16 +256,17 @@ SH
 set -e
 cd "$(dirname "$0")/.."
 echo "bump $1" >> "$FAKE_STATE/calls"
-sed -i.bak "s/^CLAX_VERSION=.*/CLAX_VERSION=\"$1\"/" scripts/ensure-clax.sh
-rm scripts/ensure-clax.sh.bak
+sed -i.bak "s/^CLAX_VERSION=.*/CLAX_VERSION=\"$1\"/" scripts/ensure-clax.sh plugins/pi/scripts/ensure-clax.sh
+sed -i.bak "s/^  \"version\": \".*\",/  \"version\": \"$1\",/" plugins/pi/package.json
+rm scripts/ensure-clax.sh.bak plugins/pi/scripts/ensure-clax.sh.bak plugins/pi/package.json.bak
 SH
     cat > "$r/scripts/pin-release.sh" <<'SH'
 #!/usr/bin/env bash
 set -e
 cd "$(dirname "$0")/.."
 echo "pin $1" >> "$FAKE_STATE/calls"
-sed -i.bak "s/^PINNED_VERSION=.*/PINNED_VERSION=\"${1#v}\"/" scripts/ensure-clax.sh
-rm scripts/ensure-clax.sh.bak
+sed -i.bak "s/^PINNED_VERSION=.*/PINNED_VERSION=\"${1#v}\"/" scripts/ensure-clax.sh plugins/pi/scripts/ensure-clax.sh
+rm scripts/ensure-clax.sh.bak plugins/pi/scripts/ensure-clax.sh.bak
 SH
     git -C "$r" add -A
     git -C "$r" -c commit.gpgsign=false commit -q -m "Clax 0.4.0"
@@ -250,7 +293,7 @@ snapshot() {
     cat "$C/repo/scripts/ensure-clax.sh" "$C/repo/bazel/workspace.bzl" "$C/repo/MODULE.bazel.lock"
 }
 # The calls that change something.
-actions() { grep -E '^(bump|pin|just|gh workflow run)' "$FAKE_STATE/calls" 2>/dev/null; }
+actions() { grep -E '^(bump|pin|just|gh workflow run|npm publish|pnpm)' "$FAKE_STATE/calls" 2>/dev/null; }
 count() { grep -c -x -- "$1" "$FAKE_STATE/calls"; }
 has() { grep -F -- "$1" "$C/out" >/dev/null; }
 
@@ -490,6 +533,43 @@ if [ "$rc" = 1 ] && has "gh failed 5 times in a row" && has "HTTP 502: Bad Gatew
     pass "gh failing on every poll stops the wait, naming gh's error"
 else fail "gh failing on every poll stops the wait (rc=$rc: $(cat "$C/out"))"; fi
 
+# --- the Pi package on npm ---------------------------------------------------------
+# Not on npm yet: the first version is published from here, from the pin
+# commit, and the trusted-publisher setup is printed.
+new_case
+: > "$FAKE_STATE/npm-absent"
+release 0.6.0; rc=$?
+if [ "$rc" = 0 ] && has "@empathic/clax-pi is not on npm yet: step 14 publishes its first version from this machine"; then
+    pass "the dry run says the Pi package's first version is published from here"
+else fail "the dry run with the Pi package not on npm (rc=$rc: $(cat "$C/out"))"; fi
+act; rc=$?
+pin="$(git --git-dir="$C/origin.git" rev-parse main)"
+if [ "$rc" = 0 ] && released && [ "$(count "npm publish at $pin")" = 1 ] && [ "$(count "npm publish --access public")" = 1 ] \
+    && [ "$(count "pnpm install --frozen-lockfile (in plugins/pi)")" = 1 ] && [ "$(count "pnpm run typecheck (in plugins/pi)")" = 1 ] \
+    && [ "$(grep -c '^gh workflow run' "$FAKE_STATE/calls")" = 0 ] \
+    && has "GitHub Actions: organization empathic, repository clax-test, workflow" \
+    && has "publish-pi.yml, and no environment (the workflow declares none)" \
+    && has "switch README.md and plugins/pi/README.md to lead their Pi install with" \
+    && [ ! -e "$C/repo/target/release/0.6.0/pi-publish" ] \
+    && [ "$(git -C "$C/repo" worktree list | wc -l | tr -d ' ')" = 1 ]; then
+    pass "a Pi package not on npm is published from here, from the pin commit, with the trusted-publisher setup"
+else fail "the first Pi publish (rc=$rc: $(actions); $(cat "$C/out"))"; fi
+# On npm: the workflow publishes, never npm here.
+new_case
+act; rc=$?
+if [ "$rc" = 0 ] && released && [ "$(count "npm publish --access public")" = 0 ] \
+    && [ "$(grep -c '^gh workflow run publish-pi.yml' "$FAKE_STATE/calls")" = 1 ] && ! has "Trusted Publisher"; then
+    pass "a Pi package on npm is published through publish-pi.yml"
+else fail "a Pi package on npm is published through publish-pi.yml (rc=$rc: $(cat "$C/out"))"; fi
+# The version on npm already: step 14 is done.
+new_case
+echo 0.6.0 > "$FAKE_STATE/npm-versions"
+act; rc=$?
+if [ "$rc" = 0 ] && has "note: @empathic/clax-pi@0.6.0 is on npm already: step 14 is done" \
+    && has "Step 14: Publish the Pi package: done already" && ! grep -E '^(gh workflow run|npm publish)' "$FAKE_STATE/calls" >/dev/null; then
+    pass "a version npm has already is not published again"
+else fail "a version npm has already (rc=$rc: $(cat "$C/out"))"; fi
+
 # --- preflight refusals --------------------------------------------------------------
 # refuse NAME EXPECTED [ARGS...]: release.sh with ARGS (default: 0.6.0 and
 # the act flag) exits 1 naming EXPECTED and changes nothing.
@@ -542,6 +622,10 @@ refuse "a tag of the version on origin on another commit" "the tag v0.6.0 tags $
 new_case
 : > "$FAKE_STATE/no-auth"
 refuse "gh signed out" "gh is not signed in (gh auth login)"
+new_case
+: > "$FAKE_STATE/npm-absent"
+: > "$FAKE_STATE/npm-no-login"
+refuse "a first Pi publish with npm signed out" "is not on npm yet, so step 14 publishes its first version from here: sign in first (npm login; npm whoami fails)"
 new_case
 git -C "$C/repo" config user.signingkey "$T/no-such-key"
 refuse "a signing key that does not sign" "commit signing does not work here"

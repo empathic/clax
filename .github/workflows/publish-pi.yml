@@ -14,9 +14,11 @@ name: Publish Pi package
 #
 # It publishes through npm trusted publishing (OIDC, no token) with
 # provenance, so the package on npmjs.com must name this repository and
-# workflow as its trusted publisher. npm offers that only for a package that
-# exists, so the first version is published by hand (`npm publish` in
-# plugins/pi).
+# workflow (no environment: the job declares none) as its trusted
+# publisher. npm offers that only for a package that exists, so the first
+# version is not published here: scripts/release.sh publishes it from the
+# releaser's machine (npm publish from a worktree of the pin commit) and
+# prints that setup.
 on:
   workflow_dispatch:
     inputs:

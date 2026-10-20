@@ -522,7 +522,7 @@ start unless the checkout is on `main`, clean (no untracked file) and equal
 to `origin/main`, `gh` is signed in (`gh auth status`), the version is
 `X.Y.Z` and newer than every `v*` tag here and on origin, commit signing
 works (a signed commit written to a scratch object directory), and `just`,
-Bazelisk or Bazel, `python3` and `curl` are on `PATH`. The release then
+Bazelisk or Bazel, `python3`, `curl` and `npm` are on `PATH`. The release then
 runs the manual steps below, in order, as you: it signs both commits and
 the tag with your signing key, pushes the tag alone, waits for the Release
 workflow on it and checks that the release lists `SHA256SUMS`, pins the
@@ -592,8 +592,11 @@ run; a release of the version from another build; a refused push of
 `main`; a failed CI run on the pin commit, also once `main` has moved on;
 and a failed Publish Pi package run. It also checks `bazel-sync` that
 never settles, `gh` failing during a wait, `main` moving during the
-Release wait and before the Pi publish, and each preflight refusal but a
-missing Bazel or `python3` or `curl`.
+Release wait and before the Pi publish, a release of the version from an
+earlier build of the same tree or of another tree, the Pi package's first
+version published from here (a fake `npm`), a package on npm published
+through the workflow, a version npm has already, and each preflight
+refusal but a missing Bazel, `python3`, `curl`, `npm` or `pnpm`.
 
 The Pi package, `@empathic/clax-pi` on npm, is published from the pin
 commit, not the tag: its wrapper must pin the release that shares its
@@ -602,12 +605,24 @@ commit (its `sha` input, main's tip by default) is on main and CI passed on
 it, before it
 typechecks, packs and publishes with provenance through npm trusted
 publishing. npm lets a package name a trusted publisher only once it
-exists, so the first version is published by hand from `plugins/pi`
-(`npm login`, then `npm publish`; `publishConfig` makes it public), and
-the package's settings on npmjs.com then name this repository and
-`publish-pi.yml`. After that first publish, `README.md` and
-`plugins/pi/README.md` lead their Pi install with `pi install
-npm:@empathic/clax-pi`. `scripts/test-plugins.sh` keeps the package
+exists, so while `npm view @empathic/clax-pi` finds nothing, `just
+release` publishes the first version from your machine instead: its
+preflight then needs `npm whoami` to succeed (`npm login`) and `pnpm`, and
+the dry run says so. Step 14 checks out the pin commit (or the merge on
+it) in a temporary worktree under `target/release/`, makes the checks
+`publish-pi.yml` makes (the wrapper pins the package's version, npm lacks
+that version, `pnpm install --frozen-lockfile` and `pnpm run typecheck`
+pass), runs `npm publish --access public` on your terminal, so npm's
+one-time-password prompt reaches you, waits for npm to list the version,
+removes the worktree, and prints the one-time setup: on npmjs.com, the
+package's Settings, Trusted Publisher, GitHub Actions, organization
+`empathic`, repository `clax`, workflow `publish-pi.yml`, no environment
+(the workflow declares none). Later releases publish through the workflow.
+Step 14 is done whenever npm has the version. After that first publish,
+step 15 lists the trusted-publisher setup and switching `README.md` and
+`plugins/pi/README.md` to lead their Pi install with `pi install
+npm:@empathic/clax-pi`; until the package exists they keep their current
+install instructions. `scripts/test-plugins.sh` keeps the package
 publishable: public, tagged `pi-package` for Pi's gallery, Pi's own
 modules as optional `"*"` peers (Pi provides them; installed, they would
 add a second Pi of about 200 MB), no `.qual` files, and a `LICENSE`.

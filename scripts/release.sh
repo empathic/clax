@@ -29,7 +29,11 @@
 #   13  wait for CI on the commit step 12 pushed (the pin commit, or the
 #       merge on it)
 #   14  gh workflow run publish-pi.yml (dry_run off) on that commit, and
-#       wait for it
+#       wait for it. While the Pi package does not exist on npm (trusted
+#       publishing needs an existing package), its first version is
+#       published from here instead: npm publish, from a temporary worktree
+#       of that commit, after the checks publish-pi.yml makes; then the
+#       trusted-publisher setup is printed. Done once npm has the version.
 #   15  print what is left by hand (clax.dev, crates.io)
 #
 # A run that fails stops at that step, says which, and changes nothing after
@@ -51,6 +55,8 @@
 #
 # Environment:
 #   GH_REPO                     the GitHub repository (default: origin's)
+#   CLAX_RELEASE_NPM            the npm command (npm); for tests
+#   CLAX_RELEASE_PNPM           the pnpm command (pnpm); for tests
 #   CLAX_RELEASE_POLL_SECONDS   seconds between polls of a workflow run (20)
 #   CLAX_RELEASE_MAX_POLLS      polls before a wait gives up (270, 90 min)
 set -euo pipefail
@@ -59,6 +65,8 @@ ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd -P)"
 POLL="${CLAX_RELEASE_POLL_SECONDS:-20}"
 MAX_POLLS="${CLAX_RELEASE_MAX_POLLS:-270}"
 ACT_FLAG="--i-know-what-i-am-doing"
+NPM="${CLAX_RELEASE_NPM:-npm}"
+PNPM="${CLAX_RELEASE_PNPM:-pnpm}"
 
 usage() {
     echo "usage: scripts/release.sh X.Y.Z [$ACT_FLAG]" >&2
@@ -135,6 +143,24 @@ find_run() {
 }
 run_state() { gh run view "$1" --json status,conclusion --jq '"\(.status) \(.conclusion)"'; }
 release_exists() { gh release view "$TAG" --json tagName >/dev/null 2>&1; }
+# The Pi package's npm name, from plugins/pi/package.json.
+pi_package() { sed -n 's/^  "name": "\(.*\)",$/\1/p' "$ROOT/plugins/pi/package.json"; }
+# Whether the Pi package exists on npm: prints yes or no; fails, saying
+# npm's error, when npm cannot tell.
+pi_on_npm() {
+    local out
+    if out="$("$NPM" view "$(pi_package)" version 2>&1)"; then echo yes; return 0; fi
+    case "$out" in
+        *E404* | *"404 Not Found"*) echo no ;;
+        *) echo "$out" | tr '\n' ' ' >&2; return 1 ;;
+    esac
+}
+# Whether npm has the Pi package at version $1 (default: this release's).
+pi_has_version() {
+    local out
+    out="$("$NPM" view "$(pi_package)@${1:-$V}" version 2>/dev/null)" || return 1
+    [ "$out" = "${1:-$V}" ]
+}
 # The tree of commit $1 as GitHub has it: a run's commit need not be here.
 github_tree() { gh api "repos/$GH_REPO/git/commits/$1" --jq .tree.sha; }
 # Whether the release's files are this tag's build: it lists SHA256SUMS and
@@ -333,7 +359,34 @@ preflight() {
     if command -v gh >/dev/null 2>&1 && ! gh auth status >/dev/null 2>&1; then
         problem "gh is not signed in (gh auth login)"
     fi
+    check_npm
     check_signing
+}
+
+NOTES=()
+# The Pi package on npm. Trusted publishing (publish-pi.yml) needs a package
+# that exists, so while it does not, step 14 publishes the first version
+# from here, which needs npm signed in and pnpm for the typecheck.
+check_npm() {
+    local on err
+    if ! command -v "$NPM" >/dev/null 2>&1; then problem "npm is not on PATH"; return 0; fi
+    semver_ok "$V" || return 0
+    err="$(mktemp)"
+    if ! on="$(pi_on_npm 2>"$err")"; then
+        problem "cannot ask npm about $(pi_package): $(cat "$err")"
+        rm -f "$err"
+        return 0
+    fi
+    rm -f "$err"
+    if [ "$on" = no ]; then
+        if ! "$NPM" whoami >/dev/null 2>&1; then
+            problem "$(pi_package) is not on npm yet, so step 14 publishes its first version from here: sign in first (npm login; npm whoami fails)"
+        fi
+        command -v "$PNPM" >/dev/null 2>&1 || problem "pnpm is not on PATH (the first Pi publish typechecks the package)"
+        NOTES+=("$(pi_package) is not on npm yet: step 14 publishes its first version from this machine (npm publish, with npm's own prompts), then prints the trusted-publisher setup")
+    elif pi_has_version; then
+        NOTES+=("$(pi_package)@$V is on npm already: step 14 is done")
+    fi
 }
 
 # --- steps 2-15 -------------------------------------------------------------------
@@ -367,7 +420,7 @@ COMMANDS=(
     [11]="git commit -S -a -m \"$PIN_SUBJECT\""
     [12]="git push origin main (after git merge -S origin/main, when origin's main moved on)"
     [13]="gh run list --workflow ci.yml (the push run on the pin commit, or the merge on it), wait"
-    [14]="gh workflow run publish-pi.yml --ref main -f dry_run=false -f sha=<that commit>, wait"
+    [14]="gh workflow run publish-pi.yml --ref main -f dry_run=false -f sha=<that commit>, wait (the first version: npm publish from here)"
     [15]="print the steps left by hand"
 )
 
@@ -390,10 +443,7 @@ done_13() {
     id="$(find_run ci.yml push "$PUBLISH_COMMIT")"
     [ -n "$id" ] && [ "$(run_state "$id")" = "completed success" ]
 }
-done_14() {
-    local id
-    id="$(publish_run "$PUBLISH_COMMIT")" && [ -n "$id" ] && [ "$(run_state "$id")" = "completed success" ]
-}
+done_14() { pi_has_version; }
 done_15() { false; }
 
 # A poll's gh call may fail this many times in a row (a network or API
@@ -586,7 +636,9 @@ new_publish_run() {
 # Publishes from the commit step 12 pushed, never main's tip: a run already under way
 # for it is waited for; none, or a failed one, is dispatched anew.
 step_14() {
-    local id state
+    local id state on
+    on="$(pi_on_npm)" || { say "  cannot ask npm about $(pi_package)"; return 1; }
+    if [ "$on" = no ]; then pi_first_publish; return; fi
     id="$(gh_retry publish_run "$PUBLISH_COMMIT")" || return 1
     state=""
     if [ -n "$id" ]; then state="$(gh_retry run_state "$id")" || return 1; fi
@@ -598,6 +650,50 @@ step_14() {
     esac
     await_run "$id" "Publish Pi package"
 }
+
+# The Pi package's first version, published from here: from a temporary
+# worktree of PUBLISH_COMMIT, after the checks publish-pi.yml makes (the
+# wrapper pins the package's version, npm lacks it, the typecheck passes);
+# npm publish runs on this terminal, so npm's sign-in and one-time-password
+# prompts reach the person.
+pi_first_publish() {
+    local dir="$ROOT/target/release/$V/pi-publish" rc=0
+    say "  $(pi_package) is not on npm yet: publishing its first version from here"
+    if [ -e "$dir" ]; then g worktree remove --force "$dir" 2>/dev/null || rm -rf "$dir"; fi
+    g worktree prune
+    mkdir -p "$(dirname "$dir")"
+    g worktree add --quiet --detach "$dir" "$PUBLISH_COMMIT"
+    set +e
+    (set -e; pi_publish_from "$dir/plugins/pi")
+    rc=$?
+    set -e
+    g worktree remove --force "$dir"
+    [ "$rc" = 0 ] || return "$rc"
+    : > "$ROOT/target/release/$V/pi-first-publish"
+    say "  $(pi_package)@$V is on npm. Later releases publish through publish-pi.yml, which uses npm"
+    say "  trusted publishing; set it up once, now: on npmjs.com, the package's Settings, Trusted"
+    say "  Publisher, GitHub Actions: organization ${GH_REPO%%/*}, repository ${GH_REPO#*/}, workflow"
+    say "  publish-pi.yml, and no environment (the workflow declares none)."
+}
+pi_publish_from() {
+    local pkg="$1" version pinned
+    cd "$pkg"
+    version="$(sed -n 's/^  "version": "\(.*\)",$/\1/p' package.json)"
+    pinned="$(sed -n 's/^PINNED_VERSION="\(.*\)"$/\1/p' scripts/ensure-clax.sh)"
+    [ "$version" = "$V" ] || { say "  plugins/pi/package.json is at $version, not $V"; return 1; }
+    [ "$pinned" = "$version" ] || { say "  plugins/pi/scripts/ensure-clax.sh pins $pinned, not $version"; return 1; }
+    if pi_has_version "$version"; then say "  $(pi_package)@$version is on npm already"; return 1; fi
+    say "  typecheck: $PNPM install --frozen-lockfile && $PNPM run typecheck"
+    logged "$PNPM" install --frozen-lockfile
+    logged "$PNPM" run typecheck
+    say "  $NPM publish --access public (plugins/pi at $PUBLISH_COMMIT)"
+    "$NPM" publish --access public
+    POLL_FAILS=0
+    await_output pi_npm_version "$version" >/dev/null \
+        || { say "  npm does not list $(pi_package)@$version after the publish"; return 1; }
+}
+# Prints version $1 once npm lists it.
+pi_npm_version() { if pi_has_version "$1"; then echo "$1"; fi; }
 step_15() {
     local prev t migrations=""
     prev=""
@@ -618,6 +714,13 @@ step_15() {
     else
         say "  - redeploy clax.dev with \`just clax-dev-deploy\` (a dry run; then $ACT_FLAG) if the"
         say "    release has migrations or hosted changes"
+    fi
+    if [ -e "$ROOT/target/release/$V/pi-first-publish" ]; then
+        say "  - once: set up npm trusted publishing for $(pi_package) (npmjs.com, the package's Settings,"
+        say "    Trusted Publisher, GitHub Actions: organization ${GH_REPO%%/*}, repository ${GH_REPO#*/},"
+        say "    workflow publish-pi.yml, no environment), so later releases publish through the workflow"
+        say "  - switch README.md and plugins/pi/README.md to lead their Pi install with"
+        say "    \`pi install npm:$(pi_package)\`"
     fi
     say "  - crates.io is not published by this script (docs/usage.md, \"The crates.io package\")"
     say "  - the release: https://github.com/${GH_REPO:-empathic/clax}/releases/tag/$TAG"
@@ -640,6 +743,7 @@ if [ "${#PROBLEMS[@]}" -gt 0 ]; then
 else
     say "  ok: on main and clean against origin/main ($GH_REPO), gh signed in, $V newer than every tag, signing works"
 fi
+for note in ${NOTES[@]+"${NOTES[@]}"}; do say "  note: $note"; done
 
 if [ "$ACT" = 0 ]; then
     say ""
