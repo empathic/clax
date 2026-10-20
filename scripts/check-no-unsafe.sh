@@ -15,6 +15,17 @@
 #    one of clax_start, clax_stop, clax_state and clax_trim_memory, each
 #    once, and every parameter a `u16` or an `i32`; `unsafe_code` appears
 #    nowhere else in that crate;
+#  - in crates/clax-embed/src/ffi.rs the only `unsafe` is, for each of
+#    clax_embed_open, clax_embed_call, clax_embed_subscribe and
+#    clax_embed_close, once: a line `#[unsafe(no_mangle)]` directly after
+#    `#[allow(unsafe_code)]` and directly before `pub unsafe extern "C" fn
+#    <name>(` (open and call, which take pointers) or `pub extern "C" fn
+#    <name>(` (subscribe and close), every parameter (on that line or the
+#    lines up to its `)`) a `u64`, `i64`, `i32`, `usize`, `*const u8` or
+#    `ClaxPost`; and, in open's and call's bodies, exactly one line
+#    `let <a> = unsafe { std::slice::from_raw_parts(<p>, <n>) };` directly
+#    after a `// SAFETY:` comment line; `unsafe_code` appears nowhere else in
+#    that crate;
 #  - no other source uses `unsafe`.
 #
 # A source line counts only where the word appears before any `//` comment,
@@ -31,6 +42,10 @@ my $bad = 0;
 sub finding { print "$_[0]\n"; $bad = 1 }
 my $ONLY = "only the four exported functions may use unsafe";
 my %EXPORT = map { $_ => 1 } qw(clax_start clax_stop clax_state clax_trim_memory);
+# The exports of clax-embed: 1 for those declared `unsafe` (they take pointers).
+my %EMBED = (clax_embed_open => 1, clax_embed_call => 1, clax_embed_subscribe => 0, clax_embed_close => 0);
+my %EMBED_PARAM = map { $_ => 1 } ("u64", "i64", "i32", "usize", "*const u8", "ClaxPost");
+my $SLICE = qr/^let \w+ = unsafe \{ std::slice::from_raw_parts\(\w+, \w+\) \};$/;
 my %OWN_LINTS = map { $_ => 1 } qw(crates/clax-ios/Cargo.toml crates/clax-embed/Cargo.toml crates/clax-worker/Cargo.toml);
 
 # A manifest as {"table.key" => value}, for the plain TOML Cargo.toml uses:
@@ -91,6 +106,7 @@ for my $path (@ARGV) {
     close $fh;
     my @code = map { (my $c = $_) =~ s{//.*}{}; $c =~ s/^\s+|\s+$//g; $c } @text;
     my $ios = $path =~ m{^crates/clax-ios/};
+    my $embed = $path =~ m{^crates/clax-embed/};
 
     # The lines of the four exports: their `#[allow(unsafe_code)]` and
     # their `#[unsafe(no_mangle)]`.
@@ -104,13 +120,38 @@ for my $path (@ARGV) {
             $granted{$i} = $granted{$i - 1} = 1;
         }
     }
+    if ($path eq "crates/clax-embed/src/ffi.rs") {
+        for my $i (1 .. $#code - 1) {
+            next unless $code[$i] eq "#[unsafe(no_mangle)]" && $code[$i - 1] eq "#[allow(unsafe_code)]";
+            my ($marked, $name) = $code[$i + 1] =~ /^pub (unsafe )?extern "C" fn (\w+)\(/ or next;
+            next unless exists $EMBED{$name} && ($marked ? 1 : 0) == $EMBED{$name} && !$named{$name}++;
+            # The signature, from its line to the one closing its parameters.
+            my $end = $i + 1;
+            my $sig = $code[$end];
+            while ($sig !~ /\)/ && $end < $#code) { $sig .= " " . $code[++$end] }
+            my ($params) = $sig =~ /\(([^)]*)\)/ or next;
+            next if grep { !/^\s*\w+\s*:\s*(.+?)\s*$/ || !$EMBED_PARAM{$1} } grep { /\S/ } split(/,/, $params);
+            my %body;
+            if ($EMBED{$name}) {
+                # The body runs to the first line that is a lone `}`.
+                my $close = $end;
+                $close++ while $close < $#code && $text[$close] !~ /^\}\s*$/;
+                my @slices = grep {
+                    $code[$_] =~ $SLICE && $code[$_ - 1] eq "" && $text[$_ - 1] =~ m{^\s*// SAFETY:}
+                } ($end + 1 .. $close - 1);
+                next unless @slices;
+                $body{$slices[0]} = 1;
+            }
+            $granted{$_} = 1 for ($i - 1, $i, $i + 1, keys %body);
+        }
+    }
     for my $i (0 .. $#code) {
         next if $granted{$i};
         my $n = $i + 1;
         if ($code[$i] =~ /\bunsafe\b(?!-)/) {
             (my $line = $text[$i]) =~ s/\n$//;
-            finding($path eq "crates/clax-ios/src/lib.rs" ? "$path:$n: $ONLY" : "$path:$n: $line");
-        } elsif ($ios && $code[$i] =~ /\bunsafe_code\b/) {
+            finding(($path eq "crates/clax-ios/src/lib.rs" || $embed) ? "$path:$n: $ONLY" : "$path:$n: $line");
+        } elsif (($ios || $embed) && $code[$i] =~ /\bunsafe_code\b/) {
             finding("$path:$n: $ONLY");
         }
     }

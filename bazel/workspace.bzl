@@ -120,7 +120,8 @@ CRATES = {
         ],
         "name": "clax-embed",
         "tests": {
-            "embed": "tests/embed.rs"
+            "embed": "tests/embed.rs",
+            "ffi": "tests/ffi.rs"
         },
         "version": "0.5.0"
     },

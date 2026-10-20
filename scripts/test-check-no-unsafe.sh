@@ -7,8 +7,12 @@
 # argument, another `allow(unsafe_code)`, clax-ios or clax-embed not
 # denying the lint,
 # the workspace not forbidding it, and another crate with lints of its own
-# each fail, naming the finding; CSP's `'unsafe-inline'` passes; `unsafe`
-# in another crate fails as it always has.
+# each fail, naming the finding; in crates/clax-embed/src/ffi.rs, a fifth
+# export, an unsafe subscribe or close, a safe open or call, a parameter
+# of another type, a second from_raw_parts or one without its SAFETY line,
+# any other unsafe expression, and unsafe or an allow anywhere else in the
+# crate fail; CSP's `'unsafe-inline'` passes; `unsafe` in another crate
+# fails as it always has.
 set -uo pipefail
 cd "$(dirname "$0")/.." || exit 1
 d="$(mktemp -d)"
@@ -116,6 +120,50 @@ crate-type = ["rlib", "cdylib", "staticlib"]
 [dependencies]
 EOF
     printf '//! The core in an app, behind C functions.\n\npub fn f() -> i32 {\n    1\n}\n' > "$d/w/crates/clax-embed/src/lib.rs"
+    cat > "$d/w/crates/clax-embed/src/ffi.rs" <<'EOF'
+//! The four C functions; `unsafe` in a comment is skipped.
+
+use crate::dart::ClaxPost;
+
+#[allow(unsafe_code)]
+#[unsafe(no_mangle)]
+pub unsafe extern "C" fn clax_embed_open(
+    home: *const u8,
+    home_len: usize,
+    post: ClaxPost,
+    port: i64,
+) -> u64 {
+    // SAFETY: Dart passes home_len readable bytes.
+    let home = unsafe { std::slice::from_raw_parts(home, home_len) };
+    crate::ffi_open(home, post, port)
+}
+
+#[allow(unsafe_code)]
+#[unsafe(no_mangle)]
+pub unsafe extern "C" fn clax_embed_call(
+    core: u64,
+    req: *const u8,
+    req_len: usize,
+    port: i64,
+    tag: i64,
+) -> i32 {
+    // SAFETY: Dart passes req_len readable bytes.
+    let req = unsafe { std::slice::from_raw_parts(req, req_len) };
+    crate::ffi_call(core, req, port, tag)
+}
+
+#[allow(unsafe_code)]
+#[unsafe(no_mangle)]
+pub extern "C" fn clax_embed_subscribe(core: u64, port: i64) -> i32 {
+    crate::ffi_subscribe(core, port)
+}
+
+#[allow(unsafe_code)]
+#[unsafe(no_mangle)]
+pub extern "C" fn clax_embed_close(core: u64) -> i32 {
+    crate::ffi_close(core)
+}
+EOF
 }
 
 # _expect pass|fail NAME [TEXT]: runs the copy of the check, from another
@@ -209,6 +257,67 @@ _expect fail "clax-embed allowing unsafe_code" "crates/clax-embed/Cargo.toml: mu
 _copy
 rm -rf "$d/w/crates/clax-embed"
 _expect pass "the tree without clax-embed"
+
+FFI="$d/w/crates/clax-embed/src/ffi.rs"
+EMBED_LIB="$d/w/crates/clax-embed/src/lib.rs"
+
+_copy
+_sub "$FFI" "pub extern \"C\" fn clax_embed_subscribe(core: u64, port: i64) -> i32 {
+    crate::ffi_subscribe(core, port)
+}" "pub extern \"C\" fn clax_embed_subscribe(core: u64, port: i64) -> i32 { crate::ffi_subscribe(core, port) }"
+_expect pass "an export on one line"
+
+_copy
+printf '\n#[allow(unsafe_code)]\n#[unsafe(no_mangle)]\npub extern "C" fn clax_embed_extra(core: u64) -> i32 {\n    0\n}\n' >> "$FFI"
+_expect fail "a fifth export in clax-embed" "crates/clax-embed/src/ffi.rs:44: $ONLY"
+
+_copy
+printf '\n#[allow(unsafe_code)]\n#[unsafe(no_mangle)]\npub extern "C" fn clax_embed_close(core: u64) -> i32 {\n    0\n}\n' >> "$FFI"
+_expect fail "a clax-embed export named twice" "crates/clax-embed/src/ffi.rs:44: $ONLY"
+
+_copy
+_sub "$FFI" 'pub extern "C" fn clax_embed_subscribe(' 'pub unsafe extern "C" fn clax_embed_subscribe('
+_expect fail "an unsafe subscribe" "crates/clax-embed/src/ffi.rs:34: $ONLY"
+
+_copy
+_sub "$FFI" 'pub unsafe extern "C" fn clax_embed_open(' 'pub extern "C" fn clax_embed_open('
+_expect fail "an open that is not an unsafe fn" "crates/clax-embed/src/ffi.rs:14: $ONLY"
+
+_copy
+_sub "$FFI" "    req: *const u8," "    req: *mut u8,"
+_expect fail "a *mut parameter" "crates/clax-embed/src/ffi.rs:20: $ONLY"
+
+_copy
+_sub "$FFI" "clax_embed_subscribe(core: u64, port: i64)" "clax_embed_subscribe(core: u64, port: u16)"
+_expect fail "a parameter of another type" "crates/clax-embed/src/ffi.rs:33: $ONLY"
+
+_copy
+_sub "$FFI" "    let req = unsafe { std::slice::from_raw_parts(req, req_len) };
+" "    let req = unsafe { std::slice::from_raw_parts(req, req_len) };
+    // SAFETY: the same bytes.
+    let again = unsafe { std::slice::from_raw_parts(req.as_ptr(), req_len) };
+"
+_expect fail "a second from_raw_parts in call" "crates/clax-embed/src/ffi.rs:30: $ONLY"
+
+_copy
+_sub "$FFI" "    // SAFETY: Dart passes req_len readable bytes." "    // Dart passes req_len readable bytes."
+_expect fail "a from_raw_parts without its SAFETY line" "crates/clax-embed/src/ffi.rs:28: $ONLY"
+
+_copy
+_sub "$FFI" "    let home = unsafe { std::slice::from_raw_parts(home, home_len) };" "    let home = unsafe { Box::from_raw(home as *mut [u8; 4]) };"
+_expect fail "Box::from_raw in an export" "crates/clax-embed/src/ffi.rs:14: $ONLY"
+
+_copy
+printf 'pub fn g() {\n    unsafe {}\n}\n' >> "$EMBED_LIB"
+_expect fail "unsafe in clax-embed's lib.rs" "crates/clax-embed/src/lib.rs:7: $ONLY"
+
+_copy
+printf '#[allow(unsafe_code)]\nfn h() {}\n' >> "$EMBED_LIB"
+_expect fail "an allow elsewhere in clax-embed" "crates/clax-embed/src/lib.rs:6: $ONLY"
+
+_copy
+cp "$FFI" "$d/w/crates/clax-core/src/ffi.rs"
+_expect fail "clax-embed's exports in another crate" "crates/clax-core/src/ffi.rs:6: #[unsafe(no_mangle)]"
 
 _copy
 _sub "$d/w/crates/clax-ios/Cargo.toml" '[lints.rust]
