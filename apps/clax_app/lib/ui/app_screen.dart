@@ -3219,7 +3219,8 @@ class _AppScreenState extends State<AppScreen> with WidgetsBindingObserver {
 /// is the pick, in the page's coordinates): [width] wide (less where the
 /// page is narrower), under the pick when it fits there, else above it,
 /// else as low as the page allows; centred on the pick and kept [margin]
-/// inside the page. Without a pick it sits at the page's top, centred.
+/// inside the page, a pick scrolled out of the page's top or bottom
+/// included. Without a pick it sits at the page's top, centred.
 class ComposerPopoverLayout extends SingleChildLayoutDelegate {
   const ComposerPopoverLayout(this.at, {this.width = 360, this.margin = 8});
 
@@ -3244,6 +3245,8 @@ class ComposerPopoverLayout extends SingleChildLayoutDelegate {
     final a = at;
     double clampX(double x) =>
         x.clamp(margin, (size.width - margin - childSize.width).clamp(margin, double.infinity));
+    double clampY(double y) =>
+        y.clamp(margin, (size.height - margin - childSize.height).clamp(margin, double.infinity));
     if (a == null) {
       return Offset(clampX((size.width - childSize.width) / 2), margin);
     }
@@ -3256,9 +3259,9 @@ class ComposerPopoverLayout extends SingleChildLayoutDelegate {
     } else if (above >= margin) {
       y = above;
     } else {
-      y = (size.height - margin - childSize.height).clamp(margin, double.infinity);
+      y = size.height - margin - childSize.height;
     }
-    return Offset(x, y);
+    return Offset(x, clampY(y));
   }
 
   @override

@@ -17,8 +17,9 @@
 // its bar under the page (`app-comment-bar`, and at 340 dp,
 // `app-comment-bar-narrow`), the bar while the page is slow
 // (`app-comment-waiting`), a pick's composer (`app-composer`; on the Mac
-// a popover under the picked row) and a composer the page opened
-// (`app-composer-page`). In wide windows, Android's and the Mac's, the
+// a popover under the picked row; with the row scrolled above the page,
+// the popover kept at the page's top, `app-composer-scrolled`) and a
+// composer the page opened (`app-composer-page`). In wide windows, Android's and the Mac's, the
 // threads pane beside the page (`app-threads-pane`), and with a pick's
 // composer too (`app-threads-composer`: heading the pane on Android, a
 // popover over the page on the Mac). An app in a pane on wide Android,
@@ -640,6 +641,28 @@ void main() {
       ],
     ),
     forms: const [phone, mac],
+  );
+  shots(
+    'app-composer-scrolled',
+    (s) => commenting(
+      s,
+      'app-composer-scrolled',
+      then: [
+        StateMsg(
+          commenting: false,
+          draft: Draft(
+            key: _wed.key,
+            label: _wed.label,
+            quote: _wed.quote,
+            text: '',
+            clip: DraftClip.pending,
+            at: _wed.at!.translate(0, -600),
+          ),
+          busy: false,
+        ),
+      ],
+    ),
+    forms: const [mac],
   );
   // The threads pane: the app's Threads action, then what the shell says.
   Future<void> threadsOpen(

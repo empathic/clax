@@ -615,6 +615,40 @@ void main() {
   );
 
   testWidgets(
+    'a pick scrolled above the page keeps the popover at the page\'s top, '
+    'and one scrolled below it keeps the popover at its bottom',
+    (tester) async {
+      final rig = await pumpScreen(
+        tester,
+        size: const Size(1200, 800),
+        settings: AppSettings(dictateComments: false),
+      );
+      rig.surface.push(rig.ready());
+      await tester.pump();
+      StateMsg at(Rect r) => StateMsg(
+        commenting: false,
+        draft: Draft(label: 'h1', text: '', clip: DraftClip.pending, at: r),
+        busy: false,
+      );
+      final pop = find.byKey(const ValueKey('composer-popover'));
+      rig.surface.push(at(const Rect.fromLTWH(100, -500, 300, 40)));
+      await tester.pumpAndSettle();
+      final page = tester.getRect(find.byKey(const ValueKey('fake-surface')));
+      var box = tester.getRect(pop);
+      expect(box.top, page.top + 8);
+      expect(box.center.dx, closeTo(page.left + 250, 0.01));
+      rig.surface.push(at(const Rect.fromLTWH(100, 1500, 300, 40)));
+      await tester.pumpAndSettle();
+      box = tester.getRect(pop);
+      expect(box.bottom, page.bottom - 8);
+      expect(box.top, greaterThanOrEqualTo(page.top + 8));
+      rig.surface.push(_Rig.noDraft);
+      await tester.pumpAndSettle();
+    },
+    variant: TargetPlatformVariant.only(TargetPlatform.macOS),
+  );
+
+  testWidgets(
     "a pick docks the app's composer and dictates into its field; its Send sends the text; the timing waits for Send",
     (tester) async {
       final rig = await pumpScreen(tester);
