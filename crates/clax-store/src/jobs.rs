@@ -2193,6 +2193,39 @@ mod tests {
     }
 
     #[test]
+    fn a_waiting_jobs_question_outlives_the_reaper_until_it_closes() {
+        let clock = Arc::new(clax_core::working::ManualClock::at("2026-10-19T10:00:00Z"));
+        let (_d, st) = crate::test_util::store_with_clock(clock.clone());
+        let q = question(&st);
+        let sid = asker(&st, &q);
+        running(&st, "j1");
+        assert_eq!(
+            st.ask_job_question("j1", &q).unwrap().state,
+            JobState::Waiting
+        );
+        // The app is killed and relaunched more than five minutes later,
+        // before the person answers.
+        let idle = std::time::Duration::from_secs(Store::SESSION_IDLE_SECS);
+        clock.advance(Store::SESSION_IDLE_SECS as i64 + 60);
+        let reaped = st.reap_sessions(idle, &|_| false).unwrap();
+        assert!(!reaped.ended.contains(&sid), "{:?}", reaped.ended);
+        assert!(reaped.withdrawn_questions.is_empty());
+        let full = st.job("j1").unwrap().unwrap();
+        assert_eq!(full.job.state, JobState::Waiting);
+        assert_eq!(full.questions[0].answer, JobAnswer::Pending);
+        assert_eq!(open_questions(&st), 1, "the person is still asked");
+        // The answer moves the job back to running with it.
+        answer(&st, &q);
+        let full = st.job("j1").unwrap().unwrap();
+        assert_eq!(full.job.state, JobState::Running);
+        assert!(matches!(full.questions[0].answer, JobAnswer::Answered(_)));
+        // The question closed: its asker is reaped as any other.
+        clock.advance(Store::SESSION_IDLE_SECS as i64 + 60);
+        let reaped = st.reap_sessions(idle, &|_| false).unwrap();
+        assert_eq!(reaped.ended, [sid]);
+    }
+
+    #[test]
     fn a_reply_step_on_another_artifacts_thread_writes_nothing() {
         let (_d, st) = store();
         let aid = artifact(&st, None);
@@ -2758,7 +2791,7 @@ mod tests {
             (JobState::Running, waiting.rev + 1)
         );
         assert_eq!(full.questions[0].answer, JobAnswer::Withdrawn);
-        // The reaper's end does the same.
+        // The reaper spares the asker of a question the job waits on.
         let waiting = st.ask_job_question("j1", &q2).unwrap();
         assert_eq!(waiting.state, JobState::Waiting);
         let s2 = asker(&st, &q2);
@@ -2772,13 +2805,8 @@ mod tests {
         let reaped = st
             .reap_sessions(std::time::Duration::from_secs(60), &|_| false)
             .unwrap();
-        assert_eq!(reaped.withdrawn_questions, vec![q2.clone()]);
-        let full = st.job("j1").unwrap().unwrap();
-        assert_eq!(
-            (full.job.state, full.job.rev),
-            (JobState::Running, waiting.rev + 1)
-        );
-        assert_eq!(full.questions[1].answer, JobAnswer::Withdrawn);
+        assert!(reaped.ended.is_empty(), "{:?}", reaped.ended);
+        assert_eq!(st.job("j1").unwrap().unwrap().job.state, JobState::Waiting);
     }
 
     /// How many questions are open in the owner's inbox.

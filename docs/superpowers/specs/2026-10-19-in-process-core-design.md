@@ -924,7 +924,7 @@ after every applied row:
 | `running`, last step `turn:<n>` with tool calls not yet answered | for each, in order: `finish` → `Publish` (base from the notes); `render` → `Render`; `ask` → `Ask`; any other → `RunTool`. A tool's result is not durable: after a restart the tools of the last committed turn run again (they are reads and draft writes, which repeat harmlessly) |
 | `running`, last step `turn:<n>`, every call answered | `StartTurn(turn n + 1)` with the notes and `carry` |
 | `running`, a `publish:<b>` step, a change | `Reply` (its step moves the job to `done` in the same transaction) |
-| `waiting` (its question not closed) | nothing; the question's close (an answer, a decline or a withdrawal) stores its outcome and moves the job to `running` in the core (§8.1), and its `JobChanged` brings `next` again, which answers the `ask` call with that outcome |
+| `waiting` (its question not closed) | nothing (the reaper spares the question's asker while the job is open, so a relaunch long after a kill finds it still asked, §8.1); the question's close (an answer, a decline or a withdrawal) stores its outcome and moves the job to `running` in the core (§8.1), and its `JobChanged` brings `next` again, which answers the `ask` call with that outcome |
 | `paused` | `MoveJob(→ running)` at launch or `Woke(foreground: true)` |
 | `stopped`, `failed` | nothing; `KeepGoing` and `Retry` emit `MoveJob(→ running)` |
 | `cancelled`, `done` | not loaded; any result still in flight for it is dropped |
@@ -1169,11 +1169,16 @@ A change's reply step is made from the session that published its
 version, which may be resumed long after the app was killed. So the
 core's reaper (`Store::reap_sessions`, which ends a local session unseen
 for `SESSION_IDLE_SECS`) leaves live every session that published a
-version one of an open job's steps recorded (`OPEN_JOB_SESSIONS`): the
-reply step of a change relaunched after more than five minutes commits.
-Once the job is `done` or `cancelled` the session is reaped as any
-other. A question's asker is not kept: its end withdraws the question
-and moves the job back to `running`, which asks again.
+version one of an open job's steps recorded, and the asker of each
+question an open job asked that is not closed (`OPEN_JOB_SESSIONS`): the
+reply step of a change relaunched after more than five minutes commits,
+and a `waiting` job's question stays in front of the person, however
+long the app was down, until it is answered or declined. Once the job is
+`done` or `cancelled`, or the question closes, the session is reaped as
+any other. An end of the asker for any other reason (it ends itself, its grant
+is revoked) still withdraws the question and moves the job back to
+`running`, and `next` answers the `ask` call with `withdrawn`: nothing
+asks again unless the model chooses to.
 
 A process killed after the content files are written and before the
 transaction commits leaves the files at the next version's number with

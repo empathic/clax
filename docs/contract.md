@@ -1127,7 +1127,9 @@ live rows so that a shim and a hook for the same conversation share one row:
 Rows end when the shim's stdin closes or it receives SIGTERM (3 s deadline),
 when a `SessionEnd` hook or Pi's `session_shutdown` ends them, or when the
 daemon's reaper finds a row unseen for 300 seconds whose `pid` is unknown or no
-longer alive. The shim marks its row seen every 60 seconds; hook-only rows and
+longer alive and that no open job of the app's queue names (the publisher of a
+version one of its steps recorded, or the asker of a question it waits on;
+`/api/jobs`). The shim marks its row seen every 60 seconds; hook-only rows and
 Pi rows get no heartbeat. An ended row is never revived. A shim or Pi
 extension whose row was ended under it registers a new row with the same
 harness session ID on its next tool call (see `unknown_session`), and a shim
