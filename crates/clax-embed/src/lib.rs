@@ -153,9 +153,9 @@ pub fn ffi_open(home: &[u8], post: Arc<dyn Post>, port: i64) -> u64 {
             let events = post.clone();
             let opened = Embed::open(
                 OpenOptions {
+                    log: Some(log::path(&home)),
                     home: home.clone(),
                     origins,
-                    log: None,
                 },
                 Box::new(move |e| {
                     post_json(&*events, port, &e);

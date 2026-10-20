@@ -1,14 +1,20 @@
-//! The core's log: a file in the app's caches, cut at [`CUT_AT`] to one
-//! older file beside it.
+//! The core's log: `<home>/logs/core.log` ([`path`]) for a core opened
+//! through the C functions, cut at [`CUT_AT`] to one older file beside it.
 
 use std::fs::{File, OpenOptions};
 use std::io::{self, Write};
-use std::path::PathBuf;
+use std::path::{Path, PathBuf};
 use std::sync::Mutex;
 
 /// The size past which the log is cut: the file becomes `<name>.1`
 /// (replacing the one before) and a new file starts.
 pub const CUT_AT: u64 = 1024 * 1024;
+
+/// Where a core opened through the C functions logs: `<home>/logs/core.log`,
+/// beside the home's other logs, so the ABI names no path.
+pub fn path(home: &Path) -> PathBuf {
+    home.join("logs").join("core.log")
+}
 
 /// Installs the process's tracing subscriber, writing to `path` (a
 /// `RUST_LOG` filter, else `warn,clax=info`, without colours). Only the

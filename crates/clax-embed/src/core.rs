@@ -49,7 +49,8 @@ pub struct OpenOptions {
     pub home: PathBuf,
     /// The origins the app gives its WebViews.
     pub origins: EmbedOrigins,
-    /// Where the rolling log goes (`<cache>/core.log`); none when `None`.
+    /// Where the rolling log goes; none when `None`. The C functions pass
+    /// `<home>/logs/core.log`.
     pub log: Option<PathBuf>,
 }
 

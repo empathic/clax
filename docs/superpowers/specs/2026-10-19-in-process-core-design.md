@@ -200,9 +200,13 @@ crates/clax-embed/
   src/events.rs       a subscription: a stream hub connection posted as SSE blocks
   src/dart.rs         Dart_CObject and the post function's type (no unsafe)
   src/ffi.rs          the four exports; the only file with unsafe
-  src/log.rs          the rolling log (moved from clax-ios)
+  src/log.rs          the rolling log (moved from clax-ios), at <home>/logs/core.log
   src/web.rs          the embedded web UI as a FileTree (moved from clax-ios)
 ```
+
+A core opened through `clax_embed_open` writes its rolling log to
+`<home>/logs/core.log` (cut at 1 MiB to `core.log.1`), beside the home's
+other logs; the C ABI names no log path.
 
 `clax-server` gains `clax_server::core::{Core, CoreConfig}`: `serve()` is
 split so that everything it does but binding, `daemon.json` and the stale
