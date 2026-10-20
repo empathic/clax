@@ -544,8 +544,10 @@ published from the pin commit, whatever main's tip is by then:
 Publish Pi package takes the commit as its `sha` input and titles its run
 after it, which is how the script finds the run again. A wait gives up
 after `CLAX_RELEASE_MAX_POLLS` polls (270) `CLAX_RELEASE_POLL_SECONDS`
-apart (20), 90 minutes. Once `main` has moved past the pin commit, the
-release is finished and the script refuses its version.
+apart (20), 90 minutes. The release is known by its tag and its pin
+commit, not by `main`'s tip: once `main` has moved past the pin commit, a
+checkout pulled up to `origin/main` still resumes a failed CI wait or Pi
+publish, and a finished release reports every step done.
 
 What it runs, which is also the procedure by hand when a release needs
 recovering outside the script:

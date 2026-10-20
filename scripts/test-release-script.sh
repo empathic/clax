@@ -326,6 +326,36 @@ if [ "$rc" = 1 ] && has "published 2026-10-01T00:00:00Z, before the Release run 
     pass "a release published before this tag's run is never pinned, even when the run succeeds"
 else fail "a release published before this tag's run (rc=$rc: $(cat "$C/out"))"; fi
 
+# --- resume after main moves past a pushed pin commit ---------------------------------
+# Someone else's commit lands on origin's main.
+other_work() {
+    local o="$C/origin.git" c
+    c="$(GIT_AUTHOR_NAME=Other GIT_AUTHOR_EMAIL=other@example.com GIT_COMMITTER_NAME=Other \
+        GIT_COMMITTER_EMAIL=other@example.com git --git-dir="$o" commit-tree "$(git --git-dir="$o" rev-parse 'main^{tree}')" \
+        -p main -m "Other work")" && git --git-dir="$o" update-ref refs/heads/main "$c"
+}
+new_case
+echo "completed failure" > "$FAKE_STATE/201"
+act; rc=$?
+if [ "$rc" = 1 ] && has "step 13 (Wait for CI on main) failed" && has "CI on main concluded failure" \
+    && [ "$(count "gh workflow run publish-pi.yml --ref main -f dry_run=false -f sha=$(git --git-dir="$C/origin.git" rev-parse main)")" = 0 ]; then
+    pass "failed CI on the pin commit stops at step 13, before the publish"
+else fail "failed CI on the pin commit stops at step 13 (rc=$rc: $(cat "$C/out"))"; fi
+pin="$(git --git-dir="$C/origin.git" rev-parse main)"
+other_work
+git -C "$C/repo" pull -q --ff-only origin main
+echo "completed success" > "$FAKE_STATE/201"
+act; rc=$?
+if [ "$rc" = 0 ] && has "Step 12: Push main: done already" \
+    && [ "$(count "gh workflow run publish-pi.yml --ref main -f dry_run=false -f sha=$pin")" = 1 ]; then
+    pass "once main has moved past the pin commit, the next run resumes at the CI wait and publishes from the pin"
+else fail "resume after main moved past the pin commit (rc=$rc: $(cat "$C/out"))"; fi
+: > "$FAKE_STATE/calls"
+act; rc=$?
+if [ "$rc" = 0 ] && [ -z "$(actions)" ] && has "Step 14: Publish the Pi package: done already"; then
+    pass "a finished release with main moved on reports every step done"
+else fail "a finished release with main moved on (rc=$rc: $(cat "$C/out"))"; fi
+
 # --- the Pi package comes from the pin commit -------------------------------------------
 new_case
 : > "$FAKE_STATE/push-on-201"
@@ -392,7 +422,7 @@ new_case
 git -C "$C/repo" checkout -q -b side
 refuse "a branch other than main" "the checkout is on side, not main"
 new_case
-refuse "the newest tag's version" "0.5.0 is not newer than the tag v0.5.0" 0.5.0 --i-know-what-i-am-doing
+refuse "the newest tag's version, a release on main with no pin" "v0.5.0's release commit is on origin/main without a \"Pin the plugins to Clax 0.5.0\" commit" 0.5.0 --i-know-what-i-am-doing
 refuse "an older version" "0.4.9 is not newer than the tag v0.5.0" 0.4.9 --i-know-what-i-am-doing
 refuse "a version that is not X.Y.Z" "0.6 is not a release version (X.Y.Z)" 0.6 --i-know-what-i-am-doing
 refuse "a bad version in a dry run too" "0.6 is not a release version (X.Y.Z)" 0.6

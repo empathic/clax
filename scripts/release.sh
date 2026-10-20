@@ -34,9 +34,9 @@
 # it. Run the same command again: each step's state is read from git and
 # GitHub (the version files, the two commits by subject, the tag here and on
 # origin, the release's assets, the workflow runs), so the run resumes at
-# the first step not done. A
-# tag of X.Y.Z is resumed only while the release is under way: its commit
-# not yet on origin/main, or the pin commit origin/main's tip.
+# the first step not done. The release is known by its tag and its pin
+# commit, so it resumes also after main has moved past the pin commit (a
+# failed CI wait or Pi publish), from a checkout pulled up to origin/main.
 # Uncommitted changes are taken only while a step that makes them is
 # pending its commit (2-4 into the release commit, 9-10 into the pin
 # commit); any other change, an untracked file, or a commit on main other
@@ -256,10 +256,9 @@ check_version() {
         problem "the tag $TAG tags $TAG_COMMIT, which neither this checkout nor origin/main has"
     elif [ -z "$TAG_COMMIT" ] && old="$(subject_in "$REL_SUBJECT" origin/main)" && [ -n "$old" ]; then
         problem "origin/main has a \"$REL_SUBJECT\" commit already ($old) and no tag $TAG names it"
-    elif [ -n "$LOCAL_TAG$REMOTE_TAG" ] \
-        && g merge-base --is-ancestor "$REL_COMMIT" origin/main \
-        && { [ -z "$PIN_COMMIT" ] || [ "$PIN_COMMIT" != "$(g rev-parse origin/main)" ]; }; then
-        problem "$V is not newer than the tag $TAG, a release finished or taken over by later commits on main"
+    elif [ -n "$TAG_COMMIT" ] && [ -z "$PIN_COMMIT" ] && g merge-base --is-ancestor "$TAG_COMMIT" origin/main; then
+        # Step 12 pushes the release commit to main together with its pin.
+        problem "$TAG's release commit is on origin/main without a \"$PIN_SUBJECT\" commit after it"
     fi
 }
 
