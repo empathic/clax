@@ -245,7 +245,10 @@ int32_t clax_embed_call(uint64_t core, const uint8_t *req, size_t req_len,
                         int64_t port, int64_t tag);
 
 // Posts the core's events to `port`, one Uint8List per SSE block of the
-// stream hub (§2.4), until the port is closed. 0, or 1 for an unknown handle.
+// stream hub (§2.4), until the port is closed or the subscription ends;
+// an ending subscription posts `event: end` with {"reason":…} last
+// (core_failed, core_closed, stream_refused, stream_ended). 0, or 1 for
+// an unknown handle.
 int32_t clax_embed_subscribe(uint64_t core, int64_t port);
 
 // Stops the core as `clax serve` stops on SIGTERM: in-flight calls end,
@@ -308,7 +311,11 @@ the streaming response body: each chunk the hub's `Conn::next` yields
 (`crates/clax-realtime/src/stream.rs:1783`; one SSE block, `id:`, `event:`,
 `data:`, keep-alives included) is posted as one message. Readers buffer to
 the blank line anyway, so a block split across messages still parses. The first block is the
-hub's `ready` with the stream's ID; topic changes go over `call` as
+hub's `ready` with the stream's ID; the last, unless the port closed
+first, is `event: end` with `{"reason":…}`: `core_failed` (the core did
+not open; at once for a handle whose open failed), `core_closed`,
+`stream_refused` or `stream_ended`, so each consumer, including one on
+an isolate with no open port, knows to resubscribe or stop; topic changes go over `call` as
 today's `POST /api/stream/<id>` (`as: owner`). A subscriber that falls
 behind gets the hub's `resync`, as an SSE client does. The SSE route and
 the subscription share the hub's connection type; the hub gains only what
@@ -1002,22 +1009,30 @@ number on main), and installed homes are adopted by their schema.
   already adopts the app's layouts that started at 24, 27 and 38) learns
   the layout that started at 39, by schema, not by `user_version`: the
   home has the app's first mark (`db_read_grants`) and the where-to-ask
-  migration's `questions.thread_id`, and lacks the marks of main's
-  migrations between the where-to-ask migration and the app's
-  (`legal_agreements`, `briefs`). Its version must be 38 plus the number
-  of the app's marks it holds, and those marks (the app's five, then the
-  jobs migration's tables) must be present exactly up to that one; else
-  the open is refused with `MigrationFailed` naming the mismatch and the
-  backup, and the home is left as it was. An adopted home runs main's
-  migrations it lacks (39 and 40, which touch none of the app's tables),
-  and its `user_version` becomes the number its last app migration has
-  now (43 → 45). A home of the new numbering, or any other database, is
-  left to the ordinary migrations.
+  migration's `questions.thread_id`, and holds the first k of the marks of
+  main's migrations between the where-to-ask migration and the app's
+  (`legal_agreements`, `briefs`, in order) and none after them, with k
+  below their number: the app's migrations in that home start at
+  38 + k + 1 (39 for the installed homes, k = 0). Its version must be
+  38 + k plus the number of the app's marks it holds, and those marks
+  (the app's five, then the jobs migration's tables) must be present
+  exactly up to that one; else, or when the main marks it holds are not
+  the first k, the open is refused with `MigrationFailed` naming the
+  mismatch and the backup, and the home is left as it was. An adopted
+  home runs main's migrations it lacks (from 38 + k + 1 up to the app's
+  first, which touch none of the app's tables), and its `user_version`
+  becomes the number its last app migration has now (43 → 45). A home
+  holding all of main's marks is of the new numbering and, like any other
+  database, is left to the ordinary migrations.
 - **Each main migration below the app's has a mark** (`MAIN_MARKS_ABOVE_38`
   beside `APP_MIGRATION_MARKS`: `legal_agreements`, `briefs`), so adoption
   decides from the schema which of them a home lacks, whatever its
-  version, and a later renumbering adds one mark per new main migration
-  and nothing else.
+  version. The rule above holds for any k, so a later renumbering adds
+  one mark per new main migration and nothing else: when main adds a 41,
+  a home this build left at 45 (main's two marks, k = 2, the app's from
+  41) is adopted the same way, gets main's 41 after a backup, and its
+  `user_version` becomes 46, never a refusal. A store test runs that case
+  against a simulated main 41.
 - **Backup first, always.** `Store::open` already backs up before any
   migration (`backup::before_migrate`, three kept), adoption included:
   the first open of an installed home leaves `backups/clax-43-<time>.db`

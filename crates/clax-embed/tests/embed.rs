@@ -432,19 +432,65 @@ async fn a_subscriber_that_returns_false_is_dropped() {
     embed.close();
 }
 
+/// The `end` block a subscription's last message is, for `reason`.
+fn end(reason: &str) -> String {
+    format!("event: end\ndata: {{\"reason\":\"{reason}\"}}\n\n")
+}
+
 #[tokio::test]
-async fn a_closed_core_ends_its_subscriptions() {
+async fn a_closed_core_ends_its_subscriptions_with_an_end_block() {
     let dir = tempfile::tempdir().unwrap();
     let (embed, rx) = open(dir.path());
     let (tx, dropped) = mpsc::channel();
     let guard = Dropped(tx);
-    embed.subscribe(Box::new(move |_| {
+    let (heard_tx, heard) = mpsc::channel();
+    embed.subscribe(Box::new(move |b| {
         let _keep = &guard;
+        let _ = heard_tx.send(String::from_utf8_lossy(&b).into_owned());
         true
     }));
+    assert!(heard.recv().unwrap().starts_with("event: ready\n"));
     embed.close();
     assert_eq!(settled(&rx), OpenEvent::Closed);
     dropped.recv().unwrap();
+    let last = heard.try_iter().last().expect("an end block");
+    assert_eq!(last, end("core_closed"));
+}
+
+#[test]
+fn a_subscription_to_a_core_that_did_not_open_hears_only_its_end() {
+    let dir = tempfile::tempdir().unwrap();
+    // The home is a file, so the core cannot open it.
+    std::fs::write(dir.path().join("home"), "").unwrap();
+    let (embed, rx) = start(dir.path());
+    let failed = settled(&rx);
+    assert!(
+        matches!(&failed, OpenEvent::Failed { code, .. } if code == "open_failed"),
+        "{failed:?}"
+    );
+    let blocks = subscribe(&embed);
+    assert_eq!(blocks.recv().unwrap(), end("core_failed"));
+    assert!(blocks.recv().is_err(), "nothing after the end");
+    embed.close();
+    assert_eq!(settled(&rx), OpenEvent::Closed);
+}
+
+#[tokio::test]
+async fn a_subscriber_that_returns_false_hears_no_end() {
+    let dir = tempfile::tempdir().unwrap();
+    let (embed, rx) = open(dir.path());
+    let (tx, dropped) = mpsc::channel();
+    let guard = Dropped(tx);
+    let (heard_tx, heard) = mpsc::channel();
+    embed.subscribe(Box::new(move |b| {
+        let _keep = &guard;
+        let _ = heard_tx.send(b);
+        false
+    }));
+    dropped.recv().unwrap();
+    assert_eq!(heard.try_iter().count(), 1, "the ready block only");
+    embed.close();
+    assert_eq!(settled(&rx), OpenEvent::Closed);
 }
 
 #[tokio::test]

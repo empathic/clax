@@ -218,21 +218,28 @@ pub fn ffi_call(core: u64, req: &[u8], port: i64, tag: i64) -> i32 {
 
 /// [`ffi::clax_embed_subscribe`]'s safe half: posts each SSE block of the
 /// core's event stream to `port` until a post fails (the port closed) or
-/// the core closes; 0, or 1 for an unknown handle.
+/// the subscription ends, which posts an `event: end` block last
+/// ([`Embed::subscribe`]; at once for a handle whose open failed); 0, or 1
+/// for an unknown handle.
 pub fn ffi_subscribe(core: u64, port: i64) -> i32 {
     let Some(r) = registered(core) else {
         return 1;
     };
+    let ended = || {
+        post_bytes(&*r.post, port, &events::end("core_failed"));
+        0
+    };
     guarded(
         "clax_embed_subscribe",
         || {
-            if let Some(embed) = &r.embed {
-                let post = r.post.clone();
-                embed.subscribe(Box::new(move |block| post_bytes(&*post, port, &block)));
-            }
+            let Some(embed) = &r.embed else {
+                return ended();
+            };
+            let post = r.post.clone();
+            embed.subscribe(Box::new(move |block| post_bytes(&*post, port, &block)));
             0
         },
-        || 0,
+        || ended(),
         0,
     )
 }

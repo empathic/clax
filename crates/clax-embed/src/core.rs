@@ -224,12 +224,13 @@ impl Embed {
     }
 
     /// Waits on the core's runtime until the core is ready: its router,
-    /// the owner's token, and what says when it stops being ready; `None`
-    /// when it failed or closed first.
+    /// the owner's token, and what says when it stops being ready; or,
+    /// when it failed or closed first, `core_failed` or `core_closed`.
     pub(crate) fn ready(
         &self,
-    ) -> impl std::future::Future<Output = Option<(axum::Router, String, Readiness)>> + Send + 'static
-    {
+    ) -> impl std::future::Future<Output = Result<(axum::Router, String, Readiness), &'static str>>
+    + Send
+    + 'static {
         let mut rx = self.inner.shared.phase.subscribe();
         async move {
             let ready = rx
@@ -237,8 +238,9 @@ impl Embed {
                 .await
                 .map(|p| p.clone());
             match ready {
-                Ok(Phase::Ready { router, token }) => Some((router, token, Readiness(rx))),
-                _ => None,
+                Ok(Phase::Ready { router, token }) => Ok((router, token, Readiness(rx))),
+                Ok(Phase::Failed) => Err("core_failed"),
+                _ => Err("core_closed"),
             }
         }
     }

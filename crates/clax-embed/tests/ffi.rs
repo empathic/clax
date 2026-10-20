@@ -128,6 +128,7 @@ fn open_call_subscribe_and_close_post_to_their_ports() {
 
     assert_eq!(ffi_close(core), 0);
     posts.event(1, "closed");
+    posts.take(3, |b| b == b"event: end\ndata: {\"reason\":\"core_closed\"}\n\n");
     assert_eq!(ffi_close(core), 1, "a closed core's handle is unknown");
 }
 
@@ -214,6 +215,11 @@ fn a_failed_open_is_a_handle_that_answers_and_closes() {
     assert_eq!(head.status, 503, "{v}");
     assert_eq!(v["error"]["code"], "core_failed", "{v}");
     assert_eq!(ffi_subscribe(core, 3), 0);
+    let end = posts.take(3, |_| true);
+    assert_eq!(
+        String::from_utf8(end).unwrap(),
+        "event: end\ndata: {\"reason\":\"core_failed\"}\n\n"
+    );
 
     assert_eq!(ffi_close(core), 0);
     posts.event(1, "closed");

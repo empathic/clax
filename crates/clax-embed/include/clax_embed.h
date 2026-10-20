@@ -30,7 +30,10 @@ int32_t clax_embed_call(uint64_t core, const uint8_t *req, size_t req_len,
                         int64_t port, int64_t tag);
 
 // Posts the core's events to `port`, one Uint8List per SSE block of the
-// stream hub (§2.4), until the port is closed. 0, or 1 for an unknown handle.
+// stream hub (§2.4), until the port is closed or the subscription ends;
+// an ending subscription posts `event: end` with {"reason":…} last
+// (core_failed, core_closed, stream_refused, stream_ended). 0, or 1 for
+// an unknown handle.
 int32_t clax_embed_subscribe(uint64_t core, int64_t port);
 
 // Stops the core as `clax serve` stops on SIGTERM: in-flight calls end,
