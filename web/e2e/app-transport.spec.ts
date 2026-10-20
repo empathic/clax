@@ -72,11 +72,6 @@ async function postThread(id: string, body: string): Promise<{ id: string }> {
   return (await res.json()).thread;
 }
 
-/** The answers the host ran for `nonce`'s calls, by call ID. */
-function answersOf(h: AppHost, nonce: string): Map<number, { path: string; text: string | null }> {
-  return new Map(h.calls.filter(c => c.nonce === nonce && c.answered).map(c => [c.id, { path: c.path.split("?")[0], text: c.answered!.text }]));
-}
-
 test("the artifact view loads and a comment posts through the channel", async ({ page }) => {
   const { id, host: h, frame } = await openInApp(page, "Transport comment");
   await expect.poll(() => h.ofType("ready").length).toBeGreaterThan(0);
@@ -122,13 +117,11 @@ test("calls go out from boot under the document's nonce, each answer names it, a
 });
 
 test("a reload's calls and stream take only their own load's answers: the previous load's late ones are dropped", async ({ page }) => {
-  // What the shell's own fetch resolves with in each load: the body of every
-  // /api/ answer, and the text of the event stream.
+  // The text of each load's event stream, as the shell's own fetch reads it.
   await page.addInitScript(shell => {
     if (location.origin !== shell || window.top !== window) return;
-    const log: { path: string; text: string }[] = [];
     const stream: string[] = [];
-    Object.assign(window, { claxFetchLog: log, claxStreamLog: stream });
+    Object.assign(window, { claxStreamLog: stream });
     let inner = window.fetch;
     let wrapped: typeof fetch | null = null;
     Object.defineProperty(window, "fetch", {
@@ -143,8 +136,6 @@ test("a reload's calls and stream take only their own load's answers: the previo
             const r = res.clone().body!.getReader();
             const dec = new TextDecoder();
             void (async () => { for (;;) { const { value, done } = await r.read(); if (done) return; stream.push(dec.decode(value)); } })().catch(() => {});
-          } else if (path.startsWith("/api/")) {
-            void res.clone().text().then(text => log.push({ path, text }), () => {});
           }
           return res;
         };
@@ -154,43 +145,42 @@ test("a reload's calls and stream take only their own load's answers: the previo
   const { artifact } = await publish(d.base, d.token, "Transport stale", { "index.html": PAGE });
   const id = artifact.id;
   const h = await hostChannel(page, { relay: d, autoInit: false });
+  const PROBES = 40;
+  const probes = (nonce: string) => h.calls.filter(c => c.nonce === nonce && c.path.includes("probe="));
+  /** Asks for the threads `PROBES` times from the shell, and waits until the
+   * core answered every call of the load (its own and those) into the
+   * held queue. */
+  const probe = async (nonce: string, tag: string) => {
+    await expect.poll(() => h.calls.some(c => c.nonce === nonce)).toBe(true);
+    await h.evalNow(`window.probes = Promise.all(Array.from({ length: ${PROBES} }, (_, k) => fetch("/api/artifacts/${id}/threads?probe=${tag}-" + k).then(r => r.text()))); 0`);
+    await expect.poll(() => probes(nonce).length === PROBES && h.calls.filter(c => c.nonce === nonce).every(c => c.answered)).toBe(true);
+  };
   // The app's answers to the first load are sent and not yet run.
   h.hold();
   await page.goto(`${SHELL}/a/${id}?app=1`);
   const first = h.nonce!;
-  // The calls it makes before any answer, its presence among them (whose
-  // answer names when each viewer came), answered by the core and waiting to run.
-  const settled = (nonce: string) => expect.poll(() => {
-    const calls = h.calls.filter(c => c.nonce === nonce);
-    return calls.some(c => c.method === "PUT" && c.path === "/api/viewers/me/presence") && calls.every(c => c.answered);
-  }).toBe(true);
-  await settled(first);
-  // What the core answers the next load differs: it has a thread, and the
-  // first load's viewer.
+  await probe(first, "one");
+  // What the core answers the next load differs: it has a thread.
   const thread = await postThread(id, "a thread after the first load");
   await page.reload();
   const second = h.nonce!;
   expect(second).not.toBe(first);
-  await settled(second);
+  await probe(second, "two");
+  // The two loads' call IDs overlap: had a first load's answer landed on
+  // the second load's call of its ID, that call would hold it.
+  const ids = new Set(h.calls.filter(c => c.nonce === second).map(c => c.id));
+  expect(probes(first).filter(c => ids.has(c.id)).length).toBeGreaterThan(PROBES / 2);
   // The first load's answers run first, into the second load's document.
   await h.release();
+  const ran = h.ran.filter(e => e.startsWith("window.claxTransport.callResult("));
+  const own = ran.findIndex(e => e.startsWith(`window.claxTransport.callResult(${JSON.stringify(second)}`));
+  expect(ran.slice(0, own).length).toBeGreaterThan(PROBES);
+  expect(ran.slice(own).some(e => e.startsWith(`window.claxTransport.callResult(${JSON.stringify(first)}`))).toBe(false);
+  const answered = await h.evalNow<string[]>("window.probes");
+  expect(answered.filter(t => !t.includes(thread.id))).toEqual([]);
   await h.init();
   await expect.poll(() => h.ofType("ready").length).toBeGreaterThan(0);
   await expect.poll(() => (h.ofType("threads").at(-1)?.threads as { id: string }[] | undefined)?.map(t => t.id) ?? []).toContain(thread.id);
-  const ran = h.ran.filter(e => e.startsWith("window.claxTransport.callResult("));
-  const own = ran.findIndex(e => e.startsWith(`window.claxTransport.callResult(${JSON.stringify(second)}`));
-  expect(ran.slice(own).some(e => e.startsWith(`window.claxTransport.callResult(${JSON.stringify(first)}`))).toBe(false);
-  // The two loads' calls of one ID that the core answered differently: had
-  // the first load's answer landed, the second load's call would hold it.
-  const one = answersOf(h, first);
-  const two = answersOf(h, second);
-  const clash = [...two].filter(([i, a]) => one.has(i) && one.get(i)!.text !== a.text);
-  expect(clash.length).toBeGreaterThan(0);
-  const log = () => quietEval<{ path: string; text: string }[]>(page, "window.claxFetchLog");
-  for (const [i, a] of clash) {
-    await expect.poll(async () => (await log()).some(e => e.path === a.path && e.text === a.text)).toBe(true);
-    expect((await log()).some(e => e.path === a.path && e.text === one.get(i)!.text)).toBe(false);
-  }
   // A late push of the first load's subscription of the same ID as the
   // second load's stream: neither its block nor its end reaches that stream.
   await live(h);
