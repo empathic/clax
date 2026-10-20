@@ -34,8 +34,8 @@ void main() {
   test('pushes blocks to live subscriptions and ends them', () async {
     final core = FakeCore();
     final a = core.subscribe();
+    // A resume point is ignored, as CoreClient ignores it.
     final b = core.subscribe(lastEventId: '7');
-    expect(core.resumes, [null, '7']);
     b.cancel();
     core.push('event: ready\n\n');
     core.end('core_closed');

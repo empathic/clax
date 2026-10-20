@@ -88,7 +88,8 @@ abstract interface class CoreCalls {
 
   /// The core's SSE blocks (text), each subscription its own stream, until
   /// an `event: end` block ([endBlock]) or [CoreSubscription.cancel].
-  /// [lastEventId] is the point to resume from.
+  /// [lastEventId] is the point to resume from; a stream that cannot
+  /// resume from it starts anew, its `ready` saying `resumed: false`.
   CoreSubscription subscribe({String? lastEventId});
 }
 
@@ -190,15 +191,11 @@ final class CoreClient implements CoreCalls {
     return answer.future;
   }
 
-  /// A resume point is not carried by `clax_embed_subscribe` yet: a
-  /// non-null [lastEventId] throws [UnsupportedError].
+  /// A resume point is not carried by `clax_embed_subscribe` yet, so
+  /// [lastEventId] is ignored: the subscription is a new stream, whose
+  /// `ready` says `resumed: false`, and a reader resyncs for it.
   @override
   CoreSubscription subscribe({String? lastEventId}) {
-    if (lastEventId != null) {
-      throw UnsupportedError(
-        "the core's subscriptions do not resume from an event ID yet",
-      );
-    }
     final sub = _Subscription(_subs.remove);
     if (_refusal case final refusal?) return sub..end(refusal.code);
     _subs.add(sub);

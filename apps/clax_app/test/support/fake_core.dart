@@ -22,8 +22,8 @@ typedef CoreHandler =
 /// path (without its query) to the handlers a test registers with [on],
 /// and answers 404 `not_in_fake` for any other; [subscribe] hands out
 /// subscriptions whose blocks a test [push]es. Every request is appended
-/// to [requests] before it is answered, and every subscription's resume
-/// point to [resumes].
+/// to [requests] before it is answered. A resume point is ignored, as
+/// [CoreClient] ignores it.
 class FakeCore implements CoreCalls {
   FakeCore();
 
@@ -39,9 +39,6 @@ class FakeCore implements CoreCalls {
   factory FakeCore.fromApi(FakeClaxApi api) => FakeCore().._routeTo(api);
 
   final List<CoreRequest> requests = [];
-
-  /// The `lastEventId` of each [subscribe], in order.
-  final List<String?> resumes = [];
 
   final List<(String, List<String>, CoreHandler)> _routes = [];
   final List<FakeSubscription> _subs = [];
@@ -91,7 +88,6 @@ class FakeCore implements CoreCalls {
 
   @override
   CoreSubscription subscribe({String? lastEventId}) {
-    resumes.add(lastEventId);
     final s = FakeSubscription();
     _subs.add(s);
     return s;

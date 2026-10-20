@@ -303,13 +303,15 @@ void main() {
       expect(await core.subscribe().blocks.toList(), [endBlock('core_closed')]);
     });
 
-    test('a resume point is refused until the C functions carry one', () {
+    test('a resume point is ignored until the C functions carry one', () async {
+      // The core opens a new stream, whose ready says resumed: false, and
+      // SseClaxStream resyncs its topics for it.
       final core = open();
-      expect(
-        () => core.subscribe(lastEventId: '42'),
-        throwsUnsupportedError,
-      );
-      expect(lib.subscriptions, isEmpty);
+      final sub = core.subscribe(lastEventId: 's1:42');
+      final s = lib.subscriptions.single;
+      lib.postBlock(s, 'event: ready\ndata: {"stream":"s2","resumed":false}\n\n');
+      lib.postBlock(s, endBlock('stream_ended'));
+      expect(await sub.blocks.first, contains('"resumed":false'));
     });
 
     test('the core closing ends a subscription it left open', () async {
