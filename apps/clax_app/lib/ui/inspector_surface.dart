@@ -12,6 +12,7 @@ import '../agent/inspector.dart';
 import '../daemon/clock.dart';
 import 'app_surface.dart';
 import 'host_protocol.dart';
+import 'webview_surface.dart' show coreShellBase;
 
 /// An [Inspector] over one page surface (a WebView) that [InspectorHost]
 /// keeps laid out, under the app, for the app's life.
@@ -321,8 +322,9 @@ class WebViewInspector implements Inspector {
         if (_disposed || (_surface.value != null && b == _base)) return;
         final surface = _surfaceFor(b);
         surface.setVisible(false);
+        // On the core the shell loads from the app's scheme.
         await surface.load(
-          b.replace(
+          (coreShellBase(surface) ?? b).replace(
             path: '/a/$_warmId',
             queryParameters: const {'app': '1', 'inspect': '1'},
           ),

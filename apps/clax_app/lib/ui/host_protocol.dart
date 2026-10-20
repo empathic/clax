@@ -1238,8 +1238,10 @@ class ShellSession {
 
   /// The top-level document loaded at [url]: the call handing the shell
   /// its nonce, or null when it is not the shell or already has one (a
-  /// document is handed one nonce).
-  Init? documentLoaded(Uri? url) {
+  /// document is handed one nonce). The nonce is [nonce] when given (the
+  /// one the app's scheme wrote into the document and the main frame
+  /// presented, on the core), else a fresh one.
+  Init? documentLoaded(Uri? url, {String? nonce}) {
     if (_nonce != null) return null;
     _shell = isShellUrl(base, url);
     if (!_shell) return null;
@@ -1247,8 +1249,8 @@ class ShellSession {
     final bytes = List<int>.generate(16, (_) => _random.nextInt(256));
     final n = [for (final b in bytes) b.toRadixString(16).padLeft(2, '0')]
         .join();
-    _nonce = n;
-    return Init(n, visible: _visible, native: native, platform: platform);
+    _nonce = nonce ?? n;
+    return Init(_nonce!, visible: _visible, native: native, platform: platform);
   }
 
   /// The app shows the page ([visible]) or not: the call telling the

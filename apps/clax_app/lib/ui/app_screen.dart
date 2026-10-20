@@ -43,6 +43,7 @@ import 'threads_panel.dart';
 import 'tokens.g.dart';
 import 'user_message.dart';
 import 'versions_tab.dart';
+import 'webview_surface.dart' show coreShellBase;
 import 'working_chip.dart';
 
 /// One app, full screen: the shell's app mode in [surface], with the
@@ -762,7 +763,10 @@ class _AppScreenState extends State<AppScreen> with WidgetsBindingObserver {
     WidgetsBinding.instance.addObserver(this);
     _deviceView.watching.addListener(_watchesChanged);
     _lifecycleShown = _shownIn(WidgetsBinding.instance.lifecycleState);
-    unawaited(widget.surface.load(AppScreen.appUrl(widget.base, widget.aid)));
+    // On the core the page loads from the app's scheme, at the surface's
+    // shell origin.
+    final base = coreShellBase(widget.surface) ?? widget.base;
+    unawaited(widget.surface.load(AppScreen.appUrl(base, widget.aid)));
   }
 
   // Whether the page is shown: the app in front, and this screen's route on

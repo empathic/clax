@@ -414,6 +414,15 @@ void main() {
       expect(s.accept(msg(second.nonce)), isA<Landed>());
     });
 
+    test('a nonce given at load (the scheme\'s, on the core) is the '
+        'document\'s', () {
+      final s = ShellSession(base)..documentStarted(shell);
+      const given = 'n0nce-the-scheme-wrote_0123456789';
+      expect(s.documentLoaded(shell, nonce: given)!.nonce, given);
+      expect(s.accept(msg(given)), isA<Landed>());
+      expect(s.documentLoaded(shell, nonce: 'other-nonce-0123456789'), isNull);
+    });
+
     test('the document is the artifact of the URL the shell loaded at', () {
       final s = ShellSession(base);
       expect(s.document, isNull);

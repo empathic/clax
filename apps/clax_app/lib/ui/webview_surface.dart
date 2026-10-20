@@ -7,6 +7,10 @@ import 'package:flutter/widgets.dart';
 import 'package:webview_flutter/webview_flutter.dart';
 import 'package:webview_flutter_wkwebview/webview_flutter_wkwebview.dart';
 
+import '../core/core_client.dart';
+import '../core/origins.dart';
+import '../core/scheme_host.dart';
+import '../core/shell_link.dart';
 import '../daemon/clock.dart';
 import 'app_surface.dart';
 import 'daemon_cookie.dart';
@@ -42,6 +46,19 @@ const nativeOverlays = ['ask', 'questions', 'notice', 'draft'];
 /// - [capture] asks the platform (`snapshotWebView` on the
 ///   `dev.empathic.clax/native` channel, macOS and Android) for an image
 ///   of the WebView as it shows.
+///
+/// With a [core] (and its [AppOrigins], whose shell origin is then [base])
+/// the WebView loads from the app's scheme instead of the daemon (spec §4
+/// and §5 of docs/superpowers/specs/2026-10-19-in-process-core-design.md):
+/// it is attached to the runner's scheme host ([SchemeHostPort], by
+/// default [SchemeHost.instance]) after every `setNavigationDelegate` and
+/// before any load ([SchemeAttachment]); its requests are answered and its
+/// `ClaxHost` messages relayed through the core by a [CoreShellLink]; the
+/// shell's nonce is the one the scheme wrote into the document and the
+/// main frame presented first after the commit, which `claxHost.init`
+/// gets once the document has loaded; no JavaScript channel is added
+/// (the runner's own listener is the shell's `ClaxHost`) and no key
+/// cookie is set.
 class WebViewAppSurface implements AppSurface, CapturableSurface {
   WebViewAppSurface({
     required this.base,
@@ -50,7 +67,18 @@ class WebViewAppSurface implements AppSurface, CapturableSurface {
     this.keyCookie,
     Color? background,
     WebViewController? controller,
-  }) : controller = controller ?? WebViewController(),
+    this.core,
+    AppOrigins? origins,
+    SchemeHostPort? schemeHost,
+  }) : assert(
+         core == null ||
+             (origins != null &&
+                 keyCookie == null &&
+                 base == Uri.parse(origins.shell)),
+         'on the core the surface loads from its origins\' shell, with no key '
+         'cookie',
+       ),
+       controller = controller ?? WebViewController(),
        _session = ShellSession(
          base,
          native: nativeOverlays,
@@ -63,21 +91,39 @@ class WebViewAppSurface implements AppSurface, CapturableSurface {
       load: c.loadRequest,
       reload: c.reload,
     );
-    c
-      ..setJavaScriptMode(JavaScriptMode.unrestricted)
-      ..addJavaScriptChannel('ClaxHost', onMessageReceived: _onMessage)
-      ..setNavigationDelegate(
-        NavigationDelegate(
-          onNavigationRequest: _onNavigation,
-          onPageStarted: (url) => _session.documentStarted(Uri.tryParse(url)),
-          onPageFinished: _onLoaded,
-          onUrlChange: (change) {
-            final url = change.url;
-            if (url != null) _session.urlChanged(Uri.tryParse(url));
-          },
-          onWebResourceError: _onError,
-        ),
+    final core = this.core;
+    if (core != null) {
+      _link = CoreShellLink(
+        core,
+        origins!,
+        runJs: c.runJavaScript,
+        onShellMessage: _onShellMessage,
+        onPinned: (_) => _initOnCore(),
       );
+      _attachment = SchemeAttachment(
+        schemeHost ?? SchemeHost.instance,
+        () => (c.platform as dynamic).webViewIdentifier as int,
+      );
+    }
+    c.setJavaScriptMode(JavaScriptMode.unrestricted);
+    if (core == null) {
+      c.addJavaScriptChannel('ClaxHost', onMessageReceived: _onMessage);
+    }
+    _setNavigationDelegate(
+      NavigationDelegate(
+        onNavigationRequest: _onNavigation,
+        onPageStarted: (url) {
+          _loaded = null;
+          _session.documentStarted(Uri.tryParse(url));
+        },
+        onPageFinished: _onLoaded,
+        onUrlChange: (change) {
+          final url = change.url;
+          if (url != null) _session.urlChanged(Uri.tryParse(url));
+        },
+        onWebResourceError: _onError,
+      ),
+    );
     if (background != null) {
       // Not every platform view takes a background colour.
       c.setBackgroundColor(background).catchError((Object _) {});
@@ -86,9 +132,20 @@ class WebViewAppSurface implements AppSurface, CapturableSurface {
     iosWebKit(c);
   }
 
-  /// The daemon's base URL (`http://127.0.0.1:<port>`).
+  /// The daemon's base URL (`http://127.0.0.1:<port>`), or on the [core]
+  /// the shell's origin.
   final Uri base;
   final WebViewController controller;
+
+  /// The core the WebView's scheme and relay go through; null for a
+  /// WebView that loads from the daemon.
+  final CoreCalls? core;
+  CoreShellLink? _link;
+  SchemeAttachment? _attachment;
+
+  /// The URL the document loaded at, while on the core it waits for its
+  /// nonce to be pinned.
+  Uri? _loaded;
   final Clock _clock;
   final ShellSession _session;
 
@@ -164,14 +221,46 @@ class WebViewAppSurface implements AppSurface, CapturableSurface {
     },
   );
 
+  /// Sets [d] as the WebView's navigation delegate; on the core, the
+  /// scheme host is attached again after it.
+  void _setNavigationDelegate(NavigationDelegate d) {
+    Future<void> set() => controller.setNavigationDelegate(d);
+    final a = _attachment;
+    final link = _link;
+    unawaited(a != null && link != null ? a.setDelegate(set, link) : set());
+  }
+
   void _onLoaded(String url) {
+    if (_link != null) {
+      _loaded = Uri.tryParse(url);
+      _initOnCore();
+      return;
+    }
     final init = _session.documentLoaded(Uri.tryParse(url));
     if (init != null) unawaited(controller.runJavaScript(init.toJs()));
   }
 
-  void _onMessage(JavaScriptMessage m) {
-    final msg = _session.accept(m.message);
+  /// On the core, hands the shell its nonce once the document has loaded
+  /// and the main frame has presented the nonce the scheme wrote into it.
+  void _initOnCore() {
+    final nonce = _link?.nonce;
+    final url = _loaded;
+    if (nonce == null || url == null) return;
+    _loaded = null;
+    final init = _session.documentLoaded(url, nonce: nonce);
+    if (init != null) unawaited(controller.runJavaScript(init.toJs()));
+  }
+
+  void _onMessage(JavaScriptMessage m) => _onShellMessage(m.message);
+
+  void _onShellMessage(String raw) {
+    final msg = _session.accept(raw);
     if (msg != null && !_messages.isClosed) _messages.add(msg);
+  }
+
+  /// A fault the surface cannot recover from by reloading.
+  void _fault(String detail) {
+    if (!_faults.isClosed) _faults.add(SurfaceFault(detail, reloading: false));
   }
 
   void _onError(WebResourceError e) {
@@ -196,8 +285,11 @@ class WebViewAppSurface implements AppSurface, CapturableSurface {
   );
 
   @override
-  Future<void> load(Uri url) {
+  Future<void> load(Uri url) async {
     _own = ShellSession.artifactOf(base, url);
+    if (_attachment case final a? when !await a.attached) {
+      _fault("the app's scheme is not attached to the WebView");
+    }
     return _loads.load(url);
   }
 
@@ -264,12 +356,19 @@ class WebViewAppSurface implements AppSurface, CapturableSurface {
 
   @override
   void dispose() {
+    _link?.dispose();
+    _attachment?.detach();
     _loads.dispose();
     _messages.close();
     _faults.close();
     _elsewhere.close();
   }
 }
+
+/// The origin [surface] loads the shell from when it runs on the core (its
+/// shell origin); null for any other surface, which loads from the daemon.
+Uri? coreShellBase(AppSurface surface) =>
+    surface is WebViewAppSurface && surface.core != null ? surface.base : null;
 
 /// The platform the shell is told at `init`: `ios` on iOS, where the
 /// shell makes camera, files, share and location calls through WebKit;
