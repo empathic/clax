@@ -143,6 +143,16 @@ SH
 done
 printf '#!/bin/sh\necho "cargo $*" >> "${0%%/*}/../calls"\nexit 1\n' | fake_exe "$FAKE/cargo"
 printf '#!/bin/sh\necho "clax 9.9.9-dev"\n' | fake_exe "$T/clax-build"
+# The native path needs node and pnpm on PATH (scripts/lib/build-system.sh);
+# a machine that builds with Bazel, CI's among them, may have neither. These
+# stand-ins satisfy that check, answer pnpm's version check with the version
+# web/package.json pins, and fail anything else: no case here gets as far as
+# running the web tools.
+PNPM_PIN="$(sed -n 's/.*"packageManager": *"pnpm@\([0-9.]*\)".*/\1/p' "$ROOT/web/package.json" | sed -n 1p)"
+mkdir -p "$T/fake-web"
+printf '#!/bin/sh\nexit 1\n' | fake_exe "$T/fake-web/node"
+printf '#!/bin/sh\n[ "$1" = --version ] && { echo "%s"; exit 0; }\nexit 1\n' "$PNPM_PIN" | fake_exe "$T/fake-web/pnpm"
+PATH="$T/fake-web:$PATH"
 # Every case here runs the native path: with Bazel on PATH, watch.sh would
 # start ibazel, and the recipes would build with Bazel.
 export CLAX_BUILD=native
