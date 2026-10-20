@@ -60,6 +60,9 @@ pub enum OpenError {
     HomeInUse,
     /// The home's path is not UTF-8.
     NotUtf8,
+    /// The core's runtime did not start (its threads could not be
+    /// spawned).
+    Runtime(String),
 }
 
 /// Where a core is.
@@ -149,10 +152,8 @@ impl Embed {
     /// `Failed`, then `Closed` after [`Embed::close`].
     ///
     /// # Errors
-    /// [`OpenError::HomeInUse`] when this process has the home open.
-    ///
-    /// # Panics
-    /// When the runtime's threads cannot be started.
+    /// [`OpenError::HomeInUse`] when this process has the home open,
+    /// [`OpenError::Runtime`] when the runtime's threads cannot be started.
     pub fn open(
         opts: OpenOptions,
         on_event: Box<dyn Fn(OpenEvent) + Send + Sync>,
@@ -168,12 +169,18 @@ impl Embed {
             }
             crate::log::init(log.clone());
         }
-        let runtime = tokio::runtime::Builder::new_multi_thread()
+        let runtime = match tokio::runtime::Builder::new_multi_thread()
             .worker_threads(2)
             .thread_name("clax-rt")
             .enable_all()
             .build()
-            .expect("the core's runtime starts");
+        {
+            Ok(rt) => rt,
+            Err(e) => {
+                lock(&OPEN).remove(&key);
+                return Err(OpenError::Runtime(e.to_string()));
+            }
+        };
         let shared = Arc::new(Shared {
             key,
             phase: watch::channel(Phase::Opening).0,
@@ -207,9 +214,13 @@ impl Embed {
             .inner
             .handle
             .spawn(answer(self.inner.shared.clone(), head, body));
-        Ok(task.await.unwrap_or_else(|_| {
-            error_frame(503, "core_closed", "the core stopped before it answered")
-        }))
+        Ok(match task.await {
+            Ok(answer) => answer,
+            Err(e) if e.is_panic() => {
+                error_frame(500, "internal", "the core panicked while it answered")
+            }
+            Err(_) => error_frame(503, "core_closed", "the core stopped before it answered"),
+        })
     }
 
     /// Waits on the core's runtime until the core is ready: its router,

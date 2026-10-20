@@ -6,6 +6,7 @@
 use clax_embed::frame::{self, As, RequestHead, ResponseHead};
 use clax_embed::{Post, ffi_call, ffi_close, ffi_open, ffi_subscribe};
 use serde_json::{Value, json};
+use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::{Arc, Condvar, Mutex};
 
 /// Every message posted, by port, in order.
@@ -42,6 +43,42 @@ impl Collector {
         });
         serde_json::from_slice(&b).unwrap()
     }
+}
+
+/// A [`Collector`] whose first post to one port panics.
+struct PanicsOnce {
+    posts: Collector,
+    port: i64,
+    panicked: AtomicBool,
+}
+
+impl PanicsOnce {
+    fn on(port: i64) -> Arc<PanicsOnce> {
+        Arc::new(PanicsOnce {
+            posts: Collector::default(),
+            port,
+            panicked: AtomicBool::new(false),
+        })
+    }
+}
+
+impl Post for PanicsOnce {
+    fn post(&self, port: i64, bytes: &[u8]) -> bool {
+        if port == self.port && !self.panicked.swap(true, Ordering::SeqCst) {
+            panic!("a post to port {port} panics once");
+        }
+        self.posts.post(port, bytes)
+    }
+}
+
+/// The response frame posted to `port` under `tag`.
+fn answer(posts: &Collector, port: i64, tag: i64) -> (ResponseHead, Value) {
+    let answer = posts.take(port, |b| b.len() >= 8 && b[..8] == tag.to_le_bytes());
+    let (head, body) = frame::split(&answer[8..]).unwrap();
+    (
+        serde_json::from_slice(head).unwrap(),
+        serde_json::from_slice(body).unwrap(),
+    )
 }
 
 /// A home with the origins the app writes before it opens the core.
@@ -162,4 +199,46 @@ fn a_home_without_its_origins_fails_to_open() {
     assert_ne!(core, 0);
     let failed = posts.event(5, "failed");
     assert_eq!(failed["code"], "no_origins", "{failed}");
+}
+
+#[test]
+fn a_failed_open_is_a_handle_that_answers_and_closes() {
+    let dir = tempfile::tempdir().unwrap();
+    let posts = Arc::new(Collector::default());
+    let core = ffi_open(dir.path().to_str().unwrap().as_bytes(), posts.clone(), 1);
+    assert_ne!(core, 0);
+    posts.event(1, "failed");
+
+    assert_eq!(ffi_call(core, &request("GET", "/api/artifacts"), 2, 9), 0);
+    let (head, v) = answer(&posts, 2, 9);
+    assert_eq!(head.status, 503, "{v}");
+    assert_eq!(v["error"]["code"], "core_failed", "{v}");
+    assert_eq!(ffi_subscribe(core, 3), 0);
+
+    assert_eq!(ffi_close(core), 0);
+    posts.event(1, "closed");
+    assert_eq!(ffi_close(core), 1, "a closed handle is unknown");
+}
+
+#[test]
+fn a_post_that_panics_does_not_unwind_out_of_the_c_functions() {
+    let dir = tempfile::tempdir().unwrap();
+    let home = dir.path().to_str().unwrap().as_bytes();
+
+    // The open port's `failed` panics; the handle still closes.
+    let posts = PanicsOnce::on(1);
+    let core = ffi_open(home, posts.clone(), 1);
+    assert_ne!(core, 0);
+    assert_eq!(ffi_close(core), 0);
+    posts.posts.event(1, "closed");
+
+    // A call's answer panics; the next call is answered.
+    let posts = PanicsOnce::on(2);
+    let core = ffi_open(home, posts.clone(), 1);
+    posts.posts.event(1, "failed");
+    assert_eq!(ffi_call(core, &request("GET", "/api/artifacts"), 2, 5), 0);
+    assert_eq!(ffi_call(core, &request("GET", "/api/artifacts"), 2, 6), 0);
+    let (head, _) = answer(&posts.posts, 2, 6);
+    assert_eq!(head.status, 503);
+    assert_eq!(ffi_close(core), 0);
 }
