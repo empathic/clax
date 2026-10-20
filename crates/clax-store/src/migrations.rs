@@ -1315,9 +1315,11 @@ pub const MIGRATIONS: &[&str] = &[
     );
     CREATE TABLE job_questions (          -- was asked.json
         job_id TEXT NOT NULL REFERENCES jobs(id),
-        question_id TEXT NOT NULL,
-        answer TEXT,
-        PRIMARY KEY (job_id, question_id)
+        question_id TEXT NOT NULL UNIQUE REFERENCES questions(id),
+        outcome TEXT CHECK (outcome IN ('answered','declined','withdrawn')),  -- NULL until the question closes
+        answers_json TEXT,                 -- the answers, as the question keeps them
+        PRIMARY KEY (job_id, question_id),
+        CHECK ((outcome IS 'answered') = (answers_json IS NOT NULL))
     );
     CREATE TABLE agent_read_consents (    -- was agent-read-consent.json
         reader TEXT NOT NULL,
@@ -3963,6 +3965,10 @@ mod tests {
          INSERT INTO job_steps (job_id, key, result_json, created_at)
             VALUES ('j1', 'turn:1', '{\"calls\":[]}', 'x');
          INSERT INTO job_threads (job_id, thread_id, comment_id) VALUES ('j1', 't1', 'c1');
+         INSERT INTO sessions (id, harness, cwd, started_at, last_seen_at)
+            VALUES ('s1', 'claude-code', '/w', 'x', 'x');
+         INSERT INTO questions (id, session_id, source, questions_json, created_at)
+            VALUES ('q1', 's1', 'ask', '[]', 'x');
          INSERT INTO job_questions (job_id, question_id) VALUES ('j1', 'q1');
          INSERT INTO agent_read_consents (reader, source, created_at)
             VALUES ('8r4m2nzy3c5v', '7q3k9mzx2b4t', 'x');

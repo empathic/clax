@@ -892,9 +892,11 @@ CREATE TABLE job_threads (            -- was the ledger's answered and stopped.j
 );
 CREATE TABLE job_questions (          -- was asked.json
     job_id TEXT NOT NULL REFERENCES jobs(id),
-    question_id TEXT NOT NULL,
-    answer TEXT,
-    PRIMARY KEY (job_id, question_id)
+    question_id TEXT NOT NULL UNIQUE REFERENCES questions(id),
+    outcome TEXT CHECK (outcome IN ('answered','declined','withdrawn')),  -- NULL until the question closes
+    answers_json TEXT,                 -- the answers, as the question keeps them
+    PRIMARY KEY (job_id, question_id),
+    CHECK ((outcome IS 'answered') = (answers_json IS NOT NULL))
 );
 CREATE TABLE agent_read_consents (    -- was agent-read-consent.json
     reader TEXT NOT NULL,

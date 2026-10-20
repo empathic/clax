@@ -1,5 +1,6 @@
--- Migration 46 as commit adbfc62dfbe4 (2026-10-20, branch flutter-app) wrote it in
--- crates/clax-store/src/migrations.rs (blob 4f6501970e16): the Clax app's jobs migration, the sixth
+-- Migration 46 as branch flutter-app writes it in crates/clax-store/src/migrations.rs, first
+-- frozen as commit adbfc62dfbe4 (2026-10-20, blob 4f6501970e16) wrote it and since edited in place
+-- with it while it is unmerged, so the two stay equal: the Clax app's jobs migration, the sixth
 -- of its migrations, after its five at 41 to 45 (flutter-app-4479a586c.sql). Migrations 1 to 45
 -- there are the current ones, character for character. Frozen with those five so that the layouts
 -- holding the app's migrations after the first k of main's migrations above 38 can still be built
@@ -42,9 +43,11 @@ CREATE TABLE jobs (
     );
     CREATE TABLE job_questions (          -- was asked.json
         job_id TEXT NOT NULL REFERENCES jobs(id),
-        question_id TEXT NOT NULL,
-        answer TEXT,
-        PRIMARY KEY (job_id, question_id)
+        question_id TEXT NOT NULL UNIQUE REFERENCES questions(id),
+        outcome TEXT CHECK (outcome IN ('answered','declined','withdrawn')),  -- NULL until the question closes
+        answers_json TEXT,                 -- the answers, as the question keeps them
+        PRIMARY KEY (job_id, question_id),
+        CHECK ((outcome IS 'answered') = (answers_json IS NOT NULL))
     );
     CREATE TABLE agent_read_consents (    -- was agent-read-consent.json
         reader TEXT NOT NULL,

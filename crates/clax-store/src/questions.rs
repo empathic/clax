@@ -984,8 +984,17 @@ impl Store {
                     params![qid, now],
                 )?;
             }
-            if matches!(status, Status::Answered | Status::Declined) {
-                self.answer_job_question_tx(tx, qid, answers.as_deref())?;
+            let outcome = match (status, answers.as_deref()) {
+                (Status::Answered, Some(a)) => Some(super::jobs::JobAnswer::Answered(
+                    serde_json::from_str(a).map_err(|e| {
+                        CoreError::Db(rusqlite::Error::ToSqlConversionFailure(Box::new(e)))
+                    })?,
+                )),
+                (Status::Declined, _) => Some(super::jobs::JobAnswer::Declined),
+                _ => None,
+            };
+            if let Some(outcome) = outcome {
+                self.close_job_question_tx(tx, qid, &outcome)?;
             }
             let (sid, aid) = (&q.session_id, q.artifact_id.as_deref());
             let rec = match status {

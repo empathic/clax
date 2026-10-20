@@ -178,13 +178,55 @@ pub struct JobThread {
     pub stopped: bool,
 }
 
-/// A question a job asked.
+/// A question a job asked. A question belongs to one job at most.
 #[derive(Clone, Debug, PartialEq, Eq, Serialize)]
 pub struct JobQuestion {
     pub question_id: String,
-    /// `None` while unanswered; else JSON text: the answers, as the
-    /// question keeps them, or `null` for a decline.
-    pub answer: Option<String>,
+    pub answer: JobAnswer,
+}
+
+/// What became of a question a job asked (`job_questions.outcome` and
+/// `answers_json`). Serialised as `{"outcome": "pending"}`, or
+/// `"answered"` with `answers`, `"declined"`, `"withdrawn"`.
+#[derive(Clone, Debug, PartialEq, Eq, Serialize)]
+#[serde(tag = "outcome", content = "answers", rename_all = "lowercase")]
+pub enum JobAnswer {
+    /// The question is not closed.
+    Pending,
+    /// The person answered: the answers, as the question keeps them.
+    Answered(serde_json::Value),
+    Declined,
+    /// Withdrawn: by the session that asked, or by Clax.
+    Withdrawn,
+}
+
+impl JobAnswer {
+    /// The `outcome` and `answers_json` columns that keep it.
+    fn columns(&self) -> (Option<&'static str>, Option<String>) {
+        match self {
+            JobAnswer::Pending => (None, None),
+            JobAnswer::Answered(a) => (Some("answered"), Some(text(a))),
+            JobAnswer::Declined => (Some("declined"), None),
+            JobAnswer::Withdrawn => (Some("withdrawn"), None),
+        }
+    }
+
+    /// Read back from its columns.
+    fn read(outcome: Option<String>, answers: Option<String>) -> rusqlite::Result<JobAnswer> {
+        Ok(match (outcome.as_deref(), answers) {
+            (None, None) => JobAnswer::Pending,
+            (Some("answered"), Some(a)) => JobAnswer::Answered(json(a)?),
+            (Some("declined"), None) => JobAnswer::Declined,
+            (Some("withdrawn"), None) => JobAnswer::Withdrawn,
+            (o, _) => {
+                return Err(rusqlite::Error::FromSqlConversionFailure(
+                    2,
+                    rusqlite::types::Type::Text,
+                    format!("no job question outcome {o:?} with those answers").into(),
+                ));
+            }
+        })
+    }
 }
 
 /// A job to create.
@@ -318,7 +360,7 @@ fn existing(c: &Connection, id: &str) -> JobResult<JobRow> {
 fn waits(c: &Connection, id: &str) -> clax_core::Result<bool> {
     Ok(c
         .prepare_cached(
-            "SELECT EXISTS (SELECT 1 FROM job_questions WHERE job_id = ?1 AND answer IS NULL)",
+            "SELECT EXISTS (SELECT 1 FROM job_questions WHERE job_id = ?1 AND outcome IS NULL)",
         )?
         .query_row(params![id], |r| r.get(0))?)
 }
@@ -385,13 +427,13 @@ fn full(c: &Connection, job: JobRow) -> clax_core::Result<JobFull> {
         .collect::<rusqlite::Result<_>>()?;
     let questions = c
         .prepare_cached(
-            "SELECT question_id, answer FROM job_questions
+            "SELECT question_id, outcome, answers_json FROM job_questions
              WHERE job_id = ?1 ORDER BY question_id",
         )?
         .query_map(params![job.id], |r| {
             Ok(JobQuestion {
                 question_id: r.get(0)?,
-                answer: r.get(1)?,
+                answer: JobAnswer::read(r.get(1)?, r.get(2)?)?,
             })
         })?
         .collect::<rusqlite::Result<_>>()?;
@@ -627,7 +669,9 @@ impl Store {
     /// question the job already asked changes nothing.
     ///
     /// # Errors
-    /// [`JobError::NotFound`]; [`JobError::Moved`] when the job is final.
+    /// [`JobError::NotFound`]; [`JobError::Moved`] when the job is final;
+    /// [`CoreError::Invalid`] `invalid_question` when `question` names no
+    /// question, or one another job asked.
     pub fn ask_job_question(&self, id: &str, question: &str) -> JobResult<JobRow> {
         self.job_tx(|tx| {
             let row = existing(tx, id)?;
@@ -638,6 +682,22 @@ impl Store {
             )?;
             if asked {
                 return Ok(row);
+            }
+            let (there, other): (bool, Option<String>) = tx.query_row(
+                "SELECT EXISTS (SELECT 1 FROM questions WHERE id = ?1),
+                        (SELECT job_id FROM job_questions WHERE question_id = ?1)",
+                params![question],
+                |r| Ok((r.get(0)?, r.get(1)?)),
+            )?;
+            if !there || other.is_some() {
+                return Err(CoreError::invalid(
+                    "invalid_question",
+                    match other {
+                        Some(job) => format!("question {question} is job {job}'s"),
+                        None => format!("no question {question}"),
+                    },
+                )
+                .into());
             }
             tx.execute(
                 "INSERT INTO job_questions (job_id, question_id) VALUES (?1, ?2)",
@@ -734,22 +794,21 @@ impl Store {
         })
     }
 
-    /// Stores `answer` (the answers' JSON text, or `None` for a decline) of
-    /// question `question` in the job that asked it, and moves that job
-    /// from `waiting` back to `running` once it waits on no other question,
-    /// inside the caller's transaction; the job's row after it, or `None`
-    /// when no job asked it or its answer is already stored. Called by
-    /// [`Store::close_question`] for an answer or a decline.
-    pub(crate) fn answer_job_question_tx(
+    /// Stores `outcome`, how question `question` closed, in the job that
+    /// asked it, and by [`may_move`] moves that job from `waiting` back to
+    /// `running` once it waits on no other question, inside the caller's
+    /// transaction; the job's row after it, or `None` when no job asked it,
+    /// the job is final, or its outcome is already stored. Called by
+    /// [`Store::close_question`].
+    pub(crate) fn close_job_question_tx(
         &self,
         tx: &Transaction<'_>,
         question: &str,
-        answer: Option<&str>,
+        outcome: &JobAnswer,
     ) -> clax_core::Result<Option<JobRow>> {
         let id: Option<String> = tx
             .query_row(
-                "SELECT job_id FROM job_questions
-                 WHERE question_id = ?1 AND answer IS NULL ORDER BY job_id LIMIT 1",
+                "SELECT job_id FROM job_questions WHERE question_id = ?1 AND outcome IS NULL",
                 params![question],
                 |r| r.get(0),
             )
@@ -760,22 +819,22 @@ impl Store {
         if row.state.is_final() {
             return Ok(None);
         }
+        let (outcome, answers) = outcome.columns();
         tx.execute(
-            "UPDATE job_questions SET answer = ?3 WHERE job_id = ?1 AND question_id = ?2",
-            params![row.id, question, answer.unwrap_or("null")],
+            "UPDATE job_questions SET outcome = ?2, answers_json = ?3 WHERE question_id = ?1",
+            params![question, outcome, answers],
         )?;
-        let state = match moving(tx, &row, Move::Close) {
-            Ok(state) => state,
-            Err(JobError::Store(e)) => return Err(e),
-            Err(_) => return Ok(None),
-        };
-        tx.execute(
-            "UPDATE jobs SET state = ?2 WHERE id = ?1",
-            params![row.id, state],
-        )?;
-        match bump(tx, &row.id, &self.now()) {
+        let moved = moving(tx, &row, Move::Close).and_then(|state| {
+            tx.execute(
+                "UPDATE jobs SET state = ?2 WHERE id = ?1",
+                params![row.id, state],
+            )?;
+            bump(tx, &row.id, &self.now())
+        });
+        match moved {
             Ok(row) => Ok(Some(row)),
             Err(JobError::Store(e)) => Err(e),
+            // No move refuses a job that is not final.
             Err(_) => Ok(None),
         }
     }
@@ -1109,15 +1168,20 @@ mod tests {
             st.job("j1").unwrap().unwrap().questions,
             vec![JobQuestion {
                 question_id: q.clone(),
-                answer: None
+                answer: JobAnswer::Pending
             }]
         );
         answer(&st, &q);
         let full = st.job("j1").unwrap().unwrap();
         assert_eq!((full.job.state, full.job.rev), (JobState::Running, 4));
-        let stored = full.questions[0].answer.as_deref().unwrap();
-        let stored: serde_json::Value = serde_json::from_str(stored).unwrap();
+        let JobAnswer::Answered(stored) = &full.questions[0].answer else {
+            panic!("expected answers, got {:?}", full.questions[0].answer)
+        };
         assert_eq!(stored[0]["selected"], json!(["A"]));
+        assert_eq!(
+            serde_json::to_value(&full.questions[0].answer).unwrap()["outcome"],
+            json!("answered")
+        );
     }
 
     #[test]
@@ -1129,7 +1193,11 @@ mod tests {
         st.close_question(DAEMON, &q, Close::Decline).unwrap();
         let full = st.job("j1").unwrap().unwrap();
         assert_eq!((full.job.state, full.job.rev), (JobState::Running, 4));
-        assert_eq!(full.questions[0].answer.as_deref(), Some("null"));
+        assert_eq!(full.questions[0].answer, JobAnswer::Declined);
+        assert_eq!(
+            serde_json::to_value(&full.questions[0].answer).unwrap(),
+            json!({"outcome": "declined"})
+        );
     }
 
     #[test]
@@ -1383,6 +1451,31 @@ mod tests {
             .commit_step("j1", "turn:1", json!({}), false)
             .unwrap();
         assert_eq!((row.state, row.rev), (JobState::Paused, paused.rev + 1));
+    }
+
+    #[test]
+    fn a_question_belongs_to_one_job_and_must_exist() {
+        let (_d, st) = store();
+        let q = question(&st);
+        running(&st, "j1");
+        let j2 = running(&st, "j2");
+        st.ask_job_question("j1", &q).unwrap();
+        for (job, q) in [("j2", q.as_str()), ("j2", "qmissing")] {
+            let refused = st.ask_job_question(job, q);
+            assert!(
+                matches!(
+                    refused,
+                    Err(JobError::Store(CoreError::Invalid {
+                        code: "invalid_question",
+                        ..
+                    }))
+                ),
+                "{q}: {refused:?}"
+            );
+        }
+        let full = st.job("j2").unwrap().unwrap();
+        assert_eq!(full.job, j2);
+        assert!(full.questions.is_empty());
     }
 
     #[test]
