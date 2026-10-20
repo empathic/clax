@@ -21,6 +21,7 @@ if has "$out" "would run" && has "$out" "./scripts/run.sh app-macos" \
     && has "$out" "codesign --force --sign - --preserve-metadata=entitlements,flags,runtime" \
     && has "$out" "10 times: <copy>/Contents/MacOS/Clax" && has "$out" "Library/Containers/dev.empathic.clax.perf" \
     && has "$out" "SIGTERM the app and its daemon by PID" && has "$out" "drop the first launch" \
+    && has "$out" "after the first, wait for its home snapshot, Data/Library/Caches/dev.empathic.clax.perf/home/home-snapshot.bin" \
     && ! has "$out" "Containers/dev.empathic.clax/" && ! has "$out" "CLAX_APP_DIR" \
     && has "$out" "--i-know-what-i-am-doing"; then
     ok "--macos dry run: build, a copy re-identified as dev.empathic.clax.perf in its own container, ten launches for nine runs, SIGTERM by PID"
@@ -35,8 +36,9 @@ else
 fi
 out="$(run --android --runs 3)"
 if has "$out" "4 times: adb shell am force-stop dev.empathic.clax; adb shell am start -W -n dev.empathic.clax/dev.empathic.clax_app.MainActivity" \
-    && has "$out" "run-as dev.empathic.clax cat files/timings.jsonl" && has "$out" "drop the first launch"; then
-    ok "--android dry run: force-stop and start -W per launch, the timings read with run-as"
+    && has "$out" "run-as dev.empathic.clax cat files/timings.jsonl" && has "$out" "drop the first launch" \
+    && has "$out" "after the first, wait for adb shell run-as dev.empathic.clax ls cache/home/home-snapshot.bin"; then
+    ok "--android dry run: force-stop and start -W per launch, the timings read with run-as, the dropped launch's snapshot awaited"
 else
     bad "--android dry run: $out"
 fi
@@ -118,19 +120,29 @@ if [ "$(uname -s)" = Darwin ]; then
 EOF
     printf '#!/bin/sh\necho "$*" >>"%s/codesign.log"\n' "$d" >"$d/bin/codesign"
     chmod +x "$d/bin/codesign"
-    printf '%s\n' "900 -" "400 20" "300 -" "500 30" >"$d/values"
+    # Each line: the launch's home-usable and the home-cover it writes when
+    # a snapshot is kept. Like the app, the fake writes home-cover only
+    # when a snapshot exists, and takes the snapshot a while after the home
+    # screen is up (the app's settle, apps/clax_app/lib/home/home_snapshot.dart),
+    # never on SIGTERM; with $d/nosnap it never takes one.
+    printf '%s\n' "900 19" "400 20" "300 25" "500 30" >"$d/values"
     cat >"$app/Contents/MacOS/Clax" <<EOF
 #!/bin/bash
 set -eu
 [ ! -e "$box/Data/stale" ] || echo stale >>"$d/stale"
 echo "\$0 \${CLAX_APP_DIR-unset}" >>"$d/launched"
+echo "\$\$" >>"$d/pids"
 t="$support/timings.jsonl"
+snap="$box/Data/Library/Caches/$perf/home/home-snapshot.bin"
 mkdir -p "$support"
+[ ! -e "$d/hang" ] || exec tail -f /dev/null
 n=\$(grep -c home-usable "\$t" 2>/dev/null || true)
 read -r usable cover < <(sed -n "\$((\${n:-0} + 1))p" "$d/values")
-[ "\$cover" = - ] || printf '{"name":"home-cover","elapsed_ms":%s}\n' "\$cover" >>"\$t"
+[ ! -e "\$snap" ] || printf '{"name":"home-cover","elapsed_ms":%s}\n' "\$cover" >>"\$t"
 printf '{"name":"home-usable","elapsed_ms":%s}\n' "\$usable" >>"\$t"
-echo "\$\$" >>"$d/pids"
+sleep 1 &
+wait
+if [ ! -e "$d/nosnap" ]; then mkdir -p "\$(dirname "\$snap")"; : >"\$snap"; fi
 exec tail -f /dev/null
 EOF
     chmod +x "$app/Contents/MacOS/Clax"
@@ -139,11 +151,11 @@ EOF
             CLAX_APP_DIR=/nowhere run --macos --app "$app" --runs 3 --i-know-what-i-am-doing "$@"
     }
     out="$(loop 2>"$d/err")"
-    want='"app_home_usable_ms": {"median": 400, "p90": 500, "runs": 3, "missing": 0}, "app_home_cover_ms": {"median": 25.0, "p90": 30, "runs": 2, "missing": 1}}'
+    want='"app_home_usable_ms": {"median": 400, "p90": 500, "runs": 3, "missing": 0}, "app_home_cover_ms": {"median": 25, "p90": 30, "runs": 3, "missing": 0}}'
     alive=""
     while read -r p; do kill -0 "$p" 2>/dev/null && alive="$alive $p"; done <"$d/pids"
     if has "$out" "$want" && [ "$(wc -l <"$d/pids" | tr -d ' ')" = 4 ] && [ -z "$alive" ]; then
-        ok "--macos: four launches for three runs, the first dropped, each app stopped"
+        ok "--macos: four launches for three runs, the first dropped once its snapshot is kept, so each measured launch has its cover; each app stopped"
     else
         bad "--macos launch loop: $out / alive:$alive / $(cat "$d/err")"
     fi
@@ -161,6 +173,15 @@ EOF
     else
         bad "--macos container: stale:$(cat "$d/stale" 2>/dev/null) / $(ls -A "$box" 2>/dev/null)"
     fi
+    : >"$d/pids"
+    touch "$d/nosnap"
+    if CLAX_PERF_CAP=1 loop >"$d/out" 2>"$d/err" || [ "$(wc -l <"$d/pids" | tr -d ' ')" != 1 ] \
+        || ! grep -qF "no home snapshot within 1 s" "$d/err" || [ -e "$box" ]; then
+        bad "a dropped launch that keeps no snapshot stops the run: $(cat "$d/out") / $(cat "$d/err")"
+    else
+        ok "a dropped launch that keeps no snapshot within the cap stops the run before any measured launch"
+    fi
+    rm "$d/nosnap"
     : >"$d/launched"
     if CLAX_PERF_CONTAINER="$d/Containers/dev.empathic.clax" CLAX_PERF_WORK="$d/work" run --macos --app "$app" --i-know-what-i-am-doing >/dev/null 2>"$d/err" \
         || [ -s "$d/launched" ] || ! grep -qF "dev.empathic.clax.perf" "$d/err"; then

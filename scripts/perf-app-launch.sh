@@ -30,9 +30,13 @@
 #   force-stop` and `am start -W` N times, each waiting for a new
 #   home-usable line in files/timings.jsonl (read with `run-as`).
 #
-# One launch more than N runs first and is dropped: it has no snapshot yet
-# (on macOS the scratch home is new; on Android the first launch after an
-# install has none) and pays macOS's assessment of new executables.
+# One launch more than N runs first and is dropped: it may have no snapshot
+# (on macOS the copy's container is new; on Android the first launch after
+# an install has none) and pays macOS's assessment of new executables. It
+# stays up until its home screen has kept its snapshot
+# (cache/home/home-snapshot.bin, a few seconds after the home screen is up;
+# the app keeps none when it is stopped), at most the same 60 s, so every
+# launch after it starts from that snapshot; without one the run stops.
 #
 # Output: a JSON object on stdout, {"platform", "app_home_usable_ms":
 # {"median", "p90", "runs", "missing"}, "app_home_cover_ms": {…}}, where
@@ -84,7 +88,9 @@ fi
 case "$runs" in '' | *[!0-9]* | 0) echo "perf-app-launch: --runs takes a count of at least 1" >&2; exit 2 ;; esac
 
 pkg=dev.empathic.clax
-cap=60
+# The wait for each launch's home-usable, and for the dropped launch's
+# snapshot (CLAX_PERF_CAP: another, in seconds, for the test).
+cap="${CLAX_PERF_CAP:-60}"
 budgets="${CLAX_PERF_BUDGETS:-web/perf/budget.json}"
 
 # summarize PLATFORM FILE WANT: the JSON object for FILE's home-usable and
@@ -206,7 +212,7 @@ if [ "$target" = macos ]; then
         fi
         echo "  copy it once per build into $work/clax-perf-<sha> (a zip unpacked, an app copied with ditto), set the copy's CFBundleIdentifier to $perf_id (plutil) and sign it again ad hoc: codesign --force --sign - --preserve-metadata=entitlements,flags,runtime <copy>"
         echo "  rm -r $container  (the copy's own container, if an earlier run left it)"
-        echo "  $((runs + 1)) times: <copy>/Contents/MacOS/Clax, wait for a new home-usable line in $container/Data/Library/Application Support/$perf_id/timings.jsonl (at most ${cap} s), SIGTERM the app and its daemon by PID and wait for them to exit"
+        echo "  $((runs + 1)) times: <copy>/Contents/MacOS/Clax, wait for a new home-usable line in $container/Data/Library/Application Support/$perf_id/timings.jsonl (at most ${cap} s); after the first, wait for its home snapshot, Data/Library/Caches/$perf_id/home/home-snapshot.bin (at most ${cap} s); SIGTERM the app and its daemon by PID and wait for them to exit"
         echo "  drop the first launch; print the median and p90 of home-usable and home-cover${CLAX_PERF_JSON:+ and append them to $CLAX_PERF_JSON}"
         [ -n "$record" ] && echo "  record $(host_platform)'s missing budgets in $budgets"
         echo "  rm -r $container"
@@ -255,6 +261,7 @@ if [ "$target" = macos ]; then
     [ -x "$exe" ] || { echo "perf-app-launch: no Contents/MacOS/Clax in $bundle" >&2; exit 1; }
     support="$container/Data/Library/Application Support/$perf_id"
     timings="$support/timings.jsonl"
+    snapshot="$container/Data/Library/Caches/$perf_id/home/home-snapshot.bin"
     logs="$copy.logs"
     mkdir -p "$logs"
     if [ -e "$container" ]; then
@@ -279,6 +286,19 @@ if [ "$target" = macos ]; then
         done
         if [ -z "$got" ]; then
             echo "perf-app-launch: launch $i: no home-usable within ${cap} s (a keychain prompt waiting? the screen locked?); counted as missing" >&2
+        elif [ "$i" = 0 ]; then
+            # The home screen keeps its snapshot a few seconds after it is
+            # up, never on SIGTERM: without one no launch has a cover.
+            kept=""
+            for _ in $(seq $((cap * 4))); do
+                if [ -e "$snapshot" ]; then kept=1; break; fi
+                kill -0 "$pid" 2>/dev/null || break
+                sleep 0.25
+            done
+            if [ -z "$kept" ]; then
+                echo "perf-app-launch: the dropped launch kept no home snapshot within ${cap} s ($snapshot); no launch would have its cover, so nothing is measured" >&2
+                exit 1
+            fi
         fi
         stop_pid "$pid" "the app"
         wait "$pid" 2>/dev/null || true
@@ -309,7 +329,7 @@ if [ -z "$adb" ]; then adb="$(command -v adb || true)"; fi
 if [ -z "$act" ]; then
     echo "perf-app-launch: would run, on the plugged-in device${ANDROID_SERIAL:+ $ANDROID_SERIAL}:"
     echo "  adb shell run-as $pkg ls files/timings.jsonl  (where the app keeps its timings)"
-    echo "  $((runs + 1)) times: adb shell am force-stop $pkg; adb shell am start -W -n $pkg/dev.empathic.clax_app.MainActivity; wait for a new home-usable line in adb exec-out run-as $pkg cat files/timings.jsonl (at most ${cap} s)"
+    echo "  $((runs + 1)) times: adb shell am force-stop $pkg; adb shell am start -W -n $pkg/dev.empathic.clax_app.MainActivity; wait for a new home-usable line in adb exec-out run-as $pkg cat files/timings.jsonl (at most ${cap} s); after the first, wait for adb shell run-as $pkg ls cache/home/home-snapshot.bin (at most ${cap} s)"
     echo "  adb shell am force-stop $pkg"
     echo "  drop the first launch; print the median and p90 of home-usable and home-cover${CLAX_PERF_JSON:+ and append them to $CLAX_PERF_JSON}"
     [ -n "$record" ] && echo "  record the device's missing budgets in $budgets"
@@ -342,6 +362,20 @@ for i in $(seq 0 "$runs"); do
         sleep 0.5
     done
     [ -n "$got" ] || echo "perf-app-launch: launch $i: no home-usable within ${cap} s; counted as missing" >&2
+    if [ -n "$got" ] && [ "$i" = 0 ]; then
+        # As on macOS: the dropped launch keeps the snapshot the others
+        # are covered by, a few seconds after its home screen is up.
+        kept=""
+        for _ in $(seq $((cap * 2))); do
+            if "$adb" shell run-as "$pkg" ls cache/home/home-snapshot.bin >/dev/null 2>&1; then kept=1; break; fi
+            sleep 0.5
+        done
+        if [ -z "$kept" ]; then
+            echo "perf-app-launch: the dropped launch kept no home snapshot within ${cap} s (cache/home/home-snapshot.bin); no launch would have its cover, so nothing is measured" >&2
+            "$adb" shell am force-stop "$pkg"
+            exit 1
+        fi
+    fi
     if [ "$i" = 0 ]; then
         pull
         start_lines="$(wc -l <"$work/timings.jsonl" | tr -d ' ')"
