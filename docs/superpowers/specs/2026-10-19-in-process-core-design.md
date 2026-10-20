@@ -574,16 +574,19 @@ forbids.
 - The nonce handshake (`ShellSession`, `host_protocol.dart:1157`) stays as
   a second check. The nonce comes with the document and is keyed to the
   main frame's navigation, not to its URL. The host numbers each
-  main-frame navigation to the shell's host, and gives that number with
-  the navigation's own request and with its commit. The scheme handler
-  (§4.2) makes a fresh nonce (16 to 128 of `[A-Za-z0-9_-]`) only for a
+  main-frame navigation to a shell document, and gives that number with
+  the navigation's own request (on Apple, with some requests of the
+  outgoing document too, below) and with its commit. The scheme handler
+  (§4.2) makes a fresh nonce (16 to 128 of `[A-Za-z0-9_-]`) for each
   shell document requested under a navigation's number, writes
   `<meta name="clax-nonce" content="…">` right after its `<head>`, and
-  keeps it with that number. The surface takes a nonce as the load's only
-  when the navigation of that number commits, and gives the same one to
-  `claxHost.init`. A nonce whose navigation never commits (cancelled,
-  superseded or failed) is dropped, and a request with no navigation's
-  number gets no shell document (403). The shell's transport reads the
+  adds it to that number's set of nonces. When the navigation of that
+  number commits, the load's nonces are that set; the first of them the
+  main frame presents over `ClaxHost` after the commit pins the load (the
+  surface gives that one to `claxHost.init` and the relay answers the load
+  under it), and the rest are dropped. A set whose navigation never
+  commits (cancelled, superseded or failed) is dropped, and a request with
+  no navigation's number gets no shell document (403). The shell's transport reads the
   nonce at boot, so its calls go out before the document's load event
   (which waits for the artifact page's own load); only a document without
   one waits for `claxTransport.init` (§5.1). How a request is paired with
@@ -597,29 +600,45 @@ forbids.
     that number when its URL is the kept one's.
   - **Apple:** a `WKURLSchemeTask` names neither its frame nor its
     navigation. `webView(_:decidePolicyFor:)`, when it allows a main-frame
-    navigation to the shell's host, opens a one-shot permit with a new
-    number for that URL (closing any earlier one);
+    navigation to a shell document, opens a permit with a new number for
+    that URL. The permit stays open until a navigation of that WebView
+    commits, the permitted navigation fails before it commits, or the next
+    main-frame navigation is allowed (which opens the next permit, or none
+    when it is not to a shell document).
     `webView(_:didStartProvisionalNavigation:)` binds the open permit's
-    number to that `WKNavigation`. The scheme handler gives the number
-    only to the first request for the permitted URL whose
-    `mainDocumentURL` is that URL, and closes the permit: every later
-    request for it goes without one (403) until the next permit.
-    `webView(_:didCommit:)` reports the number bound to the committing
-    `WKNavigation`, compared by identity, and
-    `didFailProvisionalNavigation` drops it.
+    number to that `WKNavigation`. While the permit is open, the scheme
+    handler gives the number to every `GET` for exactly the permitted URL
+    whose `mainDocumentURL` is that URL and which carries no `Origin`
+    header; every other request goes without one (403 for a shell
+    document). `webView(_:didCommit:)` reports the number bound to the
+    committing `WKNavigation`, compared by identity, and
+    `didFailProvisionalNavigation` reports it dropped.
   - **What remains.** On Apple a request is paired with its navigation by
-    order, since WebKit links them by nothing. While a reload or follow
-    of the shell is in flight the outgoing document and its content frame
-    still run, and a request one of them made for exactly the shell
-    document's URL, between the policy's decision and the navigation's
-    own request, would take the permit: the navigation's own request
-    then answers 403 and that load fails, with no shell in what commits.
-    The page cannot read the nonce it was answered (the response is
-    cross-origin and carries no `Access-Control-*`, §4.3), and what
-    commits under that number is the 403, with no shell to use it; so
-    the residual is the loss of that load, and what keeps a page from making
-    the request at all is the content policy (`default-src` and
-    `connect-src` name only the page's own files and `/_blob/<id>/`). On
+    its URL and its time alone, since WebKit links them by nothing public
+    (`WKURLSchemeTask` names no frame; the private `_frame` is SPI on iOS).
+    While a reload or follow of the shell is in flight the outgoing
+    document and its content frame still run, and a request one of them
+    makes for exactly the shell document's URL while the permit is open
+    takes the number too: a subresource's `mainDocumentURL` is the top
+    document's, so it passes that test; a frame's `cors` fetch carries
+    `Origin` and does not, but its `<img>` and `no-cors` fetch do. Each
+    such request is answered a shell document with a nonce of its own in
+    the number's set, and none of them costs the load: the navigation's
+    own request is answered under the number whatever came before it, and
+    after the commit the only main-frame document of the shell's origin,
+    the only document that reaches `ClaxHost` (above), is that
+    navigation's, so the first nonce presented is its own. The frame
+    cannot read the nonces it was answered (the answers are cross-origin
+    and carry no `Access-Control-*`, §4.3), and the outgoing shell, which
+    could, is the owner's code and is gone at the commit. What such
+    requests cost is renders of the shell document, not the load; what
+    keeps a page from making them at all is the content policy
+    (`default-src` and `connect-src` name only the page's own files and
+    `/_blob/<id>/`). The spike (Task 14) asserts it: the content frame
+    asks for the shell's URL without pause through a reload, and the
+    reload must commit a shell under a nonce of its own number's set, with
+    at least one of the frame's requests answered under that number on
+    Apple. On
     Android `onPageStarted` names only a URL: should an earlier
     main-frame navigation to the same URL commit after a later one's
     request, it is reported under the later one's number, and its

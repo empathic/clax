@@ -38,12 +38,17 @@ import webview_flutter_wkwebview
 ///
 /// Navigations to the shell's host are allowed only in the main frame, and
 /// only to a shell document (a path under `/a/`, spec §4.2).
-/// Each one allowed opens a one-shot permit with the WebView's next
-/// navigation number: the first request for the permitted URL whose
-/// `mainDocumentURL` is that URL carries the number (and `mainFrame:
-/// true`) and closes it; every other request carries neither. The number
-/// is bound to the `WKNavigation` that starts after the decision, and
-/// reported with its commit.
+/// Each one allowed opens a permit with the WebView's next navigation
+/// number, open until a navigation of the WebView commits, the permitted
+/// navigation fails before it commits, or the next main-frame navigation
+/// is allowed. While it is open, every `GET` for exactly the permitted URL
+/// whose `mainDocumentURL` is that URL and which has no `Origin` header
+/// carries the number (and `mainFrame: true`); every other request carries
+/// neither. A request of the outgoing document's frames can pass that test
+/// (spec §4.4, "What remains"): Dart mints a nonce for each, keeps them as
+/// the number's set, and the first the main frame presents after the
+/// commit pins the load. The number is bound to the `WKNavigation` that
+/// starts after the decision, and reported with its commit.
 final class SchemeHost: NSObject, WKURLSchemeHandler, WKScriptMessageHandler {
   static let shared = SchemeHost()
 
@@ -104,7 +109,7 @@ final class SchemeHost: NSObject, WKURLSchemeHandler, WKScriptMessageHandler {
     /// The last navigation number given.
     var lastNavigation = 0
     /// The permit the policy opened: the URL and number its navigation's
-    /// own request takes.
+    /// own request takes, with any other request that passes `takes`.
     var permit: (url: URL, navigation: Int)?
     /// The number the next `didStartProvisionalNavigation` binds.
     var unbound: Int?
@@ -171,6 +176,14 @@ final class SchemeHost: NSObject, WKURLSchemeHandler, WKScriptMessageHandler {
     url?.scheme == scheme && url?.host == shellHost
   }
 
+  /// Whether [request] takes the number of an open permit for [url]: a
+  /// `GET` for exactly that URL, from a document at that URL, that no
+  /// `cors` request made (a navigation sends no `Origin`).
+  static func takes(_ request: URLRequest, _ url: URL) -> Bool {
+    (request.httpMethod ?? "GET") == "GET" && request.url == url
+      && request.mainDocumentURL == url && request.value(forHTTPHeaderField: "Origin") == nil
+  }
+
   /// Whether [url] is a shell document's: a path under `/a/`.
   private static func isShellDocument(_ url: URL?) -> Bool {
     isShell(url) && url?.path.hasPrefix("/a/") == true
@@ -195,8 +208,7 @@ final class SchemeHost: NSObject, WKURLSchemeHandler, WKScriptMessageHandler {
       "headers": task.request.allHTTPHeaderFields ?? [:],
       "mainFrame": false,
     ]
-    if let permit = state.permit, permit.url == url, task.request.mainDocumentURL == url {
-      state.permit = nil
+    if let permit = state.permit, SchemeHost.takes(task.request, permit.url) {
       args["navigation"] = permit.navigation
       args["mainFrame"] = true
     }
@@ -284,12 +296,14 @@ final class SchemeHost: NSObject, WKURLSchemeHandler, WKScriptMessageHandler {
     return false
   }
 
-  /// The navigation [action] was allowed: a main-frame navigation to the
-  /// shell's host opens a permit with the next number.
+  /// The navigation [action] was allowed: a main-frame navigation closes
+  /// the open permit, and one to a shell document opens the next, with the
+  /// next number.
   fileprivate func allowed(_ action: WKNavigationAction, in webView: WKWebView) {
-    guard let state = state(of: webView), let url = action.request.url,
-      SchemeHost.isShell(url), action.targetFrame?.isMainFrame == true
-    else { return }
+    guard let state = state(of: webView), action.targetFrame?.isMainFrame == true else { return }
+    state.permit = nil
+    state.unbound = nil
+    guard let url = action.request.url, SchemeHost.isShellDocument(url) else { return }
     state.lastNavigation += 1
     state.permit = (url, state.lastNavigation)
     state.unbound = state.lastNavigation
@@ -301,8 +315,11 @@ final class SchemeHost: NSObject, WKURLSchemeHandler, WKScriptMessageHandler {
     state.bound[ObjectIdentifier(navigation)] = n
   }
 
+  /// A main-frame navigation committed: the permit closes, and its number,
+  /// if it has one, is reported.
   fileprivate func committed(_ navigation: WKNavigation?, in webView: WKWebView) {
     guard let state = state(of: webView) else { return }
+    state.permit = nil
     var args: [String: Any] = ["webViewId": state.id, "url": webView.url?.absoluteString ?? ""]
     if let navigation, let n = state.bound.removeValue(forKey: ObjectIdentifier(navigation)) {
       args["navigation"] = n
@@ -310,10 +327,13 @@ final class SchemeHost: NSObject, WKURLSchemeHandler, WKScriptMessageHandler {
     send("committed", args)
   }
 
+  /// A navigation failed: its number is dropped, with the permit when it is
+  /// that number's.
   fileprivate func failed(_ navigation: WKNavigation?, in webView: WKWebView) {
     guard let navigation, let state = state(of: webView),
       let n = state.bound.removeValue(forKey: ObjectIdentifier(navigation))
     else { return }
+    if state.permit?.navigation == n { state.permit = nil }
     send("dropped", ["webViewId": state.id, "navigation": n])
   }
 }
