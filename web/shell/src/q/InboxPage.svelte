@@ -37,7 +37,8 @@
   import TagPicker from "../ui/TagPicker.svelte";
   import { filterLabel } from "../view/tag-picker-model";
   import { listTags } from "../view/tags-api";
-  import { holds, toggle as toggleTag } from "../view/tags-model";
+  import { canonical, holds, refsForUrl, same, toggle as toggleTag } from "../view/tags-model";
+  import type { EventStream } from "../stream";
   import AgentStrip from "../people/AgentStrip.svelte";
   import { ticker } from "../ui/ticker.svelte";
   import { after } from "../clock";
@@ -59,6 +60,8 @@
     questions?: QuestionFeed;
     /** Goes to an item's URL (default: the browser navigates). */
     go?: (url: string) => void;
+    /** The page's stream, whose `tags` events refresh the Tags filter's list. */
+    stream?: EventStream;
     now?: Date;
   };
   const p: Props = $props();
@@ -272,7 +275,7 @@
   /** Applies a new search: into the URL, then the list again, its groups folded or open afresh. */
   function apply(next: InboxFilter): void {
     filter = next;
-    history.replaceState(history.state, "", `/inbox${filterToUrl(next)}`);
+    history.replaceState(history.state, "", urlOf(next));
     listedOpen = {};
     void load(false);
   }
@@ -289,7 +292,23 @@
   };
   const toggleUnread = () => apply({ ...filter, read: unreadOnly ? undefined : "unread" });
   const set = (k: "artifact" | "agent" | "since" | "until", v: string) => apply({ ...filter, [k]: v || undefined });
-  const pickTag = (t: TagRef) => { const tag = toggleTag(filter.tag ?? [], t.name); apply({ ...filter, tag: tag.length ? tag : undefined }); };
+  const pickTag = (t: TagRef) => { const tag = toggleTag(filter.tag ?? [], t); apply({ ...filter, tag: tag.length ? tag : undefined }); };
+  /** `f`'s address: its tags by name. */
+  const urlOf = (f: InboxFilter) => `/inbox${filterToUrl({ ...f, tag: f.tag && refsForUrl(f.tag, allTags) })}`;
+  /** Fetches every tag, and holds the Tags filter by tag ID: a renamed tag
+   * keeps filtering under its new name, and a deleted one drops out (the
+   * list fetched again without it). */
+  const loadTags = () => listTags().then(l => {
+    allTags = l.tags;
+    const was = filter.tag ?? [];
+    const tag = canonical(was, allTags, allTags);
+    const next = { ...filter, tag: tag.length ? tag : undefined };
+    if (tag.length < was.length) apply(next);
+    else {
+      if (!same(tag, was)) filter = next;
+      history.replaceState(history.state, "", urlOf(filter));
+    }
+  }, () => {});
 
   /** Marks read the unread items matching `f` up to the newest of `shown`
    * (group `key`'s, or every group's), shows the rows it read as read
@@ -352,11 +371,13 @@
     document.title = "Inbox · Clax";
     void getToken().then(t => { owner = !!t; });
     void listArtifacts().then(a => { artifacts = a.map(x => [x.id, x.title]); }, () => {});
-    void listTags().then(l => { allTags = l.tags; }, () => {});
+    void loadTags();
+    // The tags themselves changed (made, renamed, recoloured, deleted).
+    const offTags = p.stream?.watch(["gallery"], e => { if (e.type === "tags" && e.artifact_id == null) void loadTags(); });
     // Fetched once on open: now, or when the inbox topic first goes live.
     const off = inbox.listen(c => { if ("item" in c) take(c.item); else if (list) soon(); else void load(); });
     if (!inbox.waiting) void load();
-    return () => { off(); typing?.(); refetchSoon?.(); stripSoon?.(); };
+    return () => { off(); offTags?.(); typing?.(); refetchSoon?.(); stripSoon?.(); };
   });
 </script>
 
@@ -410,7 +431,7 @@
     <!-- svelte-ignore a11y_no_static_element_interactions -->
     <div class="pick tagpick" bind:this={tagBox} onfocusout={e => { if (tagsOpen && !tagBox?.contains(e.relatedTarget as Node | null) && e.relatedTarget) closeTags(false); }}>
       <span id="inbox-tags-l">Tags</span>
-      <button type="button" class="tbtn" aria-haspopup="dialog" aria-expanded={tagsOpen} aria-labelledby="inbox-tags-l inbox-tags-v" onclick={() => { tagsOpen = !tagsOpen; }}><span id="inbox-tags-v">{filterLabel(filter.tag ?? [])}</span></button>
+      <button type="button" class="tbtn" aria-haspopup="dialog" aria-expanded={tagsOpen} aria-labelledby="inbox-tags-l inbox-tags-v" onclick={() => { tagsOpen = !tagsOpen; }}><span id="inbox-tags-v">{filterLabel(refsForUrl(filter.tag ?? [], allTags))}</span></button>
       {#if tagsOpen}
         <div class="ipop" role="dialog" aria-label="Filter by tags">
           <TagPicker tags={allTags} chosen={t => holds(filter.tag ?? [], t)} onToggle={pickTag} label="Tags the items' pages carry, all of them" onClose={() => closeTags(true)}>

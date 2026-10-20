@@ -1,7 +1,7 @@
 import { describe, expect, it } from "vitest";
 import type { TagRef } from "../api";
 import { filterArtifacts } from "./gallery-model";
-import { barTags, carriesAll, holds, names, tagsFromUrl, tagsInUse, toggle, withTags } from "./tags-model";
+import { barTags, canonical, carriesAll, holds, names, refsForUrl, same, tagsFromUrl, tagsInUse, toggle, withTags } from "./tags-model";
 
 const q4: TagRef = { id: "t_aaaaaaaaaa", name: "Q4", colour: "blue" };
 const design: TagRef = { id: "t_bbbbbbbbbb", name: "design", colour: "purple" };
@@ -39,11 +39,33 @@ describe("filtering by tags", () => {
     expect(carriesAll(both, ["nope"])).toBe(false);
   });
 
-  it("toggles a tag in and out of a filter, whatever its case", () => {
-    expect(toggle([], "q4")).toEqual(["q4"]);
-    expect(toggle(["Q4", "design"], "q4")).toEqual(["design"]);
+  it("toggles a tag in by its ID and out however the filter names it", () => {
+    expect(toggle([], q4)).toEqual([q4.id]);
+    expect(toggle(["q4", "design"], q4)).toEqual(["design"]);
+    // A filter naming a tag by its ID lets go of it at the first press.
+    expect(toggle([q4.id], q4)).toEqual([]);
+    expect(toggle([q4.id, "Q4"], q4)).toEqual([]);
     expect(holds(["design"], design)).toBe(true);
+    expect(holds([design.id], design)).toBe(true);
     expect(holds(["q4"], design)).toBe(false);
+  });
+
+  it("holds a filter by tag ID, names it in the address, follows a rename and drops a deleted tag", () => {
+    // Names and IDs from an address become IDs, once each; a name no tag has stays.
+    expect(canonical(["q4", design.id, "Q4", "nope"], [q4, design])).toEqual([q4.id, design.id, "nope"]);
+    // A tag no card carries is found in the whole list.
+    expect(canonical(["design"], [q4], [q4, design])).toEqual([design.id]);
+    // Deleted: the whole list lacks its ID, and it drops out; without the list, it stays.
+    expect(canonical([q4.id, design.id], [q4], [q4])).toEqual([q4.id]);
+    expect(canonical([design.id], [q4])).toEqual([design.id]);
+    // The address names each tag, under its name now.
+    const renamed = { ...q4, name: "Q4 plan" };
+    expect(refsForUrl([q4.id, "nope"], [renamed])).toEqual(["Q4 plan", "nope"]);
+    expect(tagsFromUrl(withTags("", refsForUrl([q4.id], [renamed])))).toEqual(["Q4 plan"]);
+    expect(same(["a"], ["a"])).toBe(true);
+    expect(same(["a"], ["a", "b"])).toBe(false);
+    // The bar shows a filtered tag no card carries in its own colour.
+    expect(barTags([q4], [q4.id, design.id], [q4, design])).toEqual([q4, design]);
   });
 
   it("lists the tags in use once each, by name, then the filter's tags no artifact carries", () => {

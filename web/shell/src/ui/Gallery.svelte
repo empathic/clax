@@ -33,7 +33,7 @@
   import { Lifecycle, retrying } from "../lifecycle";
   import { afterPaint } from "../view/after-paint";
   import { filterArtifacts, orderArtifacts } from "../view/gallery-model";
-  import { barTags, carriesAll, holds, tagsFromUrl, tagsInUse, toggle, withTags } from "../view/tags-model";
+  import { barTags, canonical, carriesAll, holds, refsForUrl, same, tagsFromUrl, tagsInUse, toggle, withTags } from "../view/tags-model";
   import GalleryCard from "./GalleryCard.svelte";
   import Mark from "./Mark.svelte";
   import ThemeSwitch from "./ThemeSwitch.svelte";
@@ -65,11 +65,29 @@
   const inbox = location.pathname === "/inbox";
   const people = location.pathname === "/people";
   const tagsAt = location.pathname === "/tags";
-  // The tag filter (`?tag=`), by name: the artifacts shown carry every one.
+  // The tag filter: the artifacts shown carry every one. It holds tag IDs
+  // once the tags are known (`canonical`), and the address (`?tag=`) names
+  // each tag by its name, so a rename follows in place and a deleted tag
+  // drops out. While it filters, the whole list (`all`) is fetched, again
+  // at each `tags` event, to tell a deleted tag from one no card carries.
   let sel = $state(tagsFromUrl(location.search));
-  const setSel = (next: string[]) => { sel = next; history.pushState(history.state, "", `${location.pathname}${withTags(location.search, next)}${location.hash}`); };
-  const onTag = (t: TagRef) => { if (!holds(sel, t)) setSel([...sel, t.name]); document.querySelector(".tagbar")?.scrollIntoView?.({ block: "nearest" }); };
-  const inUse = $derived(barTags(tagsInUse(artifacts ?? []), sel));
+  let all = $state<TagRef[] | null>(null);
+  const used = $derived(tagsInUse(artifacts ?? []));
+  const known = $derived([...used, ...(all ?? [])]);
+  const url = (next: string[]) => `${location.pathname}${withTags(location.search, refsForUrl(next, known))}${location.hash}`;
+  const setSel = (next: string[]) => { sel = next; history.pushState(history.state, "", url(next)); };
+  const onTag = (t: TagRef) => { if (!holds(sel, t)) setSel([...sel, t.id]); document.querySelector(".tagbar")?.scrollIntoView?.({ block: "nearest" }); };
+  const inUse = $derived(barTags(used, sel, all));
+  const loadAll = () => { if (sel.length) void fetch("/api/tags").then(r => (r.ok ? r.json() : null)).then((b: { tags: TagRef[] } | null) => { if (b && !destroyed) all = b.tags; }, () => {}); };
+  $effect(() => { if (sel.length && all === null && artifacts) loadAll(); });
+  // The filter in its canonical form, and the address naming it, in place.
+  $effect(() => {
+    if (!artifacts) return;
+    const next = canonical(sel, known, all);
+    if (!same(next, sel)) sel = next;
+    const u = url(next);
+    if (u !== `${location.pathname}${location.search}${location.hash}`) history.replaceState(history.state, "", u);
+  });
   let unPeople: (() => void) | undefined;
   let Q = $state<typeof import("../q") | null>(null);
   let Page = $state<typeof import("../q/InboxPage.svelte").default | null>(null);
@@ -110,7 +128,7 @@
         if (destroyed) return;
         const f = new m.WorkingFeed();
         f.seed(artifacts ?? []);
-        sync = new m.CardSync({ list: () => artifacts, att: () => att, setList: l => { artifacts = l; }, setAtt: t => { att = t; } }, f);
+        sync = new m.CardSync({ list: () => artifacts, att: () => att, setList: l => { artifacts = l; }, setAtt: t => { att = t; }, tags: loadAll }, f);
         sync.start();
         feed = f; gw = m;
         void loadQ(m);
@@ -141,7 +159,7 @@
   <ThemeSwitch />
 </header>
 <main class="gal">
-  {#if inbox}{#if owner && Page}<Page />{:else if owner === false}<p class="empty">This browser has no inbox: open the owner's at http://localhost:{location.port}/inbox on the computer Clax runs on.</p>{/if}{:else if !people && !tagsAt}
+  {#if inbox}{#if owner && Page}<Page stream={lm?.pageStream()} />{:else if owner === false}<p class="empty">This browser has no inbox: open the owner's at http://localhost:{location.port}/inbox on the computer Clax runs on.</p>{/if}{:else if !people && !tagsAt}
   {#if Summary}<Summary />{/if}
   {#if error}<p class="empty">Could not load artifacts: {error}</p>{/if}
   {#if artifacts && artifacts.length === 0}
@@ -149,7 +167,7 @@
   {/if}
   {#if artifacts?.length && inUse.length}
     <div class="tagbar" role="group" aria-label="Filter by tags">Tags
-      {#each inUse as t (t.id)}<button type="button" class="tag" data-c={t.colour} aria-pressed={holds(sel, t)} aria-label={`Filter by tag ${t.name}`} onclick={() => setSel(toggle(sel, t.name))}>{t.name}</button>{/each}
+      {#each inUse as t (t.id)}<button type="button" class="tag" data-c={t.colour} aria-pressed={holds(sel, t)} aria-label={`Filter by tag ${t.name}`} onclick={() => setSel(toggle(sel, t))}>{t.name}</button>{/each}
       {#if sel.length}<button type="button" class="ghost tb-x" onclick={() => setSel([])}>Clear</button>{/if}
       <a class="tb-m" href="/tags">{token ? "Manage tags" : "All tags"}</a>
     </div>
