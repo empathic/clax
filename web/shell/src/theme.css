@@ -202,19 +202,25 @@ code { font: 12.5px var(--mono); background: var(--hover); border: 1px solid var
 @media (min-width: 701px) { .ttl { min-width: min(200px, 20vw); } }
 .ttl h1 { flex: 0 0 100%; margin: 0; font-size: 15px; line-height: 1.25; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
 .ttl .by { flex: 0 1 auto; min-width: 0; font-size: 12px; color: var(--muted); white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
-/* The artifact's tags beside its by-line (alone under the title on a phone),
-   clipped to one line, then Edit tags for a viewer who may set them. */
+/* The artifact's tags beside its by-line (alone under the title on a phone):
+   the chips clipped to one line, "+N" for those that do not fit (at phone
+   width "N tags" in their place), then Edit tags for a viewer who may set
+   them (view/title-tags.ts). */
 .ttags { flex: 0 1 auto; min-width: 0; display: flex; align-items: center; gap: 4px; }
 .ttags .tchips { display: flex; gap: 4px; min-width: 0; overflow: hidden; }
 .ttags .tag { flex: none; max-width: 160px; padding: 0 6px; font-size: 11.5px; line-height: 16px; }
-.topbar .ttags .tedit { flex: none; min-height: 0; padding: 0 2px; font: 500 12px/18px var(--font); color: var(--muted); }
-.topbar .ttags .tedit:not(:disabled):hover { background: none; color: var(--fg); text-decoration: underline; }
-.ttags .tn-n { display: none; font-size: 12px; color: var(--muted); white-space: nowrap; }
+.ttags .tag[hidden], .ttags .tmore:not([data-over]), .ttags .tm-p, .ttags .te-s { display: none; }
+.topbar .ttags .tmore, .topbar .ttags .tedit { flex: none; min-height: 0; padding: 0 2px; font: 500 12px/18px var(--font); color: var(--muted); white-space: nowrap; }
+.topbar .ttags .tmore:not(:disabled):hover, .topbar .ttags .tedit:not(:disabled):hover { background: none; color: var(--fg); text-decoration: underline; }
 @media (max-width: 700px) {
-  .ttags .tchips, .ttags .tedit:has(.tn-n) .tn-w { display: none; }
-  .ttags .tn-n { display: inline; }
-  .topbar .ttags .tedit { text-decoration: underline; }
+  .ttags .tchips, .ttags .tm-d, .ttags .te-l:has(+ .te-s) { display: none; }
+  .ttags .tmore:not([data-over]), .ttags .tm-p, .ttags .te-s { display: inline; }
+  .topbar .ttags .tmore, .topbar .ttags .tedit { text-decoration: underline; }
 }
+/* The popovers under a button: the tag editor and the list of an artifact's tags (ui/tag-editor.ts). */
+.tag-pop { position: fixed; z-index: 30; padding: 10px; background: var(--raised); color: var(--fg); border: 1px solid var(--border-hover); border-radius: var(--radius); box-shadow: var(--elev-lg); font-size: 13px; }
+.tag-pop a:not(.tag) { color: var(--muted); text-decoration: underline; font-size: 12.5px; }
+.tag-pop .tlist { display: flex; flex-wrap: wrap; gap: 6px; }
 .ttl .by a { color: inherit; }
 .ttl .by a:hover { text-decoration: underline; }
 .topbar button:not(.primary) { background: none; border-color: transparent; }

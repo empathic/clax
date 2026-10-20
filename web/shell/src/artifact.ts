@@ -7,7 +7,7 @@ import type { Boot } from "./view/boot";
 import { FrameHost } from "./view/frame-host";
 import { setBy } from "./view/publisher";
 import { type Skeleton, skeleton } from "./view/skeleton";
-import { setTitleTags, tagsOf } from "./view/title-tags";
+import { fitTitleTags, reachesGallery, setTitleTags, tagsOf } from "./view/title-tags";
 
 export { MOVE_TO_CLICK, MOVE_TO_PICK, pageWait } from "./view/artifact-controller";
 export type { ArtifactProps } from "./view/artifact-controller";
@@ -76,16 +76,32 @@ export function mountArtifactView(root: HTMLElement, props: ArtifactProps, opts:
     // With a bootstrap it starts at once: the view is ready before the page
     // follows it, so a served frame stays in the page and is adopted.
     if (b) begin();
-    // The tags beside the by-line, once the artifact is known; Edit tags
-    // loads the editor's chunk on its first press.
-    const editTags = (button: HTMLButtonElement) => void import("./ui/tag-editor").then(m => m.toggleTagEditor(button, ctl), () => {});
+    // The tags beside the by-line, once the artifact is known: links once
+    // the gallery answers this viewer (`reach`), asked when it first has
+    // tags; their buttons load the popovers' chunk on the first press, and
+    // the chips fit their line again as the bar's width changes.
+    const ttl = sk.title.parentElement!;
+    let reach: boolean | null = null;
+    const pops = () => import("./ui/tag-editor");
+    const editTags = (button: HTMLButtonElement) => void pops().then(m => m.toggleTagEditor(button, ctl), () => {});
+    const listTags = (button: HTMLButtonElement) => void pops().then(m => m.toggleTagList(button, ctl, !!reach), () => {});
+    const tagsFollow = (s: ViewState) => {
+      const t = tagsOf(s);
+      const shown = !s.error && !!s.data && !s.deleted;
+      if (shown && t.tags.length && reach === null) {
+        reach = false;
+        void reachesGallery().then(ok => { reach = ok; if (ok) tagsFollow(ctl.state.get()); });
+      }
+      setTitleTags(ttl, shown ? t.tags : [], shown && t.may, !!reach, listTags, editTags);
+    };
+    const refit = () => { const box = ttl.querySelector<HTMLElement>(":scope > .ttags"); if (box) fitTitleTags(box); };
+    const resized = typeof ResizeObserver === "function" ? new ResizeObserver(refit) : null;
+    resized?.observe(ttl);
     // Subscribed before a start without a bootstrap, so the viewer is back in
     // the page before the controller puts the frame in it.
     const offPage = ctl.state.subscribe(s => {
       pageFollows(sk, s, status);
-      const t = tagsOf(s);
-      const shown = !s.error && !!s.data && !s.deleted;
-      setTitleTags(sk.title.parentElement!, shown ? t.tags : [], shown && t.may, editTags);
+      tagsFollow(s);
     });
     // Without one, it starts once the loading page has painted, when the
     // view's effects started before.
@@ -97,6 +113,7 @@ export function mountArtifactView(root: HTMLElement, props: ArtifactProps, opts:
         cancelStart();
         for (const off of offs) off();
         offPage();
+        resized?.disconnect();
         ctl.dispose();
         ctl.frame?.remove();
         sk.page.remove();

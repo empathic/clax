@@ -67,8 +67,4 @@
   .tl .tag { min-width: 0; }
   .tpick :global(.tn), .te { margin: 0; font-size: 12.5px; color: var(--muted); }
   .te { color: var(--danger); }
-  /* The popovers that hold it: the artifact's tag editor (ui/tag-editor.ts) and the inbox's Tag filter. */
-  :global(.tag-pop) { position: fixed; z-index: 30; width: 280px; padding: 10px; background: var(--raised); color: var(--fg); border: 1px solid var(--border-hover); border-radius: var(--radius); box-shadow: var(--elev-lg); font-size: 13px; }
-  :global(.tag-pop a) { color: var(--muted); text-decoration: underline; font-size: 12.5px; }
-  :global(.tag-pop a:hover) { color: var(--fg); }
 </style>

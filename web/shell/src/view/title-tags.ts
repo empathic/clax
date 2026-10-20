@@ -1,8 +1,12 @@
 // The artifact's tags beside its by-line (docs/contract.md "Tags"): each a
-// link to the gallery filtered by it, then, for a viewer who may set them
-// (`may_tag`), Edit tags (Add tags while it carries none), which opens the
-// tag editor (`ui/tag-editor.ts`, its own chunk). Plain DOM, as the by-line
-// is, so the artifact entry carries no component for it.
+// link to the gallery filtered by it where the viewer can reach the gallery
+// (`reach`; a hosted Clax's guest is sent to sign in), else a plain chip.
+// The chips are clipped to one line: "+N" opens the whole list
+// (`ui/tag-editor.ts` `toggleTagList`), and at phone width, where the chips
+// give way, "N tags" does, for every viewer. Then, for a viewer who may set
+// them (`may_tag`), Edit tags (Add tags while it carries none), which opens
+// the tag editor (`ui/tag-editor.ts`, its own chunk). Plain DOM, as the
+// by-line is, so the artifact entry carries no component for it.
 import type { TagRef } from "../api";
 import type { ViewState } from "./artifact-controller";
 
@@ -10,59 +14,89 @@ import type { ViewState } from "./artifact-controller";
  * refetched (`tags`), else as loaded. */
 export const tagsOf = (s: ViewState): { tags: TagRef[]; may: boolean } => s.tags ?? { tags: s.data?.artifact.tags ?? [], may: !!s.data?.artifact.may_tag };
 
+/** Tag `t` as a chip: a link to the gallery filtered by it when `reach`, else a span. */
+export function tagChip(doc: Document, t: TagRef, reach: boolean): HTMLElement {
+  const c = doc.createElement(reach ? "a" : "span");
+  c.className = "tag";
+  c.dataset.c = t.colour;
+  c.textContent = t.name;
+  if (c instanceof HTMLAnchorElement) {
+    c.href = `/?tag=${encodeURIComponent(t.name)}`;
+    c.title = `The gallery, filtered by tag ${t.name}`;
+  }
+  return c;
+}
+
+/** Whether this viewer can open the gallery: `/` answers it, rather than sending it to sign in. */
+export const reachesGallery = (): Promise<boolean> => fetch("/", { redirect: "manual" }).then(r => r.ok, () => false);
+
+const button = (doc: Document, cls: string, on: (b: HTMLButtonElement) => void): HTMLButtonElement => {
+  const b = doc.createElement("button");
+  b.type = "button";
+  b.className = cls;
+  b.setAttribute("aria-haspopup", "dialog");
+  b.setAttribute("aria-expanded", "false");
+  b.onclick = () => on(b);
+  return b;
+};
+const span = (doc: Document, cls: string, text: string): HTMLSpanElement => {
+  const s = doc.createElement("span");
+  s.className = cls;
+  s.textContent = text;
+  return s;
+};
+
+/** Hides the chips of `box` that do not fit on its line, last first, and
+ * says how many in its "+N" (`.tmore[data-over]`). A no-op where the chips
+ * are not laid out (at phone width, or with no layout at all). */
+export function fitTitleTags(box: HTMLElement): void {
+  const chips = box.querySelector<HTMLElement>(":scope > .tchips");
+  const more = box.querySelector<HTMLElement>(":scope > .tmore");
+  if (!chips || !more) return;
+  const all = [...chips.children] as HTMLElement[];
+  for (const c of all) c.hidden = false;
+  more.removeAttribute("data-over");
+  let over = 0;
+  for (let i = all.length - 1; i > 0 && chips.scrollWidth > chips.clientWidth + 0.5; i--) {
+    all[i].hidden = true;
+    over++;
+    more.dataset.over = String(over);
+    more.querySelector(".tm-d")!.textContent = `+${over}`;
+  }
+}
+
 /** Keeps `ttl`'s tags (`.ttags`, made when first needed) showing `tags`,
- * with the edit button when `may`; `edit` gets the button when pressed.
- * Touches the DOM only when they change. */
-export function setTitleTags(ttl: HTMLElement, tags: readonly TagRef[], may: boolean, edit: (b: HTMLButtonElement) => void): void {
+ * linked when `reach`, with the edit button when `may`; `list` gets the
+ * "+N" or "N tags" button when pressed, and `edit` the edit button. Touches
+ * the DOM only when they change. */
+export function setTitleTags(ttl: HTMLElement, tags: readonly TagRef[], may: boolean, reach: boolean, list: (b: HTMLButtonElement) => void, edit: (b: HTMLButtonElement) => void): void {
   let box = ttl.querySelector<HTMLElement>(":scope > .ttags");
   if (!tags.length && !may) { box?.remove(); return; }
-  const key = JSON.stringify([tags, may]);
+  const key = JSON.stringify([tags, may, reach]);
   if (box?.dataset.k === key) return;
   const doc = ttl.ownerDocument;
   if (!box) {
-    box = doc.createElement("span");
-    box.className = "ttags";
-    box.append(doc.createElement("span"));
-    box.firstElementChild!.className = "tchips";
+    box = span(doc, "ttags", "");
+    box.append(span(doc, "tchips", ""));
     ttl.append(box);
   }
   box.dataset.k = key;
-  box.firstElementChild!.replaceChildren(...tags.map(t => {
-    const a = doc.createElement("a");
-    a.className = "tag";
-    a.dataset.c = t.colour;
-    a.href = `/?tag=${encodeURIComponent(t.name)}`;
-    a.title = `The gallery, filtered by tag ${t.name}`;
-    a.textContent = t.name;
-    return a;
-  }));
-  // At phone width the chips give way to how many there are (theme.css
-  // `.tn-n`): in the edit button for a viewer who may set them.
-  const many = tags.length ? `${tags.length} tag${tags.length === 1 ? "" : "s"}` : "";
-  const label = (what: string) => {
-    const s = doc.createElement("span");
-    s.className = "tn-w";
-    s.textContent = what;
-    const n = doc.createElement("span");
-    n.className = "tn-n";
-    n.textContent = many;
-    return many ? [s, n] : [s];
-  };
-  box.querySelector(":scope > .tn-n")?.remove();
+  box.firstElementChild!.replaceChildren(...tags.map(t => tagChip(doc, t, reach)));
+  let more = box.querySelector<HTMLButtonElement>(":scope > .tmore");
+  if (tags.length) {
+    if (!more) {
+      more = button(doc, "tmore", list);
+      box.firstElementChild!.after(more);
+    }
+    const many = `${tags.length} tag${tags.length === 1 ? "" : "s"}`;
+    more.setAttribute("aria-label", `All ${many}`);
+    more.title = `All ${many}`;
+    more.replaceChildren(span(doc, "tm-d", ""), span(doc, "tm-p", many));
+  } else more?.remove();
   let b = box.querySelector<HTMLButtonElement>(":scope > .tedit");
-  if (!may) {
-    b?.remove();
-    box.append(...label("").slice(1));
-    return;
-  }
-  if (!b) {
-    const n = (b = doc.createElement("button"));
-    n.type = "button";
-    n.className = "tedit";
-    n.setAttribute("aria-haspopup", "dialog");
-    n.setAttribute("aria-expanded", "false");
-    n.onclick = () => edit(n);
-    box.append(n);
-  }
-  b.replaceChildren(...label(tags.length ? "Edit tags" : "Add tags"));
+  if (may) {
+    b ??= box.appendChild(button(doc, "tedit", edit));
+    b.replaceChildren(...(tags.length ? [span(doc, "te-l", "Edit tags"), span(doc, "te-s", "Edit")] : [span(doc, "te-l", "Add tags")]));
+  } else b?.remove();
+  fitTitleTags(box);
 }
