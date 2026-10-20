@@ -13,9 +13,11 @@ import '../agent/backend.dart' show AgentError, AgentErrorKind;
 import '../clax/api.dart' show ClaxApiError;
 import '../clax/sse.dart' show SseMessage;
 import '../clax/transport.dart';
+import '../core/core_transport.dart';
 import 'effect.dart';
 import 'model.dart';
 import 'msg.dart';
+import 'worker_main.dart' show WorkerContext, WorkerRunner;
 
 /// The agent's turns and tools (lib/agent), one at a time.
 abstract interface class AgentPort {
@@ -51,13 +53,26 @@ abstract interface class RenderPort {
 /// What the worker tells the UI isolate.
 abstract interface class UiPort {
   /// A job ended or stopped while no view shows it.
-  void notice(NoticeKind kind, JobId jobId, String title);
+  void notice(Notice notice);
 
   /// Whether the app is to keep running for the queue.
-  void keepAlive(bool on);
+  void keepAlive(KeepAlive keepAlive);
 
   /// What the UI shows of the queue now.
-  void publishState(QueueState state);
+  void publishState(PublishState state);
+}
+
+/// [UiPort] over a worker's outlet to the UI isolate: each effect is sent
+/// as itself.
+final class _ToUi implements UiPort {
+  const _ToUi(this._toUi);
+  final void Function(Object message) _toUi;
+  @override
+  void notice(Notice notice) => _toUi(notice);
+  @override
+  void keepAlive(KeepAlive keepAlive) => _toUi(keepAlive);
+  @override
+  void publishState(PublishState state) => _toUi(state);
 }
 
 /// Runs the queue's effects on the core through [core] (the worker's
@@ -86,7 +101,7 @@ abstract interface class UiPort {
 /// Work (a turn, a tool call, a render) is dropped by [cancelJob]: what it
 /// answers afterwards is never sent. An [Error] the agent throws is not
 /// caught: a bug ends the worker.
-class EffectRunner {
+class EffectRunner implements WorkerRunner {
   EffectRunner({
     required this.core,
     required this.agent,
@@ -99,6 +114,26 @@ class EffectRunner {
     this.requestTimeout = const Duration(seconds: 35),
     this.stepTimeout = const Duration(seconds: 125),
   });
+
+  /// The runner of the worker [context] belongs to, subscribed to the
+  /// core's events at once: its calls go to the worker's core over a
+  /// [CoreTransport], its answers to [WorkerContext.send], and `Notice`,
+  /// `KeepAlive` and `PublishState` to [WorkerContext.toUi] as themselves.
+  factory EffectRunner.forWorker(
+    WorkerContext context, {
+    required AgentPort agent,
+    required RenderPort render,
+    required Future<bool> Function() probeClaude,
+    required Future<String> Function() session,
+  }) => EffectRunner(
+    core: CoreTransport(context.core),
+    agent: agent,
+    render: render,
+    ui: _ToUi(context.toUi),
+    probeClaude: probeClaude,
+    session: session,
+    send: context.send,
+  )..start();
 
   final ClaxTransport core;
   final AgentPort agent;
@@ -151,6 +186,7 @@ class EffectRunner {
   }
 
   /// Runs [e]; its answer, if any, is [send]t when it comes.
+  @override
   void run(Effect e) {
     if (_closed) return;
     switch (e) {
@@ -204,12 +240,12 @@ class EffectRunner {
         cancelJob(jobId);
       case ProbeClaude():
         unawaited(_probe(e));
-      case Notice(:final kind, :final jobId, :final title):
-        ui.notice(kind, jobId, title);
-      case KeepAlive(:final on):
-        ui.keepAlive(on);
-      case PublishState(:final state):
-        ui.publishState(state);
+      case Notice():
+        ui.notice(e);
+      case KeepAlive():
+        ui.keepAlive(e);
+      case PublishState():
+        ui.publishState(e);
     }
   }
 

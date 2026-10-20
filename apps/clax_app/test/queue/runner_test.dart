@@ -1,5 +1,6 @@
 import 'dart:async';
 import 'dart:convert';
+import 'dart:isolate';
 
 import 'package:clax_app/agent/backend.dart';
 import 'package:clax_app/core/core_transport.dart';
@@ -8,6 +9,7 @@ import 'package:clax_app/queue/effect.dart';
 import 'package:clax_app/queue/model.dart';
 import 'package:clax_app/queue/msg.dart';
 import 'package:clax_app/queue/runner.dart';
+import 'package:clax_app/queue/worker_main.dart';
 import 'package:flutter_test/flutter_test.dart' hide Retry;
 
 import '../support/fake_core.dart';
@@ -578,12 +580,46 @@ void main() {
       ..run(const Notice(1, NoticeKind.made, 'j', 'Timer'))
       ..run(const KeepAlive(2, true))
       ..run(const PublishState(3, state));
-    expect(ui.said, [
-      ('notice', NoticeKind.made, 'j', 'Timer'),
-      ('keepAlive', true),
-      ('state', state),
+    expect(ui.said, const [
+      Notice(1, NoticeKind.made, 'j', 'Timer'),
+      KeepAlive(2, true),
+      PublishState(3, state),
     ]);
     expect(sent, isEmpty);
+  });
+
+  test("a worker's runner subscribes, claims and speaks to the UI through its context", () async {
+    final port = ReceivePort();
+    final out = <Object>[];
+    final context = WorkerContext(
+      WorkerStart(
+        toUi: port.sendPort,
+        coreHandle: 1,
+        supportDir: '',
+        settings: const {},
+        apiKey: null,
+        runner: _noRunner,
+        attach: (_) => core,
+      ),
+      sent.add,
+      out.add,
+    );
+    final WorkerRunner worker = EffectRunner.forWorker(
+      context,
+      agent: agent,
+      render: renders,
+      probeClaude: () async => true,
+      session: () async => 's1',
+    );
+    await pumpEventQueue();
+    worker.run(const ClaimOwner(0));
+    worker.run(const KeepAlive(1, true));
+    await pumpEventQueue();
+    expect(body(to('POST', '/api/jobs/owner').single)['stream'], 'fake-1');
+    expect(only<OwnerClaimed>().token, jobs.ownerToken);
+    expect(out, const [KeepAlive(1, true)]);
+    await (worker as EffectRunner).close();
+    port.close();
   });
 
   test('nothing is sent after close', () async {
@@ -649,17 +685,16 @@ class _Render implements RenderPort {
 }
 
 class _Ui implements UiPort {
-  final List<Object> said = [];
+  final List<Effect> said = [];
 
   @override
-  void notice(NoticeKind kind, JobId jobId, String title) =>
-      said.add(('notice', kind, jobId, title));
+  void notice(Notice notice) => said.add(notice);
 
   @override
-  void keepAlive(bool on) => said.add(('keepAlive', on));
+  void keepAlive(KeepAlive keepAlive) => said.add(keepAlive);
 
   @override
-  void publishState(QueueState state) => said.add(('state', state));
+  void publishState(PublishState state) => said.add(state);
 }
 
 /// The transport's deadline timers, which fire only when a test fires
@@ -693,3 +728,5 @@ class _HeldTimer implements Timer {
   @override
   int get tick => 0;
 }
+
+WorkerRunner _noRunner(WorkerContext _) => throw UnimplementedError();
