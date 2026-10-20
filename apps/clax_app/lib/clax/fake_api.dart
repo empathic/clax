@@ -53,7 +53,8 @@ class FakeCall {
 /// waits for an answer, a skip, a withdrawal or [releaseQuestionWaits];
 /// an answer no wait took is a late answer on the next [pollFeedback].
 /// Each question makes an inbox item; [pushInbox] adds others. [stream]s
-/// get the `inbox` and `questions` events of their subscribed topics, and
+/// get the `inbox` and `questions` events of their subscribed topics, a
+/// version or a deletion on `gallery` and its app's topic ([emit]), and
 /// [emitStream]'s.
 class FakeClaxApi implements ClaxApi {
   FakeClaxApi({this.clock, Timer Function(Duration, void Function())? timer})
@@ -72,7 +73,6 @@ class FakeClaxApi implements ClaxApi {
   final Queue<List<FeedbackItem>> _feedback = Queue();
   final List<Completer<FeedbackBatch>> _polls = [];
   final Map<String, List<Object>> _failures = {};
-  final StreamController<ClaxEvent> _events = StreamController.broadcast();
   int _ids = 0;
   int _docVersions = 0;
   final Set<(String, String)> _grants = {};
@@ -243,19 +243,19 @@ class FakeClaxApi implements ClaxApi {
     _polls.clear();
   }
 
-  /// Sends [e] to [events] listeners whose filters keep it. A `version` or
-  /// `artifact_deleted` naming an `artifact_id` also goes to every [stream]
-  /// holding `gallery`, as the daemon sends it on both.
-  void emit(ClaxEvent e) {
-    _events.add(e);
-    if (const {'version', 'artifact_deleted'}.contains(e.type) &&
-        e.data['artifact_id'] is String) {
+  /// Sends event [type] with [data] naming an `artifact_id` to every
+  /// [stream] holding that app's topic (`artifact:<id>`), and a `version`
+  /// or `artifact_deleted` to those holding `gallery` too, as the daemon
+  /// sends them.
+  void emit(String type, Map<String, Object?> data) {
+    final aid = data['artifact_id'];
+    if (aid is! String) return;
+    for (final topic in [
+      'artifact:$aid',
+      if (const {'version', 'artifact_deleted'}.contains(type)) 'gallery',
+    ]) {
       emitStream(
-        StreamEvent(
-          topic: 'gallery',
-          type: e.type,
-          data: {...e.data, 'topic': 'gallery'}..remove('type'),
-        ),
+        StreamEvent(topic: topic, type: type, data: {...data, 'topic': topic}),
       );
     }
   }
@@ -483,12 +483,7 @@ class FakeClaxApi implements ClaxApi {
     _call('deleteArtifact', {'aid': aid});
     if (_artifacts.remove(aid) == null) throw _notFound();
     working.remove(aid);
-    emit(
-      ClaxEvent(
-        type: 'artifact_deleted',
-        data: {'type': 'artifact_deleted', 'artifact_id': aid},
-      ),
-    );
+    emit('artifact_deleted', {'artifact_id': aid});
   }
 
   @override
@@ -824,34 +819,6 @@ class FakeClaxApi implements ClaxApi {
             ],
           ),
     ];
-  }
-
-  @override
-  Stream<ClaxEvent> events({List<String>? artifacts, List<String>? types}) {
-    _call('events', {'artifacts': artifacts, 'types': types});
-    // Each listener's stream opens with `ready`, as the daemon's does, and
-    // `ready` and `resync` pass every filter.
-    late StreamController<ClaxEvent> out;
-    StreamSubscription<ClaxEvent>? sub;
-    out = StreamController<ClaxEvent>(
-      onListen: () {
-        out.add(const ClaxEvent(type: 'ready', data: {'resumed': false}));
-        sub = _events.stream
-            .where(
-              (e) =>
-                  e.type == 'ready' ||
-                  e.type == 'resync' ||
-                  ((artifacts == null ||
-                          artifacts.contains(e.data['artifact_id'])) &&
-                      (types == null || types.contains(e.type))),
-            )
-            .listen(out.add);
-      },
-      onPause: () => sub?.pause(),
-      onResume: () => sub?.resume(),
-      onCancel: () => sub?.cancel(),
-    );
-    return out.stream;
   }
 
   // --- drafts ---
@@ -1907,18 +1874,12 @@ class FakeClaxApi implements ClaxApi {
       );
     }
     if (sessionId != null) working.remove(a.id);
-    emit(
-      ClaxEvent(
-        type: 'version',
-        data: {
-          'type': 'version',
-          'artifact_id': a.id,
-          'n': v.n,
-          'by_page': false,
-          'title': a.title,
-        },
-      ),
-    );
+    emit('version', {
+      'artifact_id': a.id,
+      'n': v.n,
+      'by_page': false,
+      'title': a.title,
+    });
     return PublishResult(
       artifact: a.summary(_now()),
       version: v,

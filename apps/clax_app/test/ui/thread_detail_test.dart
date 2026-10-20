@@ -703,14 +703,66 @@ void main() {
     final item = rig.api.sendComment(rig.aid, 'make it blue');
     await pumpDetail(tester, rig, item.threadId);
     await rig.api.replyAsAgent(rig.aid, item.threadId, 'On it.');
-    rig.api.emit(
-      ClaxEvent(
-        type: 'thread',
-        data: {'artifact_id': rig.aid, 'thread_id': item.threadId},
+    rig.api.emit('thread', {'artifact_id': rig.aid, 'thread_id': item.threadId});
+    await tester.pumpAndSettle();
+    expect(find.text('On it.'), findsOneWidget);
+  });
+
+  testWidgets("follows the app's topic from before its first read, and "
+      'reads again on a resync or a dropped topic', (tester) async {
+    final rig = await _seeded();
+    final item = rig.api.sendComment(rig.aid, 'make it blue');
+    rig.api.calls.clear();
+    await pumpDetail(tester, rig, item.threadId);
+    final names = rig.api.calls.map((c) => c.name).toList();
+    final subscribed = names.indexOf('streamSubscribe');
+    expect(subscribed, isNot(-1));
+    expect(rig.api.calls[subscribed].args['topics'], ['artifact:${rig.aid}']);
+    expect(subscribed, lessThan(names.indexOf('threads')), reason: 'subscribe, then read');
+
+    StreamEvent on(String topic, String type) =>
+        StreamEvent(topic: topic, type: type, data: {'topic': topic});
+    await rig.api.replyAsAgent(rig.aid, item.threadId, 'On it.');
+    rig.api.emitStream(on('artifact:another00000', 'comment'));
+    rig.api.emitStream(on('artifact:${rig.aid}', 'presence'));
+    await tester.pumpAndSettle();
+    expect(find.text('On it.'), findsNothing, reason: 'not its events');
+    rig.api.emitStream(on('artifact:${rig.aid}', 'resync'));
+    await tester.pumpAndSettle();
+    expect(find.text('On it.'), findsOneWidget);
+    await rig.api.replyAsAgent(rig.aid, item.threadId, 'Done.');
+    rig.api.emitStream(on('artifact:${rig.aid}', 'unsubscribed'));
+    await tester.pumpAndSettle();
+    expect(find.text('Done.'), findsOneWidget);
+  });
+
+  testWidgets('a stream it is given is followed and left open', (tester) async {
+    final rig = await _seeded();
+    final item = rig.api.sendComment(rig.aid, 'make it blue');
+    final stream = rig.api.stream();
+    await tester.pumpWidget(
+      MaterialApp(
+        home: ThreadDetail(
+          api: rig.api,
+          stream: stream,
+          aid: rig.aid,
+          tid: item.threadId,
+          voice: FakeVoice(),
+          autoDictate: false,
+          onPreview: (_) {},
+          onRetry: null,
+          now: () => _now,
+        ),
       ),
     );
     await tester.pumpAndSettle();
+    expect((stream as FakeClaxStream).topics, {'artifact:${rig.aid}'});
+    await rig.api.replyAsAgent(rig.aid, item.threadId, 'On it.');
+    rig.api.emit('comment', {'artifact_id': rig.aid, 'thread_id': item.threadId});
+    await tester.pumpAndSettle();
     expect(find.text('On it.'), findsOneWidget);
+    await tester.pumpWidget(const SizedBox());
+    await stream.subscribe(['gallery']);
   });
 
   group('the owner', () {
@@ -993,12 +1045,7 @@ void main() {
       );
       await rig.api.replyAsAgent(rig.aid, tid, 'Here it is.');
       final reply = rig.api.threadOf(rig.aid, tid).comments.last.id;
-      rig.api.emit(
-        ClaxEvent(
-          type: 'comment',
-          data: {'artifact_id': rig.aid, 'thread_id': tid},
-        ),
-      );
+      rig.api.emit('comment', {'artifact_id': rig.aid, 'thread_id': tid});
       await tester.pumpAndSettle();
       expect(glowOf(tester, reply).color!.a, greaterThan(0));
       await tester.pump(ThreadDetail.glowFor);
@@ -1017,6 +1064,8 @@ void main() {
       api.stale = true;
       await pumpFocus(tester, rig, tid, focus: id);
       expect(api.staleServed, isTrue, reason: 'the first read lacked it');
+      // The comment's event reads the thread again.
+      api.emit('comment', {'artifact_id': aid, 'thread_id': tid});
       await tester.pumpAndSettle();
       expect(glowOf(tester, id).color!.a, greaterThan(0));
       expect(glowOf(tester, replies.last).color!.a, 0);

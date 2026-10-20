@@ -127,12 +127,6 @@ abstract interface class ClaxApi {
   /// an artifact without any is left out.
   Future<List<ArtifactThreads>> allThreads({bool includeResolved});
 
-  /// `GET /api/events`, narrowed to [artifacts] and [types] when given. A
-  /// dropped connection is opened again with `Last-Event-ID`, so missed
-  /// events arrive first; `ready` (`{resumed}`) and `resync` come through
-  /// for the listener to refetch on. Cancelling the subscription closes it.
-  Stream<ClaxEvent> events({List<String>? artifacts, List<String>? types});
-
   // --- drafts (all token only: no session, so no watch and no feedback) ---
 
   /// `POST /api/drafts`: a hidden draft artifact of the app [of] (null for

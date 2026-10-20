@@ -86,9 +86,8 @@ class CoreTransport implements ClaxTransport {
     return out.future;
   }
 
-  /// The messages of the core's event stream, the only one it serves:
-  /// [path] must be `/api/stream`, with no [query], or the stream ends at
-  /// once with 404 `not_in_app`, as the core answers such a call.
+  /// The messages of the core's event stream, a core subscription to its
+  /// `GET /api/stream`.
   ///
   /// The hub's `ready` is passed on; the core's closing `end` is not.
   /// A stream the core ended by itself (`stream_ended`, or `internal` when
@@ -104,20 +103,7 @@ class CoreTransport implements ClaxTransport {
   /// reopening the core is its host's work, not this stream's. Cancelling
   /// ends the subscription.
   @override
-  Stream<SseMessage> sse(
-    String path, {
-    Map<String, String>? query,
-    String? Function()? resumeId,
-  }) {
-    if (path != '/api/stream' || (query != null && query.isNotEmpty)) {
-      return Stream.error(
-        ClaxApiError(
-          status: 404,
-          code: 'not_in_app',
-          message: '$path is not served as a stream in the app',
-        ),
-      );
-    }
+  Stream<SseMessage> sse({String? Function()? resumeId}) {
     late final StreamController<SseMessage> out;
     var cancelled = false;
     CoreSubscription? current;

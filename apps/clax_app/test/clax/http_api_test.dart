@@ -209,11 +209,8 @@ class _ClosingTransport implements ClaxTransport {
   }) => throw UnimplementedError();
 
   @override
-  Stream<SseMessage> sse(
-    String path, {
-    Map<String, String>? query,
-    String? Function()? resumeId,
-  }) => throw UnimplementedError();
+  Stream<SseMessage> sse({String? Function()? resumeId}) =>
+      throw UnimplementedError();
 }
 
 void main() {

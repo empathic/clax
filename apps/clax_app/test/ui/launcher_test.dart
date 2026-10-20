@@ -124,7 +124,7 @@ void main() {
     await pumpLauncher(tester, api);
     final aid = api.seedArtifact('Fresh app', _page);
     expect(_tile('Fresh app'), findsNothing);
-    api.emit(ClaxEvent(type: 'version', data: {'artifact_id': aid, 'n': 1}));
+    api.emit('version', {'artifact_id': aid, 'n': 1});
     await tester.pumpAndSettle();
     expect(_tile('Fresh app'), findsOneWidget);
     expect(api.callNames, isNot(contains('events')));
@@ -145,7 +145,7 @@ void main() {
     final aid = api.seedArtifact('Doomed', _page);
     await pumpLauncher(tester, api);
     expect(find.text('Doomed'), findsOneWidget);
-    api.emit(ClaxEvent(type: 'artifact_deleted', data: {'artifact_id': aid}));
+    api.emit('artifact_deleted', {'artifact_id': aid});
     await tester.pumpAndSettle();
     expect(find.text('Doomed'), findsNothing);
   });
@@ -443,7 +443,7 @@ void main() {
     ]);
     if (stopped) throw const AgentError.cancelled();
     final aid = api.seedArtifact(request, _page);
-    api.emit(ClaxEvent(type: 'version', data: {'artifact_id': aid, 'n': 1}));
+    api.emit('version', {'artifact_id': aid, 'n': 1});
     return aid;
   };
 
@@ -670,7 +670,7 @@ void main() {
       ),
     );
     await tester.pumpAndSettle();
-    api.emit(ClaxEvent(type: 'artifact_deleted', data: {'artifact_id': aid}));
+    api.emit('artifact_deleted', {'artifact_id': aid});
     await tester.pumpAndSettle();
     expect(find.text('Runs'), findsNothing);
     await tester.tap(find.byTooltip('Inbox'));
@@ -1259,7 +1259,7 @@ void main() {
       expect(store.kept[aid], (version: 1, svg: icon));
 
       api.seedVersion(aid, {..._page, 'icon.svg': other});
-      api.emit(ClaxEvent(type: 'version', data: {'artifact_id': aid, 'n': 2}));
+      api.emit('version', {'artifact_id': aid, 'n': 2});
       await tester.pumpAndSettle();
       expect(shown(tester, 'Runs'), contains('#08f'));
       expect(store.kept[aid]?.version, 2);
@@ -1310,7 +1310,7 @@ void main() {
       expect(shown(tester, 'Runs'), isNull);
       expect(api.callNames.where((n) => n == 'readFile'), hasLength(2));
       api.seedVersion(aid, {..._page, 'icon.svg': icon});
-      api.emit(ClaxEvent(type: 'version', data: {'artifact_id': aid, 'n': 2}));
+      api.emit('version', {'artifact_id': aid, 'n': 2});
       await tester.pumpAndSettle();
       expect(shown(tester, 'Runs'), contains('#f80'));
     });

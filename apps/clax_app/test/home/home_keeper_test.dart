@@ -34,7 +34,7 @@ class _Clock implements Clock {
 void main() {
   late _Clock clock;
   late HomeSettings settings;
-  late StreamController<ClaxEvent> events;
+  late StreamController<StreamEvent> events;
   late List<Object?> results;
   late int installs;
   late int changes;
@@ -43,7 +43,7 @@ void main() {
   setUp(() {
     clock = _Clock();
     settings = HomeSettings();
-    events = StreamController<ClaxEvent>.broadcast();
+    events = StreamController<StreamEvent>.broadcast();
     results = [];
     installs = 0;
     changes = 0;
@@ -124,15 +124,12 @@ void main() {
       },
     );
     events.add(
-      const ClaxEvent(
-        type: 'artifact_deleted',
-        data: {'artifact_id': 'other-app'},
-      ),
+      const StreamEvent(topic: 'gallery', type: 'artifact_deleted', data: {'artifact_id': 'other-app'}),
     );
     await pumpEventQueue();
     expect(seen, isEmpty, reason: 'another app deleted changes nothing');
     events.add(
-      const ClaxEvent(type: 'artifact_deleted', data: {'artifact_id': 'home-1'}),
+      const StreamEvent(topic: 'gallery', type: 'artifact_deleted', data: {'artifact_id': 'home-1'}),
     );
     await pumpEventQueue();
     expect(seen, [null, 'home-2']);

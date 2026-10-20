@@ -159,12 +159,7 @@ void main() {
     await tester.pumpWidget(AppRoot(services: services()));
     supervisor.set(Up(endpoint()));
     await settle(tester);
-    api.emit(
-      const ClaxEvent(
-        type: 'artifact_deleted',
-        data: {'artifact_id': 'a_gone'},
-      ),
-    );
+    api.emit('artifact_deleted', {'artifact_id': 'a_gone'});
     await settle(tester);
     await tester.runAsync(() async {
       expect(await store.entry('a_gone'), isNull);

@@ -406,7 +406,7 @@ void main() {
     test('parses the blocks and passes on ready and events', () async {
       final core = FakeCore();
       final messages = <SseMessage>[];
-      final sub = CoreTransport(core).sse('/api/stream').listen(messages.add);
+      final sub = CoreTransport(core).sse().listen(messages.add);
       await pumpEventQueue();
       core.push(ev('fake-1:1', 'version', {'n': 1}));
       core.push(': keep-alive\n\n');
@@ -423,7 +423,7 @@ void main() {
       final delays = <Duration>[];
       final messages = <SseMessage>[];
       final sub = CoreTransport(core, retryDelay: (d) async => delays.add(d))
-          .sse('/api/stream')
+          .sse()
           .listen(messages.add);
       await pumpEventQueue();
       core.push(ev('fake-1:4', 'version', {'n': 1}));
@@ -450,7 +450,7 @@ void main() {
       final core = _ResumeCore();
       final delays = <Duration>[];
       final sub = CoreTransport(core, retryDelay: (d) async => delays.add(d))
-          .sse('/api/stream')
+          .sse()
           .listen((_) {});
       await pumpEventQueue();
       core.push(ev('fake-1:4', 'version', {}));
@@ -466,7 +466,7 @@ void main() {
       final core = FakeCore();
       final wait = Completer<void>();
       final sub = CoreTransport(core, retryDelay: (_) => wait.future)
-          .sse('/api/stream')
+          .sse()
           .listen((_) {});
       await pumpEventQueue();
       core.end('stream_ended');
@@ -482,7 +482,7 @@ void main() {
     test('the resume point asked for wins over the last ID seen', () async {
       final core = _ResumeCore();
       final sub = CoreTransport(core, retryDelay: (_) async {})
-          .sse('/api/stream', resumeId: () => 's:9')
+          .sse(resumeId: () => 's:9')
           .listen((_) {});
       await pumpEventQueue();
       core.push(ev('fake-1:4', 'version', {}));
@@ -497,7 +497,7 @@ void main() {
         final core = FakeCore();
         final errors = <Object>[];
         var done = false;
-        CoreTransport(core, retryDelay: (_) async {}).sse('/api/stream').listen(
+        CoreTransport(core, retryDelay: (_) async {}).sse().listen(
           (_) {},
           onError: errors.add,
           onDone: () => done = true,
@@ -522,7 +522,7 @@ void main() {
         final core = FakeCore();
         final errors = <Object>[];
         var done = false;
-        CoreTransport(core, retryDelay: (_) async {}).sse('/api/stream').listen(
+        CoreTransport(core, retryDelay: (_) async {}).sse().listen(
           (_) {},
           onError: errors.add,
           onDone: () => done = true,
@@ -547,7 +547,7 @@ void main() {
       final errors = <Object>[];
       final messages = <SseMessage>[];
       final sub = CoreTransport(core, retryDelay: (d) async => delays.add(d))
-          .sse('/api/stream')
+          .sse()
           .listen(messages.add, onError: errors.add);
       await pumpEventQueue();
       core.end('stream_refused', status: 503);
@@ -559,19 +559,6 @@ void main() {
       expect(delays, const [Duration(milliseconds: 500), Duration(seconds: 1)]);
       expect(messages.map((m) => m.event), ['ready', 'ready', 'ready']);
       await sub.cancel();
-    });
-
-    test('a path other than /api/stream is not served', () async {
-      final core = FakeCore();
-      await expectLater(
-        CoreTransport(core).sse('/api/events', query: {'types': 'x'}).toList(),
-        throwsA(
-          isA<ClaxApiError>()
-              .having((e) => e.status, 'status', 404)
-              .having((e) => e.code, 'code', 'not_in_app'),
-        ),
-      );
-      expect(core.subscribers, 0);
     });
   });
 }

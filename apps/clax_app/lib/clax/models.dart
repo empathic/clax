@@ -684,19 +684,6 @@ class ArtifactThreads {
   final List<ThreadView> threads;
 }
 
-/// One event of `GET /api/events`: its name (`version`, `thread`, `ready`,
-/// `resync`, …), its SSE ID (`<epoch>-<n>`) and its JSON data. Data that is
-/// not a JSON object is carried as `{"raw": <text>}`.
-class ClaxEvent {
-  const ClaxEvent({required this.type, required this.data, this.id});
-
-  final String type;
-  final String? id;
-  final Json data;
-
-  @override
-  String toString() => 'ClaxEvent($type, $id, $data)';
-}
 
 /// A draft artifact: a hidden artifact the agent publishes its work in
 /// progress to and renders, never listed, watched or commented on.

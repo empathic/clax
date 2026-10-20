@@ -53,12 +53,7 @@ class _EventFirstApi extends FakeClaxApi {
   @override
   Future<PublishResult> createArtifact(PublishRequest r) async {
     final made = await super.createArtifact(r);
-    emit(
-      ClaxEvent(
-        type: 'version',
-        data: {'artifact_id': made.artifact.id, 'n': 1},
-      ),
-    );
+    emit('version', {'artifact_id': made.artifact.id, 'n': 1});
     await pumpEventQueue();
     return made;
   }
@@ -304,12 +299,12 @@ void main() {
     host.addListener(() => heard++);
     final told = <HomeEvent>[];
     host.events.listen(told.add);
-    api.emit(ClaxEvent(type: 'version', data: {'artifact_id': fresh, 'n': 1}));
+    api.emit('version', {'artifact_id': fresh, 'n': 1});
     await pumpEventQueue();
     expect(heard, 1);
     expect(host.state.apps.map((a) => a.id), [fresh, aid]);
     expect(told.map((e) => e.name), contains('apps'));
-    api.emit(ClaxEvent(type: 'artifact_deleted', data: {'artifact_id': aid}));
+    api.emit('artifact_deleted', {'artifact_id': aid});
     await pumpEventQueue();
     expect(host.state.apps.map((a) => a.id), [fresh]);
     expect([for (final a in told.last.data as List) (a as Map)['id']], [fresh]);
@@ -325,7 +320,7 @@ void main() {
     host.forget(aid);
     expect(host.state.apps.map((a) => a.id), [kept]);
     expect(heard, 1);
-    api.emit(ClaxEvent(type: 'artifact_deleted', data: {'artifact_id': aid}));
+    api.emit('artifact_deleted', {'artifact_id': aid});
     await pumpEventQueue();
     expect(host.state.apps.map((a) => a.id), [kept]);
     expect(heard, 1);
@@ -354,8 +349,8 @@ void main() {
 
     // The list was taken; a new app and a delete arrive before it answers.
     final fresh = gated.seedArtifact('Fresh', _page);
-    gated.emit(ClaxEvent(type: 'version', data: {'artifact_id': fresh, 'n': 1}));
-    gated.emit(ClaxEvent(type: 'artifact_deleted', data: {'artifact_id': gone}));
+    gated.emit('version', {'artifact_id': fresh, 'n': 1});
+    gated.emit('artifact_deleted', {'artifact_id': gone});
     await pumpEventQueue();
     expect(await early.call(gatedHome, 'apps', {}), isEmpty);
     expect(early.summaries, isNull);

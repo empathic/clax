@@ -1195,7 +1195,7 @@ class _AppRootState extends State<AppRoot> with WidgetsBindingObserver {
     ),
     null => null,
   };
-  StreamSubscription<ClaxEvent>? _lineageDeletions;
+  StreamSubscription<StreamEvent>? _lineageDeletions;
   StreamSubscription<OpenedBundle>? _intake;
 
   /// The opened bundles' sheets, one after another.
@@ -1221,15 +1221,15 @@ class _AppRootState extends State<AppRoot> with WidgetsBindingObserver {
     });
   }
 
-  /// Once the daemon is first up: forgets deleted apps' lineages, puts
-  /// back updates an exit interrupted (telling the person once each), says
-  /// when the lineage file was unreadable, and takes the files opened in
-  /// Clax.
+  /// Once the daemon is first up: forgets deleted apps' lineages (as
+  /// [_stream]'s `gallery` says), puts back updates an exit interrupted
+  /// (telling the person once each), says when the lineage file was
+  /// unreadable, and takes the files opened in Clax.
   void _startBundles() {
     if (_bundlesStarted) return;
     _bundlesStarted = true;
     _lineageDeletions = forgetDeleted(
-      _api.events(types: const ['artifact_deleted']),
+      _stream!.events,
       _lineages,
       snapshots: _snapshots,
     );
@@ -1277,9 +1277,7 @@ class _AppRootState extends State<AppRoot> with WidgetsBindingObserver {
     var updated = false;
     final keeper = _homeKeeper = HomeKeeper(
       settings: host.settings,
-      events: stream?.events.map(
-        (e) => ClaxEvent(type: e.type, data: e.data, id: e.id),
-      ),
+      events: stream?.events,
       install: () => ensureHomeApp(
         host.settings,
         installer,

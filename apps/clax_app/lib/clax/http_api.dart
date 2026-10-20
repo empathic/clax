@@ -425,29 +425,8 @@ class HttpClaxApi implements ClaxApi {
   }
 
   @override
-  Stream<ClaxEvent> events({List<String>? artifacts, List<String>? types}) {
-    final query = {
-      if (artifacts != null && artifacts.isNotEmpty)
-        'artifact': artifacts.join(','),
-      if (types != null && types.isNotEmpty) 'types': types.join(','),
-    };
-    return _sse(
-      '/api/events',
-      query,
-    ).map((m) => ClaxEvent(type: m.event, id: m.id, data: _eventData(m.data)));
-  }
-
-  /// The SSE messages of `GET` [path], resuming from [resumeId]'s answer
-  /// when given and not null.
-  Stream<SseMessage> _sse(
-    String path,
-    Map<String, String>? query, {
-    String? Function()? resumeId,
-  }) => transport.sse(path, query: query, resumeId: resumeId);
-
-  @override
   ClaxStream stream() => SseClaxStream(
-    connect: (resumeId) => _sse('/api/stream', null, resumeId: resumeId),
+    connect: (resumeId) => transport.sse(resumeId: resumeId),
     update: (id, body) => _json('POST', '/api/stream/${_seg(id)}', body: body),
     retryDelay: eventRetryDelay,
   );
@@ -799,14 +778,6 @@ class HttpClaxApi implements ClaxApi {
       body: {'all': true, 'filter': ?filter, 'upto': ?upto},
     );
     return _parse(() => (j['unread'] as num).toInt());
-  }
-
-  static Map<String, Object?> _eventData(String data) {
-    try {
-      final v = jsonDecode(data);
-      if (v is Map) return v.cast<String, Object?>();
-    } on FormatException catch (_) {}
-    return {'raw': data};
   }
 
   // --- plumbing ---

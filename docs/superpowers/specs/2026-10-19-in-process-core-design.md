@@ -731,7 +731,10 @@ The browser shell (no `clax-embed` meta) is unchanged: `fetch`, the SharedWorker
   its own; the handle is shared.
 - **`ClaxTransport`** (`lib/clax/transport.dart`) is what `HttpClaxApi`
   sends through: `send(method, path, {query, headers, body, timeout}) →
-  (status, bytes)` and `sse(path, {query, resumeId}) → Stream<SseMessage>`.
+  (status, bytes)`, `sse({resumeId}) → Stream<SseMessage>` (`GET
+  /api/stream`, the API's one event stream: every reader in the app
+  follows its topics, `/api/events` is not read) and `close()` (nothing
+  over the core, whose lifetime is its host's).
   `HttpClaxApi` keeps every method and path (`lib/clax/api.dart`'s ~50) and
   its `_send` and `_sse` become calls on the transport. `CoreTransport`
   (`lib/core/core_transport.dart`) sends `as: owner` frames (an agent call

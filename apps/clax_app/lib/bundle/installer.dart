@@ -432,13 +432,15 @@ Future<bool> Function(String aid) fromBundleOf(LineageStore store) =>
     };
 
 /// Forgets each deleted app's lineage entry, kept bundle and any document
-/// snapshot (§5.3) as `artifact_deleted` events arrive on [events].
-/// Cancel the subscription to stop.
-StreamSubscription<ClaxEvent> forgetDeleted(
-  Stream<ClaxEvent> events,
+/// snapshot (§5.3) as the `gallery` topic's `artifact_deleted` events
+/// arrive on [events]. Cancel the subscription to stop.
+StreamSubscription<StreamEvent> forgetDeleted(
+  Stream<StreamEvent> events,
   LineageStore store, {
   DocSnapshots? snapshots,
-}) => events.where((e) => e.type == 'artifact_deleted').listen((e) async {
+}) => events
+    .where((e) => e.topic == 'gallery' && e.type == 'artifact_deleted')
+    .listen((e) async {
   final aid = e.data['artifact_id'];
   if (aid is! String) return;
   await store.forget(aid);

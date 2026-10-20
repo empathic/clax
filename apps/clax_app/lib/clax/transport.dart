@@ -36,17 +36,14 @@ abstract interface class ClaxTransport {
     required Duration timeout,
   });
 
-  /// The SSE messages of `GET` [path], over as many connections as it
-  /// takes: each new one resumes from [resumeId]'s answer when given and
-  /// not null, else from the last event ID seen. Ends with [ClaxApiError]
+  /// The SSE messages of `GET /api/stream`, the API's one event stream,
+  /// over as many connections as it takes: each new one resumes from
+  /// [resumeId]'s answer when given and not null, else from the last event
+  /// ID seen. Ends with [ClaxApiError]
   /// when it cannot go on: code `stream_refused` with the status of a
   /// refusal that asking again cannot change (400, 403, 404), or status 0
   /// [ClaxApiError.unreachable] when no stream can come.
-  Stream<SseMessage> sse(
-    String path, {
-    Map<String, String>? query,
-    String? Function()? resumeId,
-  });
+  Stream<SseMessage> sse({String? Function()? resumeId});
 
   /// Lets go of what this transport holds, cutting the calls and streams
   /// in flight on it. Nothing goes through it afterwards.
@@ -150,14 +147,10 @@ class LoopbackTransport implements ClaxTransport {
   );
 
   @override
-  Stream<SseMessage> sse(
-    String path, {
-    Map<String, String>? query,
-    String? Function()? resumeId,
-  }) {
+  Stream<SseMessage> sse({String? Function()? resumeId}) {
     Future<HttpClientResponse> open(String? lastId, SseAborter abort) async {
       final ep = endpoint();
-      final req = await _client.openUrl('GET', _uri(ep, path, query));
+      final req = await _client.openUrl('GET', _uri(ep, '/api/stream', null));
       abort.onAbort = req.abort;
       req.headers
         ..set(HttpHeaders.authorizationHeader, 'Bearer ${ep.token}')

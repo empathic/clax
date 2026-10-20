@@ -264,13 +264,13 @@ void main() {
     final aid = (await me.installer.install(
       await me.installer.open((await makeBundle(lineage: lineageA)).bytes),
     )).aid;
-    final events = StreamController<ClaxEvent>();
+    final events = StreamController<StreamEvent>();
     final sub = forgetDeleted(events.stream, me.store, snapshots: me.snapshots);
     await me.snapshots.take(
       aid,
       const SnapshotMeta(base: 1, contentSha256: 'x', title: 't', backOn: 1),
     );
-    events.add(ClaxEvent(type: 'artifact_deleted', data: {'artifact_id': aid}));
+    events.add(StreamEvent(topic: 'gallery', type: 'artifact_deleted', data: {'artifact_id': aid}));
     await pumpEventQueue();
     await sub.cancel();
     expect(await me.store.entry(aid), isNull);

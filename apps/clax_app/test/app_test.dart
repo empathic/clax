@@ -216,7 +216,7 @@ void main() {
   /// Opens [aid] (a new tile) from the launcher, and has its shell report
   /// `ready`.
   Future<void> openApp(WidgetTester tester, String aid) async {
-    rig.api.emit(ClaxEvent(type: 'version', data: {'artifact_id': aid}));
+    rig.api.emit('version', {'artifact_id': aid});
     await tester.pumpAndSettle();
     await tester.tap(find.text('Runs'));
     await pumpRoute(tester);
@@ -533,7 +533,7 @@ void main() {
     );
     final aid = rig.api.seedArtifact('Runs', {'index.html': _page});
     await up(tester);
-    rig.api.emit(ClaxEvent(type: 'version', data: {'artifact_id': aid}));
+    rig.api.emit('version', {'artifact_id': aid});
     await tester.pumpAndSettle();
     expect(find.byType(SplitShell), findsOneWidget);
     await tester.tap(
@@ -1042,7 +1042,7 @@ void main() {
     expect(launcher.stream, isNotNull);
     // The launcher's list follows the shared stream's gallery topic.
     final aid = rig.api.seedArtifact('Runs', {'index.html': _page});
-    rig.api.emit(ClaxEvent(type: 'version', data: {'artifact_id': aid}));
+    rig.api.emit('version', {'artifact_id': aid});
     await tester.pumpAndSettle();
     expect(find.text('Runs'), findsOneWidget);
   });

@@ -236,6 +236,7 @@ class ThreadDetail extends StatefulWidget {
   const ThreadDetail({
     super.key,
     required this.api,
+    this.stream,
     required this.aid,
     required this.tid,
     required this.voice,
@@ -286,6 +287,12 @@ class ThreadDetail extends StatefulWidget {
   static const glowFor = Duration(milliseconds: 1400);
 
   final ClaxApi api;
+
+  /// The stream to follow the app's topic on, which the page leaves open;
+  /// when null the page opens its own and closes it as it goes, so the
+  /// topic lives as long as the page.
+  final ClaxStream? stream;
+
   final String aid;
   final String tid;
   final VoiceInput voice;
@@ -337,7 +344,8 @@ class _ThreadDetailState extends State<ThreadDetail> {
   Uint8List? _clip;
   var _clipAsked = false;
 
-  StreamSubscription<ClaxEvent>? _events;
+  ClaxStream? _stream;
+  StreamSubscription<StreamEvent>? _events;
   var _loading = false;
   var _loadAgain = false;
 
@@ -371,26 +379,45 @@ class _ThreadDetailState extends State<ThreadDetail> {
   var _listening = false;
   String? _voiceNote;
 
-  static const _eventTypes = [
+  /// The events of the app's topic that may change the thread, and the
+  /// stream's own `resync` and `unsubscribed`, after which its events may
+  /// have been missed.
+  static const _eventTypes = {
     'thread',
     'comment',
     'thread_resolved',
     'thread_deleted',
     'feedback_state',
     'version',
-  ];
+    'resync',
+    'unsubscribed',
+  };
 
   @override
   void initState() {
     super.initState();
     _reply.addListener(() => setState(() {}));
     _focus.addListener(_onFocus);
-    _events = widget.api
-        .events(artifacts: [widget.aid], types: _eventTypes)
-        .listen((_) => unawaited(_load()), onError: (Object _) {});
-    unawaited(_load());
+    unawaited(_follow());
     unawaited(_readOwner());
     if (widget.appTitle == null) unawaited(_readAppTitle());
+  }
+
+  /// Subscribes the app's topic, then reads the thread, then reads it
+  /// again on each of [_eventTypes].
+  Future<void> _follow() async {
+    final topic = 'artifact:${widget.aid}';
+    final stream = _stream = widget.stream ?? widget.api.stream();
+    _events = stream.events
+        .where((e) => e.topic == topic && _eventTypes.contains(e.type))
+        .listen((_) => unawaited(_load()), onError: (Object _) {});
+    try {
+      await stream.subscribe([topic]);
+    } on Object {
+      // The thread still reads; it only misses live changes until it is
+      // opened again.
+    }
+    if (mounted) await _load();
   }
 
   Future<void> _readAppTitle() async {
@@ -414,6 +441,7 @@ class _ThreadDetailState extends State<ThreadDetail> {
   @override
   void dispose() {
     unawaited(_events?.cancel());
+    if (widget.stream == null) unawaited(_stream?.close());
     if (_listen != null) {
       unawaited(_listen!.cancel());
       unawaited(widget.voice.stop());

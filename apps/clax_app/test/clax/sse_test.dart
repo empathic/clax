@@ -102,7 +102,7 @@ void main() {
     });
   });
 
-  group('events', () {
+  group('LoopbackTransport.sse', () {
     late ScriptedServer server;
     late HttpClaxApi api;
     late List<Duration> delays;
@@ -127,12 +127,12 @@ void main() {
     });
 
     test(
-      'opens /api/events with the token and filters, and parses events',
+      'opens /api/stream with the token, and parses its messages',
       () async {
         final hold = Completer<void>();
         server.handle(
           'GET',
-          '/api/events',
+          '/api/stream',
           sse(
             'id: aa-1\nevent: ready\ndata: {"resumed":false}\n\n'
             ': keep-alive\n\n'
@@ -140,19 +140,16 @@ void main() {
             close: hold.future,
           ),
         );
-        final got = await api
-            .events(artifacts: ['a1', 'a2'], types: ['version', 'thread'])
-            .take(2)
-            .toList();
+        final got = await api.transport.sse().take(2).toList();
         hold.complete();
-        expect(got.map((e) => (e.type, e.id)), [
+        expect(got.map((e) => (e.event, e.id)), [
           ('ready', 'aa-1'),
           ('version', 'aa-2'),
         ]);
-        expect(got.first.data, {'resumed': false});
-        expect(got.last.data, {'artifact_id': 'a1', 'n': 2});
+        expect(jsonDecode(got.first.data), {'resumed': false});
+        expect(jsonDecode(got.last.data), {'artifact_id': 'a1', 'n': 2});
         final req = server.requests.single;
-        expect(req.query, {'artifact': 'a1,a2', 'types': 'version,thread'});
+        expect(req.query, isEmpty);
         expect(req.headers['authorization'], 'Bearer tok');
         expect(req.headers['accept'], 'text/event-stream');
         expect(req.headers.containsKey('last-event-id'), isFalse);
@@ -165,23 +162,23 @@ void main() {
         final hold = Completer<void>();
         server.handle(
           'GET',
-          '/api/events',
+          '/api/stream',
           sse(
             'id: aa-1\nevent: ready\ndata: {"resumed":false}\n\nid: aa-2\nevent: version\ndata: {"n":2}\n\n',
           ),
         );
         server.handle(
           'GET',
-          '/api/events',
+          '/api/stream',
           sse(
             'id: aa-3\nevent: ready\ndata: {"resumed":true}\n\nid: aa-4\nevent: version\ndata: {"n":3}\n\n',
             close: hold.future,
           ),
         );
-        final got = await api.events().take(4).toList();
+        final got = await api.transport.sse().take(4).toList();
         hold.complete();
         expect(got.map((e) => e.id), ['aa-1', 'aa-2', 'aa-3', 'aa-4']);
-        expect(got[2].data, {'resumed': true});
+        expect(jsonDecode(got[2].data), {'resumed': true});
         expect(server.requests, hasLength(2));
         expect(server.requests[1].headers['last-event-id'], 'aa-2');
         expect(delays, [const Duration(milliseconds: 500)]);
@@ -192,23 +189,23 @@ void main() {
       'retries a failing stream with a doubling wait, reset once it delivers',
       () async {
         final hold = Completer<void>();
-        server.json('GET', '/api/events', 503, {
+        server.json('GET', '/api/stream', 503, {
           'error': {'code': 'unavailable', 'message': 'x'},
         });
-        server.json('GET', '/api/events', 503, {
+        server.json('GET', '/api/stream', 503, {
           'error': {'code': 'unavailable', 'message': 'x'},
         });
         server.handle(
           'GET',
-          '/api/events',
+          '/api/stream',
           sse('id: aa-1\nevent: ready\ndata: {}\n\n'),
         );
         server.handle(
           'GET',
-          '/api/events',
+          '/api/stream',
           sse('id: aa-2\nevent: version\ndata: {}\n\n', close: hold.future),
         );
-        final got = await api.events().take(2).toList();
+        final got = await api.transport.sse().take(2).toList();
         hold.complete();
         expect(got.map((e) => e.id), ['aa-1', 'aa-2']);
         expect(delays, const [
@@ -220,11 +217,11 @@ void main() {
     );
 
     test('a refused stream ends with an error and is not retried', () async {
-      server.json('GET', '/api/events', 400, {
+      server.json('GET', '/api/stream', 400, {
         'error': {'code': 'invalid_query', 'message': 'bad types'},
       });
       await expectLater(
-        api.events().toList(),
+        api.transport.sse().toList(),
         throwsA(
           isA<ClaxApiError>()
               .having((e) => e.status, 'status', 400)
@@ -250,38 +247,23 @@ void main() {
         },
       );
       final hold = Completer<void>();
-      server.json('GET', '/api/events', 401, {
+      server.json('GET', '/api/stream', 401, {
         'error': {'code': 'unauthorized', 'message': 'token'},
       });
       server.handle(
         'GET',
-        '/api/events',
+        '/api/stream',
         sse('id: aa-1\nevent: ready\ndata: {}\n\n', close: hold.future),
       );
-      final e = await rotating.events().first;
+      final e = await rotating.transport.sse().first;
       hold.complete();
       rotating.close();
-      expect(e.type, 'ready');
+      expect(e.event, 'ready');
       expect(server.requests.map((r) => r.headers['authorization']), [
         'Bearer old',
         'Bearer new',
       ]);
       expect(delays, [const Duration(milliseconds: 500)]);
-    });
-
-    test('data that is not a JSON object is carried raw', () async {
-      final hold = Completer<void>();
-      server.handle(
-        'GET',
-        '/api/events',
-        sse('event: note\ndata: plain text\n\n', close: hold.future),
-      );
-      final e = await api.events().first;
-      hold.complete();
-      expect(
-        e,
-        isA<ClaxEvent>().having((e) => e.data, 'data', {'raw': 'plain text'}),
-      );
     });
 
     test(
@@ -315,8 +297,8 @@ void main() {
           ),
           eventRetryDelay: (d) async => delays.add(d),
         );
-        final first = await rawApi.events().first;
-        expect(first.type, 'ready');
+        final first = await rawApi.transport.sse().first;
+        expect(first.event, 'ready');
         await closed.future;
         expect(connections, 1);
         expect(delays, isEmpty);
@@ -354,7 +336,7 @@ void main() {
         eventRetryDelay: (d) async => delays.add(d),
       );
       final got = Completer<void>();
-      final sub = rawApi.events().listen((_) {
+      final sub = rawApi.transport.sse().listen((_) {
         if (!got.isCompleted) got.complete();
       });
       await got.future;
@@ -406,11 +388,11 @@ void main() {
         eventRetryDelay: (d) async => delays.add(d),
         eventTimer: timers.call,
       );
-      final first = quick.events().first;
+      final first = quick.transport.sse().first;
       await firstArrived.future;
       timers.fire(HttpClaxApi.defaultEventConnectTimeout);
       await firstClosed.future;
-      expect((await first).type, 'ready');
+      expect((await first).event, 'ready');
       expect(connections, 2);
       expect(delays, [const Duration(milliseconds: 500)]);
       quick.close();
@@ -452,7 +434,7 @@ void main() {
         eventRetryDelay: (d) async => delays.add(d),
         eventTimer: timers.call,
       );
-      final events = StreamIterator(quick.events());
+      final events = StreamIterator(quick.transport.sse());
       expect(await events.moveNext(), isTrue);
       expect(events.current.id, 'aa-1');
       expect(delays, isEmpty);

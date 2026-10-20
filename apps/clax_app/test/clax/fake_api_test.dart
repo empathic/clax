@@ -189,37 +189,37 @@ void main() {
     expect((await api.getArtifact(aid)).artifact.id, aid);
   });
 
-  test(
-    'events open with ready, then version events their filters keep',
-    () async {
-      await api.registerAppSession(installId: 'i', pid: 1);
-      final aid = api.seedArtifact('Runs', {'index.html': 'x'});
-      final other = api.seedArtifact('Other', {'index.html': 'x'});
-      final got = api
-          .events(artifacts: [aid], types: ['version'])
-          .take(2)
-          .toList();
-      await api.publish(
-        other,
-        PublishRequest(ifVersion: 1, files: {'index.html': 'y'}),
-      );
-      await api.publish(
-        aid,
-        PublishRequest(ifVersion: 1, files: {'index.html': 'y'}),
-      );
-      final es = await got;
-      expect(es[0].type, 'ready');
-      expect(es[0].data, {'resumed': false});
-      expect(es[1].type, 'version');
-      expect(es[1].data, {
-        'type': 'version',
-        'artifact_id': aid,
-        'n': 2,
-        'by_page': false,
-        'title': 'Runs',
-      });
-    },
-  );
+  test("a publish sends version to its app's topic and to gallery", () async {
+    await api.registerAppSession(installId: 'i', pid: 1);
+    final aid = api.seedArtifact('Runs', {'index.html': 'x'});
+    final other = api.seedArtifact('Other', {'index.html': 'x'});
+    final stream = api.stream();
+    final got = <StreamEvent>[];
+    final sub = stream.events.listen(got.add);
+    addTearDown(sub.cancel);
+    await stream.subscribe(['artifact:$aid', 'gallery']);
+    await api.publish(
+      other,
+      PublishRequest(ifVersion: 1, files: {'index.html': 'y'}),
+    );
+    await api.publish(
+      aid,
+      PublishRequest(ifVersion: 1, files: {'index.html': 'y'}),
+    );
+    await pumpEventQueue();
+    expect(got.map((e) => (e.topic, e.type, e.data['artifact_id'])), [
+      ('gallery', 'version', other),
+      ('artifact:$aid', 'version', aid),
+      ('gallery', 'version', aid),
+    ]);
+    expect(got[1].data, {
+      'artifact_id': aid,
+      'n': 2,
+      'by_page': false,
+      'title': 'Runs',
+      'topic': 'artifact:$aid',
+    });
+  });
 
   test('create and publish need a live session', () async {
     final aid = api.seedArtifact('Runs', {'index.html': 'x'});
@@ -1072,14 +1072,16 @@ void main() {
     test('deleteArtifact removes the app and sends artifact_deleted', () async {
       final aid = api.seedArtifact('Runs', {'index.html': '1'});
       api.putDoc(aid, 'runs/r1', {'km': 5});
-      final events = <ClaxEvent>[];
-      final sub = api.events().listen(events.add);
+      final stream = api.stream();
+      final events = <StreamEvent>[];
+      final sub = stream.events.listen(events.add);
       addTearDown(sub.cancel);
+      await stream.subscribe(['gallery']);
       await api.deleteArtifact(aid);
       await pumpEventQueue();
       expect(
-        events.map((e) => (e.type, e.data['artifact_id'])),
-        contains(('artifact_deleted', aid)),
+        events.map((e) => (e.topic, e.type, e.data['artifact_id'])),
+        contains(('gallery', 'artifact_deleted', aid)),
       );
       expect(
         (await api.listArtifacts()).map((a) => a.id),

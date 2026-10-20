@@ -29,7 +29,7 @@ class HomeKeeper {
     required this.install,
     required this.changed,
     this.onInstalled,
-    Stream<ClaxEvent>? events,
+    Stream<StreamEvent>? events,
     this.clock = const SystemClock(),
     this.backoff = const [Duration(seconds: 1), Duration(seconds: 60)],
     void Function(String line)? log,
@@ -47,7 +47,7 @@ class HomeKeeper {
   final List<Duration> backoff;
   final void Function(String) _log;
 
-  StreamSubscription<ClaxEvent>? _events;
+  StreamSubscription<StreamEvent>? _events;
   var _running = false;
   var _again = false;
   var _disposed = false;
@@ -108,7 +108,7 @@ class HomeKeeper {
     );
   }
 
-  void _onEvent(ClaxEvent e) {
+  void _onEvent(StreamEvent e) {
     if (_disposed || e.type != 'artifact_deleted') return;
     final aid = e.data['artifact_id'];
     if (aid is! String || aid != settings.homeAppId) return;
