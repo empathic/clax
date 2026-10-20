@@ -492,6 +492,9 @@ pub async fn poll(
                 "where_to_ask": where_to_ask}),
             ));
         }
+        // Its read found the question open: parked until woken.
+        #[cfg(debug_assertions)]
+        let _parked = s.questions.park(&qid);
         tokio::select! {
             () = &mut notified => {}
             () = &mut expiry, if !done => done = true,
@@ -601,11 +604,15 @@ pub async fn terminal(
     })
 }
 
-/// The query of the debug builds' waiter routes.
+/// The query of the debug builds' question waiter route.
 #[cfg(debug_assertions)]
 #[derive(Deserialize)]
-pub struct UntilQuery {
-    pub(crate) until: Option<usize>,
+pub struct WaitersQuery {
+    until: Option<usize>,
+    /// `1`: count only the polls parked after a read that found the
+    /// question open.
+    #[serde(default)]
+    parked: Option<u8>,
 }
 
 /// `POST /api/_test/questions/<qid>/expire` (debug builds): ends every
@@ -622,21 +629,24 @@ pub async fn expire(
     Ok(Json(json!({"expired": s.questions.expire(&qid)})))
 }
 
-/// `GET /api/_test/questions/<qid>/waiters?until=<n>` (debug builds):
-/// `{count}`, how many polls hold question `qid`, answered once the count
-/// is `until` (or after 5 s), at once without it.
+/// `GET /api/_test/questions/<qid>/waiters?until=<n>[&parked=1]` (debug
+/// builds): `{count}`, how many polls hold question `qid` (with
+/// `parked=1`, how many are parked after a read that found it open),
+/// answered once the count is `until` (or after 5 s), at once without it.
 #[cfg(debug_assertions)]
 pub async fn waiters(
     State(s): State<AppState>,
     _d: DeniedToGrants,
     _t: RequireToken,
     p: Result<Path<String>, PathRejection>,
-    q: Result<Query<UntilQuery>, QueryRejection>,
+    q: Result<Query<WaitersQuery>, QueryRejection>,
 ) -> Result<Json<Value>, ApiError> {
     let qid = path(p)?;
     let Query(q) = q.map_err(|e| ApiError::bad_request("invalid_query", e.body_text()))?;
     let w = &s.questions;
-    let n = clax_realtime::questions::count_until(w.changed(), || w.count(&qid), q.until).await;
+    let parked = q.parked == Some(1);
+    let count = || if parked { w.parked(&qid) } else { w.count(&qid) };
+    let n = clax_realtime::questions::count_until(w.changed(), count, q.until).await;
     Ok(Json(json!({"count": n})))
 }
 

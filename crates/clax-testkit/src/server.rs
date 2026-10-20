@@ -1317,6 +1317,21 @@ impl TestServer {
             .unwrap();
         assert_eq!(v["count"], n, "{n} polls of {qid} within 5 s");
     }
+
+    /// Returns once `n` polls of question `qid` are parked, each past a
+    /// read that found it open; panics when the daemon gives up waiting
+    /// (5 s).
+    pub async fn wait_question_parked(&self, qid: &str, n: u64) {
+        let v: serde_json::Value = self
+            .get_authed(&format!(
+                "/api/_test/questions/{qid}/waiters?until={n}&parked=1"
+            ))
+            .await
+            .json()
+            .await
+            .unwrap();
+        assert_eq!(v["count"], n, "{n} parked polls of {qid} within 5 s");
+    }
 }
 
 impl TestServer {

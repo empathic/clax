@@ -1143,7 +1143,9 @@ async fn an_answer_a_question_poll_holds_reaches_only_that_poll() {
         ts.base
     )));
     let ask = tokio::spawn(async move { req.send().await });
-    ts.wait_question_waiters(&qid, 1).await;
+    // Past its first read, which found the question open: the close below
+    // does not wake it.
+    ts.wait_question_parked(&qid, 1).await;
     ts.store
         .close_question(
             &clax_core::audit::AuditCtx::DAEMON,

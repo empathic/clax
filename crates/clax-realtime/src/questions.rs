@@ -75,6 +75,34 @@ struct Inner {
     /// once, as if their timers had fired ([`QuestionWaiters::expire`]).
     #[cfg(debug_assertions)]
     expired: HashMap<String, usize>,
+    /// Debug builds: how many of each question's polls are parked, their
+    /// last read having found it open ([`QuestionWaiters::park`]).
+    #[cfg(debug_assertions)]
+    parked: HashMap<String, usize>,
+}
+
+/// Debug builds: one poll counted as parked on a question until dropped
+/// ([`QuestionWaiters::park`]).
+#[cfg(debug_assertions)]
+pub struct ParkGuard {
+    waiters: Arc<QuestionWaiters>,
+    qid: String,
+}
+
+#[cfg(debug_assertions)]
+impl Drop for ParkGuard {
+    fn drop(&mut self) {
+        {
+            let mut g = self.waiters.lock();
+            if let Some(n) = g.parked.get_mut(&self.qid) {
+                *n -= 1;
+                if *n == 0 {
+                    g.parked.remove(&self.qid);
+                }
+            }
+        }
+        self.waiters.changed.notify_waiters();
+    }
 }
 
 /// One poll's hold on a question ([`QuestionWaiters::hold`]).
@@ -158,6 +186,27 @@ impl QuestionWaiters {
             }
             _ => false,
         }
+    }
+
+    /// Debug builds: counts a poll of `qid` as parked, waiting for a wake
+    /// after a read that found the question open, until the guard drops.
+    /// Tests wait on the count ([`QuestionWaiters::parked`]) so a change
+    /// they make next is one the poll's first read did not see.
+    #[cfg(debug_assertions)]
+    pub fn park(self: &Arc<Self>, qid: &str) -> ParkGuard {
+        *self.lock().parked.entry(qid.to_string()).or_default() += 1;
+        self.changed.notify_waiters();
+        ParkGuard {
+            waiters: self.clone(),
+            qid: qid.to_string(),
+        }
+    }
+
+    /// Debug builds: how many polls of `qid` are parked
+    /// ([`QuestionWaiters::park`]).
+    #[cfg(debug_assertions)]
+    pub fn parked(&self, qid: &str) -> usize {
+        self.lock().parked.get(qid).copied().unwrap_or(0)
     }
 
     /// How many polls hold `qid`.
@@ -252,7 +301,8 @@ impl Drop for HoldGuard {
 }
 
 /// `count()` once it equals `until`, or after 5 s; `count()` at once
-/// without `until`. `changed` is notified whenever the count may change.
+/// without `until`. `changed` is notified whenever the count may change
+/// (a hold's or a park's start or end).
 /// For the debug builds' waiter routes, so tests wait without polling.
 #[cfg(debug_assertions)]
 pub async fn count_until(
