@@ -31,7 +31,7 @@ String fixture(String name) =>
 /// import of the key with the owner's token answers its summary, every
 /// later one the same with `already: true`.
 class _ImportRoute {
-  _ImportRoute(this.core, {this.owner = 'token-1'}) {
+  _ImportRoute(this.core) {
     core.on('POST', '/api/client-imports/{key}', (req, p) {
       requests.add(req);
       if (p['key'] != jsonImportKey) {
@@ -58,7 +58,7 @@ class _ImportRoute {
   }
 
   final FakeCore core;
-  final String owner;
+  static const owner = 'token-1';
   final List<CoreRequest> requests = [];
   final List<Map<String, Object?>> bodies = [];
   Map<String, Object?>? summary;
