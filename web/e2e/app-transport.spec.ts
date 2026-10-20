@@ -413,6 +413,29 @@ test("a page's conditional request is answered whole: the scheme forwards Accept
   expect(h.scheme.filter(s => s.status === 304)).toEqual([]);
 });
 
+test("the core's redirects never reach the WebView: one within the same base is followed in the core, /v/<n> is a meta refresh, any other is 404", async ({ page }) => {
+  // The bridge leaves a link marked external to the browser, which follows it.
+  const html = PAGE.replace("</main>", `<a id="go" href="index.html" rel="external">Again</a></main>`);
+  const { id, host: h, frame } = await openInApp(page, "Transport redirects", { html });
+  const at = (path: string) => expect.poll(() => page.frames().some(f => f.url() === `${content(id)}${path}`), { timeout: 10_000 }).toBe(true);
+  // index.html, which the core answers 308 to ./, is answered the page itself under its own URL.
+  await frame.locator("#go").click();
+  await at("/v/1/index.html");
+  const followed = page.frames().find(f => f.url() === `${content(id)}/v/1/index.html`)!;
+  await expect(followed.locator("#t")).toHaveText("Quarterly goals");
+  // /v/1, which the core answers 308 to 1/, is a page that refreshes to it.
+  await followed.evaluate(() => { location.href = "/v/1"; });
+  await at("/v/1/");
+  const refreshed = page.frames().find(f => f.url() === `${content(id)}/v/1/`)!;
+  await expect(refreshed.locator("#t")).toHaveText("Quarterly goals");
+  // A request for /v/1 that is not a document's is answered 404.
+  expect(await refreshed.evaluate(() => fetch("/v/1").then(r => r.status))).toBe(404);
+  const answered = (path: string) => h.scheme.filter(s => s.url === `${content(id)}${path}`).map(s => s.status);
+  expect(answered("/v/1/index.html")).toEqual([200]);
+  expect(answered("/v/1")).toEqual([200, 404]);
+  expect(h.scheme.filter(s => s.status >= 300 && s.status < 400)).toEqual([]);
+});
+
 test.describe("at desktop width", () => {
   test.use({ hasTouch: false, isMobile: false, viewport: { width: 1280, height: 800 } });
 

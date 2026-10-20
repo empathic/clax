@@ -23,6 +23,11 @@
 // - Every request carries only its `Range`, `Accept` and `Service-Worker`
 //   (never `If-None-Match` or `If-Modified-Since`: no WebView here takes the
 //   304 they would bring); every answer loses its `Access-Control-*` headers.
+// - No answer is a 3xx, which no WebView here takes from its host: a
+//   redirect within the request's origin and directory (`…/index.html` to
+//   `…/`) is followed in the core and its target answered under the
+//   request's URL; a document request for `/v/<n>` answered 308 is a page
+//   that refreshes to its `Location`; any other 3xx is a 404.
 // - Each shell document answered to a main-frame navigation gets a fresh
 //   nonce, written as `<meta name="clax-nonce">` right after its `<head>`
 //   (unless `nonceMeta: false`, the app over loopback), and kept with that
@@ -323,11 +328,30 @@ export class AppHost {
     const all = await req.allHeaders();
     const headers: [string, string][] = PAGE_HEADERS.filter(h => all[h] !== undefined).map(h => [h, all[h]]);
     headers.push(["host", id ? `${id}.localhost` : "localhost"]);
-    if (document) headers.push(["cookie", ownerCookie(this.d.token)]);
-    try {
-      return await readAll(await send(this.d, { method: req.method(), path: url.pathname + url.search, headers }));
-    } catch (e) {
-      return textAnswer(502, `the core did not answer: ${String(e)}`);
+    // The core adds the owner cookie for the shell document's path alone.
+    const asked = (target: URL): [string, string][] => target.pathname.startsWith("/a/") && shell ? [...headers, ["cookie", ownerCookie(this.d.token)]] : headers;
+    // No WebView here takes a 3xx from its host, so none leaves the answerer
+    // (plan Task 15, `SchemeAnswerer`): one whose Location keeps the
+    // request's origin and directory is followed in the core, at most
+    // MAX_HOPS times, and its target's answer is the request's; a document
+    // request for /v/<n> answered 308 is a page that refreshes to its
+    // Location; any other 3xx is a 404.
+    let target = url;
+    for (let hop = 0; ; hop++) {
+      let answer: Answer;
+      try {
+        answer = await readAll(await send(this.d, { method: req.method(), path: target.pathname + target.search, headers: asked(target) }));
+      } catch (e) {
+        return textAnswer(502, `the core did not answer: ${String(e)}`);
+      }
+      if (answer.status < 300 || answer.status >= 400) return answer;
+      const location = answer.headers.find(([k]) => k === "location")?.[1] ?? null;
+      const next = location === null ? null : resolve(target, location);
+      if (next && hop < MAX_HOPS && sameBase(url, next)) { target = next; continue; }
+      if (answer.status === 308 && location !== null && hop === 0 && /^\/v\/[0-9]+$/.test(url.pathname) && (mainNav || /text\/html/i.test(all.accept ?? ""))) {
+        return { status: 200, headers: [["content-type", "text/html; charset=utf-8"]], body: Buffer.from(`<meta http-equiv="refresh" content="0;url=${escapeAttr(location)}">`) };
+      }
+      return textAnswer(404, "not found");
     }
   }
 
@@ -515,6 +539,22 @@ export class AppHost {
     }
   }
 }
+
+/** The most redirects the answerer follows for one request. */
+const MAX_HOPS = 5;
+
+function resolve(base: URL, location: string): URL | null {
+  try { return new URL(location, base); } catch { return null; }
+}
+
+/** Whether `to` is `from`'s origin and directory (its path up to its last
+ * `/`), so the target's relative links resolve as the request's. */
+function sameBase(from: URL, to: URL): boolean {
+  const dir = (p: string) => p.slice(0, p.lastIndexOf("/") + 1);
+  return from.origin === to.origin && dir(from.pathname) === dir(to.pathname);
+}
+
+const escapeAttr = (s: string) => s.replace(/&/g, "&amp;").replace(/"/g, "&quot;").replace(/</g, "&lt;").replace(/>/g, "&gt;");
 
 function frameOf(req: Request) {
   try { return req.frame(); } catch { return null; }
