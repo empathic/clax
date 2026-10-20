@@ -10,7 +10,7 @@
 // was.
 import type { Frame, Page } from "@playwright/test";
 import { hostChannel, host } from "./app-host";
-import { type AppHost, type AppHostOptions, BINDING, SHELL, content, startEmbedDaemon } from "./app-scheme";
+import { type AppHost, type AppHostOptions, BINDING, SHELL, SseBlocks, content, startEmbedDaemon } from "./app-scheme";
 import { test as base, expect, type Daemon, api, publish } from "./fixtures";
 import { quietEval } from "./time";
 import { REQUEST_STUCK } from "../shell/src/conn-notice";
@@ -93,6 +93,15 @@ test("the artifact view loads and a comment posts through the channel", async ({
   expect(h.callsTo("POST", `/api/artifacts/${id}/threads`)).toHaveLength(1);
 });
 
+test("the relay sends one stream message per SSE block, however the core's body is cut", () => {
+  const sse = new SseBlocks();
+  expect(sse.push("id: s:1\nevent: ready\ndata: {}\n\nid: s:2\nev")).toEqual(["id: s:1\nevent: ready\ndata: {}\n\n"]);
+  expect(sse.push("ent: x\ndata: {}\n")).toEqual([]);
+  expect(sse.push("\n: keep-alive\n\n: tail")).toEqual(["id: s:2\nevent: x\ndata: {}\n\n", ": keep-alive\n\n"]);
+  expect(sse.rest()).toBe(": tail");
+  expect(sse.rest()).toBe("");
+});
+
 test("calls go out from boot under the document's nonce, each answer names it, and a message under another nonce is dropped", async ({ page }) => {
   const { host: h } = await openInApp(page, "Transport nonce", { host: { autoInit: false } });
   const meta = await h.evalNow<string>(`document.querySelector('meta[name="clax-nonce"]').content`);
@@ -108,6 +117,17 @@ test("calls go out from boot under the document's nonce, each answer names it, a
   expect(answers.length).toBeGreaterThan(0);
   expect(answers.every(e => /^window\.claxTransport\.\w+\((".*?"), /.exec(e)?.[1] === JSON.stringify(meta))).toBe(true);
   expect(h.dropped).toEqual([]);
+  // What the core answers: no header the daemon's HTTP server adds on the
+  // wire, and one stream block per message, its blank line included.
+  const results = answers.filter(e => e.startsWith("window.claxTransport.callResult(")).map(e => JSON.parse(/^window\.claxTransport\.callResult\(".*?", \d+, (.*)\)$/s.exec(e)![1]) as { headers: [string, string][] });
+  expect(results.flatMap(r => r.headers.map(([k]) => k)).filter(k => ["connection", "keep-alive", "transfer-encoding", "date"].includes(k))).toEqual([]);
+  const blocks = answers.filter(e => e.startsWith("window.claxTransport.streamBlock(")).map(e => JSON.parse(/^window\.claxTransport\.streamBlock\(".*?", \d+, (".*")\)$/s.exec(e)![1]) as string);
+  expect(blocks.length).toBeGreaterThan(0);
+  expect(blocks.filter(b => !b.endsWith("\n\n") || b.indexOf("\n\n") !== b.length - 2)).toEqual([]);
+  // A held-open route is refused whatever follows its path.
+  await h.evalNow(`window.ClaxHost.postMessage(JSON.stringify({ type: "call", nonce: ${JSON.stringify(meta)}, id: 9998, method: "GET", path: "/api/stream#x", headers: [], body: null, body64: null }))`);
+  await expect.poll(() => h.calls.find(c => c.id === 9998)?.answered?.status).toBe(404);
+  expect(JSON.parse(h.calls.find(c => c.id === 9998)!.answered!.text!).error.code).toBe("not_in_app");
 
   await h.evalNow(`window.ClaxHost.postMessage(JSON.stringify({ type: "call", nonce: "another-load-0123456789", id: 9999, method: "GET", path: "/api/artifacts", headers: [], body: null, body64: null }))`);
   await h.barrier();
@@ -241,6 +261,14 @@ test("a same-document navigation keeps the load's channel; a reload the core ans
   await page.waitForLoadState("load");
   await h.idle();
   expect(inits()).toBe(ran);
+  // A main-frame navigation to the shell's host outside /a/ is refused as
+  // Android's host refuses it, unnumbered, and has no channel either.
+  const inbox = await page.goto(`${SHELL}/inbox`);
+  expect(inbox!.status()).toBe(403);
+  expect(inbox!.headers()["content-type"]).toBe("text/plain");
+  expect(await inbox!.text()).toBe("refused");
+  expect(h.nonce).toBeNull();
+  expect(h.loads).toEqual([first]);
 });
 
 test("a body over 8 MiB goes to the core in 1 MiB chunks and arrives whole", async ({ page }) => {

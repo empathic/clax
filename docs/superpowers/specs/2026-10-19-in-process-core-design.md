@@ -508,6 +508,13 @@ the main frame (a `nil` target, a new window, included), and the handler
 answers a shell document only to a request whose `mainDocumentURL` is its
 own URL. A page cannot frame or fetch the shell document.
 
+A main-frame navigation to the shell's host for anything but a shell
+document (a path under `/a/`) is refused, so the main frame holds only
+shell documents: Android's host answers its request 403 (`Content-Type:
+text/plain`, body `refused`) without asking Dart and gives it no
+navigation number, and Apple's navigation policy cancels it; each reports
+`refused {webViewId, url}`.
+
 ### 4.3 Origins and the security model
 
 What holds on the daemon today (`docs/contract.md`, "Security model") holds

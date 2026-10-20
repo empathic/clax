@@ -13,9 +13,11 @@
 // carries what the core would add to that frame:
 //
 // - `https://app.clax.invalid/…` (the shell, `as: shell-page`): `GET` and
-//   `HEAD` only (else 405). A shell document (`/a/…`) only to the main
-//   frame's navigation, and a main-frame navigation only to a shell
-//   document (else 403). Only `/a/`, `/_clax/`, `/c/` and `/_blob/` reach
+//   `HEAD` only (else 405). A main-frame navigation only to a shell
+//   document (`/a/…`; else 403 `text/plain` `refused`, as Android's host
+//   answers it without asking Dart), and a shell document or a gallery
+//   document (`/`, `/inbox`, `/people`) only to one (else the answerer's
+//   403 `refused`). Only `/a/`, `/_clax/`, `/c/` and `/_blob/` reach
 //   the core (else 404 `not_in_app`). `Host: localhost`; the shell document
 //   alone carries the owner cookie.
 // - `https://<id>.c.clax.invalid/…` (an artifact's content, `as: content`):
@@ -56,8 +58,8 @@
 //   that is valid UTF-8, else `body64`. `callAbort` cancels the request and
 //   drops its answer.
 // - `subscribe {id, lastEventId?}` opens `GET /api/stream` as the owner,
-//   from `Last-Event-ID` when it names one, and pushes each chunk of its
-//   body by `claxTransport.streamBlock(nonce, id, text)`, then the end
+//   from `Last-Event-ID` when it names one, and pushes each SSE block of
+//   its body by `claxTransport.streamBlock(nonce, id, text)`, then the end
 //   block the core's subscription closes with (`event: end` with
 //   `{"reason": "stream_ended"}`, or `{"reason": "stream_refused",
 //   "status": …}` for a stream the daemon refused), then
@@ -86,6 +88,8 @@ const SHELL_HOST = "app.clax.invalid";
 const CONTENT_HOST = /^([a-z0-9]+)\.c\.clax\.invalid$/;
 const PAGE_HEADERS = ["range", "accept", "service-worker"];
 const SHELL_PATHS = ["/a/", "/_clax/", "/c/", "/_blob/"];
+/** The gallery's documents, which the app never loads. */
+const GALLERY = new Set(["/", "/inbox", "/people"]);
 const HELD_OPEN = [/^\/api\/events$/, /^\/api\/stream$/, /^\/api\/artifacts\/[^/]+\/room$/, /^\/api\/artifacts\/[^/]+\/live$/, /^\/mcp$/, /^\/api\/admin\/shutdown$/];
 const TEXTUAL = /^(text\/|application\/([\w.+-]*\+)?json\b|application\/x-www-form-urlencoded\b)/i;
 /** The binding `window.ClaxHost` posts through, which every frame can reach. */
@@ -121,11 +125,20 @@ function send(d: Daemon, o: { method: string; path: string; headers: [string, st
   });
 }
 
+/** The headers the daemon's HTTP server adds on the wire, which the
+ * router's answer through the core (`crates/clax-embed/src/core.rs`
+ * `respond`) does not carry. */
+const WIRE_ONLY = new Set(["connection", "keep-alive", "transfer-encoding", "date"]);
+
+/** The daemon's answer, with the headers the core's answer would have. */
 async function readAll(res: http.IncomingMessage): Promise<Answer> {
   const chunks: Buffer[] = [];
   for await (const c of res) chunks.push(c as Buffer);
   const headers: [string, string][] = [];
-  for (let i = 0; i < res.rawHeaders.length; i += 2) headers.push([res.rawHeaders[i].toLowerCase(), res.rawHeaders[i + 1]]);
+  for (let i = 0; i < res.rawHeaders.length; i += 2) {
+    const name = res.rawHeaders[i].toLowerCase();
+    if (!WIRE_ONLY.has(name)) headers.push([name, res.rawHeaders[i + 1]]);
+  }
   return { status: res.statusCode ?? 502, headers, body: Buffer.concat(chunks) };
 }
 
@@ -353,7 +366,8 @@ export class AppHost {
 
   private async schemeAnswer(req: Request, url: URL, shell: boolean, mainNav: boolean, document: boolean): Promise<Answer> {
     if (req.method() !== "GET" && req.method() !== "HEAD") return textAnswer(405, "the app's scheme answers GET and HEAD only");
-    if (shell && document !== mainNav) return textAnswer(403, "refused");
+    if (shell && mainNav && !document) return { status: 403, headers: [["content-type", "text/plain"]], body: Buffer.from("refused") };
+    if (shell && !mainNav && (document || GALLERY.has(url.pathname))) return textAnswer(403, "refused");
     const id = shell ? null : CONTENT_HOST.exec(url.hostname)![1];
     if (shell && !SHELL_PATHS.some(p => url.pathname.startsWith(p))) return errorAnswer(404, "not_in_app", `${url.pathname} is not served in the app`);
     const all = await req.allHeaders();
@@ -492,7 +506,7 @@ export class AppHost {
       await Promise.race([Promise.all(stalled.map(s => s.open)), aborted]);
     }
     if (load.calls.get(call.id) !== call) return;
-    const path = call.path.split("?")[0];
+    const path = call.path.split(/[?#]/)[0];
     const fault = this.callFaults.findIndex(f => f.match(record));
     let answer: Answer;
     if (fault >= 0) answer = this.callFaults.splice(fault, 1)[0].answer;
@@ -535,11 +549,19 @@ export class AppHost {
       res.resume();
       return this.endStream(load, s, { reason: "stream_refused", status: res.statusCode });
     }
+    // One message per SSE block, its blank line included, as the core
+    // posts each block the hub's connection yields (spec §2.4).
     res.setEncoding("utf8");
-    res.on("data", (text: string) => {
-      if (load.streams.get(id) === s) this.run(`window.claxTransport.streamBlock(${JSON.stringify(s.nonce)}, ${id}, ${JSON.stringify(text)})`);
-    });
-    const ended = () => this.endStream(load, s, { reason: "stream_ended" });
+    const sse = new SseBlocks();
+    const push = (block: string) => {
+      if (load.streams.get(id) === s) this.run(`window.claxTransport.streamBlock(${JSON.stringify(s.nonce)}, ${id}, ${JSON.stringify(block)})`);
+    };
+    res.on("data", (text: string) => { for (const b of sse.push(text)) push(b); });
+    const ended = () => {
+      const rest = sse.rest();
+      if (rest) push(rest);
+      this.endStream(load, s, { reason: "stream_ended" });
+    };
     res.on("end", ended);
     res.on("error", ended);
   }
@@ -576,6 +598,28 @@ export class AppHost {
       this.pumping = false;
       if (this.held || !this.queue.length) for (const w of this.idleWaiters.splice(0)) w();
     }
+  }
+}
+
+/** An SSE body cut into its blocks, each with its blank line, however
+ * the body's chunks fall. */
+export class SseBlocks {
+  private pending = "";
+  /** The blocks `text` completes, oldest first. */
+  push(text: string): string[] {
+    this.pending += text;
+    const out: string[] = [];
+    for (let at = this.pending.indexOf("\n\n"); at >= 0; at = this.pending.indexOf("\n\n")) {
+      out.push(this.pending.slice(0, at + 2));
+      this.pending = this.pending.slice(at + 2);
+    }
+    return out;
+  }
+  /** What no blank line has ended yet; taken. */
+  rest(): string {
+    const r = this.pending;
+    this.pending = "";
+    return r;
   }
 }
 
