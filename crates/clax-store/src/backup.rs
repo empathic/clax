@@ -22,7 +22,7 @@ pub fn dir(home: &Home) -> PathBuf {
 /// `<home>/backups/clax-<version>-<UTC time>.db`, then prunes the older
 /// copies (see `prune`). The copy is written under a temporary name
 /// (`VACUUM INTO`), synced to stable storage, renamed, and the directory
-/// synced (and the home too when it made the directory), so a copy that
+/// synced, as is the home that holds the directory, so a copy that
 /// exists under its name is complete, and it survives a power loss after
 /// the migrations that follow commit. Where the file system cannot sync
 /// through the drive's cache it is synced with `fsync`, and where it
@@ -123,12 +123,11 @@ fn before_migrate_on(
         detail: format!("could not copy it to {} first: {e}", dir(home).display()),
     };
     let dir = dir(home);
-    if !dir.is_dir() {
-        std::fs::create_dir_all(&dir).map_err(|e| fail(&e))?;
-        // The new directory's entry is in the home: it reaches the disk
-        // before a copy in it is counted on.
-        sync_dir(disk, home.root()).map_err(|e| fail(&e))?;
-    }
+    std::fs::create_dir_all(&dir).map_err(|e| fail(&e))?;
+    // The directory's entry is in the home: it reaches the disk before a
+    // copy in it is counted on. Every copy syncs it, not only the one that
+    // makes the directory, which may have failed or stopped before its sync.
+    sync_dir(disk, home.root()).map_err(|e| fail(&e))?;
     let name = format!("clax-{version}-{}.db", now.format("%Y%m%dT%H%M%S%3fZ"));
     let path = dir.join(&name);
     let tmp = dir.join(format!(".{name}.{:016x}.tmp", rand::random::<u64>()));
@@ -397,7 +396,7 @@ mod tests {
                 "rename tmp",
                 "sync_dir full backups"
             ],
-            "the home is synced once it holds a new backups directory"
+            "the home is synced once it holds the backups directory"
         );
         let copied = Connection::open(&copy).unwrap();
         let v: u32 = copied
@@ -405,7 +404,9 @@ mod tests {
             .unwrap();
         assert_eq!(v, 9);
 
-        // The directory is there now: the home is not synced again.
+        // The directory is there now, and the home is synced again: an
+        // earlier open may have made it and failed or stopped before its
+        // sync.
         let mut disk = Recording::default();
         let now = "2026-10-03T00:00:00Z".parse().unwrap();
         before_migrate_on(&mut disk, &at_version(9), &home, 12, now)
@@ -413,8 +414,29 @@ mod tests {
             .unwrap();
         assert_eq!(
             disk.steps,
-            ["sync_file full tmp", "rename tmp", "sync_dir full backups"]
+            [
+                "sync_dir full ax",
+                "sync_file full tmp",
+                "rename tmp",
+                "sync_dir full backups"
+            ]
         );
+    }
+
+    /// An open that made the backups directory and could not sync the home
+    /// leaves the next open to sync it before the copy it makes there.
+    #[cfg(unix)]
+    #[test]
+    fn a_backups_directory_whose_home_sync_failed_is_synced_by_the_next_copy() {
+        let tmp = tempfile::tempdir().unwrap();
+        let home = Home::at(tmp.path().join("ax"));
+        let mut disk = Recording::failing(&[("sync_dir full ax", eio)]);
+        copy_on(&mut disk, &home).unwrap_err();
+        assert!(dir(&home).is_dir());
+        let mut disk = Recording::failing(&[("sync_dir full ax", eio)]);
+        copy_on(&mut disk, &home).unwrap_err();
+        assert_eq!(disk.steps, ["sync_dir full ax"], "no copy before the home is synced");
+        assert!(left_in(&home).is_empty());
     }
 
     #[test]
