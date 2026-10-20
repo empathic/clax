@@ -177,10 +177,19 @@ final class _HeldTool implements Tool {
 /// this worker while it runs the job; a worker that opens a job late
 /// (after a restart) runs the committed turns' tool calls again on a
 /// fresh draft, in order, so the draft holds every earlier turn's writes,
-/// and takes the history and the budget from the turns' notes. What the
-/// rows do not keep is answered as such: an earlier turn's render and
-/// refused finish say their result was not kept, and the draft counts as
-/// not rendered until it renders again.
+/// and takes the history and the budget from the turns' notes.
+///
+/// Each turn's notes keep what the renders of the turn before drew, as
+/// the runner recorded it in the core (`rendered`: one
+/// `{turn, call, draft_id, digest, errors, failed_tests}` per render
+/// call). A rebuild marks the draft rendered at each such call when the
+/// draft it rebuilt there has the kept digest, so a finish or a cap stop
+/// after a restart publishes what was rendered, naming the draft the
+/// core recorded it under; the call's result in the history then holds
+/// only the kept errors and failing tests. A render the notes do not
+/// keep (its turn is the last committed, or the rebuilt draft differs),
+/// and a refused finish, say their result was not kept, and the draft
+/// counts as not rendered until it renders again.
 final class AgentTurns implements AgentPort {
   AgentTurns({
     required this.backend,
@@ -311,6 +320,7 @@ final class AgentTurns implements AgentPort {
       for (final b in turn.content)
         if (b['type'] == 'tool_use') b,
     ];
+    final drawn = job.renderedIn(t - 1);
     final notes = <String, Object?>{
       'assistant': turn.content,
       'usage': _usageJson(turn.usage),
@@ -319,6 +329,7 @@ final class AgentTurns implements AgentPort {
           for (final a in turn.attempts)
             {'model': a.model, 'usage': _usageJson(a.usage)},
         ],
+      if (drawn.isNotEmpty) _renderedNote: drawn,
     };
     job.assistant[t] = turn.content;
     job.counted.add(t);
@@ -431,6 +442,7 @@ final class AgentTurns implements AgentPort {
     final left = (capUsd ?? 0) - spent;
     final said = narration ?? job.narration;
     final notes = [...job.carriedNotes, ...job.runNotes(), ?narration];
+    final drawn = job.renderedIn(input.turn - 1);
     if (usable(clean)) {
       final checksFailed = !identical(clean, passed);
       final reply = make
@@ -484,6 +496,7 @@ final class AgentTurns implements AgentPort {
             'assistant': const <Object?>[],
             'usage': _usageJson(const Usage()),
             'cap': cap,
+            if (drawn.isNotEmpty) _renderedNote: drawn,
           },
         ),
       );
@@ -507,6 +520,10 @@ final class AgentTurns implements AgentPort {
       ),
     );
   }
+
+  /// The key of a turn's notes that keeps what the renders of the turn
+  /// before drew.
+  static const _renderedNote = 'rendered';
 
   /// The ID of the finish call a cap stop answers.
   static const _capStopCall = 'cap_stop';
@@ -553,13 +570,11 @@ final class AgentTurns implements AgentPort {
     final job = _open[jobId];
     final served = job?.served['$turn/$callId'];
     if (job == null || served == null) return;
-    final failed = outcome.failedTests;
-    final errors = outcome.errors;
-    job.state.draft.markRendered(
+    job.mark(
+      '$turn/$callId',
       served.snapshot,
-      errors: errors.isNotEmpty,
-      testsFailed: failed.isNotEmpty,
-      problems: [...errors, for (final f in failed) 'test failed: $f'],
+      errors: outcome.errors,
+      failedTests: outcome.failedTests,
     );
   }
 
@@ -677,6 +692,86 @@ final class _Job {
   /// What each render served, by `<turn>/<call ID>`.
   final Map<String, _Served> served = {};
 
+  /// What each render drew, as the runner recorded it, by
+  /// `<turn>/<call ID>`: its uncaught errors and failing tests.
+  final Map<String, ({List<String> errors, List<String> failedTests})> drawn =
+      {};
+
+  /// Records that render `<turn>/<call ID>` [key] drew [snapshot] with
+  /// [errors] and [failedTests], and marks the draft rendered.
+  void mark(
+    String key,
+    DraftSnapshot snapshot, {
+    required List<String> errors,
+    required List<String> failedTests,
+  }) {
+    drawn[key] = (errors: errors, failedTests: failedTests);
+    state.draft.markRendered(
+      snapshot,
+      errors: errors.isNotEmpty,
+      testsFailed: failedTests.isNotEmpty,
+      problems: [...errors, for (final f in failedTests) 'test failed: $f'],
+    );
+  }
+
+  /// What the renders of turn [t] served and drew, as the next turn's
+  /// notes keep it: one entry per render call this worker saw drawn.
+  List<Map<String, Object?>> renderedIn(int t) => [
+    for (final c in notes[t]?.calls ?? const <ToolCall>[])
+      if (c is RenderCall)
+        if ((served['$t/${c.id}'], drawn['$t/${c.id}'])
+            case (final s?, final d?))
+          {
+            'turn': t,
+            'call': c.id,
+            'draft_id': s.draftId,
+            'digest': s.digest,
+            'errors': d.errors,
+            'failed_tests': d.failedTests,
+          },
+  ];
+
+  /// Render call [callId] of turn [turn] drawn again from the rows: the
+  /// entry turn [turn] + 1's notes keep of it, when the draft as rebuilt
+  /// here has its digest. The draft is marked rendered as the render
+  /// drew it; null when the rows keep no such entry.
+  ToolResult? redrawn(int turn, String callId) {
+    final next = agent.row?.steps[TurnKey(turn + 1)];
+    if (next is! TurnStepResult) return null;
+    final kept = switch (next.notes.data) {
+      {AgentTurns._renderedNote: final List l} => l
+          .whereType<Map>()
+          .where((e) => e['turn'] == turn && e['call'] == callId)
+          .firstOrNull,
+      _ => null,
+    };
+    if (kept case {
+      'draft_id': final String draftId,
+      'digest': final String digest,
+      'errors': final List errors,
+      'failed_tests': final List failed,
+    }) {
+      final snap = state.draft.snapshot();
+      if (draftDigest(snap.files) != digest) return null;
+      final key = '$turn/$callId';
+      served[key] = (draftId: draftId, digest: digest, snapshot: snap);
+      final e = [for (final x in errors) '$x'];
+      final f = [for (final x in failed) '$x'];
+      mark(key, snap, errors: e, failedTests: f);
+      return ToolResult(
+        data: {
+          'note':
+              'This render ran before Clax restarted; only its errors and '
+              'failing tests were kept.',
+          'errors': e,
+          'failed_tests': f,
+        },
+        isError: e.isNotEmpty || f.isNotEmpty,
+      );
+    }
+    return null;
+  }
+
   /// Whether `finish` asked for the icon once.
   var askedIcon = false;
 
@@ -718,7 +813,7 @@ final class _Job {
           OtherCall(:final name, :final args) => AgentTurns._resultOf(
             await toolbox.call(name, AgentTurns._args(args)),
           ),
-          RenderCall() => _notKept('render'),
+          RenderCall() => redrawn(j, c.id) ?? _notKept('render'),
           AskCall() => switch (row!.questionOf(j, c.id)) {
             final q? => ToolResult.answer(q.answer),
             null => _notKept('ask'),

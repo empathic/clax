@@ -1,3 +1,4 @@
+import 'dart:async';
 import 'dart:convert';
 import 'dart:io';
 
@@ -165,6 +166,36 @@ void main() {
     );
   });
 
+  test('a worker killed after a clean render and before its publish\'s '
+      'commit resumes asking the model no turn, and publishes', () async {
+    final c = coreWith();
+    final gate = c.jobs.publishGate = Completer<void>();
+    final inspector = FakeInspector();
+    final first = start(c.server, inspector);
+    first.client.send(const Make('j1', 'a todo app', title: 'a todo app'));
+    await c.jobs.publishHeld.future;
+    await first.dispose();
+    host = null;
+    expect(gate.isCompleted, isFalse, reason: 'the publish never commits');
+    expect(c.jobs.published, isEmpty);
+    expect(asked(support), [0, 1, 2, 3]);
+
+    c.jobs.publishGate = null;
+    final job = await ended(start(c.server, inspector));
+    expect(job.state, JobState.done, reason: '${job.error}');
+    expect(asked(support), [0, 1, 2, 3], reason: 'no model turn after the kill');
+    expect(inspector.calls, hasLength(1), reason: 'nothing rendered again');
+    const files = {'index.html': page, 'app.js': script};
+    expect(c.jobs.published.single['draft'], {
+      'id': 'd00000000001',
+      'digest': draftDigest(files),
+    });
+    expect(
+      [for (final s in c.jobs.jobs['j1']!['steps']! as List) (s as Map)['key']],
+      ['turn:1', 'turn:2', 'turn:3', 'turn:4', 'publish:0'],
+    );
+  });
+
   test('a host started fresh over the same rows does what another fresh '
       'host does, from the rows alone', () async {
     Future<Map<String, Object?>> runOnce() async {
@@ -195,6 +226,41 @@ void main() {
     expect((request['files'] as Map).keys, containsAll(['index.html', 'app.js']));
     expect(request['title'], 'Todo');
   });
+
+  test('a host started fresh over rows left before a publish\'s commit '
+      'publishes the render they keep, as another fresh host does', () async {
+    Future<Map<String, Object?>> runOnce() async {
+      final c = coreWith();
+      _seedBeforePublish(c.jobs);
+      final inspector = FakeInspector();
+      final h = start(c.server, inspector);
+      final job = await ended(h);
+      await h.dispose();
+      host = null;
+      expect(job.state, JobState.done, reason: '${job.error}');
+      expect(inspector.calls, isEmpty, reason: 'nothing rendered again');
+      return {
+        'drafts': c.drafts,
+        'published': c.jobs.published,
+        'steps': [
+          for (final s in c.jobs.jobs['j1']!['steps']! as List)
+            (s as Map)['key'],
+        ],
+      };
+    }
+
+    final a = await runOnce();
+    final b = await runOnce();
+    expect(jsonEncode(b), jsonEncode(a));
+    expect(asked(support), isEmpty, reason: 'no model turn is asked');
+    expect(a['drafts'], isEmpty, reason: 'no draft is served again');
+    final published = (a['published']! as List).single as Map;
+    expect(published['draft'], {
+      'id': 'd00000000001',
+      'digest': draftDigest(const {'index.html': page, 'app.js': script}),
+    });
+    expect(a['steps'], ['turn:1', 'turn:2', 'turn:3', 'turn:4', 'publish:0']);
+  });
 }
 
 const system = 'You make apps.';
@@ -208,6 +274,17 @@ const script = 'document.getElementById("list").textContent = "none yet";';
 /// written once it has; written with the request when a turn was not
 /// scripted.
 const dieFile = 'die-at-turn-3';
+
+/// In the support directory: one line per turn the model answered, the
+/// number of turns asked before it.
+const askedFile = 'asked';
+
+/// The turns the model answered in [support], across workers.
+List<int> asked(Directory support) {
+  final f = File('${support.path}/$askedFile');
+  if (!f.existsSync()) return const [];
+  return [for (final l in f.readAsLinesSync()) int.parse(l)];
+}
 const diedFile = 'died';
 const unscriptedFile = 'unscripted';
 
@@ -253,6 +330,7 @@ final class _ScriptedModel implements TurnBackend {
         clean &&
         results.length == const [0, 2, 1, 1][asked.clamp(0, 3)];
     if (!fits || asked > 3) return _unscripted(r, asked);
+    File('$dir/$askedFile').writeAsStringSync('$asked\n', mode: FileMode.append);
     switch (asked) {
       case 0:
         return _answer([
@@ -297,28 +375,48 @@ final class _ScriptedModel implements TurnBackend {
 Map<String, Object?> _use(String id, String name, Map<String, Object?> input) =>
     {'type': 'tool_use', 'id': id, 'name': name, 'input': input};
 
+/// Step `turn:<n>` of a make, its calls [uses], its notes keeping
+/// [rendered] when given.
+Map<String, Object?> _turnStep(
+  int n,
+  List<Map<String, Object?>> uses, {
+  List<Map<String, Object?>>? rendered,
+}) => {
+  'key': 'turn:$n',
+  'result': {
+    'base': 0,
+    'notes': {
+      'calls': [
+        for (final u in uses)
+          if (u['name'] == 'render')
+            {'id': u['id'], 'tool': 'render', 'draft_id': '', 'revision': 0}
+          else if (u['name'] == 'finish')
+            {
+              'id': u['id'],
+              'tool': 'finish',
+              'publish': {
+                'base': 0,
+                'data': {'finish': u['input']},
+              },
+            }
+          else
+            {'id': u['id'], 'tool': u['name'], 'args': u['input']},
+      ],
+      'data': {
+        'assistant': uses,
+        'usage': {'input': 100, 'cache_write': 0, 'cache_read': 0, 'output': 50},
+        'rendered': ?rendered,
+      },
+    },
+  },
+  'version_n': null,
+  'created_at': '2026-10-20T00:00:0${n}Z',
+};
+
 /// Job `j1` as a worker that died after its second turn left it in the
 /// core: running, with `turn:1` (the page and its title) and `turn:2`
 /// (its script) committed.
 void _seedMidMake(FakeJobs jobs) {
-  Map<String, Object?> turn(int n, List<Map<String, Object?>> uses) => {
-    'key': 'turn:$n',
-    'result': {
-      'base': 0,
-      'notes': {
-        'calls': [
-          for (final u in uses)
-            {'id': u['id'], 'tool': u['name'], 'args': u['input']},
-        ],
-        'data': {
-          'assistant': uses,
-          'usage': {'input': 100, 'cache_write': 0, 'cache_read': 0, 'output': 50},
-        },
-      },
-    },
-    'version_n': null,
-    'created_at': '2026-10-20T00:00:0${n}Z',
-  };
   jobs.seed(
     'j1',
     state: 'running',
@@ -327,13 +425,61 @@ void _seedMidMake(FakeJobs jobs) {
     title: 'a todo app',
     input: const {'request': 'a todo app', 'base': 0, 'threads': {}},
     steps: [
-      turn(1, [
+      _turnStep(1, [
         _use('w', 'write_file', {'path': 'index.html', 'content': page}),
         _use('m', 'set_meta', {'title': 'Todo'}),
       ]),
-      turn(2, [
+      _turnStep(2, [
         _use('s', 'write_file', {'path': 'app.js', 'content': script}),
       ]),
+    ],
+  );
+}
+
+/// Job `j1` as a worker killed before its publish's commit left it in
+/// the core: running, with its four turns committed, turn 3's render of
+/// draft `d00000000001` recorded clean and kept in `turn:4`'s notes.
+void _seedBeforePublish(FakeJobs jobs) {
+  final digest = draftDigest(const {'index.html': page, 'app.js': script});
+  jobs.renders.add({
+    'draft': 'd00000000001',
+    'digest': digest,
+    'errors': <Object?>[],
+    'failed_tests': <Object?>[],
+  });
+  jobs.seed(
+    'j1',
+    state: 'running',
+    step: 'turn:4',
+    rev: 6,
+    title: 'a todo app',
+    input: const {'request': 'a todo app', 'base': 0, 'threads': {}},
+    steps: [
+      _turnStep(1, [
+        _use('w', 'write_file', {'path': 'index.html', 'content': page}),
+        _use('m', 'set_meta', {'title': 'Todo'}),
+      ]),
+      _turnStep(2, [
+        _use('s', 'write_file', {'path': 'app.js', 'content': script}),
+      ]),
+      _turnStep(3, [_use('r', 'render', {})]),
+      _turnStep(
+        4,
+        [
+          _use('i', 'write_file', {'path': 'icon.svg', 'content': icon}),
+          _use('f', 'finish', {'reply': 'Made a todo app.'}),
+        ],
+        rendered: [
+          {
+            'turn': 3,
+            'call': 'r',
+            'draft_id': 'd00000000001',
+            'digest': digest,
+            'errors': <Object?>[],
+            'failed_tests': <Object?>[],
+          },
+        ],
+      ),
     ],
   );
 }

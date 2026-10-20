@@ -33,9 +33,9 @@ const _green =
     '<main style="color:green"><h2>Quarterly goals</h2></main>';
 const _reply = 'Made it green.';
 
-/// A change in three turns: the page, a render, then finish; then, for a
-/// finish whose publish was refused `not_rendered`, a render and a finish
-/// again, as a model asked again would.
+/// A change in three turns: the page, a render, then finish. A launch
+/// that resumes the job asks no more: the render the first launch drew is
+/// kept in the finish turn's notes.
 const _script = {
   'turns': [
     [
@@ -53,17 +53,6 @@ const _script = {
       {
         'type': 'tool_use',
         'id': 'f',
-        'name': 'finish',
-        'input': {'reply': _reply},
-      },
-    ],
-    [
-      {'type': 'tool_use', 'id': 'r2', 'name': 'render', 'input': <String, Object?>{}},
-    ],
-    [
-      {
-        'type': 'tool_use',
-        'id': 'f2',
         'name': 'finish',
         'input': {'reply': _reply},
       },
@@ -144,13 +133,12 @@ void main() {
           _green,
         );
         expect(replies, [_reply], reason: 'one reply');
-        if (at == 'after-publish-commit') {
-          expect(
-            [for (final t in turns) t.turn],
-            ['turn 0', 'turn 1', 'turn 2'],
-            reason: 'no turn is asked after a publish the core holds',
-          );
-        }
+        expect(
+          [for (final t in turns) t.turn],
+          ['turn 0', 'turn 1', 'turn 2'],
+          reason: 'no turn is asked after the kill: the core holds the '
+              'publish, or the finish turn\'s notes keep its clean render',
+        );
       },
       timeout: const Timeout(Duration(minutes: 8)),
     );

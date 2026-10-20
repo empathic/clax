@@ -733,6 +733,221 @@ void main() {
       expect(b.outputBefore, a.outputBefore);
     });
   });
+
+  group('renders kept in the rows', () {
+    const titled = {'index.html': page};
+    TurnNotes turn(
+      List<ToolCall> calls,
+      List<Map<String, Object?>> uses, {
+      List<Map<String, Object?>>? rendered,
+    }) => TurnNotes(
+      calls: calls,
+      data: {
+        'assistant': uses,
+        'usage': {'input': 10, 'cache_write': 0, 'cache_read': 0, 'output': 10},
+        'rendered': ?rendered,
+      },
+    );
+    final t1 = turn(
+      const [
+        OtherCall('w', 'write_file', args: {'path': 'index.html', 'content': page}),
+        OtherCall('m', 'set_meta', args: {'title': 'Todo'}),
+      ],
+      [
+        _use('w', 'write_file', {'path': 'index.html', 'content': page}),
+        _use('m', 'set_meta', {'title': 'Todo'}),
+      ],
+    );
+    final t2 = turn(
+      const [RenderCall('r', RenderSpec(draftId: '', revision: 0))],
+      [_use('r', 'render', {})],
+    );
+
+    /// Turn 2's render as turn 3's notes keep it, drawn over [files].
+    Map<String, Object?> kept({
+      Map<String, String> files = titled,
+      List<String> errors = const [],
+    }) => {
+      'turn': 2,
+      'call': 'r',
+      'draft_id': 'd9',
+      'digest': draftDigest(files),
+      'errors': errors,
+      'failed_tests': const <String>[],
+    };
+
+    Job rowOf(TurnNotes t3) => Job(
+      id: 'j',
+      kind: JobKind.make,
+      state: JobState.running,
+      step: const TurnKey(3),
+      rev: 6,
+      input: job,
+      steps: {
+        const TurnKey(1): TurnStepResult(t1),
+        const TurnKey(2): TurnStepResult(t2),
+        const TurnKey(3): TurnStepResult(t3),
+      },
+    );
+
+    TurnNotes finishTurn(Map<String, Object?>? rendered) => turn(
+      const [
+        FinishCall(
+          'f',
+          PublishPlan(
+            base: 0,
+            data: {
+              'finish': {'reply': 'Made it.'},
+            },
+          ),
+        ),
+      ],
+      [
+        _use('f', 'finish', {'reply': 'Made it.'}),
+      ],
+      rendered: rendered == null ? null : [rendered],
+    );
+
+    test('a turn\'s notes keep what the renders of the turn before drew, as '
+        'the runner recorded it', () async {
+      final agent = agentOn();
+      backend
+        ..answer([
+          _use('w', 'write_file', {'path': 'index.html', 'content': page}),
+          _use('m', 'set_meta', {'title': 'Todo'}),
+        ])
+        ..answer([_use('r', 'render', {})])
+        ..answer([_use('f', 'finish', {'reply': 'Made it.'})]);
+      final one = await agent.turn(
+        'j',
+        const TurnInput(turn: 1, input: job, base: 0),
+        Future<void>.value(),
+      );
+      final r1 = await runCalls(agent, 1, one.notes);
+      final two = await agent.turn(
+        'j',
+        TurnInput(turn: 2, input: job, base: 0, previous: one.notes, results: r1),
+        Future<void>.value(),
+      );
+      expect((two.notes.data! as Map)['rendered'], isNull,
+          reason: 'turn 1 rendered nothing');
+      final r2 = await runCalls(agent, 2, two.notes, dirty: true);
+      final three = await agent.turn(
+        'j',
+        TurnInput(turn: 3, input: job, base: 0, previous: two.notes, results: r2),
+        Future<void>.value(),
+      );
+      expect((three.notes.data! as Map)['rendered'], [
+        {
+          'turn': 2,
+          'call': 'r',
+          'draft_id': 'd1',
+          'digest': draftDigest(titled),
+          'errors': ['boom'],
+          'failed_tests': <String>[],
+        },
+      ]);
+    });
+
+    test('a worker killed after a clean render and before the publish\'s '
+        'commit publishes the kept render, rendering nothing again', () async {
+      Future<Object?> fresh() async {
+        served = [];
+        final t3 = finishTurn(kept());
+        final agent = agentOn(row: rowOf(t3));
+        final call = t3.calls.single as FinishCall;
+        final plan = await agent.publishPlan('j', 3, 'f', call.publish);
+        expect(served, isEmpty, reason: 'nothing is served again');
+        return plan.data;
+      }
+
+      final a = await fresh();
+      expect((a! as Map)['draft'], {'id': 'd9', 'digest': draftDigest(titled)});
+      expect(((a as Map)['request'] as Map)['files'], {
+        'index.html': {'content': page},
+      });
+      expect(jsonEncode(await fresh()), jsonEncode(a),
+          reason: 'a fresh worker over the same rows plans the same publish');
+    });
+
+    test('a kept render is not trusted when the rebuilt draft differs, nor '
+        'when it was not clean', () async {
+      for (final (entry, code) in [
+        (null, 'not_rendered'),
+        (kept(files: const {'index.html': '$page '}), 'not_rendered'),
+        (kept(errors: const ['boom']), 'render_errors'),
+      ]) {
+        final agent = agentOn(row: rowOf(finishTurn(entry)));
+        await expectLater(
+          agent.publishPlan(
+            'j',
+            3,
+            'f',
+            const PublishPlan(
+              base: 0,
+              data: {
+                'finish': {'reply': 'Made it.'},
+              },
+            ),
+          ),
+          throwsA(isA<PublishRefused>().having((e) => e.code, 'code', code)),
+          reason: '$entry',
+        );
+      }
+    });
+
+    test('a cap stop after a restart publishes the last clean render the '
+        'rows keep', () async {
+      const threeTurns = RunCaps(
+        turns: 3,
+        renders: 3,
+        outputTokens: 32000,
+        wallClock: Duration(seconds: 90),
+      );
+      final t3 = turn(
+        const [
+          OtherCall('w2', 'write_file', args: {'path': 'app.js', 'content': 'later'}),
+        ],
+        [
+          _use('w2', 'write_file', {'path': 'app.js', 'content': 'later'}),
+        ],
+        rendered: [kept()],
+      );
+      Future<Object?> fresh() async {
+        backend = _Turns();
+        served = [];
+        final agent = agentOn(row: rowOf(t3), caps: threeTurns, capUsd: 6);
+        // The queue runs turn 3's call again, then starts turn 4.
+        final w2 = await agent.tool(
+          'j',
+          3,
+          t3.calls.single as OtherCall,
+          Future<void>.value(),
+        );
+        final four = await agent.turn(
+          'j',
+          TurnInput(
+            turn: 4,
+            input: job,
+            base: 0,
+            previous: t3,
+            results: {'w2': w2},
+          ),
+          Future<void>.value(),
+        );
+        expect(backend.requests, isEmpty, reason: 'the model is asked nothing');
+        expect(four.stop, isNull, reason: 'the kept render is published');
+        return (four.notes.calls.single as FinishCall).publish.data;
+      }
+
+      final a = await fresh();
+      expect(((a! as Map)['request'] as Map)['files'], {
+        'index.html': {'content': page},
+      }, reason: 'the clean render\'s snapshot, not the write after it');
+      expect((a as Map)['draft'], {'id': 'd9', 'digest': draftDigest(titled)});
+      expect(jsonEncode(await fresh()), jsonEncode(a));
+    });
+  });
 }
 
 Map<String, Object?> _use(String id, String name, Map<String, Object?> input) =>

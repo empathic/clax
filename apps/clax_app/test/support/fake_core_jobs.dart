@@ -59,6 +59,12 @@ class FakeJobs {
   /// While set, a step's commit waits for it before it is answered.
   Completer<void>? stepGate;
 
+  /// While set, a publish step's commit waits for it before it is
+  /// answered, as a worker killed before the commit leaves it;
+  /// [publishHeld] completes when the first one waits.
+  Completer<void>? publishGate;
+  final Completer<void> publishHeld = Completer<void>();
+
   /// While set, a claim answers 409 `owner_draining`.
   bool draining = false;
 
@@ -313,6 +319,10 @@ class FakeJobs {
     });
     core.on('POST', '/api/jobs/{id}/steps/{key}', (r, p) async {
       if (stepGate case final g?) await g.future;
+      if (publishGate case final g? when p['key']!.startsWith('publish:')) {
+        if (!publishHeld.isCompleted) publishHeld.complete();
+        await g.future;
+      }
       final b = _body(r, const {'result', 'publish', 'reply', 'state'});
       if (b == null) return _unprocessable();
       final id = p['id']!;
