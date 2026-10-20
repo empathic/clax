@@ -649,8 +649,8 @@ async fn a_new_claim_answers_only_once_the_old_claims_write_has_landed() {
     );
     // The new claim waits for the old claim's write.
     let (_b, sid) = stream(&ts).await;
-    let claim = authed(&ts, Method::POST, "/api/jobs/owner")
-        .json(&json!({"client": "app", "stream": sid}));
+    let claim =
+        authed(&ts, Method::POST, "/api/jobs/owner").json(&json!({"client": "app", "stream": sid}));
     let claim = tokio::spawn(send(claim));
     tokio::task::yield_now().await;
     assert!(!claim.is_finished(), "answered while the old write runs");
@@ -708,9 +708,10 @@ async fn a_publish_step_from_a_session_does_for_it_what_a_publish_does() {
         .unwrap()
         .to_string();
     // An app the owner made, and a thread on it sent to no session.
-    let (s, v) = send(authed(&ts, Method::POST, "/api/artifacts").json(
-        &json!({"title": "Budget", "files": {"index.html": utf8("<p>one")}}),
-    ))
+    let (s, v) = send(
+        authed(&ts, Method::POST, "/api/artifacts")
+            .json(&json!({"title": "Budget", "files": {"index.html": utf8("<p>one")}})),
+    )
     .await;
     assert_eq!(s, 201, "{v}");
     let aid = v["artifact"]["id"].as_str().unwrap().to_string();
@@ -754,7 +755,10 @@ async fn a_publish_step_from_a_session_does_for_it_what_a_publish_does() {
     let version = ts.store.get_version(&aid_id, 2).unwrap().unwrap();
     assert_eq!(version.session_id.as_deref(), Some(sid.as_str()));
     assert_eq!(version.addresses, [tid.as_str()], "the thread worked on");
-    assert!(ts.working.threads_of(&sid, &aid).is_empty(), "working cleared");
+    assert!(
+        ts.working.threads_of(&sid, &aid).is_empty(),
+        "working cleared"
+    );
     assert!(ts.drafts.for_artifact(&aid).is_empty(), "the draft ended");
     let watched = |ts: &TestServer, a: &str| {
         ts.store

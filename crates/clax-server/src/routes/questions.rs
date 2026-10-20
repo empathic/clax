@@ -645,7 +645,13 @@ pub async fn waiters(
     let Query(q) = q.map_err(|e| ApiError::bad_request("invalid_query", e.body_text()))?;
     let w = &s.questions;
     let parked = q.parked == Some(1);
-    let count = || if parked { w.parked(&qid) } else { w.count(&qid) };
+    let count = || {
+        if parked {
+            w.parked(&qid)
+        } else {
+            w.count(&qid)
+        }
+    };
     let n = clax_realtime::questions::count_until(w.changed(), count, q.until).await;
     Ok(Json(json!({"count": n})))
 }

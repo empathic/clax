@@ -67,11 +67,7 @@ fn owner_token(headers: &HeaderMap) -> Option<&str> {
 /// token holds, to hold across the write's store call
 /// ([`JobsOwners::enter`](clax_http::jobs_owner::JobsOwners::enter)); 409
 /// `not_owner` unless the token holds it.
-fn require_owner(
-    s: &AppState,
-    headers: &HeaderMap,
-    client: &str,
-) -> Result<WriteGuard, ApiError> {
+fn require_owner(s: &AppState, headers: &HeaderMap, client: &str) -> Result<WriteGuard, ApiError> {
     if let Some(guard) = owner_token(headers).and_then(|t| s.jobs_owners.enter(client, t)) {
         return Ok(guard);
     }
@@ -205,10 +201,12 @@ pub async fn claim(
     let caller = s
         .store_call(move |st| clax_http::db_caller::caller_of(st, w.token || w.events_cookie, &w))
         .await?;
-    match s
-        .stream
-        .update(&b.stream, &caller, &[clax_realtime::stream::Topic::Jobs], &[])
-    {
+    match s.stream.update(
+        &b.stream,
+        &caller,
+        &[clax_realtime::stream::Topic::Jobs],
+        &[],
+    ) {
         Ok(_) => {}
         Err(clax_realtime::stream::SubError::UnknownStream) => {
             return Err(no_such_stream(&b.stream));
@@ -250,10 +248,7 @@ pub async fn claim(
 
 /// 400 `no_such_stream`: `stream` is not a live stream of the caller's.
 fn no_such_stream(stream: &str) -> ApiError {
-    ApiError::bad_request(
-        "no_such_stream",
-        format!("{stream} is not a live stream"),
-    )
+    ApiError::bad_request("no_such_stream", format!("{stream} is not a live stream"))
 }
 
 /// `DELETE /api/jobs/owner`: releases the claim the request's
