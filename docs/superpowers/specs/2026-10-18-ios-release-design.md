@@ -1,10 +1,8 @@
 # Clax on iPhone and iPad: a TestFlight build
 
-Parts superseded by `docs/superpowers/specs/2026-10-19-in-process-core-design.md`: §1 and §2 (the in-process daemon, `crates/clax-ios` and its `clax_start`…`clax_trim_memory`, the key slot over HTTP, loopback and App Transport Security), §4.1's `clax-ios` and `ios_daemon` pieces and §10.3's `NSAllowsLocalNetworking`; the iOS app links `crates/clax-embed` instead.
-
 Date: 2026-10-18. Branch: `flutter-app`. Status: draft for the owner's review.
 Builds on `2026-10-18-professional-ui-design.md` (the "UI spec" below),
-`2026-10-12-flutter-app-design.md` and `docs/bazel.md` ("The Clax app").
+`2026-10-12-flutter-app-design.md` and `docs/bazel.md` ("The Clax app"). Parts superseded by `docs/superpowers/specs/2026-10-19-in-process-core-design.md`: §1 and §2 (the in-process daemon, `crates/clax-ios` and its `clax_start`…`clax_trim_memory`, the key slot over HTTP, loopback and App Transport Security), §4.1's `clax-ios` and `ios_daemon` pieces and §10.3's `NSAllowsLocalNetworking`; the iOS app links `crates/clax-embed` instead.
 
 ## Goal
 

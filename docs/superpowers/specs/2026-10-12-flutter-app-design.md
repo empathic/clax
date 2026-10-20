@@ -1,9 +1,7 @@
 # Clax app: design
 
-Parts superseded by `docs/superpowers/specs/2026-10-19-in-process-core-design.md`: §2's process diagram, §3.1 (DaemonSupervisor), §3.2 (the `clax` executable packed in the app) and §8's loopback points (the app now runs the core in its own process, with no daemon and no port).
-
 Date: 2026-10-12. Branch `flutter-app`. Status: approved decisions O1–O10
-(below) are the owner's; everything else here is this design's.
+(below) are the owner's; everything else here is this design's. Parts superseded by `docs/superpowers/specs/2026-10-19-in-process-core-design.md`: §2's process diagram, §3.1 (DaemonSupervisor), §3.2 (the `clax` executable packed in the app) and §8's loopback points (the app now runs the core in its own process, with no daemon and no port).
 
 ## 1. Goal and experience
 
