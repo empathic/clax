@@ -771,6 +771,7 @@ impl<H: RepoHost + Send + Sync, A: AssetStore> ContentStore for GitContent<H, A>
         id: &ArtifactId,
         commit: &str,
         base: u32,
+        published: &BTreeMap<String, clax_core::model::FileMeta>,
     ) -> Result<Vec<PushedFile>> {
         let repo = self
             .open(id)
@@ -786,7 +787,9 @@ impl<H: RepoHost + Send + Sync, A: AssetStore> ContentStore for GitContent<H, A>
                     .await
                     .map_err(core_error)?
                     .into_iter()
-                    .filter(|e| is_regular(e.mode))
+                    // A path of the commit the version left out is not
+                    // the version's: read it again.
+                    .filter(|e| is_regular(e.mode) && published.contains_key(&e.path))
                     .map(|e| (e.path, e.id))
                     .collect()
             }

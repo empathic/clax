@@ -358,7 +358,11 @@ pub trait ContentStore: Send + Sync {
     }
 
     /// The files of pushed commit `commit` of `id`, each compared with the
-    /// same path in version `base` (see [`PushedContent`]): a store reads
+    /// same path among `published`, the files version `base` publishes
+    /// (see [`PushedContent`]). A path `base`'s commit holds but `base`
+    /// left out (a pushed file a publish refused) is not
+    /// [`PushedContent::Same`]: it is read again, for its own reason to be
+    /// named. A store reads
     /// each changed blob once, however many paths name it, and at most
     /// [`MAX_BODY_BYTES`](crate::publish::MAX_BODY_BYTES) of them in all
     /// (or less, as its host bounds it), answering the files past that
@@ -369,8 +373,9 @@ pub trait ContentStore: Send + Sync {
         id: &ArtifactId,
         commit: &str,
         base: u32,
+        published: &std::collections::BTreeMap<String, crate::model::FileMeta>,
     ) -> Result<Vec<PushedFile>> {
-        let _ = base;
+        let _ = (base, published);
         Err(unsupported(id, commit))
     }
 
@@ -480,7 +485,7 @@ pub struct PushedFile {
 /// compared with.
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub enum PushedContent {
-    /// The same bytes as the same path in that version.
+    /// The same bytes as the same path in that version, which publishes it.
     Same,
     /// Other bytes, or a path that version does not have.
     Bytes(Vec<u8>),

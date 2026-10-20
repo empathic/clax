@@ -345,7 +345,10 @@ impl Store {
         let below = self.get_version(id, current)?;
         let prev: BTreeMap<String, FileMeta> =
             below.as_ref().map(|v| v.files.clone()).unwrap_or_default();
-        let mut files = self.content.pushed_files(id, &c.commit, current).await?;
+        let mut files = self
+            .content
+            .pushed_files(id, &c.commit, current, &prev)
+            .await?;
         files.sort_by(|a, b| a.path.cmp(&b.path));
         let mut changes: BTreeMap<String, FileChange> = BTreeMap::new();
         let mut kept = KeptPaths::default();
@@ -360,11 +363,8 @@ impl Store {
                 continue;
             }
             match f.content {
-                PushedContent::Same if prev.contains_key(&f.path) => kept.keep(f.path),
-                // Left out of the version below as well.
-                PushedContent::Same | PushedContent::NotAFile | PushedContent::TooLarge => {
-                    skipped.push(f.path)
-                }
+                PushedContent::Same => kept.keep(f.path),
+                PushedContent::NotAFile | PushedContent::TooLarge => skipped.push(f.path),
                 PushedContent::Bytes(bytes) => {
                     let size = bytes.len() as u64;
                     if size > MAX_FILE_BYTES || total + size > MAX_BODY_BYTES {

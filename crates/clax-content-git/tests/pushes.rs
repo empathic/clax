@@ -464,6 +464,23 @@ async fn a_pushed_icon_that_breaks_the_icon_rules_is_left_out_and_named_in_the_n
     );
     assert!(note.ends_with("Scripted"), "{note}");
 
+    // A later push that leaves the refused icon.svg as it was: still named
+    // for the icon rule, not for the path or size limits.
+    f.write("index.html", "<p>four</p>");
+    f.commit("Four").await;
+    f.push().await;
+    let recorded =
+        f.st.reconcile_pushes_async(DAEMON, &f.id, &Pusher::default())
+            .await
+            .unwrap();
+    let v = &recorded[0].1;
+    let files: Vec<&str> = v.files.keys().map(String::as_str).collect();
+    assert_eq!(files, ["img/icon.svg", "index.html"]);
+    assert_eq!(
+        v.note.as_deref(),
+        Some("icon.svg was not taken (it breaks the icon rules: element; still in git). Four")
+    );
+
     let good = r#"<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 9 9"><rect width="9" height="9"/></svg>"#;
     f.write("icon.svg", good);
     f.commit("Drawn").await;
@@ -473,7 +490,7 @@ async fn a_pushed_icon_that_breaks_the_icon_rules_is_left_out_and_named_in_the_n
             .await
             .unwrap();
     assert_eq!(recorded[0].1.note.as_deref(), Some("Drawn"));
-    assert_eq!(f.read(5, "icon.svg").await.as_deref(), Some(good));
+    assert_eq!(f.read(6, "icon.svg").await.as_deref(), Some(good));
 }
 
 #[tokio::test(flavor = "multi_thread")]
