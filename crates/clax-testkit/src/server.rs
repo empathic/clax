@@ -156,6 +156,15 @@ impl clax_core::content::ContentStore for Deferred {
         self.inner.remove_version(id, n).await
     }
 
+    async fn unrecorded_step(
+        &self,
+        id: &clax_core::ArtifactId,
+        n: u32,
+    ) -> clax_core::Result<Option<String>> {
+        Self::executor().await?;
+        self.inner.unrecorded_step(id, n).await
+    }
+
     async fn delete_artifact(&self, id: &clax_core::ArtifactId) -> clax_core::Result<()> {
         Self::executor().await?;
         self.inner.delete_artifact(id).await

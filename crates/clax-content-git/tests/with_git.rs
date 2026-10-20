@@ -139,6 +139,7 @@ async fn a_clone_shows_one_commit_per_version_tagged_with_its_files_and_trailers
         person_name: Some("Mia Park".into()),
         agent: Some("claude".into()),
         note: Some("ignored: a fork's subject names its source".into()),
+        step: None,
     };
     c.fork(&id, 2, &["index.html", "js/app.js"], &fork, &by)
         .await
@@ -255,6 +256,7 @@ async fn git_log_shows_who_published_each_version_and_the_note() {
             person_name: name.map(Into::into),
             agent: agent.map(Into::into),
             note: note.map(Into::into),
+            step: None,
         };
     let metas = [
         by("u_rae", Some("Rae <3"), Some("web"), Some("First draft")),

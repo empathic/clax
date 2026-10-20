@@ -12,6 +12,8 @@ type Files = BTreeMap<String, Arc<Vec<u8>>>;
 #[derive(Default)]
 struct Inner {
     versions: HashMap<(String, u32), Files>,
+    /// The step mark of each version written with one.
+    steps: HashMap<(String, u32), String>,
     assets: HashMap<AssetKey, Arc<Vec<u8>>>,
 }
 
@@ -92,6 +94,10 @@ impl ContentStore for MemContent {
             files.insert(f.path.to_string(), Arc::new(f.bytes.to_vec()));
         }
         g.versions.insert(key(id, n), files);
+        match &write.meta.step {
+            Some(step) => g.steps.insert(key(id, n), step.clone()),
+            None => g.steps.remove(&key(id, n)),
+        };
         Ok(())
     }
 
@@ -119,6 +125,7 @@ impl ContentStore for MemContent {
             files.insert(path.to_string(), bytes.clone());
         }
         g.versions.insert(key(to, to_n), files);
+        g.steps.remove(&key(to, to_n));
         Ok(())
     }
 
@@ -130,12 +137,22 @@ impl ContentStore for MemContent {
             return Err(superseded(id, n, m));
         }
         g.versions.remove(&key(id, n));
+        g.steps.remove(&key(id, n));
         Ok(())
+    }
+
+    async fn unrecorded_step(&self, id: &ArtifactId, n: u32) -> Result<Option<String>> {
+        let g = self.inner();
+        if !g.versions.contains_key(&key(id, n)) {
+            return Ok(None);
+        }
+        Ok(g.steps.get(&key(id, n)).cloned())
     }
 
     async fn delete_artifact(&self, id: &ArtifactId) -> Result<()> {
         let mut g = self.inner();
         g.versions.retain(|(a, _), _| a != id.as_str());
+        g.steps.retain(|(a, _), _| a != id.as_str());
         g.assets.retain(|k, _| k.artifact != *id);
         Ok(())
     }
@@ -185,6 +202,9 @@ mod tests {
         }
         async fn remove_version(&self, id: &ArtifactId, n: u32) -> Result<()> {
             self.0.remove_version(id, n).await
+        }
+        async fn unrecorded_step(&self, id: &ArtifactId, n: u32) -> Result<Option<String>> {
+            self.0.unrecorded_step(id, n).await
         }
         async fn delete_artifact(&self, id: &ArtifactId) -> Result<()> {
             self.0.delete_artifact(id).await

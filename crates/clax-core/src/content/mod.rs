@@ -122,7 +122,13 @@
 //!   version again and records `n`. If the transaction fails, `n` is removed.
 //!   Bytes at `n` without a row (a process that died between the two) are
 //!   never served, and block the next write of `n` until removed, as a stray
-//!   version directory always has; `clax doctor` lists them.
+//!   version directory always has; `clax doctor` lists them. A job step's
+//!   write carries the step's mark ([`VersionMeta::step`]): when that step
+//!   commits again (its resume), under the lock and with the artifact still
+//!   at `n - 1`, an unrecorded `n` carrying its own mark
+//!   ([`ContentStore::unrecorded_step`]) is removed and written again. Only
+//!   that step can match the mark, and a step commits once, so no other
+//!   writer's version is ever replaced.
 //! - **Asset upload**: the bytes are written, then the row inserted; if the
 //!   insert fails the bytes are deleted.
 //! - **Asset delete**: the bytes are deleted, then the row; deleting bytes
@@ -188,8 +194,9 @@ pub struct VersionWrite<'a> {
 /// when it writes the version's content. A backend that keeps history
 /// records them with the version (git: the commit's author, message and
 /// `Clax-Publisher` and `Clax-Agent` trailers), so the history itself shows
-/// who made each version; the filesystem and memory stores ignore them.
-/// The version's row stays the record Clax reads.
+/// who made each version; the filesystem and memory stores ignore them,
+/// all but the step mark, which every store keeps. The version's row stays
+/// the record Clax reads.
 #[derive(Clone, Debug, Default, PartialEq, Eq)]
 pub struct VersionMeta {
     /// The publishing person's public ID: the owner's, or a connected
@@ -202,6 +209,13 @@ pub struct VersionMeta {
     pub agent: Option<String>,
     /// The publish note, when one was given.
     pub note: Option<String>,
+    /// The job step that writes the version, when one does: its mark
+    /// (`clax_store::jobs::step_mark`). Every backend keeps it with the
+    /// version's content (git: a `Clax-Step` trailer; the filesystem: a
+    /// `versions/<n>.step` file beside the version's directory) and answers
+    /// it from [`ContentStore::unrecorded_step`], so the step that wrote a
+    /// version no row records, and only that step, may replace it.
+    pub step: Option<String>,
 }
 
 /// An asset's address: its artifact, its ID and its extension.
@@ -310,10 +324,23 @@ pub trait ContentStore: Send + Sync {
         self.copy_version(from, from_n, paths, to, 1).await
     }
 
-    /// Removes version `n` of `id`, which no row records. Succeeds when it
-    /// is not there; fails, changing nothing, while a version above `n` is
-    /// present (only the newest version is removed).
+    /// Removes version `n` of `id`, which no row records, with its step
+    /// mark. Succeeds when it is not there; fails, changing nothing, while
+    /// a version above `n` is present (only the newest version is removed).
     async fn remove_version(&self, id: &ArtifactId, n: u32) -> Result<()>;
+
+    /// The step mark version `n` of `id` was written with
+    /// ([`VersionMeta::step`]); `None` when the version is absent or was
+    /// written without one. The store asks it of a version no row records,
+    /// a write a process killed before its transaction committed left (see
+    /// [Ordering](self#ordering)). Every store keeps the marks
+    /// ([`contract`] checks it); the default answers `None`, which leaves a
+    /// killed step's version to block that step's resume as an unmarked one
+    /// does, for a wrapping store that does not pass the call on.
+    async fn unrecorded_step(&self, id: &ArtifactId, n: u32) -> Result<Option<String>> {
+        let _ = (id, n);
+        Ok(None)
+    }
 
     /// Removes every version and asset of `id`. Succeeds when there are
     /// none.

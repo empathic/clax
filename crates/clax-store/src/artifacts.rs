@@ -1266,6 +1266,7 @@ impl Store {
             person: None,
             by_page: false,
             hidden: Vec::new(),
+            step: None,
         };
         let previous = self
             .get_version(id, if_version)?
@@ -1438,6 +1439,15 @@ impl Store {
             && current != expected
         {
             return Err(CoreError::Conflict { current });
+        }
+        if let (Some(mark), VersionStep::Write) = (p.step.as_deref(), step)
+            && self.content.unrecorded_step(id, n).await?.as_deref() == Some(mark)
+        {
+            // This step's own write of `n`, which no row records: a process
+            // killed before its transaction committed left it. Only this
+            // step carries its mark, so it is replaced (the content module's
+            // Ordering).
+            self.content.remove_version(id, n).await?;
         }
         let mut files: BTreeMap<String, FileMeta> = BTreeMap::new();
         for path in &carried {
@@ -1653,9 +1663,14 @@ impl Store {
     /// Who publishes `p` from `session_id`, for the content store: the
     /// person [`version_authors`] records (`p.person`, else the session's,
     /// else the owner's public ID) with their display name, the session's
-    /// agent name (its name, else its harness), and the note.
+    /// agent name (its name, else its harness), the note, and the step mark
+    /// `p.step`.
     fn version_meta(&self, p: &ValidatedPublish, session_id: Option<&str>) -> Result<VersionMeta> {
-        self.publisher_meta(p.person.as_deref(), session_id, p.note.as_deref())
+        let meta = self.publisher_meta(p.person.as_deref(), session_id, p.note.as_deref())?;
+        Ok(VersionMeta {
+            step: p.step.clone(),
+            ..meta
+        })
     }
 
     /// [`Store::version_meta`] of a version published as `person` (a
@@ -1705,6 +1720,7 @@ impl Store {
                 person_name: person_name.filter(|n| !n.trim().is_empty()),
                 agent: session.map(|(_, name, harness)| name.unwrap_or(harness)),
                 note: note.filter(|n| !n.trim().is_empty()).map(str::to_string),
+                step: None,
             })
         })
     }
@@ -2354,6 +2370,7 @@ mod tests {
             person: None,
             by_page: false,
             hidden: Vec::new(),
+            step: None,
         };
         let seq = store.events_after(0, 100).unwrap().last().unwrap().seq;
         let e = store
@@ -2946,6 +2963,7 @@ mod tests {
                         person_name: Some("Alex".into()),
                         agent: session.name.clone(),
                         note: Some("Tighter layout".into()),
+                        step: None,
                     }
                 ),
                 (
@@ -2955,6 +2973,7 @@ mod tests {
                         person_name: Some("Rae".into()),
                         agent: None,
                         note: None,
+                        step: None,
                     }
                 ),
             ]

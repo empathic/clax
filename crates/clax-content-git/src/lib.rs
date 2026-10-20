@@ -12,8 +12,10 @@
 //!   of its predecessor, the newest version below `n` (none for the first).
 //!   Its message is the publish note ([`VersionWrite::meta`]; `Version <n>`
 //!   without one) followed by the trailers `Clax-Version: <n>`,
-//!   `Clax-Publisher: <person ID>` and, when an agent published,
-//!   `Clax-Agent: <agent name>`. Author and committer are the publishing
+//!   `Clax-Publisher: <person ID>`, when an agent published
+//!   `Clax-Agent: <agent name>`, and when a job step wrote it
+//!   `Clax-Step: <step mark>` ([`VersionMeta::step`],
+//!   [`ContentStore::unrecorded_step`]). Author and committer are the publishing
 //!   person, `<name> <<person ID>@users.clax.dev>` (`someone` for a person
 //!   without a name; `<`, `>` and control characters dropped, as git drops
 //!   them), at the clock's time in UTC; a write whose metadata names no
@@ -73,7 +75,9 @@
 //!   a push to `main` puts commits above the newest version that no tag
 //!   names. [`ContentStore::pushed_commits`] lists them, oldest first, by
 //!   `main`'s first parents down to the commit of the version pushed past,
-//!   leaving out the publish attempts a remove left directly above it;
+//!   leaving out the publish attempts a remove left directly above it and
+//!   a tagged commit carrying `Clax-Step` (a step's version whose process
+//!   died before recording it, which only that step replaces);
 //!   more than 64 of them, or a `main` that no longer leads to that
 //!   version, are its head alone. [`ContentStore::tag_pushed`] creates
 //!   `v<n>` on one (create-only) and leaves `main` where it is, so the next
@@ -224,6 +228,10 @@ fn parse_commit(hex: &str) -> Result<ObjectId> {
     })
 }
 
+/// The trailer a job step's version commit carries its step mark in
+/// ([`VersionMeta::step`]).
+pub const STEP_TRAILER: &str = "Clax-Step";
+
 fn version_ref(n: u32) -> String {
     tag_ref(&version_tag(u64::from(n))).expect("v<n> is a valid tag name")
 }
@@ -351,6 +359,9 @@ impl<H: RepoHost, A: AssetStore> GitContent<H, A> {
             && !agent.is_empty()
         {
             trailers.push(("Clax-Agent".to_string(), agent));
+        }
+        if let Some(step) = &meta.step {
+            trailers.push((STEP_TRAILER.to_string(), step.clone()));
         }
         trailers.extend(extra);
         let message = with_trailers(subject, &trailers).map_err(core_error)?;
@@ -685,6 +696,22 @@ impl<H: RepoHost + Send + Sync, A: AssetStore> ContentStore for GitContent<H, A>
         )))
     }
 
+    /// The `Clax-Step` trailer of the commit tagged `v<n>`.
+    async fn unrecorded_step(&self, id: &ArtifactId, n: u32) -> Result<Option<String>> {
+        let Some(repo) = self.open(id).await? else {
+            return Ok(None);
+        };
+        let tags = versions_of(&repo.refs().await.map_err(core_error)?);
+        let Some(commit) = tags.get(&n) else {
+            return Ok(None);
+        };
+        Ok(repo
+            .read_commit_meta(commit)
+            .await
+            .map_err(core_error)?
+            .and_then(|m| m.trailer(STEP_TRAILER).map(str::to_string)))
+    }
+
     async fn pushed_commits(&self, id: &ArtifactId, after: u32) -> Result<Vec<PushedCommit>> {
         let Some(repo) = self.open(id).await? else {
             return Ok(Vec::new());
@@ -724,10 +751,17 @@ impl<H: RepoHost + Send + Sync, A: AssetStore> ContentStore for GitContent<H, A>
         let tagged: BTreeSet<ObjectId> = tags.values().copied().collect();
         if reached {
             chain.reverse();
-            // Publish attempts a remove left directly above the base.
+            // Publish attempts a remove left directly above the base, and a
+            // step's version (tagged, as only a write tags) its process died
+            // before recording, which is that step's to replace (clax-core's
+            // content Ordering).
             let left = chain
                 .iter()
-                .take_while(|c| !tagged.contains(&c.commit) && c.trailer("Clax-Version").is_some())
+                .take_while(|c| {
+                    let is_tagged = tagged.contains(&c.commit);
+                    (!is_tagged && c.trailer("Clax-Version").is_some())
+                        || (is_tagged && c.trailer(STEP_TRAILER).is_some())
+                })
                 .count();
             chain.drain(..left);
             if chain.is_empty() {
@@ -754,8 +788,12 @@ impl<H: RepoHost + Send + Sync, A: AssetStore> ContentStore for GitContent<H, A>
             .await
             .map_err(core_error)?
             .ok_or_else(|| unavailable(format!("Commit {head} is missing")))?;
-        if !reached && meta.trailer("Clax-Version").is_some() && !tagged.contains(&head) {
-            // An untagged publish attempt on a history that lost the base.
+        if !reached
+            && ((meta.trailer("Clax-Version").is_some() && !tagged.contains(&head))
+                || (meta.trailer(STEP_TRAILER).is_some() && tagged.contains(&head)))
+        {
+            // An untagged publish attempt, or a step's unrecorded version,
+            // on a history that lost the base.
             return Ok(Vec::new());
         }
         Ok(vec![PushedCommit {

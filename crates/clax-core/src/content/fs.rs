@@ -6,6 +6,11 @@
 //! - `versions/<n>/files/<path>`: each other file of it;
 //! - `versions/.tmp-<ULID>/`: a version being written, renamed to
 //!   `versions/<n>` once whole (a leftover one is an interrupted write);
+//! - `versions/<n>.step`: the step mark version `n` was written with
+//!   ([`super::VersionMeta::step`]), written before the rename that makes
+//!   `versions/<n>` and removed after the directory; read only while
+//!   `versions/<n>` is present, so one a write left without its version
+//!   says nothing;
 //! - `assets/<asset ID>.<ext>`: an asset, written as `<…>.<ext>.tmp` and
 //!   renamed into place;
 //! - `clips/<thread ID>.png`: a thread's clip image, written as
@@ -134,6 +139,24 @@ impl FsContent {
         }
     }
 
+    /// Where version `n` of `id` keeps its step mark.
+    fn step_path(&self, id: &ArtifactId, n: u32) -> PathBuf {
+        self.home
+            .artifact_dir(id)
+            .join("versions")
+            .join(format!("{n}.step"))
+    }
+
+    /// Writes `step` as version `n`'s step mark, or removes a mark an
+    /// earlier write of `n` left, before the version is placed.
+    fn mark(&self, id: &ArtifactId, n: u32, step: Option<&str>) -> Result<()> {
+        let path = self.step_path(id, n);
+        match step {
+            Some(step) => Ok(std::fs::write(path, step)?),
+            None => remove_file_if_present(&path),
+        }
+    }
+
     /// Renames `staging` to version `n` of `id`. A version directory with
     /// anything in it is never replaced.
     fn place(&self, staging: Staging, id: &ArtifactId, n: u32) -> Result<()> {
@@ -196,6 +219,7 @@ impl ContentStore for FsContent {
             }
             std::fs::write(dest, f.bytes)?;
         }
+        self.mark(id, n, write.meta.step.as_deref())?;
         self.place(staging, id, n)
     }
 
@@ -220,6 +244,7 @@ impl ContentStore for FsContent {
                 Err(e) => return Err(e.into()),
             }
         }
+        self.mark(to, to_n, None)?;
         self.place(staging, to, to_n)
     }
 
@@ -229,7 +254,16 @@ impl ContentStore for FsContent {
         {
             return Err(superseded(id, n, m));
         }
-        remove_dir_if_present(&self.home.version_dir(id, n))
+        remove_dir_if_present(&self.home.version_dir(id, n))?;
+        remove_file_if_present(&self.step_path(id, n))
+    }
+
+    async fn unrecorded_step(&self, id: &ArtifactId, n: u32) -> Result<Option<String>> {
+        if !self.has_version(id, n) {
+            return Ok(None);
+        }
+        Ok(read_if_present(&self.step_path(id, n))?
+            .map(|b| String::from_utf8_lossy(&b).into_owned()))
     }
 
     async fn delete_artifact(&self, id: &ArtifactId) -> Result<()> {

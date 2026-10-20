@@ -98,6 +98,10 @@ pub struct ValidatedPublish {
     /// collision with any other path is refused. So a publish never
     /// confirms a withheld name by refusing it.
     pub hidden: Vec<String>,
+    /// The mark of the job step that publishes it (the caller fills it):
+    /// the content store keeps it with the version's content
+    /// ([`crate::content::VersionMeta::step`]).
+    pub step: Option<String>,
 }
 
 /// What a restore (`versions:restore`) may set beside the restored files,
@@ -407,6 +411,7 @@ pub fn validate(req: PublishRequest) -> Result<ValidatedPublish> {
         person: None,
         by_page: false,
         hidden: Vec::new(),
+        step: None,
     })
 }
 

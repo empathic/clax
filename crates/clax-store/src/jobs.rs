@@ -1122,6 +1122,13 @@ pub struct DraftRef {
     pub digest: String,
 }
 
+/// The mark publish step `key` of job `id` writes its version's content
+/// with ([`clax_core::content::VersionMeta::step`]): the two as a JSON
+/// array, one line, so no other step's mark equals it.
+pub fn step_mark(id: &str, key: &str) -> String {
+    serde_json::to_string(&[id, key]).expect("two strings serialise")
+}
+
 /// A publish step's body: the version it publishes and the document writes
 /// that land with it.
 pub struct PublishStep {
@@ -1330,6 +1337,7 @@ impl Store {
             done,
             ..
         } = s;
+        request.step = Some(step_mark(id, key));
         let named = artifact_id.as_deref().map(ArtifactId::parse).transpose()?;
         if named.is_none() && base != 0 {
             return Err(StepError::Store(CoreError::invalid(
