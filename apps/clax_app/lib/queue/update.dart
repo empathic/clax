@@ -129,7 +129,6 @@ void _handle(QueueTurn t, Msg msg) {
         }
       }
       t.m = t.m.copyWith(owner: OwnerHeldBy(token));
-      _resumePaused(t);
       final pending = t.m.pending;
       t.m = t.m.copyWith(pending: const []);
       for (final i in pending) {
@@ -255,21 +254,15 @@ void _handle(QueueTurn t, Msg msg) {
       }
     case Woke(:final foreground):
       if (!foreground) return;
-      _resumePaused(t);
+      // In the foreground the time is the app's again: paused jobs resume.
+      t.m = t.m.copyWith(suspended: false);
       if (t.m.local.values.any((l) => l.waitingFor == WaitingFor.claude)) {
         t.probe();
       }
     case OutOfTime():
-      for (final j in t.m.jobs.values) {
-        if (j.state == JobState.running || j.state == JobState.waiting) {
-          t.setLocal(
-            j.id,
-            (l) => l.intent == null
-                ? l.copyWith(intent: () => JobIntent.pause, resume: false)
-                : l,
-          );
-        }
-      }
+      // The resume table pauses what runs, and starts nothing, until the
+      // app is in the foreground again.
+      t.m = t.m.copyWith(suspended: true);
   }
 }
 
@@ -352,7 +345,6 @@ void _apply(QueueTurn t, Job job, {bool notify = true}) {
     if (lastTurn != null && lastTurn != l.turn) {
       n = n.copyWith(turn: lastTurn, results: const {});
     }
-    if (job.state != JobState.paused) n = n.copyWith(resume: false);
     if (job.state != JobState.running) {
       n = n.copyWith(waitingFor: () => null);
     }
@@ -463,13 +455,6 @@ void _clearWaiting(QueueTurn t, WaitingFor w) {
   }
 }
 
-void _resumePaused(QueueTurn t) {
-  for (final j in t.m.jobs.values) {
-    if (j.state == JobState.paused) {
-      t.setLocal(j.id, (l) => l.copyWith(resume: true));
-    }
-  }
-}
 
 /// What a refusal of effect [e] (null when it is no longer in flight)
 /// does; the row it carried is already applied.

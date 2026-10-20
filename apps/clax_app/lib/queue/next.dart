@@ -122,16 +122,17 @@ final class QueueTurn {
       if (_grant(job, intent)) return;
       setLocal(id, (l) => l.copyWith(intent: () => null));
     }
+    if (m.suspended) {
+      // Out of time: what runs pauses, and nothing starts or goes on.
+      if (job.state == JobState.running || job.state == JobState.waiting) {
+        move(job, JobState.paused);
+      }
+      return;
+    }
     if (workInFlight(id)) return;
     switch (job.state) {
-      case JobState.queued:
+      case JobState.queued || JobState.paused:
         if (running < QueueModel.maxRunning && !_sameAppRuns(job)) {
-          move(job, JobState.running);
-        }
-      case JobState.paused:
-        if (m.localOf(id).resume &&
-            running < QueueModel.maxRunning &&
-            !_sameAppRuns(job)) {
           move(job, JobState.running);
         }
       case JobState.running:
@@ -162,8 +163,8 @@ final class QueueTurn {
         final carry = job.carry;
         if (job.state != JobState.stopped || carry == null) return false;
         if (!carry.canKeepGoing) return false;
-        // Held, not dropped, while three jobs run.
-        if (running >= QueueModel.maxRunning) return true;
+        // Held, not dropped, while three jobs run or the time is out.
+        if (m.suspended || running >= QueueModel.maxRunning) return true;
         // From the second stop, the next turn plans the rest.
         move(
           job,
@@ -175,16 +176,10 @@ final class QueueTurn {
         return true;
       case JobIntent.retry:
         if (job.state != JobState.failed) return false;
-        if (running >= QueueModel.maxRunning) return true;
+        if (m.suspended || running >= QueueModel.maxRunning) return true;
         // The error stays: when it names a refused step, the next turn
         // plans from it, and the next committed step clears it.
         move(job, JobState.running);
-        return true;
-      case JobIntent.pause:
-        if (job.state != JobState.running && job.state != JobState.waiting) {
-          return false;
-        }
-        move(job, JobState.paused);
         return true;
     }
   }

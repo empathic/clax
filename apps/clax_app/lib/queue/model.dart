@@ -180,7 +180,7 @@ enum WaitingFor { claude, render }
 /// A person's wish for a job, kept until the job's row grants or outdates
 /// it: one commit of a job is in flight at a time, so a wish may wait for
 /// the one before to be answered.
-enum JobIntent { cancel, discard, keepGoing, retry, pause }
+enum JobIntent { cancel, discard, keepGoing, retry }
 
 /// What the worker knows of a job that the core does not keep; rebuilt
 /// after a restart.
@@ -190,7 +190,6 @@ final class JobLocal {
     this.turn = 0,
     this.results = const {},
     this.intent,
-    this.resume = false,
     this.noticed = 0,
   });
 
@@ -207,9 +206,6 @@ final class JobLocal {
 
   final JobIntent? intent;
 
-  /// A paused job goes on: set at launch and when the app comes to the
-  /// foreground.
-  final bool resume;
 
   /// The highest `rev` the core's events named for the job.
   final int noticed;
@@ -219,14 +215,12 @@ final class JobLocal {
     int? turn,
     Map<String, ToolResult>? results,
     JobIntent? Function()? intent,
-    bool? resume,
     int? noticed,
   }) => JobLocal(
     waitingFor: waitingFor == null ? this.waitingFor : waitingFor(),
     turn: turn ?? this.turn,
     results: results ?? this.results,
     intent: intent == null ? this.intent : intent(),
-    resume: resume ?? this.resume,
     noticed: noticed ?? this.noticed,
   );
 
@@ -237,7 +231,6 @@ final class JobLocal {
       other.turn == turn &&
       mapEquals(other.results, results) &&
       other.intent == intent &&
-      other.resume == resume &&
       other.noticed == noticed;
   @override
   int get hashCode => Object.hash(
@@ -245,7 +238,6 @@ final class JobLocal {
     turn,
     mapHash(results),
     intent,
-    resume,
     noticed,
   );
 }
@@ -343,6 +335,7 @@ final class QueueModel {
     this.local = const {},
     this.pending = const [],
     this.keepAlive = false,
+    this.suspended = false,
     this.claude = Reachability.unknown,
     this.canRender = true,
     this.probing = false,
@@ -364,6 +357,12 @@ final class QueueModel {
 
   /// Whether the app is asked to keep running.
   final bool keepAlive;
+
+  /// The operating system's time for the app ran out (`OutOfTime`), until
+  /// it comes to the foreground: running and waiting jobs pause, and no
+  /// job starts or goes on. A launch starts unsuspended, so paused jobs
+  /// resume then.
+  final bool suspended;
   final Reachability claude;
   final bool canRender;
 
@@ -388,6 +387,7 @@ final class QueueModel {
     Map<JobId, JobLocal>? local,
     List<Intent>? pending,
     bool? keepAlive,
+    bool? suspended,
     Reachability? claude,
     bool? canRender,
     bool? probing,
@@ -400,6 +400,7 @@ final class QueueModel {
     local: local ?? this.local,
     pending: pending ?? this.pending,
     keepAlive: keepAlive ?? this.keepAlive,
+    suspended: suspended ?? this.suspended,
     claude: claude ?? this.claude,
     canRender: canRender ?? this.canRender,
     probing: probing ?? this.probing,
@@ -416,6 +417,7 @@ final class QueueModel {
       mapEquals(other.local, local) &&
       listEquals(other.pending, pending) &&
       other.keepAlive == keepAlive &&
+      other.suspended == suspended &&
       other.claude == claude &&
       other.canRender == canRender &&
       other.probing == probing &&
@@ -429,6 +431,7 @@ final class QueueModel {
     mapHash(local),
     Object.hashAll(pending),
     keepAlive,
+    suspended,
     claude,
     canRender,
     probing,

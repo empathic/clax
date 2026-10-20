@@ -664,6 +664,7 @@ QueueModel model({
   Map<JobId, JobLocal> local = const {},
   Reachability claude = Reachability.reachable,
   bool canRender = true,
+  bool suspended = false,
   DateTime? now,
 }) => QueueModel(
   owner: owned ? const OwnerHeldBy('token') : const OwnerNone(),
@@ -675,6 +676,7 @@ QueueModel model({
   ),
   claude: claude,
   canRender: canRender,
+  suspended: suspended,
   now: now,
   nextEffect: 100,
 );

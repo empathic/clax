@@ -815,6 +815,47 @@ void main() {
     });
   });
 
+  group('rule 10b: out of time, the queue is suspended', () {
+    test('running jobs pause, and nothing starts until the app is in the foreground', () {
+      final running = [for (final id in ['x', 'y', 'z']) job(id, rev: 1)];
+      final m0 = model(
+        jobs: [...running, job('q', state: JobState.queued), job('s', state: JobState.stopped, carry: _carry(1))],
+        inFlight: [
+          for (final (i, j) in running.indexed) StartTurn(i + 1, j.id, _input(1)),
+        ],
+      );
+      var (m, e) = update(m0, const OutOfTime());
+      final pauses = e.whereType<MoveJob>().toList();
+      expect(pauses.map((p) => (p.jobId, p.to)), [
+        ('x', JobState.paused),
+        ('y', JobState.paused),
+        ('z', JobState.paused),
+      ]);
+      final after = <Effect>[];
+      for (final p in pauses) {
+        final row = m.jobs[p.jobId]!.copyWith(state: JobState.paused, rev: 2);
+        (m, e) = update(m, Committed(p.id, row));
+        after.addAll(e);
+      }
+      (m, e) = update(m, const KeepGoing('s'));
+      after.addAll(e);
+      (m, e) = update(m, const Woke(foreground: false));
+      after.addAll(e);
+      expect(
+        after.where((e) => e is MoveJob || e is StartTurn),
+        isEmpty,
+        reason: 'a freed slot starts nothing while the time is out',
+      );
+      expect(m.keepAlive, isFalse);
+      (m, e) = update(m, const Woke(foreground: true));
+      expect(
+        e.whereType<MoveJob>().map((p) => (p.jobId, p.to)),
+        [('x', JobState.running), ('y', JobState.running), ('z', JobState.running)],
+        reason: 'three run again, oldest first; Keep going and the queued job wait',
+      );
+    });
+  });
+
   group('rule 11: keep-alive follows running and waiting jobs', () {
     test('on when the first runs, off when the last ends', () {
       final j = job('j', state: JobState.queued);
@@ -1206,7 +1247,7 @@ const _intentTable = <JobState, Map<String, JobState>>{
 
 /// A model holding [j] in which nothing is left to emit on its own: a
 /// running job's turn is in flight, three other jobs run beside a queued
-/// one, and a paused job is not asked to resume.
+/// one, and a paused job waits while the time is out.
 QueueModel _settledWith(Job j) {
   final others = [
     if (j.state == JobState.queued)
@@ -1218,6 +1259,7 @@ QueueModel _settledWith(Job j) {
       for (final (i, o) in others.indexed) StartTurn(i + 1, o.id, _input(1)),
       if (j.state == JobState.running) StartTurn(9, j.id, _input(1)),
     ],
+    suspended: j.state == JobState.paused,
   );
 }
 
@@ -1403,16 +1445,13 @@ final List<_NextRow> _nextTable = [
   ),
   (
     name: 'paused, at launch or in the foreground → move to running',
-    model: () => model(
-      jobs: [job('j', state: JobState.paused)],
-      local: {'j': const JobLocal(resume: true)},
-    ),
+    model: () => model(jobs: [job('j', state: JobState.paused)]),
     job: 'j',
     want: (e) => expect((e as MoveJob).to, JobState.running),
   ),
   (
-    name: 'paused, not asked to resume → nothing',
-    model: () => model(jobs: [job('j', state: JobState.paused)]),
+    name: 'paused, while the time is out → nothing',
+    model: () => model(jobs: [job('j', state: JobState.paused)], suspended: true),
     job: 'j',
     want: null,
   ),
