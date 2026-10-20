@@ -436,7 +436,7 @@ test("another machine's Clax signs in by device code: the page names it, warns w
       return r.fulfill({ json: { items: none ? [] : [item], next_cursor: null, unread: 1 } });
     });
     await owner.goto(`${origin}/inbox`);
-    await expect(owner.locator(`.igroup[data-group="${item.artifact.id}"] .gtitle`)).toHaveText("Tide tables, 1 new");
+    await expect(owner.locator(`.igroup[data-group="${item.artifact.id}"] .gtitle`)).toHaveText("Tide tables");
     await expect(owner.locator(`[data-item="${item.id}"]`)).toContainText("https://clax.example refused v4");
     await expect(owner.locator(`[data-item="${item.id}"]`)).toContainText("someone published there since");
     await expect(owner.getByRole("button", { name: "Pushes" })).toBeVisible();

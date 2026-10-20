@@ -101,16 +101,17 @@ describe("InboxPage", () => {
     // One group per page, newest first; no Read section.
     const groups = [...m.root.querySelectorAll(".igroup")];
     expect(groups.map(g => [g.querySelector(".gtitle")!.textContent, g.querySelector(".gmeta")!.textContent, g.hasAttribute("data-fresh")]))
-      .toEqual([["Quarterly Review, 1 new", "1 new · 5m", true], ["Sales dashboard", "5m", false]]);
+      .toEqual([["Quarterly Review", "1 new · 5m", true], ["Sales dashboard", "5m", false]]);
     expect(m.root.querySelector(".fold, #inbox-read")).toBeNull();
     expect(card.compareDocumentPosition(groups[0]) & Node.DOCUMENT_POSITION_FOLLOWING).toBeTruthy();
     expect(groups[0].querySelector("h3.gtitle a")!.getAttribute("href")).toBe("/a/7q3k9mzx2b4t");
     // The toggle is named by the group's heading, its state in aria-expanded, and controls the body.
     const [first, second] = groups.map(g => g.querySelector<HTMLButtonElement>(".gtoggle")!);
     // Its name says how many are new; the visible count is not read twice.
-    expect(document.getElementById(first.getAttribute("aria-labelledby")!)!.textContent).toBe("Quarterly Review, 1 new");
+    expect(document.getElementById(first.getAttribute("aria-labelledby")!)!.getAttribute("aria-label")).toBe("Quarterly Review, 1 new");
     expect(groups[0].querySelector(".gnew")!.getAttribute("aria-hidden")).toBe("true");
-    expect(document.getElementById(second.getAttribute("aria-labelledby")!)!.textContent).toBe("Sales dashboard");
+    const quiet = document.getElementById(second.getAttribute("aria-labelledby")!)!;
+    expect([quiet.getAttribute("aria-label"), quiet.textContent]).toEqual([null, "Sales dashboard"]);
     expect(document.getElementById(first.getAttribute("aria-controls")!)!.classList.contains("gbody")).toBe(true);
     // Something new: open, its new row first (the question is its card alone). Nothing new: folded, no Mark read.
     expect([first.getAttribute("aria-expanded"), second.getAttribute("aria-expanded")]).toEqual(["true", "false"]);
@@ -159,7 +160,7 @@ describe("InboxPage", () => {
     await settle();
     expect(location.search).toBe("?unread=1");
     expect(calls.at(-1)!.url).toBe("/api/inbox?read=unread&group=artifact&rows=3");
-    expect([...m.root.querySelectorAll(".igroup .gtitle")].map(t => t.textContent)).toEqual(["Quarterly Review, 1 new"]);
+    expect([...m.root.querySelectorAll(".igroup .gtitle")].map(t => t.textContent)).toEqual(["Quarterly Review"]);
     expect(chip.getAttribute("aria-pressed")).toBe("true");
     m.unmount();
     history.replaceState(null, "", "/inbox?unread=1");
@@ -451,7 +452,7 @@ describe("InboxPage", () => {
     expect(unread.querySelector('.irow[data-item="IE"] .released a')!.textContent).toBe("Quarterly Review");
     // The connection request is a card: Other counts the two rows new.
     const other = unread.querySelector('.igroup[data-group="none"]')!;
-    expect([other.querySelector(".gtitle")!.textContent, other.querySelector(".gmeta")!.textContent]).toEqual(["Other, 2 new", "2 new · 5m"]);
+    expect([other.querySelector(".gtitle")!.textContent, other.querySelector(".gmeta")!.textContent]).toEqual(["Other", "2 new · 5m"]);
   });
 
   it("offers Mark all read only while something unread could be read: an open approval request stays unread until decided", async () => {

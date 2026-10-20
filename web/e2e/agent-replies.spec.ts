@@ -95,7 +95,7 @@ test("each reader reads its own person's agent's reply as its agent's, and anoth
     // name, Sam's with Sam, under Plan's heading.
     await owner.goto(`${d.base}/inbox`);
     const plan = owner.locator(`.igroup[data-group="${aid}"]`);
-    await expect(plan.locator(".gtitle")).toHaveText(/^Plan(, \d+ new)?$/);
+    await expect(plan.locator(".gtitle")).toHaveText("Plan");
     await expect(plan.locator(".title", { hasText: new RegExp(`^${name} replied$`) })).toHaveCount(1);
     await expect(plan.locator(".title", { hasText: /^sam-notes \(Sam's agent\) replied$/ })).toHaveCount(1);
   } finally {
