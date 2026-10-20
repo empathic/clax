@@ -104,6 +104,27 @@ describe("Echo top bar parts", () => {
     vi.unstubAllGlobals();
   });
 
+  it("in the Clax app the more menu has no Open raw or Copy link, and shows at phone width only", async () => {
+    vi.stubGlobal("matchMedia", (q: string) => ({ matches: q === "(max-width: 700px)" }));
+    const items = async () => {
+      const m = mount(MoreMenu, { rawHref: "/c/x/v/1/", canCopy: true, onCopy: vi.fn(), onVersions: vi.fn() });
+      flush(() => m.root.querySelector<HTMLButtonElement>("button.icon")!.click());
+      await new Promise(r => setTimeout(r));
+      const out = { items: Array.from(m.root.querySelectorAll("[role=menuitem]")).map(i => i.textContent), phoneOnly: m.root.querySelector(".more")!.classList.contains("phone-only") };
+      m.unmount();
+      return out;
+    };
+    expect(await items()).toEqual({ items: ["Versions", "Open raw", "Copy link"], phoneOnly: false });
+    // What `installTransport` leaves on a shell document in the app.
+    Object.defineProperty(window, "claxTransport", { configurable: true, value: Object.freeze({ embed: Object.freeze({ transport: "host", shell: "clax://app", content: "clax://{id}.c" }) }) });
+    try {
+      expect(await items()).toEqual({ items: ["Versions"], phoneOnly: true });
+    } finally {
+      delete (window as { claxTransport?: unknown }).claxTransport;
+      vi.unstubAllGlobals();
+    }
+  });
+
   it("at phone width on a live page the more menu reads Snapshots and lists Open page", async () => {
     vi.stubGlobal("matchMedia", (q: string) => ({ matches: q === "(max-width: 700px)" }));
     const m = mount(MoreMenu, { rawHref: "/c/x/v/1/", canCopy: true, onCopy: vi.fn(), onVersions: vi.fn(), pageHref: "http://localhost:5173/settings" });
