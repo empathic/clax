@@ -1,5 +1,5 @@
 import { describe, expect, it, vi } from "vitest";
-import { CHUNKED_OVER, type Transport, installTransport, readEmbed, transport } from "./transport";
+import { CHUNK, CHUNKED_OVER, type Transport, installTransport, readEmbed, transport } from "./transport";
 
 const ORIGIN = "https://app.clax.invalid";
 const NONCE = "N".repeat(16);
@@ -42,11 +42,34 @@ describe("the transport", () => {
     t.callResult(NONCE, sent[0].id as number, { status: 200, headers: [["content-type", "image/png"]], body64: "AP8=" });
     expect([...new Uint8Array(await (await p).arrayBuffer())]).toEqual([0, 255]);
   });
-  it("chunks a body over the limit", async () => {
+  it("chunks a body over the limit, each chunk its slice of the body, in order", async () => {
     const { sent, f } = open();
-    void f("/api/assets", { method: "POST", body: new Uint8Array(CHUNKED_OVER + 1) });
+    const body = new Uint8Array(CHUNKED_OVER + 3).map((_, i) => (i * 7 + (i >> 20)) % 251);
+    void f("/api/assets", { method: "POST", body });
     await vi.waitFor(() => expect(sent.filter(m => m.type === "callChunk").length).toBe(9));
-    expect(sent.at(-1)).toMatchObject({ type: "callChunk", last: true });
+    const [call, ...chunks] = sent;
+    expect(call).toMatchObject({ type: "call", chunked: true, body: null, body64: null });
+    expect(chunks.map(c => [c.id, c.n, c.last])).toEqual([...Array(9).keys()].map(n => [call.id, n, n === 8]));
+    // Decoded with Node's base64, not the transport's.
+    const same = chunks.map((c, n) => Buffer.from(c.body64 as string, "base64").equals(body.subarray(n * CHUNK, (n + 1) * CHUNK)));
+    expect(same).toEqual(chunks.map(() => true));
+  });
+  it("answers a null-body status with no body, whatever the app sent", async () => {
+    const { sent, t, f } = open();
+    const p = f("/api/x", { method: "DELETE" });
+    await vi.waitFor(() => expect(sent.length).toBe(1));
+    t.callResult(NONCE, sent[0].id as number, { status: 204, headers: [], body: "ignored" });
+    const r = await p;
+    expect(r.status).toBe(204);
+    expect(r.body).toBeNull();
+  });
+  it("rejects with a TypeError on a malformed result", async () => {
+    const { sent, t, f } = open();
+    const bad = [{ status: 0, headers: [] }, { status: 200, headers: [], body64: "not base64!" }, null];
+    const ps = bad.map(() => f("/api/x"));
+    await vi.waitFor(() => expect(sent.length).toBe(bad.length));
+    bad.forEach((r, i) => t.callResult(NONCE, sent[i].id as number, r as never));
+    for (const p of ps) await expect(p).rejects.toBeInstanceOf(TypeError);
   });
   it("aborts", async () => {
     const { sent, f } = open();
@@ -75,6 +98,18 @@ describe("the transport", () => {
     await f("/api/stream");
     expect(sent.map(m => m.lastEventId)).toEqual(["abc:4", "abc:9", undefined]);
     expect(Object.keys(sent[2]).sort()).toEqual(["id", "nonce", "type"]);
+  });
+  it("ends an open stream its signal aborts, and unsubscribes", async () => {
+    const { sent, t, f } = open();
+    const ac = new AbortController();
+    const r = await f("/api/stream", { signal: ac.signal });
+    const id = sent[0].id as number;
+    const reader = r.body!.getReader();
+    ac.abort();
+    await expect(reader.read()).rejects.toThrow(/abort/i);
+    expect(sent.at(-1)).toEqual({ type: "unsubscribe", id, nonce: NONCE });
+    t.streamBlock(NONCE, id, "late");
+    expect(sent.filter(m => m.type === "unsubscribe").length).toBe(1);
   });
   it("unsubscribes when the stream is cancelled", async () => {
     const { sent, f } = open();
