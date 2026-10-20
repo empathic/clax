@@ -65,7 +65,7 @@ test("lists each page once: new ones open and bold, the rest folded, the Unread 
   await expect(inbox.locator(".qcard")).toHaveCount(1);
   await expect(inbox.locator(".pinned-h")).toHaveText("Questions1");
   // One list, each page once, newest first; no Read section.
-  await expect(titles).toHaveText(["Sales dashboard", "Onboarding doc", "Pricing page"]);
+  await expect(titles).toHaveText(["Sales dashboard, 5 new", "Onboarding doc, 1 new", "Pricing page"]);
   await expect(page.getByRole("button", { name: /read item/ })).toHaveCount(0);
   // Five new on Sales (its publication and four replies), three listed, the rest a Show more away.
   await expect(group(sales).locator(".gmeta")).toHaveText(/^5 new · /);
@@ -76,7 +76,8 @@ test("lists each page once: new ones open and bold, the rest folded, the Unread 
   await expect(group(sales).getByRole("button", { name: "Show more" })).toHaveCount(0);
   // The title opens the page; the toggle folds the group.
   await expect(group(sales).getByRole("heading", { name: "Sales dashboard" }).getByRole("link")).toHaveAttribute("href", `/a/${sales}`);
-  const toggle = group(sales).getByRole("button", { name: "Sales dashboard", exact: true });
+  // The toggle is named by the heading, the new count with it.
+  const toggle = group(sales).getByRole("button", { name: "Sales dashboard, 5 new", exact: true });
   await expect(toggle).toHaveAttribute("aria-expanded", "true");
   await toggle.click();
   await expect(toggle).toHaveAttribute("aria-expanded", "false");
@@ -114,16 +115,16 @@ test("lists each page once: new ones open and bold, the rest folded, the Unread 
   // A group's Mark read clears its new items, and it stays where it is, open.
   await group(onboarding).getByRole("button", { name: "Mark Onboarding doc read" }).click();
   await expect(group(onboarding).locator(".gmeta")).not.toContainText("new");
-  await expect(titles).toHaveText(["Sales dashboard", "Onboarding doc", "Pricing page"]);
+  await expect(titles).toHaveText([/^Sales dashboard, 6 new$/, "Onboarding doc", "Pricing page"]);
   await expect(group(onboarding).getByRole("button", { name: "Onboarding doc", exact: true })).toHaveAttribute("aria-expanded", "true");
   await expect(group(sales).locator(".gmeta")).toHaveText(/^6 new · /);
 
   // The Unread chip: only the groups with something new, kept in the URL.
   await inbox.getByRole("button", { name: "Unread", exact: true }).click();
-  await expect(titles).toHaveText(["Sales dashboard"]);
+  await expect(titles).toHaveText(["Sales dashboard, 6 new"]);
   await expect(page).toHaveURL(/[?&]unread=1/);
   await inbox.getByRole("button", { name: "Unread", exact: true }).click();
-  await expect(titles).toHaveText(["Sales dashboard", "Onboarding doc", "Pricing page"]);
+  await expect(titles).toHaveText(["Sales dashboard, 6 new", "Onboarding doc", "Pricing page"]);
 
   // The Page filter: one group.
   await page.goto(`${d.base}/inbox?artifact=${sales}`);

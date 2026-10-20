@@ -2,8 +2,9 @@
 
 <script lang="ts">
   // One page's group in the inbox (`inbox-groups.ts`): a disclosure
-  // toggle named by the group's heading (its name fixed, its state in
-  // aria-expanded), the heading, the page's title (a link to it, while it
+  // toggle named by the group's heading (the page's title, and how many
+  // of its items are new: "Sales dashboard, 3 new"; its open state in
+  // aria-expanded alone), the heading, the page's title (a link to it, while it
   // has one),
   // how many of its items are new ("3 new") and its newest item's age, and
   // **Mark read** while any is new; its body, hidden while folded, the rows
@@ -42,8 +43,8 @@
     <button type="button" class="gtoggle" onclick={p.onToggle} aria-expanded={p.open} aria-controls={p.id} aria-labelledby={`${p.id}-t`}>
       <svg viewBox="0 0 16 16" aria-hidden="true"><path d="M6 4l4 4-4 4" /></svg>
     </button>
-    <h3 class="gtitle" id={`${p.id}-t`} data-other={p.group.key === "none" ? "" : undefined}>{#if href}<a {href}>{title}</a>{:else}{title}{/if}</h3>
-    <span class="gmeta">{#if p.fresh}<span class="gnew">{p.fresh.toLocaleString("en-US")} new</span><span aria-hidden="true">{" · "}</span>{/if}<time datetime={p.group.newestAt}>{shortAge(p.group.newestAt, p.now ?? new Date())}</time></span>
+    <h3 class="gtitle" id={`${p.id}-t`} data-other={p.group.key === "none" ? "" : undefined}>{#if href}<a {href}>{title}</a>{:else}{title}{/if}{#if p.fresh}<span class="gsr">{`, ${p.fresh.toLocaleString("en-US")} new`}</span>{/if}</h3>
+    <span class="gmeta">{#if p.fresh}<span class="gnew" aria-hidden="true">{p.fresh.toLocaleString("en-US")} new</span><span aria-hidden="true">{" · "}</span>{/if}<time datetime={p.group.newestAt}>{shortAge(p.group.newestAt, p.now ?? new Date())}</time></span>
     {#if p.onRead}<button type="button" class="gread" onclick={p.onRead} aria-label={`Mark ${title} read`}>Mark read</button>{/if}
   </div>
   <div class="gbody" id={p.id} hidden={!p.open}>
@@ -67,6 +68,7 @@
     .igroup:not([data-fresh]) .gtitle { font-weight: 500; color: var(--muted); }
     .igroup .gmeta { flex: 1 0 auto; color: var(--muted); font-size: 12.5px; white-space: nowrap; font-variant-numeric: tabular-nums; }
     .igroup .gnew { color: var(--agent-ink); font-weight: 600; }
+    .igroup .gsr { position: absolute; width: 1px; height: 1px; overflow: hidden; clip-path: inset(50%); white-space: nowrap; }
     .igroup .gread { flex: none; min-height: 28px; padding: 2px 10px; font-size: 12.5px; color: var(--muted); background: none; border-color: transparent; }
     .igroup .gread:hover { color: var(--fg); background-color: var(--hover); border-color: transparent; }
     .igroup .gbody { padding: 0 0 8px 34px; min-width: 0; }

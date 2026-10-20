@@ -59,7 +59,7 @@ test("/inbox lists the unread items, opens one and marks it read, and keeps its 
   await page.goto(`${d.base}/inbox`);
   // Its row, under the page's heading.
   const group = page.locator(`.inbox .igroup[data-group="${artifact.id}"]`);
-  await expect(group.locator(".gtitle")).toHaveText("Sales dashboard");
+  await expect(group.locator(".gtitle")).toHaveText("Sales dashboard, 1 new");
   const row = group.locator(".irow", { hasText: "published the page" });
   await expect(row).toHaveAttribute("data-unread", "");
   await expect(page.locator(".gbar .inbox-link .count")).toHaveText("1");
