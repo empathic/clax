@@ -620,27 +620,100 @@ describe("the stream hub on the app's host (`host: true`)", () => {
     expect(of("t1", "status")).toEqual([]);
   });
 
-  it("opens the stream again at once when it ends, from where it stopped, with no status and no token request", async () => {
+  /** A host hub whose requests are recorded in `asked`. */
+  const asking = () => {
     const asked: string[] = [];
     const f = net.fetch;
     host.close();
     host = hostHub(((i, init) => { asked.push(String(i)); return f(i, init); }) as typeof fetch);
+    return asked;
+  };
+  /** The core's closing block of a subscription. */
+  const endBlock = (data: object) => `event: end\ndata: ${JSON.stringify(data)}\n\n`;
+
+  it("opens a stream that ends with no ready again after growing waits, with no status and no token request", async () => {
+    const asked = asking();
     host.receive("t1", { t: "topics", topics: [`artifact:${A}`] });
     await tick();
-    net.ready(net.conns[0], S1);
-    await tick();
-    net.event(net.conns[0], S1, 7, `artifact:${A}`, "version", { artifact_id: A, n: 2 });
+    // backoff(n) waits 500 * 2^n ms, give or take a fifth.
+    for (const [n, floor] of [[1, 400], [2, 800], [3, 1600]]) {
+      net.conns.at(-1)!.end();
+      await vi.advanceTimersByTimeAsync(floor - 1);
+      expect(net.conns).toHaveLength(n);
+      await vi.advanceTimersByTimeAsync(floor * 1.5 + 1);
+      expect(net.conns).toHaveLength(n + 1);
+    }
+    expect(of("t1", "status")).toEqual([]);
+    expect(asked.filter(u => u === "/api/token")).toEqual([]);
+  });
+
+  it("opens a stream that ended after its ready again after one short wait, from where it stopped", async () => {
+    const asked = asking();
+    host.receive("t1", { t: "topics", topics: [`artifact:${A}`] });
     await tick();
     for (let round = 1; round <= 3; round++) {
-      net.conns.at(-1)!.end();
+      net.ready(net.conns.at(-1)!, S1, round > 1, [`artifact:${A}`]);
       await tick();
+      net.event(net.conns.at(-1)!, S1, 6 + round, `artifact:${A}`, "version", { artifact_id: A, n: 2 });
+      await tick();
+      net.conns.at(-1)!.push(endBlock({ reason: "core_closed" }));
+      net.conns.at(-1)!.end();
+      await vi.advanceTimersByTimeAsync(399);
+      expect(net.conns).toHaveLength(round);
+      await vi.advanceTimersByTimeAsync(202);
       expect(net.conns).toHaveLength(round + 1);
-      expect(net.conns.at(-1)!.headers["Last-Event-ID"]).toBe(`${S1}:7`);
+      expect(net.conns.at(-1)!.headers["Last-Event-ID"]).toBe(`${S1}:${6 + round}`);
     }
-    net.ready(net.conns.at(-1)!, S1, true, [`artifact:${A}`]);
-    await tick();
     expect(of("t1", "status")).toEqual([]);
     expect(of("t1", "live")).toHaveLength(1);
+    expect(asked.filter(u => u === "/api/token")).toEqual([]);
+  });
+
+  for (const status of [400, 403, 404]) {
+    it(`opens nothing after the host refuses the stream ${status}, until a tab's topics change`, async () => {
+      host.receive("t1", { t: "topics", topics: [`artifact:${A}`] });
+      await tick();
+      net.conns[0].push(endBlock({ reason: "stream_refused", status }));
+      net.conns[0].end();
+      await vi.advanceTimersByTimeAsync(TEN_MINUTES);
+      expect(net.conns).toHaveLength(1);
+      expect(of("t1", "status")).toEqual([]);
+      host.receive("t1", { t: "topics", topics: [`artifact:${A}`, "gallery"] });
+      await tick();
+      expect(net.conns).toHaveLength(2);
+      await vi.advanceTimersByTimeAsync(TEN_MINUTES);
+      expect(net.conns).toHaveLength(2);
+    });
+  }
+
+  it("opens a stream the host refused 503 again after a backoff", async () => {
+    host.receive("t1", { t: "topics", topics: [`artifact:${A}`] });
+    await tick();
+    net.conns[0].push(endBlock({ reason: "stream_refused", status: 503 }));
+    net.conns[0].end();
+    await vi.advanceTimersByTimeAsync(399);
+    expect(net.conns).toHaveLength(1);
+    await vi.advanceTimersByTimeAsync(202);
+    expect(net.conns).toHaveLength(2);
+  });
+
+  it("opens the stream again after a backoff, not at once, when a subscription answers 503", async () => {
+    const asked = asking();
+    net.refuse.set("gallery", [503, "internal"]);
+    host.receive("t1", { t: "topics", topics: ["gallery"] });
+    await tick();
+    // Each new stream says ready, which resets the backoff: one short wait each.
+    for (const n of [1, 2, 3]) {
+      const floor = 400;
+      net.ready(net.conns.at(-1)!, S1);
+      await tick();
+      expect(net.posts).toHaveLength(n);
+      await vi.advanceTimersByTimeAsync(floor - 1);
+      expect(net.conns).toHaveLength(n);
+      await vi.advanceTimersByTimeAsync(floor * 1.5 + 1);
+      expect(net.conns).toHaveLength(n + 1);
+    }
+    expect(of("t1", "status")).toEqual([]);
     expect(asked.filter(u => u === "/api/token")).toEqual([]);
   });
 });

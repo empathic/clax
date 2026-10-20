@@ -26,8 +26,12 @@
 // On the Clax app's host (`host`: the shell runs on the app's transport,
 // `transport.ts`, whose `GET /api/stream` the app fills with the core's
 // events) the host owns liveness: the hub sets no timeout on the stream or
-// its subscriptions, never tells the tabs the stream is down, and opens the
-// stream again at once whenever it ends, from its `Last-Event-ID`.
+// its subscriptions, never tells the tabs the stream is down, and never
+// requests `/api/token`. The host passes the core's closing `event: end`
+// block through: after `stream_refused` with 400, 403 or 404 the hub opens
+// nothing until a tab's topics change; after any other end, and after a
+// 5xx answer to a subscription, it opens the stream again after the backoff
+// (reset by `ready`), from its `Last-Event-ID`.
 //
 // Notifications (a hub made with `notify`): tabs say whether they have focus.
 // For each new unread inbox item (an `inbox_item` event whose `seq` is above
@@ -99,6 +103,9 @@ export const CATCH_UP_SHOWN = 3;
 
 type Timer = ReturnType<typeof setTimeout>;
 
+/** The statuses of a stream the app's host refused that asking again cannot change. */
+const FINAL: ReadonlySet<number> = new Set([400, 403, 404]);
+
 /** The codes of a refused or released live seat (spec
  * 2026-10-11-clax-dev-hosted-design §16.1). */
 const SEAT_CODES: ReadonlySet<string> = new Set(["no_live_seat", "seat_idle"]);
@@ -146,7 +153,8 @@ export type HubEnv = {
   notify?: boolean;
   /** Opens a WebSocket to `url` (default: the global `WebSocket`). */
   socket?: (url: string) => WebSocket;
-  /** The stream is the app's host's: no timeouts, no backoff, no `status`. */
+  /** The stream is the app's host's: no timeouts, no `status`, no token
+   * request, and a reopen paced by the core's `end` block. */
   host?: boolean;
 };
 
@@ -174,6 +182,9 @@ export class Hub {
   /** The tabs were told the connection is down, and not yet that it is up. */
   private toldDown = false;
   private failures = 0;
+  /** The `end` block the open stream closed with (the app's host passes the
+   * core's), else null. */
+  private ended: { reason?: unknown; status?: unknown } | null = null;
   private retry: Timer | undefined;
   private linger: Timer | undefined;
   private watchdog: Timer | undefined;
@@ -337,6 +348,7 @@ export class Hub {
     this.drop();
     clearTimeout(this.retry);
     this.retry = undefined;
+    this.ended = null;
     const ac = new AbortController();
     this.conn = ac;
     this.arm(ac, CONNECT_MS);
@@ -346,7 +358,7 @@ export class Hub {
   private async run(ac: AbortController): Promise<void> {
     // After a failure the daemon may have restarted with a new token: the
     // token request renews the events cookie (a LAN view gets a 403 and none).
-    if (this.failures > 0) await this.fetch(this.url("/api/token"), { signal: ac.signal, cache: "no-store" }).catch(() => null);
+    if (this.failures > 0 && !this.env.host) await this.fetch(this.url("/api/token"), { signal: ac.signal, cache: "no-store" }).catch(() => null);
     if (this.socketMode) return this.runSocket(ac);
     const headers: Record<string, string> = {};
     if (this.streamId) headers["Last-Event-ID"] = `${this.streamId}:${this.seq}`;
@@ -421,6 +433,7 @@ export class Hub {
     let data: Record<string, unknown>;
     try { data = JSON.parse(raw); } catch { return; }
     if (!data || typeof data !== "object") return;
+    if (name === "end") { this.ended = data; return; }
     if (name === "ready") {
       this.arm(ac, IDLE_MS);
       this.caller = callerKey(data.caller);
@@ -566,14 +579,15 @@ export class Hub {
   }
 
   /** The connection failed or is stuck: retried after a backoff; the tabs
-   * hear it is down. On the host, opened again at once, the tabs told nothing. */
+   * hear it is down. On the host the tabs are told nothing, and a stream
+   * the core refused for good (400, 403, 404) is not retried: a tab's next
+   * topics open it again. */
   private fail(): void {
     this.drop();
-    if (this.env.host) {
-      if (this.wanted().size) this.connect();
-      return;
-    }
-    if (!this.toldDown) {
+    const final = this.env.host && this.ended?.reason === "stream_refused" && FINAL.has(this.ended.status as number);
+    this.ended = null;
+    if (final) { clearTimeout(this.retry); this.retry = undefined; return; }
+    if (!this.toldDown && !this.env.host) {
       this.toldDown = true;
       if (this.clients.size) this.env.send([...this.clients.keys()], { t: "status", up: false });
     }

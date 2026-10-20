@@ -375,10 +375,13 @@ panics answers 500 `internal` instead, so its stream ends
 `stream_refused` with 500), so each consumer, including one on an isolate with no
 open port, knows to resubscribe or stop. As a loopback SSE client does,
 a consumer stops for good only on `stream_refused` with 400, 403 or 404,
-which asking again cannot change, and on `core_closed` or `core_failed`
-(reopening the core is its host's work); after `stream_ended`,
-`internal` or any other refusal it subscribes again with the stream's backoff (0.5 s
-doubling to 30 s). Topic changes go over `call` as
+which asking again cannot change; after `stream_ended`, `internal` or any
+other refusal it subscribes again with the stream's backoff (0.5 s
+doubling to 30 s, reset by the next `ready`). On `core_closed` or
+`core_failed` a Dart consumer stops (reopening the core is its host's
+work, and the host subscribes it again then); a shell document, which
+cannot see the core reopen, subscribes again with the backoff, so it
+heals once the host has reopened the core (§5.2). Topic changes go over `call` as
 today's `POST /api/stream/<id>` (`as: owner`). A subscriber that falls
 behind gets the hub's `resync`, as an SSE client does. The SSE route and
 the subscription share the hub's connection type; the hub gains only what
@@ -697,14 +700,27 @@ with a `Response` whose body is a `ReadableStream`: it posts `{type:
 "subscribe", id, lastEventId?}`, `lastEventId` the request's
 `Last-Event-ID` (or `last_event_id` query) when it names one, the host
 opens a core subscription for that document from that point (§2.4) and
-pushes each block by `claxTransport.streamBlock(nonce, id, text)`, which
-the stream enqueues; `claxTransport.streamEnd(nonce, id)` (the core
-closed, for a reopen) ends it, and the hub opens the stream again with its
-`Last-Event-ID`, as after any end, so the new subscription resumes where
-the last one stopped. The hub's topic
-subscriptions go as today's `POST /api/stream/<id>` calls. In host mode the
-hub has no connect timeout, no idle timeout and no backoff, and never
-reports `stream_down`: the host owns liveness.
+pushes each block of the core's subscription, the closing `event: end`
+included (§2.4), by `claxTransport.streamBlock(nonce, id, text)`, which
+the stream enqueues, then calls `claxTransport.streamEnd(nonce, id)`,
+which ends the body. The hub's topic subscriptions go as today's
+`POST /api/stream/<id>` calls.
+
+In host mode the hub reads the `end` block's `{reason, status}` and
+paces itself by it, as §2.4's consumers do:
+
+- after `stream_refused` with 400, 403 or 404 it opens nothing, and opens
+  the stream again only when a tab's topics change;
+- after any other end (a body that ends with no `end` block included),
+  and after a 5xx answer to `POST /api/stream/<id>`, it opens the stream
+  again after the stream's backoff (`lifecycle.ts` `backoff(failures++)`:
+  0.5 s doubling to 30 s), from its `Last-Event-ID`, so the new
+  subscription resumes where the last one stopped; `ready` resets the
+  count.
+
+It has no connect, idle or subscription timeout, never requests
+`/api/token`, and never tells the tabs `status` (no `stream_down`): a
+silent stream is never failed on the host, which owns liveness.
 
 The transport adds a style of its own that hides `.conn-notice`, so
 "Live updates paused. Reconnecting…" and "Clax is not answering.
