@@ -295,7 +295,7 @@ into credentials:
 | `as` | Who sends it | What the core adds | Paths it may reach |
 |---|---|---|---|
 | `owner` | Dart (the app's own code and agent), and shell calls the host relays (§5) | `Authorization: Bearer <token>` unless the frame carries an `Authorization` (an agent session's own); `Host: localhost`; `ConnectInfo` of a loopback peer | everything but `/api/admin/shutdown` and the routes that hold their connection open (`clax_server::router::held_open`: `/api/stream`, `/api/events`, `/api/artifacts/{aid}/room`, `/api/artifacts/{aid}/live`, `/mcp`), since a call's body is read whole; events go by `subscribe`, and `POST /api/stream/{id}` is allowed |
-| `shell-page` | the host, for a scheme request to the shell's origin (§4.2) | `Host: localhost`; the owner cookie (`clax_owner_80`), so the shell's documents are the owner's browser's (§4.3); of the frame's headers, only `Range`, `If-None-Match`, `If-Modified-Since`, `Accept` and `Service-Worker` | the shell's documents and assets only: `/a/…`, `/assets/…`, `/_clax/…`, `/c/…`, `/_blob/…`, `/favicon.ico`; never `/api/` |
+| `shell-page` | the host, for a scheme request to the shell's origin (§4.2) | `Host: localhost`; the owner cookie (`clax_owner_80`), so the shell's documents are the owner's browser's (§4.3); of the frame's headers, only `Range`, `If-None-Match`, `If-Modified-Since`, `Accept` and `Service-Worker` | the shell document and what the core serves it only: `/a/…`, `/_clax/…` (the web UI's files), `/c/…`, `/_blob/…`; never `/api/` |
 | `content` | the host, for a scheme request to an artifact's origin | `Host: <host>.localhost`; no credential; of the frame's headers, only `Range`, `If-None-Match`, `If-Modified-Since`, `Accept` and `Service-Worker` | what `rewrite_artifact_host` admits on an artifact host (`/v/…`, `/draft/…`, `/_blob/…`, `/_clax/…`) |
 
 A response frame is `CLX1`, a length, JSON `{"status":200,"headers":[…]}`,
@@ -429,8 +429,10 @@ hosts are not intercepted (the content policy already refuses them).
    `Access-Control-*` header (§4.3), and with `Cache-Control` as the core
    sent it.
 
-A shell document (any HTML answer on the shell's host: `/`, `/inbox`,
-`/people`, `/a/…`) is answered only to a main-frame navigation; any other
+A shell document (the HTML answer to `/a/<id>`, the only document the app
+loads on the shell's host: it loads no gallery documents, so `/`, `/inbox`
+and `/people` are not shell documents in the app, and a `shell-page` frame
+cannot reach them) is answered only to a main-frame navigation; any other
 request for one answers 403. On Android the handler reads it from the
 request (`WebResourceRequest.isForMainFrame()`). On Apple a
 `WKURLSchemeTask` names no frame, so the navigation policy decides it

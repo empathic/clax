@@ -522,11 +522,12 @@ pub fn admit(head: &RequestHead) -> Result<(), &'static str> {
         As::Owner => {
             !clax_server::router::held_open::matches(path) && path != "/api/admin/shutdown"
         }
+        // The shell document and what the core serves it: the web UI's
+        // files under `/_clax/`, a version's files, and assets.
         As::ShellPage => {
-            read && (["/a/", "/assets/", "/_clax/", "/c/", "/_blob/"]
+            read && ["/a/", "/_clax/", "/c/", "/_blob/"]
                 .iter()
                 .any(|p| path.starts_with(p))
-                || path == "/favicon.ico")
         }
         As::Content => read && head.host.as_deref().is_some_and(content_host),
     };
@@ -1097,8 +1098,8 @@ mod tests {
             ("POST", "/api/admin/shutdown", As::Owner, None, false),
             ("GET", "api/artifacts", As::Owner, None, false),
             ("GET", "/a/7q3k9mzx2b4t?app=1", As::ShellPage, None, true),
-            ("HEAD", "/assets/x.js", As::ShellPage, None, true),
-            ("GET", "/favicon.ico", As::ShellPage, None, true),
+            ("HEAD", "/assets/x.js", As::ShellPage, None, false),
+            ("GET", "/favicon.ico", As::ShellPage, None, false),
             ("GET", "/api/token", As::ShellPage, None, false),
             ("GET", "/", As::ShellPage, None, false),
             ("POST", "/a/x", As::ShellPage, None, false),

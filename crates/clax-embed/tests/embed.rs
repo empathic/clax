@@ -258,11 +258,11 @@ async fn the_shell_document_and_its_files_answer_a_shell_page_frame_as_the_owner
         let (res, _) = call(&embed, head("GET", f, As::ShellPage), b"").await;
         assert_eq!(res.status, 200, "{f}");
     }
-    // `/assets/…` and `/favicon.ico` reach the router as the owner: this
-    // web UI has neither, so they answer its 404, never 401.
+    // The web UI serves neither `/assets/…` nor `/favicon.ico`, and the
+    // app does not admit them.
     for p in ["/assets/x.js", "/favicon.ico"] {
-        let (res, _) = call(&embed, head("GET", p, As::ShellPage), b"").await;
-        assert_eq!(res.status, 404, "{p}");
+        let (status, v) = call_json(&embed, head("GET", p, As::ShellPage), None).await;
+        not_in_app(status, &v);
     }
     embed.close();
 }
