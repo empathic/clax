@@ -71,6 +71,9 @@ POLL="${CLAX_RELEASE_POLL_SECONDS:-20}"
 MAX_POLLS="${CLAX_RELEASE_MAX_POLLS:-270}"
 ACT_FLAG="--i-know-what-i-am-doing"
 NPM="${CLAX_RELEASE_NPM:-npm}"
+# The GitHub environment publish-pi.yml's job runs in, which npm's trusted
+# publisher names and the repository limits to main.
+NPM_ENV=npm
 PNPM="${CLAX_RELEASE_PNPM:-pnpm}"
 
 usage() {
@@ -368,6 +371,7 @@ preflight() {
         problem "gh is not signed in (gh auth login)"
     fi
     check_npm
+    check_npm_environment
     check_signing
 }
 
@@ -375,6 +379,36 @@ NOTES=()
 # The Pi package on npm. Trusted publishing (publish-pi.yml) needs a package
 # that exists, so while it does not, step 14 publishes the first version
 # from here, which needs npm signed in and pnpm for the typecheck.
+# The npm environment, read-only: it must exist and allow only main, or a
+# run dispatched on another ref could get npm's token. Creating it is a
+# repository setting the owner makes; this only says how. A dry run warns,
+# a release refuses, unless npm has the version already.
+check_npm_environment() {
+    local err policy branches why=""
+    semver_ok "$V" || return 0
+    command -v gh >/dev/null 2>&1 && [ -n "${GH_REPO:-}" ] || return 0
+    if command -v "$NPM" >/dev/null 2>&1 && pi_has_version; then return 0; fi
+    err="$(mktemp)"
+    if ! policy="$(gh api "repos/$GH_REPO/environments/$NPM_ENV" \
+        --jq '.deployment_branch_policy | if . == null then "none" else "\(.protected_branches) \(.custom_branch_policies)" end' 2>"$err")"; then
+        case "$(cat "$err")" in
+            *404* | *"Not Found"*) why="the repository has no environment $NPM_ENV" ;;
+            *) why="cannot read the environment $NPM_ENV: $(tr '\n' ' ' < "$err")" ;;
+        esac
+    elif [ "$policy" != "false true" ]; then
+        why="the environment $NPM_ENV does not limit its deployment branches to main"
+    elif ! branches="$(gh api "repos/$GH_REPO/environments/$NPM_ENV/deployment-branch-policies" \
+        --jq '[.branch_policies[] | "\(.type // "branch"):\(.name)"] | join(",")' 2>"$err")"; then
+        why="cannot read the environment $NPM_ENV's deployment branches: $(tr '\n' ' ' < "$err")"
+    elif [ "$branches" != "branch:main" ]; then
+        why="the environment $NPM_ENV allows ${branches:-no branch}, not main alone"
+    fi
+    rm -f "$err"
+    [ -n "$why" ] || return 0
+    why="$why. publish-pi.yml runs in it; in GitHub, the repository's Settings, Environments, New environment (or $NPM_ENV), name $NPM_ENV; Deployment branches and tags: Selected branches and tags; Add deployment branch or tag rule: branch main"
+    if [ "$ACT" = 1 ]; then problem "$why"; else NOTES+=("WARN: $why"); fi
+}
+
 check_npm() {
     local on err
     if ! command -v "$NPM" >/dev/null 2>&1; then problem "npm is not on PATH"; return 0; fi
@@ -688,7 +722,7 @@ pi_first_publish() {
     say "  $(pi_package)@$V is on npm. Later releases publish through publish-pi.yml, which uses npm"
     say "  trusted publishing; set it up once, now: on npmjs.com, the package's Settings, Trusted"
     say "  Publisher, GitHub Actions: organization ${GH_REPO%%/*}, repository ${GH_REPO#*/}, workflow"
-    say "  publish-pi.yml, and no environment (the workflow declares none)."
+    say "  publish-pi.yml, environment $NPM_ENV."
 }
 pi_publish_from() {
     local pkg="$1" version pinned
@@ -736,7 +770,7 @@ step_15() {
     if [ -e "$ROOT/target/release/$V/pi-first-publish" ]; then
         say "  - once: set up npm trusted publishing for $(pi_package) (npmjs.com, the package's Settings,"
         say "    Trusted Publisher, GitHub Actions: organization ${GH_REPO%%/*}, repository ${GH_REPO#*/},"
-        say "    workflow publish-pi.yml, no environment), so later releases publish through the workflow"
+        say "    workflow publish-pi.yml, environment $NPM_ENV), so later releases publish through the workflow"
         say "  - switch README.md and plugins/pi/README.md to lead their Pi install with"
         say "    \`pi install npm:$(pi_package)\`"
     fi

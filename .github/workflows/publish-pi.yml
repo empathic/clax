@@ -13,10 +13,14 @@ name: Publish Pi package
 # find it.
 #
 # It publishes through npm trusted publishing (OIDC, no token) with
-# provenance, so the package on npmjs.com must name this repository and
-# workflow (no environment: the job declares none) as its trusted
-# publisher. npm offers that only for a package that exists, so the first
-# version is not published here: scripts/release.sh publishes it from the
+# provenance, so the package on npmjs.com must name this repository, this
+# workflow and the environment `npm` as its trusted publisher. The job runs
+# in that environment, whose deployment branches the repository's settings
+# limit to main (Settings, Environments, npm, Deployment branches and tags:
+# Selected, main), so npm refuses a token from a run dispatched on any
+# other ref, whatever that ref's copy of this file checks. npm offers
+# trusted publishing only for a package that exists, so the first version
+# is not published here: scripts/release.sh publishes it from the
 # releaser's machine (npm publish from a worktree of the pin commit) and
 # prints that setup.
 on:
@@ -46,6 +50,7 @@ jobs:
   publish:
     name: Publish @empathic/clax-pi
     runs-on: ubuntu-24.04
+    environment: npm
     permissions:
       contents: read
       actions: read

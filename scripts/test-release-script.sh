@@ -126,7 +126,17 @@ case "$1 $2" in
             *) echo "no assets match the file pattern" >&2; exit 1 ;;
         esac ;;
     "api repos/"*)
-        origin rev-parse "${2##*/}^{tree}" ;;
+        # The npm environment: limited to main unless $FAKE_STATE/no-env
+        # (none), env-open (any branch) or env-branch (another branch).
+        case "$2" in
+            */environments/npm)
+                if [ -e "$S/no-env" ]; then echo "gh: Not Found (HTTP 404)" >&2; exit 1; fi
+                if [ -e "$S/env-open" ]; then echo none; else echo "false true"; fi ;;
+            */environments/npm/deployment-branch-policies)
+                if [ -e "$S/env-branch" ]; then echo "branch:release"; else echo "branch:main"; fi ;;
+            */git/commits/*) origin rev-parse "${2##*/}^{tree}" ;;
+            *) echo "fake gh: unexpected: $*" >&2; exit 2 ;;
+        esac ;;
     "run list")
         sha="$(flag --commit "$@")"
         case "$(flag --workflow "$@")" in
@@ -648,12 +658,37 @@ case_15() {
         && [ "$(count "pnpm install --frozen-lockfile (in plugins/pi)")" = 1 ] && [ "$(count "pnpm run typecheck (in plugins/pi)")" = 1 ] \
         && [ "$(grep -c '^gh workflow run' "$FAKE_STATE/calls")" = 0 ] \
         && has "GitHub Actions: organization empathic, repository clax-test, workflow" \
-        && has "publish-pi.yml, and no environment (the workflow declares none)" \
+        && has "publish-pi.yml, environment npm." \
         && has "switch README.md and plugins/pi/README.md to lead their Pi install with" \
         && [ ! -e "$C/repo/target/release/0.6.0/pi-publish" ] \
         && [ "$(git -C "$C/repo" worktree list | wc -l | tr -d ' ')" = 1 ]; then
         pass "a Pi package not on npm is published from here, from the pin commit, with the trusted-publisher setup"
     else fail "the first Pi publish (rc=$rc: $(actions); $(cat "$C/out"))"; fi
+}
+case_15b() {
+    # The npm environment missing or open to more than main: a dry run warns
+    # with the steps to make it, a release refuses before anything.
+    new_case
+    : > "$FAKE_STATE/no-env"
+    release 0.6.0; rc=$?
+    if [ "$rc" = 0 ] && has "note: WARN: the repository has no environment npm" \
+        && has "Settings, Environments, New environment (or npm), name npm; Deployment branches and tags: Selected branches and tags; Add deployment branch or tag rule: branch main"; then
+        pass "a dry run warns that the npm environment is missing, with the steps to make it"
+    else fail "a dry run with no npm environment (rc=$rc: $(cat "$C/out"))"; fi
+    refuse "a release with no npm environment" "FAIL: the repository has no environment npm"
+    rm "$FAKE_STATE/no-env"
+    : > "$FAKE_STATE/env-open"
+    refuse "an npm environment open to every branch" "the environment npm does not limit its deployment branches to main"
+    rm "$FAKE_STATE/env-open"
+    : > "$FAKE_STATE/env-branch"
+    refuse "an npm environment for another branch" "the environment npm allows branch:release, not main alone"
+    rm "$FAKE_STATE/env-branch"
+    # The version on npm already: the environment no longer matters.
+    : > "$FAKE_STATE/no-env"
+    echo 0.6.0 > "$FAKE_STATE/npm-versions"
+    release 0.6.0; rc=$?
+    if [ "$rc" = 0 ] && ! has "WARN"; then pass "a version npm has already needs no npm environment"
+    else fail "a version npm has already, with no npm environment (rc=$rc: $(cat "$C/out"))"; fi
 }
 case_16() {
     # A publish npm has not listed yet when the wait gives up: the rerun finds
@@ -852,7 +887,7 @@ case_37() {
 
 JOBS="$(getconf _NPROCESSORS_ONLN 2>/dev/null || echo 4)"
 [ "$JOBS" -le 8 ] || JOBS=8
-CASES="case_1 case_2 case_3 case_4 case_5 case_5b case_5c case_6 case_7 case_8 case_9 case_10 case_11 case_12 case_13 case_14 case_15 case_16 case_16b case_16c case_17 case_18 case_19 case_20 case_21 case_22 case_23 case_24 case_25 case_26 case_27 case_28 case_29 case_30 case_31 case_32 case_33 case_34 case_35 case_36 case_37"
+CASES="case_1 case_2 case_3 case_4 case_5 case_5b case_5c case_6 case_7 case_8 case_9 case_10 case_11 case_12 case_13 case_14 case_15 case_15b case_16 case_16b case_16c case_17 case_18 case_19 case_20 case_21 case_22 case_23 case_24 case_25 case_26 case_27 case_28 case_29 case_30 case_31 case_32 case_33 case_34 case_35 case_36 case_37"
 # A case's subshell exits 0 once its last check has run; one that dies on
 # the way (an unbound variable under set -u, say) exits otherwise, and fails
 # the gate whatever it printed before. Each case's status is collected by its

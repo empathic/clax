@@ -620,8 +620,19 @@ pass), runs `npm publish --access public` on your terminal, so npm's
 one-time-password prompt reaches you, waits for npm to list the version,
 removes the worktree, and prints the one-time setup: on npmjs.com, the
 package's Settings, Trusted Publisher, GitHub Actions, organization
-`empathic`, repository `clax`, workflow `publish-pi.yml`, no environment
-(the workflow declares none). Later releases publish through the workflow.
+`empathic`, repository `clax`, workflow `publish-pi.yml`, environment
+`npm`. Later releases publish through the workflow.
+
+The workflow's job runs in the GitHub environment `npm`, which the
+repository's settings limit to `main`, so npm refuses a token from a run
+dispatched on any other ref, whatever that ref's copy of the workflow
+checks. The environment is a repository setting, made once by the owner:
+Settings, Environments, New environment, name `npm`; Deployment branches
+and tags: Selected branches and tags; Add deployment branch or tag rule,
+branch `main`. `just release` reads it (`gh api
+repos/empathic/clax/environments/npm`) and, until npm has the version,
+warns in a dry run and refuses to start a release when it is missing or
+allows more than `main`; it never changes it.
 Step 14 is done whenever npm has the version. After that first publish,
 step 15 lists the trusted-publisher setup and switching `README.md` and
 `plugins/pi/README.md` to lead their Pi install with `pi install
