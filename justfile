@@ -204,3 +204,7 @@ hosted-deploy *ARGS:
 # Deploy clax.dev, Empathic's hosted Clax, with the settings saved in ~/.config/clax/deploy/setup.env and the bundled Terms of Service and Privacy Policy (scripts/cloudflare-setup.sh --legal bundled). A dry run that changes nothing on the account unless given --i-know-what-i-am-doing; --smoke smoke-tests the deployment too
 clax-dev-deploy *ARGS:
     ./scripts/cloudflare-setup.sh --legal bundled "$@"
+
+# Release Clax VERSION and every plugin: Claude Code, Codex and Grok through the repo's marketplaces, Pi through npm (scripts/release.sh); a dry run unless --i-know-what-i-am-doing
+release VERSION *ARGS:
+    ./scripts/release.sh "$@"

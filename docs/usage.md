@@ -506,9 +506,15 @@ public.
 From the main checkout, on an up-to-date `main`:
 
 ```
-scripts/release.sh 0.6.0                              # a dry run: the checks, and every step with whether it is done
-scripts/release.sh 0.6.0 --i-know-what-i-am-doing     # the release
+just release 0.6.0                              # a dry run: the checks, and every step with whether it is done
+just release 0.6.0 --i-know-what-i-am-doing     # the release
 ```
+
+`just release` runs `scripts/release.sh` as it is (no build system in
+between), and releases Clax and all four plugins: the Claude Code, Codex
+and Grok plugins update through this repository's marketplaces once the
+pushed `main` carries the new version and its pin, and the Pi package is
+published to npm from the pin commit.
 
 The dry run changes nothing (it fetches `main` from origin, which moves only
 `origin/main`). It checks first, and so does the release, which refuses to
@@ -526,10 +532,11 @@ package with `dry_run` off and waits for it. It never force-pushes, never
 deletes a tag, and checks that each commit and the tag it pushes carries a
 signature. The output of `just` and of the waits is also appended to
 `target/release/<version>.log`. Last, it prints what is left by hand:
-redeploying clax.dev with `just clax-dev-deploy` when the release has
-migrations or hosted changes (it says whether
-`crates/clax-store/src/migrations.rs` changed since the previous tag), and
-the crates.io package, which it does not publish.
+redeploying clax.dev with `just clax-dev-deploy` (a dry run first, then
+`--i-know-what-i-am-doing`) when the release has migrations or hosted
+changes (it says whether `crates/clax-store/src/migrations.rs` changed
+since the previous tag), and the crates.io package, which it does not
+publish. It never deploys anything itself.
 
 A step that fails stops the run, which names the step and changes nothing
 after it. Fix the cause and run the same command again: each step's state
