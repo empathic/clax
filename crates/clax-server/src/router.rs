@@ -4,10 +4,10 @@
 //! testkit's delay middleware are here too.
 
 use crate::routes::{
-    app_drafts, approvals, artifacts, assets, connect, content, docs, drafts, extension, feedback,
-    git_token, grants, health, inbox, jobs, live, live_layers, mcp_http, people, perf, questions,
-    remotes, room, sample, sessions, sites, snapshot, stream, surface, threads, token, toolpath,
-    viewers, watches, working,
+    app_drafts, approvals, artifacts, assets, client_imports, connect, content, docs, drafts,
+    extension, feedback, git_token, grants, health, inbox, jobs, live, live_layers, mcp_http,
+    people, perf, questions, remotes, room, sample, sessions, sites, snapshot, stream, surface,
+    threads, token, toolpath, viewers, watches, working,
 };
 #[cfg(not(target_arch = "wasm32"))]
 use crate::routes::{events, mcp, net};
@@ -465,6 +465,11 @@ fn routes(state: AppState, shutdown: Option<tokio::sync::watch::Sender<bool>>) -
         .route(
             "/api/jobs/{id}/steps/{key}",
             post(jobs::commit.layer(publish_limit)),
+        )
+        // The app's state files, up to its 8 MiB of unfinished changes.
+        .route(
+            "/api/client-imports/{key}",
+            post(client_imports::import.layer(publish_limit)),
         )
         .route(
             "/api/artifacts/{aid}/versions:restore",

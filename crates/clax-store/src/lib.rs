@@ -113,6 +113,7 @@ pub mod forks;
 pub mod github;
 pub mod grants;
 pub mod hosted;
+pub mod imports;
 pub mod inbox;
 pub mod jobs;
 pub mod joined;

@@ -6,6 +6,7 @@ pub mod app_drafts;
 pub mod approvals;
 pub mod artifacts;
 pub mod assets;
+pub mod client_imports;
 pub mod connect;
 pub mod content;
 pub mod docs;

@@ -67,7 +67,11 @@ fn owner_token(headers: &HeaderMap) -> Option<&str> {
 /// token holds, to move into the store job that does the write
 /// ([`JobsOwners::enter`](clax_http::jobs_owner::JobsOwners::enter)); 409
 /// `not_owner` unless the token holds it, and while its claim drains.
-fn require_owner(s: &AppState, headers: &HeaderMap, client: &str) -> Result<WriteGuard, ApiError> {
+pub(crate) fn require_owner(
+    s: &AppState,
+    headers: &HeaderMap,
+    client: &str,
+) -> Result<WriteGuard, ApiError> {
     if let Some(guard) = owner_token(headers).and_then(|t| s.jobs_owners.enter(client, t)) {
         return Ok(guard);
     }

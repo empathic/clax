@@ -35,6 +35,8 @@ mod api_caching;
 mod api_canary;
 #[cfg(any(not(clax_split), clax_split = "api_changelog"))]
 mod api_changelog;
+#[cfg(any(not(clax_split), clax_split = "api_client_imports"))]
+mod api_client_imports;
 #[cfg(any(not(clax_split), clax_split = "api_content"))]
 mod api_content;
 #[cfg(any(not(clax_split), clax_split = "api_db_read"))]

@@ -80,6 +80,7 @@ mod l10 {
         ("app_drafts::list", Token),
         ("app_drafts::delete", Token),
         ("app_drafts::render", Token),
+        ("client_imports::import", Token),
         ("sessions::push_status", NoArtifact),
         ("sessions::tool_call_ids", NoArtifact),
         ("sample::daemon", Token),
@@ -233,6 +234,7 @@ mod l10 {
     pub(super) fn module_source_opt(m: &str) -> Option<&'static str> {
         Some(match m {
             "app_drafts" => include_str!("app_drafts.rs"),
+            "client_imports" => include_str!("client_imports.rs"),
             "approvals" => include_str!("approvals.rs"),
             "artifacts" => include_str!("artifacts.rs"),
             "assets" => include_str!("assets.rs"),
@@ -478,6 +480,10 @@ mod l10 {
         (
             "app_drafts::render",
             "the app's record of a draft's render, for the render gate; what a step then publishes is recorded by its step",
+        ),
+        (
+            "client_imports::import",
+            "the app's queue state, imported once into the jobs tables; what a job publishes or replies is recorded by its step",
         ),
         (
             "jobs::claim",

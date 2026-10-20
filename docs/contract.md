@@ -2545,6 +2545,33 @@ transaction with the step: either both exist, or neither does.
 | `GET /api/agent-read-consents` | token | — | `{consents: [{reader, source}]}` |
 | `PUT /api/agent-read-consents/<reader>/<source>` | token | — | 204; 404 when either artifact is missing |
 | `DELETE /api/agent-read-consents/<reader>/<source>` | token | — | `{deleted}` |
+| `POST /api/client-imports/<key>` | token, owner token | `{client, files}` | `{import: {already, jobs, consents, skipped, left_out, done_at}}`; 400 `invalid_args` |
+
+**The app's JSON state, imported once.** `POST
+/api/client-imports/app-json-v1` with `{client: "app", files}` imports
+the state files the app kept before its queue ran on these jobs: `files`
+maps each of `pending-make.json`, `plans.json`, `unfinished.json`,
+`change-ledger.json`, `asked.json`, `stopped.json` and
+`agent-read-consent.json` the app holds to its text, as the app wrote it.
+In one transaction with the import's record, pending makes become
+`queued` make jobs; a plan becomes its make's `plan`, or, while it has
+features to build, a `stopped` make job holding it; an unfinished change
+becomes a `stopped` change job carrying it (a `build:<app>` entry, its
+make's carry); a ledger record becomes a change job with its
+`publish:<base>` step when version `base + 1` is the one it made, and its
+`reply` step, then `done`, when its documents and reply landed too, else
+`queued`; an asked question's entry becomes a change job holding the
+question, `waiting` while it is open; a stopped thread becomes a
+`cancelled` change job with the thread `stopped`; consents become read
+consents. Jobs are `json-` and 24 hex digits derived from the file and the
+entry. The rows' JSON is `input: {request, base, threads: {thread ID:
+comment ID}}`, `plan: {plan_rest, data}` and `carry: {stops,
+can_keep_going, data}`, `data` the entry as the file kept it. `skipped`
+names the files that did not parse; `left_out` the entries naming an app,
+thread or question the core no longer holds. A key imported before
+answers its summary with `already: true` and changes nothing, so the app
+may delete its files after any 200. Another key or client, or a file of
+another name, is 400 `invalid_args`.
 
 A **publish step** is `publish: {artifact_id (null: a new app), base,
 request, docs?, draft?, session_id?}`: `request` is a publish's body,
@@ -4489,6 +4516,7 @@ router), and a test fails when it differs:
 | `GET /api/artifacts/{aid}/snapshot` | Denied | yes: 403 `not_for_agents` |
 | `POST /api/artifacts/{aid}/unsent:drop` | Denied | yes: 403 `not_for_agents` |
 | `POST /api/artifacts/{aid}/versions:restore` | Denied | no |
+| `POST /api/client-imports/{key}` | Denied | yes: 403 `not_for_agents` |
 | `POST /api/core/trim` | Denied | no |
 | `GET /api/drafts` | Denied | no |
 | `POST /api/drafts` | Denied | no |
