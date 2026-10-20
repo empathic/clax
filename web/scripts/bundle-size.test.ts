@@ -35,6 +35,7 @@ function run(budget: Record<string, unknown>, artifact = ENTRY, args: string[] =
   for (const f of fonts) { mkdirSync(join(web, "dist", f, ".."), { recursive: true }); dist(f, "wOF2"); }
   dist("artifact.html", artifact);
   dist("_clax/bridge.js", "bridge");
+  dist("_clax/transport.js", "transport");
   dist("_clax/shell/a.js", "a");
   // The question module imports the gallery's entry chunk, the gallery's
   // lazy module's own import (which the artifact view has not loaded), and
@@ -85,7 +86,7 @@ function run(budget: Record<string, unknown>, artifact = ENTRY, args: string[] =
 }
 
 describe("bundle-size.mjs", { timeout: CHILD_TIMEOUT_MS }, () => {
-  const full = { gallery: 10_000, artifact: 10_000, bridge: 10_000, bridgeBaseline: 10_000, partComment: 10_000, partClip: 10_000, partCaps: 10_000, partRoom: 10_000, partSample: 10_000, partLive: 10_000, extOverlay: 10_000, extWorker: 10_000, extComposer: 10_000, extPanel: 10_000, questions: 10_000, people: 10_000, host: 10_000 };
+  const full = { gallery: 10_000, artifact: 10_000, bridge: 10_000, transport: 10_000, bridgeBaseline: 10_000, partComment: 10_000, partClip: 10_000, partCaps: 10_000, partRoom: 10_000, partSample: 10_000, partLive: 10_000, extOverlay: 10_000, extWorker: 10_000, extComposer: 10_000, extPanel: 10_000, questions: 10_000, people: 10_000, host: 10_000 };
 
   it("passes within budget", () => {
     expect(run(full).status).toBe(0);
@@ -179,6 +180,15 @@ describe("bundle-size.mjs", { timeout: CHILD_TIMEOUT_MS }, () => {
     expect(run(full, face(`font-family: F; src: local("Menlo");`)).status).toBe(0);
   });
 
+  it("counts the app's transport script against its own budget", () => {
+    const t = Number(/\btransport (\d+)/.exec(run(full).stdout)?.[1]);
+    expect(t).toBe(pako.gzip("transport", { level: 9 }).length);
+    rmSync(root, { recursive: true, force: true });
+    const r = run({ ...full, transport: t - 1 });
+    expect(r.status).toBe(1);
+    expect(r.stderr).toContain("transport");
+  });
+
   it("adds a missing part budget when recording, never a missing baseline", () => {
     const { partCaps: _, ...noCaps } = full;
     expect(run(noCaps).status).toBe(1);
@@ -265,7 +275,7 @@ describe("bundle-size.mjs", { timeout: CHILD_TIMEOUT_MS }, () => {
     expect(r.stderr).toContain("extPanel");
   });
 
-  it.each(["gallery", "artifact", "bridge", "bridgeBaseline", "partComment", "partClip", "partCaps", "partRoom", "partSample", "partLive", "extOverlay", "extWorker", "extComposer", "extPanel"])("fails when the %s budget is missing or not a number", k => {
+  it.each(["gallery", "artifact", "bridge", "transport", "bridgeBaseline", "partComment", "partClip", "partCaps", "partRoom", "partSample", "partLive", "extOverlay", "extWorker", "extComposer", "extPanel"])("fails when the %s budget is missing or not a number", k => {
     for (const budget of [Object.fromEntries(Object.entries(full).filter(([key]) => key !== k)), { ...full, [k]: "10000" }]) {
       const r = run(budget);
       expect(r.status).toBe(1);
