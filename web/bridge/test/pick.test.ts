@@ -38,15 +38,6 @@ describe("PickFlow", () => {
     expect(clip).toHaveBeenCalledTimes(1);
   });
 
-  it("posts the start with where the pick is in the page's viewport, when given", async () => {
-    const { f, posted } = flow();
-    const at = { x: 10, y: 20, w: 300, h: 40 };
-    const done = f.start(anchor, async () => png(), undefined, at);
-    expect(posted[0]).toEqual({ type: "clax:pick-start", pickId: "p1", version: 3, anchor, at });
-    f.answer("p1", false);
-    await done;
-  });
-
   it("renders nothing for a refused start, and says no clip was taken", async () => {
     const { f, posted } = flow();
     const clip = vi.fn(async () => png());

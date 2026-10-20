@@ -1,7 +1,7 @@
 // The artifact view's state and behaviour, framework-free. Components render
 // `state` and call the intent methods; the frame is a FrameHost the mount
 // gives it.
-import { type AnchorResult, INDEX_FILE, type ShellToBridge } from "../../../bridge/src/protocol";
+import { type Anchor, type AnchorResult, INDEX_FILE, type ShellToBridge } from "../../../bridge/src/protocol";
 import { ApiError, type Artifact, type Attention, type SampleStatus, type Version, getArtifact, getToken } from "../api";
 import { getDrafts, getSampleStatus, putLooked, putSeen } from "./view-api";
 import { acceptByeFromFrame, acceptFromFrame, helloMatches, sendToFrame } from "../bridge-link";
@@ -22,7 +22,7 @@ import { AnchorHandles } from "./anchor-handles";
 import type { Decided } from "./changelog-model";
 import { rallyOnce } from "./rally";
 import { type Boot, rememberFrameMode } from "./boot";
-import { CAPTURE_LATE, type Draft, MAX_CLIP_BYTES, boxOf, captureWait, nextDraft, respaced, withClip } from "./composer-model";
+import { CAPTURE_LATE, type Draft, MAX_CLIP_BYTES, captureWait, nextDraft, respaced, withClip } from "./composer-model";
 import type { ArtifactStream } from "./artifact-stream";
 import { FrameGate } from "./frame-gate";
 import type { PresenceView } from "./presence-model";
@@ -201,9 +201,11 @@ export class ArtifactController {
    * follows a post from the composer (its Send also sends the thread to the
    * agent), and that the composer cancelled a post it queued behind the
    * screenshot (`dropped`: its text changed, or it moved to another anchor;
-   * the app's Send waits on that post). */
+   * the app's Send waits on that post), and the anchors besides the
+   * threads' the page resolves for it (`anchors`: an open pick's, by an ID
+   * of the app's own, its place then in `resolved` under that ID). */
   /** @internal */
-  app: { welcome(file: string): { app: true; restoreScroll?: number }; posted(t: Thread): void; dropped(): void } | null = null;
+  app: { welcome(file: string): { app: true; restoreScroll?: number }; posted(t: Thread): void; dropped(): void; anchors(): { id: string; anchor: Anchor }[] } | null = null;
   /** The write journal of a live migration in the app's migration view
    * (app/host.ts), while one runs: every `db` write of the page waits for it. */
   dbJournal: DbJournal | null = null;
@@ -725,10 +727,11 @@ export class ArtifactController {
     }
   }
 
-  private resolveAll(): void {
+  /** @internal (app mode's host asks again for a new pick) */
+  resolveAll(): void {
     if (this.customLive) return;
     const file = this.s.file;
-    this.send({ type: "clax:resolve-anchors", requestId: `r${Date.now()}`, anchors: this.s.threads.filter(t => t.anchor.file === file).map(t => ({ id: this.anchorIds.handle(t.id), anchor: t.anchor, sameVersion: t.version_n === this.shown(), highlight: t.status === "open" })) });
+    this.send({ type: "clax:resolve-anchors", requestId: `r${Date.now()}`, anchors: [...this.s.threads.filter(t => t.anchor.file === file).map(t => ({ id: t.id, anchor: t.anchor, sameVersion: t.version_n === this.shown(), highlight: t.status === "open" })), ...this.app?.anchors() ?? []].map(a => ({ ...a, id: this.anchorIds.handle(a.id) })) });
   }
 
   /** Tells the frame which thread's drawn area to outline dashed: the
@@ -1302,8 +1305,7 @@ export class ArtifactController {
         this.set({ commenting: false });
         this.resumeAfter = pickId;
         const shown = respaced(m.anchor.quote, m.desc?.text) ?? undefined;
-        const at = boxOf(m.at);
-        this.set({ draft: { pickId, anchor: m.anchor, version: m.version, clip: null, capturing: true, clipToken: pickId, ...(shown ? { shown } : {}), ...(at ? { at } : {}) } });
+        this.set({ draft: { pickId, anchor: m.anchor, version: m.version, clip: null, capturing: true, clipToken: pickId, ...(shown ? { shown } : {}) } });
         break;
       }
       case "clax:pick": {

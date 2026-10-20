@@ -233,8 +233,8 @@ type PartName = keyof Parts;
         const layer: Hook = new part.LiveHook(document, post, clock, parts.live);
         const mode: Mode = new part.CommentMode(document, {
           hover: t => post({ type: "clax:hover", selector: t ? part.cssPath(t instanceof Element ? t : part.blockAncestor(t.commonAncestorContainer, window)) : null, rect: t ? box(t) : null }),
-          pickElement: el => { void picks.start(part.buildElementAnchor(document, el, meta.file), () => clips().then(c => c.renderTargetClip(el)), part.desc(el), box(el)).finally(() => mode.captured()); },
-          pickRange: r => { void picks.start(part.buildRangeAnchor(document, r, meta.file), () => clips().then(c => c.renderTargetClip(r)), undefined, box(r)).finally(() => mode.captured()); },
+          pickElement: el => { void picks.start(part.buildElementAnchor(document, el, meta.file), () => clips().then(c => c.renderTargetClip(el)), part.desc(el)).finally(() => mode.captured()); },
+          pickRange: r => { void picks.start(part.buildRangeAnchor(document, r, meta.file), () => clips().then(c => c.renderTargetClip(r))).finally(() => mode.captured()); },
           // The clip is the drawn rectangle, placed on its element at release,
           // cropped out of a render of that element. The rectangle stays drawn
           // (as capturing) until the pick is posted.
@@ -242,7 +242,7 @@ type PartName = keyof Parts;
             const el = part.containingElement(document, r);
             const anchor = part.buildAreaAnchor(document, r, meta.file, el);
             const at = part.areaBox(anchor.area!, part.boxOf(el));
-            void picks.start(anchor, () => clips().then(c => c.renderAreaClip(el, at)), undefined, { x: r.left, y: r.top, w: r.width, h: r.height }).finally(() => mode.captured());
+            void picks.start(anchor, () => clips().then(c => c.renderAreaClip(el, at))).finally(() => mode.captured());
           },
           cancel: () => { mode.set(false); post({ type: "clax:cancel" }); },
           live: layer,

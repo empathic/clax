@@ -171,7 +171,7 @@ import { visibility } from "../visibility";
 import { now } from "../clock";
 import { SEND_FAILED, failureText, report, scopedNotice } from "../failure";
 import { type Thread, sendToAgent, upsert } from "../threads";
-import { type Anchor, INDEX_FILE, type InspectError, type PickDesc } from "../../../bridge/src/protocol";
+import { type Anchor, type Box, INDEX_FILE, type InspectError, type PickDesc } from "../../../bridge/src/protocol";
 import type { ArtifactController, ViewState } from "../view/artifact-controller";
 import { anchorLabel, anchorQuote } from "./label";
 import { respaced } from "../view/composer-model";
@@ -187,7 +187,8 @@ export type HostMessage =
    * quotes as a reader sees it, for the app's own quote marks
    * (`anchorQuote`), null when none; `byPage`: the page opened this
    * composer (its comments capability), not the viewer's pick; `at`: where
-   * the pick is in the shell's viewport (CSS pixels), when the bridge said. */
+   * the viewer's pick is in the shell's viewport (CSS pixels), as the page's
+   * resolution of the draft's anchor last placed it (`pickAt`). */
   | { type: "state"; commenting: boolean; draft: { key: string; kind: Anchor["kind"]; label: string; quote: string | null; text: string; clip: "pending" | "ready" | "none"; byPage?: true; at?: { x: number; y: number; w: number; h: number } } | null; busy: boolean }
   /** The open composer's screenshot (`png`, base64), once for each
    * screenshot it takes, while composer `key` is open; at `init`, the open
@@ -429,6 +430,16 @@ const QUESTION_ID_CHARS = 128;
 const isId = (v: unknown): v is string => typeof v === "string" && v.length > 0 && v.length <= QUESTION_ID_CHARS;
 const ids = (v: unknown): string[] | null => (Array.isArray(v) && v.every(isId) ? v : null);
 
+/** `v` when it is a rectangle {x, y, w, h} of finite numbers with no
+ * negative size, else undefined: the page's frame placed it. */
+function boxOf(v: unknown): Box | undefined {
+  const { x, y, w, h } = (v ?? {}) as Record<string, unknown>;
+  return [x, y, w, h].every(Number.isFinite) && (w as number) >= 0 && (h as number) >= 0 ? { x, y, w, h } as Box : undefined;
+}
+/** Whether draft `d` is the viewer's pick on the page, which the app places
+ * its composer at: not one the page opened, nor one on the whole app. */
+const picksAt = (d: { byPage?: boolean; anchor: Anchor }) => !d.byPage && d.anchor.kind !== "artifact";
+
 const bounded = (v: unknown, lo: number, hi: number, dflt: number) => (typeof v === "number" && Number.isFinite(v) ? Math.min(hi, Math.max(lo, Math.round(v))) : dflt);
 
 
@@ -589,6 +600,11 @@ export function installHost(win: Window, ctl: ArtifactController): () => void {
       return r && r.file === file ? { app: true, restoreScroll: r.y } : { app: true };
     },
     posted: t => sendThread(t.id),
+    // The viewer's open pick, placed by the page like the threads' anchors.
+    anchors: () => {
+      const d = s().draft;
+      return d && picksAt(d) && d.anchor.file === s().file ? [{ id: d.pickId, anchor: d.anchor }] : [];
+    },
     // The app's Send waits on the post the composer dropped: a fresh notice
     // each time tells it nothing was sent (on the web the composer's own
     // status line says so).
@@ -652,10 +668,14 @@ export function installHost(win: Window, ctl: ArtifactController): () => void {
   let lastState = "";
   let lastThreads: Thread[] | null = null;
   let lastNotice: string | null = null;
-  /** Where draft place `at` (in the frame's viewport) is in the shell's. */
-  const inShell = (at: NonNullable<ViewState["draft"]>["at"]) => {
+  /** Where the viewer's pick `d` is in the shell's viewport: the place the
+   * page last resolved its anchor to (`anchors` below), offset by the
+   * frame's; none for a composer the page opened or one on the whole app,
+   * or while the page has not placed it. */
+  const pickAt = (v: ViewState, d: NonNullable<ViewState["draft"]>) => {
+    const r = boxOf(v.resolved[d.pickId]?.rect);
     const f = ctl.frame?.el?.getBoundingClientRect();
-    return at && f ? { at: { x: at.x + f.left, y: at.y + f.top, w: at.w, h: at.h } } : {};
+    return r && f && picksAt(d) ? { at: { x: r.x + f.left, y: r.y + f.top, w: r.w, h: r.h } } : {};
   };
   const postState = (v: ViewState) => {
     const d = v.draft;
@@ -664,7 +684,7 @@ export function installHost(win: Window, ctl: ArtifactController): () => void {
       commenting: v.commenting,
       draft: d ? {
         key: d.pickId, kind: d.anchor.kind, label: d.label ?? anchorLabel(d.anchor, picked.get(d.pickId)), quote: anchorQuote(d.anchor, picked.get(d.pickId)),
-        text: ctl.composerText, clip: d.capturing ? "pending" : d.clip ? "ready" : "none", ...(d.byPage ? { byPage: true as const } : {}), ...inShell(d.at),
+        text: ctl.composerText, clip: d.capturing ? "pending" : d.clip ? "ready" : "none", ...(d.byPage ? { byPage: true as const } : {}), ...pickAt(v, d),
       } : null,
       busy: v.busy > 0,
     };
@@ -705,10 +725,18 @@ export function installHost(win: Window, ctl: ArtifactController): () => void {
     ctl.set(c => (c.draft === d ? { draft: { ...d, label } } : {}));
     return true;
   };
+  // The pick whose place the page was last asked for.
+  let placing: string | null = null;
   const onState = (v: ViewState) => {
     // The inspect view closes what would ask the viewer anything; each sets
     // the state again, which posts it.
     if (inspecting && closeForInspect(v)) return;
+    // A new pick: the page places it with the threads (`anchors` above).
+    const d = v.draft;
+    if (d && picksAt(d) && d.pickId !== placing) {
+      placing = d.pickId;
+      ctl.resolveAll();
+    }
     // Labelling sets the state again, which posts it.
     if (labelDraft(v)) return;
     postState(v);

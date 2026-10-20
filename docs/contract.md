@@ -1470,8 +1470,7 @@ with focus in the page or in the shell while the pointer is over the page.
 Only the viewer's own input counts: the bridge ignores events the page
 dispatched, and the shell takes a pick only from its start
 (`clax:pick-start`, sent by the bridge at the viewer's click or release with
-the pick's anchor and where the picked element, text or area is in the
-page's viewport), only while comment mode is on and the frame holds the
+the pick's anchor), only while comment mode is on and the frame holds the
 viewer's gesture (the check `compose` uses). A taken start opens the
 composer at once, its textarea focused and "Taking the screenshot…" shown
 until the pick's screenshot (`clax:pick`, taken once, for that composer
@@ -2290,7 +2289,7 @@ drops them. Every message carries `nonce`:
 | `type` | Fields | When |
 |---|---|---|
 | `ready` | `artifact`, `version`, `latest`, `file` | Each document the frame loads greets. |
-| `state` | `commenting`, `draft: {key, kind, label, quote, text, clip: "pending" \| "ready" \| "none", byPage?: true, at?: {x, y, w, h}} \| null`, `busy` | Any change of those. `key` is the composer's identity (new for each pick); `kind` its anchor's kind; `label` says what the composer's anchor is in words (never a selector); `quote` is the text it quotes as a reader sees it (spaced, quote marks made `'`, at most 280 characters and "…"), or null; `byPage` marks a composer the page opened; `at` is where the viewer's pick is in the WebView, CSS pixels from its top left, as the page reported it at the pick (the app places its composer by it; none for a composer the page opened or one on the whole app). |
+| `state` | `commenting`, `draft: {key, kind, label, quote, text, clip: "pending" \| "ready" \| "none", byPage?: true, at?: {x, y, w, h}} \| null`, `busy` | Any change of those. `key` is the composer's identity (new for each pick); `kind` its anchor's kind; `label` says what the composer's anchor is in words (never a selector); `quote` is the text it quotes as a reader sees it (spaced, quote marks made `'`, at most 280 characters and "…"), or null; `byPage` marks a composer the page opened; `at` is where the viewer's pick is in the WebView, CSS pixels from its top left, where the shell last placed the pick's anchor in the page (as it places the threads', so it follows the page's scrolling; the app places its composer by it; none for a composer the page opened, one on the whole app, or a pick not placed). |
 | `draftClip` | `key`, `png` (base64) | The open composer `key`'s screenshot, once per screenshot taken, and again at `init`. |
 | `threads` | `threads: [{id, status, summary, label, sent, comments, version, clip}]` | Any change of the view's threads. `summary` is the first comment cut to 140 characters; `label` the anchor in words; `clip` whether it has a screenshot. |
 | `sent` | `thread` | Send posted a thread and sent it to the agent. |

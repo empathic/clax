@@ -210,9 +210,7 @@ export type BridgeToShell =
    * clip is rendered, with the pick's anchor: the shell opens the composer
    * for it at once, focused and waiting for the screenshot, only when this
    * arrived while the frame held the viewer's gesture. */
-  /** `at`: where the picked element, text or area is in the page's viewport
-   * (CSS pixels), for the app to place its composer by. */
-  | { type: "clax:pick-start"; pickId: string; version: number; anchor: Anchor; desc?: PickDesc; at?: Box }
+  | { type: "clax:pick-start"; pickId: string; version: number; anchor: Anchor; desc?: PickDesc }
   /** The pick's screenshot (or why there is none); the shell takes it only
    * for the composer its accepted start opened, and ignores the anchor here. */
   | { type: "clax:pick"; pickId: string; version: number; anchor: Anchor; clipPng?: ArrayBuffer; clipError?: string }

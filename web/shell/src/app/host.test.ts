@@ -1061,22 +1061,40 @@ describe("app mode's host channel", { timeout: MOUNT_TIMEOUT_MS }, () => {
     await waitFor(() => document.querySelector(".composer-quote")?.textContent === "“Delete run”", "the composer's words");
   });
 
-  it("gives a pick's draft where the pick is in the shell's viewport, and none for a place that is not a rectangle", async () => {
+  it("places a pick's draft where the page resolves its anchor, offset into the shell's viewport, and never where the pick start says", async () => {
     const { frame, host } = await appView();
     hello(frame, 1);
+    const posted = framePosts(frame);
     frame.getBoundingClientRect = () => ({ left: 10, top: 20, x: 10, y: 20, width: 800, height: 600, right: 810, bottom: 620, toJSON: () => ({}) });
     host.enterCommentMode();
     gestureIn(frame);
     const row = { kind: "element", selector: "body > div", quote: "Mon", prefix: null, suffix: null, html_hash: null, rect: null, custom_name: null, file: "index.html" };
-    fromFrame(frame.contentWindow!, { type: "clax:pick-start", pickId: "a1", version: 1, anchor: row, at: { x: 5, y: 6, w: 30, h: 40 } });
+    fromFrame(frame.contentWindow!, { type: "clax:pick-start", pickId: "a1", version: 1, anchor: row, at: { x: 500, y: 600, w: 1, h: 1 } });
     await waitFor(() => ofType("state").at(-1)?.draft, "a draft");
+    expect(ofType("state").at(-1)!.draft!.at).toBeUndefined();
+    // The page is asked to place the pick's anchor with the threads'.
+    const ask = () => posted.filter(m => m.type === "clax:resolve-anchors").at(-1) as { requestId: string; anchors: { id: string; anchor: unknown }[] } | undefined;
+    await waitFor(() => ask()?.anchors.some(a => JSON.stringify(a.anchor) === JSON.stringify(row)), "the pick's anchor sent to be placed");
+    const handle = ask()!.anchors.find(a => JSON.stringify(a.anchor) === JSON.stringify(row))!.id;
+    expect(handle).not.toBe("a1");
+    fromFrame(frame.contentWindow!, { type: "clax:anchors", requestId: ask()!.requestId, results: [{ id: handle, found: true, method: "selector", rect: { x: 5, y: 6, w: 30, h: 40 } }] });
+    await waitFor(() => ofType("state").at(-1)?.draft?.at, "a place");
     expect(ofType("state").at(-1)!.draft!.at).toEqual({ x: 15, y: 26, w: 30, h: 40 });
-    host.cancelDraft();
-    await waitFor(() => ofType("state").at(-1)?.draft === null, "no draft");
-    host.enterCommentMode();
-    gestureIn(frame);
-    fromFrame(frame.contentWindow!, { type: "clax:pick-start", pickId: "a2", version: 1, anchor: row, at: { x: 5, y: Infinity, w: -3, h: 40 } });
+    // It follows the page's later placings (a scroll), and drops a place that is not a rectangle.
+    fromFrame(frame.contentWindow!, { type: "clax:anchors", requestId: null, results: [{ id: handle, found: true, method: "selector", rect: { x: 5, y: -50, w: 30, h: 40 } }] });
+    await waitFor(() => ofType("state").at(-1)?.draft?.at?.y === -30, "the new place");
+    fromFrame(frame.contentWindow!, { type: "clax:anchors", requestId: null, results: [{ id: handle, found: true, method: "selector", rect: { x: 5, y: Infinity, w: -3, h: 40 } }] });
+    await waitFor(() => ofType("state").at(-1)?.draft && ofType("state").at(-1)!.draft!.at === undefined, "no place");
+  });
+
+  it("asks no place for a composer on the whole app", async () => {
+    const { frame, host } = await appView();
+    hello(frame, 1);
+    const posted = framePosts(frame);
+    host.composeArtifact();
     await waitFor(() => ofType("state").at(-1)?.draft, "a draft");
+    await new Promise(r => setTimeout(r, 0));
+    expect(posted.some(m => m.type === "clax:resolve-anchors" && (m as unknown as { anchors: { anchor: { kind: string } }[] }).anchors.some(a => a.anchor.kind === "artifact"))).toBe(false);
     expect(ofType("state").at(-1)!.draft!.at).toBeUndefined();
   });
 

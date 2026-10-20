@@ -211,8 +211,10 @@ final class Draft {
   final bool byPage;
 
   /// Where the viewer's pick is in the WebView, in logical pixels from its
-  /// top left, as the page reported it at the pick; null for a composer
-  /// the page opened, one on the whole app, or a page that did not say.
+  /// top left: where the shell last placed the pick's anchor, as it places
+  /// the threads' pins, so a later state message moves it as the page
+  /// scrolls. Null for a composer the page opened, one on the whole app, or
+  /// a pick the shell has not placed (yet, or at all).
   final Rect? at;
 
   /// Whether this is a comment on the whole app.
