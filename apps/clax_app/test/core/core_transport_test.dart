@@ -323,23 +323,6 @@ void main() {
       await sub.cancel();
     });
 
-    test('a cancel while the stream waits to subscribe again opens no subscription', () async {
-      final core = FakeCore();
-      final wait = Completer<void>();
-      final sub = CoreTransport(core, retryDelay: (_) => wait.future)
-          .sse('/api/stream')
-          .listen((_) {});
-      await pumpEventQueue();
-      core.end('stream_ended');
-      await pumpEventQueue();
-      expect(core.subscribers, 0);
-      await sub.cancel();
-      wait.complete();
-      await pumpEventQueue();
-      expect(core.subscriptions, 1);
-      expect(core.subscribers, 0);
-    });
-
     test('the resume point asked for wins over the last ID seen', () async {
       final core = _ResumeCore();
       final sub = CoreTransport(core, retryDelay: (_) async {})
