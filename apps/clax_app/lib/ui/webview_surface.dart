@@ -270,8 +270,9 @@ class WebViewAppSurface implements AppSurface, CapturableSurface {
     link.presented(nonce);
   }
 
+  /// The script that reads the document's `clax-nonce` meta.
   static const _nonceMeta =
-      'document.querySelector(\'meta[name="clax-nonce"]\')?.content ?? ""';
+      'document.querySelector(\'meta[name="clax-nonce"]\')?.content ?? ""'; // copy-check: allow
 
   /// On the core, hands the shell its nonce once the document has loaded
   /// and the main frame has presented the nonce the scheme wrote into it.
@@ -323,7 +324,7 @@ class WebViewAppSurface implements AppSurface, CapturableSurface {
     if (_attachment case final a? when !await a.attached) {
       // Unattached, the WebView would ask the network for the shell's
       // URL: nothing loads.
-      return _fault("the app's scheme is not attached to the WebView");
+      return _fault('the app’s scheme is not attached to the WebView');
     }
     return _loads.load(url);
   }

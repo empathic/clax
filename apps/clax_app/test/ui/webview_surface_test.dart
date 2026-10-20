@@ -10,8 +10,6 @@ import 'package:clax_app/ui/app_surface.dart';
 import 'package:clax_app/ui/webview_surface.dart';
 import 'package:flutter_test/flutter_test.dart';
 import 'package:webview_flutter/webview_flutter.dart';
-import 'package:webview_flutter_platform_interface/webview_flutter_platform_interface.dart'
-    show WebViewPlatform;
 
 import '../support/fake_core.dart';
 import '../support/fake_webview.dart';
