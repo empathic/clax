@@ -41,12 +41,18 @@ test("the owner makes tags on /tags, tags an artifact from its page, and the gal
   await expect(row.locator("a.tag")).toHaveText("q4");
   await expect(row.locator("a.tag")).toHaveAttribute("data-c", "blue");
   await expect(row).toContainText("Blue · 0 artifacts");
+  // Focus goes back to the button that opened the form.
+  await expect(page.getByRole("button", { name: "New tag" })).toBeFocused();
   // A name the list has, in any case, is refused in the form.
   await page.getByRole("button", { name: "New tag" }).click();
   await form.getByLabel("Name").fill("Q4");
   await form.getByRole("button", { name: "Create tag" }).click();
   await expect(form.getByRole("alert")).toContainText("exists");
   await form.getByRole("button", { name: "Cancel" }).click();
+  await expect(page.getByRole("button", { name: "New tag" })).toBeFocused();
+  await page.getByRole("button", { name: "Edit tag q4" }).click();
+  await page.keyboard.press("Escape");
+  await expect(page.getByRole("button", { name: "Edit tag q4" })).toBeFocused();
   await makeTag(d, "design", "purple");
 
   // From the artifact's page: Add tags opens the editor on its search; the
@@ -123,11 +129,23 @@ test("a second page follows tag changes live, and deleting a tag takes it off ev
   await api(d.base, d.token, `/api/artifacts/${plan}/tags`, { method: "PATCH", body: JSON.stringify({ add: ["design"] }) });
   await expect(chips(page, "Launch plan")).toHaveText(["design", "q4"]);
   await expect(titleChips(view)).toHaveText(["design", "q4"]);
-  // Renamed and recoloured: the artifact's page hears it too.
+  // The gallery filters by both, one named by its ID in the address: it
+  // names both by name.
+  const design = ((await api(d.base, d.token, "/api/tags")) as { tags: Tag[] }).tags.find(t => t.name === "design")!;
+  await page.goto(`${d.base}/?tag=q4&tag=${design.id}`);
+  await expect(page).toHaveURL(`${d.base}/?tag=q4&tag=design`);
+  await expect(cards(page)).toHaveText(["Launch plan"]);
+  await streamLive(page);
+  // Renamed and recoloured: the artifact's page hears it too, and the
+  // filter follows it, the address naming it anew in place.
+  const depth = await page.evaluate(() => history.length);
   await api(d.base, d.token, `/api/tags/${q4.id}`, { method: "PATCH", body: JSON.stringify({ name: "Q4 plan", colour: "green" }) });
   await expect(titleChips(view)).toHaveText(["design", "Q4 plan"]);
   await expect(titleChips(view).last()).toHaveAttribute("data-c", "green");
   await expect(chips(page, "Launch plan")).toHaveText(["design", "Q4 plan"]);
+  await expect(page).toHaveURL(`${d.base}/?tag=Q4+plan&tag=design`);
+  await expect(cards(page)).toHaveText(["Launch plan"]);
+  expect(await page.evaluate(() => history.length)).toBe(depth);
 
   // Deleting on the Tags page asks first, saying how many carry it.
   const tags = await context.newPage();
@@ -137,10 +155,64 @@ test("a second page follows tag changes live, and deleting a tag takes it off ev
   expect(await asked).toBe('Delete the tag "design"? It is on 1 artifact; deleting it removes it from it.');
   await expect(tags.getByRole("status")).toHaveText("Deleted design, and took it off 1 artifact.");
   await expect(tags.locator(".trow")).toHaveCount(1);
+  await expect(tags.getByRole("button", { name: "Edit tag Q4 plan" })).toBeFocused();
   await expect(chips(page, "Launch plan")).toHaveText(["Q4 plan"]);
   await expect(titleChips(view)).toHaveText(["Q4 plan"]);
+  // The deleted tag drops out of the filter.
+  await expect(page).toHaveURL(`${d.base}/?tag=Q4+plan`);
+  await expect(cards(page)).toHaveText(["Launch plan"]);
   await view.close();
   await tags.close();
+});
+
+test("the tag editor shows a refusal past twenty tags and closes on a press outside; +N, and N tags on a phone, list them for anyone", async ({ page, browser, freshDaemon: d }) => {
+  const plan = (await publish(d.base, d.token, "Launch plan", PAGE)).artifact.id;
+  const names = Array.from({ length: 21 }, (_, i) => `tag ${String(i + 1).padStart(2, "0")}`);
+  for (const n of names) await makeTag(d, n, "teal");
+  await tagArtifact(d, plan, names.slice(0, 20));
+  await page.goto(`${d.base}/a/${plan}`);
+  await expect(titleChips(page)).toHaveCount(20);
+  // Not every chip fits: "+N" lists them all.
+  const more = page.locator(".topbar .tmore");
+  await expect(more).toHaveText(/^\+\d+/);
+  await more.click();
+  const list = page.getByRole("dialog", { name: "Tags" });
+  await expect(list.locator(".tag")).toHaveCount(20);
+  await page.keyboard.press("Escape");
+  await expect(list).toHaveCount(0);
+  await expect(more).toBeFocused();
+  // A twenty-first is refused, saying why, and its box unchecks.
+  await page.getByRole("button", { name: "Edit tags" }).click();
+  const editor = page.getByRole("dialog", { name: "Edit tags" });
+  const last = editor.getByRole("checkbox", { name: "tag 21" });
+  await last.click();
+  await expect(editor.getByRole("alert")).toContainText("20");
+  await expect(last).not.toBeChecked();
+  await expect(titleChips(page)).toHaveCount(20);
+  // A press outside closes it.
+  await page.locator(".topbar h1").click();
+  await expect(editor).toHaveCount(0);
+
+  // On a phone, a viewer who may not tag reads "20 tags", which lists them.
+  const ctx = await browser.newContext({ viewport: { width: 390, height: 844 } });
+  const phone = await ctx.newPage();
+  await openArtifact(phone, d.base, plan, 1, "sandbox", { lan: true });
+  const count = phone.getByRole("button", { name: "All 20 tags" });
+  await expect(count).toHaveText("20 tags");
+  await expect(phone.locator(".topbar .tedit")).toHaveCount(0);
+  await count.click();
+  await expect(phone.getByRole("dialog", { name: "Tags" }).locator(".tag")).toHaveCount(20);
+  if (SHOTS) {
+    mkdirSync(SHOTS, { recursive: true });
+    for (const theme of ["light", "dark"] as const) {
+      await phone.emulateMedia({ colorScheme: theme });
+      await phone.screenshot({ path: `${SHOTS}/artifact-list-phone-${theme}.png` });
+    }
+    await page.setViewportSize({ width: 1280, height: 820 });
+    await page.getByRole("button", { name: "All 20 tags" }).click();
+    await page.screenshot({ path: `${SHOTS}/artifact-list-desktop-light.png` });
+  }
+  await ctx.close();
 });
 
 test("a viewer who may not tag sees an artifact's tags and no controls, here or on the Tags page", async ({ browser, freshDaemon: d }) => {
@@ -165,7 +237,7 @@ test("the inbox's Tags filter keeps the items about artifacts carrying every tag
   const s = await registerSession(d.base, d.token);
   const alpha = (await publishAs(d.base, d.token, s.id, "Alpha page", PAGE)).artifact.id;
   const beta = (await publishAs(d.base, d.token, s.id, "Beta page", PAGE)).artifact.id;
-  await makeTag(d, "q4", "blue");
+  const q4 = await makeTag(d, "q4", "blue");
   await makeTag(d, "design", "purple");
   await tagArtifact(d, alpha, ["q4", "design"]);
   await tagArtifact(d, beta, ["q4"]);
@@ -188,6 +260,13 @@ test("the inbox's Tags filter keeps the items about artifacts carrying every tag
   await expect(inbox.getByRole("button", { name: "Tags design +1" })).toBeVisible();
   await expect(inbox.getByRole("button", { name: /^Alpha page/ })).toBeVisible();
   await expect(inbox.getByRole("button", { name: /^Beta page/ })).toHaveCount(0);
+  // A rename keeps filtering, the address naming the tag anew; the list follows.
+  await streamLive(page);
+  await api(d.base, d.token, `/api/tags/${q4.id}`, { method: "PATCH", body: JSON.stringify({ name: "Q4 plan" }) });
+  await expect(page).toHaveURL(`${d.base}/inbox?tag=design&tag=Q4+plan`);
+  await expect(inbox.getByRole("button", { name: /^Alpha page/ })).toBeVisible();
+  await inbox.getByRole("button", { name: "Tags design +1" }).click();
+  await expect(inbox.getByRole("dialog", { name: "Filter by tags" }).getByRole("checkbox", { name: "Q4 plan" })).toBeChecked();
 });
 
 test("screenshots of the tags in the gallery, the Tags page, the artifact page and the inbox", async ({ page, freshDaemon: d }) => {
