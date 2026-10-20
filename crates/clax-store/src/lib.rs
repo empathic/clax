@@ -256,7 +256,9 @@ impl Store {
     }
 
     /// [`Store::open_with_clock`], reporting the audit backfill's progress
-    /// to `report` as [`Store::open_reporting`] does.
+    /// to `report` as [`Store::open_reporting`] does. A
+    /// [`CoreError::MigrationFailed`] after the database was copied names
+    /// the copy.
     pub fn open_with(
         home: &Home,
         clock: Arc<dyn Clock>,
@@ -267,7 +269,7 @@ impl Store {
         let conn = exec::open_writer(&path)?;
         // A copy of the database before any migration changes it; the
         // home's disk only (a host's own connection keeps its own).
-        backup::before_migrate(
+        let copy = backup::before_migrate(
             &conn,
             home,
             migrations::MIGRATIONS.len() as u32,
@@ -275,6 +277,7 @@ impl Store {
         )?;
         let content = Arc::new(FsContent::new(home.clone()));
         Store::assemble(home, conn, |c| Exec::pool(c, path), content, clock, report)
+            .map_err(|e| naming_the_copy(e, copy.as_deref()))
     }
 
     /// A store on `conn`, one connection its host opened (a Durable
@@ -693,6 +696,22 @@ fn migrate(conn: &mut Connection) -> Result<()> {
             detail: other.to_string(),
         },
     })
+}
+
+/// `e`, with a [`CoreError::MigrationFailed`]'s detail naming `copy`, the
+/// copy [`backup::before_migrate`] made before the failed open, so the
+/// person can be told where the database as it was is kept.
+fn naming_the_copy(e: CoreError, copy: Option<&std::path::Path>) -> CoreError {
+    match (e, copy) {
+        (CoreError::MigrationFailed { at, detail }, Some(copy)) => CoreError::MigrationFailed {
+            at,
+            detail: format!(
+                "{detail}; a copy of the database as it was before is at {}",
+                copy.display()
+            ),
+        },
+        (e, _) => e,
+    }
 }
 
 fn migrate_steps(conn: &mut Connection) -> Result<()> {

@@ -3843,6 +3843,12 @@ mod tests {
                 if *at == APP_MIGRATION && detail.contains("draft_of")),
             "{err:?}"
         );
+        let copies = crate::backup::list(&crate::backup::dir(&home));
+        assert_eq!(copies.len(), 1, "{copies:?}");
+        assert!(
+            err.to_string().contains(&copies[0].display().to_string()),
+            "the failure names the copy: {err}"
+        );
         let c = Connection::open(home.db_path()).unwrap();
         let v: u32 = c
             .query_row("PRAGMA user_version", [], |r| r.get(0))
@@ -4600,6 +4606,13 @@ mod tests {
         assert!(after == before, "left as it was: {after:?}");
         let copies = crate::backup::list(&crate::backup::dir(&home));
         assert_eq!(copies.len(), 1, "copied before anything: {copies:?}");
+        let clax_core::CoreError::MigrationFailed { detail, .. } = &err else {
+            unreachable!()
+        };
+        assert!(
+            detail.contains(&copies[0].display().to_string()),
+            "the refusal names the copy: {detail}"
+        );
         let copy = Connection::open(&copies[0]).unwrap();
         let copied = (user_version(&copy), schema_of(&copy), every_row(&copy));
         assert!(copied == before, "the copy holds the WAL's frames too: {copied:?}");
