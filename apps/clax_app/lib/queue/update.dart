@@ -147,17 +147,9 @@ void _handle(QueueTurn t, Msg msg) {
       } else if (e is ReadJob && e.jobId == jobId) {
         _forget(t, jobId);
       }
-    case Committed(:final effect, :final job, :final questionId):
-      final e = t.answer(effect);
+    case Committed(:final effect, :final job):
+      t.answer(effect);
       _apply(t, job);
-      if (e is Ask && e.jobId == job.id && questionId != null) {
-        t.setLocal(
-          e.jobId,
-          (l) => l.turn == e.turn
-              ? l.copyWith(asked: {...l.asked, e.callId: questionId})
-              : l,
-        );
-      }
     case Refused(:final effect, :final jobId, :final reason, :final job):
       var e = t.answer(effect);
       if (e is JobEffect && e.jobId != jobId) e = null;
@@ -350,7 +342,7 @@ void _apply(QueueTurn t, Job job, {bool notify = true}) {
   t.setLocal(job.id, (l) {
     var n = l;
     if (lastTurn != null && lastTurn != l.turn) {
-      n = n.copyWith(turn: lastTurn, results: const {}, asked: const {});
+      n = n.copyWith(turn: lastTurn, results: const {});
     }
     if (job.state != JobState.paused) n = n.copyWith(resume: false);
     if (job.state != JobState.running) {

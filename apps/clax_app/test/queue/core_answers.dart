@@ -12,12 +12,21 @@ import 'package:clax_app/queue/update.dart';
 /// [mayMove]'s table (which job_moves_test.dart checks against the
 /// store's), and every committed write published as a `JobNoticed`.
 class FakeJobsCore {
-  FakeJobsCore() : rows = {}, versions = {}, questions = {};
+  FakeJobsCore()
+    : rows = {},
+      versions = {},
+      questions = {},
+      toolUseOf = {},
+      _byToolUse = {};
 
   FakeJobsCore._copy(FakeJobsCore o)
     : rows = Map.of(o.rows),
       versions = Map.of(o.versions),
       questions = Map.of(o.questions),
+      toolUseOf = Map.of(o.toolUseOf),
+      _byToolUse = Map.of(o._byToolUse),
+      session = o.session,
+      _minted = o._minted,
       published = o.published,
       replies = o.replies,
       writes = o.writes;
@@ -30,6 +39,18 @@ class FakeJobsCore {
 
   /// Each question's state: pending while open.
   final Map<String, JobAnswer> questions;
+
+  /// Each question's tool call (`questions.tool_use_id`).
+  final Map<String, String> toolUseOf;
+
+  /// The question each session created for a tool call: the store's
+  /// `(session_id, tool_use_id)` uniqueness, which is all the dedupe there
+  /// is. A relaunched worker registers a new [session].
+  final Map<(int, String), String> _byToolUse;
+
+  /// The session the worker's runner asks from; [relaunch] moves it on.
+  int session = 1;
+  var _minted = 0;
 
   /// Versions the publish steps made, and reply steps committed.
   int published = 0;
@@ -64,9 +85,26 @@ class FakeJobsCore {
   /// `GET /api/jobs/{id}`.
   Job? read(JobId id) => rows[id];
 
-  /// A question's ID as the runner makes it: one per job, turn and call,
-  /// so asking again after a restart finds it.
-  static String questionId(Ask a) => 'q:${a.jobId}:${a.turn}:${a.callId}';
+  /// The worker is killed and relaunched: its runner registers a new
+  /// session.
+  void relaunch() => session++;
+
+  /// The question the runner creates for [a] (`POST /api/questions` from
+  /// its session, tool call `<job>/turn:<n>/<call ID>`): an opaque ID the
+  /// store mints, the same only for the same session and tool call.
+  String _question(Ask a) {
+    final tool = '${a.jobId}/turn:${a.turn}/${a.callId}';
+    return _byToolUse.putIfAbsent((session, tool), () {
+      final qid = 'q${++_minted}';
+      questions[qid] = const AnswerPending();
+      toolUseOf[qid] = tool;
+      return qid;
+    });
+  }
+
+  /// How many questions were created for tool call [tool].
+  int asked(String tool) =>
+      _byToolUse.keys.where((k) => k.$2 == tool).length;
 
   Job _write(Job row) {
     final next = row.copyWith(rev: row.rev + 1);
@@ -84,8 +122,11 @@ class FakeJobsCore {
     if (!row.state.isFinal) return row;
     final qs = {...row.questions};
     for (final e in qs.entries.toList()) {
-      if (e.value is AnswerPending) {
-        qs[e.key] = const Withdrawn();
+      if (e.value.answer is AnswerPending) {
+        qs[e.key] = JobQuestion(
+          const Withdrawn(),
+          toolUseId: e.value.toolUseId,
+        );
         questions[e.key] = const Withdrawn();
       }
     }
@@ -121,18 +162,17 @@ class FakeJobsCore {
         if (row.state.isFinal) {
           return Refused(e.id, e.jobId, const JobMoved(), job: row);
         }
-        final qid = questionId(e);
-        if (row.questions.containsKey(qid)) {
-          return Committed(e.id, row, questionId: qid);
-        }
-        final status = questions.putIfAbsent(qid, () => const AnswerPending());
-        final qs = {...row.questions, qid: status};
-        final waits = qs.values.any((a) => a is AnswerPending);
+        final qid = _question(e);
+        if (row.questions.containsKey(qid)) return Committed(e.id, row);
+        final qs = {
+          ...row.questions,
+          qid: JobQuestion(questions[qid]!, toolUseId: toolUseOf[qid]),
+        };
+        final waits = qs.values.any((q) => q.answer is AnswerPending);
         final to = mayMove(row.state, const MoveAsk(), waits: waits)!;
         return Committed(
           e.id,
           _write(row.copyWith(state: to, questions: qs)),
-          questionId: qid,
         );
       case Publish():
         if (row.steps[e.key] case final s?) {
@@ -236,8 +276,11 @@ class FakeJobsCore {
         .where((j) => j.questions.containsKey(qid))
         .firstOrNull;
     if (row == null || row.state.isFinal) return;
-    final qs = {...row.questions, qid: a};
-    final waits = qs.values.any((x) => x is AnswerPending);
+    final qs = {
+      ...row.questions,
+      qid: JobQuestion(a, toolUseId: toolUseOf[qid]),
+    };
+    final waits = qs.values.any((q) => q.answer is AnswerPending);
     final to = mayMove(row.state, const MoveClose(), waits: waits)!;
     _write(row.copyWith(state: to, questions: qs));
   }
@@ -645,7 +688,7 @@ Job job(
   Carry? carry,
   PlanState? plan,
   JobError? error,
-  Map<String, JobAnswer> questions = const {},
+  Map<String, JobQuestion> questions = const {},
   int base = 0,
   String? title,
 }) => Job(

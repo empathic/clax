@@ -801,9 +801,9 @@ void main() {
         final waiting = asking.copyWith(
           state: JobState.waiting,
           rev: 3,
-          questions: {'q': const AnswerPending()},
+          questions: {'q': _asked(const AnswerPending())},
         );
-        final (m2, e2) = update(m1, Committed(ask.id, waiting, questionId: 'q'));
+        final (m2, e2) = update(m1, Committed(ask.id, waiting));
         expect(e2.whereType<JobEffect>(), isEmpty);
         expect(m2.jobs['j']!.state, JobState.waiting);
         final (m3, e3) = update(
@@ -819,7 +819,7 @@ void main() {
             waiting.copyWith(
               state: JobState.running,
               rev: 4,
-              questions: {'q': answer},
+              questions: {'q': _asked(answer)},
             ),
           ),
         );
@@ -835,14 +835,52 @@ void main() {
         m1,
         Committed(
           ask.id,
-          asking.copyWith(rev: 3, questions: {'q': const Answered('red')}),
-          questionId: 'q',
+          asking.copyWith(
+            rev: 3,
+            questions: {'q': _asked(const Answered('red'))},
+          ),
         ),
       );
       expect(
         e2.whereType<StartTurn>().single.input.results['a'],
         ToolResult.answer(const Answered('red')),
       );
+    });
+
+    test('a worker rebuilt from the rows alone answers the call from its question', () {
+      for (final (state, answer) in [
+        (JobState.waiting, const AnswerPending() as JobAnswer),
+        (JobState.running, const Answered('blue') as JobAnswer),
+      ]) {
+        final row = asking.copyWith(
+          state: state,
+          rev: 4,
+          questions: {
+            'q7': _asked(answer),
+            // Another job's question with this call's ID, and one asked
+            // otherwise: neither answers it.
+            'q8': const JobQuestion(Answered('red'), toolUseId: 'k/turn:1/a'),
+            'q9': const JobQuestion(Answered('red')),
+          },
+        );
+        final (_, e1) = update(model(), JobsLoaded([row]));
+        expect(e1.whereType<Ask>(), isEmpty, reason: '${state.name}: asked');
+        final turns = e1.whereType<StartTurn>();
+        if (answer is AnswerPending) {
+          expect(turns, isEmpty);
+        } else {
+          expect(turns.single.input.results['a'], ToolResult.answer(answer));
+        }
+      }
+      // A question of another call does not answer this one.
+      final other = asking.copyWith(
+        rev: 4,
+        questions: {
+          'q8': const JobQuestion(Answered('red'), toolUseId: 'j/turn:1/b'),
+        },
+      );
+      final (_, e2) = update(model(), JobsLoaded([other]));
+      expect(e2.whereType<Ask>().single.toolUseId, 'j/turn:1/a');
     });
   });
 
@@ -991,6 +1029,24 @@ void main() {
       }
     });
 
+    test('a worker relaunched while its job waits asks nothing again', () {
+      final core = FakeJobsCore();
+      final a = World(core, answerQuestions: false).start();
+      a.send(const Make('j', 'a todo app'));
+      a.run();
+      expect(core.read('j')!.state, JobState.waiting);
+      expect(core.asked('j/turn:2/a1'), 1);
+      // Killed, and relaunched under a new session; the person answers.
+      core.relaunch();
+      final b = World(core, answerQuestions: false).start();
+      b.run();
+      core.closeQuestion(core.openQuestions.single, const Answered('blue'));
+      b.run();
+      expect(b.effects.whereType<Ask>(), isEmpty);
+      expect(core.asked('j/turn:2/a1'), 1, reason: 'the person is asked once');
+      expect(core.read('j')!.state, JobState.done);
+    });
+
     test('jobs loaded twice run nothing twice', () {
       final core = FakeJobsCore();
       final w = World(core).start();
@@ -1005,6 +1061,11 @@ void main() {
 }
 
 Carry _carry(int stops) => Carry(stops: stops, canKeepGoing: true);
+
+/// Job `j`'s question for the `ask` call `a` of turn 1, and what became of
+/// it.
+JobQuestion _asked(JobAnswer answer) =>
+    JobQuestion(answer, toolUseId: Ask.toolUseOf('j', 1, 'a'));
 
 TurnInput _input(int turn) =>
     TurnInput(turn: turn, input: const JobInput(request: 'a todo app'), base: 0);
@@ -1236,7 +1297,7 @@ final List<_NextRow> _nextTable = [
     name: 'waiting → nothing',
     model: () => model(
       jobs: [
-        job('j', state: JobState.waiting, questions: {'q': const AnswerPending()}),
+        job('j', state: JobState.waiting, questions: {'q': _asked(const AnswerPending())}),
       ],
     ),
     job: 'j',

@@ -122,11 +122,18 @@ final class Job {
   /// Thread ID → (the newest comment ID the job answers, stopped).
   final Map<String, (String, bool)> threads;
 
-  /// Question ID → what became of it.
-  final Map<String, JobAnswer> questions;
+  /// Question ID → the call that asked it and what became of it.
+  final Map<String, JobQuestion> questions;
 
   /// Whether the job holds a question it asked that is not closed.
-  bool get waits => questions.values.any((a) => a is AnswerPending);
+  bool get waits => questions.values.any((q) => q.answer is AnswerPending);
+
+  /// The question `ask` call [callId] of turn [turn] asked, if the core
+  /// recorded it.
+  JobQuestion? questionOf(int turn, String callId) {
+    final tool = Ask.toolUseOf(id, turn, callId);
+    return questions.values.where((q) => q.toolUseId == tool).firstOrNull;
+  }
 
   Job copyWith({
     JobState? state,
@@ -139,7 +146,7 @@ final class Job {
     JobError? Function()? error,
     Map<StepKey, StepResult>? steps,
     Map<String, (String, bool)>? threads,
-    Map<String, JobAnswer>? questions,
+    Map<String, JobQuestion>? questions,
   }) => Job(
     id: id,
     kind: kind,
@@ -218,7 +225,6 @@ final class JobLocal {
     this.waitingFor,
     this.turn = 0,
     this.results = const {},
-    this.asked = const {},
     this.base = 0,
     this.intent,
     this.resume = false,
@@ -229,14 +235,12 @@ final class JobLocal {
   /// its `Render` effect, which carries its try and deadline.
   final WaitingFor? waitingFor;
 
-  /// The committed turn whose calls [results] and [asked] answer.
+  /// The committed turn whose calls [results] answer.
   final int turn;
 
-  /// Call ID → its answer, for calls of turn [turn].
+  /// Call ID → its answer, for calls of turn [turn] but `ask` calls, which
+  /// the job's row answers.
   final Map<String, ToolResult> results;
-
-  /// An `ask` call's ID → the question the core recorded for it.
-  final Map<String, String> asked;
 
   /// The artifact's version as last refused against (`version_moved`):
   /// no publish is planned on an older one.
@@ -254,7 +258,6 @@ final class JobLocal {
     WaitingFor? Function()? waitingFor,
     int? turn,
     Map<String, ToolResult>? results,
-    Map<String, String>? asked,
     int? base,
     JobIntent? Function()? intent,
     bool? resume,
@@ -263,7 +266,6 @@ final class JobLocal {
     waitingFor: waitingFor == null ? this.waitingFor : waitingFor(),
     turn: turn ?? this.turn,
     results: results ?? this.results,
-    asked: asked ?? this.asked,
     base: base ?? this.base,
     intent: intent == null ? this.intent : intent(),
     resume: resume ?? this.resume,
@@ -276,7 +278,6 @@ final class JobLocal {
       other.waitingFor == waitingFor &&
       other.turn == turn &&
       mapEquals(other.results, results) &&
-      mapEquals(other.asked, asked) &&
       other.base == base &&
       other.intent == intent &&
       other.resume == resume &&
@@ -286,7 +287,6 @@ final class JobLocal {
     waitingFor,
     turn,
     mapHash(results),
-    mapHash(asked),
     base,
     intent,
     resume,

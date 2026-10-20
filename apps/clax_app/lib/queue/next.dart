@@ -225,7 +225,7 @@ final class QueueTurn {
     if (local.turn != turn) {
       setLocal(
         job.id,
-        (l) => l.copyWith(turn: turn, results: const {}, asked: const {}),
+        (l) => l.copyWith(turn: turn, results: const {}),
       );
       local = m.localOf(job.id);
     }
@@ -275,14 +275,15 @@ final class QueueTurn {
           );
           return;
         case AskCall(:final question):
-          final qid = local.asked[call.id];
-          if (qid == null) {
+          // Answered from the row: the question the call asked, and what
+          // became of it.
+          final asked = job.questionOf(turn, call.id);
+          if (asked == null) {
             emit((id) => Ask(id, job.id, turn, call.id, question));
             return;
           }
-          final a = job.questions[qid];
-          if (a == null || a is AnswerPending) return;
-          _result(job.id, call.id, ToolResult.answer(a));
+          if (asked.answer is AnswerPending) return;
+          _result(job.id, call.id, ToolResult.answer(asked.answer));
           local = m.localOf(job.id);
         case OtherCall():
           emit((id) => RunTool(id, job.id, turn, call));

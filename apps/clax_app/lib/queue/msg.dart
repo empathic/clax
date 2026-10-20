@@ -184,7 +184,6 @@ final class Committed extends Msg {
     this.job, {
     this.step,
     this.replayed = false,
-    this.questionId,
   });
   final EffectId effect;
   final Job job;
@@ -192,9 +191,6 @@ final class Committed extends Msg {
   /// The step a step effect committed, or found committed ([replayed]).
   final StepResult? step;
   final bool replayed;
-
-  /// An `Ask`'s question, as the core recorded it for the job.
-  final String? questionId;
 }
 
 /// Why the core refused a commit effect; nothing of it was recorded.

@@ -110,13 +110,24 @@ final class CommitStep extends CommitEffect {
 }
 
 /// The `ask` call [callId] of turn [turn]: the job waits on the person's
-/// answer. The runner asks once per job, turn and call, so asking again
-/// after a restart finds the question already asked.
+/// answer. The runner creates the question from its session with tool call
+/// [toolUseId] (the store answers the same question to the same session
+/// and tool call) and records it as the job's; the job's row then carries
+/// it with that tool call, so `next` asks no call twice, a worker resumed
+/// after a kill included.
 final class Ask extends CommitEffect {
   const Ask(super.id, super.jobId, this.turn, this.callId, this.question);
   final int turn;
   final String callId;
   final Question question;
+
+  /// The question's `tool_use_id`: unique per job, turn and call, so no
+  /// two jobs asking from one session share a question.
+  String get toolUseId => toolUseOf(jobId, turn, callId);
+
+  static String toolUseOf(JobId jobId, int turn, String callId) =>
+      '$jobId/turn:$turn/$callId';
+
   @override
   bool operator ==(Object other) =>
       other is Ask &&

@@ -244,6 +244,27 @@ final class Withdrawn extends JobAnswer {
   String toString() => 'withdrawn';
 }
 
+/// A question a job asked, as its row keeps it (`job_questions`, with the
+/// question's `tool_use_id`): which `ask` call asked it, and what became
+/// of it.
+final class JobQuestion {
+  const JobQuestion(this.answer, {this.toolUseId});
+  final JobAnswer answer;
+
+  /// `<job>/turn:<n>/<call ID>` for the queue's questions
+  /// (`Ask.toolUseId`); null for a question asked otherwise.
+  final String? toolUseId;
+  @override
+  bool operator ==(Object other) =>
+      other is JobQuestion &&
+      other.answer == answer &&
+      other.toolUseId == toolUseId;
+  @override
+  int get hashCode => Object.hash(answer, toolUseId);
+  @override
+  String toString() => 'JobQuestion($toolUseId, $answer)';
+}
+
 /// What a publish step publishes: the version planned on [base] and the
 /// document writes that land with it.
 final class PublishPlan {

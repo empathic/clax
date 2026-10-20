@@ -271,6 +271,10 @@ pub struct JobThread {
 #[derive(Clone, Debug, PartialEq, Eq, Serialize)]
 pub struct JobQuestion {
     pub question_id: String,
+    /// The tool call that asked it (`questions.tool_use_id`): the app's
+    /// queue names a job's `ask` call `turn:<n>/<call ID>`, so a worker
+    /// resumed after a kill knows which call each question answers.
+    pub tool_use_id: Option<String>,
     pub answer: JobAnswer,
 }
 
@@ -543,12 +547,14 @@ fn full(c: &Connection, job: JobRow) -> clax_core::Result<JobFull> {
         .collect::<rusqlite::Result<_>>()?;
     let questions = c
         .prepare_cached(
-            "SELECT question_id, outcome, answers_json FROM job_questions
-             WHERE job_id = ?1 ORDER BY question_id",
+            "SELECT jq.question_id, jq.outcome, jq.answers_json, q.tool_use_id
+             FROM job_questions jq JOIN questions q ON q.id = jq.question_id
+             WHERE jq.job_id = ?1 ORDER BY jq.question_id",
         )?
         .query_map(params![job.id], |r| {
             Ok(JobQuestion {
                 question_id: r.get(0)?,
+                tool_use_id: r.get(3)?,
                 answer: JobAnswer::read(r.get(1)?, r.get(2)?)?,
             })
         })?
@@ -2037,6 +2043,13 @@ mod tests {
 
     /// A question asked by the session with harness session ID `hsid`.
     fn question_in(st: &Store, hsid: &str, source: Source) -> String {
+        let tool_use_id = (source == Source::Hook).then(|| "toolu_1".to_string());
+        question_for(st, hsid, source, tool_use_id)
+    }
+
+    /// A question asked by the session with harness session ID `hsid` for
+    /// tool call `tool_use_id`.
+    fn question_for(st: &Store, hsid: &str, source: Source, tool_use_id: Option<String>) -> String {
         let sid = session(st, "app", hsid);
         let qs = serde_json::from_value(json!([{"question": "Which?", "header": "Pick",
             "options": [{"label": "A"}, {"label": "B"}]}]))
@@ -2047,7 +2060,7 @@ mod tests {
                 session_id: sid,
                 artifact_id: None,
                 source,
-                tool_use_id: (source == Source::Hook).then(|| "toolu_1".into()),
+                tool_use_id,
                 questions: qs,
                 released: false,
                 thread_id: None,
@@ -2970,6 +2983,7 @@ mod tests {
             st.job("j1").unwrap().unwrap().questions,
             vec![JobQuestion {
                 question_id: q.clone(),
+                tool_use_id: None,
                 answer: JobAnswer::Pending
             }]
         );
@@ -3077,7 +3091,7 @@ mod tests {
         let (_d, st) = store();
         let aid = artifact(&st, None);
         let t = thread_on(&st, &aid);
-        let q = question(&st);
+        let q = question_for(&st, "h1", Source::Ask, Some("turn:2/a1".into()));
         st.create_job(new_job("j1")).unwrap();
         st.create_job(new_job("j2")).unwrap();
         st.create_job(NewJob {
@@ -3109,7 +3123,15 @@ mod tests {
         assert_eq!(keys, ["turn:1", "turn:2"]);
         assert_eq!(j1.steps[1].result, json!({"n": 2}));
         assert_eq!(j1.threads.len(), 1);
-        assert_eq!(j1.questions.len(), 1);
+        assert_eq!(
+            j1.questions,
+            [JobQuestion {
+                question_id: q.clone(),
+                tool_use_id: Some("turn:2/a1".into()),
+                answer: JobAnswer::Pending,
+            }],
+            "each question with the tool call that asked it"
+        );
         assert_eq!(j1.job.state, JobState::Waiting);
         assert!(open[1].steps.is_empty() && open[1].threads.is_empty());
         assert_eq!(st.open_jobs("cli").unwrap().len(), 1);
