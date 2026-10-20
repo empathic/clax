@@ -42,6 +42,39 @@ void main() {
       expect(source('macos', env: const {'CLAX_EMBED_LIB': ''}), bundled);
     });
 
+    test('macOS outside an app bundle has no core, and says how to name one', () {
+      for (final executable in [
+        'Clax',
+        '/Clax',
+        '',
+        '/',
+        'MacOS/Clax',
+        '/MacOS/Clax',
+        'Contents/MacOS/Clax',
+        '/Contents/MacOS/Clax',
+        '/usr/local/bin/dart',
+        '/Applications/Clax.app/Contents/MacOS/',
+        '/Applications/Clax.app/Contents/Resources/Clax',
+      ]) {
+        for (final release in [false, true]) {
+          final found = coreLibSource(
+            os: 'macos',
+            env: const {},
+            executable: executable,
+            release: release,
+          );
+          expect(found, isA<CoreLibUnsupported>(), reason: '$executable $release');
+          final reason = (found as CoreLibUnsupported).reason;
+          expect(reason, contains('Contents/MacOS'), reason: executable);
+          expect(
+            reason.contains('CLAX_EMBED_LIB'),
+            !release,
+            reason: '$executable $release',
+          );
+        }
+      }
+    });
+
     test('CLAX_EMBED_LIB names the library outside release builds only', () {
       expect(
         source('macos', env: named),

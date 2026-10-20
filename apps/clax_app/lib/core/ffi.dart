@@ -105,7 +105,8 @@ final class CoreLibUnsupported extends CoreLibSource {
 /// - Android: `libclax_embed.so`, from the APK;
 /// - iOS: the process itself, which links the core in statically;
 /// - macOS: the app bundle's `Contents/Frameworks/libclax_embed.dylib`,
-///   [executable] being `<bundle>/Contents/MacOS/<name>`;
+///   [executable] being `<bundle>/Contents/MacOS/<name>`; an [executable]
+///   outside a bundle's `Contents/MacOS` has none;
 /// - any other platform has none.
 CoreLibSource coreLibSource({
   required String os,
@@ -121,16 +122,27 @@ CoreLibSource coreLibSource({
     case 'ios':
       return const CoreLibProcess();
     case 'macos':
-      final macOS = executable.lastIndexOf('/');
-      final contents = executable.substring(0, executable.lastIndexOf('/', macOS - 1));
-      return CoreLibOpen('$contents/Frameworks/libclax_embed.dylib');
+      final bundled = _macBundle.firstMatch(executable);
+      if (bundled == null) {
+        return CoreLibUnsupported(
+          'the app runs as $executable, which is not in an app bundle\'s '
+          'Contents/MacOS, so there is no bundled core'
+          '${release ? '' : _nameOne}',
+        );
+      }
+      return CoreLibOpen('${bundled[1]}/Frameworks/libclax_embed.dylib');
     default:
       return CoreLibUnsupported(
-        'the embedded core is not built for $os'
-        '${release ? '' : '; set CLAX_EMBED_LIB to a host build of it (//crates/clax-embed:clax_embed_host)'}',
+        'the embedded core is not built for $os${release ? '' : _nameOne}',
       );
   }
 }
+
+/// `<bundle>/Contents/MacOS/<name>`: group 1 is `<bundle>/Contents`.
+final _macBundle = RegExp(r'^(.*[^/].*/Contents)/MacOS/[^/]+$');
+
+const _nameOne =
+    '; set CLAX_EMBED_LIB to a host build of it (//crates/clax-embed:clax_embed_host)';
 
 typedef _PostC = Int8 Function(Int64, Pointer<Dart_CObject>);
 typedef _OpenC =
