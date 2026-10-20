@@ -1419,6 +1419,8 @@ impl Store {
                 "a step that makes a new artifact has base 0",
             )));
         }
+        self.remove_moved_stray(id, key, named.as_ref(), base + 1)
+            .await?;
         let begun =
             self.begin_publish_step(id, key, named.as_ref(), base + 1, session_id.as_deref())?;
         request.step = Some(step_mark(id, key, &begun.nonce));
@@ -1475,6 +1477,52 @@ impl Store {
                 }),
             },
         }
+    }
+
+    /// Removes, under its content lock, the version an earlier attempt of
+    /// publish step `key` of job `id` left with the step's mark and no row
+    /// recording it, when this attempt writes another artifact or version
+    /// (version `n` of `named`; `None`: the step's own new app): the step
+    /// no longer writes there, and [`Store::begin_publish_step`] gives it a
+    /// new nonce, which would leave that content no step's and refuse every
+    /// write of its version.
+    async fn remove_moved_stray(
+        &self,
+        id: &str,
+        key: &str,
+        named: Option<&ArtifactId>,
+        n: u32,
+    ) -> Result<(), StepError> {
+        let held: Option<(String, String, u32)> = self.with_read(|c| {
+            Ok(c.query_row(
+                "SELECT nonce, artifact_id, version_n FROM job_step_marks
+                 WHERE job_id = ?1 AND key = ?2",
+                params![id, key],
+                |r| Ok((r.get(0)?, r.get(1)?, r.get(2)?)),
+            )
+            .optional()?)
+        })?;
+        let Some((nonce, held_aid, held_n)) = held else {
+            return Ok(());
+        };
+        if named.is_none_or(|a| a.as_str() == held_aid) && held_n == n {
+            return Ok(());
+        }
+        let Ok(held_id) = ArtifactId::parse(&held_aid) else {
+            return Ok(());
+        };
+        let mark = step_mark(id, key, &nonce);
+        let _lock = self.lock_content(&held_id).await?;
+        let recorded = self
+            .get_artifact(&held_id)?
+            .is_some_and(|a| a.current_version >= held_n);
+        if !recorded
+            && self.content.unrecorded_step(&held_id, held_n).await?.as_deref() == Some(&mark)
+            && self.mark_of(&held_id, held_n, &mark, Some(&mark))? == MarkOf::Own
+        {
+            self.content.remove_version(&held_id, held_n).await?;
+        }
+        Ok(())
     }
 
     /// The mark of publish step `key` of job `id`, which writes version `n`

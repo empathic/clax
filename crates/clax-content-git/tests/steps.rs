@@ -511,6 +511,28 @@ fn a_stray_another_step_marked_is_not_replaced<C: ContentStore + 'static>(
     assert_eq!(f.html(2).as_deref(), Some("<p>other</p>"));
 }
 
+/// A killed step's attempt on another base is refused, and removes the
+/// stray the killed attempt left: the step writes elsewhere now, and its
+/// later attempt on the first base writes that version.
+fn a_step_on_another_base_removes_its_stray<C: ContentStore + 'static>(
+    content: impl FnOnce(&Home) -> C,
+) {
+    let f = fixture(content);
+    f.content.kill_next();
+    assert!(f.commit("publish:1", "<p>killed</p>").is_err());
+    let mut other = f.step("<p>two</p>");
+    other.base = 0;
+    let e =
+        f.st.commit_publish_step(DAEMON, "j1", "publish:1", other)
+            .unwrap_err();
+    assert!(matches!(e, StepError::VersionMoved { current: 1 }), "{e:?}");
+    assert_eq!(f.html(2), None);
+    assert!(f.st.marked_strays().unwrap().is_empty());
+    let c = f.commit("publish:1", "<p>two</p>").unwrap();
+    assert_eq!(c.step.version_n, Some(2));
+    assert_eq!(f.html(2).as_deref(), Some("<p>two</p>"));
+}
+
 /// Pushes a commit onto `main` of `f`'s repository, as someone with a
 /// clone does: on the commit `main` is at, with its tree, and `message`.
 /// Its ID.
@@ -747,4 +769,14 @@ fn a_live_steps_stray_refuses_another_write_on_files() {
 #[test]
 fn a_live_steps_stray_refuses_another_write_in_git() {
     a_live_steps_stray_refuses_another_write(the_store_in_git);
+}
+
+#[test]
+fn a_step_on_another_base_removes_its_stray_on_files() {
+    a_step_on_another_base_removes_its_stray(the_store_on_files);
+}
+
+#[test]
+fn a_step_on_another_base_removes_its_stray_in_git() {
+    a_step_on_another_base_removes_its_stray(the_store_in_git);
 }
