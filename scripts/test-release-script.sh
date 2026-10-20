@@ -759,16 +759,32 @@ case_37() {
 JOBS="$(getconf _NPROCESSORS_ONLN 2>/dev/null || echo 4)"
 [ "$JOBS" -le 8 ] || JOBS=8
 CASES="case_1 case_2 case_3 case_4 case_5 case_6 case_7 case_8 case_9 case_10 case_11 case_12 case_13 case_14 case_15 case_16 case_17 case_18 case_19 case_20 case_21 case_22 case_23 case_24 case_25 case_26 case_27 case_28 case_29 case_30 case_31 case_32 case_33 case_34 case_35 case_36 case_37"
+# A case's subshell exits 0 once its last check has run; one that dies on
+# the way (an unbound variable under set -u, say) exits otherwise, and fails
+# the gate whatever it printed before. Each case's status is collected by its
+# PID.
+batch=""
+# wait_batch: waits for each "case:pid" in $batch, keeping its exit status.
+wait_batch() {
+    local entry
+    for entry in $batch; do
+        if wait "${entry#*:}"; then echo 0; else echo $?; fi > "$T/status.${entry%%:*}"
+    done
+    batch=""
+}
 i=0
 for c in $CASES; do
-    ("$c") > "$T/result.$c" 2>&1 &
+    ("$c"; exit 0) > "$T/result.$c" 2>&1 &
+    batch="$batch $c:$!"
     i=$((i + 1))
-    if [ $((i % JOBS)) = 0 ]; then wait; fi
+    if [ $((i % JOBS)) = 0 ]; then wait_batch; fi
 done
-wait
+wait_batch
 for c in $CASES; do
     cat "$T/result.$c"
     if grep '^FAIL' "$T/result.$c" >/dev/null; then FAILED=1; fi
+    status="$(cat "$T/status.$c" 2>/dev/null || echo missing)"
+    if [ "$status" != 0 ]; then fail "$c exited with status $status before its last check"; fi
     if ! grep -E '^(PASS|FAIL)' "$T/result.$c" >/dev/null; then fail "$c reported nothing"; fi
 done
 exit "$FAILED"
