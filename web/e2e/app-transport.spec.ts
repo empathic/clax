@@ -1,0 +1,450 @@
+// The shell's app transport end to end: the shell documents and content of
+// a daemon that serves as the core an app embeds, loaded from the app's
+// origins, with the shell's API calls and event stream over the app's
+// channel (./app-scheme.ts plays the app's side, as spec §4 and §5 of
+// docs/superpowers/specs/2026-10-19-in-process-core-design.md have the app
+// do): calls bound to the load's nonce, a previous load's late answers
+// dropped, bodies in chunks, aborts before and after the nonce, the stream
+// paced by the core's end blocks, a suspended WebView, origin isolation,
+// comment mode, clips, the app's more menu, and the browser's shell as it
+// was.
+import type { Frame, Page } from "@playwright/test";
+import { hostChannel, host } from "./app-host";
+import { type AppHost, type AppHostOptions, BINDING, SHELL, content, startEmbedDaemon } from "./app-scheme";
+import { test as base, expect, type Daemon, api, publish } from "./fixtures";
+import { quietEval } from "./time";
+
+const test = base.extend<object, { embed: Daemon }>({
+  // oxlint-disable-next-line no-empty-pattern
+  embed: [async ({}, use) => {
+    const d = await startEmbedDaemon();
+    await use(d);
+    await d.stop();
+  }, { scope: "worker", timeout: 30_000 }],
+});
+
+let d: Daemon;
+test.beforeEach(({ embed }) => { d = embed; });
+test.use({ hasTouch: true, isMobile: true, viewport: { width: 390, height: 800 } });
+
+const PAGE = `<!doctype html><html><head><title>App</title><style>body{margin:0;font:18px/28px sans-serif}main{padding:24px}h2{margin:0 0 24px}</style>
+</head><body><main><h2 id="t">Quarterly goals</h2><p>Grow revenue in every region this year.</p></main></body></html>`;
+
+/** A 1×1 PNG, as a thread's clip. */
+const PNG = Buffer.from("iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAYAAAAfFcSJAAAADUlEQVR42mP8z8BQDwAEhQGAhKmMIQAAAABJRU5ErkJggg==", "base64");
+
+const escape = (s: string) => s.replace(/[.*+?^${}()|[\]\\]/g, "\\$&");
+
+/** The content frame showing version `n` of `id`, from its app origin, once parsed. */
+async function appFrame(page: Page, id: string, n: number): Promise<Frame> {
+  const url = new RegExp(`^${escape(content(id))}/v/${n}/`);
+  await expect.poll(() => page.frame({ url }) !== null, { timeout: 10_000 }).toBe(true);
+  const frame = page.frame({ url })!;
+  await frame.waitForLoadState("domcontentloaded");
+  return frame;
+}
+
+/** Publishes `html` and opens it in the app through the app's host: the
+ * app's view (`?app=1`), or with `app: false` the shell document as a
+ * browser shows it. */
+async function openInApp(page: Page, title: string, opts: { html?: string; app?: boolean; host?: AppHostOptions } = {}) {
+  const { artifact } = await publish(d.base, d.token, title, { "index.html": opts.html ?? PAGE });
+  const h = await hostChannel(page, { relay: d, ...opts.host });
+  await page.goto(`${SHELL}/a/${artifact.id}${opts.app === false ? "" : "?app=1"}`);
+  const frame = await appFrame(page, artifact.id, 1);
+  return { id: artifact.id, host: h, frame };
+}
+
+/** Waits until the view's stream carries its topics (`claxStreamLive`). */
+async function live(h: AppHost) {
+  await expect.poll(() => h.evalNow<number>("window.claxStreamLive ?? 0")).toBeGreaterThan(0);
+}
+
+/** Posts a viewer's thread on `id` v1, with a clip, straight to the daemon. */
+async function postThread(id: string, body: string): Promise<{ id: string }> {
+  const form = new FormData();
+  form.set("anchor", JSON.stringify({ kind: "element", selector: "#t", quote: null, prefix: null, suffix: null, html_hash: null, rect: null, custom_name: null, file: "index.html" }));
+  form.set("body", body);
+  form.set("version", "1");
+  form.set("clip", new Blob([PNG], { type: "image/png" }), "clip.png");
+  const res = await fetch(`${d.base}/api/artifacts/${id}/threads`, { method: "POST", body: form, headers: { origin: d.base } });
+  if (!res.ok) throw new Error(`${res.status} ${await res.text()}`);
+  return (await res.json()).thread;
+}
+
+/** The answers the host ran for `nonce`'s calls, by call ID. */
+function answersOf(h: AppHost, nonce: string): Map<number, { path: string; text: string | null }> {
+  return new Map(h.calls.filter(c => c.nonce === nonce && c.answered).map(c => [c.id, { path: c.path.split("?")[0], text: c.answered!.text }]));
+}
+
+test("the artifact view loads and a comment posts through the channel", async ({ page }) => {
+  const { id, host: h, frame } = await openInApp(page, "Transport comment");
+  await expect.poll(() => h.ofType("ready").length).toBeGreaterThan(0);
+  await host(page, "enterCommentMode()");
+  // The page's bridge takes the shell's orders from the app's shell origin,
+  // which the core names in its tag (data-origin).
+  await expect.poll(() => frame.evaluate(() => document.documentElement.style.cursor)).toBe("crosshair");
+  expect(await frame.evaluate(() => document.querySelector<HTMLScriptElement>("script[data-origin]")?.dataset.origin)).toBe(SHELL);
+  await frame.locator("#t").tap();
+  await expect.poll(() => (h.ofType("state").at(-1)?.draft as { label?: string } | undefined)?.label ?? null).toBe("“Quarterly goals”");
+  await host(page, `submitDraft({ text: "make it blue" })`);
+  await expect.poll(() => h.ofType("sent").length).toBe(1);
+  const thread = h.ofType("sent")[0].thread as string;
+  const t = await api(d.base, d.token, `/api/artifacts/${id}/threads/${thread}`) as { thread: { comments: { body: string }[]; has_clip: boolean } };
+  expect(t.thread.comments[0].body).toBe("make it blue");
+  expect(t.thread.has_clip).toBe(true);
+  expect(h.callsTo("POST", `/api/artifacts/${id}/threads`)).toHaveLength(1);
+});
+
+test("calls go out from boot under the document's nonce, each answer names it, and a message under another nonce is dropped", async ({ page }) => {
+  const { host: h } = await openInApp(page, "Transport nonce", { host: { autoInit: false } });
+  const meta = await h.evalNow<string>(`document.querySelector('meta[name="clax-nonce"]').content`);
+  expect(meta).toBe(h.nonce);
+  // Before the app's init, the view has made its calls and opened its stream.
+  await expect.poll(() => h.streamsOf().length).toBeGreaterThan(0);
+  await expect.poll(() => h.calls.filter(c => c.answered).length).toBeGreaterThan(0);
+  expect(h.ran.filter(e => e.includes("claxHost.init"))).toEqual([]);
+  expect(h.calls.every(c => c.nonce === meta)).toBe(true);
+  // Every answer the host ran names the load's nonce first.
+  await h.idle();
+  const answers = h.ran.filter(e => /claxTransport\.(callResult|streamBlock|streamEnd)\(/.test(e));
+  expect(answers.length).toBeGreaterThan(0);
+  expect(answers.every(e => /^window\.claxTransport\.\w+\((".*?"), /.exec(e)?.[1] === JSON.stringify(meta))).toBe(true);
+  expect(h.dropped).toEqual([]);
+
+  await h.evalNow(`window.ClaxHost.postMessage(JSON.stringify({ type: "call", nonce: "another-load-0123456789", id: 9999, method: "GET", path: "/api/artifacts", headers: [], body: null, body64: null }))`);
+  await h.barrier();
+  expect(h.dropped).toEqual([{ why: "nonce", message: expect.objectContaining({ id: 9999 }) }]);
+  expect(h.calls.filter(c => c.id === 9999)).toEqual([]);
+
+  await h.init();
+  await expect.poll(() => h.ofType("ready").length).toBeGreaterThan(0);
+});
+
+test("a reload's calls and stream take only their own load's answers: the previous load's late ones are dropped", async ({ page }) => {
+  // What the shell's own fetch resolves with in each load: the body of every
+  // /api/ answer, and the text of the event stream.
+  await page.addInitScript(shell => {
+    if (location.origin !== shell || window.top !== window) return;
+    const log: { path: string; text: string }[] = [];
+    const stream: string[] = [];
+    Object.assign(window, { claxFetchLog: log, claxStreamLog: stream });
+    let inner = window.fetch;
+    let wrapped: typeof fetch | null = null;
+    Object.defineProperty(window, "fetch", {
+      configurable: true,
+      get: () => wrapped ?? inner,
+      set: (f: typeof fetch) => {
+        inner = f;
+        wrapped = async (input, init) => {
+          const res = await inner(input, init);
+          const path = new URL(input instanceof Request ? input.url : String(input), location.href).pathname;
+          if (path === "/api/stream" && res.body) {
+            const r = res.clone().body!.getReader();
+            const dec = new TextDecoder();
+            void (async () => { for (;;) { const { value, done } = await r.read(); if (done) return; stream.push(dec.decode(value)); } })().catch(() => {});
+          } else if (path.startsWith("/api/")) {
+            void res.clone().text().then(text => log.push({ path, text }), () => {});
+          }
+          return res;
+        };
+      },
+    });
+  }, SHELL);
+  const { artifact } = await publish(d.base, d.token, "Transport stale", { "index.html": PAGE });
+  const id = artifact.id;
+  const h = await hostChannel(page, { relay: d, autoInit: false });
+  // The app's answers to the first load are sent and not yet run.
+  h.hold();
+  await page.goto(`${SHELL}/a/${id}?app=1`);
+  const first = h.nonce!;
+  // The calls it makes before any answer, its presence among them (whose
+  // answer names when each viewer came), answered by the core and waiting to run.
+  const settled = (nonce: string) => expect.poll(() => {
+    const calls = h.calls.filter(c => c.nonce === nonce);
+    return calls.some(c => c.method === "PUT" && c.path === "/api/viewers/me/presence") && calls.every(c => c.answered);
+  }).toBe(true);
+  await settled(first);
+  // What the core answers the next load differs: it has a thread, and the
+  // first load's viewer.
+  const thread = await postThread(id, "a thread after the first load");
+  await page.reload();
+  const second = h.nonce!;
+  expect(second).not.toBe(first);
+  await settled(second);
+  // The first load's answers run first, into the second load's document.
+  await h.release();
+  await h.init();
+  await expect.poll(() => h.ofType("ready").length).toBeGreaterThan(0);
+  await expect.poll(() => (h.ofType("threads").at(-1)?.threads as { id: string }[] | undefined)?.map(t => t.id) ?? []).toContain(thread.id);
+  const ran = h.ran.filter(e => e.startsWith("window.claxTransport.callResult("));
+  const own = ran.findIndex(e => e.startsWith(`window.claxTransport.callResult(${JSON.stringify(second)}`));
+  expect(ran.slice(own).some(e => e.startsWith(`window.claxTransport.callResult(${JSON.stringify(first)}`))).toBe(false);
+  // The two loads' calls of one ID that the core answered differently: had
+  // the first load's answer landed, the second load's call would hold it.
+  const one = answersOf(h, first);
+  const two = answersOf(h, second);
+  const clash = [...two].filter(([i, a]) => one.has(i) && one.get(i)!.text !== a.text);
+  expect(clash.length).toBeGreaterThan(0);
+  const log = () => quietEval<{ path: string; text: string }[]>(page, "window.claxFetchLog");
+  for (const [i, a] of clash) {
+    await expect.poll(async () => (await log()).some(e => e.path === a.path && e.text === a.text)).toBe(true);
+    expect((await log()).some(e => e.path === a.path && e.text === one.get(i)!.text)).toBe(false);
+  }
+  // A late push of the first load's subscription of the same ID as the
+  // second load's stream: neither its block nor its end reaches that stream.
+  await live(h);
+  const s = h.streamsOf(second).at(-1)!;
+  const opened = h.subscriptions.length;
+  await h.evalNow(`window.claxTransport.streamBlock(${JSON.stringify(first)}, ${s.id}, "event: late-push\\ndata: {}\\n\\n"); window.claxTransport.streamEnd(${JSON.stringify(first)}, ${s.id})`);
+  await h.barrier();
+  await publish(d.base, d.token, "Transport stale", { "index.html": PAGE.replace("Quarterly", "Yearly") }, 1, id);
+  await expect.poll(() => h.ofType("newer").map(m => m.version)).toContain(2);
+  expect(h.subscriptions.length).toBe(opened);
+  expect((await quietEval<string[]>(page, "window.claxStreamLog")).join("")).not.toContain("late-push");
+});
+
+test("an init the app ran for the previous load leaves the next load's channel its own", async ({ page }) => {
+  const { artifact } = await publish(d.base, d.token, "Transport stale init", { "index.html": PAGE });
+  const h = await hostChannel(page, { relay: d });
+  h.hold();
+  await page.goto(`${SHELL}/a/${artifact.id}?app=1`);
+  const first = h.nonce!;
+  const inits = (nonce: string) => h.waiting.filter(e => e.startsWith("window.claxHost.init(") && e.includes(JSON.stringify(nonce)));
+  await expect.poll(() => inits(first).length).toBe(1);
+  await page.reload();
+  const second = h.nonce!;
+  await expect.poll(() => inits(second).length).toBe(1);
+  // The first load's init runs in the second load's document, before its own.
+  await h.release();
+  await expect.poll(() => h.ofType("ready", second).length).toBeGreaterThan(0);
+  expect(h.dropped.filter(m => m.why === "nonce" && (m.message as { nonce?: string }).nonce === first)).toEqual([]);
+});
+
+test("a body over 8 MiB goes to the core in 1 MiB chunks and arrives whole", async ({ page }) => {
+  const { id, host: h } = await openInApp(page, "Transport chunks");
+  await live(h);
+  const size = 9 << 20;
+  const status = await h.evalNow<number>(`fetch("/api/artifacts/${id}/versions", { method: "POST", headers: { "content-type": "application/json" },
+    body: JSON.stringify({ if_version: 1, files: { "index.html": { content: ${JSON.stringify(PAGE)}, encoding: "utf8" }, "big.txt": { content: "x".repeat(${size}), encoding: "utf8" } } }) }).then(r => r.status)`);
+  expect(status).toBeLessThan(300);
+  const [call] = h.callsTo("POST", `/api/artifacts/${id}/versions`);
+  expect(call.chunked).toBe(true);
+  const chunks = h.ofType("callChunk").filter(m => m.id === call.id);
+  const bytes = chunks.map(m => Buffer.from(m.body64 as string, "base64").length);
+  expect(chunks.map(m => m.n)).toEqual(chunks.map((_, i) => i));
+  expect(chunks.map(m => m.last)).toEqual(chunks.map((_, i) => i === chunks.length - 1));
+  expect(bytes.slice(0, -1).every(b => b === 1 << 20)).toBe(true);
+  expect(bytes.reduce((a, b) => a + b, 0)).toBeGreaterThan(size);
+  const big = await (await fetch(`${d.base}/api/artifacts/${id}/versions/2/files/big.txt`)).text();
+  expect(big.length).toBe(size);
+});
+
+test("before the nonce an aborted call or stream rejects and posts nothing; after it, an abort posts callAbort or unsubscribe and its answer is dropped", async ({ page }) => {
+  // A document without the nonce meta, as the app over loopback serves it.
+  const { id, host: h } = await openInApp(page, "Transport aborts", { host: { nonceMeta: false, autoInit: false } });
+  expect(await h.evalNow<boolean>(`document.querySelector('meta[name="clax-nonce"]') === null`)).toBe(true);
+  const before = await h.evalNow<string[]>(`(async () => {
+    const ac = new AbortController();
+    const call = fetch("/api/artifacts/${id}?probe=before", { signal: ac.signal }).then(() => "answered", e => e.name);
+    const stream = fetch("/api/stream", { signal: ac.signal }).then(() => "answered", e => e.name);
+    ac.abort();
+    return [await call, await stream];
+  })()`);
+  expect(before).toEqual(["AbortError", "AbortError"]);
+  await h.barrier();
+  // Nothing went out before the nonce, the view's own calls included.
+  expect(h.calls).toEqual([]);
+  expect(h.subscriptions).toEqual([]);
+  await h.init();
+  await live(h);
+  expect(h.calls.filter(c => c.path.includes("probe=before"))).toEqual([]);
+
+  // A call the core has not answered, aborted.
+  const unstall = h.stall(c => c.path.includes("probe=after"));
+  await h.evalNow(`window.probeAbort = new AbortController(); window.probe = fetch("/api/artifacts/${id}?probe=after", { signal: probeAbort.signal }).then(r => r.status, e => e.name); 0`);
+  await expect.poll(() => h.calls.filter(c => c.path.includes("probe=after")).length).toBe(1);
+  await h.evalNow("probeAbort.abort()");
+  expect(await h.evalNow<string>("window.probe")).toBe("AbortError");
+  await h.barrier();
+  const [aborted] = h.calls.filter(c => c.path.includes("probe=after"));
+  expect(h.ofType("callAbort")).toEqual([{ type: "callAbort", id: aborted.id }]);
+  unstall();
+  // A call after it is answered; the aborted one never is.
+  expect(await h.evalNow<number>(`fetch("/api/artifacts/${id}?probe=later").then(r => r.status)`)).toBe(200);
+  expect(aborted.answered).toBeUndefined();
+  expect(h.ran.filter(e => e.startsWith(`window.claxTransport.callResult(${JSON.stringify(h.nonce)}, ${aborted.id},`))).toEqual([]);
+
+  // A stream of the shell's own, aborted: the host closes its subscription.
+  const streams = h.subscriptions.length;
+  await h.evalNow(`window.streamAbort = new AbortController(); window.stream = fetch("/api/stream", { signal: streamAbort.signal }).then(r => r.body.getReader().read()).then(() => "read", e => e.name); 0`);
+  await expect.poll(() => h.subscriptions.length).toBe(streams + 1);
+  const s = h.subscriptions.at(-1)!;
+  await h.evalNow("streamAbort.abort()");
+  await h.barrier();
+  expect(h.ofType("unsubscribe")).toEqual([{ type: "unsubscribe", id: s.id }]);
+  expect(s.ended).toBe("unsubscribed");
+});
+
+test("the stream reopens by the core's end block: other ends back off, ready resets the backoff, and a final refusal stops", async ({ page }) => {
+  await page.clock.install();
+  const { host: h } = await openInApp(page, "Transport end blocks");
+  await live(h);
+  await page.clock.pauseAt(await h.evalNow<number>("Date.now()") + 1000);
+  const opened = () => h.streamsOf().length;
+  /** Runs `ms` of the page's clock, and waits until what the shell posted meanwhile has reached the host. */
+  const run = async (ms: number) => { await page.clock.runFor(ms); await h.idle(); await h.barrier(); };
+  /** Expects no reopen within `low` ms (a backoff's least) and one within
+   * `high` ms (its most), from once what the host sent has run. */
+  const reopensBetween = async (low: number, high: number) => {
+    await h.idle();
+    await h.barrier();
+    const n = opened();
+    await run(low - 10);
+    expect(opened()).toBe(n);
+    await run(high - low + 20);
+    await expect.poll(opened).toBe(n + 1);
+    return h.streamsOf().at(-1)!;
+  };
+  /** Waits until stream `s`'s ready has run in the shell. */
+  const ready = (s: { id: number }) => expect.poll(() => h.ran.some(e => e.startsWith(`window.claxTransport.streamBlock(${JSON.stringify(h.nonce)}, ${s.id},`) && e.includes("event: ready"))).toBe(true);
+
+  // A stream that ended reopens after the backoff's first step (0.5 s ± 20 %),
+  // from where it stopped; one that ends again before its ready, after the second.
+  h.endNextStream({ reason: "stream_ended" });
+  h.endStreams({ reason: "stream_ended" });
+  const first = await reopensBetween(400, 600);
+  expect(first.lastEventId).toMatch(/^.+:\d+$/);
+  const second = await reopensBetween(800, 1200);
+  expect(second.lastEventId).toMatch(/^.+:\d+$/);
+  // Its ready resets the backoff: the next end backs off from the first step again.
+  await ready(second);
+  h.endStreams({ reason: "stream_ended" });
+  await ready(await reopensBetween(400, 600));
+
+  // A refusal asking again can change (503) backs off; so does a core that closed.
+  h.endNextStream({ reason: "stream_refused", status: 503 });
+  h.endStreams({ reason: "core_closed" });
+  await reopensBetween(400, 600);
+  await ready(await reopensBetween(800, 1200));
+
+  // A refusal asking again cannot change (403) stops it.
+  h.endNextStream({ reason: "stream_refused", status: 403 });
+  h.endStreams({ reason: "stream_ended" });
+  await reopensBetween(400, 600);
+  await h.idle();
+  await h.barrier();
+  const n = opened();
+  await run(60_000);
+  expect(opened()).toBe(n);
+});
+
+test("a WebView suspended longer than a tab's expiry, and a relay held for a minute, keep the view following with no notice", async ({ page }) => {
+  await page.clock.install();
+  const { id, host: h } = await openInApp(page, "Transport suspended");
+  await live(h);
+  await expect.poll(() => h.ofType("ready").length).toBeGreaterThan(0);
+  const streams = h.subscriptions.length;
+  const topics = h.callsTo("POST", /^\/api\/stream\//).length;
+  // Its timers stood still past a tab's expiry (3 min), then run at once.
+  await page.clock.fastForward(4 * 60_000);
+  await publish(d.base, d.token, "Transport suspended", { "index.html": PAGE.replace("Quarterly", "Yearly") }, 1, id);
+  await expect.poll(() => h.ofType("newer").map(m => m.version)).toContain(2);
+  // The page's tab kept its topics: none was dropped from the stream.
+  await h.barrier();
+  expect(h.callsTo("POST", /^\/api\/stream\//).slice(topics).map(c => JSON.parse(c.body ?? "{}").unsubscribe ?? []).flat()).toEqual([]);
+  // The relay answers nothing for a minute.
+  h.hold();
+  await publish(d.base, d.token, "Transport suspended", { "index.html": PAGE.replace("Quarterly", "Monthly") }, 2, id);
+  await expect.poll(() => h.waiting.some(e => e.startsWith("window.claxTransport.streamBlock("))).toBe(true);
+  await page.clock.fastForward(60_000);
+  await expect(page.locator(".conn-notice")).toBeHidden();
+  await h.release();
+  await expect.poll(() => h.ofType("newer").map(m => m.version)).toContain(3);
+  await expect(page.locator(".conn-notice")).toBeHidden();
+  // The same stream all along.
+  expect(h.subscriptions.length).toBe(streams);
+});
+
+const PROBE = `<!doctype html><html><head><title>Probe</title></head><body><h2 id="t">Probe</h2><script>
+(async () => {
+  const read = async u => { try { const r = await fetch(u); return { type: r.type, status: r.status, body: await r.text() }; } catch (e) { return { error: e.name }; } };
+  const shellDoc = await read(${JSON.stringify(SHELL)} + "/a/" + location.hostname.split(".")[0] + "?app=1");
+  const shellApi = await read(${JSON.stringify(SHELL)} + "/api/artifacts");
+  let parentDoc;
+  try { parentDoc = typeof parent.document.title; } catch (e) { parentDoc = e.name; }
+  const channel = typeof window.ClaxHost;
+  try { window.${BINDING}(JSON.stringify({ type: "call", id: 4242, method: "GET", path: "/api/artifacts", headers: [], body: null, body64: null })); } catch { /* no binding */ }
+  parent.postMessage({ probe: { shellDoc, shellApi, parentDoc, channel } }, "*");
+})();
+</script></body></html>`;
+
+test("a page reads nothing of the shell and reaches nothing on its channel", async ({ page }) => {
+  await page.addInitScript(shell => {
+    if (location.origin !== shell || window.top !== window) return;
+    addEventListener("message", e => { if (e.data?.probe) (window as unknown as { claxProbe: unknown }).claxProbe = { origin: e.origin, ...e.data.probe }; });
+  }, SHELL);
+  const { id, host: h } = await openInApp(page, "Transport probe", { html: PROBE });
+  await expect.poll(() => quietEval<unknown>(page, "window.claxProbe ?? null"), { timeout: 10_000 }).not.toBeNull();
+  const probe = await quietEval<{ origin: string; shellDoc: { error?: string; type?: string; body?: string }; shellApi: { error?: string; type?: string; body?: string }; parentDoc: string; channel: string }>(page, "window.claxProbe");
+  expect(probe.origin).toBe(content(id));
+  for (const r of [probe.shellDoc, probe.shellApi]) {
+    expect(r.error === "TypeError" || r.type === "opaque").toBe(true);
+    expect(r.body ?? "").toBe("");
+  }
+  expect(probe.parentDoc).toBe("SecurityError");
+  // The channel is in the shell's frames only, and the host takes no message
+  // from another frame.
+  expect(probe.channel).toBe("undefined");
+  expect(h.dropped).toContainEqual({ why: "frame", message: expect.objectContaining({ id: 4242 }) });
+  expect(h.calls.filter(c => c.id === 4242 && c.path === "/api/artifacts")).toEqual([]);
+  // The scheme answers a shell document only to the main frame's navigation.
+  expect(h.scheme.filter(s => s.url.startsWith(`${SHELL}/a/`) && !s.mainFrame).every(s => s.status === 403)).toBe(true);
+});
+
+test.describe("at desktop width", () => {
+  test.use({ hasTouch: false, isMobile: false, viewport: { width: 1280, height: 800 } });
+
+  test("a thread's clip is fetched over the channel and shown by object URL", async ({ page }) => {
+    const { artifact } = await publish(d.base, d.token, "Transport clip", { "index.html": PAGE });
+    const thread = await postThread(artifact.id, "with a clip");
+    const h = await hostChannel(page, { relay: d });
+    await page.goto(`${SHELL}/a/${artifact.id}`);
+    await appFrame(page, artifact.id, 1);
+    const img = page.locator("img.thumb").first();
+    await expect(img).toBeVisible();
+    await expect.poll(() => img.getAttribute("src")).toMatch(/^blob:/);
+    await expect.poll(() => img.evaluate(e => (e as HTMLImageElement).naturalWidth)).toBe(1);
+    expect(h.callsTo("GET", new RegExp(`/api/artifacts/${artifact.id}/threads/${thread.id}/clip`)).length).toBe(1);
+  });
+});
+
+test("in the app the more menu has no Open raw or Copy link; a browser's shell keeps them, with no transport", async ({ page, daemon }) => {
+  await openInApp(page, "Transport menu", { app: false });
+  await page.getByRole("button", { name: "More" }).click();
+  await expect(page.getByRole("menuitem").first()).toBeVisible();
+  await expect(page.getByRole("menuitem", { name: "Open raw" })).toHaveCount(0);
+  await expect(page.getByRole("menuitem", { name: "Copy link" })).toHaveCount(0);
+
+  // The browser's shell, on a daemon that embeds nothing.
+  const browser = await page.context().newPage();
+  const transport: string[] = [];
+  const apiCalls: string[] = [];
+  browser.on("request", r => {
+    const u = new URL(r.url());
+    if (u.pathname === "/_clax/transport.js") transport.push(r.url());
+    if (u.pathname.startsWith("/api/")) apiCalls.push(u.pathname);
+  });
+  const { artifact } = await publish(daemon.base, daemon.token, "Browser menu", { "index.html": PAGE });
+  await browser.goto(`${daemon.base}/a/${artifact.id}`);
+  await expect(browser.getByRole("button", { name: "More" })).toBeVisible();
+  // Its calls go over the network, with the platform's fetch.
+  await expect.poll(() => apiCalls.length).toBeGreaterThan(0);
+  expect(await quietEval<string>(browser, "typeof window.claxTransport")).toBe("undefined");
+  expect(await quietEval<boolean>(browser, `document.querySelector('meta[name="clax-embed"]') === null`)).toBe(true);
+  expect(transport).toEqual([]);
+  await browser.getByRole("button", { name: "More" }).click();
+  await expect(browser.getByRole("menuitem", { name: "Open raw" })).toBeVisible();
+  await expect(browser.getByRole("menuitem", { name: "Copy link" })).toBeVisible();
+  await browser.close();
+});

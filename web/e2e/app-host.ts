@@ -4,14 +4,22 @@
 // `window.claxHost`. Every call goes in through the DevTools protocol with no
 // user gesture (`quietEval`), as the app's `runJavaScript` does.
 import type { Page } from "@playwright/test";
-import { expect } from "./fixtures";
+import { appHost, type AppHost, type AppHostOptions } from "./app-scheme";
+import { expect, type Daemon } from "./fixtures";
 import { quietEval } from "./time";
 
 export type HostMessage = { type: string; [k: string]: unknown };
 
 /** Installs the app's channel on the shell's window before it loads: every
- * message the view posts to its host is kept, parsed, in `claxToHost`. */
-export async function hostChannel(page: Page) {
+ * message the view posts to its host is kept, parsed, in `claxToHost`.
+ * With `relay`, the app's scheme and host instead, against that daemon (an
+ * embed daemon, `startEmbedDaemon`): the channel only in the shell's
+ * frames, messages taken only from its main frame under the load's nonce,
+ * and the transport's calls and streams relayed (./app-scheme.ts). */
+export async function hostChannel(page: Page): Promise<void>;
+export async function hostChannel(page: Page, opts: { relay: Daemon } & AppHostOptions): Promise<AppHost>;
+export async function hostChannel(page: Page, opts?: { relay: Daemon } & AppHostOptions): Promise<AppHost | void> {
+  if (opts) return appHost(page, opts.relay, opts);
   await page.addInitScript(() => {
     if (window.top !== window) return;
     (window as unknown as { claxToHost: unknown[] }).claxToHost = [];
