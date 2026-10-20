@@ -29,6 +29,12 @@ const TASKS_STOP_TIMEOUT: Duration = Duration::from_millis(250);
 /// How often grants due to expire are expired and the nonce caches swept.
 const GRANT_SWEEP_INTERVAL: Duration = Duration::from_secs(60);
 
+/// Tests: called with its home as each [`Core::stop`] ends, once its
+/// tasks have ended, the journal has synced and the store has closed.
+#[cfg(test)]
+pub(crate) static STOPPED: std::sync::Mutex<Option<Box<dyn Fn(&Home) + Send>>> =
+    std::sync::Mutex::new(None);
+
 /// What a [`Core`] starts with.
 pub struct CoreConfig {
     /// The Clax home it serves.
@@ -221,11 +227,17 @@ impl Core {
             let _ = tokio::time::timeout(JOURNAL_STOP_TIMEOUT, stopped).await;
         }
         let store = self.state.store.clone();
+        #[cfg(test)]
+        let home = self.state.home.clone();
         drop(self.router);
         drop(self.state);
         // Let queued store calls finish and the database threads stop.
         if let Err(e) = tokio::task::spawn_blocking(move || store.shutdown()).await {
             tracing::warn!(error = %e, "store shutdown failed");
+        }
+        #[cfg(test)]
+        if let Some(f) = &*STOPPED.lock().unwrap_or_else(|e| e.into_inner()) {
+            f(&home);
         }
     }
 }

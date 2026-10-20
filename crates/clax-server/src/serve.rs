@@ -375,8 +375,14 @@ pub async fn serve(
         stale_check_interval: cfg.stale_check_interval,
         stop: cfg.stop,
     };
+    let home = serving.home.clone();
     let served = serve_core(serving, &core, listener, port, ready).await;
     core.stop().await;
+    // Only once the journal has synced and the store has closed: a client
+    // that finds no daemon.json may start another daemon on the home.
+    if read_daemon_info(&home).map(|i| i.pid) == Some(std::process::id()) {
+        remove_daemon_info(&home);
+    }
     served
 }
 
@@ -390,8 +396,8 @@ struct Serving {
 }
 
 /// [`serve`] once its core started: `daemon.json`, the listener, the
-/// stale watcher and the drain, until shutdown; removes `daemon.json`
-/// when it is still this process's.
+/// stale watcher and the drain, until shutdown. [`serve`] removes
+/// `daemon.json`, when it is still this process's, after the core stops.
 async fn serve_core(
     cfg: Serving,
     core: &Core,
@@ -488,9 +494,6 @@ async fn serve_core(
     if let Some(t) = trimmer {
         t.abort();
     }
-    if read_daemon_info(&cfg.home).map(|i| i.pid) == Some(std::process::id()) {
-        remove_daemon_info(&cfg.home);
-    }
     Ok(())
 }
 
@@ -505,6 +508,49 @@ mod tests {
         assert!(!slept(m + SLEEP_SLACK, m), "within the slack");
         assert!(slept(Duration::from_secs(3600), m), "an hour asleep");
         assert!(!slept(Duration::ZERO, m), "a clock set back");
+    }
+
+    #[tokio::test]
+    async fn daemon_json_goes_only_once_the_core_has_stopped() {
+        let dir = tempfile::tempdir().unwrap();
+        let home = Home::at(dir.path().join("ax"));
+        let present = std::sync::Arc::new(std::sync::Mutex::new(Vec::new()));
+        let (seen, ours) = (present.clone(), home.clone());
+        *crate::core::STOPPED.lock().unwrap() = Some(Box::new(move |h: &Home| {
+            if h.root() == ours.root() {
+                seen.lock().unwrap().push(ours.daemon_json().exists());
+            }
+        }));
+        let (stop, stop_rx) = watch::channel(false);
+        let (_trim, trim_rx) = tokio::sync::mpsc::channel(1);
+        let cfg = ServeConfig {
+            home: home.clone(),
+            bind: IpAddr::V4(std::net::Ipv4Addr::LOCALHOST),
+            port: 0,
+            version: "test",
+            stale_check_interval: Duration::from_secs(30),
+            reap_interval: Duration::from_secs(60),
+            codex: Default::default(),
+            sample: std::sync::Arc::new(clax_sample::Sampler::disabled()),
+            web: std::sync::Arc::new(clax_core::embedded::MemTree::default()),
+            hosted: None,
+            require_credential: false,
+            stop: StopOn::Embedded(EmbeddedControl {
+                stop: stop_rx,
+                trim: trim_rx,
+            }),
+        };
+        let (tx, rx) = oneshot::channel();
+        let served = tokio::spawn(serve(cfg, Some(tx)));
+        rx.await.unwrap();
+        stop.send(true).unwrap();
+        served.await.unwrap().unwrap();
+        assert_eq!(
+            *present.lock().unwrap(),
+            [true],
+            "daemon.json was there when the core had stopped"
+        );
+        assert!(read_daemon_info(&home).is_none(), "and is gone after");
     }
 
     #[test]
