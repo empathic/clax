@@ -92,7 +92,11 @@ fn post_bytes(post: &dyn Post, port: i64, bytes: &[u8]) -> bool {
 }
 
 fn post_json<T: serde::Serialize>(post: &dyn Post, port: i64, v: &T) -> bool {
-    post_bytes(post, port, &serde_json::to_vec(v).expect("an event serializes"))
+    post_bytes(
+        post,
+        port,
+        &serde_json::to_vec(v).expect("an event serializes"),
+    )
 }
 
 /// The `failed` event of an open that panicked or could not start.
@@ -164,9 +168,10 @@ pub fn ffi_open(home: &[u8], post: Arc<dyn Post>, port: i64) -> u64 {
             match opened {
                 Ok(embed) => register(Some(embed), post.clone(), port),
                 Err(OpenError::HomeInUse | OpenError::NotUtf8) => 0,
-                Err(OpenError::Runtime(e)) => {
-                    failed(&post, internal(format!("the core's runtime did not start: {e}")))
-                }
+                Err(OpenError::Runtime(e)) => failed(
+                    &post,
+                    internal(format!("the core's runtime did not start: {e}")),
+                ),
             }
         },
         || failed(&post, internal("the core panicked while it opened".into())),
@@ -188,7 +193,11 @@ pub fn ffi_call(core: u64, req: &[u8], port: i64, tag: i64) -> i32 {
     }
     let tag = frame::tag(tag);
     let answer = |status, code, message: &str| {
-        if !post_bytes(&*r.post, port, &error_frame_after(&tag, status, code, message)) {
+        if !post_bytes(
+            &*r.post,
+            port,
+            &error_frame_after(&tag, status, code, message),
+        ) {
             tracing::debug!(port, "a call's port closed before its answer");
         }
     };
@@ -254,7 +263,7 @@ pub fn ffi_subscribe(core: u64, port: i64) -> i32 {
             embed.subscribe(Box::new(move |block| post_bytes(&*post, port, &block)));
             0
         },
-        || ended(),
+        ended,
         0,
     )
 }

@@ -79,7 +79,11 @@ async fn pump(
     // A closing core ends the stream too; either way the reason is the
     // core's, so the phase is looked at first and again when the stream ends.
     let ended = |phase: &crate::core::Readiness| {
-        Some(if phase.ready() { "stream_ended" } else { "core_closed" })
+        Some(if phase.ready() {
+            "stream_ended"
+        } else {
+            "core_closed"
+        })
     };
     loop {
         tokio::select! {

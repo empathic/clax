@@ -128,7 +128,9 @@ fn open_call_subscribe_and_close_post_to_their_ports() {
 
     assert_eq!(ffi_close(core), 0);
     posts.event(1, "closed");
-    posts.take(3, |b| b == b"event: end\ndata: {\"reason\":\"core_closed\"}\n\n");
+    posts.take(3, |b| {
+        b == b"event: end\ndata: {\"reason\":\"core_closed\"}\n\n"
+    });
     assert_eq!(ffi_close(core), 1, "a closed core's handle is unknown");
 }
 

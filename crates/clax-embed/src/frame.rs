@@ -147,7 +147,14 @@ mod tests {
 
     #[test]
     fn a_tag_precedes_the_frame_little_endian() {
-        let framed = encode_after(&tag(258), &ResponseHead { status: 200, headers: vec![] }, &[9]);
+        let framed = encode_after(
+            &tag(258),
+            &ResponseHead {
+                status: 200,
+                headers: vec![],
+            },
+            &[9],
+        );
         assert_eq!(&framed[..8], &[2, 1, 0, 0, 0, 0, 0, 0]);
         let (head, body) = split(&framed[8..]).unwrap();
         assert_eq!(head, br#"{"status":200,"headers":[]}"#);

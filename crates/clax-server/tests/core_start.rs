@@ -45,7 +45,10 @@ async fn stopping_a_core_closes_its_store_and_ends_its_streams() {
         store.call(|_| Ok(())).await.is_err(),
         "a stopped core's store refuses calls"
     );
-    assert!(*shutdown.borrow_and_update(), "its streams were told to end");
+    assert!(
+        *shutdown.borrow_and_update(),
+        "its streams were told to end"
+    );
     let again = Core::start(cfg(dir.path()), &mut |_| {}).await.unwrap();
     again.stop().await;
 }

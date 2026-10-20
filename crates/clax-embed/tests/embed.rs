@@ -231,7 +231,12 @@ async fn the_shell_document_and_its_files_answer_a_shell_page_frame_as_the_owner
     let (embed, _rx) = open(dir.path());
     let id = publish(&embed, "<title>t</title>hi", None).await;
 
-    let (res, body) = call(&embed, head("GET", &format!("/a/{id}?app=1"), As::ShellPage), b"").await;
+    let (res, body) = call(
+        &embed,
+        head("GET", &format!("/a/{id}?app=1"), As::ShellPage),
+        b"",
+    )
+    .await;
     assert_eq!(res.status, 200, "{}", String::from_utf8_lossy(&body));
     let html = String::from_utf8_lossy(&body);
     assert!(html.contains(&id), "the boot data names the artifact");
@@ -245,7 +250,10 @@ async fn the_shell_document_and_its_files_answer_a_shell_page_frame_as_the_owner
         .split(['"', '\''])
         .filter(|s| s.starts_with("/_clax/"))
         .collect();
-    assert!(!files.is_empty(), "the document loads the shell's files: {html}");
+    assert!(
+        !files.is_empty(),
+        "the document loads the shell's files: {html}"
+    );
     for f in files {
         let (res, _) = call(&embed, head("GET", f, As::ShellPage), b"").await;
         assert_eq!(res.status, 200, "{f}");
@@ -333,11 +341,9 @@ fn opening_a_new_home_reports_each_migration_before_ready() {
     let mut steps = Vec::new();
     let ready = loop {
         match rx.recv().unwrap() {
-            OpenEvent::Opening {
-                phase,
-                done,
-                total,
-            } if phase == "migrating" => steps.push((done.unwrap(), total.unwrap())),
+            OpenEvent::Opening { phase, done, total } if phase == "migrating" => {
+                steps.push((done.unwrap(), total.unwrap()))
+            }
             OpenEvent::Opening { .. } => {}
             e => break e,
         }

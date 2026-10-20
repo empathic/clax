@@ -78,7 +78,10 @@ pub enum OpenError {
 #[derive(Clone)]
 enum Phase {
     Opening,
-    Ready { router: axum::Router, token: String },
+    Ready {
+        router: axum::Router,
+        token: String,
+    },
     Failed,
     /// Closing: new calls are refused, calls in flight go on for up to
     /// the drain's bound.
@@ -540,7 +543,8 @@ fn content_host(id: &str) -> bool {
 
 /// The response to one frame, after `prefix`, on the core's runtime.
 async fn answer(sh: Arc<Shared>, head: RequestHead, body: Bytes, prefix: Vec<u8>) -> Vec<u8> {
-    let error_frame = |status, code, message: &str| error_frame_after(&prefix, status, code, message);
+    let error_frame =
+        |status, code, message: &str| error_frame_after(&prefix, status, code, message);
     if admit(&head).is_err() {
         let path = head.path.split('?').next().unwrap_or("");
         return error_frame(
@@ -752,10 +756,12 @@ mod tests {
     /// The next open event that is not an `Opening`, waited for off the
     /// test's runtime.
     async fn settled(rx: &std::sync::mpsc::Receiver<OpenEvent>) -> OpenEvent {
-        tokio::task::block_in_place(|| loop {
-            match rx.recv().expect("an open event") {
-                OpenEvent::Opening { .. } => continue,
-                e => return e,
+        tokio::task::block_in_place(|| {
+            loop {
+                match rx.recv().expect("an open event") {
+                    OpenEvent::Opening { .. } => continue,
+                    e => return e,
+                }
             }
         })
     }
@@ -838,9 +844,7 @@ mod tests {
 
         embed.close();
         let mut phase = embed.inner.shared.phase.subscribe();
-        let _ = phase
-            .wait_for(|p| !matches!(p, Phase::Ready { .. }))
-            .await;
+        let _ = phase.wait_for(|p| !matches!(p, Phase::Ready { .. })).await;
         let (status, body) = send(&embed, "GET", "/api/artifacts").await.unwrap();
         assert_eq!(status, 503, "a call made while closing is refused");
         assert!(String::from_utf8_lossy(&body).contains("core_closed"));
@@ -918,8 +922,10 @@ mod tests {
 
     #[tokio::test]
     async fn a_body_that_fails_while_read_answers_502_response_failed() {
-        let chunks: Vec<Result<Bytes, std::io::Error>> =
-            vec![Ok(Bytes::from_static(b"half")), Err(std::io::Error::other("cut"))];
+        let chunks: Vec<Result<Bytes, std::io::Error>> = vec![
+            Ok(Bytes::from_static(b"half")),
+            Err(std::io::Error::other("cut")),
+        ];
         let res = axum::response::Response::new(Body::from_stream(futures::stream::iter(chunks)));
         let (status, body) = status_and_body(&respond(res, RESPONSE_LIMIT, &[]).await);
         assert_eq!(status, 502);
@@ -995,12 +1001,36 @@ mod tests {
             ("GET", "/api/stream?x=1", As::Owner, None, false),
             ("GET", "/api/events", As::Owner, None, false),
             ("GET", "/api/events?since=3", As::Owner, None, false),
-            ("GET", "/api/artifacts/7q3k9mzx2b4t/room", As::Owner, None, false),
-            ("GET", "/api/artifacts/7q3k9mzx2b4t/live", As::Owner, None, false),
+            (
+                "GET",
+                "/api/artifacts/7q3k9mzx2b4t/room",
+                As::Owner,
+                None,
+                false,
+            ),
+            (
+                "GET",
+                "/api/artifacts/7q3k9mzx2b4t/live",
+                As::Owner,
+                None,
+                false,
+            ),
             ("GET", "/mcp", As::Owner, None, false),
             ("POST", "/mcp", As::Owner, None, false),
-            ("GET", "/api/artifacts/7q3k9mzx2b4t/live/x", As::Owner, None, true),
-            ("GET", "/api/artifacts/7q3k9mzx2b4t/threads", As::Owner, None, true),
+            (
+                "GET",
+                "/api/artifacts/7q3k9mzx2b4t/live/x",
+                As::Owner,
+                None,
+                true,
+            ),
+            (
+                "GET",
+                "/api/artifacts/7q3k9mzx2b4t/threads",
+                As::Owner,
+                None,
+                true,
+            ),
             ("POST", "/api/admin/shutdown", As::Owner, None, false),
             ("GET", "api/artifacts", As::Owner, None, false),
             ("GET", "/a/7q3k9mzx2b4t?app=1", As::ShellPage, None, true),

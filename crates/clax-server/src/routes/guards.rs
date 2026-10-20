@@ -1913,7 +1913,9 @@ mod held_open {
     #[test]
     fn the_held_open_list_is_the_routers_block_and_mcp() {
         let src = include_str!("../router.rs");
-        let block = &src[src.find("// What holds its connection open").expect("the block")..];
+        let block = &src[src
+            .find("// What holds its connection open")
+            .expect("the block")..];
         let block = &block[..block.find(".merge(mcp)").expect("its end")];
         let mut mounted: Vec<String> = super::l10::routes(block)
             .into_iter()
