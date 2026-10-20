@@ -5,8 +5,10 @@
 #
 #  - the workspace's Cargo.toml forbids `unsafe_code`;
 #  - every crate's Cargo.toml takes the workspace's lints, but
-#    crates/clax-ios's and the separate crates/clax-worker workspace's;
-#  - crates/clax-ios/Cargo.toml, when there is one, denies `unsafe_code`;
+#    crates/clax-ios's, crates/clax-embed's and the separate
+#    crates/clax-worker workspace's;
+#  - crates/clax-ios/Cargo.toml and crates/clax-embed/Cargo.toml, where
+#    there is one, deny `unsafe_code`;
 #  - in crates/clax-ios/src/lib.rs the only `unsafe` is a line
 #    `#[unsafe(no_mangle)]` directly after `#[allow(unsafe_code)]` and
 #    directly before `pub extern "C" fn <name>(` on one line, with `<name>`
@@ -29,7 +31,7 @@ my $bad = 0;
 sub finding { print "$_[0]\n"; $bad = 1 }
 my $ONLY = "only the four exported functions may use unsafe";
 my %EXPORT = map { $_ => 1 } qw(clax_start clax_stop clax_state clax_trim_memory);
-my %OWN_LINTS = map { $_ => 1 } qw(crates/clax-ios/Cargo.toml crates/clax-worker/Cargo.toml);
+my %OWN_LINTS = map { $_ => 1 } qw(crates/clax-ios/Cargo.toml crates/clax-embed/Cargo.toml crates/clax-worker/Cargo.toml);
 
 # A manifest as {"table.key" => value}, for the plain TOML Cargo.toml uses:
 # one key per line, [table] headers, # comments outside strings.
@@ -77,9 +79,10 @@ for my $path (sort glob("crates/*/Cargo.toml")) {
         && !grep { /^lints\./ && $_ ne "lints.workspace" } keys %$keys;
     finding("$path: does not take the workspace\x27s lints") unless $takes;
 }
-if (-e "crates/clax-ios/Cargo.toml") {
-    finding("crates/clax-ios/Cargo.toml: must deny unsafe_code")
-        unless level(manifest("crates/clax-ios/Cargo.toml"), "lints.rust.unsafe_code") eq "deny";
+for my $path (qw(crates/clax-ios/Cargo.toml crates/clax-embed/Cargo.toml)) {
+    next unless -e $path;
+    finding("$path: must deny unsafe_code")
+        unless level(manifest($path), "lints.rust.unsafe_code") eq "deny";
 }
 
 for my $path (@ARGV) {

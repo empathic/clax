@@ -1,0 +1,6 @@
+load("//bazel:cargo.bzl", "cargo_package")
+
+cargo_package(
+    cdylib = True,
+    staticlib = True,
+)

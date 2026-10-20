@@ -1,10 +1,11 @@
 #!/usr/bin/env bash
 # Checks scripts/check-no-unsafe.sh on a copy of itself beside a minimal
 # workspace (two crates that take the workspace's lints, the separate
-# clax-worker workspace, and crates/clax-ios with its four exported C
-# functions): the tree passes, from any directory and with or without a
+# clax-worker workspace, crates/clax-ios with its four exported C
+# functions, and crates/clax-embed): the tree passes, from any directory and with or without a
 # root given; any other `unsafe` in clax-ios, a fifth export, a pointer
-# argument, another `allow(unsafe_code)`, clax-ios not denying the lint,
+# argument, another `allow(unsafe_code)`, clax-ios or clax-embed not
+# denying the lint,
 # the workspace not forbidding it, and another crate with lints of its own
 # each fail, naming the finding; CSP's `'unsafe-inline'` passes; `unsafe`
 # in another crate fails as it always has.
@@ -98,6 +99,23 @@ pub extern "C" fn clax_state() -> i32 { state() }
 pub extern "C" fn clax_trim_memory() { let _ = trim(std::time::Duration::from_secs(2)); }
 EOF
     printf 'pub fn start_at(_: u16) -> i32 {\n    0\n}\n' > "$d/w/crates/clax-ios/src/daemon.rs"
+    mkdir -p "$d/w/crates/clax-embed/src"
+    cat > "$d/w/crates/clax-embed/Cargo.toml" <<'EOF'
+[package]
+name = "clax-embed"
+version.workspace = true
+
+# The workspace forbids unsafe_code; this crate denies it.
+[lints.rust]
+unsafe_code = "deny"
+unexpected_cfgs = { level = "warn", check-cfg = ['cfg(clax_embedded)'] }
+
+[lib]
+crate-type = ["rlib", "cdylib", "staticlib"]
+
+[dependencies]
+EOF
+    printf '//! The core in an app, behind C functions.\n\npub fn f() -> i32 {\n    1\n}\n' > "$d/w/crates/clax-embed/src/lib.rs"
 }
 
 # _expect pass|fail NAME [TEXT]: runs the copy of the check, from another
@@ -183,6 +201,14 @@ _expect fail "an inner allow" "crates/clax-ios/src/lib.rs:4: $ONLY"
 _copy
 _sub "$d/w/crates/clax-ios/Cargo.toml" 'unsafe_code = "deny"' 'unsafe_code = "allow"'
 _expect fail "clax-ios allowing unsafe_code" "crates/clax-ios/Cargo.toml: must deny unsafe_code"
+
+_copy
+_sub "$d/w/crates/clax-embed/Cargo.toml" 'unsafe_code = "deny"' 'unsafe_code = "allow"'
+_expect fail "clax-embed allowing unsafe_code" "crates/clax-embed/Cargo.toml: must deny unsafe_code"
+
+_copy
+rm -rf "$d/w/crates/clax-embed"
+_expect pass "the tree without clax-embed"
 
 _copy
 _sub "$d/w/crates/clax-ios/Cargo.toml" '[lints.rust]

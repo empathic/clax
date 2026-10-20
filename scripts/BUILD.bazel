@@ -86,6 +86,7 @@ RUST_SOURCES = [
     "//crates/clax-commands:rust_sources",
     "//crates/clax-content-git:rust_sources",
     "//crates/clax-core:rust_sources",
+    "//crates/clax-embed:rust_sources",
     "//crates/clax-embedded:rust_sources",
     "//crates/clax-fake-exe:rust_sources",
     "//crates/clax-git:rust_sources",
@@ -107,6 +108,7 @@ CRATE_MANIFESTS = [
     "//crates/clax-commands:manifest",
     "//crates/clax-content-git:manifest",
     "//crates/clax-core:manifest",
+    "//crates/clax-embed:manifest",
     "//crates/clax-embedded:manifest",
     "//crates/clax-fake-exe:manifest",
     "//crates/clax-git:manifest",
@@ -242,8 +244,9 @@ sh_test(
     ],
 )
 
-# No `unsafe` but clax-ios's four exported C functions, and every other
-# crate on the workspace's lints (AGENTS.md); and the check's own test.
+# No `unsafe` but the exceptions AGENTS.md names (clax-ios's and
+# clax-embed's exported C functions), and every other crate on the
+# workspace's lints; and the check's own test.
 sh_test(
     name = "no_unsafe",
     srcs = ["check-no-unsafe.sh"],

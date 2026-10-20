@@ -93,6 +93,35 @@ CRATES = {
         "tests": {},
         "version": "0.5.0"
     },
+    "crates/clax-embed": {
+        "bins": {},
+        "default_features": [],
+        "deps": [
+            "//crates/clax-core:clax_core",
+            "//crates/clax-embedded:clax_embedded",
+            "//crates/clax-http:clax_http",
+            "//crates/clax-realtime:clax_realtime",
+            "//crates/clax-sample:clax_sample",
+            "//crates/clax-server:clax_server",
+            "//crates/clax-store:clax_store"
+        ],
+        "dev_deps": [],
+        "edition": "2024",
+        "features": [],
+        "has_build_script": False,
+        "lib": "clax_embed",
+        "lib_root": "src/lib.rs",
+        "lint_flags": [
+            "--check-cfg=cfg(clax_embedded)",
+            "--check-cfg=cfg(clax_split)",
+            "--check-cfg=cfg(clax_split, values(any()))",
+            "-Wunexpected_cfgs",
+            "-Dunsafe_code"
+        ],
+        "name": "clax-embed",
+        "tests": {},
+        "version": "0.5.0"
+    },
     "crates/clax-embedded": {
         "bins": {},
         "default_features": [],

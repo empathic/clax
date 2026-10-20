@@ -20,6 +20,7 @@ crates/clax-git/Cargo.toml
 crates/clax-rt/Cargo.toml
 crates/clax-content-git/Cargo.toml
 crates/clax-ios/Cargo.toml
+crates/clax-embed/Cargo.toml
 crates/clax-worker/Cargo.lock
 .claude-plugin/marketplace.json
 plugins/claude-code/.claude-plugin/plugin.json

@@ -491,6 +491,31 @@ dependencies = [
 ]
 
 [[package]]
+name = "clax-embed"
+version = "0.5.0"
+dependencies = [
+ "anyhow",
+ "axum",
+ "bytes",
+ "clax-core",
+ "clax-embedded",
+ "clax-http",
+ "clax-realtime",
+ "clax-sample",
+ "clax-server",
+ "clax-store",
+ "futures",
+ "http-body-util",
+ "serde",
+ "serde_json",
+ "tempfile",
+ "tokio",
+ "tower",
+ "tracing",
+ "tracing-subscriber",
+]
+
+[[package]]
 name = "clax-embedded"
 version = "0.5.0"
 dependencies = [
