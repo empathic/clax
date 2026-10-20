@@ -773,10 +773,22 @@ export function installHost(win: Window, ctl: ArtifactController): () => void {
     if (typeof m.y === "number" && Number.isFinite(m.y) && m.y >= 0) scrolled.set(m.file, m.y);
   };
   // The inspect view's handlers (`inspect.ts`), a chunk of their own: loaded
-  // at install in the inspect view, else on the first call to one.
+  // at install in the inspect view, else on the first call to one. Calls
+  // made while it loads share the one load; a failed load is answered by
+  // each call's `refused` message, naming the cause, and the next call
+  // loads it again.
   let inspector: Inspector | null = null;
-  const loadInspector = () => import("./inspect").then(m => (inspector ??= m.inspector({ ctl, post, inspecting, migrating, given: () => nonce !== null })));
-  const inspectorDo = (f: (i: Inspector) => void) => (inspector ? f(inspector) : void loadInspector().then(f, () => {}));
+  let loading: Promise<Inspector> | null = null;
+  const loadInspector = () => (loading ??= import("./inspect").then(
+    m => (inspector ??= m.inspector({ ctl, post, inspecting, migrating, given: () => nonce !== null })),
+    (e: unknown) => { loading = null; throw e; },
+  ));
+  const inspectorDo = (f: (i: Inspector) => void, refused?: (error: string) => HostMessage) => {
+    if (inspector) return f(inspector);
+    void loadInspector().then(f, (e: unknown) => {
+      if (refused && nonce !== null) post(refused(`the inspect view's code did not load: ${e instanceof Error ? e.message : String(e)}`.slice(0, 500)));
+    });
+  };
   if (inspecting) void loadInspector().catch(() => {});
   // The shell's own trusted presses and releases, where and when.
   let shellPresses: { x: number; y: number; at: number }[] = [];
@@ -1064,11 +1076,13 @@ export function installHost(win: Window, ctl: ArtifactController): () => void {
       const anchor = { kind: "artifact" as const, selector: null, quote: null, prefix: null, suffix: null, html_hash: null, rect: null, custom_name: null, file: INDEX_FILE };
       ctl.set({ draft: { pickId: `whole-${now()}`, anchor, version: ctl.shown(v), clip: null, clipError: WHOLE_NO_CLIP, label: WHOLE_APP } });
     },
-    inspect: p => inspectorDo(i => i.inspect(p)),
-    runTests: p => inspectorDo(i => i.runTests(p)),
-    runMigration: p => inspectorDo(i => i.runMigration(p)),
+    inspect: p => inspectorDo(i => i.inspect(p), error => ({ type: "inspection", error })),
+    runTests: p => inspectorDo(i => i.runTests(p), error => ({ type: "tests", error })),
+    runMigration: p => inspectorDo(i => i.runMigration(p), error => ({ type: "migration", ok: false, error })),
+    // Nothing waits on an ack's answer, and no journal is open before the
+    // chunk has loaded.
     journalAck: p => inspectorDo(i => i.journalAck(p)),
-    restoreJournal: p => inspectorDo(i => i.restoreJournal(p)),
+    restoreJournal: p => inspectorDo(i => i.restoreJournal(p), error => ({ type: "journalRestored", ok: false, error })),
     openQuestions: p => {
       if (!dock) return;
       const id = p?.question;

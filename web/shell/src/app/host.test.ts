@@ -1339,6 +1339,33 @@ describe("app mode's inspect view", { timeout: MOUNT_TIMEOUT_MS }, () => {
     type: "clax:inspection", requestId, png: shot.slice().buffer, errors: [{ kind: "error", text: "boom" }], failed: ["https://cdn.test/a.png"], text: "# Groceries", title: "Groceries", height: 1200, ...over,
   });
 
+  it("a call whose handlers' chunk fails to load is answered with an error naming the failed load, and the next call loads it again", async () => {
+    vi.resetModules();
+    vi.doMock("./inspect", () => { throw new Error("chunk inspect-1a2b3c4d.js is missing"); });
+    onTestFinished(() => { vi.doUnmock("./inspect"); vi.resetModules(); });
+    const { host } = await appView();
+    host.inspect({});
+    host.runTests({ files: ["tests/a.test.js"] });
+    host.runMigration({ file: "m.js", from: 1, to: 2 });
+    host.restoreJournal({ entries: [] });
+    host.journalAck({ seq: 1, ok: true });
+    await waitFor(() => toHost.some(m => m.type === "journalRestored"), "the answers");
+    const failed = toHost.filter(m => ["inspection", "tests", "migration", "journalRestored"].includes(m.type));
+    // The cause is the import's own error (vitest wraps the factory's).
+    const why = expect.stringMatching(/^the inspect view's code did not load: \S/);
+    expect(failed).toEqual([
+      { type: "inspection", error: why },
+      { type: "tests", error: why },
+      { type: "migration", ok: false, error: why },
+      { type: "journalRestored", ok: false, error: why },
+    ]);
+    vi.doUnmock("./inspect");
+    toHost = [];
+    host.inspect({});
+    await waitFor(() => toHost.some(m => m.type === "inspection"), "the inspection");
+    expect(toHost.filter(m => m.type === "inspection")).toEqual([{ type: "inspection", error: "this view is not the inspect view" }]);
+  });
+
   it("inspect asks the page and posts its inspection with the nonce", async () => {
     const { frame, host } = await appView({ query: INSPECT });
     expect(document.documentElement.classList.contains("inspect")).toBe(true);
