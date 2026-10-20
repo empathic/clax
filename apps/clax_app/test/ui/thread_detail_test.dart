@@ -284,7 +284,7 @@ void main() {
       'postOwnerComment',
       const ClaxApiError(
         status: 0,
-        code: 'daemon_unreachable',
+        code: ClaxApiError.unreachable,
         message: 'connection refused',
       ),
     );

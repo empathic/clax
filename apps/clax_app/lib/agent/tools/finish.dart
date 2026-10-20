@@ -492,7 +492,7 @@ class FinishTool implements Tool {
       aid = created.artifact.id;
     } on ClaxApiError catch (e) {
       await render.cleanup();
-      if (e.status == 0) {
+      if (e.unanswered) {
         _log('new app interrupted: $e');
         return const _Ended(RunInterrupted());
       }
@@ -614,7 +614,7 @@ class FinishTool implements Tool {
           } on ClaxApiError catch (e) {
             // Without an answer the publish may have landed: the record
             // stays for recovery to settle.
-            if (e.status != 0) await _forget(aid, base);
+            if (!e.unanswered) await _forget(aid, base);
             if (!e.isConflict) rethrow;
             if (++_conflicts > 1) {
               return await _fail(s, 'the app kept changing while I worked.');
@@ -660,7 +660,7 @@ class FinishTool implements Tool {
         try {
           refused = await writeStagedDocs(api, aid, src.stagedDb, src.pins);
         } on ClaxApiError catch (e) {
-          if (e.status == 0) rethrow;
+          if (e.unanswered) rethrow;
           if (e.isNotFound && e.code == 'not_found' && e.body['path'] == null) {
             _log('change on $aid dropped: the app is gone');
             if (landed != null) await _forget(aid, base);
@@ -700,7 +700,7 @@ class FinishTool implements Tool {
         replied: replied.threads,
       );
     } on ClaxApiError catch (e) {
-      if (e.status == 0) {
+      if (e.unanswered) {
         _log('change on $aid interrupted: $e');
         await _end(s);
         return const _Ended(RunInterrupted());
@@ -741,7 +741,7 @@ class FinishTool implements Tool {
           declared: declared,
         );
       } on ClaxApiError catch (e) {
-        if (e.status == 0) rethrow;
+        if (e.unanswered) rethrow;
         _log('restoring $aid to version $base failed: $e');
         reason =
             "$reason; version $landed is still the current one, as it "
@@ -1173,7 +1173,7 @@ Future<String?> writeStagedDocs(
       return null;
     } on ClaxApiError catch (e) {
       // No answer, or the app is gone (a document's 404 names its path).
-      if (e.status == 0 || (e.code == 'not_found' && e.body['path'] == null)) {
+      if (e.unanswered || (e.code == 'not_found' && e.body['path'] == null)) {
         rethrow;
       }
       // A pin that moved: a version conflict, or a document created since

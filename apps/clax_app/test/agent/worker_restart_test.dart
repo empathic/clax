@@ -21,7 +21,7 @@ const page = '<!doctype html><title>Runs</title><button>Save</button>';
 
 const unreachable = ClaxApiError(
   status: 0,
-  code: 'daemon_unreachable',
+  code: ClaxApiError.unreachable,
   message: 'no connection',
 );
 

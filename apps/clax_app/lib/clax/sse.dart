@@ -2,6 +2,8 @@ import 'dart:async';
 import 'dart:convert';
 import 'dart:io';
 
+import 'api.dart';
+
 /// One Server-Sent Events message: its `event` name (`message` when the
 /// block names none), its `data` lines joined by `\n`, and the last event
 /// ID in effect when it was dispatched (an `id:` line sets it for this and
@@ -119,9 +121,9 @@ typedef SseOpen = Future<HttpClientResponse> Function(
 /// not come within [connectTimeout] (the request is aborted), when no byte
 /// arrives on it for [idleTimeout] (comments such as the daemon's
 /// keep-alive count; the connection is closed), or when it answers other
-/// than 200. One that answers 400, 403 or 404 ends the stream with an
-/// [HttpException] instead, since retrying the same request cannot change
-/// it. (A 401 is retried: [open] may name a restarted daemon's new token
+/// than 200. One that answers 400, 403 or 404 ends the stream with
+/// [ClaxApiError] code `stream_refused` and that status instead, since
+/// retrying the same request cannot change it. (A 401 is retried: [open] may name a restarted daemon's new token
 /// next time.) Cancelling the subscription closes the current connection
 /// and opens no other; an answer that arrives after a cancel or a missed
 /// connect deadline is closed, not read. Both deadlines run on [timer].
@@ -186,7 +188,11 @@ Stream<SseMessage> reconnectingSse(
         if (const {400, 403, 404}.contains(res.statusCode)) {
           await _close(res);
           out.addError(
-            HttpException('event stream refused: ${res.statusCode}'),
+            ClaxApiError(
+              status: res.statusCode,
+              code: 'stream_refused',
+              message: 'event stream refused: ${res.statusCode}',
+            ),
           );
           break;
         }

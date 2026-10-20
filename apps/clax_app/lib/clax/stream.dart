@@ -312,7 +312,7 @@ class SseClaxStream implements ClaxStream {
   }
 
   /// Whether [e] is a failure to answer, which a later try may not meet.
-  static bool _transient(ClaxApiError e) => e.status == 0 || e.status >= 500;
+  static bool _transient(ClaxApiError e) => e.unanswered || e.status >= 500;
 
   /// Stops wanting topic [t] and tells the caller why.
   void _drop(String t, ClaxApiError e) {

@@ -656,7 +656,7 @@ void main() {
       await r.renderNow();
       r.api.failNext(
         'deleteDraft',
-        const ClaxApiError(status: 0, code: 'unreachable', message: 'down'),
+        const ClaxApiError(status: 0, code: ClaxApiError.unreachable, message: 'down'),
       );
       await r.render.cleanup();
     });

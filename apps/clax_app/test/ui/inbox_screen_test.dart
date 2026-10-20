@@ -486,11 +486,11 @@ void main() {
     final fetches = api.callNames.where((n) => n == 'inbox').length;
     api.failNext(
       'streamSubscribe',
-      const ClaxApiError(status: 0, code: 'timeout', message: 'x'),
+      const ClaxApiError(status: 0, code: ClaxApiError.timeout, message: 'x'),
     );
     api.failNext(
       'streamSubscribe',
-      const ClaxApiError(status: 0, code: 'timeout', message: 'x'),
+      const ClaxApiError(status: 0, code: ClaxApiError.timeout, message: 'x'),
     );
     api.emitStream(
       const StreamEvent(

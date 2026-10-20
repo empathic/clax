@@ -892,7 +892,7 @@ void main() {
         ]);
         api.failNext(
           'publish',
-          const ClaxApiError(status: 0, code: 'timeout', message: 'no answer'),
+          const ClaxApiError(status: 0, code: ClaxApiError.timeout, message: 'no answer'),
         );
         final item = api.sendComment(aid, 'x', queue: false);
         final outcome = await loop.change(aid, [item], session: sid);
@@ -912,7 +912,7 @@ void main() {
           'readFiles',
           const ClaxApiError(
             status: 0,
-            code: 'daemon_unreachable',
+            code: ClaxApiError.unreachable,
             message: 'no connection',
           ),
         );
@@ -1149,7 +1149,7 @@ void main() {
         ]);
         const down = ClaxApiError(
           status: 0,
-          code: 'daemon_unreachable',
+          code: ClaxApiError.unreachable,
           message: 'no connection',
         );
         api.failNext('replyAsAgent', down);

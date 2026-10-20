@@ -183,7 +183,7 @@ void main() {
     final aid = api.seedArtifact('Runs', {'index.html': 'x'});
     api.failNext(
       'getArtifact',
-      const ClaxApiError(status: 0, code: 'timeout', message: 't'),
+      const ClaxApiError(status: 0, code: ClaxApiError.timeout, message: 't'),
     );
     await expectLater(api.getArtifact(aid), apiError('timeout'));
     expect((await api.getArtifact(aid)).artifact.id, aid);

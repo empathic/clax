@@ -23,8 +23,10 @@ class TransportAnswer {
 abstract interface class ClaxTransport {
   /// Sends [method] [path] (already percent-encoded) with [query],
   /// [headers] and [body], and answers whatever status came back. Throws
-  /// [ClaxApiError] with status 0 when no answer came: `timeout` when none
-  /// came within [timeout], or a code naming why none can come.
+  /// [ClaxApiError] with status 0 when no answer came:
+  /// [ClaxApiError.timeout] when none came within [timeout], or
+  /// [ClaxApiError.unreachable] when none can come, the transport's reason
+  /// in its body and message.
   Future<TransportAnswer> send(
     String method,
     String path, {
@@ -36,8 +38,10 @@ abstract interface class ClaxTransport {
 
   /// The SSE messages of `GET` [path], over as many connections as it
   /// takes: each new one resumes from [resumeId]'s answer when given and
-  /// not null, else from the last event ID seen. Ends with an error when
-  /// the stream is refused or can no longer be opened.
+  /// not null, else from the last event ID seen. Ends with [ClaxApiError]
+  /// when it cannot go on: code `stream_refused` with the status of a
+  /// refusal that asking again cannot change (400, 403, 404), or status 0
+  /// [ClaxApiError.unreachable] when no stream can come.
   Stream<SseMessage> sse(
     String path, {
     Map<String, String>? query,
@@ -54,9 +58,10 @@ abstract interface class ClaxTransport {
 /// Each request reads [endpoint] afresh, so a restarted daemon's new port
 /// and token are used from the next request on, and carries the token as
 /// `Authorization`. A request with no answer within its time limit is
-/// aborted and throws [ClaxApiError] code `timeout`; one that cannot
-/// connect throws code `daemon_unreachable`. Event streams reconnect as
-/// [reconnectingSse] does.
+/// aborted and throws [ClaxApiError.timeout]; one that cannot connect, or
+/// whose connection fails, throws [ClaxApiError.unreachable] with reason
+/// `daemon_unreachable`. Event streams reconnect as [reconnectingSse]
+/// does.
 class LoopbackTransport implements ClaxTransport {
   LoopbackTransport(
     this.endpoint, {
@@ -127,23 +132,22 @@ class LoopbackTransport implements ClaxTransport {
       req?.abort();
       throw ClaxApiError(
         status: 0,
-        code: 'timeout',
+        code: ClaxApiError.timeout,
         message: '$method $path had no answer within ${timeout.inSeconds} s',
       );
     } on SocketException catch (e) {
-      throw ClaxApiError(
-        status: 0,
-        code: 'daemon_unreachable',
-        message: e.message,
-      );
+      throw _unreachable(e.message);
     } on HttpException catch (e) {
-      throw ClaxApiError(
-        status: 0,
-        code: 'daemon_unreachable',
-        message: e.message,
-      );
+      throw _unreachable(e.message);
     }
   }
+
+  static ClaxApiError _unreachable(String why) => ClaxApiError(
+    status: 0,
+    code: ClaxApiError.unreachable,
+    message: 'daemon_unreachable: $why',
+    body: const {'reason': 'daemon_unreachable'},
+  );
 
   @override
   Stream<SseMessage> sse(

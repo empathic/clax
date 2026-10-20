@@ -30,7 +30,7 @@ class _Inner implements ClaxStream {
 
 const _noAnswer = ClaxApiError(
   status: 0,
-  code: 'daemon_unreachable',
+  code: ClaxApiError.unreachable,
   message: 'no answer',
 );
 

@@ -537,7 +537,7 @@ void main() {
           'replyAsAgent',
           const ClaxApiError(
             status: 0,
-            code: 'daemon_unreachable',
+            code: ClaxApiError.unreachable,
             message: 'no connection',
           ),
         );
@@ -1049,7 +1049,7 @@ void main() {
       await r.renderNow();
       r.api.beforeLiveBatch = (_) => r.api.failNext(
         'batchDocs',
-        const ClaxApiError(status: 0, code: 'timeout', message: 'no answer'),
+        const ClaxApiError(status: 0, code: ClaxApiError.timeout, message: 'no answer'),
       );
       await r.finish('Added.');
       expect(r.state.outcome, isA<RunInterrupted>());
@@ -1195,7 +1195,7 @@ void main() {
       await r.renderNow();
       r.api.failNext(
         'publish',
-        const ClaxApiError(status: 0, code: 'timeout', message: 'no answer'),
+        const ClaxApiError(status: 0, code: ClaxApiError.timeout, message: 'no answer'),
       );
       await r.finish('Keep.');
       expect(r.state.outcome, isA<RunInterrupted>());

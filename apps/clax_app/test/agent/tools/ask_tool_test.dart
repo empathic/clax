@@ -558,7 +558,7 @@ void main() {
           'waitQuestion',
           const ClaxApiError(
             status: 0,
-            code: 'timeout',
+            code: ClaxApiError.timeout,
             message: 'no answer in time',
           ),
         );

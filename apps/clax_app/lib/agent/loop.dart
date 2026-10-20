@@ -107,8 +107,8 @@ final class ChangeDropped extends ChangeOutcome {
   bool get answered => false;
 }
 
-/// A daemon call got no answer (status 0: `daemon_unreachable` or
-/// `timeout`), so whether it took effect is unknown. Nothing was replied or
+/// A daemon call got no answer ([ClaxApiError.unanswered]), so whether it
+/// took effect is unknown. Nothing was replied or
 /// acknowledged: the threads are left for the worker's recovery, which
 /// runs them again, or replies naming the version when the publish did
 /// land.
@@ -1091,7 +1091,7 @@ class AgentLoop {
         system = reads[2]! as String;
         bundled = reads[3]! as bool;
       } on ClaxApiError catch (e) {
-        if (e.status == 0) return const ChangeInterrupted();
+        if (e.unanswered) return const ChangeInterrupted();
         if (e.isNotFound && e.code == 'not_found') return const ChangeDropped();
         return ChangeFailed(e.message, answered: true);
       } on AgentError catch (e) {
@@ -1310,7 +1310,7 @@ class AgentLoop {
       system = reads[3]! as String;
       plan = reads[4] as Plan?;
     } on ClaxApiError catch (e) {
-      if (e.status == 0) {
+      if (e.unanswered) {
         _log('change on $aid interrupted: $e');
         return const ChangeInterrupted();
       }
@@ -1904,7 +1904,7 @@ class AgentLoop {
           } on ClaxApiError catch (e) {
             // Without an answer the publish may have landed: the record
             // stays for recovery to settle.
-            if (e.status != 0) await _forget(aid, v);
+            if (!e.unanswered) await _forget(aid, v);
             if (e.isConflict && !reran) {
               reran = true;
               snap = await _snapshot(aid);
@@ -1920,7 +1920,7 @@ class AgentLoop {
             refused = await writeStagedDocs(_api, aid, r.db, shown);
           } on ClaxApiError catch (e) {
             // No answer, or the app is gone: as for any call.
-            if (e.status == 0 ||
+            if (e.unanswered ||
                 (e.code == 'not_found' && e.body['path'] == null)) {
               rethrow;
             }
@@ -1938,7 +1938,7 @@ class AgentLoop {
                   declared: record?.declared,
                 );
               } on ClaxApiError catch (e) {
-                if (e.status == 0) return const ChangeInterrupted();
+                if (e.unanswered) return const ChangeInterrupted();
                 _log('restoring $aid to version $v failed: $e');
               }
               await _forget(aid, v);
@@ -1962,7 +1962,7 @@ class AgentLoop {
       if (e.kind == AgentErrorKind.cancelled) return const ChangeCancelled();
       return await fail(e.message);
     } on ClaxApiError catch (e) {
-      if (e.status == 0) {
+      if (e.unanswered) {
         _log('change on $aid interrupted: $e');
         return const ChangeInterrupted();
       }
@@ -2081,7 +2081,7 @@ class AgentLoop {
           ),
       ]);
     } on ClaxApiError catch (e) {
-      if (e.status == 0) rethrow;
+      if (e.unanswered) rethrow;
       final pinMoved = e.isConflict || e.code == 'if_version_required';
       if (!pinMoved) {
         // Refused: undo the version; its comments run again.
@@ -2207,7 +2207,7 @@ class AgentLoop {
         declared: r.declared,
       );
     } on ClaxApiError catch (e) {
-      if (e.status == 0) rethrow;
+      if (e.unanswered) rethrow;
       _log('restoring $aid to version ${r.base} failed: $e');
     }
   }

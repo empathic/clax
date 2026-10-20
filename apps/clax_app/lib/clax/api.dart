@@ -387,13 +387,18 @@ class ReadGrant {
   final String grantedAt;
 }
 
-/// A request the daemon refused, or one that never reached it.
+/// A request the API refused, or one that got no answer.
 ///
-/// [status] is the HTTP status, or 0 when there was no answer: code
-/// `daemon_unreachable` (no connection) or `timeout`. [code] and [message]
-/// are the daemon's `error.code` and `error.message`; [body] is the whole
-/// `error` object (a conflict's `current` among it). An answer the client
-/// could not read is code `bad_response`.
+/// [status] is the HTTP status, or 0 when no answer came ([unanswered]),
+/// whatever the transport: code [timeout] when none came within the
+/// call's limit, or [unreachable] when none can come, with the
+/// transport's own reason (`daemon_unreachable`, `core_closed`,
+/// `core_failed`, `frame_refused`, `malformed`) as `body['reason']` and in
+/// [message]. Otherwise [code] and [message] are the API's `error.code`
+/// and `error.message`, and [body] is the whole `error` object (a
+/// conflict's `current` among it). An answer the client could not read is
+/// code `bad_response`; an event stream the API refused to open is code
+/// `stream_refused` with the refusal's status.
 class ClaxApiError implements Exception {
   const ClaxApiError({
     required this.status,
@@ -406,6 +411,16 @@ class ClaxApiError implements Exception {
   final String code;
   final String message;
   final Map<String, Object?> body;
+
+  /// [code] of a call with no answer within its limit.
+  static const timeout = 'timeout';
+
+  /// [code] of a call no answer can come to; `body['reason']` says why.
+  static const unreachable = 'unreachable';
+
+  /// Whether no answer came (status 0): whether the call took effect is
+  /// unknown.
+  bool get unanswered => status == 0;
 
   /// A conflict's current version (`error.current`), when it names one.
   int? get current => switch (body['current']) {

@@ -698,6 +698,14 @@ The browser shell (no `clax-embed` meta) is unchanged: `fetch`, the SharedWorker
   keeps its `x-clax-session` header; the core adds the token) and makes
   `sse` a core subscription (§2.4) parsed by `sse.dart`'s block parser.
   `LoopbackTransport`, today's `HttpClient` code, lives until phase 7.
+  Either transport says "no answer" one way: `send` throws `ClaxApiError`
+  status 0 with code `timeout` (none came within the call's limit) or
+  `unreachable` (none can come), the transport's own reason
+  (`daemon_unreachable`, `core_closed`, `core_failed`, `frame_refused`,
+  `malformed`) in `body.reason` and the message, and domain code asks
+  `ClaxApiError.unanswered`, never the code. A stream that cannot go on
+  ends with `ClaxApiError` on both: code `stream_refused` with the
+  refusal's status, or status 0 `unreachable` with the core's reason.
 - **`SseClaxStream`** (`lib/clax/stream.dart`) keeps its protocol logic and
   takes the core subscription as its `connect`; `SharedClaxStream`
   (`lib/clax/shared_stream.dart`), which existed to outlive a daemon

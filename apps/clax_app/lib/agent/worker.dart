@@ -846,7 +846,7 @@ class FeedbackWorker {
         try {
           await _api.deleteDraft(d.id);
         } on ClaxApiError catch (e) {
-          if (e.status == 0) rethrow;
+          if (e.unanswered) rethrow;
           _log('deleting draft ${d.id} failed: $e');
         }
       }

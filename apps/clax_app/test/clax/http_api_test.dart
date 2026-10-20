@@ -1055,7 +1055,7 @@ void main() {
       ]);
     });
 
-    test('a daemon that is not listening is daemon_unreachable', () async {
+    test('a daemon that is not listening is unreachable, the reason in the body', () async {
       final s = await ServerSocket.bind(InternetAddress.loopbackIPv4, 0);
       final port = s.port;
       await s.close();
@@ -1071,8 +1071,11 @@ void main() {
         dead.listArtifacts(),
         throwsA(
           isA<ClaxApiError>()
-              .having((e) => e.code, 'code', 'daemon_unreachable')
-              .having((e) => e.status, 'status', 0),
+              .having((e) => e.code, 'code', ClaxApiError.unreachable)
+              .having((e) => e.status, 'status', 0)
+              .having((e) => e.unanswered, 'unanswered', isTrue)
+              .having((e) => e.body['reason'], 'reason', 'daemon_unreachable')
+              .having((e) => e.message, 'message', contains('daemon_unreachable')),
         ),
       );
       dead.close();

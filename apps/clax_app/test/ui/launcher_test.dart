@@ -1268,7 +1268,7 @@ void main() {
       api.calls.clear();
       api.failNext(
         'readFile',
-        const ClaxApiError(status: 0, code: 'timeout', message: ''),
+        const ClaxApiError(status: 0, code: ClaxApiError.timeout, message: ''),
       );
       await tester.pumpWidget(const SizedBox());
       await pumpWith(tester, api, AppIcons(api, store: store));
@@ -1303,7 +1303,7 @@ void main() {
       for (var i = 0; i < 2; i++) {
         api.failNext(
           'readFile',
-          const ClaxApiError(status: 0, code: 'timeout', message: ''),
+          const ClaxApiError(status: 0, code: ClaxApiError.timeout, message: ''),
         );
       }
       await pumpWith(tester, api, AppIcons(api));

@@ -1099,8 +1099,9 @@ class _AppRootState extends State<AppRoot> with WidgetsBindingObserver {
       _endpoint.value ??
       (throw const ClaxApiError(
         status: 0,
-        code: 'daemon_unreachable',
-        message: 'the daemon has not started yet',
+        code: ClaxApiError.unreachable,
+        message: 'daemon_unreachable: the daemon has not started yet',
+        body: {'reason': 'daemon_unreachable'},
       ));
 
   late final _asked = _s.asked ?? MemoryAskedQuestions();

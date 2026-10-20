@@ -816,7 +816,7 @@ void main() {
       'publish',
       const ClaxApiError(
         status: 0,
-        code: 'daemon_unreachable',
+        code: ClaxApiError.unreachable,
         message: 'no answer',
       ),
     );

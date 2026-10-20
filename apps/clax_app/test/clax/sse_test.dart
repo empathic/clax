@@ -223,7 +223,14 @@ void main() {
       server.json('GET', '/api/events', 400, {
         'error': {'code': 'invalid_query', 'message': 'bad types'},
       });
-      await expectLater(api.events().toList(), throwsA(isA<HttpException>()));
+      await expectLater(
+        api.events().toList(),
+        throwsA(
+          isA<ClaxApiError>()
+              .having((e) => e.status, 'status', 400)
+              .having((e) => e.code, 'code', 'stream_refused'),
+        ),
+      );
       expect(server.requests, hasLength(1));
       expect(delays, isEmpty);
     });

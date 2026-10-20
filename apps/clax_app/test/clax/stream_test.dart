@@ -474,7 +474,14 @@ void main() {
     });
     final events = stream.events.toList();
     await expectLater(stream.subscribe(['inbox']), throwsStateError);
-    await expectLater(events, throwsA(isA<HttpException>()));
+    await expectLater(
+      events,
+      throwsA(
+        isA<ClaxApiError>()
+            .having((e) => e.status, 'status', 403)
+            .having((e) => e.code, 'code', 'stream_refused'),
+      ),
+    );
     expect(server.to('GET', '/api/stream'), hasLength(1));
   });
 

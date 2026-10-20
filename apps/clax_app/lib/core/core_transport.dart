@@ -15,10 +15,11 @@ import 'frame.dart';
 /// which the core gives the owner's credentials (so no token goes with
 /// it), and `GET /api/stream` is a core subscription.
 ///
-/// A call the core did not answer throws [ClaxApiError] with status 0 and
-/// the reason as its code: `core_closed`, `core_failed`, `frame_refused`
-/// or `malformed`, or `timeout` when no answer came within the call's
-/// limit (on [timer]).
+/// A call the core did not answer throws [ClaxApiError] status 0
+/// [ClaxApiError.unreachable] with the core's reason (`core_closed`,
+/// `core_failed`, `frame_refused`, `malformed`) in its body and message,
+/// or [ClaxApiError.timeout] when no answer came within the call's limit
+/// (on [timer]).
 class CoreTransport implements ClaxTransport {
   CoreTransport(
     this._core, {
@@ -62,7 +63,7 @@ class CoreTransport implements ClaxTransport {
       out.completeError(
         ClaxApiError(
           status: 0,
-          code: 'timeout',
+          code: ClaxApiError.timeout,
           message: '$method $path had no answer within ${timeout.inSeconds} s',
         ),
       );
@@ -75,9 +76,7 @@ class CoreTransport implements ClaxTransport {
           case CoreAnswered(:final response):
             out.complete(TransportAnswer(response.status, response.body));
           case CoreUnanswered(:final code, :final message):
-            out.completeError(
-              ClaxApiError(status: 0, code: code, message: message),
-            );
+            out.completeError(_unreachable(code, message));
         }
       }),
     );
@@ -94,8 +93,9 @@ class CoreTransport implements ClaxTransport {
   /// seen, after 0.5 s doubling to 30 s (back to 0.5 s after a stream that
   /// carried an event). Any other end (`core_closed`, `core_failed`,
   /// `stream_refused`, `malformed`) ends the stream with [ClaxApiError]
-  /// status 0 and the reason as its code: reopening the core is its
-  /// host's work, not this stream's. Cancelling ends the subscription.
+  /// status 0 [ClaxApiError.unreachable], the reason in its body:
+  /// reopening the core is its host's work, not this stream's. Cancelling
+  /// ends the subscription.
   @override
   Stream<SseMessage> sse(
     String path, {
@@ -155,11 +155,7 @@ class CoreTransport implements ClaxTransport {
         final why = reason ?? 'stream_ended';
         if (why != 'stream_ended') {
           out.addError(
-            ClaxApiError(
-              status: 0,
-              code: why,
-              message: 'the core ended the event stream: $why',
-            ),
+            _unreachable(why, 'the core ended the event stream'),
           );
           break;
         }
@@ -187,6 +183,15 @@ class CoreTransport implements ClaxTransport {
     );
     return out.stream;
   }
+
+  /// Status 0 [ClaxApiError.unreachable] for the core's [reason].
+  static ClaxApiError _unreachable(String reason, String message) =>
+      ClaxApiError(
+        status: 0,
+        code: ClaxApiError.unreachable,
+        message: '$reason: $message',
+        body: {'reason': reason},
+      );
 
   /// An `end` block's reason; `malformed` when it names none.
   static String _reasonOf(String data) {

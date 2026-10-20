@@ -155,15 +155,18 @@ void main() {
       );
     });
 
-    test('a call the core did not answer is status 0 with its code', () async {
-      for (final code in ['core_closed', 'core_failed', 'frame_refused', 'malformed']) {
-        final dead = HttpClaxApi.over(CoreTransport(_Unanswering(code)));
+    test('a call the core did not answer is unreachable, its reason in the body', () async {
+      for (final reason in ['core_closed', 'core_failed', 'frame_refused', 'malformed']) {
+        final dead = HttpClaxApi.over(CoreTransport(_Unanswering(reason)));
         await expectLater(
           dead.listArtifacts(),
           throwsA(
             isA<ClaxApiError>()
                 .having((e) => e.status, 'status', 0)
-                .having((e) => e.code, 'code', code),
+                .having((e) => e.unanswered, 'unanswered', isTrue)
+                .having((e) => e.code, 'code', ClaxApiError.unreachable)
+                .having((e) => e.body['reason'], 'reason', reason)
+                .having((e) => e.message, 'message', contains(reason)),
           ),
         );
       }
@@ -197,7 +200,8 @@ void main() {
         failure,
         isA<ClaxApiError>()
             .having((e) => e.status, 'status', 0)
-            .having((e) => e.code, 'code', 'timeout'),
+            .having((e) => e.code, 'code', ClaxApiError.timeout)
+            .having((e) => e.unanswered, 'unanswered', isTrue),
       );
     });
 
@@ -280,8 +284,8 @@ void main() {
       await sub.cancel();
     });
 
-    for (final reason in ['core_closed', 'core_failed', 'stream_refused', 'malformed']) {
-      test('a stream that ends $reason ends with that error', () async {
+    for (final reason in ['core_closed', 'core_failed', 'malformed']) {
+      test('a stream that ends $reason ends unreachable, the reason in the body', () async {
         final core = FakeCore();
         final errors = <Object>[];
         var done = false;
@@ -293,7 +297,13 @@ void main() {
         await pumpEventQueue();
         core.end(reason);
         await pumpEventQueue();
-        expect(errors.single, isA<ClaxApiError>().having((e) => e.code, 'code', reason));
+        expect(
+          errors.single,
+          isA<ClaxApiError>()
+              .having((e) => e.status, 'status', 0)
+              .having((e) => e.code, 'code', ClaxApiError.unreachable)
+              .having((e) => e.body['reason'], 'reason', reason),
+        );
         expect(done, isTrue);
         expect(core.subscribers, 0);
       });

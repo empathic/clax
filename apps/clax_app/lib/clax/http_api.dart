@@ -11,9 +11,9 @@ import 'transport.dart';
 /// [ClaxApi] over a [ClaxTransport]: loopback HTTP to a daemon
 /// ([HttpClaxApi.loopback]) or the embedded core ([HttpClaxApi.over]).
 ///
-/// A call with no answer throws [ClaxApiError] with status 0 and the
-/// transport's code (`timeout`, `daemon_unreachable`, `core_closed`, …);
-/// one the API refused throws its status and error.
+/// A call with no answer throws [ClaxApiError] status 0,
+/// [ClaxApiError.timeout] or [ClaxApiError.unreachable] (the transport's
+/// reason in its body); one the API refused throws its status and error.
 class HttpClaxApi implements ClaxApi {
   /// Over loopback HTTP to the daemon [endpoint] names, read afresh for
   /// each request ([LoopbackTransport]). An event stream waits
