@@ -135,8 +135,14 @@ describe("the transport", () => {
 
 const META = `{"transport":"host","shell":"clax://app","content":"clax://{id}.c"}`;
 
-function fakeWin(meta: string | null) {
+function fakeWin(meta: string | null, nonce?: string) {
   const doc = document.implementation.createHTMLDocument("shell");
+  if (nonce !== undefined) {
+    const m = doc.createElement("meta");
+    m.name = "clax-nonce";
+    m.content = nonce;
+    doc.head.append(m);
+  }
   if (meta !== null) {
     const m = doc.createElement("meta");
     m.name = "clax-embed";
@@ -181,5 +187,27 @@ describe("installTransport", () => {
     expect(m).toMatchObject({ type: "call", method: "GET", path: "/api/artifacts/abc", nonce: NONCE });
     win.claxTransport!.callResult(NONCE, m.id as number, { status: 204, headers: [] });
     expect((await p).status).toBe(204);
+  });
+
+  it("posts from boot under the nonce the app wrote into the document, and ignores init", async () => {
+    const { win, posted } = fakeWin(META, NONCE);
+    installTransport(win);
+    void win.fetch("/api/a");
+    await vi.waitFor(() => expect(posted.length).toBe(1));
+    win.claxTransport!.init("M".repeat(16));
+    void win.fetch("/api/b");
+    await vi.waitFor(() => expect(posted.length).toBe(2));
+    expect(posted.map(m => JSON.parse(m).nonce)).toEqual([NONCE, NONCE]);
+  });
+
+  it("waits for init when the document's nonce is not well formed", async () => {
+    const { win, posted } = fakeWin(META, "short");
+    installTransport(win);
+    void win.fetch("/api/a");
+    await new Promise(r => setTimeout(r, 0));
+    expect(posted).toEqual([]);
+    win.claxTransport!.init(NONCE);
+    await vi.waitFor(() => expect(posted.length).toBe(1));
+    expect(JSON.parse(posted[0]).nonce).toBe(NONCE);
   });
 });

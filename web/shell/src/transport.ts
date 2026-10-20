@@ -18,8 +18,13 @@
 //   `streamEnd(nonce, id)`. Every shell document has it, whichever entry
 //   (gallery or artifact view) it loads.
 //
-// The channel's calls, each posted with the load's nonce, which the app
-// gives by `claxTransport.init`; every answer names it again as its first
+// The load's nonce comes with the document: the app's scheme handler writes
+// a fresh `<meta name="clax-nonce" content="…">` into each shell document it
+// serves, so the shell's calls go out from boot, before the document's load
+// event. A document without a well-formed one (the app over loopback, until
+// its scheme handler writes it) waits for the app's `claxTransport.init`.
+//
+// The channel's calls, each posted with the load's nonce; every answer names it again as its first
 // argument, and one naming another nonce (a late answer to the WebView's
 // previous load, whose call IDs this load reuses) is dropped:
 // - `call {id, method, path, headers, body, body64, chunked}`: a request to
@@ -36,7 +41,7 @@
 //   by `claxTransport.streamEnd(nonce, id)`.
 // - `unsubscribe {id}`: the stream's reader cancelled it or its signal
 //   aborted.
-// Calls made before `init` wait for it: the channel needs the nonce. One
+// Calls made before the nonce is known wait for it. One
 // whose signal aborts meanwhile rejects with an `AbortError` and posts
 // nothing.
 
@@ -130,8 +135,10 @@ function abortError(signal: AbortSignal): unknown {
 
 /** A transport over `channel` (read at each post): a request to `origin`
  * under `/api/` goes over it, anything else to `fallback`. `GET
- * /api/stream` answers a response whose body the app's pushed blocks fill. */
-export function transport(channel: () => Channel | undefined, fallback: typeof fetch, origin: string): Transport {
+ * /api/stream` answers a response whose body the app's pushed blocks fill.
+ * `given`, when well formed, is the load's nonce from the start; else
+ * `init` gives it. */
+export function transport(channel: () => Channel | undefined, fallback: typeof fetch, origin: string, given: string | null = null): Transport {
   const home = originOf(new URL(origin));
   // The calls waiting for their answer and the open streams, by ID.
   const calls = new Map<number, Pending>();
@@ -221,13 +228,16 @@ export function transport(channel: () => Channel | undefined, fallback: typeof f
     return answer;
   };
 
+  const init = (n: unknown) => {
+    if (nonce !== null || typeof n !== "string" || !NONCE.test(n)) return;
+    nonce = n;
+    opened();
+  };
+  init(given);
+
   return {
     fetch: hostFetch,
-    init(n) {
-      if (nonce !== null || typeof n !== "string" || !NONCE.test(n)) return;
-      nonce = n;
-      opened();
-    },
+    init,
     callResult(n, id, r) {
       const p = ours(n) ? calls.get(id) : undefined;
       if (!p) return;
@@ -265,7 +275,8 @@ export function installTransport(win: Window = window): boolean {
   const embed = readEmbed(doc);
   if (!embed) return false;
   const w = win as HostWindow;
-  const { fetch: f, ...receivers } = transport(() => w.ClaxHost, win.fetch.bind(win), embed.shell);
+  const nonce = doc.querySelector('meta[name="clax-nonce"]')?.getAttribute("content") ?? null;
+  const { fetch: f, ...receivers } = transport(() => w.ClaxHost, win.fetch.bind(win), embed.shell, nonce);
   win.fetch = f;
   const style = doc.createElement("style");
   style.textContent = ".conn-notice{display:none!important}";
