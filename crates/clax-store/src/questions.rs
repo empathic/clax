@@ -188,11 +188,14 @@ pub enum Reason {
     /// Withdrawn: the hook in-terminal question's dialog closed unanswered
     /// (a new prompt came).
     Lapsed,
+    /// Withdrawn: the job that asked it was cancelled or done, so nothing
+    /// reads its outcome.
+    JobEnd,
 }
 
 impl Reason {
     /// Every reason.
-    pub const ALL: [Reason; 10] = [
+    pub const ALL: [Reason; 11] = [
         Reason::Owner,
         Reason::Timer,
         Reason::Created,
@@ -203,6 +206,7 @@ impl Reason {
         Reason::DaemonStop,
         Reason::Pulled,
         Reason::Lapsed,
+        Reason::JobEnd,
     ];
 
     /// The phrase recorded.
@@ -218,6 +222,7 @@ impl Reason {
             Reason::DaemonStop => "daemon_stop",
             Reason::Pulled => "pulled",
             Reason::Lapsed => "lapsed",
+            Reason::JobEnd => "job_end",
         }
     }
 
@@ -524,7 +529,7 @@ impl Store {
     /// under `ctx`, by [`Store::close_in`]; the question after it, or
     /// `None` when there is none or it is not open. Every withdrawal goes
     /// through it: a session's (`withdraw`, its end), the daemon's, and a
-    /// final job's.
+    /// final job's (`Store::ending`).
     pub(crate) fn withdraw_question_in(
         &self,
         tx: &Transaction<'_>,

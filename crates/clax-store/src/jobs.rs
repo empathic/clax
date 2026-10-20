@@ -12,7 +12,9 @@
 //! the core's, in memory, and no rule here reads a clock.
 
 use super::Store;
+use super::questions::Reason;
 use clax_core::CoreError;
+use clax_core::audit::AuditCtx;
 use rusqlite::{Connection, OptionalExtension, Transaction, params};
 use serde::{Deserialize, Serialize};
 use std::sync::{Arc, Mutex, RwLock};
@@ -721,6 +723,9 @@ impl Store {
                     error.as_ref().map(text)
                 ],
             )?;
+            if state.is_final() {
+                self.ending(tx, id)?;
+            }
             bump(tx, id, &self.now())
         })
     }
@@ -879,6 +884,9 @@ impl Store {
                 "UPDATE jobs SET step = ?2, state = ?3 WHERE id = ?1",
                 params![id, key, state],
             )?;
+            if state.is_final() {
+                self.ending(tx, id)?;
+            }
             let row = bump(tx, id, &now)?;
             let step = step_row(tx, id, key)?.ok_or(JobError::NotFound)?;
             Ok((step, row, false))
@@ -930,11 +938,36 @@ impl Store {
         })
     }
 
+    /// Withdraws each question job `id` asked that is not closed, inside
+    /// the caller's transaction, which has just moved the job to a final
+    /// state (`cancelled` or `done`): no worker reads its outcome again, so
+    /// the person is no longer asked. Each goes by
+    /// [`Store::withdraw_question_in`] (reason `job_end`, as
+    /// `system:daemon`), which stores its outcome and moves the job no
+    /// further. Every final move calls it: a patch to `cancelled`
+    /// ([`Store::patch_job`]), a `done` step ([`Store::commit_step`]) and an
+    /// artifact's delete ([`Store::artifact_going_tx`]).
+    fn ending(&self, tx: &Transaction<'_>, id: &str) -> clax_core::Result<()> {
+        let open: Vec<String> = tx
+            .prepare_cached(
+                "SELECT question_id FROM job_questions
+                 WHERE job_id = ?1 AND outcome IS NULL ORDER BY question_id",
+            )?
+            .query_map(params![id], |r| r.get(0))?
+            .collect::<rusqlite::Result<_>>()?;
+        for q in open {
+            self.withdraw_question_in(tx, &AuditCtx::DAEMON, &q, Reason::JobEnd)?;
+        }
+        Ok(())
+    }
+
     /// Stores `outcome`, how question `question` closed, in the job that
     /// asked it, and by [`may_move`] moves that job from `waiting` back to
     /// `running` once it waits on no other question, inside the caller's
     /// transaction; the job's row after it, or `None` when no job asked it,
-    /// the job is final, or its outcome is already stored. Called by
+    /// its outcome is already stored, or the job is final (which only
+    /// [`Store::ending`] closes a question of, the outcome stored and the
+    /// job left as it is). Called by
     /// `Store::close_in`, the one write that closes a question, at every
     /// close that ends it: an answer, a decline or a withdrawal.
     pub(crate) fn close_job_question_tx(
@@ -953,14 +986,14 @@ impl Store {
         let Some(row) = id.map(|id| job_row(tx, &id)).transpose()?.flatten() else {
             return Ok(None);
         };
-        if row.state.is_final() {
-            return Ok(None);
-        }
         let (outcome, answers) = outcome.columns();
         tx.execute(
             "UPDATE job_questions SET outcome = ?2, answers_json = ?3 WHERE question_id = ?1",
             params![question, outcome, answers],
         )?;
+        if row.state.is_final() {
+            return Ok(None);
+        }
         let moved = moving(tx, &row, Move::Close).and_then(|state| {
             tx.execute(
                 "UPDATE jobs SET state = ?2 WHERE id = ?1",
@@ -1009,6 +1042,7 @@ impl Store {
                  WHERE id = ?1",
                 params![row.id, state, r#"{"code":"artifact_deleted"}"#, now],
             )?;
+            self.ending(tx, &row.id)?;
             self.jobs.going(
                 rowid,
                 JobChange {
@@ -1723,6 +1757,64 @@ mod tests {
             (JobState::Running, waiting.rev + 1)
         );
         assert_eq!(full.questions[1].answer, JobAnswer::Withdrawn);
+    }
+
+    /// How many questions are open in the owner's inbox.
+    fn open_questions(st: &Store) -> u32 {
+        st.list_questions(None, crate::questions::ListStatus::Open, 50)
+            .unwrap()
+            .1
+    }
+
+    #[test]
+    fn a_jobs_final_move_withdraws_its_open_questions() {
+        let (_d, st) = store();
+        // Cancelled by a patch.
+        let q1 = question(&st);
+        running(&st, "j1");
+        st.ask_job_question("j1", &q1).unwrap();
+        assert_eq!(open_questions(&st), 1);
+        let cancelled = move_to(&st, "j1", JobState::Cancelled).unwrap();
+        assert_eq!(open_questions(&st), 0, "a cancel withdraws");
+        // Done by its last step.
+        let q2 = question(&st);
+        running(&st, "j2");
+        st.ask_job_question("j2", &q2).unwrap();
+        let (_, done, _) = st.commit_step("j2", "reply:0", json!({}), true).unwrap();
+        assert_eq!(open_questions(&st), 0, "a done step withdraws");
+        // Cancelled by its artifact's delete.
+        let aid = artifact(&st, None);
+        change_of(&st, "j3", aid.as_str());
+        let q3 = question(&st);
+        st.ask_job_question("j3", &q3).unwrap();
+        assert_eq!(open_questions(&st), 1);
+        st.delete_artifact(DAEMON, &aid).unwrap();
+        assert_eq!(open_questions(&st), 0, "an artifact's delete withdraws");
+        for (j, q) in [("j1", &q1), ("j2", &q2), ("j3", &q3)] {
+            assert_eq!(
+                st.question(q).unwrap().unwrap().status,
+                crate::questions::Status::Withdrawn,
+                "{j}"
+            );
+            let full = st.job(j).unwrap().unwrap();
+            assert!(full.job.state.is_final(), "{j}");
+            assert_eq!(full.questions[0].answer, JobAnswer::Withdrawn, "{j}");
+        }
+        // The withdrawal moves a final job no further.
+        assert_eq!(st.job("j1").unwrap().unwrap().job, cancelled);
+        assert_eq!(st.job("j2").unwrap().unwrap().job, done);
+        // Stopped and failed are not final: the question stays open.
+        let q4 = question(&st);
+        running(&st, "j4");
+        st.ask_job_question("j4", &q4).unwrap();
+        move_to(&st, "j4", JobState::Stopped).unwrap();
+        move_to(&st, "j4", JobState::Failed).unwrap();
+        move_to(&st, "j4", JobState::Paused).unwrap();
+        assert_eq!(open_questions(&st), 1);
+        assert_eq!(
+            st.job("j4").unwrap().unwrap().questions[0].answer,
+            JobAnswer::Pending
+        );
     }
 
     #[test]

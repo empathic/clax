@@ -2753,7 +2753,10 @@ fn golden_questions_match_the_live_builders() {
             (_, Some(Reason::Timer | Reason::Created | Reason::Explicit | Reason::Lapsed)) => {
                 &["agent"]
             }
-            (_, Some(Reason::Unwaited | Reason::DaemonStart | Reason::DaemonStop)) => &["system"],
+            (
+                _,
+                Some(Reason::Unwaited | Reason::DaemonStart | Reason::DaemonStop | Reason::JobEnd),
+            ) => &["system"],
             (_, Some(Reason::SessionEnd)) => &["agent", "system"],
             (_, None) => &["system"],
         };

@@ -6878,7 +6878,7 @@ the body below.
 | `question.answer` | `answers, answered_via` | an answer (the owner) |
 | `question.decline` | none | a decline (the owner) |
 | `question.release` | `reason (owner\|timer\|created)` | a release to the terminal |
-| `question.withdraw` | `reason (explicit\|unwaited\|session_end\|daemon_start\|daemon_stop\|pulled\|lapsed)` | a withdrawal |
+| `question.withdraw` | `reason (explicit\|unwaited\|session_end\|daemon_start\|daemon_stop\|pulled\|lapsed\|job_end)` | a withdrawal |
 | `tool.call` | `call_id, tool, harness_tool?, args_sha256, started_at, ended_at, outcome (ok\|error), harness_call_id?, produced[seq]` | each Clax tool call's report (below) |
 | `tool.call_id` | `call_id (or null), harness_call_id, harness_tool, args_sha256` | Claude Code's PostToolUse report (below) |
 | `session.start` | `harness, harness_session_id, cwd, transcript_path, pid` (+ `git`) | a session's registration |
