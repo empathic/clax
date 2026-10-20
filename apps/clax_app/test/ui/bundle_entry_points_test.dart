@@ -148,7 +148,7 @@ void main() {
       await tester.runAsync(() async {
         await me.ready();
         final b = await makeBundle(lineage: lineageA);
-        aid = await me.installer.install(await me.installer.open(b.bytes));
+        aid = (await me.installer.install(await me.installer.open(b.bytes))).aid;
       });
       await pumpInspector(tester, aid);
       final e = (await tester.runAsync(() => me.store.entry(aid)))!;

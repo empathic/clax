@@ -168,7 +168,7 @@ void main() {
     final opened1 = await _wait(tester, 'open v1', installer.open(v1.bytes));
     expect(opened1.decision.answer, TrustAnswer.install);
     expect(opened1.fromSelf, isFalse);
-    final rid = await _wait(tester, 'install', installer.install(opened1));
+    final rid = await _wait(tester, 'install', installer.install(opened1).then((i) => i.aid));
     expect(rid, isNot(aid));
     final installed = await recipientApi.getArtifact(rid);
     expect(installed.current!.contentSha256, v1.manifest.contentSha256);

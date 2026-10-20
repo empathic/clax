@@ -1,6 +1,7 @@
 import 'dart:async';
 import 'dart:io';
 
+import 'package:clax_app/agent/icon_svg.dart';
 import 'package:clax_app/agent/inspector.dart';
 import 'package:clax_app/bundle/bundle_reader.dart';
 import 'package:clax_app/bundle/doc_snapshot.dart';
@@ -23,7 +24,7 @@ void main() {
       lineage: lineageA,
       files: {'index.html': '<p>v1</p>', 'old.js': 'gone soon'},
     );
-    aid = await me.installer.install(await me.installer.open(v1.bytes));
+    aid = (await me.installer.install(await me.installer.open(v1.bytes))).aid;
     me.api.putDoc(aid, 'plants/p1', {'name': 'fern'});
     me.api.putDoc(aid, 'plants/p2', {'name': 'moss'});
     me.api.calls.clear();
@@ -111,6 +112,54 @@ void main() {
     expect(e.released.last, b.manifest.contentSha256);
     expect(await me.store.keptBundle(aid), b.bytes);
     expect(me.snapshots.has(aid), isFalse);
+  });
+
+  test('an update whose icon the icon rules refuse publishes it cleaned, '
+      'or leaves it out, and says so', () async {
+    const fixable =
+        '<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 9 9">'
+        '<title>A & B</title><rect width="9" height="9"/></svg>';
+    final b = await BundleReader.read(
+      (await makeBundle(
+        lineage: lineageA,
+        version: 2,
+        files: {'index.html': '<p>v2</p>', 'icon.svg': fixable},
+      )).bytes,
+    );
+    final out = await me.updater.update(aid, b);
+    expect(out, isA<UpdateLanded>());
+    expect(
+      (out as UpdateLanded).iconChange,
+      startsWith('Its icon was redrawn without what an icon may not hold'),
+    );
+    final live = await me.api.getArtifact(aid);
+    expect(await me.api.readFile(aid, 2, 'icon.svg'), cleanIcon(fixable));
+    expect(live.current!.note, endsWith('; its icon was redrawn (icon rule '
+        'not_xml)'));
+    final hash = live.current!.contentSha256!;
+    expect(hash, isNot(b.manifest.contentSha256));
+    final e = (await me.store.entry(aid))!;
+    expect(e.released.last, b.manifest.contentSha256);
+    expect(e.released, contains(hash));
+    expect(
+      e.isModified(contentSha256: hash, capabilities: e.capabilities),
+      isFalse,
+    );
+
+    const hopeless =
+        '<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 9 8"/>';
+    final b3 = await BundleReader.read(
+      (await makeBundle(
+        lineage: lineageA,
+        version: 3,
+        files: {'index.html': '<p>v3</p>', 'icon.svg': hopeless},
+      )).bytes,
+    );
+    final out3 = await me.updater.update(aid, b3);
+    expect(out3, isA<UpdateLanded>());
+    expect((out3 as UpdateLanded).iconChange, startsWith('Its icon was left out'));
+    final v3 = await me.api.getArtifact(aid);
+    expect(v3.current!.files.keys, ['index.html']);
   });
 
   Future<void> expectUnchanged(UpdateOutcome out) async {

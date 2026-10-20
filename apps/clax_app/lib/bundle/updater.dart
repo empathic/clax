@@ -14,6 +14,7 @@ import '../clax/api.dart';
 import '../platform/bundle_key.dart' show keyFingerprint;
 import 'bundle_reader.dart';
 import 'doc_snapshot.dart';
+import 'installer.dart' show PublishedFiles;
 import 'lineage_store.dart';
 
 /// What an update's capabilities add over the live app's (§8.2): new
@@ -82,12 +83,14 @@ sealed class UpdateOutcome {
 }
 
 /// The update is live as lineage version [version]; [truncated] when its
-/// check ran on part of the person's data.
+/// check ran on part of the person's data; [iconChange] says what became
+/// of an icon the icon rules refuse ([PublishedFiles.iconChange]).
 class UpdateLanded extends UpdateOutcome {
-  const UpdateLanded(this.version, {this.truncated = false});
+  const UpdateLanded(this.version, {this.truncated = false, this.iconChange});
 
   final int version;
   final bool truncated;
+  final String? iconChange;
 }
 
 /// The check failed at [step], for [reason], the end of §3.4's sentence;
@@ -283,10 +286,8 @@ class Updater {
       return UpdateRefused('The app could not be read.', details: [e.message]);
     }
     final base = live.artifact.currentVersion;
-    final entries = {
-      for (final MapEntry(:key, :value) in m.files.entries)
-        key: FileEntry.bytes(bundle.files[key]!, type: value.type),
-    };
+    final files = PublishedFiles.of(bundle);
+    final entries = files.entries;
     final hasMigration = m.files.containsKey('migrate.js');
     final tests = [
       for (final p in m.files.keys)
@@ -346,7 +347,7 @@ class Updater {
     // 6–7: publish, then migrate the live documents under a snapshot.
     final meta = SnapshotMeta(
       base: base,
-      contentSha256: m.contentSha256,
+      contentSha256: files.contentSha256,
       title: live.artifact.title,
       icon: live.artifact.icon,
       capabilities: live.artifact.capabilities,
@@ -363,7 +364,7 @@ class Updater {
         );
       }
     }
-    _writePending(aid, bundle);
+    _writePending(aid, bundle, files.contentSha256);
     onStep?.call(UpdateStep.publish);
     PublishResult? published;
     Object? refused;
@@ -383,9 +384,10 @@ class Updater {
             icon: m.icon.word,
             capabilities: m.capabilities,
             label: 'Update v${m.version}',
-            note:
-                'Updated to v${m.version} from '
-                '${m.author.name ?? keyFingerprint(m.author.key) ?? 'its author'}',
+            note: files.noted(
+              'Updated to v${m.version} from '
+              '${m.author.name ?? keyFingerprint(m.author.key) ?? 'its author'}',
+            ),
             entries: {
               ...entries,
               for (final p in live.current?.files.keys ?? const <String>[])
@@ -435,10 +437,16 @@ class Updater {
 
     // 8: the lineage.
     await _applyPending(aid);
-    return UpdateLanded(m.version, truncated: truncated);
+    return UpdateLanded(
+      m.version,
+      truncated: truncated,
+      iconChange: files.iconChange,
+    );
   }
 
-  void _writePending(String aid, Bundle bundle) {
+  /// Keeps [bundle] and its release while it lands: the bundle's content
+  /// hash and [published], the hash of the files published for it.
+  void _writePending(String aid, Bundle bundle, String published) {
     final m = bundle.manifest;
     _pendingDir.createSync(recursive: true);
     _syncWrite(_pendingBundle(aid), bundle.bytes);
@@ -447,6 +455,7 @@ class Updater {
       utf8.encode(
         jsonEncode({
           'content_sha256': m.contentSha256,
+          'published_sha256': published,
           'version': m.version,
           'title': m.title,
           'capabilities': m.capabilities,
@@ -477,6 +486,7 @@ class Updater {
               capabilities: caps is Map<String, Object?> ? caps : const {},
             ),
             version: p['version'] as int,
+            published: p['published_sha256'] as String?,
           )
           .copyWith(
             name: () => p['name'] as String?,
@@ -575,7 +585,8 @@ class Updater {
       return;
     }
     final p = jsonDecode(_pending(aid).readAsStringSync()) as Map;
-    if (d.current?.contentSha256 == p['content_sha256']) {
+    if (d.current?.contentSha256 ==
+        (p['published_sha256'] ?? p['content_sha256'])) {
       await _applyPending(aid);
     } else {
       _dropPending(aid);

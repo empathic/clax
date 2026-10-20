@@ -121,13 +121,20 @@ class LineageEntry {
       jsonEquals(capabilities, state.capabilities);
 
   /// This entry after releasing [state] as [version]: its hash moves last
-  /// in [released], and the title and capabilities become [state]'s.
-  LineageEntry withRelease(ReleaseState state, {required int version}) =>
-      copyWith(
+  /// in [released], after [published] (the hash of the files published for
+  /// it, when they differ from the release's), and the title and
+  /// capabilities become [state]'s.
+  LineageEntry withRelease(
+    ReleaseState state, {
+    required int version,
+    String? published,
+  }) => copyWith(
         version: version,
         released: [
           for (final h in released)
-            if (h != state.contentSha256) h,
+            if (h != state.contentSha256 && h != published) h,
+          if (published != null && published != state.contentSha256)
+            published,
           state.contentSha256,
         ],
         title: state.title,

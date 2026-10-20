@@ -214,7 +214,7 @@ void main() {
     await tester.runAsync(() async {
       await me.ready();
       final v1 = await makeBundle(lineage: lineageA);
-      aid = await me.installer.install(await me.installer.open(v1.bytes));
+      aid = (await me.installer.install(await me.installer.open(v1.bytes))).aid;
       v2 = (await makeBundle(
         lineage: lineageA,
         version: 2,
@@ -241,7 +241,7 @@ void main() {
       await tester.runAsync(() async {
         await me.ready();
         final v1 = await makeBundle(lineage: lineageA);
-        await me.installer.install(await me.installer.open(v1.bytes));
+        (await me.installer.install(await me.installer.open(v1.bytes))).aid;
         v2 = (await makeBundle(
           lineage: lineageA,
           version: 2,
@@ -276,7 +276,7 @@ void main() {
     await tester.runAsync(() async {
       await me.ready();
       final v1 = await makeBundle(lineage: lineageA);
-      await me.installer.install(await me.installer.open(v1.bytes));
+      (await me.installer.install(await me.installer.open(v1.bytes))).aid;
       v2 = (await makeBundle(lineage: lineageA, version: 2)).bytes;
     });
     final hanging = _HangingUpdater(me);
@@ -309,7 +309,7 @@ void main() {
     await tester.runAsync(() async {
       await me.ready();
       final v1 = await makeBundle(lineage: lineageA);
-      aid = await me.installer.install(await me.installer.open(v1.bytes));
+      aid = (await me.installer.install(await me.installer.open(v1.bytes))).aid;
       await me.api.publish(
         aid,
         PublishRequest(files: {'index.html': '<p>mine</p>'}, ifVersion: 1),

@@ -162,7 +162,7 @@ Future<String> _install(
   final made = Completer<String?>();
   installing?.call(made.future);
   try {
-    return await installer.install(opened, made: made.complete);
+    return (await installer.install(opened, made: made.complete)).aid;
   } finally {
     if (!made.isCompleted) made.complete(null);
   }

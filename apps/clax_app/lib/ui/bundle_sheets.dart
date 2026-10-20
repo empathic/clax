@@ -1308,7 +1308,7 @@ class BundleFlows {
         final aid = await _working(
           context,
           BundleWorking('Installing ${m.title}…'),
-          () => installer.install(opened),
+          () async => (await installer.install(opened)).aid,
         );
         if (aid != null) open(aid);
       case TrustAnswer.update:

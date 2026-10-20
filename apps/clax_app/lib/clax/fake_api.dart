@@ -5,6 +5,7 @@ import 'dart:typed_data';
 
 import 'package:cryptography/dart.dart' show DartSha256;
 
+import '../agent/icon_svg.dart' show appIconPath, iconProblem;
 import 'api.dart';
 
 /// One call [FakeClaxApi] received: the method's name and its arguments.
@@ -497,6 +498,7 @@ class FakeClaxApi implements ClaxApi {
     if (!files.containsKey('index.html')) {
       throw _invalid('missing_index', 'a version must include index.html');
     }
+    _checkIcon(files);
     final aid = _newArtifactId();
     final a = _artifacts[aid] = _FakeArtifact(
       id: aid,
@@ -524,6 +526,7 @@ class FakeClaxApi implements ClaxApi {
       }
     }
     _needIndex(r);
+    _checkIcon(_requestFiles(r));
     final files = Map.of(a.versions.last.blobs);
     for (final e in _requestFiles(r).entries) {
       if (e.value == null) {
@@ -862,6 +865,7 @@ class FakeClaxApi implements ClaxApi {
     if (!blobs.containsKey('index.html')) {
       throw _invalid('missing_index', 'a version must include index.html');
     }
+    _checkIcon(blobs);
     final id = _newArtifactId();
     final d = _artifacts[id] = _FakeArtifact(
       id: id,
@@ -917,6 +921,7 @@ class FakeClaxApi implements ClaxApi {
     }
     _checkVersion(a, r.ifVersion!);
     _needIndex(r);
+    _checkIcon(_requestFiles(r));
     final files = Map.of(a.versions.last.blobs);
     for (final e in _requestFiles(r).entries) {
       if (e.value == null) {
@@ -2053,6 +2058,33 @@ class FakeClaxApi implements ClaxApi {
 
   static ClaxApiError _notFound() =>
       const ClaxApiError(status: 404, code: 'not_found', message: 'not found');
+
+  /// Refuses a put `icon.svg` that breaks the icon rules, as the daemon's
+  /// publish does: 400 `invalid_icon` with the rule in `rule`. Restore
+  /// copies history unchecked, as the daemon's does.
+  static void _checkIcon(Map<String, _FakeFile?> files) {
+    final icon = files[appIconPath];
+    if (icon == null) return;
+    final String text;
+    try {
+      text = utf8.decode(icon.bytes);
+    } on FormatException {
+      throw const ClaxApiError(
+        status: 400,
+        code: 'invalid_icon',
+        message: 'icon.svg is not well-formed XML: it is not UTF-8.',
+        body: {'rule': 'not_xml'},
+      );
+    }
+    if (iconProblem(text) case final p?) {
+      throw ClaxApiError(
+        status: 400,
+        code: 'invalid_icon',
+        message: p.message,
+        body: {'rule': p.code},
+      );
+    }
+  }
 
   static ClaxApiError _invalid(String code, String message) =>
       ClaxApiError(status: 400, code: code, message: message);

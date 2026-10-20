@@ -107,7 +107,7 @@ void main() {
   test('re-share sends the kept bundle byte for byte; a modified copy can '
       'fork under this key with forked_from', () async {
     final w = await makeBundle(lineage: lineageA, version: 3);
-    final aid = await me.installer.install(await me.installer.open(w.bytes));
+    final aid = (await me.installer.install(await me.installer.open(w.bytes))).aid;
 
     var plan = await me.exporter.plan(aid);
     expect(plan.modes, [ExportMode.reshare]);
@@ -146,7 +146,7 @@ void main() {
 
   test('an own export of an installed app is refused', () async {
     final w = await makeBundle(lineage: lineageA);
-    final aid = await me.installer.install(await me.installer.open(w.bytes));
+    final aid = (await me.installer.install(await me.installer.open(w.bytes))).aid;
     await expectLater(me.exporter.export(aid), throwsA(isA<BundleFailure>()));
   });
 }

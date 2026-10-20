@@ -3,6 +3,7 @@ import 'dart:convert';
 import 'dart:io';
 import 'dart:typed_data';
 
+import 'package:clax_app/agent/icon_svg.dart';
 import 'package:clax_app/bundle/bundle_writer.dart';
 import 'package:clax_app/bundle/doc_snapshot.dart';
 import 'package:clax_app/bundle/installer.dart';
@@ -52,7 +53,7 @@ void main() {
     expect(opened.who, 'Sam');
     expect(opened.fromSelf, isFalse);
 
-    final aid = await me.installer.install(opened);
+    final aid = (await me.installer.install(opened)).aid;
     final d = await me.api.getArtifact(aid);
     expect(d.artifact.title, 'Plant log');
     expect(d.artifact.icon, 'leaf');
@@ -77,6 +78,74 @@ void main() {
     final again = await me.installer.open(w.bytes);
     expect(again.decision.answer, TrustAnswer.current);
     expect(again.decision.aid, aid);
+  });
+
+  // An icon the app's old check passed and the core now refuses (a bare
+  // &), which cleanIcon writes out well-formed; and one it cannot draw.
+  const fixable =
+      '<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 9 9">'
+      '<title>A & B</title><rect width="9" height="9"/></svg>';
+  const hopeless =
+      '<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 9 8">'
+      '<rect width="9" height="8"/></svg>';
+
+  test('a bundle icon the icon rules refuse is installed cleaned when that '
+      'makes it pass, and the result says so', () async {
+    expect(iconProblem(fixable), isNotNull);
+    final w = await makeBundle(
+      lineage: lineageA,
+      files: {'index.html': '<p>hi</p>', 'icon.svg': fixable},
+    );
+    final got = await me.installer.install(await me.installer.open(w.bytes));
+    final svg = await me.api.readFile(got.aid, 1, 'icon.svg');
+    expect(svg, cleanIcon(fixable));
+    expect(iconProblem(svg!), isNull);
+    expect(got.iconChange, startsWith('Its icon was redrawn without what an icon '
+        'may not hold: icon.svg is not well-formed XML'));
+    final d = await me.api.getArtifact(got.aid);
+    expect(d.current!.note, 'Installed v1 of Plant log from Sam; its icon '
+        'was redrawn (icon rule not_xml)');
+    final hash = d.current!.contentSha256!;
+    expect(hash, isNot(w.manifest.contentSha256));
+    final e = (await me.store.entry(got.aid))!;
+    expect(e.released, [hash, w.manifest.contentSha256]);
+    // Opening the same bundle again: current, and the app unmodified.
+    final again = await me.installer.open(w.bytes);
+    expect(again.decision.answer, TrustAnswer.current);
+    expect(
+      e.isModified(contentSha256: hash, capabilities: e.capabilities),
+      isFalse,
+    );
+  });
+
+  test('a bundle icon cleaning cannot save is left out: the app installs '
+      'without it, and the result says so', () async {
+    expect(cleanIcon(hopeless), isNull);
+    final w = await makeBundle(
+      lineage: lineageA,
+      files: {'index.html': '<p>hi</p>', 'icon.svg': hopeless},
+    );
+    final got = await me.installer.install(await me.installer.open(w.bytes));
+    final d = await me.api.getArtifact(got.aid);
+    expect(d.current!.files.keys, ['index.html']);
+    expect(got.iconChange, 'Its icon was left out: ${iconProblem(hopeless)!.message}');
+    expect(d.current!.note, 'Installed v1 of Plant log from Sam; its icon '
+        'was left out (icon rule view_box)');
+  });
+
+  test('an icon within the rules is installed byte for byte', () async {
+    const good =
+        '<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 9 9">'
+        '<rect width="9" height="9"/></svg>';
+    final w = await makeBundle(
+      lineage: lineageA,
+      files: {'index.html': '<p>hi</p>', 'icon.svg': good},
+    );
+    final got = await me.installer.install(await me.installer.open(w.bytes));
+    expect(got.iconChange, isNull);
+    expect(await me.api.readFile(got.aid, 1, 'icon.svg'), good);
+    final d = await me.api.getArtifact(got.aid);
+    expect(d.current!.contentSha256, w.manifest.contentSha256);
   });
 
   test(
@@ -122,7 +191,7 @@ void main() {
   test('a later version of an installed app is an update with its live '
       'state; a deleted app is forgotten', () async {
     final v1 = await makeBundle(lineage: lineageA);
-    final aid = await me.installer.install(await me.installer.open(v1.bytes));
+    final aid = (await me.installer.install(await me.installer.open(v1.bytes))).aid;
     final v2 = await makeBundle(
       lineage: lineageA,
       version: 2,
@@ -141,9 +210,9 @@ void main() {
 
   test('forgetDeleted drops the entry, kept bundle and snapshot on '
       'artifact_deleted', () async {
-    final aid = await me.installer.install(
+    final aid = (await me.installer.install(
       await me.installer.open((await makeBundle(lineage: lineageA)).bytes),
-    );
+    )).aid;
     final events = StreamController<ClaxEvent>();
     final sub = forgetDeleted(events.stream, me.store, snapshots: me.snapshots);
     await me.snapshots.take(
@@ -173,7 +242,7 @@ void main() {
     final opened = await me.installer.open(w.bytes);
     expect(opened.decision.answer, TrustAnswer.install);
     expect(opened.fromSelf, isTrue);
-    final aid = await me.installer.install(opened);
+    final aid = (await me.installer.install(opened)).aid;
     final e = (await me.store.entry(aid))!;
     expect(e.role, LineageRole.author);
     expect(e.fromBundle, isFalse);
@@ -183,11 +252,11 @@ void main() {
   test('an install a crash cut short is deleted at start; meanwhile every '
       'app without an entry counts as from a bundle', () async {
     final w = await makeBundle(lineage: lineageA);
-    final kept = await me.installer.install(
+    final kept = (await me.installer.install(
       await me.installer.open(
         (await makeBundle(lineage: 'l_cccccccccccccccccccccccccc')).bytes,
       ),
-    );
+    )).aid;
     final cut = (await me.api.createArtifact(
       PublishRequest(
         title: 'Plant log',
@@ -213,9 +282,9 @@ void main() {
   });
 
   test('fromBundleOf reads the entry', () async {
-    final aid = await me.installer.install(
+    final aid = (await me.installer.install(
       await me.installer.open((await makeBundle(lineage: lineageA)).bytes),
-    );
+    )).aid;
     final f = fromBundleOf(me.store);
     expect(await f(aid), isTrue);
     expect(await f('a_other'), isFalse);

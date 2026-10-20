@@ -7,9 +7,11 @@ import 'dart:convert';
 import 'dart:io';
 import 'dart:typed_data';
 
+import '../agent/icon_svg.dart';
 import '../clax/api.dart';
 import '../platform/bundle_key.dart';
 import 'bundle_reader.dart';
+import 'content_hash.dart';
 import 'doc_snapshot.dart';
 import 'lineage_store.dart';
 import 'trust.dart';
@@ -71,6 +73,79 @@ class OpenedBundle {
   String get who => manifest.author.name ?? fingerprint;
 }
 
+/// A bundle's files as an install or an update publishes them: as the
+/// bundle holds them, but for an `icon.svg` the icon rules refuse
+/// ([iconProblem]; the daemon's publish refuses it too, and a bundle made
+/// before the rules, or by another client, may hold one). That icon is
+/// published as [cleanIcon] writes it when that passes the rules, and is
+/// otherwise left out, so the app still installs, drawn with its word.
+class PublishedFiles {
+  PublishedFiles._(this.entries, this.contentSha256, this.iconChange, this._note);
+
+  /// [b]'s files, `icon.svg` cleaned or left out as above.
+  factory PublishedFiles.of(Bundle b) {
+    final m = b.manifest;
+    final entries = <String, FileEntry>{
+      for (final MapEntry(:key, :value) in m.files.entries)
+        key: FileEntry.bytes(b.files[key]!, type: value.type),
+    };
+    String? change;
+    String? note;
+    if (b.files[appIconPath] case final raw?) {
+      final text = utf8.decode(raw, allowMalformed: true);
+      final why = iconProblem(text);
+      if (why != null) {
+        final cleaned = cleanIcon(text);
+        if (cleaned != null && iconProblem(cleaned) == null) {
+          entries[appIconPath] = FileEntry.bytes(
+            utf8.encode(cleaned),
+            type: m.files[appIconPath]!.type,
+          );
+          change =
+              'Its icon was redrawn without what an icon may not hold: '
+              '${why.message}';
+          note = 'its icon was redrawn (icon rule ${why.code})';
+        } else {
+          entries.remove(appIconPath);
+          change = 'Its icon was left out: ${why.message}';
+          note = 'its icon was left out (icon rule ${why.code})';
+        }
+      }
+    }
+    final hash = change == null
+        ? m.contentSha256
+        : contentHash({
+            for (final MapEntry(:key, :value) in entries.entries)
+              key: (sha256: sha256Hex(value.bytes), size: value.bytes.length),
+          });
+    return PublishedFiles._(entries, hash, change, note);
+  }
+
+  /// The files to publish.
+  final Map<String, FileEntry> entries;
+
+  /// The content hash of [entries]: the bundle's, unless its icon changed.
+  final String contentSha256;
+
+  /// What became of the bundle's icon, a sentence for the person; null
+  /// when it is published as the bundle holds it (or there is none).
+  final String? iconChange;
+
+  final String? _note;
+
+  /// [note] with what became of the icon after it, for the version's note.
+  String noted(String note) => _note == null ? note : '$note; $_note';
+}
+
+/// An installed app: its artifact ID, and what became of the bundle's
+/// icon ([PublishedFiles.iconChange]).
+class Installed {
+  const Installed(this.aid, {this.iconChange});
+
+  final String aid;
+  final String? iconChange;
+}
+
 /// Opens and installs bundles.
 class Installer {
   Installer({required this.api, required this.store, required this.key});
@@ -123,7 +198,10 @@ class Installer {
 
   /// Installs [opened] as a new app (§8.1): for [TrustAnswer.install],
   /// [TrustAnswer.foreign] and [TrustAnswer.forked]. Returns its artifact
-  /// ID. A bundle of this install's own ([TrustDecision.mine], on
+  /// ID, and what became of an icon the icon rules refuse
+  /// ([PublishedFiles]); the lineage's released hashes then hold the
+  /// installed files' hash before the bundle's, so the app is not taken
+  /// for modified. A bundle of this install's own ([TrustDecision.mine], on
   /// `install`: the person's app deleted here and opened again) is
   /// recorded with role `author`, so later exports continue its lineage. A failure deletes the app made and throws [BundleFailure].
   ///
@@ -136,7 +214,7 @@ class Installer {
   ///
   /// [made] hears the new app's ID as soon as the daemon made it, before
   /// it is filled.
-  Future<String> install(
+  Future<Installed> install(
     OpenedBundle opened, {
     void Function(String aid)? made,
   }) async {
@@ -155,8 +233,9 @@ class Installer {
     final m = opened.manifest;
     final b = opened.bundle;
     final who = opened.who;
+    final files = PublishedFiles.of(b);
     final marker = installMarker(store, m.lineage);
-    _writeMarker(marker, {'content_sha256': m.contentSha256, 'aid': null});
+    _writeMarker(marker, {'content_sha256': files.contentSha256, 'aid': null});
     final PublishResult created;
     try {
       created = await api.createArtifact(
@@ -165,11 +244,8 @@ class Installer {
           icon: m.icon.word,
           capabilities: m.capabilities,
           label: 'v${m.version} from $who',
-          note: 'Installed v${m.version} of ${m.title} from $who',
-          entries: {
-            for (final MapEntry(:key, :value) in m.files.entries)
-              key: FileEntry.bytes(b.files[key]!, type: value.type),
-          },
+          note: files.noted('Installed v${m.version} of ${m.title} from $who'),
+          entries: files.entries,
         ),
       );
     } on ClaxApiError catch (e) {
@@ -195,7 +271,7 @@ class Installer {
     final mine =
         opened.decision.mine && opened.decision.answer == TrustAnswer.install;
     try {
-      _writeMarker(marker, {'content_sha256': m.contentSha256, 'aid': aid});
+      _writeMarker(marker, {'content_sha256': files.contentSha256, 'aid': aid});
       await store.put(
         aid,
         LineageEntry(
@@ -204,19 +280,23 @@ class Installer {
           key: m.author.key,
           name: m.author.name,
           version: m.version,
-          released: [m.contentSha256],
+          released: [
+            if (files.contentSha256 != m.contentSha256) files.contentSha256,
+            m.contentSha256,
+          ],
           capabilities: m.capabilities,
           title: m.title,
           fromBundle: !mine,
         ),
       );
       final got = created.version.contentSha256;
-      if (got != m.contentSha256) {
+      if (got != files.contentSha256) {
         throw BundleFailure(
           'bad_file',
           'The app could not be installed: its files changed on the way in.',
           details: [
-            'The installed version is $got, the bundle ${m.contentSha256}.',
+            'The installed version is $got, the files sent '
+                '${files.contentSha256}.',
           ],
         );
       }
@@ -229,7 +309,7 @@ class Installer {
       }
       if (!mine) await store.keepBundle(aid, b.bytes);
       _dropMarker(marker);
-      return aid;
+      return Installed(aid, iconChange: files.iconChange);
     } on Object catch (e) {
       try {
         await api.deleteArtifact(aid);

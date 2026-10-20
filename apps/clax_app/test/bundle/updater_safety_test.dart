@@ -29,7 +29,7 @@ void main() {
       lineage: lineageA,
       files: {'index.html': '<p>v1</p>', 'old.js': 'gone soon'},
     );
-    aid = await me.installer.install(await me.installer.open(v1.bytes));
+    aid = (await me.installer.install(await me.installer.open(v1.bytes))).aid;
     me.api.putDoc(aid, 'plants/p1', {'name': 'fern'});
     me.api.putDoc(aid, 'plants/p2', {'name': 'moss'});
     me.api.calls.clear();
@@ -410,7 +410,7 @@ void main() {
         const SeedDoc('plants/p1', {'n': 1}),
       ],
     );
-    final made = await inst.install(await inst.open(w.bytes));
+    final made = (await inst.install(await inst.open(w.bytes))).aid;
     expect(api.seen, [true], reason: 'from a bundle while it is seeded');
     expect((await store.entry(made))!.role, LineageRole.installed);
     expect(installMarker(store, w.manifest.lineage).existsSync(), isFalse);

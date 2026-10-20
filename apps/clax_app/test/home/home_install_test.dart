@@ -93,9 +93,9 @@ void main() {
       'not made twice', () async {
     // The installer made the app and wrote its lineage entry; the ID
     // never reached home.json.
-    final made = await installer.install(
+    final made = (await installer.install(
       await installer.open(await shipped.bundle()),
-    );
+    )).aid;
     final s = await settings();
     expect(s.homeAppId, isNull);
     final aid = await ensureHomeApp(s, installer, api, shipped: shipped);
