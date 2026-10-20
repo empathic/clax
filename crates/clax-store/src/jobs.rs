@@ -436,21 +436,29 @@ fn job_row(c: &Connection, id: &str) -> clax_core::Result<Option<JobRow>> {
 }
 
 fn read_job(r: &rusqlite::Row<'_>) -> rusqlite::Result<JobRow> {
+    read_job_at(r, 0)
+}
+
+/// A job's row from [`JOB_COLUMNS`] starting at column `at`.
+fn read_job_at(r: &rusqlite::Row<'_>, at: usize) -> rusqlite::Result<JobRow> {
+    let json_at = |i: usize| -> rusqlite::Result<Option<serde_json::Value>> {
+        r.get::<_, Option<String>>(at + i)?.map(json).transpose()
+    };
     Ok(JobRow {
-        id: r.get(0)?,
-        client: r.get(1)?,
-        kind: r.get(2)?,
-        artifact_id: r.get(3)?,
-        state: r.get(4)?,
-        step: r.get(5)?,
-        title: r.get(6)?,
-        input: json(r.get(7)?)?,
-        plan: r.get::<_, Option<String>>(8)?.map(json).transpose()?,
-        carry: r.get::<_, Option<String>>(9)?.map(json).transpose()?,
-        error: r.get::<_, Option<String>>(10)?.map(json).transpose()?,
-        rev: r.get(11)?,
-        created_at: r.get(12)?,
-        updated_at: r.get(13)?,
+        id: r.get(at)?,
+        client: r.get(at + 1)?,
+        kind: r.get(at + 2)?,
+        artifact_id: r.get(at + 3)?,
+        state: r.get(at + 4)?,
+        step: r.get(at + 5)?,
+        title: r.get(at + 6)?,
+        input: json(r.get(at + 7)?)?,
+        plan: json_at(8)?,
+        carry: json_at(9)?,
+        error: json_at(10)?,
+        rev: r.get(at + 11)?,
+        created_at: r.get(at + 12)?,
+        updated_at: r.get(at + 13)?,
     })
 }
 
@@ -968,6 +976,83 @@ impl Store {
             // No move refuses a job that is not final.
             Err(_) => Ok(None),
         }
+    }
+}
+
+impl Store {
+    /// Cancels the open jobs that name artifact `aid`, inside the caller's
+    /// transaction, which is deleting it: each moves to `cancelled`
+    /// ([`may_move`]) with the error `{"code": "artifact_deleted"}` and
+    /// its `rev` one on, so a worker holding it hears of it (and so does
+    /// the job listener, even when the transaction then deletes the job's
+    /// row). Called by every delete of an artifact, before it.
+    pub(crate) fn artifact_going_tx(&self, tx: &Transaction<'_>, aid: &str) -> clax_core::Result<()> {
+        let open: Vec<(i64, JobRow)> = tx
+            .prepare_cached(&format!(
+                "SELECT rowid, {JOB_COLUMNS} FROM jobs
+                 WHERE artifact_id = ?1 AND state NOT IN ('cancelled', 'done')"
+            ))?
+            .query_map(params![aid], |r| {
+                let row = read_job_at(r, 1)?;
+                Ok((r.get(0)?, row))
+            })?
+            .collect::<rusqlite::Result<_>>()?;
+        let now = self.now();
+        for (rowid, row) in open {
+            let Some(state) = may_move(row.state, Move::To(JobState::Cancelled), false) else {
+                continue;
+            };
+            tx.execute(
+                "UPDATE jobs SET state = ?2, error_json = ?3, rev = rev + 1, updated_at = ?4
+                 WHERE id = ?1",
+                params![row.id, state, r#"{"code":"artifact_deleted"}"#, now],
+            )?;
+            self.jobs.going(
+                rowid,
+                JobChange {
+                    id: row.id,
+                    client: row.client,
+                    state,
+                    step: row.step,
+                    rev: row.rev + 1,
+                },
+            );
+        }
+        Ok(())
+    }
+
+    /// Forgets thread `tid` in every job that answers it, inside the
+    /// caller's transaction, which is deleting it: each such job's `rev`
+    /// moves one on. Called by every delete of a thread, before it.
+    pub(crate) fn thread_going_tx(&self, tx: &Transaction<'_>, tid: &str) -> clax_core::Result<()> {
+        self.threads_going(tx, "thread_id = ?1", tid)
+    }
+
+    /// [`Store::thread_going_tx`] for every thread of artifact `aid`.
+    pub(crate) fn artifact_threads_going_tx(
+        &self,
+        tx: &Transaction<'_>,
+        aid: &str,
+    ) -> clax_core::Result<()> {
+        self.threads_going(
+            tx,
+            "thread_id IN (SELECT id FROM threads WHERE artifact_id = ?1)",
+            aid,
+        )
+    }
+
+    /// The `job_threads` rows `which` selects (with `?1` bound to `key`)
+    /// go, and each job that had one moves one `rev` on.
+    fn threads_going(&self, tx: &Transaction<'_>, which: &str, key: &str) -> clax_core::Result<()> {
+        tx.execute(
+            &format!(
+                "UPDATE jobs SET rev = rev + 1, updated_at = ?2
+                 WHERE id IN (SELECT job_id FROM job_threads WHERE {which})"
+            ),
+            params![key, self.now()],
+        )?;
+        tx.execute(&format!("DELETE FROM job_threads WHERE {which}"), params![key])?;
+        Ok(())
     }
 }
 
@@ -1725,6 +1810,154 @@ mod tests {
         assert!(heard.lock().unwrap().is_empty());
     }
 
+    /// A change job naming `aid`, with a step.
+    fn change_of(st: &Store, id: &str, aid: &str) -> JobRow {
+        st.create_job(NewJob {
+            kind: "change".into(),
+            artifact_id: Some(aid.into()),
+            ..new_job(id)
+        })
+        .unwrap();
+        st.commit_step(id, "turn:1", json!({}), false).unwrap().1
+    }
+
+    fn rows_of(st: &Store, id: &str) -> i64 {
+        st.with_read(|c| {
+            Ok(c.query_row(
+                "SELECT (SELECT COUNT(*) FROM jobs WHERE id = ?1)
+                      + (SELECT COUNT(*) FROM job_steps WHERE job_id = ?1)
+                      + (SELECT COUNT(*) FROM job_threads WHERE job_id = ?1)
+                      + (SELECT COUNT(*) FROM job_questions WHERE job_id = ?1)",
+                params![id],
+                |r| r.get(0),
+            )?)
+        })
+        .unwrap()
+    }
+
+    #[test]
+    fn a_deleted_artifact_cancels_its_open_jobs_and_a_purge_takes_them() {
+        let (_d, st) = store();
+        let aid = artifact(&st, None);
+        let t = thread_on(&st, &aid);
+        let open = change_of(&st, "j1", aid.as_str());
+        change_of(&st, "j2", aid.as_str());
+        st.commit_step("j2", "reply", json!({}), true).unwrap();
+        // A make elsewhere that answers a thread of the artifact.
+        running(&st, "j3");
+        let answering = st.set_job_thread("j3", &t, "c1", false).unwrap();
+        let heard = heard(&st);
+        st.delete_artifact(DAEMON, &aid).unwrap();
+        let cancelled = st.job("j1").unwrap().unwrap().job;
+        assert_eq!(
+            (cancelled.state, cancelled.rev),
+            (JobState::Cancelled, open.rev + 1)
+        );
+        assert_eq!(cancelled.error, Some(json!({"code": "artifact_deleted"})));
+        assert_eq!(
+            *heard.lock().unwrap(),
+            vec![JobChange {
+                id: "j1".into(),
+                client: "app".into(),
+                state: JobState::Cancelled,
+                step: Some("turn:1".into()),
+                rev: open.rev + 1,
+            }]
+        );
+        heard.lock().unwrap().clear();
+        st.with_write(|c| {
+            c.execute(
+                "UPDATE artifacts SET capabilities_json = 'nope' WHERE id = ?1",
+                [aid.as_str()],
+            )?;
+            Ok(())
+        })
+        .unwrap();
+        assert_eq!(st.delete_corrupt_deleted_rows().unwrap(), 1);
+        assert_eq!((rows_of(&st, "j1"), rows_of(&st, "j2")), (0, 0));
+        let lost = st.job("j3").unwrap().unwrap();
+        assert!(lost.threads.is_empty());
+        assert_eq!(
+            (lost.job.state, lost.job.rev),
+            (JobState::Running, answering.rev + 1)
+        );
+        assert_eq!(
+            heard.lock().unwrap().iter().map(|c| (c.id.as_str(), c.rev)).collect::<Vec<_>>(),
+            vec![("j3", answering.rev + 1)]
+        );
+    }
+
+    #[test]
+    fn deleting_a_thread_a_job_answers_moves_the_job() {
+        let (_d, st) = store();
+        let aid = artifact(&st, None);
+        let (t1, t2) = (thread_on(&st, &aid), thread_on(&st, &aid));
+        running(&st, "j1");
+        st.set_job_thread("j1", &t1, "c1", false).unwrap();
+        let before = st.set_job_thread("j1", &t2, "c2", true).unwrap();
+        let heard = heard(&st);
+        st.delete_thread(DAEMON, &t1).unwrap();
+        let full = st.job("j1").unwrap().unwrap();
+        assert_eq!(full.job.rev, before.rev + 1);
+        assert_eq!(
+            full.threads.iter().map(|t| t.thread_id.as_str()).collect::<Vec<_>>(),
+            vec![t2.as_str()]
+        );
+        assert_eq!(heard.lock().unwrap().len(), 1);
+    }
+
+    #[test]
+    fn deleting_a_draft_or_an_empty_artifact_takes_its_jobs_and_consents() {
+        let (_d, st) = store();
+        let req = serde_json::from_value(json!({
+            "title": "Draft",
+            "files": {"index.html": {"content": "<main>draft</main>", "encoding": "utf8"}}
+        }))
+        .unwrap();
+        let draft = st
+            .create_draft(DAEMON, None, clax_core::publish::validate(req).unwrap())
+            .unwrap();
+        let did = clax_core::ArtifactId::parse(&draft.artifact.id).unwrap();
+        let app = artifact(&st, None);
+        change_of(&st, "j1", did.as_str());
+        st.put_agent_read_consent(did.as_str(), app.as_str()).unwrap();
+        st.put_agent_read_consent(app.as_str(), did.as_str()).unwrap();
+        st.with_write(|c| {
+            c.execute(
+                "INSERT INTO draft_renders (draft_id, digest, clean, created_at)
+                 VALUES (?1, 'ab', 1, 'x')",
+                [did.as_str()],
+            )?;
+            Ok(())
+        })
+        .unwrap();
+        let heard = heard(&st);
+        assert!(st.delete_draft(DAEMON, &did).unwrap());
+        assert_eq!(rows_of(&st, "j1"), 0);
+        assert_eq!(
+            heard.lock().unwrap().iter().map(|c| (c.id.as_str(), c.state)).collect::<Vec<_>>(),
+            vec![("j1", JobState::Cancelled)]
+        );
+        assert!(st.agent_read_consents().unwrap().is_empty());
+        let renders: i64 = st
+            .with_read(|c| Ok(c.query_row("SELECT COUNT(*) FROM draft_renders", [], |r| r.get(0))?))
+            .unwrap();
+        assert_eq!(renders, 0);
+        // An artifact whose first version never landed goes with its jobs.
+        st.with_write(|c| {
+            c.execute(
+                "INSERT INTO artifacts (id, title, created_at, updated_at, current_version, contract_version)
+                 VALUES ('zzzzzzzzzzzz', 'z', 'x', 'x', 0, '1')",
+                [],
+            )?;
+            Ok(())
+        })
+        .unwrap();
+        change_of(&st, "j2", "zzzzzzzzzzzz");
+        assert_eq!(st.delete_zero_version_artifacts().unwrap(), 1);
+        assert_eq!(rows_of(&st, "j2"), 0);
+    }
+
     #[test]
     fn a_refusal_after_a_write_rolls_the_write_back() {
         let (_d, st) = store();
@@ -1756,28 +1989,17 @@ mod tests {
     #[test]
     fn consents_round_trip() {
         let (_d, st) = store();
+        let (a, b) = (artifact(&st, None), artifact(&st, None));
+        let (a, b) = (a.as_str().to_string(), b.as_str().to_string());
         assert!(st.agent_read_consents().unwrap().is_empty());
-        st.put_agent_read_consent("8r4m2nzy3c5v", "7q3k9mzx2b4t")
-            .unwrap();
-        st.put_agent_read_consent("8r4m2nzy3c5v", "7q3k9mzx2b4t")
-            .unwrap();
-        st.put_agent_read_consent("7q3k9mzx2b4t", "8r4m2nzy3c5v")
-            .unwrap();
-        assert_eq!(
-            st.agent_read_consents().unwrap(),
-            vec![
-                ("7q3k9mzx2b4t".to_string(), "8r4m2nzy3c5v".to_string()),
-                ("8r4m2nzy3c5v".to_string(), "7q3k9mzx2b4t".to_string()),
-            ]
-        );
-        assert!(
-            st.delete_agent_read_consent("8r4m2nzy3c5v", "7q3k9mzx2b4t")
-                .unwrap()
-        );
-        assert!(
-            !st.delete_agent_read_consent("8r4m2nzy3c5v", "7q3k9mzx2b4t")
-                .unwrap()
-        );
-        assert_eq!(st.agent_read_consents().unwrap().len(), 1);
+        st.put_agent_read_consent(&b, &a).unwrap();
+        st.put_agent_read_consent(&b, &a).unwrap();
+        st.put_agent_read_consent(&a, &b).unwrap();
+        let mut both = vec![(a.clone(), b.clone()), (b.clone(), a.clone())];
+        both.sort();
+        assert_eq!(st.agent_read_consents().unwrap(), both);
+        assert!(st.delete_agent_read_consent(&b, &a).unwrap());
+        assert!(!st.delete_agent_read_consent(&b, &a).unwrap());
+        assert_eq!(st.agent_read_consents().unwrap(), vec![(a, b)]);
     }
 }

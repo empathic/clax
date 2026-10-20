@@ -13,7 +13,7 @@ CREATE TABLE jobs (
         id TEXT PRIMARY KEY,
         client TEXT NOT NULL,              -- 'app' (who runs it)
         kind TEXT NOT NULL,                -- 'make' | 'change' (opaque to the core)
-        artifact_id TEXT REFERENCES artifacts(id),
+        artifact_id TEXT REFERENCES artifacts(id) ON DELETE CASCADE,
         state TEXT NOT NULL CHECK (state IN ('queued','running','waiting','paused','stopped','failed','cancelled','done')),
         step TEXT,                         -- the current step's key
         title TEXT,
@@ -26,8 +26,9 @@ CREATE TABLE jobs (
         updated_at TEXT NOT NULL
     );
     CREATE INDEX jobs_open ON jobs(state) WHERE state NOT IN ('cancelled','done');
+    CREATE INDEX jobs_by_artifact ON jobs(artifact_id) WHERE artifact_id IS NOT NULL;
     CREATE TABLE job_steps (
-        job_id TEXT NOT NULL REFERENCES jobs(id),
+        job_id TEXT NOT NULL REFERENCES jobs(id) ON DELETE CASCADE,
         key TEXT NOT NULL,
         result_json TEXT NOT NULL,
         version_n INTEGER,                 -- the version a publish step made
@@ -35,14 +36,15 @@ CREATE TABLE jobs (
         PRIMARY KEY (job_id, key)
     );
     CREATE TABLE job_threads (            -- was the ledger's answered and stopped.json
-        job_id TEXT NOT NULL REFERENCES jobs(id),
-        thread_id TEXT NOT NULL REFERENCES threads(id),
+        job_id TEXT NOT NULL REFERENCES jobs(id) ON DELETE CASCADE,
+        thread_id TEXT NOT NULL REFERENCES threads(id) ON DELETE CASCADE,
         comment_id TEXT NOT NULL,          -- the newest comment the job answers
         stopped INTEGER NOT NULL DEFAULT 0,
         PRIMARY KEY (job_id, thread_id)
     );
+    CREATE INDEX job_threads_by_thread ON job_threads(thread_id);
     CREATE TABLE job_questions (          -- was asked.json
-        job_id TEXT NOT NULL REFERENCES jobs(id),
+        job_id TEXT NOT NULL REFERENCES jobs(id) ON DELETE CASCADE,
         question_id TEXT NOT NULL UNIQUE REFERENCES questions(id),
         outcome TEXT CHECK (outcome IN ('answered','declined','withdrawn')),  -- NULL until the question closes
         answers_json TEXT,                 -- the answers, as the question keeps them
@@ -50,13 +52,14 @@ CREATE TABLE jobs (
         CHECK ((outcome IS 'answered') = (answers_json IS NOT NULL))
     );
     CREATE TABLE agent_read_consents (    -- was agent-read-consent.json
-        reader TEXT NOT NULL,
-        source TEXT NOT NULL,
+        reader TEXT NOT NULL REFERENCES artifacts(id) ON DELETE CASCADE,
+        source TEXT NOT NULL REFERENCES artifacts(id) ON DELETE CASCADE,
         created_at TEXT NOT NULL,
         PRIMARY KEY (reader, source)
     );
+    CREATE INDEX agent_read_consents_by_source ON agent_read_consents(source);
     CREATE TABLE draft_renders (          -- the render gate (§8.2)
-        draft_id TEXT NOT NULL,
+        draft_id TEXT NOT NULL REFERENCES artifacts(id) ON DELETE CASCADE,
         digest TEXT NOT NULL,
         clean INTEGER NOT NULL,
         created_at TEXT NOT NULL,

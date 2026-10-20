@@ -258,6 +258,7 @@ impl Store {
             Err(e) => {
                 // Version 1 never landed: the zero-version row goes too.
                 if let Err(cleanup) = self.with_tx(|tx| {
+                    self.artifact_going_tx(tx, id.as_str())?;
                     tx.execute(
                         "DELETE FROM artifacts WHERE id = ?1 AND current_version = 0",
                         params![id.as_str()],
@@ -325,6 +326,7 @@ impl Store {
             else {
                 return Ok(false);
             };
+            self.artifact_going_tx(tx, id.as_str())?;
             for sql in [
                 "DELETE FROM docs WHERE artifact_id = ?1",
                 "DELETE FROM leases WHERE artifact_id = ?1",

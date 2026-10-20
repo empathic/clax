@@ -392,6 +392,7 @@ impl Store {
                 return Err(CoreError::NotFound);
             };
             self.record_audit(tx, ctx, delete_record(&now, id.as_str(), &title, current))?;
+            self.artifact_going_tx(tx, id.as_str())?;
             super::approvals::withdraw_artifact_in(self, tx, ctx, id.as_str(), &now)?;
             super::elevations::drop_artifact_in(self, tx, ctx, id.as_str())?;
             tx.execute(
@@ -594,6 +595,7 @@ impl Store {
                 let still: bool = tx.query_row(&format!("SELECT EXISTS ({zero})"), params![id], |r| r.get(0))?;
                 if still {
                     super::elevations::drop_artifact_in(self, tx, &AuditCtx::DAEMON, &id)?;
+                    self.artifact_going_tx(tx, &id)?;
                 }
                 for table in ["assets", "versions", "docs", "leases"] {
                     tx.execute(
@@ -660,6 +662,8 @@ impl Store {
                             &AuditCtx::DAEMON,
                             &row.artifact_id,
                         )?;
+                        self.artifact_going_tx(tx, &row.artifact_id)?;
+                        self.artifact_threads_going_tx(tx, &row.artifact_id)?;
                         for sql in [
                             "DELETE FROM version_threads WHERE artifact_id = ?1",
                             "DELETE FROM version_threads WHERE thread_id IN (SELECT id FROM threads WHERE artifact_id = ?1)",

@@ -1764,6 +1764,7 @@ impl Store {
                 params![thread_id],
             )?;
             tx.execute("DELETE FROM comments WHERE thread_id = ?1", params![thread_id])?;
+            self.thread_going_tx(tx, thread_id)?;
             tx.execute("DELETE FROM threads WHERE id = ?1", params![thread_id])?;
             let now = self.now();
             let rec = thread_record(AuditKind::ThreadDelete, &now, &t.artifact_id, thread_id)
