@@ -1,7 +1,7 @@
 // One handler factory per capability the shell serves. Those a page calls
-// rarely, or only on a viewer's action (assets, downloads, room, sample), are
-// lazy chunks loaded on the page's first call (lazy.ts), off the artifact entry.
-import { artifactHandler } from "./artifact";
+// rarely, or only on a viewer's action (artifact's publish, assets,
+// downloads, room, sample, the device capabilities), are lazy chunks loaded
+// on the page's first call (lazy.ts), off the artifact entry.
 import { commentsHandler } from "./comments";
 import { dbHandler } from "./db";
 import type { LinkedCap } from "./device-link";
@@ -14,7 +14,7 @@ import { userHandler } from "./user";
 const device = (cap: LinkedCap) => lazyHandler(() => import("./device").then(m => m.deviceHandler(cap)));
 
 export const REGISTRY: Record<string, HandlerFactory> = {
-  artifact: artifactHandler,
+  artifact: lazyHandler(() => import("./artifact").then(m => m.artifactHandler)),
   assets: lazyHandler(() => import("./assets").then(m => m.assetsHandler)),
   comments: commentsHandler,
   db: dbHandler,
