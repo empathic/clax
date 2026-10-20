@@ -520,7 +520,8 @@ Bazelisk or Bazel, `python3` and `curl` are on `PATH`. The release then
 runs the manual steps below, in order, as you: it signs both commits and
 the tag with your signing key, pushes the tag alone, waits for the Release
 workflow on it and checks that the release lists `SHA256SUMS`, pins the
-plugins, pushes `main`, waits for CI on the pin commit, and runs Publish Pi
+plugins, pushes `main`, waits for CI on the pin commit (or the merge on
+it, below), and runs Publish Pi
 package with `dry_run` off and waits for it. It never force-pushes, never
 deletes a tag, and checks that each commit and the tag it pushes carries a
 signature. The output of `just` and of the waits is also appended to
@@ -537,7 +538,14 @@ subject, the tag here and on origin, the release's assets, the workflow
 runs), so the run resumes at the first step not done. Uncommitted changes
 are accepted only while the step that made them waits for its commit (the
 bump, 2-4; the pin, 9-10), and the only commits `main` may have beyond
-`origin/main` are the release's own. A failed workflow run is rerun on
+`origin/main` are the release's own. When `origin/main` moves on while the
+release is under way (the Release workflow takes a while), step 12 merges
+it on top of the pin commit with a signed merge commit, "Merge origin/main
+into the Clax <version> release", and pushes that: the tag stays on the
+release commit, which a rebase would rewrite, and CI and the Pi package
+then run on the merge. A refused push of `main` is resumed the same way;
+a merge that does not apply cleanly is made by hand with that subject
+(`git merge -S origin/main -m "…"`), then the command run again. A failed workflow run is rerun on
 GitHub (`gh run rerun <ID> --failed`), then the command again picks it up;
 a failed Publish Pi package run is dispatched anew. The Pi package is
 published from the pin commit, whatever main's tip is by then:

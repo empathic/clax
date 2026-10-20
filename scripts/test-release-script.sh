@@ -135,6 +135,20 @@ case "$1 $2" in
 esac
 SH
 FAKE_PATH="$T/bin:$PATH"
+# origin's pre-receive hook: refuses a push of main while
+# $FAKE_STATE/reject-push exists.
+fake_exe "$T/pre-receive" <<'SH'
+#!/bin/sh
+main=0
+while read -r old new ref; do
+    if [ "$ref" = refs/heads/main ]; then main=1; fi
+done
+if [ "$main" = 1 ] && [ -e "$FAKE_STATE/reject-push" ]; then
+    echo "fake origin: refusing main" >&2
+    exit 1
+fi
+exit 0
+SH
 
 # A fresh case: $C/repo on main at 0.5.0, pinned to 0.5.0, tagged v0.4.0
 # and v0.5.0, pushed to $C/origin.git.
@@ -185,6 +199,7 @@ SH
     git -C "$r" -c commit.gpgsign=false commit -q --allow-empty -m "Release 0.5.0"
     git -C "$r" -c tag.gpgsign=false tag -a v0.5.0 -m "Clax 0.5.0"
     git -C "$r" remote add origin "$C/origin.git"
+    ln -s "$(readlink "$T/pre-receive")" "$C/origin.git/hooks/pre-receive"
     git -C "$r" push -q origin main v0.4.0 v0.5.0
     git -C "$r" fetch -q origin
 }
@@ -355,6 +370,42 @@ act; rc=$?
 if [ "$rc" = 0 ] && [ -z "$(actions)" ] && has "Step 14: Publish the Pi package: done already"; then
     pass "a finished release with main moved on reports every step done"
 else fail "a finished release with main moved on (rc=$rc: $(cat "$C/out"))"; fi
+
+# --- main moving during the release -------------------------------------------------
+# merged_release: origin's main is a signed merge of other work on top of the
+# pin commit, the tag still on the release commit under it, and the Pi
+# package dispatched from the merge.
+merged_release() {
+    local o="$C/origin.git" m
+    m="$(git --git-dir="$o" rev-parse main)"
+    [ "$(git --git-dir="$o" log -1 --format=%s "$m")" = "Merge origin/main into the Clax 0.6.0 release" ] \
+        && [ "$(git --git-dir="$o" log -1 --format=%s "$m^1")" = "Pin the plugins to Clax 0.6.0" ] \
+        && [ "$(git --git-dir="$o" log -1 --format=%s "$m^2")" = "Other work" ] \
+        && [ "$(git --git-dir="$o" rev-parse 'v0.6.0^{commit}')" = "$(git --git-dir="$o" rev-parse "$m^1^")" ] \
+        && git -C "$C/repo" verify-commit "$m" 2>/dev/null && git -C "$C/repo" verify-tag v0.6.0 2>/dev/null \
+        && [ "$(count "gh workflow run publish-pi.yml --ref main -f dry_run=false -f sha=$m")" = 1 ] \
+        && [ "$(git -C "$C/repo" rev-parse HEAD)" = "$m" ] && [ -z "$(git -C "$C/repo" status --porcelain)" ]
+}
+new_case
+: > "$FAKE_STATE/push-on-101"
+act; rc=$?
+if [ "$rc" = 0 ] && merged_release && has "origin/main has moved on; merging it"; then
+    pass "main moving during the Release wait is merged on top of the pin commit, signed, keeping the tag"
+else fail "main moving during the Release wait (rc=$rc: $(cat "$C/out"))"; fi
+new_case
+: > "$FAKE_STATE/reject-push"
+act; rc=$?
+if [ "$rc" = 1 ] && has "step 12 (Push main) failed" && has "the push of main was refused" \
+    && [ "$(git --git-dir="$C/origin.git" log -1 --format=%s main)" = "Release 0.5.0" ] \
+    && [ "$(git -C "$C/repo" log -1 --format=%s)" = "Pin the plugins to Clax 0.6.0" ]; then
+    pass "a refused push of main stops at step 12 with the pin commit made"
+else fail "a refused push of main stops at step 12 (rc=$rc: $(cat "$C/out"))"; fi
+rm "$FAKE_STATE/reject-push"
+other_work
+act; rc=$?
+if [ "$rc" = 0 ] && merged_release && has "Step 11: Commit the pin: done already"; then
+    pass "after main moved on, the next run merges it on top of the pin commit and finishes"
+else fail "resume after a refused push with main moved on (rc=$rc: $(cat "$C/out"))"; fi
 
 # --- the Pi package comes from the pin commit -------------------------------------------
 new_case

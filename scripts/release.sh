@@ -24,9 +24,11 @@
 #    9  scripts/pin-release.sh vX.Y.Z
 #   10  just ci
 #   11  a signed commit "Pin the plugins to Clax X.Y.Z"
-#   12  git push origin main
-#   13  wait for CI on the pin commit
-#   14  gh workflow run publish-pi.yml (dry_run off) on the pin commit, and
+#   12  git push origin main; when origin's main has moved on since, first a
+#       signed merge of origin/main on top of the pin commit
+#   13  wait for CI on the commit step 12 pushed (the pin commit, or the
+#       merge on it)
+#   14  gh workflow run publish-pi.yml (dry_run off) on that commit, and
 #       wait for it
 #   15  print what is left by hand (clax.dev, crates.io)
 #
@@ -76,6 +78,7 @@ done
 TAG="v$V"
 REL_SUBJECT="Release $V"
 PIN_SUBJECT="Pin the plugins to Clax $V"
+MERGE_SUBJECT="Merge origin/main into the Clax $V release"
 LOG="$ROOT/target/release/$V.log"
 RESUME="scripts/release.sh $V $ACT_FLAG"
 # 1 once the run acts: from then on, say and logged append to LOG.
@@ -174,6 +177,16 @@ refresh() {
         PIN_COMMIT="$(subject_in "$PIN_SUBJECT" "$REL_COMMIT..HEAD")"
         [ -n "$PIN_COMMIT" ] || PIN_COMMIT="$(subject_in "$PIN_SUBJECT" "$REL_COMMIT..origin/main")"
     fi
+    # The commit step 12 pushes, which CI and the Pi package are run on: the
+    # pin commit, or the newest merge of origin/main on top of it.
+    PUBLISH_COMMIT="$PIN_COMMIT"
+    if [ -n "$PIN_COMMIT" ]; then
+        local ref=HEAD merge
+        if g merge-base --is-ancestor "$PIN_COMMIT" origin/main; then ref=origin/main; fi
+        merge="$(g log --ancestry-path --format='%H%x09%s' "$PIN_COMMIT..$ref" -- \
+            | awk -F '\t' -v s="$MERGE_SUBJECT" '$2 == s { print $1 }' | sed -n 1p)"
+        PUBLISH_COMMIT="${merge:-$PIN_COMMIT}"
+    fi
 }
 
 # --- step 1: preflight ------------------------------------------------------------
@@ -263,23 +276,29 @@ check_version() {
 }
 
 check_tree() {
-    local branch behind expected i dirty untracked subject
+    local branch behind i dirty untracked subject
     branch="$(g symbolic-ref --short -q HEAD || true)"
     [ "$branch" = main ] || problem "the checkout is on ${branch:-a detached HEAD}, not main"
     [ "$FETCHED" = 1 ] || return 0
     behind="$(g rev-list --count HEAD..origin/main)"
-    [ "$behind" = 0 ] || problem "main is $behind commit(s) behind origin/main (git pull --ff-only)"
-    # Ahead only by this release's own commits, in order.
-    expected=("$REL_SUBJECT" "$PIN_SUBJECT")
+    # Behind origin/main is a release's to merge once its release commit is
+    # made and until step 12 pushes it.
+    if [ "$behind" != 0 ] && { [ -z "$REL_COMMIT" ] || g merge-base --is-ancestor "$REL_COMMIT" origin/main; }; then
+        problem "main is $behind commit(s) behind origin/main (git pull --ff-only)"
+    fi
+    # Ahead only by this release's own commits, in order: the release
+    # commit, the pin commit, and merges of origin/main on top of it.
     i=0
     while IFS= read -r subject; do
         [ -n "$subject" ] || continue
-        if [ "$i" -ge 2 ] || [ "$subject" != "${expected[i]}" ]; then
-            problem "the checkout has a commit origin/main lacks that is not this release's: \"$subject\""
-            break
-        fi
-        i=$((i + 1))
-    done < <(g log --reverse --format=%s origin/main..HEAD)
+        case "$i:$subject" in
+            "0:$REL_SUBJECT") i=1 ;;
+            "1:$PIN_SUBJECT" | "2:$MERGE_SUBJECT") i=2 ;;
+            *)
+                problem "the checkout has a commit origin/main lacks that is not this release's: \"$subject\""
+                break ;;
+        esac
+    done < <(g log --reverse --topo-order --format=%s origin/main..HEAD)
     untracked="$(g ls-files --others --exclude-standard "$ROOT")"
     [ -z "$untracked" ] || problem "untracked files: $(echo "$untracked" | tr '\n' ' ')"
     dirty="$(g diff --name-only HEAD)"
@@ -339,9 +358,9 @@ COMMANDS=(
     [9]="scripts/pin-release.sh $TAG"
     [10]="just ci"
     [11]="git commit -S -a -m \"$PIN_SUBJECT\""
-    [12]="git push origin main"
-    [13]="gh run list --workflow ci.yml (the push run on the pin commit), wait"
-    [14]="gh workflow run publish-pi.yml --ref main -f dry_run=false -f sha=<the pin commit>, wait"
+    [12]="git push origin main (after git merge -S origin/main, when origin's main moved on)"
+    [13]="gh run list --workflow ci.yml (the push run on the pin commit, or the merge on it), wait"
+    [14]="gh workflow run publish-pi.yml --ref main -f dry_run=false -f sha=<that commit>, wait"
     [15]="print the steps left by hand"
 )
 
@@ -362,16 +381,16 @@ done_8() {
 done_9() { [ "$PINNED" = "$V" ]; }
 done_10() { [ -n "$PIN_COMMIT" ]; }
 done_11() { [ -n "$PIN_COMMIT" ]; }
-done_12() { [ -n "$PIN_COMMIT" ] && g merge-base --is-ancestor "$PIN_COMMIT" origin/main; }
+done_12() { [ -n "$PUBLISH_COMMIT" ] && g merge-base --is-ancestor "$PUBLISH_COMMIT" origin/main; }
 done_13() {
     local id
     done_14 && return 0
-    id="$(find_run ci.yml push "$PIN_COMMIT")"
+    id="$(find_run ci.yml push "$PUBLISH_COMMIT")"
     [ -n "$id" ] && [ "$(run_state "$id")" = "completed success" ]
 }
 done_14() {
     local id
-    id="$(publish_run "$PIN_COMMIT")" && [ -n "$id" ] && [ "$(run_state "$id")" = "completed success" ]
+    id="$(publish_run "$PUBLISH_COMMIT")" && [ -n "$id" ] && [ "$(run_state "$id")" = "completed success" ]
 }
 done_15() { false; }
 
@@ -517,18 +536,36 @@ step_11() {
     g commit -S -a -q -m "$PIN_SUBJECT"
     is_signed_commit HEAD || { say "  the commit carries no signature"; return 1; }
 }
+# Pushes main. When origin's main has moved on since the release began, it
+# is merged on top of the pin commit first, signed: the tag stays on the
+# release commit, which a rebase would rewrite.
 step_12() {
     local c
+    g fetch --quiet --no-tags origin main
+    if ! g merge-base --is-ancestor origin/main HEAD; then
+        say "  origin/main has moved on; merging it: $MERGE_SUBJECT"
+        if ! g merge -S --no-ff -q -m "$MERGE_SUBJECT" origin/main; then
+            g merge --abort 2>/dev/null || true
+            say "  the merge does not apply cleanly. Merge by hand, signed and with this subject:"
+            say "    git merge -S origin/main -m \"$MERGE_SUBJECT\""
+            say "  resolve, commit, then run this again."
+            return 1
+        fi
+    fi
     for c in $(g rev-list origin/main..HEAD); do
         is_signed_commit "$c" || { say "  $c carries no signature; not pushing main"; return 1; }
     done
-    g push origin refs/heads/main:refs/heads/main
+    if ! g push origin refs/heads/main:refs/heads/main; then
+        say "  the push of main was refused; if origin's main moved on meanwhile, run this again:"
+        say "  it merges origin/main on top of the pin commit and pushes again."
+        return 1
+    fi
     g fetch --quiet --no-tags origin main
 }
 step_13() {
     local id
-    say "  waiting for CI on $PIN_COMMIT (polls every ${POLL}s, at most $MAX_POLLS)"
-    id="$(await_output find_run ci.yml push "$PIN_COMMIT")" || { say "  no CI run on $PIN_COMMIT appeared"; return 1; }
+    say "  waiting for CI on $PUBLISH_COMMIT (polls every ${POLL}s, at most $MAX_POLLS)"
+    id="$(await_output find_run ci.yml push "$PUBLISH_COMMIT")" || { say "  no CI run on $PUBLISH_COMMIT appeared"; return 1; }
     await_run "$id" "CI on main"
 }
 # The newest publish-pi.yml run that publishes (not a dry run) from commit
@@ -544,18 +581,18 @@ new_publish_run() {
     id="$(publish_run "$1")" || return 1
     if [ "$id" != "$2" ]; then echo "$id"; fi
 }
-# Publishes from the pin commit, never main's tip: a run already under way
+# Publishes from the commit step 12 pushed, never main's tip: a run already under way
 # for it is waited for; none, or a failed one, is dispatched anew.
 step_14() {
     local id state
-    id="$(gh_retry publish_run "$PIN_COMMIT")" || return 1
+    id="$(gh_retry publish_run "$PUBLISH_COMMIT")" || return 1
     state=""
     if [ -n "$id" ]; then state="$(gh_retry run_state "$id")" || return 1; fi
     case "$state" in
         "" | completed\ *)
-            gh workflow run publish-pi.yml --ref main -f dry_run=false -f "sha=$PIN_COMMIT"
-            id="$(await_output new_publish_run "$PIN_COMMIT" "$id")" \
-                || { say "  no Publish Pi package run for $PIN_COMMIT appeared"; return 1; } ;;
+            gh workflow run publish-pi.yml --ref main -f dry_run=false -f "sha=$PUBLISH_COMMIT"
+            id="$(await_output new_publish_run "$PUBLISH_COMMIT" "$id")" \
+                || { say "  no Publish Pi package run for $PUBLISH_COMMIT appeared"; return 1; } ;;
     esac
     await_run "$id" "Publish Pi package"
 }
