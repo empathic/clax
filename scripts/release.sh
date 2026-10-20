@@ -10,11 +10,14 @@
 # main, which moves only origin/main). With --i-know-what-i-am-doing it
 # acts, as the checkout's git identity, signing with its signing key:
 #
-#    1  preflight: on main, clean, not behind origin/main after a fetch and
-#       ahead only by this release's commits; gh signed in; X.Y.Z newer than
-#       every v* tag; commit signing works; the tools present; npm reachable
-#       (and signed in, for a first Pi publish). A failure here changes
-#       nothing.
+#    1  preflight: on main and clean; after a fetch, ahead of origin/main
+#       only by this release's commits (the release commit, the pin commit,
+#       merges of origin/main on top), and not behind it, except between the
+#       release commit and step 12, which merges origin/main in; gh signed
+#       in; X.Y.Z newer than every v* tag; commit signing works; the tools
+#       present; npm reachable (and signed in, for a first Pi publish); the
+#       npm environment limited to main (a dry run only warns). A failure
+#       here changes nothing.
 #    2  scripts/bump-version.sh X.Y.Z
 #    3  just bazel-sync, until it changes nothing (at most 4 runs)
 #    4  just ci

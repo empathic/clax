@@ -518,11 +518,16 @@ published to npm from the pin commit.
 
 The dry run changes nothing (it fetches `main` from origin, which moves only
 `origin/main`). It checks first, and so does the release, which refuses to
-start unless the checkout is on `main`, clean (no untracked file) and equal
-to `origin/main`, `gh` is signed in (`gh auth status`), the version is
-`X.Y.Z` and newer than every `v*` tag here and on origin, commit signing
-works (a signed commit written to a scratch object directory), and `just`,
-Bazelisk or Bazel, `python3`, `curl` and `npm` are on `PATH`. The release then
+start unless the checkout is on `main` and clean (no untracked file); ahead
+of `origin/main` only by this release's own commits (the release commit,
+the pin commit, and merges of `origin/main` on top of it); and not behind
+`origin/main`, except once the release commit is made and until step 12
+pushes it, when step 12 merges `origin/main` in. It also needs `gh` signed
+in (`gh auth status`); the version `X.Y.Z` and newer than every `v*` tag
+here and on origin; commit signing working (a signed commit written to a
+scratch object directory); `just`, Bazelisk or Bazel, `python3`, `curl`
+and `npm` on `PATH`; npm reachable (and signed in, with `pnpm`, for a
+first Pi publish); and the `npm` environment set up (below). The release then
 runs the manual steps below, in order, as you: it signs both commits and
 the tag with your signing key, pushes the tag alone, waits for the Release
 workflow on it and checks that the release lists `SHA256SUMS`, pins the
@@ -559,7 +564,8 @@ committed unsigned is refused with how to sign it (`git commit --amend -S
 --no-edit`). A failed workflow run is rerun on
 GitHub (`gh run rerun <ID> --failed`), then the command again picks it up;
 a failed Publish Pi package run is dispatched anew. The Pi package is
-published from the pin commit, whatever main's tip is by then:
+published from the pin commit, or the merge on it when step 12 merged,
+whatever main's tip is by then:
 Publish Pi package takes the commit as its `sha` input and titles its run
 after it, which is how the script finds the run again. A wait gives up
 after `CLAX_RELEASE_MAX_POLLS` polls (270) `CLAX_RELEASE_POLL_SECONDS`
