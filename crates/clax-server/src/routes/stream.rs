@@ -427,6 +427,12 @@ pub async fn update(
             "only the owner follows people, invites and grants",
         ));
     }
+    if add.contains(&Topic::Jobs) && !who.is_owner() {
+        return Err(ApiError::forbidden(
+            "forbidden",
+            "only the owner follows the app's jobs",
+        ));
+    }
     let token = token_or_cookie(&who);
     let check = add.clone();
     let (caller, claims, add) = s

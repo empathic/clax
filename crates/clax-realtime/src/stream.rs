@@ -69,7 +69,9 @@ pub const MAX_DETACHED: usize = 4096;
 /// invites and grants, for the owner alone; §6.2–§6.4), and `agents` (a
 /// bare `agents` ping whenever the agents roster may have changed, for the
 /// owner and connected people; §13), and `docs:<B>?reader=<A>` (B's `doc`
-/// events as app A reads them; spec 2026-10-12-flutter-app-design §3.8).
+/// events as app A reads them; spec 2026-10-12-flutter-app-design §3.8),
+/// and `jobs` (the app's jobs and their queue owner, for the owner alone;
+/// spec 2026-10-19-in-process-core-design §8.1).
 #[derive(Clone, Debug, PartialEq, Eq, Hash, PartialOrd, Ord)]
 pub enum Topic {
     Gallery,
@@ -95,6 +97,7 @@ pub enum Topic {
     Inbox,
     People,
     Agents,
+    Jobs,
 }
 
 impl Topic {
@@ -119,6 +122,9 @@ impl Topic {
         }
         if s == "agents" {
             return Ok(Topic::Agents);
+        }
+        if s == "jobs" {
+            return Ok(Topic::Jobs);
         }
         if let Some(origin) = s.strip_prefix("site:") {
             let normal = clax_core::live::parse_page_url(origin)
@@ -176,6 +182,7 @@ impl Topic {
             Topic::Inbox => "inbox".into(),
             Topic::People => "people".into(),
             Topic::Agents => "agents".into(),
+            Topic::Jobs => "jobs".into(),
         }
     }
 
@@ -189,7 +196,8 @@ impl Topic {
             | Topic::Questions
             | Topic::Inbox
             | Topic::People
-            | Topic::Agents => None,
+            | Topic::Agents
+            | Topic::Jobs => None,
             Topic::Artifact(a)
             | Topic::ArtifactQuiet(a)
             | Topic::Presence(a)
@@ -246,6 +254,7 @@ impl Topic {
                 .into_iter()
                 .collect(),
             Topic::People => vec![Chan::People],
+            Topic::Jobs => vec![Chan::Jobs],
             // Every person sees every agent's name and state (§13, §18).
             Topic::Agents => person.map(|_| Chan::Agents).into_iter().collect(),
             Topic::DocsRead { source, reader } => {
@@ -298,6 +307,8 @@ enum Chan {
     /// The agents roster changed; the streams of the owner and connected
     /// people subscribe. Every event on it is a bare `agents` ping.
     Agents,
+    /// The app's jobs and their queue owners; only owner streams subscribe.
+    Jobs,
 }
 
 impl Chan {
@@ -309,6 +320,7 @@ impl Chan {
             Chan::Inbox(_) => "inbox".into(),
             Chan::People => "people".into(),
             Chan::Agents => "agents".into(),
+            Chan::Jobs => "jobs".into(),
             Chan::Artifact(a) | Chan::ArtifactQuiet(a) => format!("artifact:{a}"),
             Chan::Presence(a) => format!("presence:{a}"),
             Chan::Working(a) | Chan::Drafts(a) => format!("working:{a}"),
@@ -378,6 +390,8 @@ struct Shared {
     /// Set when a frame is queued or a topic falls behind, cleared by
     /// [`Conn::drain`]: whether the connection has anything to take.
     pending: std::sync::atomic::AtomicBool,
+    /// Set by [`Hub::nudge`]: the connection sends a keep-alive now.
+    nudged: std::sync::atomic::AtomicBool,
 }
 
 impl Shared {
@@ -439,6 +453,8 @@ struct StreamEntry {
     tx: Option<mpsc::Sender<Arc<Item>>>,
     shared: Arc<Shared>,
     detached_at: Option<Instant>,
+    /// Dropped when the attached connection ends ([`Hub::closed`]).
+    closers: Vec<tokio::sync::oneshot::Sender<()>>,
 }
 
 #[derive(Default)]
@@ -513,7 +529,8 @@ pub fn live_only_admits(live: &crate::live::LiveIds, t: &Topic) -> bool {
         | Topic::Docs(_)
         | Topic::DocsRead { .. }
         | Topic::People
-        | Topic::Agents => false,
+        | Topic::Agents
+        | Topic::Jobs => false,
         Topic::Site(_) | Topic::Questions | Topic::Inbox => true,
         Topic::Artifact(a) | Topic::ArtifactQuiet(a) | Topic::Presence(a) | Topic::Working(a) => {
             live.contains(a)
@@ -758,6 +775,7 @@ fn routes_loud(ev: &Event) -> Vec<(Chan, Gate)> {
             v
         }
         Event::People { .. } => vec![(Chan::People, Gate::Any)],
+        Event::Job { .. } | Event::JobsOwner { .. } => vec![(Chan::Jobs, Gate::Any)],
         // An agent started, ended or was renamed: the roster, and the Send
         // menus of the artifacts it watched.
         Event::Agents { artifacts } => artifacts
@@ -1228,6 +1246,8 @@ impl Hub {
             let s = streams.get_mut(id).expect("checked above");
             s.epoch += 1;
             s.tx = Some(tx.clone());
+            // The connection that held it, if any, no longer does.
+            s.closers.clear();
             if let Some(at) = s.detached_at.take() {
                 detached.remove(&(at, s.key));
             }
@@ -1326,6 +1346,7 @@ impl Hub {
             tx: Some(tx),
             shared: shared.clone(),
             detached_at: None,
+            closers: Vec::new(),
         };
         g.streams.insert(id.clone(), entry);
         Opened {
@@ -1478,6 +1499,8 @@ impl Hub {
             return;
         }
         s.tx = None;
+        // Its connection ended: each `closed` resolves.
+        s.closers.clear();
         let now = Instant::now();
         s.detached_at = Some(now);
         if let Some(seats) = seats {
@@ -1616,6 +1639,40 @@ impl Hub {
         let g = self.lock();
         let (at, _) = g.detached.keys().next()?;
         Some(GRACE.saturating_sub(Instant::now().saturating_duration_since(*at)))
+    }
+
+    /// Resolves when the connection that holds stream `id` now ends (its
+    /// body ends, a newer connection takes the stream over, or the stream
+    /// is dropped), and at once when no connection holds it.
+    pub fn closed(&self, id: &str) -> impl std::future::Future<Output = ()> + Send + 'static {
+        let (tx, rx) = tokio::sync::oneshot::channel();
+        if let Some(s) = self.lock().streams.get_mut(id).filter(|s| s.tx.is_some()) {
+            s.closers.push(tx);
+        }
+        async move {
+            let _ = rx.await;
+        }
+    }
+
+    /// Has the connection holding stream `id` send a keep-alive now, so a
+    /// connection whose reader is gone is noticed at that write rather
+    /// than at the next periodic keep-alive. Nothing when no connection
+    /// holds it.
+    pub fn nudge(&self, id: &str) {
+        let shared = self
+            .lock()
+            .streams
+            .get(id)
+            .filter(|s| s.tx.is_some())
+            .map(|s| s.shared.clone());
+        if let Some(shared) = shared {
+            shared
+                .nudged
+                .store(true, std::sync::atomic::Ordering::Release);
+            shared.mark_pending();
+            shared.notify.notify_one();
+            self.tell_queued();
+        }
     }
 
     /// Whether stream `id` has a connection open now.
@@ -1806,7 +1863,16 @@ impl Conn {
                 Wake::Stop | Wake::Item(None) => return None,
                 // No shutdown source: never end on it.
                 Wake::NoShutdown => self.shutdown_live = false,
-                Wake::Lagged => self.take_lagged(),
+                Wake::Lagged => {
+                    self.take_lagged();
+                    if self
+                        .shared
+                        .nudged
+                        .swap(false, std::sync::atomic::Ordering::AcqRel)
+                    {
+                        self.out.push_back(Bytes::from_static(b": keep-alive\n\n"));
+                    }
+                }
                 Wake::KeepAlive => return self.deliver(Bytes::from_static(b": keep-alive\n\n")),
                 Wake::Item(Some(i)) => {
                     if let Some(d) = self.dropped.get(&i.topic) {
@@ -1844,6 +1910,10 @@ impl Conn {
     pub fn drain(&mut self) -> Option<Vec<Bytes>> {
         self.shared
             .pending
+            .store(false, std::sync::atomic::Ordering::Release);
+        // The host keeps its connection alive its own way.
+        self.shared
+            .nudged
             .store(false, std::sync::atomic::Ordering::Release);
         let mut frames: Vec<Bytes> = Vec::new();
         let mut block = Vec::new();
@@ -2741,6 +2811,84 @@ mod tests {
         hub.update(&o.id, &c, &[Topic::Questions], &[]).unwrap();
         hub.update(&o.id, &c, &[], &[Topic::Questions]).unwrap();
         assert!(!hub.holds_owner_topics(), "unsubscribed");
+    }
+
+    #[test]
+    fn the_jobs_topic_takes_job_events_alone() {
+        assert_eq!(Topic::parse("jobs"), Ok(Topic::Jobs));
+        assert_eq!(Topic::Jobs.name(), "jobs");
+        assert_eq!(Topic::Jobs.artifact(), None);
+        assert!(!live_only_admits(
+            &crate::live::LiveIds::default(),
+            &Topic::Jobs
+        ));
+        let hub = Hub::new(Default::default());
+        let c = viewer(Level::Owner, None);
+        let mut j = hub.open(c.clone(), true, None, None);
+        hub.update(&j.id, &c, &[Topic::Jobs], &[]).unwrap();
+        let mut g = hub.open(c.clone(), true, None, None);
+        hub.update(&g.id, &c, &[Topic::Gallery], &[]).unwrap();
+        hub.dispatch(&Event::Job {
+            id: "j1".into(),
+            client: "app".into(),
+            state: "running".into(),
+            step: None,
+            rev: 2,
+        });
+        hub.dispatch(&Event::JobsOwner {
+            client: "app".into(),
+            held: false,
+        });
+        hub.dispatch(&version(2));
+        let got = drain(&mut j);
+        assert_eq!(got.len(), 2, "{got:?}");
+        assert!(got[0].1.contains("event: job\n") && got[0].1.contains(r#""rev":2"#));
+        assert!(got[1].1.contains("event: jobs_owner\n") && got[1].1.contains(r#""held":false"#));
+        assert!(drain(&mut g).iter().all(|(_, f)| !f.contains("job")));
+    }
+
+    #[tokio::test]
+    async fn closed_resolves_when_the_connection_ends_and_at_once_for_none() {
+        use futures::FutureExt;
+        let hub = Hub::new(Default::default());
+        let c = viewer(Level::Owner, None);
+        let o = hub.open(c, true, None, None);
+        let id = o.id.clone();
+        let (_tx, rx) = tokio::sync::watch::channel(false);
+        let conn = Conn::new(hub.clone(), o, Duration::from_secs(3600), rx);
+        let mut closed = Box::pin(hub.closed(&id));
+        assert!(
+            (&mut closed).now_or_never().is_none(),
+            "the connection holds it"
+        );
+        drop(conn);
+        assert!(closed.now_or_never().is_some(), "its end resolves it");
+        assert!(
+            hub.closed(&id).now_or_never().is_some(),
+            "detached: at once"
+        );
+        assert!(
+            hub.closed("nope").now_or_never().is_some(),
+            "unknown: at once"
+        );
+    }
+
+    #[tokio::test]
+    async fn a_nudge_sends_one_keep_alive_now() {
+        use futures::FutureExt;
+        let hub = Hub::new(Default::default());
+        let c = viewer(Level::Owner, None);
+        let o = hub.open(c, true, None, None);
+        let id = o.id.clone();
+        let (_tx, rx) = tokio::sync::watch::channel(false);
+        let mut conn = Conn::new(hub.clone(), o, Duration::from_secs(3600), rx);
+        assert!(conn.next().await.unwrap().starts_with(b"event: ready"));
+        assert!(conn.next().now_or_never().is_none(), "nothing to send");
+        hub.nudge(&id);
+        let got = conn.next().now_or_never().expect("sent at once");
+        assert_eq!(got.as_deref(), Some(&b": keep-alive\n\n"[..]));
+        assert!(conn.next().now_or_never().is_none(), "one keep-alive");
+        hub.nudge("nope");
     }
 
     #[test]

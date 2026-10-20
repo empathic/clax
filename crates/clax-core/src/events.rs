@@ -195,6 +195,25 @@ pub enum Event {
         #[serde(skip)]
         artifacts: Vec<String>,
     },
+    /// A committed write changed job `id` of `client` (spec
+    /// 2026-10-19-in-process-core-design §8.1), whichever path made it (a
+    /// job route, a question's close, a delete that cancels it): its
+    /// `state`, `step` and `rev` after it. Only the owner-only `jobs`
+    /// stream topic carries it; `/api/events` never does.
+    Job {
+        id: String,
+        client: String,
+        state: String,
+        step: Option<String>,
+        rev: i64,
+    },
+    /// `client`'s queue owner claimed it (`held`) or released it (spec
+    /// §7.5). Only the `jobs` stream topic carries it; `/api/events` never
+    /// does.
+    JobsOwner {
+        client: String,
+        held: bool,
+    },
 }
 
 impl Event {
@@ -219,7 +238,9 @@ impl Event {
             | Event::InboxRead { .. }
             | Event::ApprovalRequest { .. }
             | Event::People { .. }
-            | Event::Agents { .. } => "",
+            | Event::Agents { .. }
+            | Event::Job { .. }
+            | Event::JobsOwner { .. } => "",
         }
     }
 
@@ -245,6 +266,8 @@ impl Event {
             Event::ApprovalRequest { .. } => "approval_request",
             Event::People { .. } => "people",
             Event::Agents { .. } => "agents",
+            Event::Job { .. } => "job",
+            Event::JobsOwner { .. } => "jobs_owner",
         }
     }
 }
