@@ -1,11 +1,15 @@
 #!/usr/bin/env bash
-# apk-check.sh APK AAPT2 APKSIGNER HOME: checks the Bazel-built APK against what
+# apk-check.sh APK AAPT2 APKSIGNER HOME NM: checks the Bazel-built APK against what
 # the app's Gradle build makes (apps/clax_app/android/app/build.gradle.kts):
 # its package and version, SDK levels, launcher activity, the adaptive
 # launcher icon with its monochrome layer, the splash theme, predictive back
 # (the application's enableOnBackInvokedCallback), a release build
-# (not debuggable, shrunk by R8) that extracts its native libraries, the engine, the app's
-# AOT code and the embedded clax for both CPUs, the home bundle HOME (the
+# (not debuggable, shrunk by R8) whose manifest asks nothing about
+# extracting native libraries (the core is a library the app loads, not an
+# executable it runs), the engine, the app's AOT code and the embedded core
+# (libclax_embed.so, exporting the four clax_embed_ functions, read with NM,
+# the NDK's llvm-nm) for both CPUs and no clax executable (libclax.so), each
+# native library's size printed, the home bundle HOME (the
 # one //apps/clax_app:home_bundle built), the third-party notices, and a
 # debug-key signature, and MainActivity's configChanges keeping the
 # activity through a resize (a Chromebook's window, a foldable unfolding).
@@ -38,7 +42,7 @@ if [ "${1:-}" = "--manifest" ]; then
     check_config_changes "$(cat "$2")"
     exit "$fails"
 fi
-apk="$1" aapt2="$2" apksigner="$3" home="$4"
+apk="$1" aapt2="$2" apksigner="$3" home="$4" nm="$5"
 check() { # check DESCRIPTION OUTPUT LINE: OUTPUT has LINE as a whole line
     if grep -qxF -- "$3" <<<"$2"; then ok "$1"; else bad "$1 (no line: $3)"; fi
 }
@@ -86,20 +90,36 @@ splash="$(sed -n '/ style\/Theme.Clax.Starting$/,/ resource /p' <<<"$resources")
 for item in "postSplashScreenTheme(.*)=@style/Theme.Clax" "windowSplashScreenAnimatedIcon(.*)=@drawable/splash_mark" "windowSplashScreenBackground(.*)=@color/clax_bg"; do
     if grep -q -- "$item\$" <<<"$splash"; then ok "Theme.Clax.Starting: ${item%%(*}"; else bad "Theme.Clax.Starting: ${item%%(*} (no $item)"; fi
 done
-check "the embedded daemon's network permission" "$badging" "uses-permission: name='android.permission.INTERNET'"
+check "the network permission (the Claude API)" "$badging" "uses-permission: name='android.permission.INTERNET'"
 check "both native ABIs" "$badging" "native-code: 'arm64-v8a' 'x86_64'"
 if grep -q '^application-debuggable' <<<"$badging"; then bad "a release build is not debuggable"; else ok "a release build is not debuggable"; fi
-if grep -q 'extractNativeLibs.*=true' <<<"$manifest"; then ok "native libraries are extracted"; else bad "native libraries are extracted"; fi
+if grep -q 'extractNativeLibs' <<<"$manifest"; then bad "the manifest leaves extractNativeLibs to the platform (it sets it)"; else ok "the manifest leaves extractNativeLibs to the platform"; fi
 check_config_changes "$manifest"
 # Predictive back: Android 13+ shows the back-to-home and in-app back
 # animations only for an application that opts in.
 if grep -q 'enableOnBackInvokedCallback.*=true' <<<"$manifest"; then ok "predictive back is on"; else bad "predictive back is on (no android:enableOnBackInvokedCallback=\"true\")"; fi
 files="$(unzip -l "$apk" | awk '{print $4}')"
 for abi in arm64-v8a x86_64; do
-    for lib in libapp.so libflutter.so libclax.so; do
+    for lib in libapp.so libflutter.so libclax_embed.so; do
         check "lib/$abi/$lib" "$files" "lib/$abi/$lib"
     done
+    if grep -qxF "lib/$abi/libclax.so" <<<"$files"; then bad "no clax executable in lib/$abi (libclax.so is there)"; else ok "no clax executable in lib/$abi"; fi
 done
+# Each native library's size, as the APK holds it (uncompressed).
+unzip -lv "$apk" 'lib/*' | awk '$NF ~ /^lib\// { printf "SIZE: %s %d bytes (%d stored)\n", $NF, $1, $3 }'
+# The core exports exactly the four C functions (include/clax_embed.h).
+want_syms="clax_embed_call clax_embed_close clax_embed_open clax_embed_subscribe"
+libs="$(mktemp -d "${TEST_TMPDIR:-${TMPDIR:-/tmp}}/apk-libs.XXXXXX")"
+for abi in arm64-v8a x86_64; do
+    so="$libs/$abi-libclax_embed.so"
+    if unzip -p "$apk" "lib/$abi/libclax_embed.so" > "$so" 2>/dev/null && [ -s "$so" ]; then
+        got="$("$nm" -D --defined-only "$so" | awk '$2 == "T" && $3 ~ /^clax_embed_/ { print $3 }' | sort | paste -sd ' ' -)"
+        if [ "$got" = "$want_syms" ]; then ok "lib/$abi/libclax_embed.so exports the four clax_embed_ functions"; else bad "lib/$abi/libclax_embed.so exports the four clax_embed_ functions (it exports: $got)"; fi
+    else
+        bad "lib/$abi/libclax_embed.so exports the four clax_embed_ functions (no library)"
+    fi
+done
+rm -rf "$libs"
 check "Flutter's assets" "$files" "assets/flutter_assets/assets/home/home.clax"
 check "the home bundle's release record" "$files" "assets/flutter_assets/assets/home/release.json"
 if unzip -p "$apk" assets/flutter_assets/assets/home/home.clax | cmp -s - "$home"; then

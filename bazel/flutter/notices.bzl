@@ -21,8 +21,9 @@ It holds:
   rdeps`, scripts/affected-tests.sh);
 - the engine's licences (`engine_license`, sky_engine's LICENSE, already
   in this form);
-- the third-party Rust crates linked into each binary of `rust_binaries`
-  (the embedded clax), by the licence files at each crate's root
+- the third-party Rust crates linked into each target of `rust_binaries`
+  (the embedded core: a binary, or a library reached through a `lib`
+  attribute, as `android_embed` and `opt_library` wrap one), by the licence files at each crate's root
   (LICENSE*, LICENCE*, COPYING*, NOTICE*, UNLICENSE*), which
   crate_universe's `compile_data` carries, or, for a crate published
   without one, the licence its Cargo.toml names. Build scripts and proc macros,
@@ -83,12 +84,12 @@ def _rust_aspect_impl(target, ctx):
             direct = [f for f in root if f.basename == "Cargo.toml"]
     return [RustLicensesInfo(files = depset(
         direct,
-        transitive = [c.files for c in _children(ctx, ["binary", "deps"], RustLicensesInfo)],
+        transitive = [c.files for c in _children(ctx, ["binary", "lib", "deps"], RustLicensesInfo)],
     ))]
 
 _rust_aspect = aspect(
     implementation = _rust_aspect_impl,
-    attr_aspects = ["binary", "deps"],
+    attr_aspects = ["binary", "lib", "deps"],
 )
 
 def _crate_of(f):
@@ -128,7 +129,7 @@ flutter_notices = rule(
             doc = "Each LICENSE, and the pub packages it covers, space-separated (`pub_licenses`).",
         ),
         "engine_license": attr.label(allow_single_file = True, mandatory = True),
-        "rust_binaries": attr.label_list(aspects = [_rust_aspect], doc = "The Rust binaries the app embeds."),
+        "rust_binaries": attr.label_list(aspects = [_rust_aspect], doc = "The Rust binaries and libraries the app embeds."),
         "_tool": attr.label(
             default = "//bazel/flutter:notices_tool",
             executable = True,

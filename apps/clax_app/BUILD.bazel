@@ -15,7 +15,7 @@ load("@rules_shell//shell:sh_test.bzl", "sh_test")
 load("@rules_swift//swift:swift_library.bzl", "swift_library")
 load("//bazel/flutter:android.bzl", "clax_android_integration_tests", "flutter_fat_apk")
 load("//bazel/flutter:ios.bzl", "clax_ios_app", "clax_ios_integration_tests")
-load("//bazel/flutter:macos.bzl", "debug_app", "integration_main", "macos_helper")
+load("//bazel/flutter:macos.bzl", "debug_app", "integration_main", "macos_dylib", "macos_helper")
 load("//bazel/flutter:notices.bzl", "flutter_notices", "pub_licenses", "pub_licenses_test")
 load("//bazel/flutter:tests.bzl", "flutter_test_suite")
 
@@ -422,7 +422,7 @@ APP_PUB_PACKAGES = [
 
 # NOTICES, which the app bundles as NOTICES.Z for its licences page
 # (bazel/flutter/notices.bzl): the pub packages', the Flutter engine's and
-# the embedded clax's Rust crates' licences.
+# the embedded core's Rust crates' licences.
 # flutter_web_plugins, part of the Flutter SDK, has no LICENSE of its own:
 # the SDK's (package:flutter's) covers it.
 APP_PUB_LICENSES = pub_licenses(
@@ -436,9 +436,11 @@ flutter_notices(
     pub_licenses = APP_PUB_LICENSES,
     engine_license = "@flutter_sky_engine//sky_engine:LICENSE",
     rust_binaries = [
-        "//crates/clax-cli:clax_android_arm64",
-        "//crates/clax-cli:clax_android_x86_64",
-        "//crates/clax-cli:clax_opt",
+        "//crates/clax-embed:clax_embed_android_arm64",
+        "//crates/clax-embed:clax_embed_android_x86_64",
+        # The library itself, in the configuration of the app being built (the
+        # Mac, iOS): the same crates as clax_embed_macos and clax_embed_ios_c.
+        "//crates/clax-embed:clax_embed_shared",
     ],
 )
 
@@ -543,7 +545,8 @@ ANDROID_RUNNER = {
 }
 
 # The release APK, for both Android CPUs the app ships, with the embedded
-# clax for each (bazel/flutter/android.bzl).
+# core for each (libclax_embed.so, bazel/android/embed.bzl;
+# bazel/flutter/android.bzl).
 flutter_fat_apk(
     name = "apk",
     application = ":app",
@@ -553,8 +556,8 @@ flutter_fat_apk(
     manifest_values = ANDROID_RUNNER["manifest_values"],
     namespace = ANDROID_RUNNER["namespace"],
     native_files = {
-        "//crates/clax-cli:clax_android_arm64": "arm64-v8a/libclax.so",
-        "//crates/clax-cli:clax_android_x86_64": "x86_64/libclax.so",
+        "//crates/clax-embed:clax_embed_android_arm64": "arm64-v8a/libclax_embed.so",
+        "//crates/clax-embed:clax_embed_android_x86_64": "x86_64/libclax_embed.so",
     },
     # Shrunk with R8 as Gradle's release build is: AGP's optimized defaults
     # and Flutter's rules; each plugin's and library's own rules come with it.
@@ -579,10 +582,12 @@ sh_test(
         "$(rootpath @androidsdk//:aapt2)",
         "$(rootpath @androidsdk//:apksigner)",
         "$(rootpath :assets/home/home.clax)",
+        "$(rootpath //crates/clax-embed:ndk_nm)",
     ],
     data = [
         ":apk",
         ":assets/home/home.clax",
+        "//crates/clax-embed:ndk_nm",
         "@androidsdk//:aapt2",
         "@androidsdk//:apksigner",
     ],
@@ -601,9 +606,17 @@ sh_test(
     data = ["tool/apk-check.sh"],
 )
 
-# The macOS app, with the optimized host clax in its Resources, where the
-# app's supervisor starts it (lib/daemon/supervisor.dart), signed as a
-# sandboxed helper (bazel/flutter/macos.bzl).
+# The embedded core for the macOS app's Contents/Frameworks, optimized for
+# this Mac's CPU and signed ad hoc (bazel/flutter/macos.bzl), which the app
+# loads into its own process (lib/core/ffi.dart).
+macos_dylib(
+    name = "macos_core",
+    filename = "libclax_embed.dylib",
+    lib = "//crates/clax-embed:clax_embed_macos",
+)
+
+# The earlier daemon's clax executable, signed as a sandboxed helper
+# (bazel/flutter/macos.bzl); no app ships it.
 macos_helper(
     name = "macos_clax",
     binary = "//crates/clax-cli:clax_opt",
@@ -641,7 +654,7 @@ genrule(
 
 flutter_macos_app(
     name = "macos_app",
-    additional_contents = {":macos_clax": "Resources"},
+    additional_contents = {":macos_core": "Frameworks"},
     # The Xcode build's PRODUCT_NAME (macos/Runner/Configs/AppInfo.xcconfig).
     app_name = "Clax",
     application = ":app",
@@ -679,8 +692,8 @@ sh_test(
     target_compatible_with = ["@platforms//os:macos"],
 )
 
-# The iOS app (iPhone and iPad) with the daemon in its own process
-# (crates/clax-ios), its simulator build and :ios_app_test, a check of
+# The iOS app (iPhone and iPad) with the core linked into its runner
+# (crates/clax-embed), its simulator build and :ios_app_test, a check of
 # both that is also the iOS form of :version_sync (bazel/flutter/ios.bzl).
 clax_ios_app(
     name = "ios_app",
@@ -905,7 +918,7 @@ sh_test(
 # -d macos`), a target per file but the iOS and Android ones (`ios_*`,
 # `android_*`),
 # //apps/clax_app:integration_<name>: the
-# debug app with the test as its entry point and the embedded clax, run in
+# debug app with the test as its entry point and the embedded core, run in
 # the logged-in session. They open the app's window and take minutes, so
 # they are `manual`: `just app-integration` runs them. A test's entry in
 # INTEGRATION_EXTRA adds launch arguments, data and environment.
@@ -947,7 +960,7 @@ INTEGRATION_EXTRA = {
         ),
         flutter_macos_app(
             name = "_integration_%s_macos" % test[len("integration_test/"):-len("_test.dart")],
-            additional_contents = {":macos_clax": "Resources"},
+            additional_contents = {":macos_core": "Frameworks"},
             app_name = "Clax",
             application = ":_integration_%s_app" % test[len("integration_test/"):-len("_test.dart")],
             bundle_id = "dev.empathic.clax",

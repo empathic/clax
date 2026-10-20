@@ -18,9 +18,8 @@ android {
 
     defaultConfig {
         applicationId = "dev.empathic.clax"
-        // 29: the embedded clax (jniLibs/<abi>/libclax.so) is built for
-        // android29, and Android 10 is the first to run executables only
-        // from nativeLibraryDir.
+        // 29: the embedded core (jniLibs/<abi>/libclax_embed.so) is built
+        // for android29.
         minSdk = 29
         targetSdk = flutter.targetSdkVersion
         // Uses the version code from pubspec.yaml. When using split APKs, 1000 * ABI_VERSION
@@ -31,14 +30,6 @@ android {
         versionName = flutter.versionName
         ndk {
             abiFilters += listOf("arm64-v8a", "x86_64")
-        }
-    }
-
-    // libclax.so is the clax executable, not a library: legacy packaging
-    // extracts it to nativeLibraryDir, where the app may execute it.
-    packaging {
-        jniLibs {
-            useLegacyPackaging = true
         }
     }
 

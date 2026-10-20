@@ -1,11 +1,10 @@
-import ClaxDaemon
 import Flutter
 import UIKit
 import os
 
 /// The iOS half of the `dev.empathic.clax/background` channel (Android's is
 /// `BackgroundWorkChannel.kt`): background time while runs go on, and the
-/// daemon's memory trims.
+/// core's memory trims.
 ///
 /// Dart to Swift:
 /// - "start" {title, text} records the newest run's title and answers true;
@@ -18,16 +17,18 @@ import os
 /// `TestChannel.swift`) pauses at once, as if the time were spent.
 ///
 /// Swift to Dart: "stopped" when the background time is nearly spent: the
-/// runs must pause now.
+/// runs must pause now; "trim" asks Dart to trim the core's memory
+/// (`POST /api/core/trim`: every connection's `shrink_memory` and a passive
+/// checkpoint), answered once that is done.
 ///
-/// Leaving the app always begins a "Clax trim" task, held until
-/// `ClaxDaemon.trimMemory` returns, so no write is open and the WAL is
-/// checkpointed when iOS suspends the app. With runs recorded it also
+/// Leaving the app always begins a "Clax trim" task, held until "trim" is
+/// answered, so no write is open and the WAL is checkpointed when iOS
+/// suspends the app. With runs recorded it also
 /// begins "Clax run" and checks `backgroundTimeRemaining` every [tick]: at
 /// [margin], or at the task's expiration handler if that comes first, it
 /// pauses once: calls "stopped", waits up to [ackWait] for "pauseDone",
-/// trims the daemon and ends the task. Coming back ends any held task. A
-/// memory warning trims the daemon too.
+/// trims the core and ends the task. Coming back ends any held task. A
+/// memory warning trims the core too.
 ///
 /// Leaving and coming back are the application's notifications, not a
 /// scene's: the app leaves the screen when its last scene does, and
@@ -118,7 +119,7 @@ final class Background {
     }
     trim = app.beginBackgroundTask(withName: "Clax trim", expirationHandler: endTrim)
     log.info("Clax trim began")
-    ClaxDaemon.trimMemory(endTrim)
+    trimCore(endTrim)
     if title != nil && run == .invalid { beginRun() }
   }
 
@@ -159,7 +160,7 @@ final class Background {
       guard !done else { return }
       done = true
       self?.resume = nil
-      ClaxDaemon.trimMemory {
+      self?.trimCore {
         self?.log.info("Clax run paused")
         self?.endRun()
       }
@@ -184,7 +185,14 @@ final class Background {
   }
 
   private func memoryWarning() {
-    log.info("memory warning: trimming the daemon")
-    ClaxDaemon.trimMemory { [log] in log.info("trimmed after a memory warning") }
+    log.info("memory warning: trimming the core")
+    trimCore { [log] in log.info("trimmed after a memory warning") }
+  }
+
+  /// Asks Dart to trim the core's memory ("trim"); [done] runs on the main
+  /// queue once Dart answers, whatever the answer (an engine with no
+  /// handler answers too).
+  private func trimCore(_ done: @escaping () -> Void) {
+    channel.invokeMethod("trim", arguments: nil) { _ in done() }
   }
 }

@@ -1,11 +1,12 @@
-"""The Clax app for iPhone and iPad, with its daemon inside the app's process.
+"""The Clax app for iPhone and iPad, with its core inside the app's process.
 
 `clax_ios_app` wires rules_flutter's `flutter_ios_app` to the runner in
 `apps/clax_app/ios/Runner` (every `*.swift` there, `Info.plist`, the
-storyboards, `PrivacyInfo.xcprivacy`) and to `ClaxDaemon`, a Swift
-library over the C functions of
-`//crates/clax-ios:clax_ios_c`. There is no Xcode project: Bazel is the
-only iOS build. `clax_ios_integration_tests` runs the app's simulator
+storyboards, `PrivacyInfo.xcprivacy`) and links the embedded core,
+`//crates/clax-embed:clax_embed_ios_c`, into the runner with its four C
+functions exported, which Dart calls by FFI through
+`DynamicLibrary.process()`; no Swift module calls them. There is no Xcode
+project: Bazel is the only iOS build. `clax_ios_integration_tests` runs the app's simulator
 integration tests.
 """
 
@@ -23,7 +24,7 @@ IOS_BUNDLE_ID = "dev.empathic.clax"
 
 # The oldest iOS the app runs on, as .bazelrc's --ios_minimum_os gives it
 # to every iOS configuration: :ios_app_test fails on an object of the
-# daemon's static libraries built for a newer one.
+# core's static libraries built for a newer one.
 IOS_MINIMUM_OS = "17.0"
 
 def _bundle_version_impl(ctx):
@@ -58,8 +59,9 @@ def clax_ios_app(name, version_name, version_code):
 
     Declares:
       <name>        flutter_ios_app (iPhone and iPad, iOS 17.0) with the
-                    in-process daemon (`:ios_daemon`); manual
-      ios_daemon    swift_library ClaxDaemon importing ClaxIOS
+                    core linked in (clax_embed_ios_c); manual
+      ios_daemon    swift_library ClaxDaemon importing ClaxIOS, the earlier
+                    in-process daemon's; no app links it
       ios_intents   swift_library ClaxIntents: the App Intent "Comment in
                     Clax" and the inbox the runner's IntentsChannel takes
                     it from; linked into the runner and its metadata
@@ -146,7 +148,7 @@ def clax_ios_app(name, version_name, version_code):
         # app_intents (ios_application's, through flutter_ios_app's
         # **kwargs): app_intents does not link.
         runner_deps = [
-            ":ios_daemon",
+            "//crates/clax-embed:clax_embed_ios_c",
             ":ios_intents",
             ":ios_plugin_frameworks",
         ],
@@ -192,12 +194,12 @@ def clax_ios_app(name, version_name, version_code):
         args = [
             "$(rootpath :ios_app_sim)",
             "$(rootpath :assets/home/home.clax)",
-            "$(rootpaths //crates/clax-ios:clax_ios_builds)",
+            "$(rootpaths //crates/clax-embed:clax_embed_ios_builds)",
         ],
         data = [
             ":assets/home/home.clax",
             ":ios_app_sim",
-            "//crates/clax-ios:clax_ios_builds",
+            "//crates/clax-embed:clax_embed_ios_builds",
         ],
         env = {
             "IOS_MINIMUM_OS": IOS_MINIMUM_OS,
@@ -256,7 +258,7 @@ def clax_ios_integration_tests(assets, deps):
             ],
             minimum_os_version = IOS_MINIMUM_OS,
             runner_deps = [
-                ":ios_daemon",
+                "//crates/clax-embed:clax_embed_ios_c",
                 ":ios_intents",
                 ":ios_plugin_frameworks",
             ],

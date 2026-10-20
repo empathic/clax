@@ -17,14 +17,14 @@ lacks() { ! grep -qF -- "$2" <<<"$1"; }
 dry() { CLAX_APP_DRY_RUN=1 ANDROID_NDK_HOME=/ndk bash scripts/build-app-clax.sh "$@"; }
 
 bin=/ndk/toolchains/llvm/prebuilt/darwin-x86_64/bin
-mac_place="+ place target/release/clax -> apps/clax_app/build-native/macos/clax"
-arm_place="+ place target/aarch64-linux-android/release/clax.stripped -> apps/clax_app/android/app/src/main/jniLibs/arm64-v8a/libclax.so"
-x86_place="+ place target/x86_64-linux-android/release/clax.stripped -> apps/clax_app/android/app/src/main/jniLibs/x86_64/libclax.so"
-arm_build="+ env CARGO_TARGET_AARCH64_LINUX_ANDROID_LINKER=$bin/aarch64-linux-android29-clang CC_aarch64_linux_android=$bin/aarch64-linux-android29-clang AR_aarch64_linux_android=$bin/llvm-ar cargo build -q --release -p clax-cli --target aarch64-linux-android"
-x86_build="+ env CARGO_TARGET_X86_64_LINUX_ANDROID_LINKER=$bin/x86_64-linux-android29-clang CC_x86_64_linux_android=$bin/x86_64-linux-android29-clang AR_x86_64_linux_android=$bin/llvm-ar cargo build -q --release -p clax-cli --target x86_64-linux-android"
+mac_place="+ place target/release/libclax_embed.dylib -> apps/clax_app/build-native/macos/libclax_embed.dylib"
+arm_place="+ place target/aarch64-linux-android/release/libclax_embed.stripped.so -> apps/clax_app/android/app/src/main/jniLibs/arm64-v8a/libclax_embed.so"
+x86_place="+ place target/x86_64-linux-android/release/libclax_embed.stripped.so -> apps/clax_app/android/app/src/main/jniLibs/x86_64/libclax_embed.so"
+arm_build="+ env CARGO_TARGET_AARCH64_LINUX_ANDROID_LINKER=$bin/aarch64-linux-android29-clang CC_aarch64_linux_android=$bin/aarch64-linux-android29-clang AR_aarch64_linux_android=$bin/llvm-ar cargo build -q --release -p clax-embed --target aarch64-linux-android"
+x86_build="+ env CARGO_TARGET_X86_64_LINUX_ANDROID_LINKER=$bin/x86_64-linux-android29-clang CC_x86_64_linux_android=$bin/x86_64-linux-android29-clang AR_x86_64_linux_android=$bin/llvm-ar cargo build -q --release -p clax-embed --target x86_64-linux-android"
 
 out="$(dry macos)"
-if has "$out" "+ ./scripts/build-web.sh" && has "$out" "+ cargo build -q --release -p clax-cli" \
+if has "$out" "+ ./scripts/build-web.sh" && has "$out" "+ cargo build -q --release -p clax-embed" \
     && has "$out" "$mac_place" && lacks "$out" "linux-android"; then
     ok "macos: web UI, release host build, placed under build-native"
 else
@@ -33,8 +33,8 @@ fi
 
 out="$(dry android)"
 if has "$out" "+ ./scripts/build-web.sh" && has "$out" "$arm_build" && has "$out" "$x86_build" \
-    && has "$out" "+ $bin/llvm-strip -o target/aarch64-linux-android/release/clax.stripped target/aarch64-linux-android/release/clax" \
-    && has "$out" "+ $bin/llvm-strip -o target/x86_64-linux-android/release/clax.stripped target/x86_64-linux-android/release/clax" \
+    && has "$out" "+ $bin/llvm-strip -o target/aarch64-linux-android/release/libclax_embed.stripped.so target/aarch64-linux-android/release/libclax_embed.so" \
+    && has "$out" "+ $bin/llvm-strip -o target/x86_64-linux-android/release/libclax_embed.stripped.so target/x86_64-linux-android/release/libclax_embed.so" \
     && has "$out" "$arm_place" && has "$out" "$x86_place" && lacks "$out" "build-native"; then
     ok "android: a linker, C compiler and archiver per triple, stripped, placed per ABI"
 else
@@ -50,24 +50,29 @@ else
 fi
 
 out="$(dry all --debug)"
-if lacks "$out" "--release" && has "$out" "+ cargo build -q -p clax-cli" \
-    && has "$out" "+ place target/debug/clax -> apps/clax_app/build-native/macos/clax" \
-    && has "$out" "+ place target/aarch64-linux-android/debug/clax.stripped -> apps/clax_app/android/app/src/main/jniLibs/arm64-v8a/libclax.so"; then
+if lacks "$out" "--release" && has "$out" "+ cargo build -q -p clax-embed" \
+    && has "$out" "+ place target/debug/libclax_embed.dylib -> apps/clax_app/build-native/macos/libclax_embed.dylib" \
+    && has "$out" "+ place target/aarch64-linux-android/debug/libclax_embed.stripped.so -> apps/clax_app/android/app/src/main/jniLibs/arm64-v8a/libclax_embed.so"; then
     ok "--debug: no --release, debug output paths"
 else
     bad "--debug: $out"
 fi
 
 out="$(CLAX_APP_DRY_RUN=1 env -u ANDROID_NDK_HOME bash scripts/build-app-clax.sh android)"
-if has "$out" "+ env CARGO_TARGET_AARCH64_LINUX_ANDROID_LINKER=$HOME/Library/Android/sdk/ndk/28.2.13676358/toolchains/llvm/prebuilt/darwin-x86_64/bin/aarch64-linux-android29-clang CC_aarch64_linux_android=$HOME/Library/Android/sdk/ndk/28.2.13676358/toolchains/llvm/prebuilt/darwin-x86_64/bin/aarch64-linux-android29-clang AR_aarch64_linux_android=$HOME/Library/Android/sdk/ndk/28.2.13676358/toolchains/llvm/prebuilt/darwin-x86_64/bin/llvm-ar cargo build -q --release -p clax-cli --target aarch64-linux-android"; then
+if has "$out" "+ env CARGO_TARGET_AARCH64_LINUX_ANDROID_LINKER=$HOME/Library/Android/sdk/ndk/28.2.13676358/toolchains/llvm/prebuilt/darwin-x86_64/bin/aarch64-linux-android29-clang CC_aarch64_linux_android=$HOME/Library/Android/sdk/ndk/28.2.13676358/toolchains/llvm/prebuilt/darwin-x86_64/bin/aarch64-linux-android29-clang AR_aarch64_linux_android=$HOME/Library/Android/sdk/ndk/28.2.13676358/toolchains/llvm/prebuilt/darwin-x86_64/bin/llvm-ar cargo build -q --release -p clax-embed --target aarch64-linux-android"; then
     ok "the NDK defaults to 28.2.13676358 under ~/Library/Android/sdk"
 else
     bad "default NDK: $out"
 fi
 
 out="$(dry all; dry all --debug)"
+if lacks "$out" "-p clax-cli" && lacks "$out" "libclax.so" && ! grep -qE 'build-native/macos/clax$' <<<"$out"; then
+    ok "no clax executable is built or placed"
+else
+    bad "the clax executable is still built or placed: $out"
+fi
 if lacks "$out" "+ cp " && ! grep -qE '(^|[^[:alnum:]_-])cp ' scripts/build-app-clax.sh; then
-    ok "binaries are placed, never copied with cp"
+    ok "libraries are placed, never copied with cp"
 else
     bad "cp used"
 fi

@@ -141,6 +141,7 @@ build_test(
 ndk_nm(
     name = "ndk_nm",
     platform = "//bazel/android:android_arm64",
+    visibility = ["//apps/clax_app:__pkg__"],
 )
 
 # Each Android library exports exactly the four C functions.

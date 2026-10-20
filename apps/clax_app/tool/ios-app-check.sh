@@ -1,8 +1,8 @@
 #!/usr/bin/env bash
 # ios-app-check.sh APP_ZIP HOME_BUNDLE STATIC_LIB...: checks the Bazel-built
 # iOS simulator app (APP_ZIP, rules_apple's .ipa of Clax.app) and the
-# daemon's static libraries (STATIC_LIB, the device and simulator archives
-# of //crates/clax-ios:clax_ios_builds).
+# core's static libraries (STATIC_LIB, the device and simulator archives
+# of //crates/clax-embed:clax_embed_ios_builds).
 #
 # The app's Info.plist must carry the bundle ID dev.empathic.clax, the name
 # Clax, pubspec.yaml's version ($VERSION_NAME, $VERSION_CODE: this is the iOS
@@ -22,8 +22,9 @@
 # Flutter's assets, and the App Intents metadata that lists "Comment in
 # Clax" (its title and the intent's type) for Shortcuts, Siri and the Action
 # Button. The main binary must be built for the iOS simulator
-# (platform 7) at minos $IOS_MINIMUM_OS, export the daemon's four C
-# functions, register every plugin with a native iOS half, and hold the
+# (platform 7) at minos $IOS_MINIMUM_OS, export the core's four C
+# functions (clax_embed_*) and none of the old daemon's (clax_start,
+# clax_stop, clax_state, clax_trim_memory), register every plugin with a native iOS half, and hold the
 # background channel's name and its tasks' names, and the bundles and
 # intents channels'. Every object of each STATIC_LIB that names an iOS must name one
 # no newer than $IOS_MINIMUM_OS, so a mismatch fails here rather than
@@ -113,8 +114,11 @@ if [ -f "$bin" ]; then
     build="$(otool -l "$bin" | grep -A4 LC_BUILD_VERSION | awk '$1 == "platform" || $1 == "minos" { print $1, $2 }' | sort -u | tr '\n' ' ')"
     if [ "$build" = "minos $IOS_MINIMUM_OS platform 7 " ]; then ok "built for the iOS simulator at $IOS_MINIMUM_OS"; else bad "built for the iOS simulator at $IOS_MINIMUM_OS: $build"; fi
     exported="$(nm -gU "$bin" | awk '{ print $NF }')"
-    for s in _clax_start _clax_stop _clax_state _clax_trim_memory; do
+    for s in _clax_embed_open _clax_embed_call _clax_embed_subscribe _clax_embed_close; do
         if grep -qx "$s" <<<"$exported"; then ok "the binary has $s"; else bad "the binary has $s"; fi
+    done
+    for s in _clax_start _clax_stop _clax_state _clax_trim_memory; do
+        if grep -qx "$s" <<<"$exported"; then bad "the binary has no $s (the old daemon's)"; else ok "the binary has no $s"; fi
     done
     texts="$(strings -a "$bin")"
     # The registrant rules_flutter generates: one registrar per plugin with

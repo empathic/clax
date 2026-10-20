@@ -238,7 +238,7 @@
 				33CC10E92044A3C60003C045 /* Sources */,
 				33CC10EA2044A3C60003C045 /* Frameworks */,
 				33CC10EB2044A3C60003C045 /* Resources */,
-				C1A0C1A0C1A0C1A0C1A0C1A0 /* Embed clax */,
+				C1A0C1A0C1A0C1A0C1A0C1A0 /* Embed core */,
 				33CC110E2044A8840003C045 /* Bundle Framework */,
 				3399D490228B24CF009A79C7 /* ShellScript */,
 			);
@@ -367,7 +367,7 @@
 			shellPath = /bin/sh;
 			shellScript = "\"$FLUTTER_ROOT\"/packages/flutter_tools/bin/macos_assemble.sh && touch Flutter/ephemeral/tripwire";
 		};
-		C1A0C1A0C1A0C1A0C1A0C1A0 /* Embed clax */ = {
+		C1A0C1A0C1A0C1A0C1A0C1A0 /* Embed core */ = {
 			isa = PBXShellScriptBuildPhase;
 			alwaysOutOfDate = 1;
 			buildActionMask = 2147483647;
@@ -377,14 +377,14 @@
 			);
 			inputPaths = (
 			);
-			name = "Embed clax";
+			name = "Embed core";
 			outputFileListPaths = (
 			);
 			outputPaths = (
 			);
 			runOnlyForDeploymentPostprocessing = 0;
 			shellPath = /bin/sh;
-			shellScript = "set -eu\nsrc=\"$SRCROOT/../build-native/macos/clax\"\ndst_dir=\"$BUILT_PRODUCTS_DIR/$CONTENTS_FOLDER_PATH/Resources\"\nif [ ! -x \"$src\" ]; then echo \"warning: $src missing: run scripts/build-app-clax.sh macos\"; exit 0; fi\nmkdir -p \"$dst_dir\"\ntmp=\"$(mktemp \"$dst_dir/.clax.XXXXXX\")\"\ncat \"$src\" > \"$tmp\"; chmod 755 \"$tmp\"\n# A sandboxed helper (app-sandbox + inherit) must run under a sandboxed\n# parent, or macOS kills it at launch: only Release, whose Runner is\n# sandboxed, signs clax with ClaxHelper.entitlements. Debug and Profile\n# (DebugProfile.entitlements, no sandbox) sign it without entitlements.\nif [ \"${CODE_SIGNING_ALLOWED:-YES}\" = \"YES\" ] && [ -n \"${EXPANDED_CODE_SIGN_IDENTITY:-}\" ]; then\n  if [ \"$CONFIGURATION\" = \"Release\" ]; then\n    codesign --force --sign \"$EXPANDED_CODE_SIGN_IDENTITY\" --entitlements \"$SRCROOT/Runner/ClaxHelper.entitlements\" --options runtime \"$tmp\"\n  else\n    codesign --force --sign \"$EXPANDED_CODE_SIGN_IDENTITY\" --options runtime \"$tmp\"\n  fi\nfi\nmv -f \"$tmp\" \"$dst_dir/clax\"\n";
+			shellScript = "set -eu\nsrc=\"$SRCROOT/../build-native/macos/libclax_embed.dylib\"\ndst_dir=\"$BUILT_PRODUCTS_DIR/$CONTENTS_FOLDER_PATH/Frameworks\"\nif [ ! -f \"$src\" ]; then echo \"warning: $src missing: run scripts/build-app-clax.sh macos\"; exit 0; fi\nmkdir -p \"$dst_dir\"\ntmp=\"$(mktemp \"$dst_dir/.clax_embed.XXXXXX\")\"\ncat \"$src\" > \"$tmp\"; chmod 644 \"$tmp\"\n# The core is a library the app loads into its own process: it runs in\n# the app's sandbox, so it is signed with the app's identity and no\n# entitlements of its own.\nif [ \"${CODE_SIGNING_ALLOWED:-YES}\" = \"YES\" ] && [ -n \"${EXPANDED_CODE_SIGN_IDENTITY:-}\" ]; then\n  codesign --force --sign \"$EXPANDED_CODE_SIGN_IDENTITY\" \"$tmp\"\nfi\nmv -f \"$tmp\" \"$dst_dir/libclax_embed.dylib\"\n";
 		};
 /* End PBXShellScriptBuildPhase section */
 

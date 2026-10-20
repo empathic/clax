@@ -1,4 +1,3 @@
-import ClaxDaemon
 import Flutter
 import UIKit
 import WebKit
@@ -7,12 +6,13 @@ import webview_flutter_wkwebview
 /// The iOS half of the `dev.empathic.clax/native` channel (Android's is
 /// `MainActivity.kt`, the Mac's `MainFlutterWindow.swift`):
 ///
-/// - "daemonStart" {port} starts the daemon inside this app on 127.0.0.1
-///   (`ClaxDaemon.start`) and answers 0 started, 1 already running, 2 no
-///   $HOME; "daemonStop" asks it to stop; "daemonState" answers its state
-///   (`include/clax_ios.h`), and the first time it answers 2 (up) after a
-///   start marks that run's files as excluded from backup.
-/// - "daemonPaths" answers {home, log}: the daemon's home and its log file.
+/// - "coreHome" makes the core's home,
+///   `<container>/Library/Application Support/clax-home` (the container from
+///   $HOME), with "complete until first user authentication" protection,
+///   set on a home an earlier run made too, and answers its path.
+/// - "excludeFromBackup" {paths} marks each of `paths` that exists as
+///   excluded from backup (the core's per-run files); one that does not
+///   exist yet is skipped.
 /// - "openExternal" {url} opens an http, https or mailto URL with the app
 ///   the person chose for it, and answers whether one took it.
 /// - "openAppSettings" opens this app's page in Settings (its permissions
@@ -21,8 +21,18 @@ import webview_flutter_wkwebview
 ///   webview_flutter names `id` (`webViewIdentifier`) as it shows: {png, at
 ///   one pixel a point, width, height}, its size in points; nil without one.
 enum NativeChannel {
-  /// Whether the run started last has had its files excluded from backup.
-  private static var excluded = true
+  /// The app's container, from `$HOME`.
+  private static var container: URL {
+    URL(
+      fileURLWithPath: ProcessInfo.processInfo.environment["HOME"] ?? NSHomeDirectory(),
+      isDirectory: true)
+  }
+
+  /// `<container>/Library/Application Support/clax-home`: the home the
+  /// earlier in-process daemon kept, which the core opens in place.
+  static var coreHome: URL {
+    container.appendingPathComponent("Library/Application Support/clax-home", isDirectory: true)
+  }
 
   static func install(_ registrar: FlutterPluginRegistrar) {
     let channel = FlutterMethodChannel(
@@ -30,27 +40,25 @@ enum NativeChannel {
     channel.setMethodCallHandler { call, result in
       let args = call.arguments as? [String: Any]
       switch call.method {
-      case "daemonStart":
-        let port = (args?["port"] as? NSNumber)?.intValue ?? 0
-        guard (0...Int(UInt16.max)).contains(port) else {
-          result(FlutterError(code: "bad_port", message: "port must be 0 to 65535", details: nil))
-          return
+      case "coreHome":
+        let protection: [FileAttributeKey: Any] = [
+          .protectionKey: FileProtectionType.completeUntilFirstUserAuthentication
+        ]
+        let files = FileManager.default
+        // Set on a home an earlier run made too, so a change of iOS's
+        // default class cannot move it.
+        try? files.createDirectory(
+          at: coreHome, withIntermediateDirectories: true, attributes: protection)
+        try? files.setAttributes(protection, ofItemAtPath: coreHome.path)
+        result(coreHome.path)
+      case "excludeFromBackup":
+        for path in args?["paths"] as? [String] ?? [] {
+          var url = URL(fileURLWithPath: path)
+          var values = URLResourceValues()
+          values.isExcludedFromBackup = true
+          try? url.setResourceValues(values)
         }
-        let answer = ClaxDaemon.start(port: UInt16(port))
-        if answer == 0 { excluded = false }
-        result(Int(answer))
-      case "daemonStop":
-        ClaxDaemon.stop()
         result(nil)
-      case "daemonState":
-        let state = ClaxDaemon.state()
-        if state == 2 && !excluded {
-          excluded = true
-          ClaxDaemon.excludeRunFilesFromBackup()
-        }
-        result(Int(state))
-      case "daemonPaths":
-        result(["home": ClaxDaemon.home.path, "log": ClaxDaemon.log.path])
       case "openExternal":
         guard let text = args?["url"] as? String,
           let url = URL(string: text),

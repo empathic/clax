@@ -1,13 +1,16 @@
 #!/usr/bin/env bash
-# build-app-clax.sh [android|macos|all] [--debug]: builds clax for the Clax
-# app and places it where the app's build picks it up:
-#   macos    apps/clax_app/build-native/macos/clax (the host target)
-#   android  apps/clax_app/android/app/src/main/jniLibs/<abi>/libclax.so for
-#            arm64-v8a and x86_64, compiled and linked with the NDK's
+# build-app-clax.sh [android|macos|all] [--debug]: builds the embedded core
+# (crates/clax-embed, a shared library) for the Clax app and places it where
+# the app's build picks it up:
+#   macos    apps/clax_app/build-native/macos/libclax_embed.dylib (the host
+#            target), which the Runner's "Embed core" phase copies into
+#            Contents/Frameworks
+#   android  apps/clax_app/android/app/src/main/jniLibs/<abi>/libclax_embed.so
+#            for arm64-v8a and x86_64, compiled and linked with the NDK's
 #            API 29 clang and stripped
 # The default is all, a release build. A release build embeds web/dist, so
-# the web UI is built first. Each binary is written beside its destination
-# and renamed into place, never copied over a binary that may be running;
+# the web UI is built first. Each library is written beside its destination
+# and renamed into place, never copied over a file that may be in use;
 # missing destination directories are made.
 #
 # Environment:
@@ -49,9 +52,9 @@ out="${CARGO_TARGET_DIR:-target}"
 say "building the web UI"
 run ./scripts/build-web.sh
 if [ "$what" = macos ] || [ "$what" = all ]; then
-    say "building clax for macOS"
-    run cargo build -q ${flag[@]+"${flag[@]}"} -p clax-cli
-    place "$out/$profile/clax" apps/clax_app/build-native/macos/clax
+    say "building the core for macOS"
+    run cargo build -q ${flag[@]+"${flag[@]}"} -p clax-embed
+    place "$out/$profile/libclax_embed.dylib" apps/clax_app/build-native/macos/libclax_embed.dylib
 fi
 if [ "$what" = android ] || [ "$what" = all ]; then
     ndk="${ANDROID_NDK_HOME:-$HOME/Library/Android/sdk/ndk/28.2.13676358}"
@@ -62,10 +65,10 @@ if [ "$what" = android ] || [ "$what" = all ]; then
         # The C sources of rusqlite (bundled SQLite) and ring are compiled by
         # cc-rs, which reads the target's compiler and archiver from these.
         cc_var="CC_$(echo "$triple" | tr '-' '_')"; ar_var="AR_$(echo "$triple" | tr '-' '_')"
-        say "building clax for Android $abi ($triple)"
+        say "building the core for Android $abi ($triple)"
         run rustup target add "$triple"
-        run env "$var=$bin/${triple}29-clang" "$cc_var=$bin/${triple}29-clang" "$ar_var=$bin/llvm-ar" cargo build -q ${flag[@]+"${flag[@]}"} -p clax-cli --target "$triple"
-        run "$bin/llvm-strip" -o "$out/$triple/$profile/clax.stripped" "$out/$triple/$profile/clax"
-        place "$out/$triple/$profile/clax.stripped" "apps/clax_app/android/app/src/main/jniLibs/$abi/libclax.so"
+        run env "$var=$bin/${triple}29-clang" "$cc_var=$bin/${triple}29-clang" "$ar_var=$bin/llvm-ar" cargo build -q ${flag[@]+"${flag[@]}"} -p clax-embed --target "$triple"
+        run "$bin/llvm-strip" -o "$out/$triple/$profile/libclax_embed.stripped.so" "$out/$triple/$profile/libclax_embed.so"
+        place "$out/$triple/$profile/libclax_embed.stripped.so" "apps/clax_app/android/app/src/main/jniLibs/$abi/libclax_embed.so"
     done
 fi

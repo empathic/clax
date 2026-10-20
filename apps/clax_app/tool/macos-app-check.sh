@@ -5,8 +5,10 @@
 # strings, the app menu's About, Hide and Quit
 # items named Clax, the whole menu bar (MainMenu.xib's items, keys,
 # actions and tags), Flutter's frameworks, the sandbox, camera and location
-# entitlements of Runner/Release.entitlements, and clax in Contents/Resources signed as a
-# sandboxed helper (Runner/ClaxHelper.entitlements), and the home bundle
+# entitlements of Runner/Release.entitlements, the embedded core as
+# Contents/Frameworks/libclax_embed.dylib (signed, exporting the four
+# clax_embed_ functions, its size printed) and no clax executable in
+# Contents/Resources, and the home bundle
 # HOME (the one //apps/clax_app:home_bundle built) and the third-party
 # notices in Flutter's assets; and that the debug build's entitlements
 # (DEBUG_ENTITLEMENTS, Runner/DebugProfile.entitlements) allow the camera
@@ -256,11 +258,17 @@ done
 for k in com.apple.security.device.camera com.apple.security.personal-information.location; do
     if [ "$(/usr/libexec/PlistBuddy -c "Print :$k" "$debug_ents" 2>/dev/null)" = true ]; then ok "debug entitlement $k"; else bad "debug entitlement $k"; fi
 done
-helper="$app/Contents/Resources/clax"
-if [ -x "$helper" ]; then ok "clax in Resources"; else bad "clax in Resources"; fi
-hents="$(/usr/bin/codesign -d --entitlements - --xml "$helper" 2>/dev/null || true)"
-for k in com.apple.security.app-sandbox com.apple.security.inherit; do
-    if grep -q "$k" <<<"$hents"; then ok "clax entitlement $k"; else bad "clax entitlement $k"; fi
-done
+if [ -e "$app/Contents/Resources/clax" ]; then bad "no clax executable in Resources"; else ok "no clax executable in Resources"; fi
+core="$app/Contents/Frameworks/libclax_embed.dylib"
+if [ -f "$core" ]; then
+    ok "the core in Frameworks"
+    echo "SIZE: Contents/Frameworks/libclax_embed.dylib $(( $(wc -c < "$core") )) bytes"
+    got="$(nm -gU "$core" | awk '$NF ~ /^_clax_embed_/ { print $NF }' | sort | paste -sd ' ' -)"
+    want="_clax_embed_call _clax_embed_close _clax_embed_open _clax_embed_subscribe"
+    if [ "$got" = "$want" ]; then ok "the core exports the four clax_embed_ functions"; else bad "the core exports the four clax_embed_ functions (it exports: $got)"; fi
+    if /usr/bin/codesign --verify --strict "$core"; then ok "the core is signed"; else bad "the core is signed"; fi
+else
+    bad "the core in Frameworks (no $core)"
+fi
 if /usr/bin/codesign --verify --deep --strict "$app"; then ok "signature verifies"; else bad "signature verifies"; fi
 exit "$fails"

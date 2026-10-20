@@ -1,12 +1,16 @@
-"""The macOS app's embedded clax, named and signed as the app's Xcode build does.
+"""The macOS app's embedded files, named and signed as the app's Xcode build does.
 
-The Runner's "Embed clax" build phase (macos/Runner.xcodeproj) copies the
-host clax into Contents/Resources/clax and signs it with
-Runner/ClaxHelper.entitlements (app-sandbox and inherit): a sandboxed app
-may only start a helper sandboxed the same way, or macOS kills the helper
-at launch. `macos_helper` does the same for the Bazel-built app, with an
-ad-hoc signature (the app's bundle is ad-hoc signed by rules_apple too),
-using the system's `codesign`, which no toolchain provides.
+`macos_dylib` places the embedded core, libclax_embed.dylib, for the
+bundle's Contents/Frameworks, signed ad hoc without entitlements, as the
+Runner's "Embed core" build phase (macos/Runner.xcodeproj) does for the
+Xcode build; the app loads it into its own process.
+
+`macos_helper` is the earlier daemon's: it places the clax executable for
+Contents/Resources, signed with Runner/ClaxHelper.entitlements
+(app-sandbox and inherit), since a sandboxed app may only start a helper
+sandboxed the same way. Both sign ad hoc (the app's bundle is ad-hoc
+signed by rules_apple too), using the system's `codesign`, which no
+toolchain provides.
 """
 
 def _macos_helper_impl(ctx):
@@ -41,6 +45,37 @@ macos_helper = rule(
         "entitlements": attr.label(allow_single_file = [".entitlements", ".plist"]),
         "filename": attr.string(default = "clax"),
     },
+)
+
+def _macos_dylib_impl(ctx):
+    libs = [f for f in ctx.attr.lib[DefaultInfo].files.to_list() if f.extension == "dylib"]
+    if len(libs) != 1:
+        fail("%s: expected one dylib, got %s" % (ctx.attr.lib.label, libs))
+
+    # At the package's top, as macos_helper's: rules_apple places a file by
+    # its package path.
+    out = ctx.actions.declare_file(ctx.attr.filename)
+    ctx.actions.run_shell(
+        command = 'cat "$1" > "$2" && chmod 644 "$2" && /usr/bin/codesign --force --sign - "$2"',
+        arguments = [libs[0].path, out.path],
+        inputs = [libs[0]],
+        outputs = [out],
+        mnemonic = "MacosDylibSign",
+        progress_message = "Signing %s for the app's Frameworks" % ctx.attr.filename,
+        execution_requirements = {"no-remote": "1"},
+    )
+    return [DefaultInfo(files = depset([out]))]
+
+macos_dylib = rule(
+    implementation = _macos_dylib_impl,
+    attrs = {
+        "filename": attr.string(mandatory = True),
+        "lib": attr.label(mandatory = True, doc = "A target giving one .dylib (a rust_shared_library, or an opt_library over one)."),
+    },
+    doc = """A shared library for a macOS app's Contents/Frameworks, named
+    `filename` and signed ad hoc without entitlements (a library runs in the
+    app's own process and sandbox), as the bundle is: the embedded core,
+    which the app loads with DynamicLibrary.open.""",
 )
 
 def _dbg_transition_impl(_settings, _attr):
