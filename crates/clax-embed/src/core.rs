@@ -428,6 +428,12 @@ impl Embed {
         &self.inner.shared.key
     }
 
+    /// Whether the core still holds its home: false once a failed open or
+    /// a close released it.
+    pub(crate) fn holds_home(&self) -> bool {
+        !self.inner.shared.released.load(Ordering::SeqCst)
+    }
+
     /// Whether [`Embed::close`] was called.
     pub(crate) fn closing(&self) -> bool {
         self.inner.shared.closing.load(Ordering::SeqCst)

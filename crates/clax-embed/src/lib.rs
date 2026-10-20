@@ -405,17 +405,22 @@ mod tests {
     use super::*;
     use std::sync::{Condvar, OnceLock};
 
-    /// Every message posted, in order, and how many calls the core counted
-    /// in flight as each answer (port 2) was posted.
+    /// Every message posted to a port that is open, in order, and how many
+    /// calls the core counted in flight as each answer (port 2) was
+    /// posted. A post to a port in `closed` (its isolate is gone) fails.
     #[derive(Default)]
     struct Ordered {
         core: OnceLock<Embed>,
         posted: Mutex<Vec<(i64, Vec<u8>, usize)>>,
         arrived: Condvar,
+        closed: Mutex<std::collections::HashSet<i64>>,
     }
 
     impl Post for Ordered {
         fn post(&self, port: i64, bytes: &[u8]) -> bool {
+            if self.closed.lock().unwrap().contains(&port) {
+                return false;
+            }
             let counted = match (port, self.core.get()) {
                 (2, Some(e)) => e.in_flight(),
                 _ => 0,
@@ -428,6 +433,22 @@ mod tests {
     }
 
     impl Ordered {
+        /// Closes `port`, as an isolate that ends closes its ports.
+        fn close(&self, port: i64) {
+            self.closed.lock().unwrap().insert(port);
+        }
+
+        /// The messages posted to `port`, as text.
+        fn on(&self, port: i64) -> Vec<String> {
+            self.posted
+                .lock()
+                .unwrap()
+                .iter()
+                .filter(|(p, _, _)| *p == port)
+                .map(|(_, b, _)| String::from_utf8_lossy(b).into_owned())
+                .collect()
+        }
+
         /// Waits for a message on `port` that contains `text`; its index.
         fn wait(&self, port: i64, text: &str) -> usize {
             let mut posted = self.posted.lock().unwrap();
@@ -496,7 +517,9 @@ mod tests {
         let posts = Arc::new(Ordered::default());
         let core = ffi_open(home.to_str().unwrap().as_bytes(), posts.clone(), 1);
         posts.wait(1, "\"ready\"");
-        // An isolate that restarted without closing opens the home again.
+        // An isolate that restarted without closing opens the home again:
+        // the old isolate, and so its port, is gone.
+        posts.close(1);
         let again = ffi_open(home.to_str().unwrap().as_bytes(), posts.clone(), 4);
         assert_eq!(again, core, "the live core's handle");
         posts.wait(4, "\"ready\"");
@@ -520,5 +543,44 @@ mod tests {
         let posts = Arc::new(Ordered::default());
         assert_eq!(ffi_open(b"\xff\xfe", posts.clone(), 6), 0);
         posts.wait(6, "\"failed\"");
+    }
+
+    /// The `failed` event posted to `port`, as JSON.
+    fn failed_on(posts: &Ordered, port: i64) -> serde_json::Value {
+        let i = posts.wait(port, "\"failed\"");
+        serde_json::from_slice(&posts.posted.lock().unwrap()[i].1).unwrap()
+    }
+
+    #[test]
+    fn a_reopen_after_a_failed_open_is_what_a_later_open_reattaches_to() {
+        let dir = tempfile::tempdir().unwrap();
+        let home = home(dir.path());
+        let path = home.to_str().unwrap().as_bytes();
+        let posts = Arc::new(Ordered::default());
+        // Another process holds the home: the open fails home_in_use, and
+        // its client keeps the failed core's handle without closing it.
+        let held = std::fs::File::create(home.join("core.lock")).unwrap();
+        held.try_lock().unwrap();
+        let failed = ffi_open(path, posts.clone(), 10);
+        assert_ne!(failed, 0);
+        assert_eq!(failed_on(&posts, 10)["code"], "home_in_use");
+        drop(held);
+        // The client tries again, and the core opens.
+        let live = ffi_open(path, posts.clone(), 11);
+        assert_ne!(live, 0);
+        assert_ne!(live, failed);
+        posts.wait(11, "\"ready\"");
+        // Its isolate restarts: the new one re-attaches to the live core,
+        // never to the failed one.
+        posts.close(10);
+        posts.close(11);
+        let again = ffi_open(path, posts.clone(), 12);
+        assert_eq!(again, live, "the live core's handle");
+        posts.wait(12, "\"ready\"");
+        assert_eq!(ffi_call(again, &request("/api/artifacts"), 13, 1), 0);
+        posts.wait(13, "artifacts");
+        assert_eq!(ffi_close(again), 0);
+        posts.wait(12, "\"closed\"");
+        assert_eq!(ffi_close(failed), 0);
     }
 }
