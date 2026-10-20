@@ -132,14 +132,28 @@ class CoreShellLink implements SchemeClient {
     } on FormatException {
       return;
     }
+    if (!_present(m['nonce'])) return;
+    if (_relay?.handle(m) ?? false) return;
+    onShellMessage(message);
+  }
+
+  /// The main frame's document carries [nonce] in its `clax-nonce` meta
+  /// (read once it has loaded): before the pin, a candidate pins the load
+  /// as a message under it would.
+  void presented(String nonce) {
+    if (!_disposed && _loads.pinned == null) _present(nonce);
+  }
+
+  /// Whether [nonce] is the load's, pinning it (and making its relay) when
+  /// it is the first candidate presented.
+  bool _present(Object? nonce) {
     final pinned = _loads.pinned;
-    if (!_loads.present(m['nonce'])) return;
+    if (!_loads.present(nonce)) return false;
     if (pinned == null) {
       _relay = ChannelRelay(core, runJs: runJs);
       onPinned(_loads.pinned!);
     }
-    if (_relay?.handle(m) ?? false) return;
-    onShellMessage(message);
+    return true;
   }
 
   /// Ends the load's relay; nothing more is answered.

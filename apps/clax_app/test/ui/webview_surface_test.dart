@@ -471,6 +471,59 @@ void main() {
       expect(inits(), hasLength(1));
     });
 
+    test('a document that posts nothing before its load is pinned by its '
+        'clax-nonce meta, read at the load, and gets claxHost.init', () async {
+      await make().load(shellUrl);
+      final n = await serve(1);
+      host.client!.committed(shellUrl, 1);
+      // Android answers a string JSON-encoded.
+      web.answer = (_) async => jsonEncode(n);
+      web.started('$shellUrl');
+      web.finished('$shellUrl');
+      await pumpEventQueue();
+      expect(web.asked.single, contains('clax-nonce'));
+      expect(inits().single, contains(n));
+      // Apple answers it as it is.
+      final m = await serve(2);
+      web.started('$shellUrl');
+      host.client!.committed(shellUrl, 2);
+      web.answer = (_) async => m;
+      web.finished('$shellUrl');
+      await pumpEventQueue();
+      expect(web.asked, hasLength(2));
+      expect(inits(), hasLength(2));
+      expect(inits().last, contains(m));
+    });
+
+    test('a meta read that answers another navigation\'s nonce pins '
+        'nothing', () async {
+      await make().load(shellUrl);
+      final other = await serve(1);
+      final n = await serve(2);
+      host.client!.committed(shellUrl, 2);
+      web.answer = (_) async => other;
+      web.started('$shellUrl');
+      web.finished('$shellUrl');
+      await pumpEventQueue();
+      expect(web.asked, hasLength(1));
+      expect(inits(), isEmpty);
+      present(n);
+      await pumpEventQueue();
+      expect(inits().single, contains(n));
+    });
+
+    test('no meta read once the load is pinned', () async {
+      await make().load(shellUrl);
+      final n = await serve(1);
+      host.client!.committed(shellUrl, 1);
+      web.started('$shellUrl');
+      present(n);
+      web.finished('$shellUrl');
+      await pumpEventQueue();
+      expect(web.asked, isEmpty);
+      expect(inits().single, contains(n));
+    });
+
     test('a page start forgets the last load', () async {
       await make().load(shellUrl);
       final n = await serve(1);

@@ -1,4 +1,5 @@
 import 'dart:async';
+import 'dart:convert';
 
 import 'package:flutter/foundation.dart';
 import 'package:flutter/gestures.dart';
@@ -56,8 +57,10 @@ const nativeOverlays = ['ask', 'questions', 'notice', 'draft'];
 /// raises a fault and loads nothing; its requests are answered and its
 /// `ClaxHost` messages relayed through the core by a [CoreShellLink]; the
 /// shell's nonce is the one the scheme wrote into the document and the
-/// main frame presented first after the commit, which `claxHost.init`
-/// gets once the document has loaded; no JavaScript channel is added
+/// main frame presented first after the commit (by a `ClaxHost` message,
+/// or by the `clax-nonce` meta the surface reads once the document has
+/// loaded when nothing is pinned yet), which `claxHost.init` gets once the
+/// document has loaded; no JavaScript channel is added
 /// (the runner's own listener is the shell's `ClaxHost`) and no key
 /// cookie is set.
 class WebViewAppSurface implements AppSurface, CapturableSurface {
@@ -233,14 +236,42 @@ class WebViewAppSurface implements AppSurface, CapturableSurface {
   }
 
   void _onLoaded(String url) {
-    if (_link != null) {
+    if (_link case final link?) {
       _loaded = Uri.tryParse(url);
+      if (link.nonce == null) unawaited(_readNonce(link));
       _initOnCore();
       return;
     }
     final init = _session.documentLoaded(Uri.tryParse(url));
     if (init != null) unawaited(controller.runJavaScript(init.toJs()));
   }
+
+  /// On the core, reads the loaded document's `clax-nonce` meta and
+  /// presents it to [link], so a document that posts nothing before its
+  /// load is pinned all the same. The link pins only a candidate of the
+  /// committed navigation, so a read that lands after a newer commit pins
+  /// nothing.
+  Future<void> _readNonce(CoreShellLink link) async {
+    final Object r;
+    try {
+      r = await controller.runJavaScriptReturningResult(_nonceMeta);
+    } on Object {
+      return;
+    }
+    // Android answers a string JSON-encoded, Apple as it is.
+    var nonce = '$r';
+    if (nonce.startsWith('"')) {
+      try {
+        nonce = jsonDecode(nonce) as String;
+      } on Object {
+        return;
+      }
+    }
+    link.presented(nonce);
+  }
+
+  static const _nonceMeta =
+      'document.querySelector(\'meta[name="clax-nonce"]\')?.content ?? ""';
 
   /// On the core, hands the shell its nonce once the document has loaded
   /// and the main frame has presented the nonce the scheme wrote into it.
