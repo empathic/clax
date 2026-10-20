@@ -66,4 +66,7 @@ dependencies {
     // The splash screen on API 29-30 (MainActivity.kt's installSplashScreen);
     // the Bazel build pins the same version (MODULE.bazel's maven.install).
     implementation("androidx.core:core-splashscreen:1.2.0")
+    // The WebViews' ClaxHost listener (SchemeHost.kt's addWebMessageListener);
+    // the version webview_flutter_android uses and MODULE.bazel pins.
+    implementation("androidx.webkit:webkit:1.15.0")
 }

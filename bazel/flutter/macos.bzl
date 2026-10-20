@@ -90,8 +90,8 @@ def _integration_main_impl(ctx):
     ctx.actions.write(out, """\
 // Generated (bazel/flutter/macos.bzl): runs {short} in the app, as
 // `flutter test` does on a device, then prints CLAX_INTEGRATION_RESULT=0
-// (every test passed) or =1, which the iOS runner reads from the console,
-// and exits with that status.
+// (every test passed) or =1, which the iOS runner reads from the console
+// and the Android one from the log, and exits with that status.
 import 'dart:io';
 
 import 'package:integration_test/integration_test.dart';
@@ -102,11 +102,20 @@ Future<void> main() async {{
   final binding = IntegrationTestWidgetsFlutterBinding.ensureInitialized();
   t.main();
   final passed = await binding.allTestsPassed.future;
-  for (final f in binding.failureMethodsDetails) {{
-    stderr.writeln('FAIL: ${{f.methodName}}\\n${{f.details}}');
+  // Android sends an app's stdout and stderr nowhere: there each line goes
+  // to the log (tag flutter), where tool/android-integration-run.sh reads it.
+  void out(IOSink sink, String line) {{
+    if (Platform.isAndroid) {{
+      print(line);
+    }} else {{
+      sink.writeln(line);
+    }}
   }}
-  stdout.writeln(passed ? 'integration_test: all tests passed' : 'integration_test: tests failed');
-  stdout.writeln('CLAX_INTEGRATION_RESULT=${{passed ? 0 : 1}}');
+  for (final f in binding.failureMethodsDetails) {{
+    out(stderr, 'FAIL: ${{f.methodName}}\\n${{f.details}}');
+  }}
+  out(stdout, passed ? 'integration_test: all tests passed' : 'integration_test: tests failed');
+  out(stdout, 'CLAX_INTEGRATION_RESULT=${{passed ? 0 : 1}}');
   await stdout.flush();
   exit(passed ? 0 : 1);
 }}

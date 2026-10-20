@@ -23,10 +23,13 @@ the way rules_flutter packs `libapp.so`; `android_binary` packs a jar's
 load("@bazel_skylib//rules:expand_template.bzl", "expand_template")
 load("@rules_android//android:rules.bzl", "android_binary")
 load("@rules_flutter//flutter:android.bzl", "flutter_android_engine", "flutter_android_manifest_merge")
+load("@rules_flutter//flutter:defs.bzl", "flutter_application")
 load("@rules_flutter//flutter/private:flutter_android_application.bzl", "flutter_android_bundle")
 load("@rules_flutter//flutter/private:flutter_android_registrant.bzl", "flutter_android_registrant")
 load("@rules_java//java:java_import.bzl", "java_import")
 load("@rules_kotlin//kotlin:android.bzl", "kt_android_library")
+load("@rules_shell//shell:sh_test.bzl", "sh_test")
+load(":macos.bzl", "integration_main")
 
 # rules_flutter's short ABI names, their Android ABI directories, and the
 # engine repositories rules_flutter fetches for each.
@@ -99,6 +102,7 @@ def flutter_fat_apk(
         pub_hub_name = "deps",
         abis = ["arm64", "x64"],
         manifest_values = {},
+        debug = False,
         **kwargs):
     """An APK of `application` for every ABI in `abis`.
 
@@ -120,6 +124,8 @@ def flutter_fat_apk(
         pub_hub_name: The flutter.pub hub of the app's packages.
         abis: rules_flutter's ABI names; the first one's engine classes ship.
         manifest_values: Passed to android_binary, with applicationId added.
+        debug: Flutter's debug build (JIT, `-c dbg`) instead of the release
+            one, for an integration test.
         **kwargs: Passed to android_binary.
     """
     tags = kwargs.pop("tags", ["manual"])
@@ -248,7 +254,7 @@ def flutter_fat_apk(
         **kwargs
     )
 
-    release_apk(
+    (debug_apk if debug else release_apk)(
         name = name,
         apk = "_%s_binary" % name,
         tags = tags,
@@ -288,3 +294,98 @@ release_apk = rule(
     attrs = {"apk": attr.label(mandatory = True, cfg = _release_transition)},
     doc = "The release build of an android_binary's signed APK, as `<name>.apk`.",
 )
+
+def _debug_transition_impl(_settings, _attr):
+    return {"//command_line_option:compilation_mode": "dbg"}
+
+_debug_transition = transition(
+    implementation = _debug_transition_impl,
+    inputs = [],
+    outputs = ["//command_line_option:compilation_mode"],
+)
+
+debug_apk = rule(
+    implementation = _release_apk_impl,
+    attrs = {"apk": attr.label(mandatory = True, cfg = _debug_transition)},
+    doc = "The debug build (-c dbg: JIT) of an android_binary's signed APK, as `<name>.apk`.",
+)
+
+def clax_android_integration_tests(assets, deps, runner):
+    """The Android integration tests, a target per
+    `integration_test/android_<name>_test.dart` in apps/clax_app.
+
+    Each test is the entry point (`integration_main`) of a debug APK of its
+    own, for arm64 only (the emulator's CPU on Apple silicon), with the
+    runner of `:apk`, run on the emulator "Clax Pixel" by
+    `tool/android-integration-run.sh`, which starts the emulator with
+    scripts/app-android-emulator.sh, installs the APK fresh, reads the
+    test's result from the log and stops the emulator by its PID. They boot
+    an emulator and take minutes, so they are `manual`: `just
+    app-integration --android` runs them. Declares, per test:
+      _integration_android_<name>_main  the entry point
+      _integration_android_<name>_app   its flutter_application
+      _integration_android_<name>_apk   flutter_fat_apk, debug, arm64
+      integration_android_<name>        the sh_test; manual, macOS only
+
+    Args:
+        assets: The app's assets (`:app`'s).
+        deps: The application's Dart dependencies.
+        runner: `flutter_fat_apk`'s runner arguments, as `:apk` has them
+            (manifest, manifest_values, namespace, package_name, resources,
+            kotlin_srcs, runner_deps, debug_key, pub_hub_name).
+    """
+    for test in native.glob(["integration_test/android_*_test.dart"]):
+        n = "android_" + test[len("integration_test/android_"):-len("_test.dart")]
+        integration_main(
+            name = "_integration_%s_main" % n,
+            srcs = native.glob(["integration_test/*.dart"]),
+            test = test,
+            tags = ["manual"],
+        )
+        flutter_application(
+            name = "_integration_%s_app" % n,
+            package_name = "clax_app",
+            srcs = native.glob(["lib/**/*.dart"]) + [":_integration_%s_main" % n],
+            assets = assets,
+            main = ":_integration_%s_main.dart" % n,
+            tags = ["manual"],
+            deps = deps,
+        )
+        flutter_fat_apk(
+            name = "_integration_%s_apk" % n,
+            application = ":_integration_%s_app" % n,
+            abis = ["arm64"],
+            debug = True,
+            tags = [
+                "manual",
+                "no-remote",
+            ],
+            **runner
+        )
+        sh_test(
+            name = "integration_%s" % n,
+            timeout = "long",
+            srcs = ["tool/android-integration-run.sh"],
+            args = [
+                "$(rootpath :_integration_%s_apk)" % n,
+                "$(rootpath //scripts:app-android-emulator.sh)",
+                "$(rootpath @android_emulator//:emulator)",
+                "$(rootpath @android_system_image//:source.properties)",
+                "$(rootpath @androidsdk//:platform-tools/adb)",
+            ],
+            data = [
+                ":_integration_%s_apk" % n,
+                "//scripts:app-android-emulator.sh",
+                "@android_emulator//:emulator",
+                "@android_system_image//:source.properties",
+                "@androidsdk//:platform-tools/adb",
+            ],
+            tags = [
+                "exclusive",
+                "local",
+                "manual",
+                "no-remote",
+                "no-sandbox",
+            ],
+            target_compatible_with = ["@platforms//os:macos"],
+        )

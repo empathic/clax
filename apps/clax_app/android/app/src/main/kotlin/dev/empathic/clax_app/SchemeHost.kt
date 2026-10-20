@@ -1,0 +1,293 @@
+package dev.empathic.clax_app
+
+import android.graphics.Bitmap
+import android.net.Uri
+import android.os.Handler
+import android.os.Looper
+import android.webkit.WebResourceRequest
+import android.webkit.WebResourceResponse
+import android.webkit.WebView
+import android.webkit.WebViewClient
+import androidx.webkit.JavaScriptReplyProxy
+import androidx.webkit.WebMessageCompat
+import androidx.webkit.WebViewCompat
+import androidx.webkit.WebViewFeature
+import io.flutter.plugin.common.BinaryMessenger
+import io.flutter.plugin.common.MethodChannel
+import java.io.ByteArrayInputStream
+import java.util.concurrent.CompletableFuture
+import java.util.concurrent.ConcurrentHashMap
+import java.util.concurrent.TimeUnit
+import java.util.concurrent.TimeoutException
+import java.util.concurrent.atomic.AtomicLong
+
+/**
+ * The app's scheme and the `ClaxHost` channel in its WebViews (spec §4 of
+ * docs/superpowers/specs/2026-10-19-in-process-core-design.md), over the
+ * method channel `dev.empathic.clax/scheme`.
+ *
+ * The app's origins are `https://app.clax.invalid` (the shell) and
+ * `https://<id>.c.clax.invalid` (an artifact's content); a WebView answers
+ * requests to those hosts once Dart attaches it:
+ *
+ * - Dart → native `attach {webViewId}` (answers whether that WebView
+ *   exists; it must already have webview_flutter's client, which this one
+ *   wraps) and `detach {webViewId}`; `respond {reqId, status, headers,
+ *   body}` answers a request.
+ * - Native → Dart `request {webViewId, reqId, url, method, headers,
+ *   mainFrame, navigation?}` for every request to the app's hosts;
+ *   `channel {webViewId, message}` for a `ClaxHost` message from the
+ *   shell's main frame; `committed {webViewId, url, navigation?}` when a
+ *   main-frame navigation commits.
+ *
+ * `shouldInterceptRequest` runs on a WebView IO thread: it posts the
+ * request to the main thread and waits for Dart's answer at most
+ * [ANSWER_CAP_SECONDS], then answers 504. A request for the main frame
+ * (`isForMainFrame`) takes the WebView's next navigation number, which is
+ * kept with its URL (a newer one replaces it); `onPageStarted` for that URL
+ * reports the number with the commit, any other URL none.
+ */
+class SchemeHost(
+    messenger: BinaryMessenger,
+    private val webView: (Long) -> WebView?,
+) {
+    private val channel = MethodChannel(messenger, "dev.empathic.clax/scheme")
+    private val main = Handler(Looper.getMainLooper())
+    private val pending = ConcurrentHashMap<Long, CompletableFuture<WebResourceResponse>>()
+    private val nextRequest = AtomicLong()
+
+    /** An attached WebView's state; its fields are the main thread's. */
+    private inner class Attached(val id: Long, val view: WebView, val inner: WebViewClient) {
+        var lastNavigation = 0L
+
+        /** The latest main-frame request's number and URL. */
+        @Volatile var kept: Pair<Long, String>? = null
+        val client = Client(this)
+    }
+
+    private val attached = HashMap<Long, Attached>()
+
+    init {
+        channel.setMethodCallHandler { call, result ->
+            val id = call.argument<Number>("webViewId")?.toLong()
+            when (call.method) {
+                "attach" -> result.success(id != null && attach(id))
+                "detach" -> {
+                    id?.let { detach(it) }
+                    result.success(null)
+                }
+                "respond" -> {
+                    respond(
+                        call.argument<Number>("reqId")?.toLong(),
+                        call.argument<Number>("status")?.toInt() ?: 500,
+                        call.argument<Map<String, String>>("headers") ?: emptyMap(),
+                        call.argument<ByteArray>("body") ?: ByteArray(0),
+                    )
+                    result.success(null)
+                }
+                else -> result.notImplemented()
+            }
+        }
+    }
+
+    private fun attach(id: Long): Boolean {
+        if (attached.containsKey(id)) return true
+        val view = webView(id) ?: return false
+        if (!WebViewFeature.isFeatureSupported(WebViewFeature.WEB_MESSAGE_LISTENER)) return false
+        val state = Attached(id, view, view.webViewClient)
+        attached[id] = state
+        view.webViewClient = state.client
+        // Injected only into frames of the shell's origin; a message from a
+        // frame that is not the main one is dropped too.
+        WebViewCompat.addWebMessageListener(view, "ClaxHost", setOf(SHELL_ORIGIN)) {
+                _: WebView, message: WebMessageCompat, _: Uri, isMainFrame: Boolean, _: JavaScriptReplyProxy ->
+            val text = message.data
+            if (isMainFrame && text != null && attached[id] === state) {
+                channel.invokeMethod("channel", mapOf("webViewId" to id, "message" to text))
+            }
+        }
+        return true
+    }
+
+    private fun detach(id: Long) {
+        val state = attached.remove(id) ?: return
+        if (state.view.webViewClient === state.client) state.view.webViewClient = state.inner
+        WebViewCompat.removeWebMessageListener(state.view, "ClaxHost")
+    }
+
+    private fun respond(reqId: Long?, status: Int, headers: Map<String, String>, body: ByteArray) {
+        val future = reqId?.let { pending.remove(it) } ?: return
+        future.complete(response(status, headers, body))
+    }
+
+    /** Called on a WebView IO thread: blocks until Dart answers. */
+    private fun intercept(state: Attached, request: WebResourceRequest): WebResourceResponse? {
+        val url = request.url
+        if (!isAppHost(url.host)) return null
+        val reqId = nextRequest.incrementAndGet()
+        val future = CompletableFuture<WebResourceResponse>()
+        pending[reqId] = future
+        val args = mutableMapOf<String, Any>(
+            "webViewId" to state.id,
+            "reqId" to reqId,
+            "url" to url.toString(),
+            "method" to request.method,
+            "headers" to request.requestHeaders,
+            "mainFrame" to request.isForMainFrame,
+        )
+        main.post {
+            if (request.isForMainFrame) {
+                state.lastNavigation += 1
+                state.kept = state.lastNavigation to url.toString()
+                args["navigation"] = state.lastNavigation
+            }
+            channel.invokeMethod("request", args)
+        }
+        return try {
+            future.get(ANSWER_CAP_SECONDS, TimeUnit.SECONDS)
+        } catch (e: TimeoutException) {
+            pending.remove(reqId)
+            response(504, mapOf("Content-Type" to "text/plain"), "no answer".toByteArray())
+        } catch (e: Exception) {
+            pending.remove(reqId)
+            response(500, mapOf("Content-Type" to "text/plain"), "failed".toByteArray())
+        }
+    }
+
+    private fun committed(state: Attached, url: String) {
+        if (attached[state.id] !== state) return
+        val args = mutableMapOf<String, Any>("webViewId" to state.id, "url" to url)
+        state.kept?.let { (n, keptUrl) -> if (keptUrl == url) args["navigation"] = n }
+        channel.invokeMethod("committed", args)
+    }
+
+    /**
+     * webview_flutter's client with the app's hosts answered and commits
+     * reported; every other call is the inner client's.
+     */
+    private inner class Client(private val state: Attached) : WebViewClient() {
+        private val inner get() = state.inner
+
+        override fun shouldInterceptRequest(view: WebView, request: WebResourceRequest): WebResourceResponse? =
+            intercept(state, request) ?: inner.shouldInterceptRequest(view, request)
+
+        override fun onPageStarted(view: WebView, url: String, favicon: Bitmap?) {
+            committed(state, url)
+            inner.onPageStarted(view, url, favicon)
+        }
+
+        override fun onPageFinished(view: WebView, url: String) = inner.onPageFinished(view, url)
+
+        override fun shouldOverrideUrlLoading(view: WebView, request: WebResourceRequest): Boolean =
+            inner.shouldOverrideUrlLoading(view, request)
+
+        @Deprecated("Deprecated in Java")
+        override fun shouldOverrideUrlLoading(view: WebView, url: String): Boolean =
+            @Suppress("DEPRECATION") inner.shouldOverrideUrlLoading(view, url)
+
+        override fun onLoadResource(view: WebView, url: String) = inner.onLoadResource(view, url)
+
+        override fun onPageCommitVisible(view: WebView, url: String) = inner.onPageCommitVisible(view, url)
+
+        override fun onReceivedError(
+            view: WebView,
+            request: WebResourceRequest,
+            error: android.webkit.WebResourceError,
+        ) = inner.onReceivedError(view, request, error)
+
+        @Deprecated("Deprecated in Java")
+        override fun onReceivedError(view: WebView, errorCode: Int, description: String?, failingUrl: String?) =
+            @Suppress("DEPRECATION") inner.onReceivedError(view, errorCode, description, failingUrl)
+
+        override fun onReceivedHttpError(
+            view: WebView,
+            request: WebResourceRequest,
+            errorResponse: WebResourceResponse,
+        ) = inner.onReceivedHttpError(view, request, errorResponse)
+
+        override fun onReceivedSslError(
+            view: WebView,
+            handler: android.webkit.SslErrorHandler,
+            error: android.net.http.SslError,
+        ) = inner.onReceivedSslError(view, handler, error)
+
+        override fun onReceivedHttpAuthRequest(
+            view: WebView,
+            handler: android.webkit.HttpAuthHandler,
+            host: String,
+            realm: String,
+        ) = inner.onReceivedHttpAuthRequest(view, handler, host, realm)
+
+        override fun onReceivedClientCertRequest(view: WebView, request: android.webkit.ClientCertRequest) =
+            inner.onReceivedClientCertRequest(view, request)
+
+        override fun doUpdateVisitedHistory(view: WebView, url: String, isReload: Boolean) =
+            inner.doUpdateVisitedHistory(view, url, isReload)
+
+        override fun onFormResubmission(view: WebView, dontResend: android.os.Message, resend: android.os.Message) =
+            inner.onFormResubmission(view, dontResend, resend)
+
+        override fun onScaleChanged(view: WebView, oldScale: Float, newScale: Float) =
+            inner.onScaleChanged(view, oldScale, newScale)
+
+        override fun onUnhandledKeyEvent(view: WebView, event: android.view.KeyEvent) =
+            inner.onUnhandledKeyEvent(view, event)
+
+        override fun shouldOverrideKeyEvent(view: WebView, event: android.view.KeyEvent): Boolean =
+            inner.shouldOverrideKeyEvent(view, event)
+
+        override fun onRenderProcessGone(view: WebView, detail: android.webkit.RenderProcessGoneDetail): Boolean =
+            inner.onRenderProcessGone(view, detail)
+
+        override fun onReceivedLoginRequest(view: WebView, realm: String, account: String?, args: String) =
+            inner.onReceivedLoginRequest(view, realm, account, args)
+
+        override fun onSafeBrowsingHit(
+            view: WebView,
+            request: WebResourceRequest,
+            threatType: Int,
+            callback: android.webkit.SafeBrowsingResponse,
+        ) = inner.onSafeBrowsingHit(view, request, threatType, callback)
+    }
+
+    companion object {
+        const val SHELL_ORIGIN = "https://app.clax.invalid"
+        private const val SHELL_HOST = "app.clax.invalid"
+        private const val CONTENT_SUFFIX = ".c.clax.invalid"
+        private const val ANSWER_CAP_SECONDS = 30L
+
+        /** The shell's host, or an artifact's content host. */
+        fun isAppHost(host: String?): Boolean =
+            host == SHELL_HOST || (host != null && host.endsWith(CONTENT_SUFFIX) &&
+                host.length > CONTENT_SUFFIX.length && !host.dropLast(CONTENT_SUFFIX.length).contains('.'))
+
+        /**
+         * [status] with [headers] and [body] as a WebView takes it: the
+         * content type split into MIME type and charset. WebResourceResponse
+         * takes no 3xx status; one is answered as 502.
+         */
+        fun response(status: Int, headers: Map<String, String>, body: ByteArray): WebResourceResponse {
+            val type = headers.entries.firstOrNull { it.key.equals("content-type", ignoreCase = true) }?.value
+            val mime = type?.substringBefore(';')?.trim()?.ifEmpty { null } ?: "application/octet-stream"
+            val charset = type?.split(';')?.drop(1)?.map { it.trim() }
+                ?.firstOrNull { it.startsWith("charset=", ignoreCase = true) }
+                ?.substringAfter('=')?.trim('"')
+            val code = if (status in 300..399 || status !in 100..599) 502 else status
+            return WebResourceResponse(mime, charset, code, reason(code), headers, ByteArrayInputStream(body))
+        }
+
+        private fun reason(status: Int): String = when (status) {
+            200 -> "OK"
+            204 -> "No Content"
+            206 -> "Partial Content"
+            400 -> "Bad Request"
+            403 -> "Forbidden"
+            404 -> "Not Found"
+            405 -> "Method Not Allowed"
+            500 -> "Internal Server Error"
+            502 -> "Bad Gateway"
+            504 -> "Gateway Timeout"
+            else -> "Status $status"
+        }
+    }
+}

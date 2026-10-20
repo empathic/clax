@@ -19,6 +19,7 @@ class MainActivity : FlutterActivity() {
     private var background: BackgroundWorkChannel? = null
     private var notice: AppNoticeChannel? = null
     private var bundles: BundleIntake? = null
+    private var scheme: SchemeHost? = null
 
     // The window opens on Theme.Clax.Starting: the system's splash screen
     // (androidx core-splashscreen's on API 29-30), the Clax mark on `bg`.
@@ -35,6 +36,12 @@ class MainActivity : FlutterActivity() {
         notice = AppNoticeChannel(this, flutterEngine.dartExecutor.binaryMessenger)
         CuesChannel(applicationContext, flutterEngine.dartExecutor.binaryMessenger)
         bundles = BundleIntake(this, flutterEngine.dartExecutor.binaryMessenger)
+        // The app's origins and the ClaxHost channel in its WebViews, over
+        // dev.empathic.clax/scheme (SchemeHost.kt).
+        scheme = SchemeHost(flutterEngine.dartExecutor.binaryMessenger) { id ->
+            @Suppress("DEPRECATION")
+            WebViewFlutterAndroidExternalApi.getWebView(flutterEngine, id)
+        }
         // "nativeLibraryDir" answers the directory holding libclax.so, the
         // embedded clax executable. "openAppSettings" opens this app's page
         // in system settings (its permissions among it) and answers true.
