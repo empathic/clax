@@ -3,6 +3,12 @@
 //! four C functions that take request frames and post responses and
 //! events to Dart ports.
 
+mod core;
 pub mod frame;
-pub mod log;
-pub mod web;
+mod log;
+mod web;
+
+pub use crate::core::{
+    Embed, OpenError, OpenEvent, OpenOptions, RESPONSE_LIMIT, ReadError, admit, error_frame,
+    read_limited,
+};

@@ -119,7 +119,9 @@ CRATES = {
             "-Dunsafe_code"
         ],
         "name": "clax-embed",
-        "tests": {},
+        "tests": {
+            "embed": "tests/embed.rs"
+        },
         "version": "0.5.0"
     },
     "crates/clax-embedded": {
