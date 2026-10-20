@@ -1533,7 +1533,12 @@ impl Store {
             .get_artifact(&held_id)?
             .is_some_and(|a| a.current_version >= held_n);
         if !recorded
-            && self.content.unrecorded_step(&held_id, held_n).await?.as_deref() == Some(&mark)
+            && self
+                .content
+                .unrecorded_step(&held_id, held_n)
+                .await?
+                .as_deref()
+                == Some(&mark)
             && self.mark_of(&held_id, held_n, &mark, Some(&mark))? == MarkOf::Own
         {
             self.content.remove_version(&held_id, held_n).await?;
