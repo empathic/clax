@@ -5,6 +5,7 @@ load("@rules_shell//shell:sh_test.bzl", "sh_test")
 load("//bazel:cargo.bzl", "cargo_package")
 load("//bazel:opt.bzl", "opt_library")
 load("//bazel/android:embed.bzl", "android_embed")
+load("//bazel/android:ndk_nm.bzl", "ndk_nm")
 load("//bazel/apple:ios_rust.bzl", "ios_builds", "ios_opt_library")
 
 cargo_package(
@@ -136,13 +137,10 @@ build_test(
     targets = [":clax_embed_ios_builds"],
 )
 
-# The NDK's llvm-nm, for this host.
-alias(
+# The NDK's llvm-nm for this host, as the Android C++ toolchain names it.
+ndk_nm(
     name = "ndk_nm",
-    actual = select({
-        "@platforms//os:macos": "@androidndk//toolchains/llvm/prebuilt/darwin-x86_64:bin/llvm-nm",
-        "//conditions:default": "@androidndk//toolchains/llvm/prebuilt/linux-x86_64:bin/llvm-nm",
-    }),
+    platform = "//bazel/android:android_arm64",
 )
 
 # Each Android library exports exactly the four C functions.

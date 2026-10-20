@@ -282,7 +282,12 @@ AVD's small files (about 32 MB after a run); `--clean` removes it and
   keep its C++ runtime archives apart from the static libc, which rules_rust
   would otherwise link), and the Rust standard library for
   `aarch64-linux-android` and `x86_64-linux-android`; crate_universe
-  resolves the crates for those triples too.
+  resolves the crates for those triples too. The NDK repository has the
+  tools of the host that fetched it alone
+  (`toolchains/llvm/prebuilt/<host>`), and `bazel query` loads every
+  branch of a `select()`, so no BUILD file names that directory: a tool
+  comes from the Android C++ toolchain, as `bazel/android/ndk_nm.bzl`
+  takes its `nm`, and `bazel query 'deps(//...)'` loads on every host.
 - The Rust standard library for `aarch64-apple-ios` and
   `aarch64-apple-ios-sim`, and `apple_support`'s platforms and C toolchain
   (Xcode's). `.bazelrc`'s `--ios_minimum_os=17.0` is the one minimum: the
