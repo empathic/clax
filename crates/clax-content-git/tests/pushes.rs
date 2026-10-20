@@ -13,7 +13,7 @@ use std::sync::{Arc, Mutex};
 use clax_content_git::MemGitContent;
 use clax_core::RegisterSession;
 use clax_core::audit::AuditCtx;
-use clax_core::content::{ContentStore, PushLedger, RepoToken};
+use clax_core::content::{ContentStore, PushLedger, PushedContent, RepoToken};
 use clax_core::publish::{PublishRequest, ValidatedPublish, validate};
 use clax_core::rights::{PRESET_COLLABORATOR, Rights};
 use clax_core::{ArtifactId, CoreError, Home, Secret};
@@ -1127,4 +1127,77 @@ async fn a_commit_whose_trees_name_too_many_paths_is_refused_unread() {
         ),
         "{blocked:?}"
     );
+}
+
+/// The paths of version `n`'s files.
+fn paths(v: &clax_core::model::Version) -> Vec<&str> {
+    v.files.keys().map(String::as_str).collect()
+}
+
+#[tokio::test(flavor = "multi_thread")]
+async fn a_file_a_version_left_out_is_not_read_again_by_a_later_push() {
+    let f = fixture().await;
+    // Over MAX_FILE_BYTES: left out of version 2.
+    f.write("huge.bin", &"a".repeat((16 << 20) + 1));
+    f.commit("Huge").await;
+    f.push().await;
+    let recorded =
+        f.st.reconcile_pushes_async(DAEMON, &f.id, &Pusher::default())
+            .await
+            .unwrap();
+    assert_eq!(paths(&recorded[0].1), ["index.html"]);
+
+    f.write("index.html", "<p>three</p>");
+    f.commit("Three").await;
+    f.push().await;
+    let head = f.git.text(&f.clone, &["rev-parse", "HEAD"]).await;
+    let v2 = f.st.get_version(&f.id, 2).unwrap().unwrap();
+    let files = f
+        .content
+        .pushed_files(&f.id, &head, 2, &v2.files)
+        .await
+        .unwrap();
+    let huge = files.iter().find(|p| p.path == "huge.bin").unwrap();
+    assert_eq!(huge.content, PushedContent::LeftOut, "not read");
+
+    let recorded =
+        f.st.reconcile_pushes_async(DAEMON, &f.id, &Pusher::default())
+            .await
+            .unwrap();
+    let v = &recorded[0].1;
+    assert_eq!(paths(v), ["index.html"]);
+    assert_eq!(
+        v.note.as_deref(),
+        Some(
+            "1 file was not taken (over Clax's path or size limits, or not a regular file; still in git): huge.bin. Three"
+        )
+    );
+}
+
+#[tokio::test(flavor = "multi_thread")]
+async fn a_file_a_version_left_out_does_not_spend_a_later_pushs_read_bytes() {
+    let f = fixture().await;
+    // 12 MiB at a path publish refuses, sorted before the changed file.
+    f.write("bad\tbig.bin", &"a".repeat(12 << 20));
+    f.commit("Odd name").await;
+    f.push().await;
+    let recorded =
+        f.st.reconcile_pushes_async(DAEMON, &f.id, &Pusher::default())
+            .await
+            .unwrap();
+    assert_eq!(paths(&recorded[0].1), ["index.html"]);
+
+    // 5 MiB that fits on its own.
+    f.write("page.txt", &"b".repeat(5 << 20));
+    f.commit("Page").await;
+    f.push().await;
+    let recorded =
+        f.st.reconcile_pushes_async(DAEMON, &f.id, &Pusher::default())
+            .await
+            .unwrap();
+    let v = &recorded[0].1;
+    assert_eq!(paths(v), ["index.html", "page.txt"]);
+    let note = v.note.as_deref().unwrap();
+    assert!(note.starts_with("1 file was not taken"), "{note}");
+    assert!(note.contains(": bad big.bin. Page"), "{note}");
 }

@@ -780,6 +780,8 @@ impl<H: RepoHost + Send + Sync, A: AssetStore> ContentStore for GitContent<H, A>
         let commit = parse_commit(commit)?;
         let tree = Self::tree_of(&repo, &commit).await?;
         let refs = repo.refs().await.map_err(core_error)?;
+        // The base commit's regular files; those of them the version left
+        // out are not the version's.
         let base_entries: BTreeMap<String, ObjectId> = match versions_of(&refs).get(&base) {
             Some(c) => {
                 let base_tree = Self::tree_of(&repo, c).await?;
@@ -787,9 +789,7 @@ impl<H: RepoHost + Send + Sync, A: AssetStore> ContentStore for GitContent<H, A>
                     .await
                     .map_err(core_error)?
                     .into_iter()
-                    // A path of the commit the version left out is not
-                    // the version's: read it again.
-                    .filter(|e| is_regular(e.mode) && published.contains_key(&e.path))
+                    .filter(|e| is_regular(e.mode))
                     .map(|e| (e.path, e.id))
                     .collect()
             }
@@ -805,15 +805,27 @@ impl<H: RepoHost + Send + Sync, A: AssetStore> ContentStore for GitContent<H, A>
             ));
         };
         let mut out = Vec::new();
-        // Each blob is read once (`None`: it did not fit), and the files
-        // answered carry at most PUSHED_BYTES in all.
+        // Each blob is read once (`None`: it did not fit), and the changed
+        // files answered carry at most PUSHED_BYTES in all.
         let mut read: BTreeMap<ObjectId, Option<Vec<u8>>> = BTreeMap::new();
         let mut total = 0usize;
         for e in entries {
+            let unchanged = base_entries.get(&e.path) == Some(&e.id);
             let content = if !is_regular(e.mode) {
                 PushedContent::NotAFile
-            } else if base_entries.get(&e.path) == Some(&e.id) {
+            } else if unchanged && published.contains_key(&e.path) {
                 PushedContent::Same
+            } else if unchanged && e.path == clax_core::icon::ICON_PATH {
+                // Left out for a reason only the icon rules name: read
+                // again for them, outside the changed files' bytes.
+                let blob = repo
+                    .read_object(&e.id)
+                    .await
+                    .map_err(core_error)?
+                    .ok_or_else(|| unavailable(format!("Blob {} is missing", e.id)))?;
+                PushedContent::Bytes(blob.data)
+            } else if unchanged {
+                PushedContent::LeftOut
             } else {
                 if let std::collections::btree_map::Entry::Vacant(slot) = read.entry(e.id) {
                     let blob = if total >= PUSHED_BYTES {

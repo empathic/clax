@@ -359,13 +359,15 @@ pub trait ContentStore: Send + Sync {
 
     /// The files of pushed commit `commit` of `id`, each compared with the
     /// same path among `published`, the files version `base` publishes
-    /// (see [`PushedContent`]). A path `base`'s commit holds but `base`
-    /// left out (a pushed file a publish refused) is not
-    /// [`PushedContent::Same`]: it is read again, for its own reason to be
-    /// named. A store reads
-    /// each changed blob once, however many paths name it, and at most
+    /// (see [`PushedContent`]). A path `base`'s commit holds unchanged but
+    /// `base` left out (a pushed file a publish refused) is
+    /// [`PushedContent::LeftOut`], unread, except
+    /// [`ICON_PATH`](crate::icon::ICON_PATH), which is read again for the
+    /// icon rules to name its reason. A store reads each changed blob
+    /// once, however many paths name it, and at most
     /// [`MAX_BODY_BYTES`](crate::publish::MAX_BODY_BYTES) of them in all
-    /// (or less, as its host bounds it), answering the files past that
+    /// (or less, as its host bounds it; a left-out `icon.svg` read again
+    /// is not counted), answering the files past that
     /// [`PushedContent::TooLarge`]; a commit whose trees hold more than
     /// [`MAX_PUSHED_ENTRIES`] is `push_too_large`.
     async fn pushed_files(
@@ -494,6 +496,9 @@ pub enum PushedContent {
     /// Other bytes, not read: the files before it in path order changed
     /// as many bytes as the store reads of one commit.
     TooLarge,
+    /// The same bytes as the same path in that version's commit, which
+    /// that version left out: not read, and left out again.
+    LeftOut,
 }
 
 /// The most entries (files and trees, a tree each time it is reached) a

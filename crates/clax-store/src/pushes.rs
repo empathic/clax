@@ -364,7 +364,9 @@ impl Store {
             }
             match f.content {
                 PushedContent::Same => kept.keep(f.path),
-                PushedContent::NotAFile | PushedContent::TooLarge => skipped.push(f.path),
+                PushedContent::NotAFile | PushedContent::TooLarge | PushedContent::LeftOut => {
+                    skipped.push(f.path)
+                }
                 PushedContent::Bytes(bytes) => {
                     let size = bytes.len() as u64;
                     if size > MAX_FILE_BYTES || total + size > MAX_BODY_BYTES {
