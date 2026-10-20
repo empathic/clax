@@ -72,6 +72,9 @@ class FakeCore implements CoreCalls {
   /// The subscriptions not yet ended or cancelled.
   int get subscribers => _subs.where((s) => s.live).length;
 
+  /// Every subscription opened on the core while it was open.
+  int get subscriptions => _subs.length;
+
   /// Sends [block] to every live subscription.
   void push(String block) {
     for (final s in _subs) {

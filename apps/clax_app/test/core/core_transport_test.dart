@@ -32,6 +32,26 @@ class _Unanswering implements CoreCalls {
       throw UnimplementedError();
 }
 
+/// A [CoreCalls] whose calls the test answers, whenever it likes, and
+/// which cancels nothing.
+class _Held implements CoreCalls {
+  final List<Completer<CoreAnswer>> answers = [];
+  final List<int> cancels = [];
+
+  @override
+  CoreCall call(CoreRequest r) {
+    answers.add(Completer());
+    return CoreCall(answers.length - 1, answers.last.future);
+  }
+
+  @override
+  void cancel(int tag) => cancels.add(tag);
+
+  @override
+  CoreSubscription subscribe({String? lastEventId}) =>
+      throw UnimplementedError();
+}
+
 /// A timer that never fires by itself: the test runs its callback.
 class _HeldTimer implements Timer {
   bool _active = true;
@@ -241,6 +261,125 @@ void main() {
       );
     });
 
+    test('an answer after the time limit is dropped, and one in time stops the deadline', () async {
+      final timers = <(_HeldTimer, void Function())>[];
+      final core = _Held();
+      final api = HttpClaxApi.over(
+        CoreTransport(
+          core,
+          timer: (d, f) {
+            final t = _HeldTimer();
+            timers.add((t, f));
+            return t;
+          },
+        ),
+      );
+      Object? failure;
+      final late = api.listArtifacts().then<void>(
+        (_) {},
+        onError: (Object e) => failure = e,
+      );
+      await pumpEventQueue();
+      timers.single.$2();
+      await late;
+      expect(failure, isA<ClaxApiError>().having((e) => e.code, 'code', ClaxApiError.timeout));
+      expect(core.cancels, [0]);
+      // The core's answer comes after all: nothing hears it, and nothing
+      // fails.
+      core.answers.single.complete(
+        CoreAnswered(FakeCore.json({'artifacts': <Object?>[]})),
+      );
+      await pumpEventQueue();
+
+      final inTime = api.listArtifacts();
+      await pumpEventQueue();
+      core.answers.last.complete(
+        CoreAnswered(FakeCore.json({'artifacts': <Object?>[]})),
+      );
+      expect(await inTime, isEmpty);
+      expect(timers.last.$1.isActive, isFalse, reason: 'the deadline was cancelled');
+      expect(core.cancels, [0], reason: 'an answered call is not cancelled');
+    });
+
+    test('a feedback poll is an owner call on its session, given wait + pollSlack', () async {
+      final limits = <Duration>[];
+      final timed = HttpClaxApi.over(
+        CoreTransport(
+          core,
+          timer: (d, f) {
+            limits.add(d);
+            return _HeldTimer();
+          },
+        ),
+        pollSlack: const Duration(seconds: 20),
+      );
+      final s = await timed.registerAppSession(installId: 'install-1', pid: 7);
+      final aid = (await timed.createArtifact(
+        PublishRequest(title: 'Tea', files: {'index.html': '<p>tea'}),
+      )).artifact.id;
+      final poll = timed.pollFeedback(s.id, wait: const Duration(seconds: 50));
+      await pumpEventQueue();
+      expect(limits.last, const Duration(seconds: 70));
+      final r = to('GET', '/api/sessions/${s.id}/feedback').single;
+      expect(Uri.parse(r.path).queryParameters, {'tier': 'wait', 'wait': '50'});
+      expect(r.as, CallAs.owner);
+      expect(header(r, 'x-clax-session'), isNull, reason: 'the path names the session');
+      expect(header(r, 'authorization'), isNull);
+      fake.sendComment(aid, 'bigger');
+      expect((await poll).items.single.body, 'bigger');
+    });
+
+    test('across a stream the core ended, the topics are subscribed again and resynced', () async {
+      const aid = 'abcdefghjkmn';
+      final again = HttpClaxApi.over(
+        CoreTransport(core, retryDelay: (_) async {}),
+        eventRetryDelay: (_) async {},
+      );
+      final stream = again.stream();
+      final events = <StreamEvent>[];
+      final sub = stream.events.listen(events.add);
+      await stream.subscribe(['artifact:$aid']);
+      expect(to('POST', '/api/stream/fake-1'), hasLength(1));
+      core.end('stream_ended');
+      await pumpEventQueue();
+      // The core gives a new stream, not the old one resumed.
+      expect(core.subscriptions, 2);
+      expect(FakeCore.bodyOf(to('POST', '/api/stream/fake-2').single), {
+        'subscribe': ['artifact:$aid'],
+      });
+      expect(events.single.type, 'resync');
+      expect(events.single.topic, 'artifact:$aid');
+      expect(events.single.data['reason'], 'reconnect');
+      core.push(ev('fake-2:1', 'version', {'topic': 'artifact:$aid', 'n': 3}));
+      await pumpEventQueue();
+      expect(events.last.type, 'version');
+      expect(events.last.id, 'fake-2:1');
+      await sub.cancel();
+      await stream.close();
+    });
+
+    test("the stream's events end with an error when the core closes", () async {
+      final stream = api.stream();
+      final errors = <Object>[];
+      var done = false;
+      stream.events.listen(
+        (_) {},
+        onError: errors.add,
+        onDone: () => done = true,
+      );
+      await stream.subscribe(['inbox']);
+      core.close();
+      await pumpEventQueue();
+      expect(
+        errors.single,
+        isA<ClaxApiError>()
+            .having((e) => e.code, 'code', ClaxApiError.unreachable)
+            .having((e) => e.body['reason'], 'reason', 'core_closed'),
+      );
+      expect(done, isTrue);
+      expect(() => stream.subscribe(['questions']), throwsStateError);
+    });
+
     test("the stream delivers a pushed version to its artifact's topic", () async {
       const aid = 'abcdefghjkmn';
       final stream = api.stream();
@@ -321,6 +460,23 @@ void main() {
       expect(core.subscribers, 1);
       expect(delays, const [Duration(milliseconds: 500)]);
       await sub.cancel();
+    });
+
+    test('a cancel while the stream waits to subscribe again opens no subscription', () async {
+      final core = FakeCore();
+      final wait = Completer<void>();
+      final sub = CoreTransport(core, retryDelay: (_) => wait.future)
+          .sse('/api/stream')
+          .listen((_) {});
+      await pumpEventQueue();
+      core.end('stream_ended');
+      await pumpEventQueue();
+      expect(core.subscribers, 0);
+      await sub.cancel();
+      wait.complete();
+      await pumpEventQueue();
+      expect(core.subscriptions, 1);
+      expect(core.subscribers, 0);
     });
 
     test('the resume point asked for wins over the last ID seen', () async {
