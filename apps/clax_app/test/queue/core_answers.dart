@@ -296,6 +296,54 @@ class FakeJobsCore {
     _write(row.copyWith(threads: {...row.threads, 't${row.rev}': ('c', false)}));
   }
 
+  /// Another writer commits job [id]'s next turn, with no calls.
+  void commitElsewhere(JobId id) {
+    final row = rows[id];
+    if (row == null || row.state != JobState.running) return;
+    final turn = switch (row.step) {
+      null => 1,
+      TurnKey(:final turn) => turn + 1,
+      _ => null,
+    };
+    if (turn == null) return;
+    final key = TurnKey(turn);
+    _write(
+      row.copyWith(
+        steps: {...row.steps, key: TurnStepResult(const TurnNotes(), base: row.base)},
+        step: SetTo(key),
+        error: () => null,
+      ),
+    );
+  }
+
+  /// App [aid] is deleted: each open job naming it is cancelled with the
+  /// error `artifact_deleted` (`artifact_going_tx`), and no change of it
+  /// can be made.
+  void deleteArtifact(String aid) {
+    versions.remove(aid);
+    for (final row in rows.values.toList()) {
+      if (row.artifactId != aid || row.state.isFinal) continue;
+      _write(
+        _ending(
+          row.copyWith(
+            state: JobState.cancelled,
+            error: () => const JobError('artifact_deleted'),
+          ),
+        ),
+      );
+    }
+  }
+
+  /// Job [id]'s row goes with its app's purge; the job listener hears of
+  /// it with its last row.
+  void purge(JobId id) {
+    final row = rows.remove(id);
+    if (row == null) return;
+    events.add(
+      JobNoticed(id, state: row.state, step: row.step, rev: row.rev + 1),
+    );
+  }
+
   /// Another writer publishes a version of [aid].
   void publishElsewhere(String aid) =>
       versions[aid] = (versions[aid] ?? 0) + 1;
@@ -495,6 +543,62 @@ class Generator {
 
   T _pick<T>(List<T> xs) => xs[rnd.nextInt(xs.length)];
 
+  /// Fills the core with the jobs a launch may find, now and then: up to
+  /// three running and some queued, stopped, failed and paused, as a
+  /// worker killed with work under way leaves them.
+  void seed() {
+    if (rnd.nextInt(3) != 0) return;
+    final states = [
+      for (var i = 0, n = rnd.nextInt(4); i < n; i++) JobState.running,
+      for (var i = 0, n = rnd.nextInt(4); i < n; i++)
+        _pick(const [
+          JobState.queued,
+          JobState.stopped,
+          JobState.failed,
+          JobState.paused,
+        ]),
+    ];
+    for (final state in states) {
+      final id = 's${_ids++}';
+      final change = core.versions.isNotEmpty && rnd.nextBool();
+      final aid = change ? _pick(core.versions.keys.toList()) : null;
+      final base = aid == null ? 0 : core.versions[aid]!;
+      core.rows[id] = Job(
+        id: id,
+        kind: change ? JobKind.change : JobKind.make,
+        state: state,
+        rev: 1,
+        artifactId: aid,
+        input: JobInput(request: 'an app', base: base),
+        carry: state == JobState.stopped
+            ? Carry(stops: 1 + rnd.nextInt(2), canKeepGoing: rnd.nextInt(4) > 0)
+            : null,
+        error: state == JobState.failed
+            ? _pick([
+                const JobError('turn_failed'),
+                JobError('doc_moved', 'a.json', PublishKey(base)),
+              ])
+            : null,
+        step: state == JobState.queued ? null : const TurnKey(1),
+        steps: {
+          if (state != JobState.queued)
+            const TurnKey(1): TurnStepResult(
+              TurnNotes(
+                calls: [
+                  FinishCall(
+                    'f1',
+                    PublishPlan(base: base),
+                    reply: const ReplyPlan(data: 'done'),
+                  ),
+                ],
+              ),
+              base: base,
+            ),
+        },
+      );
+    }
+  }
+
   /// The answer to [e], drawn as the runner and the core could give it.
   Msg? _answer(Effect e) {
     switch (e) {
@@ -545,7 +649,9 @@ class Generator {
               stop: TurnStop(canKeepGoing: rnd.nextBool()),
             ),
           ),
-          // The finish at once, on the base the turn planned on.
+          // The finish at once: mostly on the base the turn planned on,
+          // now and then on an older one (the job's own, or one below the
+          // turn's), which the core refused or would.
           3 || 4 || 5 || 6 => TurnDone(
             id,
             jobId,
@@ -554,7 +660,13 @@ class Generator {
                 calls: [
                   FinishCall(
                     'f${input.turn}',
-                    PublishPlan(base: input.base),
+                    PublishPlan(
+                      base: switch (rnd.nextInt(5)) {
+                        0 => job.input.base,
+                        1 => max(0, input.base - 1),
+                        _ => input.base,
+                      },
+                    ),
                     reply: const ReplyPlan(data: 'done'),
                   ),
                 ],
@@ -594,7 +706,7 @@ class Generator {
     if (roll < 88 && core.events.isNotEmpty) {
       return core.events.removeAt(rnd.nextInt(core.events.length));
     }
-    switch (rnd.nextInt(40)) {
+    switch (rnd.nextInt(46)) {
       case < 6:
         return Make('m${_ids++}', 'an app');
       case < 9:
@@ -612,6 +724,16 @@ class Generator {
         if (ids.isEmpty) return const CanRender(true);
         final id = _pick(ids);
         return _pick([Cancel(id), Retry(id), KeepGoing(id), Discard(id)]);
+      case < 13:
+        // Keep going or Retry for a job that offers it, whatever runs: at
+        // the limit it is held.
+        final ids = [
+          for (final j in core.rows.values)
+            if (j.state == JobState.stopped || j.state == JobState.failed) j,
+        ];
+        if (ids.isEmpty) return const CanRender(true);
+        final j = _pick(ids);
+        return j.state == JobState.failed ? Retry(j.id) : KeepGoing(j.id);
       case < 14:
         final ids = core.rows.keys.toList();
         if (ids.isNotEmpty) core.touch(_pick(ids));
@@ -647,6 +769,28 @@ class Generator {
       case < 30:
         liveToken = null;
         return const CoreOpened();
+      case < 32:
+        // Another writer commits a running job's next turn under the
+        // worker: a turn it has in flight is stale when it ends.
+        final ids = [
+          for (final j in core.rows.values)
+            if (j.state == JobState.running) j.id,
+        ];
+        if (ids.isNotEmpty) core.commitElsewhere(_pick(ids));
+        return const CanRender(true);
+      case < 33:
+        // An app is deleted: the core cancels its open jobs.
+        final apps = core.versions.keys.toList();
+        if (apps.isNotEmpty) core.deleteArtifact(_pick(apps));
+        return const CanRender(true);
+      case < 34:
+        // A final job's row is purged with its app.
+        final ids = [
+          for (final j in core.rows.values)
+            if (j.state.isFinal) j.id,
+        ];
+        if (ids.isNotEmpty) core.purge(_pick(ids));
+        return const CanRender(true);
       default:
         _clock = _clock.add(const Duration(seconds: 5));
         return Tick(_clock);

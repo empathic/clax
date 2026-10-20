@@ -9,14 +9,23 @@ import 'package:flutter_test/flutter_test.dart' hide Retry;
 import 'core_answers.dart';
 
 /// Seeded random runs of `update` against the core's answers
-/// ([Generator]): 2,000 sequences of up to 40 messages, each one valid for
+/// ([Generator]): for each seed (another is a one-line change), 2,000 sequences of up to 40 messages,
+/// some from a core holding jobs a killed worker left, each one valid for
 /// the effects emitted so far (answers name issued effects, the commit
 /// effects answered as the store would, or refused, events delivered
 /// before or after their answers, intents and the world's news at random).
 /// After every message the invariants below hold.
 void main() {
-  test('every run keeps the queue\'s invariants', () {
-    final rnd = Random(42);
+  for (final seed in const [42]) {
+    test('every run keeps the queue\'s invariants (seed $seed)', () {
+      _runs(seed);
+    });
+  }
+}
+
+void _runs(int seed) {
+  {
+    final rnd = Random(seed);
     var messages = 0;
     final seen = <String, int>{
       for (final k in [
@@ -37,12 +46,21 @@ void main() {
         'waiting for Claude',
         'replayed',
         'read',
+        'read: no row',
+        'cancelled by the core',
+        'keep going held at the limit',
+        'retry held at the limit',
+        'stale turn dropped',
+        'finish on a stale base',
+        'refusal recorded',
+        'suspended',
+        'probe let go',
       ])
         k: 0,
     };
     for (var run = 0; run < 2000; run++) {
       final core = FakeJobsCore()..versions['app'] = 2;
-      final gen = Generator(rnd, core);
+      final gen = Generator(rnd, core)..seed();
       final watch = _Invariants();
       var m = const QueueModel();
       final length = 1 + rnd.nextInt(40);
@@ -52,19 +70,22 @@ void main() {
         final where = 'run $run, message $i (${msg.runtimeType})';
         watch.check(m, msg, next, effects, where);
         gen.took(effects, next);
-        _cover(seen, msg, effects, next);
+        _cover(seen, m, msg, effects, next);
         m = next;
         messages++;
       }
     }
     expect(messages, greaterThan(30000));
     expect(seen, {for (final k in seen.keys) k: greaterThan(0)}, reason: '$seen');
-  });
+    // ignore: avoid_print
+    print('seed $seed: $messages messages, reached $seen');
+  }
 }
 
 class _Invariants {
-  /// Jobs whose render was lost and not yet rendered again.
-  final Set<JobId> _renderLost = {};
+  /// Jobs whose render was lost and not yet rendered again, with the turn
+  /// whose call it drew.
+  final Map<JobId, int> _renderLost = {};
 
   void check(
     QueueModel before,
@@ -77,6 +98,7 @@ class _Invariants {
     _onceCommitted(before, effects, where);
     _nothingForFinalJobs(after, effects, where);
     _atMostThreeRun(after, where);
+    _startsUnderTheLimit(after, effects, where);
     expect(
       after.keepAlive,
       after.jobs.values.any(
@@ -180,6 +202,33 @@ class _Invariants {
     );
   }
 
+  /// A job is moved to running (from queued, paused, stopped or failed)
+  /// only while fewer than three others run or are being moved to.
+  void _startsUnderTheLimit(
+    QueueModel after,
+    List<Effect> effects,
+    String where,
+  ) {
+    bool runs(Job j) =>
+        j.state == JobState.running || j.state == JobState.waiting;
+    for (final e in effects.whereType<MoveJob>()) {
+      final row = after.jobs[e.jobId];
+      if (e.to != JobState.running || row == null || runs(row)) continue;
+      final others = {
+        for (final j in after.jobs.values)
+          if (j.id != e.jobId && runs(j)) j.id,
+        for (final f in after.inFlight.values)
+          if (f is MoveJob && f.jobId != e.jobId && f.to == JobState.running)
+            f.jobId,
+      };
+      expect(
+        others.length,
+        lessThan(QueueModel.maxRunning),
+        reason: '$where: ${e.jobId} started while $others run',
+      );
+    }
+  }
+
   void _noTurnAfterLostRender(
     QueueModel before,
     Msg msg,
@@ -190,7 +239,7 @@ class _Invariants {
     switch (msg) {
       case RenderLost(:final effect, :final jobId)
           when before.inFlight[effect] is Render:
-        _renderLost.add(jobId);
+        _renderLost[jobId] = (before.inFlight[effect]! as Render).turn;
       case Rendered(:final effect, :final jobId)
           when before.inFlight[effect] is Render:
         _renderLost.remove(jobId);
@@ -199,13 +248,17 @@ class _Invariants {
     }
     for (final t in effects.whereType<StartTurn>()) {
       expect(
-        _renderLost.contains(t.jobId),
+        _renderLost.containsKey(t.jobId),
         isFalse,
         reason: '$where: a turn of ${t.jobId} between a lost render and the next',
       );
     }
+    // A job ended, or whose row moved past the render's turn (another
+    // writer committed its next one), plans afresh.
     _renderLost.removeWhere(
-      (id) => after.jobs[id]?.state.isFinal ?? true,
+      (id, turn) =>
+          (after.jobs[id]?.state.isFinal ?? true) ||
+          after.jobs[id]?.lastTurn != turn,
     );
   }
 
@@ -284,8 +337,79 @@ class _Invariants {
 
 /// Counts what the runs reached, so a generator that stops short of a
 /// path fails the test rather than passing it untried.
-void _cover(Map<String, int> seen, Msg msg, List<Effect> effects, QueueModel m) {
+void _cover(
+  Map<String, int> seen,
+  QueueModel before,
+  Msg msg,
+  List<Effect> effects,
+  QueueModel m,
+) {
   void hit(String k) => seen[k] = seen[k]! + 1;
+  // A wish the resume table holds, not drops, while three jobs run.
+  final running = m.jobs.values
+      .where((j) => j.state == JobState.running || j.state == JobState.waiting)
+      .length;
+  if (m.owner is OwnerHeldBy &&
+      !m.suspended &&
+      running >= QueueModel.maxRunning) {
+    for (final MapEntry(key: id, value: l) in m.local.entries) {
+      final j = m.jobs[id];
+      final moving = m.inFlight.values.any(
+        (e) => e is CommitEffect && e.jobId == id,
+      );
+      if (j == null || moving) continue;
+      if (l.intent == JobIntent.keepGoing && j.state == JobState.stopped) {
+        hit('keep going held at the limit');
+      }
+      if (l.intent == JobIntent.retry && j.state == JobState.failed) {
+        hit('retry held at the limit');
+      }
+    }
+  }
+  switch (msg) {
+    case TurnDone(:final effect, :final jobId):
+      final started = before.inFlight[effect];
+      final job = before.jobs[jobId];
+      if (started is StartTurn &&
+          job?.state == JobState.running &&
+          before.localOf(jobId).intent == null &&
+          job?.step !=
+              (started.input.turn == 1 ? null : TurnKey(started.input.turn - 1))) {
+        hit('stale turn dropped');
+      }
+    case JobRead(:final jobId, job: null) when before.jobs.containsKey(jobId):
+      hit('read: no row');
+    case OutOfTime():
+      hit('suspended');
+    case Tick():
+      if (before.probe case ProbeInFlight(:final effect)) {
+        if (m.probe case ProbeInFlight(effect: final now) when now == effect) {
+          break;
+        }
+        hit('probe let go');
+      }
+    default:
+      break;
+  }
+  for (final e in effects.whereType<MoveJob>()) {
+    if (e.error case SetTo(value: JobError(step: PublishKey() || ReplyKey()))) {
+      hit('refusal recorded');
+    }
+  }
+  for (final j in m.jobs.values) {
+    if (j.error?.code == 'artifact_deleted') hit('cancelled by the core');
+    final turn = j.lastTurn;
+    if (j.state != JobState.running || turn == null) continue;
+    if (j.steps[TurnKey(turn)] case TurnStepResult(:final notes)) {
+      for (final c in notes.calls) {
+        if (c case FinishCall(:final publish)
+            when publish.base < j.base &&
+                j.steps[PublishKey(publish.base)] == null) {
+          hit('finish on a stale base');
+        }
+      }
+    }
+  }
   switch (msg) {
     case Committed(:final job, :final replayed):
       if (replayed) hit('replayed');

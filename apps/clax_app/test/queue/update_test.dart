@@ -368,6 +368,33 @@ void main() {
     });
   });
 
+  group('rule 5b: a turn planned on a step the row moved past is dropped', () {
+    test('another writer commits the turn: the stale one commits nothing', () {
+      final j = job('j', rev: 2, steps: {const TurnKey(1): turnOf(const [])});
+      final m0 = model(jobs: [j], inFlight: [StartTurn(7, 'j', _input(2))]);
+      final moved = j.copyWith(
+        rev: 3,
+        steps: {...j.steps, const TurnKey(2): turnOf(const [])},
+        step: const SetTo(TurnKey(2)),
+      );
+      final (m1, e1) = updateAll(m0, [
+        const JobNoticed('j', state: JobState.running, rev: 3),
+      ]);
+      final read = e1.whereType<ReadJob>().single;
+      final (m2, _) = update(m1, JobRead(read.id, 'j', moved));
+      final (_, e3) = update(
+        m2,
+        TurnDone(7, 'j', TurnOutcome(finishNotes(base: 0).notes)),
+      );
+      expect(e3.whereType<CommitStep>(), isEmpty);
+      expect(
+        e3.whereType<StartTurn>().single.input.turn,
+        3,
+        reason: 'planned again from the row',
+      );
+    });
+  });
+
   group('rule 6: waiting for Claude is not durable', () {
     test('a turn that cannot reach Claude waits and probes, then goes on', () {
       final m0 = model(jobs: [job('j')], inFlight: [StartTurn(7, 'j', _input(1))]);
@@ -832,6 +859,32 @@ void main() {
       );
       expect(e2.whereType<StartTurn>().single.input.planRest, isTrue);
     });
+
+    for (final (name, row, intent) in <(String, Job, Intent)>[
+      ('Keep going', job('j', state: JobState.stopped, rev: 3, carry: _carry(1)), const KeepGoing('j')),
+      ('Retry', job('j', state: JobState.failed, rev: 3), const Retry('j')),
+    ]) {
+      test('$name while three jobs run is held, and granted when one ends', () {
+        final running = [for (final id in ['x', 'y', 'z']) job(id, rev: 1)];
+        final m0 = model(
+          jobs: [...running, row],
+          inFlight: [
+            for (final (i, r) in running.indexed) StartTurn(i + 1, r.id, _input(1)),
+          ],
+        );
+        final (m1, e1) = update(m0, intent);
+        expect(e1.whereType<MoveJob>(), isEmpty, reason: 'held at the limit');
+        final (m2, e2) = update(m1, Tick(t0));
+        expect(e2.whereType<MoveJob>(), isEmpty, reason: 'still held');
+        final cancel = update(m2, const Cancel('x')).$2.whereType<MoveJob>().single;
+        final (_, e3) = update(
+          update(m2, const Cancel('x')).$1,
+          Committed(cancel.id, running.first.copyWith(state: JobState.cancelled, rev: 2)),
+        );
+        final go = e3.whereType<MoveJob>().single;
+        expect((go.jobId, go.to), ('j', JobState.running), reason: 'not dropped');
+      });
+    }
 
     test('a spent budget offers no Keep going', () {
       final j = job(
