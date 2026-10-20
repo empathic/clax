@@ -582,7 +582,8 @@ export function installHost(win: Window, ctl: ArtifactController): () => void {
     // The viewer's open pick, placed by the page like the threads' anchors.
     anchors: () => {
       const d = s().draft;
-      return d && picksAt(d) && d.anchor.file === s().file ? [{ id: d.pickId, anchor: d.anchor }] : [];
+      // A pick is of the version shown.
+      return d && picksAt(d) && d.anchor.file === s().file ? [{ id: d.pickId, anchor: d.anchor, sameVersion: true }] : [];
     },
     // The app's Send waits on the post the composer dropped: a fresh notice
     // each time tells it nothing was sent (on the web the composer's own

@@ -205,7 +205,7 @@ export class ArtifactController {
    * threads' the page resolves for it (`anchors`: an open pick's, by an ID
    * of the app's own, its place then in `resolved` under that ID). */
   /** @internal */
-  app: { welcome(file: string): { app: true; restoreScroll?: number }; posted(t: Thread): void; dropped(): void; anchors(): { id: string; anchor: Anchor }[] } | null = null;
+  app: { welcome(file: string): { app: true; restoreScroll?: number }; posted(t: Thread): void; dropped(): void; anchors(): { id: string; anchor: Anchor; sameVersion?: boolean }[] } | null = null;
   /** The write journal of a live migration in the app's migration view
    * (app/host.ts), while one runs: every `db` write of the page waits for it. */
   dbJournal: DbJournal | null = null;

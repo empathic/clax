@@ -1078,8 +1078,12 @@ describe("app mode's host channel", { timeout: MOUNT_TIMEOUT_MS }, () => {
     // The page is asked to place the pick's anchor with the threads'.
     const ask = () => posted.filter(m => m.type === "clax:resolve-anchors").at(-1) as { requestId: string; anchors: { id: string; anchor: unknown }[] } | undefined;
     await waitFor(() => ask()?.anchors.some(a => JSON.stringify(a.anchor) === JSON.stringify(row)), "the pick's anchor sent to be placed");
-    const handle = ask()!.anchors.find(a => JSON.stringify(a.anchor) === JSON.stringify(row))!.id;
+    const sent = ask()!.anchors.find(a => JSON.stringify(a.anchor) === JSON.stringify(row))! as { id: string; anchor: unknown; sameVersion?: boolean };
+    const handle = sent.id;
     expect(handle).not.toBe("a1");
+    // The pick was made on the version shown: an area's fingerprint is not
+    // asked to hold, as for a thread of that version.
+    expect(sent.sameVersion).toBe(true);
     fromFrame(frame.contentWindow!, { type: "clax:anchors", requestId: ask()!.requestId, results: [{ id: handle, found: true, method: "selector", rect: { x: 5, y: 6, w: 30, h: 40 } }] });
     await waitFor(() => ofType("state").at(-1)?.draft?.at, "a place");
     expect(ofType("state").at(-1)!.draft!.at).toEqual({ x: 15, y: 26, w: 30, h: 40 });
