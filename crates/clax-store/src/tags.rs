@@ -383,6 +383,9 @@ impl Store {
     /// # Errors
     /// The store's.
     pub fn tag_filter_ids(&self, refs: &[String]) -> Result<Vec<String>> {
+        if refs.is_empty() {
+            return Ok(Vec::new());
+        }
         let all = self.list_tags()?;
         Ok(refs
             .iter()
@@ -794,6 +797,7 @@ mod tests {
         assert!(carries_all(&carried, &[x.id.clone(), "y".into()]));
         assert!(!carries_all(&carried, &s(&["x", "z"])));
         assert!(carries_all(&carried, &[]));
+        assert!(st.tag_filter_ids(&[]).unwrap().is_empty());
         let ids = st.tag_filter_ids(&s(&["X", "nope"])).unwrap();
         assert_eq!(ids[0], x.id);
         assert!(!tags::is_id(&ids[1]));
