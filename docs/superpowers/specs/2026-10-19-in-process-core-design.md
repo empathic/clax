@@ -1,0 +1,1112 @@
+# The Clax app's core in its own process: no daemon, no HTTP
+
+Date: 2026-10-19. Branch: `flutter-app`. Status: draft for the owner's review.
+Builds on `2026-10-12-flutter-app-design.md` (the "app spec"),
+`2026-10-12-flutter-app-round2-design.md` (the "round-2 spec"),
+`2026-10-18-ios-release-design.md` (the "iOS spec") and `docs/bazel.md`
+("The Clax app"). It supersedes the parts of them named in §13.
+
+## Goal
+
+The Clax app (`apps/clax_app`) runs Clax's core, the Rust store and router
+that `clax serve` runs, as a library inside its own process on Android,
+macOS, iPhone and iPad. Nothing listens on a port, nothing is spawned,
+nothing is probed for health. The app's agent and its queue of makes and
+changes run in a long-lived Dart worker isolate, as one model in the Elm
+architecture's shape, over durable job steps the core keeps in SQLite. The
+person never sees transport state for local work.
+
+After this work:
+
+- one crate, `crates/clax-embed`, is linked into the app on all three
+  platforms and exposes four C functions (§2.2);
+- the app's WebViews load the shell, pages and files from a scheme the app
+  answers (§4), and the shell talks to the core over the `ClaxHost`
+  channel in app mode (§5); the browser shell is unchanged;
+- each artifact's content is a separate origin from the shell and from
+  every other artifact (§4.3);
+- makes and changes are jobs in the core's database; a step that publishes
+  commits with its version, so a job resumed after a kill never publishes
+  twice (§7);
+- the icon and page checks that `finish` applies are the core's, so every
+  publish obeys them (§8);
+- the seven JSON state files are imported once into core tables (§9);
+- the daemon supervisor, the port, the key cookie, the health probe and
+  `crates/clax-ios` are deleted (§13).
+
+## Owner's decisions (binding)
+
+1. **No separate daemon process and no HTTP inside the app.** Android and
+   macOS stop running `clax` as a child; the supervisor, health probes,
+   port picker and port file, key cookie, `ExeLocator` and sample-key HTTP
+   go. iOS's `crates/clax-ios` (a thread serving loopback HTTP) is replaced
+   too. No loopback listener anywhere in the app.
+2. **One Rust crate, `clax-embed`**, linked on Android, macOS and iOS, with a
+   fixed C ABI of about five functions (`open(home)`, `call(request bytes)
+   → response bytes`, `free`, `close`, `subscribe(dart port)`). `unsafe`
+   only on those exports and their buffer handling; `scripts/check-no-unsafe.sh`,
+   its test and AGENTS.md name exactly those exports; the clax-ios
+   exception goes. `call` feeds a serialized request into the existing
+   axum Router in-process; the core's background tasks run on its own
+   threads; events go to Dart ports. Layering per `scripts/check-crate-layers.py`.
+3. **WebView without a server.** A custom scheme answered by the host
+   (Android `shouldInterceptRequest`, `WKURLSchemeHandler` on Apple). API
+   calls in app mode go over `ClaxHost`, answered by `runJavaScript`. Events
+   are host-pushed through the `claxHost` path. The app never shows "Live
+   updates paused. Reconnecting…" or "Clax is not answering. Retrying…".
+   The browser shell is unchanged. Each artifact's content is its own
+   origin, and the security model is spelled out.
+4. **The queue lives in a long-lived Dart worker isolate**, one Elm-shaped
+   model: Jobs with state and step, a pure `update(model, msg) → (model,
+   effects)`, an effect runner. The UI isolate never awaits work: it
+   receives `QueueState` and sends intents (make, change, cancel, retry,
+   keep going, discard). The agent stays Dart and moves into the worker.
+   Rendering is asked of the UI isolate by message. Clax's own agent is
+   app-only for now.
+5. **Shared logic goes in Rust**: durable job steps (publish atomic with the
+   version), the icon and page checks, and the JSON state files as core
+   tables (the core owns what it should; app-only preferences may stay).
+6. **Background:** jobs keep running when the person leaves the app: the
+   Android foreground service (`ChannelBackgroundWork`) holds the process
+   while any job runs; Mac and iOS go on while the OS allows. After a kill,
+   each job resumes from its last committed step at the next launch, or at
+   a WorkManager wake on Android.
+7. **No transport state for local work.** "Waiting for connection" remains
+   only for the Claude API, worded to name Claude; the home tile's
+   "Offline" says what is unreachable.
+
+## Decisions this spec takes
+
+Where the owner's text leaves a choice, this spec takes the reading below.
+Each marked **(ask)** is also a `status:needs-decision` record on this file.
+
+- **S1. `call` answers through a Dart port, not a return value (ask).**
+  Several routes the app uses wait by design: `GET /api/sessions/{sid}/feedback?wait=`
+  (`pollFeedback`), `waitQuestion`, and a 16 MiB publish or a migration can
+  take seconds. A `call` that returned its response would block the calling
+  isolate's thread for that long; on the UI isolate that is dropped frames,
+  and on the worker it stalls the Messages API stream. So `call` takes the
+  request bytes and a Dart port, returns at once, and the core posts the
+  response bytes to that port (a copy Dart owns; §2.2). With nothing handed
+  back to free, `free` has no use, and the ABI is four functions: `open`,
+  `call`, `subscribe`, `close`. The alternative (a blocking `call` and `free`,
+  run from a pool of helper isolates) is recorded as an `alternative`.
+- **S2. Platform URLs.** One logical scheme, `clax:`, written per platform
+  (§4.1): Android answers `https://*.clax.invalid` in `shouldInterceptRequest`
+  (a custom scheme gets an opaque origin in Android's WebView, which breaks
+  `localStorage`, `postMessage` targets and CORS); Apple answers `clax://`
+  with `WKURLSchemeHandler`.
+- **S3. The channel is the shell's alone.** The host accepts `ClaxHost`
+  messages only from the shell's origin in the main frame (§4.4). Android
+  uses `WebViewCompat.addWebMessageListener` with that origin as its one
+  allowed rule, replacing `addJavascriptInterface`; Apple checks
+  `WKScriptMessage.frameInfo`.
+- **S4. The core owns the queue's durable state; the app keeps preferences.**
+  Core tables: jobs, their steps, the threads and questions they answer, and
+  the agent's remembered read consents (§9). App-side and unchanged:
+  `settings.json`, `timings.jsonl`, `agent-timings.jsonl`, `lineages.json`,
+  `home.json`, `device-grants.json`, `device-reminders.json`, `bundles/`,
+  `snapshots/`. There are seven state files, not six: `unfinished.json`
+  (`lib/agent/unfinished.dart`, Keep going's carried draft) is a job's state
+  too and moves with them.
+- **S5. A render-clean record is the core's draft gate.** The core cannot
+  render, so the `finish` gate's "the draft's latest revision rendered with
+  no uncaught errors and no failing tests" becomes: the app records each
+  render's result against the draft's content digest, and a publish step
+  made from a draft is refused unless that digest has a clean render (§8.2).
+- **S6. A WorkManager wake runs a job until it needs a render (ask).** A
+  render needs a WebView, which needs the app's UI; a wake with no UI runs
+  model turns and committed-step tails, and at the next render step leaves
+  the job `paused` with the notice "Open Clax to keep building <title>".
+  Rendering in an offscreen native WebView is the recorded alternative.
+- **S7. iOS gains no BGProcessingTask (ask).** There is none today (the iOS
+  spec took `beginBackgroundTask` and turned down `BGContinuedProcessingTask`).
+  iOS and the Mac keep `IosBackgroundWork`'s pause at the time limit, and
+  resume at the next launch.
+- **S8. The Android engine outlives the activity.** The foreground service
+  holds the process; a `FlutterEngine` kept in `FlutterEngineCache` by the
+  application holds the isolates, so Back out of Clax does not end a job
+  (today the activity's own engine dies with it).
+
+## 1. What runs today
+
+| | Android | macOS | iOS |
+|---|---|---|---|
+| The core | `libclax.so`, the `clax` executable, as a child (`//crates/clax-cli:clax_android_*`, `bazel/android/clax.bzl`) | `clax` in `Contents/Resources`, a sandboxed helper (`macos_helper`, `bazel/flutter/macos.bzl`) | `crates/clax-ios`, a static library serving loopback HTTP on a thread |
+| Driven by | `DaemonSupervisor` (`lib/daemon/supervisor.dart`, 727 lines): port file, `daemon.json`, `/healthz`, backoff, restart on a key change | the same | the same supervisor over `InProcessStarter` (`lib/daemon/in_process.dart`) |
+| The app's calls | `HttpClaxApi` (`lib/clax/http_api.dart`) over `package:http` to `http://127.0.0.1:<port>` | the same | the same |
+| Events | `SseClaxStream` / `SharedClaxStream` on `/api/stream` (`lib/clax/stream.dart`, `shared_stream.dart`) | the same | the same |
+| WebViews | `http://127.0.0.1:<port>/a/<id>?app=1` with the `clax_key_<port>` cookie (`lib/ui/daemon_cookie.dart`); content at `http://<id>.localhost:<port>` | the same | the same, ATS allowing loopback |
+| Queue state | seven JSON files in the support directory, written by the UI isolate | the same | the same |
+
+`clax_server::serve::serve` (`crates/clax-server/src/serve.rs:344`) does, in
+order: open the store (with its backup and migrations), write `daemon.json`,
+assemble `AppState`, start the audit journal and the listeners
+(`start_listeners`), build the router, spawn six tasks (stale watcher,
+reaper, grant sweeper, optimizer, drafts sweeper, working sweeper), and
+serve with graceful shutdown. Everything but the listener, `daemon.json`
+and the stale watcher is what an embedded core needs.
+
+## 2. `crates/clax-embed`
+
+### 2.1 The crate
+
+A new crate, `crates/clax-embed`, replacing `crates/clax-ios`. It is built
+as a `cdylib` for Android (`libclax_embed.so` per ABI) and as a
+`staticlib` for macOS and iOS (linked into the runner). Its layer is the
+one clax-ios had: `"clax-embed": SERVER | {"clax-embedded"}` in
+`scripts/check-crate-layers.py`'s `ALLOWED`, and `clax-ios` leaves the map.
+
+```
+crates/clax-embed/
+  Cargo.toml          [lints.rust] unsafe_code = "deny" (the only crate but clax-worker)
+  BUILD.bazel
+  include/clax_embed.h   the four declarations (§2.2)
+  src/lib.rs          the safe API: Embed, open/call/subscribe/close
+  src/core.rs         Core: the store, AppState, tasks and router, without a listener
+  src/frame.rs        request and response frames (§2.3)
+  src/events.rs       a subscription: a stream hub connection posted as SSE blocks
+  src/dart.rs         Dart_CObject and the post function's type (no unsafe)
+  src/ffi.rs          the four exports; the only file with unsafe
+  src/log.rs          the rolling log (moved from clax-ios)
+  src/web.rs          the embedded web UI as a FileTree (moved from clax-ios)
+```
+
+`clax-server` gains `clax_server::core::{Core, CoreConfig}`: `serve()` is
+split so that everything it does but binding, `daemon.json` and the stale
+watcher is `Core::start(cfg) -> Core`, which owns the background tasks and
+`Core::router()`, and `Core::stop()` ends them as `serve` does after its
+drain. `serve()` becomes `Core::start` plus the listener and `daemon.json`;
+`clax serve`'s behaviour does not change (its integration tests are the
+check). `Core::start` runs on a Tokio runtime that `clax-embed` owns: a
+multi-thread runtime with two workers, named `clax-rt`, as clax-ios had.
+
+### 2.2 The C ABI
+
+```c
+// include/clax_embed.h
+#include <stdint.h>
+#include <stddef.h>
+typedef struct Dart_CObject Dart_CObject;
+typedef int8_t (*ClaxPost)(int64_t port, Dart_CObject *message);
+
+// Opens the core on the home at home[0..home_len] (UTF-8) and returns its
+// handle at once (never 0), or 0 when that home is open in this process
+// already or the path is not UTF-8. The store opens, backs up and
+// migrates on the core's own threads; `port` hears {"type":"ready"} or
+// {"type":"failed","code":…,"message":…}, then {"type":"closed"} after
+// clax_embed_close. `post` is Dart's NativeApi.postCObject.
+uint64_t clax_embed_open(const uint8_t *home, size_t home_len,
+                         ClaxPost post, int64_t port);
+
+// Sends one request frame (§2.3). Returns 0 when the core took it, 1 for
+// an unknown handle, 2 for a frame that does not parse. The response
+// frame is posted to `port` as one Uint8List: `tag` (8 bytes, little
+// endian) then the frame. A call made before "ready" waits for it.
+int32_t clax_embed_call(uint64_t core, const uint8_t *req, size_t req_len,
+                        int64_t port, int64_t tag);
+
+// Posts the core's events to `port`, one Uint8List per SSE block of the
+// stream hub (§2.4), until the port is closed. 0, or 1 for an unknown handle.
+int32_t clax_embed_subscribe(uint64_t core, int64_t port);
+
+// Stops the core as `clax serve` stops on SIGTERM: in-flight calls end,
+// tasks stop, the journal syncs, the store closes. Returns at once; the
+// open port hears {"type":"closed"}. 0, or 1 for an unknown handle.
+int32_t clax_embed_close(uint64_t core);
+```
+
+- A handle is a number in a process-wide registry (`Mutex<HashMap<u64,
+  Arc<Embed>>>`), never a pointer, so nothing dereferences it. Any isolate
+  may use it: the UI isolate opens the core and gives the handle to the
+  worker isolate when it spawns it.
+- `post` is called from the core's threads. `NativeApi.postCObject` is
+  thread-safe and copies a typed-data message, so Rust frees its buffer as
+  soon as `post` returns. A `post` that returns 0 (the port is closed) ends
+  that subscription; a dropped call response is logged and forgotten.
+- `Dart_CObject` is declared in `src/dart.rs` as `#[repr(C)]` with its
+  union sized by its largest member (`as_external_typed_data`: type, length,
+  data, peer, callback), matching `dart_native_api.h` of the Dart SDK that
+  Flutter 3.47.7 ships; the core builds only `kTypedData` (type 7) with
+  `Dart_TypedData_kUint8` (2). Building a union and passing a pointer to it
+  is safe Rust; nothing reads one.
+
+### 2.3 Frames
+
+A request frame is `CLX1`, a 4-byte little-endian length, that many bytes
+of JSON, then the body bytes:
+
+```json
+{"method":"POST","path":"/api/artifacts/abc/threads?x=1",
+ "headers":[["content-type","application/json"]],
+ "as":"owner" | "content" | "shell-page", "host":"<id>" | null}
+```
+
+`as` says who the request speaks for; the core, not the caller, turns it
+into credentials:
+
+| `as` | Who sends it | What the core adds | Paths it may reach |
+|---|---|---|---|
+| `owner` | Dart (the app's own code and agent), and shell calls the host relays (§5) | `Authorization: Bearer <token>` unless the frame carries an `Authorization` (an agent session's own); `Host: localhost`; `ConnectInfo` of a loopback peer | everything but `GET /api/stream` (events go by `subscribe`; `POST /api/stream/{id}` is allowed) and `/api/admin/shutdown` |
+| `shell-page` | the host, for a scheme request to the shell's origin (§4.2) | `Host: localhost`; no credential | the shell's documents and assets only: `/a/…`, `/assets/…`, `/_clax/…`, `/c/…`, `/_blob/…`, `/favicon.ico`; never `/api/` |
+| `content` | the host, for a scheme request to an artifact's origin | `Host: <host>.localhost`; no credential | what `rewrite_artifact_host` admits on an artifact host (`/v/…`, `/draft/…`, `/_blob/…`, `/_clax/…`) |
+
+A response frame is `CLX1`, a length, JSON `{"status":200,"headers":[…]}`,
+then the body. Bodies are read whole up to 96 MiB (`PUBLISH_BODY_LIMIT`);
+a larger body answers 502 `response_too_large`. A request to a refused path
+answers 404 `not_in_app` without reaching the router.
+
+The token never leaves Rust. The core sets `require_credential` as the
+app's daemon did, so a frame that reached the router without `as: owner`
+is a viewer without a credential, which is what a page's frame is on the
+daemon today (`auth::open_without_credential`).
+
+### 2.4 Events
+
+`clax_embed_subscribe` opens a connection on the core's stream hub
+(`clax_realtime::stream::Hub`), exactly as `GET /api/stream` does, and
+posts each block the hub would write to an SSE body (`id:`, `event:`,
+`data:`), keep-alives included, as one message. The first block is the
+hub's `ready` with the stream's ID; topic changes go over `call` as
+today's `POST /api/stream/<id>` (`as: owner`). A subscriber that falls
+behind gets the hub's `resync`, as an SSE client does. Nothing in the hub
+changes: the SSE route and the subscription share its connection type.
+
+The app subscribes once per consumer: the UI isolate's `ClaxStream`
+(replacing `SharedClaxStream`), the worker isolate's queue, and each
+WebView's shell document (§5.2).
+
+### 2.5 Opening a home
+
+`Embed::open(home)` on the core's runtime:
+
+1. takes `<home>/core.lock` with `std::fs::File::try_lock` (stable since
+   Rust 1.89; no unsafe). Held: `failed` with code `home_in_use` (a second
+   Mac app instance, or a test that forgot to close);
+2. retires a daemon of the old app: if `<home>/daemon.json` exists it is
+   renamed to `daemon.json.retired`; a `clax serve` child of an earlier app
+   build still running sees its file missing on two stale checks and exits
+   (`serve.rs`'s stale watcher), and its port, token and cookie die with it.
+   `<support>/daemon-port` is deleted by the app (§10);
+3. writes `config.toml`'s `[sample]` section as the supervisor's
+   `sampleConfig` did (moved to `CoreHost`, §6);
+4. opens the store with `Store::open_reporting`: the pre-migration backup
+   (`clax-store/src/backup.rs`), `adopt_earlier_flutter_app`, the migrations,
+   progress reported as `{"type":"opening","phase":…}` on the open port;
+5. assembles `AppState` with `embed: Some(EmbedOrigins)` (§4.3) and starts
+   the core (§2.1); posts `ready`.
+
+A failed migration posts `failed` with `code: "migration_failed"` and the
+backup's path; the app shows its existing migration-failure screen
+(today's exit 65 path), never a connection message.
+
+### 2.6 Trimming memory
+
+`clax_trim_memory` goes with clax-ios. Its work (`Store::trim_memory`:
+`PRAGMA shrink_memory` on every connection and a passive checkpoint) is a
+route, `POST /api/core/trim` (`as: owner`), which the Dart side calls when
+`ios/Runner/Background.swift` reports that the app left the screen or got a
+memory warning (it posts `trim` on `dev.empathic.clax/background`, which
+Dart answers by the call), and on Android's `onTrimMemory` the same way.
+
+## 3. The key
+
+The Claude API key is put in the core's `KeySlot` over `call`
+(`PUT /api/sample/key`, which clax-ios added) at open and on every change,
+on every platform. A key change no longer restarts anything (record
+69557070 is fixed for Android and the Mac; record c58da88f's unretried put
+becomes a `call` that cannot fail on transport, and its 4xx is logged).
+
+## 4. The WebView scheme
+
+### 4.1 URLs
+
+| Logical | Android (`shouldInterceptRequest`) | Apple (`WKURLSchemeHandler`) |
+|---|---|---|
+| the shell | `https://app.clax.invalid/a/<id>?app=1` | `clax://app/a/<id>?app=1` |
+| an artifact's content | `https://<id>.c.clax.invalid/v/<n>/…` | `clax://<id>.c/v/<n>/…` |
+
+`.invalid` is reserved (RFC 2606): if interception ever misses a request,
+it fails to resolve rather than reach a network. One Dart function,
+`lib/core/origins.dart` `AppOrigins.forPlatform()`, gives the shell origin
+and the content origin of an ID; the core is told both at open
+(`EmbedOrigins { shell: String, content: String }`, the content one a
+template with `{id}`) and uses them in boot data and in the content policy.
+
+### 4.2 Answering a request
+
+The host answers every request to the shell's host or a `*.c` host; other
+hosts are not intercepted (the content policy already refuses them).
+
+1. Map it to a frame: method `GET` or `HEAD` only (a scheme request with
+   another method answers 405: a page's writes go through the shell's
+   bridge, never its own origin), `as: shell-page` for the shell's host,
+   `as: content` with `host: <id>` for `<id>.c`, the request's
+   `Range`, `If-None-Match` and `Accept` headers, no others.
+2. `call` it from the UI isolate (the WebView's platform thread hands the
+   request to Dart and waits on the answer; Android's `shouldInterceptRequest`
+   runs on a WebView IO thread and blocks on a `CompletableFuture` that the
+   Dart reply completes; Apple's handler completes its task when Dart
+   answers).
+3. Answer with the frame's status, headers and body, minus every
+   `Access-Control-*` header (§4.3), and with `Cache-Control` as the core
+   sent it.
+
+The shell document is answered only to a main-frame navigation
+(`WebResourceRequest.isForMainFrame()`; on Apple, `request.mainDocumentURL
+== request.url`); any other request for `/a/…` answers 403. A page cannot
+frame or fetch the shell document.
+
+### 4.3 Origins and the security model
+
+What holds on the daemon today (`docs/contract.md`, "Security model") holds
+in the app, with the scheme in place of the port:
+
+- **Each artifact's content is its own origin** (`https://<id>.c.clax.invalid`
+  or `clax://<id>.c`), distinct from the shell's and from every other
+  artifact's. Its storage, cookies and service workers are its own (the
+  kill switch for service workers stays: `Service-Worker: script` is
+  answered with `SERVICE_WORKER_KILL_SWITCH`).
+- **The content policy is the daemon's**, with `frame-ancestors` naming the
+  shell's origin instead of `http://localhost:<port>` (`content_policy`
+  takes the embed's shell origin when `AppState.embed` is set). The load
+  lockdown (`'self'` only) is unchanged.
+- **A page reaches nothing with the owner's authority.** Its requests are
+  `as: content` (no credential, artifact paths only). It cannot read the
+  shell's responses: the host strips `Access-Control-*` from every
+  intercepted response, so the router's permissive CORS layer never reaches
+  a WebView, and cross-origin reads are opaque. It cannot load the shell
+  document (§4.2). It cannot reach `/api/` by any URL: the shell host
+  refuses it (`shell-page` never reaches `/api/`).
+- **Only the shell's main frame reaches the channel** (§4.4), so only the
+  shell's own code makes owner calls, as on the daemon where only the
+  shell's origin holds the key cookie. A page's capability calls go, as
+  today, through the shell's bridge (`bridge-link.ts` checks `e.source` and
+  `e.origin`), which applies the capability checks and marks them
+  `x-clax-via: page`.
+- **Other apps on the device reach nothing.** There is no port, so the
+  daemon's token and cookie defences against other local apps have nothing
+  to defend.
+
+What the spike checks on each platform (Task 13 of the plan) before the
+scheme replaces the port: `window.origin` in the shell and in a content
+frame; `localStorage` and IndexedDB surviving a reload and an app restart
+per origin; a content frame's `parent.document` access throwing; a
+`postMessage` from the frame arriving with the content origin as
+`event.origin`; `crypto.subtle` present (a secure context); a content
+frame's `fetch` of the shell's `/a/<id>` and of `/api/artifacts` failing
+or reading nothing. On Apple, if WebKit gives a registered custom scheme
+an opaque origin, the spike stops and the owner is asked: WebKit refuses a
+`WKURLSchemeHandler` for `http` and `https`, so the only other way to give
+pages real origins on Apple would be a loopback listener, which decision 1
+forbids.
+
+### 4.4 The channel
+
+- **Android:** `ClaxHost` becomes a `WebViewCompat.addWebMessageListener`
+  (androidx.webkit, `WebViewFeature.WEB_MESSAGE_LISTENER`) with the one
+  allowed origin rule `https://app.clax.invalid`, which the WebView injects
+  only into frames of that origin; the listener also drops a message whose
+  `isMainFrame` is false. `window.ClaxHost.postMessage(string)` keeps its
+  shape in JavaScript. webview_flutter's `addJavaScriptChannel` (an
+  `addJavascriptInterface`, injected into every frame) is no longer used
+  for it.
+- **Apple:** the `ClaxHost` script message handler drops a message unless
+  `message.frameInfo.isMainFrame` and its `securityOrigin` is the shell's
+  (`clax`, `app`).
+- The nonce handshake (`ShellSession`, `host_protocol.dart:1157`) stays as
+  a second check.
+
+How the host gets at each WebView's configuration is the spike's other
+question: on Android, the native `WebView` is reached by
+`WebViewFlutterAndroidExternalApi.getWebView` (as `snapshotWebView` does,
+`MainActivity.kt:53`) and its client wrapped by a delegating
+`WebViewClient` that answers the scheme's hosts and forwards everything
+else to webview_flutter's client (`WebView.getWebViewClient()`, API 26;
+minSdk is 29). On Apple a scheme handler must be set on the
+`WKWebViewConfiguration` before the `WKWebView` exists, and
+webview_flutter_wkwebview 3.27 has no hook for it: the plan carries a small
+patch to the plugin (`bazel/flutter/plugin_overlays/webview_flutter_wkwebview/`,
+and for the `-native` twins the same patch applied by `scripts/patch-pub.sh`
+to a copy under `apps/clax_app/build-native/`), adding a static
+registration hook the runner fills with Clax's handler. The alternative,
+a platform view of the app's own for the shell, is recorded.
+
+## 5. The shell in app mode
+
+### 5.1 Calls
+
+`web/shell/src/transport.ts` is the one place the shell makes a request:
+`request(method, path, {headers, body}) → Response`. In a browser it is
+`fetch`. In app mode (the shell document's boot data says `transport:
+"host"`, which the core writes when `AppState.embed` is set) it posts
+
+```json
+{"type":"call","nonce":"…","id":17,"method":"POST","path":"/api/…",
+ "headers":[["content-type","application/json"]],"body":"<text>" | null,
+ "body64":"<base64>" | null}
+```
+
+on `ClaxHost` and resolves when the host calls
+`claxHost.callResult(17, {status, headers, body | body64})`. The host
+relays it as an `as: owner` frame. `api.ts`, `threads.ts`, `caps/*` and
+every other caller go through `transport.ts` (an oxlint rule bans `fetch(`
+elsewhere under `web/shell/src`). `getToken()` in app mode resolves to
+`null` without a request: the core adds the credential. Calls made before
+`init` wait for it (the channel needs the nonce). Bodies over 8 MiB go as
+`body64` in chunks of 1 MiB (`callChunk`), so no one `runJavaScript` or
+message carries more than that.
+
+Images and downloads the shell points at by URL under `/api/` (clip PNGs,
+asset previews) are fetched through `transport.ts` in app mode and shown
+by object URL; the plan's task lists each such use by a grep.
+
+### 5.2 Events
+
+`stream-hub.ts`'s `Hub` takes a host transport in app mode: no SharedWorker,
+no leader election, no `fetch` of `/api/stream`. The host subscribes to the
+core for each shell document (§2.4) and pushes each block by
+`claxHost.streamBlock(text)`; `claxHost.streamReset()` says the
+subscription began again (a core reopen), which the hub treats as a
+`resync`. The hub's topic subscriptions go over `transport.ts` as today's
+`POST /api/stream/<id>`. In host mode the hub has no connect timeout, no
+idle timeout and no backoff; it never reports `stream_down`.
+
+`conn-notice.ts` gains `connNotices(enabled)`; app mode turns it off at
+boot, so `connTrouble` never shows "Live updates paused. Reconnecting…" or
+"Clax is not answering. Retrying…" in the app. `retrying()` keeps retrying
+a failed call (a 5xx from the core is a real failure) but reports no
+trouble in app mode.
+
+A WebView that is hidden keeps its subscription (`setVisible` already keeps
+its topics, `visibility.ts`).
+
+### 5.3 What the browser keeps
+
+The browser shell (`?app=1` absent, or boot data without `transport:
+"host"`) is unchanged: `fetch`, the SharedWorker hub over SSE, the notices.
+`web/e2e` runs every existing spec against the daemon as before.
+
+## 6. The app over the core
+
+- **`CoreHost`** (`lib/core/core_host.dart`) replaces `DaemonSupervisor`: it
+  opens the core at launch (§2.5) and exposes `state` (`Opening(phase)`,
+  `Open`, `Failed(code, message, backup)`). There is no restart, no
+  backoff, no endpoint, no PID. `onResume` does nothing.
+- **`CoreClient`** (`lib/core/core_client.dart`) holds the handle and
+  `call(Frame) → Future<Response>` for one isolate: a `ReceivePort` for
+  responses, a tag counter, a map of pending completers. Each isolate makes
+  its own; the handle is shared.
+- **`CoreHttpClient extends http.BaseClient`** turns a `package:http`
+  request into an `as: owner` frame. `HttpClaxApi` keeps every method and
+  path and takes this client instead of a base URL, so the app's ~50 calls
+  (`lib/clax/api.dart`) are untouched; its `DaemonEndpoint Function()`
+  argument goes.
+- **`CoreClaxStream implements ClaxStream`** replaces `SseClaxStream` and
+  `SharedClaxStream`: one core subscription per isolate, parsed with the
+  existing `sse.dart` block parser.
+- **`FakeCore`** (`test/support/fake_core.dart`) answers frames from a
+  `FakeClaxApi`-backed router in Dart and pushes events; every Dart test
+  that used `fake_supervisor.dart` or `real_daemon.dart` uses it. The
+  `*_real_test.dart` files run against the real core through the host
+  build of `libclax_embed` (a `cdylib` for macOS built by Bazel for tests
+  only, `//crates/clax-embed:clax_embed_host`), loaded with
+  `DynamicLibrary.open` from `CLAX_EMBED_LIB`.
+- **Loading the library:** Android `DynamicLibrary.open('libclax_embed.so')`;
+  macOS and iOS `DynamicLibrary.process()` (the static library is linked into
+  the runner with its four symbols exported, `-Wl,-exported_symbol,_clax_embed_*`).
+
+## 7. The queue
+
+### 7.1 Shape
+
+```
+UI isolate                              worker isolate (lib/queue/)
+──────────                              ─────────────────────────────
+QueueClient ── Intent ────────────────► inbox ─► update(model, msg) ─► (model, effects)
+  ▲  (make, change, cancel, retry,                     │                   │
+  │   keepGoing, discard, answer)                      │                   ▼
+  └──────────── QueueState ◄─── publish on change      │           EffectRunner
+RenderService ◄── RenderRequest ◄──────────────────────┼──────────── Render effect
+  └──── RenderResult ─────────────────► inbox           │            CoreCall / Turn / Notice
+                                                        └─ msgs ◄─── KeepAlive / Persist
+```
+
+- **Model** (`lib/queue/model.dart`): `QueueModel {jobs: Map<JobId, Job>,
+  inFlight: Map<EffectId, JobId>, keepAlive: bool, coreOpen: bool,
+  claude: Reachability}`. `Job {id, kind: make|change, state, step,
+  artifactId?, title, request, threads, plan, spent, stops, error?,
+  waitingFor?: claude|answer|render|null, rev}`. `JobState`: `queued`,
+  `running`, `waiting` (on Claude, an answer, or a render), `paused` (the
+  OS's time ran out, or a wake reached a render), `stopped` (a limit; Keep
+  going offered), `failed` (Retry offered), `cancelled`, `done`.
+- **Messages** (`lib/queue/msg.dart`): the intents; effect results
+  (`TurnDone`, `TurnFailed(network|other)`, `CoreAnswered`, `CoreRefused`,
+  `Rendered`, `RenderLost`); core events (`JobChanged`, `ThreadCommented`,
+  `QuestionAnswered`); `ClaudeReachable(bool)`; `Tick(now)` from the
+  injected clock; `Woke(foreground: bool)`.
+- **`update`** (`lib/queue/update.dart`) is a pure function with no
+  `async`, no I/O, no clock: time arrives in messages. It decides each
+  job's next step from its state and the step results the core holds, and
+  emits effects.
+- **Effects** (`lib/queue/effect.dart`): `CoreCall(id, frame)`,
+  `StartTurn(id, jobId, turnInput)`, `RunTool(id, jobId, call)`,
+  `Render(id, jobId, draft)`, `CommitStep(id, jobId, key, body)`,
+  `Notice(kind, jobId)`, `KeepAlive(on)`, `PublishState`.
+- **The effect runner** (`lib/queue/runner.dart`) runs each effect and
+  feeds its result back as a message. It holds the agent's runners and
+  backends (`lib/agent`, unchanged in substance), a `CoreClient`, the
+  `ApiConnection` probe, and the render port. It is the only code in the
+  worker that awaits.
+- **Up to three jobs run at once**, as today (`make_service.dart`); others
+  wait `queued`. A change of an app waits while a make or another change of
+  the same app runs.
+
+### 7.2 The UI isolate
+
+`QueueClient` (`lib/queue/client.dart`) is all the UI knows of the queue: a
+`ValueListenable<QueueState>` (an immutable snapshot of every job, built by
+the worker after each `update` that changed it) and `send(Intent)`. It
+spawns the worker isolate at launch, once the core is open, with the
+handle, the support path, the settings snapshot and the key; settings and
+key changes are intents too. `MakeService`, `FeedbackWorker`'s UI half,
+`ChangeTracker`, the launcher's tiles, the making screen, the working chip,
+the change sheet and the thread page read `QueueState` and send intents;
+none awaits a job.
+
+If the worker isolate dies (an uncaught error), the client restarts it once
+and the jobs resume from the core (§7.4); a second death in a minute shows
+"Clax's builder stopped. Restart Clax to go on." on the affected jobs.
+
+### 7.3 Rendering
+
+A `Render` effect posts `RenderRequest {id, jobId, draftId, revision,
+kind: inspect|tests|migration, settleMs, maxBytes}` to the UI isolate's
+`RenderService`, which runs `WebViewInspector` (`lib/ui/inspector_surface.dart`)
+on the shell's inspect view at the draft's URL (§4.1) and answers
+`RenderResult {id, inspection | tests | migration | error}`. A request not
+answered in 60 s on the worker's clock, or one whose WebView was torn down
+(`RenderLost`), is sent again once, then the job waits for a render
+(`waitingFor: render`) until the UI isolate says it can render again. The
+render's result is recorded in the core (§8.2) by the worker before the
+job goes on.
+
+### 7.4 Durable steps and resume
+
+The model in memory is a cache of the core's jobs. Every change of a job's
+state or step that must survive a kill is a `CommitStep` or a job update
+in the core before the model moves on. At the worker's start, `update`
+receives `Loaded(jobs)` from `GET /api/jobs?open=1` and resumes each job:
+
+| Last committed | Resume |
+|---|---|
+| none (queued) | start its run |
+| a turn's notes (`turn:<n>`) | the run from turn n + 1 with its notes and draft (`unfinished` state, §9) |
+| `publish:<base>` | skip the publish; do the steps after it |
+| `reply` | skip; ack and clear working |
+| `done` | nothing |
+
+A step is idempotent by its key: committing a key the job already has
+returns the recorded result with `replayed: true` and changes nothing
+(§8.1). So a double resume (two workers after a crash-restart race, or a
+wake and a launch together) can repeat a model turn, never a publish or a
+reply. The worker takes a job by setting `lease_until` (now + 2 min,
+renewed each minute) with a revision check; a second worker sees the lease
+and leaves the job.
+
+### 7.5 Background
+
+`KeepAlive(on)` effects become `ChannelBackgroundWork.start/stop` on
+Android (the `dataSync` foreground service, `BackgroundRunService.kt`), and
+`IosBackgroundWork`'s background task on iOS, by a message to the UI
+isolate (the platform channels live there). The progress notification is
+built from `QueueState`. On Android the engine is kept by the application
+(S8). On iOS and the Mac a job running out of time is `paused` and resumes
+at launch. A WorkManager `OneTimeWorkRequest` (network required) is
+enqueued while any job is open and cancelled when none is; its wake starts
+a headless engine on `queueMain` (S6).
+
+## 8. The core: jobs and publish checks
+
+### 8.1 Jobs and steps
+
+Migration 44 (the next free number on this branch; §10.2 says what happens
+if the number moves) adds:
+
+```sql
+CREATE TABLE jobs (
+    id TEXT PRIMARY KEY,
+    client TEXT NOT NULL,              -- 'app' (who runs it)
+    kind TEXT NOT NULL,                -- 'make' | 'change' (opaque to the core)
+    artifact_id TEXT REFERENCES artifacts(id),
+    state TEXT NOT NULL CHECK (state IN ('queued','running','waiting','paused','stopped','failed','cancelled','done')),
+    step TEXT,                         -- the current step's key
+    title TEXT,
+    input_json TEXT NOT NULL,          -- the request, the threads and comments answered
+    plan_json TEXT,                    -- a make's plan (was plans.json)
+    carry_json TEXT,                   -- Keep going's carried draft and notes (was unfinished.json)
+    error_json TEXT,
+    lease_until TEXT,
+    rev INTEGER NOT NULL DEFAULT 1,
+    created_at TEXT NOT NULL,
+    updated_at TEXT NOT NULL
+);
+CREATE INDEX jobs_open ON jobs(state) WHERE state NOT IN ('cancelled','done');
+CREATE TABLE job_steps (
+    job_id TEXT NOT NULL REFERENCES jobs(id),
+    key TEXT NOT NULL,
+    result_json TEXT NOT NULL,
+    version_n INTEGER,                 -- the version a publish step made
+    created_at TEXT NOT NULL,
+    PRIMARY KEY (job_id, key)
+);
+CREATE TABLE job_threads (            -- was the ledger's answered and stopped.json
+    job_id TEXT NOT NULL REFERENCES jobs(id),
+    thread_id TEXT NOT NULL REFERENCES threads(id),
+    comment_id TEXT NOT NULL,          -- the newest comment the job answers
+    stopped INTEGER NOT NULL DEFAULT 0,
+    PRIMARY KEY (job_id, thread_id)
+);
+CREATE TABLE job_questions (          -- was asked.json
+    job_id TEXT NOT NULL REFERENCES jobs(id),
+    question_id TEXT NOT NULL,
+    answer TEXT,
+    PRIMARY KEY (job_id, question_id)
+);
+CREATE TABLE agent_read_consents (    -- was agent-read-consent.json
+    reader TEXT NOT NULL,
+    source TEXT NOT NULL,
+    created_at TEXT NOT NULL,
+    PRIMARY KEY (reader, source)
+);
+CREATE TABLE client_imports (         -- one row per one-time import (§9)
+    key TEXT PRIMARY KEY,
+    done_at TEXT NOT NULL,
+    summary_json TEXT NOT NULL
+);
+```
+
+Routes (owner only; `clax-server/src/routes/jobs.rs`; also on the hosted
+Worker, which shares the router, though nothing there calls them yet):
+
+| Route | Effect |
+|---|---|
+| `POST /api/jobs` `{id, client, kind, artifact_id?, title?, input, plan?}` | creates; an existing `id` with the same body answers it (200), another body 409 |
+| `GET /api/jobs?open=1&client=app` | open jobs with their steps, threads and questions |
+| `GET /api/jobs/{id}` | one |
+| `PATCH /api/jobs/{id}` `{if_rev, state?, step?, title?, plan?, carry?, error?, lease_until?}` | compare-and-set on `rev`; 409 `job_moved` with the current job |
+| `PUT /api/jobs/{id}/threads/{tid}` / `DELETE` | the job answers, or stops at, a thread's comment |
+| `PUT /api/jobs/{id}/questions/{qid}` | a question the job asked; the answer arrives by the questions topic and is stored here |
+| `POST /api/jobs/{id}/steps/{key}` `{result, publish?}` | commits a step (below) |
+| `GET/PUT/DELETE /api/agent-read-consents[/{reader}/{source}]` | the agent's remembered consents |
+
+**A publish step** carries `publish: {artifact_id | null (a new app),
+base, request: PublishRequest, docs: [DocWrite], draft?: {id, digest}}`.
+`Store::commit_publish_step` does, in one `IMMEDIATE` transaction after the
+content files are written (content-addressed and idempotent, as
+`publish_version` writes them today): if `(job_id, key)` exists, return its
+result with `replayed: true`; else check `current_version == base` (409
+`version_moved` otherwise, nothing recorded), insert the version (or the
+artifact), apply the pinned document writes (a moved document refuses the
+whole step, 409 `doc_moved`, as `finish` refuses today), insert the step
+row with `version_n`, and bump the job's `step` and `rev`. Events
+(`Event::Version`, the docs events, `Event::Job`) are published after the
+commit. A **reply step** (`reply: {threads, body, resolve}`) does the agent's
+replies, resolves, feedback ack and working clear in one transaction the
+same way.
+
+So the change ledger's two unknowns, "did the publish land?" and "did the
+docs land?", cannot arise: either the step row and the version exist
+together, or neither does.
+
+Events: `Event::Job {id, state, step, rev}` on a new stream topic `jobs`
+(owner only), which the worker subscribes to.
+
+### 8.2 Publish checks
+
+`clax_core::publish::validate` (`crates/clax-core/src/publish.rs:260`) gains,
+for every publish from any client (the app, an outside agent over MCP or
+the CLI, a push, the hosted Worker):
+
+- **icon.svg** (`clax_core::icon::problem(&[u8]) -> Option<IconProblem>`,
+  a port of `apps/clax_app/lib/agent/icon_svg.dart`'s `iconProblem`): at
+  most 32 KB; well-formed XML (parsed with `roxmltree` 0.20, a new dependency of
+  `clax-core`: no unsafe, no I/O, builds for wasm32; `just bazel-sync`
+  after adding it); no DOCTYPE; root
+  `<svg>` with a square four-number `viewBox`; elements only from
+  `iconElements`; no `on*` attribute; `href` only to `#` references in the
+  file; no `filter`; every `url()` a `#local` one; `<use>` expanding to at
+  most 64 copies and nesting at most 3 deep. A bad icon refuses the
+  publish with 400 `invalid_icon` and the rule broken. The Dart
+  `iconProblem` stays as the agent's early warning, and a shared fixture
+  (`crates/clax-core/tests/fixtures/icons/*.svg` with `expect.json`) is run
+  by both the Rust and the Dart tests, so the two cannot drift.
+- **The page rules**: `index.html` present and a title (already there,
+  `require_title`), now with the same wording `finish` uses.
+- **The render gate (S5)**: `POST /api/drafts/{id}/renders` `{digest,
+  errors, failed_tests}` records a render of a draft's content, where
+  `digest` is the SHA-256 over the draft's files but `icon.svg` (the
+  content hash of `lib/bundle/content_hash.dart`, moved to
+  `clax_core::digest::files_digest`). A publish step with `draft` is
+  refused with 409 `not_rendered_clean` unless the draft has a render with
+  that digest, no errors and no failing tests, and the request's files
+  have that digest. A publish without `draft` (an outside agent, a
+  restore, an update from a bundle) has no render gate, as today.
+
+Outside agents' publishes that broke an icon rule before now fail. Their
+skill copies (`plugins/*/skills/clax`, `docs/contract.md` "Page contract")
+gain the icon rules in the same commit, and `scripts/sync-app-prompt.sh`
+carries them to the app's prompt.
+
+## 9. The JSON state, imported once
+
+| File | Becomes |
+|---|---|
+| `pending-make.json` | a `make` job per request, `queued`, or `waiting` for those in `waiting` |
+| `change-ledger.json` | a `change` job per record with a `publish:<base>` step when version `base + 1` exists and names the record's `addresses` (the ledger's own recovery rule), and a `reply` step when its `docs_done` and reply are found on the threads; else the job resumes before the publish |
+| `plans.json` | `plan_json` of the make job whose request matches, or a `stopped` make job holding the plan (Resume build) |
+| `asked.json` | `job_questions` rows of a `change` job per entry, `waiting` on the answer |
+| `stopped.json` | `job_threads` rows with `stopped = 1` on a `cancelled` change job per thread |
+| `unfinished.json` | `carry_json` of a `stopped` change job per entry (Keep going) |
+| `agent-read-consent.json` | `agent_read_consents` rows |
+
+`lib/core/json_import.dart` runs in the worker isolate once, at its first
+start after this build, before it loads jobs:
+
+1. if the core's `client_imports` has `app-json-v1`, do nothing;
+2. copy the seven files, as they are, to `<support>/imported-json/<time>/`;
+3. parse each with today's readers (`PendingMake`, `FileChangeLedger`,
+   `PlanStore`, `FileAskedQuestions`, `FileStoppedThreads`,
+   `FileUnfinishedChanges`, `FileConsentMemory`, kept for this and deleted in
+   the last phase); a file that does not parse is skipped and named in the
+   summary;
+4. write the jobs and rows in one `POST /api/client-imports/app-json-v1`
+   `{jobs, consents}` that the core applies in one transaction with the
+   `client_imports` row (a crash before it leaves nothing; after it, the
+   key);
+5. delete the seven files.
+
+Job IDs from the import are derived from the file's content (SHA-256 of the
+entry), so an import that a crash interrupted between 4 and 5 and then
+retried changes nothing.
+
+## 10. Existing installs
+
+### 10.1 What is on the owner's devices
+
+The phone's and the Mac's homes are `clax-home/` under the app's support
+directory, written by the `clax` the app ran, at this branch's migration
+43 (`APP_MIGRATION_MARKS`, migrations 39–43), plus the seven JSON files.
+The new build opens the same directory in place.
+
+### 10.2 Against the renumbering failure
+
+The failure of 2026-10-15 (a rebase renumbered migrations an installed
+database already had, and the daemon re-ran them and crash-looped) is
+designed against so:
+
+- **Backup first, always.** `Store::open` already backs up before any
+  migration (`backup::before_migrate`, three kept). The plan's first open
+  of an old home is tested to leave `backups/clax-43-<time>.db`.
+- **Migration 44's tables are adopted by schema.** `adopt_earlier_flutter_app`
+  gains a mark for 44 (`jobs`, `job_steps`, …): a database that has the
+  tables at another `user_version` (a build of this branch whose 44 was
+  renumbered by a rebase) is recognised, checked table by table, and its
+  version set, never re-run. A database whose tables disagree with the
+  marks is refused with `MigrationFailed` and the backup's path, not
+  migrated over.
+- **The branch and main disagree today**: main's migrations 39 and 40 are
+  not this branch's 39 and 40. The merge that settles that numbering must
+  carry its adoption step for homes at this branch's 43 or 44; this spec
+  does not settle it, and records it (needs decision).
+- **A fixture of the installed schema.** The plan adds
+  `crates/clax-store/tests/fixtures/old-migrations/flutter-app-853502f77.sql`,
+  the schema and a few rows of a home written by this branch's current
+  `clax` (`user_version` 43), and tests that
+  `Store::open` on it backs up, migrates to 44, and keeps every artifact,
+  version, thread and document.
+- **A large old database.** The test home of `scripts/perf-daemon.sh`
+  (300 artifacts, 2,400 threads, 7,200 comments) is opened by the core in a
+  test: migration 44 adds tables only (no rewrite of existing rows), so it
+  takes the time of its `CREATE`s. The open's progress messages keep the
+  splash honest meanwhile.
+- **Before installing on the owner's devices**, the plan's last task copies
+  the phone's home off the phone (`adb exec-out run-as dev.empathic.clax
+  tar …`) and the Mac's from its container, opens each copy with the new
+  core on the Mac, and checks the counts, before `just app-phone` runs.
+
+### 10.3 The JSON files
+
+§9. The files are kept, copied, under `imported-json/` until the person
+deletes the app; nothing reads them after the import.
+
+### 10.4 Leftovers
+
+At the first open the app deletes `<support>/daemon-port`; the core renames
+`daemon.json` (§2.5). The WebViews' `clax_key_<port>` cookies are cleared
+once (`WebViewCookieManager.clearCookies`), and each origin's storage under
+`http://127.0.0.1:<port>` and `http://<id>.localhost:<port>` is left to the
+WebView. A page's `localStorage` on the old origin is not carried to the
+new one; the old port was kept across starts (`<support>/daemon-port`), so
+this is a real, one-time loss for pages that keep state there rather than
+in their documents. It is accepted and recorded as a `waiver` on this
+section.
+
+## 11. Build
+
+| | Before | After |
+|---|---|---|
+| Android | `//crates/clax-cli:clax_android_arm64`, `:clax_android_x86_64` → `<abi>/libclax.so` (an executable named as a library) | `//crates/clax-embed:clax_embed_android_arm64`, `:clax_embed_android_x86_64` → `<abi>/libclax_embed.so`, a `rust_shared_library` built with the NDK by a rule beside `bazel/android/clax.bzl` (renamed `embed.bzl`); `extractNativeLibs` no longer needed (a library is loaded, not exec'd), so it goes with `useLegacyPackaging` |
+| macOS | `macos_helper(":macos_clax", //crates/clax-cli:clax_opt)` in `Contents/Resources`, signed with `ClaxHelper.entitlements` | `//crates/clax-embed:clax_embed_macos` (`rust_static_library`, `-c opt`, the host's arch) linked into the runner through a `cc_library`; no helper, no helper entitlements |
+| iOS | `//crates/clax-ios:clax_ios_c` through the `ClaxDaemon` Swift module | `//crates/clax-embed:clax_embed_ios_c` (the same `ios_rust.bzl` rules) as a `cc_library` dependency of the runner; no Swift module calls it (Dart does, by FFI) |
+| Native twins | `scripts/build-app-clax.sh` (Cargo) | the same script builds `clax-embed` for the same places |
+
+What the library carries: `clax-server` and below, the web UI (`clax-embedded`'s
+`web` module), no `clax-commands`, no CLI, no plugins or extension trees,
+no `clap`. The APK's and the macOS app's size is measured before and after
+by `:apk_test` and `:macos_app_test` (they print each native file's size)
+and reported in the phase 3 commit; the expectation is smaller per ABI
+than today's `libclax.so`, which carries the CLI and the plugin trees, but
+no number is promised.
+
+`:apk_test`, `:macos_app_test` and `:ios_app_test` check the new contents:
+the `.so` per ABI with its four exported symbols (`llvm-nm -D`), the
+runner's four exported symbols on Apple (`nm -gU`), and no `clax`
+executable anywhere.
+
+## 12. Time to usable
+
+A cold launch to a usable home screen must not regress; with no process
+spawn, no port wait and no health probe it should improve.
+
+- **The measure** is today's: `home-usable` (launch → the home app's first
+  `shown()`) and `home-cover` in `timings.jsonl` (`docs/usage.md`,
+  "Measuring the home screen's start").
+- **`scripts/perf-app-launch.sh`** (new, run by `just perf` on a Mac and by
+  hand with `--android` on a plugged-in phone; it gates nothing) cold-starts
+  the app N times (default 9; `CLAX_PERF_QUICK=1`: 5) on a scratch
+  `CLAX_APP_DIR` (macOS) or after `am force-stop` (Android), reads the new
+  `timings.jsonl` lines, and writes the median and p90 of both measures to
+  `CLAX_PERF_JSON`, beside a budget in `web/perf/budget.json`
+  (`app_home_usable_ms`), so `scripts/perf-log.sh` keeps the trend.
+- **The baseline** is measured on the current build (the daemon) before
+  phase 3 lands, on the Mac and the owner's phone, and recorded in the perf
+  log; phase 3's commit reports the after.
+- **What should improve**, and why: the supervisor's spawn, the port file,
+  `daemon.json` polling and `/healthz` (today the home WebView waits for
+  `Up`) are gone; the home page's first request waits only for the store's
+  open, which the core starts before the first frame.
+
+## 13. What this deletes and supersedes
+
+### 13.1 Files deleted (in the last phase, after nothing uses them)
+
+- `apps/clax_app/lib/daemon/`: `supervisor.dart`, `health.dart`,
+  `ports.dart`, `process.dart`, `in_process.dart`, `exe_locator.dart`,
+  `sample_key.dart`, `daemon_key.dart` (`clock.dart` moves to
+  `lib/platform/clock.dart`).
+- `apps/clax_app/lib/ui/daemon_cookie.dart`; `lib/clax/shared_stream.dart`,
+  `lib/clax/stream.dart`'s `SseClaxStream` (the block parser in `sse.dart`
+  stays).
+- `apps/clax_app/lib/platform/pending_make.dart`, `lib/agent/ledger.dart`,
+  `lib/agent/stops.dart`, `lib/agent/unfinished.dart`'s file store,
+  `lib/agent/asked.dart`'s file store, `PlanStore`'s file, `FileConsentMemory`
+  (after the import code, which keeps private copies of their readers, is
+  the only reader).
+- Tests: `test/daemon/` (supervisor, supervisor_real, in_process,
+  sample_key, daemon_key), `test/ui/daemon_cookie_test.dart`,
+  `test/support/fake_supervisor.dart`, `test/support/real_daemon.dart`,
+  `integration_test/locked_daemon_test.dart`.
+- `crates/clax-ios/` whole; `apps/clax_app/ios/Daemon/ClaxDaemon.swift`;
+  the `daemon*` methods of `ios/Runner/NativeChannel.swift`; ATS's
+  loopback exceptions in `ios/Runner/Info.plist`.
+- Android: `nativeLibraryDir` in `MainActivity.kt`,
+  `res/xml/network_security_config.xml` and its manifest reference,
+  `extractNativeLibs`; `//crates/clax-cli:clax_android_*` and
+  `bazel/android/clax.bzl` (replaced by `embed.bzl`).
+- macOS: `macos_helper` and `:macos_clax` in `apps/clax_app/BUILD.bazel`,
+  `bazel/flutter/macos.bzl`'s helper signing, `macos/Runner/ClaxHelper.entitlements`,
+  the Xcode project's "Embed clax" phase.
+- AGENTS.md's clax-ios exception line, replaced (§14).
+
+### 13.2 Specs and plans superseded, in part
+
+- App spec §3.1 (DaemonSupervisor) and its process diagram; round-2 spec's
+  recovery by ledger (§ on `ChangeInterrupted` and the ledger); iOS spec
+  §1–§2 (the in-process daemon, `clax_start`…`clax_trim_memory`, the key
+  slot over HTTP, the supervisor's in-process starter), its Review Focus 1
+  and 3; bazel.md's rows for `clax_android_*`, `macos_app`'s helper and
+  `clax_ios_c`; `docs/usage.md` "The Clax app" first paragraph and "On an
+  Android phone"'s port paragraph; `docs/contract.md` "The Clax app"'s
+  first paragraph and the Security model's key-cookie part.
+- Each superseded document gets one line at its top naming this spec and
+  the sections it replaces; the text below stays as history.
+
+### 13.3 Records this work closes or obsoletes (proposed to the owner)
+
+`69557070` (a key change restarts the daemon), `9fbb9e03` (the 15 s health
+limit), `c58da88f` (a key put not retried), `3f5fb92f` (a waiting make
+reads "Offline"; §15 rewords it), `2713e7df` (the pill says Working while
+waiting). Each is proposed for closing with the commit that removes its
+code, never closed by this work's agents (AGENTS.md).
+
+## 14. The `unsafe` exception
+
+AGENTS.md's exception line becomes:
+
+> - One exception, approved by the owner: `crates/clax-embed` denies `unsafe_code` instead of forbidding it, and allows it only in `src/ffi.rs`, on its four exported C functions (`clax_embed_open`, `clax_embed_call`, `clax_embed_subscribe`, `clax_embed_close`) and the one `std::slice::from_raw_parts` each of `clax_embed_open` and `clax_embed_call` makes of its byte arguments; `//scripts:no_unsafe` fails on any other `unsafe`, any other `allow(unsafe_code)`, and any other crate that does not take the workspace's lints.
+
+`scripts/check-no-unsafe.sh` allows, in `crates/clax-embed/src/ffi.rs` only:
+
+1. `#[unsafe(no_mangle)]` directly after `#[allow(unsafe_code)]` and
+   directly before `pub extern "C" fn <name>(` or
+   `pub unsafe extern "C" fn <name>(`, `<name>` one of the four, each once;
+2. `unsafe` in that `pub unsafe extern "C" fn` line, for `clax_embed_open`
+   and `clax_embed_call` only (they take pointers);
+3. inside those two functions' bodies, exactly one line
+   `let <a> = unsafe { std::slice::from_raw_parts(<p>, <n>) };` directly
+   after a `// SAFETY:` comment line;
+4. parameters only of the types `u64`, `i64`, `i32`, `usize`,
+   `*const u8` and `ClaxPost`.
+
+Anything else (an `unsafe` elsewhere in the crate, a fifth export, a
+`*mut` parameter, `Box::from_raw`, a second `from_raw_parts`) fails with
+`only the four exported functions may use unsafe`. `crates/clax-ios` and
+its rule leave the script and `scripts/test-check-no-unsafe.sh`, whose
+cases are rewritten for clax-embed.
+
+## 15. Words the person sees
+
+- Local work shows no transport state anywhere: no "Clax is starting",
+  "Clax is not answering", "Reconnecting" for the core. The core's open
+  shows the splash mark (UI spec §5, breathing after 600 ms) and, if it
+  fails, the migration-failure screen.
+- "Waiting for connection" becomes **"Waiting for Claude"** everywhere it
+  appears (`making_screen.dart:105`, `change_tracker.dart:256`,
+  `thread_detail.dart:917`, the working chip, `home.js:279`'s spoken text).
+- The home tile's "Offline" becomes **"Can't reach Claude"**
+  (`home.js:267`, `launcher.dart:730`, `split/sidebar.dart:428`), keeping
+  the `cloud_off_fill` glyph.
+- A job paused by the OS reads "Paused — open Clax to keep building" (the
+  iOS spec's words), and a wake that reached a render "Open Clax to keep
+  building <title>".
+
+## 16. Testing
+
+All tests stay fast and load-tolerant: no sleeps for a condition, no
+wall-clock budgets, injected clocks (AGENTS.md).
+
+- **`update` is pure and tested exhaustively**
+  (`test/queue/update_test.dart`): a table over every `JobState` × every
+  `Msg` kind asserting the next state and the effects, plus properties run
+  over generated message sequences (a seeded `Random`, 2,000 sequences of
+  up to 40 messages): no job runs two publish effects for one base; a
+  `cancelled` or `done` job emits nothing; at most three jobs `running`;
+  `KeepAlive(true)` exactly while some job is `running` or `waiting`;
+  every `CommitStep` key is unique per job.
+- **The effect runner** against `FakeCore` and the scripted runner
+  (`test/queue/runner_test.dart`), on a fake clock.
+- **A fake core for Dart tests**: `test/support/fake_core.dart` (§6).
+- **Rust tests for clax-embed's `call` against the Router**
+  (`crates/clax-embed/tests/`): an owner call lists artifacts; a content
+  frame reads `/v/1/` of its artifact and gets the content policy with the
+  shell origin in `frame-ancestors`; a content frame for `/api/artifacts`
+  is refused; a `shell-page` frame for `/api/` is refused; `/api/stream`
+  over `call` is refused; a long poll (`feedback?wait=2s` on a paused Tokio
+  clock) answers when a comment arrives; a 97 MiB response answers 502;
+  calls before `ready` wait; `close` ends them; a second `open` of the same
+  home is refused; the subscription posts `ready` then a version event as
+  an SSE block; the frame codec round-trips. The FFI layer is tested by a
+  Rust test that calls the four `extern "C"` functions with a test `post`
+  function collecting messages (safe: the test passes slices it owns).
+- **Jobs and steps** (`crates/clax-store` unit tests and
+  `crates/clax-server/tests/api_jobs.rs`): a publish step twice publishes
+  once (`replayed: true`); a step on a moved base records nothing; a
+  failure injected after the version insert and before the commit leaves
+  neither; a moved document refuses the whole step; lease and `if_rev`
+  races; the import route applies all or nothing.
+- **Publish checks**: the icon fixtures in Rust and Dart; an outside
+  agent's publish over MCP with a bad icon is refused; the render gate.
+- **The shell's app-mode transport in `web/e2e`**
+  (`web/e2e/app-transport.spec.ts`): Playwright's `page.route` answers
+  `https://app.clax.invalid/**` and `https://*.c.clax.invalid/**` from a
+  real test daemon with the frame rules of §2.3 (a small Node relay in
+  `web/e2e/app-scheme.ts`, stripping `Access-Control-*`), and the fake
+  `ClaxHost` relays `call` messages to the daemon with its token and pushes
+  `/api/stream` blocks by `claxHost.streamBlock`. It checks: the artifact
+  view loads and comments post through the channel; a version published
+  elsewhere is pushed and followed; the shell never shows a connection
+  notice, also with the relay paused for 60 s on Playwright's clock; a
+  content frame's `fetch` of the shell's `/a/<id>` and `/api/artifacts`
+  reads nothing; a content frame cannot post to `ClaxHost` (the fake host
+  drops non-main-frame messages, as the real ones do).
+- **Kill and resume**: `integration_test/kill_resume_test.dart` (macOS,
+  `just app-integration`): a scripted make is killed (the test runs the app
+  as a child and `kill -9`s it by its PID) right after the publish step's
+  commit, then relaunched; it checks one version, the job `done`, the reply
+  once. A second case kills before the commit and checks one version after
+  resume. On Android the same scenario is a manual step of the plan's
+  device checklist (`adb shell am kill` while the foreground service runs,
+  then launch).
+- **Old homes**: the fixture test (§10.2) and the perf home open.
+
+## 17. Phases
+
+Each phase leaves main working and ships something testable.
+
+1. **clax-embed with `call` and events.** The crate, `Core` split out of
+   `serve`, frames, subscriptions, the FFI, the unsafe check, Bazel for all
+   three platforms. Nothing in the app uses it yet. Ships: Rust tests, the
+   library in each build's outputs.
+2. **The shell's app-mode transport and the scheme.** `transport.ts`,
+   host-pushed events, notices off in app mode, the scheme handlers and
+   channel restrictions, `CoreClient`, `CoreHttpClient`, `CoreClaxStream`,
+   `FakeCore`. Still off in the app (a `--dart-define=CLAX_CORE=embed`
+   switch for testing). Ships: e2e app-transport specs, Dart tests, the
+   spike's results.
+3. **All three platforms off the daemon.** `CoreHost` replaces the
+   supervisor; the scheme replaces the port; the APK, the Mac app and the
+   iOS app carry the library and no `clax`. Ships: the app on the core,
+   the time-to-usable before/after, old-home adoption.
+4. **The queue in the worker isolate.** Model, update, runner, render
+   bridge, `QueueClient`, background keep-alive, the engine kept on
+   Android. Durable state still in the JSON files, now written by the
+   worker. Ships: the queue, the update tests.
+5. **Durable steps and publish checks in the core.** Migration 44, the job
+   routes, the publish and reply steps, the icon, page and render checks;
+   the worker's jobs and finish move onto them. Ships: kill-and-resume.
+6. **The JSON state import.** Ships: an upgrade from the owner's homes.
+7. **Delete the old code** (§13), reword the copy (§15), update the docs.
+
+## 18. Review Focus
+
+The inputs most likely to bite a person:
+
+1. **Kill mid-publish.** The app is killed between writing a version's
+   content files and committing its step, or between the commit and the
+   reply step. Expected: one version, one reply, after resume; never two.
+2. **A double resume.** A WorkManager wake and a launch, or a worker
+   restarted after a crash, resume the same job. Expected: one runs it
+   (the lease), the other leaves it; any repeat is a model turn, never a
+   publish or reply.
+3. **A WebView reload during a job.** The app's page (or the whole UI
+   isolate's engine, on Android after Back) goes away while a render is
+   asked. Expected: the job waits for a render, then renders again; it is
+   not failed and spends no extra turn.
+4. **Two isolates writing.** The UI isolate posts a comment and the worker
+   publishes on the same app at once. Expected: the core serializes them;
+   a publish on a moved base is a step refused and re-planned, never a lost
+   comment or a corrupted draft.
+5. **A migration on a large old home.** The owner's phone home at version
+   43, possibly large. Expected: a backup first, migration 44 in seconds
+   at most, progress on the splash, every artifact and thread kept; a
+   failure shows the backup's path.
+6. **Origin isolation.** A page tries to read the shell's document or the
+   API, to post on `ClaxHost`, or to frame the shell. Expected: nothing
+   readable, nothing delivered.
+7. **An old daemon still running.** A Mac whose app crashed left its
+   `clax` helper running on the same home. Expected: the core opens beside
+   it, the helper exits within two stale checks, no write is lost (SQLite's
+   locking).
+8. **A large call over the channel.** An asset upload of 15 MiB from a page
+   through the shell. Expected: chunked, delivered, no frozen UI.
