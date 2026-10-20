@@ -181,8 +181,8 @@ impl std::fmt::Display for IconProblem {
 /// Why `svg` is not a usable icon; `None` when it is one. The rules run in
 /// this order and the first broken one is named: size, UTF-8, nesting at
 /// most [`MAX_ICON_DEPTH`] deep (read from the text, before the parser,
-/// which recurses once per level), well-formed XML, no DOCTYPE, an `<svg>`
-/// root, a square `viewBox`, then each element (the root's descendants in
+/// which recurses once per level), no DOCTYPE (read from the text too),
+/// well-formed XML, an `<svg>` root, a square `viewBox`, then each element (the root's descendants in
 /// document order, the root last) by its name and its attributes in source
 /// order, then the `<use>` expansion.
 pub fn problem(svg: &[u8]) -> Option<IconProblem> {
@@ -195,14 +195,17 @@ pub fn problem(svg: &[u8]) -> Option<IconProblem> {
     if too_deep(text) {
         return Some(IconProblem::Nesting);
     }
-    let doc = match parse(text, false) {
+    if has_doctype(text) {
+        return Some(IconProblem::Doctype);
+    }
+    let options = roxmltree::ParsingOptions {
+        allow_dtd: false,
+        ..Default::default()
+    };
+    let doc = match roxmltree::Document::parse_with_options(text, options) {
         Ok(doc) => doc,
-        Err(roxmltree::Error::DtdDetected) => {
-            return Some(match parse(text, true) {
-                Err(e) if !named_after_doctype(&e) => IconProblem::NotXml(e.to_string()),
-                _ => IconProblem::Doctype,
-            });
-        }
+        // has_doctype finds every DOCTYPE the parser would.
+        Err(roxmltree::Error::DtdDetected) => return Some(IconProblem::Doctype),
         Err(e) => return Some(IconProblem::NotXml(e.to_string())),
     };
     let root = doc.root_element();
@@ -284,36 +287,45 @@ fn too_deep(text: &str) -> bool {
     false
 }
 
-fn parse(text: &str, allow_dtd: bool) -> Result<roxmltree::Document<'_>, roxmltree::Error> {
-    let options = roxmltree::ParsingOptions {
-        allow_dtd,
-        ..Default::default()
+/// Whether `text` holds a `<!DOCTYPE` outside comments, CDATA sections,
+/// processing instructions and quoted values, by a scan of the text that
+/// needs no parse (so it is the same for text that is not well-formed, and
+/// the app's `iconProblem` makes it alike).
+fn has_doctype(text: &str) -> bool {
+    let s = text.as_bytes();
+    let past = |end: &[u8], from: usize| {
+        s.get(from..)
+            .and_then(|rest| rest.windows(end.len()).position(|w| w == end))
+            .map_or(s.len(), |at| from + at + end.len())
     };
-    roxmltree::Document::parse_with_options(text, options)
-}
-
-/// Whether a document with a DOCTYPE that fails to parse is named for its
-/// DOCTYPE rather than as not well-formed: the app's parser reads entity
-/// references, namespaces, duplicate attributes, characters and comments
-/// loosely and names the DOCTYPE before it checks them, and it expands no
-/// entity.
-fn named_after_doctype(e: &roxmltree::Error) -> bool {
-    use roxmltree::Error as E;
-    matches!(
-        e,
-        E::UnknownEntityReference(..)
-            | E::MalformedEntityReference(..)
-            | E::EntityReferenceLoop(..)
-            | E::UnexpectedEntityCloseTag(..)
-            | E::UnknownNamespace(..)
-            | E::DuplicatedAttribute(..)
-            | E::DuplicatedNamespace(..)
-            | E::InvalidAttributeValue(..)
-            | E::NonXmlChar(..)
-            | E::InvalidComment(..)
-            | E::InvalidCharacterData(..)
-            | E::UnknownToken(..)
-    )
+    let mut i = 0;
+    while i < s.len() {
+        let rest = &s[i..];
+        if rest.starts_with(b"<!DOCTYPE") {
+            return true;
+        } else if rest.starts_with(b"<!--") {
+            i = past(b"-->", i + 4);
+        } else if rest.starts_with(b"<![CDATA[") {
+            i = past(b"]]>", i + 9);
+        } else if rest.starts_with(b"<?") {
+            i = past(b"?>", i + 2);
+        } else if rest[0] == b'<' {
+            let mut j = i + 1;
+            while j < s.len() && s[j] != b'>' {
+                if s[j] == b'"' || s[j] == b'\'' {
+                    j = past(&s[j..=j], j + 1) - 1;
+                }
+                j += 1;
+            }
+            i = j + 1;
+        } else {
+            i = s[i..]
+                .iter()
+                .position(|&c| c == b'<')
+                .map_or(s.len(), |at| i + at);
+        }
+    }
+    false
 }
 
 /// An attribute as written: its qualified name and its value with the
@@ -647,6 +659,187 @@ mod tests {
             }
         }
         assert!(wrong.is_empty(), "{}", wrong.join("\n"));
+    }
+
+    /// Markup the mutations insert: the places the core's parser and the
+    /// app's differ most easily (references, names and prefixes,
+    /// namespaces, declarations and instructions, CDATA, comments, quotes,
+    /// nesting, byte order marks and control characters).
+    const SNIPPETS: &[&str] = &[
+        "&",
+        "&amp;",
+        "&nbsp;",
+        "&#0;",
+        "&#x41;",
+        "<",
+        ">",
+        "\"",
+        "'",
+        "=",
+        ":",
+        "::",
+        " a:b=\"1\"",
+        " xmlns:a=\"urn:a\"",
+        " xmlns:b=\"urn:a\"",
+        " b:c=\"2\"",
+        " a:c=\"3\"",
+        " xmlns:xml=\"urn:x\"",
+        " xmlns=\"urn:d\"",
+        " xmlns:x=\"http://www.w3.org/XML/1998/namespace\"",
+        " xml:space=\"keep\"",
+        " p:xmlns=\"q\"",
+        " xmlns:xmlns=\"urn:n\"",
+        " c=\"1\" c=\"2\"",
+        " d=e",
+        " f",
+        "<?xml version=\"1.0\"?>",
+        "<?xml encoding=\"x\"?>",
+        "<?xml?>",
+        "<?XML x?>",
+        "<?xmid=\"a\" b?>",
+        "<?a b?>",
+        "<? a?>",
+        "<?a",
+        "?>",
+        "<![CDATA[x]]>",
+        "]]>",
+        "<!-- c -->",
+        "<!-- - - -->",
+        "<!---->",
+        "-->",
+        "<!DOCTYPE svg>",
+        "<g>",
+        "</g>",
+        "<g/>",
+        "<a::b/>",
+        "<xml:g/>",
+        "<xmlns:g/>",
+        "<a:g/>",
+        "\u{feff}",
+        "\u{1}",
+        "\u{85}",
+        "\t",
+        "\r\n",
+        "é",
+        "1",
+        "-",
+        "<script/>",
+        "<use href=\"#a\"/>",
+        " id=\"a\"",
+        " viewBox=\"0 0 1 2\"",
+        " onload=\"x\"",
+        " href=\"http://x\"",
+        " style=\"filter:x\"",
+        " fill=\"url(x)\"",
+    ];
+
+    /// A fixed, seeded set of mutations of the vectors (one or two
+    /// insertions, deletions or copies each, mostly where markup starts or
+    /// ends), with the core's answer to
+    /// each: `tests/fixtures/icons/mutations.json`, which the app's
+    /// `icon_fixtures_test.dart` runs `iconProblem` on, so the two checks
+    /// are held to agree beyond the hand-written vectors.
+    fn mutations(dir: &Path) -> String {
+        let mut names: Vec<String> = std::fs::read_dir(dir)
+            .unwrap()
+            .map(|e| e.unwrap().file_name().into_string().unwrap())
+            .filter(|n| n.ends_with(".svg"))
+            .collect();
+        names.sort();
+        let sources: Vec<(String, Vec<char>)> = names
+            .into_iter()
+            .filter_map(|n| {
+                let text = String::from_utf8(std::fs::read(dir.join(&n)).unwrap()).ok()?;
+                (text.len() <= 2048).then(|| (n, text.chars().collect()))
+            })
+            .collect();
+        let accepted: Vec<(String, Vec<char>)> = sources
+            .iter()
+            .filter(|(n, _)| n.starts_with("ok-"))
+            .cloned()
+            .collect();
+        // xorshift64*, seeded: the same mutations on every run.
+        let mut state: u64 = 0x1c0_4a7e_5eed;
+        let mut next = |bound: usize| {
+            state ^= state >> 12;
+            state ^= state << 25;
+            state ^= state >> 27;
+            (state.wrapping_mul(0x2545_f491_4f6c_dd1d) >> 33) as usize % bound
+        };
+        let mut out = Vec::new();
+        for _ in 0..600 {
+            // Mostly an icon that passes, so the later rules are reached.
+            let pool = if next(4) == 0 { &sources } else { &accepted };
+            let (name, source) = &pool[next(pool.len())];
+            let mut text = source.clone();
+            // Where markup starts or ends at or after `at`.
+            let boundary = |text: &[char], mut at: usize| {
+                while at < text.len() && !matches!(text[at], '<' | '>' | ' ') {
+                    at += 1;
+                }
+                at
+            };
+            for _ in 0..1 + next(4) / 3 {
+                let at = boundary(&text, next(text.len() + 1));
+                match next(10) {
+                    0..=5 => {
+                        let snippet = SNIPPETS[next(SNIPPETS.len())];
+                        text.splice(at..at, snippet.chars());
+                    }
+                    6 => {
+                        let end = (at + 1 + next(8)).min(text.len());
+                        text.drain(at.min(end)..end);
+                    }
+                    _ => {
+                        // A tag, or a run of text, written again elsewhere.
+                        let end = text[at.min(text.len())..]
+                            .iter()
+                            .position(|&c| c == '>')
+                            .map_or(text.len(), |e| at + e + 1);
+                        let copy: Vec<char> = text[at.min(end)..end].to_vec();
+                        let to = boundary(&text, next(text.len() + 1));
+                        text.splice(to..to, copy);
+                    }
+                }
+            }
+            let svg: String = text.into_iter().collect();
+            let answer = problem(svg.as_bytes());
+            out.push(serde_json::json!({
+                "from": name,
+                "svg": svg,
+                "code": answer.as_ref().map(IconProblem::code),
+                // A not_xml sentence is the parser's own account.
+                "message": answer
+                    .filter(|p| p.code() != "not_xml")
+                    .map(|p| p.to_string()),
+            }));
+        }
+        serde_json::to_string_pretty(&out).unwrap() + "\n"
+    }
+
+    /// `tests/fixtures/icons/mutations.json` is [`mutations`]' output;
+    /// `CLAX_UPDATE_GOLDEN=1` rewrites it after a rule or a vector changes.
+    #[test]
+    fn the_mutations_file_holds_the_cores_answers() {
+        let dir = Path::new(env!("CARGO_MANIFEST_DIR")).join("tests/fixtures/icons");
+        let path = dir.join("mutations.json");
+        let actual = mutations(&dir);
+        if std::env::var_os("CLAX_UPDATE_GOLDEN").is_some() {
+            std::fs::write(&path, &actual).unwrap();
+            return;
+        }
+        let want = std::fs::read_to_string(&path).unwrap_or_default();
+        let answers: Vec<serde_json::Value> = serde_json::from_str(&actual).unwrap();
+        let refused = answers.iter().filter(|m| !m["code"].is_null()).count();
+        assert!(
+            refused >= 300 && 600 - refused >= 60,
+            "the mutations should mix refused and accepted icons: {refused} of 600 refused"
+        );
+        assert!(
+            want == actual,
+            "{} is not the mutations' output (CLAX_UPDATE_GOLDEN=1 rewrites it)",
+            path.display()
+        );
     }
 
     #[test]

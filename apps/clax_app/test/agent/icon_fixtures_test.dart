@@ -9,7 +9,10 @@ import '../support/paths.dart';
 /// (crates/clax-core/src/icon.rs): each file's answer in expect.json, a
 /// problem's code and sentence or none, and whether [cleanIcon] draws it.
 /// A `not_xml` sentence is compared up to the parser's own account, which
-/// the two parsers word differently.
+/// the two parsers word differently. mutations.json holds a seeded set of
+/// mutations of the vectors with the core's answer to each
+/// (icon::tests::the_mutations_file_holds_the_cores_answers), and
+/// [iconProblem] must give the same.
 void main() {
   final dir = appPath('../../crates/clax-core/tests/fixtures/icons');
   final vectors =
@@ -58,7 +61,7 @@ void main() {
 
   for (final MapEntry(key: name, :value) in vectors.entries) {
     test(name, () {
-      final svg = File('$dir/$name').readAsStringSync();
+      final svg = _read('$dir/$name');
       final want = value['problem'] as Map<String, dynamic>?;
       final got = iconProblem(svg);
       if (want == null) {
@@ -78,4 +81,38 @@ void main() {
       }
     });
   }
+
+  test('the app agrees with the core on every mutation', () {
+    final mutations =
+        jsonDecode(File('$dir/mutations.json').readAsStringSync()) as List;
+    expect(mutations, hasLength(600));
+    final wrong = <String>[];
+    for (final (i, m) in mutations.indexed) {
+      final svg = m['svg'] as String;
+      final got = iconProblem(svg);
+      final want = m['message'] as String?;
+      if (got?.code != m['code'] || (want != null && got?.message != want)) {
+        wrong.add(
+          '#$i (from ${m['from']}): the core says ${m['code']} $want, the '
+          'app ${got?.code} ${got?.message}\n  ${jsonEncode(svg)}',
+        );
+      }
+      // cleanIcon reads anything without throwing.
+      cleanIcon(svg);
+    }
+    expect(wrong, isEmpty, reason: wrong.take(5).join('\n'));
+  });
+}
+
+/// [path]'s text with its byte order mark, which `utf8.decode` drops: the
+/// core reads the bytes as they are.
+String _read(String path) {
+  final bytes = File(path).readAsBytesSync();
+  final text = utf8.decode(bytes);
+  final bom =
+      bytes.length >= 3 &&
+      bytes[0] == 0xEF &&
+      bytes[1] == 0xBB &&
+      bytes[2] == 0xBF;
+  return bom ? '\ufeff$text' : text;
 }

@@ -27,6 +27,20 @@
     },
     "clean": true
   },
+  "bad-cdata-after-root.svg": {
+    "problem": {
+      "code": "not_xml",
+      "message": "icon.svg is not well-formed XML: "
+    },
+    "clean": true
+  },
+  "bad-cdata-before-root.svg": {
+    "problem": {
+      "code": "not_xml",
+      "message": "icon.svg is not well-formed XML: "
+    },
+    "clean": true
+  },
   "bad-cdata-end-in-text.svg": {
     "problem": {
       "code": "not_xml",
@@ -55,6 +69,48 @@
     },
     "clean": true
   },
+  "bad-declaration-no-space.svg": {
+    "problem": {
+      "code": "not_xml",
+      "message": "icon.svg is not well-formed XML: "
+    },
+    "clean": true
+  },
+  "bad-declaration-out-of-order.svg": {
+    "problem": {
+      "code": "not_xml",
+      "message": "icon.svg is not well-formed XML: "
+    },
+    "clean": true
+  },
+  "bad-declaration-standalone-only.svg": {
+    "problem": {
+      "code": "not_xml",
+      "message": "icon.svg is not well-formed XML: "
+    },
+    "clean": true
+  },
+  "bad-declaration-unknown-attribute.svg": {
+    "problem": {
+      "code": "not_xml",
+      "message": "icon.svg is not well-formed XML: "
+    },
+    "clean": true
+  },
+  "bad-declaration-without-version.svg": {
+    "problem": {
+      "code": "not_xml",
+      "message": "icon.svg is not well-formed XML: "
+    },
+    "clean": true
+  },
+  "bad-default-namespace-xml-uri.svg": {
+    "problem": {
+      "code": "not_xml",
+      "message": "icon.svg is not well-formed XML: "
+    },
+    "clean": true
+  },
   "bad-doctype-ampersand.svg": {
     "problem": {
       "code": "doctype",
@@ -73,6 +129,27 @@
     "problem": {
       "code": "doctype",
       "message": "icon.svg has a <!DOCTYPE>; leave it out."
+    },
+    "clean": false
+  },
+  "bad-double-colon-attribute.svg": {
+    "problem": {
+      "code": "not_xml",
+      "message": "icon.svg is not well-formed XML: "
+    },
+    "clean": true
+  },
+  "bad-double-colon-element.svg": {
+    "problem": {
+      "code": "not_xml",
+      "message": "icon.svg is not well-formed XML: "
+    },
+    "clean": true
+  },
+  "bad-double-colon-viewbox.svg": {
+    "problem": {
+      "code": "not_xml",
+      "message": "icon.svg is not well-formed XML: "
     },
     "clean": false
   },
@@ -133,6 +210,13 @@
     "clean": true
   },
   "bad-late-declaration.svg": {
+    "problem": {
+      "code": "not_xml",
+      "message": "icon.svg is not well-formed XML: "
+    },
+    "clean": true
+  },
+  "bad-leading-double-colon.svg": {
     "problem": {
       "code": "not_xml",
       "message": "icon.svg is not well-formed XML: "
@@ -202,6 +286,20 @@
     },
     "clean": true
   },
+  "bad-prefix-bound-to-xml-uri.svg": {
+    "problem": {
+      "code": "not_xml",
+      "message": "icon.svg is not well-formed XML: "
+    },
+    "clean": true
+  },
+  "bad-prefix-bound-to-xmlns-uri.svg": {
+    "problem": {
+      "code": "not_xml",
+      "message": "icon.svg is not well-formed XML: "
+    },
+    "clean": true
+  },
   "bad-root-onload.svg": {
     "problem": {
       "code": "event_attribute",
@@ -213,6 +311,13 @@
     "problem": {
       "code": "element",
       "message": "icon.svg uses <script>, which an icon may not: use only svg, g, defs, title, desc, path, rect, circle, ellipse, line, polyline, polygon, linearGradient, radialGradient, stop, clipPath, mask, use, symbol, text, tspan. No scripts, foreignObject, images, filters, styles or animation."
+    },
+    "clean": true
+  },
+  "bad-second-bom.svg": {
+    "problem": {
+      "code": "not_xml",
+      "message": "icon.svg is not well-formed XML: "
     },
     "clean": true
   },
@@ -251,12 +356,26 @@
     },
     "clean": true
   },
+  "bad-three-part-name.svg": {
+    "problem": {
+      "code": "not_xml",
+      "message": "icon.svg is not well-formed XML: "
+    },
+    "clean": true
+  },
   "bad-too-large.svg": {
     "problem": {
       "code": "too_large",
       "message": "icon.svg is 40172 bytes; an icon may be at most 32 KB (32768 bytes): simplify its paths."
     },
     "clean": false
+  },
+  "bad-two-prefixes-one-uri.svg": {
+    "problem": {
+      "code": "not_xml",
+      "message": "icon.svg is not well-formed XML: "
+    },
+    "clean": true
   },
   "bad-undeclared-prefix.svg": {
     "problem": {
@@ -363,7 +482,36 @@
     },
     "clean": true
   },
+  "bad-xml-element-prefix.svg": {
+    "problem": {
+      "code": "not_xml",
+      "message": "icon.svg is not well-formed XML: "
+    },
+    "clean": true
+  },
+  "bad-xmlns-element-prefix.svg": {
+    "problem": {
+      "code": "not_xml",
+      "message": "icon.svg is not well-formed XML: "
+    },
+    "clean": true
+  },
+  "bad-xmlns-xml-elsewhere.svg": {
+    "problem": {
+      "code": "not_xml",
+      "message": "icon.svg is not well-formed XML: "
+    },
+    "clean": true
+  },
   "ok-bom.svg": {
+    "problem": null,
+    "clean": true
+  },
+  "ok-declaration-spaced.svg": {
+    "problem": null,
+    "clean": true
+  },
+  "ok-declaration-unread-version.svg": {
     "problem": null,
     "clean": true
   },
@@ -379,7 +527,19 @@
     "problem": null,
     "clean": true
   },
+  "ok-pi-xmid.svg": {
+    "problem": null,
+    "clean": true
+  },
+  "ok-pi-xmlencoding.svg": {
+    "problem": null,
+    "clean": true
+  },
   "ok-plain.svg": {
+    "problem": null,
+    "clean": true
+  },
+  "ok-prefixed-xmlns-undeclared.svg": {
     "problem": null,
     "clean": true
   },
@@ -415,7 +575,19 @@
     "problem": null,
     "clean": true
   },
+  "ok-upper-xml-pi-inside.svg": {
+    "problem": null,
+    "clean": true
+  },
   "ok-viewbox-forms.svg": {
+    "problem": null,
+    "clean": true
+  },
+  "ok-xml-pi-tab.svg": {
+    "problem": null,
+    "clean": true
+  },
+  "ok-xml-pi-without-space.svg": {
     "problem": null,
     "clean": true
   }

@@ -53,10 +53,12 @@ typedef IconProblem = ({String code, String message});
 /// Why [svg] is not a usable icon; null when it is one. The rules run in
 /// this order and the first broken one is named: size, nesting at most
 /// [maxIconDepth] deep (read from the text, as the core reads it before its
-/// parser), well-formed XML, no DOCTYPE, the core parser's stricter XML
-/// ([_strictProblem]), an `<svg>` root, a square `viewBox`, then each element (the root's descendants in
-/// document order, the root last) by its name and its attributes, then the
-/// `<use>` expansion.
+/// parser), no DOCTYPE (read from the text too), the XML declaration and
+/// processing instructions as the core's parser reads them
+/// ([_instructions]), well-formed XML, the core parser's stricter XML
+/// ([_strictProblem]), an `<svg>` root, a square `viewBox`, then each
+/// element (the root's descendants in document order, the root last) by its
+/// name and its attributes, then the `<use>` expansion.
 IconProblem? iconProblem(String svg) {
   final bytes = utf8.encode(svg).length;
   if (bytes > maxIconBytes) {
@@ -75,14 +77,21 @@ IconProblem? iconProblem(String svg) {
           'its groups.',
     );
   }
+  if (_hasDoctype(svg)) {
+    return (code: 'doctype', message: 'icon.svg has a <!DOCTYPE>; leave it out.');
+  }
+  final (piProblem, withoutPis) = _instructions(svg);
+  if (piProblem != null) return _notXml(piProblem);
   final XmlDocument doc;
   try {
-    doc = XmlDocument.parse(svg);
+    doc = XmlDocument.parse(withoutPis);
   } on XmlException catch (e) {
     return _notXml(e.message);
   }
+  // A doctype written other than `<!DOCTYPE`, which the core's parser
+  // does not read as one.
   if (doc.children.any((n) => n is XmlDoctype)) {
-    return (code: 'doctype', message: 'icon.svg has a <!DOCTYPE>; leave it out.');
+    return _notXml('a document type must be written <!DOCTYPE');
   }
   if (_strictProblem(svg, doc) case final why?) return _notXml(why);
   final root = doc.rootElement;
@@ -153,15 +162,21 @@ IconProblem? _useProblem(XmlElement root) {
 }
 
 /// [svg] with every element outside [iconElements] and every unsafe
-/// attribute dropped, or null when it is too large, not well-formed, not
-/// an `<svg>`, nested too deep, not square or past the `<use>` limits. It reads XML as
-/// `XmlDocument.parse` does, without [iconProblem]'s stricter checks: an
-/// older icon the core would now refuse for its XML alone is still drawn.
+/// attribute (and every processing instruction) dropped, or null when it is
+/// too large, nested too deep, not well-formed, not an `<svg>`, not square
+/// or past the `<use>` limits. It reads XML as `XmlDocument.parse` does,
+/// without [iconProblem]'s stricter checks: an older icon the core would
+/// now refuse for its XML alone is still drawn.
 String? cleanIcon(String svg) {
-  if (utf8.encode(svg).length > maxIconBytes || _tooDeep(svg)) return null;
+  if (utf8.encode(svg).length > maxIconBytes ||
+      _tooDeep(svg) ||
+      _hasDoctype(svg)) {
+    return null;
+  }
+  final (piProblem, withoutPis) = _instructions(svg);
   final XmlDocument doc;
   try {
-    doc = XmlDocument.parse(svg);
+    doc = XmlDocument.parse(piProblem == null ? withoutPis : svg);
   } on XmlException {
     return null;
   }
@@ -183,6 +198,41 @@ String? cleanIcon(String svg) {
 
   clean(root);
   return root.toXmlString();
+}
+
+/// Whether [s] holds a `<!DOCTYPE` outside comments, CDATA sections,
+/// processing instructions and quoted values, by a scan of the text that
+/// needs no parse, as the core's.
+bool _hasDoctype(String s) {
+  int past(String end, int from) {
+    if (from > s.length) return s.length;
+    final at = s.indexOf(end, from);
+    return at < 0 ? s.length : at + end.length;
+  }
+
+  var i = 0;
+  while (i < s.length) {
+    if (s.startsWith('<!DOCTYPE', i)) {
+      return true;
+    } else if (s.startsWith('<!--', i)) {
+      i = past('-->', i + 4);
+    } else if (s.startsWith('<![CDATA[', i)) {
+      i = past(']]>', i + 9);
+    } else if (s.startsWith('<?', i)) {
+      i = past('?>', i + 2);
+    } else if (s[i] == '<') {
+      var j = i + 1;
+      while (j < s.length && s[j] != '>') {
+        if (s[j] == '"' || s[j] == "'") j = past(s[j], j + 1) - 1;
+        j++;
+      }
+      i = j + 1;
+    } else {
+      final at = s.indexOf('<', i);
+      i = at < 0 ? s.length : at;
+    }
+  }
+  return false;
 }
 
 /// Whether [s]'s start tags nest more than [maxIconDepth] deep, by a scan
@@ -322,9 +372,11 @@ IconProblem? _attributeProblem(XmlAttribute a) {
 /// `XmlDocument.parse` reads, in a [doc] parsed from [svg] without a
 /// DOCTYPE: a character outside XML's, a `&` that starts no predefined or
 /// character reference, an attribute without a quoted value or with a `<`
-/// in it, text outside the root element, `]]>` in text, `--` in a comment,
-/// an XML declaration after the start, an undeclared namespace prefix, or
-/// an attribute written twice.
+/// in it, text or a CDATA section outside the root element, `]]>` in text,
+/// `--` in a comment, a name with more than one `:` or an empty part, an
+/// undeclared namespace prefix, a namespace bound against XML's rules, or
+/// an attribute written twice (under one name, or two prefixes bound to
+/// one namespace).
 String? _strictProblem(String svg, XmlDocument doc) {
   for (final r in svg.runes) {
     if (!_isXmlChar(r)) return '${_codePoint(r)} is not an XML character';
@@ -393,20 +445,22 @@ String? _markupProblem(String s) {
       }
       i = end;
     } else if (s.startsWith('<![CDATA[', i)) {
+      if (depth == 0) return 'there is a CDATA section outside the root element';
       i = past(']]>', i + 9);
     } else if (s.startsWith('<?', i)) {
-      var t = i + 2;
-      while (t < s.length && !_isXmlSpace(s[t]) && s[t] != '?') {
-        t++;
-      }
-      final target = s.substring(i + 2, t);
-      if (target.toLowerCase() == 'xml' && (target != 'xml' || i != start)) {
-        return 'an XML declaration may only open the file';
-      }
-      i = past('?>', t);
+      // Checked by _instructions.
+      i = past('?>', i + 2);
     } else if (s.startsWith('</', i)) {
+      final n = _qnameLength(s, i + 2);
+      var j = i + 2 + n;
+      while (j < s.length && _isXmlSpace(s[j])) {
+        j++;
+      }
+      if (n == 0 || j >= s.length || s[j] != '>') {
+        return 'an end tag is not </name>';
+      }
       depth--;
-      i = past('>', i);
+      i = j + 1;
     } else if (s[i] == '<') {
       final (end, problem, open) = _startTag(s, i);
       if (problem != null) return problem;
@@ -428,29 +482,27 @@ String? _markupProblem(String s) {
 }
 
 /// The start tag at [at] in [s]: where it ends, its first stricter
-/// problem, and whether it opens an element (is not self-closing).
+/// problem, and whether it opens an element (is not self-closing). Its
+/// name and each attribute's are qualified XML names, and whitespace comes
+/// before each attribute.
 (int, String?, bool) _startTag(String s, int at) {
-  var i = at + 1;
+  final n = _qnameLength(s, at + 1);
+  if (n == 0) return (at, 'a start tag names no element', false);
+  var i = at + 1 + n;
   bool more() => i < s.length;
-  while (more() && !_isXmlSpace(s[i]) && s[i] != '/' && s[i] != '>') {
-    i++;
-  }
   while (true) {
+    final from = i;
     while (more() && _isXmlSpace(s[i])) {
       i++;
     }
     if (!more()) return (i, null, false);
     if (s[i] == '>') return (i + 1, null, true);
     if (s.startsWith('/>', i)) return (i + 2, null, false);
-    final from = i;
-    while (more() &&
-        !_isXmlSpace(s[i]) &&
-        s[i] != '=' &&
-        s[i] != '>' &&
-        !s.startsWith('/>', i)) {
-      i++;
-    }
-    final name = s.substring(from, i);
+    if (i == from) return (i, 'an attribute follows without whitespace', false);
+    final length = _qnameLength(s, i);
+    if (length == 0) return (i, 'an attribute\'s name is not an XML name', false);
+    final name = s.substring(i, i + length);
+    i += length;
     while (more() && _isXmlSpace(s[i])) {
       i++;
     }
@@ -473,40 +525,317 @@ String? _markupProblem(String s) {
   }
 }
 
-/// The first prefix used on [root] or below that no `xmlns:` declares, or
-/// an attribute written twice, in document order.
+const _xmlUri = 'http://www.w3.org/XML/1998/namespace';
+const _xmlnsUri = 'http://www.w3.org/2000/xmlns/';
+
+/// The first namespace problem on [root] or below, in document order, as
+/// the core's parser finds them: a name with more than one `:` or an empty
+/// part; `xmlns:xml` bound to another URI, another prefix (or the default
+/// namespace) bound to XML's or to `xmlns`'s URI; an element prefixed
+/// `xmlns`, or an undeclared prefix (`xml` is declared for attributes
+/// only); or an attribute written twice, under one name or under two
+/// prefixes bound to one URI. An attribute named `xmlns` under any prefix
+/// declares the default namespace, as the core's parser reads it.
 String? _namespaceProblem(XmlElement root) {
-  final stack = <(XmlElement, Set<String>)>[(root, const {})];
+  final stack = <(XmlElement, Map<String, String>)>[(root, const {})];
   while (stack.isNotEmpty) {
     final (e, scope) = stack.removeLast();
-    final declared = {
-      ...scope,
-      for (final a in e.attributes)
-        if (a.name.prefix == 'xmlns') a.name.local,
-    };
+    final element = e.name.qualified;
+    if (_qnameProblem(element) case final p?) return p;
+    final declared = {...scope};
     final seen = <String>{};
     for (final a in e.attributes) {
       final qualified = a.name.qualified;
-      if (!seen.add(qualified)) {
-        return 'the attribute $qualified is written twice on '
-            '<${e.name.qualified}>';
+      if (_qnameProblem(qualified) case final p?) return p;
+      final (prefix, local) = _split(qualified);
+      // The default namespace may be declared more than once.
+      if ((prefix == 'xmlns' || local != 'xmlns') && !seen.add(qualified)) {
+        return 'the attribute $qualified is written twice on <$element>';
       }
-      final prefix = a.name.prefix;
-      if (prefix != null &&
-          prefix != 'xml' &&
-          prefix != 'xmlns' &&
-          !declared.contains(prefix)) {
-        return 'the prefix of $qualified is not declared (add '
+      if (prefix == 'xmlns') {
+        if (a.value == _xmlnsUri) return 'xmlns:$local binds xmlns\'s URI';
+        if ((local == 'xml') != (a.value == _xmlUri)) {
+          return 'xmlns:$local binds the xml prefix or URI to another';
+        }
+        if (local != 'xml') declared[local] = a.value;
+      } else if (local == 'xmlns') {
+        if (a.value == _xmlUri || a.value == _xmlnsUri) {
+          return 'the default namespace is bound to a reserved URI';
+        }
+      }
+    }
+    // Attributes by namespace URI and local name.
+    final names = <String>{};
+    for (final a in e.attributes) {
+      final (prefix, local) = _split(a.name.qualified);
+      if (prefix == 'xmlns' || local == 'xmlns') continue;
+      final String uri;
+      if (prefix == null) {
+        uri = '';
+      } else if (prefix == 'xml') {
+        uri = _xmlUri;
+      } else if (declared[prefix] case final u?) {
+        uri = '\u0000$u';
+      } else {
+        return 'the prefix of ${a.name.qualified} is not declared (add '
             'xmlns:$prefix="…" to <svg>)';
       }
+      if (!names.add('$uri $local')) {
+        return 'the attribute $local is written twice on <$element> (its '
+            'prefixes name one namespace)';
+      }
     }
-    final prefix = e.name.prefix;
-    if (prefix != null && prefix != 'xml' && !declared.contains(prefix)) {
-      return 'the prefix of <${e.name.qualified}> is not declared';
+    final (prefix, _) = _split(element);
+    if (prefix != null && !declared.containsKey(prefix)) {
+      return 'the prefix of <$element> is not declared';
     }
+    if (prefix == 'xmlns') return '<$element> takes the xmlns prefix';
     for (final c in e.childElements.toList().reversed) {
       stack.add((c, declared));
     }
   }
   return null;
+}
+
+/// A qualified name's prefix (null without one, or with an empty one) and
+/// local name.
+(String?, String) _split(String qualified) {
+  final at = qualified.indexOf(':');
+  if (at <= 0) return (null, qualified.substring(at + 1));
+  return (qualified.substring(0, at), qualified.substring(at + 1));
+}
+
+/// Why [qualified] is not a name the core's parser reads ([_qnameLength]):
+/// a character outside XML's names, more than one `:`, or an empty part.
+String? _qnameProblem(String qualified) {
+  if (_qnameLength(qualified, 0) != qualified.length) {
+    return 'the name $qualified is not a qualified XML name';
+  }
+  return null;
+}
+
+/// [s]'s XML declaration and processing instructions as the core's parser
+/// reads them, which `XmlDocument.parse` reads otherwise: the first problem
+/// and [s] without them (they draw nothing), for `XmlDocument.parse` to
+/// read. A declaration is `<?xml ` (a space after it) only at the start,
+/// after one byte order mark, with `version`, then optionally `encoding`
+/// and `standalone`, in that order; anywhere else `<?xml ` is a problem.
+/// Any other `<?` names a target, an XML name (`<?xml?>` and `<?XML x?>`
+/// are instructions), and ends at `?>`.
+(String?, String) _instructions(String s) {
+  final start = s.startsWith('﻿') ? 1 : 0;
+  final out = StringBuffer();
+  var copied = 0;
+  int past(String end, int from) {
+    if (from > s.length) return s.length;
+    final at = s.indexOf(end, from);
+    return at < 0 ? s.length : at + end.length;
+  }
+
+  var i = start;
+  while (i < s.length) {
+    if (s.startsWith('<!--', i)) {
+      i = past('-->', i + 4);
+    } else if (s.startsWith('<![CDATA[', i)) {
+      i = past(']]>', i + 9);
+    } else if (s.startsWith('<!', i)) {
+      i = _pastMarkupDeclaration(s, i);
+    } else if (s.startsWith('<?', i)) {
+      final int end;
+      if (s.startsWith('<?xml ', i)) {
+        if (i != start) {
+          return ('an XML declaration may only open the file', s);
+        }
+        final (problem, after) = _declaration(s, i);
+        if (problem != null) return (problem, s);
+        end = after;
+      } else {
+        if (_nameLength(s, i + 2) == 0) {
+          return ('a processing instruction names no target', s);
+        }
+        final at = s.indexOf('?>', i + 2);
+        if (at < 0) return ('a processing instruction is not closed', s);
+        end = at + 2;
+      }
+      out.write(s.substring(copied, i));
+      copied = end;
+      i = end;
+    } else if (s[i] == '<') {
+      var j = i + 1;
+      while (j < s.length && s[j] != '>') {
+        if (s[j] == '"' || s[j] == "'") j = past(s[j], j + 1) - 1;
+        j++;
+      }
+      i = j + 1;
+    } else {
+      final at = s.indexOf('<', i);
+      i = at < 0 ? s.length : at;
+    }
+  }
+  out.write(s.substring(copied.clamp(0, s.length)));
+  return (null, out.toString());
+}
+
+/// Where the `<!…>` at [at] ends: past its `>`, skipping quoted strings
+/// and a `[…]` internal subset.
+int _pastMarkupDeclaration(String s, int at) {
+  var j = at + 2;
+  while (j < s.length && s[j] != '>') {
+    if (s[j] == '"' || s[j] == "'") {
+      final close = s.indexOf(s[j], j + 1);
+      j = close < 0 ? s.length : close + 1;
+    } else if (s[j] == '[') {
+      j++;
+      while (j < s.length && s[j] != ']') {
+        if (s[j] == '"' || s[j] == "'") {
+          final close = s.indexOf(s[j], j + 1);
+          j = close < 0 ? s.length : close;
+        }
+        j++;
+      }
+      j++;
+    } else {
+      j++;
+    }
+  }
+  return j >= s.length ? s.length : j + 1;
+}
+
+/// The XML declaration at [at]: its problem, and where it ends. It is
+/// `<?xml`, whitespace, `version="…"`, then `encoding="…"` and
+/// `standalone="…"` if present, each after whitespace, and `?>` (the
+/// values are not read).
+(String?, int) _declaration(String s, int at) {
+  const bad = 'the XML declaration is not version, encoding, standalone';
+  var i = at + 5;
+  bool space(int k) => k < s.length && _isXmlSpace(s[k]);
+  // Whitespace, or else `?>` or the end must follow.
+  bool spaces() {
+    if (space(i)) {
+      while (space(i)) {
+        i++;
+      }
+      return true;
+    }
+    return s.startsWith('?>', i) || i >= s.length;
+  }
+
+  // name, `=` with optional whitespace around it, a quoted value without <.
+  bool attribute() {
+    final n = _qnameLength(s, i);
+    if (n == 0) return false;
+    i += n;
+    while (space(i)) {
+      i++;
+    }
+    if (i >= s.length || s[i] != '=') return false;
+    i++;
+    while (space(i)) {
+      i++;
+    }
+    if (i >= s.length || (s[i] != '"' && s[i] != "'")) return false;
+    final quote = s[i];
+    i++;
+    while (i < s.length && s[i] != quote && s[i] != '<') {
+      i++;
+    }
+    if (i >= s.length || s[i] != quote) return false;
+    i++;
+    return true;
+  }
+
+  if (!spaces() || !s.startsWith('version', i) || !attribute()) {
+    return (bad, i);
+  }
+  if (!spaces()) return (bad, i);
+  if (s.startsWith('encoding', i)) {
+    if (!attribute() || !spaces()) return (bad, i);
+  }
+  if (s.startsWith('standalone', i) && !attribute()) return (bad, i);
+  while (space(i)) {
+    i++;
+  }
+  if (!s.startsWith('?>', i)) return (bad, i);
+  return (null, i + 2);
+}
+
+/// The UTF-16 length of the XML name at [at] (a name start character, then
+/// name characters), 0 when none starts there.
+int _nameLength(String s, int at) {
+  var i = at;
+  while (i < s.length) {
+    final r = _runeAt(s, i);
+    if (!(i == at ? _isNameStart(r) : _isNameChar(r))) break;
+    i += r > 0xFFFF ? 2 : 1;
+  }
+  return i - at;
+}
+
+/// The UTF-16 length of the qualified name at [at] as the core's parser
+/// reads one: name characters with at most one `:`, the prefix and the
+/// local name each starting with a name start character; 0 when none.
+int _qnameLength(String s, int at) {
+  var i = at;
+  int? colon;
+  while (i < s.length) {
+    final r = _runeAt(s, i);
+    if (r == 0x3A) {
+      if (colon != null) return 0;
+      colon = i;
+    } else if (!_isNameChar(r)) {
+      break;
+    }
+    i += r > 0xFFFF ? 2 : 1;
+  }
+  final local = colon == null ? at : colon + 1;
+  if (local >= i || !_isNameStart(_runeAt(s, local))) return 0;
+  if (colon != null && colon > at && !_isNameStart(_runeAt(s, at))) return 0;
+  return i - at;
+}
+
+int _runeAt(String s, int i) {
+  final c = s.codeUnitAt(i);
+  if (c >= 0xD800 && c <= 0xDBFF && i + 1 < s.length) {
+    final d = s.codeUnitAt(i + 1);
+    if (d >= 0xDC00 && d <= 0xDFFF) {
+      return 0x10000 + ((c - 0xD800) << 10) + (d - 0xDC00);
+    }
+  }
+  return c;
+}
+
+/// XML's NameStartChar, as the core's parser reads it.
+bool _isNameStart(int r) {
+  if (r <= 128) {
+    return (r >= 0x41 && r <= 0x5A) ||
+        (r >= 0x61 && r <= 0x7A) ||
+        r == 0x3A ||
+        r == 0x5F;
+  }
+  return (r >= 0xC0 && r <= 0xD6) ||
+      (r >= 0xD8 && r <= 0xF6) ||
+      (r >= 0xF8 && r <= 0x2FF) ||
+      (r >= 0x370 && r <= 0x37D) ||
+      (r >= 0x37F && r <= 0x1FFF) ||
+      (r >= 0x200C && r <= 0x200D) ||
+      (r >= 0x2070 && r <= 0x218F) ||
+      (r >= 0x2C00 && r <= 0x2FEF) ||
+      (r >= 0x3001 && r <= 0xD7FF) ||
+      (r >= 0xF900 && r <= 0xFDCF) ||
+      (r >= 0xFDF0 && r <= 0xFFFD) ||
+      (r >= 0x10000 && r <= 0xEFFFF);
+}
+
+/// XML's NameChar, as the core's parser reads it.
+bool _isNameChar(int r) {
+  if (r <= 128) {
+    return _isNameStart(r) ||
+        (r >= 0x30 && r <= 0x39) ||
+        r == 0x2D ||
+        r == 0x2E;
+  }
+  return _isNameStart(r) ||
+      r == 0xB7 ||
+      (r >= 0x300 && r <= 0x36F) ||
+      (r >= 0x203F && r <= 0x2040);
 }
