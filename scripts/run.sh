@@ -9,7 +9,8 @@
 #   scripts/run.sh web-test          the web UI's lint, type checks, unit tests and bundle gate
 #   scripts/run.sh pi-test           the Pi extension's type check and tests
 #   scripts/run.sh web-e2e           the browser tests
-#   scripts/run.sh perf              the perf benchmarks, on demand (they gate nothing)
+#   scripts/run.sh perf              the perf benchmarks, on demand (they gate nothing; on a
+#                                    Mac also the Clax app's launch, scripts/perf-app-launch.sh)
 #   scripts/run.sh build             the clax binary
 #   scripts/run.sh web               web/dist and web/dist-extension, built
 #   scripts/run.sh clax [args]       build the debug clax and run it (serve, stop, doctor, …)
@@ -151,6 +152,16 @@ _install() {
         echo "installed $dest/clax ($("$dest/clax" --version))"
 }
 
+# _perf_app_launch: on a Mac, after the other benchmarks, the Clax app's
+# cold start to a usable home screen (scripts/perf-app-launch.sh). It
+# gates nothing: a launch that cannot be measured is reported and the run
+# goes on.
+_perf_app_launch() {
+    [ "$(uname -s)" = Darwin ] || return 0
+    _run env CLAX_PERF_JSON="$PERF_JSON" ./scripts/perf-app-launch.sh --macos --i-know-what-i-am-doing ||
+        echo "── the Clax app's launch was not measured (it gates nothing; scripts/perf-app-launch.sh says why) ──"
+}
+
 _bazel() {
     local b
     b=("${awake[@]+"${awake[@]}"}" "$BAZEL")
@@ -179,6 +190,9 @@ _bazel() {
             _run "${b[@]}" test --lockfile_mode=error --nocache_test_results --test_output=all \
                 --test_env=CLAX_PERF_JSON="$PERF_JSON" --sandbox_writable_path="$(dirname "$PERF_JSON")" \
                 //scripts:perf_daemon_full //scripts:perf_clients_full //web:perf_usable_full //web:bundle_size "$@"
+            local status=$?
+            _perf_app_launch
+            return "$status"
             ;;
         build) _run "${b[@]}" build --lockfile_mode=error //crates/clax-cli:clax "$@" ;;
         bin) _bazel_bin //crates/clax-cli:clax ;;
@@ -251,6 +265,9 @@ _native() {
                 _run env CLAX_PERF_JSON="$PERF_JSON" CLAX_PERF_BIN="$PWD/target/release/clax" ./scripts/perf-clients.sh &&
                 _run env CLAX_PERF_JSON="$PERF_JSON" bash -c 'cd web && pnpm exec playwright install chromium >/dev/null && pnpm run perf' &&
                 _run env CLAX_PERF_JSON="$PERF_JSON" bash -c 'cd web && node scripts/bundle-size.mjs'
+            local status=$?
+            _perf_app_launch
+            return "$status"
             ;;
         build) _run cargo build --workspace "$@" ;;
         bin)

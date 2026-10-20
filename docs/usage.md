@@ -972,6 +972,29 @@ in the environment of the app's executable
 (`Clax.app/Contents/MacOS/Clax`) gives it a scratch support and
 cache directory, so a measured build leaves your own apps alone.
 
+`scripts/perf-app-launch.sh` does those cold starts and reports the
+median and p90 of both timings; it gates nothing, and without
+`--i-know-what-i-am-doing` it prints its steps and changes nothing:
+
+```sh
+scripts/perf-app-launch.sh --macos --i-know-what-i-am-doing    # builds the macOS app
+scripts/perf-app-launch.sh --macos --app <Clax.app or its zip> --runs 5 --i-know-what-i-am-doing
+scripts/perf-app-launch.sh --android --i-know-what-i-am-doing  # the app `just app-phone` installed
+```
+
+On macOS each run gets a new scratch `CLAX_APP_DIR` in the app's
+container, removed afterwards; on Android the app's own timings are
+read with `run-as`. One launch more than `--runs` (default 9) is made
+and the first dropped, as it has no snapshot. A build signed ad hoc is
+asked for the saved API key in the login keychain at each launch until
+you answer Always Allow, and nothing finishes while the screen is
+locked. `just perf` runs the macOS measure after the other benchmarks;
+with `CLAX_PERF_JSON` set the figures go to the perf log
+(`scripts/perf-log.sh`), each p90 beside its budget in
+`web/perf/budget.json` (`<platform>.app_home_usable_ms` and
+`app_home_cover_ms`), which `--record` writes for a platform that has
+none: the p90 rounded up to 50 ms.
+
 ### Clax on iPhone and iPad
 
 On iPhone and iPad the daemon runs inside the app's own process

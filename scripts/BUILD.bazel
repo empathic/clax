@@ -159,6 +159,14 @@ sh_test(
     data = [":all"],
 )
 
+# scripts/perf-app-launch.sh's dry runs, its median and p90 over a
+# timings.jsonl, and on a Mac its launch loop over a fake app.
+sh_test(
+    name = "perf_app_launch_test",
+    srcs = ["test-perf-app-launch.sh"],
+    data = [":all"],
+)
+
 sh_test(
     name = "stable_bin",
     srcs = ["test-stable-bin.sh"],
