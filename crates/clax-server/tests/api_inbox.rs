@@ -1241,3 +1241,97 @@ async fn group_by_artifact_counts_every_match_and_pages_each_group() {
         assert_eq!(ts.get_authed(bad).await.status(), 400, "{bad}");
     }
 }
+
+#[tokio::test]
+async fn a_group_pages_through_its_cursors_to_the_end_listing_each_item_once() {
+    let ts = TestServer::spawn().await;
+    let (sid, aid, tid) = owner_thread(&ts).await;
+    for i in 0..4 {
+        ts.reply_as_agent(&sid, &aid, &tid, &format!("old {i}"))
+            .await;
+    }
+    let r = ts
+        .post_json(
+            "/api/inbox/read",
+            json!({"all": true, "filter": {"artifact": aid}}),
+        )
+        .await;
+    assert_eq!(r.status(), 200);
+    for i in 0..4 {
+        ts.reply_as_agent(&sid, &aid, &tid, &format!("new {i}"))
+            .await;
+    }
+    let ids = |v: &Value| -> Vec<String> {
+        v.as_array()
+            .unwrap()
+            .iter()
+            .map(|i| i["id"].as_str().unwrap().to_string())
+            .collect()
+    };
+    let all = get(&ts, &format!("/api/inbox?artifact={aid}&limit=200")).await;
+    let mut every = ids(&all["items"]);
+    assert_eq!(every.len(), 9, "the publication and eight replies: {all}");
+
+    let g = get(
+        &ts,
+        &format!("/api/inbox?group=artifact&artifact={aid}&rows=2"),
+    )
+    .await;
+    let g = &g["groups"][0];
+    let (total, unread) = (g["total"].as_u64().unwrap(), g["unread"].as_u64().unwrap());
+    assert_eq!((total, unread), (9, 4), "{g}");
+    let mut seen = ids(&g["items"]);
+    let mut next = g["next_cursor"].as_str().map(str::to_string);
+    assert!(next.as_deref().is_some_and(|n| n.starts_with('u')), "{g}");
+    // The oldest new reply, not listed yet, is read between pages: it
+    // comes with the read ones, once.
+    let unlisted = all["items"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .find(|i| i["reply"]["body"] == "new 0")
+        .unwrap()["id"]
+        .as_str()
+        .unwrap()
+        .to_string();
+    assert!(!seen.contains(&unlisted));
+    let r = ts
+        .post_json("/api/inbox/read", json!({"ids": [unlisted]}))
+        .await;
+    assert_eq!(r.status(), 200);
+    let mut steps = Vec::new();
+    while let Some(cursor) = next {
+        let (read, before) = (&cursor[..1], &cursor[1..]);
+        steps.push(cursor.clone());
+        let which = if read == "u" { "unread" } else { "read" };
+        let before = if before.is_empty() {
+            String::new()
+        } else {
+            format!("&before={before}")
+        };
+        let p = get(
+            &ts,
+            &format!("/api/inbox?read={which}&artifact={aid}&limit=2{before}"),
+        )
+        .await;
+        seen.extend(ids(&p["items"]));
+        next = match (p["next_cursor"].as_str(), read) {
+            (Some(n), r) => Some(format!("{r}{n}")),
+            // Past the last unread page, its read ones follow.
+            (None, "u") if total > unread => Some("r".into()),
+            (None, _) => None,
+        };
+    }
+    assert!(
+        steps.iter().any(|s| s.starts_with('u'))
+            && steps.iter().any(|s| s == "r")
+            && steps.iter().any(|s| s.len() > 1 && s.starts_with('r')),
+        "u, r and r<seq> were all followed: {steps:?}"
+    );
+    let mut once = seen.clone();
+    once.sort();
+    once.dedup();
+    assert_eq!(once.len(), seen.len(), "no item twice: {seen:?}");
+    every.sort();
+    assert_eq!(once, every, "every item of the group");
+}
