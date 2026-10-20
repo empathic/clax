@@ -3,5 +3,6 @@
 //! four C functions that take request frames and post responses and
 //! events to Dart ports.
 
+pub mod frame;
 pub mod log;
 pub mod web;
