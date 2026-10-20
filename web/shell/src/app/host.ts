@@ -56,7 +56,9 @@
 // - Before `init` the shell posts nothing on the channel. From `init` on,
 //   every message it posts carries `nonce`, and `init` first posts the
 //   current `state`, `threads`, and the `ready` of the page shown if one
-//   greeted. A second `init` in the same document is ignored.
+//   greeted. A second `init` in the same document is ignored, and so is one
+//   naming another nonce than the document's `clax-nonce` meta, when it
+//   carries one (an init the app ran for the WebView's previous load).
 // - The app drops every message whose `nonce` is not the one it gave this
 //   load (and every message before it called `init`).
 // - The page cannot learn the nonce: the shell's document is cross-origin to
@@ -438,6 +440,10 @@ export function installHost(win: Window, ctl: ArtifactController): () => void {
   style.textContent = appCss;
   doc.head.append(style);
   let nonce: string | null = null;
+  // The load's nonce, when the document came with it (the app's scheme
+  // handler writes it, spec §4.4 of docs/superpowers/specs/2026-10-19-in-process-core-design.md).
+  const meta = doc.querySelector('meta[name="clax-nonce"]')?.getAttribute("content") ?? null;
+  const given = meta !== null && NONCE.test(meta) ? meta : null;
   const post = (m: HostMessage) => {
     const ch = w.ClaxHost;
     if (nonce !== null && ch && typeof ch.postMessage === "function") ch.postMessage(JSON.stringify({ ...m, nonce } satisfies Posted));
@@ -982,6 +988,9 @@ export function installHost(win: Window, ctl: ArtifactController): () => void {
     init: p => {
       const n = p?.nonce;
       if (nonce !== null || typeof n !== "string" || !NONCE.test(n)) return;
+      // A document that came with its nonce takes no other: an init the app
+      // ran for the WebView's previous load can reach this one first.
+      if (given !== null && n !== given) return;
       nonce = n;
       const platform = PLATFORMS.find(x => x === p.platform);
       if (!inspecting && platform) deviceLink.platform = platform;

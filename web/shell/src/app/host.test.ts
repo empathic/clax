@@ -935,6 +935,22 @@ describe("app mode's host channel", { timeout: MOUNT_TIMEOUT_MS }, () => {
     expect(JSON.stringify(posted)).not.toContain(NONCE);
   });
 
+  it("in a document that came with its nonce, takes no init naming another", async () => {
+    const meta = document.createElement("meta");
+    meta.name = "clax-nonce";
+    meta.content = NONCE;
+    document.head.append(meta);
+    onTestFinished(() => meta.remove());
+    const { host } = await appView({ init: false });
+    // The app's init for the WebView's previous load, run in this one.
+    host.init({ nonce: "previous-load-0123456789" });
+    await settle();
+    expect(raw).toEqual([]);
+    host.init({ nonce: NONCE });
+    expect(toHost.map(m => m.type)).toContain("state");
+    expect(raw.every(m => JSON.parse(m).nonce === NONCE)).toBe(true);
+  });
+
   it("relays the page's edge colours as chrome, the latest again at init, and drops any other shape", async () => {
     const { frame, host } = await appView({ init: false });
     hello(frame, 1);
