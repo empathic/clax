@@ -991,6 +991,8 @@ impl Store {
                     })?,
                 )),
                 (Status::Declined, _) => Some(super::jobs::JobAnswer::Declined),
+                (Status::Withdrawn, _) => Some(super::jobs::JobAnswer::Withdrawn),
+                // Released waits for the terminal's answer.
                 _ => None,
             };
             if let Some(outcome) = outcome {

@@ -671,7 +671,9 @@ impl Store {
     /// # Errors
     /// [`JobError::NotFound`]; [`JobError::Moved`] when the job is final;
     /// [`CoreError::Invalid`] `invalid_question` when `question` names no
-    /// question, or one another job asked.
+    /// question of the `ask` tool (a mirrored AskUserQuestion is the
+    /// hook's, withdrawn in bulk without its close), or one another job
+    /// asked.
     pub fn ask_job_question(&self, id: &str, question: &str) -> JobResult<JobRow> {
         self.job_tx(|tx| {
             let row = existing(tx, id)?;
@@ -684,7 +686,7 @@ impl Store {
                 return Ok(row);
             }
             let (there, other): (bool, Option<String>) = tx.query_row(
-                "SELECT EXISTS (SELECT 1 FROM questions WHERE id = ?1),
+                "SELECT EXISTS (SELECT 1 FROM questions WHERE id = ?1 AND source = 'ask'),
                         (SELECT job_id FROM job_questions WHERE question_id = ?1)",
                 params![question],
                 |r| Ok((r.get(0)?, r.get(1)?)),
@@ -694,7 +696,7 @@ impl Store {
                     "invalid_question",
                     match other {
                         Some(job) => format!("question {question} is job {job}'s"),
-                        None => format!("no question {question}"),
+                        None => format!("no question {question} of the ask tool"),
                     },
                 )
                 .into());
@@ -799,7 +801,8 @@ impl Store {
     /// `running` once it waits on no other question, inside the caller's
     /// transaction; the job's row after it, or `None` when no job asked it,
     /// the job is final, or its outcome is already stored. Called by
-    /// [`Store::close_question`].
+    /// [`Store::close_question`] at every close that ends the question: an
+    /// answer, a decline or a withdrawal.
     pub(crate) fn close_job_question_tx(
         &self,
         tx: &Transaction<'_>,
@@ -911,6 +914,10 @@ mod tests {
     }
 
     fn question(st: &Store) -> String {
+        question_from(st, Source::Ask)
+    }
+
+    fn question_from(st: &Store, source: Source) -> String {
         let sid = session(st, "app", "h1");
         let qs = serde_json::from_value(json!([{"question": "Which?", "header": "Pick",
             "options": [{"label": "A"}, {"label": "B"}]}]))
@@ -920,8 +927,8 @@ mod tests {
             NewQuestion {
                 session_id: sid,
                 artifact_id: None,
-                source: Source::Ask,
-                tool_use_id: None,
+                source,
+                tool_use_id: (source == Source::Hook).then(|| "toolu_1".into()),
                 questions: qs,
                 released: false,
                 thread_id: None,
@@ -1451,6 +1458,37 @@ mod tests {
             .commit_step("j1", "turn:1", json!({}), false)
             .unwrap();
         assert_eq!((row.state, row.rev), (JobState::Paused, paused.rev + 1));
+    }
+
+    #[test]
+    fn a_withdrawn_question_moves_the_job_back_with_its_outcome() {
+        let (_d, st) = store();
+        let q = question(&st);
+        running(&st, "j1");
+        st.ask_job_question("j1", &q).unwrap();
+        st.close_question(DAEMON, &q, Close::Withdraw).unwrap();
+        let full = st.job("j1").unwrap().unwrap();
+        assert_eq!((full.job.state, full.job.rev), (JobState::Running, 4));
+        assert_eq!(full.questions[0].answer, JobAnswer::Withdrawn);
+    }
+
+    #[test]
+    fn a_job_asks_only_the_ask_tools_questions() {
+        let (_d, st) = store();
+        let q = question_from(&st, Source::Hook);
+        let before = running(&st, "j1");
+        let refused = st.ask_job_question("j1", &q);
+        assert!(
+            matches!(
+                refused,
+                Err(JobError::Store(CoreError::Invalid {
+                    code: "invalid_question",
+                    ..
+                }))
+            ),
+            "{refused:?}"
+        );
+        assert_eq!(st.job("j1").unwrap().unwrap().job, before);
     }
 
     #[test]

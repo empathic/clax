@@ -791,7 +791,7 @@ after every applied row:
 | `running`, last step `turn:<n>` with tool calls not yet answered | for each, in order: `finish` → `Publish` (base from the notes); `render` → `Render`; `ask` → `Ask`; any other → `RunTool`. A tool's result is not durable: after a restart the tools of the last committed turn run again (they are reads and draft writes, which repeat harmlessly) |
 | `running`, last step `turn:<n>`, every call answered | `StartTurn(turn n + 1)` with the notes and `carry` |
 | `running`, a `publish:<b>` step, a change | `Reply` (its step moves the job to `done` in the same transaction) |
-| `waiting` (its question unanswered) | nothing; the answer moves the job to `running` in the core (§8.1) and its `JobChanged` brings `next` again |
+| `waiting` (its question not closed) | nothing; the question's close (an answer, a decline or a withdrawal) stores its outcome and moves the job to `running` in the core (§8.1), and its `JobChanged` brings `next` again, which answers the `ask` call with that outcome |
 | `paused` | `MoveJob(→ running)` at launch or `Woke(foreground: true)` |
 | `stopped`, `failed` | nothing; `KeepGoing` and `Retry` emit `MoveJob(→ running)` |
 | `cancelled`, `done` | not loaded; any result still in flight for it is dropped |
@@ -934,7 +934,7 @@ what the worker applies:
 | `GET /api/jobs/{id}` | one |
 | `PATCH /api/jobs/{id}` `{if_rev, state?, step?, title?, plan?, carry?, error?}` | compare-and-set on `rev`; 409 `job_moved` with the current job; the state moves by the table below |
 | `PUT /api/jobs/{id}/threads/{tid}` / `DELETE` | the job answers, or stops at, a thread's comment |
-| `PUT /api/jobs/{id}/questions/{qid}` | a question the job asked; moves a `running` job to `waiting` in the same transaction. When the question is answered (`POST /api/questions/{qid}/answer` or `/decline`, as today) the core stores the answer (or the decline) here and moves the job back to `running` in that answer's transaction |
+| `PUT /api/jobs/{id}/questions/{qid}` | a question the job asked; moves a `running` job to `waiting` in the same transaction. Only a question of the `ask` tool, which no other job asked (400 `invalid_question` otherwise). When the question closes (`POST /api/questions/{qid}/answer` or `/decline`, as today, or its withdrawal) the core stores its outcome here (`answered` with the answers, `declined`, `withdrawn`) and moves the job back to `running` in that close's transaction |
 | `POST /api/jobs/{id}/steps/{key}` `{result, publish?, reply?, state?}` | commits a step (below); `state` (only `done`) ends the job in the step's transaction |
 | `GET/PUT/DELETE /api/agent-read-consents[/{reader}/{source}]` | the agent's remembered consents |
 
