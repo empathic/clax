@@ -1156,6 +1156,16 @@ the step (`{comments: [{thread_id, comment_id}], resolved}`); the
 working records' clear, which is in memory, and the comment and thread
 events follow the commit.
 
+A change's reply step is made from the session that published its
+version, which may be resumed long after the app was killed. So the
+core's reaper (`Store::reap_sessions`, which ends a local session unseen
+for `SESSION_IDLE_SECS`) leaves live every session that published a
+version one of an open job's steps recorded (`OPEN_JOB_SESSIONS`): the
+reply step of a change relaunched after more than five minutes commits.
+Once the job is `done` or `cancelled` the session is reaped as any
+other. A question's asker is not kept: its end withdraws the question
+and moves the job back to `running`, which asks again.
+
 A process killed after the content files are written and before the
 transaction commits leaves the files at the next version's number with
 no row; they are never served. The step's write marks them with the step

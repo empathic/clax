@@ -210,6 +210,18 @@ pub(super) fn session_end_record(at: &str, id: &str, reason: &str) -> AuditRecor
     rec
 }
 
+/// The sessions an open (not `cancelled` or `done`) job names, as a
+/// subquery: each session that published a version one of the job's
+/// steps recorded. The reaper leaves them live, so a change resumed long
+/// after its app was killed commits its reply step from the session that
+/// published. (A question's asker is not kept: its end withdraws the
+/// question and moves the job back to `running`, which asks again.)
+pub(crate) const OPEN_JOB_SESSIONS: &str = "
+    SELECT v.session_id FROM jobs j
+      JOIN job_steps s ON s.job_id = j.id
+      JOIN versions v ON v.artifact_id = j.artifact_id AND v.n = s.version_n
+     WHERE j.state NOT IN ('cancelled', 'done') AND v.session_id IS NOT NULL";
+
 impl Store {
     /// Records `kind` (`session.start` or `session.join`) of session `id`
     /// in `tx`: its facts, made by the session's own agent through `ctx`'s
@@ -1189,7 +1201,10 @@ impl Store {
         })
     }
 
-    /// Ends live sessions not seen for long enough (spec 2026-10-08 §14):
+    /// Ends live sessions not seen for long enough (spec 2026-10-08 §14),
+    /// but for one an open job names ([`OPEN_JOB_SESSIONS`]: the app's
+    /// session lives while a job it published or asked for can still
+    /// commit from it, spec 2026-10-19-in-process-core-design §8.1):
     /// a local one (no `grant_id`) unseen for `idle` whose `pid` is unknown
     /// or no longer alive; a remote one (with a `grant_id`) unseen for
     /// [`Store::REMOTE_SESSION_IDLE_SECS`] of the daemon's uptime (counted
@@ -1224,9 +1239,12 @@ impl Store {
             clax_core::time::stamp(now - Duration::from_secs(Self::REMOTE_SESSION_IDLE_SECS));
         let stale = self.with_read(|c| {
             let mut stmt = c.prepare(
-                "SELECT id, pid, grant_id IS NOT NULL FROM sessions WHERE ended_at IS NULL
-                   AND ((grant_id IS NULL AND last_seen_at < ?1)
-                     OR (grant_id IS NOT NULL AND max(last_seen_at, ?3) < ?2))",
+                &format!(
+                    "SELECT id, pid, grant_id IS NOT NULL FROM sessions WHERE ended_at IS NULL
+                       AND ((grant_id IS NULL AND last_seen_at < ?1)
+                         OR (grant_id IS NOT NULL AND max(last_seen_at, ?3) < ?2))
+                       AND id NOT IN ({OPEN_JOB_SESSIONS})"
+                ),
             )?;
             Ok(stmt
                 .query_map(params![local, remote, resumed], |r| {
@@ -1633,7 +1651,8 @@ impl Store {
     /// withdraws its open questions; and, when it owned open threads or had
     /// open questions or `ask` requests, makes one `ended` inbox item for its
     /// person (M25). With `unseen_before`, ends it only when it was last
-    /// seen before then. `None` when it was not ended here. Everything is
+    /// seen before then and no open job names it ([`OPEN_JOB_SESSIONS`]).
+    /// `None` when it was not ended here. Everything is
     /// recorded under `ctx`, `session.end` ([`EndReason::audit_reason`])
     /// first; a system actor names the session's agent in `for_actor`.
     pub(super) fn end_in(
@@ -1645,9 +1664,13 @@ impl Store {
         reason: EndReason,
         unseen_before: Option<&str>,
     ) -> Result<Option<Cleanup>> {
+        // An idle end (the reaper's) spares a session an open job names.
         let n = tx.execute(
-            "UPDATE sessions SET ended_at = ?2, ended_reason = ?3, secret_sha256 = NULL
-             WHERE id = ?1 AND ended_at IS NULL AND (?4 IS NULL OR last_seen_at < ?4)",
+            &format!(
+                "UPDATE sessions SET ended_at = ?2, ended_reason = ?3, secret_sha256 = NULL
+                 WHERE id = ?1 AND ended_at IS NULL
+                   AND (?4 IS NULL OR (last_seen_at < ?4 AND id NOT IN ({OPEN_JOB_SESSIONS})))"
+            ),
             params![id, now, reason.as_str(), unseen_before],
         )?;
         if n == 0 {

@@ -2165,6 +2165,34 @@ mod tests {
     }
 
     #[test]
+    fn a_session_an_open_job_names_outlives_the_reaper_until_the_job_ends() {
+        let clock = Arc::new(clax_core::working::ManualClock::at("2026-10-19T10:00:00Z"));
+        let (_d, st) = crate::test_util::store_with_clock(clock.clone());
+        let aid = artifact(&st, None);
+        let t = thread_on(&st, &aid);
+        st.send_to_agent(DAEMON, &t).unwrap();
+        let sid = session(&st, "clax-app", "h1");
+        change(&st, "j1", &aid);
+        let mut step = publish_step(Some(&aid), 1, "<p>v2", false);
+        step.session_id = Some(sid.clone());
+        st.commit_publish_step(DAEMON, "j1", "publish:1", step)
+            .unwrap();
+        // The app is killed and relaunched more than five minutes later.
+        let idle = std::time::Duration::from_secs(Store::SESSION_IDLE_SECS);
+        clock.advance(Store::SESSION_IDLE_SECS as i64 + 60);
+        let reaped = st.reap_sessions(idle, &|_| false).unwrap();
+        assert!(!reaped.ended.contains(&sid), "{:?}", reaped.ended);
+        let c = st
+            .commit_reply_step(DAEMON, "j1", "reply:1", reply_step(&sid, &[&t]))
+            .unwrap();
+        assert_eq!(c.job.state, JobState::Done);
+        // The job ended: the session is reaped as any other.
+        clock.advance(Store::SESSION_IDLE_SECS as i64 + 60);
+        let reaped = st.reap_sessions(idle, &|_| false).unwrap();
+        assert_eq!(reaped.ended, [sid]);
+    }
+
+    #[test]
     fn a_reply_step_on_another_artifacts_thread_writes_nothing() {
         let (_d, st) = store();
         let aid = artifact(&st, None);
