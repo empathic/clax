@@ -212,6 +212,78 @@ void main() {
     expect(joined, base64Encode(bytes));
   });
 
+  group('a long answer\'s parts', () {
+    late List<Completer<void>> pending;
+    late List<String> asked;
+    late ChannelRelay gated;
+
+    setUp(() {
+      pending = [];
+      asked = [];
+      gated = ChannelRelay(
+        core,
+        runJs: (js) {
+          asked.add(js);
+          final c = Completer<void>();
+          pending.add(c);
+          return c.future;
+        },
+      );
+      fake.on(
+        'GET',
+        '/api/big',
+        (r, p) => CoreResponse(200, const [
+          ('content-type', 'application/octet-stream'),
+        ], Uint8List(3 * ChannelRelay.partBytes + 1)),
+      );
+    });
+
+    tearDown(() => gated.dispose());
+
+    test('go one at a time: each part is encoded and run only once the one '
+        'before it has run', () async {
+      gated.handle(call(1, 'GET', '/api/big'));
+      await settle();
+      for (var i = 0; i < 4; i++) {
+        expect(asked, hasLength(i + 1), reason: 'part $i in flight alone');
+        expect(pending.where((c) => !c.isCompleted), hasLength(1));
+        pending.last.complete();
+        await settle();
+      }
+      expect(asked, hasLength(4));
+      expect(_parse(asked.last).$2[2], containsPair('status', 200));
+    });
+
+    test('stop at a callAbort, which no longer cancels the core\'s answered '
+        'call', () async {
+      gated.handle(call(1, 'GET', '/api/big'));
+      await settle();
+      expect(asked, hasLength(1));
+      gated.handle({'type': 'callAbort', 'nonce': _nonce, 'id': 1});
+      pending.last.complete();
+      await settle();
+      expect(asked, hasLength(1));
+      expect(fake.cancelled, isEmpty);
+    });
+
+    test('stop at dispose, and at a part the document could not run', () async {
+      gated.handle(call(1, 'GET', '/api/big'));
+      gated.handle(call(2, 'GET', '/api/big'));
+      await settle();
+      expect(asked, hasLength(2));
+      pending[0].completeError(StateError('no document'));
+      await settle();
+      expect(asked, hasLength(2), reason: 'call 1 stops');
+      pending[1].complete();
+      await settle();
+      expect(asked, hasLength(3));
+      gated.dispose();
+      pending[2].complete();
+      await settle();
+      expect(asked, hasLength(3));
+    });
+  });
+
   test('an answer of exactly partBytes goes whole', () async {
     fake.on(
       'GET',

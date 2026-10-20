@@ -27,10 +27,14 @@ import 'frame.dart';
 ///   base64: `callResult(nonce, id, {body64, more: true})` for each
 ///   [partBytes] of it but the last, then the ordinary `callResult` with
 ///   its status, headers and the rest as `body64`; the parts' base64 texts
-///   join into the whole body's. A call the core could not answer is
+///   join into the whole body's. Each part is encoded only once the one
+///   before it has run, so one part's base64 is held at a time; a
+///   `callAbort`, [dispose], or a part the document could not run stops
+///   the rest. A call the core could not answer is
 ///   answered 503 with the core's `{"error": {code, message}}` when it is
 ///   closed or failed, else 502.
-/// - `callAbort {id}` cancels the call in the core and drops its answer.
+/// - `callAbort {id}` cancels the call in the core and drops its answer
+///   (or the rest of its parts).
 /// - `subscribe {id, lastEventId?}` opens a core subscription from
 ///   `lastEventId` and forwards each of its blocks by
 ///   `claxTransport.streamBlock(nonce, id, text)`, its closing `event: end`
@@ -83,7 +87,7 @@ class ChannelRelay {
         _chunk(id, msg);
       case 'callAbort':
         final c = _calls.remove(id);
-        if (c?.tag case final tag?) core.cancel(tag);
+        if (c?.tag case final tag? when !c!.answered) core.cancel(tag);
       case 'subscribe':
         _subscribe(nonce, id, msg['lastEventId']);
       case 'unsubscribe':
@@ -98,7 +102,7 @@ class ChannelRelay {
     if (_disposed) return;
     _disposed = true;
     for (final c in _calls.values) {
-      if (c.tag case final tag?) core.cancel(tag);
+      if (c.tag case final tag? when !c.answered) core.cancel(tag);
     }
     _calls.clear();
     for (final s in _streams.values) {
@@ -165,15 +169,16 @@ class ChannelRelay {
     );
     c.tag = call.tag;
     unawaited(
-      call.answer.then((a) {
+      call.answer.then((a) async {
         if (_disposed || _calls[id] != c) return;
-        _calls.remove(id);
-        _answer(c.nonce, id, a);
+        c.answered = true;
+        await _answer(id, c, a);
+        if (_calls[id] == c) _calls.remove(id);
       }),
     );
   }
 
-  void _answer(String nonce, int id, CoreAnswer a) {
+  Future<void> _answer(int id, _Call c, CoreAnswer a) async {
     final CoreResponse res;
     switch (a) {
       case CoreAnswered(:final response):
@@ -198,15 +203,16 @@ class ChannelRelay {
       ],
     };
     final body = res.body;
-    final n = jsonEncode(nonce);
+    final n = jsonEncode(c.nonce);
     if (body.length > partBytes) {
       var at = 0;
       for (; body.length - at > partBytes; at += partBytes) {
         final part = Uint8List.sublistView(body, at, at + partBytes);
-        _run(
+        final ran = await _runNow(
           'callResult($n, $id, '
           '{"body64":${jsonEncode(base64Encode(part))},"more":true})',
         );
+        if (!ran || _disposed || _calls[id] != c) return;
       }
       head['body64'] = base64Encode(Uint8List.sublistView(body, at));
     } else {
@@ -242,9 +248,17 @@ class ChannelRelay {
     );
   }
 
-  void _run(String call) {
-    if (_disposed) return;
-    unawaited(runJs('window.claxTransport.$call').catchError((Object _) {}));
+  void _run(String call) => unawaited(_runNow(call));
+
+  /// Runs [call]; whether the document ran it.
+  Future<bool> _runNow(String call) async {
+    if (_disposed) return false;
+    try {
+      await runJs('window.claxTransport.$call');
+      return true;
+    } on Object {
+      return false;
+    }
   }
 
   static String? _utf8(Uint8List b) {
@@ -273,6 +287,10 @@ class _Call {
 
   /// The core call's tag, once sent.
   int? tag;
+
+  /// Whether the core answered; its answer may still be going out in
+  /// parts.
+  bool answered = false;
 }
 
 class _Stream {
