@@ -14,24 +14,26 @@
 //   style of its own: the app owns liveness, and the core runs in its
 //   process;
 // - installs `window.claxTransport`, where the app answers: `init(nonce)`,
-//   `callResult(id, r)`, `streamBlock(id, text)` and `streamEnd(id)`. Every
-//   shell document has it, whichever entry (gallery or artifact view) it
-//   loads.
+//   `callResult(nonce, id, r)`, `streamBlock(nonce, id, text)` and
+//   `streamEnd(nonce, id)`. Every shell document has it, whichever entry
+//   (gallery or artifact view) it loads.
 //
-// The channel's calls (each posted with the load's nonce, which the app
-// gives by `claxTransport.init`):
+// The channel's calls, each posted with the load's nonce, which the app
+// gives by `claxTransport.init`; every answer names it again as its first
+// argument, and one naming another nonce (a late answer to the WebView's
+// previous load, whose call IDs this load reuses) is dropped:
 // - `call {id, method, path, headers, body, body64, chunked}`: a request to
 //   the shell's origin under `/api/`. A text or JSON body that is valid UTF-8
 //   goes as `body`, any other as base64 in `body64`; a body over
 //   `CHUNKED_OVER` goes in neither (`chunked: true`) but in `callChunk {id,
 //   n, last, body64}` messages that follow, `n` from 0, each one `CHUNK`
 //   bytes of the body (the last one the rest) in its own base64. The app
-//   answers with `claxTransport.callResult(id, {status, headers, body |
-//   body64})`.
+//   answers with `claxTransport.callResult(nonce, id, {status, headers, body
+//   | body64})`.
 // - `callAbort {id}`: the call's signal aborted; its answer is dropped.
 // - `subscribe {id}`: `GET /api/stream`. The app pushes the event stream's
-//   text by `claxTransport.streamBlock(id, text)` and ends it by
-//   `claxTransport.streamEnd(id)`.
+//   text by `claxTransport.streamBlock(nonce, id, text)` and ends it
+//   by `claxTransport.streamEnd(nonce, id)`.
 // - `unsubscribe {id}`: the stream's reader cancelled it or its signal
 //   aborted.
 // Calls made before `init` wait for it: the channel needs the nonce. One
@@ -78,13 +80,15 @@ export type Transport = {
   fetch: typeof fetch;
   /** Gives the channel this load's nonce; only the first well-formed one counts. */
   init(nonce: string): void;
-  /** Answers call `id`. An answer to no waiting call (aborted, or never
-   * made) does nothing. */
-  callResult(id: number, r: CallResult): void;
-  /** Adds `text` to stream `id`. */
-  streamBlock(id: number, text: string): void;
-  /** Ends stream `id` (the core closed it); its reader sees the end. */
-  streamEnd(id: number): void;
+  /** Answers call `id` of the load whose nonce is `nonce`. An answer to no
+   * waiting call (aborted, or never made), or for another load, does
+   * nothing. */
+  callResult(nonce: string, id: number, r: CallResult): void;
+  /** Adds `text` to stream `id` of the load whose nonce is `nonce`. */
+  streamBlock(nonce: string, id: number, text: string): void;
+  /** Ends stream `id` of the load whose nonce is `nonce` (the core closed
+   * it); its reader sees the end. */
+  streamEnd(nonce: string, id: number): void;
 };
 
 type Pending = { resolve(r: Response): void; reject(e: unknown): void };
@@ -144,6 +148,11 @@ export function transport(channel: () => Channel | undefined, fallback: typeof f
     signal.addEventListener("abort", stop, { once: true });
     void ready.then(() => { signal.removeEventListener("abort", stop); resolve(); });
   });
+
+  // An answer is this load's only under its nonce: IDs start at 1 in every
+  // document, and the app's answer to a previous load's call can reach this
+  // one.
+  const ours = (n: unknown) => nonce !== null && n === nonce;
 
   const post = (m: Record<string, unknown>) => {
     const ch = channel();
@@ -219,8 +228,8 @@ export function transport(channel: () => Channel | undefined, fallback: typeof f
       nonce = n;
       opened();
     },
-    callResult(id, r) {
-      const p = calls.get(id);
+    callResult(n, id, r) {
+      const p = ours(n) ? calls.get(id) : undefined;
       if (!p) return;
       calls.delete(id);
       try {
@@ -232,12 +241,12 @@ export function transport(channel: () => Channel | undefined, fallback: typeof f
         p.reject(new TypeError(`the app answered a malformed result: ${String(e)}`));
       }
     },
-    streamBlock(id, text) {
-      const c = streams.get(id);
+    streamBlock(n, id, text) {
+      const c = ours(n) ? streams.get(id) : undefined;
       if (c && typeof text === "string") c.enqueue(new TextEncoder().encode(text));
     },
-    streamEnd(id) {
-      const c = streams.get(id);
+    streamEnd(n, id) {
+      const c = ours(n) ? streams.get(id) : undefined;
       if (!c) return;
       streams.delete(id);
       c.close();

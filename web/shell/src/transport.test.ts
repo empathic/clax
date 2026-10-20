@@ -18,7 +18,7 @@ describe("the transport", () => {
     const p = f("/api/artifacts", { method: "POST", headers: { "content-type": "application/json" }, body: "{}" });
     await vi.waitFor(() => expect(sent.length).toBe(1));
     expect(sent[0]).toMatchObject({ type: "call", method: "POST", path: "/api/artifacts", body: "{}", nonce: NONCE });
-    t.callResult(sent[0].id as number, { status: 201, headers: [["content-type", "application/json"]], body: '{"ok":true}' });
+    t.callResult(NONCE, sent[0].id as number, { status: 201, headers: [["content-type", "application/json"]], body: '{"ok":true}' });
     const r = await p;
     expect(r.status).toBe(201);
     expect(await r.json()).toEqual({ ok: true });
@@ -39,7 +39,7 @@ describe("the transport", () => {
     const { sent, t, f } = open();
     const p = f("/api/assets/x");
     await vi.waitFor(() => expect(sent.length).toBe(1));
-    t.callResult(sent[0].id as number, { status: 200, headers: [["content-type", "image/png"]], body64: "AP8=" });
+    t.callResult(NONCE, sent[0].id as number, { status: 200, headers: [["content-type", "image/png"]], body64: "AP8=" });
     expect([...new Uint8Array(await (await p).arrayBuffer())]).toEqual([0, 255]);
   });
   it("chunks a body over the limit", async () => {
@@ -63,9 +63,9 @@ describe("the transport", () => {
     const id = sent[0].id as number;
     expect(sent[0]).toMatchObject({ type: "subscribe" });
     const reader = r.body!.getReader();
-    t.streamBlock(id, "event: ready\ndata: {}\n\n");
+    t.streamBlock(NONCE, id, "event: ready\ndata: {}\n\n");
     expect(new TextDecoder().decode((await reader.read()).value)).toContain("event: ready");
-    t.streamEnd(id);
+    t.streamEnd(NONCE, id);
     expect((await reader.read()).done).toBe(true);
   });
   it("unsubscribes when the stream is cancelled", async () => {
@@ -74,6 +74,34 @@ describe("the transport", () => {
     const id = sent[0].id as number;
     await r.body!.cancel();
     expect(sent.at(-1)).toEqual({ type: "unsubscribe", id, nonce: NONCE });
+  });
+  it("drops a late answer from an old load that names an ID the new load uses too", async () => {
+    const OLD = "O".repeat(16);
+    const old = transport(() => ({ postMessage: () => {} }), vi.fn(), ORIGIN);
+    old.init(OLD);
+    void old.fetch("/api/old");
+    const { sent, t, f } = open();
+    const call = f("/api/x");
+    await vi.waitFor(() => expect(sent.length).toBe(1));
+    const stream = await f("/api/stream");
+    await vi.waitFor(() => expect(sent.length).toBe(2));
+    const c = sent.find(m => m.type === "call")!;
+    const sub = sent.find(m => m.type === "subscribe")!;
+    // The new load's first call has the ID the old load's first call had.
+    expect(c.id).toBe(1);
+    // The app's answers to the old load's call and stream, run in the new document.
+    let settled = false;
+    void call.then(() => { settled = true; });
+    t.callResult(OLD, c.id as number, { status: 500, headers: [], body: "old" });
+    const reader = stream.body!.getReader();
+    t.streamBlock(OLD, sub.id as number, "event: old\n\n");
+    t.streamEnd(OLD, sub.id as number);
+    t.streamBlock(NONCE, sub.id as number, "event: new\n\n");
+    expect(new TextDecoder().decode((await reader.read()).value)).toBe("event: new\n\n");
+    await new Promise(r => setTimeout(r, 0));
+    expect(settled).toBe(false);
+    t.callResult(NONCE, c.id as number, { status: 200, headers: [], body: "new" });
+    expect(await (await call).text()).toBe("new");
   });
   it("rejects a call and a stream aborted before init, and posts neither", async () => {
     const sent: string[] = [];
@@ -151,7 +179,7 @@ describe("installTransport", () => {
     await vi.waitFor(() => expect(posted.length).toBe(1));
     const m = JSON.parse(posted[0]) as Record<string, unknown>;
     expect(m).toMatchObject({ type: "call", method: "GET", path: "/api/artifacts/abc", nonce: NONCE });
-    win.claxTransport!.callResult(m.id as number, { status: 204, headers: [] });
+    win.claxTransport!.callResult(NONCE, m.id as number, { status: 204, headers: [] });
     expect((await p).status).toBe(204);
   });
 });
