@@ -1,6 +1,6 @@
 #!/usr/bin/env bash
 # perf-app-launch.sh [--macos|--android] [--runs N] [--app <Clax.app|zip>]
-#                    [--record] [--i-know-what-i-am-doing]
+#                    [--commit <label>] [--record] [--i-know-what-i-am-doing]
 #
 # Cold-starts the Clax app N times (default 9; CLAX_PERF_QUICK=1: 5) and
 # reports the median and p90 of its two launch timings, `home-usable`
@@ -38,8 +38,13 @@
 # the app keeps none when it is stopped), at most the same 60 s, so every
 # launch after it starts from that snapshot; without one the run stops.
 #
-# Output: a JSON object on stdout, {"platform", "app_home_usable_ms":
+# Output: a JSON object on stdout, {"platform", "build", "app_home_usable_ms":
 # {"median", "p90", "runs", "missing"}, "app_home_cover_ms": {…}}, where
+# "build" names what was measured: "commit" (--commit's label; without it,
+# the checkout's HEAD when the script built the app, else null), and for a
+# launch loop the app taken ("app"), its "sha256" (of the zip, or of every
+# file of the bundle by path) and its "version" (CFBundleShortVersionString
+# and CFBundleVersion on macOS, versionName and versionCode on Android); and
 # `missing` counts the launches that gave no figure (no home-usable within
 # the cap; no snapshot for home-cover). The median of an even count is the
 # mean of the middle two; the p90 is the nearest rank, the ceil(0.9 n)-th
@@ -74,12 +79,14 @@ runs=""
 app=""
 record=""
 act=""
+commit=""
 while [ "$#" -gt 0 ]; do
     case "$1" in
         --macos) target=macos; shift ;;
         --android) target=android; shift ;;
         --runs) runs="${2:?--runs needs a count}"; shift 2 ;;
         --app) app="${2:?--app needs a path}"; shift 2 ;;
+        --commit) commit="${2:?--commit needs a label}"; shift 2 ;;
         --record) record=1; shift ;;
         --i-know-what-i-am-doing) act=1; shift ;;
         *) usage ;;
@@ -96,14 +103,16 @@ pkg=dev.empathic.clax
 cap="${CLAX_PERF_CAP:-60}"
 budgets="${CLAX_PERF_BUDGETS:-web/perf/budget.json}"
 
-# summarize PLATFORM FILE WANT: the JSON object for FILE's home-usable and
-# home-cover lines (WANT launches were asked for; 0: as many as there
-# are), then the perf-log lines and, with --record, the budgets.
+# summarize PLATFORM FILE WANT [BUILD]: the JSON object for FILE's
+# home-usable and home-cover lines (WANT launches were asked for; 0: as
+# many as there are; BUILD: a JSON object naming the build, which gains
+# "commit"), then the perf-log lines and, with --record, the budgets.
 summarize() {
-    python3 -I - "$1" "$2" "$3" "$budgets" "${CLAX_PERF_JSON:-}" "$record" <<'PY'
+    python3 -I - "$1" "$2" "$3" "$budgets" "${CLAX_PERF_JSON:-}" "$record" "${4:-}" "$commit" <<'PY'
 import json, math, sys
-platform, path, want, budgets, sink, record = sys.argv[1:7]
+platform, path, want, budgets, sink, record, build, commit = sys.argv[1:9]
 want = int(want)
+build = {"commit": commit or None, **json.loads(build or "{}")}
 lines = []
 for raw in open(path, encoding="utf-8"):
     try:
@@ -127,7 +136,7 @@ def stats(xs):
     mid = xs[n // 2] if n % 2 else (xs[n // 2 - 1] + xs[n // 2]) / 2
     return {"median": mid, "p90": xs[math.ceil(0.9 * n) - 1], "runs": n}
 measured = {"app_home_usable_ms": [u for u, _ in launches], "app_home_cover_ms": [c for _, c in launches if c is not None]}
-out = {"platform": platform}
+out = {"platform": platform, "build": build}
 for k, xs in measured.items():
     out[k] = stats(xs)
 # Launches that gave no figure: no home-usable within the cap, or a launch
@@ -242,7 +251,12 @@ if [ "$target" = macos ]; then
     case "$work" in /*) ;; *) work="$PWD/$work" ;; esac
     if [ -z "$app" ]; then
         app="$(./scripts/run.sh app-macos | tail -1)"
+        if [ -z "$commit" ]; then
+            commit="$(git rev-parse HEAD 2>/dev/null || echo unknown)"
+            if [ -n "$(git status --porcelain --untracked-files=no 2>/dev/null)" ]; then commit="$commit+dirty"; fi
+        fi
     fi
+    [ -n "$commit" ] || echo "perf-app-launch: no --commit: the JSON names the app and its digest, not its commit" >&2
     case "$app" in
         *.zip)
             [ -f "$app" ] || { echo "perf-app-launch: no app at $app; pass --app" >&2; exit 1; }
@@ -340,7 +354,10 @@ if [ "$target" = macos ]; then
     done
     measured="$logs/measured.jsonl"
     tail -n "+$((${first_lines:-0} + 1))" "$timings" >"$measured" 2>/dev/null || : >"$measured"
-    summarize "$(host_platform)" "$measured" "$runs"
+    plist="$bundle/Contents/Info.plist"
+    version="$(plutil -extract CFBundleShortVersionString raw -o - "$plist" 2>/dev/null || echo "?") ($(plutil -extract CFBundleVersion raw -o - "$plist" 2>/dev/null || echo "?"))"
+    build="$(python3 -I -c 'import json,sys; print(json.dumps({"app": sys.argv[1], "sha256": sys.argv[2], "version": sys.argv[3]}))' "$app" "$sha" "$version")"
+    summarize "$(host_platform)" "$measured" "$runs" "$build"
     exit 0
 fi
 
@@ -366,6 +383,10 @@ fi
 "$adb" get-state >/dev/null 2>&1 || { echo "perf-app-launch: no device attached (ANDROID_SERIAL picks one of several)" >&2; exit 1; }
 "$adb" shell pm path "$pkg" >/dev/null 2>&1 || { echo "perf-app-launch: $pkg is not installed (just app-phone)" >&2; exit 1; }
 model="$("$adb" shell getprop ro.product.model | tr -d '\r' | tr -c 'A-Za-z0-9\n' '-')"
+# The installed build: its versionName and versionCode.
+dump="$("$adb" shell dumpsys package "$pkg" | tr -d '\r')"
+version="$(sed -n 's/.*versionName=\([^ ]*\).*/\1/p' <<<"$dump" | sed -n 1p) ($(sed -n 's/.*versionCode=\([0-9]*\).*/\1/p' <<<"$dump" | sed -n 1p))"
+[ -n "$commit" ] || echo "perf-app-launch: no --commit: the JSON names the installed version, not its commit" >&2
 work="$(mktemp -d)"
 trap 'rm -rf "$work"' EXIT
 pull() { "$adb" exec-out run-as "$pkg" cat files/timings.jsonl >"$work/timings.jsonl" 2>/dev/null || : >"$work/timings.jsonl"; }
@@ -410,4 +431,4 @@ done
 "$adb" shell am force-stop "$pkg"
 pull
 tail -n "+$((start_lines + 1))" "$work/timings.jsonl" >"$work/measured.jsonl"
-summarize "android-$model" "$work/measured.jsonl" "$runs"
+summarize "android-$model" "$work/measured.jsonl" "$runs" "$(python3 -I -c 'import json,sys; print(json.dumps({"version": sys.argv[1]}))' "$version")"

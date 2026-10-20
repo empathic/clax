@@ -8,7 +8,10 @@
 #       Prints one record built from the benchmarks' measures (the lines
 #       they write to CLAX_PERF_JSON): the commit and date, the runner, its
 #       CPU count and load average, and each measure with its budget. With
-#       --append, also appends it to FILE.
+#       --append, also appends it to FILE. The commit is PERF_COMMIT when
+#       it is set (a build measured from another checkout, such as
+#       scripts/perf-app-launch.sh --app), else the checkout's HEAD, with
+#       "+dirty" when tracked files changed.
 #   scripts/perf-log.sh show [--runs N] [--file FILE]
 #       Prints a trend table per measure over the last N runs (default 10):
 #       from FILE, or else from the `perf-log` branch fetched from origin.
@@ -22,7 +25,7 @@ set -euo pipefail
 cd "$(dirname "${BASH_SOURCE[0]}")/.."
 
 usage() {
-    sed -n '2,20p' "${BASH_SOURCE[0]}" | sed 's/^# \{0,1\}//' >&2
+    sed -n '2,21p' "${BASH_SOURCE[0]}" | sed 's/^# \{0,1\}//' >&2
     exit 2
 }
 
@@ -37,8 +40,11 @@ record)
         shift 2
     fi
     [ "$#" -gt 0 ] || usage
-    commit="$(git rev-parse HEAD 2>/dev/null || echo unknown)"
-    if [ -n "$(git status --porcelain --untracked-files=no 2>/dev/null)" ]; then commit="$commit+dirty"; fi
+    commit="${PERF_COMMIT:-}"
+    if [ -z "$commit" ]; then
+        commit="$(git rev-parse HEAD 2>/dev/null || echo unknown)"
+        if [ -n "$(git status --porcelain --untracked-files=no 2>/dev/null)" ]; then commit="$commit+dirty"; fi
+    fi
     line="$(PERF_COMMIT="$commit" python3 - "$@" <<'PY'
 import datetime, json, os, platform, sys
 metrics = {}

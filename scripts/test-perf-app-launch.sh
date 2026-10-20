@@ -54,11 +54,11 @@ line() { printf '{"name":"%s","elapsed_ms":%s,"at":"2026-10-20T00:00:00.000Z","e
     line say-usable 999; line home-cover 21; line home-usable 450
 } >"$d/timings.jsonl"
 echo '{"darwin-arm64": {"baseline": {}, "app_home_cover_ms": {"budget": 25}}}' >"$d/budget.json"
-want='{"platform": "darwin-arm64", "app_home_usable_ms": {"median": 410, "p90": 520, "runs": 5, "missing": 0}, "app_home_cover_ms": {"median": 23.5, "p90": 30, "runs": 4, "missing": 1}}'
+want='{"platform": "darwin-arm64", "build": {"commit": "abc123"}, "app_home_usable_ms": {"median": 410, "p90": 520, "runs": 5, "missing": 0}, "app_home_cover_ms": {"median": 23.5, "p90": 30, "runs": 4, "missing": 1}}'
 out="$(CLAX_PERF_APP_TIMINGS="$d/timings.jsonl" CLAX_PERF_PLATFORM=darwin-arm64 CLAX_PERF_BUDGETS="$d/budget.json" \
-    CLAX_PERF_JSON="$d/metrics.jsonl" run 2>"$d/err")"
+    CLAX_PERF_JSON="$d/metrics.jsonl" run --commit abc123 2>"$d/err")"
 if [ "$out" = "$want" ]; then
-    ok "five launches: home-usable median 410 and p90 520, home-cover of four 23.5 and 30"
+    ok "five launches: home-usable median 410 and p90 520, home-cover of four 23.5 and 30, the build named by --commit"
 else
     bad "the summary: $out (want $want)"
 fi
@@ -72,6 +72,13 @@ if [ "$(cat "$d/metrics.jsonl")" = "$want_log" ] && grep -qF "app_home_cover_ms 
     ok "CLAX_PERF_JSON: each median and p90 for perf-log.sh, the p90s beside their budgets, and the launches missing; over budget is reported"
 else
     bad "the perf-log lines: $(cat "$d/metrics.jsonl") / $(cat "$d/err")"
+fi
+# scripts/perf-log.sh names the commit PERF_COMMIT gives, when it is set.
+rec="$(PERF_COMMIT=feedface0 bash scripts/perf-log.sh record "$d/metrics.jsonl")"
+if [ "$(python3 -I -c 'import json,sys; r=json.loads(sys.argv[1]); print(r["commit"], r["metrics"]["app launch: darwin-arm64 home usable p90"]["value"])' "$rec")" = "feedface0 520" ]; then
+    ok "perf-log.sh record names PERF_COMMIT's build"
+else
+    bad "perf-log.sh record with PERF_COMMIT: $rec"
 fi
 # A run with a launch missing records nothing.
 before="$(cat "$d/budget.json")"
@@ -171,7 +178,7 @@ EOF
         PATH="$d/bin:$PATH" CLAX_PERF_CONTAINER="$box" CLAX_PERF_WORK="$d/work" CLAX_PERF_BUDGETS="$d/none.json" \
             CLAX_APP_DIR=/nowhere run --macos --app "$app" --runs 3 --i-know-what-i-am-doing "$@"
     }
-    out="$(loop 2>"$d/err")"
+    out="$(loop --commit feed 2>"$d/err")"
     want='"app_home_usable_ms": {"median": 400, "p90": 500, "runs": 3, "missing": 0}, "app_home_cover_ms": {"median": 25, "p90": 30, "runs": 3, "missing": 0}}'
     alive=""
     while read -r p; do kill -0 "$p" 2>/dev/null && alive="$alive $p"; done <"$d/pids"
@@ -179,6 +186,13 @@ EOF
         ok "--macos: four launches for three runs, the first dropped once its snapshot is kept, so each measured launch has its cover; each app stopped"
     else
         bad "--macos launch loop: $out / alive:$alive / $(cat "$d/err")"
+    fi
+    digest="$(cd "$app" && find . -type f -print0 | LC_ALL=C sort -z | xargs -0 shasum -a 256 | shasum -a 256 | cut -d' ' -f1)"
+    if [ "$(python3 -I -c 'import json,sys; print(json.dumps(json.loads(sys.argv[1])["build"], sort_keys=True))' "$out")" \
+        = "{\"app\": \"$app\", \"commit\": \"feed\", \"sha256\": \"$digest\", \"version\": \"1.2.3 (7)\"}" ]; then
+        ok "--macos: the JSON names the build measured: --commit, the app, its digest and its version"
+    else
+        bad "--macos build: $out (digest $digest)"
     fi
     copy="$(ls -d "$d"/work/clax-perf-*/Fake.app 2>/dev/null | sed -n 1p)"
     if [ -n "$copy" ] && [ "$(plutil -extract CFBundleIdentifier raw -o - "$copy/Contents/Info.plist")" = "$perf" ] \
