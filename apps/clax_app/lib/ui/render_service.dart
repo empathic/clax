@@ -84,7 +84,8 @@ class RenderService {
       return RenderResult.lost(r.id, r.jobId);
     } on Object catch (e) {
       if (running.lost) return RenderResult.lost(r.id, r.jobId);
-      final why = e is InspectorError ? e.message : '$e';
+      // For the agent, as the render tool reports it; no person reads it.
+      final why = e is InspectorError ? e.message : '$e'; // copy-check: allow
       return RenderResult.done(
         r.id,
         r.jobId,
