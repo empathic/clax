@@ -474,6 +474,7 @@ just app-macos-dev
       pub fn subscribe(&self, on_block: Box<dyn FnMut(bytes::Bytes) -> bool + Send>);
   }
   ```
+  Spec §2.4 has a subscription start from the subscriber's resume point, sent as `Last-Event-ID`; Task 15 adds that argument here and to `clax_embed_subscribe` if this task has not.
   `POST /api/core/trim` answers `{"trimmed": <TrimReport as JSON>}` (`Store::trim_memory`, `crates/clax-store/src/lib.rs:392`).
 - Consumes: Task 5.
 
@@ -609,6 +610,8 @@ just app-macos-dev
 ## Phase 2: The shell's app-mode transport and the scheme (spec §4, §5)
 
 ### Task 9: `hostFetch`: the shell's calls over `ClaxHost`, and no connection notices in app mode
+
+> Revised after its review (2026-10-19): the transport is its own classic script, `/_clax/transport.js`, which the core writes after the `clax-embed` meta (`crates/clax-server/src/shell/boot.rs`, `with_embed_meta`), so no browser entry carries it; it hides `.conn-notice` with a style of its own (no `connNotices`, `retrying` unchanged) and answers on `window.claxTransport {init, callResult, streamBlock, streamEnd}` in every shell document, not on `claxHost`. Every answer names the load's nonce first; the nonce is read from the document's `clax-nonce` meta (Task 15 writes it), `init` the fallback; an abort before the nonce rejects; `subscribe` carries `lastEventId`. The steps below are as first planned.
 
 **Files:**
 - Create: `web/shell/src/transport.ts`, `web/shell/src/transport.test.ts`
@@ -767,7 +770,7 @@ just app-macos-dev
   4. "a page reads nothing of the shell": a published page whose script runs `fetch(SHELL + "/a/<id>?app=1")` and `fetch(SHELL + "/api/artifacts")` and posts what it read to `parent` by `postMessage`; the shell's listener (installed by the test with `page.evaluate`) records an opaque/failed result for both (`TypeError` or `type === "opaque"`), never a body.
   5. "a page cannot post on ClaxHost": the page calls `window.ClaxHost?.postMessage(...)`; the fake host records nothing from a non-main frame.
 - [ ] **Step 2: Run** `bazelisk test //web:e2e_rest --test_arg=e2e/app-transport.spec.ts` — FAIL (no scheme module, no daemon flag).
-- [ ] **Step 3: Implement** `app-scheme.ts`, the `hostChannel` relay (calls go to the daemon with its token as `as: owner` would; `subscribe` opens `GET /api/stream` with the token and forwards each chunk through `page.evaluate(() => claxHost.streamBlock(id, text))`), and the daemon flag.
+- [ ] **Step 3: Implement** `app-scheme.ts`, the `hostChannel` relay (calls go to the daemon with its token as `as: owner` would; `subscribe` opens `GET /api/stream` with the token and forwards each chunk through `page.evaluate(() => claxTransport.streamBlock(nonce, id, text))`, answering under the nonce each message carried), and the daemon flag.
 - [ ] **Step 4: Run** — PASS. Run the whole app-mode e2e set: `bazelisk test //web:e2e_rest --test_arg=e2e/app-mode.spec.ts --test_arg=e2e/app-questions.spec.ts --test_arg=e2e/inspect.spec.ts` — PASS (the browser path is unchanged).
 - [ ] **Step 5: Commit** the listed files: "Test the shell's app transport end to end over a routed scheme, origin isolation included".
 
@@ -967,12 +970,12 @@ The repository has no Android emulator path today (`docs/bazel.md` and `scripts/
     void dispose(); // cancels subscriptions, drops pending answers
   }
   ```
-  `SchemeAnswerer` rules: `GET`/`HEAD` only (else 405); shell host → `CallAs.shellPage`, refusing `/a/…` unless `mainFrame` (403); `<id>.c` host → `CallAs.content` with `host: id`; forward only `range`, `if-none-match`, `accept`; drop `access-control-*` from the answer.
-  `ChannelRelay`: `call` → `CoreRequest(as: owner)` → `runJs('claxHost.callResult(<id>, <json>)')` with `body` as text when the answer's content type is text or JSON and its bytes are valid UTF-8, else `body64`; a body over 1 MiB is answered in `claxHost.callResultChunk(id, n, last, body64)` messages (add that method to `host.ts` and `transport.ts` in this task, with a vitest case); `callChunk` assembles; `callAbort` drops the answer; `subscribe` opens a core subscription and forwards each block by `claxHost.streamBlock(id, <json string>)`.
+  `SchemeAnswerer` rules: `GET`/`HEAD` only (else 405); shell host → `CallAs.shellPage`, refusing `/a/…` unless `mainFrame` (403); `<id>.c` host → `CallAs.content` with `host: id`; forward only `range`, `if-none-match`, `accept`; drop `access-control-*` from the answer. A shell document it answers (an HTML answer on the shell host) gets a fresh nonce (16 to 128 of `[A-Za-z0-9_-]`, from `Random.secure()`) written as `<meta name="clax-nonce" content="…">` right after its `<head>` (spec §4.4); the surface gives `claxHost.init` the same nonce for that load, and the relay answers that load under it.
+  `ChannelRelay`: the transport's receivers are `window.claxTransport` (`web/shell/src/transport.ts`), never `claxHost`, and every answer names the nonce the message it answers carried, as its first argument. `call` → `CoreRequest(as: owner)` → `runJs('claxTransport.callResult(<nonce>, <id>, <json>)')` with `body` as text when the answer's content type is text or JSON and its bytes are valid UTF-8, else `body64`; a body over 1 MiB is answered in `claxTransport.callResultChunk(nonce, id, n, last, body64)` messages (add that receiver to `transport.ts` in this task, with a vitest case, inside its `transport` budget in `web/perf/bundle-budget.json`); `callChunk` assembles; `callAbort` drops the answer; `subscribe {id, lastEventId?}` opens a core subscription from `lastEventId` (the core's subscribe takes the resume point as `Last-Event-ID`, spec §2.4; carry it through `clax_embed_subscribe` here if Task 6's C function does not yet) and forwards each block by `claxTransport.streamBlock(<nonce>, id, <json string>)`, ending with `claxTransport.streamEnd(<nonce>, id)`. Until this task's scheme handler writes the nonce, a document's transport waits for `claxTransport.init(nonce)`; once it does, the surface no longer calls it.
 - Consumes: Tasks 9–14.
 
 - [ ] **Step 1: Write `scheme_test.dart`** (with `FakeCore`): each rule above, one test each, asserting the `CoreRequest` the fake saw and the answer.
-- [ ] **Step 2: Write `channel_relay_test.dart`**: a `call` is answered with the right `callResult` JS; a binary answer goes as `body64`; a 3 MiB answer goes in three `callResultChunk` calls; a `callAbort` before the answer runs no JS; `subscribe` forwards pushed blocks in order; `dispose` cancels the subscription.
+- [ ] **Step 2: Write `channel_relay_test.dart`**: a `call` is answered with the right `callResult` JS, under the call's nonce; a binary answer goes as `body64`; a 3 MiB answer goes in three `callResultChunk` calls; a `callAbort` before the answer runs no JS; `subscribe` forwards pushed blocks in order, and one with `lastEventId` opens the core subscription from it; `dispose` cancels the subscription; and in `scheme_test.dart`, each shell document answered carries a `clax-nonce` meta, a new one each time.
 - [ ] **Step 3: Run** `bazelisk test //apps/clax_app:core_scheme_test //apps/clax_app:core_channel_relay_test //web:unit --test_arg=shell/src/transport.test.ts` — FAIL.
 - [ ] **Step 4: Implement**, wiring `webview_surface.dart` to the relay and the scheme when it is given a `CoreCalls` (nothing gives it one until Task 17; the loopback path is unchanged).
 - [ ] **Step 5: Run** — PASS (the app is looked at in Task 17, when it runs on the core).

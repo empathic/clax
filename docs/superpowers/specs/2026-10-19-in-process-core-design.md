@@ -308,7 +308,11 @@ daemon today (`auth::open_without_credential`).
 
 `clax_embed_subscribe` sends `GET /api/stream` through the router as an
 `as: owner` request (with a loopback `ConnectInfo`, so the route's
-`sees_live_pages` judges it as it judges the app's daemon today) and pumps
+`sees_live_pages` judges it as it judges the app's daemon today), with the
+subscriber's resume point as `Last-Event-ID` when it has one (a shell
+document's `subscribe` carries it as `lastEventId`, §5.2): the hub then
+replays what that stream missed, or answers `resync`, as it does for an
+SSE client that reconnects. It pumps
 the streaming response body: each chunk the hub's `Conn::next` yields
 (`crates/clax-realtime/src/stream.rs:1783`; one SSE block, `id:`, `event:`,
 `data:`, keep-alives included) is posted as one message. Readers buffer to
@@ -472,7 +476,13 @@ forbids.
   `message.frameInfo.isMainFrame` and its `securityOrigin` is the shell's
   (`clax`, `app`).
 - The nonce handshake (`ShellSession`, `host_protocol.dart:1157`) stays as
-  a second check.
+  a second check. The nonce comes with the document: the scheme handler
+  (§4.2) makes a fresh one (16 to 128 of `[A-Za-z0-9_-]`) for each shell
+  document it answers, writes `<meta name="clax-nonce" content="…">` right
+  after its `<head>`, and gives the same one to `claxHost.init`. The
+  shell's transport reads it at boot, so its calls go out before the
+  document's load event (which waits for the artifact page's own load);
+  only a document without one waits for `claxTransport.init` (§5.1).
 
 How the host gets at each WebView's configuration is the spike's other
 question: on Android, the native `WebView` is reached by
@@ -496,9 +506,15 @@ a platform view of the app's own for the shell, is recorded.
 The shell makes its requests with `fetch` in about forty places
 (`api.ts`, `threads.ts`, `caps/*`, `stream-hub.ts`, …). Rather than touch
 each, app mode replaces the shell document's `fetch` once, at boot, with
-`hostFetch` (`web/shell/src/transport.ts`), when the document carries
-`<meta name="clax-embed" content='{"transport":"host",…}'>`, which the core
-writes into every shell document when `AppState.embed` is set:
+the transport's (`web/shell/src/transport.ts`). When `AppState.embed` is
+set the core writes into every shell document
+`<meta name="clax-embed" content='{"transport":"host",…}'>` and right
+after it `<script src="/_clax/transport.js">`, the transport built on its
+own as a classic script, so it runs before the shell's modules and no
+browser entry carries it. It replaces `fetch`, hides the connection
+notices (§5.2), and installs `window.claxTransport {init, callResult,
+streamBlock, streamEnd}`, where the app answers, in every shell document
+whichever entry it loads:
 
 - a request to the shell's own origin under `/api/` is posted on
   `ClaxHost` as
@@ -510,13 +526,21 @@ writes into every shell document when `AppState.embed` is set:
   ```
 
   and resolves to a real `Response` when the host calls
-  `claxHost.callResult(17, {status, headers, body | body64})`; an aborted
+  `claxTransport.callResult(nonce, 17, {status, headers, body | body64})`
+  with the nonce the call carried; an aborted
   `signal` rejects it with an `AbortError` and posts `{type: "callAbort",
   id}`. The host relays it as an `as: owner` frame;
 - every other request goes to the platform's `fetch` (the scheme answers
   it, §4.2).
 
-Calls made before `init` wait for it (the channel needs the nonce). A body
+Every answer names the nonce of the load whose call it answers, and the
+transport drops one naming another: IDs start at 1 in every document, so a
+late answer to a WebView's previous load would otherwise land on the new
+load's call or stream. Calls go out from boot under the document's nonce
+(§4.4); a document without one waits for `claxTransport.init(nonce)`,
+the way in for the app over loopback until its scheme handler writes the
+nonce, and a call or stream whose signal aborts meanwhile rejects with an
+`AbortError`, posting nothing. A body
 over 8 MiB goes as `body64` in chunks of 1 MiB (`{type: "callChunk", id,
 n, last, body64}`), so no one message carries more. `/api/token` answers as
 on the daemon (the shell's own code may hold the token, as it does today;
@@ -528,22 +552,25 @@ such use by a grep.
 ### 5.2 Events
 
 In app mode the stream hub (`stream-hub.ts`'s `Hub`) runs in the shell
-document itself (no SharedWorker, no leader election), with `hostFetch` as
-its `env.fetch`. `hostFetch` answers `GET /api/stream` with a `Response`
-whose body is a `ReadableStream`: it posts `{type: "subscribe", id}`, the
-host opens a core subscription for that document (§2.4) and pushes each
-block by `claxHost.streamBlock(id, text)`, which the stream enqueues;
-`claxHost.streamEnd(id)` (the core closed, for a reopen) ends it, and the
-hub resumes with `Last-Event-ID` as after any end. The hub's topic
+document itself (no SharedWorker, no leader election), with the
+transport's `fetch` as its `env.fetch`, which answers `GET /api/stream`
+with a `Response` whose body is a `ReadableStream`: it posts `{type:
+"subscribe", id, lastEventId?}`, `lastEventId` the request's
+`Last-Event-ID` (or `last_event_id` query) when it names one, the host
+opens a core subscription for that document from that point (§2.4) and
+pushes each block by `claxTransport.streamBlock(nonce, id, text)`, which
+the stream enqueues; `claxTransport.streamEnd(nonce, id)` (the core
+closed, for a reopen) ends it, and the hub opens the stream again with its
+`Last-Event-ID`, as after any end, so the new subscription resumes where
+the last one stopped. The hub's topic
 subscriptions go as today's `POST /api/stream/<id>` calls. In host mode the
 hub has no connect timeout, no idle timeout and no backoff, and never
 reports `stream_down`: the host owns liveness.
 
-`conn-notice.ts` gains `connNotices(enabled)`; app mode turns it off at
-boot, so `connTrouble` never shows "Live updates paused. Reconnecting…" or
-"Clax is not answering. Retrying…" in the app. `retrying()` keeps retrying
-a failed call (a 5xx from the core is a real failure) but reports no
-trouble in app mode.
+The transport adds a style of its own that hides `.conn-notice`, so
+"Live updates paused. Reconnecting…" and "Clax is not answering.
+Retrying…" never show in the app; `conn-notice.ts` and `retrying()` are as
+in a browser (a 5xx from the core is a real failure, retried).
 
 A WebView that is hidden keeps its subscription (`setVisible` already keeps
 its topics, `visibility.ts`).
@@ -1285,7 +1312,7 @@ wall-clock budgets, injected clocks (AGENTS.md).
   real test daemon with the frame rules of §2.3 (a small Node relay in
   `web/e2e/app-scheme.ts`, stripping `Access-Control-*`), and the fake
   `ClaxHost` relays `call` messages to the daemon with its token and pushes
-  `/api/stream` blocks by `claxHost.streamBlock`. It checks: the artifact
+  `/api/stream` blocks by `claxTransport.streamBlock`. It checks: the artifact
   view loads and comments post through the channel; a version published
   elsewhere is pushed and followed; the shell never shows a connection
   notice, also with the relay paused for 60 s on Playwright's clock; a
