@@ -16,13 +16,16 @@ String _with(String inner, {String box = '0 0 1024 1024'}) =>
     'xmlns:xlink="http://www.w3.org/1999/xlink" viewBox="$box">'
     '<rect width="1024" height="1024" fill="#123"/>$inner</svg>';
 
+/// [iconProblem]'s sentence.
+String? problem(String svg) => iconProblem(svg)?.message;
+
 void main() {
   group('iconProblem', () {
     test('passes a plain square icon and every sample fixture', () {
-      expect(iconProblem(_ok), isNull);
+      expect(problem(_ok), isNull);
       for (final f in Directory(appPath('test/fixtures/icons')).listSync()) {
         expect(
-          iconProblem(File(f.path).readAsStringSync()),
+          problem(File(f.path).readAsStringSync()),
           isNull,
           reason: f.path,
         );
@@ -31,40 +34,40 @@ void main() {
 
     test('refuses a script, a foreignObject, an image and a filter', () {
       expect(
-        iconProblem(_with('<script>alert(1)</script>')),
+        problem(_with('<script>alert(1)</script>')),
         contains('<script>'),
       );
       expect(
-        iconProblem(_with('<foreignObject><p>x</p></foreignObject>')),
+        problem(_with('<foreignObject><p>x</p></foreignObject>')),
         contains('<foreignObject>'),
       );
       expect(
-        iconProblem(_with('<image href="#a" width="9" height="9"/>')),
+        problem(_with('<image href="#a" width="9" height="9"/>')),
         contains('<image>'),
       );
-      expect(iconProblem(_with('<filter id="f"/>')), contains('<filter>'));
-      expect(iconProblem(_with('<g filter="url(#f)"/>')), contains('filters'));
-      expect(iconProblem(_with('<style>*{}</style>')), contains('<style>'));
+      expect(problem(_with('<filter id="f"/>')), contains('<filter>'));
+      expect(problem(_with('<g filter="url(#f)"/>')), contains('filters'));
+      expect(problem(_with('<style>*{}</style>')), contains('<style>'));
       expect(
-        iconProblem(_with('<rect width="1" height="1" onclick="x()"/>')),
+        problem(_with('<rect width="1" height="1" onclick="x()"/>')),
         contains('onclick'),
       );
     });
 
     test('refuses an external href or url()', () {
       expect(
-        iconProblem(_with('<use xlink:href="https://evil.example/a.svg#x"/>')),
+        problem(_with('<use xlink:href="https://evil.example/a.svg#x"/>')),
         contains('outside the file'),
       );
       expect(
-        iconProblem(_with('<use href="other.svg#x"/>')),
+        problem(_with('<use href="other.svg#x"/>')),
         contains('outside the file'),
       );
       expect(
-        iconProblem(_with('<rect width="1" height="1" fill="url(a.svg#g)"/>')),
+        problem(_with('<rect width="1" height="1" fill="url(a.svg#g)"/>')),
         contains('outside the file'),
       );
-      expect(iconProblem(_with('<use href="#x"/>')), isNull);
+      expect(problem(_with('<use href="#x"/>')), isNull);
     });
 
     test('refuses <use> that expands too far or nests too deep', () {
@@ -75,15 +78,15 @@ void main() {
         '<g id="c">${'<use href="#b"/>' * 10}</g></defs>'
         '<use href="#c"/>',
       );
-      expect(iconProblem(bomb), contains('expand'));
+      expect(problem(bomb), contains('expand'));
       expect(cleanIcon(bomb), isNull);
       final cycle = _with(
         '<defs><g id="a"><use href="#b"/></g><g id="b"><use href="#a"/></g>'
         '</defs><use href="#a"/>',
       );
-      expect(iconProblem(cycle), contains('nest'));
+      expect(problem(cycle), contains('nest'));
       expect(
-        iconProblem(
+        problem(
           _with(
             '<defs><circle id="d" r="9"/></defs>'
             '${'<use href="#d"/>' * 8}',
@@ -95,19 +98,19 @@ void main() {
 
     test('refuses a huge, malformed, non-svg or non-square file', () {
       final huge = _with('<path d="${'M0 0 L1 1 ' * 4000}"/>');
-      expect(iconProblem(huge), contains('at most 32 KB'));
-      expect(iconProblem('<svg viewBox="0 0 1 1">'), contains('well-formed'));
-      expect(iconProblem('<g viewBox="0 0 10 10"/>'), contains('root element'));
+      expect(problem(huge), contains('at most 32 KB'));
+      expect(problem('<svg viewBox="0 0 1 1">'), contains('well-formed'));
+      expect(problem('<g viewBox="0 0 10 10"/>'), contains('root element'));
       expect(
-        iconProblem(_with('', box: '0 0 1024 512')),
+        problem(_with('', box: '0 0 1024 512')),
         contains('not square'),
       );
       expect(
-        iconProblem('<svg xmlns="http://www.w3.org/2000/svg"/>'),
+        problem('<svg xmlns="http://www.w3.org/2000/svg"/>'),
         contains('square viewBox'),
       );
       expect(
-        iconProblem('<!DOCTYPE svg [<!ENTITY a "b">]>${_with('')}'),
+        problem('<!DOCTYPE svg [<!ENTITY a "b">]>${_with('')}'),
         contains('DOCTYPE'),
       );
     });

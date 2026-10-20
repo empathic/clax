@@ -254,7 +254,8 @@ pub fn require_title(title: Option<&str>) -> Result<()> {
 }
 
 /// Checks a publish request: `index.html` present and not removed, every path
-/// safe, encodings decodable, size caps and label length respected. Base64
+/// safe, encodings decodable, size caps and label length respected, and an
+/// `icon.svg` within the icon rules ([`crate::icon::problem`]). Base64
 /// content may contain ASCII whitespace (line breaks from encoders), which is
 /// ignored.
 pub fn validate(req: PublishRequest) -> Result<ValidatedPublish> {
@@ -333,6 +334,11 @@ pub fn validate(req: PublishRequest) -> Result<ValidatedPublish> {
                         format!("publish exceeds {MAX_BODY_BYTES} bytes"),
                     ));
                 }
+                if path == crate::icon::ICON_PATH
+                    && let Some(p) = crate::icon::problem(&bytes)
+                {
+                    return Err(CoreError::InvalidIcon(p));
+                }
                 let content_type = f.content_type.unwrap_or_else(|| content_type_for(&path));
                 files.insert(
                     path,
@@ -388,6 +394,32 @@ mod tests {
             encoding: Encoding::Utf8,
             content_type: None,
         })
+    }
+
+    #[test]
+    fn a_bad_icon_refuses_the_publish() {
+        let bad = r#"<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 9 9"><script>x()</script></svg>"#;
+        let e = validate(req(&[("index.html", utf8("<p>")), ("icon.svg", utf8(bad))])).unwrap_err();
+        assert!(
+            matches!(&e, CoreError::InvalidIcon(p) if p.code() == "element"),
+            "{e:?}"
+        );
+        assert!(e.to_string().starts_with("icon.svg uses <script>"), "{e}");
+        // Only the app's icon is checked: another .svg, or icon.svg in a
+        // folder, is any file; a removal is no icon.
+        for (path, file) in [
+            ("art.svg", utf8(bad)),
+            ("img/icon.svg", utf8(bad)),
+            ("icon.svg", None),
+        ] {
+            validate(req(&[("index.html", utf8("<p>")), (path, file)])).unwrap();
+        }
+        let good = r#"<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 9 9"/>"#;
+        validate(req(&[
+            ("index.html", utf8("<p>")),
+            ("icon.svg", utf8(good)),
+        ]))
+        .unwrap();
     }
 
     #[test]

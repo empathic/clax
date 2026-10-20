@@ -20,6 +20,8 @@ chrono.workspace = true
 mime_guess.workspace = true
 rand.workspace = true
 ring.workspace = true
+# icon.svg's parser (`icon`): no unsafe, no I/O, builds for wasm32.
+roxmltree = "0.20"
 sha2 = "0.11"
 rusqlite.workspace = true
 ryu-js = "1"

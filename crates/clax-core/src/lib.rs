@@ -26,6 +26,7 @@ pub mod extension;
 pub mod feedback;
 pub mod gitctx;
 pub mod home;
+pub mod icon;
 pub mod ids;
 pub mod live;
 pub mod live_layers;

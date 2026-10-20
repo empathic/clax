@@ -38,6 +38,10 @@ pub enum CoreError {
     },
     #[error("{message}")]
     Invalid { code: &'static str, message: String },
+    /// A publish whose `icon.svg` breaks a rule of the icon subset
+    /// ([`crate::icon::problem`]).
+    #[error("{0}")]
+    InvalidIcon(crate::icon::IconProblem),
     /// An agent's reply, resolve or handoff on a thread another live agent
     /// owns (spec 2026-10-08 §12, M24): `name` is the owner's agent name
     /// (its harness when it has none).

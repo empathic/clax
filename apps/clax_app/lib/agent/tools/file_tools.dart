@@ -341,7 +341,7 @@ void _checkSize(String path, int bytes) {
 /// Refuses an `icon.svg` outside the icon subset ([iconProblem]).
 void _checkIcon(String path, String content) {
   if (path != appIconPath) return;
-  if (iconProblem(content) case final p?) throw ToolInputError(p);
+  if (iconProblem(content) case final p?) throw ToolInputError(p.message);
 }
 
 ToolInputError _noFile(String path) =>

@@ -122,6 +122,8 @@ TEST_DATA = glob(
 ) + [
     ":home_bundle",
     "pubspec.yaml",
+    # The icon rule vectors the core runs too (test/agent/icon_fixtures_test.dart).
+    "//crates/clax-core:icon_fixtures",
     "//web:contract_files",
 ]
 

@@ -1,0 +1,369 @@
+{
+  "bad-ampersand-in-attribute.svg": {
+    "problem": {
+      "code": "not_xml",
+      "message": "icon.svg is not well-formed XML: "
+    },
+    "clean": true
+  },
+  "bad-animate.svg": {
+    "problem": {
+      "code": "element",
+      "message": "icon.svg uses <animate>, which an icon may not: use only svg, g, defs, title, desc, path, rect, circle, ellipse, line, polyline, polygon, linearGradient, radialGradient, stop, clipPath, mask, use, symbol, text, tspan. No scripts, foreignObject, images, filters, styles or animation."
+    },
+    "clean": true
+  },
+  "bad-bad-char-ref.svg": {
+    "problem": {
+      "code": "not_xml",
+      "message": "icon.svg is not well-formed XML: "
+    },
+    "clean": true
+  },
+  "bad-bare-ampersand.svg": {
+    "problem": {
+      "code": "not_xml",
+      "message": "icon.svg is not well-formed XML: "
+    },
+    "clean": true
+  },
+  "bad-cdata-end-in-text.svg": {
+    "problem": {
+      "code": "not_xml",
+      "message": "icon.svg is not well-formed XML: "
+    },
+    "clean": true
+  },
+  "bad-child-before-root.svg": {
+    "problem": {
+      "code": "element",
+      "message": "icon.svg uses <script>, which an icon may not: use only svg, g, defs, title, desc, path, rect, circle, ellipse, line, polyline, polygon, linearGradient, radialGradient, stop, clipPath, mask, use, symbol, text, tspan. No scripts, foreignObject, images, filters, styles or animation."
+    },
+    "clean": true
+  },
+  "bad-comment-dashes.svg": {
+    "problem": {
+      "code": "not_xml",
+      "message": "icon.svg is not well-formed XML: "
+    },
+    "clean": true
+  },
+  "bad-control-char.svg": {
+    "problem": {
+      "code": "not_xml",
+      "message": "icon.svg is not well-formed XML: "
+    },
+    "clean": true
+  },
+  "bad-doctype-ampersand.svg": {
+    "problem": {
+      "code": "doctype",
+      "message": "icon.svg has a <!DOCTYPE>; leave it out."
+    },
+    "clean": false
+  },
+  "bad-doctype-entity.svg": {
+    "problem": {
+      "code": "doctype",
+      "message": "icon.svg has a <!DOCTYPE>; leave it out."
+    },
+    "clean": false
+  },
+  "bad-doctype.svg": {
+    "problem": {
+      "code": "doctype",
+      "message": "icon.svg has a <!DOCTYPE>; leave it out."
+    },
+    "clean": false
+  },
+  "bad-duplicate-attribute.svg": {
+    "problem": {
+      "code": "not_xml",
+      "message": "icon.svg is not well-formed XML: "
+    },
+    "clean": true
+  },
+  "bad-empty-href.svg": {
+    "problem": {
+      "code": "external_href",
+      "message": "icon.svg: href \"\" points outside the file; only #references within it are allowed."
+    },
+    "clean": true
+  },
+  "bad-external-href.svg": {
+    "problem": {
+      "code": "external_href",
+      "message": "icon.svg: href \"other.svg#x\" points outside the file; only #references within it are allowed."
+    },
+    "clean": true
+  },
+  "bad-external-url.svg": {
+    "problem": {
+      "code": "external_url",
+      "message": "icon.svg: fill=\"url(a.svg#g)\" points outside the file; only url(#…) is allowed."
+    },
+    "clean": true
+  },
+  "bad-filter-attribute.svg": {
+    "problem": {
+      "code": "filter",
+      "message": "icon.svg: filters are not allowed."
+    },
+    "clean": true
+  },
+  "bad-filter-element.svg": {
+    "problem": {
+      "code": "element",
+      "message": "icon.svg uses <filter>, which an icon may not: use only svg, g, defs, title, desc, path, rect, circle, ellipse, line, polyline, polygon, linearGradient, radialGradient, stop, clipPath, mask, use, symbol, text, tspan. No scripts, foreignObject, images, filters, styles or animation."
+    },
+    "clean": true
+  },
+  "bad-foreign-object.svg": {
+    "problem": {
+      "code": "element",
+      "message": "icon.svg uses <foreignObject>, which an icon may not: use only svg, g, defs, title, desc, path, rect, circle, ellipse, line, polyline, polygon, linearGradient, radialGradient, stop, clipPath, mask, use, symbol, text, tspan. No scripts, foreignObject, images, filters, styles or animation."
+    },
+    "clean": true
+  },
+  "bad-image.svg": {
+    "problem": {
+      "code": "element",
+      "message": "icon.svg uses <image>, which an icon may not: use only svg, g, defs, title, desc, path, rect, circle, ellipse, line, polyline, polygon, linearGradient, radialGradient, stop, clipPath, mask, use, symbol, text, tspan. No scripts, foreignObject, images, filters, styles or animation."
+    },
+    "clean": true
+  },
+  "bad-late-declaration.svg": {
+    "problem": {
+      "code": "not_xml",
+      "message": "icon.svg is not well-formed XML: "
+    },
+    "clean": true
+  },
+  "bad-lt-in-attribute.svg": {
+    "problem": {
+      "code": "not_xml",
+      "message": "icon.svg is not well-formed XML: "
+    },
+    "clean": true
+  },
+  "bad-no-viewbox.svg": {
+    "problem": {
+      "code": "view_box",
+      "message": "icon.svg needs a square viewBox, such as viewBox=\"0 0 1024 1024\"."
+    },
+    "clean": false
+  },
+  "bad-not-svg.svg": {
+    "problem": {
+      "code": "not_svg",
+      "message": "icon.svg must have <svg> as its root element, not <g>."
+    },
+    "clean": false
+  },
+  "bad-not-xml.svg": {
+    "problem": {
+      "code": "not_xml",
+      "message": "icon.svg is not well-formed XML: "
+    },
+    "clean": false
+  },
+  "bad-onclick.svg": {
+    "problem": {
+      "code": "event_attribute",
+      "message": "icon.svg: the event attribute onclick is not allowed."
+    },
+    "clean": true
+  },
+  "bad-onload-upper.svg": {
+    "problem": {
+      "code": "event_attribute",
+      "message": "icon.svg: the event attribute ONLOAD is not allowed."
+    },
+    "clean": true
+  },
+  "bad-root-onload.svg": {
+    "problem": {
+      "code": "event_attribute",
+      "message": "icon.svg: the event attribute onload is not allowed."
+    },
+    "clean": true
+  },
+  "bad-script.svg": {
+    "problem": {
+      "code": "element",
+      "message": "icon.svg uses <script>, which an icon may not: use only svg, g, defs, title, desc, path, rect, circle, ellipse, line, polyline, polygon, linearGradient, radialGradient, stop, clipPath, mask, use, symbol, text, tspan. No scripts, foreignObject, images, filters, styles or animation."
+    },
+    "clean": true
+  },
+  "bad-second-url.svg": {
+    "problem": {
+      "code": "external_url",
+      "message": "icon.svg: style=\"fill:url(#g);stroke:URL(https://x.example/a)\" points outside the file; only url(#…) is allowed."
+    },
+    "clean": true
+  },
+  "bad-style-animation.svg": {
+    "problem": {
+      "code": "style",
+      "message": "icon.svg: the style \"animation: spin 1s\" uses animation, filters or at-rules, which an icon may not."
+    },
+    "clean": true
+  },
+  "bad-style-at-rule.svg": {
+    "problem": {
+      "code": "style",
+      "message": "icon.svg: the style \"@import x\" uses animation, filters or at-rules, which an icon may not."
+    },
+    "clean": true
+  },
+  "bad-style-element.svg": {
+    "problem": {
+      "code": "element",
+      "message": "icon.svg uses <style>, which an icon may not: use only svg, g, defs, title, desc, path, rect, circle, ellipse, line, polyline, polygon, linearGradient, radialGradient, stop, clipPath, mask, use, symbol, text, tspan. No scripts, foreignObject, images, filters, styles or animation."
+    },
+    "clean": true
+  },
+  "bad-text-outside-root.svg": {
+    "problem": {
+      "code": "not_xml",
+      "message": "icon.svg is not well-formed XML: "
+    },
+    "clean": true
+  },
+  "bad-too-large.svg": {
+    "problem": {
+      "code": "too_large",
+      "message": "icon.svg is 40172 bytes; an icon may be at most 32 KB (32768 bytes): simplify its paths."
+    },
+    "clean": false
+  },
+  "bad-undeclared-prefix.svg": {
+    "problem": {
+      "code": "not_xml",
+      "message": "icon.svg is not well-formed XML: "
+    },
+    "clean": true
+  },
+  "bad-unknown-entity.svg": {
+    "problem": {
+      "code": "not_xml",
+      "message": "icon.svg is not well-formed XML: "
+    },
+    "clean": true
+  },
+  "bad-unquoted-attribute.svg": {
+    "problem": {
+      "code": "not_xml",
+      "message": "icon.svg is not well-formed XML: "
+    },
+    "clean": true
+  },
+  "bad-use-flat-many.svg": {
+    "problem": {
+      "code": "use_too_many",
+      "message": "icon.svg's <use> elements expand to more than 64 copies, or nest more than 3 deep: draw the shapes directly instead."
+    },
+    "clean": false
+  },
+  "bad-use-too-deep.svg": {
+    "problem": {
+      "code": "use_too_deep",
+      "message": "icon.svg's <use> elements expand to more than 64 copies, or nest more than 3 deep: draw the shapes directly instead."
+    },
+    "clean": false
+  },
+  "bad-use-too-many.svg": {
+    "problem": {
+      "code": "use_too_many",
+      "message": "icon.svg's <use> elements expand to more than 64 copies, or nest more than 3 deep: draw the shapes directly instead."
+    },
+    "clean": false
+  },
+  "bad-valueless-attribute.svg": {
+    "problem": {
+      "code": "not_xml",
+      "message": "icon.svg is not well-formed XML: "
+    },
+    "clean": true
+  },
+  "bad-viewbox-hex.svg": {
+    "problem": {
+      "code": "view_box",
+      "message": "icon.svg's viewBox \"0 0 0x10 0x10\" is not four numbers."
+    },
+    "clean": false
+  },
+  "bad-viewbox-infinity.svg": {
+    "problem": {
+      "code": "view_box",
+      "message": "icon.svg's viewBox \"0 0 Infinity Infinity\" is not four numbers."
+    },
+    "clean": false
+  },
+  "bad-viewbox-nan.svg": {
+    "problem": {
+      "code": "view_box",
+      "message": "icon.svg's viewBox \"0 0 NaN NaN\" is not four numbers."
+    },
+    "clean": false
+  },
+  "bad-viewbox-not-square.svg": {
+    "problem": {
+      "code": "view_box",
+      "message": "icon.svg's viewBox \"0 0 1024 512\" is not square: give it equal width and height, such as \"0 0 1024 1024\"."
+    },
+    "clean": false
+  },
+  "bad-viewbox-three.svg": {
+    "problem": {
+      "code": "view_box",
+      "message": "icon.svg's viewBox \"0 0 1024\" is not four numbers."
+    },
+    "clean": false
+  },
+  "bad-viewbox-words.svg": {
+    "problem": {
+      "code": "view_box",
+      "message": "icon.svg's viewBox \"0 0 wide tall\" is not four numbers."
+    },
+    "clean": false
+  },
+  "bad-viewbox-zero.svg": {
+    "problem": {
+      "code": "view_box",
+      "message": "icon.svg's viewBox \"0 0 0 0\" is not square: give it equal width and height, such as \"0 0 1024 1024\"."
+    },
+    "clean": false
+  },
+  "bad-xlink-external-href.svg": {
+    "problem": {
+      "code": "external_href",
+      "message": "icon.svg: href \"https://evil.example/a.svg#x\" points outside the file; only #references within it are allowed."
+    },
+    "clean": true
+  },
+  "ok-bom.svg": {
+    "problem": null,
+    "clean": true
+  },
+  "ok-gradient-use.svg": {
+    "problem": null,
+    "clean": true
+  },
+  "ok-plain.svg": {
+    "problem": null,
+    "clean": true
+  },
+  "ok-symbols.svg": {
+    "problem": null,
+    "clean": true
+  },
+  "ok-text.svg": {
+    "problem": null,
+    "clean": true
+  },
+  "ok-viewbox-forms.svg": {
+    "problem": null,
+    "clean": true
+  }
+}

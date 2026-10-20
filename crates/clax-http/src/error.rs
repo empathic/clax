@@ -168,6 +168,12 @@ impl From<CoreError> for ApiError {
                 message,
             } => ApiError::forbidden("draft", message),
             CoreError::Invalid { code, message } => ApiError::bad_request(code, message),
+            // The rule broken rides beside the sentence (`docs/contract.md`).
+            CoreError::InvalidIcon(p) => {
+                let mut err = ApiError::bad_request("invalid_icon", p.to_string());
+                err.extra.insert("rule".into(), json!(p.code()));
+                err
+            }
             CoreError::ThreadTaken { name } => {
                 let message = CoreError::ThreadTaken { name: name.clone() }.to_string();
                 let mut err = ApiError::new(StatusCode::CONFLICT, "thread_taken", message);

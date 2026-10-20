@@ -336,6 +336,11 @@ Errors:
 - `body_too_large`: the files together exceed 64 MiB decoded, or the request
   body exceeds 96 MiB.
 - `label_too_long`: `label` exceeds 60 characters.
+- `invalid_icon`: `icon.svg` breaks a rule of the icon subset ("Page
+  contract"). The message is the sentence to act on; extra field `rule`
+  names the rule: `too_large`, `not_xml`, `doctype`, `not_svg`,
+  `view_box`, `element`, `event_attribute`, `external_href`, `filter`,
+  `external_url`, `style`, `use_too_many` or `use_too_deep`.
 - `unknown_session`: the session the tools registered has ended (for example
   through a `SessionEnd` hook) or no longer exists. The shim and the Pi
   extension register a new session with the same harness session ID and retry
@@ -1299,7 +1304,8 @@ the model with the reason and the run goes on.
 - `icon.svg` among an app's files is its launcher icon: a square
   `viewBox`, at most 32 KB, in a subset of SVG (shapes, paths, groups,
   gradients, clip paths, masks, references within the file, and a single
-  glyph of `text`; no script, image, style, filter or animation).
+  glyph of `text`; no script, image, style, filter or animation), the
+  rules every publish checks ("Page contract").
   `write_file` refuses one outside it. A first run writes one after its
   first clean render; later runs change it only when asked.
 - `db_collections`, `db_list`, `db_get` and `db_query` read this app's
@@ -5166,6 +5172,18 @@ dark mode, and on a phone:
   sites, and no `fetch`, `XMLHttpRequest`, `WebSocket` or `EventSource` to
   anywhere else. The daemon's content policy refuses the rest. Data from
   the web comes through the `net` capability.
+- `icon.svg` at the top of the files is the app's icon, a square
+  full-bleed design. Every publish refuses one that breaks these rules
+  (`invalid_icon`): at most 32 KB of well-formed XML without a
+  `<!DOCTYPE>`; an `<svg>` root with a square `viewBox` of four numbers,
+  such as `0 0 1024 1024`; only the elements `svg`, `g`, `defs`, `title`,
+  `desc`, `path`, `rect`, `circle`, `ellipse`, `line`, `polyline`,
+  `polygon`, `linearGradient`, `radialGradient`, `stop`, `clipPath`,
+  `mask`, `use`, `symbol`, `text` and `tspan`; no `on*` attribute and no
+  `filter` attribute; `href` (or `xlink:href`, its prefix declared) only
+  to `#id` within the file, and every `url()` a `url(#id)`; no animation,
+  filter or `@` rule in a `style`; `<use>`s drawing at most 64 copies,
+  nested at most 3 deep. Other `.svg` files are ordinary files.
 
 Minimal skeleton:
 
