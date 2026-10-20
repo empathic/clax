@@ -131,7 +131,9 @@ server cannot run `clax` at all, its one tool, `status`, says why, and
 ```
 clax publish index.html --dir site   # publish a directory; prints the artifact URL (--json gives the ID)
 clax open <ID>                       # open an artifact in the browser
-clax list                            # list artifacts
+clax list                            # list artifacts (--tag <tag>, repeatable: only those carrying every tag)
+clax tags                            # list the tags; the owner makes them: clax tags create|edit|delete
+clax tag <ID> --add draft --remove x # add or remove an artifact's tags (existing tags only)
 clax read <ID> --path style.css      # print a published file (--json gives the read tool's result)
 clax asset upload <ID> photo.png     # upload assets; prints each asset URL
 clax comments                        # open comment threads on every artifact, newest activity first (--all adds resolved)
@@ -170,6 +172,8 @@ daily_call_cap = 200                 # optional: at most this many calls per art
 Only your own browser spends the key: the page asks you to allow it once each time it loads, and the top bar counts today's calls. A viewer on another machine never can. Without a key, or with an invalid `[sample]` table, sample is off and pages hide the feature; `clax doctor` reports which on its `sample` line. In a checkout, `just demo-room-sample` publishes a room page and a sample page in a scratch daemon, with the stub provider unless `ANTHROPIC_API_KEY` is set.
 
 A new artifact needs a title: `--title`, or else the page's `<title>`. Updates keep the current title unless `--title` is given.
+
+Tags sort the gallery. The owner keeps one list of them, each a name, a colour (`gray`, `red`, `orange`, `yellow`, `green`, `teal`, `blue`, `purple`, `pink` or `brown`) and an optional description: `clax tags create design --colour blue --description "Waiting on a design pass"`, `clax tags edit design --name "Design review"` (the artifacts carrying it follow the rename), `clax tags delete design` (removes it from every artifact). Anyone who may see an artifact sees its tags. The owner tags any artifact, and a person the artifacts they made; agents apply existing tags (`clax publish page.html --tags design,draft`, or the `tag` tool) and never make one: a tag that is not on the list is refused, naming the ones that are.
 
 To serve on the LAN, stop a running daemon first, then run `clax serve --bind 0.0.0.0`.
 
@@ -290,7 +294,7 @@ to let that artifact's later versions go out without asking again.
 
 ## Use from an agent
 
-Each harness gets the same thirty tools (`publish`, `read`, `list`, `delete`, `open`, `pin`, `unpin`, `fork`, `asset_upload`, `status`, `comments_read`, `comments_reply`, `comments_resolve`, `comments_handoff`, `watch`, `wait_for_feedback`, `working`, `draft`, `git_remote`, `ask`, `where_to_ask`, `publish_public`, `db_get`, `db_list`, `db_query`, `db_set`, `db_update`, `db_delete`, `db_str_replace`, `db_batch`) and the `clax` skill. Install the plugin for each harness (see Install); plugin details: [plugins/claude-code/README.md](../plugins/claude-code/README.md), [plugins/clax/README.md](../plugins/clax/README.md), [plugins/pi/README.md](../plugins/pi/README.md), [plugins/clax-grok/README.md](../plugins/clax-grok/README.md).
+Each harness gets the same thirty-two tools (`publish`, `read`, `list`, `delete`, `open`, `pin`, `unpin`, `tag`, `tags`, `fork`, `asset_upload`, `status`, `comments_read`, `comments_reply`, `comments_resolve`, `comments_handoff`, `watch`, `wait_for_feedback`, `working`, `draft`, `git_remote`, `ask`, `where_to_ask`, `publish_public`, `db_get`, `db_list`, `db_query`, `db_set`, `db_update`, `db_delete`, `db_str_replace`, `db_batch`) and the `clax` skill. Install the plugin for each harness (see Install); plugin details: [plugins/claude-code/README.md](../plugins/claude-code/README.md), [plugins/clax/README.md](../plugins/clax/README.md), [plugins/pi/README.md](../plugins/pi/README.md), [plugins/clax-grok/README.md](../plugins/clax-grok/README.md).
 
 The plugins run `CLAX_BIN`, else the `bin` setting, else the release they
 pin (see "Which clax the plugins run"). `status` and `clax doctor --agent`

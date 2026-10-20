@@ -14,7 +14,8 @@ The implementation is the authority where the two disagree:
 
 ## Tools
 
-Thirty tools: `publish`, `read`, `list`, `delete`, `open`, `pin`, `unpin`, `fork`,
+Thirty-two tools: `publish`, `read`, `list`, `delete`, `open`, `pin`, `unpin`,
+`tag` and `tags` (see "Tags"), `fork`,
 `asset_upload`, `status`, the comment tools `comments_read`,
 `comments_reply`, `comments_resolve`, `comments_handoff`, `watch`, `wait_for_feedback`, `working` (see
 "Comments and feedback"), `draft` (an agent's work in progress, shown to
@@ -42,7 +43,7 @@ public Clax"), and the data tools `db_get`, `db_list`,
   which attributes publishes to no session.
 
 Pi's extension API cannot register an MCP server, so `plugins/pi` implements
-the same thirty tools in TypeScript against the daemon's REST API, with the same
+the same thirty-two tools in TypeScript against the daemon's REST API, with the same
 arguments and the same result and error JSON.
 
 Names as the model sees them:
@@ -220,6 +221,7 @@ Arguments:
 | `note` | string | no | This version's change note for the person, at most 280 characters (longer is cut, with `note_truncated: true`). |
 | `addresses` | array of thread IDs | no | Threads of this artifact this version addresses (at most 50). Linking does not resolve them. |
 | `capabilities` | object | no | The page's runtime capabilities declaration, as a full set (below). |
+| `tags` | array of strings | no | Existing tags (names or IDs, see "Tags") to add to the artifact once published. |
 
 On an update, an omitted `title`, `description`, `icon` or `capabilities`
 keeps the artifact's current value, and so does `capabilities: null`. A
@@ -231,6 +233,14 @@ new version: those named, plus those this session was marked working on for
 the artifact). `addresses` may name resolved threads. A thread ID in
 `addresses` that is not a thread of the artifact fails the call with
 `unknown_thread`, and nothing is published.
+
+With `tags`, the tool first reads the tags there are (`GET /api/tags`): a
+name that is none fails the call with `unknown_tag`, naming the tags there
+are, and nothing is published. Once the version is published, it adds them
+(`PATCH /api/artifacts/<id>/tags {add}`); the result's `tags` is the
+artifact's tag names after. A refusal then (403 `admin_only`: the
+publisher does not administer the artifact) does not undo the publish: the
+result carries it as `tags_error` (`{code, message}`), beside the version.
 
 Over HTTP, `POST /api/artifacts` and `POST /api/artifacts/<id>/versions`
 answer `{artifact, version, url, note_truncated}`: `note_truncated` is `true`
@@ -397,6 +407,7 @@ such file in that version).
 |---|---|---|---|
 | `limit` | integer ≥ 0 | no | Most artifacts to return. |
 | `scope` | `"all"` or `"mine"` | no | `all` (default) or only artifacts this session created. Without a session (the daemon's `/mcp`), `mine` is empty. |
+| `tags` | array of strings | no | Only artifacts carrying every one of these tags (names or IDs; `GET /api/artifacts?tag=…`). A name no tag has matches nothing. |
 
 Result, pinned first, then most recently updated:
 
@@ -409,6 +420,7 @@ Result, pinned first, then most recently updated:
       "title": "Sales Dashboard",
       "version": 2,
       "pinned": false,
+      "tags": ["design", "draft"],
       "updated_at": "2026-09-29T10:15:02.114Z",
       "owner_session_id": "01K6AB3Q9X7N2M4P5R6S8T0V1W"
     }
@@ -418,6 +430,7 @@ Result, pinned first, then most recently updated:
 ```
 
 `owner_session_id` is `null` for artifacts published without a session.
+`tags` are the names of the tags it carries, sorted by name.
 
 Errors: only those every tool can return.
 
@@ -471,6 +484,46 @@ Pins the artifact to the top of the gallery, or removes the pin.
 ```
 
 Errors: `invalid_id`, `not_found`.
+
+### tag and tags
+
+`tag` adds and removes an artifact's tags (`PATCH /api/artifacts/<id>/tags`,
+see "Tags"):
+
+| Name | Type | Required | Meaning |
+|---|---|---|---|
+| `url_or_id` | string | yes | The artifact. |
+| `add` | array of strings | one of `add`, `remove` | Existing tags (names or IDs) to add; one it carries already stays. |
+| `remove` | array of strings | one of `add`, `remove` | Tags to remove, after the adds; one it does not carry is no change. |
+
+```json
+{ "artifact_id": "7q3k9mzx2b4t", "tags": ["design", "final"], "changed": true, "feedback": [] }
+```
+
+`tags` are the names it carries after, sorted by name; `changed` whether
+they differ from before. Agents apply tags; they never make one: a name no
+tag has is `unknown_tag`, its message listing the tags there are.
+
+`tags` (no arguments) lists the tags there are, for an agent to know what it
+may apply:
+
+```json
+{
+  "tags": [
+    { "name": "design", "colour": "blue", "description": "Waiting on a design pass", "count": 3 }
+  ],
+  "feedback": []
+}
+```
+
+`count` is how many of the artifacts the caller may read carry it. Making,
+renaming, recolouring and deleting tags are the owner's, by hand (`clax tags
+create|edit|delete`) or in the browser, and no tool's: the tool set is the
+same for every agent, and the owner's management is rare enough for the CLI.
+
+Errors: `invalid_id`, `not_found`, `unknown_tag`, `admin_only` (the caller
+does not administer the artifact), `too_many_tags`, `no_session` (a person's
+agent writes from a session).
 
 ### fork
 
@@ -1074,6 +1127,93 @@ the threads changed since the link's cursor (`since`, below), and every
   `invalid_args` on another). `GET /api/artifacts/<id>/threads?since=<time>`
   (agent tokens only, else 400 `invalid_query`) lists only the threads made,
   commented on or resolved at or after `since`.
+
+## Tags
+
+Tags are one list per Clax that the owner keeps, like GitHub's labels: each
+tag a name, a colour and an optional description. An artifact carries any
+of them (at most 20), and everyone who may see the artifact sees its tags,
+agents included: tag names are the owner's words, never a person's, so the
+visibility filter (see "What reaches an agent") leaves them alone.
+
+- **The list is the owner's.** The owner (their browser, the daemon token
+  by hand) and the owner's agents (the token naming a session, or a grant
+  of the owner's row) make, rename, recolour and delete tags. Anyone else
+  is 403 `owner_only` (401 without a credential). On a hosted Clax, members
+  apply the owner's tags; they make none.
+- **Applying is the artifact's administrators'.** Setting an artifact's
+  tags takes what changing its pin does: the owner and the owner's agents
+  on any artifact, a person and that person's agents on the artifacts the
+  person made (`clax_http::agent::administers`). An editor (another
+  person's `update` right, a hosted editor's share) changes the contents,
+  not the tags: 403 `admin_only`. A person's agent needs `clax-artifacts`
+  `update` at the artifact (403 `not_permitted`), and writes from a session
+  (400 `no_session`).
+- **Agents apply only.** A tag that is not on the list is refused
+  (`unknown_tag`), its message listing the tags there are; nothing makes a
+  tag implicitly.
+- **Names** are trimmed, 1 to 40 characters, with no control or hidden
+  format character (bidi controls, zero-width characters), and unique
+  whatever their case (two names that differ only in case are one name,
+  compared lowercased). A name shaped like a tag ID (`t_` and ten
+  lowercase Crockford base32 characters) is refused, so a tag is named by
+  its ID or its name unambiguously. A rename keeps the tag's ID, and every
+  artifact carrying it carries the new name.
+- **Colours** are palette keys, not colours: `gray`, `red`, `orange`,
+  `yellow`, `green`, `teal`, `blue`, `purple`, `pink` and `brown` (default
+  `gray`). Each theme renders a key in shades that keep its text legible.
+- **Descriptions** are one line of at most 200 characters; blank is none.
+- **Deleting a tag** removes it from every artifact.
+- **Bounds:** at most 500 tags (429 `limit_reached`), 20 per artifact (400
+  `too_many_tags`).
+
+**The artifact's shape.** Every artifact view (`GET /api/artifacts`, `GET
+/api/artifacts/<aid>`, a publish's answer, the page's bootstrap) carries
+`tags: [{id, name, colour}]`, sorted by name (`[]` for none).
+
+**Routes.**
+
+- **`GET /api/tags`** → `{tags, colours, may_manage}`: each tag `{id, name,
+  colour, description, created_at, updated_at, count}`, sorted by name,
+  `count` the artifacts the caller may read that carry it (live pages only
+  for a caller who sees them); `colours`, the palette keys; and whether the
+  caller manages the list. The owner, connected people, a hosted Clax's
+  members and agents see every tag; a guest (a viewer who is no connected
+  person, or no credential) sees only the tags of the artifacts it may see.
+  A hosted Clax refuses it to anyone signed out (401 `sign_in_required`).
+- **`POST /api/tags {name, colour?, description?}`** → 201 `{tag}` (with
+  `count: 0`). 400 `invalid_tag` (a bad name or description),
+  `invalid_colour`; 409 `tag_exists`.
+- **`PATCH /api/tags/<tag_id> {name?, colour?, description?}`** → `{tag}`:
+  each field given is set (a blank `description` clears it). 404 for no
+  such tag; the values' errors as for `POST`.
+- **`DELETE /api/tags/<tag_id>`** → `{deleted: true, artifacts}`: how many
+  artifacts carried it. 404 for no such tag.
+- **`PUT /api/artifacts/<aid>/tags {tags: [id or name, …]}`** →
+  `{artifact_id, tags, changed}`: the artifact carries exactly these (`[]`
+  clears them); `tags` is what it carries after (`[{id, name, colour}]`,
+  sorted by name), `changed` whether that differs from before.
+- **`PATCH /api/artifacts/<aid>/tags {add?: […], remove?: […]}`** → the
+  same: adds, then removes. The tools use it.
+- **Filters.** `GET /api/artifacts`, `GET /api/inbox` (with or without
+  `group=artifact`) and `GET /api/inbox/summary` take `tag=<id or name>`,
+  repeatable: only the artifacts (or the items about artifacts) carrying
+  every tag named. A name no tag has matches nothing, and says nothing
+  about which tags exist. On the summary it narrows `questions` and
+  `latest`, not `unread`. `POST /api/inbox/read`'s `filter` takes `tag` (a
+  string or an array) the same way.
+
+The browser's writes keep the viewer routes' origin rule (403
+`forbidden_origin` from another origin). Each change publishes `tags` on
+the event stream (below) and is recorded: `tag.create`, `tag.update`,
+`tag.delete`, and `artifact.update` with `fields.tags` (see "Kinds").
+
+On the command line: `clax tags` lists them; `clax tags create <name>
+[--colour c] [--description d]`, `clax tags edit <tag> [--name n] [--colour
+c] [--description d]` and `clax tags delete <tag>` are the owner's; `clax tag
+<artifact> --add <tag> --remove <tag>` (each repeatable) changes an
+artifact's; `clax publish --tags a,b` adds tags to what it publishes; and
+`clax list --tag <tag>` (repeatable) filters.
 
 ## Sessions
 
@@ -3261,6 +3401,8 @@ cursor or body) and 404 `not_found`.
   - `kind`: comma-separated kinds.
   - `artifact`: an artifact ID, or `none` for the items about no artifact.
   - `agent`: a harness, or an agent handle (`a_…`).
+  - `tag`: a tag's ID or name, repeatable: items about an artifact
+    carrying every tag named (see "Tags").
   - `since`, `until`: a `YYYY-MM-DD` date (UTC) or an RFC 3339 time. An
     `until` date covers the whole day.
   - `read`: `unread`, `read` or `all`. Default `all`.
@@ -3333,7 +3475,7 @@ cursor or body) and 404 `not_found`.
 - **`POST /api/inbox/<id>/unread`** → `{item, unread}`.
 - **`POST /api/inbox/read`** → `{marked, unread}`. The body is one of:
   - `{ids: [...]}`: at most 500 item IDs.
-  - `{all: true, filter?: {q, kind, artifact, agent, since, until}, upto?,
+  - `{all: true, filter?: {q, kind, artifact, agent, tag, since, until}, upto?,
     except?}`: every unread item matching the filter (`artifact: "none"`:
     those about no artifact), but the item IDs in `except` (at most 500).
     A group's **Mark read** sends its artifact and, in `except`, the items
@@ -5006,8 +5148,8 @@ except as noted:
 
 | Topic | Carries |
 |---|---|
-| `gallery` | `version`, `thread` (summary), `thread_deleted`, `thread_moved`, `artifact_deleted` and `working` (summary) for every artifact. |
-| `artifact:<aid>` | That artifact's `version`, `thread`, `thread_deleted`, `thread_moved`, `feedback_state` and `artifact_deleted`, and `agents` (`{topic}`, naming nothing) when an agent that watched it started, ended or was renamed: refetch its agents. |
+| `gallery` | `version`, `thread` (summary), `thread_deleted`, `thread_moved`, `artifact_deleted`, `working` (summary) and `tags` for every artifact. |
+| `artifact:<aid>` | That artifact's `version`, `thread`, `thread_deleted`, `thread_moved`, `feedback_state`, `tags` and `artifact_deleted`, and `agents` (`{topic}`, naming nothing) when an agent that watched it started, ended or was renamed: refetch its agents. |
 | `presence:<aid>` | Its `presence` changes, and `artifact_deleted`. |
 | `working:<aid>` | Its `working` list, and `artifact_deleted`. |
 | `docs:<aid>` | Its `doc` events the caller may see, and `artifact_deleted`; needs `db` declared, or the token. |
@@ -5025,6 +5167,12 @@ event's data names its `topic`. Events carry what changed:
   On `artifact:<aid>`, `"by_page": true` is added when the page published it
   through the `artifact` capability.
 - `artifact_deleted`: `{topic, artifact_id}`.
+- `tags`: `{topic, artifact_id}`: the tags artifact `artifact_id` carries
+  changed (on `gallery` and `artifact:<aid>`), or, with `artifact_id:
+  null` (on `gallery` alone), the list itself (a tag made, renamed,
+  recoloured or deleted). It names no tag: refetch `GET /api/tags`, and
+  the artifact (`GET /api/artifacts?artifact=<aid>`) or the gallery.
+  `/api/events` does not carry it.
 - `thread` on `artifact:<aid>`: `{topic, artifact_id, thread}`, where
   `thread` is the thread view (as `GET /api/artifacts/<aid>/threads/<tid>`
   answers it without the token, and with no `feedback_state`: each reader
@@ -5885,7 +6033,7 @@ the body below.
 | `artifact.create` | `title, kind (html\|live), icon, capabilities, contract_version`; `forked_from{artifact_id, n}` on a fork | first publish, a fork, or a live page's creation |
 | `version.publish` | `n, label, note, title, files{path:{sha256,size,content_type}}, content_sha256, carried[paths], addresses[thread IDs], by_page`; `source{artifact_id, n}` on a fork's version 1 | every version write |
 | `version.push_refused` | `commit, person, session, reason (unknown_person\|person_revoked\|not_a_person\|no_right\|session_ended\|foreign_session\|grant_ended)` (`system:daemon`) | a commit pushed to an artifact's repository left unrecorded because its pusher may not publish the artifact, once per commit |
-| `artifact.update` | `fields{title?, description?, icon?, pinned?, capabilities?, share?{op (set\|remove), id, person, github_login, access?, reason? (owner)}}` | pin, unpin, metadata edits; a share set or removed (`reason: owner` when a share is dropped because it reached the owner, at the owner's GitHub sign-in or a viewer folded into the owner) |
+| `artifact.update` | `fields{title?, description?, icon?, pinned?, capabilities?, tags?, share?{op (set\|remove), id, person, github_login, access?, reason? (owner)}}` | pin, unpin, metadata edits; a change to its tags (`tags`: the names it carries after); a share set or removed (`reason: owner` when a share is dropped because it reached the owner, at the owner's GitHub sign-in or a viewer folded into the owner) |
 | `artifact.delete` | `title, current_version` | delete |
 | `asset.upload` | `asset_id, path, sha256, size, content_type` | asset store writes |
 | `asset.delete` | `asset_id, path, size, content_type` | asset deletes |
@@ -5925,6 +6073,9 @@ the body below.
 | `session.join` | the same | a hook join or re-registration that changes one of them |
 | `session.end` | `reason (explicit\|ttl)` | an end (the reaper as `system:ttl`) |
 | `backfill.skip` | `table, row_id, reason` (a fixed phrase) | a history row the backfill could not convert |
+| `tag.create` | `tag_id, name, colour, description` | a tag made |
+| `tag.update` | `tag_id, fields{name?, colour?, description?}` | a tag renamed, recoloured or redescribed |
+| `tag.delete` | `tag_id, name, artifacts` (how many carried it) | a tag deleted, and so removed from every artifact |
 
 A system actor's event about someone names them in `body.for_actor`.
 Presence, heartbeats, later delivery tiers, stream subscriptions, reads
