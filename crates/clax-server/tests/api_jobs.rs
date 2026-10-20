@@ -273,8 +273,26 @@ async fn a_reply_step_replies_resolves_and_acks_once() {
         .to_string();
     ts.send_thread(&aid, &tid).await;
     running(&ts, &token, "j1", "change", Some(&aid)).await;
-    let body = json!({"reply": {"session_id": sid, "threads": [tid], "body": "Made it green.",
+    let body = json!({"reply": {"threads": [tid], "body": "Made it green.",
         "resolve": true}, "state": "done"});
+    // No publish step yet: no session to reply from.
+    let (s, v) = step(&ts, &token, "j1", "reply", body.clone()).await;
+    assert_eq!(
+        (s, v["error"]["code"].as_str()),
+        (400, Some("invalid_step")),
+        "{v}"
+    );
+    let mut b = publish_body(Some(&aid), 1, "<p>green", false);
+    b["publish"]["session_id"] = json!(sid);
+    let (s, v) = step(&ts, &token, "j1", "publish:1", b).await;
+    assert_eq!(s, 200, "{v}");
+    // The app is relaunched: its new session is not the one the reply
+    // comes from.
+    ts.register_session("codex", "h2").await;
+    let mut named = body.clone();
+    named["reply"]["session_id"] = json!(sid);
+    let (s, v) = step(&ts, &token, "j1", "reply:0", named).await;
+    assert_eq!(s, 400, "a reply step names no session: {v}");
     let (s, v) = step(&ts, &token, "j1", "reply:0", body.clone()).await;
     assert_eq!(s, 200, "{v}");
     assert_eq!(
@@ -302,6 +320,17 @@ async fn a_reply_step_replies_resolves_and_acks_once() {
         .filter(|c| c["author_kind"] == "agent")
         .count();
     assert_eq!(agent, 1, "{t}");
+    let author = t["comments"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .find(|c| c["author_kind"] == "agent")
+        .map(|c| c["author_name"].clone());
+    assert_eq!(
+        author,
+        Some(json!("claude")),
+        "from the publishing session: {t}"
+    );
 }
 
 #[tokio::test]

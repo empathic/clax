@@ -1216,8 +1216,13 @@ the threads the session was working on are linked to the version
 (`End::Publish`), its draft of the artifact ends, it watches the
 artifact (`ensure_watch`), and the artifact's untargeted feedback is
 targeted to it (`retarget_untargeted`). A replayed key does none of it.
-A **reply step** (`reply: {session_id, threads, body, resolve?,
-ack?}`) makes, in one transaction the same way, the session's agent reply
+A **reply step** (`reply: {threads, body, resolve?, ack?}`) names no
+session: the store takes the one that published the version of the job's
+last publish step (`versions.session_id`; 400 `invalid_step` with no
+publish step, `unknown_session` when that version names no live session),
+so the one owner of that link is the core, and a worker relaunched under
+a new session acknowledges the publishing session's feedback. It makes,
+in one transaction the same way, that session's agent reply
 on each thread (each a thread of the job's artifact, 400 `invalid_thread`
 otherwise), each thread's resolve when `resolve`, the acknowledgement of
 the session's feedback on those threads and on the comments `ack`, and
@@ -1245,7 +1250,7 @@ asks again unless the model chooses to.
 
 So a relaunched worker is never refused `unknown_session` for a job it
 resumes. A job row records no session of its own. Every session a step
-of an open job names is live: a reply step names the session that
+of an open job uses is live: a reply step uses the session that
 published the job's version, and a resumed publish step the one it began
 with, both kept from the reaper as above; any other step, and a publish
 step that has not begun, names the session the worker registered at its

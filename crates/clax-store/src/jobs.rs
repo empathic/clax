@@ -1212,10 +1212,12 @@ pub struct PublishStep {
 }
 
 /// A reply step's body: the agent's replies, resolves and acknowledgements
-/// for a change.
+/// for a change. The replies come from the session that published the
+/// job's version (the version its last publish step made records it), which
+/// the store looks up: the worker that resumes a change after a relaunch
+/// runs under a new session of its own, and the feedback the reply answers
+/// is the publishing session's.
 pub struct ReplyStep {
-    /// The agent session the replies come from.
-    pub session_id: String,
     /// The threads it replies on, each a thread of the job's artifact.
     pub threads: Vec<String>,
     pub body: String,
@@ -1250,6 +1252,9 @@ pub struct Published {
 /// What a reply step wrote.
 #[derive(Debug, Default)]
 pub struct Replied {
+    /// The session the replies came from: the one that published the job's
+    /// version.
+    pub session_id: String,
     /// The agent's comments, one per thread, in the step's order.
     pub comments: Vec<Comment>,
     /// The feedback rows the replies, resolves and acknowledgements changed.
@@ -1610,8 +1615,9 @@ impl Store {
     }
 
     /// Commits reply step `key` of job `id`, under `ctx`, in one
-    /// transaction: an agent reply of `s.body` from session `s.session_id`
-    /// on each of `s.threads` (each a thread of the job's artifact), with
+    /// transaction: an agent reply of `s.body`, from the session that
+    /// published the version of the job's last publish step
+    /// ([`publishing_session_of`]), on each of `s.threads` (each a thread of the job's artifact), with
     /// [`Store::add_agent_reply`]'s ownership rules, each thread then
     /// resolved by that agent when `s.resolve` and its feedback
     /// acknowledged, the session's feedback on comments `s.ack`
@@ -1621,9 +1627,10 @@ impl Store {
     /// nothing.
     ///
     /// # Errors
-    /// [`StepError::Job`] for a missing or final job; `invalid_thread`
-    /// for a thread not of the job's artifact; `unknown_session`; the
-    /// reply's and the resolve's own errors.
+    /// [`StepError::Job`] for a missing or final job; `invalid_step` when
+    /// the job has no publish step; `unknown_session` when its version
+    /// names no session, or one that ended; `invalid_thread` for a thread
+    /// not of the job's artifact; the reply's and the resolve's own errors.
     pub fn commit_reply_step(
         &self,
         ctx: &AuditCtx,
@@ -1634,11 +1641,23 @@ impl Store {
         if let Some(done) = self.replay(id, key)? {
             return Ok(done);
         }
-        let sess = self
-            .get_session(&s.session_id)?
+        let named = self
+            .with_read(|c| publishing_session_of(c, id))?
+            .ok_or_else(|| {
+                CoreError::invalid(
+                    "invalid_step",
+                    "a reply step follows the job's publish step",
+                )
+            })?;
+        let sess = named
+            .and_then(|sid| self.get_session(&sid).transpose())
+            .transpose()?
             .filter(|x| x.ended_at.is_none())
             .ok_or_else(|| {
-                CoreError::invalid("unknown_session", "a reply step names a live session")
+                CoreError::invalid(
+                    "unknown_session",
+                    "the job's version was published from no session that is live",
+                )
             })?;
         // Read before the transaction, as an agent reply reads them.
         let seen = s
@@ -1692,6 +1711,22 @@ impl Store {
             None => Ok(None),
         }
     }
+}
+
+/// The session that published the version of job `id`'s last publish
+/// step (`versions.session_id`), read on `c`: `None` when the job has no
+/// publish step, `Some(None)` when its version names no session. The
+/// reaper keeps it live while the job is open (`OPEN_JOB_SESSIONS`).
+fn publishing_session_of(c: &Connection, id: &str) -> clax_core::Result<Option<Option<String>>> {
+    Ok(c.prepare_cached(
+        "SELECT v.session_id FROM jobs j
+           JOIN job_steps s ON s.job_id = j.id AND s.version_n IS NOT NULL
+           JOIN versions v ON v.artifact_id = j.artifact_id AND v.n = s.version_n
+          WHERE j.id = ?1
+          ORDER BY s.rowid DESC LIMIT 1",
+    )?
+    .query_row(params![id], |r| r.get(0))
+    .optional()?)
 }
 
 /// A version a job step wrote that no row records, still carrying the
@@ -1857,7 +1892,10 @@ fn reply_step_tx(
             |r| r.get(0),
         )
         .map_err(|e| refused(e.into()))?;
-    let mut made = Replied::default();
+    let mut made = Replied {
+        session_id: sess.id.clone(),
+        ..Replied::default()
+    };
     let by = format!("agent:{}", sess.harness);
     let person = sess
         .person
@@ -2465,15 +2503,25 @@ mod tests {
         assert_eq!(again.step, first.step);
     }
 
-    fn reply_step(sid: &str, threads: &[&str]) -> ReplyStep {
+    fn reply_step(threads: &[&str]) -> ReplyStep {
         ReplyStep {
-            session_id: sid.into(),
             threads: threads.iter().map(|t| t.to_string()).collect(),
             body: "Made it green.".into(),
             resolve: true,
             ack: Vec::new(),
             done: true,
         }
+    }
+
+    /// A change `id` of `aid` (at version 1), running, whose publish step
+    /// made version 2 from session `sid`.
+    fn published_change(st: &Store, id: &str, aid: &ArtifactId, sid: &str) -> JobRow {
+        change(st, id, aid);
+        let mut step = publish_step(Some(aid), 1, "<p>v2", false);
+        step.session_id = Some(sid.into());
+        st.commit_publish_step(DAEMON, id, "publish:1", step)
+            .unwrap()
+            .job
     }
 
     #[test]
@@ -2483,9 +2531,9 @@ mod tests {
         let t = thread_on(&st, &aid);
         st.send_to_agent(DAEMON, &t).unwrap();
         let sid = session(&st, "clax-app", "h1");
-        change(&st, "j1", &aid);
+        published_change(&st, "j1", &aid, &sid);
         let c = st
-            .commit_reply_step(DAEMON, "j1", "reply:0", reply_step(&sid, &[&t]))
+            .commit_reply_step(DAEMON, "j1", "reply:0", reply_step(&[&t]))
             .unwrap();
         assert!(!c.replayed);
         let made = c.made.unwrap();
@@ -2502,10 +2550,70 @@ mod tests {
         };
         assert_eq!(agent(&thread), 1);
         let again = st
-            .commit_reply_step(DAEMON, "j1", "reply:0", reply_step(&sid, &[&t]))
+            .commit_reply_step(DAEMON, "j1", "reply:0", reply_step(&[&t]))
             .unwrap();
         assert!(again.replayed);
         assert_eq!(agent(&st.get_thread(&t).unwrap().unwrap()), 1);
+    }
+
+    #[test]
+    fn a_reply_step_after_a_relaunch_comes_from_the_session_that_published() {
+        let (_d, st) = store();
+        let published = session(&st, "clax-app", "h1");
+        let aid = artifact(&st, Some(&published));
+        let t = thread_on(&st, &aid);
+        st.send_to_agent(DAEMON, &t).unwrap();
+        published_change(&st, "j1", &aid, &published);
+        // The app is killed and relaunched: its worker registers a new
+        // session, and the reply step names none.
+        let relaunched = session(&st, "clax-app", "h2");
+        assert_eq!(st.feedback_rows(&t).unwrap().len(), 1);
+        let step = ReplyStep {
+            resolve: false,
+            ..reply_step(&[&t])
+        };
+        let c = st.commit_reply_step(DAEMON, "j1", "reply", step).unwrap();
+        let made = c.made.unwrap();
+        assert_eq!(made.session_id, published);
+        let rows = st.feedback_rows(&t).unwrap();
+        let of = |sid: &str| {
+            rows.iter()
+                .find(|f| f.target_session_id.as_deref() == Some(sid))
+        };
+        assert!(
+            of(&published).is_some_and(|f| f.acknowledged_at.is_some()),
+            "{rows:?}"
+        );
+        assert!(of(&relaunched).is_none(), "{rows:?}");
+    }
+
+    #[test]
+    fn a_reply_step_needs_the_jobs_publish_step_and_its_live_session() {
+        let (_d, st) = store();
+        let aid = artifact(&st, None);
+        let t = thread_on(&st, &aid);
+        let before = change(&st, "j1", &aid);
+        let code = |e: StepError| match e {
+            StepError::Store(CoreError::Invalid { code, .. }) => code,
+            e => panic!("{e:?}"),
+        };
+        let e = st
+            .commit_reply_step(DAEMON, "j1", "reply", reply_step(&[&t]))
+            .unwrap_err();
+        assert_eq!(code(e), "invalid_step");
+        assert_eq!(st.job("j1").unwrap().unwrap().job, before);
+        // A version published from no session: no session to reply from.
+        st.commit_publish_step(
+            DAEMON,
+            "j1",
+            "publish:1",
+            publish_step(Some(&aid), 1, "<p>v2", false),
+        )
+        .unwrap();
+        let e = st
+            .commit_reply_step(DAEMON, "j1", "reply", reply_step(&[&t]))
+            .unwrap_err();
+        assert_eq!(code(e), "unknown_session");
     }
 
     #[test]
@@ -2527,7 +2635,7 @@ mod tests {
         let reaped = st.reap_sessions(idle, &|_| false).unwrap();
         assert!(!reaped.ended.contains(&sid), "{:?}", reaped.ended);
         let c = st
-            .commit_reply_step(DAEMON, "j1", "reply:1", reply_step(&sid, &[&t]))
+            .commit_reply_step(DAEMON, "j1", "reply:1", reply_step(&[&t]))
             .unwrap();
         assert_eq!(c.job.state, JobState::Done);
         // The job ended: the session is reaped as any other.
@@ -2608,9 +2716,9 @@ mod tests {
         let mine = thread_on(&st, &aid);
         let theirs = thread_on(&st, &other);
         let sid = session(&st, "clax-app", "h1");
-        let before = change(&st, "j1", &aid);
+        let before = published_change(&st, "j1", &aid, &sid);
         let e = st
-            .commit_reply_step(DAEMON, "j1", "reply:0", reply_step(&sid, &[&mine, &theirs]))
+            .commit_reply_step(DAEMON, "j1", "reply:0", reply_step(&[&mine, &theirs]))
             .unwrap_err();
         assert!(
             matches!(

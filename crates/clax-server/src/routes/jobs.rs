@@ -537,7 +537,6 @@ pub struct PublishBody {
 #[derive(Deserialize)]
 #[serde(deny_unknown_fields)]
 pub struct ReplyBody {
-    session_id: String,
     threads: Vec<String>,
     body: String,
     #[serde(default)]
@@ -623,7 +622,6 @@ fn parse_step(b: StepBody) -> Result<Step, ApiError> {
             })))
         }
         (None, None, Some(r)) => Ok(Step::Reply(ReplyStep {
-            session_id: r.session_id,
             threads: r.threads,
             body: r.body,
             resolve: r.resolve,
@@ -640,7 +638,8 @@ fn parse_step(b: StepBody) -> Result<Step, ApiError> {
 /// `POST /api/jobs/{id}/steps/{key}` `{result?, publish?, reply?,
 /// state?}`: commits step `key`, with its effects in one transaction (a
 /// publish's version and pinned document writes, a reply's comments,
-/// resolves and acknowledgements); `state: "done"` ends the job in it.
+/// resolves and acknowledgements, made from the session that published
+/// the job's version); `state: "done"` ends the job in it.
 /// `{job, step, replayed, version?}`: a key the job already has answers
 /// its step as recorded with `replayed: true` and changes nothing. 409
 /// `version_moved` with `current`, `doc_moved` with `path`,
@@ -757,10 +756,10 @@ pub async fn commit(
         Step::Reply(r) => {
             s.store_call(move |st| {
                 let _guard = guard;
-                let sid = r.session_id.clone();
                 match st.commit_reply_step(&audit, &id, &key, r) {
                     Ok(c) => {
                         if let Some(made) = &c.made {
+                            let sid = &made.session_id;
                             for cm in &made.comments {
                                 let Some(t) = st.get_thread(&cm.thread_id)? else {
                                     continue;
@@ -771,7 +770,7 @@ pub async fn commit(
                                     comment: json!(cm),
                                 });
                                 let changed = ctx.working.thread_done(
-                                    &sid,
+                                    sid,
                                     &t.artifact_id,
                                     &t.id,
                                     clax_core::working::StopReason::Explicit,

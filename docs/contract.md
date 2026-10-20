@@ -2547,8 +2547,13 @@ otherwise) the step does for that session what a publish from it does:
 the threads it was working on are linked to the version and its working
 records on the artifact end, its draft of the artifact ends, it watches
 the artifact, and the artifact's untargeted feedback is targeted to it. A
-**reply step** is `reply: {session_id, threads, body, resolve?, ack?}`: in
-one transaction the session's agent reply `body` on each thread (each a
+**reply step** is `reply: {threads, body, resolve?, ack?}`, and names no
+session: it is made from the session that published the version of the
+job's last publish step, which the core keeps live while the job is open,
+so a worker relaunched under a new session still answers that session's
+feedback (400 `invalid_step` when the job has no publish step,
+`unknown_session` when its version names no live session). In one
+transaction: that session's agent reply `body` on each thread (each a
 thread of the job's artifact, 400 `invalid_thread` otherwise), each thread
 resolved when `resolve`, the session's feedback on them and on the
 comments `ack` acknowledged, and the step (`result: {comments:
