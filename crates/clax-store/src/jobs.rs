@@ -1549,6 +1549,66 @@ impl Store {
         self.with_read(|c| Ok(mark_of(c, aid.as_str(), n, mark, own)?))
     }
 
+    /// The versions job steps wrote that no row records and that still
+    /// carry the step's mark (`clax doctor` lists them): each with the job
+    /// and key that wrote it, and whether that step may still commit and
+    /// replace it (`live`); a dead one is removed by the next write of its
+    /// version. By artifact and version.
+    ///
+    /// # Errors
+    /// The store's and the content store's.
+    pub fn marked_strays(&self) -> clax_core::Result<Vec<MarkedStray>> {
+        self.block_on(self.marked_strays_async())
+    }
+
+    /// [`Store::marked_strays`], awaiting its content store.
+    pub async fn marked_strays_async(&self) -> clax_core::Result<Vec<MarkedStray>> {
+        let held: Vec<(String, String, String, String, u32)> =
+            self.with_read(|c| {
+                Ok(c.prepare(
+                "SELECT m.nonce, m.job_id, m.key, m.artifact_id, m.version_n FROM job_step_marks m
+                 WHERE m.version_n > COALESCE(
+                     (SELECT current_version FROM artifacts WHERE id = m.artifact_id), 0)
+                 ORDER BY m.artifact_id, m.version_n, m.job_id, m.key",
+            )?
+            .query_map([], |r| Ok((r.get(0)?, r.get(1)?, r.get(2)?, r.get(3)?, r.get(4)?)))?
+            .collect::<rusqlite::Result<_>>()?)
+            })?;
+        let mut out = Vec::new();
+        for (nonce, job_id, key, aid, n) in held {
+            let Ok(id) = ArtifactId::parse(&aid) else {
+                continue;
+            };
+            let mark = step_mark(&job_id, &key, &nonce);
+            if self.content.unrecorded_step(&id, n).await?.as_deref() != Some(mark.as_str()) {
+                continue;
+            }
+            let live = self.mark_of(&id, n, &mark, None)? == MarkOf::Live;
+            out.push(MarkedStray {
+                artifact_id: aid,
+                n,
+                job_id,
+                key,
+                live,
+            });
+        }
+        Ok(out)
+    }
+
+    /// Forgets step mark `mark` once the content it marked is removed.
+    pub(crate) fn forget_step_mark(&self, mark: &str) -> clax_core::Result<()> {
+        let Ok([job, key, nonce]) = serde_json::from_str::<[String; 3]>(mark) else {
+            return Ok(());
+        };
+        self.with_tx(|tx| {
+            tx.execute(
+                "DELETE FROM job_step_marks WHERE nonce = ?1 AND job_id = ?2 AND key = ?3",
+                params![nonce, job, key],
+            )?;
+            Ok(())
+        })
+    }
+
     /// Commits reply step `key` of job `id`, under `ctx`, in one
     /// transaction: an agent reply of `s.body` from session `s.session_id`
     /// on each of `s.threads` (each a thread of the job's artifact), with
@@ -1632,6 +1692,20 @@ impl Store {
             None => Ok(None),
         }
     }
+}
+
+/// A version a job step wrote that no row records, still carrying the
+/// step's mark ([`Store::marked_strays`]).
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct MarkedStray {
+    pub artifact_id: String,
+    pub n: u32,
+    pub job_id: String,
+    pub key: String,
+    /// The step may still commit (its job is open and the key is not
+    /// committed), and only it may replace the version; else the next
+    /// write of the version removes it.
+    pub live: bool,
 }
 
 /// A publish step's mark and the artifact it writes, as the store keeps
@@ -2266,6 +2340,52 @@ mod tests {
             )
             .unwrap();
         assert_eq!(marks, 0);
+    }
+
+    #[test]
+    fn only_a_mark_the_store_holds_for_its_version_is_a_steps() {
+        let (_d, st) = store();
+        running(&st, "j1");
+        let n = "0123456789abcdef0123456789abcdef";
+        st.with_write(|c| {
+            Ok(c.execute(
+                "INSERT INTO job_step_marks (nonce, job_id, key, artifact_id, version_n, created_at)
+                 VALUES (?1, 'j1', 'publish:1', 'aaaaaaaaaaaa', 2, 'x')",
+                [n],
+            )?)
+        })
+        .unwrap();
+        let mark = step_mark("j1", "publish:1", n);
+        let of = |aid: &str, v: u32, mark: &str, own: Option<&str>| {
+            st.with_read(|c| Ok(mark_of(c, aid, v, mark, own)?))
+                .unwrap()
+        };
+        assert_eq!(of("aaaaaaaaaaaa", 2, &mark, None), MarkOf::Live);
+        assert_eq!(of("aaaaaaaaaaaa", 2, &mark, Some(&mark)), MarkOf::Own);
+        // Copied onto another version or artifact, guessed, or garbled.
+        assert_eq!(of("aaaaaaaaaaaa", 3, &mark, None), MarkOf::Foreign);
+        assert_eq!(of("bbbbbbbbbbbb", 2, &mark, None), MarkOf::Foreign);
+        let guessed = step_mark("j1", "publish:1", &"0".repeat(32));
+        assert_eq!(of("aaaaaaaaaaaa", 2, &guessed, None), MarkOf::Foreign);
+        let renamed = step_mark("j1", "publish:2", n);
+        assert_eq!(of("aaaaaaaaaaaa", 2, &renamed, None), MarkOf::Foreign);
+        assert_eq!(
+            of("aaaaaaaaaaaa", 2, r#"["j1","publish:1"]"#, None),
+            MarkOf::Foreign
+        );
+        // Its key committed, or its job gone: it can never commit.
+        st.with_write(|c| {
+            Ok(c.execute(
+                "INSERT INTO job_steps (job_id, key, result_json, created_at)
+                 VALUES ('j1', 'publish:1', '{}', 'x')",
+                [],
+            )?)
+        })
+        .unwrap();
+        assert_eq!(of("aaaaaaaaaaaa", 2, &mark, Some(&mark)), MarkOf::Dead);
+        st.with_write(|c| Ok(c.execute("DELETE FROM jobs WHERE id = 'j1'", [])?))
+            .unwrap();
+        assert_eq!(of("aaaaaaaaaaaa", 2, &mark, None), MarkOf::Dead);
     }
 
     /// A store on one connection whose content writes `gated` holds.

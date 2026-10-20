@@ -1449,15 +1449,26 @@ impl Store {
         {
             return Err(CoreError::Conflict { current });
         }
-        if let (Some(own), VersionStep::Write) = (p.step.as_deref(), step)
-            && let Some(mark) = self.content.unrecorded_step(id, n).await?
-            && self.mark_of(id, n, &mark, Some(own))? == super::jobs::MarkOf::Own
-        {
-            // This step's own write of `n`, which no row records: a process
-            // killed before its transaction committed left it. The store
-            // gave its mark to this step alone, for this version, so it is
-            // replaced (the content module's Ordering).
-            self.content.remove_version(id, n).await?;
+        if let Some(mark) = self.content.unrecorded_step(id, n).await? {
+            // A step's write of `n` that no row records: a process killed
+            // before its transaction committed left it. The store, not the
+            // content, says whose it is (the content module's Ordering).
+            match self.mark_of(id, n, &mark, p.step.as_deref())? {
+                // This step's own: the store gave the mark to it alone, for
+                // this version, so it is replaced.
+                super::jobs::MarkOf::Own => self.content.remove_version(id, n).await?,
+                // A step that can never commit: no writer can ever claim it,
+                // and the content lock excludes any other, so whoever
+                // writes `n` removes it.
+                super::jobs::MarkOf::Dead => {
+                    self.content.remove_version(id, n).await?;
+                    self.forget_step_mark(&mark)?;
+                }
+                // A step that may still commit keeps it, and a mark the
+                // store never gave is no step's: the write is refused as
+                // `n` is present.
+                super::jobs::MarkOf::Live | super::jobs::MarkOf::Foreign => {}
+            }
         }
         let mut files: BTreeMap<String, FileMeta> = BTreeMap::new();
         for path in &carried {

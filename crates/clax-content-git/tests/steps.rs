@@ -396,6 +396,81 @@ fn a_killed_new_apps_step_resumes_as_one_artifact<C: ContentStore + 'static>(
     assert_eq!(html(&aid).as_deref(), Some("<p>again</p>"));
 }
 
+/// How `j1` ends after its step was killed.
+#[derive(Clone, Copy, Debug)]
+enum Ending {
+    /// Cancelled.
+    Cancel,
+    /// Done by a later step that writes no version.
+    Done,
+}
+
+/// A step killed after its content write, whose job then ends, can never
+/// commit: the next write of the version, whoever makes it, removes what
+/// it left. `clax doctor`'s list names it, dead, until then.
+fn a_dead_steps_stray_is_removed_by_the_next_write<C: ContentStore + 'static>(
+    content: impl FnOnce(&Home) -> C,
+    ending: Ending,
+) {
+    let f = fixture(content);
+    f.content.kill_next();
+    assert!(f.commit("publish:1", "<p>killed</p>").is_err());
+    let strays = f.st.marked_strays().unwrap();
+    assert_eq!(strays.len(), 1, "{ending:?}");
+    assert_eq!(
+        (
+            strays[0].n,
+            strays[0].job_id.as_str(),
+            strays[0].key.as_str(),
+            strays[0].live
+        ),
+        (2, "j1", "publish:1", true),
+        "{ending:?}"
+    );
+    match ending {
+        Ending::Cancel => {
+            let rev = f.st.job("j1").unwrap().unwrap().job.rev;
+            f.st.patch_job(
+                "j1",
+                JobPatch {
+                    if_rev: rev,
+                    state: Some(JobState::Cancelled),
+                    ..JobPatch::default()
+                },
+            )
+            .unwrap();
+        }
+        Ending::Done => {
+            f.st.commit_step("j1", "reply:1", json!({}), true).unwrap();
+        }
+    }
+    assert!(!f.st.marked_strays().unwrap()[0].live, "{ending:?}");
+    let (_, v) =
+        f.st.publish_version(DAEMON, &f.id, publish("<p>two</p>", Some(1)), None)
+            .unwrap();
+    assert_eq!(v.n, 2, "{ending:?}");
+    assert_eq!(f.versions(), [1, 2], "{ending:?}");
+    assert_eq!(f.html(2).as_deref(), Some("<p>two</p>"), "{ending:?}");
+    assert!(f.st.marked_strays().unwrap().is_empty(), "{ending:?}");
+}
+
+/// A live step's stray refuses any other write of its version, and is
+/// listed live.
+fn a_live_steps_stray_refuses_another_write<C: ContentStore + 'static>(
+    content: impl FnOnce(&Home) -> C,
+) {
+    let f = fixture(content);
+    f.content.kill_next();
+    assert!(f.commit("publish:1", "<p>killed</p>").is_err());
+    assert!(
+        f.st.publish_version(DAEMON, &f.id, publish("<p>two</p>", Some(1)), None)
+            .is_err()
+    );
+    assert_eq!(f.versions(), [1]);
+    assert_eq!(f.html(2).as_deref(), Some("<p>killed</p>"));
+    assert!(f.st.marked_strays().unwrap()[0].live);
+}
+
 fn a_stray_no_step_marked_is_not_replaced<C: ContentStore + 'static>(
     content: impl FnOnce(&Home) -> C,
 ) {
@@ -586,4 +661,34 @@ fn a_killed_new_apps_step_resumes_as_one_artifact_on_files() {
 #[test]
 fn a_killed_new_apps_step_resumes_as_one_artifact_in_git() {
     a_killed_new_apps_step_resumes_as_one_artifact(the_store_in_git);
+}
+
+#[test]
+fn a_cancelled_steps_stray_is_removed_by_the_next_write_on_files() {
+    a_dead_steps_stray_is_removed_by_the_next_write(the_store_on_files, Ending::Cancel);
+}
+
+#[test]
+fn a_cancelled_steps_stray_is_removed_by_the_next_write_in_git() {
+    a_dead_steps_stray_is_removed_by_the_next_write(the_store_in_git, Ending::Cancel);
+}
+
+#[test]
+fn a_done_jobs_stray_is_removed_by_the_next_write_on_files() {
+    a_dead_steps_stray_is_removed_by_the_next_write(the_store_on_files, Ending::Done);
+}
+
+#[test]
+fn a_done_jobs_stray_is_removed_by_the_next_write_in_git() {
+    a_dead_steps_stray_is_removed_by_the_next_write(the_store_in_git, Ending::Done);
+}
+
+#[test]
+fn a_live_steps_stray_refuses_another_write_on_files() {
+    a_live_steps_stray_refuses_another_write(the_store_on_files);
+}
+
+#[test]
+fn a_live_steps_stray_refuses_another_write_in_git() {
+    a_live_steps_stray_refuses_another_write(the_store_in_git);
 }
