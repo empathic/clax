@@ -41,7 +41,10 @@ import java.util.concurrent.atomic.AtomicLong
  *   mainFrame, navigation?}` for every request to the app's hosts;
  *   `channel {webViewId, message}` for a `ClaxHost` message from the
  *   shell's main frame; `committed {webViewId, url, navigation?}` when a
- *   main-frame navigation commits.
+ *   main-frame navigation commits; `refused {webViewId, url}` when a
+ *   main-frame request to the shell's host is not for a shell document (a
+ *   path under `/a/`, spec §4.2), which is answered 403 here and never
+ *   reaches Dart.
  *
  * Every answer passes [response], which drops each `Access-Control-*`
  * header (spec §4.3) and answers a 3xx, which a WebResourceResponse cannot
@@ -139,6 +142,14 @@ class SchemeHost(
     private fun intercept(state: Attached, request: WebResourceRequest): WebResourceResponse? {
         val url = request.url
         if (!isAppHost(url.host)) return null
+        if (request.isForMainFrame && url.host == SHELL_HOST && url.path?.startsWith("/a/") != true) {
+            main.post {
+                if (attached[state.id] === state) {
+                    channel.invokeMethod("refused", mapOf("webViewId" to state.id, "url" to url.toString()))
+                }
+            }
+            return response(403, mapOf("Content-Type" to "text/plain"), "refused".toByteArray())
+        }
         val reqId = nextRequest.incrementAndGet()
         val future = CompletableFuture<WebResourceResponse>()
         pending[reqId] = future

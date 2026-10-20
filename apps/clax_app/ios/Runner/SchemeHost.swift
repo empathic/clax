@@ -36,7 +36,8 @@ import webview_flutter_wkwebview
 /// header (spec §4.3) and answers a 3xx, which WebKit does not follow for a
 /// custom scheme, as a 502 that says so.
 ///
-/// Navigations to the shell's host are allowed only in the main frame.
+/// Navigations to the shell's host are allowed only in the main frame, and
+/// only to a shell document (a path under `/a/`, spec §4.2).
 /// Each one allowed opens a one-shot permit with the WebView's next
 /// navigation number: the first request for the permitted URL whose
 /// `mainDocumentURL` is that URL carries the number (and `mainFrame:
@@ -170,6 +171,11 @@ final class SchemeHost: NSObject, WKURLSchemeHandler, WKScriptMessageHandler {
     url?.scheme == scheme && url?.host == shellHost
   }
 
+  /// Whether [url] is a shell document's: a path under `/a/`.
+  private static func isShellDocument(_ url: URL?) -> Bool {
+    isShell(url) && url?.path.hasPrefix("/a/") == true
+  }
+
   // MARK: The scheme
 
   func webView(_ webView: WKWebView, start task: WKURLSchemeTask) {
@@ -264,10 +270,12 @@ final class SchemeHost: NSObject, WKURLSchemeHandler, WKScriptMessageHandler {
   // MARK: Navigations
 
   /// Whether [action] may go on; cancels a navigation to the shell's host
-  /// outside the main frame.
+  /// outside the main frame, or to anything there but a shell document.
   fileprivate func admits(_ action: WKNavigationAction, in webView: WKWebView) -> Bool {
     guard SchemeHost.isShell(action.request.url) else { return true }
-    if action.targetFrame?.isMainFrame == true { return true }
+    if action.targetFrame?.isMainFrame == true, SchemeHost.isShellDocument(action.request.url) {
+      return true
+    }
     if let state = state(of: webView) {
       send(
         "refused",
