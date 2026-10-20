@@ -608,8 +608,30 @@ async fn an_embedded_core_marks_every_shell_document_and_frames_content_on_its_o
         );
     }
 
+    // The content frame's bridge takes orders from the app's shell, which
+    // its own origin does not name.
+    let port = embedded.addr.port();
+    let content = page(
+        &embedded,
+        "/v/1/",
+        &[("host", format!("{id}.localhost:{port}"))],
+    )
+    .await
+    .text()
+    .await
+    .unwrap();
+    assert!(content.contains(r#"data-origin="clax://app""#), "{content}");
+
     let plain = ts.publish("Report", &[("index.html", "<p>x</p>")]).await;
     let pid = plain["artifact"]["id"].as_str().unwrap().to_string();
+    let port = ts.addr.port();
+    let content = page(&ts, "/v/1/", &[("host", format!("{pid}.localhost:{port}"))])
+        .await
+        .text()
+        .await
+        .unwrap();
+    assert!(content.contains("<p>x</p>"), "{content}");
+    assert!(!content.contains("data-origin"), "{content}");
     let html = page(&ts, &format!("/a/{pid}?app=1"), &[])
         .await
         .text()

@@ -145,6 +145,37 @@ async fn an_owner_call_creates_and_a_content_frame_reads_its_page() {
 }
 
 #[tokio::test]
+async fn a_page_served_to_a_content_frame_names_the_apps_shell_for_its_bridge() {
+    let dir = tempfile::tempdir().unwrap();
+    let (embed, _rx) = open(dir.path());
+    let (status, v) = call_json(
+        &embed,
+        head("POST", "/api/artifacts", As::Owner),
+        Some(json!({"title": "t", "files": {
+            "index.html": {"content": "<title>t</title>hi", "encoding": "utf8"},
+            "about.html": {"content": "<title>a</title>about", "encoding": "utf8"},
+        }})),
+    )
+    .await;
+    assert_eq!(status, 201, "{v}");
+    let id = v["artifact"]["id"].as_str().unwrap().to_string();
+    for path in ["/v/1/", "/v/1/about.html"] {
+        let mut h = head("GET", path, As::Content);
+        h.host = Some(id.clone());
+        let (res, body) = call(&embed, h, b"").await;
+        assert_eq!(res.status, 200, "{path}");
+        let body = String::from_utf8_lossy(&body);
+        assert_eq!(
+            body.matches(r#"data-origin="clax://app"></script>"#)
+                .count(),
+            1,
+            "{path}: {body}"
+        );
+    }
+    embed.close();
+}
+
+#[tokio::test]
 async fn a_content_frame_reaches_no_api() {
     let dir = tempfile::tempdir().unwrap();
     let (embed, _rx) = open(dir.path());

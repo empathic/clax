@@ -141,12 +141,14 @@ async fn lookup(
     // A page wrapped concurrently with a debug rebuild may keep the old
     // `?v=`; a debug build serves every bridge URL revalidated, current bytes.
     cache.follow_bridge(&bridge);
-    // Content on a hosted daemon's content origin talks to the public one.
+    // Content framed by a shell on another origin names it: a hosted
+    // daemon's public origin, or the app's shell origin (AppState.embed).
     let shell = s
         .hosted
         .as_ref()
         .filter(|h| h.content_origin().is_some())
-        .map(|h| h.origin.clone());
+        .map(|h| h.origin.clone())
+        .or_else(|| s.embed.as_ref().map(|e| e.shell.clone()));
     s.store_call_async(move |st| async move {
         let meta = st.file_meta(&id, n, &file)?.ok_or(CoreError::NotFound)?;
         if !always_wrap && !is_html(&meta.content_type) {

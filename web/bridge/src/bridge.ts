@@ -8,7 +8,8 @@
  * (target "*"; artifact, version, and the page's published file, no page
  * content), then takes orders only from `window.parent` at
  * an origin in `shellOrigins` of its tag's `data-origin` (a hosted daemon's
- * public origin, for content on its content origin) or else of
+ * public origin, for content on its content origin, or the Clax app's shell
+ * origin, for content on the app's content origin) or else of
  * `location.href`, and replies to that origin only:
  * comment mode (hover outline, element and range picks with anchors and PNG
  * clips within the budget in `clip.ts`, drawn areas clipped to exactly the
@@ -185,8 +186,8 @@ type PartName = keyof Parts;
 
   if (!framed) return; // opened directly: there is no shell
 
-  // A hosted daemon's content origin names the shell's origin in the tag
-  // (`data-origin`): its own URL does not.
+  // A hosted daemon's content origin and the Clax app's name the shell's
+  // origin in the tag (`data-origin`): their own URL does not.
   const origins = shellOrigins(script?.dataset.origin || location.href);
   const box = (t: Element | Range): Box => { const r = t.getBoundingClientRect(); return { x: r.x, y: r.y, w: r.width, h: r.height }; };
 
