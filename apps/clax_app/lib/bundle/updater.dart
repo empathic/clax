@@ -193,7 +193,7 @@ class Updater {
   final LineageStore store;
   final Inspector inspector;
 
-  /// The daemon's base URL, as the render tool takes it.
+  /// The shell's origin, as the render tool takes it.
   final Uri Function() baseUrl;
   final DocSnapshots snapshots;
 

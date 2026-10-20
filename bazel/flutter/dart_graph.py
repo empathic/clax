@@ -23,8 +23,8 @@ test/, tool/, integration_test/) and derives:
 
 The groups trade selection for disk: a compile carries Flutter and the
 reached app (60 to 90 MB), so one per test file would cost gigabytes. The
-*_real_test.dart files form a group of their own (they run the real daemon
-and core); the others are merged, closest first, into SUITE_COUNT groups:
+*_real_test.dart files form a group of their own (they run the real
+core); the others are merged, closest first, into SUITE_COUNT groups:
 each step merges the two groups whose union adds the fewest (file, test)
 pairs in which the test is selected by the file without reaching it.
 """

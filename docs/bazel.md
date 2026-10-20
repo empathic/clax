@@ -218,7 +218,7 @@ macOS) and the two keys below.
 
 | Target (`//apps/clax_app:…`) | What it is | Native twin |
 |---|---|---|
-| `<dir>_<file>` (one per `test/**/*_test.dart`) | `flutter test` of that file, in a `flutter_tester` of its own; the `*_real_test.dart` ones against the warmed debug `clax` | `flutter test` |
+| `<dir>_<file>` (one per `test/**/*_test.dart`) | `flutter test` of that file, in a `flutter_tester` of its own; the `*_real_test.dart` ones against the host's embedded core (`//crates/clax-embed:clax_embed_host`) | `flutter test` |
 | `dart_analyze` | `flutter analyze`: the app's library, and its tests, integration tests and tools (`:checked_sources`), by `analysis_options.yaml`; any diagnostic fails | `flutter analyze` |
 | `prompt_sync`, `version_sync` | the prompt's copies of the contract; pubspec.yaml's version is the one the BUILD file gives the APK and the macOS app | `scripts/sync-app-prompt.sh --check` |
 | `apk`, `apk_test` | the release APK for arm64-v8a and x86_64 (`bazel/flutter/android.bzl`), and a check of it against what Gradle makes | `flutter build apk` |

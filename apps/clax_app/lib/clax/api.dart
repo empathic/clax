@@ -6,9 +6,11 @@ import 'stream.dart';
 export 'models.dart';
 export 'stream.dart';
 
-/// The app's typed client of the embedded daemon's HTTP API.
+/// The app's typed client of Clax's HTTP API, which the embedded core
+/// serves in the app.
 ///
-/// Every request carries the daemon's bearer token. The agent's calls
+/// Every request speaks for the owner (the core gives it the owner's
+/// credentials). The agent's calls
 /// ([createArtifact], [publish], [replyAsAgent], [resolveAsAgent]) also
 /// carry `X-Clax-Session`, naming the app session [registerAppSession]
 /// made; the owner's (a restore from the versions list, reads, document
@@ -386,8 +388,8 @@ class ReadGrant {
 /// [status] is the HTTP status, or 0 when no answer came ([unanswered]),
 /// whatever the transport: code [timeout] when none came within the
 /// call's limit, or [unreachable] when none can come, with the
-/// transport's own reason (`daemon_unreachable`, `core_closed`,
-/// `core_failed`, `frame_refused`, `malformed`) as `body['reason']` and in
+/// transport's own reason (`core_closed`, `core_failed`, `frame_refused`,
+/// `malformed`, `closed`) as `body['reason']` and in
 /// [message]. Otherwise [code] and [message] are the API's `error.code`
 /// and `error.message`, and [body] is the whole `error` object (a
 /// conflict's `current` among it). An answer the client could not read is

@@ -14,7 +14,6 @@ import '../core/scheme_host.dart';
 import '../core/shell_link.dart';
 import '../platform/clock.dart';
 import 'app_surface.dart';
-import 'daemon_cookie.dart';
 import 'host_protocol.dart';
 
 /// The overlays the app draws in place of the shell's ([Init.native]), all
@@ -41,9 +40,6 @@ const nativeOverlays = ['ask', 'questions', 'notice', 'draft'];
 /// - A main frame that fails to load, or whose web content process ends,
 ///   is loaded again once; a second failure within [retryWindow] gives up
 ///   and waits for [reload]. Each is reported on [faults].
-/// - With [keyCookie], every [load] and [reload] first awaits the daemon's
-///   key cookie in the WebView's cookie store ([DaemonKeyCookie.ready]), so
-///   a daemon started with `--require-credential` serves the shell.
 /// - [capture] asks the platform (`snapshotWebView` on the
 ///   `dev.empathic.clax/native` channel, macOS and Android) for an image
 ///   of the WebView as it shows.
@@ -68,7 +64,6 @@ class WebViewAppSurface implements AppSurface, CapturableSurface {
     required this.base,
     this._clock = const SystemClock(),
     this.openExternal,
-    this.keyCookie,
     Color? background,
     WebViewController? controller,
     this.core,
@@ -76,11 +71,8 @@ class WebViewAppSurface implements AppSurface, CapturableSurface {
     SchemeHostPort? schemeHost,
   }) : assert(
          core == null ||
-             (origins != null &&
-                 keyCookie == null &&
-                 base == Uri.parse(origins.shell)),
-         'on the core the surface loads from its origins\' shell, with no key '
-         'cookie',
+             (origins != null && base == Uri.parse(origins.shell)),
+         'on the core the surface loads from its origins\' shell',
        ),
        controller = controller ?? WebViewController(),
        _session = ShellSession(
@@ -89,12 +81,6 @@ class WebViewAppSurface implements AppSurface, CapturableSurface {
          platform: shellPlatform(),
        ) {
     final c = this.controller;
-    _loads = CookieLoads(
-      keyCookie,
-      base,
-      load: c.loadRequest,
-      reload: c.reload,
-    );
     final core = this.core;
     if (core != null) {
       _link = CoreShellLink(
@@ -153,12 +139,6 @@ class WebViewAppSurface implements AppSurface, CapturableSurface {
   Uri? _loaded;
   final Clock _clock;
   final ShellSession _session;
-
-  /// The daemon's key cookie, set before each load; none for a daemon
-  /// without `--require-credential`.
-  final DaemonKeyCookie? keyCookie;
-
-  late final CookieLoads _loads;
 
   /// Opens a link the app view does not load (in the system browser).
   /// Without it such links do nothing.
@@ -326,7 +306,7 @@ class WebViewAppSurface implements AppSurface, CapturableSurface {
       // URL: nothing loads.
       return _fault('the app’s scheme is not attached to the WebView');
     }
-    return _loads.load(url);
+    return controller.loadRequest(url);
   }
 
   /// The artifact last [load]ed, which the top level stays on.
@@ -339,7 +319,7 @@ class WebViewAppSurface implements AppSurface, CapturableSurface {
   Stream<String> get elsewhere => _elsewhere.stream;
 
   @override
-  Future<void> reload() => _loads.reload();
+  Future<void> reload() => controller.reload();
 
   @override
   Future<void> call(HostCall c) async {
@@ -394,7 +374,6 @@ class WebViewAppSurface implements AppSurface, CapturableSurface {
   void dispose() {
     _link?.dispose();
     _attachment?.detach();
-    _loads.dispose();
     _messages.close();
     _faults.close();
     _elsewhere.close();

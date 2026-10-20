@@ -142,9 +142,8 @@ TEST_DATA = glob(
 # (bazel/flutter/tests.bzl says why), against the libraries they and the
 # test-side files they import (test support, tool/, integration_test/)
 # import, so a change selects only the suites that reach it. The
-# *_real_test.dart files, which run the real daemon or the real embedded
-# core, form a suite of their own with the warmed debug clax and the host's
-# libclax_embed.
+# *_real_test.dart files, which run the real embedded core, form a suite of
+# their own with the host's libclax_embed.
 [flutter_test_suite(
     name = name,
     size = "medium",
@@ -162,15 +161,13 @@ TEST_DATA = glob(
         ":home_bundle",
     ],
     data = TEST_DATA + ([
-        "//crates/clax-cli:clax",
-        "//crates/clax-cli:clax_warm",
         "//crates/clax-embed:clax_embed_host",
     ] if suite["real"] else []),
     # APP_NAME, as `flutter test` sets it beside UNIT_TEST_ASSETS
     # (flutter_test_suite): flutter_test then reads an asset from disk at
     # once, where through the engine the read would not finish within a
     # test's fake time.
-    env = {"APP_NAME": "clax_app"} | ({"CLAX_TEST_BIN": "crates/clax-cli/clax"} | select({
+    env = {"APP_NAME": "clax_app"} | (select({
         # The core as this host builds it, relative to the runfiles root.
         "@platforms//os:macos": {"CLAX_EMBED_LIB": "crates/clax-embed/libclax_embed.dylib"},
         "//conditions:default": {"CLAX_EMBED_LIB": "crates/clax-embed/libclax_embed.so"},

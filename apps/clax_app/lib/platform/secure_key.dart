@@ -1,10 +1,10 @@
 import 'package:flutter_secure_storage/flutter_secure_storage.dart';
 
 /// The owner's Claude API key, in the platform's secure storage. The
-/// Messages API backend, Settings and the daemon supervisor read it (the
-/// supervisor hands it to the daemon in its environment, for pages'
-/// `sample()` calls); it is never logged, never written to
-/// `settings.json`, `CLAX_HOME` or the WebView.
+/// Messages API backend, Settings and the core host read it (the host puts
+/// it into the core's memory, for pages' `sample()` calls); it is never
+/// logged, never written to `settings.json`, the core's home or the
+/// WebView.
 abstract interface class SecureKey {
   /// The saved key, or null when there is none.
   Future<String?> read();
@@ -99,8 +99,9 @@ class FlutterSecureKey implements SecureKey {
 }
 
 /// A [SecureKey] that reads its inner store at most once per process, so
-/// the key's readers (the Messages API backend each run, the daemon
-/// supervisor each start, Settings) cost one keychain access between them.
+/// the key's readers (the Messages API backend each run, the core host at
+/// each open and key change, Settings) cost one keychain access between
+/// them.
 ///
 /// The value lives in memory only and is never logged. A successful read
 /// is kept, a missing key as well as a saved one; a failed read is not

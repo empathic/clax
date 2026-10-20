@@ -554,7 +554,7 @@ run.
   Dart (`//apps/clax_app:dart_analyze`, by
   `apps/clax_app/analysis_options.yaml`), each test file of `test/` as its
   own target (`//apps/clax_app:<dir>_<file>`; the `*_real_test.dart` files
-  against Bazel's debug `clax`), the prompt copies
+  against the host's build of the embedded core), the prompt copies
   (`//apps/clax_app:prompt_sync`, `scripts/sync-app-prompt.sh --check`,
   which checks that the prompt assets in `apps/clax_app/assets/prompt`
   still copy `docs/contract.md`'s "Page contract" and "Runtime

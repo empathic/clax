@@ -35,8 +35,8 @@ import 'webview_surface.dart' show coreShellBase;
 /// one waits for the earlier one to end. A cancel ends the call at once with
 /// [InspectorError] `cancelled`, and [dispose] every call with
 /// [InspectorLost]. The surface is made on the first
-/// inspection, for the daemon's address the URL names, and made again when
-/// that address changes (a daemon restarted on a new port).
+/// inspection, for the origin the URL names, and made again when that
+/// origin changes.
 class WebViewInspector implements Inspector {
   WebViewInspector({
     required AppSurface Function(Uri base) surface,
@@ -314,9 +314,9 @@ class WebViewInspector implements Inspector {
   /// An artifact ID no artifact has, for [warm]'s load.
   static const _warmId = '000000000000';
 
-  /// Makes the surface for the daemon at [base] and loads the shell's
+  /// Makes the surface for the origin [base] and loads the shell's
   /// inspect view in it once, so the WebView, the shell and its chunks are
-  /// warm before the first inspection; call it as the daemon comes up. It
+  /// warm before the first inspection; call it once the core is open. It
   /// waits for any inspection in progress, and does nothing when the
   /// surface for [base] is already made.
   Future<void> warm(Uri base) {

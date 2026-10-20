@@ -3,42 +3,16 @@ import 'dart:convert';
 import 'dart:io';
 import 'dart:typed_data';
 
-import '../daemon/supervisor.dart' show DaemonEndpoint;
 import 'api.dart';
-import 'sse.dart';
 import 'transport.dart';
 
-/// [ClaxApi] over a [ClaxTransport]: loopback HTTP to a daemon
-/// ([HttpClaxApi.loopback]) or the embedded core ([HttpClaxApi.over]).
+/// [ClaxApi] over a [ClaxTransport]: the embedded core's
+/// (`lib/core/core_transport.dart`), or a test's own.
 ///
 /// A call with no answer throws [ClaxApiError] status 0,
 /// [ClaxApiError.timeout] or [ClaxApiError.unreachable] (the transport's
 /// reason in its body); one the API refused throws its status and error.
 class HttpClaxApi implements ClaxApi {
-  /// Over loopback HTTP to the daemon [endpoint] names, read afresh for
-  /// each request ([LoopbackTransport]). An event stream waits
-  /// [eventConnectTimeout] for the daemon's answer and reconnects after
-  /// [eventIdleTimeout] without a byte; [eventTimer] makes both deadlines.
-  HttpClaxApi.loopback(
-    DaemonEndpoint Function() endpoint, {
-    HttpClient? client,
-    this.sessionId,
-    this.requestTimeout = const Duration(seconds: 35),
-    this.publishTimeout = const Duration(seconds: 125),
-    this.pollSlack = defaultPollSlack,
-    this.eventRetryDelay,
-    Duration eventConnectTimeout = defaultEventConnectTimeout,
-    Duration eventIdleTimeout = defaultEventIdleTimeout,
-    SseTimer eventTimer = Timer.new,
-  }) : transport = LoopbackTransport(
-         endpoint,
-         client: client,
-         eventRetryDelay: eventRetryDelay,
-         eventConnectTimeout: eventConnectTimeout,
-         eventIdleTimeout: eventIdleTimeout,
-         eventTimer: eventTimer,
-       );
-
   /// Over [transport].
   HttpClaxApi.over(
     this.transport, {
@@ -61,17 +35,8 @@ class HttpClaxApi implements ClaxApi {
   final Duration publishTimeout;
 
   /// The wait before [stream] subscribes its topics again; its own
-  /// backoff when null. Over loopback, also the wait before an event
-  /// stream reconnects.
+  /// backoff when null.
   final Future<void> Function(Duration)? eventRetryDelay;
-
-  /// How long a loopback event stream waits for the daemon's answer
-  /// before it aborts the request and reconnects.
-  static const defaultEventConnectTimeout = Duration(seconds: 10);
-
-  /// How long a loopback event stream may go without a byte before it
-  /// reconnects: three of the daemon's 15 s keep-alives.
-  static const defaultEventIdleTimeout = Duration(seconds: 45);
 
   /// The app session agent calls name in `X-Clax-Session`.
   String? sessionId;

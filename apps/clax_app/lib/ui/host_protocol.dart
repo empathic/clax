@@ -1164,7 +1164,7 @@ class ShellSession {
     this.platform,
   }) : _random = random ?? Random.secure();
 
-  /// The daemon's base URL (`http://127.0.0.1:<port>`).
+  /// The shell's origin (`AppOrigins.shell` on the core).
   final Uri base;
 
   /// The overlays each [Init] declares native ([Init.native]).

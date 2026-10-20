@@ -77,7 +77,7 @@ class RenderTool implements Tool {
   final ClaxApi api;
   final Inspector inspector;
 
-  /// The daemon's origin, e.g. `http://127.0.0.1:7480`.
+  /// The shell's origin, e.g. `clax://app`.
   final Uri baseUrl;
 
   @override

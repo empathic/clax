@@ -333,7 +333,7 @@ class AppScreen extends StatefulWidget {
 
   final String aid;
 
-  /// The daemon's base URL.
+  /// The shell's origin.
   final Uri base;
   final ClaxApi api;
   final AppSurface surface;
