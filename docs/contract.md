@@ -3410,7 +3410,8 @@ cursor or body) and 404 `not_found`.
   - `artifact`: an artifact ID, or `none` for the items about no artifact.
   - `agent`: a harness, or an agent handle (`a_…`).
   - `tag`: a tag's ID or name, repeatable: items about an artifact
-    carrying every tag named (see "Tags").
+    carrying every tag named (see "Tags"). Items about an artifact whose
+    comments are withheld from the caller never match one, as for `q`.
   - `since`, `until`: a `YYYY-MM-DD` date (UTC) or an RFC 3339 time. An
     `until` date covers the whole day.
   - `read`: `unread`, `read` or `all`. Default `all`.

@@ -182,7 +182,9 @@ pub struct InboxQuery {
     pub tags: Vec<String>,
     /// Artifacts whose comment text the recipient may not read: the search
     /// text matches none of their `reply`, `version` and `finished` items,
-    /// whose index entries hold comment text, so a search cannot probe it.
+    /// whose index entries hold comment text, and a tag filter matches none
+    /// of their items at all, so neither probes what they hold now (their
+    /// comments, the tags they carry).
     pub text_withheld_at: Vec<String>,
 }
 
@@ -492,6 +494,14 @@ fn build(q: &InboxQuery, shape: Shape, now: &str) -> Built {
         wh.push(format!(
             "+i.artifact_id IN (SELECT artifact_id FROM artifact_tags WHERE tag_id = {p})"
         ));
+    }
+    if !q.tags.is_empty() && !q.text_withheld_at.is_empty() {
+        let ps: Vec<String> = q
+            .text_withheld_at
+            .iter()
+            .map(|a| arg(Sql::Text(a.clone()), &mut args))
+            .collect();
+        wh.push(format!("+i.artifact_id NOT IN ({})", ps.join(", ")));
     }
     if text.is_some() && !q.text_withheld_at.is_empty() {
         let ps: Vec<String> = q
@@ -947,6 +957,15 @@ pub(super) fn shapes() -> Vec<(String, Built)> {
             InboxQuery {
                 tags: vec!["t_0000000001".into(), "t_0000000002".into()],
                 read: ReadFilter::Unread,
+                ..base.clone()
+            },
+        ),
+        (
+            "PERSON_TAG_WITHHELD_PAGE",
+            InboxQuery {
+                recipient: Some(SAM.into()),
+                tags: vec!["t_0000000001".into()],
+                text_withheld_at: vec!["art0002".into(), "art0004".into()],
                 ..base.clone()
             },
         ),

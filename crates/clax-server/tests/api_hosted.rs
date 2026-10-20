@@ -5689,3 +5689,102 @@ async fn members_apply_the_owners_tags_to_their_own_artifacts_alone() {
         .await;
     assert!(s == 401 || s == 403, "{s}");
 }
+
+#[tokio::test]
+async fn a_tag_filter_matches_no_item_whose_text_is_withheld() {
+    let site = Site::new().await;
+    let owner = site.owner().await;
+    let sid = site.ts.register_session("claude", "h1").await["id"]
+        .as_str()
+        .unwrap()
+        .to_string();
+    let plan = site.ts.publish_as(&sid, "Plan", "<h1>Plan</h1>").await["artifact"]["id"]
+        .as_str()
+        .unwrap()
+        .to_string();
+    let reads = json!({"type": "clax-artifacts", "actions": ["read"], "locations": [plan]});
+    let (mia, mia_id) = site
+        .person_with(
+            &owner,
+            "Mia",
+            json!([reads, {"type": "clax-comments", "actions": ["read", "write", "reply"], "locations": [plan]}]),
+        )
+        .await;
+    let (s, t) = site.thread(&mia, &plan, "a question").await;
+    assert_eq!(s, 201, "{t}");
+    let tid = t["thread"]["id"].as_str().unwrap().to_string();
+    let (s, v) = site
+        .post(
+            &owner,
+            &format!("/api/artifacts/{plan}/threads/{tid}/send"),
+            json!({}),
+        )
+        .await;
+    assert_eq!(s, 200, "{v}");
+    site.ts.reply_as_agent(&sid, &plan, &tid, "an answer").await;
+    let (s, v) = site
+        .post(&owner, "/api/tags", json!({"name": "layoffs"}))
+        .await;
+    assert_eq!(s, 201, "{v}");
+    let (s, v) = site
+        .send(
+            &owner,
+            reqwest::Method::PUT,
+            &format!("/api/artifacts/{plan}/tags"),
+            json!({"tags": ["layoffs"]}),
+        )
+        .await;
+    assert_eq!(s, 200, "{v}");
+    let about_plan = |v: &Value, key: &str| {
+        v[key]
+            .as_array()
+            .unwrap_or_else(|| panic!("{key}: {v}"))
+            .iter()
+            .filter(|i| i["artifact"]["id"] == json!(plan))
+            .count()
+    };
+    // While she reads its comments, the filter finds her items about it.
+    let (s, v) = site.get(&mia, "/api/inbox?tag=layoffs").await;
+    assert_eq!(s, 200, "{v}");
+    assert!(about_plan(&v, "items") > 0, "{v}");
+    // Once its comments are withheld from her, no tag filter matches them:
+    // it would tell her which tags the page carries now.
+    let (s, v) = site
+        .send(
+            &owner,
+            reqwest::Method::PUT,
+            &format!("/api/people/{mia_id}/rights"),
+            json!({"rights": [reads]}),
+        )
+        .await;
+    assert_eq!(s, 200, "{v}");
+    let (s, v) = site.get(&mia, "/api/inbox").await;
+    assert_eq!(s, 200, "{v}");
+    assert!(about_plan(&v, "items") > 0, "the items stay: {v}");
+    for path in [
+        "/api/inbox?tag=layoffs",
+        "/api/inbox?tag=layoffs&read=unread",
+        "/api/inbox?tag=nope",
+    ] {
+        let (s, v) = site.get(&mia, path).await;
+        assert_eq!(s, 200, "{v}");
+        assert_eq!(v["items"], json!([]), "{path}: {v}");
+        assert_eq!(v["total"], json!(0), "{path}: {v}");
+    }
+    let (s, v) = site
+        .get(&mia, "/api/inbox?group=artifact&tag=layoffs")
+        .await;
+    assert_eq!((s, &v["groups"]), (200, &json!([])), "{v}");
+    let (s, v) = site.get(&mia, "/api/inbox/summary?tag=layoffs").await;
+    assert_eq!(s, 200, "{v}");
+    assert_eq!(about_plan(&v, "latest"), 0, "{v}");
+    assert_eq!(v["questions"], json!([]), "{v}");
+    let (s, v) = site
+        .post(
+            &mia,
+            "/api/inbox/read",
+            json!({"all": true, "filter": {"tag": "layoffs"}}),
+        )
+        .await;
+    assert_eq!((s, &v["marked"]), (200, &json!(0)), "{v}");
+}

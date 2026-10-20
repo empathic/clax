@@ -420,7 +420,9 @@ pub async fn list(
     // unread count.
     let job = move |db: &clax_store::Store| {
         let mut iq = with_tags(db, iq)?;
-        if iq.text.is_some() {
+        // What a person may not read is out of a search's and a tag
+        // filter's reach.
+        if iq.text.is_some() || !iq.tags.is_empty() {
             iq.text_withheld_at =
                 clax_http::views::inbox::text_withheld_at(db, me.as_deref(), hosted)?;
         }
@@ -493,6 +495,13 @@ pub async fn summary(
     let out = s
         .store_call(move |db| {
             let tag_ids = db.tag_filter_ids(&tags)?;
+            // What a person may not read matches no tag filter: its items
+            // and questions would tell which tags it carries now.
+            let withheld = if tag_ids.is_empty() {
+                Vec::new()
+            } else {
+                clax_http::views::inbox::text_withheld_at(db, me.as_deref(), hosted)?
+            };
             let (mut open, _) =
                 db.list_questions(me.as_deref(), ListStatus::Open, SUMMARY_QUESTIONS)?;
             if !tag_ids.is_empty() {
@@ -501,6 +510,9 @@ pub async fn summary(
                     let Some(aid) = &q.artifact_id else {
                         return false;
                     };
+                    if withheld.contains(aid) {
+                        return false;
+                    }
                     *carrying.entry(aid.clone()).or_insert_with(|| {
                         clax_core::ArtifactId::parse(aid)
                             .ok()
@@ -528,6 +540,7 @@ pub async fn summary(
                 read: ReadFilter::Unread,
                 limit: SUMMARY_LATEST,
                 tags: tag_ids,
+                text_withheld_at: withheld,
                 ..InboxQuery::default()
             })?;
             Ok(json!({
@@ -698,7 +711,7 @@ pub async fn read_many(
                 Mark::Ids(ids) => db.inbox_mark(&ids, true, me.as_deref())?,
                 Mark::All(q) => {
                     let mut q = with_tags(db, *q)?;
-                    if q.text.is_some() {
+                    if q.text.is_some() || !q.tags.is_empty() {
                         q.text_withheld_at =
                             clax_http::views::inbox::text_withheld_at(db, me.as_deref(), hosted)?;
                     }
