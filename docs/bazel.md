@@ -246,6 +246,7 @@ Performance gates nothing in either (`just perf` measures on demand).
 | release build | `//crates/clax-cli:clax_opt` |
 | justfile | `scripts/test-justfile.sh`, outside Bazel |
 | release scripts | `//scripts:release` |
+| release command | `//scripts:release_script` |
 | tool hook gate | `//scripts:tool_hook` |
 | extension signing | `scripts/test-extension-signing.sh`, outside Bazel |
 | stable bin | `//scripts:stable_bin` |

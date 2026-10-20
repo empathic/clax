@@ -439,7 +439,7 @@ one is. To run
 one file's tests: `cargo nextest run -p clax-server -E 'test(/^api_batch::/)'`,
 or `cargo test -p clax-server --test integration api_batch::`.
 
-`scripts/quality_gates.sh` runs every check CI runs: the justfile, plugin wrapper (`scripts/test-ensure-clax.sh`, `just wrapper-test`), release script, release installer and dev script tests (`scripts/test-release.sh`, `scripts/test-install.sh` (`just install-test`), `scripts/test-dev.sh`), and plugin structure tests (`scripts/test-plugins.sh`, which also checks that the four skill copies and `docs/contract.md` share the page contract word for word, that the skill copies share the comment loop word for word, that the plugins wire their Stop and prompt hooks, that the workspace, the plugin manifests, the Pi package and the plugins' wrapper's `CLAX_VERSION` carry one version (`scripts/check-version.sh`), that the four plugins carry the same wrapper and pin the newest `v*` release tag, that the Rust and Pi tool descriptions match `plugins/pi/test/fixtures/contract.json`, and, through `scripts/sync-skill-tools.py --check`, that each skill's generated tool block and the tool lists in `docs/contract.md` and the READMEs name exactly that fixture's tools), the web lint (`oxlint`, configured in `web/.oxlintrc.json`), web typecheck and unit tests, the web build (before the Rust tests and the release build, which serve or embed it), `cargo fmt`, clippy with `-D warnings` over every target, the Rust tests (`cargo nextest`, or `cargo test` with a warning where nextest is not installed: `cargo install --locked cargo-nextest`), the comment-loop smoke (`scripts/smoke-comment-loop.sh`: a scripted Claude Code session, no model, through tiers 1, 2, 4 and 5 with a fake `codex`), the Pi extension's typecheck and tests, the Worker's checks (`crates/clax-worker`, its own workspace: `cargo fmt`, its tests, among them the SQLite VFS's, and clippy, natively, then `test-wasm.mjs`, which builds the wasm Worker, writes through it under `wrangler dev --local` on free ports with fresh state under `crates/clax-worker/target/wasm-test/`, restarts wrangler and checks the data and `PRAGMA integrity_check`; and, after the web e2e tests, `e2e.mjs`, which runs the Clax server in its Durable Object under `wrangler dev --local` with the web UI from `web/dist` and checks in two browsers that a published artifact shows in the gallery and opens, that a comment reaches the other browser live over the stream's WebSocket, also after the server is rebuilt as after hibernation, and that everything is there after a restart), and the Playwright end-to-end tests of the web UI. `just web-test` runs the web lint, typecheck, and unit tests.
+`scripts/quality_gates.sh` runs every check CI runs: the justfile, plugin wrapper (`scripts/test-ensure-clax.sh`, `just wrapper-test`), release script, release command, release installer and dev script tests (`scripts/test-release.sh`, `scripts/test-release-script.sh` (`scripts/release.sh` against fakes of `gh`, `just` and Bazel), `scripts/test-install.sh` (`just install-test`), `scripts/test-dev.sh`), and plugin structure tests (`scripts/test-plugins.sh`, which also checks that the four skill copies and `docs/contract.md` share the page contract word for word, that the skill copies share the comment loop word for word, that the plugins wire their Stop and prompt hooks, that the workspace, the plugin manifests, the Pi package and the plugins' wrapper's `CLAX_VERSION` carry one version (`scripts/check-version.sh`), that the four plugins carry the same wrapper and pin the newest `v*` release tag, that the Rust and Pi tool descriptions match `plugins/pi/test/fixtures/contract.json`, and, through `scripts/sync-skill-tools.py --check`, that each skill's generated tool block and the tool lists in `docs/contract.md` and the READMEs name exactly that fixture's tools), the web lint (`oxlint`, configured in `web/.oxlintrc.json`), web typecheck and unit tests, the web build (before the Rust tests and the release build, which serve or embed it), `cargo fmt`, clippy with `-D warnings` over every target, the Rust tests (`cargo nextest`, or `cargo test` with a warning where nextest is not installed: `cargo install --locked cargo-nextest`), the comment-loop smoke (`scripts/smoke-comment-loop.sh`: a scripted Claude Code session, no model, through tiers 1, 2, 4 and 5 with a fake `codex`), the Pi extension's typecheck and tests, the Worker's checks (`crates/clax-worker`, its own workspace: `cargo fmt`, its tests, among them the SQLite VFS's, and clippy, natively, then `test-wasm.mjs`, which builds the wasm Worker, writes through it under `wrangler dev --local` on free ports with fresh state under `crates/clax-worker/target/wasm-test/`, restarts wrangler and checks the data and `PRAGMA integrity_check`; and, after the web e2e tests, `e2e.mjs`, which runs the Clax server in its Durable Object under `wrangler dev --local` with the web UI from `web/dist` and checks in two browsers that a published artifact shows in the gallery and opens, that a comment reaches the other browser live over the stream's WebSocket, also after the server is rebuilt as after hibernation, and that everything is there after a restart), and the Playwright end-to-end tests of the web UI. `just web-test` runs the web lint, typecheck, and unit tests.
 
 The web UI is built first (`scripts/build-web.sh`, which keeps the modification times of output it did not change, so an unchanged web UI does not rebuild the release binary that embeds it) and its unit tests run next, alone, since some are timing-sensitive. The other gates then run in concurrent lanes (web e2e then the Worker's e2e, the Rust tests, clippy and `cargo fmt`, web lint and typecheck, the release build, Pi, the scripts, the Worker, the wasm32 check), the longest first, each printing a line as it finishes; a failed gate prints its output. The Rust tests are built before clippy runs, so they start as soon as they can. `pnpm install --frozen-lockfile` runs in `web/` and `plugins/pi/` only when `node_modules` was not installed from the current `pnpm-lock.yaml` by the same Node and pnpm (a hash in `node_modules/.clax-install-stamp`; `CLAX_PNPM_INSTALL=always` ignores it), and `npm ci` in `crates/clax-worker/`, the one npm project, only when its `node_modules` was not installed from its `package-lock.json` by the same Node and npm (`node_modules/.clax-ci-stamp`; `CLAX_NPM_CI=always` ignores it). One debug `clax` is built for the whole run and given to the tests that cannot name it and to the browser tests' daemons as `CLAX_TEST_BIN` (`just test` does the same for the Rust tests), and one release `clax` to the perf gates as `CLAX_PERF_BIN`. The perf gates then run alone, one at a time. The run ends with each gate's time and the total; a slow gate is reported, never failed. On a warm build cache and an otherwise idle machine, the whole run takes under two minutes.
 
@@ -503,20 +503,72 @@ A release is what the plugins download, and what `install.sh` installs.
 Only a person cuts one. Its downloads work only while the repository is
 public.
 
+From the main checkout, on an up-to-date `main`:
+
+```
+scripts/release.sh 0.6.0                              # a dry run: the checks, and every step with whether it is done
+scripts/release.sh 0.6.0 --i-know-what-i-am-doing     # the release
+```
+
+The dry run changes nothing (it fetches `main` from origin, which moves only
+`origin/main`). It checks first, and so does the release, which refuses to
+start unless the checkout is on `main`, clean (no untracked file) and equal
+to `origin/main`, `gh` is signed in (`gh auth status`), the version is
+`X.Y.Z` and newer than every `v*` tag here and on origin, commit signing
+works (a signed commit written to a scratch object directory), and `just`,
+Bazelisk or Bazel, `python3` and `curl` are on `PATH`. The release then
+runs the manual steps below, in order, as you: it signs both commits and
+the tag with your signing key, pushes the tag alone, waits for the Release
+workflow on it and checks that the release lists `SHA256SUMS`, pins the
+plugins, pushes `main`, waits for CI on the pin commit, and runs Publish Pi
+package with `dry_run` off and waits for it. It never force-pushes, never
+deletes a tag, and checks that each commit and the tag it pushes carries a
+signature. The output of `just` and of the waits is also appended to
+`target/release/<version>.log`. Last, it prints what is left by hand:
+redeploying clax.dev with `just clax-dev-deploy` when the release has
+migrations or hosted changes (it says whether
+`crates/clax-store/src/migrations.rs` changed since the previous tag), and
+the crates.io package, which it does not publish.
+
+A step that fails stops the run, which names the step and changes nothing
+after it. Fix the cause and run the same command again: each step's state
+is read from git and GitHub (the version files, the two commits by
+subject, the tag here and on origin, the release's assets, the workflow
+runs), so the run resumes at the first step not done. Uncommitted changes
+are accepted only while the step that made them waits for its commit (the
+bump, 2-4; the pin, 9-10), and the only commits `main` may have beyond
+`origin/main` are the release's own. A failed workflow run is rerun on
+GitHub (`gh run rerun <ID> --failed`), then the command again picks it up.
+The Publish Pi package run the script started is the one state not on
+GitHub, kept in `target/release/<version>/publish-pi-run`. A wait gives up
+after `CLAX_RELEASE_MAX_POLLS` polls (270) `CLAX_RELEASE_POLL_SECONDS`
+apart (20), 90 minutes. Once `main` has moved past the pin commit, the
+release is finished and the script refuses its version.
+
+What it runs, which is also the procedure by hand when a release needs
+recovering outside the script:
+
 ```
 scripts/bump-version.sh 0.4.0     # every version, both Cargo.lock files and the skills' tool blocks
-just bazel-sync                   # bazel/workspace.bzl and MODULE.bazel.lock follow the new version
+just bazel-sync                   # bazel/workspace.bzl and MODULE.bazel.lock follow the new version; again until it changes nothing
 just ci
-git commit -am "Release 0.4.0"
+git commit -S -am "Release 0.4.0"
 git tag -s v0.4.0 -m "Clax 0.4.0"
 git push origin v0.4.0            # the tag alone: main moves once the release is pinned
 # wait for the Release workflow to publish v0.4.0, then:
 scripts/pin-release.sh v0.4.0     # PINNED_VERSION and the four SHA256 values, in every wrapper copy
 just ci
-git commit -am "Pin the plugins to Clax 0.4.0"
+git commit -S -am "Pin the plugins to Clax 0.4.0"
 git push origin main
-# once CI passes on that commit: Actions, Publish Pi package, Run workflow (dry_run off)
+# once CI passes on that commit: Actions, Publish Pi package, Run workflow (dry_run off),
+# or: gh workflow run publish-pi.yml --ref main -f dry_run=false
 ```
+
+`scripts/test-release-script.sh` (gate "release command") runs the script
+in scratch repositories with a bare origin, fakes of `gh`, `just` and
+Bazel, and an SSH signing key of its own: the dry run, a whole release in
+order, resuming after a failed `just ci` and after a failed or unfinished
+Release run, and each refusal.
 
 The Pi package, `@empathic/clax-pi` on npm, is published from the pin
 commit, not the tag: its wrapper must pin the release that shares its

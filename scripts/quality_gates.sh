@@ -61,6 +61,7 @@ lane_pi() {
 lane_scripts() {
     run "justfile"              scripts/test-justfile.sh &&
     run "release scripts"       scripts/test-release.sh &&
+    run "release command"       scripts/test-release-script.sh &&
     run "tool hook gate"        scripts/test-tool-hook.sh &&
     run "extension signing"     scripts/test-extension-signing.sh &&
     run "stable bin"            scripts/test-stable-bin.sh &&
