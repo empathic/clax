@@ -296,7 +296,11 @@ pub const ROUTES: &[(&str, &str, NeedInfo)] = &[
     ("PATCH", "/api/tags/{tag_id}", TagsUpdate::INFO),
     ("DELETE", "/api/tags/{tag_id}", TagsDelete::INFO),
     ("PUT", "/api/artifacts/{aid}/tags", ArtifactTagsPut::INFO),
-    ("PATCH", "/api/artifacts/{aid}/tags", ArtifactTagsPatch::INFO),
+    (
+        "PATCH",
+        "/api/artifacts/{aid}/tags",
+        ArtifactTagsPatch::INFO,
+    ),
     (
         "GET",
         "/api/artifacts/{aid}/versions/{n}/files/{*path}",

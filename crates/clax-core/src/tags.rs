@@ -177,10 +177,23 @@ mod tests {
     fn names_are_trimmed_bounded_and_plain() {
         assert_eq!(check_name("  Design  ").unwrap(), "Design");
         assert_eq!(check_name(&"x".repeat(40)).unwrap().len(), 40);
-        for bad in ["", "   ", "a\nb", "a\u{200b}b", "a\u{202e}b", "t_0123456789"] {
+        for bad in [
+            "",
+            "   ",
+            "a\nb",
+            "a\u{200b}b",
+            "a\u{202e}b",
+            "t_0123456789",
+        ] {
             let e = check_name(bad).unwrap_err();
             assert!(
-                matches!(e, CoreError::Invalid { code: "invalid_tag", .. }),
+                matches!(
+                    e,
+                    CoreError::Invalid {
+                        code: "invalid_tag",
+                        ..
+                    }
+                ),
                 "{bad:?}: {e}"
             );
         }

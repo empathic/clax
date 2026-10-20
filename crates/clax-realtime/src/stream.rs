@@ -2823,8 +2823,13 @@ mod tests {
         hub.update(&g.id, &c, &[Topic::Gallery], &[]).unwrap();
         hub.update(&a.id, &c, &[Topic::Artifact(A.into())], &[])
             .unwrap();
-        hub.update(&other.id, &c, &[Topic::Artifact("8q3k9mzx2b4t".into())], &[])
-            .unwrap();
+        hub.update(
+            &other.id,
+            &c,
+            &[Topic::Artifact("8q3k9mzx2b4t".into())],
+            &[],
+        )
+        .unwrap();
         hub.dispatch(&Event::Tags {
             artifact_id: Some(A.into()),
         });
@@ -2832,7 +2837,11 @@ mod tests {
         let got = drain(&mut g);
         assert_eq!(got.len(), 2, "{got:?}");
         assert!(got[0].1.starts_with("event: tags\n"), "{}", got[0].1);
-        assert!(got[0].1.contains(&format!(r#""artifact_id":"{A}""#)), "{}", got[0].1);
+        assert!(
+            got[0].1.contains(&format!(r#""artifact_id":"{A}""#)),
+            "{}",
+            got[0].1
+        );
         assert!(got[1].1.contains(r#""artifact_id":null"#), "{}", got[1].1);
         let got = drain(&mut a);
         assert_eq!(got.len(), 1, "the list's change is the gallery's: {got:?}");

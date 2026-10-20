@@ -1369,8 +1369,14 @@ async fn tags_lists_publish_applies_tag_changes_and_list_filters() {
         .await);
     assert_eq!(e["error"]["code"], "unknown_tag", "{e}");
     let msg = e["error"]["message"].as_str().unwrap();
-    assert!(msg.contains("no tags yet") && msg.contains("nothing was published"), "{msg}");
-    assert_eq!(ok(t.list(Parameters(ListArgs::default())).await)["artifacts"], serde_json::json!([]));
+    assert!(
+        msg.contains("no tags yet") && msg.contains("nothing was published"),
+        "{msg}"
+    );
+    assert_eq!(
+        ok(t.list(Parameters(ListArgs::default())).await)["artifacts"],
+        serde_json::json!([])
+    );
     owner_tag(&ts, "draft").await;
     owner_tag(&ts, "Final").await;
     let listed = ok(t.tags(Parameters(TagsArgs::default())).await);
@@ -1388,7 +1394,10 @@ async fn tags_lists_publish_applies_tag_changes_and_list_filters() {
         }))
         .await);
     assert!(
-        e["error"]["message"].as_str().unwrap().contains("draft, Final"),
+        e["error"]["message"]
+            .as_str()
+            .unwrap()
+            .contains("draft, Final"),
         "{e}"
     );
     // A publish applies existing tags, by name in any case.

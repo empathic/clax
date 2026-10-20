@@ -180,7 +180,11 @@ pub fn run_tags(cli: &crate::Cli, home: &Home, a: &TagsArgs) -> anyhow::Result<(
             }
             let id = tag_id(&c.get("/api/tags")?, tag)?;
             let mut body = json!({});
-            for (k, v) in [("name", name), ("colour", colour), ("description", description)] {
+            for (k, v) in [
+                ("name", name),
+                ("colour", colour),
+                ("description", description),
+            ] {
                 if let Some(v) = v {
                     body[k] = json!(v);
                 }

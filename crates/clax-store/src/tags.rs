@@ -58,7 +58,10 @@ pub enum TagEdit {
     Replace(Vec<String>),
     /// These are added (those it carries already stay) and then those are
     /// removed (those it does not carry are no change).
-    Change { add: Vec<String>, remove: Vec<String> },
+    Change {
+        add: Vec<String>,
+        remove: Vec<String>,
+    },
 }
 
 /// 409 `tag_exists`: another tag has `name`, as names are compared.
@@ -353,13 +356,14 @@ impl Store {
                 "DELETE FROM artifact_tags WHERE artifact_id = ?1",
                 params![aid.as_str()],
             )?;
-            let mut ins = tx
-                .prepare_cached("INSERT INTO artifact_tags (artifact_id, tag_id) VALUES (?1, ?2)")?;
+            let mut ins = tx.prepare_cached(
+                "INSERT INTO artifact_tags (artifact_id, tag_id) VALUES (?1, ?2)",
+            )?;
             for id in &want {
                 ins.execute(params![aid.as_str(), id])?;
             }
-            let after = super::artifacts::live_artifact_in(tx, aid.as_str())?
-                .ok_or(CoreError::NotFound)?;
+            let after =
+                super::artifacts::live_artifact_in(tx, aid.as_str())?.ok_or(CoreError::NotFound)?;
             let names: Vec<&str> = after.tags.iter().map(|t| t.name.as_str()).collect();
             let mut fields = serde_json::Map::new();
             fields.insert("tags".into(), serde_json::json!(names));
@@ -529,7 +533,12 @@ mod tests {
             )
             .unwrap();
         assert_eq!(plain.colour, DEFAULT_COLOUR);
-        let names: Vec<String> = st.list_tags().unwrap().into_iter().map(|t| t.name).collect();
+        let names: Vec<String> = st
+            .list_tags()
+            .unwrap()
+            .into_iter()
+            .map(|t| t.name)
+            .collect();
         assert_eq!(names, sorted(&["Ärger", "Design", "plain"]));
     }
 
@@ -675,7 +684,11 @@ mod tests {
         };
         // By name in any case, or by ID; sorted by name.
         let (_, changed) = st
-            .edit_artifact_tags(DAEMON, &a, &TagEdit::Replace(vec!["z".into(), x.id.clone()]))
+            .edit_artifact_tags(
+                DAEMON,
+                &a,
+                &TagEdit::Replace(vec!["z".into(), x.id.clone()]),
+            )
             .unwrap();
         assert!(changed);
         assert_eq!(names(&st), ["x", "z"]);

@@ -100,7 +100,11 @@ async fn the_owner_manages_the_list_and_each_change_is_announced() {
         (json!({"name": " "}), 400, "invalid_tag"),
         (json!({"name": "x".repeat(41)}), 400, "invalid_tag"),
         (json!({"name": "a\u{200b}b"}), 400, "invalid_tag"),
-        (json!({"name": "ok", "colour": "#f00"}), 400, "invalid_colour"),
+        (
+            json!({"name": "ok", "colour": "#f00"}),
+            400,
+            "invalid_colour",
+        ),
         (json!({"name": "ok", "extra": 1}), 400, "invalid_json"),
     ] {
         let (s, v) = owner(&ts, "POST", "/api/tags", Some(body.clone())).await;
@@ -278,7 +282,10 @@ async fn people_guests_and_agents_apply_tags_only_where_they_administer() {
     )
     .await;
     assert_eq!(s, 200, "{v}");
-    assert_eq!((names(&v["tags"]), &v["changed"]), (vec!["draft".to_string()], &json!(true)));
+    assert_eq!(
+        (names(&v["tags"]), &v["changed"]),
+        (vec!["draft".to_string()], &json!(true))
+    );
     // Again: no change.
     let (s, v) = json_of(
         w.sam
@@ -299,7 +306,10 @@ async fn people_guests_and_agents_apply_tags_only_where_they_administer() {
     .await;
     assert_eq!((s, code(&v)), (400, "unknown_tag"), "{v}");
     let msg = v["error"]["message"].as_str().unwrap();
-    assert!(msg.contains("'urgent'") && msg.contains("draft, final"), "{msg}");
+    assert!(
+        msg.contains("'urgent'") && msg.contains("draft, final"),
+        "{msg}"
+    );
     // Nor do they make tags.
     let (s, v) = json_of(
         w.sam
@@ -313,16 +323,49 @@ async fn people_guests_and_agents_apply_tags_only_where_they_administer() {
     )
     .await;
     assert_eq!((s, code(&v)), (403, "owner_only"), "{v}");
-    let (s, v) = json_of(w.sam.agent("GET", "/api/tags", Some(&w.sam_session), None).await).await;
+    let (s, v) = json_of(
+        w.sam
+            .agent("GET", "/api/tags", Some(&w.sam_session), None)
+            .await,
+    )
+    .await;
     assert_eq!((s, &v["may_manage"]), (200, &json!(false)), "{v}");
-    assert_eq!(names(&v["tags"]), ["draft", "final"], "a person's agent sees every tag");
+    assert_eq!(
+        names(&v["tags"]),
+        ["draft", "final"],
+        "a person's agent sees every tag"
+    );
     // Mia's browser tags her own artifact, not the owner's; nor makes tags.
     let mia = format!("clax_viewer={}", w.mia_cookie);
-    let (s, v) = browser(ts, &mia, None, "PUT", &tags(&mias), Some(json!({"tags": ["final"]}))).await;
+    let (s, v) = browser(
+        ts,
+        &mia,
+        None,
+        "PUT",
+        &tags(&mias),
+        Some(json!({"tags": ["final"]})),
+    )
+    .await;
     assert_eq!(s, 200, "{v}");
-    let (s, v) = browser(ts, &mia, None, "PUT", &tags(&owners), Some(json!({"tags": ["final"]}))).await;
+    let (s, v) = browser(
+        ts,
+        &mia,
+        None,
+        "PUT",
+        &tags(&owners),
+        Some(json!({"tags": ["final"]})),
+    )
+    .await;
     assert_eq!((s, code(&v)), (403, "admin_only"), "{v}");
-    let (s, v) = browser(ts, &mia, None, "POST", "/api/tags", Some(json!({"name": "mine"}))).await;
+    let (s, v) = browser(
+        ts,
+        &mia,
+        None,
+        "POST",
+        "/api/tags",
+        Some(json!({"name": "mine"})),
+    )
+    .await;
     assert_eq!((s, code(&v)), (403, "owner_only"), "{v}");
     // The owner's agent tags any artifact, Mia's included.
     let (s, v) = json_of(
@@ -334,13 +377,33 @@ async fn people_guests_and_agents_apply_tags_only_where_they_administer() {
             .unwrap(),
     )
     .await;
-    assert_eq!((s, names(&v["tags"])), (200, vec!["draft".to_string()]), "{v}");
+    assert_eq!(
+        (s, names(&v["tags"])),
+        (200, vec!["draft".to_string()]),
+        "{v}"
+    );
     // A guest (a viewer who is no connected person) and no credential.
     let gil = ts.viewer(Some("Gil")).await;
     let gil = format!("clax_viewer={}", gil.cookie);
-    let (s, v) = browser(ts, &gil, None, "PUT", &tags(&owners), Some(json!({"tags": []}))).await;
+    let (s, v) = browser(
+        ts,
+        &gil,
+        None,
+        "PUT",
+        &tags(&owners),
+        Some(json!({"tags": []})),
+    )
+    .await;
     assert_eq!((s, code(&v)), (403, "admin_only"), "{v}");
-    let (s, v) = browser(ts, &gil, None, "POST", "/api/tags", Some(json!({"name": "g"}))).await;
+    let (s, v) = browser(
+        ts,
+        &gil,
+        None,
+        "POST",
+        "/api/tags",
+        Some(json!({"name": "g"})),
+    )
+    .await;
     assert_eq!((s, code(&v)), (403, "owner_only"), "{v}");
     let (s, _) = json_of(
         ts.client
@@ -390,7 +453,11 @@ async fn filters_match_every_tag_named() {
         );
     }
     let [x, y, z] = [made[0].clone(), made[1].clone(), made[2].clone()];
-    for (aid, t) in [(&x, json!(["a", "b"])), (&y, json!(["a"])), (&z, json!(["B", "c"]))] {
+    for (aid, t) in [
+        (&x, json!(["a", "b"])),
+        (&y, json!(["a"])),
+        (&z, json!(["B", "c"])),
+    ] {
         let (s, v) = owner(
             &ts,
             "PUT",
@@ -423,7 +490,13 @@ async fn filters_match_every_tag_named() {
     let (_, v) = owner(&ts, "GET", "/api/artifacts?tag=nope", None).await;
     assert!(listed(&v).is_empty());
     // With ?artifact= too.
-    let (_, v) = owner(&ts, "GET", &format!("/api/artifacts?artifact={y}&tag=b"), None).await;
+    let (_, v) = owner(
+        &ts,
+        "GET",
+        &format!("/api/artifacts?artifact={y}&tag=b"),
+        None,
+    )
+    .await;
     assert!(listed(&v).is_empty());
     // The artifacts carry their tags, sorted by name.
     let (_, v) = owner(&ts, "GET", &format!("/api/artifacts?artifact={z}"), None).await;
@@ -450,7 +523,15 @@ async fn filters_match_every_tag_named() {
     assert_eq!(v["total"], json!(v["items"].as_array().unwrap().len()));
     let (_, v) = browser(&ts, &cookie, None, "GET", "/api/inbox?tag=zz", None).await;
     assert!(ids(&v).is_empty());
-    let (s, v) = browser(&ts, &cookie, None, "GET", "/api/inbox?group=artifact&tag=a", None).await;
+    let (s, v) = browser(
+        &ts,
+        &cookie,
+        None,
+        "GET",
+        "/api/inbox?group=artifact&tag=a",
+        None,
+    )
+    .await;
     assert_eq!(s, 200, "{v}");
     let mut groups: Vec<String> = v["groups"]
         .as_array()
@@ -460,7 +541,15 @@ async fn filters_match_every_tag_named() {
         .collect();
     groups.sort();
     assert_eq!(groups, sorted(vec![&x, &y]));
-    let (s, v) = browser(&ts, &cookie, None, "GET", "/api/inbox?group=agent&tag=a", None).await;
+    let (s, v) = browser(
+        &ts,
+        &cookie,
+        None,
+        "GET",
+        "/api/inbox?group=agent&tag=a",
+        None,
+    )
+    .await;
     assert_eq!(s, 400, "{v}");
     let (s, v) = browser(&ts, &cookie, None, "GET", "/api/inbox/summary?tag=c", None).await;
     assert_eq!(s, 200, "{v}");
@@ -513,8 +602,19 @@ async fn counts_follow_what_the_caller_sees_and_guests_see_only_tags_in_use() {
     assert_eq!(s, 200, "{v}");
     assert_eq!(names(&v["tags"]), ["used"]);
     assert_eq!(v["may_manage"], false);
-    let (s, v) = json_of(ts.client.get(format!("{}/api/tags", ts.base)).send().await.unwrap()).await;
-    assert_eq!((s, names(&v["tags"])), (200, vec!["used".to_string()]), "{v}");
+    let (s, v) = json_of(
+        ts.client
+            .get(format!("{}/api/tags", ts.base))
+            .send()
+            .await
+            .unwrap(),
+    )
+    .await;
+    assert_eq!(
+        (s, names(&v["tags"])),
+        (200, vec!["used".to_string()]),
+        "{v}"
+    );
     // A person's agent that may read only its person's own artifacts counts
     // only those.
     let rae = ts.connect_person("Rae", "clax:reader").await;
@@ -537,7 +637,14 @@ async fn counts_follow_what_the_caller_sees_and_guests_see_only_tags_in_use() {
     let (s, v) = json_of(rae.get(None, "/api/tags").await).await;
     assert_eq!(s, 200, "{v}");
     assert_eq!(names(&v["tags"]), ["unused", "used"]);
-    assert!(v["tags"].as_array().unwrap().iter().all(|t| t["count"] == 0), "{v}");
+    assert!(
+        v["tags"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .all(|t| t["count"] == 0),
+        "{v}"
+    );
     // The artifact view carries the tags for everyone who sees it, its
     // agents included.
     let (s, v) = json_of(

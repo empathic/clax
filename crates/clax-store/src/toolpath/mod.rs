@@ -1302,11 +1302,9 @@ impl Event<'_> {
                 },
                 self.show("reason")
             ),
-            Some(K::TagCreate) => format!(
-                "Made tag {} ({})",
-                self.show("name"),
-                self.show("tag_id")
-            ),
+            Some(K::TagCreate) => {
+                format!("Made tag {} ({})", self.show("name"), self.show("tag_id"))
+            }
             Some(K::TagUpdate) => {
                 let fields: Vec<&str> = match self.body.get("fields") {
                     Some(Value::Object(f)) => f.keys().map(String::as_str).collect(),
