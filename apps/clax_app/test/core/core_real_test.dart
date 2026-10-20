@@ -124,4 +124,55 @@ void main() {
     expect((after as CoreUnanswered).code, 'core_closed');
     expect(File('${home.path}/embed.json').readAsStringSync(), contains('clax://{id}.c'));
   }, skip: skip);
+
+  test('an open of a home this process holds re-attaches to its core', () async {
+    final home = scratchRoot().createTempSync('core-real-');
+    addTearDown(() => home.deleteSync(recursive: true));
+    final lib = CoreLib(DynamicLibrary.open(path!));
+    CoreClient openHome() =>
+        CoreClient.open(home.path, AppOrigins.forPlatform(android: false), lib: lib);
+
+    /// The states [core] reports until ready, failing on anything else.
+    Future<List<CoreOpen>> untilReady(CoreClient core) async {
+      final seen = <CoreOpen>[];
+      await for (final s in core.states) {
+        seen.add(s);
+        if (s is CoreReady) return seen;
+        if (s is CoreFailed || s is CoreClosed) break;
+      }
+      throw TestFailure('not ready: $seen');
+    }
+
+    // The first client stands for an isolate that a hot restart replaced
+    // without closing its core.
+    final first = openHome();
+    await untilReady(first).timeout(const Duration(minutes: 1));
+
+    final second = openHome();
+    expect(second.handle, first.handle, reason: 'the live core');
+    final states = <CoreOpen>[];
+    final ready = Completer<void>();
+    final closed = Completer<void>();
+    second.states.listen((s) {
+      states.add(s);
+      if (s is CoreReady && !ready.isCompleted) ready.complete();
+      if (s is CoreClosed) closed.complete();
+    });
+    await ready.future.timeout(const Duration(minutes: 1));
+    expect(states, [const CoreReady()], reason: 'only the latest event');
+
+    final r = switch (await second.call(
+      const CoreRequest('GET', '/api/artifacts'),
+    )) {
+      CoreAnswered(:final response) => response,
+      final u => throw TestFailure('$u'),
+    };
+    expect(r.status, 200, reason: utf8.decode(r.body));
+
+    second.close();
+    await closed.future.timeout(const Duration(minutes: 1));
+    expect(states.last, const CoreClosed());
+    // The core is gone, so the first client's close only ends its ports.
+    first.close();
+  }, skip: skip);
 }

@@ -122,8 +122,12 @@ final class CoreClient implements CoreCalls {
 
   /// Opens the core on [home], writing `<home>/embed.json` with [origins]
   /// first. [states] hears where the open stands, then [CoreClosed] after
-  /// [close]. [log] hears what the core posted that this client could not
-  /// read.
+  /// [close]. A home this process holds already (an isolate that
+  /// restarted without closing its core) re-attaches: [handle] is the live
+  /// core's, and [states] starts at its latest event. When the core
+  /// answers 0 (its home is closing, or the path is not UTF-8), [states]
+  /// hears the [CoreFailed] it posted and is done. [log] hears what the
+  /// core posted that this client could not read.
   static CoreClient open(
     String home,
     AppOrigins origins, {
@@ -138,17 +142,9 @@ final class CoreClient implements CoreCalls {
     final states = RawReceivePort(null, 'clax core states');
     final handle = lib.open(home, states.sendPort);
     final client = CoreClient._(lib, handle, states, true, log);
-    if (handle == 0) {
-      client._refusal = _failedAnswer;
-      states.close();
-      client._stateOut.add(
-        CoreFailed(
-          'home_in_use',
-          'Clax is already open on $home in this app.',
-          null,
-        ),
-      );
-    }
+    // Handle 0 names no core: nothing is sent, and [states] reports the
+    // failed the core posted for it, then is done.
+    if (handle == 0) client._refusal = _failedAnswer;
     return client;
   }
 
@@ -164,8 +160,8 @@ final class CoreClient implements CoreCalls {
   final CoreLib _lib;
   final void Function(String line) _log;
 
-  /// The core's handle, for [attach] in another isolate; 0 when the open
-  /// was refused.
+  /// The core's handle, for [attach] in another isolate; 0 when the core
+  /// answered the open 0 ([states] says why).
   final int handle;
   final bool _owner;
   final RawReceivePort? _states;
@@ -187,7 +183,8 @@ final class CoreClient implements CoreCalls {
   bool _finished = false;
 
   /// Where the open stands, in order, to one listener, done after
-  /// [CoreClosed]. Empty for an attached client.
+  /// [CoreClosed] (after [CoreFailed] when the open answered 0). Empty for
+  /// an attached client.
   Stream<CoreOpen> get states =>
       _owner ? _stateOut.stream : const Stream.empty();
 
@@ -218,10 +215,14 @@ final class CoreClient implements CoreCalls {
   }
 
   /// Closes this isolate's door. The opener's close also stops the core:
-  /// calls already sent are answered as the core drains them, new ones go
-  /// unanswered as `core_closed`, and once the core reports [CoreClosed]
-  /// any call still waiting goes unanswered the same way. An attached
-  /// client's waiting calls go unanswered as `core_closed` at once.
+  /// calls already sent are answered as the core drains them (it posts
+  /// `closed` after each drained answer), new ones go unanswered as
+  /// `core_closed`, and once the core reports [CoreClosed] any call still
+  /// waiting goes unanswered the same way: one the drain cut, whose
+  /// `core_closed` answer is not ordered before `closed`, or one whose
+  /// answer had no readable tag. An attached client's waiting calls go
+  /// unanswered as `core_closed` at once. After an open answered 0, the
+  /// core's posted failure ends the client instead.
   void close() {
     if (_closed) return;
     _closed = true;
@@ -230,7 +231,10 @@ final class CoreClient implements CoreCalls {
       _finish();
       return;
     }
-    if (handle == 0 || _lib.close(handle) != 0) {
+    // Handle 0 names no core to close: the failed the core posted for it
+    // ends this client.
+    if (handle == 0) return;
+    if (_lib.close(handle) != 0) {
       _stateOut.add(const CoreClosed());
       _finish();
     }
@@ -284,6 +288,9 @@ final class CoreClient implements CoreCalls {
     if (state == null) return;
     _stateOut.add(state);
     switch (state) {
+      case CoreFailed() when handle == 0:
+        _fail();
+        _finish();
       case CoreFailed():
         _fail();
       case CoreClosed():

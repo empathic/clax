@@ -29,10 +29,13 @@ abstract interface class CoreLib {
     CoreLibUnsupported(:final reason) => throw UnsupportedError(reason),
   };
 
-  /// `clax_embed_open`: opens the core on [home] and returns its handle,
-  /// or 0 when this process has that home open already. [port] hears the
-  /// open's progress, then `ready` or `failed`, then `closed`, each as
-  /// JSON bytes.
+  /// `clax_embed_open`: opens the core on [home] and returns its handle.
+  /// [port] hears the open's progress, then `ready` or `failed`, then
+  /// `closed`, each as JSON bytes. A home this process holds already
+  /// re-attaches: the live core's handle, [port] hearing its latest event
+  /// at once. 0 when that home's core is closing (`failed` with code
+  /// `home_in_use`) or the path is not UTF-8 (`open_failed`); `failed` is
+  /// posted to [port] first.
   int open(String home, SendPort port);
 
   /// `clax_embed_call`: 0 when the core took request [frame] (its

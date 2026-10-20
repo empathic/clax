@@ -96,22 +96,62 @@ void main() {
       );
     });
 
-    test('a home the core refuses (handle 0) fails as home_in_use', () async {
+    for (final (code, message) in [
+      ('home_in_use', 'the core on this home is closing'),
+      ('open_failed', 'the home path is not UTF-8'),
+    ]) {
+      test('an open answered 0 reports the core\'s $code, then is done', () async {
+        lib.openAnswer = 0;
+        final core = open();
+        // The core posts failed before it answers 0.
+        lib.postState({'type': 'failed', 'code': code, 'message': message});
+        final r = await core.call(const CoreRequest('GET', '/api/artifacts'));
+        expect(unanswered(r), 'core_failed');
+        expect(lib.calls, isEmpty);
+        final sub = core.subscribe();
+        expect(await sub.blocks.toList(), [endBlock('core_failed')]);
+        await expectLater(
+          core.states,
+          emitsInOrder([CoreFailed(code, message, null), emitsDone]),
+        );
+        core.close();
+        expect(lib.closes, isEmpty, reason: 'handle 0 names no core');
+      });
+    }
+
+    test('an open answered 0 waits for the core\'s failed, even past close', () async {
       lib.openAnswer = 0;
       final core = open();
       final states = <CoreOpen>[];
       final done = Completer<void>();
       core.states.listen(states.add, onDone: done.complete);
-      final r = await core.call(const CoreRequest('GET', '/api/artifacts'));
-      expect(unanswered(r), 'core_failed');
-      expect(lib.calls, isEmpty);
-      final sub = core.subscribe();
-      expect(await sub.blocks.toList(), [endBlock('core_failed')]);
       core.close();
+      await pumpEventQueue();
+      expect(states, isEmpty);
+      lib.postState({
+        'type': 'failed',
+        'code': 'home_in_use',
+        'message': 'closing',
+      });
       await done.future;
-      expect(states, [isA<CoreFailed>(), const CoreClosed()]);
-      expect((states.first as CoreFailed).code, 'home_in_use');
+      expect(states, [const CoreFailed('home_in_use', 'closing', null)]);
       expect(lib.closes, isEmpty);
+    });
+
+    test('an open that re-attaches follows the core\'s latest event', () async {
+      // A home this process holds already: the core answers its live
+      // handle and posts where its open stands.
+      lib.openAnswer = 9;
+      final core = open();
+      expect(core.handle, 9);
+      lib.postState({'type': 'ready'});
+      final states = <CoreOpen>[];
+      core.states.listen(states.add);
+      final r = core.call(const CoreRequest('GET', '/api/artifacts'));
+      expect(lib.calls.single.core, 9);
+      lib.answer(lib.calls.single, 200, body: '{}');
+      expect(answered(await r).status, 200);
+      expect(states, [const CoreReady()]);
     });
   });
 
