@@ -608,6 +608,7 @@ impl World {
                     .replace("{asset_id}", &s.asset)
                     .replace("{n}", "1")
                     .replace("{gid}", "g")
+                    .replace("{tag_id}", "t_0000000000")
                     .replace("{code}", "c")
                     .replace("{call}", "c")
                     .replace("{ms}", "1")

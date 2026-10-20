@@ -107,6 +107,8 @@ mod api_seats;
 mod api_sessions;
 #[cfg(any(not(clax_split), clax_split = "api_stream"))]
 mod api_stream;
+#[cfg(any(not(clax_split), clax_split = "api_tags"))]
+mod api_tags;
 #[cfg(any(not(clax_split), clax_split = "api_threads"))]
 mod api_threads;
 #[cfg(any(not(clax_split), clax_split = "api_timeout"))]

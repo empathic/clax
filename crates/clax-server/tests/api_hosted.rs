@@ -5550,3 +5550,142 @@ async fn an_artifacts_answer_with_a_signed_in_viewers_attention_is_private() {
         assert!(v.get("attention").is_some(), "{v}");
     }
 }
+
+/// The names of a list of tags.
+fn tag_names(v: &Value) -> Vec<String> {
+    v.as_array()
+        .unwrap_or(&vec![])
+        .iter()
+        .map(|t| t["name"].as_str().unwrap().to_string())
+        .collect()
+}
+
+#[tokio::test]
+async fn members_apply_the_owners_tags_to_their_own_artifacts_alone() {
+    let site = Site::new().await;
+    let owner = site.owner().await;
+    let plan = site.titled("Plan").await;
+    let tags = |aid: &str| format!("/api/artifacts/{aid}/tags");
+    // The owner's browser makes tags, from the public origin alone.
+    let (s, v) = site
+        .post(
+            &owner,
+            "/api/tags",
+            json!({"name": "draft", "colour": "orange"}),
+        )
+        .await;
+    assert_eq!(s, 201, "{v}");
+    let res = site
+        .ts
+        .client
+        .post(site.url("/api/tags"))
+        .header(HOST, format!("localhost:{}", site.ts.addr.port()))
+        .header(ORIGIN, "http://evil.example")
+        .header(
+            COOKIE,
+            format!("clax_session={}", owner.cookie.clone().unwrap()),
+        )
+        .json(&json!({"name": "csrf"}))
+        .send()
+        .await
+        .unwrap();
+    let (s, v) = json_of(res).await;
+    assert_eq!((s, code(&v)), (403, "forbidden_origin"), "{v}");
+    // A member makes none, sees every tag, and applies them to their own.
+    let sam = site.member(&owner, "Sam").await;
+    let sam_pid = site.pid(&sam).await;
+    let (s, v) = site.post(&sam, "/api/tags", json!({"name": "mine"})).await;
+    assert_eq!((s, code(&v)), (403, "owner_only"), "{v}");
+    let (s, v) = site.get(&sam, "/api/tags").await;
+    assert_eq!(s, 200, "{v}");
+    assert_eq!(tag_names(&v["tags"]), ["draft"]);
+    assert_eq!(v["tags"][0]["count"], 0);
+    let (s, v) = site
+        .post(
+            &sam,
+            "/api/artifacts:new",
+            json!({"title": "Sam's", "brief": "a page"}),
+        )
+        .await;
+    assert_eq!(s, 201, "{v}");
+    let mine = v["artifact"]["id"].as_str().unwrap().to_string();
+    let (s, v) = site
+        .send(
+            &sam,
+            reqwest::Method::PUT,
+            &tags(&mine),
+            json!({"tags": ["DRAFT"]}),
+        )
+        .await;
+    assert_eq!(
+        (s, tag_names(&v["tags"])),
+        (200, vec!["draft".to_string()]),
+        "{v}"
+    );
+    let (s, v) = site
+        .send(
+            &sam,
+            reqwest::Method::PUT,
+            &tags(&mine),
+            json!({"tags": ["nope"]}),
+        )
+        .await;
+    assert_eq!((s, code(&v)), (400, "unknown_tag"), "{v}");
+    let (_, v) = site.get(&sam, "/api/artifacts?tag=draft").await;
+    assert_eq!(listed(&v), vec![mine.clone()]);
+    let (_, v) = site.get(&sam, "/api/tags").await;
+    assert_eq!(v["tags"][0]["count"], 1, "{v}");
+    // Another's artifact: not there until shared, and an editor's share
+    // does not let them tag it.
+    let (s, _) = site
+        .send(
+            &sam,
+            reqwest::Method::PUT,
+            &tags(&plan),
+            json!({"tags": ["draft"]}),
+        )
+        .await;
+    assert_eq!(s, 404);
+    let (s, v) = site
+        .put(
+            &owner,
+            &format!("/api/hosted/artifacts/{plan}/shares"),
+            json!({"person": sam_pid, "access": "editor"}),
+        )
+        .await;
+    assert_eq!(s, 200, "{v}");
+    let (s, v) = site
+        .send(
+            &sam,
+            reqwest::Method::PUT,
+            &tags(&plan),
+            json!({"tags": ["draft"]}),
+        )
+        .await;
+    assert_eq!((s, code(&v)), (403, "admin_only"), "{v}");
+    // The owner tags any artifact, and the member sees the tags there.
+    let (s, v) = site
+        .send(
+            &owner,
+            reqwest::Method::PUT,
+            &tags(&plan),
+            json!({"tags": ["draft"]}),
+        )
+        .await;
+    assert_eq!(s, 200, "{v}");
+    let (_, v) = site.get(&sam, &format!("/api/artifacts/{plan}")).await;
+    assert_eq!(tag_names(&v["artifact"]["tags"]), ["draft"]);
+    // Signed out: no list, no change.
+    let anon = Browser::default();
+    let (s, v) = site.get(&anon, "/api/tags").await;
+    assert_eq!((s, code(&v)), (401, "sign_in_required"), "{v}");
+    let (s, _) = site
+        .send(
+            &anon,
+            reqwest::Method::PUT,
+            &tags(&plan),
+            json!({"tags": []}),
+        )
+        .await;
+    assert!(s == 401 || s == 403, "{s}");
+}
