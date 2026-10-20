@@ -575,11 +575,11 @@ class FakeClaxApi implements ClaxApi {
       'aid': aid,
       'n': n,
       'ifVersion': ifVersion,
-      'title': title,
-      'icon': icon,
-      'capabilities': capabilities,
-      'label': label,
-      'note': note,
+      'title': ?title,
+      'icon': ?icon,
+      'capabilities': ?capabilities,
+      'label': ?label,
+      'note': ?note,
     });
     final a = _artifact(aid);
     if (n < 1 || n > a.versions.length) throw _notFound();
