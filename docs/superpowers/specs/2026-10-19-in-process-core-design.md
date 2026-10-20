@@ -263,10 +263,13 @@ daemon today (`auth::open_without_credential`).
 
 ### 2.4 Events
 
-`clax_embed_subscribe` opens a connection on the core's stream hub
-(`clax_realtime::stream::Hub`), exactly as `GET /api/stream` does, and
-posts each block the hub would write to an SSE body (`id:`, `event:`,
-`data:`), keep-alives included, as one message. The first block is the
+`clax_embed_subscribe` sends `GET /api/stream` through the router as an
+`as: owner` request (with a loopback `ConnectInfo`, so the route's
+`sees_live_pages` judges it as it judges the app's daemon today) and pumps
+the streaming response body: each chunk the hub's `Conn::next` yields
+(`crates/clax-realtime/src/stream.rs:1783`; one SSE block, `id:`, `event:`,
+`data:`, keep-alives included) is posted as one message. Readers buffer to
+the blank line anyway, so a block split across messages still parses. The first block is the
 hub's `ready` with the stream's ID; topic changes go over `call` as
 today's `POST /api/stream/<id>` (`as: owner`). A subscriber that falls
 behind gets the hub's `resync`, as an SSE client does. Nothing in the hub
@@ -497,14 +500,19 @@ The browser shell (`?app=1` absent, or boot data without `transport:
   `call(Frame) → Future<Response>` for one isolate: a `ReceivePort` for
   responses, a tag counter, a map of pending completers. Each isolate makes
   its own; the handle is shared.
-- **`CoreHttpClient extends http.BaseClient`** turns a `package:http`
-  request into an `as: owner` frame. `HttpClaxApi` keeps every method and
-  path and takes this client instead of a base URL, so the app's ~50 calls
-  (`lib/clax/api.dart`) are untouched; its `DaemonEndpoint Function()`
-  argument goes.
-- **`CoreClaxStream implements ClaxStream`** replaces `SseClaxStream` and
-  `SharedClaxStream`: one core subscription per isolate, parsed with the
-  existing `sse.dart` block parser.
+- **`ClaxTransport`** (`lib/clax/transport.dart`) is what `HttpClaxApi`
+  sends through: `send(method, path, {query, headers, body, timeout}) →
+  (status, bytes)` and `sse(path, {query, resumeId}) → Stream<SseMessage>`.
+  `HttpClaxApi` keeps every method and path (`lib/clax/api.dart`'s ~50) and
+  its `_send` and `_sse` become calls on the transport. `CoreTransport`
+  (`lib/core/core_transport.dart`) sends `as: owner` frames (an agent call
+  keeps its `x-clax-session` header; the core adds the token) and makes
+  `sse` a core subscription (§2.4) parsed by `sse.dart`'s block parser.
+  `LoopbackTransport`, today's `HttpClient` code, lives until phase 7.
+- **`SseClaxStream`** (`lib/clax/stream.dart`) keeps its protocol logic and
+  takes the core subscription as its `connect`; `SharedClaxStream`
+  (`lib/clax/shared_stream.dart`), which existed to outlive a daemon
+  restart, goes.
 - **`FakeCore`** (`test/support/fake_core.dart`) answers frames from a
   `FakeClaxApi`-backed router in Dart and pushes events; every Dart test
   that used `fake_supervisor.dart` or `real_daemon.dart` uses it. The
@@ -906,9 +914,9 @@ spawn, no port wait and no health probe it should improve.
   `ports.dart`, `process.dart`, `in_process.dart`, `exe_locator.dart`,
   `sample_key.dart`, `daemon_key.dart` (`clock.dart` moves to
   `lib/platform/clock.dart`).
-- `apps/clax_app/lib/ui/daemon_cookie.dart`; `lib/clax/shared_stream.dart`,
-  `lib/clax/stream.dart`'s `SseClaxStream` (the block parser in `sse.dart`
-  stays).
+- `apps/clax_app/lib/ui/daemon_cookie.dart`; `lib/clax/shared_stream.dart`;
+  `LoopbackTransport` and `reconnectingSse`'s HTTP code in `lib/clax/sse.dart`
+  (its block parser stays).
 - `apps/clax_app/lib/platform/pending_make.dart`, `lib/agent/ledger.dart`,
   `lib/agent/stops.dart`, `lib/agent/unfinished.dart`'s file store,
   `lib/agent/asked.dart`'s file store, `PlanStore`'s file, `FileConsentMemory`
@@ -1061,7 +1069,7 @@ Each phase leaves main working and ships something testable.
    library in each build's outputs.
 2. **The shell's app-mode transport and the scheme.** `transport.ts`,
    host-pushed events, notices off in app mode, the scheme handlers and
-   channel restrictions, `CoreClient`, `CoreHttpClient`, `CoreClaxStream`,
+   channel restrictions, `CoreClient`, `ClaxTransport` and `CoreTransport`,
    `FakeCore`. Still off in the app (a `--dart-define=CLAX_CORE=embed`
    switch for testing). Ships: e2e app-transport specs, Dart tests, the
    spike's results.
