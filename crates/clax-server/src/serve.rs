@@ -206,6 +206,11 @@ pub struct ServeConfig {
     /// Serve nothing but `/healthz`, static files and content by ID without
     /// a credential ([`clax_http::state::AppState::require_credential`]).
     pub require_credential: bool,
+    /// The origins of an app that embeds the core ([`CoreConfig::embed`]),
+    /// which its shell documents, content policy and bridge tags name;
+    /// `None` for `clax serve`, but for the browser tests of the app's
+    /// transport (`clax serve --embed-origins`, debug builds only).
+    pub embed: Option<clax_http::state::EmbedOrigins>,
     /// How the daemon is asked to stop. `Signals` is `clax serve`'s: SIGTERM,
     /// Ctrl-C and the shutdown route. `Embedded` is a daemon inside another
     /// app's process: only its control and the shutdown route, and no signal
@@ -360,7 +365,7 @@ pub async fn serve(
             require_credential: cfg.require_credential,
             bind: cfg.bind,
             port,
-            embed: None,
+            embed: cfg.embed,
         },
         &mut |p| starting.progress(p),
     )
@@ -535,6 +540,7 @@ mod tests {
             web: std::sync::Arc::new(clax_core::embedded::MemTree::default()),
             hosted: None,
             require_credential: false,
+            embed: None,
             stop: StopOn::Embedded(EmbeddedControl {
                 stop: stop_rx,
                 trim: trim_rx,

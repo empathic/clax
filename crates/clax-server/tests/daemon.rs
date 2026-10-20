@@ -132,6 +132,7 @@ async fn serve_picks_a_free_port_writes_info_and_shuts_down_on_request() {
         hosted: None,
         require_credential: false,
         stop: StopOn::Signals,
+        embed: None,
     };
     let handle = tokio::spawn(serve(cfg, Some(tx)));
     let info = rx.await.unwrap();
@@ -176,6 +177,7 @@ fn config_on(home: &Home, port: u16) -> ServeConfig {
         hosted: None,
         require_credential: false,
         stop: StopOn::Signals,
+        embed: None,
     }
 }
 
@@ -276,6 +278,7 @@ async fn shutdown_completes_while_an_sse_client_stays_connected() {
         hosted: None,
         require_credential: false,
         stop: StopOn::Signals,
+        embed: None,
     };
     let handle = tokio::spawn(serve(cfg, Some(tx)));
     let info = rx.await.unwrap();
@@ -322,6 +325,7 @@ async fn serve_exits_when_daemon_json_is_deleted() {
         hosted: None,
         require_credential: false,
         stop: StopOn::Signals,
+        embed: None,
     };
     let handle = tokio::spawn(serve(cfg, Some(tx)));
     rx.await.unwrap();
@@ -353,6 +357,7 @@ async fn reaper_ends_idle_sessions_whose_process_is_gone() {
         hosted: None,
         require_credential: false,
         stop: StopOn::Signals,
+        embed: None,
     };
     let handle = tokio::spawn(serve(cfg, Some(tx)));
     let info = rx.await.unwrap();

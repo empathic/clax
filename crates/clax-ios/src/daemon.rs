@@ -221,6 +221,7 @@ pub fn config(paths: &Paths, port: u16, slot: KeySlot, control: EmbeddedControl)
         hosted: None,
         require_credential: true,
         stop: StopOn::Embedded(control),
+        embed: None,
     }
 }
 

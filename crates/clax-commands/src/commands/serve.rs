@@ -29,6 +29,15 @@ pub struct Args {
     #[cfg(debug_assertions)]
     #[arg(long, hide = true, requires = "foreground")]
     pub web_dist: Option<std::path::PathBuf>,
+    /// Serve as the core an app embeds with these origins does: the shell's
+    /// origin and an artifact's content origin with `{id}` for its ID (e.g.
+    /// `https://app.clax.invalid https://{id}.c.clax.invalid`), which its
+    /// shell documents, content policy and bridge tags name. For the browser
+    /// tests of the app's transport, which route those origins to this
+    /// daemon. Debug builds only.
+    #[cfg(debug_assertions)]
+    #[arg(long, hide = true, requires = "foreground", num_args = 2, value_names = ["SHELL", "CONTENT"])]
+    pub embed_origins: Option<Vec<String>>,
 }
 
 pub fn run(cli: &crate::Cli, home: &Home, a: &Args) -> anyhow::Result<()> {
@@ -37,6 +46,13 @@ pub fn run(cli: &crate::Cli, home: &Home, a: &Args) -> anyhow::Result<()> {
         let web_dist = a.web_dist.clone();
         #[cfg(not(debug_assertions))]
         let web_dist = None;
+        #[cfg(debug_assertions)]
+        let embed = a
+            .embed_origins
+            .as_deref()
+            .and_then(|o| Some((o.first()?.clone(), o.get(1)?.clone())));
+        #[cfg(not(debug_assertions))]
+        let embed = None;
         return crate::serve(
             home,
             crate::ServeArgs {
@@ -45,6 +61,7 @@ pub fn run(cli: &crate::Cli, home: &Home, a: &Args) -> anyhow::Result<()> {
                 version: reported_version(a),
                 web_dist,
                 require_credential: a.require_credential,
+                embed,
             },
         );
     }
