@@ -279,7 +279,8 @@ enum Shape {
     Groups,
     /// A page of one group's rows: as `Page`, driven by the artifact
     /// whatever the read filter, so each group reaches its own rows
-    /// rather than walking every unread item for them.
+    /// rather than walking every unread item for them, and reading no row
+    /// past its limit (the group's counts say whether more follow).
     GroupRows,
 }
 
@@ -532,7 +533,14 @@ fn build(q: &InboxQuery, shape: Shape, now: &str) -> Built {
     match shape {
         Shape::Page | Shape::GroupRows => {
             let order = if text.is_some() { "f.rowid" } else { "i.seq" };
-            let p = arg(Sql::Integer(i64::from(page_size(q.limit)) + 1), &mut args);
+            // A page reads one past its limit to know whether more follow;
+            // a group's rows know it from the group's counts, so the walk
+            // stops at the last row it lists.
+            let past = i64::from(shape == Shape::Page);
+            let p = arg(
+                Sql::Integer(i64::from(page_size(q.limit)) + past),
+                &mut args,
+            );
             sql.push_str(&format!(" ORDER BY {order} DESC LIMIT {p}"));
         }
         Shape::Count(cap) => {
@@ -764,6 +772,22 @@ pub(super) fn shapes() -> Vec<(String, Built)> {
         (
             "BY_ARTIFACT_PAGE",
             InboxQuery {
+                artifact: Some("art0007".into()),
+                ..base.clone()
+            },
+        ),
+        (
+            "UNREAD_ARTIFACT_PAGE",
+            InboxQuery {
+                read: ReadFilter::Unread,
+                artifact: Some("art0007".into()),
+                ..base.clone()
+            },
+        ),
+        (
+            "READ_ARTIFACT_PAGE",
+            InboxQuery {
+                read: ReadFilter::Read,
                 artifact: Some("art0007".into()),
                 ..base.clone()
             },
@@ -1646,12 +1670,16 @@ impl Store {
                     limit,
                     ..q.clone()
                 };
-                // Its unread matches first, newest first, then its read ones.
+                // Its unread matches first, newest first, then its read
+                // ones; each part reads no more rows than it lists, its
+                // count saying whether more follow.
                 let (mut items, mut next) = (Vec::new(), None);
                 if q.read != ReadFilter::Read && g.unread > 0 {
-                    let (u, more) = page_on(c, &part(ReadFilter::Unread, rows), Shape::GroupRows)?;
-                    items = u;
-                    next = more.map(GroupNext::Unread);
+                    let n = rows.min(g.unread);
+                    (items, _) = page_on(c, &part(ReadFilter::Unread, n), Shape::GroupRows)?;
+                    if g.unread > rows {
+                        next = items.last().map(|i| GroupNext::Unread(i.seq));
+                    }
                 }
                 let read = g.total - g.unread;
                 if next.is_none() && q.read != ReadFilter::Unread && read > 0 {
@@ -1659,10 +1687,12 @@ impl Store {
                     if left == 0 {
                         next = Some(GroupNext::Read(None));
                     } else {
-                        let (r, more) =
-                            page_on(c, &part(ReadFilter::Read, left), Shape::GroupRows)?;
+                        let n = left.min(read);
+                        let (r, _) = page_on(c, &part(ReadFilter::Read, n), Shape::GroupRows)?;
+                        if read > left {
+                            next = r.last().map(|i| GroupNext::Read(Some(i.seq)));
+                        }
                         items.extend(r);
-                        next = more.map(|s| GroupNext::Read(Some(s)));
                     }
                 }
                 (g.items, g.next) = (items, next);
