@@ -54,4 +54,17 @@ mod tests {
         assert!(web_ui_paths().iter().any(|p| p == "_clax/transport.js"));
         assert_eq!(web_ui_dir(), None);
     }
+
+    /// No embedded file carries its file's times, which a rebuild of the
+    /// web UI changes without changing its content: the crate compiles to
+    /// the same metadata from the same inputs, so its `.rmeta` and its
+    /// `.rlib`, two separate compiles under Bazel's pipelining, agree.
+    #[test]
+    fn embedded_files_carry_no_file_times() {
+        for path in Assets::iter() {
+            let meta = Assets::get(&path).expect("listed").metadata;
+            assert_eq!(meta.last_modified(), Some(0), "{path}");
+            assert_eq!(meta.created(), Some(0), "{path}");
+        }
+    }
 }
