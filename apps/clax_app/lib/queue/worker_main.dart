@@ -15,6 +15,7 @@ import 'dart:isolate';
 
 import '../core/core_client.dart';
 import '../daemon/clock.dart';
+import 'codec.dart';
 import 'effect.dart';
 import 'model.dart';
 import 'msg.dart';
@@ -32,18 +33,20 @@ abstract interface class WorkerRunner {
 /// closure over sendable values.
 typedef RunnerFactory = WorkerRunner Function(WorkerContext context);
 
-/// How intents and states cross the isolate boundary.
-///
-/// The client and its worker share an isolate group, so each value is sent
-/// as itself; this pass-through stands in for `lib/queue/codec.dart`'s
-/// encoding, which replaces it where a value must cross as plain data.
+/// How intents and states cross the isolate boundary: as
+/// `lib/queue/codec.dart`'s envelopes of plain data. An intent travels as
+/// a [ToWorker] message; a value that does not decode as what is expected
+/// reads as null, for the reader to drop.
 final class QueueWire {
   const QueueWire();
 
-  Object? intent(Intent i) => i;
-  Intent readIntent(Object? o) => o! as Intent;
-  Object? state(QueueState s) => s;
-  QueueState readState(Object? o) => o! as QueueState;
+  Object? intent(Intent i) => encodeToWorker(WorkerMsg(i));
+  Intent? readIntent(Object? o) => switch (decodeToWorker(o)) {
+    DecodeOk(value: WorkerMsg(msg: final Intent i)) => i,
+    _ => null,
+  };
+  Object? state(QueueState s) => encodeQueueState(s);
+  QueueState? readState(Object? o) => decodeQueueState(o).valueOrNull;
 }
 
 /// What the UI isolate hands the worker it spawns.
@@ -193,7 +196,9 @@ void workerMain(WorkerStart start) {
     run: runner.run,
     publish: (s) => start.toUi.send(WorkerState(start.wire.state(s))),
   );
-  inbox.listen((o) => loop.dispatch(start.wire.readIntent(o)));
+  inbox.listen((o) {
+    if (start.wire.readIntent(o) case final intent?) loop.dispatch(intent);
+  });
   start.toUi.send(WorkerReady(inbox.sendPort));
   loop.dispatch(const CoreOpened());
   if (start.tickEvery case final every?) {

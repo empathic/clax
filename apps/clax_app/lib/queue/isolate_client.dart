@@ -148,6 +148,7 @@ final class IsolateQueueClient {
         if (!_up.isCompleted) _up.complete();
       case WorkerState(:final state):
         final s = _wire.readState(state);
+        if (s == null) return;
         for (final j in s.jobs) {
           if (j.state != JobState.queued) _creations.remove(j.id);
         }
