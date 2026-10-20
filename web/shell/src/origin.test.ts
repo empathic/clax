@@ -13,6 +13,27 @@ describe("artifactOrigin", () => {
   });
 });
 
+describe("artifactOrigin in the Clax app", () => {
+  const embed = (content: string) => ({ transport: "host" as const, shell: "clax://app", content });
+
+  it("is the embed's content origin for the ID, whatever the location", () => {
+    for (const l of [loc("localhost"), loc("192.168.1.20"), loc("app", "")]) {
+      expect(artifactOrigin("abcdefghijkl", l, embed("clax://{id}.c"))).toBe("clax://abcdefghijkl.c");
+      expect(artifactOrigin("abcdefghijkl", l, embed("https://{id}.c.clax.invalid"))).toBe("https://abcdefghijkl.c.clax.invalid");
+    }
+  });
+
+  it("reads the embed the app's transport installed", () => {
+    Object.defineProperty(window, "claxTransport", { configurable: true, value: Object.freeze({ embed: embed("clax://{id}.c") }) });
+    try {
+      expect(artifactOrigin("abcdefghijkl", loc("192.168.1.20"))).toBe("clax://abcdefghijkl.c");
+    } finally {
+      delete (window as { claxTransport?: unknown }).claxTransport;
+    }
+    expect(artifactOrigin("abcdefghijkl", loc("192.168.1.20"))).toBeNull();
+  });
+});
+
 describe("probeOrigin", () => {
   const O = "http://x.localhost:1";
   type Answer = () => Promise<Response>;

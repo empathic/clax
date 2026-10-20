@@ -13,6 +13,7 @@ import { Lifecycle, onPageCache, retrying } from "../lifecycle";
 import { LOAD_FAILED, OPEN_FAILED, PART_FAILED, POST_FAILED, REOPEN_FAILED, RESOLVE_FAILED, SEND_FAILED, SHEET_FAILED, report, scopedNotice } from "../failure";
 import { nav } from "../nav";
 import { artifactOrigin, cachedOriginOk, pageSrc, probeOrigin } from "../origin";
+import { hostEmbed } from "../transport";
 import { appQuery, parseShellPath, shellPath } from "../route";
 import { type Thread, type Viewer, addComment, createThread, currentViewer, fetchThread, getViewer, listThreads, onViewer, reopenThread, resolveThread, seedViewer, sendBatch, sendToAgent, upsert } from "../threads";
 import { after } from "../clock";
@@ -917,12 +918,14 @@ export class ArtifactController {
     void putSeen(this.id, latest);
   }
 
-  /** The frame mode: this tab's cached probe; else the daemon's guess (from
-   * the `clax_frame` cookie, when it served a frame), confirmed or corrected
-   * by a probe; else a probe. The decision is remembered in the cookie for
-   * the next load's HTML. */
+  /** The frame mode: in the Clax app, the embed's content origin; else this
+   * tab's cached probe; else the daemon's guess (from the `clax_frame`
+   * cookie, when it served a frame), confirmed or corrected by a probe; else
+   * a probe. The decision is remembered in the cookie for the next load's
+   * HTML. */
   private decideOrigin(boot: Boot | null): void {
-    const o = artifactOrigin(this.id);
+    const embed = hostEmbed();
+    const o = artifactOrigin(this.id, location, embed);
     const decided = (origin: string | null) => {
       if (this.disposed) return;
       // A hosted daemon's content origin frames every page sandboxed.
@@ -932,6 +935,8 @@ export class ArtifactController {
       this.viewChanged();
     };
     if (!o || boot?.artifact.content_origin) { decided(null); return; }
+    // The app answers every content origin itself: there is nothing to probe.
+    if (embed) { decided(o); return; }
     const cached = cachedOriginOk();
     if (cached !== null) { decided(cached ? o : null); return; }
     if (boot?.frame) {

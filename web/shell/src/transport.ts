@@ -16,7 +16,9 @@
 // - installs `window.claxTransport`, where the app answers: `init(nonce)`,
 //   `callResult(nonce, id, r)`, `streamBlock(nonce, id, text)` and
 //   `streamEnd(nonce, id)`. Every shell document has it, whichever entry
-//   (gallery or artifact view) it loads.
+//   (gallery or artifact view) it loads. It also carries the meta's `embed`
+//   settings, which the shell's entries read there (`hostEmbed`), so no
+//   browser entry carries the meta's parser.
 //
 // The load's nonce comes with the document: the app's scheme handler writes
 // a fresh `<meta name="clax-nonce" content="…">` into each shell document it
@@ -266,18 +268,28 @@ export function transport(channel: () => Channel | undefined, fallback: typeof f
   };
 }
 
-type HostWindow = Window & { ClaxHost?: Channel; claxTransport?: Omit<Transport, "fetch"> };
+/** What `installTransport` leaves on the window: the app's receivers and
+ * the document's embed settings. */
+export type HostReceivers = Omit<Transport, "fetch"> & { embed: Embed };
 
-/** Whether `win`'s document runs on the app's transport (`installTransport`
- * ran there): its `fetch` reaches the core over the app's channel. */
+type HostWindow = Window & { ClaxHost?: Channel; claxTransport?: HostReceivers };
+
+/** The embed settings of `win`'s document when it runs on the app's
+ * transport (`installTransport` ran there: its `fetch` reaches the core over
+ * the app's channel), else null. */
+export function hostEmbed(win: Window = window): Embed | null {
+  return (win as HostWindow).claxTransport?.embed ?? null;
+}
+
+/** Whether `win`'s document runs on the app's transport. */
 export function onHost(win: Window = window): boolean {
-  return "claxTransport" in win;
+  return hostEmbed(win) !== null;
 }
 
 /** At boot: in app mode (the document carries the `clax-embed` meta)
  * replaces `win.fetch` with a transport over `window.ClaxHost`, hides the
- * connection notices and installs `window.claxTransport`. Returns whether
- * it did. */
+ * connection notices and installs `window.claxTransport` with the embed
+ * settings. Returns whether it did. */
 export function installTransport(win: Window = window): boolean {
   const doc = win.document;
   const embed = readEmbed(doc);
@@ -289,6 +301,6 @@ export function installTransport(win: Window = window): boolean {
   const style = doc.createElement("style");
   style.textContent = ".conn-notice{display:none!important}";
   doc.head.append(style);
-  Object.defineProperty(w, "claxTransport", { value: Object.freeze(receivers) });
+  Object.defineProperty(w, "claxTransport", { value: Object.freeze({ ...receivers, embed }) });
   return true;
 }

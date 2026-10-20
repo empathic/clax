@@ -102,6 +102,22 @@ describe("ArtifactController", { timeout: MOUNT_TIMEOUT_MS }, () => {
     ctl.dispose();
   });
 
+  it("frames the page at the app's content origin, with no probe, in the Clax app", async () => {
+    // What `installTransport` leaves on a shell document in the app.
+    Object.defineProperty(window, "claxTransport", { configurable: true, value: Object.freeze({ embed: { transport: "host", shell: "https://app.clax.invalid", content: "https://{id}.c.clax.invalid" } }) });
+    try {
+      // A browser tab that had found `<id>.localhost` unresolvable would frame the page sandboxed.
+      const { ctl, frame } = await started();
+      expect(ctl.state.get().origin).toBe(`https://${ID}.c.clax.invalid`);
+      expect(frame.getAttribute("src")).toBe(`https://${ID}.c.clax.invalid/v/2/`);
+      const asked = (fetch as unknown as ReturnType<typeof vi.fn>).mock.calls.map(([u]) => String(u));
+      expect(asked.filter(u => u.endsWith("/healthz"))).toEqual([]);
+      ctl.dispose();
+    } finally {
+      delete (window as { claxTransport?: unknown }).claxTransport;
+    }
+  });
+
   it("opens the thread the address names once its page greets, and brings its card into view when it renders", async () => {
     history.replaceState(null, "", `/a/${ID}?thread=t1`);
     const { ctl, frame } = await started({ threads: [thread("t0"), thread("t1")] });

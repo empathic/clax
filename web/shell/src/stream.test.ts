@@ -345,7 +345,7 @@ describe("in the Clax app", () => {
     const net = new Net();
     vi.stubGlobal("fetch", net.fetch);
     // What `installTransport` leaves on a shell document in the app.
-    Object.defineProperty(window, "claxTransport", { configurable: true, value: Object.freeze({}) });
+    Object.defineProperty(window, "claxTransport", { configurable: true, value: Object.freeze({ embed: { transport: "host", shell: "https://app.clax.invalid", content: "https://{id}.c.clax.invalid" } }) });
     const w = new EventStream(window);
     const heard: StreamEvent[] = [];
     w.watch([`artifact:${A}`], e => heard.push(e));

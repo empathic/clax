@@ -1,5 +1,5 @@
 import { describe, expect, it, vi } from "vitest";
-import { CHUNK, CHUNKED_OVER, type Transport, installTransport, readEmbed, transport } from "./transport";
+import { CHUNK, CHUNKED_OVER, type HostReceivers, hostEmbed, installTransport, onHost, readEmbed, transport } from "./transport";
 
 const ORIGIN = "https://app.clax.invalid";
 const NONCE = "N".repeat(16);
@@ -194,7 +194,7 @@ function fakeWin(meta: string | null, nonce?: string) {
   }
   const posted: string[] = [];
   const native = vi.fn(async () => new Response("native"));
-  const win = { document: doc, fetch: native, ClaxHost: { postMessage: (m: string) => posted.push(m) } } as unknown as Window & { claxTransport?: Omit<Transport, "fetch"> };
+  const win = { document: doc, fetch: native, ClaxHost: { postMessage: (m: string) => posted.push(m) } } as unknown as Window & { claxTransport?: HostReceivers };
   return { win, posted, native, doc };
 }
 
@@ -211,6 +211,8 @@ describe("installTransport", () => {
     expect(installTransport(win)).toBe(false);
     expect(win.fetch).toBe(native);
     expect(win.claxTransport).toBeUndefined();
+    expect(hostEmbed(win)).toBeNull();
+    expect(onHost(win)).toBe(false);
     expect(doc.querySelector("style")).toBeNull();
   });
 
@@ -218,7 +220,9 @@ describe("installTransport", () => {
     // No claxHost here: a gallery, or an artifact view the app opened without app=1.
     const { win, posted, native, doc } = fakeWin(META);
     expect(installTransport(win)).toBe(true);
-    expect(Object.keys(win.claxTransport!).sort()).toEqual(["callResult", "init", "streamBlock", "streamEnd"]);
+    expect(Object.keys(win.claxTransport!).sort()).toEqual(["callResult", "embed", "init", "streamBlock", "streamEnd"]);
+    expect(hostEmbed(win)).toEqual({ transport: "host", shell: "clax://app", content: "clax://{id}.c" });
+    expect(onHost(win)).toBe(true);
     expect([...doc.querySelectorAll("style")].map(s => s.textContent)).toEqual([".conn-notice{display:none!important}"]);
     const p = win.fetch("/api/artifacts/abc");
     await win.fetch("clax://abc.c/v/1/index.html");
