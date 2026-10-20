@@ -219,6 +219,11 @@ export async function openArtifact(page: Page, base: string, id: string, n: numb
   if (mode === "sandbox" || opts.lan) await page.addInitScript(() => { try { sessionStorage.setItem("clax.origin-ok", "0"); } catch { /* storage unavailable */ } });
   if (opts.lan) {
     await page.route("**/api/token", r => r.fulfill({ status: 403, contentType: "application/json", body: JSON.stringify({ error: { code: "not_loopback", message: "not a loopback connection" } }) }));
+    // No route reaches a shared worker's requests, and the stream hub's
+    // worker asks GET /api/token again after a failed connection, which
+    // would make this browser the owner. The hub runs in the page instead,
+    // where the route above answers it.
+    await page.addInitScript(() => { delete (window as unknown as { SharedWorker?: unknown }).SharedWorker; });
   }
   await page.goto(`${base}/a/${id}`);
   return contentFrame(page, id, n);
