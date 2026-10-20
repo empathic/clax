@@ -158,9 +158,7 @@ abstract final class BundleReader {
     // 6. The icon.
     String? iconSvg;
     if (manifest.icon.svg != null) {
-      iconSvg = cleanIcon(
-        utf8.decode(files['icon.svg']!, allowMalformed: true),
-      );
+      iconSvg = cleanIcon(iconText(files['icon.svg']!));
     }
 
     return Bundle(

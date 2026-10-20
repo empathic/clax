@@ -5,7 +5,7 @@ import 'dart:typed_data';
 
 import 'package:cryptography/dart.dart' show DartSha256;
 
-import '../agent/icon_svg.dart' show appIconPath, iconProblem;
+import '../agent/icon_svg.dart' show appIconPath, iconBytesProblem;
 import 'api.dart';
 
 /// One call [FakeClaxApi] received: the method's name and its arguments.
@@ -2087,18 +2087,7 @@ class FakeClaxApi implements ClaxApi {
   void _checkIcon(Map<String, _FakeFile?> files) {
     final icon = files[appIconPath];
     if (icon == null || !checkIcons) return;
-    final String text;
-    try {
-      text = utf8.decode(icon.bytes);
-    } on FormatException {
-      throw const ClaxApiError(
-        status: 400,
-        code: 'invalid_icon',
-        message: 'icon.svg is not well-formed XML: it is not UTF-8.',
-        body: {'rule': 'not_xml'},
-      );
-    }
-    if (iconProblem(text) case final p?) {
+    if (iconBytesProblem(icon.bytes) case final p?) {
       throw ClaxApiError(
         status: 400,
         code: 'invalid_icon',

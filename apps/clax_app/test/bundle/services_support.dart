@@ -64,12 +64,14 @@ class Install {
       api.registerAppSession(installId: 'i-${dir.path.hashCode}', pid: 1);
 }
 
-/// A bundle of [files] signed by [keySeed] (32 bytes from [seedByte]).
+/// A bundle of [files] (as UTF-8) and [rawFiles] (as given) signed by
+/// [keySeed] (32 bytes from [seedByte]).
 Future<WrittenBundle> makeBundle({
   required String lineage,
   int version = 1,
   String title = 'Plant log',
   Map<String, String> files = const {'index.html': '<p>v1</p>'},
+  Map<String, List<int>> rawFiles = const {},
   Map<String, Object?> capabilities = const {'db': {}},
   List<SeedDoc> seed = const [],
   int seedByte = 9,
@@ -83,6 +85,8 @@ Future<WrittenBundle> makeBundle({
   files: {
     for (final MapEntry(:key, :value) in files.entries)
       key: BundleFile(utf(value), type: _type(key)),
+    for (final MapEntry(:key, :value) in rawFiles.entries)
+      key: BundleFile(Uint8List.fromList(value), type: _type(key)),
   },
   seed: seed,
   keySeed: List.filled(32, seedByte),

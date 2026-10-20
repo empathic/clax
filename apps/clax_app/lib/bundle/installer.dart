@@ -75,10 +75,11 @@ class OpenedBundle {
 
 /// A bundle's files as an install or an update publishes them: as the
 /// bundle holds them, but for an `icon.svg` the icon rules refuse
-/// ([iconProblem]; the daemon's publish refuses it too, and a bundle made
-/// before the rules, or by another client, may hold one). That icon is
-/// published as [cleanIcon] writes it when that passes the rules, and is
-/// otherwise left out, so the app still installs, drawn with its word.
+/// ([iconBytesProblem]; the daemon's publish refuses it too, and a bundle
+/// made before the rules, or by another client, may hold one). That icon
+/// is published as [cleanIcon] writes it ([iconText]: re-read as Latin-1
+/// when it is not UTF-8) when that passes the rules, and is otherwise left
+/// out, so the app still installs, drawn with its word.
 class PublishedFiles {
   PublishedFiles._(this.entries, this.contentSha256, this.iconChange, this._note);
 
@@ -92,10 +93,9 @@ class PublishedFiles {
     String? change;
     String? note;
     if (b.files[appIconPath] case final raw?) {
-      final text = utf8.decode(raw, allowMalformed: true);
-      final why = iconProblem(text);
+      final why = iconBytesProblem(raw);
       if (why != null) {
-        final cleaned = cleanIcon(text);
+        final cleaned = cleanIcon(iconText(raw));
         if (cleaned != null && iconProblem(cleaned) == null) {
           entries[appIconPath] = FileEntry.bytes(
             utf8.encode(cleaned),

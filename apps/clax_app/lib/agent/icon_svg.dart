@@ -61,14 +61,7 @@ typedef IconProblem = ({String code, String message});
 /// name and its attributes, then the `<use>` expansion.
 IconProblem? iconProblem(String svg) {
   final bytes = utf8.encode(svg).length;
-  if (bytes > maxIconBytes) {
-    return (
-      code: 'too_large',
-      message:
-          'icon.svg is $bytes bytes; an icon may be at most 32 KB '
-          '($maxIconBytes bytes): simplify its paths.',
-    );
-  }
+  if (bytes > maxIconBytes) return _tooLarge(bytes);
   if (_tooDeep(svg)) {
     return (
       code: 'nesting',
@@ -121,6 +114,37 @@ IconProblem? iconProblem(String svg) {
   }
   return _useProblem(root);
 }
+
+/// Why the bytes [svg] are not a usable icon, read as the core reads a
+/// published `icon.svg` (`clax_core::icon::problem`): its size, then
+/// whether it is UTF-8, then [iconProblem]'s rules.
+IconProblem? iconBytesProblem(List<int> svg) {
+  if (svg.length > maxIconBytes) return _tooLarge(svg.length);
+  final String text;
+  try {
+    text = utf8.decode(svg);
+  } on FormatException {
+    return _notXml('it is not UTF-8');
+  }
+  return iconProblem(text);
+}
+
+/// The text of the icon bytes [svg] for [cleanIcon]: UTF-8, or Latin-1
+/// when they are not UTF-8 (an icon another client wrote as Latin-1).
+String iconText(List<int> svg) {
+  try {
+    return utf8.decode(svg);
+  } on FormatException {
+    return latin1.decode(svg);
+  }
+}
+
+IconProblem _tooLarge(int bytes) => (
+  code: 'too_large',
+  message:
+      'icon.svg is $bytes bytes; an icon may be at most 32 KB '
+      '($maxIconBytes bytes): simplify its paths.',
+);
 
 IconProblem _notXml(String why) =>
     (code: 'not_xml', message: 'icon.svg is not well-formed XML: $why.');

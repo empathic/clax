@@ -133,6 +133,48 @@ void main() {
         'was left out (icon rule view_box)');
   });
 
+  // An icon that passes the rules but for one Latin-1 byte (é as 0xE9),
+  // which the core refuses as not UTF-8.
+  final latin1Icon = latin1.encode(
+    '<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 9 9">'
+    '<title>Caf\u00e9</title><rect width="9" height="9"/></svg>',
+  );
+
+  test('a bundle icon that is not UTF-8 is installed re-read as Latin-1 '
+      'when that passes the icon rules, and the result says so', () async {
+    expect(() => utf8.decode(latin1Icon), throwsFormatException);
+    final w = await makeBundle(
+      lineage: lineageA,
+      files: {'index.html': '<p>hi</p>'},
+      rawFiles: {'icon.svg': latin1Icon},
+    );
+    final got = await me.installer.install(await me.installer.open(w.bytes));
+    final svg = await me.api.readFile(got.aid, 1, 'icon.svg');
+    expect(svg, contains('<title>Caf\u00e9</title>'));
+    expect(iconProblem(svg!), isNull);
+    expect(got.iconChange, 'Its icon was redrawn without what an icon may '
+        'not hold: icon.svg is not well-formed XML: it is not UTF-8.');
+    final d = await me.api.getArtifact(got.aid);
+    expect(d.current!.note, 'Installed v1 of Plant log from Sam; its icon '
+        'was redrawn (icon rule not_xml)');
+  });
+
+  test('a bundle icon that is neither UTF-8 nor a passing icon as Latin-1 '
+      'is left out', () async {
+    final bad = [...latin1.encode('<svg viewBox="0 0 9 8"><title>'), 0xE9,
+        ...latin1.encode('</title></svg>')];
+    final w = await makeBundle(
+      lineage: lineageA,
+      files: {'index.html': '<p>hi</p>'},
+      rawFiles: {'icon.svg': bad},
+    );
+    final got = await me.installer.install(await me.installer.open(w.bytes));
+    final d = await me.api.getArtifact(got.aid);
+    expect(d.current!.files.keys, ['index.html']);
+    expect(got.iconChange, 'Its icon was left out: icon.svg is not '
+        'well-formed XML: it is not UTF-8.');
+  });
+
   test('an icon within the rules is installed byte for byte', () async {
     const good =
         '<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 9 9">'

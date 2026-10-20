@@ -1,3 +1,4 @@
+import 'dart:convert';
 import 'dart:io';
 
 import 'package:clax_app/agent/icon_svg.dart';
@@ -140,6 +141,22 @@ void main() {
       expect(cleanIcon('not xml'), isNull);
       expect(cleanIcon(_with('', box: '0 0 10 20')), isNull);
       expect(cleanIcon('<g viewBox="0 0 1 1"/>'), isNull);
+    });
+  });
+
+  group('iconBytesProblem', () {
+    // As the core's problem: size first, then UTF-8, then the rules.
+    test('reads bytes as the core does', () {
+      final cafe = latin1.encode(_with('<title>Caf\u00e9</title>'));
+      expect(iconBytesProblem(utf8.encode(_ok)), isNull);
+      expect(iconBytesProblem(cafe), (
+        code: 'not_xml',
+        message: 'icon.svg is not well-formed XML: it is not UTF-8.',
+      ));
+      final big = [...cafe, ...List.filled(maxIconBytes, 0x20)];
+      expect(iconBytesProblem(big)!.code, 'too_large');
+      expect(iconText(cafe), _with('<title>Caf\u00e9</title>'));
+      expect(iconText(utf8.encode(_ok)), _ok);
     });
   });
 }

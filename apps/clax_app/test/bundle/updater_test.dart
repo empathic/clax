@@ -1,4 +1,5 @@
 import 'dart:async';
+import 'dart:convert';
 import 'dart:io';
 
 import 'package:clax_app/agent/icon_svg.dart';
@@ -160,6 +161,32 @@ void main() {
     expect((out3 as UpdateLanded).iconChange, startsWith('Its icon was left out'));
     final v3 = await me.api.getArtifact(aid);
     expect(v3.current!.files.keys, ['index.html']);
+  });
+
+  test('an update whose icon is not UTF-8 publishes it re-read as Latin-1 '
+      'when that passes, and says so', () async {
+    final b = await BundleReader.read(
+      (await makeBundle(
+        lineage: lineageA,
+        version: 2,
+        files: {'index.html': '<p>v2</p>'},
+        rawFiles: {
+          'icon.svg': latin1.encode(
+            '<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 9 9">'
+            '<title>Caf\u00e9</title><rect width="9" height="9"/></svg>',
+          ),
+        },
+      )).bytes,
+    );
+    final out = await me.updater.update(aid, b);
+    expect(out, isA<UpdateLanded>());
+    expect((out as UpdateLanded).iconChange, 'Its icon was redrawn without '
+        'what an icon may not hold: icon.svg is not well-formed XML: it is '
+        'not UTF-8.');
+    expect(
+      await me.api.readFile(aid, 2, 'icon.svg'),
+      contains('<title>Caf\u00e9</title>'),
+    );
   });
 
   Future<void> expectUnchanged(UpdateOutcome out) async {
