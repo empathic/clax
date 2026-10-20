@@ -435,7 +435,11 @@ mod tests {
         assert!(dir(&home).is_dir());
         let mut disk = Recording::failing(&[("sync_dir full ax", eio)]);
         copy_on(&mut disk, &home).unwrap_err();
-        assert_eq!(disk.steps, ["sync_dir full ax"], "no copy before the home is synced");
+        assert_eq!(
+            disk.steps,
+            ["sync_dir full ax"],
+            "no copy before the home is synced"
+        );
         assert!(left_in(&home).is_empty());
     }
 
