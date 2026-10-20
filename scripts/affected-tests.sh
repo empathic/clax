@@ -28,10 +28,13 @@
 #   - A changed BUILD file selects its whole package; a removed one, every
 #     test.
 #   - A removed file selects the whole package it was in.
-#   - Any other file is its own source-file label, and a file no target
-#     uses selects nothing (the script says which).
-#   - The tests are tests(rdeps(//..., those labels)), less the ones tagged
+#   - Any other file is the source file it is in its package (by the
+#     nearest BUILD file), and a file no target in //... uses selects
+#     nothing (the script says which).
+#   - The tests are tests(rdeps(//..., those targets)), less the ones tagged
 #     `manual`: the selection scripts/bazel-test.sh --ci makes of //...
+#
+# The query runs without --keep_going: any error it reports stops the run.
 #
 # It runs `bazel query` once and `bazel test` once, with the flags
 # scripts/bazel-test.sh gives its tests, so their results are cached for
@@ -221,6 +224,7 @@ if [ "${#unbuilt[@]}" -gt 0 ]; then
 fi
 
 manual='attr(tags, "\bmanual\b", //...)'
+labels=() # files[i] as a label: //pkg:path/in/pkg
 if [ -n "$whole" ]; then
     _say "every test: $whole"
     query="tests(//...) except $manual"
@@ -228,59 +232,65 @@ elif [ "${#files[@]}" = 0 ] && [ "${#packages[@]}" = 0 ]; then
     _say "no tests affected"
     exit 0
 else
-    words=""
-    for f in "${files[@]+"${files[@]}"}"; do words+=" \"$f\""; done
+    # Each file as the label of its package's source file, matched by a
+    # regular expression against the source files //... uses: a file no
+    # target uses matches nothing, where naming it would be an error to
+    # `query`. Regex characters are escaped; a double quote, which a query
+    # string cannot hold, matches any character.
+    alts=""
+    for f in "${files[@]+"${files[@]}"}"; do
+        p="$(_package "$f")"
+        if [ -n "$p" ]; then label="//$p:${f#"$p"/}"; else label="//:$f"; fi
+        labels+=("$label")
+        re="$(printf '%s' "$label" | sed -e 's/[][\.^$*+?(){}|/]/\\&/g' -e 's/"/./g')"
+        alts+="${alts:+|}$re"
+    done
+    pkgs=""
     while IFS= read -r p; do
-        [ -n "$p" ] && words+=" \"$p\""
+        [ -n "$p" ] && pkgs+=" \"$p\""
     done < <(printf '%s\n' "${packages[@]+"${packages[@]}"}" | LC_ALL=C sort -u)
-    query="tests(rdeps(//..., set($words ))) except $manual"
+    if [ -n "$alts" ]; then
+        # shellcheck disable=SC2016 # the query's own variable
+        from='$files'
+        [ -z "$pkgs" ] || from+=" + set($pkgs )"
+        # The tests, then the files some target uses, which the output
+        # tells apart by kind.
+        query="let files = filter(\"^($alts)\$\", kind(\"source file\", deps(//...))) in"
+        query+=" (tests(rdeps(//..., $from)) except $manual) + \$files"
+    else
+        query="tests(rdeps(//..., set($pkgs ))) except $manual"
+    fi
 fi
 
 tmp="$(mktemp -d)"
 trap 'rm -rf "$tmp"' EXIT
 printf '%s\n' "$query" > "$tmp/query"
 
-# --keep_going: a file no target uses is an error to `query`, which skips it
-# and goes on. Query also loads both sides of every select(), so a label in
-# an external repository that exists only on another host (an NDK's
-# linux-x86_64 tools on a Mac) fails to load; no file of this repository
-# depends on one, so the selection stands. Any other error stops the run.
-"$bazel" query --keep_going --lockfile_mode=error --output=label \
+"$bazel" query --lockfile_mode=error --output=label_kind \
     --query_file="$tmp/query" > "$tmp/targets" 2> "$tmp/err"
 status=$?
-unused=()
 if [ "$status" != 0 ]; then
-    bad=0
-    if [ "$status" != 3 ]; then bad=1; fi
-    while IFS= read -r line; do
-        case "$line" in
-            "ERROR: Skipping '"*)
-                word="${line#ERROR: Skipping \'}"
-                word="${word%%\'*}"
-                known=0
-                for f in "${files[@]+"${files[@]}"}"; do
-                    [ "$f" = "$word" ] && known=1
-                done
-                if [ "$known" = 1 ]; then unused+=("$word"); else bad=1; fi
-                ;;
-            *"no such target '@"* | *"no such package '@"*) ;;
-            "ERROR: Evaluation of query"*"errors were encountered while computing transitive closure"*) ;;
-            ERROR:*) bad=1 ;;
-        esac
-    done < "$tmp/err"
-    if [ "$bad" = 1 ]; then
-        cat "$tmp/err" >&2
-        _die "bazel query failed (exit $status)"
-    fi
+    cat "$tmp/err" >&2
+    _die "bazel query failed (exit $status)"
 fi
+
+targets=()
+used=$'\n' # the files' labels some target uses, one per line
+while IFS= read -r line; do
+    case "$line" in
+        "") ;;
+        "source file "*) used+="${line#source file }"$'\n' ;;
+        *) targets+=("${line##* }") ;;
+    esac
+done < "$tmp/targets"
+unused=()
+for i in ${labels[@]+"${!labels[@]}"}; do
+    case "$used" in *$'\n'"${labels[$i]}"$'\n'*) ;; *) unused+=("${files[$i]}") ;; esac
+done
 if [ "${#unused[@]}" -gt 0 ]; then
     _files "files no Bazel target uses select no test" "${unused[@]}"
 fi
 
-targets=()
-while IFS= read -r t; do
-    [ -n "$t" ] && targets+=("$t")
-done < "$tmp/targets"
 if [ "${#targets[@]}" = 0 ]; then
     _say "no tests affected"
     exit 0

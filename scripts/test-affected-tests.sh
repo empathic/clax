@@ -2,11 +2,11 @@
 # Tests scripts/affected-tests.sh on a scratch git checkout with a stub
 # bazelisk: which files it hands `bazel query` and as what (a file, a
 # package), when it runs every test instead, that `manual` tests are left
-# out, the empty cases, removed files, the base-ref and range modes, which query
-# errors it tolerates, and what it passes to `bazel test`.
+# out, the empty cases, removed files, the base-ref and range modes, that any
+# query error stops it, and what it passes to `bazel test`.
 #
-# The stub records each query's text in $tmp/query and each `bazel test`
-# command line in $tmp/test, prints $tmp/query.out on stdout and
+# The stub records each query's text in $tmp/query, its flags in
+# $tmp/query.args and each `bazel test` command line in $tmp/test, prints $tmp/query.out on stdout and
 # $tmp/query.err on stderr, and exits QUERY_EXIT for a query and TEST_EXIT
 # for a test (default 0).
 
@@ -32,6 +32,7 @@ cat > "$tmp/bin/bazelisk" <<'STUB'
 #!/usr/bin/env bash
 case "$1" in
     query)
+        printf '%s\n' "$@" > "$STUB_DIR/query.args"
         for a in "$@"; do
             case "$a" in --query_file=*) cat "${a#--query_file=}" >> "$STUB_DIR/query" ;; esac
         done
@@ -77,12 +78,13 @@ git -C "$repo" commit -qm fixture
 # _run <args...>: the script in the fixture, after the stub's answers were
 # set; its stdout in $tmp/out, stderr in $tmp/err, status in $status.
 _run() {
-    rm -f "$tmp/query" "$tmp/test"
+    rm -f "$tmp/query" "$tmp/query.args" "$tmp/test"
     status=0
     "$repo/scripts/affected-tests.sh" "$@" > "$tmp/out" 2> "$tmp/err" || status=$?
 }
 
-# _answer <stdout> [stderr]: what the stub query prints.
+# _answer <stdout> [stderr]: what the stub query prints, as
+# --output=label_kind prints it.
 _answer() {
     printf '%s' "$1" > "$tmp/query.out"
     printf '%s' "${2:-}" > "$tmp/query.err"
@@ -98,6 +100,14 @@ _clean() {
 }
 
 manual=' except attr(tags, "\bmanual\b", //...)'
+# _files_query <regex> [set]: the query for files matched by <regex>, with
+# the patterns in <set> (`"//a:*"`) beside them.
+_files_query() {
+    # shellcheck disable=SC2016 # the query's own variable
+    local from='$files'
+    [ -z "${2:-}" ] || from+=" + set( $2 )"
+    printf '%s' "let files = filter(\"^($1)\$\", kind(\"source file\", deps(//...))) in (tests(rdeps(//..., $from))$manual) + \$files"
+}
 
 # --- Nothing changed: no query, no test.
 _clean
@@ -119,15 +129,18 @@ echo edit >> "$repo/docs/n.md"
 mkdir -p "$repo/vendor"
 echo new > "$repo/vendor/v.txt"
 echo new > "$repo/ignored.txt"
-_answer $'//a:x_test\n//web:unit\n' \
-    $'ERROR: Skipping \'docs/n.md\': no such target \'//:docs/n.md\'\nWARNING: --keep_going specified, ignoring errors. Results may be inaccurate\n'
-export QUERY_EXIT=3
+_answer $'rust_test rule //a:x_test\nsh_test rule //web:unit\nsource file //a:src/new.rs\nsource file //a:src/x.rs\n'
 _run --list
-want="tests(rdeps(//..., set( \"a/src/new.rs\" \"a/src/x.rs\" \"docs/n.md\" \"//a:*\" )))$manual"
+want="$(_files_query '\/\/a:src\/new\.rs|\/\/a:src\/x\.rs|\/\/:docs\/n\.md' '"//a:*"')"
 if [ "$status" = 0 ] && [ "$(cat "$tmp/query")" = "$want" ]; then
-    _ok "edited and new files go to the query as files, a BUILD file as its package"
+    _ok "edited and new files go to the query as their packages' source files, a BUILD file as its package"
 else
-    _fail "edited and new files go to the query as files, a BUILD file as its package"
+    _fail "edited and new files go to the query as their packages' source files, a BUILD file as its package"
+fi
+if grep -qx -- "--output=label_kind" "$tmp/query.args" && ! grep -qx -- "--keep_going" "$tmp/query.args"; then
+    _ok "the query runs without --keep_going"
+else
+    _fail "the query runs without --keep_going"
 fi
 if grep -A1 "no Bazel target uses" "$tmp/err" | grep -q "docs/n.md" &&
     grep -A1 "directory Bazel ignores" "$tmp/err" | grep -q "vendor/v.txt" &&
@@ -160,7 +173,7 @@ fi
 for change in MODULE.bazel web/pnpm-lock.yaml bazel/defs.bzl a/defs.bzl .bazelrc Cargo.lock; do
     _clean
     echo edit >> "$repo/$change"
-    _answer $'//a:x_test\n'
+    _answer $'rust_test rule //a:x_test\n'
     _run --list
     if [ "$status" = 0 ] && [ "$(cat "$tmp/query")" = "tests(//...)$manual" ] &&
         grep -q "every test: $change" "$tmp/err"; then
@@ -180,8 +193,9 @@ fi
 
 # --- Manual tests: both selections leave them out (above), and a test
 # selected through a file is never one.
+# shellcheck disable=SC2016 # the query's own variable
 case "$want" in
-    *'except attr(tags, "\bmanual\b", //...)') _ok "the selection through files leaves out manual tests" ;;
+    *'except attr(tags, "\bmanual\b", //...)) + $files') _ok "the selection through files leaves out manual tests" ;;
     *) _fail "the selection through files leaves out manual tests" ;;
 esac
 
@@ -195,34 +209,50 @@ else
     _fail "a removed file selects its former package"
 fi
 
+# --- A file in a subdirectory of its package, its name holding regex
+# characters and a space: matched literally, and named unused only when the
+# query does not list it.
+_clean
+echo new > "$repo/a/sub/p+q (1).txt"
+_answer $'rust_test rule //a:x_test\nsource file //a:sub/p+q (1).txt\n'
+_run --list
+if [ "$status" = 0 ] &&
+    [ "$(cat "$tmp/query")" = "$(_files_query '\/\/a:sub\/p\+q \(1\)\.txt')" ] &&
+    [ "$(cat "$tmp/out")" = "//a:x_test" ] && ! grep -q "no Bazel target uses" "$tmp/err"; then
+    _ok "a file's label is matched literally, under its package"
+else
+    _fail "a file's label is matched literally, under its package"
+fi
+
 # --- Only files no target uses: no test runs.
 _clean
 echo edit >> "$repo/docs/n.md"
-_answer "" $'ERROR: Skipping \'docs/n.md\': no such target \'//:docs/n.md\'\n'
-export QUERY_EXIT=3
+_answer ""
 _run
-if [ "$status" = 0 ] && grep -q "no tests affected" "$tmp/err" && [ ! -f "$tmp/test" ] && [ ! -s "$tmp/out" ]; then
+if [ "$status" = 0 ] && grep -q "no tests affected" "$tmp/err" &&
+    grep -A1 "no Bazel target uses" "$tmp/err" | grep -q "docs/n.md" &&
+    [ ! -f "$tmp/test" ] && [ ! -s "$tmp/out" ]; then
     _ok "changes no test reaches run nothing and exit 0"
 else
     _fail "changes no test reaches run nothing and exit 0"
 fi
 
-# --- Query errors: one in another host's external repository is tolerated,
-# one in this repository's packages stops the run.
+# --- Query errors: any error stops the run, one in an external repository
+# as much as one in this repository's packages.
 _clean
 echo edit >> "$repo/a/src/x.rs"
-_answer $'//a:x_test\n' "ERROR: /r/a/BUILD.bazel:1:1: no such target '@@ndk//linux-x86_64:bin/nm': crosses boundary
-ERROR: no such package '@@ndk//linux-x86_64': BUILD file not found
+_answer $'rust_test rule //a:x_test\n' "ERROR: /r/a/BUILD.bazel:1:1: no such package '@@ndk//linux-x86_64': BUILD file not found
 ERROR: Evaluation of query \"rdeps(...)\" failed: errors were encountered while computing transitive closure
 "
-export QUERY_EXIT=3
+export QUERY_EXIT=7
 _run --list
-if [ "$status" = 0 ] && [ "$(cat "$tmp/out")" = "//a:x_test" ]; then
-    _ok "an external repository's missing package does not stop the run"
+if [ "$status" = 2 ] && grep -q "no such package '@@ndk" "$tmp/err" && grep -q "bazel query failed (exit 7)" "$tmp/err" &&
+    [ ! -s "$tmp/out" ]; then
+    _ok "an external repository's missing package stops the run"
 else
-    _fail "an external repository's missing package does not stop the run"
+    _fail "an external repository's missing package stops the run"
 fi
-_answer $'//a:x_test\n' $'ERROR: /r/web/BUILD.bazel:3:1: name \'oops\' is not defined\n'
+_answer $'rust_test rule //a:x_test\n' $'ERROR: /r/web/BUILD.bazel:3:1: name \'oops\' is not defined\n'
 _run
 if [ "$status" = 2 ] && grep -q "is not defined" "$tmp/err" && [ ! -f "$tmp/test" ]; then
     _ok "an error in this repository's BUILD files stops the run"
@@ -248,7 +278,7 @@ git -C "$repo" checkout -q main
 echo main >> "$repo/docs/n.md"
 git -C "$repo" commit -qam "main edit"
 git -C "$repo" checkout -q feature
-_answer $'//a:x_test\n'
+_answer $'rust_test rule //a:x_test\n'
 _run --list
 if [ "$status" = 0 ] && grep -q "nothing changed against HEAD" "$tmp/err"; then
     _ok "without a base, committed work is not a change"
@@ -258,7 +288,7 @@ fi
 echo uncommitted > "$repo/web/new.ts"
 _run --list main
 if [ "$status" = 0 ] &&
-    [ "$(cat "$tmp/query")" = "tests(rdeps(//..., set( \"a/src/x.rs\" \"web/new.ts\" )))$manual" ] &&
+    [ "$(cat "$tmp/query")" = "$(_files_query '\/\/a:src\/x\.rs|\/\/web:new\.ts')" ] &&
     grep -q "against main (merge-base" "$tmp/err"; then
     _ok "a base adds the branch's commits since the merge-base, not the base's"
 else
@@ -266,7 +296,7 @@ else
 fi
 rm "$repo/web/new.ts"
 _run --list HEAD^
-if [ "$(cat "$tmp/query")" = "tests(rdeps(//..., set( \"a/src/x.rs\" )))$manual" ]; then
+if [ "$(cat "$tmp/query")" = "$(_files_query '\/\/a:src\/x\.rs')" ]; then
     _ok "<sha>^ as the base selects one commit's change"
 else
     _fail "<sha>^ as the base selects one commit's change"
@@ -279,7 +309,7 @@ else
 fi
 echo uncommitted > "$repo/web/new.ts"
 _run --list main..feature
-if [ "$status" = 0 ] && [ "$(cat "$tmp/query")" = "tests(rdeps(//..., set( \"a/src/x.rs\" )))$manual" ]; then
+if [ "$status" = 0 ] && [ "$(cat "$tmp/query")" = "$(_files_query '\/\/a:src\/x\.rs')" ]; then
     _ok "a range A..B selects its commits' changes and not the working tree's"
 else
     _fail "a range A..B selects its commits' changes and not the working tree's"
