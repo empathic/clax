@@ -93,7 +93,8 @@ fn lock<T>(m: &Mutex<T>) -> MutexGuard<'_, T> {
 }
 
 /// What the core's tasks share; it never holds the runtime, so no task
-/// keeps it alive.
+/// keeps it alive. The home is released ([`Shared::release`]) by close, by
+/// a failed open, or else when the last share is dropped.
 struct Shared {
     /// The home's key in [`OPEN`].
     key: PathBuf,
@@ -118,6 +119,14 @@ impl Shared {
 
     fn emit(&self, e: OpenEvent) {
         (self.on_event)(e);
+    }
+}
+
+impl Drop for Shared {
+    /// An Embed dropped without [`Embed::close`] still frees its home once
+    /// its runtime has ended its tasks, the last holders of this share.
+    fn drop(&mut self) {
+        self.release();
     }
 }
 

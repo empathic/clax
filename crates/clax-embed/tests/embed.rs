@@ -288,6 +288,30 @@ fn a_second_open_of_one_home_is_refused() {
     assert_eq!(settled(&rx), OpenEvent::Closed);
 }
 
+#[test]
+fn dropping_an_embed_without_close_frees_its_home() {
+    let dir = tempfile::tempdir().unwrap();
+    let (tx, dropped) = mpsc::channel();
+    let guard = Dropped(tx);
+    let (events, rx) = mpsc::channel();
+    let embed = Embed::open(
+        options(dir.path()),
+        Box::new(move |e| {
+            let _keep = &guard;
+            let _ = events.send(e);
+        }),
+    )
+    .expect("the home opens");
+    assert_eq!(settled(&rx), OpenEvent::Ready);
+    drop(embed);
+    // The core's last share, which holds `on_event`, is gone.
+    dropped.recv().unwrap();
+    let (again, rx) = start(dir.path());
+    assert_eq!(settled(&rx), OpenEvent::Ready);
+    again.close();
+    assert_eq!(settled(&rx), OpenEvent::Closed);
+}
+
 #[tokio::test]
 async fn close_posts_closed_ends_calls_and_frees_the_home() {
     let dir = tempfile::tempdir().unwrap();
