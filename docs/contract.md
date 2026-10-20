@@ -1337,8 +1337,11 @@ of its words, shows whole as its text. Previews show a link's address
 after its text.
 Headings are set a step above the comment's text. Previews on one line (a
 folded thread, a pin's title, an inbox row, a notification, a version's
-addressed threads) show the text with the Markdown syntax taken away; an
-approval request shows the withheld comments exactly as written.
+addressed threads) show the text with the Markdown syntax taken away. An
+approval request shows the withheld comments rendered the same way, each
+led by its author, its first three lines until **Show all**; as everywhere,
+a reading that would leave out a word shows the comment as its text, so
+nothing withheld is hidden from the approver.
 
 A drag in comment mode that starts where no text is under the pointer (empty
 space, padding, an image, a canvas, an inline SVG), or any drag with Shift
