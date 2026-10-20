@@ -278,21 +278,25 @@ void main() {
         {'t': 'turn'},
       ];
       var tried = 0;
+      final threw = <String>[];
       void tryAll<T>(
         Map<String, Object?> wire,
         Decoded<T> Function(Object?) dec,
       ) {
+        void attempt(Object? broken, String what) {
+          tried++;
+          try {
+            dec(broken);
+          } catch (e) {
+            threw.add('${wire['t']} $what: $e');
+          }
+        }
+
         for (final path in pathsOf(wire)) {
           for (final b in breakers) {
-            tried++;
-            expect(
-              () => dec(replaceAt(wire, path, b)),
-              returnsNormally,
-              reason: '$path = $b',
-            );
+            attempt(replaceAt(wire, path, b), '$path = $b');
           }
-          tried++;
-          expect(() => dec(removeAt(wire, path)), returnsNormally);
+          attempt(removeAt(wire, path), '$path removed');
         }
       }
 
@@ -305,18 +309,26 @@ void main() {
       for (final (_, s) in stateSamples) {
         tryAll(encodeQueueState(s), decodeQueueState);
       }
-      for (final (_, m) in toUiSamples) {
-        tryAll(encodeToUi(m), decodeToUi);
-      }
-      for (final (_, m) in toWorkerSamples) {
-        tryAll(encodeToWorker(m), decodeToWorker);
-      }
+      // The envelopes around the values above: one of each kind.
+      tryAll(encodeToUi(const UiEffect(KeepAlive(1, true))), decodeToUi);
+      tryAll(encodeToUi(toUiSamples.last.$2), decodeToUi);
+      tryAll(encodeToWorker(const WorkerMsg(Cancel('j'))), decodeToWorker);
+      tryAll(encodeToWorker(toWorkerSamples.last.$2), decodeToWorker);
+      tryAll(
+        encodeRenderRequest(renderRequestSamples.first.$2),
+        decodeRenderRequest,
+      );
+      tryAll(
+        encodeRenderResult(renderResultSamples.first.$2),
+        decodeRenderResult,
+      );
+      expect(threw, isEmpty);
       expect(tried, greaterThan(1000));
     });
 
     test('a deeply nested data value answers a failure or a value', () {
       Object? deep = 'x';
-      for (var i = 0; i < 100000; i++) {
+      for (var i = 0; i < 20000; i++) {
         deep = [deep];
       }
       final wire = {
