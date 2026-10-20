@@ -54,7 +54,10 @@ mod tests {
         ("index.html", b"<!doctype html><title>Budget</title>"),
         ("app.js", b"let n = 1;\n"),
         ("data/caf\u{e9}.json", br#"{"n":1}"#),
-        ("icon.svg", b"<svg xmlns=\"http://www.w3.org/2000/svg\" viewBox=\"0 0 1 1\"/>"),
+        (
+            "icon.svg",
+            b"<svg xmlns=\"http://www.w3.org/2000/svg\" viewBox=\"0 0 1 1\"/>",
+        ),
     ];
     const DIGEST: &str = "sha256:f7822984f37e5debcd4ae329c8f7569f2518ded0ee8b8ca3d88266e381ff1ab2";
 
