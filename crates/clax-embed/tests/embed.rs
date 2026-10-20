@@ -759,3 +759,67 @@ async fn a_key_put_reaches_the_sampler_without_a_restart() {
     assert_eq!(v["provider"], "anthropic", "{v}");
     embed.close();
 }
+
+/// The stream ID a subscription's `ready` block names.
+fn stream_of(ready: &str) -> String {
+    let data: Value = serde_json::from_str(
+        ready
+            .lines()
+            .find_map(|l| l.strip_prefix("data: "))
+            .expect("a ready block"),
+    )
+    .unwrap();
+    data["stream"].as_str().unwrap().to_string()
+}
+
+async fn claim(embed: &Embed, stream: &str) -> (u16, Value) {
+    call_json(
+        embed,
+        head("POST", "/api/jobs/owner", As::Owner),
+        Some(json!({"client": "app", "stream": stream})),
+    )
+    .await
+}
+
+#[tokio::test]
+async fn the_queue_owner_is_released_when_its_subscriber_goes() {
+    let dir = tempfile::tempdir().unwrap();
+    let (embed, _rx) = open(dir.path());
+    // A: the queue's owner, whose reader stops taking blocks.
+    let alive = std::sync::Arc::new(std::sync::atomic::AtomicBool::new(true));
+    let (a_tx, a_blocks) = mpsc::channel();
+    let a_alive = alive.clone();
+    embed.subscribe(Box::new(move |b| {
+        let _ = a_tx.send(String::from_utf8_lossy(&b).into_owned());
+        a_alive.load(std::sync::atomic::Ordering::SeqCst)
+    }));
+    let a = stream_of(&a_blocks.recv().unwrap());
+    let (status, v) = claim(&embed, &a).await;
+    assert_eq!(status, 200, "{v}");
+    // B: a second worker, following the jobs topic.
+    let b_blocks = subscribe(&embed);
+    let b = stream_of(&b_blocks.recv().unwrap());
+    let (status, v) = call_json(
+        &embed,
+        head("POST", &format!("/api/stream/{b}"), As::Owner),
+        Some(json!({"subscribe": ["jobs"]})),
+    )
+    .await;
+    assert_eq!(status, 200, "{v}");
+    let (status, v) = claim(&embed, &b).await;
+    assert_eq!((status, v["error"]["code"].as_str()), (409, Some("owner_held")), "{v}");
+    // A's reader goes: the next claim's nudge reaches it, and its
+    // subscription ends.
+    alive.store(false, std::sync::atomic::Ordering::SeqCst);
+    let (status, v) = claim(&embed, &b).await;
+    assert_eq!((status, v["error"]["code"].as_str()), (409, Some("owner_held")), "{v}");
+    loop {
+        let block = b_blocks.recv().expect("B's subscription lives");
+        if block.starts_with("event: jobs_owner\n") && block.contains(r#""held":false"#) {
+            break;
+        }
+    }
+    let (status, v) = claim(&embed, &b).await;
+    assert_eq!(status, 200, "{v}");
+    embed.close();
+}
