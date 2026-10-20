@@ -65,12 +65,18 @@ fn unframeable(mut res: Response) -> Response {
     res
 }
 
-/// An entry of the shell (`index.html` or `artifact.html`) as an HTML page.
-fn entry(web: &dyn FileTree, req: &HeaderMap, name: &str) -> Result<Response, ApiError> {
-    match web.get(name) {
+/// An entry of the shell (`index.html` or `artifact.html`) as an HTML page,
+/// marked for an embedding app's transport when the core is embedded
+/// ([`boot::with_embed_meta`]).
+fn entry(
+    s: &clax_http::state::AppState,
+    req: &HeaderMap,
+    name: &str,
+) -> Result<Response, ApiError> {
+    match s.web.get(name) {
         Some(f) => Ok(unframeable(http_cache::html(
             req,
-            &String::from_utf8_lossy(&f.data),
+            &boot::with_embed_meta(&String::from_utf8_lossy(&f.data), s.embed.as_ref()),
         ))),
         None => Err(ApiError::new(
             StatusCode::SERVICE_UNAVAILABLE,
@@ -87,7 +93,7 @@ pub async fn gallery_page(
     _d: clax_http::agent::DeniedToGrants,
     req: HeaderMap,
 ) -> Result<Response, ApiError> {
-    entry(&*s.web, &req, "index.html")
+    entry(&s, &req, "index.html")
 }
 
 /// `/a/…`: `artifact.html` with the first-load data ([`boot`]), or the
@@ -116,10 +122,10 @@ pub async fn artifact_page(
     d.refuse_agents()?;
     let route = route::parse_shell_path(uri.path());
     if matches!(route, route::ShellRoute::Gallery) {
-        return entry(&*s.web, &req, "index.html");
+        return entry(&s, &req, "index.html");
     }
     let Some(f) = s.web.get("artifact.html") else {
-        return entry(&*s.web, &req, "artifact.html");
+        return entry(&s, &req, "artifact.html");
     };
     let template = String::from_utf8_lossy(&f.data).into_owned();
     // A hosted daemon's gate checked the host already ([`clax_http::hosted::gate`]).
@@ -136,7 +142,11 @@ pub async fn artifact_page(
     } else {
         None
     };
-    let mut res = http_cache::html(&req, &boot::inject(&template, injected.as_ref()));
+    let page = boot::with_embed_meta(
+        &boot::inject(&template, injected.as_ref()),
+        s.embed.as_ref(),
+    );
+    let mut res = http_cache::html(&req, &page);
     let h = res.headers_mut();
     h.insert(
         header::CACHE_CONTROL,

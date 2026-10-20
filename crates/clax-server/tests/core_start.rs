@@ -15,6 +15,7 @@ fn cfg(home: &std::path::Path) -> CoreConfig {
         require_credential: true,
         bind: std::net::Ipv4Addr::LOCALHOST.into(),
         port: 0,
+        embed: None,
     }
 }
 

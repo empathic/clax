@@ -527,3 +527,73 @@ async fn boot_marks_the_owners_viewer() {
         .unwrap();
     assert_eq!(boot(&html).1["viewer"], me["viewer"]);
 }
+
+/// The `content` attribute of the `clax-embed` meta, unescaped, and where
+/// the meta starts.
+fn embed_meta(html: &str) -> Option<(usize, Value)> {
+    let open = r#"<meta name="clax-embed" content=""#;
+    let start = html.find(open)?;
+    let rest = &html[start + open.len()..];
+    let raw = &rest[..rest.find('"').unwrap()];
+    let text = raw
+        .replace("&quot;", "\"")
+        .replace("&#39;", "'")
+        .replace("&lt;", "<")
+        .replace("&gt;", ">")
+        .replace("&amp;", "&");
+    Some((start, serde_json::from_str(&text).unwrap()))
+}
+
+#[tokio::test]
+async fn an_embedded_core_marks_every_shell_document_and_frames_content_on_its_origin() {
+    let dist = dist();
+    let ts = TestServer::spawn_with_web(dist.path()).await;
+    let embedded = {
+        let web = std::sync::Arc::new(clax_core::embedded::DiskTree::new(dist.path()));
+        TestServer::spawn_with(move |s| {
+            s.web = web;
+            s.embed = Some(clax_http::state::EmbedOrigins {
+                shell: "clax://app".into(),
+                content: "clax://{id}.c".into(),
+            });
+        })
+        .await
+    };
+    let created = embedded
+        .publish("Report", &[("index.html", "<p>x</p>")])
+        .await;
+    let id = created["artifact"]["id"].as_str().unwrap().to_string();
+
+    let html = page(&embedded, &format!("/a/{id}?app=1"), &[])
+        .await
+        .text()
+        .await
+        .unwrap();
+    let (at, meta) = embed_meta(&html).expect("the clax-embed meta");
+    assert_eq!(
+        meta,
+        json!({"transport": "host", "shell": "clax://app", "content": "clax://{id}.c"})
+    );
+    assert!(at < html.find("<script").unwrap(), "before any script");
+    let (_, b) = boot(&html);
+    assert_eq!(b["frame"]["mode"], "subdomain");
+    let src = b["frame"]["src"].as_str().unwrap();
+    assert!(src.starts_with(&format!("clax://{id}.c/v/1/")), "{src}");
+    assert!(
+        html.contains(&format!("src=\"clax://{id}.c/v/1/\"")),
+        "{html}"
+    );
+
+    let gallery = page(&embedded, "/", &[]).await.text().await.unwrap();
+    assert!(embed_meta(&gallery).is_some(), "{gallery}");
+
+    let plain = ts.publish("Report", &[("index.html", "<p>x</p>")]).await;
+    let pid = plain["artifact"]["id"].as_str().unwrap().to_string();
+    let html = page(&ts, &format!("/a/{pid}?app=1"), &[])
+        .await
+        .text()
+        .await
+        .unwrap();
+    assert!(embed_meta(&html).is_none());
+    assert!(!html.contains("clax-embed"));
+}

@@ -351,6 +351,7 @@ pub async fn serve(
             require_credential: cfg.require_credential,
             bind: cfg.bind,
             port,
+            embed: None,
         },
         &mut |p| starting.progress(p),
     )

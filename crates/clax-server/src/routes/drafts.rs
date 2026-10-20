@@ -503,6 +503,7 @@ async fn serve(
             req,
             &clax_http::content_policy::own_host(s),
             None,
+            s.embed.as_ref(),
         ),
     );
     Ok(res)

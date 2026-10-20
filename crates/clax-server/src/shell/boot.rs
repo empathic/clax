@@ -332,11 +332,13 @@ pub async fn assemble(
         .iter()
         .find(|v| u64::from(v.n) == n)
         .is_some_and(|v| file == "index.html" || v.files.contains_key(&file));
-    // A hosted daemon's content origin frames every page sandboxed, there.
+    // A hosted daemon's content origin frames every page sandboxed, there;
+    // an embedding app's content origins each frame their artifact.
     let content_origin = s.hosted.as_ref().and_then(|h| h.content_origin());
-    let mode = match content_origin {
-        Some(_) => Some(None),
-        None => frame_origin(headers, id.as_str()),
+    let mode = match (content_origin, &s.embed) {
+        (Some(_), _) => Some(None),
+        (None, Some(e)) => Some(Some(e.content_of(id.as_str()))),
+        (None, None) => frame_origin(headers, id.as_str()),
     };
     let (frame, frame_json) = match mode {
         Some(origin) if holds => {
@@ -377,6 +379,33 @@ pub async fn assemble(
         frame,
         title: a.title.clone(),
     }))
+}
+
+/// The `clax-embed` meta an embedding app's shell documents carry: the
+/// transport the shell uses there (`host`: the app's channel) and the two
+/// origins, as attribute-escaped JSON.
+pub fn embed_meta(e: &clax_http::state::EmbedOrigins) -> String {
+    let v = json!({"transport": "host", "shell": e.shell, "content": e.content});
+    format!(
+        "<meta name=\"clax-embed\" content=\"{}\">",
+        html_escape(&v.to_string())
+    )
+}
+
+/// `html` (a shell document) with [`embed_meta`] first in its `<head>`, so
+/// before any script, when the core is embedded (`embed`); else unchanged.
+pub fn with_embed_meta(html: &str, embed: Option<&clax_http::state::EmbedOrigins>) -> String {
+    let Some(e) = embed else {
+        return html.to_string();
+    };
+    let meta = embed_meta(e);
+    match html.find("<head>") {
+        Some(at) => {
+            let end = at + "<head>".len();
+            format!("{}{meta}{}", &html[..end], &html[end..])
+        }
+        None => format!("{meta}{html}"),
+    }
 }
 
 /// `template` (the built `artifact.html`) with `i` injected at its markers,

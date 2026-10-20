@@ -3,7 +3,7 @@
 //! [`crate::host::rewrite_artifact_host`] adds to any other response for an
 //! artifact's content.
 
-use crate::state::AppState;
+use crate::state::{AppState, EmbedOrigins};
 use axum::http::{HeaderMap, HeaderValue, header};
 
 /// Content served on the main origin must not run same-origin with the API.
@@ -23,7 +23,10 @@ pub const SANDBOX: &str =
 /// - On an artifact origin (`<id>.localhost[:port]`, subdomain mode): framed
 ///   only by the artifact's own pages (`'self'`) and the shell, at
 ///   `localhost` or `127.0.0.1` on the same port, the only hosts from which
-///   the shell uses subdomain frames.
+///   the shell uses subdomain frames. In an app that embeds the core
+///   (`embed`), the shell is at the embed's shell origin instead
+///   ([`EmbedOrigins::shell`]), and only it and the artifact's own pages
+///   frame it.
 ///
 /// The policy is a separate one: a page's own `<meta>` policy still applies
 /// in full beside it, and cannot set `frame-ancestors` itself.
@@ -32,6 +35,7 @@ pub fn content_policy(
     req: &HeaderMap,
     own: &str,
     lockdown: Option<&str>,
+    embed: Option<&EmbedOrigins>,
 ) -> HeaderValue {
     // The rewrite accepted an artifact host only with a numeric port, or none;
     // on the main origin a `Host` that is not plain is the daemon's own.
@@ -41,10 +45,12 @@ pub fn content_policy(
         .filter(|(_, p)| !p.is_empty() && p.bytes().all(|b| b.is_ascii_digit()))
         .map(|(_, p)| format!(":{p}"))
         .unwrap_or_default();
-    let frame = if !on_artifact_origin {
-        SANDBOX.to_string()
-    } else {
-        format!("frame-ancestors 'self' http://localhost{port} http://127.0.0.1{port}")
+    let frame = match (on_artifact_origin, embed) {
+        (false, _) => SANDBOX.to_string(),
+        (true, Some(e)) => format!("frame-ancestors {} 'self'", e.shell),
+        (true, None) => {
+            format!("frame-ancestors 'self' http://localhost{port} http://127.0.0.1{port}")
+        }
     };
     let policy = match lockdown {
         Some(id) => {
@@ -69,6 +75,13 @@ pub fn content_policy(
         None => frame,
     };
     HeaderValue::from_str(&policy).unwrap_or_else(|_| HeaderValue::from_static("sandbox"))
+}
+
+/// [`content_policy`] of an artifact's content on its own origin in an app
+/// that embeds the core (`<id>.localhost`, as the embedded core's content
+/// requests name it).
+pub fn content_policy_embedded(embed: &EmbedOrigins, lockdown: Option<&str>) -> HeaderValue {
+    content_policy(true, &HeaderMap::new(), "localhost", lockdown, Some(embed))
 }
 
 /// What an artifact's page may load: its own files and the bridge (`own`,
@@ -138,3 +151,45 @@ pub fn own_host(s: &AppState) -> String {
 /// lockdown policy to every other response for an artifact's content.
 #[derive(Clone, Copy)]
 pub struct ContentPolicySet;
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::state::EmbedOrigins;
+
+    #[test]
+    fn an_embedded_artifact_origin_is_framed_only_by_the_shell() {
+        let embed = EmbedOrigins {
+            shell: "clax://app".into(),
+            content: "clax://{id}.c".into(),
+        };
+        let v = content_policy_embedded(&embed, None);
+        let s = v.to_str().unwrap();
+        assert!(s.contains("frame-ancestors clax://app"), "{s}");
+        assert!(!s.contains("localhost"), "{s}");
+    }
+
+    #[test]
+    fn an_embedded_artifact_keeps_its_load_lockdown() {
+        let embed = EmbedOrigins {
+            shell: "https://app.clax.invalid".into(),
+            content: "https://{id}.c.clax.invalid".into(),
+        };
+        let v = content_policy_embedded(&embed, Some("7q3k9mzx2b4t"));
+        let s = v.to_str().unwrap();
+        assert!(
+            s.starts_with("frame-ancestors https://app.clax.invalid 'self'; "),
+            "{s}"
+        );
+        assert!(s.contains("connect-src 'self'"), "{s}");
+    }
+
+    #[test]
+    fn an_embed_names_each_artifacts_content_origin() {
+        let embed = EmbedOrigins {
+            shell: "clax://app".into(),
+            content: "clax://{id}.c".into(),
+        };
+        assert_eq!(embed.content_of("7q3k9mzx2b4t"), "clax://7q3k9mzx2b4t.c");
+    }
+}

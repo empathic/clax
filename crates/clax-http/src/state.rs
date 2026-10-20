@@ -58,6 +58,24 @@ impl VisGen {
     }
 }
 
+/// The origins an app embedding the core gives its WebViews: the shell's,
+/// and each artifact's content origin.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct EmbedOrigins {
+    /// The shell's origin, e.g. "https://app.clax.invalid" or "clax://app".
+    pub shell: String,
+    /// An artifact's content origin with `{id}` for its ID, e.g.
+    /// "https://{id}.c.clax.invalid" or "clax://{id}.c".
+    pub content: String,
+}
+
+impl EmbedOrigins {
+    /// The content origin of artifact `id`.
+    pub fn content_of(&self, id: &str) -> String {
+        self.content.replace("{id}", id)
+    }
+}
+
 #[derive(Clone)]
 pub struct AppState {
     pub store: Arc<Store>,
@@ -177,6 +195,9 @@ pub struct AppState {
     pub vis_gen: VisGen,
     /// Hosted mode ([`crate::hosted`]); `None` for the local daemon.
     pub hosted: Option<Arc<crate::hosted::Hosted>>,
+    /// The origins of the app that embeds this core, which its shell
+    /// documents and content policy name; `None` for a daemon.
+    pub embed: Option<EmbedOrigins>,
     /// The host's git remotes ([`crate::git_remotes`]), once it installs
     /// them; empty on the native daemon.
     pub git_remotes: Arc<crate::git_remotes::Slot>,
@@ -262,6 +283,9 @@ pub struct StateParts {
     pub hosted: Option<Arc<crate::hosted::Hosted>>,
     /// The web UI the daemon serves.
     pub web: Arc<dyn clax_core::embedded::FileTree>,
+    /// The origins of the app that embeds the core
+    /// ([`AppState::embed`]); `None` for a daemon.
+    pub embed: Option<EmbedOrigins>,
 }
 
 impl AppState {
@@ -337,6 +361,7 @@ impl AppState {
             },
             test_daemon: false,
             web: p.web,
+            embed: p.embed,
             git_remotes: Arc::default(),
             linked: Arc::new(clax_realtime::linked::Linked::new(Arc::new(
                 clax_realtime::questions::TokioSleeper,

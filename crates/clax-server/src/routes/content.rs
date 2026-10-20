@@ -46,13 +46,13 @@ fn framed_by_shell(
     mut res: Response,
     origin: &Option<Extension<OnArtifactOrigin>>,
     req: &HeaderMap,
-    (id, own): (&str, &str),
+    (id, own, embed): (&str, &str, Option<&clax_http::state::EmbedOrigins>),
     live: bool,
 ) -> Response {
     let lockdown = (!live).then_some(id);
     res.headers_mut().insert(
         header::CONTENT_SECURITY_POLICY,
-        content_policy(origin.is_some(), req, own, lockdown),
+        content_policy(origin.is_some(), req, own, lockdown, embed),
     );
     res.headers_mut().insert(
         header::REFERRER_POLICY,
@@ -89,7 +89,7 @@ pub async fn index(
     let own = own_host(&s);
     let live = s.live_ids.contains(id.as_str());
     let aid = id.as_str().to_string();
-    let app = (aid.as_str(), own.as_str());
+    let app = (aid.as_str(), own.as_str(), s.embed.as_ref());
     match lookup(&s, id, n, INDEX.to_string(), true).await? {
         Served::Page(html) => Ok(framed_by_shell(
             http_cache::html(&req, &html),
@@ -239,7 +239,7 @@ pub async fn file(
     let own = own_host(&s);
     let live = s.live_ids.contains(id.as_str());
     let aid = id.as_str().to_string();
-    let app = (aid.as_str(), own.as_str());
+    let app = (aid.as_str(), own.as_str(), s.embed.as_ref());
     let (bytes, meta) = match lookup(&s, id, n, rel, false).await? {
         Served::Page(html) => {
             return Ok(framed_by_shell(
@@ -387,7 +387,7 @@ mod tests {
     fn the_content_policy_names_a_plain_host_and_never_a_crafted_one() {
         let mut h = HeaderMap::new();
         h.insert(header::HOST, HeaderValue::from_static("x;script-src *:80"));
-        let p = content_policy(false, &h, "localhost:7480", Some("7q3k9mzx2b4t"));
+        let p = content_policy(false, &h, "localhost:7480", Some("7q3k9mzx2b4t"), None);
         let p = p.to_str().unwrap();
         assert!(p.contains("http://localhost:7480/c/7q3k9mzx2b4t/ "), "{p}");
         assert!(!p.contains('*') && !p.contains("x;"), "{p}");
@@ -400,7 +400,7 @@ mod tests {
         );
         // Without the lockdown (a live page), the framing policy alone.
         assert_eq!(
-            content_policy(false, &h, "localhost:7480", None)
+            content_policy(false, &h, "localhost:7480", None, None)
                 .to_str()
                 .unwrap(),
             clax_http::content_policy::SANDBOX

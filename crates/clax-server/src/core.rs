@@ -50,6 +50,9 @@ pub struct CoreConfig {
     pub bind: std::net::IpAddr,
     /// The port they name; `serve` passes the bound one.
     pub port: u16,
+    /// The origins of an app that embeds the core
+    /// ([`AppState::embed`]); `None` for `clax serve`.
+    pub embed: Option<clax_http::state::EmbedOrigins>,
 }
 
 /// A started core: its state, its router, and the tasks it runs until
@@ -117,6 +120,7 @@ impl Core {
             port,
             hosted: cfg.hosted,
             web: cfg.web,
+            embed: cfg.embed,
         })?;
         // The core's `net` keeps a shared disk cache in the home.
         state.net = Arc::new(clax_http::net_cache::daemon_net(cfg.home.root()));

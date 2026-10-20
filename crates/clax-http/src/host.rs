@@ -108,6 +108,7 @@ pub async fn rewrite_artifact_host(
                 req.headers(),
                 &own_host(&s),
                 Some(&id),
+                s.embed.as_ref(),
             );
         };
         let uri: Uri = format!("{new_path}{query}")
@@ -137,13 +138,27 @@ pub async fn rewrite_artifact_host(
             SERVICE_WORKER_KILL_SWITCH,
         )
             .into_response();
-        return locked(res, on_origin, &headers, &own, artifact.as_ref());
+        return locked(
+            res,
+            on_origin,
+            &headers,
+            &own,
+            artifact.as_ref(),
+            s.embed.as_ref(),
+        );
     }
     let res = next.run(req).await;
     if res.extensions().get::<ContentPolicySet>().is_some() {
         return res;
     }
-    locked(res, on_origin, &headers, &own, artifact.as_ref())
+    locked(
+        res,
+        on_origin,
+        &headers,
+        &own,
+        artifact.as_ref(),
+        s.embed.as_ref(),
+    )
 }
 
 /// `res` with artifact `id`'s lockdown policy added beside any policy it
@@ -155,9 +170,10 @@ fn locked(
     req: &axum::http::HeaderMap,
     own: &str,
     id: Option<&ArtifactId>,
+    embed: Option<&crate::state::EmbedOrigins>,
 ) -> Response {
     let policy = match id {
-        Some(id) => content_policy(on_origin, req, own, Some(id.as_str())),
+        Some(id) => content_policy(on_origin, req, own, Some(id.as_str()), embed),
         None => HeaderValue::from_static("sandbox; default-src 'none'"),
     };
     res.headers_mut()
