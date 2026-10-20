@@ -695,6 +695,58 @@ async fn a_new_claim_drains_at_once_and_holds_the_queue_once_the_old_write_has_l
     assert_eq!(job(&ts, "j1").await["job"]["state"], "done");
 }
 
+/// A job write whose request is dropped while the store runs it, on the
+/// daemon's pool: the write goes on on its store thread, and its guard
+/// with it, so a new claim drains until it lands.
+#[tokio::test]
+async fn a_dropped_requests_write_holds_a_new_claim_until_it_lands() {
+    use tower::ServiceExt;
+    let gate = std::sync::Arc::new(Gate::new());
+    let ts = TestServer::spawn_on_pool_with_content(gate.clone()).await;
+    let (_a, old) = owner(&ts).await;
+    running(&ts, &old, "j1", "make", None).await;
+    gate.set_open(false);
+    let req = axum::http::Request::post("/api/jobs/j1/steps/publish:0")
+        .header("host", format!("127.0.0.1:{}", ts.addr.port()))
+        .header("authorization", format!("Bearer {}", ts.token))
+        .header("content-type", "application/json")
+        .header(OWNER, &old)
+        .extension(axum::extract::ConnectInfo(std::net::SocketAddr::from((
+            [127, 0, 0, 1],
+            40000,
+        ))))
+        .body(axum::body::Body::from(
+            publish_body(None, 0, "<p>a", true).to_string(),
+        ))
+        .unwrap();
+    let call = clax_server::router::build_router(ts.state.clone()).oneshot(req);
+    let mut call = Box::pin(call);
+    tokio::select! {
+        _ = gate.entered.notified() => {}
+        res = &mut call => panic!("answered before its content write: {res:?}"),
+    }
+    // The handler is dropped with its write in the store's content write.
+    drop(call);
+    let (s, _) = send(owned(&ts, Method::DELETE, "/api/jobs/owner", &old)).await;
+    assert_eq!(s, 204);
+    let (mut b, sid) = stream(&ts).await;
+    let (s, v) = claim(&ts, &sid).await;
+    assert_eq!(
+        (s, v["error"]["code"].as_str()),
+        (409, Some("owner_draining")),
+        "the dropped request's write still runs: {v}"
+    );
+    gate.set_open(true);
+    assert_eq!(
+        next_owner_event(&mut b).await,
+        json!({"topic": "jobs", "client": "app", "held": true})
+    );
+    // It landed before the new owner holds the queue.
+    assert_eq!(job(&ts, "j1").await["job"]["state"], "done");
+    let (s, v) = claim(&ts, &sid).await;
+    assert_eq!(s, 200, "{v}");
+}
+
 #[tokio::test]
 async fn a_claimant_refused_owner_held_hears_the_release() {
     let ts = TestServer::spawn().await;

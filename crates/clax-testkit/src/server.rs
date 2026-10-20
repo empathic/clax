@@ -458,7 +458,7 @@ impl TestServer {
             Arc::new(SystemClock),
             |_| {},
             false,
-            Some(content),
+            Some((content, true)),
         )
         .await
     }
@@ -471,7 +471,34 @@ impl TestServer {
     ) -> TestServer {
         let dir = tempfile::tempdir().unwrap();
         let bind = IpAddr::V4(Ipv4Addr::LOCALHOST);
-        Self::start(dir, bind, Arc::new(SystemClock), f, false, Some(content)).await
+        Self::start(
+            dir,
+            bind,
+            Arc::new(SystemClock),
+            f,
+            false,
+            Some((content, true)),
+        )
+        .await
+    }
+
+    /// A test daemon whose store runs on its pool of database threads, as
+    /// the daemon's does, keeping version files, assets and clips in
+    /// `content`.
+    pub async fn spawn_on_pool_with_content(
+        content: Arc<dyn clax_core::content::ContentStore>,
+    ) -> TestServer {
+        let dir = tempfile::tempdir().unwrap();
+        let bind = IpAddr::V4(Ipv4Addr::LOCALHOST);
+        Self::start(
+            dir,
+            bind,
+            Arc::new(SystemClock),
+            |_| {},
+            false,
+            Some((content, false)),
+        )
+        .await
     }
 
     /// A second daemon on this one's home, started as after a restart:
@@ -490,25 +517,34 @@ impl TestServer {
     }
 
     /// Serves the home `ax` under `dir` on `bind`, every time read from
-    /// `clock`: on the store's pool and the home's files, or with `content`
-    /// on one connection ([`TestServer::spawn_on_one_connection`]).
+    /// `clock`: on the store's pool and the home's files, or with `content`,
+    /// on one connection when its flag says so
+    /// ([`TestServer::spawn_on_one_connection`]), else on the pool
+    /// ([`TestServer::spawn_on_pool_with_content`]).
     async fn start(
         dir: impl Into<Arc<tempfile::TempDir>>,
         bind: IpAddr,
         clock: Arc<dyn Clock>,
         f: impl FnOnce(&mut AppState),
         shutdown: bool,
-        content: Option<Arc<dyn clax_core::content::ContentStore>>,
+        content: Option<(Arc<dyn clax_core::content::ContentStore>, bool)>,
     ) -> TestServer {
         let dir: Arc<tempfile::TempDir> = dir.into();
         let home = Home::at(dir.path().join("ax"));
         let content = content.or_else(|| {
-            deferred_content()
-                .then(|| Arc::new(Deferred::new()) as Arc<dyn clax_core::content::ContentStore>)
+            deferred_content().then(|| {
+                (
+                    Arc::new(Deferred::new()) as Arc<dyn clax_core::content::ContentStore>,
+                    true,
+                )
+            })
         });
         let store = Arc::new(match content {
             None => Store::open_with_clock(&home, clock.clone()).unwrap(),
-            Some(content) => {
+            Some((content, false)) => Store::open_with_clock(&home, clock.clone())
+                .unwrap()
+                .with_content(content),
+            Some((content, true)) => {
                 home.ensure_dirs().unwrap();
                 let conn = rusqlite::Connection::open(home.db_path()).unwrap();
                 Store::open_on(&home, conn, clock.clone(), content).unwrap()

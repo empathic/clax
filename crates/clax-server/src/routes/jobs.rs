@@ -64,9 +64,9 @@ fn owner_token(headers: &HeaderMap) -> Option<&str> {
 }
 
 /// The write admitted under the claim of `client`'s queue the request's
-/// token holds, to hold across the write's store call
+/// token holds, to move into the store job that does the write
 /// ([`JobsOwners::enter`](clax_http::jobs_owner::JobsOwners::enter)); 409
-/// `not_owner` unless the token holds it.
+/// `not_owner` unless the token holds it, and while its claim drains.
 fn require_owner(s: &AppState, headers: &HeaderMap, client: &str) -> Result<WriteGuard, ApiError> {
     if let Some(guard) = owner_token(headers).and_then(|t| s.jobs_owners.enter(client, t)) {
         return Ok(guard);
@@ -146,16 +146,22 @@ fn step_refused(st: &Store, e: StepError) -> clax_core::Result<ApiError> {
     })
 }
 
-/// Runs job write `f` on the store and answers it: the job after it, or
-/// its refusal.
+/// Runs job write `f` on the store, admitted under `guard`, and answers
+/// it: the job after it, or its refusal. The guard moves into the store
+/// job, so it ends when the write does, even when this request is dropped
+/// while the write runs.
 async fn write(
     s: &AppState,
+    guard: WriteGuard,
     f: impl FnOnce(&Store) -> Result<JobRow, JobError> + Send + 'static,
 ) -> Result<Json<Value>, ApiError> {
     let out = s
-        .store_call(move |st| match f(st) {
-            Ok(row) => Ok(Ok(answer(st, &row)?)),
-            Err(e) => Ok(Err(refused(st, e)?)),
+        .store_call(move |st| {
+            let _guard = guard;
+            match f(st) {
+                Ok(row) => Ok(Ok(answer(st, &row)?)),
+                Err(e) => Ok(Err(refused(st, e)?)),
+            }
         })
         .await??;
     Ok(Json(out))
@@ -308,10 +314,10 @@ pub async fn create(
 ) -> Result<(StatusCode, Json<Value>), ApiError> {
     d.refuse_agents()?;
     let b = body(req)?;
-    let _write = require_owner(&s, &headers, &b.client)?;
+    let guard = require_owner(&s, &headers, &b.client)?;
     let id = b.id.clone();
     let existed = s.store_call(move |st| Ok(st.job(&id)?.is_some())).await?;
-    let out = write(&s, move |st| {
+    let out = write(&s, guard, move |st| {
         st.create_job(NewJob {
             id: b.id,
             client: b.client,
@@ -416,8 +422,8 @@ pub async fn patch(
     d.refuse_agents()?;
     let id = path(p)?;
     let b = body(req)?;
-    let _write = require_owner(&s, &headers, &client_of(&s, &id).await?)?;
-    write(&s, move |st| {
+    let guard = require_owner(&s, &headers, &client_of(&s, &id).await?)?;
+    write(&s, guard, move |st| {
         st.patch_job(
             &id,
             JobPatch {
@@ -455,8 +461,8 @@ pub async fn put_thread(
     d.refuse_agents()?;
     let (id, tid) = path(p)?;
     let b = body(req)?;
-    let _write = require_owner(&s, &headers, &client_of(&s, &id).await?)?;
-    write(&s, move |st| {
+    let guard = require_owner(&s, &headers, &client_of(&s, &id).await?)?;
+    write(&s, guard, move |st| {
         st.set_job_thread(&id, &tid, &b.comment_id, b.stopped)
     })
     .await
@@ -472,8 +478,8 @@ pub async fn delete_thread(
 ) -> Result<Json<Value>, ApiError> {
     d.refuse_agents()?;
     let (id, tid) = path(p)?;
-    let _write = require_owner(&s, &headers, &client_of(&s, &id).await?)?;
-    write(&s, move |st| st.remove_job_thread(&id, &tid)).await
+    let guard = require_owner(&s, &headers, &client_of(&s, &id).await?)?;
+    write(&s, guard, move |st| st.remove_job_thread(&id, &tid)).await
 }
 
 /// `PUT /api/jobs/{id}/questions/{qid}`: records question `qid` (one of
@@ -489,8 +495,8 @@ pub async fn put_question(
 ) -> Result<Json<Value>, ApiError> {
     d.refuse_agents()?;
     let (id, qid) = path(p)?;
-    let _write = require_owner(&s, &headers, &client_of(&s, &id).await?)?;
-    write(&s, move |st| st.ask_job_question(&id, &qid)).await
+    let guard = require_owner(&s, &headers, &client_of(&s, &id).await?)?;
+    write(&s, guard, move |st| st.ask_job_question(&id, &qid)).await
 }
 
 // ------------------------------------------------------------- steps
@@ -651,16 +657,19 @@ pub async fn commit(
     d.refuse_agents()?;
     let (id, key) = path(p)?;
     let step = parse_body(req, "the publish limit", parse_step).await?;
-    let _write = require_owner(&s, &headers, &client_of(&s, &id).await?)?;
+    let guard = require_owner(&s, &headers, &client_of(&s, &id).await?)?;
     let events = s.events.clone();
     let ctx = s.feedback_ctx();
     let out = match step {
         Step::Plain(result, done) => {
-            s.store_call(move |st| match st.commit_step(&id, &key, result, done) {
-                Ok((step, row, replayed)) => Ok(Ok(json!({
-                    "job": full(st, &row.id)?, "step": step, "replayed": replayed,
-                }))),
-                Err(e) => Ok(Err(refused(st, e)?)),
+            s.store_call(move |st| {
+                let _guard = guard;
+                match st.commit_step(&id, &key, result, done) {
+                    Ok((step, row, replayed)) => Ok(Ok(json!({
+                        "job": full(st, &row.id)?, "step": step, "replayed": replayed,
+                    }))),
+                    Err(e) => Ok(Err(refused(st, e)?)),
+                }
             })
             .await??
         }
@@ -669,6 +678,8 @@ pub async fn commit(
             let drafts = s.drafts.clone();
             let out = s
                 .store_call_async(move |st| async move {
+                    // Ends with the step's work, wherever it runs.
+                    let _guard = guard;
                     let st = &*st;
                     // A key already committed answers as recorded; a new one
                     // is published as POST /api/artifacts or its versions
@@ -745,6 +756,7 @@ pub async fn commit(
         }
         Step::Reply(r) => {
             s.store_call(move |st| {
+                let _guard = guard;
                 let sid = r.session_id.clone();
                 match st.commit_reply_step(&audit, &id, &key, r) {
                     Ok(c) => {
