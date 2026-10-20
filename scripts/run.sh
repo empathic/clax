@@ -18,7 +18,8 @@
 #                                    (CLAX_INSTALL_BIN=<binary> installs that one instead: tests)
 #   scripts/run.sh rust-project      rust-project.json for rust-analyzer, from Bazel
 #   scripts/run.sh app-test          the Clax app's analysis and tests (apps/clax_app)
-#   scripts/run.sh app-integration   the Clax app's macOS integration tests (they open its window)
+#   scripts/run.sh app-integration   the Clax app's macOS integration tests (they open its window;
+#                                    --ios the simulator's, --android the emulator's)
 #                                    (--ios: its simulator ones instead, on "Clax iPhone"; Bazel only)
 #   scripts/run.sh app-apk           the Clax app's release APK, and print its path
 #   scripts/run.sh app-macos         the Clax app's macOS app, and print its path
@@ -198,14 +199,19 @@ _bazel() {
             ;;
         app-test) _run "${b[@]}" test --lockfile_mode=error //apps/clax_app/... "$@" ;;
         app-integration)
-            # The macOS tests, or with --ios the simulator ones (ios_*).
-            local t targets=() ios=""
-            if [ "${1:-}" = "--ios" ]; then ios=1; shift; fi
+            # The macOS tests, or with --ios the simulator ones (ios_*), or
+            # with --android the emulator ones (android_*).
+            local t targets=() kind=macos
+            case "${1:-}" in
+                --ios) kind=ios; shift ;;
+                --android) kind=android; shift ;;
+            esac
             for t in apps/clax_app/integration_test/*_test.dart; do
                 t="${t##*/}"
                 case "$t" in
-                    ios_*) [ -n "$ios" ] || continue ;;
-                    *) [ -z "$ios" ] || continue ;;
+                    ios_*) [ "$kind" = ios ] || continue ;;
+                    android_*) [ "$kind" = android ] || continue ;;
+                    *) [ "$kind" = macos ] || continue ;;
                 esac
                 targets+=("//apps/clax_app:integration_${t%_test.dart}")
             done
@@ -269,14 +275,19 @@ _native() {
                 _run bash -c 'bin="$(apps/clax_app/tool/test-bin.sh)" && cd apps/clax_app && CLAX_TEST_BIN="$bin" tool/check.sh'
             ;;
         app-integration)
-            if [ "${1:-}" = "--ios" ]; then
-                echo "app-integration --ios: the iOS app builds only with Bazel (brew install bazelisk)" >&2
-                return 2
-            fi
-            # One file per flutter call: a second file in the same call fails to launch.
+            case "${1:-}" in
+                --ios | --android)
+                    echo "app-integration ${1}: these tests run only with Bazel (brew install bazelisk)" >&2
+                    return 2
+                    ;;
+            esac
+            # One file per flutter call: a second file in the same call fails to
+            # launch. The iOS and Android files are the simulator's and the
+            # emulator's, which only Bazel runs.
             _run ./scripts/build-app-clax.sh macos &&
                 _run ./scripts/build-home-bundle.sh --i-know-what-i-am-doing &&
-                _run bash -c 'cd apps/clax_app && for f in integration_test/*_test.dart; do flutter test "$f" -d macos || exit 1; done'
+                _run ./scripts/patch-pub.sh --i-know-what-i-am-doing &&
+                _run env PUB_CACHE="$PWD/apps/clax_app/build-native/pub-cache" bash -c 'cd apps/clax_app && for f in integration_test/*_test.dart; do case "${f##*/}" in ios_* | android_*) continue ;; esac; flutter test "$f" -d macos || exit 1; done'
             ;;
         app-apk)
             # arm64 and x86_64 only (the ABIs clax is built for); disable-abi-filtering keeps
@@ -290,7 +301,8 @@ _native() {
         app-macos)
             _run ./scripts/build-app-clax.sh macos &&
                 _run ./scripts/build-home-bundle.sh --i-know-what-i-am-doing &&
-                _run bash -c 'cd apps/clax_app && flutter build macos --release' &&
+                _run ./scripts/patch-pub.sh --i-know-what-i-am-doing &&
+                _run env PUB_CACHE="$PWD/apps/clax_app/build-native/pub-cache" bash -c 'cd apps/clax_app && flutter build macos --release' &&
                 { [ "$dry" = 1 ] || echo "$PWD/apps/clax_app/build/macos/Build/Products/Release/Clax.app"; }
             ;;
         app-clax) _run ./scripts/build-app-clax.sh "$@" ;;

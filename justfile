@@ -98,7 +98,7 @@ app-test *ARGS:
 app-test-native:
     CLAX_BUILD=native ./scripts/run.sh app-test
 
-# Run the Clax app's macOS integration tests, one app per file; each opens the app's window (--ios: the simulator ones, on "Clax iPhone")
+# Run the Clax app's macOS integration tests, one app per file; each opens the app's window (--ios: the simulator ones, on "Clax iPhone"; --android: the emulator ones, on "Clax Pixel")
 app-integration *ARGS:
     ./scripts/run.sh app-integration {{ARGS}}
 

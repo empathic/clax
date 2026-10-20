@@ -229,6 +229,8 @@ macOS) and the two keys below.
 | `macos_dialogs_test` | the Mac's menus and alerts (`macos/Runner/NativeDialogs.swift`): items, key equivalents, button order and keys, the suppression button's labels and the armed default, an XCTest bundle run by `xcodebuild`; macOS only | none |
 | `integration_<name>` (manual) | `integration_test/<name>_test.dart` in the debug app, run in the logged-in session | `flutter test <file> -d macos` |
 | `integration_ios_<name>` (manual) | `integration_test/ios_<name>_test.dart` in a debug iOS app of its own, installed fresh and run on the simulator "Clax iPhone" by `tool/ios-integration-run.sh` (`bazel/flutter/ios.bzl`); macOS only | none |
+| `integration_android_<name>` (manual) | `integration_test/android_<name>_test.dart` in a debug APK of its own (arm64, the runner of `apk`), installed fresh and run on the emulator "Clax Pixel" by `tool/android-integration-run.sh` (`bazel/flutter/android.bzl`), which reads the test's result from the log; macOS on Apple silicon only | none |
+| `scheme_host_sync` | `macos/Runner/SchemeHost.swift` and `ios/Runner/SchemeHost.swift` are the same file | none |
 | `home_bundle`, `home_version_test` | the home app's bundle, `assets/home/home.clax` and `release.json`, packed from `home/` by `pack_home` (compiled by rules_dart) and signed: an asset of `app`, so of the APK and the macOS app; and a check of how its version is chosen | `scripts/build-home-bundle.sh` |
 | `//crates/clax-cli:clax_android_arm64`, `:clax_android_x86_64` | `clax` optimized and stripped for each Android CPU with the NDK, as `<abi>/libclax.so` (`bazel/android/clax.bzl`) | `scripts/build-app-clax.sh android` |
 | `//crates/clax-ios:clax_ios_c`, `:ios_build_test` | the in-process daemon as a static library for iOS (`libclax_ios.a`, optimized in the app's configuration) with its C header, and a check that it builds for iPhone and the simulator with every object for an iOS no newer than `--ios_minimum_os` (`bazel/apple/ios_rust.bzl`); macOS only | none |
@@ -238,7 +240,25 @@ macOS) and the two keys below.
 
 Everything but the integration tests is in `just ci` (`tests(//...)`).
 The integration tests open the app's window and take minutes each, so
-`just app-integration` runs them on demand (`--ios` the simulator ones).
+`just app-integration` runs them on demand (`--ios` the simulator ones,
+`--android` the emulator ones).
+
+**The Android integration tests** run on an emulator Bazel fetches, never
+on a plugged-in phone. `scripts/app-android-emulator.sh` (a dry run
+without `--i-know-what-i-am-doing`; `//scripts:app_android_emulator_test`
+tests it on stubs) makes the AVD "Clax Pixel" (android-36, Google APIs,
+arm64-v8a) under `target/android-avd/` by writing its `config.ini` and
+`.ini` (no `avdmanager`), links the pinned SDK parts into
+`target/android-sdk/`, and keeps the emulator's and adb's home in
+`target/android-home/`, so nothing reaches `~/.android`. `--start` boots
+it headless (`--window` to look at it) on the first free even port from
+5554 and prints `serial=emulator-<port> pid=<pid>`; `--stop <pid>` ends
+only an emulator it started, by `adb emu kill`, then the PID. Every adb
+call names the emulator's serial and goes to an adb server of its own on
+the emulator's port + 10000, never the one on 5037 a phone is attached
+to. The first run unpacks the system image into the output base (4.4 GB)
+and the AVD's data image into `target/android-avd/`; it boots in about
+30 s on an M-series Mac.
 
 **What is fetched, and from where (`MODULE.bazel`).**
 
@@ -262,6 +282,10 @@ The integration tests open the app's window and take minutes each, so
 - The Android SDK's build tools 36.0.0, platform android-36 and platform
   tools (`rules_android`, patched by `bazel/android/rules_android.patch` to
   fetch pinned archives instead of reading `ANDROID_HOME`).
+- The Android emulator (37.2.12, the stable one for macOS on Apple
+  silicon) and the android-36 Google APIs arm64-v8a system image
+  (`@android_emulator`, `@android_system_image`), which only the Android
+  integration tests fetch.
 - A JDK (rules_java's remote JDKs: 21 for the app's Java, 25 for the tools),
   the Go toolchain rules_android builds its tools with, and the Maven
   libraries the plugins' Gradle builds name, pinned in
@@ -269,6 +293,13 @@ The integration tests open the app's window and take minutes each, so
 - CwlCatchException, the Swift package speech_to_text's Apple code needs
   (`bazel/flutter/third_party`, added to it by the overlay in
   `bazel/flutter/plugin_overlays/speech_to_text`).
+- webview_flutter_wkwebview's Apple sources with a patch
+  (`bazel/flutter/plugin_overlays/webview_flutter_wkwebview/3/configuration-hook.patch`,
+  applied by that overlay) that lets the runner set its `clax` scheme
+  handler on each WebView's configuration before the view exists. The
+  native builds get the same patch from `scripts/patch-pub.sh`, which
+  applies it to the package in a pub cache of the checkout's own,
+  `apps/clax_app/build-native/pub-cache`.
 
 Three inputs are this machine's, not pinned: the Android debug key
 (`~/.android/debug.keystore`, `bazel/android/debug_keystore.bzl`; without
