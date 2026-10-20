@@ -11,8 +11,12 @@ import 'package:flutter/foundation.dart';
 
 import '../core/core_client.dart';
 import '../daemon/clock.dart';
+import 'client.dart' show QueueClient;
+import 'codec.dart';
+import 'effect.dart';
 import 'model.dart';
 import 'msg.dart';
+import 'render.dart';
 import 'worker_main.dart';
 
 /// What a job the worker can no longer run shows once the worker died a
@@ -29,14 +33,29 @@ const builderStopped = "Clax's builder stopped. Restart Clax to go on.";
 /// the core answers a repeated creation of the same job with its row. A worker
 /// that dies within [deathWindow] of the one before, on [clock], is not
 /// restarted: each job it would have run shows [builderStopped].
-final class IsolateQueueClient {
-  IsolateQueueClient._(this._start, this._clock, this._wire, this._onMessage);
+///
+/// Everything crosses as the codec's envelopes ([QueueWire]). The worker's
+/// renders are answered by [render]: each worker gets an endpoint of its
+/// own, served at its spawn (so it hears `CanRender` first) and closed at
+/// its end, so a restarted worker is served again and a dead one's renders
+/// end. The worker's other news for the UI (`KeepAlive`, `Notice`) goes to
+/// [onEffect].
+final class IsolateQueueClient implements QueueClient {
+  IsolateQueueClient._(
+    this._start,
+    this._clock,
+    this._wire,
+    this._render,
+    this._onEffect,
+  );
 
   /// Spawns the worker on the open core [coreHandle], with the support
   /// directory, the settings snapshot and the key. [runner] builds the
-  /// worker's effect runner in the worker isolate. [onMessage] hears what
-  /// the worker sends the UI but its states (`KeepAlive`, `Notice`, render
-  /// requests). Intents sent before the worker is up wait for it.
+  /// worker's effect runner in the worker isolate. [render] answers the
+  /// worker's renders; with none, every render is answered gone and the
+  /// worker hears it cannot render. [onEffect] hears the worker's
+  /// `KeepAlive` and `Notice`. Intents sent before the worker is up wait
+  /// for it.
   static IsolateQueueClient start({
     required int coreHandle,
     required String supportDir,
@@ -48,7 +67,8 @@ final class IsolateQueueClient {
     Duration? tickEvery = const Duration(seconds: 1),
     QueueWire wire = const QueueWire(),
     CoreCalls Function(int handle) attach = attachCore,
-    void Function(Object message)? onMessage,
+    RenderServer? render,
+    void Function(Effect effect)? onEffect,
   }) {
     final client = IsolateQueueClient._(
       (toUi) => WorkerStart(
@@ -65,7 +85,8 @@ final class IsolateQueueClient {
       ),
       clock,
       wire,
-      onMessage,
+      render,
+      onEffect,
     );
     client._spawn();
     return client;
@@ -77,11 +98,13 @@ final class IsolateQueueClient {
   final WorkerStart Function(SendPort toUi) _start;
   final Clock _clock;
   final QueueWire _wire;
-  final void Function(Object message)? _onMessage;
+  final RenderServer? _render;
+  final void Function(Effect effect)? _onEffect;
 
   final ValueNotifier<QueueState> _state = ValueNotifier(const QueueState([]));
 
   /// Every job as the worker last published it.
+  @override
   ValueListenable<QueueState> get state => _state;
 
   _Worker? _worker;
@@ -108,6 +131,7 @@ final class IsolateQueueClient {
 
   /// Sends [intent] to the worker; it waits while a worker starts, and is
   /// dropped once the queue has stopped or the client is disposed.
+  @override
   void send(Intent intent) {
     if (_stopped || _disposed) return;
     if (intent case Make(:final id) || Change(:final id)) {
@@ -117,8 +141,16 @@ final class IsolateQueueClient {
     if (inbox == null) {
       _waiting.add(intent);
     } else {
-      inbox.send(_wire.intent(intent));
+      inbox.send(_wire.toWorker(WorkerMsg(intent)));
     }
+  }
+
+  /// Tells the worker the app came back ([Woke]) or is out of time
+  /// ([OutOfTime]); dropped while no worker is up.
+  void tell(Msg news) {
+    assert(news is Woke || news is OutOfTime, '$news is not news');
+    if (_stopped || _disposed) return;
+    _worker?.post(_wire.toWorker(WorkerMsg(news)));
   }
 
   /// Ends the worker; nothing restarts it.
@@ -133,6 +165,16 @@ final class IsolateQueueClient {
   void _spawn() {
     final w = _Worker(_onWorker, _onExit);
     _worker = w;
+    final end = w.endpoint = WireRenderEndpoint(
+      (m) => w.post(_wire.toWorker(m)),
+    );
+    final render = _render;
+    if (render != null) {
+      w.serving = render.serve(end);
+    } else {
+      end.canRender(false);
+      w.serving = _Unserved(end);
+    }
     unawaited(w.spawn(_start));
   }
 
@@ -140,11 +182,11 @@ final class IsolateQueueClient {
     if (_disposed || !identical(w, _worker)) return;
     switch (message) {
       case WorkerReady(:final inbox):
-        w.inbox = inbox;
         for (final i in _waiting) {
-          inbox.send(_wire.intent(i));
+          w.post(_wire.toWorker(WorkerMsg(i)));
         }
         _waiting.clear();
+        w.open(inbox);
         if (!_up.isCompleted) _up.complete();
       case WorkerState(:final state):
         final s = _wire.readState(state);
@@ -154,7 +196,14 @@ final class IsolateQueueClient {
         }
         _state.value = s;
       case WorkerOut(:final message):
-        _onMessage?.call(message);
+        switch (_wire.readToUi(message)) {
+          case UiEffect(:final effect):
+            _onEffect?.call(effect);
+          case final UiRenderAsk ask:
+            w.endpoint?.take(ask);
+          case null:
+            developer.log('not a ToUi envelope: $message', name: 'clax queue');
+        }
     }
   }
 
@@ -202,7 +251,23 @@ final class IsolateQueueClient {
   }
 }
 
-/// One worker isolate and the ports that hear it.
+/// The worker's renders when the client has no [RenderServer]: every
+/// render is answered gone.
+final class _Unserved implements RenderServing {
+  _Unserved(this._end) {
+    _sub = _end.asks.listen((a) {
+      if (a case UiRender(:final request)) {
+        _end.answer(RenderGone(request.effect, request.jobId));
+      }
+    });
+  }
+  final WireRenderEndpoint _end;
+  late final StreamSubscription<UiRenderAsk> _sub;
+  @override
+  void close() => unawaited(_sub.cancel());
+}
+
+/// One worker isolate, the ports that hear it, and its render endpoint.
 final class _Worker {
   _Worker(this._onMessage, this._onExit);
 
@@ -215,6 +280,33 @@ final class _Worker {
   Isolate? _isolate;
   SendPort? inbox;
   bool _ended = false;
+
+  /// Envelopes for the worker posted before its inbox was known.
+  final List<Object?> _early = [];
+
+  /// The worker's render endpoint and its serving.
+  WireRenderEndpoint? endpoint;
+  RenderServing? serving;
+
+  /// Sends [message] to the worker's inbox, or keeps it until [open].
+  void post(Object? message) {
+    if (_ended) return;
+    final i = inbox;
+    if (i == null) {
+      _early.add(message);
+    } else {
+      i.send(message);
+    }
+  }
+
+  /// The worker's inbox is [i]: what was posted before goes first.
+  void open(SendPort i) {
+    inbox = i;
+    for (final m in _early) {
+      i.send(m);
+    }
+    _early.clear();
+  }
 
   Future<void> spawn(WorkerStart Function(SendPort toUi) start) async {
     _messages.handler = (Object? m) => _onMessage(this, m);
@@ -243,6 +335,9 @@ final class _Worker {
   void end() {
     if (_ended) return;
     _ended = true;
+    serving?.close();
+    unawaited(endpoint?.close());
+    _early.clear();
     _isolate?.kill(priority: Isolate.immediate);
     _messages.close();
     _exits.close();

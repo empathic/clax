@@ -2,10 +2,12 @@ import 'dart:async';
 import 'dart:isolate';
 
 import 'package:clax_app/daemon/clock.dart';
+import 'package:clax_app/queue/codec.dart';
 import 'package:clax_app/queue/effect.dart';
 import 'package:clax_app/queue/isolate_client.dart';
 import 'package:clax_app/queue/model.dart';
 import 'package:clax_app/queue/msg.dart';
+import 'package:clax_app/queue/render.dart';
 import 'package:clax_app/queue/worker_main.dart';
 import 'package:flutter_test/flutter_test.dart' hide Retry;
 
@@ -178,6 +180,44 @@ void main() {
     expect(done.jobs.single.state, JobState.done);
     expect(client.deaths, 2);
     expect(client.stopped, isFalse);
+  });
+
+  group('the worker inbox', () {
+    test('intents and the world\'s news go to the loop, render answers to '
+        'the render port, and the worker\'s own messages nowhere', () async {
+      final loop = <Msg>[];
+      final refused = <String>[];
+      final asks = <UiRenderAsk>[];
+      final port = WireRenderPort(asks.add);
+      const spec = RenderSpec(draftId: 'd', revision: 1);
+      final answer = port.render(const RenderRequest(4, 'j', 'r', spec));
+      const wire = QueueWire();
+      void route(ToWorker m) => routeToWorker(
+        wire.readToWorker(wire.toWorker(m)),
+        loop: loop.add,
+        render: port,
+        refused: refused.add,
+      );
+
+      route(const WorkerMsg(Make('j', 'a timer')));
+      route(const WorkerMsg(CanRender(false)));
+      route(const WorkerMsg(Woke(foreground: true)));
+      route(const WorkerMsg(OutOfTime()));
+      route(const WorkerRender(RenderGone(4, 'j')));
+      route(const WorkerMsg(OwnerClaimed(1, 'stolen')));
+      route(const WorkerMsg(Rendered(4, 'j', RenderOutcome(clean: true))));
+      routeToWorker(
+        wire.readToWorker({'v': 1, 't': 'nonsense'}),
+        loop: loop.add,
+        render: port,
+        refused: refused.add,
+      );
+
+      expect(loop.map((m) => m.runtimeType), [Make, CanRender, Woke, OutOfTime]);
+      expect(await answer, const RenderGone(4, 'j'));
+      expect(asks, [const UiRender(RenderRequest(4, 'j', 'r', spec))]);
+      expect(refused, hasLength(3));
+    });
   });
 
   group('the worker loop', () {
@@ -456,7 +496,7 @@ final class _FakeRunner implements WorkerRunner {
       case ProbeClaude():
         scheduleMicrotask(() => context.send(const ClaudeReachable(true)));
       case KeepAlive() || Notice():
-        context.toUi(e);
+        context.toUi(UiEffect(e));
       case StopWork() || PublishState():
         break;
     }

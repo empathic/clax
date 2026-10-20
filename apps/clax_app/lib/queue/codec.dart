@@ -20,24 +20,56 @@ const int codecVersion = 1;
 
 // ------------------------------------------------------------ boundary types
 
-/// What the worker asks the UI isolate to render: [spec], for the `Render`
-/// effect [effect] of job [jobId]. Its answer is the [RenderResult] naming
-/// the same [effect].
+/// What the worker asks the UI isolate to render: [spec], for the `render`
+/// call [callId] of job [jobId], as the `Render` effect [effect]. Its
+/// answer is the [RenderResult] naming the same [effect].
+///
+/// A request for a call the UI isolate is still rendering ends that render
+/// (answered gone): the worker asks a call again only once it counted the
+/// earlier ask lost. The UI isolate keeps no time of its own: the worker's
+/// deadline decides that a render took too long.
 final class RenderRequest {
-  const RenderRequest(this.effect, this.jobId, this.spec);
+  const RenderRequest(
+    this.effect,
+    this.jobId,
+    this.callId,
+    this.spec, {
+    this.settleMs = defaultSettleMs,
+    this.maxBytes = defaultMaxBytes,
+  });
+
+  /// The request for `Render` effect [e].
+  factory RenderRequest.of(Render e) =>
+      RenderRequest(e.id, e.jobId, e.callId, e.spec);
+
+  static const defaultSettleMs = 3000;
+  static const defaultMaxBytes = 1 << 20;
+
   final EffectId effect;
   final JobId jobId;
+  final String callId;
   final RenderSpec spec;
+
+  /// How long the page may take to settle before an inspection.
+  final int settleMs;
+
+  /// The most an inspection's screenshot may weigh.
+  final int maxBytes;
+
   @override
   bool operator ==(Object other) =>
       other is RenderRequest &&
       other.effect == effect &&
       other.jobId == jobId &&
-      other.spec == spec;
+      other.callId == callId &&
+      other.spec == spec &&
+      other.settleMs == settleMs &&
+      other.maxBytes == maxBytes;
   @override
-  int get hashCode => Object.hash(effect, jobId, spec);
+  int get hashCode =>
+      Object.hash(effect, jobId, callId, spec, settleMs, maxBytes);
   @override
-  String toString() => 'RenderRequest#$effect($jobId)';
+  String toString() => 'RenderRequest#$effect($jobId, $callId)';
 }
 
 /// The UI isolate's answer to the [RenderRequest] naming [effect].
@@ -45,12 +77,18 @@ sealed class RenderResult {
   const RenderResult(this.effect, this.jobId);
   final EffectId effect;
   final JobId jobId;
+
+  /// The queue's message this answer is.
+  Msg toMsg();
 }
 
-/// The render drew and answered [outcome].
+/// The render drew and answered [outcome], even one that went wrong (a
+/// page that did not load answers `{'error': message}`, not clean).
 final class RenderAnswered extends RenderResult {
   const RenderAnswered(super.effect, super.jobId, this.outcome);
   final RenderOutcome outcome;
+  @override
+  Msg toMsg() => Rendered(effect, jobId, outcome);
   @override
   bool operator ==(Object other) =>
       other is RenderAnswered &&
@@ -63,9 +101,13 @@ final class RenderAnswered extends RenderResult {
   String toString() => 'RenderAnswered#$effect($jobId)';
 }
 
-/// The render's WebView went away before it answered.
+/// The render was lost before it answered: no WebView could be made, it
+/// was torn down, the call was asked again, or the job's renders were
+/// cancelled.
 final class RenderGone extends RenderResult {
   const RenderGone(super.effect, super.jobId);
+  @override
+  Msg toMsg() => RenderLost(effect, jobId);
   @override
   bool operator ==(Object other) =>
       other is RenderGone && other.effect == effect && other.jobId == jobId;
@@ -93,8 +135,14 @@ final class UiEffect extends ToUi {
   String toString() => 'UiEffect($effect)';
 }
 
+/// What the UI isolate's render endpoint takes: a render, or an end to a
+/// job's renders.
+sealed class UiRenderAsk extends ToUi {
+  const UiRenderAsk();
+}
+
 /// A render asked of the UI isolate.
-final class UiRender extends ToUi {
+final class UiRender extends UiRenderAsk {
   const UiRender(this.request);
   final RenderRequest request;
   @override
@@ -106,13 +154,28 @@ final class UiRender extends ToUi {
   String toString() => 'UiRender($request)';
 }
 
+/// Ends every render of job [jobId] (the worker stopped its work); each is
+/// answered gone.
+final class UiRenderCancel extends UiRenderAsk {
+  const UiRenderCancel(this.jobId);
+  final JobId jobId;
+  @override
+  bool operator ==(Object other) =>
+      other is UiRenderCancel && other.jobId == jobId;
+  @override
+  int get hashCode => Object.hash(83, jobId);
+  @override
+  String toString() => 'UiRenderCancel($jobId)';
+}
+
 /// What the UI isolate sends the worker.
 sealed class ToWorker {
   const ToWorker();
 }
 
 /// A message for the worker's loop: an intent, `CanRender`, `Woke`,
-/// `OutOfTime`. Any message encodes.
+/// `OutOfTime`. Any message encodes; the worker takes only those
+/// ([fromUi]).
 final class WorkerMsg extends ToWorker {
   const WorkerMsg(this.msg);
   final Msg msg;
@@ -123,6 +186,12 @@ final class WorkerMsg extends ToWorker {
   @override
   String toString() => 'WorkerMsg($msg)';
 }
+
+/// Whether the UI isolate may send [m] to the worker's loop: an intent,
+/// `CanRender`, `Woke` or `OutOfTime`. Every other message is the worker's
+/// own, and the worker refuses it from the UI.
+bool fromUi(Msg m) =>
+    m is Intent || m is CanRender || m is Woke || m is OutOfTime;
 
 /// A render's answer, for the effect runner.
 final class WorkerRender extends ToWorker {
@@ -224,12 +293,14 @@ Map<String, Object?> encodeToUi(ToUi m) => _top(switch (m) {
     't': 'render',
     'request': _renderRequest(request),
   },
+  UiRenderCancel(:final jobId) => {'t': 'renderCancel', 'jobId': jobId},
 });
 Decoded<ToUi> decodeToUi(Object? wire) => _decodeTop(
   wire,
   (r) => r.variant<ToUi>({
     'effect': (r) => UiEffect(r.obj('effect', _effectOf)),
     'render': (r) => UiRender(r.obj('request', _renderRequestOf)),
+    'renderCancel': (r) => UiRenderCancel(r.str('jobId')),
   }),
 );
 
@@ -954,13 +1025,19 @@ JobView _viewOf(_R r) {
 Map<String, Object?> _renderRequest(RenderRequest r) => {
   'effect': r.effect,
   'jobId': r.jobId,
+  'callId': r.callId,
   'spec': _renderSpec(r.spec),
+  'settleMs': r.settleMs,
+  'maxBytes': r.maxBytes,
 };
 
 RenderRequest _renderRequestOf(_R r) => RenderRequest(
   r.integer('effect'),
   r.str('jobId'),
+  r.str('callId'),
   r.obj('spec', _renderSpecOf),
+  settleMs: r.integer('settleMs'),
+  maxBytes: r.integer('maxBytes'),
 );
 
 Map<String, Object?> _renderResult(RenderResult r) => switch (r) {
@@ -990,12 +1067,28 @@ Map<String, Object?> _renderSpec(RenderSpec s) => {
   'draftId': s.draftId,
   'revision': s.revision,
   'kind': s.kind.name,
+  'digest': s.digest,
+  'files': [...s.files],
+  'migration': switch (s.migration) {
+    final m? => {'file': m.file, 'from': m.from, 'to': m.to},
+    null => null,
+  },
 };
 
 RenderSpec _renderSpecOf(_R r) => RenderSpec(
   draftId: r.str('draftId'),
   revision: r.integer('revision'),
   kind: r.enumOf('kind', RenderKind.values),
+  digest: r.strOrNull('digest'),
+  files: r.list('files', _str),
+  migration: r.objOrNull(
+    'migration',
+    (r) => MigrationSpec(
+      file: r.str('file'),
+      from: r.integer('from'),
+      to: r.integer('to'),
+    ),
+  ),
 );
 
 Map<String, Object?> _renderOutcome(RenderOutcome o) => {

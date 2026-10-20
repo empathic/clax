@@ -5,13 +5,22 @@
 library;
 
 import 'dart:async';
+import 'dart:convert';
 
 import 'package:flutter/foundation.dart';
 
 import '../agent/inspector.dart';
 import '../core/origins.dart';
+import '../queue/codec.dart'
+    show
+        RenderAnswered,
+        RenderGone,
+        RenderRequest,
+        RenderResult,
+        UiRender,
+        UiRenderCancel;
 import '../queue/model.dart' show EffectId, JobId, RenderKind, RenderOutcome;
-import '../queue/render/render_port.dart';
+import '../queue/render.dart';
 import 'inspector_surface.dart' show InspectorLost;
 
 /// Renders drafts for the worker's jobs.
@@ -21,10 +30,12 @@ import 'inspector_surface.dart' show InspectorLost;
 /// [origins]) in [inspector], which serves one call at a time, and is
 /// answered:
 ///
-/// - with what the page showed, its tests found or its migration did;
+/// - with what the page showed (its screenshot as base64 in
+///   `inspection.png`), its tests found or its migration did, and what
+///   broke (`errors`, `failed_tests`; see [RenderOutcome]);
 /// - with a failed outcome (`{'error': message}`) when the page did not
 ///   load or answer, which is the draft's to fix;
-/// - lost, when no WebView could be made ([canRender] false), the app went
+/// - gone, when no WebView could be made ([canRender] false), the app went
 ///   away while it rendered ([available] turning false: the render is
 ///   stopped), the inspector's surface was torn down ([InspectorLost]), a
 ///   request for the same call came again, or the job's renders were
@@ -32,7 +43,7 @@ import 'inspector_surface.dart' show InspectorLost;
 ///
 /// The service keeps no time of its own: the worker's deadline decides
 /// that a render took too long.
-class RenderService {
+class RenderService implements RenderServer {
   RenderService({
     required this.inspector,
     required this.origins,
@@ -67,72 +78,66 @@ class RenderService {
 
   /// Renders [r]; never throws.
   Future<RenderResult> render(RenderRequest r) async {
-    if (!_canRender.value) return RenderResult.lost(r.id, r.jobId);
+    if (!_canRender.value) return RenderGone(r.effect, r.jobId);
     for (final other in _running.values.toList()) {
       if (other.request.jobId == r.jobId && other.request.callId == r.callId) {
         other.lose();
       }
     }
     final running = _Running(r);
-    _running[r.id] = running;
+    _running[r.effect] = running;
     try {
-      final (outcome, png) = await _draw(r, running.stopped.future);
+      final outcome = await _draw(r, running.stopped.future);
       return running.lost
-          ? RenderResult.lost(r.id, r.jobId)
-          : RenderResult.done(r.id, r.jobId, outcome, png: png);
+          ? RenderGone(r.effect, r.jobId)
+          : RenderAnswered(r.effect, r.jobId, outcome);
     } on InspectorLost {
-      return RenderResult.lost(r.id, r.jobId);
+      return RenderGone(r.effect, r.jobId);
     } on Object catch (e) {
-      if (running.lost) return RenderResult.lost(r.id, r.jobId);
+      if (running.lost) return RenderGone(r.effect, r.jobId);
       // For the agent, as the render tool reports it; no person reads it.
       final why = e is InspectorError ? e.message : '$e'; // copy-check: allow
-      return RenderResult.done(
-        r.id,
-        r.jobId,
-        RenderOutcome(clean: false, data: {'error': why}),
-      );
+      return RenderAnswered(r.effect, r.jobId, _failed(why));
     } finally {
-      if (identical(_running[r.id], running)) _running.remove(r.id);
+      if (identical(_running[r.effect], running)) _running.remove(r.effect);
     }
   }
 
-  /// Ends every render of job [jobId]; each is answered lost.
+  /// Ends every render of job [jobId]; each is answered gone.
   void cancel(JobId jobId) {
     for (final r in _running.values.toList()) {
       if (r.request.jobId == jobId) r.lose();
     }
   }
 
-  /// Answers [end]'s requests and cancels, and tells it [canRender] now
-  /// and on every change, until the serving is closed; closing ends the
-  /// renders it asked for.
+  @override
   RenderServing serve(RenderEndpoint end) {
     final asked = <EffectId>{};
     var last = _canRender.value;
-    end.reply(RenderNews(canRender: last));
+    end.canRender(last);
     void news() {
       if (_canRender.value == last) return;
       last = _canRender.value;
-      end.reply(RenderNews(canRender: last));
+      end.canRender(last);
     }
 
     _canRender.addListener(news);
     var open = true;
     final sub = end.asks.listen((a) {
       switch (a) {
-        case RenderRequest():
-          asked.add(a.id);
+        case UiRender(:final request):
+          asked.add(request.effect);
           unawaited(
-            render(a).then((result) {
-              asked.remove(a.id);
-              if (open) end.reply(result);
+            render(request).then((result) {
+              asked.remove(request.effect);
+              if (open) end.answer(result);
             }),
           );
-        case RenderCancel(:final jobId):
+        case UiRenderCancel(:final jobId):
           cancel(jobId);
       }
     });
-    return RenderServing._(() {
+    return _Serving(() {
       if (!open) return;
       open = false;
       if (!_disposed) _canRender.removeListener(news);
@@ -143,12 +148,10 @@ class RenderService {
     });
   }
 
-  Future<(RenderOutcome, Uint8List?)> _draw(
-    RenderRequest r,
-    Future<void> stopped,
-  ) async {
-    final url = draftUrl(r.draftId);
-    switch (r.kind) {
+  Future<RenderOutcome> _draw(RenderRequest r, Future<void> stopped) async {
+    final spec = r.spec;
+    final url = draftUrl(spec.draftId);
+    switch (spec.kind) {
       case RenderKind.inspect:
         final i = await inspector.inspect(
           url,
@@ -156,42 +159,44 @@ class RenderService {
           maxBytes: r.maxBytes,
           cancelled: stopped,
         );
-        return (
-          RenderOutcome(
-            clean: i.uncaught.isEmpty,
-            data: {
-              'inspection': {
-                'console_errors': [
-                  for (final e in i.errors) {'kind': e.kind, 'text': e.text},
-                ],
-                'failed_requests': [...i.failed],
-                'text': i.text,
-                'title': i.title,
-                'height': i.height,
-                'settled_ms': i.settledMs,
-              },
+        return RenderOutcome(
+          clean: i.uncaught.isEmpty,
+          data: {
+            'inspection': {
+              'console_errors': [
+                for (final e in i.errors) {'kind': e.kind, 'text': e.text},
+              ],
+              'failed_requests': [...i.failed],
+              'text': i.text,
+              'title': i.title,
+              'height': i.height,
+              'settled_ms': i.settledMs,
+              'png': base64Encode(i.png),
             },
-          ),
-          i.png,
+            'errors': [for (final e in i.uncaught) e.text],
+            'failed_tests': const <String>[],
+          },
         );
       case RenderKind.tests:
-        if (r.files.isEmpty) {
-          return (_failed('the request names no test files'), null);
+        if (spec.files.isEmpty) {
+          return _failed('the request names no test files');
         }
         final t = await inspector.runTests(
           url,
-          files: r.files,
+          files: spec.files,
           cancelled: stopped,
         );
-        return (
-          RenderOutcome(clean: t.failed.isEmpty, data: {'tests': t.toJson()}),
-          null,
+        return RenderOutcome(
+          clean: t.failed.isEmpty,
+          data: {
+            'tests': t.toJson(),
+            'errors': const <String>[],
+            'failed_tests': [for (final f in t.failed) f.name],
+          },
         );
       case RenderKind.migration:
-        final m = r.migration;
-        if (m == null) {
-          return (_failed('the request names no migration'), null);
-        }
+        final m = spec.migration;
+        if (m == null) return _failed('the request names no migration');
         final run = await inspector.runMigration(
           url,
           file: m.file,
@@ -199,27 +204,34 @@ class RenderService {
           to: m.to,
           cancelled: stopped,
         );
-        return (
-          RenderOutcome(
-            clean: run.ok,
-            data: {
-              'migration': {'ok': run.ok, 'error': ?run.error},
-            },
-          ),
-          null,
+        return RenderOutcome(
+          clean: run.ok,
+          data: {
+            'migration': {'ok': run.ok, 'error': ?run.error},
+            'errors': [
+              if (!run.ok) run.error ?? 'the migration failed',
+            ],
+            'failed_tests': const <String>[],
+          },
         );
     }
   }
 
-  static RenderOutcome _failed(String why) =>
-      RenderOutcome(clean: false, data: {'error': why});
+  static RenderOutcome _failed(String why) => RenderOutcome(
+    clean: false,
+    data: {
+      'error': why,
+      'errors': [why],
+      'failed_tests': const <String>[],
+    },
+  );
 
   /// The shell's inspect view of draft [draftId], on the app's origins.
-  Uri draftUrl(String draftId) =>
-      Uri.parse(origins.shell)
-          .replace(pathSegments: ['a', draftId], query: 'app=1&inspect=1');
+  Uri draftUrl(String draftId) => Uri.parse(
+    origins.shell,
+  ).replace(pathSegments: ['a', draftId], query: 'app=1&inspect=1');
 
-  /// Ends every render (each answered lost); later requests are lost.
+  /// Ends every render (each answered gone); later requests are gone.
   void dispose() {
     if (_disposed) return;
     _disposed = true;
@@ -229,11 +241,10 @@ class RenderService {
   }
 }
 
-/// One [RenderService.serve]: [close] it when its endpoint goes (the
-/// worker it answered is gone).
-final class RenderServing {
-  RenderServing._(this._close);
+final class _Serving implements RenderServing {
+  _Serving(this._close);
   final void Function() _close;
+  @override
   void close() => _close();
 }
 
@@ -244,7 +255,7 @@ final class _Running {
   final stopped = Completer<void>();
   var lost = false;
 
-  /// Stops the render; it is answered lost.
+  /// Stops the render; it is answered gone.
   void lose() {
     lost = true;
     if (!stopped.isCompleted) stopped.complete();

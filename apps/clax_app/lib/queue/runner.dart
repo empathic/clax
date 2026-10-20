@@ -14,9 +14,12 @@ import '../clax/api.dart' show ClaxApiError;
 import '../clax/sse.dart' show SseMessage;
 import '../clax/transport.dart';
 import '../core/core_transport.dart';
+import 'codec.dart'
+    show RenderAnswered, RenderGone, RenderRequest, ToUi, UiEffect;
 import 'effect.dart';
 import 'model.dart';
 import 'msg.dart';
+import 'render.dart';
 import 'worker_main.dart' show WorkerContext, WorkerRunner;
 
 /// The agent's turns and tools (lib/agent), one at a time.
@@ -39,15 +42,29 @@ abstract interface class AgentPort {
     OtherCall call,
     Future<void> cancelled,
   );
-}
 
-/// The UI isolate's renderer (spec §7.3).
-abstract interface class RenderPort {
-  /// Renders [spec] for job [jobId]: its outcome, or null when the WebView
-  /// went away before it answered. An outcome's `data` carries the
-  /// `digest` of the files it drew and its `errors` and `failed_tests`,
-  /// which the runner records in the core (spec §8.2).
-  Future<RenderOutcome?> render(JobId jobId, RenderSpec spec);
+  /// What the `render` call [callId] of turn [turn] draws, [planned] as
+  /// the turn named it: the job's draft as the calls before it left it
+  /// (they run in order, before it), served for the UI isolate to load,
+  /// with its digest and test files. An [Exception] it throws answers the
+  /// render as failed with its text.
+  Future<RenderSpec> renderSpec(
+    JobId jobId,
+    int turn,
+    String callId,
+    RenderSpec planned,
+  );
+
+  /// What the `finish` call [callId] of turn [turn] publishes, [planned]
+  /// as the turn named it: the job's draft as the calls before it left it.
+  /// The plan's `base` is [planned]'s. An [Exception] it throws refuses the
+  /// publish ([Invalid] `no_draft`).
+  Future<PublishPlan> publishPlan(
+    JobId jobId,
+    int turn,
+    String callId,
+    PublishPlan planned,
+  );
 }
 
 /// What the worker tells the UI isolate.
@@ -62,17 +79,17 @@ abstract interface class UiPort {
   void publishState(PublishState state);
 }
 
-/// [UiPort] over a worker's outlet to the UI isolate: each effect is sent
-/// as itself.
+/// [UiPort] over a worker's outlet to the UI isolate: each effect goes as
+/// the codec's [UiEffect].
 final class _ToUi implements UiPort {
   const _ToUi(this._toUi);
-  final void Function(Object message) _toUi;
+  final void Function(ToUi message) _toUi;
   @override
-  void notice(Notice notice) => _toUi(notice);
+  void notice(Notice notice) => _toUi(UiEffect(notice));
   @override
-  void keepAlive(KeepAlive keepAlive) => _toUi(keepAlive);
+  void keepAlive(KeepAlive keepAlive) => _toUi(UiEffect(keepAlive));
   @override
-  void publishState(PublishState state) => _toUi(state);
+  void publishState(PublishState state) => _toUi(UiEffect(state));
 }
 
 /// Runs the queue's effects on the core through [core] (the worker's
@@ -117,18 +134,20 @@ class EffectRunner implements WorkerRunner {
 
   /// The runner of the worker [context] belongs to, subscribed to the
   /// core's events at once: its calls go to the worker's core over a
-  /// [CoreTransport], its answers to [WorkerContext.send], and `Notice`,
-  /// `KeepAlive` and `PublishState` to [WorkerContext.toUi] as themselves.
+  /// [CoreTransport], its answers to [WorkerContext.send], its renders to
+  /// the worker's [WorkerContext.render] (unless [render] is given), and
+  /// `Notice` and `KeepAlive` to [WorkerContext.toUi] as the codec's
+  /// [UiEffect]s.
   factory EffectRunner.forWorker(
     WorkerContext context, {
     required AgentPort agent,
-    required RenderPort render,
+    RenderPort? render,
     required Future<bool> Function() probeClaude,
     required Future<String> Function() session,
   }) => EffectRunner(
     core: CoreTransport(context.core),
     agent: agent,
-    render: render,
+    render: render ?? context.render,
     ui: _ToUi(context.toUi),
     probeClaude: probeClaude,
     session: session,
@@ -215,12 +234,7 @@ class EffectRunner implements WorkerRunner {
           }),
         );
       case Publish():
-        unawaited(
-          _commit(e, 'POST', _step(e.jobId, e.key), {
-            'publish': {..._object(e.publish.data), 'base': e.base},
-            if (e.done) 'state': 'done',
-          }),
-        );
+        unawaited(_publish(e));
       case Reply():
         unawaited(
           _commit(e, 'POST', _step(e.jobId, e.key), {
@@ -238,6 +252,7 @@ class EffectRunner implements WorkerRunner {
         unawaited(_render(e));
       case StopWork(:final jobId):
         cancelJob(jobId);
+        render.cancel(jobId);
       case ProbeClaude():
         unawaited(_probe(e));
       case Notice():
@@ -544,6 +559,22 @@ class EffectRunner implements WorkerRunner {
     );
   }
 
+  /// Commits [e]'s publish step with the plan the agent makes of its draft
+  /// now ([AgentPort.publishPlan]), at [e]'s base.
+  Future<void> _publish(Publish e) async {
+    final PublishPlan plan;
+    try {
+      plan = await agent.publishPlan(e.jobId, e.turn, e.callId, e.publish);
+    } on Exception catch (err) {
+      _send(Refused(e.id, e.jobId, Invalid('no_draft', '$err')));
+      return;
+    }
+    await _commit(e, 'POST', _step(e.jobId, e.key), {
+      'publish': {..._object(plan.data), 'base': e.base},
+      if (e.done) 'state': 'done',
+    });
+  }
+
   /// Creates the question from the worker's session with the call's tool
   /// call ID (the core answers the same question for the same session and
   /// tool call), then records it as the job's.
@@ -635,35 +666,58 @@ class EffectRunner implements WorkerRunner {
   }
 
   /// Asks the UI isolate to render, records a render's result in the
-  /// core, then answers [Rendered]; a render the UI lost is [RenderLost].
+  /// core under the spec's digest (spec §8.2), then answers [Rendered]; a
+  /// render the UI lost is [RenderLost]. A render whose spec has no digest
+  /// is not recorded. A record refused or unanswered leaves the draft
+  /// unrendered: its publish is refused `not_rendered_clean`, and planned
+  /// again.
   Future<void> _render(Render e) async {
     _begin(e.jobId, e.id);
-    RenderOutcome? outcome;
+    final RenderSpec spec;
     try {
-      outcome = await render.render(e.jobId, e.spec);
-    } on Exception catch (_) {
-      outcome = null;
-    }
-    if (!_live(e.jobId, e.id)) return;
-    if (outcome == null) {
-      _end(e.jobId, e.id);
-      _send(RenderLost(e.id, e.jobId));
+      spec = await agent.renderSpec(e.jobId, e.turn, e.callId, e.spec);
+    } on Exception catch (err) {
+      if (_end(e.jobId, e.id)) {
+        _send(
+          Rendered(
+            e.id,
+            e.jobId,
+            RenderOutcome(
+              clean: false,
+              data: {
+                'error': 'The draft could not be served: $err',
+                'errors': ['The draft could not be served: $err'],
+                'failed_tests': const <String>[],
+              },
+            ),
+          ),
+        );
+      }
       return;
     }
-    if (outcome.data case {'digest': final String digest} && final Map d) {
-      // A record refused or unanswered leaves the draft unrendered: its
-      // publish is refused not_rendered_clean, and planned again.
-      await _call(
-        'POST',
-        '/api/drafts/${Uri.encodeComponent(e.spec.draftId)}/renders',
-        body: {
-          'digest': digest,
-          'errors': d['errors'] ?? const <Object?>[],
-          'failed_tests': d['failed_tests'] ?? const <Object?>[],
-        },
-      );
+    if (!_live(e.jobId, e.id)) return;
+    final result = await render.render(
+      RenderRequest(e.id, e.jobId, e.callId, spec),
+    );
+    if (!_live(e.jobId, e.id)) return;
+    switch (result) {
+      case RenderGone():
+        _end(e.jobId, e.id);
+        _send(RenderLost(e.id, e.jobId));
+      case RenderAnswered(:final outcome):
+        if (spec.digest case final digest?) {
+          await _call(
+            'POST',
+            '/api/drafts/${Uri.encodeComponent(spec.draftId)}/renders',
+            body: {
+              'digest': digest,
+              'errors': outcome.errors,
+              'failed_tests': outcome.failedTests,
+            },
+          );
+        }
+        if (_end(e.jobId, e.id)) _send(Rendered(e.id, e.jobId, outcome));
     }
-    if (_end(e.jobId, e.id)) _send(Rendered(e.id, e.jobId, outcome));
   }
 
   Future<void> _probe(ProbeClaude e) async {
@@ -952,6 +1006,10 @@ Map<String, Object?> _callJson(ToolCall c) => switch (c) {
     'draft_id': spec.draftId,
     'revision': spec.revision,
     'kind': spec.kind.name,
+    'digest': spec.digest,
+    'files': spec.files,
+    if (spec.migration case final m?)
+      'migration': {'file': m.file, 'from': m.from, 'to': m.to},
   },
   AskCall(:final id, :final question) => {
     'id': id,
@@ -998,6 +1056,19 @@ ToolCall? _callOf(Object? c) {
         kind:
             RenderKind.values.where((k) => k.name == c['kind']).firstOrNull ??
             RenderKind.inspect,
+        digest: c['digest'] as String?,
+        files: [
+          for (final f in (c['files'] as List?) ?? const [])
+            if (f is String) f,
+        ],
+        migration: switch (c['migration']) {
+          {'file': final String file} && final Map m => MigrationSpec(
+            file: file,
+            from: _int(m['from']) ?? 0,
+            to: _int(m['to']) ?? 0,
+          ),
+          _ => null,
+        },
       ),
     ),
     'ask' => AskCall(id, Question(data: c['question'])),

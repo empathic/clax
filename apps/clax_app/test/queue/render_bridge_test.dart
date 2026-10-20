@@ -1,11 +1,13 @@
 import 'dart:async';
+import 'dart:convert';
 
 import 'package:clax_app/agent/inspector.dart';
 import 'package:clax_app/core/origins.dart';
+import 'package:clax_app/queue/codec.dart';
 import 'package:clax_app/queue/effect.dart';
 import 'package:clax_app/queue/model.dart';
 import 'package:clax_app/queue/msg.dart';
-import 'package:clax_app/queue/render/render_port.dart';
+import 'package:clax_app/queue/render.dart';
 import 'package:clax_app/ui/inspector_surface.dart' show InspectorLost;
 import 'package:clax_app/ui/render_service.dart';
 import 'package:flutter/foundation.dart';
@@ -16,92 +18,109 @@ import '../support/fake_inspector.dart';
 import 'core_answers.dart';
 
 /// Rendering asked of the UI isolate (spec 2026-10-19-in-process-core-design
-/// §7.3): the worker's `Render` effects cross a [RenderPort] as
-/// [RenderRequest]s, a [RenderService] answers each through its inspector,
-/// and the answers come back as the queue's `Rendered`, `RenderLost` and
+/// §7.3): the worker's `Render` effects cross a [RenderPort] as the codec's
+/// [UiRender]s, a [RenderService] answers each through its inspector, and
+/// the answers come back as the queue's `Rendered`, `RenderLost` and
 /// `CanRender` messages.
 void main() {
   const origins = AppOrigins('clax://app', 'clax://{id}.c');
 
   group('the messages', () {
-    test('each crosses the wire as a map and comes back equal', () {
-      final png = Uint8List.fromList([1, 2, 3]);
-      final all = <RenderMessage>[
-        const RenderRequest(
-          id: 7,
-          jobId: 'j',
-          callId: 'r1',
-          draftId: 'd0000000000a',
-          revision: 3,
-          kind: RenderKind.tests,
-          settleMs: 1500,
-          maxBytes: 4096,
-          files: ['tests/a.test.js'],
-        ),
-        const RenderRequest(
-          id: 8,
-          jobId: 'j',
-          callId: 'r2',
-          draftId: 'd0000000000a',
-          revision: 3,
-          kind: RenderKind.migration,
-          migration: MigrationSpec(file: 'migrate.js', from: 1, to: 2),
-        ),
-        const RenderCancel('j'),
-        RenderResult.done(
-          7,
-          'j',
-          const RenderOutcome(clean: false, data: {'error': 'boom'}),
-          png: png,
-        ),
-        const RenderResult.lost(8, 'j'),
-        const RenderNews(canRender: false),
-      ];
-      for (final m in all) {
-        final wire = encodeRender(m);
-        expect(isRenderWire(wire), isTrue);
-        expect(decodeRender(wire), m, reason: '$m');
-      }
-      expect(decodeRender({'kind': 'keepAlive'}), isNull);
-      expect(isRenderWire('hello'), isFalse);
-    });
-
     test('a request is the Render effect it was made of', () {
-      const e = Render(
-        4,
-        'j',
-        1,
-        'r1',
-        RenderSpec(draftId: 'd0000000000a', revision: 2),
-        last: true,
+      const spec = RenderSpec(
+        draftId: 'd0000000000a',
+        revision: 2,
+        digest: 'sha256:ab',
+        files: ['tests/a.test.js'],
       );
+      const e = Render(4, 'j', 1, 'r1', spec, last: true);
       final r = RenderRequest.of(e);
-      expect(r.id, 4);
+      expect(r.effect, 4);
       expect(r.jobId, 'j');
       expect(r.callId, 'r1');
-      expect(r.draftId, 'd0000000000a');
-      expect(r.revision, 2);
-      expect(r.kind, RenderKind.inspect);
+      expect(r.spec, spec);
     });
 
-    test('replies are the queue\'s messages', () {
+    test('answers are the queue\'s messages', () {
       const outcome = RenderOutcome(clean: true, data: {'inspection': {}});
       expect(
-        RenderResult.done(4, 'j', outcome).toMsg(),
+        const RenderAnswered(4, 'j', outcome).toMsg(),
         isA<Rendered>()
             .having((m) => m.effect, 'effect', 4)
             .having((m) => m.jobId, 'jobId', 'j')
             .having((m) => m.outcome, 'outcome', outcome),
       );
       expect(
-        const RenderResult.lost(4, 'j').toMsg(),
+        const RenderGone(4, 'j').toMsg(),
         isA<RenderLost>()
             .having((m) => m.effect, 'effect', 4)
             .having((m) => m.jobId, 'jobId', 'j'),
       );
+    });
+
+    test('an outcome names what broke, and one not clean never reads as '
+        'clean', () {
       expect(
-        const RenderNews(canRender: false).toMsg(),
-        isA<CanRender>().having((m) => m.can, 'can', false),
+        const RenderOutcome(
+          clean: false,
+          data: {
+            'errors': ['x is undefined'],
+            'failed_tests': ['adds'],
+          },
+        ).errors,
+        ['x is undefined'],
+      );
+      expect(
+        const RenderOutcome(clean: false, data: {'error': 'did not load'})
+            .errors,
+        ['did not load'],
+      );
+      expect(const RenderOutcome(clean: false).errors, isNotEmpty);
+      expect(
+        const RenderOutcome(
+          clean: false,
+          data: {
+            'failed_tests': ['adds'],
+          },
+        ).errors,
+        isEmpty,
+        reason: 'a failing test is what broke',
+      );
+      expect(const RenderOutcome(clean: true).errors, isEmpty);
+    });
+
+    test('the in-process wire carries each message through the codec, and '
+        'a port answers only what it asked', () async {
+      final loop = <Msg>[];
+      final (port, end) = inProcessRender(toLoop: loop.add);
+      final asks = <UiRenderAsk>[];
+      end.asks.listen(asks.add);
+      const spec = RenderSpec(draftId: 'd', revision: 1);
+      final answered = port.render(const RenderRequest(1, 'j', 'r', spec));
+      await settle();
+      expect(asks, [const UiRender(RenderRequest(1, 'j', 'r', spec))]);
+      end.answer(const RenderAnswered(9, 'j', RenderOutcome(clean: true)));
+      end.answer(const RenderAnswered(1, 'j', RenderOutcome(clean: true)));
+      end.canRender(false);
+      expect(
+        await answered,
+        const RenderAnswered(1, 'j', RenderOutcome(clean: true)),
+      );
+      await settle();
+      expect(loop.single, isA<CanRender>().having((m) => m.can, 'can', false));
+
+      final cancelled = port.render(const RenderRequest(2, 'j', 'r', spec));
+      port.cancel('j');
+      expect(await cancelled, const RenderGone(2, 'j'));
+      await settle();
+      expect(asks.last, const UiRenderCancel('j'));
+
+      final pending = port.render(const RenderRequest(3, 'k', 'r', spec));
+      port.close();
+      expect(await pending, const RenderGone(3, 'k'));
+      expect(
+        await port.render(const RenderRequest(4, 'k', 'r', spec)),
+        const RenderGone(4, 'k'),
       );
     });
   });
@@ -130,16 +149,18 @@ void main() {
       List<String> files = const [],
       MigrationSpec? migration,
     }) => RenderRequest(
-      id: id,
-      jobId: job,
-      callId: call,
-      draftId: 'd0000000000a',
-      revision: 1,
-      kind: kind,
+      id,
+      job,
+      call,
+      RenderSpec(
+        draftId: 'd0000000000a',
+        revision: 1,
+        kind: kind,
+        files: files,
+        migration: migration,
+      ),
       settleMs: 1500,
       maxBytes: 4096,
-      files: files,
-      migration: migration,
     );
 
     test('an inspection loads the draft in the shell\'s inspect view by '
@@ -155,35 +176,45 @@ void main() {
       expect(call.url, Uri.parse('clax://app/a/d0000000000a?app=1&inspect=1'));
       expect(call.settle, const Duration(milliseconds: 1500));
       expect(call.maxBytes, 4096);
-      expect(r.id, 1);
-      expect(r.jobId, 'j');
-      expect(r.png, inspector.png);
       expect(
-        r.outcome,
-        const RenderOutcome(
-          clean: true,
-          data: {
-            'inspection': {
-              'console_errors': [
-                {'kind': 'console', 'text': 'just a log'},
-              ],
-              'failed_requests': ['clax://d0000000000a.c/missing.png'],
-              'text': 'Runs\n[button] Add',
-              'title': 'Runs',
-              'height': 844,
-              'settled_ms': 320,
+        r,
+        RenderAnswered(
+          1,
+          'j',
+          RenderOutcome(
+            clean: true,
+            data: {
+              'inspection': {
+                'console_errors': [
+                  {'kind': 'console', 'text': 'just a log'},
+                ],
+                'failed_requests': ['clax://d0000000000a.c/missing.png'],
+                'text': 'Runs\n[button] Add',
+                'title': 'Runs',
+                'height': 844,
+                'settled_ms': 320,
+                'png': base64Encode(inspector.png),
+              },
+              'errors': const <String>[],
+              'failed_tests': const <String>[],
             },
-          },
+          ),
         ),
       );
     });
 
-    test('an uncaught error is not clean', () async {
+    test('an uncaught error is not clean, and is named', () async {
       inspector.answer(
-        inspector.clean(errors: const [(kind: 'error', text: 'x')]),
+        inspector.clean(
+          errors: const [
+            (kind: 'error', text: 'x'),
+            (kind: 'console', text: 'a log'),
+          ],
+        ),
       );
-      final r = await service.render(req(1));
-      expect(r.outcome!.clean, isFalse);
+      final r = await service.render(req(1)) as RenderAnswered;
+      expect(r.outcome.clean, isFalse);
+      expect(r.outcome.errors, ['x']);
     });
 
     test('a page that does not load is a render that failed, not one '
@@ -191,21 +222,29 @@ void main() {
       inspector.fail(const InspectorError('it did not load within 10 seconds'));
       final r = await service.render(req(1));
       expect(
-        r.outcome,
-        const RenderOutcome(
-          clean: false,
-          data: {'error': 'it did not load within 10 seconds'},
+        r,
+        const RenderAnswered(
+          1,
+          'j',
+          RenderOutcome(
+            clean: false,
+            data: {
+              'error': 'it did not load within 10 seconds',
+              'errors': ['it did not load within 10 seconds'],
+              'failed_tests': <String>[],
+            },
+          ),
         ),
       );
     });
 
     test('a surface torn down under the render is a render lost', () async {
       inspector.fail(const InspectorLost('the app is closing'));
-      final r = await service.render(req(1));
-      expect(r.isLost, isTrue);
+      expect(await service.render(req(1)), const RenderGone(1, 'j'));
     });
 
-    test('tests and migrations run by the inspector', () async {
+    test('tests and migrations run by the inspector, from the spec\'s files '
+        'and migration', () async {
       inspector.answerTests(
         const TestRun(
           passed: 1,
@@ -215,23 +254,17 @@ void main() {
       );
       final t = await service.render(
         req(1, kind: RenderKind.tests, files: const ['tests/a.test.js']),
-      );
+      ) as RenderAnswered;
       expect(inspector.testCalls.single.files, ['tests/a.test.js']);
-      expect(
-        t.outcome,
-        const RenderOutcome(
-          clean: false,
-          data: {
-            'tests': {
-              'passed': 1,
-              'failed': [
-                {'name': 'adds', 'error': 'no'},
-              ],
-              'skipped': 0,
-            },
-          },
-        ),
-      );
+      expect(t.outcome.clean, isFalse);
+      expect(t.outcome.failedTests, ['adds']);
+      expect((t.outcome.data! as Map)['tests'], {
+        'passed': 1,
+        'failed': [
+          {'name': 'adds', 'error': 'no'},
+        ],
+        'skipped': 0,
+      });
 
       final m = await service.render(
         req(
@@ -239,29 +272,22 @@ void main() {
           kind: RenderKind.migration,
           migration: const MigrationSpec(file: 'migrate.js', from: 1, to: 2),
         ),
-      );
+      ) as RenderAnswered;
       final mc = inspector.migrationCalls.single;
       expect((mc.file, mc.from, mc.to), ('migrate.js', 1, 2));
-      expect(
-        m.outcome,
-        const RenderOutcome(
-          clean: true,
-          data: {
-            'migration': {'ok': true},
-          },
-        ),
-      );
+      expect(m.outcome.clean, isTrue);
+      expect((m.outcome.data! as Map)['migration'], {'ok': true});
 
-      final none = await service.render(req(3, kind: RenderKind.tests));
-      expect(none.outcome!.clean, isFalse);
+      final none = await service.render(req(3, kind: RenderKind.tests))
+          as RenderAnswered;
+      expect(none.outcome.clean, isFalse);
       expect(inspector.testCalls, hasLength(1), reason: 'no files, no run');
     });
 
     test('a render asked while none can be made is lost at once', () async {
       available.value = false;
       expect(service.canRender.value, isFalse);
-      final r = await service.render(req(1));
-      expect(r.isLost, isTrue);
+      expect(await service.render(req(1)), const RenderGone(1, 'j'));
       expect(inspector.calls, isEmpty);
     });
 
@@ -270,8 +296,7 @@ void main() {
       final f = service.render(req(1));
       await settle();
       available.value = false;
-      final r = await f;
-      expect(r.isLost, isTrue);
+      expect(await f, const RenderGone(1, 'j'));
       await settle();
       expect(inspector.calls.single.cancelled, isNotNull);
     });
@@ -284,46 +309,38 @@ void main() {
       final first = service.render(req(1));
       await settle();
       final second = service.render(req(2));
-      expect((await first).isLost, isTrue);
+      expect(await first, const RenderGone(1, 'j'));
       service.cancel('j');
-      expect((await second).isLost, isTrue);
+      expect(await second, const RenderGone(2, 'j'));
     });
 
     test('serving an endpoint says whether it can render, then on each '
         'change, and answers each request', () async {
-      final (port, end) = inProcessRender();
-      final replies = <RenderReply>[];
-      final sub = port.replies.listen(replies.add);
+      final news = <bool>[];
+      final (port, end) = inProcessRender(
+        toLoop: (m) => news.add((m as CanRender).can),
+      );
       final serving = service.serve(end);
       await settle();
-      expect(replies, [const RenderNews(canRender: true)]);
+      expect(news, [true]);
 
-      port.ask(req(5));
-      await settle();
-      expect(replies.last, isA<RenderResult>().having((r) => r.id, 'id', 5));
+      final r5 = await port.render(req(5));
+      expect(r5, isA<RenderAnswered>().having((r) => r.effect, 'effect', 5));
 
       available.value = false;
       available.value = false;
       await settle();
-      expect(replies.whereType<RenderNews>().toList(), const [
-        RenderNews(canRender: true),
-        RenderNews(canRender: false),
-      ]);
+      expect(news, [true, false]);
 
       inspector.hang();
       available.value = true;
-      port.ask(req(6));
+      final r6 = port.render(req(6));
       await settle();
       port.cancel('j');
+      expect(await r6, const RenderGone(6, 'j'));
       await settle();
-      expect(
-        replies.last,
-        isA<RenderResult>()
-            .having((r) => r.id, 'id', 6)
-            .having((r) => r.isLost, 'lost', isTrue),
-      );
+      expect(inspector.calls.last.cancelled, isNotNull);
       serving.close();
-      await sub.cancel();
     });
   });
 
@@ -341,14 +358,10 @@ void main() {
         origins: origins,
         available: available,
       );
-      final (port, end) = inProcessRender();
-      service.serve(end);
-      w = _RenderWorld(FakeJobsCore(), port);
+      w = _RenderWorld(FakeJobsCore());
+      service.serve(w.end);
     });
-    tearDown(() async {
-      await w.close();
-      service.dispose();
-    });
+    tearDown(() => service.dispose());
 
     test('a render answered by the inspector reaches the worker as '
         'Rendered, and the job goes on', () async {
@@ -401,27 +414,37 @@ void main() {
   });
 }
 
-/// A worker whose `Render` effects go to the UI isolate through [port], as
-/// the effect runner sends them, and whose replies come back as messages.
+/// A worker whose `Render` effects go to the UI isolate through an
+/// in-process [RenderPort], as the effect runner sends them, and whose
+/// answers and news come back as messages.
 class _RenderWorld extends World {
-  _RenderWorld(super.core, this.port) {
-    _sub = port.replies.listen((r) {
-      final msg = r.toMsg();
-      received.add(msg);
-      inbox.add(msg);
-    });
+  _RenderWorld(super.core) {
+    final (port, end) = inProcessRender(
+      toLoop: (m) {
+        received.add(m);
+        inbox.add(m);
+      },
+    );
+    this.port = port;
+    this.end = end;
   }
 
-  final RenderPort port;
-  late final StreamSubscription<RenderReply> _sub;
+  late final WireRenderPort port;
+  late final WireRenderEndpoint end;
 
-  /// Every message the UI isolate's replies became.
+  /// Every message the UI isolate's answers and news became.
   final List<Msg> received = [];
 
   @override
   Msg? answerOf(Effect e) {
     if (e is Render) {
-      port.ask(RenderRequest.of(e));
+      unawaited(
+        port.render(RenderRequest.of(e)).then((r) {
+          final m = r.toMsg();
+          received.add(m);
+          inbox.add(m);
+        }),
+      );
       return null;
     }
     if (e is StopWork) port.cancel(e.jobId);
@@ -439,6 +462,4 @@ class _RenderWorld extends World {
     }
     throw StateError('the worker and the UI isolate did not settle');
   }
-
-  Future<void> close() => _sub.cancel();
 }

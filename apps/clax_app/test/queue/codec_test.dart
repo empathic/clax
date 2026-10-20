@@ -311,6 +311,7 @@ void main() {
       }
       // The envelopes around the values above: one of each kind.
       tryAll(encodeToUi(const UiEffect(KeepAlive(1, true))), decodeToUi);
+      tryAll(encodeToUi(UiRender(renderRequestSamples.last.$2)), decodeToUi);
       tryAll(encodeToUi(toUiSamples.last.$2), decodeToUi);
       tryAll(encodeToWorker(const WorkerMsg(Cancel('j'))), decodeToWorker);
       tryAll(encodeToWorker(toWorkerSamples.last.$2), decodeToWorker);
@@ -552,7 +553,13 @@ const notes = TurnNotes(
     FinishCall('c1b', PublishPlan(base: 0)),
     RenderCall(
       'c2',
-      RenderSpec(draftId: 'd1', revision: 2, kind: RenderKind.tests),
+      RenderSpec(
+        draftId: 'd1',
+        revision: 2,
+        kind: RenderKind.tests,
+        digest: 'sha256:ab',
+        files: ['tests/a.test.js', 'tests/b.test.js'],
+      ),
     ),
     AskCall(
       'c3',
@@ -815,7 +822,12 @@ final effectSamples = <(String, Effect)>[
       'j1',
       2,
       'c2',
-      const RenderSpec(draftId: 'd1', revision: 2, kind: RenderKind.migration),
+      const RenderSpec(
+        draftId: 'd1',
+        revision: 2,
+        kind: RenderKind.migration,
+        migration: MigrationSpec(file: 'up.js', from: 1, to: 3),
+      ),
       last: true,
       deadline: t0,
     ),
@@ -855,7 +867,42 @@ final stateSamples = <(String, QueueState)>[
 final renderRequestSamples = <(String, RenderRequest)>[
   (
     'inspect',
-    const RenderRequest(9, 'j1', RenderSpec(draftId: 'd1', revision: 2)),
+    const RenderRequest(
+      9,
+      'j1',
+      'c2',
+      RenderSpec(draftId: 'd1', revision: 2, digest: 'sha256:ab'),
+      settleMs: 1500,
+      maxBytes: 4096,
+    ),
+  ),
+  (
+    'tests',
+    const RenderRequest(
+      10,
+      'j1',
+      'c3',
+      RenderSpec(
+        draftId: 'd1',
+        revision: 2,
+        kind: RenderKind.tests,
+        files: ['tests/a.test.js'],
+      ),
+    ),
+  ),
+  (
+    'migration',
+    const RenderRequest(
+      11,
+      'j1',
+      'c4',
+      RenderSpec(
+        draftId: 'd1',
+        revision: 2,
+        kind: RenderKind.migration,
+        migration: MigrationSpec(from: 1, to: 2),
+      ),
+    ),
   ),
 ];
 
@@ -868,6 +915,7 @@ final renderResultSamples = <(String, RenderResult)>[
 final toUiSamples = <(String, ToUi)>[
   for (final (n, e) in effectSamples) ('effect $n', UiEffect(e)),
   for (final (n, r) in renderRequestSamples) ('render $n', UiRender(r)),
+  ('render cancel', const UiRenderCancel('j1')),
 ];
 
 final toWorkerSamples = <(String, ToWorker)>[

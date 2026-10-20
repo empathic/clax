@@ -375,33 +375,114 @@ final class ReplyPlan {
 
 enum RenderKind { inspect, tests, migration }
 
-/// What a render draws: a draft at a revision.
+/// The migration a [RenderKind.migration] render runs: the bundle's
+/// [file], from the installed data version [from] to the bundle's [to].
+final class MigrationSpec {
+  const MigrationSpec({
+    this.file = 'migrate.js',
+    required this.from,
+    required this.to,
+  });
+  final String file;
+  final int from;
+  final int to;
+  @override
+  bool operator ==(Object other) =>
+      other is MigrationSpec &&
+      other.file == file &&
+      other.from == from &&
+      other.to == to;
+  @override
+  int get hashCode => Object.hash(file, from, to);
+  @override
+  String toString() => 'MigrationSpec($file, $from→$to)';
+}
+
+/// What a render draws: a draft at a revision, and everything the UI
+/// isolate needs to draw it, so a render is never answered as failed for
+/// want of an input.
+///
+/// - [digest] is the draft's files digest at [revision] (spec
+///   2026-10-19-in-process-core-design §8.2: the content hash of its files
+///   but `icon.svg`), which the effect runner records the render under; a
+///   render without one is not recorded, and so clears no publish.
+/// - [files] are the draft's test files (`tests/<name>.test.js`) a
+///   [RenderKind.tests] render runs.
+/// - [migration] is what a [RenderKind.migration] render runs.
 final class RenderSpec {
   const RenderSpec({
     required this.draftId,
     required this.revision,
     this.kind = RenderKind.inspect,
+    this.digest,
+    this.files = const [],
+    this.migration,
   });
   final String draftId;
   final int revision;
   final RenderKind kind;
+  final String? digest;
+  final List<String> files;
+  final MigrationSpec? migration;
   @override
   bool operator ==(Object other) =>
       other is RenderSpec &&
       other.draftId == draftId &&
       other.revision == revision &&
-      other.kind == kind;
+      other.kind == kind &&
+      other.digest == digest &&
+      listEquals(other.files, files) &&
+      other.migration == migration;
   @override
-  int get hashCode => Object.hash(draftId, revision, kind);
+  int get hashCode => Object.hash(
+    draftId,
+    revision,
+    kind,
+    digest,
+    Object.hashAll(files),
+    migration,
+  );
+  @override
+  String toString() => 'RenderSpec($draftId@$revision, ${kind.name})';
 }
 
 /// A render's answer.
+///
+/// [data] is a JSON object: one of `{inspection: {...}}` (with the
+/// screenshot as base64 in `inspection.png`), `{tests: {...}}`,
+/// `{migration: {...}}` or `{error: message}` (the page did not load or
+/// answer), and beside it what broke, as the render record of spec §8.2
+/// keeps it: `errors` (each uncaught error's text) and `failed_tests` (each
+/// failing test's name), both lists ([errors] and [failedTests]).
 final class RenderOutcome {
   const RenderOutcome({required this.clean, this.data});
 
   /// No errors and no failing tests.
   final bool clean;
   final Object? data;
+
+  /// The uncaught errors [data] names; a render that is not [clean] and
+  /// names none has one, its `error` or that it was not clean, so its
+  /// record never reads as clean.
+  List<String> get errors {
+    final named = _strings('errors');
+    if (named.isNotEmpty || clean || failedTests.isNotEmpty) return named;
+    return [
+      switch (data) {
+        {'error': final String e} => e,
+        _ => 'the render was not clean',
+      },
+    ];
+  }
+
+  /// The failing tests [data] names.
+  List<String> get failedTests => _strings('failed_tests');
+
+  List<String> _strings(String key) {
+    final d = data;
+    final l = d is Map ? d[key] : null;
+    return l is List ? [for (final e in l) '$e'] : const [];
+  }
   @override
   bool operator ==(Object other) =>
       other is RenderOutcome &&

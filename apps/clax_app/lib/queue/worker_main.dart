@@ -3,14 +3,17 @@
 /// and the [QueueState] the UI sees published after each change.
 ///
 /// The isolate boundary is a message loop and nothing else crosses it: the
-/// UI isolate sends [Intent]s to the worker's inbox, and the worker sends
-/// back [WorkerReady], [WorkerState] and [WorkerOut]. Everything the
-/// worker awaits lives in the runner; the loop itself never awaits but for
-/// its clock's ticks.
+/// UI isolate sends the codec's [ToWorker] envelopes to the worker's inbox
+/// (its intents and news as [WorkerMsg], its render answers as
+/// [WorkerRender]), and the worker sends back [WorkerReady], [WorkerState]
+/// and [WorkerOut], which carries a [ToUi] envelope. Everything the worker
+/// awaits lives in the runner; the loop itself never awaits but for its
+/// clock's ticks.
 library;
 
 import 'dart:async';
 import 'dart:collection';
+import 'dart:developer' as developer;
 import 'dart:isolate';
 
 import '../core/core_client.dart';
@@ -19,6 +22,7 @@ import 'codec.dart';
 import 'effect.dart';
 import 'model.dart';
 import 'msg.dart';
+import 'render.dart';
 import 'update.dart';
 
 /// Runs the effects [update] emits but [PublishState], each answered, if
@@ -33,18 +37,20 @@ abstract interface class WorkerRunner {
 /// closure over sendable values.
 typedef RunnerFactory = WorkerRunner Function(WorkerContext context);
 
-/// How intents and states cross the isolate boundary: as
-/// `lib/queue/codec.dart`'s envelopes of plain data. An intent travels as
-/// a [ToWorker] message; a value that does not decode as what is expected
-/// reads as null, for the reader to drop.
+/// How everything crosses the isolate boundary: as `lib/queue/codec.dart`'s
+/// envelopes of plain data. A value that does not decode as what is
+/// expected reads as null, for the reader to drop.
 final class QueueWire {
   const QueueWire();
 
-  Object? intent(Intent i) => encodeToWorker(WorkerMsg(i));
-  Intent? readIntent(Object? o) => switch (decodeToWorker(o)) {
-    DecodeOk(value: WorkerMsg(msg: final Intent i)) => i,
-    _ => null,
-  };
+  /// What the UI isolate sends the worker.
+  Object? toWorker(ToWorker m) => encodeToWorker(m);
+  ToWorker? readToWorker(Object? o) => decodeToWorker(o).valueOrNull;
+
+  /// What the worker sends the UI isolate but its states.
+  Object? toUi(ToUi m) => encodeToUi(m);
+  ToUi? readToUi(Object? o) => decodeToUi(o).valueOrNull;
+
   Object? state(QueueState s) => encodeQueueState(s);
   QueueState? readState(Object? o) => decodeQueueState(o).valueOrNull;
 }
@@ -90,18 +96,25 @@ final class WorkerStart {
 CoreCalls attachCore(int handle) => CoreClient.attach(handle);
 
 /// What the worker's runner is built from: the worker's start, its core
-/// (attached on first use), and its two outlets.
+/// (attached on first use), its two outlets, and its end of the render
+/// boundary.
 final class WorkerContext {
-  WorkerContext(this.start, this.send, this.toUi);
+  WorkerContext(this.start, this.send, this.toUi)
+    : render = WireRenderPort(toUi);
 
   final WorkerStart start;
 
   /// Feeds a message back into the loop.
   final void Function(Msg msg) send;
 
-  /// Sends anything else the UI isolate is to hear (`KeepAlive`, `Notice`,
-  /// a render request) as a [WorkerOut].
-  final void Function(Object message) toUi;
+  /// Sends anything else the UI isolate is to hear (a `KeepAlive` or
+  /// `Notice` as [UiEffect], a render or its cancel) as a [WorkerOut].
+  final void Function(ToUi message) toUi;
+
+  /// The worker's renders: each request goes to the UI isolate through
+  /// [toUi], and the worker's inbox hands each [WorkerRender] it receives
+  /// to [WireRenderPort.answer].
+  final WireRenderPort render;
 
   late final CoreCalls core = start.attach(start.coreHandle);
 }
@@ -118,10 +131,11 @@ final class WorkerState {
   final Object? state;
 }
 
-/// Any other message for the UI isolate.
+/// Any other message for the UI isolate: a [ToUi] envelope, encoded by
+/// [QueueWire.toUi].
 final class WorkerOut {
   const WorkerOut(this.message);
-  final Object message;
+  final Object? message;
 }
 
 /// The loop: one message at a time through [update], a message sent while
@@ -181,28 +195,55 @@ final class WorkerLoop {
 
 /// The worker isolate's entry: builds the runner, tells the UI its inbox,
 /// starts with [CoreOpened] (the client spawns it once the core is open),
-/// and turns each intent from the UI and each tick of its clock into a
-/// message.
+/// and turns each tick of its clock into a message. Its inbox routes what
+/// the UI isolate sends ([routeToWorker]).
 void workerMain(WorkerStart start) {
   final inbox = ReceivePort('clax queue worker');
   late final WorkerLoop loop;
   final context = WorkerContext(
     start,
     (msg) => loop.dispatch(msg),
-    (message) => start.toUi.send(WorkerOut(message)),
+    (message) => start.toUi.send(WorkerOut(start.wire.toUi(message))),
   );
   final runner = start.runner(context);
   loop = WorkerLoop(
     run: runner.run,
     publish: (s) => start.toUi.send(WorkerState(start.wire.state(s))),
   );
-  inbox.listen((o) {
-    if (start.wire.readIntent(o) case final intent?) loop.dispatch(intent);
-  });
+  inbox.listen(
+    (o) => routeToWorker(
+      start.wire.readToWorker(o),
+      loop: loop.dispatch,
+      render: context.render,
+      refused: (why) => developer.log(why, name: 'clax queue'),
+    ),
+  );
   start.toUi.send(WorkerReady(inbox.sendPort));
   loop.dispatch(const CoreOpened());
   if (start.tickEvery case final every?) {
     unawaited(_tick(start.clock, every, loop));
+  }
+}
+
+/// Routes [m], one message from the UI isolate: an intent or the world's
+/// news ([fromUi]) to the [loop], a render's answer to the worker's
+/// [render] port. Anything else (a message only the worker makes, or one
+/// that did not decode) is [refused] and goes nowhere.
+void routeToWorker(
+  ToWorker? m, {
+  required void Function(Msg msg) loop,
+  required WireRenderPort render,
+  required void Function(String why) refused,
+}) {
+  switch (m) {
+    case WorkerMsg(:final msg) when fromUi(msg):
+      loop(msg);
+    case WorkerMsg(:final msg):
+      refused('the UI isolate may not send ${msg.runtimeType}');
+    case WorkerRender(:final result):
+      render.answer(result);
+    case null:
+      refused('a message that is not the codec\'s ToWorker');
   }
 }
 

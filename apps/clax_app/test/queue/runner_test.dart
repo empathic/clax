@@ -5,9 +5,11 @@ import 'dart:isolate';
 import 'package:clax_app/agent/backend.dart';
 import 'package:clax_app/core/core_transport.dart';
 import 'package:clax_app/core/frame.dart';
+import 'package:clax_app/queue/codec.dart';
 import 'package:clax_app/queue/effect.dart';
 import 'package:clax_app/queue/model.dart';
 import 'package:clax_app/queue/msg.dart';
+import 'package:clax_app/queue/render.dart';
 import 'package:clax_app/queue/runner.dart';
 import 'package:clax_app/queue/worker_main.dart';
 import 'package:flutter_test/flutter_test.dart' hide Retry;
@@ -324,7 +326,17 @@ void main() {
       const notes = TurnNotes(
         calls: [
           FinishCall('f', PublishPlan(base: 3, data: {'request': {}}), reply: ReplyPlan(data: {'body': 'hi'})),
-          RenderCall('r', RenderSpec(draftId: 'd', revision: 2, kind: RenderKind.tests)),
+          RenderCall(
+            'r',
+            RenderSpec(
+              draftId: 'd',
+              revision: 2,
+              kind: RenderKind.tests,
+              digest: 'sha256:ab',
+              files: ['tests/a.test.js'],
+              migration: MigrationSpec(from: 1, to: 2),
+            ),
+          ),
         ],
         data: {'text': 'ok'},
       );
@@ -368,6 +380,37 @@ void main() {
       expect(c.job.artifactId, step.artifactId);
       expect(c.job.state, JobState.done);
       expect(sent.whereType<JobNoticed>().last.step, const PublishKey(0));
+    });
+
+    test('a Publish commits the plan the agent makes of its draft when it '
+        'runs, at the effect\'s base', () async {
+      await claimed();
+      jobs.seed('j', state: 'running', rev: 2);
+      agent.planned = (p) async => PublishPlan(
+        base: 9,
+        data: {
+          'artifact_id': null,
+          'request': {'title': 'Now'},
+        },
+      );
+      runner.run(const Publish(1, 'j', 2, 'f', PublishPlan(base: 0), done: true));
+      await pumpEventQueue();
+      expect(agent.resolved, [('j', 2, 'f')]);
+      expect(body(to('POST', '/api/jobs/j/steps/publish:0').single), {
+        'publish': {'artifact_id': null, 'request': {'title': 'Now'}, 'base': 0},
+        'state': 'done',
+      });
+    });
+
+    test('a publish whose draft the agent cannot make is refused no_draft, '
+        'and sends nothing to the core', () async {
+      await claimed();
+      jobs.seed('j', state: 'running', rev: 2);
+      agent.planned = (_) async => throw const FormatException('gone');
+      runner.run(const Publish(1, 'j', 2, 'f', PublishPlan(base: 0), done: true));
+      await pumpEventQueue();
+      expect(only<Refused>().reason, isA<Invalid>().having((i) => i.code, 'code', 'no_draft'));
+      expect(to('POST', '/api/jobs/j/steps/publish:0'), isEmpty);
     });
 
     test('a publish on a moved base is VersionMoved(current), and records nothing', () async {
@@ -536,33 +579,113 @@ void main() {
       expect(done.firstWhere((d) => d.callId == 'b').result.isError, isTrue);
     });
 
-    test('a Render is recorded in the core before Rendered is sent', () async {
-      const spec = RenderSpec(draftId: 'd1', revision: 2);
+    test('a Render is recorded in the core under its spec\'s digest before '
+        'Rendered is sent', () async {
+      const spec = RenderSpec(draftId: 'd1', revision: 2, digest: 'sha256:ab');
       const outcome = RenderOutcome(
-        clean: true,
-        data: {'digest': 'abc', 'errors': [], 'failed_tests': []},
+        clean: false,
+        data: {
+          'errors': ['x is undefined'],
+          'failed_tests': ['adds'],
+        },
       );
-      final answer = Completer<RenderOutcome?>();
+      final answer = Completer<RenderResult>();
       renders.answers.add(answer.future);
       runner.run(const Render(1, 'j', 1, 'r', spec));
       await pumpEventQueue();
-      expect(renders.asked.single, ('j', spec));
-      answer.complete(outcome);
+      expect(renders.asked.single, const RenderRequest(1, 'j', 'r', spec));
+      expect(sent, isEmpty);
+      answer.complete(const RenderAnswered(1, 'j', outcome));
       await pumpEventQueue();
       expect(jobs.renders.single, {
         'draft': 'd1',
-        'digest': 'abc',
-        'errors': <Object?>[],
-        'failed_tests': <Object?>[],
+        'digest': 'sha256:ab',
+        'errors': ['x is undefined'],
+        'failed_tests': ['adds'],
       });
       expect(only<Rendered>().outcome, outcome);
     });
 
-    test('a render the UI lost is RenderLost, and records nothing', () async {
-      renders.answers.add(Future.value(null));
+    test('a render draws the spec the agent serves when it runs, and is '
+        'recorded under that spec\'s digest', () async {
+      const planned = RenderSpec(draftId: '', revision: 0);
+      const spec = RenderSpec(draftId: 'd2', revision: 4, digest: 'sha256:cd', files: ['tests/a.test.js']);
+      agent.served = (p) async {
+        expect(p, planned);
+        return spec;
+      };
+      renders.answers.add(Future.value(const RenderAnswered(1, 'j', RenderOutcome(clean: true))));
+      runner.run(const Render(1, 'j', 3, 'r', planned));
+      await pumpEventQueue();
+      expect(agent.resolved, [('j', 3, 'r')]);
+      expect(renders.asked.single, const RenderRequest(1, 'j', 'r', spec));
+      expect(jobs.renders.single['draft'], 'd2');
+      expect(jobs.renders.single['digest'], 'sha256:cd');
+      expect(only<Rendered>().outcome.clean, isTrue);
+    });
+
+    test('a draft that cannot be served answers the render as failed, and '
+        'asks the UI nothing', () async {
+      agent.served = (_) async => throw const FormatException('no draft');
+      runner.run(const Render(1, 'j', 1, 'r', RenderSpec(draftId: '', revision: 0)));
+      await pumpEventQueue();
+      final r = only<Rendered>();
+      expect(r.outcome.clean, isFalse);
+      expect(r.outcome.errors.single, contains('no draft'));
+      expect(renders.asked, isEmpty);
+      expect(jobs.renders, isEmpty);
+    });
+
+    test('a render not clean that names nothing is recorded with an error, '
+        'so it never clears a publish', () async {
+      renders.answers.add(
+        Future.value(
+          const RenderAnswered(
+            1,
+            'j',
+            RenderOutcome(clean: false, data: {'error': 'did not load'}),
+          ),
+        ),
+      );
+      runner.run(
+        const Render(1, 'j', 1, 'r', RenderSpec(draftId: 'd1', revision: 2, digest: 'sha256:ab')),
+      );
+      await pumpEventQueue();
+      expect(jobs.renders.single['errors'], ['did not load']);
+    });
+
+    test('a render without a digest is not recorded', () async {
+      renders.answers.add(
+        Future.value(const RenderAnswered(1, 'j', RenderOutcome(clean: true))),
+      );
       runner.run(const Render(1, 'j', 1, 'r', RenderSpec(draftId: 'd', revision: 1)));
       await pumpEventQueue();
+      expect(only<Rendered>().effect, 1);
+      expect(jobs.renders, isEmpty);
+    });
+
+    test('a render the UI lost is RenderLost, and records nothing', () async {
+      renders.answers.add(Future.value(const RenderGone(1, 'j')));
+      runner.run(
+        const Render(1, 'j', 1, 'r', RenderSpec(draftId: 'd', revision: 1, digest: 'sha256:ab')),
+      );
+      await pumpEventQueue();
       expect(only<RenderLost>().effect, 1);
+      expect(jobs.renders, isEmpty);
+    });
+
+    test('StopWork drops a render in flight and cancels the job\'s renders', () async {
+      final answer = Completer<RenderResult>();
+      renders.answers.add(answer.future);
+      runner.run(
+        const Render(1, 'j', 1, 'r', RenderSpec(draftId: 'd', revision: 1, digest: 'sha256:ab')),
+      );
+      await pumpEventQueue();
+      runner.run(const StopWork(2, 'j'));
+      expect(renders.cancelled, ['j']);
+      answer.complete(const RenderAnswered(1, 'j', RenderOutcome(clean: true)));
+      await pumpEventQueue();
+      expect(sent, isEmpty);
       expect(jobs.renders, isEmpty);
     });
 
@@ -590,7 +713,7 @@ void main() {
 
   test("a worker's runner subscribes, claims and speaks to the UI through its context", () async {
     final port = ReceivePort();
-    final out = <Object>[];
+    final out = <ToUi>[];
     final context = WorkerContext(
       WorkerStart(
         toUi: port.sendPort,
@@ -607,17 +730,26 @@ void main() {
     final WorkerRunner worker = EffectRunner.forWorker(
       context,
       agent: agent,
-      render: renders,
       probeClaude: () async => true,
       session: () async => 's1',
     );
     await pumpEventQueue();
     worker.run(const ClaimOwner(0));
     worker.run(const KeepAlive(1, true));
+    const spec = RenderSpec(draftId: 'd', revision: 1);
+    worker.run(const Render(2, 'j', 1, 'r', spec));
     await pumpEventQueue();
     expect(body(to('POST', '/api/jobs/owner').single)['stream'], 'fake-1');
     expect(only<OwnerClaimed>().token, jobs.ownerToken);
-    expect(out, const [KeepAlive(1, true)]);
+    // Its renders go out through the context's port, as the codec's
+    // envelopes, and the port's answer is the runner's.
+    expect(out, const [
+      UiEffect(KeepAlive(1, true)),
+      UiRender(RenderRequest(2, 'j', 'r', spec)),
+    ]);
+    context.render.answer(const RenderGone(2, 'j'));
+    await pumpEventQueue();
+    expect(only<RenderLost>().effect, 2);
     await (worker as EffectRunner).close();
     port.close();
   });
@@ -671,17 +803,41 @@ class _Agent implements AgentPort {
   @override
   Future<ToolResult> tool(JobId jobId, int turn, OtherCall call, Future<void> cancelled) =>
       tools.removeAt(0)(cancelled);
-}
 
-class _Render implements RenderPort {
-  final List<Future<RenderOutcome?>> answers = [];
-  final List<(JobId, RenderSpec)> asked = [];
+  /// What [renderSpec] and [publishPlan] answer; as planned when unset.
+  Future<RenderSpec> Function(RenderSpec planned)? served;
+  Future<PublishPlan> Function(PublishPlan planned)? planned;
+  final List<(JobId, int, String)> resolved = [];
 
   @override
-  Future<RenderOutcome?> render(JobId jobId, RenderSpec spec) {
-    asked.add((jobId, spec));
+  Future<RenderSpec> renderSpec(JobId jobId, int turn, String callId, RenderSpec planned) {
+    resolved.add((jobId, turn, callId));
+    return served?.call(planned) ?? Future.value(planned);
+  }
+
+  @override
+  Future<PublishPlan> publishPlan(JobId jobId, int turn, String callId, PublishPlan planned) {
+    resolved.add((jobId, turn, callId));
+    return this.planned?.call(planned) ?? Future.value(planned);
+  }
+}
+
+/// A render port answering from [answers], in order; a render with none
+/// queued fails the test.
+class _Render implements RenderPort {
+  final List<Future<RenderResult>> answers = [];
+  final List<RenderRequest> asked = [];
+  final List<JobId> cancelled = [];
+
+  @override
+  Future<RenderResult> render(RenderRequest request) {
+    asked.add(request);
+    if (answers.isEmpty) throw StateError('no answer queued for $request');
     return answers.removeAt(0);
   }
+
+  @override
+  void cancel(JobId jobId) => cancelled.add(jobId);
 }
 
 class _Ui implements UiPort {
