@@ -1,15 +1,13 @@
 // The iOS app sent to the background for 30 s and brought back, on the
-// simulator ("Clax iPhone"), with a made app open: the daemon answers on
-// the port it had (or was started again on it), the open app's stream is
-// connected again (a version published meanwhile reaches the page), and
-// the app's `*.localhost` origin loads.
+// simulator ("Clax iPhone"), with a made app open: the open app's stream
+// is connected again (a version published meanwhile reaches the page), and
+// the app's content origin loads.
 //
 // Run: `bazelisk test //apps/clax_app:integration_ios_background`, or
 // `just app-integration --ios` (tool/ios-integration-run.sh).
 import 'dart:io';
 
 import 'package:clax_app/clax/models.dart';
-import 'package:clax_app/daemon/health.dart';
 import 'package:flutter/widgets.dart';
 import 'package:flutter_test/flutter_test.dart';
 import 'package:integration_test/integration_test.dart';
@@ -19,8 +17,8 @@ import 'ios_rig.dart';
 void main() {
   IntegrationTestWidgetsFlutterBinding.ensureInitialized();
 
-  testWidgets('after 30 s in the background the daemon answers on its port, '
-      'the open app\'s stream reconnects and its origin loads', (
+  testWidgets('after 30 s in the background the open app\'s stream '
+      'reconnects and its origin loads', (
     tester,
   ) async {
     final runner = GatedRunner([makeRun]);
@@ -30,7 +28,6 @@ void main() {
     await rig.startMake(tester, 'Count what I tally');
     final aid = await rig.madeApp(tester);
     await rig.pageAt(tester, aid, 1);
-    final before = rig.endpoint();
 
     // Settings in front for 30 s, then Clax again. Nothing pumps while
     // Clax is away: no frame comes in the background.
@@ -45,14 +42,6 @@ void main() {
       reason: 'Clax went to the background',
     );
 
-    // The listener answers, on the port it had.
-    final probe = HttpHealthProbe();
-    final after = await rig.until(tester, 'the daemon answering', () async {
-      final ep = rig.endpoint();
-      return await probe.pid(ep.base) == ep.pid ? ep : null;
-    });
-    expect(after.port, before.port, reason: 'the same origin as before');
-
     // The stream: a version published now (by a session of the test's
     // own) reaches the open page.
     await rig.api.registerAppSession(installId: 'ios-background', pid: pid);
@@ -62,7 +51,7 @@ void main() {
     );
     await rig.reloadNewer(tester, 2);
     final page = await rig.pageAt(tester, aid, 2);
-    expect(page['origin'], 'http://$aid.localhost:${after.port}');
+    expect(page['origin'], IosRig.origins.content(aid));
     // The page shows version 2, so the New version toast goes (Reload's
     // tap started its exit, which runs as frames are pumped).
     await rig.until(

@@ -7,7 +7,7 @@ import 'package:clax_app/bundle/doc_snapshot.dart';
 import 'package:clax_app/bundle/lineage_store.dart';
 import 'package:clax_app/clax/api.dart';
 import 'package:clax_app/clax/fake_api.dart';
-import 'package:clax_app/daemon/supervisor.dart';
+import 'package:clax_app/core/core_client.dart';
 import 'package:clax_app/platform/bundle_intake.dart';
 import 'package:clax_app/platform/bundle_key.dart';
 import 'package:clax_app/platform/secure_key.dart';
@@ -20,7 +20,7 @@ import 'package:flutter_test/flutter_test.dart';
 import 'agent/loop_support.dart';
 import 'bundle/services_support.dart';
 import 'support/fake_inspector.dart';
-import 'support/fake_supervisor.dart';
+import 'support/fake_core.dart';
 import 'support/fake_surface.dart';
 import 'support/fake_voice.dart';
 import 'ui/bundle_flows_test.dart' show FakeBundleFiles, settle;
@@ -36,21 +36,21 @@ class _Key implements SecureKey {
 void main() {
   late Directory dir;
   late FakeClaxApi api;
-  late FakeSupervisor supervisor;
+  late FakeCoreHost coreHost;
   late FakeBundleIntake intake;
   late List<FakeAppSurface> surfaces;
 
   setUp(() {
     dir = Directory.systemTemp.createTempSync('app-bundles-');
     api = FakeClaxApi();
-    supervisor = FakeSupervisor();
+    coreHost = FakeCoreHost();
     intake = FakeBundleIntake();
     surfaces = [];
   });
   tearDown(() => dir.deleteSync(recursive: true));
 
   AppServices services() => AppServices(
-    supervisor: supervisor,
+    core: coreHost,
     api: (_) => api,
     backend: (s, k) => HeldBackend([], name: backendMessagesApi),
     voice: FakeVoice.unsupported('No speech here'),
@@ -58,7 +58,7 @@ void main() {
     key: _Key(),
     timings: RecordingTimings(),
     agentTimings: RecordingTimings(),
-    surface: (_) {
+    surface: () {
       final s = FakeAppSurface();
       surfaces.add(s);
       return s;
@@ -73,8 +73,8 @@ void main() {
     pid: 42,
   );
 
-  testWidgets('a file opened before the daemon is up shows its install '
-      'sheet once it is, and Install opens the app', (tester) async {
+  testWidgets('a file opened at launch shows its install sheet as the core '
+      'opens, and Install opens the app', (tester) async {
     late String path;
     await tester.runAsync(() async {
       await api.registerAppSession(installId: 'install', pid: 42);
@@ -84,8 +84,7 @@ void main() {
     intake.open(path);
     await tester.pumpWidget(AppRoot(services: services()));
     await tester.pump();
-    expect(find.byType(InstallSheet), findsNothing);
-    supervisor.set(Up(endpoint()));
+    coreHost.set(const CoreReady());
     await settle(tester);
     expect(find.byType(InstallSheet), findsOneWidget);
     expect(
@@ -122,7 +121,7 @@ void main() {
       });
       intake.open(path);
       await tester.pumpWidget(AppRoot(services: services()));
-      supervisor.set(Up(endpoint()));
+      coreHost.set(const CoreReady());
       await settle(tester);
       expect(find.byType(InstallSheet), findsOneWidget);
       expect(File(path).existsSync(), !ownCopy);
@@ -132,7 +131,7 @@ void main() {
 
   testWidgets('a platform refusal shows its sentence', (tester) async {
     await tester.pumpWidget(AppRoot(services: services()));
-    supervisor.set(Up(endpoint()));
+    coreHost.set(const CoreReady());
     await settle(tester);
     intake.refuse('too_large');
     await settle(tester);
@@ -157,7 +156,7 @@ void main() {
       ),
     );
     await tester.pumpWidget(AppRoot(services: services()));
-    supervisor.set(Up(endpoint()));
+    coreHost.set(const CoreReady());
     await settle(tester);
     api.emit('artifact_deleted', {'artifact_id': 'a_gone'});
     await settle(tester);
@@ -192,7 +191,7 @@ void main() {
       api.putDoc(aid, 'plants/p2', {'name': 'written later'});
     });
     await tester.pumpWidget(AppRoot(services: services()));
-    supervisor.set(Up(endpoint()));
+    coreHost.set(const CoreReady());
     await settle(tester);
     expect(find.byType(KeptUpdateSheet), findsOneWidget);
     await tester.tap(find.text('Discard'));

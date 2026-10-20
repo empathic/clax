@@ -12,7 +12,7 @@ import 'package:clax_app/agent/tools/budget.dart';
 import 'package:clax_app/app.dart';
 import 'package:clax_app/clax/api.dart';
 import 'package:clax_app/clax/fake_api.dart';
-import 'package:clax_app/daemon/supervisor.dart';
+import 'package:clax_app/core/core_client.dart';
 import 'package:clax_app/platform/background_work.dart';
 import 'package:clax_app/platform/connection.dart';
 import 'package:clax_app/platform/pending_make.dart';
@@ -31,7 +31,7 @@ import 'package:flutter_test/flutter_test.dart';
 import 'agent/loop_support.dart' show RecordingTimings, change, edit;
 import 'agent/tools/support.dart' show StepClock;
 import 'support/fake_inspector.dart';
-import 'support/fake_supervisor.dart';
+import 'support/fake_core.dart';
 import 'support/fake_surface.dart';
 import 'support/fake_voice.dart';
 
@@ -197,7 +197,7 @@ class _Work implements BackgroundWork {
 
 void main() {
   late Directory dir;
-  late FakeSupervisor supervisor;
+  late FakeCoreHost coreHost;
   late FakeClaxApi api;
   late _Agent agent;
   late _Work work;
@@ -211,7 +211,7 @@ void main() {
     clock = StepClock();
     reachable = true;
     dir = Directory.systemTemp.createTempSync('app-bg-test-');
-    supervisor = FakeSupervisor();
+    coreHost = FakeCoreHost();
     api = FakeClaxApi();
     agent = _Agent();
     work = _Work();
@@ -228,7 +228,7 @@ void main() {
     await tester.pumpWidget(
       AppRoot(
         services: AppServices(
-          supervisor: supervisor,
+          core: coreHost,
           api: (_) => api,
           backend: (_, _) => turns ?? agent,
           voice: FakeVoice.unsupported('No speech here'),
@@ -236,7 +236,7 @@ void main() {
           key: _Key(),
           timings: RecordingTimings(),
           agentTimings: RecordingTimings(),
-          surface: (_) {
+          surface: () {
             final s = FakeAppSurface();
             surfaces.add(s);
             return s;
@@ -257,7 +257,7 @@ void main() {
       ),
     );
     await tester.pump();
-    supervisor.set(Up(endpoint()));
+    coreHost.set(const CoreReady());
     // Not pumpAndSettle: an app page's cover spins until its shell is ready.
     for (var i = 0; i < 5; i++) {
       await tester.pump(const Duration(milliseconds: 200));

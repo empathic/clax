@@ -372,6 +372,28 @@ void main() {
     });
     tearDown(() => messenger.setMockMethodCallHandler(channel, null));
 
+    test('trim from the native side is answered once the core trimmed',
+        () async {
+      var trims = 0;
+      final done = Completer<void>();
+      IosBackgroundWork(hub, onTrim: () {
+        trims++;
+        return done.future;
+      });
+      var answered = false;
+      final reply = messenger.handlePlatformMessage(
+        ChannelBackgroundWork.channelName,
+        const StandardMethodCodec().encodeMethodCall(const MethodCall('trim')),
+        (_) => answered = true,
+      );
+      await pumpEventQueue();
+      expect(trims, 1);
+      expect(answered, isFalse);
+      done.complete();
+      await reply;
+      expect(answered, isTrue);
+    });
+
     test('the paused notice is titled by the app, and a second replaces '
         'the first', () async {
       final w = IosBackgroundWork(hub);

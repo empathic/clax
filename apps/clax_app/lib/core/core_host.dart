@@ -9,7 +9,6 @@ import 'dart:convert';
 import 'dart:developer' as developer;
 import 'dart:io';
 import 'dart:io' as io show pid;
-import 'dart:typed_data';
 
 import 'package:flutter/foundation.dart';
 
@@ -49,13 +48,12 @@ class CoreHost {
     required this.supportDir,
     required this.origins,
     required this.apiKey,
-    CoreLib? lib,
+    this._lib,
     int? pid,
     this.clearCookies,
     this.excludeFromBackup,
     void Function(String line)? log,
-  }) : _lib = lib,
-       _pid = pid ?? io.pid,
+  }) : _pid = pid ?? io.pid,
        _log = log ?? _devLog;
 
   /// The core's home (`clax-home/` under the support directory).

@@ -1,9 +1,9 @@
 // App bundles end to end on macOS (bundles spec §13): the real embedded
-// daemon, locked as the app runs it (`--require-credential`), the app's
-// real WebViewInspector, and a scripted agent making the app.
+// core, the app's real WebViewInspector on its scheme, and a scripted
+// agent making the app.
 //
 // An author makes a notes app, exports it, and a recipient on the same
-// daemon (its own lineage store, key and app session) installs it; the
+// core (its own lineage store, key and app session) installs it; the
 // author ships v2 (a `migrate.js` that reshapes the notes and writes the
 // person's private `data/users/` document, and a test), v3 (a failing
 // test) and v4 (a `migrate.js` that throws part way on the live app). The
@@ -31,13 +31,11 @@ import 'package:clax_app/bundle/trust.dart';
 import 'package:clax_app/bundle/updater.dart';
 import 'package:clax_app/clax/api.dart';
 import 'package:clax_app/clax/http_api.dart';
-import 'package:clax_app/daemon/supervisor.dart';
+import 'package:clax_app/core/core_transport.dart';
 import 'package:clax_app/platform/bundle_key.dart';
 import 'package:clax_app/ui/app_screen.dart';
-import 'package:clax_app/ui/daemon_cookie.dart';
 import 'package:clax_app/ui/host_protocol.dart';
 import 'package:clax_app/ui/inspector_surface.dart';
-import 'package:clax_app/ui/webview_surface.dart';
 import 'package:flutter/material.dart';
 import 'package:flutter_test/flutter_test.dart';
 import 'package:integration_test/integration_test.dart';
@@ -53,15 +51,13 @@ void main() {
   ) async {
     final runner = RecordingRunner([_makeRun]);
     late final Rig rig;
-    final cookie = DaemonKeyCookie(token: () => rig.token());
     final inspector = WebViewInspector(
-      surface: (base) => WebViewAppSurface(base: base, keyCookie: cookie),
+      surface: (_) => Rig.coreSurface(rig.core),
     );
     rig = await Rig.create(
       backend: ScriptedBackend(const []),
       runner: () => runner,
       inspector: inspector,
-      keyCookie: cookie,
     );
     addTearDown(rig.close);
 
@@ -100,10 +96,7 @@ void main() {
     );
     expect(await _notes(rig.api, aid), _v1Notes);
 
-    final endpoint = switch (rig.supervisor.state) {
-      Up(:final endpoint) => endpoint,
-      final s => throw StateError('the daemon is not up: $s'),
-    };
+    final shell = Uri.parse(Rig.origins.shell);
     // The author publishes as the app does, in its app session.
     await rig.api.registerAppSession(
       installId: 'f10-integration',
@@ -121,7 +114,7 @@ void main() {
 
     // The recipient: its own client and app session, store and key.
     final recipientDir = Directory('${rig.dir.path}/recipient')..createSync();
-    final recipientApi = HttpClaxApi.loopback(() => endpoint);
+    final recipientApi = HttpClaxApi.over(CoreTransport(rig.core.calls));
     addTearDown(recipientApi.close);
     Future<void> session() => recipientApi.registerAppSession(
       installId: 'bundle-recipient',
@@ -139,7 +132,7 @@ void main() {
       api: recipientApi,
       store: recipientStore,
       inspector: inspector,
-      baseUrl: () => endpoint.base,
+      baseUrl: () => shell,
       snapshots: DocSnapshots(recipientApi, recipientDir),
       ensureSession: session,
       log: (l) => debugPrint('bundle test updater: $l'),
@@ -224,7 +217,7 @@ void main() {
     expect(afterV2.current!.contentSha256, v2.manifest.contentSha256);
     expect(afterV2.artifact.icon, 'book');
     expect(await _notes(recipientApi, rid), _v2Notes);
-    expect(await _private(tester, inspector, endpoint.base, rid), _v2Private);
+    expect(await _private(tester, inspector, shell, rid), _v2Private);
     final entry2 = (await recipientStore.entry(rid))!;
     expect(entry2.version, 2);
     expect(entry2.released, [
@@ -308,7 +301,7 @@ void main() {
       'user': <String, Object?>{},
     });
     expect(await _notes(recipientApi, rid), _v2Notes);
-    expect(await _private(tester, inspector, endpoint.base, rid), _v2Private);
+    expect(await _private(tester, inspector, shell, rid), _v2Private);
     expect(DocSnapshots(recipientApi, recipientDir).has(rid), isFalse);
     expect((await recipientStore.entry(rid))!.version, 2);
     await _noDrafts(tester, recipientApi);

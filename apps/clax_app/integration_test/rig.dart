@@ -1,11 +1,11 @@
 /// The app's services over a scratch directory for the macOS integration
-/// tests, with the real embedded daemon (the bundle's
-/// `Contents/Resources/clax`, from `scripts/build-app-clax.sh macos`), the
-/// real HTTP client, supervisor and WebView, and what a test reads back.
+/// tests, with the real embedded core (the bundle's
+/// `Contents/Frameworks/libclax_embed.dylib`) opened by a [CoreHost], the
+/// real client over it, the scheme's WebViews, and what a test reads back.
 ///
 /// Everything lives in a scratch directory, `--dart-define=CLAX_F10_DIR=<dir>`
 /// (made under it) or the system temporary directory, removed after a
-/// pass; the daemon is stopped by the supervisor that started it.
+/// pass; the core is closed by the rig.
 library;
 
 import 'dart:async';
@@ -21,18 +21,17 @@ import 'package:clax_app/agent/timings.dart';
 import 'package:clax_app/app.dart';
 import 'package:clax_app/clax/api.dart';
 import 'package:clax_app/clax/http_api.dart';
-import 'package:clax_app/daemon/exe_locator.dart';
-import 'package:clax_app/daemon/health.dart';
-import 'package:clax_app/daemon/ports.dart';
-import 'package:clax_app/daemon/process.dart';
-import 'package:clax_app/daemon/supervisor.dart';
+import 'package:clax_app/core/core_client.dart';
+import 'package:clax_app/core/core_host.dart';
+import 'package:clax_app/core/core_transport.dart';
+import 'package:clax_app/core/frame.dart';
+import 'package:clax_app/core/origins.dart';
 import 'package:clax_app/home/home_install.dart';
 import 'package:clax_app/platform/secure_key.dart';
 import 'package:clax_app/platform/settings_store.dart';
 import 'package:clax_app/platform/timings.dart';
 import 'package:clax_app/platform/voice.dart';
 import 'package:clax_app/ui/app_screen.dart';
-import 'package:clax_app/ui/daemon_cookie.dart';
 import 'package:clax_app/ui/host_protocol.dart';
 import 'package:clax_app/ui/webview_surface.dart';
 import 'package:flutter/material.dart';
@@ -84,30 +83,26 @@ class _NoVoice implements VoiceInput {
 
 /// The app's services over a scratch directory, and what the test reads
 /// back: the shell's messages from every surface, the defended timings,
-/// and a client of the running daemon.
+/// and a client of the core.
 class Rig {
   Rig._(
     this.dir,
-    this.supervisor,
+    this.core,
     this.backend,
     this.timingsFile, {
     this.runner,
     this.inspector,
-    this.keyCookie,
     this.homeApp = false,
   });
 
   /// A rig whose runs take [backend]; with [runner] and [inspector], the
-  /// tool loop on that runner, rendering in that inspector. With
-  /// [keyCookie] the daemon is locked as the app runs it
-  /// (`--require-credential`) and the app's pages load with that cookie;
-  /// an [inspector] given then needs it too. With [homeApp] the app installs
-  /// the home app it ships and shows it at Home, as the released app does.
+  /// tool loop on that runner, rendering in that inspector (whose surfaces
+  /// are [coreSurface]s). With [homeApp] the app installs the home app it
+  /// ships and shows it at Home, as the released app does.
   static Future<Rig> create({
     required AgentBackend backend,
     AgentRunner Function()? runner,
     Inspector? inspector,
-    DaemonKeyCookie? keyCookie,
     bool homeApp = false,
   }) async {
     final Directory dir;
@@ -118,28 +113,21 @@ class Rig {
       dir = await parent.createTemp('run-');
     }
     final home = Directory('${dir.path}/clax-home')..createSync();
-    final cache = Directory('${dir.path}/cache')..createSync();
     File('${dir.path}/settings.json')
         .writeAsStringSync(jsonEncode({'dictate_comments': false}));
-    final supervisor = DaemonSupervisor(
-      exe: const MacExeLocator(),
+    final core = CoreHost(
       home: home.path,
       supportDir: dir.path,
-      cacheDir: cache.path,
-      starter: const IoProcessStarter(),
-      ports: const LoopbackPortPicker(),
-      health: HttpHealthProbe(),
-      pids: IoPidKiller(),
-      requireCredential: keyCookie != null,
-    );
+      origins: origins,
+      apiKey: () async => null,
+    )..open();
     final rig = Rig._(
       dir,
-      supervisor,
+      core,
       backend,
       File('${dir.path}/timings.jsonl'),
       runner: runner,
       inspector: inspector,
-      keyCookie: keyCookie,
       homeApp: homeApp,
     );
     rig._lifecycleListener;
@@ -147,11 +135,13 @@ class Rig {
   }
 
   final Directory dir;
-  final DaemonSupervisor supervisor;
+  /// The origins the app's WebViews load from.
+  static final origins = AppOrigins.forPlatform();
+
+  final CoreHost core;
   final AgentBackend backend;
   final AgentRunner Function()? runner;
   final Inspector? inspector;
-  final DaemonKeyCookie? keyCookie;
   final bool homeApp;
   final File timingsFile;
 
@@ -170,31 +160,26 @@ class Rig {
   final _subs = <StreamSubscription<HostMessage>>[];
   WebViewAppSurface? surface;
 
-  late final api = HttpClaxApi.loopback(_endpoint);
+  late final api = HttpClaxApi.over(CoreTransport(core.calls));
 
-  /// The running daemon's token, or null while it is not up: a
-  /// [DaemonKeyCookie]'s source.
-  String? token() => switch (supervisor.state) {
-    Up(:final endpoint) => endpoint.token,
-    _ => null,
-  };
-
-  DaemonEndpoint _endpoint() => switch (supervisor.state) {
-    Up(:final endpoint) => endpoint,
-    final s => throw StateError('the daemon is not up: $s'),
-  };
+  /// A WebView surface on the core, as the app makes one.
+  static WebViewAppSurface coreSurface(CoreHost core) => WebViewAppSurface(
+    base: Uri.parse(origins.shell),
+    core: core.calls,
+    origins: origins,
+  );
 
   late final services = AppServices(
-    supervisor: supervisor,
-    api: HttpClaxApi.loopback,
+    core: core,
+    api: (calls) => HttpClaxApi.over(CoreTransport(calls)),
     backend: (settings, key) => backend,
     voice: _NoVoice(),
     settings: SettingsStore(File('${dir.path}/settings.json')),
     key: _Key(),
     timings: FileTimings(timingsFile),
     agentTimings: FileTimings(File('${dir.path}/agent-timings.jsonl')),
-    surface: (base) {
-      final s = WebViewAppSurface(base: base, keyCookie: keyCookie);
+    surface: () {
+      final s = coreSurface(core);
       surface = s;
       _subs.add(s.messages.listen(messages.add));
       return s;
@@ -214,14 +199,6 @@ class Rig {
     for (final r in FileTimings(timingsFile).recent(1 << 20).reversed)
       if (r.name == name) r,
   ];
-
-  /// The PID `daemon.json` names.
-  int daemonPid() {
-    final j = jsonDecode(
-      File('${dir.path}/clax-home/daemon.json').readAsStringSync(),
-    );
-    return (j as Map)['pid'] as int;
-  }
 
   Future<ThreadView> thread(String aid, String id) async =>
       (await api.threads(aid)).singleWhere((t) => t.id == id);
@@ -454,23 +431,19 @@ class Rig {
 
   /// `GET /api/artifacts/<aid>/db-grants`: the owner's read grants of [aid].
   Future<List<Map<String, Object?>>> grants(String aid) async {
-    final e = _endpoint();
-    final client = HttpClient();
-    try {
-      final req = await client.getUrl(
-        e.base.replace(path: '/api/artifacts/$aid/db-grants'),
-      );
-      req.headers.set('authorization', 'Bearer ${e.token}');
-      final res = await req.close();
-      final body = await res.transform(utf8.decoder).join();
-      expect(res.statusCode, 200, reason: body);
-      return [
-        for (final g in (jsonDecode(body) as Map)['grants'] as List)
-          (g as Map).cast<String, Object?>(),
-      ];
-    } finally {
-      client.close(force: true);
-    }
+    final a = await core.calls
+        .call(CoreRequest('GET', '/api/artifacts/$aid/db-grants'))
+        .answer;
+    final res = switch (a) {
+      CoreAnswered(:final response) => response,
+      CoreUnanswered() => throw TestFailure('db-grants went unanswered: $a'),
+    };
+    final body = utf8.decode(res.body);
+    expect(res.status, 200, reason: body);
+    return [
+      for (final g in (jsonDecode(body) as Map)['grants'] as List)
+        (g as Map).cast<String, Object?>(),
+    ];
   }
 
   /// The content frame's box in the WebView, in CSS pixels.
@@ -489,8 +462,8 @@ class Rig {
     for (final s in _subs) {
       await s.cancel();
     }
-    await supervisor.stop();
     api.close();
+    await closeCore(core);
     if (_scratchParent.isEmpty) {
       try {
         await dir.delete(recursive: true);
@@ -665,4 +638,24 @@ abstract final class MacChrome {
     ),
     _ => null,
   };
+}
+
+/// Closes [core] and waits for it to say so, at most [_cap].
+Future<void> closeCore(CoreHost core) async {
+  final state = core.state;
+  if (state.value case CoreClosed() || CoreFailed()) return;
+  final closed = Completer<void>();
+  void on() {
+    if (state.value case CoreClosed() || CoreFailed()) {
+      if (!closed.isCompleted) closed.complete();
+    }
+  }
+
+  state.addListener(on);
+  core.close();
+  try {
+    await closed.future.timeout(_cap);
+  } finally {
+    state.removeListener(on);
+  }
 }

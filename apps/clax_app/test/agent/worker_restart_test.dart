@@ -8,12 +8,12 @@ import 'package:clax_app/agent/worker.dart';
 import 'package:clax_app/app.dart';
 import 'package:clax_app/clax/api.dart';
 import 'package:clax_app/clax/fake_api.dart';
-import 'package:clax_app/daemon/supervisor.dart';
+import 'package:clax_app/core/core_client.dart';
 import 'package:flutter/services.dart';
 import 'package:flutter_test/flutter_test.dart';
 
 import '../support/fake_inspector.dart';
-import '../support/fake_supervisor.dart';
+import '../support/fake_core.dart';
 import 'loop_support.dart';
 import 'tools/support.dart' show StepClock;
 
@@ -25,34 +25,23 @@ const unreachable = ClaxApiError(
   message: 'no connection',
 );
 
-/// The feedback worker as the app runs it ([AgentRuntime]): started by the
-/// supervisor's `Up`, stopped by its `Failed`, recovering cut-off changes
-/// from the daemon's threads.
+/// The feedback worker as the app runs it ([AgentRuntime]): started once
+/// the core opens, stopped when it fails, and recovering cut-off changes
+/// from the core's threads at the next launch.
 void main() {
   TestWidgetsFlutterBinding.ensureInitialized();
 
-  late FakeSupervisor supervisor;
+  late FakeCoreHost coreHost;
   late FakeClaxApi api;
   late HeldRunner runner;
   late AgentRuntime runtime;
   late List<WorkerEvent> events;
   late MemoryAskedQuestions asked;
+  late AgentLoop loop;
 
-  AgentRuntime runtimeWith(List<List<ScriptedCall>> script) {
-    runner = HeldRunner(script);
-    final loop = AgentLoop(
-      api: api,
-      runner: () => runner,
-      prompts: PromptBuilder(rootBundle),
-      model: () => 'claude-haiku-5-5',
-      timings: RecordingTimings(),
-      inspector: FakeInspector(),
-      baseUrl: () => Uri.parse('http://127.0.0.1:7999'),
-      asked: asked,
-      clock: StepClock(),
-    );
+  AgentRuntime runtimeOn(AgentLoop loop) {
     runtime = AgentRuntime(
-      supervisor: supervisor,
+      core: coreHost,
       api: api,
       loop: loop,
       installId: 'install',
@@ -65,6 +54,30 @@ void main() {
     return runtime;
   }
 
+  /// The next launch: the runtime ends and a new one starts over a new
+  /// core on the same loop.
+  Future<void> relaunch() async {
+    await runtime.close();
+    coreHost = FakeCoreHost();
+    runtimeOn(loop);
+  }
+
+  AgentRuntime runtimeWith(List<List<ScriptedCall>> script) {
+    runner = HeldRunner(script);
+    loop = AgentLoop(
+      api: api,
+      runner: () => runner,
+      prompts: PromptBuilder(rootBundle),
+      model: () => 'claude-haiku-5-5',
+      timings: RecordingTimings(),
+      inspector: FakeInspector(),
+      baseUrl: () => Uri.parse('http://127.0.0.1:7999'),
+      asked: asked,
+      clock: StepClock(),
+    );
+    return runtimeOn(loop);
+  }
+
   int registrations() =>
       api.callNames.where((n) => n == 'registerAppSession').length;
 
@@ -74,7 +87,7 @@ void main() {
   );
 
   setUp(() {
-    supervisor = FakeSupervisor();
+    coreHost = FakeCoreHost();
     api = FakeClaxApi();
     asked = MemoryAskedQuestions();
     events = [];
@@ -86,13 +99,9 @@ void main() {
   });
 
   test(
-    'the worker waits for the daemon, then registers as the app session',
+    'the worker starts as the core opens and registers as the app session',
     () async {
       runtimeWith([]);
-      await until(() => true);
-      expect(api.callNames, isEmpty, reason: 'nothing before Up');
-
-      supervisor.set(Up(endpoint()));
       await idle();
       final register = api.calls.firstWhere(
         (c) => c.name == 'registerAppSession',
@@ -103,59 +112,20 @@ void main() {
     },
   );
 
-  test('worker_survives_daemon_restart_mid_change', () async {
+  test('a core that fails stops the worker; at the next launch the cut-off '
+      'change runs once', () async {
     final aid = api.seedArtifact('Runs', {'index.html': page});
     runtimeWith([
       changeCalls(reply: 'Keep.', edits: [('Save', 'Keep')]),
       changeCalls(reply: 'Keep.', edits: [('Save', 'Keep')]),
     ]);
-    supervisor.set(Up(endpoint(pid: 1)));
+    coreHost.set(const CoreReady());
     await idle();
     runner.gate = Completer<void>();
     final item = api.sendComment(aid, 'Say Keep');
     await runner.arrived.future;
 
-    // The daemon dies while the model runs: its long poll breaks, its
-    // session is gone, and the supervisor brings up a new one.
-    supervisor.set(const Restarting(1, Duration(milliseconds: 200)));
-    api.endSession('install');
-    api.releasePolls();
-    api.failNext('publish', unreachable);
-    supervisor.set(Up(endpoint(pid: 2)));
-    await until(() => registrations() == 2 && api.waitingPolls == 1);
-    expect(runner.seen, hasLength(1), reason: 'the change in flight is kept');
-
-    // Its publish then reaches nobody; recovery runs it again from the
-    // daemon's threads.
-    runner.gate!.complete();
-    runner.gate = null;
-    await until(() => api.currentVersion(aid) == 2);
-    await idle();
-
-    expect(api.callNames, contains('allThreads'));
-    expect(runner.seen, hasLength(2), reason: 'run again exactly once');
-    expect(api.currentVersion(aid), 2, reason: 'exactly one new version');
-    final t = api.threadOf(aid, item.threadId);
-    expect([for (final c in t.comments) c.authorKind], ['viewer', 'agent']);
-    expect(t.comments.last.body, 'Keep.');
-    expect(t.status, 'resolved');
-    expect(events.whereType<WorkerLanded>(), hasLength(1));
-  });
-
-  test('a failed daemon stops the worker; Restart brings it back and the '
-      'cut-off change runs once', () async {
-    final aid = api.seedArtifact('Runs', {'index.html': page});
-    runtimeWith([
-      changeCalls(reply: 'Keep.', edits: [('Save', 'Keep')]),
-      changeCalls(reply: 'Keep.', edits: [('Save', 'Keep')]),
-    ]);
-    supervisor.set(Up(endpoint(pid: 1)));
-    await idle();
-    runner.gate = Completer<void>();
-    final item = api.sendComment(aid, 'Say Keep');
-    await runner.arrived.future;
-
-    supervisor.set(const Failed('clax stopped 5 times within a minute', []));
+    coreHost.set(const CoreFailed('internal', 'the core panicked', null));
     await until(() => events.whereType<WorkerCancelled>().isNotEmpty);
     expect(api.callNames, isNot(contains('publish')));
     expect(api.threadOf(aid, item.threadId).comments, hasLength(1));
@@ -163,7 +133,7 @@ void main() {
     api.endSession('install');
     api.releasePolls();
     runner.gate = null;
-    supervisor.set(Up(endpoint(pid: 3)));
+    await relaunch();
     await until(() => api.currentVersion(aid) == 2);
     await idle();
     expect(registrations(), 2);
@@ -172,8 +142,8 @@ void main() {
     expect([for (final c in t.comments) c.authorKind], ['viewer', 'agent']);
   });
 
-  test('a late answer whose run a failed daemon cancels runs once after '
-      'Restart', () async {
+  test('a late answer whose run a failed core cancels runs once at the next '
+      'launch', () async {
     final aid = api.seedArtifact('Runs', {'index.html': page});
     runtimeWith([
       [
@@ -197,7 +167,7 @@ void main() {
       changeCalls(reply: 'Kilometres.', edits: [('Save', 'km')]),
       changeCalls(reply: 'Kilometres.', edits: [('Save', 'km')]),
     ]);
-    supervisor.set(Up(endpoint(pid: 1)));
+    coreHost.set(const CoreReady());
     await idle();
     api.sendComment(aid, 'Show my total');
     await until(() => events.whereType<WorkerReplied>().isNotEmpty);
@@ -214,12 +184,12 @@ void main() {
     ]);
     await runner.arrived.future;
 
-    supervisor.set(const Failed('clax stopped 5 times within a minute', []));
+    coreHost.set(const CoreFailed('internal', 'the core panicked', null));
     await until(() => events.whereType<WorkerCancelled>().isNotEmpty);
     expect(api.currentVersion(aid), 1);
     api.releasePolls();
     runner.gate = null;
-    supervisor.set(Up(endpoint(pid: 3)));
+    await relaunch();
     await until(() => api.currentVersion(aid) == 2);
     await idle();
     expect(runner.seen, hasLength(3), reason: 'the answer ran once more');

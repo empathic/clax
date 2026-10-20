@@ -197,13 +197,16 @@ class ChannelBackgroundWork implements BackgroundWork {
 /// text}, `stop` and `pauseDone` over the `dev.empathic.clax/background`
 /// channel that `ios/Runner/Background.swift` serves, which holds a
 /// background task while runs go on and calls `stopped` when the time it
-/// was given is nearly spent ([pausesRuns]). The news (ready, failed,
+/// was given is nearly spent ([pausesRuns]), and `trim` when the app left
+/// the screen or got a memory warning, which is answered once [onTrim]
+/// (the core's memory trim) has completed. The news (ready, failed,
 /// paused), the permission and the taps go through [NotificationHub], with
 /// payload `run:<artifact ID>` (`run:` alone for none).
 class IosBackgroundWork implements BackgroundWork {
   IosBackgroundWork(
     this._hub, {
     this._channel = const MethodChannel(ChannelBackgroundWork.channelName),
+    this.onTrim,
   }) {
     _channel.setMethodCallHandler(_onCall);
   }
@@ -233,8 +236,20 @@ class IosBackgroundWork implements BackgroundWork {
   final MethodChannel _channel;
   final _stoppedEvents = StreamController<void>.broadcast();
 
+  /// Trims the core's memory; nothing is trimmed when null.
+  final Future<void> Function()? onTrim;
+
   Future<Object?> _onCall(MethodCall call) async {
-    if (call.method == 'stopped') _stoppedEvents.add(null);
+    switch (call.method) {
+      case 'stopped':
+        _stoppedEvents.add(null);
+      case 'trim':
+        try {
+          await onTrim?.call();
+        } on Object {
+          // The native side ends its task either way.
+        }
+    }
     return null;
   }
 

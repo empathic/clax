@@ -5,7 +5,7 @@ import 'package:clax_app/agent/timings.dart';
 import 'package:clax_app/app.dart';
 import 'package:clax_app/clax/fake_api.dart';
 import 'package:clax_app/daemon/clock.dart';
-import 'package:clax_app/daemon/supervisor.dart';
+import 'package:clax_app/core/core_client.dart';
 import 'package:clax_app/home/home_settings.dart';
 import 'package:clax_app/home/home_snapshot.dart';
 import 'package:clax_app/platform/secure_key.dart';
@@ -19,7 +19,7 @@ import 'package:flutter/services.dart';
 import 'package:flutter_test/flutter_test.dart';
 
 import '../agent/loop_support.dart';
-import '../support/fake_supervisor.dart';
+import '../support/fake_core.dart';
 import '../support/fake_surface.dart';
 import '../support/fake_voice.dart';
 
@@ -76,7 +76,7 @@ Future<void> _finish(WidgetTester tester) async {
 void main() {
   late Directory dir;
   late FakeClaxApi api;
-  late FakeSupervisor supervisor;
+  late FakeCoreHost coreHost;
   late List<FakeAppSurface> surfaces;
   late RecordingTimings timings;
   late String home;
@@ -88,7 +88,7 @@ void main() {
     api = FakeClaxApi(
       clock: () => '2026-10-12T00:00:${(t++).toString().padLeft(2, '0')}Z',
     );
-    supervisor = FakeSupervisor();
+    coreHost = FakeCoreHost();
     surfaces = [];
     timings = RecordingTimings();
     home = api.seedArtifact('Home', _page, capabilities: {'home': {}});
@@ -103,7 +103,7 @@ void main() {
     bool shots = false,
   }) => AppServices(
     clock: clock,
-    supervisor: supervisor,
+    core: coreHost,
     api: (_) => api,
     backend: (s, k) => HeldBackend([], name: backendMessagesApi),
     voice: FakeVoice.unsupported('No speech here'),
@@ -111,7 +111,7 @@ void main() {
     key: _Key(),
     timings: timings,
     agentTimings: RecordingTimings(),
-    surface: (_) {
+    surface: () {
       final s = shots ? _ShotSurface() : FakeAppSurface();
       surfaces.add(s);
       return s;
@@ -141,7 +141,7 @@ void main() {
         services: services(store: store, clock: clock, shots: shots),
       ),
     );
-    supervisor.set(Up(endpoint()));
+    coreHost.set(const CoreReady());
     await _settle(tester);
     final page = surfaces.single;
     page.push(Ready(artifact: home, version: 1, latest: 1, file: 'index.html'));
@@ -208,7 +208,7 @@ void main() {
     await _finish(tester);
   });
 
-  testWidgets('a launch shows the kept snapshot before the daemon is up, and '
+  testWidgets('a launch shows the kept snapshot while the core opens, and '
       "times home-cover and home-usable", (tester) async {
     await recordHome(tester);
     timings
@@ -224,11 +224,11 @@ void main() {
       at: DateTime.utc(2026, 10, 16),
     );
     await tester.pumpWidget(AppRoot(services: services(snapshot: snapshot)));
-    expect(find.byKey(const ValueKey('launch-snapshot')), findsOneWidget);
+    expect(find.byKey(const ValueKey('home-snapshot-cover')), findsOneWidget);
     await tester.pump();
     expect(timings.stopped.map((r) => r.name).toSet(), {homeCover});
 
-    supervisor.set(Up(endpoint()));
+    coreHost.set(const CoreReady());
     await _settle(tester);
     expect(find.byKey(const ValueKey('home-snapshot-cover')), findsOneWidget);
     final page = surfaces.single;
@@ -248,7 +248,7 @@ void main() {
     await recordHome(tester);
     timings.start(homeUsable);
     await tester.pumpWidget(AppRoot(services: services()));
-    supervisor.set(Up(endpoint()));
+    coreHost.set(const CoreReady());
     await _settle(tester);
     final page = surfaces.single;
     page.push(Ready(artifact: home, version: 1, latest: 1, file: 'index.html'));
@@ -303,7 +303,7 @@ void main() {
         services: services(snapshot: snapshot, store: store),
       ),
     );
-    supervisor.set(Up(endpoint()));
+    coreHost.set(const CoreReady());
     await _settle(tester);
     expect(find.byKey(const ValueKey('home-snapshot-cover')), findsOneWidget);
     surfaces.single.push(

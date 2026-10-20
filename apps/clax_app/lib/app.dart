@@ -44,9 +44,9 @@ import 'home/home_update.dart';
 import 'bundle/lineage_store.dart';
 import 'bundle/updater.dart';
 import 'clax/api.dart';
-import 'clax/shared_stream.dart';
 import 'daemon/clock.dart';
-import 'daemon/supervisor.dart';
+import 'core/core_client.dart';
+import 'core/core_host.dart';
 import 'platform/app_notice.dart';
 import 'platform/background_work.dart';
 import 'platform/bundle_intake.dart';
@@ -111,7 +111,7 @@ import 'ui/tokens.g.dart';
 /// give fakes.
 class AppServices {
   AppServices({
-    required this.supervisor,
+    required this.core,
     required this.api,
     required this.backend,
     required this.voice,
@@ -159,13 +159,11 @@ class AppServices {
              clock: clock,
            );
 
-  /// Starts and watches the embedded daemon.
-  final DaemonSupervisor supervisor;
+  /// The embedded core, opened before the first frame.
+  final CoreHost core;
 
-  /// The daemon client, built once; [endpoint] answers the running
-  /// daemon's address and token at each call, so the client follows
-  /// restarts.
-  final ClaxApi Function(DaemonEndpoint Function() endpoint) api;
+  /// The core's client, built once over [core]'s calls.
+  final ClaxApi Function(CoreCalls core) api;
 
   /// The backend a run uses under [AppSettings] (see [chooseBackend]).
   final AgentBackend Function(AppSettings settings, SecureKey key) backend;
@@ -183,10 +181,11 @@ class AppServices {
   /// numbers.
   final Timings agentTimings;
 
-  /// A new page surface for the daemon at `base`.
-  final AppSurface Function(Uri base) surface;
+  /// A new page surface, loading from the core's shell origin
+  /// ([CoreHost.origins]).
+  final AppSurface Function() surface;
 
-  /// This install's ID, which the daemon finds the app session by.
+  /// This install's ID, which the core finds the app session by.
   final String installId;
 
   /// The application support directory (the app session's `cwd`).
@@ -283,7 +282,7 @@ class AppServices {
   /// until the home app's page has drawn it.
   final HomeSnapshot? homeSnapshot;
 
-  /// The app's process ID, given to the daemon with the session.
+  /// The app's process ID, given to the core with the session.
   final int pid;
 
   /// The queue of makes and changes the UI shows and sends intents to;
@@ -461,14 +460,13 @@ EditResult _result(Map<String, Object?> j, int i) {
   }
 }
 
-/// Runs the feedback worker while the daemon is up: started by the
-/// supervisor's [Up] (registering the app session and recovering cut-off
-/// changes from the daemon's threads), and stopped by [Failed], since
-/// nothing answers until Restart. A restart in between needs nothing: the
-/// worker's poll fails, it registers again and recovers.
+/// Runs the feedback worker while the core is open: started once the core
+/// opens (registering the app session and recovering cut-off changes from
+/// the core's threads; its calls wait in the core until it is ready), and
+/// stopped when it fails or closes, since nothing answers then.
 class AgentRuntime {
   AgentRuntime({
-    required this._supervisor,
+    required this._core,
     required ClaxApi api,
     required AgentLoop loop,
     required String installId,
@@ -490,37 +488,40 @@ class AgentRuntime {
          stops: stops,
        );
 
-  final DaemonSupervisor _supervisor;
+  final CoreHost _core;
   final FeedbackWorker worker;
-  StreamSubscription<DaemonState>? _sub;
+  var _attached = false;
+  var _started = false;
 
-  /// Follows the supervisor from its current state on.
+  /// Follows the core from its current state on.
   void attach() {
-    _sub ??= _supervisor.states.listen(_on);
-    _on(_supervisor.state);
+    if (_attached) return;
+    _attached = true;
+    _core.state.addListener(_on);
+    _on();
   }
 
-  void _on(DaemonState s) {
-    switch (s) {
-      case Up():
+  void _on() {
+    switch (_core.state.value) {
+      case CoreOpening() || CoreReady():
+        if (_started) return;
+        _started = true;
         worker.start();
-      case Failed():
+      case CoreFailed() || CoreClosed():
         unawaited(worker.stop());
-      case Starting() || Restarting():
-        break;
     }
   }
 
-  /// Stops following the supervisor and stops the worker.
+  /// Stops following the core and stops the worker.
   Future<void> close() async {
-    unawaited(_sub?.cancel());
-    _sub = null;
+    if (_attached) _core.state.removeListener(_on);
+    _attached = false;
     await worker.stop();
   }
 }
 
-/// The app: a splash until the daemon is first up, then the launcher (kept
-/// through restarts), and the error screen when the daemon has failed.
+/// The app: the launcher once the core is open (a splash before), and the
+/// error screen when the core failed to open.
 ///
 /// - **Agent.** Each new app runs through its own [AgentLoop] whose backend
 ///   is a [StagedBackend] around the settings' backend, so the making screen
@@ -535,14 +536,13 @@ class AgentRuntime {
 ///   cut in the background anyway waits for Clax to return and runs again
 ///   ([ResumingBackend]) instead of failing. Notification permission is
 ///   asked for at the first Make.
-/// - **Lifecycle.** Resuming probes the daemon (`onResume`); detaching stops
-///   the worker and the daemon. An open app reloads when the daemon was
-///   restarted, and opens again at the new address when its port changed.
+/// - **Lifecycle.** Detaching (and quitting) stops the worker and closes
+///   the core.
 /// - **The open app's notice.** Each app screen shows [AppServices.notice]
 ///   while it is in front. A tap on it, or on its Comment or Threads, for
 ///   the app on top brings that app's screen back to the top (Comment and
 ///   Threads then act on it); for another app, it opens that app first,
-///   which then acts. A tap before the daemon is up waits for it, and the
+///   which then acts. A tap before the core is open waits for it, and the
 ///   tap that launched Clax counts too. The first app screen of an install
 ///   shows the first-run hint ([AppSettings.appHintSeen]); the comment
 ///   bar's Voice is kept as [AppSettings.dictateComments].
@@ -559,7 +559,7 @@ class AgentRuntime {
 ///   comes while the sheet shows another waits for it to close, and one
 ///   posted in the background is presented as above when Clax comes back
 ///   to the foreground; either is skipped if it closed meanwhile or the
-///   daemon no longer holds it open (checked on a `resync` and before
+///   core no longer holds it open (checked on a `resync` and before
 ///   either is presented). A question asked for (a notification's tap,
 ///   the inbox, a toast's View) takes the place of a sheet showing one
 ///   nobody asked for.
@@ -586,14 +586,15 @@ class AppRoot extends StatefulWidget {
 class _AppRootState extends State<AppRoot> with WidgetsBindingObserver {
   final _nav = GlobalKey<NavigatorState>();
   final _comments = CommentsCommand();
-  final _endpoint = ValueNotifier<DaemonEndpoint?>(null);
+  /// The shell's origin once the core is open; null before, and after it
+  /// failed.
+  final _base = ValueNotifier<Uri?>(null);
 
   /// Bumped when anything the home screen shows changes.
   final _revision = ValueNotifier(0);
 
   late final ClaxApi _api;
   late final AgentRuntime _runtime;
-  StreamSubscription<DaemonState>? _states;
   StreamSubscription<WorkerEvent>? _worker;
   StreamSubscription<String>? _opened;
   StreamSubscription<void>? _pauses;
@@ -634,7 +635,7 @@ class _AppRootState extends State<AppRoot> with WidgetsBindingObserver {
   /// Questions waiting for the sheet, oldest first: each `asked` (a
   /// notification, the inbox or a toast's View named it) or not (a new
   /// question, presented again by [_presentQuestion] when its turn comes).
-  /// Kept while the sheet shows another or before the daemon is up.
+  /// Kept while the sheet shows another or before the core is open.
   final _questionQueue = <({String qid, bool asked})>[];
 
   /// Questions posted as notifications while Clax was in the background,
@@ -672,18 +673,18 @@ class _AppRootState extends State<AppRoot> with WidgetsBindingObserver {
   final _openApps = <_OpenApp>[];
 
   /// An app a notification asked to open (and what to do there) before
-  /// the daemon was up.
+  /// the core was open.
   ({String aid, AppAction? action})? _pendingOpen;
 
-  /// A "Comment in Clax" run before the daemon was up.
+  /// A "Comment in Clax" run before the core was open.
   var _pendingComment = false;
 
   /// The app whose page was opened last in this launch.
   String? _lastOpened;
 
-  DaemonState _daemon = const Starting();
+  CoreOpen _core = const CoreOpening('opening');
 
-  /// The daemon has been up since the last failure.
+  /// The core is open: opening or ready, not failed or closed.
   var _wasUp = false;
   AppSettings _settings = AppSettings();
   var _needsKey = false;
@@ -729,7 +730,7 @@ class _AppRootState extends State<AppRoot> with WidgetsBindingObserver {
   );
 
   /// The home screen's sources, for the home app and the built-in home
-  /// screen, from the daemon's first Up.
+  /// screen, from the core's open.
   HomeHost? _homeHost;
 
   /// What a split window's sidebar lists, over [_homeHost], and what it
@@ -814,7 +815,7 @@ class _AppRootState extends State<AppRoot> with WidgetsBindingObserver {
   var _builtinChosen = false;
 
   /// Whether this launch may still end in the home app's first `shown`
-  /// ([homeUsable]): not once the built-in home screen or the daemon's
+  /// ([homeUsable]): not once the built-in home screen or the core's
   /// failure showed instead.
   var _launchOpen = true;
 
@@ -892,11 +893,11 @@ class _AppRootState extends State<AppRoot> with WidgetsBindingObserver {
   /// The app the last Make made, until its first `ready`.
   ({String aid, Map<String, Object?> extra})? _made;
 
-  /// The app's one `/api/stream`, from the daemon's first Up to the app's
+  /// The app's one `/api/stream`, from the core's open to the app's
   /// end: `gallery` and `inbox` for the launcher and the inbox, and
   /// `questions`, which makes the app an owner surface for the agent's
   /// `ask` while it runs.
-  SharedClaxStream? _stream;
+  ClaxStream? _stream;
 
   /// The topics [_stream] holds for the app's life.
   static const streamTopics = ['gallery', 'inbox', 'questions'];
@@ -941,9 +942,9 @@ class _AppRootState extends State<AppRoot> with WidgetsBindingObserver {
     super.initState();
     WidgetsBinding.instance.addObserver(this);
     _selection.addListener(_forgetPaneAim);
-    _api = _s.api(_currentEndpoint);
+    _api = _s.api(_s.core.calls);
     _runtime = AgentRuntime(
-      supervisor: _s.supervisor,
+      core: _s.core,
       api: _api,
       loop: _loop(
         onPause: () => _stepChanges(MakeStage.paused.label),
@@ -956,8 +957,8 @@ class _AppRootState extends State<AppRoot> with WidgetsBindingObserver {
       log: (l) => debugPrint('clax worker: $l'),
       stops: FileStoppedThreads(File('${_s.supportDir}/stopped.json')),
     );
-    _onState(_s.supervisor.state);
-    _states = _s.supervisor.states.listen(_onState);
+    _onState();
+    _s.core.state.addListener(_onState);
     _worker = _runtime.worker.events.listen(_onWorker);
     _builds = _runtime.worker.builds.listen(_buildNotices.onBuild);
     _runtime.attach();
@@ -993,7 +994,6 @@ class _AppRootState extends State<AppRoot> with WidgetsBindingObserver {
       _reminderTaps = d.taps.listen(_onReminderTap);
       unawaited(d.start());
     }
-    _start();
     unawaited(_loadSettings());
     if (widget.windows case final w?) {
       w.set('settings', (_) => _window(_settingsWindow()));
@@ -1076,7 +1076,6 @@ class _AppRootState extends State<AppRoot> with WidgetsBindingObserver {
   void dispose() {
     WidgetsBinding.instance.removeObserver(this);
     _developer.dispose();
-    unawaited(_states?.cancel());
     unawaited(_worker?.cancel());
     unawaited(_builds?.cancel());
     _buildNotices.dispose();
@@ -1113,18 +1112,20 @@ class _AppRootState extends State<AppRoot> with WidgetsBindingObserver {
     if (_s.inspector case final WebViewInspector i) i.dispose();
     _runs.dispose();
     _comments.dispose();
-    _endpoint.dispose();
+    _s.core.state.removeListener(_onState);
+    _base.dispose();
     _revision.dispose();
     super.dispose();
   }
 
-  DaemonEndpoint _currentEndpoint() =>
-      _endpoint.value ??
+  /// The shell's origin, for the pages a run renders.
+  Uri _currentBase() =>
+      _base.value ??
       (throw const ClaxApiError(
         status: 0,
         code: ClaxApiError.unreachable,
-        message: 'daemon_unreachable: the daemon has not started yet',
-        body: {'reason': 'daemon_unreachable'},
+        message: 'core_failed: the core is not open',
+        body: {'reason': 'core_failed'},
       ));
 
   late final _asked = _s.asked ?? MemoryAskedQuestions();
@@ -1183,7 +1184,7 @@ class _AppRootState extends State<AppRoot> with WidgetsBindingObserver {
       api: _api,
       store: _lineages,
       inspector: inspector,
-      baseUrl: () => _currentEndpoint().base,
+      baseUrl: _currentBase,
       snapshots: _snapshots,
       busy: _changing,
       hold: <T>(aid, body) => _runtime.worker.hold(aid, body),
@@ -1244,7 +1245,7 @@ class _AppRootState extends State<AppRoot> with WidgetsBindingObserver {
     });
   }
 
-  /// Once the daemon is first up: forgets deleted apps' lineages (as
+  /// Once the core is open: forgets deleted apps' lineages (as
   /// [_stream]'s `gallery` says), puts back updates an exit interrupted
   /// (telling the person once each), says when the lineage file was
   /// unreadable, and takes the files opened in Clax.
@@ -1437,7 +1438,7 @@ class _AppRootState extends State<AppRoot> with WidgetsBindingObserver {
       plans: _plans,
       unfinished: _unfinished,
       inspector: _s.inspector,
-      baseUrl: () => _currentEndpoint().base,
+      baseUrl: _currentBase,
       readConsent: _consent,
       clock: _s.clock,
       fromBundle: fromBundleOf(_lineages),
@@ -1480,22 +1481,20 @@ class _AppRootState extends State<AppRoot> with WidgetsBindingObserver {
   Future<void> _heldWhilePaused() =>
       _presence.paused ? _presence.whenForeground : Future.value();
 
-  void _start() => unawaited(
-    _s.supervisor.ensureUp().then<void>((_) {}, onError: (Object _) {}),
-  );
-
-  void _onState(DaemonState s) {
-    _daemon = s;
+  void _onState() {
+    final s = _core = _s.core.state.value;
     switch (s) {
-      case Up(:final endpoint):
+      case CoreOpening() || CoreReady():
+        // Once: the core opens one time, and its calls wait in it.
+        if (_wasUp) break;
         _wasUp = true;
-        _endpoint.value = endpoint;
+        final base = _base.value = Uri.parse(_s.core.origins.shell);
         if (_s.inspector case final WebViewInspector inspector) {
-          unawaited(inspector.warm(endpoint.base));
+          unawaited(inspector.warm(base));
         }
         if (_stream == null) {
-          final stream = _stream = SharedClaxStream(_api.stream);
-          // A failure is retried by the stream itself.
+          final stream = _stream = _api.stream();
+          // The core's stream reconnects by itself.
           unawaited(stream.subscribe(streamTopics).catchError((Object _) {}));
           // A deleted app's reminders stop and its device answers go.
           _deletions = stream.events.listen((e) {
@@ -1555,12 +1554,14 @@ class _AppRootState extends State<AppRoot> with WidgetsBindingObserver {
           _offeredLostMake = true;
           scheduleMicrotask(() => unawaited(_offerLostMake()));
         }
-      case Failed():
+      case CoreClosed():
+        // Closed by the app's own quit: the screen stays as it is.
+        break;
+      case CoreFailed():
         _wasUp = false;
+        _base.value = null;
         _launchOpen = false;
         _nav.currentState?.popUntil((r) => r.isFirst);
-      case Starting() || Restarting():
-        break;
     }
     _revision.value++;
   }
@@ -1575,7 +1576,6 @@ class _AppRootState extends State<AppRoot> with WidgetsBindingObserver {
     }
     switch (state) {
       case AppLifecycleState.resumed:
-        unawaited(_s.supervisor.onResume());
         // Back in front: work waiting for the connection is tried at once,
         // also a turn that stopped resending until now.
         _s.connection.nudge();
@@ -1613,40 +1613,56 @@ class _AppRootState extends State<AppRoot> with WidgetsBindingObserver {
   }
 
   /// The app is about to quit (macOS: Quit, ⌘Q, or closing the last
-  /// window): the daemon is stopped before the process exits, so it does
-  /// not outlive the app.
+  /// window): the core is closed before the process exits, so its store
+  /// is left whole.
   @override
   Future<AppExitResponse> didRequestAppExit() async {
     await _shutDown();
     return AppExitResponse.exit;
   }
 
-  /// How long the worker gets to wind down its change before the daemon
-  /// is stopped anyway.
+  /// How long the worker gets to wind down its change before the core
+  /// is closed anyway.
   static const workerStopLimit = Duration(seconds: 2);
 
-  /// The longest a quit waits for the daemon: its SIGTERM grace (after
-  /// which the supervisor sends SIGKILL) and a little more.
-  static const daemonStopLimit = Duration(seconds: 5);
+  /// The longest a quit waits for the core to close.
+  static const coreCloseLimit = Duration(seconds: 5);
 
   Future<void>? _shuttingDown;
 
-  /// Stops the worker, then the daemon (SIGTERM, then SIGKILL), each
-  /// within its limit; once, however many times it is asked.
+  /// Stops the worker, then closes the core, each within its limit;
+  /// once, however many times it is asked.
   Future<void> _shutDown() => _shuttingDown ??= () async {
     try {
       await _runtime.close().timeout(workerStopLimit);
     } on Object {
-      // Stop the daemon anyway.
+      // Close the core anyway.
     }
     try {
-      await _s.supervisor.stop().timeout(daemonStopLimit);
+      await _closeCore().timeout(coreCloseLimit);
     } on Object {
-      // Quit anyway; the next launch stops a daemon left behind.
+      // Quit anyway; the next launch opens the home again.
     }
     await _s.background.stop();
     await _s.notice?.clear();
   }();
+
+  /// Closes the core; completes once it says it has closed.
+  Future<void> _closeCore() {
+    final state = _s.core.state;
+    if (state.value case CoreClosed() || CoreFailed()) return Future.value();
+    final closed = Completer<void>();
+    void on() {
+      if (state.value case CoreClosed() || CoreFailed()) {
+        state.removeListener(on);
+        if (!closed.isCompleted) closed.complete();
+      }
+    }
+
+    state.addListener(on);
+    _s.core.close();
+    return closed.future;
+  }
 
   Future<void> _loadSettings() async {
     final s = await _s.settings.load();
@@ -1934,7 +1950,7 @@ class _AppRootState extends State<AppRoot> with WidgetsBindingObserver {
     );
   }
 
-  /// The title of [aid], or [fallback] when the daemon cannot say.
+  /// The title of [aid], or [fallback] when the core cannot say.
   Future<String> _titleOf(String aid, {required String fallback}) async {
     try {
       return (await _api.getArtifact(aid)).artifact.title;
@@ -2025,7 +2041,7 @@ class _AppRootState extends State<AppRoot> with WidgetsBindingObserver {
           return;
         }
       } on Object {
-        // The daemon is unreachable: opening the app shows why.
+        // The core did not answer: opening the app shows why.
       }
     }
     if (t.route case final r?) _routes[t.aid] = r;
@@ -2052,11 +2068,11 @@ class _AppRootState extends State<AppRoot> with WidgetsBindingObserver {
   );
 
   /// Opens [aid] for a tapped notification, then takes [action] there,
-  /// after the daemon is up. When [aid]'s page is the top app page it is
+  /// after the core is open. When [aid]'s page is the top app page it is
   /// not opened again: [toTop] closes what is over it, and [action] is
   /// taken on it.
   void _openFromNotice(String aid, {AppAction? action, bool toTop = false}) {
-    if (!_wasUp || _endpoint.value == null) {
+    if (!_wasUp || _base.value == null) {
       _pendingOpen = (aid: aid, action: action);
       return;
     }
@@ -2073,7 +2089,7 @@ class _AppRootState extends State<AppRoot> with WidgetsBindingObserver {
   /// known.
   void _onIntent(String name) {
     if (name != Intents.comment) return;
-    if (!_wasUp || _endpoint.value == null) {
+    if (!_wasUp || _base.value == null) {
       _pendingComment = true;
       return;
     }
@@ -2096,7 +2112,7 @@ class _AppRootState extends State<AppRoot> with WidgetsBindingObserver {
           ..sort((a, b) => b.updatedAt.compareTo(a.updatedAt));
         aid = apps.where((a) => a.id != home).firstOrNull?.id;
       } on Object {
-        // The daemon is unreachable: nothing to open.
+        // The core did not answer: nothing to open.
       }
       if (!mounted) return;
     }
@@ -2149,7 +2165,7 @@ class _AppRootState extends State<AppRoot> with WidgetsBindingObserver {
     if (_seenQuestions.add(q.id)) _presentQuestion(q);
   }
 
-  /// Drops from the open questions each one the daemon no longer holds
+  /// Drops from the open questions each one the core no longer holds
   /// open (one it withdrew while the stream was away, as at its start),
   /// so it is never presented. A failed check keeps them.
   Future<void> _recheckQuestions() async {
@@ -2178,7 +2194,7 @@ class _AppRootState extends State<AppRoot> with WidgetsBindingObserver {
   }
 
   /// Presents the questions posted while Clax was in the background that
-  /// the daemon still holds open, as if they had just arrived in front.
+  /// the core still holds open, as if they had just arrived in front.
   /// The check comes first, so a notification tapped on return shows its
   /// own question ahead of these.
   void _presentBackgroundQuestions() {
@@ -2273,7 +2289,7 @@ class _AppRootState extends State<AppRoot> with WidgetsBindingObserver {
   void _openQuestion(String qid) => _showQuestion(qid, asked: true);
 
   /// Shows question [qid] in the question sheet; while the sheet shows
-  /// another, or before the daemon is up, queues it ([_questionQueue]): an
+  /// another, or before the core is open, queues it ([_questionQueue]): an
   /// asked one behind those asked before it but ahead of new ones. An
   /// asked one takes the place of a sheet showing a question nobody asked
   /// for, which goes back to the queue right behind it.
@@ -2283,7 +2299,7 @@ class _AppRootState extends State<AppRoot> with WidgetsBindingObserver {
       if (asked) _sheetAsked = true;
       return;
     }
-    final up = _endpoint.value != null;
+    final up = _base.value != null;
     final nav = _nav.currentState;
     final shown = _sheetQuestion;
     final route = _sheetRoute;
@@ -2351,7 +2367,7 @@ class _AppRootState extends State<AppRoot> with WidgetsBindingObserver {
   void _nextQuestion() {
     final told = <QuestionView>[];
     while (_sheetQuestion == null && _questionQueue.isNotEmpty) {
-      if (!_wasUp || _endpoint.value == null || _nav.currentState == null) {
+      if (!_wasUp || _base.value == null || _nav.currentState == null) {
         break;
       }
       final (:qid, :asked) = _questionQueue.removeAt(0);
@@ -2537,9 +2553,9 @@ class _AppRootState extends State<AppRoot> with WidgetsBindingObserver {
       builder: (_) => _AppPage(
         aid: aid,
         cover: cover,
-        endpoint: _endpoint,
-        surface: (base) => open.surface = _aimed(
-          _s.surface(base),
+        base: _base.value!,
+        surface: () => open.surface = _aimed(
+          _s.surface(),
           aid,
           thread: thread,
           version: version,
@@ -2753,8 +2769,8 @@ class _AppRootState extends State<AppRoot> with WidgetsBindingObserver {
     _homeCovered = covered;
     return _AppPage(
       aid: aid,
-      endpoint: _endpoint,
-      surface: (base) => _watchHomePage(aid, _homeSurface = _s.surface(base)),
+      base: _base.value!,
+      surface: () => _watchHomePage(aid, _homeSurface = _s.surface()),
       screen: (base, surface) => _appScreen(
         aid: aid,
         base: base,
@@ -2806,14 +2822,8 @@ class _AppRootState extends State<AppRoot> with WidgetsBindingObserver {
   };
 
   Widget _home(BuildContext context) {
-    final d = _daemon;
-    if (d is Failed) {
-      return ErrorScreen(
-        key: const ValueKey('error'),
-        reason: d.reason,
-        tail: d.stderrTail,
-        onRestart: _start,
-      );
+    if (_core case final CoreFailed failure) {
+      return ErrorScreen.failed(failure, key: const ValueKey('error'));
     }
     final host = _homeHost;
     final cover = _homeCover;
@@ -2916,9 +2926,9 @@ class _AppRootState extends State<AppRoot> with WidgetsBindingObserver {
       },
       builder: (open) => _AppPage(
         aid: id,
-        endpoint: _endpoint,
-        surface: (base) => open.surface = _aimed(
-          _s.surface(base),
+        base: _base.value!,
+        surface: () => open.surface = _aimed(
+          _s.surface(),
           id,
           thread: aim?.thread,
           version: aim?.version,
@@ -3066,7 +3076,7 @@ class _AppRootState extends State<AppRoot> with WidgetsBindingObserver {
     app = DeveloperScope(notifier: _developer, child: app);
     // The Mac's menu bar; elsewhere the same commands on the keyboard's
     // keys (Control on a Chromebook, Command on an iPad). The home
-    // screen's flows exist once the daemon is up, which bumps the
+    // screen's flows exist once the core is open, which bumps the
     // revision.
     final inner = app;
     app = ListenableBuilder(
@@ -3175,24 +3185,22 @@ class _OpenAppScopeState extends State<_OpenAppScope> {
   Widget build(BuildContext context) => widget.builder(_open);
 }
 
-/// The open app's page: a surface for the daemon's address, loaded again
-/// when the daemon is restarted on that address, and replaced (with the
-/// screen) when the address changes. A [cover] (the making screen's last
-/// render) is shown over it until the shell's first `ready` for [aid], or
-/// until the page fails to load.
+/// The open app's page: a surface on the shell's origin [base]. A [cover]
+/// (the making screen's last render) is shown over it until the shell's
+/// first `ready` for [aid], or until the page fails to load.
 class _AppPage extends StatefulWidget {
   const _AppPage({
     required this.aid,
     this.cover,
-    required this.endpoint,
+    required this.base,
     required this.surface,
     required this.screen,
   });
 
   final String aid;
   final Uint8List? cover;
-  final ValueListenable<DaemonEndpoint?> endpoint;
-  final AppSurface Function(Uri base) surface;
+  final Uri base;
+  final AppSurface Function() surface;
   final Widget Function(Uri base, AppSurface surface) screen;
 
   @override
@@ -3200,9 +3208,6 @@ class _AppPage extends StatefulWidget {
 }
 
 class _AppPageState extends State<_AppPage> {
-  late Uri _base;
-  late int _pid;
-  late String _token;
   late AppSurface _surface;
   Uint8List? _cover;
   final _watch = <StreamSubscription<Object?>>[];
@@ -3210,18 +3215,12 @@ class _AppPageState extends State<_AppPage> {
   @override
   void initState() {
     super.initState();
-    final e = widget.endpoint.value!;
-    _base = e.base;
-    _pid = e.pid;
-    _token = e.token;
     _cover = widget.cover;
-    _surface = _watched(widget.surface(_base));
-    widget.endpoint.addListener(_onEndpoint);
+    _surface = _watched(widget.surface());
   }
 
   @override
   void dispose() {
-    widget.endpoint.removeListener(_onEndpoint);
     _unwatch();
     super.dispose();
   }
@@ -3254,30 +3253,9 @@ class _AppPageState extends State<_AppPage> {
     _watch.clear();
   }
 
-  /// A new daemon at the same address (a new PID, or an in-process
-  /// daemon started again in the same process with a new token) reloads
-  /// the page; a new address opens it there.
-  void _onEndpoint() {
-    final e = widget.endpoint.value;
-    if (e == null || e.pid == _pid && e.base == _base && e.token == _token) {
-      return;
-    }
-    _pid = e.pid;
-    _token = e.token;
-    if (e.base != _base) {
-      // The screen keyed by the old address disposes the old surface.
-      setState(() {
-        _base = e.base;
-        _surface = _watched(widget.surface(_base));
-      });
-    } else {
-      unawaited(_surface.reload());
-    }
-  }
-
   @override
   Widget build(BuildContext context) {
-    final screen = widget.screen(_base, _surface);
+    final screen = widget.screen(widget.base, _surface);
     final cover = _cover;
     // One tree shape with or without the cover, so the screen (and its
     // page) is kept when the cover goes.

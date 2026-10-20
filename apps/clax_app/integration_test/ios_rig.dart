@@ -1,8 +1,8 @@
 /// The app's services as `lib/main.dart` builds them on iOS, for the
-/// simulator integration tests (`ios_*_test.dart`): the daemon in this
-/// process (crates/clax-ios) with its home and log where the Swift side
-/// puts them, the key cookie, the Swift background, bundles and test
-/// channels, the keychain's bundle key and the real WebViews; with a
+/// simulator integration tests (`ios_*_test.dart`): the core linked into
+/// this process (crates/clax-embed) on the home the Swift side makes
+/// (`coreHome`), the Swift background, bundles and test channels, the
+/// keychain's bundle key and the real WebViews on the app's scheme; with a
 /// [ScriptedRunner] for the agent and the built-in launcher for a home.
 ///
 /// What only the simulator's host can do (a screenshot, sending the app to
@@ -26,12 +26,9 @@ import 'package:clax_app/agent/tools/toolbox.dart';
 import 'package:clax_app/app.dart';
 import 'package:clax_app/clax/api.dart';
 import 'package:clax_app/clax/http_api.dart';
-import 'package:clax_app/daemon/health.dart';
-import 'package:clax_app/daemon/in_process.dart';
-import 'package:clax_app/daemon/ports.dart';
-import 'package:clax_app/daemon/process.dart';
-import 'package:clax_app/daemon/sample_key.dart';
-import 'package:clax_app/daemon/supervisor.dart';
+import 'package:clax_app/core/core_host.dart';
+import 'package:clax_app/core/core_transport.dart';
+import 'package:clax_app/core/origins.dart';
 import 'package:clax_app/platform/background_work.dart';
 import 'package:clax_app/platform/bundle_intake.dart';
 import 'package:clax_app/platform/bundle_key.dart';
@@ -40,7 +37,6 @@ import 'package:clax_app/platform/secure_key.dart';
 import 'package:clax_app/platform/settings_store.dart';
 import 'package:clax_app/platform/timings.dart';
 import 'package:clax_app/platform/voice.dart';
-import 'package:clax_app/ui/daemon_cookie.dart';
 import 'package:clax_app/ui/host_protocol.dart';
 import 'package:clax_app/ui/inspector_surface.dart';
 import 'package:clax_app/ui/webview_surface.dart';
@@ -198,10 +194,9 @@ class _NoVoice implements VoiceInput {
 class IosRig {
   IosRig._(
     this.home,
-    this.supervisor,
+    this.core,
     this.runner,
     this.notices,
-    this.keyCookie,
     this._tmp,
     this._support,
   );
@@ -209,67 +204,36 @@ class IosRig {
   static Future<IosRig> create({required ScriptedRunner runner}) async {
     final support = await getApplicationSupportDirectory()
       ..createSync(recursive: true);
-    final cache = await getApplicationCacheDirectory()
-      ..createSync(recursive: true);
     // NSTemporaryDirectory(): `<data container>/tmp`, where the runner
     // writes (path_provider's temporary directory is Library/Caches).
     final tmp = Directory.systemTemp;
-    final paths = (await _native.invokeMapMethod<String, String>(
-      'daemonPaths',
-    ))!;
-    final home = Directory(paths['home']!)..createSync(recursive: true);
-    final supervisor = DaemonSupervisor(
-      exe: const InProcessLocator(),
-      home: home.path,
-      supportDir: support.path,
-      cacheDir: cache.path,
-      starter: InProcessStarter(logPath: paths['log']!),
-      ports: const LoopbackPortPicker(),
-      health: HttpHealthProbe(),
-      pids: IoPidKiller(),
-      host: DaemonHost.inProcess,
-      keyPort: HttpSampleKeyPort(),
-      requireCredential: true,
-    );
+    final home = Directory((await _native.invokeMethod<String>('coreHome'))!)
+      ..createSync(recursive: true);
     File('${support.path}/settings.json').writeAsStringSync(
       jsonEncode({'dictate_comments': false}),
     );
-    // Every daemon WebView awaits the key cookie before it loads; a
-    // restarted daemon's cookie replaces the old one at once.
-    String? token() => switch (supervisor.state) {
-      Up(:final endpoint) => endpoint.token,
-      _ => null,
-    };
-    final keyCookie = DaemonKeyCookie(token: token);
-    supervisor.states.listen((s) {
-      if (s case Up(:final endpoint)) {
-        unawaited(
-          keyCookie
-              .refresh(endpoint.base, endpoint.token)
-              .catchError((Object _) {}),
-        );
-      }
-    });
-    final rig = IosRig._(
-      home,
-      supervisor,
-      runner,
-      NotificationHub(),
-      keyCookie,
-      tmp,
-      support,
-    );
+    final core = CoreHost(
+      home: home.path,
+      supportDir: support.path,
+      origins: origins,
+      apiKey: () async => null,
+      excludeFromBackup: (paths) =>
+          _native.invokeMethod<void>('excludeFromBackup', {'paths': paths}),
+    )..open();
+    final rig = IosRig._(home, core, runner, NotificationHub(), tmp, support);
     rig._lifecycleListener;
     return rig;
   }
 
+  /// The origins the app's WebViews load from.
+  static final origins = AppOrigins.forPlatform();
+
   final Directory home;
-  final DaemonSupervisor supervisor;
+  final CoreHost core;
   final ScriptedRunner runner;
 
   /// The app's one notifications plugin.
   final NotificationHub notices;
-  final DaemonKeyCookie keyCookie;
   final Directory _tmp;
   final Directory _support;
 
@@ -282,25 +246,25 @@ class IosRig {
     onStateChange: lifecycle.add,
   );
 
-  late final api = HttpClaxApi.loopback(endpoint);
+  late final api = HttpClaxApi.over(CoreTransport(core.calls));
 
-  /// The running daemon's endpoint; throws while it is not up.
-  DaemonEndpoint endpoint() => switch (supervisor.state) {
-    Up(:final endpoint) => endpoint,
-    final s => throw StateError('the daemon is not up: $s'),
-  };
+  WebViewAppSurface _surface() => WebViewAppSurface(
+    base: Uri.parse(origins.shell),
+    core: core.calls,
+    origins: origins,
+  );
 
   late final services = AppServices(
-    supervisor: supervisor,
-    api: HttpClaxApi.loopback,
+    core: core,
+    api: (calls) => HttpClaxApi.over(CoreTransport(calls)),
     backend: (settings, key) => ScriptedBackend(const []),
     voice: _NoVoice(),
     settings: SettingsStore(File('${_support.path}/settings.json')),
     key: _NoKey(),
     timings: FileTimings(File('${_support.path}/timings.jsonl')),
     agentTimings: FileTimings(File('${_support.path}/agent-timings.jsonl')),
-    surface: (base) {
-      final s = WebViewAppSurface(base: base, keyCookie: keyCookie);
+    surface: () {
+      final s = _surface();
       s.messages.listen(messages.add);
       return s;
     },
@@ -308,18 +272,18 @@ class IosRig {
     supportDir: _support.path,
     prompts: PromptBuilder(rootBundle),
     ledger: FileChangeLedger(File('${_support.path}/change-ledger.json')),
-    inspector: WebViewInspector(
-      surface: (base) => WebViewAppSurface(base: base, keyCookie: keyCookie),
-    ),
+    inspector: WebViewInspector(surface: (_) => _surface()),
     runner: () => runner,
     background: _QuietNotices(notices),
     bundleKey: BundleKey(FlutterBundleSeedStorage()),
     bundleIntake: ChannelBundleIntake(),
   );
 
-  /// The PID `daemon.json` in the daemon's home names.
-  int daemonPid() {
-    final j = jsonDecode(File('${home.path}/daemon.json').readAsStringSync());
+  /// The PID the core's readiness file names ([CoreHost.readinessFile]).
+  int readyPid() {
+    final j = jsonDecode(
+      File('${_support.path}/${CoreHost.readinessFile}').readAsStringSync(),
+    );
     return (j as Map)['pid'] as int;
   }
 

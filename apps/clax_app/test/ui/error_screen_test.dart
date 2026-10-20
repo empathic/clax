@@ -1,3 +1,4 @@
+import 'package:clax_app/core/core_client.dart';
 import 'package:clax_app/ui/error_screen.dart';
 import 'package:clax_app/ui/kit/kit.dart';
 import 'package:clax_app/ui/log_details.dart';
@@ -164,5 +165,51 @@ void main() {
     expect(find.text('Clax couldn’t start'), findsOneWidget);
     expect(find.text('Try again'), findsOneWidget);
     expect(find.text('Copy details'), findsOneWidget);
+  });
+
+  testWidgets('a core that did not open offers no Try again, and its '
+      'details name the backup', (tester) async {
+    tester.binding.defaultBinaryMessenger.setMockMethodCallHandler(
+      SystemChannels.platform,
+      (call) async {
+        if (call.method == 'Clipboard.setData') {
+          copied.add((call.arguments as Map)['text'] as String);
+        }
+        return null;
+      },
+    );
+    addTearDown(
+      () => tester.binding.defaultBinaryMessenger.setMockMethodCallHandler(
+        SystemChannels.platform,
+        null,
+      ),
+    );
+    await tester.pumpWidget(
+      MaterialApp(
+        theme: claxTheme(Brightness.light, TargetPlatform.android),
+        home: ErrorScreen.failed(
+          const CoreFailed(
+            'migration_failed',
+            'migration 44 failed',
+            '/h/backups/clax.db.1',
+          ),
+        ),
+      ),
+    );
+    expect(find.text('Try again'), findsNothing);
+    expect(
+      find.text(
+        'It stopped while starting. Quit Clax and open it again, or copy '
+        'the details for a report.',
+      ),
+      findsOneWidget,
+    );
+    expect(find.textContaining('migration 44'), findsNothing);
+    await tester.tap(find.text('Copy details'));
+    await tester.pump();
+    expect(copied, [
+      'migration_failed: migration 44 failed\n\nmigration 44 failed\n'
+          'The backup made before it: /h/backups/clax.db.1',
+    ]);
   });
 }

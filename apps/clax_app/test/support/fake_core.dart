@@ -2,13 +2,15 @@ import 'dart:async';
 import 'dart:convert';
 import 'dart:io';
 import 'dart:isolate';
-import 'dart:typed_data';
 
 import 'package:clax_app/clax/api.dart';
 import 'package:clax_app/clax/fake_api.dart';
 import 'package:clax_app/core/core_client.dart';
+import 'package:clax_app/core/core_host.dart';
 import 'package:clax_app/core/ffi.dart';
 import 'package:clax_app/core/frame.dart';
+import 'package:clax_app/core/origins.dart';
+import 'package:flutter/foundation.dart';
 import 'package:flutter_test/flutter_test.dart';
 
 /// Answers a [FakeCore] request; [params] holds the path's `{name}`
@@ -672,4 +674,68 @@ CoreRequest decodeRequest(Uint8List frame) {
     as: CallAs.values.firstWhere((a) => a.wire == head['as']),
     host: head['host'] as String?,
   );
+}
+
+/// A [CoreHost] for tests: the test sets its state ([set]); it starts
+/// opening, as the real one does once opened. Its [calls] are a
+/// [FakeCore] no test needs to route (the app's tests give a
+/// `FakeClaxApi` as the API). Every call is counted.
+class FakeCoreHost implements CoreHost {
+  FakeCoreHost({FakeCore? core, AppOrigins? origins})
+    : calls = core ?? FakeCore(),
+      origins = origins ?? AppOrigins.forPlatform(android: true);
+
+  final _state = ValueNotifier<CoreOpen>(const CoreOpening('opening'));
+
+  @override
+  final CoreCalls calls;
+
+  @override
+  final AppOrigins origins;
+
+  int openCalls = 0;
+  int keyChangedCalls = 0;
+  int trimCalls = 0;
+  int closeCalls = 0;
+
+  /// Moves to [s] and tells listeners.
+  void set(CoreOpen s) => _state.value = s;
+
+  @override
+  ValueListenable<CoreOpen> get state => _state;
+
+  @override
+  void open() => openCalls++;
+
+  @override
+  Future<void> keyChanged() async => keyChangedCalls++;
+
+  @override
+  Future<void> trim() async => trimCalls++;
+
+  /// Counts the close and reports [CoreClosed], as the core does once
+  /// closed.
+  @override
+  void close() {
+    closeCalls++;
+    _state.value = const CoreClosed();
+  }
+
+  @override
+  int get handle => 1;
+
+  @override
+  String get home => '/fake/clax-home';
+
+  @override
+  String get supportDir => '/fake';
+
+  @override
+  Future<String?> Function() get apiKey => () async => null;
+
+  @override
+  Future<void> Function()? get clearCookies => null;
+
+  @override
+  Future<void> Function(List<String> paths)? get excludeFromBackup => null;
 }

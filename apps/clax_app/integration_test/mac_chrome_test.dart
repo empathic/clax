@@ -1,5 +1,5 @@
 // The Mac app's window chrome, menus and real interactions, in the built
-// debug app on the embedded daemon: the native toolbar, title bar and
+// debug app on the embedded core: the native toolbar, title bar and
 // sidebar material, the Settings and Inbox windows, the menu bar, the
 // alert and the sheets, each captured in light and dark through the
 // Runner's test channel (`macos/Runner/TestChannel.swift`), and a
@@ -114,8 +114,6 @@ void main() {
     addTearDown(() => MacChrome.setAppearance(null));
 
     // --- An app to select, made before the app starts.
-    final ep = await rig.supervisor.ensureUp();
-    expect(ep.base.port, isNot(7480));
     await rig.api.registerAppSession(
       installId: 'mac-chrome-seed',
       pid: pid,

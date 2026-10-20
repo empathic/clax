@@ -19,7 +19,7 @@ import 'package:flutter/services.dart';
 import 'package:flutter_test/flutter_test.dart';
 
 import '../agent/loop_support.dart';
-import '../support/fake_supervisor.dart';
+import '../support/fake_core.dart';
 import '../support/fake_surface.dart';
 import '../support/fake_voice.dart';
 
@@ -58,7 +58,7 @@ void main() {
       await tester.pumpWidget(
         AppRoot(
           services: AppServices(
-            supervisor: FakeSupervisor(),
+            core: FakeCoreHost(),
             api: (_) => FakeClaxApi(),
             backend: (s, k) => HeldBackend([], name: backendMessagesApi),
             voice: FakeVoice.unsupported('No speech here'),
@@ -66,7 +66,7 @@ void main() {
             key: _Key(),
             timings: RecordingTimings(),
             agentTimings: RecordingTimings(),
-            surface: (_) => FakeAppSurface(),
+            surface: () => FakeAppSurface(),
             installId: 'install',
             supportDir: dir.path,
             prompts: PromptBuilder(rootBundle),

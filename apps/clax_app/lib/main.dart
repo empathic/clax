@@ -5,6 +5,7 @@ import 'package:flutter/foundation.dart';
 import 'package:flutter/services.dart';
 import 'package:flutter/widgets.dart';
 import 'package:path_provider/path_provider.dart';
+import 'package:webview_flutter/webview_flutter.dart';
 
 import 'agent/ai_consent.dart';
 import 'agent/claude_cli_backend.dart';
@@ -16,14 +17,10 @@ import 'agent/plan.dart';
 import 'agent/scripted_backend.dart';
 import 'app.dart';
 import 'clax/http_api.dart';
+import 'core/core_host.dart';
+import 'core/core_transport.dart';
+import 'core/origins.dart';
 import 'daemon/daemon_key.dart';
-import 'daemon/exe_locator.dart';
-import 'daemon/health.dart';
-import 'daemon/in_process.dart';
-import 'daemon/ports.dart';
-import 'daemon/process.dart';
-import 'daemon/sample_key.dart';
-import 'daemon/supervisor.dart';
 import 'agent/timings.dart';
 import 'home/home_install.dart';
 import 'home/home_snapshot.dart';
@@ -46,7 +43,6 @@ import 'platform/settings_store.dart';
 import 'platform/timings.dart';
 import 'platform/voice.dart';
 import 'platform/voice_cues.dart';
-import 'ui/daemon_cookie.dart';
 import 'ui/inspector_surface.dart';
 import 'ui/read_consent_dialog.dart';
 import 'ui/webview_surface.dart';
@@ -82,12 +78,15 @@ Future<void> drawEdgeToEdge() async {
   );
 }
 
-/// The services of the app on this device: the embedded daemon under the
-/// application support directory, its HTTP client, the agent from the
-/// settings, and the platform's WebView, speech, secure storage and links.
+/// The services of the app on this device: the embedded core on a home
+/// under the application support directory, opened here before the first
+/// frame and called in this process, the agent from the settings, and the
+/// platform's WebView (loading from the app's scheme), speech, secure
+/// storage and links.
 ///
-/// Files in the support directory: `clax-home/` (the daemon's
-/// `CLAX_HOME`), `settings.json`, `install-id`, `timings.jsonl` (the
+/// Files in the support directory: `clax-home/` (the core's home; on iOS
+/// where the native side puts it, the same place), `core.json`
+/// ([CoreHost.readinessFile]), `settings.json`, `install-id`, `timings.jsonl` (the
 /// defended numbers), `agent-timings.jsonl` (the agent's runs) and
 /// `change-ledger.json`, `asked.json` (what each change's open question
 /// was asked for), `agent-read-consent.json` (the pairs of apps the owner
@@ -106,7 +105,7 @@ Future<void> drawEdgeToEdge() async {
 /// home for measuring a build; on macOS it must lie in the app's
 /// container). With `CLAX_APP_NO_KEY=1` the saved API key is withheld
 /// ([FlutterSecureKey.noKeyVariable]): no key is read or saved, and the
-/// daemon starts with `sample()` off.
+/// core opens with `sample()` off.
 Future<AppServices> platformServices({DateTime? launched}) async {
   final scratchDir = Platform.environment['CLAX_APP_DIR'] ?? '';
   final support = scratchDir.isEmpty
@@ -119,15 +118,13 @@ Future<AppServices> platformServices({DateTime? launched}) async {
   cache.createSync(recursive: true);
   final snapshots = HomeSnapshotStore(Directory('${cache.path}/home'));
   final android = Platform.isAndroid;
-  // On iOS the daemon runs inside this process (crates/clax-ios): its home
-  // and log are where it puts them under the container, from $HOME.
-  final inProcess = Platform.isIOS;
-  final paths = inProcess
-      ? await const MethodChannel(
-          'dev.empathic.clax/native',
-        ).invokeMapMethod<String, String>('daemonPaths')
+  const native = MethodChannel('dev.empathic.clax/native');
+  // On iOS the native side makes the home, with its file protection, under
+  // the container from $HOME, where the app's daemon kept it.
+  final iosHome = Platform.isIOS && scratchDir.isEmpty
+      ? await native.invokeMethod<String>('coreHome')
       : null;
-  final home = Directory(paths?['home'] ?? '${support.path}/clax-home')
+  final home = Directory(iosHome ?? '${support.path}/clax-home')
     ..createSync(recursive: true);
   // One cached key for every reader: the keychain is read once a process,
   // and never with CLAX_APP_NO_KEY=1 (a launch measure's run).
@@ -136,49 +133,22 @@ Future<AppServices> platformServices({DateTime? launched}) async {
       withheld: FlutterSecureKey.withheldBy(Platform.environment),
     ),
   );
-  final supervisor = DaemonSupervisor(
-    exe: inProcess
-        ? const InProcessLocator()
-        : android
-        ? const AndroidExeLocator()
-        : const MacExeLocator(),
+  final origins = AppOrigins.forPlatform();
+  final shell = Uri.parse(origins.shell);
+  // Opened now, before the first frame, which does not wait for it: the
+  // home page's first request waits in the core.
+  final core = CoreHost(
     home: home.path,
     supportDir: support.path,
-    cacheDir: cache.path,
-    starter: inProcess
-        ? InProcessStarter(logPath: paths!['log']!)
-        : const IoProcessStarter(),
-    ports: const LoopbackPortPicker(),
-    health: HttpHealthProbe(),
-    // Never called for a daemon in this process.
-    pids: IoPidKiller(),
-    host: inProcess
-        ? DaemonHost.inProcess
-        : android
-        ? DaemonHost.android
-        : DaemonHost.mac,
-    keyPort: inProcess ? HttpSampleKeyPort() : null,
+    origins: origins,
     apiKey: secureKey.read,
-    requireCredential: true,
-  );
-  String? token() => switch (supervisor.state) {
-    Up(:final endpoint) => endpoint.token,
-    _ => null,
-  };
-  // Every daemon WebView awaits the key cookie before it loads. A restarted
-  // daemon has a new token: its cookie replaces the old one at once, and an
-  // open question page loads again with it (an open app page reloads on the
-  // endpoint's new PID).
-  final keyCookie = DaemonKeyCookie(token: token);
-  supervisor.states.listen((s) {
-    if (s case Up(:final endpoint)) {
-      unawaited(
-        keyCookie
-            .refresh(endpoint.base, endpoint.token)
-            .catchError((Object _) {}),
-      );
-    }
-  });
+    clearCookies: () => WebViewCookieManager().clearCookies(),
+    excludeFromBackup: Platform.isIOS
+        ? (paths) => native.invokeMethod<void>('excludeFromBackup', {
+            'paths': paths,
+          })
+        : null,
+  )..open();
   final cliSupported = ClaudeCliBackend.supported;
   final scratch = Directory('${cache.path}/claude-cli');
   final script = await _agentScript();
@@ -198,8 +168,8 @@ Future<AppServices> platformServices({DateTime? launched}) async {
   final notifications = NotificationHub();
   final settings = SettingsStore(File('${support.path}/settings.json'));
   return AppServices(
-    supervisor: supervisor,
-    api: HttpClaxApi.loopback,
+    core: core,
+    api: (calls) => HttpClaxApi.over(CoreTransport(calls)),
     backend: (settings, key) =>
         scripted ??
         chooseBackend(
@@ -214,16 +184,17 @@ Future<AppServices> platformServices({DateTime? launched}) async {
     // App Review asks for a clear permission before anything goes to a
     // third-party AI (guideline 5.1.2(i)).
     aiConsent: AiConsent(required: Platform.isIOS, settings: settings),
-    key: DaemonKey(secureKey, onChanged: supervisor.keyChanged),
+    key: DaemonKey(secureKey, onChanged: core.keyChanged),
     timings: FileTimings(
       File('${support.path}/timings.jsonl'),
       started: {homeUsable: ?launched, homeCover: ?launched},
     ),
     agentTimings: FileTimings(File('${support.path}/agent-timings.jsonl')),
-    surface: (base) => WebViewAppSurface(
-      base: base,
+    surface: () => WebViewAppSurface(
+      base: shell,
       openExternal: links.open,
-      keyCookie: keyCookie,
+      core: core.calls,
+      origins: origins,
     ),
     installId: await loadInstallId(support),
     supportDir: support.path,
@@ -231,8 +202,11 @@ Future<AppServices> platformServices({DateTime? launched}) async {
     ledger: FileChangeLedger(File('${support.path}/change-ledger.json')),
     asked: FileAskedQuestions(File('${support.path}/asked.json')),
     plans: PlanStore(file: File('${support.path}/plans.json')),
+    // The inspector's surface is on the shell's origin whatever URL it
+    // was made for.
     inspector: WebViewInspector(
-      surface: (base) => WebViewAppSurface(base: base, keyCookie: keyCookie),
+      surface: (_) =>
+          WebViewAppSurface(base: shell, core: core.calls, origins: origins),
     ),
     consentMemory: FileConsentMemory(
       File('${support.path}/agent-read-consent.json'),
@@ -242,7 +216,7 @@ Future<AppServices> platformServices({DateTime? launched}) async {
     background: android
         ? ChannelBackgroundWork()
         : Platform.isIOS
-        ? IosBackgroundWork(notifications)
+        ? IosBackgroundWork(notifications, onTrim: core.trim)
         : const NoBackgroundWork(),
     notice: android ? ChannelAppNotice() : null,
     device: (consent) => DeviceHost(

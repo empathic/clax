@@ -1,16 +1,14 @@
-// The whole loop on macOS: the real embedded daemon (the bundle's
-// `Contents/Resources/clax`, from `scripts/build-app-clax.sh macos`), the
-// real HTTP client, supervisor, worker and WebView, and a scripted agent.
+// The whole loop on macOS: the real embedded core (the bundle's
+// `Contents/Frameworks/libclax_embed.dylib`), the client over it, the
+// worker, the scheme's WebViews, and a scripted agent.
 //
 // Run: `just app-integration`, or from apps/clax_app
 // `flutter test integration_test -d macos`; the scratch directory is
 // rig.dart's.
-import 'dart:io';
 
 import 'package:clax_app/agent/timings.dart';
 import 'package:clax_app/app.dart';
 import 'package:clax_app/clax/api.dart';
-import 'package:clax_app/daemon/supervisor.dart';
 import 'package:clax_app/ui/app_screen.dart';
 import 'package:clax_app/ui/host_protocol.dart';
 import 'package:flutter/material.dart';
@@ -26,14 +24,14 @@ void main() {
 
   toolLoopTest();
 
-  testWidgets('make, change, undo and recover on the embedded daemon', (
+  testWidgets('make, change, undo and a held change on the embedded core', (
     tester,
   ) async {
     final held = HeldBackend(script(), holdAt: 3);
     final rig = await Rig.create(backend: held);
     addTearDown(rig.close);
     // Tear-downs run last first: the held change is let go before the
-    // daemon stops.
+    // core closes.
     addTearDown(held.release);
 
     await runClaxApp(rig.services);
@@ -133,23 +131,12 @@ void main() {
     final restored = await rig.api.getArtifact(aid);
     expect(restored.artifact.currentVersion, 3);
 
-    // --- Recovery: the next change is held in the agent; the daemon is
-    // killed (by the PID its daemon.json names), the supervisor starts it
-    // again, and the change completes exactly once.
+    // --- A held change: the next change waits in the agent, then
+    // completes exactly once.
     await tester.tap(find.text('Threads'));
     await rig.untilState(tester, 'comment mode again', (s) => s.commenting);
     final thread2 = await rig.comment(tester, 'Call it All runs');
     await rig.until(tester, 'the held change', () => held.held.isCompleted);
-    final dead = rig.daemonPid();
-    expect(Process.killPid(dead, ProcessSignal.sigkill), isTrue);
-    await rig.until(
-      tester,
-      'the daemon restarted',
-      () => switch (rig.supervisor.state) {
-        Up(:final endpoint) when endpoint.pid != dead => true,
-        _ => null,
-      },
-    );
     held.release();
     final t2 = await rig.until<ThreadView>(
       tester,
@@ -167,8 +154,8 @@ void main() {
     expect(after.versions.map((v) => v.n), [1, 2, 3, 4]);
     expect(held.calls, 3);
     await rig.reloadNewer(tester, 4);
-    // The restarted daemon's page is a new shell document, which keeps no
-    // scroll position from the one before.
+    // The reloaded page is a new shell document, which keeps no scroll
+    // position from the one before.
     await untilProbe(rig, tester, aid, recoveredTitle, scrolled: false);
     expect((await rig.api.getDoc(aid, 'runs/r1'))?.data, {'km': 5});
     expect(rig.timings(sayUsable), hasLength(1));
@@ -208,7 +195,7 @@ void main() {
     final grants = await rig.grants(bid);
     expect([for (final g in grants) g['source_id']], [aid]);
 
-    // Unmount the app: its worker stops before the daemon does.
+    // Unmount the app: its worker stops before the core closes.
     await tester.pumpWidget(const SizedBox());
   }, timeout: const Timeout(Duration(minutes: 5)));
 }

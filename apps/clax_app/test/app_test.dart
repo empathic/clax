@@ -12,7 +12,7 @@ import 'package:clax_app/agent/timings.dart';
 import 'package:clax_app/app.dart';
 import 'package:clax_app/clax/api.dart';
 import 'package:clax_app/clax/fake_api.dart';
-import 'package:clax_app/daemon/supervisor.dart';
+import 'package:clax_app/core/core_client.dart';
 import 'package:clax_app/platform/app_notice.dart';
 import 'package:clax_app/platform/intents.dart';
 import 'package:clax_app/platform/secure_key.dart';
@@ -41,7 +41,7 @@ import 'package:flutter_test/flutter_test.dart';
 
 import 'agent/loop_support.dart';
 import 'support/fake_app_notice.dart';
-import 'support/fake_supervisor.dart';
+import 'support/fake_core.dart';
 import 'support/fake_surface.dart';
 import 'support/fake_voice.dart';
 
@@ -102,7 +102,7 @@ class _Rig {
   /// ([inspectorSurfaces]).
   final bool webInspector;
   final inspectorSurfaces = <FakeAppSurface>[];
-  final supervisor = FakeSupervisor();
+  final coreHost = FakeCoreHost();
   final api = FakeClaxApi();
   final timings = RecordingTimings();
   final agentTimings = RecordingTimings();
@@ -130,7 +130,7 @@ class _Rig {
   }
 
   AppServices _services(SettingsStore settings) => AppServices(
-    supervisor: supervisor,
+    core: coreHost,
     api: (endpoint) => api,
     backend: (s, k) {
       backendFor.add(s.backend);
@@ -144,8 +144,8 @@ class _Rig {
     key: key,
     timings: timings,
     agentTimings: agentTimings,
-    surface: (base) {
-      surfaceBases.add(base);
+    surface: () {
+      surfaceBases.add(Uri.parse(coreHost.origins.shell));
       final s = FakeAppSurface();
       surfaces.add(s);
       return s;
@@ -197,10 +197,10 @@ void main() {
     await tester.pump();
   }
 
-  /// Brings the daemon up, then lets the splash's breath come due, so the
-  /// wait it started on the wall clock is not left pending.
-  Future<void> up(WidgetTester tester, {int port = 7999, int pid = 100}) async {
-    rig.supervisor.set(Up(endpoint(port: port, pid: pid)));
+  /// Says the core is ready, then lets the splash's breath come due, so
+  /// the wait it started on the wall clock is not left pending.
+  Future<void> up(WidgetTester tester) async {
+    rig.coreHost.set(const CoreReady());
     await tester.pumpAndSettle();
     await tester.pump(const Duration(milliseconds: 600));
   }
@@ -235,58 +235,38 @@ void main() {
     await tester.pump();
   }
 
-  testWidgets('a splash shows while the daemon starts; Up shows the launcher', (
-    tester,
-  ) async {
+  testWidgets('the launcher shows while the core opens, without waiting '
+      'for it', (tester) async {
     await pumpApp(tester, _Rig(key: 'sk-ant-x'));
-    expect(find.byKey(const ValueKey('splash')), findsOneWidget);
-    expect(find.text('New app'), findsNothing);
-    expect(rig.supervisor.ensureUpCalls, 1);
-
-    await up(tester);
+    await tester.pumpAndSettle();
+    expect(rig.coreHost.state.value, isA<CoreOpening>());
     expect(find.byKey(const ValueKey('splash')), findsNothing);
+    expect(find.text('New app'), findsOneWidget);
+    await up(tester);
     expect(find.text('New app'), findsOneWidget);
   });
 
-  testWidgets('a restart keeps the launcher; a failure shows the error screen '
-      'with the tail under Details, and Try again starts the daemon again', (
-    tester,
-  ) async {
+  testWidgets('a core that did not open shows the error screen with its '
+      'details under Details, and no Try again', (tester) async {
     await pumpApp(tester, _Rig(key: 'sk-ant-x'));
-    await up(tester);
-    rig.supervisor.set(const Restarting(1, Duration(milliseconds: 200)));
-    await tester.pumpAndSettle();
-    expect(find.text('New app'), findsOneWidget);
-
-    rig.supervisor.set(
-      const Failed(
-        'clax stopped 5 times within a minute; last: exited with '
-        'code 1',
-        ['error: database is locked', 'clax exiting'],
+    rig.coreHost.set(
+      const CoreFailed(
+        'migration_failed',
+        'migration 44 failed: no such table',
+        '/h/backups/clax.db.1',
       ),
     );
     await tester.pumpAndSettle();
     expect(find.text('New app'), findsNothing);
     expect(find.text('Clax couldn’t start'), findsOneWidget);
-    expect(
-      find.textContaining('clax stopped 5 times within a minute'),
-      findsNothing,
-    );
+    expect(find.text('Try again'), findsNothing);
+    expect(find.textContaining('migration_failed'), findsNothing);
     await tester.tap(find.text('Details'));
     await tester.pumpAndSettle();
     expect(
-      find.textContaining('error: database is locked\nclax exiting'),
+      find.textContaining('The backup made before it: /h/backups/clax.db.1'),
       findsOneWidget,
     );
-
-    await tester.tap(find.text('Try again'));
-    await tester.pump();
-    expect(rig.supervisor.ensureUpCalls, 2);
-    rig.supervisor.set(const Starting());
-    await tester.pump();
-    expect(find.byKey(const ValueKey('splash')), findsOneWidget);
-    await up(tester, pid: 101);
-    expect(find.text('New app'), findsOneWidget);
   });
 
   testWidgets('a failure while an app is open goes back to the error screen', (
@@ -298,16 +278,20 @@ void main() {
     await openApp(tester, aid);
     expect(find.byType(AppScreen), findsOneWidget);
 
-    rig.supervisor.set(const Failed('clax did not come up', []));
+    rig.coreHost.set(
+      const CoreFailed('open_failed', 'the store did not open', null),
+    );
     await tester.pumpAndSettle();
     expect(find.byType(AppScreen), findsNothing);
     expect(find.text('Clax couldn’t start'), findsOneWidget);
     await tester.tap(find.text('Details'));
     await tester.pumpAndSettle();
-    expect(find.text('Clax wrote nothing.'), findsOneWidget);
+    expect(find.text('the store did not open'), findsOneWidget);
   });
 
-  testWidgets('resuming probes the daemon; detaching stops it', (tester) async {
+  testWidgets('resuming leaves the core alone; detaching closes it', (
+    tester,
+  ) async {
     await pumpApp(tester, _Rig(key: 'sk-ant-x'));
     await up(tester);
     tester.binding.handleAppLifecycleStateChanged(AppLifecycleState.inactive);
@@ -317,18 +301,17 @@ void main() {
     tester.binding.handleAppLifecycleStateChanged(AppLifecycleState.inactive);
     tester.binding.handleAppLifecycleStateChanged(AppLifecycleState.resumed);
     await tester.pump();
-    expect(rig.supervisor.onResumeCalls, 1);
-    expect(rig.supervisor.stopCalls, 0);
+    expect(rig.coreHost.closeCalls, 0);
 
     tester.binding.handleAppLifecycleStateChanged(AppLifecycleState.inactive);
     tester.binding.handleAppLifecycleStateChanged(AppLifecycleState.hidden);
     tester.binding.handleAppLifecycleStateChanged(AppLifecycleState.paused);
     tester.binding.handleAppLifecycleStateChanged(AppLifecycleState.detached);
     await tester.pumpAndSettle();
-    expect(rig.supervisor.stopCalls, 1);
+    expect(rig.coreHost.closeCalls, 1);
   });
 
-  testWidgets('quitting the app stops the worker and the daemon first', (
+  testWidgets('quitting the app stops the worker, then closes the core', (
     tester,
   ) async {
     await pumpApp(tester, _Rig(key: 'sk-ant-x'));
@@ -336,17 +319,17 @@ void main() {
     await until(() => rig.api.waitingPolls == 1);
     final response = await tester.binding.handleRequestAppExit();
     expect(response, AppExitResponse.exit);
-    expect(rig.supervisor.stopCalls, 1);
+    expect(rig.coreHost.closeCalls, 1);
     // The worker no longer polls: a released poll is not followed by
     // another.
     final polls = rig.api.callNames.where((n) => n == 'pollFeedback').length;
     rig.api.releasePolls();
     await tester.pump();
     expect(rig.api.callNames.where((n) => n == 'pollFeedback').length, polls);
-    // A detach after the quit does not stop it twice.
+    // A detach after the quit does not close it twice.
     tester.binding.handleAppLifecycleStateChanged(AppLifecycleState.detached);
     await tester.pump();
-    expect(rig.supervisor.stopCalls, 1);
+    expect(rig.coreHost.closeCalls, 1);
   });
 
   testWidgets('New runs the agent with its stages, then opens the app screen '
@@ -368,7 +351,7 @@ void main() {
     final created = (await rig.api.listArtifacts()).single;
     expect(find.byType(AppScreen), findsOneWidget);
     expect(rig.surfaces.single.loads, [
-      AppScreen.appUrl(Uri.parse('http://127.0.0.1:7999'), created.id),
+      AppScreen.appUrl(Uri.parse(rig.coreHost.origins.shell), created.id),
     ]);
     expect(rig.backend.seen.single.userText, contains('a tracker for my runs'));
     expect(rig.agentTimings.stopped.map((r) => r.name), [
@@ -783,13 +766,10 @@ void main() {
       'built-in home screen\'s grid', (tester) async {
     Finder inLauncher(Finder f) =>
         find.descendant(of: find.byType(Launcher), matching: f);
-    await pumpApp(
-      tester,
-      _Rig(key: 'sk-ant-x'),
-      size: const Size(1280, 800),
-    );
-    rig.api.seedArtifact('Runs', {'index.html': _page});
-    rig.api.seedArtifact('Notes', {'index.html': _page});
+    final r = _Rig(key: 'sk-ant-x');
+    r.api.seedArtifact('Runs', {'index.html': _page});
+    r.api.seedArtifact('Notes', {'index.html': _page});
+    await pumpApp(tester, r, size: const Size(1280, 800));
     await up(tester);
     expect(inLauncher(find.text('Runs')), findsOneWidget);
     expect(inLauncher(find.text('Notes')), findsOneWidget);
@@ -859,54 +839,6 @@ void main() {
       find.text('Add your Claude API key to start making apps'),
       findsNothing,
     );
-  });
-
-  testWidgets('a restarted daemon reloads the open app; a new port opens it '
-      'at the new address', (tester) async {
-    await pumpApp(tester, _Rig(key: 'sk-ant-x'));
-    await up(tester);
-    final aid = rig.api.seedArtifact('Runs', {'index.html': _page});
-    await openApp(tester, aid);
-    final first = rig.surfaces.single;
-
-    rig.supervisor.set(const Restarting(1, Duration(milliseconds: 200)));
-    await up(tester, pid: 101);
-    expect(first.reloads, 1);
-    expect(rig.surfaces, hasLength(1));
-
-    rig.supervisor.set(const Restarting(1, Duration(milliseconds: 200)));
-    rig.supervisor.set(Up(endpoint(port: 8123, pid: 102)));
-    await pumpRoute(tester);
-    expect(rig.surfaces, hasLength(2));
-    expect(first.disposed, isTrue);
-    expect(rig.surfaces.last.loads, [
-      AppScreen.appUrl(Uri.parse('http://127.0.0.1:8123'), aid),
-    ]);
-  });
-
-  testWidgets('an in-process daemon restarted on the same port and PID, with '
-      'a new token, reloads the open app', (tester) async {
-    await pumpApp(tester, _Rig(key: 'sk-ant-x'));
-    await up(tester);
-    final aid = rig.api.seedArtifact('Runs', {'index.html': _page});
-    await openApp(tester, aid);
-    final first = rig.surfaces.single;
-
-    rig.supervisor.set(const Restarting(1, Duration(milliseconds: 200)));
-    final e = endpoint();
-    rig.supervisor.set(
-      Up(
-        DaemonEndpoint(
-          base: e.base,
-          token: 'token-after-restart',
-          pid: e.pid,
-          port: e.port,
-        ),
-      ),
-    );
-    await pumpRoute(tester);
-    expect(first.reloads, 1);
-    expect(rig.surfaces, hasLength(1));
   });
 
   testWidgets(
@@ -1030,10 +962,9 @@ void main() {
     variant: TargetPlatformVariant.only(TargetPlatform.macOS),
   );
 
-  testWidgets('once the daemon is up the app holds one stream on gallery, '
+  testWidgets('once the core opens the app holds one stream on gallery, '
       'inbox and questions, which the launcher follows', (tester) async {
     await pumpApp(tester, _Rig(key: 'sk-ant-x'));
-    expect(rig.api.callNames, isNot(contains('streamSubscribe')));
     await up(tester);
     final subscribed = [
       for (final c in rig.api.calls)
@@ -1215,21 +1146,6 @@ void main() {
       expect(cards(tester), [b]);
     });
 
-    testWidgets('after a daemon restart a queued question it withdrew is not '
-        'shown', (tester) async {
-      await pumpApp(tester, _Rig(key: 'sk-ant-x'));
-      await up(tester);
-      final other = rig.api.seedArtifact('Log', {'index.html': _page});
-      await ask(tester);
-      final b = await ask(tester, about: other);
-      rig.supervisor.set(const Failed('clax stopped', []));
-      await tester.pumpAndSettle();
-      expect(sheet, findsNothing);
-      rig.api.withdrawUnannounced(b);
-      await up(tester);
-      expect(sheet, findsNothing);
-    });
-
     testWidgets('a question in the inbox opens the sheet', (tester) async {
       await pumpApp(tester, _Rig(key: 'sk-ant-x'));
       await up(tester);
@@ -1391,7 +1307,7 @@ void main() {
     await pumpApp(tester, r);
     expect(find.byType(AppScreen), findsNothing);
     // The app opens as the daemon comes up; its cover spins meanwhile.
-    rig.supervisor.set(Up(endpoint(port: 7999, pid: 100)));
+    rig.coreHost.set(const CoreReady());
     await pumpRoute(tester);
     final screen = tester.widget<AppScreen>(find.byType(AppScreen));
     expect(screen.aid, aid);
@@ -1449,7 +1365,7 @@ void main() {
       final aid = r.api.seedArtifact('Runs', {'index.html': _page});
       await pumpApp(tester, r);
       expect(find.byType(AppScreen), findsNothing);
-      rig.supervisor.set(Up(endpoint(port: 7999, pid: 100)));
+      rig.coreHost.set(const CoreReady());
       await pumpRoute(tester);
       final screen = tester.widget<AppScreen>(find.byType(AppScreen));
       expect(screen.aid, aid);
@@ -1472,12 +1388,11 @@ void main() {
   });
 
   testWidgets('a WebViewInspector is kept in the root, under the app, and '
-      'warmed once the daemon is up', (tester) async {
+      'warmed as the core opens', (tester) async {
     await pumpApp(tester, _Rig(key: 'sk-ant-x', webInspector: true));
-    expect(rig.inspectorSurfaces, isEmpty);
     await up(tester);
     expect(find.byType(InspectorHost), findsOneWidget);
-    // Warmed as the daemon came up, before any render.
+    // Warmed as the core opened, before any render.
     expect(rig.inspectorSurfaces.single.loads.single.path, '/a/000000000000');
     expect(find.text('New app'), findsOneWidget);
     expect(
