@@ -13,9 +13,9 @@
 
 use super::Store;
 use clax_core::CoreError;
-use std::sync::{Arc, Mutex, RwLock};
 use rusqlite::{Connection, OptionalExtension, Transaction, params};
 use serde::{Deserialize, Serialize};
+use std::sync::{Arc, Mutex, RwLock};
 
 /// The state of a job, as `jobs.state` keeps it (its `CHECK` lists the
 /// same eight). Which state a job may move to from which is [`may_move`]'s
@@ -81,9 +81,8 @@ impl rusqlite::types::ToSql for JobState {
 impl rusqlite::types::FromSql for JobState {
     fn column_result(v: rusqlite::types::ValueRef<'_>) -> rusqlite::types::FromSqlResult<Self> {
         let s = v.as_str()?;
-        JobState::parse(s).ok_or_else(|| {
-            rusqlite::types::FromSqlError::Other(format!("no job state {s}").into())
-        })
+        JobState::parse(s)
+            .ok_or_else(|| rusqlite::types::FromSqlError::Other(format!("no job state {s}").into()))
     }
 }
 
@@ -469,11 +468,10 @@ fn existing(c: &Connection, id: &str) -> JobResult<JobRow> {
 
 /// Whether job `id` holds a question it asked that is not closed.
 fn waits(c: &Connection, id: &str) -> clax_core::Result<bool> {
-    Ok(c
-        .prepare_cached(
-            "SELECT EXISTS (SELECT 1 FROM job_questions WHERE job_id = ?1 AND outcome IS NULL)",
-        )?
-        .query_row(params![id], |r| r.get(0))?)
+    Ok(c.prepare_cached(
+        "SELECT EXISTS (SELECT 1 FROM job_questions WHERE job_id = ?1 AND outcome IS NULL)",
+    )?
+    .query_row(params![id], |r| r.get(0))?)
 }
 
 /// The state job `row` is in after `by` ([`may_move`]), read on `c` as
@@ -986,7 +984,11 @@ impl Store {
     /// its `rev` one on, so a worker holding it hears of it (and so does
     /// the job listener, even when the transaction then deletes the job's
     /// row). Called by every delete of an artifact, before it.
-    pub(crate) fn artifact_going_tx(&self, tx: &Transaction<'_>, aid: &str) -> clax_core::Result<()> {
+    pub(crate) fn artifact_going_tx(
+        &self,
+        tx: &Transaction<'_>,
+        aid: &str,
+    ) -> clax_core::Result<()> {
         let open: Vec<(i64, JobRow)> = tx
             .prepare_cached(&format!(
                 "SELECT rowid, {JOB_COLUMNS} FROM jobs
@@ -1051,7 +1053,10 @@ impl Store {
             ),
             params![key, self.now()],
         )?;
-        tx.execute(&format!("DELETE FROM job_threads WHERE {which}"), params![key])?;
+        tx.execute(
+            &format!("DELETE FROM job_threads WHERE {which}"),
+            params![key],
+        )?;
         Ok(())
     }
 }
@@ -1569,9 +1574,7 @@ mod tests {
         let q = question(&st);
         running(&st, "j1");
         st.set_job_thread("j1", &t, "c0", false).unwrap();
-        let (_, done, _) = st
-            .commit_step("j1", "publish:1", json!({}), true)
-            .unwrap();
+        let (_, done, _) = st.commit_step("j1", "publish:1", json!({}), true).unwrap();
         running(&st, "j2");
         st.set_job_thread("j2", &t, "c0", false).unwrap();
         let cancelled = move_to(&st, "j2", JobState::Cancelled).unwrap();
@@ -1589,9 +1592,7 @@ mod tests {
             assert_eq!(st.job(&row.id).unwrap().unwrap(), before, "{}", row.id);
         }
         // The step that ended a job is still replayed.
-        let (_, again, replayed) = st
-            .commit_step("j1", "publish:1", json!({}), true)
-            .unwrap();
+        let (_, again, replayed) = st.commit_step("j1", "publish:1", json!({}), true).unwrap();
         assert!(replayed);
         assert_eq!(again.state, JobState::Done);
     }
@@ -1637,16 +1638,10 @@ mod tests {
         let started = move_to(&st, "j1", JobState::Running).unwrap();
         assert_eq!(started.state, JobState::Waiting);
         answer(&st, &q1);
-        assert_eq!(
-            st.job("j1").unwrap().unwrap().job.state,
-            JobState::Running
-        );
+        assert_eq!(st.job("j1").unwrap().unwrap().job.state, JobState::Running);
         let paused = move_to(&st, "j1", JobState::Paused).unwrap();
         let asked = st.ask_job_question("j1", &q2).unwrap();
-        assert_eq!(
-            (asked.state, asked.rev),
-            (JobState::Paused, paused.rev + 1)
-        );
+        assert_eq!((asked.state, asked.rev), (JobState::Paused, paused.rev + 1));
     }
 
     #[test]
@@ -1667,9 +1662,7 @@ mod tests {
         assert_eq!((j.state, j.rev), (JobState::Running, resumed.rev + 1));
         // A step on a paused job keeps it paused.
         let paused = move_to(&st, "j1", JobState::Paused).unwrap();
-        let (_, row, _) = st
-            .commit_step("j1", "turn:1", json!({}), false)
-            .unwrap();
+        let (_, row, _) = st.commit_step("j1", "turn:1", json!({}), false).unwrap();
         assert_eq!((row.state, row.rev), (JobState::Paused, paused.rev + 1));
     }
 
@@ -1882,7 +1875,12 @@ mod tests {
             (JobState::Running, answering.rev + 1)
         );
         assert_eq!(
-            heard.lock().unwrap().iter().map(|c| (c.id.as_str(), c.rev)).collect::<Vec<_>>(),
+            heard
+                .lock()
+                .unwrap()
+                .iter()
+                .map(|c| (c.id.as_str(), c.rev))
+                .collect::<Vec<_>>(),
             vec![("j3", answering.rev + 1)]
         );
     }
@@ -1900,7 +1898,10 @@ mod tests {
         let full = st.job("j1").unwrap().unwrap();
         assert_eq!(full.job.rev, before.rev + 1);
         assert_eq!(
-            full.threads.iter().map(|t| t.thread_id.as_str()).collect::<Vec<_>>(),
+            full.threads
+                .iter()
+                .map(|t| t.thread_id.as_str())
+                .collect::<Vec<_>>(),
             vec![t2.as_str()]
         );
         assert_eq!(heard.lock().unwrap().len(), 1);
@@ -1920,8 +1921,10 @@ mod tests {
         let did = clax_core::ArtifactId::parse(&draft.artifact.id).unwrap();
         let app = artifact(&st, None);
         change_of(&st, "j1", did.as_str());
-        st.put_agent_read_consent(did.as_str(), app.as_str()).unwrap();
-        st.put_agent_read_consent(app.as_str(), did.as_str()).unwrap();
+        st.put_agent_read_consent(did.as_str(), app.as_str())
+            .unwrap();
+        st.put_agent_read_consent(app.as_str(), did.as_str())
+            .unwrap();
         st.with_write(|c| {
             c.execute(
                 "INSERT INTO draft_renders (draft_id, digest, clean, created_at)
@@ -1935,7 +1938,12 @@ mod tests {
         assert!(st.delete_draft(DAEMON, &did).unwrap());
         assert_eq!(rows_of(&st, "j1"), 0);
         assert_eq!(
-            heard.lock().unwrap().iter().map(|c| (c.id.as_str(), c.state)).collect::<Vec<_>>(),
+            heard
+                .lock()
+                .unwrap()
+                .iter()
+                .map(|c| (c.id.as_str(), c.state))
+                .collect::<Vec<_>>(),
             vec![("j1", JobState::Cancelled)]
         );
         assert!(st.agent_read_consents().unwrap().is_empty());
@@ -1966,10 +1974,9 @@ mod tests {
         st.create_job(new_job("j1")).unwrap();
         let a = aid.as_str();
         let bad = [
-            format!(
-                "INSERT INTO jobs (id, client, kind, state, input_json, rev, created_at, updated_at)
-                 VALUES ('j2', 'app', 'make', 'queued', '{{}}', 0, 'x', 'x')"
-            ),
+            "INSERT INTO jobs (id, client, kind, state, input_json, rev, created_at, updated_at)
+             VALUES ('j2', 'app', 'make', 'queued', '{}', 0, 'x', 'x')"
+                .into(),
             "UPDATE jobs SET rev = -1 WHERE id = 'j1'".into(),
             "UPDATE jobs SET input_json = 'not json' WHERE id = 'j1'".into(),
             "UPDATE jobs SET plan_json = '{' WHERE id = 'j1'".into(),
@@ -1989,9 +1996,7 @@ mod tests {
             "INSERT INTO client_imports (key, done_at, summary_json) VALUES ('k', 'x', 'x')".into(),
         ];
         for sql in bad {
-            let err = st
-                .with_write(|c| Ok(c.execute(&sql, [])?))
-                .expect_err(&sql);
+            let err = st.with_write(|c| Ok(c.execute(&sql, [])?)).expect_err(&sql);
             assert!(
                 err.to_string().contains("CHECK constraint failed"),
                 "{sql}: {err}"

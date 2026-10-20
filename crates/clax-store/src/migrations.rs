@@ -1627,19 +1627,23 @@ fn jobs_tables_disagree(
     let made = rusqlite::Connection::open_in_memory()?;
     made.execute_batch(jobs_sql)?;
     // The table's own SQL, then each of its indexes' (by name), normalised.
-    let schema = |c: &rusqlite::Connection, table: &str| -> clax_core::Result<Vec<(String, String)>> {
-        let mut q = c.prepare(
-            "SELECT name, sql FROM sqlite_master
+    let schema =
+        |c: &rusqlite::Connection, table: &str| -> clax_core::Result<Vec<(String, String)>> {
+            let mut q = c.prepare(
+                "SELECT name, sql FROM sqlite_master
              WHERE tbl_name = ?1 AND type IN ('table', 'index') AND sql IS NOT NULL
              ORDER BY type = 'index', name",
-        )?;
-        let rows = q
-            .query_map([table], |r| {
-                Ok((r.get::<_, String>(0)?, normalised_sql(&r.get::<_, String>(1)?)))
-            })?
-            .collect::<rusqlite::Result<_>>()?;
-        Ok(rows)
-    };
+            )?;
+            let rows = q
+                .query_map([table], |r| {
+                    Ok((
+                        r.get::<_, String>(0)?,
+                        normalised_sql(&r.get::<_, String>(1)?),
+                    ))
+                })?
+                .collect::<rusqlite::Result<_>>()?;
+            Ok(rows)
+        };
     for table in JOBS_TABLES {
         let there = has_table(tx, table)?;
         if !held {
@@ -4030,7 +4034,8 @@ mod tests {
     }
 
     /// A row in each of the jobs migration's tables.
-    const JOB_ROWS: &str = "INSERT INTO jobs (id, client, kind, artifact_id, state, step, input_json,
+    const JOB_ROWS: &str =
+        "INSERT INTO jobs (id, client, kind, artifact_id, state, step, input_json,
                                    rev, created_at, updated_at)
             VALUES ('j1', 'app', 'change', '7q3k9mzx2b4t', 'waiting', 'turn:1', '{}', 4, 'x', 'x');
          INSERT INTO job_steps (job_id, key, result_json, created_at)
@@ -5144,9 +5149,13 @@ mod tests {
         let a = super::normalised_sql(
             "CREATE TABLE t (  -- a comment, (with) 'quotes'\n    a TEXT CHECK (a IN ('x  y','-- z')) ,\n    b INTEGER\n)",
         );
-        let b = super::normalised_sql("CREATE TABLE t(a TEXT CHECK(a IN('x  y','-- z')),b INTEGER)");
+        let b =
+            super::normalised_sql("CREATE TABLE t(a TEXT CHECK(a IN('x  y','-- z')),b INTEGER)");
         assert_eq!(a, b);
-        assert_eq!(a, "CREATE TABLE t(a TEXT CHECK(a IN('x  y','-- z')),b INTEGER)");
+        assert_eq!(
+            a,
+            "CREATE TABLE t(a TEXT CHECK(a IN('x  y','-- z')),b INTEGER)"
+        );
         assert_ne!(
             super::normalised_sql("CREATE TABLE t (a TEXT REFERENCES u(id))"),
             super::normalised_sql("CREATE TABLE t (a TEXT REFERENCES u(id) ON DELETE CASCADE)")
