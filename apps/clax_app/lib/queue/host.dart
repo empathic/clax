@@ -3,7 +3,7 @@
 library;
 
 import '../core/core_client.dart';
-import '../daemon/clock.dart';
+import '../platform/clock.dart';
 import 'client.dart';
 import 'effect.dart';
 import 'isolate_client.dart';

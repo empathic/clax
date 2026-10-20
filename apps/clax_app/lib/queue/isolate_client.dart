@@ -10,7 +10,7 @@ import 'dart:isolate';
 import 'package:flutter/foundation.dart';
 
 import '../core/core_client.dart';
-import '../daemon/clock.dart';
+import '../platform/clock.dart';
 import 'client.dart' show QueueClient;
 import 'codec.dart';
 import 'effect.dart';

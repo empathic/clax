@@ -17,7 +17,7 @@ import 'dart:developer' as developer;
 import 'dart:isolate';
 
 import '../core/core_client.dart';
-import '../daemon/clock.dart';
+import '../platform/clock.dart';
 import 'codec.dart';
 import 'effect.dart';
 import 'model.dart';

@@ -20,7 +20,6 @@ import 'clax/http_api.dart';
 import 'core/core_host.dart';
 import 'core/core_transport.dart';
 import 'core/origins.dart';
-import 'daemon/daemon_key.dart';
 import 'agent/timings.dart';
 import 'home/home_install.dart';
 import 'home/home_snapshot.dart';
@@ -184,7 +183,7 @@ Future<AppServices> platformServices({DateTime? launched}) async {
     // App Review asks for a clear permission before anything goes to a
     // third-party AI (guideline 5.1.2(i)).
     aiConsent: AiConsent(required: Platform.isIOS, settings: settings),
-    key: DaemonKey(secureKey, onChanged: core.keyChanged),
+    key: NotifyingSecureKey(secureKey, onChanged: core.keyChanged),
     timings: FileTimings(
       File('${support.path}/timings.jsonl'),
       started: {homeUsable: ?launched, homeCover: ?launched},

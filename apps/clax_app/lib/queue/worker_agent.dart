@@ -26,7 +26,7 @@ import '../agent/tools/toolbox.dart';
 import '../clax/api.dart';
 import '../clax/http_api.dart';
 import '../core/core_transport.dart';
-import '../daemon/clock.dart';
+import '../platform/clock.dart';
 import '../platform/connection.dart' show canConnect;
 import '../platform/settings_store.dart' show AppSettings;
 import 'agent_port.dart';

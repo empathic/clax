@@ -44,7 +44,7 @@ import 'home/home_update.dart';
 import 'bundle/lineage_store.dart';
 import 'bundle/updater.dart';
 import 'clax/api.dart';
-import 'daemon/clock.dart';
+import 'platform/clock.dart';
 import 'core/core_client.dart';
 import 'core/core_host.dart';
 import 'platform/app_notice.dart';
