@@ -63,7 +63,8 @@ fn bin_shows_sets_and_clears_the_binary_the_plugins_run() {
     let out = e.cmd().args(["bin", "set", "--this"]).output().unwrap();
     assert!(out.status.success(), "{out:?}");
     let text = crate::common::as_clax(&String::from_utf8_lossy(&out.stdout));
-    assert!(text.contains(&format!("the plugins now run {me}")), "{text}");
+    let said = format!("the plugins now run {me}");
+    assert!(text.contains(&said), "{text}");
     let (_, v) = e.json(&["bin", "show"]);
     let path = v["path"].as_str().map(crate::common::as_clax);
     assert_eq!(
