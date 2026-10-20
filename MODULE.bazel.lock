@@ -378,6 +378,19 @@
         }
       }
     },
+    "//bazel/flutter:dart_graph.bzl%dart_graph": {
+      "general": {
+        "bzlTransitiveDigest": "TNm+4G9JsZLfXwA533BNHdodAVOhJLmKH9oS9W/WeRY=",
+        "usagesDigest": "GcRuEgSCFQtlAHsYTYm5H46bTDhImqQ8nLYOKuKm0MQ=",
+        "recordedInputs": [],
+        "generatedRepoSpecs": {
+          "clax_app_dart_graph": {
+            "repoRuleId": "@@//bazel/flutter:dart_graph.bzl%_dart_graph",
+            "attributes": {}
+          }
+        }
+      }
+    },
     "//bazel/flutter:home_release.bzl%home_release": {
       "general": {
         "bzlTransitiveDigest": "4v9FYcyhsM/1NlsSoy0QNZRrts2+AK/M4KcwDDnR+uE=",

@@ -321,6 +321,11 @@ use_repo(debug_keystore, "android_debug_keystore")
 home_release = use_extension("//bazel/flutter:home_release.bzl", "home_release")
 use_repo(home_release, "clax_home_release")
 
+# The Clax app's Dart targets, derived from its imports at load time
+# (bazel/flutter/dart_graph.bzl).
+dart_graph = use_extension("//bazel/flutter:dart_graph.bzl", "dart_graph")
+use_repo(dart_graph, "clax_app_dart_graph")
+
 # The iOS app's signing inputs on this machine, from ~/.config/clax/apple
 # (bazel/apple/signing.bzl): only the device and TestFlight builds use them.
 signing = use_extension("//bazel/apple:signing.bzl", "signing")

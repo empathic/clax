@@ -5,6 +5,7 @@
 load("@aspect_rules_js//js:defs.bzl", "js_library")
 load("@bazel_skylib//rules:build_test.bzl", "build_test")
 load("@bazel_skylib//rules:diff_test.bzl", "diff_test")
+load("@clax_app_dart_graph//:graph.bzl", "LIBS", "SUITES")
 load("@rules_apple//apple:macos.bzl", "macos_unit_test")
 load("@rules_apple//apple:versioning.bzl", "apple_bundle_version")
 load("@rules_dart//dart:defs.bzl", "dart_analysis_config", "dart_analysis_options", "dart_analysis_test", "dart_binary", "dart_library")
@@ -69,6 +70,8 @@ dart_analysis_config(
     visibility = ["//visibility:public"],
 )
 
+# The app's whole library (lib/), which the app, its integration tests and
+# the analysis build on.
 flutter_library(
     name = "clax_app",
     package_name = "clax_app",
@@ -96,28 +99,19 @@ flutter_library(
     ],
 )
 
-# The app's unit and widget tests (`flutter test`), a test target per file,
-# //apps/clax_app:<dir>_<file>, each run in a flutter_tester of its own and
-# compiled with the other files of its directory (bazel/flutter/tests.bzl
-# says why), against the app's sources and the files its tests read. The
-# *_real_test.dart files, which run the real daemon or the real embedded
-# core, form a suite of their own with the warmed debug clax and the host's
-# libclax_embed.
-TEST_SUPPORT = glob(
-    [
-        "test/**/*.dart",
-        "tool/**/*.dart",
-    ],
-    exclude = ["test/**/*_test.dart"],
-) + [
-    # Test files other tests import for their fakes.
-    "test/platform/background_work_test.dart",
-    "test/platform/device/device_host_test.dart",
-    "test/ui/build_view_test.dart",
-    "test/ui/bundle_flows_test.dart",
-    # The integration rig's pure helpers, which a unit test runs.
-    "integration_test/newer.dart",
-]
+# lib/ by its imports, for the unit tests: a library per Dart library (a
+# file, or the files of an import cycle), named lib_<path>, which depends on
+# the libraries and pub packages it imports. @clax_app_dart_graph derives
+# them when the package loads (bazel/flutter/dart_graph.bzl), so no import
+# is ever undeclared; `python3 bazel/flutter/dart_graph.py apps/clax_app
+# --report` prints the graph.
+[flutter_library(
+    name = name,
+    package_name = "clax_app",
+    srcs = lib["srcs"],
+    tags = ["no-dart-format"],
+    deps = [":" + d for d in lib["deps"]] + ["@clax_app_pub//:" + p for p in lib["pub"]],
+) for name, lib in LIBS.items()]
 
 TEST_DATA = glob(
     [
@@ -142,39 +136,20 @@ TEST_DATA = glob(
     "//web:contract_files",
 ]
 
-REAL_TESTS = glob(["test/**/*_real_test.dart"])
-
-# {suite: its test files}: a directory's, the top level's, and the real ones.
-SUITES = {
-    "real": REAL_TESTS,
-    "root": glob(
-        ["test/*_test.dart"],
-        exclude = REAL_TESTS,
-    ),
-} | {
-    d: glob(
-        ["test/%s/**/*_test.dart" % d],
-        exclude = REAL_TESTS,
-    )
-    for d in [
-        "agent",
-        "bundle",
-        "clax",
-        "core",
-        "daemon",
-        "eval",
-        "home",
-        "platform",
-        "queue",
-        "ui",
-    ]
-}
-
+# The app's unit and widget tests (`flutter test`), a test target per file,
+# //apps/clax_app:<dir>_<file>, each run in a flutter_tester of its own. A
+# suite (SUITES, bazel/flutter/dart_graph.py) compiles its files together
+# (bazel/flutter/tests.bzl says why), against the libraries they and the
+# test-side files they import (test support, tool/, integration_test/)
+# import, so a change selects only the suites that reach it. The
+# *_real_test.dart files, which run the real daemon or the real embedded
+# core, form a suite of their own with the warmed debug clax and the host's
+# libclax_embed.
 [flutter_test_suite(
-    name = "tests_%s" % suite,
+    name = name,
     size = "medium",
     package_name = "clax_app",
-    srcs = TEST_SUPPORT,
+    srcs = suite["srcs"],
     assets = glob(
         [
             "assets/kit/**",
@@ -190,7 +165,7 @@ SUITES = {
         "//crates/clax-cli:clax",
         "//crates/clax-cli:clax_warm",
         "//crates/clax-embed:clax_embed_host",
-    ] if suite == "real" else []),
+    ] if suite["real"] else []),
     # APP_NAME, as `flutter test` sets it beside UNIT_TEST_ASSETS
     # (flutter_test_suite): flutter_test then reads an asset from disk at
     # once, where through the engine the read would not finish within a
@@ -199,19 +174,16 @@ SUITES = {
         # The core as this host builds it, relative to the runfiles root.
         "@platforms//os:macos": {"CLAX_EMBED_LIB": "crates/clax-embed/libclax_embed.dylib"},
         "//conditions:default": {"CLAX_EMBED_LIB": "crates/clax-embed/libclax_embed.so"},
-    }) if suite == "real" else {}),
-    license_files = [":notices"],
-    names = {t: t[len("test/"):-len(".dart")].replace("/", "_") for t in files},
-    tests = files,
-    deps = [
-        ":clax_app",
-        "@clax_app_pub//:flutter_test",
-        "@clax_app_pub//:webview_flutter_platform_interface",
-    ],
-) for suite, files in SUITES.items() if files]
+    }) if suite["real"] else {}),
+    # NOTICES, for the suites whose files show the licences.
+    license_files = [":notices"] if suite["notices"] else [],
+    names = {t: t[len("test/"):-len(".dart")].replace("/", "_") for t in suite["tests"]},
+    tests = suite["tests"],
+    deps = [":" + d for d in suite["deps"]] + ["@clax_app_pub//:" + p for p in suite["pub"]],
+) for name, suite in SUITES.items()]
 
 # A test file in no suite would never run.
-[fail("%s is in no suite of SUITES (apps/clax_app/BUILD.bazel): add its directory" % t) for t in glob(["test/**/*_test.dart"]) if not [s for s in SUITES.values() if t in s]]
+[fail("%s is in no suite of @clax_app_dart_graph (bazel/flutter/dart_graph.py)" % t) for t in glob(["test/**/*_test.dart"]) if not [s for s in SUITES.values() if t in s["tests"]]]
 
 # `flutter analyze` (analysis_options.yaml) over the app's Dart: its
 # library, and its tests, integration tests and tools as a library of their

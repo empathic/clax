@@ -218,7 +218,7 @@ macOS) and the two keys below.
 
 | Target (`//apps/clax_app:…`) | What it is | Native twin |
 |---|---|---|
-| `<dir>_<file>` (127, one per `test/**/*_test.dart`) | `flutter test` of that file, in a `flutter_tester` of its own; the `*_real_test.dart` ones against the warmed debug `clax` | `flutter test` |
+| `<dir>_<file>` (one per `test/**/*_test.dart`) | `flutter test` of that file, in a `flutter_tester` of its own; the `*_real_test.dart` ones against the warmed debug `clax` | `flutter test` |
 | `dart_analyze` | `flutter analyze`: the app's library, and its tests, integration tests and tools (`:checked_sources`), by `analysis_options.yaml`; any diagnostic fails | `flutter analyze` |
 | `prompt_sync`, `version_sync` | the prompt's copies of the contract; pubspec.yaml's version is the one the BUILD file gives the APK and the macOS app | `scripts/sync-app-prompt.sh --check` |
 | `apk`, `apk_test` | the release APK for arm64-v8a and x86_64 (`bazel/flutter/android.bzl`), and a check of it against what Gradle makes | `flutter build apk` |
@@ -371,8 +371,8 @@ the engine's into the bundle's NOTICES.Z; rules_flutter writes only the
 `license_files` it is given. `//apps/clax_app:notices`
 (`bazel/flutter/notices.bzl`) writes them in the form `LicenseRegistry`
 reads: the pub packages of `APP_PUB_PACKAGES`, which must be exactly those
-the app's Dart code reaches (the build names any it gains or loses), the
-engine's, and the licence files of the Rust crates linked into the embedded
+the app's Dart code reaches (`:notices_pub_test` names any it gains or
+loses), the engine's, and the licence files of the Rust crates linked into the embedded
 clax. The APK's and the macOS app's checks look for it; the Maven and
 Swift libraries' notices are not in it.
 
@@ -429,20 +429,31 @@ only in debug (`bazelisk build //apps/clax_app:ios_app -c dbg`); a device
 build is `ipa_dev` or `ipa_appstore`, signed with the team's profile
 (`bazel/apple/signing.bzl`).
 
-**The tests** are compiled a directory at a time (`tests_<dir>_all`,
-`manual`; `bazel/flutter/tests.bzl`): a `.dill` carries the whole app and
-Flutter, 64 MB, and one per file made 7.6 GB of them, written again to the
-shared cache on every edit of the app. Each file still runs in its own
+**The tests** are built against what they import. `@clax_app_dart_graph`
+(`bazel/flutter/dart_graph.bzl`) reads the imports of the app's Dart files
+when the package loads, with `bazel/flutter/dart_graph.py`, and gives
+`apps/clax_app/BUILD.bazel` a `flutter_library` per Dart library of `lib/`
+(`lib_<path>`: a file, or the files of an import cycle) that depends on the
+libraries and pub packages it imports, and the test files in suites
+(`SUITES`). So `bazel query rdeps` from a changed file, and
+`just test-affected`, reach only the suites that import it, directly or
+through a test-support file, and an import needs no BUILD edit. A suite
+is compiled once (`tests_<name>_all`, `manual`; `bazel/flutter/tests.bzl`):
+a `.dill` carries Flutter and the part of the app its files reach, 60 to
+90 MB, and one per file made 7.6 GB of them. The `*_real_test.dart` files
+are a suite of their own; the others are merged, closest import sets
+first, into fifteen (`SUITE_COUNT` in `dart_graph.py`), so a change also
+runs the other tests of the suites it reaches. `python3
+bazel/flutter/dart_graph.py apps/clax_app --report` prints the folders'
+import graph, its cycles and the suites. Each file still runs in its own
 `flutter_tester`, as under `flutter test`: the suite's entry point runs
 the file `CLAX_TEST_FILE` names, so no file sees what another left in a
 global (the test binding's HTTP override is one). They run `flutter_tester` as `flutter test` does, with
 `UNIT_TEST_ASSETS` and `APP_NAME` set as it sets them (so assets load
 within a test's fake time). A test finds the app's files and its scratch
 directory through `test/support/paths.dart`, the same under `flutter test`
-(run in `apps/clax_app`) and Bazel (run in the runfiles tree). A test file
-another test imports for its fakes is listed in `TEST_SUPPORT` in
-`apps/clax_app/BUILD.bazel`. A new test directory under `test/` is added
-to `SUITES` there. An integration test runs in the debug app
+(run in `apps/clax_app`) and Bazel (run in the runfiles tree). An
+integration test runs in the debug app
 (`debug_app`, `-c dbg`: JIT, Runner's `#if DEBUG` test-input channel,
 `DebugProfile.entitlements`), whose entry point (`integration_main`) runs
 the test and exits with its result.
