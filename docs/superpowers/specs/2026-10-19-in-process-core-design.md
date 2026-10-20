@@ -1,6 +1,7 @@
 # The Clax app's core in its own process: no daemon, no HTTP
 
-Date: 2026-10-19. Branch: `flutter-app`. Status: draft for the owner's review.
+Date: 2026-10-19. Branch: `flutter-app`. Status: draft for the owner's review,
+revised the same day with the owner's decisions 8 to 13.
 Builds on `2026-10-12-flutter-app-design.md` (the "app spec"),
 `2026-10-12-flutter-app-round2-design.md` (the "round-2 spec"),
 `2026-10-18-ios-release-design.md` (the "iOS spec") and `docs/bazel.md`
@@ -25,9 +26,10 @@ After this work:
   channel in app mode (§5); the browser shell is unchanged;
 - each artifact's content is a separate origin from the shell and from
   every other artifact (§4.3);
-- makes and changes are jobs in the core's database; a step that publishes
-  commits with its version, so a job resumed after a kill never publishes
-  twice (§7);
+- makes and changes are jobs in the core's database, which are the only
+  truth about them; a step that publishes commits with its version, so a
+  job resumed after a kill never publishes twice, and one queue owner per
+  core runs them (§7, §8.1);
 - the icon and page checks that `finish` applies are the core's, so every
   publish obeys them (§8);
 - the seven JSON state files are imported once into core tables (§9);
@@ -69,11 +71,40 @@ After this work:
 6. **Background:** jobs keep running when the person leaves the app: the
    Android foreground service (`ChannelBackgroundWork`) holds the process
    while any job runs; Mac and iOS go on while the OS allows. After a kill,
-   each job resumes from its last committed step at the next launch, or at
-   a WorkManager wake on Android.
+   each job resumes from its last committed step at the next launch (the
+   WorkManager wake first named here was dropped by decision 12).
 7. **No transport state for local work.** "Waiting for connection" remains
    only for the Claude API, worded to name Claude; the home tile's
    "Offline" says what is unreachable.
+
+Taken on 2026-10-19, after the first draft:
+
+8. **Domain effects, not transport effects.** `update` emits domain
+   operations (`LoadJobs`, `StartTurn`, `RunTool`, `Render`, `CommitStep`,
+   `Publish`, `Reply`, `Notice`, `KeepAlive`, …), never a core call. Only
+   the effect runner maps an effect to core calls. `update`'s tests assert
+   meaning, never paths or methods (§7.1).
+9. **One source of truth.** The core's job rows are the truth. The worker's
+   model is a projection rebuilt from `JobChanged` events and `LoadJobs`,
+   plus the effects in flight. `update` never advances a job's durable
+   state except by emitting a commit effect and applying the core's answer,
+   or the event that answer causes (§7.4).
+10. **No wall-clock leases.** One queue owner per core (per job client,
+    `app` for the app's queue): the core keeps an in-memory owner claim
+    that a worker isolate takes at its start, refused to a second claimant
+    while the first's isolate lives, and released when that isolate's port
+    closes or the core closes or reopens. The jobs API
+    stays generic: an owner is any single caller of the core, so the
+    localhost daemon can serve it later (§7.5, §8.1).
+11. **The queue is built once, on its real store.** The core's jobs and
+    steps land before the queue, and the queue is written directly on them
+    (§17).
+12. **No Android WorkManager wake and no headless engine.** Jobs resume at
+    the next launch on every platform; the foreground service keeps running
+    jobs alive on Android, as before (§7.6).
+13. **This branch's migrations follow main's numbering**, and installed
+    homes at this branch's earlier numbering are adopted by their schema
+    after a backup, never re-run (§10.2).
 
 ## Decisions this spec takes
 
@@ -114,11 +145,11 @@ Each marked **(ask)** is also a `status:needs-decision` record on this file.
   no uncaught errors and no failing tests" becomes: the app records each
   render's result against the draft's content digest, and a publish step
   made from a draft is refused unless that digest has a clean render (§8.2).
-- **S6. A WorkManager wake runs a job until it needs a render (ask).** A
-  render needs a WebView, which needs the app's UI; a wake with no UI runs
-  model turns and committed-step tails, and at the next render step leaves
-  the job `paused` with the notice "Open Clax to keep building <title>".
-  Rendering in an offscreen native WebView is the recorded alternative.
+- **S6. Jobs resume at the next launch, on every platform (decided).** The
+  owner chose "resume at launch; no wake" on 2026-10-19 (decision 12): no
+  WorkManager wake and no headless engine on Android, so every render has
+  the app's UI to run in. A job the OS or a kill interrupted waits, as its
+  core row left it, for the next launch.
 - **S7. iOS gains no BGProcessingTask (ask).** There is none today (the iOS
   spec took `beginBackgroundTask` and turned down `BGContinuedProcessingTask`).
   iOS and the Mac keep `IosBackgroundWork`'s pause at the time limit, and
@@ -273,12 +304,14 @@ the streaming response body: each chunk the hub's `Conn::next` yields
 the blank line anyway, so a block split across messages still parses. The first block is the
 hub's `ready` with the stream's ID; topic changes go over `call` as
 today's `POST /api/stream/<id>` (`as: owner`). A subscriber that falls
-behind gets the hub's `resync`, as an SSE client does. Nothing in the hub
-changes: the SSE route and the subscription share its connection type.
+behind gets the hub's `resync`, as an SSE client does. The SSE route and
+the subscription share the hub's connection type; the hub gains only what
+the queue's owner claim needs (`Hub::closed` and `Hub::nudge`, §8.1).
 
 The app subscribes once per consumer: the UI isolate's `ClaxStream`
-(replacing `SharedClaxStream`), the worker isolate's queue, and each
-WebView's shell document (§5.2).
+(replacing `SharedClaxStream`), the worker isolate's queue (whose stream
+also holds the queue's owner claim, §7.5), and each WebView's shell
+document (§5.2).
 
 ### 2.5 Opening a home
 
@@ -395,7 +428,9 @@ in the app, with the scheme in place of the port:
   daemon's token and cookie defences against other local apps have nothing
   to defend.
 
-What the spike checks on each platform (Task 13 of the plan) before the
+What the spike checks on each platform (Task 14 of the plan; on Android an
+integration test run on an emulator under Bazel, on the Mac one run by
+`just app-integration`, each asserting every value) before the
 scheme replaces the port: `window.origin` in the shell and in a content
 frame; `localStorage` and IndexedDB surviving a reload and an app restart
 per origin; a content frame's `parent.document` access throwing; a
@@ -548,39 +583,63 @@ UI isolate                              worker isolate (lib/queue/)
 ──────────                              ─────────────────────────────
 QueueClient ── Intent ────────────────► inbox ─► update(model, msg) ─► (model, effects)
   ▲  (make, change, cancel, retry,                     │                   │
-  │   keepGoing, discard, answer)                      │                   ▼
-  └──────────── QueueState ◄─── publish on change      │           EffectRunner
-RenderService ◄── RenderRequest ◄──────────────────────┼──────────── Render effect
-  └──── RenderResult ─────────────────► inbox           │            CoreCall / Turn / Notice
-                                                        └─ msgs ◄─── KeepAlive / Persist
+  │   keepGoing, discard)                              │                   ▼
+  └──────────── QueueState ◄─── PublishState           │           EffectRunner ── core calls ──► the core
+RenderService ◄── RenderRequest ◄──────────────────────┼──────────── Render         (the only code
+  └──── RenderResult ─────────────────► inbox           │                            that knows routes)
+                                                        └─ msgs ◄─── answers, JobChanged events
 ```
 
-- **Model** (`lib/queue/model.dart`): `QueueModel {jobs: Map<JobId, Job>,
-  inFlight: Map<EffectId, JobId>, keepAlive: bool, coreOpen: bool,
-  claude: Reachability}`. `Job {id, kind: make|change, state, step,
-  artifactId?, title, request, threads, plan, spent, stops, error?,
-  waitingFor?: claude|answer|render|null, rev}`. `JobState`: `queued`,
-  `running`, `waiting` (on Claude, an answer, or a render), `paused` (the
-  OS's time ran out, or a wake reached a render), `stopped` (a limit; Keep
-  going offered), `failed` (Retry offered), `cancelled`, `done`.
-- **Messages** (`lib/queue/msg.dart`): the intents; effect results
-  (`TurnDone`, `TurnFailed(network|other)`, `CoreAnswered`, `CoreRefused`,
-  `Rendered`, `RenderLost`); core events (`JobChanged`, `ThreadCommented`,
-  `QuestionAnswered`); `ClaudeReachable(bool)`; `Tick(now)` from the
-  injected clock; `Woke(foreground: bool)`.
+- **Model** (`lib/queue/model.dart`): `QueueModel {owner, jobs: Map<JobId,
+  Job>, inFlight: Map<EffectId, Effect>, local: Map<JobId, JobLocal>,
+  pending: List<Intent>, claude: Reachability, canRender: bool, keepAlive:
+  bool}`. `jobs` is a projection of the core's job rows (§7.4): `Job {id,
+  kind: make|change, state, step, rev, artifactId?, title, input, plan?,
+  carry?, error?, steps, threads, questions}`, each field as the core last
+  sent it. `JobState` is the core's: `queued`, `running`, `waiting` (on the
+  person's answer to a question), `paused` (the OS's time ran out),
+  `stopped` (a limit; Keep going offered), `failed` (Retry offered),
+  `cancelled`, `done`. `JobLocal {waitingFor: claude|render|null,
+  renderTries, turn}` holds what is not durable and is rebuilt after a
+  restart. `owner` is `none`, `claiming`, `held(token)` or `refused` (§7.5).
+  `pending` keeps intents that arrive before the jobs are loaded.
+- **Messages** (`lib/queue/msg.dart`): the intents; the owner's
+  (`OwnerClaimed(token)`, `OwnerHeld`, `OwnerReleased`); the core's rows
+  (`JobsLoaded(jobs)`, `JobChanged(job)`, and every commit effect's answer,
+  `Committed(effect, job, {step, replayed})` or `Refused(effect, jobId,
+  reason, {job})`, `reason` one of `versionMoved(current)`, `docMoved`,
+  `notRenderedClean`, `jobMoved`, `notOwner`); work results (`TurnDone`,
+  `TurnFailed(network|other)`, `ToolDone`, `Rendered`, `RenderLost`);
+  `CanRender(bool)`; `ClaudeReachable(bool)`; `Tick(now)` from the injected
+  clock; `Woke(foreground: bool)`.
 - **`update`** (`lib/queue/update.dart`) is a pure function with no
   `async`, no I/O, no clock: time arrives in messages. It decides each
-  job's next step from its state and the step results the core holds, and
-  emits effects.
-- **Effects** (`lib/queue/effect.dart`): `CoreCall(id, frame)`,
-  `StartTurn(id, jobId, turnInput)`, `RunTool(id, jobId, call)`,
-  `Render(id, jobId, draft)`, `CommitStep(id, jobId, key, body)`,
-  `Notice(kind, jobId)`, `KeepAlive(on)`, `PublishState`.
+  job's next step from the job's row (§7.4) and emits effects.
+- **Effects** (`lib/queue/effect.dart`) are domain operations; none names a
+  path, a method or a frame:
+  - *commit effects*, each answered by the core with the job's row:
+    `CreateJob(id, jobId, kind, input, {artifactId, title, plan})`,
+    `MoveJob(id, jobId, ifRev, to, {error, carry, plan, title})` (a change
+    of state), `CommitStep(id, jobId, key, notes)` (a turn's notes),
+    `Ask(id, jobId, question)` (the job waits on the person's answer),
+    `Publish(id, jobId, base, publish)` (the publish step) and `Reply(id,
+    jobId, reply)` (the reply step);
+  - *work*: `StartTurn(id, jobId, turnInput)`, `RunTool(id, jobId, call)`,
+    `Render(id, jobId, renderSpec)`, `ProbeClaude()`;
+  - *the queue's own*: `ClaimOwner()`, `LoadJobs()`, `Notice(kind, jobId,
+    title)`, `KeepAlive(on)`, `PublishState(state)`.
 - **The effect runner** (`lib/queue/runner.dart`) runs each effect and
-  feeds its result back as a message. It holds the agent's runners and
-  backends (`lib/agent`, unchanged in substance), a `CoreClient`, the
-  `ApiConnection` probe, and the render port. It is the only code in the
-  worker that awaits.
+  feeds its result back as a message. It is the only code in the worker
+  that knows the core's routes: it maps each commit effect to its route of
+  §8.1 (with the owner token), each answer to `Committed` or `Refused`, and
+  `Render` to a `RenderRequest` and then the render's record (§8.2). It
+  holds the agent's runners and backends (`lib/agent`, unchanged in
+  substance), a `CoreClient`, the `ApiConnection` probe, and the render
+  port. It is the only code in the worker that awaits.
+- **`update`'s tests assert meaning**: which job moves to which state,
+  which step is committed with which base, that no second `Publish` is
+  emitted for a base. They never assert a path, a method or a body's JSON;
+  the runner's tests (against `FakeCore`) are where routes are checked.
 - **Up to three jobs run at once**, as today (`make_service.dart`); others
   wait `queued`. A change of an app waits while a make or another change of
   the same app runs.
@@ -589,17 +648,20 @@ RenderService ◄── RenderRequest ◄─────────────
 
 `QueueClient` (`lib/queue/client.dart`) is all the UI knows of the queue: a
 `ValueListenable<QueueState>` (an immutable snapshot of every job, built by
-the worker after each `update` that changed it) and `send(Intent)`. It
-spawns the worker isolate at launch, once the core is open, with the
-handle, the support path, the settings snapshot and the key; settings and
-key changes are intents too. `MakeService`, `FeedbackWorker`'s UI half,
-`ChangeTracker`, the launcher's tiles, the making screen, the working chip,
-the change sheet and the thread page read `QueueState` and send intents;
-none awaits a job.
+the worker after each `update` that changed it, jobs in flight to the core
+included) and `send(Intent)`. It spawns the worker isolate at launch, once
+the core is open, with the handle, the support path, the settings snapshot
+and the key; settings and key changes are intents too. `MakeService`,
+`FeedbackWorker`'s UI half, `ChangeTracker`, the launcher's tiles, the
+making screen, the working chip, the change sheet and the thread page read
+`QueueState` and send intents; none awaits a job.
 
-If the worker isolate dies (an uncaught error), the client restarts it once
-and the jobs resume from the core (§7.4); a second death in a minute shows
-"Clax's builder stopped. Restart Clax to go on." on the affected jobs.
+If the worker isolate dies (an uncaught error), its ports close with it.
+The client restarts it once; the new worker claims the queue's owner token
+(§7.5), which the core releases when it notices the dead isolate's event
+stream end, then loads the jobs from the core and resumes each (§7.4). A
+second death in a minute shows "Clax's builder stopped. Restart Clax to go
+on." on the affected jobs.
 
 ### 7.3 Rendering
 
@@ -610,51 +672,111 @@ on the shell's inspect view at the draft's URL (§4.1) and answers
 `RenderResult {id, inspection | tests | migration | error}`. A request not
 answered in 60 s on the worker's clock, or one whose WebView was torn down
 (`RenderLost`), is sent again once, then the job waits for a render
-(`waitingFor: render`) until the UI isolate says it can render again. The
-render's result is recorded in the core (§8.2) by the worker before the
-job goes on.
+(`waitingFor: render`, local) until the UI isolate says it can render
+again. The runner records the render's result in the core (§8.2) before it
+answers `Rendered`.
 
-### 7.4 Durable steps and resume
+### 7.4 One source of truth, and resume
 
-The model in memory is a cache of the core's jobs. Every change of a job's
-state or step that must survive a kill is a `CommitStep` or a job update
-in the core before the model moves on. At the worker's start, `update`
-receives `Loaded(jobs)` from `GET /api/jobs?open=1` and resumes each job:
+**The rule.** The core's job rows are the truth about every job. The
+worker's `jobs` is a projection of them, rebuilt from `JobsLoaded` and
+`JobChanged`, plus the effects in flight. `update` never advances a job's
+durable state (its `state`, `step`, steps, `plan`, `carry`, `error`, threads
+and questions) except by emitting a commit effect and applying the core's
+answer, or the `JobChanged` event that answer causes. It applies a row only
+when its `rev` is above the one it holds, so an answer and its event, in
+either order, apply once. Everything else in the model (`local`, `inFlight`,
+`pending`, `claude`, `canRender`) is not durable and is rebuilt after a
+restart.
 
-| Last committed | Resume |
+What follows from the rule:
+
+- A kill loses only what was in flight. Each commit effect either landed in
+  the core, and its row says so, or did not, and its row does not.
+- Resume is not a separate path. After every applied row `update` asks
+  `next(job)` for the job's next effect, the same function at `JobsLoaded`
+  as after any `Committed`; the resume table is that function's table.
+- A commit refused because the job moved (`job_moved`) carries the current
+  row; `update` applies it and asks `next` again.
+- The UI shows what the core holds: a job created by an intent shows as
+  `queued` from its `CreateJob` in flight, and as the core's row once
+  answered.
+
+`next(job)`, at `JobsLoaded` (from `GET /api/jobs?open=1&client=app`) and
+after every applied row:
+
+| The core's row | `next(job)` |
 |---|---|
-| none (queued) | start its run |
-| a turn's notes (`turn:<n>`) | the run from turn n + 1 with its notes and draft (`unfinished` state, §9) |
-| `publish:<base>` | skip the publish; do the steps after it |
-| `reply` | skip; ack and clear working |
-| `done` | nothing |
+| `queued` | `MoveJob(→ running)` when fewer than three run; else nothing |
+| `running`, no step | `StartTurn(turn 1)` |
+| `running`, last step `turn:<n>` with tool calls not yet answered | for each, in order: `finish` → `Publish` (base from the notes); `render` → `Render`; `ask` → `Ask`; any other → `RunTool`. A tool's result is not durable: after a restart the tools of the last committed turn run again (they are reads and draft writes, which repeat harmlessly) |
+| `running`, last step `turn:<n>`, every call answered | `StartTurn(turn n + 1)` with the notes and `carry` |
+| `running`, a `publish:<b>` step, a change | `Reply` (its step moves the job to `done` in the same transaction) |
+| `waiting` (its question unanswered) | nothing; the answer moves the job to `running` in the core (§8.1) and its `JobChanged` brings `next` again |
+| `paused` | `MoveJob(→ running)` at launch or `Woke(foreground: true)` |
+| `stopped`, `failed` | nothing; `KeepGoing` and `Retry` emit `MoveJob(→ running)` |
+| `cancelled`, `done` | not loaded; any result still in flight for it is dropped |
+
+A make's publish step and a change's reply step carry `state: done`, so
+the step and the end of the job commit together; there is no row in which
+a make has published and is not done.
 
 A step is idempotent by its key: committing a key the job already has
 returns the recorded result with `replayed: true` and changes nothing
-(§8.1). So a double resume (two workers after a crash-restart race, or a
-wake and a launch together) can repeat a model turn, never a publish or a
-reply. The worker takes a job by setting `lease_until` (now + 2 min,
-renewed each minute) with a revision check; a second worker sees the lease
-and leaves the job.
+(§8.1). So a repeated commit (a worker that crashed after the core's
+commit and before it saw the answer) can repeat a model turn, never a
+publish or a reply. Two workers never run one job: only the owner (§7.5)
+may commit.
 
-### 7.5 Background
+### 7.5 The queue's owner
+
+One worker runs the app's jobs at a time, chosen by the core, with no
+clock:
+
+- At its start the worker subscribes to the core's events (its own
+  subscription, §2.4) and reads its stream's ID from the hub's `ready`
+  block. `update` emits `ClaimOwner` once the core is open; the runner sends
+  `POST /api/jobs/owner {client: "app", stream: <that ID>}`.
+- The core keeps one claim per `client`, in memory only: `{token, stream}`.
+  A claim answers 200 `{owner: <token>}` when there is none, and 409
+  `owner_held` while the holder's stream lives. Every write to a job of that
+  client (creating, moving, steps, questions, the import of §9) carries the
+  token in `x-clax-jobs-owner`; a write without it, or with another,
+  answers 409 `not_owner`. Reads need only the owner's credential, as today.
+- The claim is released when the holder's event stream ends, on `DELETE
+  /api/jobs/owner` with the token, or when the core closes; a reopened core
+  starts with no claim. A worker isolate's stream ends when the isolate
+  dies: Dart closes its ports, the core's next post to it fails (§2.2), and
+  the subscription ends. A claim that finds a holder asks the hub to send
+  the holder's stream a keep-alive at once, so a dead holder is noticed at
+  that post rather than at the next periodic keep-alive.
+- The core publishes `Event::JobsOwner {client, held}` on the `jobs` topic
+  at each claim and release. A worker refused with `owner_held` waits for
+  `held: false` and claims again. A worker refused a write with
+  `not_owner` stops emitting work and claims again.
+- The localhost daemon can serve the same API later unchanged: there an
+  owner is any single caller holding a live `/api/stream` connection, and
+  the connection's end releases its claim.
+
+### 7.6 Background
 
 `KeepAlive(on)` effects become `ChannelBackgroundWork.start/stop` on
 Android (the `dataSync` foreground service, `BackgroundRunService.kt`), and
 `IosBackgroundWork`'s background task on iOS, by a message to the UI
 isolate (the platform channels live there). The progress notification is
 built from `QueueState`. On Android the engine is kept by the application
-(S8). On iOS and the Mac a job running out of time is `paused` and resumes
-at launch. A WorkManager `OneTimeWorkRequest` (network required) is
-enqueued while any job is open and cancelled when none is; its wake starts
-a headless engine on `queueMain` (S6).
+(S8), so Back out of Clax does not end a job. On iOS and the Mac a job
+running out of time is `paused` (a `MoveJob`). A job interrupted by the OS
+or a kill on any platform resumes at the next launch (S6); nothing wakes
+the app to run it.
 
 ## 8. The core: jobs and publish checks
 
 ### 8.1 Jobs and steps
 
-Migration 44 (the next free number on this branch; §10.2 says what happens
-if the number moves) adds:
+Migration 46 (the next free number after main's 40 and this branch's five
+app migrations, renumbered to 41 to 45 by §10.2; the number moves with
+main's, as §10.2 says) adds:
 
 ```sql
 CREATE TABLE jobs (
@@ -669,7 +791,6 @@ CREATE TABLE jobs (
     plan_json TEXT,                    -- a make's plan (was plans.json)
     carry_json TEXT,                   -- Keep going's carried draft and notes (was unfinished.json)
     error_json TEXT,
-    lease_until TEXT,
     rev INTEGER NOT NULL DEFAULT 1,
     created_at TEXT NOT NULL,
     updated_at TEXT NOT NULL
@@ -716,19 +837,32 @@ CREATE TABLE client_imports (         -- one row per one-time import (§9)
 );
 ```
 
-Routes (owner only; `clax-server/src/routes/jobs.rs`; also on the hosted
-Worker, which shares the router, though nothing there calls them yet):
+Routes (owner credential only; `clax-server/src/routes/jobs.rs`; also on
+the hosted Worker, which shares the router, though nothing there calls them
+yet). Every route that writes a job of a client also needs that client's
+queue-owner token in `x-clax-jobs-owner` (§7.5), else 409 `not_owner`;
+each write answers with the job's row after it (`{"job": {…}}`), which is
+what the worker applies:
 
 | Route | Effect |
 |---|---|
+| `POST /api/jobs/owner` `{client, stream}` | claims the client's queue (§7.5): 200 `{owner}`; 409 `owner_held`; 400 `no_such_stream` when `stream` is not a live stream of the hub |
+| `DELETE /api/jobs/owner` | releases the caller's claim (204) |
 | `POST /api/jobs` `{id, client, kind, artifact_id?, title?, input, plan?}` | creates; an existing `id` with the same body answers it (200), another body 409 |
 | `GET /api/jobs?open=1&client=app` | open jobs with their steps, threads and questions |
 | `GET /api/jobs/{id}` | one |
-| `PATCH /api/jobs/{id}` `{if_rev, state?, step?, title?, plan?, carry?, error?, lease_until?}` | compare-and-set on `rev`; 409 `job_moved` with the current job |
+| `PATCH /api/jobs/{id}` `{if_rev, state?, step?, title?, plan?, carry?, error?}` | compare-and-set on `rev`; 409 `job_moved` with the current job |
 | `PUT /api/jobs/{id}/threads/{tid}` / `DELETE` | the job answers, or stops at, a thread's comment |
-| `PUT /api/jobs/{id}/questions/{qid}` | a question the job asked; the answer arrives by the questions topic and is stored here |
-| `POST /api/jobs/{id}/steps/{key}` `{result, publish?}` | commits a step (below) |
+| `PUT /api/jobs/{id}/questions/{qid}` | a question the job asked; moves the job to `waiting` in the same transaction. When the question is answered (`POST /api/questions/{qid}/answer` or `/decline`, as today) the core stores the answer (or the decline) here and moves the job back to `running` in that answer's transaction |
+| `POST /api/jobs/{id}/steps/{key}` `{result, publish?, reply?, state?}` | commits a step (below); `state` (only `done`) ends the job in the step's transaction |
 | `GET/PUT/DELETE /api/agent-read-consents[/{reader}/{source}]` | the agent's remembered consents |
+
+The owner claim is the core's, not the store's: `AppState` keeps a
+`JobsOwners` map (client → token and stream ID) in memory, so a crash, a
+`close` or a reopen forgets it. The hub tells it when a stream ends
+(`Hub::closed(stream)`, a future that resolves at the connection's end),
+and `Hub::nudge(stream)` sends one stream a keep-alive at once. Nothing in
+the store knows owners, and nothing in the claim reads a clock.
 
 **A publish step** carries `publish: {artifact_id | null (a new app),
 base, request: PublishRequest, docs: [DocWrite], draft?: {id, digest}}`.
@@ -739,18 +873,20 @@ result with `replayed: true`; else check `current_version == base` (409
 `version_moved` otherwise, nothing recorded), insert the version (or the
 artifact), apply the pinned document writes (a moved document refuses the
 whole step, 409 `doc_moved`, as `finish` refuses today), insert the step
-row with `version_n`, and bump the job's `step` and `rev`. Events
-(`Event::Version`, the docs events, `Event::Job`) are published after the
-commit. A **reply step** (`reply: {threads, body, resolve}`) does the agent's
-replies, resolves, feedback ack and working clear in one transaction the
-same way.
+row with `version_n`, and bump the job's `step` and `rev` (and its `state`
+to `done` when the body says so). Events (`Event::Version`, the docs
+events, `Event::Job`) are published after the commit. A **reply step**
+(`reply: {threads, body, resolve}`) does the agent's replies, resolves,
+feedback ack and working clear in one transaction the same way.
 
 So the change ledger's two unknowns, "did the publish land?" and "did the
 docs land?", cannot arise: either the step row and the version exist
 together, or neither does.
 
-Events: `Event::Job {id, state, step, rev}` on a new stream topic `jobs`
-(owner only), which the worker subscribes to.
+Events, on a new stream topic `jobs` (owner only), which the worker
+subscribes to: `Event::Job {id, client, state, step, rev}` after every
+committed write of a job, and `Event::JobsOwner {client, held}` at each
+claim and release.
 
 ### 8.2 Publish checks
 
@@ -811,7 +947,9 @@ start after this build, before it loads jobs:
    the last phase); a file that does not parse is skipped and named in the
    summary;
 4. write the jobs and rows in one `POST /api/client-imports/app-json-v1`
-   `{jobs, consents}` that the core applies in one transaction with the
+   `{jobs, consents}`, carrying the queue's owner token (the worker claims
+   the queue before it imports, §7.5), that the core applies in one
+   transaction with the
    `client_imports` row (a crash before it leaves nothing; after it, the
    key);
 5. delete the seven files.
@@ -833,37 +971,79 @@ The new build opens the same directory in place.
 
 The failure of 2026-10-15 (a rebase renumbered migrations an installed
 database already had, and the daemon re-ran them and crash-looped) is
-designed against so:
+designed against so. The owner's decision 13 settles the numbering: this
+branch follows main's, as AGENTS.md requires (a branch takes the next free
+number on main), and installed homes are adopted by their schema.
 
+- **The numbering.** Main's `crates/clax-store/src/migrations.rs` ends at
+  40 today (39: `legal_agreements`, a person agreeing to a hosted Clax's
+  terms; 40: `briefs`, artifacts started from a brief), both plain
+  `CREATE TABLE`s with no Rust step. This branch's list ends at 43, its
+  39 to 43 being the app's five (`db_read_grants`, `artifacts.draft_of`,
+  `net_grants`, `sample_grants`, `artifacts.draft_inherit_net`). Before
+  migration 46 is written, the branch takes main's 39 and 40 verbatim
+  (SQL and comments, character for character, so the merge of main
+  resolves `migrations.rs` by their shared prefix) and moves the app's five
+  to 41 to 45 (`APP_MIGRATION = 41`); the jobs migration is 46. If main has
+  gained migrations when that task runs, it takes them all the same way
+  and every number after them moves up by as many.
+- **Installed homes at this branch's old numbering are adopted, never
+  re-run.** The owner's phone and Mac are at `user_version` 43 with this
+  branch's 39 to 43: read under the new numbering, 43 would claim main's
+  39 and 40 and the app's 41 to 43, and the open would run the app's 44
+  and 45, whose tables the home already has, and fail on every launch,
+  which is the failure of 2026-10-15. So `adopt_earlier_flutter_app` (which
+  already adopts the app's layouts that started at 24, 27 and 38) learns
+  the layout that started at 39, by schema, not by `user_version`: the
+  home has the app's first mark (`db_read_grants`) and the where-to-ask
+  migration's `questions.thread_id`, and lacks the marks of main's
+  migrations between the where-to-ask migration and the app's
+  (`legal_agreements`, `briefs`). Its version must be 38 plus the number
+  of the app's marks it holds, and those marks (the app's five, then the
+  jobs migration's tables) must be present exactly up to that one; else
+  the open is refused with `MigrationFailed` naming the mismatch and the
+  backup, and the home is left as it was. An adopted home runs main's
+  migrations it lacks (39 and 40, which touch none of the app's tables),
+  and its `user_version` becomes the number its last app migration has
+  now (43 → 45). A home of the new numbering, or any other database, is
+  left to the ordinary migrations.
+- **Each main migration below the app's has a mark** (`MAIN_MARKS_ABOVE_38`
+  beside `APP_MIGRATION_MARKS`: `legal_agreements`, `briefs`), so adoption
+  decides from the schema which of them a home lacks, whatever its
+  version, and a later renumbering adds one mark per new main migration
+  and nothing else.
 - **Backup first, always.** `Store::open` already backs up before any
-  migration (`backup::before_migrate`, three kept). The plan's first open
-  of an old home is tested to leave `backups/clax-43-<time>.db`.
-- **Migration 44's tables are adopted by schema.** `adopt_earlier_flutter_app`
-  gains a mark for 44 (`jobs`, `job_steps`, …): a database that has the
-  tables at another `user_version` (a build of this branch whose 44 was
-  renumbered by a rebase) is recognised, checked table by table, and its
-  version set, never re-run. A database whose tables disagree with the
-  marks is refused with `MigrationFailed` and the backup's path, not
-  migrated over.
-- **The branch and main disagree today**: main's migrations 39 and 40 are
-  not this branch's 39 and 40. The merge that settles that numbering must
-  carry its adoption step for homes at this branch's 43 or 44; this spec
-  does not settle it, and records it (needs decision).
-- **A fixture of the installed schema.** The plan adds
-  `crates/clax-store/tests/fixtures/old-migrations/flutter-app-853502f77.sql`,
-  the schema and a few rows of a home written by this branch's current
-  `clax` (`user_version` 43), and tests that
-  `Store::open` on it backs up, migrates to 44, and keeps every artifact,
-  version, thread and document.
+  migration (`backup::before_migrate`, three kept), adoption included:
+  the first open of an installed home leaves `backups/clax-43-<time>.db`
+  before anything is written.
+- **The jobs migration's tables are adopted by schema too.** Its `jobs`
+  table joins `APP_MIGRATION_MARKS` as the sixth mark, and adoption checks
+  its other six tables (`job_steps`, `job_threads`, `job_questions`,
+  `agent_read_consents`, `draft_renders`, `client_imports`) with it, so a
+  home made by a build whose jobs migration had another number is
+  recognised the same way, and one whose tables disagree with the marks is
+  refused, not migrated over.
+- **Fixtures of the installed schema.** Two, both made before the
+  renumbering: `crates/clax-store/tests/fixtures/old-migrations/flutter-app-4508df19f.sql`,
+  this branch's migrations 39 to 43 as commit 4508df19f has them (first:
+  39, user_version: 43), in the format of that directory's other fixtures,
+  which the store's adoption tests replay; and
+  `crates/clax-embed/tests/fixtures/homes/flutter-app-43.sql`, the dump of
+  a home written by this branch's own `clax` at schema 43, with a few rows
+  of every kind, which a test opens through the core: it backs up,
+  adopts, migrates to 46, and keeps every artifact, version, thread and
+  document.
 - **A large old database.** The test home of `scripts/perf-daemon.sh`
   (300 artifacts, 2,400 threads, 7,200 comments) is opened by the core in a
-  test: migration 44 adds tables only (no rewrite of existing rows), so it
-  takes the time of its `CREATE`s. The open's progress messages keep the
-  splash honest meanwhile.
+  test: main's 39 and 40 and the jobs migration add tables only (no
+  rewrite of existing rows), so the open takes the time of their
+  `CREATE`s. The open's progress messages keep the splash honest meanwhile.
 - **Before installing on the owner's devices**, the plan's last task copies
   the phone's home off the phone (`adb exec-out run-as dev.empathic.clax
   tar …`) and the Mac's from its container, opens each copy with the new
-  core on the Mac, and checks the counts, before `just app-phone` runs.
+  core on the Mac, and checks the counts, before `just app-phone` runs. No
+  build carrying the renumbered or new migrations is installed on the
+  owner's devices before that.
 
 ### 10.3 The JSON files
 
@@ -1019,8 +1199,7 @@ cases are rewritten for clax-embed.
   (`home.js:267`, `launcher.dart:730`, `split/sidebar.dart:428`), keeping
   the `cloud_off_fill` glyph.
 - A job paused by the OS reads "Paused — open Clax to keep building" (the
-  iOS spec's words), and a wake that reached a render "Open Clax to keep
-  building <title>".
+  iOS spec's words).
 
 ## 16. Testing
 
@@ -1031,12 +1210,22 @@ wall-clock budgets, injected clocks (AGENTS.md).
   (`test/queue/update_test.dart`): a table over every `JobState` × every
   `Msg` kind asserting the next state and the effects, plus properties run
   over generated message sequences (a seeded `Random`, 2,000 sequences of
-  up to 40 messages): no job runs two publish effects for one base; a
-  `cancelled` or `done` job emits nothing; at most three jobs `running`;
+  up to 40 messages, the core's answers generated from the commit effects
+  emitted): no job runs two `Publish` effects for one base; a `cancelled`
+  or `done` job emits nothing; at most three jobs `running`;
   `KeepAlive(true)` exactly while some job is `running` or `waiting`;
-  every `CommitStep` key is unique per job.
+  every `CommitStep` key is unique per job; a job's durable fields change
+  only on a message carrying a core row (§7.4); no job effect is emitted
+  while the worker does not hold the owner token. The tests assert
+  meaning (states, steps, bases, effect kinds), never a route, a method
+  or a body.
 - **The effect runner** against `FakeCore` and the scripted runner
-  (`test/queue/runner_test.dart`), on a fake clock.
+  (`test/queue/runner_test.dart`), on a fake clock: this is where each
+  effect's route, the owner header and each answer's mapping are checked.
+- **A worker isolate dies and restarts** (`test/queue/client_test.dart`):
+  the dead worker's stream ends, the new worker's claim succeeds after the
+  release, it loads the jobs from the core and resumes each by §7.4's
+  table, and no step is committed twice.
 - **A fake core for Dart tests**: `test/support/fake_core.dart` (§6).
 - **Rust tests for clax-embed's `call` against the Router**
   (`crates/clax-embed/tests/`): an owner call lists artifacts; a content
@@ -1054,8 +1243,11 @@ wall-clock budgets, injected clocks (AGENTS.md).
   `crates/clax-server/tests/api_jobs.rs`): a publish step twice publishes
   once (`replayed: true`); a step on a moved base records nothing; a
   failure injected after the version insert and before the commit leaves
-  neither; a moved document refuses the whole step; lease and `if_rev`
-  races; the import route applies all or nothing.
+  neither; a moved document refuses the whole step; `if_rev` races; a
+  second claimant of a client's queue is refused while the first's stream
+  lives and takes it once that stream ends; a write without the owner's
+  token is refused; a closed and reopened core holds no claim; the import
+  route applies all or nothing.
 - **Publish checks**: the icon fixtures in Rust and Dart; an outside
   agent's publish over MCP with a bad icon is refused; the render gate.
 - **The shell's app-mode transport in `web/e2e`**
@@ -1071,14 +1263,24 @@ wall-clock budgets, injected clocks (AGENTS.md).
   content frame's `fetch` of the shell's `/a/<id>` and `/api/artifacts`
   reads nothing; a content frame cannot post to `ClaxHost` (the fake host
   drops non-main-frame messages, as the real ones do).
+- **Two claimants of the owner token** (`crates/clax-embed/tests/` and
+  `crates/clax-server/tests/api_jobs.rs`): the second is refused while the
+  first's subscription lives; when the first's subscriber returns false
+  (a closed Dart port), the claim is released, `Event::JobsOwner {held:
+  false}` is heard and the second claim succeeds; a write with the first's
+  token after that is refused.
 - **Kill and resume**: `integration_test/kill_resume_test.dart` (macOS,
   `just app-integration`): a scripted make is killed (the test runs the app
   as a child and `kill -9`s it by its PID) right after the publish step's
   commit, then relaunched; it checks one version, the job `done`, the reply
   once. A second case kills before the commit and checks one version after
-  resume. On Android the same scenario is a manual step of the plan's
-  device checklist (`adb shell am kill` while the foreground service runs,
-  then launch).
+  resume. On Android the same scenario is a step of the plan's device
+  checklist, run on the Android emulator (`adb shell am kill` while the
+  foreground service runs, then launch).
+- **The scheme spike** (§4.3) is an integration test on each platform:
+  `just app-integration` on the Mac, and on an Android emulator under
+  Bazel (`//apps/clax_app:integration_android_scheme_spike`), each
+  asserting every value it reads.
 - **Old homes**: the fixture test (§10.2) and the perf home open.
 
 ## 17. Phases
@@ -1099,13 +1301,16 @@ Each phase leaves main working and ships something testable.
    supervisor; the scheme replaces the port; the APK, the Mac app and the
    iOS app carry the library and no `clax`. Ships: the app on the core,
    the time-to-usable before/after, old-home adoption.
-4. **The queue in the worker isolate.** Model, update, runner, render
-   bridge, `QueueClient`, background keep-alive, the engine kept on
-   Android. Durable state still in the JSON files, now written by the
-   worker. Ships: the queue, the update tests.
-5. **Durable steps and publish checks in the core.** Migration 44, the job
-   routes, the publish and reply steps, the icon, page and render checks;
-   the worker's jobs and finish move onto them. Ships: kill-and-resume.
+4. **The core's jobs and publish checks.** The migrations on main's
+   numbering with the adoption of installed homes (§10.2), the jobs
+   migration, the job routes with the queue owner, the publish and reply
+   steps, the icon, page and render checks. Nothing in the app calls the
+   job routes yet. Ships: the Rust tests, old homes adopted.
+5. **The queue in the worker isolate, on the core's jobs.** Model, update,
+   runner, render bridge, `QueueClient`, background keep-alive, the engine
+   kept on Android; the worker's jobs and `finish` are the core's from the
+   first commit (no interim JSON store). Ships: the queue, the update
+   tests, kill-and-resume.
 6. **The JSON state import.** Ships: an upgrade from the owner's homes.
 7. **Delete the old code** (§13), reword the copy (§15), update the docs.
 
@@ -1116,28 +1321,37 @@ The inputs most likely to bite a person:
 1. **Kill mid-publish.** The app is killed between writing a version's
    content files and committing its step, or between the commit and the
    reply step. Expected: one version, one reply, after resume; never two.
-2. **A double resume.** A WorkManager wake and a launch, or a worker
-   restarted after a crash, resume the same job. Expected: one runs it
-   (the lease), the other leaves it; any repeat is a model turn, never a
-   publish or reply.
-3. **A WebView reload during a job.** The app's page (or the whole UI
+2. **A worker isolate dies and restarts.** The worker throws mid-job and
+   the client starts a new one while the old one's last commit may or may
+   not have landed. Expected: the new worker owns the queue only once the
+   old one's stream has ended, rebuilds its jobs from the core, and
+   resumes each from its row; any repeat is a model turn, never a publish
+   or reply.
+3. **Two claimants of the owner token.** A second worker (a restart racing
+   the old one's end, or a second engine) claims the queue. Expected: it is
+   refused while the first's isolate lives, gets the claim when that
+   isolate's port closes, and the first's later writes are refused; no job
+   is run by both.
+4. **A WebView reload during a job.** The app's page (or the whole UI
    isolate's engine, on Android after Back) goes away while a render is
    asked. Expected: the job waits for a render, then renders again; it is
    not failed and spends no extra turn.
-4. **Two isolates writing.** The UI isolate posts a comment and the worker
+5. **Two isolates writing.** The UI isolate posts a comment and the worker
    publishes on the same app at once. Expected: the core serializes them;
    a publish on a moved base is a step refused and re-planned, never a lost
    comment or a corrupted draft.
-5. **A migration on a large old home.** The owner's phone home at version
-   43, possibly large. Expected: a backup first, migration 44 in seconds
-   at most, progress on the splash, every artifact and thread kept; a
-   failure shows the backup's path.
-6. **Origin isolation.** A page tries to read the shell's document or the
+6. **A migration on a large old home.** The owner's phone home at this
+   branch's old version 43, possibly large. Expected: a backup first, the
+   home adopted by its schema into main's numbering (43 → 45, main's 39 and
+   40 added), never an app migration run twice, migration 46 in seconds at
+   most, progress on the splash, every artifact and thread kept; a failure
+   shows the backup's path.
+7. **Origin isolation.** A page tries to read the shell's document or the
    API, to post on `ClaxHost`, or to frame the shell. Expected: nothing
    readable, nothing delivered.
-7. **An old daemon still running.** A Mac whose app crashed left its
+8. **An old daemon still running.** A Mac whose app crashed left its
    `clax` helper running on the same home. Expected: the core opens beside
    it, the helper exits within two stale checks, no write is lost (SQLite's
    locking).
-8. **A large call over the channel.** An asset upload of 15 MiB from a page
+9. **A large call over the channel.** An asset upload of 15 MiB from a page
    through the shell. Expected: chunked, delivered, no frozen UI.

@@ -4,15 +4,15 @@
 
 **Goal:** The Clax app runs Clax's core as a library in its own process on Android, macOS and iOS (no daemon, no port, no HTTP), its WebViews load from a scheme the app answers, its queue of makes and changes runs in a Dart worker isolate over durable job steps in the core, and the seven JSON state files become core tables.
 
-**Architecture:** A new crate, `crates/clax-embed`, starts the core that `clax serve` runs (store, `AppState`, background tasks, router) without a listener, behind four C functions; `call` feeds a binary request frame to the axum router through `tower::ServiceExt::oneshot` and posts the response frame to a Dart port, and `subscribe` pumps `GET /api/stream`'s body to a port. The shell in app mode replaces its document's `fetch` with one that relays `/api/` over the `ClaxHost` channel and streams pushed events; the host answers every other request from a scheme (`https://*.clax.invalid` on Android, `clax://` on Apple) through the core. The queue is an Elm-shaped model (`update(model, msg) → (model, effects)`) in a worker isolate; the core keeps jobs and steps, and a publish step commits with its version.
+**Architecture:** A new crate, `crates/clax-embed`, starts the core that `clax serve` runs (store, `AppState`, background tasks, router) without a listener, behind four C functions; `call` feeds a binary request frame to the axum router through `tower::ServiceExt::oneshot` and posts the response frame to a Dart port, and `subscribe` pumps `GET /api/stream`'s body to a port. The shell in app mode replaces its document's `fetch` with one that relays `/api/` over the `ClaxHost` channel and streams pushed events; the host answers every other request from a scheme (`https://*.clax.invalid` on Android, `clax://` on Apple) through the core. The queue is an Elm-shaped model (`update(model, msg) → (model, effects)`) in a worker isolate whose effects are domain operations; its jobs are a projection of the core's job rows, the only truth about them, and only the effect runner maps an effect to core calls. The core keeps jobs and steps, a publish step commits with its version, and one queue owner per client (a worker holding a live event stream, in memory, no clock) may write them. The core's jobs land before the queue, so the queue is built once, on them.
 
-**Tech Stack:** Rust 1.94.0 (axum 0.8, tower, tokio, rusqlite via `clax-store`, `roxmltree` 0.20 new), rules_rust with the NDK and rules_apple, Flutter 3.47.7 / Dart 3 (`dart:ffi`, `dart:isolate`, `flutter_test`), Kotlin (androidx.webkit `WebViewCompat`, WorkManager), Swift (`WKURLSchemeHandler`), TypeScript (Svelte shell, vitest, Playwright), Bash.
+**Tech Stack:** Rust 1.94.0 (axum 0.8, tower, tokio, rusqlite via `clax-store`, `roxmltree` 0.20 new), rules_rust with the NDK and rules_apple, Flutter 3.47.7 / Dart 3 (`dart:ffi`, `dart:isolate`, `flutter_test`), Kotlin (androidx.webkit `WebViewCompat`), the Android emulator under Bazel (Task 14), Swift (`WKURLSchemeHandler`), TypeScript (Svelte shell, vitest, Playwright), Bash.
 
 **Spec:** `docs/superpowers/specs/2026-10-19-in-process-core-design.md` (the "spec"; §N below are its sections). Read the section a task names before starting it. Open owner decisions on the spec: `"$Q" exec threads docs/superpowers/specs/2026-10-19-in-process-core-design.md --status needs-decision`. Tasks that depend on one say so; every other task runs without it.
 
 ## Global Constraints
 
-- **No build carrying an unmerged migration of this plan is installed on the owner's devices** except in Task 33, after the migration's number is settled (spec §10.2).
+- **No build carrying an unmerged migration of this plan is installed on the owner's devices** except in Task 33, after Task 19 has put this branch's migrations on main's numbering with installed homes adopted by schema (spec §10.2). From Task 19 on, a task that must see a build running on Android uses the Android emulator of Task 14, never the owner's phone.
 - **Commits are unsigned:** `git -c commit.gpgsign=false commit …`. `git add` only the paths your task lists (never `git add -A`, `.` or `commit -a`; `apps/clax_app/analysis_options.yaml` carries the owner's uncommitted change and must never be staged). Never push. Never file, close or comment on issues or pull requests. If a git operation fails on signing or 1Password, stop and report.
 - **Git configuration:** never change shared git configuration, and never use bare `git stash`.
 - **Homes and daemons:** never run anything against `~/.clax`, the daemon on port 7480, or the owner's app data (the phone's `dev.empathic.clax` data, the Mac's `~/Library/Containers/dev.empathic.clax`) except Task 33's read-only copy. Tests use temporary homes. Never wait on processes with `pgrep -f`/`pkill -f`; use the PID you started, or an exit file, with a timeout.
@@ -21,20 +21,21 @@
 - **`unsafe`:** the workspace forbids it. From Task 7 the one exception is `crates/clax-embed/src/ffi.rs` as spec §14 words it; until Task 31 removes it, clax-ios's existing exception stands beside it. No hard links, anywhere.
 - **Layering:** `"clax-embed": SERVER | {"clax-embedded"}` in `scripts/check-crate-layers.py`; no crate turns on another's features for tests; test support lives in `clax-testkit` and `clax-fake-exe`.
 - **Prose:** "ID" in prose, comments and commit messages; `id` only as a literal symbol. Doc comments and commit messages describe the contract or the change, never this plan, the conversation, or a rating of quality.
-- **Copy** the person sees follows spec §15: "Waiting for Claude", "Can't reach Claude", "Paused — open Clax to keep building", "Open Clax to keep building <title>", "Clax's builder stopped. Restart Clax to go on."; no transport state for local work.
+- **Copy** the person sees follows spec §15: "Waiting for Claude", "Can't reach Claude", "Paused — open Clax to keep building", "Clax's builder stopped. Restart Clax to go on."; no transport state for local work.
 - **Qualifier** runs as `Q="/Users/alex/.claude/plugins/cache/qualifier/qual/0.1.0/scripts/ensure-qualifier.sh"; "$Q" exec <args>`. Read `"$Q" exec agents` and each topic it lists before your session's first record. Before editing a file, `"$Q" exec threads <path>` and read what is open on it. More than two writes go in one `"$Q" exec record --stdin` batch written to a file outside the repository, dry-run first. Records cite paths, line ranges and command output, never this plan. Close only a record your session wrote or one your own commit fixed, with evidence and `--ref git:<sha>`, in a separate commit; propose every other close in the task report.
-- **UI is looked at:** a task that changes what a person sees is done only once it was seen running (the macOS debug app, or the phone) and its screenshots opened with the Read tool. "Tests pass" is not verification for UI.
-- **Order:** phases run in order; main is never broken. Phase 2's Dart code is reached only by tests until Task 16 switches the app to the core.
+- **UI is looked at:** a task that changes what a person sees is done only once it was seen running (the macOS debug app, the Android emulator, or the phone where the first constraint allows) and its screenshots opened with the Read tool. "Tests pass" is not verification for UI.
+- **Order:** phases run in order; main is never broken. Phase 2's Dart code is reached only by tests until Task 17 switches the app to the core; phase 4's job routes are reached only by tests until phase 5's queue calls them.
 - Before the branch merges, `just check` runs once (in the background) and `"$Q" exec diff main` is read; both results go in the final report.
 
 ## Review Focus
 
-1. **Kill mid-publish.** The app dies after a publish step's content files are written and before its transaction commits, or after the commit and before the reply step. A person expects one version and one reply after the next launch. Test: Task 25 (`api_jobs::a_step_cut_before_commit_leaves_no_version_and_resumes_once`, `api_jobs::a_replayed_publish_step_publishes_once`), Task 28 (`integration_test/kill_resume_test.dart`).
-2. **A double resume.** Two workers (a crash-restarted worker isolate, or a WorkManager wake beside a launch) resume the same job. A person expects it done once, with at most a repeated model turn. Test: Task 24 (`jobs::a_held_lease_refuses_a_second_taker`), Task 19 (`update_test.dart` "a job whose lease another worker holds is left alone").
-3. **A WebView reload during a job.** The page or the whole UI engine goes away while the worker waits on a render. A person expects the job to wait, render again when it can, and not fail or spend an extra turn. Test: Task 21 (`render_bridge_test.dart` "a render lost to a reload is asked again once, then waits"), Task 19 (property: no `StartTurn` follows `RenderLost`).
-4. **A migration on a large old home.** The owner's phone home at this branch's 43. A person expects a backup, every artifact kept, and a splash that moves. Test: Task 18 (`old_homes::the_installed_flutter_app_home_backs_up_and_migrates_to_44`, `old_homes::the_perf_home_opens_through_the_core`).
-5. **Origin isolation.** A page tries to read the shell's document or the API, post on `ClaxHost`, or frame the shell. A person expects nothing to leak. Test: Task 11 (`app-transport.spec.ts` "a page reads nothing of the shell"), Task 5 (`embed::a_content_frame_reaches_no_api`), Task 14's spike checklist on both platforms.
-6. **Two isolates writing.** The UI posts a comment while the worker publishes on the same app. A person expects the comment kept and the publish re-planned on a moved base. Test: Task 25 (`api_jobs::a_step_on_a_moved_base_records_nothing`), Task 19 (`update_test.dart` "version_moved re-plans, never republishes").
+1. **Kill mid-publish.** The app dies after a publish step's content files are written and before its transaction commits, or after the commit and before the reply step. A person expects one version and one reply after the next launch. Test: Task 21 (`jobs::a_step_cut_before_commit_leaves_no_version_and_resumes_once`, `api_jobs::a_replayed_publish_step_publishes_once`), Task 28 (`integration_test/kill_resume_test.dart`).
+2. **A worker isolate dies and restarts.** The worker throws mid-job; the client starts a new one while the old one's last commit may or may not have landed. A person expects the job to go on from its last committed step, done once, with at most a repeated model turn. Test: Task 25 (`client_test.dart` "a worker isolate dies and restarts"), Task 24 (`update_properties_test.dart`: a job's durable fields change only on a core row with a higher `rev`), Task 21 (`api_jobs::the_claim_is_released_when_its_stream_ends`).
+3. **Two claimants of the owner token.** A second worker claims the queue while the first lives, or races the first's end. A person expects no job run by both. Test: Task 21 (`api_jobs::a_second_claimant_is_refused_while_the_first_stream_lives`, `api_jobs::the_claim_is_released_when_its_stream_ends`, `api_jobs::a_write_without_the_owners_token_is_refused`, `api_jobs::a_restarted_core_holds_no_claim`, `embed::the_queue_owner_is_released_when_its_subscriber_goes`), Task 25 (`client_test.dart` "two claimants"), Task 24 (`update_test.dart` "a worker that does not own the queue runs nothing").
+4. **A WebView reload during a job.** The page or the whole UI engine goes away while the worker waits on a render. A person expects the job to wait, render again when it can, and not fail or spend an extra turn. Test: Task 26 (`render_bridge_test.dart` "a render lost to a reload is asked again once, then waits"), Task 24 (property: no `StartTurn` follows `RenderLost`).
+5. **A migration on a large old home.** The owner's phone home at this branch's old 43. A person expects a backup, the home adopted into main's numbering and never an app migration run twice, every artifact kept, and a splash that moves. Test: Task 19 (`the_app_at_39_to_43_is_adopted_into_mains_numbering`, `an_adopted_home_is_never_rerun`, `old_homes::the_installed_flutter_app_home_backs_up_and_is_adopted`), Task 20 (the same home at 46), Task 16 (`old_homes::the_perf_home_opens_through_the_core`).
+6. **Origin isolation.** A page tries to read the shell's document or the API, post on `ClaxHost`, or frame the shell. A person expects nothing to leak. Test: Task 11 (`app-transport.spec.ts` "a page reads nothing of the shell"), Task 5 (`embed::a_content_frame_reaches_no_api`), Task 14 (`integration_scheme_spike` on the Mac, `integration_android_scheme_spike` on the emulator, each asserting every value).
+7. **Two isolates writing.** The UI posts a comment while the worker publishes on the same app. A person expects the comment kept and the publish re-planned on a moved base. Test: Task 21 (`api_jobs::a_step_on_a_moved_base_records_nothing`), Task 24 (`update_test.dart` "a publish refused for a moved base re-plans and never publishes that base again").
 
 ---
 
@@ -44,9 +45,9 @@
 |---|---|
 | 1 clax-embed | **1a** T1, T3 · **1b** T2, T4 · **1c** T5 · **1d** T6, T7 · **1e** T8 |
 | 2 Shell transport and scheme | **2a** T9, T12 · **2b** T10, T13 · **2c** T11, T14 · **2d** T15 |
-| 3 Off the daemon | **3a** T18 (baseline and fixtures first) · **3b** T16 · **3c** T17 |
-| 4 Queue | **4a** T19 · **4b** T20 · **4c** T21, T23 · **4d** T22 |
-| 5 Durable steps, checks | **5a** T24, T26 · **5b** T25, T27 · **5c** T28 |
+| 3 Off the daemon | **3a** T16 (baseline and fixtures first) · **3b** T17 · **3c** T18 |
+| 4 The core's jobs and checks | **4a** T19, T22 · **4b** T20 · **4c** T21 · **4d** T23 |
+| 5 The queue, on the core's jobs | **5a** T24 · **5b** T25 · **5c** T26 · **5d** T27 · **5e** T28 |
 | 6 Import | **6a** T29 |
 | 7 Delete and finish | **7a** T30, T31 · **7b** T32 · **7c** T33 |
 
@@ -892,24 +893,49 @@ just app-macos-dev
 - [ ] **Step 4: Run** the new test and every `test/clax/` test (`bazelisk test //apps/clax_app:all --test_tag_filters=-manual 2>&1 | tail` filtered to `clax_`) — PASS.
 - [ ] **Step 5: Commit** the listed files: "Send the app's API calls and event streams through a transport, over loopback HTTP or the embedded core".
 
-### Task 14: The scheme and the channel on Android and Apple (with the spike)
+### Task 14: The scheme and the channel on Android and Apple, with the spike asserted on each
+
+The repository has no Android emulator path today (`docs/bazel.md` and `scripts/run.sh` know only the macOS integration tests and the iOS simulator ones, `clax_ios_integration_tests` in `bazel/flutter/ios.bzl`). This task adds the smallest one that runs the spike: an emulator and a system image fetched by checksum, one AVD made by a script, and a test target per `integration_test/android_<name>_test.dart`, laid out as the iOS simulator tests are.
 
 **Files:**
-- Create: `apps/clax_app/android/app/src/main/kotlin/dev/empathic/clax_app/SchemeHost.kt`, `apps/clax_app/macos/Runner/SchemeHost.swift`, `apps/clax_app/ios/Runner/SchemeHost.swift` (the same file content as the macOS one; iOS globs `ios/Runner/*.swift`), `bazel/flutter/plugin_overlays/webview_flutter_wkwebview/` (the patch and its overlay BUILD, as `speech_to_text`'s overlay is laid out), `scripts/patch-pub.sh` (applies the same patch to a copy for the `-native` twins), `apps/clax_app/integration_test/scheme_spike_test.dart`
-- Modify: `apps/clax_app/android/app/src/main/kotlin/dev/empathic/clax_app/MainActivity.kt` (register `SchemeHost` on `dev.empathic.clax/scheme`), `apps/clax_app/macos/Runner/MainFlutterWindow.swift` and `apps/clax_app/ios/Runner/AppDelegate.swift` (register the handler hook), `apps/clax_app/BUILD.bazel` (`runner_deps` gains `@rules_android_maven//:androidx_webkit_webkit`; pin it in `MODULE.bazel` `maven.install` and re-pin per `docs/bazel.md` "A pub package"), `MODULE.bazel`, `bazel/android/maven_install.json`
+- Create: `apps/clax_app/android/app/src/main/kotlin/dev/empathic/clax_app/SchemeHost.kt`, `apps/clax_app/macos/Runner/SchemeHost.swift`, `apps/clax_app/ios/Runner/SchemeHost.swift` (the same file content as the macOS one; iOS globs `ios/Runner/*.swift`), `bazel/flutter/plugin_overlays/webview_flutter_wkwebview/` (the patch and its overlay BUILD, as `speech_to_text`'s overlay is laid out), `scripts/patch-pub.sh` (applies the same patch to a copy for the `-native` twins), `apps/clax_app/integration_test/scheme_spike.dart` (the spike's page table and checks, shared), `apps/clax_app/integration_test/scheme_spike_test.dart` (macOS), `apps/clax_app/integration_test/android_scheme_spike_test.dart` (Android), `apps/clax_app/tool/android-integration-run.sh`, `scripts/app-android-emulator.sh`, `scripts/test-app-android-emulator.sh`
+- Modify: `apps/clax_app/android/app/src/main/kotlin/dev/empathic/clax_app/MainActivity.kt` (register `SchemeHost` on `dev.empathic.clax/scheme`), `apps/clax_app/macos/Runner/MainFlutterWindow.swift` and `apps/clax_app/ios/Runner/AppDelegate.swift` (register the handler hook), `apps/clax_app/BUILD.bazel` (`runner_deps` gains `@rules_android_maven//:androidx_webkit_webkit`; pin it in `MODULE.bazel` `maven.install` and re-pin per `docs/bazel.md` "A pub package"; the macOS integration list skips `android_*` as it skips `ios_*`; `clax_android_integration_tests(...)` beside `clax_ios_integration_tests`), `bazel/flutter/android.bzl` (`clax_android_integration_tests`), `MODULE.bazel` (`android_sdk.configure`'s `archives` gain the emulator and the system image), `bazel/android/maven_install.json`, `scripts/run.sh` (`app-integration --android` runs the `android_*` targets; the native twin skips `android_*` and `ios_*` files), `scripts/BUILD.bazel` (`sh_test` `app_android_emulator_test`), `justfile` (the `app-integration` recipe's comment names `--android`), `docs/bazel.md` ("The Clax app": the Android integration tests, the emulator archives, the AVD)
 
 **Interfaces:**
 - Produces the native side of channel `dev.empathic.clax/scheme`:
   - Native → Dart `request {webViewId, reqId, url, method, headers: {…}, mainFrame: bool}`; Dart → native `respond {reqId, status, headers: {…}, body: Uint8List}`. Android's `shouldInterceptRequest` (a delegating `WebViewClient` installed by `attach {webViewId}` over `WebViewFlutterAndroidExternalApi.getWebView(engine, id)` and `webView.webViewClient`) posts the request to the main thread and blocks its IO thread on a `CompletableFuture` with a 30 s cap (then answers 504); Apple's `WKURLSchemeHandler.webView(_:start:)` posts and completes the `WKURLSchemeTask` on `respond` (a `stop` drops the answer).
   - Native → Dart `channel {webViewId, message: String}` for `ClaxHost` messages that pass the origin rule: Android `WebViewCompat.addWebMessageListener(view, "ClaxHost", setOf(<shell origin>), listener)` dropping `!isMainFrame`; Apple a `WKScriptMessageHandler` named `ClaxHost` dropping `!frameInfo.isMainFrame || securityOrigin.protocol != "clax" || securityOrigin.host != "app"`.
   - The `webview_flutter_wkwebview` patch adds `public static var configurationHook: ((WKWebViewConfiguration) -> Void)?` to the plugin's `WKWebView` creation, called before the view is made; the runner sets it to `config.setURLSchemeHandler(SchemeHost.shared, forURLScheme: "clax")`.
-- Consumes: Task 12 (for the spike page's answers).
+- Produces `integration_test/scheme_spike.dart`:
+  ```dart
+  /// What the spike reads in one WebView, from the shell page and its
+  /// content frame (spec §4.3).
+  class SpikeReport {
+    final String shellOrigin, frameOrigin, messageOrigin;
+    final bool storageKeptOverReload, subtleCrypto, parentDocumentThrew,
+        shellDocumentUnreadable, apiUnreadable, frameChannelDropped;
+    // fromJson/toJson
+  }
+  /// Opens a WebViewWidget on `origins.shell + '/spike.html'`, answered by
+  /// a Dart table of two pages (no core), and returns the report.
+  Future<SpikeReport> runSpike(WidgetTester tester, AppOrigins origins);
+  /// Asserts each value of `r` against `origins` with `expect`.
+  void expectIsolated(SpikeReport r, AppOrigins origins);
+  ```
+  `expectIsolated` asserts: `shellOrigin == origins.shell`; `frameOrigin == messageOrigin == origins.content('abcdefghijkl')`; `storageKeptOverReload`; `subtleCrypto`; `parentDocumentThrew`; `shellDocumentUnreadable` and `apiUnreadable` (the frame's `fetch` of `<shell>/a/x` and `<shell>/api/artifacts` failed or was opaque); `frameChannelDropped` (the frame's `ClaxHost.postMessage` reached no handler).
+- Produces `scripts/app-android-emulator.sh [--start|--stop PID|--serial] [--window]`, dry run without `--i-know-what-i-am-doing` as `scripts/app-phone.sh` does: makes the AVD "Clax Pixel" under `target/android-avd/` once (writing its `config.ini` and `.ini` itself, no `avdmanager`), with the system image from Bazel's `@androidsdk` (`bazelisk info output_base` + `external/…`, or `ANDROID_SDK_ROOT` from the test's runfiles); `--start` boots it headless (`-no-window -no-audio -no-boot-anim -no-snapshot`; `--window` for a person to look at it) on the first free even port from 5554, waits for `adb -s emulator-<port> wait-for-device` and `getprop sys.boot_completed` = 1 with a 300 s cap, and prints `serial=emulator-<port> pid=<pid>`; `--stop PID` sends `adb emu kill`, waits for that PID to exit (60 s cap), then `kill` by the PID. It never touches a device it did not start.
+- Produces `clax_android_integration_tests(assets, deps)` in `bazel/flutter/android.bzl`, per `integration_test/android_<name>_test.dart`: `_integration_android_<name>_main` (`integration_main`), `_integration_android_<name>_app` (`flutter_application`), `_integration_android_<name>_apk` (`flutter_fat_apk`, debug, arm64 only, with `:apk`'s manifest, resources, Kotlin sources and `runner_deps`), and `integration_android_<name>`, an `sh_test` running `tool/android-integration-run.sh <apk> <emulator script>`; tags `manual`, `no-sandbox`, `local`; `target_compatible_with = ["@platforms//os:macos"]`. The run script starts the emulator by the script above, `adb install -r -t` the APK (uninstalled first), launches it, reads `adb logcat -s flutter` for at most 10 minutes for `CLAX_INTEGRATION_RESULT=<0|1>` (the line `integration_main`'s entry prints, as on iOS), copies `CLAX_SHOT=<name>` screenshots (`adb exec-out screencap -p`) to `$TEST_UNDECLARED_OUTPUTS_DIR`, stops the emulator by its PID in an `EXIT` trap, and exits 0 only on `CLAX_INTEGRATION_RESULT=0`.
+- Produces in `MODULE.bazel`'s `android_sdk.configure` `archives`, in its existing format: `emulator emulator darwin <url> <sha256>` (the newest stable emulator for macOS) and `system-images/android-36/google_apis/arm64-v8a arm64-v8a darwin <url> <sha256>`; URLs and SHA-256s from `https://dl.google.com/android/repository/repository2-3.xml` (the emulator's `<archive>` for `macosx`, `aarch64`) and `https://dl.google.com/android/repository/sys-img/google_apis/sys-img2-3.xml` (`android-36`, `arm64-v8a`), as the existing rows were taken.
+- Consumes: Task 12 (`AppOrigins`, for the spike's origins).
 
-- [ ] **Step 1: Write `integration_test/scheme_spike_test.dart`** (macOS, `just app-integration`; a debug build only): opens a `WebViewWidget` on `clax://app/spike.html` answered by a Dart table (no core): the shell page frames `clax://abcdefghijkl.c/page.html`, and both report by `ClaxHost` (the shell) and `postMessage` (the frame, relayed by the shell): `window.origin`, `localStorage` set and read back after a `reload()`, `crypto.subtle` present, the frame's `parent.document` access throwing, the frame's `fetch('clax://app/a/x')` and `fetch('clax://app/api/artifacts')` failing or opaque, `event.origin` of the frame's message equal to `clax://abcdefghijkl.c`, and no `ClaxHost` message arriving from the frame when it posts one. Assert each.
+- [ ] **Step 1: Write `scheme_spike.dart` and `scheme_spike_test.dart`** (macOS, `just app-integration`; a debug build only): `testWidgets('a content frame is its own origin and reaches nothing of the shell', (t) async => expectIsolated(await runSpike(t, AppOrigins.forPlatform()), AppOrigins.forPlatform()))`. The two pages: the shell page frames `<content origin of abcdefghijkl>/page.html`, and both report by `ClaxHost` (the shell) and `postMessage` (the frame, relayed by the shell); `storageKeptOverReload` sets `localStorage` and IndexedDB entries, `reload()`s, and reads them back in each origin.
 - [ ] **Step 2: Run** `bazelisk test //apps/clax_app:integration_scheme_spike` in the background — FAIL (no handler).
-- [ ] **Step 3: Implement** the Apple handler, the plugin patch and the hook; run the spike — PASS on macOS. **If `window.origin` is `"null"` or `localStorage` throws, stop here and report to the owner (spec §4.3): nothing later works without real origins.**
-- [ ] **Step 4: Implement** the Android side. The same spike runs on the phone or an emulator by hand: `flutter test integration_test/scheme_spike_test.dart -d <device>` through `just app-integration-native` is macOS-only, so instead build the debug APK with the spike as its entry point (`bazelisk build //apps/clax_app:debug_apk --define=CLAX_SPIKE=1` if that target exists; otherwise add a `spike` flavor to `integration_main`) and record each value from `adb logcat -s flutter`; write the results into the commit message.
-- [ ] **Step 5: Commit** the listed files: "Answer the app's scheme in its WebViews and accept ClaxHost only from the shell's main frame, on Android and Apple".
+- [ ] **Step 3: Implement** the Apple handler, the plugin patch and the hook; run the spike — PASS on macOS. **If `shellOrigin` is `"null"` or `localStorage` throws, stop here and report to the owner (spec §4.3): nothing later works without real origins.**
+- [ ] **Step 4: Write `scripts/test-app-android-emulator.sh`** (the dry run prints the AVD it would make, the emulator's arguments and the port it would take, for `--start` and `--stop 123`; a `config.ini` it writes into a temporary `target/` copy names the system image's path and `abi.type=arm64-v8a`) and `app_android_emulator_test` in `scripts/BUILD.bazel`; run `bazelisk test //scripts:app_android_emulator_test` — FAIL. Write the script and the `MODULE.bazel` archives; run it — PASS. Then `scripts/app-android-emulator.sh --start --i-know-what-i-am-doing` boots the AVD and `--stop <pid>` stops it.
+- [ ] **Step 5: Write `android_scheme_spike_test.dart`**: the same `testWidgets` as Step 1 (it runs `runSpike` with `AppOrigins.forPlatform()`, which on Android is `https://app.clax.invalid` and `https://{id}.c.clax.invalid`), and `clax_android_integration_tests` with the run script. Run `bazelisk test //apps/clax_app:integration_android_scheme_spike` in the background (`target/plan-logs/core-14-android.log`) — FAIL (no Android handler).
+- [ ] **Step 6: Implement** the Android side. Run the Android target again — PASS: every value is asserted by `expectIsolated`, so a value that differs fails the test; nothing is read off `logcat` by hand. The same stop rule as Step 3 applies on Android.
+- [ ] **Step 7: Document** the Android integration tests and the emulator in `docs/bazel.md` ("The Clax app"), and `scripts/run.sh`'s `app-integration --android`; run `bazelisk test //scripts:all` — PASS.
+- [ ] **Step 8: Commit** the listed files: "Answer the app's scheme in its WebViews and accept ClaxHost only from the shell's main frame, on Android and Apple, with the isolation spike run on the Mac and on an Android emulator".
 
 ### Task 15: The host relay in the app's WebViews
 
@@ -948,36 +974,35 @@ just app-macos-dev
 - [ ] **Step 1: Write `scheme_test.dart`** (with `FakeCore`): each rule above, one test each, asserting the `CoreRequest` the fake saw and the answer.
 - [ ] **Step 2: Write `channel_relay_test.dart`**: a `call` is answered with the right `callResult` JS; a binary answer goes as `body64`; a 3 MiB answer goes in three `callResultChunk` calls; a `callAbort` before the answer runs no JS; `subscribe` forwards pushed blocks in order; `dispose` cancels the subscription.
 - [ ] **Step 3: Run** `bazelisk test //apps/clax_app:core_scheme_test //apps/clax_app:core_channel_relay_test //web:unit --test_arg=shell/src/transport.test.ts` — FAIL.
-- [ ] **Step 4: Implement**, wiring `webview_surface.dart` to the relay and the scheme when it is given a `CoreCalls` (nothing gives it one until Task 16; the loopback path is unchanged).
-- [ ] **Step 5: Run** — PASS (the app is looked at in Task 16, when it runs on the core).
+- [ ] **Step 4: Implement**, wiring `webview_surface.dart` to the relay and the scheme when it is given a `CoreCalls` (nothing gives it one until Task 17; the loopback path is unchanged).
+- [ ] **Step 5: Run** — PASS (the app is looked at in Task 17, when it runs on the core).
 - [ ] **Step 6: Commit** the listed files: "Answer the app's scheme and relay the shell's calls and events through the core in the app's WebViews".
 
-## Phase 3: All three platforms off the daemon (spec §2.5, §6, §10, §11, §12)
+## Phase 3: All three platforms off the daemon (spec §2.5, §6, §10.1, §11, §12)
 
-### Task 18: Old homes, the launch measure and its baseline
+### Task 16: Old homes, the launch measure and its baseline
 
-Runs before Task 16, so the baseline is the daemon's.
+Runs before Task 17, so the baseline is the daemon's.
 
 **Files:**
-- Create: `crates/clax-store/tests/fixtures/old-migrations/flutter-app-853502f77.sql`, `crates/clax-embed/tests/old_homes.rs`, `scripts/perf-app-launch.sh`, `scripts/test-perf-app-launch.sh`
-- Modify: `web/perf/budget.json` (`app_home_usable_ms`, `app_home_cover_ms`, each `{"budget": <the baseline's p90 rounded up to 50 ms>}`), `scripts/run.sh` (the `perf` recipe runs `scripts/perf-app-launch.sh --macos` on macOS after the others, never failing), `scripts/BUILD.bazel` (`sh_test` `perf_app_launch_test`), `docs/usage.md` ("Measuring the home screen's start": the script)
+- Create: `crates/clax-embed/tests/fixtures/homes/flutter-app-43.sql`, `crates/clax-embed/tests/old_homes.rs`, `scripts/perf-app-launch.sh`, `scripts/test-perf-app-launch.sh`
+- Modify: `crates/clax-embed/BUILD.bazel` (the integration tests' `data` gains `tests/fixtures/homes/*.sql`), `web/perf/budget.json` (`app_home_usable_ms`, `app_home_cover_ms`, each `{"budget": <the baseline's p90 rounded up to 50 ms>}`), `scripts/run.sh` (the `perf` recipe runs `scripts/perf-app-launch.sh --macos` on macOS after the others, never failing), `scripts/BUILD.bazel` (`sh_test` `perf_app_launch_test`), `docs/usage.md` ("Measuring the home screen's start": the script)
 
 **Interfaces:**
 - Produces `scripts/perf-app-launch.sh [--macos|--android] [--runs N] [--app <Clax.app>]`: dry run without `--i-know-what-i-am-doing` (prints each step), as `scripts/app-phone.sh` does. macOS: builds or takes `--app`, makes a scratch `CLAX_APP_DIR` inside `~/Library/Containers/dev.empathic.clax/Data/tmp/perf-<time>`, runs `Contents/MacOS/Clax` N times (each waits for a new `home-usable` line in `<dir>/support/timings.jsonl`, with a 60 s cap that counts the run as missing, then sends the app `SIGTERM` by its PID and waits for it to exit), and writes `{"app_home_usable_ms": {"median": …, "p90": …, "runs": N}, "app_home_cover_ms": {…}}` to `$CLAX_PERF_JSON` or stdout. Android: `adb shell am force-stop` and `am start -W` N times, then `adb exec-out run-as dev.empathic.clax cat files/timings.jsonl` (the support directory's path on Android: read it from `getApplicationSupportDirectory` once by `adb shell run-as dev.empathic.clax ls`), the same JSON. The first run after an install is dropped (no snapshot yet; `docs/usage.md`).
-- Produces the fixture: the schema (`sqlite3 <home>/clax.db .schema`) and a handful of rows (two artifacts with three versions, two threads with comments, one app session, a `db_read_grants` row) of a home written by this branch's `clax` at commit 853502f77 (`user_version` 43), as an SQL script in the format the other fixtures in that directory use.
+- Produces the fixture (spec §10.2): `sqlite3 <home>/clax.db .dump` of a home written by this branch's own `clax` at schema 43 (this branch's schema stays 43 until Task 19 renumbers it), with a handful of rows (two artifacts with three versions, two threads with comments, one app session, a `db_read_grants` row), preceded by a comment line naming the commit it was built at and `-- user_version: 43`. The artifacts' content files are not in it: the test asserts rows, not files.
 - Consumes: Task 5.
 
-- [ ] **Step 1: Make the fixture.** Build `//crates/clax-cli:clax` at 853502f77 (`git worktree add ../fixture-853502f77 853502f77` is forbidden by the shared-worktree rule only if left behind: create it under `target/`, build with `bazelisk build //crates/clax-cli:clax` there, remove it with `git worktree remove` when done), run it on a scratch `CLAX_HOME` with a free port, publish and comment through its API with `curl`, stop it by its PID, dump. Commit nothing from the scratch home but the `.sql`.
+- [ ] **Step 1: Make the fixture** with this checkout's current build; no git worktree is made. `bazelisk build //crates/clax-cli:clax`; `CLAX_HOME=target/fixture-home/home bazel-bin/crates/clax-cli/clax --port 0 serve &` (a scratch home inside this worktree, any free port), keeping `pid=$!`; wait for `target/fixture-home/home/daemon.json` (a loop of at most 60 checks on `kill -0 "$pid"` and the file, no fixed sleep standing in for it) and read its port and token; check `sqlite3 target/fixture-home/home/clax.db 'PRAGMA user_version'` prints 43 (stop and report if not: the fixture must be schema 43); publish, comment and register a session through its API with `curl` and the token; `kill "$pid"` and wait for that PID to exit (60 s cap); `sqlite3 … .dump` into the fixture with its two header lines; `rm -r target/fixture-home`. Commit nothing from the scratch home but the `.sql`. Never point it at `~/.clax` or port 7480.
 - [ ] **Step 2: Write `old_homes.rs`**:
   ```rust
   #[tokio::test]
-  async fn the_installed_flutter_app_home_backs_up_and_migrates() {
-      let home = fixture_home("flutter-app-853502f77.sql"); // loads the script into <tmp>/clax.db
+  async fn the_installed_flutter_app_home_opens_through_the_core() {
+      let home = fixture_home("flutter-app-43.sql"); // loads the dump into <tmp>/clax.db
       let (embed, events) = open(&home);
       wait_ready(&events);
-      assert!(std::fs::read_dir(home.join("backups")).unwrap().any(|e| {
-          e.unwrap().file_name().to_string_lossy().starts_with("clax-43-")
-      }));
+      // Nothing is pending at schema 43 yet, so no backup is made; Task 19
+      // adds the backup and adoption assertions.
       let list = call_json(&embed, "GET", "/api/artifacts").await;
       assert_eq!(list["artifacts"].as_array().unwrap().len(), 2);
       // every version and comment of the fixture is readable
@@ -990,13 +1015,13 @@ Runs before Task 16, so the baseline is the daemon's.
       // lists the gallery. No time is asserted.
   }
   ```
-  (Task 24 extends the first test to `user_version` 44.)
-- [ ] **Step 3: Run** `bazelisk test //crates/clax-embed:all --test_arg=old_homes::` — PASS (no migration is new yet; this pins today's adoption through the core).
+  (Task 19 extends the first test to the adoption into main's numbering, and Task 20 to the jobs migration.)
+- [ ] **Step 3: Run** `bazelisk test //crates/clax-embed:all --test_arg=old_homes::` — PASS (no migration is new yet; this pins the installed home's open through the core).
 - [ ] **Step 4: Write `test-perf-app-launch.sh`** (the dry run prints the steps for `--macos` and `--android`; a fake `timings.jsonl` of five runs gives the median and p90 the script prints) and the script; run `bazelisk test //scripts:perf_app_launch_test` — PASS.
 - [ ] **Step 5: Measure the baseline** on the current build: `scripts/perf-app-launch.sh --macos --runs 9 --i-know-what-i-am-doing` with `CLAX_PERF_JSON=target/perf/app-launch-before.json`, and on the owner's phone only with the owner present (`--android`, after `just app-phone`). Set the budgets from these numbers. Append the run to the perf log: `scripts/perf-log.sh record`.
 - [ ] **Step 6: Commit** the listed files (not the scratch homes), with the baseline numbers in the message: "Measure launch to a usable home screen on demand, and pin the installed app's home through the embedded core".
 
-### Task 16: `CoreHost`: the app on the core
+### Task 17: `CoreHost`: the app on the core
 
 **Files:**
 - Create: `apps/clax_app/lib/core/core_host.dart`, `apps/clax_app/test/core/core_host_test.dart`
@@ -1017,13 +1042,13 @@ Runs before Task 16, so the baseline is the daemon's.
     void open();
     ValueListenable<CoreOpen> get state;
     CoreCalls get calls;          // valid once state is CoreReady
-    int get handle;               // for the worker isolate (Task 20)
+    int get handle;               // for the worker isolate (Task 25)
     Future<void> keyChanged();    // PUT /api/sample/key, or DELETE for none
     Future<void> trim();          // POST /api/core/trim
   }
   ```
   `test/support/fake_core.dart` gains `FakeCoreHost implements CoreHost`-shaped class (an interface `CoreHostLike` extracted if needed) with a settable state.
-- Consumes: Tasks 12, 13, 15, 18.
+- Consumes: Tasks 12, 13, 15, 16.
 
 - [ ] **Step 1: Read the threads** on `lib/main.dart`, `lib/app.dart`, `lib/daemon/supervisor.dart` (records 69557070, 9fbb9e03, c58da88f), `lib/ui/error_screen.dart`.
 - [ ] **Step 2: Write `core_host_test.dart`** over a fake `CoreLib`: `open` deletes `daemon-port`, writes `config.toml`'s `[sample]`, opens once even when called twice, puts the key after `ready` and not before; `keyChanged` with no key sends `DELETE`; a `failed` open ends in `CoreFailed` with the backup path; `state` never goes back to opening after `ready`.
@@ -1034,241 +1059,72 @@ Runs before Task 16, so the baseline is the daemon's.
 - [ ] **Step 7: Commit** the listed files: "Run the app on the embedded core: open it at launch, call it in process, and load the WebViews from the scheme".
 - [ ] **Step 8: Propose closes** of records 69557070, 9fbb9e03 and c58da88f in the task report (evidence: the key test of Step 2 and the absence of a health limit), not closing them.
 
-### Task 17: Ship the library instead of `clax`
+### Task 18: Ship the library instead of `clax`
 
 **Files:**
 - Modify: `apps/clax_app/BUILD.bazel:516-535` (`native_files`: `//crates/clax-embed:clax_embed_android_arm64` → `arm64-v8a/libclax_embed.so`, x86_64 likewise), `:571-615` (`macos_clax` removed from `additional_contents`; `{":macos_core": "Frameworks"}` where `macos_core` is `macos_helper(binary = "//crates/clax-embed:clax_embed_macos", entitlements = None)` or, if `macos_helper` requires an executable, a new `macos_dylib` rule in `bazel/flutter/macos.bzl` that copies and signs ad hoc), the integration apps at `:890` likewise, `bazel/flutter/ios.bzl:87-93,195` (`ios_daemon` → the runner's `deps` gain `//crates/clax-embed:clax_embed_ios_c`; `ios_app_test` checks `:clax_embed_ios_builds`), `apps/clax_app/tool/apk-check.sh` (expects `lib/<abi>/libclax_embed.so` with the four symbols, no `libclax.so`; prints each `.so`'s size), `apps/clax_app/tool/macos-app-check.sh` (expects `Contents/Frameworks/libclax_embed.dylib` with the four symbols, no `Contents/Resources/clax`), `apps/clax_app/tool/ios-app-check.sh` (the runner exports the four `clax_embed_*` symbols instead of the four `clax_*`), `apps/clax_app/android/app/src/main/AndroidManifest.xml:35` (`extractNativeLibs` removed), `apps/clax_app/android/app/build.gradle.kts:37-41` (`useLegacyPackaging` removed), `scripts/build-app-clax.sh` (the native twin builds `clax-embed` into `jniLibs/<abi>/libclax_embed.so` and `build-native/macos/libclax_embed.dylib`), `apps/clax_app/macos/Runner.xcodeproj/project.pbxproj` ("Embed clax" phase copies the dylib into `Frameworks` instead), `scripts/test-build-app-clax.sh`
 
 **Interfaces:**
 - Produces: APK, macOS app and iOS app carrying the core and no `clax`.
-- Consumes: Tasks 8, 16.
+- Consumes: Tasks 8, 17.
 
 - [ ] **Step 1: Change the checks first** (`apk-check.sh`, `macos-app-check.sh`, `ios-app-check.sh`, `test-build-app-clax.sh`). Run `bazelisk test //apps/clax_app:apk_test //apps/clax_app:macos_app_test //apps/clax_app:ios_app_test //scripts:build_app_clax_test` — FAIL.
 - [ ] **Step 2: Change the builds.** Run the same tests — PASS. Write each artifact's before and after size (the checks print them) into the commit message.
 - [ ] **Step 3: Look at it** on the Mac: `just app-macos`, open the zip's app with a scratch `CLAX_APP_DIR`, see the home screen and open an app. On the phone, only with the owner present: `just app-phone` and the same (Task 33 is the full device check).
 - [ ] **Step 4: Commit** the listed files: "Ship the embedded core in the APK, the Mac app and the iOS app instead of the clax executable".
 
-## Phase 4: The queue in a worker isolate (spec §7)
+## Phase 4: The core's jobs and publish checks (spec §8, §10.2)
 
-### Task 19: The queue's model and its pure `update`
+### Task 19: This branch's migrations on main's numbering, with installed homes adopted by schema
+
+Spec §10.2. Resolves the numbering question the spec raised (record 577508d2, decided by the owner on 2026-10-19). The owner's phone and Mac hold homes at this branch's `user_version` 43 (the app's migrations at 39 to 43); a build that reads 43 under main's numbering would run the app's last two migrations again and fail on every launch, as on 2026-10-15. Nothing in this task is installed on a device (Global Constraints).
 
 **Files:**
-- Create: `apps/clax_app/lib/queue/model.dart`, `apps/clax_app/lib/queue/msg.dart`, `apps/clax_app/lib/queue/effect.dart`, `apps/clax_app/lib/queue/update.dart`, `apps/clax_app/test/queue/update_test.dart`, `apps/clax_app/test/queue/update_properties_test.dart`
-- Modify: `apps/clax_app/BUILD.bazel` (`SUITES` gains `queue`)
+- Create: `crates/clax-store/tests/fixtures/old-migrations/flutter-app-4508df19f.sql`
+- Modify: `crates/clax-store/src/migrations.rs` (main's migrations after `WHERE_TO_ASK_MIGRATION` copied in verbatim; the app's five after them; `APP_MIGRATION`; `MAIN_MARKS_ABOVE_38`; `adopt_earlier_flutter_app` and its doc comment; the adoption tests), `crates/clax-embed/tests/old_homes.rs` (the installed home is adopted), `docs/usage.md` (the app's records list, if it names migration numbers: `grep -n "migration 4[0-9]\|39 to 43" docs/usage.md`)
 
 **Interfaces:**
-- Produces (all immutable, `==` by value, `toJson`/`fromJson` for the isolate boundary):
-  ```dart
-  // model.dart
-  typedef JobId = String;
-  enum JobKind { make, change }
-  enum JobState { queued, running, waiting, paused, stopped, failed, cancelled, done }
-  enum WaitingFor { claude, answer, render }
-  class Job {
-    const Job({required this.id, required this.kind, required this.state, this.step, this.artifactId,
-      this.title, required this.request, this.threads = const {}, this.plan, this.spentUsd = 0,
-      this.stops = 0, this.error, this.waitingFor, this.leaseOwner, this.rev = 0, this.steps = const {}});
-    final JobId id; final JobKind kind; final JobState state; final String? step;
-    final String? artifactId; final String? title; final String request;
-    /// thread ID → the newest comment ID the job answers.
-    final Map<String, String> threads;
-    final PlanState? plan; final double spentUsd; final int stops;
-    final JobError? error; final WaitingFor? waitingFor;
-    /// Another worker's lease, when one holds the job.
-    final String? leaseOwner; final int rev;
-    /// Committed steps by key (publish:<base>, reply, turn:<n>, done).
-    final Map<String, StepResult> steps;
-    Job copyWith({...});
-  }
-  class QueueModel {
-    const QueueModel({this.jobs = const {}, this.inFlight = const {}, this.keepAlive = false,
-      this.coreOpen = false, this.claude = Reachability.unknown, this.canRender = true, this.workerId = '', this.nextEffect = 0});
-    final Map<JobId, Job> jobs; final Map<int, JobId> inFlight; final bool keepAlive;
-    final bool coreOpen; final Reachability claude; final bool canRender; final String workerId; final int nextEffect;
-    static const maxRunning = 3;
-  }
-  enum Reachability { unknown, reachable, unreachable }
-  /// What the UI sees (spec §7.2).
-  class QueueState { const QueueState(this.jobs); final List<JobView> jobs; }
-  class JobView { /* id, kind, state, step label, title, artifactId, waitingFor, error text, offers: {keepGoing, retry, cancel, discard} */ }
-  QueueState viewOf(QueueModel m);
+- Produces, in `crates/clax-store/src/migrations.rs` (numbers as of main ending at 40; Step 1 recomputes them):
+  ```rust
+  /// The first of the Clax app's migrations (cross-app read grants), as a
+  /// schema version; the app's follow it in [`APP_MIGRATION_MARKS`]'s order.
+  pub const APP_MIGRATION: u32 = 41;
 
-  // msg.dart — sealed class Msg with:
-  //   Intents: Make(request, {title}), Change(artifactId, threads), Cancel(jobId),
-  //     Retry(jobId), KeepGoing(jobId), Discard(jobId), Answer(jobId, questionId, answer)
-  //   Loaded(List<Job> jobs), CoreOpened(), JobChanged(Job job)
-  //   TurnDone(effect, jobId, TurnOutcome outcome), TurnFailed(effect, jobId, TurnFailure kind),
-  //   CoreAnswered(effect, jobId, int status, Map<String, Object?> body),
-  //   StepCommitted(effect, jobId, String key, StepResult result, {bool replayed}),
-  //   StepRefused(effect, jobId, String key, String code)   // version_moved, doc_moved, not_rendered_clean, job_moved
-  //   Rendered(effect, jobId, RenderOutcome outcome), RenderLost(effect, jobId), CanRender(bool)
-  //   ClaudeReachable(bool), Tick(DateTime now), Woke({required bool foreground})
-
-  // effect.dart — sealed class Effect with: CoreCall(id, jobId, CoreRequestSpec), StartTurn(id, jobId, TurnInput),
-  //   Render(id, jobId, RenderSpec), CommitStep(id, jobId, String key, Map<String, Object?> body),
-  //   PatchJob(id, jobId, int ifRev, Map<String, Object?> patch), Notice(NoticeKind kind, JobId jobId, String title),
-  //   KeepAlive(bool on), PublishState(QueueState state), ProbeClaude()
-
-  // update.dart
-  (QueueModel, List<Effect>) update(QueueModel m, Msg msg);
+  /// What each of main's migrations after [`WHERE_TO_ASK_MIGRATION`] and
+  /// before [`APP_MIGRATION`] leaves in the schema, in order, so adoption
+  /// tells from the schema which of them a database lacks.
+  const MAIN_MARKS_ABOVE_38: [(&str, &str); 2] = [
+      ("table", "legal_agreements"),
+      ("table", "briefs"),
+  ];
   ```
-  The rules `update` implements (each is a test):
-  1. `Make` adds a `queued` job (ID from the message's `id` field, which the client derives: `sha256(request + clientNonce)` truncated), emits `PatchJob`-free `CoreCall(POST /api/jobs)` and, if fewer than 3 run, starts it (`state: running`, `StartTurn`).
-  2. A job whose `leaseOwner` is another worker is never started.
-  3. `TurnFailed(network)` → `waiting/claude`, `ProbeClaude`, no new turn until `ClaudeReachable(true)`.
-  4. `TurnDone` with a finish → `CommitStep('publish:<base>', …)` exactly once per base; `StepRefused(version_moved)` → re-plan (a `StartTurn` with the moved base), never a second `CommitStep` for the same base.
-  5. `StepCommitted('publish:<b>')` → `CommitStep('reply', …)`; `StepCommitted('reply')` → `done`, `Notice(ready)`.
-  6. A `Render` effect's `RenderLost` → one more `Render`; a second `RenderLost` → `waiting/render` until `CanRender(true)`; no `StartTurn` in between.
-  7. `Cancel` → `cancelled`, no effect for that job afterwards but `PatchJob`; in-flight results for it are dropped.
-  8. Limits: a turn result over the job's limit → `stopped` (Keep going offered); `KeepGoing` → `running` with the carried state; a second stop → `KeepGoing` plans the rest (`kind` stays, `plan` set).
-  9. `KeepAlive(true)` is emitted when the count of `running` or `waiting` jobs goes from 0 to more, `KeepAlive(false)` when it goes back to 0.
-  10. Every change of `viewOf(m)` emits one `PublishState`.
-  11. `Loaded` resumes each job by spec §7.4's table (its steps decide).
-  12. `Tick` past a render's 60 s deadline is a `RenderLost`.
-- Consumes: nothing (pure Dart).
+  `adopt_earlier_flutter_app` keeps its three earlier layouts (the app's migrations starting at 24, 27 and 38) and gains the fourth, the app's starting at 39: a database with `db_read_grants` and `questions.thread_id` and none of `MAIN_MARKS_ABOVE_38`, whose `user_version` is 38 plus the number of app marks it holds. It checks the app's marks exactly as for the other layouts (present up to that number, absent after), refusing with `CoreError::MigrationFailed` otherwise; runs, in its transaction, each of main's migrations `WHERE_TO_ASK_MIGRATION + 1 .. APP_MIGRATION` whose mark is absent (SQL then `rust_step`); and sets `user_version` to `APP_MIGRATION - 1 + held`. The layouts that started at 24, 27 and 38 now also get main's migrations above 38 in the "migrations it lacks below `APP_MIGRATION`" they run. A database with `questions.thread_id`, every main mark and a `user_version` equal to `APP_MIGRATION - 1 + held` is this numbering's and returns `Ok(None)`, as does a database with no app mark.
+- Produces the fixture: this branch's migrations 39 to 43 as commit 4508df19f has them (`git show 4508df19f:crates/clax-store/src/migrations.rs`), in the directory's format (`-- first: 39`, `-- user_version: 43`, one `-- migration: N` section each, a header naming the commit and what differs from the current schema: "the app's migrations at 39 to 43, before main's 39 and 40").
+- Consumes: Task 16 (`old_homes.rs` and the schema-43 home fixture).
 
-- [ ] **Step 1: Write `update_test.dart`**: one `group` per rule above, each with at least one `test` constructing a model, sending the message, and asserting the whole returned model and effect list, e.g.
-  ```dart
-  test('a publish refused for a moved base re-plans and never commits that base again', () {
-    final m0 = model(jobs: [job('j', state: JobState.running, steps: {})]);
-    final (m1, e1) = update(m0, TurnDone(1, 'j', finishOutcome(base: 4)));
-    expect(e1.whereType<CommitStep>().single.key, 'publish:4');
-    final (m2, e2) = update(m1, StepRefused(2, 'j', 'publish:4', 'version_moved'));
-    expect(e2.whereType<CommitStep>(), isEmpty);
-    expect(e2.whereType<StartTurn>().single.input.base, 5);
-    expect(m2.jobs['j']!.state, JobState.running);
-  });
-  test('a job whose lease another worker holds is left alone', () {
-    final m0 = model(workerId: 'w1', jobs: [job('j', state: JobState.queued, leaseOwner: 'w2')]);
-    final (m1, e1) = update(m0, Loaded([m0.jobs['j']!]));
-    expect(e1.whereType<StartTurn>(), isEmpty);
-    expect(m1.jobs['j']!.state, JobState.queued);
-  });
-  ```
-  and a table test over every `JobState` × every intent asserting the documented next state (a `const` table in the test file, 8 × 7 entries).
-- [ ] **Step 2: Write `update_properties_test.dart`**: a seeded `Random(42)` generating 2,000 sequences of up to 40 messages from a generator that only produces messages valid for the effects emitted so far (results answer issued effect IDs), checking after each step: no job has two `CommitStep`s with one key; no effect for a `cancelled` or `done` job but `PatchJob`; at most three `running`; `keepAlive` equals "some job running or waiting"; no `StartTurn` for a job between a `RenderLost` and its next `Rendered`.
-- [ ] **Step 3: Run** `bazelisk test //apps/clax_app:queue_update_test //apps/clax_app:queue_update_properties_test` — FAIL.
-- [ ] **Step 4: Implement** `model.dart`, `msg.dart`, `effect.dart`, `update.dart`. `update` imports nothing from `dart:io`, `dart:async`, `package:flutter`, or `lib/agent` beyond the plain data types it carries (`TurnInput`, `TurnOutcome` are defined in `lib/queue/` as data and mapped by the runner).
-- [ ] **Step 5: Run** — PASS; `dart_analyze` — PASS.
-- [ ] **Step 6: Commit** the listed files: "Model the app's queue of makes and changes as a pure update over jobs and their steps".
+- [ ] **Step 1: Read main's numbering.** `git show main:crates/clax-store/src/migrations.rs | grep -nE '^\s*// [0-9]+:'` and compare with this branch's (`grep -nE '^\s*// [0-9]+:' crates/clax-store/src/migrations.rs`). Today main ends at 40 (39 `legal_agreements`, 40 `briefs`, SQL only, no `rust_step`). If main has more after 38 than these two, take every one of them the same way: each is copied, gets a mark in `MAIN_MARKS_ABOVE_38` (renamed for its range if the range grows), and moves `APP_MIGRATION` and the jobs migration's number (Task 20) up by one; write the numbers you used in the commit message. If one of main's new migrations has a `rust_step`, or alters a table the app's migrations alter, stop and report to the owner: the adoption below assumes they touch none of the app's tables.
+- [ ] **Step 2: Read the threads** on `crates/clax-store/src/migrations.rs` and `crates/clax-embed/tests/old_homes.rs`, and the doc comment of `adopt_earlier_flutter_app` whole.
+- [ ] **Step 3: Write the fixture** `flutter-app-4508df19f.sql` from `git show 4508df19f:crates/clax-store/src/migrations.rs` (migrations 39 to 43, character for character).
+- [ ] **Step 4: Write the failing tests** in `migrations.rs`'s tests, using `old_build(home, sql)` (which applies the current migrations before the fixture's `first` and then the fixture's own):
+  - `the_app_at_39_to_43_is_adopted_into_mains_numbering`: `old_build` of `flutter-app-4508df19f.sql`; `Store::open` succeeds; `user_version` is `APP_MIGRATION + 4` (45); `legal_agreements` and `briefs` exist; every app mark exists once; the rows `old_build` wrote are all there; a backup `clax-43-*.db` exists in the home's backup directory.
+  - `an_adopted_home_is_never_rerun`: the same home opened a second time runs nothing (its `user_version` and schema are unchanged, no second backup).
+  - `each_app_prefix_at_the_old_numbering_is_adopted`: for `held` in 1..=5, a database at the current 1..=38 plus the fixture's first `held` migrations and `user_version = 38 + held` opens to `APP_MIGRATION - 1 + held` and then migrates to the end.
+  - `an_old_numbering_home_whose_marks_disagree_is_refused`: the fixture at `user_version` 43 with `sample_grants` dropped → `MigrationFailed` naming `sample_grants`; the file is byte-for-byte unchanged but for the backup.
+  - `a_home_of_this_numbering_is_not_adopted`: a fresh database migrated to the end returns `Ok(None)` from `adopt_earlier_flutter_app`.
+  - the existing fixtures (`rebased-*`, `pre-rebase-*`, `pre-main-rebase-*`, `main-*`, `rust-int-*`) still open to `MIGRATIONS.len()`.
+  And in `old_homes.rs`, extend Task 16's test into `the_installed_flutter_app_home_backs_up_and_is_adopted`: after `Ready`, a `clax-43-*` backup exists, `PRAGMA user_version` read through `Store` is 45, and the artifact, version, thread and comment counts equal the fixture's.
+- [ ] **Step 5: Run** `bazelisk test //crates/clax-store:clax_store_lib_test //crates/clax-embed:all --test_arg=old_homes::` — FAIL.
+- [ ] **Step 6: Implement.** Copy main's 39 and 40 (comments and SQL verbatim) into `MIGRATIONS` after 38; the app's five follow as 41 to 45 with their comments renumbered; `APP_MIGRATION = 41`; `MAIN_MARKS_ABOVE_38`; the fourth layout in `adopt_earlier_flutter_app`, and its doc comment rewritten to name all four layouts and the main marks. Then check the prefix: `git show main:crates/clax-store/src/migrations.rs | sed -n '/^pub const MIGRATIONS/,/^];/p' | sed '$d' > target/main-migrations.txt`, then `sed -n '/^pub const MIGRATIONS/,/^];/p' crates/clax-store/src/migrations.rs | head -n "$(wc -l < target/main-migrations.txt)" | diff target/main-migrations.txt -` prints nothing (main's list is a prefix of this branch's).
+- [ ] **Step 7: Run** — PASS; also `bazelisk test //crates/clax-store:all //crates/clax-server:all //crates/clax-embed:all //scripts:wasm32` (the Worker opens the same migrations).
+- [ ] **Step 8: Commit** the listed files: "Number the app's migrations after main's 39 and 40, and adopt homes at the earlier numbering by their schema".
+- [ ] **Step 9: Record it**: record 577508d2 was resolved as decided when the spec was revised; reply to its closing record (`"$Q" exec threads 577508d2 --all --format json`, `closed_by.id`) with this commit's SHA and the passing test names, in a separate commit of the `.qual` file.
 
-### Task 20: The effect runner and the worker isolate
-
-**Files:**
-- Create: `apps/clax_app/lib/queue/runner.dart`, `apps/clax_app/lib/queue/worker_main.dart`, `apps/clax_app/lib/queue/client.dart`, `apps/clax_app/lib/queue/codec.dart` (Msg/Effect/QueueState to and from JSON-able maps), `apps/clax_app/test/queue/runner_test.dart`, `apps/clax_app/test/queue/client_test.dart`, `apps/clax_app/test/queue/codec_test.dart`
-
-**Interfaces:**
-- Produces:
-  ```dart
-  // runner.dart — the only code in the worker that awaits.
-  class EffectRunner {
-    EffectRunner({required this.core, required this.turns, required this.render, required this.toUi,
-      required this.connection, required this.clock, required this.send});
-    final CoreCalls core;
-    /// Runs one model turn with the agent's runner and tools (lib/agent).
-    final Future<TurnOutcome> Function(TurnInput input, CancelToken cancel) turns;
-    /// Asks the UI isolate to render; completes with its answer.
-    final Future<RenderOutcome> Function(RenderSpec spec) render;
-    final void Function(Object uiMessage) toUi;       // KeepAlive, Notice, PublishState
-    final ApiConnection connection; final Clock clock;
-    /// Feeds a result back into the loop.
-    final void Function(Msg msg) send;
-    void run(Effect e);
-    void cancelJob(JobId id);
-  }
-
-  // worker_main.dart
-  /// The worker isolate's entry: attaches to the core by handle, builds the
-  /// agent's runners from [WorkerStart], loads jobs and loops:
-  /// msg → update → effects → runner.
-  void workerMain(WorkerStart start);
-  class WorkerStart { /* SendPort toUi; int coreHandle; String supportDir; Map settings; String? apiKey; String workerId; */ }
-
-  // client.dart — the UI isolate's only view of the queue.
-  class QueueClient {
-    static Future<QueueClient> spawn({required CoreHost core, required String supportDir, required AppSettings settings, required String? apiKey, RenderService? render, BackgroundWork? background});
-    ValueListenable<QueueState> get state;
-    void send(Msg intent);        // only intents; others are refused by an assert
-    void settingsChanged(AppSettings s); void keyChanged(String? key);
-    Future<void> dispose();
-  }
-  ```
-  In this task the durable state stays in the JSON stores (`PendingMake`, `FileChangeLedger`, `PlanStore`, `FileAskedQuestions`, `FileStoppedThreads`, `FileUnfinishedChanges`, `FileConsentMemory`), now opened by the worker isolate only: `CommitStep` and `PatchJob` effects are run by a `JsonJobStore` adapter in `runner.dart` that writes them as today's code does (the ledger before a publish, `docs_done` after). Task 28 swaps the adapter for core calls.
-- Consumes: Task 19, Task 16 (`CoreHost.handle`).
-
-- [ ] **Step 1: Write `codec_test.dart`**: every `Msg` and `Effect` variant and a `QueueState` round-trip through `codec.dart` (generated list of one instance each).
-- [ ] **Step 2: Write `runner_test.dart`** on `fakeAsync` with `FakeCore` and `ScriptedRunner` (`lib/agent/runner/scripted_runner.dart`): a `StartTurn` runs one scripted turn and sends `TurnDone`; a network failure sends `TurnFailed(network)`; `CommitStep('publish:4')` with the JSON adapter writes the ledger record before calling the fake's publish and sends `StepCommitted`; `cancelJob` aborts a turn in flight and sends nothing for it.
-- [ ] **Step 3: Write `client_test.dart`**: `QueueClient.spawn` with a real isolate and `FakeCore`-backed handle replaced by an in-isolate fake (the worker takes a `CoreCalls Function()` in tests through `WorkerStart.testCore`, a `SendPort` to a fake served in the test isolate): a `Make` intent ends in a `QueueState` with one job `running`, then `done` after the scripted run; the UI side never awaits a job (the test's `send` returns `void`). A worker whose loop throws (a scripted turn that throws a `StateError` outside the runner's guards) is restarted once and its jobs resume from the fake core; a second death within a minute of the worker's clock leaves the jobs showing "Clax's builder stopped. Restart Clax to go on." in `QueueState`.
-- [ ] **Step 4: Run** the three — FAIL. **Step 5: Implement.** **Step 6: Run** — PASS.
-- [ ] **Step 7: Commit** the listed files: "Run the queue in a worker isolate: an effect runner around the pure update, and a client the UI reads and sends intents to".
-
-### Task 21: Rendering asked of the UI isolate
-
-**Files:**
-- Create: `apps/clax_app/lib/queue/render_service.dart`, `apps/clax_app/test/queue/render_bridge_test.dart`
-- Modify: `apps/clax_app/lib/ui/inspector_surface.dart` (`WebViewInspector` usable by `RenderService` with no `ClaxApi` of its own; it loads the draft by `AppOrigins`), `apps/clax_app/lib/queue/client.dart` (routes `RenderRequest` to the service and answers)
-
-**Interfaces:**
-- Produces:
-  ```dart
-  class RenderSpec { /* draftId, revision, kind: inspect|tests|migration, settleMs, maxBytes, files (tests), migration {file, from, to} */ }
-  sealed class RenderOutcome {}  // Inspection(png, errors, …) | TestsRun(results) | MigrationRun(result) | RenderError(message)
-  class RenderService {
-    RenderService(this.inspector, {required this.clock});
-    final Inspector inspector; final Clock clock;
-    /// Whether a WebView can be made now (false while the app's UI engine is
-    /// detached on Android, or the app is in the background on iOS).
-    ValueListenable<bool> get canRender;
-    Future<RenderOutcome> render(RenderSpec spec);
-  }
-  ```
-  The worker's 60 s deadline and one retry are `update`'s (Task 19 rules 6, 12); the service only renders and reports `canRender`.
-- Consumes: Tasks 19, 20.
-
-- [ ] **Step 1: Write `render_bridge_test.dart`**: a render answered by a fake inspector reaches the worker as `Rendered`; "a render lost to a reload is asked again once, then waits": the fake inspector's surface is torn down mid-render (`RenderLost`), the worker asks again, the second is lost too, the job is `waiting/render` in `QueueState`, `canRender` false→true releases one more `Render`; no `StartTurn` was issued meanwhile (the scripted runner's call count is unchanged).
-- [ ] **Step 2: Run** — FAIL. **Step 3: Implement.** **Step 4: Run** — PASS.
-- [ ] **Step 5: Commit** the listed files: "Render a job's draft on the UI isolate at the worker's request, and wait when no WebView can be made".
-
-### Task 22: The UI on `QueueState`
-
-**Files:**
-- Modify: `apps/clax_app/lib/ui/make_service.dart` (`MakeService` and `MakeSession` become views over `QueueState` for `make` jobs; `keepGoing`, `cancel`, `dismiss`, `resume` send intents), `apps/clax_app/lib/agent/worker.dart` (`FeedbackWorker`'s scheduling moves into `update`; what stays is the per-comment polling that turns a comment into a `Change` intent, run in the worker), `apps/clax_app/lib/ui/change_tracker.dart`, `apps/clax_app/lib/ui/working_chip.dart:285-299`, `apps/clax_app/lib/ui/change_sheet.dart`, `apps/clax_app/lib/ui/thread_detail.dart:878-1156`, `apps/clax_app/lib/ui/launcher.dart:724-774`, `apps/clax_app/lib/ui/split/sidebar.dart:428`, `apps/clax_app/lib/ui/making_screen.dart`, `apps/clax_app/lib/home/home_host.dart:739`, `apps/clax_app/lib/app.dart` (builds `QueueClient` once the core is open and passes it down; `_MakeDetail` at 3313-3336 sends `Discard`/`Make`), and their tests (`test/ui/make_service_test.dart`, `test/ui/change_tracker_test.dart`, `test/agent/worker_test.dart`, `test/ui/launcher_test.dart`, `test/ui/making_screen_test.dart`, `test/ui/thread_detail_test.dart`, `test/ui/working_chip_test.dart`)
-
-**Interfaces:**
-- Consumes: `QueueClient.state`, `QueueClient.send` (Task 20), `JobView` (Task 19).
-- Produces: no new public API; every widget that showed a make or change reads a `JobView`.
-
-- [ ] **Step 1: Read the threads** on each modified file (records 3f5fb92f, 2713e7df, ea3fb7b3, 5920b083, 0fad2b12 are open on them: keep their behaviour unless a step here changes it, and say so in the report).
-- [ ] **Step 2: Rewrite each widget test** to drive a `FakeQueueClient` (in `test/support/fake_queue.dart`, added to `TEST_SUPPORT`) by pushing `QueueState`s and asserting the intents the widget sends; the visible text each test asserts stays as today (copy changes are Task 32).
-- [ ] **Step 3: Run** them — FAIL. **Step 4: Change the widgets and services.** **Step 5: Run** `bazelisk test //apps/clax_app:all` in the background — PASS.
-- [ ] **Step 6: Look at it** (`just app-macos-dev`): make an app, leave its build view while it builds, see its tile's progress, tap back in, Stop and Resume, Keep going on a change that hits its limit (a scripted agent: `--dart-define=CLAX_SCRIPTED_AGENT=<file>`); screenshots to `target/flutter-app/shots/queue-*.png`, each opened with Read.
-- [ ] **Step 7: Commit** the listed files: "Show makes and changes from the worker's queue state and send the person's choices to it as intents".
-
-### Task 23: Keep-alive, the engine on Android, the wake and trimming
-
-**Files:**
-- Create: `apps/clax_app/android/app/src/main/kotlin/dev/empathic/clax_app/ClaxApplication.kt` (holds the `FlutterEngine` in `FlutterEngineCache` under `"main"`), `apps/clax_app/android/app/src/main/kotlin/dev/empathic/clax_app/WakeWorker.kt` (a `CoroutineWorker` that starts a headless engine on entry point `queueWakeMain` when no engine runs, and waits until Dart says `idle` or 9 minutes pass), `apps/clax_app/lib/queue/wake_main.dart` (`@pragma('vm:entry-point') void queueWakeMain()`: opens the core, runs the worker with `canRender` false, posts the paused notice at a render, and says `idle` when no job is `running`), `apps/clax_app/test/queue/keep_alive_test.dart`
-- Modify: `apps/clax_app/android/app/src/main/AndroidManifest.xml` (`android:name=".ClaxApplication"`; WorkManager's initializer as androidx.work requires), `MainActivity.kt` (`provideFlutterEngine` returns the cached engine; `shouldDestroyEngineWithHost` false), `apps/clax_app/BUILD.bazel` (`runner_deps` gain `@rules_android_maven//:androidx_work_work_runtime_ktx`, pinned in `MODULE.bazel` and `maven_install.json`), `apps/clax_app/lib/platform/background_work.dart` (`enqueueWake()`/`cancelWake()` on Android over `dev.empathic.clax/background`; `trim` from Swift and from Android's `onTrimMemory` calls `CoreHost.trim`), `apps/clax_app/ios/Runner/Background.swift` (no `ClaxDaemon`: sends `trim` to Dart), `apps/clax_app/lib/queue/client.dart` (applies `KeepAlive`, `Notice`, wake enqueue/cancel)
-
-**Depends on the owner's decision** recorded on spec lines 117-121 (S6, the WorkManager wake). Until it is answered, do Steps 1-4 for the keep-alive, the cached engine and trimming only, and leave `WakeWorker.kt`, `wake_main.dart` and the wake's enqueue out; finish them once it is answered (option (a)), or drop them (option (c)).
-
-**Interfaces:**
-- Consumes: Tasks 20, 21, 16.
-- Produces: `KeepAlive(true)` → `BackgroundWork.start(title, step)` and `enqueueWake()`; `KeepAlive(false)` → `stop()` and `cancelWake()` when no job is open.
-
-- [ ] **Step 1: Write `keep_alive_test.dart`** with a fake `BackgroundWork`: a make's run starts the foreground work and enqueues the wake; its `done` stops it and cancels the wake; a job `paused` by `IosBackgroundWork`'s expiry keeps the wake enqueued on Android only.
-- [ ] **Step 2: Run** — FAIL. **Step 3: Implement** Dart, Kotlin and Swift. **Step 4: Run** — PASS; `bazelisk test //apps/clax_app:apk_test` — PASS.
-- [ ] **Step 5: Device check, with the owner present** (record what you saw in the commit message): on the phone, start a make, press Back (the activity finishes), the progress notification stays and the make lands; start another, `adb shell am kill dev.empathic.clax` while it runs in the background, wait for the wake (or `adb shell cmd jobscheduler run -f dev.empathic.clax <job ID>` to force it), see it resume until its next render and post "Open Clax to keep building <title>".
-- [ ] **Step 6: Commit** the listed files: "Hold the process and the engine while jobs run, wake to resume them on Android, and trim the core's memory on request".
-
-## Phase 5: Durable steps and publish checks in the core (spec §8)
-
-### Task 24: Migration 44 and the store's jobs
+### Task 20: Migration 46 and the store's jobs
 
 **Files:**
 - Create: `crates/clax-store/src/jobs.rs`
-- Modify: `crates/clax-store/src/migrations.rs` (migration 44: spec §8.1's SQL verbatim, under `// 44: the app's jobs, their steps, and the agent's read consents (spec 2026-10-19-in-process-core-design §8.1)`; `pub const JOBS_MIGRATION: u32 = 44;`; `APP_MIGRATION_MARKS` gains the 44 marks `jobs`, `job_steps`, `job_threads`, `job_questions`, `agent_read_consents`, `client_imports`, `draft_renders`; `adopt_earlier_flutter_app` (`:1307`) adopts a database that has those tables at another `user_version` by checking each table's columns, and refuses one whose tables disagree), `crates/clax-store/src/lib.rs` (`pub mod jobs;`), `crates/clax-embed/tests/old_homes.rs` (the installed home ends at 44)
-- Test: `crates/clax-store/src/jobs.rs` (unit tests), `crates/clax-store/src/migrations.rs` (adoption tests beside the existing ones at `~:2901`)
+- Modify: `crates/clax-store/src/migrations.rs` (migration 46, the number after the app's five as Task 19 left them: spec §8.1's SQL verbatim, under `// 46: the app's jobs, their steps, and the agent's read consents (spec 2026-10-19-in-process-core-design §8.1)`; `pub const JOBS_MIGRATION: u32 = APP_MIGRATION + 5;`; `APP_MIGRATION_MARKS` gains `("table", "jobs")` as its sixth mark; `adopt_earlier_flutter_app` checks the jobs migration's other six tables (`job_steps`, `job_threads`, `job_questions`, `agent_read_consents`, `draft_renders`, `client_imports`) whenever it finds `jobs`, column by column against the migration's text, and refuses a database whose tables disagree), `crates/clax-store/src/lib.rs` (`pub mod jobs;`), `crates/clax-embed/tests/old_homes.rs` (the installed home ends at 46)
+- Test: `crates/clax-store/src/jobs.rs` (unit tests), `crates/clax-store/src/migrations.rs` (adoption tests beside Task 19's)
 
 **Interfaces:**
 - Produces:
@@ -1276,82 +1132,124 @@ Runs before Task 16, so the baseline is the daemon's.
   pub struct JobRow { pub id: String, pub client: String, pub kind: String, pub artifact_id: Option<String>,
       pub state: String, pub step: Option<String>, pub title: Option<String>, pub input: serde_json::Value,
       pub plan: Option<serde_json::Value>, pub carry: Option<serde_json::Value>, pub error: Option<serde_json::Value>,
-      pub lease_until: Option<String>, pub rev: i64, pub created_at: String, pub updated_at: String }
+      pub rev: i64, pub created_at: String, pub updated_at: String }
+  /// A job with everything `GET /api/jobs` answers for it.
+  pub struct JobFull { pub job: JobRow, pub steps: Vec<StepRow>, pub threads: Vec<JobThread>, pub questions: Vec<JobQuestion> }
+  pub struct JobThread { pub thread_id: String, pub comment_id: String, pub stopped: bool }
+  pub struct JobQuestion { pub question_id: String, pub answer: Option<String> }
   pub struct NewJob { pub id: String, pub client: String, pub kind: String, pub artifact_id: Option<String>,
       pub title: Option<String>, pub input: serde_json::Value, pub plan: Option<serde_json::Value> }
   pub struct JobPatch { pub if_rev: i64, pub state: Option<String>, pub step: Option<Option<String>>,
       pub title: Option<String>, pub plan: Option<Option<serde_json::Value>>, pub carry: Option<Option<serde_json::Value>>,
-      pub error: Option<Option<serde_json::Value>>, pub lease_until: Option<Option<String>> }
+      pub error: Option<Option<serde_json::Value>> }
   pub struct StepRow { pub key: String, pub result: serde_json::Value, pub version_n: Option<i64>, pub created_at: String }
-  pub enum JobError { Moved(JobRow), Conflict, NotFound, Leased { until: String } }
+  pub enum JobError { Moved(JobRow), Conflict, NotFound }
 
   impl Store {
       pub fn create_job(&self, j: NewJob) -> Result<JobRow, JobError>;            // same body → Ok(existing); other body → Conflict
-      pub fn open_jobs(&self, client: &str) -> Result<Vec<(JobRow, Vec<StepRow>, Vec<(String, String, bool)>, Vec<(String, Option<String>)>)>>;
-      pub fn job(&self, id: &str) -> Result<Option<JobRow>>;
-      pub fn patch_job(&self, id: &str, p: JobPatch, now: &str) -> Result<JobRow, JobError>; // rev+1; a lease held by another until > now → Leased
-      pub fn set_job_thread(&self, id: &str, thread: &str, comment: &str, stopped: bool) -> Result<()>;
-      pub fn remove_job_thread(&self, id: &str, thread: &str) -> Result<()>;
-      pub fn set_job_question(&self, id: &str, question: &str, answer: Option<&str>) -> Result<()>;
-      /// Inserts a non-publishing step; an existing key returns it with `replayed = true`.
-      pub fn commit_step(&self, id: &str, key: &str, result: serde_json::Value) -> Result<(StepRow, bool), JobError>;
+      pub fn open_jobs(&self, client: &str) -> Result<Vec<JobFull>>;
+      pub fn job(&self, id: &str) -> Result<Option<JobFull>>;
+      pub fn patch_job(&self, id: &str, p: JobPatch) -> Result<JobRow, JobError>; // rev + 1; a stale if_rev → Moved(current)
+      pub fn set_job_thread(&self, id: &str, thread: &str, comment: &str, stopped: bool) -> Result<JobRow, JobError>;
+      pub fn remove_job_thread(&self, id: &str, thread: &str) -> Result<JobRow, JobError>;
+      /// Records a question the job asked and moves it to `waiting`, in one transaction.
+      pub fn ask_job_question(&self, id: &str, question: &str) -> Result<JobRow, JobError>;
+      /// Stores the answer (or decline) of a question a job asked and moves
+      /// that job back to `running`, inside the caller's transaction; None
+      /// when no job asked it. Called by `close_question`
+      /// (`crates/clax-store/src/questions.rs:907`) for an answer or a decline.
+      pub(crate) fn answer_job_question_tx(tx: &rusqlite::Transaction<'_>, question: &str, answer: Option<&str>) -> Result<Option<JobRow>>;
+      /// Inserts a non-publishing step; an existing key returns it with
+      /// `replayed = true`. `done` also sets the job's state to `done`.
+      pub fn commit_step(&self, id: &str, key: &str, result: serde_json::Value, done: bool) -> Result<(StepRow, JobRow, bool), JobError>;
       pub fn agent_read_consents(&self) -> Result<Vec<(String, String)>>;
       pub fn put_agent_read_consent(&self, reader: &str, source: &str) -> Result<()>;
       pub fn delete_agent_read_consent(&self, reader: &str, source: &str) -> Result<bool>;
   }
   ```
-  Leases: `patch_job` with `lease_until: Some(Some(t))` succeeds when the row's `lease_until` is null, in the past (`<= now`), or the patch carries the same `if_rev` the caller read (renewal by the holder); the holder is whoever last moved `rev`.
-- Consumes: nothing in this plan (store level).
+  Every write returns the job's row after it, which the routes answer and the worker applies (spec §7.4). The store knows nothing of the queue's owner (spec §8.1): no lease column, no clock in any job rule.
+- Consumes: Task 19 (`APP_MIGRATION`, the adoption code and its fixtures).
 
-- [ ] **Step 1: Read the threads** on `crates/clax-store/src/migrations.rs` and `lib.rs`.
-- [ ] **Step 2: Write the failing tests:** `jobs::creating_a_job_twice_with_one_body_returns_it`, `jobs::creating_with_another_body_conflicts`, `jobs::a_stale_rev_is_refused_with_the_current_job`, `jobs::a_held_lease_refuses_a_second_taker`, `jobs::an_expired_lease_is_taken`, `jobs::a_step_committed_twice_is_replayed`, `jobs::open_jobs_lists_steps_threads_and_questions`, `jobs::consents_round_trip`; in `migrations.rs`: `a_database_with_the_jobs_tables_at_another_version_is_adopted`, `a_database_whose_jobs_tables_disagree_is_refused`, `a_fresh_database_reaches_44`; and `old_homes::the_installed_flutter_app_home_backs_up_and_migrates_to_44` asserting `PRAGMA user_version` is 44 and a `clax-43-*.db` backup exists.
+- [ ] **Step 1: Read the threads** on `crates/clax-store/src/migrations.rs`, `lib.rs` and `questions.rs`.
+- [ ] **Step 2: Write the failing tests:** `jobs::creating_a_job_twice_with_one_body_returns_it`, `jobs::creating_with_another_body_conflicts`, `jobs::a_stale_rev_is_refused_with_the_current_job`, `jobs::every_write_answers_the_row_after_it` (create, patch, thread, question, step: each returned `rev` is one above the last), `jobs::asking_moves_the_job_to_waiting_and_the_answer_back_to_running` (through `close_question`), `jobs::a_declined_question_moves_the_job_back_too`, `jobs::a_step_committed_twice_is_replayed`, `jobs::a_done_step_ends_the_job_in_its_transaction`, `jobs::open_jobs_lists_steps_threads_and_questions`, `jobs::consents_round_trip`; in `migrations.rs`: `a_database_with_the_jobs_tables_at_another_version_is_adopted`, `a_database_whose_jobs_tables_disagree_is_refused`, `a_fresh_database_reaches_46`; and in `old_homes.rs` Task 19's test asserting `PRAGMA user_version` is now 46 (`JOBS_MIGRATION`) with one `clax-43-*.db` backup.
 - [ ] **Step 3: Run** `bazelisk test //crates/clax-store:clax_store_lib_test //crates/clax-embed:all --test_arg=old_homes::` — FAIL.
-- [ ] **Step 4: Implement.** Check main's migration numbers first (`git show main:crates/clax-store/src/migrations.rs | grep -E '^\s*// [0-9]+:' | tail -1`) and note in the commit message which number this took and that the merge's numbering is the owner's open decision on the spec (§10.2).
+- [ ] **Step 4: Implement.** Take the number from the list as Task 19 left it (`grep -nE '^\s*// [0-9]+:' crates/clax-store/src/migrations.rs | tail -1` shows 45); if main gained a migration since Task 19, do Task 19's Step 1 again first.
 - [ ] **Step 5: Run** — PASS; also `bazelisk test //crates/clax-store:all //crates/clax-server:all //scripts:wasm32` (the Worker opens the same migrations).
-- [ ] **Step 6: Commit** the listed files: "Keep the app's jobs, their steps and the agent's read consents in the store (migration 44), adopting the tables by schema".
+- [ ] **Step 6: Commit** the listed files: "Keep the app's jobs, their steps and the agent's read consents in the store (migration 46), adopting the tables by schema".
 
-### Task 25: Job routes, and publish and reply steps that commit with their effects
+### Task 21: Job routes with one queue owner, and publish and reply steps that commit with their effects
 
 **Files:**
-- Create: `crates/clax-server/src/routes/jobs.rs`, `crates/clax-server/tests/api_jobs.rs` (declared in `integration.rs`)
-- Modify: `crates/clax-store/src/jobs.rs` (`commit_publish_step`, `commit_reply_step`), `crates/clax-store/src/artifacts.rs:1004-1090` (the version insert factored so it runs inside a caller's transaction: `insert_version_tx`), `crates/clax-server/src/router.rs` (routes of spec §8.1, owner only: `RequireToken` as other owner routes take it), `crates/clax-core/src/events.rs:12` (`Event::Job { id, state, step, rev }`), `crates/clax-realtime/src/stream.rs` (topic `jobs`, owner only), `docs/contract.md` (a "Jobs" section under "The Clax app": the routes, the step bodies, the errors `version_moved`, `doc_moved`, `job_moved`, `not_rendered_clean`)
+- Create: `crates/clax-server/src/routes/jobs.rs`, `crates/clax-http/src/jobs_owner.rs`, `crates/clax-server/tests/api_jobs.rs` (declared in `integration.rs`)
+- Modify: `crates/clax-store/src/jobs.rs` (`commit_publish_step`, `commit_reply_step`), `crates/clax-store/src/artifacts.rs:1004-1090` (the version insert factored so it runs inside a caller's transaction: `insert_version_tx`), `crates/clax-http/src/state.rs` (`AppState.jobs_owners: Arc<JobsOwners>`, built empty with the state), `crates/clax-http/src/lib.rs` (`pub mod jobs_owner;`), `crates/clax-server/src/router.rs` (routes of spec §8.1, owner credential only: `RequireToken` as other owner routes take it), `crates/clax-core/src/events.rs:12` (`Event::Job { id, client, state, step, rev }`, `Event::JobsOwner { client, held }`), `crates/clax-realtime/src/stream.rs` (topic `jobs`, owner only; `Hub::closed(stream) -> impl Future<Output = ()>` resolving when that connection ends, immediately for an unknown ID; `Hub::nudge(stream)` queueing one keep-alive block to that connection now), `crates/clax-embed/tests/embed.rs` (the owner claim through a real subscription), `docs/contract.md` (a "Jobs" section under "The Clax app": the routes, the owner claim and its header, the step bodies, the errors `owner_held`, `not_owner`, `no_such_stream`, `version_moved`, `doc_moved`, `job_moved`, `not_rendered_clean`)
 
 **Interfaces:**
 - Produces (store):
   ```rust
   pub struct PublishStep { pub artifact_id: Option<String>, pub base: i64,
       pub request: clax_core::publish::ValidatedPublish, pub docs: Vec<clax_core::docs::DocWrite>,
-      pub draft: Option<DraftRef> }
+      pub draft: Option<DraftRef>, pub done: bool }
   pub struct DraftRef { pub id: String, pub digest: String }
-  pub struct ReplyStep { pub session_id: String, pub threads: Vec<String>, pub body: String, pub resolve: bool, pub ack: Vec<String> }
+  pub struct ReplyStep { pub session_id: String, pub threads: Vec<String>, pub body: String, pub resolve: bool, pub ack: Vec<String>, pub done: bool }
   impl Store {
       /// One IMMEDIATE transaction: replay if the key exists; else check the
       /// base, insert the version (or the artifact), apply the pinned doc
-      /// writes, insert the step with version_n, bump the job. Content files
-      /// are written before, as publish_version writes them.
-      pub fn commit_publish_step(&self, job: &str, key: &str, s: PublishStep) -> Result<(StepRow, bool), StepError>;
-      pub fn commit_reply_step(&self, job: &str, key: &str, s: ReplyStep) -> Result<(StepRow, bool), StepError>;
+      /// writes, insert the step with version_n, bump the job (and end it
+      /// when `done`). Content files are written before, as
+      /// publish_version writes them.
+      pub fn commit_publish_step(&self, job: &str, key: &str, s: PublishStep) -> Result<(StepRow, JobRow, bool), StepError>;
+      pub fn commit_reply_step(&self, job: &str, key: &str, s: ReplyStep) -> Result<(StepRow, JobRow, bool), StepError>;
   }
   pub enum StepError { VersionMoved { current: i64 }, DocMoved { path: String }, NotRenderedClean, Job(JobError), Store(clax_core::CoreError) }
   ```
   (Use the existing type names for document writes and validated publishes: `grep -n "pub struct" crates/clax-core/src/publish.rs crates/clax-core/src/docs*.rs`.)
-  Routes answer: `POST /api/jobs/{id}/steps/{key}` → `200 {"step": {...}, "replayed": bool, "version"?: n}`; `409 {"error":{"code":"version_moved","current":n}}` etc.
+- Produces (the owner claim, spec §7.5, §8.1):
+  ```rust
+  // crates/clax-http/src/jobs_owner.rs
+  /// The queue owner of each job client, in memory only: a crash, a close
+  /// or a reopen of the core forgets every claim.
+  #[derive(Default)]
+  pub struct JobsOwners { /* Mutex<HashMap<String /*client*/, Claim { token: String, stream: String }>> */ }
+  pub enum Claimed { Owner(String /*token*/), Held, NoSuchStream }
+  impl JobsOwners {
+      /// Claims `client`'s queue for the holder of event stream `stream`:
+      /// `Held` while another claim's stream lives (and nudges that stream,
+      /// so a dead holder is noticed at once). On `Owner`, spawns (by `clax_rt`, so
+      /// it builds for wasm32) a task that
+      /// awaits `hub.closed(stream)` and then releases the claim and
+      /// publishes `Event::JobsOwner { client, held: false }`.
+      pub fn claim(self: &Arc<Self>, hub: &clax_realtime::stream::Hub, events: &clax_realtime::Events, client: &str, stream: &str) -> Claimed;
+      /// Releases `client`'s claim when `token` holds it; false otherwise.
+      pub fn release(&self, client: &str, token: &str) -> bool;
+      /// Whether `token` holds `client`'s queue.
+      pub fn holds(&self, client: &str, token: &str) -> bool;
+  }
+  ```
+  (Use the real names of the hub's and the event publisher's types in `clax-realtime`; `grep -n "pub struct\|pub fn publish" crates/clax-realtime/src/*.rs`. The claim's token is 32 hex characters from the same random source the daemon's tokens use.)
+  Routes answer every job write with `{"job": <JobFull>}`; `POST /api/jobs/{id}/steps/{key}` with `{"job": …, "step": {...}, "replayed": bool, "version"?: n}`; `POST /api/jobs/owner` with `200 {"owner": "<token>"}` or `409 {"error":{"code":"owner_held"}}`; a job write whose `x-clax-jobs-owner` does not hold the job's client with `409 {"error":{"code":"not_owner"}}`; `409 {"error":{"code":"version_moved","current":n}}` and the others as spec §8.1.
   A **failure point for tests**: `Store::fail_after_version_insert_for_tests(bool)` is not allowed (no test-only features). Instead `commit_publish_step` takes its transaction body from a private function `publish_step_tx(tx, …) -> Result<…>` and the unit test calls it inside a transaction it then rolls back, asserting no version and no step remain.
-- Consumes: Task 24.
+- Consumes: Task 20; Task 6 (`Embed::subscribe`, for the embed test).
 
-- [ ] **Step 1: Write the failing tests** in `api_jobs.rs`:
+- [ ] **Step 1: Read the threads** on `crates/clax-realtime/src/stream.rs`, `crates/clax-http/src/state.rs`, `crates/clax-server/src/router.rs`, `crates/clax-store/src/artifacts.rs`.
+- [ ] **Step 2: Write the failing tests** in `api_jobs.rs` (each claims the queue first through a real `/api/stream` connection of the test daemon unless it tests the claim):
   - `a_replayed_publish_step_publishes_once`: create a job, commit `publish:0` for a new app twice; one artifact, one version; the second answers `replayed: true` with the same `version`.
+  - `a_done_publish_step_ends_the_job_with_the_version`: a make's `publish:0` with `state: "done"` answers a job row in `done`; `GET /api/jobs?open=1` no longer lists it.
   - `a_step_on_a_moved_base_records_nothing`: publish v2 outside the job, then the step with base 1 → 409 `version_moved` `current: 2`; `GET /api/jobs/{id}` has no `publish:1` step.
   - `a_moved_document_refuses_the_whole_step`: a doc write pinned to a version the doc moved past → 409 `doc_moved`; no new version.
   - `a_reply_step_replies_resolves_and_acks_once`.
-  - `jobs_are_owner_only`: an agent credential and a viewer get 403/404.
-  - `the_jobs_topic_hears_each_change` over `/api/stream`.
-  And in `jobs.rs` unit tests: `a_step_cut_before_commit_leaves_no_version_and_resumes_once` (the rolled-back transaction above, then the real commit succeeds once).
-- [ ] **Step 2: Run** `bazelisk test //crates/clax-server:all --test_arg=api_jobs:: //crates/clax-store:clax_store_lib_test` — FAIL.
-- [ ] **Step 3: Implement.** **Step 4: Run** — PASS, plus `bazelisk test //crates/clax-server:all //scripts:wasm32`.
-- [ ] **Step 5: Commit** the listed files: "Commit a job's publish and reply steps in one transaction with what they publish, and serve the app's jobs".
+  - `jobs_are_owner_only`: an agent credential and a viewer get 403/404 on every jobs route.
+  - `a_second_claimant_is_refused_while_the_first_stream_lives`: two `/api/stream` connections; the first claims (200); the second gets 409 `owner_held`.
+  - `the_claim_is_released_when_its_stream_ends`: the holder's connection is dropped; a third connection subscribed to `jobs` hears `jobs_owner` with `held: false`; the second's claim then succeeds; the first's token is refused with `not_owner` on `PATCH /api/jobs/{id}`.
+  - `a_write_without_the_owners_token_is_refused`: no header, and another client's token, each 409 `not_owner`; nothing changed.
+  - `a_claim_naming_no_live_stream_is_refused`: 400 `no_such_stream`.
+  - `a_restarted_core_holds_no_claim`: claim, stop the test daemon, start it on the same home, claim with a new stream → 200.
+  - `the_jobs_topic_hears_each_change` over `/api/stream`: `job` events with rising `rev` for create, move, step.
+  And in `jobs.rs` unit tests: `a_step_cut_before_commit_leaves_no_version_and_resumes_once` (the rolled-back transaction above, then the real commit succeeds once). In `crates/clax-embed/tests/embed.rs`: `the_queue_owner_is_released_when_its_subscriber_goes` (subscribe A collecting blocks, read its stream ID from `ready`, claim with it; subscribe B, claim → 409; A's `on_block` starts returning false; B's claim is answered 409 and nudges A, A's subscription ends, B hears `held: false`, and B's next claim → 200; no wall clock: the test waits on B's channel).
+- [ ] **Step 3: Run** `bazelisk test //crates/clax-server:all --test_arg=api_jobs:: //crates/clax-store:clax_store_lib_test //crates/clax-embed:all` — FAIL.
+- [ ] **Step 4: Implement.** **Step 5: Run** — PASS, plus `bazelisk test //crates/clax-server:all //crates/clax-realtime:all //scripts:wasm32`.
+- [ ] **Step 6: Commit** the listed files: "Serve the app's jobs to one queue owner per client, and commit a job's publish and reply steps in one transaction with what they publish".
 
-### Task 26: The icon rules in the core, shared with Dart
+### Task 22: The icon rules in the core, shared with Dart
 
 **Files:**
 - Create: `crates/clax-core/src/icon.rs`, `crates/clax-core/tests/fixtures/icons/` (`ok-*.svg`, `bad-*.svg`, `expect.json` mapping each file to `null` or the problem's code), `apps/clax_app/test/agent/icon_fixtures_test.dart`
@@ -1376,11 +1274,11 @@ Runs before Task 16, so the baseline is the daemon's.
 - [ ] **Step 3: Run** them — FAIL. **Step 4: Implement** the port, rule for rule from `icon_svg.dart` (read it whole first). **Step 5: Run** — PASS; `bazelisk test //scripts:plugins //apps/clax_app:prompt_sync //scripts:wasm32` — PASS.
 - [ ] **Step 6: Commit** the listed files: "Check icon.svg in the core's publish for every client, with fixtures the app's early check shares".
 
-### Task 27: The render gate in the core
+### Task 23: The render gate in the core
 
 **Files:**
 - Create: `crates/clax-core/src/digest.rs`, `apps/clax_app/test/bundle/files_digest_test.dart`
-- Modify: `crates/clax-store/src/jobs.rs` (`record_render`, `clean_render`; the `draft_renders` table is Task 24's), `crates/clax-server/src/routes/app_drafts.rs` (`POST /api/drafts/{id}/renders` `{digest, errors, failed_tests}`), `crates/clax-store/src/jobs.rs` (`commit_publish_step` refuses `NotRenderedClean` unless a clean row exists for `draft.digest` and the request's files digest to it), `apps/clax_app/lib/bundle/content_hash.dart` (doc comment: matches `clax_core::digest::files_digest`), `docs/contract.md` (Jobs: `not_rendered_clean`; Drafts: the renders route)
+- Modify: `crates/clax-store/src/jobs.rs` (`record_render`, `clean_render`; the `draft_renders` table is Task 20's), `crates/clax-server/src/routes/app_drafts.rs` (`POST /api/drafts/{id}/renders` `{digest, errors, failed_tests}`), `crates/clax-store/src/jobs.rs` (`commit_publish_step` refuses `NotRenderedClean` unless a clean row exists for `draft.digest` and the request's files digest to it), `apps/clax_app/lib/bundle/content_hash.dart` (doc comment: matches `clax_core::digest::files_digest`), `docs/contract.md` (Jobs: `not_rendered_clean`; Drafts: the renders route)
 
 **Interfaces:**
 - Produces:
@@ -1389,28 +1287,281 @@ Runs before Task 16, so the baseline is the daemon's.
   /// "<path>\0<len>\0<bytes>": the digest content_hash.dart computes.
   pub fn files_digest<'a>(files: impl IntoIterator<Item = (&'a str, &'a [u8])>) -> String;
   ```
-- Consumes: Tasks 24, 25.
+- Consumes: Tasks 20, 21.
 
 - [ ] **Step 1: Read `content_hash.dart`** and write `digest.rs`'s test with a vector computed by it (three files and an `icon.svg`): the same hex. Write `files_digest_test.dart` with the same vector.
 - [ ] **Step 2: Write** `api_jobs::a_draft_publish_needs_a_clean_render_of_its_digest` (no render → 409; a render with errors → 409; a clean render of another digest → 409; a clean render of this digest → 200) and `api_jobs::a_publish_without_a_draft_has_no_render_gate`.
 - [ ] **Step 3: Run** — FAIL. **Step 4: Implement.** **Step 5: Run** — PASS.
 - [ ] **Step 6: Commit** the listed files: "Refuse a draft's publish step unless the app recorded a clean render of exactly its files".
 
-### Task 28: The worker on the core's jobs, and kill-and-resume
+## Phase 5: The queue in a worker isolate, on the core's jobs (spec §7)
+
+### Task 24: The queue's model and its pure `update`, a projection of the core's jobs
+
+Spec §7.1, §7.4, §7.5. `update` emits domain effects only; it never builds a request, a path or a frame, and its tests assert meaning.
 
 **Files:**
-- Create: `apps/clax_app/lib/queue/core_jobs.dart`, `apps/clax_app/test/queue/core_jobs_test.dart`, `apps/clax_app/integration_test/kill_resume_test.dart`
-- Modify: `apps/clax_app/lib/queue/runner.dart` (`CommitStep`/`PatchJob` go to `core_jobs.dart`; `JsonJobStore` stays only for Task 29's import), `apps/clax_app/lib/queue/worker_main.dart` (loads `GET /api/jobs?open=1&client=app`; takes leases, renews each minute on the worker's clock), `apps/clax_app/lib/agent/tools/finish.dart:824-867` (the publish, doc batch and reply/resolve/ack become the `publish:<base>` and `reply` step bodies; the ledger record and `docs_done` go), `apps/clax_app/lib/agent/tools/render_tool.dart` (posts each render's result to `/api/drafts/{id}/renders` with the draft's digest), `apps/clax_app/lib/ui/read_consent_dialog.dart:51` (`FileConsentMemory` → `CoreConsentMemory` over `/api/agent-read-consents`), `apps/clax_app/integration_test/rig.dart` (a launcher that runs the debug app as a child process by its PID, for the kill)
+- Create: `apps/clax_app/lib/queue/model.dart`, `apps/clax_app/lib/queue/msg.dart`, `apps/clax_app/lib/queue/effect.dart`, `apps/clax_app/lib/queue/update.dart`, `apps/clax_app/lib/queue/next.dart`, `apps/clax_app/test/queue/update_test.dart`, `apps/clax_app/test/queue/update_properties_test.dart`, `apps/clax_app/test/queue/core_answers.dart` (the properties test's generator of the core's answers)
+- Modify: `apps/clax_app/BUILD.bazel` (`SUITES` gains `queue`)
 
 **Interfaces:**
-- Produces: `class CoreJobs { Future<StepOutcome> commit(JobId id, String key, Map<String, Object?> body); Future<Job> patch(JobId id, int ifRev, Map<String, Object?> patch); Future<List<Job>> open(); }` mapping 409 codes to `StepRefused`.
-- Consumes: Tasks 20, 24, 25, 27.
+- Produces (all immutable, `==` by value, `toJson`/`fromJson` for the isolate boundary):
+  ```dart
+  // model.dart
+  typedef JobId = String;
+  typedef EffectId = int;
+  enum JobKind { make, change }
+  /// The core's job states (spec §8.1), durable.
+  enum JobState { queued, running, waiting, paused, stopped, failed, cancelled, done }
+  /// Not durable: what a running job is held up by in this worker.
+  enum WaitingFor { claude, render }
+  /// A job as the core last sent it (spec §7.4); never changed by update
+  /// but by applying a newer row.
+  class Job {
+    const Job({required this.id, required this.kind, required this.state, this.step, required this.rev,
+      this.artifactId, this.title, required this.input, this.plan, this.carry, this.error,
+      this.steps = const {}, this.threads = const {}, this.questions = const {}});
+    final JobId id; final JobKind kind; final JobState state; final String? step; final int rev;
+    final String? artifactId; final String? title; final JobInput input;
+    final PlanState? plan; final Carry? carry; final JobError? error;
+    /// Committed steps by key (`turn:<n>`, `publish:<base>`, `reply`).
+    final Map<String, StepResult> steps;
+    /// thread ID → (the newest comment ID the job answers, stopped).
+    final Map<String, (String, bool)> threads;
+    /// question ID → the answer, null while unanswered.
+    final Map<String, String?> questions;
+  }
+  class JobLocal { const JobLocal({this.waitingFor, this.renderTries = 0, this.renderDeadline}); final WaitingFor? waitingFor; final int renderTries; final DateTime? renderDeadline; }
+  sealed class Owner { const Owner(); }   // OwnerNone, OwnerClaiming, OwnerHeldBy(String token), OwnerRefused
+  class QueueModel {
+    const QueueModel({this.owner = const OwnerNone(), this.loaded = false, this.jobs = const {}, this.inFlight = const {},
+      this.local = const {}, this.pending = const [], this.keepAlive = false, this.coreOpen = false,
+      this.claude = Reachability.unknown, this.canRender = true, this.nextEffect = 0});
+    final Owner owner; final bool loaded;
+    final Map<JobId, Job> jobs; final Map<EffectId, Effect> inFlight; final Map<JobId, JobLocal> local;
+    final List<Msg> pending; final bool keepAlive; final bool coreOpen; final Reachability claude;
+    final bool canRender; final EffectId nextEffect;
+    static const maxRunning = 3;
+  }
+  enum Reachability { unknown, reachable, unreachable }
+  /// What the UI sees (spec §7.2): the core's rows, and jobs whose CreateJob is in flight as queued.
+  class QueueState { const QueueState(this.jobs); final List<JobView> jobs; }
+  class JobView { /* id, kind, state, waitingFor, step label, title, artifactId, error text, offers: {keepGoing, retry, cancel, discard} */ }
+  QueueState viewOf(QueueModel m);
 
-- [ ] **Step 1: Read the threads** on `finish.dart` (records 76578be7, f487fab9 are open on it: the conflict rule of 76578be7's decision stays: a moved document fails the step and the change offers Retry).
-- [ ] **Step 2: Write `core_jobs_test.dart`** over `FakeCore`: each status maps to the right message; a replayed step is `StepCommitted(replayed: true)`.
-- [ ] **Step 3: Write `kill_resume_test.dart`** (macOS, `just app-integration`): with a scripted agent (`CLAX_SCRIPTED_AGENT`), launch the app as a child (`Process.start` of the debug app's executable with `CLAX_APP_DIR` scratch and `CLAX_TEST_KILL_AT=after-publish-commit`, a debug-only hook in `core_jobs.dart` that writes `<support>/kill-point` and blocks after that step's answer), wait for the file (with a 120 s cap), `Process.killPid(pid, ProcessSignal.sigkill)`, relaunch without the hook, wait for the job `done` in `GET /api/jobs/{id}` read by a `CoreClient` the test opens on the same home after the app quits; assert one version and one agent reply. A second case with `before-publish-commit` asserts one version after resume.
-- [ ] **Step 4: Run** the unit test — FAIL; implement; PASS. Run `bazelisk test //apps/clax_app:integration_kill_resume` in the background — PASS.
-- [ ] **Step 5: Commit** the listed files: "Run the queue's steps on the core's jobs, so a job killed mid-publish resumes once".
+  // msg.dart — sealed class Msg with:
+  //   Intents: Make(id, request, {title}), Change(id, artifactId, threads), Cancel(jobId),
+  //     Retry(jobId), KeepGoing(jobId), Discard(jobId)
+  //   The core: CoreOpened(), OwnerClaimed(token), OwnerHeld(), OwnerReleased(), JobsLoaded(List<Job> jobs),
+  //     JobChanged(Job job), Committed(EffectId effect, Job job, {StepResult? step, bool replayed = false}),
+  //     Refused(EffectId effect, JobId jobId, Refusal reason, {Job? job})
+  //     — Refusal: VersionMoved(int current) | DocMoved(String path) | NotRenderedClean() | JobMoved() | NotOwner()
+  //   Work: TurnDone(effect, jobId, TurnOutcome outcome), TurnFailed(effect, jobId, TurnFailure kind),
+  //     ToolDone(effect, jobId, String callId, ToolResult result),
+  //     Rendered(effect, jobId, RenderOutcome outcome), RenderLost(effect, jobId), CanRender(bool)
+  //   The world: ClaudeReachable(bool), Tick(DateTime now), Woke({required bool foreground})
+
+  // effect.dart — sealed class Effect, each with `EffectId id` and, but the queue's own, `JobId jobId`:
+  //   Commit effects (answered by Committed or Refused):
+  //     CreateJob(id, jobId, JobKind kind, JobInput input, {artifactId, title, plan}),
+  //     MoveJob(id, jobId, int ifRev, JobState to, {JobError? error, Carry? carry, PlanState? plan, String? title}),
+  //     CommitStep(id, jobId, int turn, TurnNotes notes),        // key turn:<turn>
+  //     Ask(id, jobId, Question question),
+  //     Publish(id, jobId, int base, PublishPlan publish, {required bool done}),   // key publish:<base>
+  //     Reply(id, jobId, ReplyPlan reply),                        // key reply; ends the job
+  //   Work: StartTurn(id, jobId, TurnInput input), RunTool(id, jobId, ToolCall call),
+  //     Render(id, jobId, RenderSpec spec), ProbeClaude(id)
+  //   The queue's own: ClaimOwner(id), LoadJobs(id), Notice(NoticeKind kind, JobId jobId, String title),
+  //     KeepAlive(bool on), PublishState(QueueState state)
+
+  // next.dart — the resume table of spec §7.4, used after every applied row and at JobsLoaded.
+  // Takes effect IDs from m.nextEffect and records each effect in m.inFlight.
+  (QueueModel, List<Effect>) next(QueueModel m, Job job);
+
+  // update.dart
+  (QueueModel, List<Effect>) update(QueueModel m, Msg msg);
+  ```
+  The rules `update` implements (each is a test; spec §7.4's rule is rule 1):
+  1. **One source of truth.** `jobs` changes only by applying a `Job` carried by `JobsLoaded`, `JobChanged`, `Committed` or `Refused(job:)`, and only when its `rev` is above the held one (an answer and its event, in either order, apply once). No other message changes a job's `state`, `step`, `steps`, `plan`, `carry`, `error`, `threads` or `questions`.
+  2. **The owner first.** `CoreOpened` emits `ClaimOwner`; `OwnerClaimed` emits `LoadJobs`; `OwnerHeld` emits nothing until `OwnerReleased`, which emits `ClaimOwner` again; `Refused(NotOwner)` drops the owner and every job effect in flight and emits `ClaimOwner`. No job effect is emitted while `owner` is not `OwnerHeldBy`, and intents that arrive before `JobsLoaded` wait in `pending`.
+  3. `Make` and `Change` emit `CreateJob` (the client derives the ID: `sha256(request + clientNonce)` truncated); the job shows in `viewOf` as `queued` from the in-flight effect; its `Committed` row then goes through `next`.
+  4. `next(job)` is spec §7.4's table: `queued` → `MoveJob(→ running)` while fewer than three run; `running` with no step → `StartTurn(1)`; last step `turn:<n>` with unanswered calls → `Publish`/`Render`/`Ask`/`RunTool` per call; every call answered → `StartTurn(n + 1)`; a change with `publish:<b>` → `Reply`; `waiting` → nothing; `paused` → `MoveJob(→ running)` on `Woke(foreground: true)` and at `JobsLoaded`; `stopped`/`failed` → nothing.
+  5. `TurnDone` emits `CommitStep(turn, notes)`; the turn's outcome acts only through the committed row (rule 4).
+  6. `TurnFailed(network)` → local `waitingFor: claude`, `ProbeClaude`, no new turn until `ClaudeReachable(true)`; no `MoveJob` (waiting on Claude is not durable).
+  7. A finish emits `Publish(base)` exactly once per base; `Refused(VersionMoved(c))` re-plans (a `StartTurn` with base `c`), never a second `Publish` for the same base; `Refused(DocMoved)` → `MoveJob(→ failed)` (Retry offered).
+  8. A `Render`'s `RenderLost` → one more `Render`; a second `RenderLost` → local `waitingFor: render` until `CanRender(true)`; no `StartTurn` in between. `Tick` past a render's 60 s deadline is a `RenderLost`.
+  9. `Cancel` → `MoveJob(→ cancelled)`; once its row says `cancelled`, no effect for that job and in-flight results for it are dropped.
+  10. Limits: a turn result over the job's limit → `MoveJob(→ stopped, carry)` (Keep going offered); `KeepGoing` → `MoveJob(→ running)`; a second stop → `KeepGoing` plans the rest (`plan` in the `MoveJob`).
+  11. `KeepAlive(true)` is emitted when the count of `running` or `waiting` jobs goes from 0 to more, `KeepAlive(false)` when it goes back to 0.
+  12. Every change of `viewOf(m)` emits one `PublishState`.
+- Consumes: nothing (pure Dart).
+
+- [ ] **Step 1: Write `update_test.dart`**: one `group` per rule above, each with at least one `test` constructing a model, sending the message, and asserting the returned model and effects by meaning (states, step keys, bases, effect kinds; never a path, method or body), e.g.
+  ```dart
+  test('a publish refused for a moved base re-plans and never publishes that base again', () {
+    final m0 = model(owned: true, jobs: [job('j', state: JobState.running, rev: 3, steps: {'turn:2': finishNotes(base: 4)})]);
+    final (m1, e1) = update(m0, JobChanged(m0.jobs['j']!.copyWith(rev: 4)));
+    expect(e1.whereType<Publish>().single.base, 4);
+    final (m2, e2) = update(m1, Refused(e1.whereType<Publish>().single.id, 'j', const VersionMoved(5)));
+    expect(e2.whereType<Publish>(), isEmpty);
+    expect(e2.whereType<StartTurn>().single.input.base, 5);
+    expect(m2.jobs['j']!.state, JobState.running);
+  });
+  test('a job advances only on the core\'s answer', () {
+    final m0 = model(owned: true, jobs: [job('j', state: JobState.queued, rev: 1)]);
+    final (m1, e1) = update(m0, JobsLoaded([m0.jobs['j']!]));
+    final move = e1.whereType<MoveJob>().single;
+    expect(move.to, JobState.running);
+    expect(m1.jobs['j']!.state, JobState.queued, reason: 'not running until the core says so');
+    final (m2, e2) = update(m1, Committed(move.id, m1.jobs['j']!.copyWith(state: JobState.running, rev: 2)));
+    expect(m2.jobs['j']!.state, JobState.running);
+    expect(e2.whereType<StartTurn>(), hasLength(1));
+  });
+  test('an older row than the one held is ignored', () { /* JobChanged(rev 2) after Committed(rev 3): no change, no effect */ });
+  test('a worker that does not own the queue runs nothing', () {
+    final m0 = model(owned: false, jobs: []);
+    final (m1, e1) = update(m0, const Make('j', 'a todo app'));
+    expect(e1.where((e) => e is CreateJob || e is StartTurn), isEmpty);
+    expect(m1.pending, hasLength(1));
+  });
+  ```
+  and a table test over every `JobState` × every intent asserting the documented effect kind and target state (a `const` table in the test file, 8 × 6 entries), and a table test of `next` over spec §7.4's rows.
+- [ ] **Step 2: Write `update_properties_test.dart`**: a seeded `Random(42)` generating 2,000 sequences of up to 40 messages from a generator that only produces messages valid for the effects emitted so far: results answer issued effect IDs, and `core_answers.dart` answers each commit effect as the core would (a `Committed` with the row moved and `rev` + 1, or a `Refused` drawn from the effect's possible refusals, and sometimes the same row again as a `JobChanged`, before or after the answer). After each step it checks: no job has two `Publish` effects for one base; no `CommitStep` key twice per job; no effect for a `cancelled` or `done` job; at most three `running`; `keepAlive` equals "some job running or waiting"; no `StartTurn` for a job between a `RenderLost` and its next `Rendered`; every change of a job's durable fields happened on a message carrying a core row with a higher `rev`; no job effect while the owner is not held.
+- [ ] **Step 3: Run** `bazelisk test //apps/clax_app:queue_update_test //apps/clax_app:queue_update_properties_test` — FAIL.
+- [ ] **Step 4: Implement** `model.dart`, `msg.dart`, `effect.dart`, `next.dart`, `update.dart`. `update` imports nothing from `dart:io`, `dart:async`, `package:flutter`, `lib/core`, or `lib/agent` beyond the plain data types it carries (`TurnInput`, `TurnOutcome`, `ToolCall`, `PublishPlan`, `ReplyPlan` are defined in `lib/queue/` as data and mapped by the runner).
+- [ ] **Step 5: Run** — PASS; `dart_analyze` — PASS.
+- [ ] **Step 6: Commit** the listed files: "Model the app's queue as a projection of the core's jobs, with a pure update that emits domain effects".
+
+### Task 25: The effect runner on the core's jobs, and the worker isolate
+
+The queue is built directly on the core's jobs (Tasks 20, 21): there is no interim JSON store for jobs. The runner is the only code that knows a route.
+
+**Files:**
+- Create: `apps/clax_app/lib/queue/runner.dart`, `apps/clax_app/lib/queue/core_jobs.dart`, `apps/clax_app/lib/queue/worker_main.dart`, `apps/clax_app/lib/queue/client.dart`, `apps/clax_app/lib/queue/codec.dart` (Msg/Effect/QueueState to and from JSON-able maps), `apps/clax_app/lib/agent/core_consent_memory.dart`, `apps/clax_app/test/queue/runner_test.dart`, `apps/clax_app/test/queue/core_jobs_test.dart`, `apps/clax_app/test/queue/client_test.dart`, `apps/clax_app/test/queue/codec_test.dart`
+- Modify: `apps/clax_app/lib/agent/tools/finish.dart:824-867` (the publish, the doc batch and the reply/resolve/ack become the `PublishPlan` and `ReplyPlan` a finish hands the queue; the ledger record and `docs_done` go), `apps/clax_app/lib/agent/tools/render_tool.dart` (the render's result is recorded by the runner's `Render`, `POST /api/drafts/{id}/renders` with the draft's digest), `apps/clax_app/lib/ui/read_consent_dialog.dart:51` (`FileConsentMemory` → `CoreConsentMemory` over `/api/agent-read-consents`), `apps/clax_app/test/support/fake_core.dart` (jobs routes, the owner claim and the `jobs` topic, answering as Task 21's routes do)
+
+**Interfaces:**
+- Produces:
+  ```dart
+  // core_jobs.dart — every job route the worker uses (spec §8.1), and nothing else.
+  class CoreJobs {
+    CoreJobs(this.core);
+    final CoreCalls core;
+    /// POST /api/jobs/owner with the worker's stream ID.
+    Future<OwnerAnswer> claim(String streamId);          // OwnerClaimed(token) | OwnerHeld
+    Future<List<Job>> open();                             // GET /api/jobs?open=1&client=app
+    /// Runs one commit effect with the owner's token; answers Committed or Refused.
+    Future<Msg> commit(Effect e, String token);
+  }
+
+  // runner.dart — the only code in the worker that awaits.
+  class EffectRunner {
+    EffectRunner({required this.jobs, required this.turns, required this.tools, required this.render,
+      required this.toUi, required this.connection, required this.clock, required this.send});
+    final CoreJobs jobs;
+    /// Runs one model turn with the agent's runner (lib/agent).
+    final Future<TurnOutcome> Function(TurnInput input, CancelToken cancel) turns;
+    /// Runs one of the agent's tool calls but finish, render and ask.
+    final Future<ToolResult> Function(ToolCall call, CancelToken cancel) tools;
+    /// Asks the UI isolate to render; completes with its answer.
+    final Future<RenderOutcome> Function(RenderSpec spec) render;
+    final void Function(Object uiMessage) toUi;       // KeepAlive, Notice, PublishState
+    final ApiConnection connection; final Clock clock;
+    /// Feeds a result back into the loop.
+    final void Function(Msg msg) send;
+    void run(Effect e);
+    void cancelJob(JobId id);
+  }
+
+  // worker_main.dart
+  /// The worker isolate's entry: attaches to the core by handle, subscribes
+  /// to its events (topics jobs, questions, threads) and reads its stream's
+  /// ID from `ready`, builds the agent's runners from [WorkerStart], and
+  /// loops: msg → update → effects → runner. Core events become
+  /// `JobChanged`, `OwnerReleased` and `CoreOpened` messages.
+  void workerMain(WorkerStart start);
+  class WorkerStart { /* SendPort toUi; int coreHandle; String supportDir; Map settings; String? apiKey; */ }
+
+  // client.dart — the UI isolate's only view of the queue.
+  class QueueClient {
+    static Future<QueueClient> spawn({required CoreHost core, required String supportDir, required AppSettings settings, required String? apiKey, RenderService? render, BackgroundWork? background});
+    ValueListenable<QueueState> get state;
+    void send(Msg intent);        // only intents; others are refused by an assert
+    void settingsChanged(AppSettings s); void keyChanged(String? key);
+    Future<void> dispose();
+  }
+  ```
+  The runner maps (spec §7.1): `ClaimOwner` → `CoreJobs.claim`; `LoadJobs` → `CoreJobs.open` → `JobsLoaded`; `CreateJob` → `POST /api/jobs`; `MoveJob` → `PATCH /api/jobs/{id}` with `if_rev`; `CommitStep` → `POST /api/jobs/{id}/steps/turn:<n>`; `Ask` → the question's creation (`POST /api/sessions/{sid}/questions`, as the agent's ask does today), then `PUT /api/jobs/{id}/questions/{qid}`; `Publish` → `POST /api/jobs/{id}/steps/publish:<base>` with `publish` (and `state: done` for a make); `Reply` → `POST /api/jobs/{id}/steps/reply` with `reply` and `state: done`; every commit with `x-clax-jobs-owner`; 409 codes → `Refused` (`version_moved` → `VersionMoved(current)`, `doc_moved`, `not_rendered_clean`, `job_moved` with the current row, `not_owner`), 200 → `Committed(job, step, replayed)`. `JsonJobStore` does not exist: the seven JSON files are read only by Task 29's import.
+- Consumes: Task 24, Task 17 (`CoreHost.handle`), Tasks 20, 21, 23 (the routes and the render record).
+
+- [ ] **Step 1: Read the threads** on `finish.dart` (records 76578be7, f487fab9 are open on it: the conflict rule of 76578be7's decision stays: a moved document fails the step and the change offers Retry), `render_tool.dart`, `read_consent_dialog.dart`.
+- [ ] **Step 2: Write `codec_test.dart`**: every `Msg` and `Effect` variant and a `QueueState` round-trip through `codec.dart` (generated list of one instance each).
+- [ ] **Step 3: Write `core_jobs_test.dart`** over `FakeCore`: each commit effect reaches its route with the owner header (this is where routes are asserted, not in `update`'s tests); each status maps to the right message; a replayed step is `Committed(replayed: true)`; a claim answered `owner_held` is `OwnerHeld`.
+- [ ] **Step 4: Write `runner_test.dart`** on `fakeAsync` with `FakeCore` and `ScriptedRunner` (`lib/agent/runner/scripted_runner.dart`): a `StartTurn` runs one scripted turn and sends `TurnDone`; a network failure sends `TurnFailed(network)`; a `Publish` sends one step commit and answers `Committed` with the fake core's row; a `Render` records the render's result in the fake core before it sends `Rendered`; `cancelJob` aborts a turn in flight and sends nothing for it.
+- [ ] **Step 5: Write `client_test.dart`**: `QueueClient.spawn` with a real isolate and the core replaced by a fake served in the test isolate (the worker takes a `CoreCalls Function()` in tests through `WorkerStart.testCore`, a `SendPort` to it): a `Make` intent ends in a `QueueState` with one job `queued`, then `running`, then `done` after the scripted run, each state as the fake core's rows say; the UI side never awaits a job (the test's `send` returns `void`). **A worker isolate dies and restarts**: a scripted turn throws a `StateError` outside the runner's guards after its `turn:1` commit; the fake core sees the dead worker's subscription end and releases the claim; the client starts a new worker, whose claim succeeds only after that release (a claim before it is answered `owner_held`), and which loads the job from the fake core and resumes it at `turn:2`; the job ends `done` with one `publish:` step and one `reply`. **Two claimants**: a second worker started beside a live first one gets `owner_held` and runs nothing. A second death within a minute of the worker's clock leaves the jobs showing "Clax's builder stopped. Restart Clax to go on." in `QueueState`.
+- [ ] **Step 6: Run** the four — FAIL. **Step 7: Implement**, `FakeCore`'s job routes included. **Step 8: Run** — PASS; `dart_analyze` — PASS.
+- [ ] **Step 9: Commit** the listed files: "Run the queue in a worker isolate on the core's jobs: an effect runner that alone knows the routes, and a client the UI reads and sends intents to".
+
+### Task 26: Rendering asked of the UI isolate
+
+**Files:**
+- Create: `apps/clax_app/lib/queue/render_service.dart`, `apps/clax_app/test/queue/render_bridge_test.dart`
+- Modify: `apps/clax_app/lib/ui/inspector_surface.dart` (`WebViewInspector` usable by `RenderService` with no `ClaxApi` of its own; it loads the draft by `AppOrigins`), `apps/clax_app/lib/queue/client.dart` (routes `RenderRequest` to the service and answers)
+
+**Interfaces:**
+- Produces:
+  ```dart
+  class RenderSpec { /* draftId, revision, kind: inspect|tests|migration, settleMs, maxBytes, files (tests), migration {file, from, to} */ }
+  sealed class RenderOutcome {}  // Inspection(png, errors, …) | TestsRun(results) | MigrationRun(result) | RenderError(message)
+  class RenderService {
+    RenderService(this.inspector, {required this.clock});
+    final Inspector inspector; final Clock clock;
+    /// Whether a WebView can be made now (false while the app's UI engine is
+    /// detached on Android, or the app is in the background on iOS).
+    ValueListenable<bool> get canRender;
+    Future<RenderOutcome> render(RenderSpec spec);
+  }
+  ```
+  The worker's 60 s deadline and one retry are `update`'s (Task 24 rule 8); the service only renders and reports `canRender`.
+- Consumes: Tasks 24, 25.
+
+- [ ] **Step 1: Write `render_bridge_test.dart`**: a render answered by a fake inspector reaches the worker as `Rendered`; "a render lost to a reload is asked again once, then waits": the fake inspector's surface is torn down mid-render (`RenderLost`), the worker asks again, the second is lost too, the job shows `waitingFor: render` in `QueueState` (its core row unchanged), `canRender` false→true releases one more `Render`; no `StartTurn` was issued meanwhile (the scripted runner's call count is unchanged).
+- [ ] **Step 2: Run** — FAIL. **Step 3: Implement.** **Step 4: Run** — PASS.
+- [ ] **Step 5: Commit** the listed files: "Render a job's draft on the UI isolate at the worker's request, and wait when no WebView can be made".
+
+### Task 27: The UI on `QueueState`
+
+**Files:**
+- Modify: `apps/clax_app/lib/ui/make_service.dart` (`MakeService` and `MakeSession` become views over `QueueState` for `make` jobs; `keepGoing`, `cancel`, `dismiss`, `resume` send intents), `apps/clax_app/lib/agent/worker.dart` (`FeedbackWorker`'s scheduling moves into `update`; what stays is the per-comment polling that turns a comment into a `Change` intent, run in the worker), `apps/clax_app/lib/ui/change_tracker.dart`, `apps/clax_app/lib/ui/working_chip.dart:285-299`, `apps/clax_app/lib/ui/change_sheet.dart`, `apps/clax_app/lib/ui/thread_detail.dart:878-1156`, `apps/clax_app/lib/ui/launcher.dart:724-774`, `apps/clax_app/lib/ui/split/sidebar.dart:428`, `apps/clax_app/lib/ui/making_screen.dart`, `apps/clax_app/lib/home/home_host.dart:739`, `apps/clax_app/lib/app.dart` (builds `QueueClient` once the core is open and passes it down; `_MakeDetail` at 3313-3336 sends `Discard`/`Make`), and their tests (`test/ui/make_service_test.dart`, `test/ui/change_tracker_test.dart`, `test/agent/worker_test.dart`, `test/ui/launcher_test.dart`, `test/ui/making_screen_test.dart`, `test/ui/thread_detail_test.dart`, `test/ui/working_chip_test.dart`)
+
+**Interfaces:**
+- Consumes: `QueueClient.state`, `QueueClient.send` (Task 25), `JobView` (Task 24).
+- Produces: no new public API; every widget that showed a make or change reads a `JobView`.
+
+- [ ] **Step 1: Read the threads** on each modified file (records 3f5fb92f, 2713e7df, ea3fb7b3, 5920b083, 0fad2b12 are open on them: keep their behaviour unless a step here changes it, and say so in the report).
+- [ ] **Step 2: Rewrite each widget test** to drive a `FakeQueueClient` (in `test/support/fake_queue.dart`, added to `TEST_SUPPORT`) by pushing `QueueState`s and asserting the intents the widget sends; the visible text each test asserts stays as today (copy changes are Task 32).
+- [ ] **Step 3: Run** them — FAIL. **Step 4: Change the widgets and services.** **Step 5: Run** `bazelisk test //apps/clax_app:all` in the background — PASS.
+- [ ] **Step 6: Look at it** (`just app-macos-dev`): make an app, leave its build view while it builds, see its tile's progress, tap back in, Stop and Resume, Keep going on a change that hits its limit (a scripted agent: `--dart-define=CLAX_SCRIPTED_AGENT=<file>`); screenshots to `target/flutter-app/shots/queue-*.png`, each opened with Read.
+- [ ] **Step 7: Commit** the listed files: "Show makes and changes from the worker's queue state and send the person's choices to it as intents".
+
+### Task 28: Keep-alive, the engine on Android, trimming, and kill-and-resume
+
+Spec §7.6 and S6 (decided 2026-10-19: no WorkManager wake and no headless engine; jobs resume at the next launch on every platform).
+
+**Files:**
+- Create: `apps/clax_app/android/app/src/main/kotlin/dev/empathic/clax_app/ClaxApplication.kt` (holds the `FlutterEngine` in `FlutterEngineCache` under `"main"`), `apps/clax_app/test/queue/keep_alive_test.dart`, `apps/clax_app/integration_test/kill_resume_test.dart`
+- Modify: `apps/clax_app/android/app/src/main/AndroidManifest.xml` (`android:name=".ClaxApplication"`), `MainActivity.kt` (`provideFlutterEngine` returns the cached engine; `shouldDestroyEngineWithHost` false), `apps/clax_app/lib/platform/background_work.dart` (`trim` from Swift and from Android's `onTrimMemory` calls `CoreHost.trim`), `apps/clax_app/ios/Runner/Background.swift` (no `ClaxDaemon`: sends `trim` to Dart), `apps/clax_app/lib/queue/client.dart` (applies `KeepAlive` and `Notice`; a `paused` job from `IosBackgroundWork`'s expiry is sent as a `MoveJob` by the worker), `apps/clax_app/lib/queue/core_jobs.dart` (a debug-only kill hook, below), `apps/clax_app/integration_test/rig.dart` (a launcher that runs the debug app as a child process by its PID, for the kill)
+
+**Interfaces:**
+- Consumes: Tasks 17, 25, 26, 27.
+- Produces: `KeepAlive(true)` → `BackgroundWork.start(title, step)`; `KeepAlive(false)` → `stop()`. Nothing is enqueued with the OS to wake the app.
+- Produces the kill hook: with `CLAX_TEST_KILL_AT=<before-publish-commit|after-publish-commit>` in a debug build only, `CoreJobs.commit` of a `Publish` writes `<support>/kill-point` and blocks before sending the step, or after its answer.
+
+- [ ] **Step 1: Write `keep_alive_test.dart`** with a fake `BackgroundWork`: a make's run starts the foreground work; its `done` stops it; a job `paused` by `IosBackgroundWork`'s expiry stops it and the job is `paused` in the fake core's row; nothing asks the platform to schedule a wake (the fake records no such call).
+- [ ] **Step 2: Write `kill_resume_test.dart`** (macOS, `just app-integration`): with a scripted agent (`CLAX_SCRIPTED_AGENT`), launch the app as a child (`Process.start` of the debug app's executable with a scratch `CLAX_APP_DIR` and `CLAX_TEST_KILL_AT=after-publish-commit`), wait for `kill-point` (with a 120 s cap), `Process.killPid(pid, ProcessSignal.sigkill)`, relaunch without the hook, wait for the job `done` in `GET /api/jobs/{id}` read by a `CoreClient` the test opens on the same home after the app quits; assert one version and one agent reply. A second case with `before-publish-commit` asserts one version after resume.
+- [ ] **Step 3: Run** `bazelisk test //apps/clax_app:queue_keep_alive_test` — FAIL. **Step 4: Implement** Dart, Kotlin and Swift. **Step 5: Run** — PASS; `bazelisk test //apps/clax_app:apk_test` — PASS; `bazelisk test //apps/clax_app:integration_kill_resume` in the background (`target/plan-logs/core-28.log`) — PASS.
+- [ ] **Step 6: Look at it on the Android emulator** (Task 14's `scripts/app-android-emulator.sh --start --window --i-know-what-i-am-doing`, never the owner's phone: this build carries migrations not yet on main), with the debug APK installed by `adb -s <serial> install -r`: start a make, press Back (the activity finishes), the progress notification stays and the make lands; start another, `adb -s <serial> shell am kill dev.empathic.clax` while it runs in the background, launch Clax again, and see it resume from its last step. Screenshots (`adb exec-out screencap -p`) to `target/flutter-app/shots/keep-alive-*.png`, each opened with Read; stop the emulator by its PID.
+- [ ] **Step 7: Commit** the listed files: "Hold the process and the engine while jobs run, resume them at the next launch after a kill, and trim the core's memory on request".
 
 ## Phase 6: The JSON state, imported once (spec §9)
 
@@ -1418,13 +1569,13 @@ Runs before Task 16, so the baseline is the daemon's.
 
 **Files:**
 - Create: `apps/clax_app/lib/core/json_import.dart`, `apps/clax_app/test/core/json_import_test.dart`, `apps/clax_app/test/core/fixtures/json-state/` (one real-shaped file of each of the seven, from today's writers' formats in `pending_make.dart`, `ledger.dart`, `plan.dart`, `asked.dart`, `stops.dart`, `unfinished.dart`, `read_consent_dialog.dart`), `crates/clax-server/tests/api_client_imports.rs`
-- Modify: `crates/clax-server/src/routes/jobs.rs` (`POST /api/client-imports/{key}` `{jobs: [NewJob + steps + threads + questions], consents}`: one transaction with the `client_imports` row; an existing key answers 200 `{"already": true}` and changes nothing), `crates/clax-store/src/jobs.rs` (`import(key, …)`), `apps/clax_app/lib/queue/worker_main.dart` (runs the import before loading jobs)
+- Modify: `crates/clax-server/src/routes/jobs.rs` (`POST /api/client-imports/{key}` `{jobs: [NewJob + steps + threads + questions], consents}`: one transaction with the `client_imports` row; it needs the `x-clax-jobs-owner` token of the client its jobs name, as every job write does; an existing key answers 200 `{"already": true}` and changes nothing), `crates/clax-store/src/jobs.rs` (`import(key, …)`), `apps/clax_app/lib/queue/runner.dart` (`LoadJobs` runs the import once, with the owner's token, before it reads the jobs; `update` is unchanged)
 
 **Interfaces:**
 - Produces: `Future<ImportSummary> importJsonState({required String supportDir, required CoreCalls core, required Clock clock})`; `ImportSummary {int jobs; int consents; List<String> skipped; String? copiedTo; bool already;}`. Job IDs `json-<sha256 of the entry's canonical JSON, first 24 hex>`.
-- Consumes: Tasks 24, 25, 28.
+- Consumes: Tasks 20, 21, 25.
 
-- [ ] **Step 1: Write `api_client_imports.rs`**: an import applies every job, step and consent at once; a second import with the same key changes nothing; an import with one bad job (unknown artifact for a publish step) applies nothing.
+- [ ] **Step 1: Write `api_client_imports.rs`**: an import applies every job, step and consent at once; a second import with the same key changes nothing; an import with one bad job (unknown artifact for a publish step) applies nothing; an import without the owner's token is refused with `not_owner`.
 - [ ] **Step 2: Write `json_import_test.dart`** with the fixtures and `FakeCore` recording the import body: each file maps per spec §9's table (one test per file: e.g. a ledger record whose version `base + 1` exists and names its `addresses` becomes a job with a `publish:<base>` step; one whose version is missing becomes a job with no step); the files are copied to `imported-json/<time>/` then deleted; a malformed `plans.json` is skipped and named; a second run after the key exists does nothing; a crash between the core's commit and the deletes (the fake throws on delete) leaves a second run harmless (the core answers `already`, the files are deleted then).
 - [ ] **Step 3: Run** — FAIL. **Step 4: Implement.** **Step 5: Run** — PASS.
 - [ ] **Step 6: Try it on a copy**: copy the Mac app's real support directory's seven files (read-only, from `~/Library/Containers/dev.empathic.clax/Data/Library/Application Support/dev.empathic.clax/`) into a scratch `CLAX_APP_DIR` with a copy of its `clax-home`, run the debug app on it, and check the summary in the log; never write to the original.
@@ -1456,7 +1607,7 @@ Runs before Task 16, so the baseline is the daemon's.
 ### Task 32: Words: Claude, not connection
 
 **Files:**
-- Modify: `apps/clax_app/home/home.js:267-279` (`MAKE_STATUS.offline` → "Can't reach Claude"; the spoken text "Waiting for Claude"), `apps/clax_app/lib/ui/launcher.dart:730`, `apps/clax_app/lib/ui/split/sidebar.dart:428`, `apps/clax_app/lib/ui/making_screen.dart:105`, `apps/clax_app/lib/ui/change_tracker.dart:256`, `apps/clax_app/lib/ui/thread_detail.dart:917`, `apps/clax_app/lib/ui/working_chip.dart` (the waiting label), the queue's notices (`lib/queue/client.dart`: "Paused — open Clax to keep building", "Open Clax to keep building <title>", "Clax's builder stopped. Restart Clax to go on."), `docs/usage.md` ("No connection" paragraph), and the tests asserting the old words (`grep -rn "Waiting for connection\|'Offline'" apps/clax_app/test apps/clax_app/home`)
+- Modify: `apps/clax_app/home/home.js:267-279` (`MAKE_STATUS.offline` → "Can't reach Claude"; the spoken text "Waiting for Claude"), `apps/clax_app/lib/ui/launcher.dart:730`, `apps/clax_app/lib/ui/split/sidebar.dart:428`, `apps/clax_app/lib/ui/making_screen.dart:105`, `apps/clax_app/lib/ui/change_tracker.dart:256`, `apps/clax_app/lib/ui/thread_detail.dart:917`, `apps/clax_app/lib/ui/working_chip.dart` (the waiting label), the queue's notices (`lib/queue/client.dart`: "Paused — open Clax to keep building", "Clax's builder stopped. Restart Clax to go on."), `docs/usage.md` ("No connection" paragraph), and the tests asserting the old words (`grep -rn "Waiting for connection\|'Offline'" apps/clax_app/test apps/clax_app/home`)
 
 - [ ] **Step 1: Read the threads** (3f5fb92f and 2713e7df are on these lines).
 - [ ] **Step 2: Change the tests' expected words**, run them — FAIL; change the words; run — PASS (`bazelisk test //apps/clax_app:all` and the home app's tests, `bazelisk test //apps/clax_app:home_tests` or whatever `grep -n "home" apps/clax_app/BUILD.bazel` names).
@@ -1468,9 +1619,9 @@ Runs before Task 16, so the baseline is the daemon's.
 
 **Files:** none in the repository but `.qual` files and `docs/superpowers/verification/2026-10-19-in-process-core.md` (the device checklist's results).
 
-- [ ] **Step 1: Copy the owner's homes, read-only**, only with the owner's go-ahead in the session: the phone (`adb exec-out run-as dev.empathic.clax tar c files/ > target/owner-homes/phone.tar` — the support directory's real path as Task 18 found it) and the Mac (`cp -R` of the container's support directory into `target/owner-homes/mac/`). Never write to either original.
-- [ ] **Step 2: Open each copy with the new core** on the Mac (`crates/clax-embed/tests/old_homes.rs` gains an `#[ignore]` test `an_owner_home_copy_opens` that reads `CLAX_OWNER_HOME_COPY`; run it with `--test_arg=--ignored --test_env=CLAX_OWNER_HOME_COPY=…`): backup made, migration to 44, the artifact and thread counts before (from `sqlite3` on the copy) equal after, and the import of the copy's JSON files (Task 29's function run by a Dart test pointed at the copy) reports every job.
+- [ ] **Step 1: Copy the owner's homes, read-only**, only with the owner's go-ahead in the session: the phone (`adb exec-out run-as dev.empathic.clax tar c files/ > target/owner-homes/phone.tar` — the support directory's real path as Task 16 found it) and the Mac (`cp -R` of the container's support directory into `target/owner-homes/mac/`). Never write to either original.
+- [ ] **Step 2: Open each copy with the new core** on the Mac (`crates/clax-embed/tests/old_homes.rs` gains an `#[ignore]` test `an_owner_home_copy_opens` that reads `CLAX_OWNER_HOME_COPY`; run it with `--test_arg=--ignored --test_env=CLAX_OWNER_HOME_COPY=…`): backup made, the home adopted into main's numbering and migrated to 46 (`JOBS_MIGRATION`), the artifact and thread counts before (from `sqlite3` on the copy) equal after, and the import of the copy's JSON files (Task 29's function run by a Dart test pointed at the copy) reports every job.
 - [ ] **Step 3: Install**, with the owner present: `just app-phone`; on the Mac, `just app-macos` and replace the app. Walk the device checklist and write the results to the verification file: launch to home (and the time, `scripts/perf-app-launch.sh --android`), open three apps, a comment and its change, a make left with Back, a kill during a make (`adb shell am kill`) and its resume, Settings › key change, the inbox live, a `.clax` import, the home screen's Undo.
 - [ ] **Step 4: Gates.** `just check` in the background (`target/plan-logs/core-33-check.log`); a lane that fails in code this plan did not touch is rerun alone and both results reported. Read `"$Q" exec diff main`.
-- [ ] **Step 5: Records.** Re-record any of this plan's records that drifted; propose (never make) the closes listed in Tasks 16, 31 and 32; list the spec's open decisions (`"$Q" exec threads docs/superpowers/specs/2026-10-19-in-process-core-design.md --status needs-decision`).
+- [ ] **Step 5: Records.** Re-record any of this plan's records that drifted; propose (never make) the closes listed in Tasks 17, 31 and 32; list the spec's open decisions (`"$Q" exec threads docs/superpowers/specs/2026-10-19-in-process-core-design.md --status needs-decision`).
 - [ ] **Step 6: Commit** the verification file and the `.qual` changes separately: "Record the in-process core's checks on the owner's devices".
