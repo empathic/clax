@@ -1387,10 +1387,16 @@ impl Store {
             (Err(_), Some(Cut::Replayed)) => self
                 .replay(id, key)?
                 .ok_or(StepError::Job(JobError::NotFound)),
-            (Err(CoreError::Conflict { current }), None) => {
-                Err(StepError::VersionMoved { current })
-            }
-            (Err(e), None) => Err(StepError::Store(e)),
+            // Refused before the step's transaction: another call of the
+            // same key may have committed it meanwhile (a retry overlapping
+            // the first call), which moved the artifact past `base`.
+            (Err(e), None) => match self.replay(id, key)? {
+                Some(done) => Ok(done),
+                None => Err(match e {
+                    CoreError::Conflict { current } => StepError::VersionMoved { current },
+                    e => StepError::Store(e),
+                }),
+            },
         }
     }
 
@@ -2037,6 +2043,48 @@ mod tests {
             )
             .unwrap();
         assert!(again.replayed);
+        assert_eq!(versions(&st, &aid), vec![1, 2]);
+    }
+
+    /// A store on one connection whose content writes `gated` holds.
+    fn gated_store(gated: Arc<crate::test_util::Gated>) -> (tempfile::TempDir, Store) {
+        let dir = tempfile::tempdir().unwrap();
+        let home = clax_core::Home::at(dir.path().join("ax"));
+        home.ensure_dirs().unwrap();
+        let conn = rusqlite::Connection::open(home.db_path()).unwrap();
+        let st = Store::open_on(
+            &home,
+            conn,
+            Arc::new(clax_core::working::SystemClock),
+            gated,
+        )
+        .unwrap();
+        (dir, st)
+    }
+
+    #[test]
+    fn a_key_committed_by_an_overlapping_call_is_replayed_not_moved() {
+        use std::future::Future;
+        let gated = Arc::new(crate::test_util::Gated::new());
+        let (_d, st) = gated_store(gated.clone());
+        let aid = artifact(&st, None);
+        change(&st, "j1", &aid);
+        let step = || publish_step(Some(&aid), 1, "<p>v2", false);
+        let mut cx = std::task::Context::from_waker(std::task::Waker::noop());
+        // The first call holds the content lock, waiting on its write; the
+        // second has passed its replay check and waits for the lock.
+        gated.set_open(false);
+        let mut first = std::pin::pin!(st.commit_publish_step_async(DAEMON, "j1", "publish:1", step()));
+        assert!(first.as_mut().poll(&mut cx).is_pending());
+        let mut second = std::pin::pin!(st.commit_publish_step_async(DAEMON, "j1", "publish:1", step()));
+        assert!(second.as_mut().poll(&mut cx).is_pending());
+        gated.set_open(true);
+        let first = clax_core::content::wait(first).unwrap();
+        assert!(!first.replayed);
+        let second = clax_core::content::wait(second).unwrap();
+        assert!(second.replayed, "the second call answers the first's step");
+        assert_eq!(second.step, first.step);
+        assert_eq!(second.step.version_n, Some(2));
         assert_eq!(versions(&st, &aid), vec![1, 2]);
     }
 

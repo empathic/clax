@@ -967,11 +967,99 @@ pub(crate) mod test_util {
             name: None,
         }
     }
+
+    /// A content store whose version writes wait until `open`, as a
+    /// Durable Object's wait on a JavaScript promise.
+    pub struct Gated {
+        inner: clax_core::content::memory::MemContent,
+        open: std::sync::atomic::AtomicBool,
+        waker: std::sync::Mutex<Option<std::task::Waker>>,
+    }
+
+    impl Default for Gated {
+        fn default() -> Gated {
+            Gated::new()
+        }
+    }
+
+    impl Gated {
+        /// An empty store whose writes go through.
+        pub fn new() -> Gated {
+            Gated {
+                inner: clax_core::content::memory::MemContent::new(),
+                open: std::sync::atomic::AtomicBool::new(true),
+                waker: std::sync::Mutex::new(None),
+            }
+        }
+
+        /// Lets writes through (`true`), or holds the next ones (`false`).
+        pub fn set_open(&self, open: bool) {
+            self.open.store(open, std::sync::atomic::Ordering::SeqCst);
+            if open && let Some(w) = self.waker.lock().unwrap().take() {
+                w.wake();
+            }
+        }
+    }
+
+    #[async_trait::async_trait]
+    impl clax_core::content::ContentStore for Gated {
+        async fn read_file(
+            &self,
+            id: &clax_core::ArtifactId,
+            n: u32,
+            path: &str,
+        ) -> clax_core::Result<Option<Vec<u8>>> {
+            self.inner.read_file(id, n, path).await
+        }
+        async fn write_version(
+            &self,
+            id: &clax_core::ArtifactId,
+            n: u32,
+            write: &clax_core::content::VersionWrite<'_>,
+        ) -> clax_core::Result<()> {
+            std::future::poll_fn(|cx| {
+                if self.open.load(std::sync::atomic::Ordering::SeqCst) {
+                    std::task::Poll::Ready(())
+                } else {
+                    *self.waker.lock().unwrap() = Some(cx.waker().clone());
+                    std::task::Poll::Pending
+                }
+            })
+            .await;
+            self.inner.write_version(id, n, write).await
+        }
+        async fn remove_version(
+            &self,
+            id: &clax_core::ArtifactId,
+            n: u32,
+        ) -> clax_core::Result<()> {
+            self.inner.remove_version(id, n).await
+        }
+        async fn delete_artifact(&self, id: &clax_core::ArtifactId) -> clax_core::Result<()> {
+            self.inner.delete_artifact(id).await
+        }
+        async fn put_asset(
+            &self,
+            key: &clax_core::content::AssetKey,
+            bytes: &[u8],
+        ) -> clax_core::Result<()> {
+            self.inner.put_asset(key, bytes).await
+        }
+        async fn read_asset(
+            &self,
+            key: &clax_core::content::AssetKey,
+        ) -> clax_core::Result<Option<Vec<u8>>> {
+            self.inner.read_asset(key).await
+        }
+        async fn delete_asset(&self, key: &clax_core::content::AssetKey) -> clax_core::Result<()> {
+            self.inner.delete_asset(key).await
+        }
+    }
 }
 
 #[cfg(test)]
 mod tests {
-    use super::test_util::{anchor, artifact};
+    use super::test_util::{Gated, anchor, artifact};
     use super::threads::NewThread;
     use crate::{RegisterSession, Store};
     use clax_core::Home;
@@ -1039,78 +1127,6 @@ mod tests {
         assert!(passed > 300, "{passed} passed:\n{stdout}");
     }
 
-    /// A content store whose version writes wait until `open`, as a
-    /// Durable Object's wait on a JavaScript promise.
-    struct Gated {
-        inner: clax_core::content::memory::MemContent,
-        open: std::sync::atomic::AtomicBool,
-        waker: std::sync::Mutex<Option<std::task::Waker>>,
-    }
-
-    impl Gated {
-        fn set_open(&self, open: bool) {
-            self.open.store(open, std::sync::atomic::Ordering::SeqCst);
-            if open && let Some(w) = self.waker.lock().unwrap().take() {
-                w.wake();
-            }
-        }
-    }
-
-    #[async_trait::async_trait]
-    impl clax_core::content::ContentStore for Gated {
-        async fn read_file(
-            &self,
-            id: &clax_core::ArtifactId,
-            n: u32,
-            path: &str,
-        ) -> clax_core::Result<Option<Vec<u8>>> {
-            self.inner.read_file(id, n, path).await
-        }
-        async fn write_version(
-            &self,
-            id: &clax_core::ArtifactId,
-            n: u32,
-            write: &clax_core::content::VersionWrite<'_>,
-        ) -> clax_core::Result<()> {
-            std::future::poll_fn(|cx| {
-                if self.open.load(std::sync::atomic::Ordering::SeqCst) {
-                    std::task::Poll::Ready(())
-                } else {
-                    *self.waker.lock().unwrap() = Some(cx.waker().clone());
-                    std::task::Poll::Pending
-                }
-            })
-            .await;
-            self.inner.write_version(id, n, write).await
-        }
-        async fn remove_version(
-            &self,
-            id: &clax_core::ArtifactId,
-            n: u32,
-        ) -> clax_core::Result<()> {
-            self.inner.remove_version(id, n).await
-        }
-        async fn delete_artifact(&self, id: &clax_core::ArtifactId) -> clax_core::Result<()> {
-            self.inner.delete_artifact(id).await
-        }
-        async fn put_asset(
-            &self,
-            key: &clax_core::content::AssetKey,
-            bytes: &[u8],
-        ) -> clax_core::Result<()> {
-            self.inner.put_asset(key, bytes).await
-        }
-        async fn read_asset(
-            &self,
-            key: &clax_core::content::AssetKey,
-        ) -> clax_core::Result<Option<Vec<u8>>> {
-            self.inner.read_asset(key).await
-        }
-        async fn delete_asset(&self, key: &clax_core::content::AssetKey) -> clax_core::Result<()> {
-            self.inner.delete_asset(key).await
-        }
-    }
-
     fn next_version(n: u32, html: &str) -> clax_core::publish::ValidatedPublish {
         clax_core::publish::validate(
             serde_json::from_value(serde_json::json!({
@@ -1142,11 +1158,7 @@ mod tests {
         let home = Home::at(dir.path().join("ax"));
         home.ensure_dirs().unwrap();
         let conn = rusqlite::Connection::open(home.db_path()).unwrap();
-        let gated = Arc::new(Gated {
-            inner: clax_core::content::memory::MemContent::new(),
-            open: std::sync::atomic::AtomicBool::new(true),
-            waker: std::sync::Mutex::new(None),
-        });
+        let gated = Arc::new(Gated::new());
         let st = Store::open_on(
             &home,
             conn,
