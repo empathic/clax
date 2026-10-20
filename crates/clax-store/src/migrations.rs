@@ -1614,11 +1614,12 @@ pub(super) fn adopt_earlier_flutter_app(
 
 /// How the database's jobs tables ([`JOBS_TABLES`]) disagree with the
 /// jobs migration, whose SQL is `jobs_sql`: when `held`, each must be there
-/// as that SQL makes it, its `CREATE TABLE` and the `CREATE INDEX` of each
-/// of its indexes (none missing, none more) the same text in
-/// `sqlite_master` up to comments and spacing ([`normalised_sql`]), so a
-/// column, a foreign key or its delete rule, a `CHECK` or an index that
-/// differs is seen; else none may be. `None` when they agree.
+/// as that SQL makes it, its `CREATE TABLE` and the `CREATE INDEX` or
+/// `CREATE TRIGGER` of each of its indexes and triggers (none missing, none
+/// more) the same text in `sqlite_master` up to comments and spacing
+/// ([`normalised_sql`]), so a column, a foreign key or its delete rule, a
+/// `CHECK`, an index or a trigger that differs is seen; else none may be.
+/// `None` when they agree.
 fn jobs_tables_disagree(
     tx: &rusqlite::Connection,
     jobs_sql: &str,
@@ -1626,24 +1627,27 @@ fn jobs_tables_disagree(
 ) -> clax_core::Result<Option<String>> {
     let made = rusqlite::Connection::open_in_memory()?;
     made.execute_batch(jobs_sql)?;
-    // The table's own SQL, then each of its indexes' (by name), normalised.
-    let schema =
-        |c: &rusqlite::Connection, table: &str| -> clax_core::Result<Vec<(String, String)>> {
-            let mut q = c.prepare(
-                "SELECT name, sql FROM sqlite_master
-             WHERE tbl_name = ?1 AND type IN ('table', 'index') AND sql IS NOT NULL
-             ORDER BY type = 'index', name",
-            )?;
-            let rows = q
-                .query_map([table], |r| {
-                    Ok((
-                        r.get::<_, String>(0)?,
-                        normalised_sql(&r.get::<_, String>(1)?),
-                    ))
-                })?
-                .collect::<rusqlite::Result<_>>()?;
-            Ok(rows)
-        };
+    // The table's own SQL, then each of its indexes' and triggers' (by
+    // name), normalised, each with its type.
+    type Schema = Vec<(String, String, String)>;
+    let schema = |c: &rusqlite::Connection, table: &str| -> clax_core::Result<Schema> {
+        let mut q = c.prepare(
+            "SELECT type, name, sql FROM sqlite_master
+             WHERE tbl_name = ?1 AND type IN ('table', 'index', 'trigger') AND sql IS NOT NULL
+             ORDER BY type <> 'table', name",
+        )?;
+        let rows = q
+            .query_map([table], |r| {
+                Ok((
+                    r.get::<_, String>(0)?,
+                    r.get::<_, String>(1)?,
+                    normalised_sql(&r.get::<_, String>(2)?),
+                ))
+            })?
+            .collect::<rusqlite::Result<_>>()?;
+        Ok(rows)
+    };
+    let a = |kind: &str| if kind == "index" { "an" } else { "a" };
     for table in JOBS_TABLES {
         let there = has_table(tx, table)?;
         if !held {
@@ -1662,25 +1666,29 @@ fn jobs_tables_disagree(
             )));
         }
         let (has, wants) = (schema(tx, table)?, schema(&made, table)?);
-        for (name, sql) in &wants {
-            match has.iter().find(|(n, _)| n == name) {
+        for (kind, name, sql) in &wants {
+            match has.iter().find(|(_, n, _)| n == name) {
                 None => {
                     return Ok(Some(format!(
-                        "lacks the index {name} of the jobs migration's table {table}"
+                        "lacks the {kind} {name} of the jobs migration's table {table}"
                     )));
                 }
-                Some((_, s)) if s != sql => {
+                Some((k, _, s)) if k != kind || s != sql => {
                     return Ok(Some(format!(
-                        "has a {} {name} whose SQL is not the jobs migration's",
-                        if name == table { "table" } else { "index" }
+                        "has {} {k} {name} whose SQL is not the jobs migration's",
+                        a(k)
                     )));
                 }
                 Some(_) => {}
             }
         }
-        if let Some((name, _)) = has.iter().find(|(n, _)| !wants.iter().any(|(w, _)| w == n)) {
+        if let Some((kind, name, _)) = has
+            .iter()
+            .find(|(_, n, _)| !wants.iter().any(|(_, w, _)| w == n))
+        {
             return Ok(Some(format!(
-                "has an index {name} on the table {table} that the jobs migration does not make"
+                "has {} {kind} {name} on the table {table} that the jobs migration does not make",
+                a(kind)
             )));
         }
     }
@@ -5081,7 +5089,7 @@ mod tests {
     /// refused by name and left as it was.
     #[test]
     fn a_database_whose_jobs_tables_disagree_is_refused() {
-        let cases: [(usize, &str, &str); 6] = [
+        let cases: [(usize, &str, &str); 7] = [
             (
                 6,
                 "DROP TABLE job_threads;
@@ -5112,6 +5120,12 @@ mod tests {
                 "draft_renders",
             ),
             (6, "DROP TABLE client_imports;", "client_imports"),
+            (
+                6,
+                "CREATE TRIGGER jobs_touched AFTER UPDATE ON jobs
+                 BEGIN UPDATE jobs SET title = NULL WHERE id = new.id; END;",
+                "jobs_touched",
+            ),
             (
                 5,
                 "CREATE TABLE agent_read_consents (reader TEXT NOT NULL, source TEXT NOT NULL,
