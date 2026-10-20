@@ -12,9 +12,13 @@ share an entry, as `flutter build` does.
 It holds:
 - each pub package in `pub_licenses`, by its LICENSE (the hub's
   `<package>__license` alias, which bazel/flutter/rules_flutter.patch
-  adds; `pub_licenses()` makes the attribute). The packages the app's Dart code reaches (`deps`, through the
-  `deps` of each library) must be exactly those: the build fails naming
-  any missing or extra one, so the list stays in step with pubspec.lock;
+  adds; `pub_licenses()` makes the attribute). `pub_licenses_test`
+  checks that they are exactly the packages the app's Dart code reaches
+  (its `deps`, through the `deps` of each library), naming any missing or
+  extra one, so the list stays in step with pubspec.lock. The check is a
+  target of its own so that NOTICES, whose bytes no Dart source changes,
+  does not depend on the app's Dart in the build graph (`bazel query
+  rdeps`, scripts/affected-tests.sh);
 - the engine's licences (`engine_license`, sky_engine's LICENSE, already
   in this form);
 - the third-party Rust crates linked into each binary of `rust_binaries`
@@ -92,22 +96,6 @@ def _crate_of(f):
     return "%s\t%s" % (f.owner.repo_name.rpartition("crates__")[2], f.path)
 
 def _flutter_notices_impl(ctx):
-    prefix = ctx.attr.hub + "__"
-    reached = {}
-    for d in ctx.attr.deps:
-        for repo in d[PubPackagesInfo].repos.to_list():
-            name = repo.rpartition(prefix)[2] if prefix in repo else ""
-            if name:
-                reached[name] = True
-    listed = {}
-    for names in ctx.attr.pub_licenses.values():
-        for p in names.split(" "):
-            listed[p] = True
-    missing = sorted([p for p in reached if p not in listed])
-    extra = sorted([p for p in listed if p not in reached])
-    if missing or extra:
-        fail(("%s: pub_licenses must name exactly the pub packages the app's Dart code reaches." +
-              "\n  add: %s\n  remove: %s") % (ctx.label, missing, extra))
     rust = depset(transitive = [b[RustLicensesInfo].files for b in ctx.attr.rust_binaries])
     out = ctx.actions.declare_file(ctx.label.name + "/NOTICES")
     args = ctx.actions.args()
@@ -134,8 +122,6 @@ flutter_notices = rule(
     implementation = _flutter_notices_impl,
     doc = "Writes the NOTICES file of a Flutter app (see the module's doc).",
     attrs = {
-        "deps": attr.label_list(aspects = [_pub_aspect], doc = "The app's Dart libraries."),
-        "hub": attr.string(mandatory = True, doc = "The pub hub's name, as MODULE.bazel's flutter.pub gives it."),
         "pub_licenses": attr.label_keyed_string_dict(
             allow_files = True,
             mandatory = True,
@@ -149,6 +135,43 @@ flutter_notices = rule(
             cfg = "exec",
         ),
     },
+)
+
+def _pub_licenses_test_impl(ctx):
+    prefix = ctx.attr.hub + "__"
+    reached = {}
+    for d in ctx.attr.deps:
+        for repo in d[PubPackagesInfo].repos.to_list():
+            name = repo.rpartition(prefix)[2] if prefix in repo else ""
+            if name:
+                reached[name] = True
+    listed = {}
+    for names in ctx.attr.pub_licenses.values():
+        for p in names.split(" "):
+            listed[p] = True
+    missing = sorted([p for p in reached if p not in listed])
+    extra = sorted([p for p in listed if p not in reached])
+    script = ctx.actions.declare_file(ctx.label.name + ".sh")
+    if missing or extra:
+        body = "cat >&2 <<'EOF'\n%s: pub_licenses must name exactly the pub packages the app's Dart code reaches.\n  add: %s\n  remove: %s\nEOF\nexit 1\n" % (ctx.label, missing, extra)
+    else:
+        body = "exit 0\n"
+    ctx.actions.write(script, "#!/bin/sh\n" + body, is_executable = True)
+    return [DefaultInfo(executable = script)]
+
+pub_licenses_test = rule(
+    implementation = _pub_licenses_test_impl,
+    doc = "Passes when `pub_licenses` names exactly the pub packages `deps` reach (see the module's doc).",
+    attrs = {
+        "deps": attr.label_list(aspects = [_pub_aspect], doc = "The app's Dart libraries."),
+        "hub": attr.string(mandatory = True, doc = "The pub hub's name, as MODULE.bazel's flutter.pub gives it."),
+        "pub_licenses": attr.label_keyed_string_dict(
+            allow_files = True,
+            mandatory = True,
+            doc = "`flutter_notices`'s `pub_licenses`.",
+        ),
+    },
+    test = True,
 )
 
 def pub_licenses(hub, packages, license_of = {}):

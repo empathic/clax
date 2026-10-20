@@ -15,7 +15,7 @@ load("@rules_swift//swift:swift_library.bzl", "swift_library")
 load("//bazel/flutter:android.bzl", "clax_android_integration_tests", "flutter_fat_apk")
 load("//bazel/flutter:ios.bzl", "clax_ios_app", "clax_ios_integration_tests")
 load("//bazel/flutter:macos.bzl", "debug_app", "integration_main", "macos_helper")
-load("//bazel/flutter:notices.bzl", "flutter_notices", "pub_licenses")
+load("//bazel/flutter:notices.bzl", "flutter_notices", "pub_licenses", "pub_licenses_test")
 load("//bazel/flutter:tests.bzl", "flutter_test_suite")
 
 js_library(
@@ -326,7 +326,8 @@ filegroup(
 )
 
 # The pub packages the app's Dart code reaches, whose licences its
-# licences page lists: :notices fails naming any the app gains or loses.
+# licences page lists: :notices_pub_test fails naming any the app gains or
+# loses.
 APP_PUB_PACKAGES = [
     "android_file_picker",
     "archive",
@@ -450,22 +451,30 @@ APP_PUB_PACKAGES = [
 # NOTICES, which the app bundles as NOTICES.Z for its licences page
 # (bazel/flutter/notices.bzl): the pub packages', the Flutter engine's and
 # the embedded clax's Rust crates' licences.
+# flutter_web_plugins, part of the Flutter SDK, has no LICENSE of its own:
+# the SDK's (package:flutter's) covers it.
+APP_PUB_LICENSES = pub_licenses(
+    "clax_app_pub",
+    APP_PUB_PACKAGES,
+    license_of = {"flutter_web_plugins": "flutter"},
+)
+
 flutter_notices(
     name = "notices",
-    hub = "clax_app_pub",
-    # flutter_web_plugins, part of the Flutter SDK, has no LICENSE of its
-    # own: the SDK's (package:flutter's) covers it.
-    pub_licenses = pub_licenses(
-        "clax_app_pub",
-        APP_PUB_PACKAGES,
-        license_of = {"flutter_web_plugins": "flutter"},
-    ),
+    pub_licenses = APP_PUB_LICENSES,
     engine_license = "@flutter_sky_engine//sky_engine:LICENSE",
     rust_binaries = [
         "//crates/clax-cli:clax_android_arm64",
         "//crates/clax-cli:clax_android_x86_64",
         "//crates/clax-cli:clax_opt",
     ],
+)
+
+# NOTICES's pub packages are exactly those the app's Dart code reaches.
+pub_licenses_test(
+    name = "notices_pub_test",
+    hub = "clax_app_pub",
+    pub_licenses = APP_PUB_LICENSES,
     deps = [":clax_app"],
 )
 
