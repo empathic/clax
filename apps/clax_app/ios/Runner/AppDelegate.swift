@@ -1,6 +1,7 @@
 import Flutter
 import UIKit
 import UserNotifications
+import webview_flutter_wkwebview
 
 @main
 @objc class AppDelegate: FlutterAppDelegate, FlutterImplicitEngineDelegate {
@@ -21,6 +22,12 @@ import UserNotifications
   func didInitializeImplicitFlutterEngine(_ engineBridge: FlutterImplicitEngineBridge) {
     GeneratedPluginRegistrant.register(with: engineBridge.pluginRegistry)
     if let registrar = engineBridge.pluginRegistry.registrar(forPlugin: "ClaxNative") {
+      // The `clax` scheme and the ClaxHost channel in every WebView the
+      // plugin makes (SchemeHost.swift).
+      SchemeHost.shared.install(messenger: registrar.messenger()) { id in
+        FWFWebViewFlutterWKWebViewExternalAPI.webView(
+          forIdentifier: id, withPluginRegistrar: registrar)
+      }
       NativeChannel.install(registrar)
       Background.install(registrar)
       BundleIntake.install(registrar)

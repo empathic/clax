@@ -113,6 +113,11 @@ class MainFlutterWindow: NSWindow {
     if !setFrameUsingName("ClaxMain") { center() }
     setFrameAutosaveName("ClaxMain")
 
+    // The `clax` scheme and the ClaxHost channel in every WebView the
+    // plugin makes from here on (SchemeHost.swift).
+    SchemeHost.shared.install(messenger: engine.binaryMessenger) { id in
+      FWFWebViewFlutterWKWebViewExternalAPI.webView(forIdentifier: id, withPluginRegistry: engine)
+    }
     RegisterGeneratedPlugins(registry: engine)
     ClaxEngine.windows.register(
       self, view: flutterViewController.viewIdentifier, kind: "main",

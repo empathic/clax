@@ -1,3 +1,9 @@
 # The overlay root for the Clax app's pub packages (MODULE.bazel,
 # flutter.plugin_overlays): <package>/<version>/BUILD.bazel.tpl replaces the
 # BUILD file rules_flutter generates for that package.
+
+# The patches an overlay applies, which its package's repository reads.
+exports_files(
+    ["webview_flutter_wkwebview/3/configuration-hook.patch"],
+    visibility = ["//visibility:public"],
+)
