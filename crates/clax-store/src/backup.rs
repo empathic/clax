@@ -22,13 +22,17 @@ pub fn dir(home: &Home) -> PathBuf {
 /// `<home>/backups/clax-<version>-<UTC time>.db`, then prunes the older
 /// copies (see `prune`). The copy is written under a temporary name
 /// (`VACUUM INTO`), synced to stable storage, renamed, and the directory
-/// synced, so a copy that exists under its name is complete, and it
-/// survives a power loss after the migrations that follow commit.
+/// synced (and the home too when it made the directory), so a copy that
+/// exists under its name is complete, and it survives a power loss after
+/// the migrations that follow commit. Where the file system cannot sync
+/// through the drive's cache it is synced with `fsync`, and where it
+/// cannot sync a directory at all the directory is left to it.
 /// Returns the copy's path, or `None` when nothing is to be migrated.
 ///
 /// # Errors
-/// [`CoreError::MigrationFailed`] when the copy cannot be made or synced:
-/// the caller must not migrate then. Removing old copies never fails it.
+/// [`CoreError::MigrationFailed`] when the copy cannot be made or synced
+/// (a real I/O error, not a sync the file system does not support): the
+/// caller must not migrate then. Removing old copies never fails it.
 pub fn before_migrate(
     conn: &Connection,
     home: &Home,
@@ -38,25 +42,50 @@ pub fn before_migrate(
     before_migrate_on(&mut RealDisk, conn, home, known, now)
 }
 
+/// How far a sync pushes what was written.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+enum Flush {
+    /// Through the drive's own cache to its stable storage: `F_FULLFSYNC`
+    /// on Apple platforms, `fsync` elsewhere.
+    Full,
+    /// `fsync`: to the drive, which on Apple platforms may still hold it in
+    /// its cache.
+    Plain,
+}
+
 /// The file-system steps that put a finished copy in place: the real
 /// disk's, or a test's.
 trait Disk {
-    /// Flushes `file`'s content to stable storage.
-    fn sync_file(&mut self, file: &Path) -> std::io::Result<()>;
+    /// Flushes `file`'s content to stable storage, as far as `how` says.
+    fn sync_file(&mut self, file: &Path, how: Flush) -> std::io::Result<()>;
     /// Renames `from` to `to`, replacing it.
     fn rename(&mut self, from: &Path, to: &Path) -> std::io::Result<()>;
-    /// Flushes `dir`'s entries (a rename into it) to stable storage.
-    fn sync_dir(&mut self, dir: &Path) -> std::io::Result<()>;
+    /// Flushes `dir`'s entries (a rename into it, a directory made in it)
+    /// to stable storage, as far as `how` says.
+    fn sync_dir(&mut self, dir: &Path, how: Flush) -> std::io::Result<()>;
 }
 
 struct RealDisk;
 
+impl RealDisk {
+    /// Syncs the open `file` (a file or a directory) as `how` says.
+    fn sync(file: &std::fs::File, how: Flush) -> std::io::Result<()> {
+        match how {
+            // `sync_all` is `F_FULLFSYNC` on Apple platforms and `fsync`
+            // elsewhere.
+            Flush::Full => file.sync_all(),
+            #[cfg(unix)]
+            Flush::Plain => Ok(nix::unistd::fsync(file)?),
+            #[cfg(not(unix))]
+            Flush::Plain => file.sync_all(),
+        }
+    }
+}
+
 impl Disk for RealDisk {
-    fn sync_file(&mut self, file: &Path) -> std::io::Result<()> {
-        std::fs::OpenOptions::new()
-            .write(true)
-            .open(file)?
-            .sync_all()
+    fn sync_file(&mut self, file: &Path, how: Flush) -> std::io::Result<()> {
+        let file = std::fs::OpenOptions::new().write(true).open(file)?;
+        Self::sync(&file, how)
     }
 
     fn rename(&mut self, from: &Path, to: &Path) -> std::io::Result<()> {
@@ -64,14 +93,14 @@ impl Disk for RealDisk {
     }
 
     #[cfg(unix)]
-    fn sync_dir(&mut self, dir: &Path) -> std::io::Result<()> {
-        std::fs::File::open(dir)?.sync_all()
+    fn sync_dir(&mut self, dir: &Path, how: Flush) -> std::io::Result<()> {
+        Self::sync(&std::fs::File::open(dir)?, how)
     }
 
     /// A directory cannot be opened for syncing here; NTFS journals the
     /// rename itself.
     #[cfg(not(unix))]
-    fn sync_dir(&mut self, _dir: &Path) -> std::io::Result<()> {
+    fn sync_dir(&mut self, _dir: &Path, _how: Flush) -> std::io::Result<()> {
         Ok(())
     }
 }
@@ -93,7 +122,12 @@ fn before_migrate_on(
         detail: format!("could not copy it to {} first: {e}", dir(home).display()),
     };
     let dir = dir(home);
-    std::fs::create_dir_all(&dir).map_err(|e| fail(&e))?;
+    if !dir.is_dir() {
+        std::fs::create_dir_all(&dir).map_err(|e| fail(&e))?;
+        // The new directory's entry is in the home: it reaches the disk
+        // before a copy in it is counted on.
+        sync_dir(disk, home.root()).map_err(|e| fail(&e))?;
+    }
     let name = format!("clax-{version}-{}.db", now.format("%Y%m%dT%H%M%S%3fZ"));
     let path = dir.join(&name);
     let tmp = dir.join(format!(".{name}.{:016x}.tmp", rand::random::<u64>()));
@@ -105,11 +139,11 @@ fn before_migrate_on(
     }
     // VACUUM INTO does not sync what it writes: the copy reaches the disk
     // before its name does, and its name before any migration commits.
-    if let Err(e) = disk.sync_file(&tmp).and_then(|()| disk.rename(&tmp, &path)) {
+    if let Err(e) = sync_file(disk, &tmp).and_then(|()| disk.rename(&tmp, &path)) {
         let _ = std::fs::remove_file(&tmp);
         return Err(fail(&e));
     }
-    disk.sync_dir(&dir).map_err(|e| fail(&e))?;
+    sync_dir(disk, &dir).map_err(|e| fail(&e))?;
     tracing::warn!(
         from = version,
         to = known,
@@ -118,6 +152,62 @@ fn before_migrate_on(
     );
     prune(&dir);
     Ok(Some(path))
+}
+
+/// Syncs `file` as SQLite's `fullfsync` does: through the drive's cache,
+/// or with `fsync` where the file system does not support that (SMB, AFP,
+/// exFAT and FUSE volumes answer `F_FULLFSYNC` so). Any other error, or
+/// `fsync` failing too, is returned: the database beside the copy could
+/// not commit there either.
+fn sync_file(disk: &mut dyn Disk, file: &Path) -> std::io::Result<()> {
+    match disk.sync_file(file, Flush::Full) {
+        Err(e) if unsupported(&e) => disk.sync_file(file, Flush::Plain),
+        done => done,
+    }
+}
+
+/// Syncs `dir`'s entries as [`sync_file`] syncs a file, and leaves them to
+/// the file system where it supports neither sync of a directory, as
+/// SQLite does (some FUSE and network file systems refuse it). A real I/O
+/// error is returned.
+fn sync_dir(disk: &mut dyn Disk, dir: &Path) -> std::io::Result<()> {
+    let synced = match disk.sync_dir(dir, Flush::Full) {
+        Err(e) if unsupported(&e) => disk.sync_dir(dir, Flush::Plain),
+        done => done,
+    };
+    match synced {
+        Err(e) if unsupported(&e) => {
+            tracing::debug!(dir = %dir.display(), error = %e, "the file system does not sync directories");
+            Ok(())
+        }
+        done => done,
+    }
+}
+
+/// Whether `e` says the file system does not support a sync, rather than
+/// that the sync failed: `ENOTSUP`, `EOPNOTSUPP`, `EINVAL` (a descriptor
+/// that does not support synchronisation) or `ENOSYS`.
+fn unsupported(e: &std::io::Error) -> bool {
+    if e.kind() == std::io::ErrorKind::Unsupported {
+        return true;
+    }
+    #[cfg(unix)]
+    {
+        use nix::errno::Errno;
+        e.raw_os_error().is_some_and(|code| {
+            [
+                Errno::ENOTSUP,
+                Errno::EOPNOTSUPP,
+                Errno::EINVAL,
+                Errno::ENOSYS,
+            ]
+            .contains(&Errno::from_raw(code))
+        })
+    }
+    #[cfg(not(unix))]
+    {
+        e.kind() == std::io::ErrorKind::InvalidInput
+    }
 }
 
 /// The copies in `dir`, oldest first (by the time in their names).
@@ -177,42 +267,73 @@ mod tests {
             .collect()
     }
 
-    /// A [`Disk`] that records each step, does it on the real disk, and
-    /// fails the step named `failing`.
+    /// A [`Disk`] that records each step (`"<step> <how> <name>"`, the
+    /// temporary copy's name as `tmp`), does it on the real disk, and fails
+    /// each step named in `failing` with its error.
     #[derive(Default)]
     struct Recording {
         steps: Vec<String>,
-        failing: Option<&'static str>,
+        failing: Vec<(&'static str, fn() -> std::io::Error)>,
     }
 
     impl Recording {
-        fn step(&mut self, step: &'static str, path: &Path) -> std::io::Result<()> {
+        fn failing(failing: &[(&'static str, fn() -> std::io::Error)]) -> Self {
+            Recording {
+                failing: failing.to_vec(),
+                ..Recording::default()
+            }
+        }
+
+        fn step(&mut self, step: &str, how: Option<Flush>, path: &Path) -> std::io::Result<()> {
             let name = path.file_name().unwrap().to_str().unwrap();
             let kind = if name.ends_with(".tmp") { "tmp" } else { name };
-            self.steps.push(format!("{step} {kind}"));
-            if self.failing == Some(step) {
-                return Err(std::io::Error::other("the disk is gone"));
-            }
-            Ok(())
+            let how = match how {
+                Some(Flush::Full) => " full",
+                Some(Flush::Plain) => " plain",
+                None => "",
+            };
+            let step = format!("{step}{how} {kind}");
+            let failure = self.failing.iter().find(|(s, _)| *s == step).map(|f| f.1);
+            self.steps.push(step);
+            failure.map_or(Ok(()), |e| Err(e()))
         }
     }
 
     impl Disk for Recording {
-        fn sync_file(&mut self, file: &Path) -> std::io::Result<()> {
-            self.step("sync_file", file)?;
-            RealDisk.sync_file(file)
+        fn sync_file(&mut self, file: &Path, how: Flush) -> std::io::Result<()> {
+            self.step("sync_file", Some(how), file)?;
+            RealDisk.sync_file(file, how)
         }
 
         fn rename(&mut self, from: &Path, to: &Path) -> std::io::Result<()> {
-            self.step("rename", from)?;
+            self.step("rename", None, from)?;
             RealDisk.rename(from, to)
         }
 
-        fn sync_dir(&mut self, dir: &Path) -> std::io::Result<()> {
-            self.step("sync_dir", dir)?;
-            RealDisk.sync_dir(dir)
+        fn sync_dir(&mut self, dir: &Path, how: Flush) -> std::io::Result<()> {
+            self.step("sync_dir", Some(how), dir)?;
+            RealDisk.sync_dir(dir, how)
         }
     }
+
+    fn gone() -> std::io::Error {
+        std::io::Error::other("the disk is gone")
+    }
+
+    #[cfg(unix)]
+    fn eio() -> std::io::Error {
+        nix::errno::Errno::EIO.into()
+    }
+
+    /// The errors a file system gives for a sync it does not support.
+    #[cfg(unix)]
+    const UNSUPPORTED: [fn() -> std::io::Error; 5] = [
+        || nix::errno::Errno::ENOTSUP.into(),
+        || nix::errno::Errno::EOPNOTSUPP.into(),
+        || nix::errno::Errno::EINVAL.into(),
+        || nix::errno::Errno::ENOSYS.into(),
+        || std::io::ErrorKind::Unsupported.into(),
+    ];
 
     fn at_version(v: u32) -> Connection {
         let conn = Connection::open_in_memory().unwrap();
@@ -222,50 +343,181 @@ mod tests {
         conn
     }
 
+    /// Copies a database at version 9 into `home` on `disk`.
+    fn copy_on(disk: &mut Recording, home: &Home) -> Result<Option<PathBuf>> {
+        let now = "2026-10-02T00:00:00Z".parse().unwrap();
+        before_migrate_on(disk, &at_version(9), home, 12, now)
+    }
+
+    /// The names of the files in `home`'s backups directory.
+    fn left_in(home: &Home) -> Vec<String> {
+        std::fs::read_dir(dir(home))
+            .unwrap()
+            .map(|e| e.unwrap().file_name().into_string().unwrap())
+            .collect()
+    }
+
     #[test]
     fn the_copy_is_synced_then_renamed_then_its_directory_synced() {
         let tmp = tempfile::tempdir().unwrap();
         let home = Home::at(tmp.path().join("ax"));
         let mut disk = Recording::default();
-        let now = "2026-10-02T00:00:00Z".parse().unwrap();
-        let copy = before_migrate_on(&mut disk, &at_version(9), &home, 12, now)
-            .unwrap()
-            .unwrap();
+        let copy = copy_on(&mut disk, &home).unwrap().unwrap();
         assert_eq!(
             disk.steps,
-            ["sync_file tmp", "rename tmp", "sync_dir backups"]
+            [
+                "sync_dir full ax",
+                "sync_file full tmp",
+                "rename tmp",
+                "sync_dir full backups"
+            ],
+            "the home is synced once it holds a new backups directory"
         );
         let copied = Connection::open(&copy).unwrap();
         let v: u32 = copied
             .query_row("PRAGMA user_version", [], |r| r.get(0))
             .unwrap();
         assert_eq!(v, 9);
+
+        // The directory is there now: the home is not synced again.
+        let mut disk = Recording::default();
+        let now = "2026-10-03T00:00:00Z".parse().unwrap();
+        before_migrate_on(&mut disk, &at_version(9), &home, 12, now)
+            .unwrap()
+            .unwrap();
+        assert_eq!(
+            disk.steps,
+            ["sync_file full tmp", "rename tmp", "sync_dir full backups"]
+        );
     }
 
     #[test]
     fn a_copy_that_cannot_be_synced_is_not_put_in_place() {
-        for failing in ["sync_file", "rename", "sync_dir"] {
+        for failing in [
+            "sync_dir full ax",
+            "sync_file full tmp",
+            "rename tmp",
+            "sync_dir full backups",
+        ] {
             let tmp = tempfile::tempdir().unwrap();
             let home = Home::at(tmp.path().join("ax"));
-            let mut disk = Recording {
-                failing: Some(failing),
-                ..Recording::default()
-            };
-            let now = "2026-10-02T00:00:00Z".parse().unwrap();
-            let err = before_migrate_on(&mut disk, &at_version(9), &home, 12, now).unwrap_err();
+            let mut disk = Recording::failing(&[(failing, gone)]);
+            let err = copy_on(&mut disk, &home).unwrap_err();
             assert!(
                 matches!(&err, CoreError::MigrationFailed { at: 9, detail }
                     if detail.contains("the disk is gone")),
                 "{failing}: {err:?}"
             );
-            let left: Vec<_> = std::fs::read_dir(dir(&home))
-                .unwrap()
-                .map(|e| e.unwrap().file_name().into_string().unwrap())
-                .collect();
+            let left = left_in(&home);
             assert!(
                 left.iter().all(|n| !n.ends_with(".tmp")),
                 "{failing}: no temporary file is left: {left:?}"
             );
+        }
+    }
+
+    /// Where `F_FULLFSYNC` is not supported (SMB, AFP, exFAT, FUSE), the
+    /// copy and its directories are synced with `fsync`, as SQLite's
+    /// `fullfsync` does.
+    #[cfg(unix)]
+    #[test]
+    fn without_a_full_sync_the_copy_is_synced_with_fsync() {
+        for unsupported in UNSUPPORTED {
+            let tmp = tempfile::tempdir().unwrap();
+            let home = Home::at(tmp.path().join("ax"));
+            let mut disk = Recording::failing(&[
+                ("sync_dir full ax", unsupported),
+                ("sync_file full tmp", unsupported),
+                ("sync_dir full backups", unsupported),
+            ]);
+            let copy = copy_on(&mut disk, &home).unwrap().unwrap();
+            assert!(copy.is_file(), "{:?}", unsupported());
+            assert_eq!(
+                disk.steps,
+                [
+                    "sync_dir full ax",
+                    "sync_dir plain ax",
+                    "sync_file full tmp",
+                    "sync_file plain tmp",
+                    "rename tmp",
+                    "sync_dir full backups",
+                    "sync_dir plain backups",
+                ],
+                "{:?}",
+                unsupported()
+            );
+        }
+    }
+
+    /// A file system that cannot sync a directory at all (some FUSE and
+    /// network ones) still gets its copy: the directory is left to it.
+    #[cfg(unix)]
+    #[test]
+    fn a_directory_that_cannot_be_synced_is_left_to_its_file_system() {
+        for unsupported in UNSUPPORTED {
+            let tmp = tempfile::tempdir().unwrap();
+            let home = Home::at(tmp.path().join("ax"));
+            let mut disk = Recording::failing(&[
+                ("sync_dir full ax", unsupported),
+                ("sync_dir plain ax", unsupported),
+                ("sync_dir full backups", unsupported),
+                ("sync_dir plain backups", unsupported),
+            ]);
+            let copy = copy_on(&mut disk, &home).unwrap().unwrap();
+            assert!(copy.is_file(), "{:?}", unsupported());
+            assert_eq!(left_in(&home).len(), 1, "{:?}", unsupported());
+        }
+    }
+
+    /// A real I/O error refuses the open wherever it comes, as does a file
+    /// that cannot be synced even with `fsync`: the database beside it
+    /// could not commit either.
+    #[cfg(unix)]
+    #[test]
+    fn a_real_io_error_refuses_the_open() {
+        let unsupported = UNSUPPORTED[0];
+        let cases: [&[(&'static str, fn() -> std::io::Error)]; 7] = [
+            &[("sync_dir full ax", eio)],
+            &[
+                ("sync_dir full ax", unsupported),
+                ("sync_dir plain ax", eio),
+            ],
+            &[("sync_file full tmp", eio)],
+            &[
+                ("sync_file full tmp", unsupported),
+                ("sync_file plain tmp", eio),
+            ],
+            &[
+                ("sync_file full tmp", unsupported),
+                ("sync_file plain tmp", unsupported),
+            ],
+            &[("sync_dir full backups", eio)],
+            &[
+                ("sync_dir full backups", unsupported),
+                ("sync_dir plain backups", eio),
+            ],
+        ];
+        for failing in cases {
+            let tmp = tempfile::tempdir().unwrap();
+            let home = Home::at(tmp.path().join("ax"));
+            let mut disk = Recording::failing(failing);
+            let err = copy_on(&mut disk, &home).unwrap_err();
+            let names: Vec<_> = failing.iter().map(|f| f.0).collect();
+            assert!(
+                matches!(&err, CoreError::MigrationFailed { at: 9, .. }),
+                "{names:?}: {err:?}"
+            );
+            let left = left_in(&home);
+            assert!(
+                left.iter().all(|n| !n.ends_with(".tmp")),
+                "{names:?}: no temporary file is left: {left:?}"
+            );
+            if names.contains(&"sync_file plain tmp") || names.contains(&"sync_dir full ax") {
+                assert!(
+                    left.is_empty(),
+                    "{names:?}: no copy is put in place: {left:?}"
+                );
+            }
         }
     }
 
