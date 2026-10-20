@@ -6,14 +6,16 @@
 use crate::core::Embed;
 use crate::frame::{As, RequestHead};
 use bytes::Bytes;
-use futures::StreamExt;
+use futures::{FutureExt, StreamExt};
+use std::panic::AssertUnwindSafe;
 use tower::ServiceExt;
 
 /// The SSE block a subscription ends with, `event: end` with
 /// `{"reason":…}`: `core_failed` (the core did not open), `core_closed`
-/// (it closed, whether the stream then ended or was refused) or
-/// `stream_ended` (the stream ended or failed by itself); see [`refused`]
-/// for `stream_refused`.
+/// (it closed, whether the stream then ended or was refused),
+/// `stream_ended` (the stream ended or failed by itself) or `internal`
+/// (the stream panicked while it was read); see [`refused`] for
+/// `stream_refused`.
 pub fn end(reason: &str) -> Bytes {
     block(&serde_json::json!({ "reason": reason }))
 }
@@ -41,16 +43,26 @@ impl Embed {
         let opened = self.ready();
         self.spawn(async move {
             let mut on_block = on_block;
-            let ended = match opened.await {
-                Ok((router, token, phase)) => {
-                    match pump(router, token, phase, &mut on_block).await {
-                        Some(ended) => ended,
-                        None => return,
-                    }
+            let pumped = AssertUnwindSafe(async {
+                match opened.await {
+                    Ok((router, token, phase)) => pump(router, token, phase, &mut on_block).await,
+                    Err(reason) => Some(end(reason)),
                 }
-                Err(reason) => end(reason),
-            };
-            on_block(ended);
+            })
+            .catch_unwind()
+            .await;
+            match pumped {
+                Ok(Some(ended)) => {
+                    on_block(ended);
+                }
+                Ok(None) => {}
+                // A panic in the stream (its body, or the hub as it is
+                // polled) still ends the subscription with its end block.
+                Err(_) => {
+                    tracing::error!("the event stream panicked");
+                    on_block(end("internal"));
+                }
+            }
         });
     }
 }

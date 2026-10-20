@@ -507,6 +507,35 @@ impl Embed {
     }
 }
 
+/// The core's router as the embed serves it: a route that panics answers
+/// 500 `internal`, so the panic ends neither the call's task nor a
+/// subscription's.
+pub(crate) fn embedded_router(router: axum::Router) -> axum::Router {
+    router.layer(axum::middleware::from_fn(catch_panic))
+}
+
+/// The route's response, or 500 `internal` when the route panics.
+async fn catch_panic(
+    req: axum::extract::Request,
+    next: axum::middleware::Next,
+) -> axum::response::Response {
+    match AssertUnwindSafe(next.run(req)).catch_unwind().await {
+        Ok(res) => res,
+        Err(_) => {
+            tracing::error!("a route of the core panicked");
+            let body = serde_json::json!({"error": {
+                "code": "internal",
+                "message": "the core panicked while it answered",
+            }});
+            axum::response::Response::builder()
+                .status(500)
+                .header("content-type", "application/json")
+                .body(Body::from(body.to_string()))
+                .expect("a response with a valid status and header")
+        }
+    }
+}
+
 /// Opens the home and starts the core (spec §2.5): takes `core.lock`,
 /// retires an old daemon's `daemon.json`, opens the store and starts the
 /// core with the embed's origins.
@@ -574,7 +603,7 @@ async fn opening(sh: Arc<Shared>, opts: OpenOptions) {
     match started {
         Ok(core) => {
             let ready = Phase::Ready {
-                router: core.router(),
+                router: embedded_router(core.router()),
                 token: core.state().token.clone(),
             };
             *sh.core.lock().await = Some(core);
@@ -1194,6 +1223,77 @@ mod tests {
                 )
             );
         }
+        embed.close();
+        assert_eq!(settled(&rx).await, OpenEvent::Closed);
+    }
+
+    #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+    async fn a_route_that_panics_answers_500_internal_and_the_stream_ends_refused() {
+        let dir = tempfile::tempdir().unwrap();
+        let (on_event, rx) = events();
+        let embed = Embed::open(options(dir.path()), on_event).unwrap();
+        assert_eq!(settled(&rx).await, OpenEvent::Ready);
+        let boom = || async {
+            panic!("a panic injected in a route");
+            #[allow(unreachable_code)]
+            ""
+        };
+        let router = axum::Router::new()
+            .route("/api/boom", axum::routing::get(boom))
+            .route("/api/stream", axum::routing::get(boom));
+        embed.inner.shared.phase.send_replace(Phase::Ready {
+            router: embedded_router(router),
+            token: "t".into(),
+        });
+        let (status, body) = send(&embed, "GET", "/api/boom").await.unwrap();
+        assert_eq!(status, 500);
+        let v: serde_json::Value = serde_json::from_slice(&body).unwrap();
+        assert_eq!(v["error"]["code"], "internal", "{v}");
+        assert_eq!(
+            subscription_end(&embed).await,
+            Some(crate::events::refused(500))
+        );
+        embed.close();
+        assert_eq!(settled(&rx).await, OpenEvent::Closed);
+    }
+
+    #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+    async fn a_stream_whose_body_panics_ends_internal() {
+        let dir = tempfile::tempdir().unwrap();
+        let (on_event, rx) = events();
+        let embed = Embed::open(options(dir.path()), on_event).unwrap();
+        assert_eq!(settled(&rx).await, OpenEvent::Ready);
+        let router = axum::Router::new().route(
+            "/api/stream",
+            axum::routing::get(|| async {
+                let first = futures::stream::iter([Ok::<_, std::io::Error>(Bytes::from_static(
+                    b"event: ready\ndata: {}\n\n",
+                ))]);
+                let then = futures::stream::once(async {
+                    panic!("a panic injected in the stream's body");
+                    #[allow(unreachable_code)]
+                    Ok(Bytes::new())
+                });
+                Body::from_stream(futures::StreamExt::chain(first, then))
+            }),
+        );
+        embed.inner.shared.phase.send_replace(Phase::Ready {
+            router: embedded_router(router),
+            token: "t".into(),
+        });
+        let (tx, mut blocks) = tokio::sync::mpsc::unbounded_channel();
+        embed.subscribe(Box::new(move |b| tx.send(b).is_ok()));
+        let mut got = Vec::new();
+        while let Some(b) = blocks.recv().await {
+            got.push(b);
+        }
+        assert_eq!(
+            got,
+            [
+                Bytes::from_static(b"event: ready\ndata: {}\n\n"),
+                crate::events::end("internal")
+            ]
+        );
         embed.close();
         assert_eq!(settled(&rx).await, OpenEvent::Closed);
     }

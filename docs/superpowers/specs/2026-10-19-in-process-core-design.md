@@ -260,7 +260,7 @@ int32_t clax_embed_call(uint64_t core, const uint8_t *req, size_t req_len,
 // stream hub (§2.4), until the port is closed or the subscription ends;
 // an ending subscription posts `event: end` with {"reason":…} last
 // (core_failed, core_closed, stream_refused with the refusal's "status",
-// stream_ended). 0, or 1 for an unknown handle.
+// stream_ended, internal). 0, or 1 for an unknown handle.
 int32_t clax_embed_subscribe(uint64_t core, int64_t port);
 
 // Stops the core as `clax serve` stops on SIGTERM: new calls answer 503
@@ -363,13 +363,15 @@ hub's `ready` with the stream's ID; the last, unless the port closed
 first, is `event: end` with `{"reason":…}`: `core_failed` (the core did
 not open; at once for a handle whose open failed), `core_closed`,
 `stream_refused` (the router of a ready core refused the stream, with
-its status: `{"reason":"stream_refused","status":503}`) or
-`stream_ended`, so each consumer, including one on an isolate with no
+its status: `{"reason":"stream_refused","status":503}`), `stream_ended`
+or `internal` (the stream panicked while it was read; a route that
+panics answers 500 `internal` instead, so its stream ends
+`stream_refused` with 500), so each consumer, including one on an isolate with no
 open port, knows to resubscribe or stop. As a loopback SSE client does,
 a consumer stops for good only on `stream_refused` with 400, 403 or 404,
 which asking again cannot change, and on `core_closed` or `core_failed`
-(reopening the core is its host's work); after `stream_ended` or any
-other refusal it subscribes again with the stream's backoff (0.5 s
+(reopening the core is its host's work); after `stream_ended`,
+`internal` or any other refusal it subscribes again with the stream's backoff (0.5 s
 doubling to 30 s). Topic changes go over `call` as
 today's `POST /api/stream/<id>` (`as: owner`). A subscriber that falls
 behind gets the hub's `resync`, as an SSE client does. The SSE route and
