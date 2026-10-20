@@ -146,7 +146,7 @@ app-macos:
 app-macos-native:
     CLAX_BUILD=native ./scripts/run.sh app-macos
 
-# Run the Clax app on this Mac with hot reload (r) and hot restart (R): builds the embedded clax and the home bundle natively, then flutter run -d macos (extra args go to flutter run)
+# Run the Clax app on this Mac with hot reload (r) and hot restart (R): builds the embedded core and the home bundle natively, then flutter run -d macos (extra args go to flutter run)
 [positional-arguments]
 app-macos-dev *ARGS:
     ./scripts/app-macos-dev.sh --i-know-what-i-am-doing "$@"

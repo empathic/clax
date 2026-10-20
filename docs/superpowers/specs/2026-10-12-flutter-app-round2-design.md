@@ -1,5 +1,7 @@
 # Clax app, round 2: design addendum
 
+Parts superseded by `docs/superpowers/specs/2026-10-19-in-process-core-design.md`: R§4.5's and R§4.6's recovery by the change ledger and `ChangeInterrupted` (a daemon call without an answer); makes and changes are now jobs in the core's database (that spec's §7 and §8).
+
 Date: 2026-10-12. Branch `flutter-app`. Extends
 `docs/superpowers/specs/2026-10-12-flutter-app-design.md` (the base spec,
 "§n" below refers to it unless marked "R§n" for this document). Status: the

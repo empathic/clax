@@ -503,16 +503,20 @@ a model, runs only with `VERIFY_PI_SESSION=1` and a provider key you export.
 
 ### The Clax app
 
-`apps/clax_app` is a Flutter app for Android and macOS. It runs `clax serve`
-on the device, with a home of its own under the app's support directory
-(`clax-home/`) on a free loopback port, shows each app full screen in a
-WebView, and runs its own agent: the Claude API with your key, or, in a
-desktop debug build, Claude Code. Its design is
+`apps/clax_app` is a Flutter app for Android, macOS, iPhone and iPad. It
+runs Clax's core, the store and router `clax serve` runs, as a library
+inside its own process (`crates/clax-embed`, behind four C functions the
+app calls by FFI), with a home of its own under the app's support
+directory (`clax-home/`): nothing listens on a port and no other program
+runs. It shows each app full screen in a WebView that loads from a scheme
+the app answers, and runs its own agent: the Claude API with your key,
+or, in a desktop debug build, Claude Code. Its design is
 `docs/superpowers/specs/2026-10-12-flutter-app-design.md`, with
 `2026-10-12-flutter-app-round2-design.md`,
-`2026-10-12-flutter-real-apps-design.md` and
-`2026-10-13-flutter-app-bundles-design.md` beside it; what it relies on
-from the daemon and the shell is in `docs/contract.md` ("The Clax app's
+`2026-10-12-flutter-real-apps-design.md`,
+`2026-10-13-flutter-app-bundles-design.md` and, for the core in the app's
+process, `2026-10-19-in-process-core-design.md` beside it; what it relies
+on from the core and the shell is in `docs/contract.md` ("The Clax app's
 agent", "The Clax app", "Sharing apps", "Device capabilities in the Clax
 app", "Reading another app's documents", "Fetching from the network",
 "Security model").
@@ -540,7 +544,7 @@ flutter doctor --android-licenses
 flutter doctor
 ```
 
-`scripts/build-app-clax.sh` (the native build of the embedded `clax`)
+`scripts/build-app-clax.sh` (the native build of the embedded core)
 takes the NDK from `ANDROID_NDK_HOME`, else
 `~/Library/Android/sdk/ndk/28.2.13676358`, and adds the Rust targets
 `aarch64-linux-android` and `x86_64-linux-android` itself.
@@ -563,13 +567,14 @@ run.
   version's (`:version_sync`). All of them are in `just ci`. After changing
   either contract section, run `scripts/sync-app-prompt.sh` and commit the
   assets with it. `just app-test-native` runs `apps/clax_app/tool/check.sh`
-  (`flutter analyze`, `flutter test` against a debug `clax` kept by
-  content, and the prompt check).
+  (`flutter analyze`, `flutter test`, and the prompt check); its
+  `*_real_test.dart` files run only when `CLAX_EMBED_LIB` names a host
+  build of the core, and skip otherwise.
 - `just app-integration` runs the integration tests on macOS, one app per
   file of `integration_test/` (`//apps/clax_app:integration_<name>`): the
-  full loop (a scripted agent making and changing an app on the real daemon
-  and inspector), app bundles end to end, the credential-gated daemon, and
-  the Mac's window chrome (`mac_chrome_test.dart`: the toolbar, menus,
+  full loop (a scripted agent making and changing an app on the embedded
+  core and inspector), app bundles end to end, the scheme's origins
+  (`scheme_spike_test.dart`), and the Mac's window chrome (`mac_chrome_test.dart`: the toolbar, menus,
   Settings and Inbox windows, alert and sheets captured in light and dark,
   its menu text against `integration_test/goldens/main_menu.txt`, and
   clicks, drags and keys sent as AppKit events). Each opens the app's
@@ -587,7 +592,7 @@ run.
   `apps/clax_app/build/macos`.
 - `just app-integration --ios` runs the simulator ones instead, the files
   `integration_test/ios_*_test.dart` (`//apps/clax_app:integration_ios_<name>`):
-  a cold start with the daemon in the app's process, a cycle through the
+  a cold start with the core in the app's process, a cycle through the
   background, a make paused when the background time is spent, and a
   `.clax` opened in the app. Each installs its own debug app fresh on "Clax
   iPhone" (`just app-ios` creates it), booting it when it is not running
@@ -598,7 +603,7 @@ run.
 - `just app-eval [--model ID] [--prompts a,b] [--max-spend USD] [--run
   NAME]` is the live build eval, run by hand and never by a gate: each
   prompt of `apps/clax_app/tool/eval/prompts.json` is built by the app's
-  own agent on the Messages API, against a scratch daemon, to the end of
+  own agent on the Messages API, on a scratch home of the embedded core, to the end of
   its build. It needs `ANTHROPIC_API_KEY` and spends real money: up to $6 a
   build, refused before anything runs when that times the prompts is over
   `--max-spend` ($30 by default). Each run's files, screenshots, plan,
@@ -606,10 +611,10 @@ run.
   It builds the macOS debug app, so do not run it beside another macOS
   build or `just app-integration`.
 - `just app-apk` builds the release APK, for arm64-v8a and x86_64 with the
-  embedded `clax` of each, and prints its path (`//apps/clax_app:apk`,
+  embedded core (`libclax_embed.so`) of each, and prints its path (`//apps/clax_app:apk`,
   `bazel-bin/apps/clax_app/apk.apk`). It is signed with the debug key,
   which is enough to install it on your own phone.
-  `just app-apk-native` builds the Android binaries with Cargo into
+  `just app-apk-native` builds the core for Android with Cargo into
   `jniLibs/` and the APK with Gradle, at
   `apps/clax_app/build/app/outputs/flutter-apk/app-release.apk`.
 - `just app-phone` builds HEAD's APK and installs it on the plugged-in
@@ -620,18 +625,17 @@ run.
   prints its path (`//apps/clax_app:macos_app`, a zip);
   `just app-macos-native` builds it with Xcode, at
   `apps/clax_app/build/macos/Build/Products/Release/Clax.app`.
-- `just app-clax` builds the embedded `clax` on its own: with Bazel the
-  Android binaries (`//crates/clax-cli:clax_android_arm64`,
-  `:clax_android_x86_64`) and the host one (`:clax_opt`), printing their
-  paths, which the APK and the macOS app take directly.
-  `just app-clax-native [android|macos|all] [--debug]` builds them with
-  Cargo and places them where the native app builds pick them up: the
-  host binary at `apps/clax_app/build-native/macos/clax`, and stripped
-  Android binaries at
-  `apps/clax_app/android/app/src/main/jniLibs/{arm64-v8a,x86_64}/libclax.so`
-  (all git-ignored). A release build (the default) embeds `web/dist`, so it
-  builds the web UI first. Each binary is renamed into place, never copied
-  over one that may be running.
+- `scripts/build-app-clax.sh [android|macos|all] [--debug]` builds the
+  embedded core natively, with Cargo, and places it where the native app
+  builds pick it up: `apps/clax_app/build-native/macos/libclax_embed.dylib`
+  for the host, and stripped
+  `apps/clax_app/android/app/src/main/jniLibs/{arm64-v8a,x86_64}/libclax_embed.so`
+  (all git-ignored); the `-native` recipes run it first. With Bazel the
+  APK and the macOS app build it themselves
+  (`//crates/clax-embed:clax_embed_android_arm64`,
+  `:clax_embed_android_x86_64`, `:clax_embed_macos`). A release build (the
+  default) embeds `web/dist`, so it builds the web UI first. Each library
+  is renamed into place, never copied over one that may be in use.
 
 No test and no gate calls a model: the agent is tested against a scripted
 backend and a fake Messages API server. Runs against a live model are
@@ -696,7 +700,7 @@ matches its release record and holds today's `home/` and kit files.
 the phone in, and from the checkout run:
 
 ```
-just app-phone   # builds HEAD's APK, installs it keeping the app's data, and checks the daemon stays up
+just app-phone   # builds HEAD's APK, installs it keeping the app's data, and checks its core opens and the app stays up
 ```
 
 or by hand, with an `adb` on `PATH`:
@@ -707,24 +711,24 @@ adb install -r "$(just app-apk | tail -n 1)"
 ```
 
 `flutter run --release -d <device>` from `apps/clax_app` builds, installs
-and starts it in one step, once `just app-clax-native android` has placed
-the binaries. The app needs Android 10 (API 29) or later on an arm64 or x86_64
+and starts it in one step, once `scripts/build-app-clax.sh android` has
+placed the core. The app needs Android 10 (API 29) or later on an arm64 or x86_64
 device. Open it, tap Settings on the launcher (a banner says so while no
 key is set), and paste a Claude API key into "Claude API key"; it is kept in
 the phone's Keystore-backed secure storage and sent only to the Claude API.
 Pick a model there too (Sonnet 5.5 by default; Haiku 5.5 is faster,
 Opus 5.5 stronger). Then New: say or type what
-you want. The app's daemon, its documents and every version stay on the
-phone; only the model call leaves it. Other apps on the phone can reach
-its port, but the daemon answers only the app's own WebViews and agent,
-which hold its token (see "Security model" in `docs/contract.md`).
+you want. The app's core, its documents and every version stay on the
+phone; only the model call leaves it. The core listens on no port, so
+other apps on the phone have nothing to reach (see "Security model" in
+`docs/contract.md`).
 
 **On a Mac, with Claude Code instead of a key.** A sandboxed app cannot
 start `claude`, so the Claude Code backend is offered only in a debug
 build, which runs without the App Sandbox:
 
 ```
-just app-macos-dev   # builds the embedded clax and the home bundle, then flutter run -d macos
+just app-macos-dev   # builds the embedded core and the home bundle, then flutter run -d macos
 ```
 
 `just app-macos-dev` keeps you in `flutter run`, so `r` hot-reloads and `R`
@@ -740,7 +744,7 @@ sandboxed and offers only the Claude API with a key, kept in the login
 keychain.
 
 **Signing the Mac app, so the keychain stops asking.** By default the
-macOS app and its embedded `clax` are signed ad hoc: each build is a new
+macOS app and its embedded core are signed ad hoc: each build is a new
 signature, the keychain item trusts only the build that saved it, and
 macOS asks "clax_app wants to use your confidential information stored in
 'flutter_secure_storage_service'" after every rebuild (once a launch: the
@@ -952,7 +956,7 @@ app over, and where Undo last change has stepped back to),
 `bundles/<ID>.clax` (each installed app's file as received, for sharing
 it on), `snapshots/` (an app's documents while an update
 upgrades them, put back if it fails or Clax ends part way), and
-`clax-home/`, the daemon's home. The sharing key is in the platform's
+`clax-home/`, the core's home. The sharing key is in the platform's
 secure storage beside the API key; uninstalling Clax loses it, and your
 later files then install on others' devices as separate apps. It never touches `~/.clax` or port 7480.
 
@@ -1003,9 +1007,9 @@ removes before the first launch and at the end. Your installed app's
 container is never read or written. The login keychain is not kept per
 container, though, so each launch runs with `CLAX_APP_NO_KEY=1`: the app
 then reads no saved API key and saves none (no keychain access at all, as
-if none were saved), and its daemon starts with `sample()` off. Without
+if none were saved), and its core opens with `sample()` off. Without
 it the copy would ask for the key item your installed app keeps, and
-macOS would ask you whether to let it, before the daemon started. A build
+macOS would ask you whether to let it, before the core opened. A build
 from before the variable was honoured still asks. On Android the
 installed app is measured, on its own home and with its own key (the
 variable does not reach an Android app, and a Keystore read asks
@@ -1082,17 +1086,17 @@ the embedded core. An agent never makes a git worktree; you may.
 
 ### Clax on iPhone and iPad
 
-On iPhone and iPad the daemon runs inside the app's own process
-(`docs/superpowers/specs/2026-10-18-ios-release-design.md`), and iOS lets
-an app start no other program, so everything in Clax that runs one is
-left out there. The daemon's code keeps each of those paths off on iOS
-when it is compiled (`//scripts:ios_spawns` checks that no new one
+On iPhone and iPad, as on Android and the Mac, the core runs inside the
+app's own process (`docs/superpowers/specs/2026-10-19-in-process-core-design.md`;
+the iOS build is `docs/superpowers/specs/2026-10-18-ios-release-design.md`),
+and iOS lets an app start no other program, so everything in Clax that
+runs one is left out there. The core's code keeps each of those paths off
+on iOS when it is compiled (`//scripts:ios_spawns` checks that no new one
 appears unlisted).
 
 What runs on iOS: the app's own agent over the Messages API with your
 key, every artifact, version, thread and question route, `sample()`,
-rooms, MCP over HTTP (the daemon's `/mcp` endpoint), and app bundles
-(`.clax` files).
+rooms, and app bundles (`.clax` files).
 
 What does not:
 
@@ -1103,7 +1107,8 @@ What does not:
 - the `clax` CLI and plugin installs;
 - parent-PID credential files;
 - the repository context of sessions (no git runs, so a session's
-  capture is `unavailable`).
+  capture is `unavailable`);
+- MCP over HTTP (`/mcp`): the core in the app listens on no port.
 
 **On the iOS simulator.** With Xcode and its iOS simulator runtime
 installed (`xcodebuild -downloadPlatform iOS`, about 8.5 GB), from the
@@ -1119,8 +1124,9 @@ It builds the app for the simulator with Bazel (`//apps/clax_app:ios_app`
 in debug, the only build the simulator runs; uncommitted changes
 included), creates the simulator from the newest iOS runtime when it is
 missing, boots it, installs the app keeping its data, launches it, and
-waits for its daemon: a `daemon.json` in the app's data container naming
-the launched PID, then `/healthz` on its port. It ends "Clax is up on
+waits for its core: a `core.json` in the app's data container
+(`Library/Application Support`) naming the launched PID with the state
+`ready` (one naming it `failed` ends the wait). It ends "Clax is up on
 Clax iPhone" and leaves the simulator running; `scripts/app-ios.sh
 --udid` prints its UDID (for `xcrun simctl io <udid> screenshot`). It
 touches no other simulator.
@@ -1207,8 +1213,8 @@ building when a file of this directory is missing, naming each one.
 `just app-iphone` builds the development-signed app (`:ipa_dev`, `-c opt
 --ios_multi_cpus=arm64`, stripped), then installs it with `xcrun devicectl
 device install app` on the connected or paired device, keeping the app's
-data, launches it and reads `daemon.json` from its data container until it
-names the launched PID. The device need not be connected until the build
+data, launches it and reads `core.json` from its data container until it
+names the launched PID ready. The device need not be connected until the build
 is done (it then waits up to 15 minutes, `APP_IPHONE_WAIT` seconds); with
 more than one, `APP_IPHONE_DEVICE` names the one to use (its name or
 UDID). The device must be in the development profile, trust this Mac, and

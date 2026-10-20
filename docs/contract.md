@@ -1244,12 +1244,12 @@ by the reaper.
 
 ### The Clax app's agent
 
-The Clax app (`apps/clax_app`) runs its own daemon and its own agent on the
-device (see "The Clax app" under "Comments and feedback"). Its agent
-registers once the daemon is up: `POST /api/sessions` with `{"harness":
+The Clax app (`apps/clax_app`) runs Clax's core in its own process and its
+own agent on the device (see "The Clax app" under "Comments and
+feedback"). Its agent registers once the core is open: `POST /api/sessions` with `{"harness":
 "app", "harness_session_id": <install ID>, "cwd": <the app's application
 support directory>, "pid": <the app's PID>}`, where the install ID is a random UUID the app keeps in its support
-directory, so a restarted daemon or app reuses the live row. It creates
+directory, so a reopened core or a restarted app reuses the live row. It creates
 apps with `X-Clax-Session` naming that row, so the session owns and watches
 them, and registers again when a call answers `unknown_session`. It has no
 hooks and no MCP, and sends no heartbeat.
@@ -2208,10 +2208,11 @@ entry of the shell's own; copy link includes it.
 
 ### The Clax app
 
-The Clax app (`apps/clax_app`, Android and macOS) runs `clax serve
---require-credential` on the device, on `127.0.0.1` with a home of its own
-(see "Security model" for the key cookie its WebViews carry), and shows each artifact
-full screen in a WebView at `/a/<id>?app=1`: the artifact view without
+The Clax app (`apps/clax_app`, Android, macOS, iPhone and iPad) runs
+Clax's core, what `clax serve` runs without its listener, inside its own
+process (`crates/clax-embed`), with a home of its own, and shows each
+artifact full screen in a WebView that loads from a scheme the app answers
+(see "Security model" for its origins), at `/a/<id>?app=1`: the artifact view without
 chrome, driven by the app. `/a/<id>/v/<n>?app=1` and the page forms
 (`/a/<id>/<file>?app=1`) work the same way. Of the shell URL's query only
 `app=1` (with `inspect=1`, and `migrate=1`, in the inspect and migration
@@ -2563,7 +2564,7 @@ comments `ack` acknowledged, and the step (`result: {comments:
 and `thread` events follow the commit.
 
 **Navigation.** The app lets the top level of its WebView be only the
-shell's app view on the daemon's own origin: the path `/a/<id>[/v/<n>][/<file>]`
+shell's app view on the shell's own origin: the path `/a/<id>[/v/<n>][/<file>]`
 with `app=1` in its query. Any other top-level navigation is refused,
 and a refused `http`, `https` or `mailto` link to a host off the device opens
 in the system browser. Frames inside the page navigate freely. A main frame
@@ -2592,7 +2593,7 @@ viewer's gesture" still hold, and outside app mode no attestation exists.
 The Clax app sends an app to another Clax install as one file, a
 **bundle** (`<slug>.clax`, MIME `application/vnd.empathic.clax+zip`), and
 installs and updates apps from such files. All of it is the app's own
-(`apps/clax_app/lib/bundle/`): the daemon adds no route for it, and a
+(`apps/clax_app/lib/bundle/`): the core adds no route for it, and a
 bundle's app is published, drafted, inspected and tested through the
 routes and views above. No server, directory or update check is involved:
 a bundle travels as a file, and an update is a later bundle the person
@@ -2675,7 +2676,7 @@ than refused.
 
 **Identity and trust.** Each install has its own Ed25519 key, made from
 a secure random seed at its first export and kept in the platform's
-secure storage (`bundle_signing_seed`); it never reaches the daemon, a
+secure storage (`bundle_signing_seed`); it never reaches the core, a
 WebView or a bundle. Its **fingerprint** is the first 10 bytes of the
 SHA-256 of the public key, in upper-case base32, as four groups of four
 (`7KQ2-M9XD-4FTA-QW3B`). Trust is first use per lineage: the key of the
@@ -5952,7 +5953,7 @@ routes itself.
 | `POST /api/artifacts/<aid>/sample` | SameOrigin, token, owner cookie | `{input, verb, model_tier, tools, images, cache}` | `text/event-stream` |
 | `POST /api/artifacts/<aid>/sample/<call_id>/tool_result` | SameOrigin, token, owner cookie | `{id, content, is_error}` | 204 |
 | `GET /api/sample` | token | — | `{available, provider, reason, detail, key_env, daily_call_cap}` (`clax doctor`) |
-| `PUT /api/sample/key` | token | `{key}` (a string, or `null` to clear it) | 204; the key is kept in memory only and never logged; 404 `not_found` on a daemon that takes its key from its environment (only a host app's in-process daemon has a key slot); 400 `bad_request` for any other body |
+| `PUT /api/sample/key` | token | `{key}` (a string, or `null` to clear it) | 204; the key is kept in memory only and never logged; 404 `not_found` on a daemon that takes its key from its environment (only an app's embedded core has a key slot); 400 `bad_request` for any other body |
 | `POST /api/core/trim` | token | — | `{trimmed: {wal_frames, checkpointed}}`: an app's embedded core released SQLite's caches and checkpointed its WAL (the app calls it when it leaves the screen or the OS asks for memory); 404 `not_found` on a daemon |
 | `GET /api/artifacts/<aid>/sample-grant` | token | — | `{granted, granted_at, spent_today_usd, daily_cost_cap_usd}` (`granted_at` null without a grant) |
 | `PUT /api/artifacts/<aid>/sample-grant` | token | — | as `GET`; 403 `not_declared` when the artifact does not declare `sample`; recorded as `artifact.update` (`fields.sample_grant: "grant"`) |
@@ -6613,10 +6614,11 @@ complex = "claude-opus-5-5"
 
 Without the table, the provider is `anthropic` with the key in
 `ANTHROPIC_API_KEY`, there is no daily call cap, and the daily cost cap is
-$0.50 per artifact. The Clax app writes its daemon's `config.toml` at each
-start with `quick` and `default` set to `claude-haiku-5-5` and `complex` to
-`claude-sonnet-5-5`, and passes the key saved in its settings as
-`ANTHROPIC_API_KEY`, restarting the daemon when the key changes. A `[sample]`
+$0.50 per artifact. The Clax app writes its core's `config.toml` at each
+launch with `quick` and `default` set to `claude-haiku-5-5` and `complex` to
+`claude-sonnet-5-5`, and puts the key saved in its settings into the core
+(`PUT /api/sample/key`) when the core opens and whenever the key changes,
+restarting nothing. A `[sample]`
 table that is invalid (not a table, an unknown key, another provider,
 `max_tokens = 0`, a negative `daily_cost_cap_usd`, an empty model ID, or a `base_url` that is not `https://`, or `http://` on
 `localhost`, `127.0.0.1` or `[::1]`) turns sample off and the daemon starts anyway; `clax doctor` prints it as a
@@ -6795,7 +6797,7 @@ ID>`. An artifact URL whose `#` fragment is neither is the artifact.
   after a minute idle, so a peer that vanished frees its connection.
   `clax serve --foreground --require-credential` answers only callers that
   hold the token or a cookie carrying it (see "Security model"); the Clax
-  app starts its daemon so.
+  app's embedded core runs so.
 - `scripts/perf-clients.sh` (a quality gate) opens 1,000 `/api/stream`
   clients on a scratch release daemon, writes versions and comments at a
   steady rate, and judges delivery latency, cheap requests under that load,
@@ -7576,7 +7578,8 @@ it with Ajv (draft 2020-12, formats asserted;
   the web shell's `db.artifact(id)`, which always sends it with the page's
   own artifact, is the boundary a page meets.
 - `clax serve --foreground --require-credential` serves only callers that
-  hold a credential, for a daemon on a loopback other programs share. Every
+  hold a credential, for a daemon on a loopback other programs share (and
+  the Clax app's embedded core runs under the same rule). Every
   request without one answers 401 `unauthorized`, `GET /api/token`
   included, so a program that can only reach the port never gets the
   token. A credential is the bearer token, the owner or events cookie that
@@ -7590,17 +7593,22 @@ it with Ajv (draft 2020-12, formats asserted;
   the shell and an Android WebView sends it no cookie; artifact and asset
   IDs are random, and every route that lists or names them needs a
   credential. A daemon started without the option is unchanged.
-- The Clax app's daemon binds `127.0.0.1` on the device, where (on Android)
-  every app on the device shares loopback, so the app starts it with
-  `--require-credential` and sets the key cookie in its WebView cookie
-  store before every load of a daemon page (the app view, the inspect view
-  and the question sheet), again on each daemon start. Another app on the
-  device can still reach the port and load content by an artifact or asset
-  ID it learned. Its Claude API key lives in the platform's secure storage
-  (Keychain on macOS, Keystore-backed storage on Android) and is sent to the
-  Claude API and to the daemon the app starts (as `ANTHROPIC_API_KEY` in its
-  environment, for `sample`), never to logs, the daemon's home or the
-  WebView.
+- The Clax app runs its core inside its own process and listens on no
+  port, so no other app on the device can reach it. Its WebViews load from
+  a scheme the app answers (`https://app.clax.invalid` and
+  `https://<id>.c.clax.invalid` on Android, `clax://app` and
+  `clax://<id>.c` on Apple), so each artifact's content is its own origin,
+  apart from the shell's and every other artifact's. The app answers the
+  shell document only to the main frame's navigation; from the shell's
+  origin it forwards only `GET` and `HEAD`, and never `/api/`; a content
+  frame's requests carry no credential; every answer loses its
+  `Access-Control-*` headers; and only the shell's main frame reaches the
+  `ClaxHost` channel, over which the shell's owner calls go
+  (`docs/superpowers/specs/2026-10-19-in-process-core-design.md` §4). Its
+  Claude API key lives in the platform's secure storage (Keychain on macOS
+  and iOS, Keystore-backed storage on Android) and is sent to the Claude
+  API and put into the core's memory (`PUT /api/sample/key`, for
+  `sample`), never to logs, the core's home or the WebView.
 - `artifact.publish` goes through the shell with the token, so only the
   owner's browser on this machine can republish a page, and only from the
   viewer's own gesture in the page (see "Runtime capabilities").
