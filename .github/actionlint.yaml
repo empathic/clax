@@ -1,0 +1,8 @@
+# actionlint's list of runner labels it does not know: Blacksmith's
+# (https://docs.blacksmith.sh), on which every job here runs.
+self-hosted-runner:
+  labels:
+    - blacksmith-4vcpu-ubuntu-2404
+    - blacksmith-4vcpu-ubuntu-2404-arm
+    - blacksmith-16vcpu-ubuntu-2404
+    - blacksmith-6vcpu-macos-15

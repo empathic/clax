@@ -151,7 +151,12 @@ checks build the release binary. `//web:dist` (with `dist_extension`,
 `dist_extension_test`, `dist_e2e`) is the web build; `//web:lint`,
 `//web:typecheck`, `//web:unit`, `//web:bundle_size`,
 `//plugins/pi:typecheck` and `//plugins/pi:test` the web and Pi checks;
-`//scripts:*` the script gates. The perf benchmarks
+`//scripts:*` the script gates. `crates/clax-worker` is a Cargo workspace
+of its own, with its own `Cargo.lock`, and no `cargo_package()`: its one
+target is `//crates/clax-worker:rustfmt`, the format check of its and its
+VFS's sources, with the rustfmt, configuration and flags of
+`--config=fmt` (`bazel/rustfmt_check.sh`), and only those sources: the
+Clax crates it uses by path are checked as the root workspace's. The perf benchmarks
 (`//scripts:perf_daemon_full`, `//scripts:perf_clients_full`,
 `//web:perf_usable_full`) are `manual`: performance is measured on demand
 (`just perf`, which reruns them and prints their numbers) and gates nothing.
@@ -212,7 +217,11 @@ checkout, or runs Bazel itself: `scripts/test-plugins.sh` (git tags),
 `scripts/test-extension-signing.sh` (writes `web/dist-extension`),
 `scripts/check-no-hard-links.sh` and `scripts/check-pipefail-pipes.sh` over
 the tracked files (their own tests are Bazel tests),
-`scripts/bazel-sync.test.sh` and `scripts/bazel-web.test.sh`. The slow
+`scripts/bazel-sync.test.sh` and `scripts/bazel-web.test.sh`. CI's
+`worker` job runs the rest of `crates/clax-worker`'s checks natively
+(`scripts/worker-checks.sh`: its tests, clippy, `test-wasm.mjs`, then
+`e2e.mjs`), and `scripts/check-wasm.sh`: Bazel resolves only the root's
+`Cargo.lock`, and builds nothing for wasm32. The slow
 ones are skipped when they passed last time on the same files, as Bazel
 caches a passed test: the plugin and dev-script checks are keyed on the
 whole working tree and the `v*` tags, the two Bazel-setup tests on the
@@ -257,7 +266,8 @@ Performance gates nothing in either (`just perf` measures on demand).
 | plugins | `scripts/test-plugins.sh`, outside Bazel |
 | plugin wrapper | `//scripts:plugin_wrapper` |
 | comment loop | `//scripts:comment_loop` |
-| worker npm ci, worker cargo fmt, worker cargo test, worker cargo clippy, worker wasm, worker e2e | CI's `worker` job, natively (`just worker-test`, then `e2e.mjs`): `crates/clax-worker` is a workspace of its own, outside Bazel |
+| worker cargo fmt | `//crates/clax-worker:rustfmt` |
+| worker npm ci, worker cargo test, worker cargo clippy, worker wasm, worker e2e | CI's `worker` job, natively (`scripts/worker-checks.sh`, then `e2e.mjs`): `crates/clax-worker` is a workspace of its own, with a lockfile Bazel does not resolve |
 | wasm32 check | CI's `worker` job, natively (`scripts/check-wasm.sh`, `just check-wasm`) |
 | no unsafe code | `//scripts:no_unsafe` |
 | crate layers | `//scripts:crate_layers` |
@@ -283,29 +293,64 @@ back on a shared machine, copy `user.bazelrc.example` to `user.bazelrc`.
 
 ## CI
 
-CI (`.github/workflows/ci.yml`) runs `scripts/bazel-test.sh --ci` on a
-GitHub-hosted runner. `.github/actions/setup-bazel` installs Bazelisk and
-restores `~/.cache/bazel-disk` and `~/.cache/bazel-repo` with
-`actions/cache`, keyed by the lockfiles and the commit, falling back to the
-newest cache of the same lockfiles and then of any. Every push to main whose
-build succeeded saves one, after `scripts/bazel-gc.sh` trims the disk cache
-to 6 GB (Bazel trims only while its server sits idle, which a job never
-does), even when tests failed: `scripts/bazel-test.sh --ci` sets the step
-output `built` from its one `bazel test`'s exit status (0, or 3: built, some
-tests failed). A format or clippy finding fails an action, so a run with one
-does not save. A failed run's cache cannot carry a failure into later runs:
-Bazel keeps only actions that succeeded, and never a failed test's result.
-Only main writes; pull requests restore main's cache and save nothing, so
-no branch's code reaches what main builds from. `common --config=ci` (`.bazelrc`) bounds the cache to what
-fits a runner and fails on a stale lockfile. The native gates stay as a
-manual workflow (`native-check.yml`). A second job, `worker`, runs what
-Bazel does not build, natively: `scripts/check-wasm.sh` over the crates a
-hosted Worker runs, and `crates/clax-worker` (a workspace of its own, for
-wasm32 only): `just worker-test`, then its browser e2e (`e2e.mjs`) on a
-web UI built with pnpm. A third job, `perf-log`, runs the
-perf benchmarks after every green push to main and appends a record to the
-`perf-log` branch (`docs/usage.md`, "Developing Clax"); it gates nothing, and is
-the only job with write access.
+Every workflow job runs on a [Blacksmith](https://docs.blacksmith.sh) runner
+but two that GitHub's must run: `publish-pi.yml` (npm's trusted publishing
+and provenance accept only GitHub-hosted runners) and `release.yml`'s
+`x86_64-apple-darwin` build (Blacksmith has no Intel Mac).
+`.github/actionlint.yaml` names Blacksmith's runner labels for `actionlint`.
+
+**The jobs.** `ci.yml`'s `bazel` job (16 cores) runs
+`scripts/bazel-test.sh --ci`: the sync check, then the quick checks (the
+format check, clippy, the web lint, the script gates that need no `clax`,
+the justfile, hard-link and pipefail checks), which stop the run on a
+failure, so a broken script or lint fails in minutes; then every test, then
+the slower checks outside Bazel. The `worker` job (4 cores) runs beside it
+what Bazel does not build, natively: `scripts/check-wasm.sh` over the crates
+a hosted Worker runs, and `crates/clax-worker` (a workspace of its own, for
+wasm32 only): `scripts/worker-checks.sh`, then its browser e2e (`e2e.mjs`)
+on a web UI built with pnpm. The Worker's format check is the `bazel` job's
+(`//crates/clax-worker:rustfmt`). `perf-log` runs the perf benchmarks after
+every green push to main and appends a record to the `perf-log` branch
+(`docs/usage.md`, "Developing Clax"); it gates nothing, and is the only job
+with write access. It runs on 4 cores, as GitHub's runner had; its records
+before 2026-10-21 come from GitHub's runners and are not comparable with
+later ones. The native gates stay a manual workflow (`native-check.yml`).
+
+**What persists between runs** is a Blacksmith sticky disk, mounted at
+`~/.cache/bazel-ci` by `.github/actions/setup-bazel` (the pattern of
+`../changelist`). It holds Bazel's output base (every built output, every
+passing test's result, the unpacked toolchains, crates, npm packages and
+Chromium), Bazel's downloads (`--repository_cache`) and Bazelisk's Bazel.
+A run is an incremental build on top of main's last one. `--config=ci`
+(`.bazelrc`) turns the disk cache off, which would store every output a
+second time, and fails on a stale lockfile.
+
+**Keys.** The disk's key is the repository, the name `bazel` and
+`.bazelversion`. It holds no commit, branch or lockfile hash: the output base
+invalidates exactly what a change makes stale. A new Bazel version starts a
+new disk.
+
+**Who writes it.** Each job mounts its own clone of the last committed
+disk. Only a push to main commits its clone, and only if every step of the
+job succeeded: the sticky disk action discards it after a failed, cancelled
+or timed-out step. Pull requests read main's state and their writes are
+discarded, so no branch's code reaches what main builds from (turn on
+Blacksmith's branch protection for sticky disks too, so that holds for a
+workflow edited in a pull request). When the `bazel` job fails on a push to
+main, `bazel-seed` builds the same targets on the same disk, runs no test
+and commits if the build succeeded: a failing test or lint leaves later runs
+main's current state, and only a build that fails leaves them the older one.
+A failed run cannot carry a failure into the disk: Bazel keeps no failed
+action's output and no failed test's result. `perf-log` mounts the disk and
+commits nothing.
+
+**Before the first commit** on main there is no disk, and every run builds
+everything; the same holds after a `.bazelversion` change until it is on
+main.
+
+**Bound.** Outputs are replaced in place, so the disk grows only with old
+downloads and toolchains. A run that finds more than 20 GB on it empties it
+and builds from nothing. Blacksmith evicts a disk unused for seven days.
 
 ## Disk
 
@@ -390,7 +435,11 @@ integration tests run as a few targets per crate (`split_tests`), the
 format check, clippy and the tests share one invocation, clax-cli's own
 clippy pass runs after it (from 70 s on the critical path to 8 s), the web
 UI's build no longer reads tests, and the slow checks outside Bazel are
-skipped when their inputs passed before.
+skipped when their inputs passed before. Since 2026-10-20 `--ci` runs the
+format check and clippy first, as quick checks that stop the run on a
+failure ("CI"), and the tests' invocation finds their results done: a
+broken lint now fails in minutes, at the cost of clippy no longer
+overlapping the tests on a cold build.
 
 The tables above predate the crate layout, which took the store out of clax-core, split clax-server into five crates, put
 every embedded file in clax-embedded and test support in clax-testkit, so

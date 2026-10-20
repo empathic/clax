@@ -1,14 +1,16 @@
 name: ci
 on: { push: { branches: [main] }, pull_request: {} }
 permissions: { contents: read }
-# One job, through Bazel (docs/bazel.md, "CI"): `scripts/bazel-test.sh --ci`
-# checks what scripts/quality_gates.sh checks with Cargo and pnpm. The native
-# gates do not run here; they are a manual workflow (native-check.yml).
+# One job through Bazel (docs/bazel.md, "CI"): `scripts/bazel-test.sh --ci`
+# checks what scripts/quality_gates.sh checks with Cargo and pnpm, the quick
+# checks first. The native gates do not run here; they are a manual
+# workflow (native-check.yml). Every job runs on Blacksmith.
 jobs:
   bazel:
-    runs-on: ubuntu-latest
-    # A run with nothing restored compiles every dependency; until a push
-    # to main that built has saved a cache, every run is one.
+    # Every core is Bazel's (.bazelrc); the browser tests take eight each.
+    runs-on: blacksmith-16vcpu-ubuntu-2404
+    # A run with no committed disk compiles every dependency; until a push
+    # to main has committed one, every run is one.
     timeout-minutes: 60
     steps:
       # The full history and its tags: scripts/test-plugins.sh checks the
@@ -16,10 +18,14 @@ jobs:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with: { fetch-depth: 0, persist-credentials: false }
 
-      # Bazelisk, and Bazel's disk cache and downloads from main's newest
-      # run that built. A pull request reads that cache and saves nothing.
-      - id: bazel
-        uses: ./.github/actions/setup-bazel
+      # Bazel with its state from main's last committed run, so this run
+      # rebuilds and retests only what its change touches. A push to main
+      # keeps its changes to that state when every step succeeds; a pull
+      # request reads main's state and its writes are dropped.
+      - uses: ./.github/actions/setup-bazel
+        with:
+          name: bazel
+          commit: ${{ github.event_name == 'push' && github.ref == 'refs/heads/main' }}
 
       # Only for `cargo metadata` and `cargo tree` in
       # scripts/bazel-sync.sh --check, which compile nothing; Bazel fetches
@@ -35,14 +41,13 @@ jobs:
       - name: Install Chromium's system libraries
         run: bazelisk run //web:playwright -- install-deps chromium
 
-      # Every check: the sync check, format and clippy, the Rust tests, the
-      # web and Pi checks, the script gates and the checks run outside
-      # Bazel. Performance is measured on demand (`just perf`), not here.
-      # Each phase's time goes to the job summary.
-      # Its output `built` is true when the one `bazel test` built every
-      # target, whether or not every test passed.
+      # Every check: the sync check, then the quick checks (format, clippy,
+      # the web lint, the script gates that need no clax), stopping there
+      # on a failure, then the Rust tests, the web and Pi checks, the other
+      # script gates and the checks run outside Bazel. Performance is
+      # measured on demand (`just perf`), not here. Each phase's time goes
+      # to the job summary.
       - name: Run scripts/bazel-test.sh --ci
-        id: checks
         run: scripts/bazel-test.sh --ci
 
       # Also after a timeout, when the logs matter most.
@@ -57,40 +62,50 @@ jobs:
             bazel-testlogs/web/**/test.outputs/**
           retention-days: 14
 
-      # Stop the server before the cache is trimmed and saved.
+      # Stop the server so the disk is quiet when it is committed.
       - name: Stop Bazel
         if: ${{ always() }}
         run: bazelisk shutdown || true
 
-      # Bazel trims its disk cache only while a server sits idle, which a CI
-      # job never does: the restored cache plus this run's outputs is
-      # trimmed to the `ci` config's bound before it is saved, least
-      # recently used first.
-      - name: Trim the cache
-        if: ${{ !cancelled() && steps.checks.outputs.built == 'true' && github.event_name == 'push' && github.ref == 'refs/heads/main' }}
-        run: BAZEL_GC_MAX_SIZE_GB=6 scripts/bazel-gc.sh --report
-
-      # Main's cache is what every later run starts from. Every push to main
-      # whose build succeeded saves one under its commit, even when a test
-      # failed: Bazel caches only actions that succeeded (a failed test's
-      # result is not kept), so a red run's cache holds nothing a green run
-      # would not. Pull requests never get here; they only restore.
-      - name: Save the cache
-        if: ${{ !cancelled() && steps.checks.outputs.built == 'true' && github.event_name == 'push' && github.ref == 'refs/heads/main' }}
-        uses: actions/cache/save@55cc8345863c7cc4c66a329aec7e433d2d1c52a9 # v6.1.0
+  # When the bazel job fails on a push to main, its disk is discarded (a
+  # failed step commits nothing), and every later run would start from an
+  # older one. This builds the same targets, runs no test, and commits the
+  # disk if the build succeeds, so a failing test or lint does not leave
+  # main's state behind; a compile error does.
+  bazel-seed:
+    needs: bazel
+    if: ${{ !cancelled() && needs.bazel.result == 'failure' && github.event_name == 'push' && github.ref == 'refs/heads/main' }}
+    runs-on: blacksmith-16vcpu-ubuntu-2404
+    timeout-minutes: 60
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with: { persist-credentials: false }
+      - uses: ./.github/actions/setup-bazel
         with:
-          path: |
-            ~/.cache/bazel-disk
-            ~/.cache/bazel-repo
-          key: ${{ steps.bazel.outputs.cache-key }}
+          name: bazel
+          commit: "true"
+      # The targets of scripts/bazel-test.sh --ci's test pass, built and not
+      # run, without the format and clippy aspects.
+      - name: Build
+        run: |
+          listed="$(bazelisk query 'tests(//...) except attr(tags, "\bmanual\b", //...)')"
+          mapfile -t tests <<< "$listed"
+          bazelisk build --keep_going //crates/... //web:playwright "${tests[@]}"
+      - name: Stop Bazel
+        if: ${{ always() }}
+        run: bazelisk shutdown || true
 
   # What Bazel does not build: crates/clax-worker, a workspace of its own
-  # that builds for wasm32 only, and the wasm32 check of the crates a hosted
-  # Worker runs (scripts/check-wasm.sh). Natively, as scripts/quality_gates.sh
-  # runs them in its worker and wasm32 lanes; the runner's clang and
-  # llvm-ar target wasm32.
+  # with its own Cargo.lock that builds for wasm32 only, and the wasm32 check
+  # of the crates a hosted Worker runs (scripts/check-wasm.sh). Natively, as
+  # scripts/quality_gates.sh runs them in its worker and wasm32 lanes; the
+  # runner's clang and llvm-ar target wasm32. The Worker's format check is
+  # the bazel job's (//crates/clax-worker:rustfmt), with the rustfmt the
+  # rest of the repository is checked with. A job beside the bazel job
+  # rather than steps in it: it shares nothing with Bazel's cache, and in
+  # parallel it adds nothing to the run's time.
   worker:
-    runs-on: ubuntu-latest
+    runs-on: blacksmith-4vcpu-ubuntu-2404
     timeout-minutes: 60
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
@@ -100,7 +115,6 @@ jobs:
         run: rustup toolchain install
       - uses: Swatinem/rust-cache@6323deb102c322ba6fcbdcafc7e3dddab59af2b6 # v2.9.2
         with: { workspaces: ". -> target\ncrates/clax-worker -> target" }
-      - uses: extractions/setup-just@53165ef7e734c5c07cb06b3c8e7b647c5aa16db3 # v4.0.0
       # pnpm for the web UI the Worker's e2e serves and drives Playwright from.
       - uses: pnpm/action-setup@ea17c68df8912ef543352723c149a84f56e3d413 # v6.1.0
         with: { package_json_file: web/package.json }
@@ -115,8 +129,9 @@ jobs:
       # build.rs refuses a wasm32 build without it).
       - name: Build the web UI
         run: scripts/pnpm-install-stamped.sh web --silent && scripts/build-web.sh
-      - name: Run the Worker's checks (just worker-test)
-        run: just worker-test
+      # Its tests, clippy, and the wasm build under wrangler (test-wasm.mjs).
+      - name: Run the Worker's checks (scripts/worker-checks.sh)
+        run: scripts/worker-checks.sh
       - name: Install Chromium
         run: cd web && pnpm exec playwright install --with-deps chromium
       # The Clax server in its Durable Object under wrangler dev --local, in
@@ -132,7 +147,9 @@ jobs:
   perf-log:
     if: ${{ github.event_name == 'push' && github.ref == 'refs/heads/main' }}
     needs: bazel
-    runs-on: ubuntu-latest
+    # Four cores, as GitHub's ubuntu-latest had before the log's records
+    # from 2026-10-21 on: earlier records ran on GitHub's runners.
+    runs-on: blacksmith-4vcpu-ubuntu-2404
     timeout-minutes: 60
     # The one job that writes: the log branch, with GITHUB_TOKEN.
     permissions: { contents: write }
@@ -141,7 +158,12 @@ jobs:
     steps:
       # Its credentials stay for scripts/perf-log.sh publish's push.
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+      # main's committed state, read only: the bazel job, which ran just
+      # before, built most of what the benchmarks need.
       - uses: ./.github/actions/setup-bazel
+        with:
+          name: bazel
+          commit: "false"
       - name: Install Chromium's system libraries
         run: bazelisk run //web:playwright -- install-deps chromium
       # The measuring may fail (a benchmark that cannot finish); the record

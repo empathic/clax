@@ -1,17 +1,63 @@
 name: Set up Bazel
 description: >-
-  Bazelisk at a pinned version and checksum, Bazel's disk cache and
-  downloads restored from the newest cache main saved (docs/bazel.md, "CI"),
-  and .bazelrc's `ci` config for every Bazel command in the job.
+  Bazel with its state from main's last committed run (docs/bazel.md, "CI").
+  Mounts the Blacksmith sticky disk that holds Bazel's output base, its
+  downloads and Bazelisk's Bazel, installs Bazelisk at a pinned version and
+  checksum, and selects .bazelrc's `ci` config for every Bazel command in
+  the job.
 
-outputs:
-  cache-key:
-    description: The key to save the cache under after a run on main that built.
-    value: ${{ steps.key.outputs.key }}
+inputs:
+  name:
+    description: >-
+      Which of Bazel's states this job uses. Jobs that run at the same time
+      each need their own: a disk is committed whole, so the last job to
+      finish would discard what the other built.
+    required: true
+  commit:
+    description: >-
+      Whether this job's changes to the disk are kept ('true' or 'false').
+      Even then the disk is committed only if every step of the job
+      succeeded: the sticky disk action discards it after a failed or
+      cancelled step, so a half-finished run never becomes what later runs
+      start from.
+    required: true
 
 runs:
   using: composite
   steps:
+    # Each job mounts its own clone of the last committed disk. The key
+    # holds no commit, branch or lockfile hash: Bazel's output base
+    # invalidates exactly what a change makes stale. A new Bazel version
+    # starts a new disk, and an unused disk is evicted after seven days.
+    - name: Mount Bazel's sticky disk
+      uses: useblacksmith/stickydisk@3f6be1451e3cad893b778bc93495c80452a5da26 # v1.7.2
+      with:
+        key: ${{ github.repository }}-bazel-${{ inputs.name }}-${{ hashFiles('.bazelversion') }}
+        path: /home/runner/.cache/bazel-ci
+        commit: ${{ inputs.commit }}
+
+    # The bound on that disk: past 20 GB it starts again, and this run
+    # builds everything. Stale outputs are replaced in place, so this is
+    # for what accumulates over months (old downloads, old Bazel versions,
+    # Chromium builds).
+    - name: Start the sticky disk again when it has grown too large
+      shell: bash
+      run: |
+        used_kb="$(du -sk "$HOME/.cache/bazel-ci" 2>/dev/null | cut -f1)"
+        {
+          echo "Bazel's sticky disk holds $((used_kb / 1024)) MB"
+          echo '```'
+          df -h "$HOME/.cache/bazel-ci"
+          echo '```'
+        } | tee -a "$GITHUB_STEP_SUMMARY"
+        if [ "$used_kb" -gt $((20 * 1024 * 1024)) ]; then
+          echo "over 20 GB: emptying it" | tee -a "$GITHUB_STEP_SUMMARY"
+          sudo find "$HOME/.cache/bazel-ci" -mindepth 1 -maxdepth 1 ! -name lost+found -exec rm -rf {} +
+        fi
+
+    # Bazelisk reads .bazelversion and fetches that Bazel, which it keeps on
+    # the sticky disk. Installed at a pinned version and checksum, whatever
+    # the runner image has.
     - name: Install Bazelisk
       shell: bash
       env:
@@ -24,24 +70,7 @@ runs:
         echo "$BAZELISK_SHA256  $RUNNER_TEMP/bin/bazelisk" | sha256sum -c -
         chmod +x "$RUNNER_TEMP/bin/bazelisk"
         echo "$RUNNER_TEMP/bin" >> "$GITHUB_PATH"
-
-    # The cache's key: the lockfiles and this commit. A run restores the
-    # newest cache of the same lockfiles, else the newest of any.
-    - name: Name the cache
-      id: key
-      shell: bash
-      run: echo "key=bazel-${{ runner.os }}-${{ hashFiles('.bazelversion', 'MODULE.bazel.lock', 'Cargo.lock', 'web/pnpm-lock.yaml', 'plugins/pi/pnpm-lock.yaml') }}-${{ github.sha }}" >> "$GITHUB_OUTPUT"
-
-    - name: Restore Bazel's cache
-      uses: actions/cache/restore@55cc8345863c7cc4c66a329aec7e433d2d1c52a9 # v6.1.0
-      with:
-        path: |
-          ~/.cache/bazel-disk
-          ~/.cache/bazel-repo
-        key: ${{ steps.key.outputs.key }}
-        restore-keys: |
-          bazel-${{ runner.os }}-${{ hashFiles('.bazelversion', 'MODULE.bazel.lock', 'Cargo.lock', 'web/pnpm-lock.yaml', 'plugins/pi/pnpm-lock.yaml') }}-
-          bazel-${{ runner.os }}-
+        echo "BAZELISK_HOME=$HOME/.cache/bazel-ci/bazelisk" >> "$GITHUB_ENV"
 
     # Ubuntu 24.04 denies unprivileged user namespaces, which Bazel's
     # sandbox is made of. Without them Bazel falls back to a weaker sandbox
@@ -50,6 +79,12 @@ runs:
       shell: bash
       run: sudo sysctl -w kernel.apparmor_restrict_unprivileged_userns=0 || true
 
+    # .bazelrc's `ci` config for every Bazel command, and the output base on
+    # the sticky disk.
     - name: Select Bazel's CI settings
       shell: bash
-      run: echo "common --config=ci" > user.bazelrc
+      run: |
+        {
+          echo "startup --output_user_root=$HOME/.cache/bazel-ci/root"
+          echo "common --config=ci"
+        } > user.bazelrc

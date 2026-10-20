@@ -49,6 +49,9 @@ concurrency:
 jobs:
   publish:
     name: Publish @empathic/clax-pi
+    # GitHub's runner, not Blacksmith's: npm's trusted publishing and its
+    # provenance accept only GitHub-hosted runners (a token from a
+    # self-hosted one, as a Blacksmith runner is to GitHub, is refused).
     runs-on: ubuntu-24.04
     environment: npm
     permissions:
@@ -59,7 +62,7 @@ jobs:
       run:
         working-directory: plugins/pi
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
           ref: ${{ inputs.sha || github.sha }}
           fetch-depth: 0
