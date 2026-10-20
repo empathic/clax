@@ -368,6 +368,19 @@ test("an answer over the part size reaches the shell's fetch whole, in parts; on
   expect(await h.evalNow<number>(`fetch("/api/artifacts/${id}").then(r => r.status)`)).toBe(200);
 });
 
+test("a shell that posts nothing before its load is pinned by its clax-nonce meta and gets claxHost.init", async ({ page }) => {
+  const { artifact } = await publish(d.base, d.token, "Transport meta pin", { "index.html": PAGE });
+  const h = await hostChannel(page, { relay: d, holdPosts: true });
+  await page.goto(`${SHELL}/a/${artifact.id}?app=1`);
+  const nonce = await h.pinned();
+  expect(nonce).toBe(await h.evalNow<string>(`document.querySelector('meta[name="clax-nonce"]').content`));
+  expect(h.pins).toEqual(["meta"]);
+  await expect.poll(() => h.ran.filter(e => e.startsWith("window.claxHost.init(") && e.includes(JSON.stringify(nonce))).length).toBe(1);
+  expect(h.accepted).toEqual([]);
+  await h.releasePosts();
+  await expect.poll(() => h.ofType("ready").length).toBeGreaterThan(0);
+});
+
 test("before the nonce an aborted call or stream rejects and posts nothing; after it, an abort posts callAbort or unsubscribe and its answer is dropped", async ({ page }) => {
   // A document without the nonce meta, as the app over loopback serves it.
   const { id, host: h } = await openInApp(page, "Transport aborts", { host: { nonceMeta: false, autoInit: false } });
