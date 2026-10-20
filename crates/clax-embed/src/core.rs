@@ -160,7 +160,7 @@ struct Shared {
     core: tokio::sync::Mutex<Option<Core>>,
     on_event: Box<dyn Fn(OpenEvent) + Send + Sync>,
     /// `<home>/core.lock`, locked while the core holds the home.
-    lock: Mutex<Option<std::fs::File>>,
+    lock: Mutex<Option<clax_core::daemon::FileLock>>,
     released: AtomicBool,
     closing: AtomicBool,
     /// The calls admitted and not yet answered.
@@ -560,12 +560,7 @@ async fn opening(sh: Arc<Shared>, opts: OpenOptions) {
         .truncate(false)
         .write(true)
         .open(home.join("core.lock"));
-    let held = file.and_then(|f| match f.try_lock() {
-        Ok(()) => Ok(Some(f)),
-        Err(std::fs::TryLockError::WouldBlock) => Ok(None),
-        Err(std::fs::TryLockError::Error(e)) => Err(e),
-    });
-    match held {
+    match file.and_then(clax_core::daemon::FileLock::try_exclusive) {
         Ok(Some(f)) => {
             *lock(&sh.lock) = Some(f);
             #[cfg(test)]
@@ -1108,6 +1103,78 @@ mod tests {
         assert!(alive <= 1, "{alive} tasks of the closed core still run");
         again.close();
         assert_eq!(settled(&again_rx).await, OpenEvent::Closed);
+    }
+
+    /// Opens a core on `$CLAX_TEST_HOLD_HOME` and holds it while the test
+    /// that starts it asks, when run as a child of
+    /// [`a_home_a_core_in_another_process_holds_is_in_use_until_it_closes`]:
+    /// it prints `ready` once its core is ready, then closes the core when
+    /// its stdin closes and prints `closed`.
+    #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+    #[ignore = "a helper process, run by a_home_a_core_in_another_process_holds_is_in_use_until_it_closes"]
+    async fn hold_home_open() {
+        let Ok(dir) = std::env::var("CLAX_TEST_HOLD_HOME") else {
+            return;
+        };
+        let (on_event, rx) = events();
+        let embed = Embed::open(options(Path::new(&dir)), on_event).unwrap();
+        assert_eq!(settled(&rx).await, OpenEvent::Ready);
+        println!("ready");
+        tokio::task::block_in_place(|| {
+            let mut rest = String::new();
+            let _ = std::io::Read::read_to_string(&mut std::io::stdin(), &mut rest);
+        });
+        embed.close();
+        assert_eq!(settled(&rx).await, OpenEvent::Closed);
+        println!("closed");
+    }
+
+    /// `core.lock` keeps a home to one core across processes: while a core
+    /// in another process holds it, an open here fails `home_in_use`; once
+    /// that core closes, the home opens here.
+    #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+    async fn a_home_a_core_in_another_process_holds_is_in_use_until_it_closes() {
+        use std::io::BufRead;
+        let dir = tempfile::tempdir().unwrap();
+        let mut holder = std::process::Command::new(std::env::current_exe().unwrap())
+            .args([
+                "core::tests::hold_home_open",
+                "--exact",
+                "--ignored",
+                "--nocapture",
+            ])
+            .env("CLAX_TEST_HOLD_HOME", dir.path())
+            .stdin(std::process::Stdio::piped())
+            .stdout(std::process::Stdio::piped())
+            .spawn()
+            .unwrap();
+        let mut lines = std::io::BufReader::new(holder.stdout.take().unwrap()).lines();
+        // Whether the holder prints `line` before its stdout ends.
+        let mut hears =
+            move |line: &str| tokio::task::block_in_place(|| lines.any(|l| l.unwrap() == line));
+        assert!(hears("ready"), "the other process's core is ready");
+
+        let (on_event, rx) = events();
+        let refused = Embed::open(options(dir.path()), on_event).unwrap();
+        match settled(&rx).await {
+            OpenEvent::Failed { code, .. } => assert_eq!(code, "home_in_use"),
+            e => panic!("{e:?}"),
+        }
+        refused.close();
+        assert_eq!(settled(&rx).await, OpenEvent::Closed);
+
+        drop(holder.stdin.take());
+        assert!(hears("closed"), "the other process's core closed");
+        let (on_event, rx) = events();
+        let again = Embed::open(options(dir.path()), on_event).unwrap();
+        assert_eq!(settled(&rx).await, OpenEvent::Ready);
+        again.close();
+        assert_eq!(settled(&rx).await, OpenEvent::Closed);
+        assert!(
+            tokio::task::block_in_place(|| holder.wait())
+                .unwrap()
+                .success()
+        );
     }
 
     /// Opens a core whose task panics at `at`.

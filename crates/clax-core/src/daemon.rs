@@ -176,30 +176,61 @@ pub fn browser_host(bind: &str) -> String {
     }
 }
 
-/// Exclusive advisory lock on `daemon.lock`, released when dropped
-/// (the open descriptor holds the lock).
-pub struct DaemonLock(#[allow(dead_code)] File);
+/// An exclusive advisory lock (`flock(2)`) on an open file, held while
+/// this value lives. It belongs to the file's open description: dropping
+/// the value, or the process ending in any way, releases it, and another
+/// open of the same path in this process or any other does not share it.
+///
+/// `flock` comes through `nix`, so the lock behaves the same on Linux,
+/// Android, macOS and iOS (std's `File::lock` family answers
+/// `Unsupported` on Android).
+#[derive(Debug)]
+pub struct FileLock(#[allow(dead_code)] nix::fcntl::Flock<File>);
 
-impl DaemonLock {
-    /// Blocks until the lock is held (`flock(LOCK_EX)`, through
-    /// [`File::lock`]). A wait interrupted by a signal (`EINTR`) is retried;
+impl FileLock {
+    /// Locks `f`, waiting while another open description holds it
+    /// (`LOCK_EX`). A wait interrupted by a signal (`EINTR`) is retried;
     /// any other failure is returned.
-    pub fn acquire(home: &Home) -> io::Result<DaemonLock> {
-        let f = File::create(home.daemon_lock())?;
-        retry_interrupted(|| f.lock())?;
-        Ok(DaemonLock(f))
+    pub fn exclusive(f: File) -> io::Result<FileLock> {
+        use nix::fcntl::{Flock, FlockArg};
+        let mut f = f;
+        loop {
+            match Flock::lock(f, FlockArg::LockExclusive) {
+                Ok(held) => return Ok(FileLock(held)),
+                Err((back, nix::errno::Errno::EINTR)) => f = back,
+                Err((_, e)) => return Err(e.into()),
+            }
+        }
     }
 
-    /// Takes the lock without waiting (`flock(LOCK_EX | LOCK_NB)`, through
-    /// [`File::try_lock`]): `Ok(None)` when another open descriptor holds it
-    /// (`EWOULDBLOCK`, which equals `EAGAIN` on Linux and macOS).
+    /// Locks `f` without waiting (`LOCK_EX | LOCK_NB`): `Ok(None)` when
+    /// another open description holds it (`EWOULDBLOCK`).
+    pub fn try_exclusive(f: File) -> io::Result<Option<FileLock>> {
+        use nix::fcntl::{Flock, FlockArg};
+        match Flock::lock(f, FlockArg::LockExclusiveNonblock) {
+            Ok(held) => Ok(Some(FileLock(held))),
+            Err((_, e)) if e == nix::errno::Errno::EWOULDBLOCK => Ok(None),
+            Err((_, e)) => Err(e.into()),
+        }
+    }
+}
+
+/// Exclusive advisory lock on `daemon.lock`, released when dropped
+/// (a [`FileLock`]).
+pub struct DaemonLock(#[allow(dead_code)] FileLock);
+
+impl DaemonLock {
+    /// Blocks until the lock is held ([`FileLock::exclusive`]).
+    pub fn acquire(home: &Home) -> io::Result<DaemonLock> {
+        let f = File::create(home.daemon_lock())?;
+        FileLock::exclusive(f).map(DaemonLock)
+    }
+
+    /// Takes the lock without waiting ([`FileLock::try_exclusive`]):
+    /// `Ok(None)` when another open description holds it.
     pub fn try_acquire(home: &Home) -> io::Result<Option<DaemonLock>> {
         let f = File::create(home.daemon_lock())?;
-        match f.try_lock() {
-            Ok(()) => Ok(Some(DaemonLock(f))),
-            Err(std::fs::TryLockError::WouldBlock) => Ok(None),
-            Err(std::fs::TryLockError::Error(e)) => Err(e),
-        }
+        Ok(FileLock::try_exclusive(f)?.map(DaemonLock))
     }
 }
 

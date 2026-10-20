@@ -483,7 +483,9 @@ fn hold_core_lock() {
         .write(true)
         .open(std::path::Path::new(&home).join("core.lock"))
         .unwrap();
-    lock.try_lock().unwrap();
+    let _held = clax_core::daemon::FileLock::try_exclusive(lock)
+        .unwrap()
+        .expect("the lock is free");
     println!("locked");
     let mut rest = String::new();
     let _ = std::io::Read::read_to_string(&mut std::io::stdin(), &mut rest);

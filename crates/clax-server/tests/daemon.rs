@@ -87,9 +87,8 @@ fn lock_is_exclusive_and_released_on_drop() {
 
 #[test]
 fn an_interrupted_lock_wait_is_retried() {
-    // `DaemonLock::acquire` waits through `retry_interrupted`: an `EINTR`
-    // from a signal arriving while `flock` blocks is retried, any other
-    // error is returned.
+    // `retry_interrupted` retries an `EINTR` from a signal arriving while
+    // a call blocks, and returns any other error.
     let mut calls = 0;
     let out = retry_interrupted(|| {
         calls += 1;

@@ -627,7 +627,9 @@ mod tests {
         // Another process holds the home: the open fails home_in_use, and
         // its client keeps the failed core's handle without closing it.
         let held = std::fs::File::create(home.join("core.lock")).unwrap();
-        held.try_lock().unwrap();
+        let held = clax_core::daemon::FileLock::try_exclusive(held)
+            .unwrap()
+            .expect("the lock is free");
         let failed = ffi_open(path, posts.clone(), 10);
         assert_ne!(failed, 0);
         assert_eq!(failed_on(&posts, 10)["code"], "home_in_use");
