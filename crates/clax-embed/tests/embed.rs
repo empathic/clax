@@ -326,6 +326,30 @@ async fn a_long_poll_answers_when_feedback_arrives() {
     embed.close();
 }
 
+#[test]
+fn opening_a_new_home_reports_each_migration_before_ready() {
+    let dir = tempfile::tempdir().unwrap();
+    let (embed, rx) = start(dir.path());
+    let mut steps = Vec::new();
+    let ready = loop {
+        match rx.recv().unwrap() {
+            OpenEvent::Opening {
+                phase,
+                done,
+                total,
+            } if phase == "migrating" => steps.push((done.unwrap(), total.unwrap())),
+            OpenEvent::Opening { .. } => {}
+            e => break e,
+        }
+    };
+    assert_eq!(ready, OpenEvent::Ready);
+    let n = steps.len() as u64;
+    assert!(n > 0, "a new home is migrated");
+    assert_eq!(steps, (0..n).map(|k| (k, n)).collect::<Vec<_>>());
+    embed.close();
+    assert_eq!(settled(&rx), OpenEvent::Closed);
+}
+
 #[tokio::test]
 async fn calls_made_before_ready_wait_for_it() {
     let dir = tempfile::tempdir().unwrap();
@@ -459,7 +483,15 @@ fn a_migration_that_fails_names_the_copy_made_before_it() {
     // migration fails on it.
     std::fs::write(home.db_path(), empty_database_at(1)).unwrap();
     let (embed, rx) = start(dir.path());
-    let failed = settled(&rx);
+    let mut phases = Vec::new();
+    let failed = loop {
+        match rx.recv().unwrap() {
+            OpenEvent::Opening { phase, .. } => phases.push(phase),
+            e => break e,
+        }
+    };
+    assert_eq!(phases.first().map(String::as_str), Some("backing up"));
+    assert!(phases.iter().any(|p| p == "migrating"), "{phases:?}");
     let OpenEvent::Failed { code, backup, .. } = &failed else {
         panic!("{failed:?}");
     };

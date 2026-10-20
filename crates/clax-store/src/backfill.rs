@@ -109,10 +109,16 @@ const LOG_BYTES: u64 = 16 << 20;
 /// Progress is reported to the callback at most this often while hashing.
 const REPORT_EVERY: Duration = Duration::from_millis(250);
 
-/// What the backfill is doing.
+/// What opening the store is doing: the copy before a migration, the
+/// migrations, then the backfill's phases.
 #[derive(Clone, Copy, Debug, PartialEq, Eq, serde::Serialize)]
 #[serde(rename_all = "snake_case")]
 pub enum Phase {
+    /// Copying the database before it is migrated (`backup::before_migrate`).
+    BackingUp,
+    /// Applying a migration: [`Progress::done`] of [`Progress::total`]
+    /// applied before it.
+    Migrating,
     /// Listing the history to record.
     Planning,
     /// Hashing a batch's version and asset files.
@@ -127,6 +133,8 @@ impl Phase {
     /// How the log and the spawner name it.
     pub fn label(self) -> &'static str {
         match self {
+            Phase::BackingUp => "backing up",
+            Phase::Migrating => "migrating",
             Phase::Planning => "planning",
             Phase::Hashing => "hashing files",
             Phase::Recording => "recording",
@@ -2772,8 +2780,16 @@ pub(crate) mod tests {
         let dir = tempfile::tempdir().unwrap();
         let aid = ArtifactId::generate();
         let home = old_home(dir.path(), |c, h| history(c, h, aid.as_str()));
-        let mut seen = Vec::new();
-        Store::open_reporting(&home, &mut |p| seen.push(*p)).unwrap();
+        let mut opened = Vec::new();
+        Store::open_reporting(&home, &mut |p| opened.push(*p)).unwrap();
+        // The copy and the migrations come first.
+        let first = opened
+            .iter()
+            .position(|p| !matches!(p.phase, Phase::BackingUp | Phase::Migrating))
+            .unwrap();
+        assert_eq!(opened[0].phase, Phase::BackingUp);
+        assert!(opened[1..first].iter().all(|p| p.phase == Phase::Migrating));
+        let seen = &opened[first..];
         assert_eq!(seen.first().unwrap().phase, Phase::Planning);
         assert!(seen.iter().any(|p| p.phase == Phase::Hashing));
         let last = seen.last().unwrap();
@@ -2786,9 +2802,9 @@ pub(crate) mod tests {
                 .all(|w| w[0].done <= w[1].done && w[0].bytes <= w[1].bytes)
         );
         // Once done, an open reports nothing.
-        seen.clear();
-        Store::open_reporting(&home, &mut |p| seen.push(*p)).unwrap();
-        assert!(seen.is_empty());
+        let mut again = Vec::new();
+        Store::open_reporting(&home, &mut |p| again.push(*p)).unwrap();
+        assert!(again.is_empty());
     }
 
     /// Every ordinary table but the audit's (not the inbox's full-text

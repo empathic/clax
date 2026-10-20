@@ -74,13 +74,19 @@ impl Starting {
     }
 
     /// Records the backfill's progress, writing it at most every 100 ms
-    /// within a phase.
+    /// within a phase. The copy before a migration and the migrations are
+    /// `opening`, as before they reported, so `starting.json` and what the
+    /// CLI says of it keep their phases.
     pub fn progress(&mut self, p: &clax_store::backfill::Progress) {
+        use clax_store::backfill::Phase;
         let mut info = self.info.lock().unwrap_or_else(|e| e.into_inner());
-        let phase = p.phase.label().to_string();
+        let (phase, (done, total, bytes)) = match p.phase {
+            Phase::BackingUp | Phase::Migrating => ("opening", (0, 0, 0)),
+            other => (other.label(), (p.done, p.total, p.bytes)),
+        };
         let changed = info.phase != phase;
-        info.phase = phase;
-        (info.done, info.total, info.bytes) = (p.done, p.total, p.bytes);
+        info.phase = phase.to_string();
+        (info.done, info.total, info.bytes) = (done, total, bytes);
         if changed || self.written.elapsed() >= Duration::from_millis(100) {
             if let Err(e) = write_starting_info(&self.home, &info) {
                 tracing::warn!(error = %e, "could not write starting.json");

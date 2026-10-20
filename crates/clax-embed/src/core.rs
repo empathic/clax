@@ -28,8 +28,16 @@ const RUNTIME_SHUTDOWN: Duration = Duration::from_secs(2);
 #[derive(Debug, Clone, PartialEq, serde::Serialize)]
 #[serde(tag = "type", rename_all = "kebab-case")]
 pub enum OpenEvent {
-    /// The store is opening: the audit backfill's phase.
-    Opening { phase: String },
+    /// The store is opening: `backing up` (the copy before a migration),
+    /// `migrating` (with the migrations `done` of `total`), then the
+    /// audit backfill's phases.
+    Opening {
+        phase: String,
+        #[serde(skip_serializing_if = "Option::is_none")]
+        done: Option<u64>,
+        #[serde(skip_serializing_if = "Option::is_none")]
+        total: Option<u64>,
+    },
     /// The core answers calls.
     Ready,
     /// The core did not open: `home_in_use`, `migration_failed` (with the
@@ -418,14 +426,18 @@ async fn opening(sh: Arc<Shared>, opts: OpenOptions) {
         port: 0,
         embed: Some(opts.origins),
     };
-    let mut last = String::new();
+    // One event per phase, and per migration.
+    let mut last = None;
     let on_event = &sh.on_event;
     let started = Core::start(cfg, &mut |p| {
-        let phase = p.phase.label();
-        if phase != last {
-            last = phase.to_string();
+        let step = (p.phase == clax_store::backfill::Phase::Migrating).then_some((p.done, p.total));
+        let at = (p.phase, step);
+        if last != Some(at) {
+            last = Some(at);
             on_event(OpenEvent::Opening {
-                phase: phase.to_string(),
+                phase: p.phase.label().to_string(),
+                done: step.map(|s| s.0),
+                total: step.map(|s| s.1),
             });
         }
     })

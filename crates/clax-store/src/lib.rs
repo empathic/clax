@@ -239,9 +239,11 @@ impl Store {
         Store::open_reporting(home, &mut |_| {})
     }
 
-    /// [`Store::open`], reporting the audit backfill's progress to
-    /// `report` while it runs (only on the first open after the audit
-    /// schema arrives, when there is history to record).
+    /// [`Store::open`], reporting to `report` the copy made before a
+    /// migration ([`backfill::Phase::BackingUp`]), each migration
+    /// ([`backfill::Phase::Migrating`]), and the audit backfill's progress
+    /// while it runs (only on the first open after the audit schema
+    /// arrives, when there is history to record).
     pub fn open_reporting(
         home: &Home,
         report: &mut dyn FnMut(&backfill::Progress),
@@ -268,7 +270,19 @@ impl Store {
         let path = home.db_path();
         let conn = exec::open_writer(&path)?;
         // A copy of the database before any migration changes it; the
-        // home's disk only (a host's own connection keeps its own).
+        // home's disk only (a host's own connection keeps its own). One is
+        // made for a database with a schema older than this binary's, as
+        // `backup::before_migrate` decides, and reported first.
+        let known = migrations::MIGRATIONS.len() as u32;
+        let version: u32 = conn.query_row("PRAGMA user_version", [], |r| r.get(0))?;
+        if version != 0 && version < known {
+            report(&backfill::Progress {
+                phase: backfill::Phase::BackingUp,
+                done: 0,
+                total: 0,
+                bytes: 0,
+            });
+        }
         let copy = backup::before_migrate(
             &conn,
             home,
@@ -319,7 +333,7 @@ impl Store {
         clock: Arc<dyn Clock>,
         report: &mut dyn FnMut(&backfill::Progress),
     ) -> Result<Store> {
-        migrate(&mut conn)?;
+        migrate_reporting(&mut conn, &migrations::NUMBERING, report)?;
         backfill::run(&mut conn, home, report)?;
         approvals::record_migration_approval(&mut conn)?;
         let hidden = drafts::HiddenIds::load(&conn)?;
@@ -678,17 +692,29 @@ pub fn schema_version(home: &Home) -> Result<Option<u32>> {
 /// version before it, and reported as [`CoreError::MigrationFailed`]
 /// (except a busy or locked database, reported as itself, since it may
 /// pass on a retry).
+#[cfg(test)]
 fn migrate(conn: &mut Connection) -> Result<()> {
     migrate_with(conn, &migrations::NUMBERING)
 }
 
 /// [`migrate`] to the migrations of `numbering`, which is
 /// [`migrations::NUMBERING`] but in tests of a later numbering.
+#[cfg(test)]
 pub(crate) fn migrate_with(
     conn: &mut Connection,
     numbering: &migrations::Numbering<'_>,
 ) -> Result<()> {
-    migrate_steps(conn, numbering).map_err(|e| match e {
+    migrate_reporting(conn, numbering, &mut |_| {})
+}
+
+/// [`migrate_with`], reporting [`backfill::Phase::Migrating`] to `report`
+/// before each migration it applies.
+fn migrate_reporting(
+    conn: &mut Connection,
+    numbering: &migrations::Numbering<'_>,
+    report: &mut dyn FnMut(&backfill::Progress),
+) -> Result<()> {
+    migrate_steps(conn, numbering, report).map_err(|e| match e {
         e @ (CoreError::SchemaNewer { .. } | CoreError::MigrationFailed { .. }) => e,
         CoreError::Db(rusqlite::Error::SqliteFailure(f, m))
             if matches!(
@@ -723,7 +749,11 @@ fn naming_the_copy(e: CoreError, copy: Option<&std::path::Path>) -> CoreError {
     }
 }
 
-fn migrate_steps(conn: &mut Connection, numbering: &migrations::Numbering<'_>) -> Result<()> {
+fn migrate_steps(
+    conn: &mut Connection,
+    numbering: &migrations::Numbering<'_>,
+    report: &mut dyn FnMut(&backfill::Progress),
+) -> Result<()> {
     let known = numbering.migrations.len() as u32;
     let check = |version: u32| {
         if version > known {
@@ -751,6 +781,8 @@ fn migrate_steps(conn: &mut Connection, numbering: &migrations::Numbering<'_>) -
             );
         }
     }
+    // From where the database stands after any adoption.
+    let from: u32 = conn.query_row("PRAGMA user_version", [], |r| r.get(0))?;
     loop {
         let tx = conn.transaction_with_behavior(rusqlite::TransactionBehavior::Immediate)?;
         let version: u32 = tx.query_row("PRAGMA user_version", [], |r| r.get(0))?;
@@ -758,6 +790,12 @@ fn migrate_steps(conn: &mut Connection, numbering: &migrations::Numbering<'_>) -
         if version == known {
             return Ok(());
         }
+        report(&backfill::Progress {
+            phase: backfill::Phase::Migrating,
+            done: u64::from(version.saturating_sub(from)),
+            total: u64::from(known.saturating_sub(from)),
+            bytes: 0,
+        });
         tx.execute_batch(numbering.migrations[version as usize])?;
         migrations::rust_step(&tx, version + 1)?;
         tx.pragma_update(None, "user_version", version + 1)?;
@@ -921,6 +959,37 @@ mod tests {
     use clax_core::audit::AuditCtx;
     use clax_core::working::ManualClock;
     use std::sync::Arc;
+
+    #[test]
+    fn opening_a_home_reports_each_migration_and_a_current_one_none() {
+        use crate::backfill::Phase;
+        let dir = tempfile::tempdir().unwrap();
+        let home = Home::at(dir.path().join("ax"));
+        let mut seen = Vec::new();
+        let store = Store::open_reporting(&home, &mut |p| seen.push(*p)).unwrap();
+        store.shutdown();
+        drop(store);
+        let n = crate::migrations::MIGRATIONS.len() as u64;
+        let migrating: Vec<(u64, u64)> = seen
+            .iter()
+            .filter(|p| p.phase == Phase::Migrating)
+            .map(|p| (p.done, p.total))
+            .collect();
+        assert_eq!(migrating, (0..n).map(|k| (k, n)).collect::<Vec<_>>());
+        assert!(
+            !seen.iter().any(|p| p.phase == Phase::BackingUp),
+            "a new database has nothing to copy"
+        );
+
+        let mut again = Vec::new();
+        let _store = Store::open_reporting(&home, &mut |p| again.push(*p)).unwrap();
+        assert!(
+            !again
+                .iter()
+                .any(|p| matches!(p.phase, Phase::Migrating | Phase::BackingUp)),
+            "{again:?}"
+        );
+    }
 
     /// The store's tests and the journal's (`toolpath::tests`), which open
     /// their stores through `test_util::store`, pass on one connection too:

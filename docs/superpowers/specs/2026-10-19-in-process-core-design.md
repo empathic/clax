@@ -360,7 +360,10 @@ document (§5.2).
    `sampleConfig` did (moved to `CoreHost`, §6);
 4. opens the store with `Store::open_reporting`: the pre-migration backup
    (`clax-store/src/backup.rs`), `adopt_earlier_flutter_app`, the migrations,
-   progress reported as `{"type":"opening","phase":…}` on the open port;
+   progress reported on the open port as `{"type":"opening","phase":…}`:
+   `backing up` before the copy, `migrating` with `"done"` and `"total"`
+   before each migration, then the audit backfill's phases (`clax serve`'s
+   `starting.json` counts the copy and the migrations as `opening`);
 5. assembles `AppState` with `embed: Some(EmbedOrigins)` from
    `<home>/embed.json` (§4.1, §4.3) and starts
    the core (§2.1); posts `ready`.
