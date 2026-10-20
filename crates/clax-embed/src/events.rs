@@ -76,8 +76,15 @@ async fn pump(
         return Some("stream_refused");
     }
     let mut body = res.into_body().into_data_stream();
+    // A closing core ends the stream too; either way the reason is the
+    // core's, so the phase is looked at first and again when the stream ends.
+    let ended = |phase: &crate::core::Readiness| {
+        Some(if phase.ready() { "stream_ended" } else { "core_closed" })
+    };
     loop {
         tokio::select! {
+            biased;
+            () = phase.closed() => return Some("core_closed"),
             chunk = body.next() => match chunk {
                 Some(Ok(b)) => {
                     if !on_block(b) {
@@ -86,11 +93,10 @@ async fn pump(
                 }
                 Some(Err(e)) => {
                     tracing::warn!(error = %e, "the event stream failed");
-                    return Some("stream_ended");
+                    return ended(&phase);
                 }
-                None => return Some("stream_ended"),
+                None => return ended(&phase),
             },
-            () = phase.closed() => return Some("core_closed"),
         }
     }
 }

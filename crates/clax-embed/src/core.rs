@@ -83,6 +83,11 @@ impl Readiness {
     pub(crate) async fn closed(&mut self) {
         let _ = self.0.wait_for(|p| !matches!(p, Phase::Ready { .. })).await;
     }
+
+    /// Whether the core is still ready.
+    pub(crate) fn ready(&self) -> bool {
+        matches!(*self.0.borrow(), Phase::Ready { .. })
+    }
 }
 
 /// The homes this process has open, by canonical path.
