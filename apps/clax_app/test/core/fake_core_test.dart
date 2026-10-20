@@ -49,6 +49,9 @@ void main() {
       // A page reaches only its own paths.
       (const CoreRequest('GET', '/api/artifacts', as: CallAs.shellPage), false),
       (const CoreRequest('POST', '/a/$id', as: CallAs.shellPage), false),
+      (const CoreRequest('GET', '/assets/x.js', as: CallAs.shellPage), false),
+      (const CoreRequest('HEAD', '/assets/x.js', as: CallAs.shellPage), false),
+      (const CoreRequest('GET', '/favicon.ico', as: CallAs.shellPage), false),
       (const CoreRequest('GET', '/api/artifacts', as: CallAs.content), false),
       (const CoreRequest('PUT', '/api/artifacts', as: CallAs.content, host: id), false),
       (

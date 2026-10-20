@@ -125,7 +125,8 @@ class FakeCore implements CoreCalls {
   /// Whether the core admits [r] (crates/clax-embed/src/core.rs `admit`):
   /// the owner reaches every path but the routes that hold their
   /// connection open and `/api/admin/shutdown`; the shell's page reads its
-  /// document, assets and blobs; an artifact's content origin, named by
+  /// document (`/a/`), the web UI's files (`/_clax/`), a version's files
+  /// (`/c/`) and blobs (`/_blob/`); an artifact's content origin, named by
   /// its host, reads.
   static bool admits(CoreRequest r) {
     final path = r.path.split(RegExp('[?#]')).first;
@@ -135,10 +136,7 @@ class FakeCore implements CoreCalls {
       CallAs.owner => !_heldOpen(path) && path != '/api/admin/shutdown',
       CallAs.shellPage =>
         read &&
-            (const ['/a/', '/assets/', '/_clax/', '/c/', '/_blob/'].any(
-                  path.startsWith,
-                ) ||
-                path == '/favicon.ico'),
+            const ['/a/', '/_clax/', '/c/', '/_blob/'].any(path.startsWith),
       CallAs.content => read && _artifactId.hasMatch(r.host ?? ''),
     };
   }
