@@ -204,6 +204,19 @@ export class ArtifactController {
   private live = false;
   /** @internal */
   latestKnown = 0;
+  /** The last ticket taken for the artifact's tags, and the one whose answer is shown. */
+  private tagsAsked = 0;
+  private tagsShown = 0;
+  /** A ticket for a request whose answer carries the artifact's tags (a
+   * refetch, the tag editor's change), taken as it starts. */
+  tagTicket(): number { return ++this.tagsAsked; }
+  /** Shows `v`, the tags answered to ticket `t`'s request, unless the answer
+   * to a request started later is shown already. */
+  setTags(t: number, v: { tags: TagRef[]; may: boolean }): void {
+    if (t < this.tagsShown) return;
+    this.tagsShown = t;
+    this.set({ tags: v });
+  }
   /** The artifact, version and origin the gate was last reset for. */
   private gateFor = "";
   /** The view (artifact, version, origin and data) the capability host was made for. */
