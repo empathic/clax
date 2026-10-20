@@ -157,11 +157,13 @@ pub mod shell;
 
 /// Starts every listener of the state `s` serves from: the HTTP layer's
 /// ([`AppState::start_listeners`](clax_http::state::AppState::start_listeners)),
-/// then the people routes' and linked threads' sync ([`linked::listen`]).
+/// then the people routes', the jobs routes' and linked threads' sync
+/// ([`linked::listen`]).
 /// Returns the handles of the tasks they spawn, which run until aborted.
 pub fn start_listeners(s: &clax_http::state::AppState) -> Vec<clax_rt::JoinHandle<()>> {
     let mut tasks = s.start_listeners();
     routes::people::listen(s);
+    routes::jobs::listen(s);
     tasks.extend(linked::listen(s));
     tasks
 }

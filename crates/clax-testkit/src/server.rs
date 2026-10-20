@@ -247,7 +247,7 @@ pub struct TestServer {
     /// (a socket's reopening).
     pub state: AppState,
     extension_id: String,
-    _dir: tempfile::TempDir,
+    _dir: Arc<tempfile::TempDir>,
 }
 
 impl TestServer {
@@ -465,17 +465,33 @@ impl TestServer {
         Self::start(dir, bind, Arc::new(SystemClock), f, false, Some(content)).await
     }
 
+    /// A second daemon on this one's home, started as after a restart:
+    /// the database and files are this one's, and nothing held in memory
+    /// (streams, claims, caches) carries over. Both serve until dropped.
+    pub async fn reopened(&self) -> TestServer {
+        Self::start(
+            self._dir.clone(),
+            IpAddr::V4(Ipv4Addr::LOCALHOST),
+            Arc::new(SystemClock),
+            |_| {},
+            false,
+            None,
+        )
+        .await
+    }
+
     /// Serves the home `ax` under `dir` on `bind`, every time read from
     /// `clock`: on the store's pool and the home's files, or with `content`
     /// on one connection ([`TestServer::spawn_on_one_connection`]).
     async fn start(
-        dir: tempfile::TempDir,
+        dir: impl Into<Arc<tempfile::TempDir>>,
         bind: IpAddr,
         clock: Arc<dyn Clock>,
         f: impl FnOnce(&mut AppState),
         shutdown: bool,
         content: Option<Arc<dyn clax_core::content::ContentStore>>,
     ) -> TestServer {
+        let dir: Arc<tempfile::TempDir> = dir.into();
         let home = Home::at(dir.path().join("ax"));
         let content = content.or_else(|| {
             deferred_content()
@@ -571,6 +587,7 @@ impl TestServer {
             linked: Arc::new(clax_realtime::linked::Linked::new(Arc::new(
                 clax_realtime::questions::TokioSleeper,
             ))),
+            jobs_owners: Arc::default(),
         };
         f(&mut state);
         state.audit_wake.install(&state.store);
@@ -589,6 +606,7 @@ impl TestServer {
         clax_http::views::inbox::listen(&state);
         clax_http::views::approval::listen(&state);
         clax_server::routes::people::listen(&state);
+        clax_server::routes::jobs::listen(&state);
         clax_http::pushes::listen(&state);
         clax_http::git_remotes::listen(&state);
         clax_server::linked::listen(&state);

@@ -204,6 +204,9 @@ pub struct AppState {
     /// Linked threads' sync with remotes (`clax_server::linked`); idle on a
     /// hosted daemon.
     pub linked: Arc<clax_realtime::linked::Linked>,
+    /// The queue owner of each job client ([`crate::jobs_owner`]), in
+    /// memory only: empty at every start.
+    pub jobs_owners: Arc<crate::jobs_owner::JobsOwners>,
     /// Debug builds: whether this is the testkit's daemon, which honours
     /// the `x-clax-test-delay-ms` header (so a test can make a real route
     /// slow) and serves `GET /api/_test/audit/ctx` (`clax_server::router`).
@@ -366,6 +369,7 @@ impl AppState {
             linked: Arc::new(clax_realtime::linked::Linked::new(Arc::new(
                 clax_realtime::questions::TokioSleeper,
             ))),
+            jobs_owners: Arc::default(),
             store: p.store,
         })
     }

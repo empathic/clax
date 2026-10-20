@@ -2472,6 +2472,70 @@ reachable while the draft declares it and the owner's grant to the live
 app stands (see "Fetching from the network"); nobody is asked, and a new
 app's draft reaches nothing.
 
+**Jobs.** The app's queue of makes and changes runs over jobs the core
+keeps: each job's row (`state`, `step`, `plan`, `carry`, `error`, its
+threads and questions, and `rev`, one more at every write) is the truth
+about it, and its steps are committed by key. Every route needs the
+token and refuses the owner's agents (403 `not_for_agents`); every write
+of a client's job also needs that client's **queue owner** token in
+`x-clax-jobs-owner`, else 409 `not_owner`. A write answers `{job: {job,
+steps, threads, questions}}`, the job after it; a final job (`cancelled`,
+`done`) refuses every write with 409 `job_moved` and the job.
+
+The queue owner: one claimant per client, kept in memory only (a crash, a
+close or a reopen of the core forgets every claim), tied to an
+`/api/stream` connection the claimant holds (its `ready` block names the
+stream). A claim while another claim's stream lives is 409 `owner_held`,
+and that stream is sent a keep-alive at once, so a holder whose reader is
+gone is noticed then; a claim by the stream that holds it answers its
+token again. The claim is released when its stream's connection ends, or
+by `DELETE /api/jobs/owner`. The owner-only `jobs` stream topic carries
+`job` `{id, client, state, step, rev}` after every committed write of a
+job, whichever path made it (a job route, a question's close, a delete
+that cancels the job), and `jobs_owner` `{client, held}` at each claim and
+release. A worker refused with `owner_held` waits for `held: false` and
+claims again.
+
+A **step** is idempotent by its key: committing a key the job already has
+answers the step as recorded with `replayed: true` and changes nothing. A
+publish step's version and a reply step's comments commit in one
+transaction with the step: either both exist, or neither does.
+
+| Route | Caller | Body | Answer |
+|---|---|---|---|
+| `POST /api/jobs/owner` | token | `{client, stream}` | `{owner}` (32 hex characters); 409 `owner_held`; 400 `no_such_stream` when the hub holds no connection of `stream` |
+| `DELETE /api/jobs/owner` | token, `x-clax-jobs-owner` | — | 204, the claim that token holds released |
+| `POST /api/jobs` | token, owner token | `{id, client, kind, artifact_id?, title?, input, plan?}` | 201 `{job}` in `queued`; the same `id` and body again 200; another body 409 `job_exists`; 400 `invalid_artifact` |
+| `GET /api/jobs?open=1&client=<c>` | token | — | `{jobs: [{job, steps, threads, questions}]}`, the client's jobs neither `cancelled` nor `done`, oldest first; 400 `invalid_query` without `open=1` and `client` |
+| `GET /api/jobs/<id>` | token | — | `{job}`; 404 |
+| `PATCH /api/jobs/<id>` | token, owner token | `{if_rev, state?, step?, title?, plan?, carry?, error?}` (`null` clears a field) | `{job}`; 409 `job_moved` with the job when it is not at `if_rev`; 400 `invalid_move` for `queued`, `waiting` or `done`; a move to `running` lands in `waiting` while a question it asked is open |
+| `PUT /api/jobs/<id>/threads/<tid>` | token, owner token | `{comment_id, stopped?}` | `{job}`; 400 `invalid_thread` |
+| `DELETE /api/jobs/<id>/threads/<tid>` | token, owner token | — | `{job}` |
+| `PUT /api/jobs/<id>/questions/<qid>` | token, owner token | — | `{job}`, a `running` job `waiting` while the question is open (its answer, decline or withdrawal, `job_end` when the job ends first, is stored in the job and moves it back); 400 `invalid_question` for a question not of the `ask` tool or another job's |
+| `POST /api/jobs/<id>/steps/<key>` | token, owner token | `{result?, publish?, reply?, state?}`, one of `result`, `publish` and `reply`; `state` only `"done"` | `{job, step: {key, result, version_n, created_at}, replayed, version?}`; 409 `version_moved` `{current}`, `doc_moved` `{path}`, `job_moved`; 400 `invalid_step` |
+| `GET /api/agent-read-consents` | token | — | `{consents: [{reader, source}]}` |
+| `PUT /api/agent-read-consents/<reader>/<source>` | token | — | 204; 404 when either artifact is missing |
+| `DELETE /api/agent-read-consents/<reader>/<source>` | token | — | `{deleted}` |
+
+A **publish step** is `publish: {artifact_id (null: a new app), base,
+request, docs?, draft?, session_id?}`: `request` is a publish's body,
+`base` the version it was planned on (0 for a new app), `docs` document
+writes as `docs:batch` takes them (`{op, path, data?, if_version?}`), each
+pinned to the version it was planned on. The version's files are written
+first; then one transaction checks the artifact is still at `base` (409
+`version_moved` with `current` otherwise), records the version, applies
+the writes (a document that moved refuses the whole step, 409 `doc_moved`
+with its `path`), inserts the step with the version's number, and moves
+the job one `rev` on, setting its `artifact_id` to a new app's. `version`
+and `step.result` (`{artifact_id, version, docs}`) name what it made. A
+**reply step** is `reply: {session_id, threads, body, resolve?, ack?}`: in
+one transaction the session's agent reply `body` on each thread (each a
+thread of the job's artifact, 400 `invalid_thread` otherwise), each thread
+resolved when `resolve`, the session's feedback on them and on the
+comments `ack` acknowledged, and the step (`result: {comments:
+[{thread_id, comment_id}], resolved}`). The `version`, `doc`, `comment`
+and `thread` events follow the commit.
+
 **Navigation.** The app lets the top level of its WebView be only the
 shell's app view on the daemon's own origin: the path `/a/<id>[/v/<n>][/<file>]`
 with `app=1` in its query. Any other top-level navigation is refused,
@@ -4341,6 +4405,9 @@ router), and a test fails when it differs:
 | `POST /api/admin/perf/calibrate` | Denied | no |
 | `GET /api/admin/perf/verify` | Denied | no |
 | `POST /api/admin/shutdown` | Denied | no |
+| `GET /api/agent-read-consents` | Denied | yes: 403 `not_for_agents` |
+| `DELETE /api/agent-read-consents/{reader}/{source}` | Denied | yes: 403 `not_for_agents` |
+| `PUT /api/agent-read-consents/{reader}/{source}` | Denied | yes: 403 `not_for_agents` |
 | `DELETE /api/agents/{handle}` | Denied | yes: 403 `not_for_agents` |
 | `PUT /api/agents/{handle}` | Denied | yes: 403 `not_for_agents` |
 | `DELETE /api/agents/{handle}/elevate` | Denied | yes: 403 `not_for_agents` |
@@ -4399,6 +4466,16 @@ router), and a test fails when it differs:
 | `GET /api/inbox/{id}` | Denied | yes: 403 `not_for_agents` |
 | `POST /api/inbox/{id}/read` | Denied | yes: 403 `not_for_agents` |
 | `POST /api/inbox/{id}/unread` | Denied | yes: 403 `not_for_agents` |
+| `GET /api/jobs` | Denied | yes: 403 `not_for_agents` |
+| `POST /api/jobs` | Denied | yes: 403 `not_for_agents` |
+| `DELETE /api/jobs/owner` | Denied | yes: 403 `not_for_agents` |
+| `POST /api/jobs/owner` | Denied | yes: 403 `not_for_agents` |
+| `GET /api/jobs/{id}` | Denied | yes: 403 `not_for_agents` |
+| `PATCH /api/jobs/{id}` | Denied | yes: 403 `not_for_agents` |
+| `PUT /api/jobs/{id}/questions/{qid}` | Denied | yes: 403 `not_for_agents` |
+| `POST /api/jobs/{id}/steps/{key}` | Denied | yes: 403 `not_for_agents` |
+| `DELETE /api/jobs/{id}/threads/{tid}` | Denied | yes: 403 `not_for_agents` |
+| `PUT /api/jobs/{id}/threads/{tid}` | Denied | yes: 403 `not_for_agents` |
 | `GET /api/live/pages` | Denied | no |
 | `GET /api/live/rules` | Denied | no |
 | `POST /api/live/rules` | Denied | no |

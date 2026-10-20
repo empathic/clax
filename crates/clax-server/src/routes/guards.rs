@@ -84,6 +84,19 @@ mod l10 {
         ("sample::daemon", Token),
         ("sample::put_key", Token),
         ("health::trim", Token),
+        ("jobs::claim", Token),
+        ("jobs::release", Token),
+        ("jobs::create", Token),
+        ("jobs::list", Token),
+        ("jobs::get_one", Token),
+        ("jobs::patch", Token),
+        ("jobs::put_thread", Token),
+        ("jobs::delete_thread", Token),
+        ("jobs::put_question", Token),
+        ("jobs::commit", Token),
+        ("jobs::consents", Token),
+        ("jobs::put_consent", Token),
+        ("jobs::delete_consent", Token),
         ("threads::list_all", GrantsKept),
         ("working::roster", Filtered),
         ("working::for_session", AgentPath),
@@ -233,6 +246,7 @@ mod l10 {
             "git_token" => include_str!("git_token.rs"),
             "health" => include_str!("health.rs"),
             "inbox" => include_str!("inbox.rs"),
+            "jobs" => include_str!("jobs.rs"),
             "live" => include_str!("live.rs"),
             "net" => include_str!("net.rs"),
             "perf" => include_str!("perf.rs"),
@@ -459,6 +473,42 @@ mod l10 {
         (
             "health::trim",
             "releases SQLite's caches and checkpoints the WAL of an embedded core; no history changes",
+        ),
+        (
+            "jobs::claim",
+            "claims a client's queue in memory only; no history changes",
+        ),
+        (
+            "jobs::release",
+            "releases a client's queue in memory only; no history changes",
+        ),
+        (
+            "jobs::create",
+            "the app's queue state, kept in the jobs tables; what a job publishes or replies is recorded by its step",
+        ),
+        (
+            "jobs::patch",
+            "the app's queue state, kept in the jobs tables; what a job publishes or replies is recorded by its step",
+        ),
+        (
+            "jobs::put_thread",
+            "the app's queue state: which comment a job answers; the thread is unchanged",
+        ),
+        (
+            "jobs::delete_thread",
+            "the app's queue state: which comment a job answers; the thread is unchanged",
+        ),
+        (
+            "jobs::put_question",
+            "the app's queue state: which question a job waits on; the question is recorded where it is asked",
+        ),
+        (
+            "jobs::put_consent",
+            "the app's remembered consent to read another app's documents for its agent, kept for the app's prompt",
+        ),
+        (
+            "jobs::delete_consent",
+            "the app's remembered consent to read another app's documents for its agent, kept for the app's prompt",
         ),
         (
             "git_token::mint",

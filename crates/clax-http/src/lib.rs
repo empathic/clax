@@ -28,6 +28,7 @@ pub mod host;
 pub mod hosted;
 pub mod http_cache;
 pub mod identity;
+pub mod jobs_owner;
 pub mod limits;
 pub mod live_access;
 #[cfg(not(target_arch = "wasm32"))]

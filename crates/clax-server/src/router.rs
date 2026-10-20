@@ -5,7 +5,7 @@
 
 use crate::routes::{
     app_drafts, approvals, artifacts, assets, connect, content, docs, drafts, extension, feedback,
-    git_token, grants, health, inbox, live, live_layers, mcp_http, people, perf, questions,
+    git_token, grants, health, inbox, jobs, live, live_layers, mcp_http, people, perf, questions,
     remotes, room, sample, sessions, sites, snapshot, stream, surface, threads, token, toolpath,
     viewers, watches, working,
 };
@@ -90,6 +90,22 @@ fn routes(state: AppState, shutdown: Option<tokio::sync::watch::Sender<bool>>) -
         .route("/api/sample", get(sample::daemon))
         .route("/api/sample/key", axum::routing::put(sample::put_key))
         .route("/api/core/trim", post(health::trim))
+        .route("/api/jobs/owner", post(jobs::claim).delete(jobs::release))
+        .route("/api/jobs", get(jobs::list).post(jobs::create))
+        .route("/api/jobs/{id}", get(jobs::get_one).patch(jobs::patch))
+        .route(
+            "/api/jobs/{id}/threads/{tid}",
+            axum::routing::put(jobs::put_thread).delete(jobs::delete_thread),
+        )
+        .route(
+            "/api/jobs/{id}/questions/{qid}",
+            axum::routing::put(jobs::put_question),
+        )
+        .route("/api/agent-read-consents", get(jobs::consents))
+        .route(
+            "/api/agent-read-consents/{reader}/{source}",
+            axum::routing::put(jobs::put_consent).delete(jobs::delete_consent),
+        )
         .route(
             "/api/sessions/{id}",
             get(sessions::get).patch(sessions::patch),
@@ -444,6 +460,11 @@ fn routes(state: AppState, shutdown: Option<tokio::sync::watch::Sender<bool>>) -
         )
         .route("/api/artifacts/{aid}/push", post(remotes::push))
         .route("/api/drafts", post(app_drafts::create.layer(publish_limit)))
+        // A publish step carries a publish.
+        .route(
+            "/api/jobs/{id}/steps/{key}",
+            post(jobs::commit.layer(publish_limit)),
+        )
         .route(
             "/api/artifacts/{aid}/versions:restore",
             post(artifacts::restore),
