@@ -201,11 +201,15 @@ class FakeCore implements CoreCalls {
 
   @override
   CoreSubscription subscribe({String? lastEventId}) {
-    final s = FakeSubscription();
+    final s = FakeSubscription('fake-${_subs.length + 1}');
     if (_closed) return s..end('core_closed');
     _subs.add(s);
-    return s..push(readyBlock('fake-${_subs.length}'));
+    return s..push(readyBlock(s.id));
   }
+
+  /// The live subscription whose `ready` named stream [id], if any.
+  FakeSubscription? stream(String id) =>
+      _subs.where((s) => s.id == id && s.live).firstOrNull;
 
   /// The hub's first block on a new stream [id] (crates/clax-realtime
   /// `Conn::new`): no topics yet, not resumed, the owner calling.
@@ -481,6 +485,10 @@ class FakeCore implements CoreCalls {
 
 /// A [FakeCore] subscription: the blocks [push]ed until [end] or [cancel].
 class FakeSubscription implements CoreSubscription {
+  FakeSubscription(this.id);
+
+  /// The stream ID its `ready` block names.
+  final String id;
   final StreamController<String> _out = StreamController();
 
   /// Whether it still takes blocks.
