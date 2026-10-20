@@ -360,6 +360,39 @@ pub async fn serve(
     )
     .await?;
     drop(starting);
+    // Every way out after the core started stops it: its tasks, journal
+    // and listeners run on the caller's runtime, which may outlive this.
+    let serving = Serving {
+        home: cfg.home,
+        bind: cfg.bind,
+        version: cfg.version,
+        stale_check_interval: cfg.stale_check_interval,
+        stop: cfg.stop,
+    };
+    let served = serve_core(serving, &core, listener, port, ready).await;
+    core.stop().await;
+    served
+}
+
+/// What [`serve_core`] takes of a [`ServeConfig`] the core did not.
+struct Serving {
+    home: Home,
+    bind: IpAddr,
+    version: &'static str,
+    stale_check_interval: Duration,
+    stop: StopOn,
+}
+
+/// [`serve`] once its core started: `daemon.json`, the listener, the
+/// stale watcher and the drain, until shutdown; removes `daemon.json`
+/// when it is still this process's.
+async fn serve_core(
+    cfg: Serving,
+    core: &Core,
+    listener: tokio::net::TcpListener,
+    port: u16,
+    ready: Option<oneshot::Sender<DaemonInfo>>,
+) -> anyhow::Result<()> {
     let state = core.state();
     let info = DaemonInfo {
         port,
@@ -449,7 +482,6 @@ pub async fn serve(
     if let Some(t) = trimmer {
         t.abort();
     }
-    core.stop().await;
     if read_daemon_info(&cfg.home).map(|i| i.pid) == Some(std::process::id()) {
         remove_daemon_info(&cfg.home);
     }

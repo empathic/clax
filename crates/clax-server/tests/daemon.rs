@@ -566,3 +566,54 @@ async fn an_embedded_daemon_trims_on_request() {
     assert_eq!(report.checkpointed, report.wal_frames, "{report:?}");
     stop_embedded(d).await;
 }
+
+/// The tasks alive on this runtime, once those `Core::stop` aborted have
+/// been dropped: a bounded number of yields lets the scheduler drop them.
+async fn alive_tasks() -> usize {
+    let metrics = tokio::runtime::Handle::current().metrics();
+    let mut alive = metrics.num_alive_tasks();
+    for _ in 0..100 {
+        tokio::task::yield_now().await;
+        alive = metrics.num_alive_tasks();
+    }
+    alive
+}
+
+#[tokio::test]
+async fn a_serve_that_fails_after_its_core_started_stops_the_core() {
+    // A started and stopped core leaves only its listeners' tasks.
+    let dir = tempfile::tempdir().unwrap();
+    let core = clax_server::core::Core::start(
+        clax_server::core::CoreConfig {
+            home: Home::at(dir.path().join("stopped")),
+            version: "test",
+            reap_interval: std::time::Duration::from_secs(60),
+            codex: Default::default(),
+            sample: std::sync::Arc::new(clax_sample::Sampler::disabled()),
+            web: clax_testkit::web_ui(),
+            hosted: None,
+            require_credential: false,
+            bind: IpAddr::V4(Ipv4Addr::LOCALHOST),
+            port: 0,
+            embed: None,
+        },
+        &mut |_| {},
+    )
+    .await
+    .unwrap();
+    core.stop().await;
+    let stopped = alive_tasks().await;
+
+    let home = Home::at(dir.path().join("ax"));
+    home.ensure_dirs().unwrap();
+    // daemon.json is a directory that is not empty, so writing it fails
+    // after the core has started.
+    std::fs::create_dir_all(home.daemon_json().join("x")).unwrap();
+    let served = serve(config_on(&home, 0), None).await;
+    assert!(served.is_err(), "daemon.json cannot be written");
+    assert_eq!(
+        alive_tasks().await,
+        2 * stopped,
+        "the failed serve's core leaves no more than a stopped core does"
+    );
+}
