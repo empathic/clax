@@ -113,28 +113,43 @@ pub struct RestoreDeclaration {
 }
 
 impl RestoreDeclaration {
-    /// Checks it as [`validate`] checks a publish's same fields: the
-    /// capabilities validate, the label is at most [`MAX_LABEL_CHARS`],
-    /// and the note is cleaned and cut to the changelog's length. Answers
-    /// it with whether the note was cut.
+    /// Checks it as [`validate`] checks a publish's same fields
+    /// ([`check_declared`]). Answers it with whether the note was cut.
     pub fn validated(self) -> Result<(Self, bool)> {
-        if let Some(caps) = &self.capabilities {
-            crate::capabilities::validate(caps)?;
-        }
-        if let Some(label) = &self.label
-            && label.chars().count() > MAX_LABEL_CHARS
-        {
-            return Err(CoreError::invalid(
-                "label_too_long",
-                format!("label exceeds {MAX_LABEL_CHARS} characters"),
-            ));
-        }
-        let (note, truncated) = match self.note.as_deref() {
-            Some(n) => crate::working::clean_line(n, crate::changelog::MAX_NOTE_CHARS),
-            None => (None, false),
-        };
+        let (note, truncated) = check_declared(
+            self.capabilities.as_ref(),
+            self.label.as_deref(),
+            self.note.as_deref(),
+        )?;
         Ok((Self { note, ..self }, truncated))
     }
+}
+
+/// The checks a publish ([`validate`]) and a restore
+/// ([`RestoreDeclaration::validated`]) both run on what they declare beside
+/// files: the capabilities validate, the label is at most
+/// [`MAX_LABEL_CHARS`], and the note is cleaned and cut to the changelog's
+/// length. Answers the cleaned note and whether it was cut.
+fn check_declared(
+    capabilities: Option<&serde_json::Value>,
+    label: Option<&str>,
+    note: Option<&str>,
+) -> Result<(Option<String>, bool)> {
+    if let Some(caps) = capabilities {
+        crate::capabilities::validate(caps)?;
+    }
+    if let Some(label) = label
+        && label.chars().count() > MAX_LABEL_CHARS
+    {
+        return Err(CoreError::invalid(
+            "label_too_long",
+            format!("label exceeds {MAX_LABEL_CHARS} characters"),
+        ));
+    }
+    Ok(match note {
+        Some(n) => crate::working::clean_line(n, crate::changelog::MAX_NOTE_CHARS),
+        None => (None, false),
+    })
 }
 
 /// Accepts a relative path of one or more non-empty segments, with no `.` or
@@ -296,17 +311,11 @@ pub fn require_title(title: Option<&str>) -> Result<()> {
 /// content may contain ASCII whitespace (line breaks from encoders), which is
 /// ignored.
 pub fn validate(req: PublishRequest) -> Result<ValidatedPublish> {
-    if let Some(caps) = &req.capabilities {
-        crate::capabilities::validate(caps)?;
-    }
-    if let Some(label) = &req.label
-        && label.chars().count() > MAX_LABEL_CHARS
-    {
-        return Err(CoreError::invalid(
-            "label_too_long",
-            format!("label exceeds {MAX_LABEL_CHARS} characters"),
-        ));
-    }
+    let (note, note_truncated) = check_declared(
+        req.capabilities.as_ref(),
+        req.label.as_deref(),
+        req.note.as_deref(),
+    )?;
     match req.files.get(INDEX) {
         Some(Some(_)) => {}
         _ => {
@@ -316,10 +325,6 @@ pub fn validate(req: PublishRequest) -> Result<ValidatedPublish> {
             ));
         }
     }
-    let (note, note_truncated) = match req.note.as_deref() {
-        Some(n) => crate::working::clean_line(n, crate::changelog::MAX_NOTE_CHARS),
-        None => (None, false),
-    };
     let addresses = req.addresses.clone().unwrap_or_default();
     if addresses.len() > crate::changelog::MAX_ADDRESSES {
         return Err(CoreError::invalid(

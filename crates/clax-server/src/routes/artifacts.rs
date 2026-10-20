@@ -857,6 +857,10 @@ pub struct RestoreBody {
     if_version: Option<u32>,
     #[serde(flatten)]
     declaration: clax_core::publish::RestoreDeclaration,
+    /// Every other field, which the route refuses by name (serde's
+    /// `deny_unknown_fields` does not work beside `flatten`).
+    #[serde(flatten)]
+    other: serde_json::Map<String, Value>,
 }
 
 /// `POST /api/artifacts/<aid>/versions:restore` `{version, if_version}`:
@@ -870,7 +874,8 @@ pub struct RestoreBody {
 /// note_truncated}`), and a `version` event follows. 409
 /// `conflict` with `current` when `if_version` is not the current version,
 /// 404 `not_found` for an unknown artifact or version, 400 `invalid_args`
-/// when a field is missing, 400 `live_page` for a live page. An
+/// when a field is missing or one it does not take is sent (naming it),
+/// 400 `live_page` for a live page. An
 /// `X-Clax-Session` must name a live session, which the version records.
 pub async fn restore(
     State(s): State<AppState>,
@@ -889,6 +894,12 @@ pub async fn restore(
         ));
     }
     let b = body(req)?;
+    if let Some(field) = b.other.keys().next() {
+        return Err(ApiError::bad_request(
+            "invalid_args",
+            format!("versions:restore does not take `{field}`"),
+        ));
+    }
     let (Some(n), Some(if_version)) = (b.version, b.if_version) else {
         return Err(ApiError::bad_request(
             "invalid_args",

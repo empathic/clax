@@ -452,3 +452,29 @@ async fn restore_puts_back_a_declaration_with_the_files_unchecked() {
     assert_eq!(icon.status(), 200);
     assert_eq!(icon.text().await.unwrap(), old);
 }
+
+#[tokio::test]
+async fn restore_refuses_a_field_it_does_not_take_naming_it() {
+    let ts = TestServer::spawn().await;
+    let aid = runs(&ts).await;
+    for field in ["description", "files"] {
+        let res = restore(
+            &ts,
+            &aid,
+            json!({"version": 1, "if_version": 1, field: "x"}),
+        )
+        .await;
+        assert_eq!(res.status(), 400, "{field}");
+        let err: Value = res.json().await.unwrap();
+        assert_eq!(err["error"]["code"], "invalid_args", "{err}");
+        let message = err["error"]["message"].as_str().unwrap();
+        assert!(message.contains(&format!("`{field}`")), "{message}");
+    }
+    let a: Value = ts
+        .get(&format!("/api/artifacts/{aid}"))
+        .await
+        .json()
+        .await
+        .unwrap();
+    assert_eq!(a["versions"].as_array().unwrap().len(), 1);
+}
