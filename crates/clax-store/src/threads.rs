@@ -1155,6 +1155,45 @@ impl Store {
         Ok((comment, touched))
     }
 
+    /// An agent reply `c` on thread `tid` from the session `c` names, inside
+    /// the caller's transaction, with [`Store::add_agent_reply`]'s
+    /// ownership rules: `seen` is what that session's reader saw of the
+    /// thread's viewer comments ([`Store::seen_comments`], read before the
+    /// transaction). What the take changed is added to `touched`.
+    ///
+    /// # Errors
+    /// As [`Store::add_agent_reply`].
+    pub(crate) fn add_agent_reply_in(
+        &self,
+        tx: &rusqlite::Transaction<'_>,
+        ctx: &AuditCtx,
+        tid: &str,
+        c: NewComment,
+        seen: &[String],
+        touched: &mut clax_core::feedback::Touched,
+    ) -> Result<(Comment, Thread)> {
+        let Some(sid) = c.via_session_id.clone() else {
+            return Err(CoreError::invalid(
+                "unknown_session",
+                "an agent reply comes from a session",
+            ));
+        };
+        check_not_taken_in(tx, tid, &sid)?;
+        let out = self.add_comment_in(tx, ctx, tid, c)?;
+        take_in(
+            self,
+            tx,
+            ctx,
+            tid,
+            &sid,
+            "reply",
+            seen,
+            &self.now(),
+            touched,
+        )?;
+        Ok(out)
+    }
+
     /// [`Store::add_comment`], running `then` with the thread in the
     /// comment's transaction; an error from `then` writes nothing.
     fn add_comment_then(
@@ -1164,6 +1203,22 @@ impl Store {
         c: NewComment,
         then: impl FnOnce(&rusqlite::Transaction<'_>, &Thread) -> Result<()>,
     ) -> Result<Comment> {
+        self.with_tx(|tx| {
+            let (comment, t) = self.add_comment_in(tx, ctx, thread_id, c)?;
+            then(tx, &t)?;
+            Ok(comment)
+        })
+    }
+
+    /// [`Store::add_comment`] inside the caller's transaction: the comment
+    /// and its thread as it was before it.
+    pub(crate) fn add_comment_in(
+        &self,
+        tx: &rusqlite::Transaction<'_>,
+        ctx: &AuditCtx,
+        thread_id: &str,
+        c: NewComment,
+    ) -> Result<(Comment, Thread)> {
         if c.author_kind != AUTHOR_VIEWER && c.author_kind != AUTHOR_AGENT {
             return Err(CoreError::invalid(
                 "invalid_author_kind",
@@ -1192,7 +1247,7 @@ impl Store {
             agent_person: None,
             agent: None,
         };
-        self.with_tx(|tx| {
+        {
             let t = thread_in(tx, thread_id)?.ok_or(CoreError::NotFound)?;
             tx.execute(
                 "INSERT INTO comments (id, thread_id, author_kind, author_name, author_public_id, via_session_id, via_page, body, created_at)
@@ -1256,9 +1311,8 @@ impl Store {
                     self.record_audit(tx, ctx, reopen)?;
                 }
             }
-            then(tx, &t)
-        })?;
-        Ok(comment)
+            Ok((comment, t))
+        }
     }
 
     /// The thread with its comments, or `None` when it or its artifact is gone.
@@ -1603,7 +1657,26 @@ impl Store {
         person: Option<&str>,
         then: impl FnOnce(&rusqlite::Transaction<'_>, &Thread) -> Result<Option<u32>>,
     ) -> Result<(Thread, clax_core::feedback::Touched)> {
-        let touched = self.with_tx(|tx| {
+        let touched =
+            self.with_tx(|tx| self.resolve_thread_in(tx, ctx, thread_id, by, person, then))?;
+        Ok((
+            self.get_thread(thread_id)?.ok_or(CoreError::NotFound)?,
+            touched,
+        ))
+    }
+
+    /// [`Store::resolve_thread_then`] inside the caller's transaction:
+    /// what it changed.
+    pub(crate) fn resolve_thread_in(
+        &self,
+        tx: &rusqlite::Transaction<'_>,
+        ctx: &AuditCtx,
+        thread_id: &str,
+        by: &str,
+        person: Option<&str>,
+        then: impl FnOnce(&rusqlite::Transaction<'_>, &Thread) -> Result<Option<u32>>,
+    ) -> Result<clax_core::feedback::Touched> {
+        {
             let t = thread_in(tx, thread_id)?.ok_or(CoreError::NotFound)?;
             let now = self.now();
             // The resolver's person goes with the resolver: only when this
@@ -1631,7 +1704,14 @@ impl Store {
             }
             // Its open approval requests go with its held rows (spec
             // 2026-10-08 §9.2).
-            super::approvals::withdraw_thread_in(self, tx, ctx, thread_id, "thread_resolved", &now)?;
+            super::approvals::withdraw_thread_in(
+                self,
+                tx,
+                ctx,
+                thread_id,
+                "thread_resolved",
+                &now,
+            )?;
             if let Some(n) = linked.filter(|_| t.status == "resolved") {
                 let rec = addressed_record(&now, &t.artifact_id, thread_id, n);
                 self.record_audit(tx, ctx, rec)?;
@@ -1644,11 +1724,7 @@ impl Store {
                 touched.withdrawn.insert(thread_id.to_string(), readers);
             }
             Ok(touched)
-        })?;
-        Ok((
-            self.get_thread(thread_id)?.ok_or(CoreError::NotFound)?,
-            touched,
-        ))
+        }
     }
 
     /// Reopens a thread: status `open`, `resolved_at` and `resolved_by`

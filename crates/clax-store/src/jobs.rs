@@ -12,9 +12,14 @@
 //! the core's, in memory, and no rule here reads a clock.
 
 use super::Store;
+use super::docs::{BatchWrite, Written};
 use super::questions::Reason;
-use clax_core::CoreError;
 use clax_core::audit::AuditCtx;
+use clax_core::db::{Caller, Level};
+use clax_core::feedback::Touched;
+use clax_core::model::{Artifact, Comment, Version};
+use clax_core::publish::ValidatedPublish;
+use clax_core::{ArtifactId, CoreError};
 use rusqlite::{Connection, OptionalExtension, Transaction, params};
 use serde::{Deserialize, Serialize};
 use std::sync::{Arc, Mutex, RwLock};
@@ -1109,6 +1114,552 @@ impl Store {
     }
 }
 
+/// A draft whose render a publish step names (`POST /api/drafts/{id}/renders`
+/// records them): the draft and the digest of its files.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct DraftRef {
+    pub id: String,
+    pub digest: String,
+}
+
+/// A publish step's body: the version it publishes and the document writes
+/// that land with it.
+pub struct PublishStep {
+    /// The artifact it publishes a version of; `None` makes a new one.
+    pub artifact_id: Option<String>,
+    /// The version the step was planned on: the artifact's current version
+    /// (0 for a new one).
+    pub base: u32,
+    pub request: ValidatedPublish,
+    /// Document writes, each pinned to the version it was planned on
+    /// (or last-writer-wins only where the write says `if_version` is
+    /// absent and the document does not exist).
+    pub docs: Vec<BatchWrite>,
+    /// The draft the files were rendered from.
+    pub draft: Option<DraftRef>,
+    /// The agent session the version is recorded as published from.
+    pub session_id: Option<String>,
+    /// The step is the job's last: the job ends `done` with it.
+    pub done: bool,
+}
+
+/// A reply step's body: the agent's replies, resolves and acknowledgements
+/// for a change.
+pub struct ReplyStep {
+    /// The agent session the replies come from.
+    pub session_id: String,
+    /// The threads it replies on, each a thread of the job's artifact.
+    pub threads: Vec<String>,
+    pub body: String,
+    /// Each thread is resolved as well.
+    pub resolve: bool,
+    /// Comments whose feedback the session acknowledges.
+    pub ack: Vec<String>,
+    /// The step is the job's last: the job ends `done` with it.
+    pub done: bool,
+}
+
+/// A committed step and the job after it; `replayed` when the key was
+/// already committed, and nothing changed.
+#[derive(Debug)]
+pub struct StepCommit<T> {
+    pub step: StepRow,
+    pub job: JobRow,
+    pub replayed: bool,
+    /// What the step wrote, for the events that follow its commit; `None`
+    /// on a replay.
+    pub made: Option<T>,
+}
+
+/// What a publish step wrote.
+#[derive(Debug)]
+pub struct Published {
+    pub artifact: Artifact,
+    pub version: Version,
+    pub docs: Vec<Written>,
+}
+
+/// What a reply step wrote.
+#[derive(Debug, Default)]
+pub struct Replied {
+    /// The agent's comments, one per thread, in the step's order.
+    pub comments: Vec<Comment>,
+    /// The feedback rows the replies, resolves and acknowledgements changed.
+    pub touched: Touched,
+}
+
+/// Why a step was refused; nothing of it was recorded.
+#[derive(Debug)]
+pub enum StepError {
+    /// The artifact is no longer at the step's base.
+    VersionMoved {
+        current: u32,
+    },
+    /// A pinned document write found the document at another version.
+    DocMoved {
+        path: String,
+    },
+    /// The draft named has no clean render of the step's files.
+    NotRenderedClean,
+    Job(JobError),
+    Store(CoreError),
+}
+
+impl From<JobError> for StepError {
+    fn from(e: JobError) -> Self {
+        match e {
+            JobError::Store(e) => StepError::Store(e),
+            e => StepError::Job(e),
+        }
+    }
+}
+
+impl From<CoreError> for StepError {
+    fn from(e: CoreError) -> Self {
+        StepError::Store(e)
+    }
+}
+
+impl From<rusqlite::Error> for StepError {
+    fn from(e: rusqlite::Error) -> Self {
+        StepError::Store(e.into())
+    }
+}
+
+impl std::fmt::Display for StepError {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        match self {
+            StepError::VersionMoved { current } => {
+                write!(f, "the artifact moved to version {current}")
+            }
+            StepError::DocMoved { path } => write!(f, "document {path} moved"),
+            StepError::NotRenderedClean => {
+                f.write_str("the draft has no clean render of these files")
+            }
+            StepError::Job(e) => e.fmt(f),
+            StepError::Store(e) => e.fmt(f),
+        }
+    }
+}
+
+impl std::error::Error for StepError {}
+
+type StepResult<T> = std::result::Result<StepCommit<T>, StepError>;
+
+/// Inside a step's transaction: a refusal, kept while the transaction rolls
+/// back, or a race lost to a commit of the same key.
+enum Cut {
+    Refused(StepError),
+    Replayed,
+}
+
+/// `e` as a step's refusal: a pinned document write that found its
+/// document moved is [`StepError::DocMoved`].
+fn doc_refusal(e: CoreError) -> StepError {
+    match e {
+        CoreError::InBatch { path, error, .. }
+            if matches!(
+                *error,
+                CoreError::DocConflict { .. } | CoreError::DocPinRequired { .. }
+            ) =>
+        {
+            StepError::DocMoved { path }
+        }
+        e => StepError::Store(e),
+    }
+}
+
+impl Store {
+    /// Commits publish step `key` of job `id` with the version `s`
+    /// publishes, under `ctx`: the version's content is written first, as
+    /// [`Store::publish_version`] writes it, and then one transaction
+    /// checks the artifact is at `s.base`, records the version (or the new
+    /// artifact), applies `s.docs`, inserts the step with the version's
+    /// number, and moves the job one `rev` on with `step` set to `key` (and
+    /// `artifact_id` to a new artifact's), ending it `done` when `s.done`.
+    /// Either the step and the version exist together, or neither does. A
+    /// key the job already has answers its step as recorded, replayed, and
+    /// writes nothing.
+    ///
+    /// # Errors
+    /// [`StepError::VersionMoved`]; [`StepError::DocMoved`];
+    /// [`StepError::Job`] for a missing or final job; the publish's own
+    /// errors.
+    pub fn commit_publish_step(
+        &self,
+        ctx: &AuditCtx,
+        id: &str,
+        key: &str,
+        s: PublishStep,
+    ) -> StepResult<Published> {
+        self.block_on(async { Ok(self.commit_publish_step_async(ctx, id, key, s).await) })
+            .unwrap_or_else(|e| Err(e.into()))
+    }
+
+    /// [`Store::commit_publish_step`], awaiting its content store.
+    pub async fn commit_publish_step_async(
+        &self,
+        ctx: &AuditCtx,
+        id: &str,
+        key: &str,
+        s: PublishStep,
+    ) -> StepResult<Published> {
+        self.publish_step_cut(ctx, id, key, s, |_| Ok(())).await
+    }
+
+    /// [`Store::commit_publish_step_async`] with `cut` run last in the
+    /// step's transaction, before it commits: an error from it rolls the
+    /// version and the step back together.
+    async fn publish_step_cut(
+        &self,
+        ctx: &AuditCtx,
+        id: &str,
+        key: &str,
+        s: PublishStep,
+        cut: impl FnOnce(&Transaction<'_>) -> clax_core::Result<()>,
+    ) -> StepResult<Published> {
+        if let Some(done) = self.replay(id, key)? {
+            return Ok(done);
+        }
+        let PublishStep {
+            artifact_id,
+            base,
+            mut request,
+            docs,
+            session_id,
+            done,
+            ..
+        } = s;
+        let named = artifact_id.as_deref().map(ArtifactId::parse).transpose()?;
+        if named.is_none() && base != 0 {
+            return Err(StepError::Store(CoreError::invalid(
+                "invalid_base",
+                "a step that makes a new artifact has base 0",
+            )));
+        }
+        let aid = named.clone().unwrap_or_else(ArtifactId::generate);
+        let mut cutting = None;
+        let then = |tx: &Transaction<'_>, n: u32| {
+            let made = publish_step_tx(self, tx, ctx, id, key, &aid, n, docs, done);
+            match made.and_then(|m| match cut(tx) {
+                Ok(()) => Ok(m),
+                Err(e) => Err(Cut::Refused(e.into())),
+            }) {
+                Ok(m) => Ok(m),
+                Err(c) => {
+                    cutting = Some(c);
+                    // Stands in for the cut, kept above, to roll back.
+                    Err(CoreError::TaskFailed)
+                }
+            }
+        };
+        let out = match named {
+            None => {
+                self.create_artifact_then_async(ctx, &aid, request, session_id.as_deref(), then)
+                    .await
+            }
+            Some(_) => {
+                request.if_version = Some(base);
+                self.publish_version_then_async(ctx, &aid, request, session_id.as_deref(), then)
+                    .await
+            }
+        };
+        match (out, cutting) {
+            (Ok((artifact, version, (step, job, docs))), _) => Ok(StepCommit {
+                step,
+                job,
+                replayed: false,
+                made: Some(Published {
+                    artifact,
+                    version,
+                    docs,
+                }),
+            }),
+            (Err(_), Some(Cut::Refused(e))) => Err(e),
+            (Err(_), Some(Cut::Replayed)) => self
+                .replay(id, key)?
+                .ok_or(StepError::Job(JobError::NotFound)),
+            (Err(CoreError::Conflict { current }), None) => {
+                Err(StepError::VersionMoved { current })
+            }
+            (Err(e), None) => Err(StepError::Store(e)),
+        }
+    }
+
+    /// Commits reply step `key` of job `id`, under `ctx`, in one
+    /// transaction: an agent reply of `s.body` from session `s.session_id`
+    /// on each of `s.threads` (each a thread of the job's artifact), with
+    /// [`Store::add_agent_reply`]'s ownership rules, each thread then
+    /// resolved by that agent when `s.resolve` and its feedback
+    /// acknowledged, the session's feedback on comments `s.ack`
+    /// acknowledged, the step inserted, and the job moved one `rev` on with
+    /// `step` set to `key`, ending it `done` when `s.done`. A key the job
+    /// already has answers its step as recorded, replayed, and writes
+    /// nothing.
+    ///
+    /// # Errors
+    /// [`StepError::Job`] for a missing or final job; `invalid_thread`
+    /// for a thread not of the job's artifact; `unknown_session`; the
+    /// reply's and the resolve's own errors.
+    pub fn commit_reply_step(
+        &self,
+        ctx: &AuditCtx,
+        id: &str,
+        key: &str,
+        s: ReplyStep,
+    ) -> StepResult<Replied> {
+        if let Some(done) = self.replay(id, key)? {
+            return Ok(done);
+        }
+        let sess = self
+            .get_session(&s.session_id)?
+            .filter(|x| x.ended_at.is_none())
+            .ok_or_else(|| {
+                CoreError::invalid("unknown_session", "a reply step names a live session")
+            })?;
+        // Read before the transaction, as an agent reply reads them.
+        let seen = s
+            .threads
+            .iter()
+            .map(|t| self.seen_comments(t, &sess.id))
+            .collect::<clax_core::Result<Vec<_>>>()?;
+        let vis = crate::visibility::Visibility::for_session(self, &sess.id)?;
+        let mut cutting = None;
+        let out = self.with_tx(|tx| {
+            match reply_step_tx(self, tx, ctx, id, key, &sess, &s, &seen, &vis) {
+                Ok(v) => Ok(v),
+                Err(c) => {
+                    cutting = Some(c);
+                    Err(CoreError::TaskFailed)
+                }
+            }
+        });
+        match (out, cutting) {
+            (Ok((step, job, made)), _) => Ok(StepCommit {
+                step,
+                job,
+                replayed: false,
+                made: Some(made),
+            }),
+            (Err(_), Some(Cut::Refused(e))) => Err(e),
+            (Err(_), Some(Cut::Replayed)) => self
+                .replay(id, key)?
+                .ok_or(StepError::Job(JobError::NotFound)),
+            (Err(e), None) => Err(StepError::Store(e)),
+        }
+    }
+
+    /// Step `key` of job `id` as recorded, with the job as it is, when the
+    /// job has it.
+    ///
+    /// # Errors
+    /// [`JobError::NotFound`] when there is no job `id`; [`JobError::Moved`]
+    /// when it has no such step and is final.
+    fn replay<T>(&self, id: &str, key: &str) -> Result<Option<StepCommit<T>>, StepError> {
+        let (row, step) = self.with_read(|c| Ok((job_row(c, id)?, step_row(c, id, key)?)))?;
+        let row = row.ok_or(StepError::Job(JobError::NotFound))?;
+        match step {
+            Some(step) => Ok(Some(StepCommit {
+                step,
+                job: row,
+                replayed: true,
+                made: None,
+            })),
+            None if row.state.is_final() => Err(StepError::Job(JobError::Moved(Box::new(row)))),
+            None => Ok(None),
+        }
+    }
+}
+
+/// Inserts step `key` of job `id` with `result` (and `version_n`), and
+/// moves the job by [`Move::Step`]: its `step` set to `key`, its
+/// `artifact_id` to `artifact` when it names none, `done` when `done`, one
+/// `rev` on. [`Cut::Replayed`] when the key landed meanwhile.
+#[allow(clippy::too_many_arguments)]
+fn insert_step(
+    st: &Store,
+    tx: &Transaction<'_>,
+    id: &str,
+    key: &str,
+    result: &serde_json::Value,
+    version_n: Option<u32>,
+    artifact: Option<&str>,
+    done: bool,
+) -> Result<(StepRow, JobRow), Cut> {
+    let refused = |e: JobError| Cut::Refused(e.into());
+    if step_row(tx, id, key)
+        .map_err(|e| refused(e.into()))?
+        .is_some()
+    {
+        return Err(Cut::Replayed);
+    }
+    let row = existing(tx, id).map_err(refused)?;
+    let state = moving(tx, &row, Move::Step { done }).map_err(refused)?;
+    let now = st.now();
+    let wrote = (|| -> JobResult<(StepRow, JobRow)> {
+        tx.execute(
+            "INSERT INTO job_steps (job_id, key, result_json, version_n, created_at)
+             VALUES (?1, ?2, ?3, ?4, ?5)",
+            params![id, key, text(result), version_n, now],
+        )?;
+        tx.execute(
+            "UPDATE jobs SET step = ?2, state = ?3, artifact_id = COALESCE(artifact_id, ?4)
+             WHERE id = ?1",
+            params![id, key, state, artifact],
+        )?;
+        if state.is_final() {
+            st.ending(tx, id)?;
+        }
+        let row = bump(tx, id, &now)?;
+        let step = step_row(tx, id, key)?.ok_or(JobError::NotFound)?;
+        Ok((step, row))
+    })();
+    wrote.map_err(refused)
+}
+
+/// The body of a publish step's transaction, once version `n` of its
+/// artifact is recorded: the document writes, then the step.
+#[allow(clippy::too_many_arguments)]
+fn publish_step_tx(
+    st: &Store,
+    tx: &Transaction<'_>,
+    ctx: &AuditCtx,
+    id: &str,
+    key: &str,
+    aid: &ArtifactId,
+    n: u32,
+    docs: Vec<BatchWrite>,
+    done: bool,
+) -> Result<(StepRow, JobRow, Vec<Written>), Cut> {
+    let aid_id = aid;
+    let aid = aid.as_str().to_string();
+    // A change publishes only its own artifact.
+    let named: Option<String> = tx
+        .query_row(
+            "SELECT artifact_id FROM jobs WHERE id = ?1",
+            params![id],
+            |r| r.get(0),
+        )
+        .optional()
+        .map_err(|e| Cut::Refused(e.into()))?
+        .flatten();
+    if named.as_deref().is_some_and(|a| a != aid) {
+        return Err(Cut::Refused(
+            CoreError::invalid(
+                "invalid_artifact",
+                format!("job {id} changes another artifact than {aid}"),
+            )
+            .into(),
+        ));
+    }
+    let written = if docs.is_empty() {
+        Vec::new()
+    } else {
+        let owner = Caller::new(Level::Owner, None);
+        st.doc_batch_in(tx, ctx, aid_id, docs, false, &owner)
+            .map_err(|e| Cut::Refused(doc_refusal(e)))?
+    };
+    let result = serde_json::json!({"artifact_id": aid, "version": n, "docs": written.len()});
+    let (step, row) = insert_step(st, tx, id, key, &result, Some(n), Some(&aid), done)?;
+    Ok((step, row, written))
+}
+
+/// The body of a reply step's transaction.
+#[allow(clippy::too_many_arguments)]
+fn reply_step_tx(
+    st: &Store,
+    tx: &Transaction<'_>,
+    ctx: &AuditCtx,
+    id: &str,
+    key: &str,
+    sess: &clax_core::model::Session,
+    s: &ReplyStep,
+    seen: &[Vec<String>],
+    vis: &crate::visibility::Visibility,
+) -> Result<(StepRow, JobRow, Replied), Cut> {
+    let refused = |e: CoreError| Cut::Refused(e.into());
+    if step_row(tx, id, key).map_err(refused)?.is_some() {
+        return Err(Cut::Replayed);
+    }
+    let row = existing(tx, id).map_err(|e| Cut::Refused(e.into()))?;
+    if row.state.is_final() {
+        return Err(Cut::Refused(JobError::Moved(Box::new(row)).into()));
+    }
+    let aid = row.artifact_id.clone().ok_or_else(|| {
+        refused(CoreError::invalid(
+            "invalid_thread",
+            format!("job {id} names no artifact to reply on"),
+        ))
+    })?;
+    let live: bool = tx
+        .query_row(
+            "SELECT kind = ?2 FROM artifacts WHERE id = ?1",
+            params![aid, clax_core::live::KIND_LIVE],
+            |r| r.get(0),
+        )
+        .map_err(|e| refused(e.into()))?;
+    let mut made = Replied::default();
+    let by = format!("agent:{}", sess.harness);
+    let person = sess
+        .person
+        .as_deref()
+        .unwrap_or(clax_core::visibility::OWNER);
+    for (tid, seen) in s.threads.iter().zip(seen) {
+        let t = super::threads::thread_in(tx, tid).map_err(refused)?;
+        if t.is_none_or(|t| t.artifact_id != aid) {
+            return Err(refused(CoreError::invalid(
+                "invalid_thread",
+                format!("{tid} is not a thread of {aid}"),
+            )));
+        }
+        let reply = super::threads::NewComment {
+            author_kind: super::threads::AUTHOR_AGENT,
+            author_name: sess.harness.clone(),
+            author_public_id: None,
+            via_session_id: Some(sess.id.clone()),
+            body: s.body.clone(),
+            via_page: false,
+        };
+        let (c, _) = st
+            .add_agent_reply_in(tx, ctx, tid, reply, seen, &mut made.touched)
+            .map_err(refused)?;
+        made.comments.push(c);
+        if s.resolve {
+            let parsed = ArtifactId::parse(&aid).map_err(refused)?;
+            let touched = st
+                .resolve_thread_in(tx, ctx, tid, &by, Some(person), |tx, _| {
+                    if live {
+                        super::live::mark_pending_in(
+                            tx,
+                            &parsed,
+                            tid,
+                            "resolve",
+                            &sess.harness,
+                            &st.now(),
+                        )?;
+                        Ok(None)
+                    } else {
+                        super::changelog::link_on_resolve_in(tx, tid, &st.now())
+                    }
+                })
+                .map_err(refused)?;
+            made.touched.merge(touched);
+        }
+    }
+    st.acknowledge_threads_in(tx, ctx, &sess.id, &s.threads, vis, &mut made.touched)
+        .map_err(refused)?;
+    st.acknowledge_comments_in(tx, ctx, &sess.id, &s.ack, vis, &mut made.touched)
+        .map_err(refused)?;
+    let result = serde_json::json!({
+        "comments": made.comments.iter().map(|c| serde_json::json!({
+            "thread_id": c.thread_id, "comment_id": c.id,
+        })).collect::<Vec<_>>(),
+        "resolved": s.resolve,
+    });
+    let (step, row) = insert_step(st, tx, id, key, &result, None, None, s.done)?;
+    Ok((step, row, made))
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -1209,6 +1760,379 @@ mod tests {
         .unwrap()
         .0
         .id
+    }
+
+    fn request(html: &str, if_version: Option<u32>) -> ValidatedPublish {
+        clax_core::publish::validate(
+            serde_json::from_value(json!({
+                "title": "Budget",
+                "if_version": if_version,
+                "files": {"index.html": {"content": html, "encoding": "utf8"}}
+            }))
+            .unwrap(),
+        )
+        .unwrap()
+    }
+
+    /// A publish step of `html` on `aid` at `base` (a new app for `None`).
+    fn publish_step(aid: Option<&ArtifactId>, base: u32, html: &str, done: bool) -> PublishStep {
+        PublishStep {
+            artifact_id: aid.map(|a| a.as_str().to_string()),
+            base,
+            request: request(html, None),
+            docs: Vec::new(),
+            draft: None,
+            session_id: None,
+            done,
+        }
+    }
+
+    /// A change of `aid`, created and running.
+    fn change(st: &Store, id: &str, aid: &ArtifactId) -> JobRow {
+        st.create_job(NewJob {
+            kind: "change".into(),
+            artifact_id: Some(aid.as_str().into()),
+            ..new_job(id)
+        })
+        .unwrap();
+        st.patch_job(
+            id,
+            JobPatch {
+                state: Some(JobState::Running),
+                ..patch(1)
+            },
+        )
+        .unwrap()
+    }
+
+    fn versions(st: &Store, aid: &ArtifactId) -> Vec<u32> {
+        st.list_versions(aid).unwrap().iter().map(|v| v.n).collect()
+    }
+
+    #[test]
+    fn a_publish_step_makes_its_version_and_ends_the_job_with_it() {
+        let (_d, st) = store();
+        running(&st, "j1");
+        let c = st
+            .commit_publish_step(
+                DAEMON,
+                "j1",
+                "publish:0",
+                publish_step(None, 0, "<p>a", true),
+            )
+            .unwrap();
+        assert!(!c.replayed);
+        let made = c.made.unwrap();
+        assert_eq!(made.version.n, 1);
+        assert_eq!(c.step.version_n, Some(1));
+        assert_eq!(c.step.result["artifact_id"], json!(made.artifact.id));
+        assert_eq!(
+            (c.job.state, c.job.step.as_deref(), c.job.rev),
+            (JobState::Done, Some("publish:0"), 3)
+        );
+        assert_eq!(
+            c.job.artifact_id.as_deref(),
+            Some(made.artifact.id.as_str())
+        );
+        assert!(st.open_jobs("app").unwrap().is_empty());
+    }
+
+    #[test]
+    fn a_replayed_publish_step_publishes_once() {
+        let (_d, st) = store();
+        running(&st, "j1");
+        let first = st
+            .commit_publish_step(
+                DAEMON,
+                "j1",
+                "publish:0",
+                publish_step(None, 0, "<p>a", true),
+            )
+            .unwrap();
+        let again = st
+            .commit_publish_step(
+                DAEMON,
+                "j1",
+                "publish:0",
+                publish_step(None, 0, "<p>b", true),
+            )
+            .unwrap();
+        assert!(again.replayed);
+        assert!(again.made.is_none());
+        assert_eq!(again.step, first.step);
+        assert_eq!(again.job, first.job);
+        assert_eq!(st.list_artifacts().unwrap().len(), 1);
+        assert!(st.zero_version_artifacts().unwrap().is_empty());
+    }
+
+    #[test]
+    fn a_publish_step_on_a_moved_base_records_nothing() {
+        let (_d, st) = store();
+        let aid = artifact(&st, None);
+        let before = change(&st, "j1", &aid);
+        st.publish_version(DAEMON, &aid, request("<p>v2", Some(1)), None)
+            .unwrap();
+        let e = st
+            .commit_publish_step(
+                DAEMON,
+                "j1",
+                "publish:1",
+                publish_step(Some(&aid), 1, "<p>x", false),
+            )
+            .unwrap_err();
+        assert!(matches!(e, StepError::VersionMoved { current: 2 }), "{e:?}");
+        assert_eq!(versions(&st, &aid), vec![1, 2]);
+        let job = st.job("j1").unwrap().unwrap();
+        assert!(job.steps.is_empty());
+        assert_eq!(job.job, before);
+    }
+
+    #[test]
+    fn a_moved_document_refuses_the_whole_step() {
+        let (_d, st) = store();
+        let aid = crate::test_util::artifact_with_caps(&st, json!({"db": {}}));
+        let owner = Caller::new(Level::Owner, None);
+        let pin = super::super::docs::Pin {
+            if_version: None,
+            lww: true,
+        };
+        let w = st
+            .doc_set(DAEMON, &aid, "notes/n1", json!({"t": 1}), pin, &owner)
+            .unwrap();
+        let planned = w.doc.unwrap().version;
+        st.doc_set(DAEMON, &aid, "notes/n1", json!({"t": 2}), pin, &owner)
+            .unwrap();
+        let before = change(&st, "j1", &aid);
+        let mut step = publish_step(Some(&aid), 1, "<p>v2", false);
+        step.docs = vec![BatchWrite {
+            path: "notes/n1".into(),
+            op: super::super::docs::BatchOp::Set(json!({"t": 3})),
+            if_version: Some(planned),
+        }];
+        let e = st
+            .commit_publish_step(DAEMON, "j1", "publish:1", step)
+            .unwrap_err();
+        assert!(
+            matches!(&e, StepError::DocMoved { path } if path == "notes/n1"),
+            "{e:?}"
+        );
+        assert_eq!(versions(&st, &aid), vec![1]);
+        assert!(!crate::test_util::content_version_exists(&st, &aid, 2));
+        assert_eq!(st.job("j1").unwrap().unwrap().job, before);
+    }
+
+    #[test]
+    fn a_publish_step_lands_its_pinned_documents_with_its_version() {
+        let (_d, st) = store();
+        let aid = crate::test_util::artifact_with_caps(&st, json!({"db": {}}));
+        change(&st, "j1", &aid);
+        let mut step = publish_step(Some(&aid), 1, "<p>v2", false);
+        step.docs = vec![BatchWrite {
+            path: "notes/n1".into(),
+            op: super::super::docs::BatchOp::Set(json!({"t": 1})),
+            if_version: None,
+        }];
+        let c = st
+            .commit_publish_step(DAEMON, "j1", "publish:1", step)
+            .unwrap();
+        let made = c.made.unwrap();
+        assert_eq!((made.version.n, made.docs.len()), (2, 1));
+        assert_eq!(c.step.result["docs"], json!(1));
+        assert_eq!(c.job.state, JobState::Running);
+    }
+
+    /// Publish step `key` of job `id` with `cut` run last in its
+    /// transaction, where a process that dies before the commit stops.
+    fn cut_step(
+        st: &Store,
+        id: &str,
+        key: &str,
+        s: PublishStep,
+        cut: impl FnOnce(&Transaction<'_>) -> clax_core::Result<()>,
+    ) -> StepResult<Published> {
+        clax_core::content::wait(st.publish_step_cut(DAEMON, id, key, s, cut))
+    }
+
+    #[test]
+    fn a_step_cut_before_commit_leaves_no_version_and_resumes_once() {
+        let (_d, st) = store();
+        // A new app: cut after its step is written, before the commit.
+        let before = running(&st, "j1");
+        let cut = |_: &Transaction<'_>| Err(CoreError::invalid("cut", "the process died"));
+        let e = cut_step(
+            &st,
+            "j1",
+            "publish:0",
+            publish_step(None, 0, "<p>a", true),
+            cut,
+        )
+        .unwrap_err();
+        assert!(
+            matches!(e, StepError::Store(CoreError::Invalid { code: "cut", .. })),
+            "{e:?}"
+        );
+        assert!(st.list_artifacts().unwrap().is_empty());
+        assert!(st.zero_version_artifacts().unwrap().is_empty());
+        let job = st.job("j1").unwrap().unwrap();
+        assert!(job.steps.is_empty());
+        assert_eq!(job.job, before);
+        // The resume commits it once.
+        let c = st
+            .commit_publish_step(
+                DAEMON,
+                "j1",
+                "publish:0",
+                publish_step(None, 0, "<p>a", true),
+            )
+            .unwrap();
+        assert!(!c.replayed);
+        let again = st
+            .commit_publish_step(
+                DAEMON,
+                "j1",
+                "publish:0",
+                publish_step(None, 0, "<p>a", true),
+            )
+            .unwrap();
+        assert!(again.replayed);
+        assert_eq!(st.list_artifacts().unwrap().len(), 1);
+
+        // A change: the cut leaves version 1 current and no content at 2.
+        let aid = artifact(&st, None);
+        let before = change(&st, "j2", &aid);
+        cut_step(
+            &st,
+            "j2",
+            "publish:1",
+            publish_step(Some(&aid), 1, "<p>v2", false),
+            cut,
+        )
+        .unwrap_err();
+        assert_eq!(versions(&st, &aid), vec![1]);
+        assert!(!crate::test_util::content_version_exists(&st, &aid, 2));
+        assert_eq!(st.job("j2").unwrap().unwrap().job, before);
+        let c = st
+            .commit_publish_step(
+                DAEMON,
+                "j2",
+                "publish:1",
+                publish_step(Some(&aid), 1, "<p>v2", false),
+            )
+            .unwrap();
+        assert_eq!(c.step.version_n, Some(2));
+        let again = st
+            .commit_publish_step(
+                DAEMON,
+                "j2",
+                "publish:1",
+                publish_step(Some(&aid), 1, "<p>v2", false),
+            )
+            .unwrap();
+        assert!(again.replayed);
+        assert_eq!(versions(&st, &aid), vec![1, 2]);
+    }
+
+    #[test]
+    fn a_final_job_refuses_a_new_step_and_replays_an_old_one() {
+        let (_d, st) = store();
+        running(&st, "j1");
+        let first = st
+            .commit_publish_step(
+                DAEMON,
+                "j1",
+                "publish:0",
+                publish_step(None, 0, "<p>a", true),
+            )
+            .unwrap();
+        let e = st
+            .commit_publish_step(
+                DAEMON,
+                "j1",
+                "publish:1",
+                publish_step(None, 0, "<p>b", true),
+            )
+            .unwrap_err();
+        assert!(matches!(e, StepError::Job(JobError::Moved(_))), "{e:?}");
+        assert_eq!(st.list_artifacts().unwrap().len(), 1);
+        let again = st
+            .commit_publish_step(
+                DAEMON,
+                "j1",
+                "publish:0",
+                publish_step(None, 0, "<p>a", true),
+            )
+            .unwrap();
+        assert_eq!(again.step, first.step);
+    }
+
+    fn reply_step(sid: &str, threads: &[&str]) -> ReplyStep {
+        ReplyStep {
+            session_id: sid.into(),
+            threads: threads.iter().map(|t| t.to_string()).collect(),
+            body: "Made it green.".into(),
+            resolve: true,
+            ack: Vec::new(),
+            done: true,
+        }
+    }
+
+    #[test]
+    fn a_reply_step_replies_resolves_and_acks_once() {
+        let (_d, st) = store();
+        let aid = artifact(&st, None);
+        let t = thread_on(&st, &aid);
+        st.send_to_agent(DAEMON, &t).unwrap();
+        let sid = session(&st, "clax-app", "h1");
+        change(&st, "j1", &aid);
+        let c = st
+            .commit_reply_step(DAEMON, "j1", "reply:0", reply_step(&sid, &[&t]))
+            .unwrap();
+        assert!(!c.replayed);
+        let made = c.made.unwrap();
+        assert_eq!(made.comments.len(), 1);
+        assert_eq!(c.step.result["comments"][0]["thread_id"], json!(t));
+        assert_eq!(c.job.state, JobState::Done);
+        let thread = st.get_thread(&t).unwrap().unwrap();
+        assert_eq!(thread.status, "resolved");
+        let agent = |th: &clax_core::model::Thread| {
+            th.comments
+                .iter()
+                .filter(|c| c.author_kind == super::super::threads::AUTHOR_AGENT)
+                .count()
+        };
+        assert_eq!(agent(&thread), 1);
+        let again = st
+            .commit_reply_step(DAEMON, "j1", "reply:0", reply_step(&sid, &[&t]))
+            .unwrap();
+        assert!(again.replayed);
+        assert_eq!(agent(&st.get_thread(&t).unwrap().unwrap()), 1);
+    }
+
+    #[test]
+    fn a_reply_step_on_another_artifacts_thread_writes_nothing() {
+        let (_d, st) = store();
+        let aid = artifact(&st, None);
+        let other = artifact(&st, None);
+        let mine = thread_on(&st, &aid);
+        let theirs = thread_on(&st, &other);
+        let sid = session(&st, "clax-app", "h1");
+        let before = change(&st, "j1", &aid);
+        let e = st
+            .commit_reply_step(DAEMON, "j1", "reply:0", reply_step(&sid, &[&mine, &theirs]))
+            .unwrap_err();
+        assert!(
+            matches!(
+                e,
+                StepError::Store(CoreError::Invalid {
+                    code: "invalid_thread",
+                    ..
+                })
+            ),
+            "{e:?}"
+        );
+        assert_eq!(st.get_thread(&mine).unwrap().unwrap().comments.len(), 1);
+        assert_eq!(st.get_thread(&mine).unwrap().unwrap().status, "open");
+        assert_eq!(st.job("j1").unwrap().unwrap().job, before);
     }
 
     #[test]

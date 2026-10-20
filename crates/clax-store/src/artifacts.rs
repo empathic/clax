@@ -1021,7 +1021,25 @@ impl Store {
         p: ValidatedPublish,
         session_id: Option<&str>,
     ) -> Result<(Artifact, Version)> {
-        let id = ArtifactId::generate();
+        self.create_artifact_then_async(ctx, &ArtifactId::generate(), p, session_id, |_, _| Ok(()))
+            .await
+            .map(|(a, v, ())| (a, v))
+    }
+
+    /// [`Store::create_artifact_async`] of artifact `id` (a fresh ID),
+    /// running `then` in version 1's transaction as
+    /// [`Store::write_version_then`] does. When version 1 does not land
+    /// (`then` refused it among other causes), the zero-version row goes
+    /// too.
+    pub(crate) async fn create_artifact_then_async<T>(
+        &self,
+        ctx: &AuditCtx,
+        id: &ArtifactId,
+        p: ValidatedPublish,
+        session_id: Option<&str>,
+        then: impl FnOnce(&rusqlite::Transaction<'_>, u32) -> Result<T>,
+    ) -> Result<(Artifact, Version, T)> {
+        let id = id.clone();
         let now = self.now();
         let title = p
             .title
@@ -1055,9 +1073,21 @@ impl Store {
             )?;
             Ok(())
         })?;
-        self.write_version_then_async(ctx, &id, 0, &p, &BTreeMap::new(), session_id, |_, _| Ok(()))
-            .await
-            .map(|(a, v, ())| (a, v))
+        let written = self
+            .write_version_then_async(ctx, &id, 0, &p, &BTreeMap::new(), session_id, then)
+            .await;
+        if written.is_err()
+            && let Err(e) = self.with_tx(|tx| {
+                tx.execute(
+                    "DELETE FROM artifacts WHERE id = ?1 AND current_version = 0",
+                    params![id.as_str()],
+                )?;
+                Ok(())
+            })
+        {
+            tracing::warn!(artifact = id.as_str(), error = %e, "could not remove a failed artifact's row");
+        }
+        written
     }
 
     /// Publishes the next version of an existing artifact. `p.if_version` must
@@ -1085,6 +1115,21 @@ impl Store {
         p: ValidatedPublish,
         session_id: Option<&str>,
     ) -> Result<(Artifact, Version)> {
+        self.publish_version_then_async(ctx, id, p, session_id, |_, _| Ok(()))
+            .await
+            .map(|(a, v, ())| (a, v))
+    }
+
+    /// [`Store::publish_version_async`], running `then` in the version's
+    /// transaction as [`Store::write_version_then`] does.
+    pub(crate) async fn publish_version_then_async<T>(
+        &self,
+        ctx: &AuditCtx,
+        id: &ArtifactId,
+        p: ValidatedPublish,
+        session_id: Option<&str>,
+        then: impl FnOnce(&rusqlite::Transaction<'_>, u32) -> Result<T>,
+    ) -> Result<(Artifact, Version, T)> {
         let current = self.get_artifact(id)?.ok_or(CoreError::NotFound)?;
         let Some(expected) = p.if_version else {
             return Err(CoreError::invalid(
@@ -1108,10 +1153,9 @@ impl Store {
             &p,
             &prev,
             session_id,
-            |_, _| Ok(()),
+            then,
         )
         .await
-        .map(|(a, v, ())| (a, v))
     }
 
     /// Republishes version `n`'s files, `index.html` included, as the next
@@ -1275,9 +1319,9 @@ impl Store {
     /// not a live page (whose creation is recorded when the page is made)
     /// is preceded by `artifact.create`.
     ///
-    /// `then` runs in the version's transaction once the version row and
-    /// its links are written, with the new version's number; an error from
-    /// `then` rolls the version back.
+    /// `then` runs in the version's transaction once the version row, its
+    /// links and the artifact's row are written, with the new version's
+    /// number; an error from `then` rolls the version back.
     #[cfg(test)]
     #[allow(clippy::too_many_arguments)]
     pub(super) fn write_version_then<T>(
@@ -1514,7 +1558,6 @@ impl Store {
                 ],
             )?;
             link_version(tx, id.as_str(), n, p, &self.now())?;
-            let extra = then(tx, n)?;
             // Each text field it sets is its writers' now; the rest keep
             // their authors (spec §8.2).
             let before = tx.query_row(
@@ -1555,6 +1598,9 @@ impl Store {
                 p.note.as_deref(),
                 &self.now(),
             )?;
+            // Last, so it sees the artifact as the version leaves it (its
+            // capabilities among them).
+            let extra = then(tx, n)?;
             let a = tx.query_row(
                 &format!("{SELECT} WHERE id = ?1"),
                 params![id.as_str()],

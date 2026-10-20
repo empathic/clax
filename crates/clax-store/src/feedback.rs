@@ -1562,16 +1562,91 @@ impl Store {
         vis: &Visibility,
         readable: Option<&(dyn Fn(&Artifact) -> bool + Sync)>,
     ) -> Result<Touched> {
+        let mut touched = Touched::default();
+        self.with_tx(|tx| {
+            self.acknowledge_in(
+                tx,
+                ctx,
+                column,
+                session_id,
+                ids,
+                vis,
+                readable,
+                &mut touched,
+            )
+        })?;
+        Ok(touched)
+    }
+
+    /// [`Store::acknowledge_comments`] inside the caller's transaction,
+    /// adding what it changed to `touched`.
+    #[allow(clippy::too_many_arguments)]
+    pub(crate) fn acknowledge_comments_in(
+        &self,
+        tx: &Transaction<'_>,
+        ctx: &AuditCtx,
+        session_id: &str,
+        comment_ids: &[String],
+        vis: &Visibility,
+        touched: &mut Touched,
+    ) -> Result<()> {
+        self.acknowledge_in(
+            tx,
+            ctx,
+            "comment_id",
+            session_id,
+            comment_ids,
+            vis,
+            None,
+            touched,
+        )
+    }
+
+    /// [`Store::acknowledge`] inside the caller's transaction, adding what
+    /// it changed to `touched`.
+    pub(crate) fn acknowledge_threads_in(
+        &self,
+        tx: &Transaction<'_>,
+        ctx: &AuditCtx,
+        session_id: &str,
+        thread_ids: &[String],
+        vis: &Visibility,
+        touched: &mut Touched,
+    ) -> Result<()> {
+        self.acknowledge_in(
+            tx,
+            ctx,
+            "thread_id",
+            session_id,
+            thread_ids,
+            vis,
+            None,
+            touched,
+        )
+    }
+
+    /// The body of [`Store::acknowledge_where`], in the caller's transaction.
+    #[allow(clippy::too_many_arguments)]
+    fn acknowledge_in(
+        &self,
+        tx: &Transaction<'_>,
+        ctx: &AuditCtx,
+        column: &str,
+        session_id: &str,
+        ids: &[String],
+        vis: &Visibility,
+        readable: Option<&(dyn Fn(&Artifact) -> bool + Sync)>,
+        touched: &mut Touched,
+    ) -> Result<()> {
         debug_assert!(matches!(column, "thread_id" | "comment_id"));
         let now = self.now();
-        let mut touched = Touched::default();
         let rows = format!(
             "SELECT f.id, f.thread_id, t.artifact_id, f.comment_id, f.delivered_at IS NULL
              FROM feedback f JOIN threads t ON t.id = f.thread_id
              WHERE f.{column} = ?1 AND f.target_session_id = ?2 AND f.acknowledged_at IS NULL
              ORDER BY f.created_at, f.id"
         );
-        self.with_tx(|tx| {
+        {
             let mut sight = Sight::new(tx, vis);
             for id in ids {
                 let found: Vec<(String, String, String, String, bool)> = {
@@ -1629,15 +1704,14 @@ impl Store {
                             "first_delivery",
                             std::slice::from_ref(&cid),
                             &now,
-                            &mut touched,
+                            touched,
                         )?;
                     }
                     touched.threads.insert((aid, tid));
                 }
             }
             Ok(())
-        })?;
-        Ok(touched)
+        }
     }
 
     /// Gives every untargeted, undelivered row on artifact `id` to `session_id`
