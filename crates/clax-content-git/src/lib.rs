@@ -79,7 +79,8 @@
 //!   tagged commit whose message carries `Clax-Step` is listed with its tag
 //!   and mark ([`PushedCommit::marked`]), and the store, which alone holds
 //!   the marks its steps were given, tells a step's version whose process
-//!   died before recording it (that step's to replace) from a push;
+//!   died before recording it (that step's to replace, while it is `main`'s
+//!   head) from a push; one with commits built on it is a push;
 //!   more than 64 of them, or a `main` that no longer leads to that
 //!   version, are its head alone. [`ContentStore::tag_pushed`] creates
 //!   `v<n>` on one (create-only) and leaves `main` where it is, so the next
@@ -698,15 +699,20 @@ impl<H: RepoHost + Send + Sync, A: AssetStore> ContentStore for GitContent<H, A>
         )))
     }
 
-    /// The `Clax-Step` trailer of the commit tagged `v<n>`.
+    /// The `Clax-Step` trailer of the commit tagged `v<n>`, while `main` is
+    /// at it: a commit built on it makes it a push.
     async fn unrecorded_step(&self, id: &ArtifactId, n: u32) -> Result<Option<String>> {
         let Some(repo) = self.open(id).await? else {
             return Ok(None);
         };
-        let tags = versions_of(&repo.refs().await.map_err(core_error)?);
+        let refs = repo.refs().await.map_err(core_error)?;
+        let tags = versions_of(&refs);
         let Some(commit) = tags.get(&n) else {
             return Ok(None);
         };
+        if refs.get(MAIN) != Some(commit) {
+            return Ok(None);
+        }
         Ok(repo
             .read_commit_meta(commit)
             .await

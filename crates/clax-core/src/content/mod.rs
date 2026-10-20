@@ -334,8 +334,10 @@ pub trait ContentStore: Send + Sync {
     async fn remove_version(&self, id: &ArtifactId, n: u32) -> Result<()>;
 
     /// The step mark version `n` of `id` was written with
-    /// ([`VersionMeta::step`]); `None` when the version is absent or was
-    /// written without one. The store asks it of a version no row records,
+    /// ([`VersionMeta::step`]); `None` when the version is absent, was
+    /// written without one, or has anything built on it (a version above
+    /// it; in git, a commit `main` holds above it, which makes it a push).
+    /// The store asks it of a version no row records,
     /// a write a process killed before its transaction committed left (see
     /// [Ordering](self#ordering)). Every store keeps the marks
     /// ([`contract`] checks it); the default answers `None`, which leaves a

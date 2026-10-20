@@ -136,17 +136,16 @@ impl Store {
         };
         let mut current = a.current_version;
         let mut pushed = self.content.pushed_commits(id, current).await?;
-        // A step's version its process died before recording is the step's
-        // to replace, never a push; a mark the store holds for no step of
-        // that version is a push's words.
-        let mut strays = 0;
-        for c in &pushed {
-            match &c.marked {
-                Some(m) if self.is_step_mark(id, m.n, &m.mark)? => strays += 1,
-                _ => break,
-            }
+        // A step's version its process died before recording, while it is
+        // main's head, is the step's to replace (or, its step dead, the next
+        // writer's to remove), never a push; a mark the store holds for no
+        // step of that version is a push's words. Once a commit is built on
+        // it, it is the push it has become.
+        if let Some(m) = pushed.last().and_then(|c| c.marked.as_ref())
+            && self.is_step_mark(id, m.n, &m.mark)?
+        {
+            pushed.pop();
         }
-        pushed.drain(..strays);
         if pushed.is_empty() {
             return Ok(out);
         }

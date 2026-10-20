@@ -227,6 +227,9 @@ pub async fn a_version_keeps_the_step_mark_it_was_written_with(c: &dyn ContentSt
         c.unrecorded_step(&id, 2).await.unwrap().as_deref(),
         Some("other")
     );
+    // A version built on it makes it no step's to replace.
+    c.write_version(&id, 3, &marked(3, None)).await.unwrap();
+    assert_eq!(c.unrecorded_step(&id, 2).await.unwrap(), None, "built on");
     c.delete_artifact(&id).await.unwrap();
     assert_eq!(c.unrecorded_step(&id, 2).await.unwrap(), None);
 }

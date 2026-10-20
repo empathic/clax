@@ -1201,8 +1201,14 @@ present with its own mark (`ContentStore::unrecorded_step`), removes it
 and writes it again, then commits once; git's push reconcile
 (`ContentStore::pushed_commits` lists each tagged commit's tag and mark,
 `PushedCommit::marked`) leaves a tagged commit with a step's mark to
-that step rather than recording it as a push, and records one whose
-mark the store does not hold as the push it is. Content no step marked,
+that step rather than recording it as a push while it is `main`'s head,
+and records one whose mark the store does not hold as the push it is. A
+step's version with commits pushed on top of it (a clone fetched it in
+the window after the kill) is a push too: the reconcile records it and
+the commits above it as versions, the content stores no longer answer
+its mark (`unrecorded_step` answers a mark only for a version nothing is
+built on), and the step's resume answers `version_moved` as for any
+moved base. Content no step marked,
 or another step marked, is never replaced: the files refuse the write as
 before (`clax doctor` lists a stray directory), and git records an
 unmarked commit as a push.

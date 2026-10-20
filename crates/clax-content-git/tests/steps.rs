@@ -355,20 +355,18 @@ fn a_stray_another_step_marked_is_not_replaced<C: ContentStore + 'static>(
     assert_eq!(f.html(2).as_deref(), Some("<p>other</p>"));
 }
 
-/// Pushes a commit with version 1's tree onto `main` of `f`'s repository,
-/// its message carrying `mark` as a `Clax-Step` trailer, and tags it `v2`
-/// as the push reconcile tags a commit it adopts before the transaction
-/// recording it (a process killed between the two leaves it so). Its ID.
-fn push_forging(f: &Fixture<MemGitContent>, mark: &str) -> clax_git::ObjectId {
+/// Pushes a commit onto `main` of `f`'s repository, as someone with a
+/// clone does: on the commit `main` is at, with its tree, and `message`.
+/// Its ID.
+fn push(f: &Fixture<MemGitContent>, message: &str) -> clax_git::ObjectId {
     let repo = f
         .content
         .inner
         .host()
         .repo(&repo_name(f.id.as_str()))
         .unwrap();
-    let refs = clax_core::content::wait(repo.refs()).unwrap();
-    let v1 = refs["refs/tags/v1"];
-    let meta = clax_core::content::wait(repo.read_commit_meta(&v1))
+    let main = clax_core::content::wait(repo.refs()).unwrap()[MAIN];
+    let meta = clax_core::content::wait(repo.read_commit_meta(&main))
         .unwrap()
         .unwrap();
     let sig = clax_git::Signature::utc(
@@ -380,24 +378,72 @@ fn push_forging(f: &Fixture<MemGitContent>, mark: &str) -> clax_git::ObjectId {
     );
     let pushed = clax_git::Commit {
         tree: meta.tree,
-        parents: vec![v1],
+        parents: vec![main],
         author: sig.clone(),
         committer: sig,
-        message: format!("pushed\n\nClax-Version: 2\nClax-Step: {mark}\n"),
+        message: message.into(),
     }
     .to_object()
     .unwrap();
     let id = pushed.id();
     clax_core::content::wait(repo.apply(
         vec![pushed],
-        &[RefUpdate::new(MAIN, Some(v1), Some(id))],
+        &[RefUpdate::new(MAIN, Some(main), Some(id))],
         true,
     ))
     .unwrap()[0]
         .clone()
         .unwrap();
+    id
+}
+
+/// Pushes a commit onto version 1, its message carrying `mark` as a
+/// `Clax-Step` trailer, and tags it `v2` as the push reconcile tags a
+/// commit it adopts before the transaction recording it (a process killed
+/// between the two leaves it so). Its ID.
+fn push_forging(f: &Fixture<MemGitContent>, mark: &str) -> clax_git::ObjectId {
+    let id = push(
+        f,
+        &format!("pushed\n\nClax-Version: 2\nClax-Step: {mark}\n"),
+    );
     assert!(clax_core::content::wait(f.content.tag_pushed(&f.id, 2, &id.to_hex())).unwrap());
     id
+}
+
+/// A commit pushed onto a step's version that its killed process left
+/// unrecorded makes that version a push: the reconcile records both as
+/// versions, the step's resume finds the artifact moved, and the next
+/// publish follows them.
+#[test]
+fn a_push_built_on_a_killed_steps_version_records_it_as_a_push() {
+    let f = fixture(the_store_in_git);
+    f.content.kill_next();
+    assert!(f.commit("publish:1", "<p>two</p>").is_err());
+    let pushed = push(&f, "pushed on top\n");
+    let e = f.commit("publish:1", "<p>two</p>").unwrap_err();
+    assert!(matches!(e, StepError::VersionMoved { current: 3 }), "{e:?}");
+    assert_eq!(f.versions(), [1, 2, 3]);
+    assert_eq!(f.html(2).as_deref(), Some("<p>two</p>"));
+    assert_eq!(f.html(3).as_deref(), Some("<p>two</p>"));
+    assert_eq!(f.steps(), 0);
+    let repo = f
+        .content
+        .inner
+        .host()
+        .repo(&repo_name(f.id.as_str()))
+        .unwrap();
+    assert_eq!(clax_core::content::wait(repo.refs()).unwrap()[MAIN], pushed);
+    // The step plans again on version 3, and the artifact publishes on.
+    let mut again = f.step("<p>four</p>");
+    again.base = 3;
+    let c =
+        f.st.commit_publish_step(DAEMON, "j1", "publish:3", again)
+            .unwrap();
+    assert_eq!(c.step.version_n, Some(4));
+    let (_, v) =
+        f.st.publish_version(DAEMON, &f.id, publish("<p>five</p>", Some(4)), None)
+            .unwrap();
+    assert_eq!(v.n, 5);
 }
 
 /// A pushed commit that the reconcile tagged, whose message names a live

@@ -259,7 +259,7 @@ impl ContentStore for FsContent {
     }
 
     async fn unrecorded_step(&self, id: &ArtifactId, n: u32) -> Result<Option<String>> {
-        if !self.has_version(id, n) {
+        if !self.has_version(id, n) || self.above(id, n)?.is_some() {
             return Ok(None);
         }
         Ok(read_if_present(&self.step_path(id, n))?

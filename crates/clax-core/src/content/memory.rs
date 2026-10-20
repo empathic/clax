@@ -143,7 +143,7 @@ impl ContentStore for MemContent {
 
     async fn unrecorded_step(&self, id: &ArtifactId, n: u32) -> Result<Option<String>> {
         let g = self.inner();
-        if !g.versions.contains_key(&key(id, n)) {
+        if !g.versions.contains_key(&key(id, n)) || above(&g, id, n).is_some() {
             return Ok(None);
         }
         Ok(g.steps.get(&key(id, n)).cloned())
