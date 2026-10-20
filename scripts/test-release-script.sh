@@ -143,6 +143,13 @@ case "$1 $2" in
             *) echo "fake gh: unexpected: $*" >&2; exit 2 ;;
         esac ;;
     "run view")
+        # ci.yml's run 201 as a whole reads cancelled (its perf-log job), so
+        # only its bazel job (--json jobs) says whether CI passed.
+        case "$3 $*" in
+            "201 "*"status,conclusion"*) echo "completed cancelled"; exit 0 ;;
+            "201 "*" jobs "*) ;;
+            "201 "*) echo "fake gh: unexpected: $*" >&2; exit 2 ;;
+        esac
         # $FAKE_STATE/push-on-<ID>: the first view of run <ID> sees other work
         # land on origin's main.
         if [ -e "$S/push-on-$3" ]; then rm "$S/push-on-$3"; foreign_push; fi
@@ -496,7 +503,7 @@ case_8() {
     new_case
     echo "completed failure" > "$FAKE_STATE/201"
     act; rc=$?
-    if [ "$rc" = 1 ] && has "step 13 (Wait for CI on main) failed" && has "CI on main concluded failure" \
+    if [ "$rc" = 1 ] && has "step 13 (Wait for CI on main) failed" && has "CI on main (bazel) concluded failure" \
         && [ "$(count "gh workflow run publish-pi.yml --ref main -f dry_run=false -f sha=$(git --git-dir="$C/origin.git" rev-parse main)")" = 0 ]; then
         pass "failed CI on the pin commit stops at step 13, before the publish"
     else fail "failed CI on the pin commit stops at step 13 (rc=$rc: $(cat "$C/out"))"; fi

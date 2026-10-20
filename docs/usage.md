@@ -526,8 +526,9 @@ Bazelisk or Bazel, `python3`, `curl` and `npm` are on `PATH`. The release then
 runs the manual steps below, in order, as you: it signs both commits and
 the tag with your signing key, pushes the tag alone, waits for the Release
 workflow on it and checks that the release lists `SHA256SUMS`, pins the
-plugins, pushes `main`, waits for CI on the pin commit (or the merge on
-it, below), and runs Publish Pi
+plugins, pushes `main`, waits for CI's gate (ci.yml's `bazel` job, not
+the perf-log job, which is cancelled when pushes pile up) on the pin
+commit (or the merge on it, below), and runs Publish Pi
 package with `dry_run` off and waits for it. It never force-pushes, never
 deletes a tag, and checks that each commit and the tag it pushes carries a
 signature. The output of `just` and of the waits is also appended to
@@ -604,8 +605,8 @@ refusal but a missing Bazel, `python3`, `curl`, `npm` or `pnpm`.
 The Pi package, `@empathic/clax-pi` on npm, is published from the pin
 commit, not the tag: its wrapper must pin the release that shares its
 version, which `.github/workflows/publish-pi.yml` checks, with that the
-commit (its `sha` input, main's tip by default) is on main and CI passed on
-it, before it
+commit (its `sha` input, main's tip by default) is on main and CI's
+`bazel` job passed on it, before it
 typechecks, packs and publishes with provenance through npm trusted
 publishing. npm lets a package name a trusted publisher only once it
 exists, so while `npm view @empathic/clax-pi` finds nothing, `just

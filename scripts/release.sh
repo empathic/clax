@@ -147,6 +147,12 @@ find_run() {
         | awk -v s="$3" '$2 == s { print $1 }' | sed -n 1p
 }
 run_state() { gh run view "$1" --json status,conclusion --jq '"\(.status) \(.conclusion)"'; }
+# The state of ci.yml run $1's gate, its `bazel` job, as run_state prints
+# it: the run's own conclusion also counts the perf-log job, which waits in
+# a queue of its own and is cancelled when pushes pile up.
+ci_gate_state() {
+    gh run view "$1" --json jobs --jq '.jobs[] | select(.name == "bazel") | "\(.status) \(.conclusion)"' | sed -n 1p
+}
 release_exists() { gh release view "$TAG" --json tagName >/dev/null 2>&1; }
 # The Pi package's npm name, from plugins/pi/package.json.
 pi_package() { sed -n 's/^  "name": "\(.*\)",$/\1/p' "$ROOT/plugins/pi/package.json"; }
@@ -424,7 +430,7 @@ COMMANDS=(
     [10]="just ci"
     [11]="git commit -S -a -m \"$PIN_SUBJECT\""
     [12]="git push origin main (after git merge -S origin/main, when origin's main moved on)"
-    [13]="gh run list --workflow ci.yml (the push run on the pin commit, or the merge on it), wait"
+    [13]="gh run list --workflow ci.yml (the push run on the pin commit, or the merge on it), wait for its bazel job"
     [14]="gh workflow run publish-pi.yml --ref main -f dry_run=false -f sha=<that commit>, wait (the first version: npm publish from here)"
     [15]="print the steps left by hand"
 )
@@ -446,7 +452,7 @@ done_13() {
     local id
     done_14 && return 0
     id="$(find_run ci.yml push "$PUBLISH_COMMIT")"
-    [ -n "$id" ] && [ "$(run_state "$id")" = "completed success" ]
+    [ -n "$id" ] && [ "$(ci_gate_state "$id")" = "completed success" ]
 }
 done_14() { pi_has_version; }
 done_15() { false; }
@@ -514,14 +520,14 @@ await_output() {
 }
 
 # Waits for workflow run $1 ($2 names it) to complete; fails unless it
-# succeeded.
+# succeeded. $3 reads the state (default run_state).
 await_run() {
-    local id="$1" what="$2" state last="" polls=0 rc
+    local id="$1" what="$2" read="${3:-run_state}" state last="" polls=0 rc
     say "  $what: run $id (gh run watch $id --repo $GH_REPO)"
     POLL_FAILS=0
     while :; do
         rc=0
-        poll_once run_state "$id" || rc=$?
+        poll_once "$read" "$id" || rc=$?
         [ "$rc" != 2 ] || return 1
         state=""
         [ "$rc" != 0 ] || state="$POLL_OUT"
@@ -629,9 +635,9 @@ step_12() {
 }
 step_13() {
     local id
-    say "  waiting for CI on $PUBLISH_COMMIT (polls every ${POLL}s, at most $MAX_POLLS)"
+    say "  waiting for CI's bazel job on $PUBLISH_COMMIT (polls every ${POLL}s, at most $MAX_POLLS; not perf-log)"
     id="$(await_output find_run ci.yml push "$PUBLISH_COMMIT")" || { say "  no CI run on $PUBLISH_COMMIT appeared"; return 1; }
-    await_run "$id" "CI on main"
+    await_run "$id" "CI on main (bazel)" ci_gate_state
 }
 # The newest publish-pi.yml run that publishes (not a dry run) from commit
 # $1, by the title the workflow gives it, or nothing.

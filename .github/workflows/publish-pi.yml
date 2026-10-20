@@ -72,10 +72,17 @@ jobs:
             echo "$sha is not on main" >&2
             exit 1
           fi
-          conclusion="$(gh run list --repo "$GITHUB_REPOSITORY" --workflow ci.yml --event push --commit "$sha" \
-            --limit 1 --json conclusion --jq '.[0].conclusion // ""')"
+          # The gate is ci.yml's bazel job: the run's own conclusion also
+          # counts perf-log, which is cancelled when pushes pile up.
+          run="$(gh run list --repo "$GITHUB_REPOSITORY" --workflow ci.yml --event push --commit "$sha" \
+            --limit 1 --json databaseId --jq '.[0].databaseId // ""')"
+          conclusion=""
+          if [ -n "$run" ]; then
+            conclusion="$(gh run view "$run" --repo "$GITHUB_REPOSITORY" --json jobs \
+              --jq '.jobs[] | select(.name == "bazel") | .conclusion')"
+          fi
           if [ "$conclusion" != success ]; then
-            echo "CI has not passed on $sha (${conclusion:-no run}): publish from a commit CI passed" >&2
+            echo "CI's bazel job has not passed on $sha (${conclusion:-no run}): publish from a commit CI passed" >&2
             exit 1
           fi
       - name: Check the version and the pin
