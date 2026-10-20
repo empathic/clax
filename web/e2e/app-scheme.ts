@@ -30,16 +30,25 @@
 //   `…/`) is followed in the core and its target answered under the
 //   request's URL; a document request for `/v/<n>` answered 308 is a page
 //   that refreshes to its `Location`; any other 3xx is a 404.
-// - Each main-frame request takes a number, which replaces the kept one;
-//   a shell document answered 200 to it gets a fresh nonce, written as
-//   `<meta name="clax-nonce">` right after its `<head>` (unless
-//   `nonceMeta: false`, the app over loopback), and kept with that number.
-//   A document that commits in the main frame (CDP's Page.frameNavigated;
-//   a same-document navigation is Page.navigatedWithinDocument and changes
-//   nothing) takes the kept nonce when its URL is the kept one's, and the
-//   host gives it to `claxTransport.init` (without the meta) and to
-//   `claxHost.init` once the document has loaded; any other commit, or one
-//   no nonce was minted for, leaves the load without a channel.
+// - Each main-frame request takes a number, which replaces the kept one
+//   (with its URL); a shell document answered 200 to it gets a fresh
+//   nonce, written as `<meta name="clax-nonce">` right after its `<head>`
+//   (unless `nonceMeta: false`, the app over loopback), which joins that
+//   number's set. The nonces are kept as the app's surface keeps them
+//   (`ShellLoads`, apps/clax_app/lib/core/shell_link.dart): a document
+//   that commits in the main frame (CDP's Page.frameNavigated; a
+//   same-document navigation is Page.navigatedWithinDocument and changes
+//   nothing) at the kept URL commits the kept number, whose set is the
+//   load's candidates, and the sets of every number up to it are dropped;
+//   any other commit, or a number with no set, leaves the load without a
+//   channel. The first candidate the main frame presents pins the load: a
+//   message under it, or, once the document has loaded with nothing
+//   pinned, the document's `clax-nonce` meta, which the host reads (as
+//   the app reads it with runJavaScriptReturningResult; here outside the
+//   queue). Without the meta the host names the nonce itself, so its one
+//   candidate is pinned at the commit. Once the load is pinned and loaded,
+//   the host gives the nonce to `claxTransport.init` (without the meta)
+//   and to `claxHost.init`.
 //
 // The channel (`window.ClaxHost`) is injected only into frames of the
 // shell's origin, as Android's web message listener is; it posts to a
@@ -156,8 +165,9 @@ function utf8(b: Buffer): string | null {
 type Call = { nonce: string; id: number; method: string; path: string; headers: [string, string][]; body: Buffer[]; chunked: boolean; ac: AbortController };
 /** A subscription the relay is pumping. */
 type Stream = { nonce: string; id: number; lastEventId: string | null; ac: AbortController };
-/** One load of the shell document: its navigation's number and nonce. */
-type Load = { n: number; url: string; nonce: string; calls: Map<number, Call>; streams: Map<number, Stream> };
+/** One load of the shell document: its candidates until one is pinned,
+ * then its nonce. */
+type Load = { url: string; candidates: Set<string>; nonce: string | null; loaded: boolean; inited: boolean; calls: Map<number, Call>; streams: Map<number, Stream> };
 
 /** A call the relay sent, and what it answered (`answered` once it has). */
 export type CallRecord = { nonce: string; id: number; method: string; path: string; chunked: boolean; body?: string | null; answered?: { status: number; text: string | null }; aborted?: boolean };
@@ -169,8 +179,14 @@ export type AppHostOptions = {
    * without it the shell waits for `claxTransport.init`. */
   nonceMeta?: boolean;
   /** Call `claxTransport.init` (without the meta) and `claxHost.init` once
-   * each load has loaded (default true); else `init()` does. */
+   * each load has loaded and is pinned (default true); else `init()` does. */
   autoInit?: boolean;
+  /** Hold every message the shell posts until `releasePosts()`: a shell
+   * that posts nothing before its load. */
+  holdPosts?: boolean;
+  /** Read the document's `clax-nonce` meta at its load when nothing is
+   * pinned (default true), as the app does. */
+  readMeta?: boolean;
   /** `claxHost.init`'s other fields (`native`, `platform`). */
   initWith?: Record<string, unknown>;
 };
@@ -183,8 +199,10 @@ export class AppHost {
   readonly dropped: Dropped[] = [];
   readonly calls: CallRecord[] = [];
   readonly subscriptions: SubscriptionRecord[] = [];
-  /** The nonces of the loads that committed, oldest first. */
+  /** The nonces of the loads that were pinned, oldest first. */
   readonly loads: string[] = [];
+  /** How each load was pinned (a message, or its meta read at the load), oldest first. */
+  readonly pins: ("message" | "meta" | "host")[] = [];
   /** What the scheme answered, by URL, newest last. */
   readonly scheme: { url: string; status: number; mainFrame: boolean }[] = [];
   /** The expressions the host ran in the shell, oldest first. */
@@ -192,8 +210,10 @@ export class AppHost {
   /** The URLs of the main frame's same-document navigations, oldest first. */
   readonly sameDocument: string[] = [];
   private load: Load | null = null;
-  /** The latest main-frame request's number and URL, and the nonce minted for it if any. */
-  private kept: { n: number; url: string; nonce: string | null } | null = null;
+  /** The latest main-frame request's number and URL. */
+  private kept: { n: number; url: string } | null = null;
+  /** The nonces minted, by navigation number. */
+  private sets = new Map<number, Set<string>>();
   private navigations = 0;
   private queue: string[] = [];
   private held = false;
@@ -213,11 +233,15 @@ export class AppHost {
   async install(): Promise<this> {
     const page = this.page;
     await page.exposeBinding(BINDING, ({ frame }, text: unknown) => this.receive(frame === page.mainFrame(), frame.url(), text));
-    await page.addInitScript(({ shell, binding }) => {
+    await page.addInitScript(({ shell, binding, held }) => {
       if (location.origin !== shell) return;
-      const post = (m: string) => (window as unknown as Record<string, (m: string) => void>)[binding](String(m));
-      Object.defineProperty(window, "ClaxHost", { value: Object.freeze({ postMessage: post }) });
-    }, { shell: SHELL, binding: BINDING });
+      const deliver = (m: string) => (window as unknown as Record<string, (m: string) => void>)[binding](String(m));
+      // With holdPosts the main frame's posts wait for claxReleasePosts().
+      const waiting: string[] = [];
+      let holding = held && window.top === window;
+      if (holding) Object.defineProperty(window, "claxReleasePosts", { value: () => { holding = false; for (const m of waiting.splice(0)) deliver(m); } });
+      Object.defineProperty(window, "ClaxHost", { value: Object.freeze({ postMessage: (m: string) => { if (holding) waiting.push(String(m)); else deliver(m); } }) });
+    }, { shell: SHELL, binding: BINDING, held: this.opts.holdPosts === true });
     await page.route(u => u.hostname === SHELL_HOST || CONTENT_HOST.test(u.hostname), route => this.answerScheme(route));
     // The main frame's commits, as the WebView reports them: CDP tells a
     // document's commit (Page.frameNavigated) from a navigation within one
@@ -236,8 +260,17 @@ export class AppHost {
     return this;
   }
 
-  /** The load's nonce, once one committed. */
+  /** The load's nonce, once it is pinned. */
   get nonce(): string | null { return this.load?.nonce ?? null; }
+
+  /** The load's nonce, once the main frame has presented it. */
+  async pinned(): Promise<string> {
+    await expect.poll(() => this.nonce).not.toBeNull();
+    return this.nonce!;
+  }
+
+  /** Sends what the shell posted while `holdPosts` held it, and every post after. */
+  async releasePosts(): Promise<void> { await this.evalNow("window.claxReleasePosts(); 0"); }
 
   /** The messages of `type` of this load (or of `nonce`'s), oldest first, without their nonce. */
   ofType(type: string, nonce = this.nonce): HostMessage[] {
@@ -317,11 +350,14 @@ export class AppHost {
   async init(): Promise<void> {
     const load = this.load;
     if (!load) throw new Error("no load committed");
-    if (this.opts.nonceMeta === false) this.run(`window.claxTransport.init(${JSON.stringify(load.nonce)})`);
+    const nonce = await this.pinned();
+    if (this.load !== load || load.inited) return;
+    load.inited = true;
+    if (this.opts.nonceMeta === false) this.run(`window.claxTransport.init(${JSON.stringify(nonce)})`);
     if (!new URL(load.url).searchParams.has("app")) return;
     await expect.poll(() => this.evalNow<string>("typeof window.claxHost")).toBe("object");
     if (this.load !== load) return;
-    this.run(`window.claxHost.init(${JSON.stringify({ nonce: load.nonce, ...this.opts.initWith })})`);
+    this.run(`window.claxHost.init(${JSON.stringify({ nonce, ...this.opts.initWith })})`);
   }
 
   /** Runs `expression` in the shell now, outside the queue, with no user gesture. */
@@ -345,14 +381,20 @@ export class AppHost {
     // shell's host outside /a/ itself, unnumbered); a nonce is minted only
     // for a shell document answered 200.
     const numbered = mainNav && (!shell || document) ? ++this.navigations : null;
-    if (numbered !== null) this.kept = { n: numbered, url: req.url(), nonce: null };
+    if (numbered !== null) this.kept = { n: numbered, url: req.url() };
     const answer = await this.schemeAnswer(req, url, shell, mainNav, document);
     const headers = answer.headers.filter(([k]) => !k.toLowerCase().startsWith("access-control-"));
     let body = answer.body;
     if (numbered !== null && document && answer.status === 200) {
       const nonce = randomBytes(18).toString("base64url");
-      if (this.kept?.n === numbered) this.kept.nonce = nonce;
-      if (this.opts.nonceMeta !== false) body = Buffer.from(body.toString("utf8").replace("<head>", `<head><meta name="clax-nonce" content="${nonce}">`));
+      const html = body.toString("utf8");
+      // A document with no <head> gets no nonce, as the app's answerer.
+      if (html.includes("<head>")) {
+        let set = this.sets.get(numbered);
+        if (!set) this.sets.set(numbered, set = new Set());
+        set.add(nonce);
+        if (this.opts.nonceMeta !== false) body = Buffer.from(html.replace("<head>", `<head><meta name="clax-nonce" content="${nonce}">`));
+      }
     }
     this.scheme.push({ url: req.url(), status: answer.status, mainFrame: mainNav });
     const out: Record<string, string> = {};
@@ -405,15 +447,39 @@ export class AppHost {
   // ---- loads ----
 
   /** A document committed in the main frame (never a same-document
-   * navigation): its load takes the kept number's nonce when its URL is
-   * the kept one's and a nonce was minted for it; else it has no channel
-   * (spec §4.4), and the previous load's calls and streams end. */
+   * navigation): the kept number when its URL is the kept one's, whose set
+   * is the new load's candidates; the sets of every number up to it are
+   * dropped. A commit with no number, or a number with no set, leaves the
+   * load without a channel (spec §4.4). The previous load's calls and
+   * streams end. */
   private committed(url: string): void {
     const k = this.kept;
-    if (!k || k.url !== url || new URL(url).origin !== SHELL) return this.switchTo(null);
-    this.kept = null;
-    if (k.nonce === null) return this.switchTo(null);
-    this.switchTo({ n: k.n, url, nonce: k.nonce, calls: new Map(), streams: new Map() });
+    const n = k && k.url === url && new URL(url).origin === SHELL ? k.n : null;
+    if (n !== null) this.kept = null;
+    const candidates = n === null ? undefined : this.sets.get(n);
+    if (n !== null) for (const m of [...this.sets.keys()]) if (m <= n) this.sets.delete(m);
+    if (!candidates?.size) return this.switchTo(null);
+    const load: Load = { url, candidates, nonce: null, loaded: false, inited: false, calls: new Map(), streams: new Map() };
+    this.switchTo(load);
+    if (this.opts.nonceMeta === false && candidates.size === 1) this.pin(load, [...candidates][0], "host");
+  }
+
+  /** Whether a message under `nonce` is `load`'s: its pinned nonce, or
+   * before the pin one of its candidates, which pins it. */
+  private present(load: Load, nonce: unknown, by: "message" | "meta"): boolean {
+    if (typeof nonce !== "string") return false;
+    if (load.nonce !== null) return nonce === load.nonce;
+    if (!load.candidates.has(nonce)) return false;
+    this.pin(load, nonce, by);
+    return true;
+  }
+
+  private pin(load: Load, nonce: string, by: "message" | "meta" | "host"): void {
+    load.nonce = nonce;
+    load.candidates = new Set();
+    this.loads.push(nonce);
+    this.pins.push(by);
+    if (load.loaded) this.autoInit(load);
   }
 
   private switchTo(load: Load | null): void {
@@ -428,12 +494,24 @@ export class AppHost {
       }
       old.streams.clear();
     }
-    if (load) this.loads.push(load.nonce);
   }
 
+  /** The main frame's document loaded: with nothing pinned the host reads
+   * its `clax-nonce` meta and presents it; once pinned, it inits. */
   private async loaded(): Promise<void> {
-    if (this.opts.autoInit === false || !this.load) return;
-    await this.init().catch(() => { /* the document went away */ });
+    const load = this.load;
+    if (!load) return;
+    load.loaded = true;
+    if (load.nonce === null && this.opts.readMeta !== false) {
+      const meta = await this.evalNow<string>(`document.querySelector('meta[name="clax-nonce"]')?.content ?? ""`).catch(() => "");
+      if (this.load === load) this.present(load, meta, "meta");
+    }
+    if (load.nonce !== null) this.autoInit(load);
+  }
+
+  private autoInit(load: Load): void {
+    if (this.opts.autoInit === false || load.inited || this.load !== load) return;
+    void this.init().catch(() => { /* the document went away */ });
   }
 
   // ---- the channel ----
@@ -449,14 +527,15 @@ export class AppHost {
     }
     if (!mainFrame || new URL(frameUrl).origin !== SHELL) { this.dropped.push({ why: "frame", message: m }); return; }
     const load = this.load;
-    if (!load || m.nonce !== load.nonce) { this.dropped.push({ why: "nonce", message: m }); return; }
+    if (!load || !this.present(load, m.nonce, "message")) { this.dropped.push({ why: "nonce", message: m }); return; }
     this.accepted.push(m);
+    const nonce = load.nonce!;
     const id = Number(m.id);
     switch (m.type) {
       case "call": {
         const headers = Array.isArray(m.headers) ? (m.headers as [string, string][]).filter(([k]) => k.toLowerCase() !== "host") : [];
         const body = typeof m.body64 === "string" ? Buffer.from(m.body64, "base64") : typeof m.body === "string" ? Buffer.from(m.body) : Buffer.alloc(0);
-        const call: Call = { nonce: load.nonce, id, method: String(m.method), path: String(m.path), headers, body: m.chunked ? [] : [body], chunked: m.chunked === true, ac: new AbortController() };
+        const call: Call = { nonce, id, method: String(m.method), path: String(m.path), headers, body: m.chunked ? [] : [body], chunked: m.chunked === true, ac: new AbortController() };
         load.calls.set(id, call);
         this.calls.push({ nonce: call.nonce, id, method: call.method, path: call.path, chunked: call.chunked });
         if (!call.chunked) void this.answerCall(load, call);
@@ -532,7 +611,7 @@ export class AppHost {
   }
 
   private async subscribe(load: Load, id: number, lastEventId: string | null): Promise<void> {
-    const s: Stream = { nonce: load.nonce, id, lastEventId, ac: new AbortController() };
+    const s: Stream = { nonce: load.nonce!, id, lastEventId, ac: new AbortController() };
     load.streams.set(id, s);
     this.subscriptions.push({ nonce: s.nonce, id, lastEventId });
     const fault = this.streamFaults.shift();

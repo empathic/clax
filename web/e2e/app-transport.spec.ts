@@ -105,7 +105,8 @@ test("the relay sends one stream message per SSE block, however the core's body 
 test("calls go out from boot under the document's nonce, each answer names it, and a message under another nonce is dropped", async ({ page }) => {
   const { host: h } = await openInApp(page, "Transport nonce", { host: { autoInit: false } });
   const meta = await h.evalNow<string>(`document.querySelector('meta[name="clax-nonce"]').content`);
-  expect(meta).toBe(h.nonce);
+  expect(meta).toBe(await h.pinned());
+  expect(h.pins).toEqual(["message"]);
   // Before the app's init, the view has made its calls and opened its stream.
   await expect.poll(() => h.streamsOf().length).toBeGreaterThan(0);
   await expect.poll(() => h.calls.filter(c => c.answered).length).toBeGreaterThan(0);
@@ -180,12 +181,12 @@ test("a reload's calls and stream take only their own load's answers: the previo
   // The app's answers to the first load are sent and not yet run.
   h.hold();
   await page.goto(`${SHELL}/a/${id}?app=1`);
-  const first = h.nonce!;
+  const first = await h.pinned();
   await probe(first, "one");
   // What the core answers the next load differs: it has a thread.
   const thread = await postThread(id, "a thread after the first load");
   await page.reload();
-  const second = h.nonce!;
+  const second = await h.pinned();
   expect(second).not.toBe(first);
   await probe(second, "two");
   // The two loads' call IDs overlap: had a first load's answer landed on
@@ -216,16 +217,45 @@ test("a reload's calls and stream take only their own load's answers: the previo
   expect((await quietEval<string[]>(page, "window.claxStreamLog")).join("")).not.toContain("late-push");
 });
 
+test("the load is pinned as the app's surface pins it: by the first candidate of its navigation the main frame presents, never by another navigation's nonce", async ({ page }) => {
+  const { artifact } = await publish(d.base, d.token, "Transport pin", { "index.html": PAGE });
+  const h = await hostChannel(page, { relay: d, holdPosts: true, readMeta: false });
+  /** Posts straight to the host's binding, past the held channel. */
+  const raw = (nonce: string) => h.evalNow(`window.${BINDING}(JSON.stringify({ type: "barrier", mark: "raw", nonce: ${JSON.stringify(nonce)} })); 0`);
+  const meta = () => h.evalNow<string>(`document.querySelector('meta[name="clax-nonce"]').content`);
+  await page.goto(`${SHELL}/a/${artifact.id}?app=1`);
+  const first = await meta();
+  await raw("not-a-candidate-0123456789");
+  await expect.poll(() => h.dropped.length).toBe(1);
+  expect(h.nonce).toBeNull();
+  await raw(first);
+  expect(await h.pinned()).toBe(first);
+  expect(h.pins).toEqual(["message"]);
+  await h.evalNow("window.claxReleasePosts(); 0");
+  await expect.poll(() => h.ofType("ready", first).length).toBeGreaterThan(0);
+  // The next navigation's set holds only its own nonce: the first one's, presented first, pins nothing.
+  await page.reload();
+  const second = await meta();
+  expect(second).not.toBe(first);
+  const dropped = h.dropped.length;
+  await raw(first);
+  await expect.poll(() => h.dropped.length).toBe(dropped + 1);
+  expect(h.nonce).toBeNull();
+  await raw(second);
+  expect(await h.pinned()).toBe(second);
+  expect(h.loads).toEqual([first, second]);
+});
+
 test("an init the app ran for the previous load leaves the next load's channel its own", async ({ page }) => {
   const { artifact } = await publish(d.base, d.token, "Transport stale init", { "index.html": PAGE });
   const h = await hostChannel(page, { relay: d });
   h.hold();
   await page.goto(`${SHELL}/a/${artifact.id}?app=1`);
-  const first = h.nonce!;
+  const first = await h.pinned();
   const inits = (nonce: string) => h.waiting.filter(e => e.startsWith("window.claxHost.init(") && e.includes(JSON.stringify(nonce)));
   await expect.poll(() => inits(first).length).toBe(1);
   await page.reload();
-  const second = h.nonce!;
+  const second = await h.pinned();
   await expect.poll(() => inits(second).length).toBe(1);
   // The first load's init runs in the second load's document, before its own.
   await h.release();
@@ -237,7 +267,7 @@ test("a same-document navigation keeps the load's channel; a reload the core ans
   const { id, host: h } = await openInApp(page, "Transport no nonce");
   await live(h);
   await expect.poll(() => h.ofType("ready").length).toBeGreaterThan(0);
-  const first = h.nonce!;
+  const first = await h.pinned();
   // A navigation within the document is no new load.
   await h.evalNow(`history.pushState(null, "", location.pathname + "?app=1&same=1"); 0`);
   await expect.poll(() => h.sameDocument.length).toBe(1);
