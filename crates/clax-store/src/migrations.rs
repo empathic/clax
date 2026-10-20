@@ -4416,6 +4416,26 @@ mod tests {
             .unwrap()
     }
 
+    /// A connection to `home`'s database that neither checkpoints as it
+    /// writes nor when it closes: what it writes stays in the write-ahead
+    /// log, as a process that ended without a checkpoint leaves it.
+    fn connection_leaving_wal_frames(home: &Home) -> Connection {
+        let c = Connection::open(home.db_path()).unwrap();
+        c.set_db_config(
+            rusqlite::config::DbConfig::SQLITE_DBCONFIG_NO_CKPT_ON_CLOSE,
+            true,
+        )
+        .unwrap();
+        c.pragma_update(None, "wal_autocheckpoint", 0).unwrap();
+        c
+    }
+
+    /// The size of `home`'s write-ahead log in bytes (0 when it has none).
+    fn wal_frames(home: &Home) -> u64 {
+        let wal = format!("{}-wal", home.db_path().display());
+        std::fs::metadata(wal).map(|m| m.len()).unwrap_or(0)
+    }
+
     fn table_count(c: &Connection, name: &str) -> i64 {
         c.query_row(
             "SELECT COUNT(*) FROM sqlite_schema WHERE type = 'table' AND name = ?1",
@@ -4555,11 +4575,17 @@ mod tests {
         let dir = tempfile::tempdir().unwrap();
         let home = Home::at(dir.path().join("ax"));
         installed_at_43(&home);
-        {
-            let c = Connection::open(home.db_path()).unwrap();
+        // The change is left in the write-ahead log, as a home whose last
+        // process ended without a checkpoint has it. The store's connection
+        // closing last checkpoints those frames into the file, so the file's
+        // bytes change while its content does not: what is compared is the
+        // content.
+        let before = {
+            let c = connection_leaving_wal_frames(&home);
             c.execute_batch("DROP TABLE sample_grants;").unwrap();
-        }
-        let bytes = std::fs::read(home.db_path()).unwrap();
+            (user_version(&c), schema_of(&c), every_row(&c))
+        };
+        assert!(wal_frames(&home) > 0, "the home holds frames in its WAL");
         let err = match Store::open(&home) {
             Ok(_) => panic!("a home whose schema disagrees with its version must be refused"),
             Err(e) => e,
@@ -4569,13 +4595,14 @@ mod tests {
                 if detail.contains("sample_grants")),
             "{err:?}"
         );
-        assert_eq!(
-            std::fs::read(home.db_path()).unwrap(),
-            bytes,
-            "left as it was"
-        );
+        let c = Connection::open(home.db_path()).unwrap();
+        let after = (user_version(&c), schema_of(&c), every_row(&c));
+        assert!(after == before, "left as it was: {after:?}");
         let copies = crate::backup::list(&crate::backup::dir(&home));
         assert_eq!(copies.len(), 1, "copied before anything: {copies:?}");
+        let copy = Connection::open(&copies[0]).unwrap();
+        let copied = (user_version(&copy), schema_of(&copy), every_row(&copy));
+        assert!(copied == before, "the copy holds the WAL's frames too: {copied:?}");
     }
 
     #[test]
