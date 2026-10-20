@@ -414,6 +414,9 @@ person knows, ask where "Where to ask" says.
   in an option's `preview`. Leave `options` out for a free-text answer. Set
   `multi_select` when several may apply. The person can always type their
   own answer instead.
+- A question's text renders as GitHub-flavoured Markdown, with no images
+  and no raw HTML; option labels and descriptions show as plain text, and
+  a `preview` verbatim in monospace.
 - When the result says `call_again`, call `ask` again with `question_id`.
 - The answers to your question come back in the result's `reply`. An
   `answers` array on any tool result (`ask`'s included) holds late answers

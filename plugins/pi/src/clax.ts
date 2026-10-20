@@ -143,14 +143,14 @@ const WaitArgs = Type.Object({
 }, strict);
 
 const QOption = Type.Object({
-  label: str("1 to 100 characters, unique within the question."),
+  label: str("1 to 100 characters, unique within the question; plain text."),
   description: opt(Type.String()),
-  preview: opt(str("Text shown beside the options (a mockup or code), at most 20,000 characters.")),
+  preview: opt(str("Text shown verbatim in monospace beside the options (a mockup or code), at most 20,000 characters.")),
   recommended: opt(Type.Boolean({ description: "The option you recommend (at most one per question)." })),
 }, strict);
 
 const Question = Type.Object({
-  question: str("The question, 1 to 2,000 characters, unique within the ask."),
+  question: str("The question, 1 to 2,000 characters, unique within the ask; rendered as GitHub-flavoured Markdown, with no images and no raw HTML."),
   header: str("A short chip label, 1 to 12 characters."),
   options: opt(Type.Array(QOption, { description: "Two to four options, or none for a free-text answer." })),
   multi_select: opt(Type.Boolean({ description: "The person may pick several options." })),
@@ -2158,7 +2158,7 @@ export function claxExtension(opts: ClaxOptions = {}): (pi: ExtensionAPI) => voi
       DbBatchArgs, (ctx, a) => tools.dbBatch(ctx, a));
 
     define("ask", "Clax ask",
-      "Ask the person one to four questions in Clax and wait for the answers (up to `timeout_s`, default 600 s). Each question has a short `header` (at most 12 characters) and two to four `options` (`label`, optional `description`, `preview` text, `recommended`) or none for a free-text answer; `multi_select` allows several; the person may also type an \"Other\" answer. Pass `url_or_id` when the question is about a page, and `thread_id` when it arose in one of its threads, so it shows there. With `in_terminal: true`, sending each question's `question` and `header` only, it asks nothing: it shows the person in Clax that you are asking in the terminal, returns at once, and you cancel it once they answer. If the result says `call_again`, call `ask` again with `question_id`. The answers come back in `reply`, in the person's own words; write the result's `tell_terminal` line in chat. To ask your person to let you see content withheld from you, pass `approval` (`url_or_id`, optional `thread_id`, and `author`, a public ID from the `withheld` summary's `author_ids`) instead of `questions`: the result's `status` is `approved`, `declined` or `open` (then call again with `approval_id`).",
+      "Ask the person one to four questions in Clax and wait for the answers (up to `timeout_s`, default 600 s). Each question has a short `header` (at most 12 characters) and two to four `options` (`label`, optional `description`, `preview` text, `recommended`) or none for a free-text answer; `multi_select` allows several; the person may also type an \"Other\" answer. A question's text renders as GitHub-flavoured Markdown, with no images and no raw HTML; option labels and descriptions show as plain text, and a preview verbatim in monospace. Pass `url_or_id` when the question is about a page, and `thread_id` when it arose in one of its threads, so it shows there. With `in_terminal: true`, sending each question's `question` and `header` only, it asks nothing: it shows the person in Clax that you are asking in the terminal, returns at once, and you cancel it once they answer. If the result says `call_again`, call `ask` again with `question_id`. The answers come back in `reply`, in the person's own words; write the result's `tell_terminal` line in chat. To ask your person to let you see content withheld from you, pass `approval` (`url_or_id`, optional `thread_id`, and `author`, a public ID from the `withheld` summary's `author_ids`) instead of `questions`: the result's `status` is `approved`, `declined` or `open` (then call again with `approval_id`).",
       "Ask the person questions in Clax and wait for their answers",
       AskArgs, (ctx, a) => tools.ask(ctx, a));
     define("where_to_ask", "Clax where to ask",

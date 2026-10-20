@@ -2984,7 +2984,7 @@ nothing; the note is kept in the daemon's memory until that poll.
 
 | Argument | Meaning |
 |---|---|
-| `questions` | One to four questions (the shape above). Required unless `question_id`. |
+| `questions` | One to four questions (the shape above): each question's text renders as GitHub-flavoured Markdown, with no images and no raw HTML; labels and descriptions show as plain text, previews verbatim in monospace. Required unless `question_id`. |
 | `question_id` | Keep waiting on a question this session asked. |
 | `url_or_id` | Optional, with `questions`: the artifact, or a web page's URL (its live page), the question is about. |
 | `thread_id` | Optional, with `questions` and `url_or_id`: a thread of that artifact the question arose from; the question shows in that thread. |
