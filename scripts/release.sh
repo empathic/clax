@@ -605,12 +605,20 @@ step_12() {
             g merge --abort 2>/dev/null || true
             say "  the merge does not apply cleanly. Merge by hand, signed and with this subject:"
             say "    git merge -S origin/main -m \"$MERGE_SUBJECT\""
-            say "  resolve, commit, then run this again."
+            say "  resolve, then commit it signed (git commit -S; git does not carry -S past a conflict),"
+            say "  then run this again."
             return 1
         fi
     fi
     for c in $(g rev-list origin/main..HEAD); do
-        is_signed_commit "$c" || { say "  $c carries no signature; not pushing main"; return 1; }
+        is_signed_commit "$c" && continue
+        say "  $c carries no signature; not pushing main."
+        if [ "$c" = "$(g rev-parse HEAD)" ]; then
+            say "  Sign it (git commit --amend -S --no-edit), then run this again."
+        else
+            say "  It is not the newest commit; signing it rewrites what follows, so sign it by hand."
+        fi
+        return 1
     done
     if ! g push origin refs/heads/main:refs/heads/main; then
         say "  the push of main was refused; if origin's main moved on meanwhile, run this again:"

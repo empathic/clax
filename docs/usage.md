@@ -552,7 +552,10 @@ into the Clax <version> release", and pushes that: the tag stays on the
 release commit, which a rebase would rewrite, and CI and the Pi package
 then run on the merge. A refused push of `main` is resumed the same way;
 a merge that does not apply cleanly is made by hand with that subject
-(`git merge -S origin/main -m "…"`), then the command run again. A failed workflow run is rerun on
+(`git merge -S origin/main -m "…"`, resolve, then `git commit -S`: git
+does not carry `-S` past a conflict), then the command run again. A merge
+committed unsigned is refused with how to sign it (`git commit --amend -S
+--no-edit`). A failed workflow run is rerun on
 GitHub (`gh run rerun <ID> --failed`), then the command again picks it up;
 a failed Publish Pi package run is dispatched anew. The Pi package is
 published from the pin commit, whatever main's tip is by then:

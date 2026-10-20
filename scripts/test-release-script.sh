@@ -628,6 +628,28 @@ case_16() {
         pass "the rerun finds the publish done and prints the trusted-publisher setup"
     else fail "the rerun after a first publish npm listed late (rc=$rc: $(cat "$C/out"))"; fi
 }
+case_16c() {
+    # A merge of origin/main made by hand and committed unsigned: step 12
+    # refuses it, saying how to sign it; signed, the next run pushes it.
+    new_case
+    : > "$FAKE_STATE/reject-push"
+    act
+    rm "$FAKE_STATE/reject-push"
+    other_work
+    git -C "$C/repo" fetch -q origin main
+    git -C "$C/repo" -c commit.gpgsign=false merge -q --no-ff -m "Merge origin/main into the Clax 0.6.0 release" origin/main
+    act; rc=$?
+    if [ "$rc" = 1 ] && has "carries no signature; not pushing main." \
+        && has "Sign it (git commit --amend -S --no-edit), then run this again." \
+        && [ "$(git --git-dir="$C/origin.git" log -1 --format=%s main)" = "Other work" ]; then
+        pass "an unsigned hand-made merge is not pushed, and the refusal says how to sign it"
+    else fail "an unsigned hand-made merge (rc=$rc: $(cat "$C/out"))"; fi
+    git -C "$C/repo" commit -q --amend -S --no-edit
+    act; rc=$?
+    if [ "$rc" = 0 ] && merged_release; then
+        pass "once signed as told, the next run pushes the merge and finishes"
+    else fail "the hand-made merge once signed (rc=$rc: $(cat "$C/out"))"; fi
+}
 case_16b() {
     # On npm: the workflow publishes, never npm here.
     new_case
@@ -783,7 +805,7 @@ case_37() {
 
 JOBS="$(getconf _NPROCESSORS_ONLN 2>/dev/null || echo 4)"
 [ "$JOBS" -le 8 ] || JOBS=8
-CASES="case_1 case_2 case_3 case_4 case_5 case_6 case_7 case_8 case_9 case_10 case_11 case_12 case_13 case_14 case_15 case_16 case_16b case_17 case_18 case_19 case_20 case_21 case_22 case_23 case_24 case_25 case_26 case_27 case_28 case_29 case_30 case_31 case_32 case_33 case_34 case_35 case_36 case_37"
+CASES="case_1 case_2 case_3 case_4 case_5 case_6 case_7 case_8 case_9 case_10 case_11 case_12 case_13 case_14 case_15 case_16 case_16b case_16c case_17 case_18 case_19 case_20 case_21 case_22 case_23 case_24 case_25 case_26 case_27 case_28 case_29 case_30 case_31 case_32 case_33 case_34 case_35 case_36 case_37"
 # A case's subshell exits 0 once its last check has run; one that dies on
 # the way (an unbound variable under set -u, say) exits otherwise, and fails
 # the gate whatever it printed before. Each case's status is collected by its
