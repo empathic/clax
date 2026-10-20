@@ -36,9 +36,11 @@
 //   answers with `claxTransport.callResult(nonce, id, {status, headers, body
 //   | body64})`.
 // - `callAbort {id}`: the call's signal aborted; its answer is dropped.
-// - `subscribe {id}`: `GET /api/stream`. The app pushes the event stream's
-//   text by `claxTransport.streamBlock(nonce, id, text)` and ends it
-//   by `claxTransport.streamEnd(nonce, id)`.
+// - `subscribe {id, lastEventId?}`: `GET /api/stream`, from the resume point
+//   the request names (its `Last-Event-ID`, or its `last_event_id` query),
+//   from which the core's subscription resumes as the SSE route does. The
+//   app pushes the event stream's text by `claxTransport.streamBlock(nonce,
+//   id, text)` and ends it by `claxTransport.streamEnd(nonce, id)`.
 // - `unsubscribe {id}`: the stream's reader cancelled it or its signal
 //   aborted.
 // Calls made before the nonce is known wait for it. One
@@ -166,7 +168,7 @@ export function transport(channel: () => Channel | undefined, fallback: typeof f
     if (nonce !== null && ch && typeof ch.postMessage === "function") ch.postMessage(JSON.stringify({ ...m, nonce }));
   };
 
-  const subscribe = async (signal: AbortSignal | null): Promise<Response> => {
+  const subscribe = async (from: string | null, signal: AbortSignal | null): Promise<Response> => {
     await untilOpen(signal);
     if (signal?.aborted) throw abortError(signal);
     const id = ++lastId;
@@ -185,7 +187,7 @@ export function transport(channel: () => Channel | undefined, fallback: typeof f
       },
       cancel: stop,
     });
-    post({ type: "subscribe", id });
+    post({ type: "subscribe", id, ...(from ? { lastEventId: from } : {}) });
     return new Response(body, { status: 200, headers: { "content-type": "text/event-stream" } });
   };
 
@@ -197,7 +199,7 @@ export function transport(channel: () => Channel | undefined, fallback: typeof f
     const signal = init?.signal ?? (input instanceof Request ? input.signal : null);
     const req = new Request(input instanceof Request ? input : url.href, { ...init, signal: null });
     if (signal?.aborted) throw abortError(signal);
-    if (req.method === "GET" && url.pathname === "/api/stream") return subscribe(signal);
+    if (req.method === "GET" && url.pathname === "/api/stream") return subscribe(req.headers.get("last-event-id") ?? url.searchParams.get("last_event_id"), signal);
     const bytes = new Uint8Array(await req.arrayBuffer());
     await untilOpen(signal);
     if (signal?.aborted) throw abortError(signal);

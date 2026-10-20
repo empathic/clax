@@ -68,6 +68,14 @@ describe("the transport", () => {
     t.streamEnd(NONCE, id);
     expect((await reader.read()).done).toBe(true);
   });
+  it("subscribes from the stream's resume point, its Last-Event-ID or last_event_id, when it has one", async () => {
+    const { sent, f } = open();
+    await f("/api/stream", { headers: { "Last-Event-ID": "abc:4" } });
+    await f("/api/stream?last_event_id=abc%3A9");
+    await f("/api/stream");
+    expect(sent.map(m => m.lastEventId)).toEqual(["abc:4", "abc:9", undefined]);
+    expect(Object.keys(sent[2]).sort()).toEqual(["id", "nonce", "type"]);
+  });
   it("unsubscribes when the stream is cancelled", async () => {
     const { sent, f } = open();
     const r = await f("/api/stream");
