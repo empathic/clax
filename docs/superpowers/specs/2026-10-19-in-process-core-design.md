@@ -905,6 +905,8 @@ What follows from the rule:
 
 - A kill loses only what was in flight. Each commit effect either landed in
   the core, and its row says so, or did not, and its row does not.
+- A relaunch, however late, finds every session the open jobs' steps name
+  still live (§8.1): no resumed step is refused `unknown_session`.
 - Resume is not a separate path. After every applied row `update` asks
   `next(job)` for the job's next effect, the same function at `JobsLoaded`
   as after any `Committed`; the resume table is that function's table.
@@ -1173,8 +1175,11 @@ A change's reply step is made from the session that published its
 version, which may be resumed long after the app was killed. So the
 core's reaper (`Store::reap_sessions`, which ends a local session unseen
 for `SESSION_IDLE_SECS`) leaves live every session that published a
-version one of an open job's steps recorded, and the asker of each
-question an open job asked that is not closed (`OPEN_JOB_SESSIONS`): the
+version one of an open job's steps recorded, the session each of an
+open job's publish steps that began and has not committed publishes from
+(`job_step_marks.session_id`, recorded at the step's first write), and
+the asker of each question an open job asked that is not closed
+(`OPEN_JOB_SESSIONS`): the
 reply step of a change relaunched after more than five minutes commits,
 and a `waiting` job's question stays in front of the person, however
 long the app was down, until it is answered or declined. Once the job is
@@ -1183,6 +1188,17 @@ any other. An end of the asker for any other reason (it ends itself, its grant
 is revoked) still withdraws the question and moves the job back to
 `running`, and `next` answers the `ask` call with `withdrawn`: nothing
 asks again unless the model chooses to.
+
+So a relaunched worker is never refused `unknown_session` for a job it
+resumes. A job row records no session of its own. Every session a step
+of an open job names is live: a reply step names the session that
+published the job's version, and a resumed publish step the one it began
+with, both kept from the reaper as above; any other step, and a publish
+step that has not begun, names the session the worker registered at its
+launch (`POST /api/sessions`, before `JobsLoaded`), which is live. A
+session ended for another reason (it ends itself, its grant is revoked)
+is refused as before, and the worker registers again and plans the step
+on its new session.
 
 A process killed after the content files are written and before the
 transaction commits leaves the files at the next version's number with

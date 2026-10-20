@@ -2537,6 +2537,37 @@ mod tests {
     }
 
     #[test]
+    fn a_begun_publish_steps_session_outlives_the_reaper_until_it_commits() {
+        let clock = Arc::new(clax_core::working::ManualClock::at("2026-10-19T10:00:00Z"));
+        let (_d, st) = crate::test_util::store_with_clock(clock.clone());
+        let sid = session(&st, "clax-app", "h1");
+        running(&st, "j1");
+        let mut step = publish_step(None, 0, "<p>a", true);
+        step.session_id = Some(sid.clone());
+        // The app is killed in the step's first attempt, before its commit.
+        let cut = |_: &Transaction<'_>| Err(CoreError::invalid("cut", "the process died"));
+        cut_step(&st, "j1", "publish:0", step, cut).unwrap_err();
+        // Relaunched more than five minutes later.
+        let idle = std::time::Duration::from_secs(Store::SESSION_IDLE_SECS);
+        clock.advance(Store::SESSION_IDLE_SECS as i64 + 60);
+        let reaped = st.reap_sessions(idle, &|_| false).unwrap();
+        assert!(!reaped.ended.contains(&sid), "{:?}", reaped.ended);
+        let mut step = publish_step(None, 0, "<p>a", true);
+        step.session_id = Some(sid.clone());
+        let c = st
+            .commit_publish_step(DAEMON, "j1", "publish:0", step)
+            .unwrap();
+        assert_eq!(
+            c.made.unwrap().version.session_id.as_deref(),
+            Some(sid.as_str())
+        );
+        // Committed and done: the session is reaped as any other.
+        clock.advance(Store::SESSION_IDLE_SECS as i64 + 60);
+        let reaped = st.reap_sessions(idle, &|_| false).unwrap();
+        assert_eq!(reaped.ended, [sid]);
+    }
+
+    #[test]
     fn a_waiting_jobs_question_outlives_the_reaper_until_it_closes() {
         let clock = Arc::new(clax_core::working::ManualClock::at("2026-10-19T10:00:00Z"));
         let (_d, st) = crate::test_util::store_with_clock(clock.clone());

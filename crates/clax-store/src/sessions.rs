@@ -212,12 +212,14 @@ pub(super) fn session_end_record(at: &str, id: &str, reason: &str) -> AuditRecor
 
 /// The sessions an open (not `cancelled` or `done`) job names, as a
 /// subquery: each session that published a version one of the job's
-/// steps recorded, and the asker of each question the job asked that is
-/// not closed. The reaper leaves them live, so a change resumed long
-/// after its app was killed commits its reply step from the session that
-/// published, and a job waiting on a question keeps it in front of the
-/// person until it is answered or declined, however long the app stays
-/// down.
+/// steps recorded, the asker of each question the job asked that is not
+/// closed, and the session each of its publish steps that began and has
+/// not committed publishes from (`job_step_marks`). The reaper leaves them
+/// live, so a change resumed long after its app was killed commits its
+/// reply step from the session that published, a publish step resumed so
+/// commits from the session it began with, and a job waiting on a
+/// question keeps it in front of the person until it is answered or
+/// declined, however long the app stays down.
 pub(crate) const OPEN_JOB_SESSIONS: &str = "
     SELECT v.session_id FROM jobs j
       JOIN job_steps s ON s.job_id = j.id
@@ -227,7 +229,11 @@ pub(crate) const OPEN_JOB_SESSIONS: &str = "
     SELECT q.session_id FROM jobs j
       JOIN job_questions jq ON jq.job_id = j.id
       JOIN questions q ON q.id = jq.question_id
-     WHERE j.state NOT IN ('cancelled', 'done') AND jq.outcome IS NULL";
+     WHERE j.state NOT IN ('cancelled', 'done') AND jq.outcome IS NULL
+    UNION
+    SELECT m.session_id FROM jobs j
+      JOIN job_step_marks m ON m.job_id = j.id
+     WHERE j.state NOT IN ('cancelled', 'done') AND m.session_id IS NOT NULL";
 
 impl Store {
     /// Records `kind` (`session.start` or `session.join`) of session `id`
