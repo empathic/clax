@@ -1405,7 +1405,8 @@ impl Store {
                 "a step that makes a new artifact has base 0",
             )));
         }
-        let begun = self.begin_publish_step(id, key, named.as_ref(), base + 1, session_id.as_deref())?;
+        let begun =
+            self.begin_publish_step(id, key, named.as_ref(), base + 1, session_id.as_deref())?;
         request.step = Some(step_mark(id, key, &begun.nonce));
         let aid = begun.artifact_id;
         let mut cutting = None;
@@ -2241,9 +2242,11 @@ mod tests {
         // The first call holds the content lock, waiting on its write; the
         // second has passed its replay check and waits for the lock.
         gated.set_open(false);
-        let mut first = std::pin::pin!(st.commit_publish_step_async(DAEMON, "j1", "publish:1", step()));
+        let mut first =
+            std::pin::pin!(st.commit_publish_step_async(DAEMON, "j1", "publish:1", step()));
         assert!(first.as_mut().poll(&mut cx).is_pending());
-        let mut second = std::pin::pin!(st.commit_publish_step_async(DAEMON, "j1", "publish:1", step()));
+        let mut second =
+            std::pin::pin!(st.commit_publish_step_async(DAEMON, "j1", "publish:1", step()));
         assert!(second.as_mut().poll(&mut cx).is_pending());
         gated.set_open(true);
         let first = clax_core::content::wait(first).unwrap();

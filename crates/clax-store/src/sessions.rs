@@ -1245,14 +1245,12 @@ impl Store {
         let remote =
             clax_core::time::stamp(now - Duration::from_secs(Self::REMOTE_SESSION_IDLE_SECS));
         let stale = self.with_read(|c| {
-            let mut stmt = c.prepare(
-                &format!(
-                    "SELECT id, pid, grant_id IS NOT NULL FROM sessions WHERE ended_at IS NULL
+            let mut stmt = c.prepare(&format!(
+                "SELECT id, pid, grant_id IS NOT NULL FROM sessions WHERE ended_at IS NULL
                        AND ((grant_id IS NULL AND last_seen_at < ?1)
                          OR (grant_id IS NOT NULL AND max(last_seen_at, ?3) < ?2))
                        AND id NOT IN ({OPEN_JOB_SESSIONS})"
-                ),
-            )?;
+            ))?;
             Ok(stmt
                 .query_map(params![local, remote, resumed], |r| {
                     Ok((

@@ -21,10 +21,10 @@ use clax_core::db::{Caller, Level};
 use clax_core::model::FileMeta;
 use clax_core::publish::{PublishRequest, ValidatedPublish, validate};
 use clax_core::{ArtifactId, CoreError, Home};
+use clax_git::versions::repo_name;
+use clax_git::{MAIN, RefUpdate, Repo};
 use clax_store::Store;
 use clax_store::docs::{BatchOp, BatchWrite};
-use clax_git::versions::repo_name;
-use clax_git::{MAIN, Repo, RefUpdate};
 use clax_store::jobs::{JobPatch, JobState, NewJob, PublishStep, StepError};
 use serde_json::json;
 
@@ -237,8 +237,13 @@ impl<C: ContentStore> Fixture<C> {
         }
     }
 
-    fn commit(&self, key: &str, html: &str) -> Result<clax_store::jobs::StepCommit<clax_store::jobs::Published>, StepError> {
-        self.st.commit_publish_step(DAEMON, "j1", key, self.step(html))
+    fn commit(
+        &self,
+        key: &str,
+        html: &str,
+    ) -> Result<clax_store::jobs::StepCommit<clax_store::jobs::Published>, StepError> {
+        self.st
+            .commit_publish_step(DAEMON, "j1", key, self.step(html))
     }
 
     fn versions(&self) -> Vec<u32> {
@@ -291,7 +296,10 @@ fn a_killed_step_resumes_once<C: ContentStore + 'static>(content: impl FnOnce(&H
     f.content.kill_next();
     let e = f.commit("publish:1", "<p>two</p>").unwrap_err();
     assert!(
-        matches!(e, StepError::Store(CoreError::Invalid { code: "killed", .. })),
+        matches!(
+            e,
+            StepError::Store(CoreError::Invalid { code: "killed", .. })
+        ),
         "{e:?}"
     );
     // What the kill leaves: version 2's content, no row, no step, no doc.
@@ -312,10 +320,9 @@ fn a_killed_step_resumes_once<C: ContentStore + 'static>(content: impl FnOnce(&H
     assert!(again.replayed);
     assert_eq!(f.versions(), [1, 2]);
     // The next version follows it.
-    let (_, v) = f
-        .st
-        .publish_version(DAEMON, &f.id, publish("<p>three</p>", Some(2)), None)
-        .unwrap();
+    let (_, v) =
+        f.st.publish_version(DAEMON, &f.id, publish("<p>three</p>", Some(2)), None)
+            .unwrap();
     assert_eq!(v.n, 3);
 }
 
