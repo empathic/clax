@@ -985,7 +985,11 @@ together, or neither does.
 
 Events, on a new stream topic `jobs` (owner only), which the worker
 subscribes to: `Event::Job {id, client, state, step, rev}` after every
-committed write of a job, and `Event::JobsOwner {client, held}` at each
+committed write of a job, whichever path made it (a job route, a
+question's close, a delete that cancels the job): the store's update
+hook records every written `jobs` row and `Store::set_job_listener`'s
+listener hears each changed job once per committed transaction, which
+the router publishes, and `Event::JobsOwner {client, held}` at each
 claim and release.
 
 ### 8.2 Publish checks

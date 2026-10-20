@@ -228,6 +228,9 @@ pub struct Store {
     member_caps: RwLock<Option<github::MemberCaps>>,
     /// The hidden artifacts (drafts), for event routing.
     hidden: drafts::HiddenIds,
+    /// The jobs the write transaction under way changed, recorded by the
+    /// update hook, and their listener ([`Store::set_job_listener`]).
+    jobs: jobs::JobChanges,
 }
 
 impl Store {
@@ -346,6 +349,8 @@ impl Store {
         let request_changes = Arc::new(Mutex::new(Vec::new()));
         let made = inbox_changes.clone();
         let requested = request_changes.clone();
+        let jobs = jobs::JobChanges::default();
+        let jobs_written = jobs.rowids.clone();
         conn.update_hook(Some(
             move |action: rusqlite::hooks::Action, _db: &str, table: &str, rowid: i64| {
                 if table == "inbox_items" {
@@ -358,14 +363,21 @@ impl Store {
                     if !r.contains(&rowid) {
                         r.push(rowid);
                     }
+                } else if table == "jobs" {
+                    let mut j = jobs_written.lock().unwrap();
+                    if !j.contains(&rowid) {
+                        j.push(rowid);
+                    }
                 }
             },
         ))?;
         let dropped = inbox_changes.clone();
         let dropped_requests = request_changes.clone();
+        let dropped_jobs = jobs.rowids.clone();
         conn.rollback_hook(Some(move || {
             dropped.lock().unwrap().clear();
             dropped_requests.lock().unwrap().clear();
+            dropped_jobs.lock().unwrap().clear();
         }))?;
         Ok(Store {
             home: home.clone(),
@@ -386,6 +398,7 @@ impl Store {
             member_caps: RwLock::new(None),
             clock,
             hidden,
+            jobs,
         })
     }
 
@@ -568,19 +581,24 @@ impl Store {
     /// recorded an audit event ([`Store::record_audit`]), the audit nudge
     /// ([`Store::set_audit_nudge`]) fires after the commit. When `f` changed
     /// what agents may see ([`Store::visibility_changed`]), the visibility
-    /// generation is bumped after the commit.
+    /// generation is bumped after the commit. When it wrote any job, the
+    /// job listener ([`Store::set_job_listener`]) hears of each once.
     pub(crate) fn with_tx<T>(
         &self,
         f: impl FnOnce(&rusqlite::Transaction<'_>) -> Result<T>,
     ) -> Result<T> {
-        let (out, changes, requests, recorded, agents) = self.exec.write(|conn| {
+        let (out, changes, requests, recorded, agents, jobs) = self.exec.write(|conn| {
             self.inbox_changes.lock().unwrap().clear();
             self.request_changes.lock().unwrap().clear();
+            self.jobs.clear();
             let _job = self.audit.begin();
             self.visibility.begin();
             *self.agents_changed.lock().unwrap() = None;
             let tx = conn.transaction_with_behavior(rusqlite::TransactionBehavior::Immediate)?;
             let out = f(&tx)?;
+            // Read before the commit: a job the transaction deleted after
+            // changing it is heard of as it was last.
+            let jobs = self.jobs.collect(&tx)?;
             tx.commit()?;
             // Inside the turn, so generations follow commit order.
             self.visibility.committed();
@@ -591,6 +609,7 @@ impl Store {
                 std::mem::take(&mut *self.request_changes.lock().unwrap()),
                 self.audit.take_recorded(),
                 self.agents_changed.lock().unwrap().take(),
+                jobs,
             ))
         })?;
         if recorded {
@@ -615,6 +634,7 @@ impl Store {
                 listen(artifacts.into_iter().collect());
             }
         }
+        self.jobs.tell(jobs);
         Ok(out)
     }
 

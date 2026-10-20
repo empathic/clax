@@ -13,6 +13,7 @@
 
 use super::Store;
 use clax_core::CoreError;
+use std::sync::{Arc, Mutex, RwLock};
 use rusqlite::{Connection, OptionalExtension, Transaction, params};
 use serde::{Deserialize, Serialize};
 
@@ -131,6 +132,88 @@ pub(crate) fn may_move(from: JobState, by: Move, waits: bool) -> Option<JobState
         (from, Move::Close) => Some(from),
         (_, Move::Step { done: true }) => Some(Done),
         (from, Move::Step { done: false }) => Some(from),
+    }
+}
+
+/// A committed change of a job, as its listener hears it
+/// ([`Store::set_job_listener`]): what `Event::Job` carries.
+#[derive(Clone, Debug, PartialEq, Eq, Serialize)]
+pub struct JobChange {
+    pub id: String,
+    pub client: String,
+    pub state: JobState,
+    pub step: Option<String>,
+    pub rev: i64,
+}
+
+/// The installed job listener, cloned out of its lock to be called.
+type JobListener = Arc<dyn Fn(Vec<JobChange>) + Send + Sync>;
+
+/// The jobs a write transaction changed, and the listener told of them
+/// once it commits ([`Store::with_tx`]). The write connection's update
+/// hook records the `rowid` of every `jobs` row written, by whatever
+/// statement, trigger or foreign key action; a write that deletes a job
+/// it changed leaves its last row here first ([`JobChanges::going`]).
+#[derive(Default)]
+pub(crate) struct JobChanges {
+    /// The rows of `jobs` written in the transaction under way, in order.
+    pub(crate) rowids: Arc<Mutex<Vec<i64>>>,
+    /// Rows of jobs the transaction changed and then deletes, by `rowid`.
+    gone: Mutex<Vec<(i64, JobChange)>>,
+    listener: RwLock<Option<JobListener>>,
+}
+
+impl JobChanges {
+    /// Forgets what an earlier transaction recorded.
+    pub(crate) fn clear(&self) {
+        self.rowids.lock().unwrap().clear();
+        self.gone.lock().unwrap().clear();
+    }
+
+    /// Keeps `change`, job `rowid`'s row, for when the transaction deletes
+    /// the job after changing it.
+    fn going(&self, rowid: i64, change: JobChange) {
+        self.gone.lock().unwrap().push((rowid, change));
+    }
+
+    /// The changes recorded, read on `c` in the transaction before it
+    /// commits: each job once, as the transaction leaves it, or as it was
+    /// before its delete.
+    pub(crate) fn collect(&self, c: &Connection) -> clax_core::Result<Vec<JobChange>> {
+        let rowids = std::mem::take(&mut *self.rowids.lock().unwrap());
+        let mut gone = std::mem::take(&mut *self.gone.lock().unwrap());
+        let mut out = Vec::with_capacity(rowids.len());
+        for rowid in rowids {
+            let row = c
+                .prepare_cached("SELECT id, client, state, step, rev FROM jobs WHERE rowid = ?1")?
+                .query_row(params![rowid], |r| {
+                    Ok(JobChange {
+                        id: r.get(0)?,
+                        client: r.get(1)?,
+                        state: r.get(2)?,
+                        step: r.get(3)?,
+                        rev: r.get(4)?,
+                    })
+                })
+                .optional()?;
+            let row = row.or_else(|| {
+                let i = gone.iter().rposition(|(r, _)| *r == rowid)?;
+                Some(gone.swap_remove(i).1)
+            });
+            out.extend(row);
+        }
+        Ok(out)
+    }
+
+    /// Tells the listener of `changes`, outside the write turn.
+    pub(crate) fn tell(&self, changes: Vec<JobChange>) {
+        if changes.is_empty() {
+            return;
+        }
+        let listen = self.listener.read().unwrap().clone();
+        if let Some(listen) = listen {
+            listen(changes);
+        }
     }
 }
 
@@ -504,6 +587,15 @@ impl Store {
             (Err(_), Some(refusal)) => Err(refusal),
             (Err(e), None) => Err(JobError::Store(e)),
         }
+    }
+
+    /// Installs `f`, called after each committed write transaction that
+    /// changed any job, with each changed job once, as the transaction
+    /// left it, outside the write turn and after the other listeners. A
+    /// rolled-back transaction is never heard of. Replaces any earlier
+    /// listener.
+    pub fn set_job_listener(&self, f: impl Fn(Vec<JobChange>) + Send + Sync + 'static) {
+        *self.jobs.listener.write().unwrap() = Some(Arc::new(f));
     }
 
     /// Creates job `j` in `queued` at `rev` 1. Creating it again with the
@@ -1582,6 +1674,55 @@ mod tests {
         let full = st.job("j2").unwrap().unwrap();
         assert_eq!(full.job, j2);
         assert!(full.questions.is_empty());
+    }
+
+    /// Installs a job listener on `st` that keeps what it hears.
+    fn heard(st: &Store) -> std::sync::Arc<std::sync::Mutex<Vec<JobChange>>> {
+        let heard = std::sync::Arc::new(std::sync::Mutex::new(Vec::new()));
+        let keep = heard.clone();
+        st.set_job_listener(move |changes| keep.lock().unwrap().extend(changes));
+        heard
+    }
+
+    #[test]
+    fn every_committed_job_change_is_heard_once_whatever_made_it() {
+        let (_d, st) = store();
+        let q = question(&st);
+        let heard = heard(&st);
+        let row = running(&st, "j1");
+        let asked = st.ask_job_question("j1", &q).unwrap();
+        let change = |r: &JobRow| JobChange {
+            id: r.id.clone(),
+            client: r.client.clone(),
+            state: r.state,
+            step: r.step.clone(),
+            rev: r.rev,
+        };
+        assert_eq!(
+            std::mem::take(&mut *heard.lock().unwrap()),
+            vec![
+                JobChange {
+                    state: JobState::Queued,
+                    rev: 1,
+                    ..change(&row)
+                },
+                change(&row),
+                change(&asked)
+            ]
+        );
+        // The answer's transaction is the questions' own.
+        answer(&st, &q);
+        let after = st.job("j1").unwrap().unwrap().job;
+        assert_eq!(after.state, JobState::Running);
+        assert_eq!(*heard.lock().unwrap(), vec![change(&after)]);
+        heard.lock().unwrap().clear();
+        // A rolled-back write is not heard of.
+        let refused: JobResult<()> = st.job_tx(|tx| {
+            tx.execute("UPDATE jobs SET rev = rev + 1 WHERE id = 'j1'", [])?;
+            Err(JobError::Conflict)
+        });
+        assert!(refused.is_err());
+        assert!(heard.lock().unwrap().is_empty());
     }
 
     #[test]
