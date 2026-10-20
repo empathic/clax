@@ -12,7 +12,9 @@ pub fn clax() -> std::path::PathBuf {
 /// [`clax`]'s own path. The binary names itself by `std::env::current_exe`,
 /// which on Linux resolves symbolic links (Bazel's runfiles are links into
 /// its output tree) and on macOS returns the path it was run by; either
-/// names the same file.
+/// names the same file. The integration tests use it; `descriptors`, which
+/// compiles this module too, does not.
+#[allow(dead_code)]
 pub fn as_clax(text: &str) -> String {
     let me = clax();
     let resolved = std::fs::canonicalize(&me).unwrap();
