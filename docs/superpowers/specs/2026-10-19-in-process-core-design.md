@@ -716,7 +716,14 @@ the way in for the app over loopback until its scheme handler writes the
 nonce, and a call or stream whose signal aborts meanwhile rejects with an
 `AbortError`, posting nothing. A body
 over 8 MiB goes as `body64` in chunks of 1 MiB (`{type: "callChunk", id,
-n, last, body64}`), so no one message carries more. `/api/token` answers as
+n, last, body64}`), so no one message carries more. An answer of more than
+`3 << 18` bytes (exactly 1 MiB of base64) comes the same way: the host
+calls `claxTransport.callResult(nonce, id, {body64, more: true})` for each
+`3 << 18` bytes but the last, awaiting each before it encodes the next,
+then the ordinary `callResult(nonce, id, {status, headers, body64})` with
+the rest. Every part is a multiple of 3 bytes, so the parts' base64 texts
+join into the whole body's; the transport keeps them on the call's
+pending entry, so an abort frees them. `/api/token` answers as
 on the daemon (the shell's own code may hold the token, as it does today;
 no frame of a page can ask for it). Images and downloads the shell points
 at by URL under `/api/` (clip PNGs, asset previews) are fetched with

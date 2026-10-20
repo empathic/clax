@@ -23,12 +23,13 @@ import 'frame.dart';
 ///   body64}`s, `n` from 0 (one out of order is dropped). The answer is
 ///   `claxTransport.callResult(nonce, id, {status, headers, body |
 ///   body64})`: `body` for a text or JSON answer that is valid UTF-8, else
-///   `body64`. An answer of more than [chunkBytes] goes as
-///   `callResult(nonce, id, {status, headers, chunked: true})` then
-///   `callResultChunk(nonce, id, n, last, body64)` for each [chunkBytes] of
-///   it, `n` from 0. A call the core could not answer is answered 503 with
-///   the core's `{"error": {code, message}}` when it is closed or failed,
-///   else 502.
+///   `body64`. An answer of more than [partBytes] goes in parts, all as
+///   base64: `callResult(nonce, id, {body64, more: true})` for each
+///   [partBytes] of it but the last, then the ordinary `callResult` with
+///   its status, headers and the rest as `body64`; the parts' base64 texts
+///   join into the whole body's. A call the core could not answer is
+///   answered 503 with the core's `{"error": {code, message}}` when it is
+///   closed or failed, else 502.
 /// - `callAbort {id}` cancels the call in the core and drops its answer.
 /// - `subscribe {id, lastEventId?}` opens a core subscription from
 ///   `lastEventId` and forwards each of its blocks by
@@ -46,8 +47,10 @@ class ChannelRelay {
   /// Runs an expression in the shell document.
   final Future<void> Function(String js) runJs;
 
-  /// The most body bytes one script carries.
-  static const chunkBytes = 1 << 20;
+  /// The most body bytes one script carries: a multiple of 3, so each
+  /// part's base64 has no padding and the parts' texts join, and exactly
+  /// 1 MiB of base64.
+  static const partBytes = 3 << 18;
 
   /// The calls not yet answered, by ID.
   final Map<int, _Call> _calls = {};
@@ -196,26 +199,22 @@ class ChannelRelay {
     };
     final body = res.body;
     final n = jsonEncode(nonce);
-    if (body.length > chunkBytes) {
-      _run('callResult($n, $id, ${jsonEncode({...head, 'chunked': true})})');
-      final count = (body.length + chunkBytes - 1) ~/ chunkBytes;
-      for (var i = 0; i < count; i++) {
-        final part = Uint8List.sublistView(
-          body,
-          i * chunkBytes,
-          i == count - 1 ? body.length : (i + 1) * chunkBytes,
-        );
+    if (body.length > partBytes) {
+      var at = 0;
+      for (; body.length - at > partBytes; at += partBytes) {
+        final part = Uint8List.sublistView(body, at, at + partBytes);
         _run(
-          'callResultChunk($n, $id, $i, ${i == count - 1}, '
-          '${jsonEncode(base64Encode(part))})',
+          'callResult($n, $id, '
+          '{"body64":${jsonEncode(base64Encode(part))},"more":true})',
         );
       }
-      return;
+      head['body64'] = base64Encode(Uint8List.sublistView(body, at));
+    } else {
+      final text = _textual.hasMatch(res.header('content-type') ?? '')
+          ? _utf8(body)
+          : null;
+      head[text != null ? 'body' : 'body64'] = text ?? base64Encode(body);
     }
-    final text = _textual.hasMatch(res.header('content-type') ?? '')
-        ? _utf8(body)
-        : null;
-    head[text != null ? 'body' : 'body64'] = text ?? base64Encode(body);
     _run('callResult($n, $id, ${jsonEncode(head)})');
   }
 

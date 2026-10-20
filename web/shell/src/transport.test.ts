@@ -26,8 +26,15 @@ describe("the transport", () => {
   it("passes anything but /api on its origin to the fallback", async () => {
     const fb = vi.fn(async () => new Response("x"));
     const f = transport(() => undefined, fb, ORIGIN).fetch;
-    await f("/_clax/bridge.js"); await f("https://example.com/api/x");
-    expect(fb).toHaveBeenCalledTimes(2);
+    await f("/_clax/bridge.js"); await f("https://example.com/api/x"); await f(new URL("https://example.com/api/y"));
+    expect(fb).toHaveBeenCalledTimes(3);
+  });
+  it("takes a URL or a Request on its origin as a string", async () => {
+    const { sent, f } = open();
+    void f(new URL("/api/u?x=1", ORIGIN));
+    void f(new Request(`${ORIGIN}/api/r`, { method: "PUT", body: "r" }));
+    await vi.waitFor(() => expect(sent.length).toBe(2));
+    expect(sent.map(m => [m.method, m.path])).toEqual([["GET", "/api/u?x=1"], ["PUT", "/api/r"]]);
   });
   it("sends a binary body as base64", async () => {
     const { sent, f } = open();
@@ -54,38 +61,43 @@ describe("the transport", () => {
     const same = chunks.map((c, n) => Buffer.from(c.body64 as string, "base64").equals(body.subarray(n * CHUNK, (n + 1) * CHUNK)));
     expect(same).toEqual(chunks.map(() => true));
   });
-  it("answers a chunked result from its head and its chunks, in order, under the load's nonce", async () => {
+  it("answers a result sent in parts: each part's base64 joins the next, and the last carries the status and headers", async () => {
     const { sent, t, f } = open();
-    const body = new Uint8Array(CHUNK * 2 + 5).map((_, i) => i % 253);
+    // Parts of a multiple of 3 bytes, so their base64 texts join into the body's.
+    const PART = 3 << 18;
+    const body = new Uint8Array(PART * 2 + 5).map((_, i) => i % 253);
     const p = f("/api/big");
     await vi.waitFor(() => expect(sent.length).toBe(1));
     const id = sent[0].id as number;
     // Encoded with Node's base64, not the transport's.
-    const part = (n: number) => Buffer.from(body.subarray(n * CHUNK, (n + 1) * CHUNK)).toString("base64");
+    const part = (n: number) => Buffer.from(body.subarray(n * PART, (n + 1) * PART)).toString("base64");
     let settled = false;
     void p.then(() => { settled = true; });
-    t.callResult(NONCE, id, { status: 200, headers: [["content-type", "application/octet-stream"]], chunked: true });
-    // Another load's chunk, which names this call's ID: dropped.
-    t.callResultChunk("O".repeat(16), id, 0, true, part(1));
-    t.callResultChunk(NONCE, id, 0, false, part(0));
-    t.callResultChunk(NONCE, id, 1, false, part(1));
+    // Another load's part, which names this call's ID: dropped.
+    t.callResult("O".repeat(16), id, { body64: part(1), more: true });
+    t.callResult(NONCE, id, { body64: part(0), more: true });
+    t.callResult(NONCE, id, { body64: part(1), more: true });
     await new Promise(r => setTimeout(r, 0));
     expect(settled).toBe(false);
-    t.callResultChunk(NONCE, id, 2, true, part(2));
+    t.callResult(NONCE, id, { status: 200, headers: [["content-type", "application/octet-stream"]], body64: part(2) });
     const r = await p;
     expect(r.status).toBe(200);
     expect(r.headers.get("content-type")).toBe("application/octet-stream");
     expect(Buffer.from(await r.arrayBuffer()).equals(Buffer.from(body))).toBe(true);
   });
-  it("rejects with a TypeError on a chunk out of order, and drops a chunk of no chunked result", async () => {
+  it("an abort between parts rejects the call, posts callAbort, and drops the parts after it; a part of no waiting call does nothing", async () => {
     const { sent, t, f } = open();
-    const ps = [f("/api/a"), f("/api/b")];
+    const ac = new AbortController();
+    const ps = [f("/api/a", { signal: ac.signal }), f("/api/b")];
     await vi.waitFor(() => expect(sent.length).toBe(2));
-    const [a, b] = sent.map(m => m.id as number);
-    t.callResult(NONCE, a, { status: 200, headers: [], chunked: true });
-    t.callResultChunk(NONCE, a, 1, true, "AA==");
-    await expect(ps[0]).rejects.toBeInstanceOf(TypeError);
-    t.callResultChunk(NONCE, b, 0, true, "AA==");
+    const [a, b] = ["/api/a", "/api/b"].map(path => sent.find(m => m.path === path)!.id as number);
+    t.callResult(NONCE, a, { body64: "AAAA", more: true });
+    ac.abort();
+    await expect(ps[0]).rejects.toThrow(/abort/i);
+    expect(sent.at(-1)).toEqual({ type: "callAbort", id: a, nonce: NONCE });
+    t.callResult(NONCE, a, { body64: "AAAA", more: true });
+    t.callResult(NONCE, a, { status: 200, headers: [], body64: "AAAA" });
+    t.callResult(NONCE, 999, { body64: "AAAA", more: true });
     t.callResult(NONCE, b, { status: 200, headers: [], body: "b" });
     expect(await (await ps[1]).text()).toBe("b");
   });
@@ -255,7 +267,7 @@ describe("installTransport", () => {
     // No claxHost here: a gallery, or an artifact view the app opened without app=1.
     const { win, posted, native, doc } = fakeWin(META);
     expect(installTransport(win)).toBe(true);
-    expect(Object.keys(win.claxTransport!).sort()).toEqual(["callResult", "callResultChunk", "embed", "init", "streamBlock", "streamEnd"]);
+    expect(Object.keys(win.claxTransport!).sort()).toEqual(["callResult", "embed", "init", "streamBlock", "streamEnd"]);
     expect(hostEmbed(win)).toEqual({ transport: "host", shell: "clax://app", content: "clax://{id}.c" });
     expect(Object.isFrozen(win.claxTransport)).toBe(true);
     expect(Object.isFrozen(hostEmbed(win))).toBe(true);

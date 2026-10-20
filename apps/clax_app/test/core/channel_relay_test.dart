@@ -169,68 +169,84 @@ void main() {
     expect((args[2]! as Map)['body64'], base64Encode([0xff, 0xfe]));
   });
 
-  test(
-    'a 3 MiB answer goes as a head, then in three callResultChunk calls',
-    () async {
-      final bytes = Uint8List(3 << 20);
-      for (var i = 0; i < bytes.length; i++) {
-        bytes[i] = i % 251;
-      }
-      fake.on(
-        'GET',
-        '/api/big',
-        (r, p) => CoreResponse(200, const [
-          ('content-type', 'application/octet-stream'),
-        ], bytes),
-      );
-      relay.handle(call(4, 'GET', '/api/big'));
-      await settle();
-      final got = calls();
-      expect(got.map((c) => c.$1), [
-        'callResult',
-        'callResultChunk',
-        'callResultChunk',
-        'callResultChunk',
-      ]);
-      expect(got.first.$2, [
-        _nonce,
-        4,
-        {
-          'status': 200,
-          'headers': [
-            ['content-type', 'application/octet-stream'],
-          ],
-          'chunked': true,
-        },
-      ]);
-      final joined = <int>[];
-      for (final (i, (_, args)) in got.skip(1).indexed) {
-        expect(args.sublist(0, 4), [_nonce, 4, i, i == 2]);
-        final part = base64Decode(args[4]! as String);
-        expect(part, hasLength(1 << 20));
-        joined.addAll(part);
-      }
-      expect(joined, bytes);
-    },
-  );
-
-  test('a text answer over 1 MiB goes in chunks too', () async {
-    final text = 'a' * ((1 << 20) + 1);
+  test('an answer of more than partBytes goes as callResult parts with '
+      'more: true, each a whole number of base64 quanta, then the last as '
+      'the ordinary callResult with its status and headers', () async {
+    const part = ChannelRelay.partBytes;
+    expect(part % 3, 0);
+    expect(base64Encode(Uint8List(part)).length, 1 << 20);
+    final bytes = Uint8List(3 * part + 7);
+    for (var i = 0; i < bytes.length; i++) {
+      bytes[i] = i % 251;
+    }
     fake.on(
       'GET',
-      '/api/t',
+      '/api/big',
       (r, p) => CoreResponse(200, const [
-        ('content-type', 'text/plain'),
-      ], utf8.encode(text)),
+        ('content-type', 'application/octet-stream'),
+      ], bytes),
     );
-    relay.handle(call(5, 'GET', '/api/t'));
+    relay.handle(call(4, 'GET', '/api/big'));
     await settle();
-    expect(calls().map((c) => c.$1), [
-      'callResult',
-      'callResultChunk',
-      'callResultChunk',
+    final got = calls();
+    expect(got.map((c) => c.$1), everyElement('callResult'));
+    expect(got, hasLength(4));
+    for (final (_, args) in got.take(3)) {
+      expect(args.sublist(0, 2), [_nonce, 4]);
+      expect((args[2]! as Map).keys, ['body64', 'more']);
+      expect((args[2]! as Map)['more'], isTrue);
+      expect(
+        base64Decode((args[2]! as Map)['body64'] as String),
+        hasLength(part),
+      );
+    }
+    final last = got.last.$2;
+    expect(last.sublist(0, 2), [_nonce, 4]);
+    expect((last[2]! as Map)['status'], 200);
+    expect((last[2]! as Map)['headers'], [
+      ['content-type', 'application/octet-stream'],
     ]);
+    expect((last[2]! as Map).containsKey('more'), isFalse);
+    // The parts' base64 texts join into the whole body's.
+    final joined = got.map((c) => (c.$2[2]! as Map)['body64'] as String).join();
+    expect(joined, base64Encode(bytes));
   });
+
+  test('an answer of exactly partBytes goes whole', () async {
+    fake.on(
+      'GET',
+      '/api/edge',
+      (r, p) => CoreResponse(200, const [
+        ('content-type', 'application/octet-stream'),
+      ], Uint8List(ChannelRelay.partBytes)),
+    );
+    relay.handle(call(4, 'GET', '/api/edge'));
+    await settle();
+    final (_, args) = calls().single;
+    expect((args[2]! as Map)['status'], 200);
+  });
+
+  test(
+    'a text answer over partBytes goes in parts too, all as body64',
+    () async {
+      final text = 'a' * (ChannelRelay.partBytes + 1);
+      fake.on(
+        'GET',
+        '/api/t',
+        (r, p) => CoreResponse(200, const [
+          ('content-type', 'text/plain'),
+        ], utf8.encode(text)),
+      );
+      relay.handle(call(5, 'GET', '/api/t'));
+      await settle();
+      final got = calls();
+      expect(got, hasLength(2));
+      expect((got.first.$2[2]! as Map)['more'], isTrue);
+      final last = got.last.$2[2]! as Map;
+      expect(last.containsKey('body'), isFalse);
+      expect(last['body64'], base64Encode(utf8.encode('a')));
+    },
+  );
 
   test('a chunked call waits for its callChunks and sends their bytes in '
       'order', () async {
