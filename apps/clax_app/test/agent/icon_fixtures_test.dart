@@ -25,6 +25,27 @@ void main() {
     expect(files, vectors.keys.toSet());
   });
 
+  // The icons the app's agent wrote (test/fixtures/icons, which the
+  // screenshots draw) are among the vectors as ok-sample-<name>.svg, byte
+  // for byte, so a stricter core rule cannot refuse them unseen.
+  test('the app\'s sample icons are vectors', () {
+    final samples = Directory(appPath('test/fixtures/icons'))
+        .listSync()
+        .whereType<File>()
+        .where((f) => f.path.endsWith('.svg'))
+        .toList();
+    expect(samples, hasLength(6));
+    for (final f in samples) {
+      final name = 'ok-sample-${f.uri.pathSegments.last}';
+      expect(vectors[name], {'problem': null, 'clean': true}, reason: name);
+      expect(
+        File('$dir/$name').readAsBytesSync(),
+        f.readAsBytesSync(),
+        reason: name,
+      );
+    }
+  });
+
   // The problems cleanIcon drops rather than refuses.
   const cleanable = {
     'element',

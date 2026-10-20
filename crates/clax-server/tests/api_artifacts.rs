@@ -101,6 +101,44 @@ async fn validation_errors_are_400_with_codes() {
     );
 }
 
+/// A publish whose `icon.svg` breaks the icon rules is 400 `invalid_icon`,
+/// with the rule broken in `rule` beside the sentence, on a new artifact
+/// and on a new version alike.
+#[tokio::test]
+async fn a_bad_icon_is_invalid_icon_with_its_rule() {
+    let ts = TestServer::spawn().await;
+    let files =
+        |icon: &str| json!({"index.html": {"content": "<p>x</p>"}, "icon.svg": {"content": icon}});
+    let bad =
+        r#"<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 9 9"><script>x()</script></svg>"#;
+    let res = ts
+        .post_json("/api/artifacts", json!({"files": files(bad)}))
+        .await;
+    assert_eq!(res.status(), 400);
+    let err: serde_json::Value = res.json().await.unwrap();
+    assert_eq!(err["error"]["code"], "invalid_icon", "{err}");
+    assert_eq!(err["error"]["rule"], "element", "{err}");
+    assert!(
+        err["error"]["message"]
+            .as_str()
+            .unwrap()
+            .starts_with("icon.svg uses <script>"),
+        "{err}"
+    );
+    let created = ts.publish("Iconic", &[("index.html", "<p>x</p>")]).await;
+    let id = created["artifact"]["id"].as_str().unwrap();
+    let res = ts
+        .post_json(
+            &format!("/api/artifacts/{id}/versions"),
+            json!({"if_version": 1, "files": files(r#"<svg viewBox="0 0 9 8"/>"#)}),
+        )
+        .await;
+    assert_eq!(res.status(), 400);
+    let err: serde_json::Value = res.json().await.unwrap();
+    assert_eq!(err["error"]["code"], "invalid_icon", "{err}");
+    assert_eq!(err["error"]["rule"], "view_box", "{err}");
+}
+
 #[tokio::test]
 async fn patch_and_delete() {
     let ts = TestServer::spawn().await;

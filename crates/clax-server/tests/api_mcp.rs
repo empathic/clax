@@ -342,8 +342,8 @@ async fn mcp_draft_without_a_session_is_no_session(path: &str) {
 both!(mcp_draft_without_a_session_is_no_session);
 
 /// An outside agent's publish runs the core's icon rules: an `icon.svg`
-/// with a `<script>` is refused with `invalid_icon` and the rule broken,
-/// and nothing is published.
+/// with a `<script>` is refused with `invalid_icon` and the rule broken
+/// (`rule`), and nothing is published.
 async fn an_outside_agents_bad_icon_is_refused(path: &str) {
     let ts = TestServer::spawn().await;
     let session = mcp_session(&ts, path).await;
@@ -364,8 +364,16 @@ async fn an_outside_agents_bad_icon_is_refused(path: &str) {
     .await;
     assert_eq!(call["result"]["isError"], true, "{call}");
     let text = call["result"]["content"][0]["text"].as_str().unwrap();
-    assert!(text.contains("invalid_icon"), "{text}");
-    assert!(text.contains("icon.svg uses <script>"), "{text}");
+    let err: Value = serde_json::from_str(text).unwrap();
+    assert_eq!(err["error"]["code"], "invalid_icon", "{text}");
+    assert_eq!(err["error"]["rule"], "element", "{text}");
+    assert!(
+        err["error"]["message"]
+            .as_str()
+            .unwrap()
+            .starts_with("icon.svg uses <script>"),
+        "{text}"
+    );
     let listed: Value = ts.get("/api/artifacts").await.json().await.unwrap();
     assert_eq!(listed["artifacts"], json!([]), "{listed}");
 }
