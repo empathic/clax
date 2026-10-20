@@ -16,9 +16,11 @@
 # same push as the version it ships with (see docs/usage.md, "Releasing").
 #
 # Environment:
+#   GH_REPO                 the GitHub repository whose releases to pin
+#                           (default: empathic/clax), as gh reads it
 #   CLAX_RELEASE_BASE_URL   release download base; SHA256SUMS comes from
 #                           <base>/vX.Y.Z/SHA256SUMS (default: the GitHub
-#                           releases of empathic/clax); for tests
+#                           releases of GH_REPO); for tests
 set -euo pipefail
 cd "$(dirname "$0")/.."
 [ $# = 1 ] || { echo "usage: pin-release.sh vX.Y.Z" >&2; exit 2; }
@@ -31,7 +33,7 @@ if [ "$version" != "${checkout%%-*}" ] && [ "$newest" = "$version" ]; then
     echo "pin-release: $tag is newer than this checkout ($checkout); pin it from a checkout at $version or later" >&2
     exit 1
 fi
-base="${CLAX_RELEASE_BASE_URL:-https://github.com/empathic/clax/releases/download}"
+base="${CLAX_RELEASE_BASE_URL:-https://github.com/${GH_REPO:-empathic/clax}/releases/download}"
 url="$base/$tag/SHA256SUMS"
 sums="$(mktemp)"
 trap 'rm -f "$sums"' EXIT

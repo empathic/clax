@@ -170,5 +170,14 @@ out="$(cd "$T/pin" && scripts/pin-release.sh 0.3.0 2>&1)"; rc=$?
 if [ "$rc" = 2 ] && echo "$out" | grep "not a release tag" >/dev/null; then pass "pin-release wants a vX.Y.Z tag"
 else fail "pin-release wants a vX.Y.Z tag (rc=$rc: $out)"; fi
 
+# The default download base names GH_REPO's releases; a fake curl that
+# fails keeps the request off the network.
+mkdir -p "$T/nocurl"
+printf '#!/bin/sh\nexit 7\n' | fake_exe "$T/nocurl/curl"
+out="$(cd "$T/pin" && GH_REPO=someone/fork PATH="$T/nocurl:$PATH" scripts/pin-release.sh "v$V" 2>&1)"; rc=$?
+if [ "$rc" = 1 ] && echo "$out" | grep -F "https://github.com/someone/fork/releases/download/v$V/SHA256SUMS" >/dev/null; then
+    pass "pin-release downloads from GH_REPO's releases"
+else fail "pin-release downloads from GH_REPO's releases (rc=$rc: $out)"; fi
+
 [ "$FAILED" = 0 ] && echo "release script tests passed" || echo "release script tests FAILED"
 exit "$FAILED"
