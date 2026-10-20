@@ -849,8 +849,9 @@ once (`WebViewCookieManager.clearCookies`), and each origin's storage under
 WebView. A page's `localStorage` on the old origin is not carried to the
 new one; the old port was kept across starts (`<support>/daemon-port`), so
 this is a real, one-time loss for pages that keep state there rather than
-in their documents. It is accepted and recorded as a `waiver` on this
-section.
+in their documents. This spec does not carry it (copying it would need
+each old origin loaded once over a loopback listener, which decision 1
+forbids); whether that loss is acceptable is the owner's call (ask).
 
 ## 11. Build
 
