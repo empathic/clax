@@ -19,7 +19,7 @@ void main() {
       'daemon',
       () async {
         final d = await RealDaemon.start(bin!);
-        final api = HttpClaxApi(() => d.endpoint);
+        final api = HttpClaxApi.loopback(() => d.endpoint);
         addTearDown(api.close);
         await api.registerAppSession(installId: 'eval', pid: pid);
         final made = await api.createArtifact(

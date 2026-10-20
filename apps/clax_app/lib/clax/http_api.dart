@@ -15,31 +15,6 @@ import 'transport.dart';
 /// transport's code (`timeout`, `daemon_unreachable`, `core_closed`, …);
 /// one the API refused throws its status and error.
 class HttpClaxApi implements ClaxApi {
-  /// The same as [HttpClaxApi.loopback].
-  HttpClaxApi(
-    DaemonEndpoint Function() endpoint, {
-    HttpClient? client,
-    String? sessionId,
-    Duration requestTimeout = const Duration(seconds: 35),
-    Duration publishTimeout = const Duration(seconds: 125),
-    Duration pollSlack = defaultPollSlack,
-    Future<void> Function(Duration)? eventRetryDelay,
-    Duration eventConnectTimeout = defaultEventConnectTimeout,
-    Duration eventIdleTimeout = defaultEventIdleTimeout,
-    SseTimer eventTimer = Timer.new,
-  }) : this.loopback(
-         endpoint,
-         client: client,
-         sessionId: sessionId,
-         requestTimeout: requestTimeout,
-         publishTimeout: publishTimeout,
-         pollSlack: pollSlack,
-         eventRetryDelay: eventRetryDelay,
-         eventConnectTimeout: eventConnectTimeout,
-         eventIdleTimeout: eventIdleTimeout,
-         eventTimer: eventTimer,
-       );
-
   /// Over loopback HTTP to the daemon [endpoint] names, read afresh for
   /// each request ([LoopbackTransport]). An event stream waits
   /// [eventConnectTimeout] for the daemon's answer and reconnects after

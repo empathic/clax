@@ -282,7 +282,7 @@ class IosRig {
     onStateChange: lifecycle.add,
   );
 
-  late final api = HttpClaxApi(endpoint);
+  late final api = HttpClaxApi.loopback(endpoint);
 
   /// The running daemon's endpoint; throws while it is not up.
   DaemonEndpoint endpoint() => switch (supervisor.state) {
@@ -292,7 +292,7 @@ class IosRig {
 
   late final services = AppServices(
     supervisor: supervisor,
-    api: HttpClaxApi.new,
+    api: HttpClaxApi.loopback,
     backend: (settings, key) => ScriptedBackend(const []),
     voice: _NoVoice(),
     settings: SettingsStore(File('${_support.path}/settings.json')),

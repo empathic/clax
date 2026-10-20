@@ -23,7 +23,7 @@ void main() {
     'the app session publishes, takes a sent comment, answers it and writes documents',
     () async {
       final d = await _Daemon.start(bin!);
-      final api = HttpClaxApi(() => d.endpoint);
+      final api = HttpClaxApi.loopback(() => d.endpoint);
       addTearDown(api.close);
       final s = await api.registerAppSession(
         installId: 'install-1',
@@ -215,7 +215,7 @@ void main() {
     'queries, the owner thread calls, questions, the inbox and the stream',
     () async {
       final d = await _Daemon.start(bin!);
-      final api = HttpClaxApi(() => d.endpoint, eventRetryDelay: (_) async {});
+      final api = HttpClaxApi.loopback(() => d.endpoint, eventRetryDelay: (_) async {});
       addTearDown(api.close);
       final s = await api.registerAppSession(
         installId: 'install-1',
@@ -405,7 +405,7 @@ void main() {
     'drafts: a hidden copy of the app that takes publishes and is deleted',
     () async {
       final d = await _Daemon.start(bin!);
-      final api = HttpClaxApi(() => d.endpoint);
+      final api = HttpClaxApi.loopback(() => d.endpoint);
       addTearDown(api.close);
       await api.registerAppSession(
         installId: 'install-1',
@@ -481,7 +481,7 @@ void _entriesTest(String? bin) => test(
   'file entries: bytes round-trip, the content hash, drafts and a delete',
   () async {
     final d = await _Daemon.start(bin!, requireCredential: true);
-    final api = HttpClaxApi(() => d.endpoint);
+    final api = HttpClaxApi.loopback(() => d.endpoint);
     addTearDown(api.close);
     await api.registerAppSession(
       installId: 'install-1',
@@ -564,7 +564,7 @@ void _lockedTest(String? bin) => test(
   'a daemon started as the app starts it serves the token holder alone',
   () async {
     final d = await _Daemon.start(bin!, requireCredential: true);
-    final api = HttpClaxApi(() => d.endpoint);
+    final api = HttpClaxApi.loopback(() => d.endpoint);
     addTearDown(api.close);
     await api.registerAppSession(
       installId: 'install-1',

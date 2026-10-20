@@ -112,7 +112,7 @@ void main() {
     if (bin == null) return;
     final d = await RealDaemon.start(bin);
     base = d.endpoint.base;
-    api = HttpClaxApi(() => d.endpoint);
+    api = HttpClaxApi.loopback(() => d.endpoint);
     addTearDown(api.close);
     await api.registerAppSession(
       installId: 'install-1',

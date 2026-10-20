@@ -192,7 +192,7 @@ Future<AppServices> platformServices({DateTime? launched}) async {
   final settings = SettingsStore(File('${support.path}/settings.json'));
   return AppServices(
     supervisor: supervisor,
-    api: HttpClaxApi.new,
+    api: HttpClaxApi.loopback,
     backend: (settings, key) =>
         scripted ??
         chooseBackend(

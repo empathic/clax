@@ -124,7 +124,7 @@ Future<void> main() async {
       Up(:final endpoint) => endpoint,
       _ => endpoint,
     };
-    final api = HttpClaxApi(current);
+    final api = HttpClaxApi.loopback(current);
     final backend = MessagesApiBackend(apiKey: () async => key, log: say);
     final placeholder = EvalLog(const SystemClock());
     final timings = EvalTimings(placeholder);

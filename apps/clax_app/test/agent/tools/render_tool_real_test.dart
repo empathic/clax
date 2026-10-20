@@ -27,7 +27,7 @@ void main() {
     'served, and staged writes merge as the daemon merges them',
     () async {
       final d = await RealDaemon.start(bin!);
-      final api = HttpClaxApi(() => d.endpoint);
+      final api = HttpClaxApi.loopback(() => d.endpoint);
       addTearDown(api.close);
       await api.registerAppSession(
         installId: 'install-1',

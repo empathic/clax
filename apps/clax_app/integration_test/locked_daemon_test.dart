@@ -49,7 +49,7 @@ void main() {
       await dir.delete(recursive: true);
     });
     final ep = await supervisor.ensureUp();
-    final api = HttpClaxApi(() => ep);
+    final api = HttpClaxApi.loopback(() => ep);
     addTearDown(api.close);
     await api.registerAppSession(
       installId: 'locked-integration',

@@ -170,7 +170,7 @@ class Rig {
   final _subs = <StreamSubscription<HostMessage>>[];
   WebViewAppSurface? surface;
 
-  late final api = HttpClaxApi(_endpoint);
+  late final api = HttpClaxApi.loopback(_endpoint);
 
   /// The running daemon's token, or null while it is not up: a
   /// [DaemonKeyCookie]'s source.
@@ -186,7 +186,7 @@ class Rig {
 
   late final services = AppServices(
     supervisor: supervisor,
-    api: HttpClaxApi.new,
+    api: HttpClaxApi.loopback,
     backend: (settings, key) => backend,
     voice: _NoVoice(),
     settings: SettingsStore(File('${dir.path}/settings.json')),

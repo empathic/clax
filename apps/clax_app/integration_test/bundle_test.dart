@@ -121,7 +121,7 @@ void main() {
 
     // The recipient: its own client and app session, store and key.
     final recipientDir = Directory('${rig.dir.path}/recipient')..createSync();
-    final recipientApi = HttpClaxApi(() => endpoint);
+    final recipientApi = HttpClaxApi.loopback(() => endpoint);
     addTearDown(recipientApi.close);
     Future<void> session() => recipientApi.registerAppSession(
       installId: 'bundle-recipient',
