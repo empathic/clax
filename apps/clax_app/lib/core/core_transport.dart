@@ -22,6 +22,12 @@ import 'frame.dart';
 /// (on [timer]); the core is then told to cancel the call
 /// ([CoreCalls.cancel]), as a loopback timeout aborts its request, so a
 /// call it has not finished does not take effect.
+///
+/// [close] cancels every call in flight on it in the core, each throwing
+/// [ClaxApiError.unreachable] with reason `closed`, and ends its event
+/// streams, so an app teardown or a worker isolate's shutdown leaves
+/// nothing running in the core on its behalf. The core itself stays open:
+/// its lifetime is its host's.
 class CoreTransport implements ClaxTransport {
   CoreTransport(
     this._core, {
@@ -35,9 +41,29 @@ class CoreTransport implements ClaxTransport {
   /// Makes each call's deadline timer; tests inject their own.
   final SseTimer timer;
 
-  /// Does nothing: the core's lifetime is its host's.
+  /// The calls sent and not yet answered, by tag, each with what ends it
+  /// at [close].
+  final Map<int, void Function()> _inFlight = {};
+
+  /// The event streams not yet ended, each with what ends it at [close].
+  final Set<void Function()> _streams = {};
+
+  bool _closed = false;
+
+  /// Cancels the calls in flight in the core, each throwing
+  /// [ClaxApiError.unreachable] with reason `closed`, and ends the event
+  /// streams. Later calls throw the same at once, and later streams end at
+  /// once.
   @override
-  void close() {}
+  void close() {
+    if (_closed) return;
+    _closed = true;
+    for (final end in [..._inFlight.values, ..._streams]) {
+      end();
+    }
+    _inFlight.clear();
+    _streams.clear();
+  }
 
   @override
   Future<TransportAnswer> send(
@@ -48,6 +74,7 @@ class CoreTransport implements ClaxTransport {
     Uint8List? body,
     required Duration timeout,
   }) {
+    if (_closed) return Future.error(_closedError(method, path));
     final q = query == null || query.isEmpty
         ? ''
         : '?${Uri(queryParameters: query).query}';
@@ -60,7 +87,15 @@ class CoreTransport implements ClaxTransport {
       ),
     );
     final out = Completer<TransportAnswer>();
-    final deadline = timer(timeout, () {
+    late final Timer deadline;
+    _inFlight[call.tag] = () {
+      deadline.cancel();
+      if (out.isCompleted) return;
+      out.completeError(_closedError(method, path));
+      _core.cancel(call.tag);
+    };
+    deadline = timer(timeout, () {
+      _inFlight.remove(call.tag);
       if (out.isCompleted) return;
       out.completeError(
         ClaxApiError(
@@ -73,6 +108,7 @@ class CoreTransport implements ClaxTransport {
     });
     unawaited(
       call.answer.then((answer) {
+        _inFlight.remove(call.tag);
         deadline.cancel();
         if (out.isCompleted) return;
         switch (answer) {
@@ -85,6 +121,9 @@ class CoreTransport implements ClaxTransport {
     );
     return out.future;
   }
+
+  static ClaxApiError _closedError(String method, String path) =>
+      _unreachable('closed', '$method $path: the transport is closed');
 
   /// The messages of the core's event stream, a core subscription to its
   /// `GET /api/stream`.
@@ -101,7 +140,7 @@ class CoreTransport implements ClaxTransport {
   /// Any other end (`core_closed`, `core_failed`, `malformed`) ends it
   /// with status 0 [ClaxApiError.unreachable], the reason in its body:
   /// reopening the core is its host's work, not this stream's. Cancelling
-  /// ends the subscription.
+  /// ends the subscription, and so does [close].
   @override
   Stream<SseMessage> sse({String? Function()? resumeId}) {
     late final StreamController<SseMessage> out;
@@ -110,6 +149,18 @@ class CoreTransport implements ClaxTransport {
     StreamSubscription<SseMessage>? reading;
     Completer<void>? ended;
     String? lastId;
+
+    void end() {
+      if (cancelled) return;
+      cancelled = true;
+      current?.cancel();
+      current = null;
+      unawaited(reading?.cancel());
+      reading = null;
+      final e = ended;
+      if (e != null && !e.isCompleted) e.complete();
+      if (!out.isClosed) unawaited(out.close());
+    }
 
     Future<void> run() async {
       var backoff = _first;
@@ -165,14 +216,23 @@ class CoreTransport implements ClaxTransport {
         }
         break;
       }
+      _streams.remove(end);
       if (!out.isClosed) await out.close();
     }
 
     out = StreamController<SseMessage>(
-      onListen: () => unawaited(run()),
+      onListen: () {
+        if (_closed) {
+          unawaited(out.close());
+          return;
+        }
+        _streams.add(end);
+        unawaited(run());
+      },
       onPause: () => reading?.pause(),
       onResume: () => reading?.resume(),
       onCancel: () async {
+        _streams.remove(end);
         cancelled = true;
         current?.cancel();
         current = null;

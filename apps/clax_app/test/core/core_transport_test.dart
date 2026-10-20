@@ -155,13 +155,57 @@ void main() {
       expect(Uri.parse(r.path).queryParameters, {'tier': 'wait', 'wait': '20'});
     });
 
-    test("close leaves the core's calls and streams to its host", () async {
-      final sub = api.stream().events.listen((_) {});
+    test('close cancels the calls in flight and ends the streams', () async {
+      final hanging = FakeCore()
+        ..on('GET', '/api/artifacts', (r, p) => Completer<CoreResponse>().future)
+        ..on(
+          'GET',
+          '/api/sessions/{sid}/feedback',
+          (r, p) => Completer<CoreResponse>().future,
+        );
+      final transport = CoreTransport(hanging);
+      final closing = HttpClaxApi.over(transport);
+      final failures = <Object>[];
+      final calls = [
+        closing.listArtifacts().then<void>((_) {}, onError: failures.add),
+        closing
+            .pollFeedback('s1', wait: const Duration(seconds: 20))
+            .then<void>((_) {}, onError: failures.add),
+      ];
+      var ended = false;
+      transport.sse().listen((_) {}, onDone: () => ended = true);
       await pumpEventQueue();
-      api.close();
-      expect(await api.listArtifacts(), isEmpty);
-      expect(core.subscribers, 1);
-      await sub.cancel();
+      expect(hanging.subscribers, 1);
+
+      closing.close();
+      await Future.wait(calls);
+      await pumpEventQueue();
+
+      expect(
+        hanging.cancelled.map((r) => Uri.parse(r.path).path),
+        unorderedEquals(['/api/artifacts', '/api/sessions/s1/feedback']),
+        reason: 'each call in flight is cancelled in the core',
+      );
+      final closed = isA<ClaxApiError>()
+          .having((e) => e.status, 'status', 0)
+          .having((e) => e.code, 'code', ClaxApiError.unreachable)
+          .having((e) => e.unanswered, 'unanswered', isTrue)
+          .having((e) => e.body['reason'], 'reason', 'closed');
+      expect(failures, [closed, closed]);
+      expect(ended, isTrue, reason: 'the stream ends');
+      expect(hanging.subscribers, 0, reason: 'its subscription is cancelled');
+
+      // Nothing goes through it afterwards.
+      await expectLater(closing.listArtifacts(), throwsA(closed));
+      var after = false;
+      transport.sse().listen((_) {}, onDone: () => after = true);
+      await pumpEventQueue();
+      expect(after, isTrue);
+      expect(hanging.subscriptions, 1);
+      expect(hanging.requests.map((r) => Uri.parse(r.path).path), [
+        '/api/artifacts',
+        '/api/sessions/s1/feedback',
+      ]);
     });
 
     test("a refusal throws the core's error", () async {
