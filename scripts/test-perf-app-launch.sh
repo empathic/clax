@@ -65,12 +65,31 @@ fi
 want_log='{"name": "app launch: darwin-arm64 home usable median", "value": 410, "budget": null, "unit": "ms"}
 {"name": "app launch: darwin-arm64 home usable p90", "value": 520, "budget": null, "unit": "ms"}
 {"name": "app launch: darwin-arm64 home cover median", "value": 23.5, "budget": null, "unit": "ms"}
-{"name": "app launch: darwin-arm64 home cover p90", "value": 30, "budget": 25, "unit": "ms"}'
+{"name": "app launch: darwin-arm64 home cover p90", "value": 30, "budget": 25, "unit": "ms"}
+{"name": "app launch: darwin-arm64 home usable missing", "value": 0, "budget": null, "unit": "launches"}
+{"name": "app launch: darwin-arm64 home cover missing", "value": 1, "budget": null, "unit": "launches"}'
 if [ "$(cat "$d/metrics.jsonl")" = "$want_log" ] && grep -qF "app_home_cover_ms p90 30 ms is over its budget of 25 ms (reported, not gated)" "$d/err"; then
-    ok "CLAX_PERF_JSON: each median and p90 for perf-log.sh, the p90s beside their budgets; over budget is reported"
+    ok "CLAX_PERF_JSON: each median and p90 for perf-log.sh, the p90s beside their budgets, and the launches missing; over budget is reported"
 else
     bad "the perf-log lines: $(cat "$d/metrics.jsonl") / $(cat "$d/err")"
 fi
+# A run with a launch missing records nothing.
+before="$(cat "$d/budget.json")"
+if CLAX_PERF_APP_TIMINGS="$d/timings.jsonl" CLAX_PERF_PLATFORM=darwin-arm64 CLAX_PERF_BUDGETS="$d/budget.json" \
+    run --record >/dev/null 2>"$d/err" || [ "$(cat "$d/budget.json")" != "$before" ] \
+    || ! grep -qF "records no budget from a run with launches missing (home cover: 1)" "$d/err"; then
+    bad "--record with a launch missing: $(cat "$d/budget.json") / $(cat "$d/err")"
+else
+    ok "--record refuses a run with a launch missing and writes nothing"
+fi
+# Five launches, each with its cover.
+{
+    line home-cover 25; line home-usable 400
+    line home-cover 22; line home-usable 380
+    line home-cover 24; line home-usable 520
+    line home-cover 30; line home-usable 410
+    line home-cover 21; line home-usable 450
+} >"$d/timings.jsonl"
 CLAX_PERF_APP_TIMINGS="$d/timings.jsonl" CLAX_PERF_PLATFORM=darwin-arm64 CLAX_PERF_BUDGETS="$d/budget.json" \
     run --record >/dev/null 2>"$d/err"
 want_budget='{
@@ -119,7 +138,9 @@ if [ "$(uname -s)" = Darwin ]; then
 </dict></plist>
 EOF
     printf '#!/bin/sh\necho "$*" >>"%s/codesign.log"\n' "$d" >"$d/bin/codesign"
-    chmod +x "$d/bin/codesign"
+    # ioreg: the screen is locked while $d/locked exists.
+    printf '#!/bin/sh\nif [ -e "%s/locked" ]; then l=Yes; else l=No; fi\necho "  \\"IOConsoleUsers\\" = ({\\"CGSSessionScreenIsLocked\\"=$l})"\n' "$d" >"$d/bin/ioreg"
+    chmod +x "$d/bin/codesign" "$d/bin/ioreg"
     # Each line: the launch's home-usable and the home-cover it writes when
     # a snapshot is kept. Like the app, the fake writes home-cover only
     # when a snapshot exists, and takes the snapshot a while after the home
@@ -182,6 +203,23 @@ EOF
         ok "a dropped launch that keeps no snapshot within the cap stops the run before any measured launch"
     fi
     rm "$d/nosnap"
+    : >"$d/pids"
+    touch "$d/hang"
+    if CLAX_PERF_CAP=1 loop >"$d/out" 2>"$d/err" || [ "$(wc -l <"$d/pids" | tr -d ' ')" != 1 ] \
+        || ! grep -qF "the dropped launch gave no home-usable within 1 s" "$d/err" || [ -e "$box" ]; then
+        bad "a dropped launch without home-usable stops the run: $(cat "$d/out") / $(cat "$d/err")"
+    else
+        ok "a dropped launch without home-usable stops the run after one launch, its app stopped"
+    fi
+    rm "$d/hang"
+    : >"$d/pids"
+    touch "$d/locked"
+    if loop >"$d/out" 2>"$d/err" || [ -s "$d/pids" ] || ! grep -qF "the screen is locked" "$d/err"; then
+        bad "a locked screen stops the run before any launch: $(cat "$d/out") / $(cat "$d/err")"
+    else
+        ok "a locked screen (CGSSessionScreenIsLocked) stops the run before any launch"
+    fi
+    rm "$d/locked"
     : >"$d/launched"
     if CLAX_PERF_CONTAINER="$d/Containers/dev.empathic.clax" CLAX_PERF_WORK="$d/work" run --macos --app "$app" --i-know-what-i-am-doing >/dev/null 2>"$d/err" \
         || [ -s "$d/launched" ] || ! grep -qF "dev.empathic.clax.perf" "$d/err"; then

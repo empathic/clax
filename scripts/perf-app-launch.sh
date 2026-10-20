@@ -47,13 +47,16 @@
 # line per figure is appended to that file for scripts/perf-log.sh
 # ({"name", "value", "budget", "unit"}), each p90 beside its budget in
 # web/perf/budget.json (`<platform>.app_home_usable_ms.budget`, and
-# app_home_cover_ms; CLAX_PERF_BUDGETS names another file). --record writes
-# a platform's missing budgets there: the p90 rounded up to the next 50 ms.
+# app_home_cover_ms; CLAX_PERF_BUDGETS names another file), and one line
+# per timing with its `missing` count (unit "launches"). --record writes a
+# platform's missing budgets there, the p90 rounded up to the next 50 ms,
+# and refuses (writing nothing, exiting 1) when any launch is missing.
 #
-# A macOS build signed ad hoc is asked for the login keychain's saved API
-# key at every launch until someone answers Always Allow for that build: a
-# launch waiting on that prompt, or any launch while the screen is locked,
-# gives no home-usable within the cap.
+# On macOS the run stops before the first launch while the screen is
+# locked (ioreg's CGSSessionScreenIsLocked), and on either platform after
+# a dropped launch that gives no home-usable within the cap: a lock or a
+# keychain prompt does not clear by itself. A launch after it without one
+# is counted as missing.
 #
 # CLAX_PERF_APP_TIMINGS=<timings.jsonl> skips the launches and summarizes
 # that file's lines instead, dropping none (for the test, and for a file
@@ -145,11 +148,19 @@ if sink:
                     continue
                 cap = mine.get(k, {}).get("budget") if fig == "p90" else None
                 f.write(json.dumps({"name": f"app launch: {platform} {label} {fig}", "value": out[k][fig], "budget": cap, "unit": "ms"}) + "\n")
+        for k in measured:
+            label = "home usable" if k == "app_home_usable_ms" else "home cover"
+            f.write(json.dumps({"name": f"app launch: {platform} {label} missing", "value": out[k]["missing"], "budget": None, "unit": "launches"}) + "\n")
 for k in measured:
     cap = mine.get(k, {}).get("budget")
     p90 = out[k]["p90"]
     if cap is not None and p90 is not None and p90 > cap:
         print(f"perf-app-launch: {k} p90 {p90} ms is over its budget of {cap} ms (reported, not gated)", file=sys.stderr)
+gaps = [f"{'home usable' if k == 'app_home_usable_ms' else 'home cover'}: {out[k]['missing']}" for k in measured if out[k]["missing"]]
+if record and gaps:
+    print(f"perf-app-launch: --record records no budget from a run with launches missing ({', '.join(gaps)}); {budgets} is unchanged", file=sys.stderr)
+    print(json.dumps(out))
+    sys.exit(1)
 if record:
     added = []
     for k in measured:
@@ -220,6 +231,11 @@ if [ "$target" = macos ]; then
         exit 0
     fi
     [ "$(uname -s)" = Darwin ] || { echo "perf-app-launch: --macos runs on a Mac" >&2; exit 1; }
+    # No launch reaches its home screen while the screen is locked.
+    if ioreg -n Root -d1 | grep -qF '"CGSSessionScreenIsLocked"=Yes'; then
+        echo "perf-app-launch: the screen is locked (CGSSessionScreenIsLocked), and no launch reaches its home screen while it is; unlock it and run again" >&2
+        exit 1
+    fi
     # Only the copy's own container is ever removed.
     [ "$(basename "$container")" = "$perf_id" ] ||
         { echo "perf-app-launch: CLAX_PERF_CONTAINER must be the copy's container, named $perf_id: $container" >&2; exit 1; }
@@ -284,7 +300,12 @@ if [ "$target" = macos ]; then
             kill -0 "$pid" 2>/dev/null || break
             sleep 0.25
         done
-        if [ -z "$got" ]; then
+        if [ -z "$got" ] && [ "$i" = 0 ]; then
+            # A keychain prompt or a lock does not clear by itself: the
+            # launches after it would each wait out the cap too.
+            echo "perf-app-launch: the dropped launch gave no home-usable within ${cap} s (a keychain prompt waiting? the screen locked? see $logs/launch-0.log); nothing is measured" >&2
+            exit 1
+        elif [ -z "$got" ]; then
             echo "perf-app-launch: launch $i: no home-usable within ${cap} s (a keychain prompt waiting? the screen locked?); counted as missing" >&2
         elif [ "$i" = 0 ]; then
             # The home screen keeps its snapshot a few seconds after it is
@@ -361,6 +382,11 @@ for i in $(seq 0 "$runs"); do
         if [ "$(count "$work/timings.jsonl")" -gt "$before" ]; then got=1; break; fi
         sleep 0.5
     done
+    if [ -z "$got" ] && [ "$i" = 0 ]; then
+        echo "perf-app-launch: the dropped launch gave no home-usable within ${cap} s (is the phone locked?); nothing is measured" >&2
+        "$adb" shell am force-stop "$pkg"
+        exit 1
+    fi
     [ -n "$got" ] || echo "perf-app-launch: launch $i: no home-usable within ${cap} s; counted as missing" >&2
     if [ -n "$got" ] && [ "$i" = 0 ]; then
         # As on macOS: the dropped launch keeps the snapshot the others
