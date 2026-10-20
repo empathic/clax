@@ -34,8 +34,8 @@ dark mode, and on a phone:
 - `icon.svg` at the top of the files is the app's icon, a square
   full-bleed design. Every publish refuses one that breaks these rules
   (`invalid_icon`): at most 32 KB of well-formed XML without a
-  `<!DOCTYPE>`; an `<svg>` root with a square `viewBox` of four numbers,
-  such as `0 0 1024 1024`; only the elements `svg`, `g`, `defs`, `title`,
+  `<!DOCTYPE>`, its elements nested at most 64 deep; an `<svg>` root with
+  a square `viewBox` of four numbers, such as `0 0 1024 1024`; only the elements `svg`, `g`, `defs`, `title`,
   `desc`, `path`, `rect`, `circle`, `ellipse`, `line`, `polyline`,
   `polygon`, `linearGradient`, `radialGradient`, `stop`, `clipPath`,
   `mask`, `use`, `symbol`, `text` and `tspan`; no `on*` attribute and no

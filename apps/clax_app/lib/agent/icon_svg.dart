@@ -37,17 +37,24 @@ const maxIconUses = 64;
 /// The deepest a `<use>` may reach through other `<use>`s.
 const maxIconUseDepth = 3;
 
+/// The most levels of elements an icon may nest, its root `<svg>` the
+/// first: far below what a recursive walk of the tree (the core's parser,
+/// drawing it, [cleanIcon]'s, `toXmlString`) can take on a phone's stack.
+/// It is read from the text before anything parses it.
+const maxIconDepth = 64;
+
 /// Why an icon is not usable: [code] names the rule broken, as the core's
-/// `invalid_icon` error does (`too_large`, `not_xml`, `doctype`, `not_svg`,
-/// `view_box`, `element`, `event_attribute`, `external_href`, `filter`,
-/// `external_url`, `style`, `use_too_many`, `use_too_deep`), and [message]
-/// is the sentence for the model to act on.
+/// `invalid_icon` error does (`too_large`, `not_xml`, `doctype`, `nesting`,
+/// `not_svg`, `view_box`, `element`, `event_attribute`, `external_href`,
+/// `filter`, `external_url`, `style`, `use_too_many`, `use_too_deep`), and
+/// [message] is the sentence for the model to act on.
 typedef IconProblem = ({String code, String message});
 
 /// Why [svg] is not a usable icon; null when it is one. The rules run in
-/// this order and the first broken one is named: size, well-formed XML, no
-/// DOCTYPE, the core parser's stricter XML ([_strictProblem]), an `<svg>`
-/// root, a square `viewBox`, then each element (the root's descendants in
+/// this order and the first broken one is named: size, nesting at most
+/// [maxIconDepth] deep (read from the text, as the core reads it before its
+/// parser), well-formed XML, no DOCTYPE, the core parser's stricter XML
+/// ([_strictProblem]), an `<svg>` root, a square `viewBox`, then each element (the root's descendants in
 /// document order, the root last) by its name and its attributes, then the
 /// `<use>` expansion.
 IconProblem? iconProblem(String svg) {
@@ -58,6 +65,14 @@ IconProblem? iconProblem(String svg) {
       message:
           'icon.svg is $bytes bytes; an icon may be at most 32 KB '
           '($maxIconBytes bytes): simplify its paths.',
+    );
+  }
+  if (_tooDeep(svg)) {
+    return (
+      code: 'nesting',
+      message:
+          'icon.svg nests its elements more than $maxIconDepth deep: flatten '
+          'its groups.',
     );
   }
   final XmlDocument doc;
@@ -139,11 +154,11 @@ IconProblem? _useProblem(XmlElement root) {
 
 /// [svg] with every element outside [iconElements] and every unsafe
 /// attribute dropped, or null when it is too large, not well-formed, not
-/// an `<svg>`, not square or past the `<use>` limits. It reads XML as
+/// an `<svg>`, nested too deep, not square or past the `<use>` limits. It reads XML as
 /// `XmlDocument.parse` does, without [iconProblem]'s stricter checks: an
 /// older icon the core would now refuse for its XML alone is still drawn.
 String? cleanIcon(String svg) {
-  if (utf8.encode(svg).length > maxIconBytes) return null;
+  if (utf8.encode(svg).length > maxIconBytes || _tooDeep(svg)) return null;
   final XmlDocument doc;
   try {
     doc = XmlDocument.parse(svg);
@@ -168,6 +183,51 @@ String? cleanIcon(String svg) {
 
   clean(root);
   return root.toXmlString();
+}
+
+/// Whether [s]'s start tags nest more than [maxIconDepth] deep, by a scan
+/// of the text that needs no parse, as the core's: a start tag not closed
+/// by `/>` opens a level and an end tag closes one; a comment,
+/// `<![CDATA[`, `<?…?>` and `<!…>` open none, and a quoted value in a tag
+/// hides its `>`.
+bool _tooDeep(String s) {
+  // Where [end] ends, searching from [from]; the text's end without one.
+  int past(String end, int from) {
+    if (from > s.length) return s.length;
+    final at = s.indexOf(end, from);
+    return at < 0 ? s.length : at + end.length;
+  }
+
+  var depth = 0;
+  var i = 0;
+  while (i < s.length) {
+    if (s.startsWith('<!--', i)) {
+      i = past('-->', i + 4);
+    } else if (s.startsWith('<![CDATA[', i)) {
+      i = past(']]>', i + 9);
+    } else if (s.startsWith('<?', i)) {
+      i = past('?>', i + 2);
+    } else if (s.startsWith('<!', i)) {
+      i = past('>', i + 2);
+    } else if (s.startsWith('</', i)) {
+      if (depth > 0) depth--;
+      i = past('>', i + 2);
+    } else if (s[i] == '<') {
+      var j = i + 1;
+      while (j < s.length && s[j] != '>') {
+        if (s[j] == '"' || s[j] == "'") j = past(s[j], j + 1) - 1;
+        j++;
+      }
+      if (j >= s.length || s[j - 1] != '/') {
+        if (++depth > maxIconDepth) return true;
+      }
+      i = j + 1;
+    } else {
+      final at = s.indexOf('<', i);
+      i = at < 0 ? s.length : at;
+    }
+  }
+  return false;
 }
 
 /// A number as SVG writes one; the core reads a viewBox's alike.
@@ -269,7 +329,7 @@ String? _strictProblem(String svg, XmlDocument doc) {
   for (final r in svg.runes) {
     if (!_isXmlChar(r)) return '${_codePoint(r)} is not an XML character';
   }
-  return _markupProblem(svg) ?? _namespaceProblem(doc.rootElement, const {});
+  return _markupProblem(svg) ?? _namespaceProblem(doc.rootElement);
 }
 
 bool _isXmlChar(int r) =>
@@ -413,36 +473,40 @@ String? _markupProblem(String s) {
   }
 }
 
-/// The first prefix used on [e] or below that no `xmlns:` declares (with
-/// [scope], the prefixes declared above), or an attribute written twice.
-String? _namespaceProblem(XmlElement e, Set<String> scope) {
-  final declared = {
-    ...scope,
-    for (final a in e.attributes)
-      if (a.name.prefix == 'xmlns') a.name.local,
-  };
-  final seen = <String>{};
-  for (final a in e.attributes) {
-    final qualified = a.name.qualified;
-    if (!seen.add(qualified)) {
-      return 'the attribute $qualified is written twice on '
-          '<${e.name.qualified}>';
+/// The first prefix used on [root] or below that no `xmlns:` declares, or
+/// an attribute written twice, in document order.
+String? _namespaceProblem(XmlElement root) {
+  final stack = <(XmlElement, Set<String>)>[(root, const {})];
+  while (stack.isNotEmpty) {
+    final (e, scope) = stack.removeLast();
+    final declared = {
+      ...scope,
+      for (final a in e.attributes)
+        if (a.name.prefix == 'xmlns') a.name.local,
+    };
+    final seen = <String>{};
+    for (final a in e.attributes) {
+      final qualified = a.name.qualified;
+      if (!seen.add(qualified)) {
+        return 'the attribute $qualified is written twice on '
+            '<${e.name.qualified}>';
+      }
+      final prefix = a.name.prefix;
+      if (prefix != null &&
+          prefix != 'xml' &&
+          prefix != 'xmlns' &&
+          !declared.contains(prefix)) {
+        return 'the prefix of $qualified is not declared (add '
+            'xmlns:$prefix="…" to <svg>)';
+      }
     }
-    final prefix = a.name.prefix;
-    if (prefix != null &&
-        prefix != 'xml' &&
-        prefix != 'xmlns' &&
-        !declared.contains(prefix)) {
-      return 'the prefix of $qualified is not declared (add '
-          'xmlns:$prefix="…" to <svg>)';
+    final prefix = e.name.prefix;
+    if (prefix != null && prefix != 'xml' && !declared.contains(prefix)) {
+      return 'the prefix of <${e.name.qualified}> is not declared';
     }
-  }
-  final prefix = e.name.prefix;
-  if (prefix != null && prefix != 'xml' && !declared.contains(prefix)) {
-    return 'the prefix of <${e.name.qualified}> is not declared';
-  }
-  for (final c in e.childElements) {
-    if (_namespaceProblem(c, declared) case final p?) return p;
+    for (final c in e.childElements.toList().reversed) {
+      stack.add((c, declared));
+    }
   }
   return null;
 }

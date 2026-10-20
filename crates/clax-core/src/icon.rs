@@ -45,6 +45,11 @@ pub const MAX_ICON_USES: usize = 64;
 /// The deepest a `<use>` may reach through other `<use>`s.
 pub const MAX_ICON_USE_DEPTH: usize = 3;
 
+/// The most levels of elements an icon may nest, its root `<svg>` the
+/// first: far below what a recursive walk of the tree (the app's drawing
+/// and cleaning among them) can take.
+pub const MAX_ICON_DEPTH: usize = 64;
+
 /// Why an `icon.svg` is not a usable icon. [`IconProblem::code`] names the
 /// rule; the `Display` form is the sentence the agent acts on.
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -55,6 +60,8 @@ pub enum IconProblem {
     NotXml(String),
     /// A `<!DOCTYPE>`.
     Doctype,
+    /// Elements nested more than [`MAX_ICON_DEPTH`] levels deep.
+    Nesting,
     /// A root element other than `<svg>`: its name.
     NotSvg(String),
     /// No `viewBox` on the root.
@@ -88,6 +95,7 @@ impl IconProblem {
             IconProblem::TooLarge(_) => "too_large",
             IconProblem::NotXml(_) => "not_xml",
             IconProblem::Doctype => "doctype",
+            IconProblem::Nesting => "nesting",
             IconProblem::NotSvg(_) => "not_svg",
             IconProblem::ViewBoxMissing
             | IconProblem::ViewBoxNotNumbers(_)
@@ -114,6 +122,11 @@ impl std::fmt::Display for IconProblem {
             ),
             IconProblem::NotXml(why) => write!(f, "icon.svg is not well-formed XML: {why}."),
             IconProblem::Doctype => write!(f, "icon.svg has a <!DOCTYPE>; leave it out."),
+            IconProblem::Nesting => write!(
+                f,
+                "icon.svg nests its elements more than {MAX_ICON_DEPTH} deep: flatten \
+                 its groups."
+            ),
             IconProblem::NotSvg(name) => write!(
                 f,
                 "icon.svg must have <svg> as its root element, not <{name}>."
@@ -166,10 +179,12 @@ impl std::fmt::Display for IconProblem {
 }
 
 /// Why `svg` is not a usable icon; `None` when it is one. The rules run in
-/// this order and the first broken one is named: size, well-formed XML, no
-/// DOCTYPE, an `<svg>` root, a square `viewBox`, then each element (the
-/// root's descendants in document order, the root last) by its name and
-/// its attributes in source order, then the `<use>` expansion.
+/// this order and the first broken one is named: size, UTF-8, nesting at
+/// most [`MAX_ICON_DEPTH`] deep (read from the text, before the parser,
+/// which recurses once per level), well-formed XML, no DOCTYPE, an `<svg>`
+/// root, a square `viewBox`, then each element (the root's descendants in
+/// document order, the root last) by its name and its attributes in source
+/// order, then the `<use>` expansion.
 pub fn problem(svg: &[u8]) -> Option<IconProblem> {
     if svg.len() > MAX_ICON_BYTES {
         return Some(IconProblem::TooLarge(svg.len()));
@@ -177,6 +192,9 @@ pub fn problem(svg: &[u8]) -> Option<IconProblem> {
     let Ok(text) = std::str::from_utf8(svg) else {
         return Some(IconProblem::NotXml("it is not UTF-8".into()));
     };
+    if too_deep(text) {
+        return Some(IconProblem::Nesting);
+    }
     let doc = match parse(text, false) {
         Ok(doc) => doc,
         Err(roxmltree::Error::DtdDetected) => {
@@ -206,6 +224,64 @@ pub fn problem(svg: &[u8]) -> Option<IconProblem> {
         }
     }
     use_problem(text, root)
+}
+
+/// Whether `text`'s start tags nest more than [`MAX_ICON_DEPTH`] deep, by a
+/// scan of the text that needs no parse (so it is the same for text that is
+/// not well-formed, and the app's `iconProblem` makes it alike): a start
+/// tag not closed by `/>` opens a level and an end tag closes one; a
+/// comment, `<![CDATA[`, `<?…?>` and `<!…>` open none, and a quoted value
+/// in a tag hides its `>`.
+fn too_deep(text: &str) -> bool {
+    let s = text.as_bytes();
+    // Where `end` ends, searching from `from`; the text's end without one.
+    let past = |end: &[u8], from: usize| {
+        s.get(from..)
+            .and_then(|rest| rest.windows(end.len()).position(|w| w == end))
+            .map_or(s.len(), |at| from + at + end.len())
+    };
+    let mut depth = 0usize;
+    let mut i = 0;
+    while i < s.len() {
+        let rest = &s[i..];
+        if rest.starts_with(b"<!--") {
+            i = past(b"-->", i + 4);
+        } else if rest.starts_with(b"<![CDATA[") {
+            i = past(b"]]>", i + 9);
+        } else if rest.starts_with(b"<?") {
+            i = past(b"?>", i + 2);
+        } else if rest.starts_with(b"<!") {
+            i = past(b">", i + 2);
+        } else if rest.starts_with(b"</") {
+            depth = depth.saturating_sub(1);
+            i = past(b">", i + 2);
+        } else if rest[0] == b'<' {
+            let mut j = i + 1;
+            let mut closed = false;
+            while j < s.len() && s[j] != b'>' {
+                if s[j] == b'"' || s[j] == b'\'' {
+                    j = past(&s[j..=j], j + 1) - 1;
+                }
+                j += 1;
+            }
+            if j < s.len() && s[j - 1] == b'/' {
+                closed = true;
+            }
+            if !closed {
+                depth += 1;
+                if depth > MAX_ICON_DEPTH {
+                    return true;
+                }
+            }
+            i = j + 1;
+        } else {
+            i = s[i..]
+                .iter()
+                .position(|&c| c == b'<')
+                .map_or(s.len(), |at| i + at);
+        }
+    }
+    false
 }
 
 fn parse(text: &str, allow_dtd: bool) -> Result<roxmltree::Document<'_>, roxmltree::Error> {
@@ -513,6 +589,7 @@ mod tests {
         "too_large",
         "not_xml",
         "doctype",
+        "nesting",
         "not_svg",
         "view_box",
         "element",

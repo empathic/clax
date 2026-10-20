@@ -146,6 +146,27 @@
     },
     "clean": true
   },
+  "bad-nesting-stack-deep.svg": {
+    "problem": {
+      "code": "nesting",
+      "message": "icon.svg nests its elements more than 64 deep: flatten its groups."
+    },
+    "clean": false
+  },
+  "bad-nesting-too-deep.svg": {
+    "problem": {
+      "code": "nesting",
+      "message": "icon.svg nests its elements more than 64 deep: flatten its groups."
+    },
+    "clean": false
+  },
+  "bad-nesting-unclosed.svg": {
+    "problem": {
+      "code": "nesting",
+      "message": "icon.svg nests its elements more than 64 deep: flatten its groups."
+    },
+    "clean": false
+  },
   "bad-no-viewbox.svg": {
     "problem": {
       "code": "view_box",
@@ -347,6 +368,14 @@
     "clean": true
   },
   "ok-gradient-use.svg": {
+    "problem": null,
+    "clean": true
+  },
+  "ok-nesting-at-limit.svg": {
+    "problem": null,
+    "clean": true
+  },
+  "ok-nesting-markup.svg": {
     "problem": null,
     "clean": true
   },

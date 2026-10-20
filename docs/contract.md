@@ -338,9 +338,9 @@ Errors:
 - `label_too_long`: `label` exceeds 60 characters.
 - `invalid_icon`: `icon.svg` breaks a rule of the icon subset ("Page
   contract"). The message is the sentence to act on; extra field `rule`
-  names the rule: `too_large`, `not_xml`, `doctype`, `not_svg`,
-  `view_box`, `element`, `event_attribute`, `external_href`, `filter`,
-  `external_url`, `style`, `use_too_many` or `use_too_deep`.
+  names the rule: `too_large`, `not_xml`, `doctype`, `nesting`,
+  `not_svg`, `view_box`, `element`, `event_attribute`, `external_href`,
+  `filter`, `external_url`, `style`, `use_too_many` or `use_too_deep`.
 - `unknown_session`: the session the tools registered has ended (for example
   through a `SessionEnd` hook) or no longer exists. The shim and the Pi
   extension register a new session with the same harness session ID and retry
@@ -5174,8 +5174,8 @@ dark mode, and on a phone:
 - `icon.svg` at the top of the files is the app's icon, a square
   full-bleed design. Every publish refuses one that breaks these rules
   (`invalid_icon`): at most 32 KB of well-formed XML without a
-  `<!DOCTYPE>`; an `<svg>` root with a square `viewBox` of four numbers,
-  such as `0 0 1024 1024`; only the elements `svg`, `g`, `defs`, `title`,
+  `<!DOCTYPE>`, its elements nested at most 64 deep; an `<svg>` root with
+  a square `viewBox` of four numbers, such as `0 0 1024 1024`; only the elements `svg`, `g`, `defs`, `title`,
   `desc`, `path`, `rect`, `circle`, `ellipse`, `line`, `polyline`,
   `polygon`, `linearGradient`, `radialGradient`, `stop`, `clipPath`,
   `mask`, `use`, `symbol`, `text` and `tspan`; no `on*` attribute and no
