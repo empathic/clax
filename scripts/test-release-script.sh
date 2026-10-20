@@ -14,11 +14,14 @@
 # dispatch, titled as .github/workflows/publish-pi.yml titles it.
 # $FAKE_STATE/<ID> lists the states `gh run view <ID>` reports, one per call
 # (the last one sticks; none means "completed success"). Run 101 seen to
-# succeed is listed among the tag's successful Release runs
-# ($FAKE_STATE/release-successes) and publishes the release
-# ($FAKE_STATE/release) unless it exists; $FAKE_STATE/earlier-run set to
-# "same" or "other" adds an earlier successful run (90) on a commit with the
-# tag's tree or another tree. `gh api` reads commits' trees from origin.
+# succeed publishes the release ($FAKE_STATE/release) unless it exists, with
+# a SOURCE_TREE asset ($FAKE_STATE/release-tree) of the tag commit's tree.
+# $FAKE_STATE/earlier-run set to "same" or "other" stands for a release an
+# earlier build made, of the tag commit's tree or of another tree: its
+# SOURCE_TREE says so, or with $FAKE_STATE/no-tree-asset (a release from
+# before that asset) the earlier successful run on the tag that uploaded it
+# does. `gh api` reads commits' trees from origin. The fake prints what each
+# --jq filter would.
 # The cases and their helpers run through $CASES, out of shellcheck's sight.
 # shellcheck disable=SC2329
 set -uo pipefail
@@ -106,11 +109,22 @@ case "$1 $2" in
         if [ -e "$S/release" ] && [ -n "$(origin tag -l "$3")" ]; then
             case " $* " in
                 *" tagName "*) echo "$3" ;;
-                *) printf 'clax-%s-aarch64-apple-darwin.tar.gz\ninstall.sh\nSHA256SUMS\n' "${3#v}" ;;
+                *" createdAt "*) echo "2026-10-20T00:00:10Z" ;;
+                *) printf 'clax-%s-aarch64-apple-darwin.tar.gz\ninstall.sh\nSOURCE_TREE\nSHA256SUMS\n' "${3#v}" ;;
             esac
         else
             echo "release not found" >&2; exit 1
         fi ;;
+    "release download")
+        commit="$(origin rev-parse "$3^{commit}")"
+        if [ ! -e "$S/release" ]; then echo "release not found" >&2; exit 1; fi
+        if [ -e "$S/no-tree-asset" ]; then echo "no assets match the file pattern" >&2; exit 1; fi
+        if [ -s "$S/release-tree" ]; then cat "$S/release-tree"; exit 0; fi
+        case "$(cat "$S/earlier-run" 2>/dev/null)" in
+            same) origin rev-parse "$commit^{tree}" ;;
+            other) origin rev-parse "$commit^^{tree}" ;;
+            *) echo "no assets match the file pattern" >&2; exit 1 ;;
+        esac ;;
     "api repos/"*)
         origin rev-parse "${2##*/}^{tree}" ;;
     "run list")
@@ -120,6 +134,8 @@ case "$1 $2" in
                 # $FAKE_STATE/release-delay: how many listings miss the run.
                 n="$(cat "$S/release-delay" 2>/dev/null || echo 0)"
                 if [ "$(flag --status "$@")" = success ]; then
+                    # The --jq filter's answer: the commit of the newest
+                    # successful run before the release.
                     tag="$(flag --branch "$@")"
                     commit="$(origin rev-parse "$tag^{commit}")"
                     case "$(cat "$S/earlier-run" 2>/dev/null)" in
@@ -127,11 +143,10 @@ case "$1 $2" in
                         other) tree="$(origin rev-parse "$commit^^{tree}")" ;;
                         *) tree="" ;;
                     esac
-                    cat "$S/release-successes" 2>/dev/null
                     if [ -n "$tree" ]; then
-                        echo "90 $(GIT_AUTHOR_NAME=Earlier GIT_AUTHOR_EMAIL=e@example.com GIT_COMMITTER_NAME=Earlier \
+                        GIT_AUTHOR_NAME=Earlier GIT_AUTHOR_EMAIL=e@example.com GIT_COMMITTER_NAME=Earlier \
                             GIT_COMMITTER_EMAIL=e@example.com GIT_AUTHOR_DATE=2026-10-01T00:00:00Z \
-                            GIT_COMMITTER_DATE=2026-10-01T00:00:00Z origin commit-tree "$tree" -m "Release (earlier)")"
+                            GIT_COMMITTER_DATE=2026-10-01T00:00:00Z origin commit-tree "$tree" -m "Release (earlier)"
                     fi
                 elif [ "$n" -gt 0 ]; then
                     echo $((n - 1)) > "$S/release-delay"
@@ -164,10 +179,9 @@ case "$1 $2" in
                 sha="$(awk -F '\t' -v id="$3" '$1 == id { sub("Publish Pi package ", "", $2); print $2 }' "$S/publish-runs")"
                 origin show "$sha:plugins/pi/package.json" | sed -n 's/^  "version": "\(.*\)",$/\1/p' >> "$S/npm-versions" ;;
         esac
-        if [ "$3" = 101 ] && [ "$state" = "completed success" ] && [ ! -e "$S/release-success" ]; then
-            : > "$S/release-success"
-            echo "101 $(origin rev-parse "$(origin tag -l 'v*' --sort=-creatordate | sed -n 1p)^{commit}")" >> "$S/release-successes"
-            [ -e "$S/release" ] || : > "$S/release"
+        if [ "$3" = 101 ] && [ "$state" = "completed success" ] && [ ! -e "$S/release" ]; then
+            : > "$S/release"
+            origin rev-parse "$(origin tag -l 'v*' --sort=-creatordate | sed -n 1p)^{tree}" > "$S/release-tree"
         fi
         echo "$state" ;;
     "workflow run")
@@ -253,6 +267,7 @@ new_case() {
     git -C "$r" config user.signingkey "$T/key"
     git -C "$r" config gpg.ssh.allowedSignersFile "$T/allowed_signers"
     cp "$HERE/scripts/release.sh" "$r/scripts/release.sh"
+    cp "$HERE/scripts/release-exists-check.sh" "$r/scripts/release-exists-check.sh"
     printf 'target/\n' > "$r/.gitignore"
     printf 'CLAX_VERSION="0.5.0"\nPINNED_VERSION="0.5.0"\n' > "$r/scripts/ensure-clax.sh"
     printf 'CLAX_VERSION="0.5.0"\nPINNED_VERSION="0.5.0"\n' > "$r/plugins/pi/scripts/ensure-clax.sh"
@@ -456,8 +471,8 @@ case_4() {
 case_5() {
 
     # --- a release of the version from an earlier build ----------------------------------
-    # The release exists already, made by an earlier successful run of the tag
-    # (90) on a commit with the same tree, as after re-signing the tagged
+    # The release exists already, built by an earlier run from a commit with
+    # the same tree (its SOURCE_TREE says so), as after re-signing the tagged
     # commit: it is this tag's build, even before the tag's own run is done.
     new_case
     : > "$FAKE_STATE/release"
@@ -468,6 +483,31 @@ case_5() {
         pass "a release built from the tag's tree by an earlier run, as after re-signing, is accepted"
     else fail "a release built from the tag's tree by an earlier run (rc=$rc: $(cat "$C/out"))"; fi
 }
+case_5b() {
+    # A release from before SOURCE_TREE: the run that uploaded it, the newest
+    # successful one before it, names its tree.
+    new_case
+    : > "$FAKE_STATE/release"
+    : > "$FAKE_STATE/no-tree-asset"
+    echo same > "$FAKE_STATE/earlier-run"
+    echo "in_progress " > "$FAKE_STATE/101"
+    act; rc=$?
+    if [ "$rc" = 0 ] && released && has "Step 8: Wait for the Release workflow: done already"; then
+        pass "a release with no SOURCE_TREE is judged by the run that uploaded it"
+    else fail "a release with no SOURCE_TREE judged by its run (rc=$rc: $(cat "$C/out"))"; fi
+}
+case_5c() {
+    # A release from before SOURCE_TREE with no successful run before it.
+    new_case
+    : > "$FAKE_STATE/release"
+    : > "$FAKE_STATE/no-tree-asset"
+    echo "completed failure" > "$FAKE_STATE/101"
+    act; rc=$?
+    if [ "$rc" = 1 ] && has "has no SOURCE_TREE and no successful Release run on v0.6.0 before it" \
+        && has "holds a build of an unknown tree" && [ "$(count "pin v0.6.0")" = 0 ]; then
+        pass "a release no rule can place is never pinned"
+    else fail "a release no rule can place (rc=$rc: $(cat "$C/out"))"; fi
+}
 case_6() {
     # Made from another tree: the tag's own run fails on it, and it is never pinned.
     new_case
@@ -476,7 +516,8 @@ case_6() {
     echo "completed failure" > "$FAKE_STATE/101"
     act; rc=$?
     if [ "$rc" = 1 ] && has "step 8 (Wait for the Release workflow) failed" && has "gh release delete v0.6.0 --yes" \
-        && has "no successful Release run on v0.6.0 built this tag's tree" && [ "$(count "pin v0.6.0")" = 0 ]; then
+        && has "holds a build of $(git --git-dir="$C/origin.git" rev-parse 'v0.6.0^^{tree}'), not of this tag's tree" \
+        && [ "$(count "pin v0.6.0")" = 0 ]; then
         pass "a release built from another tree stops before the pin, saying to delete it"
     else fail "a release built from another tree (rc=$rc: $(cat "$C/out"))"; fi
     rm "$FAKE_STATE/release" "$FAKE_STATE/earlier-run"
@@ -491,11 +532,10 @@ case_7() {
     new_case
     : > "$FAKE_STATE/release"
     echo other > "$FAKE_STATE/earlier-run"
-    : > "$FAKE_STATE/release-success"
     act; rc=$?
-    if [ "$rc" = 1 ] && has "built this tag's tree" && [ "$(count "pin v0.6.0")" = 0 ]; then
-        pass "a release no successful run built from this tree is never pinned"
-    else fail "a release no successful run built from this tree (rc=$rc: $(cat "$C/out"))"; fi
+    if [ "$rc" = 1 ] && has "not of this tag's tree" && [ "$(count "pin v0.6.0")" = 0 ]; then
+        pass "a release built from another tree is never pinned, even when the tag's run succeeds"
+    else fail "a release built from another tree, the tag's run succeeding (rc=$rc: $(cat "$C/out"))"; fi
 }
 case_8() {
 
@@ -812,7 +852,7 @@ case_37() {
 
 JOBS="$(getconf _NPROCESSORS_ONLN 2>/dev/null || echo 4)"
 [ "$JOBS" -le 8 ] || JOBS=8
-CASES="case_1 case_2 case_3 case_4 case_5 case_6 case_7 case_8 case_9 case_10 case_11 case_12 case_13 case_14 case_15 case_16 case_16b case_16c case_17 case_18 case_19 case_20 case_21 case_22 case_23 case_24 case_25 case_26 case_27 case_28 case_29 case_30 case_31 case_32 case_33 case_34 case_35 case_36 case_37"
+CASES="case_1 case_2 case_3 case_4 case_5 case_5b case_5c case_6 case_7 case_8 case_9 case_10 case_11 case_12 case_13 case_14 case_15 case_16 case_16b case_16c case_17 case_18 case_19 case_20 case_21 case_22 case_23 case_24 case_25 case_26 case_27 case_28 case_29 case_30 case_31 case_32 case_33 case_34 case_35 case_36 case_37"
 # A case's subshell exits 0 once its last check has run; one that dies on
 # the way (an unbound variable under set -u, say) exits otherwise, and fails
 # the gate whatever it printed before. Each case's status is collected by its

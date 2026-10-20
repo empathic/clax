@@ -646,14 +646,17 @@ carries plugins that pin the previous release; `clax init` points them at
 that binary through the `bin` setting.
 
 The tag runs `.github/workflows/release.yml`. It checks that the tag matches
-every version. When the tag's release exists already
-(`scripts/release-exists-check.sh`), the run builds nothing: it finishes
-if the earliest successful Release run on the tag built a commit with the
-same tree as the one the tag names now (a tag moved to a re-signed copy of
+every version. A release records the tree it was built from in a
+`SOURCE_TREE` asset, which `SHA256SUMS` covers. When the tag's release
+exists already, the run builds nothing: it finishes if the release was
+built from the tree the tag names now (a tag moved to a re-signed copy of
 its commit), and fails otherwise, saying to delete the release and rerun.
-`scripts/release.sh` judges the release the same way, by trees, not
-commits: a moved tag with the same tree keeps its release, and a release
-no successful run built from the tag's tree is never pinned. Otherwise the
+For a release made before `SOURCE_TREE`, its tree is that of the newest
+successful Release run on the tag created before the release: the run that
+uploaded it. `scripts/release-exists-check.sh` holds that rule, and
+`scripts/release.sh` uses the same script, so both judge a release by
+trees, not commits: a moved tag with the same tree keeps its release, and
+a release built from another tree is never pinned. Otherwise the
 workflow builds macOS arm64 and x86_64 and Linux x86_64 and arm64
 (static musl) binaries on native runners, each with the web UI embedded. It
 smoke-tests each binary and packs `clax-<version>-<target>.tar.gz`. It

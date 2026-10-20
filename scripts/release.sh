@@ -22,8 +22,8 @@
 #    6  a signed tag vX.Y.Z, "Clax X.Y.Z"
 #    7  git push origin refs/tags/vX.Y.Z (the tag alone)
 #    8  wait for the Release workflow on that tag, then check that the GitHub
-#       release lists SHA256SUMS and that a successful Release run on the
-#       tag built the tag commit's tree
+#       release lists SHA256SUMS and was built from the tag commit's tree
+#       (scripts/release-exists-check.sh --tree)
 #    9  scripts/pin-release.sh vX.Y.Z
 #   10  just ci
 #   11  a signed commit "Pin the plugins to Clax X.Y.Z"
@@ -172,29 +172,26 @@ pi_has_version() {
     out="$("$NPM" view "$(pi_package)@${1:-$V}" version 2>/dev/null)" || return 1
     [ "$out" = "${1:-$V}" ]
 }
-# The tree of commit $1 as GitHub has it: a run's commit need not be here.
-github_tree() { gh api "repos/$GH_REPO/git/commits/$1" --jq .tree.sha; }
+# The tree the release was built from, by the rule the Release workflow
+# also uses (scripts/release-exists-check.sh): its SOURCE_TREE asset, or for
+# an older release the run that uploaded it. Nothing when there is none.
+release_tree() { bash "$ROOT/scripts/release-exists-check.sh" --tree "$TAG"; }
 # Whether the release's files are this tag's build: it lists SHA256SUMS and
-# a successful Release run on the tag built the tag commit's tree. Trees,
-# not commits: a tag moved to a re-signed copy of its commit names another
-# commit with the same tree, and the Release workflow then keeps the
-# release it already made (scripts/release-exists-check.sh). A release no
-# successful run built from this tree is another build's.
+# was built from the tag commit's tree. Trees, not commits: a tag moved to a
+# re-signed copy of its commit names another commit with the same tree,
+# and the Release workflow then keeps the release it already made.
 release_of_tree() {
-    local tree id sha
+    local tree
     release_has_sums || return 1
-    tree="$(g rev-parse "$REL_COMMIT^{tree}")"
-    while read -r id sha; do
-        [ -n "$sha" ] || continue
-        if [ "$(github_tree "$sha")" = "$tree" ]; then return 0; fi
-    done < <(gh run list --workflow release.yml --event push --branch "$TAG" --status success --limit 50 \
-        --json databaseId,headSha --jq '.[] | "\(.databaseId) \(.headSha)"')
-    return 1
+    tree="$(release_tree)" || return 1
+    [ -n "$tree" ] && [ "$tree" = "$(g rev-parse "$REL_COMMIT^{tree}")" ]
 }
-# Says what to do about a release of this version that no successful run
-# built from this tag's tree; $1 is the run on the tag.
+# Says what to do about a release of this version built from another tree
+# than this tag's; $1 is the run on the tag.
 stale_release() {
-    say "  the release $TAG exists, but no successful Release run on $TAG built this tag's tree"
+    local tree
+    tree="$(release_tree 2>/dev/null)" || tree=""
+    say "  the release $TAG holds a build of ${tree:-an unknown tree}, not of this tag's tree"
     say "  ($(g rev-parse "$REL_COMMIT^{tree}")): its files are another build's. Delete it, keeping the tag"
     say "  (gh release delete $TAG --yes --repo $GH_REPO), rerun the run (gh run rerun $1"
     say "  --repo $GH_REPO), then run this again."
