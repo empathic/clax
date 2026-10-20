@@ -539,6 +539,10 @@ class FakeCoreLib implements CoreLib {
   int subscribeAnswer = 0;
   int closeAnswer = 0;
 
+  /// When set, every request [call] takes is answered at once with this
+  /// status and no body.
+  int? answerWith;
+
   final List<FakeOpen> opens = [];
   final List<FakeLibCall> calls = [];
   final List<FakeLibCancel> cancels = [];
@@ -564,7 +568,14 @@ class FakeCoreLib implements CoreLib {
       if (cancelOf(bytes) case final target?) {
         cancels.add((core: core, target: target, port: port, tag: tag));
       } else {
-        calls.add((core: core, request: decodeRequest(bytes), port: port, tag: tag));
+        final c = (
+          core: core,
+          request: decodeRequest(bytes),
+          port: port,
+          tag: tag,
+        );
+        calls.add(c);
+        if (answerWith case final status?) answer(c, status);
       }
     }
     return callAnswer;
