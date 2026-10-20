@@ -104,16 +104,16 @@ fn register(
     handle
 }
 
-/// The handle of the core this process holds `home` with, unless it is
-/// closing, its open events moved to `port`, which hears the latest one at
-/// once (`ready`, or where opening has got to).
+/// The handle of the core this process holds `home` with, unless its open
+/// failed or it is closing, its open events moved to `port`, which hears
+/// the latest one at once (`ready`, or where opening has got to).
 fn reattach(home: &std::path::Path, post: &dyn Post, port: i64) -> Option<u64> {
     let key = crate::core::home_key(home);
     let mut cores = cores();
     let (handle, r) = cores.iter_mut().find(|(_, r)| {
         r.embed
             .as_ref()
-            .is_some_and(|e| e.home() == key && !e.closing())
+            .is_some_and(|e| e.home() == key && e.holds_home() && !e.closing())
     })?;
     let events = r.events.as_ref()?;
     let mut to = events.lock().unwrap_or_else(|e| e.into_inner());
