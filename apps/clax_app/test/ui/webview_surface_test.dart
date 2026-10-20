@@ -87,11 +87,14 @@ void main() {
 
   test('on iOS the WebView is inspectable outside release builds, and '
       'WebKit\'s swipe back and forward stay off', () {
-    expect(iosWebKitSettings(), (inspectable: true, backForwardGestures: false));
-    expect(
-      iosWebKitSettings(release: true),
-      (inspectable: false, backForwardGestures: false),
-    );
+    expect(iosWebKitSettings(), (
+      inspectable: true,
+      backForwardGestures: false,
+    ));
+    expect(iosWebKitSettings(release: true), (
+      inspectable: false,
+      backForwardGestures: false,
+    ));
   });
 
   test('frames inside the page navigate freely', () {
@@ -113,6 +116,7 @@ void main() {
     late List<String> ran;
     late List<String> shellMessages;
     late List<String> pins;
+    late List<String> faults;
     late CoreShellLink link;
 
     setUp(() {
@@ -126,12 +130,14 @@ void main() {
       ran = [];
       shellMessages = [];
       pins = [];
+      faults = [];
       link = CoreShellLink(
         core,
         origins,
         runJs: (js) async => ran.add(js),
         onShellMessage: shellMessages.add,
         onPinned: pins.add,
+        onFault: faults.add,
       );
     });
 
@@ -284,6 +290,38 @@ void main() {
       gate.complete(FakeCore.json({}));
       await pumpEventQueue();
       expect(ran, isEmpty);
+    });
+
+    test('a shell document with no <head> joins no set and its fault reaches '
+        'the link\'s onFault', () async {
+      final headless = FakeCore()
+        ..on('GET', '/a/{aid}', (r, p) {
+          return CoreResponse(200, const [
+            ('content-type', 'text/html; charset=utf-8'),
+          ], utf8.encode('<html><body></body></html>'));
+        });
+      final link = CoreShellLink(
+        headless,
+        origins,
+        runJs: (js) async {},
+        onShellMessage: shellMessages.add,
+        onPinned: pins.add,
+        onFault: faults.add,
+      );
+      addTearDown(link.dispose);
+      final a = await link.request(
+        SchemeRequest(
+          url: shellUrl,
+          method: 'GET',
+          headers: const {},
+          mainFrame: true,
+          navigation: 1,
+        ),
+      );
+      expect(a.nonce, isNull);
+      expect(faults, hasLength(1));
+      link.committed(shellUrl, 1);
+      expect(link.nonce, isNull);
     });
 
     test('no request without a navigation number mints a nonce', () async {

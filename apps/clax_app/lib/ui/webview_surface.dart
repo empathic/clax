@@ -99,6 +99,7 @@ class WebViewAppSurface implements AppSurface, CapturableSurface {
         runJs: c.runJavaScript,
         onShellMessage: _onShellMessage,
         onPinned: (_) => _initOnCore(),
+        onFault: _fault,
       );
       _attachment = SchemeAttachment(
         schemeHost ?? SchemeHost.instance,

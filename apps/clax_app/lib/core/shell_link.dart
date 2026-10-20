@@ -64,7 +64,8 @@ class ShellLoads {
 /// [ChannelRelay] or, when it is not the relay's, to [onShellMessage] (the
 /// surface's `ShellSession`). Every other message is dropped. The relay is
 /// made when the load is pinned ([onPinned] hears its nonce, which
-/// `claxHost.init` gets) and disposed at the next commit.
+/// `claxHost.init` gets) and disposed at the next commit. A shell document
+/// the scheme could not give a nonce is reported on [onFault].
 class CoreShellLink implements SchemeClient {
   CoreShellLink(
     this.core,
@@ -72,7 +73,8 @@ class CoreShellLink implements SchemeClient {
     required this.runJs,
     required this.onShellMessage,
     required this.onPinned,
-  }) : _scheme = SchemeAnswerer(core, origins);
+    required this.onFault,
+  }) : _scheme = SchemeAnswerer(core, origins, onFault: onFault);
 
   final CoreCalls core;
 
@@ -84,6 +86,9 @@ class CoreShellLink implements SchemeClient {
 
   /// The load's nonce, once the main frame presented it.
   final void Function(String nonce) onPinned;
+
+  /// A fault the load cannot recover from by itself.
+  final void Function(String detail) onFault;
 
   final SchemeAnswerer _scheme;
   final ShellLoads _loads = ShellLoads();

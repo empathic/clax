@@ -264,6 +264,23 @@ void main() {
       },
     );
 
+    test('a shell document with no literal <head> gets no nonce, unchanged, '
+        'and raises a fault', () async {
+      const doc =
+          '<!doctype html><HTML><Head lang="en"><title>x</title>'
+          '</Head><body></body></HTML>';
+      core.on('GET', '/a/{aid}', (r, p) => _html(doc));
+      final faults = <String>[];
+      scheme = SchemeAnswerer(core, _android, onFault: faults.add);
+      final a = await scheme.answer(
+        _get('https://app.clax.invalid/a/$_id?app=1', navigation: 1),
+      );
+      expect(a.status, 200);
+      expect(a.nonce, isNull);
+      expect(_text(a), doc);
+      expect(faults, [contains('<head>')]);
+    });
+
     test('a content frame\'s /a/… is no shell document: no nonce', () async {
       core.on('GET', '/a/{aid}', (r, p) => _html(_shellDoc));
       final a = await scheme.answer(

@@ -80,14 +80,19 @@ class SchemeAnswer {
 /// - The answer loses every `Access-Control-*` header and its length.
 /// - A shell document answered 200 to a numbered request gets a fresh
 ///   nonce, written as `<meta name="clax-nonce" content="…">` right after
-///   its `<head>`, and named in [SchemeAnswer.nonce].
+///   its first literal `<head>`, and named in [SchemeAnswer.nonce]. One
+///   with no `<head>` goes unchanged with no nonce, so its load has no
+///   channel, and [onFault] hears it.
 class SchemeAnswerer {
-  SchemeAnswerer(this.core, this.origins, {Random? random})
+  SchemeAnswerer(this.core, this.origins, {this.onFault, Random? random})
     : _random = random ?? Random.secure();
 
   final CoreCalls core;
   final AppOrigins origins;
   final Random _random;
+
+  /// A shell document the answerer could not give a nonce.
+  final void Function(String detail)? onFault;
 
   /// The request headers that reach the core.
   static const forwarded = ['range', 'accept', 'service-worker'];
@@ -170,17 +175,27 @@ class SchemeAnswerer {
     var body = res.body;
     String? nonce;
     if (shellDocument && res.status == 200) {
-      nonce = _nonce();
-      body = _withNonce(body, nonce);
+      final minted = _nonce();
+      final written = _withNonce(body, minted);
+      if (written != null) {
+        nonce = minted;
+        body = written;
+      } else {
+        onFault?.call(
+          'the shell document has no <head> for its clax-nonce meta, so its '
+          'load has no channel',
+        );
+      }
     }
     if (method == 'HEAD') body = Uint8List(0);
     return SchemeAnswer(res.status, headers, body, nonce: nonce);
   }
 
-  /// [body] with the nonce meta right after its first `<head>`.
-  static Uint8List _withNonce(Uint8List body, String nonce) {
+  /// [body] with the nonce meta right after its first `<head>`; null when
+  /// it has none.
+  static Uint8List? _withNonce(Uint8List body, String nonce) {
     final at = _indexOf(body, _head);
-    if (at < 0) return body;
+    if (at < 0) return null;
     final meta = utf8.encode('<meta name="clax-nonce" content="$nonce">');
     final end = at + _head.length;
     return Uint8List.fromList([
