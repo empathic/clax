@@ -59,9 +59,10 @@ export function inboxQuery(f: InboxFilter, before?: string | null, limit?: numbe
 /** One page of items matching `f`, newest first; `before` is the previous page's `next_cursor`. */
 export const listInbox = (f: InboxFilter, before?: string | null, limit?: number) => get<InboxPage>(`/api/inbox${inboxQuery(f, before, limit)}`);
 /** One page of the groups of items matching `f` by artifact, newest group
- * first, each with its `rows` newest items; `before` is the previous page's `next_cursor`. */
-export function listInboxGroups(f: InboxFilter, before?: string | null, rows?: number) {
-  const q = inboxQuery(f, before);
+ * first, `limit` of them, each with its first `rows` items; `before` is the
+ * previous page's `next_cursor`. */
+export function listInboxGroups(f: InboxFilter, before?: string | null, rows?: number, limit?: number) {
+  const q = inboxQuery(f, before, limit);
   return get<InboxGroupPage>(`/api/inbox${q ? `${q}&` : "?"}group=artifact${rows ? `&rows=${rows}` : ""}`);
 }
 export const inboxSummary = () => get<InboxSummary>("/api/inbox/summary");

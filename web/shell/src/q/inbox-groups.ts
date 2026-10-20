@@ -11,6 +11,9 @@ export const NO_ARTIFACT = "none";
 export const GROUP_ROWS = 3;
 /** Rows each **Show more** adds to a group. */
 export const MORE_ROWS = 20;
+/** Groups per page of the list, and most one fetch lists (the daemon's bounds). */
+export const GROUP_PAGE = 20;
+export const MAX_GROUP_PAGE = 100;
 
 /** One group as a section keeps it: `key` is the artifact's ID, or
  * `NO_ARTIFACT`; `next` the cursor of its rows not yet listed. */
@@ -62,6 +65,26 @@ export function takeItem(groups: Group[], item: InboxItem, delta: number): Group
     const unread = g.key === key ? Math.max(0, g.unread + delta) : g.unread;
     return items === g.items && unread === g.unread ? g : { ...g, items, unread };
   });
+}
+
+/** The groups listed, `have`, with what a refetch of the list's first
+ * groups, `fresh`, says now, so nothing paged in is lost and nothing
+ * moves: each listed group keeps its place, its listed rows in their
+ * order (each as it is now, where `fresh` lists it) and its cursor, takes
+ * its counts and newest time from `fresh`, and puts items newer than its
+ * newest row on top. A group `fresh` does not list is `gone(group)`;
+ * groups new to the list come first. */
+export function mergeGroups(have: Group[], fresh: Group[], gone: (g: Group) => Group = g => g): Group[] {
+  const now = new Map(fresh.map(g => [g.key, g]));
+  const kept = have.map(h => {
+    const f = now.get(h.key);
+    if (!f) return gone(h);
+    const top = h.items.reduce((n, i) => Math.max(n, i.seq), -Infinity);
+    const newer = f.items.filter(i => i.seq > top && !h.items.some(x => x.id === i.id));
+    const items = [...newer, ...h.items.map(i => f.items.find(x => x.id === i.id) ?? i)];
+    return { ...h, artifact: f.artifact ?? h.artifact, total: f.total, unread: f.unread, newestAt: f.newestAt, items };
+  });
+  return [...fresh.filter(g => !have.some(h => h.key === g.key)), ...kept];
 }
 
 /** Whether any group lists `id`. */

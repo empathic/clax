@@ -37,7 +37,7 @@
   import type { InboxFeed, QuestionFeed } from "./feed.svelte";
   import { approvalOf, newestSeq } from "./inbox-model";
   import { INBOX_KINDS, filterFromUrl, filterToUrl } from "./inbox-filter";
-  import { GROUP_ROWS, type Group, MORE_ROWS, appendGroups, appendRows, fromWire, groupKey, lists, takeItem } from "./inbox-groups";
+  import { GROUP_PAGE, GROUP_ROWS, type Group, MAX_GROUP_PAGE, MORE_ROWS, appendGroups, appendRows, fromWire, groupKey, mergeGroups, takeItem } from "./inbox-groups";
   import ApprovalCard from "../people/ApprovalCard.svelte";
   import ConnectionCard from "../people/ConnectionCard.svelte";
   import InboxGroup from "./InboxGroup.svelte";
@@ -151,13 +151,23 @@
     return r.items.filter(i => asCard.includes(i.id) || decision(i));
   };
   /** A page of the groups, after `before`: every item's, or the unread ones' with the Unread filter. */
-  const fetchGroups = async (before?: string | null): Promise<List> => {
-    const r = await inbox.groups(filter, before, GROUP_ROWS);
+  const fetchGroups = async (before?: string | null, limit?: number): Promise<List> => {
+    const r = await inbox.groups(filter, before, GROUP_ROWS, limit);
     return { groups: r.groups.map(fromWire), next: r.next_cursor };
   };
 
-  /** Fetches the cards and the groups; `keep` keeps the cards of
-   * questions closed here (read now, so no longer listed), for the same search. */
+  /** The cards as fetched, `c`, and, with `keep`, those closed or decided
+   * here (read now, so no longer listed as unread). */
+  const keepCards = (c: InboxItem[], keep: boolean): InboxItem[] => {
+    const kept = keep ? [
+      ...cards.filter(q => q.status !== "open").map(q => cardItems.find(i => i.question?.id === q.id)!),
+      ...decisions.filter(i => i.read),
+    ].filter(i => i && !c.some(x => x.id === i.id)) : [];
+    return [...kept, ...c];
+  };
+
+  /** Fetches the cards and the first page of groups, replacing the list;
+   * `keep` keeps the cards closed here, for the same search. */
   async function load(keep = true): Promise<void> {
     const g = ++gen;
     void loadStrip();
@@ -165,18 +175,34 @@
       const [c, l] = await Promise.all([fetchCards(), fetchGroups()]);
       if (g !== gen) return;
       error = null;
-      // A question's card closed here, and a decision's card decided here: read now, no longer listed as unread.
-      const kept = keep ? [
-        ...cards.filter(q => q.status !== "open").map(q => cardItems.find(i => i.question?.id === q.id)!),
-        ...decisions.filter(i => i.read),
-      ].filter(i => i && !c.some(x => x.id === i.id)) : [];
-      cardItems = [...kept, ...c];
+      cardItems = keepCards(c, keep);
       list = l;
       opening(l.groups, l.groups.length === 1);
       void fill(g);
       // `?q=` or `?approval=`: that card takes focus, once.
       const t = target;
       if (t) queueMicrotask(() => { if ("q" in t ? toCard(t.q) : toCard(t.approval, "approval")) target = null; });
+    } catch (e) {
+      if (g === gen) loadFailed(e);
+    }
+  }
+
+  /** Fetches the cards and as many groups as are listed, and merges them
+   * into the list (`mergeGroups`): the groups paged in by More pages, the
+   * rows by Show more, and every group's place stay as they are. A mark
+   * and a live change refresh; a new search loads. */
+  async function refresh(): Promise<void> {
+    if (!list) return load();
+    const g = ++gen;
+    void loadStrip();
+    try {
+      const shown = list.groups.length;
+      const [c, l] = await Promise.all([fetchCards(), fetchGroups(null, Math.min(MAX_GROUP_PAGE, Math.max(GROUP_PAGE, shown)))]);
+      if (g !== gen || !list) return;
+      error = null;
+      cardItems = keepCards(c, true);
+      list = { groups: mergeGroups(list.groups, l.groups), next: list.next ?? l.next };
+      opening(l.groups, false);
     } catch (e) {
       if (g === gen) loadFailed(e);
     }
@@ -255,7 +281,7 @@
     try {
       // Up to the newest item shown, so one made since stays unread.
       await inbox.markAll(f, newestSeq(shown), except);
-      await load();
+      await refresh();
     } catch (e) {
       oops("mark them read")(e);
     }
@@ -281,7 +307,7 @@
   // An item as it is now: replaced where it shows; for a new unread one the
   // list is fetched again (debounced, so a burst is one fetch).
   let refetchSoon: (() => void) | undefined;
-  const soon = () => { refetchSoon?.(); refetchSoon = after(DEBOUNCE_MS, () => { refetchSoon = undefined; void load(); }); };
+  const soon = () => { refetchSoon?.(); refetchSoon = after(DEBOUNCE_MS, () => { refetchSoon = undefined; void refresh(); }); };
   // An item that changed may change a block: the strip is fetched again (debounced).
   let stripSoon: (() => void) | undefined;
   function take(item: InboxItem): void {

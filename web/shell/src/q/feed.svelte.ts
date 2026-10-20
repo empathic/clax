@@ -248,9 +248,10 @@ export class InboxFeed {
   }
 
   /** One page of the groups of items matching `filter` by artifact, newest
-   * group first, after cursor `before`, each with its `rows` newest items. */
-  async groups(filter: InboxFilter, before?: string | null, rows?: number) {
-    const r = await listInboxGroups(filter, before, rows);
+   * group first, `limit` of them after cursor `before`, each with its first
+   * `rows` items. */
+  async groups(filter: InboxFilter, before?: string | null, rows?: number, limit?: number) {
+    const r = await listInboxGroups(filter, before, rows, limit);
     if (r === "forbidden") throw forbidden();
     this.unread = r.unread;
     return r;

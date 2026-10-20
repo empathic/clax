@@ -37,7 +37,7 @@ function groupsOf(items: InboxItem[], rows: number) {
       if (!left) next = "r";
       else { shown = [...shown, ...read.slice(0, left)]; next = read.length > left ? `r${read[left - 1].seq}` : null; }
     }
-    return { artifact_id: g[0].artifact?.id ?? null, artifact: g[0].artifact, total: g.length, unread: unread.length, newest_at: g[0].created_at, items: shown, next_cursor: next };
+    return { artifact_id: g[0].artifact?.id ?? null, artifact: g[0].artifact, total: g.length, unread: unread.length, newest_at: g[0].created_at, items: shown, next_cursor: next, newest: g[0].seq };
   });
 }
 
@@ -48,8 +48,14 @@ function answer(url: string, items: InboxItem[]) {
   const kinds = u.searchParams.get("kind")?.split(",");
   const art = u.searchParams.get("artifact");
   const before = Number(u.searchParams.get("before") ?? Infinity);
-  const match = items.filter(i => (read === "unread" ? !i.read : read === "read" ? i.read : true) && (!kinds || kinds.includes(i.kind)) && (!art || (i.artifact?.id ?? "none") === art) && i.seq < before).sort(bySeq);
-  if (u.searchParams.get("group") === "artifact") return ok({ groups: groupsOf(match, Number(u.searchParams.get("rows") ?? 3)), next_cursor: null, unread: 2 });
+  const grouped = u.searchParams.get("group") === "artifact";
+  const match = items.filter(i => (read === "unread" ? !i.read : read === "read" ? i.read : true) && (!kinds || kinds.includes(i.kind)) && (!art || (i.artifact?.id ?? "none") === art) && (grouped || i.seq < before)).sort(bySeq);
+  if (grouped) {
+    // Groups page by their newest item, 20 a page unless `limit` says.
+    const all = groupsOf(match, Number(u.searchParams.get("rows") ?? 3)).filter(g => g.newest < before);
+    const size = Number(u.searchParams.get("limit") ?? 20);
+    return ok({ groups: all.slice(0, size), next_cursor: all.length > size ? String(all[size - 1].newest) : null, unread: 2 });
+  }
   const limit = Number(u.searchParams.get("limit") ?? 50);
   return ok({ items: match.slice(0, limit), next_cursor: match.length > limit ? String(match[limit - 1].seq) : null, unread: 2, total: match.length });
 }
@@ -177,6 +183,41 @@ describe("InboxPage", () => {
     expect(after.map(x => x.getAttribute("data-group"))).toEqual(["7q3k9mzx2b4t", "9x8w7v6u5t4s"]);
     expect([after[0].querySelector(".gtoggle")!.getAttribute("aria-expanded"), after[0].hasAttribute("data-fresh"), rowIds(after[0])]).toEqual(["true", false, ["IR"]]);
     expect(m.root.querySelector(".qcard")).not.toBeNull();
+  });
+
+  it("keeps the groups paged in by More pages and the rows by Show more through a group's Mark read and a live refetch", async () => {
+    // A page with five new items, and 21 pages with one each: two pages of groups.
+    const big = [1005, 1004, 1003, 1002, 1001].map(n => item("reply", { id: `B${n}`, seq: n }));
+    const small = Array.from({ length: 21 }, (_, n) => item("reply", { id: `S${n}`, seq: 100 + n, artifact: { id: `pg${n}`, title: `Page ${n}`, kind: "html", page_url: null } }));
+    const lists: Record<string, InboxItem[]> = { "": [...big, ...small] };
+    const calls = stubRoutes(lists, []);
+    const inbox = new InboxFeed();
+    const m = mount(InboxPage, { inbox, questions: new QuestionFeed(), go: vi.fn(), now });
+    await settle();
+    const keys = () => [...m.root.querySelectorAll(".igroup")].map(g => g.getAttribute("data-group"));
+    expect(keys()).toHaveLength(20);
+    click(m.root.querySelector(".inbox > .sec > .more")!);
+    await settle();
+    expect(keys()).toHaveLength(22);
+    const bigGroup = groupEl(m.root, "7q3k9mzx2b4t");
+    click(bigGroup.querySelector(".gmore")!);
+    await settle();
+    expect(rowIds(bigGroup)).toEqual(["B1005", "B1004", "B1003", "B1002", "B1001"]);
+    const before = keys();
+    // Mark read on a group of the second page: it and every group stay, and the big group keeps its five rows.
+    lists[""] = lists[""].map(i => (i.id === "S0" ? { ...i, read: true } : i));
+    click(groupEl(m.root, "pg0").querySelector(".gread")!);
+    await settle();
+    expect(calls.at(-1)!.url).toBe("/api/inbox?limit=22&group=artifact&rows=3");
+    expect(keys()).toEqual(before);
+    expect(rowIds(groupEl(m.root, "7q3k9mzx2b4t"))).toEqual(["B1005", "B1004", "B1003", "B1002", "B1001"]);
+    expect(groupEl(m.root, "pg0").hasAttribute("data-fresh")).toBe(false);
+    // A live refetch (the stream resynced) keeps them too.
+    tell(inbox, { refetch: true });
+    await new Promise(r => setTimeout(r, 300));
+    await settle();
+    expect(keys()).toEqual(before);
+    expect(rowIds(groupEl(m.root, "7q3k9mzx2b4t"))).toHaveLength(5);
   });
 
   it("puts items about no page in Other, with no link", async () => {
