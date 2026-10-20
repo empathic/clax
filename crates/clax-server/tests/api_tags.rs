@@ -143,7 +143,7 @@ async fn the_owner_manages_the_list_and_each_change_is_announced() {
     assert_eq!(v["tag"]["id"], json!(id));
     // The artifact carrying it hears the change to the list on its own topic.
     let ev = page.next_named("tags").await;
-    assert_eq!(ev["artifact_id"], Value::Null, "{ev}");
+    assert_eq!(ev["artifact_id"], json!(aid), "{ev}");
     let (_, a) = owner(&ts, "GET", &format!("/api/artifacts/{aid}"), None).await;
     assert_eq!(
         a["artifact"]["tags"],
@@ -169,7 +169,7 @@ async fn the_owner_manages_the_list_and_each_change_is_announced() {
     let (s, v) = owner(&ts, "DELETE", &format!("/api/tags/{id}"), None).await;
     assert_eq!((s, &v["artifacts"]), (200, &json!(1)), "{v}");
     let ev = page.next_named("tags").await;
-    assert_eq!(ev["artifact_id"], Value::Null, "{ev}");
+    assert_eq!(ev["artifact_id"], json!(aid), "{ev}");
     let (_, a) = owner(&ts, "GET", &format!("/api/artifacts/{aid}"), None).await;
     assert_eq!(a["artifact"]["tags"], json!([]));
     let (s, _) = owner(&ts, "DELETE", &format!("/api/tags/{id}"), None).await;
@@ -707,4 +707,128 @@ async fn the_tags_page_is_the_gallery() {
     let b = ts.get("/tags").await;
     assert_eq!(a.status(), b.status());
     assert_eq!(a.text().await.unwrap(), b.text().await.unwrap());
+}
+
+#[tokio::test]
+async fn a_grant_of_the_owners_row_manages_tags_and_applies_them_anywhere() {
+    let w = World::two_people().await;
+    let ts = &w.ts;
+    let cmd = ts.invite_with(json!({"me": true})).await;
+    let code_ = cmd.rsplit_once("/i/").unwrap().1;
+    let mine = clax_testkit::TestClient::new(ts);
+    mine.grant_request(
+        json!({"access_token": {"access": ["clax:full"]}, "clax": {"invite": code_}}),
+    )
+    .await;
+    let sid = mine.register("claude", "own-1").await["id"]
+        .as_str()
+        .unwrap()
+        .to_string();
+    let (s, v) = json_of(
+        mine.agent(
+            "POST",
+            "/api/tags",
+            Some(&sid),
+            Some(json!({"name": "by-owner-machine"})),
+        )
+        .await,
+    )
+    .await;
+    assert_eq!(s, 201, "{v}");
+    let id = v["tag"]["id"].as_str().unwrap().to_string();
+    let (s, v) = json_of(mine.get(Some(&sid), "/api/tags").await).await;
+    assert_eq!((s, &v["may_manage"]), (200, &json!(true)), "{v}");
+    // It administers every artifact, as the owner's agents do: Mia's too.
+    let mias = w.read.artifact.clone();
+    let (s, v) = json_of(
+        mine.agent(
+            "PATCH",
+            &format!("/api/artifacts/{mias}/tags"),
+            Some(&sid),
+            Some(json!({"add": ["by-owner-machine"]})),
+        )
+        .await,
+    )
+    .await;
+    assert_eq!(
+        (s, names(&v["tags"])),
+        (200, vec!["by-owner-machine".to_string()]),
+        "{v}"
+    );
+    let (s, v) = json_of(
+        mine.agent(
+            "PATCH",
+            &format!("/api/tags/{id}"),
+            Some(&sid),
+            Some(json!({"colour": "pink"})),
+        )
+        .await,
+    )
+    .await;
+    assert_eq!((s, &v["tag"]["colour"]), (200, &json!("pink")), "{v}");
+    let (s, v) = json_of(
+        mine.agent("DELETE", &format!("/api/tags/{id}"), Some(&sid), None)
+            .await,
+    )
+    .await;
+    assert_eq!((s, &v["artifacts"]), (200, &json!(1)), "{v}");
+}
+
+#[tokio::test]
+async fn a_persons_agent_without_update_tags_not_even_its_own_persons_artifact() {
+    let w = World::two_people().await;
+    let ts = &w.ts;
+    make_tag(ts, "draft", "gray").await;
+    let res = w
+        .sam
+        .agent(
+            "POST",
+            "/api/artifacts",
+            Some(&w.sam_session),
+            Some(json!({"title": "Sam's", "files": {"index.html": {"content": "<p>s", "encoding": "utf8"}}})),
+        )
+        .await;
+    let (s, v) = json_of(res).await;
+    assert_eq!(s, 201, "{v}");
+    let sams = v["artifact"]["id"].as_str().unwrap().to_string();
+    // Sam may now only read, his own artifact included: he still made it,
+    // so he administers it, but his agent lacks the update right the
+    // route needs.
+    let st = ts.store.clone();
+    let pid = ts
+        .store
+        .viewer_of_grant(&w.sam.grant_id())
+        .unwrap()
+        .public_id;
+    tokio::task::spawn_blocking(move || {
+        let reads = json!([{"type": "clax-artifacts", "actions": ["read"], "locations": ["*"]}]);
+        st.set_person_rights(
+            &clax_core::audit::AuditCtx::DAEMON,
+            &pid,
+            Some(clax_core::rights::Rights::parse(&reads).unwrap()),
+        )
+        .unwrap();
+    })
+    .await
+    .unwrap();
+    for (method, body) in [
+        ("PATCH", json!({"add": ["draft"]})),
+        ("PUT", json!({"tags": ["draft"]})),
+    ] {
+        let (s, v) = json_of(
+            w.sam
+                .agent(
+                    method,
+                    &format!("/api/artifacts/{sams}/tags"),
+                    Some(&w.sam_session),
+                    Some(body),
+                )
+                .await,
+        )
+        .await;
+        assert_eq!((s, code(&v)), (403, "not_permitted"), "{method}: {v}");
+        assert_eq!(v["error"]["right"]["action"], "update", "{v}");
+    }
+    let (_, v) = owner(ts, "GET", &format!("/api/artifacts/{sams}"), None).await;
+    assert_eq!(v["artifact"]["tags"], json!([]));
 }
