@@ -378,7 +378,10 @@ document (§5.2).
 
 A failed migration posts `failed` with `code: "migration_failed"` and the
 backup's path; the app shows its existing migration-failure screen
-(today's exit 65 path), never a connection message.
+(today's exit 65 path), never a connection message. A panic in the
+opening task posts `failed` with code `internal` and releases the home; a
+panic in the close task still cuts the calls left, stops what it can,
+releases the home and posts `closed`.
 
 ### 2.6 Trimming memory
 

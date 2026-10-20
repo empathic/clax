@@ -7,9 +7,11 @@ use axum::body::Body;
 use bytes::Bytes;
 use clax_http::state::EmbedOrigins;
 use clax_server::core::{Core, CoreConfig};
+use futures::FutureExt;
 use http_body_util::BodyExt;
 use std::collections::HashSet;
 use std::net::{Ipv4Addr, SocketAddr};
+use std::panic::AssertUnwindSafe;
 use std::path::{Path, PathBuf};
 use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::{Arc, LazyLock, Mutex, MutexGuard};
@@ -41,7 +43,7 @@ pub enum OpenEvent {
     /// The core answers calls.
     Ready,
     /// The core did not open: `home_in_use`, `migration_failed` (with the
-    /// newest backup's path) or `open_failed`.
+    /// newest backup's path), `open_failed`, or `internal` (it panicked).
     Failed {
         code: String,
         message: String,
@@ -106,6 +108,31 @@ impl Readiness {
     }
 }
 
+/// Tests: where a core's task panics.
+#[cfg(test)]
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+enum PanicAt {
+    /// The opening task, once it holds `core.lock`.
+    Opening,
+    /// The close task, before it stops the core.
+    Closing,
+}
+
+#[cfg(test)]
+thread_local! {
+    /// Tests: where the next core [`Embed::open`] makes on this thread
+    /// panics.
+    static PANIC_AT: std::cell::Cell<Option<PanicAt>> = const { std::cell::Cell::new(None) };
+}
+
+/// Tests: panics when the core was opened to panic `here`.
+#[cfg(test)]
+fn panic_if(sh: &Shared, here: PanicAt) {
+    if sh.panic_at == Some(here) {
+        panic!("a panic injected at {here:?}");
+    }
+}
+
 /// The homes this process has open, by canonical path.
 static OPEN: LazyLock<Mutex<HashSet<PathBuf>>> = LazyLock::new(Default::default);
 
@@ -130,6 +157,8 @@ struct Shared {
     in_flight: watch::Sender<usize>,
     /// How long [`Embed::close`] lets calls in flight finish.
     drain: Duration,
+    #[cfg(test)]
+    panic_at: Option<PanicAt>,
 }
 
 /// One call counted in [`Shared::in_flight`] while it lives.
@@ -251,9 +280,27 @@ impl Embed {
             closing: AtomicBool::new(false),
             in_flight: watch::channel(0).0,
             drain,
+            #[cfg(test)]
+            panic_at: PANIC_AT.take(),
         });
         let handle = runtime.handle().clone();
-        handle.spawn(opening(shared.clone(), opts));
+        // A panic while opening fails the open as any failure does: the
+        // home is released and `failed` posted, so no call or
+        // subscription waits on it.
+        let sh = shared.clone();
+        handle.spawn(async move {
+            let opened = AssertUnwindSafe(opening(sh.clone(), opts))
+                .catch_unwind()
+                .await;
+            if opened.is_err() {
+                failed(
+                    &sh,
+                    "internal",
+                    "the core panicked while it opened".into(),
+                    None,
+                );
+            }
+        });
         Ok(Embed {
             inner: Arc::new(Inner {
                 shared,
@@ -349,8 +396,8 @@ impl Embed {
     /// (one that committed a write answers as it would have), after which
     /// those still running answer 503 `core_closed`; then the tasks stop,
     /// the journal syncs, the store closes, and the home is released.
-    /// Returns at once; `on_event` hears `Closed` when done. A second
-    /// close does nothing.
+    /// Returns at once; `on_event` hears `Closed` when done, a panic on
+    /// the way included. A second close does nothing.
     pub fn close(&self) {
         let sh = &self.inner.shared;
         if sh.closing.swap(true, Ordering::SeqCst) {
@@ -360,22 +407,40 @@ impl Embed {
         let embed = self.clone();
         self.inner.handle.spawn(async move {
             let sh = embed.inner.shared.clone();
-            let mut rx = sh.phase.subscribe();
-            let _ = rx.wait_for(|p| !matches!(p, Phase::Opening)).await;
-            sh.phase.send_replace(Phase::Draining);
-            if let Some(core) = sh.core.lock().await.as_ref() {
-                let _ = core.shutdown_handle().send(true);
-            }
-            let mut in_flight = sh.in_flight.subscribe();
-            let drained = tokio::time::timeout(sh.drain, in_flight.wait_for(|n| *n == 0))
-                .await
-                .is_ok();
-            if !drained {
-                tracing::warn!("calls in flight did not finish in time; cutting them");
-            }
-            sh.phase.send_replace(Phase::Stopping);
-            if let Some(core) = sh.core.lock().await.take() {
-                core.stop().await;
+            let closed = AssertUnwindSafe(async {
+                let mut rx = sh.phase.subscribe();
+                let _ = rx.wait_for(|p| !matches!(p, Phase::Opening)).await;
+                sh.phase.send_replace(Phase::Draining);
+                if let Some(core) = sh.core.lock().await.as_ref() {
+                    let _ = core.shutdown_handle().send(true);
+                }
+                let mut in_flight = sh.in_flight.subscribe();
+                let drained = tokio::time::timeout(sh.drain, in_flight.wait_for(|n| *n == 0))
+                    .await
+                    .is_ok();
+                if !drained {
+                    tracing::warn!("calls in flight did not finish in time; cutting them");
+                }
+                sh.phase.send_replace(Phase::Stopping);
+                #[cfg(test)]
+                panic_if(&sh, PanicAt::Closing);
+                if let Some(core) = sh.core.lock().await.take() {
+                    core.stop().await;
+                }
+            })
+            .catch_unwind()
+            .await;
+            // A panic on the way still closes: calls are cut, a core left
+            // is stopped, and the home is released.
+            if closed.is_err() {
+                tracing::error!("the core panicked while it closed");
+                sh.phase.send_replace(Phase::Stopping);
+                let left = sh.core.lock().await.take();
+                if let Some(core) = left
+                    && AssertUnwindSafe(core.stop()).catch_unwind().await.is_err()
+                {
+                    tracing::error!("the core panicked while it stopped");
+                }
             }
             sh.release();
             sh.phase.send_replace(Phase::Closed);
@@ -401,7 +466,11 @@ async fn opening(sh: Arc<Shared>, opts: OpenOptions) {
         Err(std::fs::TryLockError::Error(e)) => Err(e),
     });
     match held {
-        Ok(Some(f)) => *lock(&sh.lock) = Some(f),
+        Ok(Some(f)) => {
+            *lock(&sh.lock) = Some(f);
+            #[cfg(test)]
+            panic_if(&sh, PanicAt::Opening);
+        }
         Ok(None) => {
             return failed(
                 &sh,
@@ -917,6 +986,74 @@ mod tests {
         embed.close();
         let (status, body) = poll.await.unwrap();
         assert_eq!(status, 200, "{}", String::from_utf8_lossy(&body));
+        assert_eq!(settled(&rx).await, OpenEvent::Closed);
+    }
+
+    /// Opens a core whose task panics at `at`.
+    fn open_panicking(dir: &Path, at: PanicAt) -> (Embed, std::sync::mpsc::Receiver<OpenEvent>) {
+        let (on_event, rx) = events();
+        PANIC_AT.set(Some(at));
+        let embed = Embed::open(options(dir), on_event).unwrap();
+        (embed, rx)
+    }
+
+    /// The end block a subscription to `embed` hears last.
+    async fn subscription_end(embed: &Embed) -> Option<Bytes> {
+        let (tx, mut blocks) = tokio::sync::mpsc::unbounded_channel();
+        embed.subscribe(Box::new(move |b| tx.send(b).is_ok()));
+        let mut last = None;
+        while let Some(b) = blocks.recv().await {
+            last = Some(b);
+        }
+        last
+    }
+
+    #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+    async fn a_panic_while_opening_fails_the_open_and_frees_the_home() {
+        let dir = tempfile::tempdir().unwrap();
+        let (embed, rx) = open_panicking(dir.path(), PanicAt::Opening);
+        match settled(&rx).await {
+            OpenEvent::Failed { code, .. } => assert_eq!(code, "internal"),
+            e => panic!("{e:?}"),
+        }
+        let (status, body) = send(&embed, "GET", "/api/artifacts").await.unwrap();
+        assert_eq!(status, 503);
+        assert!(String::from_utf8_lossy(&body).contains("core_failed"));
+        assert_eq!(
+            subscription_end(&embed).await,
+            Some(crate::events::end("core_failed"))
+        );
+        embed.close();
+        assert_eq!(settled(&rx).await, OpenEvent::Closed);
+        let (on_event, rx) = events();
+        let again = Embed::open(options(dir.path()), on_event).unwrap();
+        assert_eq!(settled(&rx).await, OpenEvent::Ready);
+        again.close();
+        assert_eq!(settled(&rx).await, OpenEvent::Closed);
+    }
+
+    #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+    async fn a_panic_while_closing_still_closes_and_frees_the_home() {
+        let dir = tempfile::tempdir().unwrap();
+        let (embed, rx) = open_panicking(dir.path(), PanicAt::Closing);
+        assert_eq!(settled(&rx).await, OpenEvent::Ready);
+        let (tx, mut blocks) = tokio::sync::mpsc::unbounded_channel();
+        embed.subscribe(Box::new(move |b| tx.send(b).is_ok()));
+        assert!(blocks.recv().await.unwrap().starts_with(b"event: ready\n"));
+        embed.close();
+        assert_eq!(settled(&rx).await, OpenEvent::Closed);
+        let mut last = None;
+        while let Some(b) = blocks.recv().await {
+            last = Some(b);
+        }
+        assert_eq!(last, Some(crate::events::end("core_closed")));
+        let (status, body) = send(&embed, "GET", "/api/artifacts").await.unwrap();
+        assert_eq!(status, 503);
+        assert!(String::from_utf8_lossy(&body).contains("core_closed"));
+        let (on_event, rx) = events();
+        let again = Embed::open(options(dir.path()), on_event).unwrap();
+        assert_eq!(settled(&rx).await, OpenEvent::Ready);
+        again.close();
         assert_eq!(settled(&rx).await, OpenEvent::Closed);
     }
 
