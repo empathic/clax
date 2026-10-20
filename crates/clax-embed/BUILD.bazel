@@ -1,6 +1,125 @@
+load("@bazel_skylib//rules:build_test.bzl", "build_test")
+load("@rules_cc//cc:cc_library.bzl", "cc_library")
+load("@rules_shell//shell:sh_test.bzl", "sh_test")
 load("//bazel:cargo.bzl", "cargo_package")
+load("//bazel:opt.bzl", "opt_library")
+load("//bazel/android:embed.bzl", "android_embed")
+load("//bazel/apple:ios_rust.bzl", "ios_builds", "ios_opt_library")
 
 cargo_package(
     cdylib = True,
     staticlib = True,
+)
+
+# The core for each Android CPU the app ships, as <abi>/libclax_embed.so
+# (bazel/android/embed.bzl).
+android_embed(
+    name = "clax_embed_android_arm64",
+    abi = "arm64-v8a",
+    lib = ":clax_embed_shared",
+    platform = "//bazel/android:android_arm64",
+    visibility = ["//visibility:public"],
+)
+
+android_embed(
+    name = "clax_embed_android_x86_64",
+    abi = "x86_64",
+    lib = ":clax_embed_shared",
+    platform = "//bazel/android:android_x86_64",
+    visibility = ["//visibility:public"],
+)
+
+# The core for the Mac app's Frameworks, optimized, for this Mac's CPU.
+opt_library(
+    name = "clax_embed_macos",
+    lib = ":clax_embed_shared",
+    target_compatible_with = ["@platforms//os:macos"],
+    visibility = ["//visibility:public"],
+)
+
+# The core as this host builds it for tests, which the Dart tests load
+# from CLAX_EMBED_LIB.
+alias(
+    name = "clax_embed_host",
+    actual = ":clax_embed_shared",
+    visibility = ["//visibility:public"],
+)
+
+# The static library in the app's configuration, always optimized. Only
+# for iOS, so a build of //... on the host does not build it optimized.
+ios_opt_library(
+    name = "clax_embed_ios_opt",
+    lib = ":clax_embed_static",
+    target_compatible_with = ["@platforms//os:ios"],
+)
+
+# The core linked into the iOS runner, which Dart reaches by FFI through
+# DynamicLibrary.process(): the four C functions are kept and exported,
+# with the system libraries the core's dependencies need (Security,
+# SystemConfiguration, resolv, c++).
+cc_library(
+    name = "clax_embed_ios_c",
+    hdrs = ["include/clax_embed.h"],
+    includes = ["include"],
+    linkopts = [
+        "-framework",
+        "Security",
+        "-framework",
+        "SystemConfiguration",
+        "-lresolv",
+        "-lc++",
+        "-Wl,-exported_symbol,_clax_embed_open",
+        "-Wl,-exported_symbol,_clax_embed_call",
+        "-Wl,-exported_symbol,_clax_embed_subscribe",
+        "-Wl,-exported_symbol,_clax_embed_close",
+    ],
+    target_compatible_with = ["@platforms//os:ios"],
+    visibility = ["//apps/clax_app:__pkg__"],
+    deps = [":clax_embed_ios_opt"],
+)
+
+# The library for iPhone and for the simulator on Apple silicon, each
+# archive's objects checked for that platform and for an iOS no newer than
+# --ios_minimum_os (bazel/apple/check-build-version.sh).
+ios_builds(
+    name = "clax_embed_ios_builds",
+    lib = ":clax_embed_static",
+    platforms = [
+        "@apple_support//platforms:ios_arm64",
+        "@apple_support//platforms:ios_sim_arm64",
+    ],
+    tags = ["manual"],
+    visibility = ["//apps/clax_app:__pkg__"],
+)
+
+# The core keeps building for iPhone and its simulator.
+build_test(
+    name = "ios_build_test",
+    target_compatible_with = ["@platforms//os:macos"],
+    targets = [":clax_embed_ios_builds"],
+)
+
+# The NDK's llvm-nm, for this host.
+alias(
+    name = "ndk_nm",
+    actual = select({
+        "@platforms//os:macos": "@androidndk//toolchains/llvm/prebuilt/darwin-x86_64:bin/llvm-nm",
+        "//conditions:default": "@androidndk//toolchains/llvm/prebuilt/linux-x86_64:bin/llvm-nm",
+    }),
+)
+
+# Each Android library exports exactly the four C functions.
+sh_test(
+    name = "android_symbols_test",
+    srcs = ["tool/symbols-check.sh"],
+    args = [
+        "$(rootpath :ndk_nm)",
+        "$(rootpaths :clax_embed_android_arm64)",
+        "$(rootpaths :clax_embed_android_x86_64)",
+    ],
+    data = [
+        ":ndk_nm",
+        ":clax_embed_android_arm64",
+        ":clax_embed_android_x86_64",
+    ],
 )

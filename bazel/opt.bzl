@@ -32,3 +32,14 @@ opt_binary = rule(
     },
     executable = True,
 )
+
+def _opt_library_impl(ctx):
+    return [ctx.attr.lib[0][DefaultInfo]]
+
+opt_library = rule(
+    implementation = _opt_library_impl,
+    doc = "`lib` (a library, its files as DefaultInfo) built with compilation_mode `opt`.",
+    attrs = {
+        "lib": attr.label(mandatory = True, cfg = _opt_transition),
+    },
+)
