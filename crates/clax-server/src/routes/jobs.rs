@@ -182,9 +182,11 @@ pub struct ClaimBody {
 /// 200 `{owner}` (the token every write of the client's jobs carries in
 /// `x-clax-jobs-owner`); 409 `owner_held` while another claim's stream
 /// lives; 400 `no_such_stream` when the hub holds no connection of
-/// `stream`, or none of the caller's. The claim is released when that
-/// connection ends. A claim that replaces another answers once the writes
-/// admitted under the one before have ended. Before anything else the
+/// `stream`, or none of the caller's; 409 `owner_draining` at once when
+/// the claim is the caller's but writes admitted under an older claim are
+/// still running: `jobs_owner` with `held: true` is published when they
+/// end, and the stream's next claim answers its token. The claim is
+/// released when that connection ends. Before anything else the
 /// claim subscribes `stream` to the `jobs` topic, so a claimant refused
 /// `owner_held` hears the `jobs_owner` release it waits for, however soon
 /// it comes.
@@ -239,6 +241,14 @@ pub async fn claim(
             "owner_held",
             format!(
                 "{}'s queue is held by another live stream: wait for jobs_owner with held false",
+                b.client
+            ),
+        )),
+        Claimed::Draining => Err(ApiError::new(
+            StatusCode::CONFLICT,
+            "owner_draining",
+            format!(
+                "{}'s queue is this stream's once the old owner's writes end: wait for jobs_owner with held true, then claim again",
                 b.client
             ),
         )),

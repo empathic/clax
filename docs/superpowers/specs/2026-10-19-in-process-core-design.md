@@ -953,7 +953,12 @@ clock:
   `POST /api/jobs/owner {client: "app", stream: <that ID>}`.
 - The core keeps one claim per `client`, in memory only: `{token, stream}`.
   A claim answers 200 `{owner: <token>}` when there is none, and 409
-  `owner_held` while the holder's stream lives. Every write to a job of that
+  `owner_held` while the holder's stream lives. A claim that replaces a
+  released or dead holder while that holder's writes are still running
+  answers 409 `owner_draining` at once (so does its stream's next claim
+  until they end); `JobsOwners` publishes `Event::JobsOwner {held: true}`
+  when the last of them ends, and the worker, which follows `jobs`, claims
+  again and gets its token. No request waits on a write. Every write to a job of that
   client (creating, moving, steps, questions, the import of §9) carries the
   token in `x-clax-jobs-owner`; a write without it, or with another,
   answers 409 `not_owner`. Reads need only the owner's credential, as today.
@@ -968,7 +973,8 @@ clock:
   at each claim and release. A claim first subscribes the claimant's
   stream to `jobs` (400 `no_such_stream` when the stream is not the
   caller's), so a worker refused with `owner_held` hears the release it
-  waits for (`held: false`), however soon it comes, and claims again. A
+  waits for (`held: false`), however soon it comes, and claims again, and
+  one refused with `owner_draining` hears the drain's end (`held: true`). A
   worker refused a write with
   `not_owner` stops emitting work and claims again.
 - The localhost daemon can serve the same API later unchanged: there an
@@ -1068,7 +1074,7 @@ what the worker applies:
 
 | Route | Effect |
 |---|---|
-| `POST /api/jobs/owner` `{client, stream}` | claims the client's queue (§7.5): 200 `{owner}`; 409 `owner_held`; 400 `no_such_stream` when `stream` is not a live stream of the hub; a claim by the stream that holds the queue answers its token again |
+| `POST /api/jobs/owner` `{client, stream}` | claims the client's queue (§7.5): 200 `{owner}`; 409 `owner_held`; 409 `owner_draining` while writes admitted under an older claim run; 400 `no_such_stream` when `stream` is not a live stream of the hub; a claim by the stream that holds the queue answers its token again, once its drain has ended |
 | `DELETE /api/jobs/owner` | releases the claim the request's `x-clax-jobs-owner` token holds (204) |
 | `POST /api/jobs` `{id, client, kind, artifact_id?, title?, input, plan?}` | creates (201); an existing `id` with the same body answers it (200), another body 409 `job_exists` |
 | `GET /api/jobs?open=1&client=app` | open jobs with their steps, threads and questions |
@@ -1122,13 +1128,19 @@ Nothing in the store knows owners, and nothing in the claim reads a
 clock. Job routes take the owner credential (the token) and refuse the
 owner's agents (403 `not_for_agents`). Each write is admitted under the
 claim (`JobsOwners::enter(client, token)`, which counts the claim's
-writes in flight under the map's mutex) and holds the guard it answers
-across its store call, the async publish step's included. A release, or
-a claim that replaces one whose stream is gone, takes the claim out of
-the map at once, so no write is admitted under the old token from then
-on, and the new claim answers only once the writes admitted under the
-old one have ended (it waits on a `Notify` each guard's drop signals).
-So no old owner's write lands after the new owner holds the queue.
+writes in flight under the map's mutex, and admits none under a claim
+still draining) and moves the guard it answers into the store job that
+does the write (`store_call`'s closure, or the async publish step's
+future), so the guard drops exactly when the write ends on the store's
+worker thread, even when the request's handler is dropped (its client
+gone, the core's close cutting calls in flight). A release, or a claim
+that replaces one whose stream is gone, takes the claim out of the map
+at once, so no write is admitted under the old token from then on; the
+new claim answers 409 `owner_draining` at once while the old one's
+writes run, and a task waiting on the `Notify` each guard's drop
+signals publishes `Event::JobsOwner {held: true}` once they have ended.
+So no old owner's write lands after the new owner holds the queue, and
+no request waits unbounded on a stuck write.
 
 **A publish step** carries `publish: {artifact_id | null (a new app),
 base, request: PublishRequest, docs: [{op, path, data?, if_version?}],

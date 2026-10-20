@@ -622,8 +622,19 @@ impl clax_core::content::ContentStore for Gate {
     }
 }
 
+/// The next `jobs_owner` event `events` hears: a bound for a hang (the
+/// event never coming), not a time budget.
+async fn next_owner_event(events: &mut EventReader) -> Value {
+    tokio::time::timeout(
+        std::time::Duration::from_secs(20),
+        events.next_named("jobs_owner"),
+    )
+    .await
+    .expect("a jobs_owner event")
+}
+
 #[tokio::test]
-async fn a_new_claim_answers_only_once_the_old_claims_write_has_landed() {
+async fn a_new_claim_drains_at_once_and_holds_the_queue_once_the_old_write_has_landed() {
     let gate = std::sync::Arc::new(Gate::new());
     let ts = TestServer::spawn_on_one_connection(gate.clone()).await;
     let (_a, old) = owner(&ts).await;
@@ -647,18 +658,37 @@ async fn a_new_claim_answers_only_once_the_old_claims_write_has_landed() {
         (409, Some("not_owner")),
         "{v}"
     );
-    // The new claim waits for the old claim's write.
-    let (_b, sid) = stream(&ts).await;
-    let claim =
-        authed(&ts, Method::POST, "/api/jobs/owner").json(&json!({"client": "app", "stream": sid}));
-    let claim = tokio::spawn(send(claim));
-    tokio::task::yield_now().await;
-    assert!(!claim.is_finished(), "answered while the old write runs");
+    // The new claim answers at once, draining, and so does its stream's
+    // next claim, a retry of the first or one made while it was in flight.
+    let (mut b, sid) = stream(&ts).await;
+    let first = tokio::spawn({
+        let r = authed(&ts, Method::POST, "/api/jobs/owner")
+            .json(&json!({"client": "app", "stream": sid}));
+        send(r)
+    });
+    let (s, v) = claim(&ts, &sid).await;
+    assert_eq!(
+        (s, v["error"]["code"].as_str()),
+        (409, Some("owner_draining")),
+        "{v}"
+    );
+    let (s, v) = first.await.unwrap();
+    assert_eq!(
+        (s, v["error"]["code"].as_str()),
+        (409, Some("owner_draining")),
+        "{v}"
+    );
+    assert!(!write.is_finished(), "the old write still runs");
     gate.set_open(true);
     let (s, v) = write.await.unwrap();
     assert_eq!(s, 200, "{v}");
     assert_eq!(v["version"], 1);
-    let (s, v) = claim.await.unwrap();
+    // The drain's end is heard on the claimant's stream, and it claims.
+    assert_eq!(
+        next_owner_event(&mut b).await,
+        json!({"topic": "jobs", "client": "app", "held": true})
+    );
+    let (s, v) = claim(&ts, &sid).await;
     assert_eq!(s, 200, "{v}");
     let new = v["owner"].as_str().unwrap();
     assert_ne!(new, old);

@@ -2492,13 +2492,19 @@ and that stream is sent a keep-alive at once, so a holder whose reader is
 gone is noticed then; a claim by the stream that holds it answers its
 token again. The claim is released when its stream's connection ends, or
 by `DELETE /api/jobs/owner`. A release, or a claim that replaces one
-whose stream is gone, admits no write under the old token from then on,
-and the new claim answers only once the writes admitted under the old
-one have ended, so none of them lands after it. The owner-only `jobs`
+whose stream is gone, admits no write under the old token from then on.
+While writes admitted under the old one are still running (each ends with
+the store work it does, even when its request is dropped), the new claim
+answers 409 `owner_draining` at once, as does any later claim of its
+stream, and its token admits no write; `jobs_owner` `{client, held:
+true}` is published when the last of them ends, and the stream's next
+claim answers its token. So none of them lands after the new owner holds
+the queue, and no claim waits on a write. The owner-only `jobs`
 stream topic carries `job` `{id, client, state, step, rev}` after every
 committed write of a job, whichever path made it (a job route, a
 question's close, a delete that cancels the job), and `jobs_owner`
-`{client, held}` at each claim and release. A claim first subscribes
+`{client, held}` at each claim that holds the queue, each drain's end
+and each release. A claim first subscribes
 the claimant's stream to `jobs` (400 `no_such_stream` when the stream is
 not the caller's), so a worker refused with `owner_held` hears the
 `held: false` it waits for, however soon it comes, and claims again.
@@ -2510,7 +2516,7 @@ transaction with the step: either both exist, or neither does.
 
 | Route | Caller | Body | Answer |
 |---|---|---|---|
-| `POST /api/jobs/owner` | token | `{client, stream}` | `{owner}` (32 hex characters); 409 `owner_held`; 400 `no_such_stream` when the hub holds no connection of `stream` |
+| `POST /api/jobs/owner` | token | `{client, stream}` | `{owner}` (32 hex characters); 409 `owner_held`; 409 `owner_draining` while the old owner's writes run; 400 `no_such_stream` when the hub holds no connection of `stream` |
 | `DELETE /api/jobs/owner` | token, `x-clax-jobs-owner` | — | 204, the claim that token holds released |
 | `POST /api/jobs` | token, owner token | `{id, client, kind, artifact_id?, title?, input, plan?}` | 201 `{job}` in `queued`; the same `id` and body again 200; another body 409 `job_exists`; 400 `invalid_artifact` |
 | `GET /api/jobs?open=1&client=<c>` | token | — | `{jobs: [{job, steps, threads, questions}]}`, the client's jobs neither `cancelled` nor `done`, oldest first; 400 `invalid_query` without `open=1` and `client` |
