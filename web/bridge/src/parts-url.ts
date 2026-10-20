@@ -8,17 +8,20 @@
 // replace (fetch, URL, document.currentScript, createElement) is on the way.
 // Retries, the time limit and the wait for the page's parse are the bridge's
 // (part-loader.ts).
+import { PART_NAMES } from "./parts/names";
 import type { Parts } from "./parts/types";
 
-declare const __CLAX_PARTS__: Record<keyof Parts, string>;
+declare const __CLAX_PARTS__: Partial<Record<keyof Parts, string>>;
 
-/** The parts' loaders; `bridgeSrc` is the bridge script's own URL. */
+/** The parts' loaders, one for every part; `bridgeSrc` is the bridge
+ * script's own URL. A part the build named no file for rejects its loads. */
 export function loadParts(bridgeSrc: string): Parts {
   const parts: Record<string, (attempt?: number) => Promise<unknown>> = {};
-  for (const name of Object.keys(__CLAX_PARTS__) as (keyof Parts)[]) {
+  for (const name of PART_NAMES) {
+    const file = __CLAX_PARTS__[name];
     let u: string | null = null;
     try {
-      u = new URL(__CLAX_PARTS__[name], new URL("/_clax/bridge/", bridgeSrc)).href;
+      if (file) u = new URL(file, new URL("/_clax/bridge/", bridgeSrc)).href;
     } catch { /* no URL to load from: the part fails */ }
     // A browser keeps a failed module load for its URL, so a retry asks for
     // the same file under a query naming the attempt.
