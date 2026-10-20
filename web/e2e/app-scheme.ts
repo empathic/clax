@@ -20,8 +20,9 @@
 //   alone carries the owner cookie.
 // - `https://<id>.c.clax.invalid/…` (an artifact's content, `as: content`):
 //   `GET` and `HEAD` only, `Host: <id>.localhost`, no credential.
-// - Every request carries only its `Range`, `If-None-Match` and `Accept`;
-//   every answer loses its `Access-Control-*` headers.
+// - Every request carries only its `Range`, `Accept` and `Service-Worker`
+//   (never `If-None-Match` or `If-Modified-Since`: no WebView here takes the
+//   304 they would bring); every answer loses its `Access-Control-*` headers.
 // - Each shell document answered to a main-frame navigation gets a fresh
 //   nonce, written as `<meta name="clax-nonce">` right after its `<head>`
 //   (unless `nonceMeta: false`, the app over loopback), and kept with that
@@ -75,7 +76,7 @@ export const startEmbedDaemon = () => startDaemon({ args: ["--embed-origins", SH
 
 const SHELL_HOST = "app.clax.invalid";
 const CONTENT_HOST = /^([a-z0-9]+)\.c\.clax\.invalid$/;
-const PAGE_HEADERS = ["range", "if-none-match", "accept"];
+const PAGE_HEADERS = ["range", "accept", "service-worker"];
 const SHELL_PATHS = ["/a/", "/_clax/", "/c/", "/_blob/"];
 const HELD_OPEN = [/^\/api\/events$/, /^\/api\/stream$/, /^\/api\/artifacts\/[^/]+\/room$/, /^\/api\/artifacts\/[^/]+\/live$/, /^\/mcp$/, /^\/api\/admin\/shutdown$/];
 const TEXTUAL = /^(text\/|application\/([\w.+-]*\+)?json\b|application\/x-www-form-urlencoded\b)/i;

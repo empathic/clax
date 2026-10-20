@@ -310,8 +310,8 @@ into credentials:
 | `as` | Who sends it | What the core adds | Paths it may reach |
 |---|---|---|---|
 | `owner` | Dart (the app's own code and agent), and shell calls the host relays (§5) | `Authorization: Bearer <token>` unless the frame carries an `Authorization` (an agent session's own); `Host: localhost`; `ConnectInfo` of a loopback peer | everything but `/api/admin/shutdown` and the routes that hold their connection open (`clax_server::router::held_open`: `/api/stream`, `/api/events`, `/api/artifacts/{aid}/room`, `/api/artifacts/{aid}/live`, `/mcp`), since a call's body is read whole; events go by `subscribe`, and `POST /api/stream/{id}` is allowed |
-| `shell-page` | the host, for a scheme request to the shell's origin (§4.2) | `Host: localhost`; for the shell document (`/a/…`) alone, the owner cookie (`clax_owner_80`), so the shell document is the owner's browser's (§4.3), and no credential for the rest; of the frame's headers, only `Range`, `If-None-Match`, `If-Modified-Since`, `Accept` and `Service-Worker` | the shell document and what the core serves it only: `/a/…`, `/_clax/…` (the web UI's files), `/c/…`, `/_blob/…`; never `/api/` |
-| `content` | the host, for a scheme request to an artifact's origin | `Host: <host>.localhost`; no credential; of the frame's headers, only `Range`, `If-None-Match`, `If-Modified-Since`, `Accept` and `Service-Worker` | what `rewrite_artifact_host` admits on an artifact host (`/v/…`, `/draft/…`, `/_blob/…`, `/_clax/…`) |
+| `shell-page` | the host, for a scheme request to the shell's origin (§4.2) | `Host: localhost`; for the shell document (`/a/…`) alone, the owner cookie (`clax_owner_80`), so the shell document is the owner's browser's (§4.3), and no credential for the rest; of the frame's headers, only `Range`, `Accept` and `Service-Worker` (§4.2) | the shell document and what the core serves it only: `/a/…`, `/_clax/…` (the web UI's files), `/c/…`, `/_blob/…`; never `/api/` |
+| `content` | the host, for a scheme request to an artifact's origin | `Host: <host>.localhost`; no credential; of the frame's headers, only `Range`, `Accept` and `Service-Worker` (§4.2) | what `rewrite_artifact_host` admits on an artifact host (`/v/…`, `/draft/…`, `/_blob/…`, `/_clax/…`) |
 
 A **cancel frame** is a frame whose JSON is `{"cancel": <tag>}`, with no
 body, sent through `clax_embed_call` on the port of the call it names:
@@ -479,7 +479,13 @@ hosts are not intercepted (the content policy already refuses them).
    another method answers 405: a page's writes go through the shell's
    bridge, never its own origin), `as: shell-page` for the shell's host,
    `as: content` with `host: <id>` for `<id>.c`, the request's
-   `Range`, `If-None-Match` and `Accept` headers, no others.
+   `Range`, `Accept` and `Service-Worker` headers, no others, on every
+   platform. `If-None-Match` and `If-Modified-Since` are dropped: the core
+   answers in the app's own process, so a conditional request saves
+   nothing, and the 304 it would bring is a 3xx, which no WebView here
+   takes from its host (Android's `WebResourceResponse` refuses one;
+   WebKit follows none for a custom scheme). `Service-Worker` is kept for
+   the kill switch (§4.3).
 2. `call` it from the UI isolate (the WebView's platform thread hands the
    request to Dart and waits on the answer; Android's `shouldInterceptRequest`
    runs on a WebView IO thread and blocks on a `CompletableFuture` that the

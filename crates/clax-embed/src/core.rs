@@ -759,16 +759,13 @@ async fn answer(sh: Arc<Shared>, head: RequestHead, body: Bytes, prefix: Vec<u8>
     }
 }
 
-/// The headers a page's frame keeps (spec §4.2: what a scheme request
-/// carries that the answer depends on, and `Service-Worker`, which the
-/// kill switch reads); a page's frame drops every other.
-const PAGE_HEADERS: [&str; 5] = [
-    "range",
-    "if-none-match",
-    "if-modified-since",
-    "accept",
-    "service-worker",
-];
+/// The headers a page's frame keeps (spec §2.3, §4.2): `Range` and
+/// `Accept`, which the answer depends on, and `Service-Worker`, which the
+/// kill switch reads. A page's frame drops every other, `If-None-Match` and
+/// `If-Modified-Since` included: a conditional request would be answered
+/// 304, which no WebView here takes from its host, and an answer made in
+/// the app's own process costs nothing to send whole.
+const PAGE_HEADERS: [&str; 3] = ["range", "accept", "service-worker"];
 
 /// Whether `path` asks for the shell document, `/a/…`: the one path a
 /// shell-page frame is asked for as the owner.
@@ -1379,7 +1376,7 @@ mod tests {
     }
 
     #[test]
-    fn a_page_frame_keeps_only_the_headers_a_scheme_request_carries() {
+    fn a_page_frame_keeps_only_range_accept_and_service_worker() {
         let sent = [
             ("Range", "bytes=0-9"),
             ("If-None-Match", "\"v1\""),
@@ -1404,14 +1401,7 @@ mod tests {
             let mut names: Vec<&str> = req.headers().keys().map(|k| k.as_str()).collect();
             names.sort_unstable();
             names.dedup();
-            let mut want = vec![
-                "accept",
-                "host",
-                "if-modified-since",
-                "if-none-match",
-                "range",
-                "service-worker",
-            ];
+            let mut want = vec!["accept", "host", "range", "service-worker"];
             if as_ == As::ShellPage {
                 want.push("cookie");
                 want.sort_unstable();

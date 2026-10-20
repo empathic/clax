@@ -392,6 +392,27 @@ test("a page reads nothing of the shell and reaches nothing on its channel", asy
   expect(h.scheme.filter(s => s.url.startsWith(`${SHELL}/a/`) && !s.mainFrame).every(s => s.status === 403)).toBe(true);
 });
 
+test("a page's conditional request is answered whole: the scheme forwards Accept, never If-None-Match or If-Modified-Since", async ({ page }) => {
+  const { artifact } = await publish(d.base, d.token, "Transport conditional", { "index.html": PAGE, "notes.html": "<!doctype html><p>notes</p>" });
+  const h = await hostChannel(page, { relay: d });
+  await page.goto(`${SHELL}/a/${artifact.id}?app=1`);
+  const frame = await appFrame(page, artifact.id, 1);
+  // The core's validator, as a page reads it from its own page.
+  const plain = await frame.evaluate(async () => {
+    const r = await fetch("notes.html", { cache: "no-store" });
+    return { status: r.status, etag: r.headers.get("etag"), body: await r.text() };
+  });
+  expect(plain.status).toBe(200);
+  expect(plain.etag).toMatch(/^"[0-9a-f]+"$/);
+  const asked = await frame.evaluate(async etag => {
+    const one = async (headers: Record<string, string>) => { const r = await fetch("notes.html", { headers, cache: "no-store" }); return { status: r.status, body: await r.text() }; };
+    return [await one({ "if-none-match": etag }), await one({ "if-modified-since": new Date().toUTCString() })];
+  }, plain.etag!);
+  // Each is answered 200 with the whole page, as no WebView here takes a 304 from its host.
+  expect(asked).toEqual([{ status: 200, body: plain.body }, { status: 200, body: plain.body }]);
+  expect(h.scheme.filter(s => s.status === 304)).toEqual([]);
+});
+
 test.describe("at desktop width", () => {
   test.use({ hasTouch: false, isMobile: false, viewport: { width: 1280, height: 800 } });
 
