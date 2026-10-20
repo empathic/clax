@@ -218,6 +218,11 @@ pi-test *ARGS:
 pi-test-native *ARGS:
     CLAX_BUILD=native ./scripts/run.sh pi-test {{ARGS}}
 
+# Run the Bazel tests downstream of your changes (scripts/affected-tests.sh: [--list] [BASE] [bazel args])
+[positional-arguments]
+test-affected *ARGS:
+    ./scripts/affected-tests.sh "$@"
+
 # Run the Rust workspace tests
 test *ARGS:
     ./scripts/run.sh test {{ARGS}}

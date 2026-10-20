@@ -3,6 +3,7 @@
 # as js_library targets so rules_js copies them beside the tests.
 
 load("@aspect_rules_js//js:defs.bzl", "js_library")
+load("@bazel_skylib//rules:build_test.bzl", "build_test")
 load("@bazel_skylib//rules:diff_test.bzl", "diff_test")
 load("@rules_apple//apple:macos.bzl", "macos_unit_test")
 load("@rules_apple//apple:versioning.bzl", "apple_bundle_version")
@@ -234,6 +235,17 @@ dart_analysis_test(
     targets = [
         ":checked_sources",
         ":clax_app",
+    ],
+)
+
+# :dart_analyze reads :analysis_config through the flag .bazelrc sets, an
+# edge `bazel query` cannot see. This test names both, so an edit to
+# analysis_options.yaml selects the analysis (scripts/affected-tests.sh).
+build_test(
+    name = "dart_analyze_options",
+    targets = [
+        ":analysis_config",
+        ":dart_analyze",
     ],
 )
 

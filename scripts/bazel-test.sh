@@ -50,15 +50,10 @@ fi
 
 ./scripts/bazel-sync.sh --check || exit 1
 
-flags=(--lockfile_mode=error)
-
-# Fake executables keep one store across tests and runs (CLAX_FAKE_EXE_DIR,
-# crates/clax-fake-exe), outside each test's temporary directory, so each
-# text is assessed by macOS once and not once per test.
-fakes="${TMPDIR:-/tmp}"
-fakes="${fakes%/}/clax-fake-exe"
-mkdir -p "$fakes"
-test_flags=(--test_env=CLAX_FAKE_EXE_DIR="$fakes" --sandbox_writable_path="$fakes")
+# shellcheck source=scripts/lib/bazel-test-flags.sh
+source scripts/lib/bazel-test-flags.sh
+flags=("${bazel_flags[@]}")
+test_flags=("${bazel_test_flags[@]}")
 
 # A machine that sleeps in the middle of a run fails tests that were in
 # flight: their timeouts see the gap. On macOS the builds and tests run under

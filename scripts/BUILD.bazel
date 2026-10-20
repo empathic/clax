@@ -369,3 +369,15 @@ sh_test(
     srcs = ["bazel-gc.test.sh"],
     data = [":all"],
 )
+
+# scripts/affected-tests.sh on a scratch checkout and a stub bazelisk: the
+# files it queries and as what, every test for a change to the build, the
+# manual tests left out, removed files and the base-ref mode.
+sh_test(
+    name = "affected_tests",
+    srcs = ["test-affected-tests.sh"],
+    data = [
+        "affected-tests.sh",
+        "lib/bazel-test-flags.sh",
+    ],
+)

@@ -417,6 +417,18 @@ touched. `just install` puts the working tree in front of your everyday agents
 uninstall` takes it away again.
 
 - `just help` (or bare `just`) lists every recipe with a description.
+- `just test-affected` (`scripts/affected-tests.sh`) runs the Bazel tests
+  downstream of your changes, chosen by the build graph: the working
+  tree's edits, staged or not, and new files, against `HEAD`. A base
+  (`just test-affected main`) adds every commit since its merge-base; a
+  range (`<sha>^..<sha>`) takes its commits alone, without the working
+  tree. Each changed file is its own label, a
+  changed BUILD file or a removed file selects its package, and the tests
+  are those that depend on them, less the `manual` ones. A change to the
+  build itself (`MODULE.bazel`, its lockfile and the files it names,
+  `.bazelrc`, a `.bzl` file, `bazel/`, `Cargo.lock`) runs every test. It
+  names the files no target uses, which select nothing; `--list` prints
+  the tests without running them, and other arguments go to `bazel test`.
 - `just check` formats the Rust code, then runs every quality gate.
 - `just ci` runs the same gates CI runs, without formatting.
 - `just perf` runs the perf benchmarks. Performance is measured on demand

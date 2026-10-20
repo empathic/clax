@@ -78,8 +78,10 @@ run it through the command the plugin's session context gives.
   once (`clax-fake-exe` in Rust, `fake-exe.ts` in `web/e2e` and
   `plugins/pi/test`) rather than
   writing a fresh executable per run.
-- While working, run the tests of the crates and packages you changed;
-  run `just check` (or `just ci`) once before the branch merges. A lane that fails in code you did not touch is rerun alone and
+- While working, run `just test-affected`; it runs the tests downstream
+  of your changes, as the build graph says (`just test-affected main` for
+  the whole branch, `--list` to see them). Run `just check` (or `just ci`)
+  once before the branch merges. A lane that fails in code you did not touch is rerun alone and
   both results reported.
 - Run anything longer than a minute or two in the background, log it to a
   file inside your own worktree (`target/…`, git-ignored; a log there is
