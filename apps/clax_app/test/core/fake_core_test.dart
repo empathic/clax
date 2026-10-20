@@ -25,10 +25,75 @@ void main() {
       ..on('GET', '/api/artifacts/{aid}', (r, p) => FakeCore.json({'id': p['aid']}));
     final r = await core.call(const CoreRequest('GET', '/api/artifacts/a%2Fb?x=1'));
     expect(jsonOf(r), {'id': 'a/b'});
-    final missing = await core.call(const CoreRequest('POST', '/api/artifacts/x'));
-    expect(statusOf(missing).$1, 404);
-    expect((jsonOf(missing)['error']! as Map)['code'], 'not_in_fake');
-    expect(core.requests.map((r) => r.method), ['GET', 'POST']);
+    expect(core.requests.map((r) => r.path), ['/api/artifacts/a%2Fb?x=1']);
+  });
+
+  test('refuses what the core refuses: 404 not_in_app', () async {
+    final core = FakeCore()
+      ..on('GET', '/api/artifacts', (r, p) => FakeCore.json({}))
+      ..on('GET', '/a/{aid}', (r, p) => FakeCore.json({}))
+      ..on('GET', '/api/stream', (r, p) => FakeCore.json({}));
+    const id = '7q3k9mzx2b4t';
+    for (final (r, admitted) in [
+      (const CoreRequest('GET', '/api/artifacts'), true),
+      (const CoreRequest('GET', '/api/artifacts', as: CallAs.content, host: id), true),
+      (const CoreRequest('GET', '/a/$id?app=1', as: CallAs.shellPage), true),
+      // A route that holds its connection open answers no call.
+      (const CoreRequest('GET', '/api/stream'), false),
+      (const CoreRequest('GET', '/api/stream?x=1'), false),
+      (const CoreRequest('GET', '/api/events'), false),
+      (const CoreRequest('GET', '/api/artifacts/$id/room'), false),
+      (const CoreRequest('GET', '/api/artifacts/$id/live'), false),
+      (const CoreRequest('POST', '/mcp'), false),
+      (const CoreRequest('POST', '/api/admin/shutdown'), false),
+      // A page reaches only its own paths.
+      (const CoreRequest('GET', '/api/artifacts', as: CallAs.shellPage), false),
+      (const CoreRequest('POST', '/a/$id', as: CallAs.shellPage), false),
+      (const CoreRequest('GET', '/api/artifacts', as: CallAs.content), false),
+      (const CoreRequest('PUT', '/api/artifacts', as: CallAs.content, host: id), false),
+      (
+        const CoreRequest('GET', '/api/artifacts', as: CallAs.content, host: '7Q3K9MZX2B4T'),
+        false,
+      ),
+    ]) {
+      final (status, res) = statusOf(await core.call(r));
+      if (admitted) {
+        expect(status, 200, reason: '$r');
+      } else {
+        expect(status, 404, reason: '$r');
+        expect((jsonOf(CoreAnswered(res))['error']! as Map)['code'], 'not_in_app', reason: '$r');
+      }
+    }
+  });
+
+  test('a call no route answers fails the test', () async {
+    final unrouted = <Object>[];
+    final core = FakeCore(unrouted: unrouted.add);
+    await expectLater(
+      core.call(const CoreRequest('POST', '/api/artifacts/x')),
+      throwsA(isA<TestFailure>()),
+    );
+    expect(unrouted.single.toString(), contains('POST /api/artifacts/x'));
+  });
+
+  test("a subscription starts with the hub's ready block", () async {
+    final core = FakeCore();
+    final first = await core.subscribe().blocks.first;
+    expect(first, startsWith('event: ready\n'));
+    final data = jsonDecode(first.split('data: ')[1].trim()) as Map;
+    expect(data['resumed'], false);
+    expect(data['stream'], isA<String>());
+  });
+
+  test('a closed core answers no call and ends every subscription', () async {
+    final core = FakeCore()..on('GET', '/api/a', (r, p) => FakeCore.json({}));
+    final live = core.subscribe();
+    core.close();
+    expect(await live.blocks.last, endBlock('core_closed'));
+    final r = await core.call(const CoreRequest('GET', '/api/a'));
+    expect((r as CoreUnanswered).code, 'core_closed');
+    expect(core.requests, isEmpty, reason: 'a closed core is not called');
+    expect(await core.subscribe().blocks.toList(), [endBlock('core_closed')]);
   });
 
   test('pushes blocks to live subscriptions and ends them', () async {
@@ -37,9 +102,10 @@ void main() {
     // A resume point is ignored, as CoreClient ignores it.
     final b = core.subscribe(lastEventId: '7');
     b.cancel();
-    core.push('event: ready\n\n');
-    core.end('core_closed');
-    expect(await a.blocks.toList(), ['event: ready\n\n', endBlock('core_closed')]);
+    core.push('event: version\n\n');
+    core.end('stream_ended');
+    final blocks = await a.blocks.toList();
+    expect(blocks.skip(1), ['event: version\n\n', endBlock('stream_ended')]);
     expect(core.subscribers, 0);
   });
 

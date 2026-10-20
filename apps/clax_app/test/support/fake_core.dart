@@ -9,6 +9,7 @@ import 'package:clax_app/clax/fake_api.dart';
 import 'package:clax_app/core/core_client.dart';
 import 'package:clax_app/core/ffi.dart';
 import 'package:clax_app/core/frame.dart';
+import 'package:flutter_test/flutter_test.dart';
 
 /// Answers a [FakeCore] request; [params] holds the path's `{name}`
 /// segments, decoded.
@@ -18,14 +19,23 @@ typedef CoreHandler =
       Map<String, String> params,
     );
 
-/// An in-memory core for tests: [call] dispatches on the method and the
-/// path (without its query) to the handlers a test registers with [on],
-/// and answers 404 `not_in_fake` for any other; [subscribe] hands out
-/// subscriptions whose blocks a test [push]es. Every request is appended
-/// to [requests] before it is answered. A resume point is ignored, as
-/// [CoreClient] ignores it.
+/// An in-memory core for tests that refuses what the core refuses: [call]
+/// answers 404 `not_in_app` for a frame the core would not admit (by its
+/// `as`, host, method and path, as crates/clax-embed/src/core.rs `admit`
+/// judges it), then dispatches on the method and the path (without its
+/// query) to the handlers a test registers with [on]. A call no handler
+/// answers fails the test ([unrouted]). [subscribe] hands out
+/// subscriptions that start with the hub's `ready` block and carry the
+/// blocks a test [push]es. After [close], calls go unanswered and
+/// subscriptions end as `core_closed`. Every call the core receives is
+/// appended to [requests] before it is answered. A resume point is
+/// ignored, as [CoreClient] ignores it.
 class FakeCore implements CoreCalls {
-  FakeCore();
+  /// [unrouted] hears each call no handler answers; by default it fails
+  /// the running test, even when the code under test catches the error
+  /// the call completes with.
+  FakeCore({void Function(Object failure) unrouted = _failTest})
+    : _unrouted = unrouted;
 
   /// A core whose routes are [api]'s, in the JSON shapes `HttpClaxApi`
   /// reads: `GET /api/artifacts`, `GET /api/artifacts/{aid}`,
@@ -36,12 +46,19 @@ class FakeCore implements CoreCalls {
   /// an agent's with `author_kind: agent`),
   /// `POST /api/artifacts/{aid}/docs:batch` and `POST /api/stream/{id}`.
   /// A [ClaxApiError] answers its status and `{"error": …}`.
-  factory FakeCore.fromApi(FakeClaxApi api) => FakeCore().._routeTo(api);
+  factory FakeCore.fromApi(
+    FakeClaxApi api, {
+    void Function(Object failure) unrouted = _failTest,
+  }) => FakeCore(unrouted: unrouted).._routeTo(api);
 
   final List<CoreRequest> requests = [];
 
+  final void Function(Object failure) _unrouted;
   final List<(String, List<String>, CoreHandler)> _routes = [];
   final List<FakeSubscription> _subs = [];
+  bool _closed = false;
+
+  static void _failTest(Object failure) => registerException(failure);
 
   /// Answers [method] on [path], whose segments may be `{name}`.
   void on(String method, String path, CoreHandler handler) =>
@@ -64,14 +81,29 @@ class FakeCore implements CoreCalls {
     }
   }
 
+  /// Closes the core: live subscriptions end `core_closed`, later calls go
+  /// unanswered as `core_closed`, and later subscriptions end at once.
+  void close() {
+    _closed = true;
+    end('core_closed');
+  }
+
   /// What a handler's response becomes, as [CoreClient] reads it: a 503
   /// `core_closed` or `core_failed` is [CoreUnanswered].
   @override
-  Future<CoreAnswer> call(CoreRequest r) async =>
-      CoreAnswer.of(await _respond(r));
+  Future<CoreAnswer> call(CoreRequest r) async {
+    if (_closed) {
+      return const CoreUnanswered('core_closed', 'the core is closed');
+    }
+    return CoreAnswer.of(await _respond(r));
+  }
 
   Future<CoreResponse> _respond(CoreRequest r) async {
     requests.add(r);
+    if (!admits(r)) {
+      final path = r.path.split(RegExp('[?#]')).first;
+      return error(404, 'not_in_app', '$path is not served in the app');
+    }
     final path = _segments(Uri.parse(r.path).path);
     for (final (method, pattern, handler) in _routes) {
       if (method != r.method) continue;
@@ -83,15 +115,76 @@ class FakeCore implements CoreCalls {
         return error(e.status, e.code, e.message, e.body);
       }
     }
-    return error(404, 'not_in_fake', 'FakeCore answers no ${r.method} ${r.path}');
+    final failure = TestFailure(
+      'FakeCore has no route for ${r.method} ${r.path} (as ${r.as.wire})',
+    );
+    _unrouted(failure);
+    throw failure;
   }
+
+  /// Whether the core admits [r] (crates/clax-embed/src/core.rs `admit`):
+  /// the owner reaches every path but the routes that hold their
+  /// connection open and `/api/admin/shutdown`; the shell's page reads its
+  /// document, assets and blobs; an artifact's content origin, named by
+  /// its host, reads.
+  static bool admits(CoreRequest r) {
+    final path = r.path.split(RegExp('[?#]')).first;
+    if (!path.startsWith('/')) return false;
+    final read = r.method == 'GET' || r.method == 'HEAD';
+    return switch (r.as) {
+      CallAs.owner => !_heldOpen(path) && path != '/api/admin/shutdown',
+      CallAs.shellPage =>
+        read &&
+            (const ['/a/', '/assets/', '/_clax/', '/c/', '/_blob/'].any(
+                  path.startsWith,
+                ) ||
+                path == '/favicon.ico'),
+      CallAs.content => read && _artifactId.hasMatch(r.host ?? ''),
+    };
+  }
+
+  /// clax_server::router::held_open: a `{…}` segment stands for any one
+  /// non-empty segment.
+  static bool _heldOpen(String path) => const [
+    '/api/events',
+    '/api/stream',
+    '/api/artifacts/{aid}/room',
+    '/api/artifacts/{aid}/live',
+    '/mcp',
+  ].any((route) {
+    final want = route.split('/');
+    final got = path.split('/');
+    if (want.length != got.length) return false;
+    for (var i = 0; i < want.length; i++) {
+      final w = want[i];
+      if (w != got[i] && !(w.startsWith('{') && got[i].isNotEmpty)) {
+        return false;
+      }
+    }
+    return true;
+  });
+
+  /// 12 characters of lowercase Crockford base32
+  /// (crates/clax-core/src/ids.rs).
+  static final _artifactId = RegExp(r'^[0-9a-hjkmnp-tv-z]{12}$');
 
   @override
   CoreSubscription subscribe({String? lastEventId}) {
     final s = FakeSubscription();
+    if (_closed) return s..end('core_closed');
     _subs.add(s);
-    return s;
+    return s..push(readyBlock('fake-${_subs.length}'));
   }
+
+  /// The hub's first block on a new stream [id] (crates/clax-realtime
+  /// `Conn::new`): no topics yet, not resumed, the owner calling.
+  static String readyBlock(String id) => 'event: ready\ndata: ${jsonEncode({
+    'stream': id,
+    'seq': 0,
+    'resumed': false,
+    'topics': const <String>[],
+    'caller': {'level': 'owner', 'viewer': null},
+  })}\n\n';
 
   /// A JSON answer.
   static CoreResponse json(Object? body, {int status = 200}) => CoreResponse(
