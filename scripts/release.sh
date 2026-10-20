@@ -108,9 +108,9 @@ ver_cmp() {
 }
 checkout_version() { bash "$ROOT/scripts/check-version.sh" --print 2>/dev/null; }
 pinned_version() { sed -n 's/^PINNED_VERSION="\(.*\)"$/\1/p' "$ROOT/scripts/ensure-clax.sh"; }
-# The newest commit reachable from HEAD whose subject is exactly $1.
-commit_with_subject() {
-    g log --format='%H%x09%s' --fixed-strings --grep="$1" HEAD | awk -F '\t' -v s="$1" '$2 == s { print $1 }' | sed -n 1p
+# The oldest commit in revision range $2 whose subject is exactly $1.
+subject_in() {
+    g log --format='%H%x09%s' --fixed-strings --grep="$1" "$2" -- | awk -F '\t' -v s="$1" '$2 == s { h = $1 } END { print h }'
 }
 local_tag_commit() { g rev-parse -q --verify "refs/tags/$TAG^{commit}" 2>/dev/null || true; }
 # The commit origin's tag of this version tags, or nothing; fails when
@@ -138,10 +138,22 @@ run_state() { gh run view "$1" --json status,conclusion --jq '"\(.status) \(.con
 refresh() {
     CUR="$(checkout_version || true)"
     PINNED="$(pinned_version)"
-    REL_COMMIT="$(commit_with_subject "$REL_SUBJECT")"
-    PIN_COMMIT="$(commit_with_subject "$PIN_SUBJECT")"
     LOCAL_TAG="$(local_tag_commit)"
     REMOTE_TAG="$(remote_tag_commit)" || { REFRESH_ERR="cannot read origin's tags (git ls-remote origin)"; return 1; }
+    # The release commit is the one the tag names, once there is a tag;
+    # before, only a "Release X.Y.Z" commit this checkout has on top of
+    # origin/main, never one from older history (preflight checks both).
+    TAG_COMMIT="${LOCAL_TAG:-$REMOTE_TAG}"
+    if [ -n "$TAG_COMMIT" ]; then
+        REL_COMMIT="$TAG_COMMIT"
+    else
+        REL_COMMIT="$(subject_in "$REL_SUBJECT" origin/main..HEAD)"
+    fi
+    PIN_COMMIT=""
+    if [ -n "$REL_COMMIT" ]; then
+        PIN_COMMIT="$(subject_in "$PIN_SUBJECT" "$REL_COMMIT..HEAD")"
+        [ -n "$PIN_COMMIT" ] || PIN_COMMIT="$(subject_in "$PIN_SUBJECT" "$REL_COMMIT..origin/main")"
+    fi
 }
 
 # --- step 1: preflight ------------------------------------------------------------
@@ -191,7 +203,7 @@ check_signing() {
 }
 
 check_version() {
-    local remote tags t
+    local remote tags t old
     if ! semver_ok "$V"; then
         problem "$V is not a release version (X.Y.Z)"
         return 0
@@ -211,14 +223,19 @@ check_version() {
             0) [[ $t == *-* ]] || problem "$V is not newer than the tag $t" ;;
         esac
     done
-    # A tag of this version is this release's only when it tags the
-    # release commit, and the release is still under way: its commit not on
-    # origin/main yet (steps 6-11), or the pin commit origin/main's tip
-    # (12-14). A finished release, with main moved on, is not resumed.
-    if [ -n "$LOCAL_TAG" ] && [ "$LOCAL_TAG" != "$REL_COMMIT" ]; then
-        problem "the tag $TAG exists here and does not tag a \"$REL_SUBJECT\" commit on main"
-    elif [ -n "$REMOTE_TAG" ] && [ "$REMOTE_TAG" != "$REL_COMMIT" ]; then
-        problem "the tag $TAG exists on origin and does not tag a \"$REL_SUBJECT\" commit on main"
+    # A tag of this version is this release's only when it tags a
+    # "Release X.Y.Z" commit main has, here or on origin, and both tags agree.
+    # Without a tag, a "Release X.Y.Z" commit already on origin/main is not
+    # this release's to tag.
+    if [ -n "$LOCAL_TAG" ] && [ -n "$REMOTE_TAG" ] && [ "$LOCAL_TAG" != "$REMOTE_TAG" ]; then
+        problem "the tag $TAG tags $LOCAL_TAG here and $REMOTE_TAG on origin"
+    elif [ -n "$TAG_COMMIT" ] && [ "$(g log -1 --format=%s "$TAG_COMMIT" 2>/dev/null)" != "$REL_SUBJECT" ]; then
+        problem "the tag $TAG tags $TAG_COMMIT, not a \"$REL_SUBJECT\" commit"
+    elif [ -n "$TAG_COMMIT" ] && ! g merge-base --is-ancestor "$TAG_COMMIT" HEAD \
+        && ! g merge-base --is-ancestor "$TAG_COMMIT" origin/main; then
+        problem "the tag $TAG tags $TAG_COMMIT, which neither this checkout nor origin/main has"
+    elif [ -z "$TAG_COMMIT" ] && old="$(subject_in "$REL_SUBJECT" origin/main)" && [ -n "$old" ]; then
+        problem "origin/main has a \"$REL_SUBJECT\" commit already ($old) and no tag $TAG names it"
     elif [ -n "$LOCAL_TAG$REMOTE_TAG" ] \
         && g merge-base --is-ancestor "$REL_COMMIT" origin/main \
         && { [ -z "$PIN_COMMIT" ] || [ "$PIN_COMMIT" != "$(g rev-parse origin/main)" ]; }; then
@@ -230,10 +247,7 @@ check_tree() {
     local branch behind expected i dirty untracked subject
     branch="$(g symbolic-ref --short -q HEAD || true)"
     [ "$branch" = main ] || problem "the checkout is on ${branch:-a detached HEAD}, not main"
-    if ! g fetch --quiet --no-tags origin main; then
-        problem "cannot fetch main from origin"
-        return 0
-    fi
+    [ "$FETCHED" = 1 ] || return 0
     behind="$(g rev-list --count HEAD..origin/main)"
     [ "$behind" = 0 ] || problem "main is $behind commit(s) behind origin/main (git pull --ff-only)"
     # Ahead only by this release's own commits, in order.
@@ -266,6 +280,8 @@ preflight() {
     check_tools
     command -v git >/dev/null 2>&1 || return 0
     resolve_repo
+    FETCHED=0
+    if g fetch --quiet --no-tags origin main; then FETCHED=1; else problem "cannot fetch main from origin"; fi
     refresh || problem "$REFRESH_ERR"
     check_tree
     check_version

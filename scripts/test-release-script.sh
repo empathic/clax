@@ -333,6 +333,18 @@ refuse "a bad version in a dry run too" "0.6 is not a release version (X.Y.Z)" 0
 git -C "$C/origin.git" tag v0.7.0 main
 refuse "a version below a tag only origin has" "0.6.0 is not newer than the tag v0.7.0"
 new_case
+git -C "$C/repo" commit -q -S --allow-empty -m "Release 0.6.0"
+git -C "$C/repo" -c commit.gpgsign=false revert -q --no-edit HEAD 2>/dev/null \
+    || git -C "$C/repo" -c commit.gpgsign=false commit -q --allow-empty -m 'Revert "Release 0.6.0"'
+git -C "$C/repo" push -q origin main
+refuse "an old \"Release 0.6.0\" commit on origin/main with no tag" "origin/main has a \"Release 0.6.0\" commit already"
+new_case
+git -C "$C/repo" -c tag.gpgsign=false tag -a v0.6.0 -m "Clax 0.6.0"
+refuse "a tag of the version here on another commit" "the tag v0.6.0 tags $(git -C "$C/repo" rev-parse HEAD), not a \"Release 0.6.0\" commit"
+new_case
+git --git-dir="$C/origin.git" tag v0.6.0 main
+refuse "a tag of the version on origin on another commit" "the tag v0.6.0 tags $(git -C "$C/repo" rev-parse HEAD), not a \"Release 0.6.0\" commit"
+new_case
 : > "$FAKE_STATE/no-auth"
 refuse "gh signed out" "gh is not signed in (gh auth login)"
 new_case
