@@ -600,6 +600,7 @@ test("a member tags the artifact they made with the owner's tags, and manages no
     // The list is the owner's: Mia reads it.
     await mia.goto(`${origin}/tags`);
     await expect(mia.locator(".trow")).toHaveCount(2);
+    await expect(mia.locator(".tsub")).toHaveText("The owner keeps this list. You can put these tags on the artifacts you made.");
     await expect(mia.getByRole("button", { name: "New tag" })).toHaveCount(0);
     await expect(mia.locator(".trow button")).toHaveCount(0);
   } finally {

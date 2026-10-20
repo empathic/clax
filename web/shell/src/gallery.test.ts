@@ -551,7 +551,8 @@ describe("Gallery tags", { timeout: MOUNT_TIMEOUT_MS }, () => {
         calls.push({ url, method: init?.method ?? "GET" });
         const ok = (b: unknown) => new Response(JSON.stringify(b));
         if (url === "/api/token") return may ? ok({ token: "t" }) : new Response("{}", { status: 403 });
-        if (url === "/api/viewers/me") return ok({ viewer: null });
+        if (url === "/api/viewers/me") return ok({ viewer: null, may_create: false });
+        if (init?.method === "DELETE") return new Response(JSON.stringify({ error: { code: "not_found", message: "no such tag" } }), { status: 404 });
         if (url === "/api/tags") return ok({ tags: [{ ...Q4, description: "The quarter", created_at: "", updated_at: "", count: 2 }, { ...DESIGN, description: null, created_at: "", updated_at: "", count: 1 }], colours: ["gray", "blue", "purple"], may_manage: may });
         return new Response("{}", { status: 404 });
       }));
@@ -569,6 +570,18 @@ describe("Gallery tags", { timeout: MOUNT_TIMEOUT_MS }, () => {
       expect(!!m.root.querySelector(".tagsp .th button.primary")).toBe(may);
       expect(rows[0].querySelectorAll("button").length).toBe(may ? 2 : 0);
       expect(calls.some(c => c.url === "/api/artifacts")).toBe(false);
+      // What this viewer may do: the owner manages; a reader who makes no artifacts reads.
+      await waitFor(() => m.root.querySelector(".tsub"), "the line under the heading");
+      if (!may) expect(m.root.querySelector(".tsub")!.textContent).toBe("The owner keeps this list.");
+      if (may) {
+        // A refused delete says why, past the list's reload.
+        vi.stubGlobal("confirm", () => true);
+        const loads = calls.filter(c => c.url === "/api/tags").length;
+        rows[0].querySelector<HTMLButtonElement>("button.tdel")!.click();
+        await waitFor(() => calls.filter(c => c.url === "/api/tags").length > loads && m.root.querySelector(".terr"), "the refusal after the reload");
+        await new Promise(r => setTimeout(r, 20));
+        expect(m.root.querySelector(".terr")!.textContent).toBe("Could not delete Q4: no such tag");
+      }
       unmountGallery(); unmountGallery = null; vi.resetModules(); vi.unstubAllGlobals();
     }
   });
