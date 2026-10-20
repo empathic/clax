@@ -900,6 +900,41 @@ mod tests {
         assert_eq!(settled(&rx).await, OpenEvent::Closed);
     }
 
+    #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+    async fn a_stream_refused_because_the_core_is_closing_ends_core_closed() {
+        let dir = tempfile::tempdir().unwrap();
+        let (on_event, rx) = events();
+        let embed = Embed::open(options(dir.path()), on_event).unwrap();
+        assert_eq!(settled(&rx).await, OpenEvent::Ready);
+        // The stream reaches a router that is closing: it leaves Ready
+        // before it answers, and refuses.
+        let phase = embed.inner.shared.phase.clone();
+        let router = axum::Router::new().route(
+            "/api/stream",
+            axum::routing::get(move || {
+                let phase = phase.clone();
+                async move {
+                    phase.send_replace(Phase::Draining);
+                    axum::http::StatusCode::SERVICE_UNAVAILABLE
+                }
+            }),
+        );
+        embed.inner.shared.phase.send_replace(Phase::Ready {
+            router,
+            token: "t".into(),
+        });
+        let (tx, blocks) = tokio::sync::mpsc::unbounded_channel();
+        embed.subscribe(Box::new(move |b| tx.send(b).is_ok()));
+        let mut blocks = blocks;
+        let mut last = None;
+        while let Some(b) = blocks.recv().await {
+            last = Some(b);
+        }
+        assert_eq!(last, Some(crate::events::end("core_closed")));
+        embed.close();
+        assert_eq!(settled(&rx).await, OpenEvent::Closed);
+    }
+
     /// A response frame's status and body.
     fn status_and_body(frame: &[u8]) -> (u16, Vec<u8>) {
         let (h, body) = frame::split(frame).unwrap();

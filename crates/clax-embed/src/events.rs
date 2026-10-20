@@ -11,7 +11,8 @@ use tower::ServiceExt;
 
 /// The SSE block a subscription ends with, `event: end` with
 /// `{"reason":…}`: `core_failed` (the core did not open), `core_closed`
-/// (it closed), `stream_refused` (the router refused the stream) or
+/// (it closed, whether the stream then ended or was refused),
+/// `stream_refused` (the router refused the stream of a ready core) or
 /// `stream_ended` (the stream ended or failed by itself).
 pub fn end(reason: &str) -> Bytes {
     Bytes::from(format!(
@@ -60,11 +61,16 @@ async fn pump(
         as_: As::Owner,
         host: None,
     };
+    // A closing core refuses or ends the stream too; either way the reason
+    // is then the core's, so the phase is looked at whenever it stops.
+    let why = |phase: &crate::core::Readiness, own: &'static str| {
+        Some(if phase.ready() { own } else { "core_closed" })
+    };
     let req = match crate::core::request(&head, Bytes::new(), &token) {
         Ok(r) => r,
         Err(e) => {
             tracing::warn!(error = %e, "could not build the event stream's request");
-            return Some("stream_refused");
+            return why(&phase, "stream_refused");
         }
     };
     let res = router
@@ -73,18 +79,9 @@ async fn pump(
         .unwrap_or_else(|never| match never {});
     if !res.status().is_success() {
         tracing::warn!(status = %res.status(), "the event stream was refused");
-        return Some("stream_refused");
+        return why(&phase, "stream_refused");
     }
     let mut body = res.into_body().into_data_stream();
-    // A closing core ends the stream too; either way the reason is the
-    // core's, so the phase is looked at first and again when the stream ends.
-    let ended = |phase: &crate::core::Readiness| {
-        Some(if phase.ready() {
-            "stream_ended"
-        } else {
-            "core_closed"
-        })
-    };
     loop {
         tokio::select! {
             biased;
@@ -97,9 +94,9 @@ async fn pump(
                 }
                 Some(Err(e)) => {
                     tracing::warn!(error = %e, "the event stream failed");
-                    return ended(&phase);
+                    return why(&phase, "stream_ended");
                 }
-                None => return ended(&phase),
+                None => return why(&phase, "stream_ended"),
             },
         }
     }
