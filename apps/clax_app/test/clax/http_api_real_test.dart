@@ -51,9 +51,8 @@ void main() {
       expect(created.version.sessionId, s.id);
 
       final stream = api.stream();
-      final events = StreamIterator(
-        stream.events.where((e) => e.type == 'version'),
-      );
+      // Listened to before the publish: the stream's events are broadcast.
+      final version = stream.events.firstWhere((e) => e.type == 'version');
       await stream.subscribe(['artifact:$aid']);
 
       final v2 = await api.publish(
@@ -65,9 +64,8 @@ void main() {
       );
       expect(v2.version.n, 2);
       expect(v2.version.files.keys, ['index.html']);
-      expect(await events.moveNext(), isTrue);
-      expect((events.current.topic, events.current.data['n']), ('artifact:$aid', 2));
-      await events.cancel();
+      final e = await version;
+      expect((e.topic, e.data['n']), ('artifact:$aid', 2));
       await stream.close();
 
       await expectLater(
