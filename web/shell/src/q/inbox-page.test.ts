@@ -220,6 +220,24 @@ describe("InboxPage", () => {
     expect(rowIds(groupEl(m.root, "7q3k9mzx2b4t"))).toHaveLength(5);
   });
 
+  it("keeps a group's rows where they are after its Mark read, the row it read shown read", async () => {
+    const U = item("reply", { id: "U5", seq: 5 });
+    const read = [9, 8, 7].map(n => item("reply", { id: `R${n}`, seq: n, read: true }));
+    const lists: Record<string, InboxItem[]> = { "": [U] };
+    stubRoutes(lists, read);
+    const { m } = page();
+    await settle();
+    const g = groupEl(m.root, "7q3k9mzx2b4t");
+    expect(rowIds(g)).toEqual(["U5", "R9", "R8"]);
+    // Read now: the daemon's first rows would be R9, R8, R7.
+    lists[""] = [{ ...U, read: true }];
+    click(g.querySelector(".gread")!);
+    await settle();
+    expect(rowIds(g)).toEqual(["U5", "R9", "R8"]);
+    expect(g.querySelector('.irow[data-item="U5"]')!.hasAttribute("data-unread")).toBe(false);
+    expect(g.hasAttribute("data-fresh")).toBe(false);
+  });
+
   it("puts items about no page in Other, with no link", async () => {
     stubRoutes({ "": [R] }, [item("published", { id: "D9", seq: 2, read: true, artifact: null })]);
     const { m } = page();

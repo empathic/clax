@@ -274,13 +274,19 @@
   const toggleUnread = () => apply({ ...filter, read: unreadOnly ? undefined : "unread" });
   const set = (k: "artifact" | "agent" | "since" | "until", v: string) => apply({ ...filter, [k]: v || undefined });
 
-  /** Marks read the unread items matching `f` up to the newest of `shown`,
-   * then fetches the list again: the groups keep their places and folds. */
-  async function markUpTo(f: InboxFilter | undefined, shown: InboxItem[], except?: string[]): Promise<void> {
+  /** Marks read the unread items matching `f` up to the newest of `shown`
+   * (group `key`'s, or every group's), shows the rows it read as read
+   * where they are, then refreshes the list: rows and groups keep their
+   * places and folds. */
+  async function markUpTo(f: InboxFilter | undefined, shown: InboxItem[], except: string[] = [], key?: string): Promise<void> {
     busy = true;
     try {
       // Up to the newest item shown, so one made since stays unread.
-      await inbox.markAll(f, newestSeq(shown), except);
+      const upto = newestSeq(shown);
+      await inbox.markAll(f, upto, except);
+      // An open approval request stays unread until decided.
+      const reads = (i: InboxItem) => !i.read && i.seq <= upto && !except.includes(i.id) && approvalOf(i)?.status !== "open";
+      if (list) list = { ...list, groups: list.groups.map(g => (key !== undefined && g.key !== key) || !g.items.some(reads) ? g : { ...g, items: g.items.map(i => (reads(i) ? { ...i, read: true } : i)) }) };
       await refresh();
     } catch (e) {
       oops("mark them read")(e);
@@ -291,7 +297,7 @@
   /** A group's Mark read: the unread items it counts new, up to its newest
    * shown; its page's items pinned above as cards stay unread. */
   const markGroup = (g: Group) => markUpTo({ ...filter, artifact: g.key }, g.items,
-    cardItems.filter(i => !i.read && carded.has(i.id) && groupKey(i) === g.key).map(i => i.id));
+    cardItems.filter(i => !i.read && carded.has(i.id) && groupKey(i) === g.key).map(i => i.id), g.key);
 
   // Where an item leads; a question's (`/inbox?q=…`) is this page, whose card, if shown, takes focus.
   const go = (url: string) => {
