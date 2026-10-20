@@ -417,12 +417,7 @@ pub(crate) const CLOSED_BEFORE: &str = concat!(
 pub(crate) const LATE_ANSWERS: &str = concat!(select!(), late!());
 pub(crate) const OPEN_OF_SESSION: &str = "SELECT id, session_id, artifact_id FROM questions
     WHERE session_id = ?1 AND status = 'open'";
-pub(crate) const WITHDRAW_SESSION: &str =
-    "UPDATE questions SET status = 'withdrawn', closed_at = ?2
-    WHERE session_id = ?1 AND status = 'open'";
 pub(crate) const OPEN_HOOKS: &str = "SELECT id, session_id, artifact_id FROM questions
-    WHERE status = 'open' AND source = 'hook' AND in_terminal = 0";
-pub(crate) const WITHDRAW_HOOKS: &str = "UPDATE questions SET status = 'withdrawn', closed_at = ?1
     WHERE status = 'open' AND source = 'hook' AND in_terminal = 0";
 pub(crate) const CLOSE: &str = "UPDATE questions SET status = ?3, answers_json = ?4,
     answered_via = ?5, closed_at = ?6 WHERE id = ?1 AND status = ?2";
@@ -485,36 +480,32 @@ fn fetch(c: &Connection, id: &str) -> Result<Option<QuestionRow>> {
     Ok(c.query_row(BY_ID, params![id], row).optional()?)
 }
 
-/// What a withdrawal and its event need of an open question.
-struct OpenKeys {
-    id: String,
-    session_id: String,
-    artifact_id: Option<String>,
-}
-
-/// The open questions `sql` selects (`id, session_id, artifact_id`), by ID
-/// (ULIDs sort in creation order).
-fn open_keys(c: &Connection, sql: &str, p: impl rusqlite::Params) -> Result<Vec<OpenKeys>> {
+/// The IDs of the open questions `sql` selects (its first column), in
+/// order (ULIDs sort in creation order).
+fn open_ids(c: &Connection, sql: &str, p: impl rusqlite::Params) -> Result<Vec<String>> {
     let mut stmt = c.prepare_cached(sql)?;
     let mut out = stmt
-        .query_map(p, |r| {
-            Ok(OpenKeys {
-                id: r.get(0)?,
-                session_id: r.get(1)?,
-                artifact_id: r.get(2)?,
-            })
-        })?
+        .query_map(p, |r| r.get::<_, String>(0))?
         .collect::<rusqlite::Result<Vec<_>>>()?;
-    out.sort_unstable_by(|a, b| a.id.cmp(&b.id));
+    out.sort_unstable();
     Ok(out)
+}
+
+/// What a close makes of a question: its status after, the answers it
+/// stores (their JSON text), how they came, and the reason its event
+/// records.
+struct Closing {
+    status: Status,
+    answers: Option<String>,
+    via: Option<&'static str>,
+    why: Option<Reason>,
 }
 
 impl Store {
     /// Withdraws session `sid`'s open questions inside the caller's
     /// transaction, its session having ended under `ctx` (the reaper's is
-    /// `system:ttl`); returns their IDs. Each records `question.withdraw`
-    /// (reason `session_end`); an in-terminal question's inbox item is read,
-    /// nothing waiting in the terminal any more.
+    /// `system:ttl`), each by [`Store::withdraw_question_in`] (reason
+    /// `session_end`) at `now`; returns their IDs.
     pub(crate) fn withdraw_session_questions(
         &self,
         tx: &Transaction<'_>,
@@ -522,41 +513,114 @@ impl Store {
         sid: &str,
         now: &str,
     ) -> Result<Vec<String>> {
-        let open = open_keys(tx, OPEN_OF_SESSION, params![sid])?;
-        if !open.is_empty() {
-            tx.execute(WITHDRAW_SESSION, params![sid, now])?;
-            self.record_withdrawals(tx, ctx, &open, now, Reason::SessionEnd)?;
-            for k in &open {
-                if let Some(q) = fetch(tx, &k.id)?.filter(|q| q.in_terminal) {
-                    super::inbox::question_changed(tx, &q, false, now)?;
-                }
-            }
+        let open = open_ids(tx, OPEN_OF_SESSION, params![sid])?;
+        for id in &open {
+            self.withdraw_at(tx, ctx, id, Reason::SessionEnd, now)?;
         }
-        Ok(open.into_iter().map(|k| k.id).collect())
+        Ok(open)
     }
 
-    /// Records `question.withdraw` with `why` for each of `open`, withdrawn
-    /// at `now` under `ctx` in `tx`.
-    fn record_withdrawals(
+    /// Withdraws question `qid` for `why` inside the caller's transaction,
+    /// under `ctx`, by [`Store::close_in`]; the question after it, or
+    /// `None` when there is none or it is not open. Every withdrawal goes
+    /// through it: a session's (`withdraw`, its end), the daemon's, and a
+    /// final job's.
+    pub(crate) fn withdraw_question_in(
         &self,
         tx: &Transaction<'_>,
         ctx: &AuditCtx,
-        open: &[OpenKeys],
-        now: &str,
+        qid: &str,
         why: Reason,
-    ) -> Result<()> {
-        for k in open {
-            let rec = close_record(
-                AuditKind::QuestionWithdraw,
-                now,
-                &k.id,
-                &k.session_id,
-                k.artifact_id.as_deref(),
-                Some(why),
-            )?;
-            self.record_question(tx, ctx, rec, &k.session_id)?;
+    ) -> Result<Option<QuestionRow>> {
+        self.withdraw_at(tx, ctx, qid, why, &self.now())
+    }
+
+    /// [`Store::withdraw_question_in`] at `now`.
+    fn withdraw_at(
+        &self,
+        tx: &Transaction<'_>,
+        ctx: &AuditCtx,
+        qid: &str,
+        why: Reason,
+        now: &str,
+    ) -> Result<Option<QuestionRow>> {
+        let Some(q) = fetch(tx, qid)?.filter(|q| q.status == Status::Open) else {
+            return Ok(None);
+        };
+        let to = Closing {
+            status: Status::Withdrawn,
+            answers: None,
+            via: None,
+            why: Some(why),
+        };
+        self.close_in(tx, ctx, &q, to, false, now).map(Some)
+    }
+
+    /// Closes question `q`, as read in `tx`, as `to` at `now` under `ctx`:
+    /// the one write that closes a question. In `tx` it stores the close
+    /// (and, for [`Reason::Pulled`], the time), stores the outcome in the
+    /// job that asked it ([`Store::close_job_question_tx`]), records its
+    /// event (`question.answer`, `question.decline`, or `question.release`
+    /// / `question.withdraw` with `to.why`), and updates its inbox item,
+    /// read when `seen` and the question was answered, declined or
+    /// released, or when it is in the terminal.
+    ///
+    /// # Errors
+    /// `question_closed` when `q`'s status moved since it was read.
+    fn close_in(
+        &self,
+        tx: &Transaction<'_>,
+        ctx: &AuditCtx,
+        q: &QuestionRow,
+        to: Closing,
+        seen: bool,
+        now: &str,
+    ) -> Result<QuestionRow> {
+        let qid = q.id.as_str();
+        let n = tx.execute(
+            CLOSE,
+            params![
+                qid,
+                q.status.as_str(),
+                to.status.as_str(),
+                to.answers,
+                to.via,
+                now
+            ],
+        )?;
+        if n != 1 {
+            return Err(closed(q));
         }
-        Ok(())
+        if to.why == Some(Reason::Pulled) {
+            tx.execute(
+                "UPDATE questions SET pulled_at = ?2 WHERE id = ?1",
+                params![qid, now],
+            )?;
+        }
+        let outcome = super::jobs::JobAnswer::of(to.status.as_str(), to.answers.clone())?;
+        if outcome != super::jobs::JobAnswer::Pending {
+            self.close_job_question_tx(tx, qid, &outcome)?;
+        }
+        let (sid, aid) = (&q.session_id, q.artifact_id.as_deref());
+        let rec = match to.status {
+            Status::Answered => answer_record(
+                now,
+                qid,
+                sid,
+                aid,
+                json_or_null(to.answers.as_deref()),
+                to.via,
+            ),
+            Status::Declined => close_record(AuditKind::QuestionDecline, now, qid, sid, aid, None)?,
+            Status::Released => {
+                close_record(AuditKind::QuestionRelease, now, qid, sid, aid, to.why)?
+            }
+            _ => close_record(AuditKind::QuestionWithdraw, now, qid, sid, aid, to.why)?,
+        };
+        self.record_question(tx, ctx, rec, sid)?;
+        let q = fetch(tx, qid)?.ok_or(CoreError::NotFound)?;
+        super::inbox::question_changed(tx, &q, seen, now)?;
+        Ok(q)
     }
 
     /// Records `rec`, an event of a question of session `sid`, under `ctx`;
@@ -905,13 +969,11 @@ impl Store {
     /// `invalid_answer` for answers that do not fit the questions or a `via`
     /// other than `shell`, `extension` or `cli`.
     pub fn close_question(&self, ctx: &AuditCtx, qid: &str, c: Close) -> Result<QuestionRow> {
-        // Whether the owner acted (or answered in the terminal): the
-        // question's inbox item is then read. An in-terminal question's
-        // item is read on every close (`inbox::question_changed`).
-        let seen = !matches!(
-            c,
-            Close::Withdraw | Close::Unwaited | Close::Shutdown | Close::Expire
-        );
+        // Whether the owner acted (or answered in the terminal): an
+        // answered, declined or released question's inbox item is then
+        // read. A withdrawn one's stays as it was, and an in-terminal
+        // question's is read on every close (`inbox::question_changed`).
+        let seen = !matches!(c, Close::Expire);
         self.with_tx(|tx| {
             let q = fetch(tx, qid)?.ok_or(CoreError::NotFound)?;
             let (status, answers, via, why) = match (c, q.status) {
@@ -924,11 +986,25 @@ impl Store {
                 (Close::Lapse, _) if !(q.in_terminal && q.source == Source::Hook) => {
                     return Err(not_in_terminal());
                 }
-                (Close::Pull, Status::Open) => {
-                    (Status::Withdrawn, None, None, Some(Reason::Pulled))
-                }
-                (Close::Lapse, Status::Open) => {
-                    (Status::Withdrawn, None, None, Some(Reason::Lapsed))
+                (
+                    c @ (Close::Pull
+                    | Close::Lapse
+                    | Close::Withdraw
+                    | Close::Unwaited
+                    | Close::Shutdown),
+                    Status::Open,
+                ) => {
+                    let why = match c {
+                        Close::Pull => Reason::Pulled,
+                        Close::Lapse => Reason::Lapsed,
+                        Close::Unwaited => Reason::Unwaited,
+                        Close::Shutdown => Reason::DaemonStop,
+                        // Close::Withdraw: by its session.
+                        _ => Reason::Explicit,
+                    };
+                    return self
+                        .withdraw_question_in(tx, ctx, qid, why)?
+                        .ok_or_else(|| closed(&q));
                 }
                 (Close::Terminal { answers }, Status::Open)
                     if q.in_terminal && q.source == Source::Hook =>
@@ -955,56 +1031,18 @@ impl Store {
                 (Close::Expire, Status::Open) => {
                     (Status::Released, None, None, Some(Reason::Timer))
                 }
-                (Close::Withdraw, Status::Open) => {
-                    (Status::Withdrawn, None, None, Some(Reason::Explicit))
-                }
-                (Close::Unwaited, Status::Open) => {
-                    (Status::Withdrawn, None, None, Some(Reason::Unwaited))
-                }
-                (Close::Shutdown, Status::Open) => {
-                    (Status::Withdrawn, None, None, Some(Reason::DaemonStop))
-                }
                 (Close::Terminal { answers }, Status::Released) => {
                     (Status::Answered, Some(answers), Some("terminal"), None)
                 }
                 _ => return Err(closed(&q)),
             };
-            let answers = answers.as_deref().map(to_json).transpose()?;
-            let now = self.now();
-            let n = tx.execute(
-                CLOSE,
-                params![qid, q.status.as_str(), status.as_str(), answers, via, now],
-            )?;
-            if n != 1 {
-                return Err(closed(&q));
-            }
-            if why == Some(Reason::Pulled) {
-                tx.execute(
-                    "UPDATE questions SET pulled_at = ?2 WHERE id = ?1",
-                    params![qid, now],
-                )?;
-            }
-            let outcome = super::jobs::JobAnswer::of(status.as_str(), answers.clone())?;
-            if outcome != super::jobs::JobAnswer::Pending {
-                self.close_job_question_tx(tx, qid, &outcome)?;
-            }
-            let (sid, aid) = (&q.session_id, q.artifact_id.as_deref());
-            let rec = match status {
-                Status::Answered => {
-                    answer_record(&now, qid, sid, aid, json_or_null(answers.as_deref()), via)
-                }
-                Status::Declined => {
-                    close_record(AuditKind::QuestionDecline, &now, qid, sid, aid, None)?
-                }
-                Status::Released => {
-                    close_record(AuditKind::QuestionRelease, &now, qid, sid, aid, why)?
-                }
-                _ => close_record(AuditKind::QuestionWithdraw, &now, qid, sid, aid, why)?,
+            let to = Closing {
+                status,
+                answers: answers.as_deref().map(to_json).transpose()?,
+                via,
+                why,
             };
-            self.record_question(tx, ctx, rec, sid)?;
-            let q = fetch(tx, qid)?.ok_or(CoreError::NotFound)?;
-            super::inbox::question_changed(tx, &q, seen, &self.now())?;
-            Ok(q)
+            self.close_in(tx, ctx, &q, to, seen, &self.now())
         })
     }
 
@@ -1086,12 +1124,7 @@ impl Store {
 
     /// The IDs of every open `hook` question.
     pub fn open_hook_question_ids(&self) -> Result<Vec<String>> {
-        self.with_read(|c| {
-            Ok(open_keys(c, OPEN_HOOKS, [])?
-                .into_iter()
-                .map(|k| k.id)
-                .collect())
-        })
+        self.with_read(|c| open_ids(c, OPEN_HOOKS, []))
     }
 
     /// At daemon start: withdraws every open `hook` question, whose hook
@@ -1100,14 +1133,12 @@ impl Store {
     /// naming the asking agent in `for_actor`.
     pub fn withdraw_hook_questions_on_start(&self) -> Result<Vec<String>> {
         self.with_tx(|tx| {
-            let open = open_keys(tx, OPEN_HOOKS, [])?;
-            if !open.is_empty() {
-                let now = self.now();
-                tx.execute(WITHDRAW_HOOKS, params![now])?;
-                let ctx = AuditCtx::system(SystemReason::Daemon);
-                self.record_withdrawals(tx, &ctx, &open, &now, Reason::DaemonStart)?;
+            let open = open_ids(tx, OPEN_HOOKS, [])?;
+            let (ctx, now) = (AuditCtx::system(SystemReason::Daemon), self.now());
+            for id in &open {
+                self.withdraw_at(tx, &ctx, id, Reason::DaemonStart, &now)?;
             }
-            Ok(open.into_iter().map(|k| k.id).collect())
+            Ok(open)
         })
     }
 }

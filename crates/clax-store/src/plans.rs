@@ -636,21 +636,9 @@ fn question_queries() -> Vec<Hot> {
             &["questions_by_session"],
         ),
         (
-            "withdraw a session's",
-            q::WITHDRAW_SESSION.into(),
-            vec![t("s1"), t("2026-01-01T00:00:00.000Z")],
-            &["questions_by_session"],
-        ),
-        (
             "open hook questions",
             q::OPEN_HOOKS.into(),
             vec![],
-            &["questions_by_status"],
-        ),
-        (
-            "withdraw hook questions",
-            q::WITHDRAW_HOOKS.into(),
-            vec![t("2026-01-01T00:00:00.000Z")],
             &["questions_by_status"],
         ),
         (

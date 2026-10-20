@@ -935,8 +935,8 @@ impl Store {
     /// `running` once it waits on no other question, inside the caller's
     /// transaction; the job's row after it, or `None` when no job asked it,
     /// the job is final, or its outcome is already stored. Called by
-    /// [`Store::close_question`] at every close that ends the question: an
-    /// answer, a decline or a withdrawal.
+    /// `Store::close_in`, the one write that closes a question, at every
+    /// close that ends it: an answer, a decline or a withdrawal.
     pub(crate) fn close_job_question_tx(
         &self,
         tx: &Transaction<'_>,
@@ -1136,7 +1136,12 @@ mod tests {
     }
 
     fn question_from(st: &Store, source: Source) -> String {
-        let sid = session(st, "app", "h1");
+        question_in(st, "h1", source)
+    }
+
+    /// A question asked by the session with harness session ID `hsid`.
+    fn question_in(st: &Store, hsid: &str, source: Source) -> String {
+        let sid = session(st, "app", hsid);
         let qs = serde_json::from_value(json!([{"question": "Which?", "header": "Pick",
             "options": [{"label": "A"}, {"label": "B"}]}]))
         .unwrap();
@@ -1676,6 +1681,48 @@ mod tests {
         let full = st.job("j1").unwrap().unwrap();
         assert_eq!((full.job.state, full.job.rev), (JobState::Running, 4));
         assert_eq!(full.questions[0].answer, JobAnswer::Withdrawn);
+    }
+
+    /// The session that asked question `q`.
+    fn asker(st: &Store, q: &str) -> String {
+        st.question(q).unwrap().unwrap().session_id
+    }
+
+    #[test]
+    fn a_sessions_end_withdraws_its_question_and_moves_the_job_back() {
+        let (_d, st) = store();
+        let q1 = question_in(&st, "h1", Source::Ask);
+        let q2 = question_in(&st, "h2", Source::Ask);
+        running(&st, "j1");
+        let waiting = st.ask_job_question("j1", &q1).unwrap();
+        st.end_session(DAEMON, &asker(&st, &q1)).unwrap();
+        let full = st.job("j1").unwrap().unwrap();
+        assert_eq!(
+            (full.job.state, full.job.rev),
+            (JobState::Running, waiting.rev + 1)
+        );
+        assert_eq!(full.questions[0].answer, JobAnswer::Withdrawn);
+        // The reaper's end does the same.
+        let waiting = st.ask_job_question("j1", &q2).unwrap();
+        assert_eq!(waiting.state, JobState::Waiting);
+        let s2 = asker(&st, &q2);
+        st.with_write(|c| {
+            Ok(c.execute(
+                "UPDATE sessions SET last_seen_at = '2000-01-01T00:00:00.000Z' WHERE id = ?1",
+                [&s2],
+            )?)
+        })
+        .unwrap();
+        let reaped = st
+            .reap_sessions(std::time::Duration::from_secs(60), &|_| false)
+            .unwrap();
+        assert_eq!(reaped.withdrawn_questions, vec![q2.clone()]);
+        let full = st.job("j1").unwrap().unwrap();
+        assert_eq!(
+            (full.job.state, full.job.rev),
+            (JobState::Running, waiting.rev + 1)
+        );
+        assert_eq!(full.questions[1].answer, JobAnswer::Withdrawn);
     }
 
     #[test]
