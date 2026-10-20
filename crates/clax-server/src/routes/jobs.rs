@@ -16,13 +16,15 @@
 //! - `GET /api/agent-read-consents`, `PUT`/`DELETE
 //!   /api/agent-read-consents/{reader}/{source}`
 
-use super::artifacts::{JsonBytes, body, parse_body, path};
+use super::artifacts::{
+    JsonBytes, body, parse_body, path, published_from, publishing_session, working_threads_of,
+};
 use axum::Json;
 use axum::extract::rejection::{JsonRejection, PathRejection, QueryRejection};
 use axum::extract::{Path, Query, State};
 use axum::http::{HeaderMap, StatusCode};
 use clax_core::audit::AuditCtx;
-use clax_core::publish::{PublishRequest, validate};
+use clax_core::publish::{PublishRequest, require_title, validate};
 use clax_core::{ArtifactId, CoreError, Event};
 use clax_http::agent::DeniedToGrants;
 use clax_http::auth::RequireToken;
@@ -658,12 +660,40 @@ pub async fn commit(
             .await??
         }
         Step::Publish(p) => {
-            let p = *p;
+            let mut p = *p;
+            let drafts = s.drafts.clone();
             let out = s
                 .store_call_async(move |st| async move {
                     let st = &*st;
+                    // A key already committed answers as recorded; a new one
+                    // is published as POST /api/artifacts or its versions
+                    // publish for the session it names.
+                    let committed = st
+                        .job(&id)?
+                        .is_some_and(|j| j.steps.iter().any(|x| x.key == key));
+                    if !committed {
+                        if p.artifact_id.is_none() {
+                            require_title(p.request.title.as_deref())?;
+                        }
+                        p.session_id = publishing_session(st, &p.session_id, None)?;
+                        if let (Some(sid), Some(aid)) = (&p.session_id, &p.artifact_id) {
+                            p.request.working_threads = working_threads_of(&ctx, sid, aid);
+                        }
+                    }
+                    let sid = p.session_id.clone();
                     match st.commit_publish_step_async(&audit, &id, &key, p).await {
                         Ok(c) => {
+                            if let (Some(made), Some(sid)) = (&c.made, &sid) {
+                                published_from(
+                                    st,
+                                    &audit,
+                                    &ctx,
+                                    &drafts,
+                                    sid,
+                                    &made.artifact,
+                                    true,
+                                )?;
+                            }
                             if let Some(made) = &c.made {
                                 events.publish(Event::Version {
                                     artifact_id: made.artifact.id.clone(),

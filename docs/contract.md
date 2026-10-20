@@ -2533,6 +2533,12 @@ the writes (a document that moved refuses the whole step, 409 `doc_moved`
 with its `path`), inserts the step with the version's number, and moves
 the job one `rev` on, setting its `artifact_id` to a new app's. `version`
 and `step.result` (`{artifact_id, version, docs}`) name what it made. A
+new app's `request` needs a title (400 `invalid_args`). With
+`session_id` (a live session of the owner's, 400 `unknown_session`
+otherwise) the step does for that session what a publish from it does:
+the threads it was working on are linked to the version and its working
+records on the artifact end, its draft of the artifact ends, it watches
+the artifact, and the artifact's untargeted feedback is targeted to it. A
 **reply step** is `reply: {session_id, threads, body, resolve?, ack?}`: in
 one transaction the session's agent reply `body` on each thread (each a
 thread of the job's artifact, 400 `invalid_thread` otherwise), each thread

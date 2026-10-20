@@ -1147,7 +1147,16 @@ and the result `{artifact_id, version, docs}`, and moves the job one
 `state` to `done` when the body says so. A transaction that fails removes
 the content it wrote, and a new app's zero-version row. Events
 (`Event::Version`, the docs events, `Event::Job`) are published after the
-commit. A **reply step** (`reply: {session_id, threads, body, resolve?,
+commit. A new app's request needs a title, as `POST /api/artifacts`
+does. With `session_id` (checked as `X-Clax-Session` is:
+`publishing_session`) the step does for the session what the publish
+routes do, through the same function (`routes::artifacts::published_from`):
+the threads the session was working on are linked to the version
+(`working_threads`), its working records on the artifact end
+(`End::Publish`), its draft of the artifact ends, it watches the
+artifact (`ensure_watch`), and the artifact's untargeted feedback is
+targeted to it (`retarget_untargeted`). A replayed key does none of it.
+A **reply step** (`reply: {session_id, threads, body, resolve?,
 ack?}`) makes, in one transaction the same way, the session's agent reply
 on each thread (each a thread of the job's artifact, 400 `invalid_thread`
 otherwise), each thread's resolve when `resolve`, the acknowledgement of

@@ -693,3 +693,96 @@ async fn a_claimant_refused_owner_held_hears_the_release() {
     let (s, v) = claim(&ts, &sid).await;
     assert_eq!(s, 200, "{v}");
 }
+
+/// The `utf8` file body of `html`.
+fn utf8(html: &str) -> Value {
+    json!({"content": html, "encoding": "utf8"})
+}
+
+#[tokio::test]
+async fn a_publish_step_from_a_session_does_for_it_what_a_publish_does() {
+    let ts = TestServer::spawn().await;
+    let (_o, token) = owner(&ts).await;
+    let sid = ts.register_session("claude", "h1").await["id"]
+        .as_str()
+        .unwrap()
+        .to_string();
+    // An app the owner made, and a thread on it sent to no session.
+    let (s, v) = send(authed(&ts, Method::POST, "/api/artifacts").json(
+        &json!({"title": "Budget", "files": {"index.html": utf8("<p>one")}}),
+    ))
+    .await;
+    assert_eq!(s, 201, "{v}");
+    let aid = v["artifact"]["id"].as_str().unwrap().to_string();
+    let tid = ts.thread_as_owner(&aid, "make it green").await["id"]
+        .as_str()
+        .unwrap()
+        .to_string();
+    let targets = |ts: &TestServer| -> Vec<Option<String>> {
+        ts.store
+            .feedback_rows(&tid)
+            .unwrap()
+            .into_iter()
+            .map(|f| f.target_session_id)
+            .collect()
+    };
+    assert_eq!(targets(&ts), [None]);
+    // The session works on the thread and drafts the change.
+    ts.put_working(
+        &sid,
+        &aid,
+        json!({"message": "Recolouring", "thread_ids": [tid]}),
+    )
+    .await;
+    let r = ts
+        .authed(
+            ts.client
+                .put(format!("{}/api/sessions/{sid}/drafts/{aid}", ts.base)),
+        )
+        .json(&json!({"files": {"index.html": utf8("<p>green")}}))
+        .send()
+        .await
+        .unwrap();
+    assert_eq!(r.status(), 200, "{}", r.text().await.unwrap());
+    assert_eq!(ts.drafts.for_artifact(&aid).len(), 1);
+    running(&ts, &token, "j1", "change", Some(&aid)).await;
+    let mut b = publish_body(Some(&aid), 1, "<p>green", false);
+    b["publish"]["session_id"] = json!(sid);
+    let (s, v) = step(&ts, &token, "j1", "publish:1", b).await;
+    assert_eq!(s, 200, "{v}");
+    let aid_id = clax_core::ArtifactId::parse(&aid).unwrap();
+    let version = ts.store.get_version(&aid_id, 2).unwrap().unwrap();
+    assert_eq!(version.session_id.as_deref(), Some(sid.as_str()));
+    assert_eq!(version.addresses, [tid.clone()], "the thread worked on");
+    assert!(ts.working.threads_of(&sid, &aid).is_empty(), "working cleared");
+    assert!(ts.drafts.for_artifact(&aid).is_empty(), "the draft ended");
+    let watched = |ts: &TestServer, a: &str| {
+        ts.store
+            .list_watches(&sid)
+            .unwrap()
+            .iter()
+            .any(|w| w.artifact_id == a)
+    };
+    assert!(watched(&ts, &aid), "the session watches the app");
+    assert_eq!(targets(&ts), [Some(sid.clone())], "untargeted, retargeted");
+
+    // A new app needs a title, and its session watches it.
+    running(&ts, &token, "j2", "make", None).await;
+    let mut b = publish_body(None, 0, "<p>new", true);
+    b["publish"]["session_id"] = json!(sid);
+    b["publish"]["request"]
+        .as_object_mut()
+        .unwrap()
+        .remove("title");
+    let (s, v) = step(&ts, &token, "j2", "publish:0", b.clone()).await;
+    assert_eq!(
+        (s, v["error"]["code"].as_str()),
+        (400, Some("invalid_args")),
+        "{v}"
+    );
+    b["publish"]["request"]["title"] = json!("Fresh");
+    let (s, v) = step(&ts, &token, "j2", "publish:0", b).await;
+    assert_eq!(s, 200, "{v}");
+    let made = v["step"]["result"]["artifact_id"].as_str().unwrap();
+    assert!(watched(&ts, made));
+}

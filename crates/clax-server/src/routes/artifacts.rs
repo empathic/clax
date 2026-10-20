@@ -410,6 +410,7 @@ pub async fn create(
     let events = s.events.clone();
     let ctx = s.feedback_ctx();
     let vf = VisFor::of(&a.caller, &s);
+    let drafts = s.drafts.clone();
     let (artifact, version) = s
         .store_call_async(move |st| async move {
             let st = &*st;
@@ -426,10 +427,7 @@ pub async fn create(
                 st.record_publish_key(g, k, &artifact.id, version.n)?;
             }
             if let Some(sid) = &session {
-                let aid = ArtifactId::parse(&artifact.id)?;
-                st.ensure_watch(&audit, sid, &aid)?;
-                let touched = st.retarget_untargeted(&aid, sid)?;
-                clax_realtime::feedback::apply(&ctx, st, &touched);
+                published_from(st, &audit, &ctx, &drafts, sid, &artifact, true)?;
             }
             events.publish(Event::Version {
                 artifact_id: artifact.id.clone(),
@@ -450,6 +448,52 @@ pub async fn create(
     }
     clax_http::hosted::stamp_content_keys(&s, &mut v);
     Ok((StatusCode::CREATED, Json(v)))
+}
+
+/// What a version of `artifact` that session `sid` published does for the
+/// session once it lands, for every path that publishes from a session
+/// (`POST /api/artifacts`, its versions, a job's publish step): the
+/// session watches the artifact; its working records on it end (`End::Publish`),
+/// the threads they named having been linked to the version by the publish
+/// (`ValidatedPublish::working_threads`, from [`working_threads_of`]); its
+/// draft on it ends; and, when `retarget`, the artifact's untargeted
+/// feedback is targeted to it.
+pub(crate) fn published_from(
+    st: &Store,
+    audit: &AuditCtx,
+    ctx: &clax_realtime::feedback::FeedbackCtx,
+    drafts: &std::sync::Arc<clax_core::drafts::Drafts>,
+    sid: &str,
+    artifact: &Artifact,
+    retarget: bool,
+) -> clax_core::Result<()> {
+    let aid = ArtifactId::parse(&artifact.id)?;
+    st.ensure_watch(audit, sid, &aid)?;
+    let (changed, _) = ctx.working.clear(
+        sid,
+        artifact.id.as_str(),
+        None,
+        clax_core::working::End::Publish,
+    );
+    clax_realtime::working::settle(st, audit, &ctx.events, &ctx.working, &changed);
+    // The version lands: the session's draft on it ends.
+    clax_realtime::drafts::end(&ctx.events, drafts, sid, artifact.id.as_str());
+    if retarget {
+        let touched = st.retarget_untargeted(&aid, sid)?;
+        clax_realtime::feedback::apply(ctx, st, &touched);
+    }
+    Ok(())
+}
+
+/// The threads session `sid` is working on in artifact `aid`, which a
+/// publish from it links to its version: read before
+/// [`published_from`] clears them.
+pub(crate) fn working_threads_of(
+    ctx: &clax_realtime::feedback::FeedbackCtx,
+    sid: &str,
+    aid: &str,
+) -> Vec<String> {
+    ctx.working.threads_of(sid, aid)
 }
 
 /// Who publishes for `caller` (spec §8.2): a person's agent's person (none
@@ -788,7 +832,7 @@ pub async fn publish(
             // Read before the clear below: the threads this session was
             // working on are linked to the new version.
             if let Some(sid) = &session {
-                p.working_threads = ctx.working.threads_of(sid, id.as_str());
+                p.working_threads = working_threads_of(&ctx, sid, id.as_str());
             }
             // The previous version's files the reader may not see never
             // constrain the publish (spec §21.7).
@@ -806,21 +850,7 @@ pub async fn publish(
                 st.record_publish_key(g, k, &artifact.id, version.n)?;
             }
             if let Some(sid) = &session {
-                let aid = ArtifactId::parse(&artifact.id)?;
-                st.ensure_watch(&audit, sid, &aid)?;
-                let (changed, _) = ctx.working.clear(
-                    sid,
-                    artifact.id.as_str(),
-                    None,
-                    clax_core::working::End::Publish,
-                );
-                clax_realtime::working::settle(st, &audit, &ctx.events, &ctx.working, &changed);
-                // The version lands: the session's draft on it ends.
-                clax_realtime::drafts::end(&events, &drafts, sid, artifact.id.as_str());
-                if retarget {
-                    let touched = st.retarget_untargeted(&aid, sid)?;
-                    clax_realtime::feedback::apply(&ctx, st, &touched);
-                }
+                published_from(st, &audit, &ctx, &drafts, sid, &artifact, retarget)?;
             }
             events.publish(Event::Version {
                 artifact_id: artifact.id.clone(),
