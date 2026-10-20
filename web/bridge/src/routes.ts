@@ -19,6 +19,9 @@ type Route = { href: string; state: unknown };
 export type Routes = {
   /** Takes the page to the route at `depth`, below the one it shows. */
   back(depth: number): void;
+  /** Reports the route the page shows again: the page greeted again, and a
+   * report the shell got while it awaited that hello was not taken. */
+  report(): void;
 };
 
 /** Watches `win`'s pushes and pops, reporting each move with `post`. */
@@ -71,6 +74,7 @@ export function appRoutes(win: Window, post: (m: RouteReport) => void): Routes {
     if (win.location.href !== routes[depth].href) plain = false;
   });
   return {
+    report,
     back(to: number) {
       if (!Number.isInteger(to) || to < 0 || to >= (landing ?? depth)) return;
       target = to;

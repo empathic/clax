@@ -1134,7 +1134,7 @@ describe("ArtifactController", { timeout: MOUNT_TIMEOUT_MS }, () => {
     const sent: { type: string }[] = [];
     frame.contentWindow!.postMessage = ((m: { type: string }) => { sent.push(m); }) as Window["postMessage"];
     hello(frame.contentWindow!);
-    expect(welcome).toHaveBeenCalledWith("index.html");
+    expect(welcome).toHaveBeenCalledWith("index.html", false);
     expect(sent.find(m => m.type === "clax:welcome")).toEqual({ type: "clax:welcome", mode: "view", app: true, restoreScroll: 40 });
     ctl.dispose();
   });

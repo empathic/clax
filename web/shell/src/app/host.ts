@@ -563,10 +563,14 @@ export function installHost(win: Window, ctl: ArtifactController): () => void {
   };
   ctl.app = {
     // A page greeted (each document the frame loads): `ready`, and `landed`
-    // once the version auto-follow loaded greets.
-    welcome: file => {
-      newDocument();
+    // once the version auto-follow loaded greets. A document that greets
+    // `again` (asked after a load that brought no new document, as Chromium
+    // fires for a traversal of the page's own entries) keeps its routes.
+    welcome: (file, again) => {
+      if (!again) newDocument();
       visit(file, ctl.frameHash);
+      // Routes a new document dropped can leave nothing to go back to.
+      postHistory();
       const version = ctl.shown();
       ready = { type: "ready", artifact: ctl.id, version, latest: ctl.latest(), file };
       post(ready);

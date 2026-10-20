@@ -19,6 +19,15 @@ const watch = (start: string) => {
 };
 
 describe("appRoutes", () => {
+  it("reports the route it shows again when asked (the page greeting again)", () => {
+    const { posted, routes, stop } = watch("/c/a1/v/1/");
+    history.pushState({ run: 3 }, "", "/c/a1/v/1/runs/3#laps");
+    posted.length = 0;
+    routes.report();
+    expect(posted).toEqual([{ type: "clax:route", depth: 1, hash: "#laps" }]);
+    stop();
+  });
+
   it("reports the page's pushes and its own back, and takes the page back through its own entries on the shell's back", async () => {
     const { posted, routes, pops, stop } = watch("/c/a1/v/1/");
 

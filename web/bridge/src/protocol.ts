@@ -204,7 +204,9 @@ export type MigrationResult = { ok: true } | { ok: false; error: string };
 export interface PickDesc { tag: string; role: string | null; name: string | null; text?: string | null }
 
 export type BridgeToShell =
-  | { type: "clax:hello"; artifact: string; version: number; file: string }
+  /** `again`: the answer to `clax:greet`, from the document that greeted
+   * before, its state (its routes) as it was. */
+  | { type: "clax:hello"; artifact: string; version: number; file: string; again?: true }
   | { type: "clax:hover"; selector: string | null; rect: Box | null }
   /** Sent at the viewer's pick itself (the click or release), before its
    * clip is rendered, with the pick's anchor: the shell opens the composer

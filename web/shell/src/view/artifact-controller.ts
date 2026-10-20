@@ -205,7 +205,7 @@ export class ArtifactController {
    * threads' the page resolves for it (`anchors`: an open pick's, by an ID
    * of the app's own, its place then in `resolved` under that ID). */
   /** @internal */
-  app: { welcome(file: string): { app: true; restoreScroll?: number }; posted(t: Thread): void; dropped(): void; anchors(): { id: string; anchor: Anchor; sameVersion?: boolean }[] } | null = null;
+  app: { welcome(file: string, again: boolean): { app: true; restoreScroll?: number }; posted(t: Thread): void; dropped(): void; anchors(): { id: string; anchor: Anchor; sameVersion?: boolean }[] } | null = null;
   /** The write journal of a live migration in the app's migration view
    * (app/host.ts), while one runs: every `db` write of the page waits for it. */
   dbJournal: DbJournal | null = null;
@@ -1225,7 +1225,7 @@ export class ArtifactController {
           this.send({ type: "clax:hash", hash: this.pendingFragment });
           this.pendingFragment = null;
         }
-        this.send({ type: "clax:welcome", mode: this.s.commenting ? "comment" : "view", ...this.app?.welcome(greeted) });
+        this.send({ type: "clax:welcome", mode: this.s.commenting ? "comment" : "view", ...this.app?.welcome(greeted, m.again === true) });
         this.resolveAll();
         this.sendFocus();
         this.liveView?.hello();

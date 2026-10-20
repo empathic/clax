@@ -484,6 +484,36 @@ describe("app mode's host", { timeout: MOUNT_TIMEOUT_MS }, () => {
     expect(posted.length).toBe(sent);
   });
 
+  it("history: a load with no new document, and the page greeting again (again: true), keeps its routes", async () => {
+    const { frame, host } = await appView();
+    hello(frame, 1);
+    // The document's own load, after its hello.
+    frame.dispatchEvent(new Event("load"));
+    fromFrame(frame.contentWindow!, { type: "clax:route", depth: 1, hash: "" });
+    fromFrame(frame.contentWindow!, { type: "clax:route", depth: 2, hash: "" });
+    // Chromium fires a load at the frame for a traversal of the page's own
+    // entries; the shell asks the page to greet, and the same document does.
+    const posted = framePosts(frame);
+    frame.dispatchEvent(new Event("load"));
+    expect(posted.at(-1)).toEqual({ type: "clax:greet" });
+    fromFrame(frame.contentWindow!, { type: "clax:hello", artifact: ID, version: 1, file: "index.html", again: true });
+    expect(ofType("history").at(-1)).toEqual({ type: "history", back: true });
+    host.back();
+    expect(posted.filter(m => m.type === "clax:back")).toEqual([{ type: "clax:back", depth: 1 }]);
+    host.back();
+    expect(posted.filter(m => m.type === "clax:back")).toEqual([{ type: "clax:back", depth: 1 }, { type: "clax:back", depth: 0 }]);
+    expect(ofType("history").at(-1)).toEqual({ type: "history", back: false });
+  });
+
+  it("history: a new document's routes are gone, and the app is told when that leaves nothing to go back to", async () => {
+    const { frame } = await appView();
+    hello(frame, 1);
+    fromFrame(frame.contentWindow!, { type: "clax:route", depth: 1, hash: "" });
+    expect(ofType("history").at(-1)).toEqual({ type: "history", back: true });
+    hello(frame, 1);
+    expect(ofType("history").at(-1)).toEqual({ type: "history", back: false });
+  });
+
   it("history: a page's routes go with its document; back() from another page reloads it", async () => {
     const { frame, host } = await appView();
     hello(frame, 1);
