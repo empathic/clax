@@ -33,16 +33,19 @@ dark mode, and on a phone:
   the web comes through the `net` capability.
 - `icon.svg` at the top of the files is the app's icon, a square
   full-bleed design. Every publish refuses one that breaks these rules
-  (`invalid_icon`): at most 32 KB of well-formed XML without a
+  (`invalid_icon`), and a version a git push makes leaves it out, naming
+  it in the version's note; restoring or forking a version copies its icon
+  as it is. The rules: at most 32 KB of well-formed XML without a
   `<!DOCTYPE>`, its elements nested at most 64 deep; an `<svg>` root with
-  a square `viewBox` of four numbers, such as `0 0 1024 1024`; only the elements `svg`, `g`, `defs`, `title`,
-  `desc`, `path`, `rect`, `circle`, `ellipse`, `line`, `polyline`,
-  `polygon`, `linearGradient`, `radialGradient`, `stop`, `clipPath`,
-  `mask`, `use`, `symbol`, `text` and `tspan`; no `on*` attribute and no
-  `filter` attribute; `href` (or `xlink:href`, its prefix declared) only
-  to `#id` within the file, and every `url()` a `url(#id)`; no animation,
-  filter or `@` rule in a `style`; `<use>`s drawing at most 64 copies,
-  nested at most 3 deep. Other `.svg` files are ordinary files.
+  a square `viewBox` of four numbers, such as `0 0 1024 1024`; only the
+  elements `svg`, `g`, `defs`, `title`, `desc`, `path`, `rect`, `circle`,
+  `ellipse`, `line`, `polyline`, `polygon`, `linearGradient`,
+  `radialGradient`, `stop`, `clipPath`, `mask`, `use`, `symbol`, `text`
+  and `tspan`; no `on*` attribute and no `filter` attribute; `href` (or
+  `xlink:href`, its prefix declared) only to `#id` within the file, and
+  every `url()` a `url(#id)`; no animation, filter or `@` rule in a
+  `style`; `<use>`s drawing at most 64 copies, nested at most 3 deep.
+  Other `.svg` files are ordinary files.
 
 Minimal skeleton:
 

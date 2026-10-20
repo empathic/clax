@@ -404,6 +404,78 @@ async fn a_path_publish_refuses_is_left_out_of_the_pushed_version_and_named_in_i
     );
 }
 
+/// A pushed `icon.svg` runs the icon rules a publish runs: one that breaks
+/// them is left out of the version and named in its note, as a file over
+/// the size limits is; an `icon.svg` the push leaves as it was is carried
+/// unchecked (history keeps what it holds), and another path's `.svg` is
+/// any file.
+#[tokio::test(flavor = "multi_thread")]
+async fn a_pushed_icon_that_breaks_the_icon_rules_is_left_out_and_named_in_the_note() {
+    let f = fixture().await;
+    // An icon an older build took, which the rules now refuse.
+    let old =
+        r#"<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 9 9"><title>A & B</title></svg>"#;
+    assert!(clax_core::icon::problem(old.as_bytes()).is_some());
+    let mut v2 = publish("<p>two</p>", Some(1));
+    v2.files.insert(
+        "icon.svg".into(),
+        clax_core::publish::FileChange::Put(clax_core::publish::DecodedFile {
+            bytes: old.as_bytes().to_vec(),
+            content_type: "image/svg+xml".into(),
+        }),
+    );
+    f.st.publish_version_async(DAEMON, &f.id, v2, None)
+        .await
+        .unwrap();
+    f.git
+        .text(&f.clone, &["pull", "-q", "origin", "main"])
+        .await;
+
+    f.write("index.html", "<p>three</p>");
+    f.commit("Three").await;
+    f.push().await;
+    let recorded =
+        f.st.reconcile_pushes_async(DAEMON, &f.id, &Pusher::default())
+            .await
+            .unwrap();
+    assert_eq!(recorded.len(), 1);
+    assert_eq!(f.read(3, "icon.svg").await.as_deref(), Some(old));
+    assert_eq!(recorded[0].1.note.as_deref(), Some("Three"));
+
+    let bad =
+        r#"<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 9 9"><script>x()</script></svg>"#;
+    f.write("icon.svg", bad);
+    f.write("img/icon.svg", bad);
+    f.commit("Scripted").await;
+    f.push().await;
+    let recorded =
+        f.st.reconcile_pushes_async(DAEMON, &f.id, &Pusher::default())
+            .await
+            .unwrap();
+    let v = &recorded[0].1;
+    let files: Vec<&str> = v.files.keys().map(String::as_str).collect();
+    assert_eq!(files, ["img/icon.svg", "index.html"]);
+    let note = v.note.as_deref().unwrap();
+    assert!(
+        note.starts_with(
+            "icon.svg was not taken (it breaks the icon rules: element; still in git)."
+        ),
+        "{note}"
+    );
+    assert!(note.ends_with("Scripted"), "{note}");
+
+    let good = r#"<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 9 9"><rect width="9" height="9"/></svg>"#;
+    f.write("icon.svg", good);
+    f.commit("Drawn").await;
+    f.push().await;
+    let recorded =
+        f.st.reconcile_pushes_async(DAEMON, &f.id, &Pusher::default())
+            .await
+            .unwrap();
+    assert_eq!(recorded[0].1.note.as_deref(), Some("Drawn"));
+    assert_eq!(f.read(5, "icon.svg").await.as_deref(), Some(good));
+}
+
 #[tokio::test(flavor = "multi_thread")]
 async fn a_publish_that_did_not_see_a_push_is_a_conflict_and_the_push_a_version() {
     let f = fixture().await;
