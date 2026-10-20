@@ -132,6 +132,27 @@ find_run() {
         | awk -v s="$3" '$2 == s { print $1 }' | sed -n 1p
 }
 run_state() { gh run view "$1" --json status,conclusion --jq '"\(.status) \(.conclusion)"'; }
+run_created() { gh run view "$1" --json createdAt --jq .createdAt; }
+# When the release was published, or nothing when there is none.
+release_created() { gh release view "$TAG" --json createdAt --jq .createdAt 2>/dev/null || true; }
+# Whether the release's files are run $1's: it lists SHA256SUMS and was
+# published after the run started. A release published earlier is another
+# build's, from a commit the tag may no longer name: the run's own publish
+# job fails on it ("a release with the same tag name already exists").
+release_of_run() {
+    local rel run
+    release_has_sums || return 1
+    rel="$(release_created)"
+    run="$(run_created "$1")" || return 1
+    [ -n "$rel" ] && [ -n "$run" ] && ! [[ $rel < $run ]]
+}
+# Says what to do about a release of this version that run $1 did not make.
+stale_release() {
+    say "  the release $TAG was published $(release_created), before the Release run $1 on $REL_COMMIT"
+    say "  started ($(run_created "$1")): its files are another build's, not this tag's. Delete it,"
+    say "  keeping the tag (gh release delete $TAG --yes --repo $GH_REPO), rerun the run"
+    say "  (gh run rerun $1 --repo $GH_REPO), then run this again."
+}
 
 # Reads the state the steps are judged by; fails, saying why in
 # REFRESH_ERR, when origin cannot be read.
@@ -335,7 +356,13 @@ done_4() { [ -n "$REL_COMMIT" ]; }
 done_5() { [ -n "$REL_COMMIT" ]; }
 done_6() { [ -n "$LOCAL_TAG" ] || [ -n "$REMOTE_TAG" ]; }
 done_7() { [ -n "$REMOTE_TAG" ]; }
-done_8() { release_has_sums; }
+# Done when the newest Release run on the release commit succeeded and the
+# release is that run's.
+done_8() {
+    local id
+    id="$(find_run release.yml push "$REL_COMMIT")" && [ -n "$id" ] || return 1
+    [ "$(run_state "$id")" = "completed success" ] && release_of_run "$id"
+}
 done_9() { [ "$PINNED" = "$V" ]; }
 done_10() { [ -n "$PIN_COMMIT" ]; }
 done_11() { [ -n "$PIN_COMMIT" ]; }
@@ -460,8 +487,12 @@ step_8() {
     say "  waiting for the Release workflow's run on $TAG (polls every ${POLL}s, at most $MAX_POLLS)"
     id="$(await_output find_run release.yml push "$REL_COMMIT")" \
         || { say "  no Release workflow run on $TAG appeared"; return 1; }
-    await_run "$id" "Release $TAG" || return 1
+    if ! await_run "$id" "Release $TAG"; then
+        if [ -n "$(release_created)" ]; then stale_release "$id"; fi
+        return 1
+    fi
     release_has_sums || { say "  the release $TAG does not list SHA256SUMS (gh release view $TAG)"; return 1; }
+    release_of_run "$id" || { stale_release "$id"; return 1; }
 }
 step_9() { bash "$ROOT/scripts/pin-release.sh" "$TAG"; }
 step_10() { step_4; }

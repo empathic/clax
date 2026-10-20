@@ -13,7 +13,8 @@
 # (201) once main holds the commit, a publish-pi run (301) once dispatched.
 # $FAKE_STATE/<ID> lists the states `gh run view <ID>` reports, one per call
 # (the last one sticks; none means "completed success"); the release lists
-# SHA256SUMS once run 101 was seen to succeed.
+# SHA256SUMS once run 101 was seen to succeed, published at the time in
+# $FAKE_STATE/release-created (run 101 started at 2026-10-20T00:00:05Z).
 set -uo pipefail
 HERE="$(cd "$(dirname "$0")/.." && pwd)"
 T="$(cd "$(mktemp -d)" && pwd -P)"
@@ -83,8 +84,11 @@ case "$1 $2" in
     "auth status")
         if [ -e "$S/no-auth" ]; then echo "You are not logged into any GitHub hosts." >&2; exit 1; fi ;;
     "release view")
-        if [ -e "$S/published" ] && [ -n "$(origin tag -l "$3")" ]; then
-            printf 'clax-%s-aarch64-apple-darwin.tar.gz\ninstall.sh\nSHA256SUMS\n' "${3#v}"
+        if [ -e "$S/release-created" ] && [ -n "$(origin tag -l "$3")" ]; then
+            case " $* " in
+                *" createdAt "*) cat "$S/release-created" ;;
+                *) printf 'clax-%s-aarch64-apple-darwin.tar.gz\ninstall.sh\nSHA256SUMS\n' "${3#v}" ;;
+            esac
         else
             echo "release not found" >&2; exit 1
         fi ;;
@@ -97,12 +101,15 @@ case "$1 $2" in
             *) echo "fake gh: unexpected: $*" >&2; exit 2 ;;
         esac ;;
     "run view")
+        case " $* " in *" createdAt "*) echo "2026-10-20T00:00:05Z"; exit 0 ;; esac
         state="completed success"
         if [ -s "$S/$3" ]; then
             state="$(sed -n 1p "$S/$3")"
             if [ "$(wc -l < "$S/$3")" -gt 1 ]; then sed -i.bak 1d "$S/$3"; fi
         fi
-        if [ "$3" = 101 ] && [ "$state" = "completed success" ]; then : > "$S/published"; fi
+        if [ "$3" = 101 ] && [ "$state" = "completed success" ] && [ ! -e "$S/release-created" ]; then
+            echo "2026-10-20T00:00:10Z" > "$S/release-created"
+        fi
         echo "$state" ;;
     "workflow run")
         case "$3 $*" in
@@ -280,6 +287,28 @@ if [ "$rc" = 0 ] && released && [ "$(count "just ci")" = 2 ] && [ "$(count "bump
     && has "Step 6: Tag the release: done already"; then
     pass "the next run resumes at the wait and finishes the release, tagging and testing once"
 else fail "resume after a failed wait (rc=$rc: $(grep '^just' "$FAKE_STATE/calls"); $(cat "$C/out"))"; fi
+
+# --- a release of the version from another build --------------------------------------
+new_case
+echo "2026-10-01T00:00:00Z" > "$FAKE_STATE/release-created"
+echo "completed failure" > "$FAKE_STATE/101"
+act; rc=$?
+if [ "$rc" = 1 ] && has "step 8 (Wait for the Release workflow) failed" && has "gh release delete v0.6.0 --yes" \
+    && has "its files are another build's" && [ "$(count "pin v0.6.0")" = 0 ]; then
+    pass "a Release run failing on a release of another build stops before the pin, saying to delete it"
+else fail "a Release run failing on a release of another build (rc=$rc: $(cat "$C/out"))"; fi
+rm "$FAKE_STATE/release-created"
+echo "completed success" > "$FAKE_STATE/101"
+act; rc=$?
+if [ "$rc" = 0 ] && released && [ "$(cat "$FAKE_STATE/release-created")" = "2026-10-20T00:00:10Z" ]; then
+    pass "once that release is deleted and the run rerun, the next run finishes"
+else fail "resume after deleting a release of another build (rc=$rc: $(cat "$C/out"))"; fi
+new_case
+echo "2026-10-01T00:00:00Z" > "$FAKE_STATE/release-created"
+act; rc=$?
+if [ "$rc" = 1 ] && has "published 2026-10-01T00:00:00Z, before the Release run 101" && [ "$(count "pin v0.6.0")" = 0 ]; then
+    pass "a release published before this tag's run is never pinned, even when the run succeeds"
+else fail "a release published before this tag's run (rc=$rc: $(cat "$C/out"))"; fi
 
 # --- gh failing during a wait ---------------------------------------------------------
 new_case
