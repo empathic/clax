@@ -66,6 +66,7 @@ flutter_library(
     deps = [
         "@clax_app_pub//:archive",
         "@clax_app_pub//:cryptography",
+        "@clax_app_pub//:ffi",
         "@clax_app_pub//:file_picker",
         "@clax_app_pub//:flutter",
         "@clax_app_pub//:flutter_local_notifications",
@@ -88,8 +89,9 @@ flutter_library(
 # //apps/clax_app:<dir>_<file>, each run in a flutter_tester of its own and
 # compiled with the other files of its directory (bazel/flutter/tests.bzl
 # says why), against the app's sources and the files its tests read. The
-# *_real_test.dart files, which run the real daemon, form a suite of their
-# own with the warmed debug clax.
+# *_real_test.dart files, which run the real daemon or the real embedded
+# core, form a suite of their own with the warmed debug clax and the host's
+# libclax_embed.
 TEST_SUPPORT = glob(
     [
         "test/**/*.dart",
@@ -145,6 +147,7 @@ SUITES = {
         "agent",
         "bundle",
         "clax",
+        "core",
         "daemon",
         "eval",
         "home",
@@ -172,12 +175,17 @@ SUITES = {
     data = TEST_DATA + ([
         "//crates/clax-cli:clax",
         "//crates/clax-cli:clax_warm",
+        "//crates/clax-embed:clax_embed_host",
     ] if suite == "real" else []),
     # APP_NAME, as `flutter test` sets it beside UNIT_TEST_ASSETS
     # (flutter_test_suite): flutter_test then reads an asset from disk at
     # once, where through the engine the read would not finish within a
     # test's fake time.
-    env = {"APP_NAME": "clax_app"} | ({"CLAX_TEST_BIN": "crates/clax-cli/clax"} if suite == "real" else {}),
+    env = {"APP_NAME": "clax_app"} | ({"CLAX_TEST_BIN": "crates/clax-cli/clax"} | select({
+        # The core as this host builds it, relative to the runfiles root.
+        "@platforms//os:macos": {"CLAX_EMBED_LIB": "crates/clax-embed/libclax_embed.dylib"},
+        "//conditions:default": {"CLAX_EMBED_LIB": "crates/clax-embed/libclax_embed.so"},
+    }) if suite == "real" else {}),
     license_files = [":notices"],
     names = {t: t[len("test/"):-len(".dart")].replace("/", "_") for t in files},
     tests = files,

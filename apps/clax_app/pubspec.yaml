@@ -9,6 +9,7 @@ environment:
 dependencies:
   archive: ^4.5.2
   cryptography: ^2.9.0
+  ffi: ^2.2.0
   file_picker: ^13.1.0
   flutter:
     sdk: flutter

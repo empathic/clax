@@ -30,8 +30,16 @@ Directory scratchRoot() {
 
 /// The debug `clax` named by CLAX_TEST_BIN as an absolute path (Bazel
 /// names it relative to the runfiles root), or null when it is not set.
-String? claxTestBin() {
-  final bin = _env['CLAX_TEST_BIN'];
+String? claxTestBin() => _runfile('CLAX_TEST_BIN');
+
+/// The host's build of the embedded core's shared library named by
+/// CLAX_EMBED_LIB as an absolute path, or null when it is not set.
+String? claxEmbedLib() => _runfile('CLAX_EMBED_LIB');
+
+/// The file environment variable [name] names, relative to the runfiles
+/// root under Bazel, as an absolute path; null when it is not set.
+String? _runfile(String name) {
+  final bin = _env[name];
   if (bin == null || bin.isEmpty) return null;
   if (bin.startsWith('/')) return bin;
   final src = _env['TEST_SRCDIR'];
