@@ -1,0 +1,986 @@
+/// The queue's effect runner (spec 2026-10-19-in-process-core-design
+/// §7.1, §7.3–§7.5): the only code in the worker that awaits, and the only
+/// code that knows the core's routes (docs/contract.md, "Jobs"). It runs
+/// each effect `update` emits and feeds its result back as the matching
+/// message, nothing more: it decides nothing about a job.
+library;
+
+import 'dart:async';
+import 'dart:convert';
+import 'dart:typed_data';
+
+import '../agent/backend.dart' show AgentError, AgentErrorKind;
+import '../clax/api.dart' show ClaxApiError;
+import '../clax/sse.dart' show SseMessage;
+import '../clax/transport.dart';
+import 'effect.dart';
+import 'model.dart';
+import 'msg.dart';
+
+/// The agent's turns and tools (lib/agent), one at a time.
+abstract interface class AgentPort {
+  /// Runs one model turn of job [jobId]. Stops when [cancelled] completes.
+  /// Throws [AgentError] when the model fails; kind `network` when it could
+  /// not be reached.
+  Future<TurnOutcome> turn(
+    JobId jobId,
+    TurnInput input,
+    Future<void> cancelled,
+  );
+
+  /// Runs [call], one of turn [turn]'s calls but `finish`, `render` and
+  /// `ask`. Stops when [cancelled] completes. An [Exception] it throws is
+  /// the call's error result.
+  Future<ToolResult> tool(
+    JobId jobId,
+    int turn,
+    OtherCall call,
+    Future<void> cancelled,
+  );
+}
+
+/// The UI isolate's renderer (spec §7.3).
+abstract interface class RenderPort {
+  /// Renders [spec] for job [jobId]: its outcome, or null when the WebView
+  /// went away before it answered. An outcome's `data` carries the
+  /// `digest` of the files it drew and its `errors` and `failed_tests`,
+  /// which the runner records in the core (spec §8.2).
+  Future<RenderOutcome?> render(JobId jobId, RenderSpec spec);
+}
+
+/// What the worker tells the UI isolate.
+abstract interface class UiPort {
+  /// A job ended or stopped while no view shows it.
+  void notice(NoticeKind kind, JobId jobId, String title);
+
+  /// Whether the app is to keep running for the queue.
+  void keepAlive(bool on);
+
+  /// What the UI shows of the queue now.
+  void publishState(QueueState state);
+}
+
+/// Runs the queue's effects on the core through [core] (the worker's
+/// `CoreTransport`), the agent through [agent], renders through
+/// [render], and the UI's news through [ui], and [send]s each answer.
+///
+/// [start] subscribes to the core's event stream: its `ready` names the
+/// stream a claim holds the queue with, and a claim subscribes that stream
+/// to the `jobs` topic, whose `job` and `jobs_owner` events become
+/// [JobNoticed] and [OwnerChanged]. A `ready` naming another stream than
+/// the one before (the stream ended and was opened again) is
+/// [OwnerChanged] `held: false`: the claim held with the old stream is
+/// released with it.
+///
+/// Every write of a job carries the owner token the last claim answered
+/// in `x-clax-jobs-owner`. A commit answered 2xx is [Committed] with the
+/// row after it; any other status is [Refused], with `version_moved`,
+/// `doc_moved`, `not_rendered_clean`, `job_moved` (with its row) and
+/// `not_owner` as their [Refusal]s and every other code as [Invalid]. A
+/// call the core cannot answer (it closed) answers nothing: the core's
+/// reopen loses the claim and loads the jobs again. A commit with no
+/// answer in its time reads the job back and answers [JobRead] with its
+/// row, which says whether the commit landed; a creation asks again,
+/// which the core answers once for its ID and body.
+///
+/// Work (a turn, a tool call, a render) is dropped by [cancelJob]: what it
+/// answers afterwards is never sent. An [Error] the agent throws is not
+/// caught: a bug ends the worker.
+class EffectRunner {
+  EffectRunner({
+    required this.core,
+    required this.agent,
+    required this.render,
+    required this.ui,
+    required this.probeClaude,
+    required this.session,
+    required this.send,
+    this.client = 'app',
+    this.requestTimeout = const Duration(seconds: 35),
+    this.stepTimeout = const Duration(seconds: 125),
+  });
+
+  final ClaxTransport core;
+  final AgentPort agent;
+  final RenderPort render;
+  final UiPort ui;
+
+  /// Whether Claude answers (the `ApiConnection` probe).
+  final Future<bool> Function() probeClaude;
+
+  /// The worker's live session, which asks the `ask` tool's questions.
+  final Future<String> Function() session;
+
+  /// Feeds a result back into the loop.
+  final void Function(Msg msg) send;
+
+  /// The queue's client: `app`.
+  final String client;
+
+  /// A call's time limit; [stepTimeout] for a step's commit, which may
+  /// write a version.
+  final Duration requestTimeout;
+  final Duration stepTimeout;
+
+  static const ownerHeader = 'x-clax-jobs-owner';
+
+  /// The token the last claim answered.
+  String? _token;
+
+  StreamSubscription<SseMessage>? _events;
+
+  /// The stream the core's last `ready` named, and the claims waiting for
+  /// a stream.
+  String? _stream;
+  final List<Completer<String>> _streamWaiters = [];
+
+  /// The work in flight by job, each with the signal that cancels it.
+  final Map<JobId, Map<EffectId, Completer<void>>> _work = {};
+
+  bool _closed = false;
+
+  /// Subscribes to the core's events.
+  void start() {
+    if (_closed || _events != null) return;
+    _events = core.sse().listen(
+      _onEvent,
+      onError: (Object _) => _streamEnded(),
+      onDone: _streamEnded,
+      cancelOnError: true,
+    );
+  }
+
+  /// Runs [e]; its answer, if any, is [send]t when it comes.
+  void run(Effect e) {
+    if (_closed) return;
+    switch (e) {
+      case ClaimOwner():
+        unawaited(_claim(e));
+      case LoadJobs():
+        unawaited(_load(e));
+      case ReadJob():
+        unawaited(_read(e));
+      case CreateJob():
+        unawaited(_create(e));
+      case MoveJob():
+        unawaited(
+          _commit(e, 'PATCH', _job(e.jobId), {
+            'if_rev': e.ifRev,
+            'state': e.to.name,
+            ..._field('error', e.error, _errorJson),
+            ..._field('carry', e.carry, _carryJson),
+            ..._field('plan', e.plan, _planJson),
+          }),
+        );
+      case CommitStep():
+        unawaited(
+          _commit(e, 'POST', _step(e.jobId, e.key), {
+            'result': _turnResultJson(e.result),
+          }),
+        );
+      case Publish():
+        unawaited(
+          _commit(e, 'POST', _step(e.jobId, e.key), {
+            'publish': {..._object(e.publish.data), 'base': e.base},
+            if (e.done) 'state': 'done',
+          }),
+        );
+      case Reply():
+        unawaited(
+          _commit(e, 'POST', _step(e.jobId, e.key), {
+            'reply': e.reply.data,
+            'state': 'done',
+          }),
+        );
+      case Ask():
+        unawaited(_ask(e));
+      case StartTurn():
+        unawaited(_turn(e));
+      case RunTool():
+        unawaited(_tool(e));
+      case Render():
+        unawaited(_render(e));
+      case StopWork(:final jobId):
+        cancelJob(jobId);
+      case ProbeClaude():
+        unawaited(_probe(e));
+      case Notice(:final kind, :final jobId, :final title):
+        ui.notice(kind, jobId, title);
+      case KeepAlive(:final on):
+        ui.keepAlive(on);
+      case PublishState(:final state):
+        ui.publishState(state);
+    }
+  }
+
+  /// Abandons job [id]'s work in flight: each is told to stop, and what it
+  /// answers is dropped.
+  void cancelJob(JobId id) {
+    for (final stop in (_work.remove(id) ?? const {}).values) {
+      if (!stop.isCompleted) stop.complete();
+    }
+  }
+
+  /// Stops: work in flight is cancelled, the event stream ends, the claim
+  /// is released, and nothing more is sent.
+  Future<void> close() async {
+    if (_closed) return;
+    _closed = true;
+    for (final id in [..._work.keys]) {
+      cancelJob(id);
+    }
+    for (final w in _streamWaiters) {
+      w.completeError(StateError('the runner closed'));
+    }
+    _streamWaiters.clear();
+    await _events?.cancel();
+    _events = null;
+    if (_token case final token?) {
+      _token = null;
+      try {
+        await core.send(
+          'DELETE',
+          '/api/jobs/owner',
+          headers: {ownerHeader: token},
+          timeout: requestTimeout,
+        );
+      } on ClaxApiError catch (_) {
+        // The claim ends with the stream in any case.
+      }
+    }
+  }
+
+  void _send(Msg m) {
+    if (!_closed) send(m);
+  }
+
+  // ------------------------------------------------------------ events
+
+  void _onEvent(SseMessage m) {
+    switch (m.event) {
+      case 'ready':
+        final id = switch (_decode(m.data)) {
+          {'stream': final String s} => s,
+          _ => null,
+        };
+        if (id == null) return;
+        final before = _stream;
+        _stream = id;
+        for (final w in _streamWaiters) {
+          w.complete(id);
+        }
+        _streamWaiters.clear();
+        if (before != null && before != id) {
+          _token = null;
+          _send(OwnerChanged(client: client, held: false));
+        }
+      case 'job':
+        if (_decode(m.data) case {
+          'id': final String id,
+          'client': final String c,
+          'state': final String s,
+          'rev': final int rev,
+        }) {
+          final state = JobState.parse(s);
+          if (state == null) return;
+          final step = (_decode(m.data) as Map)['step'];
+          _send(
+            JobNoticed(
+              id,
+              client: c,
+              state: state,
+              step: step is String ? StepKey.parse(step) : null,
+              rev: rev,
+            ),
+          );
+        }
+      case 'jobs_owner':
+        if (_decode(m.data) case {
+          'client': final String c,
+          'held': final bool held,
+        }) {
+          _send(OwnerChanged(client: c, held: held));
+        }
+    }
+  }
+
+  /// The stream ended for good (the core closed, or refused it): the
+  /// claim went with it; the next claim subscribes again.
+  void _streamEnded() {
+    _events = null;
+    _stream = null;
+    if (_closed) return;
+    if (_token != null) {
+      _token = null;
+      _send(OwnerChanged(client: client, held: false));
+    }
+  }
+
+  /// The live stream to claim with, other than [not]: waits for the next
+  /// `ready` when there is none, subscribing again if the stream ended.
+  Future<String> _streamOtherThan(String? not) {
+    if (_stream case final s? when s != not) return Future.value(s);
+    start();
+    final w = Completer<String>();
+    _streamWaiters.add(w);
+    return w.future;
+  }
+
+  // ------------------------------------------------------------ the owner
+
+  Future<void> _claim(ClaimOwner e) async {
+    String? refused;
+    while (!_closed) {
+      final String stream;
+      try {
+        stream = await _streamOtherThan(refused);
+      } on StateError catch (_) {
+        return;
+      }
+      final a = await _call(
+        'POST',
+        '/api/jobs/owner',
+        body: {'client': client, 'stream': stream},
+      );
+      switch (a) {
+        case _Ok(json: {'owner': final String token}):
+          _token = token;
+          _send(OwnerClaimed(e.id, token));
+          return;
+        case _Refused(code: 'owner_held'):
+          _send(OwnerHeld(e.id));
+          return;
+        case _Refused(code: 'owner_draining'):
+          _send(OwnerDraining(e.id));
+          return;
+        case _Refused(code: 'no_such_stream'):
+          // The stream ended since its `ready`: claim with the next one.
+          refused = stream;
+        case _Unanswered(timedOut: true):
+          // The claim may have landed: the same stream's claim answers
+          // its token again.
+          break;
+        case _Unanswered() || _Ok() || _Refused():
+          return;
+      }
+    }
+  }
+
+  // ------------------------------------------------------------ reads
+
+  Future<void> _load(LoadJobs e) async {
+    while (!_closed) {
+      final a = await _call(
+        'GET',
+        '/api/jobs',
+        query: {'open': '1', 'client': client},
+      );
+      switch (a) {
+        case _Ok(json: {'jobs': final List rows}):
+          final jobs = <Job>[];
+          for (final r in rows) {
+            if (jobOf(r) case final j?) jobs.add(j);
+          }
+          _send(JobsLoaded(jobs));
+          return;
+        case _Unanswered(timedOut: true):
+          continue;
+        case _Unanswered() || _Ok() || _Refused():
+          return;
+      }
+    }
+  }
+
+  Future<void> _read(ReadJob e) async {
+    while (!_closed) {
+      switch (await _readJob(e.jobId)) {
+        case (true, final job):
+          _send(JobRead(e.id, e.jobId, job));
+          return;
+        case (false, _):
+          return;
+      }
+    }
+  }
+
+  /// Job [id]'s row: (true, the row) when the core answered, null for a
+  /// job it holds none of; (false, null) when it could not answer. A read
+  /// with no answer in its time is asked again.
+  Future<(bool, Job?)> _readJob(JobId id) async {
+    while (!_closed) {
+      switch (await _call('GET', _job(id))) {
+        case _Ok(json: {'job': final row}):
+          return (true, jobOf(row));
+        case _Refused(status: 404):
+          return (true, null);
+        case _Unanswered(timedOut: true):
+          continue;
+        case _Unanswered() || _Ok() || _Refused():
+          return (false, null);
+      }
+    }
+    return (false, null);
+  }
+
+  // ------------------------------------------------------------ commits
+
+  Future<void> _create(CreateJob e) => _commit(e, 'POST', '/api/jobs', {
+    'id': e.jobId,
+    'client': client,
+    'kind': e.kind.name,
+    'artifact_id': ?e.artifactId,
+    'title': ?e.title,
+    'input': _inputJson(e.input),
+    if (e.plan case final p?) 'plan': _planJson(p),
+  });
+
+  /// Sends commit [e] as [method] [path] with [body] and the owner's
+  /// token, and answers it.
+  Future<void> _commit(
+    CommitEffect e,
+    String method,
+    String path,
+    Map<String, Object?> body, {
+    bool again = true,
+  }) async {
+    final a = await _call(
+      method,
+      path,
+      body: body,
+      owner: true,
+      timeout: e is CreateJob || e is MoveJob || e is Ask
+          ? requestTimeout
+          : stepTimeout,
+    );
+    if (_closed) return;
+    switch (a) {
+      case _Ok(:final json):
+        final job = jobOf(json['job']);
+        if (job == null) {
+          _send(Refused(e.id, e.jobId, const Invalid('malformed')));
+          return;
+        }
+        final key = switch (json['step']) {
+          {'key': final String k} => StepKey.parse(k),
+          _ => null,
+        };
+        _send(
+          Committed(
+            e.id,
+            job,
+            step: key == null ? null : stepResultOf(key, json['step']),
+            replayed: json['replayed'] == true,
+          ),
+        );
+      case _Refused():
+        _send(_refusal(e, a));
+      case _Unanswered(timedOut: true) when e is CreateJob && again:
+        // The core answers the same ID and body once.
+        await _commit(e, method, path, body, again: false);
+      case _Unanswered(timedOut: true):
+        // Whether it landed, the row says.
+        if (await _readJob(e.jobId) case (true, final job)) {
+          _send(JobRead(e.id, e.jobId, job));
+        }
+      case _Unanswered():
+        break;
+    }
+  }
+
+  Msg _refusal(CommitEffect e, _Refused a) {
+    final Refusal reason = switch (a) {
+      _Refused(status: 409, code: 'version_moved', :final error) =>
+        VersionMoved(_int(error['current']) ?? 0),
+      _Refused(status: 409, code: 'doc_moved', :final error) => DocMoved(
+        error['path'] as String? ?? '',
+      ),
+      _Refused(status: 409, code: 'not_rendered_clean') =>
+        const NotRenderedClean(),
+      _Refused(status: 409, code: 'job_moved') => const JobMoved(),
+      _Refused(status: 409, code: 'not_owner') => const NotOwner(),
+      _Refused(:final code, :final message) => Invalid(code, message),
+    };
+    return Refused(
+      e.id,
+      e.jobId,
+      reason,
+      job: reason is JobMoved ? jobOf(a.error['job']) : null,
+    );
+  }
+
+  /// Creates the question from the worker's session with the call's tool
+  /// call ID (the core answers the same question for the same session and
+  /// tool call), then records it as the job's.
+  Future<void> _ask(Ask e) async {
+    final String sid;
+    try {
+      sid = await session();
+    } on Exception catch (err) {
+      _send(Refused(e.id, e.jobId, Invalid('unknown_session', '$err')));
+      return;
+    }
+    final asked = await _call(
+      'POST',
+      '/api/sessions/${Uri.encodeComponent(sid)}/questions',
+      body: {
+        ...switch (e.question.data) {
+          final Map d => d.cast<String, Object?>(),
+          final d => {'questions': d},
+        },
+        'source': 'ask',
+        'tool_use_id': e.toolUseId,
+      },
+    );
+    switch (asked) {
+      case _Ok(json: {'question': {'id': final String qid}}):
+        await _commit(
+          e,
+          'PUT',
+          '${_job(e.jobId)}/questions/${Uri.encodeComponent(qid)}',
+          const {},
+        );
+      case _Refused():
+        _send(_refusal(e, asked));
+      case _Unanswered(timedOut: true):
+        // Asked again, the same tool call answers the same question.
+        if (await _readJob(e.jobId) case (true, final job)) {
+          _send(JobRead(e.id, e.jobId, job));
+        }
+      case _Ok() || _Unanswered():
+        break;
+    }
+  }
+
+  // ------------------------------------------------------------ work
+
+  Future<void> _turn(StartTurn e) async {
+    final stop = _begin(e.jobId, e.id);
+    final Msg answer;
+    try {
+      answer = TurnDone(
+        e.id,
+        e.jobId,
+        await agent.turn(e.jobId, e.input, stop.future),
+      );
+    } on AgentError catch (err) {
+      if (!_end(e.jobId, e.id)) return;
+      _send(
+        TurnFailed(
+          e.id,
+          e.jobId,
+          err.kind == AgentErrorKind.network
+              ? TurnFailure.network
+              : TurnFailure.other,
+          detail: err.message,
+        ),
+      );
+      return;
+    } on Exception catch (err) {
+      if (!_end(e.jobId, e.id)) return;
+      _send(TurnFailed(e.id, e.jobId, TurnFailure.other, detail: '$err'));
+      return;
+    }
+    if (_end(e.jobId, e.id)) _send(answer);
+  }
+
+  Future<void> _tool(RunTool e) async {
+    final stop = _begin(e.jobId, e.id);
+    ToolResult result;
+    try {
+      result = await agent.tool(e.jobId, e.turn, e.call, stop.future);
+    } on AgentError catch (err) {
+      result = ToolResult(data: {'error': err.message}, isError: true);
+    } on Exception catch (err) {
+      result = ToolResult(data: {'error': '$err'}, isError: true);
+    }
+    if (_end(e.jobId, e.id)) {
+      _send(ToolDone(e.id, e.jobId, e.call.id, result));
+    }
+  }
+
+  /// Asks the UI isolate to render, records a render's result in the
+  /// core, then answers [Rendered]; a render the UI lost is [RenderLost].
+  Future<void> _render(Render e) async {
+    _begin(e.jobId, e.id);
+    RenderOutcome? outcome;
+    try {
+      outcome = await render.render(e.jobId, e.spec);
+    } on Exception catch (_) {
+      outcome = null;
+    }
+    if (!_live(e.jobId, e.id)) return;
+    if (outcome == null) {
+      _end(e.jobId, e.id);
+      _send(RenderLost(e.id, e.jobId));
+      return;
+    }
+    if (outcome.data case {'digest': final String digest} && final Map d) {
+      // A record refused or unanswered leaves the draft unrendered: its
+      // publish is refused not_rendered_clean, and planned again.
+      await _call(
+        'POST',
+        '/api/drafts/${Uri.encodeComponent(e.spec.draftId)}/renders',
+        body: {
+          'digest': digest,
+          'errors': d['errors'] ?? const <Object?>[],
+          'failed_tests': d['failed_tests'] ?? const <Object?>[],
+        },
+      );
+    }
+    if (_end(e.jobId, e.id)) _send(Rendered(e.id, e.jobId, outcome));
+  }
+
+  Future<void> _probe(ProbeClaude e) async {
+    bool reachable;
+    try {
+      reachable = await probeClaude();
+    } on Exception catch (_) {
+      reachable = false;
+    }
+    _send(ClaudeReachable(reachable));
+  }
+
+  Completer<void> _begin(JobId job, EffectId id) =>
+      (_work[job] ??= {})[id] = Completer<void>();
+
+  bool _live(JobId job, EffectId id) => _work[job]?.containsKey(id) ?? false;
+
+  /// Ends work [id] of [job]: whether it was still live (not cancelled).
+  bool _end(JobId job, EffectId id) {
+    final held = _work[job];
+    final live = held?.remove(id) != null;
+    if (held != null && held.isEmpty) _work.remove(job);
+    return live && !_closed;
+  }
+
+  // ------------------------------------------------------------ calls
+
+  Future<_Answer> _call(
+    String method,
+    String path, {
+    Map<String, String>? query,
+    Map<String, Object?>? body,
+    bool owner = false,
+    Duration? timeout,
+  }) async {
+    final TransportAnswer a;
+    try {
+      a = await core.send(
+        method,
+        path,
+        query: query,
+        headers: {
+          if (body != null) 'content-type': 'application/json',
+          if (owner && _token != null) ownerHeader: _token!,
+        },
+        body: body == null ? null : Uint8List.fromList(utf8.encode(jsonEncode(body))),
+        timeout: timeout ?? requestTimeout,
+      );
+    } on ClaxApiError catch (e) {
+      return _Unanswered(timedOut: e.code == ClaxApiError.timeout);
+    }
+    final json = a.body.isEmpty ? null : _decode(utf8.decode(a.body, allowMalformed: true));
+    if (a.status >= 200 && a.status < 300) {
+      return _Ok(json is Map ? json.cast<String, Object?>() : const {});
+    }
+    final error = switch (json) {
+      {'error': final Map e} => e.cast<String, Object?>(),
+      _ => const <String, Object?>{},
+    };
+    return _Refused(
+      a.status,
+      error['code'] as String? ?? 'http_${a.status}',
+      error['message'] as String?,
+      error,
+    );
+  }
+
+  static Object? _decode(String s) {
+    try {
+      return jsonDecode(s);
+    } on FormatException catch (_) {
+      return null;
+    }
+  }
+
+  static String _job(JobId id) => '/api/jobs/${Uri.encodeComponent(id)}';
+
+  /// A step's route: its key as the core spells it (`turn:<n>`,
+  /// `publish:<base>`, `reply`).
+  static String _step(JobId id, StepKey key) => '${_job(id)}/steps/$key';
+}
+
+sealed class _Answer {
+  const _Answer();
+}
+
+/// 2xx, with its JSON object.
+final class _Ok extends _Answer {
+  const _Ok(this.json);
+  final Map<String, Object?> json;
+}
+
+/// Any other status, with the core's error object.
+final class _Refused extends _Answer {
+  const _Refused(this.status, this.code, this.message, this.error);
+  final int status;
+  final String code;
+  final String? message;
+  final Map<String, Object?> error;
+}
+
+/// No answer: none came within the call's time ([timedOut]), so whether
+/// it took effect is unknown, or none can come.
+final class _Unanswered extends _Answer {
+  const _Unanswered({required this.timedOut});
+  final bool timedOut;
+}
+
+// ------------------------------------------------------------ rows
+
+/// The queue's [Job] of a row as the core's job routes answer it
+/// (`{job, steps, threads, questions}`); null for one the queue cannot
+/// read (another kind, or a state the core does not have).
+Job? jobOf(Object? full) {
+  if (full is! Map) return null;
+  final row = full['job'];
+  if (row is! Map) return null;
+  final kind = switch (row['kind']) {
+    'make' => JobKind.make,
+    'change' => JobKind.change,
+    _ => null,
+  };
+  final state = switch (row['state']) {
+    final String s => JobState.parse(s),
+    _ => null,
+  };
+  final id = row['id'];
+  final rev = _int(row['rev']);
+  if (kind == null || state == null || id is! String || rev == null) {
+    return null;
+  }
+  final steps = <StepKey, StepResult>{};
+  for (final s in (full['steps'] as List?) ?? const []) {
+    if (s case {'key': final String k}) {
+      final key = StepKey.parse(k);
+      steps[key] = stepResultOf(key, s);
+    }
+  }
+  return Job(
+    id: id,
+    kind: kind,
+    state: state,
+    step: switch (row['step']) {
+      final String s => StepKey.parse(s),
+      _ => null,
+    },
+    rev: rev,
+    artifactId: row['artifact_id'] as String?,
+    title: row['title'] as String?,
+    input: _inputOf(row['input']),
+    plan: switch (row['plan']) {
+      final Map p => PlanState(
+        planRest: p['plan_rest'] == true,
+        data: p['data'],
+      ),
+      _ => null,
+    },
+    carry: switch (row['carry']) {
+      final Map c => Carry(
+        stops: _int(c['stops']) ?? 0,
+        canKeepGoing: c['can_keep_going'] == true,
+        data: c['data'],
+      ),
+      _ => null,
+    },
+    error: switch (row['error']) {
+      {'code': final String code} && final Map e => JobError(
+        code,
+        e['detail'],
+        switch (e['step']) {
+          final String s => StepKey.parse(s),
+          _ => null,
+        },
+      ),
+      _ => null,
+    },
+    steps: steps,
+    threads: {
+      for (final t in (full['threads'] as List?) ?? const [])
+        if (t case {
+          'thread_id': final String tid,
+          'comment_id': final String cid,
+        })
+          tid: (cid, t['stopped'] == true),
+    },
+    questions: {
+      for (final q in (full['questions'] as List?) ?? const [])
+        if (q case {'question_id': final String qid})
+          qid: JobQuestion(
+            _answerOf(q['answer']),
+            toolUseId: q['tool_use_id'] as String?,
+          ),
+    },
+  );
+}
+
+/// A committed step's result (`{key, result, version_n}`), by the kind its
+/// [key] names.
+StepResult stepResultOf(StepKey key, Object? step) {
+  final result = step is Map ? step['result'] : null;
+  return switch (key) {
+    TurnKey() => switch (result) {
+      final Map r => TurnStepResult(
+        _notesOf(r['notes']),
+        base: _int(r['base']) ?? 0,
+      ),
+      _ => const TurnStepResult(TurnNotes()),
+    },
+    PublishKey() => PublishStepResult(
+      artifactId: (result is Map ? result['artifact_id'] : null) as String? ?? '',
+      version:
+          _int(result is Map ? result['version'] : null) ??
+          _int(step is Map ? step['version_n'] : null) ??
+          0,
+    ),
+    ReplyKey() || UnknownKey() => ReplyStepResult(data: result),
+  };
+}
+
+JobInput _inputOf(Object? v) => switch (v) {
+  final Map i => JobInput(
+    request: i['request'] as String? ?? '',
+    base: _int(i['base']) ?? 0,
+    threads: {
+      for (final e in ((i['threads'] as Map?) ?? const {}).entries)
+        if (e.value is String) e.key as String: e.value as String,
+    },
+  ),
+  _ => const JobInput(request: ''),
+};
+
+Map<String, Object?> _inputJson(JobInput i) => {
+  'request': i.request,
+  'base': i.base,
+  'threads': i.threads,
+};
+
+Map<String, Object?> _planJson(PlanState p) => {
+  'plan_rest': p.planRest,
+  'data': p.data,
+};
+
+Map<String, Object?> _carryJson(Carry c) => {
+  'stops': c.stops,
+  'can_keep_going': c.canKeepGoing,
+  'data': c.data,
+};
+
+Map<String, Object?> _errorJson(JobError e) => {
+  'code': e.code,
+  'detail': e.detail,
+  'step': e.step?.toString(),
+};
+
+/// A patch's field: absent to keep it, `null` to clear it.
+Map<String, Object?> _field<T>(
+  String name,
+  Field<T> f,
+  Object? Function(T) json,
+) => switch (f) {
+  Keep() => const {},
+  Clear() => {name: null},
+  SetTo(:final value) => {name: json(value)},
+};
+
+/// Step `turn:<n>`'s result: the turn's notes and the version it was
+/// planned on.
+Map<String, Object?> _turnResultJson(TurnStepResult r) => {
+  'base': r.base,
+  'notes': {
+    'calls': [for (final c in r.notes.calls) _callJson(c)],
+    'data': r.notes.data,
+  },
+};
+
+Map<String, Object?> _callJson(ToolCall c) => switch (c) {
+  FinishCall(:final id, :final publish, :final reply) => {
+    'id': id,
+    'tool': 'finish',
+    'publish': {'base': publish.base, 'data': publish.data},
+    if (reply != null) 'reply': reply.data,
+  },
+  RenderCall(:final id, :final spec) => {
+    'id': id,
+    'tool': 'render',
+    'draft_id': spec.draftId,
+    'revision': spec.revision,
+    'kind': spec.kind.name,
+  },
+  AskCall(:final id, :final question) => {
+    'id': id,
+    'tool': 'ask',
+    'question': question.data,
+  },
+  OtherCall(:final id, :final name, :final args) => {
+    'id': id,
+    'tool': name,
+    'args': args,
+  },
+};
+
+TurnNotes _notesOf(Object? v) {
+  if (v is! Map) return const TurnNotes();
+  return TurnNotes(
+    calls: [
+      for (final c in (v['calls'] as List?) ?? const [])
+        ?_callOf(c),
+    ],
+    data: v['data'],
+  );
+}
+
+ToolCall? _callOf(Object? c) {
+  if (c is! Map) return null;
+  final id = c['id'];
+  final tool = c['tool'];
+  if (id is! String || tool is! String) return null;
+  return switch (tool) {
+    'finish' => FinishCall(
+      id,
+      switch (c['publish']) {
+        final Map p => PublishPlan(base: _int(p['base']) ?? 0, data: p['data']),
+        _ => const PublishPlan(base: 0),
+      },
+      reply: c.containsKey('reply') ? ReplyPlan(data: c['reply']) : null,
+    ),
+    'render' => RenderCall(
+      id,
+      RenderSpec(
+        draftId: c['draft_id'] as String? ?? '',
+        revision: _int(c['revision']) ?? 0,
+        kind:
+            RenderKind.values.where((k) => k.name == c['kind']).firstOrNull ??
+            RenderKind.inspect,
+      ),
+    ),
+    'ask' => AskCall(id, Question(data: c['question'])),
+    _ => OtherCall(id, tool, args: c['args']),
+  };
+}
+
+/// A question's outcome as the job's row keeps it.
+JobAnswer _answerOf(Object? a) {
+  if (a is! Map) return const AnswerPending();
+  return switch (a['outcome']) {
+    'answered' => Answered(a['answers']),
+    'declined' => const Declined(),
+    'withdrawn' => const Withdrawn(),
+    _ => const AnswerPending(),
+  };
+}
+
+Map<String, Object?> _object(Object? v) =>
+    v is Map ? v.cast<String, Object?>() : const {};
+
+int? _int(Object? v) => v is num ? v.toInt() : null;
