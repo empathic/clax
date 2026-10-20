@@ -34,10 +34,18 @@ async fn a_core_answers_its_router_with_no_listener_and_writes_no_daemon_json() 
 }
 
 #[tokio::test]
-async fn stopping_a_core_closes_its_store_so_another_opens_the_home() {
+async fn stopping_a_core_closes_its_store_and_ends_its_streams() {
     let dir = tempfile::tempdir().unwrap();
     let core = Core::start(cfg(dir.path()), &mut |_| {}).await.unwrap();
+    let store = core.state().store.clone();
+    let mut shutdown = core.shutdown_requested();
+    assert!(store.call(|_| Ok(())).await.is_ok(), "the store answers");
     core.stop().await;
+    assert!(
+        store.call(|_| Ok(())).await.is_err(),
+        "a stopped core's store refuses calls"
+    );
+    assert!(*shutdown.borrow_and_update(), "its streams were told to end");
     let again = Core::start(cfg(dir.path()), &mut |_| {}).await.unwrap();
     again.stop().await;
 }
