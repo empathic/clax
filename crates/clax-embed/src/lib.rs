@@ -192,19 +192,43 @@ fn internal(message: String) -> OpenEvent {
 }
 
 /// The origins the app wrote to `<home>/embed.json` before it opened the
-/// core (spec §4.1): `{"shell": …, "content": …}`.
-fn origins(home: &std::path::Path) -> Option<clax_http::state::EmbedOrigins> {
+/// core (spec §4.1): `{"shell": …, "content": …}`; why not, as the
+/// message of the `no_origins` its open fails with. The content template
+/// must hold exactly one `{id}`, as the whole first label of its host
+/// ([`content_template_ok`]): any other gives artifacts a shared origin,
+/// which their isolation (spec §4.3) rests on not doing.
+fn origins(home: &std::path::Path) -> Result<clax_http::state::EmbedOrigins, String> {
     #[derive(serde::Deserialize)]
     struct File {
         shell: String,
         content: String,
     }
-    let text = std::fs::read(home.join("embed.json")).ok()?;
-    let f: File = serde_json::from_slice(&text).ok()?;
-    Some(clax_http::state::EmbedOrigins {
+    let unreadable = || format!("{} has no readable embed.json", home.display());
+    let text = std::fs::read(home.join("embed.json")).map_err(|_| unreadable())?;
+    let f: File = serde_json::from_slice(&text).map_err(|_| unreadable())?;
+    if !content_template_ok(&f.content) {
+        return Err(format!(
+            "{}'s content template {:?} does not have exactly one {{id}}, as the first label of its host",
+            home.join("embed.json").display(),
+            f.content
+        ));
+    }
+    Ok(clax_http::state::EmbedOrigins {
         shell: f.shell,
         content: f.content,
     })
+}
+
+/// Whether `template` is `<scheme>://{id}.<rest of the host>[:<port>]`,
+/// with no other `{id}` and nothing after the host and port.
+fn content_template_ok(template: &str) -> bool {
+    let Some((_, authority)) = template.split_once("://") else {
+        return false;
+    };
+    let host = authority.split(':').next().unwrap_or_default();
+    template.matches("{id}").count() == 1
+        && !authority.contains(['/', '?', '#', '@'])
+        && host.split('.').next() == Some("{id}")
 }
 
 /// [`ffi::clax_embed_open`]'s safe half: opens the core on the home at
@@ -217,7 +241,8 @@ fn origins(home: &std::path::Path) -> Option<clax_http::state::EmbedOrigins> {
 /// core has a live client (`home_in_use`, the home open in this app), or
 /// when it is closing (`home_in_use`). Opens are taken one at a time
 /// ([`OPENING`]), so two at once get one handle and one refusal. An open that fails before a core exists (no readable
-/// `embed.json`: `no_origins`; a runtime that does not start or a panic:
+/// `embed.json`, or one whose content template [`origins`] refuses:
+/// `no_origins`, naming the template; a runtime that does not start or a panic:
 /// `internal`) posts `failed` and still returns a handle, which
 /// [`ffi_close`] closes as any other.
 pub fn ffi_open(home: &[u8], post: Arc<dyn Post>, port: i64) -> u64 {
@@ -242,16 +267,18 @@ pub fn ffi_open(home: &[u8], post: Arc<dyn Post>, port: i64) -> u64 {
         "clax_embed_open",
         || {
             let _opening = lock(&OPENING);
-            let Some(origins) = origins(&home) else {
-                let message = format!("{} has no readable embed.json", home.display());
-                return failed(
-                    &post,
-                    OpenEvent::Failed {
-                        code: "no_origins".into(),
-                        message,
-                        backup: None,
-                    },
-                );
+            let origins = match origins(&home) {
+                Ok(origins) => origins,
+                Err(message) => {
+                    return failed(
+                        &post,
+                        OpenEvent::Failed {
+                            code: "no_origins".into(),
+                            message,
+                            backup: None,
+                        },
+                    );
+                }
             };
             let events = Arc::new(Mutex::new(OpenPort { port, last: None }));
             let (to, poster) = (events.clone(), post.clone());

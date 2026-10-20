@@ -216,6 +216,40 @@ fn a_home_without_its_origins_fails_to_open() {
 }
 
 #[test]
+fn a_content_template_without_one_id_as_its_first_host_label_fails_to_open() {
+    let posts = Arc::new(Collector::default());
+    for (port, content) in [
+        (1, "clax://c"),
+        (2, "clax://{id}{id}.c"),
+        (3, "clax://{id}.{id}.c"),
+        (4, "clax://x.c/{id}"),
+        (5, "clax://x{id}.c"),
+        (6, "clax://x.{id}.c"),
+    ] {
+        let dir = tempfile::tempdir().unwrap();
+        std::fs::write(
+            dir.path().join("embed.json"),
+            json!({"shell": "clax://app", "content": content}).to_string(),
+        )
+        .unwrap();
+        let core = ffi_open(dir.path().to_str().unwrap().as_bytes(), posts.clone(), port);
+        assert_ne!(core, 0);
+        // A refused template's `failed` is posted before the open returns,
+        // so an open that went ahead fails here rather than waits.
+        let failed: Value = {
+            let posted = posts.posted.lock().unwrap();
+            let (_, b) = posted.iter().find(|(p, _)| *p == port).expect(content);
+            serde_json::from_slice(b).unwrap()
+        };
+        assert_eq!(failed["type"], "failed", "{content}: {failed}");
+        assert_eq!(failed["code"], "no_origins", "{content}: {failed}");
+        let message = failed["message"].as_str().unwrap();
+        assert!(message.contains(content), "{content}: {message}");
+        assert_eq!(ffi_close(core), 0);
+    }
+}
+
+#[test]
 fn a_failed_open_is_a_handle_that_answers_and_closes() {
     let dir = tempfile::tempdir().unwrap();
     let posts = Arc::new(Collector::default());
