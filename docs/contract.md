@@ -1137,8 +1137,11 @@ agents included: tag names are the owner's words, never a person's, so the
 visibility filter (see "What reaches an agent") leaves them alone.
 
 - **The list is the owner's.** The owner (their browser, the daemon token
-  by hand) and the owner's agents (the token naming a session, or a grant
-  of the owner's row) make, rename, recolour and delete tags. Anyone else
+  by hand) and the owner's agents make, rename, recolour and delete tags.
+  The owner's agents are this machine's (the token naming a session) and
+  those of another machine connected as the owner (a grant of the owner's
+  row, within that grant's rights: it needs `clax-artifacts` `update`
+  somewhere); such a grant also administers every artifact. Anyone else
   is 403 `owner_only` (401 without a credential). On a hosted Clax, members
   apply the owner's tags; they make none.
 - **Applying is the artifact's administrators'.** Setting an artifact's
@@ -1185,9 +1188,12 @@ edits and deletes them.
   colour, description, created_at, updated_at, count}`, sorted by name,
   `count` the artifacts the caller may read that carry it (live pages only
   for a caller who sees them); `colours`, the palette keys; and whether the
-  caller manages the list. The owner, connected people, a hosted Clax's
-  members and agents see every tag; a guest (a viewer who is no connected
-  person, or no credential) sees only the tags of the artifacts it may see.
+  caller manages the list. Every signed-in person (the owner, connected
+  people, a hosted Clax's members) and every agent sees every tag, its name
+  and description included, whatever artifacts they may read, so they know
+  what they may apply; only the counts are limited to what they may read. A
+  guest (a viewer who is no connected person, or no credential) sees only
+  the tags of the artifacts it may see.
   A hosted Clax refuses it to anyone signed out (401 `sign_in_required`).
 - **`POST /api/tags {name, colour?, description?}`** → 201 `{tag}` (with
   `count: 0`). 400 `invalid_tag` (a bad name or description),
