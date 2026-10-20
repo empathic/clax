@@ -256,7 +256,7 @@ then the body. Bodies are read whole up to 96 MiB (`PUBLISH_BODY_LIMIT`);
 a larger body answers 502 `response_too_large`. A request to a refused path
 answers 404 `not_in_app` without reaching the router.
 
-The token never leaves Rust. The core sets `require_credential` as the
+Dart never holds the token: the core adds it. The core sets `require_credential` as the
 app's daemon did, so a frame that reached the router without `as: owner`
 is a viewer without a credential, which is what a page's frame is on the
 daemon today (`auth::open_without_credential`).
@@ -439,41 +439,50 @@ a platform view of the app's own for the shell, is recorded.
 
 ### 5.1 Calls
 
-`web/shell/src/transport.ts` is the one place the shell makes a request:
-`request(method, path, {headers, body}) → Response`. In a browser it is
-`fetch`. In app mode (the shell document's boot data says `transport:
-"host"`, which the core writes when `AppState.embed` is set) it posts
+The shell makes its requests with `fetch` in about forty places
+(`api.ts`, `threads.ts`, `caps/*`, `stream-hub.ts`, …). Rather than touch
+each, app mode replaces the shell document's `fetch` once, at boot, with
+`hostFetch` (`web/shell/src/transport.ts`), when the boot data says
+`transport: "host"` (the core writes it when `AppState.embed` is set):
 
-```json
-{"type":"call","nonce":"…","id":17,"method":"POST","path":"/api/…",
- "headers":[["content-type","application/json"]],"body":"<text>" | null,
- "body64":"<base64>" | null}
-```
+- a request to the shell's own origin under `/api/` is posted on
+  `ClaxHost` as
 
-on `ClaxHost` and resolves when the host calls
-`claxHost.callResult(17, {status, headers, body | body64})`. The host
-relays it as an `as: owner` frame. `api.ts`, `threads.ts`, `caps/*` and
-every other caller go through `transport.ts` (an oxlint rule bans `fetch(`
-elsewhere under `web/shell/src`). `getToken()` in app mode resolves to
-`null` without a request: the core adds the credential. Calls made before
-`init` wait for it (the channel needs the nonce). Bodies over 8 MiB go as
-`body64` in chunks of 1 MiB (`callChunk`), so no one `runJavaScript` or
-message carries more than that.
+  ```json
+  {"type":"call","nonce":"…","id":17,"method":"POST","path":"/api/…",
+   "headers":[["content-type","application/json"]],
+   "body":"<text>" | null,"body64":"<base64>" | null}
+  ```
 
-Images and downloads the shell points at by URL under `/api/` (clip PNGs,
-asset previews) are fetched through `transport.ts` in app mode and shown
-by object URL; the plan's task lists each such use by a grep.
+  and resolves to a real `Response` when the host calls
+  `claxHost.callResult(17, {status, headers, body | body64})`; an aborted
+  `signal` rejects it with an `AbortError` and posts `{type: "callAbort",
+  id}`. The host relays it as an `as: owner` frame;
+- every other request goes to the platform's `fetch` (the scheme answers
+  it, §4.2).
+
+Calls made before `init` wait for it (the channel needs the nonce). A body
+over 8 MiB goes as `body64` in chunks of 1 MiB (`{type: "callChunk", id,
+n, last, body64}`), so no one message carries more. `/api/token` answers as
+on the daemon (the shell's own code may hold the token, as it does today;
+no frame of a page can ask for it). Images and downloads the shell points
+at by URL under `/api/` (clip PNGs, asset previews) are fetched with
+`fetch` in app mode and shown by object URL; the plan's task lists each
+such use by a grep.
 
 ### 5.2 Events
 
-`stream-hub.ts`'s `Hub` takes a host transport in app mode: no SharedWorker,
-no leader election, no `fetch` of `/api/stream`. The host subscribes to the
-core for each shell document (§2.4) and pushes each block by
-`claxHost.streamBlock(text)`; `claxHost.streamReset()` says the
-subscription began again (a core reopen), which the hub treats as a
-`resync`. The hub's topic subscriptions go over `transport.ts` as today's
-`POST /api/stream/<id>`. In host mode the hub has no connect timeout, no
-idle timeout and no backoff; it never reports `stream_down`.
+In app mode the stream hub (`stream-hub.ts`'s `Hub`) runs in the shell
+document itself (no SharedWorker, no leader election), with `hostFetch` as
+its `env.fetch`. `hostFetch` answers `GET /api/stream` with a `Response`
+whose body is a `ReadableStream`: it posts `{type: "subscribe", id}`, the
+host opens a core subscription for that document (§2.4) and pushes each
+block by `claxHost.streamBlock(id, text)`, which the stream enqueues;
+`claxHost.streamEnd(id)` (the core closed, for a reopen) ends it, and the
+hub resumes with `Last-Event-ID` as after any end. The hub's topic
+subscriptions go as today's `POST /api/stream/<id>` calls. In host mode the
+hub has no connect timeout, no idle timeout and no backoff, and never
+reports `stream_down`: the host owns liveness.
 
 `conn-notice.ts` gains `connNotices(enabled)`; app mode turns it off at
 boot, so `connTrouble` never shows "Live updates paused. Reconnecting…" or
