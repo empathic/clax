@@ -104,56 +104,25 @@ fn register(
     handle
 }
 
-/// Opens, one at a time: an open's [`Embed::open`] and its registration
-/// happen under it, so an open of a home this process holds finds that
-/// home's core registered ([`reattach`]), never a home held with no
-/// handle yet.
-static OPENING: Mutex<()> = Mutex::new(());
-
-/// The message a re-attach posts to a core's open port to learn whether
-/// its client lives: no open event (spec §2.2), and the client ignores it.
-const PROBE: &[u8] = br#"{"type":"probe"}"#;
-
-/// What [`reattach`] found.
-enum Reattach {
-    /// The core's handle: its open events now go to the new port.
-    To(u64),
-    /// The core's client lives (its open port takes a post).
-    InUse,
-    /// No registered core holds the home: its core is closing.
-    Closing,
-}
-
-/// The handle of the core this process holds `home` with, when its
-/// client is gone, its open events moved to `port`, which hears the
-/// latest one at once (`ready`, or where opening has got to). A core
-/// whose open failed or that is closing is not re-attached to; nor is one
-/// whose client still lives: a post to its open port fails only once the
-/// isolate that opened it is gone ([`PROBE`]).
-fn reattach(home: &std::path::Path, post: &dyn Post, port: i64) -> Reattach {
+/// The handle of the core this process holds `home` with, unless it is
+/// closing, its open events moved to `port`, which hears the latest one at
+/// once (`ready`, or where opening has got to).
+fn reattach(home: &std::path::Path, post: &dyn Post, port: i64) -> Option<u64> {
     let key = crate::core::home_key(home);
     let mut cores = cores();
-    let found = cores.iter_mut().find(|(_, r)| {
+    let (handle, r) = cores.iter_mut().find(|(_, r)| {
         r.embed
             .as_ref()
-            .is_some_and(|e| e.home() == key && e.holds_home() && !e.closing())
-    });
-    let Some((handle, r)) = found else {
-        return Reattach::Closing;
-    };
-    let Some(events) = r.events.as_ref() else {
-        return Reattach::Closing;
-    };
-    let mut to = lock(events);
-    if post_bytes(&*r.post, to.port, PROBE) {
-        return Reattach::InUse;
-    }
+            .is_some_and(|e| e.home() == key && !e.closing())
+    })?;
+    let events = r.events.as_ref()?;
+    let mut to = events.lock().unwrap_or_else(|e| e.into_inner());
     to.port = port;
     r.port = port;
     if let Some(last) = &to.last {
         post_bytes(post, port, last);
     }
-    Reattach::To(*handle)
+    Some(*handle)
 }
 
 /// `f`'s answer, or `on_panic`'s when `f` panics (and `last` when that
@@ -209,14 +178,12 @@ fn origins(home: &std::path::Path) -> Option<clax_http::state::EmbedOrigins> {
 
 /// [`ffi::clax_embed_open`]'s safe half: opens the core on the home at
 /// `home` (UTF-8), posting its [`OpenEvent`]s to `port` as JSON, and
-/// returns its handle. A home this process holds already is not opened
-/// again: when the client that opened it is gone (an isolate that
-/// restarted without closing it) the open re-attaches to its core
-/// ([`reattach`]) and returns that core's handle. 0, with `failed`
-/// posted, when `home` is not UTF-8 (`open_failed`), when that home's
-/// core has a live client (`home_in_use`, the home open in this app), or
-/// when it is closing (`home_in_use`). Opens are taken one at a time
-/// ([`OPENING`]), so two at once get one handle and one refusal. An open that fails before a core exists (no readable
+/// returns its handle. A home this process holds already (an isolate that
+/// restarted without closing it) is not opened again: the open
+/// re-attaches to its core ([`reattach`]) and returns that core's handle.
+/// 0, with `failed` posted (`open_failed`, or `home_in_use` for a home
+/// whose core is closing), when `home` is not UTF-8 or that home's core
+/// is closing. An open that fails before a core exists (no readable
 /// `embed.json`: `no_origins`; a runtime that does not start or a panic:
 /// `internal`) posts `failed` and still returns a handle, which
 /// [`ffi_close`] closes as any other.
@@ -241,7 +208,6 @@ pub fn ffi_open(home: &[u8], post: Arc<dyn Post>, port: i64) -> u64 {
     guarded(
         "clax_embed_open",
         || {
-            let _opening = lock(&OPENING);
             let Some(origins) = origins(&home) else {
                 let message = format!("{} has no readable embed.json", home.display());
                 return failed(
@@ -271,14 +237,8 @@ pub fn ffi_open(home: &[u8], post: Arc<dyn Post>, port: i64) -> u64 {
             match opened {
                 Ok(embed) => register(Some(embed), post.clone(), port, Some(events)),
                 Err(OpenError::HomeInUse) => match reattach(&home, &*post, port) {
-                    Reattach::To(handle) => handle,
-                    Reattach::InUse => refused(
-                        "home_in_use",
-                        "this home is open in this app already, by another of its clients",
-                    ),
-                    Reattach::Closing => {
-                        refused("home_in_use", "this app is closing its core on this home")
-                    }
+                    Some(handle) => handle,
+                    None => refused("home_in_use", "this app is closing its core on this home"),
                 },
                 Err(OpenError::NotUtf8) => refused("open_failed", "the home's path is not UTF-8"),
                 Err(OpenError::Runtime(e)) => failed(
