@@ -329,6 +329,111 @@ fn dropping_an_embed_without_close_frees_its_home() {
     assert_eq!(settled(&rx), OpenEvent::Closed);
 }
 
+/// Holds `<home>/core.lock` while the test that starts it asks, when run
+/// as a child of [`a_home_another_process_holds_is_in_use`]: it prints
+/// `locked`, then waits for its stdin to close.
+#[test]
+#[ignore = "a helper process, run by a_home_another_process_holds_is_in_use"]
+fn hold_core_lock() {
+    let Ok(home) = std::env::var("CLAX_TEST_HOLD_CORE_LOCK") else {
+        return;
+    };
+    let lock = std::fs::File::options()
+        .create(true)
+        .truncate(false)
+        .write(true)
+        .open(std::path::Path::new(&home).join("core.lock"))
+        .unwrap();
+    lock.try_lock().unwrap();
+    println!("locked");
+    let mut rest = String::new();
+    let _ = std::io::Read::read_to_string(&mut std::io::stdin(), &mut rest);
+}
+
+#[test]
+fn a_home_another_process_holds_is_in_use() {
+    use std::io::BufRead;
+    let dir = tempfile::tempdir().unwrap();
+    let home = dir.path().join("home");
+    std::fs::create_dir_all(&home).unwrap();
+    let mut holder = std::process::Command::new(std::env::current_exe().unwrap())
+        .args(["hold_core_lock", "--exact", "--ignored", "--nocapture"])
+        .env("CLAX_TEST_HOLD_CORE_LOCK", &home)
+        .stdin(std::process::Stdio::piped())
+        .stdout(std::process::Stdio::piped())
+        .spawn()
+        .unwrap();
+    let out = std::io::BufReader::new(holder.stdout.take().unwrap());
+    let mut lines = out.lines();
+    assert!(
+        lines.any(|l| l.unwrap() == "locked"),
+        "the other process holds the lock"
+    );
+
+    let (embed, rx) = start(dir.path());
+    let failed = settled(&rx);
+    assert!(
+        matches!(&failed, OpenEvent::Failed { code, .. } if code == "home_in_use"),
+        "{failed:?}"
+    );
+    drop(holder.stdin.take());
+    assert!(holder.wait().unwrap().success());
+
+    embed.close();
+    assert_eq!(settled(&rx), OpenEvent::Closed);
+    let (again, rx) = open(dir.path());
+    again.close();
+    assert_eq!(settled(&rx), OpenEvent::Closed);
+}
+
+/// An SQLite database of one empty page whose `user_version` is
+/// `version` (the file format's header, sqlite.org/fileformat.html).
+fn empty_database_at(version: u32) -> Vec<u8> {
+    let mut db = vec![0u8; 4096];
+    db[..16].copy_from_slice(b"SQLite format 3\0");
+    db[16..18].copy_from_slice(&4096u16.to_be_bytes());
+    db[18] = 1; // write version: legacy
+    db[19] = 1; // read version: legacy
+    db[21] = 64; // payload fractions
+    db[22] = 32;
+    db[23] = 32;
+    db[24..28].copy_from_slice(&1u32.to_be_bytes()); // change counter
+    db[28..32].copy_from_slice(&1u32.to_be_bytes()); // pages
+    db[44..48].copy_from_slice(&4u32.to_be_bytes()); // schema format
+    db[56..60].copy_from_slice(&1u32.to_be_bytes()); // UTF-8
+    db[60..64].copy_from_slice(&version.to_be_bytes());
+    db[92..96].copy_from_slice(&1u32.to_be_bytes()); // valid for change 1
+    db[96..100].copy_from_slice(&3_045_000u32.to_be_bytes());
+    db[100] = 0x0d; // page 1: an empty table leaf, its schema
+    db[105..107].copy_from_slice(&4096u16.to_be_bytes());
+    db
+}
+
+#[test]
+fn a_migration_that_fails_names_the_copy_made_before_it() {
+    let dir = tempfile::tempdir().unwrap();
+    let home = clax_core::Home::at(dir.path().join("home"));
+    home.ensure_dirs().unwrap();
+    // A database at version 1 with none of version 1's tables: the next
+    // migration fails on it.
+    std::fs::write(home.db_path(), empty_database_at(1)).unwrap();
+    let (embed, rx) = start(dir.path());
+    let failed = settled(&rx);
+    let OpenEvent::Failed { code, backup, .. } = &failed else {
+        panic!("{failed:?}");
+    };
+    assert_eq!(code, "migration_failed", "{failed:?}");
+    let backup = std::path::PathBuf::from(backup.as_deref().expect("the copy's path"));
+    assert!(backup.is_file(), "{}", backup.display());
+    assert!(
+        backup.starts_with(clax_store::backup::dir(&home)),
+        "{}",
+        backup.display()
+    );
+    embed.close();
+    assert_eq!(settled(&rx), OpenEvent::Closed);
+}
+
 #[tokio::test]
 async fn close_posts_closed_ends_calls_and_frees_the_home() {
     let dir = tempfile::tempdir().unwrap();
