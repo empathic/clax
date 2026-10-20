@@ -428,7 +428,7 @@ test("a page reads nothing of the shell and reaches nothing on its channel", asy
     if (location.origin !== shell || window.top !== window) return;
     addEventListener("message", e => { if (e.data?.probe) (window as unknown as { claxProbe: unknown }).claxProbe = { origin: e.origin, ...e.data.probe }; });
   }, SHELL);
-  const { id, host: h } = await openInApp(page, "Transport probe", { html: PROBE });
+  const { id, host: h, frame } = await openInApp(page, "Transport probe", { html: PROBE });
   await expect.poll(() => quietEval<unknown>(page, "window.claxProbe ?? null"), { timeout: 10_000 }).not.toBeNull();
   const probe = await quietEval<{ origin: string; shellDoc: { error?: string; type?: string; body?: string }; shellApi: { error?: string; type?: string; body?: string }; parentDoc: string; channel: string }>(page, "window.claxProbe");
   expect(probe.origin).toBe(content(id));
@@ -442,8 +442,15 @@ test("a page reads nothing of the shell and reaches nothing on its channel", asy
   expect(probe.channel).toBe("undefined");
   expect(h.dropped).toContainEqual({ why: "frame", message: expect.objectContaining({ id: 4242 }) });
   expect(h.calls.filter(c => c.id === 4242 && c.path === "/api/artifacts")).toEqual([]);
-  // The scheme answers a shell document only to the main frame's navigation.
-  expect(h.scheme.filter(s => s.url.startsWith(`${SHELL}/a/`) && !s.mainFrame).every(s => s.status === 403)).toBe(true);
+  // The scheme answers a shell document only to the main frame's
+  // navigation. The content policy keeps the probe's fetch of it from
+  // leaving the page; the frame's navigation of itself to it reaches the
+  // scheme.
+  await frame.evaluate(u => { location.replace(u); }, `${SHELL}/a/${id}?app=1`);
+  const shellDocs = () => h.scheme.filter(s => s.url.startsWith(`${SHELL}/a/`) && !s.mainFrame);
+  await expect.poll(() => shellDocs().length).toBeGreaterThanOrEqual(1);
+  const refused = shellDocs();
+  expect(refused.map(s => s.status)).toEqual(refused.map(() => 403));
 });
 
 test("a page's conditional request is answered whole: the scheme forwards Accept, never If-None-Match or If-Modified-Since", async ({ page }) => {
