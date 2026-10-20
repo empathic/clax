@@ -89,6 +89,7 @@ fn routes(state: AppState, shutdown: Option<tokio::sync::watch::Sender<bool>>) -
         .route("/api/push", get(sessions::push_status))
         .route("/api/sample", get(sample::daemon))
         .route("/api/sample/key", axum::routing::put(sample::put_key))
+        .route("/api/core/trim", post(health::trim))
         .route(
             "/api/sessions/{id}",
             get(sessions::get).patch(sessions::patch),

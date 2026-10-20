@@ -41,3 +41,10 @@ async fn stopping_a_core_closes_its_store_so_another_opens_the_home() {
     let again = Core::start(cfg(dir.path()), &mut |_| {}).await.unwrap();
     again.stop().await;
 }
+
+#[tokio::test]
+async fn a_daemon_has_no_trim_route() {
+    let ts = clax_testkit::TestServer::spawn().await;
+    let res = ts.post_json("/api/core/trim", serde_json::json!({})).await;
+    assert_eq!(res.status(), 404);
+}

@@ -72,6 +72,16 @@ enum Phase {
     Closed,
 }
 
+/// What says when a ready core stops being ready (it closes).
+pub(crate) struct Readiness(watch::Receiver<Phase>);
+
+impl Readiness {
+    /// Resolves when the core is no longer ready.
+    pub(crate) async fn closed(&mut self) {
+        let _ = self.0.wait_for(|p| !matches!(p, Phase::Ready { .. })).await;
+    }
+}
+
 /// The homes this process has open, by canonical path.
 static OPEN: LazyLock<Mutex<HashSet<PathBuf>>> = LazyLock::new(Default::default);
 
@@ -200,6 +210,26 @@ impl Embed {
         Ok(task.await.unwrap_or_else(|_| {
             error_frame(503, "core_closed", "the core stopped before it answered")
         }))
+    }
+
+    /// Waits on the core's runtime until the core is ready: its router,
+    /// the owner's token, and what says when it stops being ready; `None`
+    /// when it failed or closed first.
+    pub(crate) fn ready(
+        &self,
+    ) -> impl std::future::Future<Output = Option<(axum::Router, String, Readiness)>> + Send + 'static
+    {
+        let mut rx = self.inner.shared.phase.subscribe();
+        async move {
+            let ready = rx
+                .wait_for(|p| !matches!(p, Phase::Opening))
+                .await
+                .map(|p| p.clone());
+            match ready {
+                Ok(Phase::Ready { router, token }) => Some((router, token, Readiness(rx))),
+                _ => None,
+            }
+        }
     }
 
     /// Spawns `fut` on the core's runtime.
@@ -425,7 +455,11 @@ async fn answer(sh: Arc<Shared>, head: RequestHead, body: Bytes) -> Vec<u8> {
 
 /// The router's request for `head`: its headers but those the core sets,
 /// the `Host` and credential for who it speaks as, and a loopback peer.
-fn request(head: &RequestHead, body: Bytes, token: &str) -> Result<axum::extract::Request, String> {
+pub(crate) fn request(
+    head: &RequestHead,
+    body: Bytes,
+    token: &str,
+) -> Result<axum::extract::Request, String> {
     let method = axum::http::Method::from_bytes(head.method.as_bytes())
         .map_err(|_| format!("bad method {:?}", head.method))?;
     let mut b = axum::http::Request::builder()

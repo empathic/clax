@@ -4358,6 +4358,7 @@ router), and a test fails when it differs:
 | `GET /api/artifacts/{aid}/snapshot` | Denied | yes: 403 `not_for_agents` |
 | `POST /api/artifacts/{aid}/unsent:drop` | Denied | yes: 403 `not_for_agents` |
 | `POST /api/artifacts/{aid}/versions:restore` | Denied | no |
+| `POST /api/core/trim` | Denied | no |
 | `GET /api/drafts` | Denied | no |
 | `POST /api/drafts` | Denied | no |
 | `DELETE /api/drafts/{id}` | Denied | no |
@@ -5815,6 +5816,7 @@ routes itself.
 | `POST /api/artifacts/<aid>/sample/<call_id>/tool_result` | SameOrigin, token, owner cookie | `{id, content, is_error}` | 204 |
 | `GET /api/sample` | token | — | `{available, provider, reason, detail, key_env, daily_call_cap}` (`clax doctor`) |
 | `PUT /api/sample/key` | token | `{key}` (a string, or `null` to clear it) | 204; the key is kept in memory only and never logged; 404 `not_found` on a daemon that takes its key from its environment (only a host app's in-process daemon has a key slot); 400 `bad_request` for any other body |
+| `POST /api/core/trim` | token | — | `{trimmed: {wal_frames, checkpointed}}`: an app's embedded core released SQLite's caches and checkpointed its WAL (the app calls it when it leaves the screen or the OS asks for memory); 404 `not_found` on a daemon |
 | `GET /api/artifacts/<aid>/sample-grant` | token | — | `{granted, granted_at, spent_today_usd, daily_cost_cap_usd}` (`granted_at` null without a grant) |
 | `PUT /api/artifacts/<aid>/sample-grant` | token | — | as `GET`; 403 `not_declared` when the artifact does not declare `sample`; recorded as `artifact.update` (`fields.sample_grant: "grant"`) |
 | `DELETE /api/artifacts/<aid>/sample-grant` | token | — | `{revoked}` (`false` when there was none); the day's spend stays |

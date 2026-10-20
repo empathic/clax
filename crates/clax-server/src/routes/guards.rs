@@ -83,6 +83,7 @@ mod l10 {
         ("sessions::tool_call_ids", NoArtifact),
         ("sample::daemon", Token),
         ("sample::put_key", Token),
+        ("health::trim", Token),
         ("threads::list_all", GrantsKept),
         ("working::roster", Filtered),
         ("working::for_session", AgentPath),
@@ -454,6 +455,10 @@ mod l10 {
         (
             "sample::put_key",
             "sets the key a host app's daemon samples with, in memory only; no history changes, and the key is never recorded",
+        ),
+        (
+            "health::trim",
+            "releases SQLite's caches and checkpoints the WAL of an embedded core; no history changes",
         ),
         (
             "git_token::mint",

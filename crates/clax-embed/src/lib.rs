@@ -4,6 +4,7 @@
 //! events to Dart ports.
 
 mod core;
+mod events;
 pub mod frame;
 mod log;
 mod web;
