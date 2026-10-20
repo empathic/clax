@@ -1310,12 +1310,16 @@ pub(crate) enum Mark<'a> {
     /// A column the migration adds: the table, then the column.
     Column(&'a str, &'a str),
     /// An index the migration makes.
+    // No main migration above 38 is marked by an index or a row yet; the
+    // tests' simulated ones are.
+    #[cfg_attr(not(test), allow(dead_code))]
     Index(&'a str),
     /// For a migration that changes only rows: a row of `table` that
     /// `predicate` (an SQL expression over its columns, the `WHERE` of a
     /// `SELECT` from it) finds after the migration. Such a migration must
     /// leave one even on an empty database, for example a row it inserts
     /// into `install`.
+    #[cfg_attr(not(test), allow(dead_code))]
     Row {
         /// The table the row is in.
         table: &'a str,
