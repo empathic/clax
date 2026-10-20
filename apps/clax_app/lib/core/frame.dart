@@ -48,9 +48,10 @@ class CoreRequest {
   /// The artifact ID a [CallAs.content] request's origin names.
   final String? host;
 
-  /// The request frame. Empty headers and a null host are left out.
-  Uint8List encode() {
-    final head = utf8.encode(
+  /// The request frame, to write where it is needed. Empty headers and a
+  /// null host are left out.
+  RequestFrame frame() => RequestFrame._(
+    utf8.encode(
       jsonEncode({
         'method': method,
         'path': path,
@@ -61,17 +62,43 @@ class CoreRequest {
         'as': as.wire,
         'host': ?host,
       }),
-    );
-    final body = this.body ?? const <int>[];
-    return Uint8List(8 + head.length + body.length)
-      ..setAll(0, _magic)
-      ..buffer.asByteData().setUint32(4, head.length, Endian.little)
-      ..setAll(8, head)
-      ..setAll(8 + head.length, body);
+    ),
+    body ?? Uint8List(0),
+  );
+
+  /// The request frame's bytes.
+  Uint8List encode() {
+    final f = frame();
+    final out = Uint8List(f.length);
+    f.writeTo(out);
+    return out;
   }
 
   @override
   String toString() => 'CoreRequest($method $path as ${as.wire})';
+}
+
+/// A request frame not yet laid out: its encoded head and the request's
+/// body, written once, by [writeTo], where the frame is to live (the
+/// native memory the core reads it from), so the body is not copied into
+/// a frame first.
+final class RequestFrame {
+  RequestFrame._(this._head, this._body);
+
+  final Uint8List _head;
+  final Uint8List _body;
+
+  /// The frame's size in bytes.
+  int get length => 8 + _head.length + _body.length;
+
+  /// Writes the frame to the first [length] bytes of [out].
+  void writeTo(Uint8List out) {
+    out
+      ..setAll(0, _magic)
+      ..setAll(8, _head)
+      ..setAll(8 + _head.length, _body);
+    ByteData.sublistView(out).setUint32(4, _head.length, Endian.little);
+  }
 }
 
 /// The response frame the core answered a [CoreRequest] with.

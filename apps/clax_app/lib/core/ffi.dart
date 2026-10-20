@@ -11,6 +11,8 @@ import 'dart:typed_data';
 
 import 'package:ffi/ffi.dart';
 
+import 'frame.dart';
+
 /// The core's C functions. Every answer is the C function's: see each.
 abstract interface class CoreLib {
   /// The functions of [lib], looked up by name now.
@@ -42,10 +44,10 @@ abstract interface class CoreLib {
   /// JSON bytes.
   int open(String home, SendPort port);
 
-  /// `clax_embed_call`: 0 when the core took request frame [req] (its
+  /// `clax_embed_call`: 0 when the core took request [frame] (its
   /// answer, after the 8 bytes of [tag], goes to [port]), 1 for an unknown
   /// handle, 2 for a frame it could not read.
-  int call(int core, Uint8List req, SendPort port, int tag);
+  int call(int core, RequestFrame frame, SendPort port, int tag);
 
   /// `clax_embed_subscribe`: 0 when the core's SSE blocks will be posted
   /// to [port] (an `event: end` block last), 1 for an unknown handle.
@@ -89,8 +91,8 @@ final class _NativeCoreLib implements CoreLib {
   );
 
   @override
-  int call(int core, Uint8List req, SendPort port, int tag) =>
-      _lent(req, (p, n) => _call(core, p, n, port.nativePort, tag));
+  int call(int core, RequestFrame frame, SendPort port, int tag) =>
+      lendFrame(frame, (p, n) => _call(core, p, n, port.nativePort, tag));
 
   @override
   int subscribe(int core, SendPort port) => _subscribe(core, port.nativePort);
@@ -109,5 +111,19 @@ final class _NativeCoreLib implements CoreLib {
     } finally {
       malloc.free(p);
     }
+  }
+}
+
+/// [use] of [frame] written straight into native memory, and its length;
+/// the memory is freed when [use] returns (the C functions copy what they
+/// keep). The request's body is copied once, into that memory.
+T lendFrame<T>(RequestFrame frame, T Function(Pointer<Uint8>, int) use) {
+  final n = frame.length;
+  final p = malloc<Uint8>(n);
+  try {
+    frame.writeTo(p.asTypedList(n));
+    return use(p, n);
+  } finally {
+    malloc.free(p);
   }
 }

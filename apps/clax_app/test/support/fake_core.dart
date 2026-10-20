@@ -513,9 +513,11 @@ class FakeCoreLib implements CoreLib {
   }
 
   @override
-  int call(int core, Uint8List req, SendPort port, int tag) {
+  int call(int core, RequestFrame frame, SendPort port, int tag) {
     if (callAnswer == 0) {
-      calls.add((core: core, request: decodeRequest(req), port: port, tag: tag));
+      final bytes = Uint8List(frame.length);
+      frame.writeTo(bytes);
+      calls.add((core: core, request: decodeRequest(bytes), port: port, tag: tag));
     }
     return callAnswer;
   }

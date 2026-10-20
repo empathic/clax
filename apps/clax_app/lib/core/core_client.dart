@@ -183,7 +183,7 @@ final class CoreClient implements CoreCalls {
     final tag = _tag++;
     final answer = Completer<CoreAnswer>();
     _pending[tag] = answer;
-    final code = _lib.call(handle, r.encode(), _answers.sendPort, tag);
+    final code = _lib.call(handle, r.frame(), _answers.sendPort, tag);
     if (code != 0) {
       _pending.remove(tag);
       answer.complete(code == 1 ? _closedAnswer : _refusedAnswer);
