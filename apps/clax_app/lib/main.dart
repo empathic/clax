@@ -234,7 +234,7 @@ Future<AppServices> platformServices({DateTime? launched}) async {
     runner: runner == null ? null : () => runner,
     cliSupported: cliSupported,
     background: android
-        ? ChannelBackgroundWork()
+        ? ChannelBackgroundWork(onTrim: core.trim)
         : Platform.isIOS
         ? IosBackgroundWork(notifications, onTrim: core.trim)
         : const NoBackgroundWork(),

@@ -1630,7 +1630,13 @@ class _AppRootState extends State<AppRoot> with WidgetsBindingObserver {
       case AppLifecycleState.detached:
         // No WebView can be made for the queue's renders now.
         _renderable.value = false;
-        unawaited(_shutDown());
+        // On Android the engine outlives its activity (ClaxApplication.kt):
+        // the core and the queue's jobs go on until the process ends, and
+        // the next activity shows this same app. Elsewhere a detach is
+        // the end.
+        if (defaultTargetPlatform != TargetPlatform.android) {
+          unawaited(_shutDown());
+        }
       case AppLifecycleState.paused || AppLifecycleState.hidden
           when Platform.isIOS:
         // WebKit draws nothing in the background on iOS.

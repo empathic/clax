@@ -105,9 +105,15 @@ class NoBackgroundWork implements BackgroundWork {
 /// `stop`, `ready` {title, text, artifact}, `failed` {title, text,
 /// artifact?}, `requestPermission` → bool, `launchArtifact` → String?.
 /// Platform to Dart: `opened` {artifact} when a notification is tapped
-/// while the app runs, and `stopped` when the service stopped on its own.
+/// while the app runs, `stopped` when the service stopped on its own, and
+/// `trim` when the system asks the app to trim its memory
+/// (`ClaxApplication.onTrimMemory`), answered once [onTrim] (the core's
+/// memory trim) has completed.
 class ChannelBackgroundWork implements BackgroundWork {
-  ChannelBackgroundWork({this._channel = const MethodChannel(channelName)}) {
+  ChannelBackgroundWork({
+    this._channel = const MethodChannel(channelName),
+    this.onTrim,
+  }) {
     _channel.setMethodCallHandler(_onCall);
   }
 
@@ -116,6 +122,9 @@ class ChannelBackgroundWork implements BackgroundWork {
   final MethodChannel _channel;
   final _opened = StreamController<String>.broadcast();
   final _stoppedEvents = StreamController<void>.broadcast();
+
+  /// Trims the core's memory; nothing is trimmed when null.
+  final Future<void> Function()? onTrim;
 
   Future<Object?> _onCall(MethodCall call) async {
     switch (call) {
@@ -126,6 +135,12 @@ class ChannelBackgroundWork implements BackgroundWork {
         _opened.add(aid);
       case MethodCall(method: 'stopped'):
         _stoppedEvents.add(null);
+      case MethodCall(method: 'trim'):
+        try {
+          await onTrim?.call();
+        } on Object {
+          // Best effort: the system asks again when it needs to.
+        }
     }
     return null;
   }

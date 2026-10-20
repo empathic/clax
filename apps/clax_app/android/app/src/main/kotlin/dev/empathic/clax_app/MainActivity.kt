@@ -1,6 +1,7 @@
 package dev.empathic.clax_app
 
 import android.content.ActivityNotFoundException
+import android.content.Context
 import android.content.Intent
 import android.graphics.Bitmap
 import android.graphics.Canvas
@@ -29,6 +30,16 @@ class MainActivity : FlutterActivity() {
         installSplashScreen().setKeepOnScreenCondition { false }
         super.onCreate(savedInstanceState)
     }
+
+    /**
+     * The application's engine ([ClaxApplication.engine]), which outlives
+     * this activity: a job keeps running after Back or a finish, and the
+     * next activity shows the same Dart.
+     */
+    override fun provideFlutterEngine(context: Context): FlutterEngine =
+        (application as ClaxApplication).engine()
+
+    override fun shouldDestroyEngineWithHost(): Boolean = false
 
     override fun configureFlutterEngine(flutterEngine: FlutterEngine) {
         super.configureFlutterEngine(flutterEngine)
@@ -142,21 +153,13 @@ class MainActivity : FlutterActivity() {
     }
 
     override fun onDestroy() {
-        BackgroundRunService.onStopped = null
         // The open app's notice belongs to this activity's screen.
         AppNoticeChannel.clear(this)
         notice?.dispose()
         bundles?.dispose()
-        // Without its Dart run, the service has nothing to keep alive.
-        if (isFinishing) {
-            val stop = Intent(this, BackgroundRunService::class.java)
-                .setAction(BackgroundRunService.ACTION_STOP)
-            try {
-                startService(stop)
-            } catch (e: IllegalStateException) {
-                stopService(Intent(this, BackgroundRunService::class.java))
-            }
-        }
+        // The engine and its Dart run outlive this activity
+        // (ClaxApplication): the service goes on while they hold a job,
+        // and Dart stops it when none runs.
         super.onDestroy()
     }
 }

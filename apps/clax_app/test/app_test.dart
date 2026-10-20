@@ -289,7 +289,8 @@ void main() {
     expect(find.text('the store did not open'), findsOneWidget);
   });
 
-  testWidgets('resuming leaves the core alone; detaching closes it', (
+  testWidgets('resuming leaves the core alone; detaching closes it, '
+      'off Android', (
     tester,
   ) async {
     await pumpApp(tester, _Rig(key: 'sk-ant-x'));
@@ -309,7 +310,23 @@ void main() {
     tester.binding.handleAppLifecycleStateChanged(AppLifecycleState.detached);
     await tester.pumpAndSettle();
     expect(rig.coreHost.closeCalls, 1);
-  });
+  }, variant: TargetPlatformVariant({TargetPlatform.iOS, TargetPlatform.macOS}));
+
+  testWidgets('on Android a detach leaves the core open: the engine '
+      'outlives its activity', (tester) async {
+    await pumpApp(tester, _Rig(key: 'sk-ant-x'));
+    await up(tester);
+    tester.binding.handleAppLifecycleStateChanged(AppLifecycleState.inactive);
+    tester.binding.handleAppLifecycleStateChanged(AppLifecycleState.hidden);
+    tester.binding.handleAppLifecycleStateChanged(AppLifecycleState.paused);
+    tester.binding.handleAppLifecycleStateChanged(AppLifecycleState.detached);
+    await tester.pumpAndSettle();
+    expect(rig.coreHost.closeCalls, 0);
+    // The next activity attaches to the same engine.
+    tester.binding.handleAppLifecycleStateChanged(AppLifecycleState.resumed);
+    await tester.pump();
+    expect(rig.coreHost.closeCalls, 0);
+  }, variant: TargetPlatformVariant.only(TargetPlatform.android));
 
   testWidgets('quitting the app stops the worker, then closes the core', (
     tester,

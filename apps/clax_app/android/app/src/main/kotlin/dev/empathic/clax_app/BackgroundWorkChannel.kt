@@ -28,11 +28,18 @@ import io.flutter.plugin.common.MethodChannel
  *
  * It calls `opened` {artifact} when a notice is tapped while the activity
  * runs ([onNewIntent]), and `stopped` when the service stopped on its own
- * (see [BackgroundRunService]).
+ * (see [BackgroundRunService]). [ClaxApplication] sends `trim` on the
+ * same channel when the system asks the app to trim its memory.
  */
 class BackgroundWorkChannel(private val activity: Activity, messenger: BinaryMessenger) :
     MethodChannel.MethodCallHandler {
     private val channel = MethodChannel(messenger, NAME)
+
+    /**
+     * The service and the notices go through the application, since the
+     * engine this channel is on outlives [activity] (ClaxApplication).
+     */
+    private val app = activity.applicationContext
     private var permissionResult: MethodChannel.Result? = null
     private var launchArtifact: String? = artifactOf(activity.intent)
 
@@ -51,12 +58,12 @@ class BackgroundWorkChannel(private val activity: Activity, messenger: BinaryMes
         val text = call.argument<String>("text") ?: ""
         when (call.method) {
             "start" -> {
-                val intent = Intent(activity, BackgroundRunService::class.java)
+                val intent = Intent(app, BackgroundRunService::class.java)
                     .putExtra(Notices.EXTRA_TITLE, title)
                     .putExtra(Notices.EXTRA_TEXT, text)
                 result.success(
                     try {
-                        activity.startForegroundService(intent)
+                        app.startForegroundService(intent)
                         true
                     } catch (e: IllegalStateException) {
                         // ForegroundServiceStartNotAllowedException: in the background.
@@ -68,23 +75,23 @@ class BackgroundWorkChannel(private val activity: Activity, messenger: BinaryMes
             }
             "update" -> {
                 if (BackgroundRunService.running) {
-                    activity.getSystemService(NotificationManager::class.java)
-                        .notify(Notices.RUN_NOTIFICATION, Notices.run(activity, title, text))
+                    app.getSystemService(NotificationManager::class.java)
+                        .notify(Notices.RUN_NOTIFICATION, Notices.run(app, title, text))
                 }
                 result.success(null)
             }
             "stop" -> {
-                val service = Intent(activity, BackgroundRunService::class.java)
+                val service = Intent(app, BackgroundRunService::class.java)
                 try {
-                    activity.startService(service.setAction(BackgroundRunService.ACTION_STOP))
+                    app.startService(service.setAction(BackgroundRunService.ACTION_STOP))
                 } catch (e: IllegalStateException) {
                     // In the background with no service running: nothing to stop.
-                    activity.stopService(Intent(activity, BackgroundRunService::class.java))
+                    app.stopService(Intent(app, BackgroundRunService::class.java))
                 }
                 result.success(null)
             }
             "ready", "failed" -> {
-                Notices.news(activity, title, text, call.argument<String>("artifact"))
+                Notices.news(app, title, text, call.argument<String>("artifact"))
                 result.success(null)
             }
             "requestPermission" -> requestPermission(result)

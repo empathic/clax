@@ -331,6 +331,44 @@ void main() {
       await sub.cancel();
     });
 
+    test('trim from Android is answered once the core trimmed; a failed '
+        'trim is answered too', () async {
+      var trims = 0;
+      var done = Completer<void>();
+      ChannelBackgroundWork(
+        onTrim: () {
+          trims++;
+          return done.future;
+        },
+      );
+      /// Sends `trim` and waits until the core was asked; the answer comes
+      /// from the returned future.
+      Future<({Future<bool> answered})> trim() async {
+        var answered = false;
+        final reply = messenger.handlePlatformMessage(
+          ChannelBackgroundWork.channelName,
+          const StandardMethodCodec().encodeMethodCall(
+            const MethodCall('trim'),
+          ),
+          (_) => answered = true,
+        );
+        await pumpEventQueue();
+        expect(answered, isFalse, reason: 'answered before the core trimmed');
+        return (answered: reply.then((_) => answered));
+      }
+
+      final first = await trim();
+      expect(trims, 1);
+      done.complete();
+      expect(await first.answered, isTrue);
+
+      done = Completer<void>();
+      final second = await trim();
+      expect(trims, 2);
+      done.completeError(StateError('the core is closed'));
+      expect(await second.answered, isTrue);
+    });
+
     test('a platform without the channel answers false and null', () async {
       messenger.setMockMethodCallHandler(channel, null);
       final w = ChannelBackgroundWork();

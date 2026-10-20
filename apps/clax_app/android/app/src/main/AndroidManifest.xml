@@ -29,7 +29,7 @@
     <application
         android:label="Clax"
         android:enableOnBackInvokedCallback="true"
-        android:name="${applicationName}"
+        android:name=".ClaxApplication"
         android:icon="@mipmap/ic_launcher"
         android:roundIcon="@mipmap/ic_launcher_round">
         <activity
