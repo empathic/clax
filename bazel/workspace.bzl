@@ -116,7 +116,8 @@ CRATES = {
             "--check-cfg=cfg(clax_split)",
             "--check-cfg=cfg(clax_split, values(any()))",
             "-Wunexpected_cfgs",
-            "-Dunsafe_code"
+            "-Dunsafe_code",
+            "-Funsafe_op_in_unsafe_fn"
         ],
         "name": "clax-embed",
         "tests": {

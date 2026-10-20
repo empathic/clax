@@ -1167,13 +1167,19 @@ AGENTS.md's exception line becomes:
 
 > - One exception, approved by the owner: `crates/clax-embed` denies `unsafe_code` instead of forbidding it, and allows it only in `src/ffi.rs`, on its four exported C functions (`clax_embed_open`, `clax_embed_call`, `clax_embed_subscribe`, `clax_embed_close`) and the one `std::slice::from_raw_parts` each of `clax_embed_open` and `clax_embed_call` makes of its byte arguments; `//scripts:no_unsafe` fails on any other `unsafe`, any other `allow(unsafe_code)`, and any other crate that does not take the workspace's lints.
 
+`crates/clax-embed/Cargo.toml` forbids `unsafe_op_in_unsafe_fn` (edition
+2024 only warns), so an unsafe operation in the body of an `unsafe fn`
+export needs an `unsafe` block of its own, and the check, which reads
+words, sees it; the check fails when the lint is not forbidden.
 `scripts/check-no-unsafe.sh` allows, in `crates/clax-embed/src/ffi.rs` only:
 
 1. `#[unsafe(no_mangle)]` directly after `#[allow(unsafe_code)]` and
    directly before `pub extern "C" fn <name>(` or
    `pub unsafe extern "C" fn <name>(`, `<name>` one of the four, each once;
-2. `unsafe` in that `pub unsafe extern "C" fn` line, for `clax_embed_open`
-   and `clax_embed_call` only (they take pointers);
+2. `unsafe` in that `pub unsafe extern "C" fn` line, before its `(`, for
+   `clax_embed_open` and `clax_embed_call` only (they take pointers); the
+   rest of a signature line (its parameters, and a body on the same line)
+   is checked as any other line;
 3. inside those two functions' bodies, exactly one line
    `let <a> = unsafe { std::slice::from_raw_parts(<p>, <n>) };` directly
    after a `// SAFETY:` comment line;

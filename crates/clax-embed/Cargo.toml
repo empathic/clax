@@ -6,8 +6,11 @@ license.workspace = true
 
 # The workspace forbids unsafe_code; this crate denies it and allows it
 # only in src/ffi.rs (AGENTS.md; scripts/check-no-unsafe.sh checks it).
+# An unsafe operation in an `unsafe fn` needs its own `unsafe` block,
+# which the check sees.
 [lints.rust]
 unsafe_code = "deny"
+unsafe_op_in_unsafe_fn = "forbid"
 unexpected_cfgs = { level = "warn", check-cfg = ['cfg(clax_embedded)', 'cfg(clax_split)', 'cfg(clax_split, values(any()))'] }
 
 [lib]

@@ -8,7 +8,10 @@
 #    crates/clax-ios's, crates/clax-embed's and the separate
 #    crates/clax-worker workspace's;
 #  - crates/clax-ios/Cargo.toml and crates/clax-embed/Cargo.toml, where
-#    there is one, deny `unsafe_code`;
+#    there is one, deny `unsafe_code`, and crates/clax-embed/Cargo.toml
+#    forbids `unsafe_op_in_unsafe_fn`, so an unsafe operation in the body
+#    of its `unsafe fn` exports needs an `unsafe` block, which this check
+#    sees;
 #  - in crates/clax-ios/src/lib.rs the only `unsafe` is a line
 #    `#[unsafe(no_mangle)]` directly after `#[allow(unsafe_code)]` and
 #    directly before `pub extern "C" fn <name>(` on one line, with `<name>`
@@ -22,7 +25,9 @@
 #    <name>(` (open and call, which take pointers) or `pub extern "C" fn
 #    <name>(` (subscribe and close), every parameter (on that line or the
 #    lines up to its `)`) a `u64`, `i64`, `i32`, `usize`, `*const u8` or
-#    `ClaxPost`; and, in open's and call's bodies, exactly one line
+#    `ClaxPost`, the grant on that signature line ending at its `(` (the
+#    rest of the line is checked as any other); and, in open's and call's
+#    bodies, exactly one line
 #    `let <a> = unsafe { std::slice::from_raw_parts(<p>, <n>) };` directly
 #    after a `// SAFETY:` comment line; `unsafe_code` appears nowhere else in
 #    that crate;
@@ -99,6 +104,10 @@ for my $path (qw(crates/clax-ios/Cargo.toml crates/clax-embed/Cargo.toml)) {
     finding("$path: must deny unsafe_code")
         unless level(manifest($path), "lints.rust.unsafe_code") eq "deny";
 }
+if (-e "crates/clax-embed/Cargo.toml") {
+    finding("crates/clax-embed/Cargo.toml: must forbid unsafe_op_in_unsafe_fn")
+        unless level(manifest("crates/clax-embed/Cargo.toml"), "lints.rust.unsafe_op_in_unsafe_fn") eq "forbid";
+}
 
 for my $path (@ARGV) {
     open(my $fh, "<", $path) or die "$path: $!";
@@ -142,7 +151,9 @@ for my $path (@ARGV) {
                 next unless @slices;
                 $body{$slices[0]} = 1;
             }
-            $granted{$_} = 1 for ($i - 1, $i, $i + 1, keys %body);
+            $granted{$_} = 1 for ($i - 1, $i, keys %body);
+            # The signature line up to its `(`; what follows is checked.
+            $code[$i + 1] =~ s/^[^(]*\(//;
         }
     }
     for my $i (0 .. $#code) {

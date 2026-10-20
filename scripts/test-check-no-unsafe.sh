@@ -11,8 +11,11 @@
 # export, an unsafe subscribe or close, a safe open or call, a parameter
 # of another type, a second from_raw_parts or one without its SAFETY line,
 # any other unsafe expression, and unsafe or an allow anywhere else in the
-# crate fail; CSP's `'unsafe-inline'` passes; `unsafe` in another crate
-# fails as it always has.
+# crate, `unsafe` after the opening `(` of a signature line, and
+# clax-embed not forbidding unsafe_op_in_unsafe_fn fail (an unsafe
+# operation in an `unsafe fn` with no `unsafe` block carries no keyword the
+# check could see: only that lint refuses it); CSP's `'unsafe-inline'`
+# passes; `unsafe` in another crate fails as it always has.
 set -uo pipefail
 cd "$(dirname "$0")/.." || exit 1
 d="$(mktemp -d)"
@@ -112,6 +115,7 @@ version.workspace = true
 # The workspace forbids unsafe_code; this crate denies it.
 [lints.rust]
 unsafe_code = "deny"
+unsafe_op_in_unsafe_fn = "forbid"
 unexpected_cfgs = { level = "warn", check-cfg = ['cfg(clax_embedded)'] }
 
 [lib]
@@ -266,6 +270,31 @@ _sub "$FFI" "pub extern \"C\" fn clax_embed_subscribe(core: u64, port: i64) -> i
     crate::ffi_subscribe(core, port)
 }" "pub extern \"C\" fn clax_embed_subscribe(core: u64, port: i64) -> i32 { crate::ffi_subscribe(core, port) }"
 _expect pass "an export on one line"
+
+_copy
+_sub "$FFI" "pub extern \"C\" fn clax_embed_close(core: u64) -> i32 {
+    crate::ffi_close(core)
+}" "pub extern \"C\" fn clax_embed_close(core: u64) -> i32 { unsafe { *(core as *mut u8) = 0 }; crate::ffi_close(core) }"
+_expect fail "unsafe after the brace of an export on one line" "crates/clax-embed/src/ffi.rs:40: $ONLY"
+
+_copy
+_sub "$FFI" "pub extern \"C\" fn clax_embed_subscribe(core: u64, port: i64) -> i32 {" "pub extern \"C\" fn clax_embed_subscribe(core: u64, port: i64) -> i32 { let _ = unsafe { 0 };"
+_expect fail "unsafe after the brace of a signature line" "crates/clax-embed/src/ffi.rs:34: $ONLY"
+
+_copy
+_sub "$IOS" "pub extern \"C\" fn clax_stop() { stop() }" "pub extern \"C\" fn clax_stop() { unsafe { stop() } }"
+_expect fail "unsafe after the brace of a clax-ios export" "crates/clax-ios/src/lib.rs:18: $ONLY"
+
+_copy
+_sub "$d/w/crates/clax-embed/Cargo.toml" 'unsafe_op_in_unsafe_fn = "forbid"
+' ''
+_sub "$FFI" "    crate::ffi_open(home, post, port)" "    let _b = Box::from_raw(home.as_ptr() as *mut [u8; 4]);
+    crate::ffi_open(home, post, port)"
+_expect fail "an unsafe operation with no unsafe block, the lint not forbidden" "crates/clax-embed/Cargo.toml: must forbid unsafe_op_in_unsafe_fn"
+
+_copy
+_sub "$d/w/crates/clax-embed/Cargo.toml" 'unsafe_op_in_unsafe_fn = "forbid"' 'unsafe_op_in_unsafe_fn = "deny"'
+_expect fail "clax-embed only denying unsafe_op_in_unsafe_fn" "crates/clax-embed/Cargo.toml: must forbid unsafe_op_in_unsafe_fn"
 
 _copy
 printf '\n#[allow(unsafe_code)]\n#[unsafe(no_mangle)]\npub extern "C" fn clax_embed_extra(core: u64) -> i32 {\n    0\n}\n' >> "$FFI"
