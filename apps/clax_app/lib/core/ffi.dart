@@ -18,25 +18,17 @@ abstract interface class CoreLib {
   /// The functions of [lib], looked up by name now.
   factory CoreLib(DynamicLibrary lib) = _NativeCoreLib;
 
-  /// This platform's library: `libclax_embed.so` on Android, the
-  /// executable itself on iOS (linked in statically), and on macOS the
-  /// file CLAX_EMBED_LIB names when it is set, else the app bundle's
-  /// `Contents/Frameworks/libclax_embed.dylib`.
-  static CoreLib load() {
-    if (Platform.isAndroid) {
-      return CoreLib(DynamicLibrary.open('libclax_embed.so'));
-    }
-    if (Platform.isIOS) return CoreLib(DynamicLibrary.process());
-    final named = Platform.environment['CLAX_EMBED_LIB'];
-    if (named != null && named.isNotEmpty) {
-      return CoreLib(DynamicLibrary.open(named));
-    }
-    // <bundle>/Contents/MacOS/<executable>
-    final contents = File(Platform.resolvedExecutable).parent.parent.path;
-    return CoreLib(
-      DynamicLibrary.open('$contents/Frameworks/libclax_embed.dylib'),
-    );
-  }
+  /// This platform's library, found as [coreLibSource] says.
+  static CoreLib load() => switch (coreLibSource(
+    os: Platform.operatingSystem,
+    env: Platform.environment,
+    executable: Platform.resolvedExecutable,
+    release: const bool.fromEnvironment('dart.vm.product'),
+  )) {
+    CoreLibOpen(:final path) => CoreLib(DynamicLibrary.open(path)),
+    CoreLibProcess() => CoreLib(DynamicLibrary.process()),
+    CoreLibUnsupported(:final reason) => throw UnsupportedError(reason),
+  };
 
   /// `clax_embed_open`: opens the core on [home] and returns its handle,
   /// or 0 when this process has that home open already. [port] hears the
@@ -56,6 +48,86 @@ abstract interface class CoreLib {
   /// `clax_embed_close`: 0 when the core is closing (its open port hears
   /// `closed`), 1 for an unknown handle.
   int close(int core);
+}
+
+/// Where the core's library is found.
+sealed class CoreLibSource {
+  const CoreLibSource();
+}
+
+/// The shared library at [path] (a bare name is found the platform's way).
+final class CoreLibOpen extends CoreLibSource {
+  const CoreLibOpen(this.path);
+
+  final String path;
+
+  @override
+  bool operator ==(Object other) => other is CoreLibOpen && other.path == path;
+
+  @override
+  int get hashCode => path.hashCode;
+
+  @override
+  String toString() => 'CoreLibOpen($path)';
+}
+
+/// The running executable, which links the core in statically.
+final class CoreLibProcess extends CoreLibSource {
+  const CoreLibProcess();
+
+  @override
+  bool operator ==(Object other) => other is CoreLibProcess;
+
+  @override
+  int get hashCode => 0;
+
+  @override
+  String toString() => 'CoreLibProcess()';
+}
+
+/// No core for this platform; [reason] says why and what to do.
+final class CoreLibUnsupported extends CoreLibSource {
+  const CoreLibUnsupported(this.reason);
+
+  final String reason;
+
+  @override
+  String toString() => 'CoreLibUnsupported($reason)';
+}
+
+/// Where the core's library is on [os] (`Platform.operatingSystem`), for
+/// the app running as [executable], with environment [env]:
+///
+/// - outside a [release] build, a non-empty `CLAX_EMBED_LIB` names it on
+///   any platform (a host's build, for tests and development);
+/// - Android: `libclax_embed.so`, from the APK;
+/// - iOS: the process itself, which links the core in statically;
+/// - macOS: the app bundle's `Contents/Frameworks/libclax_embed.dylib`,
+///   [executable] being `<bundle>/Contents/MacOS/<name>`;
+/// - any other platform has none.
+CoreLibSource coreLibSource({
+  required String os,
+  required Map<String, String> env,
+  required String executable,
+  required bool release,
+}) {
+  final named = env['CLAX_EMBED_LIB'] ?? '';
+  if (!release && named.isNotEmpty) return CoreLibOpen(named);
+  switch (os) {
+    case 'android':
+      return const CoreLibOpen('libclax_embed.so');
+    case 'ios':
+      return const CoreLibProcess();
+    case 'macos':
+      final macOS = executable.lastIndexOf('/');
+      final contents = executable.substring(0, executable.lastIndexOf('/', macOS - 1));
+      return CoreLibOpen('$contents/Frameworks/libclax_embed.dylib');
+    default:
+      return CoreLibUnsupported(
+        'the embedded core is not built for $os'
+        '${release ? '' : '; set CLAX_EMBED_LIB to a host build of it (//crates/clax-embed:clax_embed_host)'}',
+      );
+  }
 }
 
 typedef _PostC = Int8 Function(Int64, Pointer<Dart_CObject>);

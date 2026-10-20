@@ -7,6 +7,71 @@ import 'package:clax_app/core/frame.dart';
 import 'package:flutter_test/flutter_test.dart';
 
 void main() {
+  group('coreLibSource', () {
+    CoreLibSource source(
+      String os, {
+      Map<String, String> env = const {},
+      bool release = false,
+    }) => coreLibSource(
+      os: os,
+      env: env,
+      executable: '/Applications/Clax.app/Contents/MacOS/Clax',
+      release: release,
+    );
+    const named = {'CLAX_EMBED_LIB': '/tmp/libclax_embed.dylib'};
+
+    test('Android opens the APK\'s libclax_embed.so', () {
+      expect(source('android'), const CoreLibOpen('libclax_embed.so'));
+      expect(
+        source('android', release: true),
+        const CoreLibOpen('libclax_embed.so'),
+      );
+    });
+
+    test('iOS finds the core linked into the process', () {
+      expect(source('ios'), const CoreLibProcess());
+      expect(source('ios', release: true), const CoreLibProcess());
+    });
+
+    test("macOS opens the bundle's Contents/Frameworks dylib", () {
+      const bundled = CoreLibOpen(
+        '/Applications/Clax.app/Contents/Frameworks/libclax_embed.dylib',
+      );
+      expect(source('macos'), bundled);
+      expect(source('macos', release: true), bundled);
+      expect(source('macos', env: const {'CLAX_EMBED_LIB': ''}), bundled);
+    });
+
+    test('CLAX_EMBED_LIB names the library outside release builds only', () {
+      expect(
+        source('macos', env: named),
+        const CoreLibOpen('/tmp/libclax_embed.dylib'),
+      );
+      expect(
+        source('linux', env: named),
+        const CoreLibOpen('/tmp/libclax_embed.dylib'),
+      );
+      expect(
+        source('macos', env: named, release: true),
+        const CoreLibOpen(
+          '/Applications/Clax.app/Contents/Frameworks/libclax_embed.dylib',
+        ),
+      );
+      expect(source('linux', env: named, release: true), isA<CoreLibUnsupported>());
+    });
+
+    test('Linux and Windows have no core of their own', () {
+      for (final os in ['linux', 'windows', 'fuchsia']) {
+        final s = source(os);
+        expect(s, isA<CoreLibUnsupported>(), reason: os);
+        final reason = (s as CoreLibUnsupported).reason;
+        expect(reason, contains(os));
+        expect(reason, contains('CLAX_EMBED_LIB'));
+        expect(reason, isNot(contains('Frameworks')));
+      }
+    });
+  });
+
   group('lendFrame', () {
     test("lends the frame's exact bytes and length in native memory", () {
       for (final r in [
