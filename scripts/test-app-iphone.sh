@@ -5,7 +5,7 @@
 #     commands in order, and with --testflight the build with the next build
 #     number and the upload; it runs none of them and writes no ledger;
 #   - the real device run builds, then installs on the device, launches the
-#     app and reads daemon.json until it names the launched PID; a device
+#     app and reads core.json until it names the launched PID ready; a device
 #     need not be there until the build is done, and two need
 #     APP_IPHONE_DEVICE;
 #   - the real TestFlight run writes the next build number (`1.0.0 4` gives
@@ -73,8 +73,8 @@ case "\$1 \$2 \${3:-}" in
     "devicectl device process")
         echo '{"result":{"process":{"processIdentifier":4242}}}' > "\$json" ;;
     "devicectl device copy")
-        [ -f "$tmp/daemon.json" ] || exit 1
-        cat "$tmp/daemon.json" > "\$dest" ;;
+        [ -f "$tmp/core.json" ] || exit 1
+        cat "$tmp/core.json" > "\$dest" ;;
     altool*)
         echo "API_PRIVATE_KEYS_DIR=\${API_PRIVATE_KEYS_DIR:-}" >> "$tmp/calls"
         cat "$apple/builds" > "$tmp/ledger-at-upload"
@@ -151,7 +151,7 @@ _case() {
     rm -rf "$repo/target"
     status=0
     (cd "$tmp" && env -i HOME="$tmp/home" PATH="$tmp/bin:$tmp/sys" CLAX_APPLE_DIR="$apple" \
-        APP_IPHONE_DEVICE="${APP_IPHONE_DEVICE:-}" APP_IPHONE_DAEMON_WAIT="${APP_IPHONE_DAEMON_WAIT:-60}" \
+        APP_IPHONE_DEVICE="${APP_IPHONE_DEVICE:-}" APP_IPHONE_CORE_WAIT="${APP_IPHONE_CORE_WAIT:-60}" \
         "$tmp/sys/bash" "$repo/scripts/app-iphone.sh" "$@") > "$tmp/out" 2>&1 || status=$?
 }
 
@@ -179,7 +179,7 @@ if [ "$status" = 0 ] && _in_order "$tmp/out" \
     "bazelisk build" "$dev_flags //apps/clax_app:ipa_dev" \
     "xcrun devicectl device install app --device AB-1" "target/app-iphone/0123abcd/Payload/Clax.app" \
     "xcrun devicectl device process launch --device AB-1" "dev.empathic.clax" \
-    "daemon.json" \
+    "core.json" \
     "--i-know-what-i-am-doing" &&
     grep -qF "Test iPhone" "$tmp/out" && ! _acted >/dev/null && [ ! -e "$apple/builds" ]; then
     _ok "the dry run prints the build, install and launch, in order, and runs none"
@@ -286,27 +286,20 @@ else
     _fail "the dry run without the signing directory (status $status)"
 fi
 
-# 8. The real device run: build, install, launch, and the daemon of the
-# launched PID; it writes nothing to the signing directory.
+# 8. The real device run: build, install, launch, and the core of the
+# launched PID ready; it writes nothing to the signing directory.
 _apple
-cat > "$tmp/daemon.json" <<'JSON'
-{
-  "port": 7555,
-  "pid": 4242,
-  "token": "t",
-  "bind": "127.0.0.1"
-}
-JSON
+printf '{"pid":4242,"state":"ready"}' > "$tmp/core.json"
 _case "$(_listing "$phone" "$away")" -- --i-know-what-i-am-doing
 if [ "$status" = 0 ] && _in_order "$tmp/calls" \
     "bazelisk build" "$dev_flags //apps/clax_app:ipa_dev" \
     "xcrun devicectl device install app --device AB-1 $repo/target/app-iphone/0123abcd/Payload/Clax.app" \
     "xcrun devicectl device process launch --device AB-1" \
     "xcrun devicectl device copy from --device AB-1" &&
-    grep -qF "Library/Application Support/clax-home/daemon.json" "$tmp/calls" &&
+    grep -qF "Library/Application Support/core.json" "$tmp/calls" &&
     grep -qF "PID 4242" "$tmp/out" && grep -qF "Test iPhone" "$tmp/out" &&
     [ "$(ls -A "$apple" | wc -l | tr -d ' ')" = 6 ] && [ ! -e "$apple/builds" ]; then
-    _ok "the device run builds, installs, launches and sees the launched PID's daemon"
+    _ok "the device run builds, installs, launches and sees the launched PID's core ready"
 else
     _fail "the device run (status $status)"
 fi
@@ -338,14 +331,24 @@ else
     _fail "APP_IPHONE_DEVICE (status $status)"
 fi
 
-# 11. A daemon.json from an earlier launch (another PID) is not this launch's.
-sed -i.bak 's/"pid": 4242/"pid": 17/' "$tmp/daemon.json"
-APP_IPHONE_DAEMON_WAIT=0 _case "$(_listing "$phone")" -- --i-know-what-i-am-doing
-if [ "$status" = 1 ] && grep -qF "did not come up" "$tmp/out"; then
-    _ok "a daemon.json naming another PID is not this launch's daemon"
+# 11. A core.json from an earlier launch (another PID) is not this launch's.
+printf '{"pid":17,"state":"ready"}' > "$tmp/core.json"
+APP_IPHONE_CORE_WAIT=0 _case "$(_listing "$phone")" -- --i-know-what-i-am-doing
+if [ "$status" = 1 ] && grep -qF "core did not open in 0 s" "$tmp/out"; then
+    _ok "a core.json naming another PID is not this launch's core"
 else
-    _fail "a stale daemon.json (status $status)"
+    _fail "a stale core.json (status $status)"
 fi
+
+# 11b. A core.json naming this launch failed ends the wait at once.
+printf '{"pid":4242,"state":"failed","code":"migration_failed"}' > "$tmp/core.json"
+APP_IPHONE_CORE_WAIT=20 _case "$(_listing "$phone")" -- --i-know-what-i-am-doing
+if [ "$status" = 1 ] && grep -qF "the core did not open: " "$tmp/out" && grep -qF "migration_failed" "$tmp/out"; then
+    _ok "a core.json naming this launch failed ends the wait"
+else
+    _fail "a failed core.json (status $status)"
+fi
+printf '{"pid":4242,"state":"ready"}' > "$tmp/core.json"
 
 # 12. Uncommitted changes: HEAD is built in a clean copy.
 echo " M apps/clax_app/lib/main.dart" > "$tmp/git-status"

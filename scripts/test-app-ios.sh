@@ -4,8 +4,8 @@
 # order and runs none of them; a missing iOS runtime stops it with the
 # download line; --udid prints the device's UDID and nothing else; the real
 # run (--i-know-what-i-am-doing) builds, creates the simulator only when it
-# is missing, installs, launches and waits for a daemon.json and a /healthz
-# naming the launched PID, and fails when the daemon never names it.
+# is missing, installs, launches and waits for a core.json naming the
+# launched PID ready, and fails when none names it or it names it failed.
 #
 # The stub xcrun, bazelisk, git, curl and open record their calls in
 # $tmp/calls. No build runs and no simulator is touched.
@@ -198,39 +198,40 @@ else
 fi
 
 # 7. The real run: builds, creates, boots, installs, launches, and finds
-# the daemon of the launched PID.
-mkdir -p "$container/Library/Application Support/clax-home"
-cat > "$container/Library/Application Support/clax-home/daemon.json" <<'JSON'
-{
-  "port": 7555,
-  "pid": 4242,
-  "token": "t",
-  "bind": "127.0.0.1"
-}
-JSON
+# the core of the launched PID open.
+mkdir -p "$container/Library/Application Support"
+printf '{"pid":4242,"state":"ready"}' > "$container/Library/Application Support/core.json"
 _case "$runtime_line" "" --i-know-what-i-am-doing
 if [ "$status" = 0 ] && _in_order "$tmp/calls" \
     "bazelisk build" "xcrun simctl create Clax iPhone com.apple.CoreSimulator.SimDeviceType.iPhone-17" \
     "xcrun simctl bootstatus $UDID -b" "xcrun simctl install $UDID" \
-    "xcrun simctl launch --terminate-running-process $UDID dev.empathic.clax" \
-    "curl" &&
-    grep -qF "http://127.0.0.1:7555/healthz" "$tmp/calls" &&
-    grep -qF "Clax is up on Clax iPhone" "$tmp/out" && grep -qF "7555" "$tmp/out" &&
+    "xcrun simctl launch --terminate-running-process $UDID dev.empathic.clax" &&
+    grep -qF "Clax is up on Clax iPhone" "$tmp/out" && grep -qF "the core is open (PID 4242)" "$tmp/out" &&
     [ -f "$repo/target/app-ios/0123abcd/Payload/Clax.app/Info.plist" ]; then
-    _ok "the real run builds, creates, boots, installs, launches and sees the daemon up"
+    _ok "the real run builds, creates, boots, installs, launches and sees the core open"
 else
     _fail "the real run (status $status)"
 fi
 
-# 8. A daemon.json from an earlier launch (another PID) is not taken for this one.
-sed -i.bak 's/"pid": 4242/"pid": 17/' "$container/Library/Application Support/clax-home/daemon.json"
+# 8. A core.json from an earlier launch (another PID) is not taken for this one.
+printf '{"pid":17,"state":"ready"}' > "$container/Library/Application Support/core.json"
 APP_IOS_WAIT=0 _case "$runtime_line" "    Clax iPhone ($UDID) (Booted)
 " --i-know-what-i-am-doing
-if [ "$status" = 1 ] && grep -qF "daemon did not come up" "$tmp/out" && ! grep -q '^curl' "$tmp/calls" &&
+if [ "$status" = 1 ] && grep -qF "core did not open in 0 s" "$tmp/out" &&
     ! grep -qF "simctl create" "$tmp/calls"; then
-    _ok "a daemon.json naming another PID is not this launch's daemon"
+    _ok "a core.json naming another PID is not this launch's core"
 else
-    _fail "a stale daemon.json (status $status)"
+    _fail "a stale core.json (status $status)"
+fi
+
+# 9. A core that failed to open ends the wait at once, saying why.
+printf '{"pid":4242,"state":"failed","code":"migration_failed"}' > "$container/Library/Application Support/core.json"
+APP_IOS_WAIT=20 _case "$runtime_line" "    Clax iPhone ($UDID) (Booted)
+" --i-know-what-i-am-doing
+if [ "$status" = 1 ] && grep -qF "the core did not open: " "$tmp/out" && grep -qF "migration_failed" "$tmp/out"; then
+    _ok "a core.json naming this launch failed ends the wait"
+else
+    _fail "a failed core.json (status $status)"
 fi
 
 if [ "$fails" -gt 0 ]; then

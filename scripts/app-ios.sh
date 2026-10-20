@@ -3,7 +3,7 @@
 # Clax app for the iOS simulator from this checkout (with Bazel, the only
 # iOS build: //apps/clax_app:ios_app, -c dbg, --ios_multi_cpus=sim_arm64)
 # and runs it on the simulator "Clax iPhone", keeping the app's data, then
-# waits for its in-process daemon to answer.
+# waits for its embedded core to open.
 #
 # Without an argument, or with --dry-run, it prints the command of each
 # step and runs none (it only lists runtimes, device types and devices).
@@ -18,14 +18,16 @@
 #      newest iPad Pro 13-inch), boots it and shows it in Simulator;
 #   4. unzips the app into target/app-ios/<sha>/ and installs it;
 #   5. launches it and waits, every 0.5 s for at most APP_IOS_WAIT seconds
-#      (60 by default), for daemon.json in the app's data container naming
-#      the launched PID, then for /healthz on its port answering with it.
+#      (60 by default), for core.json in the app's data container
+#      (Library/Application Support, CoreHost.readinessFile) naming the
+#      launched PID with state "ready"; one naming it "failed" ends the
+#      wait at once.
 # It names, boots and installs on no simulator but the chosen one, and
 # leaves it running.
 #
 # Environment:
 #   APP_IOS_DEVICE  iphone (default) or ipad
-#   APP_IOS_WAIT    seconds to wait for the daemon after the launch (default 60)
+#   APP_IOS_WAIT    seconds to wait for the core after the launch (default 60)
 set -euo pipefail
 cd "$(dirname "$0")/.."
 root="$PWD"
@@ -107,7 +109,7 @@ if [ -z "$act" ]; then
     fi
     echo "would unzip the app into $out and install it, keeping its data:"
     echo "  xcrun simctl install ${udid:-<its UDID>} $app"
-    echo "would launch it and wait up to $wait_s s for its daemon (daemon.json in its data container, then /healthz):"
+    echo "would launch it and wait up to $wait_s s for its core (core.json in its data container naming it ready):"
     echo "  xcrun simctl launch --terminate-running-process ${udid:-<its UDID>} $bundle_id"
     echo "run again with --i-know-what-i-am-doing (or: just app-ios) to do it"
     exit 0
@@ -170,25 +172,27 @@ done
 launched="$(xcrun simctl launch --terminate-running-process "$udid" "$bundle_id")"
 pid="${launched##*: }"
 case "$pid" in '' | *[!0-9]*) echo "app-ios: the launch named no PID: $launched" >&2; exit 1 ;; esac
-echo "app-ios: launched Clax (PID $pid); waiting up to $wait_s s for its daemon"
+echo "app-ios: launched Clax (PID $pid); waiting up to $wait_s s for its core"
 
-# The daemon's daemon.json under the app's data container names the PID
-# and the port; /healthz on that port answers with the same PID.
+# The app's core.json under its data container names the PID and whether
+# the core opened (lib/core/core_host.dart, CoreHost.readinessFile).
 data="$(xcrun simctl get_app_container "$udid" "$bundle_id" data)"
-info="$data/Library/Application Support/clax-home/daemon.json"
-field() { sed -nE "s/^ *\"$1\" *: *([0-9]+).*/\1/p" "$info" 2>/dev/null | sed -n 1p; }
-start=$SECONDS port=""
+info="$data/Library/Application Support/core.json"
+start=$SECONDS
 while :; do
-    if [ "$(field pid)" = "$pid" ]; then
-        port="$(field port)"
-        health="$(curl -fsS --max-time 2 "http://127.0.0.1:$port/healthz" 2>/dev/null || true)"
-        if grep -qE "\"pid\" *: *$pid([^0-9]|$)" <<<"$health"; then break; fi
+    ready="$(cat "$info" 2>/dev/null || true)"
+    if grep -qE "\"pid\" *: *$pid([^0-9]|$)" <<<"$ready"; then
+        if grep -qE '"state" *: *"ready"' <<<"$ready"; then break; fi
+        if grep -qE '"state" *: *"failed"' <<<"$ready"; then
+            echo "app-ios: the core did not open: $ready" >&2
+            exit 1
+        fi
     fi
     if [ $((SECONDS - start)) -ge "$wait_s" ]; then
-        echo "app-ios: the daemon did not come up in $wait_s s (no daemon.json naming PID $pid with a /healthz answering; see $data/Library/Caches/clax/daemon.log)" >&2
+        echo "app-ios: the core did not open in $wait_s s (no core.json naming PID $pid ready)" >&2
         exit 1
     fi
     sleep 0.5
 done
-echo "app-ios: the daemon answers on port $port (PID $pid)"
+echo "app-ios: the core is open (PID $pid)"
 echo "app-ios: Clax is up on $device"

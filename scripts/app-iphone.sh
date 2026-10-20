@@ -4,8 +4,9 @@
 # the team's files in ~/.config/clax/apple (CLAX_APPLE_DIR names another;
 # docs/usage.md, "Signing for a device and TestFlight"), and installs it on
 # the plugged-in or paired device, keeping the app's data; then launches it
-# and reads the daemon's daemon.json from the app's data container until it
-# names the launched PID. With --testflight it builds the App Store-signed
+# and reads core.json from the app's data container until it names the
+# launched PID ready (CoreHost.readinessFile; one naming it failed ends the
+# wait). With --testflight it builds the App Store-signed
 # app instead and uploads it to App Store Connect for TestFlight.
 #
 # Without --i-know-what-i-am-doing it prints the command of each step and
@@ -44,7 +45,7 @@
 #                           more than one is attached
 #   APP_IPHONE_WAIT         seconds to wait for a device after the build
 #                           (default 900)
-#   APP_IPHONE_DAEMON_WAIT  seconds to wait for the daemon after the launch
+#   APP_IPHONE_CORE_WAIT    seconds to wait for the core after the launch
 #                           (default 60)
 set -euo pipefail
 cd "$(dirname "$0")/.."
@@ -64,7 +65,7 @@ apple="${CLAX_APPLE_DIR:-$HOME/.config/clax/apple}"
 ledger="$apple/builds"
 docs='docs/usage.md, "Signing for a device and TestFlight"'
 device_wait="${APP_IPHONE_WAIT:-900}"
-daemon_wait="${APP_IPHONE_DAEMON_WAIT:-60}"
+core_wait="${APP_IPHONE_CORE_WAIT:-60}"
 
 for tool in git xcrun plutil; do
     command -v "$tool" >/dev/null || { echo "app-iphone: $tool is not on PATH (xcrun and plutil come with Xcode)" >&2; exit 1; }
@@ -208,7 +209,7 @@ if [ -z "$testflight" ]; then
     fi
 fi
 
-daemon_path="Library/Application Support/clax-home/daemon.json"
+core_path="Library/Application Support/core.json"
 upload=(xcrun altool --upload-package "<the .ipa>" --api-key "${key_id:-<api-key-id>}" --api-issuer "${issuer:-<api-issuer-id>}" --show-progress)
 
 if [ -z "$act" ]; then
@@ -229,9 +230,9 @@ if [ -z "$act" ]; then
         echo "  ${build[*]}"
         echo "would unzip the app into $out and install it on ${device_name:-the device attached by then}, keeping its data:"
         echo "  xcrun devicectl device install app --device ${device:-<its identifier>} $out/Payload/Clax.app"
-        echo "would launch it and wait up to $daemon_wait s for daemon.json in its data container to name the launched PID:"
+        echo "would launch it and wait up to $core_wait s for core.json in its data container to name the launched PID ready:"
         echo "  xcrun devicectl device process launch --device ${device:-<its identifier>} --terminate-existing $bundle_id"
-        echo "  xcrun devicectl device copy from --device ${device:-<its identifier>} --domain-type appDataContainer --domain-identifier $bundle_id --source \"$daemon_path\""
+        echo "  xcrun devicectl device copy from --device ${device:-<its identifier>} --domain-type appDataContainer --domain-identifier $bundle_id --source \"$core_path\""
     fi
     echo "run again with --i-know-what-i-am-doing (or: just app-iphone${testflight:+-testflight}) to do it"
     exit 0
@@ -332,20 +333,28 @@ xcrun devicectl device process launch --device "$device" --terminate-existing --
     --json-output "$tmpd/launch.json" "$bundle_id" >/dev/null
 pid="$(plutil -extract result.process.processIdentifier raw -o - "$tmpd/launch.json" 2>/dev/null || true)"
 case "$pid" in '' | *[!0-9]*) echo "app-iphone: the launch named no PID (see $tmpd/launch.json)" >&2; exit 1 ;; esac
-echo "app-iphone: launched Clax (PID $pid); waiting up to $daemon_wait s for its daemon"
+echo "app-iphone: launched Clax (PID $pid); waiting up to $core_wait s for its core"
 
-# The daemon's daemon.json in the app's data container names the PID.
-info="$tmpd/daemon.json"
+# The app's core.json in its data container names the PID and whether the
+# core opened (lib/core/core_host.dart, CoreHost.readinessFile).
+info="$tmpd/core.json"
 start=$SECONDS
 while :; do
     rm -f "$info"
     xcrun devicectl device copy from --device "$device" --domain-type appDataContainer \
-        --domain-identifier "$bundle_id" --source "$daemon_path" --destination "$info" --quiet >/dev/null 2>&1 || true
-    if [ "$(sed -nE 's/^ *"pid" *: *([0-9]+).*/\1/p' "$info" 2>/dev/null | sed -n 1p)" = "$pid" ]; then break; fi
-    if [ $((SECONDS - start)) -ge "$daemon_wait" ]; then
-        echo "app-iphone: the daemon did not come up in $daemon_wait s (no daemon.json naming PID $pid in the app's data container)" >&2
+        --domain-identifier "$bundle_id" --source "$core_path" --destination "$info" --quiet >/dev/null 2>&1 || true
+    ready="$(cat "$info" 2>/dev/null || true)"
+    if grep -qE "\"pid\" *: *$pid([^0-9]|$)" <<<"$ready"; then
+        if grep -qE '"state" *: *"ready"' <<<"$ready"; then break; fi
+        if grep -qE '"state" *: *"failed"' <<<"$ready"; then
+            echo "app-iphone: the core did not open: $ready" >&2
+            exit 1
+        fi
+    fi
+    if [ $((SECONDS - start)) -ge "$core_wait" ]; then
+        echo "app-iphone: the core did not open in $core_wait s (no core.json naming PID $pid ready in the app's data container)" >&2
         exit 1
     fi
     sleep 2
 done
-echo "app-iphone: $sha installed on $device_name; Clax is open and its daemon (PID $pid) is up"
+echo "app-iphone: $sha installed on $device_name; Clax is open and its core (PID $pid) is ready"
