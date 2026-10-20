@@ -43,6 +43,9 @@ import java.util.concurrent.atomic.AtomicLong
  *   shell's main frame; `committed {webViewId, url, navigation?}` when a
  *   main-frame navigation commits.
  *
+ * Every answer passes [response], which drops each `Access-Control-*`
+ * header (spec §4.3).
+ *
  * `shouldInterceptRequest` runs on a WebView IO thread: it posts the
  * request to the main thread and waits for Dart's answer at most
  * [ANSWER_CAP_SECONDS], then answers 504. A request for the main frame
@@ -274,17 +277,19 @@ class SchemeHost(
 
         /**
          * [status] with [headers] and [body] as a WebView takes it: the
-         * content type split into MIME type and charset. WebResourceResponse
-         * takes no 3xx status; one is answered as 502.
+         * content type split into MIME type and charset, and no
+         * `Access-Control-*` header. WebResourceResponse takes no 3xx
+         * status; one is answered as 502.
          */
         fun response(status: Int, headers: Map<String, String>, body: ByteArray): WebResourceResponse {
-            val type = headers.entries.firstOrNull { it.key.equals("content-type", ignoreCase = true) }?.value
+            val kept = headers.filterKeys { !it.lowercase().startsWith("access-control-") }
+            val type = kept.entries.firstOrNull { it.key.equals("content-type", ignoreCase = true) }?.value
             val mime = type?.substringBefore(';')?.trim()?.ifEmpty { null } ?: "application/octet-stream"
             val charset = type?.split(';')?.drop(1)?.map { it.trim() }
                 ?.firstOrNull { it.startsWith("charset=", ignoreCase = true) }
                 ?.substringAfter('=')?.trim('"')
             val code = if (status in 300..399 || status !in 100..599) 502 else status
-            return WebResourceResponse(mime, charset, code, reason(code), headers, ByteArrayInputStream(body))
+            return WebResourceResponse(mime, charset, code, reason(code), kept, ByteArrayInputStream(body))
         }
 
         private fun reason(status: Int): String = when (status) {

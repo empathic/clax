@@ -32,6 +32,9 @@ import webview_flutter_wkwebview
 ///   url}` when a navigation to the shell's host outside the main frame is
 ///   cancelled.
 ///
+/// Every answer passes `respond`, which drops each `Access-Control-*`
+/// header (spec §4.3).
+///
 /// Navigations to the shell's host are allowed only in the main frame.
 /// Each one allowed opens a one-shot permit with the WebView's next
 /// navigation number: the first request for the permitted URL whose
@@ -204,17 +207,30 @@ final class SchemeHost: NSObject, WKURLSchemeHandler, WKScriptMessageHandler {
       let task = tasks.removeValue(forKey: reqId)
     else { return }
     taskIds[ObjectIdentifier(task)] = nil
+    let (status, headers, body) = SchemeHost.answer(
+      status: (args["status"] as? NSNumber)?.intValue ?? 500,
+      headers: args["headers"] as? [String: String] ?? [:],
+      body: (args["body"] as? FlutterStandardTypedData)?.data ?? Data())
     guard let url = task.request.url,
       let response = HTTPURLResponse(
-        url: url, statusCode: (args["status"] as? NSNumber)?.intValue ?? 500,
-        httpVersion: "HTTP/1.1", headerFields: args["headers"] as? [String: String] ?? [:])
+        url: url, statusCode: status, httpVersion: "HTTP/1.1", headerFields: headers)
     else {
       task.didFailWithError(URLError(.badServerResponse))
       return
     }
     task.didReceive(response)
-    if let body = args["body"] as? FlutterStandardTypedData { task.didReceive(body.data) }
+    task.didReceive(body)
     task.didFinish()
+  }
+
+  /// [status], [headers] and [body] as a WebView is given them: without
+  /// any `Access-Control-*` header.
+  static func answer(status: Int, headers: [String: String], body: Data) -> (
+    Int, [String: String], Data
+  ) {
+    return (
+      status, headers.filter { !$0.key.lowercased().hasPrefix("access-control-") }, body
+    )
   }
 
   // MARK: The channel
