@@ -51,7 +51,7 @@
 # smallest. With CLAX_PERF_JSON set, one
 # line per figure is appended to that file for scripts/perf-log.sh
 # ({"name", "value", "budget", "unit"}), each p90 beside its budget in
-# web/perf/budget.json (`<platform>.app_home_usable_ms.budget`, and
+# web/perf/app-budget.json (`<platform>.app_home_usable_ms.budget`, and
 # app_home_cover_ms; CLAX_PERF_BUDGETS names another file), and one line
 # per timing with its `missing` count (unit "launches"). --record writes a
 # platform's missing budgets there, the p90 rounded up to the next 50 ms,
@@ -101,7 +101,10 @@ pkg=dev.empathic.clax
 # The wait for each launch's home-usable, and for the dropped launch's
 # snapshot (CLAX_PERF_CAP: another, in seconds, for the test).
 cap="${CLAX_PERF_CAP:-60}"
-budgets="${CLAX_PERF_BUDGETS:-web/perf/budget.json}"
+# The app's launch budgets, kept apart from web/perf/budget.json: the web
+# benchmark (web/perf/usable.perf.ts) takes any entry of its file under its
+# platform's key as a whole web budget.
+budgets="${CLAX_PERF_BUDGETS:-web/perf/app-budget.json}"
 
 # summarize PLATFORM FILE WANT [BUILD]: the JSON object for FILE's
 # home-usable and home-cover lines (WANT launches were asked for; 0: as

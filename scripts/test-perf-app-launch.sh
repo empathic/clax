@@ -42,6 +42,12 @@ if has "$out" "4 times: adb shell am force-stop dev.empathic.clax; adb shell am 
 else
     bad "--android dry run: $out"
 fi
+out="$(run --android --record)"
+if has "$out" "record the device's missing budgets in web/perf/app-budget.json" && ! has "$out" "web/perf/budget.json"; then
+    ok "the app's budgets are kept in web/perf/app-budget.json, apart from the web's budget.json that usable.perf.ts reads"
+else
+    bad "the budgets file: $out"
+fi
 if run --runs 0 >/dev/null 2>&1; then bad "--runs 0 is refused"; else ok "--runs 0 is refused"; fi
 
 # Five launches, the third without a snapshot (no home-cover line).
@@ -53,7 +59,7 @@ line() { printf '{"name":"%s","elapsed_ms":%s,"at":"2026-10-20T00:00:00.000Z","e
     line home-cover 30; line home-usable 410
     line say-usable 999; line home-cover 21; line home-usable 450
 } >"$d/timings.jsonl"
-echo '{"darwin-arm64": {"baseline": {}, "app_home_cover_ms": {"budget": 25}}}' >"$d/budget.json"
+echo '{"darwin-arm64": {"app_home_cover_ms": {"budget": 25}}}' >"$d/budget.json"
 want='{"platform": "darwin-arm64", "build": {"commit": "abc123"}, "app_home_usable_ms": {"median": 410, "p90": 520, "runs": 5, "missing": 0}, "app_home_cover_ms": {"median": 23.5, "p90": 30, "runs": 4, "missing": 1}}'
 out="$(CLAX_PERF_APP_TIMINGS="$d/timings.jsonl" CLAX_PERF_PLATFORM=darwin-arm64 CLAX_PERF_BUDGETS="$d/budget.json" \
     CLAX_PERF_JSON="$d/metrics.jsonl" run --commit abc123 2>"$d/err")"
@@ -101,7 +107,6 @@ CLAX_PERF_APP_TIMINGS="$d/timings.jsonl" CLAX_PERF_PLATFORM=darwin-arm64 CLAX_PE
     run --record >/dev/null 2>"$d/err"
 want_budget='{
   "darwin-arm64": {
-    "baseline": {},
     "app_home_cover_ms": {
       "budget": 25
     },
