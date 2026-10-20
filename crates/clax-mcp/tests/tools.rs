@@ -1,6 +1,6 @@
 use clax_mcp::tools::{
     AssetUploadArgs, FileArg, FileEncoding, ForkArgs, ListArgs, ListScope, PublishArgs, ReadArgs,
-    StatusArgs, TargetArgs,
+    StatusArgs, TagArgs, TagsArgs, TargetArgs,
 };
 use clax_mcp::{ClaxTools, DaemonClient};
 use clax_testkit::TestServer;
@@ -1346,4 +1346,120 @@ async fn fork_makes_a_new_artifact_from_the_version_a_url_names() {
         }))
         .await);
     assert_eq!(e["error"]["code"], "not_found", "{e}");
+}
+
+/// Makes tag `name` as the owner does.
+async fn owner_tag(ts: &TestServer, name: &str) {
+    let res = ts
+        .post_json("/api/tags", serde_json::json!({"name": name}))
+        .await;
+    assert_eq!(res.status(), 201);
+}
+
+#[tokio::test]
+async fn tags_lists_publish_applies_tag_changes_and_list_filters() {
+    let ts = TestServer::spawn().await;
+    let t = tools_for(&ts);
+    // None yet: a publish naming a tag publishes nothing.
+    let e = err(t
+        .publish(Parameters(PublishArgs {
+            tags: Some(vec!["draft".into()]),
+            ..html("Plan", "<p>p</p>")
+        }))
+        .await);
+    assert_eq!(e["error"]["code"], "unknown_tag", "{e}");
+    let msg = e["error"]["message"].as_str().unwrap();
+    assert!(msg.contains("no tags yet") && msg.contains("nothing was published"), "{msg}");
+    assert_eq!(ok(t.list(Parameters(ListArgs::default())).await)["artifacts"], serde_json::json!([]));
+    owner_tag(&ts, "draft").await;
+    owner_tag(&ts, "Final").await;
+    let listed = ok(t.tags(Parameters(TagsArgs::default())).await);
+    assert_eq!(
+        listed["tags"],
+        serde_json::json!([
+            {"name": "draft", "colour": "gray", "description": null, "count": 0},
+            {"name": "Final", "colour": "gray", "description": null, "count": 0},
+        ])
+    );
+    let e = err(t
+        .publish(Parameters(PublishArgs {
+            tags: Some(vec!["draft".into(), "urgent".into()]),
+            ..html("Plan", "<p>p</p>")
+        }))
+        .await);
+    assert!(
+        e["error"]["message"].as_str().unwrap().contains("draft, Final"),
+        "{e}"
+    );
+    // A publish applies existing tags, by name in any case.
+    let p = ok(t
+        .publish(Parameters(PublishArgs {
+            tags: Some(vec!["DRAFT".into()]),
+            ..html("Plan", "<p>p</p>")
+        }))
+        .await);
+    assert_eq!(p["tags"], serde_json::json!(["draft"]), "{p}");
+    let id = p["artifact_id"].as_str().unwrap().to_string();
+    ok(t.publish(Parameters(html("Other", "<p>o</p>"))).await);
+    // `tag` adds and removes.
+    let r = ok(t
+        .tag(Parameters(TagArgs {
+            url_or_id: id.clone(),
+            add: Some(vec!["final".into()]),
+            remove: Some(vec!["draft".into()]),
+        }))
+        .await);
+    assert_eq!(
+        (&r["tags"], &r["changed"]),
+        (&serde_json::json!(["Final"]), &serde_json::json!(true))
+    );
+    let e = err(t
+        .tag(Parameters(TagArgs {
+            url_or_id: id.clone(),
+            add: Some(vec!["urgent".into()]),
+            remove: None,
+        }))
+        .await);
+    assert_eq!(e["error"]["code"], "unknown_tag", "{e}");
+    let e = err(t
+        .tag(Parameters(TagArgs {
+            url_or_id: id.clone(),
+            ..Default::default()
+        }))
+        .await);
+    assert_eq!(e["error"]["code"], "invalid_args", "{e}");
+    // `list` shows the tags and filters on them, every one named.
+    let all = ok(t.list(Parameters(ListArgs::default())).await);
+    let plan = all["artifacts"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .find(|a| a["id"] == serde_json::json!(id))
+        .unwrap()
+        .clone();
+    assert_eq!(plan["tags"], serde_json::json!(["Final"]));
+    let only = ok(t
+        .list(Parameters(ListArgs {
+            tags: Some(vec!["final".into()]),
+            ..Default::default()
+        }))
+        .await);
+    let ids: Vec<&Value> = only["artifacts"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .map(|a| &a["id"])
+        .collect();
+    assert_eq!(ids, vec![&serde_json::json!(id)]);
+    let none = ok(t
+        .list(Parameters(ListArgs {
+            tags: Some(vec!["final".into(), "draft".into()]),
+            ..Default::default()
+        }))
+        .await);
+    assert_eq!(none["artifacts"], serde_json::json!([]));
+    assert_eq!(
+        ok(t.tags(Parameters(TagsArgs::default())).await)["tags"][1]["count"],
+        1
+    );
 }

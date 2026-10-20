@@ -54,6 +54,10 @@ pub struct Args {
     /// IDs of comment threads this version addresses (comma-separated).
     #[arg(long, value_delimiter = ',')]
     pub addresses: Vec<String>,
+    /// Existing tags to add to the artifact (names, comma-separated; see
+    /// `clax tags`). An unknown tag fails before anything is published.
+    #[arg(long, value_delimiter = ',')]
+    pub tags: Vec<String>,
 }
 
 /// Printed after the URL when no agent session owns the published artifact.
@@ -182,6 +186,7 @@ pub fn run(cli: &crate::Cli, home: &Home, a: &Args) -> anyhow::Result<()> {
         label: a.label.clone(),
         note: a.note.clone(),
         addresses: (!a.addresses.is_empty()).then(|| a.addresses.clone()),
+        tags: (!a.tags.is_empty()).then(|| a.tags.clone()),
         ..Default::default()
     };
     let res = super::tools::call_on(&c, home, move |t: clax_mcp::ClaxTools| async move {
@@ -209,6 +214,8 @@ pub fn run(cli: &crate::Cli, home: &Home, a: &Args) -> anyhow::Result<()> {
             "session": session.clone().flatten(),
             "note": res["note"],
             "addressed": res["addressed"],
+            "tags": res["tags"],
+            "tags_error": res.get("tags_error"),
         }),
         |j| {
             let mut text = format!(
@@ -225,9 +232,21 @@ pub fn run(cli: &crate::Cli, home: &Home, a: &Args) -> anyhow::Result<()> {
                 text.push('\n');
                 text.push_str(NO_SESSION_NOTE);
             }
+            if let Some(tags) = j["tags"].as_array().filter(|t| !t.is_empty()) {
+                let names: Vec<&str> = tags.iter().filter_map(|t| t.as_str()).collect();
+                text.push_str(&format!("\ntags: {}", names.join(", ")));
+            }
             text
         },
     );
+    // The version landed; tags that could not be applied fail the command
+    // after it says so.
+    if let Some(e) = res.get("tags_error") {
+        anyhow::bail!(
+            "published, but the tags were not applied: {}",
+            e["message"].as_str().unwrap_or("refused")
+        );
+    }
     Ok(())
 }
 

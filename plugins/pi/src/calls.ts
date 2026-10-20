@@ -28,6 +28,7 @@ export const GIT_TOOLS: ReadonlySet<string> = new Set([
   "delete",
   "pin",
   "unpin",
+  "tag",
   "working",
   "ask",
   "publish_public",

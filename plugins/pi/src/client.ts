@@ -550,6 +550,23 @@ export class DaemonClient {
     return this.json("/api/artifacts", { method: "GET" });
   }
 
+  /** `GET /api/artifacts?tag=…`: the artifacts carrying every tag in `tags`
+   * (each an ID or a name), as `list` gives them. */
+  listTagged(tags: string[]): Promise<any> {
+    const q = new URLSearchParams(tags.map(t => ["tag", t])).toString();
+    return this.json(`/api/artifacts?${q}`, { method: "GET" });
+  }
+
+  /** `GET /api/tags`: `{tags: [{id, name, colour, description, count, …}], colours, may_manage}`. */
+  tags(): Promise<any> {
+    return this.json("/api/tags", { method: "GET" });
+  }
+
+  /** `PATCH /api/artifacts/<id>/tags` (`{add, remove}`): changes the tags it carries; `{artifact_id, tags, changed}`. */
+  editTags(id: string, body: unknown): Promise<any> {
+    return this.json(`/api/artifacts/${id}/tags`, this.jsonBody("PATCH", body));
+  }
+
   /** `GET /api/artifacts/<id>`: `{artifact, versions}`; `artifact` carries
    * `owner_session_id`, `owner_live` and `owner_harness`. */
   get(id: string): Promise<any> {

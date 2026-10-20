@@ -1,6 +1,6 @@
 // Clax for Pi: registers the Pi session with the Clax daemon (the local one,
 // or in remote mode the daemon of the person this machine is connected to)
-// and adds the thirty Clax tools (`clax_publish`, `clax_read`, ...) and
+// and adds the thirty-two Clax tools (`clax_publish`, `clax_read`, ...) and
 // the `/clax` command. Pi has no MCP support in its extension API, so the
 // tools call the daemon's REST API directly and return the same JSON as the MCP
 // tools. It appends feedback to its tool results and long-polls for pushed
@@ -68,6 +68,7 @@ const PublishArgs = Type.Object({
   capabilities: opt(Type.Record(Type.String(), Type.Unknown(), { description: "Runtime capabilities the page declares." })),
   note: opt(str("A short change note for the person, at most 280 characters.")),
   addresses: opt(Type.Array(Type.String(), { description: "IDs of the comment threads this version addresses." })),
+  tags: opt(Type.Array(Type.String(), { description: "Existing tags (names, from `tags`) to add to the artifact once published. Only the owner makes tags: an unknown one fails before anything is published, listing the tags there are." })),
 }, strict);
 
 const ReadArgs = Type.Object({
@@ -80,9 +81,25 @@ const ReadArgs = Type.Object({
 const ListArgs = Type.Object({
   limit: opt(Type.Integer({ minimum: 0, description: "Most artifacts to return." })),
   scope: opt(Type.Unsafe<"mine" | "all">({ type: "string", enum: ["mine", "all"], description: "`all` (default) lists every artifact; `mine` only those this session created." })),
+  tags: opt(Type.Array(Type.String(), { description: "Only artifacts carrying every one of these tags (names or IDs)." })),
 }, strict);
 
 const TargetArgs = Type.Object({ url_or_id: urlOrId }, strict);
+
+const TagArgs = Type.Object({
+  url_or_id: urlOrId,
+  add: opt(Type.Array(Type.String(), { description: "Existing tags (names, from `tags`) to add." })),
+  remove: opt(Type.Array(Type.String(), { description: "Tags to remove." })),
+}, strict);
+
+const TagsArgs = Type.Object({}, strict);
+
+/** The names of an artifact's `tags` (`[{id, name, colour}]`), in order. */
+const tagNames = (tags: unknown): string[] =>
+  Array.isArray(tags) ? tags.map((t: Json) => t?.name).filter((n: unknown): n is string => typeof n === "string") : [];
+
+/** Names compared as Clax compares them: lowercased. */
+const foldTag = (name: string) => name.trim().toLowerCase();
 
 const PublishPublicArgs = Type.Object({
   url_or_id: str("Artifact URL or ID (an artifact of this Clax)."),
@@ -1069,6 +1086,8 @@ class Tools {
       for (const t of a.addresses) checkThreadId(t);
       body.addresses = a.addresses;
     }
+    const tags = a.tags ?? [];
+    if (tags.length > 0) await this.checkTags(c, tags);
     const res = await this.call(async () => {
       if (targetId === undefined) {
         try {
@@ -1098,7 +1117,7 @@ class Tools {
       }
     });
     const id: string = res.artifact?.id ?? "";
-    return {
+    const out: Json = {
       artifact_id: id,
       url: this.artifactUrl(c, id),
       version: res.version?.n ?? null,
@@ -1107,7 +1126,31 @@ class Tools {
       note: res.version?.note ?? null,
       note_truncated: res.note_truncated ?? false,
       addressed: res.version?.addresses ?? [],
+      tags: tagNames(res.artifact?.tags),
     };
+    // The version is published whatever the tags' fate: a refusal is
+    // reported beside it, never as the publish's failure.
+    if (tags.length > 0) {
+      try {
+        out.tags = tagNames((await c.editTags(id, { add: tags })).tags);
+      } catch (e) {
+        out.tags_error = e instanceof ClientError && e.kind === "api" ? e.error : { message: String(e instanceof Error ? e.message : e) };
+      }
+    }
+    return out;
+  }
+
+  /** Refuses `wanted` tags that name no tag (by ID or by name, whatever its
+   * case), before a publish applies them, naming the tags there are. */
+  private async checkTags(c: DaemonClient, wanted: string[]): Promise<void> {
+    const res = await this.call(() => c.tags());
+    const all: Json[] = res.tags ?? [];
+    const known = (w: string) => all.some(t => t.id === w.trim() || (typeof t.name === "string" && foldTag(t.name) === foldTag(w)));
+    const bad = wanted.find(w => !known(w));
+    if (bad === undefined) return;
+    const names = all.map(t => t.name).filter((n: unknown) => typeof n === "string");
+    const there = names.length === 0 ? "there are no tags yet" : `the tags are: ${names.join(", ")}`;
+    throw toolError("unknown_tag", `no tag is named '${bad.trim()}': ${there}. Only the owner makes tags; nothing was published`);
   }
 
   /** The error result for a publish conflict: the daemon's error plus a summary
@@ -1160,7 +1203,8 @@ class Tools {
 
   async list(ctx: ExtensionContext, a: Static<typeof ListArgs>): Promise<Json> {
     const c = this.clientFor(ctx);
-    const res = await this.call(() => c.list());
+    const tags = a.tags ?? [];
+    const res = await this.call(() => (tags.length > 0 ? c.listTagged(tags) : c.list()));
     const sessionId = c.session()?.id;
     const mine = (x: Json) => a.scope !== "mine" || (sessionId !== undefined && x.owner_session_id === sessionId);
     const artifacts = (res.artifacts ?? []).filter(mine).slice(0, a.limit ?? Infinity).map((x: Json) => ({
@@ -1169,10 +1213,33 @@ class Tools {
       title: x.title ?? null,
       version: x.current_version ?? null,
       pinned: x.pinned ?? null,
+      tags: tagNames(x.tags),
       updated_at: x.updated_at ?? null,
       owner_session_id: x.owner_session_id ?? null,
     }));
     return { artifacts };
+  }
+
+  async tag(ctx: ExtensionContext, a: Static<typeof TagArgs>): Promise<Json> {
+    const c = this.clientFor(ctx);
+    const { id } = await this.resolveRef(c, a.url_or_id);
+    const add = a.add ?? [];
+    const remove = a.remove ?? [];
+    if (add.length === 0 && remove.length === 0) throw invalid("pass `add` or `remove` (tag names)");
+    const res = await this.call(() => c.editTags(id, { add, remove }));
+    return { artifact_id: id, tags: tagNames(res.tags), changed: res.changed ?? null };
+  }
+
+  async tags(ctx: ExtensionContext): Promise<Json> {
+    const c = this.clientFor(ctx);
+    const res = await this.call(() => c.tags());
+    const tags = (res.tags ?? []).map((t: Json) => ({
+      name: t.name ?? null,
+      colour: t.colour ?? null,
+      description: t.description ?? null,
+      count: t.count ?? null,
+    }));
+    return { tags };
   }
 
   async delete(ctx: ExtensionContext, a: Static<typeof TargetArgs>): Promise<Json> {
@@ -2053,7 +2120,7 @@ export function claxExtension(opts: ClaxOptions = {}): (pi: ExtensionAPI) => voi
     };
 
     define("publish", "Clax publish",
-      "Publish an HTML page as a new artifact, or as a new version of an existing one (pass `id` or `url`, with `if_version`). Give the page as `html` or `file_path`, plus optional supporting `files`. Returns the artifact ID, its URL for the person, and the new version number. Add a short `note` (at most 280 characters) saying what changed, and list the comment threads this version addresses in `addresses`; threads you were marked working on are added for you. The person sees both as the version's changelog; nothing is resolved by it.",
+      "Publish an HTML page as a new artifact, or as a new version of an existing one (pass `id` or `url`, with `if_version`). Give the page as `html` or `file_path`, plus optional supporting `files`. Returns the artifact ID, its URL for the person, and the new version number. Add a short `note` (at most 280 characters) saying what changed, and list the comment threads this version addresses in `addresses`; threads you were marked working on are added for you. The person sees both as the version's changelog; nothing is resolved by it. Pass `tags` to add existing tags (see `tags`).",
       "Publish an HTML page (artifact) to the local Clax server, or a new version of one",
       PublishArgs, (ctx, a) => tools.publish(ctx, a));
     define("read", "Clax read",
@@ -2061,7 +2128,7 @@ export function claxExtension(opts: ClaxOptions = {}): (pi: ExtensionAPI) => voi
       "Read a published file of a Clax artifact version",
       ReadArgs, (ctx, a) => tools.read(ctx, a));
     define("list", "Clax list",
-      "List artifacts, pinned first and then most recently updated, with their URLs and current versions. `scope: mine` lists only those this session created.",
+      "List artifacts, pinned first and then most recently updated, with their URLs, current versions and tags. `scope: mine` lists only those this session created; `tags` only those carrying every tag named.",
       "List Clax artifacts with their URLs and current versions",
       ListArgs, (ctx, a) => tools.list(ctx, a));
     define("delete", "Clax delete", "Delete an artifact and all its versions.",
@@ -2084,6 +2151,14 @@ export function claxExtension(opts: ClaxOptions = {}): (pi: ExtensionAPI) => voi
     define("unpin", "Clax unpin", "Unpin an artifact.",
       "Unpin a Clax artifact",
       TargetArgs, (ctx, a) => tools.setPinned(ctx, a, false));
+    define("tag", "Clax tag",
+      "Add or remove tags on an artifact. Tags are the owner's list (see `tags`); only existing tags apply, and an unknown one fails, listing the tags there are. Needs the right to administer the artifact: its owner, its maker, and their agents. Returns the artifact's tags after.",
+      "Add or remove a Clax artifact's tags",
+      TagArgs, (ctx, a) => tools.tag(ctx, a));
+    define("tags", "Clax tags",
+      "List the tags artifacts can carry: each one's name, colour, description and how many artifacts you can see carry it. Only the owner makes and changes tags; apply them with `tag` or `publish`'s `tags`.",
+      "List the tags Clax artifacts can carry",
+      TagsArgs, ctx => tools.tags(ctx));
     define("asset_upload", "Clax asset upload",
       "Upload local files (images, video, fonts, data) as assets of an artifact. Returns each asset's URL for the page to reference.",
       "Upload local files as assets of a Clax artifact and get URLs for the page",

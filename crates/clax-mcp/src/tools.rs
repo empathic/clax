@@ -1,4 +1,4 @@
-//! The Clax MCP tool set: thirty tools that call the daemon's REST API.
+//! The Clax MCP tool set: thirty-two tools that call the daemon's REST API.
 
 use crate::client::{ClientError, DaemonClient};
 use crate::render;
@@ -108,6 +108,10 @@ pub struct PublishArgs {
     pub note: Option<String>,
     /// IDs of the comment threads this version addresses.
     pub addresses: Option<Vec<String>>,
+    /// Existing tags (names, from `tags`) to add to the artifact once
+    /// published. Only the owner makes tags: an unknown one fails before
+    /// anything is published, listing the tags there are.
+    pub tags: Option<Vec<String>>,
 }
 
 #[derive(Clone, Debug, Default, Deserialize, JsonSchema)]
@@ -132,6 +136,8 @@ pub struct ListArgs {
     pub limit: Option<u32>,
     /// `all` (default) lists every artifact; `mine` only those this session created.
     pub scope: Option<ListScope>,
+    /// Only artifacts carrying every one of these tags (names or IDs).
+    pub tags: Option<Vec<String>>,
 }
 
 /// Which artifacts `list` returns.
@@ -144,6 +150,21 @@ pub enum ListScope {
     #[default]
     All,
 }
+
+#[derive(Clone, Debug, Default, Deserialize, JsonSchema)]
+#[serde(deny_unknown_fields)]
+pub struct TagArgs {
+    /// Artifact URL or ID.
+    pub url_or_id: String,
+    /// Existing tags (names, from `tags`) to add.
+    pub add: Option<Vec<String>>,
+    /// Tags to remove.
+    pub remove: Option<Vec<String>>,
+}
+
+#[derive(Clone, Debug, Default, Deserialize, JsonSchema)]
+#[serde(deny_unknown_fields)]
+pub struct TagsArgs {}
 
 #[derive(Clone, Debug, Default, Deserialize, JsonSchema)]
 #[serde(deny_unknown_fields)]
@@ -589,6 +610,18 @@ const CREATE_TIMEOUT: &str = "the daemon did not respond in time, and the artifa
 
 fn invalid(message: impl Into<String>) -> CallToolResult {
     render::error("invalid_args", message, json!({}))
+}
+
+/// The names of `tags` (an artifact's `[{id, name, colour}]`), in order.
+fn tag_names(tags: &Value) -> Value {
+    json!(
+        tags.as_array()
+            .map(Vec::as_slice)
+            .unwrap_or_default()
+            .iter()
+            .filter_map(|t| t["name"].as_str())
+            .collect::<Vec<_>>()
+    )
 }
 
 fn not_found(message: impl Into<String>) -> CallToolResult {
@@ -1387,6 +1420,10 @@ impl ClaxTools {
             }
             body["addresses"] = json!(t);
         }
+        let tags = a.tags.unwrap_or_default();
+        if !tags.is_empty() {
+            self.check_tags(&tags).await?;
+        }
         let res = match target {
             // A create past its deadline may have made the artifact, whose
             // ID the agent never saw: it is told to look for it before
@@ -1431,7 +1468,7 @@ impl ClaxTools {
             .as_object()
             .map(|m| m.keys().collect())
             .unwrap_or_default();
-        Ok(json!({
+        let mut out = json!({
             "artifact_id": id,
             "url": self.artifact_url(id),
             "version": res["version"]["n"],
@@ -1440,7 +1477,51 @@ impl ClaxTools {
             "note": res["version"]["note"],
             "note_truncated": res["note_truncated"],
             "addressed": res["version"]["addresses"],
-        }))
+            "tags": tag_names(&res["artifact"]["tags"]),
+        });
+        // The version is published whatever the tags' fate: a refusal is
+        // reported beside it, never as the publish's failure.
+        if !tags.is_empty() {
+            match self.client.edit_tags(id, &json!({"add": tags})).await {
+                Ok(r) => out["tags"] = tag_names(&r["tags"]),
+                Err(ClientError::Api { error, .. }) => out["tags_error"] = error,
+                Err(e) => out["tags_error"] = json!({"message": e.to_string()}),
+            }
+        }
+        Ok(out)
+    }
+
+    /// Refuses `wanted` tags that name no tag (by ID or by name, whatever
+    /// its case), before a publish applies them, naming the tags there are.
+    async fn check_tags(&self, wanted: &[String]) -> std::result::Result<(), CallToolResult> {
+        let res = self.client.tags().await.map_err(|e| self.fail(e))?;
+        let all = res["tags"].as_array().cloned().unwrap_or_default();
+        let known = |w: &str| {
+            let w = w.trim();
+            all.iter().any(|t| {
+                t["id"].as_str() == Some(w)
+                    || t["name"]
+                        .as_str()
+                        .is_some_and(|n| clax_core::tags::fold(n) == clax_core::tags::fold(w))
+            })
+        };
+        if let Some(bad) = wanted.iter().find(|w| !known(w)) {
+            let names: Vec<&str> = all.iter().filter_map(|t| t["name"].as_str()).collect();
+            let there = if names.is_empty() {
+                "there are no tags yet".to_string()
+            } else {
+                format!("the tags are: {}", names.join(", "))
+            };
+            return Err(render::error(
+                "unknown_tag",
+                format!(
+                    "no tag is named '{}': {there}. Only the owner makes tags; nothing was published",
+                    bad.trim()
+                ),
+                json!({}),
+            ));
+        }
+        Ok(())
     }
 
     /// The error result for a publish conflict: the daemon's error plus a summary
@@ -1528,7 +1609,13 @@ impl ClaxTools {
     }
 
     async fn do_list(&self, a: ListArgs) -> Outcome {
-        let res = self.client.list().await.map_err(|e| self.fail(e))?;
+        let tags = a.tags.clone().unwrap_or_default();
+        let res = if tags.is_empty() {
+            self.client.list().await
+        } else {
+            self.client.list_tagged(&tags).await
+        }
+        .map_err(|e| self.fail(e))?;
         let session_id = self.session().map(|s| s.id);
         let limit = a.limit.map_or(usize::MAX, |l| l as usize);
         let mine = |x: &&Value| match a.scope.unwrap_or_default() {
@@ -1552,6 +1639,7 @@ impl ClaxTools {
                     "title": x["title"],
                     "version": x["current_version"],
                     "pinned": x["pinned"],
+                    "tags": tag_names(&x["tags"]),
                     "updated_at": x["updated_at"],
                     "owner_session_id": x["owner_session_id"],
                 })
@@ -1564,6 +1652,43 @@ impl ClaxTools {
         let id = self.resolve_id(&a.url_or_id).await?;
         self.client.delete(&id).await.map_err(|e| self.fail(e))?;
         Ok(json!({"artifact_id": id, "deleted": true}))
+    }
+
+    async fn do_tag(&self, a: TagArgs) -> Outcome {
+        let id = self.resolve_id(&a.url_or_id).await?;
+        let (add, remove) = (a.add.unwrap_or_default(), a.remove.unwrap_or_default());
+        if add.is_empty() && remove.is_empty() {
+            return Err(invalid("pass `add` or `remove` (tag names)"));
+        }
+        let res = self
+            .client
+            .edit_tags(&id, &json!({"add": add, "remove": remove}))
+            .await
+            .map_err(|e| self.fail(e))?;
+        Ok(json!({
+            "artifact_id": id,
+            "tags": tag_names(&res["tags"]),
+            "changed": res["changed"],
+        }))
+    }
+
+    async fn do_tags(&self) -> Outcome {
+        let res = self.client.tags().await.map_err(|e| self.fail(e))?;
+        let tags: Vec<Value> = res["tags"]
+            .as_array()
+            .map(Vec::as_slice)
+            .unwrap_or_default()
+            .iter()
+            .map(|t| {
+                json!({
+                    "name": t["name"],
+                    "colour": t["colour"],
+                    "description": t["description"],
+                    "count": t["count"],
+                })
+            })
+            .collect();
+        Ok(json!({"tags": tags}))
     }
 
     async fn set_pinned(&self, a: TargetArgs, pinned: bool) -> Outcome {
@@ -3025,6 +3150,8 @@ direct_tools!(
     open,
     pin,
     unpin,
+    tag,
+    tags,
     asset_upload,
     status,
     comments_read,
@@ -3051,7 +3178,7 @@ direct_tools!(
 #[tool_router]
 impl ClaxTools {
     #[tool(
-        description = "Publish an HTML page as a new artifact, or as a new version of an existing one (pass `id` or `url`, with `if_version`). Give the page as `html` or `file_path`, plus optional supporting `files`. Returns the artifact ID, its URL for the person, and the new version number. Add a short `note` (at most 280 characters) saying what changed, and list the comment threads this version addresses in `addresses`; threads you were marked working on are added for you. The person sees both as the version's changelog; nothing is resolved by it.",
+        description = "Publish an HTML page as a new artifact, or as a new version of an existing one (pass `id` or `url`, with `if_version`). Give the page as `html` or `file_path`, plus optional supporting `files`. Returns the artifact ID, its URL for the person, and the new version number. Add a short `note` (at most 280 characters) saying what changed, and list the comment threads this version addresses in `addresses`; threads you were marked working on are added for you. The person sees both as the version's changelog; nothing is resolved by it. Pass `tags` to add existing tags (see `tags`).",
         annotations(
             read_only_hint = false,
             destructive_hint = false,
@@ -3078,7 +3205,7 @@ impl ClaxTools {
     }
 
     #[tool(
-        description = "List artifacts, pinned first and then most recently updated, with their URLs and current versions. `scope: mine` lists only those this session created.",
+        description = "List artifacts, pinned first and then most recently updated, with their URLs, current versions and tags. `scope: mine` lists only those this session created; `tags` only those carrying every tag named.",
         annotations(read_only_hint = true, open_world_hint = false)
     )]
     pub async fn list(
@@ -3182,6 +3309,33 @@ impl ClaxTools {
         Parameters(args): Parameters<TargetArgs>,
     ) -> Result<CallToolResult, McpError> {
         self.finish(self.set_pinned(args, false).await).await
+    }
+
+    #[tool(
+        description = "Add or remove tags on an artifact. Tags are the owner's list (see `tags`); only existing tags apply, and an unknown one fails, listing the tags there are. Needs the right to administer the artifact: its owner, its maker, and their agents. Returns the artifact's tags after.",
+        annotations(
+            read_only_hint = false,
+            destructive_hint = false,
+            idempotent_hint = true,
+            open_world_hint = false
+        )
+    )]
+    pub async fn tag(
+        &self,
+        Parameters(args): Parameters<TagArgs>,
+    ) -> Result<CallToolResult, McpError> {
+        self.finish(self.do_tag(args).await).await
+    }
+
+    #[tool(
+        description = "List the tags artifacts can carry: each one's name, colour, description and how many artifacts you can see carry it. Only the owner makes and changes tags; apply them with `tag` or `publish`'s `tags`.",
+        annotations(read_only_hint = true, open_world_hint = false)
+    )]
+    pub async fn tags(
+        &self,
+        Parameters(_args): Parameters<TagsArgs>,
+    ) -> Result<CallToolResult, McpError> {
+        self.finish(self.do_tags().await).await
     }
 
     #[tool(
@@ -3725,12 +3879,12 @@ mod tests {
         }
     }
 
-    /// Thirty tools, `comments_handoff` (spec 2026-10-08 §16) and
-    /// `where_to_ask` (spec 2026-10-16 §1) among them.
+    /// Thirty-two tools, `comments_handoff` (spec 2026-10-08 §16),
+    /// `where_to_ask` (spec 2026-10-16 §1), `tag` and `tags` among them.
     #[test]
-    fn tool_count_is_30() {
-        assert_eq!(ClaxTools::tool_count(), 30);
-        for name in ["comments_handoff", "where_to_ask"] {
+    fn tool_count_is_32() {
+        assert_eq!(ClaxTools::tool_count(), 32);
+        for name in ["comments_handoff", "where_to_ask", "tag", "tags"] {
             assert!(ClaxTools::tools().iter().any(|t| t.name == name), "{name}");
         }
     }

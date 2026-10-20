@@ -1026,6 +1026,33 @@ impl DaemonClient {
         .await
     }
 
+    /// `GET /api/artifacts?tag=…`: the artifacts carrying every tag in
+    /// `tags` (each an ID or a name), as [`Client::list`] gives them.
+    pub async fn list_tagged(&self, tags: &[String]) -> Result<Value> {
+        let query: String = url::form_urlencoded::Serializer::new(String::new())
+            .extend_pairs(tags.iter().map(|t| ("tag", t.as_str())))
+            .finish();
+        let path = format!("/api/artifacts?{query}");
+        self.json(|c| c.request(reqwest::Method::GET, &path)).await
+    }
+
+    /// `GET /api/tags`: `{tags: [{id, name, colour, description, count, …}],
+    /// colours, may_manage}`.
+    pub async fn tags(&self) -> Result<Value> {
+        self.json(|c| c.request(reqwest::Method::GET, "/api/tags"))
+            .await
+    }
+
+    /// `PATCH /api/artifacts/<id>/tags {add, remove}`: changes the tags the
+    /// artifact carries; `{artifact_id, tags, changed}`.
+    pub async fn edit_tags(&self, id: &str, body: &Value) -> Result<Value> {
+        self.json(|c| {
+            c.request(reqwest::Method::PATCH, &format!("/api/artifacts/{id}/tags"))
+                .json(body)
+        })
+        .await
+    }
+
     /// `POST /api/artifacts/<id>/fork`: forks a version (`{version?}`) into a
     /// new artifact; `{artifact, version, url}`.
     pub async fn fork(&self, id: &str, body: &Value) -> Result<Value> {

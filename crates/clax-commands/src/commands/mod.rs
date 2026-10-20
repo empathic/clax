@@ -25,6 +25,7 @@ pub mod remotes;
 pub mod serve;
 pub mod status;
 pub mod stop;
+pub mod tags;
 pub mod toolpath;
 pub mod tools;
 pub mod version;

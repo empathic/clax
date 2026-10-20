@@ -116,7 +116,7 @@ async function deadHome(): Promise<string> {
 }
 
 describe("clax Pi extension", () => {
-  it("registers the thirty tools with one-line prompt snippets, and the clax command", () => {
+  it("registers the thirty-two tools with one-line prompt snippets, and the clax command", () => {
     const { pi } = load(daemon.home, "s-tools");
     expect([...pi.tools.keys()].sort()).toEqual([...TOOLS].sort());
     for (const t of pi.tools.values()) {
@@ -276,6 +276,34 @@ describe("clax Pi extension", () => {
     expect(listed.artifacts).toHaveLength(1);
     expect(listed.artifacts[0]).toMatchObject({ id: mine.artifact_id, url: mine.url, title: "mine", version: 1, pinned: false });
     expect(listed.artifacts[0].owner_session_id).toBeTypeOf("string");
+  });
+
+  it("applies the owner's tags through publish and tag, and lists and filters by them", async () => {
+    const { pi, ctx } = load(daemon.home, "pi-tags");
+    await pi.emit("session_start", { type: "session_start", reason: "startup" }, ctx);
+    const refused = await pi.callTool("clax_publish", { html: "<title>t</title>", tags: ["pi-unknown"] }, ctx);
+    expect(refused.isError).toBe(true);
+    expect(json(refused).error).toMatchObject({ code: "unknown_tag" });
+    expect(json(refused).error.message).toContain("nothing was published");
+    for (const name of ["pi-draft", "pi-final"]) {
+      await api(daemon, "/api/tags", { method: "POST", body: JSON.stringify({ name }) });
+    }
+    const listed = json(await pi.callTool("clax_tags", {}, ctx));
+    expect(listed.tags).toEqual(expect.arrayContaining([{ name: "pi-draft", colour: "gray", description: null, count: 0 }]));
+    const p = json(await pi.callTool("clax_publish", { html: "<title>tagged</title>", tags: ["PI-DRAFT"] }, ctx));
+    expect(p.tags).toEqual(["pi-draft"]);
+    const t = json(await pi.callTool("clax_tag", { url_or_id: p.artifact_id, add: ["pi-final"], remove: ["pi-draft"] }, ctx));
+    expect(t).toMatchObject({ artifact_id: p.artifact_id, tags: ["pi-final"], changed: true });
+    const unknown = await pi.callTool("clax_tag", { url_or_id: p.artifact_id, add: ["pi-nope"] }, ctx);
+    expect(unknown.isError).toBe(true);
+    expect(json(unknown).error).toMatchObject({ code: "unknown_tag" });
+    const empty = await pi.callTool("clax_tag", { url_or_id: p.artifact_id }, ctx);
+    expect(json(empty).error).toMatchObject({ code: "invalid_args" });
+    const only = json(await pi.callTool("clax_list", { tags: ["pi-final"] }, ctx));
+    expect(only.artifacts.map((a: any) => a.id)).toEqual([p.artifact_id]);
+    expect(only.artifacts[0].tags).toEqual(["pi-final"]);
+    const none = json(await pi.callTool("clax_list", { tags: ["pi-final", "pi-draft"] }, ctx));
+    expect(none.artifacts).toEqual([]);
   });
 
   it("reports daemon_unreachable naming the daemon log when no daemon answers", async () => {
@@ -512,15 +540,18 @@ describe("clax Pi extension", () => {
         { file_path: "page.html", id, if_version: 2, title: "t", description: "d", icon: "chart", label: "l", capabilities: { db: {} },
           files: { "a.css": { content: "body{}" }, "b.png": { content: "iVBORw0K", encoding: "base64", content_type: "image/png" }, "c.js": { path: "c.js" }, "old.txt": null } },
         { html: "<p>", url: `http://localhost:7480/a/${id}` },
+        { html: "<p>", tags: ["draft"] },
       ],
       clax_read: [{ url_or_id: id }, { url_or_id: id, path: "a.css", version: 1, max_bytes: 10 }],
-      clax_list: [{}, { limit: 5, scope: "mine" }, { scope: "all" }],
+      clax_list: [{}, { limit: 5, scope: "mine" }, { scope: "all" }, { tags: ["draft", "final"] }],
       clax_delete: [{ url_or_id: id }],
       clax_fork: [{ url_or_id: id }, { url_or_id: id, version: 2 }],
       clax_publish_public: [{ url_or_id: id }, { url_or_id: id, remote: "pub", mode: "fork", question_id: "01J0000000000000000000000A", timeout_s: 5 }],
       clax_open: [{ url_or_id: id }],
       clax_pin: [{ url_or_id: id }],
       clax_unpin: [{ url_or_id: id }],
+      clax_tag: [{ url_or_id: id, add: ["draft"] }, { url_or_id: id, add: ["a"], remove: ["b"] }, { url_or_id: id, remove: [] }],
+      clax_tags: [{}],
       clax_asset_upload: [{ url_or_id: id, file_path: "a.png" }, { url_or_id: id, file_paths: ["a.png", "b.mp4"] }],
       clax_status: [{}, { name: "fix-chart-axis" }],
       clax_comments_read: [{ url_or_id: id }, { url_or_id: id, thread_id: "01K6AB3Q9X7N2M4P5R6S8T0V1W", cursor: "01K6AB3Q9X7N2M4P5R6S8T0V1W", include_resolved: true }],
@@ -565,6 +596,8 @@ describe("clax Pi extension", () => {
       clax_open: [{ url_or_id: id, bogus: 1 }],
       clax_pin: [{ url_or_id: id, bogus: 1 }],
       clax_unpin: [{ url_or_id: id, bogus: 1 }],
+      clax_tag: [{ add: ["a"] }, { url_or_id: id, bogus: 1 }],
+      clax_tags: [{ bogus: 1 }],
       clax_asset_upload: [{ url_or_id: id, file_path: "a.png", bogus: 1 }],
       clax_status: [{ bogus: 1 }],
       clax_comments_handoff: [{ url_or_id: id }, { url_or_id: id, thread_id: "x", bogus: 1 }],

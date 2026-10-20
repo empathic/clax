@@ -114,6 +114,113 @@ fn write(dir: &std::path::Path, name: &str, content: &str) -> std::path::PathBuf
     p
 }
 
+/// `clax <args> --json`, asserted to succeed: its JSON.
+fn json_of(e: &Env, args: &[&str]) -> serde_json::Value {
+    let out = e
+        .cmd()
+        .args(args)
+        .arg("--json")
+        .assert()
+        .success()
+        .get_output()
+        .stdout
+        .clone();
+    serde_json::from_slice(&out).unwrap()
+}
+
+#[test]
+fn tags_are_made_applied_listed_and_deleted_from_the_command_line() {
+    let e = Env::new();
+    let index = write(e.dir.path(), "index.html", "<title>Plan</title><p>p</p>");
+    // No tags yet: a publish naming one publishes nothing.
+    e.cmd()
+        .args(["publish", "--port", "0", "--tags", "design"])
+        .arg(&index)
+        .assert()
+        .failure()
+        .stderr(predicate::str::contains("no tags yet"));
+    assert_eq!(json_of(&e, &["list"])["artifacts"], serde_json::json!([]));
+    let made = json_of(
+        &e,
+        &[
+            "tags",
+            "create",
+            "design",
+            "--colour",
+            "blue",
+            "--description",
+            "Waiting on a design pass",
+        ],
+    );
+    assert_eq!(made["tag"]["colour"], "blue");
+    json_of(&e, &["tags", "create", "draft"]);
+    e.cmd()
+        .args(["tags", "create", "DESIGN"])
+        .assert()
+        .failure()
+        .stderr(predicate::str::contains("tag_exists"));
+    // Publish with tags, then change them.
+    let out = e
+        .cmd()
+        .args(["publish", "--tags", "Design,draft"])
+        .arg(&index)
+        .assert()
+        .success()
+        .stdout(predicate::str::contains("tags: design, draft"))
+        .get_output()
+        .stdout
+        .clone();
+    let url = String::from_utf8(out).unwrap();
+    let id = url
+        .split("/a/")
+        .nth(1)
+        .unwrap()
+        .split_whitespace()
+        .next()
+        .unwrap()
+        .to_string();
+    let other = write(e.dir.path(), "other.html", "<title>Other</title>");
+    e.cmd().arg("publish").arg(&other).assert().success();
+    let t = json_of(&e, &["tag", &id, "--remove", "draft"]);
+    assert_eq!(t["tags"][0]["name"], "design");
+    assert_eq!(t["tags"].as_array().unwrap().len(), 1);
+    e.cmd()
+        .args(["tag", &id, "--add", "urgent"])
+        .assert()
+        .failure()
+        .stderr(predicate::str::contains("design, draft"));
+    // List and filter.
+    let only = json_of(&e, &["list", "--tag", "design"]);
+    let ids: Vec<&str> = only["artifacts"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .map(|a| a["id"].as_str().unwrap())
+        .collect();
+    assert_eq!(ids, vec![id.as_str()]);
+    e.cmd()
+        .args(["list"])
+        .assert()
+        .success()
+        .stdout(predicate::str::contains("Plan  [design]"));
+    let tags = json_of(&e, &["tags"]);
+    assert_eq!(tags["tags"][0]["name"], "design");
+    assert_eq!(tags["tags"][0]["count"], 1);
+    // Edit by name, then delete: the artifact loses it.
+    let edited = json_of(&e, &["tags", "edit", "design", "--name", "Design review"]);
+    assert_eq!(edited["tag"]["name"], "Design review");
+    let gone = json_of(&e, &["tags", "delete", "design review"]);
+    assert_eq!(gone["artifacts"], 1);
+    let after = json_of(&e, &["list", "--tag", "Design review"]);
+    assert_eq!(after["artifacts"], serde_json::json!([]));
+    e.cmd()
+        .args(["tags", "delete", "nope"])
+        .assert()
+        .failure()
+        .stderr(predicate::str::contains("no tag is named 'nope'"));
+    e.stop();
+}
+
 #[test]
 fn publish_list_pin_open_delete_roundtrip() {
     let e = Env::new();
