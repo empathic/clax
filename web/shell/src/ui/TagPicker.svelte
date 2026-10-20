@@ -6,14 +6,15 @@
   // filter. The search takes focus when it opens; Down and Up move between
   // it and the tags, Home and End to the first and last tag, Space checks
   // one, Enter in the search checks the only tag it shows, and Escape
-  // closes (`onClose`). A tag's box shows `chosen` until it changes:
-  // `onToggle` asks for the change. While it is open no printable key
+  // closes (`onClose`). A check asks for the change (`onToggle`), and once
+  // that settles the box shows `chosen` again, so a refused change undoes
+  // itself. While it is open no printable key
   // typed in it reaches the shell's keys. Its styles travel with its chunk.
   import { type Snippet, onMount } from "svelte";
   import type { TagRef } from "../api";
   import { matchTags, step } from "../view/tag-picker-model";
 
-  const p: { tags: TagRef[]; chosen(t: TagRef): boolean; onToggle(t: TagRef): void; label: string; error?: string | null; onClose(): void; empty?: Snippet; foot?: Snippet } = $props();
+  const p: { tags: TagRef[]; chosen(t: TagRef): boolean; onToggle(t: TagRef): void | Promise<void>; label: string; error?: string | null; onClose(): void; empty?: Snippet; foot?: Snippet } = $props();
   let q = $state("");
   let root: HTMLDivElement | undefined = $state();
   const shown = $derived(matchTags(p.tags, q));
@@ -44,7 +45,7 @@
   {#if shown.length}
     <ul class="tl" role="group" aria-label={p.label}>
       {#each shown as t (t.id)}
-        <li><label><input type="checkbox" checked={p.chosen(t)} onchange={e => { e.currentTarget.checked = p.chosen(t); p.onToggle(t); }} /><span class="tag" data-c={t.colour}>{t.name}</span></label></li>
+        <li><label><input type="checkbox" checked={p.chosen(t)} onchange={async e => { const box = e.currentTarget; await p.onToggle(t); box.checked = p.chosen(t); }} /><span class="tag" data-c={t.colour}>{t.name}</span></label></li>
       {/each}
     </ul>
   {:else if p.tags.length}

@@ -45,7 +45,7 @@ test("the owner makes tags on /tags, tags an artifact from its page, and the gal
   await page.getByRole("button", { name: "New tag" }).click();
   await form.getByLabel("Name").fill("Q4");
   await form.getByRole("button", { name: "Create tag" }).click();
-  await expect(form.getByRole("alert")).toContainText("q4");
+  await expect(form.getByRole("alert")).toContainText("exists");
   await form.getByRole("button", { name: "Cancel" }).click();
   await makeTag(d, "design", "purple");
 
@@ -99,7 +99,7 @@ test("the owner makes tags on /tags, tags an artifact from its page, and the gal
   await bar.getByRole("button", { name: "Clear" }).click();
   await expect(cards(page)).toHaveCount(3);
   // A card's tag adds it to the filter; the search matches tag names too.
-  await chips(page, "Budget").getByRole("button", { name: "Filter by tag q4" }).click();
+  await card(page, "Budget").getByRole("button", { name: "Filter by tag q4" }).click();
   await expect(page).toHaveURL(`${d.base}/?tag=q4`);
   await bar.getByRole("button", { name: "Clear" }).click();
   await page.getByRole("searchbox", { name: "Search artifacts" }).fill("desig");
@@ -171,23 +171,23 @@ test("the inbox's Tags filter keeps the items about artifacts carrying every tag
   await tagArtifact(d, beta, ["q4"]);
   await page.goto(`${d.base}/inbox`);
   const inbox = page.locator(".inbox");
-  await expect(inbox.getByRole("button", { name: "Alpha page", exact: true })).toBeVisible();
-  await expect(inbox.getByRole("button", { name: "Beta page", exact: true })).toBeVisible();
+  await expect(inbox.getByRole("button", { name: /^Alpha page/ })).toBeVisible();
+  await expect(inbox.getByRole("button", { name: /^Beta page/ })).toBeVisible();
   const pick = inbox.getByRole("button", { name: "Tags Any tag" });
   await pick.click();
   const dialog = inbox.getByRole("dialog", { name: "Filter by tags" });
   await dialog.getByRole("checkbox", { name: "design" }).check();
   await expect(page).toHaveURL(`${d.base}/inbox?tag=design`);
-  await expect(inbox.getByRole("button", { name: "Beta page", exact: true })).toHaveCount(0);
-  await expect(inbox.getByRole("button", { name: "Alpha page", exact: true })).toBeVisible();
+  await expect(inbox.getByRole("button", { name: /^Beta page/ })).toHaveCount(0);
+  await expect(inbox.getByRole("button", { name: /^Alpha page/ })).toBeVisible();
   await dialog.getByRole("checkbox", { name: "q4" }).check();
   await expect(page).toHaveURL(`${d.base}/inbox?tag=design&tag=q4`);
   await page.keyboard.press("Escape");
   await expect(dialog).toHaveCount(0);
   await page.reload();
   await expect(inbox.getByRole("button", { name: "Tags design +1" })).toBeVisible();
-  await expect(inbox.getByRole("button", { name: "Alpha page", exact: true })).toBeVisible();
-  await expect(inbox.getByRole("button", { name: "Beta page", exact: true })).toHaveCount(0);
+  await expect(inbox.getByRole("button", { name: /^Alpha page/ })).toBeVisible();
+  await expect(inbox.getByRole("button", { name: /^Beta page/ })).toHaveCount(0);
 });
 
 test("screenshots of the tags in the gallery, the Tags page, the artifact page and the inbox", async ({ page, freshDaemon: d }) => {
@@ -227,11 +227,12 @@ test("screenshots of the tags in the gallery, the Tags page, the artifact page a
   await page.goto(`${d.base}/a/${ids.launch}`);
   await shoot("artifact", () => expect(titleChips(page)).toHaveCount(5));
   await shoot("artifact-picker", async () => {
-    await page.getByRole("button", { name: "Edit tags" }).click();
+    await page.locator(".topbar .tedit").click();
     await expect(page.getByRole("dialog", { name: "Edit tags" }).getByRole("checkbox")).toHaveCount(10);
   });
   await page.goto(`${d.base}/inbox?tag=q4`);
   await shoot("inbox-filter", async () => {
+    await expect(page.getByRole("searchbox", { name: "Search the inbox" })).toBeVisible();
     if (await page.getByRole("button", { name: "Filters" }).isVisible()) await page.getByRole("button", { name: "Filters" }).click();
     await page.getByRole("button", { name: "Tags q4" }).click();
     await expect(page.getByRole("dialog", { name: "Filter by tags" })).toBeVisible();

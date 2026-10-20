@@ -564,3 +564,45 @@ test("a member starts an artifact from a brief in their browser, and a reader is
     await d.stop();
   }
 });
+
+test("a member tags the artifact they made with the owner's tags, and manages none", async ({ browser }) => {
+  const { d, origin } = await hostedDaemon();
+  try {
+    const owner = await page(browser);
+    await owner.goto(`${origin}/setup?secret=${encodeURIComponent(SECRET)}`);
+    await owner.getByLabel("Your name").fill("Ada");
+    await owner.getByRole("button", { name: "Create the first person" }).click();
+    await owner.waitForURL(`${origin}/`);
+    const made = await owner.evaluate(async () => {
+      const out: number[] = [];
+      for (const [name, colour] of [["q4", "blue"], ["design", "purple"]]) out.push((await fetch("/api/tags", { method: "POST", headers: { "content-type": "application/json" }, body: JSON.stringify({ name, colour }) })).status);
+      const r = await fetch("/api/people/invites", { method: "POST", headers: { "content-type": "application/json" }, body: JSON.stringify({ name: "Mia" }) });
+      return { out, url: (await r.json()).invite.url as string };
+    });
+    expect(made.out).toEqual([201, 201]);
+    const mia = await page(browser);
+    await mia.goto(made.url);
+    await mia.getByRole("button", { name: "Join as Mia" }).click();
+    await mia.waitForURL(`${origin}/`);
+    await mia.getByRole("button", { name: "New artifact" }).click();
+    const form = mia.getByRole("dialog", { name: "New artifact" });
+    await form.getByLabel("Title").fill("Mia's plan");
+    await form.getByLabel("Brief").fill("A one-page plan");
+    await form.getByRole("button", { name: "Create" }).click();
+    await mia.getByRole("dialog", { name: "Who builds it?" }).getByRole("button", { name: "Open the artifact" }).click();
+    await expect(mia).toHaveURL(new RegExp(`${origin}/a/[a-z0-9]+$`));
+    // Mia administers what she made: she applies the owner's tags.
+    await mia.getByRole("button", { name: "Add tags" }).click();
+    const editor = mia.getByRole("dialog", { name: "Edit tags" });
+    await editor.getByRole("checkbox", { name: "q4" }).check();
+    await expect(mia.locator(".topbar .ttags a.tag")).toHaveText(["q4"]);
+    await expect(editor.getByRole("link", { name: "Manage tags" })).toHaveCount(0);
+    // The list is the owner's: Mia reads it.
+    await mia.goto(`${origin}/tags`);
+    await expect(mia.locator(".trow")).toHaveCount(2);
+    await expect(mia.getByRole("button", { name: "New tag" })).toHaveCount(0);
+    await expect(mia.locator(".trow button")).toHaveCount(0);
+  } finally {
+    await d.stop();
+  }
+});

@@ -43,7 +43,7 @@
   }
 </script>
 
-<TagPicker tags={list?.tags ?? []} chosen={has} onToggle={t => void toggle(t)} label="Tags" {error} onClose={p.onClose}>
+<TagPicker tags={list?.tags ?? []} chosen={has} onToggle={toggle} label="Tags" {error} onClose={p.onClose}>
   {#snippet empty()}<p class="tn">{list ? "There are no tags yet." : "Loading…"}{#if list?.may_manage}{" "}<a href="/tags">Make one</a>{/if}</p>{/snippet}
   {#snippet foot()}{#if list?.may_manage && list.tags.length}<a href="/tags">Manage tags</a>{/if}{/snippet}
 </TagPicker>

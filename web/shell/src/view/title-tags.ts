@@ -36,8 +36,25 @@ export function setTitleTags(ttl: HTMLElement, tags: readonly TagRef[], may: boo
     a.textContent = t.name;
     return a;
   }));
+  // At phone width the chips give way to how many there are (theme.css
+  // `.tn-n`): in the edit button for a viewer who may set them.
+  const many = tags.length ? `${tags.length} tag${tags.length === 1 ? "" : "s"}` : "";
+  const label = (what: string) => {
+    const s = doc.createElement("span");
+    s.className = "tn-w";
+    s.textContent = what;
+    const n = doc.createElement("span");
+    n.className = "tn-n";
+    n.textContent = many;
+    return many ? [s, n] : [s];
+  };
+  box.querySelector(":scope > .tn-n")?.remove();
   let b = box.querySelector<HTMLButtonElement>(":scope > .tedit");
-  if (!may) { b?.remove(); return; }
+  if (!may) {
+    b?.remove();
+    box.append(...label("").slice(1));
+    return;
+  }
   if (!b) {
     const n = (b = doc.createElement("button"));
     n.type = "button";
@@ -47,5 +64,5 @@ export function setTitleTags(ttl: HTMLElement, tags: readonly TagRef[], may: boo
     n.onclick = () => edit(n);
     box.append(n);
   }
-  b.textContent = tags.length ? "Edit tags" : "Add tags";
+  b.replaceChildren(...label(tags.length ? "Edit tags" : "Add tags"));
 }

@@ -23,15 +23,19 @@ describe("the artifact's tags beside its title", () => {
     const links = [...el.querySelectorAll<HTMLAnchorElement>(".ttags a.tag")];
     expect(links.map(a => [a.textContent, a.getAttribute("href"), a.dataset.c])).toEqual([["design", "/?tag=design", "purple"], ["Q4 plan", "/?tag=Q4%20plan", "blue"]]);
     expect(el.querySelector(".tedit")).toBeNull();
+    // How many, which a phone shows in place of the chips.
+    expect(el.querySelector(".ttags > .tn-n")!.textContent).toBe("2 tags");
     setTitleTags(el, [design], true, edit);
+    expect(el.querySelector(".ttags > .tn-n")).toBeNull();
     const b = el.querySelector<HTMLButtonElement>(".ttags .tedit")!;
-    expect([b.textContent, b.getAttribute("aria-haspopup"), b.getAttribute("aria-expanded")]).toEqual(["Edit tags", "dialog", "false"]);
+    expect([b.querySelector(".tn-w")!.textContent, b.querySelector(".tn-n")!.textContent, b.getAttribute("aria-haspopup"), b.getAttribute("aria-expanded")]).toEqual(["Edit tags", "1 tag", "dialog", "false"]);
     b.click();
     expect(edit).toHaveBeenCalledWith(b);
     // The same button stays as the tags change, so an open editor keeps its place.
     setTitleTags(el, [], true, edit);
     expect(el.querySelector(".tedit")).toBe(b);
     expect(b.textContent).toBe("Add tags");
+    expect(b.querySelector(".tn-n")).toBeNull();
     expect(el.querySelectorAll("a.tag")).toHaveLength(0);
     // No tags and no right to set them: nothing.
     setTitleTags(el, [], false, edit);
