@@ -1082,6 +1082,16 @@ CREATE TABLE client_imports (         -- one row per one-time import (§9)
     done_at TEXT NOT NULL,
     summary_json TEXT NOT NULL CHECK (json_valid(summary_json))
 );
+CREATE TABLE job_step_marks (         -- each publish step's mark
+    nonce TEXT PRIMARY KEY,            -- 32 hex characters from the operating system's random source
+    job_id TEXT NOT NULL,
+    key TEXT NOT NULL,                 -- the step's key
+    artifact_id TEXT NOT NULL,         -- the artifact it writes
+    version_n INTEGER NOT NULL CHECK (version_n >= 1),  -- the version it writes
+    session_id TEXT,                   -- the session it publishes from
+    created_at TEXT NOT NULL,
+    UNIQUE (job_id, key)
+);
 ```
 
 Routes (owner credential only; `clax-server/src/routes/jobs.rs`; also on
@@ -1237,7 +1247,7 @@ no row; they are never served. The step's write marks them with the step
 (`clax_store::jobs::step_mark`: the job ID, the key and a nonce, as a
 JSON array). The nonce is 32 hex characters from the operating system's
 random source, minted by the store at the step's first write and kept in
-migration 47's `job_step_marks` (nonce, job, key, the artifact and
+migration 46's `job_step_marks` (nonce, job, key, the artifact and
 version it writes, the session it publishes from); the row goes when the
 step commits or its content is removed, and has no foreign key, so it
 outlives its job. Git's version commit carries the mark as a

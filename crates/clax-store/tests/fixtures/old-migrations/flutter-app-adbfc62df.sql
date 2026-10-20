@@ -1,7 +1,7 @@
 -- Migration 46 as branch flutter-app writes it in crates/clax-store/src/migrations.rs, first
 -- frozen as commit adbfc62dfbe4 (2026-10-20, blob 4f6501970e16) wrote it and since edited in place
 -- with it while it is unmerged, so the two stay equal: the Clax app's jobs migration, the sixth
--- of its migrations, after its five at 41 to 45 (flutter-app-4479a586c.sql). Migrations 1 to 45
+-- and last of its migrations, after its five at 41 to 45 (flutter-app-4479a586c.sql). Migrations 1 to 45
 -- there are the current ones, character for character. Frozen with those five so that the layouts
 -- holding the app's migrations after the first k of main's migrations above 38 can still be built
 -- once main adds more.
@@ -69,4 +69,14 @@ CREATE TABLE jobs (
         key TEXT PRIMARY KEY,
         done_at TEXT NOT NULL,
         summary_json TEXT NOT NULL CHECK (json_valid(summary_json))
+    );
+    CREATE TABLE job_step_marks (         -- each publish step's mark
+        nonce TEXT PRIMARY KEY,            -- 32 hex characters from the operating system's random source
+        job_id TEXT NOT NULL,
+        key TEXT NOT NULL,                 -- the step's key
+        artifact_id TEXT NOT NULL,         -- the artifact it writes
+        version_n INTEGER NOT NULL CHECK (version_n >= 1),  -- the version it writes
+        session_id TEXT,                   -- the session it publishes from
+        created_at TEXT NOT NULL,
+        UNIQUE (job_id, key)
     );
