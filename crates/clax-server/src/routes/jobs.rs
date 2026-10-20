@@ -27,7 +27,7 @@ use clax_core::{ArtifactId, CoreError, Event};
 use clax_http::agent::DeniedToGrants;
 use clax_http::auth::RequireToken;
 use clax_http::error::ApiError;
-use clax_http::jobs_owner::{Claimed, OWNER_HEADER};
+use clax_http::jobs_owner::{Claimed, OWNER_HEADER, WriteGuard};
 use clax_http::state::AppState;
 use clax_store::Store;
 use clax_store::docs::{BatchOp, BatchWrite};
@@ -61,11 +61,17 @@ fn owner_token(headers: &HeaderMap) -> Option<&str> {
     headers.get(OWNER_HEADER).and_then(|v| v.to_str().ok())
 }
 
-/// 409 `not_owner` unless the request carries the token that holds
-/// `client`'s queue.
-fn require_owner(s: &AppState, headers: &HeaderMap, client: &str) -> Result<(), ApiError> {
-    if owner_token(headers).is_some_and(|t| s.jobs_owners.holds(client, t)) {
-        return Ok(());
+/// The write admitted under the claim of `client`'s queue the request's
+/// token holds, to hold across the write's store call
+/// ([`JobsOwners::enter`](clax_http::jobs_owner::JobsOwners::enter)); 409
+/// `not_owner` unless the token holds it.
+fn require_owner(
+    s: &AppState,
+    headers: &HeaderMap,
+    client: &str,
+) -> Result<WriteGuard, ApiError> {
+    if let Some(guard) = owner_token(headers).and_then(|t| s.jobs_owners.enter(client, t)) {
+        return Ok(guard);
     }
     Err(ApiError::new(
         StatusCode::CONFLICT,
@@ -178,7 +184,9 @@ pub struct ClaimBody {
 /// 200 `{owner}` (the token every write of the client's jobs carries in
 /// `x-clax-jobs-owner`); 409 `owner_held` while another claim's stream
 /// lives; 400 `no_such_stream` when the hub holds no connection of
-/// `stream`. The claim is released when that connection ends.
+/// `stream`. The claim is released when that connection ends. A claim
+/// that replaces another answers once the writes admitted under the one
+/// before have ended.
 pub async fn claim(
     State(s): State<AppState>,
     d: DeniedToGrants,
@@ -190,6 +198,7 @@ pub async fn claim(
     match s
         .jobs_owners
         .claim(&s.stream, &s.events, &b.client, &b.stream)
+        .await
     {
         Claimed::Owner(token) => Ok(Json(json!({"owner": token}))),
         Claimed::Held => Err(ApiError::new(
@@ -254,7 +263,7 @@ pub async fn create(
 ) -> Result<(StatusCode, Json<Value>), ApiError> {
     d.refuse_agents()?;
     let b = body(req)?;
-    require_owner(&s, &headers, &b.client)?;
+    let _write = require_owner(&s, &headers, &b.client)?;
     let id = b.id.clone();
     let existed = s.store_call(move |st| Ok(st.job(&id)?.is_some())).await?;
     let out = write(&s, move |st| {
@@ -362,7 +371,7 @@ pub async fn patch(
     d.refuse_agents()?;
     let id = path(p)?;
     let b = body(req)?;
-    require_owner(&s, &headers, &client_of(&s, &id).await?)?;
+    let _write = require_owner(&s, &headers, &client_of(&s, &id).await?)?;
     write(&s, move |st| {
         st.patch_job(
             &id,
@@ -401,7 +410,7 @@ pub async fn put_thread(
     d.refuse_agents()?;
     let (id, tid) = path(p)?;
     let b = body(req)?;
-    require_owner(&s, &headers, &client_of(&s, &id).await?)?;
+    let _write = require_owner(&s, &headers, &client_of(&s, &id).await?)?;
     write(&s, move |st| {
         st.set_job_thread(&id, &tid, &b.comment_id, b.stopped)
     })
@@ -418,7 +427,7 @@ pub async fn delete_thread(
 ) -> Result<Json<Value>, ApiError> {
     d.refuse_agents()?;
     let (id, tid) = path(p)?;
-    require_owner(&s, &headers, &client_of(&s, &id).await?)?;
+    let _write = require_owner(&s, &headers, &client_of(&s, &id).await?)?;
     write(&s, move |st| st.remove_job_thread(&id, &tid)).await
 }
 
@@ -435,7 +444,7 @@ pub async fn put_question(
 ) -> Result<Json<Value>, ApiError> {
     d.refuse_agents()?;
     let (id, qid) = path(p)?;
-    require_owner(&s, &headers, &client_of(&s, &id).await?)?;
+    let _write = require_owner(&s, &headers, &client_of(&s, &id).await?)?;
     write(&s, move |st| st.ask_job_question(&id, &qid)).await
 }
 
@@ -597,7 +606,7 @@ pub async fn commit(
     d.refuse_agents()?;
     let (id, key) = path(p)?;
     let step = parse_body(req, "the publish limit", parse_step).await?;
-    require_owner(&s, &headers, &client_of(&s, &id).await?)?;
+    let _write = require_owner(&s, &headers, &client_of(&s, &id).await?)?;
     let events = s.events.clone();
     let ctx = s.feedback_ctx();
     let out = match step {

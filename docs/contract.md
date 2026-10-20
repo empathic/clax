@@ -2489,12 +2489,15 @@ stream). A claim while another claim's stream lives is 409 `owner_held`,
 and that stream is sent a keep-alive at once, so a holder whose reader is
 gone is noticed then; a claim by the stream that holds it answers its
 token again. The claim is released when its stream's connection ends, or
-by `DELETE /api/jobs/owner`. The owner-only `jobs` stream topic carries
-`job` `{id, client, state, step, rev}` after every committed write of a
-job, whichever path made it (a job route, a question's close, a delete
-that cancels the job), and `jobs_owner` `{client, held}` at each claim and
-release. A worker refused with `owner_held` waits for `held: false` and
-claims again.
+by `DELETE /api/jobs/owner`. A release, or a claim that replaces one
+whose stream is gone, admits no write under the old token from then on,
+and the new claim answers only once the writes admitted under the old
+one have ended, so none of them lands after it. The owner-only `jobs`
+stream topic carries `job` `{id, client, state, step, rev}` after every
+committed write of a job, whichever path made it (a job route, a
+question's close, a delete that cancels the job), and `jobs_owner`
+`{client, held}` at each claim and release. A worker refused with
+`owner_held` waits for `held: false` and claims again.
 
 A **step** is idempotent by its key: committing a key the job already has
 answers the step as recorded with `replayed: true` and changes nothing. A

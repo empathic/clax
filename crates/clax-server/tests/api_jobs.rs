@@ -543,3 +543,114 @@ async fn the_jobs_topic_hears_each_change() {
         ]
     );
 }
+
+/// Content in memory whose version writes wait while the gate is closed.
+struct Gate {
+    inner: clax_core::content::memory::MemContent,
+    open: tokio::sync::watch::Sender<bool>,
+    entered: tokio::sync::Notify,
+}
+
+impl Gate {
+    fn new() -> Gate {
+        Gate {
+            inner: clax_core::content::memory::MemContent::new(),
+            open: tokio::sync::watch::channel(true).0,
+            entered: tokio::sync::Notify::new(),
+        }
+    }
+
+    fn set_open(&self, open: bool) {
+        self.open.send_replace(open);
+    }
+}
+
+#[async_trait::async_trait]
+impl clax_core::content::ContentStore for Gate {
+    async fn read_file(
+        &self,
+        id: &clax_core::ArtifactId,
+        n: u32,
+        path: &str,
+    ) -> clax_core::Result<Option<Vec<u8>>> {
+        self.inner.read_file(id, n, path).await
+    }
+    async fn write_version(
+        &self,
+        id: &clax_core::ArtifactId,
+        n: u32,
+        write: &clax_core::content::VersionWrite<'_>,
+    ) -> clax_core::Result<()> {
+        let mut open = self.open.subscribe();
+        if !*open.borrow() {
+            self.entered.notify_one();
+            let _ = open.wait_for(|o| *o).await;
+        }
+        self.inner.write_version(id, n, write).await
+    }
+    async fn remove_version(&self, id: &clax_core::ArtifactId, n: u32) -> clax_core::Result<()> {
+        self.inner.remove_version(id, n).await
+    }
+    async fn delete_artifact(&self, id: &clax_core::ArtifactId) -> clax_core::Result<()> {
+        self.inner.delete_artifact(id).await
+    }
+    async fn put_asset(
+        &self,
+        key: &clax_core::content::AssetKey,
+        bytes: &[u8],
+    ) -> clax_core::Result<()> {
+        self.inner.put_asset(key, bytes).await
+    }
+    async fn read_asset(
+        &self,
+        key: &clax_core::content::AssetKey,
+    ) -> clax_core::Result<Option<Vec<u8>>> {
+        self.inner.read_asset(key).await
+    }
+    async fn delete_asset(&self, key: &clax_core::content::AssetKey) -> clax_core::Result<()> {
+        self.inner.delete_asset(key).await
+    }
+}
+
+#[tokio::test]
+async fn a_new_claim_answers_only_once_the_old_claims_write_has_landed() {
+    let gate = std::sync::Arc::new(Gate::new());
+    let ts = TestServer::spawn_on_one_connection(gate.clone()).await;
+    let (_a, old) = owner(&ts).await;
+    running(&ts, &old, "j1", "make", None).await;
+    // A publish step admitted under the old claim, held in its content write.
+    gate.set_open(false);
+    let write = owned(&ts, Method::POST, "/api/jobs/j1/steps/publish:0", &old)
+        .json(&publish_body(None, 0, "<p>a", true));
+    let write = tokio::spawn(send(write));
+    gate.entered.notified().await;
+    let (s, _) = send(owned(&ts, Method::DELETE, "/api/jobs/owner", &old)).await;
+    assert_eq!(s, 204);
+    // Released at once: the old token's next write is refused.
+    let (s, v) = send(
+        owned(&ts, Method::PATCH, "/api/jobs/j1", &old)
+            .json(&json!({"if_rev": 2, "state": "paused"})),
+    )
+    .await;
+    assert_eq!(
+        (s, v["error"]["code"].as_str()),
+        (409, Some("not_owner")),
+        "{v}"
+    );
+    // The new claim waits for the old claim's write.
+    let (_b, sid) = stream(&ts).await;
+    let claim = authed(&ts, Method::POST, "/api/jobs/owner")
+        .json(&json!({"client": "app", "stream": sid}));
+    let claim = tokio::spawn(send(claim));
+    tokio::task::yield_now().await;
+    assert!(!claim.is_finished(), "answered while the old write runs");
+    gate.set_open(true);
+    let (s, v) = write.await.unwrap();
+    assert_eq!(s, 200, "{v}");
+    assert_eq!(v["version"], 1);
+    let (s, v) = claim.await.unwrap();
+    assert_eq!(s, 200, "{v}");
+    let new = v["owner"].as_str().unwrap();
+    assert_ne!(new, old);
+    assert_eq!(job(&ts, "j1").await["job"]["state"], "done");
+}

@@ -1095,9 +1095,15 @@ and `Hub::nudge(stream)` has that connection send a keep-alive at once.
 A claim whose holder's stream no longer has a connection replaces it.
 Nothing in the store knows owners, and nothing in the claim reads a
 clock. Job routes take the owner credential (the token) and refuse the
-owner's agents (403 `not_for_agents`); a write's owner check reads the
-claim before the store's transaction, so a claim released between the
-two lets that one write land.
+owner's agents (403 `not_for_agents`). Each write is admitted under the
+claim (`JobsOwners::enter(client, token)`, which counts the claim's
+writes in flight under the map's mutex) and holds the guard it answers
+across its store call, the async publish step's included. A release, or
+a claim that replaces one whose stream is gone, takes the claim out of
+the map at once, so no write is admitted under the old token from then
+on, and the new claim answers only once the writes admitted under the
+old one have ended (it waits on a `Notify` each guard's drop signals).
+So no old owner's write lands after the new owner holds the queue.
 
 **A publish step** carries `publish: {artifact_id | null (a new app),
 base, request: PublishRequest, docs: [{op, path, data?, if_version?}],
