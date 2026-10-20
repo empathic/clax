@@ -34,7 +34,9 @@
 //   `claxTransport.streamEnd(id)`.
 // - `unsubscribe {id}`: the stream's reader cancelled it or its signal
 //   aborted.
-// Calls made before `init` wait for it: the channel needs the nonce.
+// Calls made before `init` wait for it: the channel needs the nonce. One
+// whose signal aborts meanwhile rejects with an `AbortError` and posts
+// nothing.
 
 /** The app's embed settings, from the shell document's
  * `<meta name="clax-embed" content='{"transport":"host","shell":…,"content":…}'>`
@@ -135,13 +137,21 @@ export function transport(channel: () => Channel | undefined, fallback: typeof f
   let opened = () => {};
   const ready = new Promise<void>(resolve => { opened = resolve; });
 
+  /** Resolves once the nonce is given, or rejects once `signal` aborts. */
+  const untilOpen = (signal: AbortSignal | null) => !signal ? ready : new Promise<void>((resolve, reject) => {
+    const stop = () => reject(abortError(signal));
+    if (signal.aborted) return stop();
+    signal.addEventListener("abort", stop, { once: true });
+    void ready.then(() => { signal.removeEventListener("abort", stop); resolve(); });
+  });
+
   const post = (m: Record<string, unknown>) => {
     const ch = channel();
     if (nonce !== null && ch && typeof ch.postMessage === "function") ch.postMessage(JSON.stringify({ ...m, nonce }));
   };
 
   const subscribe = async (signal: AbortSignal | null): Promise<Response> => {
-    await ready;
+    await untilOpen(signal);
     if (signal?.aborted) throw abortError(signal);
     const id = ++lastId;
     const stop = () => {
@@ -173,7 +183,7 @@ export function transport(channel: () => Channel | undefined, fallback: typeof f
     if (signal?.aborted) throw abortError(signal);
     if (req.method === "GET" && url.pathname === "/api/stream") return subscribe(signal);
     const bytes = new Uint8Array(await req.arrayBuffer());
-    await ready;
+    await untilOpen(signal);
     if (signal?.aborted) throw abortError(signal);
     const id = ++lastId;
     const answer = new Promise<Response>((resolve, reject) => calls.set(id, { resolve, reject }));

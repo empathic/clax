@@ -75,6 +75,20 @@ describe("the transport", () => {
     await r.body!.cancel();
     expect(sent.at(-1)).toEqual({ type: "unsubscribe", id, nonce: NONCE });
   });
+  it("rejects a call and a stream aborted before init, and posts neither", async () => {
+    const sent: string[] = [];
+    const t = transport(() => ({ postMessage: m => sent.push(m) }), vi.fn(), ORIGIN);
+    const ac = new AbortController();
+    const call = t.fetch("/api/x", { method: "POST", body: "x", signal: ac.signal });
+    const stream = t.fetch("/api/stream", { signal: ac.signal });
+    await new Promise(r => setTimeout(r, 0));
+    ac.abort();
+    await expect(call).rejects.toThrow(/abort/i);
+    await expect(stream).rejects.toThrow(/abort/i);
+    t.init(NONCE);
+    await new Promise(r => setTimeout(r, 0));
+    expect(sent).toEqual([]);
+  });
   it("posts nothing before init, and every call made before it once it comes", async () => {
     const sent: string[] = [];
     const t = transport(() => ({ postMessage: m => sent.push(m) }), vi.fn(), ORIGIN);
