@@ -1007,15 +1007,15 @@ what the worker applies:
 
 | Route | Effect |
 |---|---|
-| `POST /api/jobs/owner` `{client, stream}` | claims the client's queue (§7.5): 200 `{owner}`; 409 `owner_held`; 400 `no_such_stream` when `stream` is not a live stream of the hub |
-| `DELETE /api/jobs/owner` | releases the caller's claim (204) |
-| `POST /api/jobs` `{id, client, kind, artifact_id?, title?, input, plan?}` | creates; an existing `id` with the same body answers it (200), another body 409 |
+| `POST /api/jobs/owner` `{client, stream}` | claims the client's queue (§7.5): 200 `{owner}`; 409 `owner_held`; 400 `no_such_stream` when `stream` is not a live stream of the hub; a claim by the stream that holds the queue answers its token again |
+| `DELETE /api/jobs/owner` | releases the claim the request's `x-clax-jobs-owner` token holds (204) |
+| `POST /api/jobs` `{id, client, kind, artifact_id?, title?, input, plan?}` | creates (201); an existing `id` with the same body answers it (200), another body 409 `job_exists` |
 | `GET /api/jobs?open=1&client=app` | open jobs with their steps, threads and questions |
 | `GET /api/jobs/{id}` | one |
 | `PATCH /api/jobs/{id}` `{if_rev, state?, step?, title?, plan?, carry?, error?}` | compare-and-set on `rev`; 409 `job_moved` with the current job; the state moves by the table below |
 | `PUT /api/jobs/{id}/threads/{tid}` / `DELETE` | the job answers, or stops at, a thread's comment |
-| `PUT /api/jobs/{id}/questions/{qid}` | a question the job asked; moves a `running` job to `waiting` in the same transaction, which reads the question: one that closed before this call (an answer landing between the question's creation and this call, or a worker re-asking after a kill) has its outcome stored at once, and the job keeps its state; a `cancelled` or `done` job refuses (409 `job_moved`). Only a question of the `ask` tool, which no other job asked (400 `invalid_question` otherwise). When the question closes (`POST /api/questions/{qid}/answer` or `/decline`, as today, or its withdrawal) the core stores its outcome here (`answered` with the answers, `declined`, `withdrawn`) and moves the job back to `running` in that close's transaction |
-| `POST /api/jobs/{id}/steps/{key}` `{result, publish?, reply?, state?}` | commits a step (below); `state` (only `done`) ends the job in the step's transaction |
+| `PUT /api/jobs/{id}/questions/{qid}` | a question the job asked; moves a `running` job to `waiting` in the same transaction, which reads the question: one that closed before this call (an answer landing between the question's creation and this call, or a worker re-asking after a kill) has its outcome stored at once, and the job keeps its state; a `cancelled` or `done` job refuses (409 `job_moved`). Only a question of the `ask` tool, which no other job asked (400 `invalid_question` otherwise). When the question closes (`POST /api/questions/{qid}/answer` or `/decline`, as today, or its withdrawal) the core stores its outcome here (`answered` with the answers, `declined`, `withdrawn`) and moves the job back to `running` in that close's transaction. A job's final move (a patch to `cancelled`, a `done` step, its artifact's delete) withdraws each question it asked that is still open, with the reason `job_end` (`Reason::JobEnd`, recorded as `system:daemon`): no worker reads its outcome again, so the person is no longer asked; the outcome `withdrawn` is stored and the job moves no further |
+| `POST /api/jobs/{id}/steps/{key}` `{result?, publish?, reply?, state?}` (one of `result`, `publish`, `reply`) | commits a step (below); `state` (only `done`) ends the job in the step's transaction; answers `{job, step, replayed, version?}` |
 | `GET/PUT/DELETE /api/agent-read-consents[/{reader}/{source}]` | the agent's remembered consents |
 
 **The states.** One table in the store (`jobs::may_move`) says how a job
@@ -1048,27 +1048,54 @@ delete does this too), and `thread_going_tx` forgets the thread in each
 job that answers it; each job so changed moves one `rev` on, and its
 `Event::Job` follows the commit.
 
-The owner claim is the core's, not the store's: `AppState` keeps a
-`JobsOwners` map (client → token and stream ID) in memory, so a crash, a
-`close` or a reopen forgets it. The hub tells it when a stream ends
-(`Hub::closed(stream)`, a future that resolves at the connection's end),
-and `Hub::nudge(stream)` sends one stream a keep-alive at once. Nothing in
-the store knows owners, and nothing in the claim reads a clock.
+The owner claim is the core's, not the store's: `AppState.jobs_owners`
+(`clax_http::jobs_owner::JobsOwners`) keeps a map (client → token and
+stream ID) in memory, so a crash, a `close` or a reopen forgets it. The
+token is 32 hex characters from the operating system's random source. The
+hub tells it when a stream's connection ends (`Hub::closed(stream)`, a
+future that resolves at the connection's end, a newer connection's
+takeover or the stream's drop, and at once when no connection holds it),
+and `Hub::nudge(stream)` has that connection send a keep-alive at once.
+A claim whose holder's stream no longer has a connection replaces it.
+Nothing in the store knows owners, and nothing in the claim reads a
+clock. Job routes take the owner credential (the token) and refuse the
+owner's agents (403 `not_for_agents`); a write's owner check reads the
+claim before the store's transaction, so a claim released between the
+two lets that one write land.
 
 **A publish step** carries `publish: {artifact_id | null (a new app),
-base, request: PublishRequest, docs: [DocWrite], draft?: {id, digest}}`.
-`Store::commit_publish_step` does, in one `IMMEDIATE` transaction after the
-content files are written (content-addressed and idempotent, as
-`publish_version` writes them today): if `(job_id, key)` exists, return its
-result with `replayed: true`; else check `current_version == base` (409
-`version_moved` otherwise, nothing recorded), insert the version (or the
-artifact), apply the pinned document writes (a moved document refuses the
-whole step, 409 `doc_moved`, as `finish` refuses today), insert the step
-row with `version_n`, and bump the job's `step` and `rev` (and its `state`
-to `done` when the body says so). Events (`Event::Version`, the docs
-events, `Event::Job`) are published after the commit. A **reply step**
-(`reply: {threads, body, resolve}`) does the agent's replies, resolves,
-feedback ack and working clear in one transaction the same way.
+base, request: PublishRequest, docs: [{op, path, data?, if_version?}],
+draft?: {id, digest}, session_id?}`. `Store::commit_publish_step` first
+answers a key the job already has with its step as recorded and
+`replayed: true`, writing nothing, and refuses a final job (409
+`job_moved`). Else it writes the content files as `publish_version` does
+(under the artifact's content lock, once the artifact is seen at `base`)
+and then, in the version's one `IMMEDIATE` transaction: checks
+`current_version == base` (409 `version_moved` with `current` otherwise,
+nothing recorded), inserts the version (or the artifact), applies the
+pinned document writes after the artifact's row, so they see the
+capabilities the version declares (a moved document, or an existing one
+written without a pin, refuses the whole step, 409 `doc_moved` with its
+`path`, as `finish` refuses today), inserts the step row with `version_n`
+and the result `{artifact_id, version, docs}`, and moves the job one
+`rev` on with `step` set to the key, `artifact_id` to a new app's, and
+`state` to `done` when the body says so. A transaction that fails removes
+the content it wrote, and a new app's zero-version row. Events
+(`Event::Version`, the docs events, `Event::Job`) are published after the
+commit. A **reply step** (`reply: {session_id, threads, body, resolve?,
+ack?}`) makes, in one transaction the same way, the session's agent reply
+on each thread (each a thread of the job's artifact, 400 `invalid_thread`
+otherwise), each thread's resolve when `resolve`, the acknowledgement of
+the session's feedback on those threads and on the comments `ack`, and
+the step (`{comments: [{thread_id, comment_id}], resolved}`); the
+working records' clear, which is in memory, and the comment and thread
+events follow the commit.
+
+A process killed after the content files are written and before the
+transaction commits leaves the files at the next version's number with
+no row; they are never served, but the content store refuses to write
+that number again until they are removed, so the resumed step fails
+until then (recorded on `crates/clax-store/src/jobs.rs`).
 
 So the change ledger's two unknowns, "did the publish land?" and "did the
 docs land?", cannot arise: either the step row and the version exist
