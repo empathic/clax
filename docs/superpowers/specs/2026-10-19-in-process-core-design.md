@@ -1148,7 +1148,11 @@ and the result `{artifact_id, version, docs}`, and moves the job one
 the content it wrote, and a new app's zero-version row. Events
 (`Event::Version`, the docs events, `Event::Job`) are published after the
 commit. A new app's request needs a title, as `POST /api/artifacts`
-does. With `session_id` (checked as `X-Clax-Session` is:
+does. A new app's ID is minted once, with the step's mark below, and kept
+in `job_step_marks`: every attempt of the step writes that artifact, so a
+resume after a kill replaces the zero-version row and the marked version
+1 its killed attempt left, and no content is orphaned under another ID.
+With `session_id` (checked as `X-Clax-Session` is:
 `publishing_session`) the step does for the session what the publish
 routes do, through the same function (`routes::artifacts::published_from`):
 the threads the session was working on are linked to the version
