@@ -4,9 +4,12 @@
 # It builds the embedded clax natively (scripts/build-app-clax.sh macos,
 # a release build that embeds the web UI, into
 # apps/clax_app/build-native/macos/clax), packs the home app's
-# bundle (scripts/build-home-bundle.sh), then runs `flutter run -d macos`
-# in apps/clax_app, passing on any further arguments. Without the flag it
-# prints the steps and changes nothing.
+# bundle (scripts/build-home-bundle.sh), gives the native build the pub
+# packages Bazel's build patches (scripts/patch-pub.sh, into
+# apps/clax_app/build-native/pub-cache: the runner's scheme host needs the
+# patched webview_flutter_wkwebview), then runs `flutter run -d macos` in
+# apps/clax_app with PUB_CACHE set to that cache, passing on any further
+# arguments. Without the flag it prints the steps and changes nothing.
 #
 # A debug build runs without the App Sandbox, so its data is apart from the
 # release app's container; set CLAX_APP_DIR for a scratch home. Swift and
@@ -21,10 +24,13 @@ if [ "${1:-}" = --i-know-what-i-am-doing ]; then
     shift
 fi
 
+pub_cache="$PWD/apps/clax_app/build-native/pub-cache"
+
 steps=(
     "./scripts/build-app-clax.sh macos"
     "./scripts/build-home-bundle.sh --i-know-what-i-am-doing"
-    "(cd apps/clax_app && flutter run -d macos $*)"
+    "./scripts/patch-pub.sh --i-know-what-i-am-doing"
+    "(cd apps/clax_app && PUB_CACHE=$pub_cache flutter run -d macos $*)"
 )
 
 if [ -z "$act" ]; then
@@ -39,6 +45,8 @@ echo "app-macos-dev: building clax for macOS"
 ./scripts/build-app-clax.sh macos
 echo "app-macos-dev: packing the home app's bundle"
 ./scripts/build-home-bundle.sh --i-know-what-i-am-doing
+echo "app-macos-dev: patching the pub packages Bazel's build patches"
+./scripts/patch-pub.sh --i-know-what-i-am-doing
 echo "app-macos-dev: starting flutter run (r reloads, R restarts, q quits)"
 cd apps/clax_app
-exec flutter run -d macos "$@"
+PUB_CACHE="$pub_cache" exec flutter run -d macos "$@"
