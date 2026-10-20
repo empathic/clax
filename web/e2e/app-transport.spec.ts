@@ -13,6 +13,8 @@ import { hostChannel, host } from "./app-host";
 import { type AppHost, type AppHostOptions, BINDING, SHELL, content, startEmbedDaemon } from "./app-scheme";
 import { test as base, expect, type Daemon, api, publish } from "./fixtures";
 import { quietEval } from "./time";
+import { REQUEST_STUCK } from "../shell/src/conn-notice";
+import { STUCK_MS } from "../shell/src/lifecycle";
 
 const test = base.extend<object, { embed: Daemon }>({
   // oxlint-disable-next-line no-empty-pattern
@@ -359,7 +361,7 @@ test("the stream reopens by the core's end block: other ends back off, ready res
   expect(opened()).toBe(n);
 });
 
-test("a WebView suspended longer than a tab's expiry, and a relay held for a minute, keep the view following with no notice", async ({ page }) => {
+test("a WebView suspended longer than a tab's expiry, and a relay held for a minute, keep the view following on one stream", async ({ page }) => {
   await page.clock.install();
   const { id, host: h } = await openInApp(page, "Transport suspended");
   await live(h);
@@ -378,12 +380,34 @@ test("a WebView suspended longer than a tab's expiry, and a relay held for a min
   await publish(d.base, d.token, "Transport suspended", { "index.html": PAGE.replace("Quarterly", "Monthly") }, 2, id);
   await expect.poll(() => h.waiting.some(e => e.startsWith("window.claxTransport.streamBlock("))).toBe(true);
   await page.clock.fastForward(60_000);
-  await expect(page.locator(".conn-notice")).toBeHidden();
   await h.release();
   await expect.poll(() => h.ofType("newer").map(m => m.version)).toContain(3);
-  await expect(page.locator(".conn-notice")).toBeHidden();
   // The same stream all along.
   expect(h.subscriptions.length).toBe(streams);
+});
+
+test("a call the core holds past the stuck limit raises the shell's notice, which the app's transport hides", async ({ page }) => {
+  await page.clock.install();
+  // An artifact the core has none of: its shell document has no bootstrap,
+  // so the view asks for the artifact, retrying while the call is stuck.
+  const id = "zzzzzzzzzzzz";
+  const h = await hostChannel(page, { relay: d });
+  const asked = (c: { method: string; path: string }) => c.method === "GET" && c.path.split("?")[0] === `/api/artifacts/${id}`;
+  const unstall = h.stall(asked);
+  await page.goto(`${SHELL}/a/${id}?app=1`);
+  await expect.poll(() => h.calls.filter(asked).length).toBe(1);
+  await page.clock.runFor(STUCK_MS + 100);
+  // The notice is raised (not hidden by the shell), and the transport's style hides it.
+  const notice = page.locator(".conn-notice");
+  await expect(notice).toBeAttached();
+  await expect(notice).toHaveText(REQUEST_STUCK);
+  expect(await notice.evaluate(e => (e as HTMLElement).hidden)).toBe(false);
+  await expect(notice).toBeHidden();
+  // The stuck call was abandoned and asked again.
+  await page.clock.runFor(2_000);
+  await expect.poll(() => h.calls.filter(asked).length).toBeGreaterThan(1);
+  expect(h.ofType("callAbort").map(m => m.id)).toContain(h.calls.filter(asked)[0].id);
+  unstall();
 });
 
 const PROBE = `<!doctype html><html><head><title>Probe</title></head><body><h2 id="t">Probe</h2><script>
