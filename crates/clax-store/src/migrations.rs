@@ -1374,14 +1374,9 @@ const APP_MIGRATION_MARKS: [(&str, &str); 5] = [
 /// multi-person migrations their final schema.
 /// `user_version` then becomes the app migration it already holds in this
 /// numbering.
+///
+/// `numbering` is this build's ([`NUMBERING`]), or in tests a later one's.
 pub(super) fn adopt_earlier_flutter_app(
-    tx: &rusqlite::Transaction<'_>,
-) -> clax_core::Result<Option<(u32, u32)>> {
-    adopt(tx, &NUMBERING)
-}
-
-/// [`adopt_earlier_flutter_app`] into `numbering`.
-pub(super) fn adopt(
     tx: &rusqlite::Transaction<'_>,
     numbering: &Numbering<'_>,
 ) -> clax_core::Result<Option<(u32, u32)>> {
@@ -4567,7 +4562,10 @@ mod tests {
         {
             let mut c = Connection::open(home.db_path()).unwrap();
             let tx = c.transaction().unwrap();
-            assert_eq!(super::adopt_earlier_flutter_app(&tx).unwrap(), None);
+            assert_eq!(
+                super::adopt_earlier_flutter_app(&tx, &super::NUMBERING).unwrap(),
+                None
+            );
         }
         drop(Store::open(&home).unwrap());
         let c = Connection::open(home.db_path()).unwrap();
@@ -4610,7 +4608,7 @@ mod tests {
             let tx = c.transaction().unwrap();
             let old = WHERE_TO_ASK_MIGRATION + app as u32;
             assert_eq!(
-                super::adopt_earlier_flutter_app(&tx).unwrap(),
+                super::adopt_earlier_flutter_app(&tx, &super::NUMBERING).unwrap(),
                 Some((old, APP_MIGRATION - 1 + app as u32)),
                 "from {old}"
             );
@@ -4663,7 +4661,10 @@ mod tests {
         );
         let copy = Connection::open(&copies[0]).unwrap();
         let copied = (user_version(&copy), schema_of(&copy), every_row(&copy));
-        assert!(copied == before, "the copy holds the WAL's frames too: {copied:?}");
+        assert!(
+            copied == before,
+            "the copy holds the WAL's frames too: {copied:?}"
+        );
     }
 
     #[test]
@@ -4673,7 +4674,10 @@ mod tests {
         drop(Store::open(&home).unwrap());
         let mut c = Connection::open(home.db_path()).unwrap();
         let tx = c.transaction().unwrap();
-        assert_eq!(super::adopt_earlier_flutter_app(&tx).unwrap(), None);
+        assert_eq!(
+            super::adopt_earlier_flutter_app(&tx, &super::NUMBERING).unwrap(),
+            None
+        );
         drop(tx);
         // Nor one part way through the app's migrations in this numbering.
         for v in WHERE_TO_ASK_MIGRATION..=MIGRATIONS.len() as u32 {
@@ -4688,7 +4692,7 @@ mod tests {
             }
             tx.pragma_update(None, "user_version", v).unwrap();
             assert_eq!(
-                super::adopt_earlier_flutter_app(&tx).unwrap(),
+                super::adopt_earlier_flutter_app(&tx, &super::NUMBERING).unwrap(),
                 None,
                 "at {v}"
             );
@@ -4828,14 +4832,21 @@ mod tests {
         );
         let copied = Connection::open(&copy).unwrap();
         assert_eq!(user_version(&copied), 45);
-        assert_eq!(every_row(&copied), before, "the copy holds the home as it was");
+        assert_eq!(
+            every_row(&copied),
+            before,
+            "the copy holds the home as it was"
+        );
 
         // Opened again by the later build, nothing changes.
         drop(c);
         let mut c = Connection::open(home.db_path()).unwrap();
         let (schema, rows) = (schema_of(&c), every_row(&c));
         crate::migrate_with(&mut c, &later).unwrap();
-        assert_eq!((user_version(&c), schema_of(&c), every_row(&c)), (46, schema, rows));
+        assert_eq!(
+            (user_version(&c), schema_of(&c), every_row(&c)),
+            (46, schema, rows)
+        );
     }
 
     #[test]
@@ -4851,11 +4862,21 @@ mod tests {
         // with the first `app` of the app's migrations.
         type Layout = (&'static str, MakeNumbered, fn(usize) -> u32);
         let layouts: [Layout; 5] = [
-            ("from 24", pre_rebase_flutter_app, |app| AUDIT_MIGRATION + app as u32),
-            ("from 27", earlier_app_numbering, |app| INBOX_MIGRATION + app as u32),
-            ("from 38", app_numbered_from_38, |app| REPAIR_MIGRATION + app as u32),
-            ("from 39", app_numbered_from_39, |app| WHERE_TO_ASK_MIGRATION + app as u32),
-            ("from 41", app_numbered_from_41, |app| APP_MIGRATION - 1 + app as u32),
+            ("from 24", pre_rebase_flutter_app, |app| {
+                AUDIT_MIGRATION + app as u32
+            }),
+            ("from 27", earlier_app_numbering, |app| {
+                INBOX_MIGRATION + app as u32
+            }),
+            ("from 38", app_numbered_from_38, |app| {
+                REPAIR_MIGRATION + app as u32
+            }),
+            ("from 39", app_numbered_from_39, |app| {
+                WHERE_TO_ASK_MIGRATION + app as u32
+            }),
+            ("from 41", app_numbered_from_41, |app| {
+                APP_MIGRATION - 1 + app as u32
+            }),
         ];
         for (layout, make, version) in layouts {
             for app in 1..=super::APP_MIGRATION_MARKS.len() {
@@ -4868,7 +4889,7 @@ mod tests {
                     assert_eq!(user_version(&c), old, "{layout}, {app}");
                     let tx = c.transaction().unwrap();
                     assert_eq!(
-                        super::adopt(&tx, &later).unwrap(),
+                        super::adopt_earlier_flutter_app(&tx, &later).unwrap(),
                         Some((old, later.app_first() - 1 + app as u32)),
                         "{layout}, {app}"
                     );
@@ -4914,7 +4935,7 @@ mod tests {
         c.execute_batch("DROP TABLE legal_agreements;").unwrap();
         let before = (schema_of(&c), every_row(&c));
         let tx = c.transaction().unwrap();
-        let err = super::adopt(&tx, &later).unwrap_err();
+        let err = super::adopt_earlier_flutter_app(&tx, &later).unwrap_err();
         assert!(
             matches!(&err, clax_core::CoreError::MigrationFailed { at: 45, detail }
                 if detail.contains("briefs") && detail.contains("legal_agreements")),

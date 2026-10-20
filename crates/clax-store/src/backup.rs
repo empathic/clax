@@ -105,10 +105,7 @@ fn before_migrate_on(
     }
     // VACUUM INTO does not sync what it writes: the copy reaches the disk
     // before its name does, and its name before any migration commits.
-    if let Err(e) = disk
-        .sync_file(&tmp)
-        .and_then(|()| disk.rename(&tmp, &path))
-    {
+    if let Err(e) = disk.sync_file(&tmp).and_then(|()| disk.rename(&tmp, &path)) {
         let _ = std::fs::remove_file(&tmp);
         return Err(fail(&e));
     }
@@ -234,7 +231,10 @@ mod tests {
         let copy = before_migrate_on(&mut disk, &at_version(9), &home, 12, now)
             .unwrap()
             .unwrap();
-        assert_eq!(disk.steps, ["sync_file tmp", "rename tmp", "sync_dir backups"]);
+        assert_eq!(
+            disk.steps,
+            ["sync_file tmp", "rename tmp", "sync_dir backups"]
+        );
         let copied = Connection::open(&copy).unwrap();
         let v: u32 = copied
             .query_row("PRAGMA user_version", [], |r| r.get(0))

@@ -742,7 +742,7 @@ fn migrate_steps(conn: &mut Connection, numbering: &migrations::Numbering<'_>) -
     }
     {
         let tx = conn.transaction_with_behavior(rusqlite::TransactionBehavior::Immediate)?;
-        if let Some((from, to)) = migrations::adopt(&tx, numbering)? {
+        if let Some((from, to)) = migrations::adopt_earlier_flutter_app(&tx, numbering)? {
             tx.commit()?;
             tracing::warn!(
                 from,
