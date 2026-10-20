@@ -1390,8 +1390,8 @@ pub const APP_MIGRATION: u32 = NUMBERING.app_first();
 pub const JOBS_MIGRATION: u32 = APP_MIGRATION + 5;
 
 /// The tables the jobs migration ([`JOBS_MIGRATION`]) makes, its mark
-/// (`jobs`) first. Adoption holds a database to have all of them, each with
-/// the migration's columns, or none.
+/// (`jobs`) first. Adoption holds a database to have all of them, each as
+/// the migration makes it with its indexes, or none.
 pub(crate) const JOBS_TABLES: [&str; 7] = [
     "jobs",
     "job_steps",
@@ -1508,8 +1508,9 @@ const APP_MIGRATION_MARKS: [Mark<'static>; 6] = [
 /// migration's mark must be present exactly up to the one its version
 /// names, or the database is refused
 /// ([`clax_core::CoreError::MigrationFailed`]) and left as it was; so is
-/// one whose jobs tables ([`JOBS_TABLES`]) are not all there with the jobs
-/// migration's columns when it holds that migration's mark, or not all
+/// one whose jobs tables ([`JOBS_TABLES`]) are not all there as the jobs
+/// migration makes them, with their indexes, when it holds that
+/// migration's mark, or not all
 /// absent when it does not. A
 /// database with the app's tables whose main marks above 38 are not the
 /// first k of them, or that holds any without `questions.thread_id`, was
@@ -1613,8 +1614,11 @@ pub(super) fn adopt_earlier_flutter_app(
 
 /// How the database's jobs tables ([`JOBS_TABLES`]) disagree with the
 /// jobs migration, whose SQL is `jobs_sql`: when `held`, each must be there
-/// with the columns that SQL gives it (name, type, `NOT NULL`, default and
-/// primary key, in order); else none may be. `None` when they agree.
+/// as that SQL makes it, its `CREATE TABLE` and the `CREATE INDEX` of each
+/// of its indexes (none missing, none more) the same text in
+/// `sqlite_master` up to comments and spacing ([`normalised_sql`]), so a
+/// column, a foreign key or its delete rule, a `CHECK` or an index that
+/// differs is seen; else none may be. `None` when they agree.
 fn jobs_tables_disagree(
     tx: &rusqlite::Connection,
     jobs_sql: &str,
@@ -1622,20 +1626,16 @@ fn jobs_tables_disagree(
 ) -> clax_core::Result<Option<String>> {
     let made = rusqlite::Connection::open_in_memory()?;
     made.execute_batch(jobs_sql)?;
-    let columns = |c: &rusqlite::Connection, table: &str| -> clax_core::Result<Vec<String>> {
+    // The table's own SQL, then each of its indexes' (by name), normalised.
+    let schema = |c: &rusqlite::Connection, table: &str| -> clax_core::Result<Vec<(String, String)>> {
         let mut q = c.prepare(
-            "SELECT name, type, \"notnull\", dflt_value, pk FROM pragma_table_info(?1) ORDER BY cid",
+            "SELECT name, sql FROM sqlite_master
+             WHERE tbl_name = ?1 AND type IN ('table', 'index') AND sql IS NOT NULL
+             ORDER BY type = 'index', name",
         )?;
         let rows = q
             .query_map([table], |r| {
-                Ok(format!(
-                    "{} {} {} {:?} {}",
-                    r.get::<_, String>(0)?,
-                    r.get::<_, String>(1)?,
-                    r.get::<_, i64>(2)?,
-                    r.get::<_, Option<String>>(3)?,
-                    r.get::<_, i64>(4)?
-                ))
+                Ok((r.get::<_, String>(0)?, normalised_sql(&r.get::<_, String>(1)?)))
             })?
             .collect::<rusqlite::Result<_>>()?;
         Ok(rows)
@@ -1657,13 +1657,78 @@ fn jobs_tables_disagree(
                 JOBS_TABLES[0]
             )));
         }
-        if columns(tx, table)? != columns(&made, table)? {
+        let (has, wants) = (schema(tx, table)?, schema(&made, table)?);
+        for (name, sql) in &wants {
+            match has.iter().find(|(n, _)| n == name) {
+                None => {
+                    return Ok(Some(format!(
+                        "lacks the index {name} of the jobs migration's table {table}"
+                    )));
+                }
+                Some((_, s)) if s != sql => {
+                    return Ok(Some(format!(
+                        "has a {} {name} whose SQL is not the jobs migration's",
+                        if name == table { "table" } else { "index" }
+                    )));
+                }
+                Some(_) => {}
+            }
+        }
+        if let Some((name, _)) = has.iter().find(|(n, _)| !wants.iter().any(|(w, _)| w == n)) {
             return Ok(Some(format!(
-                "has a table {table} whose columns are not the jobs migration's"
+                "has an index {name} on the table {table} that the jobs migration does not make"
             )));
         }
     }
     Ok(None)
+}
+
+/// `sql` as `sqlite_master` keeps a `CREATE` statement, without its `--`
+/// comments and with its spacing made one: runs of white space are one
+/// space, and none is kept next to `(`, `)` or `,`. Quoted text is kept
+/// as it is.
+fn normalised_sql(sql: &str) -> String {
+    let mut out = String::with_capacity(sql.len());
+    let mut chars = sql.chars().peekable();
+    let mut space = false;
+    while let Some(c) = chars.next() {
+        match c {
+            '\'' | '"' => {
+                if space && !out.is_empty() && !out.ends_with(['(', ',']) {
+                    out.push(' ');
+                }
+                space = false;
+                out.push(c);
+                for q in chars.by_ref() {
+                    out.push(q);
+                    if q == c {
+                        break;
+                    }
+                }
+            }
+            '-' if chars.peek() == Some(&'-') => {
+                for n in chars.by_ref() {
+                    if n == '\n' {
+                        break;
+                    }
+                }
+                space = true;
+            }
+            c if c.is_whitespace() => space = true,
+            '(' | ')' | ',' => {
+                space = false;
+                out.push(c);
+            }
+            c => {
+                if space && !out.is_empty() && !out.ends_with(['(', ',']) {
+                    out.push(' ');
+                }
+                space = false;
+                out.push(c);
+            }
+        }
+    }
+    out
 }
 
 /// Whether the database holds `mark`.
@@ -5011,7 +5076,20 @@ mod tests {
     /// refused by name and left as it was.
     #[test]
     fn a_database_whose_jobs_tables_disagree_is_refused() {
-        let cases: [(usize, &str, &str); 4] = [
+        let cases: [(usize, &str, &str); 6] = [
+            (
+                6,
+                "DROP TABLE job_threads;
+                 CREATE TABLE job_threads (
+                     job_id TEXT NOT NULL REFERENCES jobs(id),
+                     thread_id TEXT NOT NULL REFERENCES threads(id),
+                     comment_id TEXT NOT NULL,
+                     stopped INTEGER NOT NULL DEFAULT 0 CHECK (stopped IN (0, 1)),
+                     PRIMARY KEY (job_id, thread_id));
+                 CREATE INDEX job_threads_by_thread ON job_threads(thread_id);",
+                "job_threads",
+            ),
+            (6, "DROP INDEX jobs_open;", "jobs_open"),
             (
                 6,
                 "DROP TABLE job_steps;
@@ -5059,6 +5137,20 @@ mod tests {
             let after = (user_version(&c), schema_of(&c), every_row(&c));
             assert!(after == before, "{named}: left as it was: {after:?}");
         }
+    }
+
+    #[test]
+    fn sql_is_compared_without_its_comments_and_spacing() {
+        let a = super::normalised_sql(
+            "CREATE TABLE t (  -- a comment, (with) 'quotes'\n    a TEXT CHECK (a IN ('x  y','-- z')) ,\n    b INTEGER\n)",
+        );
+        let b = super::normalised_sql("CREATE TABLE t(a TEXT CHECK(a IN('x  y','-- z')),b INTEGER)");
+        assert_eq!(a, b);
+        assert_eq!(a, "CREATE TABLE t(a TEXT CHECK(a IN('x  y','-- z')),b INTEGER)");
+        assert_ne!(
+            super::normalised_sql("CREATE TABLE t (a TEXT REFERENCES u(id))"),
+            super::normalised_sql("CREATE TABLE t (a TEXT REFERENCES u(id) ON DELETE CASCADE)")
+        );
     }
 
     #[test]
