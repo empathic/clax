@@ -45,9 +45,12 @@ echo "just $*" >> "$FAKE_STATE/calls"
 case "$1" in
     bazel-sync)
         # One change per run: the version into bazel/workspace.bzl, then that
-        # into MODULE.bazel.lock; the third run changes nothing.
+        # into MODULE.bazel.lock; the third run changes nothing. With
+        # $FAKE_STATE/sync-forever, every run changes MODULE.bazel.lock.
         v="$(sed -n 's/^CLAX_VERSION="\(.*\)"$/\1/p' scripts/ensure-clax.sh)"
-        if [ "$(cat bazel/workspace.bzl)" != "version = $v" ]; then
+        if [ -e "$FAKE_STATE/sync-forever" ]; then
+            echo "again" >> MODULE.bazel.lock
+        elif [ "$(cat bazel/workspace.bzl)" != "version = $v" ]; then
             echo "version = $v" > bazel/workspace.bzl
         elif ! cmp -s bazel/workspace.bzl MODULE.bazel.lock; then
             cp bazel/workspace.bzl MODULE.bazel.lock
@@ -103,7 +106,14 @@ case "$1 $2" in
     "run list")
         sha="$(flag --commit "$@")"
         case "$(flag --workflow "$@")" in
-            release.yml) [ -z "$(origin tag --points-at "$sha" 'v*')" ] || echo "101 $sha" ;;
+            release.yml)
+                # $FAKE_STATE/release-delay: how many listings miss the run.
+                n="$(cat "$S/release-delay" 2>/dev/null || echo 0)"
+                if [ "$n" -gt 0 ]; then
+                    echo $((n - 1)) > "$S/release-delay"
+                elif [ -n "$(origin tag --points-at "$sha" 'v*')" ]; then
+                    echo "101 $sha"
+                fi ;;
             ci.yml) if origin merge-base --is-ancestor "$sha" refs/heads/main 2>/dev/null; then echo "201 $sha"; fi ;;
             publish-pi.yml) cat "$S/publish-runs" 2>/dev/null || true ;;
             *) echo "fake gh: unexpected: $*" >&2; exit 2 ;;
@@ -175,7 +185,9 @@ new_case() {
     cat > "$r/scripts/check-version.sh" <<'SH'
 #!/usr/bin/env bash
 cd "$(dirname "$0")/.." || exit 1
-sed -n 's/^CLAX_VERSION="\(.*\)"$/\1/p' scripts/ensure-clax.sh
+v="$(sed -n 's/^CLAX_VERSION="\(.*\)"$/\1/p' scripts/ensure-clax.sh)"
+[ -n "$v" ] || { echo "versions differ" >&2; exit 1; }
+echo "$v"
 SH
     cat > "$r/scripts/bump-version.sh" <<'SH'
 #!/usr/bin/env bash
@@ -206,7 +218,7 @@ SH
 
 # Runs release.sh from another directory; its output is in $C/out.
 release() {
-    (cd "$T" && PATH="$FAKE_PATH" bash "$C/repo/scripts/release.sh" "$@") > "$C/out" 2>&1
+    (cd "$T" && PATH="${CASE_PATH:-$FAKE_PATH}" bash "$C/repo/scripts/release.sh" "$@") > "$C/out" 2>&1
 }
 act() { release 0.6.0 --i-know-what-i-am-doing; }
 # Everything a run could change: the work tree, ignored files included, and
@@ -497,6 +509,47 @@ refuse "gh signed out" "gh is not signed in (gh auth login)"
 new_case
 git -C "$C/repo" config user.signingkey "$T/no-such-key"
 refuse "a signing key that does not sign" "commit signing does not work here"
+new_case
+sed -i.bak 's/^CLAX_VERSION="0.5.0"/CLAX_VERSION="0.7.0"/' "$C/repo/scripts/ensure-clax.sh"
+git -C "$C/repo" -c commit.gpgsign=false commit -q -am "Bump to 0.7.0"
+git -C "$C/repo" push -q origin main
+refuse "a checkout at a newer version" "the checkout is at 0.7.0, newer than 0.6.0"
+new_case
+sed -i.bak 's/^CLAX_VERSION=/CLAX_VERSION_GONE=/' "$C/repo/scripts/ensure-clax.sh"
+git -C "$C/repo" -c commit.gpgsign=false commit -q -am "Lose a version"
+git -C "$C/repo" push -q origin main
+refuse "versions that disagree" "the checkout's versions disagree (scripts/check-version.sh)"
+new_case
+mkdir -p "$T/no-just"
+for tool in gh bazelisk; do [ -e "$T/no-just/$tool" ] || ln -s "$(readlink "$T/bin/$tool")" "$T/no-just/$tool"; done
+CASE_PATH="$T/no-just:/usr/bin:/bin" refuse "a missing just" "just is not on PATH"
+new_case
+GH_REPO="" refuse "an origin that is not on GitHub, with no GH_REPO" "is not a GitHub repository; set GH_REPO=owner/name"
+
+# --- the Release run listed late, or never -------------------------------------------
+new_case
+echo 2 > "$FAKE_STATE/release-delay"
+act; rc=$?
+if [ "$rc" = 0 ] && released && [ "$(grep -c '^gh run list --workflow release.yml' "$FAKE_STATE/calls")" -ge 3 ]; then
+    pass "the wait polls until the Release run is listed"
+else fail "the wait polls until the Release run is listed (rc=$rc: $(cat "$C/out"))"; fi
+new_case
+echo 99 > "$FAKE_STATE/release-delay"
+act; rc=$?
+if [ "$rc" = 1 ] && has "nothing after 3 polls" && has "no Release workflow run on v0.6.0 appeared" \
+    && has "step 8 (Wait for the Release workflow) failed"; then
+    pass "a Release run that is never listed stops the wait after its polls"
+else fail "a Release run that is never listed (rc=$rc: $(cat "$C/out"))"; fi
+
+# --- bazel-sync that never settles --------------------------------------------------
+new_case
+: > "$FAKE_STATE/sync-forever"
+act; rc=$?
+if [ "$rc" = 1 ] && [ "$(count "just bazel-sync")" = 4 ] && has "just bazel-sync still changed files on its 4th run" \
+    && has "step 3 (Sync Bazel with Cargo) failed" && [ "$(count "just ci")" = 0 ]; then
+    pass "bazel-sync still changing files after 4 runs stops at step 3"
+else fail "bazel-sync that never settles (rc=$rc: $(cat "$C/out"))"; fi
+
 new_case
 before="$(snapshot)"
 release 0.6.0 --force; rc=$?

@@ -578,9 +578,15 @@ git push origin main
 
 `scripts/test-release-script.sh` (gate "release command") runs the script
 in scratch repositories with a bare origin, fakes of `gh`, `just` and
-Bazel, and an SSH signing key of its own: the dry run, a whole release in
-order, resuming after a failed `just ci` and after a failed or unfinished
-Release run, and each refusal.
+Bazel, and an SSH signing key of its own. It covers the dry run (also
+mid-release), a whole release in order and a rerun of it, and resuming
+after: a failed `just ci`; a failed, never-listed or unfinished Release
+run; a release of the version from another build; a refused push of
+`main`; a failed CI run on the pin commit, also once `main` has moved on;
+and a failed Publish Pi package run. It also checks `bazel-sync` that
+never settles, `gh` failing during a wait, `main` moving during the
+Release wait and before the Pi publish, and each preflight refusal but a
+missing Bazel or `python3` or `curl`.
 
 The Pi package, `@empathic/clax-pi` on npm, is published from the pin
 commit, not the tag: its wrapper must pin the release that shares its
