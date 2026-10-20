@@ -930,11 +930,30 @@ what the worker applies:
 | `POST /api/jobs` `{id, client, kind, artifact_id?, title?, input, plan?}` | creates; an existing `id` with the same body answers it (200), another body 409 |
 | `GET /api/jobs?open=1&client=app` | open jobs with their steps, threads and questions |
 | `GET /api/jobs/{id}` | one |
-| `PATCH /api/jobs/{id}` `{if_rev, state?, step?, title?, plan?, carry?, error?}` | compare-and-set on `rev`; 409 `job_moved` with the current job |
+| `PATCH /api/jobs/{id}` `{if_rev, state?, step?, title?, plan?, carry?, error?}` | compare-and-set on `rev`; 409 `job_moved` with the current job; the state moves by the table below |
 | `PUT /api/jobs/{id}/threads/{tid}` / `DELETE` | the job answers, or stops at, a thread's comment |
-| `PUT /api/jobs/{id}/questions/{qid}` | a question the job asked; moves the job to `waiting` in the same transaction. When the question is answered (`POST /api/questions/{qid}/answer` or `/decline`, as today) the core stores the answer (or the decline) here and moves the job back to `running` in that answer's transaction |
+| `PUT /api/jobs/{id}/questions/{qid}` | a question the job asked; moves a `running` job to `waiting` in the same transaction. When the question is answered (`POST /api/questions/{qid}/answer` or `/decline`, as today) the core stores the answer (or the decline) here and moves the job back to `running` in that answer's transaction |
 | `POST /api/jobs/{id}/steps/{key}` `{result, publish?, reply?, state?}` | commits a step (below); `state` (only `done`) ends the job in the step's transaction |
 | `GET/PUT/DELETE /api/agent-read-consents[/{reader}/{source}]` | the agent's remembered consents |
+
+**The states.** One table in the store (`jobs::may_move`) says how a job
+moves, and every write of a job obeys it; a job's `state` is a Rust enum
+(`JobState`) and the SQL `CHECK` lists the same eight:
+
+| From | By | To |
+|---|---|---|
+| `cancelled`, `done` | any write | refused: these are final (409 `job_moved` with the row); a step's replay still answers the recorded step |
+| any other | `PATCH` to `running` | `waiting` while the job holds a question that is not closed, else `running` |
+| any other | `PATCH` to `paused`, `stopped`, `failed` or `cancelled`, or naming the state it is in | that state |
+| any other | `PATCH` to `queued`, `waiting` or `done` | refused, 400 `invalid_move`: only creation makes `queued`, only asking `waiting`, only a step `done` |
+| `running` | `PUT …/questions/{qid}` | `waiting` while the question is not closed |
+| any other | `PUT …/questions/{qid}` | unchanged; a move to `running` later lands in `waiting` |
+| `waiting` | the close of a question it asked | `running` once it waits on none |
+| any other | the close of a question it asked | unchanged |
+| any other | a step | unchanged; `done` with `state: done` |
+
+So a job is `waiting` exactly while it would run and holds an unclosed
+question, and nothing writes a row that no sequence of these moves reaches.
 
 The owner claim is the core's, not the store's: `AppState` keeps a
 `JobsOwners` map (client → token and stream ID) in memory, so a crash, a
