@@ -213,8 +213,12 @@ impl Core {
         for t in &self.tasks {
             t.abort();
         }
-        crate::linked::stop(&self.state);
-        let ended = futures::future::join_all(self.tasks);
+        // The linked sync's tasks are aborted and awaited with the rest.
+        let linked = crate::linked::stop(&self.state);
+        let ended = futures::future::join(
+            futures::future::join_all(self.tasks),
+            futures::future::join_all(linked),
+        );
         if tokio::time::timeout(TASKS_STOP_TIMEOUT, ended)
             .await
             .is_err()

@@ -170,13 +170,22 @@ pub fn listen(s: &AppState) -> Vec<clax_rt::JoinHandle<()>> {
     vec![supervisor, listener]
 }
 
-/// Aborts the task kept for each remote ([`Linked::tasks`]); a stopping
-/// core calls it once its supervisor is aborted.
-pub fn stop(s: &AppState) {
-    let tasks = std::mem::take(&mut *s.linked.tasks.lock().unwrap_or_else(|e| e.into_inner()));
-    for t in tasks.into_values() {
-        t.handle.abort();
-    }
+/// Stops the sync: aborts the task kept for each remote ([`Linked::tasks`])
+/// and returns their handles, for the caller to await; no task is started
+/// after ([`Linked::stopped`]), whatever the supervisor is doing.
+pub fn stop(s: &AppState) -> Vec<clax_rt::JoinHandle<()>> {
+    let tasks = {
+        let mut tasks = s.linked.tasks.lock().unwrap_or_else(|e| e.into_inner());
+        s.linked.stopped.store(true, Ordering::SeqCst);
+        std::mem::take(&mut *tasks)
+    };
+    tasks
+        .into_values()
+        .map(|t| {
+            t.handle.abort();
+            t.handle
+        })
+        .collect()
 }
 
 /// Queues remote `rid`'s local writes and questions not queued yet;
@@ -189,7 +198,7 @@ async fn scan(s: &AppState, rid: &str) -> bool {
 }
 
 /// Starts a task for each connected remote with a link, and stops the
-/// others.
+/// others; nothing once the sync stopped.
 async fn supervise(s: &AppState) {
     let Ok((links, remotes)) = s
         .store_call(|st| Ok((st.all_remote_links()?, st.remotes()?)))
@@ -213,6 +222,9 @@ async fn supervise(s: &AppState) {
     }
     *s.linked.artifacts.lock().unwrap_or_else(|e| e.into_inner()) = by_artifact;
     let mut tasks = s.linked.tasks.lock().unwrap_or_else(|e| e.into_inner());
+    if s.linked.stopped.load(Ordering::SeqCst) {
+        return;
+    }
     tasks.retain(|rid, t| {
         let keep = want.contains(rid) && !t.handle.is_finished();
         if !keep {

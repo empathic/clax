@@ -619,3 +619,70 @@ async fn a_serve_that_fails_after_its_core_started_stops_the_core() {
         "the failed serve's core leaves no task either"
     );
 }
+
+#[tokio::test]
+async fn a_stopped_core_leaves_no_task_of_its_linked_sync() {
+    // A connected remote with a linked artifact: the sync keeps a task for
+    // it (its remote unreachable, the task waits out its backoff), which a
+    // stopped core has ended, not only aborted, by the time stop returns.
+    use clax_core::Secret;
+    use clax_store::remotes::{PendingSignIn, SignedInAs};
+    let dir = tempfile::tempdir().unwrap();
+    let home = Home::at(dir.path().join("linked"));
+    home.ensure_dirs().unwrap();
+    let rid = {
+        let st = clax_store::Store::open(&home).unwrap();
+        let sign_in = PendingSignIn {
+            device_code: Secret::new("cxd_1".into()),
+            user_code: "WXYZ-4821".into(),
+            verification_url: "http://127.0.0.1:9/device".into(),
+            expires_at: "2026-10-12T10:10:00.000Z".into(),
+            interval_s: 5,
+        };
+        let r = st
+            .add_pending_remote("http://127.0.0.1:9", "unreachable", &sign_in)
+            .unwrap();
+        st.connect_remote(
+            &r.id,
+            &SignedInAs {
+                token: Secret::new("cxa_1".into()),
+                person_public_id: "p1".into(),
+                person_name: None,
+                grant_id: "g1".into(),
+            },
+        )
+        .unwrap();
+        st.record_remote_push("a1", &r.id, "b1", "http://127.0.0.1:9/a/b1", (1, 1), None)
+            .unwrap();
+        st.shutdown();
+        r.id
+    };
+    let before = alive_tasks().await;
+    let core = clax_server::core::Core::start(
+        clax_server::core::CoreConfig {
+            home,
+            version: "test",
+            reap_interval: std::time::Duration::from_secs(60),
+            codex: Default::default(),
+            sample: std::sync::Arc::new(clax_sample::Sampler::disabled()),
+            web: clax_testkit::web_ui(),
+            hosted: None,
+            require_credential: false,
+            bind: IpAddr::V4(Ipv4Addr::LOCALHOST),
+            port: 0,
+            embed: None,
+        },
+        &mut |_| {},
+    )
+    .await
+    .unwrap();
+    while !core.state().linked.running(&rid) {
+        tokio::task::yield_now().await;
+    }
+    core.stop().await;
+    // Counted at once: every task of the core has ended as stop returns.
+    let left = tokio::runtime::Handle::current()
+        .metrics()
+        .num_alive_tasks();
+    assert_eq!(left, before, "a task of the stopped core's sync still runs");
+}

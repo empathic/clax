@@ -41,6 +41,9 @@ pub struct Linked {
     /// acted on them.
     pub lose_answers: AtomicUsize,
     pub started: AtomicBool,
+    /// Set under [`Linked::tasks`]'s lock once the sync stopped: no task is
+    /// started after.
+    pub stopped: AtomicBool,
 }
 
 impl Linked {
@@ -55,6 +58,7 @@ impl Linked {
             offline: AtomicBool::new(false),
             lose_answers: AtomicUsize::new(0),
             started: AtomicBool::new(false),
+            stopped: AtomicBool::new(false),
         }
     }
 
