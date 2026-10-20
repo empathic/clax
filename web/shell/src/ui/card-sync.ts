@@ -47,7 +47,9 @@ export class CardSync {
   start(): void {
     if (this.#life) return;
     const life = (this.#life = new Lifecycle());
-    this.feed.start(() => void this.full(), id => void this.changed(id), d => this.apply(d));
+    // A card's tags changed: that card is fetched again; the list changed
+    // (a tag renamed, recoloured or deleted): every card.
+    this.feed.start(() => void this.full(), id => void this.changed(id), d => this.apply(d), id => void (id ? this.one(id) : this.full()));
     life.defer(() => this.feed.stop());
     this.#arm();
     life.listen(document, "visibilitychange", this.#shown);

@@ -7,6 +7,7 @@ import type { Boot } from "./view/boot";
 import { FrameHost } from "./view/frame-host";
 import { setBy } from "./view/publisher";
 import { type Skeleton, skeleton } from "./view/skeleton";
+import { setTitleTags, tagsOf } from "./view/title-tags";
 
 export { MOVE_TO_CLICK, MOVE_TO_PICK, pageWait } from "./view/artifact-controller";
 export type { ArtifactProps } from "./view/artifact-controller";
@@ -75,9 +76,17 @@ export function mountArtifactView(root: HTMLElement, props: ArtifactProps, opts:
     // With a bootstrap it starts at once: the view is ready before the page
     // follows it, so a served frame stays in the page and is adopted.
     if (b) begin();
+    // The tags beside the by-line, once the artifact is known; Edit tags
+    // loads the editor's chunk on its first press.
+    const editTags = (button: HTMLButtonElement) => void import("./ui/tag-editor").then(m => m.toggleTagEditor(button, ctl), () => {});
     // Subscribed before a start without a bootstrap, so the viewer is back in
     // the page before the controller puts the frame in it.
-    const offPage = ctl.state.subscribe(s => pageFollows(sk, s, status));
+    const offPage = ctl.state.subscribe(s => {
+      pageFollows(sk, s, status);
+      const t = tagsOf(s);
+      const shown = !s.error && !!s.data && !s.deleted;
+      setTitleTags(sk.title.parentElement!, shown ? t.tags : [], shown && t.may, editTags);
+    });
     // Without one, it starts once the loading page has painted, when the
     // view's effects started before.
     const cancelStart = b ? () => {} : afterPaint(begin);

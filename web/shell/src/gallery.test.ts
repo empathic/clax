@@ -30,6 +30,8 @@ const ARTIFACTS = [
 ];
 
 type Call = { url: string; method: string; body?: string };
+/** The tags the list's artifacts carry, by artifact ID. */
+let tagsOn: Record<string, { id: string; name: string; colour: string }[]> = {};
 /** Fields a single-artifact list answer changes, by artifact ID. */
 let edits: Record<string, Record<string, unknown>> = {};
 const ATTENTION = { artifacts: { aaaaaaaaaaaa: { addressed: [], addressed_v: null, new_replies: ["t"], open_in: ["t"], seen: 1 } } };
@@ -47,7 +49,7 @@ function stubApi(tokenStatus: number = 200, attention: "ok" | "fail" | "none" = 
       if (attention === "fail") throw new Error("network");
       if (attention === "ok") return new Response(JSON.stringify(ATTENTION));
     }
-    if (url.endsWith("/api/artifacts")) return new Response(JSON.stringify({ artifacts: ARTIFACTS }));
+    if (url.endsWith("/api/artifacts")) return new Response(JSON.stringify({ artifacts: ARTIFACTS.map(a => (tagsOn[a.id] ? { ...a, tags: tagsOn[a.id] } : a)) }));
     const one = url.match(/^\/api\/artifacts\?artifact=(\w+)$/);
     if (one) return new Response(JSON.stringify({ artifacts: ARTIFACTS.filter(a => a.id === one[1]).map(a => ({ ...a, ...edits[a.id] })) }));
     if (url.startsWith("/api/viewers/me/attention?artifact=")) return new Response(JSON.stringify({ artifacts: {} }));
@@ -477,6 +479,98 @@ describe("Gallery and People", { timeout: MOUNT_TIMEOUT_MS }, () => {
     expect(root.querySelector(".gbar .search")).toBeNull();
     expect(calls.some(c => c.url === "/api/artifacts")).toBe(false);
     await workerWith("people", "agents");
+  });
+});
+
+describe("Gallery tags", { timeout: MOUNT_TIMEOUT_MS }, () => {
+  const Q4 = { id: "t_aaaaaaaaaa", name: "Q4", colour: "blue" };
+  const DESIGN = { id: "t_bbbbbbbbbb", name: "design", colour: "purple" };
+  beforeEach(() => { vi.resetModules(); tagsOn = { "7q3k9mzx2b4t": [DESIGN, Q4], aaaaaaaaaaaa: [Q4] }; });
+  afterEach(() => { unmountGallery?.(); unmountGallery = null; vi.unstubAllGlobals(); document.body.replaceChildren(); tagsOn = {}; history.replaceState(null, "", "/"); });
+  const titles = (root: Element) => [...root.querySelectorAll("a.card h3")].map(h => h.textContent);
+  const bar = (root: Element) => [...root.querySelectorAll<HTMLButtonElement>(".tagbar button.tag")];
+
+  it("filters to the artifacts carrying every tag in the address, and keeps the filter there as it changes", async () => {
+    stubApi();
+    history.replaceState(null, "", "/?tag=design");
+    const root = await mountGallery();
+    expect(titles(root)).toEqual(["Pinned one"]);
+    // The bar lists the tags in use, the filter's pressed; a filter shows one list.
+    expect(bar(root).map(b => [b.textContent, b.getAttribute("aria-pressed"), b.dataset.c])).toEqual([["design", "true", "purple"], ["Q4", "false", "blue"]]);
+    expect(bar(root)[1].getAttribute("aria-label")).toBe("Filter by tag Q4");
+    expect(root.querySelector(".grp h2")).toBeNull();
+    const manage = await waitFor(() => root.querySelector<HTMLAnchorElement>(".tagbar a.tb-m")?.textContent === "Manage tags" && root.querySelector<HTMLAnchorElement>(".tagbar a.tb-m"), "Manage tags");
+    expect(manage.getAttribute("href")).toBe("/tags");
+    // Clear shows everything, and takes the filter out of the address.
+    root.querySelector<HTMLButtonElement>(".tagbar .tb-x")!.click();
+    await waitFor(() => titles(root).length === 2, "both cards");
+    expect(location.search).toBe("");
+    // A card's tag adds it to the filter; the bar's tags press and unpress (match all).
+    const chip = [...root.querySelectorAll(".card-wrap")].find(c => c.textContent!.includes("Other"))!.querySelector<HTMLButtonElement>(".ctags button.tag")!;
+    expect(chip.getAttribute("aria-label")).toBe("Filter by tag Q4");
+    chip.click();
+    await waitFor(() => location.search === "?tag=Q4", "the card's tag in the address");
+    expect(titles(root)).toEqual(["Pinned one", "Other"]);
+    bar(root).find(b => b.textContent === "design")!.click();
+    await waitFor(() => titles(root).length === 1, "one card");
+    expect(location.search).toBe("?tag=Q4&tag=design");
+    // Back and forward bring the address's filter back.
+    history.replaceState(null, "", "/?tag=q4");
+    dispatchEvent(new PopStateEvent("popstate"));
+    await waitFor(() => titles(root).length === 2, "the filter from the address");
+    history.replaceState(null, "", "/?tag=nothing");
+    dispatchEvent(new PopStateEvent("popstate"));
+    await waitFor(() => root.querySelector(".empty")?.textContent === "No artifacts carry every tag chosen.", "no match");
+    // A tag no artifact carries still shows, pressed, so it can be taken out.
+    expect(bar(root).at(-1)!.textContent).toBe("nothing");
+    expect(bar(root).at(-1)!.getAttribute("aria-pressed")).toBe("true");
+  });
+
+  it("matches a search against tag names, and shows no bar without tags", async () => {
+    stubApi(403);
+    const root = await mountGallery();
+    const search = root.querySelector<HTMLInputElement>(".search")!;
+    search.value = "desig";
+    search.dispatchEvent(new Event("input", { bubbles: true }));
+    await waitFor(() => titles(root).length === 1, "the search");
+    expect(titles(root)).toEqual(["Pinned one ★"]);
+    // A viewer without the token reads the list.
+    expect(root.querySelector(".tagbar a.tb-m")!.textContent).toBe("All tags");
+    unmountGallery!(); unmountGallery = null; vi.resetModules();
+    tagsOn = {};
+    stubApi();
+    const bare = await mountGallery();
+    expect(bare.querySelector(".tagbar")).toBeNull();
+    expect(bare.querySelector(".ctags")).toBeNull();
+  });
+
+  it("is the Tags page at /tags: no artifacts are fetched, the owner may make, edit and delete, and anyone else reads", async () => {
+    for (const may of [true, false]) {
+      const calls: Call[] = [];
+      vi.stubGlobal("fetch", vi.fn(async (url: string, init?: RequestInit) => {
+        calls.push({ url, method: init?.method ?? "GET" });
+        const ok = (b: unknown) => new Response(JSON.stringify(b));
+        if (url === "/api/token") return may ? ok({ token: "t" }) : new Response("{}", { status: 403 });
+        if (url === "/api/viewers/me") return ok({ viewer: null });
+        if (url === "/api/tags") return ok({ tags: [{ ...Q4, description: "The quarter", created_at: "", updated_at: "", count: 2 }, { ...DESIGN, description: null, created_at: "", updated_at: "", count: 1 }], colours: ["gray", "blue", "purple"], may_manage: may });
+        return new Response("{}", { status: 404 });
+      }));
+      history.replaceState(null, "", "/tags");
+      const { default: Gallery } = await import("./ui/Gallery.svelte");
+      const { mount } = await import("./test/svelte");
+      const m = mount(Gallery, {});
+      unmountGallery = m.unmount;
+      const rows = await waitFor(() => m.root.querySelectorAll(".tagsp .trow").length === 2 && [...m.root.querySelectorAll(".tagsp .trow")], "the tags");
+      expect(rows[0].querySelector("a.tag")!.getAttribute("href")).toBe("/?tag=Q4");
+      expect(rows[0].textContent).toContain("The quarter");
+      expect(rows[0].textContent).toContain("Blue · 2 artifacts");
+      expect(rows[1].textContent).toContain("1 artifact");
+      expect(m.root.querySelector(".gbar .search")).toBeNull();
+      expect(!!m.root.querySelector(".tagsp .th button.primary")).toBe(may);
+      expect(rows[0].querySelectorAll("button").length).toBe(may ? 2 : 0);
+      expect(calls.some(c => c.url === "/api/artifacts")).toBe(false);
+      unmountGallery(); unmountGallery = null; vi.resetModules(); vi.unstubAllGlobals();
+    }
   });
 });
 

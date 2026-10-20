@@ -2,7 +2,7 @@
 // `state` and call the intent methods; the frame is a FrameHost the mount
 // gives it.
 import { type Anchor, type AnchorResult, INDEX_FILE, type ShellToBridge } from "../../../bridge/src/protocol";
-import { ApiError, type Artifact, type Attention, type SampleStatus, type Version, getArtifact, getToken } from "../api";
+import { ApiError, type Artifact, type Attention, type SampleStatus, type TagRef, type Version, getArtifact, getToken } from "../api";
 import { getDrafts, getSampleStatus, putLooked, putSeen } from "./view-api";
 import { acceptByeFromFrame, acceptFromFrame, helloMatches, sendToFrame } from "../bridge-link";
 import type { Declared } from "../caps/availability";
@@ -144,6 +144,11 @@ export type ViewState = {
   /** Other people's pointers, selections, typing and drafts (the live
    * layers); none until their code loads after the first paint. */
   live?: LiveUi;
+  /** The artifact's tags and whether the viewer may set them, as last
+   * refetched or set (a `tags` event, the tag editor); null: as `data`
+   * says (`view/title-tags.ts` `tagsOf`). Kept apart from `data`, whose
+   * replacement starts a new capability host. */
+  tags: { tags: TagRef[]; may: boolean } | null;
 };
 
 /** The artifact is loaded and the frame mode decided: the islands show. */
@@ -324,7 +329,7 @@ export class ArtifactController {
       decided: null, rally: false, menu: null, askName: null, looked: {}, presence: [], shareWhere: readShareWhere(),
       agents: [], selection: EMPTY_SELECTION, batchNote: "", batchBusy: false, sendTo: null, sampleCalls: null,
       spectator: null, viewing: null,
-      drafts: [], showDraft: null, draftChanged: null,
+      drafts: [], showDraft: null, draftChanged: null, tags: null,
     });
     this.threadLoad = new ThreadSync(f => this.set(s => ({ threads: f(s.threads) })));
     this.ownPublish.settled = () => {

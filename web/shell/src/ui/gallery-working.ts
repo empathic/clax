@@ -61,6 +61,15 @@ export function peoplePage(target: Element): () => void {
   return () => { gone = true; if (view) void unmount(view); };
 }
 
+/** `/tags`: mounts the Tags page (its own chunk) at the end of `target`,
+ * following the page's stream. The result removes it. */
+export function tagsPage(target: Element): () => void {
+  let view: Record<string, unknown> | null = null;
+  let gone = false;
+  void import("./TagsPage.svelte").then(p => { if (!gone) view = mount(p.default, { target, props: { stream: pageStream() } }); }, () => {});
+  return () => { gone = true; if (view) void unmount(view); };
+}
+
 /** A card's markers, its working agents named as its participants name them. */
 export const cardMarkers = (a: Artifact, att: AttentionSummary | undefined, working: Working[]) =>
   markers(a, att, chips(working, agentNames(working, a.participants?.agents ?? [])));

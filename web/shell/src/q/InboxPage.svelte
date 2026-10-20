@@ -29,9 +29,15 @@
   // Only the owner's browser offers the Connections filter. At phone width
   // the filters sit behind **Filters**. The agent strip (§13) opens the
   // page, under its header: a chip filters the inbox by its agent; it is
-  // fetched again with the list.
+  // fetched again with the list. Tags, beside Page, picks tags (a list with
+  // a search, `ui/TagPicker.svelte`): the items about artifacts carrying
+  // every one picked.
   import { onMount } from "svelte";
-  import { type InboxFilter, type InboxItem, type InboxKind, type StripAgent, getToken, listArtifacts } from "../api";
+  import { type InboxFilter, type InboxItem, type InboxKind, type StripAgent, type TagRef, getToken, listArtifacts } from "../api";
+  import TagPicker from "../ui/TagPicker.svelte";
+  import { filterLabel } from "../view/tag-picker-model";
+  import { listTags } from "../view/tags-api";
+  import { holds, toggle as toggleTag } from "../view/tags-model";
   import AgentStrip from "../people/AgentStrip.svelte";
   import { ticker } from "../ui/ticker.svelte";
   import { after } from "../clock";
@@ -101,7 +107,13 @@
   const N = typeof Notification === "undefined" ? undefined : Notification;
   let perm = $state(N?.permission);
 
-  const filtered = $derived([filter.q, filter.kind?.length, filter.artifact, filter.agent, filter.since, filter.until].some(Boolean));
+  const filtered = $derived([filter.q, filter.kind?.length, filter.artifact, filter.agent, filter.since, filter.until, filter.tag?.length].some(Boolean));
+  // Every tag, for the Tags filter, and whether its list is open.
+  let allTags = $state<TagRef[]>([]);
+  let tagsOpen = $state(false);
+  let tagBox: HTMLDivElement | undefined = $state();
+  const closeTags = (refocus: boolean) => { tagsOpen = false; if (refocus) tagBox?.querySelector<HTMLButtonElement>(".tbtn")?.focus(); };
+  const outside = (e: PointerEvent) => { if (tagsOpen && !tagBox?.contains(e.target as Node)) closeTags(false); };
   const unreadOnly = $derived(filter.read === "unread");
   // A card's view: the question feed's (live), else the item's.
   const qview = (i: InboxItem) => (i.question && (questions.get(i.question.id) ?? i.question))!;
@@ -277,6 +289,7 @@
   };
   const toggleUnread = () => apply({ ...filter, read: unreadOnly ? undefined : "unread" });
   const set = (k: "artifact" | "agent" | "since" | "until", v: string) => apply({ ...filter, [k]: v || undefined });
+  const pickTag = (t: TagRef) => { const tag = toggleTag(filter.tag ?? [], t.name); apply({ ...filter, tag: tag.length ? tag : undefined }); };
 
   /** Marks read the unread items matching `f` up to the newest of `shown`
    * (group `key`'s, or every group's), shows the rows it read as read
@@ -339,6 +352,7 @@
     document.title = "Inbox · Clax";
     void getToken().then(t => { owner = !!t; });
     void listArtifacts().then(a => { artifacts = a.map(x => [x.id, x.title]); }, () => {});
+    void listTags().then(l => { allTags = l.tags; }, () => {});
     // Fetched once on open: now, or when the inbox topic first goes live.
     const off = inbox.listen(c => { if ("item" in c) take(c.item); else if (list) soon(); else void load(); });
     if (!inbox.waiting) void load();
@@ -362,6 +376,8 @@
     {#if rows.length}<ul class="rows">{#each rows as i (i.id)}<InboxRow item={i} others={listed} now={p.now} grouped onOpen={open} onToggle={toggle} />{/each}</ul>{/if}
   </InboxGroup>
 {/snippet}
+
+<svelte:window onpointerdown={outside} />
 
 <div class="inbox">
   <header class="ihead">
@@ -391,6 +407,19 @@
         {#each pages as a (a[0])}<option value={a[0]} selected={a[0] === filter.artifact}>{a[1]}</option>{/each}
       </select>
     </label>
+    <!-- svelte-ignore a11y_no_static_element_interactions -->
+    <div class="pick tagpick" bind:this={tagBox} onfocusout={e => { if (tagsOpen && !tagBox?.contains(e.relatedTarget as Node | null) && e.relatedTarget) closeTags(false); }}>
+      <span id="inbox-tags-l">Tags</span>
+      <button type="button" class="tbtn" aria-haspopup="dialog" aria-expanded={tagsOpen} aria-labelledby="inbox-tags-l inbox-tags-v" onclick={() => { tagsOpen = !tagsOpen; }}><span id="inbox-tags-v">{filterLabel(filter.tag ?? [])}</span></button>
+      {#if tagsOpen}
+        <div class="ipop" role="dialog" aria-label="Filter by tags">
+          <TagPicker tags={allTags} chosen={t => holds(filter.tag ?? [], t)} onToggle={pickTag} label="Tags the items' pages carry, all of them" onClose={() => closeTags(true)}>
+            {#snippet empty()}<p class="tn">There are no tags yet.</p>{/snippet}
+            {#snippet foot()}{#if filter.tag?.length}<button type="button" class="ghost iclear" onclick={() => { apply({ ...filter, tag: undefined }); closeTags(true); }}>Any tag</button>{/if}{/snippet}
+          </TagPicker>
+        </div>
+      {/if}
+    </div>
     <label class="pick">Agent
       <select onchange={e => set("agent", e.currentTarget.value)}>
         <option value="">Any agent</option>
@@ -436,6 +465,10 @@
     .inbox .kind[aria-pressed="true"] { color: var(--fg); background: var(--hover); border-color: var(--fg); }
     .inbox .pick { display: inline-flex; align-items: center; gap: 6px; font-size: 12.5px; color: var(--muted); }
     .inbox .pick select { max-width: 220px; }
+    .inbox .tagpick { position: relative; }
+    .inbox .tagpick .tbtn { min-height: 32px; max-width: 220px; justify-content: flex-start; border-color: var(--border-strong); overflow: hidden; text-overflow: ellipsis; }
+    .inbox .tagpick .ipop { position: absolute; top: calc(100% + 6px); left: 0; z-index: 20; width: 280px; max-width: calc(100vw - 32px); padding: 10px; background: var(--raised); color: var(--fg); border: 1px solid var(--border-hover); border-radius: var(--radius); box-shadow: var(--elev-lg); }
+    .inbox .tagpick .iclear { align-self: flex-start; min-height: 28px; padding: 2px 8px; font-size: 12.5px; color: var(--muted); }
     .inbox .err { margin: 12px 0 0; color: var(--danger); font-size: 13px; }
     .inbox .sec { margin-top: 22px; min-width: 0; }
     .inbox .pinned-h .c { font: 400 12.5px var(--mono); color: var(--muted); font-variant-numeric: tabular-nums; }
@@ -451,7 +484,8 @@
       .inbox .filters { flex-direction: column; align-items: stretch; }
       .inbox .filters:not([data-open]) { display: none; }
       .inbox .pick { justify-content: space-between; }
-      .inbox .pick select, .inbox .pick input { flex: 1; max-width: none; min-width: 0; }
+      .inbox .pick select, .inbox .pick input, .inbox .tagpick .tbtn { flex: 1; max-width: none; min-width: 0; }
+      .inbox .tagpick .ipop { left: auto; right: 0; }
     }
   }
 </style>

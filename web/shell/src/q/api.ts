@@ -50,6 +50,7 @@ export function inboxQuery(f: InboxFilter, before?: string | null, limit?: numbe
     const v = f[k];
     if (v) u.set(k, v);
   }
+  for (const t of f.tag ?? []) u.append("tag", t);
   if (before) u.set("before", before);
   if (limit) u.set("limit", String(limit));
   const s = u.toString();
@@ -77,6 +78,6 @@ export const markInbox = (id: string, read: boolean) =>
 export function markInboxMany(m: { ids: string[] } | { all: true; filter?: InboxFilter; upto?: number; except?: string[] }) {
   if ("ids" in m) return post<{ marked: number; unread: number }>("/api/inbox/read", { ids: m.ids });
   const f = m.filter ?? {};
-  const filter = Object.fromEntries(Object.entries({ q: f.q?.trim() || undefined, kind: f.kind?.length ? f.kind : undefined, artifact: f.artifact, agent: f.agent, since: f.since, until: f.until }).filter(([, v]) => v !== undefined));
+  const filter = Object.fromEntries(Object.entries({ q: f.q?.trim() || undefined, kind: f.kind?.length ? f.kind : undefined, artifact: f.artifact, agent: f.agent, since: f.since, until: f.until, tag: f.tag?.length ? f.tag : undefined }).filter(([, v]) => v !== undefined));
   return post<{ marked: number; unread: number }>("/api/inbox/read", { all: true, ...Object.keys(filter).length && { filter }, ...m.upto !== undefined && { upto: m.upto }, ...m.except?.length && { except: m.except } });
 }

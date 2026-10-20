@@ -4,6 +4,7 @@
 // page loads it, so the question module's chunk carries none of it. Pure:
 // no DOM.
 import type { InboxFilter, InboxKind } from "../api";
+import { tagsFromUrl, withTags } from "../view/tags-model";
 
 /** The kinds the inbox page filters by. */
 export const INBOX_KINDS: readonly InboxKind[] = ["reply", "version", "published", "question", "finished", "approval", "connection", "ended", "push"];
@@ -11,8 +12,9 @@ export const INBOX_KINDS: readonly InboxKind[] = ["reply", "version", "published
 const PARAMS = ["search", "unread", "kind", "artifact", "agent", "since", "until"] as const;
 
 /** The search a `/inbox` URL's query string (`?search=…&kind=…`) keeps,
- * `unread=1` the Unread filter (`read: "unread"`); unknown kinds and
- * empty values are dropped. */
+ * `unread=1` the Unread filter (`read: "unread"`), each `tag` a tag the
+ * items' artifacts carry (all of them); unknown kinds and empty values are
+ * dropped. */
 export function filterFromUrl(search: string): InboxFilter {
   const u = new URLSearchParams(search);
   const f: InboxFilter = {};
@@ -26,6 +28,8 @@ export function filterFromUrl(search: string): InboxFilter {
     const v = get(k);
     if (v) f[k] = v;
   }
+  const tag = tagsFromUrl(search);
+  if (tag.length) f.tag = tag;
   return f;
 }
 
@@ -37,5 +41,7 @@ export function filterToUrl(f: InboxFilter): string {
     artifact: f.artifact, agent: f.agent, since: f.since, until: f.until,
   };
   const parts = PARAMS.flatMap(k => (v[k] ? [`${k}=${k === "kind" ? v[k] : encodeURIComponent(v[k])}`] : []));
+  const tags = withTags("", f.tag ?? []).slice(1);
+  if (tags) parts.push(tags);
   return parts.length ? `?${parts.join("&")}` : "";
 }

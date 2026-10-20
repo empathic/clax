@@ -1,5 +1,6 @@
 import { describe, expect, it } from "vitest";
 import { approvalCard, item, view } from "./fixtures";
+import { inboxQuery } from "./api";
 import { filterFromUrl, filterToUrl } from "./inbox-filter";
 import { itemText, itemTitle, newestSeq } from "./inbox-model";
 import { notificationText } from "./notify";
@@ -77,6 +78,15 @@ describe("inbox model", () => {
     expect(filterFromUrl("?kind=reply,bogus&search=%20&until=2026-10-07")).toEqual({ kind: ["reply"], until: "2026-10-07" });
     expect(filterToUrl({})).toBe("");
     expect(filterFromUrl(filterToUrl({ q: "a&b=c #d" }))).toEqual({ q: "a&b=c #d" });
+  });
+
+  it("keeps the tag filter in the address, each tag its own parameter, and sends it to the inbox", () => {
+    const f = filterFromUrl("?unread=1&tag=q4&tag=a%20b&tag=Q4&tag=");
+    expect(f).toEqual({ read: "unread", tag: ["q4", "a b"] });
+    expect(filterToUrl(f)).toBe("?unread=1&tag=q4&tag=a+b");
+    expect(filterFromUrl(filterToUrl(f))).toEqual(f);
+    expect(inboxQuery({ tag: ["q4", "a b"], kind: ["reply"] })).toBe("?kind=reply&tag=q4&tag=a+b");
+    expect(filterToUrl({ tag: [] })).toBe("");
   });
 
   it("strips control and bidirectional characters from a notification and cuts its body at 180", () => {
