@@ -249,7 +249,7 @@ class AppServices {
   final PendingMake pendingMake;
 
   /// Whether the Claude API can be reached: runs that cannot reach it wait
-  /// for it, saying "Waiting for connection", and go on by themselves; by
+  /// for it, saying "Waiting for Claude", and go on by themselves; by
   /// default a TCP probe of the Messages API's host.
   final ApiConnection connection;
 

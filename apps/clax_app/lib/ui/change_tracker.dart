@@ -51,10 +51,9 @@ class _Change {
 /// [WorkerProgress] events whose threads are exactly the running change's
 /// ([workerProgress]); a [Narration] or [ToolStarted] is a step, a
 /// resent [AttemptStarted] the step "Trying again", an [Inspected] the
-/// [inspection], a [WaitingForConnection] the step "Waiting for
-/// connection" ([waitingForConnection] until a [ConnectionBack], the step
-/// "Connection is back"). Steps start afresh with each run and stop when it
-/// ends.
+/// [inspection], a [WaitingForConnection] the step "Waiting for Claude"
+/// ([waitingForConnection] until a [ConnectionBack], the step "Reached
+/// Claude again"). Steps start afresh with each run and stop when it ends.
 /// The send→first-step timing ([sendFirstStep]) runs with the timed
 /// change, from Send to its first step; a step the worker reported before
 /// the Send, or a change that ends without one, records nothing.
@@ -146,8 +145,8 @@ class ChangeTracker {
   /// Whether a Retry is being queued.
   bool get retrying => _retrying;
 
-  /// Whether the running change waits for the Claude API's connection; it
-  /// goes on by itself once the connection is back.
+  /// Whether the running change waits for Claude, which cannot be
+  /// reached; it goes on by itself once Claude answers.
   bool get waitingForConnection =>
       _offline && _running.isNotEmpty && _outcome == null;
 
@@ -253,11 +252,11 @@ class ChangeTracker {
         return _addStep('Trying again');
       case WaitingForConnection():
         _offline = true;
-        _addStep('Waiting for connection');
+        _addStep('Waiting for Claude');
         return true;
       case ConnectionBack():
         _offline = false;
-        _addStep('Connection is back');
+        _addStep('Reached Claude again');
         return true;
       case Inspected(:final png, :final errors):
         _inspection = (png: png, errors: errors);

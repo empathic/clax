@@ -611,8 +611,8 @@ class AgentLoop {
       case RunInterrupted():
         if (await _findCreated(before) case final aid?) return aid;
         throw const AgentError(
-          'Clax lost its connection while saving your app, so it may have '
-          'been made. Look for it in your apps before you try again.',
+          'Clax stopped while saving your app, so it may have been made. '
+          'Look for it in your apps before you try again.',
         );
     }
   }

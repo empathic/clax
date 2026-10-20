@@ -366,6 +366,10 @@ enum ClaxPillState {
   /// A change is under way: the breathing mark and "Working".
   working,
 
+  /// A change waits for Claude, which cannot be reached; it goes on by
+  /// itself once Claude answers: the resting mark and "Waiting for Claude".
+  waiting,
+
   /// The app's build goes: "Building 2/5".
   building,
 
@@ -384,9 +388,10 @@ enum ClaxPillState {
 /// [onShow] in [ClaxPillState.newVersion]. With [state] null nothing goes
 /// on and nothing shows.
 ///
-/// The mark breathes while a change or a build runs, slides its dot into
-/// Clax's arc as a change starts ([ClaxMarkState.sent]), and nods at a new
-/// version ([ClaxMarkState.landed]). A screen reader hears the state as a
+/// The mark breathes while a change or a build runs (it rests while a
+/// change waits for Claude), slides its dot into Clax's arc as a change
+/// starts ([ClaxMarkState.sent]), and nods at a new version
+/// ([ClaxMarkState.landed]). A screen reader hears the state as a
 /// live region ("Clax is working").
 class ClaxPill extends StatefulWidget {
   const ClaxPill({
@@ -418,6 +423,7 @@ class ClaxPill extends StatefulWidget {
   static String label(ClaxPillState state, ({int done, int total})? progress) =>
       switch (state) {
         ClaxPillState.working => 'Working',
+        ClaxPillState.waiting => 'Waiting for Claude',
         ClaxPillState.building =>
           progress == null || progress.total == 0
               ? 'Building'
@@ -432,6 +438,7 @@ class ClaxPill extends StatefulWidget {
     ({int done, int total})? progress,
   ) => switch (state) {
     ClaxPillState.working => 'Clax is working',
+    ClaxPillState.waiting => 'Clax is waiting for Claude',
     ClaxPillState.building => label(state, progress),
     ClaxPillState.newVersion => 'New version ready',
     ClaxPillState.location => 'Location in use',
@@ -510,6 +517,7 @@ class _ClaxPillState extends State<ClaxPill> {
               ClaxPillState.working ||
               ClaxPillState.building => ClaxMarkState.working,
               ClaxPillState.newVersion => ClaxMarkState.landed,
+              ClaxPillState.waiting ||
               ClaxPillState.location => ClaxMarkState.resting,
             },
           );
@@ -697,10 +705,10 @@ class BuildChip extends StatelessWidget {
 
 /// What goes on with an app shown in a pane (Android wide), in its top app
 /// bar where the [ClaxPill] would be over a phone's page: the breathing
-/// mark and the pill's words for [state] ("Working", "Building 2/5") on
-/// `accent-tint`. It stays as long as that goes on (nothing folds or
-/// covers the page), and a tap calls [onTap], which opens the change or
-/// the plan in a side sheet. A screen reader hears the state as a live
+/// mark (resting while it waits for Claude) and the pill's words for
+/// [state] ("Working", "Building 2/5") on `accent-tint`. It stays as long
+/// as that goes on (nothing folds or covers the page), and a tap calls
+/// [onTap], which opens the change or the plan in a side sheet. A screen reader hears the state as a live
 /// region.
 class BarStatus extends StatelessWidget {
   const BarStatus({
@@ -710,7 +718,8 @@ class BarStatus extends StatelessWidget {
     this.progress,
   });
 
-  /// [ClaxPillState.working] or [ClaxPillState.building].
+  /// [ClaxPillState.working], [ClaxPillState.waiting] or
+  /// [ClaxPillState.building].
   final ClaxPillState state;
   final ({int done, int total})? progress;
   final VoidCallback? onTap;
@@ -741,7 +750,12 @@ class BarStatus extends StatelessWidget {
               child: Row(
                 mainAxisSize: MainAxisSize.min,
                 children: [
-                  const ClaxMark(size: 18, state: ClaxMarkState.working),
+                  ClaxMark(
+                    size: 18,
+                    state: state == ClaxPillState.waiting
+                        ? ClaxMarkState.resting
+                        : ClaxMarkState.working,
+                  ),
                   const SizedBox(width: ClaxSpace.s8),
                   Text(
                     ClaxPill.label(state, progress),

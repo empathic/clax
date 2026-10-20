@@ -519,10 +519,10 @@ void main() {
     expect(t.waitingForConnection, isFalse);
     expect(t.workerProgress(['t1'], const WaitingForConnection()), isTrue);
     expect(t.waitingForConnection, isTrue);
-    expect(t.step, 'Waiting for connection');
+    expect(t.step, 'Waiting for Claude');
     expect(t.workerProgress(['t1'], const ConnectionBack()), isTrue);
     expect(t.waitingForConnection, isFalse);
-    expect(t.step, 'Connection is back');
+    expect(t.step, 'Reached Claude again');
 
     t.workerProgress(['t1'], const WaitingForConnection());
     t.workerCancelled();

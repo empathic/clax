@@ -140,6 +140,7 @@ void main() {
   testWidgets('at 200% text the label is whole', (tester) async {
     for (final (state, text) in [
       (ClaxPillState.working, 'Working'),
+      (ClaxPillState.waiting, 'Waiting for Claude'),
       (ClaxPillState.building, 'Building 12/15'),
       (ClaxPillState.newVersion, 'New version'),
       (ClaxPillState.location, 'Location'),
@@ -169,6 +170,7 @@ void main() {
     final semantics = tester.ensureSemantics();
     for (final (state, words) in [
       (ClaxPillState.working, 'Clax is working'),
+      (ClaxPillState.waiting, 'Clax is waiting for Claude'),
       (ClaxPillState.building, 'Building 2/5'),
       (ClaxPillState.newVersion, 'New version ready'),
       (ClaxPillState.location, 'Location in use'),

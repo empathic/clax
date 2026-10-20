@@ -524,7 +524,7 @@ void _screen() {
       ),
     );
     await _settle(tester);
-    expect(find.text('Waiting for connection'), findsOneWidget);
+    expect(find.text('Waiting for Claude'), findsOneWidget);
     await tester.tap(find.byKey(const ValueKey('make-try-now')));
     expect(tries, 1);
     session.cancel();

@@ -682,8 +682,8 @@ class _Building extends StatelessWidget {
 /// it stands on the second, in that state's colour: "Making…" (its face
 /// the breathing [ClaxMark] on `accent-tint`, in a ring filled to the
 /// features done once its plan has features, with "3/7" in a badge),
-/// "Offline" (its run waits for the Claude API's connection, read out as
-/// "Waiting for connection"), "Waiting…" (for a slot), "Interrupted" (the
+/// "Can’t reach Claude" (its run waits for Claude, read out as "Waiting
+/// for Claude"), "Waiting…" (for a slot), "Interrupted" (the
 /// app's last run ended before it), or "Couldn't make it", in `danger`,
 /// once it failed.
 class MakingTile extends StatelessWidget {
@@ -727,7 +727,7 @@ class MakingTile extends StatelessWidget {
         : stopped
         ? 'Made a start'
         : offline
-        ? 'Offline'
+        ? 'Can’t reach Claude'
         : session.interrupted
         ? 'Interrupted'
         : session.queued
@@ -771,7 +771,7 @@ class MakingTile extends StatelessWidget {
     return _HomeCell(
       key: const ValueKey('making-tile'),
       semantics:
-          '${session.request}, ${offline ? 'Waiting for connection' : status}',
+          '${session.request}, ${offline ? 'Waiting for Claude' : status}',
       onTap: onTap,
       icon: counted
           ? Stack(

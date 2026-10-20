@@ -3008,9 +3008,9 @@ void main() {
       expect(find.byKey(const ValueKey('change-stop')), findsNothing);
     });
 
-    testWidgets('a change waiting for the connection says so on the chip '
-        'and its thread page, whose Cancel stops that thread alone, which '
-        'then reads Cancelled', (tester) async {
+    testWidgets('a change waiting for Claude says so on the pill, its '
+        'sheet and its thread page, whose Cancel stops that thread alone, '
+        'which then reads Cancelled', (tester) async {
       final stopped = <String>[];
       final rig = await pumpScreen(
         tester,
@@ -3025,10 +3025,13 @@ void main() {
         ..add(WorkerWorking(rig.aid, [tid]))
         ..add(WorkerProgress(rig.aid, [tid], const WaitingForConnection()));
       await tester.pump();
-      expect(_working, findsOneWidget);
-      await tester.tap(_working);
+      final waiting = _pill(ClaxPillState.waiting);
+      expect(waiting, findsOneWidget);
+      expect(_working, findsNothing);
+      expect(find.text('Waiting for Claude'), findsOneWidget);
+      await tester.tap(waiting);
       await frames(tester);
-      expect(find.text('Waiting for connection'), findsWidgets);
+      expect(find.text('Waiting for Claude'), findsWidgets);
       await tester.tap(find.byKey(const ValueKey('change-open-thread')));
       await frames(tester);
       expect(
@@ -3982,6 +3985,30 @@ void main() {
       toast = tester.getRect(key('app-notice'));
       expect(toast.top, 24 + 64);
       expect(toast.width, 1280);
+    });
+
+    testWidgets('a change waiting for Claude says so in the top app bar, '
+        'whose tap opens the change', (tester) async {
+      final rig = await pumpScreen(tester, size: const Size(1280, 800));
+      rig.surface.push(rig.ready());
+      rig.surface.push(const Sent('thread-1'));
+      await frames(tester);
+      rig.worker
+        ..add(WorkerWorking(rig.aid, ['thread-1']))
+        ..add(
+          WorkerProgress(rig.aid, ['thread-1'], const WaitingForConnection()),
+        );
+      await frames(tester);
+      expect(
+        find.descendant(
+          of: key('pane-status'),
+          matching: find.text('Waiting for Claude'),
+        ),
+        findsOneWidget,
+      );
+      await tester.tap(key('pane-status'));
+      await frames(tester);
+      expect(key('change-sheet'), findsOneWidget);
     });
 
     testWidgets(

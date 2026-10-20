@@ -1125,7 +1125,7 @@ void main() {
       onCancel: () {},
       onTryNow: () => tries++,
     );
-    expect(find.text('Waiting for connection'), findsOneWidget);
+    expect(find.text('Waiting for Claude'), findsOneWidget);
     expect(find.text('Clax is working on it'), findsNothing);
     expect(
       tester.widget<ClaxButton>(find.byKey(const ValueKey('thread-try-now'))).kind,
@@ -1140,7 +1140,7 @@ void main() {
 
     waiting.value = const [];
     await tester.pump();
-    expect(find.text('Waiting for connection'), findsNothing);
+    expect(find.text('Waiting for Claude'), findsNothing);
     expect(find.text('Clax is working on it'), findsOneWidget);
     expect(find.byKey(const ValueKey('thread-cancel')), findsNothing);
   });
@@ -1172,7 +1172,7 @@ void main() {
     await tester.pump();
     expect(find.text('Cancelled'), findsOneWidget);
     expect(find.text('Clax is working on it'), findsNothing);
-    expect(find.text('Waiting for connection'), findsNothing);
+    expect(find.text('Waiting for Claude'), findsNothing);
 
     await tester.tap(find.byKey(const ValueKey('thread-send-again')));
     await tester.pump();

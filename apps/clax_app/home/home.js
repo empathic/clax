@@ -264,7 +264,7 @@ function GroupTile({ entry, cell, dragging, fanned, ctl, onFanGroup, onGroupMenu
   </button>`;
 }
 
-const MAKE_STATUS = { making: 'Making…', offline: 'Offline', waiting: 'Waiting…', interrupted: 'Interrupted', failed: 'Couldn’t make it' };
+const MAKE_STATUS = { making: 'Making…', offline: 'Can’t reach Claude', waiting: 'Waiting…', interrupted: 'Interrupted', failed: 'Couldn’t make it' };
 const MAKE_GLYPH = { offline: 'cloud_off_fill', waiting: 'hourglass_empty', interrupted: 'replay', failed: 'error' };
 
 /** Make `make`'s tile: its request on one line and how it stands on the
@@ -276,7 +276,7 @@ function MakeTile({ make, cell, act }) {
   const status = MAKE_STATUS[state];
   const p = make.progress;
   const counted = state === 'making' && p && p.total > 0;
-  const spoken = state === 'offline' ? 'Waiting for connection' : status;
+  const spoken = state === 'offline' ? 'Waiting for Claude' : status;
   return html`<button type="button" class="h-tile" data-make=${make.id} data-key=${`m:${make.id}`} style=${cellStyle(cell)} aria-label=${`${make.request}, ${spoken}`} onClick=${() => act('openMake', [make.id], `open ${make.request}`)}>
     <span class="h-icon">
       <span class=${`h-face h-make${state === 'failed' ? ' h-failed' : ''}`} data-kind="make">

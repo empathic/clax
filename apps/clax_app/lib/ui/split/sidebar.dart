@@ -425,7 +425,7 @@ class _ClaxSidebarState extends State<ClaxSidebar> {
 /// The line under a make's request for its [state] (§4.2); none while it
 /// is making.
 String? makeStateLine(String state) => switch (state) {
-  'offline' => 'Offline',
+  'offline' => 'Can’t reach Claude',
   'waiting' => 'Waiting',
   'interrupted' => 'Interrupted',
   'failed' => 'Couldn’t make it',

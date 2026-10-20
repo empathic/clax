@@ -62,7 +62,7 @@ class HomeMake {
 
   final String id, request;
 
-  /// `making`, `offline` (waiting for the Claude API's connection),
+  /// `making`, `offline` (waiting for Claude, which cannot be reached),
   /// `waiting` (for a slot), `interrupted` or `failed`.
   final String state;
 

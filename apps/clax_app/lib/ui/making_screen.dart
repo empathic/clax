@@ -100,12 +100,12 @@ enum MakeStage implements MakeUpdate {
   /// run waits for Clax to come back to the front.
   paused('Waiting for Clax to come back…'),
 
-  /// The Claude API cannot be reached; the run waits for the connection
-  /// and goes on by itself once it is back.
-  offline('Waiting for connection'),
+  /// Claude cannot be reached; the run waits for it and goes on by itself
+  /// once it answers.
+  offline('Waiting for Claude'),
 
-  /// Clax or the connection is back after a cut; the model is asked
-  /// again.
+  /// Clax is back in front, or Claude answers again, after a cut; the
+  /// model is asked again.
   resuming('Picking up where it left off');
 
   const MakeStage(this.label);

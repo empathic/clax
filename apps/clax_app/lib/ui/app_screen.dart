@@ -580,7 +580,11 @@ class _AppScreenState extends State<AppScreen> with WidgetsBindingObserver {
   /// this screen's toasts is up, which takes the pill's place.
   ClaxPillState? _pillState(int watches) {
     if (_changes.outcome != null || _toastUp != null) return null;
-    if (_changes.working) return ClaxPillState.working;
+    if (_changes.working) {
+      return _changes.waitingForConnection
+          ? ClaxPillState.waiting
+          : ClaxPillState.working;
+    }
     if (_building) return ClaxPillState.building;
     if (_newer != null && !_reloading && _draft == null && !_sending) {
       return ClaxPillState.newVersion;
@@ -598,7 +602,8 @@ class _AppScreenState extends State<AppScreen> with WidgetsBindingObserver {
       progress: count == null ? null : (done: count.done, total: count.total),
       clock: widget.clock,
       onTap: switch (state) {
-        ClaxPillState.working => () => unawaited(_showChange()),
+        ClaxPillState.working ||
+        ClaxPillState.waiting => () => unawaited(_showChange()),
         ClaxPillState.building => () =>
             unawaited(showBuildSheet(context, widget.build!, widget.aid)),
         ClaxPillState.location => _locationDetails,
@@ -2886,7 +2891,9 @@ class _AppScreenState extends State<AppScreen> with WidgetsBindingObserver {
     final ClaxPillState? status = _changes.outcome != null
         ? null
         : _changes.working
-        ? ClaxPillState.working
+        ? (_changes.waitingForConnection
+              ? ClaxPillState.waiting
+              : ClaxPillState.working)
         : _building
         ? ClaxPillState.building
         : null;
@@ -2927,7 +2934,7 @@ class _AppScreenState extends State<AppScreen> with WidgetsBindingObserver {
               progress: count == null
                   ? null
                   : (done: count.done, total: count.total),
-              onTap: status == ClaxPillState.working
+              onTap: status != ClaxPillState.building
                   ? () => unawaited(_showChange())
                   : () => unawaited(
                       showBuildSheet(

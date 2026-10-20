@@ -1330,14 +1330,14 @@ void main() {
       },
     );
     await submit(tester, 'a stopwatch');
-    expect(find.text('Waiting for connection'), findsWidgets);
+    expect(find.text('Waiting for Claude'), findsWidgets);
     await tester.tap(find.byKey(const ValueKey('build-back')));
     await frames(tester);
     expect(find.byKey(const ValueKey('making-tile')), findsOneWidget);
     expect(find.byKey(const ValueKey('tile-offline')), findsOneWidget);
-    expect(find.text('Offline'), findsOneWidget);
+    expect(find.text('Can’t reach Claude'), findsOneWidget);
     expect(
-      find.bySemanticsLabel('a stopwatch, Waiting for connection'),
+      find.bySemanticsLabel('a stopwatch, Waiting for Claude'),
       findsOneWidget,
     );
 

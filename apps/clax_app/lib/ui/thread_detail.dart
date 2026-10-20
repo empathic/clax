@@ -312,10 +312,10 @@ class ThreadDetail extends StatefulWidget {
   /// The clock relative times are read against.
   final DateTime Function() now;
 
-  /// The threads whose change waits for the Claude API's connection: while
-  /// it names this thread and the thread reads as sent or working, the
-  /// status says "Waiting for connection" (the change goes on by itself
-  /// once the connection is back), with Try now ([onTryNow]) and Cancel
+  /// The threads whose change waits for Claude, which cannot be reached:
+  /// while it names this thread and the thread reads as sent or working,
+  /// the status says "Waiting for Claude" (the change goes on by itself
+  /// once Claude can be reached), with Try now ([onTryNow]) and Cancel
   /// ([onCancel]) when given.
   final ValueListenable<List<String>>? waitingForConnection;
 
@@ -942,8 +942,8 @@ class _ThreadDetailState extends State<ThreadDetail> {
         Icons.cloud_off_outlined,
         scheme.surfaceContainerHighest,
         scheme.onSurface,
-        'Waiting for connection',
-        'It goes to Clax by itself when the connection is back.',
+        'Waiting for Claude',
+        'Clax goes on by itself once Claude can be reached.',
       ),
       ThreadStatus.unsent => (
         Icons.outbox_outlined,

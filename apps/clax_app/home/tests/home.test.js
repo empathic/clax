@@ -62,8 +62,8 @@ test('making tiles come first, each saying how it stands', async () => {
   expect(ui.text('[data-make="m2"] .h-tile-badge')).toBe('3/7');
   // Its request is one line, its state the second.
   expect(document.querySelectorAll('[data-make="m2"] .h-label .h-line').length).toBe(1);
-  expect(status('m3')).toBe('Offline');
-  expect(document.querySelector('[data-make="m3"]').getAttribute('aria-label')).toBe('A water reminder, Waiting for connection');
+  expect(status('m3')).toBe('Can’t reach Claude');
+  expect(document.querySelector('[data-make="m3"]').getAttribute('aria-label')).toBe('A water reminder, Waiting for Claude');
   expect(status('m4')).toBe('Waiting…');
   expect(status('m5')).toBe('Interrupted');
   expect(status('m6')).toBe('Couldn’t make it');

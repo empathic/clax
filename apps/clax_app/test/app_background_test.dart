@@ -411,10 +411,10 @@ void main() {
       ..add((_) async => _made);
     await submit(tester, 'a tracker for my runs');
     await pumpRoute(tester);
-    expect(find.text('Waiting for connection'), findsOneWidget);
+    expect(find.text('Waiting for Claude'), findsOneWidget);
     expect(find.text('Couldn’t make it'), findsNothing);
     expect(agent.runs, 1);
-    expect(work.calls.last, 'update($title, Waiting for connection)');
+    expect(work.calls.last, 'update($title, Waiting for Claude)');
     await settleFiles(tester);
     expect(
       File('${dir.path}/pending-make.json').readAsStringSync(),

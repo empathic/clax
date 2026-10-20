@@ -1,8 +1,8 @@
 // The making screen rendered in every form and theme into CLAX_SHOTS_DIR
 // (skipped without it): starting, the page streaming into the live
-// preview, waiting long enough for the haiku, a failure with Developer
-// tools' Details open, a new app whose starting data was refused, and a
-// make stopped at a limit, with its Details open.
+// preview, waiting for Claude, waiting long enough for the haiku, a
+// failure with Developer tools' Details open, a new app whose starting
+// data was refused, and a make stopped at a limit, with its Details open.
 import 'dart:async';
 
 import 'package:clax_app/agent/loop.dart' show MakeStopped;
@@ -146,6 +146,18 @@ void main() {
     p(const PartialFile('index.html', '<h1>Harbour tides</h1>'));
     await s.settle();
     await s.take('making-live');
+    done.complete('a1');
+    await s.tester.pump();
+  });
+
+  shots('making-waiting', (s) async {
+    final done = Completer<String>();
+    final report = await _pump(s, done);
+    report(MakeStage.writing);
+    report(const MakeProgress(Narration('Laying out the day’s tides.')));
+    report(MakeStage.offline);
+    await s.settle();
+    await s.take('making-waiting');
     done.complete('a1');
     await s.tester.pump();
   });
