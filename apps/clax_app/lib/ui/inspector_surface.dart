@@ -33,7 +33,8 @@ import 'webview_surface.dart' show coreShellBase;
 /// a migration run ([runMigration]) with `claxHost.runMigration`.
 /// Inspections and test runs go one at a time, in the order asked; a later
 /// one waits for the earlier one to end. A cancel ends the call at once with
-/// [InspectorError] `cancelled`. The surface is made on the first
+/// [InspectorError] `cancelled`, and [dispose] every call with
+/// [InspectorLost]. The surface is made on the first
 /// inspection, for the daemon's address the URL names, and made again when
 /// that address changes (a daemon restarted on a new port).
 class WebViewInspector implements Inspector {
@@ -58,6 +59,10 @@ class WebViewInspector implements Inspector {
   Uri? _base;
   Future<void> _last = Future.value();
   var _disposed = false;
+
+  /// Completes on [dispose]: every call in progress ends with
+  /// [InspectorLost].
+  final _gone = Completer<void>();
 
   /// The surface [InspectorHost] shows; null before the first inspection.
   ValueListenable<AppSurface?> get surface => _surface;
@@ -231,7 +236,7 @@ class WebViewInspector implements Inspector {
     return () async {
       try {
         await Future.any<void>([prior, ?cancelled]);
-        if (_disposed) throw const InspectorError('the app is closing');
+        if (_disposed) throw const InspectorLost('the app is closing');
         if (stopped) throw const InspectorError('cancelled');
         return await work();
       } finally {
@@ -276,6 +281,9 @@ class WebViewInspector implements Inspector {
           _clock.delay(limit).then<T>((_) => throw InspectorError(why)),
           if (cancelled != null)
             cancelled.then<T>((_) => throw const InspectorError('cancelled')),
+          _gone.future.then<T>(
+            (_) => throw const InspectorLost('the app is closing'),
+          ),
         ]);
     try {
       surface.setVisible(true);
@@ -352,13 +360,22 @@ class WebViewInspector implements Inspector {
     return segs.length >= 2 && segs[0] == 'a' ? segs[1] : null;
   }
 
-  /// Ends the surface; later inspections fail.
+  /// Ends the surface: calls in progress and later calls fail with
+  /// [InspectorLost].
   void dispose() {
     _disposed = true;
+    if (!_gone.isCompleted) _gone.complete();
     _surface.value?.dispose();
     _surface.value = null;
     _surface.dispose();
   }
+}
+
+/// A call that ended because the inspector's surface was torn down (the
+/// inspector was disposed) before the page answered: the page did nothing
+/// wrong, and the same call may succeed on a new surface.
+class InspectorLost extends InspectorError {
+  const InspectorLost(super.message);
 }
 
 /// The size an inspection renders at: [screen] (the app's own size, which

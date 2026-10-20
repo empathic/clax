@@ -567,6 +567,17 @@ void main() {
     await tester.pump();
   });
 
+  test('a surface disposed mid-call ends the call at once as lost, and '
+      'a call after it is lost too', () async {
+    final f = inspector.inspect(_url());
+    await _settle();
+    surfaces.single.push(_ready());
+    await _settle();
+    inspector.dispose();
+    await expectLater(f, throwsA(isA<InspectorLost>()));
+    await expectLater(inspector.inspect(_url()), throwsA(isA<InspectorLost>()));
+  });
+
   test('the inspection size is the screen on a phone, at most a phone on a '
       'desktop, and a phone when the screen is not known', () {
     expect(
