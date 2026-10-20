@@ -547,6 +547,8 @@ fn embed_meta(html: &str) -> Option<(usize, Value)> {
 #[tokio::test]
 async fn an_embedded_core_marks_every_shell_document_and_frames_content_on_its_origin() {
     let dist = dist();
+    std::fs::create_dir(dist.path().join("_clax")).unwrap();
+    std::fs::write(dist.path().join("_clax/transport.js"), "/* transport */").unwrap();
     let ts = TestServer::spawn_with_web(dist.path()).await;
     let embedded = {
         let web = std::sync::Arc::new(clax_core::embedded::DiskTree::new(dist.path()));
@@ -588,14 +590,22 @@ async fn an_embedded_core_marks_every_shell_document_and_frames_content_on_its_o
     assert!(embed_meta(&gallery).is_some(), "{gallery}");
 
     // The app's transport is a classic script right after the meta, so it
-    // runs before any of the shell's own.
+    // runs before any of the shell's own, named by the version of its bytes
+    // so that a document never runs a cached transport of another build.
+    let v = clax_server::shell::transport_version(&*embedded.web);
+    assert_eq!(v.len(), 12, "{v}");
+    let tag = format!(r#"<script src="/_clax/transport.js?v={v}"></script>"#);
     for doc in [&html, &gallery] {
-        let tag = r#"<script src="/_clax/transport.js"></script>"#;
+        let tag = tag.as_str();
         let (meta_at, _) = embed_meta(doc).unwrap();
         let script_at = doc.find(tag).expect("the transport's script");
         assert_eq!(doc.matches(tag).count(), 1, "{doc}");
         assert!(meta_at < script_at, "{doc}");
-        assert_eq!(doc.find("<script"), Some(script_at), "first of the scripts: {doc}");
+        assert_eq!(
+            doc.find("<script"),
+            Some(script_at),
+            "first of the scripts: {doc}"
+        );
     }
 
     let plain = ts.publish("Report", &[("index.html", "<p>x</p>")]).await;
@@ -608,4 +618,24 @@ async fn an_embedded_core_marks_every_shell_document_and_frames_content_on_its_o
     assert!(embed_meta(&html).is_none());
     assert!(!html.contains("clax-embed"));
     assert!(!html.contains("/_clax/transport.js"));
+
+    // The versioned URL is immutable in a release build (a debug build reads
+    // the file from disk, where it can change under the same daemon); any
+    // other URL of it is revalidated against its ETag.
+    let current = page(&embedded, &format!("/_clax/transport.js?v={v}"), &[]).await;
+    assert_eq!(current.status(), 200);
+    let expected = if cfg!(debug_assertions) {
+        "no-cache"
+    } else {
+        "public, max-age=31536000, immutable"
+    };
+    assert_eq!(current.headers()["cache-control"], expected);
+    assert_eq!(current.headers()["content-type"], "text/javascript");
+    for stale in ["/_clax/transport.js", "/_clax/transport.js?v=000000000000"] {
+        let res = page(&embedded, stale, &[]).await;
+        assert_eq!(res.headers()["cache-control"], "no-cache", "{stale}");
+        let etag = res.headers()["etag"].to_str().unwrap().to_string();
+        let again = page(&embedded, stale, &[("if-none-match", etag)]).await;
+        assert_eq!(again.status(), 304, "{stale}");
+    }
 }

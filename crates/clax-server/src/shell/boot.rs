@@ -392,19 +392,31 @@ pub fn embed_meta(e: &clax_http::state::EmbedOrigins) -> String {
     )
 }
 
-/// The app's transport (`web/shell/src/transport.ts`, built on its own): a
-/// classic script, so it runs before the shell's modules, which replaces
-/// their `fetch` with the app's channel.
-pub const TRANSPORT_SCRIPT: &str = r#"<script src="/_clax/transport.js"></script>"#;
+/// The tag of the app's transport (`web/shell/src/transport.ts`, built on
+/// its own) at `version` ([`super::transport_version`]): a classic script, so
+/// it runs before the shell's modules, which replaces their `fetch` with the
+/// app's channel. The URL names the version of the bytes, so a shell
+/// document (never cached) always loads the transport of its own build.
+pub fn transport_script(version: &str) -> String {
+    if version.is_empty() {
+        r#"<script src="/_clax/transport.js"></script>"#.to_string()
+    } else {
+        format!(r#"<script src="/_clax/transport.js?v={version}"></script>"#)
+    }
+}
 
 /// `html` (a shell document) with [`embed_meta`] and then
-/// [`TRANSPORT_SCRIPT`] first in its `<head>`, so before any other script,
-/// when the core is embedded (`embed`); else unchanged.
-pub fn with_embed_meta(html: &str, embed: Option<&clax_http::state::EmbedOrigins>) -> String {
+/// [`transport_script`] at `transport` first in its `<head>`, so before any
+/// other script, when the core is embedded (`embed`); else unchanged.
+pub fn with_embed_meta(
+    html: &str,
+    embed: Option<&clax_http::state::EmbedOrigins>,
+    transport: &str,
+) -> String {
     let Some(e) = embed else {
         return html.to_string();
     };
-    let meta = format!("{}{TRANSPORT_SCRIPT}", embed_meta(e));
+    let meta = format!("{}{}", embed_meta(e), transport_script(transport));
     match html.find("<head>") {
         Some(at) => {
             let end = at + "<head>".len();
