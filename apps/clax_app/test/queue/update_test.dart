@@ -388,6 +388,50 @@ void main() {
       expect(m3.localOf('j').waitingFor, isNull);
     });
 
+    test('after Claude does not answer, the worker probes again on its clock', () {
+      final m0 = model(
+        jobs: [job('j')],
+        inFlight: [StartTurn(7, 'j', _input(1))],
+        now: t0,
+      );
+      final (m1, e1) = updateAll(m0, [
+        const TurnFailed(7, 'j', TurnFailure.network),
+        const ClaudeReachable(false),
+        Tick(t0.add(const Duration(seconds: 29))),
+      ]);
+      expect(e1.whereType<ProbeClaude>(), hasLength(1));
+      final (m2, e2) = update(m1, Tick(t0.add(const Duration(seconds: 30))));
+      expect(e2.whereType<ProbeClaude>(), hasLength(1), reason: 'probed again');
+      final (m3, e3) = updateAll(m2, [
+        const ClaudeReachable(false),
+        Tick(t0.add(const Duration(seconds: 59))),
+      ]);
+      expect(e3.whereType<ProbeClaude>(), isEmpty);
+      final (m4, e4) = update(m3, Tick(t0.add(const Duration(seconds: 60))));
+      expect(e4.whereType<ProbeClaude>(), hasLength(1));
+      final (_, e5) = update(m4, const ClaudeReachable(true));
+      expect(e5.whereType<StartTurn>().single.input.turn, 1);
+    });
+
+    test('a probe never answered is let go at its deadline, and asked again', () {
+      final m0 = model(jobs: [job('j')], inFlight: [StartTurn(7, 'j', _input(1))]);
+      final (m1, e1) = updateAll(m0, [
+        const TurnFailed(7, 'j', TurnFailure.network),
+        Tick(t0),
+        Tick(t0.add(const Duration(seconds: 29))),
+        const Woke(foreground: true),
+      ]);
+      expect(
+        e1.whereType<ProbeClaude>(),
+        hasLength(1),
+        reason: 'one probe at a time; its deadline set at the first Tick',
+      );
+      final (m2, e2) = update(m1, Tick(t0.add(const Duration(seconds: 30))));
+      expect(e2.whereType<ProbeClaude>(), hasLength(1), reason: 'asked again');
+      final (_, e3) = update(m2, const ClaudeReachable(true));
+      expect(e3.whereType<StartTurn>(), hasLength(1));
+    });
+
     test('another failure fails the job, with Retry offered', () {
       final m0 = model(jobs: [job('j')], inFlight: [StartTurn(7, 'j', _input(1))]);
       final (_, e1) = update(m0, const TurnFailed(7, 'j', TurnFailure.other));

@@ -344,8 +344,10 @@ final class QueueTurn {
 
   /// Asks whether Claude answers, unless a probe is under way.
   void probe() {
-    if (m.probing) return;
-    emit(ProbeClaude.new);
-    m = m.copyWith(probing: true);
+    if (m.probe is ProbeInFlight) return;
+    final e = emit(ProbeClaude.new)!;
+    m = m.copyWith(
+      probe: ProbeInFlight(e.id, deadline: m.now?.add(QueueModel.probeTimeout)),
+    );
   }
 }

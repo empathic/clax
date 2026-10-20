@@ -232,8 +232,11 @@ void _handle(QueueTurn t, Msg msg) {
       if (can) _clearWaiting(t, WaitingFor.render);
 
     case ClaudeReachable(:final reachable):
+      // A probe's answer, or news of Claude: either settles the probe.
       t.m = t.m.copyWith(
-        probing: false,
+        probe: reachable
+            ? const ProbeIdle()
+            : ProbeAfter(t.m.now?.add(QueueModel.probeEvery)),
         claude: reachable ? Reachability.reachable : Reachability.unreachable,
       );
       if (reachable) _clearWaiting(t, WaitingFor.claude);
@@ -252,6 +255,7 @@ void _handle(QueueTurn t, Msg msg) {
           _renderLost(t, e.id);
         }
       }
+      _probeOnTime(t, now);
     case Woke(:final foreground):
       if (!foreground) return;
       // In the foreground the time is the app's again: paused jobs resume.
@@ -445,6 +449,38 @@ void _renderLost(QueueTurn t, EffectId effect) {
       deadline: deadline,
     ),
   );
+}
+
+/// The probe of Claude on the worker's clock at [now]: a probe not
+/// answered by its deadline is let go, and one due is asked while a job
+/// waits for Claude.
+void _probeOnTime(QueueTurn t, DateTime now) {
+  switch (t.m.probe) {
+    case ProbeIdle():
+      return;
+    case ProbeInFlight(:final effect, deadline: null):
+      t.m = t.m.copyWith(
+        probe: ProbeInFlight(effect, deadline: now.add(QueueModel.probeTimeout)),
+      );
+      return;
+    case ProbeInFlight(:final deadline?) when now.isBefore(deadline):
+      return;
+    case ProbeInFlight():
+      // Never answered: due now.
+      t.m = t.m.copyWith(probe: ProbeAfter(now));
+    case ProbeAfter(at: null):
+      t.m = t.m.copyWith(probe: ProbeAfter(now.add(QueueModel.probeEvery)));
+      return;
+    case ProbeAfter():
+      break;
+  }
+  if (t.m.probe case ProbeAfter(:final at?) when !now.isBefore(at)) {
+    if (t.m.local.values.any((l) => l.waitingFor == WaitingFor.claude)) {
+      t.probe();
+    } else {
+      t.m = t.m.copyWith(probe: const ProbeIdle());
+    }
+  }
 }
 
 void _clearWaiting(QueueTurn t, WaitingFor w) {

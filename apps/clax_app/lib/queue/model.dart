@@ -326,6 +326,47 @@ final class OwnerRefused extends Owner {
 
 enum Reachability { unknown, reachable, unreachable }
 
+/// The worker's asking whether Claude answers, on its clock.
+sealed class Probe {
+  const Probe();
+}
+
+/// No probe in flight, and none due.
+final class ProbeIdle extends Probe {
+  const ProbeIdle();
+  @override
+  bool operator ==(Object other) => other is ProbeIdle;
+  @override
+  int get hashCode => 61;
+}
+
+/// `ProbeClaude` [effect] awaits its `ClaudeReachable`, until [deadline]
+/// (null until the worker's clock is known, and set at the next `Tick`);
+/// one not answered by then is let go, and asked again.
+final class ProbeInFlight extends Probe {
+  const ProbeInFlight(this.effect, {this.deadline});
+  final EffectId effect;
+  final DateTime? deadline;
+  @override
+  bool operator ==(Object other) =>
+      other is ProbeInFlight &&
+      other.effect == effect &&
+      other.deadline == deadline;
+  @override
+  int get hashCode => Object.hash(62, effect, deadline);
+}
+
+/// Claude did not answer: asked again at [at] while a job waits for it
+/// (null until the worker's clock is known, and set at the next `Tick`).
+final class ProbeAfter extends Probe {
+  const ProbeAfter([this.at]);
+  final DateTime? at;
+  @override
+  bool operator ==(Object other) => other is ProbeAfter && other.at == at;
+  @override
+  int get hashCode => Object.hash(63, at);
+}
+
 /// The worker's whole state.
 final class QueueModel {
   const QueueModel({
@@ -338,7 +379,7 @@ final class QueueModel {
     this.suspended = false,
     this.claude = Reachability.unknown,
     this.canRender = true,
-    this.probing = false,
+    this.probe = const ProbeIdle(),
     this.now,
     this.nextEffect = 0,
   });
@@ -366,8 +407,8 @@ final class QueueModel {
   final Reachability claude;
   final bool canRender;
 
-  /// A `ProbeClaude` awaits its `ClaudeReachable`.
-  final bool probing;
+  /// Whether Claude is being asked, or is to be asked again.
+  final Probe probe;
 
   /// The worker's clock at the last `Tick`.
   final DateTime? now;
@@ -377,6 +418,12 @@ final class QueueModel {
 
   /// How long a render may take before it counts as lost.
   static const renderTimeout = Duration(seconds: 60);
+
+  /// How long a probe of Claude may take before it is let go.
+  static const probeTimeout = Duration(seconds: 30);
+
+  /// How long after Claude did not answer it is asked again.
+  static const probeEvery = Duration(seconds: 30);
 
   JobLocal localOf(JobId id) => local[id] ?? const JobLocal();
 
@@ -390,7 +437,7 @@ final class QueueModel {
     bool? suspended,
     Reachability? claude,
     bool? canRender,
-    bool? probing,
+    Probe? probe,
     DateTime? now,
     EffectId? nextEffect,
   }) => QueueModel(
@@ -403,7 +450,7 @@ final class QueueModel {
     suspended: suspended ?? this.suspended,
     claude: claude ?? this.claude,
     canRender: canRender ?? this.canRender,
-    probing: probing ?? this.probing,
+    probe: probe ?? this.probe,
     now: now ?? this.now,
     nextEffect: nextEffect ?? this.nextEffect,
   );
@@ -420,7 +467,7 @@ final class QueueModel {
       other.suspended == suspended &&
       other.claude == claude &&
       other.canRender == canRender &&
-      other.probing == probing &&
+      other.probe == probe &&
       other.now == now &&
       other.nextEffect == nextEffect;
   @override
@@ -434,7 +481,7 @@ final class QueueModel {
     suspended,
     claude,
     canRender,
-    probing,
+    probe,
     now,
     nextEffect,
   );
