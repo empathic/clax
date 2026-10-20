@@ -104,25 +104,56 @@ fn register(
     handle
 }
 
-/// The handle of the core this process holds `home` with, unless its open
-/// failed or it is closing, its open events moved to `port`, which hears
-/// the latest one at once (`ready`, or where opening has got to).
-fn reattach(home: &std::path::Path, post: &dyn Post, port: i64) -> Option<u64> {
+/// Opens, one at a time: an open's [`Embed::open`] and its registration
+/// happen under it, so an open of a home this process holds finds that
+/// home's core registered ([`reattach`]), never a home held with no
+/// handle yet.
+static OPENING: Mutex<()> = Mutex::new(());
+
+/// The message a re-attach posts to a core's open port to learn whether
+/// its client lives: no open event (spec §2.2), and the client ignores it.
+const PROBE: &[u8] = br#"{"type":"probe"}"#;
+
+/// What [`reattach`] found.
+enum Reattach {
+    /// The core's handle: its open events now go to the new port.
+    To(u64),
+    /// The core's client lives (its open port takes a post).
+    InUse,
+    /// No registered core holds the home: its core is closing.
+    Closing,
+}
+
+/// The handle of the core this process holds `home` with, when its
+/// client is gone, its open events moved to `port`, which hears the
+/// latest one at once (`ready`, or where opening has got to). A core
+/// whose open failed or that is closing is not re-attached to; nor is one
+/// whose client still lives: a post to its open port fails only once the
+/// isolate that opened it is gone ([`PROBE`]).
+fn reattach(home: &std::path::Path, post: &dyn Post, port: i64) -> Reattach {
     let key = crate::core::home_key(home);
     let mut cores = cores();
-    let (handle, r) = cores.iter_mut().find(|(_, r)| {
+    let found = cores.iter_mut().find(|(_, r)| {
         r.embed
             .as_ref()
             .is_some_and(|e| e.home() == key && e.holds_home() && !e.closing())
-    })?;
-    let events = r.events.as_ref()?;
-    let mut to = events.lock().unwrap_or_else(|e| e.into_inner());
+    });
+    let Some((handle, r)) = found else {
+        return Reattach::Closing;
+    };
+    let Some(events) = r.events.as_ref() else {
+        return Reattach::Closing;
+    };
+    let mut to = lock(events);
+    if post_bytes(&*r.post, to.port, PROBE) {
+        return Reattach::InUse;
+    }
     to.port = port;
     r.port = port;
     if let Some(last) = &to.last {
         post_bytes(post, port, last);
     }
-    Some(*handle)
+    Reattach::To(*handle)
 }
 
 /// `f`'s answer, or `on_panic`'s when `f` panics (and `last` when that
@@ -178,12 +209,14 @@ fn origins(home: &std::path::Path) -> Option<clax_http::state::EmbedOrigins> {
 
 /// [`ffi::clax_embed_open`]'s safe half: opens the core on the home at
 /// `home` (UTF-8), posting its [`OpenEvent`]s to `port` as JSON, and
-/// returns its handle. A home this process holds already (an isolate that
-/// restarted without closing it) is not opened again: the open
-/// re-attaches to its core ([`reattach`]) and returns that core's handle.
-/// 0, with `failed` posted (`open_failed`, or `home_in_use` for a home
-/// whose core is closing), when `home` is not UTF-8 or that home's core
-/// is closing. An open that fails before a core exists (no readable
+/// returns its handle. A home this process holds already is not opened
+/// again: when the client that opened it is gone (an isolate that
+/// restarted without closing it) the open re-attaches to its core
+/// ([`reattach`]) and returns that core's handle. 0, with `failed`
+/// posted, when `home` is not UTF-8 (`open_failed`), when that home's
+/// core has a live client (`home_in_use`, the home open in this app), or
+/// when it is closing (`home_in_use`). Opens are taken one at a time
+/// ([`OPENING`]), so two at once get one handle and one refusal. An open that fails before a core exists (no readable
 /// `embed.json`: `no_origins`; a runtime that does not start or a panic:
 /// `internal`) posts `failed` and still returns a handle, which
 /// [`ffi_close`] closes as any other.
@@ -208,6 +241,7 @@ pub fn ffi_open(home: &[u8], post: Arc<dyn Post>, port: i64) -> u64 {
     guarded(
         "clax_embed_open",
         || {
+            let _opening = lock(&OPENING);
             let Some(origins) = origins(&home) else {
                 let message = format!("{} has no readable embed.json", home.display());
                 return failed(
@@ -237,8 +271,14 @@ pub fn ffi_open(home: &[u8], post: Arc<dyn Post>, port: i64) -> u64 {
             match opened {
                 Ok(embed) => register(Some(embed), post.clone(), port, Some(events)),
                 Err(OpenError::HomeInUse) => match reattach(&home, &*post, port) {
-                    Some(handle) => handle,
-                    None => refused("home_in_use", "this app is closing its core on this home"),
+                    Reattach::To(handle) => handle,
+                    Reattach::InUse => refused(
+                        "home_in_use",
+                        "this home is open in this app already, by another of its clients",
+                    ),
+                    Reattach::Closing => {
+                        refused("home_in_use", "this app is closing its core on this home")
+                    }
                 },
                 Err(OpenError::NotUtf8) => refused("open_failed", "the home's path is not UTF-8"),
                 Err(OpenError::Runtime(e)) => failed(
@@ -582,5 +622,94 @@ mod tests {
         assert_eq!(ffi_close(again), 0);
         posts.wait(12, "\"closed\"");
         assert_eq!(ffi_close(failed), 0);
+    }
+
+    #[test]
+    fn a_reopen_while_the_first_client_lives_is_refused_home_in_use() {
+        let dir = tempfile::tempdir().unwrap();
+        let home = home(dir.path());
+        let path = home.to_str().unwrap().as_bytes();
+        let posts = Arc::new(Ordered::default());
+        let core = ffi_open(path, posts.clone(), 1);
+        posts.wait(1, "\"ready\"");
+        // A second client in a live isolate opens the home too.
+        assert_eq!(ffi_open(path, posts.clone(), 4), 0);
+        let refused = failed_on(&posts, 4);
+        assert_eq!(refused["code"], "home_in_use", "{refused}");
+        assert!(
+            refused["message"]
+                .as_str()
+                .unwrap()
+                .contains("open in this app"),
+            "{refused}"
+        );
+        // The first client keeps its core: its events and its close.
+        assert_eq!(ffi_close(core), 0);
+        posts.wait(1, "\"closed\"");
+        assert_eq!(posts.on(4).len(), 1, "the refused port hears only failed");
+        // What the first client heard besides its events is the probe,
+        // which names no event.
+        for m in posts.on(1) {
+            let v: serde_json::Value = serde_json::from_str(&m).unwrap();
+            assert!(
+                ["opening", "ready", "closed", "probe"].contains(&v["type"].as_str().unwrap()),
+                "{m}"
+            );
+        }
+    }
+
+    #[test]
+    fn a_reattach_while_the_core_opens_hears_the_rest_of_the_open() {
+        let dir = tempfile::tempdir().unwrap();
+        let home = home(dir.path());
+        let path = home.to_str().unwrap().as_bytes();
+        let posts = Arc::new(Ordered::default());
+        let hold = Arc::new(tokio::sync::Semaphore::new(0));
+        crate::core::HOLD_OPENING.set(Some(hold.clone()));
+        let core = ffi_open(path, posts.clone(), 1);
+        assert_ne!(core, 0);
+        // The core holds the home and waits; its client's isolate restarts.
+        posts.close(1);
+        let again = ffi_open(path, posts.clone(), 4);
+        assert_eq!(again, core, "the opening core's handle");
+        hold.add_permits(1);
+        posts.wait(4, "\"ready\"");
+        assert_eq!(ffi_close(again), 0);
+        posts.wait(4, "\"closed\"");
+    }
+
+    #[test]
+    fn two_opens_at_once_answer_one_handle_and_one_refusal_home_in_use() {
+        let dir = tempfile::tempdir().unwrap();
+        let home = home(dir.path());
+        let posts = Arc::new(Ordered::default());
+        let start = Arc::new(std::sync::Barrier::new(2));
+        let opens: Vec<_> = [20, 21]
+            .into_iter()
+            .map(|port| {
+                let (home, posts, start) = (home.clone(), posts.clone(), start.clone());
+                std::thread::spawn(move || {
+                    start.wait();
+                    (port, ffi_open(home.to_str().unwrap().as_bytes(), posts, port))
+                })
+            })
+            .collect();
+        let opened: Vec<(i64, u64)> = opens.into_iter().map(|t| t.join().unwrap()).collect();
+        let live: Vec<_> = opened.iter().filter(|(_, h)| *h != 0).collect();
+        assert_eq!(live.len(), 1, "{opened:?}");
+        let (port, handle) = *live[0];
+        let other = if port == 20 { 21 } else { 20 };
+        let refused = failed_on(&posts, other);
+        assert_eq!(refused["code"], "home_in_use", "{refused}");
+        assert!(
+            refused["message"]
+                .as_str()
+                .unwrap()
+                .contains("open in this app"),
+            "{refused}"
+        );
+        posts.wait(port, "\"ready\"");
+        assert_eq!(ffi_close(handle), 0);
+        posts.wait(port, "\"closed\"");
     }
 }

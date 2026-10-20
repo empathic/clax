@@ -123,6 +123,10 @@ thread_local! {
     /// Tests: where the next core [`Embed::open`] makes on this thread
     /// panics.
     static PANIC_AT: std::cell::Cell<Option<PanicAt>> = const { std::cell::Cell::new(None) };
+    /// Tests: what the next core [`Embed::open`] makes on this thread
+    /// waits for, once it holds `core.lock`, before it opens the store.
+    pub(crate) static HOLD_OPENING: std::cell::RefCell<Option<Arc<tokio::sync::Semaphore>>> =
+        const { std::cell::RefCell::new(None) };
 }
 
 /// Tests: panics when the core was opened to panic `here`.
@@ -165,6 +169,8 @@ struct Shared {
     drain: Duration,
     #[cfg(test)]
     panic_at: Option<PanicAt>,
+    #[cfg(test)]
+    hold_opening: Option<Arc<tokio::sync::Semaphore>>,
 }
 
 /// Aborts a task when dropped; once the task is done, that does nothing.
@@ -307,6 +313,8 @@ impl Embed {
             drain,
             #[cfg(test)]
             panic_at: PANIC_AT.take(),
+            #[cfg(test)]
+            hold_opening: HOLD_OPENING.take(),
         });
         let handle = runtime.handle().clone();
         // A panic while opening fails the open as any failure does: the
@@ -562,6 +570,10 @@ async fn opening(sh: Arc<Shared>, opts: OpenOptions) {
             *lock(&sh.lock) = Some(f);
             #[cfg(test)]
             panic_if(&sh, PanicAt::Opening);
+            #[cfg(test)]
+            if let Some(hold) = &sh.hold_opening {
+                let _ = hold.acquire().await;
+            }
         }
         Ok(None) => {
             return failed(

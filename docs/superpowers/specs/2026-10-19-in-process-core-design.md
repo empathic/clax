@@ -235,13 +235,19 @@ typedef int8_t (*ClaxPost)(int64_t port, Dart_CObject *message);
 // core's own threads; `port` hears {"type":"ready"} or
 // {"type":"failed","code":…,"message":…}, then {"type":"closed"} after
 // clax_embed_close. A home this process has open already (the app's own
-// core, from an isolate that restarted without closing it) is not opened
-// again: the open re-attaches, returning that core's handle; its open
-// events go to `port` from then on, which hears the latest at once
-// ("ready", or where opening has got to). 0 when the path is not UTF-8
-// (`port` hears "failed" with code open_failed), that home's core is
-// closing (code home_in_use), or `home` or `post` is NULL (nothing is
-// posted). `post` is Dart's NativeApi.postCObject.
+// core) is not opened again. When the isolate that opened it is gone (it
+// restarted without closing the core) the open re-attaches, returning
+// that core's handle; its open events go to `port` from then on, which
+// hears the latest at once ("ready", or where opening has got to). To
+// tell, the open posts {"type":"probe"}, which is no event and which a
+// client ignores, to the core's open port: the post fails only once that
+// port's isolate is gone. A core whose open failed is never re-attached
+// to. Opens are taken one at a time, so two at once of one home get one
+// handle and one refusal. 0 when the path is not UTF-8 (`port` hears
+// "failed" with code open_failed), that home's core has a live client
+// (code home_in_use, the home open in this app) or is closing (code
+// home_in_use), or `home` or `post` is NULL (nothing is posted). `post`
+// is Dart's NativeApi.postCObject.
 uint64_t clax_embed_open(const uint8_t *home, size_t home_len,
                          ClaxPost post, int64_t port);
 
@@ -387,8 +393,17 @@ document (§5.2).
 
 A home this process holds already is not opened again: the only holder
 in one process is the app itself, so `clax_embed_open` re-attaches to that
-core (§2.2) unless it is closing, which answers 0 with `failed` code
-`home_in_use`. Otherwise `Embed::open(home)`, on the core's runtime:
+core (§2.2) when the isolate that opened it is gone (a hot restart, or an
+isolate that ended without closing it). It posts `{"type":"probe"}` to the
+core's open port first, a message that is no open event and that
+`CoreClient` drops, and re-attaches only when that post fails, as it does
+once the port's isolate is gone. A core whose client lives (a second
+isolate that calls `open` rather than `attach`) answers 0 with `failed`
+code `home_in_use` saying the home is open in this app, and so does a
+core that is closing; a core whose open failed released the home and is
+skipped, so the home opens afresh. Opens are taken one at a time, an
+open's `Embed::open` and its handle's registration together, so two opens
+of one home at once get one handle and one `home_in_use`. Otherwise `Embed::open(home)`, on the core's runtime:
 
 1. takes `<home>/core.lock` with `std::fs::File::try_lock` (stable since
    Rust 1.89; no unsafe). Held: `failed` with code `home_in_use` (another process

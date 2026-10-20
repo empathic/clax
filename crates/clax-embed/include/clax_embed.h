@@ -16,13 +16,19 @@ typedef int8_t (*ClaxPost)(int64_t port, Dart_CObject *message);
 // core's own threads; `port` hears {"type":"ready"} or
 // {"type":"failed","code":…,"message":…}, then {"type":"closed"} after
 // clax_embed_close. A home this process has open already (the app's own
-// core, from an isolate that restarted without closing it) is not opened
-// again: the open re-attaches, returning that core's handle; its open
-// events go to `port` from then on, which hears the latest at once
-// ("ready", or where opening has got to). 0 when the path is not UTF-8
-// (`port` hears "failed" with code open_failed), that home's core is
-// closing (code home_in_use), or `home` or `post` is NULL (nothing is
-// posted). `post` is Dart's NativeApi.postCObject.
+// core) is not opened again. When the isolate that opened it is gone (it
+// restarted without closing the core) the open re-attaches, returning
+// that core's handle; its open events go to `port` from then on, which
+// hears the latest at once ("ready", or where opening has got to). To
+// tell, the open posts {"type":"probe"}, which is no event and which a
+// client ignores, to the core's open port: the post fails only once that
+// port's isolate is gone. A core whose open failed is never re-attached
+// to. Opens are taken one at a time, so two at once of one home get one
+// handle and one refusal. 0 when the path is not UTF-8 (`port` hears
+// "failed" with code open_failed), that home's core has a live client
+// (code home_in_use, the home open in this app) or is closing (code
+// home_in_use), or `home` or `post` is NULL (nothing is posted). `post`
+// is Dart's NativeApi.postCObject.
 uint64_t clax_embed_open(const uint8_t *home, size_t home_len,
                          ClaxPost post, int64_t port);
 

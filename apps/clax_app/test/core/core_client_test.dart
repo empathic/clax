@@ -78,6 +78,17 @@ void main() {
       );
     });
 
+    test("a re-attach's probe of the open port is no state", () async {
+      final core = open();
+      lib.postState({'type': 'probe'});
+      lib.postState({'type': 'ready'});
+      lib.postState({'type': 'closed'});
+      await expectLater(
+        core.states,
+        emitsInOrder([const CoreReady(), const CoreClosed(), emitsDone]),
+      );
+    });
+
     test('a failed open names its code, message and backup', () async {
       final core = open();
       lib.postState({

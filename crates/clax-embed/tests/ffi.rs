@@ -9,15 +9,20 @@ use serde_json::{Value, json};
 use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::{Arc, Condvar, Mutex};
 
-/// Every message posted, by port, in order.
+/// Every message posted to a port that is open, by port, in order. A post
+/// to a port in `closed` (its isolate is gone) fails.
 #[derive(Default)]
 struct Collector {
     posted: Mutex<Vec<(i64, Vec<u8>)>>,
     arrived: Condvar,
+    closed: Mutex<std::collections::HashSet<i64>>,
 }
 
 impl Post for Collector {
     fn post(&self, port: i64, bytes: &[u8]) -> bool {
+        if self.closed.lock().unwrap().contains(&port) {
+            return false;
+        }
         self.posted.lock().unwrap().push((port, bytes.to_vec()));
         self.arrived.notify_all();
         true
@@ -182,6 +187,8 @@ fn a_path_that_is_not_utf8_answers_0_and_a_home_open_already_its_handle() {
     let core = ffi_open(home.to_str().unwrap().as_bytes(), posts.clone(), 2);
     assert_ne!(core, 0);
     posts.event(2, "ready");
+    // The isolate that opened it is gone, and its port with it.
+    posts.closed.lock().unwrap().insert(2);
     assert_eq!(
         ffi_open(home.to_str().unwrap().as_bytes(), posts.clone(), 4),
         core,

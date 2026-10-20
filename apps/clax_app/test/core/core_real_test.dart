@@ -2,6 +2,7 @@ import 'dart:async';
 import 'dart:convert';
 import 'dart:ffi';
 import 'dart:io';
+import 'dart:isolate';
 
 import 'package:clax_app/core/core_client.dart';
 import 'package:clax_app/core/ffi.dart';
@@ -125,35 +126,75 @@ void main() {
     expect(File('${home.path}/embed.json').readAsStringSync(), contains('clax://{id}.c'));
   }, skip: skip);
 
-  test('an open of a home this process holds re-attaches to its core', () async {
+  test('an open of a home whose client lives is refused home_in_use', () async {
     final home = scratchRoot().createTempSync('core-real-');
     addTearDown(() => home.deleteSync(recursive: true));
     final lib = CoreLib(DynamicLibrary.open(path!));
     CoreClient openHome() =>
         CoreClient.open(home.path, AppOrigins.forPlatform(android: false), lib: lib);
 
-    /// The states [core] reports until ready, failing on anything else.
-    Future<List<CoreOpen>> untilReady(CoreClient core) async {
-      final seen = <CoreOpen>[];
-      await for (final s in core.states) {
-        seen.add(s);
-        if (s is CoreReady) return seen;
-        if (s is CoreFailed || s is CoreClosed) break;
-      }
-      throw TestFailure('not ready: $seen');
+    final first = openHome();
+    final firstStates = StreamIterator(first.states);
+    Future<CoreOpen> next() async {
+      if (!await firstStates.moveNext()) throw TestFailure('states ended');
+      return firstStates.current;
     }
 
-    // The first client stands for an isolate that a hot restart replaced
-    // without closing its core.
-    final first = openHome();
-    await untilReady(first).timeout(const Duration(minutes: 1));
+    while (await next().timeout(const Duration(minutes: 1)) is! CoreReady) {}
 
+    // A second client, beside the first in this live isolate.
     final second = openHome();
-    expect(second.handle, first.handle, reason: 'the live core');
+    expect(second.handle, 0);
+    final refused = await second.states.toList();
+    expect(refused, hasLength(1));
+    expect(
+      refused.single,
+      isA<CoreFailed>()
+          .having((f) => f.code, 'code', 'home_in_use')
+          .having((f) => f.message, 'message', contains('open in this app')),
+    );
+
+    // The first keeps its core, and hears its close.
+    final r = switch (await first.call(
+      const CoreRequest('GET', '/api/artifacts'),
+    ).answer) {
+      CoreAnswered(:final response) => response,
+      final u => throw TestFailure('$u'),
+    };
+    expect(r.status, 200, reason: utf8.decode(r.body));
+    first.close();
+    expect(await next().timeout(const Duration(minutes: 1)), const CoreClosed());
+  }, skip: skip);
+
+  test('an open of a home whose isolate is gone re-attaches to its core', () async {
+    final home = scratchRoot().createTempSync('core-real-');
+    addTearDown(() => home.deleteSync(recursive: true));
+    final lib = CoreLib(DynamicLibrary.open(path!));
+
+    // An isolate opens the core and is killed without closing it, as a
+    // hot restart replaces the app's isolate.
+    final opened = ReceivePort();
+    final exited = ReceivePort();
+    final isolate = await Isolate.spawn(
+      _openThenWait,
+      (lib: path, home: home.path, opened: opened.sendPort),
+      onExit: exited.sendPort,
+    );
+    final handle = await opened.first.timeout(const Duration(minutes: 1)) as int;
+    expect(handle, isNot(0));
+    isolate.kill(priority: Isolate.immediate);
+    await exited.first.timeout(const Duration(minutes: 1));
+
+    final again = CoreClient.open(
+      home.path,
+      AppOrigins.forPlatform(android: false),
+      lib: lib,
+    );
+    expect(again.handle, handle, reason: 'the live core');
     final states = <CoreOpen>[];
     final ready = Completer<void>();
     final closed = Completer<void>();
-    second.states.listen((s) {
+    again.states.listen((s) {
       states.add(s);
       if (s is CoreReady && !ready.isCompleted) ready.complete();
       if (s is CoreClosed) closed.complete();
@@ -161,7 +202,7 @@ void main() {
     await ready.future.timeout(const Duration(minutes: 1));
     expect(states, [const CoreReady()], reason: 'only the latest event');
 
-    final r = switch (await second.call(
+    final r = switch (await again.call(
       const CoreRequest('GET', '/api/artifacts'),
     ).answer) {
       CoreAnswered(:final response) => response,
@@ -169,10 +210,24 @@ void main() {
     };
     expect(r.status, 200, reason: utf8.decode(r.body));
 
-    second.close();
+    again.close();
     await closed.future.timeout(const Duration(minutes: 1));
     expect(states.last, const CoreClosed());
-    // The core is gone, so the first client's close only ends its ports.
-    first.close();
   }, skip: skip);
+}
+
+/// In an isolate of its own: opens the core on `home` with the library at
+/// `lib`, sends its handle once ready, and waits to be killed.
+Future<void> _openThenWait(({String lib, String home, SendPort opened}) a) async {
+  final core = CoreClient.open(
+    a.home,
+    AppOrigins.forPlatform(android: false),
+    lib: CoreLib(DynamicLibrary.open(a.lib)),
+  );
+  await for (final s in core.states) {
+    if (s is CoreReady) break;
+    if (s is CoreFailed || s is CoreClosed) throw StateError('not ready: $s');
+  }
+  a.opened.send(core.handle);
+  await Completer<void>().future;
 }

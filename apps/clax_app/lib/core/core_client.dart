@@ -140,11 +140,13 @@ final class CoreClient implements CoreCalls {
 
   /// Opens the core on [home], writing `<home>/embed.json` with [origins]
   /// first. [states] hears where the open stands, then [CoreClosed] after
-  /// [close]. A home this process holds already (an isolate that
-  /// restarted without closing its core) re-attaches: [handle] is the live
-  /// core's, and [states] starts at its latest event. When the core
-  /// answers 0 (its home is closing, or the path is not UTF-8), [states]
-  /// hears the [CoreFailed] it posted and is done. [log] hears what the
+  /// [close]. A home this process holds already, whose opening isolate is
+  /// gone (it restarted without closing its core), re-attaches: [handle]
+  /// is the live core's, and [states] starts at its latest event. When
+  /// the core answers 0 (its home is open in a live isolate of this app,
+  /// which [attach]es instead, or is closing: `home_in_use`; or the path
+  /// is not UTF-8), [states] hears the [CoreFailed] it posted and is
+  /// done. [log] hears what the
   /// core posted that this client could not read.
   static CoreClient open(
     String home,
@@ -308,6 +310,9 @@ final class CoreClient implements CoreCalls {
           j['backup'] as String?,
         ),
         'closed' => const CoreClosed(),
+        // A re-attach's check that this port's isolate lives (spec §2.5);
+        // like any type this client does not know, no state.
+        'probe' => null,
         _ => null,
       };
     } on Object catch (e) {
