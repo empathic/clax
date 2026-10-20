@@ -199,9 +199,14 @@ case "$1" in
         if [ -e "$S/npm-no-login" ]; then echo "npm error code ENEEDAUTH" >&2; exit 1; fi
         echo owner ;;
     publish)
+        # $FAKE_STATE/npm-hide: the registry has not listed it yet.
         echo "npm publish at $(git rev-parse HEAD)" >> "$S/calls"
-        sed -n 's/^  "version": "\(.*\)",$/\1/p' package.json >> "$S/npm-versions"
-        rm -f "$S/npm-absent" ;;
+        if [ -e "$S/npm-hide" ]; then
+            sed -n 's/^  "version": "\(.*\)",$/\1/p' package.json >> "$S/npm-hidden"
+        else
+            sed -n 's/^  "version": "\(.*\)",$/\1/p' package.json >> "$S/npm-versions"
+            rm -f "$S/npm-absent"
+        fi ;;
     *) echo "fake npm: unexpected: $*" >&2; exit 2 ;;
 esac
 SH
@@ -604,6 +609,26 @@ case_15() {
     else fail "the first Pi publish (rc=$rc: $(actions); $(cat "$C/out"))"; fi
 }
 case_16() {
+    # A publish npm has not listed yet when the wait gives up: the rerun finds
+    # step 14 done and still prints the trusted-publisher setup.
+    new_case
+    : > "$FAKE_STATE/npm-absent"
+    : > "$FAKE_STATE/npm-hide"
+    act; rc=$?
+    if [ "$rc" = 1 ] && has "npm does not list @empathic/clax-pi@0.6.0 after the publish" \
+        && [ -e "$C/repo/target/release/0.6.0/pi-first-publish" ]; then
+        pass "a first publish npm has not listed yet stops step 14, keeping the publish recorded"
+    else fail "a first publish npm has not listed yet (rc=$rc: $(cat "$C/out"))"; fi
+    rm "$FAKE_STATE/npm-absent" "$FAKE_STATE/npm-hide"
+    mv "$FAKE_STATE/npm-hidden" "$FAKE_STATE/npm-versions"
+    act; rc=$?
+    if [ "$rc" = 0 ] && has "Step 14: Publish the Pi package: done already" \
+        && has "once: set up npm trusted publishing for @empathic/clax-pi" \
+        && [ "$(count "npm publish --access public")" = 1 ]; then
+        pass "the rerun finds the publish done and prints the trusted-publisher setup"
+    else fail "the rerun after a first publish npm listed late (rc=$rc: $(cat "$C/out"))"; fi
+}
+case_16b() {
     # On npm: the workflow publishes, never npm here.
     new_case
     act; rc=$?
@@ -758,7 +783,7 @@ case_37() {
 
 JOBS="$(getconf _NPROCESSORS_ONLN 2>/dev/null || echo 4)"
 [ "$JOBS" -le 8 ] || JOBS=8
-CASES="case_1 case_2 case_3 case_4 case_5 case_6 case_7 case_8 case_9 case_10 case_11 case_12 case_13 case_14 case_15 case_16 case_17 case_18 case_19 case_20 case_21 case_22 case_23 case_24 case_25 case_26 case_27 case_28 case_29 case_30 case_31 case_32 case_33 case_34 case_35 case_36 case_37"
+CASES="case_1 case_2 case_3 case_4 case_5 case_6 case_7 case_8 case_9 case_10 case_11 case_12 case_13 case_14 case_15 case_16 case_16b case_17 case_18 case_19 case_20 case_21 case_22 case_23 case_24 case_25 case_26 case_27 case_28 case_29 case_30 case_31 case_32 case_33 case_34 case_35 case_36 case_37"
 # A case's subshell exits 0 once its last check has run; one that dies on
 # the way (an unbound variable under set -u, say) exits otherwise, and fails
 # the gate whatever it printed before. Each case's status is collected by its

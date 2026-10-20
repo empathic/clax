@@ -674,7 +674,6 @@ pi_first_publish() {
     set -e
     g worktree remove --force "$dir"
     [ "$rc" = 0 ] || return "$rc"
-    : > "$ROOT/target/release/$V/pi-first-publish"
     say "  $(pi_package)@$V is on npm. Later releases publish through publish-pi.yml, which uses npm"
     say "  trusted publishing; set it up once, now: on npmjs.com, the package's Settings, Trusted"
     say "  Publisher, GitHub Actions: organization ${GH_REPO%%/*}, repository ${GH_REPO#*/}, workflow"
@@ -693,6 +692,9 @@ pi_publish_from() {
     logged "$PNPM" run typecheck
     say "  $NPM publish --access public (plugins/pi at $PUBLISH_COMMIT)"
     "$NPM" publish --access public
+    # Kept as soon as npm took the package, so step 15 prints the
+    # trusted-publisher setup even if the wait below gives up.
+    : > "$ROOT/target/release/$V/pi-first-publish"
     POLL_FAILS=0
     await_output pi_npm_version "$version" >/dev/null \
         || { say "  npm does not list $(pi_package)@$version after the publish"; return 1; }
