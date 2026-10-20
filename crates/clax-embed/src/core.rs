@@ -989,6 +989,26 @@ mod tests {
         assert_eq!(settled(&rx).await, OpenEvent::Closed);
     }
 
+    #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+    async fn a_closed_core_leaves_no_task_beside_a_reopen_of_its_home() {
+        let dir = tempfile::tempdir().unwrap();
+        let (on_event, rx) = events();
+        let old = Embed::open(options(dir.path()), on_event).unwrap();
+        assert_eq!(settled(&rx).await, OpenEvent::Ready);
+        old.close();
+        assert_eq!(settled(&rx).await, OpenEvent::Closed);
+        // The same home opens again in this process while the old core's
+        // runtime lives on (`old` is kept): nothing of the old core runs
+        // there but its close task, which ends once it posted `closed`.
+        let (on_event, again_rx) = events();
+        let again = Embed::open(options(dir.path()), on_event).unwrap();
+        assert_eq!(settled(&again_rx).await, OpenEvent::Ready);
+        let alive = old.inner.handle.metrics().num_alive_tasks();
+        assert!(alive <= 1, "{alive} tasks of the closed core still run");
+        again.close();
+        assert_eq!(settled(&again_rx).await, OpenEvent::Closed);
+    }
+
     /// Opens a core whose task panics at `at`.
     fn open_panicking(dir: &Path, at: PanicAt) -> (Embed, std::sync::mpsc::Receiver<OpenEvent>) {
         let (on_event, rx) = events();
