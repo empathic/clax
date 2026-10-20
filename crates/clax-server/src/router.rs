@@ -290,6 +290,7 @@ fn routes(state: AppState, shutdown: Option<tokio::sync::watch::Sender<bool>>) -
         )
         .route("/api/drafts", get(app_drafts::list))
         .route("/api/drafts/{id}", delete(app_drafts::delete))
+        .route("/api/drafts/{id}/renders", post(app_drafts::render))
         .route("/api/artifacts/{aid}/db-grants", get(docs::grants))
         .route(
             "/api/artifacts/{aid}/db-grants/{source}",

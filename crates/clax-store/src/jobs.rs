@@ -1212,7 +1212,10 @@ pub struct PublishStep {
     /// (or last-writer-wins only where the write says `if_version` is
     /// absent and the document does not exist).
     pub docs: Vec<BatchWrite>,
-    /// The draft the files were rendered from.
+    /// The draft the files were rendered from: the step is refused
+    /// ([`StepError::NotRenderedClean`]) unless the draft has a clean render
+    /// with its digest and the version's files have that digest. `None`
+    /// has no render gate.
     pub draft: Option<DraftRef>,
     /// The agent session the version is recorded as published from.
     pub session_id: Option<String>,
@@ -1365,8 +1368,9 @@ impl Store {
     ///
     /// # Errors
     /// [`StepError::VersionMoved`]; [`StepError::DocMoved`];
-    /// [`StepError::Job`] for a missing or final job; the publish's own
-    /// errors.
+    /// [`StepError::NotRenderedClean`] for a draft's files the app did not
+    /// render clean; [`StepError::Job`] for a missing or final job; the
+    /// publish's own errors.
     pub fn commit_publish_step(
         &self,
         ctx: &AuditCtx,
@@ -1410,7 +1414,7 @@ impl Store {
             docs,
             session_id,
             done,
-            ..
+            draft,
         } = s;
         let named = artifact_id.as_deref().map(ArtifactId::parse).transpose()?;
         if named.is_none() && base != 0 {
@@ -1418,6 +1422,18 @@ impl Store {
                 "invalid_base",
                 "a step that makes a new artifact has base 0",
             )));
+        }
+        // The render gate (spec 2026-10-19-in-process-core-design §8.2): a
+        // draft's files are published only as the app rendered them clean.
+        if let Some(d) = &draft
+            && (!self.clean_render(&d.id, &d.digest)?
+                || self
+                    .next_files_digest(named.as_ref(), base, &request)
+                    .await?
+                    .as_deref()
+                    != Some(d.digest.as_str()))
+        {
+            return Err(StepError::NotRenderedClean);
         }
         self.remove_moved_stray(id, key, named.as_ref(), base + 1)
             .await?;

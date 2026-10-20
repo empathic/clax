@@ -16,6 +16,7 @@ pub mod content;
 #[cfg(not(target_arch = "wasm32"))]
 pub mod daemon;
 pub mod db;
+pub mod digest;
 pub mod draft_diff;
 pub mod drafts;
 pub mod embedded;

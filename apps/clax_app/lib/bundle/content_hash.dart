@@ -35,7 +35,9 @@ int compareUtf8(String a, String b) {
 /// The content hash of [files] (path to file hash and size): `sha256:`
 /// and the hex SHA-256 of one line `<path>\0<sha256 hex>\0<size>\n` per
 /// file in byte order of path. It equals the daemon's version
-/// `content_sha256` for the same files.
+/// `content_sha256` for the same files, and, over a draft's files but
+/// `icon.svg`, the render gate's digest (`clax_core::digest::files_digest`,
+/// `POST /api/drafts/{id}/renders`).
 String contentHash(Map<String, ({String sha256, int size})> files) {
   final paths = files.keys.toList()..sort(compareUtf8);
   final out = BytesBuilder(copy: false);

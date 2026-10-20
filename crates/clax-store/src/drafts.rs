@@ -420,6 +420,90 @@ impl Store {
         self.empty_draft_trash();
         Ok(gone)
     }
+
+    /// Records a render of draft `id`'s files whose digest is `digest`
+    /// ([`clax_core::digest::files_digest`]), clean or not; a later render
+    /// of the same digest replaces it. `NotFound` when `id` is no draft.
+    ///
+    /// # Errors
+    /// `NotFound`; database errors.
+    pub fn record_render(&self, id: &ArtifactId, digest: &str, clean: bool) -> Result<()> {
+        let now = self.now();
+        self.with_tx(|tx| {
+            let n = tx.execute(
+                "INSERT INTO draft_renders (draft_id, digest, clean, created_at)
+                 SELECT id, ?2, ?3, ?4 FROM artifacts WHERE id = ?1 AND hidden = 1
+                 ON CONFLICT (draft_id, digest) DO UPDATE SET clean = ?3, created_at = ?4",
+                params![id.as_str(), digest, clean, now],
+            )?;
+            if n == 0 {
+                return Err(CoreError::NotFound);
+            }
+            Ok(())
+        })
+    }
+
+    /// Whether draft `id` has a clean render of the files whose digest is
+    /// `digest` ([`Store::record_render`]).
+    ///
+    /// # Errors
+    /// Database errors.
+    pub fn clean_render(&self, id: &str, digest: &str) -> Result<bool> {
+        self.with_read(|c| {
+            Ok(c.query_row(
+                "SELECT EXISTS (SELECT 1 FROM draft_renders
+                     WHERE draft_id = ?1 AND digest = ?2 AND clean = 1)",
+                params![id, digest],
+                |r| r.get(0),
+            )?)
+        })
+    }
+
+    /// The digest ([`clax_core::digest::manifest_digest`]) of the files
+    /// the next version of `named` (`None`: a new app) holds when `p` is
+    /// published on version `base`: its own files and those of `base` it
+    /// carries. The render gate compares it with the draft's.
+    ///
+    /// # Errors
+    /// The store's and the content store's.
+    pub(crate) async fn next_files_digest(
+        &self,
+        named: Option<&ArtifactId>,
+        base: u32,
+        p: &ValidatedPublish,
+    ) -> Result<Option<String>> {
+        let prev = match named {
+            Some(id) if base > 0 => self
+                .get_version(id, base)?
+                .map(|v| v.files)
+                .unwrap_or_default(),
+            _ => BTreeMap::new(),
+        };
+        let mut files = BTreeMap::new();
+        for path in super::artifacts::carried_of(&prev, p, false) {
+            let mut meta = prev[path].clone();
+            if meta.sha256.is_none()
+                && let Some(id) = named
+                && let Some(bytes) = self.content.read_file(id, base, path).await?
+            {
+                meta.sha256 = Some(clax_core::audit::sha256_hex(&bytes));
+            }
+            files.insert(path.clone(), meta);
+        }
+        for (path, change) in &p.files {
+            if let clax_core::publish::FileChange::Put(f) = change {
+                files.insert(
+                    path.clone(),
+                    clax_core::model::FileMeta {
+                        content_type: f.content_type.clone(),
+                        size: f.bytes.len() as u64,
+                        sha256: Some(clax_core::audit::sha256_hex(&f.bytes)),
+                    },
+                );
+            }
+        }
+        Ok(clax_core::digest::manifest_digest(&files))
+    }
 }
 
 #[cfg(test)]

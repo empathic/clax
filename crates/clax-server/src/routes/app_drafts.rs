@@ -137,6 +137,51 @@ pub async fn delete(
     Ok(Json(json!({"deleted": true})))
 }
 
+/// The body of `POST /api/drafts/<id>/renders`.
+#[derive(Deserialize)]
+#[serde(deny_unknown_fields)]
+struct RenderBody {
+    digest: String,
+    errors: Vec<Value>,
+    failed_tests: u32,
+}
+
+/// `POST /api/drafts/<id>/renders` `{digest, errors, failed_tests}`:
+/// records the app's render of the draft's files whose digest is `digest`
+/// (`clax_core::digest::files_digest`: the files but `icon.svg`), clean
+/// when `errors` is empty and `failed_tests` is 0; a later render of the
+/// same digest replaces it. A job's publish step naming the draft is
+/// refused 409 `not_rendered_clean` without a clean one (spec
+/// 2026-10-19-in-process-core-design §8.2). `{render: {draft_id, digest,
+/// clean}}`; 404 when `id` is no draft; 400 `invalid_args` for a digest
+/// that is not `sha256:` and 64 lower-case hex digits.
+pub async fn render(
+    State(s): State<AppState>,
+    d: clax_http::agent::DeniedToGrants,
+    _t: RequireToken,
+    p: Result<Path<String>, PathRejection>,
+    req: Result<JsonBytes, JsonRejection>,
+) -> Result<Json<Value>, ApiError> {
+    d.refuse_agents()?;
+    let id = parse_id(&path(p)?)?;
+    let (digest, clean) = parse_body(req, "the request body limit", |b: RenderBody| {
+        let hex = b.digest.strip_prefix("sha256:").unwrap_or_default();
+        if hex.len() != 64 || !hex.bytes().all(|c| matches!(c, b'0'..=b'9' | b'a'..=b'f')) {
+            return Err(ApiError::bad_request(
+                "invalid_args",
+                "digest is sha256: and 64 lower-case hex digits",
+            ));
+        }
+        Ok((b.digest, b.errors.is_empty() && b.failed_tests == 0))
+    })
+    .await?;
+    let draft_id = id.as_str().to_string();
+    let answer = json!({"render": {"draft_id": draft_id, "digest": digest, "clean": clean}});
+    s.store_call(move |st| st.record_render(&id, &digest, clean))
+        .await?;
+    Ok(Json(answer))
+}
+
 /// Deletes the drafts older than [`DRAFT_MAX_AGE`] at `now`, and their
 /// wrapped pages from `cache`; how many it deleted.
 ///

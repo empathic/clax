@@ -901,3 +901,103 @@ async fn a_publish_step_from_a_session_does_for_it_what_a_publish_does() {
     let made = v["step"]["result"]["artifact_id"].as_str().unwrap();
     assert!(watched(&ts, made));
 }
+
+/// `POST /api/drafts/{draft}/renders` with `body`.
+async fn render(ts: &TestServer, draft: &str, body: Value) -> (u16, Value) {
+    send(authed(ts, Method::POST, &format!("/api/drafts/{draft}/renders")).json(&body)).await
+}
+
+#[tokio::test]
+async fn a_draft_publish_needs_a_clean_render_of_its_digest() {
+    let ts = TestServer::spawn().await;
+    let (_o, token) = owner(&ts).await;
+    let aid = ts
+        .publish("App", &[("index.html", "<p>v1"), ("app.js", "let n = 1;")])
+        .await["artifact"]["id"]
+        .as_str()
+        .unwrap()
+        .to_string();
+    let (s, v) = send(authed(&ts, Method::POST, "/api/drafts").json(&json!({
+        "of": aid, "title": "Budget",
+        "files": {"index.html": "<p>v2", "app.js": "let n = 1;"},
+    })))
+    .await;
+    assert_eq!(s, 201, "{v}");
+    let draft = v["draft"]["id"].as_str().unwrap().to_string();
+    running(&ts, &token, "j1", "change", Some(&aid)).await;
+    // The version holds the step's index.html and the app.js it carries.
+    let digest = clax_core::digest::files_digest([
+        ("index.html", "<p>v2".as_bytes()),
+        ("app.js", "let n = 1;".as_bytes()),
+    ]);
+    let other = clax_core::digest::files_digest([("index.html", "<p>v3".as_bytes())]);
+    let body = |html: &str| {
+        let mut b = publish_body(Some(&aid), 1, html, false);
+        b["publish"]["draft"] = json!({"id": draft, "digest": digest});
+        b
+    };
+    let refused = |(s, v): (u16, Value)| {
+        assert_eq!(
+            (s, v["error"]["code"].as_str()),
+            (409, Some("not_rendered_clean")),
+            "{v}"
+        );
+    };
+    let rendered = async |digest: &str, errors: Value, failed: u32| {
+        let (s, v) = render(
+            &ts,
+            &draft,
+            json!({"digest": digest, "errors": errors, "failed_tests": failed}),
+        )
+        .await;
+        assert_eq!(s, 200, "{v}");
+        v["render"]["clean"].as_bool().unwrap()
+    };
+    refused(step(&ts, &token, "j1", "publish:1", body("<p>v2")).await);
+    assert!(!rendered(&digest, json!(["TypeError: x is undefined"]), 0).await);
+    refused(step(&ts, &token, "j1", "publish:1", body("<p>v2")).await);
+    assert!(!rendered(&digest, json!([]), 1).await);
+    refused(step(&ts, &token, "j1", "publish:1", body("<p>v2")).await);
+    assert!(rendered(&other, json!([]), 0).await);
+    refused(step(&ts, &token, "j1", "publish:1", body("<p>v2")).await);
+    assert!(rendered(&digest, json!([]), 0).await);
+    // A clean render of the digest, but files that do not have it.
+    refused(step(&ts, &token, "j1", "publish:1", body("<p>v3")).await);
+    assert_eq!(job(&ts, "j1").await["steps"], json!([]));
+    assert_eq!(versions(&ts, &aid).await, 1);
+    let (s, v) = step(&ts, &token, "j1", "publish:1", body("<p>v2")).await;
+    assert_eq!(s, 200, "{v}");
+    assert_eq!(versions(&ts, &aid).await, 2);
+    // Renders are of drafts only, under a digest of the right form.
+    let ok = json!({"digest": digest, "errors": [], "failed_tests": 0});
+    let (s, v) = render(&ts, &aid, ok).await;
+    assert_eq!(s, 404, "{v}");
+    let (s, v) = render(
+        &ts,
+        &draft,
+        json!({"digest": "abc", "errors": [], "failed_tests": 0}),
+    )
+    .await;
+    assert_eq!(
+        (s, v["error"]["code"].as_str()),
+        (400, Some("invalid_args")),
+        "{v}"
+    );
+}
+
+#[tokio::test]
+async fn a_publish_without_a_draft_has_no_render_gate() {
+    let ts = TestServer::spawn().await;
+    let (_o, token) = owner(&ts).await;
+    running(&ts, &token, "j1", "make", None).await;
+    let (s, v) = step(
+        &ts,
+        &token,
+        "j1",
+        "publish:0",
+        publish_body(None, 0, "<p>never rendered", true),
+    )
+    .await;
+    assert_eq!(s, 200, "{v}");
+    assert_eq!(v["version"], 1);
+}

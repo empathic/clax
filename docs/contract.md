@@ -2459,6 +2459,16 @@ need the token:
   The daemon deletes drafts older than an hour at start and hourly, and
   the app deletes the ones an earlier run of it left when its agent first
   registers.
+- `POST /api/drafts/<id>/renders` with `{digest, errors, failed_tests}`
+  records the app's render of the draft's files (403 `not_for_agents` to
+  the owner's agents): `digest` is `sha256:` and the hex SHA-256 of one
+  line `<path>\0<sha256 hex>\0<size>\n` per file but `icon.svg`, in byte
+  order of path (a version's `content_sha256` for the same files), and
+  the render is clean when `errors` (a list) is empty and `failed_tests`
+  is 0. A later render of the same digest replaces it. Answers `{render:
+  {draft_id, digest, clean}}`; 404 when `id` is no draft, 400
+  `invalid_args` for a malformed digest. A publish step naming the draft
+  needs a clean one (below).
 
 A draft is left out of `GET /api/artifacts`, the `gallery` topic, the
 `list` tool, inbox items, sessions' watches and feedback; `/api/events`
@@ -2531,7 +2541,7 @@ transaction with the step: either both exist, or neither does.
 | `PUT /api/jobs/<id>/threads/<tid>` | token, owner token | `{comment_id, stopped?}` | `{job}`; 400 `invalid_thread` |
 | `DELETE /api/jobs/<id>/threads/<tid>` | token, owner token | — | `{job}` |
 | `PUT /api/jobs/<id>/questions/<qid>` | token, owner token | — | `{job}`, a `running` job `waiting` while the question is open (its answer, decline or withdrawal, `job_end` when the job ends first, is stored in the job and moves it back); 400 `invalid_question` for a question not of the `ask` tool or another job's |
-| `POST /api/jobs/<id>/steps/<key>` | token, owner token | `{result?, publish?, reply?, state?}`, one of `result`, `publish` and `reply`; `state` only `"done"` | `{job, step: {key, result, version_n, created_at}, replayed, version?}`; 409 `version_moved` `{current}`, `doc_moved` `{path}`, `job_moved`; 400 `invalid_step` |
+| `POST /api/jobs/<id>/steps/<key>` | token, owner token | `{result?, publish?, reply?, state?}`, one of `result`, `publish` and `reply`; `state` only `"done"` | `{job, step: {key, result, version_n, created_at}, replayed, version?}`; 409 `version_moved` `{current}`, `doc_moved` `{path}`, `not_rendered_clean`, `job_moved`; 400 `invalid_step` |
 | `GET /api/agent-read-consents` | token | — | `{consents: [{reader, source}]}` |
 | `PUT /api/agent-read-consents/<reader>/<source>` | token | — | 204; 404 when either artifact is missing |
 | `DELETE /api/agent-read-consents/<reader>/<source>` | token | — | `{deleted}` |
@@ -2545,7 +2555,12 @@ first; then one transaction checks the artifact is still at `base` (409
 `version_moved` with `current` otherwise), records the version, applies
 the writes (a document that moved refuses the whole step, 409 `doc_moved`
 with its `path`), inserts the step with the version's number, and moves
-the job one `rev` on, setting its `artifact_id` to a new app's. `version`
+the job one `rev` on, setting its `artifact_id` to a new app's. With
+`draft: {id, digest}` (the draft the files were rendered from) the step is
+refused first, 409 `not_rendered_clean`, unless the draft has a clean
+render with `digest` and the version's files (the request's and those it
+carries from `base`) have that digest; a step without `draft` has no
+render gate. `version`
 and `step.result` (`{artifact_id, version, docs}`) name what it made. A
 new app's `request` needs a title (400 `invalid_args`). With
 `session_id` (a live session of the owner's, 400 `unknown_session`
@@ -4478,6 +4493,7 @@ router), and a test fails when it differs:
 | `GET /api/drafts` | Denied | no |
 | `POST /api/drafts` | Denied | no |
 | `DELETE /api/drafts/{id}` | Denied | no |
+| `POST /api/drafts/{id}/renders` | Denied | yes: 403 `not_for_agents` |
 | `GET /api/events` | Denied | yes: 403 `not_for_agents` |
 | `GET /api/extension` | Denied | no |
 | `DELETE /api/extension/credentials` | Denied | no |

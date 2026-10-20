@@ -777,7 +777,7 @@ pub(super) enum VersionStep<'a> {
 /// does not name, but `index.html`, which a publish always gives, unless
 /// `adopt` (a pushed commit, which carries it like any other file); and
 /// none withheld from `p`'s publisher that collides with a path it puts.
-fn carried_of<'a>(
+pub(super) fn carried_of<'a>(
     prev: &'a BTreeMap<String, FileMeta>,
     p: &ValidatedPublish,
     adopt: bool,

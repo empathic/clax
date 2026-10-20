@@ -645,7 +645,8 @@ fn parse_step(b: StepBody) -> Result<Step, ApiError> {
 /// `{job, step, replayed, version?}`: a key the job already has answers
 /// its step as recorded with `replayed: true` and changes nothing. 409
 /// `version_moved` with `current`, `doc_moved` with `path`,
-/// `job_moved` with the job; nothing is recorded then.
+/// `not_rendered_clean` for a publish naming a draft with no clean render
+/// of its files, `job_moved` with the job; nothing is recorded then.
 pub async fn commit(
     State(s): State<AppState>,
     d: DeniedToGrants,
