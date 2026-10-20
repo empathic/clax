@@ -8,6 +8,20 @@ pub fn clax() -> std::path::PathBuf {
     clax_fake_exe::clax_bin(option_env!("CARGO_BIN_EXE_clax"))
 }
 
+/// `text` with every mention of the resolved path of [`clax`] written as
+/// [`clax`]'s own path. The binary names itself by `std::env::current_exe`,
+/// which on Linux resolves symbolic links (Bazel's runfiles are links into
+/// its output tree) and on macOS returns the path it was run by; either
+/// names the same file.
+pub fn as_clax(text: &str) -> String {
+    let me = clax();
+    let resolved = std::fs::canonicalize(&me).unwrap();
+    if resolved == me {
+        return text.to_string();
+    }
+    text.replace(&*resolved.to_string_lossy(), &me.to_string_lossy())
+}
+
 /// A scratch HOME and CLAX_HOME; dropping it stops the daemon started there.
 pub struct Env {
     pub dir: tempfile::TempDir,

@@ -1183,7 +1183,9 @@ fn every_hook_run_appends_a_line_to_hooks_log() {
         .write_stdin("")
         .assert()
         .success();
-    let log = std::fs::read_to_string(e.dir.path().join("ax/logs/hooks.log")).unwrap();
+    let log = crate::common::as_clax(
+        &std::fs::read_to_string(e.dir.path().join("ax/logs/hooks.log")).unwrap(),
+    );
     let lines: Vec<&str> = log.lines().collect();
     assert_eq!(lines.len(), 2, "{log}");
     let bin = crate::common::clax();
