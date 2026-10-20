@@ -272,7 +272,7 @@ pub struct JobThread {
 pub struct JobQuestion {
     pub question_id: String,
     /// The tool call that asked it (`questions.tool_use_id`): the app's
-    /// queue names a job's `ask` call `turn:<n>/<call ID>`, so a worker
+    /// queue names a job's `ask` call `<job>/turn:<n>/<call ID>`, so a worker
     /// resumed after a kill knows which call each question answers.
     pub tool_use_id: Option<String>,
     pub answer: JobAnswer,
