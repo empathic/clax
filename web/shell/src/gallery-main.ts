@@ -1,5 +1,10 @@
 import { mount } from "svelte";
 import Gallery from "./ui/Gallery.svelte";
+import { installTransport } from "./transport";
+
+// In the Clax app the API goes over the app's channel: before anything
+// else asks for it.
+installTransport();
 
 const target = document.getElementById("app")!;
 // A hosted daemon's sign-in pages (`/setup`, `/device`, `/join/<code>`, `/signin[/<code>]`)

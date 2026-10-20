@@ -1,4 +1,5 @@
 import { afterEach, describe, expect, it, vi } from "vitest";
+import { connNotices } from "./conn-notice";
 import { Lifecycle, backoff, onPageCache, retrying } from "./lifecycle";
 
 afterEach(() => { vi.useRealTimers(); });
@@ -158,6 +159,24 @@ describe("retrying", () => {
     expect(n).toBe(3);
     expect(trouble).toEqual([true, true, false]);
     life.dispose();
+  });
+
+  it("reports no trouble while connection notices are off, and still retries", async () => {
+    vi.useFakeTimers();
+    connNotices(false);
+    try {
+      const life = new Lifecycle();
+      const trouble: boolean[] = [];
+      let n = 0;
+      const p = retrying(life, async () => { if (n++ < 2) throw new TypeError("network"); return "ok"; }, { trouble: on => trouble.push(on) });
+      await vi.advanceTimersByTimeAsync(5000);
+      await expect(p).resolves.toBe("ok");
+      expect(n).toBe(3);
+      expect(trouble).not.toContain(true);
+      life.dispose();
+    } finally {
+      connNotices(true);
+    }
   });
 
   it("abandons a stuck attempt through its signal and tries again", async () => {

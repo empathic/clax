@@ -4,6 +4,11 @@ import { loadMoreMenu } from "./ui/more-menu.svelte";
 import { allowSidebarPrefetch } from "./ui/sidebar-chunk";
 import { afterPaint } from "./view/after-paint";
 import { readBoot, takeEarly } from "./view/boot";
+import { installTransport } from "./transport";
+
+// In the Clax app the API goes over the app's channel: before anything
+// else asks for it.
+installTransport();
 
 const r = parseShellPath(location.pathname);
 // The daemon serves this entry only for artifact paths.

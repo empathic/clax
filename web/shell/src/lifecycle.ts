@@ -2,6 +2,8 @@
 // streams are registered with the view's Lifecycle, and its `dispose` ends
 // them all at once, so nothing outlives the view. Requests take its `signal`.
 
+import { connNoticesOn } from "./conn-notice";
+
 /** The lifecycle of one view (or one part of it, through `child`). */
 export class Lifecycle {
   private readonly ac = new AbortController();
@@ -91,10 +93,14 @@ export const STUCK_MS = 8000;
 /** Runs `attempt` until it succeeds, retrying with `backoff` after a failure
  * `retry` accepts (by default any), or after it was stuck `timeoutMs`
  * (aborted through its signal). `trouble(true)` is called while it is
- * failing or stuck, `trouble(false)` once it is settled. Rejects with the
- * failure `retry` refused, or with an `AbortError` once `life` ends. */
+ * failing or stuck, `trouble(false)` once it is settled; while connection
+ * notices are off (app mode, `connNotices`) it is never called with true.
+ * Rejects with the failure `retry` refused, or with an `AbortError` once
+ * `life` ends. */
 export async function retrying<T>(life: Lifecycle, attempt: (signal: AbortSignal) => Promise<T>, opts: { timeoutMs?: number; retry?: (e: unknown) => boolean; trouble?: (on: boolean) => void } = {}): Promise<T> {
-  const { timeoutMs = STUCK_MS, retry = () => true, trouble = () => {} } = opts;
+  const { timeoutMs = STUCK_MS, retry = () => true } = opts;
+  const told = opts.trouble ?? (() => {});
+  const trouble = (on: boolean) => { if (!on || connNoticesOn()) told(on); };
   for (let n = 0; ; n++) {
     const one = life.child();
     let stuck = false;
