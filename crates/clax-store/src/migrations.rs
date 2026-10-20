@@ -4903,22 +4903,115 @@ mod tests {
         }
     }
 
-    /// A database of this numbering holding the first `app` of the app's
-    /// migrations, at version `40 + app`, with the rows of [`app_rows`].
-    /// Returns its rows.
-    fn app_numbered_from_41(home: &Home, app: usize) -> Vec<(String, Vec<String>)> {
+    /// The Clax app's migrations as this numbering has them, at 41 to 45
+    /// after main's 39 and 40, frozen: the layout the owner's devices hold
+    /// once this build has opened their homes.
+    const APP_AT_41: &str =
+        include_str!("../tests/fixtures/old-migrations/flutter-app-4479a586c.sql");
+
+    /// The SQL of each of the app's migrations in [`APP_AT_41`], in order.
+    fn app_migrations() -> Vec<&'static str> {
+        APP_AT_41
+            .split("\n-- migration: ")
+            .skip(1)
+            .map(|part| part.split_once('\n').unwrap().1)
+            .collect()
+    }
+
+    /// A database as a build holding the first `k` of main's migrations
+    /// above the where-to-ask one left it: migrations 1 to `38 + k` with
+    /// their Rust steps, then the first `app` of the app's ([`APP_AT_41`]),
+    /// numbered from `38 + k + 1`, with the rows of [`app_rows`]. Returns
+    /// its rows.
+    fn app_after_main(home: &Home, k: usize, app: usize) -> Vec<(String, Vec<String>)> {
         home.ensure_dirs().unwrap();
         let mut c = Connection::open(home.db_path()).unwrap();
         c.pragma_update(None, "journal_mode", "wal").unwrap();
         let tx = c.transaction().unwrap();
-        let to = APP_MIGRATION - 1 + app as u32;
-        for v in 1..=to {
+        let main = WHERE_TO_ASK_MIGRATION + k as u32;
+        for v in 1..=main {
             tx.execute_batch(MIGRATIONS[v as usize - 1]).unwrap();
             super::rust_step(&tx, v).unwrap();
         }
-        tx.pragma_update(None, "user_version", to).unwrap();
+        for sql in &app_migrations()[..app] {
+            tx.execute_batch(sql).unwrap();
+        }
+        tx.pragma_update(None, "user_version", main + app as u32)
+            .unwrap();
         tx.commit().unwrap();
         app_rows(&c, app)
+    }
+
+    /// A database at this build's numbering, the app's at 41 to 45 after
+    /// main's 39 and 40, holding the first `app` of the app's migrations,
+    /// at version `40 + app`, with the rows of [`app_rows`]. Returns its
+    /// rows.
+    fn app_numbered_from_41(home: &Home, app: usize) -> Vec<(String, Vec<String>)> {
+        app_after_main(home, 2, app)
+    }
+
+    #[test]
+    fn the_frozen_app_migrations_are_this_numberings() {
+        let frozen = app_migrations();
+        assert_eq!(frozen.len(), super::APP_MIGRATION_MARKS.len());
+        let first = APP_MIGRATION as usize - 1;
+        for (i, sql) in frozen.iter().enumerate() {
+            // Each is followed by the line break before the next.
+            assert_eq!(
+                sql.trim_end(),
+                MIGRATIONS[first + i],
+                "the app's migration {}",
+                i + 1
+            );
+        }
+    }
+
+    /// Every layout of the app's migrations after the first k of main's
+    /// above 38, for k up to the number this numbering has, opens under it:
+    /// copied first, adopted for a k below that number, migrated to the
+    /// final schema, every row kept.
+    #[test]
+    fn the_app_after_every_k_of_mains_migrations_opens_under_this_numbering() {
+        let fresh = fresh_shape();
+        for k in 0..=MAIN_MARKS_ABOVE_38.len() {
+            for app in 1..=super::APP_MIGRATION_MARKS.len() {
+                let dir = tempfile::tempdir().unwrap();
+                let home = Home::at(dir.path().join("ax"));
+                let before = app_after_main(&home, k, app);
+                let old = WHERE_TO_ASK_MIGRATION + (k + app) as u32;
+                {
+                    let mut c = Connection::open(home.db_path()).unwrap();
+                    assert_eq!(user_version(&c), old, "k {k}, app {app}");
+                    let tx = c.transaction().unwrap();
+                    let adopted = (k < MAIN_MARKS_ABOVE_38.len())
+                        .then_some((old, APP_MIGRATION - 1 + app as u32));
+                    assert_eq!(
+                        super::adopt_earlier_flutter_app(&tx, &super::NUMBERING).unwrap(),
+                        adopted,
+                        "k {k}, app {app}"
+                    );
+                }
+                drop(Store::open(&home).unwrap());
+                let c = Connection::open(home.db_path()).unwrap();
+                assert_eq!(
+                    user_version(&c),
+                    MIGRATIONS.len() as u32,
+                    "k {k}, app {app}"
+                );
+                assert_eq!(shape_of(&c), fresh, "k {k}, app {app}");
+                assert_eq!(kept_rows(&c, app), before, "k {k}, app {app}");
+                let copies = crate::backup::list(&crate::backup::dir(&home));
+                let copied = copies.iter().any(|p| {
+                    p.file_name()
+                        .unwrap()
+                        .to_str()
+                        .unwrap()
+                        .starts_with(&format!("clax-{old}-"))
+                });
+                let last = MIGRATIONS.len() as u32;
+                assert_eq!(copied, old < last, "k {k}, app {app}: {copies:?}");
+            }
+        }
     }
 
     #[test]
