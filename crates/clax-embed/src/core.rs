@@ -581,7 +581,9 @@ const PAGE_HEADERS: [&str; 5] = [
 
 /// The router's request for `head`: its headers but those the core sets
 /// (an owner frame's all; a page frame's only [`PAGE_HEADERS`]), the
-/// `Host` and credential for who it speaks as, and a loopback peer.
+/// `Host` and credential for who it speaks as (an owner frame the token, a
+/// shell-page frame the owner cookie, a content frame none), and a
+/// loopback peer.
 pub(crate) fn request(
     head: &RequestHead,
     body: Bytes,
@@ -610,6 +612,20 @@ pub(crate) fn request(
     }
     if owner && !authorized {
         b = b.header("authorization", format!("Bearer {token}"));
+    }
+    // The host sends a shell-page frame only for the shell origin's
+    // main-frame navigation and its subresources (spec §4.2), and nothing
+    // else reaches the core: it is the owner's browser, as the daemon
+    // app's WebView was with its key cookie. A content frame never is.
+    if head.as_ == As::ShellPage {
+        b = b.header(
+            "cookie",
+            format!(
+                "{}={}",
+                clax_http::identity::owner_cookie_name("localhost"),
+                clax_http::identity::owner_cookie_value(token)
+            ),
+        );
     }
     if !length && !body.is_empty() {
         b = b.header("content-length", body.len());
@@ -933,7 +949,7 @@ mod tests {
             let mut names: Vec<&str> = req.headers().keys().map(|k| k.as_str()).collect();
             names.sort_unstable();
             names.dedup();
-            let want = vec![
+            let mut want = vec![
                 "accept",
                 "host",
                 "if-modified-since",
@@ -941,6 +957,16 @@ mod tests {
                 "range",
                 "service-worker",
             ];
+            if as_ == As::ShellPage {
+                want.push("cookie");
+                want.sort_unstable();
+                let owner = format!(
+                    "{}={}",
+                    clax_http::identity::owner_cookie_name("localhost"),
+                    clax_http::identity::owner_cookie_value("t")
+                );
+                assert_eq!(req.headers()["cookie"], owner.as_str());
+            }
             assert_eq!(names, want, "{as_:?}");
             assert_ne!(req.headers()["host"], "elsewhere");
         }

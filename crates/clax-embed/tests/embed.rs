@@ -204,17 +204,58 @@ async fn no_route_that_holds_its_connection_open_is_a_call() {
 }
 
 #[tokio::test]
-async fn a_page_frame_carrying_a_cookie_gets_no_credential() {
+async fn a_page_frame_carrying_a_credential_reaches_no_api() {
     let dir = tempfile::tempdir().unwrap();
     let (embed, _rx) = open(dir.path());
-    let mut h = head("GET", "/api/token", As::ShellPage);
-    h.headers.push(("cookie".into(), "clax_owner=x".into()));
-    h.headers
-        .push(("authorization".into(), "Bearer forged".into()));
-    let (status, v) = call_json(&embed, h, None).await;
-    not_in_app(status, &v);
-    let (status, v) = call_json(&embed, head("GET", "/api/token", As::Owner), None).await;
-    assert_eq!(status, 200, "{v}");
+    let token = {
+        let (status, v) = call_json(&embed, head("GET", "/api/token", As::Owner), None).await;
+        assert_eq!(status, 200, "{v}");
+        v["token"].as_str().unwrap().to_string()
+    };
+    let id = publish(&embed, "<title>t</title>hi", None).await;
+    for (as_, host) in [(As::ShellPage, None), (As::Content, Some(id))] {
+        let mut h = head("GET", "/api/token", as_);
+        h.host = host;
+        h.headers.push(("cookie".into(), "clax_owner=x".into()));
+        h.headers
+            .push(("authorization".into(), format!("Bearer {token}")));
+        let (status, v) = call_json(&embed, h, None).await;
+        assert_eq!(status, 404, "{as_:?}: {v}");
+    }
+    embed.close();
+}
+
+#[tokio::test]
+async fn the_shell_document_and_its_files_answer_a_shell_page_frame_as_the_owner() {
+    let dir = tempfile::tempdir().unwrap();
+    let (embed, _rx) = open(dir.path());
+    let id = publish(&embed, "<title>t</title>hi", None).await;
+
+    let (res, body) = call(&embed, head("GET", &format!("/a/{id}?app=1"), As::ShellPage), b"").await;
+    assert_eq!(res.status, 200, "{}", String::from_utf8_lossy(&body));
+    let html = String::from_utf8_lossy(&body);
+    assert!(html.contains(&id), "the boot data names the artifact");
+    assert!(
+        html.contains(r#""owner":true"#),
+        "the boot data is the owner's: {html}"
+    );
+
+    // Every file of the shell's the document loads answers it.
+    let files: Vec<&str> = html
+        .split(['"', '\''])
+        .filter(|s| s.starts_with("/_clax/"))
+        .collect();
+    assert!(!files.is_empty(), "the document loads the shell's files: {html}");
+    for f in files {
+        let (res, _) = call(&embed, head("GET", f, As::ShellPage), b"").await;
+        assert_eq!(res.status, 200, "{f}");
+    }
+    // `/assets/…` and `/favicon.ico` reach the router as the owner: this
+    // web UI has neither, so they answer its 404, never 401.
+    for p in ["/assets/x.js", "/favicon.ico"] {
+        let (res, _) = call(&embed, head("GET", p, As::ShellPage), b"").await;
+        assert_eq!(res.status, 404, "{p}");
+    }
     embed.close();
 }
 

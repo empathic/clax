@@ -291,7 +291,7 @@ into credentials:
 | `as` | Who sends it | What the core adds | Paths it may reach |
 |---|---|---|---|
 | `owner` | Dart (the app's own code and agent), and shell calls the host relays (§5) | `Authorization: Bearer <token>` unless the frame carries an `Authorization` (an agent session's own); `Host: localhost`; `ConnectInfo` of a loopback peer | everything but `/api/admin/shutdown` and the routes that hold their connection open (`clax_server::router::held_open`: `/api/stream`, `/api/events`, `/api/artifacts/{aid}/room`, `/api/artifacts/{aid}/live`, `/mcp`), since a call's body is read whole; events go by `subscribe`, and `POST /api/stream/{id}` is allowed |
-| `shell-page` | the host, for a scheme request to the shell's origin (§4.2) | `Host: localhost`; no credential; of the frame's headers, only `Range`, `If-None-Match`, `If-Modified-Since`, `Accept` and `Service-Worker` | the shell's documents and assets only: `/a/…`, `/assets/…`, `/_clax/…`, `/c/…`, `/_blob/…`, `/favicon.ico`; never `/api/` |
+| `shell-page` | the host, for a scheme request to the shell's origin (§4.2) | `Host: localhost`; the owner cookie (`clax_owner_80`), so the shell's documents are the owner's browser's (§4.3); of the frame's headers, only `Range`, `If-None-Match`, `If-Modified-Since`, `Accept` and `Service-Worker` | the shell's documents and assets only: `/a/…`, `/assets/…`, `/_clax/…`, `/c/…`, `/_blob/…`, `/favicon.ico`; never `/api/` |
 | `content` | the host, for a scheme request to an artifact's origin | `Host: <host>.localhost`; no credential; of the frame's headers, only `Range`, `If-None-Match`, `If-Modified-Since`, `Accept` and `Service-Worker` | what `rewrite_artifact_host` admits on an artifact host (`/v/…`, `/draft/…`, `/_blob/…`, `/_clax/…`) |
 
 A response frame is `CLX1`, a length, JSON `{"status":200,"headers":[…]}`,
@@ -303,9 +303,14 @@ head); `postCObject` copies that buffer again into the Dart heap. A request to a
 answers 404 `not_in_app` without reaching the router.
 
 Dart never holds the token: the core adds it. The core sets `require_credential` as the
-app's daemon did, so a frame that reached the router without `as: owner`
-is a viewer without a credential, which is what a page's frame is on the
-daemon today (`auth::open_without_credential`).
+app's daemon did. A `shell-page` frame speaks as the owner's browser (the
+owner cookie): the host sends one only for the shell origin's main-frame
+navigation and its subresources (§4.2), nothing else reaches the core
+(§4.3), and the daemon app's WebView carried the owner's key cookie on the
+same requests, so the shell document's boot data is the owner's as it was
+there. A `content` frame never carries a credential: it reaches the router
+as a viewer without one, which is what a page's frame is on the daemon
+today (`auth::open_without_credential`).
 
 ### 2.4 Events
 
@@ -433,6 +438,12 @@ in the app, with the scheme in place of the port:
   shell's origin instead of `http://localhost:<port>` (`content_policy`
   takes the embed's shell origin when `AppState.embed` is set). The load
   lockdown (`'self'` only) is unchanged.
+- **The shell's documents are the owner's; a page's are no one's.** A
+  `shell-page` frame carries the owner cookie, since the host makes one
+  only for the shell origin's main-frame navigation and its subresources
+  (§4.2) and no other program reaches the core; it reaches only the
+  shell's read-only document and file paths. A `content` frame never
+  carries a credential and is never the owner.
 - **A page reaches nothing with the owner's authority.** Its requests are
   `as: content` (no credential, artifact paths only). It cannot read the
   shell's responses: the host strips `Access-Control-*` from every
