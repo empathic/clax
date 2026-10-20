@@ -9,7 +9,11 @@
   // With no target chosen, a Send goes to this viewer's own most recent
   // live agent (`ownTarget`), chosen for it as it sends; a LAN viewer's, to
   // the owner's (`sendsFor`).
+  // In the Clax app, whose scheme answers nothing under `/api/`, a thread's
+  // clip is fetched over the transport and shown by object URL
+  // (`api-image.ts`, loaded only there); a browser loads `clip_url` itself.
   import type { Thread } from "../threads";
+  import { onHost } from "../transport";
   import { ownTarget, sendsFor } from "../view/send-menu";
   import type { ArtifactController, Loaded, ViewState } from "../view/artifact-controller";
   import { emptyLayer, writersIn } from "../view/live-layers";
@@ -21,6 +25,7 @@
   const live = { writers, onText: (tid: string | null, text: string) => ctl.liveView?.text(tid, text) };
   const target = $derived(s.sendTo ?? ownTarget(s.agents, sendsFor(s.agents, s.me)));
   const go = (send: () => unknown) => { if (target && target !== s.sendTo) ctl.chooseTarget(target); send(); };
+  const clip = onHost() ? async (t: Thread) => (t.clip_url ? (await import("../api-image")).apiImageSrc(t.clip_url) : null) : undefined;
 </script>
 
 {#snippet writers(tid: string | null)}
@@ -36,7 +41,7 @@
 <Sidebar threads={s.threads} resolved={s.resolved} selected={s.selected} file={s.file} holds={f => ctl.holds(f, s)} me={s.me}
   versions={s.data.versions} shown={ctl.shown(s)} agent={s.data.artifact.owner_name || s.data.artifact.owner_harness || "agent"}
   working={s.working} commenting={s.commenting} agents={s.agents} mine={s.attention?.open_in ?? []}
-  decided={s.decided} onSeen={t => ctl.look(t)}
+  decided={s.decided} onSeen={t => ctl.look(t)} {clip}
   onSelect={t => ctl.selectThread(t)} onHover={t => ctl.hover(t)} onSend={t => go(() => ctl.sendThread(t))}
   onResolve={t => ctl.resolveThread(t)} onReply={(t, body) => ctl.reply(t, body)}
   selection={s.selection} batchNote={s.batchNote} batchBusy={s.batchBusy} sendTo={target}
