@@ -1293,6 +1293,17 @@ impl TestServer {
         )
         .await;
     }
+
+    /// Returns once `n` polls of question `qid` have read it and wait to
+    /// be woken; panics past the [`HANG`](crate::HANG) guard.
+    pub async fn wait_parked_question_polls(&self, qid: &str, n: u64) {
+        self.count_until(
+            &format!("/api/_test/questions/{qid}/waiters?parked=true&until={n}"),
+            n,
+            &format!("{n} parked polls of {qid}"),
+        )
+        .await;
+    }
 }
 
 impl TestServer {

@@ -492,6 +492,7 @@ pub async fn poll(
                 "where_to_ask": where_to_ask}),
             ));
         }
+        let _parked = s.questions.park(&qid);
         tokio::select! {
             () = &mut notified => {}
             () = &mut expiry, if !done => done = true,
@@ -601,11 +602,13 @@ pub async fn terminal(
     })
 }
 
-/// The query of the debug builds' waiter routes.
+/// The query of the debug builds' question waiter route.
 #[cfg(debug_assertions)]
 #[derive(Deserialize)]
 pub struct UntilQuery {
     pub(crate) until: Option<usize>,
+    /// Count the parked polls rather than the holding ones.
+    pub(crate) parked: Option<bool>,
 }
 
 /// `POST /api/_test/questions/<qid>/expire` (debug builds): ends every
@@ -624,7 +627,8 @@ pub async fn expire(
 
 /// `GET /api/_test/questions/<qid>/waiters?until=<n>` (debug builds):
 /// `{count}`, how many polls hold question `qid`, answered once the count
-/// is `until` (or after 5 s), at once without it.
+/// is `until` (or after 5 s), at once without it. With `parked=true`,
+/// counts instead its polls that have read it and wait to be woken.
 #[cfg(debug_assertions)]
 pub async fn waiters(
     State(s): State<AppState>,
@@ -636,7 +640,14 @@ pub async fn waiters(
     let qid = path(p)?;
     let Query(q) = q.map_err(|e| ApiError::bad_request("invalid_query", e.body_text()))?;
     let w = &s.questions;
-    let n = clax_realtime::questions::count_until(w.changed(), || w.count(&qid), q.until).await;
+    let count = || {
+        if q.parked.unwrap_or(false) {
+            w.parked(&qid)
+        } else {
+            w.count(&qid)
+        }
+    };
+    let n = clax_realtime::questions::count_until(w.changed(), count, q.until).await;
     Ok(Json(json!({"count": n})))
 }
 

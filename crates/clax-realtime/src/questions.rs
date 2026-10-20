@@ -57,13 +57,16 @@ pub const MAX_POLLS: usize = 4;
 #[derive(Default)]
 pub struct QuestionWaiters {
     inner: Mutex<Inner>,
-    /// Notified whenever a hold starts or ends.
+    /// Notified whenever a hold or a park starts or ends.
     changed: Notify,
 }
 
 #[derive(Default)]
 struct Inner {
     held: HashMap<String, (Arc<Notify>, usize)>,
+    /// How many of each question's polls have read it and wait to be
+    /// woken ([`QuestionWaiters::park`]).
+    parked: HashMap<String, usize>,
     /// The generation of each question's pending grace timer; a poll
     /// holding the question, or a later timer, replaces or cancels it.
     armed: HashMap<String, u64>,
@@ -165,7 +168,23 @@ impl QuestionWaiters {
         self.lock().held.get(qid).map_or(0, |e| e.1)
     }
 
-    /// Notified whenever a hold starts or ends.
+    /// Counts a poll of `qid` as parked (it has read the question and
+    /// waits to be woken) until the guard drops.
+    pub fn park(self: &Arc<Self>, qid: &str) -> ParkGuard {
+        *self.lock().parked.entry(qid.to_string()).or_default() += 1;
+        self.changed.notify_waiters();
+        ParkGuard {
+            waiters: self.clone(),
+            qid: qid.to_string(),
+        }
+    }
+
+    /// How many polls of `qid` are parked ([`QuestionWaiters::park`]).
+    pub fn parked(&self, qid: &str) -> usize {
+        self.lock().parked.get(qid).copied().unwrap_or(0)
+    }
+
+    /// Notified whenever a hold or a park starts or ends.
     pub fn changed(&self) -> &Notify {
         &self.changed
     }
@@ -226,6 +245,27 @@ impl QuestionWaiters {
         }
         g.armed.remove(qid);
         !g.held.contains_key(qid)
+    }
+}
+
+/// A parked question poll ([`QuestionWaiters::park`]).
+pub struct ParkGuard {
+    waiters: Arc<QuestionWaiters>,
+    qid: String,
+}
+
+impl Drop for ParkGuard {
+    fn drop(&mut self) {
+        {
+            let mut g = self.waiters.lock();
+            if let Some(n) = g.parked.get_mut(&self.qid) {
+                *n -= 1;
+                if *n == 0 {
+                    g.parked.remove(&self.qid);
+                }
+            }
+        }
+        self.waiters.changed.notify_waiters();
     }
 }
 
