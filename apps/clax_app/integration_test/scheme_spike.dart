@@ -4,8 +4,9 @@
 // content origin of artifact `abcdefghjkmn`; both are answered from a Dart
 // table of pages through the native scheme host
 // (`dev.empathic.clax/scheme`), with no core. Each platform's test
-// (`scheme_spike_test.dart` on the Mac, `android_scheme_spike_test.dart`
-// on Android) asserts every value of the report with [expectIsolated].
+// (`scheme_spike_test.dart` on the Mac, `ios_scheme_spike_test.dart` on the
+// simulator, `android_scheme_spike_test.dart` on Android) asserts every
+// value of the report with [expectIsolated].
 import 'dart:convert';
 import 'dart:io';
 import 'dart:math';
@@ -37,7 +38,10 @@ class SpikeReport {
     required this.apiUnreadable,
     required this.frameChannelDropped,
     required this.shellFrameRefused,
-    required this.shellRequestUnnumbered,
+    required this.reloadKeptUnderRace,
+    required this.accessControlStripped,
+    required this.redirectRefused,
+    required this.otherShellPathRefused,
     this.notes = const {},
   });
 
@@ -70,13 +74,31 @@ class SpikeReport {
   final bool frameChannelDropped;
 
   /// The frame's `<iframe src="<shell>/">` loaded no shell document, and
-  /// the shell page's nonce was always its own load's.
+  /// the shell page's nonce was always one minted under its own load's
+  /// navigation number, pinned by the first one it presented.
   final bool shellFrameRefused;
 
-  /// The frame's requests for the shell page's own URL during a reload
-  /// carried no navigation number, or took the reload's on Apple and left
-  /// that load without a shell (spec §4.4, "What remains").
-  final bool shellRequestUnnumbered;
+  /// The shell reloaded while its frame asked for the shell page's own URL
+  /// without pause until it went (spec §4.4): the reload committed a shell
+  /// whose nonce was minted under the committed number and pinned the load;
+  /// no request with an `Origin` header took a number; every other request
+  /// for a shell document was refused; and on Apple, where the frame's
+  /// requests can take the number, at least one of them did, so the race
+  /// was run.
+  final bool reloadKeptUnderRace;
+
+  /// No `Access-Control-*` header the table sent reached a page: the shell's
+  /// own fetch of `/api/artifacts`, answered with
+  /// `Access-Control-Allow-Origin: *`, shows none.
+  final bool accessControlStripped;
+
+  /// A redirect the table answered (308 to the frame's own page) reached
+  /// the frame as the host's 502, never as a 3xx or its target.
+  final bool redirectRefused;
+
+  /// A main-frame navigation to the shell's host outside `/a/` was refused
+  /// by the host and never reached the table.
+  final bool otherShellPathRefused;
 
   /// What each value was read from, for the log.
   final Map<String, Object?> notes;
@@ -92,7 +114,10 @@ class SpikeReport {
     apiUnreadable: j['apiUnreadable']! as bool,
     frameChannelDropped: j['frameChannelDropped']! as bool,
     shellFrameRefused: j['shellFrameRefused']! as bool,
-    shellRequestUnnumbered: j['shellRequestUnnumbered']! as bool,
+    reloadKeptUnderRace: j['reloadKeptUnderRace']! as bool,
+    accessControlStripped: j['accessControlStripped']! as bool,
+    redirectRefused: j['redirectRefused']! as bool,
+    otherShellPathRefused: j['otherShellPathRefused']! as bool,
     notes: (j['notes'] as Map?)?.cast<String, Object?>() ?? const {},
   );
 
@@ -107,7 +132,10 @@ class SpikeReport {
     'apiUnreadable': apiUnreadable,
     'frameChannelDropped': frameChannelDropped,
     'shellFrameRefused': shellFrameRefused,
-    'shellRequestUnnumbered': shellRequestUnnumbered,
+    'reloadKeptUnderRace': reloadKeptUnderRace,
+    'accessControlStripped': accessControlStripped,
+    'redirectRefused': redirectRefused,
+    'otherShellPathRefused': otherShellPathRefused,
     'notes': notes,
   };
 }
@@ -141,14 +169,32 @@ void expectIsolated(SpikeReport r, AppOrigins origins) {
   expect(r.frameChannelDropped, isTrue, reason: "the frame's ClaxHost");
   expect(r.shellFrameRefused, isTrue, reason: 'the shell framed by a page');
   expect(
-    r.shellRequestUnnumbered,
+    r.reloadKeptUnderRace,
     isTrue,
-    reason: "the frame's requests for the shell during its reload",
+    reason: "the shell's reload while its frame asks for the shell's URL",
+  );
+  expect(r.accessControlStripped, isTrue, reason: 'Access-Control-* stripped');
+  expect(r.redirectRefused, isTrue, reason: 'a 3xx answered as 502');
+  expect(
+    r.otherShellPathRefused,
+    isTrue,
+    reason: 'a main-frame navigation to the shell host outside /a/',
   );
 }
 
-/// Opens a WebViewWidget on `origins.shell + '/spike.html'`, answered by
+/// The shell page's path: a shell document's, as the host allows a
+/// main-frame navigation to the shell's host only under `/a/`.
+const spikeShellPath = '/a/spike';
+
+/// Opens a WebViewWidget on `origins.shell + spikeShellPath`, answered by
 /// a Dart table of two pages (no core), and returns the report.
+///
+/// The navigation delegate is set again after the scheme host attaches,
+/// then the host is attached again, as the app's surface does after each
+/// `setNavigationDelegate`: on Apple the plugin's delegate hook keeps the
+/// host's navigation proxy in front of the new delegate (attaching an
+/// attached WebView changes nothing there), and on Android the second
+/// attach wraps the new client.
 Future<SpikeReport> runSpike(WidgetTester tester, AppOrigins origins) async {
   final spike = _Spike(origins);
   const channel = MethodChannel('dev.empathic.clax/scheme');
@@ -167,6 +213,11 @@ Future<SpikeReport> runSpike(WidgetTester tester, AppOrigins origins) async {
       'webViewId': id,
     });
     expect(attached, isTrue, reason: 'the scheme host attached to the WebView');
+    await controller.setNavigationDelegate(
+      NavigationDelegate(onPageFinished: spike.finished.add),
+    );
+    final again = await channel.invokeMethod<bool>('attach', {'webViewId': id});
+    expect(again, isTrue, reason: 'the scheme host attached again');
     await tester.pumpWidget(
       Directionality(
         textDirection: TextDirection.ltr,
@@ -188,12 +239,22 @@ Future<SpikeReport> runSpike(WidgetTester tester, AppOrigins origins) async {
 
 /// One request the table answered.
 class _Seen {
-  _Seen(this.url, this.mainFrame, this.navigation, this.status, this.phase);
+  _Seen(
+    this.url,
+    this.mainFrame,
+    this.navigation,
+    this.status,
+    this.phase,
+    this.origin,
+  );
   final Uri url;
   final bool mainFrame;
   final int? navigation;
   final int status;
   final int phase;
+
+  /// The request's `Origin` header, if it had one.
+  final String? origin;
   bool get numbered => navigation != null;
   Map<String, Object?> toJson() => {
     'url': '$url',
@@ -201,6 +262,7 @@ class _Seen {
     'navigation': navigation,
     'status': status,
     'phase': phase,
+    'origin': origin,
   };
 }
 
@@ -215,19 +277,30 @@ class _Spike {
   final String runToken = _token(20);
 
   /// What the pages are told to do: 1 write storage and probe, 2 read
-  /// storage back, 3 race the shell's own reload.
+  /// storage back, 3 race the shell's own reload, 4 navigate the main frame
+  /// to the shell's host outside `/a/`.
   int phase = 1;
 
   final List<_Seen> seen = [];
 
-  /// The nonce minted for each navigation number.
-  final Map<int, String> minted = {};
+  /// The nonces minted under each navigation number, one per shell
+  /// document answered under it (spec §4.4: on Apple a frame's request for
+  /// the shell's URL can take the number too).
+  final Map<int, List<String>> minted = {};
 
   /// Each `committed` the host reported: {url, navigation}.
   final List<Map<String, Object?>> commits = [];
 
-  /// The nonce of the shell's current load, taken at its commit.
-  String? loadNonce;
+  /// The nonces of the shell's current load, taken at its commit: those
+  /// minted under the committed number.
+  List<String> loadNonces = const [];
+
+  /// The nonce that pinned the current load: the first of [loadNonces]
+  /// the main frame presented after the commit.
+  String? pinned;
+
+  /// The pinned nonce, by the phase of the shell report that presented it.
+  final Map<int, String?> pins = {};
 
   /// Every ClaxHost message that reached Dart, as sent.
   final List<String> messages = [];
@@ -248,13 +321,16 @@ class _Spike {
       case 'request':
         _answer(a).ignore();
       case 'channel':
-        messages.add(a['message']! as String);
+        final text = a['message']! as String;
+        messages.add(text);
+        _pin(text);
       case 'committed':
         final n = a['navigation'] as int?;
         commits.add({'url': a['url'], 'navigation': n});
-        // A load takes the nonce minted under its own navigation's number,
-        // or none.
-        loadNonce = n == null ? null : minted[n];
+        // A load takes the nonces minted under its own navigation's number,
+        // or none; the first of them its main frame presents pins it.
+        loadNonces = n == null ? const [] : [...?minted[n]];
+        pinned = null;
       case 'dropped':
         commits.add({'dropped': a['navigation']});
       case 'refused':
@@ -263,46 +339,81 @@ class _Spike {
     return null;
   }
 
+  /// A shell report's nonce pins the current load if none has yet and it
+  /// is one of the load's (the Dart half of spec §4.4's pairing).
+  void _pin(String text) {
+    if (!text.startsWith('{')) return;
+    final m = (jsonDecode(text) as Map).cast<String, Object?>();
+    if (m['kind'] != 'shell') return;
+    final nonce = m['nonce'];
+    if (pinned == null && nonce is String && loadNonces.contains(nonce)) {
+      pinned = nonce;
+    }
+    pins[m['phase']! as int] = pinned;
+  }
+
   Future<void> _answer(Map<String, Object?> a) async {
     final url = Uri.parse(a['url']! as String);
     final navigation = a['navigation'] as int?;
-    final (status, type, body) = _page(url, navigation);
-    seen.add(_Seen(url, a['mainFrame'] == true, navigation, status, phase));
-    await const MethodChannel('dev.empathic.clax/scheme').invokeMethod('respond', {
+    final headers = (a['headers'] as Map?)?.cast<String, Object?>() ?? {};
+    final origin = headers.entries
+        .where((e) => e.key.toLowerCase() == 'origin')
+        .map((e) => '${e.value}')
+        .firstOrNull;
+    final (status, extra, type, body) = _page(url, navigation);
+    seen.add(
+      _Seen(url, a['mainFrame'] == true, navigation, status, phase, origin),
+    );
+    await const MethodChannel(
+      'dev.empathic.clax/scheme',
+    ).invokeMethod('respond', {
       'reqId': a['reqId'],
       'status': status,
-      'headers': {'Content-Type': type, 'Cache-Control': 'no-store'},
+      'headers': {'Content-Type': type, 'Cache-Control': 'no-store', ...extra},
       'body': Uint8List.fromList(utf8.encode(body)),
     });
   }
 
   /// The table: the shell page (a shell document, answered only under a
   /// navigation number, as spec §4.2 has the host answer one), an API
-  /// path that answers, and the frame's page.
-  (int, String, String) _page(Uri url, int? navigation) {
+  /// path that answers with the permissive CORS headers the daemon's
+  /// router sends, the frame's page, and a redirect to it.
+  (int, Map<String, String>, String, String) _page(Uri url, int? navigation) {
     if (url.host == Uri.parse(shell).host) {
       final p = url.path;
-      if (p == '/spike.html' || p == '/' || p == '' || p.startsWith('/a/')) {
-        if (navigation == null) return (403, 'text/plain', 'refused');
+      if (p == '/' || p == '' || p.startsWith('/a/')) {
+        if (navigation == null) return (403, const {}, 'text/plain', 'refused');
         final nonce = _token(32);
-        minted[navigation] = nonce;
-        return (200, 'text/html; charset=utf-8', _shellPage(nonce));
+        (minted[navigation] ??= []).add(nonce);
+        return (200, const {}, 'text/html; charset=utf-8', _shellPage(nonce));
       }
       if (p == '/api/artifacts') {
-        return (200, 'application/json', '{"artifacts":["secret"]}');
+        return (
+          200,
+          const {
+            'Access-Control-Allow-Origin': '*',
+            'Access-Control-Expose-Headers': '*',
+          },
+          'application/json',
+          '{"artifacts":["secret"]}',
+        );
       }
-      return (404, 'text/plain', 'not found');
+      return (404, const {}, 'text/plain', 'not found');
     }
     if (url.host == Uri.parse(content).host && url.path == '/page.html') {
-      return (200, 'text/html; charset=utf-8', _framePage());
+      return (200, const {}, 'text/html; charset=utf-8', _framePage());
     }
-    return (404, 'text/plain', 'not found');
+    if (url.host == Uri.parse(content).host && url.path == '/moved') {
+      return (308, {'Location': '$content/page.html'}, 'text/plain', 'moved');
+    }
+    return (404, const {}, 'text/plain', 'not found');
   }
 
   Map<String, Object?> get _config => {
     'run': runToken,
     'phase': phase,
     'shell': shell,
+    'shellPath': spikeShellPath,
     'content': content,
   };
 
@@ -320,16 +431,24 @@ function nonce() {
 }
 window.addEventListener('message', (e) => {
   if (e.source !== document.getElementById('f').contentWindow) return;
+  // The frame asks for the shell's URL without pause from here on: reload.
+  if (e.data === 'racing') { location.reload(); return; }
   post({kind: 'frame', origin: e.origin, data: e.data});
 });
 window.startRace = () => {
   document.getElementById('f').contentWindow.postMessage('race', cfg.content);
-  location.reload();
 };
 (async () => {
   const r = {kind: 'shell', phase: cfg.phase, origin: window.origin,
     subtle: !!(window.crypto && window.crypto.subtle),
     secure: window.isSecureContext, nonce: nonce()};
+  if (cfg.phase === 1) {
+    try {
+      const a = await fetch('/api/artifacts');
+      r.accessControl = [...a.headers.keys()]
+        .filter((k) => k.toLowerCase().startsWith('access-control-'));
+    } catch (e) { r.accessControlError = String(e); }
+  }
   if (cfg.phase === 1) Object.assign(r, await write(cfg.run));
   if (cfg.phase === 2) Object.assign(r, await read(cfg.run));
   post(r);
@@ -351,18 +470,37 @@ async function unreadable(url) {
     return {unreadable: true, how: String(e)};
   }
 }
+// The shell page's own URL, asked without pause from 'race' until this
+// document goes: four chains, each always with one request in flight, by
+// an image, a no-cors fetch and a cors fetch in turn (the last carries an
+// Origin header). The shell reloads once the first round is answered, so
+// requests are in flight from before the reload's policy decision to its
+// commit.
+let racing = false;
+window.addEventListener('pagehide', () => { racing = false; });
 window.addEventListener('message', (e) => {
-  if (e.origin !== cfg.shell || e.data !== 'race') return;
-  // The shell page's own URL, asked while the shell reloads: by fetch and
-  // by an image, a few times over, until this document goes.
-  let i = 0;
-  const fire = () => {
-    fetch(cfg.shell + '/spike.html').catch(() => {});
-    const img = new Image();
-    img.src = cfg.shell + '/spike.html';
-    if (++i < 8) setTimeout(fire, 0);
+  if (e.origin !== cfg.shell || e.data !== 'race' || racing) return;
+  racing = true;
+  const url = cfg.shell + cfg.shellPath;
+  const once = (i) => {
+    if (i % 3 === 0) {
+      return new Promise((res) => {
+        const img = new Image();
+        img.onload = img.onerror = () => res();
+        img.src = url;
+      });
+    }
+    const mode = i % 3 === 1 ? 'no-cors' : 'cors';
+    return fetch(url, {mode, cache: 'no-store'}).then(() => {}, () => {});
   };
-  fire();
+  let first = 0;
+  const chain = async (k) => {
+    for (let i = k; racing; i += 4) {
+      await once(i);
+      if (i === k && ++first === 4) parent.postMessage('racing', cfg.shell);
+    }
+  };
+  for (const k of [0, 1, 2, 3]) chain(k);
 });
 (async () => {
   const r = {phase: cfg.phase, origin: window.origin,
@@ -373,6 +511,11 @@ window.addEventListener('message', (e) => {
     catch (e) { r.parentDocumentThrew = true; r.parentDocumentError = String(e); }
     r.shellDoc = await unreadable(cfg.shell + '/a/x');
     r.api = await unreadable(cfg.shell + '/api/artifacts');
+    try {
+      const m = await fetch(cfg.content + '/moved');
+      r.redirect = {status: m.status, type: m.type,
+        body: (await m.text()).slice(0, 200)};
+    } catch (e) { r.redirect = {error: String(e)}; }
     r.probes = [];
     try {
       if (window.ClaxHost) {
@@ -414,7 +557,10 @@ window.addEventListener('message', (e) => {
 
   Map<String, Object?> _state() => {
     'phase': phase,
-    'seen': [for (final s in seen) s.toJson()],
+    'seenCount': seen.length,
+    'seenLast': [
+      for (final s in seen.skip(max(0, seen.length - 30))) s.toJson(),
+    ],
     'commits': commits,
     'messages': messages,
     'refused': refused,
@@ -431,9 +577,7 @@ window.addEventListener('message', (e) => {
       .firstOrNull;
 
   Map<String, Object?>? _frameReport(int p) => _reports
-      .where(
-        (r) => r['kind'] == 'frame' && (r['data'] as Map?)?['phase'] == p,
-      )
+      .where((r) => r['kind'] == 'frame' && (r['data'] as Map?)?['phase'] == p)
       .firstOrNull;
 
   bool get _shellFramedSettled =>
@@ -450,8 +594,13 @@ window.addEventListener('message', (e) => {
     WebViewController controller,
     MethodChannel channel,
   ) async {
+    final shellHost = Uri.parse(shell).host;
+    bool shellDocument(Uri u) =>
+        u.host == shellHost &&
+        (u.path == '/' || u.path == '' || u.path.startsWith('/a/'));
+
     // Phase 1: write each origin's storage; the frame probes the shell.
-    await controller.loadRequest(Uri.parse('$shell/spike.html'));
+    await controller.loadRequest(Uri.parse('$shell$spikeShellPath'));
     await _until(
       tester,
       'first load',
@@ -464,7 +613,7 @@ window.addEventListener('message', (e) => {
     final shell1 = _shellReport(1)!;
     final frame1msg = _frameReport(1)!;
     final frame1 = (frame1msg['data']! as Map).cast<String, Object?>();
-    final nonce1Ok = shell1['nonce'] != '' && shell1['nonce'] == loadNonce;
+    final nonce1Ok = shell1['nonce'] != '' && shell1['nonce'] == pins[1];
 
     // Phase 2: reload; each origin reads its storage back.
     phase = 2;
@@ -481,11 +630,11 @@ window.addEventListener('message', (e) => {
     final frame2 = (_frameReport(2)!['data']! as Map).cast<String, Object?>();
     final nonce2Ok =
         shell2['nonce'] != '' &&
-        shell2['nonce'] == loadNonce &&
+        shell2['nonce'] == pins[2] &&
         shell2['nonce'] != shell1['nonce'];
 
     // Phase 3: the shell reloads while its frame asks for the shell page's
-    // own URL.
+    // own URL without pause.
     phase = 3;
     final commitsBefore = commits.length;
     final seenBefore = seen.length;
@@ -502,54 +651,64 @@ window.addEventListener('message', (e) => {
         .skip(commitsBefore)
         .lastWhere((c) => c.containsKey('url'));
     final racedNumber = raced['navigation'] as int?;
-    final metaRaw = await controller.runJavaScriptReturningResult(
-      "(document.querySelector('meta[name=\"clax-nonce\"]') || {content: ''}).content",
-    );
-    final pageNonce = _jsString(metaRaw);
-    final bodyText = _jsString(
+    final pageNonce = _jsString(
       await controller.runJavaScriptReturningResult(
-        "document.body ? document.body.textContent : ''",
+        "(document.querySelector('meta[name=\"clax-nonce\"]') || {content: ''}).content",
       ),
     );
+    // A shell came back: its report, which pins the load.
+    if (pageNonce.isNotEmpty) {
+      await _until(
+        tester,
+        "the reloaded shell's report",
+        () => _shellReport(3) != null,
+      );
+    }
+    final shell3 = _shellReport(3) ?? const <String, Object?>{};
     final phase3 = seen
         .skip(seenBefore)
-        .where((s) => s.url.host == Uri.parse(shell).host)
+        .where((s) => shellDocument(s.url))
         .toList();
     final numbered3 = phase3.where((s) => s.numbered).toList();
-    final bool unnumbered;
-    if (pageNonce.isNotEmpty) {
-      // The shell came back: under its own navigation's nonce, every other
-      // request for it unnumbered and refused.
-      unnumbered =
-          racedNumber != null &&
-          pageNonce == minted[racedNumber] &&
-          numbered3.length == 1 &&
-          phase3.where((s) => !s.numbered).every((s) => s.status == 403);
-    } else {
-      // No shell: on Apple only, a frame's request took the reload's
-      // number (answered with the shell under it) and the reload's own
-      // request was refused (spec §4.4, "What remains"); the load
-      // committed under that number with the refusal in it, no shell.
-      unnumbered =
-          (Platform.isIOS || Platform.isMacOS) &&
-          bodyText == 'refused' &&
-          numbered3.length == 1 &&
-          numbered3.single.status == 200 &&
-          numbered3.single.navigation == racedNumber &&
-          phase3.where((s) => !s.numbered).every((s) => s.status == 403);
-    }
+    final apple = Platform.isIOS || Platform.isMacOS;
+    final reloadKept =
+        racedNumber != null &&
+        pageNonce.isNotEmpty &&
+        (minted[racedNumber] ?? const []).contains(pageNonce) &&
+        shell3['nonce'] == pageNonce &&
+        pins[3] == pageNonce &&
+        numbered3.every(
+          (s) => s.navigation == racedNumber && s.status == 200,
+        ) &&
+        phase3.where((s) => !s.numbered).every((s) => s.status == 403) &&
+        seen.where((s) => s.numbered).every((s) => s.origin == null) &&
+        // The frame's requests ran: at least one besides the reload's own.
+        phase3.length >= 2 &&
+        // On Apple, at least one of them took the reload's number;
+        // elsewhere only the main frame's own request does.
+        (apple ? numbered3.length >= 2 : numbered3.length == 1);
+
+    // Phase 4: the main frame to the shell's host outside /a/.
+    phase = 4;
+    final other = Uri.parse('$shell/_clax/spike');
+    bool reached(Uri u) =>
+        seen.any((s) => s.url.path == u.path && s.url.host == u.host);
+    bool refusedOf(Uri u) => refused.any((r) => Uri.parse(r).path == u.path);
+    await controller.loadRequest(other);
+    await _until(
+      tester,
+      'a main-frame navigation outside /a/',
+      () => refusedOf(other) || reached(other),
+    );
+    final otherRefused = refusedOf(other) && !reached(other);
 
     final shellDocNumbered = seen.every(
-      (s) =>
-          s.status != 200 ||
-          s.url.host != Uri.parse(shell).host ||
-          s.url.path == '/api/artifacts' ||
-          s.numbered,
+      (s) => s.status != 200 || !shellDocument(s.url) || s.numbered,
     );
     final framedShell = seen
         .where(
           (s) =>
-              s.url.host == Uri.parse(shell).host &&
+              s.url.host == shellHost &&
               (s.url.path == '/' || s.url.path == ''),
         )
         .toList();
@@ -560,6 +719,8 @@ window.addEventListener('message', (e) => {
       for (final m in [shell1, frame1, shell2, frame2])
         if (storageErr(m).isNotEmpty) storageErr(m),
     ];
+    final redirect =
+        (frame1['redirect'] as Map?)?.cast<String, Object?>() ?? {};
 
     return SpikeReport(
       shellOrigin: shell1['origin']! as String,
@@ -582,7 +743,14 @@ window.addEventListener('message', (e) => {
           framedShell.every((s) => !s.numbered && s.status == 403) &&
           nonce1Ok &&
           nonce2Ok,
-      shellRequestUnnumbered: unnumbered,
+      reloadKeptUnderRace: reloadKept,
+      accessControlStripped:
+          shell1['accessControl'] is List &&
+          (shell1['accessControl']! as List).isEmpty,
+      redirectRefused:
+          redirect['status'] == 502 &&
+          '${redirect['body']}'.contains('redirect'),
+      otherShellPathRefused: otherRefused,
       notes: {
         'shell1': shell1,
         'frame1': frame1,
@@ -596,9 +764,17 @@ window.addEventListener('message', (e) => {
         'race': {
           'committed': raced,
           'pageNonce': pageNonce,
-          'bodyText': bodyText,
-          'requests': [for (final s in phase3) s.toJson()],
+          'minted': minted[racedNumber],
+          'pinned': pins[3],
+          'requests': phase3.length,
+          'numbered': [for (final s in numbered3) s.toJson()],
+          'statuses': {
+            for (final st in phase3.map((s) => s.status).toSet())
+              '$st': phase3.where((s) => s.status == st).length,
+          },
+          'withOrigin': phase3.where((s) => s.origin != null).length,
         },
+        'other': {'refused': refusedOf(other), 'reached': reached(other)},
       },
     );
   }
