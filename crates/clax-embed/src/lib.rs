@@ -52,6 +52,15 @@ struct Registered {
     post: Arc<dyn Post>,
     /// The port given at open.
     port: i64,
+    /// Where the core's open events go, for a core: an open that
+    /// re-attaches to it moves them ([`reattach`]).
+    events: Option<Arc<Mutex<OpenPort>>>,
+}
+
+/// Where a core's open events are posted, and the latest one posted.
+struct OpenPort {
+    port: i64,
+    last: Option<Vec<u8>>,
 }
 
 /// The open cores by handle.
@@ -68,10 +77,44 @@ fn registered(core: u64) -> Option<Registered> {
 }
 
 /// Registers a handle and returns it.
-fn register(embed: Option<Embed>, post: Arc<dyn Post>, port: i64) -> u64 {
+fn register(
+    embed: Option<Embed>,
+    post: Arc<dyn Post>,
+    port: i64,
+    events: Option<Arc<Mutex<OpenPort>>>,
+) -> u64 {
     let handle = NEXT.fetch_add(1, Ordering::SeqCst);
-    cores().insert(handle, Registered { embed, post, port });
+    cores().insert(
+        handle,
+        Registered {
+            embed,
+            post,
+            port,
+            events,
+        },
+    );
     handle
+}
+
+/// The handle of the core this process holds `home` with, unless it is
+/// closing, its open events moved to `port`, which hears the latest one at
+/// once (`ready`, or where opening has got to).
+fn reattach(home: &std::path::Path, post: &dyn Post, port: i64) -> Option<u64> {
+    let key = crate::core::home_key(home);
+    let mut cores = cores();
+    let (handle, r) = cores.iter_mut().find(|(_, r)| {
+        r.embed
+            .as_ref()
+            .is_some_and(|e| e.home() == key && !e.closing())
+    })?;
+    let events = r.events.as_ref()?;
+    let mut to = events.lock().unwrap_or_else(|e| e.into_inner());
+    to.port = port;
+    r.port = port;
+    if let Some(last) = &to.last {
+        post_bytes(post, port, last);
+    }
+    Some(*handle)
 }
 
 /// `f`'s answer, or `on_panic`'s when `f` panics (and `last` when that
@@ -127,19 +170,32 @@ fn origins(home: &std::path::Path) -> Option<clax_http::state::EmbedOrigins> {
 
 /// [`ffi::clax_embed_open`]'s safe half: opens the core on the home at
 /// `home` (UTF-8), posting its [`OpenEvent`]s to `port` as JSON, and
-/// returns its handle; 0 when `home` is not UTF-8 or this process has that
-/// home open. An open that fails before a core exists (no readable
+/// returns its handle. A home this process holds already (an isolate that
+/// restarted without closing it) is not opened again: the open
+/// re-attaches to its core ([`reattach`]) and returns that core's handle.
+/// 0, with `failed` posted (`open_failed`, or `home_in_use` for a home
+/// whose core is closing), when `home` is not UTF-8 or that home's core
+/// is closing. An open that fails before a core exists (no readable
 /// `embed.json`: `no_origins`; a runtime that does not start or a panic:
 /// `internal`) posts `failed` and still returns a handle, which
 /// [`ffi_close`] closes as any other.
 pub fn ffi_open(home: &[u8], post: Arc<dyn Post>, port: i64) -> u64 {
+    let refused = |code: &str, message: &str| {
+        let failed = OpenEvent::Failed {
+            code: code.into(),
+            message: message.into(),
+            backup: None,
+        };
+        let _ = catch_unwind(AssertUnwindSafe(|| post_json(&*post, port, &failed)));
+        0
+    };
     let Ok(home) = std::str::from_utf8(home) else {
-        return 0;
+        return refused("open_failed", "the home's path is not UTF-8");
     };
     let home = std::path::PathBuf::from(home);
     let failed = |post: &Arc<dyn Post>, event: OpenEvent| {
         post_json(&**post, port, &event);
-        register(None, post.clone(), port)
+        register(None, post.clone(), port, None)
     };
     guarded(
         "clax_embed_open",
@@ -155,7 +211,8 @@ pub fn ffi_open(home: &[u8], post: Arc<dyn Post>, port: i64) -> u64 {
                     },
                 );
             };
-            let events = post.clone();
+            let events = Arc::new(Mutex::new(OpenPort { port, last: None }));
+            let (to, poster) = (events.clone(), post.clone());
             let opened = Embed::open(
                 OpenOptions {
                     log: Some(log::path(&home)),
@@ -163,12 +220,19 @@ pub fn ffi_open(home: &[u8], post: Arc<dyn Post>, port: i64) -> u64 {
                     origins,
                 },
                 Box::new(move |e| {
-                    post_json(&*events, port, &e);
+                    let bytes = serde_json::to_vec(&e).expect("an event serializes");
+                    let mut to = to.lock().unwrap_or_else(|e| e.into_inner());
+                    post_bytes(&*poster, to.port, &bytes);
+                    to.last = Some(bytes);
                 }),
             );
             match opened {
-                Ok(embed) => register(Some(embed), post.clone(), port),
-                Err(OpenError::HomeInUse | OpenError::NotUtf8) => 0,
+                Ok(embed) => register(Some(embed), post.clone(), port, Some(events)),
+                Err(OpenError::HomeInUse) => match reattach(&home, &*post, port) {
+                    Some(handle) => handle,
+                    None => refused("home_in_use", "this app is closing its core on this home"),
+                },
+                Err(OpenError::NotUtf8) => refused("open_failed", "the home's path is not UTF-8"),
                 Err(OpenError::Runtime(e)) => failed(
                     &post,
                     internal(format!("the core's runtime did not start: {e}")),
@@ -383,5 +447,38 @@ mod tests {
             "the call was not counted while its answer was posted"
         );
         assert!(answered < closed, "closed came before the answer");
+    }
+
+    #[test]
+    fn an_open_of_a_home_this_process_holds_reattaches_to_its_core() {
+        let dir = tempfile::tempdir().unwrap();
+        let home = home(dir.path());
+        let posts = Arc::new(Ordered::default());
+        let core = ffi_open(home.to_str().unwrap().as_bytes(), posts.clone(), 1);
+        posts.wait(1, "\"ready\"");
+        // An isolate that restarted without closing opens the home again.
+        let again = ffi_open(home.to_str().unwrap().as_bytes(), posts.clone(), 4);
+        assert_eq!(again, core, "the live core's handle");
+        posts.wait(4, "\"ready\"");
+        assert_eq!(ffi_call(again, &request("/api/artifacts"), 5, 1), 0);
+        posts.wait(5, "artifacts");
+        assert_eq!(ffi_close(again), 0);
+        let closed = posts.wait(4, "\"closed\"");
+        let on_old = posts
+            .posted
+            .lock()
+            .unwrap()
+            .iter()
+            .filter(|(p, b, _)| *p == 1 && String::from_utf8_lossy(b).contains("closed"))
+            .count();
+        assert_eq!(on_old, 0, "the old port hears nothing after the new open");
+        assert!(closed > 0);
+    }
+
+    #[test]
+    fn an_open_that_answers_0_still_posts_failed() {
+        let posts = Arc::new(Ordered::default());
+        assert_eq!(ffi_open(b"\xff\xfe", posts.clone(), 6), 0);
+        posts.wait(6, "\"failed\"");
     }
 }

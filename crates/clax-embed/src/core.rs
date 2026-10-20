@@ -133,6 +133,12 @@ fn panic_if(sh: &Shared, here: PanicAt) {
     }
 }
 
+/// A home's key in [`OPEN`]: its canonical path, or the path as given
+/// when it cannot be made canonical.
+pub(crate) fn home_key(home: &Path) -> PathBuf {
+    std::fs::canonicalize(home).unwrap_or_else(|_| home.to_path_buf())
+}
+
 /// The homes this process has open, by canonical path.
 static OPEN: LazyLock<Mutex<HashSet<PathBuf>>> = LazyLock::new(Default::default);
 
@@ -258,7 +264,7 @@ impl Embed {
         drain: Duration,
     ) -> Result<Embed, OpenError> {
         let _ = std::fs::create_dir_all(&opts.home);
-        let key = std::fs::canonicalize(&opts.home).unwrap_or_else(|_| opts.home.clone());
+        let key = home_key(&opts.home);
         if !lock(&OPEN).insert(key.clone()) {
             return Err(OpenError::HomeInUse);
         }
@@ -403,6 +409,16 @@ impl Embed {
         let sh = self.inner.shared.clone();
         sh.in_flight.send_modify(|n| *n += 1);
         Counted(sh)
+    }
+
+    /// The key of the home this core holds ([`home_key`]).
+    pub(crate) fn home(&self) -> &Path {
+        &self.inner.shared.key
+    }
+
+    /// Whether [`Embed::close`] was called.
+    pub(crate) fn closing(&self) -> bool {
+        self.inner.shared.closing.load(Ordering::SeqCst)
     }
 
     /// Tests: the calls counted in flight.

@@ -12,12 +12,17 @@ typedef int8_t (*ClaxPost)(int64_t port, Dart_CObject *message);
 // reads anything. A length may be 0 with a pointer that is not NULL.
 
 // Opens the core on the home at home[0..home_len] (UTF-8) and returns its
-// handle at once (never 0), or 0 when that home is open in this process
-// already, the path is not UTF-8, or `home` or `post` is NULL. The store
-// opens, backs up and migrates on the core's own threads; `port` hears
-// {"type":"ready"} or {"type":"failed","code":…,"message":…}, then
-// {"type":"closed"} after clax_embed_close. `post` is Dart's
-// NativeApi.postCObject.
+// handle at once (never 0). The store opens, backs up and migrates on the
+// core's own threads; `port` hears {"type":"ready"} or
+// {"type":"failed","code":…,"message":…}, then {"type":"closed"} after
+// clax_embed_close. A home this process has open already (the app's own
+// core, from an isolate that restarted without closing it) is not opened
+// again: the open re-attaches, returning that core's handle; its open
+// events go to `port` from then on, which hears the latest at once
+// ("ready", or where opening has got to). 0 when the path is not UTF-8
+// (`port` hears "failed" with code open_failed), that home's core is
+// closing (code home_in_use), or `home` or `post` is NULL (nothing is
+// posted). `post` is Dart's NativeApi.postCObject.
 uint64_t clax_embed_open(const uint8_t *home, size_t home_len,
                          ClaxPost post, int64_t port);
 

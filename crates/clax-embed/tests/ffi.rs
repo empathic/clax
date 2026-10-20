@@ -172,20 +172,24 @@ fn bad_handles_and_frames_are_refused_at_once() {
 }
 
 #[test]
-fn a_path_that_is_not_utf8_or_a_home_open_already_answers_0() {
+fn a_path_that_is_not_utf8_answers_0_and_a_home_open_already_its_handle() {
     let posts = Arc::new(Collector::default());
     assert_eq!(ffi_open(&[0xff, 0xfe], posts.clone(), 1), 0);
+    assert_eq!(posts.event(1, "failed")["code"], "open_failed");
 
     let dir = tempfile::tempdir().unwrap();
     let home = home(dir.path());
-    let core = ffi_open(home.to_str().unwrap().as_bytes(), posts.clone(), 1);
+    let core = ffi_open(home.to_str().unwrap().as_bytes(), posts.clone(), 2);
     assert_ne!(core, 0);
+    posts.event(2, "ready");
     assert_eq!(
         ffi_open(home.to_str().unwrap().as_bytes(), posts.clone(), 4),
-        0
+        core,
+        "an open of a home this process holds re-attaches"
     );
+    posts.event(4, "ready");
     assert_eq!(ffi_close(core), 0);
-    posts.event(1, "closed");
+    posts.event(4, "closed");
 }
 
 #[test]
