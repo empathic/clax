@@ -582,8 +582,9 @@ export function installHost(win: Window, ctl: ArtifactController): () => void {
     // The viewer's open pick, placed by the page like the threads' anchors.
     anchors: () => {
       const d = s().draft;
-      // A pick is of the version shown.
-      return d && picksAt(d) && d.anchor.file === s().file ? [{ id: d.pickId, anchor: d.anchor, sameVersion: true }] : [];
+      // As for threads: an area's fingerprint is skipped only on the version
+      // it was picked on, not after a follow to a newer one.
+      return d && picksAt(d) && d.anchor.file === s().file ? [{ id: d.pickId, anchor: d.anchor, sameVersion: d.version === ctl.shown() }] : [];
     },
     // The app's Send waits on the post the composer dropped: a fresh notice
     // each time tells it nothing was sent (on the web the composer's own

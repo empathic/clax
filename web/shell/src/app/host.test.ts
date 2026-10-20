@@ -1064,6 +1064,26 @@ describe("app mode's host channel", { timeout: MOUNT_TIMEOUT_MS }, () => {
     await waitFor(() => document.querySelector(".composer-quote")?.textContent === "“Delete run”", "the composer's words");
   });
 
+  it("a pick from the version shown before reloadLatest is sent to be placed as of another version", async () => {
+    const { view, frame, host } = await appView();
+    hello(frame, 1);
+    host.enterCommentMode();
+    gestureIn(frame);
+    const row = { kind: "element", selector: "body > div", quote: "Mon", prefix: null, suffix: null, html_hash: null, rect: null, custom_name: null, file: "index.html" };
+    fromFrame(frame.contentWindow!, { type: "clax:pick-start", pickId: "a1", version: 1, anchor: row });
+    await waitFor(() => ofType("state").at(-1)?.draft, "a draft");
+    latest = 2;
+    host.reloadLatest();
+    const next = await waitFor(() => { const f = view.root.querySelector<HTMLIFrameElement>("iframe.frame"); return f && f !== frame ? f : null; }, "the newer version's frame");
+    const posted = framePosts(next);
+    hello(next, 2);
+    expect(ofType("state").at(-1)?.draft).toBeTruthy();
+    const ask = () => posted.filter(m => m.type === "clax:resolve-anchors").at(-1) as { anchors: { anchor: unknown; sameVersion?: boolean }[] } | undefined;
+    await waitFor(() => ask()?.anchors.some(a => JSON.stringify(a.anchor) === JSON.stringify(row)), "the pick's anchor sent to be placed");
+    // Picked on v1, placed on v2: an area's fingerprint must still hold.
+    expect(ask()!.anchors.find(a => JSON.stringify(a.anchor) === JSON.stringify(row))!.sameVersion).toBe(false);
+  });
+
   it("places a pick's draft where the page resolves its anchor, offset into the shell's viewport, and never where the pick start says", async () => {
     const { frame, host } = await appView();
     hello(frame, 1);
