@@ -2062,9 +2062,13 @@ class _AppRootState extends State<AppRoot> with WidgetsBindingObserver {
     } on Object catch (e) {
       debugPrint('clax make: forgetting the stopped makes failed: $e');
     }
+    // The worker isolate's queue keeps its makes in the core; the file is
+    // the JSON import's then, and is left for it.
+    final local = _localQueue;
+    if (local == null) return;
     final left = await _s.pendingMake.takeEach();
     if (!mounted) return;
-    _localQueue?.recover(left);
+    local.recover(left);
   }
 
   /// The build view of make [s].

@@ -1202,6 +1202,22 @@ void main() {
       expect(wirings, hasLength(1), reason: 'started once');
     });
 
+    testWidgets('a make the last run kept is left for the import, not shown',
+        (tester) async {
+      // Seeded synchronously: real file futures do not settle in a widget
+      // test's body.
+      File('${dir.path}/pending-make.json')
+          .writeAsStringSync('{"request": "laps"}');
+      await pumpApp(tester, startQueue: starter());
+      await started(tester);
+      await settleFiles(tester);
+      expect(find.text('Interrupted'), findsNothing);
+      expect(
+        File('${dir.path}/pending-make.json').readAsStringSync(),
+        '{"request": "laps"}',
+      );
+    });
+
     testWidgets('its KeepAlive holds a background run, and the lifecycle '
         'reaches the worker', (tester) async {
       work.pausesRuns = true;
