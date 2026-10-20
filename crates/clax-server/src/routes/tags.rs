@@ -144,7 +144,7 @@ pub async fn create(
             )?;
             events.publish(Event::Tags {
                 artifact_id: None,
-                artifacts: vec![],
+                carriers: vec![],
             });
             Ok(tag)
         })
@@ -191,20 +191,10 @@ pub async fn update(
                     description: b.description,
                 },
             )?;
-            if let Some(b) = before.as_ref().filter(|b| **b != tag) {
-                // The artifacts carrying it show its name and colour.
-                let artifacts = if b.name != tag.name || b.colour != tag.colour {
-                    st.list_artifacts()?
-                        .into_iter()
-                        .filter(|a| a.tags.iter().any(|t| t.id == tag.id))
-                        .map(|a| a.id.as_str().to_string())
-                        .collect()
-                } else {
-                    vec![]
-                };
+            if before.as_ref() != Some(&tag) {
                 events.publish(Event::Tags {
                     artifact_id: None,
-                    artifacts,
+                    carriers: st.tag_carriers(&tag.id)?,
                 });
             }
             Ok(tag)
@@ -228,15 +218,16 @@ pub async fn delete(
     let events = s.events.clone();
     let carried = s
         .store_call(move |st| {
-            let carried = st.delete_tag(&audit, &id)?;
+            let carriers = st.delete_tag(&audit, &id)?;
+            let carried = carriers.len();
             events.publish(Event::Tags {
                 artifact_id: None,
-                artifacts: carried.clone(),
+                carriers,
             });
             Ok(carried)
         })
         .await?;
-    Ok(Json(json!({"deleted": true, "artifacts": carried.len()})))
+    Ok(Json(json!({"deleted": true, "artifacts": carried})))
 }
 
 /// `PUT /api/artifacts/<aid>/tags` body: the tags it carries after, each by
@@ -286,7 +277,7 @@ async fn edit_artifact(
             if changed {
                 events.publish(Event::Tags {
                     artifact_id: Some(aid.as_str().to_string()),
-                    artifacts: vec![],
+                    carriers: vec![],
                 });
             }
             Ok(Some((aid.as_str().to_string(), after.tags, changed)))

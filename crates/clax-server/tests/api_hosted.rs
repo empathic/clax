@@ -5788,3 +5788,81 @@ async fn a_tag_filter_matches_no_item_whose_text_is_withheld() {
         .await;
     assert_eq!((s, &v["marked"]), (200, &json!(0)), "{v}");
 }
+
+#[tokio::test]
+async fn a_members_page_hears_a_tag_it_carries_renamed_or_deleted() {
+    let site = Site::new().await;
+    let owner = site.owner().await;
+    let (s, v) = site
+        .post(&owner, "/api/tags", json!({"name": "draft"}))
+        .await;
+    assert_eq!(s, 201, "{v}");
+    let tag = v["tag"]["id"].as_str().unwrap().to_string();
+    // Sam reads his own artifacts alone: his stream holds no gallery.
+    let sam = site.member(&owner, "Sam").await;
+    let (s, v) = site
+        .post(
+            &sam,
+            "/api/artifacts:new",
+            json!({"title": "Sam's", "brief": "a page"}),
+        )
+        .await;
+    assert_eq!(s, 201, "{v}");
+    let mine = v["artifact"]["id"].as_str().unwrap().to_string();
+    let (s, v) = site
+        .send(
+            &sam,
+            reqwest::Method::PUT,
+            &format!("/api/artifacts/{mine}/tags"),
+            json!({"tags": ["draft"]}),
+        )
+        .await;
+    assert_eq!(s, 200, "{v}");
+    let res = site
+        .req(&sam, reqwest::Method::GET, "/api/stream")
+        .send()
+        .await
+        .unwrap();
+    let mut events = clax_testkit::EventReader::from_response(res);
+    let (_, ready) = events.next().await;
+    let stream = ready["stream"].as_str().unwrap().to_string();
+    let (s, v) = site
+        .post(
+            &sam,
+            &format!("/api/stream/{stream}"),
+            json!({"subscribe": ["gallery", format!("artifact:{mine}")]}),
+        )
+        .await;
+    assert_eq!(s, 200, "{v}");
+    assert_eq!(
+        v["topics"],
+        json!([format!("artifact:{mine}")]),
+        "the gate keeps the gallery from him: {v}"
+    );
+    let (s, v) = site
+        .send(
+            &owner,
+            reqwest::Method::PATCH,
+            &format!("/api/tags/{tag}"),
+            json!({"name": "Draft review"}),
+        )
+        .await;
+    assert_eq!(s, 200, "{v}");
+    let ev = events.next_named("tags").await;
+    assert_eq!(
+        (&ev["topic"], &ev["artifact_id"]),
+        (&json!(format!("artifact:{mine}")), &json!(mine)),
+        "{ev}"
+    );
+    let (s, v) = site
+        .send(
+            &owner,
+            reqwest::Method::DELETE,
+            &format!("/api/tags/{tag}"),
+            json!({}),
+        )
+        .await;
+    assert_eq!((s, &v["artifacts"]), (200, &json!(1)), "{v}");
+    let ev = events.next_named("tags").await;
+    assert_eq!(ev["artifact_id"], json!(mine), "{ev}");
+}

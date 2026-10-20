@@ -5177,13 +5177,14 @@ event's data names its `topic`. Events carry what changed:
   On `artifact:<aid>`, `"by_page": true` is added when the page published it
   through the `artifact` capability.
 - `artifact_deleted`: `{topic, artifact_id}`.
-- `tags`: `{topic, artifact_id}`: the tags artifact `artifact_id` carries
-  changed (on `gallery` and `artifact:<aid>`), or, with `artifact_id:
-  null`, the list itself (a tag made, renamed, recoloured or deleted: on
-  `gallery`, and on the `artifact:<aid>` topic of each artifact carrying
-  a tag renamed, recoloured or deleted). It names no tag: refetch `GET
-  /api/tags`, and the artifact (`GET /api/artifacts?artifact=<aid>`) or
-  the gallery. `/api/events` does not carry it.
+- `tags`: `{type, topic, artifact_id}`: the tags artifact `artifact_id`
+  carries changed (on `gallery` and `artifact:<aid>`), or the list itself
+  changed (a tag made, renamed, recoloured or deleted): on `gallery` with
+  `artifact_id: null`, and on the topic of each artifact carrying the tag
+  renamed, recoloured or deleted, naming that artifact, so a page whose
+  stream holds no gallery hears it too. It names no tag: refetch `GET
+  /api/tags`, and the artifact (`GET /api/artifacts?artifact=<aid>`) or the
+  gallery. `/api/events` does not carry it.
 - `thread` on `artifact:<aid>`: `{topic, artifact_id, thread}`, where
   `thread` is the thread view (as `GET /api/artifacts/<aid>/threads/<tid>`
   answers it without the token, and with no `feedback_state`: each reader

@@ -199,16 +199,15 @@ pub enum Event {
     /// (`Some`), or the list itself (`None`: a tag made, renamed,
     /// recoloured or deleted, which every artifact carrying it shows).
     /// Clients refetch: `GET /api/tags`, and the gallery's artifacts or
-    /// the one artifact. The `gallery` topic carries it, and an artifact's
-    /// own topic when it names one, or when it carries the tag a change to
-    /// the list renamed, recoloured or deleted (`artifacts`); `/api/events`
-    /// never does.
+    /// the one artifact. The `gallery` topic carries it, and the topic of
+    /// the artifact it names or of each of `carriers`, there naming that
+    /// artifact; `/api/events` never does.
     Tags {
         artifact_id: Option<String>,
-        /// With `artifact_id` `None`: the artifacts carrying the tag the
-        /// change touched; never serialised.
+        /// A list change's artifacts that carry (or carried) the tag; never
+        /// serialised.
         #[serde(skip)]
-        artifacts: Vec<String>,
+        carriers: Vec<String>,
     },
 }
 
@@ -540,7 +539,7 @@ mod tests {
             },
             Event::Tags {
                 artifact_id: None,
-                artifacts: vec![],
+                carriers: vec![],
             },
         ] {
             assert_eq!(serde_json::to_value(&ev).unwrap()["type"], ev.name());

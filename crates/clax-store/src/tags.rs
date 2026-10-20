@@ -79,6 +79,16 @@ fn names_list(all: &[Tag]) -> String {
     }
 }
 
+/// The live artifacts on `c` that carry tag `id`, by ID.
+fn carriers_in(c: &rusqlite::Connection, id: &str) -> Result<Vec<String>> {
+    let mut st = c.prepare_cached(
+        "SELECT x.artifact_id FROM artifact_tags x JOIN artifacts a ON a.id = x.artifact_id
+          WHERE x.tag_id = ?1 AND a.deleted_at IS NULL ORDER BY x.artifact_id",
+    )?;
+    let rows = st.query_map(params![id], |r| r.get::<_, String>(0))?;
+    Ok(rows.collect::<rusqlite::Result<Vec<_>>>()?)
+}
+
 /// Every tag on `c`, sorted by name as names are compared.
 fn all_tags(c: &rusqlite::Connection) -> Result<Vec<Tag>> {
     let mut st = c.prepare_cached(&format!("{SELECT} ORDER BY fold, id"))?;
@@ -271,6 +281,14 @@ impl Store {
         })
     }
 
+    /// The live artifacts that carry tag `id`, by ID.
+    ///
+    /// # Errors
+    /// The store's.
+    pub fn tag_carriers(&self, id: &str) -> Result<Vec<String>> {
+        self.with_read(|c| carriers_in(c, id))
+    }
+
     /// Deletes tag `id` and removes it from every artifact, recorded as
     /// `tag.delete` under `ctx` with its name and how many live artifacts
     /// carried it (`artifacts`). Returns those artifacts' IDs.
@@ -285,13 +303,7 @@ impl Store {
                 })
                 .optional()?
                 .ok_or(CoreError::NotFound)?;
-            let mut st = tx.prepare_cached(
-                "SELECT x.artifact_id FROM artifact_tags x JOIN artifacts a ON a.id = x.artifact_id
-                  WHERE x.tag_id = ?1 AND a.deleted_at IS NULL ORDER BY x.artifact_id",
-            )?;
-            let carried = st
-                .query_map(params![id], |r| r.get::<_, String>(0))?
-                .collect::<rusqlite::Result<Vec<_>>>()?;
+            let carried = carriers_in(tx, id)?;
             tx.execute("DELETE FROM artifact_tags WHERE tag_id = ?1", params![id])?;
             tx.execute("DELETE FROM tags WHERE id = ?1", params![id])?;
             let rec = AuditRecord::new(AuditKind::TagDelete, self.now())
@@ -571,6 +583,7 @@ mod tests {
             )
             .unwrap();
         assert_eq!(after.id, t.id);
+        assert_eq!(st.tag_carriers(&t.id).unwrap(), vec![a.to_string()]);
         let got = st.get_artifact(&a).unwrap().unwrap().tags;
         assert_eq!(
             got,

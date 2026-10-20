@@ -731,14 +731,12 @@ fn routes_loud(ev: &Event) -> Vec<(Chan, Gate)> {
         Event::People { .. } => vec![(Chan::People, Gate::Any)],
         // Tag names are the owner's, shown with every artifact anyone sees;
         // the event carries no name, only what to refetch.
-        // A change to the list reaches the artifacts carrying the tag it
-        // touched, which show its name and colour.
         Event::Tags {
             artifact_id,
-            artifacts,
+            carriers,
         } => artifact_id
             .iter()
-            .chain(artifacts)
+            .chain(carriers)
             .map(|a| (Chan::Artifact(a.clone()), Gate::Any))
             .chain([(Chan::Gallery, Gate::Any)])
             .collect(),
@@ -884,6 +882,10 @@ fn project(
                 return None;
             }
             json!({"topic": topic, "artifact_id": artifact_id, "people": changed, "gone": gone})
+        }
+        // On an artifact's topic, a list change names that artifact.
+        (Event::Tags { .. }, Chan::Artifact(a) | Chan::ArtifactQuiet(a)) => {
+            json!({"topic": topic, "type": "tags", "artifact_id": a})
         }
         _ => with_topic(topic, serde_json::to_value(ev).ok()?),
     };
@@ -2836,11 +2838,11 @@ mod tests {
         .unwrap();
         hub.dispatch(&Event::Tags {
             artifact_id: Some(A.into()),
-            artifacts: vec![],
+            carriers: vec![],
         });
         hub.dispatch(&Event::Tags {
             artifact_id: None,
-            artifacts: vec![],
+            carriers: vec![],
         });
         let got = drain(&mut g);
         assert_eq!(got.len(), 2, "{got:?}");
@@ -2852,20 +2854,27 @@ mod tests {
         );
         assert!(got[1].1.contains(r#""artifact_id":null"#), "{}", got[1].1);
         let got = drain(&mut a);
-        assert_eq!(got.len(), 1, "the list's change is the gallery's: {got:?}");
+        assert_eq!(got.len(), 1, "a list change with no carrier: {got:?}");
         assert!(got[0].1.contains(r#""topic":"artifact:"#), "{}", got[0].1);
         assert!(drain(&mut other).is_empty());
-        // A rename, recolour or delete also reaches the artifacts carrying
-        // the tag, naming none of them.
+        // A list change reaches each carrier's topic, naming it there, so a
+        // page whose stream holds no gallery (a hosted member who reads
+        // only some artifacts) refetches too.
         hub.dispatch(&Event::Tags {
             artifact_id: None,
-            artifacts: vec![A.into()],
+            carriers: vec![A.into()],
         });
-        assert_eq!(drain(&mut g).len(), 1);
         let got = drain(&mut a);
         assert_eq!(got.len(), 1, "{got:?}");
+        assert!(got[0].1.starts_with("event: tags\n"), "{}", got[0].1);
+        assert!(
+            got[0].1.contains(&format!(r#""artifact_id":"{A}""#)),
+            "{}",
+            got[0].1
+        );
+        let got = drain(&mut g);
+        assert_eq!(got.len(), 1, "{got:?}");
         assert!(got[0].1.contains(r#""artifact_id":null"#), "{}", got[0].1);
-        assert!(!got[0].1.contains("artifacts"), "{}", got[0].1);
         assert!(drain(&mut other).is_empty());
     }
 
