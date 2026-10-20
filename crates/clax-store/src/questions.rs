@@ -984,18 +984,8 @@ impl Store {
                     params![qid, now],
                 )?;
             }
-            let outcome = match (status, answers.as_deref()) {
-                (Status::Answered, Some(a)) => Some(super::jobs::JobAnswer::Answered(
-                    serde_json::from_str(a).map_err(|e| {
-                        CoreError::Db(rusqlite::Error::ToSqlConversionFailure(Box::new(e)))
-                    })?,
-                )),
-                (Status::Declined, _) => Some(super::jobs::JobAnswer::Declined),
-                (Status::Withdrawn, _) => Some(super::jobs::JobAnswer::Withdrawn),
-                // Released waits for the terminal's answer.
-                _ => None,
-            };
-            if let Some(outcome) = outcome {
+            let outcome = super::jobs::JobAnswer::of(status.as_str(), answers.clone())?;
+            if outcome != super::jobs::JobAnswer::Pending {
                 self.close_job_question_tx(tx, qid, &outcome)?;
             }
             let (sid, aid) = (&q.session_id, q.artifact_id.as_deref());

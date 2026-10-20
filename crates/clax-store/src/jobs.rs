@@ -211,6 +211,26 @@ impl JobAnswer {
         }
     }
 
+    /// The outcome of a question whose `questions.status` is `status`,
+    /// with `answers_json` `answers`: [`JobAnswer::Pending`] while it is
+    /// open (or handed to the terminal, which only a hook question is).
+    pub(crate) fn of(status: &str, answers: Option<String>) -> clax_core::Result<JobAnswer> {
+        Ok(match (status, answers) {
+            ("answered", Some(a)) => JobAnswer::Answered(json(a)?),
+            ("declined", _) => JobAnswer::Declined,
+            ("withdrawn", _) => JobAnswer::Withdrawn,
+            ("open" | "released", _) => JobAnswer::Pending,
+            (s, _) => {
+                return Err(rusqlite::Error::FromSqlConversionFailure(
+                    0,
+                    rusqlite::types::Type::Text,
+                    format!("no question status {s} with those answers").into(),
+                )
+                .into());
+            }
+        })
+    }
+
     /// Read back from its columns.
     fn read(outcome: Option<String>, answers: Option<String>) -> rusqlite::Result<JobAnswer> {
         Ok(match (outcome.as_deref(), answers) {
@@ -664,9 +684,11 @@ impl Store {
         })
     }
 
-    /// Records a question the job asked and, when it is `running`, moves
-    /// it to `waiting` ([`may_move`]), in one transaction. Recording a
-    /// question the job already asked changes nothing.
+    /// Records a question the job asked and, when it is `running` and the
+    /// question is not closed, moves it to `waiting` ([`may_move`]), in
+    /// one transaction that reads the question: one already closed has
+    /// its outcome stored at once, and the job keeps its state. Recording
+    /// a question the job already asked changes nothing.
     ///
     /// # Errors
     /// [`JobError::NotFound`]; [`JobError::Moved`] when the job is final;
@@ -685,25 +707,39 @@ impl Store {
             if asked {
                 return Ok(row);
             }
-            let (there, other): (bool, Option<String>) = tx.query_row(
-                "SELECT EXISTS (SELECT 1 FROM questions WHERE id = ?1 AND source = 'ask'),
-                        (SELECT job_id FROM job_questions WHERE question_id = ?1)",
-                params![question],
-                |r| Ok((r.get(0)?, r.get(1)?)),
-            )?;
-            if !there || other.is_some() {
-                return Err(CoreError::invalid(
-                    "invalid_question",
-                    match other {
-                        Some(job) => format!("question {question} is job {job}'s"),
-                        None => format!("no question {question} of the ask tool"),
-                    },
+            // The question as this transaction sees it: a close that
+            // landed before this call is stored now, not waited for.
+            let asked: Option<(String, Option<String>, Option<String>)> = tx
+                .query_row(
+                    "SELECT q.status, q.answers_json,
+                            (SELECT job_id FROM job_questions WHERE question_id = q.id)
+                     FROM questions q WHERE q.id = ?1 AND q.source = 'ask'",
+                    params![question],
+                    |r| Ok((r.get(0)?, r.get(1)?, r.get(2)?)),
                 )
-                .into());
-            }
+                .optional()?;
+            let outcome = match asked {
+                Some((status, answers, None)) => JobAnswer::of(&status, answers)?,
+                Some((_, _, Some(job))) => {
+                    return Err(CoreError::invalid(
+                        "invalid_question",
+                        format!("question {question} is job {job}'s"),
+                    )
+                    .into());
+                }
+                None => {
+                    return Err(CoreError::invalid(
+                        "invalid_question",
+                        format!("no question {question} of the ask tool"),
+                    )
+                    .into());
+                }
+            };
+            let (outcome, answers) = outcome.columns();
             tx.execute(
-                "INSERT INTO job_questions (job_id, question_id) VALUES (?1, ?2)",
-                params![id, question],
+                "INSERT INTO job_questions (job_id, question_id, outcome, answers_json)
+                 VALUES (?1, ?2, ?3, ?4)",
+                params![id, question, outcome, answers],
             )?;
             let state = moving(tx, &row, Move::Ask)?;
             tx.execute(
@@ -1470,6 +1506,38 @@ mod tests {
         let full = st.job("j1").unwrap().unwrap();
         assert_eq!((full.job.state, full.job.rev), (JobState::Running, 4));
         assert_eq!(full.questions[0].answer, JobAnswer::Withdrawn);
+    }
+
+    #[test]
+    fn a_question_closed_before_it_is_recorded_is_stored_at_once() {
+        let (_d, st) = store();
+        let (q1, q2) = (question(&st), question(&st));
+        let before = running(&st, "j1");
+        answer(&st, &q1);
+        let asked = st.ask_job_question("j1", &q1).unwrap();
+        assert_eq!(
+            (asked.state, asked.rev),
+            (JobState::Running, before.rev + 1)
+        );
+        let full = st.job("j1").unwrap().unwrap();
+        let JobAnswer::Answered(stored) = &full.questions[0].answer else {
+            panic!("expected answers, got {:?}", full.questions[0].answer)
+        };
+        assert_eq!(stored[0]["selected"], json!(["A"]));
+        // A paused job's withdrawn question is stored the same way.
+        let paused = move_to(&st, "j1", JobState::Paused).unwrap();
+        st.close_question(DAEMON, &q2, Close::Withdraw).unwrap();
+        let asked = st.ask_job_question("j1", &q2).unwrap();
+        assert_eq!((asked.state, asked.rev), (JobState::Paused, paused.rev + 1));
+        assert_eq!(
+            st.job("j1").unwrap().unwrap().questions[1].answer,
+            JobAnswer::Withdrawn
+        );
+        // Resumed, it runs: it waits on nothing.
+        assert_eq!(
+            move_to(&st, "j1", JobState::Running).unwrap().state,
+            JobState::Running
+        );
     }
 
     #[test]
