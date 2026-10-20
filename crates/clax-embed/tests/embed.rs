@@ -267,6 +267,43 @@ async fn the_shell_document_and_its_files_answer_a_shell_page_frame_as_the_owner
     embed.close();
 }
 
+#[tokio::test]
+async fn what_a_page_includes_from_the_shells_host_answers_with_no_credential() {
+    let dir = tempfile::tempdir().unwrap();
+    let (embed, _rx) = open(dir.path());
+    let id = publish(&embed, "<title>t</title>hi", None).await;
+    let boundary = "clax-test-boundary";
+    let mut form = format!(
+        "--{boundary}\r\ncontent-disposition: form-data; name=\"file\"; filename=\"a.png\"\r\ncontent-type: image/png\r\n\r\n"
+    )
+    .into_bytes();
+    form.extend_from_slice(&[137, 80, 78, 71]);
+    form.extend_from_slice(format!("\r\n--{boundary}--\r\n").as_bytes());
+    let mut h = head("POST", &format!("/api/artifacts/{id}/assets"), As::Owner);
+    h.headers.push((
+        "content-type".into(),
+        format!("multipart/form-data; boundary={boundary}"),
+    ));
+    let (res, body) = call(&embed, h, &form).await;
+    assert_eq!(res.status, 201, "{}", String::from_utf8_lossy(&body));
+    let asset: Value = serde_json::from_slice(&body).unwrap();
+    let blob = asset["url"].as_str().unwrap().to_string();
+
+    // `<script src="clax://app/c/…">` and `<img src="clax://app/_blob/…">`
+    // in a page: shell-page frames, asked for as no one, which these
+    // routes answer as they do on the daemon.
+    for path in [format!("/c/{id}/v/1/"), blob] {
+        let (res, body) = call(&embed, head("GET", &path, As::ShellPage), b"").await;
+        assert_eq!(
+            res.status,
+            200,
+            "{path}: {}",
+            String::from_utf8_lossy(&body)
+        );
+    }
+    embed.close();
+}
+
 /// A multipart body creating a thread on version 1, as a browser sends it.
 fn thread_form(body: &str) -> (String, Vec<u8>) {
     let boundary = "clax-test-boundary";

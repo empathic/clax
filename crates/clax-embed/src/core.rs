@@ -597,11 +597,19 @@ const PAGE_HEADERS: [&str; 5] = [
     "service-worker",
 ];
 
+/// Whether `path` asks for the shell document, `/a/…`: the one path a
+/// shell-page frame is asked for as the owner.
+fn is_shell_document(path: &str) -> bool {
+    path.split(['?', '#'])
+        .next()
+        .is_some_and(|p| p.starts_with("/a/"))
+}
+
 /// The router's request for `head`: its headers but those the core sets
 /// (an owner frame's all; a page frame's only [`PAGE_HEADERS`]), the
 /// `Host` and credential for who it speaks as (an owner frame the token, a
-/// shell-page frame the owner cookie, a content frame none), and a
-/// loopback peer.
+/// shell-page frame for the shell document the owner cookie, any other
+/// page frame none), and a loopback peer.
 pub(crate) fn request(
     head: &RequestHead,
     body: Bytes,
@@ -631,11 +639,14 @@ pub(crate) fn request(
     if owner && !authorized {
         b = b.header("authorization", format!("Bearer {token}"));
     }
-    // The host sends a shell-page frame only for the shell origin's
-    // main-frame navigation and its subresources (spec §4.2), and nothing
-    // else reaches the core: it is the owner's browser, as the daemon
-    // app's WebView was with its key cookie. A content frame never is.
-    if head.as_ == As::ShellPage {
+    // Any frame of the WebView can make a request to the shell's host (a
+    // page's `<script src>`, `<img src>` or fetch included), so a
+    // shell-page frame is the owner's browser only for the shell document,
+    // `/a/…`, which the host answers to the main frame's navigation alone
+    // (spec §4.2, §4.3). The rest it reaches (`/_clax/`, `/c/`, `/_blob/`)
+    // answers without a credential and is asked for with none. A content
+    // frame never carries one.
+    if head.as_ == As::ShellPage && is_shell_document(&head.path) {
         b = b.header(
             "cookie",
             format!(
@@ -1022,8 +1033,8 @@ mod tests {
             ("authorization", "Bearer forged"),
             ("host", "elsewhere"),
         ];
-        for as_ in [As::Content, As::ShellPage] {
-            let mut h = head("GET", "/v/1/", as_, Some("7q3k9mzx2b4t"));
+        for (as_, path) in [(As::Content, "/v/1/"), (As::ShellPage, "/a/7q3k9mzx2b4t")] {
+            let mut h = head("GET", path, as_, Some("7q3k9mzx2b4t"));
             h.headers = sent
                 .iter()
                 .map(|(k, v)| (k.to_string(), v.to_string()))
@@ -1053,6 +1064,33 @@ mod tests {
             assert_eq!(names, want, "{as_:?}");
             assert_ne!(req.headers()["host"], "elsewhere");
         }
+    }
+
+    #[test]
+    fn only_the_shell_document_is_asked_for_as_the_owner() {
+        // What a page can make the WebView ask of the shell's host, by
+        // `<script src>`, `<img src>` or a fetch, reaches the core as a
+        // shell-page frame too: none of it carries a credential.
+        for path in [
+            "/c/7q3k9mzx2b4t/v/1/app.js",
+            "/_blob/7q3k9mzx2b4t/01ARZ3NDEKTSV4RRFFQ69G5FAV",
+            "/_blob/01ARZ3NDEKTSV4RRFFQ69G5FAV",
+            "/_clax/shell/app.js",
+        ] {
+            let req = request(&head("GET", path, As::ShellPage, None), Bytes::new(), "t").unwrap();
+            assert!(req.headers().get("cookie").is_none(), "{path}");
+            assert!(req.headers().get("authorization").is_none(), "{path}");
+        }
+        let req = request(
+            &head("GET", "/a/7q3k9mzx2b4t?app=1", As::ShellPage, None),
+            Bytes::new(),
+            "t",
+        )
+        .unwrap();
+        assert!(
+            req.headers().get("cookie").is_some(),
+            "the shell document's"
+        );
     }
 
     #[test]
