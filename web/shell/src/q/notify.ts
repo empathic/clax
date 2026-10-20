@@ -47,7 +47,7 @@ export class Notifier {
     private readonly mark: (id: string) => unknown = id => markInbox(id, true).catch(() => {}),
   ) {
     this.shown = new Map();
-    // A reply's notification shows its text without Markdown syntax once the module is here.
+    // A reply's or a question's notification shows its text without Markdown syntax once the module is here.
     void loadMarkdown();
   }
 

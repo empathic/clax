@@ -2,7 +2,7 @@
 
 Clax is a local server for HTML artifacts that agents publish. It stores every version of each artifact and serves a gallery and viewer in your browser, where people comment on a page and send comments back to the agent that published it.
 
-Comments and agents' replies are Markdown, with GitHub's tables, strikethrough, task lists and bare links, and shown rendered in the browser; images show as links and HTML as text, and a link opens only to an `http:`, `https:` or `mailto:` address (`docs/contract.md`, "Comments and feedback").
+Comments and agents' replies are Markdown, with GitHub's tables, strikethrough, task lists and bare links, and shown rendered in the browser; so is the text of an agent's question (its previews stay verbatim in monospace). Images show as links and HTML as text, and a link opens only to an `http:`, `https:` or `mailto:` address (`docs/contract.md`, "Comments and feedback").
 
 ## Prerequisites
 

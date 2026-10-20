@@ -367,4 +367,9 @@ describe("plain", () => {
     const item = { id: "i", seq: 1, kind: "reply", reply: { body: "**Fixed** in `v4`:\n\n- the [header](https://example.com)" } } as unknown as InboxItem;
     expect(itemText(item)).toBe("Fixed in v4: the header (https://example.com)");
   });
+
+  it("is what the inbox's one-line text shows for an unanswered question", () => {
+    const item = { id: "i", seq: 1, kind: "question", question: { questions: [{ question: "Use **`grid`** or [flex](https://example.com)?", header: "Layout", options: [] }], answers: null } } as unknown as InboxItem;
+    expect(itemText(item)).toBe("Use grid or flex (https://example.com)?");
+  });
 });

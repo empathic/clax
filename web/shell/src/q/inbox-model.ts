@@ -92,14 +92,14 @@ const answersText = (q: NonNullable<InboxItem["question"]>): string | null =>
 
 /** An item's text on one line: the reply's body as text (`plainText`), the version's note, the
  * new artifact's description, the answers to a question (else its first
- * question), what an approval request holds, a connecting machine's key,
+ * question, as text), what an approval request holds, a connecting machine's key,
  * the finished work's message, or what an ended agent's end cleaned up;
  * "" when it has none. */
 export function itemText(i: InboxItem): string {
   const t = i.kind === "reply" ? (i.reply?.body ? plainText(i.reply.body) : null)
     : i.kind === "version" ? i.version?.note
     : i.kind === "published" ? i.published?.description
-    : i.kind === "question" ? (i.question && answersText(i.question)) ?? i.question?.questions[0]?.question
+    : i.kind === "question" ? (i.question && answersText(i.question)) ?? (q => q && plainText(q))(i.question?.questions[0]?.question)
     : i.kind === "approval" ? ((a => a && heldText(i, a))(approvalOf(i)))
     : i.kind === "connection" ? (i.connection?.client.key ? `Key ${i.connection.client.key}` : null)
     : i.kind === "finished" ? i.work?.message

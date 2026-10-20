@@ -29,7 +29,7 @@
     grouped?: boolean;
   };
   const p: Props = $props();
-  // A reply's text shows its Markdown syntax taken away once the module is here.
+  // A reply's or a question's text shows its Markdown syntax taken away once the module is here.
   void loadMarkdown();
   const title = $derived(itemTitle(p.item, p.others ?? [], { page: !p.grouped }));
   const text = $derived(p.item.gone ? "(deleted)" : itemText(p.item));

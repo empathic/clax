@@ -2731,11 +2731,11 @@ stored for the session that asked it and never deleted.
 
 | Field | Rule |
 |---|---|
-| `question` | 1 to 2,000 characters, not only spaces; unique within the set (it keys `AskUserQuestion`'s answers). |
+| `question` | 1 to 2,000 characters, not only spaces; unique within the set (it keys `AskUserQuestion`'s answers). Shown as Markdown, as a comment is (see "Comments and feedback": GitHub-flavoured, no images, no raw HTML); a one-line preview (an inbox row, a notification) shows it with the syntax taken away. |
 | `header` | 1 to 12 characters for `ask`. A mirrored header longer than 12 is kept and shown cut with `…`. |
 | `options` | None (or empty) for a free-text question, else 2 to 4. |
 | `label` | 1 to 100 characters, unique within the question. |
-| `description` | Optional, at most 500 characters. |
+| `description` | Optional, at most 500 characters; shown as text. |
 | `preview` | Optional, at most 20,000 characters; shown verbatim in monospace. |
 | `recommended` | Optional; at most one option per question. A mirrored label ending in "(Recommended)" (any case) is marked recommended and keeps its label. |
 | `multi_select` | Default false; only on choice questions. |
