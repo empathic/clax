@@ -1275,6 +1275,68 @@ pub const MIGRATIONS: &[&str] = &[
     // drafts, 0 for a bundle update's check draft, which stays offline.
     // Meaningless for an artifact that is no draft.
     "ALTER TABLE artifacts ADD COLUMN draft_inherit_net INTEGER NOT NULL DEFAULT 1;",
+    // 46: the app's jobs, their steps, and the agent's read consents (spec
+    // 2026-10-19-in-process-core-design §8.1): each make or change the
+    // app's queue runs, the steps it committed, the threads it answers and
+    // the questions it asked; the agent's remembered read consents; the
+    // render gate's renders of drafts; and one row per one-time import of
+    // the app's JSON state.
+    "CREATE TABLE jobs (
+        id TEXT PRIMARY KEY,
+        client TEXT NOT NULL,              -- 'app' (who runs it)
+        kind TEXT NOT NULL,                -- 'make' | 'change' (opaque to the core)
+        artifact_id TEXT REFERENCES artifacts(id),
+        state TEXT NOT NULL CHECK (state IN ('queued','running','waiting','paused','stopped','failed','cancelled','done')),
+        step TEXT,                         -- the current step's key
+        title TEXT,
+        input_json TEXT NOT NULL,          -- the request, the threads and comments answered
+        plan_json TEXT,                    -- a make's plan (was plans.json)
+        carry_json TEXT,                   -- Keep going's carried draft and notes (was unfinished.json)
+        error_json TEXT,
+        rev INTEGER NOT NULL DEFAULT 1,
+        created_at TEXT NOT NULL,
+        updated_at TEXT NOT NULL
+    );
+    CREATE INDEX jobs_open ON jobs(state) WHERE state NOT IN ('cancelled','done');
+    CREATE TABLE job_steps (
+        job_id TEXT NOT NULL REFERENCES jobs(id),
+        key TEXT NOT NULL,
+        result_json TEXT NOT NULL,
+        version_n INTEGER,                 -- the version a publish step made
+        created_at TEXT NOT NULL,
+        PRIMARY KEY (job_id, key)
+    );
+    CREATE TABLE job_threads (            -- was the ledger's answered and stopped.json
+        job_id TEXT NOT NULL REFERENCES jobs(id),
+        thread_id TEXT NOT NULL REFERENCES threads(id),
+        comment_id TEXT NOT NULL,          -- the newest comment the job answers
+        stopped INTEGER NOT NULL DEFAULT 0,
+        PRIMARY KEY (job_id, thread_id)
+    );
+    CREATE TABLE job_questions (          -- was asked.json
+        job_id TEXT NOT NULL REFERENCES jobs(id),
+        question_id TEXT NOT NULL,
+        answer TEXT,
+        PRIMARY KEY (job_id, question_id)
+    );
+    CREATE TABLE agent_read_consents (    -- was agent-read-consent.json
+        reader TEXT NOT NULL,
+        source TEXT NOT NULL,
+        created_at TEXT NOT NULL,
+        PRIMARY KEY (reader, source)
+    );
+    CREATE TABLE draft_renders (          -- the render gate (§8.2)
+        draft_id TEXT NOT NULL,
+        digest TEXT NOT NULL,
+        clean INTEGER NOT NULL,
+        created_at TEXT NOT NULL,
+        PRIMARY KEY (draft_id, digest)
+    );
+    CREATE TABLE client_imports (         -- one row per one-time import (§9)
+        key TEXT PRIMARY KEY,
+        done_at TEXT NOT NULL,
+        summary_json TEXT NOT NULL
+    );",
 ];
 
 /// The audit journal's migration, as a schema version (the
@@ -1313,6 +1375,24 @@ pub const WHERE_TO_ASK_MIGRATION: u32 = 38;
 /// ([`MAIN_MARKS_ABOVE_38`]); the app's follow it in
 /// [`APP_MIGRATION_MARKS`]'s order.
 pub const APP_MIGRATION: u32 = NUMBERING.app_first();
+
+/// The Clax app's jobs migration (its jobs, their steps, and the agent's
+/// read consents; spec 2026-10-19-in-process-core-design §8.1), as a
+/// schema version: the sixth of the app's ([`APP_MIGRATION_MARKS`]).
+pub const JOBS_MIGRATION: u32 = APP_MIGRATION + 5;
+
+/// The tables the jobs migration ([`JOBS_MIGRATION`]) makes, its mark
+/// (`jobs`) first. Adoption holds a database to have all of them, each with
+/// the migration's columns, or none.
+pub(crate) const JOBS_TABLES: [&str; 7] = [
+    "jobs",
+    "job_steps",
+    "job_threads",
+    "job_questions",
+    "agent_read_consents",
+    "draft_renders",
+    "client_imports",
+];
 
 /// What each of main's migrations after [`WHERE_TO_ASK_MIGRATION`] and
 /// before [`APP_MIGRATION`] leaves in the database, in order, so adoption
@@ -1386,12 +1466,13 @@ pub(crate) const NUMBERING: Numbering<'static> = Numbering {
 
 /// What each of the Clax app's migrations ([`APP_MIGRATION`] onwards, in
 /// order) leaves in the schema.
-const APP_MIGRATION_MARKS: [Mark<'static>; 5] = [
+const APP_MIGRATION_MARKS: [Mark<'static>; 6] = [
     Mark::Table("db_read_grants"),
     Mark::Column("artifacts", "draft_of"),
     Mark::Table("net_grants"),
     Mark::Table("sample_grants"),
     Mark::Column("artifacts", "draft_inherit_net"),
+    Mark::Table(JOBS_TABLES[0]),
 ];
 
 /// Brings a database written by an earlier `flutter-app` build, which
@@ -1418,7 +1499,10 @@ const APP_MIGRATION_MARKS: [Mark<'static>; 5] = [
 /// 27, without it at 24; its version must name one of them. Each app
 /// migration's mark must be present exactly up to the one its version
 /// names, or the database is refused
-/// ([`clax_core::CoreError::MigrationFailed`]) and left as it was. A
+/// ([`clax_core::CoreError::MigrationFailed`]) and left as it was; so is
+/// one whose jobs tables ([`JOBS_TABLES`]) are not all there with the jobs
+/// migration's columns when it holds that migration's mark, or not all
+/// absent when it does not. A
 /// database with the app's tables whose main marks above 38 are not the
 /// first k of them, or that holds any without `questions.thread_id`, was
 /// made by no build, and is refused the same way. One with
@@ -1505,6 +1589,11 @@ pub(super) fn adopt_earlier_flutter_app(
             )));
         }
     }
+    let jobs = (JOBS_MIGRATION - APP_MIGRATION) as usize;
+    let jobs_sql = numbering.migrations[app_first as usize - 1 + jobs];
+    if let Some(why) = jobs_tables_disagree(tx, jobs_sql, held > jobs)? {
+        return Err(refuse(why));
+    }
     for v in below..app_first {
         tx.execute_batch(numbering.migrations[v as usize - 1])?;
         rust_step(tx, v)?;
@@ -1512,6 +1601,61 @@ pub(super) fn adopt_earlier_flutter_app(
     let now = app_first - 1 + held as u32;
     tx.pragma_update(None, "user_version", now)?;
     Ok(Some((version, now)))
+}
+
+/// How the database's jobs tables ([`JOBS_TABLES`]) disagree with the
+/// jobs migration, whose SQL is `jobs_sql`: when `held`, each must be there
+/// with the columns that SQL gives it (name, type, `NOT NULL`, default and
+/// primary key, in order); else none may be. `None` when they agree.
+fn jobs_tables_disagree(
+    tx: &rusqlite::Connection,
+    jobs_sql: &str,
+    held: bool,
+) -> clax_core::Result<Option<String>> {
+    let made = rusqlite::Connection::open_in_memory()?;
+    made.execute_batch(jobs_sql)?;
+    let columns = |c: &rusqlite::Connection, table: &str| -> clax_core::Result<Vec<String>> {
+        let mut q = c.prepare(
+            "SELECT name, type, \"notnull\", dflt_value, pk FROM pragma_table_info(?1) ORDER BY cid",
+        )?;
+        let rows = q
+            .query_map([table], |r| {
+                Ok(format!(
+                    "{} {} {} {:?} {}",
+                    r.get::<_, String>(0)?,
+                    r.get::<_, String>(1)?,
+                    r.get::<_, i64>(2)?,
+                    r.get::<_, Option<String>>(3)?,
+                    r.get::<_, i64>(4)?
+                ))
+            })?
+            .collect::<rusqlite::Result<_>>()?;
+        Ok(rows)
+    };
+    for table in JOBS_TABLES {
+        let there = has_table(tx, table)?;
+        if !held {
+            if there {
+                return Ok(Some(format!(
+                    "lacks the table {} but already has the table {table} of the same migration",
+                    JOBS_TABLES[0]
+                )));
+            }
+            continue;
+        }
+        if !there {
+            return Ok(Some(format!(
+                "has the table {} but lacks the table {table} of the same migration",
+                JOBS_TABLES[0]
+            )));
+        }
+        if columns(tx, table)? != columns(&made, table)? {
+            return Ok(Some(format!(
+                "has a table {table} whose columns are not the jobs migration's"
+            )));
+        }
+    }
+    Ok(None)
 }
 
 /// Whether the database holds `mark`.
@@ -3643,6 +3787,19 @@ mod tests {
                 "SELECT id || '|' || draft_inherit_net FROM artifacts ORDER BY id",
             ));
         }
+        if app >= 6 {
+            queries.push((
+                "jobs",
+                "SELECT id || '|' || state || '|' || coalesce(step, '') || '|' || rev FROM jobs
+                 UNION ALL SELECT job_id || '|' || key || '|' || result_json FROM job_steps
+                 UNION ALL SELECT job_id || '|' || thread_id || '|' || comment_id FROM job_threads
+                 UNION ALL SELECT job_id || '|' || question_id FROM job_questions
+                 UNION ALL SELECT reader || '|' || source FROM agent_read_consents
+                 UNION ALL SELECT draft_id || '|' || digest FROM draft_renders
+                 UNION ALL SELECT key || '|' || summary_json FROM client_imports
+                 ORDER BY 1",
+            ));
+        }
         queries
             .into_iter()
             .map(|(name, sql)| {
@@ -3793,8 +3950,24 @@ mod tests {
             )
             .unwrap();
         }
+        if app >= 6 {
+            c.execute_batch(JOB_ROWS).unwrap();
+        }
         kept_rows(c, app)
     }
+
+    /// A row in each of the jobs migration's tables.
+    const JOB_ROWS: &str = "INSERT INTO jobs (id, client, kind, artifact_id, state, step, input_json,
+                                   rev, created_at, updated_at)
+            VALUES ('j1', 'app', 'change', '7q3k9mzx2b4t', 'waiting', 'turn:1', '{}', 4, 'x', 'x');
+         INSERT INTO job_steps (job_id, key, result_json, created_at)
+            VALUES ('j1', 'turn:1', '{\"calls\":[]}', 'x');
+         INSERT INTO job_threads (job_id, thread_id, comment_id) VALUES ('j1', 't1', 'c1');
+         INSERT INTO job_questions (job_id, question_id) VALUES ('j1', 'q1');
+         INSERT INTO agent_read_consents (reader, source, created_at)
+            VALUES ('8r4m2nzy3c5v', '7q3k9mzx2b4t', 'x');
+         INSERT INTO draft_renders (draft_id, digest, clean, created_at) VALUES ('d1', 'ab', 1, 'x');
+         INSERT INTO client_imports (key, done_at, summary_json) VALUES ('app-json', 'x', '{}');";
 
     fn assert_pre_rebase_flutter_app_upgrades(app: usize) {
         let dir = tempfile::tempdir().unwrap();
@@ -3906,13 +4079,28 @@ mod tests {
                 assert!(!sql.contains(name), "{mark}");
             }
         }
-        assert_eq!(MIGRATIONS.len() as u32, APP_MIGRATION + 4);
+        assert_eq!(MIGRATIONS.len() as u32, APP_MIGRATION + 5);
+        assert_eq!(super::JOBS_MIGRATION, APP_MIGRATION + 5);
         let first = APP_MIGRATION as usize - 1;
         assert!(MIGRATIONS[first].contains("CREATE TABLE db_read_grants"));
         assert!(MIGRATIONS[first + 1].contains("ADD COLUMN draft_of"));
         assert!(MIGRATIONS[first + 2].contains("CREATE TABLE net_grants"));
         assert!(MIGRATIONS[first + 3].contains("CREATE TABLE sample_grants"));
         assert!(MIGRATIONS[first + 4].contains("ADD COLUMN draft_inherit_net"));
+        assert!(MIGRATIONS[first + 5].contains("CREATE TABLE jobs ("));
+    }
+
+    #[test]
+    fn a_fresh_database_reaches_46() {
+        let dir = tempfile::tempdir().unwrap();
+        let home = Home::at(dir.path().join("ax"));
+        drop(Store::open(&home).unwrap());
+        let c = Connection::open(home.db_path()).unwrap();
+        assert_eq!(super::JOBS_MIGRATION, 46);
+        assert_eq!(user_version(&c), super::JOBS_MIGRATION);
+        for table in super::JOBS_TABLES {
+            assert_eq!(table_count(&c, table), 1, "{table}");
+        }
     }
 
     #[test]
@@ -4598,7 +4786,7 @@ mod tests {
 
         drop(Store::open(&home).unwrap());
         let c = Connection::open(home.db_path()).unwrap();
-        assert_eq!(user_version(&c), APP_MIGRATION + 4);
+        assert_eq!(user_version(&c), super::JOBS_MIGRATION);
         assert_eq!(user_version(&c), MIGRATIONS.len() as u32);
         for table in [
             "legal_agreements",
@@ -4606,7 +4794,10 @@ mod tests {
             "db_read_grants",
             "net_grants",
             "sample_grants",
-        ] {
+        ]
+        .into_iter()
+        .chain(super::JOBS_TABLES)
+        {
             assert_eq!(table_count(&c, table), 1, "{table}");
         }
         assert_eq!(shape_of(&c), fresh, "the final schema");
@@ -4667,7 +4858,8 @@ mod tests {
     }
 
     /// A database at the installed builds' numbering holding the first
-    /// `app` of [`INSTALLED_AT_43`]'s migrations, at version `38 + app`,
+    /// `app` of [`INSTALLED_AT_43`]'s migrations, then the jobs migration
+    /// ([`APP_AT_41`]'s last) as such a build would number it, at version `38 + app`,
     /// with the rows of [`app_rows`]. Returns its rows.
     fn app_numbered_from_39(home: &Home, app: usize) -> Vec<(String, Vec<String>)> {
         home.ensure_dirs().unwrap();
@@ -4678,7 +4870,11 @@ mod tests {
             tx.execute_batch(MIGRATIONS[v as usize - 1]).unwrap();
             super::rust_step(&tx, v).unwrap();
         }
-        for sql in &installed_migrations()[..app] {
+        for sql in installed_migrations()
+            .into_iter()
+            .chain([app_migrations()[5]])
+            .take(app)
+        {
             tx.execute_batch(sql).unwrap();
         }
         tx.pragma_update(None, "user_version", WHERE_TO_ASK_MIGRATION + app as u32)
@@ -4690,7 +4886,7 @@ mod tests {
     #[test]
     fn each_app_prefix_at_the_old_numbering_is_adopted() {
         assert_eq!(installed_migrations().len(), 5);
-        for app in 1..=5 {
+        for app in 1..=super::APP_MIGRATION_MARKS.len() {
             let dir = tempfile::tempdir().unwrap();
             let home = Home::at(dir.path().join("ax"));
             app_numbered_from_39(&home, app);
@@ -4703,7 +4899,7 @@ mod tests {
                 "from {old}"
             );
         }
-        for app in 1..=5 {
+        for app in 1..=super::APP_MIGRATION_MARKS.len() {
             assert_numbered_app_database_upgrades(
                 app,
                 WHERE_TO_ASK_MIGRATION,
@@ -4755,6 +4951,101 @@ mod tests {
             copied == before,
             "the copy holds the WAL's frames too: {copied:?}"
         );
+    }
+
+    /// A home whose jobs tables a build numbered otherwise made (the jobs
+    /// migration at 44 after the app's 39 to 43, at 43 after the app's 38
+    /// to 42) is adopted at 46 with its job rows, and is this numbering's
+    /// when opened again.
+    #[test]
+    fn a_database_with_the_jobs_tables_at_another_version_is_adopted() {
+        let fresh = fresh_shape();
+        let layouts: [(MakeNumbered, u32); 2] = [
+            (app_numbered_from_39, WHERE_TO_ASK_MIGRATION + 6),
+            (app_numbered_from_38, REPAIR_MIGRATION + 6),
+        ];
+        for (make, old) in layouts {
+            let dir = tempfile::tempdir().unwrap();
+            let home = Home::at(dir.path().join("ax"));
+            let before = make(&home, 6);
+            {
+                let mut c = Connection::open(home.db_path()).unwrap();
+                assert_eq!(user_version(&c), old);
+                let tx = c.transaction().unwrap();
+                assert_eq!(
+                    super::adopt_earlier_flutter_app(&tx, &super::NUMBERING).unwrap(),
+                    Some((old, super::JOBS_MIGRATION)),
+                    "from {old}"
+                );
+            }
+            drop(Store::open(&home).unwrap());
+            let c = Connection::open(home.db_path()).unwrap();
+            assert_eq!(user_version(&c), super::JOBS_MIGRATION, "from {old}");
+            assert_eq!(shape_of(&c), fresh, "from {old}");
+            assert_eq!(kept_rows(&c, 6), before, "from {old}");
+            let mut c = c;
+            let tx = c.transaction().unwrap();
+            assert_eq!(
+                super::adopt_earlier_flutter_app(&tx, &super::NUMBERING).unwrap(),
+                None,
+                "from {old}, opened again"
+            );
+        }
+    }
+
+    /// A home at an earlier numbering whose jobs tables are not the jobs
+    /// migration's, or that holds some of them without its `jobs`, is
+    /// refused by name and left as it was.
+    #[test]
+    fn a_database_whose_jobs_tables_disagree_is_refused() {
+        let cases: [(usize, &str, &str); 4] = [
+            (
+                6,
+                "DROP TABLE job_steps;
+                 CREATE TABLE job_steps (job_id TEXT NOT NULL, key TEXT NOT NULL,
+                     result_json TEXT NOT NULL, created_at TEXT NOT NULL,
+                     PRIMARY KEY (job_id, key));",
+                "job_steps",
+            ),
+            (
+                6,
+                "DROP TABLE draft_renders;
+                 CREATE TABLE draft_renders (draft_id TEXT NOT NULL, digest TEXT NOT NULL,
+                     clean TEXT NOT NULL, created_at TEXT NOT NULL,
+                     PRIMARY KEY (draft_id, digest));",
+                "draft_renders",
+            ),
+            (6, "DROP TABLE client_imports;", "client_imports"),
+            (
+                5,
+                "CREATE TABLE agent_read_consents (reader TEXT NOT NULL, source TEXT NOT NULL,
+                     created_at TEXT NOT NULL, PRIMARY KEY (reader, source));",
+                "agent_read_consents",
+            ),
+        ];
+        for (app, change, named) in cases {
+            let dir = tempfile::tempdir().unwrap();
+            let home = Home::at(dir.path().join("ax"));
+            app_numbered_from_39(&home, app);
+            let before = {
+                let c = Connection::open(home.db_path()).unwrap();
+                c.execute_batch(change).unwrap();
+                (user_version(&c), schema_of(&c), every_row(&c))
+            };
+            let err = match Store::open(&home) {
+                Ok(_) => panic!("{named}: a home whose jobs tables disagree must be refused"),
+                Err(e) => e,
+            };
+            let at = WHERE_TO_ASK_MIGRATION + app as u32;
+            assert!(
+                matches!(&err, clax_core::CoreError::MigrationFailed { at: a, detail }
+                    if *a == at && detail.contains(named)),
+                "{named}: {err:?}"
+            );
+            let c = Connection::open(home.db_path()).unwrap();
+            let after = (user_version(&c), schema_of(&c), every_row(&c));
+            assert!(after == before, "{named}: left as it was: {after:?}");
+        }
     }
 
     #[test]
@@ -4919,20 +5210,21 @@ mod tests {
         assert_eq!(later.app_first(), APP_MIGRATION + 1);
         let fresh = fresh_shape_of(&later);
 
-        // The owner's home after this build's first open: 43 adopted to 45.
+        // The owner's home after this build's first open: 43 adopted to 45,
+        // then the jobs migration to 46.
         let dir = tempfile::tempdir().unwrap();
         let home = Home::at(dir.path().join("ax"));
         installed_at_43(&home);
         drop(Store::open(&home).unwrap());
         let (cols, before) = {
             let c = Connection::open(home.db_path()).unwrap();
-            assert_eq!(user_version(&c), 45);
+            assert_eq!(user_version(&c), 46);
             (columns_of(&c), every_row(&c))
         };
 
         let copy = open_under(&home, &later);
         let c = Connection::open(home.db_path()).unwrap();
-        assert_eq!(user_version(&c), 46, "the app's 45 is its 46 now");
+        assert_eq!(user_version(&c), 47, "the app's 46 is its 47 now");
         assert_eq!(shape_of(&c), fresh, "the later build's schema");
         assert_eq!(rows_in(&c, &cols), before, "every row kept");
         assert_eq!(table_count(&c, "simulated_main_41"), 1);
@@ -4950,7 +5242,7 @@ mod tests {
             "ok"
         );
         let copied = Connection::open(&copy).unwrap();
-        assert_eq!(user_version(&copied), 45);
+        assert_eq!(user_version(&copied), 46);
         assert_eq!(
             every_row(&copied),
             before,
@@ -4964,7 +5256,7 @@ mod tests {
         crate::migrate_with(&mut c, &later).unwrap();
         assert_eq!(
             (user_version(&c), schema_of(&c), every_row(&c)),
-            (46, schema, rows)
+            (47, schema, rows)
         );
     }
 
@@ -5028,12 +5320,14 @@ mod tests {
     const APP_AT_41: &str =
         include_str!("../tests/fixtures/old-migrations/flutter-app-4479a586c.sql");
 
-    /// The SQL of each of the app's migrations in [`APP_AT_41`], in order.
+    /// The SQL of each of the app's migrations in [`APP_AT_41`], in order,
+    /// then the jobs migration.
     fn app_migrations() -> Vec<&'static str> {
         APP_AT_41
             .split("\n-- migration: ")
             .skip(1)
             .map(|part| part.split_once('\n').unwrap().1)
+            .chain([MIGRATIONS[super::JOBS_MIGRATION as usize - 1]])
             .collect()
     }
 
@@ -5257,7 +5551,7 @@ mod tests {
             };
             assert_marks_made(&later);
             let fresh = fresh_shape_of(&later);
-            for (k, app) in [(2, 5), (2, 1), (1, 3), (0, 5)] {
+            for (k, app) in [(2, 6), (2, 5), (2, 1), (1, 3), (0, 5), (0, 6)] {
                 let dir = tempfile::tempdir().unwrap();
                 let home = Home::at(dir.path().join("ax"));
                 let before = app_after_main(&home, k, app);

@@ -984,6 +984,9 @@ impl Store {
                     params![qid, now],
                 )?;
             }
+            if matches!(status, Status::Answered | Status::Declined) {
+                self.answer_job_question_tx(tx, qid, answers.as_deref())?;
+            }
             let (sid, aid) = (&q.session_id, q.artifact_id.as_deref());
             let rec = match status {
                 Status::Answered => {

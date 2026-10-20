@@ -114,6 +114,7 @@ pub mod github;
 pub mod grants;
 pub mod hosted;
 pub mod inbox;
+pub mod jobs;
 pub mod joined;
 pub mod linked;
 pub mod live;
