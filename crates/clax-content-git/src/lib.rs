@@ -75,9 +75,11 @@
 //!   a push to `main` puts commits above the newest version that no tag
 //!   names. [`ContentStore::pushed_commits`] lists them, oldest first, by
 //!   `main`'s first parents down to the commit of the version pushed past,
-//!   leaving out the publish attempts a remove left directly above it and
-//!   a tagged commit carrying `Clax-Step` (a step's version whose process
-//!   died before recording it, which only that step replaces);
+//!   leaving out the publish attempts a remove left directly above it; a
+//!   tagged commit whose message carries `Clax-Step` is listed with its tag
+//!   and mark ([`PushedCommit::marked`]), and the store, which alone holds
+//!   the marks its steps were given, tells a step's version whose process
+//!   died before recording it (that step's to replace) from a push;
 //!   more than 64 of them, or a `main` that no longer leads to that
 //!   version, are its head alone. [`ContentStore::tag_pushed`] creates
 //!   `v<n>` on one (create-only) and leaves `main` where it is, so the next
@@ -97,7 +99,7 @@ use std::collections::{BTreeMap, BTreeSet};
 use std::sync::Arc;
 
 use clax_core::content::{
-    AssetKey, ContentStore, MAX_PUSHED_ENTRIES, PushLedger, PushedCommit, PushedContent,
+    AssetKey, ContentStore, MAX_PUSHED_ENTRIES, MarkedTag, PushLedger, PushedCommit, PushedContent,
     PushedFile, Pusher, RepoToken, VersionMeta, VersionWrite, missing, present, superseded,
 };
 use clax_core::working::Clock;
@@ -748,19 +750,22 @@ impl<H: RepoHost + Send + Sync, A: AssetStore> ContentStore for GitContent<H, A>
             at = meta.parents.first().copied();
             chain.push(meta);
         }
-        let tagged: BTreeSet<ObjectId> = tags.values().copied().collect();
+        let tagged: BTreeMap<ObjectId, u32> = tags.iter().map(|(n, c)| (*c, *n)).collect();
+        // The tag and step mark of a tagged commit whose message names one:
+        // the store tells a step's unrecorded version from a push's words.
+        let marked = |c: &clax_git::CommitMeta| {
+            Some(MarkedTag {
+                n: *tagged.get(&c.commit)?,
+                mark: c.trailer(STEP_TRAILER)?.to_string(),
+            })
+        };
         if reached {
             chain.reverse();
-            // Publish attempts a remove left directly above the base, and a
-            // step's version (tagged, as only a write tags) its process died
-            // before recording, which is that step's to replace (clax-core's
-            // content Ordering).
+            // Publish attempts a remove left directly above the base.
             let left = chain
                 .iter()
                 .take_while(|c| {
-                    let is_tagged = tagged.contains(&c.commit);
-                    (!is_tagged && c.trailer("Clax-Version").is_some())
-                        || (is_tagged && c.trailer(STEP_TRAILER).is_some())
+                    !tagged.contains_key(&c.commit) && c.trailer("Clax-Version").is_some()
                 })
                 .count();
             chain.drain(..left);
@@ -773,6 +778,7 @@ impl<H: RepoHost + Send + Sync, A: AssetStore> ContentStore for GitContent<H, A>
                 return Ok(chain
                     .into_iter()
                     .map(|c| PushedCommit {
+                        marked: marked(&c),
                         commit: c.commit.to_hex(),
                         message: c.message,
                         follows: true,
@@ -788,15 +794,12 @@ impl<H: RepoHost + Send + Sync, A: AssetStore> ContentStore for GitContent<H, A>
             .await
             .map_err(core_error)?
             .ok_or_else(|| unavailable(format!("Commit {head} is missing")))?;
-        if !reached
-            && ((meta.trailer("Clax-Version").is_some() && !tagged.contains(&head))
-                || (meta.trailer(STEP_TRAILER).is_some() && tagged.contains(&head)))
-        {
-            // An untagged publish attempt, or a step's unrecorded version,
-            // on a history that lost the base.
+        if !reached && meta.trailer("Clax-Version").is_some() && !tagged.contains_key(&head) {
+            // An untagged publish attempt on a history that lost the base.
             return Ok(Vec::new());
         }
         Ok(vec![PushedCommit {
+            marked: marked(&meta),
             commit: head.to_hex(),
             message: meta.message,
             follows: false,

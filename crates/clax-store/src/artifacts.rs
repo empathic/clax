@@ -1440,13 +1440,14 @@ impl Store {
         {
             return Err(CoreError::Conflict { current });
         }
-        if let (Some(mark), VersionStep::Write) = (p.step.as_deref(), step)
-            && self.content.unrecorded_step(id, n).await?.as_deref() == Some(mark)
+        if let (Some(own), VersionStep::Write) = (p.step.as_deref(), step)
+            && let Some(mark) = self.content.unrecorded_step(id, n).await?
+            && self.mark_of(id, n, &mark, Some(own))? == super::jobs::MarkOf::Own
         {
             // This step's own write of `n`, which no row records: a process
-            // killed before its transaction committed left it. Only this
-            // step carries its mark, so it is replaced (the content module's
-            // Ordering).
+            // killed before its transaction committed left it. The store
+            // gave its mark to this step alone, for this version, so it is
+            // replaced (the content module's Ordering).
             self.content.remove_version(id, n).await?;
         }
         let mut files: BTreeMap<String, FileMeta> = BTreeMap::new();

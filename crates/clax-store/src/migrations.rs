@@ -1345,6 +1345,26 @@ pub const MIGRATIONS: &[&str] = &[
         done_at TEXT NOT NULL,
         summary_json TEXT NOT NULL CHECK (json_valid(summary_json))
     );",
+    // 47: each publish step's mark (spec 2026-10-19-in-process-core-design
+    // §8.1), minted by the store when the step first writes its version
+    // and carried in that version's content (git's `Clax-Step` trailer,
+    // the home's `versions/<n>.step`): only a mark this table holds, for
+    // the artifact and version it names, is a step's, so a mark copied
+    // into a pushed commit's message counts for nothing. A new app's ID is
+    // minted with it, so a step resumed after a kill writes the same
+    // artifact. No foreign key: a mark outlives its job, so the content a
+    // killed step left is still known as a step's once the job is gone.
+    // The row goes when its step commits or its content is removed.
+    "CREATE TABLE job_step_marks (
+        nonce TEXT PRIMARY KEY,            -- 32 hex characters from the operating system's random source
+        job_id TEXT NOT NULL,
+        key TEXT NOT NULL,                 -- the step's key
+        artifact_id TEXT NOT NULL,         -- the artifact it writes
+        version_n INTEGER NOT NULL CHECK (version_n >= 1),  -- the version it writes
+        session_id TEXT,                   -- the session it publishes from
+        created_at TEXT NOT NULL,
+        UNIQUE (job_id, key)
+    );",
 ];
 
 /// The audit journal's migration, as a schema version (the
@@ -1388,6 +1408,11 @@ pub const APP_MIGRATION: u32 = NUMBERING.app_first();
 /// read consents; spec 2026-10-19-in-process-core-design §8.1), as a
 /// schema version: the sixth of the app's ([`APP_MIGRATION_MARKS`]).
 pub const JOBS_MIGRATION: u32 = APP_MIGRATION + 5;
+
+/// The Clax app's step marks migration (each publish step's mark; spec
+/// 2026-10-19-in-process-core-design §8.1), as a schema version: the
+/// seventh of the app's ([`APP_MIGRATION_MARKS`]), and this build's last.
+pub const STEP_MARKS_MIGRATION: u32 = APP_MIGRATION + 6;
 
 /// The tables the jobs migration ([`JOBS_MIGRATION`]) makes, its mark
 /// (`jobs`) first. Adoption holds a database to have all of them, each as
@@ -1474,13 +1499,14 @@ pub(crate) const NUMBERING: Numbering<'static> = Numbering {
 
 /// What each of the Clax app's migrations ([`APP_MIGRATION`] onwards, in
 /// order) leaves in the schema.
-const APP_MIGRATION_MARKS: [Mark<'static>; 6] = [
+const APP_MIGRATION_MARKS: [Mark<'static>; 7] = [
     Mark::Table("db_read_grants"),
     Mark::Column("artifacts", "draft_of"),
     Mark::Table("net_grants"),
     Mark::Table("sample_grants"),
     Mark::Column("artifacts", "draft_inherit_net"),
     Mark::Table(JOBS_TABLES[0]),
+    Mark::Table("job_step_marks"),
 ];
 
 /// Brings a database written by an earlier `flutter-app` build, which
@@ -4170,8 +4196,9 @@ mod tests {
                 assert!(!sql.contains(name), "{mark}");
             }
         }
-        assert_eq!(MIGRATIONS.len() as u32, APP_MIGRATION + 5);
+        assert_eq!(MIGRATIONS.len() as u32, APP_MIGRATION + 6);
         assert_eq!(super::JOBS_MIGRATION, APP_MIGRATION + 5);
+        assert_eq!(super::STEP_MARKS_MIGRATION, APP_MIGRATION + 6);
         let first = APP_MIGRATION as usize - 1;
         assert!(MIGRATIONS[first].contains("CREATE TABLE db_read_grants"));
         assert!(MIGRATIONS[first + 1].contains("ADD COLUMN draft_of"));
@@ -4179,17 +4206,19 @@ mod tests {
         assert!(MIGRATIONS[first + 3].contains("CREATE TABLE sample_grants"));
         assert!(MIGRATIONS[first + 4].contains("ADD COLUMN draft_inherit_net"));
         assert!(MIGRATIONS[first + 5].contains("CREATE TABLE jobs ("));
+        assert!(MIGRATIONS[first + 6].contains("CREATE TABLE job_step_marks ("));
     }
 
     #[test]
-    fn a_fresh_database_reaches_46() {
+    fn a_fresh_database_reaches_47() {
         let dir = tempfile::tempdir().unwrap();
         let home = Home::at(dir.path().join("ax"));
         drop(Store::open(&home).unwrap());
         let c = Connection::open(home.db_path()).unwrap();
         assert_eq!(super::JOBS_MIGRATION, 46);
-        assert_eq!(user_version(&c), super::JOBS_MIGRATION);
-        for table in super::JOBS_TABLES {
+        assert_eq!(super::STEP_MARKS_MIGRATION, 47);
+        assert_eq!(user_version(&c), super::STEP_MARKS_MIGRATION);
+        for table in super::JOBS_TABLES.into_iter().chain(["job_step_marks"]) {
             assert_eq!(table_count(&c, table), 1, "{table}");
         }
     }
@@ -4877,7 +4906,7 @@ mod tests {
 
         drop(Store::open(&home).unwrap());
         let c = Connection::open(home.db_path()).unwrap();
-        assert_eq!(user_version(&c), super::JOBS_MIGRATION);
+        assert_eq!(user_version(&c), super::STEP_MARKS_MIGRATION);
         assert_eq!(user_version(&c), MIGRATIONS.len() as u32);
         for table in [
             "legal_agreements",
@@ -4949,8 +4978,9 @@ mod tests {
     }
 
     /// A database at the installed builds' numbering holding the first
-    /// `app` of [`INSTALLED_AT_43`]'s migrations, then the jobs migration
-    /// ([`JOBS_AT_46`]'s) as such a build would number it, at version `38 + app`,
+    /// `app` of [`INSTALLED_AT_43`]'s migrations, then the jobs and step
+    /// marks migrations ([`JOBS_AT_46`]'s, [`STEP_MARKS_AT_47`]'s) as such
+    /// a build would number them, at version `38 + app`,
     /// with the rows of [`app_rows`]. Returns its rows.
     fn app_numbered_from_39(home: &Home, app: usize) -> Vec<(String, Vec<String>)> {
         home.ensure_dirs().unwrap();
@@ -4963,7 +4993,7 @@ mod tests {
         }
         for sql in installed_migrations()
             .into_iter()
-            .chain([app_migrations()[5]])
+            .chain(app_migrations()[5..].iter().copied())
             .take(app)
         {
             tx.execute_batch(sql).unwrap();
@@ -5046,8 +5076,8 @@ mod tests {
 
     /// A home whose jobs tables a build numbered otherwise made (the jobs
     /// migration at 44 after the app's 39 to 43, at 43 after the app's 38
-    /// to 42) is adopted at 46 with its job rows, and is this numbering's
-    /// when opened again.
+    /// to 42) is adopted at 46 with its job rows, migrated on to 47, and is
+    /// this numbering's when opened again.
     #[test]
     fn a_database_with_the_jobs_tables_at_another_version_is_adopted() {
         let fresh = fresh_shape();
@@ -5071,7 +5101,7 @@ mod tests {
             }
             drop(Store::open(&home).unwrap());
             let c = Connection::open(home.db_path()).unwrap();
-            assert_eq!(user_version(&c), super::JOBS_MIGRATION, "from {old}");
+            assert_eq!(user_version(&c), super::STEP_MARKS_MIGRATION, "from {old}");
             assert_eq!(shape_of(&c), fresh, "from {old}");
             assert_eq!(kept_rows(&c, 6), before, "from {old}");
             let mut c = c;
@@ -5339,20 +5369,20 @@ mod tests {
         let fresh = fresh_shape_of(&later);
 
         // The owner's home after this build's first open: 43 adopted to 45,
-        // then the jobs migration to 46.
+        // then the jobs migration to 46 and the step marks migration to 47.
         let dir = tempfile::tempdir().unwrap();
         let home = Home::at(dir.path().join("ax"));
         installed_at_43(&home);
         drop(Store::open(&home).unwrap());
         let (cols, before) = {
             let c = Connection::open(home.db_path()).unwrap();
-            assert_eq!(user_version(&c), 46);
+            assert_eq!(user_version(&c), 47);
             (columns_of(&c), every_row(&c))
         };
 
         let copy = open_under(&home, &later);
         let c = Connection::open(home.db_path()).unwrap();
-        assert_eq!(user_version(&c), 47, "the app's 46 is its 47 now");
+        assert_eq!(user_version(&c), 48, "the app's 47 is its 48 now");
         assert_eq!(shape_of(&c), fresh, "the later build's schema");
         assert_eq!(rows_in(&c, &cols), before, "every row kept");
         assert_eq!(table_count(&c, "simulated_main_41"), 1);
@@ -5370,7 +5400,7 @@ mod tests {
             "ok"
         );
         let copied = Connection::open(&copy).unwrap();
-        assert_eq!(user_version(&copied), 46);
+        assert_eq!(user_version(&copied), 47);
         assert_eq!(
             every_row(&copied),
             before,
@@ -5384,7 +5414,7 @@ mod tests {
         crate::migrate_with(&mut c, &later).unwrap();
         assert_eq!(
             (user_version(&c), schema_of(&c), every_row(&c)),
-            (47, schema, rows)
+            (48, schema, rows)
         );
     }
 
@@ -5453,10 +5483,15 @@ mod tests {
     const JOBS_AT_46: &str =
         include_str!("../tests/fixtures/old-migrations/flutter-app-adbfc62df.sql");
 
-    /// The SQL of each of the app's migrations in [`APP_AT_41`] and
-    /// [`JOBS_AT_46`], in order.
+    /// The app's step marks migration as this numbering has it, at 47
+    /// after [`JOBS_AT_46`], frozen.
+    const STEP_MARKS_AT_47: &str =
+        include_str!("../tests/fixtures/old-migrations/flutter-app-step-marks-47.sql");
+
+    /// The SQL of each of the app's migrations in [`APP_AT_41`],
+    /// [`JOBS_AT_46`] and [`STEP_MARKS_AT_47`], in order.
     fn app_migrations() -> Vec<&'static str> {
-        [APP_AT_41, JOBS_AT_46]
+        [APP_AT_41, JOBS_AT_46, STEP_MARKS_AT_47]
             .into_iter()
             .flat_map(|frozen| frozen.split("\n-- migration: ").skip(1))
             .map(|part| part.split_once('\n').unwrap().1)

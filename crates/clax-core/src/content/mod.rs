@@ -123,12 +123,15 @@
 //!   Bytes at `n` without a row (a process that died between the two) are
 //!   never served, and block the next write of `n` until removed, as a stray
 //!   version directory always has; `clax doctor` lists them. A job step's
-//!   write carries the step's mark ([`VersionMeta::step`]): when that step
+//!   write carries the step's mark ([`VersionMeta::step`]), which holds a
+//!   random nonce the store minted for that step and keeps: when that step
 //!   commits again (its resume), under the lock and with the artifact still
 //!   at `n - 1`, an unrecorded `n` carrying its own mark
-//!   ([`ContentStore::unrecorded_step`]) is removed and written again. Only
-//!   that step can match the mark, and a step commits once, so no other
-//!   writer's version is ever replaced.
+//!   ([`ContentStore::unrecorded_step`]) is removed and written again. The
+//!   store decides whose a mark is, never the content: only a mark it holds
+//!   for that artifact and version is a step's, a step commits once, so no
+//!   other writer's version is ever replaced, and a mark copied into a
+//!   pushed commit's message counts for nothing.
 //! - **Asset upload**: the bytes are written, then the row inserted; if the
 //!   insert fails the bytes are deleted.
 //! - **Asset delete**: the bytes are deleted, then the row; deleting bytes
@@ -210,7 +213,8 @@ pub struct VersionMeta {
     /// The publish note, when one was given.
     pub note: Option<String>,
     /// The job step that writes the version, when one does: its mark
-    /// (`clax_store::jobs::step_mark`). Every backend keeps it with the
+    /// (`clax_store::jobs::step_mark`, with the nonce the store keeps for
+    /// the step). Every backend keeps it with the
     /// version's content (git: a `Clax-Step` trailer; the filesystem: a
     /// `versions/<n>.step` file beside the version's directory) and answers
     /// it from [`ContentStore::unrecorded_step`], so the step that wrote a
@@ -501,6 +505,24 @@ pub struct PushedCommit {
     /// pushed past is not in `main`'s history: this commit is `main`'s
     /// head, standing for all of them.
     pub collapsed: bool,
+    /// The version tag the commit carries and the job step mark its
+    /// message names ([`VersionMeta::step`]), when it carries both: a
+    /// step's version whose process died before recording it, or a
+    /// pushed commit whose message names a mark and which a reconcile
+    /// tagged before it was killed. The store tells which: a mark it holds
+    /// for that artifact and version is a step's, any other is a push's
+    /// words.
+    pub marked: Option<MarkedTag>,
+}
+
+/// A pushed commit's version tag and the step mark its message names
+/// ([`PushedCommit::marked`]).
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct MarkedTag {
+    /// The version its tag names.
+    pub n: u32,
+    /// The mark, as its message has it.
+    pub mark: String,
 }
 
 /// One file of a pushed commit.

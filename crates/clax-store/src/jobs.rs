@@ -1123,10 +1123,71 @@ pub struct DraftRef {
 }
 
 /// The mark publish step `key` of job `id` writes its version's content
-/// with ([`clax_core::content::VersionMeta::step`]): the two as a JSON
-/// array, one line, so no other step's mark equals it.
-pub fn step_mark(id: &str, key: &str) -> String {
-    serde_json::to_string(&[id, key]).expect("two strings serialise")
+/// with ([`clax_core::content::VersionMeta::step`]): the two and `nonce`,
+/// the random value the store minted for the step when it first wrote
+/// (`job_step_marks`), as a JSON array, one line. The job ID and key say
+/// whose it is to a reader of the content; only the nonce, which the store
+/// keeps, makes it the step's.
+pub fn step_mark(id: &str, key: &str, nonce: &str) -> String {
+    serde_json::to_string(&[id, key, nonce]).expect("three strings serialise")
+}
+
+/// What a step mark found on content no row records is, as the store
+/// tells it from the marks it holds (`job_step_marks`).
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub(crate) enum MarkOf {
+    /// The mark of the step writing now.
+    Own,
+    /// The mark of another step that may still commit: its job is open and
+    /// the key is not committed.
+    Live,
+    /// The mark of a step that can never commit: its job is gone or final,
+    /// or the key is committed.
+    Dead,
+    /// No mark the store holds for that artifact and version: a mark
+    /// copied or guessed into content (a pushed commit's message), or one
+    /// written before marks were the store's.
+    Foreign,
+}
+
+/// What `mark`, found on version `n` of artifact `aid` with no row
+/// recording it, is ([`MarkOf`]); `own` is the mark of the step writing,
+/// if one is.
+pub(crate) fn mark_of(
+    c: &Connection,
+    aid: &str,
+    n: u32,
+    mark: &str,
+    own: Option<&str>,
+) -> rusqlite::Result<MarkOf> {
+    let Ok([_, _, nonce]) = serde_json::from_str::<[String; 3]>(mark) else {
+        return Ok(MarkOf::Foreign);
+    };
+    let held: Option<(String, String)> = c
+        .query_row(
+            "SELECT job_id, key FROM job_step_marks
+             WHERE nonce = ?1 AND artifact_id = ?2 AND version_n = ?3",
+            params![nonce, aid, n],
+            |r| Ok((r.get(0)?, r.get(1)?)),
+        )
+        .optional()?;
+    let Some((job, key)) = held else {
+        return Ok(MarkOf::Foreign);
+    };
+    if step_mark(&job, &key, &nonce) != mark {
+        return Ok(MarkOf::Foreign);
+    }
+    let live: bool = c.query_row(
+        "SELECT EXISTS (SELECT 1 FROM jobs WHERE id = ?1 AND state NOT IN ('cancelled', 'done'))
+            AND NOT EXISTS (SELECT 1 FROM job_steps WHERE job_id = ?1 AND key = ?2)",
+        params![job, key],
+        |r| r.get(0),
+    )?;
+    Ok(match (live, own == Some(mark)) {
+        (true, true) => MarkOf::Own,
+        (true, false) => MarkOf::Live,
+        (false, _) => MarkOf::Dead,
+    })
 }
 
 /// A publish step's body: the version it publishes and the document writes
@@ -1337,7 +1398,6 @@ impl Store {
             done,
             ..
         } = s;
-        request.step = Some(step_mark(id, key));
         let named = artifact_id.as_deref().map(ArtifactId::parse).transpose()?;
         if named.is_none() && base != 0 {
             return Err(StepError::Store(CoreError::invalid(
@@ -1345,7 +1405,9 @@ impl Store {
                 "a step that makes a new artifact has base 0",
             )));
         }
-        let aid = named.clone().unwrap_or_else(ArtifactId::generate);
+        let begun = self.begin_publish_step(id, key, named.as_ref(), base + 1, session_id.as_deref())?;
+        request.step = Some(step_mark(id, key, &begun.nonce));
+        let aid = begun.artifact_id;
         let mut cutting = None;
         let then = |tx: &Transaction<'_>, n: u32| {
             let made = publish_step_tx(self, tx, ctx, id, key, &aid, n, docs, done);
@@ -1398,6 +1460,89 @@ impl Store {
                 }),
             },
         }
+    }
+
+    /// The mark of publish step `key` of job `id`, which writes version `n`
+    /// of `named` (`None`: a new app, whose ID is minted with it), and the
+    /// artifact it writes: the ones the store keeps for the step
+    /// (`job_step_marks`), minted at its first write. A step that now
+    /// writes another artifact or version is given a new nonce, so content
+    /// an earlier attempt left under the old one is no longer its own.
+    /// `session` is recorded as the session it publishes from.
+    fn begin_publish_step(
+        &self,
+        id: &str,
+        key: &str,
+        named: Option<&ArtifactId>,
+        n: u32,
+        session: Option<&str>,
+    ) -> Result<Begun, StepError> {
+        self.with_tx(|tx| {
+            let held: Option<(String, String, u32)> = tx
+                .query_row(
+                    "SELECT nonce, artifact_id, version_n FROM job_step_marks
+                     WHERE job_id = ?1 AND key = ?2",
+                    params![id, key],
+                    |r| Ok((r.get(0)?, r.get(1)?, r.get(2)?)),
+                )
+                .optional()?;
+            let now = self.now();
+            let aid = match named {
+                Some(named) => named.as_str().to_string(),
+                None => ArtifactId::generate().as_str().to_string(),
+            };
+            let nonce = match held {
+                Some((nonce, held_aid, held_n)) if held_aid == aid && held_n == n => {
+                    tx.execute(
+                        "UPDATE job_step_marks SET session_id = ?2 WHERE nonce = ?1",
+                        params![nonce, session],
+                    )?;
+                    nonce
+                }
+                _ => {
+                    let nonce = new_nonce();
+                    tx.execute(
+                        "INSERT INTO job_step_marks
+                            (nonce, job_id, key, artifact_id, version_n, session_id, created_at)
+                         VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7)
+                         ON CONFLICT (job_id, key) DO UPDATE SET nonce = ?1,
+                            artifact_id = ?4, version_n = ?5, session_id = ?6, created_at = ?7",
+                        params![nonce, id, key, aid, n, session, now],
+                    )?;
+                    nonce
+                }
+            };
+            Ok(Begun {
+                nonce,
+                artifact_id: ArtifactId::parse(&aid)?,
+            })
+        })
+        .map_err(StepError::Store)
+    }
+
+    /// Whether `mark`, which version `n` of `aid` carries with no row
+    /// recording it, is a mark the store gave one of its steps for that
+    /// version ([`MarkOf`] other than [`MarkOf::Foreign`]): content a
+    /// step's write left, never a push.
+    pub(crate) fn is_step_mark(
+        &self,
+        aid: &ArtifactId,
+        n: u32,
+        mark: &str,
+    ) -> clax_core::Result<bool> {
+        self.with_read(|c| Ok(mark_of(c, aid.as_str(), n, mark, None)? != MarkOf::Foreign))
+    }
+
+    /// What `mark`, which version `n` of `aid` carries with no row
+    /// recording it, is to the step whose mark is `own` ([`MarkOf`]).
+    pub(crate) fn mark_of(
+        &self,
+        aid: &ArtifactId,
+        n: u32,
+        mark: &str,
+        own: Option<&str>,
+    ) -> clax_core::Result<MarkOf> {
+        self.with_read(|c| Ok(mark_of(c, aid.as_str(), n, mark, own)?))
     }
 
     /// Commits reply step `key` of job `id`, under `ctx`, in one
@@ -1483,6 +1628,22 @@ impl Store {
             None => Ok(None),
         }
     }
+}
+
+/// A publish step's mark and the artifact it writes, as the store keeps
+/// them ([`Store::begin_publish_step`]).
+struct Begun {
+    nonce: String,
+    artifact_id: ArtifactId,
+}
+
+/// A step's nonce: 32 hex characters from the operating system's random
+/// source.
+fn new_nonce() -> String {
+    clax_core::secret::random_bytes::<16>()
+        .iter()
+        .map(|b| format!("{b:02x}"))
+        .collect()
 }
 
 /// Inserts step `key` of job `id` with `result` (and `version_n`), and
@@ -1575,6 +1736,12 @@ fn publish_step_tx(
     };
     let result = serde_json::json!({"artifact_id": aid, "version": n, "docs": written.len()});
     let (step, row) = insert_step(st, tx, id, key, &result, Some(n), Some(&aid), done)?;
+    // Committed: its version is recorded, and its mark names nothing left.
+    tx.execute(
+        "DELETE FROM job_step_marks WHERE job_id = ?1 AND key = ?2",
+        params![id, key],
+    )
+    .map_err(|e| Cut::Refused(e.into()))?;
     Ok((step, row, written))
 }
 

@@ -135,7 +135,18 @@ impl Store {
             return Ok(out);
         };
         let mut current = a.current_version;
-        let pushed = self.content.pushed_commits(id, current).await?;
+        let mut pushed = self.content.pushed_commits(id, current).await?;
+        // A step's version its process died before recording is the step's
+        // to replace, never a push; a mark the store holds for no step of
+        // that version is a push's words.
+        let mut strays = 0;
+        for c in &pushed {
+            match &c.marked {
+                Some(m) if self.is_step_mark(id, m.n, &m.mark)? => strays += 1,
+                _ => break,
+            }
+        }
+        pushed.drain(..strays);
         if pushed.is_empty() {
             return Ok(out);
         }
@@ -586,6 +597,7 @@ mod tests {
             message: "Fix the header\n\nLonger body".into(),
             follows,
             collapsed,
+            marked: None,
         }
     }
 

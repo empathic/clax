@@ -1183,17 +1183,29 @@ asks again unless the model chooses to.
 A process killed after the content files are written and before the
 transaction commits leaves the files at the next version's number with
 no row; they are never served. The step's write marks them with the step
-(`clax_store::jobs::step_mark`, the job ID and the key as a JSON array):
-git's version commit carries it as a `Clax-Step` trailer, the home's
-files as `versions/<n>.step` beside the version's directory, written
-before the rename that places it. The resumed step, under the content
-lock and with the artifact still at `base`, finds `n` present with its
-own mark (`ContentStore::unrecorded_step`), removes it and writes it
-again, then commits once; git's push reconcile leaves a tagged commit
-with that trailer to its step rather than recording it as a push.
-Content no step marked, or another step marked, is never replaced: the
-files refuse the write as before (`clax doctor` lists a stray
-directory), and git records an unmarked commit as a push.
+(`clax_store::jobs::step_mark`: the job ID, the key and a nonce, as a
+JSON array). The nonce is 32 hex characters from the operating system's
+random source, minted by the store at the step's first write and kept in
+migration 47's `job_step_marks` (nonce, job, key, the artifact and
+version it writes, the session it publishes from); the row goes when the
+step commits or its content is removed, and has no foreign key, so it
+outlives its job. Git's version commit carries the mark as a
+`Clax-Step` trailer, the home's files as `versions/<n>.step` beside the
+version's directory, written before the rename that places it. The store
+decides what a mark is, never the content: a mark is a step's only when
+`job_step_marks` holds its nonce for that job, key, artifact and version
+(`jobs::mark_of`); any other, a job ID and key guessed or a whole mark
+copied into a pushed commit's message, is no mark. The resumed step,
+under the content lock and with the artifact still at `base`, finds `n`
+present with its own mark (`ContentStore::unrecorded_step`), removes it
+and writes it again, then commits once; git's push reconcile
+(`ContentStore::pushed_commits` lists each tagged commit's tag and mark,
+`PushedCommit::marked`) leaves a tagged commit with a step's mark to
+that step rather than recording it as a push, and records one whose
+mark the store does not hold as the push it is. Content no step marked,
+or another step marked, is never replaced: the files refuse the write as
+before (`clax doctor` lists a stray directory), and git records an
+unmarked commit as a push.
 
 So the change ledger's two unknowns, "did the publish land?" and "did the
 docs land?", cannot arise: either the step row and the version exist

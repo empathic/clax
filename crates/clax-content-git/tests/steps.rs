@@ -3,7 +3,8 @@
 //! stores (the home's files and git): the resumed step replaces the version
 //! its own write left and commits once, with its document writes and its
 //! step; a version no step marked, or another step marked, is never
-//! replaced.
+//! replaced, and a pushed commit whose message copies or guesses a mark is
+//! a push.
 
 use std::collections::BTreeMap;
 use std::sync::Arc;
@@ -22,7 +23,9 @@ use clax_core::publish::{PublishRequest, ValidatedPublish, validate};
 use clax_core::{ArtifactId, CoreError, Home};
 use clax_store::Store;
 use clax_store::docs::{BatchOp, BatchWrite};
-use clax_store::jobs::{JobPatch, JobState, NewJob, PublishStep, StepError, step_mark};
+use clax_git::versions::repo_name;
+use clax_git::{MAIN, Repo, RefUpdate};
+use clax_store::jobs::{JobPatch, JobState, NewJob, PublishStep, StepError};
 use serde_json::json;
 
 use crate::common::{clock, committer};
@@ -331,12 +334,95 @@ fn a_stray_another_step_marked_is_not_replaced<C: ContentStore + 'static>(
     content: impl FnOnce(&Home) -> C,
 ) {
     let f = fixture(content);
-    f.stray("<p>stray</p>", Some(step_mark("j1", "publish:other")));
+    // Another live step of the job, killed after its content write.
+    f.content.kill_next();
+    assert!(f.commit("publish:other", "<p>stray</p>").is_err());
     assert!(f.commit("publish:1", "<p>two</p>").is_err());
     assert_eq!(f.steps(), 0);
     assert_eq!(f.doc(), None);
     assert_eq!(f.versions(), [1], "nor taken for a push");
     assert_eq!(f.html(2).as_deref(), Some("<p>stray</p>"));
+    // Its own resume replaces it.
+    let c = f.commit("publish:other", "<p>other</p>").unwrap();
+    assert_eq!(c.step.version_n, Some(2));
+    assert_eq!(f.html(2).as_deref(), Some("<p>other</p>"));
+}
+
+/// Pushes a commit with version 1's tree onto `main` of `f`'s repository,
+/// its message carrying `mark` as a `Clax-Step` trailer, and tags it `v2`
+/// as the push reconcile tags a commit it adopts before the transaction
+/// recording it (a process killed between the two leaves it so). Its ID.
+fn push_forging(f: &Fixture<MemGitContent>, mark: &str) -> clax_git::ObjectId {
+    let repo = f
+        .content
+        .inner
+        .host()
+        .repo(&repo_name(f.id.as_str()))
+        .unwrap();
+    let refs = clax_core::content::wait(repo.refs()).unwrap();
+    let v1 = refs["refs/tags/v1"];
+    let meta = clax_core::content::wait(repo.read_commit_meta(&v1))
+        .unwrap()
+        .unwrap();
+    let sig = clax_git::Signature::utc(
+        &clax_git::Person {
+            name: "Rae".into(),
+            email: "rae@example.com".into(),
+        },
+        1_760_000_000,
+    );
+    let pushed = clax_git::Commit {
+        tree: meta.tree,
+        parents: vec![v1],
+        author: sig.clone(),
+        committer: sig,
+        message: format!("pushed\n\nClax-Version: 2\nClax-Step: {mark}\n"),
+    }
+    .to_object()
+    .unwrap();
+    let id = pushed.id();
+    clax_core::content::wait(repo.apply(
+        vec![pushed],
+        &[RefUpdate::new(MAIN, Some(v1), Some(id))],
+        true,
+    ))
+    .unwrap()[0]
+        .clone()
+        .unwrap();
+    assert!(clax_core::content::wait(f.content.tag_pushed(&f.id, 2, &id.to_hex())).unwrap());
+    id
+}
+
+/// A pushed commit that the reconcile tagged, whose message names a live
+/// step of the job by its guessable job ID and key, is a push: it becomes
+/// version 2 as the push it is, stays on main, and the step finds the
+/// artifact moved.
+#[test]
+fn a_pushed_commit_forging_a_step_mark_is_a_push() {
+    for mark in [
+        r#"["j1","publish:1"]"#.to_string(),
+        format!(r#"["j1","publish:1","{}"]"#, "0".repeat(32)),
+    ] {
+        let f = fixture(the_store_in_git);
+        let pushed = push_forging(&f, &mark);
+        let e = f.commit("publish:1", "<p>two</p>").unwrap_err();
+        assert!(
+            matches!(e, StepError::VersionMoved { current: 2 }),
+            "{mark}: {e:?}"
+        );
+        assert_eq!(f.versions(), [1, 2], "{mark}");
+        assert_eq!(f.html(2).as_deref(), Some("<p>one</p>"), "{mark}");
+        let repo = f
+            .content
+            .inner
+            .host()
+            .repo(&repo_name(f.id.as_str()))
+            .unwrap();
+        let refs = clax_core::content::wait(repo.refs()).unwrap();
+        assert_eq!(refs[MAIN], pushed, "{mark}: the push stays on main");
+        assert_eq!(refs["refs/tags/v2"], pushed, "{mark}");
+        assert_eq!(f.steps(), 0, "{mark}");
+    }
 }
 
 #[test]
