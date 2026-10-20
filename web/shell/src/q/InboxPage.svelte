@@ -16,7 +16,8 @@
   // folded line that opens in place. **Show more** pages a group, **Mark
   // read** reads its new items, and **Unread** narrows the list to groups
   // with something new. A group keeps its place and its fold as its items
-  // are read, here or elsewhere, until the search changes. Items stay where
+  // are read, here or elsewhere, until the search changes; under Unread a
+  // group read since stays too, shown read, so nothing jumps. Items stay where
   // they are as they change (a row read elsewhere, a card answered): the
   // list is fetched again when the search changes, on a bulk mark, and when
   // the stream resyncs. A row opens its item and marks it read; its dot
@@ -201,7 +202,10 @@
       if (g !== gen || !list) return;
       error = null;
       cardItems = keepCards(c, true);
-      list = { groups: mergeGroups(list.groups, l.groups), next: list.next ?? l.next };
+      // Under the Unread filter a group read since drops out of the fetch:
+      // it stays where it is, all read, until the next load.
+      const gone = (x: Group): Group => (unreadOnly ? { ...x, unread: 0, items: x.items.map(i => (i.read ? i : { ...i, read: true })) } : x);
+      list = { groups: mergeGroups(list.groups, l.groups, gone), next: list.next ?? l.next };
       opening(l.groups, false);
     } catch (e) {
       if (g === gen) loadFailed(e);

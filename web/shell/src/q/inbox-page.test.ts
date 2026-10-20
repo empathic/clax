@@ -238,6 +238,31 @@ describe("InboxPage", () => {
     expect(g.hasAttribute("data-fresh")).toBe(false);
   });
 
+  it("keeps a group read under the Unread chip where it is, shown read, until the next load", async () => {
+    history.replaceState(null, "", "/inbox?unread=1");
+    const S = item("reply", { id: "IS", seq: 7, artifact: { id: "9x8w7v6u5t4s", title: "Sales dashboard", kind: "html", page_url: null } });
+    const lists: Record<string, InboxItem[]> = { "": [R, S] };
+    stubRoutes(lists, []);
+    const { m } = page();
+    await settle();
+    const keys = () => [...m.root.querySelectorAll(".igroup")].map(g => g.getAttribute("data-group"));
+    expect(keys()).toEqual(["7q3k9mzx2b4t", "9x8w7v6u5t4s"]);
+    lists[""] = [{ ...R, read: true }, S];
+    click(groupEl(m.root, "7q3k9mzx2b4t").querySelector(".gread")!);
+    await settle();
+    // The daemon no longer lists it under Unread; it stays, read.
+    expect(keys()).toEqual(["7q3k9mzx2b4t", "9x8w7v6u5t4s"]);
+    const g = groupEl(m.root, "7q3k9mzx2b4t");
+    expect([g.hasAttribute("data-fresh"), g.querySelector(".irow")!.hasAttribute("data-unread")]).toEqual([false, false]);
+    // The next load (the filter changes and back) drops it.
+    const chip = [...m.root.querySelectorAll<HTMLButtonElement>(".kind")].find(b => b.textContent === "Unread")!;
+    click(chip);
+    await settle();
+    click(chip);
+    await settle();
+    expect(keys()).toEqual(["9x8w7v6u5t4s"]);
+  });
+
   it("puts items about no page in Other, with no link", async () => {
     stubRoutes({ "": [R] }, [item("published", { id: "D9", seq: 2, read: true, artifact: null })]);
     const { m } = page();
