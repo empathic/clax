@@ -242,7 +242,7 @@ check_tree() {
     while IFS= read -r subject; do
         [ -n "$subject" ] || continue
         if [ "$i" -ge 2 ] || [ "$subject" != "${expected[i]}" ]; then
-            problem "main has a commit origin/main lacks that is not this release's: \"$subject\""
+            problem "the checkout has a commit origin/main lacks that is not this release's: \"$subject\""
             break
         fi
         i=$((i + 1))
@@ -305,7 +305,7 @@ COMMANDS=(
     [10]="just ci"
     [11]="git commit -S -a -m \"$PIN_SUBJECT\""
     [12]="git push origin main"
-    [13]="gh run list --workflow ci.yml (the push run on origin/main), wait"
+    [13]="gh run list --workflow ci.yml (the push run on the pin commit), wait"
     [14]="gh workflow run publish-pi.yml --ref main -f dry_run=false, wait"
     [15]="print the steps left by hand"
 )
