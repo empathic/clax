@@ -4,6 +4,7 @@ library;
 
 import 'dart:async';
 import 'dart:convert';
+import 'dart:developer' as developer;
 import 'dart:io';
 import 'dart:isolate';
 import 'dart:typed_data';
@@ -105,7 +106,8 @@ abstract interface class CoreSubscription {
 
 /// The SSE block a subscription ends with: `event: end` with
 /// `{"reason": …}`, one of `core_failed` (the core did not open),
-/// `core_closed`, `stream_refused` and `stream_ended`.
+/// `core_closed`, `stream_refused` and `stream_ended`, or this client's
+/// `malformed` (the core posted bytes that are not UTF-8).
 String endBlock(String reason) =>
     'event: end\ndata: ${jsonEncode({'reason': reason})}\n\n';
 
@@ -113,15 +115,21 @@ String endBlock(String reason) =>
 /// answers and a tag per call. The isolate that [open]s the core owns it
 /// and hears its [states]; another isolate [attach]es to its [handle].
 final class CoreClient implements CoreCalls {
-  CoreClient._(this._lib, this.handle, this._states, this._owner) {
+  CoreClient._(this._lib, this.handle, this._states, this._owner, this._log) {
     _answers.handler = _answer;
     _states?.handler = _onState;
   }
 
   /// Opens the core on [home], writing `<home>/embed.json` with [origins]
   /// first. [states] hears where the open stands, then [CoreClosed] after
-  /// [close].
-  static CoreClient open(String home, AppOrigins origins, {CoreLib? lib}) {
+  /// [close]. [log] hears what the core posted that this client could not
+  /// read.
+  static CoreClient open(
+    String home,
+    AppOrigins origins, {
+    CoreLib? lib,
+    void Function(String line) log = _devLog,
+  }) {
     lib ??= CoreLib.load();
     Directory(home).createSync(recursive: true);
     final tmp = File('$home/embed.json.tmp')
@@ -129,7 +137,7 @@ final class CoreClient implements CoreCalls {
     tmp.renameSync('$home/embed.json');
     final states = RawReceivePort(null, 'clax core states');
     final handle = lib.open(home, states.sendPort);
-    final client = CoreClient._(lib, handle, states, true);
+    final client = CoreClient._(lib, handle, states, true, log);
     if (handle == 0) {
       client._refusal = _failedAnswer;
       states.close();
@@ -145,10 +153,16 @@ final class CoreClient implements CoreCalls {
   }
 
   /// The core opened as [handle] by another isolate's [open].
-  static CoreClient attach(int handle, {CoreLib? lib}) =>
-      CoreClient._(lib ?? CoreLib.load(), handle, null, false);
+  static CoreClient attach(
+    int handle, {
+    CoreLib? lib,
+    void Function(String line) log = _devLog,
+  }) => CoreClient._(lib ?? CoreLib.load(), handle, null, false, log);
+
+  static void _devLog(String line) => developer.log(line, name: 'clax core');
 
   final CoreLib _lib;
+  final void Function(String line) _log;
 
   /// The core's handle, for [attach] in another isolate; 0 when the open
   /// was refused.
@@ -196,7 +210,7 @@ final class CoreClient implements CoreCalls {
   /// `ready` says `resumed: false`, and a reader resyncs for it.
   @override
   CoreSubscription subscribe({String? lastEventId}) {
-    final sub = _Subscription(_subs.remove);
+    final sub = _Subscription(_subs.remove, _log);
     if (_refusal case final refusal?) return sub..end(refusal.code);
     _subs.add(sub);
     if (_lib.subscribe(handle, sub.port) != 0) sub.end('core_closed');
@@ -222,8 +236,14 @@ final class CoreClient implements CoreCalls {
     }
   }
 
+  /// An answer: the call's tag, 8 bytes little endian, then a response
+  /// frame. A message without a readable tag cannot be matched to its
+  /// call, which waits until the core closes or fails: it is logged.
   void _answer(Object? message) {
-    if (message is! Uint8List || message.length < 8) return;
+    if (message is! Uint8List || message.length < 8) {
+      _log('an answer without a readable tag, dropped: $message');
+      return;
+    }
     final tag = ByteData.sublistView(message).getInt64(0, Endian.little);
     _pending.remove(tag)?.complete(_read(Uint8List.sublistView(message, 8)));
   }
@@ -318,19 +338,22 @@ final class CoreClient implements CoreCalls {
   );
 }
 
-/// A subscription's port and the blocks it hears, decoded as UTF-8 across
-/// messages.
+/// A subscription's port and the blocks it hears: bytes buffered until a
+/// block's blank line, each block decoded whole, so a block or a character
+/// split across messages reads as one.
 final class _Subscription implements CoreSubscription {
-  _Subscription(this._forget) {
-    _in.handler = _onBlock;
+  _Subscription(this._forget, this._log) {
+    _in.handler = _onMessage;
     _out = StreamController(onCancel: cancel);
-    _text = utf8.decoder.startChunkedConversion(_NonEmpty(_out));
   }
 
   final void Function(_Subscription) _forget;
+  final void Function(String line) _log;
   final RawReceivePort _in = RawReceivePort(null, 'clax core events');
   late final StreamController<String> _out;
-  late final ByteConversionSink _text;
+
+  /// The bytes of a block not yet ended.
+  final List<int> _partial = [];
   bool _ended = false;
 
   SendPort get port => _in.sendPort;
@@ -338,16 +361,45 @@ final class _Subscription implements CoreSubscription {
   @override
   Stream<String> get blocks => _out.stream;
 
-  void _onBlock(Object? message) {
-    if (_ended || message is! Uint8List) return;
-    _text.add(message);
-    if (_isEnd(message)) _stop();
+  void _onMessage(Object? message) {
+    if (_ended) return;
+    if (message is! Uint8List) {
+      _log('a subscription message that is not bytes, dropped: $message');
+      return;
+    }
+    // _partial holds no blank line, but may end with half of one.
+    var i = _partial.isEmpty ? 0 : _partial.length - 1;
+    _partial.addAll(message);
+    var start = 0;
+    for (; i + 1 < _partial.length; i++) {
+      if (_partial[i] != _lf || _partial[i + 1] != _lf) continue;
+      final ended = _block(_partial.sublist(start, i + 2));
+      if (ended) return;
+      start = i + 2;
+      i++;
+    }
+    _partial.removeRange(0, start);
+  }
+
+  /// Passes on one whole block; true once the subscription has ended.
+  bool _block(List<int> bytes) {
+    final String block;
+    try {
+      block = utf8.decode(bytes);
+    } on FormatException catch (e) {
+      _log('a subscription block that is not UTF-8: ${e.message}');
+      end('malformed');
+      return true;
+    }
+    _out.add(block);
+    if (block.startsWith('event: end\n')) _stop();
+    return _ended;
   }
 
   /// Ends with the `end` block for [reason], as the core would.
   void end(String reason) {
     if (_ended) return;
-    _text.add(utf8.encode(endBlock(reason)));
+    _out.add(endBlock(reason));
     _stop();
   }
 
@@ -357,33 +409,11 @@ final class _Subscription implements CoreSubscription {
   void _stop() {
     if (_ended) return;
     _ended = true;
+    _partial.clear();
     _in.close();
     _forget(this);
-    _text.close();
-  }
-
-  static final _endPrefix = utf8.encode('event: end\n');
-
-  static bool _isEnd(Uint8List block) =>
-      block.length >= _endPrefix.length &&
-      Iterable.generate(_endPrefix.length).every(
-        (i) => block[i] == _endPrefix[i],
-      );
-}
-
-/// Passes on the decoder's non-empty strings.
-final class _NonEmpty implements Sink<String> {
-  _NonEmpty(this._out);
-
-  final StreamController<String> _out;
-
-  @override
-  void add(String s) {
-    if (s.isNotEmpty && !_out.isClosed) _out.add(s);
-  }
-
-  @override
-  void close() {
     if (!_out.isClosed) _out.close();
   }
+
+  static const _lf = 0x0a;
 }

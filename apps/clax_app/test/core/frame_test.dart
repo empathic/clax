@@ -103,6 +103,19 @@ void main() {
         () => CoreResponse.decode(frame('{"status":"x"}')),
         throwsFormatException,
       );
+      for (final head in [
+        '{"status":0,"headers":[]}',
+        '{"status":600,"headers":[]}',
+        '{"status":1e400,"headers":[]}',
+        '{"status":200.5,"headers":[]}',
+        '{"status":200,"headers":[["a"]]}',
+        '{"status":200}',
+        '[200]',
+      ]) {
+        expect(() => CoreResponse.decode(frame(head)), throwsFormatException, reason: head);
+      }
+      expect(CoreResponse.decode(frame('{"status":100,"headers":[]}')).status, 100);
+      expect(CoreResponse.decode(frame('{"status":599,"headers":[]}')).status, 599);
     });
   });
 

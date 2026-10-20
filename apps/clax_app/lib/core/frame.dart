@@ -105,8 +105,9 @@ final class RequestFrame {
 class CoreResponse {
   const CoreResponse(this.status, this.headers, this.body);
 
-  /// Reads a response frame; a [FormatException] when [frame] is not one.
-  /// The body is a view of [frame], not a copy.
+  /// Reads a response frame; a [FormatException] when [frame] is not one,
+  /// including a status that is not an integer from 100 to 599. The body
+  /// is a view of [frame], not a copy.
   static CoreResponse decode(Uint8List frame) {
     if (frame.length < 8 ||
         !Iterable.generate(4).every((i) => frame[i] == _magic[i])) {
@@ -116,13 +117,17 @@ class CoreResponse {
     if (frame.length - 8 < n) {
       throw const FormatException('a frame shorter than its head');
     }
-    try {
-      final head = jsonDecode(utf8.decode(Uint8List.sublistView(frame, 8, 8 + n)))
-          as Map<String, Object?>;
+    final head = jsonDecode(
+      utf8.decode(Uint8List.sublistView(frame, 8, 8 + n)),
+    );
+    if (head case {
+      'status': final int status,
+      'headers': final List<Object?> headers,
+    } when status >= 100 && status <= 599) {
       return CoreResponse(
-        (head['status']! as num).toInt(),
+        status,
         [
-          for (final h in head['headers']! as List<Object?>)
+          for (final h in headers)
             switch (h) {
               [final String k, final String v] => (k, v),
               _ => throw FormatException('a response header: $h'),
@@ -130,9 +135,8 @@ class CoreResponse {
         ],
         Uint8List.sublistView(frame, 8 + n),
       );
-    } on TypeError catch (e) {
-      throw FormatException('a response head: $e');
     }
+    throw FormatException('a response head: $head');
   }
 
   final int status;

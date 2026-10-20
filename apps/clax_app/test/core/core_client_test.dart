@@ -270,17 +270,6 @@ void main() {
       }
     });
 
-    test('a character split across two posts decodes whole', () async {
-      final core = open();
-      final sub = core.subscribe();
-      final s = lib.subscriptions.single;
-      final bytes = utf8.encode('data: "café ✓"\n\n');
-      lib.postBytes(s, bytes.sublist(0, 11));
-      lib.postBytes(s, bytes.sublist(11));
-      lib.postBlock(s, endBlock('stream_ended'));
-      expect((await sub.blocks.toList()).join(), 'data: "café ✓"\n\n${endBlock('stream_ended')}');
-    });
-
     test('cancel stops the blocks and closes the port', () async {
       final core = open();
       final sub = core.subscribe();
@@ -320,6 +309,102 @@ void main() {
       core.close();
       lib.postState({'type': 'closed'});
       expect(await sub.blocks.toList(), [endBlock('core_closed')]);
+    });
+  });
+
+  group('malformed input', () {
+    /// Posts [c]'s tag, then a frame whose head is [head].
+    void postHead(FakeLibCall c, String head) {
+      final h = utf8.encode(head);
+      c.port.send(Uint8List.fromList([
+        ...(ByteData(8)..setInt64(0, c.tag, Endian.little)).buffer.asUint8List(),
+        ...ascii.encode('CLX1'),
+        ...(ByteData(4)..setUint32(0, h.length, Endian.little)).buffer.asUint8List(),
+        ...h,
+      ]));
+    }
+
+    test('a status outside 100-599, or not an integer, is malformed', () async {
+      final core = open();
+      for (final status in ['0', '99', '600', '1e400', '200.5', '"200"', 'null']) {
+        final r = core.call(const CoreRequest('GET', '/api/a'));
+        postHead(lib.calls.last, '{"status":$status,"headers":[]}');
+        expect(unanswered(await r), 'malformed', reason: status);
+      }
+    });
+
+    test('a message too short for its tag is logged; its call waits for close', () async {
+      final logs = <String>[];
+      final core = CoreClient.open(
+        home.path,
+        AppOrigins.forPlatform(android: true),
+        lib: lib,
+        log: logs.add,
+      );
+      final r = core.call(const CoreRequest('GET', '/api/a'));
+      lib.calls.single.port.send(Uint8List(3));
+      lib.calls.single.port.send('not bytes');
+      await pumpEventQueue();
+      expect(logs, hasLength(2));
+      core.close();
+      lib.postState({'type': 'closed'});
+      expect(unanswered(await r), 'core_closed');
+    });
+
+    test('a frame too short for its head, after a tag, is malformed', () async {
+      final core = open();
+      final r = core.call(const CoreRequest('GET', '/api/a'));
+      final c = lib.calls.single;
+      c.port.send(Uint8List.fromList([
+        ...(ByteData(8)..setInt64(0, c.tag, Endian.little)).buffer.asUint8List(),
+        ...ascii.encode('CLX'),
+      ]));
+      expect(unanswered(await r), 'malformed');
+    });
+
+    test('malformed UTF-8 ends a subscription as malformed, and is logged', () async {
+      final logs = <String>[];
+      final core = CoreClient.open(
+        home.path,
+        AppOrigins.forPlatform(android: true),
+        lib: lib,
+        log: logs.add,
+      );
+      final sub = core.subscribe();
+      final s = lib.subscriptions.single;
+      lib.postBlock(s, 'event: ready\n\n');
+      lib.postBytes(s, [...ascii.encode('data: '), 0xff, 0x0a, 0x0a]);
+      lib.postBlock(s, 'event: after\n\n');
+      expect(await sub.blocks.toList(), ['event: ready\n\n', endBlock('malformed')]);
+      expect(logs, hasLength(1));
+    });
+
+    test('an end block split across posts ends with its reason', () async {
+      final core = open();
+      final sub = core.subscribe();
+      final s = lib.subscriptions.single;
+      final end = endBlock('stream_ended');
+      lib.postBlock(s, end.substring(0, 'event: end\n'.length));
+      lib.postBlock(s, end.substring('event: end\n'.length, end.length - 1));
+      lib.postBlock(s, '\n');
+      lib.postBlock(s, 'event: after\n\n');
+      expect(await sub.blocks.toList(), [end]);
+    });
+
+    test('blocks are yielded whole, however the posts split them', () async {
+      final core = open();
+      final sub = core.subscribe();
+      final s = lib.subscriptions.single;
+      final bytes = utf8.encode('data: "café ✓"\n\nevent: x\n\n');
+      lib.postBytes(s, bytes.sublist(0, 11));
+      lib.postBytes(s, bytes.sublist(11, 18));
+      lib.postBytes(s, bytes.sublist(18));
+      lib.postBlock(s, endBlock('stream_ended'));
+      expect(await sub.blocks.toList(), [
+        'data: "café ✓"\n\n',
+        'event: x\n\n',
+        endBlock('stream_ended'),
+      ]);
     });
   });
 }
