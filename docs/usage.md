@@ -967,10 +967,9 @@ last ten timings ("Launch → home usable", "Launch → home snapshot").
 A first launch after an install has no snapshot yet; leave the home
 screen up for a second (the snapshot is taken shortly after it is
 drawn, and whenever it is covered or put away) before the next launch.
-On macOS, `CLAX_APP_DIR=<dir inside ~/Library/Containers/dev.empathic.clax/Data>`
-in the environment of the app's executable
-(`Clax.app/Contents/MacOS/Clax`) gives it a scratch support and
-cache directory, so a measured build leaves your own apps alone.
+On macOS, `CLAX_APP_DIR=<dir inside the app's container>` in the
+environment of the app's executable (`Clax.app/Contents/MacOS/Clax`)
+gives it a scratch support and cache directory.
 
 `scripts/perf-app-launch.sh` does those cold starts and reports the
 median and p90 of both timings; it gates nothing, and without
@@ -978,22 +977,88 @@ median and p90 of both timings; it gates nothing, and without
 
 ```sh
 scripts/perf-app-launch.sh --macos --i-know-what-i-am-doing    # builds the macOS app
-scripts/perf-app-launch.sh --macos --app <Clax.app or its zip> --runs 5 --i-know-what-i-am-doing
-scripts/perf-app-launch.sh --android --i-know-what-i-am-doing  # the app `just app-phone` installed
+scripts/perf-app-launch.sh --macos --app <Clax.app or its zip> --commit <sha> --runs 5 --i-know-what-i-am-doing
+scripts/perf-app-launch.sh --android --commit <sha> --i-know-what-i-am-doing  # the app installed on the phone
 ```
 
-On macOS each run gets a new scratch `CLAX_APP_DIR` in the app's
-container, removed afterwards; on Android the app's own timings are
-read with `run-as`. One launch more than `--runs` (default 9) is made
-and the first dropped, as it has no snapshot. A build signed ad hoc is
-asked for the saved API key in the login keychain at each launch until
-you answer Always Allow, and nothing finishes while the screen is
-locked. `just perf` runs the macOS measure after the other benchmarks;
-with `CLAX_PERF_JSON` set the figures go to the perf log
-(`scripts/perf-log.sh`), each p90 beside its budget in
-`web/perf/budget.json` (`<platform>.app_home_usable_ms` and
-`app_home_cover_ms`), which `--record` writes for a platform that has
-none: the p90 rounded up to 50 ms.
+On macOS it never runs the build as `dev.empathic.clax`: it makes a copy
+of it once per build under `target/perf/clax-perf-<sha>`, sets the copy's
+`CFBundleIdentifier` to `dev.empathic.clax.perf` and signs it again ad
+hoc with its entitlements kept, so the copy runs in a sandbox container of
+its own, `~/Library/Containers/dev.empathic.clax.perf`, which the script
+removes before the first launch and at the end. Your installed app's
+container is never read or written. The login keychain is not kept per
+container, though: the copy asks for the same saved API key item your
+installed app keeps, macOS asks you whether to let it, and the copy's
+daemon starts only once that read returns, so until the app can be told
+to read no key when it is measured (record 30b78596, an open decision), a
+measured launch waits on that question. On Android the installed app is measured, on its own home, and
+its timings are read with `run-as`.
+
+One launch more than `--runs` (default 9) is made and the first dropped;
+it stays up until its home screen has kept its snapshot, so every
+measured launch starts from one. The run stops before the first launch
+while the Mac's screen is locked, and after a dropped launch that never
+reaches its home screen. The JSON names the build measured (`--commit`,
+the app, its digest and version). `just perf` runs the macOS measure
+after the other benchmarks; with `CLAX_PERF_JSON` set the figures and
+each timing's missing launches go to the perf log (`scripts/perf-log.sh`),
+each p90 beside its budget in `web/perf/app-budget.json`
+(`<platform>.app_home_usable_ms` and `app_home_cover_ms`), which
+`--record` writes for a platform that has none, the p90 rounded up to
+50 ms, and refuses to write from a run with any launch missing.
+
+Taking the launch baseline, the daemon's numbers before the app runs on
+the embedded core. An agent never makes a git worktree; you may.
+
+1. Name the build: the branch head while the app has not yet been put on
+   the core, else the commit before the one that did.
+
+   ```sh
+   C=$(git rev-parse HEAD)
+   # once "Run the app on the embedded core" has landed:
+   C=$(git rev-parse "$(git log -1 --format=%H --grep='^Run the app on the embedded core')^")
+   ```
+
+2. Build its macOS app in a checkout of `$C` that you make, and keep its
+   zip here (`just app-macos` prints the zip's path last):
+
+   ```sh
+   git worktree add ../clax-baseline "$C"
+   (cd ../clax-baseline && just app-macos)
+   mkdir -p target/perf && cp <the zip it printed> "target/perf/clax-macos-$C.zip"
+   git worktree remove ../clax-baseline
+   ```
+
+3. With the screen unlocked, from this checkout. Its first launch asks
+   for the saved API key (above): this step waits on the app reading no
+   key when it is measured.
+
+   ```sh
+   CLAX_PERF_JSON=target/perf/app-launch-before.json scripts/perf-app-launch.sh --macos \
+       --app "target/perf/clax-macos-$C.zip" --commit "$C" --runs 9 --record --i-know-what-i-am-doing
+   ```
+
+4. Log it under the measured build:
+
+   ```sh
+   PERF_COMMIT="$C" scripts/perf-log.sh record --append target/perf-log.jsonl target/perf/app-launch-before.json
+   ```
+
+5. On the phone, on the build installed now (not `just app-phone`: a
+   build of this branch is not installed on your devices before their
+   homes are checked), unlocked and awake, with `P` the commit that build
+   was made from:
+
+   ```sh
+   adb shell dumpsys package dev.empathic.clax | grep -m1 versionName
+   CLAX_PERF_JSON=target/perf/app-launch-before-phone.json scripts/perf-app-launch.sh --android \
+       --commit "$P" --record --i-know-what-i-am-doing
+   PERF_COMMIT="$P" scripts/perf-log.sh record --append target/perf-log.jsonl target/perf/app-launch-before-phone.json
+   ```
+
+6. Commit `web/perf/app-budget.json`, with both runs' medians and p90s in
+   the message.
 
 ### Clax on iPhone and iPad
 

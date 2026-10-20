@@ -24,7 +24,11 @@
 #   line in its support directory's timings.jsonl, at most 60 s (a launch
 #   without one counts as missing), then sends the app SIGTERM by its PID,
 #   and the daemon it started too (by the PID in its daemon.json), waiting
-#   for each to exit.
+#   for each to exit. The login keychain is not kept per container: the
+#   copy asks for the same saved API key item the installed app keeps
+#   (flutter_secure_storage's, apps/clax_app/lib/platform/secure_key.dart),
+#   and macOS asks whether to let it; the daemon starts only once that
+#   read returns.
 # --android: on the plugged-in phone or emulator (ANDROID_SERIAL picks
 #   one), with the app already installed (`just app-phone`): `am
 #   force-stop` and `am start -W` N times, each waiting for a new
