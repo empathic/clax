@@ -238,9 +238,11 @@ else `false`. The tool result passes it on.
 next version, in one store transaction: every file of `n`, `index.html`
 included, with its bytes, content type and hash, so the new version's
 `content_sha256` equals `n`'s, and no file of the current version that `n`
-lacks. The new version is labelled `Restored v<n>` with the note `Restored
-version <n>`; the title, description, icon and capabilities stay as they
-are, and documents are not touched. An `X-Clax-Session`, when given, must
+lacks. The files are copied as they are, without a publish's checks: an
+`icon.svg` the icon rules now refuse comes back unchanged. The new version
+is labelled `Restored v<n>` with the note `Restored version <n>`; the
+title, description, icon and capabilities stay as they are, and documents
+are not touched. An `X-Clax-Session`, when given, must
 name a live session (400 `unknown_session` otherwise), which the version
 records. It
 answers as a publish does (201 `{artifact, version, url, note_truncated}`),
@@ -490,7 +492,9 @@ Errors: `invalid_id`, `not_found`.
 | `version` | integer | no | The version to fork; defaults to the URL's version, else the current version. |
 
 Makes a new artifact whose version 1 holds the chosen version's files,
-title, description, icon and capabilities. It is the agent's person's (the
+title, description, icon and capabilities. The files are copied as they
+are, without a publish's checks (an `icon.svg` the icon rules now refuse
+included). It is the agent's person's (the
 owner's for the owner's agents) and the session's, which watches it; the
 source's comment threads, assets, documents and sharing are not copied.
 Version 1's note is `Forked from <artifact ID>@v<n>`. A daemon that keeps

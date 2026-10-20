@@ -2321,6 +2321,45 @@ mod tests {
         assert_eq!(files, ["a.css", "b.css", "index.html"]);
     }
 
+    /// Restore and fork copy history as it is: an `icon.svg` an older build
+    /// took, which the icon rules now refuse, comes back unchanged, since
+    /// neither runs a publish's checks on the files it copies.
+    #[test]
+    fn restore_and_fork_carry_an_icon_the_rules_now_refuse_unchanged() {
+        let (_d, store) = store();
+        let old = r#"<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 9 9"><script>x()</script></svg>"#;
+        assert!(clax_core::icon::problem(old.as_bytes()).is_some());
+        use clax_core::publish::{DecodedFile, FileChange};
+        let mut v1 = publish(&[("index.html", Some("v1"))], None);
+        v1.files.insert(
+            "icon.svg".into(),
+            FileChange::Put(DecodedFile {
+                bytes: old.as_bytes().to_vec(),
+                content_type: "image/svg+xml".into(),
+            }),
+        );
+        let (a, _) = store.create_artifact(DAEMON, v1, None).unwrap();
+        let id = clax_core::ArtifactId::parse(&a.id).unwrap();
+        store
+            .publish_version(
+                DAEMON,
+                &id,
+                publish(&[("index.html", Some("v2")), ("icon.svg", None)], Some(1)),
+                None,
+            )
+            .unwrap();
+        let (_, v3) = store.restore_version(DAEMON, &id, 1, 2, None).unwrap();
+        assert_eq!(v3.n, 3);
+        let (bytes, _) = store.read_file(&id, 3, "icon.svg").unwrap().unwrap();
+        assert_eq!(bytes, old.as_bytes());
+        let (fork, _) = store
+            .fork_artifact(DAEMON, &id, Some(1), None, None)
+            .unwrap();
+        let fork = clax_core::ArtifactId::parse(&fork.id).unwrap();
+        let (bytes, _) = store.read_file(&fork, 1, "icon.svg").unwrap().unwrap();
+        assert_eq!(bytes, old.as_bytes());
+    }
+
     #[test]
     fn a_publish_records_no_source_version() {
         let (_d, store) = store();
