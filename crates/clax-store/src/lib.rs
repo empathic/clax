@@ -126,6 +126,7 @@ pub mod remotes;
 pub mod sessions;
 pub mod shares;
 pub mod site;
+pub mod tags;
 pub mod threads;
 pub mod viewers;
 pub mod visibility;

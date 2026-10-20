@@ -1302,6 +1302,28 @@ impl Event<'_> {
                 },
                 self.show("reason")
             ),
+            Some(K::TagCreate) => format!(
+                "Made tag {} ({})",
+                self.show("name"),
+                self.show("tag_id")
+            ),
+            Some(K::TagUpdate) => {
+                let fields: Vec<&str> = match self.body.get("fields") {
+                    Some(Value::Object(f)) => f.keys().map(String::as_str).collect(),
+                    _ => Vec::new(),
+                };
+                format!(
+                    "Changed the {} of tag {}",
+                    and_list(&fields),
+                    self.show("tag_id")
+                )
+            }
+            Some(K::TagDelete) => format!(
+                "Deleted tag {} ({}), which {} artifacts carried",
+                self.show("name"),
+                self.show("tag_id"),
+                self.show("artifacts")
+            ),
             Some(K::BackfillSkip) => {
                 return format!(
                     "Skipped {} row {} while recording earlier history",

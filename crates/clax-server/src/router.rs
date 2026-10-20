@@ -6,8 +6,8 @@
 use crate::routes::{
     approvals, artifacts, assets, connect, content, docs, drafts, extension, feedback, git_token,
     grants, health, inbox, live, live_layers, mcp_http, people, perf, questions, remotes, room,
-    sample, sessions, sites, snapshot, stream, surface, threads, token, toolpath, viewers, watches,
-    working,
+    sample, sessions, sites, snapshot, stream, surface, tags, threads, token, toolpath, viewers,
+    watches, working,
 };
 #[cfg(not(target_arch = "wasm32"))]
 use crate::routes::{events, mcp};
@@ -19,7 +19,7 @@ use axum::{
     extract::DefaultBodyLimit,
     handler::Handler,
     http::StatusCode,
-    routing::{delete, get, post},
+    routing::{delete, get, patch, post, put},
 };
 use clax_http::agent::{self, DeniedToGrants};
 use clax_http::auth::RequireToken;
@@ -107,6 +107,15 @@ fn routes(state: AppState, shutdown: Option<tokio::sync::watch::Sender<bool>>) -
             get(artifacts::get_version),
         )
         .route("/api/artifacts/{aid}/files", get(artifacts::files))
+        .route("/api/tags", get(tags::list).post(tags::create))
+        .route(
+            "/api/tags/{tag_id}",
+            patch(tags::update).delete(tags::delete),
+        )
+        .route(
+            "/api/artifacts/{aid}/tags",
+            put(tags::put_artifact).patch(tags::patch_artifact),
+        )
         .route("/api/artifacts/{aid}/assets", get(assets::list))
         .route(
             "/api/artifacts/{aid}/assets/{asset_id}",

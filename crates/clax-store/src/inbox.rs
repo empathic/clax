@@ -177,6 +177,9 @@ pub struct InboxQuery {
     /// ID): those the person is shown elsewhere, as an inbox group's Mark
     /// read leaves the cards pinned above the groups.
     pub except: Vec<String>,
+    /// Tag IDs: only items about an artifact carrying every one (match
+    /// all). [`Store::tag_filter_ids`] gives them for a filter's names.
+    pub tags: Vec<String>,
     /// Artifacts whose comment text the recipient may not read: the search
     /// text matches none of their `reply`, `version` and `finished` items,
     /// whose index entries hold comment text, so a search cannot probe it.
@@ -481,6 +484,14 @@ fn build(q: &InboxQuery, shape: Shape, now: &str) -> Built {
         wh.push(format!("{}i.artifact_id = {p}", on(Driver::Artifact)));
     } else if q.no_artifact {
         wh.push(format!("{}i.artifact_id IS NULL", on(Driver::Artifact)));
+    }
+    // Each tag a residual term, the artifacts carrying it read once from
+    // `artifact_tags_by_tag`: together, every tag (match all).
+    for t in &q.tags {
+        let p = arg(Sql::Text(t.clone()), &mut args);
+        wh.push(format!(
+            "+i.artifact_id IN (SELECT artifact_id FROM artifact_tags WHERE tag_id = {p})"
+        ));
     }
     if text.is_some() && !q.text_withheld_at.is_empty() {
         let ps: Vec<String> = q
@@ -921,6 +932,30 @@ pub(super) fn shapes() -> Vec<(String, Built)> {
             InboxQuery {
                 recipient: Some(SAM.into()),
                 since: Some("2026-01-01T00:00:10.000Z".into()),
+                ..base.clone()
+            },
+        ),
+        (
+            "TAG_PAGE",
+            InboxQuery {
+                tags: vec!["t_0000000001".into()],
+                ..base.clone()
+            },
+        ),
+        (
+            "TAGS_UNREAD_PAGE",
+            InboxQuery {
+                tags: vec!["t_0000000001".into(), "t_0000000002".into()],
+                read: ReadFilter::Unread,
+                ..base.clone()
+            },
+        ),
+        (
+            "PERSON_TAG_KIND_PAGE",
+            InboxQuery {
+                recipient: Some(SAM.into()),
+                tags: vec!["t_0000000001".into()],
+                kinds: vec![Kind::Reply],
                 ..base.clone()
             },
         ),

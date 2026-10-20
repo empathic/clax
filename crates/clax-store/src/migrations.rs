@@ -1187,6 +1187,26 @@ pub const MIGRATIONS: &[&str] = &[
         created_at TEXT NOT NULL
     );
     CREATE UNIQUE INDEX briefs_by_key ON briefs (starter, key) WHERE key IS NOT NULL;",
+    // 41: tags (`crate::tags`): one list the owner manages, each tag a
+    // name, a palette colour and an optional description, and the tags each
+    // artifact carries. `fold` is the name lowercased, unique, so two
+    // names that differ only in case cannot both exist; a rename keeps the
+    // ID. `artifact_tags_by_tag` serves the filters and a tag's delete.
+    "CREATE TABLE tags (
+        id TEXT PRIMARY KEY,
+        name TEXT NOT NULL,
+        fold TEXT NOT NULL UNIQUE,
+        colour TEXT NOT NULL,
+        description TEXT,
+        created_at TEXT NOT NULL,
+        updated_at TEXT NOT NULL
+    );
+    CREATE TABLE artifact_tags (
+        artifact_id TEXT NOT NULL,
+        tag_id TEXT NOT NULL,
+        PRIMARY KEY (artifact_id, tag_id)
+    );
+    CREATE INDEX artifact_tags_by_tag ON artifact_tags (tag_id, artifact_id);",
 ];
 
 /// The audit journal's migration, as a schema version (the

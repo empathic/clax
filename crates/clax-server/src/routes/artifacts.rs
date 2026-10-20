@@ -276,15 +276,18 @@ pub struct ListQuery {
 /// ([`clax_http::live_access::sees_live_pages`]), and for a person's agent every
 /// artifact its rights do not let it read, answered as if it did not
 /// exist. An agent channel's fields are filtered for its reader (spec
-/// §8.3, O9).
+/// §8.3, O9). With `?tag=<id or name>` (repeatable), only the artifacts
+/// carrying every tag named (match all); a name no tag has matches none.
 pub async fn list(
     State(s): State<AppState>,
     a: Agent<ArtifactsList>,
     extensions: axum::http::Extensions,
     headers: HeaderMap,
+    axum::extract::RawQuery(raw): axum::extract::RawQuery,
     q: Result<Query<ListQuery>, QueryRejection>,
 ) -> Result<Json<Value>, ApiError> {
     let Query(q) = q.map_err(|e| ApiError::bad_request("invalid_query", e.body_text()))?;
+    let tags = super::tags::tag_params(raw.as_deref());
     let local = clax_http::live_access::sees_live_pages(&headers, &extensions, &s.token);
     let reads = a.read_rights();
     let vf = VisFor::of(&a.caller, &s);
@@ -406,6 +409,13 @@ pub async fn list(
         }
     };
     let mut artifacts = artifacts;
+    if !tags.is_empty() {
+        artifacts.retain(|v| {
+            let carried: Vec<clax_core::tags::TagRef> =
+                serde_json::from_value(v["tags"].clone()).unwrap_or_default();
+            clax_store::tags::carries_all(&carried, &tags)
+        });
+    }
     if !a.caller.is_agent() {
         mark_brief(&s, &mut artifacts).await?;
     }

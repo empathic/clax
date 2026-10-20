@@ -265,6 +265,22 @@ fn seed_inbox(c: &Connection, ts: &dyn Fn(usize) -> String) {
         )
         .unwrap();
     }
+    // Three tags, each on some of the artifacts the items are about.
+    for t in 1..=3 {
+        c.execute(
+            "INSERT INTO tags (id, name, fold, colour, created_at, updated_at)
+             VALUES (?1, ?2, ?2, 'gray', ?3, ?3)",
+            params![format!("t_000000000{t}"), format!("tag{t}"), ts(0)],
+        )
+        .unwrap();
+        for a in (0..40).filter(|a| a % (t + 1) == 0) {
+            c.execute(
+                "INSERT INTO artifact_tags (artifact_id, tag_id) VALUES (?1, ?2)",
+                params![format!("art{a:04}"), format!("t_000000000{t}")],
+            )
+            .unwrap();
+        }
+    }
     for (n, q) in (0..QUESTIONS).step_by(4).enumerate() {
         c.execute(
             "INSERT INTO inbox_items (id, kind, key, question_id, session_id, harness, created_at)
@@ -724,6 +740,21 @@ fn hot_queries() -> Vec<Hot> {
     let live = vec![t(":viewer"), t("v1"), t(":pid"), pid.clone()];
     let named = |v: Vec<Value>| v;
     vec![
+        (
+            "artifacts with their tags",
+            format!(
+                "{} WHERE deleted_at IS NULL AND current_version > 0",
+                super::artifacts::SELECT
+            ),
+            vec![],
+            &["sqlite_autoindex_tags_1"],
+        ),
+        (
+            "artifacts carrying a tag",
+            "SELECT artifact_id FROM artifact_tags WHERE tag_id = ?1".into(),
+            vec![t("t_0000000001")],
+            &["artifact_tags_by_tag"],
+        ),
         (
             "attention of one artifact",
             ATTENTION_ONE.into(),

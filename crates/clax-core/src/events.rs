@@ -195,6 +195,15 @@ pub enum Event {
         #[serde(skip)]
         artifacts: Vec<String>,
     },
+    /// Tags changed (`crate::tags`): the tags artifact `artifact_id` carries
+    /// (`Some`), or the list itself (`None`: a tag made, renamed,
+    /// recoloured or deleted, which every artifact carrying it shows).
+    /// Clients refetch: `GET /api/tags`, and the gallery's artifacts or
+    /// the one artifact. The `gallery` topic carries it, and an artifact's
+    /// own topic when it names one; `/api/events` never does.
+    Tags {
+        artifact_id: Option<String>,
+    },
 }
 
 impl Event {
@@ -220,6 +229,8 @@ impl Event {
             | Event::ApprovalRequest { .. }
             | Event::People { .. }
             | Event::Agents { .. } => "",
+            // A change to the list itself belongs to no artifact.
+            Event::Tags { artifact_id } => artifact_id.as_deref().unwrap_or(""),
         }
     }
 
@@ -245,6 +256,7 @@ impl Event {
             Event::ApprovalRequest { .. } => "approval_request",
             Event::People { .. } => "people",
             Event::Agents { .. } => "agents",
+            Event::Tags { .. } => "tags",
         }
     }
 }
@@ -520,6 +532,7 @@ mod tests {
             Event::People {
                 change: serde_json::json!({"what": "grant_requested"}),
             },
+            Event::Tags { artifact_id: None },
         ] {
             assert_eq!(serde_json::to_value(&ev).unwrap()["type"], ev.name());
         }

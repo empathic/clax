@@ -134,7 +134,7 @@ impl From<CoreError> for ApiError {
             // The grant flow (spec §6.2–§6.4).
             CoreError::Invalid {
                 code:
-                    code @ ("name_taken" | "name_locked" | "key_in_use" | "not_pending"
+                    code @ ("name_taken" | "tag_exists" | "name_locked" | "key_in_use" | "not_pending"
                     | "already_issued" | "not_issued" | "owner_answered" | "answer_closed"
                     | "not_on_lan" | "request_closed"),
                 message,

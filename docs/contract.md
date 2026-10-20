@@ -3724,6 +3724,12 @@ router), and a test fails when it differs:
 | `GET /api/artifacts/{aid}/versions/{n}` | Filtered | `clax-artifacts` `read` | 2 MiB | yes |
 | `POST /api/artifacts/{aid}/versions` | Filtered | `clax-artifacts` `update` | 96 MiB | yes |
 | `GET /api/artifacts/{aid}/files` | Filtered | `clax-artifacts` `read` | 2 MiB | yes |
+| `GET /api/tags` | Own | `clax-artifacts` `read` | 2 MiB | yes |
+| `POST /api/tags` | Own | `clax-artifacts` `update` | 2 MiB | yes |
+| `PATCH /api/tags/{tag_id}` | Own | `clax-artifacts` `update` | 2 MiB | yes |
+| `DELETE /api/tags/{tag_id}` | Own | `clax-artifacts` `update` | 2 MiB | yes |
+| `PUT /api/artifacts/{aid}/tags` | Own | `clax-artifacts` `update` | 2 MiB | yes |
+| `PATCH /api/artifacts/{aid}/tags` | Own | `clax-artifacts` `update` | 2 MiB | yes |
 | `GET /api/artifacts/{aid}/versions/{n}/files/{*path}` | Filtered | `clax-artifacts` `read` | 2 MiB | yes |
 | `GET /api/artifacts/{aid}/assets` | Filtered | `clax-artifacts` `read` | 2 MiB | yes |
 | `POST /api/artifacts/{aid}/assets` | Filtered | `clax-artifacts` `update` | 21 MiB | yes |

@@ -729,6 +729,15 @@ fn routes_loud(ev: &Event) -> Vec<(Chan, Gate)> {
             v
         }
         Event::People { .. } => vec![(Chan::People, Gate::Any)],
+        // Tag names are the owner's, shown with every artifact anyone sees;
+        // the event carries no name, only what to refetch.
+        Event::Tags { artifact_id } => match artifact_id {
+            Some(a) => vec![
+                (Chan::Gallery, Gate::Any),
+                (Chan::Artifact(a.clone()), Gate::Any),
+            ],
+            None => vec![(Chan::Gallery, Gate::Any)],
+        },
         // An agent started, ended or was renamed: the roster, and the Send
         // menus of the artifacts it watched.
         Event::Agents { artifacts } => artifacts
@@ -2802,6 +2811,33 @@ mod tests {
             got[0].1
         );
         assert!(drain(&mut q).is_empty(), "no other topic carries people");
+    }
+
+    #[test]
+    fn tag_changes_reach_the_gallery_and_the_artifacts_topic() {
+        let hub = Hub::new(Default::default());
+        let c = viewer(Level::Interact, Some("u_sam"));
+        let mut g = hub.open_for(c.clone(), true, None, None, Some("u_sam".into()));
+        let mut a = hub.open_for(c.clone(), true, None, None, Some("u_sam".into()));
+        let mut other = hub.open_for(c.clone(), true, None, None, Some("u_sam".into()));
+        hub.update(&g.id, &c, &[Topic::Gallery], &[]).unwrap();
+        hub.update(&a.id, &c, &[Topic::Artifact(A.into())], &[])
+            .unwrap();
+        hub.update(&other.id, &c, &[Topic::Artifact("8q3k9mzx2b4t".into())], &[])
+            .unwrap();
+        hub.dispatch(&Event::Tags {
+            artifact_id: Some(A.into()),
+        });
+        hub.dispatch(&Event::Tags { artifact_id: None });
+        let got = drain(&mut g);
+        assert_eq!(got.len(), 2, "{got:?}");
+        assert!(got[0].1.starts_with("event: tags\n"), "{}", got[0].1);
+        assert!(got[0].1.contains(&format!(r#""artifact_id":"{A}""#)), "{}", got[0].1);
+        assert!(got[1].1.contains(r#""artifact_id":null"#), "{}", got[1].1);
+        let got = drain(&mut a);
+        assert_eq!(got.len(), 1, "the list's change is the gallery's: {got:?}");
+        assert!(got[0].1.contains(r#""topic":"artifact:"#), "{}", got[0].1);
+        assert!(drain(&mut other).is_empty());
     }
 
     #[test]

@@ -62,6 +62,26 @@ pub struct Filter {
     since: Option<String>,
     #[serde(default)]
     until: Option<String>,
+    /// Tags, each by ID or name: items about an artifact carrying every one.
+    #[serde(default)]
+    tag: Option<Tags>,
+}
+
+/// One tag or several, as a request body names them.
+#[derive(Deserialize)]
+#[serde(untagged)]
+pub enum Tags {
+    One(String),
+    List(Vec<String>),
+}
+
+impl Tags {
+    fn into_vec(self) -> Vec<String> {
+        match self {
+            Tags::One(t) => vec![t],
+            Tags::List(v) => v,
+        }
+    }
 }
 
 #[derive(Deserialize)]
@@ -76,7 +96,7 @@ impl Filter {
     /// `invalid_query` for an unknown kind, an artifact that is neither an
     /// artifact ID nor `none` (the items about no artifact), or a date or
     /// time that is not RFC 3339 (`since`/`until` are normalised to the
-    /// stored form).
+    /// stored form). Its tags are names until [`with_tags`] makes them IDs.
     fn query(self, recipient: Option<String>) -> Result<InboxQuery, ApiError> {
         let names: Vec<String> = match self.kind {
             None => Vec::new(),
@@ -132,9 +152,28 @@ impl Filter {
             agent,
             since: time(self.since, false)?,
             until: time(self.until, true)?,
+            tags: tag_refs(self.tag.map(Tags::into_vec).unwrap_or_default()),
             ..InboxQuery::default()
         })
     }
+}
+
+/// `refs` trimmed, blanks left out.
+fn tag_refs(refs: Vec<String>) -> Vec<String> {
+    refs.into_iter()
+        .map(|t| t.trim().to_string())
+        .filter(|t| !t.is_empty())
+        .collect()
+}
+
+/// `q` with its tags, names or IDs as the request gave them, made tag IDs
+/// ([`clax_store::Store::tag_filter_ids`]: a name no tag has matches
+/// nothing).
+fn with_tags(db: &clax_store::Store, mut q: InboxQuery) -> clax_core::Result<InboxQuery> {
+    if !q.tags.is_empty() {
+        q.tags = db.tag_filter_ids(&q.tags)?;
+    }
+    Ok(q)
 }
 
 #[derive(Deserialize)]
@@ -247,7 +286,9 @@ fn query_of<T>(q: Result<Query<T>, QueryRejection>) -> Result<T, ApiError> {
     q.map(|Query(q)| q).map_err(|e| invalid(e.body_text()))
 }
 
-/// `GET /api/inbox?q=&kind=<k,…>&artifact=<aid>&agent=<harness|handle>&since=&until=&read=unread|read|all&before=<cursor>&limit=`,
+/// `GET /api/inbox?q=&kind=<k,…>&artifact=<aid>&agent=<harness|handle>&tag=<id or name>…&since=&until=&read=unread|read|all&before=<cursor>&limit=`
+/// (`tag` repeatable: items about an artifact carrying every tag named;
+/// a name no tag has matches nothing),
 /// or `GET /api/inbox?group=agent` (no other parameter; spec
 /// 2026-10-08-multi-agent-multi-person §13) → `{agents, unread}`: the agent
 /// strip, one entry per agent with unread items for the caller or an open
@@ -289,17 +330,19 @@ pub async fn list(
     d: DeniedToGrants,
     _o: SameOrigin,
     who: Identity,
+    axum::extract::RawQuery(raw): axum::extract::RawQuery,
     q: Result<Query<ListQuery>, QueryRejection>,
 ) -> Result<Json<Value>, ApiError> {
     d.refuse_agents()?;
     let me = recipient_of(&s, &who).await?;
     let hosted = s.hosted.is_some();
     let q = query_of(q)?;
+    let tags = super::tags::tag_params(raw.as_deref());
     match q.group.as_deref() {
         None => {}
         Some("artifact") => {}
         Some("agent") => {
-            if q.filters() {
+            if q.filters() || !tags.is_empty() {
                 return Err(invalid("group=agent takes no other parameter"));
             }
             let out = s
@@ -337,6 +380,7 @@ pub async fn list(
         agent: q.agent,
         since: q.since,
         until: q.until,
+        tag: Some(Tags::List(tags)),
     }
     .query(me.clone())?;
     iq.read = match q.read.as_deref() {
@@ -368,13 +412,14 @@ pub async fn list(
         || iq.agent.is_some()
         || iq.since.is_some()
         || iq.until.is_some()
+        || !iq.tags.is_empty()
         || iq.read != ReadFilter::All;
     // A filtered list (a search included) also counts what matches, and a
     // grouping groups every match; each reads up to the whole inbox, so it
     // waits in the bulk lane. An unfiltered page reads one page and the
     // unread count.
     let job = move |db: &clax_store::Store| {
-        let mut iq = iq;
+        let mut iq = with_tags(db, iq)?;
         if iq.text.is_some() {
             iq.text_withheld_at =
                 clax_http::views::inbox::text_withheld_at(db, me.as_deref(), hosted)?;
@@ -431,20 +476,39 @@ pub async fn list(
 /// views oldest first, and the five newest unread items other than
 /// questions (connection requests among them), for the gallery and the
 /// top bar. Each part is read on its
-/// own, one just after another.
+/// own, one just after another. With `?tag=<id or name>` (repeatable),
+/// `questions` and `latest` are only those about an artifact carrying every
+/// tag named (match all); `unread` stays the whole inbox's.
 pub async fn summary(
     State(s): State<AppState>,
     d: DeniedToGrants,
     _o: SameOrigin,
     who: Identity,
+    axum::extract::RawQuery(raw): axum::extract::RawQuery,
 ) -> Result<Json<Value>, ApiError> {
     d.refuse_agents()?;
     let me = recipient_of(&s, &who).await?;
     let hosted = s.hosted.is_some();
+    let tags = super::tags::tag_params(raw.as_deref());
     let out = s
         .store_call(move |db| {
-            let (open, _) =
+            let tag_ids = db.tag_filter_ids(&tags)?;
+            let (mut open, _) =
                 db.list_questions(me.as_deref(), ListStatus::Open, SUMMARY_QUESTIONS)?;
+            if !tag_ids.is_empty() {
+                let mut carrying = std::collections::HashMap::new();
+                open.retain(|q| {
+                    let Some(aid) = &q.artifact_id else {
+                        return false;
+                    };
+                    *carrying.entry(aid.clone()).or_insert_with(|| {
+                        clax_core::ArtifactId::parse(aid)
+                            .ok()
+                            .and_then(|id| db.get_artifact(&id).ok().flatten())
+                            .is_some_and(|a| clax_store::tags::carries_all(&a.tags, &tag_ids))
+                    })
+                });
+            }
             let questions = open
                 .iter()
                 .map(|q| clax_http::views::question::view(db, q))
@@ -463,6 +527,7 @@ pub async fn summary(
                 ],
                 read: ReadFilter::Unread,
                 limit: SUMMARY_LATEST,
+                tags: tag_ids,
                 ..InboxQuery::default()
             })?;
             Ok(json!({
@@ -578,7 +643,7 @@ pub struct ReadBody {
 
 /// `POST /api/inbox/read` (the owner, or a connected person: their own
 /// items; another's IDs mark nothing), body `{ids}` (at most 500 item IDs) or
-/// `{all: true, filter?: {q, kind, artifact, agent, since, until}, upto?,
+/// `{all: true, filter?: {q, kind, artifact, agent, since, until, tag}, upto?,
 /// except?}` (every unread item matching the filter, up to item `seq`
 /// `upto`, the newest the client showed, but the item IDs `except`, at
 /// most 500) → `{marked, unread}`. 400 `invalid_query` for
@@ -631,7 +696,8 @@ pub async fn read_many(
         .store_call(move |db| {
             let marked = match mark {
                 Mark::Ids(ids) => db.inbox_mark(&ids, true, me.as_deref())?,
-                Mark::All(mut q) => {
+                Mark::All(q) => {
+                    let mut q = with_tags(db, *q)?;
                     if q.text.is_some() {
                         q.text_withheld_at =
                             clax_http::views::inbox::text_withheld_at(db, me.as_deref(), hosted)?;

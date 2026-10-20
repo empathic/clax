@@ -172,7 +172,23 @@ pub(super) fn row_to_artifact(r: &Row<'_>) -> rusqlite::Result<Result<Artifact>>
             }),
             _ => None,
         },
+        tags: tags_of(r.get::<_, Option<String>>("tags_json")?.as_deref()),
     }))
+}
+
+/// The tags in `tags_json` (`[[id, name, colour], …]`, the artifact SELECT's
+/// column), sorted by name as [`clax_core::tags::fold`] folds it; a value
+/// that does not parse (none is written but by SQLite) is no tags.
+fn tags_of(json: Option<&str>) -> Vec<clax_core::tags::TagRef> {
+    let rows: Vec<(String, String, String)> = json
+        .and_then(|j| serde_json::from_str(j).ok())
+        .unwrap_or_default();
+    let mut tags: Vec<clax_core::tags::TagRef> = rows
+        .into_iter()
+        .map(|(id, name, colour)| clax_core::tags::TagRef { id, name, colour })
+        .collect();
+    tags.sort_by_cached_key(|t| (clax_core::tags::fold(&t.name), t.id.clone()));
+    tags
 }
 
 /// Keeps the readable rows, logging and dropping the corrupt ones.
@@ -197,7 +213,11 @@ fn skip_corrupt<T>(rows: Vec<Result<T>>) -> Result<Vec<T>> {
 pub(super) const SELECT: &str =
     "SELECT id, title, description, icon, created_at, updated_at, current_version,
     owner_session_id, pinned, capabilities_json, contract_version, kind, person,
-    text_authors_json, forked_from_id, forked_from_version FROM artifacts";
+    text_authors_json, forked_from_id, forked_from_version,
+    (SELECT json_group_array(json_array(g.id, g.name, g.colour))
+       FROM artifact_tags x JOIN tags g ON g.id = x.tag_id
+      WHERE x.artifact_id = artifacts.id) AS tags_json
+    FROM artifacts";
 
 /// The live artifact `id` (not deleted, at least one version) on `c`, or `None`.
 pub(crate) fn live_artifact_in(c: &rusqlite::Connection, id: &str) -> Result<Option<Artifact>> {
@@ -389,6 +409,10 @@ impl Store {
             )?;
             tx.execute(
                 "DELETE FROM doc_authors WHERE artifact_id = ?1",
+                params![id.as_str()],
+            )?;
+            tx.execute(
+                "DELETE FROM artifact_tags WHERE artifact_id = ?1",
                 params![id.as_str()],
             )?;
             tx.execute(
@@ -697,6 +721,7 @@ impl Store {
                             "DELETE FROM docs WHERE artifact_id = ?1",
                             "DELETE FROM doc_authors WHERE artifact_id = ?1",
                             "DELETE FROM leases WHERE artifact_id = ?1",
+                            "DELETE FROM artifact_tags WHERE artifact_id = ?1",
                         ] {
                             tx.execute(sql, params![row.artifact_id])?;
                         }
