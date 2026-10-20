@@ -333,14 +333,48 @@ done_13() {
 done_14() { [ -s "$publish_run_file" ] && [ "$(run_state "$(cat "$publish_run_file")")" = "completed success" ]; }
 done_15() { false; }
 
-# Polls until "$@" prints something, at most MAX_POLLS times.
+# A poll's gh call may fail this many times in a row (a network or API
+# hiccup) before the wait gives up.
+GH_RETRIES=5
+
+# poll_once CMD...: runs CMD, its output in POLL_OUT. A failure counts in
+# POLL_FAILS and returns 1; GH_RETRIES failures in a row return 2, after
+# saying so (on stderr, as callers capture stdout) with gh's error.
+POLL_FAILS=0
+poll_once() {
+    local err
+    err="$(mktemp)"
+    if POLL_OUT="$("$@" 2>"$err")"; then
+        POLL_FAILS=0
+        rm -f "$err"
+        return 0
+    fi
+    POLL_FAILS=$((POLL_FAILS + 1))
+    if [ "$POLL_FAILS" -ge "$GH_RETRIES" ]; then
+        say "  gh failed $POLL_FAILS times in a row ($*): $(tr '\n' ' ' < "$err")" >&2
+        rm -f "$err"
+        return 2
+    fi
+    rm -f "$err"
+    return 1
+}
+
+# Polls until "$@" prints something, at most MAX_POLLS times; a failed call
+# counts as an empty poll. Says why it gave up, on stderr.
 await_output() {
-    local out polls=0
+    local polls=0 rc
+    POLL_FAILS=0
     while :; do
-        out="$("$@")" || return 1
-        if [ -n "$out" ]; then echo "$out"; return 0; fi
+        rc=0
+        poll_once "$@" || rc=$?
+        [ "$rc" != 2 ] || return 1
+        if [ "$rc" = 0 ] && [ -n "$POLL_OUT" ]; then echo "$POLL_OUT"; return 0; fi
         polls=$((polls + 1))
-        [ "$polls" -lt "$MAX_POLLS" ] || return 1
+        if [ "$polls" -ge "$MAX_POLLS" ]; then
+            if [ "$rc" = 0 ]; then say "  nothing after $polls polls" >&2
+            else say "  nothing after $polls polls; the last gh call failed ($*)" >&2; fi
+            return 1
+        fi
         sleep "$POLL"
     done
 }
@@ -348,11 +382,16 @@ await_output() {
 # Waits for workflow run $1 ($2 names it) to complete; fails unless it
 # succeeded.
 await_run() {
-    local id="$1" what="$2" state last="" polls=0
+    local id="$1" what="$2" state last="" polls=0 rc
     say "  $what: run $id (gh run watch $id --repo $GH_REPO)"
+    POLL_FAILS=0
     while :; do
-        state="$(run_state "$id")" || { say "  cannot read run $id"; return 1; }
-        if [ "$state" != "$last" ]; then say "  $what: ${state% }"; last="$state"; fi
+        rc=0
+        poll_once run_state "$id" || rc=$?
+        [ "$rc" != 2 ] || return 1
+        state=""
+        [ "$rc" != 0 ] || state="$POLL_OUT"
+        if [ "$rc" = 0 ] && [ "$state" != "$last" ]; then say "  $what: ${state% }"; last="$state"; fi
         case "$state" in
             "completed success") return 0 ;;
             completed\ *)

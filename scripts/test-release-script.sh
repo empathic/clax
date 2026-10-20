@@ -69,6 +69,16 @@ flag() {
         shift
     done
 }
+# $FAKE_STATE/gh-fail: how many of the next run list and run view calls fail.
+case "$1 $2" in
+    "run list"|"run view")
+        n="$(cat "$S/gh-fail" 2>/dev/null || echo 0)"
+        if [ "$n" -gt 0 ]; then
+            echo $((n - 1)) > "$S/gh-fail"
+            echo "HTTP 502: Bad Gateway (fake)" >&2
+            exit 1
+        fi ;;
+esac
 case "$1 $2" in
     "auth status")
         if [ -e "$S/no-auth" ]; then echo "You are not logged into any GitHub hosts." >&2; exit 1; fi ;;
@@ -270,6 +280,20 @@ if [ "$rc" = 0 ] && released && [ "$(count "just ci")" = 2 ] && [ "$(count "bump
     && has "Step 6: Tag the release: done already"; then
     pass "the next run resumes at the wait and finishes the release, tagging and testing once"
 else fail "resume after a failed wait (rc=$rc: $(grep '^just' "$FAKE_STATE/calls"); $(cat "$C/out"))"; fi
+
+# --- gh failing during a wait ---------------------------------------------------------
+new_case
+echo 2 > "$FAKE_STATE/gh-fail"
+act; rc=$?
+if [ "$rc" = 0 ] && released; then pass "a wait rides out gh failing twice"
+else fail "a wait rides out gh failing twice (rc=$rc: $(cat "$C/out"))"; fi
+new_case
+echo 99 > "$FAKE_STATE/gh-fail"
+CLAX_RELEASE_MAX_POLLS=10 act; rc=$?
+if [ "$rc" = 1 ] && has "gh failed 5 times in a row" && has "HTTP 502: Bad Gateway (fake)" \
+    && has "step 8 (Wait for the Release workflow) failed"; then
+    pass "gh failing on every poll stops the wait, naming gh's error"
+else fail "gh failing on every poll stops the wait (rc=$rc: $(cat "$C/out"))"; fi
 
 # --- preflight refusals --------------------------------------------------------------
 # refuse NAME EXPECTED [ARGS...]: release.sh with ARGS (default: 0.6.0 and
