@@ -154,7 +154,7 @@ type PartName = keyof Parts;
     const next = retrying(name, load, failed(name), clock);
     return () => parsed ? next() : (wait(), whenDone.then(next));
   };
-  const parts = { comment: onNeed("comment", loaders.comment), clip: onNeed("clip", loaders.clip), caps: onNeed("caps", loaders.caps), room: onNeed("room", loaders.room), sample: onNeed("sample", loaders.sample), live: onNeed("live", loaders.live), test: onNeed("test", loaders.test) };
+  const parts = Object.fromEntries(Object.entries(loaders).map(([name, load]) => [name, onNeed(name as PartName, load as (attempt: number) => Promise<unknown>)])) as unknown as { [K in PartName]: () => ReturnType<Parts[K]> };
   const clips = () => parts.clip();
   const rpc = new Rpc(m => post(m));
   const use = makeUse({

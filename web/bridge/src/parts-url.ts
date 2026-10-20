@@ -14,16 +14,15 @@ declare const __CLAX_PARTS__: Record<keyof Parts, string>;
 
 /** The parts' loaders; `bridgeSrc` is the bridge script's own URL. */
 export function loadParts(bridgeSrc: string): Parts {
-  const href: Partial<Record<keyof Parts, string>> = {};
-  try {
-    const base = new URL("/_clax/bridge/", bridgeSrc);
-    for (const name of Object.keys(__CLAX_PARTS__) as (keyof Parts)[]) href[name] = new URL(__CLAX_PARTS__[name], base).href;
-  } catch { /* no URL to load from: every part fails */ }
-  // A browser keeps a failed module load for its URL, so a retry asks for
-  // the same file under a query naming the attempt.
-  const load = (name: keyof Parts) => (attempt = 0) => {
-    const u = href[name];
-    return u ? import(/* @vite-ignore */ attempt ? `${u}?retry=${attempt}` : u) : Promise.reject(new Error(`no URL for the ${name} part`));
-  };
-  return { comment: load("comment"), clip: load("clip"), caps: load("caps"), room: load("room"), sample: load("sample"), live: load("live"), test: load("test") } as Parts;
+  const parts: Record<string, (attempt?: number) => Promise<unknown>> = {};
+  for (const name of Object.keys(__CLAX_PARTS__) as (keyof Parts)[]) {
+    let u: string | null = null;
+    try {
+      u = new URL(__CLAX_PARTS__[name], new URL("/_clax/bridge/", bridgeSrc)).href;
+    } catch { /* no URL to load from: the part fails */ }
+    // A browser keeps a failed module load for its URL, so a retry asks for
+    // the same file under a query naming the attempt.
+    parts[name] = (attempt = 0) => u ? import(/* @vite-ignore */ attempt ? `${u}?retry=${attempt}` : u) : Promise.reject(new Error(`no URL for the ${name} part`));
+  }
+  return parts as Parts;
 }
