@@ -70,6 +70,7 @@ class RunContext {
     this.artifactId,
     this.baseVersion = 0,
     this.title,
+    this.icon,
     this.capabilities,
     required this.files,
     this.items = const [],
@@ -98,6 +99,9 @@ class RunContext {
   /// The version a change started from; 0 for a new app.
   final int baseVersion;
   final String? title;
+
+  /// The base version's icon word.
+  final String? icon;
   final Map<String, Object?>? capabilities;
 
   /// The base version's text files by path.

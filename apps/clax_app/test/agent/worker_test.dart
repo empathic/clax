@@ -854,7 +854,13 @@ void main() {
     expect(t.status, 'open');
     expect(runner.seen, hasLength(1));
     final restore = api.calls.singleWhere((c) => c.name == 'restoreVersion');
-    expect(restore.args, {'aid': aid, 'n': 1, 'ifVersion': 2});
+    expect(restore.args, {
+        'aid': aid,
+        'n': 1,
+        'ifVersion': 2,
+        'title': 'Runs',
+        'capabilities': <String, Object?>{},
+      });
     expect((await api.getDoc(aid, 'runs/a'))!.data, {'km': 9});
   });
 
@@ -881,10 +887,56 @@ void main() {
     await until(() => api.currentVersion(aid) == 4);
     await idle();
     final restore = api.calls.singleWhere((c) => c.name == 'restoreVersion');
-    expect(restore.args, {'aid': aid, 'n': 1, 'ifVersion': 2});
+    expect(restore.args, {
+        'aid': aid,
+        'n': 1,
+        'ifVersion': 2,
+        'title': 'Runs',
+        'capabilities': <String, Object?>{},
+      });
     expect(runner.seen, hasLength(2));
     expect(api.filesOf(aid, 4)['index.html'], contains('Keep'));
     expect(api.threadOf(aid, item.threadId).comments.last.body, 'Keep.');
+  });
+
+  test('a lost publish that set the title, whose documents are then '
+      'refused, is undone with the title it replaced', () async {
+    final lossy = LostAnswerApi();
+    api = lossy;
+    final aid = api.seedArtifact('Runs', {'index.html': page});
+    const refused = DbOp(
+      op: 'set',
+      collection: 'runs',
+      docId: 'a',
+      data: {'km': 1},
+    );
+    workerWith([
+      [
+        const ScriptedCall('set_meta', {
+          'title': 'Run log',
+          'capabilities_json': '{"notify":{}}',
+        }),
+        ...changeCalls(reply: 'Keep.', edits: [('Save', 'Keep')], db: [refused]),
+      ],
+      changeCalls(reply: 'Keep.', edits: [('Save', 'Keep')]),
+    ]).start();
+    await idle();
+    lossy
+      ..loseNextPublish = true
+      ..refuseNextBatch = true;
+    api.sendComment(aid, 'Say Keep');
+    await until(() => api.currentVersion(aid) == 4);
+    await idle();
+    final restore = api.calls.singleWhere((c) => c.name == 'restoreVersion');
+    expect(restore.args, {
+      'aid': aid,
+      'n': 1,
+      'ifVersion': 2,
+      'title': 'Runs',
+      'capabilities': <String, Object?>{},
+    });
+    expect(api.calls.where((c) => c.name == 'restoreVersion'), hasLength(1));
+    expect((await api.getArtifact(aid)).artifact.title, 'Runs');
   });
 
   test('a recovered thread answered before its run is not run again', () async {

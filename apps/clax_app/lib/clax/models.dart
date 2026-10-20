@@ -74,6 +74,39 @@ class ArtifactSummary {
   bool get declaresDb => capabilities.containsKey('db');
 }
 
+/// What an artifact declares beside its files: its title, icon word and
+/// capabilities. Versions do not record it, so a roll-back captures the
+/// one it rolls back to before the change it undoes, and restores it with
+/// the files (`ClaxApi.restoreVersion`'s title, icon and capabilities).
+class Declaration {
+  const Declaration({
+    required this.title,
+    this.icon,
+    this.capabilities = const {},
+  });
+
+  /// What [a] declares now.
+  factory Declaration.of(ArtifactSummary a) =>
+      Declaration(title: a.title, icon: a.icon, capabilities: a.capabilities);
+
+  factory Declaration.fromJson(Json j) => Declaration(
+    title: j['title']! as String,
+    icon: j['icon'] as String?,
+    capabilities: _map(j['capabilities']),
+  );
+
+  final String title;
+
+  /// The icon word; null when there is none. A restore cannot clear an
+  /// icon word, so a roll-back to none keeps the current one.
+  final String? icon;
+
+  /// The full set of capabilities.
+  final Json capabilities;
+
+  Json toJson() => {'title': title, 'icon': icon, 'capabilities': capabilities};
+}
+
 /// One file of a version: its content type, size and SHA-256 (hex), when known.
 class FileMeta {
   const FileMeta({required this.contentType, required this.size, this.sha256});

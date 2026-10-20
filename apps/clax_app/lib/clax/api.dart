@@ -420,3 +420,27 @@ class ClaxApiError implements Exception {
   @override
   String toString() => 'ClaxApiError($status $code: $message)';
 }
+
+/// Undoing a change: version [n]'s files as a new version, with the
+/// [Declaration] in force at [n], [declared], captured before the change.
+/// Without one (a ledger record written before declarations were kept)
+/// only the files come back.
+extension RollBack on ClaxApi {
+  Future<PublishResult> rollBack(
+    String aid,
+    int n, {
+    required int ifVersion,
+    required Declaration? declared,
+    String? label,
+    String? note,
+  }) => restoreVersion(
+    aid,
+    n,
+    ifVersion: ifVersion,
+    title: declared?.title,
+    icon: declared?.icon,
+    capabilities: declared?.capabilities,
+    label: label,
+    note: note,
+  );
+}

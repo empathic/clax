@@ -1134,6 +1134,7 @@ class AgentLoop {
           artifactId: aid,
           baseVersion: snap.artifact.currentVersion,
           title: snap.artifact.title,
+          icon: snap.artifact.icon,
           capabilities: snap.artifact.capabilities,
           files: snap.files,
           shownDocs: {
@@ -1363,6 +1364,7 @@ class AgentLoop {
         artifactId: aid,
         baseVersion: snap.artifact.currentVersion,
         title: snap.artifact.title,
+        icon: snap.artifact.icon,
         capabilities: snap.artifact.capabilities,
         files: snap.files,
         items: items,
@@ -1883,6 +1885,7 @@ class AgentLoop {
                 '${o.collection}/${o.docId}':
                     shown['${o.collection}/${o.docId}'],
             },
+            declared: Declaration.of(snap.artifact),
           );
           await _record(record);
           try {
@@ -1928,7 +1931,12 @@ class AgentLoop {
           if (refused != null) {
             if (landed != null) {
               try {
-                await _api.restoreVersion(aid, v, ifVersion: landed);
+                await _api.rollBack(
+                  aid,
+                  v,
+                  ifVersion: landed,
+                  declared: record?.declared,
+                );
               } on ClaxApiError catch (e) {
                 if (e.status == 0) return const ChangeInterrupted();
                 _log('restoring $aid to version $v failed: $e');
@@ -2078,7 +2086,7 @@ class AgentLoop {
       if (!pinMoved) {
         // Refused: undo the version; its comments run again.
         _log('documents of $aid version ${v.n} refused: $e');
-        await _restore(aid, r.base, v.n, detail.artifact.currentVersion);
+        await _restore(aid, r, v.n, detail.artifact.currentVersion);
         await _forget(aid, r.base);
         return _Docs.undone;
       }
@@ -2087,7 +2095,7 @@ class AgentLoop {
         // wrote them, and whether the batch ran is unknown. Undo the
         // version and fail, rather than skip a migration.
         _log('documents of $aid version ${v.n} ambiguous: $e');
-        await _restore(aid, r.base, v.n, detail.artifact.currentVersion);
+        await _restore(aid, r, v.n, detail.artifact.currentVersion);
         await _forget(aid, r.base);
         return _Docs.ambiguous;
       }
@@ -2182,13 +2190,25 @@ class AgentLoop {
     return true;
   }
 
-  Future<void> _restore(String aid, int base, int landed, int current) async {
+  /// Undoes record [r]'s version [landed] while it is still [current]:
+  /// back to [ChangeRecord.base] with what it declared.
+  Future<void> _restore(
+    String aid,
+    ChangeRecord r,
+    int landed,
+    int current,
+  ) async {
     if (current != landed) return;
     try {
-      await _api.restoreVersion(aid, base, ifVersion: landed);
+      await _api.rollBack(
+        aid,
+        r.base,
+        ifVersion: landed,
+        declared: r.declared,
+      );
     } on ClaxApiError catch (e) {
       if (e.status == 0) rethrow;
-      _log('restoring $aid to version $base failed: $e');
+      _log('restoring $aid to version ${r.base} failed: $e');
     }
   }
 

@@ -643,11 +643,49 @@ void main() {
       final outcome = await loop.change(aid, [item], session: sid);
       expect(outcome, isA<ChangeFailed>());
       final restore = api.calls.singleWhere((c) => c.name == 'restoreVersion');
-      expect(restore.args, {'aid': aid, 'n': 1, 'ifVersion': 2});
+      expect(restore.args, {
+        'aid': aid,
+        'n': 1,
+        'ifVersion': 2,
+        'title': 'Runs',
+        'capabilities': <String, Object?>{},
+      });
       expect(api.filesOf(aid, 3), api.filesOf(aid, 1));
       final t = api.threadOf(aid, item.threadId);
       expect(t.comments.last.body, startsWith("Couldn't make that change: "));
       expect(t.status, 'open');
+    });
+
+    test('a refused db batch after a version that set the title and '
+        'capabilities rolls them back with the files', () async {
+      final loop = loopWith([
+        change(
+          title: 'Run log',
+          capabilities: const {'notify': {}},
+          edits: [edit('Save', 'Keep')],
+          db: [
+            const DbOp(
+              op: 'update',
+              collection: 'runs',
+              docId: 'gone',
+              data: {'unit': 'km'},
+            ),
+          ],
+        ),
+      ]);
+      final item = api.sendComment(aid, 'x', queue: false);
+      expect(await loop.change(aid, [item], session: sid), isA<ChangeFailed>());
+      final restore = api.calls.singleWhere((c) => c.name == 'restoreVersion');
+      expect(restore.args, {
+        'aid': aid,
+        'n': 1,
+        'ifVersion': 2,
+        'title': 'Runs',
+        'capabilities': <String, Object?>{},
+      });
+      final a = (await api.getArtifact(aid)).artifact;
+      expect(a.title, 'Runs');
+      expect(a.capabilities, isEmpty);
     });
 
     for (final (name, op) in [
@@ -687,7 +725,13 @@ void main() {
           final restore = api.calls.singleWhere(
             (c) => c.name == 'restoreVersion',
           );
-          expect(restore.args, {'aid': aid, 'n': 1, 'ifVersion': 2});
+          expect(restore.args, {
+        'aid': aid,
+        'n': 1,
+        'ifVersion': 2,
+        'title': 'Runs',
+        'capabilities': <String, Object?>{},
+      });
           final t = api.threadOf(aid, item.threadId);
           expect(t.comments.last.body, startsWith(failurePrefix));
           expect(t.status, 'open');
@@ -745,7 +789,13 @@ void main() {
       final outcome = await loop.change(aid, [item], session: sid);
       expect(outcome, isA<ChangeFailed>());
       final restore = api.calls.singleWhere((c) => c.name == 'restoreVersion');
-      expect(restore.args, {'aid': aid, 'n': 1, 'ifVersion': 2});
+      expect(restore.args, {
+        'aid': aid,
+        'n': 1,
+        'ifVersion': 2,
+        'title': 'Runs',
+        'capabilities': <String, Object?>{},
+      });
       expect(await loop.ledger.of(aid), isEmpty);
       expect(
         api.threadOf(aid, item.threadId).comments.last.body,

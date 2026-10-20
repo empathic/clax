@@ -70,6 +70,27 @@ void main() {
     expect(api.filesOf(aid, 3)['index.html'], shippedHtml);
   });
 
+  test('Undo keeps the title, icon and capabilities the app has now', () async {
+    await api.publish(
+      aid,
+      PublishRequest(
+        ifVersion: api.currentVersion(aid),
+        title: 'My home',
+        capabilities: const {'db': {}, 'notify': {}},
+        entries: {'index.html': FileEntry.text('<p>mine</p>')},
+      ),
+    );
+    final before = (await api.getArtifact(aid)).artifact;
+    await undoLast(api, aid);
+    final restore = api.calls.lastWhere((c) => c.name == 'restoreVersion');
+    expect(restore.args, {'aid': aid, 'n': 1, 'ifVersion': 2});
+    final after = (await api.getArtifact(aid)).artifact;
+    expect(after.currentVersion, 3);
+    expect(after.title, 'My home');
+    expect(after.icon, before.icon);
+    expect(after.capabilities, {'db': {}, 'notify': {}});
+  });
+
   test('Undo with no earlier version says so', () async {
     await expectLater(undoLast(api, aid), throwsA(isA<HomeRecoveryError>()));
     expect(api.calls.where((c) => c.name == 'restoreVersion'), isEmpty);

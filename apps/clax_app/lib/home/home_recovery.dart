@@ -21,7 +21,9 @@ class HomeRecoveryError implements Exception {
 
 /// Restores an earlier version of home app [homeAppId] (`restoreVersion`,
 /// as the Versions tab's Undo does): its files as a new version, documents
-/// and capabilities untouched. Each Undo in a row steps back one more
+/// untouched, and the title, icon and capabilities the app has now kept,
+/// since no version records its own (a roll-back of a failed change puts
+/// its base's back, `RollBack`). Each Undo in a row steps back one more
 /// version: from latest version `n` it restores `n - 1`; when `n` is the
 /// version the last Undo made (kept in [settings]' [HomeSettings.undo], so
 /// it outlasts a restart) from version `k`, it restores `k - 1`. Any other

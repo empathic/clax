@@ -183,6 +183,7 @@ class FinishTool implements Tool {
   /// after a conflict reset.
   Map<String, String>? _baseFiles;
   String? _baseTitle;
+  String? _baseIcon;
   Map<String, Object?>? _baseCaps;
   var _conflicts = 0;
 
@@ -204,6 +205,7 @@ class FinishTool implements Tool {
     _cancel = CancelWatch(s.ctx.cancelled);
     _baseFiles = s.ctx.files;
     _baseTitle = s.ctx.title;
+    _baseIcon = s.ctx.icon;
     _baseCaps = s.ctx.capabilities;
   }
 
@@ -545,6 +547,12 @@ class FinishTool implements Tool {
       );
       var base = s.draft.baseVersion;
       var baseFiles = _baseFiles!;
+      // What base declares, which undoing this change puts back.
+      var declared = Declaration(
+        title: _baseTitle ?? '',
+        icon: _baseIcon,
+        capabilities: _baseCaps ?? const {},
+      );
       var changes = _changes(src, baseFiles, _baseTitle, _baseCaps);
       if (_cancel!.isCancelled) return await _cancelled(s);
       if (src.stagedDb.length > maxDbOps) {
@@ -580,6 +588,7 @@ class FinishTool implements Tool {
             for (final o in src.stagedDb)
               _path(o): src.pins['${o.collection}/${o.docId}'],
           },
+          declared: declared,
         );
         while (true) {
           record = recordOn(base);
@@ -617,6 +626,7 @@ class FinishTool implements Tool {
               // Carried over: only paths the draft did not change moved.
               base = latest.currentVersion;
               baseFiles = latestFiles;
+              declared = Declaration.of(latest);
               changes = _changes(src, baseFiles, _baseTitle, _baseCaps)
                 ..keepOnly(changes);
               continue;
@@ -636,6 +646,7 @@ class FinishTool implements Tool {
             );
             _baseFiles = latestFiles;
             _baseTitle = latest.title;
+            _baseIcon = latest.icon;
             _baseCaps = latest.capabilities;
             return _Reset(latest.currentVersion);
           }
@@ -656,13 +667,13 @@ class FinishTool implements Tool {
             await _end(s);
             return const _Ended(RunDropped());
           }
-          return await _undo(s, aid, base, landed, e.message);
+          return await _undo(s, aid, base, landed, declared, e.message);
         } on Object catch (e) {
           _log('documents of $aid not written: $e');
-          return await _undo(s, aid, base, landed, '$e');
+          return await _undo(s, aid, base, landed, declared, '$e');
         }
         if (refused != null) {
-          return await _undo(s, aid, base, landed, refused);
+          return await _undo(s, aid, base, landed, declared, refused);
         }
         if (record != null) {
           record.docsDone = true;
@@ -707,7 +718,8 @@ class FinishTool implements Tool {
   }
 
   /// Fails a change whose documents were [refused]: restores the version
-  /// before it ([base]) when one [landed] and forgets its ledger record,
+  /// before it ([base]), with what it [declared], when one [landed] and
+  /// forgets its ledger record,
   /// so recovery never writes the documents later. A restore without an
   /// answer is rethrown (the record kept); a refused one leaves [landed]
   /// current, which the reply says.
@@ -716,12 +728,18 @@ class FinishTool implements Tool {
     String aid,
     int base,
     int? landed,
+    Declaration declared,
     String refused,
   ) async {
     var reason = "its data couldn't be updated: $refused";
     if (landed != null) {
       try {
-        await api.restoreVersion(aid, base, ifVersion: landed);
+        await api.rollBack(
+          aid,
+          base,
+          ifVersion: landed,
+          declared: declared,
+        );
       } on ClaxApiError catch (e) {
         if (e.status == 0) rethrow;
         _log('restoring $aid to version $base failed: $e');

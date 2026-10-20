@@ -2182,6 +2182,9 @@ class _AppScreenState extends State<AppScreen> with WidgetsBindingObserver {
     }
   }
 
+  /// Restores version [n]'s files as a new version (Restore and Undo).
+  /// The title, icon and capabilities the app has now are kept: no version
+  /// records its own, so this is not a roll-back of a change (`RollBack`).
   Future<void> _restore(int n) async {
     final latest = _detail?.artifact.currentVersion;
     if (latest == null || _restoring) return;

@@ -1,6 +1,7 @@
 import 'dart:convert';
 import 'dart:io';
 
+import '../clax/models.dart' show Declaration;
 import 'edit_result.dart';
 
 /// What a change published, kept so recovery can tell which comments a
@@ -21,6 +22,7 @@ class ChangeRecord {
     this.db = const [],
     this.pins = const {},
     this.docsDone = false,
+    this.declared,
   });
 
   factory ChangeRecord.fromJson(Map<String, Object?> j) => ChangeRecord(
@@ -47,6 +49,10 @@ class ChangeRecord {
         e.key as String: (e.value as num?)?.toInt(),
     },
     docsDone: j['docs_done']! as bool,
+    declared: switch (j['declared']) {
+      final Map<Object?, Object?> d => Declaration.fromJson(d.cast()),
+      _ => null,
+    },
   );
 
   final String artifactId;
@@ -70,6 +76,10 @@ class ChangeRecord {
   final Map<String, int?> pins;
   bool docsDone;
 
+  /// What [base] declared, which undoing the change puts back with its
+  /// files; null in a record written before it was kept.
+  final Declaration? declared;
+
   Map<String, Object?> toJson() => {
     'artifact_id': artifactId,
     'base': base,
@@ -88,6 +98,7 @@ class ChangeRecord {
     ],
     'pins': pins,
     'docs_done': docsDone,
+    'declared': ?declared?.toJson(),
   };
 }
 

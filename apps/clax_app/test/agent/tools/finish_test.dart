@@ -642,7 +642,13 @@ void main() {
         ),
       );
       final restore = r.named('restoreVersion').single;
-      expect(restore.args, {'aid': r.aid, 'n': 1, 'ifVersion': 2});
+      expect(restore.args, {
+        'aid': r.aid,
+        'n': 1,
+        'ifVersion': 2,
+        'title': 'Runs',
+        'capabilities': {'db': {}},
+      });
       expect(r.api.filesOf(r.aid!, 3), r.api.filesOf(r.aid!, 1));
       expect(
         r.thread().comments.last.body,
@@ -651,6 +657,37 @@ void main() {
       expect(r.thread().status, 'open');
       expect(await r.ledger.of(r.aid!), isEmpty);
       expect(r.named('deleteDraft'), hasLength(1));
+    });
+
+    test('a refused batch after a version that set the title and '
+        'capabilities rolls them back with the files', () async {
+      final r = await Rig.make();
+      await r.stage([
+        op('set', 'runs/b', {'km': 7}),
+      ]);
+      await r.edit('Save', 'Keep');
+      await r.ok('set_meta', {
+        'title': 'Run log',
+        'capabilities_json': '{"db":{},"notify":{}}',
+      });
+      await r.renderNow();
+      r.api.beforeLiveBatch = (_) => r.api.failNext(
+        'batchDocs',
+        const ClaxApiError(status: 400, code: 'invalid', message: 'too big'),
+      );
+      await r.finish('Added it.');
+      expect(r.state.outcome, isA<RunGaveUp>());
+      expect(r.named('restoreVersion').single.args, {
+        'aid': r.aid,
+        'n': 1,
+        'ifVersion': 2,
+        'title': 'Runs',
+        'capabilities': {'db': {}},
+      });
+      final a = (await r.api.getArtifact(r.aid!)).artifact;
+      expect(a.currentVersion, 3);
+      expect(a.title, 'Runs');
+      expect(a.capabilities, {'db': {}});
     });
 
     test(
@@ -694,6 +731,8 @@ void main() {
           'aid': r.aid,
           'n': 1,
           'ifVersion': 2,
+          'title': 'Runs',
+          'capabilities': {'db': {}},
         });
         expect(r.api.currentVersion(r.aid!), 3);
         expect(r.api.filesOf(r.aid!, 3), {'index.html': page});
@@ -854,6 +893,8 @@ void main() {
         'aid': r.aid,
         'n': 1,
         'ifVersion': 2,
+        'title': 'Runs',
+        'capabilities': {'db': {}},
       });
       expect(r.api.currentVersion(r.aid!), 3);
       expect(r.api.filesOf(r.aid!, 3), {'index.html': page});

@@ -2,6 +2,7 @@ import 'dart:io';
 
 import 'package:clax_app/agent/edit_result.dart';
 import 'package:clax_app/agent/ledger.dart';
+import 'package:clax_app/clax/models.dart' show Declaration;
 import 'package:flutter_test/flutter_test.dart';
 
 ChangeRecord record(String aid, int base) => ChangeRecord(
@@ -19,6 +20,11 @@ ChangeRecord record(String aid, int base) => ChangeRecord(
     DbOp(op: 'delete', collection: 'runs', docId: 'b'),
   ],
   pins: {'runs/a': 3, 'runs/b': null},
+  declared: const Declaration(
+    title: 'Runs',
+    icon: 'leaf',
+    capabilities: {'db': {}},
+  ),
 );
 
 void main() {
@@ -60,9 +66,17 @@ void main() {
       expect(r.db.first.data, {'km': 5});
       expect(r.pins, {'runs/a': 3, 'runs/b': null});
       expect(r.docsDone, isTrue);
+      expect(r.declared?.title, 'Runs');
+      expect(r.declared?.icon, 'leaf');
+      expect(r.declared?.capabilities, {'db': {}});
       expect(File('${file.path}.tmp').existsSync(), isFalse);
     },
   );
+
+  test('a record written before declarations were kept reads with none', () {
+    final j = record('a', 1).toJson()..remove('declared');
+    expect(ChangeRecord.fromJson(j).declared, isNull);
+  });
 
   test('an unreadable ledger file reads as empty', () async {
     final dir = await Directory.systemTemp.createTemp('ledger');
