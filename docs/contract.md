@@ -2511,6 +2511,8 @@ not the caller's), so a worker refused with `owner_held` hears the
 
 A **step** is idempotent by its key: committing a key the job already has
 answers the step as recorded with `replayed: true` and changes nothing. A
+step's commit clears the job's `error`: a job retried keeps its error,
+naming the step refused before, until its next step commits. A
 publish step's version and a reply step's comments commit in one
 transaction with the step: either both exist, or neither does.
 
@@ -2519,7 +2521,7 @@ transaction with the step: either both exist, or neither does.
 | `POST /api/jobs/owner` | token | `{client, stream}` | `{owner}` (32 hex characters); 409 `owner_held`; 409 `owner_draining` while the old owner's writes run; 400 `no_such_stream` when the hub holds no connection of `stream` |
 | `DELETE /api/jobs/owner` | token, `x-clax-jobs-owner` | — | 204, the claim that token holds released |
 | `POST /api/jobs` | token, owner token | `{id, client, kind, artifact_id?, title?, input, plan?}` | 201 `{job}` in `queued`; the same `id` and body again 200; another body 409 `job_exists`; 400 `invalid_artifact` |
-| `GET /api/jobs?open=1&client=<c>` | token | — | `{jobs: [{job, steps, threads, questions}]}`, the client's jobs neither `cancelled` nor `done`, oldest first; 400 `invalid_query` without `open=1` and `client` |
+| `GET /api/jobs?open=1&client=<c>` | token | — | `{jobs: [{job, steps, threads, questions}]}`, the client's jobs neither `cancelled` nor `done`, oldest first, each question `{question_id, tool_use_id, answer}`; 400 `invalid_query` without `open=1` and `client` |
 | `GET /api/jobs/<id>` | token | — | `{job}`; 404 |
 | `PATCH /api/jobs/<id>` | token, owner token | `{if_rev, state?, step?, title?, plan?, carry?, error?}` (`null` clears a field) | `{job}`; 409 `job_moved` with the job when it is not at `if_rev`; 400 `invalid_move` for `queued`, `waiting` or `done`; a move to `running` lands in `waiting` while a question it asked is open |
 | `PUT /api/jobs/<id>/threads/<tid>` | token, owner token | `{comment_id, stopped?}` | `{job}`; 400 `invalid_thread` |

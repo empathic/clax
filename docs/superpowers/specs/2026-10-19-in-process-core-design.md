@@ -843,26 +843,44 @@ RenderService ◄── RenderRequest ◄─────────────
 
 - **Model** (`lib/queue/model.dart`): `QueueModel {owner, jobs: Map<JobId,
   Job>, inFlight: Map<EffectId, Effect>, local: Map<JobId, JobLocal>,
-  pending: List<Intent>, claude: Reachability, canRender: bool, keepAlive:
-  bool}`. `jobs` is a projection of the core's job rows (§7.4): `Job {id,
-  kind: make|change, state, step, rev, artifactId?, title, input, plan?,
-  carry?, error?, steps, threads, questions}`, each field as the core last
-  sent it. `JobState` is the core's: `queued`, `running`, `waiting` (on the
-  person's answer to a question), `paused` (the OS's time ran out),
-  `stopped` (a limit; Keep going offered), `failed` (Retry offered),
-  `cancelled`, `done`. `JobLocal {waitingFor: claude|render|null,
-  renderTries, turn}` holds what is not durable and is rebuilt after a
-  restart. `owner` is `none`, `claiming`, `held(token)` or `refused` (§7.5).
-  `pending` keeps intents that arrive before the jobs are loaded.
+  pending: List<Intent>, keepAlive: bool, suspended: bool, claude:
+  Reachability, canRender: bool, probe: Probe, now}`. `jobs` is a
+  projection of the core's job rows (§7.4): `Job {id, kind: make|change,
+  state, step: StepKey?, rev, artifactId?, title, input, plan?, carry?,
+  error?, steps: Map<StepKey, StepResult>, threads, questions}`, each field
+  as the core last sent it; a step's key is parsed once into `StepKey`
+  (`turn:<n>`, `publish:<base>`, `reply`, or an unknown key, which fails a
+  running job `invalid_step` rather than stalling it). `error {code,
+  detail?, step?}` names the step whose commit the core refused, when a
+  refusal caused it (§7.4). Each of `questions` (question ID → `{answer,
+  toolUseId}`) carries the tool call that asked it. `JobState` is the
+  core's: `queued`, `running`, `waiting` (on the person's answer to a
+  question), `paused` (the OS's time ran out), `stopped` (a limit; Keep
+  going offered), `failed` (Retry offered), `cancelled`, `done`.
+  `JobLocal {waitingFor: claude|render|null, turn, results, intent,
+  noticed}` holds what is in flight in this worker and is rebuilt after a
+  restart; nothing in it decides a step the row could not: a fresh worker
+  rebuilt from `JobsLoaded` alone emits what the one that died would have.
+  `owner` is `none`, `claiming(claim, heardRelease, heardHeld)` (only the
+  answer to that `ClaimOwner` counts), `refused(draining)`,
+  `loading(token)` (claimed, jobs not yet loaded: no job effect) or
+  `held(token)` (§7.5). `pending` keeps intents that arrive before the
+  jobs are loaded; the UI sees a pending `Make` or `Change` as `queued`.
+  `suspended` is set by `OutOfTime` and cleared by `Woke(foreground:
+  true)` (§7.6). `probe` is `idle`, `inFlight(effect, deadline)` or
+  `after(at)`: Claude's reachability is asked again on the worker's clock
+  (below).
 - **Messages** (`lib/queue/msg.dart`): the intents; the owner's
-  (`OwnerClaimed(token)`, `OwnerHeld`, `OwnerReleased`); the core's rows
+  (`OwnerClaimed(claim, token)`, `OwnerHeld(claim)`, `OwnerDraining(claim)`,
+  each naming the `ClaimOwner` it answers, and `OwnerChanged(held)`); the
+  core's rows
   (`JobsLoaded(jobs)`, `JobChanged(job)`, and every commit effect's answer,
   `Committed(effect, job, {step, replayed})` or `Refused(effect, jobId,
   reason, {job})`, `reason` one of `versionMoved(current)`, `docMoved`,
   `notRenderedClean`, `jobMoved`, `notOwner`); work results (`TurnDone`,
   `TurnFailed(network|other)`, `ToolDone`, `Rendered`, `RenderLost`);
   `CanRender(bool)`; `ClaudeReachable(bool)`; `Tick(now)` from the injected
-  clock; `Woke(foreground: bool)`.
+  clock; `Woke(foreground: bool)`; `OutOfTime`.
 - **`update`** (`lib/queue/update.dart`) is a pure function with no
   `async`, no I/O, no clock: time arrives in messages. It decides each
   job's next step from the job's row (§7.4) and emits effects.
@@ -871,12 +889,19 @@ RenderService ◄── RenderRequest ◄─────────────
   - *commit effects*, each answered by the core with the job's row:
     `CreateJob(id, jobId, kind, input, {artifactId, title, plan})`,
     `MoveJob(id, jobId, ifRev, to, {error, carry, plan, title})` (a change
-    of state), `CommitStep(id, jobId, key, notes)` (a turn's notes),
-    `Ask(id, jobId, question)` (the job waits on the person's answer),
-    `Publish(id, jobId, base, publish)` (the publish step) and `Reply(id,
-    jobId, reply)` (the reply step);
+    of state, or the record of a refusal on the row), `CommitStep(id, jobId,
+    turn, notes, base)` (a turn's notes and the version it planned on),
+    `Ask(id, jobId, turn, callId, question)` (the job waits on the
+    person's answer; the runner creates the question from its session with
+    `tool_use_id` `<job>/turn:<n>/<call ID>`, which the job's row then
+    carries), `Publish(id, jobId, turn, callId, publish)` (the publish
+    step) and `Reply(id, jobId, turn, callId, reply)` (the reply step,
+    which names no session: the core replies from the one that published
+    the job's version, §8.1);
   - *work*: `StartTurn(id, jobId, turnInput)`, `RunTool(id, jobId, call)`,
-    `Render(id, jobId, renderSpec)`, `ProbeClaude()`;
+    `Render(id, jobId, turn, callId, renderSpec, last, deadline)` (a render
+    in flight is this effect: whether it is the last try, and when it
+    counts as lost), `ProbeClaude()`;
   - *the queue's own*: `ClaimOwner()`, `LoadJobs()`, `Notice(kind, jobId,
     title)`, `KeepAlive(on)`, `PublishState(state)`.
 - **The effect runner** (`lib/queue/runner.dart`) runs each effect and
@@ -921,10 +946,11 @@ kind: inspect|tests|migration, settleMs, maxBytes}` to the UI isolate's
 `RenderService`, which runs `WebViewInspector` (`lib/ui/inspector_surface.dart`)
 on the shell's inspect view at the draft's URL (§4.1) and answers
 `RenderResult {id, inspection | tests | migration | error}`. A request not
-answered in 60 s on the worker's clock, or one whose WebView was torn down
-(`RenderLost`), is sent again once, then the job waits for a render
-(`waitingFor: render`, local) until the UI isolate says it can render
-again. The runner records the render's result in the core (§8.2) before it
+answered by the `Render` effect's deadline (60 s on the worker's clock, set
+at the first `Tick` when the clock is not yet known), or one whose WebView
+was torn down (`RenderLost`), is sent again once as the `last` try, then
+the job waits for a render (`waitingFor: render`, local) until the UI
+isolate says it can render again. The runner records the render's result in the core (§8.2) before it
 answers `Rendered`.
 
 ### 7.4 One source of truth, and resume
@@ -937,8 +963,10 @@ and questions) except by emitting a commit effect and applying the core's
 answer, or the `JobChanged` event that answer causes. It applies a row only
 when its `rev` is above the one it holds, so an answer and its event, in
 either order, apply once. Everything else in the model (`local`, `inFlight`,
-`pending`, `claude`, `canRender`) is not durable and is rebuilt after a
-restart.
+`pending`, `suspended`, `claude`, `canRender`, `probe`) is not durable and
+is rebuilt after a restart, and none of it decides a step the row could
+not: a worker rebuilt from `JobsLoaded` alone emits what the one that died
+would have.
 
 What follows from the rule:
 
@@ -951,6 +979,25 @@ What follows from the rule:
   as after any `Committed`; the resume table is that function's table.
 - A commit refused because the job moved (`job_moved`) carries the current
   row; `update` applies it and asks `next` again.
+- Any other refusal of a step is recorded in the row before anything plans
+  from it: a `MoveJob` sets `error {code, detail, step}`, naming the
+  refused step (`publish:<b>`, `reply` or `turn:<n>`); a moved document
+  (`doc_moved`), a refused reply and a refused turn commit fail the job,
+  `version_moved`, `not_rendered_clean` and a publish's own refusal leave
+  it running. Retry keeps the error, and the core clears it when the job's
+  next step commits (§8.1). `next` answers the refused `finish` call from
+  the row, so nothing is written again and the next turn plans from the
+  refusal, whichever worker runs it.
+- The version a turn planned on is kept in its step (`turn:<n>`'s
+  `base`); with the job's own and a `version_moved` error's, it is the
+  version the next turn plans on, and a `finish` planned on an older one
+  is answered `version_moved` without asking the core.
+- An `ask` call is answered from the row: the question whose `toolUseId`
+  is `<job>/turn:<n>/<call ID>`, and what became of it. A worker relaunched
+  while a job waits asks nothing again. (A kill between the question's
+  creation and its `PUT` leaves one question no job holds, which its
+  session's end withdraws; the relaunched worker asks again from its new
+  session.)
 - The UI shows what the core holds: a job created by an intent shows as
   `queued` from its `CreateJob` in flight, and as the core's row once
   answered.
@@ -960,14 +1007,16 @@ after every applied row:
 
 | The core's row | `next(job)` |
 |---|---|
-| `queued` | `MoveJob(→ running)` when fewer than three run; else nothing |
+| `queued` | `MoveJob(→ running)` when fewer than three run and the queue is not suspended; else nothing |
 | `running`, no step | `StartTurn(turn 1)` |
-| `running`, last step `turn:<n>` with tool calls not yet answered | for each, in order: `finish` → `Publish` (base from the notes); `render` → `Render`; `ask` → `Ask`; any other → `RunTool`. A tool's result is not durable: after a restart the tools of the last committed turn run again (they are reads and draft writes, which repeat harmlessly) |
+| `running`, last step `turn:<n>` with tool calls not yet answered | for each, in order: `finish` → answered from the row when the row's `error` names its `publish:<b>` (or, its publish committed, `reply`), or `version_moved` when planned on a version older than the row's; a change's whose publish committed → `Reply`; else `Publish` (base from the notes); `render` → `Render`; `ask` → answered from the row's question for the call, nothing while it is open, else `Ask`; any other → `RunTool`. A tool's result is not durable: after a restart the tools of the last committed turn run again (they are reads and draft writes, which repeat harmlessly) |
 | `running`, last step `turn:<n>`, every call answered | `StartTurn(turn n + 1)` with the notes and `carry` |
-| `running`, a `publish:<b>` step, a change | `Reply` (its step moves the job to `done` in the same transaction) |
+| `running`, a `publish:<b>` step, a change | the last turn's calls, as above: its `finish` → `Reply` (its step moves the job to `done` in the same transaction) |
+| `running` or `waiting`, the queue `suspended` | `MoveJob(→ paused)` |
+| `running`, a step the queue does not know | `MoveJob(→ failed)`, error `invalid_step` |
 | `waiting` (its question not closed) | nothing (the reaper spares the question's asker while the job is open, so a relaunch long after a kill finds it still asked, §8.1); the question's close (an answer, a decline or a withdrawal) stores its outcome and moves the job to `running` in the core (§8.1), and its `JobChanged` brings `next` again, which answers the `ask` call with that outcome |
-| `paused` | `MoveJob(→ running)` at launch or `Woke(foreground: true)` |
-| `stopped`, `failed` | nothing; `KeepGoing` and `Retry` emit `MoveJob(→ running)` |
+| `paused` | `MoveJob(→ running)` when fewer than three run and the queue is not suspended (at launch, or from `Woke(foreground: true)`) |
+| `stopped`, `failed` | nothing; `KeepGoing` and `Retry` emit `MoveJob(→ running)` (Retry keeping the row's `error`), held while three run or the queue is suspended |
 | `cancelled`, `done` | not loaded; any result still in flight for it is dropped |
 
 A make's publish step and a change's reply step carry `state: done`, so
@@ -1028,9 +1077,20 @@ Android (the `dataSync` foreground service, `BackgroundRunService.kt`), and
 isolate (the platform channels live there). The progress notification is
 built from `QueueState`. On Android the engine is kept by the application
 (S8), so Back out of Clax does not end a job. On iOS and the Mac a job
-running out of time is `paused` (a `MoveJob`). A job interrupted by the OS
-or a kill on any platform resumes at the next launch (S6); nothing wakes
-the app to run it.
+running out of time is `paused` (a `MoveJob`): `OutOfTime` suspends the
+queue (`suspended`), under which `next` pauses every running and waiting
+job and starts nothing (no queued or paused job moves to running, Keep
+going and Retry are held, no turn starts), however many slots the pauses
+free, until `Woke(foreground: true)`. A launch starts unsuspended. A job
+interrupted by the OS or a kill on any platform resumes at the next launch
+(S6); nothing wakes the app to run it.
+
+Claude's reachability is the model's to ask, on the worker's clock: a turn
+that cannot reach Claude waits (`waitingFor: claude`) and `ProbeClaude` is
+emitted, one at a time; `ClaudeReachable(false)` schedules the next probe
+30 s on, and the `Tick` that passes it probes again while a job waits; a
+probe not answered within 30 s is let go and asked again. The runner only
+answers `ProbeClaude`.
 
 ## 8. The core: jobs and publish checks
 
@@ -1126,12 +1186,12 @@ what the worker applies:
 | `POST /api/jobs/owner` `{client, stream}` | claims the client's queue (§7.5): 200 `{owner}`; 409 `owner_held`; 409 `owner_draining` while writes admitted under an older claim run; 400 `no_such_stream` when `stream` is not a live stream of the hub; a claim by the stream that holds the queue answers its token again, once its drain has ended |
 | `DELETE /api/jobs/owner` | releases the claim the request's `x-clax-jobs-owner` token holds (204) |
 | `POST /api/jobs` `{id, client, kind, artifact_id?, title?, input, plan?}` | creates (201); an existing `id` with the same body answers it (200), another body 409 `job_exists` |
-| `GET /api/jobs?open=1&client=app` | open jobs with their steps, threads and questions |
+| `GET /api/jobs?open=1&client=app` | open jobs with their steps, threads and questions, each question with its `tool_use_id` (a join on `questions`), so the queue knows which call asked it |
 | `GET /api/jobs/{id}` | one |
 | `PATCH /api/jobs/{id}` `{if_rev, state?, step?, title?, plan?, carry?, error?}` | compare-and-set on `rev`; 409 `job_moved` with the current job; the state moves by the table below |
 | `PUT /api/jobs/{id}/threads/{tid}` / `DELETE` | the job answers, or stops at, a thread's comment |
 | `PUT /api/jobs/{id}/questions/{qid}` | a question the job asked; moves a `running` job to `waiting` in the same transaction, which reads the question: one that closed before this call (an answer landing between the question's creation and this call, or a worker re-asking after a kill) has its outcome stored at once, and the job keeps its state; a `cancelled` or `done` job refuses (409 `job_moved`). Only a question of the `ask` tool, which no other job asked (400 `invalid_question` otherwise). When the question closes (`POST /api/questions/{qid}/answer` or `/decline`, as today, or its withdrawal) the core stores its outcome here (`answered` with the answers, `declined`, `withdrawn`) and moves the job back to `running` in that close's transaction. A job's final move (a patch to `cancelled`, a `done` step, its artifact's delete) withdraws each question it asked that is still open, with the reason `job_end` (`Reason::JobEnd`, recorded as `system:daemon`): no worker reads its outcome again, so the person is no longer asked; the outcome `withdrawn` is stored and the job moves no further |
-| `POST /api/jobs/{id}/steps/{key}` `{result?, publish?, reply?, state?}` (one of `result`, `publish`, `reply`) | commits a step (below); `state` (only `done`) ends the job in the step's transaction; answers `{job, step, replayed, version?}` |
+| `POST /api/jobs/{id}/steps/{key}` `{result?, publish?, reply?, state?}` (one of `result`, `publish`, `reply`) | commits a step (below); `state` (only `done`) ends the job in the step's transaction, and every step clears the job's `error` in it (an error a running job keeps names the step refused before it, §7.4); answers `{job, step, replayed, version?}` |
 | `GET/PUT/DELETE /api/agent-read-consents[/{reader}/{source}]` | the agent's remembered consents |
 
 **The states.** One table in the store (`jobs::may_move`) says how a job
