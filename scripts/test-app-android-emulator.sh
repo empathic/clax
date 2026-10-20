@@ -1,15 +1,17 @@
 #!/usr/bin/env bash
 # Tests scripts/app-android-emulator.sh on stub tools: the dry runs of
-# --start and --stop 123 print the AVD, the emulator's command line and the
-# port it would take, and start, write or stop nothing; a busy port moves
-# it to the next even one; --start --i-know-what-i-am-doing writes the
-# AVD's config.ini (naming the system image's path and abi.type=arm64-v8a)
-# and its .ini into a scratch checkout's target/, links the SDK parts,
-# boots the stub emulator, waits for the stub adb's boot_completed and
-# prints serial and PID; a second --start prints the same emulator; --stop
-# refuses a PID it did not start, and stops its own by `adb emu kill`, the
-# PID's exit and the adb server's kill-server; every adb call names the
-# emulator's serial and an adb server on the emulator's port + 10000.
+# --start and --stop 123 print the AVD, the emulator's command line and
+# the port it would take, and start, write or stop nothing; a busy port moves it to the next even one; --start
+# --i-know-what-i-am-doing writes the AVD's config.ini (naming the system
+# image's path and abi.type=arm64-v8a) and its .ini into a scratch
+# checkout's target/, links the SDK parts, boots the stub emulator, waits
+# for the stub adb's boot_completed and prints serial and PID; a second
+# --start prints the same emulator; --stop refuses a PID it did not start,
+# and stops its own by `adb emu kill`, the PID's exit and the adb server's
+# kill-server; every adb call names the emulator's serial and an adb server
+# on the emulator's port + 10000. A .running file whose PID now belongs to
+# another process (another start time, or another command) is neither
+# reported nor stopped.
 #
 # The stub emulator is a process that runs until the stub adb's `emu kill`
 # ends it; no emulator or adb runs.
@@ -21,6 +23,7 @@ cd "$(dirname "${BASH_SOURCE[0]}")/.."
 tmp="$(cd "$(mktemp -d)" && pwd -P)"
 cleanup() {
     if [ -f "$tmp/emulator.pid" ]; then kill "$(cat "$tmp/emulator.pid")" 2>/dev/null || true; fi
+    if [ -f "$tmp/strangers" ]; then while read -r p; do kill "$p" 2>/dev/null || true; done < "$tmp/strangers"; fi
     rm -rf "$tmp"
 }
 trap cleanup EXIT
@@ -144,6 +147,18 @@ else
     _fail "a second --start"
 fi
 
+# --- the .running file records the PID's start time and command
+running_file="$repo/target/android-avd/Clax_Pixel.running"
+if [ -n "$pid" ] &&
+    grep -qx "pid=$pid" "$running_file" &&
+    grep -qx "started=$(ps -o lstart= -p "$pid" | sed 's/^ *//; s/ *$//')" "$running_file" &&
+    grep -qx "command=$(ps -o comm= -p "$pid" | sed 's/^ *//; s/ *$//')" "$running_file"; then
+    _ok "the .running file names the emulator's PID, start time and command"
+else
+    cp "$running_file" "$tmp/out" 2>/dev/null || true
+    _fail "the .running file's record"
+fi
+
 # --- --stop of a PID it did not start
 if ! "$script" --stop 999999 --i-know-what-i-am-doing > "$tmp/out" 2>&1 &&
     grep -q 'is not an emulator this script started' "$tmp/out" && kill -0 "$pid" &&
@@ -171,6 +186,43 @@ if ! grep -v -e '^port=15554 -s emulator-5554 ' -e '^port=15554 kill-server$' "$
 else
     _fail "an adb call without the emulator's serial or server"
 fi
+
+# --- a .running file whose PID another process has now: the emulator
+# the script started dies without --stop, and its PID is another
+# process's (a stranger's PID put in the script's own record of it)
+sleep 300 &
+stranger=$!
+echo "$stranger" >> "$tmp/strangers"
+rm -f "$tmp/emulator.pid"
+"$script" --start --i-know-what-i-am-doing > "$tmp/out" 2>&1 || true
+dead="$(cat "$tmp/emulator.pid" 2>/dev/null || echo none)"
+kill "$dead" 2>/dev/null || true
+for _ in $(seq 300); do kill -0 "$dead" 2>/dev/null || break; sleep 0.1; done
+sed -E "s/(^| |=)$dead\$/\\1$stranger/" "$running_file" > "$tmp/stale"
+[ "$dead" != none ] && ! grep -q "$dead" "$tmp/stale" && grep -q "$stranger" "$tmp/stale" ||
+    _fail "the stale record ($dead to $stranger)"
+cp "$tmp/stale" "$running_file"
+: > "$tmp/adb.calls"
+if ! "$script" --serial > "$tmp/out" 2>&1 &&
+    ! "$script" --stop "$stranger" --i-know-what-i-am-doing >> "$tmp/out" 2>&1 &&
+    grep -q 'is not an emulator this script started' "$tmp/out" &&
+    kill -0 "$stranger" && [ ! -s "$tmp/adb.calls" ]; then
+    _ok "a reused PID with another start time is neither reported nor stopped"
+else
+    _fail "a reused PID with another start time"
+fi
+started="$(ps -o lstart= -p "$stranger" | sed 's/^ *//; s/ *$//')"
+sed "s/^started=.*/started=$started/" "$tmp/stale" > "$running_file"
+if ! "$script" --serial > "$tmp/out" 2>&1 &&
+    ! "$script" --stop "$stranger" --i-know-what-i-am-doing >> "$tmp/out" 2>&1 &&
+    kill -0 "$stranger" && [ ! -s "$tmp/adb.calls" ]; then
+    _ok "a reused PID with the start time but another command is neither reported nor stopped"
+else
+    _fail "a reused PID with another command"
+fi
+kill "$stranger" 2>/dev/null || true
+wait "$stranger" 2>/dev/null || true
+rm -f "$running_file"
 
 [ "$fails" -eq 0 ] || { echo "$fails failed" >&2; exit 1; }
 echo "all passed"

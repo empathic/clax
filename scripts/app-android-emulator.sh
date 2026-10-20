@@ -22,6 +22,11 @@
 #   --serial  prints the serial of the emulator this script started, if it
 #             runs.
 #
+# An emulator is this script's only while target/android-avd's .running
+# file names its serial, its PID, the PID's start time and its command, and
+# the PID still runs with that start time and command: a PID the system
+# has since given to another process is never reported or stopped.
+#
 # It never touches a device it did not start: every adb call names the
 # emulator's serial, and goes to an adb server of its own (port 10000 above
 # the emulator's), never the one on 5037 a plugged-in phone is known to.
@@ -173,12 +178,46 @@ link_sdk() {
     mkdir -p "$sdk/platforms"
 }
 
+# PID $1's start time and command, as ps gives them; empty when it does not
+# run.
+started_of() { ps -o lstart= -p "$1" 2>/dev/null | sed 's/^ *//; s/ *$//' || true; }
+command_of() { ps -o comm= -p "$1" 2>/dev/null | sed 's/^ *//; s/ *$//' || true; }
+
+# Field $1 of the .running file.
+running_field() { sed -n "s/^$1=//p" "$running" | head -1; }
+
+# Writes the .running file for serial $1 and PID $2: its start time, and
+# its command unless $3 is "booting" (the emulator may exec another program
+# while it boots, so the command is taken once it has booted).
+record_running() {
+    local cmdline="-"
+    [ "${3:-}" = booting ] || cmdline="$(command_of "$2")"
+    printf 'serial=%s\npid=%s\nstarted=%s\ncommand=%s\n' "$1" "$2" "$(started_of "$2")" "$cmdline" > "$running.tmp"
+    mv "$running.tmp" "$running"
+}
+
+# Whether PID $1 is the process the .running file names: the same PID,
+# running, with the recorded start time, and the recorded command (when one
+# is recorded).
+is_ours() {
+    [ -f "$running" ] || return 1
+    local pid started cmdline now
+    pid="$(running_field pid)"
+    started="$(running_field started)"
+    cmdline="$(running_field command)"
+    [ -n "$pid" ] && [ "$pid" = "$1" ] && [ -n "$started" ] || return 1
+    now="$(started_of "$pid")"
+    [ -n "$now" ] && [ "$now" = "$started" ] || return 1
+    [ "$cmdline" = - ] || [ "$(command_of "$pid")" = "$cmdline" ]
+}
+
 # The running emulator this script started: "serial pid", or nothing.
 running_one() {
     [ -f "$running" ] || return 0
     local serial pid
-    read -r serial pid < "$running" || return 0
-    if [ -n "$pid" ] && kill -0 "$pid" 2>/dev/null; then echo "$serial $pid"; fi
+    serial="$(running_field serial)"
+    pid="$(running_field pid)"
+    if [ -n "$pid" ] && is_ours "$pid"; then echo "$serial $pid"; fi
 }
 
 adb_env() {
@@ -186,6 +225,22 @@ adb_env() {
     export ANDROID_ADB_SERVER_PORT=$((port + 10000))
     export ANDROID_USER_HOME="$user_home" ANDROID_EMULATOR_HOME="$user_home"
     export ANDROID_AVD_HOME="$avd_home" ANDROID_SDK_ROOT="$sdk" ANDROID_HOME="$sdk"
+}
+
+# Stops the emulator serial $1, PID $2, which is_ours has checked: `adb emu
+# kill`, at most 60 s for the PID to exit, then `kill`; then its adb
+# server, and the .running file.
+stop_emulator() {
+    local serial="$1" pid="$2" deadline
+    "$adb" -s "$serial" emu kill > /dev/null 2>&1 || true
+    deadline=$((SECONDS + 60))
+    while is_ours "$pid" && [ "$SECONDS" -lt "$deadline" ]; do sleep 1; done
+    if is_ours "$pid"; then
+        say "$pid did not exit after emu kill; killing it"
+        kill "$pid" 2>/dev/null || true
+    fi
+    "$adb" kill-server > /dev/null 2>&1 || true
+    rm -f "$running"
 }
 
 case "$cmd" in
@@ -222,13 +277,13 @@ case "$cmd" in
         say "booting $serial (log: $log)"
         "$sdk/emulator/emulator" "${args[@]}" > "$log" 2>&1 < /dev/null &
         pid=$!
-        echo "$serial $pid" > "$running"
+        record_running "$serial" "$pid" booting
         # Until the device answers and Android has booted, polled every 2 s
         # for at most 300 s; the emulator's own exit ends the wait.
         deadline=$((SECONDS + 300))
         booted=""
         while [ "$SECONDS" -lt "$deadline" ]; do
-            if ! kill -0 "$pid" 2>/dev/null; then
+            if ! is_ours "$pid"; then
                 echo "app-android-emulator: the emulator exited while booting (log: $log)" >&2
                 tail -20 "$log" >&2 || true
                 rm -f "$running"
@@ -246,6 +301,7 @@ case "$cmd" in
             "$0" --stop "$pid" --i-know-what-i-am-doing >&2 || true
             exit 1
         fi
+        record_running "$serial" "$pid"
         echo "serial=$serial pid=$pid"
         ;;
     stop)
@@ -266,15 +322,7 @@ case "$cmd" in
         port="${serial#emulator-}"
         sdk_parts
         adb_env "$port"
-        "$adb" -s "$serial" emu kill > /dev/null 2>&1 || true
-        deadline=$((SECONDS + 60))
-        while kill -0 "$stop_pid" 2>/dev/null && [ "$SECONDS" -lt "$deadline" ]; do sleep 1; done
-        if kill -0 "$stop_pid" 2>/dev/null; then
-            say "$stop_pid did not exit after emu kill; killing it"
-            kill "$stop_pid" 2>/dev/null || true
-        fi
-        "$adb" kill-server > /dev/null 2>&1 || true
-        rm -f "$running"
+        stop_emulator "$serial" "$stop_pid"
         say "stopped $serial"
         ;;
 esac
