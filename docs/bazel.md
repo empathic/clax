@@ -293,12 +293,15 @@ and the AVD's data image into `target/android-avd/`; it boots in about
 - CwlCatchException, the Swift package speech_to_text's Apple code needs
   (`bazel/flutter/third_party`, added to it by the overlay in
   `bazel/flutter/plugin_overlays/speech_to_text`).
-- webview_flutter_wkwebview's Apple sources with a patch
-  (`bazel/flutter/plugin_overlays/webview_flutter_wkwebview/3/configuration-hook.patch`,
-  applied by that overlay) that lets the runner set its `clax` scheme
-  handler on each WebView's configuration before the view exists. The
-  native builds get the same patch from `scripts/patch-pub.sh`, which
-  applies it to the package in a pub cache of the checkout's own,
+- webview_flutter_wkwebview's Apple sources with two patches
+  (`bazel/flutter/plugin_overlays/webview_flutter_wkwebview/3/`, applied
+  in order by that overlay): `configuration-hook.patch` lets the runner
+  set its `clax` scheme handler on each WebView's configuration before
+  the view exists, and `navigation-delegate-hook.patch` lets it keep its
+  navigation proxy in front of every navigation delegate Dart sets. The
+  native builds get the same patches from `scripts/patch-pub.sh` (which
+  `just app-macos-dev` and the `-native` recipes run), which applies them
+  to the package in a pub cache of the checkout's own,
   `apps/clax_app/build-native/pub-cache`.
 
 Three inputs are this machine's, not pinned: the Android debug key

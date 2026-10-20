@@ -14,7 +14,11 @@ import webview_flutter_wkwebview
 ///
 /// Every `WKWebView` webview_flutter makes gets this handler for `clax`
 /// (`configure`, through the plugin's `configurationHook`). A WebView is
-/// answered once Dart attaches it:
+/// answered once Dart attaches it, and stays wrapped while attached: the
+/// plugin's `navigationDelegateHook` puts the host's navigation proxy in
+/// front of every delegate Dart sets later, so attaching before or after
+/// `setNavigationDelegate` is the same (attaching an attached WebView
+/// changes nothing):
 ///
 /// - Dart → native `attach {webViewId}` (answers whether that WebView
 ///   exists) and `detach {webViewId}`; `respond {reqId, status, headers,
@@ -56,6 +60,9 @@ final class SchemeHost: NSObject, WKURLSchemeHandler, WKScriptMessageHandler {
     messenger: FlutterBinaryMessenger, webView: @escaping (Int64) -> WKWebView?
   ) {
     FWFWebViewFlutterWKWebViewExternalAPI.configurationHook = SchemeHost.configure
+    FWFWebViewFlutterWKWebViewExternalAPI.navigationDelegateHook = { [weak self] view, delegate in
+      self?.wrap(view, delegate) ?? delegate
+    }
     lookup = webView
     let channel = FlutterMethodChannel(name: "dev.empathic.clax/scheme", binaryMessenger: messenger)
     self.channel = channel
@@ -105,6 +112,10 @@ final class SchemeHost: NSObject, WKURLSchemeHandler, WKScriptMessageHandler {
   private var taskIds: [ObjectIdentifier: Int] = [:]
   private var nextRequest = 0
 
+  /// `window.ClaxHost.postMessage(string)` in the main frame, as
+  /// webview_flutter's JavaScript channel gives it.
+  private static let hostScript = "window.ClaxHost = window.webkit.messageHandlers.ClaxHost;"
+
   private func attach(_ id: Int64?) -> Bool {
     guard let id, let view = lookup?(id) else { return false }
     let key = ObjectIdentifier(view)
@@ -117,13 +128,23 @@ final class SchemeHost: NSObject, WKURLSchemeHandler, WKScriptMessageHandler {
     let content = view.configuration.userContentController
     content.removeScriptMessageHandler(forName: "ClaxHost")
     content.add(WeakMessageHandler(self), name: "ClaxHost")
-    // `window.ClaxHost.postMessage(string)` in the main frame, as
-    // webview_flutter's JavaScript channel gives it.
-    content.addUserScript(
-      WKUserScript(
-        source: "window.ClaxHost = window.webkit.messageHandlers.ClaxHost;",
-        injectionTime: .atDocumentStart, forMainFrameOnly: true))
+    // Once per controller: a detach leaves the script, and a later attach
+    // finds it.
+    if !content.userScripts.contains(where: { $0.source == SchemeHost.hostScript }) {
+      content.addUserScript(
+        WKUserScript(
+          source: SchemeHost.hostScript, injectionTime: .atDocumentStart,
+          forMainFrameOnly: true))
+    }
     return true
+  }
+
+  /// The delegate the plugin sets on [view]: an attached WebView's proxy,
+  /// now in front of [delegate]; for any other WebView, [delegate].
+  private func wrap(_ view: WKWebView, _ delegate: WKNavigationDelegate) -> WKNavigationDelegate {
+    guard let state = state(of: view), let proxy = state.proxy else { return delegate }
+    proxy.inner = delegate
+    return proxy
   }
 
   private func detach(_ id: Int64?) {

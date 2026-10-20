@@ -33,7 +33,10 @@ import java.util.concurrent.atomic.AtomicLong
  * - Dart → native `attach {webViewId}` (answers whether that WebView
  *   exists; it must already have webview_flutter's client, which this one
  *   wraps) and `detach {webViewId}`; `respond {reqId, status, headers,
- *   body}` answers a request.
+ *   body}` answers a request. webview_flutter's `setNavigationDelegate`
+ *   sets a new client, so Dart attaches again after each one: attaching an
+ *   attached WebView wraps the client it has now if that is not this
+ *   host's.
  * - Native → Dart `request {webViewId, reqId, url, method, headers,
  *   mainFrame, navigation?}` for every request to the app's hosts;
  *   `channel {webViewId, message}` for a `ClaxHost` message from the
@@ -57,7 +60,7 @@ class SchemeHost(
     private val nextRequest = AtomicLong()
 
     /** An attached WebView's state; its fields are the main thread's. */
-    private inner class Attached(val id: Long, val view: WebView, val inner: WebViewClient) {
+    private inner class Attached(val id: Long, val view: WebView, var inner: WebViewClient) {
         var lastNavigation = 0L
 
         /** The latest main-frame request's number and URL. */
@@ -91,7 +94,15 @@ class SchemeHost(
     }
 
     private fun attach(id: Long): Boolean {
-        if (attached.containsKey(id)) return true
+        attached[id]?.let { state ->
+            // A client set since (setNavigationDelegate): wrap it instead.
+            val now = state.view.webViewClient
+            if (now !== state.client) {
+                state.inner = now
+                state.view.webViewClient = state.client
+            }
+            return true
+        }
         val view = webView(id) ?: return false
         if (!WebViewFeature.isFeatureSupported(WebViewFeature.WEB_MESSAGE_LISTENER)) return false
         val state = Attached(id, view, view.webViewClient)

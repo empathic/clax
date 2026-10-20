@@ -1,13 +1,17 @@
 # Overlay for `package:webview_flutter_wkwebview` 3.x (bazel/flutter/plugin_overlays,
 # registered in MODULE.bazel): the generated BUILD file, with the plugin's
-# Apple sources patched by configuration-hook.patch beside this file, which
-# adds `FWFWebViewFlutterWKWebViewExternalAPI.configurationHook`, called
-# with each WKWebViewConfiguration before the plugin makes a WKWebView with
-# it. The runner sets it to register its `clax` scheme handler
+# Apple sources patched by the patches beside this file, in order:
+# configuration-hook.patch adds
+# `FWFWebViewFlutterWKWebViewExternalAPI.configurationHook`, called with
+# each WKWebViewConfiguration before the plugin makes a WKWebView with it,
+# which the runner sets to register its `clax` scheme handler
 # (macos/Runner/SchemeHost.swift, ios/Runner/SchemeHost.swift), which
-# WebKit takes only before the view exists. scripts/patch-pub.sh applies
-# the same patch for the native builds. The rest is what rules_flutter
-# generates.
+# WebKit takes only before the view exists; navigation-delegate-hook.patch
+# adds `navigationDelegateHook`, called with each navigation delegate the
+# plugin sets and returning the one set instead, which the runner uses to
+# keep its navigation proxy in front of the plugin's delegate whenever Dart
+# sets a new one. scripts/patch-pub.sh applies the same patches for the
+# native builds. The rest is what rules_flutter generates.
 
 load("@rules_flutter//flutter:defs.bzl", "flutter_plugin")
 load("@rules_flutter//flutter:macos.bzl", "flutter_apple_plugin_library")
@@ -50,7 +54,13 @@ flutter_plugin(
 
 _SOURCES = "darwin/webview_flutter_wkwebview/Sources/webview_flutter_wkwebview/"
 
-# The files the patch changes, patched.
+# The patches, applied in this order.
+_PATCHES = [
+    "@@//bazel/flutter/plugin_overlays:webview_flutter_wkwebview/3/configuration-hook.patch",
+    "@@//bazel/flutter/plugin_overlays:webview_flutter_wkwebview/3/navigation-delegate-hook.patch",
+]
+
+# The files the patches change, patched.
 _PATCHED = [
     "WebViewFlutterWKWebViewExternalAPI.swift",
     "WebViewProxyAPIDelegate.swift",
@@ -58,21 +68,23 @@ _PATCHED = [
 
 genrule(
     name = "patched_sources",
-    srcs = [_SOURCES + f for f in _PATCHED] + [
-        "@@//bazel/flutter/plugin_overlays:webview_flutter_wkwebview/3/configuration-hook.patch",
-    ],
+    srcs = [_SOURCES + f for f in _PATCHED] + _PATCHES,
     outs = ["patched/" + f for f in _PATCHED],
     cmd = """set -euo pipefail
 dir="$$(mktemp -d)"
 trap 'rm -rf "$$dir"' EXIT
 mkdir -p "$$dir/{sources}"
 for f in {files}; do cat "$$(dirname $(location {first}))/$$f" > "$$dir/{sources}$$f"; done
-/usr/bin/patch --quiet --forward -p1 -d "$$dir" < $(location @@//bazel/flutter/plugin_overlays:webview_flutter_wkwebview/3/configuration-hook.patch)
+{apply}
 for f in {files}; do cat "$$dir/{sources}$$f" > "$(RULEDIR)/patched/$$f"; done
 """.format(
         sources = _SOURCES,
         files = " ".join(_PATCHED),
         first = _SOURCES + _PATCHED[0],
+        apply = "\n".join([
+            '/usr/bin/patch --quiet --forward -p1 -d "$$dir" < $(location %s)' % p
+            for p in _PATCHES
+        ]),
     ),
 )
 

@@ -4,6 +4,9 @@
 
 # The patches an overlay applies, which its package's repository reads.
 exports_files(
-    ["webview_flutter_wkwebview/3/configuration-hook.patch"],
+    [
+        "webview_flutter_wkwebview/3/configuration-hook.patch",
+        "webview_flutter_wkwebview/3/navigation-delegate-hook.patch",
+    ],
     visibility = ["//visibility:public"],
 )
