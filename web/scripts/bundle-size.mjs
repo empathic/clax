@@ -1,7 +1,8 @@
 // Gzip sizes of what must load before each shell entry can render (the HTML
 // and its module script with that script's static imports, per the Vite
-// manifest), of the eager bridge, of each of the bridge's lazy parts with
-// the files it imports (per the parts build's manifest), and of the Chrome
+// manifest), of the eager bridge, of the app's transport script, of each
+// of the bridge's lazy parts with the files it imports (per the parts
+// build's manifest), and of the Chrome
 // extension's release build (web/dist-extension: its worker and overlay
 // scripts, and each page with the scripts and stylesheets it names), of the
 // question module (`questions`: the `q` chunk, which the gallery loads
@@ -98,7 +99,9 @@ function part(name) {
   return [...seen].reduce((n, k) => n + gz(`_clax/bridge/${partsManifest[k].file}`), 0);
 }
 
-const sizes = { gallery: entry("index.html"), artifact: entry("artifact.html"), bridge: gz("_clax/bridge.js") };
+// The app's transport (`transport`), a classic script of its own that only
+// the shell documents an embedded core serves load, before their entry.
+const sizes = { gallery: entry("index.html"), artifact: entry("artifact.html"), bridge: gz("_clax/bridge.js"), transport: gz("_clax/transport.js") };
 // The question module: its chunk and what it imports beyond what its host
 // has loaded by then, for the larger of its two hosts: the gallery (its entry
 // and its lazy module, through which the module loads) and the artifact view
@@ -170,9 +173,9 @@ for (const [key, html] of [["extComposer", "composer.html"], ["extPanel", "sidep
   const files = [...text.matchAll(/(?:src|href)="\.\/(assets\/[^"]+)"/g)].map(m => m[1]);
   sizes[key] = extGz(html) + files.reduce((n, f) => n + extGz(f), 0);
 }
-console.log(`gzip bytes: gallery ${sizes.gallery}, artifact ${sizes.artifact}, questions ${sizes.questions}, people ${sizes.people}, eager bridge ${sizes.bridge}, app host ${sizes.host}, parts: comment ${sizes.partComment}, clip ${sizes.partClip}, caps ${sizes.partCaps}, room ${sizes.partRoom}, sample ${sizes.partSample}, live ${sizes.partLive}, extension: overlay ${sizes.extOverlay}, worker ${sizes.extWorker}, composer ${sizes.extComposer}, panel ${sizes.extPanel}`);
+console.log(`gzip bytes: gallery ${sizes.gallery}, artifact ${sizes.artifact}, questions ${sizes.questions}, people ${sizes.people}, eager bridge ${sizes.bridge}, app host ${sizes.host}, transport ${sizes.transport}, parts: comment ${sizes.partComment}, clip ${sizes.partClip}, caps ${sizes.partCaps}, room ${sizes.partRoom}, sample ${sizes.partSample}, live ${sizes.partLive}, extension: overlay ${sizes.extOverlay}, worker ${sizes.extWorker}, composer ${sizes.extComposer}, panel ${sizes.extPanel}`);
 
-const RECORDED = ["gallery", "artifact", "host", "bridge", ...Object.values(partKeys)];
+const RECORDED = ["gallery", "artifact", "host", "bridge", "transport", ...Object.values(partKeys)];
 const EXTENSION = ["extOverlay", "extWorker", "extComposer", "extPanel", "questions", "people"];
 const MEASURED = [...RECORDED, ...EXTENSION];
 const KEYS = [...MEASURED, "bridgeBaseline"];

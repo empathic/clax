@@ -54,6 +54,7 @@ copy_to_bin(
         "vite.bridge.config.ts",
         "vite.bridge-parts.config.ts",
         "vite.shell.config.ts",
+        "vite.transport.config.ts",
         "vitest.config.ts",
     ],
     visibility = ["//visibility:public"],

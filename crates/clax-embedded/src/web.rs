@@ -43,13 +43,15 @@ pub fn web_ui_dir() -> Option<&'static str> {
 mod tests {
     use super::*;
 
-    /// A build that embeds its web UI carries the bridge with its hash.
+    /// A build that embeds its web UI carries the bridge with its hash, and
+    /// the app's transport, which an embedded core's shell documents load.
     #[test]
     fn an_embedded_build_carries_the_bridge() {
         use sha2::Digest;
         let f = web_ui("_clax/bridge.js").expect("the bridge is built");
         assert_eq!(f.sha256, <[u8; 32]>::from(sha2::Sha256::digest(&f.data)));
         assert!(web_ui_paths().iter().any(|p| p == "artifact.html"));
+        assert!(web_ui_paths().iter().any(|p| p == "_clax/transport.js"));
         assert_eq!(web_ui_dir(), None);
     }
 }

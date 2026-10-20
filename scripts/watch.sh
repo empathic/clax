@@ -73,7 +73,7 @@ if [ "$BUILD_SYSTEM" = native ]; then
     export CLAX_DEV=1
     (cd web && node scripts/build-parts.mjs)
     (cd web && node scripts/build-parts.mjs --watch 2>&1 | sed -u "s/^/[web:bridge-parts] /") &
-    for cfg in bridge shell; do
+    for cfg in bridge transport shell; do
         (cd web && pnpm exec vite build -c "vite.$cfg.config.ts" --watch 2>&1 | sed -u "s/^/[web:$cfg] /") &
     done
     reload="backend restarts on Rust changes; reload the browser for frontend changes"

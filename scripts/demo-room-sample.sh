@@ -37,7 +37,7 @@ for out in web/dist/index.html web/dist/_clax/bridge.js; do
     [ -f "$out" ] || die "$out is missing: run (cd web && pnpm run build) first"
     built="$out"
     if [ web/node_modules/.clax-web-built -nt "$out" ]; then built=web/node_modules/.clax-web-built; fi
-    newer="$(find web/shell web/bridge web/vite.shell.config.ts web/vite.bridge.config.ts web/package.json web/pnpm-lock.yaml \
+    newer="$(find web/shell web/bridge web/vite.shell.config.ts web/vite.bridge.config.ts web/vite.transport.config.ts web/package.json web/pnpm-lock.yaml \
         -type f ! -name '*.test.ts' -newer "$built" -print -quit)"
     [ -z "$newer" ] || die "web/dist is older than $newer: run (cd web && pnpm run build) first"
 done

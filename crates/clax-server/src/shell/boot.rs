@@ -392,13 +392,19 @@ pub fn embed_meta(e: &clax_http::state::EmbedOrigins) -> String {
     )
 }
 
-/// `html` (a shell document) with [`embed_meta`] first in its `<head>`, so
-/// before any script, when the core is embedded (`embed`); else unchanged.
+/// The app's transport (`web/shell/src/transport.ts`, built on its own): a
+/// classic script, so it runs before the shell's modules, which replaces
+/// their `fetch` with the app's channel.
+pub const TRANSPORT_SCRIPT: &str = r#"<script src="/_clax/transport.js"></script>"#;
+
+/// `html` (a shell document) with [`embed_meta`] and then
+/// [`TRANSPORT_SCRIPT`] first in its `<head>`, so before any other script,
+/// when the core is embedded (`embed`); else unchanged.
 pub fn with_embed_meta(html: &str, embed: Option<&clax_http::state::EmbedOrigins>) -> String {
     let Some(e) = embed else {
         return html.to_string();
     };
-    let meta = embed_meta(e);
+    let meta = format!("{}{TRANSPORT_SCRIPT}", embed_meta(e));
     match html.find("<head>") {
         Some(at) => {
             let end = at + "<head>".len();

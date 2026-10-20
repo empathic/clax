@@ -152,14 +152,10 @@
 //   `PAGE_WAIT_MS`, and `pageWait {waiting: false}` when it ends or the
 //   page goes; a wait under way at `init` is posted then. A shorter wait
 //   is never posted.
-// - The app's transport (`transport.ts`): when the core writes the
-//   document's `clax-embed` meta, the shell's API calls and its event stream
-//   go over this channel, from `init` on. The shell posts `call {id, method,
-//   path, headers, body, body64, chunked}` (a body over 8 MiB follows as
-//   `callChunk {id, n, last, body64}`), `callAbort {id}`, `subscribe {id}`
-//   and `unsubscribe {id}`; the app answers a call with `callResult(id,
-//   {status, headers, body | body64})`, and feeds a subscription with
-//   `streamBlock(id, text)` and `streamEnd(id)`.
+// - The app's transport (`transport.ts`, its own script) carries the
+//   shell's API calls and event stream over the same channel, in every shell
+//   document the core marks with the `clax-embed` meta; the app answers it
+//   through `window.claxTransport`, never `claxHost`.
 // Its styles go in with it: the shell links no stylesheet a lazy chunk
 // imports (`vite.shell.config.ts`, `inlineCss`).
 import appCss from "./app.css?inline";
@@ -181,7 +177,6 @@ import { anchorLabel, anchorQuote } from "./label";
 import { respaced } from "../view/composer-model";
 import { appQuery, inspectQuery, migrateQuery, parseShellPath, shellPath } from "../route";
 import { setUrl, validHash } from "../view/url";
-import { type CallResult, callResult, channelNonce, streamBlock, streamEnd } from "../transport";
 
 export type HostMessage =
   | { type: "ready"; artifact: string; version: number; latest: number; file: string }
@@ -371,13 +366,6 @@ export type ClaxHost = {
   deviceEvent(a: unknown): void;
   /** Moves the page to fragment `hash` (`#` and at most 512 characters). */
   openRoute(hash: string): void;
-  /** The app's answer to the shell's `call` `id` (see The app's transport
-   * above). */
-  callResult(id: number, r: CallResult): void;
-  /** The next text of the event stream `subscribe` `id` opened. */
-  streamBlock(id: number, text: string): void;
-  /** Ends the event stream `id` (the core closed it). */
-  streamEnd(id: number): void;
 };
 
 /** `inspect`'s defaults and bounds (`bridge/src/inspect.ts` has the same). */
@@ -1008,7 +996,6 @@ export function installHost(win: Window, ctl: ArtifactController): () => void {
       const n = p?.nonce;
       if (nonce !== null || typeof n !== "string" || !NONCE.test(n)) return;
       nonce = n;
-      channelNonce(n);
       const platform = PLATFORMS.find(x => x === p.platform);
       if (!inspecting && platform) deviceLink.platform = platform;
       if (platform === "macos") doc.documentElement.classList.add("mac");
@@ -1200,9 +1187,6 @@ export function installHost(win: Window, ctl: ArtifactController): () => void {
       if (typeof hash !== "string" || !hash.startsWith("#") || hash.length > 512) return;
       win.location.hash = hash;
     },
-    callResult,
-    streamBlock,
-    streamEnd,
   };
   Object.defineProperty(w, "claxHost", { value: host, configurable: true });
 

@@ -587,6 +587,17 @@ async fn an_embedded_core_marks_every_shell_document_and_frames_content_on_its_o
     let gallery = page(&embedded, "/", &[]).await.text().await.unwrap();
     assert!(embed_meta(&gallery).is_some(), "{gallery}");
 
+    // The app's transport is a classic script right after the meta, so it
+    // runs before any of the shell's own.
+    for doc in [&html, &gallery] {
+        let tag = r#"<script src="/_clax/transport.js"></script>"#;
+        let (meta_at, _) = embed_meta(doc).unwrap();
+        let script_at = doc.find(tag).expect("the transport's script");
+        assert_eq!(doc.matches(tag).count(), 1, "{doc}");
+        assert!(meta_at < script_at, "{doc}");
+        assert_eq!(doc.find("<script"), Some(script_at), "first of the scripts: {doc}");
+    }
+
     let plain = ts.publish("Report", &[("index.html", "<p>x</p>")]).await;
     let pid = plain["artifact"]["id"].as_str().unwrap().to_string();
     let html = page(&ts, &format!("/a/{pid}?app=1"), &[])
@@ -596,4 +607,5 @@ async fn an_embedded_core_marks_every_shell_document_and_frames_content_on_its_o
         .unwrap();
     assert!(embed_meta(&html).is_none());
     assert!(!html.contains("clax-embed"));
+    assert!(!html.contains("/_clax/transport.js"));
 }

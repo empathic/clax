@@ -2,29 +2,39 @@
 // process, with no port: its WebView answers the shell's documents and the
 // artifacts' content from a scheme, and the shell's API calls go over the
 // `ClaxHost` channel. The core marks every shell document it writes in the
-// app with `<meta name="clax-embed" content='{"transport":"host",…}'>`;
-// `installTransport` reads it at boot and, when it is there, replaces the
-// document's `fetch` with `hostFetch`. A browser's shell has no such meta and
-// keeps its own `fetch`.
+// app with `<meta name="clax-embed" content='{"transport":"host",…}'>`,
+// followed by `<script src="/_clax/transport.js">`: this module, built on its
+// own as a classic script (`vite.transport.config.ts`, `transport-main.ts`),
+// so it runs before any of the shell's modules, and a browser's shell, which
+// the core never marks, loads none of it.
 //
-// The channel's calls (each posted with the load's nonce, `app/host.ts`):
+// `installTransport` reads the meta and, when it is there:
+// - replaces the document's `fetch` with the transport's;
+// - hides the connection notices (`.conn-notice`, `conn-notice.ts`) with a
+//   style of its own: the app owns liveness, and the core runs in its
+//   process;
+// - installs `window.claxTransport`, where the app answers: `init(nonce)`,
+//   `callResult(id, r)`, `streamBlock(id, text)` and `streamEnd(id)`. Every
+//   shell document has it, whichever entry (gallery or artifact view) it
+//   loads.
+//
+// The channel's calls (each posted with the load's nonce, which the app
+// gives by `claxTransport.init`):
 // - `call {id, method, path, headers, body, body64, chunked}`: a request to
 //   the shell's origin under `/api/`. A text or JSON body that is valid UTF-8
 //   goes as `body`, any other as base64 in `body64`; a body over
 //   `CHUNKED_OVER` goes in neither (`chunked: true`) but in `callChunk {id,
 //   n, last, body64}` messages that follow, `n` from 0, each one `CHUNK`
-//   bytes of the body (the last one the rest) in its own base64. The host
-//   answers with `claxHost.callResult(id, {status, headers, body | body64})`.
+//   bytes of the body (the last one the rest) in its own base64. The app
+//   answers with `claxTransport.callResult(id, {status, headers, body |
+//   body64})`.
 // - `callAbort {id}`: the call's signal aborted; its answer is dropped.
-// - `subscribe {id}`: `GET /api/stream`. The host pushes the event stream's
-//   text by `claxHost.streamBlock(id, text)` and ends it by
-//   `claxHost.streamEnd(id)`.
+// - `subscribe {id}`: `GET /api/stream`. The app pushes the event stream's
+//   text by `claxTransport.streamBlock(id, text)` and ends it by
+//   `claxTransport.streamEnd(id)`.
 // - `unsubscribe {id}`: the stream's reader cancelled it or its signal
 //   aborted.
-// Calls made before the app's `init` wait for it: the channel needs the
-// nonce.
-
-import { connNotices } from "./conn-notice";
+// Calls made before `init` wait for it: the channel needs the nonce.
 
 /** The app's embed settings, from the shell document's
  * `<meta name="clax-embed" content='{"transport":"host","shell":…,"content":…}'>`
@@ -44,36 +54,42 @@ export function readEmbed(doc: Document = document): Embed | null {
     return null;
   }
   if (typeof v !== "object" || v === null) return null;
-  const { transport, shell, content } = v as Record<string, unknown>;
-  if (transport !== "host" || typeof shell !== "string" || typeof content !== "string") return null;
-  return { transport, shell, content };
+  const { transport: kind, shell, content } = v as Record<string, unknown>;
+  if (kind !== "host" || typeof shell !== "string" || typeof content !== "string") return null;
+  return { transport: kind, shell, content };
 }
-
-/** What the host side of the channel looks like to the transport. */
-export type HostLink = {
-  /** Posts `msg` on the channel with the load's nonce. */
-  post(msg: Record<string, unknown>): void;
-  /** Resolves once the channel has its nonce (the app's `init`). */
-  ready: Promise<void>;
-};
 
 /** A body's bytes a `callChunk` carries. */
 export const CHUNK = 1 << 20;
 /** A body over this many bytes goes in chunks. */
 export const CHUNKED_OVER = 8 << 20;
 
-/** The host's answer to a `call`. */
+/** The app's answer to a `call`. */
 export type CallResult = { status: number; headers: [string, string][]; body?: string | null; body64?: string | null };
+
+/** The app's channel, `window.ClaxHost`. */
+export type Channel = { postMessage(m: string): void };
+
+/** One document's transport: its `fetch`, and the receivers the app calls
+ * (`window.claxTransport`). */
+export type Transport = {
+  fetch: typeof fetch;
+  /** Gives the channel this load's nonce; only the first well-formed one counts. */
+  init(nonce: string): void;
+  /** Answers call `id`. An answer to no waiting call (aborted, or never
+   * made) does nothing. */
+  callResult(id: number, r: CallResult): void;
+  /** Adds `text` to stream `id`. */
+  streamBlock(id: number, text: string): void;
+  /** Ends stream `id` (the core closed it); its reader sees the end. */
+  streamEnd(id: number): void;
+};
 
 type Pending = { resolve(r: Response): void; reject(e: unknown): void };
 
-// The calls waiting for their answer and the open streams, by ID: one set
-// per document, which `claxHost` answers into.
-const calls = new Map<number, Pending>();
-const streams = new Map<number, ReadableStreamDefaultController<Uint8Array>>();
-let lastId = 0;
-
 const NULL_BODY = new Set([101, 103, 204, 205, 304]);
+const NONCE = /^[A-Za-z0-9_-]{16,128}$/;
+const TEXTUAL = /^(text\/|application\/([\w.+-]*\+)?json\b|application\/x-www-form-urlencoded\b)/i;
 
 /** A URL's scheme and host. `URL.origin` is "null" for a scheme the URL
  * standard does not know (`clax://app`), so origins are compared by these. */
@@ -94,57 +110,6 @@ function fromBase64(text: string): Uint8Array {
   return out;
 }
 
-const TEXTUAL = /^(text\/|application\/([\w.+-]*\+)?json\b|application\/x-www-form-urlencoded\b)/i;
-
-function abortError(signal: AbortSignal): unknown {
-  return signal.reason ?? new DOMException("The operation was aborted.", "AbortError");
-}
-
-/** `fetch` for app mode: a request to `origin` under `/api/` goes over
- * `link`, anything else to `fallback`. `GET /api/stream` answers a
- * response whose body the host's pushed blocks fill. */
-export function hostFetch(link: HostLink, fallback: typeof fetch, origin: string): typeof fetch {
-  const home = originOf(new URL(origin));
-  return async (input, init) => {
-    const href = input instanceof Request ? input.url : input instanceof URL ? input.href : String(input);
-    const url = new URL(href, origin);
-    if (originOf(url) !== home || !url.pathname.startsWith("/api/")) return fallback(input, init);
-    // The signal stays out of the Request: it is watched here.
-    const signal = init?.signal ?? (input instanceof Request ? input.signal : null);
-    const req = new Request(input instanceof Request ? input : url.href, { ...init, signal: null });
-    if (signal?.aborted) throw abortError(signal);
-    if (req.method === "GET" && url.pathname === "/api/stream") return subscribe(link, signal);
-    const bytes = new Uint8Array(await req.arrayBuffer());
-    await link.ready;
-    if (signal?.aborted) throw abortError(signal);
-    const id = ++lastId;
-    const answer = new Promise<Response>((resolve, reject) => calls.set(id, { resolve, reject }));
-    const msg = { type: "call", id, method: req.method, path: url.pathname + url.search, headers: [...req.headers], body: null as string | null, body64: null as string | null };
-    if (bytes.length > CHUNKED_OVER) {
-      link.post({ ...msg, chunked: true });
-      const n = Math.ceil(bytes.length / CHUNK);
-      for (let i = 0; i < n; i++) link.post({ type: "callChunk", id, n: i, last: i === n - 1, body64: toBase64(bytes.subarray(i * CHUNK, (i + 1) * CHUNK)) });
-    } else {
-      const text = bytes.length > 0 && TEXTUAL.test(req.headers.get("content-type") ?? "") ? utf8(bytes) : null;
-      if (text !== null) msg.body = text;
-      else if (bytes.length > 0) msg.body64 = toBase64(bytes);
-      link.post(msg);
-    }
-    if (signal) {
-      const onAbort = () => {
-        const p = calls.get(id);
-        if (!p) return;
-        calls.delete(id);
-        link.post({ type: "callAbort", id });
-        p.reject(abortError(signal));
-      };
-      signal.addEventListener("abort", onAbort, { once: true });
-      void answer.finally(() => signal.removeEventListener("abort", onAbort)).catch(() => {});
-    }
-    return answer;
-  };
-}
-
 function utf8(bytes: Uint8Array): string | null {
   try {
     return new TextDecoder("utf-8", { fatal: true }).decode(bytes);
@@ -153,89 +118,139 @@ function utf8(bytes: Uint8Array): string | null {
   }
 }
 
-async function subscribe(link: HostLink, signal: AbortSignal | null): Promise<Response> {
-  await link.ready;
-  if (signal?.aborted) throw abortError(signal);
-  const id = ++lastId;
-  const stop = () => {
-    if (!streams.delete(id)) return;
-    link.post({ type: "unsubscribe", id });
+function abortError(signal: AbortSignal): unknown {
+  return signal.reason ?? new DOMException("The operation was aborted.", "AbortError");
+}
+
+/** A transport over `channel` (read at each post): a request to `origin`
+ * under `/api/` goes over it, anything else to `fallback`. `GET
+ * /api/stream` answers a response whose body the app's pushed blocks fill. */
+export function transport(channel: () => Channel | undefined, fallback: typeof fetch, origin: string): Transport {
+  const home = originOf(new URL(origin));
+  // The calls waiting for their answer and the open streams, by ID.
+  const calls = new Map<number, Pending>();
+  const streams = new Map<number, ReadableStreamDefaultController<Uint8Array>>();
+  let lastId = 0;
+  let nonce: string | null = null;
+  let opened = () => {};
+  const ready = new Promise<void>(resolve => { opened = resolve; });
+
+  const post = (m: Record<string, unknown>) => {
+    const ch = channel();
+    if (nonce !== null && ch && typeof ch.postMessage === "function") ch.postMessage(JSON.stringify({ ...m, nonce }));
   };
-  const body = new ReadableStream<Uint8Array>({
-    start(c) {
-      streams.set(id, c);
-      if (signal) signal.addEventListener("abort", () => {
-        if (!streams.has(id)) return;
-        stop();
-        c.error(abortError(signal));
-      }, { once: true });
+
+  const subscribe = async (signal: AbortSignal | null): Promise<Response> => {
+    await ready;
+    if (signal?.aborted) throw abortError(signal);
+    const id = ++lastId;
+    const stop = () => {
+      if (!streams.delete(id)) return;
+      post({ type: "unsubscribe", id });
+    };
+    const body = new ReadableStream<Uint8Array>({
+      start(c) {
+        streams.set(id, c);
+        if (signal) signal.addEventListener("abort", () => {
+          if (!streams.has(id)) return;
+          stop();
+          c.error(abortError(signal));
+        }, { once: true });
+      },
+      cancel: stop,
+    });
+    post({ type: "subscribe", id });
+    return new Response(body, { status: 200, headers: { "content-type": "text/event-stream" } });
+  };
+
+  const hostFetch: typeof fetch = async (input, init) => {
+    const href = input instanceof Request ? input.url : input instanceof URL ? input.href : String(input);
+    const url = new URL(href, origin);
+    if (originOf(url) !== home || !url.pathname.startsWith("/api/")) return fallback(input, init);
+    // The signal stays out of the Request: it is watched here.
+    const signal = init?.signal ?? (input instanceof Request ? input.signal : null);
+    const req = new Request(input instanceof Request ? input : url.href, { ...init, signal: null });
+    if (signal?.aborted) throw abortError(signal);
+    if (req.method === "GET" && url.pathname === "/api/stream") return subscribe(signal);
+    const bytes = new Uint8Array(await req.arrayBuffer());
+    await ready;
+    if (signal?.aborted) throw abortError(signal);
+    const id = ++lastId;
+    const answer = new Promise<Response>((resolve, reject) => calls.set(id, { resolve, reject }));
+    const msg = { type: "call", id, method: req.method, path: url.pathname + url.search, headers: [...req.headers], body: null as string | null, body64: null as string | null };
+    if (bytes.length > CHUNKED_OVER) {
+      post({ ...msg, chunked: true });
+      const n = Math.ceil(bytes.length / CHUNK);
+      for (let i = 0; i < n; i++) post({ type: "callChunk", id, n: i, last: i === n - 1, body64: toBase64(bytes.subarray(i * CHUNK, (i + 1) * CHUNK)) });
+    } else {
+      const text = bytes.length > 0 && TEXTUAL.test(req.headers.get("content-type") ?? "") ? utf8(bytes) : null;
+      if (text !== null) msg.body = text;
+      else if (bytes.length > 0) msg.body64 = toBase64(bytes);
+      post(msg);
+    }
+    if (signal) {
+      const onAbort = () => {
+        const p = calls.get(id);
+        if (!p) return;
+        calls.delete(id);
+        post({ type: "callAbort", id });
+        p.reject(abortError(signal));
+      };
+      signal.addEventListener("abort", onAbort, { once: true });
+      void answer.finally(() => signal.removeEventListener("abort", onAbort)).catch(() => {});
+    }
+    return answer;
+  };
+
+  return {
+    fetch: hostFetch,
+    init(n) {
+      if (nonce !== null || typeof n !== "string" || !NONCE.test(n)) return;
+      nonce = n;
+      opened();
     },
-    cancel: stop,
-  });
-  link.post({ type: "subscribe", id });
-  return new Response(body, { status: 200, headers: { "content-type": "text/event-stream" } });
+    callResult(id, r) {
+      const p = calls.get(id);
+      if (!p) return;
+      calls.delete(id);
+      try {
+        const status = r.status;
+        const bytes = typeof r.body64 === "string" ? fromBase64(r.body64) : null;
+        const body = NULL_BODY.has(status) ? null : (bytes ?? r.body ?? null);
+        p.resolve(new Response(body as BodyInit | null, { status, headers: r.headers }));
+      } catch (e) {
+        p.reject(new TypeError(`the app answered a malformed result: ${String(e)}`));
+      }
+    },
+    streamBlock(id, text) {
+      const c = streams.get(id);
+      if (c && typeof text === "string") c.enqueue(new TextEncoder().encode(text));
+    },
+    streamEnd(id) {
+      const c = streams.get(id);
+      if (!c) return;
+      streams.delete(id);
+      c.close();
+    },
+  };
 }
 
-/** Answers call `id` with the host's result. An answer to no waiting call
- * (aborted, or never made) does nothing. */
-export function callResult(id: number, r: CallResult): void {
-  const p = calls.get(id);
-  if (!p) return;
-  calls.delete(id);
-  try {
-    const status = r.status;
-    const bytes = typeof r.body64 === "string" ? fromBase64(r.body64) : null;
-    const body = NULL_BODY.has(status) ? null : (bytes ?? r.body ?? null);
-    p.resolve(new Response(body as BodyInit | null, { status, headers: r.headers }));
-  } catch (e) {
-    p.reject(new TypeError(`the app answered a malformed result: ${String(e)}`));
-  }
-}
-
-/** Adds `text` to stream `id`. */
-export function streamBlock(id: number, text: string): void {
-  const c = streams.get(id);
-  if (c && typeof text === "string") c.enqueue(new TextEncoder().encode(text));
-}
-
-/** Ends stream `id` (the core closed it); its reader sees the end. */
-export function streamEnd(id: number): void {
-  const c = streams.get(id);
-  if (!c) return;
-  streams.delete(id);
-  c.close();
-}
-
-let nonceGiven: (n: string) => void = () => {};
-const nonceSet = new Promise<string>(resolve => { nonceGiven = resolve; });
-
-/** Gives the channel this load's nonce: `claxHost.init` (`app/host.ts`)
- * calls it once. */
-export function channelNonce(n: string): void {
-  nonceGiven(n);
-}
-
-type HostWindow = Window & { ClaxHost?: { postMessage(m: string): void } };
+type HostWindow = Window & { ClaxHost?: Channel; claxTransport?: Omit<Transport, "fetch"> };
 
 /** At boot: in app mode (the document carries the `clax-embed` meta)
- * replaces `win.fetch` with `hostFetch` over `window.ClaxHost` and turns
- * connection notices off. `nonce` resolves to the load's nonce (by default
- * once `channelNonce` gives it). Returns whether it did. */
-export function installTransport(win: Window = window, nonce?: Promise<string>): boolean {
-  const embed = readEmbed(win.document);
+ * replaces `win.fetch` with a transport over `window.ClaxHost`, hides the
+ * connection notices and installs `window.claxTransport`. Returns whether
+ * it did. */
+export function installTransport(win: Window = window): boolean {
+  const doc = win.document;
+  const embed = readEmbed(doc);
   if (!embed) return false;
   const w = win as HostWindow;
-  let given: string | null = null;
-  const ready = (nonce ?? nonceSet).then(n => { given = n; });
-  const link: HostLink = {
-    post: m => {
-      const ch = w.ClaxHost;
-      if (given !== null && ch && typeof ch.postMessage === "function") ch.postMessage(JSON.stringify({ ...m, nonce: given }));
-    },
-    ready,
-  };
-  const native = win.fetch.bind(win);
-  win.fetch = hostFetch(link, native, embed.shell);
-  connNotices(false, win.document);
+  const { fetch: f, ...receivers } = transport(() => w.ClaxHost, win.fetch.bind(win), embed.shell);
+  win.fetch = f;
+  const style = doc.createElement("style");
+  style.textContent = ".conn-notice{display:none!important}";
+  doc.head.append(style);
+  Object.defineProperty(w, "claxTransport", { value: Object.freeze(receivers) });
   return true;
 }
