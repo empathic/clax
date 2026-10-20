@@ -162,9 +162,13 @@ for (const mode of ["subdomain", "sandbox"] as const) {
   });
 
   test(`${mode}: a journaled migration that fails part way is put back from its journal, the viewer's data/users documents included`, async ({ page }) => {
-    // This browser's viewer, whose private documents the migration writes.
+    // This browser's viewer, whose private documents the migration writes:
+    // the one the gallery's own lookup answers, made after its token request
+    // has made the browser the owner. A lookup of the test's own could go
+    // out before that, without a cookie, and mint a viewer of its own.
+    const looked = page.waitForResponse(r => new URL(r.url()).pathname === "/api/viewers/me" && r.request().method() === "GET");
     await page.goto(`${d.base}/`);
-    const me = await page.evaluate(async () => (await (await fetch("/api/viewers/me")).json()).viewer.public_id as string);
+    const me = ((await (await looked).json()) as { viewer: { public_id: string } }).viewer.public_id;
     const mine = (js: string) => js.replaceAll("data/users/me/", `data/users/${me}/`);
     const id = await draft({ "index.html": PAGE, "seed.js": mine(SEED), "break.js": mine(BREAK), "check.js": mine(CHECK) });
     expect(await runTests(page, id, mode, `runMigration({ file: "seed.js", from: 1, to: 2 })`, "migration", MIGRATE_VIEW)).toEqual({ type: "migration", ok: true });
