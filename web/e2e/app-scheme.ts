@@ -344,14 +344,14 @@ export class AppHost {
     // isForMainFrame() request it hands Dart (it refuses one for the
     // shell's host outside /a/ itself, unnumbered); a nonce is minted only
     // for a shell document answered 200.
-    const n = mainNav && (!shell || document) ? ++this.navigations : null;
-    if (n !== null) this.kept = { n, url: req.url(), nonce: null };
+    const numbered = mainNav && (!shell || document) ? ++this.navigations : null;
+    if (numbered !== null) this.kept = { n: numbered, url: req.url(), nonce: null };
     const answer = await this.schemeAnswer(req, url, shell, mainNav, document);
     const headers = answer.headers.filter(([k]) => !k.toLowerCase().startsWith("access-control-"));
     let body = answer.body;
-    if (n !== null && document && answer.status === 200) {
+    if (numbered !== null && document && answer.status === 200) {
       const nonce = randomBytes(18).toString("base64url");
-      if (this.kept?.n === n) this.kept.nonce = nonce;
+      if (this.kept?.n === numbered) this.kept.nonce = nonce;
       if (this.opts.nonceMeta !== false) body = Buffer.from(body.toString("utf8").replace("<head>", `<head><meta name="clax-nonce" content="${nonce}">`));
     }
     this.scheme.push({ url: req.url(), status: answer.status, mainFrame: mainNav });
@@ -393,7 +393,7 @@ export class AppHost {
       }
       if (answer.status < 300 || answer.status >= 400) return answer;
       const location = answer.headers.find(([k]) => k === "location")?.[1] ?? null;
-      const next = location === null ? null : resolve(target, location);
+      const next = location === null ? null : resolveLocation(target, location);
       if (next && hop < MAX_HOPS && sameBase(url, next)) { target = next; continue; }
       if (answer.status === 308 && location !== null && hop === 0 && /^\/v\/[0-9]+$/.test(url.pathname) && (mainNav || /text\/html/i.test(all.accept ?? ""))) {
         return { status: 200, headers: [["content-type", "text/html; charset=utf-8"]], body: Buffer.from(`<meta http-equiv="refresh" content="0;url=${escapeAttr(location)}">`) };
@@ -626,7 +626,7 @@ export class SseBlocks {
 /** The most redirects the answerer follows for one request. */
 const MAX_HOPS = 5;
 
-function resolve(base: URL, location: string): URL | null {
+function resolveLocation(base: URL, location: string): URL | null {
   try { return new URL(location, base); } catch { return null; }
 }
 
