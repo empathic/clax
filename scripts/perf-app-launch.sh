@@ -12,14 +12,19 @@
 #
 # --macos (the default): takes --app (an app or the zip `just app-macos`
 #   makes), or builds //apps/clax_app:macos_app (scripts/run.sh app-macos),
-#   unpacks a zip once per build under target/perf/app-<sha>, and runs its
-#   Contents/MacOS/Clax with a scratch CLAX_APP_DIR made for this run under
-#   the app's container, ~/Library/Containers/dev.empathic.clax/Data/tmp
-#   (CLAX_PERF_APP_BASE names another parent). Each launch waits for a new
-#   home-usable line, at most 60 s (a launch without one counts as
-#   missing), then sends the app SIGTERM by its PID, and the daemon it
-#   started too (by the PID in its daemon.json), waiting for each to exit.
-#   The scratch directory is removed at the end.
+#   and makes, once per build, a copy of it under target/perf/clax-perf-<sha>
+#   (CLAX_PERF_WORK names another parent) whose CFBundleIdentifier is
+#   dev.empathic.clax.perf, signed again ad hoc with its entitlements kept.
+#   The copy runs in a sandbox container of its own,
+#   ~/Library/Containers/dev.empathic.clax.perf (CLAX_PERF_CONTAINER names
+#   another; it must end in dev.empathic.clax.perf), which the script
+#   removes before the first launch and at the end; the installed app's
+#   container, dev.empathic.clax's, is never read or written. Each launch
+#   runs the copy's Contents/MacOS/Clax and waits for a new home-usable
+#   line in its support directory's timings.jsonl, at most 60 s (a launch
+#   without one counts as missing), then sends the app SIGTERM by its PID,
+#   and the daemon it started too (by the PID in its daemon.json), waiting
+#   for each to exit.
 # --android: on the plugged-in phone or emulator (ANDROID_SERIAL picks
 #   one), with the app already installed (`just app-phone`): `am
 #   force-stop` and `am start -W` N times, each waiting for a new
@@ -189,48 +194,82 @@ stop_pid() {
 }
 
 if [ "$target" = macos ]; then
-    base="${CLAX_PERF_APP_BASE:-$HOME/Library/Containers/$pkg/Data/tmp}"
+    perf_id="$pkg.perf"
+    work="${CLAX_PERF_WORK:-target/perf}"
+    container="${CLAX_PERF_CONTAINER:-$HOME/Library/Containers/$perf_id}"
     if [ -z "$act" ]; then
         echo "perf-app-launch: would run, in $(pwd):"
         if [ -n "$app" ]; then
-            echo "  take the app $app (unpacked once per build under target/perf/app-<sha> if a zip)"
+            echo "  take the app $app"
         else
-            echo "  ./scripts/run.sh app-macos  (builds //apps/clax_app:macos_app), unpacked once per build under target/perf/app-<sha>"
+            echo "  ./scripts/run.sh app-macos  (builds //apps/clax_app:macos_app)"
         fi
-        echo "  mkdir $base/perf-<time>  (the scratch CLAX_APP_DIR)"
-        echo "  $((runs + 1)) times: CLAX_APP_DIR=$base/perf-<time> <Clax.app>/Contents/MacOS/Clax, wait for a new home-usable line in <dir>/support/timings.jsonl (at most ${cap} s), SIGTERM the app and its daemon by PID and wait for them to exit"
+        echo "  copy it once per build into $work/clax-perf-<sha> (a zip unpacked, an app copied with ditto), set the copy's CFBundleIdentifier to $perf_id (plutil) and sign it again ad hoc: codesign --force --sign - --preserve-metadata=entitlements,flags,runtime <copy>"
+        echo "  rm -r $container  (the copy's own container, if an earlier run left it)"
+        echo "  $((runs + 1)) times: <copy>/Contents/MacOS/Clax, wait for a new home-usable line in $container/Data/Library/Application Support/$perf_id/timings.jsonl (at most ${cap} s), SIGTERM the app and its daemon by PID and wait for them to exit"
         echo "  drop the first launch; print the median and p90 of home-usable and home-cover${CLAX_PERF_JSON:+ and append them to $CLAX_PERF_JSON}"
         [ -n "$record" ] && echo "  record $(host_platform)'s missing budgets in $budgets"
-        echo "  rm -r $base/perf-<time>"
+        echo "  rm -r $container"
         echo "run again with --i-know-what-i-am-doing to do it"
         exit 0
     fi
     [ "$(uname -s)" = Darwin ] || { echo "perf-app-launch: --macos runs on a Mac" >&2; exit 1; }
+    # Only the copy's own container is ever removed.
+    [ "$(basename "$container")" = "$perf_id" ] ||
+        { echo "perf-app-launch: CLAX_PERF_CONTAINER must be the copy's container, named $perf_id: $container" >&2; exit 1; }
+    case "$work" in /*) ;; *) work="$PWD/$work" ;; esac
     if [ -z "$app" ]; then
         app="$(./scripts/run.sh app-macos | tail -1)"
     fi
     case "$app" in
         *.zip)
             [ -f "$app" ] || { echo "perf-app-launch: no app at $app; pass --app" >&2; exit 1; }
-            dir="target/perf/app-$(shasum -a 256 "$app" | cut -c1-12)"
-            if [ ! -d "$dir" ]; then
-                mkdir -p "$dir.new"
-                unzip -q "$app" -d "$dir.new"
-                mv "$dir.new" "$dir"
-            fi
-            app="$(ls -d "$PWD/$dir"/*.app | sed -n 1p)"
+            sha="$(shasum -a 256 "$app" | cut -d' ' -f1)"
+            ;;
+        *)
+            [ -f "$app/Contents/Info.plist" ] || { echo "perf-app-launch: no Contents/Info.plist in $app; pass --app" >&2; exit 1; }
+            # A digest of every file in the bundle, by path.
+            sha="$(cd "$app" && find . -type f -print0 | LC_ALL=C sort -z | xargs -0 shasum -a 256 | shasum -a 256 | cut -d' ' -f1)"
             ;;
     esac
-    exe="$app/Contents/MacOS/Clax"
-    [ -x "$exe" ] || { echo "perf-app-launch: no Contents/MacOS/Clax in $app" >&2; exit 1; }
-    mkdir -p "$base"
-    scratch="$base/perf-$(date +%Y%m%dT%H%M%S)-$$"
-    mkdir "$scratch"
-    trap 'rm -rf "$scratch"' EXIT
-    timings="$scratch/support/timings.jsonl"
+    copy="$work/clax-perf-$(printf %s "$sha" | cut -c1-12)"
+    if [ ! -d "$copy" ]; then
+        # Made aside and moved into place whole: a copy under its name is
+        # always re-identified, and no binary is ever written over.
+        rm -rf "$copy.new"
+        mkdir -p "$copy.new"
+        case "$app" in
+            *.zip) unzip -q "$app" -d "$copy.new" ;;
+            *) ditto "$app" "$copy.new/$(basename "$app")" ;;
+        esac
+        b="$(ls -d "$copy.new"/*.app | sed -n 1p)"
+        plutil -replace CFBundleIdentifier -string "$perf_id" "$b/Contents/Info.plist"
+        codesign --force --sign - --preserve-metadata=entitlements,flags,runtime "$b"
+        codesign --verify --strict "$b"
+        mv "$copy.new" "$copy"
+    fi
+    bundle="$(ls -d "$copy"/*.app | sed -n 1p)"
+    [ "$(plutil -extract CFBundleIdentifier raw -o - "$bundle/Contents/Info.plist" 2>/dev/null)" = "$perf_id" ] ||
+        { echo "perf-app-launch: $bundle is not identified as $perf_id; remove $copy and run again" >&2; exit 1; }
+    exe="$bundle/Contents/MacOS/Clax"
+    [ -x "$exe" ] || { echo "perf-app-launch: no Contents/MacOS/Clax in $bundle" >&2; exit 1; }
+    support="$container/Data/Library/Application Support/$perf_id"
+    timings="$support/timings.jsonl"
+    logs="$copy.logs"
+    mkdir -p "$logs"
+    if [ -e "$container" ]; then
+        echo "perf-app-launch: removing $container, left by an earlier run" >&2
+        rm -rf "$container"
+    fi
+    pid=""
+    cleanup() {
+        [ -z "$pid" ] || stop_pid "$pid" "the app"
+        rm -rf "$container"
+    }
+    trap cleanup EXIT
     for i in $(seq 0 "$runs"); do
         before="$(count "$timings")"
-        CLAX_APP_DIR="$scratch" "$exe" >"$scratch/launch-$i.log" 2>&1 &
+        env -u CLAX_APP_DIR "$exe" >"$logs/launch-$i.log" 2>&1 &
         pid=$!
         got=""
         for _ in $(seq $((cap * 4))); do
@@ -243,8 +282,9 @@ if [ "$target" = macos ]; then
         fi
         stop_pid "$pid" "the app"
         wait "$pid" 2>/dev/null || true
+        pid=""
         # The daemon the app started, if it outlived the app.
-        info="$scratch/support/clax-home/daemon.json"
+        info="$support/clax-home/daemon.json"
         if [ -f "$info" ]; then
             dpid="$(python3 -I -c 'import json,sys; print(json.load(open(sys.argv[1])).get("pid", ""))' "$info" 2>/dev/null || true)"
             case "$(ps -p "${dpid:-0}" -o comm= 2>/dev/null)" in
@@ -257,7 +297,7 @@ if [ "$target" = macos ]; then
             [ -f "$timings" ] && first_lines="$(wc -l <"$timings" | tr -d ' ')"
         fi
     done
-    measured="$scratch/measured.jsonl"
+    measured="$logs/measured.jsonl"
     tail -n "+$((${first_lines:-0} + 1))" "$timings" >"$measured" 2>/dev/null || : >"$measured"
     summarize "$(host_platform)" "$measured" "$runs"
     exit 0

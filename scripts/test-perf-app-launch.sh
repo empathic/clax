@@ -17,10 +17,13 @@ run() { bash scripts/perf-app-launch.sh "$@"; }
 # Dry runs print the steps and change nothing.
 out="$(run --macos)"
 if has "$out" "would run" && has "$out" "./scripts/run.sh app-macos" \
-    && has "$out" "10 times: CLAX_APP_DIR=" && has "$out" "Contents/MacOS/Clax" \
+    && has "$out" "CFBundleIdentifier to dev.empathic.clax.perf" \
+    && has "$out" "codesign --force --sign - --preserve-metadata=entitlements,flags,runtime" \
+    && has "$out" "10 times: <copy>/Contents/MacOS/Clax" && has "$out" "Library/Containers/dev.empathic.clax.perf" \
     && has "$out" "SIGTERM the app and its daemon by PID" && has "$out" "drop the first launch" \
+    && ! has "$out" "Containers/dev.empathic.clax/" && ! has "$out" "CLAX_APP_DIR" \
     && has "$out" "--i-know-what-i-am-doing"; then
-    ok "--macos dry run: build, scratch CLAX_APP_DIR, ten launches for nine runs, SIGTERM by PID"
+    ok "--macos dry run: build, a copy re-identified as dev.empathic.clax.perf in its own container, ten launches for nine runs, SIGTERM by PID"
 else
     bad "--macos dry run: $out"
 fi
@@ -93,16 +96,36 @@ else
 fi
 
 # The launch loop, on a Mac: a fake app that writes the next launch's lines
-# to its CLAX_APP_DIR's timings.jsonl and then waits for SIGTERM.
+# to the timings.jsonl in its container's support directory and then waits
+# for SIGTERM. Its copy is re-identified (plutil, and codesign stubbed on
+# PATH) and runs in a container of its own under $d.
 if [ "$(uname -s)" = Darwin ]; then
     app="$d/Fake.app"
-    mkdir -p "$app/Contents/MacOS" "$d/base"
+    perf=dev.empathic.clax.perf
+    box="$d/Containers/$perf"
+    support="$box/Data/Library/Application Support/$perf"
+    mkdir -p "$app/Contents/MacOS" "$d/bin" "$box/Data"
+    : >"$box/Data/stale"
+    cat >"$app/Contents/Info.plist" <<'EOF'
+<?xml version="1.0" encoding="UTF-8"?>
+<!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
+<plist version="1.0"><dict>
+<key>CFBundleExecutable</key><string>Clax</string>
+<key>CFBundleIdentifier</key><string>dev.empathic.clax</string>
+<key>CFBundleShortVersionString</key><string>1.2.3</string>
+<key>CFBundleVersion</key><string>7</string>
+</dict></plist>
+EOF
+    printf '#!/bin/sh\necho "$*" >>"%s/codesign.log"\n' "$d" >"$d/bin/codesign"
+    chmod +x "$d/bin/codesign"
     printf '%s\n' "900 -" "400 20" "300 -" "500 30" >"$d/values"
     cat >"$app/Contents/MacOS/Clax" <<EOF
 #!/bin/bash
 set -eu
-t="\$CLAX_APP_DIR/support/timings.jsonl"
-mkdir -p "\$CLAX_APP_DIR/support"
+[ ! -e "$box/Data/stale" ] || echo stale >>"$d/stale"
+echo "\$0 \${CLAX_APP_DIR-unset}" >>"$d/launched"
+t="$support/timings.jsonl"
+mkdir -p "$support"
 n=\$(grep -c home-usable "\$t" 2>/dev/null || true)
 read -r usable cover < <(sed -n "\$((\${n:-0} + 1))p" "$d/values")
 [ "\$cover" = - ] || printf '{"name":"home-cover","elapsed_ms":%s}\n' "\$cover" >>"\$t"
@@ -111,15 +134,39 @@ echo "\$\$" >>"$d/pids"
 exec tail -f /dev/null
 EOF
     chmod +x "$app/Contents/MacOS/Clax"
-    out="$(CLAX_PERF_APP_BASE="$d/base" CLAX_PERF_BUDGETS="$d/none.json" run --macos --app "$app" --runs 3 --i-know-what-i-am-doing 2>"$d/err")"
+    loop() {
+        PATH="$d/bin:$PATH" CLAX_PERF_CONTAINER="$box" CLAX_PERF_WORK="$d/work" CLAX_PERF_BUDGETS="$d/none.json" \
+            CLAX_APP_DIR=/nowhere run --macos --app "$app" --runs 3 --i-know-what-i-am-doing "$@"
+    }
+    out="$(loop 2>"$d/err")"
     want='"app_home_usable_ms": {"median": 400, "p90": 500, "runs": 3, "missing": 0}, "app_home_cover_ms": {"median": 25.0, "p90": 30, "runs": 2, "missing": 1}}'
     alive=""
     while read -r p; do kill -0 "$p" 2>/dev/null && alive="$alive $p"; done <"$d/pids"
-    if has "$out" "$want" && [ "$(wc -l <"$d/pids" | tr -d ' ')" = 4 ] && [ -z "$alive" ] \
-        && [ -z "$(ls -A "$d/base")" ]; then
-        ok "--macos: four launches for three runs, the first dropped, each app stopped, the scratch directory removed"
+    if has "$out" "$want" && [ "$(wc -l <"$d/pids" | tr -d ' ')" = 4 ] && [ -z "$alive" ]; then
+        ok "--macos: four launches for three runs, the first dropped, each app stopped"
     else
-        bad "--macos launch loop: $out / alive:$alive / $(ls -A "$d/base") / $(cat "$d/err")"
+        bad "--macos launch loop: $out / alive:$alive / $(cat "$d/err")"
+    fi
+    copy="$(ls -d "$d"/work/clax-perf-*/Fake.app 2>/dev/null | sed -n 1p)"
+    if [ -n "$copy" ] && [ "$(plutil -extract CFBundleIdentifier raw -o - "$copy/Contents/Info.plist")" = "$perf" ] \
+        && [ "$(plutil -extract CFBundleIdentifier raw -o - "$app/Contents/Info.plist")" = dev.empathic.clax ] \
+        && grep -qxF -- "--force --sign - --preserve-metadata=entitlements,flags,runtime ${copy%/Fake.app}.new/Fake.app" "$d/codesign.log" \
+        && [ "$(sort -u "$d/launched")" = "$copy/Contents/MacOS/Clax unset" ]; then
+        ok "--macos: the copy, never the app given, is re-identified as $perf and signed again keeping its entitlements; it runs without CLAX_APP_DIR"
+    else
+        bad "--macos copy: ${copy:-none} / $(cat "$d/codesign.log" 2>/dev/null) / $(sort -u "$d/launched")"
+    fi
+    if [ ! -e "$d/stale" ] && [ ! -e "$box" ]; then
+        ok "--macos: the copy's container is removed before the first launch and at the end"
+    else
+        bad "--macos container: stale:$(cat "$d/stale" 2>/dev/null) / $(ls -A "$box" 2>/dev/null)"
+    fi
+    : >"$d/launched"
+    if CLAX_PERF_CONTAINER="$d/Containers/dev.empathic.clax" CLAX_PERF_WORK="$d/work" run --macos --app "$app" --i-know-what-i-am-doing >/dev/null 2>"$d/err" \
+        || [ -s "$d/launched" ] || ! grep -qF "dev.empathic.clax.perf" "$d/err"; then
+        bad "a container not the copy's is refused: $(cat "$d/err")"
+    else
+        ok "a container not named dev.empathic.clax.perf is refused before any launch"
     fi
 else
     echo "SKIP: the --macos launch loop runs on a Mac"
