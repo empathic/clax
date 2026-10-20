@@ -614,8 +614,8 @@ class Updater {
   }
 
   /// Restores [aid]'s documents from its snapshot and its version to the
-  /// snapshot's `base` (files, title, icon and capabilities, published
-  /// again pinned to the update's version), then deletes the snapshot.
+  /// snapshot's `base` (files, title, icon and capabilities, restored
+  /// pinned to the update's version), then deletes the snapshot.
   /// The version is put back only while the live version is the update's
   /// (always when not [force]d, which callers check first). False when it
   /// failed: the snapshot stays, marked failed, for the person.
@@ -666,37 +666,29 @@ class Updater {
     await inspector.restoreWrites(_page(aid), private);
   }
 
-  /// Publishes `base`'s files, title, icon and capabilities over [d]'s
-  /// current version (a `versions:restore` would keep the update's
-  /// declaration).
+  /// Restores `base` over [d]'s current version with its title, icon and
+  /// capabilities, in one version (`versions:restore` with the
+  /// declaration): the base's files come back as history, unchecked, so
+  /// an icon an older build took and a publish now refuses still rolls
+  /// back.
   Future<void> _rollBackVersion(
     String aid,
     ArtifactDetail d,
     SnapshotMeta meta,
   ) async {
-    final base = d.versions.where((v) => v.n == meta.base).firstOrNull;
-    if (base == null) throw StateError('version ${meta.base} is gone');
-    final entries = <String, FileEntry?>{};
-    for (final MapEntry(key: path, value: f) in base.files.entries) {
-      final bytes = await api.readFileBytes(aid, base.n, path);
-      if (bytes == null) throw StateError('$path of v${base.n} is gone');
-      entries[path] = FileEntry.bytes(bytes, type: f.contentType);
-    }
-    for (final p in d.current?.files.keys ?? const <String>[]) {
-      entries.putIfAbsent(p, () => null);
+    if (!d.versions.any((v) => v.n == meta.base)) {
+      throw StateError('version ${meta.base} is gone');
     }
     await _ensureSession?.call();
-    await api.publish(
+    await api.restoreVersion(
       aid,
-      PublishRequest(
-        ifVersion: d.artifact.currentVersion,
-        title: meta.title,
-        icon: meta.icon,
-        capabilities: meta.capabilities,
-        label: 'Back to v${meta.backOn}',
-        note: 'The update did not finish; back on v${meta.backOn}',
-        entries: entries,
-      ),
+      meta.base,
+      ifVersion: d.artifact.currentVersion,
+      title: meta.title,
+      icon: meta.icon,
+      capabilities: meta.capabilities,
+      label: 'Back to v${meta.backOn}',
+      note: 'The update did not finish; back on v${meta.backOn}',
     );
   }
 

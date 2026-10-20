@@ -10,7 +10,7 @@ use clax_core::model::ARTIFACT_TEXT_FIELDS;
 use clax_core::model::{
     Artifact, ArtifactAuthors, CONTRACT_VERSION, FileMeta, ForkedFrom, Version, VersionAuthors,
 };
-use clax_core::publish::{DecodedFile, FileChange, INDEX, ValidatedPublish};
+use clax_core::publish::{DecodedFile, FileChange, INDEX, RestoreDeclaration, ValidatedPublish};
 use clax_core::visibility::OWNER;
 use clax_core::visibility::{Author, file_authors};
 use clax_core::{ArtifactId, CoreError, Result};
@@ -1147,6 +1147,32 @@ impl Store {
         if_version: u32,
         session_id: Option<&str>,
     ) -> Result<(Artifact, Version)> {
+        self.restore_version_declaring_async(
+            ctx,
+            id,
+            n,
+            if_version,
+            session_id,
+            RestoreDeclaration::default(),
+        )
+        .await
+    }
+
+    /// [`Store::restore_version_async`] that also sets `declaration`'s
+    /// title, icon and capabilities (a full set) in the same version, and
+    /// labels and notes it with `declaration`'s label and note when it has
+    /// them. The caller validates `declaration`
+    /// ([`RestoreDeclaration::validated`]); the restored files are never
+    /// checked, as history.
+    pub async fn restore_version_declaring_async(
+        &self,
+        ctx: &AuditCtx,
+        id: &ArtifactId,
+        n: u32,
+        if_version: u32,
+        session_id: Option<&str>,
+        declaration: RestoreDeclaration,
+    ) -> Result<(Artifact, Version)> {
         let current = self.get_artifact(id)?.ok_or(CoreError::NotFound)?;
         if if_version != current.current_version {
             return Err(CoreError::Conflict {
@@ -1170,14 +1196,22 @@ impl Store {
             );
         }
         let p = ValidatedPublish {
-            title: None,
+            title: declaration.title,
             description: None,
-            icon: None,
-            label: Some(format!("Restored v{n}")),
+            icon: declaration.icon,
+            label: Some(
+                declaration
+                    .label
+                    .unwrap_or_else(|| format!("Restored v{n}")),
+            ),
             if_version: Some(if_version),
-            capabilities: None,
+            capabilities: declaration.capabilities,
             files,
-            note: Some(format!("Restored version {n}")),
+            note: Some(
+                declaration
+                    .note
+                    .unwrap_or_else(|| format!("Restored version {n}")),
+            ),
             note_truncated: false,
             addresses: Vec::new(),
             working_threads: Vec::new(),

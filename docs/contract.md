@@ -242,7 +242,12 @@ lacks. The files are copied as they are, without a publish's checks: an
 `icon.svg` the icon rules now refuse comes back unchanged. The new version
 is labelled `Restored v<n>` with the note `Restored version <n>`; the
 title, description, icon and capabilities stay as they are, and documents
-are not touched. An `X-Clax-Session`, when given, must
+are not touched. The body may also carry `title`, `icon`, `capabilities`
+(a full set), `label` and `note`, set in the same version as a publish
+sets them and checked as a publish's (400 `invalid_capabilities`,
+`label_too_long`; a longer note is cut, with `note_truncated: true`): the
+Clax app rolls an update back to the version before it this way, with
+that version's declaration. An `X-Clax-Session`, when given, must
 name a live session (400 `unknown_session` otherwise), which the version
 records. It
 answers as a publish does (201 `{artifact, version, url, note_truncated}`),

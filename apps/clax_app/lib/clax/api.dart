@@ -51,12 +51,20 @@ abstract interface class ClaxApi {
   Future<PublishResult> publish(String aid, PublishRequest r);
 
   /// `POST versions:restore`: republishes version [n]'s files as a new
-  /// version, documents and capabilities untouched; 409 `conflict` when
-  /// [ifVersion] is not the current version.
+  /// version, as they are (history is not checked as a publish is), and
+  /// documents untouched; 409 `conflict` when [ifVersion] is not the
+  /// current version. [title], [icon] and [capabilities] (a full set), when
+  /// given, are set in the same version, and [label] and [note] replace
+  /// the restore's own; without them the declaration stays as it is.
   Future<PublishResult> restoreVersion(
     String aid,
     int n, {
     required int ifVersion,
+    String? title,
+    String? icon,
+    Map<String, Object?>? capabilities,
+    String? label,
+    String? note,
   });
 
   /// Registers (or finds again, by [installId]) the app's `app` harness

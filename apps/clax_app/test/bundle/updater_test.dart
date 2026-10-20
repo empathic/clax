@@ -308,6 +308,60 @@ void main() {
     },
   );
 
+  test('a failed live migration rolls back to a base whose icon the icon '
+      'rules now refuse: restored as history, with its declaration', () async {
+    // The live version holds an icon an older build published, which a
+    // publish now refuses.
+    const old =
+        '<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 9 9">'
+        '<title>A & B</title><rect width="9" height="9"/></svg>';
+    expect(iconProblem(old), isNotNull);
+    me.api.checkIcons = false;
+    await me.api.publish(
+      aid,
+      PublishRequest(
+        ifVersion: 1,
+        entries: {
+          'index.html': FileEntry.text('<p>v1</p>'),
+          'icon.svg': FileEntry.text(old, type: 'image/svg+xml'),
+        },
+      ),
+    );
+    me.api.checkIcons = true;
+    final b = await v2(migrate: true);
+    final updater = Updater(
+      api: me.api,
+      store: me.store,
+      inspector: _Writing(me.inspector, () async {
+        me.api.putDoc(aid, 'plants/p1', {'name': 'FERN', 'v': 2});
+      }),
+      baseUrl: () => Uri.parse('http://127.0.0.1:9/'),
+      snapshots: me.snapshots,
+    );
+    final out = await updater.update(aid, b);
+    expect(out, isA<UpdateRolledBack>());
+    expect((out as UpdateRolledBack).restored, isTrue);
+    expect(await docs(), {
+      'plants/p1': {'name': 'fern'},
+      'plants/p2': {'name': 'moss'},
+    });
+    final live = await me.api.getArtifact(aid);
+    expect(live.artifact.currentVersion, 4, reason: 'v3 published, v2 back');
+    expect(await me.api.readFile(aid, 4, 'icon.svg'), old);
+    expect(await me.api.readFile(aid, 4, 'index.html'), '<p>v1</p>');
+    expect(live.current!.contentSha256, isNotNull);
+    expect(
+      live.current!.contentSha256,
+      live.versions.firstWhere((v) => v.n == 2).contentSha256,
+    );
+    expect(live.current!.label, 'Back to v1');
+    expect(live.artifact.capabilities, {'db': {}}, reason: "the base's");
+    final restore = me.api.calls.lastWhere((c) => c.name == 'restoreVersion');
+    expect(restore.args['n'], 2);
+    expect(restore.args['ifVersion'], 3);
+    expect(me.snapshots.has(aid), isFalse);
+  });
+
   test('a snapshot left at start is restored with the version, then '
       'deleted', () async {
     final b = await v2(migrate: true);

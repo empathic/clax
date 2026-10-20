@@ -855,13 +855,19 @@ pub async fn publish(
 pub struct RestoreBody {
     version: Option<u32>,
     if_version: Option<u32>,
+    #[serde(flatten)]
+    declaration: clax_core::publish::RestoreDeclaration,
 }
 
 /// `POST /api/artifacts/<aid>/versions:restore` `{version, if_version}`:
 /// republishes version `version`'s files as a new version, in one store
-/// transaction ([`Store::restore_version`]); documents and the capability
-/// declaration are untouched. The answer is publish's (201 `{artifact,
-/// version, url, note_truncated}`), and a `version` event follows. 409
+/// transaction ([`Store::restore_version`]), without a publish's checks on
+/// them (they are history); documents are untouched. Optional `title`,
+/// `icon`, `capabilities`, `label` and `note` are set in the same version
+/// as a publish sets them (checked as a publish's: 400
+/// `invalid_capabilities`, `label_too_long`); without them the declaration
+/// is untouched. The answer is publish's (201 `{artifact, version, url,
+/// note_truncated}`), and a `version` event follows. 409
 /// `conflict` with `current` when `if_version` is not the current version,
 /// 404 `not_found` for an unknown artifact or version, 400 `invalid_args`
 /// when a field is missing, 400 `live_page` for a live page. An
@@ -889,6 +895,7 @@ pub async fn restore(
             "version and if_version are required",
         ));
     };
+    let (declaration, truncated) = b.declaration.validated()?;
     let session = session_header(&headers)?;
     let events = s.events.clone();
     let (artifact, version) = s
@@ -896,7 +903,14 @@ pub async fn restore(
             let st = &*st;
             let session = publishing_session(st, &session, None)?;
             let (artifact, version) = st
-                .restore_version_async(&audit, &id, n, if_version, session.as_deref())
+                .restore_version_declaring_async(
+                    &audit,
+                    &id,
+                    n,
+                    if_version,
+                    session.as_deref(),
+                    declaration,
+                )
                 .await?;
             events.publish(Event::Version {
                 artifact_id: artifact.id.clone(),
@@ -912,7 +926,7 @@ pub async fn restore(
     Ok((
         StatusCode::CREATED,
         Json(
-            json!({"artifact": artifact, "version": version, "url": url, "note_truncated": false}),
+            json!({"artifact": artifact, "version": version, "url": url, "note_truncated": truncated}),
         ),
     ))
 }

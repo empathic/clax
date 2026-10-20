@@ -359,3 +359,96 @@ async fn a_publish_after_a_restore_builds_on_the_restored_files() {
     );
     assert_eq!(file(&ts, &aid, 4, "app.js").await.status(), 404);
 }
+
+/// A restore may put back the declaration with the files, in the same
+/// version: `title`, `icon`, `capabilities` (the full set, validated as a
+/// publish's), `label` and `note` (cut to 280 characters, as a publish's).
+/// The files are history and are not checked: an `icon.svg` the icon rules
+/// now refuse comes back unchanged.
+#[tokio::test]
+async fn restore_puts_back_a_declaration_with_the_files_unchecked() {
+    use clax_core::publish::{DecodedFile, FileChange, PublishRequest, validate};
+    let ts = TestServer::spawn().await;
+    let old =
+        r#"<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 9 9"><title>A & B</title></svg>"#;
+    assert!(clax_core::icon::problem(old.as_bytes()).is_some());
+    let req: PublishRequest = serde_json::from_value(json!({
+        "title": "Runs",
+        "icon": "chart",
+        "capabilities": {"db": {}},
+        "files": {"index.html": {"content": "<p>1</p>"}},
+    }))
+    .unwrap();
+    let mut v1 = validate(req).unwrap();
+    v1.files.insert(
+        "icon.svg".into(),
+        FileChange::Put(DecodedFile {
+            bytes: old.as_bytes().to_vec(),
+            content_type: "image/svg+xml".into(),
+        }),
+    );
+    let (a, _) = ts
+        .store
+        .create_artifact_async(&clax_core::audit::AuditCtx::DAEMON, v1, None)
+        .await
+        .unwrap();
+    let aid = a.id;
+    let res = ts
+        .post_json(
+            &format!("/api/artifacts/{aid}/versions"),
+            json!({
+                "if_version": 1,
+                "title": "Runs 2",
+                "icon": "map",
+                "capabilities": {"db": {}, "notify": {}},
+                "files": {"index.html": {"content": "<p>2</p>"}, "icon.svg": null},
+            }),
+        )
+        .await;
+    assert_eq!(res.status(), 201, "{}", res.text().await.unwrap());
+
+    let bad = restore(
+        &ts,
+        &aid,
+        json!({"version": 1, "if_version": 2, "capabilities": {"db": 1}}),
+    )
+    .await;
+    assert_eq!(bad.status(), 400);
+    let err: Value = bad.json().await.unwrap();
+    assert_eq!(err["error"]["code"], "invalid_capabilities", "{err}");
+    let long = restore(
+        &ts,
+        &aid,
+        json!({"version": 1, "if_version": 2, "label": "x".repeat(61)}),
+    )
+    .await;
+    assert_eq!(long.status(), 400);
+    let err: Value = long.json().await.unwrap();
+    assert_eq!(err["error"]["code"], "label_too_long", "{err}");
+
+    let res = restore(
+        &ts,
+        &aid,
+        json!({
+            "version": 1,
+            "if_version": 2,
+            "title": "Runs",
+            "icon": "chart",
+            "capabilities": {"db": {}},
+            "label": "Back to v1",
+            "note": "n".repeat(300),
+        }),
+    )
+    .await;
+    assert_eq!(res.status(), 201, "{}", res.text().await.unwrap());
+    let v: Value = res.json().await.unwrap();
+    assert_eq!(v["version"]["n"], 3);
+    assert_eq!(v["version"]["label"], "Back to v1");
+    assert_eq!(v["note_truncated"], true);
+    assert_eq!(v["artifact"]["title"], "Runs");
+    assert_eq!(v["artifact"]["icon"], "chart");
+    assert_eq!(v["artifact"]["capabilities"], json!({"db": {}}));
+    let icon = file(&ts, &aid, 3, "icon.svg").await;
+    assert_eq!(icon.status(), 200);
+    assert_eq!(icon.text().await.unwrap(), old);
+}

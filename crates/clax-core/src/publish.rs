@@ -100,6 +100,43 @@ pub struct ValidatedPublish {
     pub hidden: Vec<String>,
 }
 
+/// What a restore (`versions:restore`) may set beside the restored files,
+/// each field as a publish sets it; `None` keeps the artifact's title,
+/// icon and capabilities, and the restore's own label and note.
+#[derive(Clone, Debug, Default, Deserialize)]
+pub struct RestoreDeclaration {
+    pub title: Option<String>,
+    pub icon: Option<String>,
+    pub capabilities: Option<serde_json::Value>,
+    pub label: Option<String>,
+    pub note: Option<String>,
+}
+
+impl RestoreDeclaration {
+    /// Checks it as [`validate`] checks a publish's same fields: the
+    /// capabilities validate, the label is at most [`MAX_LABEL_CHARS`],
+    /// and the note is cleaned and cut to the changelog's length. Answers
+    /// it with whether the note was cut.
+    pub fn validated(self) -> Result<(Self, bool)> {
+        if let Some(caps) = &self.capabilities {
+            crate::capabilities::validate(caps)?;
+        }
+        if let Some(label) = &self.label
+            && label.chars().count() > MAX_LABEL_CHARS
+        {
+            return Err(CoreError::invalid(
+                "label_too_long",
+                format!("label exceeds {MAX_LABEL_CHARS} characters"),
+            ));
+        }
+        let (note, truncated) = match self.note.as_deref() {
+            Some(n) => crate::working::clean_line(n, crate::changelog::MAX_NOTE_CHARS),
+            None => (None, false),
+        };
+        Ok((Self { note, ..self }, truncated))
+    }
+}
+
 /// Accepts a relative path of one or more non-empty segments, with no `.` or
 /// `..` segments, no control characters or U+2028/U+2029 line and paragraph
 /// separators, and forward slashes only.

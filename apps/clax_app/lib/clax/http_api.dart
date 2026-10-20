@@ -169,11 +169,24 @@ class HttpClaxApi implements ClaxApi {
     String aid,
     int n, {
     required int ifVersion,
+    String? title,
+    String? icon,
+    Map<String, Object?>? capabilities,
+    String? label,
+    String? note,
   }) async {
     final j = await _json(
       'POST',
       '/api/artifacts/${_seg(aid)}/versions:restore',
-      body: {'version': n, 'if_version': ifVersion},
+      body: {
+        'version': n,
+        'if_version': ifVersion,
+        'title': ?title,
+        'icon': ?icon,
+        'capabilities': ?capabilities,
+        'label': ?label,
+        'note': ?note,
+      },
       timeout: publishTimeout,
     );
     return _parse(() => PublishResult.fromJson(j));

@@ -103,6 +103,11 @@ class FakeClaxApi implements ClaxApi {
   /// stored other bytes would.
   bool reportWrongContentHash = false;
 
+  /// Whether a publish refuses a bad `icon.svg` (400 `invalid_icon`), as
+  /// the daemon does; false stands for a build from before the icon rules,
+  /// to make history that holds one.
+  bool checkIcons = true;
+
   /// The owner's display name, which every owner comment is posted with
   /// from then on; a test may change it, as `PUT /api/viewers/me` does.
   String ownerName = 'Alex';
@@ -560,18 +565,35 @@ class FakeClaxApi implements ClaxApi {
     String aid,
     int n, {
     required int ifVersion,
+    String? title,
+    String? icon,
+    Map<String, Object?>? capabilities,
+    String? label,
+    String? note,
   }) async {
-    _call('restoreVersion', {'aid': aid, 'n': n, 'ifVersion': ifVersion});
+    _call('restoreVersion', {
+      'aid': aid,
+      'n': n,
+      'ifVersion': ifVersion,
+      'title': title,
+      'icon': icon,
+      'capabilities': capabilities,
+      'label': label,
+      'note': note,
+    });
     final a = _artifact(aid);
     if (n < 1 || n > a.versions.length) throw _notFound();
     _checkVersion(a, ifVersion);
+    if (title != null) a.title = title;
+    if (icon != null) a.icon = icon;
+    if (capabilities != null) a.capabilities = Map.of(capabilities);
     a.versions.add(
       _version(
         aid,
         a.current + 1,
         Map.of(a.versions[n - 1].blobs),
-        label: 'Restored v$n',
-        note: 'Restored version $n',
+        label: label ?? 'Restored v$n',
+        note: note ?? 'Restored version $n',
       ),
     );
     return _landed(a, const []);
@@ -2062,9 +2084,9 @@ class FakeClaxApi implements ClaxApi {
   /// Refuses a put `icon.svg` that breaks the icon rules, as the daemon's
   /// publish does: 400 `invalid_icon` with the rule in `rule`. Restore
   /// copies history unchecked, as the daemon's does.
-  static void _checkIcon(Map<String, _FakeFile?> files) {
+  void _checkIcon(Map<String, _FakeFile?> files) {
     final icon = files[appIconPath];
-    if (icon == null) return;
+    if (icon == null || !checkIcons) return;
     final String text;
     try {
       text = utf8.decode(icon.bytes);
