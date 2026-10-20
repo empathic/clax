@@ -526,7 +526,7 @@ async fn answer(sh: Arc<Shared>, head: RequestHead, body: Bytes) -> Vec<u8> {
             .oneshot(req)
             .await
             .unwrap_or_else(|never| match never {});
-        respond(res).await
+        respond(res, RESPONSE_LIMIT).await
     };
     tokio::select! {
         r = answered => r,
@@ -582,10 +582,12 @@ pub(crate) fn request(
         .map_err(|e| e.to_string())
 }
 
-/// The response frame of `res`, its body read whole.
-async fn respond(res: axum::response::Response) -> Vec<u8> {
+/// The response frame of `res`, its body read whole: 502
+/// `response_too_large` past `limit` bytes, 502 `response_failed` when the
+/// body fails while it is read.
+async fn respond(res: axum::response::Response, limit: usize) -> Vec<u8> {
     let (parts, body) = res.into_parts();
-    let body = match read_limited(body, RESPONSE_LIMIT).await {
+    let body = match read_limited(body, limit).await {
         Ok(b) => b,
         Err(ReadError::TooLarge) => {
             return error_frame(
@@ -823,6 +825,34 @@ mod tests {
         let (status, body) = poll.await.unwrap();
         assert_eq!(status, 200, "{}", String::from_utf8_lossy(&body));
         assert_eq!(settled(&rx).await, OpenEvent::Closed);
+    }
+
+    /// A response frame's status and body.
+    fn status_and_body(frame: &[u8]) -> (u16, Vec<u8>) {
+        let (h, body) = frame::split(frame).unwrap();
+        let h: ResponseHead = serde_json::from_slice(h).unwrap();
+        (h.status, body.to_vec())
+    }
+
+    #[tokio::test]
+    async fn a_body_past_the_limit_answers_502_response_too_large() {
+        let res = |n| axum::response::Response::new(Body::from(vec![7u8; n]));
+        let (status, body) = status_and_body(&respond(res(9), 8).await);
+        assert_eq!(status, 502);
+        let v: serde_json::Value = serde_json::from_slice(&body).unwrap();
+        assert_eq!(v["error"]["code"], "response_too_large", "{v}");
+        assert_eq!(status_and_body(&respond(res(8), 8).await), (200, vec![7u8; 8]));
+    }
+
+    #[tokio::test]
+    async fn a_body_that_fails_while_read_answers_502_response_failed() {
+        let chunks: Vec<Result<Bytes, std::io::Error>> =
+            vec![Ok(Bytes::from_static(b"half")), Err(std::io::Error::other("cut"))];
+        let res = axum::response::Response::new(Body::from_stream(futures::stream::iter(chunks)));
+        let (status, body) = status_and_body(&respond(res, RESPONSE_LIMIT).await);
+        assert_eq!(status, 502);
+        let v: serde_json::Value = serde_json::from_slice(&body).unwrap();
+        assert_eq!(v["error"]["code"], "response_failed", "{v}");
     }
 
     #[test]
