@@ -1736,8 +1736,13 @@ async fn a_local_ask_on_a_linked_artifact_is_asked_there_and_answered_from_there
         answered["answers"],
         json!([{"selected": ["Blue"], "text": null}])
     );
-    let local = p.local_question(&qid).await;
-    assert_eq!(local["linked"]["answered_there"], true, "{local}");
+    // The answer closes the question here, which ends the wait, and then the
+    // link records that it came from there.
+    until("the link records the answer as from there", || async {
+        let l = p.local_question(&qid).await;
+        (l["linked"]["answered_there"] == true).then_some(())
+    })
+    .await;
     // A decline there declines here.
     let q2 = p.ask(&sid, Some(&p.aid), "Ship it?").await;
     let there = p.hosted_question("Ship it?").await;
