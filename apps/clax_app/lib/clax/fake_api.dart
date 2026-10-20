@@ -149,6 +149,7 @@ class FakeClaxApi implements ClaxApi {
     String title,
     Map<String, String> files, {
     Map<String, Object?> capabilities = const {},
+    String? icon,
     String? ownerSession,
   }) {
     final aid = _newArtifactId();
@@ -158,7 +159,7 @@ class FakeClaxApi implements ClaxApi {
       capabilities: Map.of(capabilities),
       ownerSession: ownerSession,
       versions: [_version(aid, 1, _texts(files), session: ownerSession)],
-    );
+    )..icon = icon;
     return aid;
   }
 

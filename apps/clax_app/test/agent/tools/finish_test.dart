@@ -129,6 +129,7 @@ class Rig {
     bool session = true,
     String? request,
     bool asksIcon = false,
+    String? icon,
   }) async {
     final r = Rig._(api ?? TestApi(), kind);
     if (session) {
@@ -136,7 +137,12 @@ class Rig {
     }
     final change = kind == RequestKind.change;
     r.aid = change
-        ? r.api.seedArtifact('Runs', files, capabilities: const {'db': {}})
+        ? r.api.seedArtifact(
+            'Runs',
+            files,
+            capabilities: const {'db': {}},
+            icon: icon,
+          )
         : null;
     r.items = [
       if (change)
@@ -158,6 +164,7 @@ class Rig {
       clock: r.clock,
       request: request,
       asksIcon: asksIcon,
+      icon: icon,
     );
     r.state = RunState(
       ctx: ctx,
@@ -688,6 +695,79 @@ void main() {
       expect(a.currentVersion, 3);
       expect(a.title, 'Runs');
       expect(a.capabilities, {'db': {}});
+    });
+
+    test('a refused batch rolls back the icon word the app had', () async {
+      final r = await Rig.make(icon: 'run');
+      await r.stage([
+        op('set', 'runs/b', {'km': 7}),
+      ]);
+      await r.edit('Save', 'Keep');
+      await r.renderNow();
+      r.api.beforeLiveBatch = (_) => r.api.failNext(
+        'batchDocs',
+        const ClaxApiError(status: 400, code: 'invalid', message: 'too big'),
+      );
+      await r.finish('Added it.');
+      expect(r.state.outcome, isA<RunGaveUp>());
+      expect(r.named('restoreVersion').single.args, {
+        'aid': r.aid,
+        'n': 1,
+        'ifVersion': 2,
+        'title': 'Runs',
+        'icon': 'run',
+        'capabilities': {'db': {}},
+      });
+    });
+
+    test('a refused batch after a carried-over publish restores what the '
+        "person's version declared", () async {
+      final r = await Rig.make(
+        icon: 'run',
+        files: const {'index.html': page, 'style.css': 'p{}'},
+      );
+      await r.stage([
+        op('set', 'runs/b', {'km': 7}),
+      ]);
+      await r.edit('Save', 'Keep');
+      await r.renderNow();
+      // The person renames the app, adds a capability and draws another
+      // icon word, changing only a path the draft did not touch.
+      await r.api.publish(
+        r.aid!,
+        PublishRequest(
+          ifVersion: 1,
+          title: 'Run log',
+          icon: 'bolt',
+          capabilities: const {'db': {}, 'notify': {}},
+          files: {'index.html': page, 'style.css': 'p{color:red}'},
+        ),
+      );
+      r.api.beforeLiveBatch = (_) => r.api.failNext(
+        'batchDocs',
+        const ClaxApiError(status: 400, code: 'invalid', message: 'too big'),
+      );
+      await r.finish('Added it.');
+      expect(r.state.outcome, isA<RunGaveUp>());
+      final reqs = [
+        for (final c in r.named('publish'))
+          c.args['request']! as PublishRequest,
+      ];
+      expect([for (final q in reqs) q.ifVersion], [1, 1, 2], reason: 'carried');
+      expect(r.named('restoreVersion').single.args, {
+        'aid': r.aid,
+        'n': 2,
+        'ifVersion': 3,
+        'title': 'Run log',
+        'icon': 'bolt',
+        'capabilities': {'db': {}, 'notify': {}},
+      });
+      final a = (await r.api.getArtifact(r.aid!)).artifact;
+      expect(a.currentVersion, 4);
+      expect(a.title, 'Run log');
+      expect(a.icon, 'bolt');
+      expect(a.capabilities, {'db': {}, 'notify': {}});
+      expect(r.api.filesOf(r.aid!, 4), r.api.filesOf(r.aid!, 2));
     });
 
     test(
