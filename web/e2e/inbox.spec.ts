@@ -16,7 +16,7 @@ test("replies arrive unread, a look marks them read, and history stays searchabl
   const tid = await threadAsOwner(d.base, d.token, artifact.id, "make it blue");
   await replyAsAgent(d.base, d.token, s.id, artifact.id, tid, "Done: the header is blue");
   await page.goto(`${d.base}/inbox`);
-  const unread = page.locator('.inbox .sec[aria-labelledby="inbox-unread-h"]');
+  const unread = page.locator(".inbox");
   const row = unread.locator(".irow", { hasText: "the header is blue" });
   await expect(row).toBeVisible();
   await expect(row).toHaveAttribute("data-unread", "");
@@ -26,11 +26,15 @@ test("replies arrive unread, a look marks them read, and history stays searchabl
   await row.locator(".open").click();
   await expect(page).toHaveURL(new RegExp(`/a/${artifact.id}`));
 
-  await page.goto(`${d.base}/inbox?search=blue`);
+  await page.goto(`${d.base}/inbox?search=blue&unread=1`);
   await expect(unread.locator(".note")).toHaveText("No unread items match.");
   await expect(unread.locator(".irow", { hasText: "blue" })).toHaveCount(0);
-  await page.getByRole("button", { name: /Show \d+ read item/ }).click();
-  await expect(page.locator("#inbox-read .irow", { hasText: "the header is blue" })).toBeVisible();
+  // Read, it stays listed under its page's heading, the search's one group, open.
+  await page.goto(`${d.base}/inbox?search=blue`);
+  await expect(unread.getByRole("button", { name: "Board", exact: true })).toHaveAttribute("aria-expanded", "true");
+  const read = unread.locator(".irow", { hasText: "the header is blue" });
+  await expect(read).toBeVisible();
+  await expect(read).not.toHaveAttribute("data-unread", "");
 
   // A second reply comes in while the inbox is open; Mark all read reads it.
   await page.goto(`${d.base}/inbox`);
@@ -41,11 +45,11 @@ test("replies arrive unread, a look marks them read, and history stays searchabl
   await expect(page.locator(".gbar .inbox-link .count")).toBeHidden();
 });
 
-test("groups the inbox by page: counts across pages, folding, a group's Mark read, the Page filter", async ({ page, freshDaemon: d }) => {
+test("lists each page once: new ones open and bold, the rest folded, the Unread chip, a group's Mark read in place, the Page filter", async ({ page, freshDaemon: d }) => {
   const s = await registerSession(d.base, d.token);
   const pub = async (title: string) => (await publishAs(d.base, d.token, s.id, title, PAGE)).artifact.id;
   const pricing = await pub("Pricing page");
-  // Pricing's publication is read: its group shows in Read alone.
+  // Pricing's publication is read: nothing new there.
   await api(d.base, d.token, "/api/inbox/read", { method: "POST", body: JSON.stringify({ all: true, filter: { artifact: pricing } }) });
   const onboarding = await pub("Onboarding doc");
   await ask(d.base, d.token, s.id, { source: "ask", questions: [{ question: "Ship it today?", header: "Ship", options: [{ label: "Yes" }, { label: "No" }] }] });
@@ -54,12 +58,15 @@ test("groups the inbox by page: counts across pages, folding, a group's Mark rea
   for (const n of [1, 2, 3, 4]) await replyAsAgent(d.base, d.token, s.id, sales, tid, `Reply ${n} on the chart`);
 
   await page.goto(`${d.base}/inbox`);
-  const unread = page.locator('.inbox .sec[aria-labelledby="inbox-unread-h"]');
-  const group = (key: string) => unread.locator(`.igroup[data-group="${key}"]`);
+  const inbox = page.locator(".inbox");
+  const group = (key: string) => inbox.locator(`.igroup[data-group="${key}"]`);
+  const titles = inbox.locator(".igroup .gtitle");
   // The question about no page is a card; its group, Other, has nothing else, so it does not show.
-  await expect(unread.locator(".qcard")).toHaveCount(1);
-  await expect(unread.locator(".pinned-h")).toHaveText("Questions1");
-  await expect(unread.locator(".igroup .gtitle")).toHaveText(["Sales dashboard", "Onboarding doc"]);
+  await expect(inbox.locator(".qcard")).toHaveCount(1);
+  await expect(inbox.locator(".pinned-h")).toHaveText("Questions1");
+  // One list, each page once, newest first; no Read section.
+  await expect(titles).toHaveText(["Sales dashboard", "Onboarding doc", "Pricing page"]);
+  await expect(page.getByRole("button", { name: /read item/ })).toHaveCount(0);
   // Five new on Sales (its publication and four replies), three listed, the rest a Show more away.
   await expect(group(sales).locator(".gmeta")).toHaveText(/^5 new · /);
   await expect(group(sales).locator(".irow")).toHaveCount(3);
@@ -76,6 +83,13 @@ test("groups the inbox by page: counts across pages, folding, a group's Mark rea
   await expect(group(sales).locator(".irow:visible")).toHaveCount(0);
   await toggle.click();
   await expect(group(sales).locator(".irow:visible")).toHaveCount(5);
+  // Nothing new on Pricing: a quiet folded line that opens in place.
+  const quiet = group(pricing).getByRole("button", { name: "Pricing page", exact: true });
+  await expect(quiet).toHaveAttribute("aria-expanded", "false");
+  await expect(group(pricing).locator(".gmeta")).not.toContainText("new");
+  await quiet.click();
+  await expect(group(pricing).locator(".irow:visible")).toHaveCount(1);
+  await quiet.click();
 
   // A reply arrives: its group counts it.
   await replyAsAgent(d.base, d.token, s.id, sales, tid, "Reply 5 on the chart");
@@ -94,22 +108,25 @@ test("groups the inbox by page: counts across pages, folding, a group's Mark rea
         expect(await page.evaluate(() => document.documentElement.scrollWidth)).toBeLessThanOrEqual(viewport.width);
       }
     }
+    await page.setViewportSize({ width: 1280, height: 720 });
   }
 
-  // A group's Mark read reads that group alone; it moves to Read.
+  // A group's Mark read clears its new items, and it stays where it is, open.
   await group(onboarding).getByRole("button", { name: "Mark Onboarding doc read" }).click();
-  await expect(group(onboarding)).toHaveCount(0);
+  await expect(group(onboarding).locator(".gmeta")).not.toContainText("new");
+  await expect(titles).toHaveText(["Sales dashboard", "Onboarding doc", "Pricing page"]);
+  await expect(group(onboarding).getByRole("button", { name: "Onboarding doc", exact: true })).toHaveAttribute("aria-expanded", "true");
   await expect(group(sales).locator(".gmeta")).toHaveText(/^6 new · /);
-  // Read folds the same way: its groups folded, newest first.
-  await page.getByRole("button", { name: /Show \d+ read items?/ }).click();
-  const read = page.locator("#inbox-read");
-  await expect(read.locator(".igroup .gtitle")).toHaveText(["Onboarding doc", "Pricing page"]);
-  await expect(read.locator(".irow:visible")).toHaveCount(0);
-  await read.getByRole("button", { name: "Pricing page", exact: true }).click();
-  await expect(read.locator(`.igroup[data-group="${pricing}"] .irow:visible`)).toHaveCount(1);
+
+  // The Unread chip: only the groups with something new, kept in the URL.
+  await inbox.getByRole("button", { name: "Unread", exact: true }).click();
+  await expect(titles).toHaveText(["Sales dashboard"]);
+  await expect(page).toHaveURL(/[?&]unread=1/);
+  await inbox.getByRole("button", { name: "Unread", exact: true }).click();
+  await expect(titles).toHaveText(["Sales dashboard", "Onboarding doc", "Pricing page"]);
 
   // The Page filter: one group.
   await page.goto(`${d.base}/inbox?artifact=${sales}`);
-  await expect(unread.locator(".igroup")).toHaveCount(1);
-  await expect(unread.locator(".qcard")).toHaveCount(0);
+  await expect(inbox.locator(".igroup")).toHaveCount(1);
+  await expect(inbox.locator(".qcard")).toHaveCount(0);
 });

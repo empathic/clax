@@ -42,7 +42,7 @@
     <button type="button" class="gtoggle" onclick={p.onToggle} aria-expanded={p.open} aria-controls={p.id} aria-labelledby={`${p.id}-t`}>
       <svg viewBox="0 0 16 16" aria-hidden="true"><path d="M6 4l4 4-4 4" /></svg>
     </button>
-    <h4 class="gtitle" id={`${p.id}-t`} data-other={p.group.key === "none" ? "" : undefined}>{#if href}<a {href}>{title}</a>{:else}{title}{/if}</h4>
+    <h3 class="gtitle" id={`${p.id}-t`} data-other={p.group.key === "none" ? "" : undefined}>{#if href}<a {href}>{title}</a>{:else}{title}{/if}</h3>
     <span class="gmeta">{#if p.fresh}<span class="gnew">{p.fresh.toLocaleString("en-US")} new</span><span aria-hidden="true">{" · "}</span>{/if}<time datetime={p.group.newestAt}>{shortAge(p.group.newestAt, p.now ?? new Date())}</time></span>
     {#if p.onRead}<button type="button" class="gread" onclick={p.onRead} aria-label={`Mark ${title} read`}>Mark read</button>{/if}
   </div>
@@ -64,7 +64,7 @@
     .igroup .gtitle a { color: inherit; text-decoration: none; }
     .igroup .gtitle a:hover { text-decoration: underline; text-decoration-color: var(--border-strong); text-underline-offset: 2px; }
     .igroup .gtitle[data-other] { color: var(--muted); }
-    .igroup:not([data-fresh]) .gtitle { font-weight: 500; }
+    .igroup:not([data-fresh]) .gtitle { font-weight: 500; color: var(--muted); }
     .igroup .gmeta { flex: 1 0 auto; color: var(--muted); font-size: 12.5px; white-space: nowrap; font-variant-numeric: tabular-nums; }
     .igroup .gnew { color: var(--agent-ink); font-weight: 600; }
     .igroup .gread { flex: none; min-height: 28px; padding: 2px 10px; font-size: 12.5px; color: var(--muted); background: none; border-color: transparent; }

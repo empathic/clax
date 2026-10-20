@@ -295,11 +295,17 @@ test("a local agent's question is asked on the hosted copy, answered there, and 
     await expect(local_card.locator(".link-tag")).toHaveText(host);
     await expect(local_card).toContainText("The 24th");
     await shoot(page, "questions-local-answered", async phone => { if (phone) await threads(page); await local_card.locator(".closed").waitFor(); });
+    // Read now, in its page's group, folded while nothing there is new.
+    const unfold = async () => {
+      const t = page.locator(`.igroup[data-group="${artifact.id}"] .gtoggle`);
+      await t.waitFor();
+      if ((await t.getAttribute("aria-expanded")) === "false") await t.click();
+    };
     await page.goto(`${local.base}/inbox`);
-    await page.getByRole("button", { name: /^Show \d+ read item/ }).click();
+    await unfold();
     const row = page.getByRole("button", { name: /^Question: claude asks: Launch day/ });
     await expect(row.locator(".link-tag")).toHaveText(host);
-    await shoot(page, "questions-local-inbox", async () => { await page.goto(`${local.base}/inbox`); await page.getByRole("button", { name: /^Show \d+ read item/ }).click(); await row.waitFor(); });
+    await shoot(page, "questions-local-inbox", async () => { await page.goto(`${local.base}/inbox`); await unfold(); await row.waitFor(); });
 
     // With the hosted daemon gone, a question's copy is pending; past the
     // backoff's cap it is not sent (marked here on the scratch home's

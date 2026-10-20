@@ -2,33 +2,33 @@
 
 <script lang="ts">
   // `/inbox` (spec 2026-10-06-agent-questions-and-inbox §9.2): everything
-  // agents sent back. The header has the unread count, **Mark all read** and
-  // **Notify me** (while the browser has not been asked; a quiet line when
-  // notifications are blocked). Search text and filters (kind, page, agent,
-  // dates) apply to both sections and are kept in the URL. **Unread** shows
-  // every open question as a card, then approval requests (spec
-  // 2026-10-08-multi-agent-multi-person §9.5) and connection requests
-  // (§3.2) as cards, under one heading with their count ("Questions" when
-  // all are questions, else "Waiting on you"), then the other unread items grouped by the page they
-  // are about (`InboxGroup`), newest group first, items about no page in
-  // one group, "Other". A group says how many of its items are new and
-  // how old its newest is, lists its three newest, pages the rest with
-  // **Show more**, and marks its new items read with **Mark read**; one
-  // with something new starts open, the rest folded. **Read** is folded
-  // behind its count, its groups folded the same way (open when there is
-  // one, as with the Page filter), a decided request a card in its group.
-  // Items stay where they are as they change (a row read elsewhere, a card
-  // answered): the sections are fetched again when the search changes, on a
-  // bulk mark, and when the stream resyncs. A row opens its item and marks
-  // it read; its dot marks it without opening. `?q=<question>` scrolls to
-  // that question's card and focuses it, and `?approval=<request>` to
-  // that request's. A decided card stays where it is, saying how, and the
-  // read section leaves out what Unread still shows. A machine that
-  // connected with an invite and an agent that ended are rows.
+  // agents sent back, in one list. The header has the unread count, **Mark
+  // all read** and **Notify me** (while the browser has not been asked; a
+  // quiet line when notifications are blocked). Search text and filters
+  // (Unread, kind, page, agent, dates) are kept in the URL. Open questions,
+  // approval requests (spec 2026-10-08-multi-agent-multi-person §9.5) and
+  // connection requests (§3.2) are pinned on top as cards under one heading
+  // with their count ("Questions" when all are questions, else "Waiting on
+  // you"). Below them each page appears once, as a group (`InboxGroup`),
+  // newest group first, items about no page in one group, "Other". A group
+  // with something new says how many, bold, and starts open on its new
+  // items, then its most recent read ones; one with nothing new is a quiet
+  // folded line that opens in place. **Show more** pages a group, **Mark
+  // read** reads its new items, and **Unread** narrows the list to groups
+  // with something new. A group keeps its place and its fold as its items
+  // are read, here or elsewhere, until the search changes. Items stay where
+  // they are as they change (a row read elsewhere, a card answered): the
+  // list is fetched again when the search changes, on a bulk mark, and when
+  // the stream resyncs. A row opens its item and marks it read; its dot
+  // marks it without opening. `?q=<question>` scrolls to that question's
+  // card and focuses it, and `?approval=<request>` to that request's. A
+  // decided card stays where it is, saying how; a request decided before
+  // shows as a card in its group. A machine that connected with an invite
+  // and an agent that ended are rows.
   // Only the owner's browser offers the Connections filter. At phone width
   // the filters sit behind **Filters**. The agent strip (§13) opens the
   // page, under its header: a chip filters the inbox by its agent; it is
-  // fetched again with the sections.
+  // fetched again with the list.
   import { onMount } from "svelte";
   import { type InboxFilter, type InboxItem, type InboxKind, type StripAgent, getToken, listArtifacts } from "../api";
   import AgentStrip from "../people/AgentStrip.svelte";
@@ -69,23 +69,21 @@
   const oops = (what: string) => (e: unknown) => { error = `Could not ${what}: ${e instanceof Error ? e.message : String(e)}`; };
   const loadFailed = oops("load the inbox");
 
-  type Which = "unread" | "read";
-  /** A section's groups, the cursor of its next page of groups, and its match count. */
-  type Section = { groups: Group[]; next: string | null; total: number | "10000+" };
+  /** The list's groups and the cursor of its next page of groups. */
+  type List = { groups: Group[]; next: string | null };
   const initial = filterFromUrl(location.search);
   let filter = $state<InboxFilter>(initial);
   let search = $state(initial.q ?? "");
   const asked = new URLSearchParams(location.search);
   // The card to focus once listed: a question's (`?q=`) or an approval request's (`?approval=`).
   let target: { q: string } | { approval: string } | null = asked.get("q") ? { q: asked.get("q")! } : asked.get("approval") ? { approval: asked.get("approval")! } : null;
-  let unread = $state<Section | null>(null);
-  // The unread section's cards: open questions and decisions, and those closed or decided here.
+  let list = $state<List | null>(null);
+  // The cards pinned above the groups: open questions and decisions, and those closed or decided here.
   let cardItems = $state<InboxItem[]>([]);
-  // The read section: its count always, its groups once unfolded.
-  let readCount = $state<number | "10000+">(0);
-  let readOpen = $state(false);
-  let read = $state<Section | null>(null);
-  // Whether a group (`<section>:<key>`) is open: as the person set it, else as it was when listed.
+  // Whether a group is open: as the person set it, else as it was first
+  // listed for this search (open with something new, or alone). A group
+  // opens when something new comes, and never folds itself: one read here
+  // or elsewhere stays where it is until the search changes.
   let toggled = $state<Record<string, boolean>>({});
   let listedOpen = $state<Record<string, boolean>>({});
   let busy = $state(false);
@@ -103,6 +101,7 @@
   let perm = $state(N?.permission);
 
   const filtered = $derived([filter.q, filter.kind?.length, filter.artifact, filter.agent, filter.since, filter.until].some(Boolean));
+  const unreadOnly = $derived(filter.read === "unread");
   // A card's view: the question feed's (live), else the item's.
   const qview = (i: InboxItem) => (i.question && (questions.get(i.question.id) ?? i.question))!;
   const cards = $derived(cardItems.filter(i => asCard.includes(i.id)).map(qview).sort((a, b) => a.created_at.localeCompare(b.created_at)));
@@ -111,25 +110,21 @@
   const decisions = $derived(cardItems.filter(decision).sort((a, b) => a.seq - b.seq));
   // The cards pinned above the groups, under one heading: "Questions" when all are, else "Waiting on you".
   const pinned = $derived(cards.length + decisions.length);
-  // What the unread section shows as a card, so no group lists it as a row.
+  // What is pinned as a card, so no group lists it as a row.
   const carded = $derived(new Set([...asCard, ...decisions.map(i => i.id)]));
   const rowsOf = (g: Group) => g.items.filter(i => !carded.has(i.id));
-  /** How many of a group's items are new: its unread count, less its unread items shown as cards. */
+  /** How many of a group's items are new: its unread count, less its unread items pinned as cards. */
   const freshOf = (g: Group) => Math.max(0, g.unread - cardItems.filter(i => !i.read && carded.has(i.id) && groupKey(i) === g.key).length);
-  // A group whose every item is a card has nothing of its own to show.
-  const unreadGroups = $derived((unread?.groups ?? []).filter(g => rowsOf(g).length || freshOf(g) || g.next));
-  // The read section leaves out what Unread still shows (a card kept there once decided).
-  const inUnread = $derived(new Set([...cardItems, ...(unread?.groups ?? []).flatMap(g => g.items)].map(i => i.id)));
-  const readRowsOf = (g: Group) => g.items.filter(i => !inUnread.has(i.id));
-  const readGroups = $derived((read?.groups ?? []).filter(g => readRowsOf(g).length || g.next));
-  const isOpen = (which: Which, g: Group) => toggled[`${which}:${g.key}`] ?? listedOpen[`${which}:${g.key}`] ?? false;
-  /** Notes whether each group listed starts open: one with something new, or a section's only group. */
-  const opening = (which: Which, gs: Group[], one: boolean) => {
-    listedOpen = { ...listedOpen, ...Object.fromEntries(gs.map(g => [`${which}:${g.key}`, (which === "unread" && freshOf(g) > 0) || one])) };
+  // A group whose every item is a pinned card has nothing of its own to show.
+  const groups = $derived((list?.groups ?? []).filter(g => rowsOf(g).length || freshOf(g) || g.next));
+  const isOpen = (g: Group) => toggled[g.key] ?? listedOpen[g.key] ?? false;
+  /** Notes which groups listed start open: one with something new, or the only one. */
+  const opening = (gs: Group[], one: boolean) => {
+    listedOpen = { ...listedOpen, ...Object.fromEntries(gs.map(g => [g.key, !!listedOpen[g.key] || freshOf(g) > 0 || one])) };
   };
   // The pickers' options, [value, label]: the pages and the harnesses and
   // agents of the items listed, and the one chosen.
-  const listed = $derived([...cardItems, ...[...(unread?.groups ?? []), ...(read?.groups ?? [])].flatMap(g => g.items)]);
+  const listed = $derived([...cardItems, ...(list?.groups ?? []).flatMap(g => g.items)]);
   // Every artifact, and the pages of the items listed (live pages among them).
   let artifacts = $state<string[][]>([]);
   const pages = $derived([...new Map([...(filter.artifact ? [[filter.artifact, filter.artifact]] : []), ...artifacts, ...listed.flatMap(i => (i.artifact ? [[i.artifact.id, i.artifact.title ?? i.artifact.id]] : []))] as [string, string][])]);
@@ -140,7 +135,7 @@
     return [...seen];
   });
   // Something unread Mark all read would read: an open approval request stays unread until decided.
-  const markable = $derived(unreadGroups.some(g => freshOf(g) > 0) || cardItems.some(i => !i.read && approvalOf(i)?.status !== "open"));
+  const markable = $derived(groups.some(g => freshOf(g) > 0) || cardItems.some(i => !i.read && approvalOf(i)?.status !== "open"));
   const cardsFrom = (items: InboxItem[]) => {
     asCard = [...asCard, ...items.filter(i => i.kind === "question" && i.question && qview(i).status === "open" && !asCard.includes(i.id)).map(i => i.id)];
   };
@@ -155,22 +150,19 @@
     cardsFrom(r.items);
     return r.items.filter(i => asCard.includes(i.id) || decision(i));
   };
-  /** A page of `which`'s groups, after `before`. */
-  const fetchGroups = async (which: Which, before?: string | null): Promise<Section> => {
-    const r = await inbox.groups({ ...filter, read: which }, before, GROUP_ROWS);
-    const groups = r.groups.map(fromWire);
-    return { groups, next: r.next_cursor, total: r.total ?? groups.reduce((n, g) => n + g.total, 0) };
+  /** A page of the groups, after `before`: every item's, or the unread ones' with the Unread filter. */
+  const fetchGroups = async (before?: string | null): Promise<List> => {
+    const r = await inbox.groups(filter, before, GROUP_ROWS);
+    return { groups: r.groups.map(fromWire), next: r.next_cursor };
   };
-  /** How many read items match. */
-  const countRead = async () => { const r = await inbox.page({ ...filter, read: "read" }, null, 1); return r.total ?? r.items.length; };
 
-  /** Fetches both sections; `keep` keeps the cards of questions closed
-   * here (read now, so no longer listed), for the same search. */
+  /** Fetches the cards and the groups; `keep` keeps the cards of
+   * questions closed here (read now, so no longer listed), for the same search. */
   async function load(keep = true): Promise<void> {
     const g = ++gen;
     void loadStrip();
     try {
-      const [c, u, r, shown] = await Promise.all([fetchCards(), fetchGroups("unread"), countRead(), readOpen ? fetchGroups("read") : null]);
+      const [c, l] = await Promise.all([fetchCards(), fetchGroups()]);
       if (g !== gen) return;
       error = null;
       // A question's card closed here, and a decision's card decided here: read now, no longer listed as unread.
@@ -179,11 +171,8 @@
         ...decisions.filter(i => i.read),
       ].filter(i => i && !c.some(x => x.id === i.id)) : [];
       cardItems = [...kept, ...c];
-      unread = u;
-      opening("unread", u.groups, false);
-      readCount = r;
-      read = shown;
-      if (shown) opening("read", shown.groups, shown.groups.length === 1);
+      list = l;
+      opening(l.groups, l.groups.length === 1);
       void fill(g);
       // `?q=` or `?approval=`: that card takes focus, once.
       const t = target;
@@ -193,51 +182,42 @@
     }
   }
 
-  /** Lists more of each open unread group whose first rows are all cards. */
+  /** Lists more of each open group whose first rows are all pinned cards. */
   async function fill(g: number): Promise<void> {
-    for (const x of unreadGroups) if (g === gen && x.next && rowsOf(x).length === 0 && isOpen("unread", x)) await more("unread", x.key);
+    for (const x of groups) if (g === gen && x.next && rowsOf(x).length === 0 && isOpen(x)) await more(x.key);
   }
 
-  /** The next rows of group `key` of `which`, appended. */
-  async function more(which: Which, key: string): Promise<void> {
-    const at = (which === "unread" ? unread : read)?.groups.find(x => x.key === key);
-    if (!at?.next) return;
+  /** The next rows of group `key`, appended: its unread ones while there
+   * are more (`u<seq>`), then its read ones (`r`, `r<seq>`). */
+  async function more(key: string): Promise<void> {
+    const at = list?.groups.find(x => x.key === key);
+    const cursor = at?.next;
+    if (!at || !cursor) return;
     const g = gen;
+    const unreadPart = cursor.startsWith("u");
+    const before = cursor.slice(1) || null;
     try {
-      const r = await inbox.page({ ...filter, read: which, artifact: key }, at.next, MORE_ROWS);
-      const s = which === "unread" ? unread : read;
-      if (g !== gen || !s) return;
-      const next = { ...s, groups: appendRows(s.groups, key, r.items, r.next_cursor) };
-      if (which === "unread") unread = next; else read = next;
+      const r = await inbox.page({ ...filter, read: unreadPart ? "unread" : "read", artifact: key }, before, MORE_ROWS);
+      if (g !== gen || !list) return;
+      // Past the last unread page, its read ones follow (none with the Unread filter).
+      const next = r.next_cursor ? `${unreadPart ? "u" : "r"}${r.next_cursor}` : unreadPart && !unreadOnly && at.total > at.unread ? "r" : null;
+      list = { ...list, groups: appendRows(list.groups, key, r.items, next) };
     } catch (e) { loadFailed(e); }
   }
 
-  /** The next page of `which`'s groups, appended. */
-  async function moreGroups(which: Which): Promise<void> {
-    const s = which === "unread" ? unread : read;
-    if (!s?.next) return;
+  /** The next page of groups, appended. */
+  async function moreGroups(): Promise<void> {
+    if (!list?.next) return;
     const g = gen;
     try {
-      const r = await fetchGroups(which, s.next);
-      const now = which === "unread" ? unread : read;
-      if (g !== gen || !now) return;
-      opening(which, r.groups, false);
-      const next = { ...now, groups: appendGroups(now.groups, r.groups), next: r.next };
-      if (which === "unread") unread = next; else read = next;
+      const r = await fetchGroups(list.next);
+      if (g !== gen || !list) return;
+      opening(r.groups, false);
+      list = { groups: appendGroups(list.groups, r.groups), next: r.next };
     } catch (e) { loadFailed(e); }
   }
 
-  const flip = (which: Which, g: Group) => { toggled = { ...toggled, [`${which}:${g.key}`]: !isOpen(which, g) }; };
-
-  async function toggleRead(): Promise<void> {
-    readOpen = !readOpen;
-    if (!readOpen || read) return;
-    const g = gen;
-    try {
-      const r = await fetchGroups("read");
-      if (g === gen && readOpen) { opening("read", r.groups, r.groups.length === 1); read = r; }
-    } catch (e) { loadFailed(e); }
-  }
+  const flip = (g: Group) => { toggled = { ...toggled, [g.key]: !isOpen(g) }; };
 
   /** Scrolls to question `id`'s card (or approval request `id`'s) and focuses it; false when no card shows it. */
   const toCard = (id: string, kind: "question" | "approval" = "question"): boolean => {
@@ -247,11 +227,11 @@
     return !!el;
   };
 
-  /** Applies a new search: into the URL, then both sections again. */
+  /** Applies a new search: into the URL, then the list again, its groups folded or open afresh. */
   function apply(next: InboxFilter): void {
     filter = next;
     history.replaceState(history.state, "", `/inbox${filterToUrl(next)}`);
-    read = null;
+    listedOpen = {};
     void load(false);
   }
 
@@ -265,9 +245,11 @@
     const on = filter.kind ?? [];
     apply({ ...filter, kind: INBOX_KINDS.filter(x => (x === k) !== on.includes(x)) });
   };
+  const toggleUnread = () => apply({ ...filter, read: unreadOnly ? undefined : "unread" });
   const set = (k: "artifact" | "agent" | "since" | "until", v: string) => apply({ ...filter, [k]: v || undefined });
 
-  /** Marks read the unread items matching `f` up to the newest of `shown`, then fetches the sections again. */
+  /** Marks read the unread items matching `f` up to the newest of `shown`,
+   * then fetches the list again: the groups keep their places and folds. */
   async function markUpTo(f: InboxFilter | undefined, shown: InboxItem[], except?: string[]): Promise<void> {
     busy = true;
     try {
@@ -279,7 +261,7 @@
     }
     busy = false;
   }
-  const markAll = () => markUpTo(filtered ? { ...filter } : undefined, [...cardItems, ...(unread?.groups ?? []).flatMap(g => g.items)]);
+  const markAll = () => markUpTo(filtered ? { ...filter } : undefined, listed);
   /** A group's Mark read: the unread items it counts new, up to its newest
    * shown; its page's items pinned above as cards stay unread. */
   const markGroup = (g: Group) => markUpTo({ ...filter, artifact: g.key }, g.items,
@@ -297,7 +279,7 @@
   const askNotify = () => void N?.requestPermission().then(r => { perm = r; }, () => {});
 
   // An item as it is now: replaced where it shows; for a new unread one the
-  // sections are fetched again (debounced, so a burst is one fetch).
+  // list is fetched again (debounced, so a burst is one fetch).
   let refetchSoon: (() => void) | undefined;
   const soon = () => { refetchSoon?.(); refetchSoon = after(DEBOUNCE_MS, () => { refetchSoon = undefined; void load(); }); };
   // An item that changed may change a block: the strip is fetched again (debounced).
@@ -305,19 +287,16 @@
   function take(item: InboxItem): void {
     stripSoon?.();
     stripSoon = after(DEBOUNCE_MS, () => { stripSoon = undefined; void loadStrip(); });
-    // An item Unread shows that was read (a decision, a mark elsewhere), or
-    // unread again, moves the counts with it: its section's and its group's.
-    const was = cardItems.find(x => x.id === item.id) ?? unread?.groups.flatMap(g => g.items).find(x => x.id === item.id);
+    // An item shown that was read (a decision, a mark elsewhere), or unread
+    // again, moves its group's count with it; it stays where it is.
+    const was = cardItems.find(x => x.id === item.id) ?? list?.groups.flatMap(g => g.items).find(x => x.id === item.id);
     const d = was && was.read !== item.read ? (item.read ? -1 : 1) : 0;
-    if (d && unread && typeof unread.total === "number") unread = { ...unread, total: Math.max(0, unread.total + d) };
-    if (d && typeof readCount === "number") readCount = Math.max(0, readCount - d);
     if (cardItems.some(x => x.id === item.id)) cardItems = cardItems.map(x => (x.id === item.id ? item : x));
-    if (unread) unread = { ...unread, groups: takeItem(unread.groups, item, d) };
-    if (read) read = { ...read, groups: takeItem(read.groups, item, 0) };
+    if (list) list = { ...list, groups: takeItem(list.groups, item, d) };
     // One not shown: a new unread item, or one of a shown group's past its
     // listed rows, read or unread elsewhere, whose change in its group's
-    // count is unknown here: the sections are fetched again.
-    if (!was && !lists(read?.groups, item.id) && (!item.read || unread?.groups.some(g => g.key === groupKey(item)))) soon();
+    // count is unknown here: the list is fetched again.
+    if (!was && (!item.read || list?.groups.some(g => g.key === groupKey(item)))) soon();
   }
 
   onMount(() => {
@@ -325,7 +304,7 @@
     void getToken().then(t => { owner = !!t; });
     void listArtifacts().then(a => { artifacts = a.map(x => [x.id, x.title]); }, () => {});
     // Fetched once on open: now, or when the inbox topic first goes live.
-    const off = inbox.listen(c => { if ("item" in c) take(c.item); else if (unread) soon(); else void load(); });
+    const off = inbox.listen(c => { if ("item" in c) take(c.item); else if (list) soon(); else void load(); });
     if (!inbox.waiting) void load();
     return () => { off(); typing?.(); refetchSoon?.(); stripSoon?.(); };
   });
@@ -337,12 +316,12 @@
   {/if}
 {/snippet}
 
-{#snippet group(which: Which, g: Group)}
-  {@const shown = which === "unread" ? rowsOf(g) : readRowsOf(g)}
-  {@const fresh = which === "unread" ? freshOf(g) : 0}
+{#snippet group(g: Group)}
+  {@const shown = rowsOf(g)}
+  {@const fresh = freshOf(g)}
   {@const rows = shown.filter(i => !decision(i))}
-  <InboxGroup group={g} {fresh} open={isOpen(which, g)} now={p.now} id={`inbox-${which}-${g.key}`} onToggle={() => flip(which, g)}
-    onMore={g.next ? () => void more(which, g.key) : undefined} onRead={fresh && !busy ? () => void markGroup(g) : undefined}>
+  <InboxGroup group={g} {fresh} open={isOpen(g)} now={p.now} id={`inbox-group-${g.key}`} onToggle={() => flip(g)}
+    onMore={g.next ? () => void more(g.key) : undefined} onRead={fresh && !busy ? () => void markGroup(g) : undefined}>
     {@render decided(shown.filter(decision))}
     {#if rows.length}<ul class="rows">{#each rows as i (i.id)}<InboxRow item={i} others={listed} now={p.now} grouped onOpen={open} onToggle={toggle} />{/each}</ul>{/if}
   </InboxGroup>
@@ -364,6 +343,7 @@
     <button type="button" class="filters-toggle" aria-expanded={filtersOpen} aria-controls="inbox-filters" onclick={() => { filtersOpen = !filtersOpen; }}>Filters</button>
   </div>
   <div class="filters" id="inbox-filters" data-open={filtersOpen ? "" : undefined}>
+    <button type="button" class="kind unread-chip" aria-pressed={unreadOnly} onclick={toggleUnread}>Unread</button>
     <div class="kinds" role="group" aria-label="Kinds">
       {#each INBOX_KINDS.filter(k => k !== "connection" || owner || filter.kind?.includes(k)) as k (k)}
         <button type="button" class="kind" aria-pressed={!!filter.kind?.includes(k)} onclick={() => toggleKind(k)}>{KIND_LABEL[k]}</button>
@@ -387,37 +367,20 @@
 
   {#if error}<p class="err" role="alert">{error}</p>{/if}
 
-  <section class="sec" aria-labelledby="inbox-unread-h">
-    <h3 id="inbox-unread-h">Unread{#if unread}<span class="c">{fmt(unread.total)}</span>{/if}</h3>
-    {#if !unread}
+  <section class="sec" aria-label="Items">
+    {#if !list}
       {#if !error}<p class="note">Loading…</p>{/if}
     {:else}
-      {#if pinned}<h4 class="pinned-h" id="inbox-pinned-h">{decisions.length ? "Waiting on you" : "Questions"}<span class="c">{fmt(pinned)}</span></h4>{/if}
+      {#if pinned}<h3 class="pinned-h" id="inbox-pinned-h">{decisions.length ? "Waiting on you" : "Questions"}<span class="c">{fmt(pinned)}</span></h3>{/if}
       <QuestionList list={cards} feed={questions} now={p.now} />
       {@render decided(decisions)}
-      {#if unreadGroups.length}<div class="groups">{#each unreadGroups as g (g.key)}{@render group("unread", g)}{/each}</div>{/if}
-      {#if !cardItems.length && !unreadGroups.length}
-        <p class="note">{filtered ? "No unread items match." : "Nothing unread."}</p>
+      {#if groups.length}<div class="groups">{#each groups as g (g.key)}{@render group(g)}{/each}</div>{/if}
+      {#if !cardItems.length && !groups.length}
+        <p class="note">{unreadOnly ? (filtered ? "No unread items match." : "Nothing unread.") : filtered ? "No items match." : "Nothing in the inbox yet."}</p>
       {/if}
-      {#if unread.next}<button type="button" class="more" onclick={() => moreGroups("unread")}>More pages</button>{/if}
+      {#if list.next}<button type="button" class="more" onclick={moreGroups}>More pages</button>{/if}
     {/if}
   </section>
-
-  {#if unread && readCount !== 0}
-    <section class="sec" aria-label="Read">
-      <button type="button" class="fold" aria-expanded={readOpen} aria-controls="inbox-read" onclick={toggleRead}>
-        {readOpen ? "Hide read items" : `Show ${fmt(readCount)} read ${readCount === 1 ? "item" : "items"}`}
-      </button>
-      {#if readOpen}
-        <div id="inbox-read">
-          {#if read}
-            {#if readGroups.length}<div class="groups">{#each readGroups as g (g.key)}{@render group("read", g)}{/each}</div>{/if}
-            {#if read.next}<button type="button" class="more" onclick={() => moreGroups("read")}>More pages</button>{/if}
-          {:else}<p class="note">Loading…</p>{/if}
-        </div>
-      {/if}
-    </section>
-  {/if}
 </div>
 
 <style>
@@ -439,8 +402,7 @@
     .inbox .pick select { max-width: 220px; }
     .inbox .err { margin: 12px 0 0; color: var(--danger); font-size: 13px; }
     .inbox .sec { margin-top: 22px; min-width: 0; }
-    .inbox .sec h3 { display: flex; align-items: baseline; gap: 8px; margin: 0 0 10px; font-size: 15px; }
-    .inbox .sec h3 .c, .inbox .pinned-h .c { font: 400 12.5px var(--mono); color: var(--muted); font-variant-numeric: tabular-nums; }
+    .inbox .pinned-h .c { font: 400 12.5px var(--mono); color: var(--muted); font-variant-numeric: tabular-nums; }
     .inbox .pinned-h { display: flex; align-items: baseline; gap: 8px; margin: 0 0 8px; font: 600 13px/1.4 var(--font); color: var(--muted); }
     .inbox .sec .qlist { margin-bottom: 10px; }
     .inbox .dlist { display: grid; gap: 10px; margin-bottom: 10px; min-width: 0; }
@@ -448,8 +410,6 @@
     .inbox .groups { border-top: 1px solid var(--border); min-width: 0; }
     .inbox .note { margin: 8px 0; color: var(--muted); font-size: 13px; }
     .inbox .more { margin-top: 10px; }
-    .inbox .fold { width: 100%; justify-content: flex-start; background: none; border: 1px dashed var(--border-hover); color: var(--muted); font-weight: 500; }
-    .inbox .fold[aria-expanded="true"] { margin-bottom: 8px; }
     @media (max-width: 700px) {
       .inbox .filters-toggle { display: inline-flex; }
       .inbox .filters { flex-direction: column; align-items: stretch; }
