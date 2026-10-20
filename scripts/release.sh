@@ -26,15 +26,15 @@
 #   11  a signed commit "Pin the plugins to Clax X.Y.Z"
 #   12  git push origin main
 #   13  wait for CI on the pin commit
-#   14  gh workflow run publish-pi.yml (dry_run off), and wait for it
+#   14  gh workflow run publish-pi.yml (dry_run off) on the pin commit, and
+#       wait for it
 #   15  print what is left by hand (clax.dev, crates.io)
 #
 # A run that fails stops at that step, says which, and changes nothing after
 # it. Run the same command again: each step's state is read from git and
 # GitHub (the version files, the two commits by subject, the tag here and on
 # origin, the release's assets, the workflow runs), so the run resumes at
-# the first step not done. The one thing not on GitHub, the publish-pi run
-# this script started, is kept in target/release/X.Y.Z/publish-pi-run. A
+# the first step not done. A
 # tag of X.Y.Z is resumed only while the release is under way: its commit
 # not yet on origin/main, or the pin commit origin/main's tip.
 # Uncommitted changes are taken only while a step that makes them is
@@ -76,7 +76,6 @@ done
 TAG="v$V"
 REL_SUBJECT="Release $V"
 PIN_SUBJECT="Pin the plugins to Clax $V"
-STATE_DIR="$ROOT/target/release/$V"
 LOG="$ROOT/target/release/$V.log"
 RESUME="scripts/release.sh $V $ACT_FLAG"
 # 1 once the run acts: from then on, say and logged append to LOG.
@@ -343,11 +342,9 @@ COMMANDS=(
     [11]="git commit -S -a -m \"$PIN_SUBJECT\""
     [12]="git push origin main"
     [13]="gh run list --workflow ci.yml (the push run on the pin commit), wait"
-    [14]="gh workflow run publish-pi.yml --ref main -f dry_run=false, wait"
+    [14]="gh workflow run publish-pi.yml --ref main -f dry_run=false -f sha=<the pin commit>, wait"
     [15]="print the steps left by hand"
 )
-
-publish_run_file="$STATE_DIR/publish-pi-run"
 
 # done_N: whether step N is done, from the state refresh read.
 done_2() { [ "$CUR" = "$V" ]; }
@@ -373,7 +370,10 @@ done_13() {
     id="$(find_run ci.yml push "$PIN_COMMIT")"
     [ -n "$id" ] && [ "$(run_state "$id")" = "completed success" ]
 }
-done_14() { [ -s "$publish_run_file" ] && [ "$(run_state "$(cat "$publish_run_file")")" = "completed success" ]; }
+done_14() {
+    local id
+    id="$(publish_run "$PIN_COMMIT")" && [ -n "$id" ] && [ "$(run_state "$id")" = "completed success" ]
+}
 done_15() { false; }
 
 # A poll's gh call may fail this many times in a row (a network or API
@@ -400,6 +400,22 @@ poll_once() {
     fi
     rm -f "$err"
     return 1
+}
+
+# Runs "$@" until it succeeds, at most GH_RETRIES times, POLL seconds apart;
+# prints its output, or says why it gave up.
+gh_retry() {
+    local rc
+    POLL_FAILS=0
+    while :; do
+        rc=0
+        poll_once "$@" || rc=$?
+        case "$rc" in
+            0) printf '%s\n' "$POLL_OUT"; return 0 ;;
+            2) return 1 ;;
+        esac
+        sleep "$POLL"
+    done
 }
 
 # Polls until "$@" prints something, at most MAX_POLLS times; a failed call
@@ -516,24 +532,32 @@ step_13() {
     id="$(await_output find_run ci.yml push "$PIN_COMMIT")" || { say "  no CI run on $PIN_COMMIT appeared"; return 1; }
     await_run "$id" "CI on main"
 }
-# The IDs of publish-pi.yml's dispatched runs on main, sorted.
-publish_runs() {
-    gh run list --workflow publish-pi.yml --event workflow_dispatch --branch main --limit 50 \
-        --json databaseId --jq '.[].databaseId' | sort
+# The newest publish-pi.yml run that publishes (not a dry run) from commit
+# $1, by the title the workflow gives it, or nothing.
+publish_run() {
+    gh run list --workflow publish-pi.yml --event workflow_dispatch --limit 50 \
+        --json databaseId,displayTitle --jq '.[] | "\(.databaseId)\t\(.displayTitle)"' \
+        | awk -F '\t' -v t="Publish Pi package $1" '$2 == t { print $1 }' | sed -n 1p
 }
-# The first of them not in $1, the IDs before the dispatch.
-new_publish_run() { publish_runs | comm -13 <(printf '%s\n' "$1") - | sed -n 1p; }
+# That run, when it is not run $2 (the newest before a dispatch).
+new_publish_run() {
+    local id
+    id="$(publish_run "$1")" || return 1
+    if [ "$id" != "$2" ]; then echo "$id"; fi
+}
+# Publishes from the pin commit, never main's tip: a run already under way
+# for it is waited for; none, or a failed one, is dispatched anew.
 step_14() {
-    local id before
-    if [ -s "$publish_run_file" ]; then
-        id="$(cat "$publish_run_file")"
-    else
-        before="$(publish_runs)"
-        gh workflow run publish-pi.yml --ref main -f dry_run=false
-        id="$(await_output new_publish_run "$before")" || { say "  the publish-pi run did not appear"; return 1; }
-        mkdir -p "$STATE_DIR"
-        echo "$id" > "$publish_run_file"
-    fi
+    local id state
+    id="$(gh_retry publish_run "$PIN_COMMIT")" || return 1
+    state=""
+    if [ -n "$id" ]; then state="$(gh_retry run_state "$id")" || return 1; fi
+    case "$state" in
+        "" | completed\ *)
+            gh workflow run publish-pi.yml --ref main -f dry_run=false -f "sha=$PIN_COMMIT"
+            id="$(await_output new_publish_run "$PIN_COMMIT" "$id")" \
+                || { say "  no Publish Pi package run for $PIN_COMMIT appeared"; return 1; } ;;
+    esac
     await_run "$id" "Publish Pi package"
 }
 step_15() {
@@ -584,7 +608,7 @@ if [ "$ACT" = 0 ]; then
     say "The steps (checkout at ${CUR:-?}, plugins pinned to ${PINNED:-?}):"
     next=""
     for n in $(seq 2 15); do
-        if [ -z "$next" ] && "done_$n"; then
+        if [ -z "$next" ] && "done_$n" 2>/dev/null; then
             say "  $n. [done] ${TITLES[n]}: ${COMMANDS[n]}"
         else
             next="${next:-$n}"
@@ -608,7 +632,7 @@ for n in $(seq 2 15); do
         say "release.sh: $REFRESH_ERR before step $n; run \`$RESUME\` again to resume."
         exit 1
     fi
-    if "done_$n"; then
+    if "done_$n" 2>/dev/null; then
         say "Step $n: ${TITLES[n]}: done already"
         continue
     fi

@@ -10,7 +10,8 @@
 # own tests are scripts/test-release.sh). The fakes log every call to
 # $FAKE_STATE/calls. The fake gh plays GitHub from the bare origin: a
 # Release run (ID 101) exists once a tag on the commit is pushed, a CI run
-# (201) once main holds the commit, a publish-pi run (301) once dispatched.
+# (201) once main holds the commit, a publish-pi run (301, 302, ...) per
+# dispatch, titled as .github/workflows/publish-pi.yml titles it.
 # $FAKE_STATE/<ID> lists the states `gh run view <ID>` reports, one per call
 # (the last one sticks; none means "completed success"); the release lists
 # SHA256SUMS once run 101 was seen to succeed, published at the time in
@@ -63,6 +64,13 @@ fake_exe "$T/bin/gh" <<'SH'
 S="$FAKE_STATE"
 echo "gh $*" >> "$S/calls"
 origin() { git --git-dir="$FAKE_REMOTE" "$@"; }
+# Someone else's commit lands on origin's main.
+foreign_push() {
+    t="$(origin rev-parse 'main^{tree}')"
+    c="$(GIT_AUTHOR_NAME=Other GIT_AUTHOR_EMAIL=other@example.com GIT_COMMITTER_NAME=Other \
+        GIT_COMMITTER_EMAIL=other@example.com origin commit-tree "$t" -p main -m "Other work")"
+    origin update-ref refs/heads/main "$c"
+}
 flag() {
     want="$1"; shift
     while [ $# -gt 0 ]; do
@@ -97,10 +105,13 @@ case "$1 $2" in
         case "$(flag --workflow "$@")" in
             release.yml) [ -z "$(origin tag --points-at "$sha" 'v*')" ] || echo "101 $sha" ;;
             ci.yml) if origin merge-base --is-ancestor "$sha" refs/heads/main 2>/dev/null; then echo "201 $sha"; fi ;;
-            publish-pi.yml) if [ -e "$S/dispatched" ]; then echo 301; fi ;;
+            publish-pi.yml) cat "$S/publish-runs" 2>/dev/null || true ;;
             *) echo "fake gh: unexpected: $*" >&2; exit 2 ;;
         esac ;;
     "run view")
+        # $FAKE_STATE/push-on-<ID>: the first view of run <ID> sees other work
+        # land on origin's main.
+        if [ -e "$S/push-on-$3" ]; then rm "$S/push-on-$3"; foreign_push; fi
         case " $* " in *" createdAt "*) echo "2026-10-20T00:00:05Z"; exit 0 ;; esac
         state="completed success"
         if [ -s "$S/$3" ]; then
@@ -113,7 +124,11 @@ case "$1 $2" in
         echo "$state" ;;
     "workflow run")
         case "$3 $*" in
-            "publish-pi.yml "*" -f dry_run=false"*) : > "$S/dispatched" ;;
+            "publish-pi.yml "*" -f dry_run=false -f sha="*)
+                for a in "$@"; do case "$a" in sha=*) sha="${a#sha=}" ;; esac; done
+                n=$(( $(cat "$S/publish-runs" 2>/dev/null | wc -l) + 301 ))
+                { printf '%s\tPublish Pi package %s\n' "$n" "$sha"; cat "$S/publish-runs" 2>/dev/null; } > "$S/publish-runs.new"
+                mv "$S/publish-runs.new" "$S/publish-runs" ;;
             *) echo "fake gh: unexpected: $*" >&2; exit 2 ;;
         esac ;;
     *) echo "fake gh: unexpected: $*" >&2; exit 2 ;;
@@ -227,14 +242,15 @@ else fail "a dry run checks, prints the plan and changes nothing (rc=$rc: $(cat 
 new_case
 printf 'queued \nin_progress \ncompleted success\n' > "$FAKE_STATE/101"
 act; rc=$?
+pin="$(git --git-dir="$C/origin.git" rev-parse main)"
 want="$(printf '%s\n' "bump 0.6.0" "just bazel-sync" "just bazel-sync" "just bazel-sync" "just ci" \
     "gh run view 101" "pin v0.6.0" "just ci" "gh run view 201" \
-    "gh workflow run publish-pi.yml --ref main -f dry_run=false" "gh run view 301")"
+    "gh workflow run publish-pi.yml --ref main -f dry_run=false -f sha=$pin" "gh run view 301")"
 # Each run's polls, as one line.
 got="$(grep -E '^(bump|pin|just|gh workflow run|gh run view)' "$FAKE_STATE/calls" \
     | sed 's/^\(gh run view [0-9]*\) .*/\1/' | awk '!($0 ~ /^gh run view/ && $0 == prev) { print } { prev = $0 }')"
 if [ "$rc" = 0 ] && [ "$got" = "$want" ] && released && has "Clax 0.6.0 is released." \
-    && has "Release v0.6.0: in_progress" && [ "$(cat "$C/repo/target/release/0.6.0/publish-pi-run")" = 301 ] \
+    && has "Release v0.6.0: in_progress" \
     && [ -s "$C/repo/target/release/0.6.0.log" ] && has "redeploy clax.dev with \`just clax-dev-deploy\`"; then
     pass "a full run bumps, syncs until settled, tests, signs, tags, pushes, waits, pins and publishes, in order"
 else fail "a full run, in order (rc=$rc; calls: $got; $(cat "$C/out"))"; fi
@@ -309,6 +325,27 @@ act; rc=$?
 if [ "$rc" = 1 ] && has "published 2026-10-01T00:00:00Z, before the Release run 101" && [ "$(count "pin v0.6.0")" = 0 ]; then
     pass "a release published before this tag's run is never pinned, even when the run succeeds"
 else fail "a release published before this tag's run (rc=$rc: $(cat "$C/out"))"; fi
+
+# --- the Pi package comes from the pin commit -------------------------------------------
+new_case
+: > "$FAKE_STATE/push-on-201"
+act; rc=$?
+pin="$(git --git-dir="$C/origin.git" rev-parse main^)"
+if [ "$rc" = 0 ] && [ "$(git --git-dir="$C/origin.git" log -1 --format=%s main)" = "Other work" ] \
+    && [ "$(git --git-dir="$C/origin.git" log -1 --format=%s "$pin")" = "Pin the plugins to Clax 0.6.0" ] \
+    && [ "$(count "gh workflow run publish-pi.yml --ref main -f dry_run=false -f sha=$pin")" = 1 ]; then
+    pass "the Pi package is published from the pin commit after main moves on"
+else fail "the Pi package is published from the pin commit (rc=$rc: $(grep 'workflow run' "$FAKE_STATE/calls"); $(cat "$C/out"))"; fi
+new_case
+echo "completed failure" > "$FAKE_STATE/301"
+act; rc=$?
+if [ "$rc" = 1 ] && has "step 14 (Publish the Pi package) failed" && has "Publish Pi package concluded failure"; then
+    pass "a failed Publish Pi package run stops at step 14"
+else fail "a failed Publish Pi package run stops at step 14 (rc=$rc: $(cat "$C/out"))"; fi
+act; rc=$?
+if [ "$rc" = 0 ] && [ "$(grep -c '^gh workflow run' "$FAKE_STATE/calls")" = 2 ] && has "Publish Pi package: run 302"; then
+    pass "the next run dispatches the publish again and waits for the new run"
+else fail "resume after a failed publish (rc=$rc: $(cat "$C/out"))"; fi
 
 # --- gh failing during a wait ---------------------------------------------------------
 new_case

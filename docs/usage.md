@@ -538,9 +538,11 @@ runs), so the run resumes at the first step not done. Uncommitted changes
 are accepted only while the step that made them waits for its commit (the
 bump, 2-4; the pin, 9-10), and the only commits `main` may have beyond
 `origin/main` are the release's own. A failed workflow run is rerun on
-GitHub (`gh run rerun <ID> --failed`), then the command again picks it up.
-The Publish Pi package run the script started is the one state not on
-GitHub, kept in `target/release/<version>/publish-pi-run`. A wait gives up
+GitHub (`gh run rerun <ID> --failed`), then the command again picks it up;
+a failed Publish Pi package run is dispatched anew. The Pi package is
+published from the pin commit, whatever main's tip is by then:
+Publish Pi package takes the commit as its `sha` input and titles its run
+after it, which is how the script finds the run again. A wait gives up
 after `CLAX_RELEASE_MAX_POLLS` polls (270) `CLAX_RELEASE_POLL_SECONDS`
 apart (20), 90 minutes. Once `main` has moved past the pin commit, the
 release is finished and the script refuses its version.
@@ -560,8 +562,8 @@ scripts/pin-release.sh v0.4.0     # PINNED_VERSION and the four SHA256 values, i
 just ci
 git commit -S -am "Pin the plugins to Clax 0.4.0"
 git push origin main
-# once CI passes on that commit: Actions, Publish Pi package, Run workflow (dry_run off),
-# or: gh workflow run publish-pi.yml --ref main -f dry_run=false
+# once CI passes on that commit: Actions, Publish Pi package, Run workflow (dry_run off,
+# sha the pin commit), or: gh workflow run publish-pi.yml --ref main -f dry_run=false -f sha=<pin commit>
 ```
 
 `scripts/test-release-script.sh` (gate "release command") runs the script
@@ -572,7 +574,9 @@ Release run, and each refusal.
 
 The Pi package, `@empathic/clax-pi` on npm, is published from the pin
 commit, not the tag: its wrapper must pin the release that shares its
-version, which `.github/workflows/publish-pi.yml` checks before it
+version, which `.github/workflows/publish-pi.yml` checks, with that the
+commit (its `sha` input, main's tip by default) is on main and CI passed on
+it, before it
 typechecks, packs and publishes with provenance through npm trusted
 publishing. npm lets a package name a trusted publisher only once it
 exists, so the first version is published by hand from `plugins/pi`
