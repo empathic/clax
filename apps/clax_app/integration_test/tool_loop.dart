@@ -1,4 +1,4 @@
-// The tool loop end to end on macOS: the real embedded daemon, worker and
+// The tool loop end to end on macOS: the real embedded core, worker and
 // WebView, the app's real WebViewInspector rendering each draft (and
 // running its tests), and a scripted agent calling the real tools.
 //
@@ -12,7 +12,6 @@ import 'package:clax_app/app.dart';
 import 'package:clax_app/ui/app_screen.dart';
 import 'package:clax_app/ui/host_protocol.dart';
 import 'package:clax_app/ui/inspector_surface.dart';
-import 'package:clax_app/ui/webview_surface.dart';
 import 'package:flutter/material.dart';
 import 'package:flutter_test/flutter_test.dart';
 
@@ -23,12 +22,12 @@ import 'tool_script.dart';
 void toolLoopTest() {
   testWidgets('make and change an app on the tool loop', (tester) async {
     final runner = RecordingRunner([makeRun, changeRun]);
-    final rig = await Rig.create(
+    late final Rig rig;
+    rig = await Rig.create(
       backend: ScriptedBackend(const []),
       runner: () => runner,
-      inspector: WebViewInspector(
-        surface: (base) => WebViewAppSurface(base: base),
-      ),
+      // On the shell's origin through the core, as the app's inspector is.
+      inspector: WebViewInspector(surface: (_) => Rig.coreSurface(rig.core)),
     );
     addTearDown(rig.close);
 
@@ -120,7 +119,7 @@ void toolLoopTest() {
       () async => (await rig.api.listDrafts()).isEmpty,
     );
 
-    // Unmount the app: its worker stops before the daemon does.
+    // Unmount the app: its worker stops before the core closes.
     await tester.pumpWidget(const SizedBox());
   }, timeout: const Timeout(Duration(minutes: 5)));
 }

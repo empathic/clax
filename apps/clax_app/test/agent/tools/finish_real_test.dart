@@ -14,14 +14,13 @@ import 'package:clax_app/clax/http_api.dart';
 import 'package:flutter_test/flutter_test.dart';
 
 import '../../support/fake_inspector.dart';
-import '../../support/real_daemon.dart';
+import '../../support/real_core.dart';
 import 'support.dart';
-import '../../support/paths.dart';
 
 const page = '<main><button>Save</button></main>';
 const db = {'db': <String, Object?>{}};
 
-/// One change run over an app of the real daemon: the file, data, render
+/// One change run over an app of the real core: the file, data, render
 /// and finish tools, with renders inspected by a [FakeInspector].
 class RealRun {
   RealRun._(this.api, this.aid, this.state, this.toolbox, this.ledger);
@@ -100,29 +99,26 @@ class RealRun {
   }
 }
 
-/// The finish tool against the real debug `clax` named by `CLAX_TEST_BIN`
-/// (`scripts/stable-bin.sh` keeps one): the publish conflicts, document
-/// pins and restores the daemon applies.
+/// The finish tool against the real embedded core (the library
+/// `CLAX_EMBED_LIB` names): the publish conflicts, document pins and
+/// restores the core applies.
 void main() {
-  final bin = claxTestBin();
   late HttpClaxApi api;
   late Uri base;
+  final skip = RealCore.skip;
 
   setUpAll(() async {
-    if (bin == null) return;
-    final d = await RealDaemon.start(bin);
-    base = d.endpoint.base;
-    api = HttpClaxApi.loopback(() => d.endpoint);
-    addTearDown(api.close);
+    if (skip != false) return;
+    final core = await RealCore.open();
+    base = core.shell;
+    api = core.api();
     await api.registerAppSession(
       installId: 'install-1',
       pid: pid,
-      cwd: d.dir.path,
+      cwd: core.dir.path,
     );
   });
 
-  final skip = bin == null ? 'CLAX_TEST_BIN is not set' : false;
-  // macOS assesses a new executable on its first run, which can take a while.
   const timeout = Timeout(Duration(minutes: 3));
 
   test(

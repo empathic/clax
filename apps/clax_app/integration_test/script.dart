@@ -79,8 +79,8 @@ EditResult rename(String from, String to) => EditResult(
   resolve: true,
 );
 
-/// The scripted answers, in call order: the new app, the first change, and
-/// the change the test interrupts by killing the daemon.
+/// The scripted answers, in call order: the new app, the first change, the
+/// change made after Undo, and the second app, which reads the run log.
 List<Object> script() => [
   const EditResult(
     reply: 'Made a run log.',

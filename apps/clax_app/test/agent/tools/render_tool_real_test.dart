@@ -8,31 +8,26 @@ import 'package:clax_app/agent/tools/file_tools.dart';
 import 'package:clax_app/agent/tools/render_tool.dart';
 import 'package:clax_app/agent/tools/toolbox.dart';
 import 'package:clax_app/clax/api.dart';
-import 'package:clax_app/clax/http_api.dart';
 import 'package:flutter_test/flutter_test.dart';
 
 import '../../support/fake_inspector.dart';
-import '../../support/real_daemon.dart';
+import '../../support/real_core.dart';
 import 'support.dart';
-import '../../support/paths.dart';
 
-/// The render tool against the real debug `clax` named by `CLAX_TEST_BIN`
-/// (`tool/test-bin.sh` prints one): the draft publishes the daemon takes
-/// and the document merge it applies.
+/// The render tool against the real embedded core (the library
+/// `CLAX_EMBED_LIB` names): the draft publishes the core takes and the
+/// document merge it applies.
 void main() {
-  final bin = claxTestBin();
-
   test(
     'renders after a delete, a title change and an app.js change are '
-    'served, and staged writes merge as the daemon merges them',
+    'served, and staged writes merge as the core merges them',
     () async {
-      final d = await RealDaemon.start(bin!);
-      final api = HttpClaxApi.loopback(() => d.endpoint);
-      addTearDown(api.close);
+      final core = await RealCore.open();
+      final api = core.api();
       await api.registerAppSession(
         installId: 'install-1',
         pid: pid,
-        cwd: d.dir.path,
+        cwd: core.dir.path,
       );
       const files = {
         'index.html': '<p>runs</p>',
@@ -77,7 +72,7 @@ void main() {
         ),
       );
       final inspector = FakeInspector();
-      final render = RenderTool(api, inspector, baseUrl: d.endpoint.base);
+      final render = RenderTool(api, inspector, baseUrl: core.shell);
       final tb = Toolbox(state, [...fileTools(), render]);
       Future<void> rendered() async {
         final out = await tb.call('render', {'file': null});
@@ -130,8 +125,7 @@ void main() {
       await render.cleanup();
       expect(await api.listDrafts(), isEmpty);
     },
-    skip: bin == null ? 'CLAX_TEST_BIN is not set' : false,
-    // macOS assesses a new executable on its first run, which can take a while.
+    skip: RealCore.skip,
     timeout: const Timeout(Duration(minutes: 3)),
   );
 }

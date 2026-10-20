@@ -28,10 +28,11 @@ typedef CoreHandler =
 /// query) to the handlers a test registers with [on]. A call no handler
 /// answers fails the test ([unrouted]). [subscribe] hands out
 /// subscriptions that start with the hub's `ready` block and carry the
-/// blocks a test [push]es. After [close], calls go unanswered and
-/// subscriptions end as `core_closed`. Every call the core receives is
-/// appended to [requests] before it is answered. A resume point is
-/// ignored, as [CoreClient] ignores it.
+/// blocks a test [push]es, or that run the scripts a test registers with
+/// [script]. After [close], calls go unanswered and subscriptions end as
+/// `core_closed`. Every call the core receives is appended to [requests]
+/// before it is answered. A resume point is kept in [resumes] and
+/// otherwise ignored, as [CoreClient] ignores it.
 class FakeCore implements CoreCalls {
   /// [unrouted] hears each call no handler answers; by default it fails
   /// the running test, even when the code under test catches the error
@@ -53,6 +54,10 @@ class FakeCore implements CoreCalls {
   }) => FakeCore(unrouted: unrouted).._routeTo(api);
 
   final List<CoreRequest> requests = [];
+
+  /// The resume point each subscription asked for, in order.
+  final List<String?> resumes = [];
+  final List<SubscriptionScript> _scripts = [];
 
   /// The calls [cancel]led while they waited for their handler.
   final List<CoreRequest> cancelled = [];
@@ -76,6 +81,13 @@ class FakeCore implements CoreCalls {
 
   /// Every subscription opened on the core while it was open.
   int get subscriptions => _subs.length;
+
+  /// Has the next subscriptions run [script] in place of the hub's
+  /// `ready`: it pushes what blocks it likes, waiting on what it likes
+  /// between them, and the subscription then ends `stream_ended` unless it
+  /// has ended. The scripts are taken in the order they were registered,
+  /// the last one repeating.
+  void script(SubscriptionScript script) => _scripts.add(script);
 
   /// Sends [block] to every live subscription.
   void push(String block) {
@@ -203,10 +215,16 @@ class FakeCore implements CoreCalls {
 
   @override
   CoreSubscription subscribe({String? lastEventId}) {
+    resumes.add(lastEventId);
     final s = FakeSubscription('fake-${_subs.length + 1}');
     if (_closed) return s..end('core_closed');
     _subs.add(s);
-    return s..push(readyBlock(s.id));
+    if (_scripts.isEmpty) return s..push(readyBlock(s.id));
+    final run = _scripts.length > 1 ? _scripts.removeAt(0) : _scripts.first;
+    unawaited(
+      Future(() => run(s)).then((_) => s.end('stream_ended')),
+    );
+    return s;
   }
 
   /// The live subscription whose `ready` named stream [id], if any.
@@ -486,6 +504,10 @@ class FakeCore implements CoreCalls {
 }
 
 /// A [FakeCore] subscription: the blocks [push]ed until [end] or [cancel].
+/// What a [FakeCore.script]ed subscription runs: it writes to [s] with
+/// [FakeSubscription.push] and may end it ([FakeSubscription.end]).
+typedef SubscriptionScript = FutureOr<void> Function(FakeSubscription s);
+
 class FakeSubscription implements CoreSubscription {
   FakeSubscription(this.id);
 

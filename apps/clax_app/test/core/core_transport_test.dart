@@ -66,18 +66,6 @@ class _HeldTimer implements Timer {
   void cancel() => _active = false;
 }
 
-/// A [FakeCore] that also keeps the resume point each subscription asked
-/// for.
-class _ResumeCore extends FakeCore {
-  final List<String?> resumes = [];
-
-  @override
-  CoreSubscription subscribe({String? lastEventId}) {
-    resumes.add(lastEventId);
-    return super.subscribe(lastEventId: lastEventId);
-  }
-}
-
 void main() {
   group('HttpClaxApi over the core', () {
     late FakeClaxApi fake;
@@ -463,7 +451,7 @@ void main() {
     });
 
     test('a stream the core ended is subscribed again from where it stopped', () async {
-      final core = _ResumeCore();
+      final core = FakeCore();
       final delays = <Duration>[];
       final messages = <SseMessage>[];
       final sub = CoreTransport(core, retryDelay: (d) async => delays.add(d))
@@ -490,8 +478,31 @@ void main() {
       await sub.cancel();
     });
 
+    test('the wait before subscribing again goes back to 0.5 s after a stream that carried an event', () async {
+      final core = FakeCore();
+      final delays = <Duration>[];
+      final sub = CoreTransport(core, retryDelay: (d) async => delays.add(d))
+          .sse()
+          .listen((_) {});
+      await pumpEventQueue();
+      core.end('stream_ended');
+      await pumpEventQueue();
+      core.end('stream_ended');
+      await pumpEventQueue();
+      core.push(ev('fake-3:1', 'version', {}));
+      core.end('stream_ended');
+      await pumpEventQueue();
+      expect(delays, const [
+        Duration(milliseconds: 500),
+        Duration(seconds: 1),
+        Duration(milliseconds: 500),
+      ]);
+      expect(core.subscribers, 1);
+      await sub.cancel();
+    });
+
     test('a stream that panicked in the core (internal) is subscribed again', () async {
-      final core = _ResumeCore();
+      final core = FakeCore();
       final delays = <Duration>[];
       final sub = CoreTransport(core, retryDelay: (d) async => delays.add(d))
           .sse()
@@ -524,7 +535,7 @@ void main() {
     });
 
     test('the resume point asked for wins over the last ID seen', () async {
-      final core = _ResumeCore();
+      final core = FakeCore();
       final sub = CoreTransport(core, retryDelay: (_) async {})
           .sse(resumeId: () => 's:9')
           .listen((_) {});

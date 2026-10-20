@@ -1,9 +1,9 @@
 /// The live build eval's core: runs one prompt as a whole build on the
 /// app's own agent (`AgentLoop.newApp`, then the worker's continue runs)
-/// and writes what it made and what it cost. The model, the daemon and the
-/// eyes come in from outside: `live_build.dart` gives the Messages API, a
-/// real daemon and WebViews; the smoke test gives a scripted runner and
-/// fakes.
+/// and writes what it made and what it cost. The model, the core and the
+/// eyes come in from outside: `live_build.dart` gives the Messages API, the
+/// real embedded core and WebViews; the smoke test gives a scripted runner
+/// and fakes.
 library;
 
 import 'dart:async';
@@ -20,7 +20,7 @@ import 'package:clax_app/agent/timings.dart';
 import 'package:clax_app/agent/worker.dart';
 import 'package:clax_app/clax/api.dart';
 import 'package:clax_app/platform/clock.dart';
-import 'package:clax_app/daemon/supervisor.dart' show DaemonEndpoint;
+import 'package:clax_app/clax/transport.dart';
 
 import 'eval_config.dart';
 
@@ -324,10 +324,11 @@ abstract interface class AppGrants {
 /// Grants as the owner would on the app's consent prompts: the declared
 /// net hosts (`PUT /api/artifacts/<id>/net-grants`) and AI
 /// (`PUT /api/artifacts/<id>/sample-grant`).
-class HttpGrants implements AppGrants {
-  HttpGrants(this.endpoint);
+class ApiGrants implements AppGrants {
+  ApiGrants(this.transport);
 
-  final DaemonEndpoint Function() endpoint;
+  /// What the grants are put through, as the owner.
+  final ClaxTransport transport;
 
   @override
   Future<List<String>> grant(
@@ -351,21 +352,15 @@ class HttpGrants implements AppGrants {
   }
 
   Future<void> _put(String path, Object? body) async {
-    final ep = endpoint();
-    final client = HttpClient();
-    try {
-      final req = await client.putUrl(ep.base.replace(path: path));
-      req.headers
-        ..set(HttpHeaders.authorizationHeader, 'Bearer ${ep.token}')
-        ..contentType = ContentType.json;
-      if (body != null) req.write(jsonEncode(body));
-      final res = await req.close();
-      final text = await res.transform(utf8.decoder).join();
-      if (res.statusCode >= 300) {
-        throw HttpException('PUT $path: ${res.statusCode} $text');
-      }
-    } finally {
-      client.close(force: true);
+    final r = await transport.send(
+      'PUT',
+      path,
+      headers: {if (body != null) 'content-type': 'application/json'},
+      body: body == null ? null : utf8.encode(jsonEncode(body)),
+      timeout: const Duration(seconds: 35),
+    );
+    if (r.status >= 300) {
+      throw StateError('PUT $path: ${r.status} ${utf8.decode(r.body)}');
     }
   }
 }

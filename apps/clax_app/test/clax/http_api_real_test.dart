@@ -5,36 +5,31 @@ import 'dart:typed_data';
 
 import 'package:clax_app/clax/api.dart';
 import 'package:clax_app/clax/http_api.dart';
-import 'package:clax_app/daemon/supervisor.dart' show DaemonEndpoint, keyCookie;
 import 'package:cryptography/dart.dart' show DartSha256;
 import 'package:flutter_test/flutter_test.dart';
-import '../support/paths.dart';
+import '../support/real_core.dart';
 
-/// [HttpClaxApi] against the real debug `clax` named by `CLAX_TEST_BIN`
-/// (`tool/test-bin.sh` prints one), started on a free port with a scratch
-/// home under the repository's `target/flutter-app/`, and stopped by its
-/// PID in a tear-down, which runs on a failure or a timeout too.
+/// [HttpClaxApi] against the real embedded core (the library
+/// `CLAX_EMBED_LIB` names), opened by the app's core host on a scratch home
+/// and closed in a tear-down, which runs on a failure or a timeout too.
 void main() {
-  final bin = claxTestBin();
-  _lockedTest(bin);
-  _entriesTest(bin);
+  _entriesTest();
 
   test(
     'the app session publishes, takes a sent comment, answers it and writes documents',
     () async {
-      final d = await _Daemon.start(bin!);
-      final api = HttpClaxApi.loopback(() => d.endpoint);
-      addTearDown(api.close);
+      final core = await RealCore.open();
+      final api = core.api();
       final s = await api.registerAppSession(
         installId: 'install-1',
         pid: pid,
-        cwd: d.dir.path,
+        cwd: core.dir.path,
       );
       expect(s.harness, 'app');
       final again = await api.registerAppSession(
         installId: 'install-1',
         pid: pid,
-        cwd: d.dir.path,
+        cwd: core.dir.path,
       );
       expect(again.id, s.id, reason: 'the install ID finds the live row again');
 
@@ -89,9 +84,9 @@ void main() {
       expect(await api.readFiles(aid, 2), {'index.html': '<p>two</p>'});
       expect((await api.listArtifacts()).map((a) => a.id), contains(aid));
 
-      // The person comments and sends it, as the shell does (no token).
-      final tid = await d.viewerThread(aid, 2, 'make it blue');
-      await d.viewerSend(aid, tid);
+      // The person comments and sends it, as the shell does.
+      final tid = await _thread(api, aid, 2, 'make it blue');
+      await _send(api, aid, tid);
 
       // Sent and not yet taken: the next poll delivers it, so a restarted
       // worker leaves it alone.
@@ -205,21 +200,19 @@ void main() {
         ),
       );
     },
-    skip: bin == null ? 'CLAX_TEST_BIN is not set' : false,
-    // macOS assesses a new executable on its first run, which can take a while.
+    skip: RealCore.skip,
     timeout: const Timeout(Duration(minutes: 3)),
   );
 
   test(
     'queries, the owner thread calls, questions, the inbox and the stream',
     () async {
-      final d = await _Daemon.start(bin!);
-      final api = HttpClaxApi.loopback(() => d.endpoint, eventRetryDelay: (_) async {});
-      addTearDown(api.close);
+      final core = await RealCore.open();
+      final api = core.api(eventRetryDelay: (_) async {});
       final s = await api.registerAppSession(
         installId: 'install-1',
         pid: pid,
-        cwd: d.dir.path,
+        cwd: core.dir.path,
       );
       final b = (await api.createArtifact(
         PublishRequest(
@@ -274,7 +267,7 @@ void main() {
       );
 
       // The owner's thread calls.
-      final tid = await d.viewerThread(aid, 1, 'a plain note');
+      final tid = await _thread(api, aid, 1, 'a plain note');
       var t = await api.postOwnerComment(aid, tid, 'and another');
       expect(t.comments.map((c) => c.body), ['a plain note', 'and another']);
       expect(t.sentToAgent, isFalse);
@@ -396,20 +389,19 @@ void main() {
       await stream.close();
       await expectLater(stream.subscribe(['inbox']), throwsStateError);
     },
-    skip: bin == null ? 'CLAX_TEST_BIN is not set' : false,
+    skip: RealCore.skip,
     timeout: const Timeout(Duration(minutes: 3)),
   );
 
   test(
     'drafts: a hidden copy of the app that takes publishes and is deleted',
     () async {
-      final d = await _Daemon.start(bin!);
-      final api = HttpClaxApi.loopback(() => d.endpoint);
-      addTearDown(api.close);
+      final core = await RealCore.open();
+      final api = core.api();
       await api.registerAppSession(
         installId: 'install-1',
         pid: pid,
-        cwd: d.dir.path,
+        cwd: core.dir.path,
       );
       final aid = (await api.createArtifact(
         PublishRequest(
@@ -421,12 +413,6 @@ void main() {
       await api.batchDocs(aid, const [
         DocWrite(op: 'set', collection: 'runs', docId: 'r1', data: {'km': 5}),
       ]);
-      // A viewer's private document, which only that viewer reads or writes
-      // (the token neither): the copy leaves it out.
-      final viewer = await d.newViewer('V');
-      final private = 'data/users/${viewer.publicId}/prefs';
-      await d.viewerPutDoc(aid, private, {'dark': true}, viewer.cookie);
-      expect(await d.viewerGetDocStatus(aid, private, viewer.cookie), 200);
       final draft = await api.createDraft(
         of: aid,
         title: 'Runs',
@@ -436,7 +422,7 @@ void main() {
       expect(
         (draft.of, draft.version, draft.docsCopied, draft.docsTruncated),
         (aid, 1, 1, false),
-        reason: 'runs/r1 is copied; the private document is not',
+        reason: 'runs/r1 is copied',
       );
       expect((await api.listArtifacts()).map((a) => a.id), [aid]);
       expect((await api.listDrafts()).map((x) => x.id), [draft.id]);
@@ -471,21 +457,20 @@ void main() {
         throwsA(isA<ClaxApiError>().having((e) => e.isNotFound, '404', isTrue)),
       );
     },
-    skip: bin == null ? 'CLAX_TEST_BIN is not set' : false,
+    skip: RealCore.skip,
     timeout: const Timeout(Duration(minutes: 3)),
   );
 }
 
-void _entriesTest(String? bin) => test(
+void _entriesTest() => test(
   'file entries: bytes round-trip, the content hash, drafts and a delete',
   () async {
-    final d = await _Daemon.start(bin!, requireCredential: true);
-    final api = HttpClaxApi.loopback(() => d.endpoint);
-    addTearDown(api.close);
+    final core = await RealCore.open();
+    final api = core.api();
     await api.registerAppSession(
       installId: 'install-1',
       pid: pid,
-      cwd: d.dir.path,
+      cwd: core.dir.path,
     );
     final png = Uint8List.fromList([0x89, 0x50, 0x4e, 0x47, 0xff, 0x00, 0x0a]);
     final html = utf8.encode('<p>é</p>');
@@ -509,7 +494,7 @@ void _entriesTest(String? bin) => test(
     expect(
       v.contentSha256,
       _contentHash({'index.html': html, 'img/a.png': png}),
-      reason: "the daemon's content hash is the bundle formula",
+      reason: "the core's content hash is the bundle formula",
     );
 
     final draft = await api.createDraft(
@@ -542,7 +527,7 @@ void _entriesTest(String? bin) => test(
       throwsA(isA<ClaxApiError>().having((e) => e.isNotFound, '404', isTrue)),
     );
   },
-  skip: bin == null ? 'CLAX_TEST_BIN is not set' : false,
+  skip: RealCore.skip,
   timeout: const Timeout(Duration(minutes: 3)),
 );
 
@@ -559,288 +544,73 @@ String _contentHash(Map<String, List<int>> files) {
   return 'sha256:${_sha(utf8.encode(lines.toString()))}';
 }
 
-void _lockedTest(String? bin) => test(
-  'a daemon started as the app starts it serves the token holder alone',
-  () async {
-    final d = await _Daemon.start(bin!, requireCredential: true);
-    final api = HttpClaxApi.loopback(() => d.endpoint);
-    addTearDown(api.close);
-    await api.registerAppSession(
-      installId: 'install-1',
-      pid: pid,
-      cwd: d.dir.path,
-    );
-    final created = await api.createArtifact(
-      PublishRequest(title: 'Locked', files: {'index.html': '<p>one</p>'}),
-    );
-    expect(
-      (await api.listArtifacts()).map((a) => a.id),
-      contains(created.artifact.id),
-    );
-    final client = HttpClient();
-    addTearDown(() => client.close(force: true));
-    Future<int> status(String path, {String? cookie}) async {
-      final req = await client.getUrl(d.endpoint.base.replace(path: path));
-      req.headers.set('sec-fetch-site', 'same-origin');
-      if (cookie != null) req.headers.set('cookie', cookie);
-      final res = await req.close();
-      await res.drain<void>();
-      return res.statusCode;
-    }
+/// Creates a thread on [aid] as the owner, through the shell's multipart
+/// route; returns its ID.
+Future<String> _thread(
+  HttpClaxApi api,
+  String aid,
+  int version,
+  String body,
+) async {
+  const boundary = 'clax-test-boundary';
+  final parts = {
+    'anchor': jsonEncode({
+      'kind': 'element',
+      'selector': 'body > p',
+      'quote': 'two',
+      'prefix': '',
+      'suffix': '',
+      'html_hash': 'sha256:00',
+      'rect': null,
+      'custom_name': null,
+    }),
+    'body': body,
+    'version': '$version',
+  };
+  final text = StringBuffer();
+  for (final e in parts.entries) {
+    text
+      ..write('--$boundary\r\n')
+      ..write('content-disposition: form-data; name="${e.key}"\r\n\r\n')
+      ..write('${e.value}\r\n');
+  }
+  text.write('--$boundary--\r\n');
+  final j = await _owner(
+    api,
+    'POST',
+    '/api/artifacts/$aid/threads',
+    utf8.encode(text.toString()),
+    'multipart/form-data; boundary=$boundary',
+  );
+  return (j['thread'] as Map)['id'] as String;
+}
 
-    final aid = created.artifact.id;
-    expect(await status('/api/token'), 401);
-    expect(await status('/api/artifacts/$aid'), 401);
-    final c = keyCookie(d.endpoint.base, d.endpoint.token);
-    expect(await status('/api/token', cookie: '${c.name}=${c.value}'), 200);
-    expect(await status('/a/$aid', cookie: '${c.name}=${c.value}'), 200);
-  },
-  skip: bin == null ? 'CLAX_TEST_BIN is not set' : false,
-  timeout: const Timeout(Duration(minutes: 3)),
+/// Sends thread [tid] to the agent, as the shell's Send does.
+Future<void> _send(HttpClaxApi api, String aid, String tid) => _owner(
+  api,
+  'POST',
+  '/api/artifacts/$aid/threads/$tid/send',
+  Uint8List(0),
+  null,
 );
 
-/// A daemon this test started, stopped by its PID.
-class _Daemon {
-  _Daemon(this.dir, this.process, this.endpoint);
-
-  final Directory dir;
-  final Process process;
-  final DaemonEndpoint endpoint;
-
-  static Future<_Daemon> start(
-    String bin, {
-    bool requireCredential = false,
-  }) async {
-    final scratch = scratchRoot();
-    final dir = scratch.createTempSync('clax-api-real-');
-    addTearDown(() {
-      if (dir.existsSync()) dir.deleteSync(recursive: true);
-    });
-    final home = Directory('${dir.path}/clax-home')..createSync();
-    final probe = await ServerSocket.bind(InternetAddress.loopbackIPv4, 0);
-    final port = probe.port;
-    await probe.close();
-    final p = await Process.start(
-      bin,
-      [
-        '--port',
-        '$port',
-        'serve',
-        '--foreground',
-        if (requireCredential) '--require-credential',
-      ],
-      environment: {
-        'CLAX_HOME': home.path,
-        'HOME': dir.path,
-        'TMPDIR': dir.path,
-        'PATH': '/usr/bin:/bin',
-        'RUST_LOG': 'warn',
-      },
-      includeParentEnvironment: false,
-      workingDirectory: dir.path,
-    );
-    // Registered before anything else can fail, and run on a timeout too.
-    addTearDown(() => _stop(p));
-    unawaited(p.stdout.drain<void>());
-    final stderr = StringBuffer();
-    p.stderr.transform(utf8.decoder).listen(stderr.write);
-    var exited = false;
-    unawaited(p.exitCode.then((_) => exited = true));
-    // Up once daemon.json names this process and /healthz answers.
-    final file = File('${home.path}/daemon.json');
-    final client = HttpClient();
-    final deadline = DateTime.now().add(const Duration(seconds: 90));
-    try {
-      while (true) {
-        if (exited) throw StateError('clax exited before it was up: $stderr');
-        if (DateTime.now().isAfter(deadline)) {
-          p.kill(ProcessSignal.sigkill);
-          throw StateError('clax was not up within 90 s: $stderr');
-        }
-        if (file.existsSync()) {
-          try {
-            final j =
-                jsonDecode(file.readAsStringSync()) as Map<String, Object?>;
-            if (j['pid'] == p.pid) {
-              final req = await client.getUrl(
-                Uri.parse('http://127.0.0.1:$port/healthz'),
-              );
-              final res = await req.close();
-              await res.drain<void>();
-              if (res.statusCode == 200) {
-                return _Daemon(
-                  dir,
-                  p,
-                  DaemonEndpoint(
-                    base: Uri.parse('http://127.0.0.1:$port'),
-                    token: j['token'] as String,
-                    pid: p.pid,
-                    port: port,
-                  ),
-                );
-              }
-            }
-          } on FormatException catch (_) {
-            // Written but not yet complete.
-          } on IOException catch (_) {
-            // Not listening yet, or the connection dropped mid-answer.
-          }
-        }
-        await Future<void>.delayed(const Duration(milliseconds: 50));
-      }
-    } on Object {
-      p.kill(ProcessSignal.sigkill);
-      rethrow;
-    } finally {
-      client.close(force: true);
-    }
-  }
-
-  /// Creates a thread on [aid] as a viewer, through the shell's multipart
-  /// route; returns its ID.
-  Future<String> viewerThread(String aid, int version, String body) async {
-    const boundary = 'clax-test-boundary';
-    final parts = {
-      'anchor': jsonEncode({
-        'kind': 'element',
-        'selector': 'body > p',
-        'quote': 'two',
-        'prefix': '',
-        'suffix': '',
-        'html_hash': 'sha256:00',
-        'rect': null,
-        'custom_name': null,
-      }),
-      'body': body,
-      'version': '$version',
-    };
-    final text = StringBuffer();
-    for (final e in parts.entries) {
-      text
-        ..write('--$boundary\r\n')
-        ..write('content-disposition: form-data; name="${e.key}"\r\n\r\n')
-        ..write('${e.value}\r\n');
-    }
-    text.write('--$boundary--\r\n');
-    final j = await _viewer(
-      'POST',
-      '/api/artifacts/$aid/threads',
-      utf8.encode(text.toString()),
-      'multipart/form-data; boundary=$boundary',
-    );
-    return (j['thread'] as Map)['id'] as String;
-  }
-
-  /// A new named viewer: its cookie and public ID.
-  Future<({String cookie, String publicId})> newViewer(String name) async {
-    final client = HttpClient();
-    try {
-      final req = await client.getUrl(
-        endpoint.base.replace(path: '/api/viewers/me'),
-      );
-      final res = await req.close();
-      await res.drain<void>();
-      final cookie = res.cookies.firstWhere((c) => c.name == 'clax_viewer');
-      final put = await client.openUrl(
-        'PUT',
-        endpoint.base.replace(path: '/api/viewers/me'),
-      );
-      put.cookies.add(cookie);
-      put.headers.contentType = ContentType.json;
-      put.write(jsonEncode({'display_name': name}));
-      final named = await put.close();
-      final j = jsonDecode(await utf8.decodeStream(named)) as Map;
-      expect(named.statusCode, 200, reason: '$j');
-      return (
-        cookie: cookie.value,
-        publicId: (j['viewer'] as Map)['public_id'] as String,
-      );
-    } finally {
-      client.close(force: true);
-    }
-  }
-
-  /// Writes document [path] of [aid] as the viewer of [cookie].
-  Future<void> viewerPutDoc(
-    String aid,
-    String path,
-    Map<String, Object?> data,
-    String cookie,
-  ) async {
-    final client = HttpClient();
-    try {
-      final req = await client.openUrl(
-        'PUT',
-        endpoint.base.replace(path: '/api/artifacts/$aid/docs/$path'),
-      );
-      req.cookies.add(Cookie('clax_viewer', cookie));
-      req.headers.contentType = ContentType.json;
-      req.write(jsonEncode({'data': data, 'lww': true}));
-      final res = await req.close();
-      final text = await utf8.decodeStream(res);
-      expect(res.statusCode, 200, reason: 'PUT $path: $text');
-    } finally {
-      client.close(force: true);
-    }
-  }
-
-  /// The status of reading document [path] of [aid] as the viewer.
-  Future<int> viewerGetDocStatus(String aid, String path, String cookie) async {
-    final client = HttpClient();
-    try {
-      final req = await client.getUrl(
-        endpoint.base.replace(path: '/api/artifacts/$aid/docs/$path'),
-      );
-      req.cookies.add(Cookie('clax_viewer', cookie));
-      final res = await req.close();
-      await res.drain<void>();
-      return res.statusCode;
-    } finally {
-      client.close(force: true);
-    }
-  }
-
-  /// Sends thread [tid] to the agent, as the shell's Send does.
-  Future<void> viewerSend(String aid, String tid) =>
-      _viewer('POST', '/api/artifacts/$aid/threads/$tid/send', const [], null);
-
-  Future<Map<String, Object?>> _viewer(
-    String method,
-    String path,
-    List<int> body,
-    String? type,
-  ) async {
-    final client = HttpClient();
-    try {
-      final req = await client.openUrl(
-        method,
-        endpoint.base.replace(path: path),
-      );
-      if (type != null) req.headers.set(HttpHeaders.contentTypeHeader, type);
-      req.contentLength = body.length;
-      req.add(body);
-      final res = await req.close();
-      final text = await utf8.decodeStream(res);
-      expect(
-        res.statusCode,
-        inInclusiveRange(200, 299),
-        reason: '$method $path: $text',
-      );
-      return (jsonDecode(text) as Map).cast();
-    } finally {
-      client.close(force: true);
-    }
-  }
-
-  /// SIGTERM, then SIGKILL when [p] has not exited within 10 s.
-  static Future<void> _stop(Process p) async {
-    p.kill(ProcessSignal.sigterm);
-    await p.exitCode.timeout(
-      const Duration(seconds: 10),
-      onTimeout: () {
-        p.kill(ProcessSignal.sigkill);
-        return p.exitCode;
-      },
-    );
-  }
+/// [method] [path] with [body] as the owner, through the API's transport;
+/// its JSON answer, which must be 2xx.
+Future<Map<String, Object?>> _owner(
+  HttpClaxApi api,
+  String method,
+  String path,
+  Uint8List body,
+  String? type,
+) async {
+  final r = await api.transport.send(
+    method,
+    path,
+    headers: {'content-type': ?type},
+    body: body,
+    timeout: const Duration(seconds: 35),
+  );
+  final text = utf8.decode(r.body);
+  expect(r.status, inInclusiveRange(200, 299), reason: '$method $path: $text');
+  return (jsonDecode(text) as Map).cast();
 }

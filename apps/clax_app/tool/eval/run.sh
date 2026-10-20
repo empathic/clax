@@ -1,7 +1,8 @@
 #!/usr/bin/env bash
 # Runs the live build eval on macOS: each prompt of tool/eval/prompts.json
 # (or --prompts a,b) built by the app's own agent on the Messages API,
-# against a scratch daemon, with results in target/flutter-app/eval/<run>/.
+# on the embedded core with a scratch home, with results in
+# target/flutter-app/eval/<run>/.
 #
 #   ANTHROPIC_API_KEY=... apps/clax_app/tool/eval/run.sh [--model ID] [--prompts a,b] [--max-spend USD] [--run NAME]
 #
@@ -28,12 +29,12 @@ if [ -z "${ANTHROPIC_API_KEY:-}" ]; then
     exit 2
 fi
 
-bin="$("$app/tool/test-bin.sh")"
+# The core the app bundles (the Runner's "Embed core" phase copies it).
+"$repo/scripts/build-app-clax.sh" macos --debug
 args_json="$(python3 -c 'import json, sys; print(json.dumps(sys.argv[1:]))' "$@")"
 mkdir -p "$repo/target/flutter-app/eval"
 cd "$app"
 CLAX_EVAL_ARGS="$args_json" \
-CLAX_EVAL_BIN="$bin" \
 CLAX_EVAL_APP_DIR="$app" \
 CLAX_EVAL_OUT_ROOT="$repo/target/flutter-app/eval" \
     "$flutter" run -d macos --debug -t tool/eval/live_build.dart

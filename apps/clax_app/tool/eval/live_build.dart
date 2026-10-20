@@ -1,23 +1,22 @@
 // The live build eval, as a macOS app: the app's own agent (the Messages
 // API runner over `MessagesApiBackend`, `AgentLoop`, `PlanStore`, the
 // worker's continue runs, the kit, `render` with tests, `finish`, the icon)
-// against a real daemon on a scratch home, with real WebViews for its
-// renders and for the published app's screenshots. Live calls spend money:
+// against the embedded core on a scratch home, with real WebViews on the
+// app's scheme for its renders and for the published app's screenshots. Live calls spend money:
 // run it only through `tool/eval/run.sh`, which checks the spend guard
 // first. Never part of `flutter test` or the gates.
 //
 // Inputs, from the environment (run.sh sets them):
 //   ANTHROPIC_API_KEY    the key, for the agent and the apps' `sample()`;
 //   CLAX_EVAL_ARGS       the arguments, a JSON list (see EvalConfig.usage);
-//   CLAX_EVAL_BIN        the `clax` binary to run the daemon from;
 //   CLAX_EVAL_APP_DIR    apps/clax_app, for the default prompt file;
 //   CLAX_EVAL_OUT_ROOT   where runs go (<repo>/target/flutter-app/eval).
 //
-// The daemon's home and the app's support files go under the run's
-// directory; the daemon is stopped by the supervisor that started it (by
-// its PID) when the run ends, and the process exits 0 when every build was
-// run (whatever each build's ending), 2 when the run was refused, 1 on a
-// harness failure.
+// The core is the app bundle's (`scripts/build-app-clax.sh macos`, which
+// run.sh runs first). Its home and the app's support files go under the
+// run's directory; the core is closed when the run ends, and the process
+// exits 0 when every build was run (whatever each build's ending), 2 when
+// the run was refused, 1 on a harness failure.
 import 'dart:async';
 import 'dart:convert';
 import 'dart:io';
@@ -30,12 +29,11 @@ import 'package:clax_app/agent/prompt.dart';
 import 'package:clax_app/agent/runner/messages_runner.dart';
 import 'package:clax_app/agent/worker.dart';
 import 'package:clax_app/clax/http_api.dart';
+import 'package:clax_app/core/core_client.dart';
+import 'package:clax_app/core/core_host.dart';
+import 'package:clax_app/core/core_transport.dart';
+import 'package:clax_app/core/origins.dart';
 import 'package:clax_app/platform/clock.dart';
-import 'package:clax_app/daemon/exe_locator.dart';
-import 'package:clax_app/daemon/health.dart';
-import 'package:clax_app/daemon/ports.dart';
-import 'package:clax_app/daemon/process.dart';
-import 'package:clax_app/daemon/supervisor.dart';
 import 'package:clax_app/ui/app_surface.dart';
 import 'package:clax_app/ui/inspector_surface.dart';
 import 'package:clax_app/ui/webview_surface.dart';
@@ -66,7 +64,6 @@ Future<void> main() async {
     if ((env['ANTHROPIC_API_KEY'] ?? '').isEmpty) {
       throw const EvalConfigError('ANTHROPIC_API_KEY is not set');
     }
-    _need(env, 'CLAX_EVAL_BIN');
   } on EvalConfigError catch (e) {
     stderr.writeln('eval: $e\n\n${EvalConfig.usage}');
     exit(2);
@@ -84,15 +81,24 @@ Future<void> main() async {
       .writeAsStringSync(const JsonEncoder.withIndent('  ').convert(config));
   say('eval ${config.runName}: ${jsonEncode(config.toJson())}');
 
-  final agentEyes = WebViewInspector(
-    surface: (base) => WebViewAppSurface(base: base),
+  final support = Directory('${out.path}/support')..createSync();
+  final origins = AppOrigins.forPlatform();
+  final shell = Uri.parse(origins.shell);
+  final core = CoreHost(
+    home: '${support.path}/clax-home',
+    supportDir: support.path,
+    origins: origins,
+    apiKey: () async => key,
+    log: (l) => say('core: $l'),
+  )..open();
+  // Each inspector's surface is on the shell's origin, as the app's is.
+  WebViewInspector newEyes() => WebViewInspector(
+    surface: (_) =>
+        WebViewAppSurface(base: shell, core: core.calls, origins: origins),
   );
-  final phoneEyes = WebViewInspector(
-    surface: (base) => WebViewAppSurface(base: base),
-  );
-  final desktopEyes = WebViewInspector(
-    surface: (base) => WebViewAppSurface(base: base),
-  );
+  final agentEyes = newEyes();
+  final phoneEyes = newEyes();
+  final desktopEyes = newEyes();
   runApp(
     _Host([
       (agentEyes, phoneSize),
@@ -101,30 +107,13 @@ Future<void> main() async {
     ]),
   );
 
-  final support = Directory('${out.path}/support')..createSync();
-  final cache = Directory('${out.path}/cache')..createSync();
-  final home = Directory('${out.path}/clax-home')..createSync();
-  final supervisor = DaemonSupervisor(
-    exe: FixedExeLocator(env['CLAX_EVAL_BIN']!),
-    home: home.path,
-    supportDir: support.path,
-    cacheDir: cache.path,
-    starter: const IoProcessStarter(),
-    ports: const LoopbackPortPicker(),
-    health: HttpHealthProbe(),
-    pids: IoPidKiller(),
-    apiKey: () async => key,
-  );
   var code = 0;
   FeedbackWorker? worker;
   try {
-    final endpoint = await supervisor.ensureUp();
-    say('daemon up on ${endpoint.base} (pid ${endpoint.pid})');
-    DaemonEndpoint current() => switch (supervisor.state) {
-      Up(:final endpoint) => endpoint,
-      _ => endpoint,
-    };
-    final api = HttpClaxApi.loopback(current);
+    final opened = await _settled(core);
+    if (opened is! CoreReady) throw StateError('the core did not open: $opened');
+    say('core ready on ${core.home}');
+    final api = HttpClaxApi.over(CoreTransport(core.calls));
     final backend = MessagesApiBackend(apiKey: () async => key, log: say);
     final placeholder = EvalLog(const SystemClock());
     final timings = EvalTimings(placeholder);
@@ -137,7 +126,7 @@ Future<void> main() async {
       model: () => config.model,
       timings: timings,
       inspector: eyes,
-      baseUrl: () => current().base,
+      baseUrl: () => shell,
       plans: plans,
       log: (l) => say('agent: $l'),
     );
@@ -153,7 +142,7 @@ Future<void> main() async {
       if (i > 300) throw StateError('the worker never registered a session');
       await Future<void>.delayed(const Duration(milliseconds: 100));
     }
-    await agentEyes.warm(endpoint.base);
+    await agentEyes.warm(shell);
     final eval = BuildEval(
       loop: loop,
       worker: w,
@@ -161,8 +150,8 @@ Future<void> main() async {
       timings: timings,
       inspector: eyes,
       outDir: out.path,
-      shots: _Shots({'phone': phoneEyes, 'desktop': desktopEyes}, current),
-      grants: config.grant ? HttpGrants(current) : null,
+      shots: _Shots({'phone': phoneEyes, 'desktop': desktopEyes}, shell),
+      grants: config.grant ? ApiGrants(api.transport) : null,
       maxContinueRuns: config.maxContinueRuns,
       maxBuildTime: config.maxBuildTime,
       say: say,
@@ -179,11 +168,31 @@ Future<void> main() async {
     code = 1;
   } finally {
     await worker?.stop();
-    await supervisor.stop();
+    core.close();
     await logFile.flush();
     await logFile.close();
   }
   exit(code);
+}
+
+/// The core's state once it is ready, has failed or has closed.
+Future<CoreOpen> _settled(CoreHost core) async {
+  final done = Completer<CoreOpen>();
+  void check() {
+    final s = core.state.value;
+    if ((s is CoreReady || s is CoreFailed || s is CoreClosed) &&
+        !done.isCompleted) {
+      done.complete(s);
+    }
+  }
+
+  core.state.addListener(check);
+  check();
+  try {
+    return await done.future;
+  } finally {
+    core.state.removeListener(check);
+  }
 }
 
 String _need(Map<String, String> env, String name) {
@@ -225,10 +234,12 @@ class _Host extends StatelessWidget {
 
 /// The published app's live version in the inspect view, once per size.
 class _Shots implements AppShots {
-  _Shots(this.eyes, this.endpoint);
+  _Shots(this.eyes, this.shell);
 
   final Map<String, Inspector> eyes;
-  final DaemonEndpoint Function() endpoint;
+
+  /// The shell's origin, which serves the app's inspect view.
+  final Uri shell;
 
   @override
   Future<({Map<String, Inspection> shots, Map<String, String> errors})> capture(
@@ -236,7 +247,7 @@ class _Shots implements AppShots {
   ) async {
     final shots = <String, Inspection>{};
     final errors = <String, String>{};
-    final url = endpoint().base.replace(
+    final url = shell.replace(
       path: '/a/$aid',
       queryParameters: const {'app': '1', 'inspect': '1'},
     );

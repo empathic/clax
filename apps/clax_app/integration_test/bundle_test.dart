@@ -157,7 +157,7 @@ void main() {
       for (final d in (await BundleReader.read(v1.bytes)).seed!) d.path: d.data,
     }, _v1Notes);
 
-    // --- Install it as a second app; the daemon's content hash matches.
+    // --- Install it as a second app; the core's content hash matches.
     final opened1 = await _wait(tester, 'open v1', installer.open(v1.bytes));
     expect(opened1.decision.answer, TrustAnswer.install);
     expect(opened1.fromSelf, isFalse);
@@ -345,7 +345,7 @@ void main() {
     expect((await recipientStore.entry(rid))!.updatesStopped, isTrue);
     expect(await recipientApi.listArtifacts(), hasLength(2));
 
-    // Unmount the app: its worker stops before the daemon does.
+    // Unmount the app: its worker stops before the core closes.
     await tester.pumpWidget(const SizedBox());
   }, timeout: const Timeout(Duration(minutes: 10)));
 }

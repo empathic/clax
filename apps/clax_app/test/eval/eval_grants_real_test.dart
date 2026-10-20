@@ -1,26 +1,22 @@
-// The live build eval's grants (tool/eval/build_eval.dart, HttpGrants)
-// against the real debug `clax` named by `CLAX_TEST_BIN`: the published app
-// gets what its consent prompts would give it, before its screenshots.
+// The live build eval's grants (tool/eval/build_eval.dart, ApiGrants)
+// against the real embedded core (the library `CLAX_EMBED_LIB` names): the
+// published app gets what its consent prompts would give it, before its
+// screenshots.
 import 'dart:io';
 
 import 'package:clax_app/clax/api.dart';
-import 'package:clax_app/clax/http_api.dart';
 import 'package:flutter_test/flutter_test.dart';
 
 import '../../tool/eval/build_eval.dart';
-import '../support/real_daemon.dart';
-import '../support/paths.dart';
+import '../support/real_core.dart';
 
 void main() {
   group('grants', () {
-    final bin = claxTestBin();
     test(
-      'the published app gets its declared net hosts and AI from the '
-      'daemon',
+      'the published app gets its declared net hosts and AI from the core',
       () async {
-        final d = await RealDaemon.start(bin!);
-        final api = HttpClaxApi.loopback(() => d.endpoint);
-        addTearDown(api.close);
+        final core = await RealCore.open();
+        final api = core.api();
         await api.registerAppSession(installId: 'eval', pid: pid);
         final made = await api.createArtifact(
           PublishRequest(
@@ -35,14 +31,14 @@ void main() {
           ),
         );
         final aid = made.artifact.id;
-        final granted = await HttpGrants(() => d.endpoint)
+        final granted = await ApiGrants(api.transport)
             .grant(aid, made.artifact.capabilities);
         expect(granted, ['net (api.frankfurter.app)', 'sample']);
         final net = await api.netGrants(aid);
         expect([for (final g in net.granted) g.host], ['api.frankfurter.app']);
         expect((await api.sampleGrant(aid)).granted, isTrue);
       },
-      skip: bin == null ? 'CLAX_TEST_BIN is not set' : false,
+      skip: RealCore.skip,
       timeout: const Timeout(Duration(minutes: 3)),
     );
   });

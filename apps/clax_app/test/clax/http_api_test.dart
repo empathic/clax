@@ -1,15 +1,15 @@
+import 'dart:async';
 import 'dart:convert';
-import 'dart:io';
 import 'dart:typed_data';
 
 import 'package:clax_app/clax/api.dart';
 import 'package:clax_app/clax/http_api.dart';
 import 'package:clax_app/clax/sse.dart';
 import 'package:clax_app/clax/transport.dart';
-import 'package:clax_app/daemon/supervisor.dart' show DaemonEndpoint;
+import 'package:clax_app/core/frame.dart';
 import 'package:flutter_test/flutter_test.dart';
 
-import '../support/scripted_server.dart';
+import '../support/scripted_core.dart';
 
 const aid = '7q3k9mzx2b4t';
 const sid = '01J9SESSION0000000000000000';
@@ -214,27 +214,15 @@ class _ClosingTransport implements ClaxTransport {
 }
 
 void main() {
-  late ScriptedServer server;
+  late ScriptedCore server;
   late HttpClaxApi api;
-  var token = 'tok-1';
 
-  setUp(() async {
-    server = await ScriptedServer.start();
-    token = 'tok-1';
-    api = HttpClaxApi.loopback(
-      () => DaemonEndpoint(
-        base: server.base,
-        token: token,
-        pid: 1,
-        port: server.base.port,
-      ),
-    );
+  setUp(() {
+    server = ScriptedCore();
+    api = server.api();
   });
 
-  tearDown(() async {
-    api.close();
-    await server.close();
-  });
+  tearDown(() => api.close());
 
   Recorded only(String method, String path) {
     final rs = server.to(method, path);
@@ -243,7 +231,12 @@ void main() {
   }
 
   void expectOwnerCall(Recorded r) {
-    expect(r.headers['authorization'], 'Bearer tok-1');
+    expect(r.as, CallAs.owner);
+    expect(
+      r.headers.containsKey('authorization'),
+      isFalse,
+      reason: 'the core gives an owner call its token',
+    );
     expect(
       r.headers.containsKey('x-clax-session'),
       isFalse,
@@ -252,13 +245,14 @@ void main() {
   }
 
   void expectAgentCall(Recorded r) {
-    expect(r.headers['authorization'], 'Bearer tok-1');
+    expect(r.as, CallAs.owner);
+    expect(r.headers.containsKey('authorization'), isFalse);
     expect(r.headers['x-clax-session'], sid);
   }
 
   group('reads', () {
     test(
-      'listArtifacts gets /api/artifacts with the token and no session',
+      'listArtifacts gets /api/artifacts as the owner, naming no session',
       () async {
         api.sessionId = sid;
         server.json('GET', '/api/artifacts', 200, {
@@ -352,7 +346,7 @@ void main() {
       }
     });
 
-    test('readFiles throws the daemon error when a file is missing', () async {
+    test('readFiles throws the API error when a file is missing', () async {
       server.json('GET', '/api/artifacts/$aid/versions/1', 200, {
         'version': versionJson(1, {'index.html': meta('text/html', 1)}),
       });
@@ -386,7 +380,7 @@ void main() {
     });
 
     test(
-      'clip answers null for any 404, since the daemon names no cause',
+      'clip answers null for any 404, since the API names no cause',
       () async {
         server.json(
           'GET',
@@ -435,7 +429,7 @@ void main() {
     );
 
     test(
-      'allThreads gets /api/threads with the token, open threads unless asked',
+      'allThreads gets /api/threads as the owner, open threads unless asked',
       () async {
         server.json('GET', '/api/threads', 200, {
           'artifacts': [
@@ -674,20 +668,12 @@ void main() {
           const Duration(seconds: 20),
           reason: 'a 50 s wait has a 70 s limit',
         );
-        final quick = HttpClaxApi.loopback(
-          () => DaemonEndpoint(
-            base: server.base,
-            token: token,
-            pid: 1,
-            port: server.base.port,
-          ),
-          pollSlack: Duration.zero,
-        );
-        // The server never answers.
+        final quick = server.api(pollSlack: Duration.zero);
+        // The core never answers.
         server.handle(
           'GET',
           '/api/sessions/$sid/feedback',
-          (_, res) => res.done,
+          (_) => Completer<CoreResponse>().future,
         );
         await expectLater(
           quick.pollFeedback(sid, wait: Duration.zero),
@@ -985,7 +971,7 @@ void main() {
       );
     });
 
-    test('a refused batch carries the daemon code', () async {
+    test('a refused batch carries the API error code', () async {
       server.json('POST', '/api/artifacts/$aid/docs:batch', 400, {
         'error': {
           'code': 'if_version_required',
@@ -1041,41 +1027,19 @@ void main() {
       expect(t.closed, isTrue);
     });
 
-    test('each request reads the endpoint afresh', () async {
-      server.json('GET', '/api/artifacts', 200, {'artifacts': <Object?>[]});
-      await api.listArtifacts();
-      token = 'tok-2';
-      await api.listArtifacts();
-      expect(server.requests.map((r) => r.headers['authorization']), [
-        'Bearer tok-1',
-        'Bearer tok-2',
-      ]);
-    });
-
-    test('a daemon that is not listening is unreachable, the reason in the body', () async {
-      final s = await ServerSocket.bind(InternetAddress.loopbackIPv4, 0);
-      final port = s.port;
-      await s.close();
-      final dead = HttpClaxApi.loopback(
-        () => DaemonEndpoint(
-          base: Uri.parse('http://127.0.0.1:$port'),
-          token: 't',
-          pid: 1,
-          port: port,
-        ),
-      );
+    test('a closed core is unreachable, the reason in the body', () async {
+      server.core.close();
       await expectLater(
-        dead.listArtifacts(),
+        api.listArtifacts(),
         throwsA(
           isA<ClaxApiError>()
               .having((e) => e.code, 'code', ClaxApiError.unreachable)
               .having((e) => e.status, 'status', 0)
               .having((e) => e.unanswered, 'unanswered', isTrue)
-              .having((e) => e.body['reason'], 'reason', 'daemon_unreachable')
-              .having((e) => e.message, 'message', contains('daemon_unreachable')),
+              .having((e) => e.body['reason'], 'reason', 'core_closed')
+              .having((e) => e.message, 'message', contains('core_closed')),
         ),
       );
-      dead.close();
     });
 
     test('an answer that is not the expected JSON is bad_response', () async {
@@ -1103,7 +1067,7 @@ void main() {
       );
     });
 
-    test('an error without the daemon shape keeps its status', () async {
+    test('an error without the API error shape keeps its status', () async {
       server.bytes(
         'GET',
         '/api/artifacts',
@@ -1124,7 +1088,7 @@ void main() {
 
   group('drafts', () {
     test(
-      'createDraft posts the files and the app with the token only',
+      'createDraft posts the files and the app as the owner only',
       () async {
         api.sessionId = sid;
         server.json('POST', '/api/drafts', 201, {
@@ -1394,7 +1358,7 @@ void main() {
 
   group('the owner', () {
     test(
-      'ownerPublicId reads the owner from viewers/me with the token',
+      'ownerPublicId reads the owner from viewers/me as the owner',
       () async {
         server.json('GET', '/api/viewers/me', 200, {
           'viewer': {
@@ -1783,7 +1747,7 @@ void main() {
   });
 
   group('question answers', () {
-    test('toJson never writes selected: null, which the daemon refuses', () {
+    test('toJson never writes selected: null, which the API refuses', () {
       expect(const QuestionAnswer(text: 'other').toJson(), {
         'selected': <String>[],
         'text': 'other',
@@ -1981,10 +1945,11 @@ void main() {
       'deleteArtifact deletes as the owner; an unknown one is 404',
       () async {
         api.sessionId = sid;
-        server.handle('DELETE', '/api/artifacts/$aid', (_, res) async {
-          res.statusCode = 204;
-          await res.close();
-        });
+        server.handle(
+          'DELETE',
+          '/api/artifacts/$aid',
+          (_) => CoreResponse(204, const [], Uint8List(0)),
+        );
         server.json('DELETE', '/api/artifacts/zzzzzzzzzzzz', 404, {
           'error': {'code': 'not_found', 'message': 'not found'},
         });

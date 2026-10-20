@@ -1,13 +1,13 @@
 import 'dart:async';
 import 'dart:convert';
-import 'dart:io';
 
 import 'package:clax_app/clax/api.dart';
 import 'package:clax_app/clax/http_api.dart';
-import 'package:clax_app/daemon/supervisor.dart' show DaemonEndpoint;
+import 'package:clax_app/core/frame.dart';
 import 'package:flutter_test/flutter_test.dart';
 
-import '../support/scripted_server.dart';
+import '../support/fake_core.dart';
+import '../support/scripted_core.dart';
 
 final s1 = 'a' * 32;
 final s2 = 'b' * 32;
@@ -29,40 +29,23 @@ String ready(
 String ev(String? id, String type, Map<String, Object?> data) =>
     '${id == null ? '' : 'id: $id\n'}event: $type\ndata: ${jsonEncode(data)}\n\n';
 
-/// One `/api/stream` connection: [script] writes its blocks, waiting on
-/// whatever it likes between them, and the connection closes when it
-/// returns.
-ScriptHandler conn(
+/// One subscription to the core's event stream: [script] writes its
+/// blocks, waiting on whatever it likes between them, and the core ends
+/// the stream (`stream_ended`) when it returns.
+SubscriptionScript conn(
   Future<void> Function(Future<void> Function(String) write) script,
-) => (_, res) async {
-  res.statusCode = 200;
-  res.headers.contentType = ContentType('text', 'event-stream');
-  res.bufferOutput = false;
-  await script((text) async {
-    res.write(text);
-    await res.flush();
-  });
-  await res.close();
-};
+) => (s) => script((text) async => s.push(text));
 
 void main() {
-  late ScriptedServer server;
+  late ScriptedCore server;
   late HttpClaxApi api;
   late ClaxStream stream;
   late Completer<void> hold;
 
-  setUp(() async {
-    server = await ScriptedServer.start();
+  setUp(() {
+    server = ScriptedCore();
     hold = Completer<void>();
-    api = HttpClaxApi.loopback(
-      () => DaemonEndpoint(
-        base: server.base,
-        token: 'tok',
-        pid: 1,
-        port: server.base.port,
-      ),
-      eventRetryDelay: (_) async {},
-    );
+    api = server.api(eventRetryDelay: (_) async {});
     stream = api.stream();
   });
 
@@ -70,17 +53,21 @@ void main() {
     if (!hold.isCompleted) hold.complete();
     await stream.close();
     api.close();
-    await server.close();
   });
+
+  /// Has each subscription to the core's event stream run [script], in
+  /// order, the last one repeating.
+  void onSubscribe(SubscriptionScript script) => server.core.script(script);
 
   /// Answers each `POST /api/stream/<id>` with the topics it subscribed.
   void acceptSubscribes(String id, {Completer<void>? posted}) =>
-      server.handle('POST', '/api/stream/$id', (r, res) async {
+      server.handle('POST', '/api/stream/$id', (r) {
         final topics = (r.json! as Map)['subscribe'];
-        res.headers.contentType = ContentType.json;
-        res.write(jsonEncode({'seq': 50, 'topics': topics}));
-        await res.close();
-        if (posted != null && !posted.isCompleted) posted.complete();
+        // After the answer is made, as a server answers and then goes on.
+        Future(() {
+          if (posted != null && !posted.isCompleted) posted.complete();
+        });
+        return FakeCore.json({'seq': 50, 'topics': topics});
       });
 
   List<Object?> subscribeBodies(String id) => [
@@ -88,11 +75,9 @@ void main() {
   ];
 
   test(
-    'subscribe waits for ready, then posts the topics with the token',
+    'subscribe waits for ready, then posts the topics as the owner',
     () async {
-      server.handle(
-        'GET',
-        '/api/stream',
+      onSubscribe(
         conn((write) async {
           await write(ready(s1, 41));
           await hold.future;
@@ -100,12 +85,9 @@ void main() {
       );
       acceptSubscribes(s1);
       await stream.subscribe(['inbox', 'questions']);
-      final open = server.to('GET', '/api/stream').single;
-      expect(open.headers['authorization'], 'Bearer tok');
-      expect(open.headers['accept'], 'text/event-stream');
-      expect(open.headers.containsKey('last-event-id'), isFalse);
+      expect(server.core.resumes, [null], reason: 'one subscription, resuming nothing');
       final post = server.to('POST', '/api/stream/$s1').single;
-      expect(post.headers['authorization'], 'Bearer tok');
+      expect(post.as, CallAs.owner);
       expect(post.json, {
         'subscribe': ['inbox', 'questions'],
       });
@@ -113,12 +95,10 @@ void main() {
   );
 
   test(
-    "events carry their topic and ID, and the daemon's resync passes through",
+    "events carry their topic and ID, and the core's resync passes through",
     () async {
       final subscribed = Completer<void>();
-      server.handle(
-        'GET',
-        '/api/stream',
+      onSubscribe(
         conn((write) async {
           await write(ready(s1, 41));
           await subscribed.future;
@@ -157,18 +137,14 @@ void main() {
 
   test('a dropped connection resumes with the last event ID, without subscribing again', () async {
     final subscribed = Completer<void>();
-    server.handle(
-      'GET',
-      '/api/stream',
+    onSubscribe(
       conn((write) async {
         await write(ready(s1, 41));
         await subscribed.future;
         await write(ev('$s1:43', 'inbox_item', {'topic': 'inbox'}));
       }),
     );
-    server.handle(
-      'GET',
-      '/api/stream',
+    onSubscribe(
       conn((write) async {
         await write(ready(s1, 60, resumed: true, topics: ['inbox']));
         await write(ev('$s1:61', 'inbox_item', {'topic': 'inbox'}));
@@ -181,25 +157,20 @@ void main() {
     final es = await got;
     expect(es.map((e) => e.id), ['$s1:43', '$s1:61']);
     expect(es.map((e) => e.type), everyElement('inbox_item'));
-    final opens = server.to('GET', '/api/stream');
-    expect(opens, hasLength(2));
-    expect(opens[1].headers['last-event-id'], '$s1:43');
+    expect(server.core.resumes, hasLength(2));
+    expect(server.core.resumes[1], '$s1:43');
     expect(subscribeBodies(s1), hasLength(1));
   });
 
   test("a drop before any event resumes from the ready's seq", () async {
     final subscribed = Completer<void>();
-    server.handle(
-      'GET',
-      '/api/stream',
+    onSubscribe(
       conn((write) async {
         await write(ready(s1, 41));
         await subscribed.future;
       }),
     );
-    server.handle(
-      'GET',
-      '/api/stream',
+    onSubscribe(
       conn((write) async {
         await write(ready(s1, 42, resumed: true, topics: ['inbox']));
         await write(ev('$s1:45', 'inbox_item', {'topic': 'inbox'}));
@@ -211,24 +182,20 @@ void main() {
     await stream.subscribe(['inbox']);
     expect((await got).id, '$s1:45');
     expect(
-      server.to('GET', '/api/stream')[1].headers['last-event-id'],
+      server.core.resumes[1],
       '$s1:41',
     );
   });
 
   test('a new stream after a drop is subscribed again, and each topic gets a resync', () async {
     final subscribed = Completer<void>();
-    server.handle(
-      'GET',
-      '/api/stream',
+    onSubscribe(
       conn((write) async {
         await write(ready(s1, 41));
         await subscribed.future;
       }),
     );
-    server.handle(
-      'GET',
-      '/api/stream',
+    onSubscribe(
       conn((write) async {
         await write(ready(s2, 7));
         await hold.future;
@@ -252,17 +219,13 @@ void main() {
 
   test('a topic the new stream refuses is dropped with unsubscribed; the rest resync', () async {
     final subscribed = Completer<void>();
-    server.handle(
-      'GET',
-      '/api/stream',
+    onSubscribe(
       conn((write) async {
         await write(ready(s1, 41));
         await subscribed.future;
       }),
     );
-    server.handle(
-      'GET',
-      '/api/stream',
+    onSubscribe(
       conn((write) async {
         await write(ready(s2, 7));
         await hold.future;
@@ -302,17 +265,13 @@ void main() {
   /// A stream that drops once after its subscribe and comes back as [s2].
   void dropToNewStream() {
     final subscribed = Completer<void>();
-    server.handle(
-      'GET',
-      '/api/stream',
+    onSubscribe(
       conn((write) async {
         await write(ready(s1, 41));
         await subscribed.future;
       }),
     );
-    server.handle(
-      'GET',
-      '/api/stream',
+    onSubscribe(
       conn((write) async {
         await write(ready(s2, 7));
         await hold.future;
@@ -387,17 +346,13 @@ void main() {
     'a refused subscribe throws, and the topic is not subscribed again later',
     () async {
       final refused = Completer<void>();
-      server.handle(
-        'GET',
-        '/api/stream',
+      onSubscribe(
         conn((write) async {
           await write(ready(s1, 41));
           await refused.future;
         }),
       );
-      server.handle(
-        'GET',
-        '/api/stream',
+      onSubscribe(
         conn((write) async {
           await write(ready(s2, 7));
           await write(ev('$s2:9', 'question', {'topic': 'questions'}));
@@ -426,35 +381,24 @@ void main() {
   );
 
   test(
-    'a subscribe to a stream the daemon no longer holds goes to the next one',
+    'a subscribe to a stream the core no longer holds goes to the next one',
     () async {
       final posted = Completer<void>();
-      server.handle(
-        'GET',
-        '/api/stream',
+      onSubscribe(
         conn((write) async {
           await write(ready(s1, 41));
           await posted.future;
         }),
       );
-      server.handle(
-        'GET',
-        '/api/stream',
+      onSubscribe(
         conn((write) async {
           await write(ready(s2, 7));
           await hold.future;
         }),
       );
-      server.handle('POST', '/api/stream/$s1', (_, res) async {
-        res.statusCode = 404;
-        res.headers.contentType = ContentType.json;
-        res.write(
-          jsonEncode({
-            'error': {'code': 'unknown_stream', 'message': 'no such stream'},
-          }),
-        );
-        await res.close();
-        posted.complete();
+      server.handle('POST', '/api/stream/$s1', (_) {
+        Future(posted.complete);
+        return FakeCore.error(404, 'unknown_stream', 'no such stream');
       });
       acceptSubscribes(s2);
       await stream.subscribe(['inbox']);
@@ -469,9 +413,7 @@ void main() {
   );
 
   test('a stream refused at open ends its events with an error and fails subscribe', () async {
-    server.json('GET', '/api/stream', 403, {
-      'error': {'code': 'forbidden_origin', 'message': 'no'},
-    });
+    onSubscribe((s) => s.end('stream_refused', status: 403));
     final events = stream.events.toList();
     await expectLater(stream.subscribe(['inbox']), throwsStateError);
     await expectLater(
@@ -482,13 +424,11 @@ void main() {
             .having((e) => e.code, 'code', 'stream_refused'),
       ),
     );
-    expect(server.to('GET', '/api/stream'), hasLength(1));
+    expect(server.core.resumes, hasLength(1));
   });
 
   test('close ends the events, and a later subscribe throws', () async {
-    server.handle(
-      'GET',
-      '/api/stream',
+    onSubscribe(
       conn((write) async {
         await write(ready(s1, 41));
         await hold.future;
