@@ -620,6 +620,24 @@ describe("the stream hub on the app's host (`host: true`)", () => {
     expect(of("t1", "status")).toEqual([]);
   });
 
+  it("waits on an inbox request that does not answer", async () => {
+    let aborted = false;
+    host.close();
+    host = new Hub({
+      host: true, notify: true,
+      fetch: ((i, init) => {
+        if (!String(i).startsWith("/api/inbox")) return net.fetch(i, init);
+        init?.signal?.addEventListener("abort", () => { aborted = true; });
+        return new Promise<Response>(() => {});
+      }) as typeof fetch,
+      send: () => {},
+    });
+    host.receive("t1", { t: "topics", topics: ["inbox"] });
+    await tick();
+    await vi.advanceTimersByTimeAsync(TEN_MINUTES);
+    expect(aborted).toBe(false);
+  });
+
   /** A host hub whose requests are recorded in `asked`. */
   const asking = () => {
     const asked: string[] = [];

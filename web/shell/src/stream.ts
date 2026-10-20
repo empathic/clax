@@ -206,10 +206,13 @@ export const leaderLink: LinkMaker = async on => {
 };
 
 /** A hub of this tab's own: one connection per tab; on the app's host
- * when the page runs on its transport. */
+ * when the page runs on its transport. The hub lives and dies with its one
+ * tab, which holds it as a lock that never frees, so a page whose timers
+ * stood still (a suspended WebView, a sleeping laptop) is never expired. */
 export const localLink: LinkMaker = async on => {
   const { Hub } = await import("./stream-hub");
-  const hub = new Hub({ notify: true, host: onHost(), send: (_ids, msg) => on(msg) });
+  const hub = new Hub({ notify: true, host: onHost(), send: (_ids, msg) => on(msg), watchLock: () => {} });
+  hub.receive("self", { t: "hello", lock: "self" });
   return { send: m => hub.receive("self", m), close: () => hub.close() };
 };
 

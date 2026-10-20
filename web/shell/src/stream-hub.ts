@@ -514,11 +514,12 @@ export class Hub {
     if (best) this.env.send([best], { t: "notify", data });
   }
 
-  /** A GET of the daemon's JSON, bounded by `STUCK_MS`: "forbidden" on a
-   * 403, null when it failed otherwise. */
+  /** A GET of the daemon's JSON, bounded by `STUCK_MS` (not on the host,
+   * which answers every call): "forbidden" on a 403, null when it failed
+   * otherwise. */
   private async getJson(path: string): Promise<Record<string, unknown> | "forbidden" | null> {
     const req = new AbortController();
-    const stuck = setTimeout(() => req.abort(), STUCK_MS);
+    const stuck = this.env.host ? undefined : setTimeout(() => req.abort(), STUCK_MS);
     try {
       const res = await this.fetch(this.url(path), { signal: req.signal, cache: "no-store", credentials: "same-origin" });
       if (res.status === 403) return "forbidden";

@@ -718,9 +718,13 @@ paces itself by it, as §2.4's consumers do:
   subscription resumes where the last one stopped; `ready` resets the
   count.
 
-It has no connect, idle or subscription timeout, never requests
+It has no connect, idle or subscription timeout, and no timeout on its
+inbox requests either (the host answers every call), never requests
 `/api/token`, and never tells the tabs `status` (no `stream_down`): a
-silent stream is never failed on the host, which owns liveness.
+silent stream is never failed on the host, which owns liveness. Its one
+tab is never expired: the hub lives and dies with its document, so a
+WebView whose timers stood still while it was suspended keeps its
+topics.
 
 The transport adds a style of its own that hides `.conn-notice`, so
 "Live updates paused. Reconnecting…" and "Clax is not answering.
