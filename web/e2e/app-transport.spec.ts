@@ -211,6 +211,36 @@ test("an init the app ran for the previous load leaves the next load's channel i
   expect(h.dropped.filter(m => m.why === "nonce" && (m.message as { nonce?: string }).nonce === first)).toEqual([]);
 });
 
+test("a same-document navigation keeps the load's channel; a reload the core answers 404 commits with no nonce and leaves no channel", async ({ page }) => {
+  const { id, host: h } = await openInApp(page, "Transport no nonce");
+  await live(h);
+  await expect.poll(() => h.ofType("ready").length).toBeGreaterThan(0);
+  const first = h.nonce!;
+  // A navigation within the document is no new load.
+  await h.evalNow(`history.pushState(null, "", location.pathname + "?app=1&same=1"); 0`);
+  await expect.poll(() => h.sameDocument.length).toBe(1);
+  await h.barrier();
+  expect(h.nonce).toBe(first);
+  const inits = () => h.ran.filter(e => /^window\.(claxHost|claxTransport)\.init\(/.test(e)).length;
+  const ran = inits();
+  const streams = h.streamsOf(first);
+  // The reload's main-frame request is numbered, but the core answers it 404, so no nonce is minted for it.
+  h.failNextScheme(u => u.pathname === `/a/${id}`, 404, "not_found");
+  await page.reload();
+  await expect.poll(() => h.scheme.at(-1)).toEqual({ url: `${SHELL}/a/${id}?app=1&same=1`, status: 404, mainFrame: true });
+  await expect.poll(() => h.nonce).toBeNull();
+  expect(h.loads).toEqual([first]);
+  // The previous load's streams are closed, and its nonce takes nothing more.
+  expect(streams.every(s => s.ended !== undefined)).toBe(true);
+  await h.evalNow(`window.ClaxHost.postMessage(JSON.stringify({ type: "call", nonce: ${JSON.stringify(first)}, id: 7777, method: "GET", path: "/api/artifacts", headers: [], body: null, body64: null })); 0`);
+  await expect.poll(() => h.dropped).toContainEqual({ why: "nonce", message: expect.objectContaining({ id: 7777 }) });
+  expect(h.calls.filter(c => c.id === 7777)).toEqual([]);
+  // No init ran into the document the core refused.
+  await page.waitForLoadState("load");
+  await h.idle();
+  expect(inits()).toBe(ran);
+});
+
 test("a body over 8 MiB goes to the core in 1 MiB chunks and arrives whole", async ({ page }) => {
   const { id, host: h } = await openInApp(page, "Transport chunks");
   await live(h);

@@ -28,13 +28,16 @@
 //   `…/`) is followed in the core and its target answered under the
 //   request's URL; a document request for `/v/<n>` answered 308 is a page
 //   that refreshes to its `Location`; any other 3xx is a 404.
-// - Each shell document answered to a main-frame navigation gets a fresh
-//   nonce, written as `<meta name="clax-nonce">` right after its `<head>`
-//   (unless `nonceMeta: false`, the app over loopback), and kept with that
-//   navigation's number. The load's nonce is the one kept for the
-//   navigation that commits; the host gives it to `claxTransport.init`
-//   (without the meta) and to `claxHost.init` once the document has
-//   loaded.
+// - Each main-frame request takes a number, which replaces the kept one;
+//   a shell document answered 200 to it gets a fresh nonce, written as
+//   `<meta name="clax-nonce">` right after its `<head>` (unless
+//   `nonceMeta: false`, the app over loopback), and kept with that number.
+//   A document that commits in the main frame (CDP's Page.frameNavigated;
+//   a same-document navigation is Page.navigatedWithinDocument and changes
+//   nothing) takes the kept nonce when its URL is the kept one's, and the
+//   host gives it to `claxTransport.init` (without the meta) and to
+//   `claxHost.init` once the document has loaded; any other commit, or one
+//   no nonce was minted for, leaves the load without a channel.
 //
 // The channel (`window.ClaxHost`) is injected only into frames of the
 // shell's origin, as Android's web message listener is; it posts to a
@@ -173,8 +176,11 @@ export class AppHost {
   readonly scheme: { url: string; status: number; mainFrame: boolean }[] = [];
   /** The expressions the host ran in the shell, oldest first. */
   readonly ran: string[] = [];
+  /** The URLs of the main frame's same-document navigations, oldest first. */
+  readonly sameDocument: string[] = [];
   private load: Load | null = null;
-  private kept: { n: number; url: string; nonce: string } | null = null;
+  /** The latest main-frame request's number and URL, and the nonce minted for it if any. */
+  private kept: { n: number; url: string; nonce: string | null } | null = null;
   private navigations = 0;
   private queue: string[] = [];
   private held = false;
@@ -182,6 +188,7 @@ export class AppHost {
   private idleWaiters: (() => void)[] = [];
   private stalls: { match: (c: CallRecord) => boolean; open: Promise<void> }[] = [];
   private callFaults: { match: (c: CallRecord) => boolean; answer: Answer }[] = [];
+  private schemeFaults: { match: (u: URL) => boolean; answer: Answer }[] = [];
   private streamFaults: { reason: string; status?: number }[] = [];
   private cdp: Promise<CDPSession>;
 
@@ -199,7 +206,19 @@ export class AppHost {
       Object.defineProperty(window, "ClaxHost", { value: Object.freeze({ postMessage: post }) });
     }, { shell: SHELL, binding: BINDING });
     await page.route(u => u.hostname === SHELL_HOST || CONTENT_HOST.test(u.hostname), route => this.answerScheme(route));
-    page.on("framenavigated", f => { if (f === page.mainFrame()) this.committed(f.url()); });
+    // The main frame's commits, as the WebView reports them: CDP tells a
+    // document's commit (Page.frameNavigated) from a navigation within one
+    // (Page.navigatedWithinDocument), which Playwright's framenavigated
+    // does not.
+    const cdp = await this.cdp;
+    await cdp.send("Page.enable");
+    let main: string | null = null;
+    cdp.on("Page.frameNavigated", e => {
+      if (e.frame.parentId) return;
+      main = e.frame.id;
+      this.committed(e.frame.url);
+    });
+    cdp.on("Page.navigatedWithinDocument", e => { if (e.frameId === main) this.sameDocument.push(e.url); });
     page.on("load", () => { void this.loaded(); });
     return this;
   }
@@ -262,6 +281,12 @@ export class AppHost {
     this.callFaults.push({ match, answer: errorAnswer(status, code, "refused by the test") });
   }
 
+  /** Has the core answer the next scheme request `match` names with
+   * `status` and `code`, unasked. */
+  failNextScheme(match: (u: URL) => boolean, status: number, code = "unavailable"): void {
+    this.schemeFaults.push({ match, answer: errorAnswer(status, code, "refused by the test") });
+  }
+
   /** Ends the next subscription at once with this end block, as the core
    * does when its stream is refused or the core is closed. */
   endNextStream(end: { reason: string; status?: number }): void { this.streamFaults.push(end); }
@@ -301,13 +326,19 @@ export class AppHost {
     const shell = url.hostname === SHELL_HOST;
     const mainNav = req.isNavigationRequest() && frameOf(req) === this.page.mainFrame();
     const document = shell && url.pathname.startsWith("/a/");
+    // Every main-frame request the answerer gets takes the next number and
+    // replaces the kept one, as Android's host numbers each
+    // isForMainFrame() request it hands Dart (it refuses one for the
+    // shell's host outside /a/ itself, unnumbered); a nonce is minted only
+    // for a shell document answered 200.
+    const n = mainNav && (!shell || document) ? ++this.navigations : null;
+    if (n !== null) this.kept = { n, url: req.url(), nonce: null };
     const answer = await this.schemeAnswer(req, url, shell, mainNav, document);
     const headers = answer.headers.filter(([k]) => !k.toLowerCase().startsWith("access-control-"));
     let body = answer.body;
-    if (document && mainNav && answer.status === 200) {
-      const n = ++this.navigations;
+    if (n !== null && document && answer.status === 200) {
       const nonce = randomBytes(18).toString("base64url");
-      this.kept = { n, url: req.url(), nonce };
+      if (this.kept?.n === n) this.kept.nonce = nonce;
       if (this.opts.nonceMeta !== false) body = Buffer.from(body.toString("utf8").replace("<head>", `<head><meta name="clax-nonce" content="${nonce}">`));
     }
     this.scheme.push({ url: req.url(), status: answer.status, mainFrame: mainNav });
@@ -339,7 +370,9 @@ export class AppHost {
     let target = url;
     for (let hop = 0; ; hop++) {
       let answer: Answer;
-      try {
+      const fault = this.schemeFaults.findIndex(f => f.match(target));
+      if (fault >= 0) answer = this.schemeFaults.splice(fault, 1)[0].answer;
+      else try {
         answer = await readAll(await send(this.d, { method: req.method(), path: target.pathname + target.search, headers: asked(target) }));
       } catch (e) {
         return textAnswer(502, `the core did not answer: ${String(e)}`);
@@ -357,12 +390,15 @@ export class AppHost {
 
   // ---- loads ----
 
+  /** A document committed in the main frame (never a same-document
+   * navigation): its load takes the kept number's nonce when its URL is
+   * the kept one's and a nonce was minted for it; else it has no channel
+   * (spec §4.4), and the previous load's calls and streams end. */
   private committed(url: string): void {
     const k = this.kept;
-    if (new URL(url).origin !== SHELL) return this.switchTo(null);
-    // A same-document navigation, or a document the host numbered none for.
-    if (!k || k.url !== url) return;
+    if (!k || k.url !== url || new URL(url).origin !== SHELL) return this.switchTo(null);
     this.kept = null;
+    if (k.nonce === null) return this.switchTo(null);
     this.switchTo({ n: k.n, url, nonce: k.nonce, calls: new Map(), streams: new Map() });
   }
 
@@ -372,7 +408,10 @@ export class AppHost {
     if (old) {
       for (const c of old.calls.values()) c.ac.abort();
       old.calls.clear();
-      for (const s of old.streams.values()) s.ac.abort();
+      for (const s of old.streams.values()) {
+        s.ac.abort();
+        this.subscriptions.find(r => r.nonce === s.nonce && r.id === s.id)!.ended ??= "unloaded";
+      }
       old.streams.clear();
     }
     if (load) this.loads.push(load.nonce);
