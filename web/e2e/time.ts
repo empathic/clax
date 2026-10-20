@@ -39,9 +39,11 @@ export async function settle(page: Page): Promise<void> {
 
 /** Waits until the shell window's transient user activation has lapsed (as
  * Chromium keeps it: 5 s from the input that granted it), read without
- * granting any. */
+ * granting any. It lapses on Chromium's own clock, which no test can
+ * advance, and a loaded machine can report it well past 5 s: the test's
+ * timeout is the only bound. */
 export async function activationLapsed(page: Page): Promise<void> {
-  await expect.poll(() => quietEval<boolean>(page, "navigator.userActivation.isActive"), { timeout: 10_000, intervals: [100] }).toBe(false);
+  await expect.poll(() => quietEval<boolean>(page, "navigator.userActivation.isActive"), { timeout: 0, intervals: [100] }).toBe(false);
 }
 
 /** The shell's clock now (`performance.now()` plus what tests advanced it). */

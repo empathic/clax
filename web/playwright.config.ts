@@ -10,7 +10,8 @@ import { defineConfig } from "@playwright/test";
 // No test sleeps to wait for something: the shell's timing rules run on a
 // clock the tests advance (shell/src/clock.ts), and the rest is waited on as
 // events (the typing tests' key schedules are input, not waits). A failing
-// expectation fails in 5 s; a test that hangs stops at 30 s.
+// expectation fails in 5 s; a test that hangs stops at 30 s (90 s for the
+// gesture tests).
 const workers = Number(process.env.CLAX_E2E_WORKERS) || cpus().length + 4;
 
 export default defineConfig({
@@ -27,7 +28,9 @@ export default defineConfig({
   // at once. The Chrome overlay's tests launch browsers of their own, each
   // with the extension in a fresh profile (e2e/extension-fixtures.ts).
   projects: [
-    { name: "gesture", testMatch: /gesture\.spec\.ts$/, workers: Math.ceil(workers * 5 / 8) },
+    // A gesture test waits out Chromium's real 5 s activation, some twice,
+    // so one counts as hung only after 90 s.
+    { name: "gesture", testMatch: /gesture\.spec\.ts$/, workers: Math.ceil(workers * 5 / 8), timeout: 90_000 },
     { name: "chrome-overlay", testMatch: /chrome-overlay\.spec\.ts$/ },
     { name: "rest", testIgnore: /(gesture|chrome-overlay)\.spec\.ts$/ },
   ],
