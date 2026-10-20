@@ -753,7 +753,7 @@ async fn a_publish_step_from_a_session_does_for_it_what_a_publish_does() {
     let aid_id = clax_core::ArtifactId::parse(&aid).unwrap();
     let version = ts.store.get_version(&aid_id, 2).unwrap().unwrap();
     assert_eq!(version.session_id.as_deref(), Some(sid.as_str()));
-    assert_eq!(version.addresses, [tid.clone()], "the thread worked on");
+    assert_eq!(version.addresses, [tid.as_str()], "the thread worked on");
     assert!(ts.working.threads_of(&sid, &aid).is_empty(), "working cleared");
     assert!(ts.drafts.for_artifact(&aid).is_empty(), "the draft ended");
     let watched = |ts: &TestServer, a: &str| {
