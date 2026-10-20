@@ -6,3 +6,7 @@ config_setting(
     values = {"compilation_mode": "fastbuild"},
     visibility = ["//visibility:public"],
 )
+
+# The rustfmt check of Rust sources no Bazel Rust target holds
+# (crates/clax-worker/BUILD.bazel).
+exports_files(["rustfmt_check.sh"])

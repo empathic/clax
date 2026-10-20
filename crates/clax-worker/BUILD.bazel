@@ -1,0 +1,35 @@
+load("@rules_shell//shell:sh_test.bzl", "sh_test")
+
+# crates/clax-worker is a Cargo workspace of its own (the Worker and its
+# SQLite VFS, vfs/), with its own Cargo.lock, which Bazel does not resolve:
+# its tests, clippy and the wasm build run natively (docs/bazel.md, "Run
+# outside Bazel"). Its formatting is checked here, by the rustfmt and the
+# command the rest of the repository's format check uses (`--config=fmt`),
+# over its own sources only.
+
+# Read by scripts/test-release.sh (bazel/release_files.bzl).
+exports_files(["Cargo.lock"])
+
+# The Rust sources of both crates.
+RUST_SOURCES = glob([
+    "build.rs",
+    "src/**/*.rs",
+    "tests/**/*.rs",
+    "vfs/src/**/*.rs",
+    "vfs/tests/**/*.rs",
+])
+
+sh_test(
+    name = "rustfmt",
+    srcs = ["//bazel:rustfmt_check.sh"],
+    args = [
+        "$(rootpath @rules_rust//rust/toolchain:current_rustfmt_files)",
+        "$(rootpath @rules_rust//rust/settings:rustfmt.toml)",
+        # Both crates' edition (Cargo.toml, vfs/Cargo.toml).
+        "2024",
+    ] + ["$(rootpath %s)" % f for f in RUST_SOURCES],
+    data = [
+        "@rules_rust//rust/settings:rustfmt.toml",
+        "@rules_rust//rust/toolchain:current_rustfmt_files",
+    ] + RUST_SOURCES,
+)
