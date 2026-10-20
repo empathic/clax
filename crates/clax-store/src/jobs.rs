@@ -1016,7 +1016,10 @@ impl Store {
     /// ([`may_move`]) with the error `{"code": "artifact_deleted"}` and
     /// its `rev` one on, so a worker holding it hears of it (and so does
     /// the job listener, even when the transaction then deletes the job's
-    /// row). Called by every delete of an artifact, before it.
+    /// row). The agent's read consents naming `aid` (as reader or source)
+    /// and its draft's renders go too: their foreign keys cascade only on a
+    /// hard delete, and a soft-deleted artifact is never undeleted. Called
+    /// by every delete of an artifact, the soft delete included, before it.
     pub(crate) fn artifact_going_tx(
         &self,
         tx: &Transaction<'_>,
@@ -1054,6 +1057,14 @@ impl Store {
                 },
             );
         }
+        tx.execute(
+            "DELETE FROM agent_read_consents WHERE reader = ?1 OR source = ?1",
+            params![aid],
+        )?;
+        tx.execute(
+            "DELETE FROM draft_renders WHERE draft_id = ?1",
+            params![aid],
+        )?;
         Ok(())
     }
 
@@ -2044,6 +2055,42 @@ mod tests {
             vec![t2.as_str()]
         );
         assert_eq!(heard.lock().unwrap().len(), 1);
+    }
+
+    #[test]
+    fn a_soft_deleted_artifact_takes_its_consents_and_renders() {
+        let (_d, st) = store();
+        let (a, b, c) = (
+            artifact(&st, None),
+            artifact(&st, None),
+            artifact(&st, None),
+        );
+        let (a, b, c) = (a, b.as_str().to_string(), c.as_str().to_string());
+        st.put_agent_read_consent(a.as_str(), &b).unwrap();
+        st.put_agent_read_consent(&b, a.as_str()).unwrap();
+        st.put_agent_read_consent(&b, &c).unwrap();
+        st.with_write(|db| {
+            for d in [a.as_str(), b.as_str()] {
+                db.execute(
+                    "INSERT INTO draft_renders (draft_id, digest, clean, created_at)
+                     VALUES (?1, 'ab', 1, 'x')",
+                    [d],
+                )?;
+            }
+            Ok(())
+        })
+        .unwrap();
+        st.delete_artifact(DAEMON, &a).unwrap();
+        assert_eq!(st.agent_read_consents().unwrap(), vec![(b.clone(), c)]);
+        let renders: Vec<String> = st
+            .with_read(|db| {
+                Ok(db
+                    .prepare("SELECT draft_id FROM draft_renders")?
+                    .query_map([], |r| r.get(0))?
+                    .collect::<rusqlite::Result<_>>()?)
+            })
+            .unwrap();
+        assert_eq!(renders, vec![b]);
     }
 
     #[test]
