@@ -83,14 +83,12 @@ sealed class UpdateOutcome {
 }
 
 /// The update is live as lineage version [version]; [truncated] when its
-/// check ran on part of the person's data; [iconChange] says what became
-/// of an icon the icon rules refuse ([PublishedFiles.iconChange]).
+/// check ran on part of the person's data.
 class UpdateLanded extends UpdateOutcome {
-  const UpdateLanded(this.version, {this.truncated = false, this.iconChange});
+  const UpdateLanded(this.version, {this.truncated = false});
 
   final int version;
   final bool truncated;
-  final String? iconChange;
 }
 
 /// The check failed at [step], for [reason], the end of §3.4's sentence;
@@ -437,11 +435,7 @@ class Updater {
 
     // 8: the lineage.
     await _applyPending(aid);
-    return UpdateLanded(
-      m.version,
-      truncated: truncated,
-      iconChange: files.iconChange,
-    );
+    return UpdateLanded(m.version, truncated: truncated);
   }
 
   /// Keeps [bundle] and its release while it lands: the bundle's content

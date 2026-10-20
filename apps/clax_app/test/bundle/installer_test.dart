@@ -90,18 +90,19 @@ void main() {
       '<rect width="9" height="8"/></svg>';
 
   test('a bundle icon the icon rules refuse is installed cleaned when that '
-      'makes it pass, and the result says so', () async {
+      'makes it pass, and says so', () async {
     expect(iconProblem(fixable), isNotNull);
     final w = await makeBundle(
       lineage: lineageA,
       files: {'index.html': '<p>hi</p>', 'icon.svg': fixable},
     );
-    final got = await me.installer.install(await me.installer.open(w.bytes));
+    final opened = await me.installer.open(w.bytes);
+    final got = await me.installer.install(opened);
+    final change = PublishedFiles.of(opened.bundle).iconChange;
     final svg = await me.api.readFile(got.aid, 1, 'icon.svg');
     expect(svg, cleanIcon(fixable));
     expect(iconProblem(svg!), isNull);
-    expect(got.iconChange, startsWith('Its icon was redrawn without what an icon '
-        'may not hold: icon.svg is not well-formed XML'));
+    expect(change, 'Its icon broke Clax’s icon rules, so Clax redrew it.');
     final d = await me.api.getArtifact(got.aid);
     expect(d.current!.note, 'Installed v1 of Plant log from Sam; its icon '
         'was redrawn (icon rule not_xml)');
@@ -119,16 +120,18 @@ void main() {
   });
 
   test('a bundle icon cleaning cannot save is left out: the app installs '
-      'without it, and the result says so', () async {
+      'without it, and says so', () async {
     expect(cleanIcon(hopeless), isNull);
     final w = await makeBundle(
       lineage: lineageA,
       files: {'index.html': '<p>hi</p>', 'icon.svg': hopeless},
     );
-    final got = await me.installer.install(await me.installer.open(w.bytes));
+    final opened = await me.installer.open(w.bytes);
+    final got = await me.installer.install(opened);
+    final change = PublishedFiles.of(opened.bundle).iconChange;
     final d = await me.api.getArtifact(got.aid);
     expect(d.current!.files.keys, ['index.html']);
-    expect(got.iconChange, 'Its icon was left out: ${iconProblem(hopeless)!.message}');
+    expect(change, 'Its icon broke Clax’s icon rules, so Clax left it out.');
     expect(d.current!.note, 'Installed v1 of Plant log from Sam; its icon '
         'was left out (icon rule view_box)');
   });
@@ -141,19 +144,20 @@ void main() {
   );
 
   test('a bundle icon that is not UTF-8 is installed re-read as Latin-1 '
-      'when that passes the icon rules, and the result says so', () async {
+      'when that passes the icon rules, and says so', () async {
     expect(() => utf8.decode(latin1Icon), throwsFormatException);
     final w = await makeBundle(
       lineage: lineageA,
       files: {'index.html': '<p>hi</p>'},
       rawFiles: {'icon.svg': latin1Icon},
     );
-    final got = await me.installer.install(await me.installer.open(w.bytes));
+    final opened = await me.installer.open(w.bytes);
+    final got = await me.installer.install(opened);
+    final change = PublishedFiles.of(opened.bundle).iconChange;
     final svg = await me.api.readFile(got.aid, 1, 'icon.svg');
     expect(svg, contains('<title>Caf\u00e9</title>'));
     expect(iconProblem(svg!), isNull);
-    expect(got.iconChange, 'Its icon was redrawn without what an icon may '
-        'not hold: icon.svg is not well-formed XML: it is not UTF-8.');
+    expect(change, 'Its icon broke Clax’s icon rules, so Clax redrew it.');
     final d = await me.api.getArtifact(got.aid);
     expect(d.current!.note, 'Installed v1 of Plant log from Sam; its icon '
         'was redrawn (icon rule not_xml)');
@@ -168,11 +172,14 @@ void main() {
       files: {'index.html': '<p>hi</p>'},
       rawFiles: {'icon.svg': bad},
     );
-    final got = await me.installer.install(await me.installer.open(w.bytes));
+    final opened = await me.installer.open(w.bytes);
+    final got = await me.installer.install(opened);
+    final change = PublishedFiles.of(opened.bundle).iconChange;
     final d = await me.api.getArtifact(got.aid);
     expect(d.current!.files.keys, ['index.html']);
-    expect(got.iconChange, 'Its icon was left out: icon.svg is not '
-        'well-formed XML: it is not UTF-8.');
+    expect(change, 'Its icon broke Clax’s icon rules, so Clax left it out.');
+    expect(d.current!.note, 'Installed v1 of Plant log from Sam; its icon '
+        'was left out (icon rule not_xml)');
   });
 
   test('an icon within the rules is installed byte for byte', () async {
@@ -183,8 +190,10 @@ void main() {
       lineage: lineageA,
       files: {'index.html': '<p>hi</p>', 'icon.svg': good},
     );
-    final got = await me.installer.install(await me.installer.open(w.bytes));
-    expect(got.iconChange, isNull);
+    final opened = await me.installer.open(w.bytes);
+    final got = await me.installer.install(opened);
+    final change = PublishedFiles.of(opened.bundle).iconChange;
+    expect(change, isNull);
     expect(await me.api.readFile(got.aid, 1, 'icon.svg'), good);
     final d = await me.api.getArtifact(got.aid);
     expect(d.current!.contentSha256, w.manifest.contentSha256);

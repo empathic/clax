@@ -6,6 +6,7 @@ import 'package:clax_app/agent/icon_svg.dart';
 import 'package:clax_app/agent/inspector.dart';
 import 'package:clax_app/bundle/bundle_reader.dart';
 import 'package:clax_app/bundle/doc_snapshot.dart';
+import 'package:clax_app/bundle/installer.dart' show PublishedFiles;
 import 'package:clax_app/bundle/updater.dart';
 import 'package:clax_app/clax/api.dart';
 import 'package:flutter_test/flutter_test.dart';
@@ -130,8 +131,8 @@ void main() {
     final out = await me.updater.update(aid, b);
     expect(out, isA<UpdateLanded>());
     expect(
-      (out as UpdateLanded).iconChange,
-      startsWith('Its icon was redrawn without what an icon may not hold'),
+      PublishedFiles.of(b).iconChange,
+      'Its icon broke Clax’s icon rules, so Clax redrew it.',
     );
     final live = await me.api.getArtifact(aid);
     expect(await me.api.readFile(aid, 2, 'icon.svg'), cleanIcon(fixable));
@@ -158,7 +159,10 @@ void main() {
     );
     final out3 = await me.updater.update(aid, b3);
     expect(out3, isA<UpdateLanded>());
-    expect((out3 as UpdateLanded).iconChange, startsWith('Its icon was left out'));
+    expect(
+      PublishedFiles.of(b3).iconChange,
+      'Its icon broke Clax’s icon rules, so Clax left it out.',
+    );
     final v3 = await me.api.getArtifact(aid);
     expect(v3.current!.files.keys, ['index.html']);
   });
@@ -180,9 +184,12 @@ void main() {
     );
     final out = await me.updater.update(aid, b);
     expect(out, isA<UpdateLanded>());
-    expect((out as UpdateLanded).iconChange, 'Its icon was redrawn without '
-        'what an icon may not hold: icon.svg is not well-formed XML: it is '
-        'not UTF-8.');
+    expect(
+      PublishedFiles.of(b).iconChange,
+      'Its icon broke Clax’s icon rules, so Clax redrew it.',
+    );
+    expect((await me.api.getArtifact(aid)).current!.note, endsWith('; its '
+        'icon was redrawn (icon rule not_xml)'));
     expect(
       await me.api.readFile(aid, 2, 'icon.svg'),
       contains('<title>Caf\u00e9</title>'),

@@ -2,7 +2,8 @@
 // (skipped without it), the phone's update sheet also at 200%, the
 // install sheet also on an iPhone at 100% and 200%: export
 // (own and a modified copy), install, update (as received and changed),
-// the update check in progress, its failure with Details open, and a
+// an install and an update whose icon Clax redrew, the update check in
+// progress, its failure with Details open, and a
 // refused file.
 import 'package:clax_app/bundle/exporter.dart' show ExportMode, ExportPlan;
 import 'package:clax_app/bundle/lineage_store.dart';
@@ -53,6 +54,17 @@ const _bundle = BundleSummary(
   },
   word: 'leaf',
   seedDocs: 12,
+);
+
+const _redrawn = BundleSummary(
+  lineage: 'l_aaaaaaaaaaaaaaaaaaaaaaaaaa',
+  title: 'Plant log',
+  version: 3,
+  fingerprint: '7KQ2-M9XD-4FTA-QW3B',
+  name: 'Alex',
+  capabilities: {'db': {}},
+  word: 'leaf',
+  iconChange: 'Its icon broke Clax’s icon rules, so Clax redrew it.',
 );
 
 /// Shows [sheet] over a page, then [then] (a tap) before the shot.
@@ -138,6 +150,22 @@ void main() {
         have: 2,
         added: ['take photos and pick photos from your library'],
       ),
+    ),
+  );
+  shots(
+    'bundle-install-icon',
+    (s) => _sheet(
+      s,
+      'bundle-install-icon',
+      const InstallSheet(bundle: _redrawn, kind: InstallKind.install),
+    ),
+  );
+  shots(
+    'bundle-update-icon',
+    (s) => _sheet(
+      s,
+      'bundle-update-icon',
+      const UpdateSheet(bundle: _redrawn, have: 2, added: []),
     ),
   );
   shots(

@@ -81,9 +81,10 @@ class OpenedBundle {
 /// when it is not UTF-8) when that passes the rules, and is otherwise left
 /// out, so the app still installs, drawn with its word.
 class PublishedFiles {
-  PublishedFiles._(this.entries, this.contentSha256, this.iconChange, this._note);
+  PublishedFiles._(this.entries, this._bundleHash, this.iconChange, this._note);
 
-  /// [b]'s files, `icon.svg` cleaned or left out as above.
+  /// [b]'s files, `icon.svg` cleaned or left out as above. Only the icon
+  /// is read here; [contentSha256] hashes the files when first asked.
   factory PublishedFiles.of(Bundle b) {
     final m = b.manifest;
     final entries = <String, FileEntry>{
@@ -101,34 +102,35 @@ class PublishedFiles {
             utf8.encode(cleaned),
             type: m.files[appIconPath]!.type,
           );
-          change =
-              'Its icon was redrawn without what an icon may not hold: '
-              '${why.message}';
+          change = 'Its icon broke Clax’s icon rules, so Clax redrew it.';
           note = 'its icon was redrawn (icon rule ${why.code})';
         } else {
           entries.remove(appIconPath);
-          change = 'Its icon was left out: ${why.message}';
+          change = 'Its icon broke Clax’s icon rules, so Clax left it out.';
           note = 'its icon was left out (icon rule ${why.code})';
         }
       }
     }
-    final hash = change == null
-        ? m.contentSha256
-        : contentHash({
-            for (final MapEntry(:key, :value) in entries.entries)
-              key: (sha256: sha256Hex(value.bytes), size: value.bytes.length),
-          });
-    return PublishedFiles._(entries, hash, change, note);
+    return PublishedFiles._(entries, m.contentSha256, change, note);
   }
 
   /// The files to publish.
   final Map<String, FileEntry> entries;
 
-  /// The content hash of [entries]: the bundle's, unless its icon changed.
-  final String contentSha256;
+  final String _bundleHash;
 
-  /// What became of the bundle's icon, a sentence for the person; null
-  /// when it is published as the bundle holds it (or there is none).
+  /// The content hash of [entries]: the bundle's, unless its icon changed.
+  late final String contentSha256 = iconChange == null
+      ? _bundleHash
+      : contentHash({
+          for (final MapEntry(:key, :value) in entries.entries)
+            key: (sha256: sha256Hex(value.bytes), size: value.bytes.length),
+        });
+
+  /// What became of the bundle's icon, a sentence for the person that the
+  /// install and update sheets show ([BundleSummary]); null when it is
+  /// published as the bundle holds it (or there is none). The version's
+  /// note names the rule ([noted]).
   final String? iconChange;
 
   final String? _note;
@@ -137,13 +139,11 @@ class PublishedFiles {
   String noted(String note) => _note == null ? note : '$note; $_note';
 }
 
-/// An installed app: its artifact ID, and what became of the bundle's
-/// icon ([PublishedFiles.iconChange]).
+/// An installed app: its artifact ID.
 class Installed {
-  const Installed(this.aid, {this.iconChange});
+  const Installed(this.aid);
 
   final String aid;
-  final String? iconChange;
 }
 
 /// Opens and installs bundles.
@@ -309,7 +309,7 @@ class Installer {
       }
       if (!mine) await store.keepBundle(aid, b.bytes);
       _dropMarker(marker);
-      return Installed(aid, iconChange: files.iconChange);
+      return Installed(aid);
     } on Object catch (e) {
       try {
         await api.deleteArtifact(aid);

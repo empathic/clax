@@ -208,6 +208,54 @@ void main() {
     });
   });
 
+  testWidgets('a bundle whose icon breaks the icon rules: the install '
+      'sheet says Clax redrew it', (tester) async {
+    late Uint8List bytes;
+    await tester.runAsync(() async {
+      await me.ready();
+      bytes = (await makeBundle(
+        lineage: lineageA,
+        files: {
+          'index.html': '<p>hi</p>',
+          'icon.svg':
+              '<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 9 9">'
+              '<title>A & B</title><rect width="9" height="9"/></svg>',
+        },
+      )).bytes;
+    });
+    await run(tester, (c) => flows.openBytes(c, bytes));
+    expect(find.byType(InstallSheet), findsOneWidget);
+    expect(
+      find.text('Its icon broke Clax’s icon rules, so Clax redrew it.'),
+      findsOneWidget,
+    );
+  });
+
+  testWidgets('an update whose icon cannot be redrawn: the update sheet '
+      'says Clax left it out', (tester) async {
+    late Uint8List v2;
+    await tester.runAsync(() async {
+      await me.ready();
+      final v1 = await makeBundle(lineage: lineageA);
+      await me.installer.install(await me.installer.open(v1.bytes));
+      v2 = (await makeBundle(
+        lineage: lineageA,
+        version: 2,
+        files: {
+          'index.html': '<p>v2</p>',
+          'icon.svg':
+              '<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 9 8"/>',
+        },
+      )).bytes;
+    });
+    await run(tester, (c) => flows.openBytes(c, v2));
+    expect(find.text('Update Plant log to v2?'), findsOneWidget);
+    expect(
+      find.text('Its icon broke Clax’s icon rules, so Clax left it out.'),
+      findsOneWidget,
+    );
+  });
+
   testWidgets('an update: checked, landed, then Open', (tester) async {
     late String aid;
     late Uint8List v2;

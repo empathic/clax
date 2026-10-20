@@ -14,6 +14,7 @@ import 'package:flutter/foundation.dart';
 import 'package:flutter/material.dart';
 import 'package:share_plus/share_plus.dart';
 
+import '../agent/icon_svg.dart' show appIconPath;
 import '../bundle/bundle_reader.dart' show BundleError;
 import '../bundle/exporter.dart';
 import '../bundle/installer.dart' hide OpenedBundle;
@@ -465,6 +466,7 @@ class BundleSummary {
     this.svg,
     this.own = false,
     this.seedDocs,
+    this.iconChange,
   });
 
   final String lineage;
@@ -488,9 +490,15 @@ class BundleSummary {
   /// The seed's document count, when it has one.
   final int? seedDocs;
 
-  /// What [opened] shows.
+  /// What becomes of an icon that breaks the icon rules, in a sentence
+  /// ([PublishedFiles.iconChange]); null when it goes as it is.
+  final String? iconChange;
+
+  /// What [opened] shows: its icon as it will be published, none when
+  /// the icon is left out.
   factory BundleSummary.of(svc.OpenedBundle opened) {
     final m = opened.manifest;
+    final published = PublishedFiles.of(opened.bundle);
     return BundleSummary(
       lineage: m.lineage,
       title: m.title,
@@ -499,9 +507,12 @@ class BundleSummary {
       name: m.author.name,
       capabilities: m.capabilities,
       word: m.icon.word,
-      svg: opened.bundle.iconSvg,
+      svg: published.entries.containsKey(appIconPath)
+          ? opened.bundle.iconSvg
+          : null,
       own: opened.fromSelf,
       seedDocs: m.seed?.docs,
+      iconChange: published.iconChange,
     );
   }
 
@@ -555,6 +566,7 @@ class InstallSheet extends StatelessWidget {
           _Bullets('It can ask to:', words),
         if (b.seedDocs case final d?)
           _Para('Comes with ${_count(d, 'document')}'),
+        if (b.iconChange case final c?) _Para(c, small: true),
       ],
       actions: [
         ClaxButton(
@@ -659,6 +671,7 @@ class UpdateSheet extends StatelessWidget {
             'stay.',
             small: true,
           ),
+        if (b.iconChange case final c?) _Para(c, small: true),
       ],
       actions: [
         ClaxButton(
