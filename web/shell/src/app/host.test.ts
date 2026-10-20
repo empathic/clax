@@ -72,6 +72,9 @@ async function appView(opts: { pinned?: number | null; channel?: boolean; init?:
   const remove = m.installHost(window, ctl);
   const uninstall = () => { if (!done) { done = true; remove(); } };
   installed.push(uninstall);
+  // The inspect view loads its handlers' chunk at install; its calls are
+  // handled at once from then on.
+  if (query.includes("inspect=1")) await import("./inspect");
   const frame = await waitFor(() => view.root.querySelector<HTMLIFrameElement>("iframe.frame"), "frame");
   const host = (window as unknown as { claxHost: import("./host").ClaxHost }).claxHost;
   if (opts.init !== false) host.init({ nonce: NONCE });
@@ -1407,7 +1410,8 @@ describe("app mode's inspect view", { timeout: MOUNT_TIMEOUT_MS }, () => {
     hello(other.frame, 1);
     toHost = [];
     other.host.inspect({});
-    expect(ofType("inspection")).toEqual([{ type: "inspection", error: "this view is not the inspect view" }]);
+    // Outside the inspect view the handlers' chunk loads on this first call.
+    await expect.poll(() => ofType("inspection")).toEqual([{ type: "inspection", error: "this view is not the inspect view" }]);
     expect(otherFramed.filter(m => m.type === "clax:inspect")).toEqual([]);
   });
 
@@ -1451,7 +1455,7 @@ describe("app mode's inspect view", { timeout: MOUNT_TIMEOUT_MS }, () => {
     hello(other.frame, 1);
     toHost = [];
     other.host.runTests({ files: ["tests/a.test.js"] });
-    expect(ofType("tests")).toEqual([{ type: "tests", error: "this view is not the inspect view" }]);
+    await expect.poll(() => ofType("tests")).toEqual([{ type: "tests", error: "this view is not the inspect view" }]);
   });
 
   it("runMigration asks the page to run the migration and posts its checked answer", async () => {
@@ -1545,7 +1549,7 @@ describe("app mode's inspect view", { timeout: MOUNT_TIMEOUT_MS }, () => {
     hello(other.frame, 1);
     toHost = [];
     other.host.restoreJournal({ entries: [] });
-    expect(ofType("journalRestored")).toEqual([{ type: "journalRestored", ok: false, error: "this view is not the migration view" }]);
+    await expect.poll(() => ofType("journalRestored")).toEqual([{ type: "journalRestored", ok: false, error: "this view is not the migration view" }]);
   });
 
   it("runMigration refuses a bad order, before the page greets, and outside the migration view", async () => {
@@ -1573,7 +1577,7 @@ describe("app mode's inspect view", { timeout: MOUNT_TIMEOUT_MS }, () => {
       hello(other.frame, 1);
       toHost = [];
       other.host.runMigration({ file: "migrate.js", from: 1, to: 2 });
-      expect(ofType("migration")).toEqual([{ type: "migration", ok: false, error: "this view is not the migration view" }]);
+      await expect.poll(() => ofType("migration")).toEqual([{ type: "migration", ok: false, error: "this view is not the migration view" }]);
     }
   });
 
