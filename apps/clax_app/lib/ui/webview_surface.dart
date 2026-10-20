@@ -52,7 +52,8 @@ const nativeOverlays = ['ask', 'questions', 'notice', 'draft'];
 /// and §5 of docs/superpowers/specs/2026-10-19-in-process-core-design.md):
 /// it is attached to the runner's scheme host ([SchemeHostPort], by
 /// default [SchemeHost.instance]) after every `setNavigationDelegate` and
-/// before any load ([SchemeAttachment]); its requests are answered and its
+/// before any load ([SchemeAttachment]), and a [load] it could not attach
+/// raises a fault and loads nothing; its requests are answered and its
 /// `ClaxHost` messages relayed through the core by a [CoreShellLink]; the
 /// shell's nonce is the one the scheme wrote into the document and the
 /// main frame presented first after the commit, which `claxHost.init`
@@ -289,7 +290,9 @@ class WebViewAppSurface implements AppSurface, CapturableSurface {
   Future<void> load(Uri url) async {
     _own = ShellSession.artifactOf(base, url);
     if (_attachment case final a? when !await a.attached) {
-      _fault("the app's scheme is not attached to the WebView");
+      // Unattached, the WebView would ask the network for the shell's
+      // URL: nothing loads.
+      return _fault("the app's scheme is not attached to the WebView");
     }
     return _loads.load(url);
   }

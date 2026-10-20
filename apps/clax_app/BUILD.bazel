@@ -196,6 +196,7 @@ SUITES = {
     deps = [
         ":clax_app",
         "@clax_app_pub//:flutter_test",
+        "@clax_app_pub//:webview_flutter_platform_interface",
     ],
 ) for suite, files in SUITES.items() if files]
 

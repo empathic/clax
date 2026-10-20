@@ -6,11 +6,15 @@ import 'package:clax_app/core/origins.dart';
 import 'package:clax_app/core/scheme.dart';
 import 'package:clax_app/core/scheme_host.dart';
 import 'package:clax_app/core/shell_link.dart';
+import 'package:clax_app/ui/app_surface.dart';
 import 'package:clax_app/ui/webview_surface.dart';
 import 'package:flutter_test/flutter_test.dart';
 import 'package:webview_flutter/webview_flutter.dart';
+import 'package:webview_flutter_platform_interface/webview_flutter_platform_interface.dart'
+    show WebViewPlatform;
 
 import '../support/fake_core.dart';
+import '../support/fake_webview.dart';
 
 void main() {
   final base = Uri.parse('http://127.0.0.1:7999');
@@ -358,6 +362,144 @@ void main() {
       expect(log.last, 'detach 7');
     });
   });
+
+  group('WebViewAppSurface on the core', () {
+    const aid = '7q3k9mzx2b4t';
+    final origins = AppOrigins.forPlatform(android: true);
+    final base = Uri.parse(origins.shell);
+    final shellUrl = Uri.parse('${origins.shell}/a/$aid?app=1');
+    late FakeCore core;
+    late List<String> log;
+    late FakeWebViewController web;
+    late _SurfaceHost host;
+    late WebViewAppSurface surface;
+    late List<SurfaceFault> faults;
+
+    setUp(() {
+      WebViewPlatform.instance = FakeWebViewPlatform();
+      core = FakeCore()
+        ..on('GET', '/a/{aid}', (r, p) {
+          return CoreResponse(200, const [
+            ('content-type', 'text/html; charset=utf-8'),
+          ], utf8.encode('<html><head></head><body></body></html>'));
+        });
+      log = [];
+      web = FakeWebViewController(log: log);
+      host = _SurfaceHost(log);
+      faults = [];
+    });
+
+    tearDown(() => surface.dispose());
+
+    WebViewAppSurface make() {
+      surface = WebViewAppSurface(
+        base: base,
+        controller: WebViewController.fromPlatform(web),
+        core: core,
+        origins: origins,
+        schemeHost: host,
+      );
+      surface.faults.listen(faults.add);
+      return surface;
+    }
+
+    /// Answers the shell document to navigation [n]; its nonce.
+    Future<String> serve(int n) async {
+      final a = await host.client!.request(
+        SchemeRequest(
+          url: shellUrl,
+          method: 'GET',
+          headers: const {},
+          mainFrame: true,
+          navigation: n,
+        ),
+      );
+      return a.nonce!;
+    }
+
+    void present(String nonce) =>
+        host.client!.channel(jsonEncode({'type': 'ready', 'nonce': nonce}));
+
+    Iterable<String> inits() => web.ran.where((js) => js.contains('h.init('));
+
+    test('adds no ClaxHost channel, and attaches the scheme host after its '
+        'delegate and before the load', () async {
+      await make().load(shellUrl);
+      expect(log, ['delegate', 'attach 7', 'load $shellUrl']);
+      expect(log.where((l) => l.startsWith('channel')), isEmpty);
+      expect(faults, isEmpty);
+    });
+
+    test('a load that the scheme host could not attach raises the fault and '
+        'loads nothing', () async {
+      host.attaches = false;
+      await make().load(shellUrl);
+      await pumpEventQueue();
+      expect(faults.single.detail, contains('not attached'));
+      expect(faults.single.reloading, isFalse);
+      expect(log.where((l) => l.startsWith('load')), isEmpty);
+    });
+
+    test('claxHost.init runs with the pinned nonce once the document has '
+        'loaded and the main frame presented it: load, then pin', () async {
+      await make().load(shellUrl);
+      final n = await serve(1);
+      host.client!.committed(shellUrl, 1);
+      web.started('$shellUrl');
+      web.finished('$shellUrl');
+      await pumpEventQueue();
+      expect(inits(), isEmpty);
+      present(n);
+      await pumpEventQueue();
+      expect(inits().single, contains(n));
+    });
+
+    test('claxHost.init runs once: pin, then load', () async {
+      await make().load(shellUrl);
+      final n = await serve(1);
+      host.client!.committed(shellUrl, 1);
+      web.started('$shellUrl');
+      present(n);
+      await pumpEventQueue();
+      expect(inits(), isEmpty, reason: 'not loaded yet');
+      web.finished('$shellUrl');
+      await pumpEventQueue();
+      expect(inits().single, contains(n));
+      present(n);
+      web.finished('$shellUrl');
+      await pumpEventQueue();
+      expect(inits(), hasLength(1));
+    });
+
+    test('a page start forgets the last load', () async {
+      await make().load(shellUrl);
+      final n = await serve(1);
+      host.client!.committed(shellUrl, 1);
+      web.finished('$shellUrl');
+      web.started('$shellUrl');
+      present(n);
+      await pumpEventQueue();
+      expect(inits(), isEmpty);
+    });
+  });
+}
+
+class _SurfaceHost implements SchemeHostPort {
+  _SurfaceHost(this.log);
+
+  final List<String> log;
+  bool attaches = true;
+  SchemeClient? client;
+
+  @override
+  Future<bool> attach(int webViewId, SchemeClient client) async {
+    log.add('attach $webViewId');
+    this.client = client;
+    return attaches;
+  }
+
+  @override
+  Future<void> detach(int webViewId) async => log.add('detach $webViewId');
 }
 
 class _RecordingHost implements SchemeHostPort {
