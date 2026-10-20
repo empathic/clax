@@ -10,6 +10,7 @@ import type { Working } from "../view/working-model";
 import { type Declared, type Served, declaredConfig, isAvailable } from "./availability";
 import { deviceLink } from "./device-link";
 import { CapError } from "./errors";
+import type { ArrivalGesture } from "./gesture";
 import { Grants, type Prompt, type PromptAnswer, grantsKey } from "./grants";
 import { REGISTRY } from "./registry";
 
@@ -95,7 +96,10 @@ export interface CapEnv {
 export type DbJournal = (e: { path: string; before: Record<string, unknown> | null }) => Promise<void>;
 
 export interface Handler {
-  call(method: string, args: unknown[]): Promise<unknown>;
+  /** `gesture`: the viewer's gesture as judged when the call arrived, given
+   * by a lazy handler (`lazy.ts`) whose chunk loaded after it; without it a
+   * handler judges the gesture itself, now. */
+  call(method: string, args: unknown[], gesture?: ArrivalGesture): Promise<unknown>;
   onEvent?(e: ArtifactEvent): void;
   /** The frame loaded a new document: drop per-document state. */
   reset?(): void;

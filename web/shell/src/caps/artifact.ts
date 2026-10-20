@@ -100,7 +100,9 @@ export const artifactHandler: HandlerFactory = env => {
   }
 
   return {
-    async call(method, args) {
+    async call(method, args, gesture) {
+      // Judged when the call arrived, when the registry's lazy entry gives it.
+      const g = gesture?.strict ?? frameGestureStrict();
       if (disposed) throw closed();
       if (method === "edit" || method === "sync") throw new CapError("invalid_content", "this artifact is not a live doc");
       if (method !== "publish") throw new CapError("capability_removed", `artifact.${String(method)} is not part of this runtime`);
@@ -111,7 +113,6 @@ export const artifactHandler: HandlerFactory = env => {
       if (env.files && !(Object.hasOwn(env.files, page) && isHtml(env.files[page].content_type))) {
         throw new CapError("invalid_content", `${page} is not an HTML page of v${env.version}`);
       }
-      const g = frameGestureStrict();
       if (g === "no_gesture") throw new CapError("rate_limited", NO_GESTURE);
       if (g === "shell_input_recent") throw new CapError("shell_input_recent", SHELL_RECENT);
       const wait = takeSlot(`clax.publish-budget.v1:${env.aid}`, { gapMs: PUBLISH_GAP_MS, perWindow: { n: PUBLISH_PER_MINUTE, ms: 60_000 } });

@@ -561,6 +561,14 @@ export function frameGestureStrict(doc: Document = document): "ok" | "no_gesture
   return now() - lastShellInputAt < SHELL_QUIET_MS ? "shell_input_recent" : "ok";
 }
 
+/** The viewer's gesture as it was when a capability call arrived, judged
+ * before anything is awaited, for a handler whose code loads after the call
+ * (`caps/lazy.ts`): by then a click's activation can have lapsed, or a click
+ * given while it loads would count for a call made without one. `composer` is
+ * `frameGesture()`; `strict`, set for a handler of the strict tier, is
+ * `frameGestureStrict()`. */
+export type ArrivalGesture = { composer: boolean; strict?: ReturnType<typeof frameGestureStrict> };
+
 /** How long a pick start with no counted arrival waits for a pending
  * release attestation from the app's host (see the header). */
 export const PICK_ATTEST_WAIT_MS = 300;

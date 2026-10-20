@@ -106,9 +106,9 @@ export const homeHandler: HandlerFactory = env => {
   };
   deviceLink.events.add(onEvent);
   return {
-    call(method, args) {
+    call(method, args, gesture) {
       if (!(HOME_METHODS as readonly string[]).includes(method)) return Promise.reject(new CapError("capability_removed", `home.${String(method)} is not part of this runtime`));
-      if (!READS.has(method) && !frameGesture()) {
+      if (!READS.has(method) && !(gesture?.composer ?? frameGesture())) {
         return Promise.reject(new CapError("no_gesture", `home.${method} needs the person's tap or key press in the page; call it from a click handler`));
       }
       const call = deviceLink.call;

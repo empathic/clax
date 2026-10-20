@@ -98,11 +98,11 @@ export function deviceHandler(cap: LinkedCap): HandlerFactory {
       local?.stopAll(false);
     };
     return {
-      call(method, args) {
+      call(method, args, gesture) {
         if (!DEVICE_METHODS[cap].includes(method)) return Promise.reject(new CapError("capability_removed", `${cap}.${String(method)} is not part of this runtime`));
         // Everything else acts on the device or opens a system sheet: only
         // from the viewer's tap or key in the page.
-        if (!NO_GESTURE.has(`${cap}.${method}`) && !frameGesture()) {
+        if (!NO_GESTURE.has(`${cap}.${method}`) && !(gesture?.composer ?? frameGesture())) {
           return Promise.reject(new CapError("no_gesture", `${cap}.${method} needs the person's tap or key press in the page; call it from a click handler`));
         }
         if (!plain(args)) return Promise.reject(new CapError("bad_request", `${cap}.${method} takes plain data (strings, numbers, objects)`));
