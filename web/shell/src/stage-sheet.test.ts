@@ -1,9 +1,10 @@
 // The stage island loads the keys sheet's code when the sheet is asked for;
 // if that load fails, it tells the controller, which closes the sheet.
 import { afterEach, expect, it, vi } from "vitest";
+import { freshModules } from "./test/modules";
 
 // The gesture module this test's registry loaded watches the document until its `unwatchShell` runs.
-afterEach(async () => { (await import("./caps/gesture")).unwatchShell(); vi.doUnmock("./ui/KeysSheet.svelte"); vi.resetModules(); });
+afterEach(async () => { (await import("./caps/gesture")).unwatchShell(); vi.doUnmock("./ui/KeysSheet.svelte"); await freshModules(); });
 
 it("a sheet whose code fails to load reaches sheetFailed", async () => {
   vi.resetModules();

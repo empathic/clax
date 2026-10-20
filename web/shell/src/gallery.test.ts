@@ -1,6 +1,7 @@
 import { describe, it, expect, vi, beforeEach, afterEach } from "vitest";
 import { relativeTime } from "./format";
 import { FakeWorker, workerWith } from "./test/fake-worker";
+import { freshModules } from "./test/modules";
 import { MOUNT_TIMEOUT_MS, WAIT_MS } from "./test/timeouts";
 
 describe("relativeTime", () => {
@@ -102,7 +103,7 @@ describe("Gallery", { timeout: MOUNT_TIMEOUT_MS }, () => {
 
   it("names a hosted daemon's site in the bar, for its owner and for anyone else", async () => {
     for (const [token, hostedMe] of [[200, false], [403, true]] as const) {
-      vi.resetModules();
+      await freshModules();
       const calls = stubApi(token);
       const plain = globalThis.fetch as (u: string, i?: RequestInit) => Promise<Response>;
       vi.stubGlobal("fetch", vi.fn(async (url: string, init?: RequestInit) => {
@@ -268,7 +269,7 @@ describe("Gallery", { timeout: MOUNT_TIMEOUT_MS }, () => {
       expect(loaded, String(late)).toBe(false);
       expect(calls.some(c => /^\/api\/(inbox|questions)/.test(c.url)), String(late)).toBe(false);
       vi.doUnmock("./q/index.ts");
-      vi.resetModules();
+      await freshModules();
     }
   });
 
@@ -450,13 +451,14 @@ describe("Gallery and People", { timeout: MOUNT_TIMEOUT_MS }, () => {
       const link = await waitFor(() => root.querySelector<HTMLAnchorElement>(".gbar a.people-link"), `People for the ${who}`);
       expect(link.getAttribute("href")).toBe("/people");
       expect(link.hasAttribute("aria-current")).toBe(false);
-      unmountGallery!(); unmountGallery = null; vi.resetModules();
+      unmountGallery!(); unmountGallery = null; await freshModules();
     }
     const calls = stubAs("viewer");
     const root = await mountAt("/");
     await waitFor(() => root.querySelector("a.card"), "the cards");
     await waitFor(() => calls.some(c => c.url === "/api/viewers/me") && calls.some(c => c.url === "/api/token"), "the viewer and token requests");
-    await new Promise(r => setTimeout(r, 50));
+    // The header's links come from the lazy module: once it has loaded, the viewer is known too.
+    await vi.dynamicImportSettled();
     expect(root.querySelector(".people-link")).toBeNull();
   });
 
@@ -536,7 +538,7 @@ describe("Gallery tags", { timeout: MOUNT_TIMEOUT_MS }, () => {
     expect(titles(root)).toEqual(["Pinned one ★"]);
     // A viewer without the token reads the list.
     expect(root.querySelector(".tagbar a.tb-m")!.textContent).toBe("All tags");
-    unmountGallery!(); unmountGallery = null; vi.resetModules();
+    unmountGallery!(); unmountGallery = null; await freshModules();
     tagsOn = {};
     stubApi();
     const bare = await mountGallery();
@@ -582,7 +584,7 @@ describe("Gallery tags", { timeout: MOUNT_TIMEOUT_MS }, () => {
         await new Promise(r => setTimeout(r, 20));
         expect(m.root.querySelector(".terr")!.textContent).toBe("Could not delete Q4: no such tag");
       }
-      unmountGallery(); unmountGallery = null; vi.resetModules(); vi.unstubAllGlobals();
+      unmountGallery(); unmountGallery = null; await freshModules(); vi.unstubAllGlobals();
     }
   });
 });

@@ -1,5 +1,6 @@
 import { readFileSync } from "node:fs";
 import { FakeWorker } from "./test/fake-worker";
+import { freshModules } from "./test/modules";
 import { dispatchTrusted } from "../../bridge/test/trusted";
 import { join } from "node:path";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
@@ -229,7 +230,7 @@ describe("the first load from the daemon's HTML", { timeout: MOUNT_TIMEOUT_MS },
     expect(document.cookie).toContain("clax_frame=subdomain");
     view.unmount();
     sessionStorage.clear();
-    vi.resetModules();
+    await freshModules();
     stubFetch(async () => { throw new TypeError("no such host"); });
     const replaced = served(SUBDOMAIN);
     const guess = replaced.querySelector("iframe")!;
