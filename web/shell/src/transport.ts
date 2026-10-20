@@ -14,9 +14,10 @@
 //   style of its own: the app owns liveness, and the core runs in its
 //   process;
 // - installs `window.claxTransport`, where the app answers: `init(nonce)`,
-//   `callResult(nonce, id, r)`, `streamBlock(nonce, id, text)` and
-//   `streamEnd(nonce, id)`. Every shell document has it, whichever entry
-//   (gallery or artifact view) it loads. It also carries the meta's `embed`
+//   `callResult(nonce, id, r)`, `callResultChunk(nonce, id, n, last,
+//   body64)`, `streamBlock(nonce, id, text)` and `streamEnd(nonce, id)`.
+//   Every shell document has it, whichever entry (gallery or artifact
+//   view) it loads. It also carries the meta's `embed`
 //   settings, which the shell's entries read there (`hostEmbed`), so no
 //   browser entry carries the meta's parser.
 //
@@ -36,7 +37,9 @@
 //   n, last, body64}` messages that follow, `n` from 0, each one `CHUNK`
 //   bytes of the body (the last one the rest) in its own base64. The app
 //   answers with `claxTransport.callResult(nonce, id, {status, headers, body
-//   | body64})`.
+//   | body64})`; an answer of more than 1 MiB with `callResult(nonce, id,
+//   {status, headers, chunked: true})`, then its body in
+//   `callResultChunk(nonce, id, n, last, body64)` calls, `n` from 0.
 // - `callAbort {id}`: the call's signal aborted; its answer is dropped.
 // - `subscribe {id, lastEventId?}`: `GET /api/stream`, from the resume point
 //   the request names (its `Last-Event-ID`, or its `last_event_id` query),
@@ -78,7 +81,7 @@ export const CHUNK = 1 << 20;
 export const CHUNKED_OVER = 8 << 20;
 
 /** The app's answer to a `call`. */
-export type CallResult = { status: number; headers: [string, string][]; body?: string | null; body64?: string | null };
+export type CallResult = { status: number; headers: [string, string][]; body?: string | null; body64?: string | null; chunked?: boolean };
 
 /** The app's channel, `window.ClaxHost`. */
 export type Channel = { postMessage(m: string): void };
@@ -93,6 +96,9 @@ export type Transport = {
    * waiting call (aborted, or never made), or for another load, does
    * nothing. */
   callResult(nonce: string, id: number, r: CallResult): void;
+  /** Adds part `n` (from 0) of a `chunked` result's body to call `id`;
+   * the `last` one answers it. One out of order fails the call. */
+  callResultChunk(nonce: string, id: number, n: number, last: boolean, body64: string): void;
   /** Adds `text` to stream `id` of the load whose nonce is `nonce`. */
   streamBlock(nonce: string, id: number, text: string): void;
   /** Ends stream `id` of the load whose nonce is `nonce` (the core closed
@@ -118,8 +124,9 @@ function toBase64(bytes: Uint8Array): string {
   return btoa(s);
 }
 
-function fromBase64(text: string): Uint8Array {
-  const s = atob(text);
+/** The bytes of `text`, base64, or of its parts each in its own base64. */
+function fromBase64(text: string | string[]): Uint8Array {
+  const s = [text].flat().map(t => atob(t)).join("");
   const out = new Uint8Array(s.length);
   for (let i = 0; i < s.length; i++) out[i] = s.charCodeAt(i);
   return out;
@@ -147,6 +154,8 @@ export function transport(channel: () => Channel | undefined, fallback: typeof f
   // The calls waiting for their answer and the open streams, by ID.
   const calls = new Map<number, Pending>();
   const streams = new Map<number, ReadableStreamDefaultController<Uint8Array>>();
+  // The chunked results being received: their head and their parts' base64 so far.
+  const parts = new Map<number, [CallResult, string[]]>();
   let lastId = 0;
   let nonce: string | null = null;
   let opened = () => {};
@@ -223,6 +232,7 @@ export function transport(channel: () => Channel | undefined, fallback: typeof f
         const p = calls.get(id);
         if (!p) return;
         calls.delete(id);
+        parts.delete(id);
         post({ type: "callAbort", id });
         p.reject(abortError(signal));
       };
@@ -230,6 +240,22 @@ export function transport(channel: () => Channel | undefined, fallback: typeof f
       void answer.finally(() => signal.removeEventListener("abort", onAbort)).catch(() => {});
     }
     return answer;
+  };
+
+  /** Answers call `id` with what `r()` gives: a result, and its body's
+   * bytes when they came apart from it. Fails the call when `r()` throws. */
+  const settle = (id: number, r: () => [CallResult, Uint8Array | null]) => {
+    const p = calls.get(id)!;
+    calls.delete(id);
+    parts.delete(id);
+    try {
+      const [{ status, headers, body64, body: text }, joined] = r();
+      const bytes = joined ?? (typeof body64 === "string" ? fromBase64(body64) : null);
+      const body = NULL_BODY.has(status) ? null : (bytes ?? text ?? null);
+      p.resolve(new Response(body as BodyInit | null, { status, headers }));
+    } catch (e) {
+      p.reject(new TypeError(`the app answered a malformed result: ${String(e)}`));
+    }
   };
 
   const init = (n: unknown) => {
@@ -243,17 +269,16 @@ export function transport(channel: () => Channel | undefined, fallback: typeof f
     fetch: hostFetch,
     init,
     callResult(n, id, r) {
-      const p = ours(n) ? calls.get(id) : undefined;
-      if (!p) return;
-      calls.delete(id);
-      try {
-        const status = r.status;
-        const bytes = typeof r.body64 === "string" ? fromBase64(r.body64) : null;
-        const body = NULL_BODY.has(status) ? null : (bytes ?? r.body ?? null);
-        p.resolve(new Response(body as BodyInit | null, { status, headers: r.headers }));
-      } catch (e) {
-        p.reject(new TypeError(`the app answered a malformed result: ${String(e)}`));
-      }
+      if (!ours(n) || !calls.has(id)) return;
+      if (r?.chunked) parts.set(id, [r, []]);
+      else settle(id, () => [r, null]);
+    },
+    callResultChunk(n, id, i, last, body64) {
+      const c = ours(n) && calls.has(id) ? parts.get(id) : undefined;
+      if (!c) return;
+      const [r, got] = c;
+      if (i !== got.push(body64) - 1) settle(id, () => { throw new Error(`part ${i} out of order`); });
+      else if (last) settle(id, () => [r, fromBase64(got)]);
     },
     streamBlock(n, id, text) {
       const c = ours(n) ? streams.get(id) : undefined;
