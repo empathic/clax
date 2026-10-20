@@ -297,7 +297,8 @@ WebView's shell document (§5.2).
 4. opens the store with `Store::open_reporting`: the pre-migration backup
    (`clax-store/src/backup.rs`), `adopt_earlier_flutter_app`, the migrations,
    progress reported as `{"type":"opening","phase":…}` on the open port;
-5. assembles `AppState` with `embed: Some(EmbedOrigins)` (§4.3) and starts
+5. assembles `AppState` with `embed: Some(EmbedOrigins)` from
+   `<home>/embed.json` (§4.1, §4.3) and starts
    the core (§2.1); posts `ready`.
 
 A failed migration posts `failed` with `code: "migration_failed"` and the
@@ -333,9 +334,11 @@ becomes a `call` that cannot fail on transport, and its 4xx is logged).
 `.invalid` is reserved (RFC 2606): if interception ever misses a request,
 it fails to resolve rather than reach a network. One Dart function,
 `lib/core/origins.dart` `AppOrigins.forPlatform()`, gives the shell origin
-and the content origin of an ID; the core is told both at open
-(`EmbedOrigins { shell: String, content: String }`, the content one a
-template with `{id}`) and uses them in boot data and in the content policy.
+and the content origin of an ID. The app writes both to `<home>/embed.json`
+(`{"shell": …, "content": …}`, the content one a template with `{id}`)
+before `clax_embed_open`, which reads it (`failed` with `no_origins`
+without it); the core keeps them as `EmbedOrigins` and uses them in the
+shell documents and in the content policy.
 
 ### 4.2 Answering a request
 
@@ -443,8 +446,9 @@ a platform view of the app's own for the shell, is recorded.
 The shell makes its requests with `fetch` in about forty places
 (`api.ts`, `threads.ts`, `caps/*`, `stream-hub.ts`, …). Rather than touch
 each, app mode replaces the shell document's `fetch` once, at boot, with
-`hostFetch` (`web/shell/src/transport.ts`), when the boot data says
-`transport: "host"` (the core writes it when `AppState.embed` is set):
+`hostFetch` (`web/shell/src/transport.ts`), when the document carries
+`<meta name="clax-embed" content='{"transport":"host",…}'>`, which the core
+writes into every shell document when `AppState.embed` is set:
 
 - a request to the shell's own origin under `/api/` is posted on
   `ClaxHost` as
@@ -496,8 +500,7 @@ its topics, `visibility.ts`).
 
 ### 5.3 What the browser keeps
 
-The browser shell (`?app=1` absent, or boot data without `transport:
-"host"`) is unchanged: `fetch`, the SharedWorker hub over SSE, the notices.
+The browser shell (no `clax-embed` meta) is unchanged: `fetch`, the SharedWorker hub over SSE, the notices.
 `web/e2e` runs every existing spec against the daemon as before.
 
 ## 6. The app over the core
@@ -698,6 +701,13 @@ CREATE TABLE agent_read_consents (    -- was agent-read-consent.json
     source TEXT NOT NULL,
     created_at TEXT NOT NULL,
     PRIMARY KEY (reader, source)
+);
+CREATE TABLE draft_renders (          -- the render gate (§8.2)
+    draft_id TEXT NOT NULL,
+    digest TEXT NOT NULL,
+    clean INTEGER NOT NULL,
+    created_at TEXT NOT NULL,
+    PRIMARY KEY (draft_id, digest)
 );
 CREATE TABLE client_imports (         -- one row per one-time import (§9)
     key TEXT PRIMARY KEY,
