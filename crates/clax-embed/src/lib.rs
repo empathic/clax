@@ -213,6 +213,8 @@ pub fn ffi_call(core: u64, req: &[u8], port: i64, tag: i64) -> i32 {
             let req = bytes::Bytes::copy_from_slice(req);
             let call = embed.clone();
             let post = r.post.clone();
+            // Counted until its answer is posted, so `closed` follows it.
+            let counted = embed.count_call();
             embed.spawn(async move {
                 let answered = AssertUnwindSafe(call.call_owned(req, tag.to_vec()))
                     .catch_unwind()
@@ -230,6 +232,7 @@ pub fn ffi_call(core: u64, req: &[u8], port: i64, tag: i64) -> i32 {
                 if !post_bytes(&*post, port, &bytes) {
                     tracing::debug!(port, "a call's port closed before its answer");
                 }
+                drop(counted);
             });
             0
         },
@@ -291,4 +294,94 @@ pub fn ffi_close(core: u64) -> i32 {
         || 0,
         0,
     )
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use std::sync::{Condvar, OnceLock};
+
+    /// Every message posted, in order, and how many calls the core counted
+    /// in flight as each answer (port 2) was posted.
+    #[derive(Default)]
+    struct Ordered {
+        core: OnceLock<Embed>,
+        posted: Mutex<Vec<(i64, Vec<u8>, usize)>>,
+        arrived: Condvar,
+    }
+
+    impl Post for Ordered {
+        fn post(&self, port: i64, bytes: &[u8]) -> bool {
+            let counted = match (port, self.core.get()) {
+                (2, Some(e)) => e.in_flight(),
+                _ => 0,
+            };
+            let mut posted = self.posted.lock().unwrap();
+            posted.push((port, bytes.to_vec(), counted));
+            self.arrived.notify_all();
+            true
+        }
+    }
+
+    impl Ordered {
+        /// Waits for a message on `port` that contains `text`; its index.
+        fn wait(&self, port: i64, text: &str) -> usize {
+            let mut posted = self.posted.lock().unwrap();
+            loop {
+                if let Some(i) = posted
+                    .iter()
+                    .position(|(p, b, _)| *p == port && String::from_utf8_lossy(b).contains(text))
+                {
+                    return i;
+                }
+                posted = self.arrived.wait(posted).unwrap();
+            }
+        }
+    }
+
+    fn home(dir: &std::path::Path) -> std::path::PathBuf {
+        let home = dir.join("home");
+        std::fs::create_dir_all(&home).unwrap();
+        std::fs::write(
+            home.join("embed.json"),
+            r#"{"shell": "clax://app", "content": "clax://{id}.c"}"#,
+        )
+        .unwrap();
+        home
+    }
+
+    fn request(path: &str) -> Vec<u8> {
+        frame::encode(
+            &frame::RequestHead {
+                method: "GET".into(),
+                path: path.into(),
+                headers: vec![],
+                as_: frame::As::Owner,
+                host: None,
+            },
+            b"",
+        )
+    }
+
+    #[test]
+    fn a_call_is_counted_until_its_answer_is_posted_so_closed_comes_after_it() {
+        let dir = tempfile::tempdir().unwrap();
+        let home = home(dir.path());
+        let posts = Arc::new(Ordered::default());
+        let core = ffi_open(home.to_str().unwrap().as_bytes(), posts.clone(), 1);
+        let embed = registered(core).and_then(|r| r.embed).unwrap();
+        assert!(posts.core.set(embed).is_ok());
+        posts.wait(1, "\"ready\"");
+        assert_eq!(ffi_call(core, &request("/api/artifacts"), 2, 7), 0);
+        assert_eq!(ffi_close(core), 0);
+        let closed = posts.wait(1, "\"closed\"");
+        // Answered 200, or 503 core_closed when the close began first.
+        let answered = posts.wait(2, "");
+        let counted = posts.posted.lock().unwrap()[answered].2;
+        assert!(
+            counted >= 1,
+            "the call was not counted while its answer was posted"
+        );
+        assert!(answered < closed, "closed came before the answer");
+    }
 }

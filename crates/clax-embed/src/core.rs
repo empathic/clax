@@ -177,6 +177,16 @@ impl Drop for InFlight<'_> {
     }
 }
 
+/// A call counted in [`Shared::in_flight`] until it is dropped, once its
+/// answer has been delivered ([`Embed::count_call`]).
+pub(crate) struct Counted(Arc<Shared>);
+
+impl Drop for Counted {
+    fn drop(&mut self) {
+        self.0.in_flight.send_modify(|n| *n -= 1);
+    }
+}
+
 impl Shared {
     /// Unlocks the home and forgets it in [`OPEN`]; once.
     fn release(&self) {
@@ -383,6 +393,22 @@ impl Embed {
                 _ => Err("core_closed"),
             }
         }
+    }
+
+    /// Counts a call in flight until the returned guard is dropped: a host
+    /// that delivers the answer after [`Embed::call`] returns holds it
+    /// until then, so a close, which waits for the calls in flight, posts
+    /// `Closed` only after every answer it drained was delivered.
+    pub(crate) fn count_call(&self) -> Counted {
+        let sh = self.inner.shared.clone();
+        sh.in_flight.send_modify(|n| *n += 1);
+        Counted(sh)
+    }
+
+    /// Tests: the calls counted in flight.
+    #[cfg(test)]
+    pub(crate) fn in_flight(&self) -> usize {
+        *self.inner.shared.in_flight.borrow()
     }
 
     /// Spawns `fut` on the core's runtime.
