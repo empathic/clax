@@ -1,4 +1,4 @@
-import 'package:clax_app/daemon/clock.dart';
+import 'package:clax_app/platform/clock.dart';
 import 'package:clax_app/ui/swipe.dart';
 import 'package:flutter/gestures.dart';
 import 'package:flutter_test/flutter_test.dart';

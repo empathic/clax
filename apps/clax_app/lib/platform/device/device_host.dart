@@ -27,7 +27,7 @@ import 'dart:math' as math;
 
 import 'package:flutter/foundation.dart';
 
-import '../../daemon/clock.dart';
+import '../clock.dart';
 import '../../ui/host_protocol.dart';
 import 'device_grants.dart';
 import 'device_ports.dart';

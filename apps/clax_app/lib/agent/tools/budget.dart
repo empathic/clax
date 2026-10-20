@@ -3,7 +3,7 @@ library;
 
 import 'dart:async';
 
-import '../../daemon/clock.dart';
+import '../../platform/clock.dart';
 import '../pricing.dart';
 
 /// The limits of one run. A run that reaches a hard cap stops calling the

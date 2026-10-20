@@ -3,7 +3,7 @@ import 'dart:convert';
 import 'dart:typed_data';
 
 import '../clax/api.dart';
-import '../daemon/clock.dart';
+import '../platform/clock.dart';
 import 'apply.dart';
 import 'asked.dart';
 import 'backend.dart';

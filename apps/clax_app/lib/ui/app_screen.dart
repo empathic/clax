@@ -9,7 +9,7 @@ import '../agent/plan.dart';
 import '../agent/timings.dart';
 import '../agent/worker.dart';
 import '../clax/api.dart';
-import '../daemon/clock.dart';
+import '../platform/clock.dart';
 import '../home/home_host.dart';
 import '../platform/app_notice.dart';
 import '../platform/device/device_host.dart';

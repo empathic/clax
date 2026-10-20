@@ -30,7 +30,7 @@ import 'package:clax_app/agent/prompt.dart';
 import 'package:clax_app/agent/runner/messages_runner.dart';
 import 'package:clax_app/agent/worker.dart';
 import 'package:clax_app/clax/http_api.dart';
-import 'package:clax_app/daemon/clock.dart';
+import 'package:clax_app/platform/clock.dart';
 import 'package:clax_app/daemon/exe_locator.dart';
 import 'package:clax_app/daemon/health.dart';
 import 'package:clax_app/daemon/ports.dart';

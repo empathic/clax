@@ -4,7 +4,7 @@ library;
 import 'dart:async';
 
 import '../clax/api.dart';
-import '../daemon/clock.dart';
+import '../platform/clock.dart';
 import 'home_settings.dart';
 
 /// Runs [install] (finding or installing the home app, as

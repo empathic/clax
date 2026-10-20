@@ -38,7 +38,7 @@ import 'package:clax_app/agent/plan.dart';
 import 'package:clax_app/agent/timings.dart';
 import 'package:clax_app/agent/worker.dart';
 import 'package:clax_app/clax/fake_api.dart';
-import 'package:clax_app/daemon/clock.dart';
+import 'package:clax_app/platform/clock.dart';
 import 'package:clax_app/platform/app_notice.dart';
 import 'package:clax_app/platform/device/device_grants.dart';
 import 'package:clax_app/platform/device/device_host.dart';

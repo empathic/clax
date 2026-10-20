@@ -21,7 +21,7 @@ import 'dart:ui' as ui;
 import 'package:flutter/foundation.dart';
 import 'package:flutter/material.dart';
 
-import '../daemon/clock.dart';
+import '../platform/clock.dart';
 import '../ui/app_surface.dart';
 
 /// App [id]'s tile at [rect], in CSS (logical) pixels from the page's

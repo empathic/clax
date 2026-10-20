@@ -1,7 +1,7 @@
 import 'dart:async';
 
 import 'package:clax_app/clax/api.dart';
-import 'package:clax_app/daemon/clock.dart';
+import 'package:clax_app/platform/clock.dart';
 import 'package:clax_app/home/home_keeper.dart';
 import 'package:clax_app/home/home_settings.dart';
 import 'package:flutter_test/flutter_test.dart';

@@ -3,7 +3,7 @@ import 'dart:io';
 
 import 'package:flutter/foundation.dart';
 
-import '../daemon/clock.dart';
+import 'clock.dart';
 
 /// Whether the Claude API can be reached. Clax's daemon is on the device,
 /// so comments and new apps are kept whatever the network does; what needs

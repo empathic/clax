@@ -4,7 +4,7 @@ import 'package:flutter/foundation.dart';
 import 'package:flutter/widgets.dart';
 import 'package:webview_flutter/webview_flutter.dart';
 
-import '../daemon/clock.dart';
+import '../platform/clock.dart';
 
 /// A view that shows HTML handed to it whole, for the making screen's live
 /// preview of a new app's `index.html` as it is written.

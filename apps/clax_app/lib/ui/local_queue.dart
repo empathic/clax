@@ -6,7 +6,7 @@ import '../agent/backend.dart' show AgentError, AgentErrorKind;
 import '../agent/loop.dart' show MakeStopped;
 import '../agent/progress.dart';
 import '../agent/worker.dart';
-import '../daemon/clock.dart';
+import '../platform/clock.dart';
 import '../platform/pending_make.dart';
 import '../queue/client.dart';
 import 'make_service.dart';

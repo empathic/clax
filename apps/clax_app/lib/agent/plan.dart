@@ -7,7 +7,7 @@ import 'dart:async';
 import 'dart:convert';
 import 'dart:io';
 
-import '../daemon/clock.dart';
+import '../platform/clock.dart';
 import 'tools/tool_spec.dart';
 import 'tools/toolbox.dart';
 

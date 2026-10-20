@@ -1,7 +1,7 @@
 import 'dart:async';
 import 'dart:isolate';
 
-import 'package:clax_app/daemon/clock.dart';
+import 'package:clax_app/platform/clock.dart';
 import 'package:clax_app/queue/codec.dart';
 import 'package:clax_app/queue/effect.dart';
 import 'package:clax_app/queue/isolate_client.dart';

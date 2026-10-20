@@ -1,6 +1,6 @@
 import 'package:flutter/material.dart';
 
-import '../daemon/clock.dart';
+import '../platform/clock.dart';
 import 'kit/mark.dart';
 import 'theme.dart';
 import 'tokens.g.dart';

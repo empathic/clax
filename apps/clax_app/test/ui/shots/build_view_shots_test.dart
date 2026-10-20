@@ -7,7 +7,7 @@ import 'dart:async';
 import 'package:clax_app/agent/plan.dart';
 import 'package:clax_app/agent/progress.dart';
 import 'package:clax_app/agent/worker.dart';
-import 'package:clax_app/daemon/clock.dart';
+import 'package:clax_app/platform/clock.dart';
 import 'package:clax_app/ui/build_plan.dart';
 import 'package:clax_app/ui/making_preview.dart';
 import 'package:clax_app/ui/making_screen.dart';

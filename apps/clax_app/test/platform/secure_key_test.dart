@@ -1,6 +1,5 @@
 import 'dart:async';
 
-import 'package:clax_app/daemon/daemon_key.dart';
 import 'package:clax_app/platform/secure_key.dart';
 import 'package:flutter_secure_storage/flutter_secure_storage.dart';
 import 'package:flutter_test/flutter_test.dart';
@@ -158,19 +157,36 @@ void main() {
   });
 
   test(
-    'the daemon key over the cache reads storage once across writes',
+    'a saved or removed key is reported; the same key is not',
+    () async {
+      final inner = CachedSecureKey(CountingKey());
+      var changes = 0;
+      final key = NotifyingSecureKey(inner, onChanged: () async => changes++);
+      await key.write('sk-a');
+      expect((await key.read(), changes), ('sk-a', 1));
+      await key.write(' sk-a ');
+      expect(changes, 1);
+      await key.write('sk-b');
+      expect(changes, 2);
+      await key.write(null);
+      expect((await key.read(), changes), (null, 3));
+    },
+  );
+
+  test(
+    'the notifying key over the cache reads storage once across writes',
     () async {
       final inner = CountingKey('sk-a');
-      var restarts = 0;
-      final key = DaemonKey(
+      var changes = 0;
+      final key = NotifyingSecureKey(
         CachedSecureKey(inner),
-        onChanged: () async => restarts++,
+        onChanged: () async => changes++,
       );
       await key.read();
       await key.write('sk-b');
       await key.write('sk-b');
       await key.read();
-      expect((inner.reads, inner.writes, restarts), (1, 2, 1));
+      expect((inner.reads, inner.writes, changes), (1, 2, 1));
     },
   );
 }

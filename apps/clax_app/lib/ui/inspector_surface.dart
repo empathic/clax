@@ -9,7 +9,7 @@ import 'package:flutter/foundation.dart';
 import 'package:flutter/widgets.dart';
 
 import '../agent/inspector.dart';
-import '../daemon/clock.dart';
+import '../platform/clock.dart';
 import 'app_surface.dart';
 import 'host_protocol.dart';
 import 'webview_surface.dart' show coreShellBase;

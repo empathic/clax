@@ -4,7 +4,7 @@ import 'dart:ui' as ui;
 import 'package:clax_app/agent/failure.dart';
 import 'package:clax_app/agent/progress.dart';
 import 'package:clax_app/agent/timings.dart';
-import 'package:clax_app/daemon/clock.dart';
+import 'package:clax_app/platform/clock.dart';
 import 'package:clax_app/ui/change_tracker.dart';
 import 'package:clax_app/ui/kit/verbs.dart';
 import 'package:clax_app/ui/theme.dart';

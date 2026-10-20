@@ -6,7 +6,7 @@ import 'package:flutter/material.dart';
 import 'package:flutter/rendering.dart';
 import 'package:flutter/services.dart';
 
-import '../../daemon/clock.dart';
+import '../../platform/clock.dart';
 import '../theme.dart';
 import '../tokens.g.dart';
 import 'button.dart';

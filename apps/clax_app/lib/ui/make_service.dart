@@ -3,7 +3,7 @@ import 'dart:async';
 import 'package:flutter/foundation.dart';
 
 import '../agent/loop.dart' show MakeStopped;
-import '../daemon/clock.dart';
+import '../platform/clock.dart';
 import '../platform/pending_make.dart';
 import '../queue/client.dart';
 import 'local_queue.dart';

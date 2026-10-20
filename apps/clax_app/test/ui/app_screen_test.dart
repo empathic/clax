@@ -7,7 +7,7 @@ import 'package:clax_app/agent/timings.dart';
 import 'package:clax_app/agent/worker.dart';
 import 'package:clax_app/clax/api.dart';
 import 'package:clax_app/clax/fake_api.dart';
-import 'package:clax_app/daemon/clock.dart';
+import 'package:clax_app/platform/clock.dart';
 import 'package:clax_app/platform/app_notice.dart';
 import 'package:clax_app/platform/settings_store.dart';
 import 'package:clax_app/queue/client.dart' hide Intent;

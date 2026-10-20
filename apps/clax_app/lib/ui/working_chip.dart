@@ -6,7 +6,7 @@ import '../agent/failure.dart'
     show keepGoingIn, offersKeepGoing, parseFailureReply;
 import '../agent/plan.dart';
 import '../agent/worker.dart';
-import '../daemon/clock.dart';
+import '../platform/clock.dart';
 import 'build_plan.dart';
 import 'kit/mark.dart';
 import 'kit/verbs.dart';

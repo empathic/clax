@@ -12,7 +12,7 @@ import '../agent/request.dart';
 import '../agent/timings.dart';
 import '../agent/plan.dart';
 import '../agent/worker.dart';
-import '../daemon/clock.dart';
+import '../platform/clock.dart';
 import 'build_plan.dart';
 import 'developer.dart';
 import 'haiku.dart';

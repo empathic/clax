@@ -12,7 +12,7 @@ import '../core/core_client.dart';
 import '../core/origins.dart';
 import '../core/scheme_host.dart';
 import '../core/shell_link.dart';
-import '../daemon/clock.dart';
+import '../platform/clock.dart';
 import 'app_surface.dart';
 import 'daemon_cookie.dart';
 import 'host_protocol.dart';

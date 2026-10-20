@@ -3,7 +3,7 @@ import 'dart:async';
 import 'package:flutter/material.dart';
 
 import '../clax/api.dart' show ArtifactSummary;
-import '../daemon/clock.dart';
+import '../platform/clock.dart';
 import 'app_icon.dart';
 import 'kit/kit.dart';
 import 'log_details.dart';

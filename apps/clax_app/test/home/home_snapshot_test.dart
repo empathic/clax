@@ -4,7 +4,7 @@ import 'dart:typed_data';
 import 'dart:ui' as ui;
 
 import 'package:clax_app/clax/fake_api.dart';
-import 'package:clax_app/daemon/clock.dart';
+import 'package:clax_app/platform/clock.dart';
 import 'package:clax_app/home/home_host.dart';
 import 'package:clax_app/home/home_route.dart';
 import 'package:clax_app/home/home_settings.dart';

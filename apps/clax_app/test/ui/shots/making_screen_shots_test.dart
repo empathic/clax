@@ -7,7 +7,7 @@ import 'dart:async';
 
 import 'package:clax_app/agent/loop.dart' show MakeStopped;
 import 'package:clax_app/agent/progress.dart';
-import 'package:clax_app/daemon/clock.dart';
+import 'package:clax_app/platform/clock.dart';
 import 'package:clax_app/ui/developer.dart';
 import 'package:clax_app/ui/making_preview.dart';
 import 'package:clax_app/ui/making_screen.dart';

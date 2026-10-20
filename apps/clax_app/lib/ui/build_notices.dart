@@ -2,7 +2,7 @@ import 'dart:async';
 
 import '../agent/plan.dart';
 import '../agent/worker.dart';
-import '../daemon/clock.dart';
+import '../platform/clock.dart';
 import '../platform/background_work.dart';
 import 'build_plan.dart';
 import 'kit/verbs.dart';

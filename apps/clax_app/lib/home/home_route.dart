@@ -2,7 +2,7 @@ import 'dart:async';
 
 import 'package:flutter/widgets.dart';
 
-import '../daemon/clock.dart';
+import '../platform/clock.dart';
 import 'home_host.dart';
 import 'home_recovery.dart';
 import 'home_snapshot.dart';

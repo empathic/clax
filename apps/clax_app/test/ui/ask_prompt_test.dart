@@ -1,6 +1,6 @@
 import 'dart:async';
 
-import 'package:clax_app/daemon/clock.dart';
+import 'package:clax_app/platform/clock.dart';
 import 'package:clax_app/ui/ask_prompt.dart';
 import 'package:clax_app/ui/host_protocol.dart';
 import 'package:clax_app/ui/kit/toggles.dart';

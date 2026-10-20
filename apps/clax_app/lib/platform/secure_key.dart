@@ -143,3 +143,26 @@ class CachedSecureKey implements SecureKey {
     _value = Future.value((t == null || t.isEmpty) ? null : t);
   }
 }
+
+/// A [SecureKey] that reports a changed key: after a [write] that saved
+/// or removed a key it awaits [onChanged] (the core host's `keyChanged`,
+/// which puts the key into the core for pages' `sample()` calls). A write
+/// that leaves the saved key as it was calls nothing.
+class NotifyingSecureKey implements SecureKey {
+  NotifyingSecureKey(this._inner, {required this.onChanged});
+
+  final SecureKey _inner;
+
+  /// Called after a write that saved or removed a key.
+  final Future<void> Function() onChanged;
+
+  @override
+  Future<String?> read() => _inner.read();
+
+  @override
+  Future<void> write(String? key) async {
+    final before = await _inner.read();
+    await _inner.write(key);
+    if (await _inner.read() != before) await onChanged();
+  }
+}

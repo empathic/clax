@@ -19,7 +19,7 @@ import 'package:clax_app/agent/progress.dart';
 import 'package:clax_app/agent/timings.dart';
 import 'package:clax_app/agent/worker.dart';
 import 'package:clax_app/clax/api.dart';
-import 'package:clax_app/daemon/clock.dart';
+import 'package:clax_app/platform/clock.dart';
 import 'package:clax_app/daemon/supervisor.dart' show DaemonEndpoint;
 
 import 'eval_config.dart';

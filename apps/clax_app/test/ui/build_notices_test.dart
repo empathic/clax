@@ -3,7 +3,7 @@ import 'dart:async';
 import 'package:clax_app/agent/plan.dart';
 import 'package:clax_app/agent/progress.dart';
 import 'package:clax_app/agent/worker.dart';
-import 'package:clax_app/daemon/clock.dart';
+import 'package:clax_app/platform/clock.dart';
 import 'package:clax_app/platform/background_work.dart';
 import 'package:clax_app/ui/build_notices.dart';
 import 'package:clax_app/ui/kit/verbs.dart';

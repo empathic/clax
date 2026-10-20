@@ -1,6 +1,6 @@
 import 'package:flutter/gestures.dart';
 
-import '../daemon/clock.dart';
+import '../platform/clock.dart';
 
 /// Recognizes a two-finger horizontal swipe from raw pointer events, fed by
 /// a `Listener` that stays out of the gesture arena (so the WebView under

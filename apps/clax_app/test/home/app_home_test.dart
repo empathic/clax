@@ -4,7 +4,7 @@ import 'package:clax_app/agent/prompt.dart';
 import 'package:clax_app/agent/timings.dart';
 import 'package:clax_app/app.dart';
 import 'package:clax_app/clax/fake_api.dart';
-import 'package:clax_app/daemon/clock.dart';
+import 'package:clax_app/platform/clock.dart';
 import 'package:clax_app/core/core_client.dart';
 import 'package:clax_app/home/home_settings.dart';
 import 'package:clax_app/home/home_snapshot.dart';

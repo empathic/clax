@@ -5,7 +5,7 @@ import 'package:clax_app/agent/tools/budget.dart';
 import 'package:clax_app/agent/tools/draft.dart';
 import 'package:clax_app/agent/tools/file_tools.dart';
 import 'package:clax_app/agent/tools/toolbox.dart';
-import 'package:clax_app/daemon/clock.dart';
+import 'package:clax_app/platform/clock.dart';
 
 /// A clock that moves only when a test advances it; a [delay] completes
 /// once [advance] reaches its end.

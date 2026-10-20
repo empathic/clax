@@ -2,7 +2,7 @@ import 'dart:convert';
 import 'dart:io';
 
 import '../agent/timings.dart';
-import '../daemon/clock.dart';
+import 'clock.dart';
 
 /// [Timings] kept as JSON lines in [file] (`<support>/timings.jsonl`), one
 /// per stopped interval:

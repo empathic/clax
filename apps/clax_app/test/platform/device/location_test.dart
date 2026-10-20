@@ -3,7 +3,7 @@ import 'dart:convert';
 import 'dart:io';
 import 'dart:math' as math;
 
-import 'package:clax_app/daemon/clock.dart';
+import 'package:clax_app/platform/clock.dart';
 import 'package:clax_app/platform/device/device_grants.dart';
 import 'package:clax_app/platform/device/device_host.dart';
 import 'package:clax_app/platform/device/device_plugins.dart';

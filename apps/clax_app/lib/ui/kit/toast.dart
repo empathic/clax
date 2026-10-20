@@ -4,7 +4,7 @@ import 'dart:math' as math;
 import 'package:flutter/material.dart';
 import 'package:flutter/semantics.dart';
 
-import '../../daemon/clock.dart';
+import '../../platform/clock.dart';
 import '../layout.dart';
 import '../theme.dart';
 import '../tokens.g.dart';

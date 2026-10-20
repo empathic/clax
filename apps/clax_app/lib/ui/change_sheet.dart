@@ -7,7 +7,7 @@ import '../agent/failure.dart'
     show keepGoingIn, offersKeepGoing, parseFailureReply;
 import '../agent/loop.dart' show pendingComments;
 import '../clax/api.dart';
-import '../daemon/clock.dart';
+import '../platform/clock.dart';
 import 'change_tracker.dart';
 import 'kit/kit.dart';
 import 'layout.dart';

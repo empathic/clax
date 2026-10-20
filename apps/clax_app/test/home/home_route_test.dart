@@ -5,7 +5,7 @@ import 'package:clax_app/agent/timings.dart';
 import 'package:clax_app/bundle/installer.dart';
 import 'package:clax_app/bundle/lineage_store.dart';
 import 'package:clax_app/clax/fake_api.dart';
-import 'package:clax_app/daemon/clock.dart';
+import 'package:clax_app/platform/clock.dart';
 import 'package:clax_app/home/home_install.dart';
 import 'package:clax_app/home/home_recovery.dart';
 import 'package:clax_app/home/home_host.dart';

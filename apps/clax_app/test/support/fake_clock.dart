@@ -1,6 +1,6 @@
 import 'dart:async';
 
-import 'package:clax_app/daemon/clock.dart';
+import 'package:clax_app/platform/clock.dart';
 
 /// A clock whose time moves only when the test advances it; each `delay`
 /// completes once the clock reaches its deadline.

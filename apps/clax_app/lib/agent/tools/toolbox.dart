@@ -5,7 +5,7 @@ library;
 import 'dart:typed_data';
 
 import '../../clax/models.dart' show FeedbackItem;
-import '../../daemon/clock.dart';
+import '../../platform/clock.dart';
 import '../failure.dart' show changeCapUsd, limitFailureReply, limitLandedReply;
 import '../progress.dart';
 import '../read_consent.dart';

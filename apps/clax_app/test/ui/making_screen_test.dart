@@ -9,7 +9,7 @@ import 'package:clax_app/agent/progress.dart';
 import 'package:clax_app/agent/request.dart';
 import 'package:clax_app/agent/scripted_backend.dart';
 import 'package:clax_app/agent/timings.dart';
-import 'package:clax_app/daemon/clock.dart';
+import 'package:clax_app/platform/clock.dart';
 import 'package:clax_app/queue/client.dart' hide Intent;
 import 'package:clax_app/ui/developer.dart';
 import 'package:clax_app/ui/haiku.dart';

@@ -6,7 +6,7 @@ import '../agent/backend.dart';
 import '../agent/edit_result.dart';
 import '../agent/request.dart';
 import '../agent/runner/turn.dart';
-import '../daemon/clock.dart';
+import 'clock.dart';
 import 'connection.dart';
 
 /// Whether the app is in front of the person, and how many times it has

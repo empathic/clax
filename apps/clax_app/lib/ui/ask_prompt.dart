@@ -1,6 +1,6 @@
 import 'package:flutter/widgets.dart';
 
-import '../daemon/clock.dart';
+import '../platform/clock.dart';
 import 'host_protocol.dart';
 import 'kit/button.dart';
 import 'kit/dialog.dart';
