@@ -1464,9 +1464,11 @@ impl Store {
     }
 
     /// The mark of publish step `key` of job `id`, which writes version `n`
-    /// of `named` (`None`: a new app, whose ID is minted with it), and the
-    /// artifact it writes: the ones the store keeps for the step
-    /// (`job_step_marks`), minted at its first write. A step that now
+    /// of `named` (`None`: a new app, whose ID is minted with the mark and
+    /// kept, so every attempt of the step writes the same artifact and a
+    /// resume replaces what a killed attempt left), and the artifact it
+    /// writes: the ones the store keeps for the step (`job_step_marks`),
+    /// minted at its first write. A step that now
     /// writes another artifact or version is given a new nonce, so content
     /// an earlier attempt left under the old one is no longer its own.
     /// `session` is recorded as the session it publishes from.
@@ -1488,9 +1490,10 @@ impl Store {
                 )
                 .optional()?;
             let now = self.now();
-            let aid = match named {
-                Some(named) => named.as_str().to_string(),
-                None => ArtifactId::generate().as_str().to_string(),
+            let aid = match (&held, named) {
+                (_, Some(named)) => named.as_str().to_string(),
+                (Some((_, aid, _)), None) => aid.clone(),
+                (None, None) => ArtifactId::generate().as_str().to_string(),
             };
             let nonce = match held {
                 Some((nonce, held_aid, held_n)) if held_aid == aid && held_n == n => {
@@ -2212,6 +2215,57 @@ mod tests {
             .unwrap();
         assert!(again.replayed);
         assert_eq!(versions(&st, &aid), vec![1, 2]);
+    }
+
+    #[test]
+    fn a_new_apps_step_resumed_over_its_killed_attempts_row_makes_one_artifact() {
+        let (_d, st) = store();
+        running(&st, "j1");
+        let cut = |_: &Transaction<'_>| Err(CoreError::invalid("cut", "the process died"));
+        cut_step(
+            &st,
+            "j1",
+            "publish:0",
+            publish_step(None, 0, "<p>a", true),
+            cut,
+        )
+        .unwrap_err();
+        // A kill leaves the zero-version row its cleanup would have removed.
+        let minted: String = st
+            .with_read(|c| {
+                Ok(c.query_row(
+                    "SELECT artifact_id FROM job_step_marks WHERE job_id = 'j1'",
+                    [],
+                    |r| r.get(0),
+                )?)
+            })
+            .unwrap();
+        st.with_write(|c| {
+            Ok(c.execute(
+                "INSERT INTO artifacts (id, title, created_at, updated_at, current_version, contract_version)
+                 VALUES (?1, 'Budget', 'x', 'x', 0, '0')",
+                [&minted],
+            )?)
+        })
+        .unwrap();
+        let c = st
+            .commit_publish_step(
+                DAEMON,
+                "j1",
+                "publish:0",
+                publish_step(None, 0, "<p>a", true),
+            )
+            .unwrap();
+        assert_eq!(c.made.unwrap().artifact.id, minted);
+        assert!(st.zero_version_artifacts().unwrap().is_empty());
+        assert_eq!(st.list_artifacts().unwrap().len(), 1);
+        // Committed: its mark is gone.
+        let marks: i64 = st
+            .with_read(
+                |c| Ok(c.query_row("SELECT COUNT(*) FROM job_step_marks", [], |r| r.get(0))?),
+            )
+            .unwrap();
+        assert_eq!(marks, 0);
     }
 
     /// A store on one connection whose content writes `gated` holds.

@@ -1026,8 +1026,10 @@ impl Store {
             .map(|(a, v, ())| (a, v))
     }
 
-    /// [`Store::create_artifact_async`] of artifact `id` (a fresh ID),
-    /// running `then` in version 1's transaction as
+    /// [`Store::create_artifact_async`] of artifact `id` (a fresh ID, or
+    /// the one a job step's earlier attempt wrote, whose zero-version row
+    /// and marked version 1 are replaced), running `then` in version 1's
+    /// transaction as
     /// [`Store::write_version_then`] does. When version 1 does not land
     /// (`then` refused it among other causes), the zero-version row goes
     /// too.
@@ -1064,6 +1066,13 @@ impl Store {
         };
         self.check_quota(creator.as_deref())?;
         self.with_tx(|tx| {
+            // A zero-version row of `id` is an earlier attempt's whose
+            // process died before version 1 (a job step's resume writes the
+            // ID its first attempt did): it is replaced.
+            tx.execute(
+                "DELETE FROM artifacts WHERE id = ?1 AND current_version = 0",
+                params![id.as_str()],
+            )?;
             tx.execute(
                 "INSERT INTO artifacts (id, title, description, icon, created_at, updated_at, current_version,
                     pinned, capabilities_json, contract_version, owner_session_id, person)

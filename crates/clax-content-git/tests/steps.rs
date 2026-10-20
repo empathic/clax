@@ -38,11 +38,18 @@ const DAEMON: &AuditCtx = &AuditCtx::DAEMON;
 struct Dying<C> {
     inner: C,
     die: AtomicBool,
+    /// The artifact of each version write, in order.
+    wrote: std::sync::Mutex<Vec<String>>,
 }
 
 impl<C> Dying<C> {
     fn kill_next(&self) {
         self.die.store(true, Ordering::SeqCst);
+    }
+
+    /// The artifact the last version write wrote.
+    fn last_written(&self) -> Option<String> {
+        self.wrote.lock().unwrap().last().cloned()
     }
 }
 
@@ -63,6 +70,7 @@ impl<C: ContentStore> ContentStore for Dying<C> {
         write: &VersionWrite<'_>,
     ) -> clax_core::Result<()> {
         self.inner.write_version(id, n, write).await?;
+        self.wrote.lock().unwrap().push(id.as_str().to_string());
         if self.die.swap(false, Ordering::SeqCst) {
             return Err(CoreError::invalid("killed", "the process was killed"));
         }
@@ -178,6 +186,7 @@ fn fixture<C: ContentStore + 'static>(content: impl FnOnce(&Home) -> C) -> Fixtu
     let content = Arc::new(Dying {
         inner: content(&h),
         die: AtomicBool::new(false),
+        wrote: Default::default(),
     });
     let st = Store::open(&h).unwrap().with_content(content.clone());
     let (a, _) = st
@@ -324,6 +333,67 @@ fn a_killed_step_resumes_once<C: ContentStore + 'static>(content: impl FnOnce(&H
         f.st.publish_version(DAEMON, &f.id, publish("<p>three</p>", Some(2)), None)
             .unwrap();
     assert_eq!(v.n, 3);
+}
+
+/// A make's publish step, which makes a new app, killed after version 1's
+/// content is written and resumed, makes one artifact: the resume writes
+/// the ID the killed attempt wrote, replacing what it left, so no content
+/// or row is left under another ID.
+fn a_killed_new_apps_step_resumes_as_one_artifact<C: ContentStore + 'static>(
+    content: impl FnOnce(&Home) -> C,
+) {
+    let f = fixture(content);
+    f.st.create_job(NewJob {
+        id: "j2".into(),
+        client: "app".into(),
+        kind: "make".into(),
+        artifact_id: None,
+        title: None,
+        input: json!({"request": "a budget"}),
+        plan: None,
+    })
+    .unwrap();
+    f.st.patch_job(
+        "j2",
+        JobPatch {
+            if_rev: 1,
+            state: Some(JobState::Running),
+            ..JobPatch::default()
+        },
+    )
+    .unwrap();
+    let step = |html: &str| PublishStep {
+        artifact_id: None,
+        base: 0,
+        request: publish(html, None),
+        docs: Vec::new(),
+        draft: None,
+        session_id: None,
+        done: true,
+    };
+    f.content.kill_next();
+    assert!(
+        f.st.commit_publish_step(DAEMON, "j2", "publish:0", step("<p>first</p>"))
+            .is_err()
+    );
+    // What the kill leaves: version 1's content under the step's new ID.
+    let killed = f.content.last_written().unwrap();
+    let aid = ArtifactId::parse(&killed).unwrap();
+    let html = |aid: &ArtifactId| {
+        clax_core::content::wait(f.content.read_file(aid, 1, "index.html"))
+            .unwrap()
+            .map(|b| String::from_utf8(b).unwrap())
+    };
+    assert_eq!(html(&aid).as_deref(), Some("<p>first</p>"));
+    let c =
+        f.st.commit_publish_step(DAEMON, "j2", "publish:0", step("<p>again</p>"))
+            .unwrap();
+    let made = c.made.unwrap().artifact;
+    assert_eq!(made.id, killed, "the resume writes the killed attempt's ID");
+    assert_eq!(c.job.artifact_id.as_deref(), Some(made.id.as_str()));
+    assert!(f.st.zero_version_artifacts().unwrap().is_empty());
+    assert_eq!(f.st.list_artifacts().unwrap().len(), 2);
+    assert_eq!(html(&aid).as_deref(), Some("<p>again</p>"));
 }
 
 fn a_stray_no_step_marked_is_not_replaced<C: ContentStore + 'static>(
@@ -506,4 +576,14 @@ fn a_stray_another_step_marked_is_not_replaced_on_files() {
 #[test]
 fn a_stray_another_step_marked_is_not_replaced_in_git() {
     a_stray_another_step_marked_is_not_replaced(the_store_in_git);
+}
+
+#[test]
+fn a_killed_new_apps_step_resumes_as_one_artifact_on_files() {
+    a_killed_new_apps_step_resumes_as_one_artifact(the_store_on_files);
+}
+
+#[test]
+fn a_killed_new_apps_step_resumes_as_one_artifact_in_git() {
+    a_killed_new_apps_step_resumes_as_one_artifact(the_store_in_git);
 }
