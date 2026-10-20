@@ -1472,3 +1472,37 @@ async fn tags_lists_publish_applies_tag_changes_and_list_filters() {
         1
     );
 }
+
+#[tokio::test]
+async fn a_publish_whose_tags_are_refused_lands_and_reports_tags_error() {
+    let ts = TestServer::spawn().await;
+    let t = tools_for(&ts);
+    let max = clax_core::tags::MAX_ARTIFACT_TAGS;
+    let names: Vec<String> = (0..=max).map(|i| format!("t{i}")).collect();
+    for n in &names {
+        owner_tag(&ts, n).await;
+    }
+    let p = ok(t.publish(Parameters(html("Full", "<p>1</p>"))).await);
+    let id = p["artifact_id"].as_str().unwrap().to_string();
+    let res = ts
+        .authed(
+            ts.client
+                .put(format!("{}/api/artifacts/{id}/tags", ts.base)),
+        )
+        .json(&serde_json::json!({"tags": names[..max].to_vec()}))
+        .send()
+        .await
+        .unwrap();
+    assert_eq!(res.status(), 200);
+    // One more is past the bound: the version lands, the tags do not.
+    let r = ok(t
+        .publish(Parameters(PublishArgs {
+            id: Some(id.clone()),
+            tags: Some(vec![names[max].clone()]),
+            ..html("Full", "<p>2</p>")
+        }))
+        .await);
+    assert_eq!(r["version"], 2, "{r}");
+    assert_eq!(r["tags_error"]["code"], "too_many_tags", "{r}");
+    assert_eq!(r["tags"].as_array().unwrap().len(), max, "{r}");
+}

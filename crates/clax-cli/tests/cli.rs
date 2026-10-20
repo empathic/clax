@@ -222,6 +222,51 @@ fn tags_are_made_applied_listed_and_deleted_from_the_command_line() {
 }
 
 #[test]
+fn a_publish_whose_tags_are_refused_publishes_and_exits_non_zero() {
+    let e = Env::new();
+    let index = write(e.dir.path(), "index.html", "<title>Full</title><p>1</p>");
+    let max = clax_core::tags::MAX_ARTIFACT_TAGS;
+    let out = e
+        .cmd()
+        .args(["publish", "--json", "--port", "0"])
+        .arg(&index)
+        .assert()
+        .success()
+        .get_output()
+        .stdout
+        .clone();
+    let id = serde_json::from_slice::<serde_json::Value>(&out).unwrap()["id"]
+        .as_str()
+        .unwrap()
+        .to_string();
+    let names: Vec<String> = (0..=max).map(|i| format!("t{i}")).collect();
+    for n in &names {
+        e.cmd().args(["tags", "create", n]).assert().success();
+    }
+    let mut add = vec!["tag".to_string(), id.clone()];
+    for n in &names[..max] {
+        add.extend(["--add".to_string(), n.clone()]);
+    }
+    e.cmd().args(&add).assert().success();
+    // One more is past the bound: the version lands, then the command fails
+    // saying the tags were not applied.
+    write(e.dir.path(), "index.html", "<title>Full</title><p>2</p>");
+    e.cmd()
+        .args(["publish", "--id", &id, "--tags", &names[max]])
+        .arg(&index)
+        .assert()
+        .failure()
+        .stdout(predicate::str::contains("published v2"))
+        .stderr(predicate::str::contains(
+            "published, but the tags were not applied",
+        ));
+    let list = json_of(&e, &["list"]);
+    assert_eq!(list["artifacts"][0]["current_version"], 2);
+    assert_eq!(list["artifacts"][0]["tags"].as_array().unwrap().len(), max);
+    e.stop();
+}
+
+#[test]
 fn publish_list_pin_open_delete_roundtrip() {
     let e = Env::new();
     let index = write(

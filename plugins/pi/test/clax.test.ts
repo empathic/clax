@@ -278,6 +278,22 @@ describe("clax Pi extension", () => {
     expect(listed.artifacts[0].owner_session_id).toBeTypeOf("string");
   });
 
+  it("publishes a version whose tags are refused and reports tags_error beside it", async () => {
+    const { pi, ctx } = load(daemon.home, "pi-tags-error");
+    await pi.emit("session_start", { type: "session_start", reason: "startup" }, ctx);
+    // An artifact carries at most 20 tags: one more is refused after the version lands.
+    const names = Array.from({ length: 21 }, (_, i) => `pi-full-${i}`);
+    for (const name of names) await api(daemon, "/api/tags", { method: "POST", body: JSON.stringify({ name }) });
+    const p = json(await pi.callTool("clax_publish", { html: "<title>full</title>" }, ctx));
+    await api(daemon, `/api/artifacts/${p.artifact_id}/tags`, { method: "PUT", body: JSON.stringify({ tags: names.slice(0, 20) }) });
+    const r = await pi.callTool("clax_publish", { id: p.artifact_id, html: "<title>full</title><p>2", tags: [names[20]] }, ctx);
+    expect(r.isError).toBe(false);
+    const body = json(r);
+    expect(body.version).toBe(2);
+    expect(body.tags_error).toMatchObject({ code: "too_many_tags" });
+    expect(body.tags).toHaveLength(20);
+  });
+
   it("applies the owner's tags through publish and tag, and lists and filters by them", async () => {
     const { pi, ctx } = load(daemon.home, "pi-tags");
     await pi.emit("session_start", { type: "session_start", reason: "startup" }, ctx);
