@@ -581,8 +581,10 @@ async fn alive_tasks() -> usize {
 
 #[tokio::test]
 async fn a_serve_that_fails_after_its_core_started_stops_the_core() {
-    // A started and stopped core leaves only its listeners' tasks.
+    // A started and stopped core leaves no task behind: its background
+    // tasks, its listeners and the linked threads' sync all end.
     let dir = tempfile::tempdir().unwrap();
+    let before = alive_tasks().await;
     let core = clax_server::core::Core::start(
         clax_server::core::CoreConfig {
             home: Home::at(dir.path().join("stopped")),
@@ -602,7 +604,7 @@ async fn a_serve_that_fails_after_its_core_started_stops_the_core() {
     .await
     .unwrap();
     core.stop().await;
-    let stopped = alive_tasks().await;
+    assert_eq!(alive_tasks().await, before, "a stopped core leaves no task");
 
     let home = Home::at(dir.path().join("ax"));
     home.ensure_dirs().unwrap();
@@ -613,7 +615,7 @@ async fn a_serve_that_fails_after_its_core_started_stops_the_core() {
     assert!(served.is_err(), "daemon.json cannot be written");
     assert_eq!(
         alive_tasks().await,
-        2 * stopped,
-        "the failed serve's core leaves no more than a stopped core does"
+        before,
+        "the failed serve's core leaves no task either"
     );
 }

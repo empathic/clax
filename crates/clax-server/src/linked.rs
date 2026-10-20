@@ -93,12 +93,14 @@ pub use clax_realtime::linked::{Linked, SyncStatus, Task};
 /// Starts the sync on a local daemon: a supervisor that keeps one task per
 /// remote with a linked artifact, and a listener that wakes a remote's task
 /// on a local write on one of its artifacts. A hosted daemon runs none.
-pub fn listen(s: &AppState) {
+/// Returns the supervisor's and the listener's handles; the supervisor's
+/// tasks are in [`Linked::tasks`], which [`stop`] aborts.
+pub fn listen(s: &AppState) -> Vec<clax_rt::JoinHandle<()>> {
     if s.hosted.is_some() || s.linked.started.swap(true, Ordering::SeqCst) {
-        return;
+        return Vec::new();
     }
     let st = s.clone();
-    clax_rt::spawn(async move {
+    let supervisor = clax_rt::spawn(async move {
         loop {
             supervise(&st).await;
             st.linked.supervise.notified().await;
@@ -106,7 +108,7 @@ pub fn listen(s: &AppState) {
     });
     let st = s.clone();
     let mut rx = s.events.subscribe();
-    clax_rt::spawn(async move {
+    let listener = clax_rt::spawn(async move {
         loop {
             let ev = match rx.recv().await {
                 Ok(e) => e,
@@ -165,6 +167,16 @@ pub fn listen(s: &AppState) {
             }
         }
     });
+    vec![supervisor, listener]
+}
+
+/// Aborts the task kept for each remote ([`Linked::tasks`]); a stopping
+/// core calls it once its supervisor is aborted.
+pub fn stop(s: &AppState) {
+    let tasks = std::mem::take(&mut *s.linked.tasks.lock().unwrap_or_else(|e| e.into_inner()));
+    for t in tasks.into_values() {
+        t.handle.abort();
+    }
 }
 
 /// Queues remote `rid`'s local writes and questions not queued yet;

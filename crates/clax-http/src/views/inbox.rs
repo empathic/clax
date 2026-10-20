@@ -513,15 +513,16 @@ fn announcement(
 ///
 /// It also ends a person's streams once the person is no longer connected
 /// (revoked), at the visibility generation's bump that the revocation makes
-/// (spec M17): their browser is then no one's inbox (§6.4).
-pub fn listen(s: &AppState) {
+/// (spec M17): their browser is then no one's inbox (§6.4). Returns the
+/// two tasks' handles.
+pub fn listen(s: &AppState) -> Vec<clax_rt::JoinHandle<()>> {
     let (tx, mut rx) = tokio::sync::mpsc::unbounded_channel::<Vec<InboxChange>>();
     s.store.set_inbox_listener(Box::new(move |c| {
         let _ = tx.send(c);
     }));
     let st = s.clone();
     let hosted = s.hosted.is_some();
-    clax_rt::spawn(async move {
+    let announcer = clax_rt::spawn(async move {
         while let Some(changes) = rx.recv().await {
             // Nobody to tell: no view is read or rendered.
             let held = st.stream.inbox_holders();
@@ -561,7 +562,7 @@ pub fn listen(s: &AppState) {
         }
     });
     let st = s.clone();
-    clax_rt::spawn(async move {
+    let revoker = clax_rt::spawn(async move {
         let mut seen = st.vis_gen.current();
         loop {
             seen = st.vis_gen.wait_after(seen).await;
@@ -578,6 +579,7 @@ pub fn listen(s: &AppState) {
             }
         }
     });
+    vec![announcer, revoker]
 }
 
 #[cfg(test)]

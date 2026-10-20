@@ -456,8 +456,9 @@ impl AppState {
     /// streams' events: the stream hub's listener, the live seats' link to
     /// it, and the inbox, approvals, pushes and git remotes listeners. The
     /// daemon's `clax_server::start_listeners` adds the people routes' and
-    /// the linked threads' sync.
-    pub fn start_listeners(&self) {
+    /// the linked threads' sync. Returns the handles of the tasks they
+    /// spawn, which run until aborted.
+    pub fn start_listeners(&self) -> Vec<clax_rt::JoinHandle<()>> {
         self.stream.listen(&self.events);
         {
             let store = self.store.clone();
@@ -468,10 +469,11 @@ impl AppState {
             self.stream.hide(move |aid| store.is_hidden(aid));
         }
         crate::seats::install(self);
-        crate::views::inbox::listen(self);
-        crate::views::approval::listen(self);
+        let mut tasks = crate::views::inbox::listen(self);
+        tasks.push(crate::views::approval::listen(self));
         crate::pushes::listen(self);
-        crate::git_remotes::listen(self);
+        tasks.push(crate::git_remotes::listen(self));
+        tasks
     }
 }
 

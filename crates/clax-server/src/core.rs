@@ -19,10 +19,13 @@ const DRAFT_SWEEP_INTERVAL: Duration = Duration::from_secs(3600);
 /// How long shutdown waits for the journal appender to close its segment.
 /// The appender stops as shutdown begins, beside the connection drain, and
 /// catches up for at most 0.5 s; a wedged one is left on its own thread,
-/// which the process exit ends. The whole shutdown stays within 6.5 s,
-/// inside the 7 s a replacing client waits before it sends SIGTERM; what
+/// which the process exit ends. The whole shutdown, [`TASKS_STOP_TIMEOUT`]
+/// included, stays within 6.75 s, inside the 7 s a replacing client waits before it sends SIGTERM; what
 /// the journal does not write, the next start writes from the table.
 const JOURNAL_STOP_TIMEOUT: Duration = Duration::from_millis(1500);
+/// How long [`Core::stop`] waits for its aborted tasks to end: each ends at
+/// its next await, unless it is inside a blocking call.
+const TASKS_STOP_TIMEOUT: Duration = Duration::from_millis(250);
 /// How often grants due to expire are expired and the nonce caches swept.
 const GRANT_SWEEP_INTERVAL: Duration = Duration::from_secs(60);
 
@@ -56,7 +59,7 @@ pub struct CoreConfig {
 }
 
 /// A started core: its state, its router, and the tasks it runs until
-/// [`Core::stop`].
+/// [`Core::stop`] (its background tasks and its listeners).
 pub struct Core {
     state: AppState,
     router: axum::Router,
@@ -155,10 +158,11 @@ impl Core {
                 }
             })
         });
-        crate::start_listeners(&state);
+        let listeners = crate::start_listeners(&state);
         tracing::info!(codex = ?state.codex.bin, source = ?state.codex.source, "codex push");
         tracing::info!(provider = ?state.sample.provider_name(), "sample provider");
-        let tasks = background_tasks(&state, cfg.reap_interval);
+        let mut tasks = background_tasks(&state, cfg.reap_interval);
+        tasks.extend(listeners);
         let router = crate::router::build_router_with_shutdown(state.clone(), shutdown.clone());
         Ok(Core {
             state,
@@ -193,13 +197,23 @@ impl Core {
         self.shutdown.clone()
     }
 
-    /// Stops the core: ends the background tasks, waits for the journal to
-    /// close its segment, and shuts the store down, as `serve` does after
-    /// its drain.
+    /// Stops the core: ends its tasks (the background tasks, the
+    /// listeners and the linked threads' sync) and waits for them to end,
+    /// waits for the journal to close its segment, and shuts the store
+    /// down, as `serve` does after its drain. No task of the core runs
+    /// after it returns.
     pub async fn stop(self) {
         let _ = self.shutdown.send(true);
         for t in &self.tasks {
             t.abort();
+        }
+        crate::linked::stop(&self.state);
+        let ended = futures::future::join_all(self.tasks);
+        if tokio::time::timeout(TASKS_STOP_TIMEOUT, ended)
+            .await
+            .is_err()
+        {
+            tracing::warn!("the core's tasks did not end in time");
         }
         // The journal has closed its segment (it began to as shutdown
         // began) before the store stops.
