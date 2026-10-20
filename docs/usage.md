@@ -988,12 +988,15 @@ hoc with its entitlements kept, so the copy runs in a sandbox container of
 its own, `~/Library/Containers/dev.empathic.clax.perf`, which the script
 removes before the first launch and at the end. Your installed app's
 container is never read or written. The login keychain is not kept per
-container, though: the copy asks for the same saved API key item your
-installed app keeps, macOS asks you whether to let it, and the copy's
-daemon starts only once that read returns, so until the app can be told
-to read no key when it is measured (record 30b78596, an open decision), a
-measured launch waits on that question. On Android the installed app is measured, on its own home, and
-its timings are read with `run-as`.
+container, though, so each launch runs with `CLAX_APP_NO_KEY=1`: the app
+then reads no saved API key and saves none (no keychain access at all, as
+if none were saved), and its daemon starts with `sample()` off. Without
+it the copy would ask for the key item your installed app keeps, and
+macOS would ask you whether to let it, before the daemon started. A build
+from before the variable was honoured still asks. On Android the
+installed app is measured, on its own home and with its own key (the
+variable does not reach an Android app, and a Keystore read asks
+nothing), and its timings are read with `run-as`.
 
 One launch more than `--runs` (default 9) is made and the first dropped;
 it stays up until its home screen has kept its snapshot, so every
@@ -1011,13 +1014,18 @@ each p90 beside its budget in `web/perf/app-budget.json`
 Taking the launch baseline, the daemon's numbers before the app runs on
 the embedded core. An agent never makes a git worktree; you may.
 
-1. Name the build: the branch head while the app has not yet been put on
-   the core, else the commit before the one that did.
+1. Name the build. It must include the commit that made the app honour
+   `CLAX_APP_NO_KEY` (else its launches wait on the keychain question
+   above), and come from before the app was put on the core: the branch
+   head while "Run the app on the embedded core" has not landed, else the
+   commit before it. The last command checks the first condition.
 
    ```sh
    C=$(git rev-parse HEAD)
    # once "Run the app on the embedded core" has landed:
    C=$(git rev-parse "$(git log -1 --format=%H --grep='^Run the app on the embedded core')^")
+   K=$(git log --reverse --format=%H -S CLAX_APP_NO_KEY -- apps/clax_app/lib/platform/secure_key.dart | head -1)
+   git merge-base --is-ancestor "$K" "$C" && echo "$C honours CLAX_APP_NO_KEY"
    ```
 
 2. Build its macOS app in a checkout of `$C` that you make, and keep its
@@ -1030,9 +1038,8 @@ the embedded core. An agent never makes a git worktree; you may.
    git worktree remove ../clax-baseline
    ```
 
-3. With the screen unlocked, from this checkout. Its first launch asks
-   for the saved API key (above): this step waits on the app reading no
-   key when it is measured.
+3. With the screen unlocked, from this checkout (each launch reads no
+   saved key, so nothing asks for the keychain):
 
    ```sh
    CLAX_PERF_JSON=target/perf/app-launch-before.json scripts/perf-app-launch.sh --macos \

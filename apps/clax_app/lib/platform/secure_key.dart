@@ -31,13 +31,35 @@ abstract interface class SecureKey {
 /// each rebuild, and macOS asks for the keychain again; a build signed by
 /// a team keeps one signature across rebuilds.
 ///
+/// With [withheld] true the storage is never touched: [read] answers null
+/// at once, as if no key were saved, and [write] throws a [StateError].
+/// A launch measure (`scripts/perf-app-launch.sh`) runs the app so, by
+/// [noKeyVariable], and never reads the owner's saved key, waits on the
+/// keychain's question for it, or saves a key into it.
+///
 /// Wrap it in a [CachedSecureKey] so a process reads the keychain once.
 class FlutterSecureKey implements SecureKey {
-  FlutterSecureKey({FlutterSecureStorage? storage})
+  FlutterSecureKey({FlutterSecureStorage? storage, this.withheld = false})
     : _storage = storage ?? defaultStorage;
 
   /// The storage key the API key is saved under.
   static const storageKey = 'anthropic_api_key';
+
+  /// The environment variable that withholds the saved key: set to `1`,
+  /// the app reads no key and saves none ([withheldBy]). It is honoured in
+  /// every build, release ones too, since all it can do is keep the app
+  /// from the key; it reaches the app only where the platform hands it the
+  /// launching environment (macOS; on Android an app's environment is not
+  /// the launcher's).
+  static const noKeyVariable = 'CLAX_APP_NO_KEY';
+
+  /// Whether [environment] withholds the saved key: [noKeyVariable] is
+  /// exactly `1`. Read once at launch (`platformServices`).
+  static bool withheldBy(Map<String, String> environment) =>
+      environment[noKeyVariable] == '1';
+
+  /// Whether the saved key is withheld: no read or write reaches storage.
+  final bool withheld;
 
   /// The macOS options every read and write uses.
   static const macOsOptions = MacOsOptions(usesDataProtectionKeychain: false);
@@ -57,12 +79,16 @@ class FlutterSecureKey implements SecureKey {
 
   @override
   Future<String?> read() async {
+    if (withheld) return null;
     final v = await _storage.read(key: storageKey);
     return (v == null || v.isEmpty) ? null : v;
   }
 
   @override
   Future<void> write(String? key) async {
+    if (withheld) {
+      throw StateError('$noKeyVariable=1: the app saves no API key');
+    }
     final v = key?.trim();
     if (v == null || v.isEmpty) {
       await _storage.delete(key: storageKey);

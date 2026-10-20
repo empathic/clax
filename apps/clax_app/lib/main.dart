@@ -104,7 +104,9 @@ Future<void> drawEdgeToEdge() async {
 /// With `CLAX_APP_DIR` set in the environment, the support and cache
 /// directories are `support/` and `cache/` under it instead (a scratch
 /// home for measuring a build; on macOS it must lie in the app's
-/// container).
+/// container). With `CLAX_APP_NO_KEY=1` the saved API key is withheld
+/// ([FlutterSecureKey.noKeyVariable]): no key is read or saved, and the
+/// daemon starts with `sample()` off.
 Future<AppServices> platformServices({DateTime? launched}) async {
   final scratchDir = Platform.environment['CLAX_APP_DIR'] ?? '';
   final support = scratchDir.isEmpty
@@ -127,8 +129,13 @@ Future<AppServices> platformServices({DateTime? launched}) async {
       : null;
   final home = Directory(paths?['home'] ?? '${support.path}/clax-home')
     ..createSync(recursive: true);
-  // One cached key for every reader: the keychain is read once a process.
-  final secureKey = CachedSecureKey(FlutterSecureKey());
+  // One cached key for every reader: the keychain is read once a process,
+  // and never with CLAX_APP_NO_KEY=1 (a launch measure's run).
+  final secureKey = CachedSecureKey(
+    FlutterSecureKey(
+      withheld: FlutterSecureKey.withheldBy(Platform.environment),
+    ),
+  );
   final supervisor = DaemonSupervisor(
     exe: inProcess
         ? const InProcessLocator()

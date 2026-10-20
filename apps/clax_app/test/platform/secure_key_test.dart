@@ -5,6 +5,8 @@ import 'package:clax_app/platform/secure_key.dart';
 import 'package:flutter_secure_storage/flutter_secure_storage.dart';
 import 'package:flutter_test/flutter_test.dart';
 
+import '../support/counting_storage.dart';
+
 /// A [SecureKey] that counts the storage reads and writes, and can fail or
 /// hold a read open.
 class CountingKey implements SecureKey {
@@ -39,6 +41,37 @@ class CountingKey implements SecureKey {
 }
 
 void main() {
+  test('CLAX_APP_NO_KEY=1 withholds the saved key, and nothing else does', () {
+    expect(FlutterSecureKey.noKeyVariable, 'CLAX_APP_NO_KEY');
+    expect(FlutterSecureKey.withheldBy({'CLAX_APP_NO_KEY': '1'}), isTrue);
+    for (final env in [
+      <String, String>{},
+      {'CLAX_APP_NO_KEY': ''},
+      {'CLAX_APP_NO_KEY': '0'},
+      {'CLAX_APP_NO_KEY': 'yes'},
+    ]) {
+      expect(FlutterSecureKey.withheldBy(env), isFalse, reason: '$env');
+    }
+  });
+
+  test('a withheld key reads as none and refuses writes, never reaching '
+      'the secure storage', () async {
+    final storage = CountingStorage();
+    final key = CachedSecureKey(
+      FlutterSecureKey(storage: storage, withheld: true),
+    );
+    expect(await key.read(), isNull);
+    await expectLater(key.write('sk-new'), throwsStateError);
+    await expectLater(key.write(null), throwsStateError);
+    expect(await key.read(), isNull);
+    expect(storage.calls, isEmpty);
+
+    // Not withheld, the same storage is read.
+    final open = FlutterSecureKey(storage: storage);
+    expect(await open.read(), 'sk-saved');
+    expect(storage.calls, [#read]);
+  });
+
   test('on iOS the key is readable from the first unlock, on this device '
       'only', () {
     expect(

@@ -24,15 +24,21 @@
 #   line in its support directory's timings.jsonl, at most 60 s (a launch
 #   without one counts as missing), then sends the app SIGTERM by its PID,
 #   and the daemon it started too (by the PID in its daemon.json), waiting
-#   for each to exit. The login keychain is not kept per container: the
-#   copy asks for the same saved API key item the installed app keeps
-#   (flutter_secure_storage's, apps/clax_app/lib/platform/secure_key.dart),
-#   and macOS asks whether to let it; the daemon starts only once that
-#   read returns.
+#   for each to exit. Each launch runs with CLAX_APP_NO_KEY=1: the login
+#   keychain is not kept per container, and the copy would otherwise ask
+#   for the installed app's saved API key item (flutter_secure_storage's),
+#   and macOS whether to let it, before the daemon starts; with it the app
+#   reads no key and saves none (FlutterSecureKey.noKeyVariable,
+#   apps/clax_app/lib/platform/secure_key.dart), and its daemon starts
+#   with sample() off. The app must be a build that honours it.
 # --android: on the plugged-in phone or emulator (ANDROID_SERIAL picks
 #   one), with the app already installed (`just app-phone`): `am
 #   force-stop` and `am start -W` N times, each waiting for a new
-#   home-usable line in files/timings.jsonl (read with `run-as`).
+#   home-usable line in files/timings.jsonl (read with `run-as`). The app
+#   reads the installed app's own key there: CLAX_APP_NO_KEY does not
+#   reach an Android app (its environment is not the launcher's, and `am
+#   start --es` sets an intent extra the app does not read), and an
+#   Android Keystore read asks nothing.
 #
 # One launch more than N runs first and is dropped: it may have no snapshot
 # (on macOS the copy's container is new; on Android the first launch after
@@ -239,7 +245,7 @@ if [ "$target" = macos ]; then
         fi
         echo "  copy it once per build into $work/clax-perf-<sha> (a zip unpacked, an app copied with ditto), set the copy's CFBundleIdentifier to $perf_id (plutil) and sign it again ad hoc: codesign --force --sign - --preserve-metadata=entitlements,flags,runtime <copy>"
         echo "  rm -r $container  (the copy's own container, if an earlier run left it)"
-        echo "  $((runs + 1)) times: <copy>/Contents/MacOS/Clax, wait for a new home-usable line in $container/Data/Library/Application Support/$perf_id/timings.jsonl (at most ${cap} s); after the first, wait for its home snapshot, Data/Library/Caches/$perf_id/home/home-snapshot.bin (at most ${cap} s); SIGTERM the app and its daemon by PID and wait for them to exit"
+        echo "  $((runs + 1)) times: CLAX_APP_NO_KEY=1 <copy>/Contents/MacOS/Clax (no saved key read), wait for a new home-usable line in $container/Data/Library/Application Support/$perf_id/timings.jsonl (at most ${cap} s); after the first, wait for its home snapshot, Data/Library/Caches/$perf_id/home/home-snapshot.bin (at most ${cap} s); SIGTERM the app and its daemon by PID and wait for them to exit"
         echo "  drop the first launch; print the median and p90 of home-usable and home-cover${CLAX_PERF_JSON:+ and append them to $CLAX_PERF_JSON}"
         [ -n "$record" ] && echo "  record $(host_platform)'s missing budgets in $budgets"
         echo "  rm -r $container"
@@ -313,7 +319,7 @@ if [ "$target" = macos ]; then
     trap cleanup EXIT
     for i in $(seq 0 "$runs"); do
         before="$(count "$timings")"
-        env -u CLAX_APP_DIR "$exe" >"$logs/launch-$i.log" 2>&1 &
+        env -u CLAX_APP_DIR CLAX_APP_NO_KEY=1 "$exe" >"$logs/launch-$i.log" 2>&1 &
         pid=$!
         got=""
         for _ in $(seq $((cap * 4))); do

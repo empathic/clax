@@ -7,9 +7,11 @@ import 'package:clax_app/daemon/health.dart';
 import 'package:clax_app/daemon/ports.dart';
 import 'package:clax_app/daemon/process.dart';
 import 'package:clax_app/daemon/supervisor.dart';
+import 'package:clax_app/platform/secure_key.dart';
 import 'package:flutter/foundation.dart';
 import 'package:flutter_test/flutter_test.dart';
 
+import '../support/counting_storage.dart';
 import '../support/fake_clock.dart';
 
 class FakeProcess implements RunningProcess {
@@ -330,6 +332,23 @@ void main() {
         isFalse,
       );
       expect(printed.where((l) => l.contains(key)), isEmpty);
+    },
+  );
+
+  test(
+    'with the key withheld (CLAX_APP_NO_KEY=1) the daemon starts with no key, '
+    'and the secure storage is never asked',
+    () async {
+      final storage = CountingStorage();
+      final key = CachedSecureKey(
+        FlutterSecureKey(storage: storage, withheld: true),
+      );
+      rig = Rig(apiKey: key.read, requireCredential: true);
+      await rig.up();
+      expect(rig.sup.state, isA<Up>());
+      final env = rig.starter.calls.single.environment;
+      expect(env.containsKey(DaemonSupervisor.keyEnv), isFalse);
+      expect(storage.calls, isEmpty);
     },
   );
 

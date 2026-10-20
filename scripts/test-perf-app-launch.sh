@@ -19,12 +19,12 @@ out="$(run --macos)"
 if has "$out" "would run" && has "$out" "./scripts/run.sh app-macos" \
     && has "$out" "CFBundleIdentifier to dev.empathic.clax.perf" \
     && has "$out" "codesign --force --sign - --preserve-metadata=entitlements,flags,runtime" \
-    && has "$out" "10 times: <copy>/Contents/MacOS/Clax" && has "$out" "Library/Containers/dev.empathic.clax.perf" \
+    && has "$out" "10 times: CLAX_APP_NO_KEY=1 <copy>/Contents/MacOS/Clax" && has "$out" "Library/Containers/dev.empathic.clax.perf" \
     && has "$out" "SIGTERM the app and its daemon by PID" && has "$out" "drop the first launch" \
     && has "$out" "after the first, wait for its home snapshot, Data/Library/Caches/dev.empathic.clax.perf/home/home-snapshot.bin" \
     && ! has "$out" "Containers/dev.empathic.clax/" && ! has "$out" "CLAX_APP_DIR" \
     && has "$out" "--i-know-what-i-am-doing"; then
-    ok "--macos dry run: build, a copy re-identified as dev.empathic.clax.perf in its own container, ten launches for nine runs, SIGTERM by PID"
+    ok "--macos dry run: build, a copy re-identified as dev.empathic.clax.perf in its own container, ten launches for nine runs with the saved key withheld, SIGTERM by PID"
 else
     bad "--macos dry run: $out"
 fi
@@ -163,7 +163,7 @@ EOF
 #!/bin/bash
 set -eu
 [ ! -e "$box/Data/stale" ] || echo stale >>"$d/stale"
-echo "\$0 \${CLAX_APP_DIR-unset}" >>"$d/launched"
+echo "\$0 \${CLAX_APP_DIR-unset} \${CLAX_APP_NO_KEY-unset}" >>"$d/launched"
 echo "\$\$" >>"$d/pids"
 t="$support/timings.jsonl"
 snap="$box/Data/Library/Caches/$perf/home/home-snapshot.bin"
@@ -181,7 +181,7 @@ EOF
     chmod +x "$app/Contents/MacOS/Clax"
     loop() {
         PATH="$d/bin:$PATH" CLAX_PERF_CONTAINER="$box" CLAX_PERF_WORK="$d/work" CLAX_PERF_BUDGETS="$d/none.json" \
-            CLAX_APP_DIR=/nowhere run --macos --app "$app" --runs 3 --i-know-what-i-am-doing "$@"
+            CLAX_APP_DIR=/nowhere CLAX_APP_NO_KEY=0 run --macos --app "$app" --runs 3 --i-know-what-i-am-doing "$@"
     }
     out="$(loop --commit feed 2>"$d/err")"
     want='"app_home_usable_ms": {"median": 400, "p90": 500, "runs": 3, "missing": 0}, "app_home_cover_ms": {"median": 25, "p90": 30, "runs": 3, "missing": 0}}'
@@ -203,8 +203,8 @@ EOF
     if [ -n "$copy" ] && [ "$(plutil -extract CFBundleIdentifier raw -o - "$copy/Contents/Info.plist")" = "$perf" ] \
         && [ "$(plutil -extract CFBundleIdentifier raw -o - "$app/Contents/Info.plist")" = dev.empathic.clax ] \
         && grep -qxF -- "--force --sign - --preserve-metadata=entitlements,flags,runtime ${copy%/Fake.app}.new/Fake.app" "$d/codesign.log" \
-        && [ "$(sort -u "$d/launched")" = "$copy/Contents/MacOS/Clax unset" ]; then
-        ok "--macos: the copy, never the app given, is re-identified as $perf and signed again keeping its entitlements; it runs without CLAX_APP_DIR"
+        && [ "$(sort -u "$d/launched")" = "$copy/Contents/MacOS/Clax unset 1" ]; then
+        ok "--macos: the copy, never the app given, is re-identified as $perf and signed again keeping its entitlements; every launch runs without CLAX_APP_DIR and with CLAX_APP_NO_KEY=1"
     else
         bad "--macos copy: ${copy:-none} / $(cat "$d/codesign.log" 2>/dev/null) / $(sort -u "$d/launched")"
     fi
