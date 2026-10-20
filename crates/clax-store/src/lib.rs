@@ -679,7 +679,16 @@ pub fn schema_version(home: &Home) -> Result<Option<u32>> {
 /// (except a busy or locked database, reported as itself, since it may
 /// pass on a retry).
 fn migrate(conn: &mut Connection) -> Result<()> {
-    migrate_steps(conn).map_err(|e| match e {
+    migrate_with(conn, &migrations::NUMBERING)
+}
+
+/// [`migrate`] to the migrations of `numbering`, which is
+/// [`migrations::NUMBERING`] but in tests of a later numbering.
+pub(crate) fn migrate_with(
+    conn: &mut Connection,
+    numbering: &migrations::Numbering<'_>,
+) -> Result<()> {
+    migrate_steps(conn, numbering).map_err(|e| match e {
         e @ (CoreError::SchemaNewer { .. } | CoreError::MigrationFailed { .. }) => e,
         CoreError::Db(rusqlite::Error::SqliteFailure(f, m))
             if matches!(
@@ -714,8 +723,8 @@ fn naming_the_copy(e: CoreError, copy: Option<&std::path::Path>) -> CoreError {
     }
 }
 
-fn migrate_steps(conn: &mut Connection) -> Result<()> {
-    let known = migrations::MIGRATIONS.len() as u32;
+fn migrate_steps(conn: &mut Connection, numbering: &migrations::Numbering<'_>) -> Result<()> {
+    let known = numbering.migrations.len() as u32;
     let check = |version: u32| {
         if version > known {
             Err(CoreError::SchemaNewer {
@@ -733,7 +742,7 @@ fn migrate_steps(conn: &mut Connection) -> Result<()> {
     }
     {
         let tx = conn.transaction_with_behavior(rusqlite::TransactionBehavior::Immediate)?;
-        if let Some((from, to)) = migrations::adopt_earlier_flutter_app(&tx)? {
+        if let Some((from, to)) = migrations::adopt(&tx, numbering)? {
             tx.commit()?;
             tracing::warn!(
                 from,
@@ -749,7 +758,7 @@ fn migrate_steps(conn: &mut Connection) -> Result<()> {
         if version == known {
             return Ok(());
         }
-        tx.execute_batch(migrations::MIGRATIONS[version as usize])?;
+        tx.execute_batch(numbering.migrations[version as usize])?;
         migrations::rust_step(&tx, version + 1)?;
         tx.pragma_update(None, "user_version", version + 1)?;
         tx.commit()?;

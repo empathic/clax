@@ -1286,13 +1286,43 @@ pub const REPAIR_MIGRATION: u32 = 37;
 pub const WHERE_TO_ASK_MIGRATION: u32 = 38;
 
 /// The first of the Clax app's migrations (cross-app read grants), as a
-/// schema version; the app's follow it in [`APP_MIGRATION_MARKS`]'s order.
-pub const APP_MIGRATION: u32 = 41;
+/// schema version: the one after main's above [`WHERE_TO_ASK_MIGRATION`]
+/// ([`MAIN_MARKS_ABOVE_38`]); the app's follow it in
+/// [`APP_MIGRATION_MARKS`]'s order.
+pub const APP_MIGRATION: u32 = NUMBERING.app_first();
 
 /// What each of main's migrations after [`WHERE_TO_ASK_MIGRATION`] and
 /// before [`APP_MIGRATION`] leaves in the schema, in order, so adoption
-/// tells from the schema which of them a database lacks.
+/// tells from the schema which of them a database lacks. Taking a new
+/// migration of main's below the app's is adding it to [`MIGRATIONS`]
+/// and its mark here, nothing else.
 const MAIN_MARKS_ABOVE_38: [(&str, &str); 2] = [("table", "legal_agreements"), ("table", "briefs")];
+
+/// A list of migrations and the marks of main's among them above
+/// [`WHERE_TO_ASK_MIGRATION`], which the app's follow: this build's
+/// ([`NUMBERING`]), or in tests a later build's.
+pub(crate) struct Numbering<'a> {
+    /// Every migration in order; the `user_version` each leaves is its
+    /// position from 1.
+    pub(crate) migrations: &'a [&'a str],
+    /// What each of main's migrations after [`WHERE_TO_ASK_MIGRATION`]
+    /// leaves in the schema, in order; the app's ([`APP_MIGRATION_MARKS`])
+    /// follow them.
+    pub(crate) main_marks: &'a [(&'a str, &'a str)],
+}
+
+impl Numbering<'_> {
+    /// The number of the app's first migration.
+    pub(crate) const fn app_first(&self) -> u32 {
+        WHERE_TO_ASK_MIGRATION + 1 + self.main_marks.len() as u32
+    }
+}
+
+/// This build's migrations ([`MIGRATIONS`], [`MAIN_MARKS_ABOVE_38`]).
+pub(crate) const NUMBERING: Numbering<'static> = Numbering {
+    migrations: MIGRATIONS,
+    main_marks: &MAIN_MARKS_ABOVE_38,
+};
 
 /// What each of the Clax app's migrations ([`APP_MIGRATION`] onwards, in
 /// order) leaves in the schema: a table, or a column of `artifacts`.
@@ -1314,36 +1344,48 @@ const APP_MIGRATION_MARKS: [(&str, &str); 5] = [
 /// [`INBOX_MIGRATION`]) were under them; later from 27, right after them,
 /// before hosted mode's sign-in ([`HOSTED_MIGRATION`]) to the repair
 /// ([`REPAIR_MIGRATION`]); later from 38, right after the repair, before
-/// the where-to-ask migration ([`WHERE_TO_ASK_MIGRATION`]); and later from
-/// 39, right after it, before main's migrations that this list has between
-/// it and [`APP_MIGRATION`] (see [`MAIN_MARKS_ABOVE_38`]). Such a database
-/// is recognised by its schema, not its `user_version` alone: the
+/// the where-to-ask migration ([`WHERE_TO_ASK_MIGRATION`]); and since then
+/// right after main's migrations above it, of which a build held some
+/// number k (the first k of [`MAIN_MARKS_ABOVE_38`]; k is 0 for the builds
+/// that numbered them from 39, 2 for this one). Such a database is
+/// recognised by its schema, not its `user_version` alone: the
 /// `db_read_grants` table, and either no `questions.thread_id` column
-/// (which [`WHERE_TO_ASK_MIGRATION`] adds) or none of main's marks above
-/// it. With `questions.thread_id` its app migrations start at 39; else
-/// with the `hosted_setup` table (which [`HOSTED_MIGRATION`] makes) at 38;
-/// else with the `invites` table (which [`PEOPLE_MIGRATION`] makes) at 27,
-/// without it at 24; its version must name one of them. Each app
+/// (which [`WHERE_TO_ASK_MIGRATION`] adds) or fewer than all of main's
+/// marks above it. With `questions.thread_id` and the first k of main's
+/// marks its app migrations start at `38 + k + 1`, for any k; else with
+/// the `hosted_setup` table (which [`HOSTED_MIGRATION`] makes) at 38;
+/// else with the `invites` table (which [`PEOPLE_MIGRATION`] makes) at
+/// 27, without it at 24; its version must name one of them. Each app
 /// migration's mark must be present exactly up to the one its version
 /// names, or the database is refused
 /// ([`clax_core::CoreError::MigrationFailed`]) and left as it was. A
-/// database with `questions.thread_id` and the app's tables that holds
-/// some but not all of main's marks above it was made by no build, and is
-/// refused the same way. One with all of them is this numbering's.
+/// database with the app's tables whose main marks above 38 are not the
+/// first k of them, or that holds any without `questions.thread_id`, was
+/// made by no build, and is refused the same way. One with
+/// `questions.thread_id` and all of them is this numbering's.
 ///
 /// The migrations it lacks below [`APP_MIGRATION`] run on it, SQL and Rust
 /// step each: the multi-person ones when it has no `invites`, then
 /// [`HOSTED_MIGRATION`] to [`REPAIR_MIGRATION`] when it has no
 /// `hosted_setup`, then [`WHERE_TO_ASK_MIGRATION`] when it has no
-/// `questions.thread_id`, then each of main's above it whose mark it
-/// lacks; none of them touches the app's tables or adds a column the
-/// app's migrations add, and the repair gives a database of an earlier
-/// revision of the multi-person migrations their final schema.
+/// `questions.thread_id`, then main's above it after the first k; none of
+/// them touches the app's tables or adds a column the app's migrations
+/// add, and the repair gives a database of an earlier revision of the
+/// multi-person migrations their final schema.
 /// `user_version` then becomes the app migration it already holds in this
 /// numbering.
 pub(super) fn adopt_earlier_flutter_app(
     tx: &rusqlite::Transaction<'_>,
 ) -> clax_core::Result<Option<(u32, u32)>> {
+    adopt(tx, &NUMBERING)
+}
+
+/// [`adopt_earlier_flutter_app`] into `numbering`.
+pub(super) fn adopt(
+    tx: &rusqlite::Transaction<'_>,
+    numbering: &Numbering<'_>,
+) -> clax_core::Result<Option<(u32, u32)>> {
+    let app_first = numbering.app_first();
     let version: u32 = tx.query_row("PRAGMA user_version", [], |r| r.get(0))?;
     if !has_mark(tx, "table", "db_read_grants")? {
         return Ok(None);
@@ -1355,26 +1397,37 @@ pub(super) fn adopt_earlier_flutter_app(
         ),
     };
     let asked = has_column(tx, "questions", "thread_id")?;
-    let mut main_held = Vec::with_capacity(MAIN_MARKS_ABOVE_38.len());
-    for (kind, name) in MAIN_MARKS_ABOVE_38 {
-        main_held.push(has_mark(tx, kind, name)?);
+    // How many of main's migrations above the where-to-ask one the
+    // database holds: the first `main` of them, and none after.
+    let mut main = 0;
+    for (i, &(kind, name)) in numbering.main_marks.iter().enumerate() {
+        if !has_mark(tx, kind, name)? {
+            continue;
+        }
+        if i > main {
+            let (lacked_kind, lacked) = numbering.main_marks[main];
+            return Err(refuse(format!(
+                "holds the {kind} {name} but lacks the {lacked_kind} {lacked} of an earlier migration"
+            )));
+        }
+        main += 1;
     }
-    if asked {
-        if main_held.iter().all(|&held| held) {
-            return Ok(None);
-        }
-        if main_held.iter().any(|&held| held) {
-            return Err(refuse(
-                "holds the app's tables and only some of the migrations before them".into(),
-            ));
-        }
+    if asked && main == numbering.main_marks.len() {
+        return Ok(None);
+    }
+    if !asked && main > 0 {
+        let (kind, name) = numbering.main_marks[0];
+        return Err(refuse(format!(
+            "holds the {kind} {name} but lacks questions.thread_id of an earlier migration"
+        )));
     }
     let hosted = has_mark(tx, "table", "hosted_setup")?;
     let people = has_mark(tx, "table", "invites")?;
     // The first app migration in the database's numbering, and the first
     // migration of this list's it lacks below the app's.
     let (first, below) = if asked {
-        (WHERE_TO_ASK_MIGRATION + 1, WHERE_TO_ASK_MIGRATION + 1)
+        let first = WHERE_TO_ASK_MIGRATION + 1 + main as u32;
+        (first, first)
     } else if hosted {
         (REPAIR_MIGRATION + 1, WHERE_TO_ASK_MIGRATION)
     } else if people {
@@ -1397,16 +1450,11 @@ pub(super) fn adopt_earlier_flutter_app(
             )));
         }
     }
-    for v in below..APP_MIGRATION {
-        if let Some(i) = v.checked_sub(WHERE_TO_ASK_MIGRATION + 1)
-            && main_held[i as usize]
-        {
-            continue;
-        }
-        tx.execute_batch(MIGRATIONS[v as usize - 1])?;
+    for v in below..app_first {
+        tx.execute_batch(numbering.migrations[v as usize - 1])?;
         rust_step(tx, v)?;
     }
-    let now = APP_MIGRATION - 1 + held as u32;
+    let now = app_first - 1 + held as u32;
     tx.pragma_update(None, "user_version", now)?;
     Ok(Some((version, now)))
 }
@@ -4697,5 +4745,182 @@ mod tests {
         let name = copies[0].file_name().unwrap().to_str().unwrap();
         assert!(name.starts_with("clax-40-"), "{name}");
         assert_eq!(every_row(&Connection::open(&copies[0]).unwrap()), before);
+    }
+
+    /// A migration main might add after its 40, for tests of a later
+    /// numbering: a plain table, which fails if it is run twice.
+    const SIMULATED_MAIN_41: &str = "CREATE TABLE simulated_main_41 (
+        id TEXT PRIMARY KEY,
+        created_at TEXT NOT NULL
+    );";
+
+    /// [`MIGRATIONS`] as a build would have them after taking a 41 more
+    /// of main's ([`SIMULATED_MAIN_41`]): main's 1 to 40, it, then the
+    /// app's from 42; and main's marks above 38 with its mark last.
+    fn with_a_main_41() -> (Vec<&'static str>, Vec<(&'static str, &'static str)>) {
+        let app = APP_MIGRATION as usize - 1;
+        let mut migrations = MIGRATIONS[..app].to_vec();
+        migrations.push(SIMULATED_MAIN_41);
+        migrations.extend_from_slice(&MIGRATIONS[app..]);
+        let mut marks = MAIN_MARKS_ABOVE_38.to_vec();
+        marks.push(("table", "simulated_main_41"));
+        (migrations, marks)
+    }
+
+    /// A fresh database's [`shape_of`] under `numbering`.
+    fn fresh_shape_of(numbering: &super::Numbering<'_>) -> Vec<String> {
+        let mut c = Connection::open_in_memory().unwrap();
+        crate::migrate_with(&mut c, numbering).unwrap();
+        shape_of(&c)
+    }
+
+    /// Opens `home` as a build with `numbering` does: a copy first, then
+    /// the migrations. Returns the copy.
+    fn open_under(home: &Home, numbering: &super::Numbering<'_>) -> std::path::PathBuf {
+        let mut c = Connection::open(home.db_path()).unwrap();
+        let now = "2026-11-02T00:00:00Z".parse().unwrap();
+        let copy = crate::backup::before_migrate(&c, home, numbering.migrations.len() as u32, now)
+            .unwrap()
+            .expect("a copy before the upgrade");
+        crate::migrate_with(&mut c, numbering).unwrap();
+        copy
+    }
+
+    #[test]
+    fn a_home_of_this_numbering_takes_a_later_main_migration_and_the_apps_renumbering() {
+        let (migrations, marks) = with_a_main_41();
+        let later = super::Numbering {
+            migrations: &migrations,
+            main_marks: &marks,
+        };
+        assert_eq!(later.app_first(), APP_MIGRATION + 1);
+        let fresh = fresh_shape_of(&later);
+
+        // The owner's home after this build's first open: 43 adopted to 45.
+        let dir = tempfile::tempdir().unwrap();
+        let home = Home::at(dir.path().join("ax"));
+        installed_at_43(&home);
+        drop(Store::open(&home).unwrap());
+        let (cols, before) = {
+            let c = Connection::open(home.db_path()).unwrap();
+            assert_eq!(user_version(&c), 45);
+            (columns_of(&c), every_row(&c))
+        };
+
+        let copy = open_under(&home, &later);
+        let c = Connection::open(home.db_path()).unwrap();
+        assert_eq!(user_version(&c), 46, "the app's 45 is its 46 now");
+        assert_eq!(shape_of(&c), fresh, "the later build's schema");
+        assert_eq!(rows_in(&c, &cols), before, "every row kept");
+        assert_eq!(table_count(&c, "simulated_main_41"), 1);
+        let approvals: i64 = c
+            .query_row(
+                "SELECT COUNT(*) FROM approvals WHERE created_via = 'migration'",
+                [],
+                |r| r.get(0),
+            )
+            .unwrap();
+        assert_eq!(approvals, 1, "no earlier migration runs again");
+        assert_eq!(
+            c.query_row("PRAGMA integrity_check", [], |r| r.get::<_, String>(0))
+                .unwrap(),
+            "ok"
+        );
+        let copied = Connection::open(&copy).unwrap();
+        assert_eq!(user_version(&copied), 45);
+        assert_eq!(every_row(&copied), before, "the copy holds the home as it was");
+
+        // Opened again by the later build, nothing changes.
+        drop(c);
+        let mut c = Connection::open(home.db_path()).unwrap();
+        let (schema, rows) = (schema_of(&c), every_row(&c));
+        crate::migrate_with(&mut c, &later).unwrap();
+        assert_eq!((user_version(&c), schema_of(&c), every_row(&c)), (46, schema, rows));
+    }
+
+    #[test]
+    fn every_layout_adopts_into_a_later_main_numbering() {
+        let (migrations, marks) = with_a_main_41();
+        let later = super::Numbering {
+            migrations: &migrations,
+            main_marks: &marks,
+        };
+        let fresh = fresh_shape_of(&later);
+        let last = migrations.len() as u32;
+        // Each layout: how a home of it is made, and the version it has
+        // with the first `app` of the app's migrations.
+        type Layout = (&'static str, MakeNumbered, fn(usize) -> u32);
+        let layouts: [Layout; 5] = [
+            ("from 24", pre_rebase_flutter_app, |app| AUDIT_MIGRATION + app as u32),
+            ("from 27", earlier_app_numbering, |app| INBOX_MIGRATION + app as u32),
+            ("from 38", app_numbered_from_38, |app| REPAIR_MIGRATION + app as u32),
+            ("from 39", app_numbered_from_39, |app| WHERE_TO_ASK_MIGRATION + app as u32),
+            ("from 41", app_numbered_from_41, |app| APP_MIGRATION - 1 + app as u32),
+        ];
+        for (layout, make, version) in layouts {
+            for app in 1..=super::APP_MIGRATION_MARKS.len() {
+                let dir = tempfile::tempdir().unwrap();
+                let home = Home::at(dir.path().join("ax"));
+                let before = make(&home, app);
+                let old = version(app);
+                {
+                    let mut c = Connection::open(home.db_path()).unwrap();
+                    assert_eq!(user_version(&c), old, "{layout}, {app}");
+                    let tx = c.transaction().unwrap();
+                    assert_eq!(
+                        super::adopt(&tx, &later).unwrap(),
+                        Some((old, later.app_first() - 1 + app as u32)),
+                        "{layout}, {app}"
+                    );
+                }
+                open_under(&home, &later);
+                let c = Connection::open(home.db_path()).unwrap();
+                assert_eq!(user_version(&c), last, "{layout}, {app}");
+                assert_eq!(shape_of(&c), fresh, "{layout}, {app}");
+                assert_eq!(kept_rows(&c, app), before, "{layout}, {app}");
+            }
+        }
+    }
+
+    /// A database of this numbering holding the first `app` of the app's
+    /// migrations, at version `40 + app`, with the rows of [`app_rows`].
+    /// Returns its rows.
+    fn app_numbered_from_41(home: &Home, app: usize) -> Vec<(String, Vec<String>)> {
+        home.ensure_dirs().unwrap();
+        let mut c = Connection::open(home.db_path()).unwrap();
+        c.pragma_update(None, "journal_mode", "wal").unwrap();
+        let tx = c.transaction().unwrap();
+        let to = APP_MIGRATION - 1 + app as u32;
+        for v in 1..=to {
+            tx.execute_batch(MIGRATIONS[v as usize - 1]).unwrap();
+            super::rust_step(&tx, v).unwrap();
+        }
+        tx.pragma_update(None, "user_version", to).unwrap();
+        tx.commit().unwrap();
+        app_rows(&c, app)
+    }
+
+    #[test]
+    fn a_home_holding_mains_later_migrations_without_an_earlier_one_is_refused() {
+        let (migrations, marks) = with_a_main_41();
+        let later = super::Numbering {
+            migrations: &migrations,
+            main_marks: &marks,
+        };
+        let dir = tempfile::tempdir().unwrap();
+        let home = Home::at(dir.path().join("ax"));
+        app_numbered_from_41(&home, 5);
+        let mut c = Connection::open(home.db_path()).unwrap();
+        c.execute_batch("DROP TABLE legal_agreements;").unwrap();
+        let before = (schema_of(&c), every_row(&c));
+        let tx = c.transaction().unwrap();
+        let err = super::adopt(&tx, &later).unwrap_err();
+        assert!(
+            matches!(&err, clax_core::CoreError::MigrationFailed { at: 45, detail }
+                if detail.contains("briefs") && detail.contains("legal_agreements")),
+            "{err:?}"
+        );
+        drop(tx);
+        assert_eq!((schema_of(&c), every_row(&c)), before);
     }
 }

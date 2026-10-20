@@ -1009,22 +1009,30 @@ number on main), and installed homes are adopted by their schema.
   already adopts the app's layouts that started at 24, 27 and 38) learns
   the layout that started at 39, by schema, not by `user_version`: the
   home has the app's first mark (`db_read_grants`) and the where-to-ask
-  migration's `questions.thread_id`, and lacks the marks of main's
-  migrations between the where-to-ask migration and the app's
-  (`legal_agreements`, `briefs`). Its version must be 38 plus the number
-  of the app's marks it holds, and those marks (the app's five, then the
-  jobs migration's tables) must be present exactly up to that one; else
-  the open is refused with `MigrationFailed` naming the mismatch and the
-  backup, and the home is left as it was. An adopted home runs main's
-  migrations it lacks (39 and 40, which touch none of the app's tables),
-  and its `user_version` becomes the number its last app migration has
-  now (43 → 45). A home of the new numbering, or any other database, is
-  left to the ordinary migrations.
+  migration's `questions.thread_id`, and holds the first k of the marks of
+  main's migrations between the where-to-ask migration and the app's
+  (`legal_agreements`, `briefs`, in order) and none after them, with k
+  below their number: the app's migrations in that home start at
+  38 + k + 1 (39 for the installed homes, k = 0). Its version must be
+  38 + k plus the number of the app's marks it holds, and those marks
+  (the app's five, then the jobs migration's tables) must be present
+  exactly up to that one; else, or when the main marks it holds are not
+  the first k, the open is refused with `MigrationFailed` naming the
+  mismatch and the backup, and the home is left as it was. An adopted
+  home runs main's migrations it lacks (from 38 + k + 1 up to the app's
+  first, which touch none of the app's tables), and its `user_version`
+  becomes the number its last app migration has now (43 → 45). A home
+  holding all of main's marks is of the new numbering and, like any other
+  database, is left to the ordinary migrations.
 - **Each main migration below the app's has a mark** (`MAIN_MARKS_ABOVE_38`
   beside `APP_MIGRATION_MARKS`: `legal_agreements`, `briefs`), so adoption
   decides from the schema which of them a home lacks, whatever its
-  version, and a later renumbering adds one mark per new main migration
-  and nothing else.
+  version. The rule above holds for any k, so a later renumbering adds
+  one mark per new main migration and nothing else: when main adds a 41,
+  a home this build left at 45 (main's two marks, k = 2, the app's from
+  41) is adopted the same way, gets main's 41 after a backup, and its
+  `user_version` becomes 46, never a refusal. A store test runs that case
+  against a simulated main 41.
 - **Backup first, always.** `Store::open` already backs up before any
   migration (`backup::before_migrate`, three kept), adoption included:
   the first open of an installed home leaves `backups/clax-43-<time>.db`
