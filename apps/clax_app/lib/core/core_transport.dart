@@ -88,12 +88,15 @@ class CoreTransport implements ClaxTransport {
   /// once with 404 `not_in_app`, as the core answers such a call.
   ///
   /// The hub's `ready` is passed on; the core's closing `end` is not.
-  /// A stream the core ended by itself (`stream_ended`) is subscribed
-  /// again, resuming from [resumeId]'s answer or else the last event ID
-  /// seen, after 0.5 s doubling to 30 s (back to 0.5 s after a stream that
-  /// carried an event). Any other end (`core_closed`, `core_failed`,
-  /// `stream_refused`, `malformed`) ends the stream with [ClaxApiError]
-  /// status 0 [ClaxApiError.unreachable], the reason in its body:
+  /// A stream the core ended by itself (`stream_ended`), or one its router
+  /// refused (`stream_refused`) with a status other than 400, 403 or 404,
+  /// is subscribed again, resuming from [resumeId]'s answer or else the
+  /// last event ID seen, after 0.5 s doubling to 30 s (back to 0.5 s after
+  /// a stream that carried an event), as a loopback stream reconnects. A
+  /// refusal with 400, 403 or 404, which asking again cannot change, ends
+  /// the stream with [ClaxApiError] code `stream_refused` and that status.
+  /// Any other end (`core_closed`, `core_failed`, `malformed`) ends it
+  /// with status 0 [ClaxApiError.unreachable], the reason in its body:
   /// reopening the core is its host's work, not this stream's. Cancelling
   /// ends the subscription.
   @override
@@ -125,13 +128,13 @@ class CoreTransport implements ClaxTransport {
           lastEventId: resumeId?.call() ?? lastId,
         );
         final done = ended = Completer<void>();
-        String? reason;
+        (String, int?)? ending;
         var delivered = false;
         reading =
             decodeSse(sub.blocks.map(utf8.encode), lastEventId: lastId).listen(
               (m) {
                 if (m.event == 'end') {
-                  reason = _reasonOf(m.data);
+                  ending = _endOf(m.data);
                   return;
                 }
                 if (m.event != 'ready') delivered = true;
@@ -139,7 +142,7 @@ class CoreTransport implements ClaxTransport {
                 out.add(m);
               },
               onError: (Object _) {
-                reason ??= 'malformed';
+                ending ??= ('malformed', null);
                 if (!done.isCompleted) done.complete();
               },
               onDone: () {
@@ -152,17 +155,25 @@ class CoreTransport implements ClaxTransport {
         current = null;
         ended = null;
         if (cancelled) break;
-        final why = reason ?? 'stream_ended';
-        if (why != 'stream_ended') {
-          out.addError(
-            _unreachable(why, 'the core ended the event stream'),
-          );
-          break;
+        switch (ending ?? ('stream_ended', null)) {
+          case ('stream_refused', final int status) when _final.contains(status):
+            out.addError(
+              ClaxApiError(
+                status: status,
+                code: 'stream_refused',
+                message: 'event stream refused: $status',
+              ),
+            );
+          case ('stream_ended' || 'stream_refused', _):
+            if (delivered) backoff = _first;
+            await _retryDelay(backoff);
+            final next = backoff * 2;
+            backoff = next > _max ? _max : next;
+            continue;
+          case (final why, _):
+            out.addError(_unreachable(why, 'the core ended the event stream'));
         }
-        if (delivered) backoff = _first;
-        await _retryDelay(backoff);
-        final next = backoff * 2;
-        backoff = next > _max ? _max : next;
+        break;
       }
       if (!out.isClosed) await out.close();
     }
@@ -193,13 +204,22 @@ class CoreTransport implements ClaxTransport {
         body: {'reason': reason},
       );
 
-  /// An `end` block's reason; `malformed` when it names none.
-  static String _reasonOf(String data) {
+  /// An `end` block's reason and status; `malformed` when it names no
+  /// reason.
+  static (String, int?) _endOf(String data) {
     try {
-      if (jsonDecode(data) case {'reason': final String r}) return r;
+      switch (jsonDecode(data)) {
+        case {'reason': final String r, 'status': final int status}:
+          return (r, status);
+        case {'reason': final String r}:
+          return (r, null);
+      }
     } on FormatException catch (_) {}
-    return 'malformed';
+    return ('malformed', null);
   }
+
+  /// The refusals asking again cannot change, which end a stream for good.
+  static const _final = {400, 403, 404};
 
   static const _first = Duration(milliseconds: 500);
   static const _max = Duration(seconds: 30);

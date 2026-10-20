@@ -309,6 +309,50 @@ void main() {
       });
     }
 
+    for (final status in [400, 403, 404]) {
+      test('a stream the core refuses $status ends with stream_refused and that status', () async {
+        final core = FakeCore();
+        final errors = <Object>[];
+        var done = false;
+        CoreTransport(core, retryDelay: (_) async {}).sse('/api/stream').listen(
+          (_) {},
+          onError: errors.add,
+          onDone: () => done = true,
+        );
+        await pumpEventQueue();
+        core.end('stream_refused', status: status);
+        await pumpEventQueue();
+        expect(
+          errors.single,
+          isA<ClaxApiError>()
+              .having((e) => e.status, 'status', status)
+              .having((e) => e.code, 'code', 'stream_refused'),
+        );
+        expect(done, isTrue);
+        expect(core.subscribers, 0);
+      });
+    }
+
+    test('a stream the core refuses otherwise is subscribed again after the backoff', () async {
+      final core = FakeCore();
+      final delays = <Duration>[];
+      final errors = <Object>[];
+      final messages = <SseMessage>[];
+      final sub = CoreTransport(core, retryDelay: (d) async => delays.add(d))
+          .sse('/api/stream')
+          .listen(messages.add, onError: errors.add);
+      await pumpEventQueue();
+      core.end('stream_refused', status: 503);
+      await pumpEventQueue();
+      core.end('stream_refused', status: 500);
+      await pumpEventQueue();
+      expect(errors, isEmpty);
+      expect(core.subscribers, 1);
+      expect(delays, const [Duration(milliseconds: 500), Duration(seconds: 1)]);
+      expect(messages.map((m) => m.event), ['ready', 'ready', 'ready']);
+      await sub.cancel();
+    });
+
     test('a path other than /api/stream is not served', () async {
       final core = FakeCore();
       await expectLater(

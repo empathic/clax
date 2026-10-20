@@ -74,10 +74,11 @@ class FakeCore implements CoreCalls {
     }
   }
 
-  /// Ends every live subscription with an `end` block naming [reason].
-  void end(String reason) {
+  /// Ends every live subscription with an `end` block naming [reason]
+  /// (and [status], as a `stream_refused` end carries the refusal's).
+  void end(String reason, {int? status}) {
     for (final s in _subs) {
-      s.end(reason);
+      s.end(reason, status: status);
     }
   }
 
@@ -460,10 +461,10 @@ class FakeSubscription implements CoreSubscription {
     if (live) _out.add(block);
   }
 
-  /// Sends the `end` block naming [reason] and ends.
-  void end(String reason) {
+  /// Sends the `end` block naming [reason] (and [status]) and ends.
+  void end(String reason, {int? status}) {
     if (!live) return;
-    _out.add(endBlock(reason));
+    _out.add(endBlock(reason, status: status));
     _out.close();
   }
 

@@ -1154,6 +1154,35 @@ mod tests {
         assert_eq!(settled(&rx).await, OpenEvent::Closed);
     }
 
+    #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+    async fn a_stream_a_ready_core_refuses_ends_with_the_refusals_status() {
+        let dir = tempfile::tempdir().unwrap();
+        let (on_event, rx) = events();
+        let embed = Embed::open(options(dir.path()), on_event).unwrap();
+        assert_eq!(settled(&rx).await, OpenEvent::Ready);
+        for status in [503u16, 403] {
+            let router = axum::Router::new().route(
+                "/api/stream",
+                axum::routing::get(move || async move {
+                    axum::http::StatusCode::from_u16(status).unwrap()
+                }),
+            );
+            embed.inner.shared.phase.send_replace(Phase::Ready {
+                router,
+                token: "t".into(),
+            });
+            let end = subscription_end(&embed).await.unwrap();
+            assert_eq!(
+                String::from_utf8_lossy(&end),
+                format!(
+                    "event: end\ndata: {{\"reason\":\"stream_refused\",\"status\":{status}}}\n\n"
+                )
+            );
+        }
+        embed.close();
+        assert_eq!(settled(&rx).await, OpenEvent::Closed);
+    }
+
     /// A response frame's status and body.
     fn status_and_body(frame: &[u8]) -> (u16, Vec<u8>) {
         let (h, body) = frame::split(frame).unwrap();
