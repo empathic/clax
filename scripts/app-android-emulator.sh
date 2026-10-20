@@ -1,6 +1,6 @@
 #!/usr/bin/env bash
-# app-android-emulator.sh [--start | --stop PID | --serial] [--window]
-#                         [--i-know-what-i-am-doing]
+# app-android-emulator.sh [--start | --stop PID | --serial | --clean]
+#                         [--window] [--i-know-what-i-am-doing]
 #
 # The Android emulator the Clax app's Android integration tests run on
 # (//apps/clax_app:integration_android_<name>, bazel/flutter/android.bzl;
@@ -10,12 +10,14 @@
 #
 #   --start   makes the AVD "Clax Pixel" under target/android-avd/ once
 #             (its config.ini and .ini written here, no avdmanager), boots
-#             it headless on the first free even port from 5554 (--window:
-#             in a window, for a person to look at), waits for adb and
-#             sys.boot_completed=1 (at most 300 s), and prints
-#             `serial=emulator-<port> pid=<pid>`. An emulator this script
-#             started that still runs is printed again, not started twice.
-#             If it does not boot, or the script exits any other way
+#             it headless and read-only (-read-only: what the device writes
+#             goes to temporary files the emulator drops when it exits, so
+#             the AVD does not grow from run to run) on the first free even
+#             port from 5554 (--window: in a window, for a person to look
+#             at), waits for adb and sys.boot_completed=1 (at most 300 s),
+#             and prints `serial=emulator-<port> pid=<pid>`. An emulator this
+#             script started that still runs is printed again, not started
+#             twice. If it does not boot, or the script exits any other way
 #             before printing (an interrupt, a signal), it stops that
 #             emulator and its adb server before it exits.
 #   --stop PID  stops the emulator this script started as PID: `adb emu
@@ -24,6 +26,9 @@
 #             not start.
 #   --serial  prints the serial of the emulator this script started, if it
 #             runs.
+#   --clean   removes target/android-avd and target/android-home (the AVD,
+#             its data images and the emulator's home), when no emulator of
+#             this script runs; the next --start makes the AVD again.
 #
 # An emulator is this script's only while target/android-avd's .running
 # file names its serial, its PID, the PID's start time and its command, and
@@ -53,7 +58,7 @@ stop_pid=""
 window=""
 while [ $# -gt 0 ]; do
     case "$1" in
-        --start | --serial) cmd="${1#--}" ;;
+        --start | --serial | --clean) cmd="${1#--}" ;;
         --stop)
             cmd=stop
             stop_pid="${2:-}"
@@ -63,13 +68,13 @@ while [ $# -gt 0 ]; do
         --window) window=1 ;;
         --i-know-what-i-am-doing) act=1 ;;
         *)
-            echo "usage: $0 [--start | --stop PID | --serial] [--window] [--i-know-what-i-am-doing]" >&2
+            echo "usage: $0 [--start | --stop PID | --serial | --clean] [--window] [--i-know-what-i-am-doing]" >&2
             exit 2
             ;;
     esac
     shift
 done
-[ -n "$cmd" ] || { echo "usage: $0 [--start | --stop PID | --serial] [--window] [--i-know-what-i-am-doing]" >&2; exit 2; }
+[ -n "$cmd" ] || { echo "usage: $0 [--start | --stop PID | --serial | --clean] [--window] [--i-know-what-i-am-doing]" >&2; exit 2; }
 
 avd_name="Clax_Pixel"
 avd_home="$root/target/android-avd"
@@ -247,6 +252,20 @@ stop_emulator() {
 }
 
 case "$cmd" in
+    clean)
+        r="$(running_one)"
+        if [ -n "$r" ]; then
+            echo "app-android-emulator: ${r%% *} (pid ${r##* }) runs; stop it first (--stop ${r##* })" >&2
+            exit 1
+        fi
+        if [ -z "$act" ]; then
+            say "would remove $avd_home and $user_home ($(du -sh "$avd_home" 2>/dev/null | cut -f1 || true) in the AVD)"
+            say "dry run: pass --i-know-what-i-am-doing to act"
+            exit 0
+        fi
+        rm -rf "$avd_home" "$user_home"
+        say "removed $avd_home and $user_home"
+        ;;
     serial)
         r="$(running_one)"
         [ -n "$r" ] || { echo "app-android-emulator: no emulator of this script runs" >&2; exit 1; }
@@ -262,7 +281,7 @@ case "$cmd" in
         fi
         sdk_parts
         port="$(free_port)"
-        args=(-avd "$avd_name" -port "$port" -no-audio -no-boot-anim -no-snapshot -no-metrics -gpu "$gpu")
+        args=(-avd "$avd_name" -port "$port" -read-only -no-audio -no-boot-anim -no-snapshot -no-metrics -gpu "$gpu")
         [ -n "$window" ] || args+=(-no-window)
         if [ -z "$act" ]; then
             say "would make the AVD \"Clax Pixel\" at $avd_home/$avd_name.avd (android-36, google_apis, arm64-v8a, image $image_dir)"

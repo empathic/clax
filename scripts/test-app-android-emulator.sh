@@ -1,7 +1,8 @@
 #!/usr/bin/env bash
 # Tests scripts/app-android-emulator.sh on stub tools: the dry runs of
-# --start and --stop 123 print the AVD, the emulator's command line and
-# the port it would take, and start, write or stop nothing; a busy port moves it to the next even one; --start
+# --start and --stop 123 print the AVD, the emulator's command line (with
+# -read-only) and the port it would take, and start, write or stop
+# nothing; a busy port moves it to the next even one; --start
 # --i-know-what-i-am-doing writes the AVD's config.ini (naming the system
 # image's path and abi.type=arm64-v8a) and its .ini into a scratch
 # checkout's target/, links the SDK parts, boots the stub emulator, waits
@@ -13,6 +14,8 @@
 # another process (another start time, or another command) is neither
 # reported nor stopped. An emulator that exits while booting, and an
 # interrupted boot, leave no emulator, no adb server and no .running file.
+# --clean removes the AVD and the emulator's home, and refuses while the
+# emulator runs.
 #
 # The stub emulator is a process that runs until the stub adb's `emu kill`
 # ends it (or, in mode `exit`, exits at once); no emulator or adb runs.
@@ -88,7 +91,7 @@ export CLAX_ANDROID_ADB="$tmp/sdk/platform-tools/adb"
 # --- the dry run of --start
 if "$script" --start > "$tmp/out" 2>&1 &&
     grep -q 'would make the AVD "Clax Pixel" at .*/target/android-avd/Clax_Pixel.avd' "$tmp/out" &&
-    grep -q "would run: $tmp/sdk/emulator/emulator -avd Clax_Pixel -port 5554 -no-audio -no-boot-anim -no-snapshot -no-metrics -gpu swiftshader_indirect -no-window" "$tmp/out" &&
+    grep -q "would run: $tmp/sdk/emulator/emulator -avd Clax_Pixel -port 5554 -read-only -no-audio -no-boot-anim -no-snapshot -no-metrics -gpu swiftshader_indirect -no-window" "$tmp/out" &&
     grep -q 'would take port 5554 (serial emulator-5554, adb server on 15554)' "$tmp/out" &&
     [ ! -e "$repo/target" ] && [ ! -e "$tmp/emulator.args" ] && [ ! -e "$tmp/adb.calls" ]; then
     _ok "the dry run of --start prints the AVD, the command line and the port, and does nothing"
@@ -99,7 +102,7 @@ fi
 # --- a busy port, and a window
 echo 5554 > "$tmp/busy"
 if "$script" --start --window > "$tmp/out" 2>&1 &&
-    grep -q -- '-port 5556 -no-audio -no-boot-anim -no-snapshot -no-metrics -gpu auto$' "$tmp/out" &&
+    grep -q -- '-port 5556 -read-only -no-audio -no-boot-anim -no-snapshot -no-metrics -gpu auto$' "$tmp/out" &&
     grep -q 'would take port 5556' "$tmp/out"; then
     _ok "a busy 5554 moves it to 5556; --window drops -no-window"
 else
@@ -128,7 +131,7 @@ if "$script" --start --i-know-what-i-am-doing > "$tmp/out" 2>&1; then
         grep -qx "path=$repo/target/android-avd/Clax_Pixel.avd" "$repo/target/android-avd/Clax_Pixel.ini" &&
         [ "$(readlink "$repo/target/android-sdk/system-images/android-36/google_apis/arm64-v8a")" = "$(cd "$tmp/sdk/image" && pwd -P)" ] &&
         [ "$(readlink "$repo/target/android-sdk/emulator")" = "$(cd "$tmp/sdk/emulator" && pwd -P)" ] &&
-        grep -qx -- '-avd Clax_Pixel -port 5554 -no-audio -no-boot-anim -no-snapshot -no-metrics -gpu swiftshader_indirect -no-window' "$tmp/emulator.args" &&
+        grep -qx -- '-avd Clax_Pixel -port 5554 -read-only -no-audio -no-boot-anim -no-snapshot -no-metrics -gpu swiftshader_indirect -no-window' "$tmp/emulator.args" &&
         grep -qx "sdk=$repo/target/android-sdk avd=$repo/target/android-avd adbport=15554" "$tmp/emulator.env" &&
         kill -0 "$pid"; then
         _ok "--start writes the AVD, links the SDK, boots and prints serial=emulator-5554 pid=$pid"
@@ -267,6 +270,31 @@ else
     [ -z "$booting" ] || kill "$booting" 2>/dev/null || true
 fi
 rm -f "$tmp/adb.mode"
+
+# --- --clean
+if "$script" --clean > "$tmp/out" 2>&1 &&
+    grep -q "would remove $repo/target/android-avd and $repo/target/android-home" "$tmp/out" &&
+    [ -d "$repo/target/android-avd/Clax_Pixel.avd" ]; then
+    _ok "the dry run of --clean names what it would remove and removes nothing"
+else
+    _fail "the dry run of --clean"
+fi
+rm -f "$tmp/emulator.pid"
+"$script" --start --i-know-what-i-am-doing > "$tmp/out" 2>&1 || true
+pid="$(cat "$tmp/emulator.pid" 2>/dev/null || true)"
+if [ -n "$pid" ] && ! "$script" --clean --i-know-what-i-am-doing > "$tmp/out" 2>&1 &&
+    grep -q 'runs; stop it first' "$tmp/out" && [ -d "$repo/target/android-avd/Clax_Pixel.avd" ]; then
+    _ok "--clean refuses while the emulator runs"
+else
+    _fail "--clean while the emulator runs"
+fi
+[ -z "$pid" ] || "$script" --stop "$pid" --i-know-what-i-am-doing > /dev/null 2>&1 || true
+if "$script" --clean --i-know-what-i-am-doing > "$tmp/out" 2>&1 &&
+    [ ! -e "$repo/target/android-avd" ] && [ ! -e "$repo/target/android-home" ]; then
+    _ok "--clean removes the AVD and the emulator's home"
+else
+    _fail "--clean, acting"
+fi
 
 [ "$fails" -eq 0 ] || { echo "$fails failed" >&2; exit 1; }
 echo "all passed"

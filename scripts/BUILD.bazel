@@ -333,7 +333,9 @@ sh_test(
 )
 
 # scripts/app-android-emulator.sh on a stub emulator, adb and lsof: its dry
-# runs, the AVD it writes, its boot and its stop by PID.
+# runs, the AVD it writes, its read-only boot and its stop by PID, a reused
+# PID it neither reports nor stops, the cleanup of a failed or interrupted
+# boot, and --clean.
 sh_test(
     name = "app_android_emulator_test",
     srcs = ["test-app-android-emulator.sh"],

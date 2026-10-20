@@ -251,14 +251,24 @@ arm64-v8a) under `target/android-avd/` by writing its `config.ini` and
 `.ini` (no `avdmanager`), links the pinned SDK parts into
 `target/android-sdk/`, and keeps the emulator's and adb's home in
 `target/android-home/`, so nothing reaches `~/.android`. `--start` boots
-it headless (`--window` to look at it) on the first free even port from
-5554 and prints `serial=emulator-<port> pid=<pid>`; `--stop <pid>` ends
-only an emulator it started, by `adb emu kill`, then the PID. Every adb
+it headless (`--window` to look at it) and read-only (`-read-only`: what
+the device writes goes to temporary files the emulator drops when it
+exits) on the first free even port from 5554 and prints
+`serial=emulator-<port> pid=<pid>`; a `--start` that ends before the
+device has booted (a failed boot, an interrupt, a signal) stops the
+emulator and its adb server first. `--stop <pid>` ends only an emulator
+it started, by `adb emu kill`, then the PID: it knows its emulator by the
+PID with the start time and command it recorded, so a PID the system has
+given to another process since is never reported or stopped. Every adb
 call names the emulator's serial and goes to an adb server of its own on
 the emulator's port + 10000, never the one on 5037 a phone is attached
-to. The first run unpacks the system image into the output base (4.4 GB)
-and the AVD's data image into `target/android-avd/`; it boots in about
-30 s on an M-series Mac.
+to. The system image is not unpacked per worktree: Bazel's repository
+contents cache keeps it once per user
+(`~/Library/Caches/bazel/_bazel_<user>/cache/repos/v1/contents`, 4.3 GB
+unpacked, beside its 1.9 GB zip in the content-addressable cache), and
+each output base links it. Per worktree, `target/android-avd/` holds the
+AVD's small files (about 32 MB after a run); `--clean` removes it and
+`target/android-home/`. It boots in about 30 s on an M-series Mac.
 
 **What is fetched, and from where (`MODULE.bazel`).**
 
