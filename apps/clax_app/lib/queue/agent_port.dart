@@ -629,7 +629,7 @@ final class AgentTurns implements AgentPort {
       [
         for (final a in (d['attempts'] as List?) ?? const [])
           if (a case {'model': final String model})
-            (model: model, usage: _usageOf((a as Map)['usage'])),
+            (model: model, usage: _usageOf(a['usage'])),
       ],
     );
   }
@@ -833,7 +833,7 @@ final class _Job {
     for (var j = runStart; j <= live; j++)
       for (final b in assistant[j] ?? const <Map<String, Object?>>[])
         if (b case {'type': 'text', 'text': final String text})
-          if (_sentence(text) case final s?) s,
+          ?_sentence(text),
   ];
 
   /// The latest note of the current run.

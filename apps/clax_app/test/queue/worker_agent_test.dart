@@ -1,4 +1,3 @@
-import 'dart:async';
 import 'dart:convert';
 import 'dart:io';
 
@@ -241,7 +240,7 @@ final class _ScriptedModel implements TurnBackend {
     final results = switch (r.messages.last['content']) {
       final List c => [
         for (final b in c)
-          if (b case {'type': 'tool_result'}) b as Map,
+          if (b case final Map m when m['type'] == 'tool_result') m,
       ],
       _ => const <Map>[],
     };
