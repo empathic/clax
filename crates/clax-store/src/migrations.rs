@@ -4859,7 +4859,7 @@ mod tests {
 
     /// A database at the installed builds' numbering holding the first
     /// `app` of [`INSTALLED_AT_43`]'s migrations, then the jobs migration
-    /// ([`APP_AT_41`]'s last) as such a build would number it, at version `38 + app`,
+    /// ([`JOBS_AT_46`]'s) as such a build would number it, at version `38 + app`,
     /// with the rows of [`app_rows`]. Returns its rows.
     fn app_numbered_from_39(home: &Home, app: usize) -> Vec<(String, Vec<String>)> {
         home.ensure_dirs().unwrap();
@@ -5320,14 +5320,18 @@ mod tests {
     const APP_AT_41: &str =
         include_str!("../tests/fixtures/old-migrations/flutter-app-4479a586c.sql");
 
-    /// The SQL of each of the app's migrations in [`APP_AT_41`], in order,
-    /// then the jobs migration.
+    /// The app's jobs migration as this numbering has it, at 46 after
+    /// [`APP_AT_41`]'s five, frozen.
+    const JOBS_AT_46: &str =
+        include_str!("../tests/fixtures/old-migrations/flutter-app-adbfc62df.sql");
+
+    /// The SQL of each of the app's migrations in [`APP_AT_41`] and
+    /// [`JOBS_AT_46`], in order.
     fn app_migrations() -> Vec<&'static str> {
-        APP_AT_41
-            .split("\n-- migration: ")
-            .skip(1)
+        [APP_AT_41, JOBS_AT_46]
+            .into_iter()
+            .flat_map(|frozen| frozen.split("\n-- migration: ").skip(1))
             .map(|part| part.split_once('\n').unwrap().1)
-            .chain([MIGRATIONS[super::JOBS_MIGRATION as usize - 1]])
             .collect()
     }
 
