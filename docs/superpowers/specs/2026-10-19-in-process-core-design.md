@@ -529,20 +529,59 @@ forbids.
   `message.frameInfo.isMainFrame` and its `securityOrigin` is the shell's
   (`clax`, `app`).
 - The nonce handshake (`ShellSession`, `host_protocol.dart:1157`) stays as
-  a second check. The nonce comes with the document: the scheme handler
-  (§4.2) makes a fresh one (16 to 128 of `[A-Za-z0-9_-]`) for each shell
-  document it answers, which is only ever to the main frame's navigation,
-  writes `<meta name="clax-nonce" content="…">` right after its `<head>`,
-  and keeps it with that navigation's URL. The surface takes a nonce as
-  the load's only when the main frame's navigation to that URL commits
-  (Android `WebViewClient.onPageStarted`, Apple
-  `webView(_:didCommit:)`, both of the main frame alone), and gives the
-  same one to `claxHost.init`; a nonce whose navigation never commits (a
-  cancelled or superseded load) is dropped, and nothing a frame inside the
-  page loads or requests can change the load's nonce. The shell's
-  transport reads it at boot, so its calls go out before the document's
-  load event (which waits for the artifact page's own load); only a
-  document without one waits for `claxTransport.init` (§5.1).
+  a second check. The nonce comes with the document and is keyed to the
+  main frame's navigation, not to its URL. The host numbers each
+  main-frame navigation to the shell's host, and gives that number with
+  the navigation's own request and with its commit. The scheme handler
+  (§4.2) makes a fresh nonce (16 to 128 of `[A-Za-z0-9_-]`) only for a
+  shell document requested under a navigation's number, writes
+  `<meta name="clax-nonce" content="…">` right after its `<head>`, and
+  keeps it with that number. The surface takes a nonce as the load's only
+  when the navigation of that number commits, and gives the same one to
+  `claxHost.init`. A nonce whose navigation never commits (cancelled,
+  superseded or failed) is dropped, and a request with no navigation's
+  number gets no shell document (403). The shell's transport reads the
+  nonce at boot, so its calls go out before the document's load event
+  (which waits for the artifact page's own load); only a document without
+  one waits for `claxTransport.init` (§5.1). How a request is paired with
+  its navigation:
+  - **Android:** the number goes with a request only when
+    `WebResourceRequest.isForMainFrame()`, which no frame inside the page
+    can make; the host keeps the latest such request's number and URL (a
+    newer main-frame request replaces it, as the WebView supersedes the
+    older navigation), and `WebViewClient.onPageStarted`, which the
+    WebView calls for the main frame when its navigation commits, reports
+    that number when its URL is the kept one's.
+  - **Apple:** a `WKURLSchemeTask` names neither its frame nor its
+    navigation. `webView(_:decidePolicyFor:)`, when it allows a main-frame
+    navigation to the shell's host, opens a one-shot permit with a new
+    number for that URL (closing any earlier one);
+    `webView(_:didStartProvisionalNavigation:)` binds the open permit's
+    number to that `WKNavigation`. The scheme handler gives the number
+    only to the first request for the permitted URL whose
+    `mainDocumentURL` is that URL, and closes the permit: every later
+    request for it goes without one (403) until the next permit.
+    `webView(_:didCommit:)` reports the number bound to the committing
+    `WKNavigation`, compared by identity, and
+    `didFailProvisionalNavigation` drops it.
+  - **What remains.** On Apple a request is paired with its navigation by
+    order, since WebKit links them by nothing. While a reload or follow
+    of the shell is in flight the outgoing document and its content frame
+    still run, and a request one of them made for exactly the shell
+    document's URL, between the policy's decision and the navigation's
+    own request, would take the permit: the navigation's own request
+    then answers 403 and that load fails, with no shell in what commits.
+    The page cannot read the nonce it was answered (the response is
+    cross-origin and carries no `Access-Control-*`, §4.3), and what
+    commits under that number is the 403, with no shell to use it; so
+    the residual is the loss of that load, and what keeps a page from making
+    the request at all is the content policy (`default-src` and
+    `connect-src` name only the page's own files and `/_blob/<id>/`). On
+    Android `onPageStarted` names only a URL: should an earlier
+    main-frame navigation to the same URL commit after a later one's
+    request, it is reported under the later one's number, and its
+    document's meta does not match, so its messages are dropped until the
+    later one commits.
 
 How the host gets at each WebView's configuration is the spike's other
 question: on Android, the native `WebView` is reached by
