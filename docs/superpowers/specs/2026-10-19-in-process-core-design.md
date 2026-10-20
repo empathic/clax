@@ -251,9 +251,11 @@ int32_t clax_embed_call(uint64_t core, const uint8_t *req, size_t req_len,
 // an unknown handle.
 int32_t clax_embed_subscribe(uint64_t core, int64_t port);
 
-// Stops the core as `clax serve` stops on SIGTERM: in-flight calls end,
-// tasks stop, the journal syncs, the store closes. Returns at once; the
-// open port hears {"type":"closed"}. 0, or 1 for an unknown handle.
+// Stops the core as `clax serve` stops on SIGTERM: new calls answer 503
+// core_closed, streams and long polls are told to end, calls in flight
+// finish for up to 5 s (then answer 503 core_closed), tasks stop, the
+// journal syncs, the store closes. Returns at once; the open port hears
+// {"type":"closed"}. 0, or 1 for an unknown handle.
 int32_t clax_embed_close(uint64_t core);
 ```
 

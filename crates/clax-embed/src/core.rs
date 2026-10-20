@@ -71,7 +71,11 @@ enum Phase {
     Opening,
     Ready { router: axum::Router, token: String },
     Failed,
-    Closing,
+    /// Closing: new calls are refused, calls in flight go on for up to
+    /// the drain's bound.
+    Draining,
+    /// Closing past the drain: calls still in flight are cut.
+    Stopping,
     Closed,
 }
 
@@ -110,6 +114,26 @@ struct Shared {
     lock: Mutex<Option<std::fs::File>>,
     released: AtomicBool,
     closing: AtomicBool,
+    /// The calls admitted and not yet answered.
+    in_flight: watch::Sender<usize>,
+    /// How long [`Embed::close`] lets calls in flight finish.
+    drain: Duration,
+}
+
+/// One call counted in [`Shared::in_flight`] while it lives.
+struct InFlight<'a>(&'a watch::Sender<usize>);
+
+impl<'a> InFlight<'a> {
+    fn enter(n: &'a watch::Sender<usize>) -> InFlight<'a> {
+        n.send_modify(|n| *n += 1);
+        InFlight(n)
+    }
+}
+
+impl Drop for InFlight<'_> {
+    fn drop(&mut self) {
+        self.0.send_modify(|n| *n -= 1);
+    }
 }
 
 impl Shared {
@@ -172,6 +196,16 @@ impl Embed {
         opts: OpenOptions,
         on_event: Box<dyn Fn(OpenEvent) + Send + Sync>,
     ) -> Result<Embed, OpenError> {
+        Embed::open_draining(opts, on_event, clax_server::serve::DRAIN_TIMEOUT)
+    }
+
+    /// [`Embed::open`], with `drain` as how long a close lets calls in
+    /// flight finish.
+    fn open_draining(
+        opts: OpenOptions,
+        on_event: Box<dyn Fn(OpenEvent) + Send + Sync>,
+        drain: Duration,
+    ) -> Result<Embed, OpenError> {
         let _ = std::fs::create_dir_all(&opts.home);
         let key = std::fs::canonicalize(&opts.home).unwrap_or_else(|_| opts.home.clone());
         if !lock(&OPEN).insert(key.clone()) {
@@ -203,6 +237,8 @@ impl Embed {
             lock: Mutex::new(None),
             released: AtomicBool::new(false),
             closing: AtomicBool::new(false),
+            in_flight: watch::channel(0).0,
+            drain,
         });
         let handle = runtime.handle().clone();
         handle.spawn(opening(shared.clone(), opts));
@@ -264,10 +300,14 @@ impl Embed {
         self.inner.handle.spawn(fut);
     }
 
-    /// Stops the core as `clax serve` stops: calls in flight end with 503
-    /// `core_closed`, the tasks stop, the journal syncs, the store closes,
-    /// and the home is released. Returns at once; `on_event` hears
-    /// `Closed` when done. A second close does nothing.
+    /// Stops the core as `clax serve` stops on SIGTERM: new calls answer
+    /// 503 `core_closed`; streams and long polls are told to end, and calls
+    /// in flight finish for up to [`clax_server::serve::DRAIN_TIMEOUT`]
+    /// (one that committed a write answers as it would have), after which
+    /// those still running answer 503 `core_closed`; then the tasks stop,
+    /// the journal syncs, the store closes, and the home is released.
+    /// Returns at once; `on_event` hears `Closed` when done. A second
+    /// close does nothing.
     pub fn close(&self) {
         let sh = &self.inner.shared;
         if sh.closing.swap(true, Ordering::SeqCst) {
@@ -279,7 +319,18 @@ impl Embed {
             let sh = embed.inner.shared.clone();
             let mut rx = sh.phase.subscribe();
             let _ = rx.wait_for(|p| !matches!(p, Phase::Opening)).await;
-            sh.phase.send_replace(Phase::Closing);
+            sh.phase.send_replace(Phase::Draining);
+            if let Some(core) = sh.core.lock().await.as_ref() {
+                let _ = core.shutdown_handle().send(true);
+            }
+            let mut in_flight = sh.in_flight.subscribe();
+            let drained = tokio::time::timeout(sh.drain, in_flight.wait_for(|n| *n == 0))
+                .await
+                .is_ok();
+            if !drained {
+                tracing::warn!("calls in flight did not finish in time; cutting them");
+            }
+            sh.phase.send_replace(Phase::Stopping);
             if let Some(core) = sh.core.lock().await.take() {
                 core.stop().await;
             }
@@ -451,6 +502,9 @@ async fn answer(sh: Arc<Shared>, head: RequestHead, body: Bytes) -> Vec<u8> {
             &format!("{path} is not served in the app"),
         );
     }
+    // Counted before the phase is read, so a close that sees no call in
+    // flight sees no call admitted after it began.
+    let _counted = InFlight::enter(&sh.in_flight);
     let mut rx = sh.phase.subscribe();
     let ready = rx
         .wait_for(|p| !matches!(p, Phase::Opening))
@@ -474,7 +528,7 @@ async fn answer(sh: Arc<Shared>, head: RequestHead, body: Bytes) -> Vec<u8> {
     };
     tokio::select! {
         r = answered => r,
-        _ = rx.wait_for(|p| !matches!(p, Phase::Ready { .. })) => {
+        _ = rx.wait_for(|p| matches!(p, Phase::Stopping | Phase::Closed)) => {
             error_frame(503, "core_closed", "the core closed before it answered")
         }
     }
@@ -604,6 +658,169 @@ mod tests {
             as_,
             host: host.map(str::to_string),
         }
+    }
+
+    /// The origins the tests' cores give their WebViews.
+    fn origins() -> EmbedOrigins {
+        EmbedOrigins {
+            shell: "clax://app".into(),
+            content: "clax://{id}.c".into(),
+        }
+    }
+
+    fn options(dir: &Path) -> OpenOptions {
+        OpenOptions {
+            home: dir.join("home"),
+            origins: origins(),
+            log: None,
+        }
+    }
+
+    /// The next open event that is not an `Opening`, waited for off the
+    /// test's runtime.
+    async fn settled(rx: &std::sync::mpsc::Receiver<OpenEvent>) -> OpenEvent {
+        tokio::task::block_in_place(|| loop {
+            match rx.recv().expect("an open event") {
+                OpenEvent::Opening { .. } => continue,
+                e => return e,
+            }
+        })
+    }
+
+    fn events() -> (
+        Box<dyn Fn(OpenEvent) + Send + Sync>,
+        std::sync::mpsc::Receiver<OpenEvent>,
+    ) {
+        let (tx, rx) = std::sync::mpsc::channel();
+        let tx = Mutex::new(tx);
+        (
+            Box::new(move |e| {
+                let _ = lock(&tx).send(e);
+            }),
+            rx,
+        )
+    }
+
+    /// A router whose `POST /hold` says when a request entered it, then
+    /// answers 201 `made` once the gate opens.
+    fn hold_router() -> (
+        axum::Router,
+        tokio::sync::mpsc::UnboundedReceiver<()>,
+        Arc<tokio::sync::Notify>,
+    ) {
+        let (entered, entering) = tokio::sync::mpsc::unbounded_channel();
+        let gate = Arc::new(tokio::sync::Notify::new());
+        let open = gate.clone();
+        let router = axum::Router::new().route(
+            "/hold",
+            axum::routing::post(move || {
+                let (entered, open) = (entered.clone(), open.clone());
+                async move {
+                    let _ = entered.send(());
+                    open.notified().await;
+                    (axum::http::StatusCode::CREATED, "made")
+                }
+            }),
+        );
+        (router, entering, gate)
+    }
+
+    /// Opens a core, then has its calls answered by [`hold_router`].
+    async fn holding(
+        embed: &Embed,
+        rx: &std::sync::mpsc::Receiver<OpenEvent>,
+    ) -> (
+        tokio::sync::mpsc::UnboundedReceiver<()>,
+        Arc<tokio::sync::Notify>,
+    ) {
+        assert_eq!(settled(rx).await, OpenEvent::Ready);
+        let (router, entering, gate) = hold_router();
+        embed.inner.shared.phase.send_replace(Phase::Ready {
+            router,
+            token: "t".into(),
+        });
+        (entering, gate)
+    }
+
+    /// Sends `method path` as the owner on a task of the test's runtime.
+    fn send(embed: &Embed, method: &str, path: &str) -> tokio::task::JoinHandle<(u16, Vec<u8>)> {
+        let embed = embed.clone();
+        let req = frame::encode(&head(method, path, As::Owner, None), b"");
+        tokio::spawn(async move {
+            let res = embed.call(&req).await.expect("a frame");
+            let (h, body) = frame::split(&res).unwrap();
+            let h: ResponseHead = serde_json::from_slice(h).unwrap();
+            (h.status, body.to_vec())
+        })
+    }
+
+    #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+    async fn a_call_in_flight_at_close_answers_with_its_own_status() {
+        let dir = tempfile::tempdir().unwrap();
+        let (on_event, rx) = events();
+        let embed = Embed::open(options(dir.path()), on_event).unwrap();
+        let (mut entering, gate) = holding(&embed, &rx).await;
+        let held = send(&embed, "POST", "/hold");
+        entering.recv().await.unwrap();
+
+        embed.close();
+        let mut phase = embed.inner.shared.phase.subscribe();
+        let _ = phase
+            .wait_for(|p| !matches!(p, Phase::Ready { .. }))
+            .await;
+        let (status, body) = send(&embed, "GET", "/api/artifacts").await.unwrap();
+        assert_eq!(status, 503, "a call made while closing is refused");
+        assert!(String::from_utf8_lossy(&body).contains("core_closed"));
+
+        gate.notify_one();
+        let (status, body) = held.await.unwrap();
+        assert_eq!((status, &body[..]), (201, &b"made"[..]));
+        assert_eq!(settled(&rx).await, OpenEvent::Closed);
+    }
+
+    #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+    async fn a_call_still_running_when_the_drain_ends_answers_core_closed() {
+        let dir = tempfile::tempdir().unwrap();
+        let (on_event, rx) = events();
+        let embed = Embed::open_draining(options(dir.path()), on_event, Duration::ZERO).unwrap();
+        let (mut entering, gate) = holding(&embed, &rx).await;
+        let held = send(&embed, "POST", "/hold");
+        entering.recv().await.unwrap();
+
+        embed.close();
+        let (status, body) = held.await.unwrap();
+        assert_eq!(status, 503);
+        assert!(String::from_utf8_lossy(&body).contains("core_closed"));
+        gate.notify_one();
+        assert_eq!(settled(&rx).await, OpenEvent::Closed);
+    }
+
+    #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+    async fn a_long_poll_in_flight_at_close_is_told_to_end_and_answers_200() {
+        let dir = tempfile::tempdir().unwrap();
+        let (on_event, rx) = events();
+        let embed = Embed::open(options(dir.path()), on_event).unwrap();
+        assert_eq!(settled(&rx).await, OpenEvent::Ready);
+        let body = br#"{"harness":"app","harness_session_id":"install-1","cwd":"/w"}"#;
+        let mut h = head("POST", "/api/sessions", As::Owner, None);
+        h.headers
+            .push(("content-type".into(), "application/json".into()));
+        let res = embed.call(&frame::encode(&h, body)).await.unwrap();
+        let (_, created) = frame::split(&res).unwrap();
+        let created: serde_json::Value = serde_json::from_slice(created).unwrap();
+        let sid = created["session"]["id"].as_str().unwrap();
+
+        let mut in_flight = embed.inner.shared.in_flight.subscribe();
+        let poll = send(
+            &embed,
+            "GET",
+            &format!("/api/sessions/{sid}/feedback?tier=wait&wait=600"),
+        );
+        let _ = in_flight.wait_for(|n| *n == 1).await;
+        embed.close();
+        let (status, body) = poll.await.unwrap();
+        assert_eq!(status, 200, "{}", String::from_utf8_lossy(&body));
+        assert_eq!(settled(&rx).await, OpenEvent::Closed);
     }
 
     #[test]

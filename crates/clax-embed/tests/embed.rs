@@ -328,29 +328,6 @@ async fn close_posts_closed_ends_calls_and_frees_the_home() {
 }
 
 #[tokio::test]
-async fn close_ends_a_call_in_flight() {
-    let dir = tempfile::tempdir().unwrap();
-    let (embed, rx) = open(dir.path());
-    let (status, v) = call_json(
-        &embed,
-        head("POST", "/api/sessions", As::Owner),
-        Some(json!({"harness": "app", "harness_session_id": "install-1", "cwd": "/w"})),
-    )
-    .await;
-    assert_eq!(status, 201, "{v}");
-    let sid = v["session"]["id"].as_str().unwrap().to_string();
-    let poll = {
-        let embed = embed.clone();
-        let path = format!("/api/sessions/{sid}/feedback?tier=wait&wait=600");
-        tokio::spawn(async move { call_json(&embed, head("GET", &path, As::Owner), None).await })
-    };
-    embed.close();
-    assert_eq!(settled(&rx), OpenEvent::Closed);
-    let (status, _) = poll.await.unwrap();
-    assert!(status == 503 || status == 200, "{status}");
-}
-
-#[tokio::test]
 async fn an_old_daemon_json_is_retired() {
     let dir = tempfile::tempdir().unwrap();
     let home = dir.path().join("home");

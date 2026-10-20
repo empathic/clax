@@ -20,7 +20,10 @@ use std::sync::Arc;
 use std::time::{Duration, Instant};
 use tokio::sync::{oneshot, watch};
 
-const DRAIN_TIMEOUT: Duration = Duration::from_secs(5);
+/// How long a stopping core lets the requests it already took finish,
+/// after it has told its streams and long polls to end; what is still
+/// running then is cut.
+pub const DRAIN_TIMEOUT: Duration = Duration::from_secs(5);
 
 /// Publishes this daemon's start in `starting.json` until dropped: the
 /// phase and backfill progress it is given, and a heartbeat every second
