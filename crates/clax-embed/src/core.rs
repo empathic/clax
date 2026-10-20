@@ -662,10 +662,24 @@ pub(crate) fn request(
 }
 
 /// `prefix`, then the response frame of `res`, its body read whole: 502
-/// `response_too_large` past `limit` bytes, 502 `response_failed` when the
-/// body fails while it is read. The frame is one buffer, sized once from
-/// the body's size hint, and each chunk of the body is copied into it once.
+/// `response_too_large` past `limit` bytes (at once, unread, when its size
+/// hint already says so), 502 `response_failed` when the body fails while
+/// it is read. The frame is one buffer, sized from the body's size hint,
+/// and each chunk of the body is copied into it once; a body whose size is
+/// not known ahead may make the buffer grow.
 async fn respond(res: axum::response::Response, limit: usize, prefix: &[u8]) -> Vec<u8> {
+    let too_large = || {
+        error_frame_after(
+            prefix,
+            502,
+            "response_too_large",
+            "the response is larger than the app reads",
+        )
+    };
+    let hint = axum::body::HttpBody::size_hint(res.body());
+    if hint.lower() > limit as u64 {
+        return too_large();
+    }
     let (parts, mut body) = res.into_parts();
     let headers = parts
         .headers
@@ -681,8 +695,7 @@ async fn respond(res: axum::response::Response, limit: usize, prefix: &[u8]) -> 
         status: parts.status.as_u16(),
         headers,
     };
-    let hint = axum::body::HttpBody::size_hint(&body);
-    let expected = hint.exact().unwrap_or(hint.lower()).min(limit as u64 + 1);
+    let expected = hint.exact().unwrap_or(hint.lower()).min(limit as u64);
     let mut out = frame::begin(prefix, &head, expected as usize);
     let start = out.len();
     while let Some(next) = body.frame().await {
@@ -690,12 +703,7 @@ async fn respond(res: axum::response::Response, limit: usize, prefix: &[u8]) -> 
             Ok(f) => {
                 let Ok(data) = f.into_data() else { continue };
                 if out.len() - start + data.len() > limit {
-                    return error_frame_after(
-                        prefix,
-                        502,
-                        "response_too_large",
-                        "the response is larger than the app reads",
-                    );
+                    return too_large();
                 }
                 out.extend_from_slice(&data);
             }
@@ -953,6 +961,26 @@ mod tests {
             status_and_body(&respond(res(8), 8, &[]).await),
             (200, vec![7u8; 8])
         );
+    }
+
+    #[tokio::test]
+    async fn a_body_whose_size_is_known_past_the_limit_is_refused_unread() {
+        let read = Arc::new(AtomicBool::new(false));
+        let seen = read.clone();
+        // Its size hint is exact, 9 bytes, past a limit of 8; read, it
+        // fails (20 bytes past its own 9), and the failure is seen.
+        let body =
+            http_body_util::Limited::new(http_body_util::Full::new(Bytes::from(vec![7u8; 20])), 9)
+                .map_err(move |e| {
+                    seen.store(true, Ordering::SeqCst);
+                    e
+                });
+        let res = axum::response::Response::new(Body::new(body));
+        let (status, body) = status_and_body(&respond(res, 8, &[]).await);
+        assert_eq!(status, 502);
+        let v: serde_json::Value = serde_json::from_slice(&body).unwrap();
+        assert_eq!(v["error"]["code"], "response_too_large", "{v}");
+        assert!(!read.load(Ordering::SeqCst), "the body is never read");
     }
 
     #[tokio::test]

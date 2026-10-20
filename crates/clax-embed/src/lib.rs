@@ -12,9 +12,10 @@
 //! A call's bytes are copied as few times as the ABI allows: the request
 //! frame once out of the buffer Dart lends for the call (the body is a
 //! slice of that copy), and the response once, chunk by chunk, into the
-//! buffer that is posted (the tag and the frame's head first, sized once
-//! from the body's size hint); Dart then copies that buffer as it posts
-//! it, and Rust frees it when the post returns.
+//! buffer that is posted (the tag and the frame's head first, sized from
+//! the body's size hint, and grown only for a body whose size is not known
+//! ahead); Dart then copies that buffer as it posts it, and Rust frees it
+//! when the post returns.
 
 mod core;
 pub mod dart;

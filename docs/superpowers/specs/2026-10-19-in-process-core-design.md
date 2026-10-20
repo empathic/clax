@@ -300,10 +300,13 @@ into credentials:
 
 A response frame is `CLX1`, a length, JSON `{"status":200,"headers":[…]}`,
 then the body. Bodies are read whole up to 96 MiB (`PUBLISH_BODY_LIMIT`);
-a larger body answers 502 `response_too_large`. The core copies a request
+a larger body answers 502 `response_too_large`, at once and unread when
+its size hint already says it is larger. The core copies a request
 once (out of the buffer Dart lends for the call) and a response once
 (each body chunk into the one buffer it posts, after the tag and the
-head); `postCObject` copies that buffer again into the Dart heap. A request to a refused path
+head, sized from the body's size hint; a body whose size is not known
+ahead may make that buffer grow, and be copied again as it does);
+`postCObject` copies that buffer again into the Dart heap. A request to a refused path
 answers 404 `not_in_app` without reaching the router.
 
 Dart never holds the token: the core adds it. The core sets `require_credential` as the
