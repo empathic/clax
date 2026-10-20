@@ -645,6 +645,43 @@ async fn test_audit_ctx(ctx: clax_core::audit::AuditCtx) -> axum::Json<serde_jso
 #[cfg(debug_assertions)]
 const TEST_SLEEP_MAX_MS: u64 = 60_000;
 
+/// The routes whose response lasts as long as its reader does: the event
+/// streams, a page's room and live layers (the daemon's block that holds
+/// connections open, in [`build_router_with_shutdown`]) and rmcp's `/mcp`.
+/// A caller that reads a response whole (the in-process core's `call`)
+/// refuses them by [`held_open::matches`]. A test reads the router's
+/// source, so a route added to that block fails it until it is listed here.
+pub mod held_open {
+    /// The owner's change events (SSE).
+    pub const EVENTS: &str = "/api/events";
+    /// The stream hub's connection (SSE; `POST /api/stream/{id}` is not one).
+    pub const STREAM: &str = "/api/stream";
+    /// A page's room.
+    pub const ROOM: &str = "/api/artifacts/{aid}/room";
+    /// A page's live layers.
+    pub const LIVE: &str = "/api/artifacts/{aid}/live";
+    /// rmcp's streamable HTTP endpoint.
+    pub const MCP: &str = "/mcp";
+    /// Every one of them.
+    pub const ALL: [&str; 5] = [EVENTS, STREAM, ROOM, LIVE, MCP];
+
+    /// Whether `path` (without its query) is one of [`ALL`], a `{…}`
+    /// segment standing for any one segment.
+    pub fn matches(path: &str) -> bool {
+        ALL.iter().any(|route| {
+            let mut want = route.split('/');
+            let mut got = path.split('/');
+            loop {
+                match (want.next(), got.next()) {
+                    (None, None) => return true,
+                    (Some(w), Some(g)) if w == g || (w.starts_with('{') && !g.is_empty()) => {}
+                    _ => return false,
+                }
+            }
+        })
+    }
+}
+
 /// `ms`, refused (400 `bad_request`) above [`TEST_SLEEP_MAX_MS`].
 #[cfg(debug_assertions)]
 fn test_sleep_ms(ms: u64) -> Result<Duration, ApiError> {

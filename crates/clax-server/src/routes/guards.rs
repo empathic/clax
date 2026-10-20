@@ -1903,3 +1903,49 @@ mod agents {
         );
     }
 }
+
+/// [`crate::router::held_open`] is the router's block of routes that hold
+/// their connection open, read from its source, and rmcp's `/mcp`.
+#[cfg(test)]
+mod held_open {
+    use crate::router::held_open::{ALL, MCP, matches};
+
+    #[test]
+    fn the_held_open_list_is_the_routers_block_and_mcp() {
+        let src = include_str!("../router.rs");
+        let block = &src[src.find("// What holds its connection open").expect("the block")..];
+        let block = &block[..block.find(".merge(mcp)").expect("its end")];
+        let mut mounted: Vec<String> = super::l10::routes(block)
+            .into_iter()
+            .map(|(path, _)| path)
+            // A finite document, streamed so memory holds a few chunks:
+            // read whole, it answers.
+            .filter(|p| p != "/api/toolpath/export")
+            .collect();
+        assert!(include_str!("mcp.rs").contains(".route_service(\"/mcp\""));
+        mounted.push(MCP.to_string());
+        mounted.sort();
+        let mut listed: Vec<String> = ALL.iter().map(|p| p.to_string()).collect();
+        listed.sort();
+        assert_eq!(mounted, listed);
+    }
+
+    #[test]
+    fn a_held_open_route_matches_with_any_id_and_nothing_else() {
+        for (path, held) in [
+            ("/api/events", true),
+            ("/api/stream", true),
+            ("/api/stream/abc", false),
+            ("/api/artifacts/7q3k9mzx2b4t/room", true),
+            ("/api/artifacts//room", false),
+            ("/api/artifacts/7q3k9mzx2b4t/live", true),
+            ("/api/artifacts/7q3k9mzx2b4t/live/x", false),
+            ("/api/artifacts/7q3k9mzx2b4t/threads", false),
+            ("/mcp", true),
+            ("/mcp/", false),
+            ("/api/toolpath/export", false),
+        ] {
+            assert_eq!(matches(path), held, "{path}");
+        }
+    }
+}

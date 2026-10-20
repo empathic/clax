@@ -470,8 +470,10 @@ pub fn admit(head: &RequestHead) -> Result<(), &'static str> {
     }
     let read = matches!(head.method.as_str(), "GET" | "HEAD");
     let ok = match head.as_ {
+        // A call's response is read whole, so a route that holds its
+        // connection open never answers; events go by `subscribe`.
         As::Owner => {
-            !(path == "/api/stream" && head.method == "GET") && path != "/api/admin/shutdown"
+            !clax_server::router::held_open::matches(path) && path != "/api/admin/shutdown"
         }
         As::ShellPage => {
             read && (["/a/", "/assets/", "/_clax/", "/c/", "/_blob/"]
@@ -831,6 +833,14 @@ mod tests {
             ("POST", "/api/stream/x", As::Owner, None, true),
             ("GET", "/api/stream", As::Owner, None, false),
             ("GET", "/api/stream?x=1", As::Owner, None, false),
+            ("GET", "/api/events", As::Owner, None, false),
+            ("GET", "/api/events?since=3", As::Owner, None, false),
+            ("GET", "/api/artifacts/7q3k9mzx2b4t/room", As::Owner, None, false),
+            ("GET", "/api/artifacts/7q3k9mzx2b4t/live", As::Owner, None, false),
+            ("GET", "/mcp", As::Owner, None, false),
+            ("POST", "/mcp", As::Owner, None, false),
+            ("GET", "/api/artifacts/7q3k9mzx2b4t/live/x", As::Owner, None, true),
+            ("GET", "/api/artifacts/7q3k9mzx2b4t/threads", As::Owner, None, true),
             ("POST", "/api/admin/shutdown", As::Owner, None, false),
             ("GET", "api/artifacts", As::Owner, None, false),
             ("GET", "/a/7q3k9mzx2b4t?app=1", As::ShellPage, None, true),

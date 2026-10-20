@@ -187,6 +187,23 @@ async fn the_event_stream_is_not_a_call() {
 }
 
 #[tokio::test]
+async fn no_route_that_holds_its_connection_open_is_a_call() {
+    let dir = tempfile::tempdir().unwrap();
+    let (embed, _rx) = open(dir.path());
+    let id = publish(&embed, "<title>t</title>hi", None).await;
+    for path in [
+        "/api/events".to_string(),
+        format!("/api/artifacts/{id}/room"),
+        format!("/api/artifacts/{id}/live"),
+        "/mcp".to_string(),
+    ] {
+        let (status, v) = call_json(&embed, head("GET", &path, As::Owner), None).await;
+        not_in_app(status, &v);
+    }
+    embed.close();
+}
+
+#[tokio::test]
 async fn a_page_frame_carrying_a_cookie_gets_no_credential() {
     let dir = tempfile::tempdir().unwrap();
     let (embed, _rx) = open(dir.path());
