@@ -23,6 +23,12 @@
 // the body's blocks are; the hub sends `ping` every `SOCKET_PING_MS`, which
 // the server answers `pong` without waking, in place of the keep-alive.
 //
+// On the Clax app's host (`host`: the shell runs on the app's transport,
+// `transport.ts`, whose `GET /api/stream` the app fills with the core's
+// events) the host owns liveness: the hub sets no timeout on the stream or
+// its subscriptions, never tells the tabs the stream is down, and opens the
+// stream again at once whenever it ends, from its `Last-Event-ID`.
+//
 // Notifications (a hub made with `notify`): tabs say whether they have focus.
 // For each new unread inbox item (an `inbox_item` event whose `seq` is above
 // every item the hub has seen, so an older item marked unread again or
@@ -140,6 +146,8 @@ export type HubEnv = {
   notify?: boolean;
   /** Opens a WebSocket to `url` (default: the global `WebSocket`). */
   socket?: (url: string) => WebSocket;
+  /** The stream is the app's host's: no timeouts, no backoff, no `status`. */
+  host?: boolean;
 };
 
 export class Hub {
@@ -402,8 +410,9 @@ export class Hub {
     });
   }
 
-  /** Fails connection `ac` unless it is heard from within `ms`. */
+  /** Fails connection `ac` unless it is heard from within `ms`; never on the host. */
   private arm(ac: AbortController, ms: number): void {
+    if (this.env.host) return;
     clearTimeout(this.watchdog);
     this.watchdog = setTimeout(() => { if (this.conn === ac) this.fail(); }, ms);
   }
@@ -556,9 +565,14 @@ export class Hub {
     this.up = false;
   }
 
-  /** The connection failed or is stuck: retried after a backoff; the tabs hear it is down. */
+  /** The connection failed or is stuck: retried after a backoff; the tabs
+   * hear it is down. On the host, opened again at once, the tabs told nothing. */
   private fail(): void {
     this.drop();
+    if (this.env.host) {
+      if (this.wanted().size) this.connect();
+      return;
+    }
     if (!this.toldDown) {
       this.toldDown = true;
       if (this.clients.size) this.env.send([...this.clients.keys()], { t: "status", up: false });
@@ -636,7 +650,7 @@ export class Hub {
   /** [`update`]'s request on connection `ac`, stream `id`. */
   private async subscribe(ac: AbortController, id: string, add: string[], remove: string[]): Promise<boolean> {
     const req = new AbortController();
-    const stuck = setTimeout(() => req.abort(), STUCK_MS);
+    const stuck = this.env.host ? undefined : setTimeout(() => req.abort(), STUCK_MS);
     const abort = () => req.abort();
     ac.signal.addEventListener("abort", abort);
     for (const t of remove) this.removing.add(t);

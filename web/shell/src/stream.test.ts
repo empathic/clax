@@ -336,6 +336,34 @@ describe("EventStream", () => {
   });
 });
 
+describe("in the Clax app", () => {
+  afterEach(() => { delete (window as { claxTransport?: unknown }).claxTransport; });
+
+  it("runs the hub in the page on the app's transport: no shared worker, and no notice through a long silence", async () => {
+    let workers = 0;
+    vi.stubGlobal("SharedWorker", vi.fn(() => { workers++; throw new Error("no worker in the app"); }));
+    const net = new Net();
+    vi.stubGlobal("fetch", net.fetch);
+    // What `installTransport` leaves on a shell document in the app.
+    Object.defineProperty(window, "claxTransport", { configurable: true, value: Object.freeze({}) });
+    const w = new EventStream(window);
+    const heard: StreamEvent[] = [];
+    w.watch([`artifact:${A}`], e => heard.push(e));
+    await flush();
+    expect(net.conns).toHaveLength(1);
+    net.ready(net.conns[0], "0123456789abcdef0123456789abcdef");
+    await flush();
+    net.event(net.conns[0], "0123456789abcdef0123456789abcdef", 3, `artifact:${A}`, "version", { n: 2 });
+    await flush();
+    await vi.advanceTimersByTimeAsync(10 * 60_000);
+    expect(workers).toBe(0);
+    expect(net.conns).toHaveLength(1);
+    expect(heard.map(e => e.type)).toEqual(["ready", "version"]);
+    expect(connNoticeText()).toBeNull();
+    w.close();
+  });
+});
+
 /** Web Locks in one realm: a request waits until the name is free. */
 class Locks {
   held = new Set<string>();

@@ -268,6 +268,12 @@ export function transport(channel: () => Channel | undefined, fallback: typeof f
 
 type HostWindow = Window & { ClaxHost?: Channel; claxTransport?: Omit<Transport, "fetch"> };
 
+/** Whether `win`'s document runs on the app's transport (`installTransport`
+ * ran there): its `fetch` reaches the core over the app's channel. */
+export function onHost(win: Window = window): boolean {
+  return "claxTransport" in win;
+}
+
 /** At boot: in app mode (the document carries the `clax-embed` meta)
  * replaces `win.fetch` with a transport over `window.ClaxHost`, hides the
  * connection notices and installs `window.claxTransport`. Returns whether

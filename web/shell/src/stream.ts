@@ -5,7 +5,10 @@
 // opens or closes on a view change. The hub lives in a shared worker, so
 // every Clax tab of this origin shares one connection; where shared workers
 // are missing, the tabs elect a leader that holds it for them (Web Locks and
-// a BroadcastChannel), and without those each tab holds its own.
+// a BroadcastChannel), and without those each tab holds its own. In the
+// Clax app (`onHost`) the page holds its own hub on the app's transport,
+// which carries the core's events: the app owns liveness, so that hub never
+// says the stream is down (`HubEnv.host`).
 //
 // A watcher hears `ready` when its topics go live (refetch, then apply the
 // deltas that follow), `resync` when a topic's events were dropped (refetch
@@ -35,6 +38,7 @@ import { after } from "./clock";
 import { STREAM_DOWN, connTrouble } from "./conn-notice";
 import { visibility } from "./visibility";
 import { backoff } from "./lifecycle";
+import { onHost } from "./transport";
 import type { HubMsg, TabMsg } from "./stream-hub";
 
 /** One message on the stream, as a watcher hears it: `ready`, `resync`
@@ -201,15 +205,17 @@ export const leaderLink: LinkMaker = async on => {
   };
 };
 
-/** A hub of this tab's own: one connection per tab. */
+/** A hub of this tab's own: one connection per tab; on the app's host
+ * when the page runs on its transport. */
 export const localLink: LinkMaker = async on => {
   const { Hub } = await import("./stream-hub");
-  const hub = new Hub({ notify: true, send: (_ids, msg) => on(msg) });
+  const hub = new Hub({ notify: true, host: onHost(), send: (_ids, msg) => on(msg) });
   return { send: m => hub.receive("self", m), close: () => hub.close() };
 };
 
-/** The best link this browser supports. */
+/** The best link this browser supports; the page's own in the app. */
 export const bestLink: LinkMaker = async (on, lost) => {
+  if (onHost()) return localLink(on, lost);
   if (typeof SharedWorker === "function" && !workerBroken) {
     try { return await workerLink(on, lost); } catch { /* blocked: fall back */ }
   }

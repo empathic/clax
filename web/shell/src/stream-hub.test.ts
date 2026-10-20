@@ -559,3 +559,88 @@ describe("the stream hub", () => {
     expect(socks[1].url).toMatch(new RegExp(`/api/stream\\?last_event_id=${S1}%3A4$`));
   });
 });
+
+describe("the stream hub on the app's host (`host: true`)", () => {
+  let host: Hub;
+  /** A hub on the host whose tabs answer its pings, as `EventStream` does. */
+  const hostHub = (f: typeof fetch = net.fetch) => {
+    const h: Hub = new Hub({
+      host: true, fetch: f,
+      send: (ids, msg) => {
+        for (const id of ids) got.set(id, [...(got.get(id) ?? []), msg]);
+        if (msg.t === "ping") queueMicrotask(() => { for (const id of ids) h.receive(id, { t: "ping" }); });
+      },
+    });
+    return h;
+  };
+  beforeEach(() => { host = hostHub(); });
+  afterEach(() => { host.close(); });
+  const TEN_MINUTES = 10 * 60_000;
+
+  it("waits on a stream that says nothing, with no status and no reconnect, where a browser's hub gives up", async () => {
+    host.receive("t1", { t: "topics", topics: [`artifact:${A}`] });
+    await tick();
+    await vi.advanceTimersByTimeAsync(TEN_MINUTES);
+    expect(net.conns).toHaveLength(1);
+    expect(net.conns[0].aborted).toBe(false);
+    expect(of("t1", "status")).toEqual([]);
+    // A browser's hub, on the same silence, says it is down and connects again.
+    hub.receive("t2", { t: "topics", topics: [`artifact:${A}`] });
+    await tick();
+    await vi.advanceTimersByTimeAsync(TEN_MINUTES);
+    expect(of("t2", "status")).toContainEqual({ t: "status", up: false });
+    expect(net.conns.length).toBeGreaterThan(2);
+  });
+
+  it("keeps a live stream that goes silent", async () => {
+    host.receive("t1", { t: "topics", topics: [`artifact:${A}`] });
+    await tick();
+    net.ready(net.conns[0], S1);
+    await tick();
+    await vi.advanceTimersByTimeAsync(TEN_MINUTES);
+    expect(net.conns).toHaveLength(1);
+    expect(net.conns[0].aborted).toBe(false);
+    expect(of("t1", "status")).toEqual([]);
+  });
+
+  it("waits on a subscription that does not answer", async () => {
+    host.receive("t1", { t: "topics", topics: ["gallery"] });
+    await tick();
+    net.ready(net.conns[0], S1);
+    await tick();
+    net.auto = false;
+    host.receive("t1", { t: "topics", topics: ["gallery", `artifact:${A}`] });
+    await tick();
+    await vi.advanceTimersByTimeAsync(TEN_MINUTES);
+    expect(net.conns).toHaveLength(1);
+    expect(net.conns[0].aborted).toBe(false);
+    net.posts.at(-1)!.answer(200, { seq: 0, topics: ["gallery", `artifact:${A}`] });
+    await tick();
+    expect(of("t1", "live")).toEqual([{ t: "live", topics: ["gallery"] }, { t: "live", topics: [`artifact:${A}`] }]);
+    expect(of("t1", "status")).toEqual([]);
+  });
+
+  it("opens the stream again at once when it ends, from where it stopped, with no status and no token request", async () => {
+    const asked: string[] = [];
+    const f = net.fetch;
+    host.close();
+    host = hostHub(((i, init) => { asked.push(String(i)); return f(i, init); }) as typeof fetch);
+    host.receive("t1", { t: "topics", topics: [`artifact:${A}`] });
+    await tick();
+    net.ready(net.conns[0], S1);
+    await tick();
+    net.event(net.conns[0], S1, 7, `artifact:${A}`, "version", { artifact_id: A, n: 2 });
+    await tick();
+    for (let round = 1; round <= 3; round++) {
+      net.conns.at(-1)!.end();
+      await tick();
+      expect(net.conns).toHaveLength(round + 1);
+      expect(net.conns.at(-1)!.headers["Last-Event-ID"]).toBe(`${S1}:7`);
+    }
+    net.ready(net.conns.at(-1)!, S1, true, [`artifact:${A}`]);
+    await tick();
+    expect(of("t1", "status")).toEqual([]);
+    expect(of("t1", "live")).toHaveLength(1);
+    expect(asked.filter(u => u === "/api/token")).toEqual([]);
+  });
+});
