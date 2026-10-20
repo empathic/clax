@@ -33,7 +33,8 @@ import webview_flutter_wkwebview
 ///   cancelled.
 ///
 /// Every answer passes `respond`, which drops each `Access-Control-*`
-/// header (spec §4.3).
+/// header (spec §4.3) and answers a 3xx, which WebKit does not follow for a
+/// custom scheme, as a 502 that says so.
 ///
 /// Navigations to the shell's host are allowed only in the main frame.
 /// Each one allowed opens a one-shot permit with the WebView's next
@@ -224,13 +225,26 @@ final class SchemeHost: NSObject, WKURLSchemeHandler, WKScriptMessageHandler {
   }
 
   /// [status], [headers] and [body] as a WebView is given them: without
-  /// any `Access-Control-*` header.
+  /// any `Access-Control-*` header, and a 3xx (or a status outside
+  /// 100...599) as a 502 whose body says why.
   static func answer(status: Int, headers: [String: String], body: Data) -> (
     Int, [String: String], Data
   ) {
+    if (300...399).contains(status) || !(100...599).contains(status) {
+      return (
+        502, ["Content-Type": "text/plain; charset=utf-8", "Cache-Control": "no-store"],
+        Data(SchemeHost.redirectRefusal(status).utf8)
+      )
+    }
     return (
       status, headers.filter { !$0.key.lowercased().hasPrefix("access-control-") }, body
     )
+  }
+
+  /// The body of the 502 that stands for a [status] the app's WebViews do
+  /// not take.
+  static func redirectRefusal(_ status: Int) -> String {
+    "502 Bad Gateway: the app answered \(status), a redirect or a status a WebView here does not take"
   }
 
   // MARK: The channel

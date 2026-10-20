@@ -44,7 +44,8 @@ import java.util.concurrent.atomic.AtomicLong
  *   main-frame navigation commits.
  *
  * Every answer passes [response], which drops each `Access-Control-*`
- * header (spec §4.3).
+ * header (spec §4.3) and answers a 3xx, which a WebResourceResponse cannot
+ * carry, as a 502 that says so.
  *
  * `shouldInterceptRequest` runs on a WebView IO thread: it posts the
  * request to the main thread and waits for Dart's answer at most
@@ -279,18 +280,30 @@ class SchemeHost(
          * [status] with [headers] and [body] as a WebView takes it: the
          * content type split into MIME type and charset, and no
          * `Access-Control-*` header. WebResourceResponse takes no 3xx
-         * status; one is answered as 502.
+         * status: one (or a status outside 100..599) is answered as a 502
+         * whose body says why.
          */
         fun response(status: Int, headers: Map<String, String>, body: ByteArray): WebResourceResponse {
+            if (status in 300..399 || status !in 100..599) {
+                return response(
+                    502,
+                    mapOf("Content-Type" to "text/plain; charset=utf-8", "Cache-Control" to "no-store"),
+                    redirectRefusal(status).toByteArray(),
+                )
+            }
             val kept = headers.filterKeys { !it.lowercase().startsWith("access-control-") }
             val type = kept.entries.firstOrNull { it.key.equals("content-type", ignoreCase = true) }?.value
             val mime = type?.substringBefore(';')?.trim()?.ifEmpty { null } ?: "application/octet-stream"
             val charset = type?.split(';')?.drop(1)?.map { it.trim() }
                 ?.firstOrNull { it.startsWith("charset=", ignoreCase = true) }
                 ?.substringAfter('=')?.trim('"')
-            val code = if (status in 300..399 || status !in 100..599) 502 else status
-            return WebResourceResponse(mime, charset, code, reason(code), kept, ByteArrayInputStream(body))
+            return WebResourceResponse(mime, charset, status, reason(status), kept, ByteArrayInputStream(body))
         }
+
+        /** The body of the 502 that stands for a [status] the WebView does not take. */
+        fun redirectRefusal(status: Int): String =
+            "502 Bad Gateway: the app answered $status, a redirect or a status a WebView here does not take"
+
 
         private fun reason(status: Int): String = when (status) {
             200 -> "OK"
