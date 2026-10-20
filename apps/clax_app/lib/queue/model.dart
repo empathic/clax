@@ -16,22 +16,21 @@ typedef EffectId = int;
 
 enum JobKind { make, change }
 
-/// The kind of a step key: `turn:<n>`, `publish:<base>` or `reply`.
+/// A step's key, parsed once from the core's text: `turn:<n>`,
+/// `publish:<base>`, `reply`, or a key the queue does not know.
 sealed class StepKey {
   const StepKey();
 
-  /// The key [s] names; null for none of the three.
-  static StepKey? parse(String? s) {
-    if (s == null) return null;
+  /// The key [s] names; [UnknownKey] for none of the three.
+  static StepKey parse(String s) {
     if (s == 'reply') return const ReplyKey();
     final i = s.indexOf(':');
-    if (i < 0) return null;
-    final n = int.tryParse(s.substring(i + 1));
-    if (n == null || n < 0) return null;
+    final n = i < 0 ? null : int.tryParse(s.substring(i + 1));
+    if (n == null || n < 0) return UnknownKey(s);
     return switch (s.substring(0, i)) {
-      'turn' when n >= 1 => TurnKey(n),
-      'publish' => PublishKey(n),
-      _ => null,
+      'turn' when n >= 1 && s == 'turn:$n' => TurnKey(n),
+      'publish' when s == 'publish:$n' => PublishKey(n),
+      _ => UnknownKey(s),
     };
   }
 }
@@ -40,6 +39,10 @@ final class TurnKey extends StepKey {
   const TurnKey(this.turn);
   final int turn;
   @override
+  bool operator ==(Object other) => other is TurnKey && other.turn == turn;
+  @override
+  int get hashCode => Object.hash(51, turn);
+  @override
   String toString() => 'turn:$turn';
 }
 
@@ -47,13 +50,34 @@ final class PublishKey extends StepKey {
   const PublishKey(this.base);
   final int base;
   @override
+  bool operator ==(Object other) => other is PublishKey && other.base == base;
+  @override
+  int get hashCode => Object.hash(52, base);
+  @override
   String toString() => 'publish:$base';
 }
 
 final class ReplyKey extends StepKey {
   const ReplyKey();
   @override
+  bool operator ==(Object other) => other is ReplyKey;
+  @override
+  int get hashCode => 53;
+  @override
   String toString() => 'reply';
+}
+
+/// A key the core holds that names none of the queue's steps: a running
+/// job whose last step is one fails (`invalid_step`) rather than stalls.
+final class UnknownKey extends StepKey {
+  const UnknownKey(this.raw);
+  final String raw;
+  @override
+  bool operator ==(Object other) => other is UnknownKey && other.raw == raw;
+  @override
+  int get hashCode => Object.hash(54, raw);
+  @override
+  String toString() => raw;
 }
 
 /// A job as the core last sent it (spec §7.4). `update` never changes
@@ -81,7 +105,7 @@ final class Job {
   final JobState state;
 
   /// The key of the step committed last.
-  final String? step;
+  final StepKey? step;
 
   /// 1 when created, one more at every write of the job.
   final int rev;
@@ -93,7 +117,7 @@ final class Job {
   final JobError? error;
 
   /// Committed steps by key, in the order they were committed.
-  final Map<String, StepResult> steps;
+  final Map<StepKey, StepResult> steps;
 
   /// Thread ID → (the newest comment ID the job answers, stopped).
   final Map<String, (String, bool)> threads;
@@ -106,14 +130,14 @@ final class Job {
 
   Job copyWith({
     JobState? state,
-    Field<String> step = const Keep(),
+    Field<StepKey> step = const Keep(),
     int? rev,
     Field<String> artifactId = const Keep(),
     String? title,
     PlanState? Function()? plan,
     Carry? Function()? carry,
     JobError? Function()? error,
-    Map<String, StepResult>? steps,
+    Map<StepKey, StepResult>? steps,
     Map<String, (String, bool)>? threads,
     Map<String, JobAnswer>? questions,
   }) => Job(
@@ -192,8 +216,6 @@ enum JobIntent { cancel, discard, keepGoing, retry, pause }
 final class JobLocal {
   const JobLocal({
     this.waitingFor,
-    this.renderTries = 0,
-    this.renderDeadline,
     this.turn = 0,
     this.results = const {},
     this.asked = const {},
@@ -203,13 +225,9 @@ final class JobLocal {
     this.noticed = 0,
   });
 
+  /// Held up by Claude, or by a render lost twice; a render in flight is
+  /// its `Render` effect, which carries its try and deadline.
   final WaitingFor? waitingFor;
-
-  /// Renders of the current render call lost so far.
-  final int renderTries;
-
-  /// When the render in flight counts as lost, on the worker's clock.
-  final DateTime? renderDeadline;
 
   /// The committed turn whose calls [results] and [asked] answer.
   final int turn;
@@ -234,8 +252,6 @@ final class JobLocal {
 
   JobLocal copyWith({
     WaitingFor? Function()? waitingFor,
-    int? renderTries,
-    DateTime? Function()? renderDeadline,
     int? turn,
     Map<String, ToolResult>? results,
     Map<String, String>? asked,
@@ -245,10 +261,6 @@ final class JobLocal {
     int? noticed,
   }) => JobLocal(
     waitingFor: waitingFor == null ? this.waitingFor : waitingFor(),
-    renderTries: renderTries ?? this.renderTries,
-    renderDeadline: renderDeadline == null
-        ? this.renderDeadline
-        : renderDeadline(),
     turn: turn ?? this.turn,
     results: results ?? this.results,
     asked: asked ?? this.asked,
@@ -262,8 +274,6 @@ final class JobLocal {
   bool operator ==(Object other) =>
       other is JobLocal &&
       other.waitingFor == waitingFor &&
-      other.renderTries == renderTries &&
-      other.renderDeadline == renderDeadline &&
       other.turn == turn &&
       mapEquals(other.results, results) &&
       mapEquals(other.asked, asked) &&
@@ -274,8 +284,6 @@ final class JobLocal {
   @override
   int get hashCode => Object.hash(
     waitingFor,
-    renderTries,
-    renderDeadline,
     turn,
     mapHash(results),
     mapHash(asked),
@@ -286,12 +294,13 @@ final class JobLocal {
   );
 }
 
-/// Whether this worker holds the queue (spec §7.5).
+/// Whether this worker holds the queue (spec §7.5), and has loaded its
+/// jobs under the claim it holds.
 sealed class Owner {
   const Owner();
 }
 
-/// Not claimed: the core is not open.
+/// Not claimed: the core is not open, or the claim was lost.
 final class OwnerNone extends Owner {
   const OwnerNone();
   @override
@@ -300,22 +309,50 @@ final class OwnerNone extends Owner {
   int get hashCode => 31;
 }
 
-/// A claim is in flight; [heard] holds each `held` the core's `jobs_owner`
-/// events said meanwhile, so a release or a drain's end that comes before
-/// the claim's answer is not missed.
+/// Claim [claim] (a `ClaimOwner` effect) is in flight; only its answer
+/// counts. What the core's `jobs_owner` events said meanwhile is kept, so
+/// one that comes before the claim's answer is not missed: a release
+/// ([heardRelease], `held: false`), and a claim or a drain's end
+/// ([heardHeld], `held: true`).
 final class OwnerClaiming extends Owner {
-  const OwnerClaiming({this.heard = const {}});
-  final Set<bool> heard;
+  const OwnerClaiming(
+    this.claim, {
+    this.heardRelease = false,
+    this.heardHeld = false,
+  });
+  final EffectId claim;
+  final bool heardRelease;
+  final bool heardHeld;
+
+  OwnerClaiming heard({required bool held}) => OwnerClaiming(
+    claim,
+    heardRelease: heardRelease || !held,
+    heardHeld: heardHeld || held,
+  );
+
   @override
   bool operator ==(Object other) =>
       other is OwnerClaiming &&
-      other.heard.length == heard.length &&
-      other.heard.containsAll(heard);
+      other.claim == claim &&
+      other.heardRelease == heardRelease &&
+      other.heardHeld == heardHeld;
   @override
-  int get hashCode => Object.hash(32, Object.hashAllUnordered(heard));
+  int get hashCode => Object.hash(32, claim, heardRelease, heardHeld);
 }
 
-/// The worker holds the queue under [token].
+/// The worker holds the queue under [token] and is loading its jobs: no
+/// job effect is emitted until they are loaded.
+final class OwnerLoading extends Owner {
+  const OwnerLoading(this.token);
+  final String token;
+  @override
+  bool operator ==(Object other) =>
+      other is OwnerLoading && other.token == token;
+  @override
+  int get hashCode => Object.hash(35, token);
+}
+
+/// The worker holds the queue under [token], with its jobs loaded.
 final class OwnerHeldBy extends Owner {
   const OwnerHeldBy(this.token);
   final String token;
@@ -345,13 +382,11 @@ enum Reachability { unknown, reachable, unreachable }
 final class QueueModel {
   const QueueModel({
     this.owner = const OwnerNone(),
-    this.loaded = false,
     this.jobs = const {},
     this.inFlight = const {},
     this.local = const {},
     this.pending = const [],
     this.keepAlive = false,
-    this.coreOpen = false,
     this.claude = Reachability.unknown,
     this.canRender = true,
     this.probing = false,
@@ -360,9 +395,6 @@ final class QueueModel {
   });
 
   final Owner owner;
-
-  /// The open jobs were loaded under the claim [owner] holds.
-  final bool loaded;
 
   /// The core's rows, in the order first seen (the core's oldest first).
   final Map<JobId, Job> jobs;
@@ -376,7 +408,6 @@ final class QueueModel {
 
   /// Whether the app is asked to keep running.
   final bool keepAlive;
-  final bool coreOpen;
   final Reachability claude;
   final bool canRender;
 
@@ -396,13 +427,11 @@ final class QueueModel {
 
   QueueModel copyWith({
     Owner? owner,
-    bool? loaded,
     Map<JobId, Job>? jobs,
     Map<EffectId, Effect>? inFlight,
     Map<JobId, JobLocal>? local,
     List<Intent>? pending,
     bool? keepAlive,
-    bool? coreOpen,
     Reachability? claude,
     bool? canRender,
     bool? probing,
@@ -410,13 +439,11 @@ final class QueueModel {
     EffectId? nextEffect,
   }) => QueueModel(
     owner: owner ?? this.owner,
-    loaded: loaded ?? this.loaded,
     jobs: jobs ?? this.jobs,
     inFlight: inFlight ?? this.inFlight,
     local: local ?? this.local,
     pending: pending ?? this.pending,
     keepAlive: keepAlive ?? this.keepAlive,
-    coreOpen: coreOpen ?? this.coreOpen,
     claude: claude ?? this.claude,
     canRender: canRender ?? this.canRender,
     probing: probing ?? this.probing,
@@ -428,13 +455,11 @@ final class QueueModel {
   bool operator ==(Object other) =>
       other is QueueModel &&
       other.owner == owner &&
-      other.loaded == loaded &&
       mapEquals(other.jobs, jobs) &&
       mapEquals(other.inFlight, inFlight) &&
       mapEquals(other.local, local) &&
       listEquals(other.pending, pending) &&
       other.keepAlive == keepAlive &&
-      other.coreOpen == coreOpen &&
       other.claude == claude &&
       other.canRender == canRender &&
       other.probing == probing &&
@@ -443,13 +468,11 @@ final class QueueModel {
   @override
   int get hashCode => Object.hash(
     owner,
-    loaded,
     mapHash(jobs),
     mapHash(inFlight),
     mapHash(local),
     Object.hashAll(pending),
     keepAlive,
-    coreOpen,
     claude,
     canRender,
     probing,
@@ -493,7 +516,7 @@ final class JobView {
   final JobKind kind;
   final JobState state;
   final WaitingFor? waitingFor;
-  final String? step;
+  final StepKey? step;
   final String? title;
   final String? artifactId;
   final String? error;
@@ -541,30 +564,47 @@ final class QueueState {
   String toString() => 'QueueState($jobs)';
 }
 
-/// The core's rows, and each job whose creation is in flight as `queued`.
-QueueState viewOf(QueueModel m) => QueueState([
-  for (final j in m.jobs.values)
-    JobView(
-      id: j.id,
-      kind: j.kind,
-      state: j.state,
-      waitingFor: j.state == JobState.running
-          ? m.localOf(j.id).waitingFor
-          : null,
-      step: j.step,
-      title: j.title,
-      artifactId: j.artifactId,
-      error: j.error?.code,
-      offers: offersOf(j.state, j.carry),
-    ),
-  for (final e in m.inFlight.values)
-    if (e is CreateJob && !m.jobs.containsKey(e.jobId))
+/// The core's rows, then each job not yet the core's as `queued`: its
+/// creation in flight, or its intent waiting for the jobs to load.
+QueueState viewOf(QueueModel m) {
+  final shown = {...m.jobs.keys};
+  JobView? queued(JobId id, JobKind kind, String? title, String? artifactId) {
+    if (!shown.add(id)) return null;
+    return JobView(
+      id: id,
+      kind: kind,
+      state: JobState.queued,
+      title: title,
+      artifactId: artifactId,
+    );
+  }
+
+  return QueueState([
+    for (final j in m.jobs.values)
       JobView(
-        id: e.jobId,
-        kind: e.kind,
-        state: JobState.queued,
-        title: e.title,
-        artifactId: e.artifactId,
-        offers: const {},
+        id: j.id,
+        kind: j.kind,
+        state: j.state,
+        waitingFor: j.state == JobState.running
+            ? m.localOf(j.id).waitingFor
+            : null,
+        step: j.step,
+        title: j.title,
+        artifactId: j.artifactId,
+        error: j.error?.code,
+        offers: offersOf(j.state, j.carry),
       ),
-]);
+    for (final e in m.inFlight.values)
+      if (e is CreateJob) ?queued(e.jobId, e.kind, e.title, e.artifactId),
+    for (final i in m.pending)
+      ...switch (i) {
+        Make(:final id, :final title) => [
+          ?queued(id, JobKind.make, title, null),
+        ],
+        Change(:final id, :final title, :final artifactId) => [
+          ?queued(id, JobKind.change, title, artifactId),
+        ],
+        _ => const <JobView>[],
+      },
+  ]);
+}

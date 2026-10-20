@@ -206,7 +206,7 @@ class FakeJobsCore {
   Msg _step(
     CommitEffect e,
     Job row,
-    String key,
+    StepKey key,
     StepResult result, {
     required bool done,
   }) {
@@ -338,7 +338,7 @@ class World {
   /// What answers [e], as the runner would send it.
   Msg? answerOf(Effect e) => switch (e) {
     CommitEffect() => core.answer(e),
-    ClaimOwner() => const OwnerClaimed('token'),
+    ClaimOwner(:final id) => OwnerClaimed(id, 'token'),
     LoadJobs() => JobsLoaded(core.open()),
     ReadJob(:final id, :final jobId) => JobRead(id, jobId, core.read(jobId)),
     ProbeClaude() => const ClaudeReachable(true),
@@ -470,14 +470,14 @@ class Generator {
       case ClaimOwner():
         switch (rnd.nextInt(10)) {
           case 0:
-            return const OwnerHeld();
+            return OwnerHeld(e.id);
           case 1:
-            return const OwnerDraining();
+            return OwnerDraining(e.id);
           default:
             // The stream that holds the claim gets its token again.
             final token = liveToken ?? 't${_ids++}';
             liveToken = token;
-            return OwnerClaimed(token);
+            return OwnerClaimed(e.id, token);
         }
       case LoadJobs():
         return JobsLoaded(core.open());
@@ -621,7 +621,6 @@ QueueModel model({
   DateTime? now,
 }) => QueueModel(
   owner: owned ? const OwnerHeldBy('token') : const OwnerNone(),
-  loaded: owned,
   jobs: {for (final j in jobs) j.id: j},
   inFlight: {for (final e in inFlight) e.id: e},
   local: local,
@@ -640,8 +639,8 @@ Job job(
   JobState state = JobState.running,
   int rev = 1,
   JobKind kind = JobKind.make,
-  Map<String, StepResult> steps = const {},
-  String? step,
+  Map<StepKey, StepResult> steps = const {},
+  StepKey? step,
   String? artifactId,
   Carry? carry,
   PlanState? plan,

@@ -28,7 +28,7 @@ final class QueueTurn {
 
   /// Whether job effects may be emitted: the worker holds the queue and
   /// loaded the jobs under that claim.
-  bool get canWrite => m.owner is OwnerHeldBy && m.loaded;
+  bool get canWrite => m.owner is OwnerHeldBy;
 
   EffectId _take() {
     final id = m.nextEffect;
@@ -37,17 +37,18 @@ final class QueueTurn {
   }
 
   /// Emits the effect [make] builds, recorded in flight when an answer
-  /// will come for it. A job's commit or work is emitted only while
-  /// [canWrite].
-  void emit(Effect Function(EffectId id) make) {
+  /// will come for it, and answers it. A job's commit or work is emitted
+  /// only while [canWrite]; null when it is not.
+  Effect? emit(Effect Function(EffectId id) make) {
     final e = make(_take());
     if ((e is CommitEffect || e is WorkEffect || e is ReadJob) && !canWrite) {
-      return;
+      return null;
     }
     out.add(e);
     if (e is CommitEffect || e is WorkEffect || e is ReadJob) {
       m = m.copyWith(inFlight: {...m.inFlight, e.id: e});
     }
+    return e;
   }
 
   /// Removes effect [id] from those in flight, answering it.
@@ -190,19 +191,25 @@ final class QueueTurn {
   void _run(Job job) {
     final local = m.localOf(job.id);
     if (local.waitingFor != null) return;
-    final key = StepKey.parse(job.step);
-    switch (key) {
+    switch (job.step) {
       case null:
-        if (job.step == null) _startTurn(job, 1, null, const {});
+        _startTurn(job, 1, null, const {});
       case ReplyKey():
         break;
+      case UnknownKey(:final raw):
+        // A step no table row reads: failed, not left running unseen.
+        move(
+          job,
+          JobState.failed,
+          error: SetTo(JobError('invalid_step', raw)),
+        );
       case PublishKey(:final base):
         if (job.kind == JobKind.change) {
           final reply = _replyFor(job, base) ?? const ReplyPlan();
           emit((id) => Reply(id, job.id, reply));
         }
       case TurnKey(:final turn):
-        final notes = switch (job.steps[job.step]) {
+        final notes = switch (job.steps[TurnKey(turn)]) {
           TurnStepResult(:final notes) => notes,
           _ => null,
         };
@@ -226,8 +233,7 @@ final class QueueTurn {
       if (local.results.containsKey(call.id)) continue;
       switch (call) {
         case FinishCall(:final publish)
-            when job.steps['publish:${publish.base}']
-                is PublishStepResult:
+            when job.steps[PublishKey(publish.base)] is PublishStepResult:
           // Published already (a step committed while its answer was
           // lost): the row's next step follows.
           _result(job.id, call.id, const ToolResult(data: 'published'));
@@ -262,13 +268,10 @@ final class QueueTurn {
             );
             return;
           }
-          emit((id) => Render(id, job.id, turn, call.id, spec));
-          final now = m.now;
-          setLocal(
-            job.id,
-            (l) => l.copyWith(
-              renderDeadline: () => now?.add(QueueModel.renderTimeout),
-            ),
+          final deadline = m.now?.add(QueueModel.renderTimeout);
+          emit(
+            (id) =>
+                Render(id, job.id, turn, call.id, spec, deadline: deadline),
           );
           return;
         case AskCall(:final question):

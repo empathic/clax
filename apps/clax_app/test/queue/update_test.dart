@@ -82,7 +82,7 @@ void main() {
     test('no other message changes a job\'s durable fields', () {
       final jobs = [
         job('a', state: JobState.running, rev: 4, steps: {
-          'turn:1': turnOf([const OtherCall('w', 'write_file')]),
+          const TurnKey(1): turnOf([const OtherCall('w', 'write_file')]),
         }),
         job('b', state: JobState.failed, rev: 2, error: const JobError('x')),
         job('c', state: JobState.paused, rev: 7),
@@ -122,12 +122,34 @@ void main() {
   group('rule 2: the owner first', () {
     test('the core\'s opening claims the queue, and a claim loads the jobs', () {
       final (m1, e1) = update(const QueueModel(), const CoreOpened());
-      expect(e1.single, isA<ClaimOwner>());
-      expect(m1.owner, const OwnerClaiming());
-      final (m2, e2) = update(m1, const OwnerClaimed('tok'));
+      final claim = e1.single as ClaimOwner;
+      expect(m1.owner, OwnerClaiming(claim.id));
+      final (m2, e2) = update(m1, OwnerClaimed(claim.id, 'tok'));
       expect(e2.single, isA<LoadJobs>());
-      expect(m2.owner, const OwnerHeldBy('tok'));
-      expect(m2.loaded, isFalse);
+      expect(m2.owner, const OwnerLoading('tok'));
+      final (m3, _) = update(m2, const JobsLoaded([]));
+      expect(m3.owner, const OwnerHeldBy('tok'));
+    });
+
+    test('an answer to a claim made before the core reopened counts for nothing', () {
+      final (m1, e1) = updateAll(const QueueModel(), [
+        const CoreOpened(),
+        const CoreOpened(),
+      ]);
+      final claims = e1.whereType<ClaimOwner>().toList();
+      expect(claims, hasLength(2));
+      for (final stale in <Msg>[
+        OwnerClaimed(claims.first.id, 'old'),
+        OwnerHeld(claims.first.id),
+        OwnerDraining(claims.first.id),
+      ]) {
+        final (m2, e2) = update(m1, stale);
+        expect(e2, isEmpty, reason: '$stale');
+        expect(m2.owner, OwnerClaiming(claims.last.id));
+      }
+      final (m3, e3) = update(m1, OwnerClaimed(claims.last.id, 'new'));
+      expect(e3.single, isA<LoadJobs>());
+      expect(m3.owner, const OwnerLoading('new'));
     });
 
     test('a worker that does not own the queue runs nothing', () {
@@ -137,64 +159,84 @@ void main() {
       expect(m1.pending, hasLength(1));
     });
 
-    test('intents wait for the jobs, then run', () {
-      final (m1, e1) = updateAll(const QueueModel(), [
-        const CoreOpened(),
-        const Make('j', 'a todo app'),
-        const OwnerClaimed('tok'),
+    test('intents wait for the jobs, shown queued, then run', () {
+      final (m0, e0) = update(const QueueModel(), const CoreOpened());
+      final claim = e0.single as ClaimOwner;
+      final (m1, e1) = updateAll(m0, [
+        const Make('j', 'a todo app', title: 'Todo'),
+        const Change('c', 'app', base: 2, threads: {}),
+        OwnerClaimed(claim.id, 'tok'),
       ]);
       expect(e1.whereType<CreateJob>(), isEmpty);
-      expect(m1.pending, [const Make('j', 'a todo app')]);
+      expect(m1.pending, hasLength(2));
+      expect(viewOf(m1).jobs, [
+        const JobView(
+          id: 'j',
+          kind: JobKind.make,
+          state: JobState.queued,
+          title: 'Todo',
+        ),
+        const JobView(
+          id: 'c',
+          kind: JobKind.change,
+          state: JobState.queued,
+          artifactId: 'app',
+        ),
+      ]);
+      expect(e1.whereType<PublishState>(), isNotEmpty);
       final (m2, e2) = update(m1, const JobsLoaded([]));
-      expect(e2.whereType<CreateJob>().single.jobId, 'j');
+      expect(e2.whereType<CreateJob>().map((c) => c.jobId), ['j', 'c']);
       expect(m2.pending, isEmpty);
+      expect(viewOf(m2), viewOf(m1), reason: 'still queued, now in flight');
     });
 
     test('a claim refused owner_held waits for the release, then claims', () {
-      final (m1, e1) = updateAll(const QueueModel(), [
-        const CoreOpened(),
-        const OwnerHeld(),
+      final (m0, e0) = update(const QueueModel(), const CoreOpened());
+      final claim = e0.single as ClaimOwner;
+      final (m1, e1) = updateAll(m0, [
+        OwnerHeld(claim.id),
         const OwnerChanged(held: true),
       ]);
-      expect(e1.whereType<ClaimOwner>(), hasLength(1));
+      expect(e1.whereType<ClaimOwner>(), isEmpty);
       expect(m1.owner, const OwnerRefused(draining: false));
       final (m2, e2) = update(m1, const OwnerChanged(held: false));
-      expect(e2.single, isA<ClaimOwner>());
-      expect(m2.owner, const OwnerClaiming());
+      final again = e2.single as ClaimOwner;
+      expect(m2.owner, OwnerClaiming(again.id));
     });
 
     test('a release heard before the claim\'s refusal claims again at once', () {
-      final (m1, e1) = updateAll(const QueueModel(), [
-        const CoreOpened(),
+      final (m0, e0) = update(const QueueModel(), const CoreOpened());
+      final claim = e0.single as ClaimOwner;
+      final (m1, e1) = updateAll(m0, [
         const OwnerChanged(held: false),
-        const OwnerHeld(),
+        OwnerHeld(claim.id),
       ]);
-      expect(e1.whereType<ClaimOwner>(), hasLength(2));
-      expect(m1.owner, const OwnerClaiming());
+      final again = e1.single as ClaimOwner;
+      expect(m1.owner, OwnerClaiming(again.id));
     });
 
     test('a claim refused owner_draining claims again when the drain ends', () {
-      final (m1, e1) = updateAll(const QueueModel(), [
-        const CoreOpened(),
-        const OwnerDraining(),
-      ]);
-      expect(e1.whereType<ClaimOwner>(), hasLength(1));
+      final (m0, e0) = update(const QueueModel(), const CoreOpened());
+      final claim = e0.single as ClaimOwner;
+      final (m1, e1) = update(m0, OwnerDraining(claim.id));
+      expect(e1, isEmpty);
       expect(m1.owner, const OwnerRefused(draining: true));
       final (m2, e2) = update(m1, const OwnerChanged(held: true));
-      expect(e2.single, isA<ClaimOwner>());
-      final (m3, e3) = update(m2, const OwnerClaimed('tok'));
+      final again = e2.single as ClaimOwner;
+      final (m3, e3) = update(m2, OwnerClaimed(again.id, 'tok'));
       expect(e3.single, isA<LoadJobs>());
-      expect(m3.owner, const OwnerHeldBy('tok'));
+      expect(m3.owner, const OwnerLoading('tok'));
     });
 
     test('a drain\'s end heard before the claim\'s answer claims again', () {
-      final (m1, e1) = updateAll(const QueueModel(), [
-        const CoreOpened(),
+      final (m0, e0) = update(const QueueModel(), const CoreOpened());
+      final claim = e0.single as ClaimOwner;
+      final (m1, e1) = updateAll(m0, [
         const OwnerChanged(held: true),
-        const OwnerDraining(),
+        OwnerDraining(claim.id),
       ]);
-      expect(e1.whereType<ClaimOwner>(), hasLength(2));
-      expect(m1.owner, const OwnerClaiming());
+      final again = e1.single as ClaimOwner;
+      expect(m1.owner, OwnerClaiming(again.id));
     });
 
     test('not_owner drops every job effect in flight and claims again', () {
@@ -219,7 +261,7 @@ void main() {
       expect(e1.whereType<JobEffect>().whereType<CommitEffect>(), isEmpty);
       expect(m1.inFlight.values.whereType<JobEffect>(), isEmpty);
       expect(m1.pending, [const Make('n', 'notes')]);
-      expect(m1.loaded, isFalse);
+      expect(m1.owner, isA<OwnerClaiming>());
       // The dropped turn's answer runs nothing.
       final (_, e2) = update(
         m1,
@@ -235,20 +277,19 @@ void main() {
       );
       final (m1, e1) = update(m0, const OwnerChanged(held: false));
       expect(e1.whereType<StopWork>(), hasLength(1));
-      expect(e1.whereType<ClaimOwner>(), hasLength(1));
-      expect(m1.owner, const OwnerClaiming());
+      expect(m1.owner, OwnerClaiming(e1.whereType<ClaimOwner>().single.id));
     });
 
     test('an owner handoff: the next worker resumes from the core\'s rows', () {
       final core = FakeJobsCore();
       final a = World(core).start();
       a.send(const Make('j', 'a todo app'));
-      a.run(until: () => core.read('j')?.step == 'turn:1');
+      a.run(until: () => core.read('j')?.step == const TurnKey(1));
       // Worker a dies here. Worker b was refused while a lived.
       final b = World(core);
       b.send(const CoreOpened());
       b.inbox.clear();
-      b.send(const OwnerHeld());
+      b.send(OwnerHeld(b.effects.whereType<ClaimOwner>().last.id));
       expect(b.effects.whereType<JobEffect>(), isEmpty);
       b.send(const OwnerChanged(held: false));
       b.run();
@@ -313,14 +354,14 @@ void main() {
       final notes = finishNotes(base: 0).notes;
       final (m1, e1) = update(m0, TurnDone(7, 'j', TurnOutcome(notes)));
       final commit = e1.whereType<CommitStep>().single;
-      expect(commit.key, 'turn:1');
+      expect(commit.key, const TurnKey(1));
       expect(commit.notes, notes);
       expect(e1.whereType<Publish>(), isEmpty);
       final (_, e2) = update(
         m1,
         Committed(
           commit.id,
-          job('j', rev: 2, steps: {'turn:1': TurnStepResult(notes)}),
+          job('j', rev: 2, steps: {const TurnKey(1): TurnStepResult(notes)}),
         ),
       );
       expect(e2.whereType<Publish>().single.base, 0);
@@ -360,7 +401,7 @@ void main() {
     test(
       'a publish refused for a moved base re-plans and never publishes that base again',
       () {
-        final j = job('j', rev: 3, steps: {'turn:2': finishNotes(base: 4)}, base: 4);
+        final j = job('j', rev: 3, steps: {const TurnKey(2): finishNotes(base: 4)}, base: 4);
         final m0 = model(jobs: [j]);
         final (m1, e1) = update(m0, JobsLoaded([j]));
         final pub = e1.whereType<Publish>().single;
@@ -383,8 +424,8 @@ void main() {
             commit.id,
             j.copyWith(
               rev: 4,
-              steps: {...j.steps, 'turn:3': again},
-              step: const SetTo('turn:3'),
+              steps: {...j.steps, const TurnKey(3): again},
+              step: const SetTo(TurnKey(3)),
             ),
           ),
         );
@@ -394,7 +435,7 @@ void main() {
     );
 
     test('a moved document fails the job; Retry re-plans without publishing', () {
-      final j = job('j', rev: 3, steps: {'turn:2': finishNotes(base: 0)});
+      final j = job('j', rev: 3, steps: {const TurnKey(2): finishNotes(base: 0)});
       final (m1, e1) = update(model(jobs: [j]), JobsLoaded([j]));
       final pub = e1.whereType<Publish>().single;
       final (m2, e2) = update(m1, Refused(pub.id, 'j', const DocMoved('notes.json')));
@@ -429,7 +470,7 @@ void main() {
     });
 
     test('a publish refused for an unrendered draft re-plans', () {
-      final j = job('j', rev: 3, steps: {'turn:2': finishNotes(base: 0)});
+      final j = job('j', rev: 3, steps: {const TurnKey(2): finishNotes(base: 0)});
       final (m1, e1) = update(model(jobs: [j]), JobsLoaded([j]));
       final pub = e1.whereType<Publish>().single;
       final (_, e2) = update(m1, Refused(pub.id, 'j', const NotRenderedClean()));
@@ -441,15 +482,15 @@ void main() {
     });
 
     test('a replayed publish ends the job once', () {
-      final j = job('j', rev: 3, steps: {'turn:2': finishNotes(base: 0)});
+      final j = job('j', rev: 3, steps: {const TurnKey(2): finishNotes(base: 0)});
       final (m1, e1) = update(model(jobs: [j]), JobsLoaded([j]));
       final pub = e1.whereType<Publish>().single;
       const step = PublishStepResult(artifactId: 'app', version: 1);
       final done = j.copyWith(
         state: JobState.done,
         rev: 4,
-        steps: {...j.steps, 'publish:0': step},
-        step: const SetTo('publish:0'),
+        steps: {...j.steps, const PublishKey(0): step},
+        step: const SetTo(PublishKey(0)),
         artifactId: const SetTo('app'),
       );
       final (m2, e2) = update(
@@ -469,7 +510,7 @@ void main() {
         base: 2,
         rev: 3,
         steps: {
-          'turn:1': finishNotes(base: 2, reply: const ReplyPlan(data: 'done')),
+          const TurnKey(1): finishNotes(base: 2, reply: const ReplyPlan(data: 'done')),
         },
       );
       final (m1, e1) = update(model(jobs: [j]), JobsLoaded([j]));
@@ -479,9 +520,9 @@ void main() {
         rev: 4,
         steps: {
           ...j.steps,
-          'publish:2': const PublishStepResult(artifactId: 'app', version: 3),
+          const PublishKey(2): const PublishStepResult(artifactId: 'app', version: 3),
         },
-        step: const SetTo('publish:2'),
+        step: const SetTo(PublishKey(2)),
       );
       final (_, e2) = update(m1, Committed(pub.id, published));
       expect(e2.whereType<Reply>().single.reply, const ReplyPlan(data: 'done'));
@@ -490,15 +531,17 @@ void main() {
 
   group('rule 8: a lost render is asked again once, then waits', () {
     final j = job('j', steps: {
-      'turn:1': turnOf([const RenderCall('r', RenderSpec(draftId: 'd', revision: 2))]),
+      const TurnKey(1): turnOf([const RenderCall('r', RenderSpec(draftId: 'd', revision: 2))]),
     });
 
     test('lost once, rendered again; lost twice, waits for a render', () {
       final (m1, e1) = update(model(jobs: [j], now: t0), JobsLoaded([j]));
       final r1 = e1.whereType<Render>().single;
-      expect(m1.localOf('j').renderDeadline, t0.add(const Duration(seconds: 60)));
+      expect(r1.deadline, t0.add(const Duration(seconds: 60)));
       final (m2, e2) = update(m1, RenderLost(r1.id, 'j'));
       final r2 = e2.whereType<Render>().single;
+      expect((r1.last, r2.last), (false, true), reason: 'the second is the last try');
+      expect(m2.inFlight[r2.id], r2);
       expect(e2.whereType<StartTurn>(), isEmpty);
       final (m3, e3) = update(m2, RenderLost(r2.id, 'j'));
       expect(e3.whereType<JobEffect>(), isEmpty);
@@ -522,9 +565,14 @@ void main() {
     test('a render past its 60 s on the worker\'s clock counts as lost', () {
       final (m1, e1) = update(model(jobs: [j]), JobsLoaded([j]));
       final r1 = e1.whereType<Render>().single;
-      expect(m1.localOf('j').renderDeadline, isNull);
+      expect(r1.deadline, isNull);
       final (m2, e2) = update(m1, Tick(t0));
       expect(e2.whereType<Render>(), isEmpty);
+      expect(
+        (m2.inFlight[r1.id] as Render).deadline,
+        t0.add(const Duration(seconds: 60)),
+        reason: 'the deadline is set at the first Tick',
+      );
       final (m3, e3) = update(m2, Tick(t0.add(const Duration(seconds: 59))));
       expect(e3.whereType<Render>(), isEmpty);
       final (_, e4) = update(m3, Tick(t0.add(const Duration(seconds: 60))));
@@ -591,8 +639,8 @@ void main() {
           7,
           j.copyWith(
             rev: 3,
-            steps: {'turn:1': TurnStepResult(notes)},
-            step: const SetTo('turn:1'),
+            steps: {const TurnKey(1): TurnStepResult(notes)},
+            step: const SetTo(TurnKey(1)),
           ),
         ),
       );
@@ -733,7 +781,7 @@ void main() {
 
   group('questions', () {
     final asking = job('j', rev: 2, steps: {
-      'turn:1': turnOf([const AskCall('a', Question(data: 'which colour?'))]),
+      const TurnKey(1): turnOf([const AskCall('a', Question(data: 'which colour?'))]),
     });
 
     (QueueModel, Ask) asked() {
@@ -964,8 +1012,8 @@ TurnInput _input(int turn) =>
 /// The highest turn job [j] committed.
 int _lastTurn(Job? j) {
   var n = 0;
-  for (final k in j?.steps.keys ?? const <String>[]) {
-    if (StepKey.parse(k) case TurnKey(:final turn) when turn > n) n = turn;
+  for (final k in j?.steps.keys ?? const <StepKey>[]) {
+    if (k case TurnKey(:final turn) when turn > n) n = turn;
   }
   return n;
 }
@@ -1058,11 +1106,11 @@ final List<_NextRow> _nextTable = [
   ),
   (
     name: 'running, turn:2 with a finish not answered → publish on its base',
-    model: () => model(jobs: [job('j', base: 3, steps: {'turn:2': finishNotes(base: 3)})]),
+    model: () => model(jobs: [job('j', base: 3, steps: {const TurnKey(2): finishNotes(base: 3)})]),
     job: 'j',
     want: (e) {
       final p = e as Publish;
-      expect((p.base, p.key, p.done, p.turn), (3, 'publish:3', true, 2));
+      expect((p.base, p.key, p.done, p.turn), (3, const PublishKey(3), true, 2));
     },
   ),
   (
@@ -1070,7 +1118,7 @@ final List<_NextRow> _nextTable = [
     model: () => model(
       jobs: [
         job('j', steps: {
-          'turn:1': turnOf([const RenderCall('r', RenderSpec(draftId: 'd', revision: 1))]),
+          const TurnKey(1): turnOf([const RenderCall('r', RenderSpec(draftId: 'd', revision: 1))]),
         }),
       ],
     ),
@@ -1082,7 +1130,7 @@ final List<_NextRow> _nextTable = [
     model: () => model(
       jobs: [
         job('j', steps: {
-          'turn:1': turnOf([const AskCall('a', Question())]),
+          const TurnKey(1): turnOf([const AskCall('a', Question())]),
         }),
       ],
     ),
@@ -1094,7 +1142,7 @@ final List<_NextRow> _nextTable = [
     model: () => model(
       jobs: [
         job('j', steps: {
-          'turn:1': turnOf([
+          const TurnKey(1): turnOf([
             const OtherCall('w', 'write_file'),
             const OtherCall('v', 'read_file'),
           ]),
@@ -1109,7 +1157,7 @@ final List<_NextRow> _nextTable = [
     model: () => model(
       jobs: [
         job('j', steps: {
-          'turn:1': turnOf([
+          const TurnKey(1): turnOf([
             const OtherCall('w', 'write_file'),
             const OtherCall('v', 'read_file'),
           ]),
@@ -1127,7 +1175,7 @@ final List<_NextRow> _nextTable = [
     model: () => model(
       jobs: [
         job('j', steps: {
-          'turn:1': turnOf([const OtherCall('w', 'write_file')]),
+          const TurnKey(1): turnOf([const OtherCall('w', 'write_file')]),
         }),
       ],
       local: {
@@ -1150,14 +1198,30 @@ final List<_NextRow> _nextTable = [
           kind: JobKind.change,
           artifactId: 'app',
           steps: {
-            'turn:1': finishNotes(base: 3),
-            'publish:3': const PublishStepResult(artifactId: 'app', version: 4),
+            const TurnKey(1): finishNotes(base: 3),
+            const PublishKey(3): const PublishStepResult(artifactId: 'app', version: 4),
           },
         ),
       ],
     ),
     job: 'j',
     want: (e) => expect(e, isA<Reply>()),
+  ),
+  (
+    name: 'running, a step the queue does not know → failed invalid_step',
+    model: () => model(
+      jobs: [
+        job('j', step: StepKey.parse('turn:x'), steps: {
+          StepKey.parse('turn:x'): const ReplyStepResult(),
+        }),
+      ],
+    ),
+    job: 'j',
+    want: (e) {
+      final m = e as MoveJob;
+      expect(m.to, JobState.failed);
+      expect(m.error, const SetTo(JobError('invalid_step', 'turn:x')));
+    },
   ),
   (
     name: 'running, waiting for Claude → nothing',

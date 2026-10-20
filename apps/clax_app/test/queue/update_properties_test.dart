@@ -284,10 +284,10 @@ void _cover(Map<String, int> seen, Msg msg, List<Effect> effects, QueueModel m) 
   switch (msg) {
     case Committed(:final job, :final replayed):
       if (replayed) hit('replayed');
-      if (job.steps.keys.any((k) => k.startsWith('publish:'))) {
+      if (job.steps.keys.any((k) => k is PublishKey)) {
         hit('publish committed');
       }
-      if (job.steps.containsKey('reply')) hit('reply committed');
+      if (job.steps.containsKey(const ReplyKey())) hit('reply committed');
     case Refused(:final reason):
       switch (reason) {
         case VersionMoved():

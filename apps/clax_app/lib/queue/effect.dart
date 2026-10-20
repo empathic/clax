@@ -95,7 +95,7 @@ final class CommitStep extends CommitEffect {
   const CommitStep(super.id, super.jobId, this.turn, this.notes);
   final int turn;
   final TurnNotes notes;
-  String get key => 'turn:$turn';
+  TurnKey get key => TurnKey(turn);
   @override
   bool operator ==(Object other) =>
       other is CommitStep &&
@@ -147,7 +147,7 @@ final class Publish extends CommitEffect {
   final PublishPlan publish;
   final bool done;
   int get base => publish.base;
-  String get key => 'publish:$base';
+  PublishKey get key => PublishKey(base);
   @override
   bool operator ==(Object other) =>
       other is Publish &&
@@ -167,7 +167,7 @@ final class Publish extends CommitEffect {
 final class Reply extends CommitEffect {
   const Reply(super.id, super.jobId, this.reply);
   final ReplyPlan reply;
-  String get key => 'reply';
+  ReplyKey get key => const ReplyKey();
   @override
   bool operator ==(Object other) =>
       other is Reply &&
@@ -215,11 +215,31 @@ final class RunTool extends WorkEffect {
 }
 
 /// The `render` call [callId] of turn [turn], asked of the UI isolate.
+/// A render lost (its WebView gone, or no answer by [deadline] on the
+/// worker's clock) is asked once more, as the [last] try; a last try lost,
+/// the job waits for a render.
 final class Render extends WorkEffect {
-  const Render(super.id, super.jobId, this.turn, this.callId, this.spec);
+  const Render(
+    super.id,
+    super.jobId,
+    this.turn,
+    this.callId,
+    this.spec, {
+    this.last = false,
+    this.deadline,
+  });
   final int turn;
   final String callId;
   final RenderSpec spec;
+  final bool last;
+
+  /// When it counts as lost; null until the worker's clock is known, and
+  /// set at the next `Tick`.
+  final DateTime? deadline;
+
+  Render withDeadline(DateTime at) =>
+      Render(id, jobId, turn, callId, spec, last: last, deadline: at);
+
   @override
   bool operator ==(Object other) =>
       other is Render &&
@@ -227,11 +247,14 @@ final class Render extends WorkEffect {
       other.jobId == jobId &&
       other.turn == turn &&
       other.callId == callId &&
-      other.spec == spec;
+      other.spec == spec &&
+      other.last == last &&
+      other.deadline == deadline;
   @override
-  int get hashCode => Object.hash(id, jobId, turn, callId, spec);
+  int get hashCode =>
+      Object.hash(id, jobId, turn, callId, spec, last, deadline);
   @override
-  String toString() => 'Render#$id($jobId, $callId)';
+  String toString() => 'Render#$id($jobId, $callId${last ? ', last' : ''})';
 }
 
 /// Reads the job's row: a core event named a `rev` above the one held.

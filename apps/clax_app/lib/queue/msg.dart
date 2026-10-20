@@ -101,22 +101,29 @@ final class CoreOpened extends Msg {
   const CoreOpened();
 }
 
-/// The claim holds the queue under [token].
-final class OwnerClaimed extends Msg {
-  const OwnerClaimed(this.token);
+/// A `ClaimOwner` effect's answer: one of the three below, naming the
+/// claim it answers.
+sealed class ClaimAnswer extends Msg {
+  const ClaimAnswer(this.effect);
+  final EffectId effect;
+}
+
+/// Claim [effect] holds the queue under [token].
+final class OwnerClaimed extends ClaimAnswer {
+  const OwnerClaimed(super.effect, this.token);
   final String token;
 }
 
-/// The claim was refused `owner_held`: another worker's stream holds the
-/// queue.
-final class OwnerHeld extends Msg {
-  const OwnerHeld();
+/// Claim [effect] was refused `owner_held`: another worker's stream holds
+/// the queue.
+final class OwnerHeld extends ClaimAnswer {
+  const OwnerHeld(super.effect);
 }
 
-/// The claim was refused `owner_draining`: it is this worker's, but writes
-/// under the claim before it have not ended.
-final class OwnerDraining extends Msg {
-  const OwnerDraining();
+/// Claim [effect] was refused `owner_draining`: it is this worker's, but
+/// writes under the claim before it have not ended.
+final class OwnerDraining extends ClaimAnswer {
+  const OwnerDraining(super.effect);
 }
 
 /// `Event::JobsOwner {client, held}` on the core's `jobs` topic: a claim
@@ -148,7 +155,7 @@ final class JobNoticed extends Msg {
   final JobId id;
   final String client;
   final JobState state;
-  final String? step;
+  final StepKey? step;
   final int rev;
   @override
   bool operator ==(Object other) =>

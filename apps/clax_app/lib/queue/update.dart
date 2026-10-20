@@ -71,47 +71,52 @@ void _handle(QueueTurn t, Msg msg) {
     case CoreOpened():
       // A core opened (or reopened) holds no claim.
       _loseOwner(t);
-      t.m = t.m.copyWith(coreOpen: true);
       _claim(t);
-    case OwnerClaimed(:final token):
-      if (t.m.owner is! OwnerClaiming) return;
-      t.m = t.m.copyWith(owner: OwnerHeldBy(token), loaded: false);
-      t.emit(LoadJobs.new);
-    case OwnerHeld():
-      if (t.m.owner case OwnerClaiming(:final heard)) {
-        if (heard.contains(false)) {
-          _claim(t);
-        } else {
-          t.m = t.m.copyWith(owner: const OwnerRefused(draining: false));
-        }
-      }
-    case OwnerDraining():
-      if (t.m.owner case OwnerClaiming(:final heard)) {
-        if (heard.isNotEmpty) {
-          _claim(t);
-        } else {
-          t.m = t.m.copyWith(owner: const OwnerRefused(draining: true));
-        }
+    case ClaimAnswer(:final effect):
+      // Only the answer to the claim in flight counts: one made before a
+      // reopen answers nothing.
+      final owner = t.m.owner;
+      if (owner is! OwnerClaiming || owner.claim != effect) return;
+      switch (msg) {
+        case OwnerClaimed(:final token):
+          t.m = t.m.copyWith(owner: OwnerLoading(token));
+          t.emit(LoadJobs.new);
+        case OwnerHeld():
+          if (owner.heardRelease) {
+            _claim(t);
+          } else {
+            t.m = t.m.copyWith(owner: const OwnerRefused(draining: false));
+          }
+        case OwnerDraining():
+          if (owner.heardRelease || owner.heardHeld) {
+            _claim(t);
+          } else {
+            t.m = t.m.copyWith(owner: const OwnerRefused(draining: true));
+          }
       }
     case OwnerChanged(:final client, :final held):
       if (client != 'app') return;
       switch (t.m.owner) {
-        case OwnerClaiming(:final heard):
-          t.m = t.m.copyWith(owner: OwnerClaiming(heard: {...heard, held}));
+        case final OwnerClaiming c:
+          t.m = t.m.copyWith(owner: c.heard(held: held));
         case OwnerRefused(draining: false) when !held:
           _claim(t);
         case OwnerRefused(draining: true):
           _claim(t);
-        case OwnerHeldBy() when !held:
+        case OwnerHeldBy() || OwnerLoading() when !held:
           // The claim this worker held was released.
           _loseOwner(t);
           _claim(t);
-        case OwnerNone() || OwnerRefused() || OwnerHeldBy():
+        case OwnerNone() || OwnerRefused() || OwnerHeldBy() || OwnerLoading():
           break;
       }
 
     case JobsLoaded(:final jobs):
-      if (t.m.owner is! OwnerHeldBy) return;
+      final token = switch (t.m.owner) {
+        OwnerLoading(:final token) || OwnerHeldBy(:final token) => token,
+        _ => null,
+      };
+      if (token == null) return;
       final loaded = {for (final j in jobs) j.id};
       for (final j in jobs) {
         _apply(t, j, notify: false);
@@ -123,7 +128,7 @@ void _handle(QueueTurn t, Msg msg) {
           t.setLocal(j.id, (l) => l.copyWith(noticed: j.rev + 1));
         }
       }
-      t.m = t.m.copyWith(loaded: true);
+      t.m = t.m.copyWith(owner: OwnerHeldBy(token));
       _resumePaused(t);
       final pending = t.m.pending;
       t.m = t.m.copyWith(pending: const []);
@@ -167,7 +172,7 @@ void _handle(QueueTurn t, Msg msg) {
       // A turn planned on a step the row has since moved past is dropped:
       // the resume table plans again from the row.
       final turn = e.input.turn;
-      if (job.step != (turn == 1 ? null : 'turn:${turn - 1}')) return;
+      if (job.step != (turn == 1 ? null : TurnKey(turn - 1))) return;
       if (outcome.stop case final stop?) {
         t.move(
           job,
@@ -211,10 +216,6 @@ void _handle(QueueTurn t, Msg msg) {
     case Rendered(:final effect, :final jobId, :final outcome):
       final e = t.answer(effect);
       if (e is Render && e.jobId == jobId) {
-        t.setLocal(
-          jobId,
-          (l) => l.copyWith(renderTries: 0, renderDeadline: () => null),
-        );
         _callAnswered(
           t,
           jobId,
@@ -240,13 +241,13 @@ void _handle(QueueTurn t, Msg msg) {
     case Tick(:final now):
       t.m = t.m.copyWith(now: now);
       for (final e in t.m.inFlight.values.whereType<Render>().toList()) {
-        final deadline = t.m.localOf(e.jobId).renderDeadline;
+        final deadline = e.deadline;
         if (deadline == null) {
-          t.setLocal(
-            e.jobId,
-            (l) => l.copyWith(
-              renderDeadline: () => now.add(QueueModel.renderTimeout),
-            ),
+          t.m = t.m.copyWith(
+            inFlight: {
+              ...t.m.inFlight,
+              e.id: e.withDeadline(now.add(QueueModel.renderTimeout)),
+            },
           );
         } else if (!now.isBefore(deadline)) {
           _renderLost(t, e.id);
@@ -290,8 +291,8 @@ void _wish(QueueTurn t, JobId id, JobIntent intent, Offer offer) {
 }
 
 void _claim(QueueTurn t) {
-  t.m = t.m.copyWith(owner: const OwnerClaiming());
-  t.emit(ClaimOwner.new);
+  final claim = t.emit(ClaimOwner.new)!;
+  t.m = t.m.copyWith(owner: OwnerClaiming(claim.id));
 }
 
 /// The worker no longer holds the queue: it emits no work, drops every job
@@ -315,7 +316,6 @@ void _loseOwner(QueueTurn t) {
   }
   t.m = t.m.copyWith(
     owner: const OwnerNone(),
-    loaded: false,
     inFlight: kept,
     pending: pending,
   );
@@ -343,7 +343,7 @@ void _apply(QueueTurn t, Job job, {bool notify = true}) {
   t.m = t.m.copyWith(jobs: {...t.m.jobs, job.id: job});
   // What the worker holds of the job follows its row: answers belong to
   // the last committed turn, and only a running job waits or renders.
-  final lastTurn = switch (StepKey.parse(job.step)) {
+  final lastTurn = switch (job.step) {
     TurnKey(:final turn) => turn,
     _ => null,
   };
@@ -354,11 +354,7 @@ void _apply(QueueTurn t, Job job, {bool notify = true}) {
     }
     if (job.state != JobState.paused) n = n.copyWith(resume: false);
     if (job.state != JobState.running) {
-      n = n.copyWith(
-        waitingFor: () => null,
-        renderTries: 0,
-        renderDeadline: () => null,
-      );
+      n = n.copyWith(waitingFor: () => null);
     }
     if (job.state.isFinal) n = JobLocal(noticed: n.noticed);
     return n;
@@ -436,29 +432,33 @@ void _callAnswered(
   );
 }
 
-/// A render lost: asked once more, then the job waits for a render.
+/// A render lost: asked once more as the last try, then the job waits for
+/// a render.
 void _renderLost(QueueTurn t, EffectId effect) {
   final e = t.answer(effect);
   if (e is! Render) return;
-  t.setLocal(
-    e.jobId,
-    (l) => l.renderTries == 0
-        ? l.copyWith(renderTries: 1, renderDeadline: () => null)
-        : l.copyWith(
-            renderTries: 0,
-            renderDeadline: () => null,
-            waitingFor: () => WaitingFor.render,
-          ),
+  if (e.last) {
+    t.setLocal(e.jobId, (l) => l.copyWith(waitingFor: () => WaitingFor.render));
+    return;
+  }
+  final deadline = t.m.now?.add(QueueModel.renderTimeout);
+  t.emit(
+    (id) => Render(
+      id,
+      e.jobId,
+      e.turn,
+      e.callId,
+      e.spec,
+      last: true,
+      deadline: deadline,
+    ),
   );
 }
 
 void _clearWaiting(QueueTurn t, WaitingFor w) {
   for (final e in t.m.local.entries.toList()) {
     if (e.value.waitingFor == w) {
-      t.setLocal(
-        e.key,
-        (l) => l.copyWith(waitingFor: () => null, renderTries: 0),
-      );
+      t.setLocal(e.key, (l) => l.copyWith(waitingFor: () => null));
     }
   }
 }
