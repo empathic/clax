@@ -1138,30 +1138,49 @@ impl TestServer {
     }
 
     /// Returns once `n` `wait_for_feedback` polls of session `sid` are in
-    /// progress; panics when the daemon gives up waiting (5 s).
+    /// progress; panics past the [`HANG`](crate::HANG) guard.
     pub async fn wait_feedback_waiters(&self, sid: &str, n: u64) {
-        let v: serde_json::Value = self
-            .get_authed(&format!("/api/_test/feedback/{sid}/waiters?until={n}"))
-            .await
-            .json()
-            .await
-            .unwrap();
-        assert_eq!(v["count"], n, "{n} feedback polls of {sid} within 5 s");
+        self.count_until(
+            &format!("/api/_test/feedback/{sid}/waiters?until={n}"),
+            n,
+            &format!("{n} feedback polls of {sid}"),
+        )
+        .await;
     }
 
     /// Returns once `n` feedback polls of session `sid` with tier `tier`
-    /// are parked waiting to be woken; panics when the daemon gives up
-    /// waiting (5 s).
+    /// are parked waiting to be woken; panics past the
+    /// [`HANG`](crate::HANG) guard.
     pub async fn wait_parked_feedback_polls(&self, sid: &str, tier: &str, n: u64) {
-        let v: serde_json::Value = self
-            .get_authed(&format!(
-                "/api/_test/feedback/{sid}/waiters?parked={tier}&until={n}"
-            ))
-            .await
-            .json()
-            .await
-            .unwrap();
-        assert_eq!(v["count"], n, "{n} parked {tier} polls of {sid} within 5 s");
+        self.count_until(
+            &format!("/api/_test/feedback/{sid}/waiters?parked={tier}&until={n}"),
+            n,
+            &format!("{n} parked {tier} polls of {sid}"),
+        )
+        .await;
+    }
+
+    /// Asks a debug waiter route (`path`, which names `until={n}`) until
+    /// its `count` is `n`. The route answers once the count is `n` or after
+    /// a few seconds, whichever is first; each answer short of `n` is asked
+    /// again, so a slow machine only makes the wait longer. Panics, naming
+    /// `what` and the last count, past the [`HANG`](crate::HANG) guard.
+    async fn count_until(&self, path: &str, n: u64, what: &str) {
+        let start = std::time::Instant::now();
+        loop {
+            let res = self.get_authed(path).await;
+            assert_eq!(res.status(), 200, "{what}: {path}");
+            let v: serde_json::Value = res.json().await.unwrap();
+            if v["count"].as_u64() == Some(n) {
+                return;
+            }
+            assert!(
+                start.elapsed() < crate::HANG,
+                "{what}: still {} after {:?} (hang guard)",
+                v["count"],
+                crate::HANG
+            );
+        }
     }
 
     /// Stops each feedback poll of session `sid` after its take (`hold`),
@@ -1183,17 +1202,14 @@ impl TestServer {
     }
 
     /// Returns once `n` feedback polls of session `sid` are stopped after
-    /// their take; panics when the daemon gives up waiting (5 s).
+    /// their take; panics past the [`HANG`](crate::HANG) guard.
     pub async fn wait_held_feedback_polls(&self, sid: &str, n: u64) {
-        let v: serde_json::Value = self
-            .get_authed(&format!(
-                "/api/_test/feedback/{sid}/waiters?held=true&until={n}"
-            ))
-            .await
-            .json()
-            .await
-            .unwrap();
-        assert_eq!(v["count"], n, "{n} held polls of {sid} within 5 s");
+        self.count_until(
+            &format!("/api/_test/feedback/{sid}/waiters?held=true&until={n}"),
+            n,
+            &format!("{n} held polls of {sid}"),
+        )
+        .await;
     }
 
     /// Ends every `wait_for_feedback` poll of session `sid` now, as if its
@@ -1267,16 +1283,15 @@ impl TestServer {
         v["count"].as_u64().expect("a count")
     }
 
-    /// Returns once `n` polls hold question `qid`; panics when the daemon
-    /// gives up waiting (5 s).
+    /// Returns once `n` polls hold question `qid`; panics past the
+    /// [`HANG`](crate::HANG) guard.
     pub async fn wait_question_waiters(&self, qid: &str, n: u64) {
-        let v: serde_json::Value = self
-            .get_authed(&format!("/api/_test/questions/{qid}/waiters?until={n}"))
-            .await
-            .json()
-            .await
-            .unwrap();
-        assert_eq!(v["count"], n, "{n} polls of {qid} within 5 s");
+        self.count_until(
+            &format!("/api/_test/questions/{qid}/waiters?until={n}"),
+            n,
+            &format!("{n} polls of {qid}"),
+        )
+        .await;
     }
 }
 
@@ -1403,16 +1418,23 @@ impl TestServer {
 }
 
 impl TestServer {
-    /// Returns once the agent gate's state satisfies `f`; panics after 5 s.
+    /// Returns once the agent gate's state satisfies `f`; panics past the
+    /// [`HANG`](crate::HANG) guard.
     pub async fn wait_gate(
         &self,
         what: &str,
         f: impl Fn(clax_http::agent::GateState) -> bool,
     ) -> clax_http::agent::GateState {
         self.agent_gate
-            .wait_until(f, Duration::from_secs(5))
+            .wait_until(f, crate::HANG)
             .await
-            .unwrap_or_else(|| panic!("{what} within 5 s: {:?}", self.agent_gate.state()))
+            .unwrap_or_else(|| {
+                panic!(
+                    "{what}: not within {:?} (hang guard): {:?}",
+                    crate::HANG,
+                    self.agent_gate.state()
+                )
+            })
     }
 
     /// `GET /api/_test/agent/gate`: what the agent gate holds.

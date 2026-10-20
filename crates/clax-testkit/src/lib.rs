@@ -24,3 +24,11 @@ pub use clock::*;
 pub use events::*;
 pub use fixture::*;
 pub use server::*;
+
+/// How long a test kit wait on a condition may take before the test calls
+/// it a hang and fails, naming what it waited for. A hang guard only: a
+/// loaded machine reaches every condition far sooner, so it never decides
+/// whether a test passes; it turns a wait that would never end into a
+/// message well inside Bazel's test timeout (`timeout = "long"`,
+/// `bazel/cargo.bzl`; 300 s in CI).
+pub const HANG: std::time::Duration = std::time::Duration::from_secs(120);

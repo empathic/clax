@@ -1,7 +1,5 @@
 //! Reading Server-Sent Events from the daemon's event and stream routes.
 
-use std::time::Duration;
-
 /// Reads Server-Sent Events from one `/api/events` or `/api/stream` response.
 pub struct EventReader {
     pub(crate) stream:
@@ -27,7 +25,8 @@ impl EventReader {
     }
 
     /// The next event other than keep-alive comments (and `ready`, unless
-    /// made by [`EventReader::from_response`]), as (name, data), within 20 s.
+    /// made by [`EventReader::from_response`]), as (name, data); panics
+    /// when none comes within the [`HANG`](crate::HANG) guard.
     pub async fn next(&mut self) -> (String, serde_json::Value) {
         use futures::StreamExt;
         loop {
@@ -54,9 +53,9 @@ impl EventReader {
                     serde_json::from_str(data).expect("event data is JSON"),
                 );
             }
-            let chunk = tokio::time::timeout(Duration::from_secs(20), self.stream.next())
+            let chunk = tokio::time::timeout(crate::HANG, self.stream.next())
                 .await
-                .expect("SSE chunk within 20 s")
+                .unwrap_or_else(|_| panic!("no SSE chunk within {:?} (hang guard)", crate::HANG))
                 .expect("stream still open")
                 .expect("chunk readable");
             self.buf
@@ -65,11 +64,12 @@ impl EventReader {
     }
 
     /// The names of the events (keep-alive comments aside) until the body
-    /// ends; panics when it has not ended within 20 s.
+    /// ends; panics when it has not ended within the [`HANG`](crate::HANG)
+    /// guard.
     pub async fn rest(&mut self) -> Vec<String> {
         use futures::StreamExt;
         let mut names = vec![];
-        let deadline = tokio::time::Instant::now() + Duration::from_secs(20);
+        let deadline = tokio::time::Instant::now() + crate::HANG;
         loop {
             while let Some(end) = self.buf.find("\n\n") {
                 let block = self.buf[..end].to_string();
@@ -80,7 +80,12 @@ impl EventReader {
             }
             let chunk = tokio::time::timeout_at(deadline, self.stream.next())
                 .await
-                .expect("the stream ends within 20 s");
+                .unwrap_or_else(|_| {
+                    panic!(
+                        "the stream has not ended within {:?} (hang guard)",
+                        crate::HANG
+                    )
+                });
             match chunk {
                 Some(Ok(c)) => self
                     .buf
