@@ -26,7 +26,8 @@ pub fn dir(home: &Home) -> PathBuf {
 /// exists under its name is complete, and it survives a power loss after
 /// the migrations that follow commit. Where the file system cannot sync
 /// through the drive's cache it is synced with `fsync`, and where it
-/// cannot sync a directory at all the directory is left to it.
+/// cannot sync a directory at all the directory is left to it. A sync a
+/// signal interrupts is made again.
 /// Returns the copy's path, or `None` when nothing is to be migrated.
 ///
 /// # Errors
@@ -160,8 +161,8 @@ fn before_migrate_on(
 /// `fsync` failing too, is returned: the database beside the copy could
 /// not commit there either.
 fn sync_file(disk: &mut dyn Disk, file: &Path) -> std::io::Result<()> {
-    match disk.sync_file(file, Flush::Full) {
-        Err(e) if unsupported(&e) => disk.sync_file(file, Flush::Plain),
+    match uninterrupted(|| disk.sync_file(file, Flush::Full)) {
+        Err(e) if unsupported(&e) => uninterrupted(|| disk.sync_file(file, Flush::Plain)),
         done => done,
     }
 }
@@ -171,8 +172,8 @@ fn sync_file(disk: &mut dyn Disk, file: &Path) -> std::io::Result<()> {
 /// SQLite does (some FUSE and network file systems refuse it). A real I/O
 /// error is returned.
 fn sync_dir(disk: &mut dyn Disk, dir: &Path) -> std::io::Result<()> {
-    let synced = match disk.sync_dir(dir, Flush::Full) {
-        Err(e) if unsupported(&e) => disk.sync_dir(dir, Flush::Plain),
+    let synced = match uninterrupted(|| disk.sync_dir(dir, Flush::Full)) {
+        Err(e) if unsupported(&e) => uninterrupted(|| disk.sync_dir(dir, Flush::Plain)),
         done => done,
     };
     match synced {
@@ -181,6 +182,18 @@ fn sync_dir(disk: &mut dyn Disk, dir: &Path) -> std::io::Result<()> {
             Ok(())
         }
         done => done,
+    }
+}
+
+/// Makes `sync` again for as long as a signal interrupts it (`EINTR`), as
+/// `File::sync_all` does: `fsync` is not restarted after a signal, and an
+/// interrupted sync is no I/O error.
+fn uninterrupted(mut sync: impl FnMut() -> std::io::Result<()>) -> std::io::Result<()> {
+    loop {
+        match sync() {
+            Err(e) if e.kind() == std::io::ErrorKind::Interrupted => {}
+            done => return done,
+        }
     }
 }
 
@@ -272,7 +285,8 @@ mod tests {
 
     /// A [`Disk`] that records each step (`"<step> <how> <name>"`, the
     /// temporary copy's name as `tmp`), does it on the real disk, and fails
-    /// each step named in `failing` with its error.
+    /// a step named in `failing` with its error, once for each time it is
+    /// named there.
     #[derive(Default)]
     struct Recording {
         steps: Vec<String>,
@@ -296,7 +310,11 @@ mod tests {
                 None => "",
             };
             let step = format!("{step}{how} {kind}");
-            let failure = self.failing.iter().find(|(s, _)| *s == step).map(|f| f.1);
+            let failure = self
+                .failing
+                .iter()
+                .position(|(s, _)| *s == step)
+                .map(|i| self.failing.remove(i).1);
             self.steps.push(step);
             failure.map_or(Ok(()), |e| Err(e()))
         }
@@ -326,6 +344,11 @@ mod tests {
     #[cfg(unix)]
     fn eio() -> std::io::Error {
         nix::errno::Errno::EIO.into()
+    }
+
+    #[cfg(unix)]
+    fn eintr() -> std::io::Error {
+        nix::errno::Errno::EINTR.into()
     }
 
     /// The errors a file system gives for a sync it does not support.
@@ -470,6 +493,42 @@ mod tests {
             assert!(copy.is_file(), "{:?}", unsupported());
             assert_eq!(left_in(&home).len(), 1, "{:?}", unsupported());
         }
+    }
+
+    /// A sync a signal interrupts (`EINTR`) is made again, as `sync_all`
+    /// makes its own, the `fsync` fallback's included: an interrupted sync
+    /// is no I/O error and never refuses the open.
+    #[cfg(unix)]
+    #[test]
+    fn a_sync_a_signal_interrupts_is_made_again() {
+        let unsupported = UNSUPPORTED[0];
+        let tmp = tempfile::tempdir().unwrap();
+        let home = Home::at(tmp.path().join("ax"));
+        let mut disk = Recording::failing(&[
+            ("sync_dir full ax", eintr),
+            ("sync_file full tmp", unsupported),
+            ("sync_file plain tmp", eintr),
+            ("sync_file plain tmp", eintr),
+            ("sync_dir full backups", unsupported),
+            ("sync_dir plain backups", eintr),
+        ]);
+        let copy = copy_on(&mut disk, &home).unwrap().unwrap();
+        assert!(copy.is_file());
+        assert_eq!(
+            disk.steps,
+            [
+                "sync_dir full ax",
+                "sync_dir full ax",
+                "sync_file full tmp",
+                "sync_file plain tmp",
+                "sync_file plain tmp",
+                "sync_file plain tmp",
+                "rename tmp",
+                "sync_dir full backups",
+                "sync_dir plain backups",
+                "sync_dir plain backups",
+            ]
+        );
     }
 
     /// A real I/O error refuses the open wherever it comes, as does a file
