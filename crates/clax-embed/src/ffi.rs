@@ -7,10 +7,11 @@ use crate::dart::{ClaxPost, DartPost};
 use std::sync::Arc;
 
 /// Opens the core on the home at `home[..home_len]` (UTF-8); see the header.
+/// A NULL `home` or `post` answers 0.
 ///
 /// # Safety
-/// `home` points to `home_len` readable bytes that stay valid and unchanged
-/// until this returns.
+/// `home`, when not NULL, points to `home_len` (at most `isize::MAX`)
+/// readable bytes that stay valid and unchanged until this returns.
 #[allow(unsafe_code)]
 #[unsafe(no_mangle)]
 pub unsafe extern "C" fn clax_embed_open(
@@ -19,16 +20,23 @@ pub unsafe extern "C" fn clax_embed_open(
     post: ClaxPost,
     port: i64,
 ) -> u64 {
-    // SAFETY: Dart passes a pointer to home_len readable bytes that outlive this call.
+    let Some(post) = post else {
+        return 0;
+    };
+    if home.is_null() {
+        return 0;
+    }
+    // SAFETY: home is not NULL (u8 needs no alignment), and the caller lends home_len readable bytes until this returns.
     let home = unsafe { std::slice::from_raw_parts(home, home_len) };
     crate::ffi_open(home, Arc::new(DartPost(post)), port)
 }
 
-/// Sends one request frame `req[..req_len]`; see the header.
+/// Sends one request frame `req[..req_len]`; see the header. A NULL `req`
+/// answers 2.
 ///
 /// # Safety
-/// `req` points to `req_len` readable bytes that stay valid and unchanged
-/// until this returns.
+/// `req`, when not NULL, points to `req_len` (at most `isize::MAX`)
+/// readable bytes that stay valid and unchanged until this returns.
 #[allow(unsafe_code)]
 #[unsafe(no_mangle)]
 pub unsafe extern "C" fn clax_embed_call(
@@ -38,7 +46,10 @@ pub unsafe extern "C" fn clax_embed_call(
     port: i64,
     tag: i64,
 ) -> i32 {
-    // SAFETY: Dart passes a pointer to req_len readable bytes that outlive this call.
+    if req.is_null() {
+        return 2;
+    }
+    // SAFETY: req is not NULL (u8 needs no alignment), and the caller lends req_len readable bytes until this returns.
     let req = unsafe { std::slice::from_raw_parts(req, req_len) };
     crate::ffi_call(core, req, port, tag)
 }

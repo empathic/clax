@@ -222,19 +222,25 @@ multi-thread runtime with two workers, named `clax-rt`, as clax-ios had.
 typedef struct Dart_CObject Dart_CObject;
 typedef int8_t (*ClaxPost)(int64_t port, Dart_CObject *message);
 
+// Pointers are never NULL: a NULL `home` or `post` makes clax_embed_open
+// answer 0, and a NULL `req` makes clax_embed_call answer 2, before either
+// reads anything. A length may be 0 with a pointer that is not NULL.
+
 // Opens the core on the home at home[0..home_len] (UTF-8) and returns its
 // handle at once (never 0), or 0 when that home is open in this process
-// already or the path is not UTF-8. The store opens, backs up and
-// migrates on the core's own threads; `port` hears {"type":"ready"} or
-// {"type":"failed","code":…,"message":…}, then {"type":"closed"} after
-// clax_embed_close. `post` is Dart's NativeApi.postCObject.
+// already, the path is not UTF-8, or `home` or `post` is NULL. The store
+// opens, backs up and migrates on the core's own threads; `port` hears
+// {"type":"ready"} or {"type":"failed","code":…,"message":…}, then
+// {"type":"closed"} after clax_embed_close. `post` is Dart's
+// NativeApi.postCObject.
 uint64_t clax_embed_open(const uint8_t *home, size_t home_len,
                          ClaxPost post, int64_t port);
 
 // Sends one request frame (§2.3). Returns 0 when the core took it, 1 for
-// an unknown handle, 2 for a frame that does not parse. The response
-// frame is posted to `port` as one Uint8List: `tag` (8 bytes, little
-// endian) then the frame. A call made before "ready" waits for it.
+// an unknown handle, 2 for a frame that does not parse or a NULL `req`.
+// The response frame is posted to `port` as one Uint8List: `tag` (8
+// bytes, little endian) then the frame. A call made before "ready" waits
+// for it.
 int32_t clax_embed_call(uint64_t core, const uint8_t *req, size_t req_len,
                         int64_t port, int64_t tag);
 

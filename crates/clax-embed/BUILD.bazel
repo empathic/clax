@@ -1,5 +1,6 @@
 load("@bazel_skylib//rules:build_test.bzl", "build_test")
 load("@rules_cc//cc:cc_library.bzl", "cc_library")
+load("@rules_cc//cc:cc_test.bzl", "cc_test")
 load("@rules_shell//shell:sh_test.bzl", "sh_test")
 load("//bazel:cargo.bzl", "cargo_package")
 load("//bazel:opt.bzl", "opt_library")
@@ -9,6 +10,40 @@ load("//bazel/apple:ios_rust.bzl", "ios_builds", "ios_opt_library")
 cargo_package(
     cdylib = True,
     staticlib = True,
+)
+
+# The four C functions as this host links them, for C tests.
+cc_library(
+    name = "clax_embed_c",
+    testonly = True,
+    hdrs = ["include/clax_embed.h"],
+    includes = ["include"],
+    linkopts = select({
+        "@platforms//os:macos": [
+            "-framework",
+            "CoreFoundation",
+            "-framework",
+            "IOKit",
+            "-framework",
+            "Security",
+            "-framework",
+            "SystemConfiguration",
+            "-lresolv",
+        ],
+        "//conditions:default": [
+            "-lpthread",
+            "-ldl",
+            "-lm",
+        ],
+    }),
+    deps = [":clax_embed_static"],
+)
+
+# The exports called from C with NULL pointers: each refuses at once.
+cc_test(
+    name = "nulls_test",
+    srcs = ["tests/nulls.c"],
+    deps = [":clax_embed_c"],
 )
 
 # The core for each Android CPU the app ships, as <abi>/libclax_embed.so

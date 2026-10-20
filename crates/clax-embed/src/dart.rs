@@ -45,11 +45,15 @@ pub struct DartCObject {
 
 /// Dart's `NativeApi.postCObject`: posts `message` to `port` and returns
 /// nonzero when it was posted; Dart copies typed data before it returns.
-pub type ClaxPost = extern "C" fn(port: i64, message: *mut DartCObject) -> i8;
+pub type PostFn = extern "C" fn(port: i64, message: *mut DartCObject) -> i8;
+
+/// The header's `ClaxPost`: a C function pointer, which may be NULL, so
+/// `None` stands for NULL and Rust never holds a NULL [`PostFn`].
+pub type ClaxPost = Option<PostFn>;
 
 /// Posts `bytes` to `port` as a Uint8List (Dart copies it); false when the
 /// port is closed.
-pub fn post_bytes(post: ClaxPost, port: i64, bytes: &[u8]) -> bool {
+pub fn post_bytes(post: PostFn, port: i64, bytes: &[u8]) -> bool {
     let mut obj = DartCObject {
         ty: K_TYPED_DATA,
         value: Value {
@@ -64,7 +68,7 @@ pub fn post_bytes(post: ClaxPost, port: i64, bytes: &[u8]) -> bool {
 }
 
 /// Dart's post function as a [`crate::Post`].
-pub struct DartPost(pub ClaxPost);
+pub struct DartPost(pub PostFn);
 
 impl crate::Post for DartPost {
     fn post(&self, port: i64, bytes: &[u8]) -> bool {
