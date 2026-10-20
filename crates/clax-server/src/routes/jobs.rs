@@ -184,17 +184,50 @@ pub struct ClaimBody {
 /// 200 `{owner}` (the token every write of the client's jobs carries in
 /// `x-clax-jobs-owner`); 409 `owner_held` while another claim's stream
 /// lives; 400 `no_such_stream` when the hub holds no connection of
-/// `stream`. The claim is released when that connection ends. A claim
-/// that replaces another answers once the writes admitted under the one
-/// before have ended.
+/// `stream`, or none of the caller's. The claim is released when that
+/// connection ends. A claim that replaces another answers once the writes
+/// admitted under the one before have ended. Before anything else the
+/// claim subscribes `stream` to the `jobs` topic, so a claimant refused
+/// `owner_held` hears the `jobs_owner` release it waits for, however soon
+/// it comes.
 pub async fn claim(
     State(s): State<AppState>,
     d: DeniedToGrants,
     _t: RequireToken,
+    who: clax_http::identity::Identity,
     req: Result<Json<ClaimBody>, JsonRejection>,
 ) -> Result<Json<Value>, ApiError> {
     d.refuse_agents()?;
     let b = body(req)?;
+    let w = who.clone();
+    let caller = s
+        .store_call(move |st| clax_http::db_caller::caller_of(st, w.token || w.events_cookie, &w))
+        .await?;
+    match s
+        .stream
+        .update(&b.stream, &caller, &[clax_realtime::stream::Topic::Jobs], &[])
+    {
+        Ok(_) => {}
+        Err(clax_realtime::stream::SubError::UnknownStream) => {
+            return Err(no_such_stream(&b.stream));
+        }
+        Err(clax_realtime::stream::SubError::TooMany) => {
+            return Err(ApiError::new(
+                StatusCode::TOO_MANY_REQUESTS,
+                "limit_reached",
+                format!(
+                    "a stream holds at most {} topics",
+                    clax_realtime::stream::MAX_TOPICS
+                ),
+            ));
+        }
+        Err(_) => {
+            return Err(ApiError::forbidden(
+                "forbidden",
+                "this stream may not follow the app's jobs",
+            ));
+        }
+    }
     match s
         .jobs_owners
         .claim(&s.stream, &s.events, &b.client, &b.stream)
@@ -209,11 +242,16 @@ pub async fn claim(
                 b.client
             ),
         )),
-        Claimed::NoSuchStream => Err(ApiError::bad_request(
-            "no_such_stream",
-            format!("{} is not a live stream", b.stream),
-        )),
+        Claimed::NoSuchStream => Err(no_such_stream(&b.stream)),
     }
+}
+
+/// 400 `no_such_stream`: `stream` is not a live stream of the caller's.
+fn no_such_stream(stream: &str) -> ApiError {
+    ApiError::bad_request(
+        "no_such_stream",
+        format!("{stream} is not a live stream"),
+    )
 }
 
 /// `DELETE /api/jobs/owner`: releases the claim the request's

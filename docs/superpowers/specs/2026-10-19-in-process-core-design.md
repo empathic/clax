@@ -963,8 +963,11 @@ clock:
   the holder's stream a keep-alive at once, so a dead holder is noticed at
   that post rather than at the next periodic keep-alive.
 - The core publishes `Event::JobsOwner {client, held}` on the `jobs` topic
-  at each claim and release. A worker refused with `owner_held` waits for
-  `held: false` and claims again. A worker refused a write with
+  at each claim and release. A claim first subscribes the claimant's
+  stream to `jobs` (400 `no_such_stream` when the stream is not the
+  caller's), so a worker refused with `owner_held` hears the release it
+  waits for (`held: false`), however soon it comes, and claims again. A
+  worker refused a write with
   `not_owner` stops emitting work and claims again.
 - The localhost daemon can serve the same API later unchanged: there an
   owner is any single caller holding a live `/api/stream` connection, and

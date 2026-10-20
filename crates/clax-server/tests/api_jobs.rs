@@ -393,10 +393,20 @@ async fn the_claim_is_released_when_its_stream_ends() {
     running(&ts, &old, "j1", "make", None).await;
     drop(a);
     // The claim finds the holder and nudges its connection, whose write
-    // fails: the stream ends and the claim is released.
+    // fails: the stream ends and the claim is released. A claim made once
+    // the connection is gone replaces it at once, after the release or
+    // before it (which then finds the claim replaced and says nothing).
     let (s, v) = claim(&ts, &second).await;
-    assert!(s == 200 || v["error"]["code"] == "owner_held", "{s} {v}");
-    assert_eq!(c.next_named("jobs_owner").await["held"], false);
+    if s == 200 {
+        let mut held = c.next_named("jobs_owner").await["held"].clone();
+        if held == false {
+            held = c.next_named("jobs_owner").await["held"].clone();
+        }
+        assert_eq!(held, true);
+    } else {
+        assert_eq!(v["error"]["code"], "owner_held", "{s} {v}");
+        assert_eq!(c.next_named("jobs_owner").await["held"], false);
+    }
     let (s, v) = claim(&ts, &second).await;
     assert_eq!(s, 200, "{v}");
     let (s, v) = send(
@@ -653,4 +663,33 @@ async fn a_new_claim_answers_only_once_the_old_claims_write_has_landed() {
     let new = v["owner"].as_str().unwrap();
     assert_ne!(new, old);
     assert_eq!(job(&ts, "j1").await["job"]["state"], "done");
+}
+
+#[tokio::test]
+async fn a_claimant_refused_owner_held_hears_the_release() {
+    let ts = TestServer::spawn().await;
+    let (_a, holder) = owner(&ts).await;
+    // The second claimant's stream follows no topic of its own.
+    let (mut waiting, sid) = stream(&ts).await;
+    let (s, v) = claim(&ts, &sid).await;
+    assert_eq!(
+        (s, v["error"]["code"].as_str()),
+        (409, Some("owner_held")),
+        "{v}"
+    );
+    let (s, _) = send(owned(&ts, Method::DELETE, "/api/jobs/owner", &holder)).await;
+    assert_eq!(s, 204);
+    // A bound for a hang (the event never coming), not a time budget.
+    let heard = tokio::time::timeout(
+        std::time::Duration::from_secs(20),
+        waiting.next_named("jobs_owner"),
+    )
+    .await
+    .expect("the release reaches the refused claimant's stream");
+    assert_eq!(
+        heard,
+        json!({"topic": "jobs", "client": "app", "held": false})
+    );
+    let (s, v) = claim(&ts, &sid).await;
+    assert_eq!(s, 200, "{v}");
 }

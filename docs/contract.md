@@ -2496,8 +2496,10 @@ one have ended, so none of them lands after it. The owner-only `jobs`
 stream topic carries `job` `{id, client, state, step, rev}` after every
 committed write of a job, whichever path made it (a job route, a
 question's close, a delete that cancels the job), and `jobs_owner`
-`{client, held}` at each claim and release. A worker refused with
-`owner_held` waits for `held: false` and claims again.
+`{client, held}` at each claim and release. A claim first subscribes
+the claimant's stream to `jobs` (400 `no_such_stream` when the stream is
+not the caller's), so a worker refused with `owner_held` hears the
+`held: false` it waits for, however soon it comes, and claims again.
 
 A **step** is idempotent by its key: committing a key the job already has
 answers the step as recorded with `replayed: true` and changes nothing. A
