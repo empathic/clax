@@ -91,11 +91,12 @@ class CoreTransport implements ClaxTransport {
   /// once with 404 `not_in_app`, as the core answers such a call.
   ///
   /// The hub's `ready` is passed on; the core's closing `end` is not.
-  /// A stream the core ended by itself (`stream_ended`), or one its router
-  /// refused (`stream_refused`) with a status other than 400, 403 or 404,
-  /// is subscribed again, resuming from [resumeId]'s answer or else the
-  /// last event ID seen, after 0.5 s doubling to 30 s (back to 0.5 s after
-  /// a stream that carried an event), as a loopback stream reconnects. A
+  /// A stream the core ended by itself (`stream_ended`, or `internal` when
+  /// it panicked), or one its router refused (`stream_refused`) with a
+  /// status other than 400, 403 or 404, is subscribed again, resuming
+  /// from [resumeId]'s answer or else the last event ID seen, after 0.5 s
+  /// doubling to 30 s (back to 0.5 s after a stream that carried an
+  /// event), as a loopback stream reconnects. A
   /// refusal with 400, 403 or 404, which asking again cannot change, ends
   /// the stream with [ClaxApiError] code `stream_refused` and that status.
   /// Any other end (`core_closed`, `core_failed`, `malformed`) ends it
@@ -167,7 +168,7 @@ class CoreTransport implements ClaxTransport {
                 message: 'event stream refused: $status',
               ),
             );
-          case ('stream_ended' || 'stream_refused', _):
+          case ('stream_ended' || 'internal' || 'stream_refused', _):
             if (delivered) backoff = _first;
             await _retryDelay(backoff);
             final next = backoff * 2;

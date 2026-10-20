@@ -123,9 +123,9 @@ abstract interface class CoreSubscription {
 
 /// The SSE block a subscription ends with: `event: end` with
 /// `{"reason": …}`, one of `core_failed` (the core did not open),
-/// `core_closed`, `stream_refused` (with the refusal's `status`) and
-/// `stream_ended`, or this client's `malformed` (the core posted bytes
-/// that are not UTF-8).
+/// `core_closed`, `stream_refused` (with the refusal's `status`),
+/// `stream_ended` and `internal` (the stream panicked in the core), or
+/// this client's `malformed` (the core posted bytes that are not UTF-8).
 String endBlock(String reason, {int? status}) =>
     'event: end\ndata: ${jsonEncode({'reason': reason, 'status': ?status})}\n\n';
 
