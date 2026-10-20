@@ -8,19 +8,21 @@
 #   scripts/bazel-test.sh --ci         # every check, in this order:
 #       1. scripts/bazel-sync.sh --check (a stale derived file stops the run)
 #       2. package.json and pnpm-lock.yaml agree
-#       3. one `bazel test`: the Rust format check and clippy with
-#          -D warnings, the Rust tests, the web and Pi checks, the script
-#          gates (performance is measured on demand, `just perf`, and gates
-#          nothing)
-#          (under GitHub Actions, the step output `built` says whether
-#          it built everything, failed tests aside)
-#       4. clippy on each crate with its own clippy.toml
-#       5. the checks that run outside Bazel (docs/bazel.md, "Run outside Bazel")
+#       3. the quick checks: the Rust format check, clippy with -D warnings
+#          (each crate with its own clippy.toml too), the web lint, the
+#          script gates that need no `clax`, the justfile, hard-link and
+#          pipefail checks; a failure here stops the run
+#       4. one `bazel test`: the Rust tests, the web and Pi checks, every
+#          script gate (performance is measured on demand, `just perf`, and
+#          gates nothing)
+#       5. the other checks that run outside Bazel (docs/bazel.md, "Run
+#          outside Bazel")
 #   scripts/bazel-test.sh [...] ARGS   # ARGS go to every `bazel test`
 #
-# A failing phase does not stop the later ones, but for the first. Nothing
-# here writes MODULE.bazel.lock or bazel/workspace.bzl: when a Cargo.toml or
-# Cargo.lock changed, the run stops and names `just bazel-sync`.
+# A failing phase does not stop the later ones, but for the first and the
+# quick checks. Nothing here writes MODULE.bazel.lock or
+# bazel/workspace.bzl: when a Cargo.toml or Cargo.lock changed, the run
+# stops and names `just bazel-sync`.
 #
 # BAZEL_TEST_LOGS=<dir> keeps the Rust tests' logs under <dir>/<pass>, for
 # scripts/bazel-parity.py.
@@ -100,13 +102,9 @@ _build() {
     _summary "$name" $((SECONDS - start))
 }
 
-# _pass <name> <query> [bazel test arguments...]: sets pass_status to
-# `bazel test`'s exit status (0: all passed, 3: built, some tests failed;
-# anything else: not built), or 2 when the targets could not be listed.
-pass_status=2
+# _pass <name> <query> [bazel test arguments...]
 _pass() {
     local name="$1" query="$2" start=$SECONDS targets testlogs label status
-    pass_status=2
     shift 2
     echo "── bazel: $name ──"
     if ! targets="$("$bazel" query --lockfile_mode=error "$query" 2>"$output")"; then
@@ -123,7 +121,6 @@ _pass() {
     # shellcheck disable=SC2086  # one label per word
     "${awake[@]+"${awake[@]}"}" "$bazel" test --keep_going "${flags[@]}" "${test_flags[@]}" "$@" $targets 2>&1 | tee "$output"
     status="${PIPESTATUS[0]}"
-    pass_status="$status"
     [ "$status" -eq 0 ] || failed+=("$name")
     echo "── bazel: $name took $((SECONDS - start))s ──"
     _summary "$name" $((SECONDS - start))
@@ -202,37 +199,42 @@ if [ "$ci" = 1 ]; then
     # What `pnpm install --frozen-lockfile` refuses: Bazel builds from the
     # lockfile alone, so a dependency missing from it must fail here.
     _run "package.json and pnpm-lock.yaml agree" ./scripts/pnpm-lock-check.py web plugins/pi
-    # Everything else in one invocation, so builds, lints and tests share
-    # the machine instead of queueing: the format check and clippy over
-    # every crate, and every test (Rust, web, Pi, script gates). The perf
-    # benchmarks are `manual`: on demand only (`just perf`). //web:playwright
-    # is no test, but CI runs it before this script (`install-deps`), so it
-    # is built here too.
-    _pass "every check" \
-        '//crates/... + //web:playwright + tests(//...) except attr(tags, "\bmanual\b", //...)' \
-        --config=fmt --config=clippy "$@"
-    # Whether everything built (Bazel's exit status 0, or 3: built, some
-    # tests failed), as the step output `built` for CI, which saves its
-    # cache on main when it is true even if a test failed
-    # (docs/bazel.md, "CI"). A format or clippy finding is a failed action,
-    # so it counts as not built.
-    if [ -n "${GITHUB_OUTPUT:-}" ]; then
-        if [ "$pass_status" = 0 ] || [ "$pass_status" = 3 ]; then
-            echo "built=true" >> "$GITHUB_OUTPUT"
-        else
-            echo "built=false" >> "$GITHUB_OUTPUT"
-        fi
-    fi
+    # The quick checks first, so a broken format, lint or script fails in
+    # minutes rather than after every test: the format check, clippy (each
+    # crate with its own clippy.toml too), the web lint, the script gates
+    # that need no `clax`, and the outside checks that take seconds. A
+    # failure among them stops the run before the long pass.
+    _build "rust format" --keep_going --config=fmt --output_groups=rustfmt_checks //crates/...
+    _build "rust clippy" --keep_going --config=clippy --output_groups=clippy_checks //crates/...
     # Cargo reads a crate's clippy.toml from beside its Cargo.toml. Bazel
     # takes one for the whole command, so each crate that has one is also
-    # linted on its own, with it, after the invocation above has built
-    # everything it needs.
+    # linted on its own, with it.
     for toml in crates/*/clippy.toml; do
         [ -f "$toml" ] || continue
         crate="$(dirname "$toml")"
-        _build "rust clippy ($crate)" --config=clippy \
+        _build "rust clippy ($crate)" --keep_going --config=clippy --output_groups=clippy_checks \
             "--@rules_rust//rust/settings:clippy.toml=//$crate:clippy.toml" "//$crate/..."
     done
+    quick='//scripts/... + //bazel/... + //crates/clax-worker/...'
+    _pass "quick checks" \
+        "//web:lint + tests($quick) except rdeps($quick, //crates/clax-cli:clax) except attr(tags, \"\\b(manual|exclusive)\\b\", //...)" "$@"
+    _run "justfile" ./scripts/test-justfile.sh
+    _run "no hard links (tracked files)" ./scripts/check-no-hard-links.sh
+    _run "pipefail pipes (tracked files)" ./scripts/check-pipefail-pipes.sh
+    if [ "${#failed[@]}" -gt 0 ]; then
+        printf 'error: failed under Bazel: %s\n' "${failed[@]}" >&2
+        echo "error: the quick checks failed; the tests did not run" >&2
+        exit 1
+    fi
+    # Everything else in one invocation, so builds and tests share the
+    # machine instead of queueing: every test (Rust, web, Pi, script
+    # gates). The format check and clippy are asked for again, and come
+    # from the quick checks' results. The perf benchmarks are `manual`: on
+    # demand only (`just perf`). //web:playwright is no test, but CI runs
+    # it before this script (`install-deps`), so it is built here too.
+    _pass "every check" \
+        '//crates/... + //web:playwright + tests(//...) except attr(tags, "\bmanual\b", //...)' \
+        --config=fmt --config=clippy "$@"
     # Outside Bazel (docs/bazel.md, "Run outside Bazel"): each reads git
     # (tags, tracked files), runs just or cargo, writes into the checkout,
     # or runs Bazel itself.
@@ -240,11 +242,8 @@ if [ "$ci" = 1 ]; then
     # (_run_keyed): a whole-tree key where they are many, as for the plugin
     # checks, which read the plugins, skills, docs, versions and tags.
     _run_keyed "plugins" . -- ./scripts/test-plugins.sh
-    _run "justfile" ./scripts/test-justfile.sh
     _run_keyed "dev scripts" . -- ./scripts/test-dev.sh
     _run "extension signing" ./scripts/test-extension-signing.sh
-    _run "no hard links (tracked files)" ./scripts/check-no-hard-links.sh
-    _run "pipefail pipes (tracked files)" ./scripts/check-pipefail-pipes.sh
     # These two test Bazel's setup, not the code: they rerun when a Cargo,
     # Bazel or package manifest, or Bazel's own files, change.
     bazel_setup=(.bazelrc .bazelversion MODULE.bazel MODULE.bazel.lock rust-toolchain.toml
