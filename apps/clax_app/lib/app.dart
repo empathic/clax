@@ -995,13 +995,8 @@ class _AppRootState extends State<AppRoot> with WidgetsBindingObserver {
       log: (l) => debugPrint('clax worker: $l'),
       stops: FileStoppedThreads(File('${_s.supportDir}/stopped.json')),
     );
-    _onState();
-    _s.core.state.addListener(_onState);
-    _worker = _runtime.worker.events.listen(_onWorker);
-    _builds = _runtime.worker.builds.listen(_buildNotices.onBuild);
-    _runtime.attach();
-    _opened = _s.background.opened.listen(_onNews);
-    // Made before _pauses: the worker hears a stop first, then the app's
+    // Made before the core's first state (a failed core ends its run)
+    // and before _pauses: the worker hears a stop first, then the app's
     // own runs pause.
     _keepAlive = QueueKeepAlive(
       _runs,
@@ -1010,6 +1005,12 @@ class _AppRootState extends State<AppRoot> with WidgetsBindingObserver {
       title: 'Making your apps',
       step: MakeStage.starting.label,
     );
+    _onState();
+    _s.core.state.addListener(_onState);
+    _worker = _runtime.worker.events.listen(_onWorker);
+    _builds = _runtime.worker.builds.listen(_buildNotices.onBuild);
+    _runtime.attach();
+    _opened = _s.background.opened.listen(_onNews);
     if (_s.background.pausesRuns) {
       _pauses = _s.background.stopped.listen((_) => unawaited(_pauseRuns()));
     }

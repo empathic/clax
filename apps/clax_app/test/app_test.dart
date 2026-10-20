@@ -269,6 +269,18 @@ void main() {
     );
   });
 
+  testWidgets('a core that failed before the app started shows the error '
+      'screen', (tester) async {
+    final r = _Rig(key: 'sk-ant-x');
+    r.coreHost.set(
+      const CoreFailed('open_failed', 'the store did not open', null),
+    );
+    await pumpApp(tester, r);
+    await tester.pumpAndSettle();
+    expect(tester.takeException(), isNull);
+    expect(find.text('Clax couldn’t start'), findsOneWidget);
+  });
+
   testWidgets('a failure while an app is open goes back to the error screen', (
     tester,
   ) async {
