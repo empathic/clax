@@ -1155,7 +1155,7 @@ visibility filter (see "What reaches an agent") leaves them alone.
 - **Names** are trimmed, 1 to 40 characters, with no control or hidden
   format character (bidi controls, zero-width characters), and unique
   whatever their case (two names that differ only in case are one name,
-  compared lowercased). A name shaped like a tag ID (`t_` and ten
+  compared lowercased). A name shaped like a tag ID in any case (`t_` and ten
   lowercase Crockford base32 characters) is refused, so a tag is named by
   its ID or its name unambiguously. A rename keeps the tag's ID, and every
   artifact carrying it carries the new name.

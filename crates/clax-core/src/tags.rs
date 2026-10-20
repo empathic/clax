@@ -93,7 +93,7 @@ pub fn is_id(s: &str) -> bool {
 /// `raw` as a tag name: trimmed, 1 to [`MAX_NAME_CHARS`] characters, with
 /// no control or hidden format character
 /// ([`crate::publish::check_meta_text`]'s rule), and not shaped like a tag
-/// ID, so a name never reads as another tag's ID.
+/// ID once folded ([`fold`]), so a name in any case never reads as a tag's ID.
 ///
 /// # Errors
 /// `invalid_tag` naming what is wrong.
@@ -117,7 +117,7 @@ pub fn check_name(raw: &str) -> Result<String> {
             "a tag name holds no control or hidden format character",
         ));
     }
-    if is_id(name) {
+    if is_id(&fold(name)) {
         return Err(CoreError::invalid(
             "invalid_tag",
             format!("'{name}' reads as a tag ID; choose another name"),
@@ -184,6 +184,8 @@ mod tests {
             "a\u{200b}b",
             "a\u{202e}b",
             "t_0123456789",
+            "T_ABCDEFGHJK",
+            "t_ABCDEFGHJK",
         ] {
             let e = check_name(bad).unwrap_err();
             assert!(
