@@ -91,7 +91,7 @@ _fail() {
     fails=$((fails + 1))
     [ -f "$log" ] || return 0
     local failed
-    failed="$(grep -E '^[[:space:]]*(×|FAIL[[:space:]])' "$log" | sort -u | head -n 40)"
+    failed="$(grep -E '^[[:space:]]*(×|FAIL[[:space:]])' "$log" | sort -u | sed -n 1,40p)"
     if [ -n "$failed" ]; then
         echo "  failing tests and files:" >&2
         sed 's/^/    /' <<<"$failed" >&2
