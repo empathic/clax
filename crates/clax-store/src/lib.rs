@@ -823,6 +823,9 @@ fn migrate_steps(
 }
 
 #[cfg(test)]
+mod job_moves_fixture;
+
+#[cfg(test)]
 pub(crate) mod test_util {
     /// The audit context of changes a test makes: Clax itself.
     pub const DAEMON: &clax_core::audit::AuditCtx = &clax_core::audit::AuditCtx::DAEMON;
