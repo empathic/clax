@@ -1959,6 +1959,59 @@ mod tests {
     }
 
     #[test]
+    fn the_schema_refuses_values_no_job_can_have() {
+        let (_d, st) = store();
+        let aid = artifact(&st, None);
+        let t = thread_on(&st, &aid);
+        st.create_job(new_job("j1")).unwrap();
+        let a = aid.as_str();
+        let bad = [
+            format!(
+                "INSERT INTO jobs (id, client, kind, state, input_json, rev, created_at, updated_at)
+                 VALUES ('j2', 'app', 'make', 'queued', '{{}}', 0, 'x', 'x')"
+            ),
+            "UPDATE jobs SET rev = -1 WHERE id = 'j1'".into(),
+            "UPDATE jobs SET input_json = 'not json' WHERE id = 'j1'".into(),
+            "UPDATE jobs SET plan_json = '{' WHERE id = 'j1'".into(),
+            "UPDATE jobs SET carry_json = 'x' WHERE id = 'j1'".into(),
+            "UPDATE jobs SET error_json = 'x' WHERE id = 'j1'".into(),
+            "INSERT INTO job_steps (job_id, key, result_json, created_at)
+             VALUES ('j1', 'turn:1', 'x', 'x')"
+                .into(),
+            format!(
+                "INSERT INTO job_threads (job_id, thread_id, comment_id, stopped)
+                 VALUES ('j1', '{t}', 'c1', 2)"
+            ),
+            format!(
+                "INSERT INTO draft_renders (draft_id, digest, clean, created_at)
+                 VALUES ('{a}', 'ab', 5, 'x')"
+            ),
+            "INSERT INTO client_imports (key, done_at, summary_json) VALUES ('k', 'x', 'x')".into(),
+        ];
+        for sql in bad {
+            let err = st
+                .with_write(|c| Ok(c.execute(&sql, [])?))
+                .expect_err(&sql);
+            assert!(
+                err.to_string().contains("CHECK constraint failed"),
+                "{sql}: {err}"
+            );
+        }
+        // Answers stored with an outcome that is no answer.
+        let q = question(&st);
+        let err = st
+            .with_write(|c| {
+                Ok(c.execute(
+                    "INSERT INTO job_questions (job_id, question_id, outcome, answers_json)
+                     VALUES ('j1', ?1, 'declined', '[]')",
+                    [q.as_str()],
+                )?)
+            })
+            .unwrap_err();
+        assert!(err.to_string().contains("CHECK constraint failed"), "{err}");
+    }
+
+    #[test]
     fn a_refusal_after_a_write_rolls_the_write_back() {
         let (_d, st) = store();
         st.create_job(new_job("j1")).unwrap();

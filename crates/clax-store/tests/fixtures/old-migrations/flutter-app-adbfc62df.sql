@@ -17,11 +17,11 @@ CREATE TABLE jobs (
         state TEXT NOT NULL CHECK (state IN ('queued','running','waiting','paused','stopped','failed','cancelled','done')),
         step TEXT,                         -- the current step's key
         title TEXT,
-        input_json TEXT NOT NULL,          -- the request, the threads and comments answered
-        plan_json TEXT,                    -- a make's plan (was plans.json)
-        carry_json TEXT,                   -- Keep going's carried draft and notes (was unfinished.json)
-        error_json TEXT,
-        rev INTEGER NOT NULL DEFAULT 1,
+        input_json TEXT NOT NULL CHECK (json_valid(input_json)),  -- the request, the threads and comments answered
+        plan_json TEXT CHECK (json_valid(plan_json)),  -- a make's plan (was plans.json)
+        carry_json TEXT CHECK (json_valid(carry_json)),  -- Keep going's carried draft and notes (was unfinished.json)
+        error_json TEXT CHECK (json_valid(error_json)),
+        rev INTEGER NOT NULL DEFAULT 1 CHECK (rev >= 1),
         created_at TEXT NOT NULL,
         updated_at TEXT NOT NULL
     );
@@ -30,7 +30,7 @@ CREATE TABLE jobs (
     CREATE TABLE job_steps (
         job_id TEXT NOT NULL REFERENCES jobs(id) ON DELETE CASCADE,
         key TEXT NOT NULL,
-        result_json TEXT NOT NULL,
+        result_json TEXT NOT NULL CHECK (json_valid(result_json)),
         version_n INTEGER,                 -- the version a publish step made
         created_at TEXT NOT NULL,
         PRIMARY KEY (job_id, key)
@@ -39,7 +39,7 @@ CREATE TABLE jobs (
         job_id TEXT NOT NULL REFERENCES jobs(id) ON DELETE CASCADE,
         thread_id TEXT NOT NULL REFERENCES threads(id) ON DELETE CASCADE,
         comment_id TEXT NOT NULL,          -- the newest comment the job answers
-        stopped INTEGER NOT NULL DEFAULT 0,
+        stopped INTEGER NOT NULL DEFAULT 0 CHECK (stopped IN (0, 1)),
         PRIMARY KEY (job_id, thread_id)
     );
     CREATE INDEX job_threads_by_thread ON job_threads(thread_id);
@@ -47,7 +47,7 @@ CREATE TABLE jobs (
         job_id TEXT NOT NULL REFERENCES jobs(id) ON DELETE CASCADE,
         question_id TEXT NOT NULL UNIQUE REFERENCES questions(id),
         outcome TEXT CHECK (outcome IN ('answered','declined','withdrawn')),  -- NULL until the question closes
-        answers_json TEXT,                 -- the answers, as the question keeps them
+        answers_json TEXT CHECK (json_valid(answers_json)),  -- the answers, as the question keeps them
         PRIMARY KEY (job_id, question_id),
         CHECK ((outcome IS 'answered') = (answers_json IS NOT NULL))
     );
@@ -61,12 +61,12 @@ CREATE TABLE jobs (
     CREATE TABLE draft_renders (          -- the render gate (§8.2)
         draft_id TEXT NOT NULL REFERENCES artifacts(id) ON DELETE CASCADE,
         digest TEXT NOT NULL,
-        clean INTEGER NOT NULL,
+        clean INTEGER NOT NULL CHECK (clean IN (0, 1)),
         created_at TEXT NOT NULL,
         PRIMARY KEY (draft_id, digest)
     );
     CREATE TABLE client_imports (         -- one row per one-time import (§9)
         key TEXT PRIMARY KEY,
         done_at TEXT NOT NULL,
-        summary_json TEXT NOT NULL
+        summary_json TEXT NOT NULL CHECK (json_valid(summary_json))
     );
