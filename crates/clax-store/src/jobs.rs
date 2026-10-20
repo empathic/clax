@@ -275,14 +275,26 @@ fn step_row(c: &Connection, id: &str, key: &str) -> clax_core::Result<Option<Ste
 }
 
 impl Store {
-    /// Runs `f` in a write transaction ([`Store::with_tx`]). A refusal
-    /// other than [`JobError::Store`] commits what `f` wrote before it, so
-    /// `f` refuses before it writes.
+    /// Runs `f` in a write transaction ([`Store::with_tx`]), committed
+    /// when `f` succeeds and rolled back on every error `f` answers, a
+    /// refusal as much as a failure, which is then answered as `f` gave it.
     fn job_tx<T>(&self, f: impl FnOnce(&Transaction<'_>) -> JobResult<T>) -> JobResult<T> {
-        self.with_tx(|tx| match f(tx) {
-            Err(JobError::Store(e)) => Err(e),
-            other => Ok(other),
-        })?
+        let mut refused = None;
+        let out = self.with_tx(|tx| {
+            f(tx).map_err(|e| match e {
+                JobError::Store(e) => e,
+                other => {
+                    refused = Some(other);
+                    // Stands in for the refusal, kept above, to roll back.
+                    CoreError::TaskFailed
+                }
+            })
+        });
+        match (out, refused) {
+            (Ok(v), _) => Ok(v),
+            (Err(_), Some(refusal)) => Err(refusal),
+            (Err(e), None) => Err(JobError::Store(e)),
+        }
     }
 
     /// Creates job `j` in `queued` at `rev` 1. Creating it again with the
@@ -1057,6 +1069,34 @@ mod tests {
         assert!(open[1].steps.is_empty() && open[1].threads.is_empty());
         assert_eq!(st.open_jobs("cli").unwrap().len(), 1);
         assert!(st.job("nope").unwrap().is_none());
+    }
+
+    #[test]
+    fn a_refusal_after_a_write_rolls_the_write_back() {
+        let (_d, st) = store();
+        st.create_job(new_job("j1")).unwrap();
+        let refused: JobResult<()> = st.job_tx(|tx| {
+            tx.execute(
+                "INSERT INTO job_steps (job_id, key, result_json, created_at)
+                 VALUES ('j1', 'turn:1', '{}', 'x')",
+                [],
+            )?;
+            Err(JobError::Conflict)
+        });
+        assert!(matches!(refused, Err(JobError::Conflict)));
+        let full = st.job("j1").unwrap().unwrap();
+        assert!(full.steps.is_empty(), "rolled back: {:?}", full.steps);
+        // A refusal whose row it carries is handed back as it was.
+        let row = full.job;
+        let moved: JobResult<()> = st.job_tx(|tx| {
+            tx.execute("UPDATE jobs SET title = 'changed' WHERE id = 'j1'", [])?;
+            Err(JobError::Moved(Box::new(row.clone())))
+        });
+        let Err(JobError::Moved(back)) = moved else {
+            panic!("expected Moved, got {moved:?}")
+        };
+        assert_eq!(*back, row);
+        assert_eq!(st.job("j1").unwrap().unwrap().job, row);
     }
 
     #[test]
