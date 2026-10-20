@@ -10,9 +10,11 @@
 # main, which moves only origin/main). With --i-know-what-i-am-doing it
 # acts, as the checkout's git identity, signing with its signing key:
 #
-#    1  preflight: on main, clean, equal to origin/main after a fetch; gh
-#       signed in; X.Y.Z newer than every v* tag; commit signing works; the
-#       tools present. A failure here changes nothing.
+#    1  preflight: on main, clean, not behind origin/main after a fetch and
+#       ahead only by this release's commits; gh signed in; X.Y.Z newer than
+#       every v* tag; commit signing works; the tools present; npm reachable
+#       (and signed in, for a first Pi publish). A failure here changes
+#       nothing.
 #    2  scripts/bump-version.sh X.Y.Z
 #    3  just bazel-sync, until it changes nothing (at most 4 runs)
 #    4  just ci
@@ -20,7 +22,8 @@
 #    6  a signed tag vX.Y.Z, "Clax X.Y.Z"
 #    7  git push origin refs/tags/vX.Y.Z (the tag alone)
 #    8  wait for the Release workflow on that tag, then check that the GitHub
-#       release lists SHA256SUMS
+#       release lists SHA256SUMS and that a successful Release run on the
+#       tag built the tag commit's tree
 #    9  scripts/pin-release.sh vX.Y.Z
 #   10  just ci
 #   11  a signed commit "Pin the plugins to Clax X.Y.Z"
@@ -34,19 +37,21 @@
 #       published from here instead: npm publish, from a temporary worktree
 #       of that commit, after the checks publish-pi.yml makes; then the
 #       trusted-publisher setup is printed. Done once npm has the version.
-#   15  print what is left by hand (clax.dev, crates.io)
+#   15  print what is left by hand (the clax.dev deploy, crates.io, and after
+#       a first Pi publish its trusted-publisher setup and the README switch)
 #
 # A run that fails stops at that step, says which, and changes nothing after
 # it. Run the same command again: each step's state is read from git and
-# GitHub (the version files, the two commits by subject, the tag here and on
-# origin, the release's assets, the workflow runs), so the run resumes at
+# GitHub and npm (the version files, the commits by subject, the tag here
+# and on origin, the release's assets, the workflow runs, the versions npm
+# has), so the run resumes at
 # the first step not done. The release is known by its tag and its pin
 # commit, so it resumes also after main has moved past the pin commit (a
 # failed CI wait or Pi publish), from a checkout pulled up to origin/main.
 # Uncommitted changes are taken only while a step that makes them is
 # pending its commit (2-4 into the release commit, 9-10 into the pin
 # commit); any other change, an untracked file, or a commit on main other
-# than these two, refuses to run. It never force-pushes, never deletes a
+# than the release's own, refuses to run. It never force-pushes, never deletes a
 # tag, and checks that every commit and the tag it pushes carry a signature.
 # The output of the long steps (just, the waits) is also appended to
 # target/release/X.Y.Z.log.
