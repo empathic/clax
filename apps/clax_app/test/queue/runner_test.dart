@@ -820,6 +820,13 @@ class _Agent implements AgentPort {
     resolved.add((jobId, turn, callId));
     return this.planned?.call(planned) ?? Future.value(planned);
   }
+
+  /// What each render drew, as the runner told it.
+  final List<(JobId, int, String, RenderOutcome)> drawn = [];
+
+  @override
+  void rendered(JobId jobId, int turn, String callId, RenderOutcome outcome) =>
+      drawn.add((jobId, turn, callId, outcome));
 }
 
 /// A render port answering from [answers], in order; a render with none

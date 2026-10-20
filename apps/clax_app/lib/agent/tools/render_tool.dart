@@ -81,7 +81,10 @@ class RenderTool implements Tool {
   final Uri baseUrl;
 
   @override
-  final spec = ToolSpec(
+  ToolSpec get spec => toolSpec;
+
+  /// The tool's spec, the same for every run.
+  static final toolSpec = ToolSpec(
     'render',
     'Serves the draft (files, title, capabilities and your staged '
         'db_write ops, over a copy of the app\'s documents) and loads it '

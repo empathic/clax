@@ -184,6 +184,9 @@ final class _ScriptedAgent implements AgentPort {
     String callId,
     PublishPlan planned,
   ) async => planned;
+
+  @override
+  void rendered(JobId jobId, int turn, String callId, RenderOutcome outcome) {}
 }
 
 /// Waits for [client]'s state to satisfy [ok].

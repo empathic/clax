@@ -161,7 +161,10 @@ class FinishTool implements Tool {
   final void Function(String) _log;
 
   @override
-  final spec = ToolSpec(
+  ToolSpec get spec => toolSpec;
+
+  /// The tool's spec, the same for every run.
+  static final toolSpec = ToolSpec(
     'finish',
     'Ends the run. When the draft changed, it is published as the new '
         'version, your staged db_write ops are written, and reply is posted '
@@ -839,7 +842,10 @@ class GiveUpTool implements Tool {
   String? givenReason;
 
   @override
-  final spec = ToolSpec(
+  ToolSpec get spec => toolSpec;
+
+  /// The tool's spec, the same for every run.
+  static final toolSpec = ToolSpec(
     'give_up',
     'Ends the run without publishing: the threads get "Couldn\'t make '
         'that change: <reason>" and stay open. reason: one short sentence '

@@ -58,13 +58,30 @@ abstract interface class AgentPort {
   /// What the `finish` call [callId] of turn [turn] publishes, [planned]
   /// as the turn named it: the job's draft as the calls before it left it.
   /// The plan's `base` is [planned]'s. An [Exception] it throws refuses the
-  /// publish ([Invalid] `no_draft`).
+  /// publish without asking the core: a [PublishRefused] as its code, any
+  /// other as [Invalid] `no_draft`. The finish call is then answered with
+  /// the refusal, which the next turn plans from.
   Future<PublishPlan> publishPlan(
     JobId jobId,
     int turn,
     String callId,
     PublishPlan planned,
   );
+
+  /// Hears what the `render` call [callId] of turn [turn] drew, once the
+  /// UI isolate answered it and before the queue hears it: the draft the
+  /// [renderSpec] served counts as rendered so.
+  void rendered(JobId jobId, int turn, String callId, RenderOutcome outcome);
+}
+
+/// A publish [AgentPort.publishPlan] refuses before the core is asked:
+/// the finish call is answered with [code] and [message].
+final class PublishRefused implements Exception {
+  const PublishRefused(this.code, this.message);
+  final String code;
+  final String message;
+  @override
+  String toString() => message;
 }
 
 /// What the worker tells the UI isolate.
@@ -565,6 +582,9 @@ class EffectRunner implements WorkerRunner {
     final PublishPlan plan;
     try {
       plan = await agent.publishPlan(e.jobId, e.turn, e.callId, e.publish);
+    } on PublishRefused catch (err) {
+      _send(Refused(e.id, e.jobId, Invalid(err.code, err.message)));
+      return;
     } on Exception catch (err) {
       _send(Refused(e.id, e.jobId, Invalid('no_draft', '$err')));
       return;
@@ -716,6 +736,8 @@ class EffectRunner implements WorkerRunner {
             },
           );
         }
+        if (!_live(e.jobId, e.id)) return;
+        agent.rendered(e.jobId, e.turn, e.callId, outcome);
         if (_end(e.jobId, e.id)) _send(Rendered(e.id, e.jobId, outcome));
     }
   }

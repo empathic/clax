@@ -122,6 +122,29 @@ class AskTool implements Tool {
     strict: false,
   );
 
+  /// The `ask` tool of a run the queue runs (lib/queue): the job waits for
+  /// the person's answer, however long it takes, so the call takes only
+  /// its questions (no `question_id`, `timeout_s` or `cancel`).
+  static final queuedSpec = ToolSpec(
+    'ask',
+    'Ask the person one to four questions in Clax. The work waits for '
+        'the answers, which come back in your next turn, in the '
+        "person's own words; the person may also decline. Each question "
+        'has a short header (at most 12 characters) and two to four '
+        'options (label, optional description, preview text, '
+        'recommended), or no options for a free-text answer; multi_select '
+        'allows several; other (default true) lets the person type an Other '
+        'answer. Ask at most once a run.',
+    objectSchema({
+      'questions': {
+        'type': 'array',
+        'items': _questionSchema,
+        'description': 'One to four questions.',
+      },
+    }),
+    strict: false,
+  );
+
   static final _questionSchema = objectSchema({
     'question': {'type': 'string'},
     'header': {'type': 'string'},
