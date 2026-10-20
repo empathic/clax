@@ -11,10 +11,11 @@
 # kill-server; every adb call names the emulator's serial and an adb server
 # on the emulator's port + 10000. A .running file whose PID now belongs to
 # another process (another start time, or another command) is neither
-# reported nor stopped.
+# reported nor stopped. An emulator that exits while booting, and an
+# interrupted boot, leave no emulator, no adb server and no .running file.
 #
 # The stub emulator is a process that runs until the stub adb's `emu kill`
-# ends it; no emulator or adb runs.
+# ends it (or, in mode `exit`, exits at once); no emulator or adb runs.
 
 set -euo pipefail
 
@@ -52,9 +53,10 @@ exit 1
 STUB
 
 # The emulator: records its arguments and environment, then runs until
-# killed.
+# killed; with "exit" in emulator.mode, exits at once instead.
 cat > "$tmp/sdk/emulator/emulator" <<STUB
 #!/usr/bin/env bash
+if [ "\$(cat "$tmp/emulator.mode" 2>/dev/null)" = exit ]; then exit 3; fi
 echo "\$*" > "$tmp/emulator.args"
 echo "sdk=\$ANDROID_SDK_ROOT avd=\$ANDROID_AVD_HOME adbport=\$ANDROID_ADB_SERVER_PORT" > "$tmp/emulator.env"
 echo \$\$ > "$tmp/emulator.pid"
@@ -62,12 +64,13 @@ exec tail -f /dev/null
 STUB
 
 # adb: records each call with its server port; the device is up and
-# booted; `emu kill` ends the stub emulator.
+# booted (with "never" in adb.mode, it never answers); `emu kill` ends the
+# stub emulator.
 cat > "$tmp/sdk/platform-tools/adb" <<STUB
 #!/usr/bin/env bash
 echo "port=\$ANDROID_ADB_SERVER_PORT \$*" >> "$tmp/adb.calls"
 case "\$*" in
-    *get-state) echo device ;;
+    *get-state) if [ "\$(cat "$tmp/adb.mode" 2>/dev/null)" = never ]; then echo offline; else echo device; fi ;;
     *"shell getprop sys.boot_completed") echo 1 ;;
     *"emu kill") kill "\$(cat "$tmp/emulator.pid")" ;;
     kill-server) ;;
@@ -223,6 +226,47 @@ fi
 kill "$stranger" 2>/dev/null || true
 wait "$stranger" 2>/dev/null || true
 rm -f "$running_file"
+
+# --- an emulator that exits while booting
+echo exit > "$tmp/emulator.mode"
+: > "$tmp/adb.calls"
+if ! "$script" --start --i-know-what-i-am-doing > "$tmp/out" 2>&1 &&
+    grep -q 'the emulator exited while booting' "$tmp/out" &&
+    grep -qx 'port=15554 kill-server' "$tmp/adb.calls" &&
+    [ ! -e "$running_file" ]; then
+    _ok "an emulator that exits while booting leaves no adb server and no .running file"
+else
+    _fail "an emulator that exits while booting"
+fi
+rm -f "$tmp/emulator.mode"
+
+# --- an interrupted boot
+echo never > "$tmp/adb.mode"
+: > "$tmp/adb.calls"
+rm -f "$tmp/emulator.pid"
+"$script" --start --i-know-what-i-am-doing > "$tmp/out" 2>&1 &
+starter=$!
+# Until the stub emulator runs and the script waits on its boot, at most
+# 30 s.
+for _ in $(seq 300); do
+    [ -s "$tmp/emulator.pid" ] && grep -q 'get-state' "$tmp/adb.calls" 2>/dev/null && break
+    sleep 0.1
+done
+booting="$(cat "$tmp/emulator.pid" 2>/dev/null || true)"
+kill -TERM "$starter"
+starter_status=0
+wait "$starter" || starter_status=$?
+if [ -n "$booting" ] && [ "$starter_status" -ne 0 ] &&
+    ! kill -0 "$booting" 2>/dev/null &&
+    grep -qx 'port=15554 -s emulator-5554 emu kill' "$tmp/adb.calls" &&
+    grep -qx 'port=15554 kill-server' "$tmp/adb.calls" &&
+    [ ! -e "$running_file" ]; then
+    _ok "an interrupted boot stops the emulator and its adb server"
+else
+    _fail "an interrupted boot (status $starter_status, emulator ${booting:-none})"
+    [ -z "$booting" ] || kill "$booting" 2>/dev/null || true
+fi
+rm -f "$tmp/adb.mode"
 
 [ "$fails" -eq 0 ] || { echo "$fails failed" >&2; exit 1; }
 echo "all passed"

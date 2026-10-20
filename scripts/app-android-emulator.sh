@@ -15,6 +15,9 @@
 #             sys.boot_completed=1 (at most 300 s), and prints
 #             `serial=emulator-<port> pid=<pid>`. An emulator this script
 #             started that still runs is printed again, not started twice.
+#             If it does not boot, or the script exits any other way
+#             before printing (an interrupt, a signal), it stops that
+#             emulator and its adb server before it exits.
 #   --stop PID  stops the emulator this script started as PID: `adb emu
 #             kill`, a wait of at most 60 s for PID to exit, then `kill PID`;
 #             and the adb server it started for it. It refuses a PID it did
@@ -278,15 +281,30 @@ case "$cmd" in
         "$sdk/emulator/emulator" "${args[@]}" > "$log" 2>&1 < /dev/null &
         pid=$!
         record_running "$serial" "$pid" booting
+        # Any exit before the emulator is handed over (a failed boot, an
+        # interrupt, a signal) stops it and its adb server.
+        booted=""
+        unbooted() {
+            [ -z "$booted" ] || return 0
+            if is_ours "$pid"; then
+                echo "app-android-emulator: stopping $serial (pid $pid), which did not boot" >&2
+                stop_emulator "$serial" "$pid"
+            else
+                "$adb" kill-server > /dev/null 2>&1 || true
+                rm -f "$running"
+            fi
+        }
+        trap unbooted EXIT
+        trap 'exit 130' INT
+        trap 'exit 143' TERM
+        trap 'exit 129' HUP
         # Until the device answers and Android has booted, polled every 2 s
         # for at most 300 s; the emulator's own exit ends the wait.
         deadline=$((SECONDS + 300))
-        booted=""
         while [ "$SECONDS" -lt "$deadline" ]; do
             if ! is_ours "$pid"; then
                 echo "app-android-emulator: the emulator exited while booting (log: $log)" >&2
                 tail -20 "$log" >&2 || true
-                rm -f "$running"
                 exit 1
             fi
             if [ "$("$adb" -s "$serial" get-state 2>/dev/null || true)" = device ] &&
@@ -297,11 +315,11 @@ case "$cmd" in
             sleep 2
         done
         if [ -z "$booted" ]; then
-            echo "app-android-emulator: $serial did not boot within 300 s (log: $log); stopping it" >&2
-            "$0" --stop "$pid" --i-know-what-i-am-doing >&2 || true
+            echo "app-android-emulator: $serial did not boot within 300 s (log: $log)" >&2
             exit 1
         fi
         record_running "$serial" "$pid"
+        trap - EXIT INT TERM HUP
         echo "serial=$serial pid=$pid"
         ;;
     stop)
