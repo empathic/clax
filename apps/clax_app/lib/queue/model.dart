@@ -16,70 +16,6 @@ typedef EffectId = int;
 
 enum JobKind { make, change }
 
-/// A step's key, parsed once from the core's text: `turn:<n>`,
-/// `publish:<base>`, `reply`, or a key the queue does not know.
-sealed class StepKey {
-  const StepKey();
-
-  /// The key [s] names; [UnknownKey] for none of the three.
-  static StepKey parse(String s) {
-    if (s == 'reply') return const ReplyKey();
-    final i = s.indexOf(':');
-    final n = i < 0 ? null : int.tryParse(s.substring(i + 1));
-    if (n == null || n < 0) return UnknownKey(s);
-    return switch (s.substring(0, i)) {
-      'turn' when n >= 1 && s == 'turn:$n' => TurnKey(n),
-      'publish' when s == 'publish:$n' => PublishKey(n),
-      _ => UnknownKey(s),
-    };
-  }
-}
-
-final class TurnKey extends StepKey {
-  const TurnKey(this.turn);
-  final int turn;
-  @override
-  bool operator ==(Object other) => other is TurnKey && other.turn == turn;
-  @override
-  int get hashCode => Object.hash(51, turn);
-  @override
-  String toString() => 'turn:$turn';
-}
-
-final class PublishKey extends StepKey {
-  const PublishKey(this.base);
-  final int base;
-  @override
-  bool operator ==(Object other) => other is PublishKey && other.base == base;
-  @override
-  int get hashCode => Object.hash(52, base);
-  @override
-  String toString() => 'publish:$base';
-}
-
-final class ReplyKey extends StepKey {
-  const ReplyKey();
-  @override
-  bool operator ==(Object other) => other is ReplyKey;
-  @override
-  int get hashCode => 53;
-  @override
-  String toString() => 'reply';
-}
-
-/// A key the core holds that names none of the queue's steps: a running
-/// job whose last step is one fails (`invalid_step`) rather than stalls.
-final class UnknownKey extends StepKey {
-  const UnknownKey(this.raw);
-  final String raw;
-  @override
-  bool operator ==(Object other) => other is UnknownKey && other.raw == raw;
-  @override
-  int get hashCode => Object.hash(54, raw);
-  @override
-  String toString() => raw;
-}
-
 /// A job as the core last sent it (spec §7.4). `update` never changes
 /// one but by applying a row the core sent with a higher [rev].
 final class Job {
@@ -124,6 +60,34 @@ final class Job {
 
   /// Question ID → the call that asked it and what became of it.
   final Map<String, JobQuestion> questions;
+
+  /// The artifact's version the job's next turn plans on, from its row:
+  /// the one it started from, the one its last turn planned on, or the one
+  /// a refusal of its publish (`version_moved`) named. A finish planned on
+  /// an older one is answered without asking the core.
+  int get base {
+    var b = input.base;
+    for (final s in steps.values) {
+      if (s case TurnStepResult(base: final t) when t > b) b = t;
+    }
+    if (error case JobError(
+      code: 'version_moved',
+      detail: final int current,
+      step: PublishKey(),
+    ) when current > b) {
+      b = current;
+    }
+    return b;
+  }
+
+  /// The highest turn the job committed; null for none.
+  int? get lastTurn {
+    int? n;
+    for (final k in steps.keys) {
+      if (k case TurnKey(:final turn) when turn > (n ?? 0)) n = turn;
+    }
+    return n;
+  }
 
   /// Whether the job holds a question it asked that is not closed.
   bool get waits => questions.values.any((q) => q.answer is AnswerPending);
@@ -225,7 +189,6 @@ final class JobLocal {
     this.waitingFor,
     this.turn = 0,
     this.results = const {},
-    this.base = 0,
     this.intent,
     this.resume = false,
     this.noticed = 0,
@@ -242,9 +205,6 @@ final class JobLocal {
   /// the job's row answers.
   final Map<String, ToolResult> results;
 
-  /// The artifact's version as last refused against (`version_moved`):
-  /// no publish is planned on an older one.
-  final int base;
   final JobIntent? intent;
 
   /// A paused job goes on: set at launch and when the app comes to the
@@ -258,7 +218,6 @@ final class JobLocal {
     WaitingFor? Function()? waitingFor,
     int? turn,
     Map<String, ToolResult>? results,
-    int? base,
     JobIntent? Function()? intent,
     bool? resume,
     int? noticed,
@@ -266,7 +225,6 @@ final class JobLocal {
     waitingFor: waitingFor == null ? this.waitingFor : waitingFor(),
     turn: turn ?? this.turn,
     results: results ?? this.results,
-    base: base ?? this.base,
     intent: intent == null ? this.intent : intent(),
     resume: resume ?? this.resume,
     noticed: noticed ?? this.noticed,
@@ -278,7 +236,6 @@ final class JobLocal {
       other.waitingFor == waitingFor &&
       other.turn == turn &&
       mapEquals(other.results, results) &&
-      other.base == base &&
       other.intent == intent &&
       other.resume == resume &&
       other.noticed == noticed;
@@ -287,7 +244,6 @@ final class JobLocal {
     waitingFor,
     turn,
     mapHash(results),
-    base,
     intent,
     resume,
     noticed,
@@ -591,7 +547,10 @@ QueueState viewOf(QueueModel m) {
         step: j.step,
         title: j.title,
         artifactId: j.artifactId,
-        error: j.error?.code,
+        // A running job's error is a refusal it plans from, not news.
+        error: j.state == JobState.failed || j.state == JobState.cancelled
+            ? j.error?.code
+            : null,
         offers: offersOf(j.state, j.carry),
       ),
     for (final e in m.inFlight.values)

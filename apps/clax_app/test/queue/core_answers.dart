@@ -157,7 +157,7 @@ class FakeJobsCore {
         );
         return Committed(e.id, _write(moved));
       case CommitStep():
-        return _step(e, row, e.key, TurnStepResult(e.notes), done: false);
+        return _step(e, row, e.key, e.result, done: false);
       case Ask():
         if (row.state.isFinal) {
           return Refused(e.id, e.jobId, const JobMoved(), job: row);
@@ -197,6 +197,8 @@ class FakeJobsCore {
             steps: {...row.steps, e.key: step},
             step: SetTo(e.key),
             artifactId: SetTo(aid),
+            // A committed step clears the error, as the store does.
+            error: () => null,
             state: mayMove(row.state, MoveStep(done: e.done), waits: row.waits),
           ),
         );
@@ -260,6 +262,7 @@ class FakeJobsCore {
       row.copyWith(
         steps: {...row.steps, key: result},
         step: SetTo(key),
+        error: () => null,
         state: mayMove(row.state, MoveStep(done: done), waits: row.waits),
       ),
     );

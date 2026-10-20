@@ -176,7 +176,9 @@ final class QueueTurn {
       case JobIntent.retry:
         if (job.state != JobState.failed) return false;
         if (running >= QueueModel.maxRunning) return true;
-        move(job, JobState.running, error: const Clear());
+        // The error stays: when it names a refused step, the next turn
+        // plans from it, and the next committed step clears it.
+        move(job, JobState.running);
         return true;
       case JobIntent.pause:
         if (job.state != JobState.running && job.state != JobState.waiting) {
@@ -187,34 +189,36 @@ final class QueueTurn {
     }
   }
 
-  /// A running job's next step, from its last committed step.
+  /// A running job's next step, from its last committed step: the calls
+  /// of its last turn (a publish step is its `finish` call's first half).
   void _run(Job job) {
     final local = m.localOf(job.id);
     if (local.waitingFor != null) return;
+    final unknown = switch (job.step) {
+      null => null,
+      ReplyKey() => null,
+      UnknownKey(:final raw) => raw,
+      TurnKey() || PublishKey() => job.lastTurn == null ? '${job.step}' : null,
+    };
+    if (unknown != null) {
+      // A step no table row reads: failed, not left running unseen.
+      move(
+        job,
+        JobState.failed,
+        error: SetTo(JobError('invalid_step', unknown)),
+      );
+      return;
+    }
     switch (job.step) {
       case null:
         _startTurn(job, 1, null, const {});
-      case ReplyKey():
+      case ReplyKey() || UnknownKey():
         break;
-      case UnknownKey(:final raw):
-        // A step no table row reads: failed, not left running unseen.
-        move(
-          job,
-          JobState.failed,
-          error: SetTo(JobError('invalid_step', raw)),
-        );
-      case PublishKey(:final base):
-        if (job.kind == JobKind.change) {
-          final reply = _replyFor(job, base) ?? const ReplyPlan();
-          emit((id) => Reply(id, job.id, reply));
+      case TurnKey() || PublishKey():
+        final turn = job.lastTurn!;
+        if (job.steps[TurnKey(turn)] case TurnStepResult(:final notes)) {
+          _answerCalls(job, turn, notes);
         }
-      case TurnKey(:final turn):
-        final notes = switch (job.steps[TurnKey(turn)]) {
-          TurnStepResult(:final notes) => notes,
-          _ => null,
-        };
-        if (notes == null) return;
-        _answerCalls(job, turn, notes);
     }
   }
 
@@ -223,32 +227,51 @@ final class QueueTurn {
   void _answerCalls(Job job, int turn, TurnNotes notes) {
     var local = m.localOf(job.id);
     if (local.turn != turn) {
-      setLocal(
-        job.id,
-        (l) => l.copyWith(turn: turn, results: const {}),
-      );
+      setLocal(job.id, (l) => l.copyWith(turn: turn, results: const {}));
       local = m.localOf(job.id);
     }
+    void answered(String callId, ToolResult r) {
+      _result(job.id, callId, r);
+      local = m.localOf(job.id);
+    }
+
+    final refused = job.error;
     for (final call in notes.calls) {
       if (local.results.containsKey(call.id)) continue;
       switch (call) {
-        case FinishCall(:final publish)
+        case FinishCall(:final publish, :final reply)
             when job.steps[PublishKey(publish.base)] is PublishStepResult:
-          // Published already (a step committed while its answer was
-          // lost): the row's next step follows.
-          _result(job.id, call.id, const ToolResult(data: 'published'));
-          local = m.localOf(job.id);
-        case FinishCall(:final publish):
-          final known = local.base > job.input.base
-              ? local.base
-              : job.input.base;
-          if (publish.base < known) {
-            // Planned on a version the core already refused: answered
-            // without asking it again.
-            _result(job.id, call.id, ToolResult.refused('version_moved', known));
-            local = m.localOf(job.id);
-            continue;
+          // Published (a finish planned on a base the job published is
+          // that publish): a change's reply follows, unless the core
+          // refused it, which the next turn plans from.
+          if (job.kind == JobKind.make) {
+            answered(call.id, const ToolResult(data: 'published'));
+          } else if (refused?.step == const ReplyKey()) {
+            answered(
+              call.id,
+              ToolResult.refused(refused!.code, refused.detail),
+            );
+          } else {
+            emit(
+              (id) => Reply(
+                id,
+                job.id,
+                turn,
+                call.id,
+                reply ?? const ReplyPlan(),
+              ),
+            );
+            return;
           }
+        case FinishCall(:final publish)
+            when refused != null && refused.step == PublishKey(publish.base):
+          // The core refused this publish: the row says how.
+          answered(call.id, ToolResult.refused(refused.code, refused.detail));
+        case FinishCall(:final publish) when publish.base < job.base:
+          // Planned on a version the core already refused: answered
+          // without asking it again.
+          answered(call.id, ToolResult.refused('version_moved', job.base));
+        case FinishCall(:final publish):
           emit(
             (id) => Publish(
               id,
@@ -307,7 +330,6 @@ final class QueueTurn {
       probe();
       return;
     }
-    final local = m.localOf(job.id);
     emit(
       (id) => StartTurn(
         id,
@@ -315,7 +337,7 @@ final class QueueTurn {
         TurnInput(
           turn: turn,
           input: job.input,
-          base: local.base > job.input.base ? local.base : job.input.base,
+          base: job.base,
           previous: previous,
           results: results,
           carry: job.carry,
@@ -330,21 +352,5 @@ final class QueueTurn {
     if (m.probing) return;
     emit(ProbeClaude.new);
     m = m.copyWith(probing: true);
-  }
-
-  /// The reply of the `finish` call that published on [base].
-  ReplyPlan? _replyFor(Job job, int base) {
-    ReplyPlan? found;
-    for (final s in job.steps.values) {
-      if (s case TurnStepResult(:final notes)) {
-        for (final c in notes.calls) {
-          if (c case FinishCall(:final publish, :final reply)
-              when publish.base == base) {
-            found = reply ?? found;
-          }
-        }
-      }
-    }
-    return found;
   }
 }

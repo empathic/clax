@@ -125,8 +125,13 @@ class _Invariants {
       );
       expect(
         p.base,
-        greaterThanOrEqualTo(after.localOf(p.jobId).base),
+        greaterThanOrEqualTo(row.base),
         reason: '$where: ${p.key} is on a base the core refused as moved',
+      );
+      expect(
+        row.error?.step,
+        isNot(p.key),
+        reason: '$where: ${p.key} asked again after the row recorded its refusal',
       );
     }
   }

@@ -178,7 +178,15 @@ void _handle(QueueTurn t, Msg msg) {
           ),
         );
       } else {
-        t.emit((id) => CommitStep(id, jobId, e.input.turn, outcome.notes));
+        t.emit(
+          (id) => CommitStep(
+            id,
+            jobId,
+            e.input.turn,
+            outcome.notes,
+            base: e.input.base,
+          ),
+        );
       }
     case TurnFailed(:final effect, :final jobId, :final failure, :final detail):
       final e = t.answer(effect);
@@ -197,7 +205,7 @@ void _handle(QueueTurn t, Msg msg) {
           t.move(
             job,
             JobState.failed,
-            error: SetTo(JobError('turn_failed', detail)),
+            error: SetTo(JobError('turn_failed', detail, TurnKey(e.input.turn))),
           );
       }
     case ToolDone(:final effect, :final jobId, :final result):
@@ -473,49 +481,22 @@ void _refused(QueueTurn t, Effect? e, JobId jobId, Refusal reason) {
   }
   if (e == null) return;
   switch ((e, reason)) {
-    case (final Publish p, VersionMoved(:final current)):
-      t.setLocal(
-        jobId,
-        (l) => l.copyWith(base: current > l.base ? current : l.base),
-      );
-      _callAnswered(
+    case (final Publish p, _) when reason is! JobMoved:
+      // The refusal goes into the row before anything plans from it: the
+      // finish call is answered from the row, by this worker and by one
+      // rebuilt from the rows alone. A moved document fails the job.
+      final (code, detail) = switch (reason) {
+        VersionMoved(:final current) => ('version_moved', current as Object?),
+        DocMoved(:final path) => ('doc_moved', path),
+        NotRenderedClean() => ('not_rendered_clean', null),
+        Invalid(:final code, :final message) => (code, message),
+        JobMoved() || NotOwner() => throw StateError('handled above'),
+      };
+      _record(
         t,
         jobId,
-        p.turn,
-        p.callId,
-        ToolResult.refused('version_moved', current),
-      );
-    case (final Publish p, DocMoved(:final path)):
-      _callAnswered(
-        t,
-        jobId,
-        p.turn,
-        p.callId,
-        ToolResult.refused('doc_moved', path),
-      );
-      final job = _runningJob(t, jobId);
-      if (job != null && !t.commitInFlight(jobId)) {
-        t.move(
-          job,
-          JobState.failed,
-          error: SetTo(JobError('doc_moved', path)),
-        );
-      }
-    case (final Publish p, NotRenderedClean()):
-      _callAnswered(
-        t,
-        jobId,
-        p.turn,
-        p.callId,
-        ToolResult.refused('not_rendered_clean'),
-      );
-    case (final Publish p, Invalid(:final code, :final message)):
-      _callAnswered(
-        t,
-        jobId,
-        p.turn,
-        p.callId,
-        ToolResult.refused(code, message),
+        JobError(code, detail, p.key),
+        fail: reason is DocMoved,
       );
     case (final Ask a, Invalid(:final code, :final message)):
       _callAnswered(
@@ -536,19 +517,29 @@ void _refused(QueueTurn t, Effect? e, JobId jobId, Refusal reason) {
       );
     case (MoveJob(), Invalid()):
       t.setLocal(jobId, (l) => l.copyWith(intent: () => null));
-    case (CommitStep() || Reply(), Invalid(:final code, :final message)):
-      final job = t.m.jobs[jobId];
-      if (job != null &&
-          !job.state.isFinal &&
-          mayMove(job.state, const MoveTo(JobState.failed), waits: job.waits) !=
-              null) {
-        t.move(job, JobState.failed, error: SetTo(JobError(code, message)));
-      }
+    case (final CommitStep c, Invalid(:final code, :final message)):
+      _record(t, jobId, JobError(code, message, c.key), fail: true);
+    case (final Reply r, Invalid(:final code, :final message)):
+      _record(t, jobId, JobError(code, message, r.key), fail: true);
     default:
       // job_moved, or a refusal the effect cannot draw: the row, applied,
       // decides.
       break;
   }
+}
+
+/// Records [error], a refusal of a running job's step, in the job's row:
+/// the job moves to failed when [fail], else stays running. Nothing when
+/// the job no longer runs or another of its commits is in flight: the row
+/// decides then, and a step asked again is refused again.
+void _record(QueueTurn t, JobId jobId, JobError error, {required bool fail}) {
+  final job = _runningJob(t, jobId);
+  if (job == null || t.commitInFlight(jobId)) return;
+  t.move(
+    job,
+    fail ? JobState.failed : JobState.running,
+    error: SetTo(error),
+  );
 }
 
 /// Runs the resume table over every job, oldest first, and reads each job

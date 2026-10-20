@@ -90,21 +90,31 @@ final class MoveJob extends CommitEffect {
   String toString() => 'MoveJob#$id($jobId → ${to.name} @$ifRev)';
 }
 
-/// Step `turn:<turn>`: a turn's notes.
+/// Step `turn:<turn>`: a turn's notes, and the version it was planned on
+/// ([base]).
 final class CommitStep extends CommitEffect {
-  const CommitStep(super.id, super.jobId, this.turn, this.notes);
+  const CommitStep(
+    super.id,
+    super.jobId,
+    this.turn,
+    this.notes, {
+    this.base = 0,
+  });
   final int turn;
   final TurnNotes notes;
+  final int base;
   TurnKey get key => TurnKey(turn);
+  TurnStepResult get result => TurnStepResult(notes, base: base);
   @override
   bool operator ==(Object other) =>
       other is CommitStep &&
       other.id == id &&
       other.jobId == jobId &&
       other.turn == turn &&
-      other.notes == notes;
+      other.notes == notes &&
+      other.base == base;
   @override
-  int get hashCode => Object.hash(id, jobId, turn, notes);
+  int get hashCode => Object.hash(id, jobId, turn, notes, base);
   @override
   String toString() => 'CommitStep#$id($jobId, $key)';
 }
@@ -174,9 +184,13 @@ final class Publish extends CommitEffect {
   String toString() => 'Publish#$id($jobId, $key${done ? ', done' : ''})';
 }
 
-/// Step `reply`, which ends a change.
+/// Step `reply`, which ends a change: the reply of the `finish` call
+/// [callId] of turn [turn], once its publish committed. It names no
+/// session: the core replies from the one that published the job's version.
 final class Reply extends CommitEffect {
-  const Reply(super.id, super.jobId, this.reply);
+  const Reply(super.id, super.jobId, this.turn, this.callId, this.reply);
+  final int turn;
+  final String callId;
   final ReplyPlan reply;
   ReplyKey get key => const ReplyKey();
   @override
@@ -184,9 +198,11 @@ final class Reply extends CommitEffect {
       other is Reply &&
       other.id == id &&
       other.jobId == jobId &&
+      other.turn == turn &&
+      other.callId == callId &&
       other.reply == reply;
   @override
-  int get hashCode => Object.hash(id, jobId, reply);
+  int get hashCode => Object.hash(id, jobId, turn, callId, reply);
   @override
   String toString() => 'Reply#$id($jobId)';
 }

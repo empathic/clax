@@ -866,7 +866,10 @@ impl Store {
 
     /// Commits step `key` of job `id` with `result`, setting the job's
     /// `step` to it, and its state to `done` when `done`, in one
-    /// transaction. A key the job already has returns its step as recorded
+    /// transaction. Every step's commit clears the job's `error`: an error
+    /// a job keeps while it runs again names what refused the step before
+    /// (spec 2026-10-19-in-process-core-design §7.4), and a committed step
+    /// is past it. A key the job already has returns its step as recorded
     /// with `replayed = true`, and changes nothing, whatever the job's
     /// state.
     ///
@@ -892,7 +895,7 @@ impl Store {
                 params![id, key, text(&result), now],
             )?;
             tx.execute(
-                "UPDATE jobs SET step = ?2, state = ?3 WHERE id = ?1",
+                "UPDATE jobs SET step = ?2, state = ?3, error_json = NULL WHERE id = ?1",
                 params![id, key, state],
             )?;
             if state.is_final() {
@@ -1767,8 +1770,9 @@ fn new_nonce() -> String {
 
 /// Inserts step `key` of job `id` with `result` (and `version_n`), and
 /// moves the job by [`Move::Step`]: its `step` set to `key`, its
-/// `artifact_id` to `artifact` when it names none, `done` when `done`, one
-/// `rev` on. [`Cut::Replayed`] when the key landed meanwhile.
+/// `artifact_id` to `artifact` when it names none, its `error` cleared
+/// (as [`Store::commit_step`] clears it), `done` when `done`, one `rev` on.
+/// [`Cut::Replayed`] when the key landed meanwhile.
 #[allow(clippy::too_many_arguments)]
 fn insert_step(
     st: &Store,
@@ -1797,7 +1801,8 @@ fn insert_step(
             params![id, key, text(result), version_n, now],
         )?;
         tx.execute(
-            "UPDATE jobs SET step = ?2, state = ?3, artifact_id = COALESCE(artifact_id, ?4)
+            "UPDATE jobs SET step = ?2, state = ?3, artifact_id = COALESCE(artifact_id, ?4),
+                             error_json = NULL
              WHERE id = ?1",
             params![id, key, state, artifact],
         )?;
@@ -3069,6 +3074,44 @@ mod tests {
             st.commit_step("nope", "turn:1", json!({}), false),
             Err(JobError::NotFound)
         ));
+    }
+
+    #[test]
+    fn a_committed_step_clears_the_error_of_the_step_before_it() {
+        let (_d, st) = store();
+        let aid = artifact(&st, None);
+        // A job failed by a refused step, then retried: the error stays on
+        // the row, naming what refused the step, until the next one commits.
+        let refused = json!({"code": "doc_moved", "detail": "notes.json", "step": "publish:1"});
+        let fail = |id: &str| {
+            let rev = st.job(id).unwrap().unwrap().job.rev;
+            st.patch_job(
+                id,
+                JobPatch {
+                    state: Some(JobState::Failed),
+                    error: Some(Some(refused.clone())),
+                    ..patch(rev)
+                },
+            )
+            .unwrap();
+            let retried = move_to(&st, id, JobState::Running).unwrap();
+            assert_eq!(retried.error, Some(refused.clone()), "kept by the retry");
+        };
+        running(&st, "j1");
+        fail("j1");
+        let (_, row, _) = st.commit_step("j1", "turn:2", json!({}), false).unwrap();
+        assert_eq!(row.error, None);
+        change(&st, "j2", &aid);
+        fail("j2");
+        let c = st
+            .commit_publish_step(
+                DAEMON,
+                "j2",
+                "publish:1",
+                publish_step(Some(&aid), 1, "<p>v2", false),
+            )
+            .unwrap();
+        assert_eq!(c.job.error, None);
     }
 
     #[test]

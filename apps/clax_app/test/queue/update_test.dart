@@ -399,38 +399,49 @@ void main() {
 
   group('rule 7: one publish per base', () {
     test(
-      'a publish refused for a moved base re-plans and never publishes that base again',
+      'a publish refused for a moved base is recorded, re-plans and never publishes that base again',
       () {
         final j = job('j', rev: 3, steps: {const TurnKey(2): finishNotes(base: 4)}, base: 4);
-        final m0 = model(jobs: [j]);
-        final (m1, e1) = update(m0, JobsLoaded([j]));
+        final (m1, e1) = update(model(jobs: [j]), JobsLoaded([j]));
         final pub = e1.whereType<Publish>().single;
         expect(pub.base, 4);
         expect(pub.done, isTrue, reason: 'a make ends with its publish');
         final (m2, e2) = update(m1, Refused(pub.id, 'j', const VersionMoved(5)));
-        expect(e2.whereType<Publish>(), isEmpty);
-        final turn = e2.whereType<StartTurn>().single;
+        expect(e2.whereType<StartTurn>(), isEmpty, reason: 'the row first');
+        final record = e2.whereType<MoveJob>().single;
+        const refusal = JobError('version_moved', 5, PublishKey(4));
+        expect((record.to, record.error), (JobState.running, const SetTo(refusal)));
+        final recorded = j.copyWith(rev: 4, error: () => refusal);
+        final (m3, e3) = update(m2, Committed(record.id, recorded));
+        expect(e3.whereType<Publish>(), isEmpty);
+        final turn = e3.whereType<StartTurn>().single;
         expect(turn.input.turn, 3);
         expect(turn.input.base, 5);
         expect(turn.input.results['f'], ToolResult.refused('version_moved', 5));
-        expect(m2.jobs['j']!.state, JobState.running);
-        // The model plans on the old base again: answered without a publish.
+        // The model plans on the old base again: answered without a
+        // publish, from the base turn 3 was planned on, which its step
+        // keeps once the error is cleared.
         final again = finishNotes(base: 4);
-        final (m3, e3) = update(m2, TurnDone(turn.id, 'j', TurnOutcome(again.notes)));
-        final commit = e3.whereType<CommitStep>().single;
-        final (_, e4) = update(
-          m3,
+        final (m4, e4) = update(m3, TurnDone(turn.id, 'j', TurnOutcome(again.notes)));
+        final commit = e4.whereType<CommitStep>().single;
+        expect(commit.base, 5);
+        final (_, e5) = update(
+          m4,
           Committed(
             commit.id,
-            j.copyWith(
-              rev: 4,
-              steps: {...j.steps, const TurnKey(3): again},
+            recorded.copyWith(
+              rev: 5,
+              steps: {...j.steps, const TurnKey(3): commit.result},
               step: const SetTo(TurnKey(3)),
+              error: () => null,
             ),
           ),
         );
-        expect(e4.whereType<Publish>(), isEmpty);
-        expect(e4.whereType<StartTurn>().single.input.turn, 4);
+        expect(e5.whereType<Publish>(), isEmpty);
+        final next = e5.whereType<StartTurn>().single;
+        expect(next.input.turn, 4);
+        expect(next.input.base, 5);
+        expect(next.input.results['f'], ToolResult.refused('version_moved', 5));
       },
     );
 
@@ -440,27 +451,21 @@ void main() {
       final pub = e1.whereType<Publish>().single;
       final (m2, e2) = update(m1, Refused(pub.id, 'j', const DocMoved('notes.json')));
       final fail = e2.whereType<MoveJob>().single;
+      const refusal = JobError('doc_moved', 'notes.json', PublishKey(0));
       expect(fail.to, JobState.failed);
-      expect(fail.error, const SetTo(JobError('doc_moved', 'notes.json')));
-      final failed = j.copyWith(
-        state: JobState.failed,
-        rev: 4,
-        error: () => const JobError('doc_moved', 'notes.json'),
-      );
+      expect(fail.error, const SetTo(refusal));
+      final failed = j.copyWith(state: JobState.failed, rev: 4, error: () => refusal);
       final (m3, _) = update(m2, Committed(fail.id, failed));
       expect(viewOf(m3).jobs.single.offers, {Offer.retry, Offer.discard});
+      expect(viewOf(m3).jobs.single.error, 'doc_moved');
       final (m4, e4) = update(m3, const Retry('j'));
       final retry = e4.whereType<MoveJob>().single;
       expect(retry.to, JobState.running);
-      expect(retry.error, const Clear<JobError>());
-      final (_, e5) = update(
-        m4,
-        Committed(
-          retry.id,
-          failed.copyWith(state: JobState.running, rev: 5, error: () => null),
-        ),
-      );
+      expect(retry.error, const Keep<JobError>(), reason: 'the row keeps the refusal');
+      final running = failed.copyWith(state: JobState.running, rev: 5);
+      final (m5, e5) = update(m4, Committed(retry.id, running));
       expect(e5.whereType<Publish>(), isEmpty);
+      expect(viewOf(m5).jobs.single.error, isNull, reason: 'running again');
       final turn = e5.whereType<StartTurn>().single;
       expect(turn.input.turn, 3);
       expect(
@@ -469,17 +474,91 @@ void main() {
       );
     });
 
-    test('a publish refused for an unrendered draft re-plans', () {
+    test('a publish refused for an unrendered draft is recorded and re-plans', () {
       final j = job('j', rev: 3, steps: {const TurnKey(2): finishNotes(base: 0)});
       final (m1, e1) = update(model(jobs: [j]), JobsLoaded([j]));
       final pub = e1.whereType<Publish>().single;
-      final (_, e2) = update(m1, Refused(pub.id, 'j', const NotRenderedClean()));
-      expect(e2.whereType<Publish>(), isEmpty);
+      final (m2, e2) = update(m1, Refused(pub.id, 'j', const NotRenderedClean()));
+      final record = e2.whereType<MoveJob>().single;
+      const refusal = JobError('not_rendered_clean', null, PublishKey(0));
+      expect((record.to, record.error), (JobState.running, const SetTo(refusal)));
+      final (_, e3) = update(
+        m2,
+        Committed(record.id, j.copyWith(rev: 4, error: () => refusal)),
+      );
+      expect(e3.whereType<Publish>(), isEmpty);
       expect(
-        e2.whereType<StartTurn>().single.input.results['f'],
+        e3.whereType<StartTurn>().single.input.results['f'],
         ToolResult.refused('not_rendered_clean'),
       );
     });
+
+    // Each refusal a finish's steps or a turn's commit can meet, and the
+    // row the core holds after it: a worker rebuilt from that row alone
+    // (after a kill, or another worker's) emits what the live one does.
+    final make = job('j', rev: 3, steps: {const TurnKey(2): finishNotes(base: 0)});
+    final change = job(
+      'j',
+      kind: JobKind.change,
+      artifactId: 'app',
+      base: 2,
+      rev: 3,
+      steps: {
+        const TurnKey(1): finishNotes(base: 2, reply: const ReplyPlan(data: 'done')),
+      },
+    );
+    final published = change.copyWith(
+      rev: 4,
+      steps: {
+        ...change.steps,
+        const PublishKey(2): const PublishStepResult(artifactId: 'app', version: 3),
+      },
+      step: const SetTo(PublishKey(2)),
+    );
+    for (final (name, row, refusal, error) in <(String, Job, Refusal, JobError)>[
+      ('version_moved', make, const VersionMoved(3), const JobError('version_moved', 3, PublishKey(0))),
+      ('doc_moved', make, const DocMoved('a.json'), const JobError('doc_moved', 'a.json', PublishKey(0))),
+      ('not_rendered_clean', make, const NotRenderedClean(), const JobError('not_rendered_clean', null, PublishKey(0))),
+      ('an invalid publish', make, const Invalid('invalid_icon', 'no icon'), const JobError('invalid_icon', 'no icon', PublishKey(0))),
+      ('a refused reply', published, const Invalid('invalid_thread', 'gone'), const JobError('invalid_thread', 'gone', ReplyKey())),
+      ('a refused turn commit', job('j', rev: 3), const Invalid('invalid_step', 'too big'), const JobError('invalid_step', 'too big', TurnKey(1))),
+    ]) {
+      test('after $name, a worker rebuilt from the rows does what the live one does', () {
+        // The live worker: the effect, its refusal, the refusal recorded.
+        var (m, e) = update(model(jobs: [row]), JobsLoaded([row]));
+        var effect = e.whereType<CommitEffect>().firstOrNull;
+        if (effect == null) {
+          final turn = e.whereType<StartTurn>().single;
+          (m, e) = update(m, TurnDone(turn.id, 'j', const TurnOutcome(TurnNotes())));
+          effect = e.whereType<CommitStep>().single;
+        }
+        (m, e) = update(m, Refused(effect.id, 'j', refusal));
+        final record = e.whereType<MoveJob>().single;
+        expect(record.error, SetTo(error));
+        final held = row.copyWith(state: record.to, rev: row.rev + 1, error: () => error);
+        (m, e) = update(m, Committed(record.id, held));
+        // A failed job is retried, by the live worker and the rebuilt one.
+        (QueueModel, List<Effect>) retried(QueueModel m) {
+          if (held.state != JobState.failed) return (m, const []);
+          final (m1, e1) = update(m, const Retry('j'));
+          final retry = e1.whereType<MoveJob>().single;
+          return update(
+            m1,
+            Committed(retry.id, held.copyWith(state: JobState.running, rev: held.rev + 1)),
+          );
+        }
+
+        final live = held.state == JobState.failed ? retried(m).$2 : e;
+        final (fresh, _) = update(model(), JobsLoaded([held]));
+        final rebuilt = held.state == JobState.failed
+            ? retried(fresh).$2
+            : update(model(), JobsLoaded([held])).$2;
+        expect(_jobEffects(live), isNotEmpty);
+        expect(_jobEffects(rebuilt), _jobEffects(live));
+        expect(live.whereType<Publish>(), isEmpty, reason: 'nothing written again');
+        expect(live.whereType<Reply>(), isEmpty, reason: 'nothing written again');
+      });
+    }
 
     test('a replayed publish ends the job once', () {
       final j = job('j', rev: 3, steps: {const TurnKey(2): finishNotes(base: 0)});
@@ -895,7 +974,10 @@ void main() {
       );
       final move = e1.whereType<MoveJob>().single;
       expect(move.to, JobState.failed);
-      expect(move.error, const SetTo(JobError('invalid_step', 'bad notes')));
+      expect(
+        move.error,
+        const SetTo(JobError('invalid_step', 'bad notes', TurnKey(1))),
+      );
     });
 
     test('a move refused job_moved is made again on the row it carries', () {
@@ -1061,6 +1143,22 @@ void main() {
 }
 
 Carry _carry(int stops) => Carry(stops: stops, canKeepGoing: true);
+
+/// [effects]' job commits and work, each with its effect ID left out.
+List<String> _jobEffects(List<Effect> effects) => [
+  for (final e in effects)
+    if (e is CommitEffect || e is WorkEffect)
+      switch (e) {
+        StartTurn(:final jobId, :final input) =>
+          'StartTurn($jobId, ${input.turn}, base ${input.base}, '
+              '${input.results})',
+        Publish(:final jobId, :final key) => 'Publish($jobId, $key)',
+        Reply(:final jobId, :final reply) => 'Reply($jobId, ${reply.data})',
+        MoveJob(:final jobId, :final to, :final error) =>
+          'MoveJob($jobId → ${to.name}, $error)',
+        _ => '$e'.replaceFirst(RegExp(r'#\d+'), ''),
+      },
+];
 
 /// Job `j`'s question for the `ask` call `a` of turn 1, and what became of
 /// it.

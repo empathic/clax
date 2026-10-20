@@ -101,6 +101,70 @@ final class Clear<T> extends Field<T> {
   String toString() => 'clear';
 }
 
+/// A step's key, parsed once from the core's text: `turn:<n>`,
+/// `publish:<base>`, `reply`, or a key the queue does not know.
+sealed class StepKey {
+  const StepKey();
+
+  /// The key [s] names; [UnknownKey] for none of the three.
+  static StepKey parse(String s) {
+    if (s == 'reply') return const ReplyKey();
+    final i = s.indexOf(':');
+    final n = i < 0 ? null : int.tryParse(s.substring(i + 1));
+    if (n == null || n < 0) return UnknownKey(s);
+    return switch (s.substring(0, i)) {
+      'turn' when n >= 1 && s == 'turn:$n' => TurnKey(n),
+      'publish' when s == 'publish:$n' => PublishKey(n),
+      _ => UnknownKey(s),
+    };
+  }
+}
+
+final class TurnKey extends StepKey {
+  const TurnKey(this.turn);
+  final int turn;
+  @override
+  bool operator ==(Object other) => other is TurnKey && other.turn == turn;
+  @override
+  int get hashCode => Object.hash(51, turn);
+  @override
+  String toString() => 'turn:$turn';
+}
+
+final class PublishKey extends StepKey {
+  const PublishKey(this.base);
+  final int base;
+  @override
+  bool operator ==(Object other) => other is PublishKey && other.base == base;
+  @override
+  int get hashCode => Object.hash(52, base);
+  @override
+  String toString() => 'publish:$base';
+}
+
+final class ReplyKey extends StepKey {
+  const ReplyKey();
+  @override
+  bool operator ==(Object other) => other is ReplyKey;
+  @override
+  int get hashCode => 53;
+  @override
+  String toString() => 'reply';
+}
+
+/// A key the core holds that names none of the queue's steps: a running
+/// job whose last step is one fails (`invalid_step`) rather than stalls.
+final class UnknownKey extends StepKey {
+  const UnknownKey(this.raw);
+  final String raw;
+  @override
+  bool operator ==(Object other) => other is UnknownKey && other.raw == raw;
+  @override
+  int get hashCode => Object.hash(54, raw);
+  @override
+  String toString() => raw;
+}
+
 /// What a job was asked to do, as its row's `input` keeps it.
 final class JobInput {
   const JobInput({
@@ -176,21 +240,39 @@ final class Carry {
   String toString() => 'Carry($stops, keepGoing: $canKeepGoing)';
 }
 
-/// Why a job failed, as its row's `error` keeps it.
+/// What refused a job, as its row's `error` keeps it: why it failed, or
+/// a refusal of one of its steps that the next turn plans from. The row
+/// keeps it, a Retry included, until the job's next step commits (the core
+/// clears it then), so a worker rebuilt from the rows alone answers the
+/// refused call as the one that heard the refusal did.
 final class JobError {
-  const JobError(this.code, [this.detail]);
+  const JobError(this.code, [this.detail, this.step]);
 
-  /// `doc_moved`, `turn_failed`, `artifact_deleted`, or a refusal's code.
+  /// `doc_moved`, `version_moved`, `not_rendered_clean`, `turn_failed`,
+  /// `artifact_deleted`, `invalid_step`, or a refusal's code.
   final String code;
-  final String? detail;
+
+  /// The refusal's detail, a JSON value: a moved document's path, the
+  /// version an artifact moved to, a message.
+  final Object? detail;
+
+  /// The step whose commit was refused: `publish:<base>` (its `finish`
+  /// call is answered with the refusal), `reply` (likewise, after its
+  /// publish), or `turn:<n>`; null for a failure of no step.
+  final StepKey? step;
 
   @override
   bool operator ==(Object other) =>
-      other is JobError && other.code == code && other.detail == detail;
+      other is JobError &&
+      other.code == code &&
+      jsonEquals(other.detail, detail) &&
+      other.step == step;
   @override
-  int get hashCode => Object.hash(code, detail);
+  int get hashCode => Object.hash(code, jsonHash(detail), step);
   @override
-  String toString() => 'JobError($code${detail == null ? '' : ', $detail'})';
+  String toString() =>
+      'JobError($code${detail == null ? '' : ', $detail'}'
+      '${step == null ? '' : ', $step'})';
 }
 
 /// What became of a question a job asked (`job_questions`), as the core
@@ -552,15 +634,18 @@ sealed class StepResult {
   const StepResult();
 }
 
-/// Step `turn:<n>`.
+/// Step `turn:<n>`: the turn's notes, and the artifact's version it was
+/// planned on, so a finish planned on an older one is known stale from the
+/// row.
 final class TurnStepResult extends StepResult {
-  const TurnStepResult(this.notes);
+  const TurnStepResult(this.notes, {this.base = 0});
   final TurnNotes notes;
+  final int base;
   @override
   bool operator ==(Object other) =>
-      other is TurnStepResult && other.notes == notes;
+      other is TurnStepResult && other.notes == notes && other.base == base;
   @override
-  int get hashCode => notes.hashCode;
+  int get hashCode => Object.hash(notes, base);
 }
 
 /// Step `publish:<base>`: the version it made.
