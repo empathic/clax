@@ -43,6 +43,7 @@ import 'platform/timings.dart';
 import 'platform/voice.dart';
 import 'platform/voice_cues.dart';
 import 'queue/host.dart';
+import 'queue/scripted_turns.dart';
 import 'queue/worker_agent.dart';
 import 'ui/inspector_surface.dart';
 import 'ui/read_consent_dialog.dart';
@@ -107,6 +108,12 @@ Future<void> drawEdgeToEdge() async {
 /// container). With `CLAX_APP_NO_KEY=1` the saved API key is withheld
 /// ([FlutterSecureKey.noKeyVariable]): no key is read or saved, and the
 /// core opens with `sample()` off.
+///
+/// A debug build takes three test hooks from the environment besides:
+/// `CLAX_SCRIPTED_TURNS` (the queue's worker asks [ScriptedTurns] instead
+/// of a model), `CLAX_TEST_KILL_AT` (the worker holds a publish at that
+/// point: `KillHook`) and `CLAX_TEST_QUIT_WHEN_IDLE=1`
+/// ([AppServices.quitWhenIdle]).
 Future<AppServices> platformServices({DateTime? launched}) async {
   final scratchDir = Platform.environment['CLAX_APP_DIR'] ?? '';
   final support = scratchDir.isEmpty
@@ -185,6 +192,8 @@ Future<AppServices> platformServices({DateTime? launched}) async {
         installId: installId,
         pid: pid,
       )),
+      backend: ScriptedTurns.enabled ? scriptedTurns : null,
+      probe: ScriptedTurns.enabled ? scriptReachable : null,
     ),
   );
   return AppServices(
@@ -266,6 +275,8 @@ Future<AppServices> platformServices({DateTime? launched}) async {
     homeSnapshot: await snapshots.load(),
     // A debug build's scripted agent runs its makes in this isolate.
     startQueue: scripted == null && runner == null ? startQueue : null,
+    quitWhenIdle:
+        kDebugMode && Platform.environment['CLAX_TEST_QUIT_WHEN_IDLE'] == '1',
   );
 }
 

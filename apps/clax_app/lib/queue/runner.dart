@@ -7,7 +7,10 @@ library;
 
 import 'dart:async';
 import 'dart:convert';
+import 'dart:io';
 import 'dart:typed_data';
+
+import 'package:flutter/foundation.dart' show kDebugMode;
 
 import '../agent/backend.dart' show AgentError, AgentErrorKind;
 import '../clax/api.dart' show ClaxApiError;
@@ -84,6 +87,58 @@ final class PublishRefused implements Exception {
   String toString() => message;
 }
 
+/// Where a debug build's kill hook ([KillHook]) holds a `Publish`.
+enum KillPoint {
+  /// Before the step's commit is sent: the core holds no version of it.
+  beforePublishCommit('before-publish-commit'),
+
+  /// Once the core answered the commit, before the queue hears it.
+  afterPublishCommit('after-publish-commit');
+
+  const KillPoint(this.label);
+
+  /// The point as `CLAX_TEST_KILL_AT` names it.
+  final String label;
+
+  static KillPoint? parse(String? s) {
+    for (final p in values) {
+      if (p.label == s) return p;
+    }
+    return null;
+  }
+}
+
+/// A debug build's hook for the kill-and-resume test
+/// (integration_test/kill_resume_test.dart): at [at], the runner writes
+/// [file] (the point's name and the job's ID) and waits forever, for the
+/// test to kill the process there.
+final class KillHook {
+  const KillHook(this.at, this.file);
+
+  /// The environment variable naming the point.
+  static const variable = 'CLAX_TEST_KILL_AT';
+
+  /// The file written at the point, under the support directory.
+  static const fileName = 'kill-point';
+
+  /// The hook `CLAX_TEST_KILL_AT` names, in a debug build only; null in
+  /// any other build, or without the variable.
+  static KillHook? fromEnvironment(String supportDir) {
+    if (!kDebugMode) return null;
+    final at = KillPoint.parse(Platform.environment[variable]);
+    return at == null ? null : KillHook(at, '$supportDir/$fileName');
+  }
+
+  final KillPoint at;
+  final String file;
+
+  /// Writes [file] for job [jobId] and never completes.
+  Future<Never> hold(JobId jobId) async {
+    File(file).writeAsStringSync('${at.label} $jobId\n', flush: true);
+    return Completer<Never>().future;
+  }
+}
+
 /// What the worker tells the UI isolate.
 abstract interface class UiPort {
   /// A job ended or stopped while no view shows it.
@@ -147,6 +202,7 @@ class EffectRunner implements WorkerRunner {
     this.client = 'app',
     this.requestTimeout = const Duration(seconds: 35),
     this.stepTimeout = const Duration(seconds: 125),
+    this.kill,
   });
 
   /// The runner of the worker [context] belongs to, subscribed to the
@@ -169,6 +225,7 @@ class EffectRunner implements WorkerRunner {
     probeClaude: probeClaude,
     session: session,
     send: context.send,
+    kill: KillHook.fromEnvironment(context.start.supportDir),
   )..start();
 
   final ClaxTransport core;
@@ -192,6 +249,9 @@ class EffectRunner implements WorkerRunner {
   /// write a version.
   final Duration requestTimeout;
   final Duration stepTimeout;
+
+  /// A debug build's kill hook, which holds a `Publish` at its point.
+  final KillHook? kill;
 
   static const ownerHeader = 'x-clax-jobs-owner';
 
@@ -521,6 +581,10 @@ class EffectRunner implements WorkerRunner {
           : stepTimeout,
     );
     if (_closed) return;
+    if (kill case final k?
+        when k.at == KillPoint.afterPublishCommit && e is Publish && a is _Ok) {
+      await k.hold(e.jobId);
+    }
     switch (a) {
       case _Ok(:final json):
         final job = jobOf(json['job']);
@@ -588,6 +652,9 @@ class EffectRunner implements WorkerRunner {
     } on Exception catch (err) {
       _send(Refused(e.id, e.jobId, Invalid('no_draft', '$err')));
       return;
+    }
+    if (kill case final k? when k.at == KillPoint.beforePublishCommit) {
+      await k.hold(e.jobId);
     }
     await _commit(e, 'POST', _step(e.jobId, e.key), {
       'publish': {..._object(plan.data), 'base': e.base},

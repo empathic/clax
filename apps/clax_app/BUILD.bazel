@@ -914,7 +914,22 @@ INTEGRATION_EXTRA = {
         "data": ["integration_test/goldens/main_menu.txt"],
         "env": {"CLAX_MENU_GOLDEN": "$(rootpath integration_test/goldens/main_menu.txt)"},
     },
+    # Kill and resume: the debug app it runs as a child process.
+    "kill_resume": {
+        "data": [":macos_debug"],
+        "env": {"CLAX_CHILD_APP": "$(rootpath :macos_debug)"},
+    },
 }
+
+# The app as Flutter's debug build, for the tests that run it as a child
+# process (integration_test/kill_resume_test.dart): its debug hooks
+# (CLAX_SCRIPTED_TURNS, CLAX_TEST_KILL_AT, CLAX_TEST_QUIT_WHEN_IDLE) are
+# compiled out of the release build.
+debug_app(
+    name = "macos_debug",
+    app = ":macos_app",
+    tags = ["manual"],
+)
 
 [
     (

@@ -659,3 +659,100 @@ Future<void> closeCore(CoreHost core) async {
     state.removeListener(on);
   }
 }
+
+/// The debug app run as a child process of a test, by its PID: unpacked
+/// from its zip (`//apps/clax_app:macos_debug`, which the test's target
+/// names in `CLAX_CHILD_APP`), launched with the environment a test
+/// gives, its output kept in [log].
+final class ChildApp {
+  ChildApp._(this.executable, this.log);
+
+  /// The zip the test's target names, resolved from the directory the
+  /// test started in.
+  static String get zip {
+    final z = Platform.environment['CLAX_CHILD_APP'] ?? '';
+    if (z.isEmpty) throw StateError('CLAX_CHILD_APP names no app');
+    return File(z).absolute.path;
+  }
+
+  /// Unpacks [zipPath] into [dir] with `/usr/bin/ditto`, which keeps the
+  /// bundle's signature and links.
+  static Future<ChildApp> unpack(String zipPath, Directory dir) async {
+    final r = await Process.run('/usr/bin/ditto', [
+      '-x',
+      '-k',
+      zipPath,
+      dir.path,
+    ]);
+    if (r.exitCode != 0) {
+      throw StateError('ditto could not unpack $zipPath: ${r.stderr}');
+    }
+    return ChildApp._(
+      '${dir.path}/Clax.app/Contents/MacOS/Clax',
+      File('${dir.path}/child.log'),
+    );
+  }
+
+  final String executable;
+  final File log;
+
+  /// Starts the app with [env] over this process's environment; its
+  /// output is appended to [log].
+  Future<Process> launch(Map<String, String> env) async {
+    final p = await Process.start(executable, const [], environment: env);
+    log.writeAsStringSync(
+      '--- launch ${p.pid} with $env\n',
+      mode: FileMode.append,
+    );
+    void keep(List<int> bytes) =>
+        log.writeAsBytesSync(bytes, mode: FileMode.append);
+    p.stdout.listen(keep);
+    p.stderr.listen(keep);
+    return p;
+  }
+
+  /// Waits until [done] answers true while [p] runs, looking every 100 ms
+  /// for at most [cap]; fails when [p] exits first or the cap passes, and
+  /// kills [p] by its PID at the cap.
+  Future<void> waitFor(
+    Process p,
+    String what,
+    bool Function() done, {
+    Duration cap = const Duration(seconds: 120),
+  }) async {
+    int? exited;
+    unawaited(p.exitCode.then((c) => exited = c));
+    final end = DateTime.now().add(cap);
+    while (!done()) {
+      if (exited != null) {
+        fail('the app exited ($exited) before $what; its log: $tail');
+      }
+      if (DateTime.now().isAfter(end)) {
+        Process.killPid(p.pid, ProcessSignal.sigkill);
+        fail('no $what within ${cap.inSeconds} s; its log: $tail');
+      }
+      await Future<void>.delayed(const Duration(milliseconds: 100));
+    }
+  }
+
+  /// Waits for [p] to exit by itself within [cap]; kills it by its PID
+  /// and fails otherwise.
+  Future<int> exited(
+    Process p, {
+    Duration cap = const Duration(seconds: 180),
+  }) async {
+    try {
+      return await p.exitCode.timeout(cap);
+    } on TimeoutException {
+      Process.killPid(p.pid, ProcessSignal.sigkill);
+      fail('the app did not quit within ${cap.inSeconds} s; its log: $tail');
+    }
+  }
+
+  /// The end of [log], for a failure's report.
+  String get tail {
+    if (!log.existsSync()) return '(none)';
+    final s = log.readAsStringSync();
+    return s.length > 4000 ? s.substring(s.length - 4000) : s;
+  }
+}

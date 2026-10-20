@@ -151,6 +151,7 @@ class AppServices {
     this.homeSnapshot,
     this.queue,
     this.startQueue,
+    this.quitWhenIdle = false,
     PendingMake? pendingMake,
     ApiConnection? connection,
     int? pid,
@@ -303,6 +304,11 @@ class AppServices {
   /// are still the feedback worker's.
   final QueueStarter? startQueue;
 
+  /// A debug build's hook for the kill-and-resume test
+  /// (integration_test/kill_resume_test.dart): the app quits, closing the
+  /// core first, once the queue's worker lets the process go
+  /// (`KeepAlive(false)`), so the test can open the same home.
+  final bool quitWhenIdle;
 }
 
 /// Runs the app with [services], with Clax's own licence on the licences
@@ -1720,8 +1726,11 @@ class _AppRootState extends State<AppRoot> with WidgetsBindingObserver {
   /// notification (in front, the screens' toasts say it).
   void _onQueueEffect(q.Effect e) {
     switch (e) {
-      case q.KeepAlive():
+      case q.KeepAlive(:final on):
         _keepAlive.apply(e);
+        if (!on && _s.quitWhenIdle) {
+          unawaited(_shutDown().whenComplete(() => exit(0)));
+        }
       case q.Notice(:final kind, :final jobId, :final title):
         if (_presence.foreground) return;
         final aid = _queue.state.value.job(jobId)?.artifactId;

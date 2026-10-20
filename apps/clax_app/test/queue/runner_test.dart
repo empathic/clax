@@ -1,5 +1,6 @@
 import 'dart:async';
 import 'dart:convert';
+import 'dart:io';
 import 'dart:isolate';
 
 import 'package:clax_app/agent/backend.dart';
@@ -32,7 +33,8 @@ void main() {
   late EffectRunner runner;
   var probe = true;
 
-  EffectRunner runnerOn(FakeCore c, List<Msg> out) => EffectRunner(
+  EffectRunner runnerOn(FakeCore c, List<Msg> out, {KillHook? kill}) =>
+      EffectRunner(
     core: CoreTransport(
       c,
       timer: timers.make,
@@ -44,6 +46,7 @@ void main() {
     probeClaude: () async => probe,
     session: () async => 's1',
     send: out.add,
+    kill: kill,
   );
 
   setUp(() {
@@ -380,6 +383,61 @@ void main() {
       expect(c.job.artifactId, step.artifactId);
       expect(c.job.state, JobState.done);
       expect(sent.whereType<JobNoticed>().last.step, const PublishKey(0));
+    });
+
+    group('the debug kill hook', () {
+      late Directory dir;
+      setUp(() => dir = Directory.systemTemp.createTempSync('clax-kill-'));
+      tearDown(() => dir.deleteSync(recursive: true));
+
+      Future<void> publishHeldAt(KillPoint at) async {
+        runner = runnerOn(
+          core,
+          sent,
+          kill: KillHook(at, '${dir.path}/${KillHook.fileName}'),
+        );
+        await claimed();
+        jobs.seed('j', state: 'running', rev: 2);
+        runner.run(
+          const Publish(
+            1,
+            'j',
+            2,
+            'f',
+            PublishPlan(base: 0, data: {'artifact_id': null, 'request': {'title': 'Timer'}}),
+            done: true,
+          ),
+        );
+        await pumpEventQueue();
+      }
+
+      String killPoint() =>
+          File('${dir.path}/${KillHook.fileName}').readAsStringSync();
+
+      test('before the commit, it writes the kill point and sends nothing',
+          () async {
+        await publishHeldAt(KillPoint.beforePublishCommit);
+        expect(killPoint(), 'before-publish-commit j\n');
+        expect(to('POST', '/api/jobs/j/steps/publish:0'), isEmpty);
+        expect(jobs.published, isEmpty);
+        expect(sent.whereType<Committed>(), isEmpty);
+      });
+
+      test('after the commit, the core holds the version and the queue hears '
+          'nothing', () async {
+        await publishHeldAt(KillPoint.afterPublishCommit);
+        expect(killPoint(), 'after-publish-commit j\n');
+        expect(to('POST', '/api/jobs/j/steps/publish:0'), hasLength(1));
+        expect(jobs.published, hasLength(1));
+        expect(sent.whereType<Committed>(), isEmpty);
+      });
+
+      test('its points are named as CLAX_TEST_KILL_AT names them', () {
+        expect(KillPoint.parse('before-publish-commit'), KillPoint.beforePublishCommit);
+        expect(KillPoint.parse('after-publish-commit'), KillPoint.afterPublishCommit);
+        expect(KillPoint.parse('elsewhere'), isNull);
+        expect(KillPoint.parse(null), isNull);
+      });
     });
 
     test('a Publish commits the plan the agent makes of its draft when it '
