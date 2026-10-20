@@ -8,7 +8,7 @@
 // replace (fetch, URL, document.currentScript, createElement) is on the way.
 // Retries, the time limit and the wait for the page's parse are the bridge's
 // (part-loader.ts).
-import { PART_NAMES } from "./parts/names";
+import { PART_NAMES } from "./part-names";
 import type { Parts } from "./parts/types";
 
 declare const __CLAX_PARTS__: Partial<Record<keyof Parts, string>>;

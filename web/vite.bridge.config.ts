@@ -1,7 +1,7 @@
 import { readFileSync } from "node:fs";
 import { fileURLToPath } from "node:url";
 import { defineConfig } from "vite";
-import { PART_NAMES } from "./bridge/src/parts/names";
+import { PART_NAMES } from "./bridge/src/part-names";
 
 // The eager bridge, one classic script. It names its lazy parts by the
 // content-hashed files the parts build (scripts/build-parts.mjs) wrote.
