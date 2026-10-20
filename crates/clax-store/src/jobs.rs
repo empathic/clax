@@ -1609,6 +1609,25 @@ impl Store {
         Ok(out)
     }
 
+    /// Gives the step whose mark is `mark` a new nonce once the content
+    /// that carried `mark` is removed, and answers its new mark: the old
+    /// one was readable on that content, so it may no longer be the
+    /// step's.
+    pub(crate) fn renew_step_mark(&self, mark: &str) -> clax_core::Result<String> {
+        let Ok([job, key, nonce]) = serde_json::from_str::<[String; 3]>(mark) else {
+            return Err(CoreError::invalid("invalid_step", "a step mark is malformed"));
+        };
+        let fresh = new_nonce();
+        self.with_tx(|tx| {
+            tx.execute(
+                "UPDATE job_step_marks SET nonce = ?4 WHERE nonce = ?1 AND job_id = ?2 AND key = ?3",
+                params![nonce, job, key, fresh],
+            )?;
+            Ok(())
+        })?;
+        Ok(step_mark(&job, &key, &fresh))
+    }
+
     /// Forgets step mark `mark` once the content it marked is removed.
     pub(crate) fn forget_step_mark(&self, mark: &str) -> clax_core::Result<()> {
         let Ok([job, key, nonce]) = serde_json::from_str::<[String; 3]>(mark) else {

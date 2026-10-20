@@ -1449,14 +1449,24 @@ impl Store {
         {
             return Err(CoreError::Conflict { current });
         }
+        // The step's mark this write carries: a fresh one once its own
+        // stray is removed.
+        let mut step_mark = p.step.clone();
         if let Some(mark) = self.content.unrecorded_step(id, n).await? {
             // A step's write of `n` that no row records: a process killed
             // before its transaction committed left it. The store, not the
             // content, says whose it is (the content module's Ordering).
             match self.mark_of(id, n, &mark, p.step.as_deref())? {
                 // This step's own: the store gave the mark to it alone, for
-                // this version, so it is replaced.
-                super::jobs::MarkOf::Own => self.content.remove_version(id, n).await?,
+                // this version, so it is replaced. Its mark was readable on
+                // that content, so once the content is gone the step writes
+                // under a new one: a commit copying the old one is a push.
+                // Removed first, then renewed: a process killed between the
+                // two leaves nothing under the old mark.
+                super::jobs::MarkOf::Own => {
+                    self.content.remove_version(id, n).await?;
+                    step_mark = Some(self.renew_step_mark(&mark)?);
+                }
                 // A step that can never commit: no writer can ever claim it,
                 // and the content lock excludes any other, so whoever
                 // writes `n` removes it.
@@ -1531,7 +1541,10 @@ impl Store {
                 let write = VersionWrite {
                     carry: carried.iter().map(|p| p.as_str()).collect(),
                     put,
-                    meta: self.version_meta(p, session_id)?,
+                    meta: VersionMeta {
+                        step: step_mark,
+                        ..self.version_meta(p, session_id)?
+                    },
                 };
                 self.content
                     .write_version(id, n, &write)

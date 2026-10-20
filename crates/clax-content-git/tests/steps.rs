@@ -38,6 +38,7 @@ const DAEMON: &AuditCtx = &AuditCtx::DAEMON;
 struct Dying<C> {
     inner: C,
     die: AtomicBool,
+    refuse: AtomicBool,
     /// The artifact of each version write, in order.
     wrote: std::sync::Mutex<Vec<String>>,
 }
@@ -45,6 +46,12 @@ struct Dying<C> {
 impl<C> Dying<C> {
     fn kill_next(&self) {
         self.die.store(true, Ordering::SeqCst);
+    }
+
+    /// The next version write fails before it writes, as a process killed
+    /// just before it would.
+    fn kill_before_next(&self) {
+        self.refuse.store(true, Ordering::SeqCst);
     }
 
     /// The artifact the last version write wrote.
@@ -69,6 +76,9 @@ impl<C: ContentStore> ContentStore for Dying<C> {
         n: u32,
         write: &VersionWrite<'_>,
     ) -> clax_core::Result<()> {
+        if self.refuse.swap(false, Ordering::SeqCst) {
+            return Err(CoreError::invalid("killed", "the process was killed"));
+        }
         self.inner.write_version(id, n, write).await?;
         self.wrote.lock().unwrap().push(id.as_str().to_string());
         if self.die.swap(false, Ordering::SeqCst) {
@@ -186,6 +196,7 @@ fn fixture<C: ContentStore + 'static>(content: impl FnOnce(&Home) -> C) -> Fixtu
     let content = Arc::new(Dying {
         inner: content(&h),
         die: AtomicBool::new(false),
+        refuse: AtomicBool::new(false),
         wrote: Default::default(),
     });
     let st = Store::open(&h).unwrap().with_content(content.clone());
@@ -621,6 +632,51 @@ fn a_pushed_commit_forging_a_step_mark_is_a_push() {
         assert_eq!(refs["refs/tags/v2"], pushed, "{mark}");
         assert_eq!(f.steps(), 0, "{mark}");
     }
+}
+
+/// The step mark version `n` of `f`'s artifact carries, read from its
+/// commit as anyone who fetches the repository reads it.
+fn mark_on(f: &Fixture<MemGitContent>, n: u32) -> String {
+    let repo = f
+        .content
+        .inner
+        .host()
+        .repo(&repo_name(f.id.as_str()))
+        .unwrap();
+    let commit = clax_core::content::wait(repo.refs()).unwrap()[&format!("refs/tags/v{n}")];
+    clax_core::content::wait(repo.read_commit_meta(&commit))
+        .unwrap()
+        .unwrap()
+        .trailer("Clax-Step")
+        .unwrap()
+        .to_string()
+}
+
+/// A step's mark, read from the stray its killed attempt left, is no
+/// longer the step's once its resume removed that stray: a push that copies
+/// it, tagged at the step's version, is recorded as the push it is and
+/// stays on main, even when the resume was killed before its own write.
+#[test]
+fn a_mark_copied_from_a_removed_stray_is_a_push() {
+    let f = fixture(the_store_in_git);
+    f.content.kill_next();
+    assert!(f.commit("publish:1", "<p>two</p>").is_err());
+    let copied = mark_on(&f, 2);
+    // The resume removes the stray and is killed before it writes.
+    f.content.kill_before_next();
+    assert!(f.commit("publish:1", "<p>two</p>").is_err());
+    assert_eq!(f.html(2), None);
+    let pushed = push_forging(&f, &copied);
+    let e = f.commit("publish:1", "<p>two</p>").unwrap_err();
+    assert!(matches!(e, StepError::VersionMoved { current: 2 }), "{e:?}");
+    assert_eq!(f.versions(), [1, 2]);
+    let repo = f
+        .content
+        .inner
+        .host()
+        .repo(&repo_name(f.id.as_str()))
+        .unwrap();
+    assert_eq!(clax_core::content::wait(repo.refs()).unwrap()[MAIN], pushed);
 }
 
 #[test]
