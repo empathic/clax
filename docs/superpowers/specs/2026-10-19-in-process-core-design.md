@@ -423,10 +423,16 @@ hosts are not intercepted (the content policy already refuses them).
    `Access-Control-*` header (§4.3), and with `Cache-Control` as the core
    sent it.
 
-The shell document is answered only to a main-frame navigation
-(`WebResourceRequest.isForMainFrame()`; on Apple, `request.mainDocumentURL
-== request.url`); any other request for `/a/…` answers 403. A page cannot
-frame or fetch the shell document.
+A shell document (any HTML answer on the shell's host: `/`, `/inbox`,
+`/people`, `/a/…`) is answered only to a main-frame navigation; any other
+request for one answers 403. On Android the handler reads it from the
+request (`WebResourceRequest.isForMainFrame()`). On Apple a
+`WKURLSchemeTask` names no frame, so the navigation policy decides it
+before the handler is asked: `webView(_:decidePolicyFor:)` cancels every
+navigation to the shell's host whose `navigationAction.targetFrame` is not
+the main frame (a `nil` target, a new window, included), and the handler
+answers a shell document only to a request whose `mainDocumentURL` is its
+own URL. A page cannot frame or fetch the shell document.
 
 ### 4.3 Origins and the security model
 
@@ -496,11 +502,18 @@ forbids.
 - The nonce handshake (`ShellSession`, `host_protocol.dart:1157`) stays as
   a second check. The nonce comes with the document: the scheme handler
   (§4.2) makes a fresh one (16 to 128 of `[A-Za-z0-9_-]`) for each shell
-  document it answers, writes `<meta name="clax-nonce" content="…">` right
-  after its `<head>`, and gives the same one to `claxHost.init`. The
-  shell's transport reads it at boot, so its calls go out before the
-  document's load event (which waits for the artifact page's own load);
-  only a document without one waits for `claxTransport.init` (§5.1).
+  document it answers, which is only ever to the main frame's navigation,
+  writes `<meta name="clax-nonce" content="…">` right after its `<head>`,
+  and keeps it with that navigation's URL. The surface takes a nonce as
+  the load's only when the main frame's navigation to that URL commits
+  (Android `WebViewClient.onPageStarted`, Apple
+  `webView(_:didCommit:)`, both of the main frame alone), and gives the
+  same one to `claxHost.init`; a nonce whose navigation never commits (a
+  cancelled or superseded load) is dropped, and nothing a frame inside the
+  page loads or requests can change the load's nonce. The shell's
+  transport reads it at boot, so its calls go out before the document's
+  load event (which waits for the artifact page's own load); only a
+  document without one waits for `claxTransport.init` (§5.1).
 
 How the host gets at each WebView's configuration is the spike's other
 question: on Android, the native `WebView` is reached by
