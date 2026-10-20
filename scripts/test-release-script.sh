@@ -191,7 +191,9 @@ case "$1 $2" in
         esac
         if [ "$3" = 101 ] && [ "$state" = "completed success" ] && [ ! -e "$S/release" ]; then
             : > "$S/release"
-            origin rev-parse "$(origin tag -l 'v*' --sort=-creatordate | sed -n 1p)^{tree}" > "$S/release-tree"
+            # The release's tag is the highest version: tags made in the same
+            # second tie on their dates, and git breaks the tie by name.
+            origin rev-parse "$(origin tag -l 'v*' --sort=-version:refname | sed -n 1p)^{tree}" > "$S/release-tree"
         fi
         echo "$state" ;;
     "workflow run")
