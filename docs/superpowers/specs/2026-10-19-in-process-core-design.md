@@ -1129,9 +1129,18 @@ events follow the commit.
 
 A process killed after the content files are written and before the
 transaction commits leaves the files at the next version's number with
-no row; they are never served, but the content store refuses to write
-that number again until they are removed, so the resumed step fails
-until then (recorded on `crates/clax-store/src/jobs.rs`).
+no row; they are never served. The step's write marks them with the step
+(`clax_store::jobs::step_mark`, the job ID and the key as a JSON array):
+git's version commit carries it as a `Clax-Step` trailer, the home's
+files as `versions/<n>.step` beside the version's directory, written
+before the rename that places it. The resumed step, under the content
+lock and with the artifact still at `base`, finds `n` present with its
+own mark (`ContentStore::unrecorded_step`), removes it and writes it
+again, then commits once; git's push reconcile leaves a tagged commit
+with that trailer to its step rather than recording it as a push.
+Content no step marked, or another step marked, is never replaced: the
+files refuse the write as before (`clax doctor` lists a stray
+directory), and git records an unmarked commit as a push.
 
 So the change ledger's two unknowns, "did the publish land?" and "did the
 docs land?", cannot arise: either the step row and the version exist
