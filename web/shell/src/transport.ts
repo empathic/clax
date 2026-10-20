@@ -301,6 +301,6 @@ export function installTransport(win: Window = window): boolean {
   const style = doc.createElement("style");
   style.textContent = ".conn-notice{display:none!important}";
   doc.head.append(style);
-  Object.defineProperty(w, "claxTransport", { value: Object.freeze({ ...receivers, embed }) });
+  Object.defineProperty(w, "claxTransport", { value: Object.freeze({ ...receivers, embed: Object.freeze(embed) }) });
   return true;
 }

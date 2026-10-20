@@ -222,6 +222,8 @@ describe("installTransport", () => {
     expect(installTransport(win)).toBe(true);
     expect(Object.keys(win.claxTransport!).sort()).toEqual(["callResult", "embed", "init", "streamBlock", "streamEnd"]);
     expect(hostEmbed(win)).toEqual({ transport: "host", shell: "clax://app", content: "clax://{id}.c" });
+    expect(Object.isFrozen(win.claxTransport)).toBe(true);
+    expect(Object.isFrozen(hostEmbed(win))).toBe(true);
     expect(onHost(win)).toBe(true);
     expect([...doc.querySelectorAll("style")].map(s => s.textContent)).toEqual([".conn-notice{display:none!important}"]);
     const p = win.fetch("/api/artifacts/abc");
