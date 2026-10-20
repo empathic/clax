@@ -1055,13 +1055,27 @@ number on main), and installed homes are adopted by their schema.
   database, is left to the ordinary migrations.
 - **Each main migration below the app's has a mark** (`MAIN_MARKS_ABOVE_38`
   beside `APP_MIGRATION_MARKS`: `legal_agreements`, `briefs`), so adoption
-  decides from the schema which of them a home lacks, whatever its
-  version. The rule above holds for any k, so a later renumbering adds
-  one mark per new main migration and nothing else: when main adds a 41,
+  decides from the database which of them a home lacks, whatever its
+  version. A mark (`Mark`) is what the migration leaves: a table it makes,
+  a column it adds to any table, an index it makes, or, for a migration
+  that changes only rows, a row that an SQL predicate in the mark finds in
+  a named table. A data-only migration must leave such a row even on an
+  empty database (for example a row it inserts into `install`): a backfill
+  that may change nothing cannot otherwise be told apart from its absence.
+  Each mark must be absent before its migration and present after it and
+  after every later one, which a store test checks for every main mark
+  from an empty database. The rule above holds for any k, so a later
+  renumbering adds one mark per new main migration and nothing else: when
+  main adds a 41,
   a home this build left at 45 (main's two marks, k = 2, the app's from
   41) is adopted the same way, gets main's 41 after a backup, and its
-  `user_version` becomes 46, never a refusal. A store test runs that case
-  against a simulated main 41.
+  `user_version` becomes 46, never a refusal. Store tests run that case
+  against a simulated main 41 of each kind of mark, and adopt the app's
+  migrations after every k of main's under this build's own numbering,
+  from a frozen copy of the app's SQL
+  (`crates/clax-store/tests/fixtures/old-migrations/flutter-app-4479a586c.sql`),
+  so this build's layout (the app's at 41 to 45) stays tested once main
+  adds a 41.
 - **Backup first, always.** `Store::open` already backs up before any
   migration (`backup::before_migrate`, three kept), adoption included:
   the first open of an installed home leaves `backups/clax-43-<time>.db`

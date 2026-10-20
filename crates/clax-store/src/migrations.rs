@@ -1292,11 +1292,48 @@ pub const WHERE_TO_ASK_MIGRATION: u32 = 38;
 pub const APP_MIGRATION: u32 = NUMBERING.app_first();
 
 /// What each of main's migrations after [`WHERE_TO_ASK_MIGRATION`] and
-/// before [`APP_MIGRATION`] leaves in the schema, in order, so adoption
-/// tells from the schema which of them a database lacks. Taking a new
-/// migration of main's below the app's is adding it to [`MIGRATIONS`]
-/// and its mark here, nothing else.
-const MAIN_MARKS_ABOVE_38: [(&str, &str); 2] = [("table", "legal_agreements"), ("table", "briefs")];
+/// before [`APP_MIGRATION`] leaves in the database, in order, so adoption
+/// tells from it which of them a database lacks. Taking a new migration
+/// of main's below the app's is adding it to [`MIGRATIONS`] and its
+/// [`Mark`] here, nothing else.
+const MAIN_MARKS_ABOVE_38: [Mark<'static>; 2] =
+    [Mark::Table("legal_agreements"), Mark::Table("briefs")];
+
+/// What a migration leaves in a database, by which adoption tells whether
+/// a database holds it whatever its `user_version`. It must be absent
+/// before the migration and present after it on any database, an empty one
+/// included, and stay present after every later migration.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub(crate) enum Mark<'a> {
+    /// A table the migration makes.
+    Table(&'a str),
+    /// A column the migration adds: the table, then the column.
+    Column(&'a str, &'a str),
+    /// An index the migration makes.
+    Index(&'a str),
+    /// For a migration that changes only rows: a row of `table` that
+    /// `predicate` (an SQL expression over its columns, the `WHERE` of a
+    /// `SELECT` from it) finds after the migration. Such a migration must
+    /// leave one even on an empty database, for example a row it inserts
+    /// into `install`.
+    Row {
+        /// The table the row is in.
+        table: &'a str,
+        /// The SQL expression that finds it.
+        predicate: &'a str,
+    },
+}
+
+impl std::fmt::Display for Mark<'_> {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        match self {
+            Mark::Table(name) => write!(f, "table {name}"),
+            Mark::Column(table, column) => write!(f, "column {table}.{column}"),
+            Mark::Index(name) => write!(f, "index {name}"),
+            Mark::Row { table, predicate } => write!(f, "row of {table} where {predicate}"),
+        }
+    }
+}
 
 /// A list of migrations and the marks of main's among them above
 /// [`WHERE_TO_ASK_MIGRATION`], which the app's follow: this build's
@@ -1308,7 +1345,7 @@ pub(crate) struct Numbering<'a> {
     /// What each of main's migrations after [`WHERE_TO_ASK_MIGRATION`]
     /// leaves in the schema, in order; the app's ([`APP_MIGRATION_MARKS`])
     /// follow them.
-    pub(crate) main_marks: &'a [(&'a str, &'a str)],
+    pub(crate) main_marks: &'a [Mark<'a>],
 }
 
 impl Numbering<'_> {
@@ -1325,13 +1362,13 @@ pub(crate) const NUMBERING: Numbering<'static> = Numbering {
 };
 
 /// What each of the Clax app's migrations ([`APP_MIGRATION`] onwards, in
-/// order) leaves in the schema: a table, or a column of `artifacts`.
-const APP_MIGRATION_MARKS: [(&str, &str); 5] = [
-    ("table", "db_read_grants"),
-    ("column", "draft_of"),
-    ("table", "net_grants"),
-    ("table", "sample_grants"),
-    ("column", "draft_inherit_net"),
+/// order) leaves in the schema.
+const APP_MIGRATION_MARKS: [Mark<'static>; 5] = [
+    Mark::Table("db_read_grants"),
+    Mark::Column("artifacts", "draft_of"),
+    Mark::Table("net_grants"),
+    Mark::Table("sample_grants"),
+    Mark::Column("artifacts", "draft_inherit_net"),
 ];
 
 /// Brings a database written by an earlier `flutter-app` build, which
@@ -1382,7 +1419,7 @@ pub(super) fn adopt_earlier_flutter_app(
 ) -> clax_core::Result<Option<(u32, u32)>> {
     let app_first = numbering.app_first();
     let version: u32 = tx.query_row("PRAGMA user_version", [], |r| r.get(0))?;
-    if !has_mark(tx, "table", "db_read_grants")? {
+    if !has_mark(tx, &APP_MIGRATION_MARKS[0])? {
         return Ok(None);
     }
     let refuse = |why: String| clax_core::CoreError::MigrationFailed {
@@ -1395,14 +1432,14 @@ pub(super) fn adopt_earlier_flutter_app(
     // How many of main's migrations above the where-to-ask one the
     // database holds: the first `main` of them, and none after.
     let mut main = 0;
-    for (i, &(kind, name)) in numbering.main_marks.iter().enumerate() {
-        if !has_mark(tx, kind, name)? {
+    for (i, mark) in numbering.main_marks.iter().enumerate() {
+        if !has_mark(tx, mark)? {
             continue;
         }
         if i > main {
-            let (lacked_kind, lacked) = numbering.main_marks[main];
+            let lacked = numbering.main_marks[main];
             return Err(refuse(format!(
-                "holds the {kind} {name} but lacks the {lacked_kind} {lacked} of an earlier migration"
+                "holds the {mark} but lacks the {lacked} of an earlier migration"
             )));
         }
         main += 1;
@@ -1411,13 +1448,13 @@ pub(super) fn adopt_earlier_flutter_app(
         return Ok(None);
     }
     if !asked && main > 0 {
-        let (kind, name) = numbering.main_marks[0];
+        let mark = numbering.main_marks[0];
         return Err(refuse(format!(
-            "holds the {kind} {name} but lacks questions.thread_id of an earlier migration"
+            "holds the {mark} but lacks questions.thread_id of an earlier migration"
         )));
     }
-    let hosted = has_mark(tx, "table", "hosted_setup")?;
-    let people = has_mark(tx, "table", "invites")?;
+    let hosted = has_table(tx, "hosted_setup")?;
+    let people = has_table(tx, "invites")?;
     // The first app migration in the database's numbering, and the first
     // migration of this list's it lacks below the app's.
     let (first, below) = if asked {
@@ -1437,10 +1474,10 @@ pub(super) fn adopt_earlier_flutter_app(
         )));
     }
     let held = (version - first + 1) as usize;
-    for (i, (kind, name)) in APP_MIGRATION_MARKS.iter().enumerate() {
-        if has_mark(tx, kind, name)? != (i < held) {
+    for (i, mark) in APP_MIGRATION_MARKS.iter().enumerate() {
+        if has_mark(tx, mark)? != (i < held) {
             return Err(refuse(format!(
-                "{} the {kind} {name}",
+                "{} the {mark}",
                 if i < held { "lacks" } else { "already has" }
             )));
         }
@@ -1454,13 +1491,27 @@ pub(super) fn adopt_earlier_flutter_app(
     Ok(Some((version, now)))
 }
 
-/// Whether the schema has the table `name` (`kind` "table") or the
-/// `artifacts` column `name` (`kind` "column").
-fn has_mark(tx: &rusqlite::Transaction<'_>, kind: &str, name: &str) -> clax_core::Result<bool> {
-    if kind == "table" {
-        has_table(tx, name)
-    } else {
-        has_column(tx, "artifacts", name)
+/// Whether the database holds `mark`.
+pub(crate) fn has_mark(conn: &rusqlite::Connection, mark: &Mark<'_>) -> clax_core::Result<bool> {
+    match *mark {
+        Mark::Table(name) => has_table(conn, name),
+        Mark::Column(table, column) => has_column(conn, table, column),
+        Mark::Index(name) => Ok(conn.query_row(
+            "SELECT EXISTS (SELECT 1 FROM sqlite_master WHERE type = 'index' AND name = ?1)",
+            [name],
+            |r| r.get(0),
+        )?),
+        Mark::Row { table, predicate } => {
+            if !has_table(conn, table)? {
+                return Ok(false);
+            }
+            let table = table.replace('"', "\"\"");
+            Ok(conn.query_row(
+                &format!("SELECT EXISTS (SELECT 1 FROM \"{table}\" WHERE {predicate})"),
+                [],
+                |r| r.get(0),
+            )?)
+        }
     }
 }
 
@@ -1747,7 +1798,7 @@ const REPAIR_INDEXES: &str = "CREATE INDEX IF NOT EXISTS viewer_cookies_by_viewe
         WHERE status <> 'open';
     CREATE INDEX IF NOT EXISTS question_keys_by_question ON question_keys(question_id, grant_id);";
 
-fn has_table(tx: &rusqlite::Transaction<'_>, table: &str) -> clax_core::Result<bool> {
+fn has_table(tx: &rusqlite::Connection, table: &str) -> clax_core::Result<bool> {
     Ok(tx.query_row(
         "SELECT EXISTS (SELECT 1 FROM sqlite_master WHERE type = 'table' AND name = ?1)",
         [table],
@@ -1755,11 +1806,7 @@ fn has_table(tx: &rusqlite::Transaction<'_>, table: &str) -> clax_core::Result<b
     )?)
 }
 
-fn has_column(
-    tx: &rusqlite::Transaction<'_>,
-    table: &str,
-    column: &str,
-) -> clax_core::Result<bool> {
+fn has_column(tx: &rusqlite::Connection, table: &str, column: &str) -> clax_core::Result<bool> {
     Ok(tx.query_row(
         "SELECT EXISTS (SELECT 1 FROM pragma_table_info(?1) WHERE name = ?2)",
         [table, column],
@@ -3798,6 +3845,31 @@ mod tests {
         }
     }
 
+    /// Each of `numbering`'s main marks above 38 is absent from an empty
+    /// database before its migration, present after it (Rust step and
+    /// all), and still present after every later migration.
+    fn assert_marks_made(numbering: &super::Numbering<'_>) {
+        let main = WHERE_TO_ASK_MIGRATION as usize;
+        let mut c = Connection::open_in_memory().unwrap();
+        let tx = c.transaction().unwrap();
+        for v in 1..=numbering.migrations.len() as u32 {
+            let made = v as usize > main && v < numbering.app_first();
+            let mark = made.then(|| numbering.main_marks[v as usize - main - 1]);
+            if let Some(mark) = mark {
+                assert!(!super::has_mark(&tx, &mark).unwrap(), "{mark} before {v}");
+            }
+            tx.execute_batch(numbering.migrations[v as usize - 1])
+                .unwrap();
+            super::rust_step(&tx, v).unwrap();
+            if let Some(mark) = mark {
+                assert!(super::has_mark(&tx, &mark).unwrap(), "{mark} after {v}");
+            }
+        }
+        for mark in numbering.main_marks {
+            assert!(super::has_mark(&tx, mark).unwrap(), "{mark} at the end");
+        }
+    }
+
     #[test]
     fn the_app_migrations_follow_mains_in_this_order() {
         assert_eq!(WHERE_TO_ASK_MIGRATION, REPAIR_MIGRATION + 1);
@@ -3805,15 +3877,15 @@ mod tests {
         // Main's migrations after the where-to-ask one, each making its mark.
         let main = WHERE_TO_ASK_MIGRATION as usize;
         assert_eq!(APP_MIGRATION as usize, main + MAIN_MARKS_ABOVE_38.len() + 1);
-        for (i, (kind, name)) in MAIN_MARKS_ABOVE_38.iter().enumerate() {
-            assert_eq!(*kind, "table");
-            assert!(MIGRATIONS[main + i].contains(&format!("CREATE TABLE {name} (")));
-        }
+        assert_marks_made(&super::NUMBERING);
         // Adoption runs them on a database holding the app's tables: they
         // name none of them.
         for sql in &MIGRATIONS[main..APP_MIGRATION as usize - 1] {
-            for (_, mark) in super::APP_MIGRATION_MARKS {
-                assert!(!sql.contains(mark), "{mark}");
+            for mark in super::APP_MIGRATION_MARKS {
+                let (super::Mark::Table(name) | super::Mark::Column(_, name)) = mark else {
+                    unreachable!("the app's marks are tables and columns")
+                };
+                assert!(!sql.contains(name), "{mark}");
             }
         }
         assert_eq!(MIGRATIONS.len() as u32, APP_MIGRATION + 4);
@@ -4758,16 +4830,46 @@ mod tests {
         created_at TEXT NOT NULL
     );";
 
+    /// Migrations main might add after its 40 that make no table, each with
+    /// its mark: a column of a table other than `artifacts`, an index, and
+    /// one that changes only rows.
+    const SIMULATED_MAINS_41_WITHOUT_A_TABLE: [(&str, super::Mark<'static>); 3] = [
+        (
+            "ALTER TABLE sessions ADD COLUMN simulated_main_41 TEXT;",
+            super::Mark::Column("sessions", "simulated_main_41"),
+        ),
+        (
+            "CREATE INDEX simulated_main_41 ON comments(created_at);",
+            super::Mark::Index("simulated_main_41"),
+        ),
+        (
+            "UPDATE artifacts SET title = trim(title);
+             INSERT INTO install (k, v) VALUES ('simulated_main_41', '1');",
+            super::Mark::Row {
+                table: "install",
+                predicate: "k = 'simulated_main_41'",
+            },
+        ),
+    ];
+
     /// [`MIGRATIONS`] as a build would have them after taking a 41 more
     /// of main's ([`SIMULATED_MAIN_41`]): main's 1 to 40, it, then the
     /// app's from 42; and main's marks above 38 with its mark last.
-    fn with_a_main_41() -> (Vec<&'static str>, Vec<(&'static str, &'static str)>) {
+    fn with_a_main_41() -> (Vec<&'static str>, Vec<super::Mark<'static>>) {
+        with_main_41(SIMULATED_MAIN_41, super::Mark::Table("simulated_main_41"))
+    }
+
+    /// [`MIGRATIONS`] after taking `sql` as main's 41, with its `mark`.
+    fn with_main_41(
+        sql: &'static str,
+        mark: super::Mark<'static>,
+    ) -> (Vec<&'static str>, Vec<super::Mark<'static>>) {
         let app = APP_MIGRATION as usize - 1;
         let mut migrations = MIGRATIONS[..app].to_vec();
-        migrations.push(SIMULATED_MAIN_41);
+        migrations.push(sql);
         migrations.extend_from_slice(&MIGRATIONS[app..]);
         let mut marks = MAIN_MARKS_ABOVE_38.to_vec();
-        marks.push(("table", "simulated_main_41"));
+        marks.push(mark);
         (migrations, marks)
     }
 
@@ -5067,5 +5169,89 @@ mod tests {
         let c = Connection::open(home.db_path()).unwrap();
         let after = (user_version(&c), schema_of(&c), every_row(&c));
         assert!(after == before, "left as it was: {after:?}");
+    }
+
+    #[test]
+    fn a_mark_is_a_table_a_column_of_any_table_an_index_or_a_row() {
+        use super::Mark;
+        let c = Connection::open_in_memory().unwrap();
+        c.execute_batch(
+            "CREATE TABLE install (k TEXT PRIMARY KEY, v TEXT);
+             CREATE TABLE sessions (id TEXT PRIMARY KEY, cwd TEXT);
+             CREATE INDEX sessions_by_cwd ON sessions(cwd);
+             INSERT INTO install (k, v) VALUES ('id', 'x');",
+        )
+        .unwrap();
+        let held = |m: Mark<'_>| super::has_mark(&c, &m).unwrap();
+        assert!(held(Mark::Table("sessions")));
+        assert!(!held(Mark::Table("briefs")));
+        assert!(held(Mark::Column("sessions", "cwd")));
+        assert!(!held(Mark::Column("sessions", "harness")));
+        assert!(!held(Mark::Column("artifacts", "cwd")));
+        assert!(held(Mark::Index("sessions_by_cwd")));
+        assert!(!held(Mark::Index("sessions")), "a table is no index");
+        assert!(
+            !held(Mark::Table("sessions_by_cwd")),
+            "an index is no table"
+        );
+        let row = |predicate| Mark::Row {
+            table: "install",
+            predicate,
+        };
+        assert!(held(row("k = 'id' AND v = 'x'")));
+        assert!(!held(row("k = 'backfill'")));
+        assert!(
+            !held(Mark::Row {
+                table: "briefs",
+                predicate: "1"
+            }),
+            "no row of a table the database lacks"
+        );
+    }
+
+    /// A main migration above 38 that makes no table is marked by the
+    /// column, index or row it leaves: a home of this numbering takes it as
+    /// it takes one that makes a table, and every earlier layout of the
+    /// app's migrations is adopted around it.
+    #[test]
+    fn a_later_main_migration_making_no_table_is_marked_and_adopted_around() {
+        for (sql, mark) in SIMULATED_MAINS_41_WITHOUT_A_TABLE {
+            let (migrations, marks) = with_main_41(sql, mark);
+            let later = super::Numbering {
+                migrations: &migrations,
+                main_marks: &marks,
+            };
+            assert_marks_made(&later);
+            let fresh = fresh_shape_of(&later);
+            for (k, app) in [(2, 5), (2, 1), (1, 3), (0, 5)] {
+                let dir = tempfile::tempdir().unwrap();
+                let home = Home::at(dir.path().join("ax"));
+                let before = app_after_main(&home, k, app);
+                let old = WHERE_TO_ASK_MIGRATION + (k + app) as u32;
+                {
+                    let mut c = Connection::open(home.db_path()).unwrap();
+                    let tx = c.transaction().unwrap();
+                    assert_eq!(
+                        super::adopt_earlier_flutter_app(&tx, &later).unwrap(),
+                        Some((old, later.app_first() - 1 + app as u32)),
+                        "{mark}: k {k}, app {app}"
+                    );
+                }
+                open_under(&home, &later);
+                let mut c = Connection::open(home.db_path()).unwrap();
+                assert_eq!(
+                    user_version(&c),
+                    migrations.len() as u32,
+                    "{mark}: k {k}, app {app}"
+                );
+                assert_eq!(shape_of(&c), fresh, "{mark}: k {k}, app {app}");
+                assert_eq!(kept_rows(&c, app), before, "{mark}: k {k}, app {app}");
+                assert!(super::has_mark(&c, &mark).unwrap(), "{mark}");
+                // Opened again, it is this numbering's: nothing runs twice.
+                let (schema, rows) = (schema_of(&c), every_row(&c));
+                crate::migrate_with(&mut c, &later).unwrap();
+                assert_eq!((schema_of(&c), every_row(&c)), (schema, rows), "{mark}");
+            }
+        }
     }
 }
