@@ -54,6 +54,40 @@ async fn as_lan(
     next.run(req).await
 }
 
+/// A listener on an ephemeral port of `bind`, and for an IPv4 `bind` a
+/// socket bound, not listening, to the same port on `[::1]`.
+///
+/// `localhost` resolves to `::1` first, and another process (a Bazel
+/// server, a dev server) may listen on `[::1]` at the port the kernel gave
+/// this daemon on `127.0.0.1`: a request to `http://localhost:<port>`
+/// (a hosted test daemon's origin, a browser base) would then reach that
+/// process. Holding the twin keeps the port free of any such listener, and
+/// a connection to it is refused at once, so the client goes on to
+/// `127.0.0.1`. A port whose twin is taken is given back and another
+/// tried; a machine without IPv6 needs no twin.
+async fn listen(bind: IpAddr) -> (tokio::net::TcpListener, Option<tokio::net::TcpSocket>) {
+    loop {
+        let listener = tokio::net::TcpListener::bind(SocketAddr::new(bind, 0))
+            .await
+            .unwrap();
+        if bind.is_ipv6() {
+            return (listener, None);
+        }
+        let port = listener.local_addr().unwrap().port();
+        let Ok(twin) = tokio::net::TcpSocket::new_v6() else {
+            return (listener, None);
+        };
+        match twin.bind(SocketAddr::new(
+            IpAddr::V6(std::net::Ipv6Addr::LOCALHOST),
+            port,
+        )) {
+            Ok(()) => return (listener, Some(twin)),
+            Err(e) if e.kind() == std::io::ErrorKind::AddrInUse => continue,
+            Err(_) => return (listener, None),
+        }
+    }
+}
+
 /// The checkout's web UI (`web/dist`, Bazel's build of it under Bazel), read
 /// from disk: the tests read it as run-time data, so a web UI edit reruns
 /// them without recompiling them. Empty when the UI is not built.
@@ -247,6 +281,8 @@ pub struct TestServer {
     /// (a socket's reopening).
     pub state: AppState,
     extension_id: String,
+    /// The IPv6 loopback twin of an IPv4 daemon's port ([`listen`]).
+    _v6_twin: Option<tokio::net::TcpSocket>,
     _dir: tempfile::TempDir,
 }
 
@@ -490,9 +526,7 @@ impl TestServer {
             }
         });
         let token = "test-token".to_string();
-        let listener = tokio::net::TcpListener::bind(SocketAddr::new(bind, 0))
-            .await
-            .unwrap();
+        let (listener, v6_twin) = listen(bind).await;
         let addr = listener.local_addr().unwrap();
         let port = addr.port();
         let live_ids = Arc::new(clax_realtime::live::LiveIds::load(&store).unwrap());
@@ -627,6 +661,7 @@ impl TestServer {
             live_layers,
             state: kept_state,
             extension_id,
+            _v6_twin: v6_twin,
             _dir: dir,
         }
     }
