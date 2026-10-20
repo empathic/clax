@@ -2499,7 +2499,10 @@ the store work it does, even when its request is dropped), the new claim
 answers 409 `owner_draining` at once, as does any later claim of its
 stream, and its token admits no write; `jobs_owner` `{client, held:
 true}` is published when the last of them ends, and the stream's next
-claim answers its token. So none of them lands after the new owner holds
+claim answers its token. That event may reach the stream before the
+claim's 409 does: a `held: true` for the client heard after the claim was
+sent counts, so on `owner_draining` a worker that has heard one claims
+again at once, and otherwise waits for it. So none of them lands after the new owner holds
 the queue, and no claim waits on a write. The owner-only `jobs`
 stream topic carries `job` `{id, client, state, step, rev}` after every
 committed write of a job, whichever path made it (a job route, a

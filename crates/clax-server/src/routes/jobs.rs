@@ -191,7 +191,9 @@ pub struct ClaimBody {
 /// `stream`, or none of the caller's; 409 `owner_draining` at once when
 /// the claim is the caller's but writes admitted under an older claim are
 /// still running: `jobs_owner` with `held: true` is published when they
-/// end, and the stream's next claim answers its token. The claim is
+/// end, and the stream's next claim answers its token. That event may
+/// reach the stream before this answer does, so one heard after the
+/// claim was sent counts. The claim is
 /// released when that connection ends. Before anything else the
 /// claim subscribes `stream` to the `jobs` topic, so a claimant refused
 /// `owner_held` hears the `jobs_owner` release it waits for, however soon
