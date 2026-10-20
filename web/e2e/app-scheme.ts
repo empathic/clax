@@ -64,8 +64,13 @@
 //   `/api/admin/shutdown` answers 404 `not_in_app` unasked. A `chunked`
 //   call waits for its `callChunk`s. The answer is `claxTransport.callResult
 //   (nonce, id, {status, headers, body | body64})`: `body` for text or JSON
-//   that is valid UTF-8, else `body64`. `callAbort` cancels the request and
-//   drops its answer.
+//   that is valid UTF-8, else `body64`. An answer of more than `PART` bytes
+//   goes in parts as the app's relay sends it (`answerScripts`, checked
+//   against the relay's own scripts in apps/clax_app/test/fixtures/
+//   relay_answer_parts.json): `callResult(nonce, id, {body64, more: true})`
+//   for each part but the last, each run before the next is queued, then
+//   the ordinary `callResult` with the rest. `callAbort` cancels the
+//   request and drops its answer, or the rest of its parts.
 // - `subscribe {id, lastEventId?}` opens `GET /api/stream` as the owner,
 //   from `Last-Event-ID` when it names one, and pushes each SSE block of
 //   its body by `claxTransport.streamBlock(nonce, id, text)`, then the end
@@ -116,7 +121,7 @@ function ownerCookie(token: string): string {
   return `clax_owner_80=${v}`;
 }
 
-type Answer = { status: number; headers: [string, string][]; body: Buffer };
+export type Answer = { status: number; headers: [string, string][]; body: Buffer };
 
 /** Sends one request to the daemon, as the router gets it from a frame. */
 function send(d: Daemon, o: { method: string; path: string; headers: [string, string][]; body?: Buffer; signal?: AbortSignal }): Promise<http.IncomingMessage> {
@@ -215,11 +220,12 @@ export class AppHost {
   /** The nonces minted, by navigation number. */
   private sets = new Map<number, Set<string>>();
   private navigations = 0;
-  private queue: string[] = [];
+  private queue: { e: string; ran: () => void }[] = [];
   private held = false;
   private pumping = false;
   private idleWaiters: (() => void)[] = [];
   private stalls: { match: (c: CallRecord) => boolean; open: Promise<void> }[] = [];
+  private partStalls: { match: (c: CallRecord) => boolean; open: Promise<void> }[] = [];
   private callFaults: { match: (c: CallRecord) => boolean; answer: Answer }[] = [];
   private schemeFaults: { match: (u: URL) => boolean; answer: Answer }[] = [];
   private streamFaults: { reason: string; status?: number }[] = [];
@@ -286,7 +292,7 @@ export class AppHost {
   streamsOf(nonce = this.nonce): SubscriptionRecord[] { return this.subscriptions.filter(s => s.nonce === nonce); }
 
   /** What waits in the queue, oldest first. */
-  get waiting(): readonly string[] { return this.queue; }
+  get waiting(): readonly string[] { return this.queue.map(q => q.e); }
 
   /** Stops running anything in the shell; what the relay answers waits. */
   hold(): void { this.held = true; }
@@ -322,6 +328,15 @@ export class AppHost {
     return () => { this.stalls.splice(this.stalls.indexOf(s), 1); open(); };
   }
 
+  /** Keeps every call `match` names, once the first part of its answer
+   * has run, from sending the rest until the returned function is called. */
+  stallParts(match: (c: CallRecord) => boolean): () => void {
+    let open = () => {};
+    const s = { match, open: new Promise<void>(r => { open = r; }) };
+    this.partStalls.push(s);
+    return () => { this.partStalls.splice(this.partStalls.indexOf(s), 1); open(); };
+  }
+
   /** Answers the next call `match` names with `status` and `code`, unasked. */
   failNext(match: (c: CallRecord) => boolean, status: number, code = "unavailable"): void {
     this.callFaults.push({ match, answer: errorAnswer(status, code, "refused by the test") });
@@ -353,11 +368,11 @@ export class AppHost {
     const nonce = await this.pinned();
     if (this.load !== load || load.inited) return;
     load.inited = true;
-    if (this.opts.nonceMeta === false) this.run(`window.claxTransport.init(${JSON.stringify(nonce)})`);
+    if (this.opts.nonceMeta === false) void this.run(`window.claxTransport.init(${JSON.stringify(nonce)})`);
     if (!new URL(load.url).searchParams.has("app")) return;
     await expect.poll(() => this.evalNow<string>("typeof window.claxHost")).toBe("object");
     if (this.load !== load) return;
-    this.run(`window.claxHost.init(${JSON.stringify({ nonce, ...this.opts.initWith })})`);
+    void this.run(`window.claxHost.init(${JSON.stringify({ nonce, ...this.opts.initWith })})`);
   }
 
   /** Runs `expression` in the shell now, outside the queue, with no user gesture. */
@@ -602,12 +617,23 @@ export class AppHost {
       }
     }
     if (load.calls.get(call.id) !== call) return;
-    load.calls.delete(call.id);
     const type = answer.headers.find(([k]) => k === "content-type")?.[1] ?? "";
-    const text = TEXTUAL.test(type) ? utf8(answer.body) : null;
-    record.answered = { status: answer.status, text };
-    const r = { status: answer.status, headers: answer.headers, ...(text !== null ? { body: text } : { body64: answer.body.toString("base64") }) };
-    this.run(`window.claxTransport.callResult(${JSON.stringify(call.nonce)}, ${call.id}, ${JSON.stringify(r)})`);
+    record.answered = { status: answer.status, text: TEXTUAL.test(type) ? utf8(answer.body) : null };
+    const scripts = answerScripts(call.nonce, call.id, answer);
+    const last = scripts.pop()!;
+    for (const [i, js] of scripts.entries()) {
+      // Each part runs before the next goes, as the relay awaits it.
+      await this.run(js);
+      if (load.calls.get(call.id) !== call) return;
+      const paused = i === 0 ? this.partStalls.filter(s => s.match(record)) : [];
+      if (paused.length) {
+        const aborted = new Promise<void>(r => call.ac.signal.addEventListener("abort", () => r(), { once: true }));
+        await Promise.race([Promise.all(paused.map(s => s.open)), aborted]);
+        if (load.calls.get(call.id) !== call) return;
+      }
+    }
+    load.calls.delete(call.id);
+    void this.run(last);
   }
 
   private async subscribe(load: Load, id: number, lastEventId: string | null): Promise<void> {
@@ -633,7 +659,7 @@ export class AppHost {
     res.setEncoding("utf8");
     const sse = new SseBlocks();
     const push = (block: string) => {
-      if (load.streams.get(id) === s) this.run(`window.claxTransport.streamBlock(${JSON.stringify(s.nonce)}, ${id}, ${JSON.stringify(block)})`);
+      if (load.streams.get(id) === s) void this.run(`window.claxTransport.streamBlock(${JSON.stringify(s.nonce)}, ${id}, ${JSON.stringify(block)})`);
     };
     res.on("data", (text: string) => { for (const b of sse.push(text)) push(b); });
     const ended = () => {
@@ -651,16 +677,19 @@ export class AppHost {
     load.streams.delete(s.id);
     s.ac.abort();
     this.subscriptions.find(r => r.nonce === s.nonce && r.id === s.id)!.ended = end.reason;
-    this.run(`window.claxTransport.streamBlock(${JSON.stringify(s.nonce)}, ${s.id}, ${JSON.stringify(`event: end\ndata: ${JSON.stringify(end)}\n\n`)})`);
-    this.run(`window.claxTransport.streamEnd(${JSON.stringify(s.nonce)}, ${s.id})`);
+    void this.run(`window.claxTransport.streamBlock(${JSON.stringify(s.nonce)}, ${s.id}, ${JSON.stringify(`event: end\ndata: ${JSON.stringify(end)}\n\n`)})`);
+    void this.run(`window.claxTransport.streamEnd(${JSON.stringify(s.nonce)}, ${s.id})`);
   }
 
   // ---- the queue ----
 
-  /** Queues `expression` to run in the shell, as `runJavaScript` does. */
-  private run(expression: string): void {
-    this.queue.push(expression);
-    void this.pump();
+  /** Queues `expression` to run in the shell, as `runJavaScript` does;
+   * resolves once it has run (or the document could not run it). */
+  private run(expression: string): Promise<void> {
+    return new Promise(ran => {
+      this.queue.push({ e: expression, ran });
+      void this.pump();
+    });
   }
 
   private async pump(): Promise<void> {
@@ -668,16 +697,42 @@ export class AppHost {
     this.pumping = true;
     try {
       while (!this.held && this.queue.length) {
-        const e = this.queue.shift()!;
+        const { e, ran } = this.queue.shift()!;
         this.ran.push(e);
         // A document that went away takes nothing, as runJavaScript into it.
         await this.evalNow(e).catch(() => {});
+        ran();
       }
     } finally {
       this.pumping = false;
       if (this.held || !this.queue.length) for (const w of this.idleWaiters.splice(0)) w();
     }
   }
+}
+
+/** The most body bytes one part of an answer carries, as the app's relay
+ * (`ChannelRelay.partBytes`): a multiple of 3, so the parts' base64 texts
+ * join, and exactly 1 MiB of base64. */
+export const PART = 3 << 18;
+
+/** The scripts the app's relay runs to answer call `id` of the load under
+ * `nonce` with `a`, byte for byte as ChannelRelay writes them: one
+ * `callResult` with `body` (text or JSON that is valid UTF-8) or `body64`,
+ * or for a body of more than `PART` bytes a `{body64, more: true}` part for
+ * each `PART` bytes but the last, then the `callResult` with the rest as
+ * `body64`. */
+export function answerScripts(nonce: string, id: number, a: Answer): string[] {
+  const call = (r: object) => `window.claxTransport.callResult(${JSON.stringify(nonce)}, ${id}, ${JSON.stringify(r)})`;
+  const head = { status: a.status, headers: a.headers };
+  if (a.body.length <= PART) {
+    const type = a.headers.find(([k]) => k.toLowerCase() === "content-type")?.[1] ?? "";
+    const text = TEXTUAL.test(type) ? utf8(a.body) : null;
+    return [call({ ...head, ...(text !== null ? { body: text } : { body64: a.body.toString("base64") }) })];
+  }
+  const out: string[] = [];
+  let at = 0;
+  for (; a.body.length - at > PART; at += PART) out.push(call({ body64: a.body.subarray(at, at + PART).toString("base64"), more: true }));
+  return [...out, call({ ...head, body64: a.body.subarray(at).toString("base64") })];
 }
 
 /** An SSE body cut into its blocks, each with its blank line, however

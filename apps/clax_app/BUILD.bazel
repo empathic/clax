@@ -46,6 +46,15 @@ js_library(
 )
 exports_files(["pubspec.lock"])
 
+# The scripts the host relay runs for one long answer, which
+# test/core/channel_relay_test.dart writes and the web's unit and browser
+# tests run against the shell's transport and the e2e stand-in.
+js_library(
+    name = "relay_fixture",
+    srcs = ["test/fixtures/relay_answer_parts.json"],
+    visibility = ["//web:__pkg__"],
+)
+
 # `flutter analyze`'s rules for the app's Dart targets (the dart_analyze
 # aspect .bazelrc applies to every test run).
 dart_analysis_options(

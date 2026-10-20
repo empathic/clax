@@ -8,9 +8,11 @@
 // paced by the core's end blocks, a suspended WebView, origin isolation,
 // comment mode, clips, the app's more menu, and the browser's shell as it
 // was.
+import { createHash } from "node:crypto";
+import { readFileSync } from "node:fs";
 import type { Frame, Page } from "@playwright/test";
 import { hostChannel, host } from "./app-host";
-import { type AppHost, type AppHostOptions, BINDING, SHELL, SseBlocks, content, startEmbedDaemon } from "./app-scheme";
+import { type AppHost, type AppHostOptions, BINDING, PART, SHELL, SseBlocks, answerScripts, content, startEmbedDaemon } from "./app-scheme";
 import { test as base, expect, type Daemon, api, publish } from "./fixtures";
 import { quietEval } from "./time";
 import { REQUEST_STUCK } from "../shell/src/conn-notice";
@@ -112,7 +114,9 @@ test("calls go out from boot under the document's nonce, each answer names it, a
   await expect.poll(() => h.calls.filter(c => c.answered).length).toBeGreaterThan(0);
   expect(h.ran.filter(e => e.includes("claxHost.init"))).toEqual([]);
   expect(h.calls.every(c => c.nonce === meta)).toBe(true);
-  // Every answer the host ran names the load's nonce first.
+  // Every answer the host ran names the load's nonce first (the stream's
+  // first block included, which the daemon sends after the subscription opens).
+  await expect.poll(() => h.ran.some(e => e.startsWith("window.claxTransport.streamBlock("))).toBe(true);
   await h.idle();
   const answers = h.ran.filter(e => /claxTransport\.(callResult|streamBlock|streamEnd)\(/.test(e));
   expect(answers.length).toBeGreaterThan(0);
@@ -318,6 +322,50 @@ test("a body over 8 MiB goes to the core in 1 MiB chunks and arrives whole", asy
   expect(bytes.reduce((a, b) => a + b, 0)).toBeGreaterThan(size);
   const big = await (await fetch(`${d.base}/api/artifacts/${id}/versions/2/files/big.txt`)).text();
   expect(big.length).toBe(size);
+});
+
+/** The body of the relay's shared fixture: byte i is (i * 31 + (i >> 9)) & 255. */
+const fixtureBody = (n: number) => Buffer.from(Uint8Array.from({ length: n }, (_, i) => (i * 31 + (i >> 9)) & 255));
+
+test("the stand-in answers a long body in exactly the scripts the app's relay runs", () => {
+  // Written by apps/clax_app/test/core/channel_relay_test.dart from what ChannelRelay runs.
+  const fx = JSON.parse(readFileSync(new URL("../../apps/clax_app/test/fixtures/relay_answer_parts.json", import.meta.url), "utf8")) as { nonce: string; id: number; bytes: number; scripts: string[] };
+  const scripts = answerScripts(fx.nonce, fx.id, { status: 200, headers: [["content-type", "application/octet-stream"]], body: fixtureBody(fx.bytes) });
+  expect(scripts.length).toBe(fx.scripts.length);
+  expect(scripts.map((js, i) => js === fx.scripts[i])).toEqual(fx.scripts.map(() => true));
+});
+
+test("an answer over the part size reaches the shell's fetch whole, in parts; one aborted after its first part sends no more", async ({ page }) => {
+  const { id, host: h } = await openInApp(page, "Transport long answer");
+  await live(h);
+  const body = fixtureBody((5 << 19) + 7);
+  const res = await fetch(`${d.base}/api/artifacts/${id}/versions`, { method: "POST", headers: { "content-type": "application/json", authorization: `Bearer ${d.token}` },
+    body: JSON.stringify({ if_version: 1, files: { "index.html": { content: PAGE, encoding: "utf8" }, "big.bin": { content: body.toString("base64"), encoding: "base64" } } }) });
+  expect(res.status).toBeLessThan(300);
+  const path = `/api/artifacts/${id}/versions/2/files/big.bin`;
+  const nonce = await h.pinned();
+  const partsOf = (callId: number) => h.ran.filter(e => e.startsWith(`window.claxTransport.callResult(${JSON.stringify(nonce)}, ${callId}, {"body64":`) && e.endsWith(`,"more":true})`));
+  const hash = await h.evalNow<string>(`fetch(${JSON.stringify(path)}).then(r => r.arrayBuffer()).then(b => crypto.subtle.digest("SHA-256", b)).then(d => [...new Uint8Array(d)].map(x => x.toString(16).padStart(2, "0")).join(""))`);
+  expect(hash).toBe(createHash("sha256").update(body).digest("hex"));
+  const [whole] = h.callsTo("GET", path);
+  expect(partsOf(whole.id)).toHaveLength(Math.floor(body.length / PART));
+
+  // Aborted once its first part has run in the shell.
+  const unstall = h.stallParts(c => c.path === `${path}?abort=1`);
+  await h.evalNow(`window.bigAbort = new AbortController(); window.big = fetch(${JSON.stringify(`${path}?abort=1`)}, { signal: bigAbort.signal }).then(r => r.arrayBuffer()).then(() => "read", e => e.name); 0`);
+  await expect.poll(() => h.callsTo("GET", `${path}?abort=1`).length).toBe(1);
+  const [aborted] = h.callsTo("GET", `${path}?abort=1`);
+  await expect.poll(() => partsOf(aborted.id).length).toBe(1);
+  await h.evalNow("bigAbort.abort(); 0");
+  expect(await h.evalNow<string>("window.big")).toBe("AbortError");
+  await h.barrier();
+  expect(aborted.aborted).toBe(true);
+  unstall();
+  await h.idle();
+  expect(partsOf(aborted.id)).toHaveLength(1);
+  expect(h.ran.filter(e => e.startsWith(`window.claxTransport.callResult(${JSON.stringify(nonce)}, ${aborted.id}, {"status"`))).toEqual([]);
+  // The shell's next call is answered as any other.
+  expect(await h.evalNow<number>(`fetch("/api/artifacts/${id}").then(r => r.status)`)).toBe(200);
 });
 
 test("before the nonce an aborted call or stream rejects and posts nothing; after it, an abort posts callAbort or unsubscribe and its answer is dropped", async ({ page }) => {

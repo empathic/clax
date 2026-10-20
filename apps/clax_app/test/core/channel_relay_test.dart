@@ -1,5 +1,6 @@
 import 'dart:async';
 import 'dart:convert';
+import 'dart:io';
 import 'dart:typed_data';
 
 import 'package:clax_app/core/channel_relay.dart';
@@ -8,6 +9,7 @@ import 'package:clax_app/core/frame.dart';
 import 'package:flutter_test/flutter_test.dart';
 
 import '../support/fake_core.dart';
+import '../support/paths.dart';
 
 const _nonce = 'n0nce-of-the-load_0123456789';
 
@@ -282,6 +284,43 @@ void main() {
       await settle();
       expect(asked, hasLength(3));
     });
+  });
+
+  test('the scripts for a 2.5 MiB answer are the shared fixture\'s, which '
+      'web/shell/src/transport.test.ts runs against the transport and '
+      'web/e2e/app-scheme.ts must match', () async {
+    final bytes = Uint8List((5 << 19) + 7);
+    for (var i = 0; i < bytes.length; i++) {
+      bytes[i] = (i * 31 + (i >> 9)) & 255;
+    }
+    fake.on(
+      'GET',
+      '/api/blob',
+      (r, p) => CoreResponse(200, const [
+        ('content-type', 'application/octet-stream'),
+      ], bytes),
+    );
+    relay.handle(call(1, 'GET', '/api/blob'));
+    await settle();
+    final text =
+        '${const JsonEncoder.withIndent('  ').convert({'about': 'The scripts ChannelRelay (apps/clax_app/lib/core/'
+            'channel_relay.dart) runs to answer call 1 of the load '
+            'under nonce with a 200 application/octet-stream body of '
+            'bytes bytes, byte i being (i * 31 + (i >> 9)) & 255. '
+            'Written by test/core/channel_relay_test.dart.', 'nonce': _nonce, 'id': 1, 'bytes': bytes.length, 'scripts': ran})}\n';
+    const name = 'relay_answer_parts.json';
+    final file = File(appPath('test/fixtures/$name'));
+    if (!file.existsSync() || file.readAsStringSync() != text) {
+      final out =
+          Platform.environment['TEST_UNDECLARED_OUTPUTS_DIR'] ??
+          scratchRoot().path;
+      File('$out/$name').writeAsStringSync(text);
+      fail(
+        'test/fixtures/$name is not what the relay runs: the relay\'s is '
+        '$out/$name',
+      );
+    }
+    expect(ran, hasLength(4));
   });
 
   test('an answer of exactly partBytes goes whole', () async {

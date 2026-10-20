@@ -1,7 +1,11 @@
+import { readFileSync } from "node:fs";
+import { join } from "node:path";
 import { describe, expect, it, vi } from "vitest";
 import { CHUNK, CHUNKED_OVER, type HostReceivers, hostEmbed, installTransport, onHost, readEmbed, transport } from "./transport";
 
 const ORIGIN = "https://app.clax.invalid";
+/** For the cases that encode or decode megabytes: they wait on no condition, so only the machine's load bounds them. */
+const HEAVY = { timeout: 120_000 };
 const NONCE = "N".repeat(16);
 
 /** A transport over a channel that records what it posts, given `NONCE`. */
@@ -60,7 +64,7 @@ describe("the transport", () => {
     // Decoded with Node's base64, not the transport's.
     const same = chunks.map((c, n) => Buffer.from(c.body64 as string, "base64").equals(body.subarray(n * CHUNK, (n + 1) * CHUNK)));
     expect(same).toEqual(chunks.map(() => true));
-  });
+  }, HEAVY);
   it("answers a result sent in parts: each part's base64 joins the next, and the last carries the status and headers", async () => {
     const { sent, t, f } = open();
     // Parts of a multiple of 3 bytes, so their base64 texts join into the body's.
@@ -84,7 +88,22 @@ describe("the transport", () => {
     expect(r.status).toBe(200);
     expect(r.headers.get("content-type")).toBe("application/octet-stream");
     expect(Buffer.from(await r.arrayBuffer()).equals(Buffer.from(body))).toBe(true);
-  });
+  }, HEAVY);
+  it("assembles the host relay's own scripts for a 2.5 MiB answer into its body", async () => {
+    // Written by apps/clax_app/test/core/channel_relay_test.dart from what ChannelRelay runs.
+    const fx = JSON.parse(readFileSync(join(__dirname, "../../../apps/clax_app/test/fixtures/relay_answer_parts.json"), "utf8")) as { nonce: string; id: number; bytes: number; scripts: string[] };
+    const sent: Record<string, unknown>[] = [];
+    const t = transport(() => ({ postMessage: (m: string) => sent.push(JSON.parse(m) as Record<string, unknown>) }), vi.fn(), ORIGIN, fx.nonce);
+    const p = t.fetch("/api/blob");
+    await vi.waitFor(() => expect(sent.length).toBe(1));
+    expect(sent[0].id).toBe(fx.id);
+    expect(fx.scripts.filter(js => js.includes('"more":true'))).toHaveLength(fx.scripts.length - 1);
+    for (const js of fx.scripts) new Function("window", js)({ claxTransport: t });
+    const r = await p;
+    expect(r.status).toBe(200);
+    const want = Buffer.from(Uint8Array.from({ length: fx.bytes }, (_, i) => (i * 31 + (i >> 9)) & 255));
+    expect(Buffer.from(await r.arrayBuffer()).equals(want)).toBe(true);
+  }, HEAVY);
   it("an abort between parts rejects the call, posts callAbort, and drops the parts after it; a part of no waiting call does nothing", async () => {
     const { sent, t, f } = open();
     const ac = new AbortController();

@@ -193,15 +193,16 @@ filegroup(
 )
 
 # What the unit tests and the typecheck read outside web/: the toolpath
-# vectors, the browser tests of the hosted demo (they import demo/lib), and
-# the home app's modules, its unit tests and the kit
-# (apps/clax_app/home_unit).
+# vectors, the browser tests of the hosted demo (they import demo/lib), the
+# home app's modules, its unit tests and the kit (apps/clax_app/home_unit),
+# and the host relay's scripts for one long answer (relay_fixture).
 UNIT_DATA = [
     ":files",
     ":node_modules",
     "//apps/clax_app:home",
     "//apps/clax_app:home_unit",
     "//apps/clax_app:kit",
+    "//apps/clax_app:relay_fixture",
     "//crates/clax-core:toolpath_vectors_bin",
     "//demo:files",
 ]
@@ -248,6 +249,7 @@ npm_script_test(
 E2E_DATA = [
     "//apps/clax_app:home",
     "//apps/clax_app:kit",
+    "//apps/clax_app:relay_fixture",
     ":dist",
     ":dist_e2e",
     ":dist_extension_test",
