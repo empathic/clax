@@ -259,18 +259,49 @@ impl Embed {
     /// A [`FrameError`] for a frame that does not parse.
     pub async fn call(&self, bytes: &[u8]) -> Result<Vec<u8>, FrameError> {
         let (head, body) = frame::decode_request(bytes)?;
-        let body = Bytes::copy_from_slice(body);
-        let task = self
-            .inner
-            .handle
-            .spawn(answer(self.inner.shared.clone(), head, body));
-        Ok(match task.await {
+        Ok(self
+            .answered(head, Bytes::copy_from_slice(body), Vec::new())
+            .await)
+    }
+
+    /// [`Embed::call`] on a frame the caller owns, its body taken as a
+    /// slice of it, the response frame written after `prefix` (a call's
+    /// tag) in the one buffer that is posted.
+    ///
+    /// # Errors
+    /// A [`FrameError`] for a frame that does not parse.
+    pub(crate) async fn call_owned(
+        &self,
+        bytes: Bytes,
+        prefix: Vec<u8>,
+    ) -> Result<Vec<u8>, FrameError> {
+        let (head, body) = frame::decode_request(&bytes)?;
+        let body = bytes.slice_ref(body);
+        Ok(self.answered(head, body, prefix).await)
+    }
+
+    async fn answered(&self, head: RequestHead, body: Bytes, prefix: Vec<u8>) -> Vec<u8> {
+        let task = self.inner.handle.spawn(answer(
+            self.inner.shared.clone(),
+            head,
+            body,
+            prefix.clone(),
+        ));
+        match task.await {
             Ok(answer) => answer,
-            Err(e) if e.is_panic() => {
-                error_frame(500, "internal", "the core panicked while it answered")
-            }
-            Err(_) => error_frame(503, "core_closed", "the core stopped before it answered"),
-        })
+            Err(e) if e.is_panic() => error_frame_after(
+                &prefix,
+                500,
+                "internal",
+                "the core panicked while it answered",
+            ),
+            Err(_) => error_frame_after(
+                &prefix,
+                503,
+                "core_closed",
+                "the core stopped before it answered",
+            ),
+        }
     }
 
     /// Waits on the core's runtime until the core is ready: its router,
@@ -494,8 +525,9 @@ fn content_host(id: &str) -> bool {
         && clax_http::host::artifact_host(&format!("{id}.localhost")).is_some()
 }
 
-/// The response to one frame, on the core's runtime.
-async fn answer(sh: Arc<Shared>, head: RequestHead, body: Bytes) -> Vec<u8> {
+/// The response to one frame, after `prefix`, on the core's runtime.
+async fn answer(sh: Arc<Shared>, head: RequestHead, body: Bytes, prefix: Vec<u8>) -> Vec<u8> {
+    let error_frame = |status, code, message: &str| error_frame_after(&prefix, status, code, message);
     if admit(&head).is_err() {
         let path = head.path.split('?').next().unwrap_or("");
         return error_frame(
@@ -521,12 +553,12 @@ async fn answer(sh: Arc<Shared>, head: RequestHead, body: Bytes) -> Vec<u8> {
         Ok(r) => r,
         Err(e) => return error_frame(400, "bad_frame", &e),
     };
-    let answered = async move {
+    let answered = async {
         let res = router
             .oneshot(req)
             .await
             .unwrap_or_else(|never| match never {});
-        respond(res, RESPONSE_LIMIT).await
+        respond(res, RESPONSE_LIMIT, &prefix).await
     };
     tokio::select! {
         r = answered => r,
@@ -582,22 +614,12 @@ pub(crate) fn request(
         .map_err(|e| e.to_string())
 }
 
-/// The response frame of `res`, its body read whole: 502
+/// `prefix`, then the response frame of `res`, its body read whole: 502
 /// `response_too_large` past `limit` bytes, 502 `response_failed` when the
-/// body fails while it is read.
-async fn respond(res: axum::response::Response, limit: usize) -> Vec<u8> {
-    let (parts, body) = res.into_parts();
-    let body = match read_limited(body, limit).await {
-        Ok(b) => b,
-        Err(ReadError::TooLarge) => {
-            return error_frame(
-                502,
-                "response_too_large",
-                "the response is larger than the app reads",
-            );
-        }
-        Err(ReadError::Failed(e)) => return error_frame(502, "response_failed", &e),
-    };
+/// body fails while it is read. The frame is one buffer, sized once from
+/// the body's size hint, and each chunk of the body is copied into it once.
+async fn respond(res: axum::response::Response, limit: usize, prefix: &[u8]) -> Vec<u8> {
+    let (parts, mut body) = res.into_parts();
     let headers = parts
         .headers
         .iter()
@@ -608,40 +630,44 @@ async fn respond(res: axum::response::Response, limit: usize) -> Vec<u8> {
             )
         })
         .collect();
-    frame::encode(
-        &ResponseHead {
-            status: parts.status.as_u16(),
-            headers,
-        },
-        &body,
-    )
-}
-
-/// Why [`read_limited`] read no body.
-#[derive(Debug, PartialEq, Eq)]
-pub enum ReadError {
-    /// The body is longer than the limit.
-    TooLarge,
-    /// The body failed while it was read.
-    Failed(String),
-}
-
-/// `body` read whole, if it is at most `limit` bytes.
-///
-/// # Errors
-/// [`ReadError::TooLarge`] past the limit, else what the body failed with.
-pub async fn read_limited(body: Body, limit: usize) -> Result<Bytes, ReadError> {
-    match http_body_util::Limited::new(body, limit).collect().await {
-        Ok(c) => Ok(c.to_bytes()),
-        Err(e) if e.is::<http_body_util::LengthLimitError>() => Err(ReadError::TooLarge),
-        Err(e) => Err(ReadError::Failed(e.to_string())),
+    let head = ResponseHead {
+        status: parts.status.as_u16(),
+        headers,
+    };
+    let hint = axum::body::HttpBody::size_hint(&body);
+    let expected = hint.exact().unwrap_or(hint.lower()).min(limit as u64 + 1);
+    let mut out = frame::begin(prefix, &head, expected as usize);
+    let start = out.len();
+    while let Some(next) = body.frame().await {
+        match next {
+            Ok(f) => {
+                let Ok(data) = f.into_data() else { continue };
+                if out.len() - start + data.len() > limit {
+                    return error_frame_after(
+                        prefix,
+                        502,
+                        "response_too_large",
+                        "the response is larger than the app reads",
+                    );
+                }
+                out.extend_from_slice(&data);
+            }
+            Err(e) => return error_frame_after(prefix, 502, "response_failed", &e.to_string()),
+        }
     }
+    out
 }
 
 /// A response frame with an API error body.
 pub fn error_frame(status: u16, code: &str, message: &str) -> Vec<u8> {
+    error_frame_after(&[], status, code, message)
+}
+
+/// `prefix`, then [`error_frame`]'s frame.
+pub fn error_frame_after(prefix: &[u8], status: u16, code: &str, message: &str) -> Vec<u8> {
     let body = serde_json::json!({"error": {"code": code, "message": message}});
-    frame::encode(
+    frame::encode_after(
+        prefix,
         &ResponseHead {
             status,
             headers: vec![("content-type".into(), "application/json".into())],
@@ -837,11 +863,14 @@ mod tests {
     #[tokio::test]
     async fn a_body_past_the_limit_answers_502_response_too_large() {
         let res = |n| axum::response::Response::new(Body::from(vec![7u8; n]));
-        let (status, body) = status_and_body(&respond(res(9), 8).await);
+        let (status, body) = status_and_body(&respond(res(9), 8, &[]).await);
         assert_eq!(status, 502);
         let v: serde_json::Value = serde_json::from_slice(&body).unwrap();
         assert_eq!(v["error"]["code"], "response_too_large", "{v}");
-        assert_eq!(status_and_body(&respond(res(8), 8).await), (200, vec![7u8; 8]));
+        assert_eq!(
+            status_and_body(&respond(res(8), 8, &[]).await),
+            (200, vec![7u8; 8])
+        );
     }
 
     #[tokio::test]
@@ -849,10 +878,19 @@ mod tests {
         let chunks: Vec<Result<Bytes, std::io::Error>> =
             vec![Ok(Bytes::from_static(b"half")), Err(std::io::Error::other("cut"))];
         let res = axum::response::Response::new(Body::from_stream(futures::stream::iter(chunks)));
-        let (status, body) = status_and_body(&respond(res, RESPONSE_LIMIT).await);
+        let (status, body) = status_and_body(&respond(res, RESPONSE_LIMIT, &[]).await);
         assert_eq!(status, 502);
         let v: serde_json::Value = serde_json::from_slice(&body).unwrap();
         assert_eq!(v["error"]["code"], "response_failed", "{v}");
+    }
+
+    #[tokio::test]
+    async fn a_response_is_framed_after_its_tag_in_one_buffer_sized_once() {
+        let res = axum::response::Response::new(Body::from(vec![7u8; 1000]));
+        let out = respond(res, RESPONSE_LIMIT, &frame::tag(5)).await;
+        assert_eq!(&out[..8], &5i64.to_le_bytes());
+        assert_eq!(status_and_body(&out[8..]), (200, vec![7u8; 1000]));
+        assert_eq!(out.capacity(), out.len(), "no copy to grow it");
     }
 
     #[test]

@@ -466,13 +466,6 @@ async fn an_old_daemon_json_is_retired() {
 }
 
 #[tokio::test]
-async fn a_body_over_the_limit_is_refused() {
-    let body = || axum::body::Body::from(vec![7u8; 9]);
-    assert!(clax_embed::read_limited(body(), 8).await.is_err());
-    assert_eq!(clax_embed::read_limited(body(), 9).await.unwrap().len(), 9);
-}
-
-#[tokio::test]
 async fn a_frame_that_does_not_parse_is_named() {
     let dir = tempfile::tempdir().unwrap();
     let (embed, _rx) = open(dir.path());

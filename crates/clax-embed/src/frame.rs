@@ -78,21 +78,33 @@ pub fn split(bytes: &[u8]) -> Result<(&[u8], &[u8]), FrameError> {
 
 /// A frame of `head` and `body`.
 pub fn encode<H: serde::Serialize>(head: &H, body: &[u8]) -> Vec<u8> {
-    let h = serde_json::to_vec(head).expect("a frame head serializes");
-    let mut out = Vec::with_capacity(8 + h.len() + body.len());
-    out.extend_from_slice(MAGIC);
-    out.extend_from_slice(&(h.len() as u32).to_le_bytes());
-    out.extend_from_slice(&h);
+    encode_after(&[], head, body)
+}
+
+/// `prefix`, then a frame of `head` and `body`, in one buffer allocated
+/// once.
+pub fn encode_after<H: serde::Serialize>(prefix: &[u8], head: &H, body: &[u8]) -> Vec<u8> {
+    let mut out = begin(prefix, head, body.len());
     out.extend_from_slice(body);
     out
 }
 
-/// A response frame preceded by the call's tag, as posted to Dart.
-pub fn tagged(tag: i64, frame: Vec<u8>) -> Vec<u8> {
-    let mut out = Vec::with_capacity(8 + frame.len());
-    out.extend_from_slice(&tag.to_le_bytes());
-    out.extend(frame);
+/// `prefix` and a frame's head, with room for `body` more bytes: the
+/// start of a frame whose body is appended as it is read.
+pub fn begin<H: serde::Serialize>(prefix: &[u8], head: &H, body: usize) -> Vec<u8> {
+    let h = serde_json::to_vec(head).expect("a frame head serializes");
+    let mut out = Vec::with_capacity(prefix.len() + 8 + h.len() + body);
+    out.extend_from_slice(prefix);
+    out.extend_from_slice(MAGIC);
+    out.extend_from_slice(&(h.len() as u32).to_le_bytes());
+    out.extend_from_slice(&h);
     out
+}
+
+/// The 8 bytes, little endian, that precede a call's response frame as
+/// posted to Dart.
+pub fn tag(tag: i64) -> [u8; 8] {
+    tag.to_le_bytes()
 }
 
 #[cfg(test)]
@@ -135,6 +147,11 @@ mod tests {
 
     #[test]
     fn a_tag_precedes_the_frame_little_endian() {
-        assert_eq!(&tagged(258, vec![9])[..], &[2, 1, 0, 0, 0, 0, 0, 0, 9]);
+        let framed = encode_after(&tag(258), &ResponseHead { status: 200, headers: vec![] }, &[9]);
+        assert_eq!(&framed[..8], &[2, 1, 0, 0, 0, 0, 0, 0]);
+        let (head, body) = split(&framed[8..]).unwrap();
+        assert_eq!(head, br#"{"status":200,"headers":[]}"#);
+        assert_eq!(body, &[9]);
+        assert_eq!(framed.capacity(), framed.len(), "allocated once");
     }
 }

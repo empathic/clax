@@ -8,6 +8,13 @@
 //! open cores by handle. They post through a [`Post`]: Dart's
 //! `NativeApi.postCObject` in the app ([`dart::DartPost`]), a collector in
 //! tests.
+//!
+//! A call's bytes are copied as few times as the ABI allows: the request
+//! frame once out of the buffer Dart lends for the call (the body is a
+//! slice of that copy), and the response once, chunk by chunk, into the
+//! buffer that is posted (the tag and the frame's head first, sized once
+//! from the body's size hint); Dart then copies that buffer as it posts
+//! it, and Rust frees it when the post returns.
 
 mod core;
 pub mod dart;
@@ -18,8 +25,7 @@ mod log;
 mod web;
 
 pub use crate::core::{
-    Embed, OpenError, OpenEvent, OpenOptions, RESPONSE_LIMIT, ReadError, admit, error_frame,
-    read_limited,
+    Embed, OpenError, OpenEvent, OpenOptions, RESPONSE_LIMIT, admit, error_frame, error_frame_after,
 };
 
 use futures::FutureExt;
@@ -180,8 +186,9 @@ pub fn ffi_call(core: u64, req: &[u8], port: i64, tag: i64) -> i32 {
     if frame::split(req).is_err() {
         return 2;
     }
-    let answer = |bytes: Vec<u8>| {
-        if !post_bytes(&*r.post, port, &frame::tagged(tag, bytes)) {
+    let tag = frame::tag(tag);
+    let answer = |status, code, message: &str| {
+        if !post_bytes(&*r.post, port, &error_frame_after(&tag, status, code, message)) {
             tracing::debug!(port, "a call's port closed before its answer");
         }
     };
@@ -189,27 +196,35 @@ pub fn ffi_call(core: u64, req: &[u8], port: i64, tag: i64) -> i32 {
         "clax_embed_call",
         || {
             let Some(embed) = &r.embed else {
-                answer(error_frame(503, "core_failed", "the core did not open"));
+                answer(503, "core_failed", "the core did not open");
                 return 0;
             };
-            let req = req.to_vec();
+            // Dart lends the frame only for this call: its one copy.
+            let req = bytes::Bytes::copy_from_slice(req);
             let call = embed.clone();
             let post = r.post.clone();
             embed.spawn(async move {
-                let answered = AssertUnwindSafe(call.call(&req)).catch_unwind().await;
+                let answered = AssertUnwindSafe(call.call_owned(req, tag.to_vec()))
+                    .catch_unwind()
+                    .await;
                 let bytes = match answered {
                     Ok(Ok(a)) => a,
-                    Ok(Err(e)) => error_frame(400, "bad_frame", &format!("{e:?}")),
-                    Err(_) => error_frame(500, "internal", "the core panicked while it answered"),
+                    Ok(Err(e)) => error_frame_after(&tag, 400, "bad_frame", &format!("{e:?}")),
+                    Err(_) => error_frame_after(
+                        &tag,
+                        500,
+                        "internal",
+                        "the core panicked while it answered",
+                    ),
                 };
-                if !post_bytes(&*post, port, &frame::tagged(tag, bytes)) {
+                if !post_bytes(&*post, port, &bytes) {
                     tracing::debug!(port, "a call's port closed before its answer");
                 }
             });
             0
         },
         || {
-            answer(error_frame(500, "internal", "the core panicked while it took the call"));
+            answer(500, "internal", "the core panicked while it took the call");
             0
         },
         0,
