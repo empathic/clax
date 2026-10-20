@@ -19,15 +19,66 @@ pub fn dir(home: &Home) -> PathBuf {
 /// Before a migration changes an existing database (one whose
 /// `user_version` is above 0 and below `known`), copies it whole, with
 /// what its write-ahead log holds, to
-/// `<home>/backups/clax-<version>-<UTC time>.db` (`VACUUM INTO` a
-/// temporary name, then renamed, so a copy that exists is complete), then
-/// prunes the older copies (see `prune`). Returns the copy's path, or
-/// `None` when nothing is to be migrated.
+/// `<home>/backups/clax-<version>-<UTC time>.db`, then prunes the older
+/// copies (see `prune`). The copy is written under a temporary name
+/// (`VACUUM INTO`), synced to stable storage, renamed, and the directory
+/// synced, so a copy that exists under its name is complete, and it
+/// survives a power loss after the migrations that follow commit.
+/// Returns the copy's path, or `None` when nothing is to be migrated.
 ///
 /// # Errors
-/// [`CoreError::MigrationFailed`] when the copy cannot be made: the caller
-/// must not migrate then. Removing old copies never fails it.
+/// [`CoreError::MigrationFailed`] when the copy cannot be made or synced:
+/// the caller must not migrate then. Removing old copies never fails it.
 pub fn before_migrate(
+    conn: &Connection,
+    home: &Home,
+    known: u32,
+    now: DateTime<Utc>,
+) -> Result<Option<PathBuf>> {
+    before_migrate_on(&mut RealDisk, conn, home, known, now)
+}
+
+/// The file-system steps that put a finished copy in place: the real
+/// disk's, or a test's.
+trait Disk {
+    /// Flushes `file`'s content to stable storage.
+    fn sync_file(&mut self, file: &Path) -> std::io::Result<()>;
+    /// Renames `from` to `to`, replacing it.
+    fn rename(&mut self, from: &Path, to: &Path) -> std::io::Result<()>;
+    /// Flushes `dir`'s entries (a rename into it) to stable storage.
+    fn sync_dir(&mut self, dir: &Path) -> std::io::Result<()>;
+}
+
+struct RealDisk;
+
+impl Disk for RealDisk {
+    fn sync_file(&mut self, file: &Path) -> std::io::Result<()> {
+        std::fs::OpenOptions::new()
+            .write(true)
+            .open(file)?
+            .sync_all()
+    }
+
+    fn rename(&mut self, from: &Path, to: &Path) -> std::io::Result<()> {
+        std::fs::rename(from, to)
+    }
+
+    #[cfg(unix)]
+    fn sync_dir(&mut self, dir: &Path) -> std::io::Result<()> {
+        std::fs::File::open(dir)?.sync_all()
+    }
+
+    /// A directory cannot be opened for syncing here; NTFS journals the
+    /// rename itself.
+    #[cfg(not(unix))]
+    fn sync_dir(&mut self, _dir: &Path) -> std::io::Result<()> {
+        Ok(())
+    }
+}
+
+/// [`before_migrate`] on `disk`.
+fn before_migrate_on(
+    disk: &mut dyn Disk,
     conn: &Connection,
     home: &Home,
     known: u32,
@@ -52,7 +103,16 @@ pub fn before_migrate(
         let _ = std::fs::remove_file(&tmp);
         return Err(fail(&e));
     }
-    std::fs::rename(&tmp, &path).map_err(|e| fail(&e))?;
+    // VACUUM INTO does not sync what it writes: the copy reaches the disk
+    // before its name does, and its name before any migration commits.
+    if let Err(e) = disk
+        .sync_file(&tmp)
+        .and_then(|()| disk.rename(&tmp, &path))
+    {
+        let _ = std::fs::remove_file(&tmp);
+        return Err(fail(&e));
+    }
+    disk.sync_dir(&dir).map_err(|e| fail(&e))?;
     tracing::warn!(
         from = version,
         to = known,
@@ -118,6 +178,95 @@ mod tests {
             .iter()
             .map(|p| p.file_name().unwrap().to_str().unwrap().to_string())
             .collect()
+    }
+
+    /// A [`Disk`] that records each step, does it on the real disk, and
+    /// fails the step named `failing`.
+    #[derive(Default)]
+    struct Recording {
+        steps: Vec<String>,
+        failing: Option<&'static str>,
+    }
+
+    impl Recording {
+        fn step(&mut self, step: &'static str, path: &Path) -> std::io::Result<()> {
+            let name = path.file_name().unwrap().to_str().unwrap();
+            let kind = if name.ends_with(".tmp") { "tmp" } else { name };
+            self.steps.push(format!("{step} {kind}"));
+            if self.failing == Some(step) {
+                return Err(std::io::Error::other("the disk is gone"));
+            }
+            Ok(())
+        }
+    }
+
+    impl Disk for Recording {
+        fn sync_file(&mut self, file: &Path) -> std::io::Result<()> {
+            self.step("sync_file", file)?;
+            RealDisk.sync_file(file)
+        }
+
+        fn rename(&mut self, from: &Path, to: &Path) -> std::io::Result<()> {
+            self.step("rename", from)?;
+            RealDisk.rename(from, to)
+        }
+
+        fn sync_dir(&mut self, dir: &Path) -> std::io::Result<()> {
+            self.step("sync_dir", dir)?;
+            RealDisk.sync_dir(dir)
+        }
+    }
+
+    fn at_version(v: u32) -> Connection {
+        let conn = Connection::open_in_memory().unwrap();
+        conn.execute_batch("CREATE TABLE t (x); INSERT INTO t VALUES (1);")
+            .unwrap();
+        conn.pragma_update(None, "user_version", v).unwrap();
+        conn
+    }
+
+    #[test]
+    fn the_copy_is_synced_then_renamed_then_its_directory_synced() {
+        let tmp = tempfile::tempdir().unwrap();
+        let home = Home::at(tmp.path().join("ax"));
+        let mut disk = Recording::default();
+        let now = "2026-10-02T00:00:00Z".parse().unwrap();
+        let copy = before_migrate_on(&mut disk, &at_version(9), &home, 12, now)
+            .unwrap()
+            .unwrap();
+        assert_eq!(disk.steps, ["sync_file tmp", "rename tmp", "sync_dir backups"]);
+        let copied = Connection::open(&copy).unwrap();
+        let v: u32 = copied
+            .query_row("PRAGMA user_version", [], |r| r.get(0))
+            .unwrap();
+        assert_eq!(v, 9);
+    }
+
+    #[test]
+    fn a_copy_that_cannot_be_synced_is_not_put_in_place() {
+        for failing in ["sync_file", "rename", "sync_dir"] {
+            let tmp = tempfile::tempdir().unwrap();
+            let home = Home::at(tmp.path().join("ax"));
+            let mut disk = Recording {
+                failing: Some(failing),
+                ..Recording::default()
+            };
+            let now = "2026-10-02T00:00:00Z".parse().unwrap();
+            let err = before_migrate_on(&mut disk, &at_version(9), &home, 12, now).unwrap_err();
+            assert!(
+                matches!(&err, CoreError::MigrationFailed { at: 9, detail }
+                    if detail.contains("the disk is gone")),
+                "{failing}: {err:?}"
+            );
+            let left: Vec<_> = std::fs::read_dir(dir(&home))
+                .unwrap()
+                .map(|e| e.unwrap().file_name().into_string().unwrap())
+                .collect();
+            assert!(
+                left.iter().all(|n| !n.ends_with(".tmp")),
+                "{failing}: no temporary file is left: {left:?}"
+            );
+        }
     }
 
     #[test]
