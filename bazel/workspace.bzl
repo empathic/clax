@@ -123,7 +123,8 @@ CRATES = {
         "tests": {
             "embed": "tests/embed.rs",
             "ffi": "tests/ffi.rs",
-            "log": "tests/log.rs"
+            "log": "tests/log.rs",
+            "old_homes": "tests/old_homes.rs"
         },
         "version": "0.5.0"
     },

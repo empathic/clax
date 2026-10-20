@@ -10,6 +10,8 @@ load("//bazel/apple:ios_rust.bzl", "ios_builds", "ios_opt_library")
 cargo_package(
     cdylib = True,
     staticlib = True,
+    # The homes tests/old_homes.rs opens, which it includes.
+    test_compile_data = glob(["tests/fixtures/**"]),
 )
 
 # The four C functions as this host links them, for C tests.

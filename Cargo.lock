@@ -507,6 +507,7 @@ dependencies = [
  "clax-store",
  "futures",
  "http-body-util",
+ "rusqlite",
  "serde",
  "serde_json",
  "tempfile",
