@@ -32,8 +32,11 @@ const GRANT_SWEEP_INTERVAL: Duration = Duration::from_secs(60);
 /// Tests: called with its home as each [`Core::stop`] ends, once its
 /// tasks have ended, the journal has synced and the store has closed.
 #[cfg(test)]
-pub(crate) static STOPPED: std::sync::Mutex<Option<Box<dyn Fn(&Home) + Send>>> =
-    std::sync::Mutex::new(None);
+pub(crate) static STOPPED: std::sync::Mutex<Option<StoppedHook>> = std::sync::Mutex::new(None);
+
+/// Tests: the hook [`STOPPED`] holds.
+#[cfg(test)]
+pub(crate) type StoppedHook = Box<dyn Fn(&Home) + Send>;
 
 /// What a [`Core`] starts with.
 pub struct CoreConfig {
