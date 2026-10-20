@@ -7,9 +7,9 @@
 # The app's Info.plist must carry the bundle ID dev.empathic.clax, the name
 # Clax, pubspec.yaml's version ($VERSION_NAME, $VERSION_CODE: this is the iOS
 # form of :version_sync), the minimum iOS $IOS_MINIMUM_OS, iPhone and iPad,
-# App Transport Security's loopback keys (NSAllowsLocalNetworking, and
-# localhost with its subdomains as an exception domain) and no arbitrary
-# loads, no full-screen requirement and no background modes, and the .clax
+# no App Transport Security exceptions (the WebViews load from the app's
+# scheme, not over HTTP), no full-screen requirement and no background
+# modes, and the .clax
 # document type (dev.empathic.clax.bundle, exported, copied in), and the
 # words of each permission prompt the plugins can raise (camera, photos,
 # microphone, speech recognition, location and precise location). The
@@ -54,10 +54,7 @@ want CFBundleVersion "$VERSION_CODE" "build number"
 want MinimumOSVersion "$IOS_MINIMUM_OS" "minimum iOS"
 families="$(plutil -extract UIDeviceFamily json -o - "$info" 2>/dev/null | tr -d ' \n' || true)"
 if [ "$families" = "[1,2]" ]; then ok "iPhone and iPad"; else bad "iPhone and iPad: UIDeviceFamily is '$families'"; fi
-want NSAppTransportSecurity.NSAllowsLocalNetworking true "loopback over HTTP"
-want NSAppTransportSecurity.NSExceptionDomains.localhost.NSIncludesSubdomains true "localhost's subdomains are an exception domain"
-want NSAppTransportSecurity.NSExceptionDomains.localhost.NSExceptionAllowsInsecureHTTPLoads true "localhost's subdomains over HTTP"
-for k in NSAppTransportSecurity.NSAllowsArbitraryLoads UIRequiresFullScreen UIBackgroundModes; do
+for k in NSAppTransportSecurity UIRequiresFullScreen UIBackgroundModes; do
     if has "$k"; then bad "no $k"; else ok "no $k"; fi
 done
 if plutil -convert xml1 -o - "$info" | grep '\$(' >/dev/null; then

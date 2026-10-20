@@ -3,57 +3,17 @@
 `macos_dylib` places the embedded core, libclax_embed.dylib, for the
 bundle's Contents/Frameworks, signed ad hoc without entitlements, as the
 Runner's "Embed core" build phase (macos/Runner.xcodeproj) does for the
-Xcode build; the app loads it into its own process.
-
-`macos_helper` is the earlier daemon's: it places the clax executable for
-Contents/Resources, signed with Runner/ClaxHelper.entitlements
-(app-sandbox and inherit), since a sandboxed app may only start a helper
-sandboxed the same way. Both sign ad hoc (the app's bundle is ad-hoc
-signed by rules_apple too), using the system's `codesign`, which no
-toolchain provides.
+Xcode build; the app loads it into its own process. It signs ad hoc (the
+app's bundle is ad-hoc signed by rules_apple too), using the system's
+`codesign`, which no toolchain provides.
 """
-
-def _macos_helper_impl(ctx):
-    src = ctx.attr.binary[DefaultInfo].files_to_run.executable
-    # At the package's top: rules_apple places a file by its package path.
-    out = ctx.actions.declare_file(ctx.attr.filename)
-    # Without entitlements (a debug app, which is not sandboxed), as the
-    # Xcode build signs the Debug and Profile helper.
-    if ctx.file.entitlements:
-        command = 'cat "$1" > "$2" && chmod 755 "$2" && /usr/bin/codesign --force --sign - --entitlements "$3" --options runtime "$2"'
-        arguments = [src.path, out.path, ctx.file.entitlements.path]
-        inputs = [src, ctx.file.entitlements]
-    else:
-        command = 'cat "$1" > "$2" && chmod 755 "$2" && /usr/bin/codesign --force --sign - --options runtime "$2"'
-        arguments = [src.path, out.path]
-        inputs = [src]
-    ctx.actions.run_shell(
-        command = command,
-        arguments = arguments,
-        inputs = inputs,
-        outputs = [out],
-        mnemonic = "MacosHelperSign",
-        progress_message = "Signing %s for the sandboxed app" % ctx.attr.filename,
-        execution_requirements = {"no-remote": "1"},
-    )
-    return [DefaultInfo(files = depset([out]))]
-
-macos_helper = rule(
-    implementation = _macos_helper_impl,
-    attrs = {
-        "binary": attr.label(mandatory = True, executable = True, cfg = "target"),
-        "entitlements": attr.label(allow_single_file = [".entitlements", ".plist"]),
-        "filename": attr.string(default = "clax"),
-    },
-)
 
 def _macos_dylib_impl(ctx):
     libs = [f for f in ctx.attr.lib[DefaultInfo].files.to_list() if f.extension == "dylib"]
     if len(libs) != 1:
         fail("%s: expected one dylib, got %s" % (ctx.attr.lib.label, libs))
 
-    # At the package's top, as macos_helper's: rules_apple places a file by
-    # its package path.
+    # At the package's top: rules_apple places a file by its package path.
     out = ctx.actions.declare_file(ctx.attr.filename)
     ctx.actions.run_shell(
         command = 'cat "$1" > "$2" && chmod 644 "$2" && /usr/bin/codesign --force --sign - "$2"',

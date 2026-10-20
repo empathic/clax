@@ -47,7 +47,8 @@ app.*.map.json
 # Widget Preview related
 .widget_preview/
 
-# The macOS clax and Android libclax.so, placed by scripts/build-app-clax.sh
+# The embedded core for macOS and Android (libclax_embed), placed by
+# scripts/build-app-clax.sh
 /build-native/
 /android/app/src/main/jniLibs/
 

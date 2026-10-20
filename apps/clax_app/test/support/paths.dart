@@ -28,10 +28,6 @@ Directory scratchRoot() {
   return dir..createSync(recursive: true);
 }
 
-/// The debug `clax` named by CLAX_TEST_BIN as an absolute path (Bazel
-/// names it relative to the runfiles root), or null when it is not set.
-String? claxTestBin() => _runfile('CLAX_TEST_BIN');
-
 /// The host's build of the embedded core's shared library named by
 /// CLAX_EMBED_LIB as an absolute path, or null when it is not set.
 String? claxEmbedLib() => _runfile('CLAX_EMBED_LIB');

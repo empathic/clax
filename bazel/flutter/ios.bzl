@@ -60,8 +60,6 @@ def clax_ios_app(name, version_name, version_code):
     Declares:
       <name>        flutter_ios_app (iPhone and iPad, iOS 17.0) with the
                     core linked in (clax_embed_ios_c); manual
-      ios_daemon    swift_library ClaxDaemon importing ClaxIOS, the earlier
-                    in-process daemon's; no app links it
       ios_intents   swift_library ClaxIntents: the App Intent "Comment in
                     Clax" and the inbox the runner's IntentsChannel takes
                     it from; linked into the runner and its metadata
@@ -86,15 +84,6 @@ def clax_ios_app(name, version_name, version_code):
         version_name: pubspec.yaml's version name (CFBundleShortVersionString).
         version_code: pubspec.yaml's build number (CFBundleVersion).
     """
-    swift_library(
-        name = "ios_daemon",
-        srcs = ["ios/Daemon/ClaxDaemon.swift"],
-        module_name = "ClaxDaemon",
-        tags = ["manual"],
-        target_compatible_with = ["@platforms//os:ios"],
-        deps = ["//crates/clax-ios:clax_ios_c"],
-    )
-
     swift_library(
         name = "ios_intents",
         srcs = ["ios/Intents/CommentInClax.swift"],

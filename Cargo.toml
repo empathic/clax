@@ -17,7 +17,6 @@ members = [
     "crates/clax-git",
     "crates/clax-rt",
     "crates/clax-content-git",
-    "crates/clax-ios",
     "crates/clax-embed",
 ]
 # The Cloudflare Worker is a workspace of its own (wasm32 only, rusqlite 0.40).

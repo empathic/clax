@@ -24,7 +24,6 @@
 #                                    (--ios: its simulator ones instead, on "Clax iPhone"; Bazel only)
 #   scripts/run.sh app-apk           the Clax app's release APK, and print its path
 #   scripts/run.sh app-macos         the Clax app's macOS app, and print its path
-#   scripts/run.sh app-clax [args]   the Clax app's embedded clax builds ([android|macos|all] [--debug] natively)
 #   scripts/run.sh home-bundle       the home app's bundle, as the app builds pack it, and print its path
 #   scripts/run.sh which             say which build system would run, and why
 #   scripts/run.sh --dry-run <task>  say what would run, and run nothing
@@ -73,7 +72,6 @@ case "$task" in
     web-test|pi-test|web) needs=(web) ;;
     web-e2e) needs=(rust web) ;;
     app-test|app-integration|app-apk|app-macos) needs=(rust web flutter) ;;
-    app-clax) needs=(rust web) ;;
     home-bundle) needs=(flutter) ;;
     *) usage ;;
 esac
@@ -233,11 +231,6 @@ _bazel() {
             ;;
         app-apk) _bazel_out //apps/clax_app:apk ;;
         app-macos) _bazel_out //apps/clax_app:macos_app ;;
-        app-clax)
-            _bazel_out //crates/clax-cli:clax_android_arm64 &&
-                _bazel_out //crates/clax-cli:clax_android_x86_64 &&
-                _bazel_out //crates/clax-cli:clax_opt
-            ;;
         home-bundle) _bazel_out //apps/clax_app:home_bundle ;;
     esac
 }
@@ -289,7 +282,7 @@ _native() {
         web) _run bash -c 'cd web && pnpm install --frozen-lockfile' && _run ./scripts/build-web.sh ;;
         app-test)
             _run ./scripts/build-home-bundle.sh --i-know-what-i-am-doing &&
-                _run bash -c 'bin="$(apps/clax_app/tool/test-bin.sh)" && cd apps/clax_app && CLAX_TEST_BIN="$bin" tool/check.sh'
+                _run bash -c 'cd apps/clax_app && tool/check.sh'
             ;;
         app-integration)
             case "${1:-}" in
@@ -307,7 +300,7 @@ _native() {
                 _run env PUB_CACHE="$PWD/apps/clax_app/build-native/pub-cache" bash -c 'cd apps/clax_app && for f in integration_test/*_test.dart; do case "${f##*/}" in ios_* | android_*) continue ;; esac; flutter test "$f" -d macos || exit 1; done'
             ;;
         app-apk)
-            # arm64 and x86_64 only (the ABIs clax is built for); disable-abi-filtering keeps
+            # arm64 and x86_64 only (the ABIs the core is built for); disable-abi-filtering keeps
             # Flutter's Gradle plugin from adding armeabi-v7a back to the app's abiFilters.
             _run ./scripts/build-app-clax.sh android &&
                 _run ./scripts/build-home-bundle.sh --i-know-what-i-am-doing &&
@@ -322,7 +315,6 @@ _native() {
                 _run env PUB_CACHE="$PWD/apps/clax_app/build-native/pub-cache" bash -c 'cd apps/clax_app && flutter build macos --release' &&
                 { [ "$dry" = 1 ] || echo "$PWD/apps/clax_app/build/macos/Build/Products/Release/Clax.app"; }
             ;;
-        app-clax) _run ./scripts/build-app-clax.sh "$@" ;;
         home-bundle)
             _run ./scripts/build-home-bundle.sh --i-know-what-i-am-doing &&
                 { [ "$dry" = 1 ] || echo "$PWD/apps/clax_app/assets/home/home.clax"; }
@@ -371,7 +363,7 @@ status=$?
 _perf_record
 
 if [ "$status" -eq 0 ]; then result="passed"; else result="failed (exit $status)"; fi
-case "$task" in build|web|bin|install|rust-project|app-apk|app-macos|app-clax|home-bundle) result="${result/passed/done}" ;; esac
+case "$task" in build|web|bin|install|rust-project|app-apk|app-macos|home-bundle) result="${result/passed/done}" ;; esac
 line="── \`$task\` $result with the native tools, not Bazel. CI gates on Bazel, and the two can differ: this does not say what CI will."
 if [ "$BUILD_SYSTEM_FALLBACK" = 1 ]; then
     line="$line Install Bazelisk for the same checks: $(build_system_install_hint)"

@@ -73,7 +73,7 @@ def cargo_package(
       build_script_data: files the build script reads.
       staticlib: also declare `<lib>_static`, a rust_static_library of the
         library's sources and dependencies, for a host app to link
-        (crates/clax-ios).
+        (crates/clax-embed, on iOS).
       cdylib: also declare `<lib>_shared`, a rust_shared_library of the
         library's sources and dependencies, for a host app to load
         (crates/clax-embed).
@@ -122,7 +122,7 @@ def cargo_package(
         "--check-cfg=cfg(feature,values(%s))" % ",".join(['"%s"' % f for f in crate["features"]]),
     ]
     # The workspace's lints, or the crate's own [lints.rust] when it has
-    # one (only crates/clax-ios: scripts/check-no-unsafe.sh).
+    # one (only crates/clax-embed: scripts/check-no-unsafe.sh).
     lint_flags = crate.get("lint_flags", WORKSPACE_RUSTC_FLAGS)
     rustc_flags = lint_flags + check_cfg + ["--cfg", "clax_embedded"] + select({
         # Cargo's dev profile keeps line tables, which panics and

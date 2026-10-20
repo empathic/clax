@@ -107,7 +107,7 @@ _pass() {
         return
     fi
     # The query names each target, so a target only for another platform
-    # (//crates/clax-ios's, only for iOS) is skipped as a pattern would
+    # (an iOS one, such as //crates/clax-embed's) is skipped as a pattern would
     # skip it, not refused.
     # shellcheck disable=SC2086  # one label per word
     "${awake[@]+"${awake[@]}"}" "$bazel" test --keep_going --skip_incompatible_explicit_targets "${flags[@]}" "${test_flags[@]}" "$@" $targets 2>&1 | tee "$output"

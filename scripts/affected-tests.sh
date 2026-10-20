@@ -305,7 +305,7 @@ source scripts/lib/bazel-test-flags.sh
 # flight (scripts/bazel-test.sh).
 awake=()
 if command -v caffeinate >/dev/null 2>&1; then awake=(caffeinate -i); fi
-# Each target is named, so one only for another platform (clax-ios's) is
+# Each target is named, so one only for another platform (an iOS one) is
 # skipped as a pattern would skip it, not refused.
 "${awake[@]+"${awake[@]}"}" "$bazel" test --keep_going --skip_incompatible_explicit_targets \
     "${bazel_flags[@]}" "${bazel_test_flags[@]}" "${bazel_args[@]+"${bazel_args[@]}"}" -- "${targets[@]}"

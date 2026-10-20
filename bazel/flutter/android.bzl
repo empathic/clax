@@ -82,7 +82,7 @@ lib_jar = rule(
     attrs = {
         "files": attr.label_keyed_string_dict(
             allow_files = True,
-            doc = "Each file's path in the jar, such as lib/arm64-v8a/libclax.so.",
+            doc = "Each file's path in the jar, such as lib/arm64-v8a/libclax_embed.so.",
         ),
         "lib_from": attr.label(allow_single_file = [".jar"], doc = "A jar whose lib/ entries are added."),
         "_zipper": attr.label(default = "@bazel_tools//tools/zip:zipper", executable = True, cfg = "exec"),

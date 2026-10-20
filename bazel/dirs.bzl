@@ -8,8 +8,8 @@ def _without_node(platform):
 
 def _built_on_host_impl(settings, _attr):
     # The web builds are the same files for any target, and need a Node
-    # runtime for the platform they are built for: a binary built for
-    # Android (bazel/android/clax.bzl) or a library built for iOS
+    # runtime for the platform they are built for: a library built for
+    # Android (bazel/android/embed.bzl) or for iOS
     # (bazel/apple/ios_rust.bzl) takes them as built for the host. On the
     # host the configuration is left as it is, so nothing is built twice.
     if any([_without_node(str(p)) for p in settings[_PLATFORMS]]):

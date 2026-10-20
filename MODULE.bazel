@@ -40,9 +40,9 @@ rust.toolchain(
         "rustfmt-1.94.0-x86_64-apple-darwin.tar.xz": "e58601a10ee85e956611ea2814bf26de88934a8224c1663bb11aa23f727663ec",
         "rustfmt-1.94.0-x86_64-unknown-linux-gnu.tar.xz": "903e768f7626f78ed2d6cb82c1820b93bd339afec8575102e847fd3a379d33e5",
     },
-    # The Clax app's embedded clax, for its two Android CPUs
-    # (bazel/android/BUILD.bazel), and its in-process daemon for iPhone and
-    # the simulator on Apple silicon (crates/clax-ios).
+    # The Clax app's embedded core (crates/clax-embed), for its two Android
+    # CPUs (bazel/android/BUILD.bazel), and for iPhone and the simulator on
+    # Apple silicon.
     extra_target_triples = [
         "aarch64-apple-ios",
         "aarch64-apple-ios-sim",
@@ -196,7 +196,7 @@ register_toolchains("@flutter_toolchains//:all")
 bazel_dep(name = "rules_apple", version = "5.2.0")
 # Apple's platforms (@apple_support//platforms:ios_arm64, :ios_sim_arm64)
 # and the C toolchain that compiles ring's and SQLite's C for iOS at
-# --ios_minimum_os (crates/clax-ios); the version rules_flutter asks for.
+# --ios_minimum_os (crates/clax-embed); the version rules_flutter asks for.
 bazel_dep(name = "apple_support", version = "2.9.1")
 bazel_dep(name = "rules_cc", version = "0.2.26")
 bazel_dep(name = "rules_swift", version = "4.1.2")

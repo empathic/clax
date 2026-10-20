@@ -15,7 +15,7 @@ load("@rules_shell//shell:sh_test.bzl", "sh_test")
 load("@rules_swift//swift:swift_library.bzl", "swift_library")
 load("//bazel/flutter:android.bzl", "clax_android_integration_tests", "flutter_fat_apk")
 load("//bazel/flutter:ios.bzl", "clax_ios_app", "clax_ios_integration_tests")
-load("//bazel/flutter:macos.bzl", "debug_app", "integration_main", "macos_dylib", "macos_helper")
+load("//bazel/flutter:macos.bzl", "debug_app", "integration_main", "macos_dylib")
 load("//bazel/flutter:notices.bzl", "flutter_notices", "pub_licenses", "pub_licenses_test")
 load("//bazel/flutter:tests.bzl", "flutter_test_suite")
 
@@ -610,23 +610,6 @@ macos_dylib(
     name = "macos_core",
     filename = "libclax_embed.dylib",
     lib = "//crates/clax-embed:clax_embed_macos",
-)
-
-# The earlier daemon's clax executable, signed as a sandboxed helper
-# (bazel/flutter/macos.bzl); no app ships it.
-macos_helper(
-    name = "macos_clax",
-    binary = "//crates/clax-cli:clax_opt",
-    # A debug app is not sandboxed: its helper is signed without them.
-    entitlements = select({
-        ":dbg": None,
-        "//conditions:default": "macos/Runner/ClaxHelper.entitlements",
-    }),
-)
-
-config_setting(
-    name = "dbg",
-    values = {"compilation_mode": "dbg"},
 )
 
 # pubspec.yaml's version, as Flutter's Xcode build gives it to the bundle.

@@ -80,16 +80,6 @@ doctor:
 # shared cache (docs/bazel.md, "The Clax app"); each has a `-native` twin
 # (Flutter, Gradle, Xcode and Cargo, as before).
 
-# Build the Clax app's embedded clax: with Bazel for both Android CPUs and macOS, printing their paths; natively placed in apps/clax_app: [android|macos|all] [--debug]
-[positional-arguments]
-app-clax *ARGS:
-    ./scripts/run.sh app-clax "$@"
-
-# Build the Clax app's embedded clax natively (Cargo and the NDK) and place it in apps/clax_app
-[positional-arguments]
-app-clax-native *ARGS:
-    CLAX_BUILD=native ./scripts/run.sh app-clax "$@"
-
 # Run the Clax app's checks: Dart analysis, its tests, the prompt copies, its APK and macOS app's contents
 app-test *ARGS:
     ./scripts/run.sh app-test {{ARGS}}

@@ -376,7 +376,7 @@ class MainFlutterWindow: NSWindow {
       if tool <= 1 { exit(0) }
       let source = DispatchSource.makeProcessSource(identifier: tool, eventMask: .exit, queue: .main)
       source.setEventHandler {
-        // The app's own quit stops the worker and the daemon first; exit
+        // The app's own quit stops the worker and closes the core first; exit
         // anyway if that does not finish (the Dart side may be gone).
         NSApp.terminate(nil)
         DispatchQueue.main.asyncAfter(deadline: .now() + 10) { exit(0) }

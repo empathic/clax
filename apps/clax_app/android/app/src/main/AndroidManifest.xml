@@ -1,5 +1,5 @@
 <manifest xmlns:android="http://schemas.android.com/apk/res/android">
-    <!-- The embedded daemon listens on loopback; sockets need INTERNET. -->
+    <!-- The Claude API, which the embedded core and the app reach over HTTPS. -->
     <uses-permission android:name="android.permission.INTERNET"/>
     <!-- On-device dictation. -->
     <uses-permission android:name="android.permission.RECORD_AUDIO"/>
@@ -31,8 +31,7 @@
         android:enableOnBackInvokedCallback="true"
         android:name="${applicationName}"
         android:icon="@mipmap/ic_launcher"
-        android:roundIcon="@mipmap/ic_launcher_round"
-        android:networkSecurityConfig="@xml/network_security_config">
+        android:roundIcon="@mipmap/ic_launcher_round">
         <activity
             android:name=".MainActivity"
             android:exported="true"

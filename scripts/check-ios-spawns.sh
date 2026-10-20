@@ -1,6 +1,6 @@
 #!/usr/bin/env bash
 # check-ios-spawns.sh [ROOT]: fails on a process launch (`Command::new`,
-# `posix_spawn`, `fork()`, `exec*()`) in the crates the iOS daemon links,
+# `posix_spawn`, `fork()`, `exec*()`) in the crates the iOS app's core links,
 # since iOS lets an app start no other program, unless
 # scripts/ios-spawns.allow names the function it is in. An entry is
 # `<path> <fn>  # how it is kept off on iOS`, or `skip <path>  # why` for a
@@ -11,9 +11,9 @@
 set -euo pipefail
 root="$(cd "${1:-$(dirname "$0")/..}" && pwd)"
 cd "$root"
-# clax-server and what it links outside its dev-dependencies, and clax-ios
-# once it exists.
-crates=(clax-core clax-embedded clax-http clax-ios clax-mcp clax-realtime clax-rt clax-sample clax-server clax-store)
+# clax-embed (the core linked into the iOS app), and clax-server and what it
+# links outside its dev-dependencies.
+crates=(clax-core clax-embed clax-embedded clax-http clax-mcp clax-realtime clax-rt clax-sample clax-server clax-store)
 files=()
 for c in "${crates[@]}"; do
     [ -d "crates/$c/src" ] || continue

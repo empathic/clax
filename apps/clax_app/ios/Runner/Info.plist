@@ -43,27 +43,6 @@
          that copy (ios/Runner/BundleIntake.swift), never the original. -->
     <key>LSSupportsOpeningDocumentsInPlace</key>
     <false/>
-    <!-- The daemon serves the shell and every app over plain HTTP on
-         loopback: 127.0.0.1, localhost and each app's own origin,
-         http://<ID>.localhost:<port>/. NSAllowsLocalNetworking covers the
-         first two; iOS 26.5's ATS refuses the subdomains under it alone
-         (NSURLErrorDomain -1022), so localhost is an exception domain with
-         its subdomains. Everything off the device stays HTTPS. -->
-    <key>NSAppTransportSecurity</key>
-    <dict>
-        <key>NSAllowsLocalNetworking</key>
-        <true/>
-        <key>NSExceptionDomains</key>
-        <dict>
-            <key>localhost</key>
-            <dict>
-                <key>NSExceptionAllowsInsecureHTTPLoads</key>
-                <true/>
-                <key>NSIncludesSubdomains</key>
-                <true/>
-            </dict>
-        </dict>
-    </dict>
     <!-- The words under each permission prompt. Camera, photos and
          location are asked for by an app made in Clax (through Clax's own
          grant first); the microphone and speech recognition by Clax's

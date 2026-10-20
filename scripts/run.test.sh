@@ -143,7 +143,7 @@ _try CLAX_BUILD=native -- --dry-run app-test
 _expect "native without flutter: app-test is refused" 2 "1xflutter (the Clax app"
 _stubs "${native[@]}" flutter
 _try CLAX_BUILD=native -- --dry-run app-apk
-_expect "native: app-apk is Cargo's binaries, the home bundle and Gradle" 0 \
+_expect "native: app-apk is Cargo's core, the home bundle and Gradle" 0 \
     "1xwould run: ./scripts/build-app-clax.sh android$" \
     "1xwould run: ./scripts/build-home-bundle.sh --i-know-what-i-am-doing$" "1xflutter build apk --release"
 

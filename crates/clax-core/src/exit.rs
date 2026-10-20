@@ -1,11 +1,12 @@
 //! The statuses a daemon run ends with, shared by `clax serve` and the
-//! daemon a host app runs in its own process (`clax-ios`).
+//! core a host app runs in its own process (`clax-embed`).
 
 /// The status a run ends with when its database's schema could not be
 /// brought up to date ([`crate::CoreError::MigrationFailed`]): a failure
 /// that repeats on every start until the database or the binary changes,
-/// so a supervisor stops restarting on it (the Clax app's
-/// `DaemonSupervisor.migrationFailedExit`).
+/// so a supervisor stops restarting on it, and the embedded core tells its
+/// host app the open failed this way rather than for a reason a retry
+/// could fix.
 pub const MIGRATION_FAILED: i32 = 65;
 
 /// The status for a run that failed with `e`: [`MIGRATION_FAILED`] when

@@ -152,15 +152,13 @@ lane_worker() {
 lane_wasm() {
     run "wasm32 check"          scripts/check-wasm.sh
 }
-# The Flutter app's analysis and tests (apps/clax_app/tool/check.sh), with
-# the gates' debug clax for the tests that run the daemon. Skipped where
-# Flutter is not installed.
+# The Flutter app's analysis and tests (apps/clax_app/tool/check.sh).
+# Skipped where Flutter is not installed.
 lane_app() {
     if ! command -v flutter >/dev/null 2>&1; then
         echo "app: skipped (flutter not found)"; return 0
     fi
-    await clax-built rust &&
-    run "app (flutter analyze + test)" bash -c 'cd apps/clax_app && CLAX_TEST_BIN="$CLAX_TEST_BIN" tool/check.sh'
+    run "app (flutter analyze + test)" bash -c 'cd apps/clax_app && tool/check.sh'
 }
 lane_release() {
     run "release build"         cargo build -q --release -p clax-cli &&

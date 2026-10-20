@@ -1,9 +1,9 @@
 #!/usr/bin/env bash
 # app-macos-dev.sh [--i-know-what-i-am-doing] [flutter run args…]: runs the
 # Clax app on this Mac with Flutter's hot reload (r) and hot restart (R).
-# It builds the embedded clax natively (scripts/build-app-clax.sh macos,
+# It builds the embedded core natively (scripts/build-app-clax.sh macos,
 # a release build that embeds the web UI, into
-# apps/clax_app/build-native/macos/clax), packs the home app's
+# apps/clax_app/build-native/macos/libclax_embed.dylib), packs the home app's
 # bundle (scripts/build-home-bundle.sh), gives the native build the pub
 # packages Bazel's build patches (scripts/patch-pub.sh, into
 # apps/clax_app/build-native/pub-cache: the runner's scheme host needs the
@@ -41,7 +41,7 @@ if [ -z "$act" ]; then
 fi
 
 command -v flutter >/dev/null || { echo "app-macos-dev: flutter is not on PATH" >&2; exit 1; }
-echo "app-macos-dev: building clax for macOS"
+echo "app-macos-dev: building the core for macOS"
 ./scripts/build-app-clax.sh macos
 echo "app-macos-dev: packing the home app's bundle"
 ./scripts/build-home-bundle.sh --i-know-what-i-am-doing

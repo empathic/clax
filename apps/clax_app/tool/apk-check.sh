@@ -6,7 +6,8 @@
 # (the application's enableOnBackInvokedCallback), a release build
 # (not debuggable, shrunk by R8) whose manifest asks nothing about
 # extracting native libraries (the core is a library the app loads, not an
-# executable it runs), the engine, the app's AOT code and the embedded core
+# executable it runs) and sets no network security config (no cleartext
+# HTTP: the WebViews load from the app's scheme), the engine, the app's AOT code and the embedded core
 # (libclax_embed.so, exporting the four clax_embed_ functions, read with NM,
 # the NDK's llvm-nm) for both CPUs and no clax executable (libclax.so), each
 # native library's size printed, the home bundle HOME (the
@@ -94,6 +95,7 @@ check "the network permission (the Claude API)" "$badging" "uses-permission: nam
 check "both native ABIs" "$badging" "native-code: 'arm64-v8a' 'x86_64'"
 if grep -q '^application-debuggable' <<<"$badging"; then bad "a release build is not debuggable"; else ok "a release build is not debuggable"; fi
 if grep -q 'extractNativeLibs' <<<"$manifest"; then bad "the manifest leaves extractNativeLibs to the platform (it sets it)"; else ok "the manifest leaves extractNativeLibs to the platform"; fi
+if grep -q 'networkSecurityConfig' <<<"$manifest"; then bad "the manifest sets no network security config (it sets one)"; else ok "the manifest sets no network security config"; fi
 check_config_changes "$manifest"
 # Predictive back: Android 13+ shows the back-to-home and in-app back
 # animations only for an application that opts in.

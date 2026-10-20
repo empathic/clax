@@ -10,7 +10,7 @@ import android.os.Bundle
  * `MainActivity`, in Clax's own task, as a
  * [BundleIntake.ACTION_OPEN_BUNDLE] intent carrying the URI and its read
  * grant. It shows nothing and keeps no history, so the sender's task never
- * holds a second `MainActivity`, engine or daemon.
+ * holds a second `MainActivity` or engine.
  */
 class BundleReceiverActivity : Activity() {
     override fun onCreate(savedInstanceState: Bundle?) {

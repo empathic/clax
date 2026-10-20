@@ -30,10 +30,10 @@ build --experimental_android_compress_java_resources
 # passes --ios_multi_cpus=arm64.
 build --ios_multi_cpus=sim_arm64
 # The oldest iOS the Clax app runs on. Every iOS configuration, the app's
-# and //crates/clax-ios:clax_ios_builds' alike, compiles for it, the C of
-# ring and the bundled SQLite included (bazel/apple/ios_rust.bzl passes it
-# to rustc); //crates/clax-ios:ios_build_test fails on an object built for
-# a newer iOS.
+# and //crates/clax-embed:clax_embed_ios_builds' alike, compiles for it, the
+# C of ring and the bundled SQLite included (bazel/apple/ios_rust.bzl passes
+# it to rustc); //crates/clax-embed:ios_build_test fails on an object built
+# for a newer iOS.
 build --ios_minimum_os=17.0
 # An imported framework's module map is an input of Objective-C compiles,
 # so a plugin's `@import Flutter;` (image_picker_ios) finds the engine's

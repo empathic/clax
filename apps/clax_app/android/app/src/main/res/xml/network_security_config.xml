@@ -1,9 +1,0 @@
-<?xml version="1.0" encoding="utf-8"?>
-<!-- Cleartext only to the embedded daemon on loopback: the shell at
-     127.0.0.1:<port> and artifact origins at <id>.localhost:<port>. -->
-<network-security-config>
-    <domain-config cleartextTrafficPermitted="true">
-        <domain includeSubdomains="true">localhost</domain>
-        <domain includeSubdomains="false">127.0.0.1</domain>
-    </domain-config>
-</network-security-config>

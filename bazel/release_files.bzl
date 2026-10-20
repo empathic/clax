@@ -19,7 +19,6 @@ RELEASE_FILES = [
     "//crates/clax-git:Cargo.toml",
     "//crates/clax-hooks:Cargo.toml",
     "//crates/clax-http:Cargo.toml",
-    "//crates/clax-ios:Cargo.toml",
     "//crates/clax-mcp:Cargo.toml",
     "//crates/clax-realtime:Cargo.toml",
     "//crates/clax-rt:Cargo.toml",

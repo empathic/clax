@@ -42,8 +42,7 @@ class MainActivity : FlutterActivity() {
             @Suppress("DEPRECATION")
             WebViewFlutterAndroidExternalApi.getWebView(flutterEngine, id)
         }
-        // "nativeLibraryDir" answers the directory holding libclax.so, the
-        // embedded clax executable. "openAppSettings" opens this app's page
+        // "openAppSettings" opens this app's page
         // in system settings (its permissions among it) and answers true.
         // "openExternal" opens an http, https or mailto URL with the app
         // the person chose for it, and answers whether one took it.
@@ -84,7 +83,6 @@ class MainActivity : FlutterActivity() {
                             }
                         }
                     }
-                    "nativeLibraryDir" -> result.success(applicationInfo.nativeLibraryDir)
                     "openAppSettings" -> {
                         startActivity(
                             Intent(
