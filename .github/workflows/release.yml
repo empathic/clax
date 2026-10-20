@@ -2,7 +2,11 @@ name: Release
 
 # A v* tag builds, checks and publishes a release. A manual run, or a pull
 # request that touches the release path, runs the same jobs without
-# publishing; its result is the workflow artifact `release-dist`.
+# publishing; its result is the workflow artifact `release-dist`. A tag
+# whose release exists already, made by an earlier run from a commit with
+# the same tree (the tag moved to a re-signed copy of its commit), finishes
+# without building or uploading anything; one whose release came from
+# another tree fails (scripts/release-exists-check.sh).
 on:
   push:
     tags: ["v*"]
@@ -16,6 +20,7 @@ on:
       - "install.sh"
       - "scripts/ensure-clax.sh"
       - "scripts/pin-release.sh"
+      - "scripts/release-exists-check.sh"
       - "rust-toolchain.toml"
 
 permissions:
@@ -32,9 +37,13 @@ jobs:
   version:
     name: Check versions
     runs-on: ubuntu-24.04
+    permissions:
+      contents: read
+      actions: read
     outputs:
       version: ${{ steps.v.outputs.version }}
-      publish: ${{ steps.v.outputs.publish }}
+      publish: ${{ steps.v.outputs.publish == 'true' && steps.existing.outputs.skip != 'true' }}
+      skip: ${{ steps.existing.outputs.skip == 'true' }}
     steps:
       - uses: actions/checkout@v4
       - id: v
@@ -48,10 +57,19 @@ jobs:
             echo "publish=false" >> "$GITHUB_OUTPUT"
           fi
           echo "version=$(scripts/check-version.sh --print)" >> "$GITHUB_OUTPUT"
+      - id: existing
+        name: Check for a release of this tag
+        if: github.event_name == 'push'
+        shell: bash
+        env:
+          GH_TOKEN: ${{ github.token }}
+          GH_REPO: ${{ github.repository }}
+        run: scripts/release-exists-check.sh "$GITHUB_REF_NAME" "$GITHUB_SHA" >> "$GITHUB_OUTPUT"
 
   build:
     name: Build ${{ matrix.target }}
     needs: version
+    if: needs.version.outputs.skip != 'true'
     runs-on: ${{ matrix.os }}
     strategy:
       fail-fast: false

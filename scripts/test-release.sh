@@ -1,7 +1,8 @@
 #!/usr/bin/env bash
 # Tests check-version.sh, bump-version.sh, package-release.sh and
-# pin-release.sh in a scratch copy of the files they touch. No network:
-# pin-release.sh fetches from scripts/fake-release-server.py on 127.0.0.1.
+# pin-release.sh in a scratch copy of the files they touch, and
+# release-exists-check.sh against a fake gh. No network: pin-release.sh
+# fetches from scripts/fake-release-server.py on 127.0.0.1.
 set -uo pipefail
 HERE="$(cd "$(dirname "$0")/.." && pwd)"
 T="$(cd "$(mktemp -d)" && pwd -P)"
@@ -178,6 +179,53 @@ out="$(cd "$T/pin" && GH_REPO=someone/fork PATH="$T/nocurl:$PATH" scripts/pin-re
 if [ "$rc" = 1 ] && echo "$out" | grep -F "https://github.com/someone/fork/releases/download/v$V/SHA256SUMS" >/dev/null; then
     pass "pin-release downloads from GH_REPO's releases"
 else fail "pin-release downloads from GH_REPO's releases (rc=$rc: $out)"; fi
+
+# --- release-exists-check.sh ------------------------------------------------------
+# A fake gh: the release exists when $FAKE_GH/release does, `gh run list`
+# prints $FAKE_GH/earliest (what its --jq makes of the earliest successful
+# run), `gh api .../commits/<sha>` prints $FAKE_GH/tree-<sha>, and
+# $FAKE_GH/view-error makes `gh release view` fail otherwise than "not found".
+mkdir -p "$T/ghbin"
+fake_exe "$T/ghbin/gh" <<'SH'
+#!/bin/sh
+d="$FAKE_GH"
+case "$1" in
+    release)
+        if [ -e "$d/view-error" ]; then echo "HTTP 502: Bad Gateway" >&2; exit 1; fi
+        if [ -e "$d/release" ]; then echo "$3"; else echo "release not found" >&2; exit 1; fi ;;
+    run) cat "$d/earliest" 2>/dev/null || true ;;
+    api) cat "$d/tree-${2##*/}" ;;
+    *) echo "fake gh: unexpected: $*" >&2; exit 2 ;;
+esac
+SH
+check() { # case-dir: runs the check on v1.2.3 at commit "new"
+    (FAKE_GH="$1" GH_REPO=empathic/clax PATH="$T/ghbin:$PATH" "$HERE/scripts/release-exists-check.sh" v1.2.3 new) 2>"$1/err"
+}
+G="$T/gh-none"; mkdir -p "$G"
+out="$(check "$G")"; rc=$?
+if [ "$rc" = 0 ] && [ "$out" = "skip=false" ]; then pass "release-exists-check: no release, so build and publish"
+else fail "release-exists-check: no release (rc=$rc: $out $(cat "$G/err"))"; fi
+G="$T/gh-same"; mkdir -p "$G"; : > "$G/release"; echo "90 old" > "$G/earliest"; echo t1 > "$G/tree-old"; echo t1 > "$G/tree-new"
+out="$(check "$G")"; rc=$?
+if [ "$rc" = 0 ] && [ "$out" = "skip=true" ] && grep "built by run 90 from old" "$G/err" >/dev/null \
+    && grep "nothing is rebuilt or uploaded" "$G/err" >/dev/null; then
+    pass "release-exists-check: a release built from the same tree is kept, saying so"
+else fail "release-exists-check: same tree (rc=$rc: $out $(cat "$G/err"))"; fi
+G="$T/gh-other"; mkdir -p "$G"; : > "$G/release"; echo "90 old" > "$G/earliest"; echo t1 > "$G/tree-old"; echo t2 > "$G/tree-new"
+out="$(check "$G")"; rc=$?
+if [ "$rc" = 1 ] && [ -z "$out" ] && grep "another tree; delete the release" "$G/err" >/dev/null; then
+    pass "release-exists-check: a release built from another tree fails the run"
+else fail "release-exists-check: another tree (rc=$rc: $out $(cat "$G/err"))"; fi
+G="$T/gh-norun"; mkdir -p "$G"; : > "$G/release"
+out="$(check "$G")"; rc=$?
+if [ "$rc" = 1 ] && grep "no successful Release run on v1.2.3 made it" "$G/err" >/dev/null; then
+    pass "release-exists-check: a release no successful run made fails the run"
+else fail "release-exists-check: no successful run (rc=$rc: $out $(cat "$G/err"))"; fi
+G="$T/gh-error"; mkdir -p "$G"; : > "$G/view-error"
+out="$(check "$G")"; rc=$?
+if [ "$rc" = 1 ] && grep "cannot tell whether the release v1.2.3 exists: HTTP 502" "$G/err" >/dev/null; then
+    pass "release-exists-check: gh failing fails the run"
+else fail "release-exists-check: gh failing (rc=$rc: $out $(cat "$G/err"))"; fi
 
 [ "$FAILED" = 0 ] && echo "release script tests passed" || echo "release script tests FAILED"
 exit "$FAILED"

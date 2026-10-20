@@ -134,26 +134,33 @@ find_run() {
         | awk -v s="$3" '$2 == s { print $1 }' | sed -n 1p
 }
 run_state() { gh run view "$1" --json status,conclusion --jq '"\(.status) \(.conclusion)"'; }
-run_created() { gh run view "$1" --json createdAt --jq .createdAt; }
-# When the release was published, or nothing when there is none.
-release_created() { gh release view "$TAG" --json createdAt --jq .createdAt 2>/dev/null || true; }
-# Whether the release's files are run $1's: it lists SHA256SUMS and was
-# published after the run started. A release published earlier is another
-# build's, from a commit the tag may no longer name: the run's own publish
-# job fails on it ("a release with the same tag name already exists").
-release_of_run() {
-    local rel run
+release_exists() { gh release view "$TAG" --json tagName >/dev/null 2>&1; }
+# The tree of commit $1 as GitHub has it: a run's commit need not be here.
+github_tree() { gh api "repos/$GH_REPO/git/commits/$1" --jq .tree.sha; }
+# Whether the release's files are this tag's build: it lists SHA256SUMS and
+# a successful Release run on the tag built the tag commit's tree. Trees,
+# not commits: a tag moved to a re-signed copy of its commit names another
+# commit with the same tree, and the Release workflow then keeps the
+# release it already made (scripts/release-exists-check.sh). A release no
+# successful run built from this tree is another build's.
+release_of_tree() {
+    local tree id sha
     release_has_sums || return 1
-    rel="$(release_created)"
-    run="$(run_created "$1")" || return 1
-    [ -n "$rel" ] && [ -n "$run" ] && ! [[ $rel < $run ]]
+    tree="$(g rev-parse "$REL_COMMIT^{tree}")"
+    while read -r id sha; do
+        [ -n "$sha" ] || continue
+        if [ "$(github_tree "$sha")" = "$tree" ]; then return 0; fi
+    done < <(gh run list --workflow release.yml --event push --branch "$TAG" --status success --limit 50 \
+        --json databaseId,headSha --jq '.[] | "\(.databaseId) \(.headSha)"')
+    return 1
 }
-# Says what to do about a release of this version that run $1 did not make.
+# Says what to do about a release of this version that no successful run
+# built from this tag's tree; $1 is the run on the tag.
 stale_release() {
-    say "  the release $TAG was published $(release_created), before the Release run $1 on $REL_COMMIT"
-    say "  started ($(run_created "$1")): its files are another build's, not this tag's. Delete it,"
-    say "  keeping the tag (gh release delete $TAG --yes --repo $GH_REPO), rerun the run"
-    say "  (gh run rerun $1 --repo $GH_REPO), then run this again."
+    say "  the release $TAG exists, but no successful Release run on $TAG built this tag's tree"
+    say "  ($(g rev-parse "$REL_COMMIT^{tree}")): its files are another build's. Delete it, keeping the tag"
+    say "  (gh release delete $TAG --yes --repo $GH_REPO), rerun the run (gh run rerun $1"
+    say "  --repo $GH_REPO), then run this again."
 }
 
 # Reads the state the steps are judged by; fails, saying why in
@@ -371,13 +378,8 @@ done_4() { [ -n "$REL_COMMIT" ]; }
 done_5() { [ -n "$REL_COMMIT" ]; }
 done_6() { [ -n "$LOCAL_TAG" ] || [ -n "$REMOTE_TAG" ]; }
 done_7() { [ -n "$REMOTE_TAG" ]; }
-# Done when the newest Release run on the release commit succeeded and the
-# release is that run's.
-done_8() {
-    local id
-    id="$(find_run release.yml push "$REL_COMMIT")" && [ -n "$id" ] || return 1
-    [ "$(run_state "$id")" = "completed success" ] && release_of_run "$id"
-}
+# Done when the release is the build of this tag's tree.
+done_8() { release_of_tree; }
 done_9() { [ "$PINNED" = "$V" ]; }
 done_10() { [ -n "$PIN_COMMIT" ]; }
 done_11() { [ -n "$PIN_COMMIT" ]; }
@@ -522,11 +524,11 @@ step_8() {
     id="$(await_output find_run release.yml push "$REL_COMMIT")" \
         || { say "  no Release workflow run on $TAG appeared"; return 1; }
     if ! await_run "$id" "Release $TAG"; then
-        if [ -n "$(release_created)" ]; then stale_release "$id"; fi
+        if release_exists && ! release_of_tree; then stale_release "$id"; fi
         return 1
     fi
     release_has_sums || { say "  the release $TAG does not list SHA256SUMS (gh release view $TAG)"; return 1; }
-    release_of_run "$id" || { stale_release "$id"; return 1; }
+    release_of_tree || { stale_release "$id"; return 1; }
 }
 step_9() { bash "$ROOT/scripts/pin-release.sh" "$TAG"; }
 step_10() { step_4; }

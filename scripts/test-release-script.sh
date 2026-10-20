@@ -13,9 +13,12 @@
 # (201) once main holds the commit, a publish-pi run (301, 302, ...) per
 # dispatch, titled as .github/workflows/publish-pi.yml titles it.
 # $FAKE_STATE/<ID> lists the states `gh run view <ID>` reports, one per call
-# (the last one sticks; none means "completed success"); the release lists
-# SHA256SUMS once run 101 was seen to succeed, published at the time in
-# $FAKE_STATE/release-created (run 101 started at 2026-10-20T00:00:05Z).
+# (the last one sticks; none means "completed success"). Run 101 seen to
+# succeed is listed among the tag's successful Release runs
+# ($FAKE_STATE/release-successes) and publishes the release
+# ($FAKE_STATE/release) unless it exists; $FAKE_STATE/earlier-run set to
+# "same" or "other" adds an earlier successful run (90) on a commit with the
+# tag's tree or another tree. `gh api` reads commits' trees from origin.
 set -uo pipefail
 HERE="$(cd "$(dirname "$0")/.." && pwd)"
 T="$(cd "$(mktemp -d)" && pwd -P)"
@@ -95,21 +98,37 @@ case "$1 $2" in
     "auth status")
         if [ -e "$S/no-auth" ]; then echo "You are not logged into any GitHub hosts." >&2; exit 1; fi ;;
     "release view")
-        if [ -e "$S/release-created" ] && [ -n "$(origin tag -l "$3")" ]; then
+        if [ -e "$S/release" ] && [ -n "$(origin tag -l "$3")" ]; then
             case " $* " in
-                *" createdAt "*) cat "$S/release-created" ;;
+                *" tagName "*) echo "$3" ;;
                 *) printf 'clax-%s-aarch64-apple-darwin.tar.gz\ninstall.sh\nSHA256SUMS\n' "${3#v}" ;;
             esac
         else
             echo "release not found" >&2; exit 1
         fi ;;
+    "api repos/"*)
+        origin rev-parse "${2##*/}^{tree}" ;;
     "run list")
         sha="$(flag --commit "$@")"
         case "$(flag --workflow "$@")" in
             release.yml)
                 # $FAKE_STATE/release-delay: how many listings miss the run.
                 n="$(cat "$S/release-delay" 2>/dev/null || echo 0)"
-                if [ "$n" -gt 0 ]; then
+                if [ "$(flag --status "$@")" = success ]; then
+                    tag="$(flag --branch "$@")"
+                    commit="$(origin rev-parse "$tag^{commit}")"
+                    case "$(cat "$S/earlier-run" 2>/dev/null)" in
+                        same) tree="$(origin rev-parse "$commit^{tree}")" ;;
+                        other) tree="$(origin rev-parse "$commit^^{tree}")" ;;
+                        *) tree="" ;;
+                    esac
+                    cat "$S/release-successes" 2>/dev/null
+                    if [ -n "$tree" ]; then
+                        echo "90 $(GIT_AUTHOR_NAME=Earlier GIT_AUTHOR_EMAIL=e@example.com GIT_COMMITTER_NAME=Earlier \
+                            GIT_COMMITTER_EMAIL=e@example.com GIT_AUTHOR_DATE=2026-10-01T00:00:00Z \
+                            GIT_COMMITTER_DATE=2026-10-01T00:00:00Z origin commit-tree "$tree" -m "Release (earlier)")"
+                    fi
+                elif [ "$n" -gt 0 ]; then
                     echo $((n - 1)) > "$S/release-delay"
                 elif [ -n "$(origin tag --points-at "$sha" 'v*')" ]; then
                     echo "101 $sha"
@@ -122,14 +141,15 @@ case "$1 $2" in
         # $FAKE_STATE/push-on-<ID>: the first view of run <ID> sees other work
         # land on origin's main.
         if [ -e "$S/push-on-$3" ]; then rm "$S/push-on-$3"; foreign_push; fi
-        case " $* " in *" createdAt "*) echo "2026-10-20T00:00:05Z"; exit 0 ;; esac
         state="completed success"
         if [ -s "$S/$3" ]; then
             state="$(sed -n 1p "$S/$3")"
             if [ "$(wc -l < "$S/$3")" -gt 1 ]; then sed -i.bak 1d "$S/$3"; fi
         fi
-        if [ "$3" = 101 ] && [ "$state" = "completed success" ] && [ ! -e "$S/release-created" ]; then
-            echo "2026-10-20T00:00:10Z" > "$S/release-created"
+        if [ "$3" = 101 ] && [ "$state" = "completed success" ] && [ ! -e "$S/release-success" ]; then
+            : > "$S/release-success"
+            echo "101 $(origin rev-parse "$(origin tag -l 'v*' --sort=-creatordate | sed -n 1p)^{commit}")" >> "$S/release-successes"
+            [ -e "$S/release" ] || : > "$S/release"
         fi
         echo "$state" ;;
     "workflow run")
@@ -331,27 +351,43 @@ if [ "$rc" = 0 ] && released && [ "$(count "just ci")" = 2 ] && [ "$(count "bump
     pass "the next run resumes at the wait and finishes the release, tagging and testing once"
 else fail "resume after a failed wait (rc=$rc: $(grep '^just' "$FAKE_STATE/calls"); $(cat "$C/out"))"; fi
 
-# --- a release of the version from another build --------------------------------------
+# --- a release of the version from an earlier build ----------------------------------
+# The release exists already, made by an earlier successful run of the tag
+# (90) on a commit with the same tree, as after re-signing the tagged
+# commit: it is this tag's build, even before the tag's own run is done.
 new_case
-echo "2026-10-01T00:00:00Z" > "$FAKE_STATE/release-created"
+: > "$FAKE_STATE/release"
+echo same > "$FAKE_STATE/earlier-run"
+echo "in_progress " > "$FAKE_STATE/101"
+act; rc=$?
+if [ "$rc" = 0 ] && released && has "Step 8: Wait for the Release workflow: done already"; then
+    pass "a release built from the tag's tree by an earlier run, as after re-signing, is accepted"
+else fail "a release built from the tag's tree by an earlier run (rc=$rc: $(cat "$C/out"))"; fi
+# Made from another tree: the tag's own run fails on it, and it is never pinned.
+new_case
+: > "$FAKE_STATE/release"
+echo other > "$FAKE_STATE/earlier-run"
 echo "completed failure" > "$FAKE_STATE/101"
 act; rc=$?
 if [ "$rc" = 1 ] && has "step 8 (Wait for the Release workflow) failed" && has "gh release delete v0.6.0 --yes" \
-    && has "its files are another build's" && [ "$(count "pin v0.6.0")" = 0 ]; then
-    pass "a Release run failing on a release of another build stops before the pin, saying to delete it"
-else fail "a Release run failing on a release of another build (rc=$rc: $(cat "$C/out"))"; fi
-rm "$FAKE_STATE/release-created"
+    && has "no successful Release run on v0.6.0 built this tag's tree" && [ "$(count "pin v0.6.0")" = 0 ]; then
+    pass "a release built from another tree stops before the pin, saying to delete it"
+else fail "a release built from another tree (rc=$rc: $(cat "$C/out"))"; fi
+rm "$FAKE_STATE/release" "$FAKE_STATE/earlier-run"
 echo "completed success" > "$FAKE_STATE/101"
 act; rc=$?
-if [ "$rc" = 0 ] && released && [ "$(cat "$FAKE_STATE/release-created")" = "2026-10-20T00:00:10Z" ]; then
+if [ "$rc" = 0 ] && released && [ -e "$FAKE_STATE/release" ]; then
     pass "once that release is deleted and the run rerun, the next run finishes"
-else fail "resume after deleting a release of another build (rc=$rc: $(cat "$C/out"))"; fi
+else fail "resume after deleting a release of another tree (rc=$rc: $(cat "$C/out"))"; fi
+# The tag's own run succeeding does not make another tree's release its own.
 new_case
-echo "2026-10-01T00:00:00Z" > "$FAKE_STATE/release-created"
+: > "$FAKE_STATE/release"
+echo other > "$FAKE_STATE/earlier-run"
+: > "$FAKE_STATE/release-success"
 act; rc=$?
-if [ "$rc" = 1 ] && has "published 2026-10-01T00:00:00Z, before the Release run 101" && [ "$(count "pin v0.6.0")" = 0 ]; then
-    pass "a release published before this tag's run is never pinned, even when the run succeeds"
-else fail "a release published before this tag's run (rc=$rc: $(cat "$C/out"))"; fi
+if [ "$rc" = 1 ] && has "built this tag's tree" && [ "$(count "pin v0.6.0")" = 0 ]; then
+    pass "a release no successful run built from this tree is never pinned"
+else fail "a release no successful run built from this tree (rc=$rc: $(cat "$C/out"))"; fi
 
 # --- resume after main moves past a pushed pin commit ---------------------------------
 # Someone else's commit lands on origin's main.
