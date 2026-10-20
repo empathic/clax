@@ -10,6 +10,7 @@ import 'package:clax_app/clax/fake_api.dart';
 import 'package:clax_app/daemon/clock.dart';
 import 'package:clax_app/platform/app_notice.dart';
 import 'package:clax_app/platform/settings_store.dart';
+import 'package:clax_app/queue/client.dart' hide Intent;
 import 'package:clax_app/ui/app_icon.dart';
 import 'package:clax_app/ui/app_menu.dart';
 import 'package:clax_app/ui/app_screen.dart';
@@ -34,9 +35,10 @@ import 'package:flutter/foundation.dart';
 import 'package:flutter/material.dart';
 import 'package:flutter/rendering.dart';
 import 'package:flutter/services.dart';
-import 'package:flutter_test/flutter_test.dart';
+import 'package:flutter_test/flutter_test.dart' hide Retry;
 
 import '../support/fake_app_notice.dart';
+import '../support/fake_queue.dart';
 import '../support/fake_surface.dart';
 import '../support/fake_voice.dart';
 
@@ -207,6 +209,7 @@ void main() {
     ValueChanged<double>? onCommentTabMoved,
     Future<bool> Function(String aid, String tid)? onRetry,
     void Function(String aid)? onStop,
+    QueueClient? queue,
     Future<bool> Function(String aid, String tid)? onCancelThread,
     bool Function(String tid)? isStopped,
     String? initialThread,
@@ -252,6 +255,7 @@ void main() {
       onCommentTabMoved: onCommentTabMoved,
       onRetry: onRetry,
       onStop: onStop,
+      queue: queue,
       onCancelThread: onCancelThread,
       isStopped: isStopped,
       initialThread: initialThread,
@@ -1530,6 +1534,47 @@ void main() {
       rig.worker.add(WorkerFailed(rig.aid, 'x'));
       await tester.pump();
       await tester.tap(find.byKey(const ValueKey('retry-change')));
+      await tester.pump();
+      expect(find.textContaining('Nothing to run again'), findsOneWidget);
+      expect(find.byKey(const ValueKey('retry-change')), findsNothing);
+    });
+
+    testWidgets('with the queue, a failed change\'s Retry is a Retry of its '
+        'job, which shows running again once the queue has it', (tester) async {
+      final q = FakeQueueClient();
+      final rig = await pumpScreen(tester, queue: q);
+      rig.surface.push(rig.ready());
+      rig.worker.add(WorkerWorking(rig.aid, const ['thread-1']));
+      q.push([changeJob('c1', rig.aid)]);
+      rig.worker.add(WorkerFailed(rig.aid, 'it broke'));
+      q.push([changeJob('c1', rig.aid, state: JobState.failed)]);
+      await tester.pump();
+      await tester.tap(find.byKey(const ValueKey('retry-change')));
+      await tester.pump();
+      expect(q.sent, [const Retry('c1')]);
+      expect(find.text('Retrying…'), findsOneWidget);
+      await tester.tap(find.byKey(const ValueKey('retry-change')));
+      expect(q.sent, hasLength(1), reason: 'one Retry at a time');
+      q.push([changeJob('c1', rig.aid, state: JobState.queued)]);
+      await tester.pump();
+      expect(find.byKey(const ValueKey('chip-failed')), findsNothing);
+      expect(_working, findsOneWidget);
+    });
+
+    testWidgets('with the queue, a Retry its job no longer offers says so', (
+      tester,
+    ) async {
+      final q = FakeQueueClient();
+      final rig = await pumpScreen(tester, queue: q);
+      rig.surface.push(rig.ready());
+      rig.worker.add(WorkerWorking(rig.aid, const ['thread-1']));
+      rig.worker.add(WorkerFailed(rig.aid, 'x'));
+      q.push([changeJob('c1', rig.aid, state: JobState.failed)]);
+      await tester.pump();
+      await tester.tap(find.byKey(const ValueKey('retry-change')));
+      q.push([
+        changeJob('c1', rig.aid, state: JobState.failed, offers: {Offer.discard}),
+      ]);
       await tester.pump();
       expect(find.textContaining('Nothing to run again'), findsOneWidget);
       expect(find.byKey(const ValueKey('retry-change')), findsNothing);
@@ -2998,6 +3043,25 @@ void main() {
       await tester.tap(find.text('Run again'));
       await tester.pump();
       expect(retried, [tid]);
+    });
+
+    testWidgets('with the queue, Stop is a Cancel of the change\'s job, and '
+        'a job waiting for Claude says so on the chip', (tester) async {
+      final q = FakeQueueClient();
+      final rig = await pumpScreen(tester, queue: q);
+      final tid = await start(tester, rig);
+      rig.worker.add(WorkerWorking(rig.aid, [tid]));
+      q.push([changeJob('c1', rig.aid, waitingFor: WaitingFor.claude)]);
+      await tester.pump();
+      final waiting = _pill(ClaxPillState.waiting);
+      expect(waiting, findsOneWidget);
+      await tester.tap(waiting);
+      await frames(tester);
+      expect(find.text('Waiting for Claude'), findsWidgets);
+      await tester.tap(find.byKey(const ValueKey('change-stop')));
+      await frames(tester);
+      expect(q.sent, [const Cancel('c1')]);
+      expect(find.byKey(const ValueKey('chip-stopped')), findsOneWidget);
     });
 
     testWidgets('without a stop hook it offers no Stop', (tester) async {

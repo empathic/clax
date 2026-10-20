@@ -148,7 +148,7 @@ class Launcher extends StatefulWidget {
   final BuildLink? build;
 
   /// The makes going on; when null, the launcher keeps its own over
-  /// [make].
+  /// [make] ([MakeService.local]).
   final MakeService? makes;
 
   /// The apps' icons, which a tile shows in its badge; when null, the
@@ -177,7 +177,7 @@ class Launcher extends StatefulWidget {
 
 class _LauncherState extends State<Launcher> {
   late final MakeService _makes =
-      widget.host?.makes ?? widget.makes ?? MakeService(widget.make);
+      widget.host?.makes ?? widget.makes ?? MakeService.local(widget.make);
 
   late final AppIcons _icons =
       widget.host?.icons ?? widget.icons ?? AppIcons(widget.api);
@@ -436,7 +436,7 @@ class _LauncherState extends State<Launcher> {
                         if (i < makes.length) {
                           final m = makes[i];
                           return MakingTile(
-                            key: ObjectKey(m),
+                            key: ValueKey('make-${m.id}'),
                             session: m,
                             link: widget.build,
                             onTap: () => _actions.openMake(_host.makeIdOf(m)),
@@ -719,8 +719,8 @@ class MakingTile extends StatelessWidget {
 
   Widget _tile(BuildContext context, ({int done, int total})? count) {
     final p = claxPalette(context);
-    final failed = session.failure != null && !session.running;
-    final stopped = session.stopped != null && !session.running;
+    final failed = session.failure != null;
+    final stopped = session.isStopped;
     final offline = session.running && session.waitingForConnection;
     final status = failed
         ? 'Couldn’t make it'
@@ -1207,8 +1207,7 @@ class HomeFlows implements HomeActions {
     );
     if (request == null || !mounted) return;
     _draft = request;
-    // The build view starts it, once it is up.
-    await _showMake(host.makes.add(request));
+    await _showMake(host.makes.start(request));
   }
 
   /// Says interrupted make [s] wasn't finished, and offers **Make it

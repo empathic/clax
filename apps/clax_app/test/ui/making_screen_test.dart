@@ -10,6 +10,7 @@ import 'package:clax_app/agent/request.dart';
 import 'package:clax_app/agent/scripted_backend.dart';
 import 'package:clax_app/agent/timings.dart';
 import 'package:clax_app/daemon/clock.dart';
+import 'package:clax_app/queue/client.dart' hide Intent;
 import 'package:clax_app/ui/developer.dart';
 import 'package:clax_app/ui/haiku.dart';
 import 'package:clax_app/ui/kit/kit.dart';
@@ -17,7 +18,9 @@ import 'package:clax_app/ui/make_service.dart';
 import 'package:clax_app/ui/making_preview.dart';
 import 'package:clax_app/ui/making_screen.dart';
 import 'package:flutter/material.dart';
-import 'package:flutter_test/flutter_test.dart';
+import 'package:flutter_test/flutter_test.dart' hide Retry;
+
+import '../support/fake_queue.dart';
 
 const _result = EditResult(
   reply: 'Made it.',
@@ -507,13 +510,47 @@ class _Rig {
 }
 
 void _screen() {
-  testWidgets('a make waiting for the connection says so and offers Try '
-      'now', (tester) async {
+  testWidgets('a make whose job waits for Claude says so, and its Cancel '
+      'is a Cancel intent', (tester) async {
+    final q = FakeQueueClient()..push([makeJob('j')]);
+    final makes = MakeService(q);
+    addTearDown(makes.dispose);
+    await tester.pumpWidget(
+      MaterialApp(
+        home: MakingScreen(
+          request: 'a timer',
+          session: makes.sessionOf('j'),
+          preview: _FakePreview.new,
+          haikus: () async => const [],
+        ),
+      ),
+    );
+    await _settle(tester);
+    expect(find.text('Waiting for Claude'), findsNothing);
+    q.put(makeJob('j', waitingFor: WaitingFor.claude));
+    await _settle(tester);
+    expect(find.text('Waiting for Claude'), findsOneWidget);
+    expect(find.byKey(const ValueKey('make-try-now')), findsNothing);
+    q.put(makeJob('j'));
+    await _settle(tester);
+    // The line's switch lets the old words fade out.
+    await tester.pump(const Duration(milliseconds: 300));
+    expect(find.text('Waiting for Claude'), findsNothing);
+    await tester.tap(find.text('Cancel'));
+    await _settle(tester);
+    expect(q.sent, [const Cancel('j')]);
+  });
+
+  testWidgets('a make whose run waits for Claude offers Try now', (
+    tester,
+  ) async {
     var tries = 0;
-    final session = MakeSession('a timer', (r, cancelled, stage) {
+    final makes = MakeService.local((r, cancelled, stage) {
       stage(MakeStage.offline);
       return Completer<String>().future;
     }, tryNow: () => tries++);
+    addTearDown(makes.dispose);
+    final session = makes.start('a timer');
     await tester.pumpWidget(
       MaterialApp(
         home: MakingScreen(
@@ -529,6 +566,39 @@ void _screen() {
     expect(tries, 1);
     session.cancel();
     await _settle(tester);
+  });
+
+  testWidgets('a stopped make\'s Keep going and a failed one\'s Retry are '
+      'intents, and the view follows its job', (tester) async {
+    final q = FakeQueueClient()..push([makeJob('j')]);
+    final makes = MakeService(q);
+    addTearDown(makes.dispose);
+    await tester.pumpWidget(
+      MaterialApp(
+        home: MakingScreen(
+          request: 'a timer',
+          session: makes.sessionOf('j'),
+          preview: _FakePreview.new,
+          haikus: () async => const [],
+        ),
+      ),
+    );
+    await _settle(tester);
+    q.put(makeJob('j', state: JobState.stopped));
+    await _settle(tester);
+    expect(find.byKey(const ValueKey('make-stopped')), findsOneWidget);
+    await tester.tap(find.text('Keep going'));
+    await _settle(tester);
+    expect(q.sent, [const KeepGoing('j')]);
+    q.put(makeJob('j'));
+    await _settle(tester);
+    expect(find.byKey(const ValueKey('make-stopped')), findsNothing);
+    q.put(makeJob('j', state: JobState.failed, error: 'doc_moved'));
+    await _settle(tester);
+    expect(find.textContaining('A document changed'), findsOneWidget);
+    await tester.tap(find.text('Retry'));
+    await _settle(tester);
+    expect(q.sent.last, const Retry('j'));
   });
 
   testWidgets('streamed index.html loads into the preview at most four '
@@ -972,10 +1042,12 @@ void _plain() {
   testWidgets('no button under the making screen shrinks its tap target', (
     tester,
   ) async {
-    final session = MakeSession('a timer', (r, cancelled, stage) {
+    final makes = MakeService.local((r, cancelled, stage) {
       stage(MakeStage.offline);
       return Completer<String>().future;
     }, tryNow: () {});
+    addTearDown(makes.dispose);
+    final session = makes.start('a timer');
     await tester.pumpWidget(
       MaterialApp(
         home: MakingScreen(

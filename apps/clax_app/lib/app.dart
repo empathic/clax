@@ -58,6 +58,7 @@ import 'platform/intents.dart';
 import 'platform/network_pause.dart';
 import 'platform/pending_make.dart';
 import 'platform/secure_key.dart';
+import 'queue/client.dart' show QueueClient;
 import 'platform/settings_store.dart';
 import 'platform/voice.dart';
 import 'ui/app_icon.dart';
@@ -91,6 +92,7 @@ import 'ui/kit/verbs.dart';
 import 'ui/launcher.dart';
 import 'ui/mac/windows.dart';
 import 'ui/licences.dart';
+import 'ui/local_queue.dart';
 import 'ui/make_service.dart';
 import 'ui/making_screen.dart';
 import 'ui/questions/questions_sheet.dart';
@@ -141,6 +143,7 @@ class AppServices {
     this.shippedHome,
     this.homeSnapshots,
     this.homeSnapshot,
+    this.queue,
     PendingMake? pendingMake,
     ApiConnection? connection,
     int? pid,
@@ -282,6 +285,11 @@ class AppServices {
 
   /// The app's process ID, given to the daemon with the session.
   final int pid;
+
+  /// The queue of makes and changes the UI shows and sends intents to;
+  /// when null, makes run in the UI isolate and changes are the feedback
+  /// worker's ([LocalQueueClient]).
+  final QueueClient? queue;
 }
 
 /// Runs the app with [services], with Clax's own licence on the licences
@@ -683,18 +691,35 @@ class _AppRootState extends State<AppRoot> with WidgetsBindingObserver {
   /// [AppSettings.developer], for the [DeveloperScope] over every screen.
   final _developer = ValueNotifier(false);
 
+  /// The queue run in this isolate, when [AppServices.queue] gives none.
+  late final LocalQueueClient? _localQueue = _s.queue != null
+      ? null
+      : LocalQueueClient(
+          makes: LocalMakes(
+            _make,
+            clock: _s.clock,
+            pending: _s.pendingMake,
+            tryNow: _s.connection.nudge,
+            keepGoing: (request, key, cancelled, stage) =>
+                _make(request, cancelled, stage, keepGoing: key),
+            forget: (key) => unawaited(_forgetMake(key)),
+          ),
+          worker: _runtime.worker.events,
+          cancelChange: _runtime.worker.cancelChange,
+          retryChange: _runtime.worker.retry,
+        );
+
+  /// The makes and changes, which outlive their screens.
+  late final QueueClient _queue = _s.queue ?? _localQueue!;
+
   /// The makes going on, which outlive their build views.
   late final _makes = MakeService(
-    _make,
+    _queue,
+    live: _localQueue,
     clock: _s.clock,
-    pending: _s.pendingMake,
-    tryNow: _s.connection.nudge,
     onMade: _madeAway,
     onFailed: _failedAway,
     onStopped: _stoppedAway,
-    keepGoing: (request, key, cancelled, stage) =>
-        _make(request, cancelled, stage, keepGoing: key),
-    forget: (key) => unawaited(_forgetMake(key)),
   );
 
   /// The apps' icons, kept under the support directory between launches.
@@ -1068,10 +1093,8 @@ class _AppRootState extends State<AppRoot> with WidgetsBindingObserver {
     for (final o in _openApps) {
       unawaited(o.actions.close());
     }
-    for (final m in _makes.makes) {
-      m.cancel();
-    }
     _makes.dispose();
+    _localQueue?.dispose();
     unawaited(_runtime.close());
     _sidebar?.dispose();
     _selection.removeListener(_forgetPaneAim);
@@ -1851,7 +1874,7 @@ class _AppRootState extends State<AppRoot> with WidgetsBindingObserver {
     }
     final left = await _s.pendingMake.takeEach();
     if (!mounted) return;
-    _makes.recover(left);
+    _localQueue?.recover(left);
   }
 
   /// The build view of make [s].
@@ -2590,6 +2613,7 @@ class _AppRootState extends State<AppRoot> with WidgetsBindingObserver {
       settings: settings,
       timings: _s.timings,
       worker: _runtime.worker.events,
+      queue: _queue,
       onRetry: _runtime.worker.retry,
       onStop: _runtime.worker.cancelChange,
       onCancelThread: _runtime.worker.cancelThread,

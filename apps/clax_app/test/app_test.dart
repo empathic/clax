@@ -358,7 +358,9 @@ void main() {
     rig.backend.gate = Completer<void>();
     await submit(tester, 'a tracker for my runs');
     await tester.pump(const Duration(milliseconds: 400));
-    expect(rig.timings.started, [sayFirstOutput, sayUsable]);
+    // The make starts at Make; its build view's first-output timing as the
+    // view shows.
+    expect(rig.timings.started, unorderedEquals([sayFirstOutput, sayUsable]));
     expect(find.text('Writing your app'), findsOneWidget);
 
     rig.backend.gate!.complete();

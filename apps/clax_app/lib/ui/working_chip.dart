@@ -10,6 +10,7 @@ import '../daemon/clock.dart';
 import 'build_plan.dart';
 import 'kit/mark.dart';
 import 'kit/verbs.dart';
+import 'making_screen.dart' show MakeStage;
 import 'theme.dart';
 import 'tokens.g.dart';
 import 'change_tracker.dart';
@@ -131,6 +132,7 @@ class _WorkingChipState extends State<WorkingChip> {
   String get _label {
     final c = _c;
     if (c.landing) return 'Loading the new version';
+    if (c.waitingForConnection) return MakeStage.offline.label;
     return c.step ?? (c.again ? 'Trying again…' : 'Working…');
   }
 

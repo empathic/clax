@@ -2,8 +2,11 @@ import 'dart:typed_data';
 
 import 'package:clax_app/agent/progress.dart';
 import 'package:clax_app/agent/timings.dart';
+import 'package:clax_app/queue/client.dart';
 import 'package:clax_app/ui/change_tracker.dart';
-import 'package:flutter_test/flutter_test.dart';
+import 'package:flutter_test/flutter_test.dart' hide Retry;
+
+import '../support/fake_queue.dart';
 
 /// Logs the long-press→landed timing in [log] and the send→first-step
 /// timing in [stepLog].
@@ -527,5 +530,45 @@ void main() {
     t.workerProgress(['t1'], const WaitingForConnection());
     t.workerCancelled();
     expect(t.waitingForConnection, isFalse, reason: 'it ended');
+  });
+
+  group('the change\'s job in the queue', () {
+    test('a job waiting for Claude is the step that says so, until it '
+        'goes on', () {
+      t.workerWorking(['t1']);
+      t.queued(changeJob('c', 'a1'));
+      expect(t.waitingForConnection, isFalse);
+      t.queued(changeJob('c', 'a1', waitingFor: WaitingFor.claude));
+      expect(t.waitingForConnection, isTrue);
+      expect(t.step, 'Waiting for Claude');
+      // The worker's own word of it repeats no step.
+      t.workerProgress(['t1'], const WaitingForConnection());
+      expect(t.stepCount, 1);
+      t.queued(changeJob('c', 'a1'));
+      expect(t.waitingForConnection, isFalse);
+      expect(t.step, 'Reached Claude again');
+      expect(t.job?.id, 'c');
+    });
+
+    test('a Retry ends as the job runs again, or offers no Retry', () {
+      t.workerWorking(['t1']);
+      t.workerFailed('it broke');
+      t.queued(changeJob('c', 'a1', state: JobState.failed));
+      t.retryStarted();
+      t.queued(changeJob('c', 'a1', state: JobState.queued));
+      expect(t.retrying, isFalse);
+      expect(t.again, isTrue);
+      expect(t.working, isTrue);
+
+      t.workerWorking(['t1']);
+      t.workerFailed('it broke');
+      t.retryStarted();
+      t.queued(
+        changeJob('c', 'a1', state: JobState.failed, offers: {Offer.discard}),
+      );
+      expect(t.retrying, isFalse);
+      expect(t.failedThreads, isEmpty);
+      expect(t.outcomeText, 'Nothing to run again: reply in the thread.');
+    });
   });
 }

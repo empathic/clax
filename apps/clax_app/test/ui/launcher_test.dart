@@ -9,7 +9,9 @@ import 'package:clax_app/ui/app_icon.dart';
 import 'package:clax_app/ui/app_menu.dart';
 import 'package:clax_app/ui/inbox_screen.dart';
 import 'package:clax_app/ui/kit/kit.dart';
+import 'package:clax_app/queue/client.dart' hide Intent;
 import 'package:clax_app/ui/launcher.dart';
+import 'package:clax_app/ui/make_service.dart';
 import 'package:clax_app/ui/making_screen.dart';
 import 'package:clax_app/ui/theme.dart';
 import 'package:clax_app/ui/tile_label.dart';
@@ -18,8 +20,9 @@ import 'package:flutter/material.dart';
 import 'package:flutter/rendering.dart';
 import 'package:flutter/services.dart';
 import 'package:flutter_svg/flutter_svg.dart';
-import 'package:flutter_test/flutter_test.dart';
+import 'package:flutter_test/flutter_test.dart' hide Retry;
 
+import '../support/fake_queue.dart';
 import '../support/fake_voice.dart';
 import '../support/split_fixture.dart';
 
@@ -1349,6 +1352,40 @@ void main() {
     await frames(tester);
     expect(fired, isTrue);
     expect(find.byKey(const ValueKey('making-tile')), findsNothing);
+  });
+
+  testWidgets('a make\'s tile says where its job stands, following the '
+      'queue', (tester) async {
+    final q = FakeQueueClient()..push([makeJob('j', title: 'a stopwatch')]);
+    final makes = MakeService(q);
+    addTearDown(makes.dispose);
+    await tester.pumpWidget(
+      MaterialApp(
+        theme: claxTheme(Brightness.light, TargetPlatform.android),
+        home: Scaffold(
+          body: Center(
+            child: SizedBox(
+              width: 120,
+              child: MakingTile(session: makes.sessionOf('j')!, onTap: () {}),
+            ),
+          ),
+        ),
+      ),
+    );
+    String said() =>
+        tester.widget<Text>(find.byKey(const ValueKey('making-status'))).data!;
+    expect(said(), 'Making…');
+    for (final (view, words) in [
+      (makeJob('j', state: JobState.queued), 'Waiting…'),
+      (makeJob('j', waitingFor: WaitingFor.claude), 'Can’t reach Claude'),
+      (makeJob('j', state: JobState.stopped), 'Made a start'),
+      (makeJob('j', state: JobState.failed), 'Couldn’t make it'),
+      (makeJob('j', state: JobState.failed, error: 'interrupted'), 'Interrupted'),
+    ]) {
+      q.put(view);
+      await tester.pump();
+      expect(said(), words, reason: '$view');
+    }
   });
 }
 

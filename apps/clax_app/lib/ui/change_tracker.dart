@@ -2,6 +2,8 @@ import 'dart:typed_data';
 
 import '../agent/progress.dart';
 import '../agent/timings.dart';
+import '../queue/client.dart';
+import 'making_screen.dart' show MakeStage;
 
 /// The last render of the running change: its screenshot and the number of
 /// uncaught errors it logged.
@@ -62,6 +64,12 @@ class _Change {
 /// the chip is dismissed or new work starts. [retryStarted], then
 /// [retried] (the worker queued it: the change shows running again) or
 /// [retryRefused].
+///
+/// Where the queue runs the app's changes, [queued] gives the change's
+/// job ([job]): its run waiting for Claude is the step "Waiting for
+/// Claude" ([waitingForConnection]), and a Retry in flight ends as the job
+/// shows queued or running again ([retried]), or failed with no Retry
+/// left ([retryRefused]).
 class ChangeTracker {
   ChangeTracker({
     required this.timings,
@@ -110,6 +118,36 @@ class ChangeTracker {
 
   /// The running change said it waits for the connection.
   var _offline = false;
+
+  /// The app's change as the queue last showed it.
+  JobView? _job;
+
+  /// The app's change as the queue last showed it; null without a queue,
+  /// or with no change open.
+  JobView? get job => _job;
+
+  /// The queue showed the app's change as [j] (null: none open).
+  void queued(JobView? j) {
+    _job = j;
+    final waiting =
+        j != null &&
+        j.state == JobState.running &&
+        j.waitingFor == WaitingFor.claude;
+    if (waiting != _offline && _running.isNotEmpty) {
+      _offline = waiting;
+      _addStep(waiting ? MakeStage.offline.label : 'Reached Claude again');
+    }
+    if (_retrying && j != null) {
+      switch (j.state) {
+        case JobState.queued || JobState.running:
+          retried();
+        case JobState.failed when !j.offers.contains(Offer.retry):
+          retryRefused();
+        default:
+          break;
+      }
+    }
+  }
 
   /// How many steps [steps] keeps.
   static const shownSteps = 3;
@@ -252,7 +290,7 @@ class ChangeTracker {
         return _addStep('Trying again');
       case WaitingForConnection():
         _offline = true;
-        _addStep('Waiting for Claude');
+        _addStep(MakeStage.offline.label);
         return true;
       case ConnectionBack():
         _offline = false;

@@ -14,6 +14,7 @@ import 'dart:async';
 
 import 'package:clax_app/clax/fake_api.dart';
 import 'package:clax_app/ui/launcher.dart';
+import 'package:clax_app/ui/local_queue.dart';
 import 'package:clax_app/ui/make_service.dart';
 import 'package:clax_app/ui/making_screen.dart';
 import 'package:clax_app/ui/split/sidebar_model.dart';
@@ -29,12 +30,14 @@ import 'shots/rig.dart';
 
 void main() {
   shots('offline-launcher', (s) async {
-    final makes = MakeService((r, cancelled, stage) {
+    final makes = MakeService.local((r, cancelled, stage) {
       if (r.startsWith('A packing')) stage(MakeStage.offline);
       return Completer<String>().future;
     });
     addTearDown(makes.dispose);
-    makes.lost('A water reminder every two hours');
+    (makes.queue as LocalQueueClient).recover([
+      (request: 'A water reminder every two hours', waiting: false),
+    ]);
     makes.start('A packing list for trips');
     final api = FakeClaxApi();
     api.seedArtifact('Notes', {'index.html': '<p>n</p>'});

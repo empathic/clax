@@ -97,7 +97,7 @@ void main() {
         },
       ),
     ]);
-    makes = MakeService((r, cancel, report) => Completer<String>().future);
+    makes = MakeService.local((r, cancel, report) => Completer<String>().future);
     host = HomeHost(
       api: api,
       stream: api.stream(),

@@ -15,6 +15,7 @@ import 'package:clax_app/platform/settings_store.dart';
 import 'package:clax_app/ui/app_icon.dart';
 import 'package:clax_app/ui/build_plan.dart';
 import 'package:clax_app/ui/launcher.dart';
+import 'package:clax_app/ui/local_queue.dart';
 import 'package:clax_app/ui/make_service.dart';
 import 'package:clax_app/ui/settings_screen.dart';
 import 'package:clax_app/ui/splash.dart';
@@ -101,7 +102,7 @@ void main() {
   });
 
   shots('launcher', (s) async {
-    final makes = MakeService(
+    final makes = MakeService.local(
       (r, cancelled, stage) => r.startsWith('A tide')
           ? Future<String>.error(StateError('no key'))
           : Completer<String>().future,
@@ -110,8 +111,10 @@ void main() {
     addTearDown(makes.dispose);
     makes.start('A tide table for the harbour');
     await s.tester.runAsync(() => Future<void>.delayed(Duration.zero));
-    makes.lost('A water reminder every two hours');
-    makes.add('A reading log');
+    (makes.queue as LocalQueueClient).recover([
+          (request: 'A water reminder every two hours', waiting: false),
+        ]);
+    makes.start('A reading log');
     makes.start('A packing list for trips');
     var t = 0;
     final api = FakeClaxApi(

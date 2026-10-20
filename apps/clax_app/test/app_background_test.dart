@@ -1034,11 +1034,17 @@ void main() {
         'state with the run', (tester) async {
       turns = _Turns();
       await pumpApp(tester);
+      // The make runs from Make on; the app goes away once its build view
+      // is up.
+      final shown = Completer<void>();
       turns!.steps.add((r) async {
+        await shown.future;
         leave(tester);
         throw _dns;
       });
       await submit(tester, 'a tracker for my runs');
+      await pumpUntilShown(tester, 'Cancel');
+      shown.complete();
       await pumpUntil(
         tester,
         () => work.calls.last.contains('Waiting for Clax'),

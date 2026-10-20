@@ -60,7 +60,7 @@ void main() {
       api: api,
       stream: api.stream(),
       closeStream: true,
-      makes: MakeService((r, c, s) => Completer<String>().future),
+      makes: MakeService.local((r, c, s) => Completer<String>().future),
       builds: null,
       settings: HomeSettings(homeAppId: home),
       actions: actions,

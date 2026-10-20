@@ -385,12 +385,14 @@ void main() {
       final made = Completer<String>();
       late void Function(MakeUpdate) report;
       Future<void>? cancelled;
-      final makes = MakeService((_, c, r) {
+      final makes = MakeService.local((_, c, r) {
         report = r;
         cancelled = c;
         return made.future;
       });
       final s = makes.start('a run tracker');
+      // The queue starts its run after the turn that sent it.
+      await tester.pump();
       report(const MakePlanKey('new:1'));
       await plans.set('new:1', _features);
       report(const MakeProgress(Narration('Laying out the runs')));

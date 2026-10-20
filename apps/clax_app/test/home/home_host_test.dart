@@ -151,7 +151,7 @@ void main() {
   setUp(() async {
     api = _api();
     actions = _Actions();
-    makes = MakeService(
+    makes = MakeService.local(
       (r, cancel, report) => r.startsWith('boom')
           ? Future.error(StateError('no key'))
           : Completer<String>().future,
@@ -423,7 +423,7 @@ void main() {
   });
 
   test('a make that changes while nobody listens reads as it stands', () async {
-    makes.dismiss(makes.add('Something else'));
+    makes.dismiss(makes.start('Something else'));
     final s = makes.start('boom: a tracker for my runs');
     expect(host.state.makes.single.state, 'making');
     await pumpEventQueue();

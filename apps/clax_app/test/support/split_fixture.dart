@@ -63,7 +63,7 @@ class SplitFixture {
   late final String home;
   final ids = <String, String>{};
   final actions = RecordedActions();
-  late final MakeService makes = MakeService((r, cancel, report) {
+  late final MakeService makes = MakeService.local((r, cancel, report) {
     this.report = report;
     return Completer<String>().future;
   });

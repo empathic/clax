@@ -722,7 +722,7 @@ class HomeHost extends ChangeNotifier {
   }
 
   HomeMake _make(MakeSession s) {
-    final failed = s.failure != null && !s.running;
+    final failed = s.failure != null;
     final key = s.planKey;
     final plan = key == null ? null : _makePlans[key];
     final c = plan == null ? null : planCount(plan);
@@ -733,7 +733,7 @@ class HomeHost extends ChangeNotifier {
       // one does: the contract has no state of its own for it.
       state: failed
           ? 'failed'
-          : s.stopped != null && !s.running
+          : s.isStopped
           ? 'interrupted'
           : s.running && s.waitingForConnection
           ? 'offline'

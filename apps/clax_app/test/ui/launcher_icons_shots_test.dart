@@ -9,6 +9,7 @@ import 'dart:io';
 import 'package:clax_app/clax/fake_api.dart';
 import 'package:clax_app/ui/app_icon.dart';
 import 'package:clax_app/ui/launcher.dart';
+import 'package:clax_app/ui/local_queue.dart';
 import 'package:clax_app/ui/make_service.dart';
 import 'package:clax_app/ui/theme.dart';
 import 'package:flutter/foundation.dart';
@@ -63,13 +64,15 @@ void main() {
         addTearDown(tester.view.reset);
         // Shadows as on a device: flutter_test turns them off by default.
         debugDisableShadows = false;
-        final makes = MakeService(
+        final makes = MakeService.local(
           (r, cancelled, stage) => Completer<String>().future,
           maxRunning: 1,
         );
         addTearDown(makes.dispose);
-        makes.lost('A water reminder every two hours');
-        makes.add('A reading log');
+        (makes.queue as LocalQueueClient).recover([
+          (request: 'A water reminder every two hours', waiting: false),
+        ]);
+        makes.start('A reading log');
         makes.start('A packing list for trips');
         var t = 0;
         final api = FakeClaxApi(

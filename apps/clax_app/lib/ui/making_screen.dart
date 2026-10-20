@@ -400,14 +400,16 @@ class MakingScreen extends StatefulWidget {
   /// navigator's back (⌘[, Escape), still come to the screen.
   final ValueChanged<MakingResult?>? onExit;
 
-  /// Runs the screen's own make, when there is no [session].
+  /// Runs the screen's own make, when there is no [session]: a queue of
+  /// its own ([MakeService.local]) runs it while the screen shows.
   final MakeApp? make;
 
   /// Goes on with the screen's own make after it stopped at a limit, when
   /// there is no [session].
   final KeepGoingApp? keepGoing;
 
-  /// The make to show, which goes on when the screen goes.
+  /// The make to show, a view of its job in the queue, which goes on when
+  /// the screen goes.
   final MakeSession? session;
   final VoidCallback? openSettings;
 
@@ -451,6 +453,10 @@ class _MakingScreenState extends State<MakingScreen> {
   String? _failure;
 
   late final MakeSession _session;
+
+  /// The queue of the screen's own make, when there is no
+  /// [MakingScreen.session].
+  MakeService? _own;
   StreamSubscription<MakeUpdate>? _updates;
   MakingLog get _log => _session.log;
 
@@ -496,29 +502,22 @@ class _MakingScreenState extends State<MakingScreen> {
   @override
   void initState() {
     super.initState();
-    final own = widget.session == null;
-    _session =
-        widget.session ??
-        MakeSession(
-          widget.request,
-          widget.make ?? (throw ArgumentError('a make or a session')),
-          clock: widget.clock,
-          keepGoing: widget.keepGoing,
-        );
+    final own = widget.session == null
+        ? _own = MakeService.local(
+            widget.make ?? (throw ArgumentError('a make or a session')),
+            clock: widget.clock,
+            keepGoing: widget.keepGoing,
+          )
+        : null;
+    _session = widget.session ?? own!.prepare(widget.request);
     _autoSeen = _session.autoKeptGoing;
     _session.attach();
     _session.addListener(_onSession);
     _updates = _session.updates.listen(_onUpdate);
-    if (own || !_session.started && !_session.queued) {
-      // After this build: starting tells the session's listeners (the
-      // launcher's tiles), which must not rebuild during it.
-      _attempt(
-        () => scheduleMicrotask(() {
-          if (!_session.cancelled && !_session.started && !_session.queued) {
-            unawaited(_session.start());
-          }
-        }),
-      );
+    if (own != null) {
+      // The screen's own make: the queue hears of it once the screen
+      // follows it.
+      _attempt(() => own.send(_session));
     } else {
       _catchUp();
     }
@@ -553,7 +552,10 @@ class _MakingScreenState extends State<MakingScreen> {
     _session.removeListener(_onSession);
     _session.detach();
     // A make of the screen's own has nobody else to show it.
-    if (widget.session == null) _session.cancel();
+    if (_own case final own?) {
+      _session.cancel();
+      own.dispose();
+    }
     _throttle?.close();
     _view?.dispose();
     super.dispose();
@@ -652,7 +654,9 @@ class _MakingScreenState extends State<MakingScreen> {
       _throttle?.clear();
       setState(() => _failure = f);
     } else if (_session.stopped case final st? when !_session.running) {
-      if (identical(_stop, st)) return;
+      if (_stop != null && _stop!.key == st.key && _stop!.stops == st.stops) {
+        return;
+      }
       _tick?.cancel();
       _throttle?.clear();
       setState(() => _stop = st);
@@ -713,11 +717,11 @@ class _MakingScreenState extends State<MakingScreen> {
   }
 
   /// Retry after a failure; Start over after a stop.
-  void _run() => _attempt(() => unawaited(_session.start()));
+  void _run() => _attempt(_session.retry);
 
   /// Keep going after a stop, from the kept draft.
   void _keepGoing() {
-    _attempt(() => unawaited(_session.keepGoing()), carry: false);
+    _attempt(_session.keepGoing, carry: false);
     _showKept();
   }
 
@@ -903,7 +907,11 @@ class _MakingScreenState extends State<MakingScreen> {
     final developer = DeveloperScope.of(context);
     // Made, with nothing left to build here: it waits to be opened.
     final ready = _made != null && !buildGoing(_buildState);
-    final line = ready ? 'Ready to open' : log.lineFor(developer: developer);
+    final line = ready
+        ? 'Ready to open'
+        : _session.waitingForConnection
+        ? MakeStage.offline.label
+        : log.lineFor(developer: developer);
     final dim = theme.textTheme.bodyMedium?.copyWith(color: p.muted);
     final haiku = _haiku;
     final showHaiku =
@@ -1015,7 +1023,7 @@ class _MakingScreenState extends State<MakingScreen> {
           ConstrainedBox(
             constraints: const BoxConstraints(minHeight: 24),
             child: switch (_session.tryNow) {
-              final tryNow? when log.stage == MakeStage.offline => Align(
+              final tryNow? when _session.waitingForConnection => Align(
                 alignment: Alignment.centerLeft,
                 child: ClaxButton(
                   key: const ValueKey('make-try-now'),

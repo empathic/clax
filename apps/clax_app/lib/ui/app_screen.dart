@@ -15,6 +15,7 @@ import '../platform/app_notice.dart';
 import '../platform/device/device_host.dart';
 import '../platform/settings_store.dart';
 import '../platform/voice.dart';
+import '../queue/client.dart' hide Intent;
 import 'app_cover.dart';
 import 'app_icon.dart';
 import 'app_menu.dart';
@@ -283,6 +284,7 @@ class AppScreen extends StatefulWidget {
     this.onThreadsWidth,
     this.onRetry,
     this.onStop,
+    this.queue,
     this.onCancelThread,
     this.isStopped,
     this.onTryNow,
@@ -398,8 +400,15 @@ class AppScreen extends StatefulWidget {
   final Future<bool> Function(String aid, String tid)? onRetry;
 
   /// Stops app `aid`'s change in flight, leaving its threads open; null
-  /// offers no Stop.
+  /// offers no Stop, unless [queue] does.
   final void Function(String aid)? onStop;
+
+  /// The queue of makes and changes. With it, the app's change shows as
+  /// its job there ([QueueStateJobs.changeOf]): whether it waits for
+  /// Claude, and Stop, Retry and Keep going as intents ([Cancel], [Retry],
+  /// [KeepGoing]) in place of [onStop] and [onRetry]. The worker's events
+  /// still tell its threads, steps and landing.
+  final QueueClient? queue;
 
   /// Stops one thread of the app's change (Cancel on a thread page waiting
   /// for the connection); its other threads run without it.
@@ -667,6 +676,8 @@ class _AppScreenState extends State<AppScreen> with WidgetsBindingObserver {
       now: widget.clock.now,
     );
     _text.addListener(_onText);
+    widget.queue?.state.addListener(_onQueue);
+    _onQueue();
     unawaited(_readApp());
     _comments = widget.comments ?? (_ownComments = CommentsCommand());
     if (!widget.covered) {
@@ -1142,6 +1153,7 @@ class _AppScreenState extends State<AppScreen> with WidgetsBindingObserver {
     _deviceView.watching.dispose();
     _updates.dispose();
     _waitingThreads.dispose();
+    widget.queue?.state.removeListener(_onQueue);
     WidgetsBinding.instance.removeObserver(this);
     widget.notice?.clear(this);
     if (_escapeView case final view?) {
@@ -1695,10 +1707,45 @@ class _AppScreenState extends State<AppScreen> with WidgetsBindingObserver {
       case WorkerProgress(:final threads, :final progress):
         if (_changes.workerProgress(threads, progress)) setState(() {});
     }
+    _showWaiting();
+  }
+
+  /// The app's change in the queue's state changed.
+  void _onQueue() {
+    final q = widget.queue;
+    if (q == null) return;
+    final job = q.state.value.changeOf(widget.aid);
+    if (identical(job, _changes.job)) return;
+    if (mounted) {
+      setState(() => _changes.queued(job));
+    } else {
+      _changes.queued(job);
+    }
+    _showWaiting();
+  }
+
+  void _showWaiting() {
     _waitingThreads.value = _changes.waitingForConnection
         ? _changes.running
         : const [];
   }
+
+  /// Stops the app's change: its job in the queue, else by [AppScreen.onStop].
+  void _stopChange() {
+    final job = _changes.job;
+    if (widget.queue case final q? when job != null) {
+      if (job.offers.contains(Offer.cancel)) q.send(Cancel(job.id));
+    } else {
+      widget.onStop?.call(widget.aid);
+    }
+    setState(_changes.stopped);
+  }
+
+  /// Whether the app offers Stop.
+  bool get _canStop => widget.queue != null || widget.onStop != null;
+
+  /// Whether the app offers Retry.
+  bool get _canRetry => widget.queue != null || widget.onRetry != null;
 
   // --- the build ---
 
@@ -1768,9 +1815,20 @@ class _AppScreenState extends State<AppScreen> with WidgetsBindingObserver {
     if (mounted) _buildToast('Added “${f.title}” to the plan');
   }
 
-  /// Runs the failed change again: asks the worker to queue each of its
-  /// threads, then shows it running, or that there was nothing to run.
+  /// Runs the failed change again: with the queue, a Retry (or a Keep
+  /// going) of its job, which shows running again once the queue has it;
+  /// else asks the worker to queue each of its threads, then shows it
+  /// running, or that there was nothing to run.
   Future<void> _retryChange() async {
+    if (widget.queue case final q?) {
+      final job = _changes.job;
+      if (job == null || _changes.retrying) return;
+      final retry = job.offers.contains(Offer.retry);
+      if (!retry && !job.offers.contains(Offer.keepGoing)) return;
+      setState(_changes.retryStarted);
+      q.send(retry ? Retry(job.id) : KeepGoing(job.id));
+      return;
+    }
     final retry = widget.onRetry;
     final threads = _changes.failedThreads;
     if (retry == null || threads.isEmpty || _changes.retrying) return;
@@ -1895,17 +1953,10 @@ class _AppScreenState extends State<AppScreen> with WidgetsBindingObserver {
         aid: widget.aid,
         onThread: (tid, run, {reply = false}) =>
             _openThread(tid, reply: reply, run: run),
-        onStop: widget.onStop == null
-            ? null
-            : () {
-                widget.onStop!(widget.aid);
-                setState(_changes.stopped);
-              },
+        onStop: _canStop ? _stopChange : null,
         questions: () => _questions ?? 0,
         onQuestions: _raiseQuestions,
-        onRetry: widget.onRetry == null
-            ? null
-            : () => unawaited(_retryChange()),
+        onRetry: _canRetry ? () => unawaited(_retryChange()) : null,
         labelOf: (tid) => _threads.where((t) => t.id == tid).firstOrNull?.label,
       );
     } finally {
@@ -2822,7 +2873,7 @@ class _AppScreenState extends State<AppScreen> with WidgetsBindingObserver {
       _openReplied();
     },
     onResend: () => _resend(_changes.retryThread),
-    onRetry: widget.onRetry == null ? null : () => unawaited(_retryChange()),
+    onRetry: _canRetry ? () => unawaited(_retryChange()) : null,
     onOpen: () => unawaited(_showChange()),
   );
 
