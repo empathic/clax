@@ -127,6 +127,8 @@ TEST_DATA = glob(
     "pubspec.yaml",
     # The icon rule vectors the core runs too (test/agent/icon_fixtures_test.dart).
     "//crates/clax-core:icon_fixtures",
+    # The store's table of job moves (test/queue/job_moves_test.dart).
+    "//crates/clax-store:job_moves_fixture",
     "//web:contract_files",
 ]
 
@@ -153,6 +155,7 @@ SUITES = {
         "eval",
         "home",
         "platform",
+        "queue",
         "ui",
     ]
 }
