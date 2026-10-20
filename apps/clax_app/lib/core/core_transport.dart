@@ -32,6 +32,10 @@ class CoreTransport implements ClaxTransport {
   /// Makes each call's deadline timer; tests inject their own.
   final SseTimer timer;
 
+  /// Does nothing: the core's lifetime is its host's.
+  @override
+  void close() {}
+
   @override
   Future<TransportAnswer> send(
     String method,

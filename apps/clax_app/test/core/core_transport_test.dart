@@ -131,6 +131,15 @@ void main() {
       expect(Uri.parse(r.path).queryParameters, {'tier': 'wait', 'wait': '20'});
     });
 
+    test("close leaves the core's calls and streams to its host", () async {
+      final sub = api.stream().events.listen((_) {});
+      await pumpEventQueue();
+      api.close();
+      expect(await api.listArtifacts(), isEmpty);
+      expect(core.subscribers, 1);
+      await sub.cancel();
+    });
+
     test("a refusal throws the core's error", () async {
       await api.registerAppSession(installId: 'install-1', pid: 7);
       final aid = (await api.createArtifact(

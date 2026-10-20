@@ -112,11 +112,8 @@ class HttpClaxApi implements ClaxApi {
     '.svg', '.md', '.txt', '.csv', '.xml',
   };
 
-  /// Closes a loopback client and every connection it holds; the core's
-  /// lifetime is its host's, so over the core this does nothing.
-  void close() {
-    if (transport case final LoopbackTransport t) t.close();
-  }
+  /// Closes [transport] ([ClaxTransport.close]).
+  void close() => transport.close();
 
   @override
   Future<List<ArtifactSummary>> listArtifacts() async {

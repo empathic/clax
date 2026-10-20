@@ -4,6 +4,8 @@ import 'dart:typed_data';
 
 import 'package:clax_app/clax/api.dart';
 import 'package:clax_app/clax/http_api.dart';
+import 'package:clax_app/clax/sse.dart';
+import 'package:clax_app/clax/transport.dart';
 import 'package:clax_app/daemon/supervisor.dart' show DaemonEndpoint;
 import 'package:flutter_test/flutter_test.dart';
 
@@ -188,6 +190,31 @@ Map<String, Object?> inboxItemJson({
   'gone': false,
   'url': '/a/$aid?thread=$tid',
 };
+
+/// A [ClaxTransport] that only records whether it was closed.
+class _ClosingTransport implements ClaxTransport {
+  var closed = false;
+
+  @override
+  void close() => closed = true;
+
+  @override
+  Future<TransportAnswer> send(
+    String method,
+    String path, {
+    Map<String, String>? query,
+    Map<String, String> headers = const {},
+    Uint8List? body,
+    required Duration timeout,
+  }) => throw UnimplementedError();
+
+  @override
+  Stream<SseMessage> sse(
+    String path, {
+    Map<String, String>? query,
+    String? Function()? resumeId,
+  }) => throw UnimplementedError();
+}
 
 void main() {
   late ScriptedServer server;
@@ -1011,6 +1038,12 @@ void main() {
   });
 
   group('transport', () {
+    test('close closes the transport the API is over', () {
+      final t = _ClosingTransport();
+      HttpClaxApi.over(t).close();
+      expect(t.closed, isTrue);
+    });
+
     test('each request reads the endpoint afresh', () async {
       server.json('GET', '/api/artifacts', 200, {'artifacts': <Object?>[]});
       await api.listArtifacts();

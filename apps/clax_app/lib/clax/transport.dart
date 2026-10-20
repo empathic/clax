@@ -43,6 +43,10 @@ abstract interface class ClaxTransport {
     Map<String, String>? query,
     String? Function()? resumeId,
   });
+
+  /// Lets go of what this transport holds, cutting the calls and streams
+  /// in flight on it. Nothing goes through it afterwards.
+  void close();
 }
 
 /// [ClaxTransport] over `dart:io`'s [HttpClient] to a daemon on loopback.
@@ -81,6 +85,7 @@ class LoopbackTransport implements ClaxTransport {
   final SseTimer eventTimer;
 
   /// Closes the client and every connection it holds.
+  @override
   void close() => _client.close(force: true);
 
   static Uri _uri(DaemonEndpoint ep, String path, Map<String, String>? query) {
