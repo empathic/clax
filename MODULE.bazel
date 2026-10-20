@@ -285,6 +285,32 @@ android_sdk.configure(
 )
 use_repo(android_sdk, "androidsdk")
 
+# The Android emulator and the system image the app's Android integration
+# tests boot (scripts/app-android-emulator.sh; docs/bazel.md, "The Clax
+# app"), fetched by checksum, for macOS on Apple silicon. They are their own
+# repositories rather than @androidsdk's archives so that only those manual
+# tests fetch them: the image unpacks to 4.4 GB, which no APK build needs.
+# The newest stable emulator for macOS aarch64 in
+# https://dl.google.com/android/repository/repository2-3.xml, and android-36
+# google_apis arm64-v8a in
+# https://dl.google.com/android/repository/sys-img/google_apis/sys-img2-3.xml
+# (whose SHA-1s these archives match).
+http_archive(
+    name = "android_emulator",
+    build_file_content = 'exports_files(["emulator", "source.properties"])',
+    sha256 = "f4c4a142bda54fcec064bdb32b51f19e25bae0a45ad019197ef968bf7a48979b",
+    strip_prefix = "emulator",
+    url = "https://dl.google.com/android/repository/emulator-darwin_aarch64-16428233.zip",
+)
+
+http_archive(
+    name = "android_system_image",
+    build_file_content = 'exports_files(["system.img", "source.properties"])',
+    sha256 = "fb47d861d6f87230ee0fe70f610d579935ca77f41a0eefbf391595d3dc4b5ee2",
+    strip_prefix = "arm64-v8a",
+    url = "https://dl.google.com/android/repository/sys-img/google_apis/arm64-v8a-36_r07.zip",
+)
+
 # The machine's Android debug key, which signs the app's APK as Gradle does
 # (bazel/android/debug_keystore.bzl).
 debug_keystore = use_extension("//bazel/android:debug_keystore.bzl", "debug_keystore")

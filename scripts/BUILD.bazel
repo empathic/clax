@@ -8,10 +8,12 @@ exports_files(
     visibility = ["//crates:__subpackages__"],
 )
 
-# The Clax app's prompt copies' check (//apps/clax_app:prompt_sync), and
-# the simulator lookup of its iOS integration tests (app-ios.sh --udid).
+# The Clax app's prompt copies' check (//apps/clax_app:prompt_sync), the
+# simulator lookup of its iOS integration tests (app-ios.sh --udid), and
+# the emulator of its Android ones (app-android-emulator.sh).
 exports_files(
     [
+        "app-android-emulator.sh",
         "app-ios.sh",
         "sync-app-prompt.sh",
     ],
@@ -320,6 +322,14 @@ sh_test(
     name = "app_ios",
     srcs = ["test-app-ios.sh"],
     data = ["app-ios.sh"],
+)
+
+# scripts/app-android-emulator.sh on a stub emulator, adb and lsof: its dry
+# runs, the AVD it writes, its boot and its stop by PID.
+sh_test(
+    name = "app_android_emulator_test",
+    srcs = ["test-app-android-emulator.sh"],
+    data = ["app-android-emulator.sh"],
 )
 
 # scripts/app-iphone.sh (just app-iphone) on a PATH of stub xcrun and
