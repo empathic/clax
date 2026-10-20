@@ -58,7 +58,12 @@ import 'platform/intents.dart';
 import 'platform/network_pause.dart';
 import 'platform/pending_make.dart';
 import 'platform/secure_key.dart';
-import 'queue/client.dart' show QueueClient;
+import 'queue/client.dart' show QueueClient, QueueStateJobs;
+import 'queue/effect.dart' as q show Effect, KeepAlive, Notice, NoticeKind;
+import 'queue/host.dart';
+import 'queue/msg.dart' as q show OutOfTime, Woke;
+import 'queue/relay.dart';
+import 'ui/render_service.dart';
 import 'platform/settings_store.dart';
 import 'platform/voice.dart';
 import 'ui/app_icon.dart';
@@ -144,6 +149,7 @@ class AppServices {
     this.homeSnapshots,
     this.homeSnapshot,
     this.queue,
+    this.startQueue,
     PendingMake? pendingMake,
     ApiConnection? connection,
     int? pid,
@@ -286,9 +292,15 @@ class AppServices {
   final int pid;
 
   /// The queue of makes and changes the UI shows and sends intents to;
-  /// when null, makes run in the UI isolate and changes are the feedback
-  /// worker's ([LocalQueueClient]).
+  /// when null, the queue [startQueue] starts, else makes run in the UI
+  /// isolate and changes are the feedback worker's ([LocalQueueClient]).
   final QueueClient? queue;
+
+  /// Starts the queue's worker isolate on the core, once it is ready, with
+  /// the settings and key then, the app's renders and its news; disposed
+  /// when the core fails or closes. Makes then run in the worker; changes
+  /// are still the feedback worker's.
+  final QueueStarter? startQueue;
 }
 
 /// Runs the app with [services], with Clax's own licence on the licences
@@ -693,7 +705,8 @@ class _AppRootState extends State<AppRoot> with WidgetsBindingObserver {
   final _developer = ValueNotifier(false);
 
   /// The queue run in this isolate, when [AppServices.queue] gives none.
-  late final LocalQueueClient? _localQueue = _s.queue != null
+  late final LocalQueueClient? _localQueue =
+      _s.queue != null || _s.startQueue != null
       ? null
       : LocalQueueClient(
           makes: LocalMakes(
@@ -711,7 +724,23 @@ class _AppRootState extends State<AppRoot> with WidgetsBindingObserver {
         );
 
   /// The makes and changes, which outlive their screens.
-  late final QueueClient _queue = _s.queue ?? _localQueue!;
+  late final QueueClient _queue = _s.queue ?? _relay ?? _localQueue!;
+
+  /// The worker isolate's queue, over whichever host runs now, when
+  /// [AppServices.startQueue] gives one.
+  late final QueueRelay? _relay = _s.queue == null && _s.startQueue != null
+      ? QueueRelay()
+      : null;
+
+  /// The queue's host while the core is up, its start in flight, its
+  /// renders and whether the app can show a WebView for them.
+  QueueRun? _host;
+  Future<void>? _hostStarting;
+  RenderService? _render;
+  final _renderable = ValueNotifier(true);
+
+  /// The background run the queue's KeepAlive holds.
+  BackgroundRun? _queueRun;
 
   /// The makes going on, which outlive their build views.
   late final _makes = MakeService(
@@ -1094,6 +1123,10 @@ class _AppRootState extends State<AppRoot> with WidgetsBindingObserver {
     }
     _makes.dispose();
     _localQueue?.dispose();
+    _stopQueue();
+    _relay?.dispose();
+    _render?.dispose();
+    _renderable.dispose();
     unawaited(_runtime.close());
     _sidebar?.dispose();
     _selection.removeListener(_forgetPaneAim);
@@ -1549,6 +1582,7 @@ class _AppRootState extends State<AppRoot> with WidgetsBindingObserver {
           scheduleMicrotask(() => unawaited(_commentIntent()));
         }
         _startBundles();
+        _startQueue();
         _homeKeeper?.daemonUp();
         if (!_offeredLostMake) {
           _offeredLostMake = true;
@@ -1556,8 +1590,9 @@ class _AppRootState extends State<AppRoot> with WidgetsBindingObserver {
         }
       case CoreClosed():
         // Closed by the app's own quit: the screen stays as it is.
-        break;
+        _stopQueue();
       case CoreFailed():
+        _stopQueue();
         _wasUp = false;
         _base.value = null;
         _launchOpen = false;
@@ -1580,6 +1615,8 @@ class _AppRootState extends State<AppRoot> with WidgetsBindingObserver {
         // also a turn that stopped resending until now.
         _s.connection.nudge();
         _runs.onForeground();
+        _renderable.value = true;
+        _host?.tell(const q.Woke(foreground: true));
         if (_pausedNotice) {
           _pausedNotice = false;
           unawaited(_s.background.clearPaused());
@@ -1591,8 +1628,124 @@ class _AppRootState extends State<AppRoot> with WidgetsBindingObserver {
           unawaited(_snapshotter?.take());
         }
       case AppLifecycleState.detached:
+        // No WebView can be made for the queue's renders now.
+        _renderable.value = false;
         unawaited(_shutDown());
+      case AppLifecycleState.paused || AppLifecycleState.hidden
+          when Platform.isIOS:
+        // WebKit draws nothing in the background on iOS.
+        _renderable.value = false;
       case _:
+        break;
+    }
+  }
+
+  /// Starts the queue's worker on the ready core, once: with the settings
+  /// and key as they are now, the app's inspector for its renders, and its
+  /// news for the background and the notices.
+  void _startQueue() {
+    final start = _s.startQueue;
+    final relay = _relay;
+    final inspector = _s.inspector;
+    if (start == null || relay == null || inspector == null) return;
+    if (_host != null || _hostStarting != null) return;
+    final starting = _hostStarting = () async {
+      final settings = await _s.settings.load();
+      String? key;
+      try {
+        key = await _s.key.read();
+      } on Object {
+        key = null;
+      }
+      final render = _render ??= RenderService(
+        inspector: inspector,
+        origins: _s.core.origins,
+        available: _renderable,
+      );
+      final host = await start((
+        settings: settings.toJson(),
+        apiKey: key,
+        render: render,
+        onEffect: _onQueueEffect,
+      ));
+      if (!mounted || !_wasUp || _hostStarting == null) {
+        await host.dispose();
+        return;
+      }
+      _host = host;
+      relay.attach(host.client);
+    }();
+    unawaited(
+      starting
+          .catchError((Object e) => debugPrint('clax queue: $e'))
+          .whenComplete(() {
+            if (identical(_hostStarting, starting)) _hostStarting = null;
+          }),
+    );
+  }
+
+  /// Ends the queue's worker (the core failed or closed, or the app ends);
+  /// the screens keep the queue's last state.
+  void _stopQueue() {
+    _hostStarting = null;
+    _relay?.detach();
+    final host = _host;
+    _host = null;
+    if (host != null) unawaited(host.dispose());
+    if (_queueRun case final run?) {
+      _queueRun = null;
+      _runs.end(run, const RunQuiet());
+    }
+  }
+
+  /// The queue worker's news: a KeepAlive holds a background run (the
+  /// foreground service on Android, the background task on iOS) while
+  /// jobs run; a Notice of a job that ended while the app was away is a
+  /// notification (in front, the screens' toasts say it).
+  void _onQueueEffect(q.Effect e) {
+    switch (e) {
+      case q.KeepAlive(on: true):
+        if (_queueRun != null) return;
+        unawaited(_s.background.requestPermission());
+        _queueRun = _runs.begin('Making your apps', MakeStage.starting.label);
+      case q.KeepAlive(on: false):
+        if (_queueRun case final run?) {
+          _queueRun = null;
+          _runs.end(run, const RunQuiet());
+        }
+      case q.Notice(:final kind, :final jobId, :final title):
+        if (_presence.foreground) return;
+        final aid = _queue.state.value.job(jobId)?.artifactId;
+        switch (kind) {
+          case q.NoticeKind.made || q.NoticeKind.changed:
+            if (aid == null) return;
+            unawaited(
+              _s.background.ready(
+                kind == q.NoticeKind.made
+                    ? '$title is ready'
+                    : '$title changed',
+                '${_verbs.tap} to open it',
+                aid,
+              ),
+            );
+          case q.NoticeKind.stopped:
+            unawaited(
+              _s.background.failed(
+                'Made a start on $title',
+                'It’s bigger than one go. Open Clax to keep going.',
+                artifactId: aid,
+              ),
+            );
+          case q.NoticeKind.failed:
+            unawaited(
+              _s.background.failed(
+                'Couldn’t make $title',
+                'Open Clax to try again.',
+                artifactId: aid,
+              ),
+            );
+        }
+      default:
         break;
     }
   }
@@ -1603,6 +1756,9 @@ class _AppRootState extends State<AppRoot> with WidgetsBindingObserver {
   /// app, and the platform is told the runs are paused. Each run goes on
   /// by itself when Clax is back in front.
   Future<void> _pauseRuns() async {
+    // The queue's jobs pause where they are, and go on at the next launch
+    // or when Clax is back in front.
+    _host?.tell(const q.OutOfTime());
     _presence.pause();
     if (!_presence.paused) return;
     if (_runs.newest case final run?) {
@@ -2629,7 +2785,9 @@ class _AppRootState extends State<AppRoot> with WidgetsBindingObserver {
       settings: settings,
       timings: _s.timings,
       worker: _runtime.worker.events,
-      queue: _queue,
+      // Changes are the feedback worker's unless the queue given shows
+      // them: the worker isolate's queue runs makes alone.
+      queue: _relay == null ? _queue : null,
       onRetry: _runtime.worker.retry,
       onStop: _runtime.worker.cancelChange,
       onCancelThread: _runtime.worker.cancelThread,

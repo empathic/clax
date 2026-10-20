@@ -28,6 +28,31 @@ typedef WorkerAgent = ({
 /// it must be sendable: a top-level or static function.
 typedef WorkerAgentFactory = WorkerAgent Function(WorkerContext context);
 
+/// What the app hands [QueueStarter] once the core is ready: the settings
+/// and key then, its renders, and where the worker's news goes.
+typedef QueueWiring = ({
+  Map<String, Object?> settings,
+  String? apiKey,
+  RenderServer render,
+  void Function(Effect effect) onEffect,
+});
+
+/// Starts the app's [QueueHost] on the open core with [QueueWiring]
+/// (lib/main.dart makes it, over `CoreHost.handle`).
+typedef QueueStarter = Future<QueueRun> Function(QueueWiring wiring);
+
+/// A running queue as the app holds it: [QueueHost], or a test's own.
+abstract interface class QueueRun {
+  /// The queue as the UI sees it.
+  QueueClient get client;
+
+  /// Passes the app's lifecycle to the worker: [Woke] or [OutOfTime].
+  void tell(Msg news);
+
+  /// Ends the worker.
+  Future<void> dispose();
+}
+
 /// The queue of the app: one worker isolate running `update` and the
 /// [EffectRunner] on the core's jobs, restarted once if it dies, and the
 /// [client] the UI reads and sends intents to.
@@ -63,7 +88,7 @@ typedef WorkerAgentFactory = WorkerAgent Function(WorkerContext context);
 /// the queue goes with its event stream) and closes its render endpoint;
 /// the client then sends nothing. Settings and key changes reach only a
 /// worker spawned after them (record 68692ab6): dispose and start again.
-final class QueueHost {
+final class QueueHost implements QueueRun {
   QueueHost._(this._client);
 
   /// Spawns the worker on the open core [coreHandle].
@@ -94,15 +119,18 @@ final class QueueHost {
   final IsolateQueueClient _client;
 
   /// The queue as the UI sees it: `AppServices.queue`.
+  @override
   QueueClient get client => _client;
 
   /// Completes once the worker is up.
   Future<void> get ready => _client.ready;
 
   /// Passes the app's lifecycle to the worker: [Woke] or [OutOfTime].
+  @override
   void tell(Msg news) => _client.tell(news);
 
   /// Ends the worker; nothing restarts it.
+  @override
   Future<void> dispose() => _client.dispose();
 }
 

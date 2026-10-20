@@ -42,6 +42,8 @@ import 'platform/settings_store.dart';
 import 'platform/timings.dart';
 import 'platform/voice.dart';
 import 'platform/voice_cues.dart';
+import 'queue/host.dart';
+import 'queue/worker_agent.dart';
 import 'ui/inspector_surface.dart';
 import 'ui/read_consent_dialog.dart';
 import 'ui/webview_surface.dart';
@@ -166,6 +168,25 @@ Future<AppServices> platformServices({DateTime? launched}) async {
   // on iOS the run notices too. Initialised on first use.
   final notifications = NotificationHub();
   final settings = SettingsStore(File('${support.path}/settings.json'));
+  final installId = await loadInstallId(support);
+  final prompts = PromptBuilder(rootBundle);
+  // Read once, at the queue's first start, not before the first frame.
+  Future<WorkerAgentAssets>? assets;
+  Future<QueueHost> startQueue(QueueWiring w) async => QueueHost.start(
+    coreHandle: core.handle,
+    supportDir: support.path,
+    settings: w.settings,
+    apiKey: w.apiKey,
+    render: w.render,
+    onEffect: w.onEffect,
+    agent: workerAgent(
+      await (assets ??= WorkerAgentAssets.load(
+        prompts,
+        installId: installId,
+        pid: pid,
+      )),
+    ),
+  );
   return AppServices(
     core: core,
     api: (calls) => HttpClaxApi.over(CoreTransport(calls)),
@@ -195,9 +216,9 @@ Future<AppServices> platformServices({DateTime? launched}) async {
       core: core.calls,
       origins: origins,
     ),
-    installId: await loadInstallId(support),
+    installId: installId,
     supportDir: support.path,
-    prompts: PromptBuilder(rootBundle),
+    prompts: prompts,
     ledger: FileChangeLedger(File('${support.path}/change-ledger.json')),
     asked: FileAskedQuestions(File('${support.path}/asked.json')),
     plans: PlanStore(file: File('${support.path}/plans.json')),
@@ -243,6 +264,8 @@ Future<AppServices> platformServices({DateTime? launched}) async {
     shippedHome: AssetShippedHome(),
     homeSnapshots: snapshots,
     homeSnapshot: await snapshots.load(),
+    // A debug build's scripted agent runs its makes in this isolate.
+    startQueue: scripted == null && runner == null ? startQueue : null,
   );
 }
 

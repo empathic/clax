@@ -18,6 +18,11 @@ import 'package:clax_app/platform/connection.dart';
 import 'package:clax_app/platform/pending_make.dart';
 import 'package:clax_app/platform/secure_key.dart';
 import 'package:clax_app/platform/settings_store.dart';
+import 'package:clax_app/queue/client.dart';
+import 'package:clax_app/queue/effect.dart' as q;
+import 'package:clax_app/queue/host.dart';
+import 'package:clax_app/queue/msg.dart' as q show Msg, OutOfTime, Woke;
+import 'package:clax_app/ui/render_service.dart';
 import 'package:clax_app/ui/app_screen.dart';
 import 'package:clax_app/ui/host_protocol.dart' show Ready;
 import 'package:clax_app/ui/making_screen.dart' show MakingScreen;
@@ -31,6 +36,7 @@ import 'package:flutter_test/flutter_test.dart';
 import 'agent/loop_support.dart' show RecordingTimings, change, edit;
 import 'agent/tools/support.dart' show StepClock;
 import 'support/fake_inspector.dart';
+import 'support/fake_queue.dart';
 import 'support/fake_core.dart';
 import 'support/fake_surface.dart';
 import 'support/fake_voice.dart';
@@ -221,7 +227,7 @@ void main() {
 
   /// Pumps the app in an Android phone's window, where a screen opens over
   /// the home screen (a wider one lays out as a split window).
-  Future<void> pumpApp(WidgetTester tester) async {
+  Future<void> pumpApp(WidgetTester tester, {QueueStarter? startQueue}) async {
     tester.view.physicalSize = const Size(412, 915);
     tester.view.devicePixelRatio = 1;
     addTearDown(tester.view.reset);
@@ -247,7 +253,10 @@ void main() {
           background: work,
           pendingMake: PendingMake(File('${dir.path}/pending-make.json')),
           pid: 42,
-          inspector: turns == null ? null : FakeInspector(),
+          inspector: turns == null && startQueue == null
+              ? null
+              : FakeInspector(),
+          startQueue: startQueue,
           consentMemory: FileConsentMemory(
             File('${dir.path}/agent-read-consent.json'),
           ),
@@ -1161,4 +1170,119 @@ void main() {
       expect(await screen.onRetry!(aid, 'no-such-thread'), isFalse);
     });
   });
+
+  group('on the worker\'s queue', () {
+    late List<QueueWiring> wirings;
+    late _Run run;
+
+    QueueStarter starter() {
+      wirings = [];
+      run = _Run();
+      return (w) async {
+        wirings.add(w);
+        return run;
+      };
+    }
+
+    Future<QueueWiring> started(WidgetTester tester) async {
+      await pumpUntil(tester, () => wirings.isNotEmpty);
+      return wirings.single;
+    }
+
+    testWidgets('starts once the core is ready, with the settings and the '
+        'key, rendering in the app\'s inspector', (tester) async {
+      await pumpApp(tester, startQueue: starter());
+      final w = await started(tester);
+      expect(w.settings, AppSettings().toJson());
+      expect(w.apiKey, 'sk-ant-x');
+      expect(w.render, isA<RenderService>());
+      expect((w.render as RenderService).canRender.value, isTrue);
+      coreHost.set(const CoreReady());
+      await tester.pump();
+      expect(wirings, hasLength(1), reason: 'started once');
+    });
+
+    testWidgets('its KeepAlive holds a background run, and the lifecycle '
+        'reaches the worker', (tester) async {
+      work.pausesRuns = true;
+      await pumpApp(tester, startQueue: starter());
+      final w = await started(tester);
+      work.calls.clear();
+      w.onEffect(const q.KeepAlive(1, true));
+      await tester.pump();
+      expect(work.calls.where((c) => c.startsWith('start(Making your apps')), hasLength(1));
+      w.onEffect(const q.KeepAlive(2, false));
+      await tester.pump();
+      expect(work.calls.last, 'stop');
+
+      tester.binding.handleAppLifecycleStateChanged(AppLifecycleState.inactive);
+      tester.binding.handleAppLifecycleStateChanged(AppLifecycleState.hidden);
+      tester.binding.handleAppLifecycleStateChanged(AppLifecycleState.paused);
+      await tester.pump();
+      tester.binding.handleAppLifecycleStateChanged(AppLifecycleState.hidden);
+      tester.binding.handleAppLifecycleStateChanged(AppLifecycleState.inactive);
+      tester.binding.handleAppLifecycleStateChanged(AppLifecycleState.resumed);
+      await tester.pump();
+      expect(
+        run.told.whereType<q.Woke>().map((m) => m.foreground),
+        [true],
+      );
+      work.stopNow();
+      await tester.pump();
+      expect(run.told.last, isA<q.OutOfTime>());
+    });
+
+    testWidgets('a job that ends while the app is away is a notification',
+        (tester) async {
+      await pumpApp(tester, startQueue: starter());
+      final w = await started(tester);
+      run.queue.push(const [
+        JobView(
+          id: 'j1',
+          kind: JobKind.make,
+          state: JobState.done,
+          artifactId: 'a1',
+          title: 'Todo',
+        ),
+      ]);
+      await tester.pump();
+      w.onEffect(const q.Notice(3, q.NoticeKind.made, 'j1', 'Todo'));
+      expect(work.calls.where((c) => c.startsWith('ready(')), isEmpty,
+          reason: 'in front the screens say it');
+      tester.binding.handleAppLifecycleStateChanged(AppLifecycleState.inactive);
+      tester.binding.handleAppLifecycleStateChanged(AppLifecycleState.hidden);
+      tester.binding.handleAppLifecycleStateChanged(AppLifecycleState.paused);
+      await tester.pump();
+      w.onEffect(const q.Notice(4, q.NoticeKind.made, 'j1', 'Todo'));
+      await tester.pump();
+      expect(work.calls, contains('ready(Todo is ready, Tap to open it)'));
+      expect(work.targets.last, 'a1');
+    });
+
+    testWidgets('a failed core ends the worker', (tester) async {
+      await pumpApp(tester, startQueue: starter());
+      await started(tester);
+      expect(run.disposed, isFalse);
+      coreHost.set(const CoreFailed('core_failed', 'it broke', null));
+      await tester.pump();
+      expect(run.disposed, isTrue);
+    });
+  });
+}
+
+/// A queue run the app is handed: its client, what the app told it, and
+/// whether it was disposed.
+final class _Run implements QueueRun {
+  final queue = FakeQueueClient();
+  final told = <q.Msg>[];
+  var disposed = false;
+
+  @override
+  QueueClient get client => queue;
+
+  @override
+  void tell(q.Msg news) => told.add(news);
+
+  @override
+  Future<void> dispose() async => disposed = true;
 }
