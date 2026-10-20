@@ -6,54 +6,97 @@ import 'dart:typed_data';
 import '../daemon/supervisor.dart' show DaemonEndpoint;
 import 'api.dart';
 import 'sse.dart';
+import 'transport.dart';
 
-/// [ClaxApi] over `dart:io`'s [HttpClient].
+/// [ClaxApi] over a [ClaxTransport]: loopback HTTP to a daemon
+/// ([HttpClaxApi.loopback]) or the embedded core ([HttpClaxApi.over]).
 ///
-/// Each request reads [endpoint] afresh, so a restarted daemon's new port
-/// and token are used from the next request on. A request with no answer
-/// within its time limit is aborted and throws [ClaxApiError] code
-/// `timeout`; one that cannot connect throws code `daemon_unreachable`.
+/// A call with no answer throws [ClaxApiError] with status 0 and the
+/// transport's code (`timeout`, `daemon_unreachable`, `core_closed`, …);
+/// one the API refused throws its status and error.
 class HttpClaxApi implements ClaxApi {
+  /// The same as [HttpClaxApi.loopback].
   HttpClaxApi(
-    this.endpoint, {
+    DaemonEndpoint Function() endpoint, {
+    HttpClient? client,
+    String? sessionId,
+    Duration requestTimeout = const Duration(seconds: 35),
+    Duration publishTimeout = const Duration(seconds: 125),
+    Duration pollSlack = defaultPollSlack,
+    Future<void> Function(Duration)? eventRetryDelay,
+    Duration eventConnectTimeout = defaultEventConnectTimeout,
+    Duration eventIdleTimeout = defaultEventIdleTimeout,
+    SseTimer eventTimer = Timer.new,
+  }) : this.loopback(
+         endpoint,
+         client: client,
+         sessionId: sessionId,
+         requestTimeout: requestTimeout,
+         publishTimeout: publishTimeout,
+         pollSlack: pollSlack,
+         eventRetryDelay: eventRetryDelay,
+         eventConnectTimeout: eventConnectTimeout,
+         eventIdleTimeout: eventIdleTimeout,
+         eventTimer: eventTimer,
+       );
+
+  /// Over loopback HTTP to the daemon [endpoint] names, read afresh for
+  /// each request ([LoopbackTransport]). An event stream waits
+  /// [eventConnectTimeout] for the daemon's answer and reconnects after
+  /// [eventIdleTimeout] without a byte; [eventTimer] makes both deadlines.
+  HttpClaxApi.loopback(
+    DaemonEndpoint Function() endpoint, {
     HttpClient? client,
     this.sessionId,
     this.requestTimeout = const Duration(seconds: 35),
     this.publishTimeout = const Duration(seconds: 125),
     this.pollSlack = defaultPollSlack,
     this.eventRetryDelay,
-    this.eventConnectTimeout = defaultEventConnectTimeout,
-    this.eventIdleTimeout = defaultEventIdleTimeout,
-    this.eventTimer = Timer.new,
-  }) : _client = client ?? HttpClient();
+    Duration eventConnectTimeout = defaultEventConnectTimeout,
+    Duration eventIdleTimeout = defaultEventIdleTimeout,
+    SseTimer eventTimer = Timer.new,
+  }) : transport = LoopbackTransport(
+         endpoint,
+         client: client,
+         eventRetryDelay: eventRetryDelay,
+         eventConnectTimeout: eventConnectTimeout,
+         eventIdleTimeout: eventIdleTimeout,
+         eventTimer: eventTimer,
+       );
 
-  final DaemonEndpoint Function() endpoint;
-  final HttpClient _client;
+  /// Over [transport].
+  HttpClaxApi.over(
+    this.transport, {
+    this.sessionId,
+    this.requestTimeout = const Duration(seconds: 35),
+    this.publishTimeout = const Duration(seconds: 125),
+    this.pollSlack = defaultPollSlack,
+    this.eventRetryDelay,
+  });
 
-  /// The limit for a request: a little over the daemon's own 30 s deadline,
+  /// What every call and event stream goes through.
+  final ClaxTransport transport;
+
+  /// The limit for a request: a little over the API's own 30 s deadline,
   /// so its timeout answer arrives first.
   final Duration requestTimeout;
 
   /// The limit for creates, publishes and restores, a little over the
-  /// daemon's 120 s publish deadline.
+  /// API's 120 s publish deadline.
   final Duration publishTimeout;
 
-  /// The wait before an event stream reconnects; [reconnectingSse]'s own
-  /// backoff when null.
+  /// The wait before [stream] subscribes its topics again; its own
+  /// backoff when null. Over loopback, also the wait before an event
+  /// stream reconnects.
   final Future<void> Function(Duration)? eventRetryDelay;
 
-  /// How long an event stream waits for the daemon's answer before it
-  /// aborts the request and reconnects.
-  final Duration eventConnectTimeout;
+  /// How long a loopback event stream waits for the daemon's answer
+  /// before it aborts the request and reconnects.
   static const defaultEventConnectTimeout = Duration(seconds: 10);
 
-  /// How long an event stream may go without a byte before it reconnects:
-  /// three of the daemon's 15 s keep-alives.
-  final Duration eventIdleTimeout;
+  /// How long a loopback event stream may go without a byte before it
+  /// reconnects: three of the daemon's 15 s keep-alives.
   static const defaultEventIdleTimeout = Duration(seconds: 45);
-
-  /// Makes the event stream's deadline timers; tests inject their own.
-  final SseTimer eventTimer;
 
   /// The app session agent calls name in `X-Clax-Session`.
   String? sessionId;
@@ -69,8 +112,11 @@ class HttpClaxApi implements ClaxApi {
     '.svg', '.md', '.txt', '.csv', '.xml',
   };
 
-  /// Closes the client and every connection it holds.
-  void close() => _client.close(force: true);
+  /// Closes a loopback client and every connection it holds; the core's
+  /// lifetime is its host's, so over the core this does nothing.
+  void close() {
+    if (transport case final LoopbackTransport t) t.close();
+  }
 
   @override
   Future<List<ArtifactSummary>> listArtifacts() async {
@@ -419,42 +465,13 @@ class HttpClaxApi implements ClaxApi {
     ).map((m) => ClaxEvent(type: m.event, id: m.id, data: _eventData(m.data)));
   }
 
-  /// The reconnecting SSE messages of `GET` [path] with the token. Each
-  /// connection sends `Last-Event-ID`: [resumeId]'s answer when given and
-  /// not null, else the last event ID seen.
+  /// The SSE messages of `GET` [path], resuming from [resumeId]'s answer
+  /// when given and not null.
   Stream<SseMessage> _sse(
     String path,
     Map<String, String>? query, {
     String? Function()? resumeId,
-  }) {
-    Future<HttpClientResponse> open(String? lastId, SseAborter abort) async {
-      final ep = endpoint();
-      final req = await _client.openUrl('GET', _uri(ep, path, query));
-      abort.onAbort = req.abort;
-      req.headers
-        ..set(HttpHeaders.authorizationHeader, 'Bearer ${ep.token}')
-        ..set(HttpHeaders.acceptHeader, 'text/event-stream');
-      final id = resumeId?.call() ?? lastId;
-      if (id != null) req.headers.set('last-event-id', id);
-      return req.close();
-    }
-
-    final retry = eventRetryDelay;
-    return retry == null
-        ? reconnectingSse(
-            open,
-            connectTimeout: eventConnectTimeout,
-            idleTimeout: eventIdleTimeout,
-            timer: eventTimer,
-          )
-        : reconnectingSse(
-            open,
-            delay: retry,
-            connectTimeout: eventConnectTimeout,
-            idleTimeout: eventIdleTimeout,
-            timer: eventTimer,
-          );
-  }
+  }) => transport.sse(path, query: query, resumeId: resumeId);
 
   @override
   ClaxStream stream() => SseClaxStream(
@@ -886,14 +903,6 @@ class HttpClaxApi implements ClaxApi {
   static String _path(String p) =>
       p.split('/').map(Uri.encodeComponent).join('/');
 
-  static Uri _uri(DaemonEndpoint ep, String path, Map<String, String>? query) {
-    final base = ep.base;
-    return base.replace(
-      path: path,
-      queryParameters: query == null || query.isEmpty ? null : query,
-    );
-  }
-
   Future<Map<String, Object?>> _json(
     String method,
     String path, {
@@ -917,7 +926,7 @@ class HttpClaxApi implements ClaxApi {
 
   /// The JSON object of a 2xx answer (`{}` for an empty one); otherwise
   /// throws the daemon's error.
-  static Map<String, Object?> _ok(_Answer r) {
+  static Map<String, Object?> _ok(TransportAnswer r) {
     _check(r);
     if (r.body.isEmpty) return {};
     try {
@@ -932,7 +941,7 @@ class HttpClaxApi implements ClaxApi {
   }
 
   /// Throws the daemon's error for an answer that is not 2xx.
-  static void _check(_Answer r) {
+  static void _check(TransportAnswer r) {
     if (r.status >= 200 && r.status < 300) return;
     Object? decoded;
     try {
@@ -953,7 +962,7 @@ class HttpClaxApi implements ClaxApi {
     );
   }
 
-  Future<_Answer> _send(
+  Future<TransportAnswer> _send(
     String method,
     String path, {
     Map<String, String>? query,
@@ -961,55 +970,19 @@ class HttpClaxApi implements ClaxApi {
     bool agent = false,
     Duration? timeout,
     Map<String, String>? headers,
-  }) async {
-    final ep = endpoint();
-    HttpClientRequest? req;
-    Future<_Answer> go() async {
-      final r = req = await _client.openUrl(method, _uri(ep, path, query));
-      r.headers.set(HttpHeaders.authorizationHeader, 'Bearer ${ep.token}');
-      headers?.forEach(r.headers.set);
-      final sid = sessionId;
-      if (agent && sid != null) r.headers.set('x-clax-session', sid);
-      if (body != null) {
-        final bytes = utf8.encode(jsonEncode(body));
-        r.headers.contentType = ContentType.json;
-        r.contentLength = bytes.length;
-        r.add(bytes);
-      }
-      final res = await r.close();
-      final chunks = BytesBuilder(copy: false);
-      await res.forEach(chunks.add);
-      return _Answer(res.statusCode, chunks.takeBytes());
-    }
-
-    final limit = timeout ?? requestTimeout;
-    try {
-      return await go().timeout(limit);
-    } on TimeoutException catch (_) {
-      req?.abort();
-      throw ClaxApiError(
-        status: 0,
-        code: 'timeout',
-        message: '$method $path had no answer within ${limit.inSeconds} s',
-      );
-    } on SocketException catch (e) {
-      throw ClaxApiError(
-        status: 0,
-        code: 'daemon_unreachable',
-        message: e.message,
-      );
-    } on HttpException catch (e) {
-      throw ClaxApiError(
-        status: 0,
-        code: 'daemon_unreachable',
-        message: e.message,
-      );
-    }
+  }) {
+    final sid = sessionId;
+    return transport.send(
+      method,
+      path,
+      query: query,
+      headers: {
+        ...?headers,
+        if (agent && sid != null) 'x-clax-session': sid,
+        if (body != null) 'content-type': ContentType.json.toString(),
+      },
+      body: body == null ? null : utf8.encode(jsonEncode(body)),
+      timeout: timeout ?? requestTimeout,
+    );
   }
-}
-
-class _Answer {
-  _Answer(this.status, this.body);
-  final int status;
-  final Uint8List body;
 }

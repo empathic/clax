@@ -54,7 +54,7 @@ void main() {
   setUp(() async {
     server = await ScriptedServer.start();
     hold = Completer<void>();
-    api = HttpClaxApi(
+    api = HttpClaxApi.loopback(
       () => DaemonEndpoint(
         base: server.base,
         token: 'tok',

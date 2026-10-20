@@ -110,7 +110,7 @@ void main() {
     setUp(() async {
       server = await ScriptedServer.start();
       delays = [];
-      api = HttpClaxApi(
+      api = HttpClaxApi.loopback(
         () => DaemonEndpoint(
           base: server.base,
           token: 'tok',
@@ -230,7 +230,7 @@ void main() {
 
     test('a 401 is retried with the endpoint read again', () async {
       var token = 'old';
-      final rotating = HttpClaxApi(
+      final rotating = HttpClaxApi.loopback(
         () => DaemonEndpoint(
           base: server.base,
           token: token,
@@ -299,7 +299,7 @@ void main() {
             'id: aa-1\nevent: ready\ndata: {}\n\n',
           );
         });
-        final rawApi = HttpClaxApi(
+        final rawApi = HttpClaxApi.loopback(
           () => DaemonEndpoint(
             base: Uri.parse('http://127.0.0.1:${raw.port}'),
             token: 'tok',
@@ -337,7 +337,7 @@ void main() {
           'id: aa-1\nevent: ready\ndata: {}\n\n: keep-alive\n\n',
         );
       });
-      final rawApi = HttpClaxApi(
+      final rawApi = HttpClaxApi.loopback(
         () => DaemonEndpoint(
           base: Uri.parse('http://127.0.0.1:${raw.port}'),
           token: 'tok',
@@ -389,7 +389,7 @@ void main() {
           onError: (Object _) {},
         );
       });
-      final quick = HttpClaxApi(
+      final quick = HttpClaxApi.loopback(
         () => DaemonEndpoint(
           base: Uri.parse('http://127.0.0.1:${raw.port}'),
           token: 'tok',
@@ -435,7 +435,7 @@ void main() {
           onError: (Object _) {},
         );
       });
-      final quick = HttpClaxApi(
+      final quick = HttpClaxApi.loopback(
         () => DaemonEndpoint(
           base: Uri.parse('http://127.0.0.1:${raw.port}'),
           token: 'tok',

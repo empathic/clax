@@ -197,7 +197,7 @@ void main() {
   setUp(() async {
     server = await ScriptedServer.start();
     token = 'tok-1';
-    api = HttpClaxApi(
+    api = HttpClaxApi.loopback(
       () => DaemonEndpoint(
         base: server.base,
         token: token,
@@ -650,7 +650,7 @@ void main() {
           const Duration(seconds: 20),
           reason: 'a 50 s wait has a 70 s limit',
         );
-        final quick = HttpClaxApi(
+        final quick = HttpClaxApi.loopback(
           () => DaemonEndpoint(
             base: server.base,
             token: token,
@@ -1026,7 +1026,7 @@ void main() {
       final s = await ServerSocket.bind(InternetAddress.loopbackIPv4, 0);
       final port = s.port;
       await s.close();
-      final dead = HttpClaxApi(
+      final dead = HttpClaxApi.loopback(
         () => DaemonEndpoint(
           base: Uri.parse('http://127.0.0.1:$port'),
           token: 't',
