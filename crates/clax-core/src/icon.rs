@@ -804,17 +804,28 @@ mod tests {
             }
             let svg: String = text.into_iter().collect();
             let answer = problem(svg.as_bytes());
-            out.push(serde_json::json!({
-                "from": name,
-                "svg": svg,
-                "code": answer.as_ref().map(IconProblem::code),
+            out.push(Mutation {
+                code: answer.as_ref().map(IconProblem::code),
+                from: name.clone(),
                 // A not_xml sentence is the parser's own account.
-                "message": answer
+                message: answer
                     .filter(|p| p.code() != "not_xml")
                     .map(|p| p.to_string()),
-            }));
+                svg,
+            });
         }
         serde_json::to_string_pretty(&out).unwrap() + "\n"
+    }
+
+    /// One line of `mutations.json`. A struct, not a `serde_json` map, so
+    /// the file's key order is this field order whatever map order a
+    /// feature of `serde_json` picks.
+    #[derive(serde::Serialize)]
+    struct Mutation {
+        code: Option<&'static str>,
+        from: String,
+        message: Option<String>,
+        svg: String,
     }
 
     /// `tests/fixtures/icons/mutations.json` is [`mutations`]' output;
