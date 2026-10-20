@@ -890,7 +890,7 @@ async fn golden_now() -> Value {
 /// names the narrowest place the question shows (spec
 /// 2026-10-16-ask-where-attention-is-design §2), which
 /// [`compare_with_section_19`] accepts as [`moved_to_its_place`].
-pub const ADDITIVE_KEYS: [&str; 15] = [
+pub const ADDITIVE_KEYS: [&str; 16] = [
     "owner",
     "taken_by",
     "name",
@@ -906,6 +906,7 @@ pub const ADDITIVE_KEYS: [&str; 15] = [
     "in_terminal",
     "pulled",
     "thread",
+    "tags",
 ];
 
 /// Whether `v`, the value of item 6's key `key` that the golden lacks, is
@@ -916,7 +917,8 @@ pub const ADDITIVE_KEYS: [&str; 15] = [
 /// an artifact's `may_fork` true (the owner's agents may fork it); an
 /// answer's `linked` null (no remote is linked); `where_to_ask` a
 /// suggestion; a question asked before them neither in the terminal nor
-/// pulled, in no thread.
+/// pulled, in no thread; an artifact's `tags` none (an install migrated
+/// from before tags has none).
 pub fn solo_value(key: &str, v: &Value, owner: &str) -> bool {
     let owners_agent = |a: &Value| {
         a.is_null()
@@ -940,6 +942,7 @@ pub fn solo_value(key: &str, v: &Value, owner: &str) -> bool {
         "where_to_ask" => v["surface"].is_string() && v["why"].is_string(),
         "in_terminal" | "pulled" => *v == json!(false),
         "thread" => v.is_null(),
+        "tags" => *v == json!([]),
         _ => false,
     }
 }
