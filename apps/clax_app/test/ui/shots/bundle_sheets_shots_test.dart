@@ -2,9 +2,9 @@
 // (skipped without it), the phone's update sheet also at 200%, the
 // install sheet also on an iPhone at 100% and 200%: export
 // (own and a modified copy), install, update (as received and changed),
-// an install and an update whose icon Clax redrew, the update check in
-// progress, its failure with Details open, and a
-// refused file.
+// an install and an update whose icon Clax redrew, and one whose icon
+// Clax left out, the update check in progress, its failure with Details
+// open, and a refused file.
 import 'package:clax_app/bundle/exporter.dart' show ExportMode, ExportPlan;
 import 'package:clax_app/bundle/lineage_store.dart';
 import 'package:clax_app/bundle/updater.dart' show UpdateStep;
@@ -64,7 +64,27 @@ const _redrawn = BundleSummary(
   name: 'Alex',
   capabilities: {'db': {}},
   word: 'leaf',
+  svg: _redrawnSvg,
   iconChange: 'Its icon broke Clax’s icon rules, so Clax redrew it.',
+);
+
+/// An icon as Clax redraws one: its script and links gone, its shapes kept.
+const _redrawnSvg =
+    '<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 1024 1024">'
+    '<rect width="1024" height="1024" fill="#2f7d4a"/>'
+    '<path d="M512 200C300 320 260 600 512 824C764 600 724 320 512 200Z" '
+    'fill="#bfe8c9"/>'
+    '<path d="M512 300V780" stroke="#2f7d4a" stroke-width="28"/></svg>';
+
+const _leftOut = BundleSummary(
+  lineage: 'l_aaaaaaaaaaaaaaaaaaaaaaaaaa',
+  title: 'Plant log',
+  version: 3,
+  fingerprint: '7KQ2-M9XD-4FTA-QW3B',
+  name: 'Alex',
+  capabilities: {'db': {}},
+  word: 'leaf',
+  iconChange: 'Its icon broke Clax’s icon rules, so Clax left it out.',
 );
 
 /// Shows [sheet] over a page, then [then] (a tap) before the shot.
@@ -166,6 +186,22 @@ void main() {
       s,
       'bundle-update-icon',
       const UpdateSheet(bundle: _redrawn, have: 2, added: []),
+    ),
+  );
+  shots(
+    'bundle-install-icon-left-out',
+    (s) => _sheet(
+      s,
+      'bundle-install-icon-left-out',
+      const InstallSheet(bundle: _leftOut, kind: InstallKind.install),
+    ),
+  );
+  shots(
+    'bundle-update-icon-left-out',
+    (s) => _sheet(
+      s,
+      'bundle-update-icon-left-out',
+      const UpdateSheet(bundle: _leftOut, have: 2, added: []),
     ),
   );
   shots(
