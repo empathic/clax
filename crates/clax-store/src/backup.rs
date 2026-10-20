@@ -267,17 +267,20 @@ mod tests {
             .collect()
     }
 
+    /// A step (as [`Recording`] names it) that fails, and its error.
+    type Failure = (&'static str, fn() -> std::io::Error);
+
     /// A [`Disk`] that records each step (`"<step> <how> <name>"`, the
     /// temporary copy's name as `tmp`), does it on the real disk, and fails
     /// each step named in `failing` with its error.
     #[derive(Default)]
     struct Recording {
         steps: Vec<String>,
-        failing: Vec<(&'static str, fn() -> std::io::Error)>,
+        failing: Vec<Failure>,
     }
 
     impl Recording {
-        fn failing(failing: &[(&'static str, fn() -> std::io::Error)]) -> Self {
+        fn failing(failing: &[Failure]) -> Self {
             Recording {
                 failing: failing.to_vec(),
                 ..Recording::default()
@@ -476,7 +479,7 @@ mod tests {
     #[test]
     fn a_real_io_error_refuses_the_open() {
         let unsupported = UNSUPPORTED[0];
-        let cases: [&[(&'static str, fn() -> std::io::Error)]; 7] = [
+        let cases: [&[Failure]; 7] = [
             &[("sync_dir full ax", eio)],
             &[
                 ("sync_dir full ax", unsupported),
