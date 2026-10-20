@@ -1,4 +1,21 @@
 import { afterAll, afterEach, expect, vi } from "vitest";
+import { WAIT_MS } from "./src/test/timeouts";
+
+// `vi.waitFor` and `vi.waitUntil` give up after one second unless told
+// otherwise, which a loaded machine can take to load one lazy module. Here
+// they wait up to `WAIT_MS`, as the tests' own polls do, so a test fails on
+// a condition that never comes rather than on one that comes late. The `vi`
+// object outlives a test file, so it is wrapped once.
+type Wait = typeof vi.waitFor;
+const waits = vi as unknown as { waitFor: Wait; waitUntil: typeof vi.waitUntil; claxWaitsPatient?: true };
+if (!waits.claxWaitsPatient) {
+  const patient = <F extends Wait | typeof vi.waitUntil>(wait: F): F =>
+    ((callback: unknown, options?: number | { timeout?: number; interval?: number }) =>
+      (wait as (c: unknown, o: object) => unknown)(callback, typeof options === "number" ? { timeout: options } : { timeout: WAIT_MS, ...options })) as F;
+  waits.waitFor = patient(vi.waitFor);
+  waits.waitUntil = patient(vi.waitUntil);
+  waits.claxWaitsPatient = true;
+}
 
 // Node 25 and later define a global `localStorage` that is undefined unless
 // Node runs with --localstorage-file (reading it warns), and it shadows

@@ -17,6 +17,9 @@ const thread = (id: string, over: Partial<Thread> = {}): Thread => ({
   anchor: { kind: "element", selector: "h2", quote: null, prefix: null, suffix: null, html_hash: null, rect: null, custom_name: null, file: "index.html" }, ...over,
 });
 
+/** The controllers a test started: disposed after it, even when it fails part-way, so none leaves its timers running. */
+const controllers: { dispose(): void }[] = [];
+
 async function started(seed: Seed = {}) {
   vi.stubGlobal("SharedWorker", FakeWorker);
   vi.stubGlobal("fetch", vi.fn(async (url: string, init?: RequestInit) => {
@@ -35,6 +38,7 @@ async function started(seed: Seed = {}) {
   const stage = document.createElement("div");
   document.body.append(stage);
   const ctl = new ArtifactController({ id: ID, pinnedVersion: null });
+  controllers.push(ctl);
   ctl.frame = new FrameHost(stage, () => ctl.frameLoaded());
   ctl.start();
   const deadline = Date.now() + WAIT_MS;
@@ -67,7 +71,7 @@ const seed: Seed = {
 describe("ArtifactController", { timeout: MOUNT_TIMEOUT_MS }, () => {
   beforeEach(() => { vi.resetModules(); FakeES.last = undefined; history.replaceState(null, "", `/a/${ID}`); });
   // The gesture module this test's registry loaded watches the document until its `unwatchShell` runs.
-  afterEach(async () => { (await import("../caps/gesture")).unwatchShell(); vi.unstubAllGlobals(); sessionStorage.clear(); document.body.replaceChildren(); });
+  afterEach(async () => { for (const c of controllers.splice(0)) c.dispose(); vi.useRealTimers(); (await import("../caps/gesture")).unwatchShell(); vi.unstubAllGlobals(); sessionStorage.clear(); document.body.replaceChildren(); });
 
   it("decides the changelog once ready, writes seen for the unpinned latest, and batches looked-at marks", async () => {
     vi.useFakeTimers({ shouldAdvanceTime: true });

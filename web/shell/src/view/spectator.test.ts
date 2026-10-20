@@ -18,6 +18,9 @@ const thread = (id: string): Thread => ({
 let snap: Record<string, unknown>;
 let snapshots = 0;
 
+/** The controllers a test started: disposed after it, even when it fails part-way, so none leaves its timers running. */
+const controllers: { dispose(): void }[] = [];
+
 async function started() {
   vi.stubGlobal("SharedWorker", FakeWorker);
   vi.stubGlobal("fetch", vi.fn(async (url: string) => {
@@ -34,6 +37,7 @@ async function started() {
   const stage = document.createElement("div");
   document.body.append(stage);
   const ctl = new ArtifactController({ id: ID, pinnedVersion: null });
+  controllers.push(ctl);
   ctl.frame = new FrameHost(stage, () => ctl.frameLoaded());
   ctl.start();
   const deadline = Date.now() + WAIT_MS;
@@ -53,7 +57,7 @@ describe("spectator mode", { timeout: MOUNT_TIMEOUT_MS }, () => {
     snapshots = 0;
     snap = { artifact: artifact(1), versions: [version(1)], threads: [], presence: [], viewing: 2, seats_free: 0, guest_seats_free: 0, built_at: 1 };
   });
-  afterEach(async () => { (await import("../caps/gesture")).unwatchShell(); vi.unstubAllGlobals(); sessionStorage.clear(); document.body.replaceChildren(); vi.useRealTimers(); });
+  afterEach(async () => { for (const c of controllers.splice(0)) c.dispose(); (await import("../caps/gesture")).unwatchShell(); vi.unstubAllGlobals(); sessionStorage.clear(); document.body.replaceChildren(); vi.useRealTimers(); });
 
   it("offers Join live from the seats a viewer may take", () => {
     expect(joinOffered({ seats_free: 1, guest_seats_free: 0 }, false)).toBe(true);

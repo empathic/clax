@@ -156,10 +156,10 @@ describe("user in the shell", () => {
     const reply = (name: string) => new Response(JSON.stringify({ viewers: [{ id: OTHER, display_name: name }] }));
     const done: string[] = [];
     const first = h.call("search", ["sa"]).then(r => { done.push("first"); return r; });
-    await vi.waitFor(() => expect(replies).toHaveLength(1), { timeout: 5_000 });
+    await vi.waitFor(() => expect(replies).toHaveLength(1));
     const second = h.call("search", ["sam"]).then(r => { done.push("second"); return r; });
     expect(signals[0].aborted).toBe(true);
-    await vi.waitFor(() => expect(replies).toHaveLength(2), { timeout: 5_000 });
+    await vi.waitFor(() => expect(replies).toHaveLength(2));
     // The first request never answers; the first call still settles with the second.
     replies[1](reply("Sam B"));
     const newest = await second;
@@ -174,14 +174,14 @@ describe("user in the shell", () => {
     vi.stubGlobal("fetch", vi.fn(() => new Promise<Response>(r => { replies.push(r); })));
     const h = userHandler(env("tok", "Alex"), null as never);
     const old = h.call("search", ["sa"]);
-    await vi.waitFor(() => expect(replies).toHaveLength(1), { timeout: 5_000 });
+    await vi.waitFor(() => expect(replies).toHaveLength(1));
     h.reset?.();
     expect(await old).toEqual([]);
     // The stale request still answers (this fetch ignores the abort); once its
     // body is read, only microtasks remain before the old search would remember.
     let read = false;
     replies[0]({ ok: true, json: async () => { read = true; return { viewers: [{ id: OTHER, display_name: "Sam" }] }; } } as unknown as Response);
-    await vi.waitFor(() => expect(read).toBe(true), { timeout: 5_000 });
+    await vi.waitFor(() => expect(read).toBe(true));
     await new Promise(r => setTimeout(r, 0));
     const seeded = (await h.call("search", [""])) as { id: string }[];
     expect(seeded.map(p => p.id)).toEqual([ME]);
@@ -194,10 +194,10 @@ describe("user in the shell", () => {
     const h = userHandler(env("tok", "Alex"), null as never);
     const order: string[] = [];
     const first = h.call("search", ["sa"]).then(r => { order.push("first"); return r; });
-    await vi.waitFor(() => expect(replies).toHaveLength(1), { timeout: 5_000 });
+    await vi.waitFor(() => expect(replies).toHaveLength(1));
     const second = h.call("search", ["sam"]).then(r => { order.push("second"); return r; });
     replies[0](new Response(JSON.stringify({ viewers: [{ id: OTHER, display_name: "Old" }] })));
-    await vi.waitFor(() => expect(replies).toHaveLength(2), { timeout: 5_000 });
+    await vi.waitFor(() => expect(replies).toHaveLength(2));
     expect(order).toEqual([]);
     release = replies[1];
     release(new Response(JSON.stringify({ viewers: [{ id: OTHER, display_name: "New" }] })));
