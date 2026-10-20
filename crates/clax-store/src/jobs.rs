@@ -1069,8 +1069,9 @@ impl Store {
     }
 
     /// Forgets thread `tid` in every job that answers it, inside the
-    /// caller's transaction, which is deleting it: each such job's `rev`
-    /// moves one on. Called by every delete of a thread, before it.
+    /// caller's transaction, which is deleting it: each such job that is
+    /// not final moves one `rev` on. Called by every delete of a thread,
+    /// before it.
     pub(crate) fn thread_going_tx(&self, tx: &Transaction<'_>, tid: &str) -> clax_core::Result<()> {
         self.threads_going(tx, "thread_id = ?1", tid)
     }
@@ -1089,12 +1090,14 @@ impl Store {
     }
 
     /// The `job_threads` rows `which` selects (with `?1` bound to `key`)
-    /// go, and each job that had one moves one `rev` on.
+    /// go, and each job that had one moves one `rev` on, unless it is
+    /// final: no write changes a `cancelled` or `done` job's row.
     fn threads_going(&self, tx: &Transaction<'_>, which: &str, key: &str) -> clax_core::Result<()> {
         tx.execute(
             &format!(
                 "UPDATE jobs SET rev = rev + 1, updated_at = ?2
-                 WHERE id IN (SELECT job_id FROM job_threads WHERE {which})"
+                 WHERE id IN (SELECT job_id FROM job_threads WHERE {which})
+                   AND state NOT IN ('cancelled', 'done')"
             ),
             params![key, self.now()],
         )?;
@@ -2055,6 +2058,39 @@ mod tests {
             vec![t2.as_str()]
         );
         assert_eq!(heard.lock().unwrap().len(), 1);
+    }
+
+    #[test]
+    fn deleting_a_thread_leaves_done_and_cancelled_jobs_as_they_were() {
+        let (_d, st) = store();
+        let aid = artifact(&st, None);
+        let t = thread_on(&st, &aid);
+        running(&st, "j1");
+        st.set_job_thread("j1", &t, "c1", false).unwrap();
+        let (_, done, _) = st.commit_step("j1", "reply:0", json!({}), true).unwrap();
+        running(&st, "j2");
+        st.set_job_thread("j2", &t, "c1", false).unwrap();
+        let cancelled = move_to(&st, "j2", JobState::Cancelled).unwrap();
+        running(&st, "j3");
+        let answering = st.set_job_thread("j3", &t, "c1", false).unwrap();
+        let heard = heard(&st);
+        st.delete_thread(DAEMON, &t).unwrap();
+        assert_eq!(st.job("j1").unwrap().unwrap().job, done);
+        assert_eq!(st.job("j2").unwrap().unwrap().job, cancelled);
+        let open = st.job("j3").unwrap().unwrap();
+        assert_eq!(open.job.rev, answering.rev + 1);
+        for j in ["j1", "j2", "j3"] {
+            assert!(st.job(j).unwrap().unwrap().threads.is_empty(), "{j}");
+        }
+        assert_eq!(
+            heard
+                .lock()
+                .unwrap()
+                .iter()
+                .map(|c| c.id.as_str())
+                .collect::<Vec<_>>(),
+            vec!["j3"]
+        );
     }
 
     #[test]
