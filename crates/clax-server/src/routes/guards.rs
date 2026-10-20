@@ -79,6 +79,7 @@ mod l10 {
         ("app_drafts::create", Token),
         ("app_drafts::list", Token),
         ("app_drafts::delete", Token),
+        ("app_drafts::render", Token),
         ("sessions::push_status", NoArtifact),
         ("sessions::tool_call_ids", NoArtifact),
         ("sample::daemon", Token),
@@ -473,6 +474,10 @@ mod l10 {
         (
             "health::trim",
             "releases SQLite's caches and checkpoints the WAL of an embedded core; no history changes",
+        ),
+        (
+            "app_drafts::render",
+            "the app's record of a draft's render, for the render gate; what a step then publishes is recorded by its step",
         ),
         (
             "jobs::claim",
