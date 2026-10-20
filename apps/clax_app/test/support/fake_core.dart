@@ -34,8 +34,7 @@ class FakeCore implements CoreCalls {
   /// [unrouted] hears each call no handler answers; by default it fails
   /// the running test, even when the code under test catches the error
   /// the call completes with.
-  FakeCore({void Function(Object failure) unrouted = _failTest})
-    : _unrouted = unrouted;
+  FakeCore({this.unrouted = _failTest});
 
   /// A core whose routes are [api]'s, in the JSON shapes `HttpClaxApi`
   /// reads: `GET /api/artifacts`, `GET /api/artifacts/{aid}`,
@@ -53,7 +52,8 @@ class FakeCore implements CoreCalls {
 
   final List<CoreRequest> requests = [];
 
-  final void Function(Object failure) _unrouted;
+  /// Hears each call no handler answers.
+  final void Function(Object failure) unrouted;
   final List<(String, List<String>, CoreHandler)> _routes = [];
   final List<FakeSubscription> _subs = [];
   bool _closed = false;
@@ -118,7 +118,7 @@ class FakeCore implements CoreCalls {
     final failure = TestFailure(
       'FakeCore has no route for ${r.method} ${r.path} (as ${r.as.wire})',
     );
-    _unrouted(failure);
+    unrouted(failure);
     throw failure;
   }
 
