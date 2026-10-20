@@ -4944,4 +4944,35 @@ mod tests {
         drop(tx);
         assert_eq!((schema_of(&c), every_row(&c)), before);
     }
+
+    #[test]
+    fn a_home_holding_a_main_mark_above_38_without_questions_thread_id_is_refused() {
+        let dir = tempfile::tempdir().unwrap();
+        let home = Home::at(dir.path().join("ax"));
+        // The app's from 38: no questions.thread_id, which main's 38 adds
+        // before its 39 makes legal_agreements.
+        app_numbered_from_38(&home, 5);
+        let before = {
+            let c = connection_leaving_wal_frames(&home);
+            c.execute_batch(MIGRATIONS[WHERE_TO_ASK_MIGRATION as usize])
+                .unwrap();
+            assert_eq!(table_count(&c, "legal_agreements"), 1);
+            (user_version(&c), schema_of(&c), every_row(&c))
+        };
+        let err = match Store::open(&home) {
+            Ok(_) => panic!("a home holding main's 39 without its 38 must be refused"),
+            Err(e) => e,
+        };
+        let at = REPAIR_MIGRATION + 5;
+        assert!(
+            matches!(&err, clax_core::CoreError::MigrationFailed { at: a, detail }
+                if *a == at
+                    && detail.contains("legal_agreements")
+                    && detail.contains("lacks questions.thread_id")),
+            "{err:?}"
+        );
+        let c = Connection::open(home.db_path()).unwrap();
+        let after = (user_version(&c), schema_of(&c), every_row(&c));
+        assert!(after == before, "left as it was: {after:?}");
+    }
 }
