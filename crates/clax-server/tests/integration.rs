@@ -139,6 +139,8 @@ mod api_working;
 mod api_working_auto;
 #[cfg(any(not(clax_split), clax_split = "bridge_dev"))]
 mod bridge_dev;
+#[cfg(any(not(clax_split), clax_split = "core_start"))]
+mod core_start;
 #[cfg(any(not(clax_split), clax_split = "daemon"))]
 mod daemon;
 mod deferred;
