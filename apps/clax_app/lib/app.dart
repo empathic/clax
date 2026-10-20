@@ -61,7 +61,8 @@ import 'platform/secure_key.dart';
 import 'queue/client.dart' show QueueClient, QueueStateJobs;
 import 'queue/effect.dart' as q show Effect, KeepAlive, Notice, NoticeKind;
 import 'queue/host.dart';
-import 'queue/msg.dart' as q show OutOfTime, Woke;
+import 'queue/keep_alive.dart';
+import 'queue/msg.dart' as q show Woke;
 import 'queue/relay.dart';
 import 'ui/render_service.dart';
 import 'platform/settings_store.dart';
@@ -301,6 +302,7 @@ class AppServices {
   /// when the core fails or closes. Makes then run in the worker; changes
   /// are still the feedback worker's.
   final QueueStarter? startQueue;
+
 }
 
 /// Runs the app with [services], with Clax's own licence on the licences
@@ -739,8 +741,9 @@ class _AppRootState extends State<AppRoot> with WidgetsBindingObserver {
   RenderService? _render;
   final _renderable = ValueNotifier(true);
 
-  /// The background run the queue's KeepAlive holds.
-  BackgroundRun? _queueRun;
+  /// The background run the queue's KeepAlive holds, and the worker's
+  /// OutOfTime where the platform pauses runs.
+  late final QueueKeepAlive _keepAlive;
 
   /// The makes going on, which outlive their build views.
   late final _makes = MakeService(
@@ -992,6 +995,15 @@ class _AppRootState extends State<AppRoot> with WidgetsBindingObserver {
     _builds = _runtime.worker.builds.listen(_buildNotices.onBuild);
     _runtime.attach();
     _opened = _s.background.opened.listen(_onNews);
+    // Made before _pauses: the worker hears a stop first, then the app's
+    // own runs pause.
+    _keepAlive = QueueKeepAlive(
+      _runs,
+      _s.background,
+      tell: (news) => _host?.tell(news),
+      title: 'Making your apps',
+      step: MakeStage.starting.label,
+    );
     if (_s.background.pausesRuns) {
       _pauses = _s.background.stopped.listen((_) => unawaited(_pauseRuns()));
     }
@@ -1143,6 +1155,7 @@ class _AppRootState extends State<AppRoot> with WidgetsBindingObserver {
     unawaited(_homeActions.close());
     unawaited(_stream?.close());
     if (_s.inspector case final WebViewInspector i) i.dispose();
+    _keepAlive.dispose();
     _runs.dispose();
     _comments.dispose();
     _s.core.state.removeListener(_onState);
@@ -1698,10 +1711,7 @@ class _AppRootState extends State<AppRoot> with WidgetsBindingObserver {
     final host = _host;
     _host = null;
     if (host != null) unawaited(host.dispose());
-    if (_queueRun case final run?) {
-      _queueRun = null;
-      _runs.end(run, const RunQuiet());
-    }
+    _keepAlive.end();
   }
 
   /// The queue worker's news: a KeepAlive holds a background run (the
@@ -1710,15 +1720,8 @@ class _AppRootState extends State<AppRoot> with WidgetsBindingObserver {
   /// notification (in front, the screens' toasts say it).
   void _onQueueEffect(q.Effect e) {
     switch (e) {
-      case q.KeepAlive(on: true):
-        if (_queueRun != null) return;
-        unawaited(_s.background.requestPermission());
-        _queueRun = _runs.begin('Making your apps', MakeStage.starting.label);
-      case q.KeepAlive(on: false):
-        if (_queueRun case final run?) {
-          _queueRun = null;
-          _runs.end(run, const RunQuiet());
-        }
+      case q.KeepAlive():
+        _keepAlive.apply(e);
       case q.Notice(:final kind, :final jobId, :final title):
         if (_presence.foreground) return;
         final aid = _queue.state.value.job(jobId)?.artifactId;
@@ -1762,9 +1765,8 @@ class _AppRootState extends State<AppRoot> with WidgetsBindingObserver {
   /// app, and the platform is told the runs are paused. Each run goes on
   /// by itself when Clax is back in front.
   Future<void> _pauseRuns() async {
-    // The queue's jobs pause where they are, and go on at the next launch
-    // or when Clax is back in front.
-    _host?.tell(const q.OutOfTime());
+    // The queue's jobs pause where they are (QueueKeepAlive tells the
+    // worker), and go on at the next launch or when Clax is back in front.
     _presence.pause();
     if (!_presence.paused) return;
     if (_runs.newest case final run?) {
