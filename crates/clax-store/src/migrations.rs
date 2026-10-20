@@ -1,5 +1,28 @@
 //! Schema versions applied in order on `Store::open`.
 
+/// The SQL a migration that changes only rows starts with, to leave its
+/// [`Mark::Marker`] `$name`: it makes `migration_marks` (one row per such
+/// migration, its marker) where no earlier one did, with triggers that
+/// refuse to change or remove a row of it, and inserts `$name`. Nothing
+/// else writes the table, so the marker stays as long as the database.
+/// Use: `concat!(migration_marker!("name"), "UPDATE …;")`.
+// No migration changes only rows yet; the tests' simulated one does.
+#[cfg_attr(not(test), allow(unused_macros))]
+macro_rules! migration_marker {
+    ($name:literal) => {
+        concat!(
+            "CREATE TABLE IF NOT EXISTS migration_marks (name TEXT PRIMARY KEY);\n",
+            "CREATE TRIGGER IF NOT EXISTS migration_marks_kept BEFORE DELETE ON migration_marks\n",
+            "BEGIN SELECT RAISE(ABORT, 'a migration mark is never removed'); END;\n",
+            "CREATE TRIGGER IF NOT EXISTS migration_marks_fixed BEFORE UPDATE ON migration_marks\n",
+            "BEGIN SELECT RAISE(ABORT, 'a migration mark is never changed'); END;\n",
+            "INSERT INTO migration_marks (name) VALUES ('",
+            $name,
+            "');\n"
+        )
+    };
+}
+
 pub const MIGRATIONS: &[&str] = &[
     // 1: phase 1 tables
     "CREATE TABLE artifacts (
@@ -1302,7 +1325,8 @@ const MAIN_MARKS_ABOVE_38: [Mark<'static>; 2] =
 /// What a migration leaves in a database, by which adoption tells whether
 /// a database holds it whatever its `user_version`. It must be absent
 /// before the migration and present after it on any database, an empty one
-/// included, and stay present after every later migration.
+/// included, and stay present for as long as the database: after every
+/// later migration, and whatever the running store or the person does.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub(crate) enum Mark<'a> {
     /// A table the migration makes.
@@ -1310,22 +1334,17 @@ pub(crate) enum Mark<'a> {
     /// A column the migration adds: the table, then the column.
     Column(&'a str, &'a str),
     /// An index the migration makes.
-    // No main migration above 38 is marked by an index or a row yet; the
-    // tests' simulated ones are.
+    // No main migration above 38 is marked by an index or a marker yet;
+    // the tests' simulated ones are.
     #[cfg_attr(not(test), allow(dead_code))]
     Index(&'a str),
-    /// For a migration that changes only rows: a row of `table` that
-    /// `predicate` (an SQL expression over its columns, the `WHERE` of a
-    /// `SELECT` from it) finds after the migration. Such a migration must
-    /// leave one even on an empty database, for example a row it inserts
-    /// into `install`.
+    /// For a migration that changes only rows, which a backfill that may
+    /// change nothing cannot otherwise be told apart from its absence: the
+    /// name its SQL inserts into `migration_marks` through
+    /// `migration_marker!`, which no other code writes and the database
+    /// keeps from being changed or removed.
     #[cfg_attr(not(test), allow(dead_code))]
-    Row {
-        /// The table the row is in.
-        table: &'a str,
-        /// The SQL expression that finds it.
-        predicate: &'a str,
-    },
+    Marker(&'a str),
 }
 
 impl std::fmt::Display for Mark<'_> {
@@ -1334,7 +1353,7 @@ impl std::fmt::Display for Mark<'_> {
             Mark::Table(name) => write!(f, "table {name}"),
             Mark::Column(table, column) => write!(f, "column {table}.{column}"),
             Mark::Index(name) => write!(f, "index {name}"),
-            Mark::Row { table, predicate } => write!(f, "row of {table} where {predicate}"),
+            Mark::Marker(name) => write!(f, "marker {name}"),
         }
     }
 }
@@ -1505,17 +1524,12 @@ pub(crate) fn has_mark(conn: &rusqlite::Connection, mark: &Mark<'_>) -> clax_cor
             [name],
             |r| r.get(0),
         )?),
-        Mark::Row { table, predicate } => {
-            if !has_table(conn, table)? {
-                return Ok(false);
-            }
-            let table = table.replace('"', "\"\"");
-            Ok(conn.query_row(
-                &format!("SELECT EXISTS (SELECT 1 FROM \"{table}\" WHERE {predicate})"),
-                [],
+        Mark::Marker(name) => Ok(has_table(conn, "migration_marks")?
+            && conn.query_row(
+                "SELECT EXISTS (SELECT 1 FROM migration_marks WHERE name = ?1)",
+                [name],
                 |r| r.get(0),
-            )?)
-        }
+            )?),
     }
 }
 
@@ -4836,7 +4850,7 @@ mod tests {
 
     /// Migrations main might add after its 40 that make no table, each with
     /// its mark: a column of a table other than `artifacts`, an index, and
-    /// one that changes only rows.
+    /// one that changes only rows, marked by its marker.
     const SIMULATED_MAINS_41_WITHOUT_A_TABLE: [(&str, super::Mark<'static>); 3] = [
         (
             "ALTER TABLE sessions ADD COLUMN simulated_main_41 TEXT;",
@@ -4847,12 +4861,11 @@ mod tests {
             super::Mark::Index("simulated_main_41"),
         ),
         (
-            "UPDATE artifacts SET title = trim(title);
-             INSERT INTO install (k, v) VALUES ('simulated_main_41', '1');",
-            super::Mark::Row {
-                table: "install",
-                predicate: "k = 'simulated_main_41'",
-            },
+            concat!(
+                migration_marker!("simulated_main_41"),
+                "UPDATE artifacts SET title = trim(title);"
+            ),
+            super::Mark::Marker("simulated_main_41"),
         ),
     ];
 
@@ -5176,14 +5189,12 @@ mod tests {
     }
 
     #[test]
-    fn a_mark_is_a_table_a_column_of_any_table_an_index_or_a_row() {
+    fn a_mark_is_a_table_a_column_of_any_table_an_index_or_a_marker() {
         use super::Mark;
         let c = Connection::open_in_memory().unwrap();
         c.execute_batch(
-            "CREATE TABLE install (k TEXT PRIMARY KEY, v TEXT);
-             CREATE TABLE sessions (id TEXT PRIMARY KEY, cwd TEXT);
-             CREATE INDEX sessions_by_cwd ON sessions(cwd);
-             INSERT INTO install (k, v) VALUES ('id', 'x');",
+            "CREATE TABLE sessions (id TEXT PRIMARY KEY, cwd TEXT);
+             CREATE INDEX sessions_by_cwd ON sessions(cwd);",
         )
         .unwrap();
         let held = |m: Mark<'_>| super::has_mark(&c, &m).unwrap();
@@ -5198,19 +5209,38 @@ mod tests {
             !held(Mark::Table("sessions_by_cwd")),
             "an index is no table"
         );
-        let row = |predicate| Mark::Row {
-            table: "install",
-            predicate,
-        };
-        assert!(held(row("k = 'id' AND v = 'x'")));
-        assert!(!held(row("k = 'backfill'")));
         assert!(
-            !held(Mark::Row {
-                table: "briefs",
-                predicate: "1"
-            }),
-            "no row of a table the database lacks"
+            !held(Mark::Marker("main_41")),
+            "no marker before any migration leaves one"
         );
+        c.execute_batch(migration_marker!("main_41")).unwrap();
+        assert!(held(Mark::Marker("main_41")));
+        assert!(!held(Mark::Marker("main_42")));
+        // A second data-only migration finds the table there.
+        c.execute_batch(migration_marker!("main_42")).unwrap();
+        assert!(held(Mark::Marker("main_41")) && held(Mark::Marker("main_42")));
+    }
+
+    /// A marker outlives the running store: the database refuses to change
+    /// or remove one once made.
+    #[test]
+    fn a_marker_is_never_changed_or_removed() {
+        use super::Mark;
+        let c = Connection::open_in_memory().unwrap();
+        c.execute_batch(migration_marker!("main_41")).unwrap();
+        for sql in [
+            "DELETE FROM migration_marks",
+            "DELETE FROM migration_marks WHERE name = 'main_41'",
+            "UPDATE migration_marks SET name = 'main_40'",
+        ] {
+            let err = c.execute_batch(sql).unwrap_err();
+            assert!(err.to_string().contains("migration mark"), "{sql}: {err}");
+        }
+        assert!(super::has_mark(&c, &Mark::Marker("main_41")).unwrap());
+        let n: i64 = c
+            .query_row("SELECT COUNT(*) FROM migration_marks", [], |r| r.get(0))
+            .unwrap();
+        assert_eq!(n, 1);
     }
 
     /// A main migration above 38 that makes no table is marked by the

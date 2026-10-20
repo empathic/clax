@@ -1092,13 +1092,19 @@ number on main), and installed homes are adopted by their schema.
   decides from the database which of them a home lacks, whatever its
   version. A mark (`Mark`) is what the migration leaves: a table it makes,
   a column it adds to any table, an index it makes, or, for a migration
-  that changes only rows, a row that an SQL predicate in the mark finds in
-  a named table. A data-only migration must leave such a row even on an
-  empty database (for example a row it inserts into `install`): a backfill
+  that changes only rows, its marker (`Mark::Marker(name)`): a backfill
   that may change nothing cannot otherwise be told apart from its absence.
-  Each mark must be absent before its migration and present after it and
-  after every later one, which a store test checks for every main mark
-  from an empty database. The rule above holds for any k, so a later
+  A data-only migration's SQL starts with `migration_marker!("<name>")`,
+  which makes the dedicated table `migration_marks (name TEXT PRIMARY
+  KEY)` where no earlier data-only migration did (`CREATE TABLE IF NOT
+  EXISTS`, so it needs no migration of its own and takes no number), with
+  triggers that refuse an `UPDATE` or `DELETE` of it, and inserts its
+  name. Nothing else writes the table, so a marker, unlike a row of
+  `install` or of a user table, stays whatever the running store or the
+  person does. Each mark must be absent before its migration and present
+  after it and after every later one, and stay for as long as the
+  database, which a store test checks for every main mark from an empty
+  database. The rule above holds for any k, so a later
   renumbering adds one mark per new main migration and nothing else: when
   main adds a 41,
   a home this build left at 45 (main's two marks, k = 2, the app's from
