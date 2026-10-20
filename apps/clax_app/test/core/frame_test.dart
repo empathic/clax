@@ -104,15 +104,6 @@ void main() {
         throwsFormatException,
       );
     });
-
-    test('an unanswered call is status 0 with the error body the core uses', () {
-      final r = CoreResponse.unanswered('core_closed', 'closed');
-      expect(r.status, 0);
-      expect(r.header('content-type'), 'application/json');
-      expect(jsonDecode(utf8.decode(r.body)), {
-        'error': {'code': 'core_closed', 'message': 'closed'},
-      });
-    });
   });
 
   group('AppOrigins', () {

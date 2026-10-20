@@ -74,21 +74,9 @@ class CoreRequest {
   String toString() => 'CoreRequest($method $path as ${as.wire})';
 }
 
-/// The core's answer to a [CoreRequest].
+/// The response frame the core answered a [CoreRequest] with.
 class CoreResponse {
   const CoreResponse(this.status, this.headers, this.body);
-
-  /// The answer to a call the core will not answer: status 0 and the
-  /// core's error body, `{"error": {"code": [code], "message": [message]}}`.
-  factory CoreResponse.unanswered(String code, String message) => CoreResponse(
-    0,
-    const [('content-type', 'application/json')],
-    utf8.encode(
-      jsonEncode({
-        'error': {'code': code, 'message': message},
-      }),
-    ),
-  );
 
   /// Reads a response frame; a [FormatException] when [frame] is not one.
   /// The body is a view of [frame], not a copy.
@@ -120,7 +108,6 @@ class CoreResponse {
     }
   }
 
-  /// 0 when the core gave no answer ([CoreResponse.unanswered]).
   final int status;
   final List<(String, String)> headers;
   final Uint8List body;
@@ -136,4 +123,68 @@ class CoreResponse {
 
   @override
   String toString() => 'CoreResponse($status, ${body.length} bytes)';
+}
+
+/// What became of one call: the core answered it, or no answer came.
+sealed class CoreAnswer {
+  const CoreAnswer();
+
+  /// [r] as the caller sees it: the core's own 503 `core_closed` or
+  /// `core_failed` (a call it admitted while it closed, or to a core whose
+  /// open failed) is the same condition as a call the client could not
+  /// send, so it is [CoreUnanswered] with the core's code and message;
+  /// every other response is [CoreAnswered].
+  factory CoreAnswer.of(CoreResponse r) =>
+      switch (r.status == 503 ? _errorOf(r) : null) {
+        (final code, final message)
+            when code == 'core_closed' || code == 'core_failed' =>
+          CoreUnanswered(code, message),
+        _ => CoreAnswered(r),
+      };
+
+  /// The code and message of [r]'s `{"error": …}` body, or null.
+  static (String, String)? _errorOf(CoreResponse r) {
+    try {
+      return switch (jsonDecode(utf8.decode(r.body))) {
+        {'error': {'code': final String c, 'message': final String m}} => (c, m),
+        {'error': {'code': final String c}} => (c, ''),
+        _ => null,
+      };
+    } on FormatException {
+      return null;
+    }
+  }
+}
+
+/// The core's response to the call, whatever its status.
+final class CoreAnswered extends CoreAnswer {
+  const CoreAnswered(this.response);
+
+  final CoreResponse response;
+
+  @override
+  String toString() => 'CoreAnswered($response)';
+}
+
+/// No answer came, and none will: [code] says why.
+///
+/// - `core_closed`: the core is closed or closing, or this client is.
+/// - `core_failed`: the core did not open.
+/// - `frame_refused`: the core could not read the request frame.
+/// - `malformed`: what came back is not a response frame.
+final class CoreUnanswered extends CoreAnswer {
+  const CoreUnanswered(this.code, this.message);
+
+  final String code;
+  final String message;
+
+  @override
+  bool operator ==(Object other) =>
+      other is CoreUnanswered && other.code == code && other.message == message;
+
+  @override
+  int get hashCode => Object.hash(code, message);
+
+  @override
+  String toString() => 'CoreUnanswered($code: $message)';
 }

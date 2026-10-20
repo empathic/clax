@@ -67,8 +67,13 @@ class FakeCore implements CoreCalls {
     }
   }
 
+  /// What a handler's response becomes, as [CoreClient] reads it: a 503
+  /// `core_closed` or `core_failed` is [CoreUnanswered].
   @override
-  Future<CoreResponse> call(CoreRequest r) async {
+  Future<CoreAnswer> call(CoreRequest r) async =>
+      CoreAnswer.of(await _respond(r));
+
+  Future<CoreResponse> _respond(CoreRequest r) async {
     requests.add(r);
     final path = _segments(Uri.parse(r.path).path);
     for (final (method, pattern, handler) in _routes) {

@@ -82,9 +82,9 @@ final class CoreClosed extends CoreOpen {
 
 /// What one isolate calls the core with.
 abstract interface class CoreCalls {
-  /// The core's answer to [r]; status 0 when it will give none
-  /// ([CoreResponse.unanswered]).
-  Future<CoreResponse> call(CoreRequest r);
+  /// What became of [r]: the core's response, or [CoreUnanswered] when no
+  /// answer came. The future always completes, and never with an error.
+  Future<CoreAnswer> call(CoreRequest r);
 
   /// The core's SSE blocks (text), each subscription its own stream, until
   /// an `event: end` block ([endBlock]) or [CoreSubscription.cancel].
@@ -130,6 +130,7 @@ final class CoreClient implements CoreCalls {
     final handle = lib.open(home, states.sendPort);
     final client = CoreClient._(lib, handle, states, true);
     if (handle == 0) {
+      client._refusal = _failedAnswer;
       states.close();
       client._stateOut.add(
         CoreFailed(
@@ -155,12 +156,16 @@ final class CoreClient implements CoreCalls {
   final RawReceivePort? _states;
   final StreamController<CoreOpen> _stateOut = StreamController();
   final RawReceivePort _answers = RawReceivePort(null, 'clax core answers');
-  final Map<int, Completer<CoreResponse>> _pending = {};
+  final Map<int, Completer<CoreAnswer>> _pending = {};
   final Set<_Subscription> _subs = {};
   int _tag = 0;
 
-  /// Set by [close]: new calls are not sent.
+  /// Set by [close].
   bool _closed = false;
+
+  /// What a new call answers instead of being sent: set once the open
+  /// failed, or [close] was called.
+  CoreUnanswered? _refusal;
 
   /// Set once the core closed (or, attached, this client did): every
   /// port is closed.
@@ -172,27 +177,15 @@ final class CoreClient implements CoreCalls {
       _owner ? _stateOut.stream : const Stream.empty();
 
   @override
-  Future<CoreResponse> call(CoreRequest r) {
-    if (handle == 0) {
-      return Future.value(
-        CoreResponse.unanswered('core_failed', 'the core did not open'),
-      );
-    }
-    if (_closed) return Future.value(_closedAnswer());
+  Future<CoreAnswer> call(CoreRequest r) {
+    if (_refusal case final refusal?) return Future.value(refusal);
     final tag = _tag++;
-    final answer = Completer<CoreResponse>();
+    final answer = Completer<CoreAnswer>();
     _pending[tag] = answer;
-    switch (_lib.call(handle, r.encode(), _answers.sendPort, tag)) {
-      case 0:
-        break;
-      case 1:
-        _pending.remove(tag);
-        answer.complete(_closedAnswer());
-      case final code:
-        _pending.remove(tag);
-        answer.completeError(
-          ArgumentError.value(r, 'r', 'the core refused its frame ($code)'),
-        );
+    final code = _lib.call(handle, r.encode(), _answers.sendPort, tag);
+    if (code != 0) {
+      _pending.remove(tag);
+      answer.complete(code == 1 ? _closedAnswer : _refusedAnswer);
     }
     return answer.future;
   }
@@ -207,21 +200,21 @@ final class CoreClient implements CoreCalls {
       );
     }
     final sub = _Subscription(_subs.remove);
-    if (handle == 0) return sub..end('core_failed');
-    if (_finished || _closed) return sub..end('core_closed');
+    if (_refusal case final refusal?) return sub..end(refusal.code);
     _subs.add(sub);
     if (_lib.subscribe(handle, sub.port) != 0) sub.end('core_closed');
     return sub;
   }
 
   /// Closes this isolate's door. The opener's close also stops the core:
-  /// calls already sent are answered as the core drains them, new ones
-  /// answer status 0 `core_closed`, and once the core reports
-  /// [CoreClosed] any call still unanswered answers the same. An attached
-  /// client's calls answer `core_closed` at once.
+  /// calls already sent are answered as the core drains them, new ones go
+  /// unanswered as `core_closed`, and once the core reports [CoreClosed]
+  /// any call still waiting goes unanswered the same way. An attached
+  /// client's waiting calls go unanswered as `core_closed` at once.
   void close() {
     if (_closed) return;
     _closed = true;
+    _refusal ??= _closedAnswer;
     if (!_owner) {
       _finish();
       return;
@@ -235,12 +228,15 @@ final class CoreClient implements CoreCalls {
   void _answer(Object? message) {
     if (message is! Uint8List || message.length < 8) return;
     final tag = ByteData.sublistView(message).getInt64(0, Endian.little);
-    final answer = _pending.remove(tag);
-    if (answer == null) return;
+    _pending.remove(tag)?.complete(_read(Uint8List.sublistView(message, 8)));
+  }
+
+  /// The answer response [frame] gives.
+  static CoreAnswer _read(Uint8List frame) {
     try {
-      answer.complete(CoreResponse.decode(Uint8List.sublistView(message, 8)));
+      return CoreAnswer.of(CoreResponse.decode(frame));
     } on FormatException catch (e) {
-      answer.completeError(e);
+      return CoreUnanswered('malformed', e.message);
     }
   }
 
@@ -270,20 +266,39 @@ final class CoreClient implements CoreCalls {
     }
     if (state == null) return;
     _stateOut.add(state);
-    if (state is CoreClosed) _finish();
+    switch (state) {
+      case CoreFailed():
+        _fail();
+      case CoreClosed():
+        _finish();
+      case CoreOpening() || CoreReady():
+    }
   }
 
-  /// Ends whatever the core left: unanswered calls answer `core_closed`,
-  /// open subscriptions end with it, every port closes.
+  /// The open failed: the core answers no call (it would answer each
+  /// 503 `core_failed`), so waiting calls and new ones go unanswered as
+  /// `core_failed`.
+  void _fail() {
+    _refusal ??= _failedAnswer;
+    _answerPending(_failedAnswer);
+  }
+
+  void _answerPending(CoreUnanswered a) {
+    final pending = [..._pending.values];
+    _pending.clear();
+    for (final p in pending) {
+      p.complete(a);
+    }
+  }
+
+  /// Ends whatever the core left: waiting calls go unanswered as
+  /// `core_closed`, open subscriptions end with it, every port closes.
   void _finish() {
     if (_finished) return;
     _finished = true;
     _closed = true;
-    final pending = [..._pending.values];
-    _pending.clear();
-    for (final p in pending) {
-      p.complete(_closedAnswer());
-    }
+    _refusal ??= _closedAnswer;
+    _answerPending(_closedAnswer);
     for (final s in [..._subs]) {
       _owner ? s.end('core_closed') : s.cancel();
     }
@@ -292,8 +307,18 @@ final class CoreClient implements CoreCalls {
     if (_owner) _stateOut.close();
   }
 
-  static CoreResponse _closedAnswer() =>
-      CoreResponse.unanswered('core_closed', 'the core is closed');
+  static const _closedAnswer = CoreUnanswered(
+    'core_closed',
+    'the core is closed',
+  );
+  static const _failedAnswer = CoreUnanswered(
+    'core_failed',
+    'the core did not open',
+  );
+  static const _refusedAnswer = CoreUnanswered(
+    'frame_refused',
+    'the core could not read the request frame',
+  );
 }
 
 /// A subscription's port and the blocks it hears, decoded as UTF-8 across

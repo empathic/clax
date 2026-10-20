@@ -1,6 +1,7 @@
 import 'dart:async';
 import 'dart:convert';
 import 'dart:io';
+import 'dart:typed_data';
 
 import 'package:clax_app/core/core_client.dart';
 import 'package:clax_app/core/frame.dart';
@@ -10,10 +11,18 @@ import 'package:flutter_test/flutter_test.dart';
 import '../support/fake_core.dart';
 import '../support/paths.dart';
 
-/// The JSON error code of [r]'s body.
-String? errorCode(CoreResponse r) =>
-    ((jsonDecode(utf8.decode(r.body)) as Map)['error'] as Map?)?['code']
-        as String?;
+/// The core's response in [a]; fails the test when the call went
+/// unanswered.
+CoreResponse answered(CoreAnswer a) => switch (a) {
+  CoreAnswered(:final response) => response,
+  CoreUnanswered() => throw TestFailure('expected an answer, got $a'),
+};
+
+/// The code of [a] when the call went unanswered; null when answered.
+String? unanswered(CoreAnswer a) => switch (a) {
+  CoreAnswered() => null,
+  CoreUnanswered(:final code) => code,
+};
 
 void main() {
   late Directory home;
@@ -94,7 +103,7 @@ void main() {
       final done = Completer<void>();
       core.states.listen(states.add, onDone: done.complete);
       final r = await core.call(const CoreRequest('GET', '/api/artifacts'));
-      expect((r.status, errorCode(r)), (0, 'core_failed'));
+      expect(unanswered(r), 'core_failed');
       expect(lib.calls, isEmpty);
       final sub = core.subscribe();
       expect(await sub.blocks.toList(), [endBlock('core_failed')]);
@@ -122,27 +131,73 @@ void main() {
       lib.answer(lib.calls[2], 200, body: 'c');
       lib.answer(lib.calls[0], 201, body: 'a');
       lib.answer(lib.calls[1], 404, body: 'b');
-      final answers = await Future.wait([a, b, c]);
+      final answers = (await Future.wait([a, b, c])).map(answered);
       expect(
         [for (final r in answers) (r.status, utf8.decode(r.body))],
         [(201, 'a'), (404, 'b'), (200, 'c')],
       );
     });
 
-    test('an unknown handle answers status 0 core_closed', () async {
+    test('an unknown handle goes unanswered as core_closed', () async {
       final core = open();
       lib.callAnswer = 1;
       final r = await core.call(const CoreRequest('GET', '/api/a'));
-      expect((r.status, errorCode(r)), (0, 'core_closed'));
+      expect(unanswered(r), 'core_closed');
     });
 
-    test('a frame the core refuses is an ArgumentError', () async {
+    test('a frame the core refuses goes unanswered as frame_refused', () async {
       final core = open();
       lib.callAnswer = 2;
-      await expectLater(
-        core.call(const CoreRequest('GET', '/api/a')),
-        throwsArgumentError,
-      );
+      final r = await core.call(const CoreRequest('GET', '/api/a'));
+      expect(unanswered(r), 'frame_refused');
+    });
+
+    test("the core's own 503 core_closed and core_failed are unanswered", () async {
+      final core = open();
+      final closed = core.call(const CoreRequest('GET', '/api/a'));
+      final failed = core.call(const CoreRequest('GET', '/api/b'));
+      final busy = core.call(const CoreRequest('GET', '/api/c'));
+      String error(String code) =>
+          jsonEncode({'error': {'code': code, 'message': 'from the core'}});
+      const json = [('content-type', 'application/json')];
+      lib.answer(lib.calls[0], 503, headers: json, body: error('core_closed'));
+      lib.answer(lib.calls[1], 503, headers: json, body: error('core_failed'));
+      lib.answer(lib.calls[2], 503, headers: json, body: error('busy'));
+      final c = await closed;
+      expect(c, isA<CoreUnanswered>());
+      expect((c as CoreUnanswered).code, 'core_closed');
+      expect(c.message, 'from the core');
+      expect(unanswered(await failed), 'core_failed');
+      // A route's own 503 is an answer.
+      expect(answered(await busy).status, 503);
+    });
+
+    test('an answer that is not a frame goes unanswered as malformed', () async {
+      final core = open();
+      final r = core.call(const CoreRequest('GET', '/api/a'));
+      final c = lib.calls.single;
+      c.port.send(Uint8List.fromList([
+        ...(ByteData(8)..setInt64(0, c.tag, Endian.little)).buffer.asUint8List(),
+        ...ascii.encode('CLX2xxxxxxxx'),
+      ]));
+      expect(unanswered(await r), 'malformed');
+    });
+
+    test('a failed open ends every call, sent or not, as core_failed', () async {
+      final core = open();
+      final pending = core.call(const CoreRequest('GET', '/api/a'));
+      lib.postState({
+        'type': 'failed',
+        'code': 'open_failed',
+        'message': 'no store',
+      });
+      expect(unanswered(await pending), 'core_failed');
+      final after = await core.call(const CoreRequest('GET', '/api/b'));
+      expect(unanswered(after), 'core_failed');
+      expect(lib.calls, hasLength(1), reason: 'a failed core is not called');
+      // The core's own late answer to the first call is dropped.
+      lib.answer(lib.calls.single, 503, body: 'late');
+      await pumpEventQueue();
     });
   });
 
@@ -161,17 +216,16 @@ void main() {
 
       // A call after close never reaches the core.
       final late = await core.call(const CoreRequest('GET', '/api/late'));
-      expect((late.status, errorCode(late)), (0, 'core_closed'));
+      expect(unanswered(late), 'core_closed');
       expect(lib.calls, hasLength(2));
 
       // A call in flight still gets the core's answer while it drains.
       lib.answer(lib.calls[0], 200, body: 'ok');
-      expect((await drained).status, 200);
+      expect(answered(await drained).status, 200);
 
       // The core's `closed` ends every call it did not answer.
       lib.postState({'type': 'closed'});
-      final r = await cut;
-      expect((r.status, errorCode(r)), (0, 'core_closed'));
+      expect(unanswered(await cut), 'core_closed');
       await pumpEventQueue();
       expect(states, [const CoreReady(), const CoreClosed()]);
       // A late answer to a call already ended is dropped.
@@ -184,8 +238,7 @@ void main() {
       final pending = core.call(const CoreRequest('GET', '/api/a'));
       expect(lib.calls.single.core, 7);
       core.close();
-      final r = await pending;
-      expect((r.status, errorCode(r)), (0, 'core_closed'));
+      expect(unanswered(await pending), 'core_closed');
       expect(lib.closes, isEmpty);
       expect(await core.states.isEmpty, isTrue);
     });

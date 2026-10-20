@@ -85,15 +85,21 @@ void main() {
     }
     expect(states.last, const CoreReady());
 
-    final r = await early;
+    final r = switch (await early) {
+      CoreAnswered(:final response) => response,
+      final u => throw TestFailure('$u'),
+    };
     expect(r.status, 200, reason: utf8.decode(r.body));
     expect(r.header('content-type'), startsWith('application/json'));
     expect(jsonDecode(utf8.decode(r.body)), {'artifacts': isEmpty});
 
     // The core, not the caller, decides what a frame may reach.
-    final refused = await core.call(
+    final refused = switch (await core.call(
       const CoreRequest('GET', '/api/artifacts', as: CallAs.shellPage),
-    );
+    )) {
+      CoreAnswered(:final response) => response,
+      final u => throw TestFailure('$u'),
+    };
     expect(refused.status, 404);
     expect(utf8.decode(refused.body), contains('not_in_app'));
 
@@ -114,7 +120,8 @@ void main() {
     await closed.future;
     expect(states.last, const CoreClosed());
     final after = await core.call(const CoreRequest('GET', '/api/artifacts'));
-    expect(after.status, 0);
+    expect(after, isA<CoreUnanswered>());
+    expect((after as CoreUnanswered).code, 'core_closed');
     expect(File('${home.path}/embed.json').readAsStringSync(), contains('clax://{id}.c'));
   }, skip: skip);
 }

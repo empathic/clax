@@ -8,8 +8,16 @@ import 'package:flutter_test/flutter_test.dart';
 
 import '../support/fake_core.dart';
 
-Map<String, Object?> jsonOf(CoreResponse r) =>
-    (jsonDecode(utf8.decode(r.body)) as Map).cast();
+/// The JSON body of [a]'s response; fails the test when it went
+/// unanswered.
+Map<String, Object?> jsonOf(CoreAnswer a) =>
+    (jsonDecode(utf8.decode(statusOf(a).$2.body)) as Map).cast();
+
+/// [a]'s status and response; fails the test when it went unanswered.
+(int, CoreResponse) statusOf(CoreAnswer a) => switch (a) {
+  CoreAnswered(:final response) => (response.status, response),
+  CoreUnanswered() => throw TestFailure('expected an answer, got $a'),
+};
 
 void main() {
   test('dispatches on method and path, and records every request', () async {
@@ -18,7 +26,7 @@ void main() {
     final r = await core.call(const CoreRequest('GET', '/api/artifacts/a%2Fb?x=1'));
     expect(jsonOf(r), {'id': 'a/b'});
     final missing = await core.call(const CoreRequest('POST', '/api/artifacts/x'));
-    expect(missing.status, 404);
+    expect(statusOf(missing).$1, 404);
     expect((jsonOf(missing)['error']! as Map)['code'], 'not_in_fake');
     expect(core.requests.map((r) => r.method), ['GET', 'POST']);
   });
@@ -107,7 +115,7 @@ void main() {
         })),
       ),
     );
-    expect(batch.status, 200);
+    expect(statusOf(batch).$1, 200);
     expect((await api.getDoc(aid, 'notes/n1'))!.data, {'t': 1});
 
     final stale = await core.call(
@@ -119,7 +127,7 @@ void main() {
         )),
       ),
     );
-    expect(stale.status, 409);
+    expect(statusOf(stale).$1, 409);
     expect((jsonOf(stale)['error']! as Map)['code'], 'conflict');
   });
 }

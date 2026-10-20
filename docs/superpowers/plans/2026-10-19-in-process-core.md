@@ -881,8 +881,11 @@ just app-macos-dev
   // lib/core/core_transport.dart
   class CoreTransport implements ClaxTransport {
     CoreTransport(CoreCalls core);
-    // send: CoreRequest(as: owner); a status-0 never arises from transport, only
-    //   'core_closed' when the core is closed.
+    // send: CoreRequest(as: owner). CoreAnswered(response) → its status and
+    //   body. CoreUnanswered(code) → throws ClaxApiError(0, code): no answer
+    //   came (spec §6), code one of core_closed, core_failed, frame_refused,
+    //   malformed. CoreClient already folds the core's own 503 core_closed /
+    //   core_failed into CoreUnanswered, so a closed core has one shape.
     // sse: a CoreSubscription's blocks parsed with sse.dart's SseParser; a
     //   new subscription after `core_closed` reopens are not this class's job.
   }
