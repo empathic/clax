@@ -1658,22 +1658,43 @@ impl Store {
     }
 
     /// Gives the step whose mark is `mark` a new nonce once the content
-    /// that carried `mark` is removed, and answers its new mark: the old
-    /// one was readable on that content, so it may no longer be the
-    /// step's.
-    pub(crate) fn renew_step_mark(&self, mark: &str) -> clax_core::Result<String> {
+    /// that carried `mark` is removed: the old one was readable on that
+    /// content, so it may no longer be the step's.
+    pub(crate) fn renew_step_mark(&self, mark: &str) -> clax_core::Result<()> {
         let Ok([job, key, nonce]) = serde_json::from_str::<[String; 3]>(mark) else {
-            return Err(CoreError::invalid("invalid_step", "a step mark is malformed"));
+            return Ok(());
         };
-        let fresh = new_nonce();
         self.with_tx(|tx| {
             tx.execute(
                 "UPDATE job_step_marks SET nonce = ?4 WHERE nonce = ?1 AND job_id = ?2 AND key = ?3",
-                params![nonce, job, key, fresh],
+                params![nonce, job, key, new_nonce()],
             )?;
             Ok(())
+        })
+    }
+
+    /// The mark the store holds now for the step whose mark was `mark`
+    /// (its nonce renewed since, [`Store::renew_step_mark`]); `mark` as it
+    /// is when the store holds none for that step.
+    pub(crate) fn held_step_mark(&self, mark: Option<&str>) -> clax_core::Result<Option<String>> {
+        let Some(mark) = mark else {
+            return Ok(None);
+        };
+        let Ok([job, key, _]) = serde_json::from_str::<[String; 3]>(mark) else {
+            return Ok(Some(mark.to_string()));
+        };
+        let held: Option<String> = self.with_read(|c| {
+            Ok(c.query_row(
+                "SELECT nonce FROM job_step_marks WHERE job_id = ?1 AND key = ?2",
+                params![job, key],
+                |r| r.get(0),
+            )
+            .optional()?)
         })?;
-        Ok(step_mark(&job, &key, &fresh))
+        Ok(Some(match held {
+            Some(nonce) => step_mark(&job, &key, &nonce),
+            None => mark.to_string(),
+        }))
     }
 
     /// Forgets step mark `mark` once the content it marked is removed.

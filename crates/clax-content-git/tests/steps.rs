@@ -656,6 +656,61 @@ fn a_pushed_commit_forging_a_step_mark_is_a_push() {
     }
 }
 
+/// A host that takes a push that is not a fast forward: main moves off a
+/// killed step's version to a commit on version 1, which builds nothing on
+/// the step's version. The step's resume removes its version, and the
+/// push becomes version 2.
+#[test]
+fn a_push_beside_a_killed_steps_version_is_recorded_once_the_step_resumes() {
+    let f = fixture(the_store_in_git);
+    f.content.kill_next();
+    assert!(f.commit("publish:1", "<p>two</p>").is_err());
+    let repo = f
+        .content
+        .inner
+        .host()
+        .repo(&repo_name(f.id.as_str()))
+        .unwrap();
+    let refs = clax_core::content::wait(repo.refs()).unwrap();
+    let (stray, v1) = (refs[MAIN], refs["refs/tags/v1"]);
+    let meta = clax_core::content::wait(repo.read_commit_meta(&v1))
+        .unwrap()
+        .unwrap();
+    let sig = clax_git::Signature::utc(
+        &clax_git::Person {
+            name: "Rae".into(),
+            email: "rae@example.com".into(),
+        },
+        1_760_000_000,
+    );
+    let beside = clax_git::Commit {
+        tree: meta.tree,
+        parents: vec![v1],
+        author: sig.clone(),
+        committer: sig,
+        message: "forced over the step\n".into(),
+    }
+    .to_object()
+    .unwrap();
+    let pushed = beside.id();
+    clax_core::content::wait(repo.apply(
+        vec![beside],
+        &[RefUpdate::new(MAIN, Some(stray), Some(pushed))],
+        true,
+    ))
+    .unwrap()[0]
+        .clone()
+        .unwrap();
+    assert_eq!(f.st.marked_strays().unwrap().len(), 1);
+    let e = f.commit("publish:1", "<p>two</p>").unwrap_err();
+    assert!(matches!(e, StepError::VersionMoved { current: 2 }), "{e:?}");
+    assert_eq!(f.versions(), [1, 2]);
+    assert_eq!(f.html(2).as_deref(), Some("<p>one</p>"));
+    let refs = clax_core::content::wait(repo.refs()).unwrap();
+    assert_eq!((refs[MAIN], refs["refs/tags/v2"]), (pushed, pushed));
+    assert!(f.st.marked_strays().unwrap().is_empty());
+}
+
 /// The step mark version `n` of `f`'s artifact carries, read from its
 /// commit as anyone who fetches the repository reads it.
 fn mark_on(f: &Fixture<MemGitContent>, n: u32) -> String {

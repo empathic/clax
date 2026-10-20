@@ -425,6 +425,35 @@ impl<H: RepoHost, A: AssetStore> GitContent<H, A> {
         Ok(false)
     }
 
+    /// Whether `head`'s first-parent history (`main`'s) leaves out
+    /// `commit`, the newest version's: the walk meets another of the
+    /// `tagged` versions' commits, which lies below it, or ends, first. `false` when it meets
+    /// `commit` or is longer than [`MAX_PUSHED`] and [`MAX_LEFT`] allow.
+    async fn off_main(
+        repo: &H::Repo,
+        head: Option<ObjectId>,
+        commit: &ObjectId,
+        tagged: &BTreeSet<ObjectId>,
+    ) -> Result<bool> {
+        let mut at = head;
+        for _ in 0..=MAX_PUSHED + MAX_LEFT {
+            let Some(c) = at else {
+                return Ok(true);
+            };
+            if c == *commit {
+                return Ok(false);
+            }
+            if tagged.contains(&c) {
+                return Ok(true);
+            }
+            let Some(meta) = repo.read_commit_meta(&c).await.map_err(core_error)? else {
+                return Ok(false);
+            };
+            at = meta.parents.first().copied();
+        }
+        Ok(false)
+    }
+
     /// The tree of commit `commit`.
     async fn tree_of(repo: &H::Repo, commit: &ObjectId) -> Result<ObjectId> {
         Ok(repo
@@ -686,11 +715,13 @@ impl<H: RepoHost + Send + Sync, A: AssetStore> ContentStore for GitContent<H, A>
         if main == Some(commit)
             || main == parent
             || Self::left_above(&repo, main, Some(commit), &tagged).await?
+            || Self::off_main(&repo, main, &commit, &tagged).await?
         {
             // A first version, whose main stays (deleting the current
-            // branch is refused); main already back below the version; or
-            // main on commits a remove left above it: nothing is built on
-            // the version.
+            // branch is refused); main already back below the version; main
+            // on commits a remove left above it; or main moved off it by a
+            // push that was not a fast forward: nothing is built on the
+            // version.
             return Self::apply_all(&repo, Vec::new(), &[tag]).await;
         }
         Err(unavailable(format!(
@@ -699,8 +730,11 @@ impl<H: RepoHost + Send + Sync, A: AssetStore> ContentStore for GitContent<H, A>
         )))
     }
 
-    /// The `Clax-Step` trailer of the commit tagged `v<n>`, while `main` is
-    /// at it: a commit built on it makes it a push.
+    /// The `Clax-Step` trailer of the commit tagged `v<n>`, while nothing
+    /// is built on it: `main` is at it, or `main`'s first-parent history
+    /// does not pass through it (a push that was not a fast forward moved
+    /// `main` off it). A commit built on it makes it a push, and so does
+    /// a history too long to walk.
     async fn unrecorded_step(&self, id: &ArtifactId, n: u32) -> Result<Option<String>> {
         let Some(repo) = self.open(id).await? else {
             return Ok(None);
@@ -710,7 +744,12 @@ impl<H: RepoHost + Send + Sync, A: AssetStore> ContentStore for GitContent<H, A>
         let Some(commit) = tags.get(&n) else {
             return Ok(None);
         };
-        if refs.get(MAIN) != Some(commit) {
+        if tags.range(n.saturating_add(1)..).next().is_some() {
+            return Ok(None);
+        }
+        let main = refs.get(MAIN).copied();
+        let tagged: BTreeSet<ObjectId> = tags.values().copied().collect();
+        if main != Some(*commit) && !Self::off_main(&repo, main, commit, &tagged).await? {
             return Ok(None);
         }
         Ok(repo

@@ -1390,6 +1390,14 @@ impl Store {
         // Refused before waiting for the lock.
         check_collisions(carried_of(prev, p, false).into_iter().chain(put_paths(p)))?;
         let _lock = self.lock_content(id).await?;
+        if expected > 0 && self.current_version_of(id)? == Some(expected) {
+            // First, so that commits pushed beside a stray step version
+            // (main moved off it by a push that was not a fast forward),
+            // which cannot take its number while it is there, are recorded
+            // below.
+            self.clear_stray_locked(id, expected + 1, p.step.as_deref())
+                .await?;
+        }
         if expected > 0 {
             // Commits pushed since `expected` become versions first, so a
             // push never blocks a publish and a publish that did not see
@@ -1413,6 +1421,34 @@ impl Store {
         }
         self.record_version_locked(ctx, id, expected, p, prev, session_id, step, then)
             .await
+    }
+
+    /// Clears version `n` of `id`, which no row records, when a step's
+    /// killed write left it and its step may not keep it: the step writing
+    /// now (whose mark is `own`) replaces its own, and gets a new nonce
+    /// (its mark was readable on that content, so a commit copying it is a
+    /// push; removed first, then renewed, so a process killed between the
+    /// two leaves nothing under the old mark); a step that can never commit
+    /// leaves it to whoever writes `n`. A live step's and a mark the store
+    /// never gave stay, and refuse the write as `n` is present. The store,
+    /// not the content, says whose it is (the content module's Ordering).
+    /// Under `id`'s content lock, with the artifact at `n - 1`.
+    async fn clear_stray_locked(&self, id: &ArtifactId, n: u32, own: Option<&str>) -> Result<()> {
+        let Some(mark) = self.content.unrecorded_step(id, n).await? else {
+            return Ok(());
+        };
+        match self.mark_of(id, n, &mark, own)? {
+            super::jobs::MarkOf::Own => {
+                self.content.remove_version(id, n).await?;
+                self.renew_step_mark(&mark)?;
+            }
+            super::jobs::MarkOf::Dead => {
+                self.content.remove_version(id, n).await?;
+                self.forget_step_mark(&mark)?;
+            }
+            super::jobs::MarkOf::Live | super::jobs::MarkOf::Foreign => {}
+        }
+        Ok(())
     }
 
     /// The rest of [`Store::write_version_then_async`], under the content
@@ -1449,37 +1485,10 @@ impl Store {
         {
             return Err(CoreError::Conflict { current });
         }
-        // The step's mark this write carries: a fresh one once its own
-        // stray is removed.
-        let mut step_mark = p.step.clone();
-        if let Some(mark) = self.content.unrecorded_step(id, n).await? {
-            // A step's write of `n` that no row records: a process killed
-            // before its transaction committed left it. The store, not the
-            // content, says whose it is (the content module's Ordering).
-            match self.mark_of(id, n, &mark, p.step.as_deref())? {
-                // This step's own: the store gave the mark to it alone, for
-                // this version, so it is replaced. Its mark was readable on
-                // that content, so once the content is gone the step writes
-                // under a new one: a commit copying the old one is a push.
-                // Removed first, then renewed: a process killed between the
-                // two leaves nothing under the old mark.
-                super::jobs::MarkOf::Own => {
-                    self.content.remove_version(id, n).await?;
-                    step_mark = Some(self.renew_step_mark(&mark)?);
-                }
-                // A step that can never commit: no writer can ever claim it,
-                // and the content lock excludes any other, so whoever
-                // writes `n` removes it.
-                super::jobs::MarkOf::Dead => {
-                    self.content.remove_version(id, n).await?;
-                    self.forget_step_mark(&mark)?;
-                }
-                // A step that may still commit keeps it, and a mark the
-                // store never gave is no step's: the write is refused as
-                // `n` is present.
-                super::jobs::MarkOf::Live | super::jobs::MarkOf::Foreign => {}
-            }
-        }
+        self.clear_stray_locked(id, n, p.step.as_deref()).await?;
+        // The step's mark as the store holds it now: a new one once its
+        // own stray was removed.
+        let step_mark = self.held_step_mark(p.step.as_deref())?;
         let mut files: BTreeMap<String, FileMeta> = BTreeMap::new();
         for path in &carried {
             let mut meta = prev[*path].clone();
