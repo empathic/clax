@@ -152,8 +152,9 @@ and the stale watcher is what an embedded core needs.
 ### 2.1 The crate
 
 A new crate, `crates/clax-embed`, replacing `crates/clax-ios`. It is built
-as a `cdylib` for Android (`libclax_embed.so` per ABI) and as a
-`staticlib` for macOS and iOS (linked into the runner). Its layer is the
+as a `cdylib` for Android (`libclax_embed.so` per ABI) and macOS
+(`libclax_embed.dylib` in the bundle's `Frameworks`), and as a
+`staticlib` for iOS (linked into the runner; iOS loads no loose dylib). Its layer is the
 one clax-ios had: `"clax-embed": SERVER | {"clax-embedded"}` in
 `scripts/check-crate-layers.py`'s `ALLOWED`, and `clax-ios` leaves the map.
 
@@ -530,8 +531,10 @@ The browser shell (`?app=1` absent, or boot data without `transport:
   only, `//crates/clax-embed:clax_embed_host`), loaded with
   `DynamicLibrary.open` from `CLAX_EMBED_LIB`.
 - **Loading the library:** Android `DynamicLibrary.open('libclax_embed.so')`;
-  macOS and iOS `DynamicLibrary.process()` (the static library is linked into
-  the runner with its four symbols exported, `-Wl,-exported_symbol,_clax_embed_*`).
+  macOS `DynamicLibrary.open('<bundle>/Contents/Frameworks/libclax_embed.dylib')`;
+  iOS `DynamicLibrary.process()` (the static library is linked into the
+  runner with its four symbols kept and exported,
+  `-Wl,-exported_symbol,_clax_embed_*`).
 
 ## 7. The queue
 
@@ -875,7 +878,7 @@ forbids); whether that loss is acceptable is the owner's call (ask).
 | | Before | After |
 |---|---|---|
 | Android | `//crates/clax-cli:clax_android_arm64`, `:clax_android_x86_64` → `<abi>/libclax.so` (an executable named as a library) | `//crates/clax-embed:clax_embed_android_arm64`, `:clax_embed_android_x86_64` → `<abi>/libclax_embed.so`, a `rust_shared_library` built with the NDK by a rule beside `bazel/android/clax.bzl` (renamed `embed.bzl`); `extractNativeLibs` no longer needed (a library is loaded, not exec'd), so it goes with `useLegacyPackaging` |
-| macOS | `macos_helper(":macos_clax", //crates/clax-cli:clax_opt)` in `Contents/Resources`, signed with `ClaxHelper.entitlements` | `//crates/clax-embed:clax_embed_macos` (`rust_static_library`, `-c opt`, the host's arch) linked into the runner through a `cc_library`; no helper, no helper entitlements |
+| macOS | `macos_helper(":macos_clax", //crates/clax-cli:clax_opt)` in `Contents/Resources`, signed with `ClaxHelper.entitlements` | `//crates/clax-embed:clax_embed_macos` (`rust_shared_library`, `-c opt`, the host's arch) as `Contents/Frameworks/libclax_embed.dylib` through `flutter_macos_app`'s `additional_contents` (as rules_flutter places `App.framework`), signed ad hoc by the rule that signed the helper, without entitlements; no helper process |
 | iOS | `//crates/clax-ios:clax_ios_c` through the `ClaxDaemon` Swift module | `//crates/clax-embed:clax_embed_ios_c` (the same `ios_rust.bzl` rules) as a `cc_library` dependency of the runner; no Swift module calls it (Dart does, by FFI) |
 | Native twins | `scripts/build-app-clax.sh` (Cargo) | the same script builds `clax-embed` for the same places |
 
@@ -888,8 +891,8 @@ than today's `libclax.so`, which carries the CLI and the plugin trees, but
 no number is promised.
 
 `:apk_test`, `:macos_app_test` and `:ios_app_test` check the new contents:
-the `.so` per ABI with its four exported symbols (`llvm-nm -D`), the
-runner's four exported symbols on Apple (`nm -gU`), and no `clax`
+the `.so` per ABI with its four exported symbols (`llvm-nm -D`), the Mac's
+`libclax_embed.dylib` and the iOS runner with theirs (`nm -gU`), and no `clax`
 executable anywhere.
 
 ## 12. Time to usable
