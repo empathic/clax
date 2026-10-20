@@ -276,22 +276,20 @@ impl Store {
         // A copy of the database before any migration changes it; the
         // home's disk only (a host's own connection keeps its own). One is
         // made for a database with a schema older than this binary's, as
-        // `backup::before_migrate` decides, and reported first.
-        let known = migrations::MIGRATIONS.len() as u32;
-        let version: u32 = conn.query_row("PRAGMA user_version", [], |r| r.get(0))?;
-        if version != 0 && version < known {
-            report(&backfill::Progress {
-                phase: backfill::Phase::BackingUp,
-                done: 0,
-                total: 0,
-                bytes: 0,
-            });
-        }
-        let copy = backup::before_migrate(
+        // `backup::before_migrate_reporting` decides, and reported first.
+        let copy = backup::before_migrate_reporting(
             &conn,
             home,
             migrations::MIGRATIONS.len() as u32,
             clock.now(),
+            &mut || {
+                report(&backfill::Progress {
+                    phase: backfill::Phase::BackingUp,
+                    done: 0,
+                    total: 0,
+                    bytes: 0,
+                })
+            },
         )?;
         let content = Arc::new(FsContent::new(home.clone()));
         Store::assemble(home, conn, |c| Exec::pool(c, path), content, clock, report)

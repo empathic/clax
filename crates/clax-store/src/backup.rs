@@ -40,7 +40,23 @@ pub fn before_migrate(
     known: u32,
     now: DateTime<Utc>,
 ) -> Result<Option<PathBuf>> {
-    before_migrate_on(&mut RealDisk, conn, home, known, now)
+    before_migrate_reporting(conn, home, known, now, &mut || {})
+}
+
+/// [`before_migrate`], calling `copying` once a copy is to be made, just
+/// before it is: the one place that decides whether there is a copy says
+/// so (a store reports it as `backing up`).
+///
+/// # Errors
+/// As [`before_migrate`].
+pub fn before_migrate_reporting(
+    conn: &Connection,
+    home: &Home,
+    known: u32,
+    now: DateTime<Utc>,
+    copying: &mut dyn FnMut(),
+) -> Result<Option<PathBuf>> {
+    before_migrate_on(&mut RealDisk, conn, home, known, now, copying)
 }
 
 /// How far a sync pushes what was written.
@@ -113,11 +129,13 @@ fn before_migrate_on(
     home: &Home,
     known: u32,
     now: DateTime<Utc>,
+    copying: &mut dyn FnMut(),
 ) -> Result<Option<PathBuf>> {
     let version: u32 = conn.query_row("PRAGMA user_version", [], |r| r.get(0))?;
     if version == 0 || version >= known {
         return Ok(None);
     }
+    copying();
     let fail = |e: &dyn std::fmt::Display| CoreError::MigrationFailed {
         at: version,
         detail: format!("could not copy it to {} first: {e}", dir(home).display()),
@@ -371,7 +389,7 @@ mod tests {
     /// Copies a database at version 9 into `home` on `disk`.
     fn copy_on(disk: &mut Recording, home: &Home) -> Result<Option<PathBuf>> {
         let now = "2026-10-02T00:00:00Z".parse().unwrap();
-        before_migrate_on(disk, &at_version(9), home, 12, now)
+        before_migrate_on(disk, &at_version(9), home, 12, now, &mut || {})
     }
 
     /// The names of the files in `home`'s backups directory.
@@ -409,7 +427,7 @@ mod tests {
         // sync.
         let mut disk = Recording::default();
         let now = "2026-10-03T00:00:00Z".parse().unwrap();
-        before_migrate_on(&mut disk, &at_version(9), &home, 12, now)
+        before_migrate_on(&mut disk, &at_version(9), &home, 12, now, &mut || {})
             .unwrap()
             .unwrap();
         assert_eq!(
@@ -421,6 +439,26 @@ mod tests {
                 "sync_dir full backups"
             ]
         );
+    }
+
+    #[test]
+    fn backing_up_is_reported_only_for_a_copy_and_before_it_is_made() {
+        for (version, copies) in [(9, true), (0, false), (12, false), (13, false)] {
+            let tmp = tempfile::tempdir().unwrap();
+            let home = Home::at(tmp.path().join("ax"));
+            let now = "2026-10-02T00:00:00Z".parse().unwrap();
+            let mut heard = Vec::new();
+            let copy = before_migrate_reporting(&at_version(version), &home, 12, now, &mut || {
+                heard.push(dir(&home).is_dir() && !left_in(&home).is_empty());
+            })
+            .unwrap();
+            assert_eq!(copy.is_some(), copies, "at {version}");
+            assert_eq!(
+                heard,
+                if copies { vec![false] } else { vec![] },
+                "at {version}: once, before the copy"
+            );
+        }
     }
 
     /// An open that made the backups directory and could not sync the home
