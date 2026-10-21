@@ -24,6 +24,13 @@ import 'fake_core.dart';
 /// one on, and sends `event: job` to every stream a claim subscribed to
 /// the `jobs` topic; each claim and release sends `event: jobs_owner`.
 /// Moves follow [mayMove], the store's table.
+///
+/// The owner's live sessions are [sessions]. A publish or reply step's
+/// `session_id` must name one (400 `unknown_session`). A reply step is
+/// made from the session the job's last publish step named while it is
+/// live, else from the one the reply names, and is refused
+/// `unknown_session` when neither is live: as `commit_reply_step` in
+/// crates/clax-store/src/jobs.rs.
 class FakeJobs {
   FakeJobs(this.core) {
     _routes();
@@ -52,6 +59,21 @@ class FakeJobs {
   /// The bodies of every reply step committed, in order.
   final List<Map<String, Object?>> replied = [];
 
+  /// The session each committed reply step was made from, in order.
+  final List<String> repliedFrom = [];
+
+  /// The owner's live sessions, which a step may name; a test registers
+  /// one by adding it and ends it with [endSession].
+  final Set<String> sessions = {};
+
+  /// The session each job's last publish step was made from; none for a
+  /// job whose publish step named none (an imported change), or a seeded
+  /// one without `publishedFrom`.
+  final Map<String, String> _publishedFrom = {};
+
+  /// Ends session [sid], as the person ending it or a revoked grant does.
+  void endSession(String sid) => sessions.remove(sid);
+
   /// The claim of the app's queue: its token and its stream.
   String? ownerToken;
   String? ownerStream;
@@ -76,7 +98,8 @@ class FakeJobs {
 
   static const ownerHeader = 'x-clax-jobs-owner';
 
-  /// A job row in queued, as a test seeds the core with it.
+  /// A job row in queued, as a test seeds the core with it; its publish
+  /// step, if any, made from session [publishedFrom].
   Map<String, Object?> seed(
     String id, {
     String kind = 'make',
@@ -91,7 +114,10 @@ class FakeJobs {
     Object? error,
     List<Map<String, Object?>> steps = const [],
     List<Map<String, Object?>> questions = const [],
-  }) => jobs[id] = {
+    String? publishedFrom,
+  }) {
+    if (publishedFrom != null) _publishedFrom[id] = publishedFrom;
+    return jobs[id] = {
     'job': {
       'id': id,
       'client': 'app',
@@ -111,7 +137,8 @@ class FakeJobs {
     'steps': steps,
     'threads': const <Object?>[],
     'questions': questions,
-  };
+    };
+  }
 
   /// Job [id]'s row (`job`).
   Map<String, Object?> row(String id) =>
@@ -372,6 +399,10 @@ class FakeJobs {
         }
         final aid = pb['artifact_id'] as String?;
         final current = aid == null ? 0 : (versions[aid] ?? 0);
+        if (pb['session_id'] case final sid?
+            when sid is! String || !sessions.contains(sid)) {
+          return FakeCore.error(400, 'unknown_session', 'no live session');
+        }
         if (current != pb['base']) {
           return FakeCore.error(409, 'version_moved', 'moved', {
             'current': current,
@@ -396,6 +427,11 @@ class FakeJobs {
         made = current + 1;
         versions[target] = made;
         published.add(pb);
+        if (pb['session_id'] case final String sid) {
+          _publishedFrom[id] = sid;
+        } else {
+          _publishedFrom.remove(id);
+        }
         result = {
           'artifact_id': target,
           'version': made,
@@ -403,10 +439,39 @@ class FakeJobs {
         };
         row(id)['artifact_id'] = target;
       } else if (b['reply'] case final Map rep) {
+        final unknown = rep.keys.toSet().difference(const {
+          'threads',
+          'body',
+          'resolve',
+          'ack',
+          'session_id',
+        });
+        if (unknown.isNotEmpty ||
+            rep['threads'] is! List ||
+            rep['body'] is! String) {
+          return _unprocessable();
+        }
+        final named = rep['session_id'];
+        if (named != null && (named is! String || !sessions.contains(named))) {
+          return FakeCore.error(400, 'unknown_session', 'no live session');
+        }
         if (!steps.any((s) => (s['key']! as String).startsWith('publish:'))) {
           return FakeCore.error(400, 'invalid_step', 'no publish step');
         }
+        final from = switch (_publishedFrom[id]) {
+          final sid? when sessions.contains(sid) => sid,
+          _ => named as String?,
+        };
+        if (from == null) {
+          return FakeCore.error(
+            400,
+            'unknown_session',
+            'the version was published from no live session, and the step '
+                'names none',
+          );
+        }
         replied.add(rep.cast());
+        repliedFrom.add(from);
         result = {
           'comments': [
             for (final t in rep['threads'] as List)

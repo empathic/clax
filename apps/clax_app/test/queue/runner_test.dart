@@ -598,11 +598,13 @@ void main() {
 
     test('Reply commits the reply step and ends the change', () async {
       await claimed();
+      jobs.sessions.addAll(['s0', 's1']);
       jobs.seed(
         'j',
         kind: 'change',
         state: 'running',
         rev: 3,
+        publishedFrom: 's0',
         steps: [
           {'key': 'publish:1', 'result': {'artifact_id': 'abc', 'version': 2}, 'version_n': 2, 'created_at': 'x'},
         ],
@@ -612,13 +614,88 @@ void main() {
       );
       await pumpEventQueue();
       expect(body(to('POST', '/api/jobs/j/steps/reply').single), {
-        'reply': {'threads': ['t1'], 'body': 'Done.', 'resolve': true},
+        'reply': {'threads': ['t1'], 'body': 'Done.', 'resolve': true, 'session_id': 's1'},
         'state': 'done',
       });
       final c = only<Committed>();
       expect(c.job.state, JobState.done);
       expect(c.step, isA<ReplyStepResult>());
       expect(c.job.steps[const PublishKey(1)], const PublishStepResult(artifactId: 'abc', version: 2));
+      expect(jobs.repliedFrom, ['s0'], reason: 'the publishing session is live');
+    });
+
+    /// Job `j`, a running change whose publish step made version 2 of
+    /// `abc` from session [from] (none: a change imported from the app's
+    /// ledger).
+    void seedPublished({String? from}) => jobs.seed(
+      'j',
+      kind: 'change',
+      state: 'running',
+      rev: 3,
+      artifactId: 'abc',
+      publishedFrom: from,
+      steps: [
+        {'key': 'publish:1', 'result': {'artifact_id': 'abc', 'version': 2}, 'version_n': 2, 'created_at': 'x'},
+      ],
+    );
+
+    const reply = Reply(1, 'j', 2, 'f', ReplyPlan(data: {'threads': ['t1'], 'body': 'Done.', 'resolve': false}));
+
+    test('a Reply after the publishing session ended comes from the worker\'s session', () async {
+      await claimed();
+      jobs.sessions.addAll(['s0', 's1']);
+      seedPublished(from: 's0');
+      jobs.endSession('s0');
+      runner.run(reply);
+      await pumpEventQueue();
+      expect(only<Committed>().job.state, JobState.done);
+      expect(jobs.repliedFrom, ['s1']);
+    });
+
+    test('a Reply on a change whose version names no session comes from the worker\'s session', () async {
+      await claimed();
+      jobs.sessions.add('s1');
+      seedPublished();
+      runner.run(reply);
+      await pumpEventQueue();
+      expect(only<Committed>().job.state, JobState.done);
+      expect(jobs.repliedFrom, ['s1']);
+    });
+
+    test('a Reply without the worker\'s session goes without one, and the core '
+        'refuses it unknown_session when the publishing session ended', () async {
+      runner.close();
+      runner = EffectRunner(
+        core: CoreTransport(core, timer: timers.make, retryDelay: (_) async {}),
+        agent: agent,
+        render: renders,
+        ui: ui,
+        probeClaude: () async => probe,
+        session: () async => throw const SocketException('the core is away'),
+        send: sent.add,
+      );
+      await claimed();
+      jobs.sessions.add('s0');
+      seedPublished(from: 's0');
+      jobs.endSession('s0');
+      runner.run(reply);
+      await pumpEventQueue();
+      expect(
+        (body(to('POST', '/api/jobs/j/steps/reply').single)['reply']! as Map).containsKey('session_id'),
+        isFalse,
+      );
+      expect((only<Refused>().reason as Invalid).code, 'unknown_session');
+      expect(jobs.replied, isEmpty);
+    });
+
+    test('a Reply naming an ended session is refused unknown_session', () async {
+      await claimed();
+      jobs.sessions.addAll(['s0', 's1']);
+      seedPublished(from: 's0');
+      jobs.endSession('s1');
+      runner.run(reply);
+      await pumpEventQueue();
+      expect((only<Refused>().reason as Invalid).code, 'unknown_session');
     });
 
     test('Ask creates the question with its tool call, then the job waits on it', () async {

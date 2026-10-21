@@ -60,7 +60,8 @@ void main() {
   ({FakeCore core, FakeJobs jobs, PortCoreServer server, List<Object?> drafts})
   coreWith() {
     final core = FakeCore();
-    final jobs = FakeJobs(core);
+    // The session POST /api/sessions answers below, live in the core.
+    final jobs = FakeJobs(core)..sessions.add('s1');
     final drafts = <Object?>[];
     core
       ..on('POST', '/api/sessions', (r, _) {

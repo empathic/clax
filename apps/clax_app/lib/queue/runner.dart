@@ -260,7 +260,8 @@ class EffectRunner implements WorkerRunner {
   /// Whether Claude answers (the `ApiConnection` probe).
   final Future<bool> Function() probeClaude;
 
-  /// The worker's live session, which asks the `ask` tool's questions.
+  /// The worker's live session, which asks the `ask` tool's questions and
+  /// is named in every reply step.
   final Future<String> Function() session;
 
   /// Feeds a result back into the loop.
@@ -342,12 +343,7 @@ class EffectRunner implements WorkerRunner {
       case Publish():
         unawaited(_publish(e));
       case Reply():
-        unawaited(
-          _commit(e, 'POST', _step(e.jobId, e.key), {
-            'reply': e.reply.data,
-            'state': 'done',
-          }),
-        );
+        unawaited(_reply(e));
       case Ask():
         unawaited(_ask(e));
       case StartTurn():
@@ -711,6 +707,29 @@ class EffectRunner implements WorkerRunner {
     await _commit(e, 'POST', _step(e.jobId, e.key), {
       'publish': {..._object(plan.data), 'base': e.base},
       if (e.done) 'state': 'done',
+    });
+  }
+
+  /// Commits [e]'s reply step, ending the change, with the worker's
+  /// session as its `session_id`: the core makes the reply from the
+  /// session that published the job's version while it is live, and from
+  /// this one once it has ended or when the version names none (a change
+  /// imported from the app's ledger). When the session cannot be had the
+  /// step goes without it, and the core alone decides whether it needs one.
+  Future<void> _reply(Reply e) async {
+    String? sid;
+    try {
+      sid = await session();
+    } on Exception {
+      sid = null;
+    }
+    if (_closed) return;
+    await _commit(e, 'POST', _step(e.jobId, e.key), {
+      'reply': switch (e.reply.data) {
+        final Map d => {...d.cast<String, Object?>(), 'session_id': ?sid},
+        final d => d,
+      },
+      'state': 'done',
     });
   }
 
