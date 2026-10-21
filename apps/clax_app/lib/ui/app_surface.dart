@@ -1,4 +1,3 @@
-import 'dart:typed_data';
 
 import 'package:flutter/widgets.dart';
 
@@ -57,15 +56,4 @@ class SurfaceFault {
 
   @override
   String toString() => 'SurfaceFault($detail, reloading: $reloading)';
-}
-
-/// An image of a surface's page: [png] at the device's pixels, of a view
-/// [width] by [height] logical pixels.
-typedef SurfaceShot = ({Uint8List png, double width, double height});
-
-/// A surface that can take an image of its page as it shows now.
-abstract interface class CapturableSurface {
-  /// The page's image; null when the platform has none to give (no
-  /// WebView yet, or a platform without the call).
-  Future<SurfaceShot?> capture();
 }

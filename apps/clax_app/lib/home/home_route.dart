@@ -5,7 +5,6 @@ import 'package:flutter/widgets.dart';
 import '../platform/clock.dart';
 import 'home_host.dart';
 import 'home_recovery.dart';
-import 'home_snapshot.dart';
 
 /// What [HomeRoute] and the home app's screen tell each other: whether
 /// the built-in home screen covers it ([covered], so it acts as not
@@ -49,13 +48,7 @@ class HomeBanner {
 /// [shownWithin] counted again. Without [recovery] the banner is not
 /// offered.
 ///
-/// A cold start's [snapshot] of the same home app shows over its page,
-/// while the built-in screen does not, until the snapshot's
-/// [HomeSnapshotCover] lifts on the page's `shown`, opening (with the
-/// host's [HomeActions.open]) the app a tap on it chose; the built-in
-/// screen coming instead drops it. [onSnapshotPainted] is called after its
-/// first frame. [onBuiltIn] is called whenever the built-in home screen
-/// shows.
+/// [onBuiltIn] is called whenever the built-in home screen shows.
 class HomeRoute extends StatefulWidget {
   const HomeRoute({
     super.key,
@@ -63,8 +56,6 @@ class HomeRoute extends StatefulWidget {
     required this.app,
     required this.fallback,
     this.recovery,
-    this.snapshot,
-    this.onSnapshotPainted,
     this.onBuiltIn,
     this.clock = const SystemClock(),
     this.shownWithin = const Duration(seconds: 10),
@@ -81,8 +72,6 @@ class HomeRoute extends StatefulWidget {
   final Widget Function(BuildContext context, HomeBanner? banner) fallback;
 
   final HomeRecovery? recovery;
-  final HomeSnapshotCover? snapshot;
-  final VoidCallback? onSnapshotPainted;
   final VoidCallback? onBuiltIn;
   final Clock clock;
   final Duration shownWithin;
@@ -121,18 +110,6 @@ class _HomeRouteState extends State<HomeRoute> {
     super.initState();
     _listen(widget.host);
     widget.recovery?.addListener(_onRecovered);
-    widget.snapshot?.addListener(_onSnapshot);
-    _holdActions();
-  }
-
-  /// The page's clicks are held while the snapshot holds them.
-  void _holdActions() {
-    final s = widget.snapshot;
-    widget.host.holdActions = s == null ? null : () => s.holdsActions;
-  }
-
-  void _onSnapshot() {
-    if (mounted) setState(() {});
   }
 
   void _listen(HomeHost host) {
@@ -157,22 +134,12 @@ class _HomeRouteState extends State<HomeRoute> {
       old.recovery?.removeListener(_onRecovered);
       widget.recovery?.addListener(_onRecovered);
     }
-    if (old.snapshot != widget.snapshot) {
-      old.snapshot?.removeListener(_onSnapshot);
-      widget.snapshot?.addListener(_onSnapshot);
-    }
-    if (old.snapshot != widget.snapshot || old.host != widget.host) {
-      if (old.host != widget.host) old.host.holdActions = null;
-      _holdActions();
-    }
   }
 
   @override
   void dispose() {
     _unlisten(widget.host);
     widget.recovery?.removeListener(_onRecovered);
-    widget.snapshot?.removeListener(_onSnapshot);
-    widget.host.holdActions = null;
     super.dispose();
   }
 
@@ -189,11 +156,6 @@ class _HomeRouteState extends State<HomeRoute> {
 
   /// The home app [aid]'s page drew its home screen.
   void _onShown(String aid) {
-    if (mounted && aid == _home) {
-      widget.snapshot?.shown(aid, [
-        for (final a in widget.host.state.apps) a.id,
-      ], widget.host.openReplayed);
-    }
     final load = _waiting;
     if (!mounted || load == null || aid != _shownAid) return;
     if (_shownLoad == load && _failed != load) return;
@@ -205,7 +167,6 @@ class _HomeRouteState extends State<HomeRoute> {
 
   void _onFailed(String load) {
     if (mounted && _failed != load && _waiting == load) {
-      widget.snapshot?.drop();
       setState(() => _failed = load);
     }
   }
@@ -252,9 +213,6 @@ class _HomeRouteState extends State<HomeRoute> {
     final cover = aid == null || failed || (_fellBack && _shownLoad != load);
     if (aid == null) _fellBack = true;
     if (cover) widget.onBuiltIn?.call();
-    final snap = widget.snapshot;
-    final snapshot =
-        !cover && snap != null && snap.covering && snap.snapshot.aid == aid;
     // One keyed shape throughout, so the home app's page is kept when the
     // built-in screen over it goes, and the built-in screen when the home
     // app is put under it.
@@ -271,14 +229,6 @@ class _HomeRouteState extends State<HomeRoute> {
                 covered: cover,
                 onStoppedLoading: () => _onFailed(load),
               ),
-            ),
-          ),
-        if (snapshot)
-          KeyedSubtree(
-            key: const ValueKey('home-snapshot-cover'),
-            child: HomeSnapshotView(
-              cover: snap,
-              onPainted: widget.onSnapshotPainted,
             ),
           ),
         if (cover)

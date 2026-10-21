@@ -751,22 +751,27 @@ void main() {
     expect(actions.calls, isEmpty);
   });
 
-  test('while actions are held, menu resolves null without showing', () async {
+  test('shown resolves null, and tiles, which older home apps call, is '
+      'taken and does nothing', () async {
     final aid = api.seedArtifact('Runs', _page);
     await host.load();
-    host.holdActions = () => true;
-    actions.menuAnswer = 'star';
+    final shown = <String>[];
+    final sub = host.shown.listen(shown.add);
+    expect(await host.call(home, 'shown', const {}), isNull);
     expect(
-      await host.call(home, 'menu', {
-        'id': aid,
-        'rect': {'x': 0, 'y': 0, 'w': 1, 'h': 1},
-        'items': [
-          {'id': 'star', 'label': 'Star'},
+      await host.call(home, 'tiles', {
+        'tiles': [
+          {
+            'id': aid,
+            'rect': {'x': 0, 'y': 0, 'w': 1, 'h': 1},
+          },
         ],
       }),
       isNull,
     );
+    expect(shown, [home]);
     expect(actions.calls, isEmpty);
+    await sub.cancel();
   });
 
   test(

@@ -295,7 +295,7 @@ declare namespace ClaxExtensions {
    * Calls that open something (`open`, `openMake`, `newApp`, `menu`,
    * `openInbox`, `openSettings`, `importApp`) must come from the person's
    * tap or key press in the page, or they reject `no_gesture`; the reads,
-   * `chrome`, `shown` and `tiles` need none.
+   * `chrome` and `shown` need none.
    *
    * Clax keeps its own home screen over the page until the page calls
    * `shown()`, and shows its own, with Undo last change and Reset, when
@@ -407,16 +407,8 @@ declare namespace ClaxExtensions {
       /** Says the page has drawn the home screen: the grid with its apps,
        * the empty state or the load error. Call it once per load, after
        * the first such render (from an effect, not a tap). Resolves
-       * `{opened: id}` when Clax opened app `id` from a tap on the image of
-       * the home screen it showed until then (an open from the home screen,
-       * as a tap on the tile), else `null`. */
-      shown(): Promise<{ opened: string } | null>;
-      /** Says where each app's tile is now, after each render that moves
-       * them (and on scroll and resize): Clax keeps the last ones with an
-       * image of the page, which it shows at once on its next start, and
-       * opens the app under a tap on that image once the page is shown. At
-       * most 512 tiles. */
-      tiles(tiles: { id: string; rect: Rect }[]): Promise<void>;
+       * `null`. */
+      shown(): Promise<null>;
       /** The window the page is in, and the pointer in use; `on("chrome")`
        * hears each change. An older Clax rejects it (`unavailable`, or it
        * is missing): treat that as `{form: "phone", toolbar: false,

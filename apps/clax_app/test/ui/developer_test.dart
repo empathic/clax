@@ -149,7 +149,6 @@ void main() {
         sayUsable,
         longpressLanded,
         homeUsable,
-        homeCover,
         sendFirstStep,
       ]) {
         expect(timingLabel(name), isNot(name));

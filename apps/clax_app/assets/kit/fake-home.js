@@ -17,9 +17,7 @@
 // kept in `home.calls` as `{method, args}` instead of opening anything;
 // `home.shownCount` counts the page's `shown()` calls (a test asserts the
 // page said once that it was drawn: `home.shownCount === 1`), which resolve
-// `{opened: home.replayed}` when `home.replayed` names an app (as Clax
-// answers after opening it from a tap on its start-up image), else null; and
-// `home.set({apps, makes, unread, needsKey})` changes the state and calls
+// null; and `home.set({apps, makes, unread, needsKey})` changes the state and calls
 // the listeners of what changed, as the app does when a make finishes or an
 // app changes; `home.set({chrome})` as the window changes form, the
 // pointer in use changes or the toolbar's search text (`chrome.query`)
@@ -115,8 +113,7 @@ export function fakeHome(state = {}) {
     openInbox: act('openInbox'),
     openSettings: act('openSettings'),
     importApp: act('importApp'),
-    replayed: null,
-    shown: async () => { shown++; return home.replayed ? { opened: home.replayed } : null; },
+    shown: async () => { shown++; return null; },
     get shownCount() { return shown; },
     chrome: async () => {
       if (s.chrome == null) throw { code: 'unavailable', message: 'chrome() is not in this Clax' };

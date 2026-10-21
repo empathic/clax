@@ -124,15 +124,11 @@ class MainFlutterWindow: NSWindow {
       sidebar: container.sidebar)
 
     // "openExternal" opens an http, https or mailto URL with the app the
-    // person chose for it, and answers whether it was handed over.
-    // "snapshotWebView" {id} answers an image of the WebView that
-    // webview_flutter names `id` (`webViewIdentifier`) as it shows:
-    // {png, at one pixel a point, width, height}, its size in points;
-    // nil without one. "share" {text} or {name, data} shows the share
-    // picker at the centre of the main window and answers whether the
-    // person chose a target (`MacShare` in
-    // `lib/platform/device/mac_share.dart`). "notificationsAllowed" answers
-    // whether the system lets Clax show notifications, and
+    // person chose for it, and answers whether it was handed over. "share"
+    // {text} or {name, data} shows the share picker at the centre of the
+    // main window and answers whether the person chose a target (`MacShare`
+    // in `lib/platform/device/mac_share.dart`). "notificationsAllowed"
+    // answers whether the system lets Clax show notifications, and
     // "openAppSettings" opens System Settings at Notifications for Clax
     // (Settings › Notifications, `SettingsScreen`).
     let native = FlutterMethodChannel(
@@ -140,39 +136,6 @@ class MainFlutterWindow: NSWindow {
       binaryMessenger: engine.binaryMessenger)
     native.setMethodCallHandler { [weak self] call, result in
       switch call.method {
-      case "snapshotWebView":
-        guard let id = (call.arguments as? [String: Any])?["id"] as? NSNumber,
-          let webView = FWFWebViewFlutterWKWebViewExternalAPI.webView(
-            forIdentifier: id.int64Value, withPluginRegistry: engine),
-          webView.bounds.width > 0, webView.bounds.height > 0
-        else {
-          result(nil)
-          return
-        }
-        let size = webView.bounds.size
-        webView.takeSnapshot(with: nil) { image, _ in
-          guard let image,
-            let cg = image.cgImage(forProposedRect: nil, context: nil, hints: nil)
-          else {
-            result(nil)
-            return
-          }
-          // Scaled to one pixel a point and encoded off the main thread.
-          DispatchQueue.global(qos: .utility).async {
-            let png = MainFlutterWindow.png(cg, width: Int(size.width), height: Int(size.height))
-            DispatchQueue.main.async {
-              guard let png else {
-                result(nil)
-                return
-              }
-              result([
-                "png": FlutterStandardTypedData(bytes: png),
-                "width": Double(size.width),
-                "height": Double(size.height),
-              ])
-            }
-          }
-        }
       case "openExternal":
         guard let args = call.arguments as? [String: Any],
           let text = args["url"] as? String,
@@ -344,21 +307,6 @@ class MainFlutterWindow: NSWindow {
   }
 
   private var camera: CameraBridge?
-
-  /// [image] drawn at [width] by [height] pixels, as PNG; nil when it
-  /// cannot be drawn or encoded.
-  private static func png(_ image: CGImage, width: Int, height: Int) -> Data? {
-    guard width > 0, height > 0,
-      let ctx = CGContext(
-        data: nil, width: width, height: height, bitsPerComponent: 8, bytesPerRow: 0,
-        space: CGColorSpace(name: CGColorSpace.sRGB) ?? CGColorSpaceCreateDeviceRGB(),
-        bitmapInfo: CGImageAlphaInfo.premultipliedLast.rawValue)
-    else { return nil }
-    ctx.interpolationQuality = .high
-    ctx.draw(image, in: CGRect(x: 0, y: 0, width: width, height: height))
-    guard let scaled = ctx.makeImage() else { return nil }
-    return NSBitmapImageRep(cgImage: scaled).representation(using: .png, properties: [:])
-  }
 
   #if DEBUG
     private var toolExit: DispatchSourceProcess?

@@ -366,39 +366,6 @@ test('the shipped page calls shown() exactly once over the kit\'s fake host', as
   expect(home.shownCount).toBe(1);
 });
 
-test('tells Clax where each app tile is, again when they move', async () => {
-  const home = fakeHome({ makes: [] });
-  const reports = [];
-  home.tiles = async (list) => { reports.push(list); };
-  mount(root(), home, { db: fakeDb() });
-  await wait(() => reports.length === 1);
-  const first = reports[0];
-  expect(first.map((t) => t.id)).toEqual(tiles().filter((t) => t.dataset.id).map((t) => t.dataset.id));
-  const r = document.querySelector(`[data-id="${first[0].id}"]`).getBoundingClientRect();
-  expect(first[0].rect).toEqual({ x: r.x, y: r.y, w: r.width, h: r.height });
-  home.set({ apps: SAMPLE.apps.slice(0, 2) });
-  await wait(() => reports.length === 2);
-  expect(reports[1].length).toBe(2);
-});
-
-test('says where the tiles are only after it said it was drawn, even with no apps', async () => {
-  const home = fakeHome({ makes: [], apps: [] });
-  let release;
-  const gate = new Promise((r) => { release = r; });
-  const apps = home.apps;
-  home.apps = async () => { await gate; return apps(); };
-  const order = [];
-  home.shown = async () => { order.push('shown'); };
-  home.tiles = async (list) => { order.push(list.length); };
-  mount(root(), home, { db: fakeDb() });
-  await ui.waitFor(() => document.querySelector('.h-fab'));
-  await new Promise((r) => requestAnimationFrame(() => requestAnimationFrame(r)));
-  expect(order).toEqual([]);
-  release();
-  await wait(() => order.length === 2);
-  expect(order).toEqual(['shown', 0]);
-});
-
 test('the first load writes every listed app as seen, so none reads New; an app made after reads New', async () => {
   const home = await show({ makes: [] });
   await wait(async () => (await stored())?.seen?.length === SAMPLE.apps.length);
@@ -421,18 +388,6 @@ test('opening a new app from the home screen clears its mark and counts the open
   const l = await stored();
   expect(l.seen).toContain('app-notes');
   expect(l.opens['app-notes']).toEqual({ n: 1, last: '2026-10-16T12:00:00.000Z', days: { '2026-10-16': 1 } });
-});
-
-test('an app Clax opened from a tap on its start-up image counts as opened and loses its New mark', async () => {
-  const seen = SAMPLE.apps.map((a) => a.id).filter((id) => id !== 'app-notes');
-  const home = fakeHome({ makes: [] });
-  home.replayed = 'app-notes';
-  db = fakeDb({ [LAYOUT]: { v: 1, starred: [], order: [], seen } });
-  mount(root(), home, { db });
-  await wait(() => home.shownCount === 1);
-  await wait(async () => (await stored()).opens?.['app-notes']?.n === 1);
-  await wait(() => ui.exists('[data-id="app-notes"]') && !ui.exists('[data-id="app-notes"][data-new]'));
-  expect((await stored()).seen).toContain('app-notes');
 });
 
 test('Star from the menu moves the app to Starred; Unstar puts it first under All apps', async () => {
@@ -628,14 +583,9 @@ test('a drop into Starred dragged again before it is written lands in Starred', 
   await wait(() => section('starred').join() === 'app-mood,app-run');
 });
 
-test('a drag whose release never comes ends when the page loses focus, and the tiles are reported again', async () => {
+test('a drag whose release never comes ends when the page loses focus', async () => {
   const clock = manualClock();
-  const home = fakeHome({ makes: [] });
-  const reports = [];
-  home.tiles = async (list) => { reports.push(list); };
-  db = fakeDb();
-  mount(root(), home, { db, clock });
-  await wait(() => reports.length === 1);
+  const home = await show({ makes: [] }, { clock });
   const el = document.querySelector('[data-id="app-run"]');
   const a = centre('app-run');
   el.dispatchEvent(pointer('pointerdown', a));
@@ -647,7 +597,7 @@ test('a drag whose release never comes ends when the page loses focus, and the t
   expect(ui.exists('.h-tile[data-held], .h-tile[data-dragging]')).toBe(false);
   expect(el.style.transform).toBe('');
   home.set({ apps: SAMPLE.apps.slice(0, 2) });
-  await wait(() => reports.at(-1).length === 2);
+  await wait(() => tiles().length === 2);
   await ui.click('[data-id="app-groceries"]');
   await wait(() => home.calls.some((c) => c.method === 'open'));
 });
@@ -784,31 +734,6 @@ test('after an Alt+arrow move, a press elsewhere keeps a later render from focus
   home.set({ unread: 2 });
   await wait(() => ui.exists('.h-badge'));
   expect(document.activeElement?.dataset?.id ?? null).toBe(null);
-});
-
-test('tiles are reported once they come to rest, not while they move', async () => {
-  const clock = manualClock();
-  const home = fakeHome({ makes: [] });
-  const reports = [];
-  home.tiles = async (list) => { reports.push(list); };
-  db = fakeDb();
-  mount(root(), home, { db, clock });
-  await wait(() => reports.length === 1);
-  const el = document.querySelector('[data-id="app-run"]');
-  const a = centre('app-run');
-  el.dispatchEvent(pointer('pointerdown', a));
-  clock.advance(400);
-  el.dispatchEvent(pointer('pointermove', { x: a.x + 120, y: a.y }));
-  clock.advance(200);
-  // An absence: no report may come while the tile is held.
-  await new Promise((r) => setTimeout(r, 120));
-  expect(reports.length).toBe(1);
-  el.dispatchEvent(pointer('pointerup', { x: a.x + 120, y: a.y }));
-  clock.advance(1500);
-  await wait(() => reports.length === 2);
-  const run = reports[1].find((t) => t.id === 'app-run');
-  const r = document.querySelector('[data-id="app-run"]').getBoundingClientRect();
-  expect(run.rect).toEqual({ x: r.x, y: r.y, w: r.width, h: r.height });
 });
 
 /** Run tracker, then a group of Groceries and Notes ("Lists"), then the
@@ -1137,17 +1062,6 @@ test('an app in a fanned group offers Remove from group in its menu', async () =
   await wait(() => !ui.exists('.h-fan') && !ui.exists('.h-group'));
 });
 
-test('tiles() leaves group tiles out', async () => {
-  const home = fakeHome({ makes: [] });
-  const reports = [];
-  home.tiles = async (list) => { reports.push(list.map((t) => t.id)); };
-  db = fakeDb({ [LAYOUT]: groupLayout() });
-  mount(root(), home, { db });
-  await wait(() => reports.length >= 1);
-  expect(reports.at(-1).includes('app-groceries')).toBe(false);
-  expect(reports.at(-1).every((id) => id.startsWith('app-'))).toBe(true);
-});
-
 test("a group's tile shows its first four apps' icons, two by two; fewer apps fill fewer cells", async () => {
   const ids = SAMPLE.apps.map((a) => a.id);
   const six = ids.filter((id) => !['app-mood', 'app-notes'].includes(id));
@@ -1212,22 +1126,6 @@ test('a tap fans a group out in a row below it, pushing the grid down; a tap out
   await wait(() => !ui.exists('.h-fan'));
   clock.advance(1000);
   await wait(() => document.querySelector('[data-id="app-mood"]').getBoundingClientRect().y === below);
-});
-
-test("tiles() reports a fanned group's apps", async () => {
-  const home = fakeHome({ makes: [] });
-  const reports = [];
-  home.tiles = async (list) => { reports.push(list.map((t) => t.id)); };
-  db = fakeDb({ [LAYOUT]: groupLayout() });
-  const clock = manualClock();
-  mount(root(), home, { db, clock });
-  await wait(() => reports.length >= 1);
-  await ui.click('.h-group');
-  clock.advance(1000);
-  await wait(() => reports.at(-1).includes('app-notes'));
-  document.dispatchEvent(new KeyboardEvent('keydown', { key: 'Escape', bubbles: true }));
-  clock.advance(1000);
-  await wait(() => !ui.exists('.h-fan'));
 });
 
 const groupOfThree = () => ({
@@ -1433,20 +1331,6 @@ test('a pull down from the top does not open search; only the ⌕ does', async (
   expect(ui.exists('.h-search-ghost')).toBe(false);
   await searchField();
   expect(ui.exists('.h-search input')).toBe(true);
-});
-
-test('while search shows results, tiles() gives them', async () => {
-  const home = fakeHome({ makes: [] });
-  const reports = [];
-  home.tiles = async (list) => { reports.push(list.map((t) => t.id)); };
-  db = fakeDb();
-  mount(root(), home, { db });
-  await wait(() => reports.length >= 1);
-  const input = await searchField();
-  typeIn(input, 'gro');
-  await wait(() => reports.at(-1).join() === 'app-groceries');
-  press(input, 'Escape');
-  await wait(() => !ui.exists('.h-search'));
 });
 
 // Releases before this one wrote `bigTiles` and `big` and drew the apps

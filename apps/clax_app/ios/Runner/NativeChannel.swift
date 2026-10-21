@@ -1,7 +1,5 @@
 import Flutter
 import UIKit
-import WebKit
-import webview_flutter_wkwebview
 
 /// The iOS half of the `dev.empathic.clax/native` channel (Android's is
 /// `MainActivity.kt`, the Mac's `MainFlutterWindow.swift`):
@@ -17,9 +15,6 @@ import webview_flutter_wkwebview
 ///   the person chose for it, and answers whether one took it.
 /// - "openAppSettings" opens this app's page in Settings (its permissions
 ///   among it) and answers whether it opened.
-/// - "snapshotWebView" {id} answers an image of the WebView that
-///   webview_flutter names `id` (`webViewIdentifier`) as it shows: {png, at
-///   one pixel a point, width, height}, its size in points; nil without one.
 enum NativeChannel {
   /// The app's container, from `$HOME`.
   private static var container: URL {
@@ -75,45 +70,8 @@ enum NativeChannel {
           return
         }
         UIApplication.shared.open(url, options: [:]) { result($0) }
-      case "snapshotWebView":
-        snapshot(registrar, id: args?["id"] as? NSNumber, result: result)
       default:
         result(FlutterMethodNotImplemented)
-      }
-    }
-  }
-
-  private static func snapshot(
-    _ registrar: FlutterPluginRegistrar, id: NSNumber?, result: @escaping FlutterResult
-  ) {
-    guard let id,
-      let webView = FWFWebViewFlutterWKWebViewExternalAPI.webView(
-        forIdentifier: id.int64Value, withPluginRegistrar: registrar),
-      webView.bounds.width > 0, webView.bounds.height > 0
-    else {
-      result(nil)
-      return
-    }
-    let size = webView.bounds.size
-    webView.takeSnapshot(with: nil) { image, _ in
-      guard let image else {
-        result(nil)
-        return
-      }
-      // Scaled to one pixel a point and encoded off the main thread.
-      DispatchQueue.global(qos: .utility).async {
-        let format = UIGraphicsImageRendererFormat()
-        format.scale = 1
-        let png = UIGraphicsImageRenderer(size: size, format: format).pngData { _ in
-          image.draw(in: CGRect(origin: .zero, size: size))
-        }
-        DispatchQueue.main.async {
-          result([
-            "png": FlutterStandardTypedData(bytes: png),
-            "width": Double(size.width),
-            "height": Double(size.height),
-          ])
-        }
       }
     }
   }

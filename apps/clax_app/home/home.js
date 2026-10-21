@@ -1126,7 +1126,7 @@ function arranger(st, clock) {
     },
     /** The page hidden or left, or the pointer lost, mid-press: the press
      * ends as if cancelled and every tile goes to its place at once, so
-     * nothing stays held and the tiles are reported again. */
+     * nothing stays held. */
     abandon() {
       if (!active || active.phase === 'idle') return;
       active.cancel();
@@ -1617,51 +1617,6 @@ function useActions(home, verbs) {
   return [act, notice, say];
 }
 
-const MAX_TILES = 512;
-/** How long a burst of renders or scroll events settles before the tiles go. */
-const TILES_MS = 50;
-
-/** Tells Clax where each app's tile is (`home.tiles`; a fanned group's
- * apps too; never a group's tile), once the home
- * screen is `drawn` (after `shown`: Clax takes no tiles before it), then
- * after each render that moves one, on scroll and resize, and each time
- * the tiles come to rest, so the image of the home screen it shows at its
- * next start opens the app under a tap. Nothing goes while a tile moves
- * (`motion.moving`). Returns the report, for the motion's settling. */
-function useTiles(home, drawn, motion) {
-  const frame = useRef(0);
-  const last = useRef('');
-  const report = useCallback(() => {
-    if (!home?.tiles || !drawn || motion.moving) return;
-    // A short timer, not an animation frame: a WebView that is covered or
-    // in a window the system counts hidden runs no frames, and Clax still
-    // wants the tiles under its image.
-    clearTimeout(frame.current);
-    frame.current = setTimeout(() => {
-      if (motion.moving) return;
-      const tiles = [...document.querySelectorAll('.h-grid-wrap .h-tile[data-id]')].slice(0, MAX_TILES).map((el) => {
-        const r = el.getBoundingClientRect();
-        return { id: el.dataset.id, rect: { x: r.x, y: r.y, w: r.width, h: r.height } };
-      });
-      const key = JSON.stringify(tiles);
-      if (key === last.current) return;
-      last.current = key;
-      Promise.resolve(home.tiles(tiles)).catch(() => {});
-    }, TILES_MS);
-  }, [home, drawn, motion]);
-  useEffect(report);
-  useEffect(() => {
-    addEventListener('scroll', report, { passive: true });
-    addEventListener('resize', report);
-    return () => {
-      clearTimeout(frame.current);
-      removeEventListener('scroll', report);
-      removeEventListener('resize', report);
-    };
-  }, [report]);
-  return report;
-}
-
 /** Whether the person asks for reduced motion, following its changes. */
 function useReducedMotion() {
   const q = useMemo(() => (typeof matchMedia === 'function' ? matchMedia('(prefers-reduced-motion: reduce)') : null), []);
@@ -1834,8 +1789,7 @@ function Home({ home, db, clock }) {
     nav.leave('menu');
   }, []);
   const reduced = useReducedMotion();
-  const settled = useRef(() => {});
-  const motion = useMemo(() => createMotion(clock, { reduced, onSettle: () => settled.current() }), [clock, reduced]);
+  const motion = useMemo(() => createMotion(clock, { reduced }), [clock, reduced]);
   useEffect(() => () => motion.stop(), [motion]);
   // The group fanned out ({gid, closing}), with its own history entry.
   const [fan, setFan] = useState(null);
@@ -1989,13 +1943,8 @@ function Home({ home, db, clock }) {
   useEffect(() => {
     if (!home || !drawn || toldShown.current) return;
     toldShown.current = true;
-    // Clax may have opened an app from a tap on its image of this page
-    // before it was drawn: that is an open from the home screen too.
-    Promise.resolve(home.shown?.()).then((v) => {
-      if (typeof v?.opened === 'string') change((l) => opened(l, v.opened, clock.date()));
-    }).catch(() => {});
+    Promise.resolve(home.shown?.()).catch(() => {});
   }, [home, drawn]);
-  settled.current = useTiles(home, drawn, motion);
   const [dragging, setDragging] = useState(false);
   // Search goes with the bar.
   useEffect(() => { if (!ownBar) closeSearch(); }, [ownBar]);

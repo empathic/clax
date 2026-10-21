@@ -22,7 +22,6 @@ import 'core/core_transport.dart';
 import 'core/origins.dart';
 import 'agent/timings.dart';
 import 'home/home_install.dart';
-import 'home/home_snapshot.dart';
 import 'platform/app_notice.dart';
 import 'platform/background_work.dart';
 import 'platform/bundle_intake.dart';
@@ -98,9 +97,8 @@ Future<void> drawEdgeToEdge() async {
 /// The tool loop renders its drafts in a [WebViewInspector]: a WebView of
 /// its own that follows no link out of the app.
 ///
-/// The home screen's snapshot is kept in the cache directory
-/// (`home/home-snapshot.bin`). [homeUsable] and [homeCover] run from
-/// [launched].
+/// [homeUsable] runs from [launched]. The cache directory's `home/`, where
+/// earlier builds kept an image of the home screen, is deleted.
 ///
 /// With `CLAX_APP_DIR` set in the environment, the support and cache
 /// directories are `support/` and `cache/` under it instead (a scratch
@@ -124,10 +122,7 @@ Future<AppServices> platformServices({DateTime? launched}) async {
       : Directory('$scratchDir/cache');
   support.createSync(recursive: true);
   cache.createSync(recursive: true);
-  final snapshots = HomeSnapshotStore(
-    Directory('${cache.path}/home'),
-    announce: debugPrint,
-  );
+  unawaited(_forgetHomeSnapshot(cache));
   final android = Platform.isAndroid;
   const native = MethodChannel('dev.empathic.clax/native');
   // On iOS the native side makes the home, with its file protection, under
@@ -222,7 +217,7 @@ Future<AppServices> platformServices({DateTime? launched}) async {
     key: NotifyingSecureKey(secureKey, onChanged: core.keyChanged),
     timings: FileTimings(
       File('${support.path}/timings.jsonl'),
-      started: {homeUsable: ?launched, homeCover: ?launched},
+      started: {homeUsable: ?launched},
       announce: debugPrint,
     ),
     agentTimings: FileTimings(File('${support.path}/agent-timings.jsonl')),
@@ -278,8 +273,6 @@ Future<AppServices> platformServices({DateTime? launched}) async {
     bundleIntake: ChannelBundleIntake(),
     intents: Platform.isIOS ? ChannelIntents() : null,
     shippedHome: AssetShippedHome(),
-    homeSnapshots: snapshots,
-    homeSnapshot: await snapshots.load(),
     // A debug build's scripted agent runs its makes in this isolate.
     startQueue: scripted == null && runner == null ? startQueue : null,
     quitWhenIdle:
@@ -295,4 +288,14 @@ Future<Object?> _agentScript() async {
   return json.trimLeft().startsWith('{')
       ? readRunnerScript(json)
       : readAgentScript(json);
+}
+
+/// Deletes `home/` in [cache], where earlier builds kept an image of the
+/// home screen (`home-snapshot.bin`) to show at launch; none is kept now.
+Future<void> _forgetHomeSnapshot(Directory cache) async {
+  try {
+    await Directory('${cache.path}/home').delete(recursive: true);
+  } on FileSystemException {
+    // None kept.
+  }
 }

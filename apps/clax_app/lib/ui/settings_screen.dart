@@ -1284,7 +1284,6 @@ String timingLabel(String name) => switch (name) {
   sayUsable => 'Say → usable',
   longpressLanded => 'Long-press → landed',
   homeUsable => 'Launch → home usable',
-  homeCover => 'Launch → home snapshot',
   sendFirstStep => 'Send → first step',
   _ => name,
 };

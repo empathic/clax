@@ -11,10 +11,6 @@ const longpressLanded = 'longpress-landed';
 /// page has drawn the home screen with its apps).
 const homeUsable = 'home-usable';
 
-/// The app's launch (its `main`) to the first frame showing the home
-/// screen's last snapshot.
-const homeCover = 'home-cover';
-
 /// Send in the composer to the first step of that change the Working chip
 /// shows (docs/superpowers/specs/2026-10-12-flutter-app-round2-design.md
 /// R§6.5).
@@ -29,8 +25,7 @@ class TimingRecord {
     this.extra = const {},
   });
 
-  /// [sayUsable], [longpressLanded], [homeUsable], [homeCover] or
-  /// [sendFirstStep].
+  /// [sayUsable], [longpressLanded], [homeUsable] or [sendFirstStep].
   final String name;
   final Duration elapsed;
 

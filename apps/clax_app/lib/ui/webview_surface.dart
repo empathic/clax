@@ -3,7 +3,6 @@ import 'dart:convert';
 
 import 'package:flutter/foundation.dart';
 import 'package:flutter/gestures.dart';
-import 'package:flutter/services.dart';
 import 'package:flutter/widgets.dart';
 import 'package:webview_flutter/webview_flutter.dart';
 import 'package:webview_flutter_wkwebview/webview_flutter_wkwebview.dart';
@@ -40,9 +39,6 @@ const nativeOverlays = ['ask', 'questions', 'notice', 'draft'];
 /// - A main frame that fails to load, or whose web content process ends,
 ///   is loaded again once; a second failure within [retryWindow] gives up
 ///   and waits for [reload]. Each is reported on [faults].
-/// - [capture] asks the platform (`snapshotWebView` on the
-///   `dev.empathic.clax/native` channel, macOS and Android) for an image
-///   of the WebView as it shows.
 ///
 /// With a [core] (and its [AppOrigins], whose shell origin is then [base])
 /// the WebView loads from the app's scheme instead of the daemon (spec §4
@@ -59,7 +55,7 @@ const nativeOverlays = ['ask', 'questions', 'notice', 'draft'];
 /// document has loaded; no JavaScript channel is added
 /// (the runner's own listener is the shell's `ClaxHost`) and no key
 /// cookie is set.
-class WebViewAppSurface implements AppSurface, CapturableSurface {
+class WebViewAppSurface implements AppSurface {
   WebViewAppSurface({
     required this.base,
     this._clock = const SystemClock(),
@@ -331,33 +327,6 @@ class WebViewAppSurface implements AppSurface, CapturableSurface {
   void setVisible(bool visible) {
     final c = _session.visibilityChanged(visible);
     if (c != null) unawaited(call(c));
-  }
-
-  static const _native = MethodChannel('dev.empathic.clax/native');
-
-  @override
-  Future<SurfaceShot?> capture() async {
-    try {
-      // Both platform controllers (WebKit's and Android's) name their
-      // native WebView by `webViewIdentifier`.
-      final id = (controller.platform as dynamic).webViewIdentifier as int;
-      final r = await _native.invokeMapMethod<String, Object?>(
-        'snapshotWebView',
-        {'id': id},
-      );
-      if (r
-          case {
-            'png': final Uint8List png,
-            'width': final num width,
-            'height': final num height,
-          }
-          when png.isNotEmpty && width > 0 && height > 0) {
-        return (png: png, width: width.toDouble(), height: height.toDouble());
-      }
-      return null;
-    } on Object {
-      return null;
-    }
   }
 
   /// Runs [js] in the page and returns its result (for integration tests).

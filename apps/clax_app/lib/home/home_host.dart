@@ -21,7 +21,6 @@ import '../ui/launcher.dart'
 import '../ui/make_service.dart';
 import 'home_layout.dart';
 import 'home_settings.dart';
-import 'home_snapshot.dart' show HomeTile;
 
 /// One app on the home screen.
 ///
@@ -352,54 +351,6 @@ class HomeHost extends ChangeNotifier {
   /// goes.
   Stream<String> get shown => _shown.stream;
 
-  final _tiles = StreamController<List<HomeTile>>.broadcast(sync: true);
-  List<HomeTile>? _lastTiles;
-  var _shownThisLoad = false;
-  String? _replayed;
-  var _pageLoads = 0;
-  var _tileReports = 0;
-
-  /// Where the home app's page last said its app tiles are (its
-  /// `home.tiles` call, made after each render), in CSS pixels from its
-  /// viewport's top left; null before the current page load said, after
-  /// its `shown` ([pageLoaded] forgets them).
-  List<HomeTile>? get tiles => _lastTiles;
-
-  /// Each of the home app's `home.tiles` reports that [tiles] took.
-  Stream<List<HomeTile>> get tileReports => _tiles.stream;
-
-  /// Counts the home app's page loads and the tile reports [tiles] took:
-  /// a capture of the page pairs with [tiles] only while this is
-  /// unchanged.
-  ({int loads, int tiles}) get renderMark =>
-      (loads: _pageLoads, tiles: _tileReports);
-
-  /// Opens app [id] for a tap on the image of the home screen shown until
-  /// the page's `shown` call, which answers `{opened: id}` so the page
-  /// counts the open as one from the home screen.
-  void openReplayed(String id) {
-    _replayed = id;
-    actions.open(id);
-  }
-
-  /// The home app's page loaded a document (its shell's `ready`): the
-  /// tiles of the page before are forgotten, and tile reports count again
-  /// from this load's `shown`.
-  void pageLoaded() {
-    _pageLoads++;
-    _lastTiles = null;
-    _shownThisLoad = false;
-  }
-
-  /// While this answers true, the calls that open something (`open`,
-  /// `openMake`, `newApp`, `menu`, `openInbox`, `openSettings`,
-  /// `importApp`) do nothing: a click that reached the page while the
-  /// person saw a snapshot over it was aimed at the snapshot.
-  bool Function()? holdActions;
-
-  /// The most tiles one `home.tiles` call may give.
-  static const maxTiles = 512;
-
   /// Each topic's latest value, as [events] carries it: what a home app
   /// page that was covered or in the background is told when it shows
   /// again.
@@ -526,18 +477,14 @@ class HomeHost extends ChangeNotifier {
   /// as the shell sends them). Throws [HomeRefused] when [callerAid] is
   /// not the home app, and [HomeBadRequest] for a method or arguments the
   /// capability does not take. `menu` resolves the picked item's ID, or
-  /// null; every other call that opens something resolves null. `shown`
-  /// resolves `{opened: id}` when its listeners opened app `id` for a tap
-  /// on the image of the home screen ([openReplayed]), else null.
+  /// null; every other call resolves null. `tiles`, which older home apps
+  /// call with where their tiles are, is taken and does nothing.
   Future<Object?> call(
     String callerAid,
     String method,
     Map<String, Object?> args,
   ) async {
     if (!availableTo(callerAid)) throw HomeRefused(callerAid);
-    if (_opens.contains(method) && (holdActions?.call() ?? false)) {
-      return null;
-    }
     switch (method) {
       case 'apps':
         return _json('apps');
@@ -570,19 +517,9 @@ class HomeHost extends ChangeNotifier {
       case 'importApp':
         actions.importApp();
       case 'shown':
-        _shownThisLoad = true;
-        _replayed = null;
         _shown.add(callerAid);
-        final opened = _replayed;
-        _replayed = null;
-        if (opened != null) return {'opened': opened};
       case 'tiles':
-        final t = _tilesOf(args['tiles']);
-        if (_shownThisLoad) {
-          _lastTiles = t;
-          _tileReports++;
-          _tiles.add(t);
-        }
+        break;
       default:
         throw HomeBadRequest('home.$method is not a home method');
     }
@@ -602,17 +539,6 @@ class HomeHost extends ChangeNotifier {
     }
     return id;
   }
-
-  /// The calls that open something.
-  static const _opens = {
-    'open',
-    'openMake',
-    'newApp',
-    'menu',
-    'openInbox',
-    'openSettings',
-    'importApp',
-  };
 
   /// The most items a home app may add to a menu, and the longest label.
   static const maxMenuItems = 4;
@@ -649,24 +575,7 @@ class HomeHost extends ChangeNotifier {
       s.runes.length <= maxMenuLabel &&
       !s.runes.any((r) => r < 0x20 || r == 0x7f);
 
-  static List<HomeTile> _tilesOf(Object? v) {
-    if (v is! List || v.length > maxTiles) {
-      throw const HomeBadRequest(
-        'tiles takes a list of at most $maxTiles {id, rect}',
-      );
-    }
-    return [
-      for (final t in v)
-        switch (t) {
-          {'id': final String id, 'rect': final Object? r}
-              when id.isNotEmpty && id.length <= 64 =>
-            HomeTile(id, _rect(r, 'tiles')),
-          _ => throw const HomeBadRequest('tiles takes {id, rect} each'),
-        },
-    ];
-  }
-
-  static Rect _rect(Object? r, [String method = 'menu']) {
+  static Rect _rect(Object? r) {
     if (r
         case {
           'x': final num x,
@@ -682,7 +591,7 @@ class HomeHost extends ChangeNotifier {
         h.toDouble(),
       );
     }
-    throw HomeBadRequest('$method takes a rect {x, y, w, h}');
+    throw const HomeBadRequest('menu takes a rect {x, y, w, h}');
   }
 
   /// Topic [name]'s value as the page gets it.
@@ -1018,7 +927,6 @@ class HomeHost extends ChangeNotifier {
     }
     unawaited(_out.close());
     unawaited(_shown.close());
-    unawaited(_tiles.close());
     if (closeStream) unawaited(stream.close());
     super.dispose();
   }
