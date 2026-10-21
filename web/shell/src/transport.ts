@@ -41,7 +41,9 @@
 //   {body64, more: true})` for each but the last, each part a multiple of 3
 //   bytes so the parts' base64 texts join into the whole body's, then the
 //   ordinary `callResult` with its status, headers and the last part's
-//   `body64`. The parts wait on the call, so an abort frees them.
+//   `body64`. The parts wait on the call, so an abort frees them. A part,
+//   or the last one after parts, without a `body64` string rejects the call
+//   with a `TypeError`.
 // - `callAbort {id}`: the call's signal aborted; its answer is dropped.
 // - `subscribe {id, lastEventId?}`: `GET /api/stream`, from the resume point
 //   the request names (its `Last-Event-ID`, or its `last_event_id` query),
@@ -263,6 +265,8 @@ export function transport(channel: () => Channel | undefined, fallback: typeof f
       if (!p) return;
       calls.delete(id);
       try {
+        // A part, and the last one after parts, carries its bytes in body64.
+        if ((r.more || p.more !== undefined) && typeof r.body64 !== "string") throw Error("a part without body64");
         const b64 = p.more === undefined ? r.body64 : p.more + r.body64;
         if (r.more) return void calls.set(id, { ...p, more: b64 as string });
         const { status, headers, body: text } = r;

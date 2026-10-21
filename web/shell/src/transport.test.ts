@@ -250,6 +250,19 @@ describe("the transport", () => {
     t.callResult(NONCE, sent[0].id as number, { status: 204, headers: [] });
     expect((await p).status).toBe(204);
   });
+  it("rejects with a TypeError a part, or the last part after parts, that carries no body64, never gluing it on as text", async () => {
+    const { sent, t, f } = open();
+    const ps = [f("/api/a"), f("/api/b"), f("/api/c")];
+    await vi.waitFor(() => expect(sent.length).toBe(3));
+    const [a, b, c] = sent.map(m => m.id as number);
+    t.callResult(NONCE, a, { body64: "AAAA", more: true });
+    t.callResult(NONCE, a, { status: 200, headers: [], body64: null, body: "x" });
+    t.callResult(NONCE, b, { body64: "AAAA", more: true });
+    t.callResult(NONCE, b, { status: 200, headers: [] });
+    t.callResult(NONCE, c, { body64: null, more: true } as never);
+    t.callResult(NONCE, c, { status: 200, headers: [], body64: "AAAA" });
+    for (const p of ps) await expect(p).rejects.toBeInstanceOf(TypeError);
+  });
   it("posts nothing before init, and every call made before it once it comes", async () => {
     const sent: string[] = [];
     const t = transport(() => ({ postMessage: m => sent.push(m) }), vi.fn(), ORIGIN);
