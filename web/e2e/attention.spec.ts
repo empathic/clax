@@ -31,6 +31,10 @@ for (const mode of ["subdomain"] as const) {
     await openArtifact(mia, d.base, artifact.id, 1, mode, { lan: true });
     await name(alex, "alex");
     await name(mia, "Mia");
+    // Mia leaves before the reply that mentions her: a view left open shows
+    // the new reply in its sidebar and marks it looked once it has been in
+    // view a while, which a slow run reaches before Mia's gallery loads.
+    await mia.goto(`${d.base}/`);
     const tid = await comment(alex, artifact.id, "Two columns");
     await comment(alex, artifact.id, "@Mia which log?", tid);
     await publishNext(d.base, d.token, s.id, artifact.id, 1, { addresses: [tid] });
