@@ -2,8 +2,12 @@
 Clax app loads it.
 
 `android_embed` builds `lib` (a rust_shared_library) optimized (as `cargo
-build --release`) and stripped (`-Cstrip=symbols`, which keeps the dynamic
-symbols the app looks up) for `platform` with the NDK's toolchain, and names
+build --release`), stripped (`-Cstrip=symbols`, which keeps the dynamic
+symbols the app looks up) and linked with its segments aligned to 16 KB
+(`-z max-page-size=16384`: a phone with 16 KB pages loads no library aligned
+less, and Google Play takes no such app for SDK 35 and later; the NDK's
+lld aligns arm64 to 4 KB by default) for `platform` with the NDK's
+toolchain, and names
 it `<abi>/libclax_embed.so`, where the APK packs each ABI's libraries. The
 name is a symbolic link; nothing is copied.
 """
@@ -14,7 +18,11 @@ def _android_transition_impl(settings, attr):
     return {
         "//command_line_option:platforms": str(attr.platform),
         "//command_line_option:compilation_mode": "opt",
-        _RUSTC_FLAGS: settings[_RUSTC_FLAGS] + ["-Cstrip=symbols"],
+        _RUSTC_FLAGS: settings[_RUSTC_FLAGS] + [
+            "-Cstrip=symbols",
+            "-Clink-arg=-Wl,-z,max-page-size=16384",
+            "-Clink-arg=-Wl,-z,common-page-size=16384",
+        ],
     }
 
 _android_transition = transition(

@@ -10,7 +10,11 @@
 # HTTP: the WebViews load from the app's scheme), the engine, the app's AOT code and the embedded core
 # (libclax_embed.so, exporting the four clax_embed_ functions, read with NM,
 # the NDK's llvm-nm) for both CPUs and no clax executable (libclax.so), each
-# native library's size printed, the home bundle HOME (the
+# native library's size printed, every native library in the APK (the
+# engine's and plugins' as well as ours) with each PT_LOAD segment aligned
+# to at least 16 KB, read with the NDK's llvm-readelf beside NM (a phone
+# with 16 KB pages loads no library aligned less, and Google Play takes no
+# such app for SDK 35 and later), the home bundle HOME (the
 # one //apps/clax_app:home_bundle built), the third-party notices, and a
 # debug-key signature, and MainActivity's configChanges keeping the
 # activity through a resize (a Chromebook's window, a foldable unfolding).
@@ -119,6 +123,21 @@ for abi in arm64-v8a x86_64; do
         if [ "$got" = "$want_syms" ]; then ok "lib/$abi/libclax_embed.so exports the four clax_embed_ functions"; else bad "lib/$abi/libclax_embed.so exports the four clax_embed_ functions (it exports: $got)"; fi
     else
         bad "lib/$abi/libclax_embed.so exports the four clax_embed_ functions (no library)"
+    fi
+done
+# Every native library's PT_LOAD segments are aligned to 16 KB or more.
+readelf="$(dirname "$nm")/llvm-readelf"
+for path in $(grep -E '^lib/[^/]+/[^/]+\.so$' <<<"$files"); do
+    so="$libs/align.so"
+    if ! unzip -p "$apk" "$path" > "$so" 2>/dev/null; then bad "$path: aligned to 16 KB (unreadable)"; continue; fi
+    headers="$("$readelf" -lW "$so")"
+    aligns="$(awk '$1 == "LOAD" { print $NF }' <<<"$headers" | paste -sd ' ' -)"
+    low=""
+    for a in $aligns; do if (( a < 0x4000 )); then low="$low $a"; fi; done
+    if [ -n "$aligns" ] && [ -z "$low" ]; then
+        ok "$path: every PT_LOAD aligned to at least 16 KB ($aligns)"
+    else
+        bad "$path: every PT_LOAD aligned to at least 16 KB (PT_LOAD alignments: ${aligns:-none})"
     fi
 done
 rm -rf "$libs"

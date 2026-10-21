@@ -7,7 +7,8 @@
 #            Contents/Frameworks
 #   android  apps/clax_app/android/app/src/main/jniLibs/<abi>/libclax_embed.so
 #            for arm64-v8a and x86_64, compiled and linked with the NDK's
-#            API 29 clang and stripped
+#            API 29 clang, its segments aligned to 16 KB (a phone with 16 KB
+#            pages loads no library aligned less), and stripped
 # The default is all, a release build. A release build embeds web/dist, so
 # the web UI is built first. Each library is written beside its destination
 # and renamed into place, never copied over a file that may be in use;
@@ -59,15 +60,18 @@ fi
 if [ "$what" = android ] || [ "$what" = all ]; then
     ndk="${ANDROID_NDK_HOME:-$HOME/Library/Android/sdk/ndk/28.2.13676358}"
     bin="$ndk/toolchains/llvm/prebuilt/darwin-x86_64/bin"
+    # The NDK's lld aligns arm64 segments to 4 KB unless told otherwise.
+    page_flags="-Clink-arg=-Wl,-z,max-page-size=16384 -Clink-arg=-Wl,-z,common-page-size=16384"
     for t in aarch64-linux-android:arm64-v8a x86_64-linux-android:x86_64; do
         triple="${t%%:*}"; abi="${t##*:}"
         var="CARGO_TARGET_$(echo "$triple" | tr 'a-z-' 'A-Z_')_LINKER"
+        flags_var="CARGO_TARGET_$(echo "$triple" | tr 'a-z-' 'A-Z_')_RUSTFLAGS"
         # The C sources of rusqlite (bundled SQLite) and ring are compiled by
         # cc-rs, which reads the target's compiler and archiver from these.
         cc_var="CC_$(echo "$triple" | tr '-' '_')"; ar_var="AR_$(echo "$triple" | tr '-' '_')"
         say "building the core for Android $abi ($triple)"
         run rustup target add "$triple"
-        run env "$var=$bin/${triple}29-clang" "$cc_var=$bin/${triple}29-clang" "$ar_var=$bin/llvm-ar" cargo build -q ${flag[@]+"${flag[@]}"} -p clax-embed --target "$triple"
+        run env "$var=$bin/${triple}29-clang" "$flags_var=$page_flags" "$cc_var=$bin/${triple}29-clang" "$ar_var=$bin/llvm-ar" cargo build -q ${flag[@]+"${flag[@]}"} -p clax-embed --target "$triple"
         run "$bin/llvm-strip" -o "$out/$triple/$profile/libclax_embed.stripped.so" "$out/$triple/$profile/libclax_embed.so"
         place "$out/$triple/$profile/libclax_embed.stripped.so" "apps/clax_app/android/app/src/main/jniLibs/$abi/libclax_embed.so"
     done
