@@ -11,7 +11,7 @@ import 'package:flutter/foundation.dart';
 
 import '../core/core_client.dart';
 import '../platform/clock.dart';
-import 'client.dart' show QueueClient;
+import 'client.dart' show QueueClient, QueueStateJobs;
 import 'codec.dart';
 import 'effect.dart';
 import 'model.dart';
@@ -19,9 +19,11 @@ import 'msg.dart';
 import 'render.dart';
 import 'worker_main.dart';
 
-/// What a job the worker can no longer run shows once the worker died a
-/// second time within [IsolateQueueClient.deathWindow].
-const builderStopped = "Clax's builder stopped. Restart Clax to go on.";
+/// The error code of a job the worker can no longer run, once the worker
+/// died a second time within [IsolateQueueClient.deathWindow]: the job
+/// shows as failed, offering nothing, until Clax restarts. The UI words it
+/// (`jobErrorText`).
+const builderStoppedError = 'builder_stopped';
 
 /// The queue in a worker isolate, spawned once the core is open.
 ///
@@ -32,7 +34,12 @@ const builderStopped = "Clax's builder stopped. Restart Clax to go on.";
 /// the new worker again: its creation may have died with the old one, and
 /// the core answers a repeated creation of the same job with its row. A worker
 /// that dies within [deathWindow] of the one before, on [clock], is not
-/// restarted: each job it would have run shows [builderStopped].
+/// restarted: each job it would have run, and each make or change sent
+/// after, shows failed with [builderStoppedError] and offers nothing.
+///
+/// A worker's death lets the app go: [onEffect] hears `KeepAlive(false)`
+/// (effect ID -1, the client's own), and the next worker asks again once
+/// it has loaded a job that runs.
 ///
 /// Everything crosses as the codec's envelopes ([QueueWire]). The worker's
 /// renders are answered by [render]: each worker gets an endpoint of its
@@ -130,10 +137,18 @@ final class IsolateQueueClient implements QueueClient {
   bool get stopped => _stopped;
 
   /// Sends [intent] to the worker; it waits while a worker starts, and is
-  /// dropped once the queue has stopped or the client is disposed.
+  /// dropped once the client is disposed. Once the queue has stopped, a
+  /// make or change shows as stopped after the jobs before it, and any
+  /// other intent is dropped.
   @override
   void send(Intent intent) {
-    if (_stopped || _disposed) return;
+    if (_disposed) return;
+    if (_stopped) {
+      if (_haltedOf(intent) case final v? when _state.value.job(v.id) == null) {
+        _state.value = QueueState([..._state.value.jobs, v]);
+      }
+      return;
+    }
     if (intent case Make(:final id) || Change(:final id)) {
       _creations[id] = intent;
     }
@@ -212,6 +227,8 @@ final class IsolateQueueClient implements QueueClient {
     w.end();
     _worker = null;
     _deaths++;
+    // The dead worker's keep-alive goes with it.
+    _onEffect?.call(const KeepAlive(-1, false));
     final now = _clock.now();
     final last = _lastDeath;
     _lastDeath = now;
@@ -227,10 +244,16 @@ final class IsolateQueueClient implements QueueClient {
     }
   }
 
-  /// The queue is stopped: each job the worker would have run shows
-  /// [builderStopped] and offers nothing more.
+  /// The queue is stopped: each job the worker would have run, and each
+  /// creation not yet shown, shows failed with [builderStoppedError] and
+  /// offers nothing more.
   void _stop() {
     _stopped = true;
+    final shown = {for (final j in _state.value.jobs) j.id};
+    final unshown = [
+      for (final i in [..._creations.values, ..._waiting])
+        if (_haltedOf(i) case final v? when shown.add(v.id)) v,
+    ];
     _waiting.clear();
     _creations.clear();
     _state.value = QueueState([
@@ -241,14 +264,35 @@ final class IsolateQueueClient implements QueueClient {
           JobView(
             id: j.id,
             kind: j.kind,
-            state: j.state,
+            state: JobState.failed,
             step: j.step,
             title: j.title,
             artifactId: j.artifactId,
-            error: builderStopped,
+            error: builderStoppedError,
           ),
+      ...unshown,
     ]);
   }
+
+  /// The stopped view of creation [i]; null for any other intent.
+  static JobView? _haltedOf(Intent i) => switch (i) {
+    Make(:final id, :final title) => JobView(
+      id: id,
+      kind: JobKind.make,
+      state: JobState.failed,
+      title: title,
+      error: builderStoppedError,
+    ),
+    Change(:final id, :final title, :final artifactId) => JobView(
+      id: id,
+      kind: JobKind.change,
+      state: JobState.failed,
+      title: title,
+      artifactId: artifactId,
+      error: builderStoppedError,
+    ),
+    _ => null,
+  };
 }
 
 /// The worker's renders when the client has no [RenderServer]: every

@@ -23,7 +23,7 @@ void main() {
   late CoreServer core;
   final clients = <IsolateQueueClient>[];
 
-  IsolateQueueClient start({Clock? clock}) {
+  IsolateQueueClient start({Clock? clock, void Function(Effect e)? onEffect}) {
     final c = IsolateQueueClient.start(
       coreHandle: 7,
       supportDir: '/support',
@@ -33,6 +33,7 @@ void main() {
       clock: clock ?? const SystemClock(),
       tickEvery: null,
       attach: noCore,
+      onEffect: onEffect,
     );
     clients.add(c);
     return c;
@@ -98,6 +99,23 @@ void main() {
     ]);
   });
 
+  test('a worker\'s death lets the app go, and the next worker holds it '
+      'again while its job runs', () async {
+    core.deathsAtTurn2 = 1;
+    final held = <bool>[];
+    final client = start(
+      onEffect: (e) {
+        if (e is KeepAlive) held.add(e.on);
+      },
+    );
+    client.send(const Make('j1', 'a todo app'));
+    await stateWhere(
+      client,
+      (s) => s.jobs.isNotEmpty && s.jobs.single.state == JobState.done,
+    );
+    expect(held, [true, false, true, false]);
+  });
+
   test('a make sent while its worker dies is made by the next one', () async {
     core.dieAtCreate = true;
     final client = start();
@@ -158,11 +176,19 @@ void main() {
     expect(client.deaths, 2);
     expect(client.stopped, isTrue);
     final job = stopped.jobs.single;
-    expect(job.error, builderStopped);
-    expect(job.state, JobState.running);
+    expect(job.error, builderStoppedError);
+    expect(job.state, JobState.failed, reason: 'not left looking busy');
     expect(job.offers, isEmpty);
-    // Nothing more is sent, and nothing restarts.
+    // Nothing more is sent, and nothing restarts; a make sent now shows
+    // stopped too, not nothing.
     client.send(const Cancel('j1'));
+    client.send(const Make('j2', 'a timer', title: 'Timer'));
+    final shown = client.state.value.jobs;
+    expect(shown.map((j) => (j.id, j.state, j.error)), [
+      ('j1', JobState.failed, builderStoppedError),
+      ('j2', JobState.failed, builderStoppedError),
+    ]);
+    expect(shown.last.title, 'Timer');
     expect(core.turns, [('j1', 1), ('j1', 2), ('j1', 2)]);
   });
 

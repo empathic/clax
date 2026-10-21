@@ -10,7 +10,7 @@ import 'package:clax_app/core/core_transport.dart';
 import 'package:clax_app/core/origins.dart';
 import 'package:clax_app/queue/agent_port.dart' show draftDigest;
 import 'package:clax_app/queue/host.dart';
-import 'package:clax_app/queue/isolate_client.dart' show builderStopped;
+import 'package:clax_app/queue/isolate_client.dart' show builderStoppedError;
 import 'package:clax_app/queue/model.dart';
 import 'package:clax_app/queue/msg.dart';
 import 'package:clax_app/queue/worker_agent.dart';
@@ -116,7 +116,7 @@ void main() {
         s.jobs.isNotEmpty &&
         (s.jobs.single.state.isFinal ||
             s.jobs.single.state == JobState.failed ||
-            s.jobs.single.error == builderStopped),
+            s.jobs.single.error == builderStoppedError),
   )).jobs.single;
 
   test('a job the core cannot read, or a change naming no app, opens as an '
