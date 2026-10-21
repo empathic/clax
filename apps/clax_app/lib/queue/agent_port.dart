@@ -29,7 +29,7 @@ import '../agent/tools/finish.dart'
 import '../agent/tools/render_tool.dart' show RenderTool;
 import '../agent/tools/tool_spec.dart';
 import '../agent/tools/toolbox.dart';
-import '../agent/unfinished.dart' show changedFiles, keptEdits;
+import '../agent/unfinished.dart' show changedFiles, fingerprint, keptEdits;
 import '../bundle/content_hash.dart' show contentHash, sha256Hex;
 import 'model.dart';
 import 'runner.dart' show AgentPort, PublishRefused;
@@ -197,7 +197,13 @@ final class _HeldTool implements Tool {
 /// turn of a job whose row carries such a stop, at or after its `turn`,
 /// is a Keep going run ([AgentJob.again]): a fresh conversation over the
 /// draft, its cost cap what is left, told to plan the rest from the
-/// second stop or when the row says `planRest`.
+/// second stop or when the row says `planRest`. A stop imported from the
+/// app's unfinished.json carries its draft instead of turns (`draft:
+/// {edits, before, title?, capabilities?}`, crates/clax-store's import):
+/// its Keep going run begins at turn 1 on the job's draft with those
+/// edits, when the app still holds every file as `before` fingerprints
+/// it, and each later stop carries the draft on, so a rebuild seeds it
+/// again before it runs the turns' calls.
 ///
 /// **Rebuilt from the rows.** A job's draft, history and budget live in
 /// this worker while it runs the job; a worker that opens a job late
@@ -283,12 +289,12 @@ final class AgentTurns implements AgentPort {
       forget(jobId);
       job = await _jobOf(jobId);
     }
-    if (job.live == 0 && turn > 1) {
-      await job.rebuild(
-        through: turn - 1,
-        runOf: turn,
-        carry: carry ?? job.agent.row?.carry,
-      );
+    if (job.live == 0) {
+      final held = carry ?? job.agent.row?.carry;
+      job.seed(held);
+      if (turn > 1) {
+        await job.rebuild(through: turn - 1, runOf: turn, carry: held);
+      }
     }
     if (calls) job.live = turn;
     return job;
@@ -308,7 +314,7 @@ final class AgentTurns implements AgentPort {
     }
     // A Keep going run starts at the turn the stop named.
     final start = _runStart(input.carry, t);
-    if (job.runStart != start) {
+    if (job.runStart != start || !job.begun) {
       job.beginRun(start, input.carry, planRest: input.planRest);
     }
     // The turn before, when another worker asked it: its words and its
@@ -413,6 +419,15 @@ final class AgentTurns implements AgentPort {
     {'turn': final int s} when s <= t && s > 1 => s,
     _ => 1,
   };
+
+  /// The draft [carry] holds (`draft`): a stop imported from the app's
+  /// unfinished.json carries the run's draft, which no committed turn
+  /// holds. Null for none.
+  static Map<String, Object?>? _carriedDraftOf(Carry? carry) =>
+      switch (carry?.data) {
+        {'draft': final Map d} => d.cast<String, Object?>(),
+        _ => null,
+      };
 
   int _maxTokens(RunBudget b) {
     final left = b.caps.outputTokens - b.usage.output;
@@ -557,6 +572,9 @@ final class AgentTurns implements AgentPort {
           'notes': notes.length > _keptNotes
               ? notes.sublist(notes.length - _keptNotes)
               : notes,
+          // The draft an imported stop carried, which no committed turn
+          // holds: a worker rebuilding the job seeds it again.
+          'draft': ?job.carriedDraft,
         },
       ),
     );
@@ -715,6 +733,60 @@ final class _Job {
   List<Map<String, Object?>> first;
   int runStart = 1;
 
+  /// Whether [beginRun] began the current run.
+  bool begun = false;
+
+  /// The draft the row's carry holds (`draft`, `{edits, before, title?,
+  /// capabilities?}`: a stop imported from the app's unfinished.json,
+  /// which no committed turn holds), once [seed] read it; and whether the
+  /// draft held it ([carriedDraftApplied]: the app still held what its
+  /// edits were made on).
+  Map<String, Object?>? carriedDraft;
+  bool carriedDraftApplied = false;
+  bool _seeded = false;
+
+  /// Starts the draft from the carried draft of [carry], once, before any
+  /// turn's calls run on it: its edits, title and capabilities, when the
+  /// draft holds every file as its `before` fingerprints say.
+  void seed(Carry? carry) {
+    if (_seeded) return;
+    _seeded = true;
+    final d = AgentTurns._carriedDraftOf(carry);
+    if (d == null) return;
+    carriedDraft = d;
+    final draft = state.draft;
+    final before = switch (d['before']) {
+      final Map b => b,
+      _ => const {},
+    };
+    final holds = before.entries.every(
+      (e) => fingerprint(draft.files[e.key]) == e.value,
+    );
+    if (!holds) return;
+    carriedDraftApplied = true;
+    for (final e in (switch (d['edits']) {
+      final Map m => m,
+      _ => const {},
+    }).entries) {
+      final path = e.key;
+      if (path is! String) continue;
+      switch (e.value) {
+        case final String text:
+          draft.writeFile(path, text);
+        case null:
+          draft.deleteFile(path);
+      }
+    }
+    final title = d['title'];
+    final caps = d['capabilities'];
+    if (title is String || caps is Map) {
+      draft.setMeta(
+        title: title is String ? title : null,
+        capabilities: caps is Map ? caps.cast<String, Object?>() : null,
+      );
+    }
+  }
+
   /// The turn whose calls this worker ran last, or which it last asked
   /// the model; 0 before any.
   int live = 0;
@@ -843,7 +915,7 @@ final class _Job {
     final planRest = row?.plan?.planRest ?? false;
     final start = AgentTurns._runStart(carry, runOf);
     for (var j = 1; j <= through; j++) {
-      if (j == start && start > 1) beginRun(start, carry, planRest: planRest);
+      if (j == start) beginRun(start, carry, planRest: planRest);
       final step = row?.steps[TurnKey(j)];
       if (step is! TurnStepResult) continue;
       final n = notes[j] = step.notes;
@@ -897,11 +969,15 @@ final class _Job {
 
   /// Begins the run whose first turn is [start]: the first run, or a Keep
   /// going run after the stop [carry] holds, its budget what the job has
-  /// left and its first message what the runs before it left.
+  /// left and its first message what the runs before it left. A stop
+  /// imported from the app (its carry holds a draft, [seed]) begins a
+  /// Keep going run at turn 1.
   void beginRun(int start, Carry? carry, {required bool planRest}) {
     runStart = start;
+    begun = true;
     counted.clear();
-    if (start == 1 || carry == null) {
+    final imported = start == 1 && AgentTurns._carriedDraftOf(carry) != null;
+    if ((start == 1 && !imported) || carry == null) {
       toolbox = agent.toolbox;
       first = agent.input.first;
       return;
@@ -937,6 +1013,7 @@ final class _Job {
     toolbox = again.toolbox(draft, budget);
     final ctx = toolbox.state.ctx;
     final edits = keptEdits(draft.files, ctx.files);
+    final lost = carriedDraft != null && !carriedDraftApplied;
     first = again.first(
       KeepGoingNote(
         limit: switch (data['cap']) {
@@ -945,7 +1022,10 @@ final class _Job {
         },
         stops: planRest && stops < planAfterStops ? planAfterStops : stops,
         notes: carriedNotes,
-        edited: edits.keys.toList()..sort(),
+        // A carried draft the app changed under starts over from the app,
+        // as the app's own Keep going did.
+        edited: lost ? null : (edits.keys.toList()..sort()),
+        why: lost ? 'the app changed under its unfinished draft' : null,
       ),
       Map.of(draft.files),
     );

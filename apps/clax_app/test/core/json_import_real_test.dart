@@ -3,24 +3,27 @@ import 'dart:convert';
 import 'dart:io';
 import 'dart:typed_data';
 
+import 'package:clax_app/agent/backend.dart' show AgentError;
+import 'package:clax_app/agent/runner/turn.dart';
+import 'package:clax_app/agent/tools/budget.dart' show Usage;
+import 'package:clax_app/agent/unfinished.dart' show fingerprint;
 import 'package:clax_app/clax/api.dart';
+import 'package:clax_app/clax/http_api.dart';
 import 'package:clax_app/core/core_transport.dart';
 import 'package:clax_app/core/json_import.dart';
 import 'package:clax_app/queue/effect.dart';
 import 'package:clax_app/queue/model.dart';
 import 'package:clax_app/queue/msg.dart';
 import 'package:clax_app/queue/render.dart';
-import 'package:clax_app/agent/backend.dart' show AgentError;
-import 'package:clax_app/agent/runner/turn.dart';
-import 'package:clax_app/clax/http_api.dart';
 import 'package:clax_app/queue/runner.dart';
 import 'package:clax_app/queue/worker_main.dart' show WorkerContext;
-import 'package:flutter_test/flutter_test.dart';
+import 'package:flutter_test/flutter_test.dart' hide Retry;
 
+import '../queue/make_real_test.dart' show ended, startHost;
+import '../queue/queue_host_test.dart' show stateWhere;
+import '../queue/worker_agent_test.dart' show unscriptedFile;
 import '../support/paths.dart';
 import '../support/real_core.dart';
-import '../queue/make_real_test.dart' show ended, startHost;
-import '../queue/worker_agent_test.dart' show unscriptedFile;
 
 /// The fixtures' artifacts (test/fixtures/json-state), replaced by the
 /// real core's.
@@ -237,6 +240,112 @@ void main() {
     skip: RealCore.skip,
     timeout: const Timeout(Duration(minutes: 3)),
   );
+
+  test(
+    'Keep going on an imported unfinished change builds on its carried '
+    'draft and publishes it',
+    () async {
+      final core = await RealCore.open();
+      final api = core.api();
+      await api.registerAppSession(
+        installId: 'install-0',
+        pid: pid,
+        cwd: core.dir.path,
+      );
+      final aid = (await api.createArtifact(
+        PublishRequest(title: 'Habits', files: {'index.html': _old}),
+      )).artifact.id;
+      final tid = await _thread(api, aid, 'say it is half done');
+      final cid = (await api.threads(aid))
+          .singleWhere((t) => t.id == tid)
+          .comments
+          .single
+          .id;
+
+      final (host, support) = startHost(
+        core,
+        keepGoingModel,
+        importJson: true,
+        seed: (dir) => File('${dir.path}/unfinished.json').writeAsStringSync(
+          jsonEncode({
+            'version': 1,
+            'threads': {
+              tid: {
+                'artifact': aid,
+                'threads': [tid],
+                'comments': [cid],
+                'limit': 'turns',
+                'spent_usd': 1.0,
+                'at': '2026-10-18T10:00:00.000Z',
+                'stops': 1,
+                'notes': ['Ran out of turns'],
+                'edits': {'index.html': _half},
+                'before': {'index.html': fingerprint(_old)},
+              },
+            },
+          }),
+        ),
+      );
+      final stopped = (await stateWhere(
+        host.client,
+        (s) => s.jobs.isNotEmpty && s.jobs.single.state == JobState.stopped,
+      ).timeout(const Duration(minutes: 1))).jobs.single;
+      host.client.send(KeepGoing(stopped.id));
+
+      final job = await ended(host, support);
+      expect(job.state, JobState.done, reason: '${job.error}');
+      expect((await api.getArtifact(aid)).artifact.currentVersion, 2);
+      expect(
+        await api.readFiles(aid, 2),
+        containsPair('index.html', _half),
+        reason: 'the carried draft, which the run only rendered',
+      );
+    },
+    skip: RealCore.skip,
+    timeout: const Timeout(Duration(minutes: 3)),
+  );
+}
+
+/// The page an unfinished change's draft was made on, and the draft.
+const _old = '<title>Habits</title><p>Habits</p>';
+const _half = '<title>Habits</title><p>Habits, half done</p>';
+
+/// The model of a Keep going run that builds on its carried draft: it
+/// renders the draft as it is, then finishes. Any other turn, or a turn
+/// after an error, is written to [unscriptedFile] and fails.
+TurnBackend keepGoingModel(WorkerContext context) =>
+    _KeepGoingModel(context.start.supportDir);
+
+final class _KeepGoingModel implements TurnBackend {
+  _KeepGoingModel(this.dir);
+  final String dir;
+
+  @override
+  String get name => 'scripted';
+
+  @override
+  Future<ModelTurn> turn(TurnRequest r) async {
+    final asked = [
+      for (final m in r.messages)
+        if (m['role'] == 'assistant') m,
+    ].length;
+    final last = jsonEncode(r.messages.last['content']);
+    if (asked > 1 || last.contains('"is_error":true')) {
+      File('$dir/$unscriptedFile').writeAsStringSync(
+        'turn after $asked asked: ${jsonEncode(r.messages)}',
+      );
+      throw AgentError('turn after $asked was not scripted');
+    }
+    Map<String, Object?> use(String id, String name, Map<String, Object?> i) =>
+        {'type': 'tool_use', 'id': id, 'name': name, 'input': i};
+    return ModelTurn(
+      content: asked == 0
+          ? [use('r', 'render', {})]
+          : [use('f', 'finish', {'reply': 'Finished it.'})],
+      stopReason: 'tool_use',
+      usage: const Usage(input: 100, output: 50),
+    );
+  }
 }
 
 /// The model of a worker that must ask it nothing: a turn is written to

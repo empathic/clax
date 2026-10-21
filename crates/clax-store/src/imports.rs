@@ -27,8 +27,10 @@
 //! The rows' JSON (the queue's codec reads them): `input` is `{request,
 //! base, threads: {thread ID: comment ID}}`; `plan` is `{plan_rest: false,
 //! data: <the plan as plans.json kept it>}`; `carry` is `{stops,
-//! can_keep_going, data: <the change as unfinished.json kept it, or
-//! null>}`.
+//! can_keep_going, data}`, `data` null or, of an unfinished.json entry,
+//! `{cap, spent_usd, notes, draft: {edits, before, title?,
+//! capabilities?}}`, the shape the queue's worker reads a stop's carry in
+//! (see `carried`).
 
 use super::Store;
 use super::jobs::JobState;
@@ -539,7 +541,7 @@ impl Import<'_, '_> {
             if !seen.insert(entry.to_string()) {
                 continue;
             }
-            let held = carry(stops, spent, entry.clone());
+            let held = carry(stops, spent, carried(entry, spent));
             if let Some(app) = key.strip_prefix("build:") {
                 // A build's draft: its make job carries it.
                 if let Some(j) = self
@@ -954,6 +956,34 @@ fn finish_turn(rec: &LedgerRecord, owed: &[String]) -> Value {
     })
 }
 
+/// The carry's `data` of `unfinished.json` entry `e`, in the shape the
+/// queue's worker reads a stop's (`AgentTurns`' cap stop): the cap it
+/// stopped at (`cap`), what its runs spent (`spent_usd`) and the agent's
+/// notes, with its unfinished draft (`draft`): `edits`, path to the
+/// draft's text or null for a file it deleted, over `before`, the
+/// fingerprint of each such path as the app held it then, and the
+/// draft's `title` and `capabilities` when it changed them. The worker
+/// starts a Keep going run from the draft when the app still holds every
+/// `before`.
+fn carried(e: &Value, spent: f64) -> Value {
+    let field = |k: &str| e.get(k).cloned().unwrap_or(Value::Null);
+    let mut draft = json!({
+        "edits": e.get("edits").cloned().unwrap_or_else(|| json!({})),
+        "before": e.get("before").cloned().unwrap_or_else(|| json!({})),
+    });
+    for k in ["title", "capabilities"] {
+        if !field(k).is_null() {
+            draft[k] = field(k);
+        }
+    }
+    json!({
+        "cap": field("limit"),
+        "spent_usd": spent,
+        "notes": e.get("notes").cloned().unwrap_or_else(|| json!([])),
+        "draft": draft,
+    })
+}
+
 /// What the import reads of an `unfinished.json` entry
 /// (`UnfinishedChange.fromJson`'s required fields).
 struct UnfinishedEntry {
@@ -1254,9 +1284,15 @@ mod tests {
         // The unfinished change, stopped with its carry.
         let stopped = by(&|j| j.job.kind == "change" && j.job.state == JobState::Stopped);
         assert_eq!(stopped.len(), 1);
+        // Its carry in the shape the worker's Keep going reads: the cap it
+        // stopped at, its spend and notes, and its draft's edits over what
+        // the app held.
         assert_eq!(
-            stopped[0].job.carry.as_ref().unwrap()["data"]["limit"],
-            "turns"
+            stopped[0].job.carry.as_ref().unwrap()["data"],
+            json!({
+                "cap": "turns", "spent_usd": 5.98, "notes": ["Ran out of turns"],
+                "draft": {"edits": {"index.html": "<p>half"}, "before": {"index.html": "5:abc"}},
+            })
         );
         assert_eq!(stopped[0].threads[0].thread_id, t2);
         // The open question: its job waits on it.
