@@ -30,6 +30,7 @@ def cargo_package(
         build_script_data = [],
         staticlib = False,
         cdylib = False,
+        disable_pipelining = False,
         visibility = ["//visibility:public"]):
     """Declares the library, binaries, build script and tests of the Cargo
     package here.
@@ -77,6 +78,13 @@ def cargo_package(
       cdylib: also declare `<lib>_shared`, a rust_shared_library of the
         library's sources and dependencies, for a host app to load
         (crates/clax-embed).
+      disable_pipelining: build the library's metadata and its rlib in one
+        action, not two. For a crate whose compile reads paths under the
+        action's own sandbox (crates/clax-embedded: rust-embed's folders
+        come from its build script's absolute paths, which differ in every
+        sandbox): its two actions would give it two crate hashes, and a
+        library compiled against the metadata could not be linked with the
+        rlib ("can't find crate").
       visibility: the library's and binaries' visibility.
     """
     package = native.package_name()
@@ -209,6 +217,7 @@ def cargo_package(
             crate_features = features,
             crate_name = lib,
             crate_root = crate["lib_root"],
+            disable_pipelining = disable_pipelining,
             proc_macro_deps = macros,
             visibility = visibility,
             deps = normal_deps,

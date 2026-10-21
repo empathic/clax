@@ -13,6 +13,12 @@ EMBEDDED = [
 
 cargo_package(
     build_script_data = EMBEDDED,
+    # rust-embed reads its folders by the absolute paths the build script
+    # names, which differ in each action's sandbox, so the metadata and the
+    # rlib are made in one action: two would give the crate two hashes, and
+    # crates/clax-embed's tests, which link the rlib against a library
+    # compiled with the metadata, could not find it.
+    disable_pipelining = True,
     build_script_env = {
         "CLAX_EXTENSION_DIST_DIR": "$(execpath //web:dist_extension)",
         "CLAX_PLUGINS_DIR": "$${pwd}/$(BINDIR)/plugins",
