@@ -124,7 +124,10 @@ Future<AppServices> platformServices({DateTime? launched}) async {
       : Directory('$scratchDir/cache');
   support.createSync(recursive: true);
   cache.createSync(recursive: true);
-  final snapshots = HomeSnapshotStore(Directory('${cache.path}/home'));
+  final snapshots = HomeSnapshotStore(
+    Directory('${cache.path}/home'),
+    announce: debugPrint,
+  );
   final android = Platform.isAndroid;
   const native = MethodChannel('dev.empathic.clax/native');
   // On iOS the native side makes the home, with its file protection, under
@@ -220,6 +223,7 @@ Future<AppServices> platformServices({DateTime? launched}) async {
     timings: FileTimings(
       File('${support.path}/timings.jsonl'),
       started: {homeUsable: ?launched, homeCover: ?launched},
+      announce: debugPrint,
     ),
     agentTimings: FileTimings(File('${support.path}/agent-timings.jsonl')),
     surface: () => WebViewAppSurface(

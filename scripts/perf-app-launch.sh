@@ -33,9 +33,11 @@
 #   with sample() off. The app must be a build that honours it.
 # --android: on the plugged-in phone or emulator (ANDROID_SERIAL picks
 #   one), with the app already installed (`just app-phone`): `am
-#   force-stop` and `am start -W` N times, each waiting for a new
-#   home-usable line in files/timings.jsonl (read with `run-as`). The app
-#   reads the installed app's own key there: CLAX_APP_NO_KEY does not
+#   force-stop` and `am start -W` N times, each waiting for the launch's
+#   home-usable line in its log (`adb logcat -d --pid=<the app's PID>`,
+#   where the app says each timings.jsonl line after `clax-timing: `; a
+#   release build is not debuggable, so `run-as` cannot read the file). The
+#   app reads the installed app's own key there: CLAX_APP_NO_KEY does not
 #   reach an Android app (its environment is not the launcher's, and `am
 #   start --es` sets an intent extra the app does not read), and an
 #   Android Keystore read asks nothing.
@@ -45,8 +47,9 @@
 # an install has none) and pays macOS's assessment of new executables. It
 # stays up until its home screen has kept its snapshot
 # (cache/home/home-snapshot.bin, a few seconds after the home screen is up;
-# the app keeps none when it is stopped), at most the same 60 s, so every
-# launch after it starts from that snapshot; without one the run stops.
+# on Android its `clax-home: snapshot kept` log line; the app keeps none
+# when it is stopped), at most the same 60 s, so every launch after it
+# starts from that snapshot; without one the run stops.
 #
 # Output: a JSON object on stdout, {"platform", "build", "app_home_usable_ms":
 # {"median", "p90", "runs", "missing"}, "app_home_cover_ms": {…}}, where
@@ -379,8 +382,7 @@ adb="${ADB:-}"
 if [ -z "$adb" ]; then adb="$(command -v adb || true)"; fi
 if [ -z "$act" ]; then
     echo "perf-app-launch: would run, on the plugged-in device${ANDROID_SERIAL:+ $ANDROID_SERIAL}:"
-    echo "  adb shell run-as $pkg ls files/timings.jsonl  (where the app keeps its timings)"
-    echo "  $((runs + 1)) times: adb shell am force-stop $pkg; adb shell am start -W -n $pkg/dev.empathic.clax_app.MainActivity; wait for a new home-usable line in adb exec-out run-as $pkg cat files/timings.jsonl (at most ${cap} s); after the first, wait for adb shell run-as $pkg ls cache/home/home-snapshot.bin (at most ${cap} s)"
+    echo "  $((runs + 1)) times: adb shell am force-stop $pkg; adb shell am start -W -n $pkg/dev.empathic.clax_app.MainActivity; wait for a clax-timing: home-usable line in adb logcat -d --pid=<the app's PID> (at most ${cap} s); after the first, wait for clax-home: snapshot kept in that log (at most ${cap} s)"
     echo "  adb shell am force-stop $pkg"
     echo "  drop the first launch; print the median and p90 of home-usable and home-cover${CLAX_PERF_JSON:+ and append them to $CLAX_PERF_JSON}"
     [ -n "$record" ] && echo "  record the device's missing budgets in $budgets"
@@ -402,18 +404,18 @@ version="$(sed -n 's/.*versionName=\([^ ]*\).*/\1/p' <<<"$dump" | sed -n 1p) ($(
 [ -n "$commit" ] || echo "perf-app-launch: no --commit: the JSON names the installed version, not its commit" >&2
 work="$(mktemp -d)"
 trap 'rm -rf "$work"' EXIT
-pull() { "$adb" exec-out run-as "$pkg" cat files/timings.jsonl >"$work/timings.jsonl" 2>/dev/null || : >"$work/timings.jsonl"; }
-pull
-start_lines="$(wc -l <"$work/timings.jsonl" | tr -d ' ')"
+# said PID: what the app running as PID has logged.
+said() { "$adb" logcat -d --pid="$1" 2>/dev/null | tr -d '\r' || true; }
+# timings PID: its timings.jsonl lines, from its clax-timing: log lines.
+timings() { said "$1" | sed -n 's/.*clax-timing: //p'; }
+: >"$work/measured.jsonl"
 for i in $(seq 0 "$runs"); do
-    pull
-    before="$(count "$work/timings.jsonl")"
     "$adb" shell am force-stop "$pkg"
     "$adb" shell am start -W -n "$pkg/dev.empathic.clax_app.MainActivity" >/dev/null
-    got=""
+    pid="" got=""
     for _ in $(seq $((cap * 2))); do
-        pull
-        if [ "$(count "$work/timings.jsonl")" -gt "$before" ]; then got=1; break; fi
+        [ -n "$pid" ] || pid="$("$adb" shell pidof "$pkg" | tr -d '\r')"
+        if [ -n "$pid" ] && timings "$pid" | grep -q '"name":"home-usable"'; then got=1; break; fi
         sleep 0.5
     done
     if [ -z "$got" ] && [ "$i" = 0 ]; then
@@ -427,21 +429,17 @@ for i in $(seq 0 "$runs"); do
         # are covered by, a few seconds after its home screen is up.
         kept=""
         for _ in $(seq $((cap * 2))); do
-            if "$adb" shell run-as "$pkg" ls cache/home/home-snapshot.bin >/dev/null 2>&1; then kept=1; break; fi
+            if said "$pid" | grep -qF 'clax-home: snapshot kept'; then kept=1; break; fi
             sleep 0.5
         done
         if [ -z "$kept" ]; then
-            echo "perf-app-launch: the dropped launch kept no home snapshot within ${cap} s (cache/home/home-snapshot.bin); no launch would have its cover, so nothing is measured" >&2
+            echo "perf-app-launch: the dropped launch kept no home snapshot within ${cap} s (no clax-home: snapshot kept in its log); no launch would have its cover, so nothing is measured" >&2
             "$adb" shell am force-stop "$pkg"
             exit 1
         fi
     fi
-    if [ "$i" = 0 ]; then
-        pull
-        start_lines="$(wc -l <"$work/timings.jsonl" | tr -d ' ')"
-    fi
+    # The dropped launch's lines are not summarized.
+    if [ "$i" != 0 ] && [ -n "$pid" ]; then timings "$pid" >>"$work/measured.jsonl"; fi
 done
 "$adb" shell am force-stop "$pkg"
-pull
-tail -n "+$((start_lines + 1))" "$work/timings.jsonl" >"$work/measured.jsonl"
 summarize "android-$model" "$work/measured.jsonl" "$runs" "$(python3 -I -c 'import json,sys; print(json.dumps({"version": sys.argv[1]}))' "$version")"

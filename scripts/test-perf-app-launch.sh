@@ -36,9 +36,9 @@ else
 fi
 out="$(run --android --runs 3)"
 if has "$out" "4 times: adb shell am force-stop dev.empathic.clax; adb shell am start -W -n dev.empathic.clax/dev.empathic.clax_app.MainActivity" \
-    && has "$out" "run-as dev.empathic.clax cat files/timings.jsonl" && has "$out" "drop the first launch" \
-    && has "$out" "after the first, wait for adb shell run-as dev.empathic.clax ls cache/home/home-snapshot.bin"; then
-    ok "--android dry run: force-stop and start -W per launch, the timings read with run-as, the dropped launch's snapshot awaited"
+    && has "$out" "wait for a clax-timing: home-usable line in adb logcat -d --pid=<the app's PID>" && has "$out" "drop the first launch" \
+    && has "$out" "after the first, wait for clax-home: snapshot kept in that log" && ! has "$out" "run-as"; then
+    ok "--android dry run: force-stop and start -W per launch, the timings read from the app's log (no run-as: a release build is not debuggable), the dropped launch's snapshot awaited"
 else
     bad "--android dry run: $out"
 fi
@@ -127,6 +127,75 @@ if [ "$(cat "$d/budget.json")" = "$want_budget" ] && grep -qF "already has darwi
 else
     bad "--record twice: $(cat "$d/budget.json") / $(cat "$d/err")"
 fi
+
+# The Android launch loop over a fake adb: each `am start` starts a new PID
+# whose log (`logcat -d --pid=<PID>`) holds that launch's clax-timing:
+# lines and, a while after its home-usable, clax-home: snapshot kept; the
+# first launch has no snapshot to cover it. Like a release build, `run-as`
+# fails.
+mkdir -p "$d/adb"
+echo 0 >"$d/adb/n"
+cat >"$d/adb/adb" <<EOF
+#!/bin/bash
+s="$d/adb"
+echo "\$*" >>"\$s/calls"
+case "\$1 \${2:-}" in
+    "get-state "*) echo device ;;
+    "shell pm") echo package:/data/app/base.apk ;;
+    "shell getprop") echo "Pixel 9" ;;
+    "shell dumpsys") echo "    versionCode=12 minSdk=29 targetSdk=36"; echo "    versionName=0.6.0" ;;
+    "shell run-as") echo "run-as: package not debuggable: dev.empathic.clax" >&2; exit 1 ;;
+    "shell am")
+        if [ "\$3" = start ]; then
+            n=\$((\$(cat "\$s/n") + 1)); echo "\$n" >"\$s/n"; echo "\$((1000 + n))" >"\$s/pid"
+        else
+            rm -f "\$s/pid"
+        fi ;;
+    "shell pidof") cat "\$s/pid" 2>/dev/null || true ;;
+    "logcat -d")
+        pid="\${3#--pid=}"; n=\$((pid - 1000))
+        [ -e "\$s/hang" ] && exit 0
+        read -r usable cover < <(sed -n "\${n}p" "$d/adb/values")
+        say() { printf '10-20 22:00:00.000  %s  %s I flutter : %s\n' "\$pid" "\$pid" "\$1"; }
+        say "clax-core: ready pid=\$pid"
+        [ "\$cover" = - ] || say "clax-timing: {\"name\":\"home-cover\",\"elapsed_ms\":\$cover,\"at\":\"2026-10-20T22:00:00.000Z\",\"extra\":{}}"
+        say "clax-timing: {\"name\":\"home-usable\",\"elapsed_ms\":\$usable,\"at\":\"2026-10-20T22:00:00.000Z\",\"extra\":{}}"
+        # The snapshot is kept a while after the home screen is up.
+        if [ ! -e "\$s/nosnap" ] && [ "\$(cat "\$s/polls" 2>/dev/null || echo 0)" -ge 2 ]; then say "clax-home: snapshot kept"; fi
+        echo \$((\$(cat "\$s/polls" 2>/dev/null || echo 0) + 1)) >"\$s/polls" ;;
+    *) echo "fake adb: unexpected: \$*" >&2; exit 1 ;;
+esac
+EOF
+chmod +x "$d/adb/adb"
+printf '%s\n' "900 -" "400 20" "300 25" "500 30" >"$d/adb/values"
+droid() { ADB="$d/adb/adb" CLAX_PERF_BUDGETS="$d/none.json" run --android --runs 3 --i-know-what-i-am-doing "$@"; }
+out="$(droid --commit feed 2>"$d/err")" || true
+want='"app_home_usable_ms": {"median": 400, "p90": 500, "runs": 3, "missing": 0}, "app_home_cover_ms": {"median": 25, "p90": 30, "runs": 3, "missing": 0}}'
+if has "$out" "$want" && has "$out" '"platform": "android-Pixel-9"' && has "$out" '"version": "0.6.0 (12)"' \
+    && [ "$(grep -c '^shell am start -W' "$d/adb/calls")" = 4 ] && ! grep -q 'run-as' "$d/adb/calls" \
+    && grep -q '^logcat -d --pid=1004$' "$d/adb/calls"; then
+    ok "--android: four launches for three runs, each read from its own PID's log (never run-as), the first dropped once its snapshot is kept"
+else
+    bad "--android launch loop: $out / $(cat "$d/err") / $(tr '\n' ';' <"$d/adb/calls")"
+fi
+echo 0 >"$d/adb/n"; rm -f "$d/adb/polls"; : >"$d/adb/calls"
+touch "$d/adb/nosnap"
+if CLAX_PERF_CAP=1 droid >"$d/out" 2>"$d/err" || [ "$(grep -c '^shell am start -W' "$d/adb/calls")" != 1 ] \
+    || ! grep -qF "no clax-home: snapshot kept in its log" "$d/err"; then
+    bad "--android: a dropped launch that keeps no snapshot stops the run: $(cat "$d/out") / $(cat "$d/err")"
+else
+    ok "--android: a dropped launch that keeps no snapshot within the cap stops the run"
+fi
+rm "$d/adb/nosnap"
+echo 0 >"$d/adb/n"; : >"$d/adb/calls"
+touch "$d/adb/hang"
+if CLAX_PERF_CAP=1 droid >"$d/out" 2>"$d/err" || [ "$(grep -c '^shell am start -W' "$d/adb/calls")" != 1 ] \
+    || ! grep -qF "the dropped launch gave no home-usable within 1 s" "$d/err"; then
+    bad "--android: a dropped launch without home-usable stops the run: $(cat "$d/out") / $(cat "$d/err")"
+else
+    ok "--android: a dropped launch without home-usable in its log stops the run"
+fi
+rm "$d/adb/hang"
 
 # The launch loop, on a Mac: a fake app that writes the next launch's lines
 # to the timings.jsonl in its container's support directory and then waits

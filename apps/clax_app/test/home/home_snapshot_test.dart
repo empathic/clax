@@ -122,6 +122,14 @@ void main() {
       expect((await store.load(decode: false))!.png, [1, 2, 3]);
     });
 
+    test('announces each snapshot it has kept', () async {
+      final announced = <String>[];
+      final store = HomeSnapshotStore(dir, announce: announced.add);
+      await store.save(snap('home1', Uint8List.fromList(List.filled(64, 7))));
+      expect(File('${dir.path}/home-snapshot.bin').existsSync(), isTrue);
+      expect(announced, ['clax-home: snapshot kept']);
+    });
+
     testWidgets('decodes the image as it loads', (tester) async {
       final store = HomeSnapshotStore(dir);
       final loaded = await tester.runAsync(() async {

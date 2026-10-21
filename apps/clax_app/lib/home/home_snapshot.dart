@@ -107,11 +107,14 @@ class HomeSnapshot {
 /// file `home-snapshot.bin`: a line of JSON (`aid`, `version`, `width`,
 /// `height`, `tiles`, `at`), then the PNG. It is written whole to a temporary file
 /// and renamed over the last one, so a load sees one snapshot or the
-/// other. A file that cannot be read whole is no snapshot.
+/// other. A file that cannot be read whole is no snapshot. Each snapshot
+/// kept is said to [announce] as `clax-home: snapshot kept` (the platform
+/// log, for a script that cannot read the cache directory).
 class HomeSnapshotStore {
-  HomeSnapshotStore(this.dir);
+  HomeSnapshotStore(this.dir, {this.announce});
 
   final Directory dir;
+  final void Function(String line)? announce;
 
   File get _file => File('${dir.path}/home-snapshot.bin');
 
@@ -144,6 +147,7 @@ class HomeSnapshotStore {
     final tmp = File('${_file.path}.tmp');
     await tmp.writeAsBytes(out.takeBytes(), flush: true);
     await tmp.rename(_file.path);
+    announce?.call('clax-home: snapshot kept');
   }
 
   /// Forgets the snapshot.

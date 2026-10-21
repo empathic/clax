@@ -620,7 +620,12 @@ run.
 - `just app-phone` builds HEAD's APK and installs it on the plugged-in
   phone (`scripts/app-phone.sh`, a dry run without
   `--i-know-what-i-am-doing`), with the SDK's `adb` Bazel fetches; a
-  checkout with changes is built from a clean copy of HEAD.
+  checkout with changes is built from a clean copy of HEAD. It then opens
+  the app and waits, up to `APP_PHONE_READY_WAIT` seconds (300; a first
+  launch after an upgrade may migrate and back up the store first), for
+  the core's `clax-core: ready pid=<PID>` line in `adb logcat --pid` (a
+  release build is not debuggable, so its `core.json` cannot be read with
+  `run-as`), and checks the app keeps that PID.
 - `just app-macos` builds the release (sandboxed) app, `Clax.app`, and
   prints its path (`//apps/clax_app:macos_app`, a zip);
   `just app-macos-native` builds it with Xcode, at
@@ -1013,7 +1018,11 @@ macOS would ask you whether to let it, before the core opened. A build
 from before the variable was honoured still asks. On Android the
 installed app is measured, on its own home and with its own key (the
 variable does not reach an Android app, and a Keystore read asks
-nothing), and its timings are read with `run-as`.
+nothing), and its timings are read from its log: the app says each
+`timings.jsonl` line in logcat after `clax-timing: `, and `clax-home:
+snapshot kept` when it keeps a snapshot, which the script reads with
+`adb logcat -d --pid=<the launch's PID>`. A release build is not
+debuggable, so `run-as` cannot read its files.
 
 One launch more than `--runs` (default 9) is made and the first dropped;
 it stays up until its home screen has kept its snapshot, so every
@@ -1072,7 +1081,11 @@ the embedded core. An agent never makes a git worktree; you may.
 5. On the phone, on the build installed now (not `just app-phone`: a
    build of this branch is not installed on your devices before their
    homes are checked), unlocked and awake, with `P` the commit that build
-   was made from:
+   was made from. The script reads the launch timings from the app's log
+   (`clax-timing:` lines), which only builds that include "Log the core's
+   readiness and the launch timings to the platform log" write; a release
+   build from before it writes none, and its files cannot be read with
+   `run-as`, so on such a build every launch counts as missing:
 
    ```sh
    adb shell dumpsys package dev.empathic.clax | grep -m1 versionName

@@ -39,7 +39,10 @@ import 'origins.dart';
 /// [excludeFromBackup] is given (iOS), and [readinessFile] says
 /// `{"pid": <this process>, "state": "ready"}`; a failure writes
 /// `{"pid", "state": "failed", "code"}` there instead, so a script that
-/// launched the app knows when this launch's core answers.
+/// launched the app knows when this launch's core answers. The same is
+/// said in the platform log ([announce]: logcat on Android, where a release
+/// build's files cannot be read from outside the app), as
+/// `clax-core: ready pid=<pid>` or `clax-core: failed pid=<pid> code=<code>`.
 ///
 /// The key is never logged: a refused put logs its status alone.
 class CoreHost {
@@ -53,8 +56,10 @@ class CoreHost {
     this.clearCookies,
     this.excludeFromBackup,
     void Function(String line)? log,
+    void Function(String line)? announce,
   }) : _pid = pid ?? io.pid,
-       _log = log ?? _devLog;
+       _log = log ?? _devLog,
+       _announce = announce ?? debugPrint;
 
   /// The core's home (`clax-home/` under the support directory).
   final String home;
@@ -79,6 +84,7 @@ class CoreHost {
   final CoreLib? _lib;
   final int _pid;
   final void Function(String line) _log;
+  final void Function(String line) _announce;
 
   static void _devLog(String line) => developer.log(line, name: 'clax core');
 
@@ -165,6 +171,7 @@ complex = "claude-sonnet-5-5"
       case CoreReady():
         if (!_ready.isCompleted) _ready.complete(true);
         _writeReadiness({'pid': _pid, 'state': 'ready'});
+        _announce('clax-core: ready pid=$_pid');
         unawaited(_put(always: false));
         if (excludeFromBackup case final exclude?) {
           unawaited(
@@ -176,6 +183,7 @@ complex = "claude-sonnet-5-5"
       case CoreFailed(:final code):
         if (!_ready.isCompleted) _ready.complete(false);
         _writeReadiness({'pid': _pid, 'state': 'failed', 'code': code});
+        _announce('clax-core: failed pid=$_pid code=$code');
       case CoreClosed():
         if (!_ready.isCompleted) _ready.complete(false);
         unawaited(_states?.cancel());

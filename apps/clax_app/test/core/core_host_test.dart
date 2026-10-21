@@ -17,8 +17,10 @@ void main() {
   late int cookieClears;
   late List<List<String>> excluded;
   late String home;
+  late List<String> announced;
 
   setUp(() {
+    announced = [];
     support = scratchRoot().createTempSync('core-host-');
     home = '${support.path}/clax-home';
     lib = FakeCoreLib();
@@ -37,6 +39,7 @@ void main() {
     pid: 4242,
     clearCookies: () async => cookieClears++,
     excludeFromBackup: backup ? (paths) async => excluded.add(paths) : null,
+    announce: announced.add,
   );
 
   /// The key puts the core was sent, as their JSON bodies.
@@ -111,6 +114,7 @@ void main() {
         'state': 'failed',
         'code': 'migration_failed',
       });
+      expect(announced, ['clax-core: failed pid=4242 code=migration_failed']);
     });
 
     test('never goes back to opening after ready', () async {
@@ -135,6 +139,16 @@ void main() {
       lib.postState({'type': 'ready'});
       await pumpEventQueue();
       expect(readiness(), {'pid': 4242, 'state': 'ready'});
+    });
+
+    test('says it is ready or failed in the platform log, with the PID', () async {
+      host().open();
+      lib.postState({'type': 'opening', 'phase': 'backing up'});
+      await pumpEventQueue();
+      expect(announced, isEmpty);
+      lib.postState({'type': 'ready'});
+      await pumpEventQueue();
+      expect(announced, ['clax-core: ready pid=4242']);
     });
 
     test('clears the WebViews\' cookies once per install', () async {

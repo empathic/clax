@@ -46,6 +46,17 @@ void main() {
     });
   });
 
+  test('stop also announces the line, after clax-timing:', () {
+    final announced = <String>[];
+    final t = FileTimings(file, clock: clock, announce: announced.add);
+    t.start(homeUsable);
+    clock.t = clock.t.add(const Duration(milliseconds: 380));
+    t.stop(homeUsable);
+    expect(announced, ['clax-timing: ${file.readAsLinesSync().single}']);
+    expect(t.stop(homeUsable), isNull);
+    expect(announced, hasLength(1));
+  });
+
   test('stop without a start records nothing', () {
     final t = FileTimings(file, clock: clock);
     expect(t.stop(sayUsable), isNull);

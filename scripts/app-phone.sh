@@ -2,9 +2,9 @@
 # app-phone.sh [--i-know-what-i-am-doing]: builds the Clax app's release APK
 # from this checkout's committed HEAD and installs it on the plugged-in
 # Android phone, keeping the app's data, then opens the app and checks that
-# its core opens (files/core.json naming the app's PID ready,
-# CoreHost.readinessFile) and the app keeps that PID. Without the flag it prints what it would
-# do and changes nothing.
+# its core opens (a `clax-core: ready pid=<the app's PID>` line in logcat,
+# lib/core/core_host.dart) and the app keeps that PID. Without the flag it
+# prints what it would do and changes nothing.
 #
 # With Bazel (scripts/lib/build-system.sh's choice; CLAX_BUILD=native for
 # the native build) the APK is //apps/clax_app:apk and adb the SDK's that
@@ -33,6 +33,7 @@
 # Environment:
 #   ANDROID_SERIAL  which device, when more than one is attached
 #   APP_PHONE_WAIT  seconds to wait for a phone after the build (default 900)
+#   APP_PHONE_READY_WAIT  seconds to wait for the core to say it opened (default 300)
 #   JAVA_HOME       natively, a JDK 17 (default: the newest ~/Library/Java/jdk-17*)
 set -euo pipefail
 cd "$(dirname "$0")/.."
@@ -239,34 +240,48 @@ echo "app-phone: installing $sha on $ANDROID_SERIAL"
 "$adb" shell monkey -p "$pkg" -c android.intent.category.LAUNCHER 1 >/dev/null 2>&1
 
 # The app should open its core and keep one PID; a crash loop shows as a
-# new PID. The core says it opened in files/core.json, naming the app's
-# PID (lib/core/core_host.dart).
-echo "app-phone: opened Clax; watching it for 20 s"
-first="" ready=""
-for _ in $(seq 1 10); do
-    sleep 2
+# new PID. The core says it opened, or failed, in the platform log, naming
+# the app's PID (`clax-core: ready pid=<pid>` or `clax-core: failed
+# pid=<pid> code=<code>`, lib/core/core_host.dart), read here with
+# `adb logcat --pid`: files/core.json says the same, but a release build is
+# not debuggable, so `run-as` cannot read it. The first launch after an
+# upgrade may migrate and back up the store before the core answers, so the
+# wait for it is long (APP_PHONE_READY_WAIT); once ready, the app is
+# watched 10 s more for a restart.
+ready_wait="${APP_PHONE_READY_WAIT:-300}"
+echo "app-phone: opened Clax; waiting for its core to say it is ready (at most ${ready_wait} s)"
+first="" ready="" start=$SECONDS
+# same_pid: the app runs with PID $first still (it is set on the first).
+same_pid() {
     pid="$("$adb" shell pidof "$pkg" | tr -d '\r')"
-    if [ -z "$pid" ]; then continue; fi
+    [ -n "$pid" ] || return 0
     if [ -z "$first" ]; then first="$pid"
     elif [ "$pid" != "$first" ]; then
         echo "app-phone: Clax restarted ($first, then $pid); see: adb logcat -d | grep -i clax" >&2
         exit 1
     fi
-    core="$("$adb" exec-out run-as "$pkg" cat files/core.json 2>/dev/null || true)"
-    if grep -qE "\"pid\" *: *$pid([^0-9]|$)" <<<"$core"; then
-        if grep -qE '"state" *: *"failed"' <<<"$core"; then
-            echo "app-phone: the core did not open: $core" >&2
-            exit 1
-        fi
-        grep -qE '"state" *: *"ready"' <<<"$core" && ready=1
+}
+while [ $((SECONDS - start)) -lt "$ready_wait" ]; do
+    sleep 2
+    same_pid
+    [ -n "$first" ] || continue
+    said="$("$adb" logcat -d --pid="$first" 2>/dev/null | tr -d '\r' || true)"
+    if failed="$(grep -E "clax-core: failed pid=$first( |$)" <<<"$said")"; then
+        echo "app-phone: the core did not open: ${failed##*clax-core: }" >&2
+        exit 1
     fi
+    if grep -qE "clax-core: ready pid=$first( |$)" <<<"$said"; then ready=1; break; fi
 done
 if [ -z "$first" ]; then
     echo "app-phone: Clax did not start; see: adb logcat -d | grep -i clax" >&2
     exit 1
 fi
 if [ -z "$ready" ]; then
-    echo "app-phone: the core did not say it opened (no files/core.json naming PID $first ready); see: adb logcat -d | grep -i clax" >&2
+    echo "app-phone: the core did not say it opened within ${ready_wait} s (no 'clax-core: ready pid=$first' in adb logcat --pid=$first); see: adb logcat -d | grep -i clax" >&2
     exit 1
 fi
+for _ in 1 2 3 4 5; do
+    sleep 2
+    same_pid
+done
 echo "app-phone: $sha installed; Clax is open, its core is ready and it stayed up (PID $first)"

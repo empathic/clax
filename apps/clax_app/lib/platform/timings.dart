@@ -11,18 +11,22 @@ import 'clock.dart';
 /// Running intervals live in memory only; [started] are running from
 /// the start (an interval that began before the timings were made, such
 /// as at launch). A line that cannot be read is skipped. Writes are
-/// appends of one short line, made synchronously.
+/// appends of one short line, made synchronously. With [announce] each
+/// line is also given to it after `clax-timing: ` (the platform log, which
+/// a script reads where it cannot read the file: a release Android app's).
 class FileTimings implements Timings {
   FileTimings(
     this.file, {
     this._clock = const SystemClock(),
     Map<String, DateTime> started = const {},
+    this.announce,
   }) {
     _started.addAll(started);
   }
 
   final File file;
   final Clock _clock;
+  final void Function(String line)? announce;
   final _started = <String, DateTime>{};
 
   /// Every record, oldest first; read from [file] on first use.
@@ -45,11 +49,14 @@ class FileTimings implements Timings {
     final records = _load();
     records.add(r);
     file.parent.createSync(recursive: true);
-    file.writeAsStringSync(
-      '${jsonEncode({'name': r.name, 'elapsed_ms': r.elapsed.inMilliseconds, 'at': r.at.toUtc().toIso8601String(), 'extra': r.extra}, toEncodable: (o) => o.toString())}\n',
-      mode: FileMode.append,
-      flush: true,
-    );
+    final line = jsonEncode({
+      'name': r.name,
+      'elapsed_ms': r.elapsed.inMilliseconds,
+      'at': r.at.toUtc().toIso8601String(),
+      'extra': r.extra,
+    }, toEncodable: (o) => o.toString());
+    file.writeAsStringSync('$line\n', mode: FileMode.append, flush: true);
+    announce?.call('clax-timing: $line');
     return r;
   }
 
