@@ -596,6 +596,49 @@ void main() {
       expect(only<Refused>().reason, isA<NotRenderedClean>());
     });
 
+    test('a draft\'s publish needs the digest of the files its version '
+        'holds, those it carries from the base included', () async {
+      await claimed();
+      const logo = (sha256: 'ab', size: 3);
+      jobs
+        ..versions['a1'] = 1
+        ..files['a1'] = {'index.html': (sha256: 'cd', size: 1), 'logo.png': logo}
+        ..seed('j', kind: 'change', artifactId: 'a1', state: 'running', rev: 2);
+      const page = {'index.html': '<p>new</p>'};
+      final textOnly = draftDigest(page);
+      final whole = draftDigest(page, carried: const {'logo.png': logo});
+      for (final d in [textOnly, whole]) {
+        jobs.renders.add({'draft': 'd', 'digest': d, 'errors': <Object?>[], 'failed_tests': 0});
+      }
+      Publish publish(int id, String digest) => Publish(
+        id,
+        'j',
+        1,
+        'f',
+        PublishPlan(
+          base: 1,
+          data: {
+            'artifact_id': 'a1',
+            'request': {
+              'files': {
+                'index.html': {'content': page['index.html']},
+              },
+            },
+            'draft': {'id': 'd', 'digest': digest},
+          },
+        ),
+        done: false,
+      );
+      runner.run(publish(1, textOnly));
+      await pumpEventQueue();
+      expect(only<Refused>().reason, isA<NotRenderedClean>());
+      runner.run(publish(2, whole));
+      await pumpEventQueue();
+      expect(only<Committed>().job.artifactId, 'a1');
+      expect(jobs.versions['a1'], 2);
+      expect(jobs.files['a1']!['logo.png'], logo);
+    });
+
     test('Reply commits the reply step and ends the change', () async {
       await claimed();
       jobs.sessions.addAll(['s0', 's1']);

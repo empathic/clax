@@ -23,6 +23,7 @@ import '../agent/tools/draft.dart';
 import '../agent/tools/file_tools.dart';
 import '../agent/tools/kit_tool.dart';
 import '../agent/tools/toolbox.dart';
+import '../bundle/content_hash.dart' show sha256Hex;
 import '../clax/api.dart';
 import '../clax/http_api.dart';
 import '../core/core_transport.dart';
@@ -253,6 +254,7 @@ final class WorkerJobs {
     final app = detail.artifact;
     final base = row.input.base > 0 ? row.input.base : app.currentVersion;
     final files = await api.readFiles(aid, base);
+    final carried = await _carried(aid, base, files);
     final threads = await api.threads(aid);
     final documents = await _documents(aid);
     final others = await _others(exclude: aid);
@@ -301,11 +303,49 @@ final class WorkerJobs {
       toolbox: _toolbox(ctx, draft, RunBudget(caps, model, clock), plan),
       row: row,
       capUsd: changeCapUsd,
+      carried: carried,
       again: KeepGoingRun(
         first: (note, now) => first(note: note, now: now),
         toolbox: (draft, budget) => _toolbox(ctx, draft, budget, plan),
       ),
     );
+  }
+
+  /// The files of version [n] of app [aid] that [texts] (the draft's
+  /// files at its start) leave out, by hash and size: what a publish of
+  /// the draft carries. A file the version's manifest names without its
+  /// hash is read and hashed.
+  Future<Map<String, FileHash>> _carried(
+    String aid,
+    int n,
+    Map<String, String> texts,
+  ) async {
+    final path = '/api/artifacts/${Uri.encodeComponent(aid)}/versions/$n';
+    final a = await transport.send(
+      'GET',
+      path,
+      timeout: const Duration(seconds: 35),
+    );
+    final json = a.body.isEmpty ? null : jsonDecode(utf8.decode(a.body));
+    final files = switch (json) {
+      {'version': {'files': final Map f}} when a.status == 200 => f,
+      _ => throw JobUnopened(
+        'version $n of $aid could not be read (${a.status})',
+      ),
+    };
+    final out = <String, FileHash>{};
+    for (final MapEntry(:key, :value) in files.entries) {
+      if (key is! String || texts.containsKey(key) || value is! Map) continue;
+      if (value case {'sha256': final String h, 'size': final int size}) {
+        out[key] = (sha256: h, size: size);
+        continue;
+      }
+      final bytes =
+          await api.readFileBytes(aid, n, key) ??
+          (throw JobUnopened('$key of version $n of $aid could not be read'));
+      out[key] = (sha256: sha256Hex(bytes), size: bytes.length);
+    }
+    return out;
   }
 
   /// The viewers' comments of thread [t] since the agent's last reply,

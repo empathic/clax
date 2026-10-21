@@ -2,7 +2,9 @@ import 'dart:async';
 import 'dart:convert';
 import 'dart:typed_data';
 
+import 'package:clax_app/bundle/content_hash.dart' show sha256Hex;
 import 'package:clax_app/core/frame.dart';
+import 'package:clax_app/queue/agent_port.dart' show FileHash, draftDigest;
 import 'package:clax_app/queue/job_moves.dart';
 
 import 'fake_core.dart';
@@ -44,6 +46,14 @@ class FakeJobs {
 
   /// Each artifact's current version.
   final Map<String, int> versions = {};
+
+  /// Each artifact's current files by hash and size, where a test or a
+  /// publish step gave them; an artifact without is taken to hold none.
+  /// A publish step naming a draft must publish files whose digest
+  /// (those it puts, and those it carries from here but `index.html`) is
+  /// the draft's, as `next_files_digest` in crates/clax-store/src/drafts.rs
+  /// checks it.
+  final Map<String, Map<String, FileHash>> files = {};
 
   /// Each question the `ask` tool created: `{id, session, tool_use_id,
   /// outcome, answers}`, `outcome` null while it is open.
@@ -414,6 +424,8 @@ class FakeJobs {
             'current': current,
           });
         }
+        final next = _nextFiles(aid, pb['request']! as Map);
+        if (next == null) return _unprocessable();
         if (pb['draft'] case final Map d) {
           // A later render of the same digest replaces an earlier one.
           final last = renders.lastWhere(
@@ -424,7 +436,7 @@ class FakeJobs {
               last.isNotEmpty &&
               (last['errors']! as List).isEmpty &&
               last['failed_tests'] == 0;
-          if (!clean) {
+          if (!clean || draftDigest(const {}, carried: next) != d['digest']) {
             return FakeCore.error(409, 'not_rendered_clean', 'no clean render');
           }
         }
@@ -434,6 +446,7 @@ class FakeJobs {
         final target = aid ?? 'a${(++_minted).toString().padLeft(11, '0')}';
         made = current + 1;
         versions[target] = made;
+        files[target] = next;
         published.add(pb);
         if (pb['session_id'] case final String sid) {
           _publishedFrom[id] = sid;
@@ -572,6 +585,32 @@ class FakeJobs {
   }
 
   // ------------------------------------------------------------ the store
+
+  /// The files the next version of [aid] (null: a new app) holds once
+  /// [request] is published on its current one: those of the current
+  /// version it carries (all but `index.html` and the paths it names) and
+  /// those it puts. Null for a file that is neither null nor
+  /// `{content, encoding?}`.
+  Map<String, FileHash>? _nextFiles(String? aid, Map request) {
+    final named = (request['files'] as Map?) ?? const {};
+    final out = <String, FileHash>{
+      if (aid != null)
+        for (final e in (files[aid] ?? const <String, FileHash>{}).entries)
+          if (e.key != 'index.html' && !named.containsKey(e.key)) e.key: e.value,
+    };
+    for (final MapEntry(:key, :value) in named.entries) {
+      if (value == null) continue;
+      if (value case {'content': final String c}) {
+        final bytes = value['encoding'] == 'base64'
+            ? base64Decode(c)
+            : utf8.encode(c);
+        out['$key'] = (sha256: sha256Hex(bytes), size: bytes.length);
+      } else {
+        return null;
+      }
+    }
+    return out;
+  }
 
   /// Writes [patch] to job [id]'s row, moving its `rev` on; a final move
   /// withdraws its open questions. Sends `event: job`; answers the job.

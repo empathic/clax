@@ -44,6 +44,7 @@ final class AgentJob {
     this.row,
     this.capUsd,
     this.again,
+    this.carried = const {},
   });
 
   /// The first run's prompt.
@@ -67,7 +68,16 @@ final class AgentJob {
   /// How a run after a stop at a limit starts; null: it goes on with the
   /// first run's prompt and tools.
   final KeepGoingRun? again;
+
+  /// The files of the job's base version the draft does not hold (those
+  /// that are not text), by their hash and size: a publish of the draft
+  /// carries them into its version, so its render digest counts them
+  /// ([draftDigest]). None for a make.
+  final Map<String, FileHash> carried;
 }
+
+/// A file's hex SHA-256 and size in bytes.
+typedef FileHash = ({String sha256, int size});
 
 /// A Keep going run of a job: a fresh conversation over the job's draft,
 /// with a budget of its own.
@@ -98,9 +108,16 @@ typedef ServeDraft =
     Future<String> Function(JobId jobId, DraftSnapshot snapshot);
 
 /// The digest a render of [files] is recorded under (spec §8.2,
-/// `clax_core::digest::files_digest`): the content hash of the files but
-/// `icon.svg`.
-String draftDigest(Map<String, String> files) => contentHash({
+/// `clax_core::digest::manifest_digest`): the content hash of the files
+/// the version a publish of them makes holds, but `icon.svg`. Those are
+/// [files], and the base's files the draft does not hold that the publish
+/// carries ([carried]; a file of [files] replaces one of the same path).
+String draftDigest(
+  Map<String, String> files, {
+  Map<String, FileHash> carried = const {},
+}) => contentHash({
+  for (final e in carried.entries)
+    if (e.key != 'icon.svg') e.key: e.value,
   for (final e in files.entries)
     if (e.key != 'icon.svg')
       e.key: (
@@ -572,7 +589,7 @@ final class AgentTurns implements AgentPort {
     }
     budget.addRender();
     final snap = job.state.draft.snapshot();
-    final digest = draftDigest(snap.files);
+    final digest = draftDigest(snap.files, carried: job.agent.carried);
     final draftId = await serveDraft(jobId, snap);
     job.served['$turn/$callId'] = (
       draftId: draftId,
@@ -779,7 +796,9 @@ final class _Job {
       'failed_tests': final List failed,
     }) {
       final snap = state.draft.snapshot();
-      if (draftDigest(snap.files) != digest) return null;
+      if (draftDigest(snap.files, carried: agent.carried) != digest) {
+        return null;
+      }
       final key = '$turn/$callId';
       served[key] = (draftId: draftId, digest: digest, snapshot: snap);
       final e = [for (final x in errors) '$x'];
