@@ -79,6 +79,7 @@ import 'ui/developer.dart';
 import 'ui/bundle_sheets.dart';
 import 'ui/app_surface.dart';
 import 'ui/error_screen.dart';
+import 'ui/updating_cover.dart';
 import 'ui/host_protocol.dart'
     show
         HostCall,
@@ -91,7 +92,6 @@ import 'ui/inspector_surface.dart';
 import 'ui/kit/button.dart';
 import 'ui/kit/empty.dart';
 import 'ui/kit/family.dart';
-import 'ui/kit/mark.dart';
 import 'ui/kit/verbs.dart';
 import 'ui/launcher.dart';
 import 'ui/mac/windows.dart';
@@ -109,7 +109,6 @@ import 'ui/splash.dart';
 import 'ui/split/sidebar_model.dart';
 import 'ui/split/split_shell.dart';
 import 'ui/theme.dart';
-import 'ui/tokens.g.dart';
 
 /// Everything [AppRoot] needs. `main` builds it for the platform; tests
 /// give fakes.
@@ -2766,8 +2765,11 @@ class _AppRootState extends State<AppRoot> with WidgetsBindingObserver {
     VoidCallback? leave,
   }) => ValueListenableBuilder<Set<String>>(
     valueListenable: _updating,
-    builder: (_, updating, child) =>
-        updating.contains(aid) ? const _UpdatingCover() : child!,
+    builder: (_, updating, child) => _UpdateGate(
+      updating: updating.contains(aid),
+      title: () => _titleOf(aid, fallback: ''),
+      page: child!,
+    ),
     child: AppScreen(
       key: ValueKey(base),
       aid: aid,
@@ -3258,32 +3260,55 @@ class _AppPageState extends State<_AppPage> {
   Widget build(BuildContext context) => widget.screen(widget.base, _surface);
 }
 
-/// What an app's screen shows while an update runs on it: no page.
-class _UpdatingCover extends StatelessWidget {
-  const _UpdatingCover();
+/// [page] behind an [UpdatingCover] while [updating], naming the app by
+/// [title], which is asked for once, when the first update starts.
+class _UpdateGate extends StatefulWidget {
+  const _UpdateGate({
+    required this.updating,
+    required this.title,
+    required this.page,
+  });
+
+  final bool updating;
+  final Future<String> Function() title;
+  final Widget page;
 
   @override
-  Widget build(BuildContext context) {
-    final p = claxPalette(context);
-    return Scaffold(
-      body: Center(
-        child: Column(
-          mainAxisSize: MainAxisSize.min,
-          children: [
-            const ClaxMark(size: 48, state: ClaxMarkState.working),
-            const SizedBox(height: ClaxSpace.s16),
-            Text(
-              'Updating…',
-              style: ClaxType.of(
-                ClaxRole.callout,
-                Theme.of(context).platform,
-              ).copyWith(color: p.muted),
-            ),
-          ],
-        ),
-      ),
+  State<_UpdateGate> createState() => _UpdateGateState();
+}
+
+class _UpdateGateState extends State<_UpdateGate> {
+  String? _title;
+  bool _asked = false;
+
+  void _ask() {
+    if (_asked || !widget.updating) return;
+    _asked = true;
+    unawaited(
+      widget.title().then((t) {
+        if (mounted) setState(() => _title = t);
+      }),
     );
   }
+
+  @override
+  void initState() {
+    super.initState();
+    _ask();
+  }
+
+  @override
+  void didUpdateWidget(_UpdateGate old) {
+    super.didUpdateWidget(old);
+    _ask();
+  }
+
+  @override
+  Widget build(BuildContext context) => UpdatingCover(
+    updating: widget.updating,
+    title: _title,
+    page: (_) => widget.page,
+  );
 }
 
 /// A make in a split window's detail that has no build view to show: an
