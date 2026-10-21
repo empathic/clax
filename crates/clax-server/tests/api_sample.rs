@@ -789,33 +789,57 @@ async fn the_daily_cap_counts_calls_that_reach_the_provider() {
     assert_eq!(s["calls_today"], 1);
 }
 
+/// Returns once `viewer`'s queue is full: two calls run, four wait, and the
+/// next is refused. Each look is one poll of `enter`, given back at once;
+/// the daemon's tasks share this test's single thread, so none of its
+/// requests can take a place in between.
+async fn until_queue_full(sampler: &Sampler, viewer: &str) {
+    use futures::FutureExt as _;
+    let start = std::time::Instant::now();
+    loop {
+        if let Some(None) = Box::pin(sampler.queues.enter(viewer)).now_or_never() {
+            return;
+        }
+        assert!(
+            start.elapsed() < clax_testkit::HANG,
+            "{viewer}'s queue never filled (hang guard)"
+        );
+        // A poll interval, not a deadline: the loop ends on the condition.
+        tokio::time::sleep(Duration::from_millis(5)).await;
+    }
+}
+
 #[tokio::test]
 async fn a_flood_from_one_viewer_is_rate_limited() {
-    let (ts, _, _) = stub_server(false, SampleSettings::default()).await;
+    let (ts, _, sampler) = stub_server(false, SampleSettings::default()).await;
     let aid = artifact(&ts, json!({"sample": {}})).await;
     let (flooder, other) = (ts.viewer(None).await, ts.viewer(None).await);
     let url = format!("{}/api/artifacts/{aid}/sample", ts.base);
+    // Each call waits on a tool that never answers, so the running ones hold
+    // their places until the test ends.
+    let tools = json!([{"name": "stuck", "description": "Never answers."}]);
     let mut held = Vec::new();
     for _ in 0..6 {
-        let (client, url, cookie, token) = (
+        let (client, url, cookie, token, tools) = (
             ts.client.clone(),
             url.clone(),
             flooder.cookie.clone(),
             ts.token.clone(),
+            tools.clone(),
         );
         held.push(tokio::spawn(async move {
             let res = client
                 .post(url)
                 .bearer_auth(token)
                 .header("cookie", format!("clax_viewer={cookie}"))
-                .json(&json!({"input": "[[slow]]", "cache": false}))
+                .json(&json!({"input": "[[tool:stuck]]", "tools": tools, "cache": false}))
                 .send()
                 .await;
-            tokio::time::sleep(Duration::from_secs(30)).await;
+            std::future::pending::<()>().await;
             drop(res);
         }));
     }
-    tokio::time::sleep(Duration::from_millis(300)).await;
+    until_queue_full(&sampler, &flooder.cookie).await;
     let (status, e) = start(
         &ts,
         &aid,
