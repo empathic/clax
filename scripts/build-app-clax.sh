@@ -2,9 +2,11 @@
 # build-app-clax.sh [android|macos|all] [--debug]: builds the embedded core
 # (crates/clax-embed, a shared library) for the Clax app and places it where
 # the app's build picks it up:
-#   macos    apps/clax_app/build-native/macos/libclax_embed.dylib (the host
-#            target), which the Runner's "Embed core" phase copies into
-#            Contents/Frameworks
+#   macos    apps/clax_app/build-native/macos/libclax_embed.dylib, which the
+#            Runner's "Embed core" phase copies into Contents/Frameworks: a
+#            release build is universal (arm64 and x86_64, joined with
+#            lipo), as a Release app Xcode builds is; --debug builds the
+#            host's CPU only, as a Debug app is
 #   android  apps/clax_app/android/app/src/main/jniLibs/<abi>/libclax_embed.so
 #            for arm64-v8a and x86_64, compiled and linked with the NDK's
 #            API 29 clang, its segments aligned to 16 KB (a phone with 16 KB
@@ -53,9 +55,22 @@ out="${CARGO_TARGET_DIR:-target}"
 say "building the web UI"
 run ./scripts/build-web.sh
 if [ "$what" = macos ] || [ "$what" = all ]; then
-    say "building the core for macOS"
-    run cargo build -q ${flag[@]+"${flag[@]}"} -p clax-embed
-    place "$out/$profile/libclax_embed.dylib" apps/clax_app/build-native/macos/libclax_embed.dylib
+    if [ "$profile" = release ]; then
+        for triple in aarch64-apple-darwin x86_64-apple-darwin; do
+            say "building the core for macOS ($triple)"
+            run rustup target add "$triple"
+            run cargo build -q --release -p clax-embed --target "$triple"
+        done
+        say "joining the core's two CPUs into one library"
+        run mkdir -p "$out/universal-apple-darwin/release"
+        run lipo -create -output "$out/universal-apple-darwin/release/libclax_embed.dylib" \
+            "$out/aarch64-apple-darwin/release/libclax_embed.dylib" "$out/x86_64-apple-darwin/release/libclax_embed.dylib"
+        place "$out/universal-apple-darwin/release/libclax_embed.dylib" apps/clax_app/build-native/macos/libclax_embed.dylib
+    else
+        say "building the core for macOS"
+        run cargo build -q -p clax-embed
+        place "$out/debug/libclax_embed.dylib" apps/clax_app/build-native/macos/libclax_embed.dylib
+    fi
 fi
 if [ "$what" = android ] || [ "$what" = all ]; then
     ndk="${ANDROID_NDK_HOME:-$HOME/Library/Android/sdk/ndk/28.2.13676358}"

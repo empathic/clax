@@ -17,7 +17,8 @@ lacks() { ! grep -qF -- "$2" <<<"$1"; }
 dry() { CLAX_APP_DRY_RUN=1 ANDROID_NDK_HOME=/ndk bash scripts/build-app-clax.sh "$@"; }
 
 bin=/ndk/toolchains/llvm/prebuilt/darwin-x86_64/bin
-mac_place="+ place target/release/libclax_embed.dylib -> apps/clax_app/build-native/macos/libclax_embed.dylib"
+mac_place="+ place target/universal-apple-darwin/release/libclax_embed.dylib -> apps/clax_app/build-native/macos/libclax_embed.dylib"
+mac_lipo="+ lipo -create -output target/universal-apple-darwin/release/libclax_embed.dylib target/aarch64-apple-darwin/release/libclax_embed.dylib target/x86_64-apple-darwin/release/libclax_embed.dylib"
 arm_place="+ place target/aarch64-linux-android/release/libclax_embed.stripped.so -> apps/clax_app/android/app/src/main/jniLibs/arm64-v8a/libclax_embed.so"
 x86_place="+ place target/x86_64-linux-android/release/libclax_embed.stripped.so -> apps/clax_app/android/app/src/main/jniLibs/x86_64/libclax_embed.so"
 pages="-Clink-arg=-Wl,-z,max-page-size=16384 -Clink-arg=-Wl,-z,common-page-size=16384"
@@ -25,9 +26,10 @@ arm_build="+ env CARGO_TARGET_AARCH64_LINUX_ANDROID_LINKER=$bin/aarch64-linux-an
 x86_build="+ env CARGO_TARGET_X86_64_LINUX_ANDROID_LINKER=$bin/x86_64-linux-android29-clang CARGO_TARGET_X86_64_LINUX_ANDROID_RUSTFLAGS=$pages CC_x86_64_linux_android=$bin/x86_64-linux-android29-clang AR_x86_64_linux_android=$bin/llvm-ar cargo build -q --release -p clax-embed --target x86_64-linux-android"
 
 out="$(dry macos)"
-if has "$out" "+ ./scripts/build-web.sh" && has "$out" "+ cargo build -q --release -p clax-embed" \
-    && has "$out" "$mac_place" && lacks "$out" "linux-android"; then
-    ok "macos: web UI, release host build, placed under build-native"
+if has "$out" "+ ./scripts/build-web.sh" && has "$out" "+ cargo build -q --release -p clax-embed --target aarch64-apple-darwin" \
+    && has "$out" "+ cargo build -q --release -p clax-embed --target x86_64-apple-darwin" \
+    && has "$out" "$mac_lipo" && has "$out" "$mac_place" && lacks "$out" "linux-android"; then
+    ok "macos: web UI, release builds for arm64 and x86_64 joined with lipo, placed under build-native"
 else
     bad "macos: $out"
 fi
@@ -53,8 +55,9 @@ fi
 out="$(dry all --debug)"
 if lacks "$out" "--release" && has "$out" "+ cargo build -q -p clax-embed" \
     && has "$out" "+ place target/debug/libclax_embed.dylib -> apps/clax_app/build-native/macos/libclax_embed.dylib" \
+    && lacks "$out" "lipo" && lacks "$out" "apple-darwin" \
     && has "$out" "+ place target/aarch64-linux-android/debug/libclax_embed.stripped.so -> apps/clax_app/android/app/src/main/jniLibs/arm64-v8a/libclax_embed.so"; then
-    ok "--debug: no --release, debug output paths"
+    ok "--debug: no --release, the host's CPU only, debug output paths"
 else
     bad "--debug: $out"
 fi

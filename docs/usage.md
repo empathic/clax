@@ -633,7 +633,8 @@ run.
 - `scripts/build-app-clax.sh [android|macos|all] [--debug]` builds the
   embedded core natively, with Cargo, and places it where the native app
   builds pick it up: `apps/clax_app/build-native/macos/libclax_embed.dylib`
-  for the host, and stripped
+  (universal, arm64 and x86_64, joined with `lipo`, as Xcode builds a
+  Release app; with `--debug` the host CPU only), and stripped
   `apps/clax_app/android/app/src/main/jniLibs/{arm64-v8a,x86_64}/libclax_embed.so`
   (all git-ignored); the `-native` recipes run it first. With Bazel the
   APK and the macOS app build it themselves
