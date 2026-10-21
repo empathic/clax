@@ -440,6 +440,7 @@ impl Store {
             by_page: false,
             hidden: Vec::new(),
             step: None,
+            publish_key: None,
         };
         self.record_version_locked(
             ctx,

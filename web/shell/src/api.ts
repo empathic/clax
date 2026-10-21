@@ -27,7 +27,15 @@ export type Artifact = {
   forked_from?: ForkedFrom;
   /** From `GET /api/artifacts/<id>`: the viewer may fork it. */
   may_fork?: boolean;
+  /** Started from a brief in a person's browser: who, by display name. */
+  brief?: { by: string };
+  /** The tags it carries, sorted by name (docs/contract.md "Tags"). */
+  tags?: TagRef[];
+  /** From `GET /api/artifacts/<id>` and the bootstrap: the viewer may set its tags. */
+  may_tag?: boolean;
 };
+/** A tag as an artifact carries it; `colour` is a palette key (`view/tags-model.ts`). */
+export type TagRef = { id: string; name: string; colour: string };
 export type ForkedFrom = { artifact_id: string; version: number; title: string | null };
 /** An artifact's people and agents. `agents` is ordered live first, then
  * most recently active; `live` means a send can reach it. An agent carries
@@ -279,11 +287,20 @@ export type RosterAgent = {
 };
 /** One page of `GET /api/inbox`; `total` is present when the query filters. */
 export type InboxPage = { items: InboxItem[]; next_cursor: string | null; unread: number; total?: number | "10000+" };
+/** One group of `GET /api/inbox?group=artifact`: the artifact its items
+ * are about (null for the group of items about none), how many match and
+ * how many of those are unread, its newest match's time, its newest
+ * matches, and the `before` of the rest (listed with `artifact=<ID>`, or
+ * `artifact=none`). `artifact_id` keys it: the artifact's ID, null for none. */
+export type InboxGroup = { artifact_id: string | null; artifact: InboxItem["artifact"]; total: number; unread: number; newest_at: string; items: InboxItem[]; next_cursor: string | null };
+/** One page of `GET /api/inbox?group=artifact`, newest group first. */
+export type InboxGroupPage = { groups: InboxGroup[]; next_cursor: string | null; unread: number; total?: number | "10000+" };
 /** `GET /api/inbox/summary`: open questions oldest first, the five newest unread other items. */
 export type InboxSummary = { unread: number; questions: QuestionView[]; latest: InboxItem[] };
 /** The inbox page's search: text (`q`), kinds, an artifact ID, an agent
  * (harness or handle), dates (`YYYY-MM-DD` or RFC 3339), and read state. */
-export type InboxFilter = { q?: string; kind?: InboxKind[]; artifact?: string; agent?: string; since?: string; until?: string; read?: "unread" | "read" | "all" };
+/** `tag`: only items about artifacts carrying every tag named (match all). */
+export type InboxFilter = { q?: string; kind?: InboxKind[]; artifact?: string; agent?: string; since?: string; until?: string; read?: "unread" | "read" | "all"; tag?: string[] };
 
 // People (spec 2026-10-08-multi-agent-multi-person §6, §7.4, §9, §17). The
 // owner's and a connected person's People page reads these; its fetchers

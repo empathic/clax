@@ -41,8 +41,9 @@ impl Env {
             .unwrap_or_else(|e| panic!("{e}: {}", String::from_utf8_lossy(&out.stderr)));
         (out.status.success(), v)
     }
+    /// The config file, with this binary named as the tests run it.
     fn config(&self) -> String {
-        std::fs::read_to_string(self.p("ax/config.toml")).unwrap()
+        crate::common::as_clax(&std::fs::read_to_string(self.p("ax/config.toml")).unwrap())
     }
 }
 
@@ -59,14 +60,15 @@ fn bin_shows_sets_and_clears_the_binary_the_plugins_run() {
     assert!(ok, "{v}");
     assert_eq!(v["setting"], serde_json::Value::Null, "{v}");
     assert_ne!(v["source"], "config", "{v}");
-    e.cmd()
-        .args(["bin", "set", "--this"])
-        .assert()
-        .success()
-        .stdout(contains(format!("the plugins now run {me}")));
+    let out = e.cmd().args(["bin", "set", "--this"]).output().unwrap();
+    assert!(out.status.success(), "{out:?}");
+    let text = crate::common::as_clax(&String::from_utf8_lossy(&out.stdout));
+    let said = format!("the plugins now run {me}");
+    assert!(text.contains(&said), "{text}");
     let (_, v) = e.json(&["bin", "show"]);
+    let path = v["path"].as_str().map(crate::common::as_clax);
     assert_eq!(
-        (v["source"].as_str(), v["path"].as_str(), v["ok"].as_bool()),
+        (v["source"].as_str(), path.as_deref(), v["ok"].as_bool()),
         (Some("config"), Some(me.as_str()), Some(true)),
         "{v}"
     );

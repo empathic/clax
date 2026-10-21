@@ -4,7 +4,7 @@
 // this. A 403 (the caller is not the owner) resolves to "forbidden"; a 409
 // on an answer, a skip or a move resolves to the question as it closed;
 // any other failure throws an `ApiError`.
-import { ApiError, type AnswerBody, type InboxFilter, type InboxItem, type InboxPage, type InboxSummary, type QuestionView, type StripAgent } from "../api";
+import { ApiError, type AnswerBody, type InboxFilter, type InboxGroupPage, type InboxItem, type InboxPage, type InboxSummary, type QuestionView, type StripAgent } from "../api";
 
 export type Forbidden = "forbidden";
 /** The outcome of answering, skipping or moving a question: the question
@@ -50,6 +50,7 @@ export function inboxQuery(f: InboxFilter, before?: string | null, limit?: numbe
     const v = f[k];
     if (v) u.set(k, v);
   }
+  for (const t of f.tag ?? []) u.append("tag", t);
   if (before) u.set("before", before);
   if (limit) u.set("limit", String(limit));
   const s = u.toString();
@@ -58,6 +59,13 @@ export function inboxQuery(f: InboxFilter, before?: string | null, limit?: numbe
 
 /** One page of items matching `f`, newest first; `before` is the previous page's `next_cursor`. */
 export const listInbox = (f: InboxFilter, before?: string | null, limit?: number) => get<InboxPage>(`/api/inbox${inboxQuery(f, before, limit)}`);
+/** One page of the groups of items matching `f` by artifact, newest group
+ * first, `limit` of them, each with its first `rows` items; `before` is the
+ * previous page's `next_cursor`. */
+export function listInboxGroups(f: InboxFilter, before?: string | null, rows?: number, limit?: number) {
+  const q = inboxQuery(f, before, limit);
+  return get<InboxGroupPage>(`/api/inbox${q ? `${q}&` : "?"}group=artifact${rows ? `&rows=${rows}` : ""}`);
+}
 export const inboxSummary = () => get<InboxSummary>("/api/inbox/summary");
 /** The agent strip (spec 2026-10-08-multi-agent-multi-person §13). */
 export const inboxAgents = () => get<{ agents: StripAgent[]; unread: number }>("/api/inbox?group=agent");
@@ -65,10 +73,11 @@ export const inboxAgents = () => get<{ agents: StripAgent[]; unread: number }>("
 export const markInbox = (id: string, read: boolean) =>
   post<{ item: InboxItem; unread: number }>(`/api/inbox/${encodeURIComponent(id)}/${read ? "read" : "unread"}`);
 /** Marks items read: these IDs, or every unread item matching `filter` up
- * to `upto` (the newest `seq` shown, so an item made since stays unread). */
-export function markInboxMany(m: { ids: string[] } | { all: true; filter?: InboxFilter; upto?: number }) {
+ * to `upto` (the newest `seq` shown, so an item made since stays unread)
+ * but the item IDs `except`. */
+export function markInboxMany(m: { ids: string[] } | { all: true; filter?: InboxFilter; upto?: number; except?: string[] }) {
   if ("ids" in m) return post<{ marked: number; unread: number }>("/api/inbox/read", { ids: m.ids });
   const f = m.filter ?? {};
-  const filter = Object.fromEntries(Object.entries({ q: f.q?.trim() || undefined, kind: f.kind?.length ? f.kind : undefined, artifact: f.artifact, agent: f.agent, since: f.since, until: f.until }).filter(([, v]) => v !== undefined));
-  return post<{ marked: number; unread: number }>("/api/inbox/read", { all: true, ...Object.keys(filter).length && { filter }, ...m.upto !== undefined && { upto: m.upto } });
+  const filter = Object.fromEntries(Object.entries({ q: f.q?.trim() || undefined, kind: f.kind?.length ? f.kind : undefined, artifact: f.artifact, agent: f.agent, since: f.since, until: f.until, tag: f.tag?.length ? f.tag : undefined }).filter(([, v]) => v !== undefined));
+  return post<{ marked: number; unread: number }>("/api/inbox/read", { all: true, ...Object.keys(filter).length && { filter }, ...m.upto !== undefined && { upto: m.upto }, ...m.except?.length && { except: m.except } });
 }

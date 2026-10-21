@@ -191,6 +191,35 @@ pub(crate) fn publish_key(
     }
 }
 
+/// Holds the lock of agent token `grant`'s idempotency key `key`, when the
+/// publish names one, until the publish's version is recorded with it: the
+/// same publish sent again meanwhile waits, then replays.
+async fn lock_key<'a>(
+    st: &'a Store,
+    grant: &Option<String>,
+    key: &Option<String>,
+) -> Option<clax_core::content::ArtifactLock<'a>> {
+    match (grant, key) {
+        (Some(g), Some(k)) => Some(st.lock_publish_key(g, k).await),
+        _ => None,
+    }
+}
+
+/// The idempotency key agent token `grant` named, for the store to record
+/// with the version.
+fn publish_key_of(
+    grant: &Option<String>,
+    key: &Option<String>,
+) -> Option<clax_core::publish::PublishKey> {
+    match (grant, key) {
+        (Some(g), Some(k)) => Some(clax_core::publish::PublishKey {
+            grant_id: g.clone(),
+            key: k.clone(),
+        }),
+        _ => None,
+    }
+}
+
 /// The version agent token `grant`'s publish keyed `key` made, as `vis`
 /// shows it, when it made one (of artifact `of`, when given).
 ///
@@ -247,15 +276,19 @@ pub struct ListQuery {
 /// ([`clax_http::live_access::sees_live_pages`]), and for a person's agent every
 /// artifact its rights do not let it read, answered as if it did not
 /// exist. An agent channel's fields are filtered for its reader (spec
-/// §8.3, O9). Drafts are left out for every caller.
+/// §8.3, O9). Drafts are left out for every caller. With `?tag=<id or
+/// name>` (repeatable), only the artifacts carrying every tag named (match
+/// all); a name no tag has matches none.
 pub async fn list(
     State(s): State<AppState>,
     a: Agent<ArtifactsList>,
     extensions: axum::http::Extensions,
     headers: HeaderMap,
+    axum::extract::RawQuery(raw): axum::extract::RawQuery,
     q: Result<Query<ListQuery>, QueryRejection>,
 ) -> Result<Json<Value>, ApiError> {
     let Query(q) = q.map_err(|e| ApiError::bad_request("invalid_query", e.body_text()))?;
+    let tags = super::tags::tag_params(raw.as_deref());
     let local = clax_http::live_access::sees_live_pages(&headers, &extensions, &s.token);
     let reads = a.read_rights();
     let vf = VisFor::of(&a.caller, &s);
@@ -379,6 +412,17 @@ pub async fn list(
             .await?
         }
     };
+    let mut artifacts = artifacts;
+    if !tags.is_empty() {
+        artifacts.retain(|v| {
+            let carried: Vec<clax_core::tags::TagRef> =
+                serde_json::from_value(v["tags"].clone()).unwrap_or_default();
+            clax_store::tags::carries_all(&carried, &tags)
+        });
+    }
+    if !a.caller.is_agent() {
+        mark_brief(&s, &mut artifacts).await?;
+    }
     let mut v = json!({"artifacts": artifacts});
     if !a.holds_token() {
         strip_sessions(&mut v);
@@ -415,17 +459,16 @@ pub async fn create(
         .store_call_async(move |st| async move {
             let st = &*st;
             let session = publishing_session(st, &session, grant.as_deref())?;
+            let _keyed = lock_key(st, &grant, &key).await;
             if let Some(done) =
                 replayed(st, grant.as_deref(), key.as_deref(), None, &vf.build(st)?)?
             {
                 return Ok(done);
             }
+            p.publish_key = publish_key_of(&grant, &key);
             let (artifact, version) = st
                 .create_artifact_async(&audit, p, session.as_deref())
                 .await?;
-            if let (Some(g), Some(k)) = (&grant, &key) {
-                st.record_publish_key(g, k, &artifact.id, version.n)?;
-            }
             if let Some(sid) = &session {
                 published_from(st, &audit, &ctx, &drafts, sid, &artifact, true)?;
             }
@@ -496,6 +539,303 @@ pub(crate) fn working_threads_of(
     ctx.working.threads_of(sid, aid)
 }
 
+/// `POST /api/artifacts:new` body.
+#[derive(Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct BriefBody {
+    title: String,
+    /// What the person wants built: the artifact's first thread.
+    brief: String,
+}
+
+/// Why `caller` may not start an artifact from a brief, or `None` when it
+/// may: the owner (in a browser or by hand) always; a connected person
+/// (`Caller::Person`, on a local daemon or signed in to a hosted one) when
+/// their rights create artifacts and would let them read the new one and
+/// comment on it (an artifact they made is their own, `own`); a guest (a
+/// viewer who is no connected person) never (403 `not_permitted`), and no
+/// credential 401. Agents are refused before this (they publish).
+pub(crate) fn brief_refusal(
+    st: &Store,
+    caller: &clax_http::auth::Caller,
+) -> clax_core::Result<Option<ApiError>> {
+    use clax_http::auth::Caller;
+    let no_create = || {
+        Some(ApiError::forbidden(
+            "not_permitted",
+            "your rights here do not let you create artifacts (clax-artifacts)",
+        ))
+    };
+    Ok(match caller {
+        Caller::Owner { .. } => None,
+        Caller::Person { viewer } => {
+            let rights = st.person_rights(&viewer.public_id)?;
+            // The new artifact matches no artifact a right names by ID, and
+            // is the person's own.
+            const NEW: &str = "new";
+            let own = |_: &str| true;
+            let ok = rights.allows(RightType::Artifacts, "create", None, &|_| false)
+                && rights.allows(RightType::Artifacts, "read", Some(NEW), &own)
+                && rights.allows(RightType::Comments, "write", Some(NEW), &own);
+            if ok { None } else { no_create() }
+        }
+        Caller::Viewer { .. } => Some(ApiError::forbidden(
+            "not_permitted",
+            "a guest cannot create artifacts: sign in as a person of this Clax first",
+        )),
+        Caller::Anonymous => Some(ApiError::unauthorized()),
+        Caller::OwnerAgent { .. } | Caller::PersonAgent { .. } => {
+            Some(clax_http::auth::not_for_agents())
+        }
+    })
+}
+
+/// `POST /api/artifacts:new {title, brief}` → 201 `{artifact, version, url,
+/// thread}`: a person starts an artifact from a brief in their browser
+/// (the gallery's New). Version 1 is a placeholder page naming the title
+/// ([`clax_core::brief::placeholder_html`]); the brief is its first thread,
+/// on the whole artifact, authored by the person and sent to no agent (a
+/// send naming an agent, `POST …/threads/<tid>/send {to}`, gives that agent
+/// its watch). The artifact is the person's (`person`; the owner's has
+/// none) and no session's. Who may ([`brief_refusal`]): the owner, and a
+/// connected person whose rights create artifacts; a guest is 403
+/// `not_permitted`, no credential 401, agents 403 (`forbidden` for a
+/// person's, `not_for_agents` for the owner's: agents publish). A foreign
+/// `Origin` is refused. 400 `invalid_title` (blank, over
+/// [`clax_core::brief::MAX_TITLE_CHARS`] characters, or holding a control
+/// or format character) and `invalid_brief` (blank, or longer than a
+/// comment may be). An `Idempotency-Key` (1 to
+/// [`clax_store::briefs::MAX_BRIEF_KEY`] printable ASCII characters, else
+/// 400 `invalid_args`) makes a repeat by the same person answer 200 with
+/// the artifact, version 1 and brief thread the first request made, while
+/// that artifact exists ([`clax_store::briefs`]); the same request sent
+/// while the first is running waits for it. A member's artifact cap
+/// (`quota_exceeded`) is counted in the transaction that inserts the
+/// artifact, as for a publish.
+pub async fn create_from_brief(
+    State(s): State<AppState>,
+    d: clax_http::agent::DeniedToGrants,
+    _o: clax_http::viewer::SameOrigin,
+    who: clax_http::identity::Identity,
+    audit: clax_http::audit::DeferredAudit,
+    headers: HeaderMap,
+    req: Result<Json<BriefBody>, JsonRejection>,
+) -> Result<(StatusCode, Json<Value>), ApiError> {
+    use clax_http::auth::Caller;
+    d.refuse_agents()?;
+    let caller = d.caller(&s).await?;
+    let c = caller.clone();
+    s.store_call(move |st| brief_refusal(st, &c))
+        .await?
+        .map_or(Ok(()), Err)?;
+    let key = match headers.get(IDEMPOTENCY_HEADER) {
+        None => None,
+        Some(v) => match v.to_str() {
+            Ok(k)
+                if !k.is_empty()
+                    && k.len() <= clax_store::briefs::MAX_BRIEF_KEY
+                    && k.bytes().all(|b| b.is_ascii_graphic()) =>
+            {
+                Some(k.to_string())
+            }
+            _ => {
+                return Err(ApiError::bad_request(
+                    "invalid_args",
+                    format!(
+                        "Idempotency-Key is at most {} printable ASCII characters",
+                        clax_store::briefs::MAX_BRIEF_KEY
+                    ),
+                ));
+            }
+        },
+    };
+    let b = body(req)?;
+    let title = clax_core::brief::check_title(&b.title)?;
+    let brief = clax_core::brief::check_brief(&b.brief)?;
+    if brief.chars().count() > clax_store::threads::MAX_BODY_CHARS {
+        return Err(ApiError::bad_request(
+            "invalid_brief",
+            format!(
+                "a brief is at most {} characters",
+                clax_store::threads::MAX_BODY_CHARS
+            ),
+        ));
+    }
+    let person = match &caller {
+        Caller::Person { viewer } => Some(viewer.public_id.clone()),
+        _ => None,
+    };
+    let starter = person
+        .clone()
+        .unwrap_or_else(|| clax_store::briefs::OWNER_STARTER.to_string());
+    let html = clax_core::brief::placeholder_html(&title);
+    let mut files = std::collections::BTreeMap::new();
+    files.insert(
+        clax_core::publish::INDEX.to_string(),
+        Some(clax_core::publish::FileInput {
+            content: html,
+            encoding: clax_core::publish::Encoding::Utf8,
+            content_type: None,
+        }),
+    );
+    let mut p = validate(PublishRequest {
+        title: Some(title),
+        files,
+        ..Default::default()
+    })?;
+    p.person = person;
+    let ctx = s.feedback_ctx();
+    let with_path = d.holds_token();
+    let vf = VisFor::of(&caller, &s);
+    let (artifact, version, thread, again) = s
+        .store_call_async(move |st| async move {
+            let st = &*st;
+            // Held until the key is recorded: the same request sent again
+            // meanwhile waits, then answers what this one made.
+            let _keyed = match &key {
+                Some(k) => Some(st.lock_brief_key(&starter, k).await),
+                None => None,
+            };
+            if let Some(k) = &key
+                && let Some(aid) = st.brief_by_key(&starter, k)?
+            {
+                let id = ArtifactId::parse(&aid)?;
+                // A key whose artifact is gone makes a new one
+                // (`record_brief` takes it over); a live one is answered.
+                if let Some(a) = st.get_artifact(&id)? {
+                    let v = st.get_version(&id, 1)?;
+                    let threads = st.list_threads(&id, true, None, 1)?.0;
+                    let (Some(v), Some(t)) = (v, threads.first()) else {
+                        return Err(CoreError::invalid(
+                            "invalid_args",
+                            "this Idempotency-Key named an artifact whose brief is gone",
+                        ));
+                    };
+                    let vis = vf.build(st)?;
+                    let (a, v) = vis.filter_published(st, &a, &v)?;
+                    let t = vis.filter_thread(st, t, ctx.codex_push(), with_path)?;
+                    return Ok((a, v, t, true));
+                }
+            }
+            let audit = audit.resolve(st)?;
+            let (author_name, author_public_id) = clax_http::viewer::author(st, &who)?;
+            let (artifact, version) = st.create_artifact_async(&audit, p, None).await?;
+            let aid = ArtifactId::parse(&artifact.id)?;
+            ctx.events.publish(Event::Version {
+                artifact_id: artifact.id.clone(),
+                n: version.n,
+                by_page: false,
+                title: Some(artifact.title.clone()),
+                at: Some(version.created_at.clone()),
+            });
+            let anchor = clax_core::Anchor {
+                kind: clax_core::anchor::AnchorKind::Artifact,
+                selector: None,
+                quote: None,
+                prefix: None,
+                suffix: None,
+                html_hash: None,
+                rect: None,
+                custom_name: None,
+                area: None,
+                file: clax_core::anchor::WHOLE_FILE.to_string(),
+                route: None,
+                label: None,
+                name: None,
+            };
+            let made = st
+                .create_thread_hiding_async(
+                    &audit,
+                    &aid,
+                    clax_store::threads::NewThread {
+                        version_n: version.n,
+                        anchor,
+                        author_name,
+                        author_public_id,
+                        body: brief,
+                        clip: None,
+                        via_page: false,
+                    },
+                    &[],
+                )
+                .await;
+            // A brief that cannot be written leaves no artifact behind.
+            let thread = match made {
+                Ok(t) => t,
+                Err(e) => {
+                    let _ = st.delete_artifact_async(&audit, &aid).await;
+                    return Err(e);
+                }
+            };
+            // The key's lock serialises this process's requests; one key
+            // recorded by another process first leaves no artifact here.
+            let recorded = match st.record_brief(&artifact.id, &starter, key.as_deref()) {
+                Ok(true) => Ok(()),
+                Ok(false) => Err(CoreError::invalid(
+                    "invalid_args",
+                    "this Idempotency-Key named another request, which made an artifact first",
+                )),
+                Err(e) => Err(e),
+            };
+            if let Err(e) = recorded {
+                let _ = st.delete_artifact_async(&audit, &aid).await;
+                return Err(e);
+            }
+            // The brief goes to no agent: `@` in it sends nothing.
+            let (thread, _) =
+                super::threads::announce_new_thread(st, &ctx, &audit, thread, false, None, false)?;
+            let vis = vf.build(st)?;
+            let (a, v) = vis.filter_published(st, &artifact, &version)?;
+            let t = vis.filter_thread(st, &thread, ctx.codex_push(), with_path)?;
+            Ok((a, v, t, false))
+        })
+        .await?;
+    let url = format!("/a/{}", artifact["id"].as_str().unwrap_or_default());
+    let mut v = json!({"artifact": artifact, "version": version, "url": url, "thread": thread});
+    if let Some(a) = v.get_mut("artifact") {
+        mark_brief(&s, std::slice::from_mut(a)).await?;
+    }
+    if !d.holds_token() {
+        strip_sessions(&mut v);
+    }
+    clax_http::hosted::stamp_content_keys(&s, &mut v);
+    let status = if again {
+        StatusCode::OK
+    } else {
+        StatusCode::CREATED
+    };
+    Ok((status, Json(v)))
+}
+
+/// Adds `brief: {by}` to each of `views` (artifact views) started from a
+/// brief in a person's browser: who started it, by their display name now
+/// (`Viewer` without one, as their comments are signed). For people's views only: agents' leave it out.
+///
+/// # Errors
+/// The store's.
+pub(crate) async fn mark_brief(s: &AppState, views: &mut [Value]) -> Result<(), ApiError> {
+    let ids: Vec<String> = views
+        .iter()
+        .filter_map(|v| v["id"].as_str().map(str::to_string))
+        .collect();
+    if ids.is_empty() {
+        return Ok(());
+    }
+    let starters = s
+        .store_call(move |st| {
+            let refs: Vec<&str> = ids.iter().map(String::as_str).collect();
+            st.brief_starters(&refs)
+        })
+        .await?;
+    for v in views.iter_mut() {
+        if let Some(by) = v["id"].as_str().and_then(|id| starters.get(id)) {
+            v["brief"] =
+                json!({"by": clax_core::feedback::display_name(by.as_deref().unwrap_or(""))});
+        }
+    }
+    Ok(())
+}
+
 /// Who publishes for `caller` (spec §8.2): a person's agent's person (none
 /// for a grant of the owner's row); `None` otherwise, which takes the
 /// publishing session's person.
@@ -509,9 +849,9 @@ fn publisher(caller: &clax_http::auth::Caller) -> Option<String> {
 /// The artifact (with the owner fields of [`with_owner`]) and its versions,
 /// filtered for an agent channel's reader. Without the token, no session ID
 /// is included. From a browser with a viewer
-/// (the owner for the owner cookie, else the viewer cookie's; see
-/// [`clax_http::identity`]), also that viewer's `attention`, and the response is
-/// private to the cookie.
+/// (the owner for the owner cookie, else the viewer cookie's or a hosted
+/// session's; see [`clax_http::identity`]), also that viewer's `attention`,
+/// and the response is private to the cookie.
 pub async fn get(
     State(s): State<AppState>,
     a: Agent<clax_http::agent::ArtifactsGet>,
@@ -522,7 +862,7 @@ pub async fn get(
     let id = parse_id(&path(aid)?)?;
     let who = clax_http::identity::Identity::from_parts(&headers, &extensions, &s.token);
     let working = s.working.for_artifact(id.as_str());
-    let has_viewer = who.owner_browser() || who.cookie.is_some();
+    let has_viewer = who.owner_browser() || who.names_viewer();
     let vf = VisFor::of(&a.caller, &s);
     let reader = SourceReader::new(a.caller.clone(), a.member().cloned(), s.hosted.is_some());
     let (caller, member) = (a.caller.clone(), a.member_rights());
@@ -556,6 +896,9 @@ pub async fn get(
                 a.kind != KIND_LIVE
                     && fork_refusal(st, &caller, member.as_deref(), &a.id)?.is_none()
             );
+            // Whether the caller may change its tags (the shell's tag
+            // editor): those who administer it, as for its pin.
+            artifact["may_tag"] = json!(clax_http::agent::administers(st, &caller, a.id.as_str())?);
             let mut v = json!({
                 "artifact": artifact,
                 "versions": vis.filter_versions(&versions),
@@ -566,6 +909,11 @@ pub async fn get(
             Ok(v)
         })
         .await?;
+    if !a.caller.is_agent()
+        && let Some(art) = v.get_mut("artifact")
+    {
+        mark_brief(&s, std::slice::from_mut(art)).await?;
+    }
     if !a.holds_token() {
         strip_sessions(&mut v);
     }
@@ -619,7 +967,8 @@ async fn admin_change(
 }
 
 /// Metadata edits. `capabilities` replaces the whole declaration (omitted
-/// keeps, `{}` clears) and is validated like a publish's.
+/// keeps, `{}` clears); it and the text fields are validated like a
+/// publish's.
 #[derive(Deserialize, Default)]
 #[serde(deny_unknown_fields)]
 pub struct PatchBody {
@@ -683,6 +1032,12 @@ pub async fn patch(
     if let Some(c) = &b.capabilities {
         clax_core::capabilities::validate(c)?;
     }
+    clax_core::publish::check_update_title(b.title.as_deref())?;
+    clax_core::publish::check_meta_text(
+        b.title.as_deref(),
+        b.description.as_deref(),
+        b.icon.as_deref(),
+    )?;
     admin_change(&s, &a.0.caller, &id, b.pinned, b.capabilities.clone()).await?;
     let vf = VisFor::of(&a.0.caller, &s);
     let artifact = s
@@ -797,6 +1152,7 @@ pub async fn publish(
         Ok(validate(r)?)
     })
     .await?;
+    clax_core::publish::check_update_title(p.title.as_deref())?;
     let truncated = p.note_truncated;
     let session = session_header(&headers)?;
     let grant = a.grant().map(str::to_string);
@@ -819,6 +1175,7 @@ pub async fn publish(
         .store_call_async(move |st| async move {
             let st = &*st;
             let session = publishing_session(st, &session, grant.as_deref())?;
+            let _keyed = lock_key(st, &grant, &key).await;
             // A publish sent again whose first answer was lost: what it made.
             if let Some(done) = replayed(
                 st,
@@ -843,12 +1200,10 @@ pub async fn publish(
             {
                 p.hidden = vis.filter_hidden_files(&prev);
             }
+            p.publish_key = publish_key_of(&grant, &key);
             let (artifact, version) = st
                 .publish_version_async(&audit, &id, p, session.as_deref())
                 .await?;
-            if let (Some(g), Some(k)) = (&grant, &key) {
-                st.record_publish_key(g, k, &artifact.id, version.n)?;
-            }
             if let Some(sid) = &session {
                 published_from(st, &audit, &ctx, &drafts, sid, &artifact, retarget)?;
             }
@@ -1186,13 +1541,11 @@ pub struct ForkBody {
 /// a person beyond the live seats forks as one within them. A person's agent
 /// forks from a session, as its person; the fork is the forking person's,
 /// and the session, when one is named, watches it.
-#[allow(clippy::too_many_arguments)]
 pub async fn fork(
     State(s): State<AppState>,
     a: Agent<clax_http::agent::ArtifactsFork>,
     _o: clax_http::viewer::SameOrigin,
     audit: AuditCtx,
-    headers: HeaderMap,
     req: Result<Json<ForkBody>, JsonRejection>,
 ) -> Result<(StatusCode, Json<Value>), ApiError> {
     use clax_http::auth::Caller;
@@ -1219,7 +1572,9 @@ pub async fn fork(
     // A spectator forks too: a fork writes nothing of the source's (spec
     // 2026-10-11-clax-dev-hosted-design §7: beyond the seats one reads and
     // forks).
-    let session = session_header(&headers)?;
+    // The session the verified caller speaks for: an agent's alone. A
+    // browser's X-Clax-Session names no session of its own.
+    let session = a.caller.session().map(str::to_string);
     let grant = a.grant().map(str::to_string);
     let events = s.events.clone();
     let vf = VisFor::of(&a.caller, &s);

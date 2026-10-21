@@ -656,6 +656,22 @@ describe("Tabs", () => {
     expect(after.tabs.admits(4)).toBe(false);
     expect(after.tabs.onTabs()).toEqual([]);
   });
+
+  it("keeps Clax on through a worker restart in a tab whose address is over MAX_URL", async () => {
+    const store = memory();
+    const first = harness(store);
+    const long = `${URL1}#${"x".repeat(4096)}`;
+    first.tabs.turnOn(4, long, "http://localhost:5173");
+    await first.tabs.route(4, long);
+    await settle();
+    const h = harness(store, first.docs);
+    await h.tabs.ready();
+    expect(h.tabs.onOrigin(4)).toBe("http://localhost:5173");
+    expect(h.tabs.admits(4)).toBe(true);
+    await h.tabs.fromOverlay(4, 1, { t: "ping" }, long);
+    expect(h.calls).toEqual([]);
+    expect(h.tabs.state(4)).toMatchObject({ url: "", on: "http://localhost:5173", error: { code: "url_too_long" } });
+  });
 });
 
 describe("Tabs and side panels", () => {

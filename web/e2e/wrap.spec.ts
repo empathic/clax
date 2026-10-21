@@ -1,5 +1,5 @@
 import { type Frame, type Page } from "@playwright/test";
-import { test, expect, type Daemon, commentModeIn, contentFrame, openArtifact, publish, publishWith } from "./fixtures";
+import { test, expect, type Daemon, commentModeIn, contentFrame, openArtifact, publish, publishWith, streamLive } from "./fixtures";
 import { advance, settle } from "./time";
 
 let d: Daemon;
@@ -74,6 +74,9 @@ for (const mode of ["subdomain", "sandbox"] as const) {
       return h.innerHTML;
     });
     const head1 = await headOf(f);
+    // A version the page publishes before the shell's stream is live is
+    // offered as Reload rather than followed.
+    await streamLive(page);
     await f.locator("#go").click();
     const g = await contentFrame(page, artifact.id, 2);
     await expect(g.locator("#out")).toHaveText("function");

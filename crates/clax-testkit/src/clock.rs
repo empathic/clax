@@ -35,9 +35,10 @@ impl ManualSleeper {
         p.iter().filter(|(x, _)| *x == d).count()
     }
 
-    /// Returns once `n` sleeps of `d` are waiting; panics after 5 s.
+    /// Returns once `n` sleeps of `d` are waiting; panics past the
+    /// [`HANG`](crate::HANG) guard.
     pub async fn wait_for(&self, d: Duration, n: usize) {
-        let deadline = tokio::time::Instant::now() + Duration::from_secs(5);
+        let deadline = tokio::time::Instant::now() + crate::HANG;
         loop {
             let changed = self.changed.notified();
             tokio::pin!(changed);
@@ -48,7 +49,11 @@ impl ManualSleeper {
             tokio::time::timeout_at(deadline, changed)
                 .await
                 .unwrap_or_else(|_| {
-                    panic!("{n} sleeps of {d:?} within 5 s, have {}", self.waiting(d))
+                    panic!(
+                        "{n} sleeps of {d:?}: have {} after {:?} (hang guard)",
+                        self.waiting(d),
+                        crate::HANG
+                    )
                 });
         }
     }

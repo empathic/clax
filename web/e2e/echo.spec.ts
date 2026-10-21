@@ -140,7 +140,7 @@ test("the sidebar holds its width from the first paint, so the frame is laid out
   await openArtifact(page, d.base, artifact.id, 1, "subdomain");
   await expect(page.locator("aside.sidebar .gh")).toHaveCount(3);
   expect(new Set(await page.evaluate(() => (window as unknown as { frameWidths: number[] }).frameWidths)).size).toBe(1);
-  expect((await page.locator("aside.sidebar").boundingBox())!.width).toBe(392);
+  expect((await page.locator(".drawer").boundingBox())!.width).toBe(392);
 });
 
 test("at phone width the thread list's code is fetched after the first paint, before the first Threads tap", async ({ page }) => {

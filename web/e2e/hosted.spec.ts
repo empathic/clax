@@ -13,7 +13,10 @@
 // content key guards. A fourth has a member's agent token connect over
 // /mcp/json as an MCP client, the owner's Send menu name it as the
 // member's, who approves first, and the member allow the owner from the
-// approval card in their own inbox. With CLAX_E2E_SHOTS set it writes
+// approval card in their own inbox. A daemon showing the bundled Terms of
+// Service and Privacy Policy says so under each sign-in button, serves
+// both, links them under the gallery and in the artifact view's more menu,
+// and asks a person who has not agreed. With CLAX_E2E_SHOTS set it writes
 // screenshots to target/hosted-shots/.
 import { createServer } from "node:net";
 import { type Browser, type Page } from "@playwright/test";
@@ -33,10 +36,10 @@ function freePort(): Promise<number> {
   });
 }
 
-async function hostedDaemon() {
+async function hostedDaemon(extra = "") {
   const port = await freePort();
   const origin = `http://localhost:${port}`;
-  const config = `${NO_KEY_CONFIG}[hosted]\npublic_origin = "${origin}"\nsetup_secret_env = "CLAX_E2E_SETUP_SECRET"\n`;
+  const config = `${NO_KEY_CONFIG}[hosted]\npublic_origin = "${origin}"\nsetup_secret_env = "CLAX_E2E_SETUP_SECRET"\n${extra}`;
   const d = await startDaemon({ config, port, env: { CLAX_E2E_SETUP_SECRET: SECRET } });
   test.skip(d.port !== port, `the daemon took port ${d.port}, not ${port}: its public origin would not match`);
   return { d, origin };
@@ -424,9 +427,17 @@ test("another machine's Clax signs in by device code: the page names it, warns w
     await shots(owner, "device-approved");
     // A refused automatic push, as the owner's inbox lists it.
     const item = { id: "01JA00000000000000000000PU", seq: 9, kind: "push", read: false, created_at: new Date().toISOString(), agent: null, artifact: { id: "7q3k9mzx2b4t", title: "Tide tables", kind: "html", page_url: null }, thread: null, reply: null, version: null, published: null, question: null, work: null, gone: false, url: "/a/7q3k9mzx2b4t", push: { n: 4, origin: "https://clax.example", code: "remote_moved", message: "the public copy is at version 5, past version 4 this Clax pushed last: someone published there since", url: "https://clax.example/a/k3m9q2w8x1ab" } };
-    await owner.route(/\/api\/inbox(\?.*)?$/, r => (r.request().url().includes("group=agent") ? r.continue() : r.fulfill({ json: { items: [item], next_cursor: null, unread: 1 } })));
+    // Unread lists it under its page's heading; the cards and Read are empty.
+    await owner.route(/\/api\/inbox(\?.*)?$/, r => {
+      const q = new URL(r.request().url()).searchParams;
+      if (q.get("group") === "agent") return r.continue();
+      const none = q.get("read") === "read" || q.has("kind");
+      if (q.get("group") === "artifact") return r.fulfill({ json: { groups: none ? [] : [{ artifact_id: item.artifact.id, artifact: item.artifact, total: 1, unread: 1, newest_at: item.created_at, items: [item], next_cursor: null }], next_cursor: null, unread: 1 } });
+      return r.fulfill({ json: { items: none ? [] : [item], next_cursor: null, unread: 1 } });
+    });
     await owner.goto(`${origin}/inbox`);
-    await expect(owner.locator(`[data-item="${item.id}"]`)).toContainText("https://clax.example refused v4 of Tide tables");
+    await expect(owner.locator(`.igroup[data-group="${item.artifact.id}"] .gtitle`)).toHaveText("Tide tables");
+    await expect(owner.locator(`[data-item="${item.id}"]`)).toContainText("https://clax.example refused v4");
     await expect(owner.locator(`[data-item="${item.id}"]`)).toContainText("someone published there since");
     await expect(owner.getByRole("button", { name: "Pushes" })).toBeVisible();
     await shots(owner, "inbox-push");
@@ -454,6 +465,144 @@ test("People's hosted part shows a refusal as a sentence", async ({ browser }) =
     const alert = owner.getByRole("alert");
     await expect(alert).toHaveText("Too many tokens made from this address.");
     await shots(owner, "hosted-refusal");
+  } finally {
+    await d.stop();
+  }
+});
+
+test("the bundled Terms of Service and Privacy Policy: notices, pages, links and the prompt", async ({ browser }) => {
+  const { d, origin } = await hostedDaemon('legal = "bundled"\n');
+  try {
+    const owner = await page(browser);
+    await owner.goto(`${origin}/setup?secret=${encodeURIComponent(SECRET)}`);
+    await expect(owner.getByTestId("legal-notice")).toHaveText("By setting up this Clax, you agree to the Terms of Service and the Privacy Policy.");
+    await owner.getByLabel("Your name").fill("Ada");
+    await owner.getByRole("button", { name: "Create the first person" }).click();
+    await owner.waitForURL(`${origin}/`);
+    const links = owner.getByRole("navigation", { name: "About Clax" });
+    await expect(links.getByRole("link", { name: "Terms of Service" })).toHaveAttribute("href", "/terms");
+    await expect(owner.getByTestId("legal-prompt"), "setup agreed").toHaveCount(0);
+    await shots(owner, "legal-gallery");
+
+    // The documents are public: a browser that never signed in reads both.
+    const anon = await page(browser);
+    await anon.goto(`${origin}/terms`);
+    await expect(anon.getByRole("heading", { level: 1 })).toHaveText("Terms of Service");
+    await anon.getByRole("link", { name: "Privacy Policy" }).first().click();
+    await expect(anon.getByRole("heading", { level: 1 })).toHaveText("Privacy Policy");
+    await anon.goto(`${origin}/signin`);
+    await expect(anon.getByText("Terms of Service · Privacy Policy · Source on GitHub")).toBeVisible();
+
+    // The artifact view's more menu links both.
+    const aid = (await publish(d.base, d.token, "Plan", { "index.html": "<title>Plan</title><h1>Plan</h1>" })).artifact.id;
+    await owner.goto(`${origin}/a/${aid}`);
+    await owner.getByRole("button", { name: "More" }).click();
+    await expect(owner.getByRole("menuitem", { name: "Privacy Policy" })).toHaveAttribute("href", "/privacy");
+    await owner.keyboard.press("Escape");
+
+    // A person who has not agreed to the current version (here, as the
+    // daemon would answer after a material change) is asked once, and
+    // Continue records it with the daemon.
+    await owner.route("**/api/hosted/me", async r => {
+      const res = await r.fetch();
+      const body = await res.json();
+      await r.fulfill({ response: res, json: { ...body, legal: { ...body.legal, agreed: false } } });
+    });
+    await owner.goto(`${origin}/`);
+    const prompt = owner.getByTestId("legal-prompt");
+    await expect(prompt.getByRole("dialog")).toBeVisible();
+    await shots(owner, "legal-prompt");
+    const agreed = owner.waitForResponse(r => r.url().endsWith("/api/hosted/legal/agree"));
+    await prompt.getByRole("button", { name: "Continue" }).click();
+    expect((await agreed).status()).toBe(204);
+    await expect(prompt).toHaveCount(0);
+  } finally {
+    await d.stop();
+  }
+});
+
+test("a member starts an artifact from a brief in their browser, and a reader is offered no New", async ({ browser }) => {
+  const { d, origin } = await hostedDaemon();
+  try {
+    const owner = await page(browser);
+    await owner.goto(`${origin}/setup?secret=${encodeURIComponent(SECRET)}`);
+    await owner.getByLabel("Your name").fill("Ada");
+    await owner.getByRole("button", { name: "Create the first person" }).click();
+    await owner.waitForURL(`${origin}/`);
+    await expect(owner.getByRole("button", { name: "New artifact" })).toBeVisible();
+    const invite = (name: string, rights?: unknown) => owner.evaluate(async ([n, r]) => {
+      const res = await fetch("/api/people/invites", { method: "POST", headers: { "content-type": "application/json" }, body: JSON.stringify(r ? { name: n, rights: r } : { name: n }) });
+      return (await res.json()).invite.url as string;
+    }, [name, rights] as const);
+    // Mia holds the default rights: her own space, where she creates.
+    const mia = await page(browser);
+    await mia.goto(await invite("Mia"));
+    await mia.getByRole("button", { name: "Join as Mia" }).click();
+    await mia.waitForURL(`${origin}/`);
+    await mia.getByRole("button", { name: "New artifact" }).click();
+    const form = mia.getByRole("dialog", { name: "New artifact" });
+    await form.getByLabel("Title").fill("Mia's plan");
+    await form.getByLabel("Brief").fill("A one-page plan for the launch week");
+    await form.getByRole("button", { name: "Create" }).click();
+    const who = mia.getByRole("dialog", { name: "Who builds it?" });
+    await expect(who).toContainText("No agent is connected.");
+    await expect(who.getByLabel("Prompt", { exact: true })).toContainText(`${origin}/a/`);
+    await who.getByRole("button", { name: "Open the artifact" }).click();
+    await expect(mia).toHaveURL(new RegExp(`${origin}/a/[a-z0-9]+$`));
+    await expect(mia.frameLocator("iframe.frame").locator("h1")).toHaveText("Mia's plan");
+    // The owner sees it, Mia's.
+    await owner.goto(`${origin}/`);
+    await expect(owner.locator("a.card")).toContainText("Mia's plan");
+    // Sam may read, and create nothing.
+    const sam = await page(browser);
+    await sam.goto(await invite("Sam", ["clax:reader"]));
+    await sam.getByRole("button", { name: "Join as Sam" }).click();
+    await sam.waitForURL(`${origin}/`);
+    await expect(sam.locator("a.card")).toContainText("Mia's plan");
+    await expect(sam.getByRole("button", { name: "New artifact" })).toHaveCount(0);
+  } finally {
+    await d.stop();
+  }
+});
+
+test("a member tags the artifact they made with the owner's tags, and manages none", async ({ browser }) => {
+  const { d, origin } = await hostedDaemon();
+  try {
+    const owner = await page(browser);
+    await owner.goto(`${origin}/setup?secret=${encodeURIComponent(SECRET)}`);
+    await owner.getByLabel("Your name").fill("Ada");
+    await owner.getByRole("button", { name: "Create the first person" }).click();
+    await owner.waitForURL(`${origin}/`);
+    const made = await owner.evaluate(async () => {
+      const out: number[] = [];
+      for (const [name, colour] of [["q4", "blue"], ["design", "purple"]]) out.push((await fetch("/api/tags", { method: "POST", headers: { "content-type": "application/json" }, body: JSON.stringify({ name, colour }) })).status);
+      const r = await fetch("/api/people/invites", { method: "POST", headers: { "content-type": "application/json" }, body: JSON.stringify({ name: "Mia" }) });
+      return { out, url: (await r.json()).invite.url as string };
+    });
+    expect(made.out).toEqual([201, 201]);
+    const mia = await page(browser);
+    await mia.goto(made.url);
+    await mia.getByRole("button", { name: "Join as Mia" }).click();
+    await mia.waitForURL(`${origin}/`);
+    await mia.getByRole("button", { name: "New artifact" }).click();
+    const form = mia.getByRole("dialog", { name: "New artifact" });
+    await form.getByLabel("Title").fill("Mia's plan");
+    await form.getByLabel("Brief").fill("A one-page plan");
+    await form.getByRole("button", { name: "Create" }).click();
+    await mia.getByRole("dialog", { name: "Who builds it?" }).getByRole("button", { name: "Open the artifact" }).click();
+    await expect(mia).toHaveURL(new RegExp(`${origin}/a/[a-z0-9]+$`));
+    // Mia administers what she made: she applies the owner's tags.
+    await mia.getByRole("button", { name: "Add tags" }).click();
+    const editor = mia.getByRole("dialog", { name: "Edit tags" });
+    await editor.getByRole("checkbox", { name: "q4" }).check();
+    await expect(mia.locator(".topbar .ttags a.tag")).toHaveText(["q4"]);
+    await expect(editor.getByRole("link", { name: "Manage tags" })).toHaveCount(0);
+    // The list is the owner's: Mia reads it.
+    await mia.goto(`${origin}/tags`);
+    await expect(mia.locator(".trow")).toHaveCount(2);
+    await expect(mia.locator(".tsub")).toHaveText("The owner keeps this list. You can put these tags on the artifacts you made.");
+    await expect(mia.getByRole("button", { name: "New tag" })).toHaveCount(0);
+    await expect(mia.locator(".trow button")).toHaveCount(0);
   } finally {
     await d.stop();
   }

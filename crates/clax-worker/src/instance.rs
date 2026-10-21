@@ -386,9 +386,20 @@ fn hosted(env: &Env) -> Result<Option<Arc<clax_http::hosted::Hosted>>> {
     // The public gallery that signed-out visitors see: on only with
     // `PUBLIC_GALLERY=1`.
     let public_gallery = opt("PUBLIC_GALLERY").is_some_and(|v| v == "1");
+    // The Terms of Service and Privacy Policy: `LEGAL=bundled` for the
+    // documents in docs/legal, or `TERMS_URL`, `PRIVACY_URL` and
+    // `LEGAL_VERSION` for the deployment's own; none shows none.
+    let legal = clax_core::config::Legal::from_settings(
+        opt("LEGAL").as_deref(),
+        opt("TERMS_URL").as_deref(),
+        opt("PRIVACY_URL").as_deref(),
+        opt("LEGAL_VERSION").as_deref(),
+    )
+    .map_err(rust_err)?;
     let h = h
         .with_github(github, max_artifacts)
-        .with_public_gallery(public_gallery);
+        .with_public_gallery(public_gallery)
+        .with_legal(legal);
     Ok(Some(Arc::new(h)))
 }
 

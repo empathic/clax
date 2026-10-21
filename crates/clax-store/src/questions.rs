@@ -428,6 +428,8 @@ pub(crate) const CLOSE: &str = "UPDATE questions SET status = ?3, answers_json =
     answered_via = ?5, closed_at = ?6 WHERE id = ?1 AND status = ?2";
 pub(crate) const TAKE: &str =
     "UPDATE questions SET taken_at = ?2 WHERE id = ?1 AND taken_at IS NULL";
+/// Thread `?1`'s questions are about artifact `?2`, its new page.
+pub(crate) const MOVE_THREAD: &str = "UPDATE questions SET artifact_id = ?2 WHERE thread_id = ?1";
 
 /// A row this code could not have written. The message names the column,
 /// never its content, so no question text reaches an error or a log.
@@ -1135,7 +1137,8 @@ impl Store {
     /// At daemon start: withdraws every open `hook` question, whose hook
     /// was waiting on the previous daemon. Returns their IDs. Each records
     /// `question.withdraw` (reason `daemon_start`) as `system:daemon`,
-    /// naming the asking agent in `for_actor`.
+    /// naming the asking agent in `for_actor`, and updates its inbox item
+    /// (`inbox::question_changed`).
     pub fn withdraw_hook_questions_on_start(&self) -> Result<Vec<String>> {
         self.with_tx(|tx| {
             let open = open_ids(tx, OPEN_HOOKS, [])?;
@@ -1704,6 +1707,34 @@ mod tests {
             ids(st.take_late_answers(&s, |_| false).unwrap()),
             vec![held.id.clone()]
         );
+    }
+
+    /// A withdrawal at session end or daemon start updates the question's
+    /// inbox item, as every other close does, so the inbox listener hears
+    /// of it.
+    #[test]
+    fn session_end_and_daemon_start_withdrawals_touch_the_inbox_items() {
+        let (_d, st) = store();
+        let s = session(&st, "claude", "h1");
+        let (q, _) = st
+            .create_question(DAEMON, new(&s, Source::Ask, None))
+            .unwrap();
+        let (h, _) = st
+            .create_question(DAEMON, new(&s, Source::Hook, Some("t")))
+            .unwrap();
+        let seq_of = |id: &str| -> i64 {
+            st.with_read(|c| Ok(c.query_row(crate::inbox::OF_QUESTION, [id], |r| r.get(0))?))
+                .unwrap()
+        };
+        let (q_seq, h_seq) = (seq_of(&q.id), seq_of(&h.id));
+        let heard = std::sync::Arc::new(std::sync::Mutex::new(Vec::new()));
+        let got = heard.clone();
+        st.set_inbox_listener(Box::new(move |c| got.lock().unwrap().extend(c)));
+        let seqs = || -> Vec<i64> { heard.lock().unwrap().drain(..).map(|c| c.seq).collect() };
+        st.withdraw_hook_questions_on_start().unwrap();
+        assert_eq!(seqs(), vec![h_seq], "daemon start");
+        st.end_session(DAEMON, &s).unwrap();
+        assert!(seqs().contains(&q_seq), "session end");
     }
 
     #[test]

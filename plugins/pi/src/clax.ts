@@ -1,6 +1,6 @@
 // Clax for Pi: registers the Pi session with the Clax daemon (the local one,
 // or in remote mode the daemon of the person this machine is connected to)
-// and adds the thirty Clax tools (`clax_publish`, `clax_read`, ...) and
+// and adds the thirty-two Clax tools (`clax_publish`, `clax_read`, ...) and
 // the `/clax` command. Pi has no MCP support in its extension API, so the
 // tools call the daemon's REST API directly and return the same JSON as the MCP
 // tools. It appends feedback to its tool results and long-polls for pushed
@@ -19,7 +19,7 @@ import { checkClip, CLIP_MAX_BYTES, loadRemote, rewriteClipItems, rewriteClipTex
  * over (spec §16); a clip not fetched by then reads `Clip: unavailable
  * (timed out)`. */
 export const CLIP_FETCH_MS = 5_000;
-import { binaryVersion, claxHome, discover, endpointOf, ensure, findBinary, logPath, upgradeHeld } from "./daemon.ts";
+import { binaryVersion, claxHome, discover, endpointOf, ensure, installedBinary, logPath, upgradeHeld } from "./daemon.ts";
 
 /** Default cap on the bytes `read` returns. */
 export const DEFAULT_READ_MAX_BYTES = 200_000;
@@ -68,6 +68,7 @@ const PublishArgs = Type.Object({
   capabilities: opt(Type.Record(Type.String(), Type.Unknown(), { description: "Runtime capabilities the page declares." })),
   note: opt(str("A short change note for the person, at most 280 characters.")),
   addresses: opt(Type.Array(Type.String(), { description: "IDs of the comment threads this version addresses." })),
+  tags: opt(Type.Array(Type.String(), { description: "Existing tags (names, from `tags`) to add to the artifact once published. Only the owner makes tags: an unknown one fails before anything is published, listing the tags there are." })),
 }, strict);
 
 const ReadArgs = Type.Object({
@@ -80,9 +81,25 @@ const ReadArgs = Type.Object({
 const ListArgs = Type.Object({
   limit: opt(Type.Integer({ minimum: 0, description: "Most artifacts to return." })),
   scope: opt(Type.Unsafe<"mine" | "all">({ type: "string", enum: ["mine", "all"], description: "`all` (default) lists every artifact; `mine` only those this session created." })),
+  tags: opt(Type.Array(Type.String(), { description: "Only artifacts carrying every one of these tags (names or IDs)." })),
 }, strict);
 
 const TargetArgs = Type.Object({ url_or_id: urlOrId }, strict);
+
+const TagArgs = Type.Object({
+  url_or_id: urlOrId,
+  add: opt(Type.Array(Type.String(), { description: "Existing tags (names, from `tags`) to add." })),
+  remove: opt(Type.Array(Type.String(), { description: "Tags to remove." })),
+}, strict);
+
+const TagsArgs = Type.Object({}, strict);
+
+/** The names of an artifact's `tags` (`[{id, name, colour}]`), in order. */
+const tagNames = (tags: unknown): string[] =>
+  Array.isArray(tags) ? tags.map((t: Json) => t?.name).filter((n: unknown): n is string => typeof n === "string") : [];
+
+/** Names compared as Clax compares them: lowercased. */
+const foldTag = (name: string) => name.trim().toLowerCase();
 
 const PublishPublicArgs = Type.Object({
   url_or_id: str("Artifact URL or ID (an artifact of this Clax)."),
@@ -119,7 +136,7 @@ const CommentsReadArgs = Type.Object({
 const CommentsReplyArgs = Type.Object({
   url_or_id: pageOrId,
   thread_id: threadId("The thread to reply to."),
-  text: str("The reply, shown to the person under its harness's name, such as `claude`."),
+  text: str("The reply, in Markdown, shown to the person under its harness's name, such as `claude`."),
   addressed: opt(Type.Boolean({ description: "On a live page: the page now shows the fix, so the thread is listed as addressed in the page's next snapshot. Not for artifacts (publish with `addresses` instead)." })),
 }, strict);
 
@@ -143,14 +160,14 @@ const WaitArgs = Type.Object({
 }, strict);
 
 const QOption = Type.Object({
-  label: str("1 to 100 characters, unique within the question."),
+  label: str("1 to 100 characters, unique within the question; plain text."),
   description: opt(Type.String()),
-  preview: opt(str("Text shown beside the options (a mockup or code), at most 20,000 characters.")),
+  preview: opt(str("Text shown verbatim in monospace beside the options (a mockup or code), at most 20,000 characters.")),
   recommended: opt(Type.Boolean({ description: "The option you recommend (at most one per question)." })),
 }, strict);
 
 const Question = Type.Object({
-  question: str("The question, 1 to 2,000 characters, unique within the ask."),
+  question: str("The question, 1 to 2,000 characters, unique within the ask; rendered as GitHub-flavoured Markdown, with no images and no raw HTML."),
   header: str("A short chip label, 1 to 12 characters."),
   options: opt(Type.Array(QOption, { description: "Two to four options, or none for a free-text answer." })),
   multi_select: opt(Type.Boolean({ description: "The person may pick several options." })),
@@ -367,6 +384,10 @@ function toolError(code: string, message: string, extra: Json = {}): ToolError {
 
 const invalid = (message: string) => toolError("invalid_args", message);
 
+/** The `timeout` message of a publish that creates an artifact. */
+const CREATE_TIMEOUT =
+  "the daemon did not respond in time, and the artifact may have been created: call list (newest first, after pinned artifacts) and look for it by title before publishing it again";
+
 /** An error result for an unexpected exception, so every error stays JSON. */
 function internal(e: unknown): ToolError {
   return e instanceof ToolError ? e : toolError("internal", e instanceof Error ? e.message : String(e));
@@ -433,9 +454,11 @@ export function artifactRef(urlOrId: string): { id: string; version?: number } {
 
 /** What a tool's `url_or_id` names (spec 2026-10-05 §6.2), for a daemon
  * reached at `daemonBase`: an http(s) URL on the daemon's port is an artifact
- * reference (whatever its host); any other http(s) URL is a page. An artifact
- * reference, and text without a scheme, are read as `artifactRef` reads them.
- * Anything else is `invalid_id`. */
+ * reference when its host is the daemon's (for a daemon on a local name, any
+ * host; for a daemon on any other name, that name or a subdomain of it); any
+ * other http(s) URL is a page. An artifact reference, and text
+ * without a scheme, are read as `artifactRef` reads them. Anything else is
+ * `invalid_id`. */
 export function target(urlOrId: string, daemonBase: string): { kind: "artifact"; id: string; version?: number } | { kind: "page"; url: string } {
   const s = urlOrId.trim();
   const invalidId = () => toolError("invalid_id", `'${s}' is not an artifact ID, a Clax URL, or an http(s) page URL`);
@@ -448,13 +471,56 @@ export function target(urlOrId: string, daemonBase: string): { kind: "artifact";
     }
     if (u.protocol !== "http:" && u.protocol !== "https:") throw invalidId();
     const daemonPort = portOf(daemonBase);
-    if (daemonPort === undefined || portOf(s) !== daemonPort) return { kind: "page", url: s };
+    if (daemonPort === undefined || portOf(s) !== daemonPort || !sameHost(u, daemonBase)) {
+      return { kind: "page", url: s };
+    }
   }
   try {
     return { kind: "artifact", ...artifactRef(s) };
   } catch {
     throw invalidId();
   }
+}
+
+/** Whether `u` is on the host of the daemon at `daemonBase`: any host when
+ * the daemon's is local (the machine is reached by many names, LAN and
+ * tailnet ones included, so its port alone tells), else the daemon's own
+ * name or a subdomain of it. */
+function sameHost(u: URL, daemonBase: string): boolean {
+  let d: string;
+  try {
+    d = new URL(daemonBase).hostname.replace(/\.$/, "");
+  } catch {
+    return false;
+  }
+  const h = u.hostname.replace(/\.$/, "");
+  if (isLocal(d)) return true;
+  return h === d || h.endsWith(`.${d}`);
+}
+
+/** Whether a URL's `hostname` names this machine or its local network:
+ * `localhost` and `*.localhost`, a `*.local` or single-label name, or a
+ * loopback, private, link-local or unspecified address. */
+function isLocal(hostname: string): boolean {
+  if (hostname.startsWith("[")) {
+    const ip = hostname.slice(1, -1).toLowerCase();
+    if (ip === "::1" || ip === "::") return true;
+    const first = parseInt(ip.split(":")[0] || "0", 16);
+    return (first & 0xfe00) === 0xfc00 || (first & 0xffc0) === 0xfe80;
+  }
+  const v4 = /^(\d+)\.(\d+)\.(\d+)\.(\d+)$/.exec(hostname);
+  if (v4) {
+    const [a, b] = [Number(v4[1]), Number(v4[2])];
+    return (
+      a === 127 ||
+      a === 10 ||
+      hostname === "0.0.0.0" ||
+      (a === 172 && b >= 16 && b <= 31) ||
+      (a === 192 && b === 168) ||
+      (a === 169 && b === 254)
+    );
+  }
+  return hostname === "localhost" || hostname.endsWith(".localhost") || hostname.endsWith(".local") || !hostname.includes(".");
 }
 
 /** The port of an http(s) URL, the scheme's default when none is written. */
@@ -671,6 +737,12 @@ export const MAX_DERIVED_TITLE_CHARS = 200;
 const WHITESPACE = /[\t\n\v\f\r \u0085\u00a0\u1680\u2000-\u200a\u2028\u2029\u202f\u205f\u3000]+/;
 const WHITESPACE_RUN = new RegExp(WHITESPACE.source, "g");
 const TRAILING_WHITESPACE = new RegExp(`${WHITESPACE.source}$`);
+/** What [`htmlTitle`] drops: control characters other than whitespace (as
+ * Rust's `char::is_control` and `char::is_whitespace`), and the hidden
+ * format characters of `clax_core::text::is_hidden_char` (bidi embeddings,
+ * overrides and isolates, zero-width spaces, tags; not the joiners or the
+ * direction marks). */
+const HIDDEN = /[\u0000-\u0008\u000e-\u001f\u007f-\u0084\u0086-\u009f\u00ad\u0600-\u0605\u06dd\u070f\u0890\u0891\u08e2\u180e\u200b\u202a-\u202e\u2060-\u2064\u2066-\u206f\ufeff\ufff9-\ufffb\u{110bd}\u{110cd}\u{13430}-\u{1343f}\u{1bca0}-\u{1bca3}\u{1d173}-\u{1d17a}\u{e0001}\u{e0020}-\u{e007f}]/gu;
 const BASIC_ENTITIES: Record<string, string> = { "&amp;": "&", "&lt;": "<", "&gt;": ">", "&quot;": "\"", "&apos;": "'" };
 
 /** Tags [`htmlTitle`] looks for: the title, and elements whose contents it skips. */
@@ -689,8 +761,10 @@ function tagStarts(lower: string, at: number, name: string): boolean {
  * `<svg>` elements are skipped (an unclosed one hides the rest of the page).
  * Tag names match in any case and may carry attributes; the five
  * entities `&amp;` `&lt;` `&gt;` `&quot;` `&apos;` are decoded once (any other
- * entity is kept as written); runs of whitespace become one space; the result
- * is trimmed and cut to [`MAX_DERIVED_TITLE_CHARS`] characters. `undefined`
+ * entity is kept as written); control characters other than whitespace and
+ * hidden format characters ([`HIDDEN`]) are dropped; runs of whitespace
+ * become one space; the result is trimmed and cut to
+ * [`MAX_DERIVED_TITLE_CHARS`] characters. `undefined`
  * when there is no closed `<title>` element or its text is empty. The same
  * rule as `clax_core::html_title`. */
 export function htmlTitle(html: string): string | undefined {
@@ -729,7 +803,7 @@ export function htmlTitle(html: string): string | undefined {
   }
   const bodyEnd = lower.indexOf("</title", bodyStart);
   if (bodyEnd < 0) return undefined;
-  const text = html.slice(bodyStart, bodyEnd).replace(/&(?:amp|lt|gt|quot|apos);/g, e => BASIC_ENTITIES[e] ?? e);
+  const text = html.slice(bodyStart, bodyEnd).replace(/&(?:amp|lt|gt|quot|apos);/g, e => BASIC_ENTITIES[e] ?? e).replace(HIDDEN, "");
   const joined = text.split(WHITESPACE).filter(w => w !== "").join(" ");
   const title = Array.from(joined).slice(0, MAX_DERIVED_TITLE_CHARS).join("").replace(TRAILING_WHITESPACE, "");
   return title === "" ? undefined : title;
@@ -779,14 +853,16 @@ export interface ClaxOptions {
   /** The injection loop's pause before it polls again;
    * [`INJECT_RETRY_MS`] when absent. */
   injectRetryMs?: number;
-  /** How long session_start may spend finding the daemon and registering;
-   * [`START_BUDGET_MS`] when absent. */
-  startBudgetMs?: number;
+  /** Gives, at each session_start, the signal that ends the time it may
+   * spend finding the daemon and registering (aborted: the time is spent);
+   * one that aborts [`START_BUDGET_MS`] later when absent. */
+  startBudget?: () => AbortSignal;
   /** How long session_shutdown may spend ending the session;
    * [`END_TIMEOUT_MS`] when absent. */
   endTimeoutMs?: number;
   /** The clock, in milliseconds, by which the injection loop judges whether
-   * a long-poll came back within [`INJECT_EARLY_MS`]; `Date.now` when absent. */
+   * a long-poll came back within [`INJECT_EARLY_MS`], and `publish_public`
+   * keeps within its wait; `Date.now` when absent. */
   now?: () => number;
   /** How long one remote clip fetch may take; [`CLIP_FETCH_MS`] when absent. */
   clipFetchMs?: number;
@@ -1010,9 +1086,29 @@ class Tools {
       for (const t of a.addresses) checkThreadId(t);
       body.addresses = a.addresses;
     }
+    const tags = a.tags ?? [];
+    if (tags.length > 0) await this.checkTags(c, tags);
     const res = await this.call(async () => {
-      if (targetId === undefined) return c.create(body);
-      body.if_version = a.if_version ?? Number((await c.get(targetId)).artifact?.current_version ?? 0);
+      if (targetId === undefined) {
+        try {
+          return await c.create(body);
+        } catch (e) {
+          // A create past its deadline may have made the artifact, whose ID
+          // the agent never saw: it is told to look for it before creating
+          // another.
+          if (e instanceof ClientError && e.kind === "timeout") {
+            throw toolError("timeout", CREATE_TIMEOUT, { detail: e.message, log: this.log });
+          }
+          throw e;
+        }
+      }
+      if (a.if_version === undefined) {
+        const current = (await c.get(targetId)).artifact?.current_version;
+        if (typeof current !== "number") throw new ClientError("bad_response", "the artifact has no current_version");
+        body.if_version = current;
+      } else {
+        body.if_version = a.if_version;
+      }
       try {
         return await c.publishVersion(targetId, body);
       } catch (e) {
@@ -1021,7 +1117,7 @@ class Tools {
       }
     });
     const id: string = res.artifact?.id ?? "";
-    return {
+    const out: Json = {
       artifact_id: id,
       url: this.artifactUrl(c, id),
       version: res.version?.n ?? null,
@@ -1030,7 +1126,31 @@ class Tools {
       note: res.version?.note ?? null,
       note_truncated: res.note_truncated ?? false,
       addressed: res.version?.addresses ?? [],
+      tags: tagNames(res.artifact?.tags),
     };
+    // The version is published whatever the tags' fate: a refusal is
+    // reported beside it, never as the publish's failure.
+    if (tags.length > 0) {
+      try {
+        out.tags = tagNames((await c.editTags(id, { add: tags })).tags);
+      } catch (e) {
+        out.tags_error = e instanceof ClientError && e.kind === "api" ? e.error : { message: String(e instanceof Error ? e.message : e) };
+      }
+    }
+    return out;
+  }
+
+  /** Refuses `wanted` tags that name no tag (by ID or by name, whatever its
+   * case), before a publish applies them, naming the tags there are. */
+  private async checkTags(c: DaemonClient, wanted: string[]): Promise<void> {
+    const res = await this.call(() => c.tags());
+    const all: Json[] = res.tags ?? [];
+    const known = (w: string) => all.some(t => t.id === w.trim() || (typeof t.name === "string" && foldTag(t.name) === foldTag(w)));
+    const bad = wanted.find(w => !known(w));
+    if (bad === undefined) return;
+    const names = all.map(t => t.name).filter((n: unknown) => typeof n === "string");
+    const there = names.length === 0 ? "there are no tags yet" : `the tags are: ${names.join(", ")}`;
+    throw toolError("unknown_tag", `no tag is named '${bad.trim()}': ${there}. Only the owner makes tags; nothing was published`);
   }
 
   /** The error result for a publish conflict: the daemon's error plus a summary
@@ -1083,7 +1203,8 @@ class Tools {
 
   async list(ctx: ExtensionContext, a: Static<typeof ListArgs>): Promise<Json> {
     const c = this.clientFor(ctx);
-    const res = await this.call(() => c.list());
+    const tags = a.tags ?? [];
+    const res = await this.call(() => (tags.length > 0 ? c.listTagged(tags) : c.list()));
     const sessionId = c.session()?.id;
     const mine = (x: Json) => a.scope !== "mine" || (sessionId !== undefined && x.owner_session_id === sessionId);
     const artifacts = (res.artifacts ?? []).filter(mine).slice(0, a.limit ?? Infinity).map((x: Json) => ({
@@ -1092,10 +1213,33 @@ class Tools {
       title: x.title ?? null,
       version: x.current_version ?? null,
       pinned: x.pinned ?? null,
+      tags: tagNames(x.tags),
       updated_at: x.updated_at ?? null,
       owner_session_id: x.owner_session_id ?? null,
     }));
     return { artifacts };
+  }
+
+  async tag(ctx: ExtensionContext, a: Static<typeof TagArgs>): Promise<Json> {
+    const c = this.clientFor(ctx);
+    const { id } = await this.resolveRef(c, a.url_or_id);
+    const add = a.add ?? [];
+    const remove = a.remove ?? [];
+    if (add.length === 0 && remove.length === 0) throw invalid("pass `add` or `remove` (tag names)");
+    const res = await this.call(() => c.editTags(id, { add, remove }));
+    return { artifact_id: id, tags: tagNames(res.tags), changed: res.changed ?? null };
+  }
+
+  async tags(ctx: ExtensionContext): Promise<Json> {
+    const c = this.clientFor(ctx);
+    const res = await this.call(() => c.tags());
+    const tags = (res.tags ?? []).map((t: Json) => ({
+      name: t.name ?? null,
+      colour: t.colour ?? null,
+      description: t.description ?? null,
+      count: t.count ?? null,
+    }));
+    return { tags };
   }
 
   async delete(ctx: ExtensionContext, a: Static<typeof TargetArgs>): Promise<Json> {
@@ -1133,7 +1277,8 @@ class Tools {
     const c = this.clientFor(ctx);
     const { id } = await this.resolveRef(c, a.url_or_id);
     const wait = Math.min(Math.max(a.timeout_s ?? DEFAULT_ASK_WAIT_S, MIN_WAIT_S), MAX_ASK_WAIT_S);
-    const started = Date.now();
+    const now = this.opts.now ?? (() => Date.now());
+    const started = now();
     const body: Record<string, unknown> = { remote: a.remote ?? null, mode: a.mode ?? null, question_id: a.question_id ?? null };
     for (;;) {
       const res = await this.call(() => c.push(id, body));
@@ -1148,7 +1293,7 @@ class Tools {
         };
       }
       const qid = String(res.question_id ?? "");
-      const left = Math.max(0, wait - Math.floor((Date.now() - started) / 1000));
+      const left = () => Math.max(0, wait - Math.floor((now() - started) / 1000));
       const pending = {
         status: "approval_pending",
         question_id: qid,
@@ -1156,9 +1301,20 @@ class Tools {
         call_again: true,
         note: "The person has not answered yet: call publish_public again with this question_id to keep waiting.",
       };
-      if (left === 0) return pending;
-      const q = await this.call(() => c.askWait(qid, left));
+      const waitS = left();
+      if (waitS === 0) return pending;
+      const q = await this.call(() => c.askWait(qid, waitS));
       if (q.question?.status === "open") return pending;
+      // The push after an answer starts only while the wait has time left.
+      if (left() === 0) {
+        return {
+          status: "answered",
+          question_id: qid,
+          url: res.inbox_url ?? null,
+          call_again: true,
+          note: "The person answered as this call's wait ran out: call publish_public again with this question_id to publish what they approved.",
+        };
+      }
       body.question_id = qid;
     }
   }
@@ -1188,11 +1344,19 @@ class Tools {
     if (paths.length === 0) throw invalid("pass file_path or file_paths");
     const files = paths.map(p => {
       const path = this.localPath(ctx, p);
-      return { name: basename(path) || "file", bytes: readLocal(path) };
+      return { p, name: basename(path) || "file", bytes: readLocal(path) };
     });
     const assets: Json[] = [];
-    for (const { name, bytes } of files) {
-      const res = await this.call(() => c.uploadAsset(id, name, undefined, bytes));
+    for (const { p, name, bytes } of files) {
+      let res: any;
+      try {
+        res = await this.call(() => c.uploadAsset(id, name, undefined, bytes));
+      } catch (e) {
+        // The files uploaded before this one stay uploaded: the error names
+        // them, so a retry sends only the rest.
+        if (e instanceof ToolError) throw new ToolError({ ...e.error, path: p, uploaded: assets });
+        throw e;
+      }
       const asset = res.asset ?? {};
       assets.push({
         id: asset.id ?? null,
@@ -1235,10 +1399,11 @@ class Tools {
     // Version skew between these tools and the daemon they call.
     if (h.version !== null && h.version !== VERSION) out.daemon_version = h.version ?? null;
     // Which binary the extension runs: CLAX_BIN, else the bin setting, else
-    // the pinned release (see findBinary).
+    // the pinned release (see findBinary). Status installs nothing: a pinned
+    // release not installed yet is reported as the error.
     let path: string | null = null;
     try {
-      path = await findBinary(this.home, this.env);
+      path = await installedBinary(this.home, this.env);
     } catch (e) {
       out.binary = { path: null, version: null, error: (e as Error).message };
     }
@@ -1786,12 +1951,13 @@ export function claxExtension(opts: ClaxOptions = {}): (pi: ExtensionAPI) => voi
     const wakers = new Set<() => void>();
     const wakeLoop = () => { for (const w of [...wakers]) w(); };
     const retryMs = opts.injectRetryMs ?? INJECT_RETRY_MS;
-    const startBudgetMs = opts.startBudgetMs ?? START_BUDGET_MS;
+    const startBudget = opts.startBudget ?? (() => AbortSignal.timeout(START_BUDGET_MS));
     const now = opts.now ?? (() => Date.now());
     const startInject = (c: DaemonClient) => {
       if (!live || stopInject) return;
       const abort = new AbortController();
-      stopInject = () => abort.abort();
+      const stop = () => abort.abort();
+      stopInject = stop;
       // Waits `ms` (with none, until woken), or less when the loop is stopped
       // or a wait starts or ends.
       const pause = (ms?: number) => new Promise<void>(r => {
@@ -1819,31 +1985,47 @@ export function claxExtension(opts: ClaxOptions = {}): (pi: ExtensionAPI) => voi
           }
           if (abort.signal.aborted) return;
           if (typeof res.text === "string" && res.text) {
-            pi.sendUserMessage(await tools.agentText(c, res.text), { deliverAs: "followUp" });
+            const text = await tools.agentText(c, res.text);
+            // A session that ended meanwhile (/new, /resume, /fork, quit) takes no message.
+            if (abort.signal.aborted) return;
+            pi.sendUserMessage(text, { deliverAs: "followUp" });
           } else if (waits === 0 && waitEpoch === epoch && now() - started < INJECT_EARLY_MS) {
             await pause(retryMs);
           }
         }
-      })();
+      })().catch(() => {
+        // Any throw ends the loop: Pi refusing the message once the session's
+        // runtime is stale (/new, /resume, /fork, quit), or an unexpected
+        // failure. Nothing is reported: the extension has no log of its own,
+        // and Pi's notify needs a session context the loop does not hold. A
+        // later start may begin another loop.
+        abort.abort();
+        if (stopInject === stop) stopInject = undefined;
+      });
     };
 
     // Pi awaits this handler before it continues, so registration gets at most
-    // `startBudgetMs`; the first tool call registers when this did not.
+    // the start budget; the first tool call registers when this did not.
     pi.on("session_start", async (_event, ctx) => {
       live = true;
-      let timer: NodeJS.Timeout | undefined;
-      const budget = new Promise<"timeout">(r => { timer = setTimeout(() => r("timeout"), startBudgetMs); });
+      const signal = startBudget();
+      let spent: (() => void) | undefined;
+      const budget = new Promise<"timeout">(r => {
+        spent = () => r("timeout");
+        if (signal.aborted) spent();
+        else signal.addEventListener("abort", spent, { once: true });
+      });
       try {
         const client = tools.clientFor(ctx);
-        const registered = client.ensureSession(startBudgetMs);
-        // A registration still running when the budget ends may fail later,
-        // unobserved; the injection loop starts once it succeeds.
+        const registered = client.ensureSession(signal);
+        // A registration still finding the daemon when the budget ends may
+        // fail later, unobserved; the injection loop starts once it succeeds.
         registered.then(() => startInject(client), () => undefined);
         await Promise.race([registered, budget]);
       } catch (e) {
         if (ctx.hasUI) ctx.ui.notify(`clax: no daemon yet (${e instanceof Error ? e.message : String(e)})`, "warning");
       } finally {
-        clearTimeout(timer);
+        signal.removeEventListener("abort", spent!);
       }
     });
 
@@ -1938,7 +2120,7 @@ export function claxExtension(opts: ClaxOptions = {}): (pi: ExtensionAPI) => voi
     };
 
     define("publish", "Clax publish",
-      "Publish an HTML page as a new artifact, or as a new version of an existing one (pass `id` or `url`, with `if_version`). Give the page as `html` or `file_path`, plus optional supporting `files`. Returns the artifact ID, its URL for the person, and the new version number. Add a short `note` (at most 280 characters) saying what changed, and list the comment threads this version addresses in `addresses`; threads you were marked working on are added for you. The person sees both as the version's changelog; nothing is resolved by it.",
+      "Publish an HTML page as a new artifact, or as a new version of an existing one (pass `id` or `url`, with `if_version`). Give the page as `html` or `file_path`, plus optional supporting `files`. Returns the artifact ID, its URL for the person, and the new version number. Add a short `note` (at most 280 characters) saying what changed, and list the comment threads this version addresses in `addresses`; threads you were marked working on are added for you. The person sees both as the version's changelog; nothing is resolved by it. Pass `tags` to add existing tags (see `tags`).",
       "Publish an HTML page (artifact) to the local Clax server, or a new version of one",
       PublishArgs, (ctx, a) => tools.publish(ctx, a));
     define("read", "Clax read",
@@ -1946,7 +2128,7 @@ export function claxExtension(opts: ClaxOptions = {}): (pi: ExtensionAPI) => voi
       "Read a published file of a Clax artifact version",
       ReadArgs, (ctx, a) => tools.read(ctx, a));
     define("list", "Clax list",
-      "List artifacts, pinned first and then most recently updated, with their URLs and current versions. `scope: mine` lists only those this session created.",
+      "List artifacts, pinned first and then most recently updated, with their URLs, current versions and tags. `scope: mine` lists only those this session created; `tags` only those carrying every tag named.",
       "List Clax artifacts with their URLs and current versions",
       ListArgs, (ctx, a) => tools.list(ctx, a));
     define("delete", "Clax delete", "Delete an artifact and all its versions.",
@@ -1969,6 +2151,14 @@ export function claxExtension(opts: ClaxOptions = {}): (pi: ExtensionAPI) => voi
     define("unpin", "Clax unpin", "Unpin an artifact.",
       "Unpin a Clax artifact",
       TargetArgs, (ctx, a) => tools.setPinned(ctx, a, false));
+    define("tag", "Clax tag",
+      "Add or remove tags on an artifact. Tags are the owner's list (see `tags`); only existing tags apply, and an unknown one fails, listing the tags there are. Needs the right to administer the artifact: its owner, its maker, and their agents. Returns the artifact's tags after.",
+      "Add or remove a Clax artifact's tags",
+      TagArgs, (ctx, a) => tools.tag(ctx, a));
+    define("tags", "Clax tags",
+      "List the tags artifacts can carry: each one's name, colour, description and how many artifacts you can see carry it. Only the owner makes and changes tags; apply them with `tag` or `publish`'s `tags`.",
+      "List the tags Clax artifacts can carry",
+      TagsArgs, ctx => tools.tags(ctx));
     define("asset_upload", "Clax asset upload",
       "Upload local files (images, video, fonts, data) as assets of an artifact. Returns each asset's URL for the page to reference.",
       "Upload local files as assets of a Clax artifact and get URLs for the page",
@@ -1982,7 +2172,7 @@ export function claxExtension(opts: ClaxOptions = {}): (pi: ExtensionAPI) => voi
       "Read the comment threads on a Clax artifact, with anchors and screenshot clips",
       CommentsReadArgs, (ctx, a) => tools.commentsRead(ctx, a));
     define("comments_reply", "Clax comments reply",
-      "Reply to a comment thread as the agent; people and agents read its author as your name, your person and your harness, such as `clax-claude (agent, via claude)`. Only threads the person sent to the agent accept agent replies: on other threads the result has `replied: false` and `guidance`, and nothing is written. On a live page, pass `addressed: true` once the page shows your fix.",
+      "Reply to a comment thread as the agent; people and agents read its author as your name, your person and your harness, such as `clax-claude (agent, via claude)`. Only threads the person sent to the agent accept agent replies: on other threads the result has `replied: false` and `guidance`, and nothing is written. On a live page, pass `addressed: true` once the page shows your fix. The reply renders as GitHub-flavoured Markdown (lists, code blocks, tables, links), with no images and no raw HTML: an image shows as a link and HTML as its text.",
       "Reply to a Clax comment thread that was sent to you",
       CommentsReplyArgs, (ctx, a) => tools.commentsReply(ctx, a));
     define("comments_resolve", "Clax comments resolve",
@@ -2043,7 +2233,7 @@ export function claxExtension(opts: ClaxOptions = {}): (pi: ExtensionAPI) => voi
       DbBatchArgs, (ctx, a) => tools.dbBatch(ctx, a));
 
     define("ask", "Clax ask",
-      "Ask the person one to four questions in Clax and wait for the answers (up to `timeout_s`, default 600 s). Each question has a short `header` (at most 12 characters) and two to four `options` (`label`, optional `description`, `preview` text, `recommended`) or none for a free-text answer; `multi_select` allows several; the person may also type an \"Other\" answer. Pass `url_or_id` when the question is about a page, and `thread_id` when it arose in one of its threads, so it shows there. With `in_terminal: true`, sending each question's `question` and `header` only, it asks nothing: it shows the person in Clax that you are asking in the terminal, returns at once, and you cancel it once they answer. If the result says `call_again`, call `ask` again with `question_id`. The answers come back in `reply`, in the person's own words; write the result's `tell_terminal` line in chat. To ask your person to let you see content withheld from you, pass `approval` (`url_or_id`, optional `thread_id`, and `author`, a public ID from the `withheld` summary's `author_ids`) instead of `questions`: the result's `status` is `approved`, `declined` or `open` (then call again with `approval_id`).",
+      "Ask the person one to four questions in Clax and wait for the answers (up to `timeout_s`, default 600 s). Each question has a short `header` (at most 12 characters) and two to four `options` (`label`, optional `description`, `preview` text, `recommended`) or none for a free-text answer; `multi_select` allows several; the person may also type an \"Other\" answer. A question's text renders as GitHub-flavoured Markdown, with no images and no raw HTML; option labels and descriptions show as plain text, and a preview verbatim in monospace. Pass `url_or_id` when the question is about a page, and `thread_id` when it arose in one of its threads, so it shows there. With `in_terminal: true`, sending each question's `question` and `header` only, it asks nothing: it shows the person in Clax that you are asking in the terminal, returns at once, and you cancel it once they answer. If the result says `call_again`, call `ask` again with `question_id`. The answers come back in `reply`, in the person's own words; write the result's `tell_terminal` line in chat. To ask your person to let you see content withheld from you, pass `approval` (`url_or_id`, optional `thread_id`, and `author`, a public ID from the `withheld` summary's `author_ids`) instead of `questions`: the result's `status` is `approved`, `declined` or `open` (then call again with `approval_id`).",
       "Ask the person questions in Clax and wait for their answers",
       AskArgs, (ctx, a) => tools.ask(ctx, a));
     define("where_to_ask", "Clax where to ask",

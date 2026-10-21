@@ -143,6 +143,9 @@ export class CommentMode {
   private swallowTap = false;
   private readonly chip: HTMLElement;
   private readonly confirmDrag: () => boolean;
+  /** The inline `cursor` the page had on <html> before the mode's crosshair,
+   * given back when the mode ends. */
+  private cursorBefore: { value: string; priority: string } | null = null;
 
   /** `opts.trustedOnly` (default true) ignores events the page dispatched
    * itself; tests that synthesise input turn it off. `opts.shadow`
@@ -201,7 +204,16 @@ export class CommentMode {
     this.swallowTap = false;
     this.dropOffer();
     this.setGuard(on);
-    this.doc.documentElement.style.cursor = on ? "crosshair" : "";
+    const style = this.doc.documentElement.style;
+    if (on) {
+      this.cursorBefore = { value: style.getPropertyValue("cursor"), priority: style.getPropertyPriority("cursor") };
+      style.setProperty("cursor", "crosshair");
+    } else if (this.cursorBefore?.value) {
+      style.setProperty("cursor", this.cursorBefore.value, this.cursorBefore.priority);
+    } else {
+      style.removeProperty("cursor");
+    }
+    if (!on) this.cursorBefore = null;
     if (on) this.ensureLast();
     this.suppressClick = false;
     this.endTouchWait();

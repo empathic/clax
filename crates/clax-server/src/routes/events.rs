@@ -179,7 +179,8 @@ pub async fn events(
         // stream topics carry them. A delivery state is its reader's alone (spec
         // 2026-10-08 §10): only `/api/stream` carries it, to its reader.
         // Drafts go to people's streams alone (their tokens are
-        // capabilities, never an agent's).
+        // capabilities, never an agent's). Tag changes reach the gallery's
+        // and artifacts' stream topics alone.
         if matches!(
             ev,
             Event::Site { .. }
@@ -192,6 +193,7 @@ pub async fn events(
                 | Event::Agents { .. }
                 | Event::Job { .. }
                 | Event::JobsOwner { .. }
+                | Event::Tags { .. }
                 | Event::FeedbackState { .. }
         ) {
             return false;

@@ -5,6 +5,7 @@
 import type { CardPerson, InboxApproval, InboxItem, QAgent } from "../api";
 import { agentLabel, answerText, cutHeader } from "./model";
 import { whose } from "../view/working-model";
+import { plainText } from "../view/md-load.svelte";
 
 /** The newest `seq` of `items`, the `upto` of a mark-all over what was
  * shown; 0 when none was shown, which marks nothing. */
@@ -45,19 +46,21 @@ function named(a: QAgent | null, others: InboxItem[]): string {
 }
 
 /** An item's title: who did what, on which page ("claude replied on
- * Quarterly Review"). `others` are the items listed beside it, which
- * decide whether an agent is named by its harness alone. */
-export function itemTitle(i: InboxItem, others: InboxItem[] = []): string {
+ * Quarterly Review"), or without the page under its page's heading
+ * (`page: false`: "claude replied"). `others` are the items listed beside
+ * it, which decide whether an agent is named by its harness alone. */
+export function itemTitle(i: InboxItem, others: InboxItem[] = [], { page = true } = {}): string {
+  const on = (pre: string) => (page ? `${pre}${pageOf(i)}` : "");
   // A reply that came from a remote is named by its author there.
   const who = i.kind === "reply" && !i.agent && i.linked?.author ? i.linked.author : named(i.agent, others);
   switch (i.kind) {
-    case "reply": return `${who} replied on ${pageOf(i)}`;
+    case "reply": return `${who} replied${on(" on ")}`;
     case "version": {
       const n = i.version?.addressed.length ?? 0;
       const addressed = n ? ` · addressed ${n === 1 ? "1 of your threads" : `${n} of your threads`}` : "";
-      return `${who} published v${i.version?.n ?? "?"} of ${pageOf(i)}${addressed}`;
+      return `${who} published v${i.version?.n ?? "?"}${on(" of ")}${addressed}`;
     }
-    case "published": return `${who} published ${pageOf(i)}`;
+    case "published": return `${who} published ${page ? pageOf(i) : "the page"}`;
     case "question": {
       const headers = i.question?.questions.map(s => cutHeader(s.header)).join(", ");
       // A withdrawn question stays unread (its person did not answer it),
@@ -65,7 +68,7 @@ export function itemTitle(i: InboxItem, others: InboxItem[] = []): string {
       if (i.question?.status === "withdrawn") return headers ? `${who} withdrew its question: ${headers}` : `${who} withdrew a question`;
       return headers ? `${who} asks: ${headers}` : `${who} asked a question`;
     }
-    case "finished": return `${who} finished on ${pageOf(i)}`;
+    case "finished": return `${who} finished${on(" on ")}`;
     case "connection": {
       const c = i.connection;
       if (!c) return "A connection request";
@@ -79,7 +82,7 @@ export function itemTitle(i: InboxItem, others: InboxItem[] = []): string {
       return `${personName(a.author)} wants to reach your ${a.agent ? `agent ${a.agent.name}` : "agents"}`;
     }
     case "ended": return `${who} ended`;
-    case "push": return `${i.push?.origin ?? "A public Clax"} refused v${i.push?.n ?? "?"} of ${pageOf(i)}`;
+    case "push": return `${i.push?.origin ?? "A public Clax"} refused v${i.push?.n ?? "?"}${on(" of ")}`;
   }
 }
 
@@ -87,16 +90,16 @@ export function itemTitle(i: InboxItem, others: InboxItem[] = []): string {
 const answersText = (q: NonNullable<InboxItem["question"]>): string | null =>
   q.answers && q.questions.map((s, n) => `${cutHeader(s.header)}: ${answerText(q, n)}`).join(" · ");
 
-/** An item's text on one line: the reply's body, the version's note, the
+/** An item's text on one line: the reply's body as text (`plainText`), the version's note, the
  * new artifact's description, the answers to a question (else its first
- * question), what an approval request holds, a connecting machine's key,
+ * question, as text), what an approval request holds, a connecting machine's key,
  * the finished work's message, or what an ended agent's end cleaned up;
  * "" when it has none. */
 export function itemText(i: InboxItem): string {
-  const t = i.kind === "reply" ? i.reply?.body
+  const t = i.kind === "reply" ? (i.reply?.body ? plainText(i.reply.body) : null)
     : i.kind === "version" ? i.version?.note
     : i.kind === "published" ? i.published?.description
-    : i.kind === "question" ? (i.question && answersText(i.question)) ?? i.question?.questions[0]?.question
+    : i.kind === "question" ? (i.question && answersText(i.question)) ?? (q => q && plainText(q))(i.question?.questions[0]?.question)
     : i.kind === "approval" ? ((a => a && heldText(i, a))(approvalOf(i)))
     : i.kind === "connection" ? (i.connection?.client.key ? `Key ${i.connection.client.key}` : null)
     : i.kind === "finished" ? i.work?.message

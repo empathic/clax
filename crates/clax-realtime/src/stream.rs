@@ -207,6 +207,17 @@ impl Topic {
         }
     }
 
+    /// The other variant of an `artifact:<id>` topic ([`Topic::Artifact`]
+    /// for [`Topic::ArtifactQuiet`] and back), which has the same name: a
+    /// stream holds at most one of the two.
+    fn twin(&self) -> Option<Topic> {
+        match self {
+            Topic::Artifact(a) => Some(Topic::ArtifactQuiet(a.clone())),
+            Topic::ArtifactQuiet(a) => Some(Topic::Artifact(a.clone())),
+            _ => None,
+        }
+    }
+
     /// This topic as a subscriber who may not read its artifact's comments
     /// holds it: `artifact:<id>` becomes [`Topic::ArtifactQuiet`]; the
     /// others are unchanged (none of them carries comments).
@@ -386,8 +397,13 @@ struct Item {
 struct Shared {
     /// Topics that fell behind, with the sequence of the first event dropped.
     lagged: Mutex<Vec<(Arc<str>, u64)>>,
+    /// Topics the stream left when its seat was released while its queue
+    /// was full ([`Hub::unseat`]): each topic, its `unseated` block and the
+    /// sequence at the release.
+    unseated: Mutex<Vec<(Arc<str>, Bytes, u64)>>,
     notify: Notify,
-    /// Set when a frame is queued or a topic falls behind, cleared by
+    /// Set when a frame is queued, a topic falls behind or is left
+    /// unannounced, cleared by
     /// [`Conn::drain`]: whether the connection has anything to take.
     pending: std::sync::atomic::AtomicBool,
     /// Set by [`Hub::nudge`]: the connection sends a keep-alive now.
@@ -398,6 +414,21 @@ impl Shared {
     fn mark_pending(&self) {
         self.pending
             .store(true, std::sync::atomic::Ordering::Release);
+    }
+
+    /// Whether a topic fell behind or was left unannounced since the
+    /// connection last looked.
+    fn out_of_band(&self) -> bool {
+        !self
+            .lagged
+            .lock()
+            .unwrap_or_else(|e| e.into_inner())
+            .is_empty()
+            || !self
+                .unseated
+                .lock()
+                .unwrap_or_else(|e| e.into_inner())
+                .is_empty()
     }
 }
 
@@ -776,6 +807,17 @@ fn routes_loud(ev: &Event) -> Vec<(Chan, Gate)> {
         }
         Event::People { .. } => vec![(Chan::People, Gate::Any)],
         Event::Job { .. } | Event::JobsOwner { .. } => vec![(Chan::Jobs, Gate::Any)],
+        // Tag names are the owner's, shown with every artifact anyone sees;
+        // the event carries no name, only what to refetch.
+        Event::Tags {
+            artifact_id,
+            carriers,
+        } => artifact_id
+            .iter()
+            .chain(carriers)
+            .map(|a| (Chan::Artifact(a.clone()), Gate::Any))
+            .chain([(Chan::Gallery, Gate::Any)])
+            .collect(),
         // An agent started, ended or was renamed: the roster, and the Send
         // menus of the artifacts it watched.
         Event::Agents { artifacts } => artifacts
@@ -919,6 +961,10 @@ fn project(
             }
             json!({"topic": topic, "artifact_id": artifact_id, "people": changed, "gone": gone})
         }
+        // On an artifact's topic, a list change names that artifact.
+        (Event::Tags { .. }, Chan::Artifact(a) | Chan::ArtifactQuiet(a)) => {
+            json!({"topic": topic, "type": "tags", "artifact_id": a})
+        }
         _ => with_topic(topic, serde_json::to_value(ev).ok()?),
     };
     Some((ev.name(), data))
@@ -1039,6 +1085,9 @@ impl Hub {
     /// Stream `id`'s seat on `aid` was released (`code`: why): the stream
     /// leaves the artifact's live topics, and an attached one is sent
     /// `unseated` (`{topic, code}`) for each, so its page turns spectator.
+    /// A full queue does not lose it: the connection takes it out of band,
+    /// as it takes `resync`, before the topic's events still queued, which
+    /// it then skips. A topic it leaves is no longer `resync`ed.
     pub fn unseat(&self, id: &str, aid: &str, code: &str) {
         let mut g = self.lock();
         let seq = g.seq;
@@ -1063,14 +1112,29 @@ impl Hub {
                 s.key,
                 &t.chans(&s.caller, s.person.as_deref(), s.drafts),
             );
-            if let Some(tx) = &s.tx
-                && tx
-                    .try_send(Arc::new(unseated_item(seq, &t.name(), code)))
-                    .is_ok()
-            {
-                s.shared.mark_pending();
-                queued = true;
+            let name = t.name();
+            s.shared
+                .lagged
+                .lock()
+                .unwrap_or_else(|e| e.into_inner())
+                .retain(|(l, _)| **l != *name);
+            let Some(tx) = &s.tx else { continue };
+            match tx.try_send(Arc::new(unseated_item(seq, &name, code))) {
+                Ok(()) => {}
+                Err(mpsc::error::TrySendError::Full(_)) => {
+                    let mut block = unseated_frame(&name, code).to_vec();
+                    block.push(b'\n');
+                    s.shared
+                        .unseated
+                        .lock()
+                        .unwrap_or_else(|e| e.into_inner())
+                        .push((name.into(), Bytes::from(block), seq));
+                    s.shared.notify.notify_one();
+                }
+                Err(mpsc::error::TrySendError::Closed(_)) => continue,
             }
+            s.shared.mark_pending();
+            queued = true;
         }
         if let Some(seats) = seats {
             seats.leave(aid, &seat_conn(id));
@@ -1402,11 +1466,14 @@ impl Hub {
             .get_mut(id)
             .filter(|s| s.caller == *caller && s.credential.as_deref() == credential)
             .ok_or(SubError::UnknownStream)?;
+        // By name: an `artifact:<id>` topic added in its other variant
+        // replaces the one held.
         let after = s
             .topics
             .keys()
             .filter(|t| !remove.contains(t))
-            .chain(add.iter().filter(|t| !s.topics.contains_key(t)))
+            .chain(add.iter())
+            .map(Topic::name)
             .collect::<std::collections::BTreeSet<_>>()
             .len();
         if after > MAX_TOPICS {
@@ -1444,6 +1511,17 @@ impl Hub {
         for t in add {
             if s.topics.contains_key(t) {
                 continue;
+            }
+            // The newer variant of an `artifact:<id>` topic is held alone:
+            // it reflects whether the comments are the caller's to read now.
+            if let Some(twin) = t.twin()
+                && s.topics.remove(&twin).is_some()
+            {
+                leave(
+                    chans,
+                    s.key,
+                    &twin.chans(&s.caller, s.person.as_deref(), s.drafts),
+                );
             }
             s.topics.insert(t.clone(), seq);
             for c in t.chans(&s.caller, s.person.as_deref(), s.drafts) {
@@ -1902,7 +1980,8 @@ impl Conn {
     /// Takes every frame the connection has now, without waiting: what
     /// [`Conn::next`] would hand out before it next waits (the `ready` and
     /// prelude first, then each queued event with its `id:` line, `resync`
-    /// for a topic fallen behind), each frame a whole SSE block ending in a
+    /// for a topic fallen behind, `unseated` for a topic left while the
+    /// queue was full), each frame a whole SSE block ending in a
     /// blank line. No keep-alive is made: the host keeps its connection
     /// alive its own way. `None` once the stream has ended (a newer
     /// connection took it over, or the extension credential it was opened
@@ -1919,13 +1998,7 @@ impl Conn {
         let mut block = Vec::new();
         let mut ended = false;
         loop {
-            let lagged = !self
-                .shared
-                .lagged
-                .lock()
-                .unwrap_or_else(|e| e.into_inner())
-                .is_empty();
-            if lagged {
+            if self.shared.out_of_band() {
                 self.take_lagged();
             }
             if let Some(b) = self.out.pop_front() {
@@ -1970,7 +2043,22 @@ impl Conn {
         &self.id
     }
 
+    /// Takes what reached the stream out of band: each topic left while
+    /// the queue was full (its events still queued are skipped), then each
+    /// topic fallen behind.
     fn take_lagged(&mut self) {
+        let unseated = std::mem::take(
+            &mut *self
+                .shared
+                .unseated
+                .lock()
+                .unwrap_or_else(|e| e.into_inner()),
+        );
+        for (topic, block, seq) in unseated {
+            self.out.push_back(block);
+            let d = self.dropped.entry(topic).or_insert(seq);
+            *d = (*d).max(seq);
+        }
         let lagged =
             std::mem::take(&mut *self.shared.lagged.lock().unwrap_or_else(|e| e.into_inner()));
         for (topic, seq) in lagged {
@@ -2398,6 +2486,51 @@ mod tests {
     }
 
     #[test]
+    fn an_artifact_topic_is_held_loud_or_quiet_never_both() {
+        let hub = Hub::new(Default::default());
+        let c = viewer(Level::View, None);
+        let mut o = hub.open(c.clone(), true, None, None);
+        let thread = || Event::Thread {
+            artifact_id: A.into(),
+            thread: json!({"id": "t1", "status": "open", "sent_to_agent": false,
+                "comments": [{"id": "c1", "body": "words", "created_at": "x"}]}),
+        };
+        hub.update(&o.id, &c, &[Topic::Artifact(A.into())], &[])
+            .unwrap();
+        let (_, names) = hub
+            .update(&o.id, &c, &[Topic::ArtifactQuiet(A.into())], &[])
+            .unwrap();
+        assert_eq!(names, vec!["artifact:7q3k9mzx2b4t".to_string()]);
+        hub.dispatch(&version(2));
+        hub.dispatch(&thread());
+        let got = drain(&mut o);
+        assert_eq!(got.len(), 1, "one version frame and no thread: {got:?}");
+        assert!(
+            got[0].1.starts_with(
+                "event: version
+"
+            ),
+            "{}",
+            got[0].1
+        );
+        // Back to loud: thread events reach it again, still once each.
+        hub.update(&o.id, &c, &[Topic::Artifact(A.into())], &[])
+            .unwrap();
+        hub.dispatch(&version(3));
+        hub.dispatch(&thread());
+        let got = drain(&mut o);
+        assert_eq!(got.len(), 2, "{got:?}");
+        assert!(
+            got[1].1.starts_with(
+                "event: thread
+"
+            ),
+            "{}",
+            got[1].1
+        );
+    }
+
+    #[test]
     fn a_full_queue_marks_the_topic_behind_and_stops_offering_it() {
         let hub = Hub::new(Default::default());
         let c = viewer(Level::View, None);
@@ -2419,6 +2552,73 @@ mod tests {
         hub.clear_lag(&o.id, o.epoch, "artifact:7q3k9mzx2b4t");
         hub.dispatch(&version(999));
         assert_eq!(drain(&mut o).len(), 1);
+    }
+
+    #[tokio::test]
+    async fn a_full_queue_still_hears_it_was_unseated_and_no_resync_after() {
+        let hub = Hub::new(Default::default());
+        let c = viewer(Level::Interact, Some("p1"));
+        let o = hub.open(c.clone(), true, None, None);
+        let id = o.id.clone();
+        hub.update(
+            &id,
+            &c,
+            &[
+                Topic::Artifact(A.into()),
+                Topic::Presence(A.into()),
+                Topic::Gallery,
+            ],
+            &[],
+        )
+        .unwrap();
+        let (_tx, shutdown) = tokio::sync::watch::channel(false);
+        let mut conn = Conn::new(hub.clone(), o, Duration::from_secs(15), shutdown);
+        // The `ready` frame, then a queue filled past its bound.
+        conn.drain().unwrap();
+        for n in 0..(QUEUE as u32 + 4) {
+            hub.dispatch(&version(n));
+        }
+        hub.unseat(&id, A, "idle");
+        assert!(!hub.holds_live(&id, A));
+        hub.dispatch(&version(999));
+        let frames: Vec<String> = conn
+            .drain()
+            .unwrap()
+            .iter()
+            .map(|b| String::from_utf8_lossy(b).to_string())
+            .collect();
+        let unseated: Vec<&String> = frames
+            .iter()
+            .filter(|f| f.starts_with("event: unseated\n"))
+            .collect();
+        assert_eq!(unseated.len(), 2, "{frames:?}");
+        assert!(
+            unseated.iter().any(|f| f.contains("artifact:7q3k9mzx2b4t")),
+            "{unseated:?}"
+        );
+        assert!(
+            unseated
+                .iter()
+                .all(|f| f.contains("idle") && f.ends_with("\n\n"))
+        );
+        assert!(
+            !frames
+                .iter()
+                .any(|f| f.starts_with("event: resync") && f.contains("artifact:")),
+            "no resync for a topic the stream left: {frames:?}"
+        );
+        assert!(
+            !frames
+                .iter()
+                .any(|f| f.contains("\"topic\":\"artifact:") && f.starts_with("event: version")),
+            "the left topic's queued events are skipped: {frames:?}"
+        );
+        assert!(
+            frames
+                .iter()
+                .any(|f| f.starts_with("event: resync") && f.contains("gallery")),
+            "the gallery fell behind and is resynced: {frames:?}"
+        );
     }
 
     #[test]
@@ -2970,6 +3170,65 @@ mod tests {
             got[0].1
         );
         assert!(drain(&mut q).is_empty(), "no other topic carries people");
+    }
+
+    #[test]
+    fn tag_changes_reach_the_gallery_and_the_artifacts_topic() {
+        let hub = Hub::new(Default::default());
+        let c = viewer(Level::Interact, Some("u_sam"));
+        let mut g = hub.open_for(c.clone(), true, None, None, Some("u_sam".into()));
+        let mut a = hub.open_for(c.clone(), true, None, None, Some("u_sam".into()));
+        let mut other = hub.open_for(c.clone(), true, None, None, Some("u_sam".into()));
+        hub.update(&g.id, &c, &[Topic::Gallery], &[]).unwrap();
+        hub.update(&a.id, &c, &[Topic::Artifact(A.into())], &[])
+            .unwrap();
+        hub.update(
+            &other.id,
+            &c,
+            &[Topic::Artifact("8q3k9mzx2b4t".into())],
+            &[],
+        )
+        .unwrap();
+        hub.dispatch(&Event::Tags {
+            artifact_id: Some(A.into()),
+            carriers: vec![],
+        });
+        hub.dispatch(&Event::Tags {
+            artifact_id: None,
+            carriers: vec![],
+        });
+        let got = drain(&mut g);
+        assert_eq!(got.len(), 2, "{got:?}");
+        assert!(got[0].1.starts_with("event: tags\n"), "{}", got[0].1);
+        assert!(
+            got[0].1.contains(&format!(r#""artifact_id":"{A}""#)),
+            "{}",
+            got[0].1
+        );
+        assert!(got[1].1.contains(r#""artifact_id":null"#), "{}", got[1].1);
+        let got = drain(&mut a);
+        assert_eq!(got.len(), 1, "a list change with no carrier: {got:?}");
+        assert!(got[0].1.contains(r#""topic":"artifact:"#), "{}", got[0].1);
+        assert!(drain(&mut other).is_empty());
+        // A list change reaches each carrier's topic, naming it there, so a
+        // page whose stream holds no gallery (a hosted member who reads
+        // only some artifacts) refetches too.
+        hub.dispatch(&Event::Tags {
+            artifact_id: None,
+            carriers: vec![A.into()],
+        });
+        let got = drain(&mut a);
+        assert_eq!(got.len(), 1, "{got:?}");
+        assert!(got[0].1.starts_with("event: tags\n"), "{}", got[0].1);
+        assert!(
+            got[0].1.contains(&format!(r#""artifact_id":"{A}""#)),
+            "{}",
+            got[0].1
+        );
+        let got = drain(&mut g);
+        assert_eq!(got.len(), 1, "{got:?}");
+        assert!(got[0].1.contains(r#""artifact_id":null"#), "{}", got[0].1);
+        assert!(drain(&mut other).is_empty());
     }
 
     #[test]

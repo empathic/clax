@@ -151,7 +151,7 @@ pub async fn add(
             ),
         ));
     }
-    let sign_in = public::sendable(public::start_sign_in(&origin, &machine)).await?;
+    let sign_in = clax_rt::sendable(public::start_sign_in(&origin, &machine)).await?;
     let r = s
         .store_call(move |st| st.add_pending_remote(&origin, &name, &sign_in))
         .await?;
@@ -190,7 +190,7 @@ pub async fn poll(
     who.require_owner("publishes to a public Clax")?;
     asker(&s, &d).await?;
     let r = remote_named(&s, path(id)?).await?;
-    let (status, shown) = match public::sendable(public::poll_sign_in(&s, &r)).await? {
+    let (status, shown) = match clax_rt::sendable(public::poll_sign_in(&s, &r)).await? {
         SignIn::Waiting => ("pending", r),
         SignIn::Refused("access_denied") => ("denied", r),
         SignIn::Refused(_) => ("expired", r),
@@ -251,7 +251,7 @@ pub async fn remove(
     let id = r.id.clone();
     let token = s.store_call(move |st| st.remote_token(&id)).await?;
     let revoked = match token {
-        Some(t) => match public::sendable(public::revoke(&r, t)).await {
+        Some(t) => match clax_rt::sendable(public::revoke(&r, t)).await {
             Ok(()) => true,
             Err(e) => {
                 tracing::warn!(remote = r.name.as_str(), code = e.code, "token not revoked");
@@ -268,14 +268,15 @@ pub async fn remove(
 
 /// `GET /api/artifacts/<aid>/remotes` → `{links: [{remote_id, remote_name,
 /// origin, url, pushed_n, remote_n, auto, behind, download_only, sync,
-/// pending, failed, failed_questions}], remotes, unsent}`: the artifact's
-/// public twins (`behind`: local versions not pushed yet; `download_only`:
-/// local threads stay local; `sync`: how its linked threads' sync stands,
-/// with `unreachable_since`; `pending` and `failed`: its writes waiting to
-/// go up, and those not sent; `failed_questions`: its open questions whose
-/// copies were not sent, which Retry sends too), every connected remote,
-/// and `unsent`: the
-/// writes not sent to a remote the artifact is no longer linked to, which
+/// read_error, pending, failed, failed_questions}], remotes, unsent}`: the
+/// artifact's public twins (`behind`: local versions not pushed yet;
+/// `download_only`: local threads stay local; `sync`: how its remote's
+/// linked-threads sync stands, with `unreachable_since`; `read_error`: what
+/// the last cycle could not read of this link's threads, `null` when it
+/// read them all; `pending` and `failed`: its writes waiting to go up, and
+/// those not sent; `failed_questions`: its open questions whose copies were
+/// not sent, which Retry sends too), every connected remote, and `unsent`:
+/// the writes not sent to a remote the artifact is no longer linked to, which
 /// the owner may drop (`POST /api/artifacts/<aid>/unsent:drop`).
 pub async fn for_artifact(
     State(s): State<AppState>,
@@ -343,6 +344,7 @@ pub async fn for_artifact(
                 "pushed_at": l.pushed_at,
                 "download_only": l.download_only,
                 "sync": s.linked.status(&l.remote_id),
+                "read_error": s.linked.read_error(&l.artifact_id, &l.remote_id),
                 "pending": pending,
                 "failed": failed,
                 "failed_questions": failed_questions,
@@ -614,7 +616,7 @@ pub async fn push(
             }
         }
     };
-    let pushed = public::sendable(public::push(&s, &id, &remote, mode, auto, upto)).await?;
+    let pushed = clax_rt::sendable(public::push(&s, &id, &remote, mode, auto, upto)).await?;
     Ok(Json(json!({
         "status": "pushed",
         "url": pushed.link.url,

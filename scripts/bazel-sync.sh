@@ -25,7 +25,8 @@
 # Sources and third-party dependencies need no step: BUILD files glob the
 # former and take the latter from Cargo.toml through crate_universe.
 #
-# BAZEL_SYNC_BAZEL names the bazel command (default bazelisk); the test
+# BAZEL_SYNC_BAZEL names the bazel command (by default Bazelisk, or a bazel
+# at the version .bazelversion names, as scripts/run.sh picks); the test
 # (scripts/bazel-sync.test.sh) sets it to a fake.
 
 set -euo pipefail
@@ -38,6 +39,18 @@ case "${1:-}" in
     --check) mode=check ;;
     *) echo "usage: $0 [--check]" >&2; exit 2 ;;
 esac
+
+# Bazel as scripts/run.sh picks it: Bazelisk, or a bazel at .bazelversion.
+bazel="${BAZEL_SYNC_BAZEL:-}"
+if [ -z "$bazel" ]; then
+    # shellcheck source=scripts/lib/build-system.sh
+    . scripts/lib/build-system.sh
+    if ! _bazel_usable; then
+        echo "error: $_bazel_why; install Bazelisk: $(build_system_install_hint)" >&2
+        exit 1
+    fi
+    bazel="$BAZEL"
+fi
 
 stale=0
 _stale() {
@@ -94,15 +107,6 @@ if ! grep -q "versions = \[\"$cargo_rust\"\]" MODULE.bazel; then
     echo "error: MODULE.bazel does not build with Rust $cargo_rust (rust-toolchain.toml);" \
         "set rust.toolchain's versions, rustfmt_version and sha256s to it" >&2
     stale=1
-fi
-
-bazel="${BAZEL_SYNC_BAZEL:-}"
-if [ -z "$bazel" ]; then
-    bazel="$(command -v bazelisk || command -v bazel || true)"
-fi
-if [ -z "$bazel" ]; then
-    echo "error: bazelisk not found; install it (brew install bazelisk)" >&2
-    exit 1
 fi
 
 # The lockfile records the hashes of Cargo.toml, Cargo.lock and each

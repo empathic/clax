@@ -1143,9 +1143,9 @@ async fn an_answer_a_question_poll_holds_reaches_only_that_poll() {
         ts.base
     )));
     let ask = tokio::spawn(async move { req.send().await });
-    // Past its first read, which found the question open: the close below
-    // does not wake it.
-    ts.wait_question_parked(&qid, 1).await;
+    // Closed only once the poll has read the question open and waits:
+    // closed before that read, the poll would take the answer itself.
+    ts.wait_parked_question_polls(&qid, 1).await;
     ts.store
         .close_question(
             &clax_core::audit::AuditCtx::DAEMON,
@@ -1219,7 +1219,7 @@ async fn a_held_answer_left_untaken_wakes_the_feedback_poll_when_the_hold_ends()
         ts.base
     )));
     let ask = tokio::spawn(async move { req.send().await });
-    ts.wait_question_waiters(&qid, 1).await;
+    ts.wait_parked_question_polls(&qid, 1).await;
     let req = ts.authed(
         ts.client
             .get(format!("{}/api/sessions/{sid}/feedback?wait=60", ts.base)),
@@ -1236,7 +1236,7 @@ async fn a_held_answer_left_untaken_wakes_the_feedback_poll_when_the_hold_ends()
         )
         .unwrap();
     ask.abort();
-    let got = tokio::time::timeout(Duration::from_secs(5), waiter)
+    let got = tokio::time::timeout(clax_testkit::HANG, waiter)
         .await
         .expect("the feedback poll was woken when the hold ended")
         .unwrap();
@@ -1429,7 +1429,7 @@ async fn the_test_expire_routes_end_question_and_feedback_polls_at_once() {
         expire(format!("/api/_test/questions/{qid}/expire")).await,
         1
     );
-    let v = tokio::time::timeout(Duration::from_secs(5), poll)
+    let v = tokio::time::timeout(clax_testkit::HANG, poll)
         .await
         .expect("the poll ends at once")
         .unwrap();
@@ -1462,7 +1462,7 @@ async fn the_test_expire_routes_end_question_and_feedback_polls_at_once() {
         expire(format!("/api/_test/sessions/{sid}/feedback/expire")).await,
         1
     );
-    let v = tokio::time::timeout(Duration::from_secs(5), poll)
+    let v = tokio::time::timeout(clax_testkit::HANG, poll)
         .await
         .expect("the poll ends at once")
         .unwrap();
@@ -1499,7 +1499,7 @@ async fn shutting_down_withdraws_the_hook_questions_polls_hold() {
     ts.wait_question_waiters(&aq, 1).await;
     let seq = ts.store.newest_seq().unwrap();
     stop.send(true).unwrap();
-    let (h, a) = tokio::time::timeout(Duration::from_secs(5), async {
+    let (h, a) = tokio::time::timeout(clax_testkit::HANG, async {
         (hook_poll.await.unwrap(), ask_poll.await.unwrap())
     })
     .await

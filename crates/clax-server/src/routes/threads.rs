@@ -17,7 +17,7 @@ use axum::http::{StatusCode, header};
 use axum::response::{IntoResponse, Response};
 use clax_core::audit::AuditCtx;
 use clax_core::feedback::Touched;
-use clax_core::model::{Session, Thread};
+use clax_core::model::{Comment, Session, Thread};
 use clax_core::visibility::{OWNER, UNCONNECTED};
 use clax_core::working::StopReason;
 use clax_core::{Anchor, ArtifactId, CoreError, Event};
@@ -32,6 +32,7 @@ use clax_http::viewer::{SameOrigin, acting_viewer, author};
 use clax_http::views::thread::{VisFor, thread_event_views};
 use clax_realtime::feedback::apply;
 use clax_store::batches::SendBatch;
+use clax_store::linked::{CommentKey, Keyed};
 use clax_store::threads::{
     AUTHOR_AGENT, AUTHOR_VIEWER, DEFAULT_THREAD_PAGE, NewComment, NewThread, clip_problem,
 };
@@ -484,7 +485,7 @@ pub async fn clip(
 
 /// Whether a send or `@name` reaches live session `sid` on artifact `id`.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
-enum Reach {
+pub(crate) enum Reach {
     /// It may read and watch the artifact.
     Yes,
     /// Its rights do not let it read the artifact (spec §10: 400
@@ -501,7 +502,7 @@ enum Reach {
 /// only off live pages (`live_page`) and where its rights allow reading
 /// and watching the artifact. Reaching another person's agent makes a
 /// routing request (M18), which the store's send does.
-fn named_agent_reaches(
+pub(crate) fn named_agent_reaches(
     st: &Store,
     sid: &str,
     id: &ArtifactId,
@@ -622,7 +623,15 @@ pub(crate) fn resolve_named(
 /// `@agent` or a live agent's `@name` (unless the page wrote it), publishes
 /// the `thread` event, and returns the thread and the `@name`s that reached
 /// no agent. Both are recorded under `audit`.
-pub(crate) async fn create_thread_now(
+///
+/// An agent token's write keyed `key`
+/// ([`clax_store::Store::create_thread_keyed_async`]) whose key is recorded
+/// already writes nothing and answers the thread it made. Its sends and
+/// announcement come after the thread's transaction, so the first write
+/// may have ended before them: a thread still open and sent to no agent is
+/// sent and announced now, and any other announced again.
+#[allow(clippy::too_many_arguments)]
+pub(crate) async fn create_thread_keyed_now(
     st: &Store,
     ctx: &clax_realtime::feedback::FeedbackCtx,
     audit: &AuditCtx,
@@ -630,10 +639,24 @@ pub(crate) async fn create_thread_now(
     t: NewThread,
     live_page: bool,
     hidden: &[String],
+    key: Option<CommentKey<'_>>,
 ) -> clax_core::Result<(Thread, Vec<String>)> {
     let mention = !t.via_page && mentions_agent(&t.body);
     let named = (!t.via_page).then(|| t.body.clone());
-    let thread = st.create_thread_hiding_async(audit, id, t, hidden).await?;
+    let thread = match st
+        .create_thread_keyed_async(audit, id, t, hidden, key)
+        .await?
+    {
+        Keyed::Made(t) => t,
+        Keyed::Before { thread_id, .. } => {
+            let t = thread_of(st, id, &thread_id)?;
+            if t.status != "open" || t.sent_to_agent {
+                publish_thread(ctx, st, &t)?;
+                return Ok((t, Vec::new()));
+            }
+            t
+        }
+    };
     announce_new_thread(st, ctx, audit, thread, mention, named.as_deref(), live_page)
 }
 
@@ -741,29 +764,6 @@ pub async fn create(
     }
     clax_http::seats::require_seat(&s, &a.caller, &id).await?;
     let key = comment_key(&a.caller, &headers)?;
-    if let Some((grant, k)) = key.clone() {
-        // A resend of a keyed thread answers the thread it made.
-        let vf = VisFor::of(&a.caller, &s);
-        let codex = s.feedback_ctx().codex_push();
-        let id2 = id.clone();
-        let made = s
-            .store_call(move |st| match st.comment_key(&grant, &k)? {
-                Some((tid, _)) => {
-                    let vis = vf.build(st)?;
-                    Ok(Some(vis.filter_thread(
-                        st,
-                        &thread_of(st, &id2, &tid)?,
-                        codex,
-                        false,
-                    )?))
-                }
-                None => Ok(None),
-            })
-            .await?;
-        if let Some(view) = made {
-            return Ok((StatusCode::CREATED, Json(json!({"thread": view}))));
-        }
-    }
     let mut mp = mp.map_err(|e| multipart_error(e.status(), e.body_text()))?;
     let (mut anchor, mut text, mut version, mut clip) = (None, None, None, None);
     let mut via_page = false;
@@ -878,7 +878,10 @@ pub async fn create(
             if !via_page {
                 check_named_reads(st, &id, text.as_deref().unwrap_or_default(), live_page)?;
             }
-            let (thread, unresolved) = create_thread_now(
+            // The key is checked, and recorded, in the thread's own
+            // transaction: a resend answers the thread the first write made
+            // and does the sends that write may not have reached.
+            let (thread, unresolved) = create_thread_keyed_now(
                 st,
                 &ctx,
                 &audit,
@@ -894,11 +897,9 @@ pub async fn create(
                 },
                 live_page,
                 &hidden,
+                key.as_ref().map(|(g, k)| (g.as_str(), k.as_str())),
             )
             .await?;
-            if let (Some((grant, k)), Some(first)) = (&key, thread.comments.first()) {
-                st.record_comment_key(grant, k, &thread.id, &first.id)?;
-            }
             let view = vis.filter_thread(st, &thread, ctx.codex_push(), with_path)?;
             Ok((view, unresolved))
         })
@@ -991,34 +992,6 @@ pub async fn comment(
     refuse_unlinked(&s, &tid).await?;
     let b = body(req)?;
     let key = comment_key(&a.caller, &headers)?;
-    if let Some((grant, k)) = key.clone() {
-        // A resend of a keyed comment answers the comment it made.
-        let vf = VisFor::of(&a.caller, &s);
-        let codex = s.feedback_ctx().codex_push();
-        let (id2, tid2, aid2) = (id.clone(), tid.clone(), aid.clone());
-        let made = s
-            .store_call(move |st| match st.comment_key(&grant, &k)? {
-                Some((ktid, cid)) if ktid == tid2 => {
-                    let vis = vf.build(st)?;
-                    let t = thread_of(st, &id2, &tid2)?;
-                    let Some(c) = t.comments.iter().find(|c| c.id == cid) else {
-                        return Ok(None);
-                    };
-                    let comment = vis.filter_comment(&aid2, c);
-                    Ok(Some(json!({"comment": comment,
-                        "thread": vis.filter_thread(st, &t, codex, false)?})))
-                }
-                Some(_) => Err(CoreError::invalid(
-                    "invalid_args",
-                    "this Idempotency-Key made a comment on another thread",
-                )),
-                None => Ok(None),
-            })
-            .await?;
-        if let Some(v) = made {
-            return Ok((StatusCode::CREATED, Json(v)).into_response());
-        }
-    }
     let agent = match b.author_kind.as_deref() {
         None | Some("viewer") => false,
         Some("agent") => true,
@@ -1071,6 +1044,25 @@ pub async fn comment(
             let was_resolved = t.status == "resolved";
             let mut touched = Touched::default();
             let mut unresolved = Vec::new();
+            // The key is checked, and recorded, in the comment's own
+            // transaction. A resend finds the comment the first write made
+            // and does again what follows it, which that write may not have
+            // reached: an agent reply's acknowledgement, a viewer comment's
+            // sends while it reached no agent.
+            let key = key.as_ref().map(|(g, k)| (g.as_str(), k.as_str()));
+            let replayed = |ktid: String, cid: String| -> clax_core::Result<Comment> {
+                if ktid != tid {
+                    return Err(CoreError::invalid(
+                        "invalid_args",
+                        "this Idempotency-Key made a comment on another thread",
+                    ));
+                }
+                thread_of(st, &id, &tid)?
+                    .comments
+                    .into_iter()
+                    .find(|c| c.id == cid)
+                    .ok_or(CoreError::NotFound)
+            };
             let c = if agent {
                 let sess = agent_session(st, &session, grant.as_deref())?;
                 if !t.sent_to_agent {
@@ -1087,12 +1079,20 @@ pub async fn comment(
                 };
                 // Another live agent's thread refuses the reply (409
                 // `thread_taken`); an unowned one becomes this agent's.
-                let (c, took) = st.add_agent_reply(
+                let (c, took) = st.add_agent_reply_keyed(
                     &audit,
                     &tid,
                     reply,
                     addressed.then_some((&id, sess.harness.as_str())),
+                    key,
                 )?;
+                let c = match c {
+                    Keyed::Made(c) => c,
+                    Keyed::Before {
+                        thread_id,
+                        comment_id,
+                    } => replayed(thread_id, comment_id)?,
+                };
                 touched.merge(took);
                 let seen = clax_store::visibility::Visibility::for_session(st, &sess.id)?;
                 let may = |x: &clax_core::model::Artifact| reads.allows(x);
@@ -1116,7 +1116,7 @@ pub async fn comment(
                 }
                 let audit = audit.resolve(st)?;
                 let (name, author_public_id) = author(st, &who)?;
-                let c = st.add_comment(
+                let (c, follow) = match st.add_comment_keyed(
                     &audit,
                     &tid,
                     NewComment {
@@ -1127,36 +1127,46 @@ pub async fn comment(
                         body: b.body,
                         via_page: b.via_page,
                     },
-                )?;
-                let (named, u) = if c.via_page {
-                    (Vec::new(), Vec::new())
-                } else {
-                    resolve_named(st, &audit, &id, &c.body, live_page)?
+                    key,
+                )? {
+                    Keyed::Made(c) => (c, true),
+                    Keyed::Before {
+                        thread_id,
+                        comment_id,
+                    } => {
+                        let c = replayed(thread_id, comment_id)?;
+                        let unsent = !st.comment_has_feedback(&c.id)?;
+                        (c, unsent)
+                    }
                 };
-                unresolved = u;
-                // A comment naming agents goes to them, not to the thread's
-                // target; `@agent` keeps its meaning beside them.
-                let at_agent = !c.via_page && mentions_agent(&c.body);
-                if at_agent || (t.sent_to_agent && named.is_empty()) {
-                    // `@agent` routes (M18); a later comment on a sent
-                    // thread counts into the requests open there.
-                    let route = if at_agent {
-                        clax_store::approvals::Route::Send
+                if follow {
+                    let (named, u) = if c.via_page {
+                        (Vec::new(), Vec::new())
                     } else {
-                        clax_store::approvals::Route::Join
+                        resolve_named(st, &audit, &id, &c.body, live_page)?
                     };
-                    let (_, t, _) =
-                        st.send_routed(&audit, &tid, SendTarget::Thread, route, false)?;
-                    touched.merge(t);
-                }
-                if !named.is_empty() {
-                    touched.merge(st.send_to_named(&audit, &tid, &named)?.1);
+                    unresolved = u;
+                    // A comment naming agents goes to them, not to the thread's
+                    // target; `@agent` keeps its meaning beside them.
+                    let at_agent = !c.via_page && mentions_agent(&c.body);
+                    if at_agent || (t.sent_to_agent && named.is_empty()) {
+                        // `@agent` routes (M18); a later comment on a sent
+                        // thread counts into the requests open there.
+                        let route = if at_agent {
+                            clax_store::approvals::Route::Send
+                        } else {
+                            clax_store::approvals::Route::Join
+                        };
+                        let (_, t, _) =
+                            st.send_routed(&audit, &tid, SendTarget::Thread, route, false)?;
+                        touched.merge(t);
+                    }
+                    if !named.is_empty() {
+                        touched.merge(st.send_to_named(&audit, &tid, &named)?.1);
+                    }
                 }
                 c
             };
-            if let Some((grant, k)) = &key {
-                st.record_comment_key(grant, k, &tid, &c.id)?;
-            }
             ctx.events.publish(Event::Comment {
                 artifact_id: aid.clone(),
                 thread_id: tid.clone(),
@@ -1190,44 +1200,62 @@ struct SendBody {
     to: Option<String>,
 }
 
-/// The live owner or watcher session of artifact `id` that agent handle `to`
-/// names; 400 `unknown_agent` when it names none, and 400
-/// `agent_cannot_read` when it names an agent that may not read the
-/// artifact (spec §10).
+/// The live session a send's `to` names on artifact `id`, if any, and
+/// whether it needs a watch there: a live owner or watcher by its handle;
+/// 400 `unknown_agent` when it names none, and 400 `agent_cannot_read` when
+/// it names an agent that may not read the artifact (spec §10). For a
+/// person (`person`: the owner, or a connected person, in a browser or by
+/// hand) `to` may also name, by handle or name, any live agent that may
+/// read and watch the artifact, as an `@name` in their comment may
+/// ([`handoff_target`]); the send gives it its watch, in the send's own
+/// transaction ([`Store::send_routed_watching`]).
 fn send_target(
     st: &Store,
     id: &ArtifactId,
     to: Option<&str>,
     live_page: bool,
-) -> clax_core::Result<Option<String>> {
-    match to {
-        Some(h) if clax_core::is_agent_handle(h) => {
-            let sid = st.live_agent(id, h)?.ok_or_else(|| {
-                CoreError::invalid(
-                    "unknown_agent",
-                    "no live agent on this artifact has that handle",
-                )
-            })?;
-            if named_agent_reaches(st, &sid, id, live_page)? == Reach::CannotRead {
-                let name = st
-                    .get_session(&sid)?
-                    .map(|s| s.name.unwrap_or_else(|| h.to_string()))
-                    .unwrap_or_default();
-                return Err(cannot_read(&name));
-            }
-            Ok(Some(sid))
+    person: bool,
+) -> clax_core::Result<Option<(String, bool)>> {
+    let Some(h) = to else {
+        return Ok(None);
+    };
+    let watching = if clax_core::is_agent_handle(h) {
+        st.live_agent(id, h)?
+    } else {
+        None
+    };
+    if let Some(sid) = watching {
+        if named_agent_reaches(st, &sid, id, live_page)? == Reach::CannotRead {
+            let name = st
+                .get_session(&sid)?
+                .map(|s| s.name.unwrap_or_else(|| h.to_string()))
+                .unwrap_or_default();
+            return Err(cannot_read(&name));
         }
-        Some(_) => Err(CoreError::invalid("unknown_agent", "not an agent handle")),
-        None => Ok(None),
+        return Ok(Some((sid, false)));
     }
+    if person {
+        return Ok(Some((handoff_target(st, id, h, live_page)?, true)));
+    }
+    Err(if clax_core::is_agent_handle(h) {
+        CoreError::invalid(
+            "unknown_agent",
+            "no live agent on this artifact has that handle",
+        )
+    } else {
+        CoreError::invalid("unknown_agent", "not an agent handle")
+    })
 }
 
 /// Sets `sent_to_agent` and creates feedback rows; idempotent. An optional
 /// body `{"to": <agent handle>}` sends to that live agent only, and it becomes
 /// the thread's target (400 `unknown_agent` when it names no live owner or
 /// watcher, 400 `agent_cannot_read` when it names one that may not read the
-/// artifact). Without `to` the send goes to every live owner and watcher and
-/// clears the thread's target. The send routes (spec §9.2, M18): each
+/// artifact). From a person (the owner, or a connected person; not a guest
+/// and not an agent) `to` may name any live agent, by handle or name, that
+/// may read and watch the artifact: it is given a watch, as an `@name` in
+/// their comment gives one ([`send_target`]). Without `to` the send goes to
+/// every live owner and watcher and clears the thread's target. The send routes (spec §9.2, M18): each
 /// agent it reaches whose person has not approved an author of the
 /// thread's comments makes or joins a request to that person; a page's
 /// send (`x-clax-via: page`, a page's `sendToClaude`) names the page and
@@ -1257,20 +1285,34 @@ pub async fn send(
     let ctx = s.feedback_ctx();
     let with_path = a.holds_token();
     let vf = VisFor::of(&a.caller, &s);
+    let person = matches!(a.caller, Caller::Owner { .. } | Caller::Person { .. });
     let view = s
         .store_call(move |st| {
             let vis = vf.build(st)?;
-            thread_of(st, &id, &tid)?;
-            let to = send_target(st, &id, b.to.as_deref(), live_page)?;
+            if thread_of(st, &id, &tid)?.status == "resolved" {
+                return Err(CoreError::invalid(
+                    "thread_resolved",
+                    "a resolved thread cannot be sent; add a comment to reopen it",
+                ));
+            }
             let audit = audit.resolve(st)?;
-            let (t, touched, _) = st.send_routed(
+            let to = send_target(st, &id, b.to.as_deref(), live_page, person)?;
+            let watch = to.as_ref().filter(|(_, w)| *w).map(|(sid, _)| sid.as_str());
+            let (t, touched, _) = st.send_routed_watching(
                 &audit,
                 &tid,
-                to.as_deref()
-                    .map_or(SendTarget::Everyone, SendTarget::Agent),
+                to.as_ref()
+                    .map_or(SendTarget::Everyone, |(sid, _)| SendTarget::Agent(sid)),
                 clax_store::approvals::Route::Send,
                 page,
+                watch,
             )?;
+            if watch.is_some() {
+                // The Send menu and roster show the watcher it gained.
+                ctx.events.publish(Event::Agents {
+                    artifacts: vec![id.as_str().to_string()],
+                });
+            }
             apply(&ctx, st, &touched);
             publish_thread(&ctx, st, &t)?;
             vis.filter_thread(st, &t, ctx.codex_push(), with_path)
@@ -1437,8 +1479,9 @@ pub async fn send_batch(
         .store_call(move |st| {
             let vis = vf.build(st)?;
             st.get_artifact(&id)?.ok_or(CoreError::NotFound)?;
-            let to = send_target(st, &id, b.to.as_deref(), live_page)?;
             let audit = audit.resolve(st)?;
+            // A batch names only an agent that owns or watches the artifact.
+            let to = send_target(st, &id, b.to.as_deref(), live_page, false)?.map(|(sid, _)| sid);
             let (sent_by, viewer) = author(st, &who)?;
             // The sender as an author of the note (spec §8.2).
             let sender = match agent_person {

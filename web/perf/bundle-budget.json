@@ -1,9 +1,9 @@
 {
   "bridgeBaseline": 32861,
-  "gallery": 28096,
-  "artifact": 66048,
+  "gallery": 30936,
+  "artifact": 69105,
   "host": 9088,
-  "questions": 16384,
+  "questions": 17500,
   "bridge": 6272,
   "transport": 2174,
   "partComment": 14720,

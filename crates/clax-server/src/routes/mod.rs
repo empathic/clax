@@ -38,6 +38,7 @@ pub mod sites;
 pub mod snapshot;
 pub mod stream;
 pub mod surface;
+pub mod tags;
 pub mod threads;
 pub mod token;
 pub mod toolpath;

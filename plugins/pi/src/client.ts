@@ -17,6 +17,9 @@ export const END_TIMEOUT_MS = 3_000;
 export const CONNECT_TIMEOUT_MS = 2_000;
 /** Deadline for a tool call's report, sent in the background. */
 export const REPORT_TIMEOUT_MS = 3_000;
+/** Most IDs each list of one `POST /api/sessions/<sid>/feedback/ack` names
+ * (the daemon's `MAX_ACK_IDS`). */
+export const MAX_ACK_IDS = 500;
 /** The channel the extension names on every request (`x-clax-via`, spec
  * 2026-10-06-toolpath-audit-design §6.9). */
 export const VIA = "pi";
@@ -112,8 +115,10 @@ interface RequestOptions {
  * connection that was never established is `unreachable` and refreshable, a
  * request past its deadline is `timeout`, anything else (such as a connection
  * dropped mid-request) is `unreachable` but not retried, since the request may
- * have taken effect. Proxies are never used. */
-function send(url: string, opts: RequestOptions): Promise<RawResponse> {
+ * have taken effect. Proxies are never used. `path` (with its query) goes
+ * to the daemon at `base` (`http://<host>[:<port>]`) exactly as given. */
+function send(base: string, path: string, opts: RequestOptions): Promise<RawResponse> {
+  const url = `${base}${path}`;
   const deadline = AbortSignal.timeout(opts.timeoutMs ?? REQUEST_TIMEOUT_MS);
   const signal = opts.signal ? AbortSignal.any([deadline, opts.signal]) : deadline;
   return new Promise<RawResponse>((resolve, reject) => {
@@ -129,9 +134,8 @@ function send(url: string, opts: RequestOptions): Promise<RawResponse> {
     };
     // The path goes out as given, never normalized: a signed request
     // signs it as sent.
-    const u = new URL(url);
-    const path = url.slice(u.origin.length) || "/";
-    const target = { protocol: u.protocol, hostname: u.hostname.replace(/^\[|\]$/g, ""), port: u.port, path };
+    const u = new URL(base);
+    const target = { protocol: u.protocol, hostname: u.hostname.replace(/^\[|\]$/g, ""), port: u.port, path: path || "/" };
     const req = httpRequest({ ...target, method: opts.method, headers: opts.headers, signal }, res => {
       const chunks: Buffer[] = [];
       let size = 0;
@@ -193,7 +197,7 @@ export async function sendRemote(r: Remote, path: string, opts: RequestOptions):
   let backoffs = 0;
   for (;;) {
     const headers = signedHeaders(r, opts.method, path, body, opts.headers ?? {});
-    const res = await send(`${r.config.url}${path}`, { ...opts, headers, body, maxBytes });
+    const res = await send(r.config.url, path, { ...opts, headers, body, maxBytes });
     if (res.status !== 401 && res.status !== 429 && res.status !== 503) return res;
     const code = errorOf(res).code;
     if (res.status === 401 && code === "stale_request" && !staleRetried) {
@@ -225,7 +229,7 @@ function sessionRefused(status: number, error: Record<string, unknown>): boolean
  * object, refreshable when the local daemon refused its token (401), or
  * the session it named is not its to name ([`sessionRefused`]). */
 async function attempt(base: string, path: string, opts: RequestOptions, remote?: Remote): Promise<RawResponse> {
-  const res = remote ? await sendRemote(remote, path, opts) : await send(`${base}${path}`, opts);
+  const res = remote ? await sendRemote(remote, path, opts) : await send(base, path, opts);
   if (res.status >= 200 && res.status < 300) return res;
   const error = errorOf(res);
   const refreshable = (res.status === 401 && !remote) || sessionRefused(res.status, error);
@@ -247,10 +251,10 @@ function sessionOf(res: any): Session {
   return s as Session;
 }
 
-/** A GET to `url` with a 1 s deadline: true when it answers with a success status. */
-export async function probe(url: string): Promise<boolean> {
+/** A GET of `path` from the daemon at `base` with a 1 s deadline: true when it answers with a success status. */
+export async function probe(base: string, path: string): Promise<boolean> {
   try {
-    const res = await send(url, { method: "GET", timeoutMs: 1_000 });
+    const res = await send(base, path, { method: "GET", timeoutMs: 1_000 });
     return res.status >= 200 && res.status < 300;
   } catch {
     return false;
@@ -376,15 +380,15 @@ export class DaemonClient {
   }
 
   /** Finds (or starts) the daemon and registers the session unless both are
-   * done. With `timeoutMs`, the registration request is cut off at that long
-   * after the call (finding the daemon is bounded by its own timeouts). */
-  ensureSession(timeoutMs?: number): Promise<void> {
-    return this.ensure(this.refreshFn, timeoutMs === undefined ? undefined : Date.now() + timeoutMs);
+   * done. With `budget`, the registration request is cancelled when it
+   * aborts (finding the daemon is bounded by its own timeouts). */
+  ensureSession(budget?: AbortSignal): Promise<void> {
+    return this.ensure(this.refreshFn, undefined, budget);
   }
 
-  private async ensure(find: Find, deadline?: number): Promise<void> {
+  private async ensure(find: Find, deadline?: number, budget?: AbortSignal): Promise<void> {
     if (this.endpoint && this.registered) return;
-    await this.refresh(this.stale(), find, deadline);
+    await this.refresh(this.stale(), find, deadline, budget);
   }
 
   private stale(): Stale {
@@ -394,8 +398,9 @@ export class DaemonClient {
   /** Re-discovers the daemon and registers the session there, unless another
    * caller already moved on from `stale` (the endpoint and session the failure
    * was seen with). Registering again after the session was ended inserts a
-   * new live row with the same harness session ID. */
-  private async refresh(stale: Stale, find: Find, deadline?: number): Promise<void> {
+   * new live row with the same harness session ID. The registration request
+   * is cut off at `deadline` (epoch ms), or when `budget` aborts. */
+  private async refresh(stale: Stale, find: Find, deadline?: number, budget?: AbortSignal): Promise<void> {
     while (this.refreshing) await this.refreshing.catch(() => {});
     if (this.endpoint && this.registered && (this.endpoint !== stale.endpoint || this.sessionId !== stale.sessionId)) return;
     const call = currentCall();
@@ -431,6 +436,7 @@ export class DaemonClient {
             headers: h,
             body: JSON.stringify(this.registration),
             timeoutMs: remaining(deadline, REQUEST_TIMEOUT_MS),
+            signal: budget,
           }, this.remote);
         } catch (e) {
           // A credential the daemon refuses, or whose session it has no row
@@ -542,6 +548,23 @@ export class DaemonClient {
   /** `GET /api/artifacts`: `{artifacts: [..]}`, pinned first, then most recently updated. */
   list(): Promise<any> {
     return this.json("/api/artifacts", { method: "GET" });
+  }
+
+  /** `GET /api/artifacts?tag=…`: the artifacts carrying every tag in `tags`
+   * (each an ID or a name), as `list` gives them. */
+  listTagged(tags: string[]): Promise<any> {
+    const q = new URLSearchParams(tags.map(t => ["tag", t])).toString();
+    return this.json(`/api/artifacts?${q}`, { method: "GET" });
+  }
+
+  /** `GET /api/tags`: `{tags: [{id, name, colour, description, count, …}], colours, may_manage}`. */
+  tags(): Promise<any> {
+    return this.json("/api/tags", { method: "GET" });
+  }
+
+  /** `PATCH /api/artifacts/<id>/tags` (`{add, remove}`): changes the tags it carries; `{artifact_id, tags, changed}`. */
+  editTags(id: string, body: unknown): Promise<any> {
+    return this.json(`/api/artifacts/${id}/tags`, this.jsonBody("PATCH", body));
   }
 
   /** `GET /api/artifacts/<id>`: `{artifact, versions}`; `artifact` carries
@@ -779,8 +802,6 @@ export class DaemonClient {
   }
 
   /** Thread `tid`'s clip on artifact `aid`
-   * (`GET /api/artifacts/<aid>/threads/<tid>/clip`), as bytes. */
-  /** Thread `tid`'s clip on artifact `aid`
    * (`GET /api/artifacts/<aid>/threads/<tid>/clip`): its `Content-Type` and
    * bytes, at most `maxBytes` of them; `signal` cancels it. */
   async clipBytes(aid: string, tid: string, maxBytes: number, signal?: AbortSignal): Promise<{ contentType: string | undefined; bytes: Buffer }> {
@@ -840,15 +861,26 @@ export class DaemonClient {
   }
 
   /** `POST /api/sessions/<sid>/feedback/ack` `{thread_ids}`: acknowledges every
-   * row of the session on these threads. */
-  ack(threadIds: string[]): Promise<any> {
-    return this.json(() => `${this.sessionPath()}/feedback/ack`, this.jsonBody("POST", { thread_ids: threadIds }));
+   * row of the session on these threads, in requests of at most
+   * `MAX_ACK_IDS` IDs; `{acknowledged}`, summed over the requests. */
+  ack(threadIds: string[]): Promise<{ acknowledged: number }> {
+    return this.ackBy("thread_ids", threadIds);
   }
 
   /** `POST /api/sessions/<sid>/feedback/ack` `{comment_ids}`: acknowledges the
-   * session's rows for these comments only. */
-  ackComments(commentIds: string[]): Promise<any> {
-    return this.json(() => `${this.sessionPath()}/feedback/ack`, this.jsonBody("POST", { comment_ids: commentIds }));
+   * session's rows for these comments only, in requests of at most
+   * `MAX_ACK_IDS` IDs; `{acknowledged}`, summed over the requests. */
+  ackComments(commentIds: string[]): Promise<{ acknowledged: number }> {
+    return this.ackBy("comment_ids", commentIds);
+  }
+
+  private async ackBy(key: "thread_ids" | "comment_ids", ids: string[]): Promise<{ acknowledged: number }> {
+    let acknowledged = 0;
+    for (let i = 0; i < ids.length; i += MAX_ACK_IDS) {
+      const r = await this.json(() => `${this.sessionPath()}/feedback/ack`, this.jsonBody("POST", { [key]: ids.slice(i, i + MAX_ACK_IDS) }));
+      if (typeof r?.acknowledged === "number") acknowledged += r.acknowledged;
+    }
+    return { acknowledged };
   }
 
   /** `POST /api/sessions/<sid>/tool-calls`: reports a finished tool call

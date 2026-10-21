@@ -965,6 +965,8 @@ async fn other_commands_refuse_remotely() {
         vec!["delete", &aid],
         vec!["pin", &aid],
         vec!["unpin", &aid],
+        vec!["tag", &aid, "--add", "x"],
+        vec!["tags"],
         vec!["inbox"],
         vec!["toolpath", "status"],
         vec!["extension", "status"],

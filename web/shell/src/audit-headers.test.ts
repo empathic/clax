@@ -20,8 +20,9 @@ function sources(dir: string): string[] {
 const MARKER = `"x-clax-via": "page"`;
 const read = (p: string) => readFileSync(join(__dirname, p), "utf8");
 
-/** Capability handlers that write on a page's behalf, and the helpers they write through. */
-const PAGE_WRITERS = ["caps/artifact.ts", "caps/assets.ts", "caps/db.ts", "caps/comments.ts", "threads.ts"];
+/** Capability handlers that write on a page's behalf, and the helpers they
+ * write through (`caps/comments.ts` writes only through `threads.ts`). */
+const PAGE_WRITERS = ["caps/artifact.ts", "caps/assets.ts", "caps/db.ts", "threads.ts"];
 /** Capability handlers that send a write method and why they need no marker. */
 const NOT_PAGE_CONTENT: Record<string, string> = {
   "caps/sample.ts": "a model request: it writes no content of the page's into the store",
@@ -54,8 +55,10 @@ describe("x-clax request headers", () => {
     }
   });
 
-  it("mark a thread the comments capability starts", () => {
+  it("mark a thread the comments capability starts, and its replies and sends", () => {
     expect(read("caps/comments.ts")).toContain("viaPage: true");
+    expect(read("caps/comments.ts")).toContain("addComment(env.aid, tid, target.text, true)");
+    expect(read("caps/comments.ts")).toContain("sendToAgent(env.aid, r.thread.id, null, true)");
     expect(read("threads.ts")).toMatch(/input\.viaPage \? \{ "x-clax-via": "page" \}/);
   });
 });

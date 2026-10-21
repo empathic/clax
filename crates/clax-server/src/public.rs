@@ -50,19 +50,6 @@ use clax_store::remotes::{PendingSignIn, Remote, RemoteLink, SignedInAs};
 use serde_json::{Value, json};
 use std::collections::{BTreeMap, BTreeSet, HashMap};
 
-/// `f`, made `Send` where a route's future must be: on wasm32 the remote's
-/// client (`fetch`) is not, which is sound to wrap because a Worker has one
-/// thread (the wrapper panics if polled on another).
-#[cfg(not(target_arch = "wasm32"))]
-pub fn sendable<F: std::future::Future>(f: F) -> F {
-    f
-}
-/// See the native [`sendable`].
-#[cfg(target_arch = "wasm32")]
-pub fn sendable<F: std::future::Future>(f: F) -> send_wrapper::SendWrapper<F> {
-    send_wrapper::SendWrapper::new(f)
-}
-
 /// The by-hand harness ([`crate::routes::sessions::BY_HAND_HARNESS`]).
 const BY_HAND: &str = crate::routes::sessions::BY_HAND_HARNESS;
 
@@ -209,7 +196,7 @@ impl From<RemoteFail> for ApiError {
 const IDEMPOTENCY: &str = "idempotency-key";
 
 /// The most bytes of a remote's answer this daemon reads.
-const MAX_ANSWER_BYTES: usize = 4 * 1024 * 1024;
+pub(crate) const MAX_ANSWER_BYTES: usize = 4 * 1024 * 1024;
 
 /// One remote's REST API, as an agent of its person (or, before sign-in,
 /// as no one).
@@ -319,10 +306,22 @@ impl Client {
             .await
             .map_err(|e| fail(None, "unreachable", e.to_string(), Value::Null))?;
         let status = res.status().as_u16();
+        let ok = (200..300).contains(&status);
+        let too_large = || {
+            fail(
+                Some(status),
+                "too_large",
+                "the answer is too large".into(),
+                Value::Null,
+            )
+        };
         if res
             .content_length()
             .is_some_and(|n| n > MAX_ANSWER_BYTES as u64)
         {
+            if ok {
+                return Err(too_large());
+            }
             return Err(fail(
                 None,
                 "unreachable",
@@ -330,11 +329,29 @@ impl Client {
                 Value::Null,
             ));
         }
+        // A success is its whole body, JSON (or empty): one cut off or not
+        // JSON is refused rather than read as empty.
         let v: Value = match read_capped(res, MAX_ANSWER_BYTES).await {
-            Ok(Some(bytes)) => serde_json::from_slice(&bytes).unwrap_or(Value::Null),
+            Ok(Some(bytes)) if bytes.iter().all(u8::is_ascii_whitespace) => Value::Null,
+            Ok(Some(bytes)) => match serde_json::from_slice(&bytes) {
+                Ok(v) => v,
+                Err(_) if ok => {
+                    return Err(fail(
+                        Some(status),
+                        "bad_answer",
+                        "the answer is not JSON".into(),
+                        Value::Null,
+                    ));
+                }
+                Err(_) => Value::Null,
+            },
+            Ok(None) if ok => return Err(too_large()),
+            Err(e) if ok => {
+                return Err(fail(None, "unreachable", e.to_string(), Value::Null));
+            }
             Ok(None) | Err(_) => Value::Null,
         };
-        if (200..300).contains(&status) {
+        if ok {
             return Ok(v);
         }
         let code = v["error"]["code"].as_str().unwrap_or("error").to_string();
@@ -1189,16 +1206,7 @@ pub async fn push(
     } else {
         Vec::new()
     };
-    let meta = json!({
-        "title": artifact.title,
-        "description": artifact.description,
-        "icon": artifact.icon,
-        "capabilities": artifact
-            .capabilities
-            .as_object()
-            .filter(|m| !m.is_empty())
-            .map(|_| artifact.capabilities.clone()),
-    });
+    let meta = outgoing_meta(&artifact);
     let mut pushed = Vec::new();
     let mut referenced_any: BTreeSet<String> = BTreeSet::new();
     let out = async {
@@ -1332,9 +1340,68 @@ pub async fn revoke(remote: &Remote, token: Secret) -> Result<(), ApiError> {
     Ok(())
 }
 
+/// The metadata a push sends: the artifact's, its text fit to the checks
+/// the public daemon makes (`clax_core::publish::fit_meta_text`), so that
+/// metadata stored before those checks does not refuse the push.
+fn outgoing_meta(artifact: &clax_core::model::Artifact) -> Value {
+    use clax_core::publish::{
+        MAX_DESCRIPTION_CHARS, MAX_ICON_CHARS, MAX_TITLE_CHARS, fit_meta_text,
+    };
+    let fit = |t: Option<&str>, max| t.and_then(|t| fit_meta_text(t, max));
+    // Nothing left of a legacy title: named as a new artifact without one
+    // is, so a push that creates the public copy has a title.
+    let title = fit(Some(&artifact.title), MAX_TITLE_CHARS).unwrap_or_else(|| "Untitled".into());
+    json!({
+        "title": title,
+        "description": fit(artifact.description.as_deref(), MAX_DESCRIPTION_CHARS),
+        "icon": fit(artifact.icon.as_deref(), MAX_ICON_CHARS),
+        "capabilities": artifact
+            .capabilities
+            .as_object()
+            .filter(|m| !m.is_empty())
+            .map(|_| artifact.capabilities.clone()),
+    })
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn outgoing_metadata_is_fit_to_the_public_daemons_checks() {
+        let mut a: clax_core::model::Artifact = serde_json::from_value(json!({
+            "id": A, "title": "x", "created_at": "t", "updated_at": "t",
+            "current_version": 1, "pinned": false, "capabilities": {},
+            "contract_version": "0.2.61",
+        }))
+        .unwrap();
+        a.title = format!("Old\ttitle {}", "t".repeat(300));
+        a.description = Some("two\nlines\u{202E}".into());
+        a.icon = Some("\u{200B}".into());
+        let m = outgoing_meta(&a);
+        let (title, description) = (
+            m["title"].as_str().unwrap(),
+            m["description"].as_str().unwrap(),
+        );
+        assert!(title.starts_with("Old title "), "{title}");
+        assert_eq!(description, "two lines");
+        assert_eq!(m["icon"], Value::Null);
+        clax_core::publish::check_meta_text(Some(title), Some(description), None).unwrap();
+        clax_core::publish::validate(
+            serde_json::from_value(json!({
+                "title": m["title"], "description": m["description"], "icon": m["icon"],
+                "files": {"index.html": {"content": "<p>"}},
+            }))
+            .unwrap(),
+        )
+        .unwrap();
+        for blank in ["", " \n", "\u{200B}\u{FEFF}"] {
+            a.title = blank.into();
+            let m = outgoing_meta(&a);
+            assert_eq!(m["title"], "Untitled", "{blank:?}");
+            clax_core::publish::require_title(m["title"].as_str()).unwrap();
+        }
+    }
 
     /// A remote at a local port that answers every request 200 with a
     /// chunked body of `n` bytes of `fill` and then never ends it.
@@ -1374,8 +1441,46 @@ mod tests {
         let c = Client::new(&endless(b'x', 8 * 1024).await, None);
         let f = c.get_bytes("/clip", 4 * 1024).await.unwrap_err();
         assert_eq!(f.code, "too_large", "{}", f.message);
+        // A success cut off at the cap is refused, never read as empty.
         let c = Client::new(&endless(b' ', MAX_ANSWER_BYTES + 1024).await, None);
+        let f = c.get("/api/x").await.unwrap_err();
+        assert_eq!((f.status, f.code.as_str()), (Some(200), "too_large"));
+    }
+
+    /// A remote at a local port that answers every request 200 with `body`.
+    async fn answering(body: &'static str) -> String {
+        use tokio::io::{AsyncReadExt, AsyncWriteExt};
+        let l = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
+        let origin = format!("http://{}", l.local_addr().unwrap());
+        tokio::spawn(async move {
+            loop {
+                let Ok((mut c, _)) = l.accept().await else {
+                    return;
+                };
+                tokio::spawn(async move {
+                    let mut req = [0u8; 4096];
+                    let _ = c.read(&mut req).await;
+                    let head = format!(
+                        "HTTP/1.1 200 OK\r\ncontent-type: application/json\r\ncontent-length: {}\r\nconnection: close\r\n\r\n",
+                        body.len()
+                    );
+                    let _ = c.write_all(head.as_bytes()).await;
+                    let _ = c.write_all(body.as_bytes()).await;
+                });
+            }
+        });
+        origin
+    }
+
+    #[tokio::test]
+    async fn a_success_that_is_not_json_is_refused_and_an_empty_one_is_null() {
+        let c = Client::new(&answering("<html>gateway</html>").await, None);
+        let f = c.get("/api/x").await.unwrap_err();
+        assert_eq!((f.status, f.code.as_str()), (Some(200), "bad_answer"));
+        let c = Client::new(&answering("").await, None);
         assert_eq!(c.get("/api/x").await.unwrap(), Value::Null);
+        let c = Client::new(&answering("{\"a\": 1}").await, None);
+        assert_eq!(c.get("/api/x").await.unwrap(), json!({"a": 1}));
     }
 
     const A: &str = "01K6AB7D2E3F4G5H6J7K8M9N0P";

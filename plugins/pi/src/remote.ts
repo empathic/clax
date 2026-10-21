@@ -6,6 +6,7 @@
 // session's credential file under `<home>/remote-sessions/`.
 import { createHash, createPrivateKey, randomBytes, sign as edSign, type KeyObject } from "node:crypto";
 import { closeSync, constants, fstatSync, lstatSync, mkdirSync, openSync, readFileSync, readSync, renameSync, unlinkSync, chmodSync, writeSync, fsyncSync, futimesSync } from "node:fs";
+import { isIP } from "node:net";
 import { join } from "node:path";
 
 /** The variable that, set to `0`, keeps a connected home local. */
@@ -77,8 +78,8 @@ export function loadRemote(home: string, env: NodeJS.ProcessEnv = process.env): 
     throw new RemoteBroken(`${path}: ${(e as Error).message}`);
   }
   if (s?.version !== FILE_VERSION) throw new RemoteBroken(`${path}: version ${s?.version} (this extension reads ${FILE_VERSION})`);
-  const m = typeof s.url === "string" ? /^http:\/\/((?:\d{1,3}\.){3}\d{1,3}|\[[0-9A-Fa-f:.]+\]):(\d{1,5})\/?$/.exec(s.url) : null;
-  if (!m) throw new RemoteBroken(`${path}: the daemon URL is not http://<IP address>:<port>`);
+  const host = typeof s.url === "string" ? daemonHost(s.url) : null;
+  if (host === null) throw new RemoteBroken(`${path}: the daemon URL is not http://<IP address>:<port>`);
   if (typeof s.access_token !== "string" || typeof s.grant_id !== "string") throw new RemoteBroken(`${path}: no grant`);
   const keyPath = join(home, "remote.key");
   let key: KeyObject;
@@ -88,13 +89,31 @@ export function loadRemote(home: string, env: NodeJS.ProcessEnv = process.env): 
     throw new RemoteBroken(`${keyPath}: ${(e as Error).message}`);
   }
   if (key.asymmetricKeyType !== "ed25519") throw new RemoteBroken(`${keyPath} is not an Ed25519 key`);
-  const host = `${m[1]}:${m[2]}`;
   return {
     config: { url: `http://${host}`, host, grantId: s.grant_id, accessToken: s.access_token, personName: s.person?.display_name ?? null },
     key,
     home,
     offset: 0,
   };
+}
+
+/** The daemon's `host[:port]` in `url`, in WHATWG URL's canonical form: an
+ * IP literal host, the port left out when it is 80; null unless `url` is
+ * `http://<IP>[:<port>]` with no path, query or credentials. That is the form
+ * the Rust clients make (`clax_core::remote::DaemonUrl::parse`) except for an
+ * IPv4-mapped IPv6 host, which Rust writes `[::ffff:1.2.3.4]` and WHATWG
+ * `[::ffff:102:304]`. */
+export function daemonHost(url: string): string | null {
+  let u: URL;
+  try {
+    u = new URL(url);
+  } catch {
+    return null;
+  }
+  if (u.protocol !== "http:" || u.username || u.password || u.pathname !== "/" || url.includes("?") || url.includes("#")) return null;
+  const ip = u.hostname.startsWith("[") ? u.hostname.slice(1, -1) : u.hostname;
+  if (!isIP(ip)) return null;
+  return u.host;
 }
 
 const sha256 = (b: Buffer | string) => createHash("sha256").update(b).digest();

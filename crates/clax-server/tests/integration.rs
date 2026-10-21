@@ -29,6 +29,8 @@ mod api_attention;
 mod api_auth;
 #[cfg(any(not(clax_split), clax_split = "api_batch"))]
 mod api_batch;
+#[cfg(any(not(clax_split), clax_split = "api_briefs"))]
+mod api_briefs;
 #[cfg(any(not(clax_split), clax_split = "api_caching"))]
 mod api_caching;
 #[cfg(any(not(clax_split), clax_split = "api_canary"))]
@@ -121,6 +123,8 @@ mod api_seats;
 mod api_sessions;
 #[cfg(any(not(clax_split), clax_split = "api_stream"))]
 mod api_stream;
+#[cfg(any(not(clax_split), clax_split = "api_tags"))]
+mod api_tags;
 #[cfg(any(not(clax_split), clax_split = "api_threads"))]
 mod api_threads;
 #[cfg(any(not(clax_split), clax_split = "api_timeout"))]

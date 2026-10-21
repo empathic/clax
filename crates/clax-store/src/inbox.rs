@@ -30,6 +30,12 @@ pub const DEFAULT_PAGE: u32 = 50;
 pub const MAX_PAGE: u32 = 200;
 /// Most search terms a query uses; later ones are ignored.
 pub const MAX_TERMS: usize = 16;
+/// Groups per page of [`Store::inbox_groups`] when a query gives no limit.
+pub const DEFAULT_GROUPS: u32 = 20;
+/// Most groups one page of [`Store::inbox_groups`] returns.
+pub const MAX_GROUPS: u32 = 100;
+/// Most items [`Store::inbox_groups`] lists in each group.
+pub const MAX_GROUP_ROWS: u32 = 20;
 
 /// What an item is about (spec §7.1; `approval`, `connection` and
 /// `ended`: spec 2026-10-08-multi-agent-multi-person §5.3, §6.3, §9.5, §14).
@@ -151,6 +157,8 @@ pub struct InboxQuery {
     /// Any of these kinds; empty for all.
     pub kinds: Vec<Kind>,
     pub artifact: Option<String>,
+    /// Only items about no artifact (with `artifact` unset).
+    pub no_artifact: bool,
     pub agent: Option<Agent>,
     /// Made at or after this time, compared as stored text: RFC 3339 UTC
     /// with milliseconds and `Z` (as [`Store::now`] writes).
@@ -165,9 +173,18 @@ pub struct InboxQuery {
     /// Mark-all only: items up to this `seq` (the newest the owner was
     /// shown), so an item made since is not marked read unseen.
     pub upto: Option<i64>,
+    /// Mark-all only: items left unread whatever else matches (by item
+    /// ID): those the person is shown elsewhere, as an inbox group's Mark
+    /// read leaves the cards pinned above the groups.
+    pub except: Vec<String>,
+    /// Tag IDs: only items about an artifact carrying every one (match
+    /// all). [`Store::tag_filter_ids`] gives them for a filter's names.
+    pub tags: Vec<String>,
     /// Artifacts whose comment text the recipient may not read: the search
     /// text matches none of their `reply`, `version` and `finished` items,
-    /// whose index entries hold comment text, so a search cannot probe it.
+    /// whose index entries hold comment text, and a tag filter matches none
+    /// of their items at all, so neither probes what they hold now (their
+    /// comments, the tags they carry).
     pub text_withheld_at: Vec<String>,
 }
 
@@ -260,6 +277,16 @@ enum Shape {
     Count(u32),
     /// Marks the unread matches read at the time given.
     MarkAll,
+    /// The matches grouped by artifact (one group for those about none):
+    /// each group's artifact, newest `seq`, its time, and its match and
+    /// unread counts, newest group first, the groups whose newest `seq` is
+    /// below the query's `before`, one past its limit ([`group_page`]).
+    Groups,
+    /// A page of one group's rows: as `Page`, driven by the artifact
+    /// whatever the read filter, so each group reaches its own rows
+    /// rather than walking every unread item for them, and reading no row
+    /// past its limit (the group's counts say whether more follow).
+    GroupRows,
 }
 
 /// The index that drives a statement: the one filter it walks, after the
@@ -318,9 +345,11 @@ fn kinds_of(q: &InboxQuery) -> Vec<Kind> {
 fn driver(q: &InboxQuery, text: bool, kinds: usize, shape: Shape) -> Driver {
     if text {
         Driver::Text
+    } else if shape == Shape::GroupRows && (q.artifact.is_some() || q.no_artifact) {
+        Driver::Artifact
     } else if shape == Shape::MarkAll || q.read == ReadFilter::Unread {
         Driver::Unread
-    } else if q.artifact.is_some() {
+    } else if q.artifact.is_some() || q.no_artifact {
         Driver::Artifact
     } else if matches!(q.agent, Some(Agent::Handle(_))) {
         Driver::Handle
@@ -393,14 +422,24 @@ fn build(q: &InboxQuery, shape: Shape, now: &str) -> Built {
                 let p = arg(Sql::Integer(u), &mut args);
                 wh.push(format!("i.seq <= {p}"));
             }
+            if !q.except.is_empty() {
+                let p = arg(Sql::Text(super::feedback::id_array(&q.except)), &mut args);
+                wh.push(format!("+i.id NOT IN (SELECT value FROM json_each({p}))"));
+            }
             // An approval item stays unread until its request is decided
             // (spec 2026-10-08 §9.5): deciding reads it.
             wh.push(format!("NOT {UNDECIDED}"));
         }
-        Shape::Page | Shape::Count(_) => {
-            let what = if shape == Shape::Page { COLUMNS } else { "1" };
+        Shape::Page | Shape::GroupRows | Shape::Count(_) | Shape::Groups => {
+            let what = match shape {
+                Shape::Page | Shape::GroupRows => COLUMNS,
+                Shape::Groups => {
+                    "i.seq AS seq, i.artifact_id AS aid, i.created_at AS at, i.read_at IS NULL AS u"
+                }
+                _ => "1",
+            };
             let before = match shape {
-                Shape::Page => q.before.unwrap_or(i64::MAX),
+                Shape::Page | Shape::GroupRows => q.before.unwrap_or(i64::MAX),
                 _ => i64::MAX,
             };
             let r = arg(
@@ -445,6 +484,24 @@ fn build(q: &InboxQuery, shape: Shape, now: &str) -> Built {
     if let Some(a) = &q.artifact {
         let p = arg(Sql::Text(a.clone()), &mut args);
         wh.push(format!("{}i.artifact_id = {p}", on(Driver::Artifact)));
+    } else if q.no_artifact {
+        wh.push(format!("{}i.artifact_id IS NULL", on(Driver::Artifact)));
+    }
+    // Each tag a residual term, the artifacts carrying it read once from
+    // `artifact_tags_by_tag`: together, every tag (match all).
+    for t in &q.tags {
+        let p = arg(Sql::Text(t.clone()), &mut args);
+        wh.push(format!(
+            "+i.artifact_id IN (SELECT artifact_id FROM artifact_tags WHERE tag_id = {p})"
+        ));
+    }
+    if !q.tags.is_empty() && !q.text_withheld_at.is_empty() {
+        let ps: Vec<String> = q
+            .text_withheld_at
+            .iter()
+            .map(|a| arg(Sql::Text(a.clone()), &mut args))
+            .collect();
+        wh.push(format!("+i.artifact_id NOT IN ({})", ps.join(", ")));
     }
     if text.is_some() && !q.text_withheld_at.is_empty() {
         let ps: Vec<String> = q
@@ -495,14 +552,31 @@ fn build(q: &InboxQuery, shape: Shape, now: &str) -> Built {
         sql.push_str(w);
     }
     match shape {
-        Shape::Page => {
+        Shape::Page | Shape::GroupRows => {
             let order = if text.is_some() { "f.rowid" } else { "i.seq" };
-            let p = arg(Sql::Integer(i64::from(page_size(q.limit)) + 1), &mut args);
+            // A page reads one past its limit to know whether more follow;
+            // a group's rows know it from the group's counts, so the walk
+            // stops at the last row it lists.
+            let past = i64::from(shape == Shape::Page);
+            let p = arg(
+                Sql::Integer(i64::from(page_size(q.limit)) + past),
+                &mut args,
+            );
             sql.push_str(&format!(" ORDER BY {order} DESC LIMIT {p}"));
         }
         Shape::Count(cap) => {
             let p = arg(Sql::Integer(i64::from(cap)), &mut args);
             sql = format!("SELECT count(*) FROM ({sql} LIMIT {p})");
+        }
+        Shape::Groups => {
+            // `at` is the newest item's: SQLite takes a bare column from
+            // the row that gave `max()`.
+            let b = arg(Sql::Integer(q.before.unwrap_or(i64::MAX)), &mut args);
+            let p = arg(Sql::Integer(i64::from(group_page(q.limit)) + 1), &mut args);
+            sql = format!(
+                "SELECT aid, max(seq) AS newest, at, count(*), sum(u) FROM ({sql})
+                 GROUP BY aid HAVING newest < {b} ORDER BY newest DESC LIMIT {p}"
+            );
         }
         Shape::MarkAll => {}
     }
@@ -519,6 +593,62 @@ fn page_size(limit: u32) -> u32 {
         0 => DEFAULT_PAGE,
         n => n.min(MAX_PAGE),
     }
+}
+
+/// Groups per page of [`Store::inbox_groups`] for a query's `limit`.
+fn group_page(limit: u32) -> u32 {
+    match limit {
+        0 => DEFAULT_GROUPS,
+        n => n.min(MAX_GROUPS),
+    }
+}
+
+/// A page of items matching `q` on connection `c` (`shape`: `Page` or
+/// `GroupRows`), and the next page's cursor.
+fn page_on(c: &Connection, q: &InboxQuery, shape: Shape) -> Result<(Vec<ItemRow>, Option<i64>)> {
+    let b = build(q, shape, "");
+    let size = page_size(q.limit) as usize;
+    let mut items = (|| -> Result<Vec<ItemRow>> {
+        let mut st = c.prepare_cached(&b.sql)?;
+        Ok(st
+            .query_map(params_from_iter(b.args.iter()), row)?
+            .collect::<rusqlite::Result<Vec<_>>>()?)
+    })()
+    .map_err(|e| search_error(e, b.searched))?;
+    let next = if items.len() > size {
+        items.truncate(size);
+        items.last().map(|i| i.seq)
+    } else {
+        None
+    };
+    Ok((items, next))
+}
+
+/// One artifact's matches in [`Store::inbox_groups`]: the artifact
+/// (`None` for the items about none), how many match and how many of
+/// those are unread, the newest one's `seq` and time, and its first
+/// rows, its unread matches newest first and then its read ones, with
+/// where the rest begins when there are more.
+#[derive(Clone, Debug, PartialEq)]
+pub struct ArtifactGroup {
+    pub artifact_id: Option<String>,
+    pub total: u32,
+    pub unread: u32,
+    pub newest: i64,
+    pub newest_at: String,
+    pub items: Vec<ItemRow>,
+    pub next: Option<GroupNext>,
+}
+
+/// Where the rest of a group's rows begins, each part listed by the plain
+/// query with the group's artifact (or `no_artifact`) set.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum GroupNext {
+    /// More unread matches, before this `seq` (`read` unread).
+    Unread(i64),
+    /// Its read matches (`read` read), before this `seq`, or from the
+    /// newest when `None`.
+    Read(Option<i64>),
 }
 
 /// An SQL error from a search is the search text's fault (there should be
@@ -668,6 +798,37 @@ pub(super) fn shapes() -> Vec<(String, Built)> {
             },
         ),
         (
+            "UNREAD_ARTIFACT_PAGE",
+            InboxQuery {
+                read: ReadFilter::Unread,
+                artifact: Some("art0007".into()),
+                ..base.clone()
+            },
+        ),
+        (
+            "READ_ARTIFACT_PAGE",
+            InboxQuery {
+                read: ReadFilter::Read,
+                artifact: Some("art0007".into()),
+                ..base.clone()
+            },
+        ),
+        (
+            "NO_ARTIFACT_PAGE",
+            InboxQuery {
+                no_artifact: true,
+                ..base.clone()
+            },
+        ),
+        (
+            "UNREAD_NO_ARTIFACT_PAGE",
+            InboxQuery {
+                no_artifact: true,
+                read: ReadFilter::Unread,
+                ..base.clone()
+            },
+        ),
+        (
             "BY_KIND_PAGE",
             InboxQuery {
                 kinds: vec![Kind::Version],
@@ -723,6 +884,7 @@ pub(super) fn shapes() -> Vec<(String, Built)> {
             InboxQuery {
                 upto: Some(5000),
                 artifact: Some("art0007".into()),
+                except: vec!["I00040".into(), "I00041".into()],
                 ..base.clone()
             },
         ),
@@ -784,6 +946,39 @@ pub(super) fn shapes() -> Vec<(String, Built)> {
             },
         ),
         (
+            "TAG_PAGE",
+            InboxQuery {
+                tags: vec!["t_0000000001".into()],
+                ..base.clone()
+            },
+        ),
+        (
+            "TAGS_UNREAD_PAGE",
+            InboxQuery {
+                tags: vec!["t_0000000001".into(), "t_0000000002".into()],
+                read: ReadFilter::Unread,
+                ..base.clone()
+            },
+        ),
+        (
+            "PERSON_TAG_WITHHELD_PAGE",
+            InboxQuery {
+                recipient: Some(SAM.into()),
+                tags: vec!["t_0000000001".into()],
+                text_withheld_at: vec!["art0002".into(), "art0004".into()],
+                ..base.clone()
+            },
+        ),
+        (
+            "PERSON_TAG_KIND_PAGE",
+            InboxQuery {
+                recipient: Some(SAM.into()),
+                tags: vec!["t_0000000001".into()],
+                kinds: vec![Kind::Reply],
+                ..base.clone()
+            },
+        ),
+        (
             "PERSON_TEXT_PAGE",
             InboxQuery {
                 recipient: Some(SAM.into()),
@@ -798,6 +993,8 @@ pub(super) fn shapes() -> Vec<(String, Built)> {
             ("", Shape::Page),
             (" count", Shape::Count(10_001)),
             (" mark all", Shape::MarkAll),
+            (" groups", Shape::Groups),
+            (" group rows", Shape::GroupRows),
         ] {
             out.push((format!("{name}{suffix}"), build(&q, shape, now)));
         }
@@ -1478,23 +1675,90 @@ impl Store {
     /// # Errors
     /// `invalid_query` when the search text cannot be used.
     pub fn inbox_list(&self, q: &InboxQuery) -> Result<(Vec<ItemRow>, Option<i64>)> {
-        let b = build(q, Shape::Page, "");
-        let size = page_size(q.limit) as usize;
-        let mut items = self
-            .with_read(|c| {
+        self.with_read(|c| page_on(c, q, Shape::Page))
+    }
+
+    /// The items matching `q` grouped by artifact, one group for the items
+    /// about none: a page of groups, newest group (by its newest match)
+    /// first, each with its counts and its first `rows` rows (1 to
+    /// [`MAX_GROUP_ROWS`]): its unread matches newest first, then its read
+    /// ones, and the cursor of the next page of groups (its
+    /// `before`). `q.before` is that cursor, and `q.limit` the groups per
+    /// page (0 for [`DEFAULT_GROUPS`], at most [`MAX_GROUPS`]). One
+    /// snapshot; the grouping reads every match.
+    ///
+    /// # Errors
+    /// `invalid_query` when the search text cannot be used.
+    pub fn inbox_groups(
+        &self,
+        q: &InboxQuery,
+        rows: u32,
+    ) -> Result<(Vec<ArtifactGroup>, Option<i64>)> {
+        let b = build(q, Shape::Groups, "");
+        let size = group_page(q.limit) as usize;
+        let rows = rows.clamp(1, MAX_GROUP_ROWS);
+        self.with_read(|c| {
+            let mut groups = (|| -> Result<Vec<ArtifactGroup>> {
                 let mut st = c.prepare_cached(&b.sql)?;
                 Ok(st
-                    .query_map(params_from_iter(b.args.iter()), row)?
+                    .query_map(params_from_iter(b.args.iter()), |r| {
+                        Ok(ArtifactGroup {
+                            artifact_id: r.get(0)?,
+                            newest: r.get(1)?,
+                            newest_at: r.get(2)?,
+                            total: r.get(3)?,
+                            unread: r.get(4)?,
+                            items: Vec::new(),
+                            next: None,
+                        })
+                    })?
                     .collect::<rusqlite::Result<Vec<_>>>()?)
-            })
+            })()
             .map_err(|e| search_error(e, b.searched))?;
-        let next = if items.len() > size {
-            items.truncate(size);
-            items.last().map(|i| i.seq)
-        } else {
-            None
-        };
-        Ok((items, next))
+            let next = if groups.len() > size {
+                groups.truncate(size);
+                groups.last().map(|g| g.newest)
+            } else {
+                None
+            };
+            for g in &mut groups {
+                let part = |read: ReadFilter, limit: u32| InboxQuery {
+                    artifact: g.artifact_id.clone(),
+                    no_artifact: g.artifact_id.is_none(),
+                    read,
+                    before: None,
+                    limit,
+                    ..q.clone()
+                };
+                // Its unread matches first, newest first, then its read
+                // ones; each part reads no more rows than it lists, its
+                // count saying whether more follow.
+                let (mut items, mut next) = (Vec::new(), None);
+                if q.read != ReadFilter::Read && g.unread > 0 {
+                    let n = rows.min(g.unread);
+                    (items, _) = page_on(c, &part(ReadFilter::Unread, n), Shape::GroupRows)?;
+                    if g.unread > rows {
+                        next = items.last().map(|i| GroupNext::Unread(i.seq));
+                    }
+                }
+                let read = g.total - g.unread;
+                if next.is_none() && q.read != ReadFilter::Unread && read > 0 {
+                    let left = rows - items.len() as u32;
+                    if left == 0 {
+                        next = Some(GroupNext::Read(None));
+                    } else {
+                        let n = left.min(read);
+                        let (r, _) = page_on(c, &part(ReadFilter::Read, n), Shape::GroupRows)?;
+                        if read > left {
+                            next = r.last().map(|i| GroupNext::Read(Some(i.seq)));
+                        }
+                        items.extend(r);
+                    }
+                }
+                (g.items, g.next) = (items, next);
+            }
+            Ok((groups, next))
+        })
     }
 
     /// How many items match `q` (its `before` and `limit` ignored), counting
@@ -3204,6 +3468,165 @@ mod tests {
     }
 
     #[test]
+    fn groups_by_artifact_with_counts_across_pages() {
+        let (_d, st) = store();
+        let sid = session(&st, "claude", "h1");
+        let (_p, a, tid) = owner_thread(&st);
+        for i in 0..4 {
+            agent_reply(&st, &tid, &sid, &format!("on a {i}"));
+        }
+        let b = artifact(&st, Some(&sid));
+        let qid = ask(&st, &sid, None);
+        agent_reply(&st, &tid, &sid, "on a again");
+        let oldest_a = all(&st)
+            .into_iter()
+            .rfind(|i| i.artifact_id.as_deref() == Some(a.as_str()))
+            .unwrap();
+        st.inbox_mark(&[oldest_a.id], true, None).unwrap();
+        let groups = |q: InboxQuery, rows: u32| st.inbox_groups(&q, rows).unwrap();
+        let (gs, next) = groups(InboxQuery::default(), 2);
+        let shape: Vec<_> = gs
+            .iter()
+            .map(|g| {
+                (
+                    g.artifact_id.clone(),
+                    g.total,
+                    g.unread,
+                    g.items.len(),
+                    g.next.is_some(),
+                )
+            })
+            .collect();
+        assert_eq!(
+            shape,
+            vec![
+                (Some(a.as_str().to_string()), 5, 4, 2, true),
+                (None, 1, 1, 1, false),
+                (Some(b.as_str().to_string()), 1, 1, 1, false),
+            ],
+            "newest group first, each counted in full past its rows"
+        );
+        assert_eq!(next, None);
+        assert_eq!(gs[0].newest, gs[0].items[0].seq);
+        assert_eq!(gs[0].newest_at, gs[0].items[0].created_at);
+        assert_eq!(gs[1].items[0].question_id.as_deref(), Some(qid.as_str()));
+        // The rest of a group: its unread matches past the cursor, then its read ones.
+        let Some(GroupNext::Unread(at)) = gs[0].next else {
+            panic!("more unread: {:?}", gs[0].next)
+        };
+        let (rest, none) = st
+            .inbox_list(&InboxQuery {
+                artifact: Some(a.as_str().into()),
+                read: ReadFilter::Unread,
+                before: Some(at),
+                ..Default::default()
+            })
+            .unwrap();
+        assert_eq!((rest.len(), none), (2, None));
+        // Unread first, then read, in the group's rows; the read part's start when the unread fill them.
+        let (wide, _) = groups(InboxQuery::default(), 5);
+        let reads: Vec<bool> = wide[0].items.iter().map(|i| i.read_at.is_some()).collect();
+        assert_eq!(
+            (reads, wide[0].next),
+            (vec![false, false, false, false, true], None)
+        );
+        let (four, _) = groups(InboxQuery::default(), 4);
+        assert_eq!(four[0].next, Some(GroupNext::Read(None)));
+        let (three, _) = groups(
+            InboxQuery {
+                read: ReadFilter::Read,
+                ..Default::default()
+            },
+            3,
+        );
+        assert_eq!((three[0].items.len(), three[0].next), (1, None));
+        // Groups page by their newest item.
+        let (one, next) = groups(
+            InboxQuery {
+                limit: 2,
+                ..Default::default()
+            },
+            1,
+        );
+        assert_eq!(one.len(), 2);
+        let (two, end) = groups(
+            InboxQuery {
+                limit: 2,
+                before: next,
+                ..Default::default()
+            },
+            1,
+        );
+        assert_eq!(
+            (
+                two.iter()
+                    .map(|g| g.artifact_id.clone())
+                    .collect::<Vec<_>>(),
+                end
+            ),
+            (vec![Some(b.as_str().to_string())], None)
+        );
+        // Filters hold in the counts and the rows: unread only, the items
+        // about no artifact, a search.
+        st.inbox_mark(&[gs[2].items[0].id.clone()], true, None)
+            .unwrap();
+        let (unread, _) = groups(
+            InboxQuery {
+                read: ReadFilter::Unread,
+                ..Default::default()
+            },
+            20,
+        );
+        assert_eq!(
+            unread
+                .iter()
+                .map(|g| (g.total, g.unread, g.items.len()))
+                .collect::<Vec<_>>(),
+            vec![(4, 4, 4), (1, 1, 1)]
+        );
+        let (none_group, _) = groups(
+            InboxQuery {
+                no_artifact: true,
+                ..Default::default()
+            },
+            3,
+        );
+        assert_eq!(none_group.len(), 1);
+        assert_eq!(none_group[0].artifact_id, None);
+        let (found, _) = groups(
+            InboxQuery {
+                text: Some("again".into()),
+                ..Default::default()
+            },
+            3,
+        );
+        assert_eq!(
+            found
+                .iter()
+                .map(|g| (g.artifact_id.clone(), g.total))
+                .collect::<Vec<_>>(),
+            vec![(Some(a.as_str().to_string()), 1)]
+        );
+        assert_eq!(found[0].items[0].kind, Kind::Reply);
+        // A group's rows are reached by its artifact, unread or not.
+        for q in [
+            InboxQuery {
+                read: ReadFilter::Unread,
+                artifact: Some(a.as_str().into()),
+                ..Default::default()
+            },
+            InboxQuery {
+                read: ReadFilter::Unread,
+                no_artifact: true,
+                ..Default::default()
+            },
+        ] {
+            assert_eq!(build(&q, Shape::GroupRows, "").driver, Driver::Artifact);
+            assert_eq!(build(&q, Shape::Page, "").driver, Driver::Unread);
+        }
+    }
+
+    #[test]
     fn listener_hears_committed_changes_only() {
         let (_d, st) = store();
         let heard = std::sync::Arc::new(std::sync::Mutex::new(Vec::new()));
@@ -3233,6 +3656,44 @@ mod tests {
                 seq: h[0].seq,
                 made: false
             }
+        );
+    }
+
+    /// A change a savepoint rolled back leaves no trace the rollback hook
+    /// clears: the item made after it takes the same `seq`, and is heard
+    /// once.
+    #[test]
+    fn a_seq_reused_after_a_savepoint_rollback_is_heard_once() {
+        let (_d, st) = store();
+        let heard = std::sync::Arc::new(std::sync::Mutex::new(Vec::new()));
+        let h = heard.clone();
+        st.set_inbox_listener(Box::new(move |c| h.lock().unwrap().extend(c)));
+        let insert = |tx: &rusqlite::Transaction<'_>, id: &str| -> clax_core::Result<()> {
+            tx.execute(
+                "INSERT INTO inbox_items (id, kind, key, created_at) VALUES (?1, 'version', ?1, 'x')",
+                params![id],
+            )?;
+            Ok(())
+        };
+        st.with_tx(|tx| {
+            tx.execute_batch("SAVEPOINT s")?;
+            insert(tx, "i1")?;
+            tx.execute_batch("ROLLBACK TO s; RELEASE s")?;
+            insert(tx, "i2")
+        })
+        .unwrap();
+        let seq: i64 = st
+            .with_read(|c| {
+                Ok(
+                    c.query_row("SELECT seq FROM inbox_items WHERE id = 'i2'", [], |r| {
+                        r.get(0)
+                    })?,
+                )
+            })
+            .unwrap();
+        assert_eq!(
+            *heard.lock().unwrap(),
+            vec![InboxChange { seq, made: true }]
         );
     }
 
@@ -3334,6 +3795,27 @@ mod tests {
         };
         assert_eq!(st.inbox_mark_all(&q).unwrap(), 1);
         assert_eq!(st.inbox_unread(None).unwrap(), 1);
+    }
+
+    #[test]
+    fn mark_all_leaves_the_items_it_is_told_to_except() {
+        let (_d, st) = store();
+        let sid = session(&st, "claude", "h1");
+        ask(&st, &sid, None);
+        ask(&st, &sid, None);
+        ask(&st, &sid, None);
+        let items = all(&st);
+        let q = InboxQuery {
+            except: vec![items[0].id.clone(), items[2].id.clone()],
+            ..Default::default()
+        };
+        assert_eq!(st.inbox_mark_all(&q).unwrap(), 1);
+        let unread: Vec<String> = all(&st)
+            .into_iter()
+            .filter(|i| i.read_at.is_none())
+            .map(|i| i.id)
+            .collect();
+        assert_eq!(unread, vec![items[0].id.clone(), items[2].id.clone()]);
     }
 
     #[test]

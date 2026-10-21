@@ -666,7 +666,7 @@ async fn a_credential_for_another_extension_id_is_refused() {
     let o = other.clone();
     let ts = TestServer::spawn_with(move |st| {
         let m = st.store.mint_extension_credential(&"p".repeat(32)).unwrap();
-        *o.lock().unwrap() = m.credential;
+        *o.lock().unwrap() = m.credential.expose().to_string();
         st.ext_creds =
             std::sync::Arc::new(clax_http::extension::Credentials::load(&st.store).unwrap());
     })

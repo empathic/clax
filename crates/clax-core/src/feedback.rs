@@ -74,7 +74,7 @@ pub enum FeedbackPhase {
 }
 
 /// Where a thread's latest forwarded comment stands, for the shell's waiting
-/// indicator, as one reader reads it ([`crate::Delivery::view`]).
+/// indicator, as one reader reads it (`clax_store::Delivery::view`).
 /// `tier` is the tier waited on (`sent`), the delivering tier (`delivered`,
 /// `acknowledged`), or `None` (`agent_ended`, `withheld`, `declined`,
 /// `no_access`).
@@ -252,7 +252,7 @@ pub struct Touched {
     pub threads: BTreeSet<(String, String)>,
     /// For each thread whose rows the change withdrew, by thread ID: the
     /// people (public IDs) who read a row of it
-    /// ([`crate::Delivery::people`]), read before the rows went. The owner
+    /// (`clax_store::Delivery::people`), read before the rows went. The owner
     /// read them too. When no row is left, they alone are told so.
     pub withdrawn: BTreeMap<String, BTreeSet<String>>,
 }
@@ -493,6 +493,11 @@ pub fn render_delivery(items: &[FeedbackItem], placeholders: &[Placeholder]) -> 
 
 /// Characters of a quote shown in tool results.
 pub const SHORT_QUOTE_CHARS: usize = 200;
+
+/// Most IDs each list of one `POST /api/sessions/<sid>/feedback/ack` names
+/// (`thread_ids` and `comment_ids` alike); a client with more sends them in
+/// chunks of at most this many.
+pub const MAX_ACK_IDS: usize = 500;
 
 /// A quote as tool results show it: whitespace collapsed, at most
 /// [`SHORT_QUOTE_CHARS`] characters, then `…`.

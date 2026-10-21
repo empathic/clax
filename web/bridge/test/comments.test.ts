@@ -162,4 +162,27 @@ describe("comments (page side)", () => {
     offB();
     expect(methods()).toContain("unwatchWorking");
   });
+
+  it("onWorking that the shell refused to watch leaves no subscription behind, so the next one watches again", async () => {
+    let refuse = true;
+    const f = fakeRpc(method => {
+      if (method === "watchWorking" && refuse) throw Object.assign(new Error("closed"), { code: "unavailable" });
+      return { working: false, agents: [] };
+    });
+    const c = commentsLocals(f.rpc as never, {}, { ctx: commentsContext, clip: () => import("../src/parts/clip") }) as unknown as { onWorking(fn: (s: unknown) => void): Promise<() => void> };
+    const a: unknown[] = [];
+    const b: unknown[] = [];
+    await expect(c.onWorking(s => a.push(s))).rejects.toMatchObject({ code: "unavailable" });
+    f.emit("working", { working: true, agents: [] });
+    expect(a).toEqual([]);
+    refuse = false;
+    const off = await c.onWorking(s => b.push(s));
+    const methods = () => f.rpc.call.mock.calls.map(x => x[1]);
+    expect(methods().filter(m => m === "watchWorking")).toHaveLength(2);
+    f.emit("working", { working: true, agents: [] });
+    expect(b).toEqual([{ working: true, agents: [] }]);
+    expect(a).toEqual([]);
+    off();
+    expect(methods()).toContain("unwatchWorking");
+  });
 });

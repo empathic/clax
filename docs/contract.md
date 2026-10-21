@@ -14,7 +14,8 @@ The implementation is the authority where the two disagree:
 
 ## Tools
 
-Thirty tools: `publish`, `read`, `list`, `delete`, `open`, `pin`, `unpin`, `fork`,
+Thirty-two tools: `publish`, `read`, `list`, `delete`, `open`, `pin`, `unpin`,
+`tag` and `tags` (see "Tags"), `fork`,
 `asset_upload`, `status`, the comment tools `comments_read`,
 `comments_reply`, `comments_resolve`, `comments_handoff`, `watch`, `wait_for_feedback`, `working` (see
 "Comments and feedback"), `draft` (an agent's work in progress, shown to
@@ -42,7 +43,7 @@ public Clax"), and the data tools `db_get`, `db_list`,
   which attributes publishes to no session.
 
 Pi's extension API cannot register an MCP server, so `plugins/pi` implements
-the same thirty tools in TypeScript against the daemon's REST API, with the same
+the same thirty-two tools in TypeScript against the daemon's REST API, with the same
 arguments and the same result and error JSON.
 
 Names as the model sees them:
@@ -131,12 +132,14 @@ see "What reaches an agent") and `notes` (notes from Clax itself, such as what a
 session's idle end released), each present only when not empty, and each
 also told in the trailing text block.
 
-The one exception: arguments that fail the tool's schema (a wrong type, a
-missing required argument, or an unknown argument, since every schema rejects
-unknown fields) are refused before the tool runs. Over MCP that is a
-protocol-level invalid-params error, not a tool result, so it has no
-`error.code` and no `feedback`. Pi reports it as an error result whose text is
-Pi's own validation message (`Validation failed for tool ...`), not JSON.
+Arguments that fail the tool's schema (a wrong type, a missing required
+argument, or an unknown argument, since every schema rejects unknown fields)
+are refused before the tool runs. Over MCP (the stdio shim and `/mcp`) that
+is an error result like any other, `invalid_args` with the deserializer's
+reason as its `message` (such as `failed to deserialize parameters: unknown
+field ...`). The one exception is Pi, which validates arguments itself and
+reports a failure as an error result whose text is Pi's own validation
+message (`Validation failed for tool ...`), not JSON.
 
 ### Error codes every tool can return
 
@@ -148,7 +151,9 @@ These come from the tool layer itself, not the daemon:
   says the daemon and its log are on the owner's machine.
 - `timeout`: a request to the daemon passed its client-side deadline. Extra
   fields `detail` and `log` (no `log` in remote mode). For a publish, the
-  outcome is unknown; read the artifact before retrying.
+  outcome is unknown: read the artifact before retrying an update, and
+  before retrying a create (whose artifact ID you never saw) call `list`
+  and look for it by title, as the create's message says.
 - `bad_response`: the daemon answered with a success status but a body that
   could not be read.
 - `internal` (Pi only): an unexpected exception inside the extension.
@@ -209,13 +214,14 @@ Arguments:
 | `id` | string | no; at most one of `id`, `url` | Artifact to update. |
 | `url` | string | no; at most one of `id`, `url` | Artifact to update, as any artifact URL. |
 | `if_version` | integer ≥ 0 | no | The version the update is based on. Defaults to the artifact's current version. Ignored when creating. |
-| `title` | string | on create, unless the page has a `<title>` | Artifact title. Creating without it takes the page's `<title>` (below). Updates never need it. |
-| `description` | string | no | One-line description. |
-| `icon` | string | no | One generic word, such as `chart` or `map`. |
+| `title` | string | on create, unless the page has a `<title>` | Artifact title, at most 200 characters. Creating without it takes the page's `<title>` (below). Updates never need it. |
+| `description` | string | no | One-line description, at most 1000 characters. |
+| `icon` | string | no | One generic word, such as `chart` or `map`, at most 40 characters. |
 | `label` | string | no | Short name for this version, at most 60 characters. |
 | `note` | string | no | This version's change note for the person, at most 280 characters (longer is cut, with `note_truncated: true`). |
 | `addresses` | array of thread IDs | no | Threads of this artifact this version addresses (at most 50). Linking does not resolve them. |
 | `capabilities` | object | no | The page's runtime capabilities declaration, as a full set (below). |
+| `tags` | array of strings | no | Existing tags (names or IDs, see "Tags") to add to the artifact once published. |
 
 On an update, an omitted `title`, `description`, `icon` or `capabilities`
 keeps the artifact's current value, and so does `capabilities: null`. A
@@ -227,6 +233,14 @@ new version: those named, plus those this session was marked working on for
 the artifact). `addresses` may name resolved threads. A thread ID in
 `addresses` that is not a thread of the artifact fails the call with
 `unknown_thread`, and nothing is published.
+
+With `tags`, the tool first reads the tags there are (`GET /api/tags`): a
+name that is none fails the call with `unknown_tag`, naming the tags there
+are, and nothing is published. Once the version is published, it adds them
+(`PATCH /api/artifacts/<id>/tags {add}`); the result's `tags` is the
+artifact's tag names after. A refusal then (403 `admin_only`: the
+publisher does not administer the artifact) does not undo the publish: the
+result carries it as `tags_error` (`{code, message}`), beside the version.
 
 Over HTTP, `POST /api/artifacts` and `POST /api/artifacts/<id>/versions`
 answer `{artifact, version, url, note_truncated}`: `note_truncated` is `true`
@@ -271,8 +285,10 @@ artifact reached inside it, until it is reloaded.
 Title on create: a new artifact needs a title. When `title` is omitted, the
 tool uses the text of the page's first `<title>` element: the tag name in any
 case, attributes allowed; `&amp;`, `&lt;`, `&gt;`, `&quot;` and `&apos;`
-decoded once (other entities kept as written); runs of whitespace collapsed to
-one space; trimmed; cut to 200 characters. A page sent as base64 (a
+decoded once (other entities kept as written); control characters other than
+whitespace and hidden format characters (bidi embeddings, overrides and
+isolates, zero-width spaces, U+FEFF, soft hyphens, tag characters) dropped;
+runs of whitespace collapsed to one space; trimmed; cut to 200 characters. A page sent as base64 (a
 `file_path` that is not UTF-8 or lacks a text extension), or one with no
 closed `<title>` holding non-blank text, gives none, and the call fails with
 `invalid_args`. An explicit `title` always wins; an explicit blank one on
@@ -354,6 +370,13 @@ Errors:
   names the rule: `too_large`, `not_xml`, `doctype`, `nesting`,
   `not_svg`, `view_box`, `element`, `event_attribute`, `external_href`,
   `filter`, `external_url`, `style`, `use_too_many` or `use_too_deep`.
+- `title_too_long`, `description_too_long`, `icon_too_long`: `title` exceeds
+  200 characters, `description` 1000 or `icon` 40. `invalid_args` when one
+  of them holds a control character (a line break or tab among them) or a
+  hidden format character (a bidi embedding, override or isolate, a
+  zero-width space, a tag character); the joiners ZWJ and ZWNJ and the
+  direction marks LRM, RLM and ALM are allowed. `PATCH /api/artifacts/<id>`
+  checks its `title`, `description` and `icon` the same way.
 - `unknown_session`: the session the tools registered has ended (for example
   through a `SessionEnd` hook) or no longer exists. The shim and the Pi
   extension register a new session with the same harness session ID and retry
@@ -420,6 +443,7 @@ such file in that version).
 |---|---|---|---|
 | `limit` | integer ≥ 0 | no | Most artifacts to return. |
 | `scope` | `"all"` or `"mine"` | no | `all` (default) or only artifacts this session created. Without a session (the daemon's `/mcp`), `mine` is empty. |
+| `tags` | array of strings | no | Only artifacts carrying every one of these tags (names or IDs; `GET /api/artifacts?tag=…`). A name no tag has matches nothing. |
 
 Result, pinned first, then most recently updated:
 
@@ -432,6 +456,7 @@ Result, pinned first, then most recently updated:
       "title": "Sales Dashboard",
       "version": 2,
       "pinned": false,
+      "tags": ["design", "draft"],
       "updated_at": "2026-09-29T10:15:02.114Z",
       "owner_session_id": "01K6AB3Q9X7N2M4P5R6S8T0V1W"
     }
@@ -441,6 +466,7 @@ Result, pinned first, then most recently updated:
 ```
 
 `owner_session_id` is `null` for artifacts published without a session.
+`tags` are the names of the tags it carries, sorted by name.
 
 Errors: only those every tool can return.
 
@@ -494,6 +520,46 @@ Pins the artifact to the top of the gallery, or removes the pin.
 ```
 
 Errors: `invalid_id`, `not_found`.
+
+### tag and tags
+
+`tag` adds and removes an artifact's tags (`PATCH /api/artifacts/<id>/tags`,
+see "Tags"):
+
+| Name | Type | Required | Meaning |
+|---|---|---|---|
+| `url_or_id` | string | yes | The artifact. |
+| `add` | array of strings | one of `add`, `remove` | Existing tags (names or IDs) to add; one it carries already stays. |
+| `remove` | array of strings | one of `add`, `remove` | Tags to remove, after the adds; one it does not carry is no change. |
+
+```json
+{ "artifact_id": "7q3k9mzx2b4t", "tags": ["design", "final"], "changed": true, "feedback": [] }
+```
+
+`tags` are the names it carries after, sorted by name; `changed` whether
+they differ from before. Agents apply tags; they never make one: a name no
+tag has is `unknown_tag`, its message listing the tags there are.
+
+`tags` (no arguments) lists the tags there are, for an agent to know what it
+may apply:
+
+```json
+{
+  "tags": [
+    { "name": "design", "colour": "blue", "description": "Waiting on a design pass", "count": 3 }
+  ],
+  "feedback": []
+}
+```
+
+`count` is how many of the artifacts the caller may read carry it. Making,
+renaming, recolouring and deleting tags are the owner's, by hand (`clax tags
+create|edit|delete`) or in the browser, and no tool's: the tool set is the
+same for every agent, and the owner's management is rare enough for the CLI.
+
+Errors: `invalid_id`, `not_found`, `unknown_tag`, `admin_only` (the caller
+does not administer the artifact), `too_many_tags`, `no_session` (a person's
+agent writes from a session).
 
 ### fork
 
@@ -561,7 +627,11 @@ The result:
 
 or, while the owner has not answered, `{status: "approval_pending",
 question_id, url, call_again: true, note}`: call again with
-`question_id`. Errors: `not_approved` (the owner chose not to publish,
+`question_id`. The push after the owner answers starts only while
+`timeout_s` has time left: when they answer as it runs out, the push is
+left to the next call, and the result
+is `{status: "answered", question_id, url, call_again: true, note}`: call
+again with `question_id` to publish what they approved. Errors: `not_approved` (the owner chose not to publish,
 skipped the question, or answered outside the browser), `approval_used`,
 `no_remote` (none added: `clax remote add`), `remote_required` (several:
 name one), `not_connected` (its sign-in is not finished), `remote_moved`
@@ -582,9 +652,13 @@ version; a page references one by the returned `url`.
 | `file_path` | string | at least one of `file_path`, `file_paths` | One local file. |
 | `file_paths` | array of string | at least one of `file_path`, `file_paths` | Several local files. |
 
-Paths resolve as for `publish`. Every file is read before any is uploaded;
-uploads then happen one at a time, so a failure part way leaves the earlier
-files uploaded. The content type is inferred from the file name.
+Paths resolve as for `publish`. Every file is read, and its type and size
+checked, before any is uploaded; uploads then happen one at a time, so a
+failure part way leaves the earlier files uploaded, and its error names
+the file that failed (`path`) and the assets already uploaded
+(`uploaded`, entries as in `assets`): retry with the rest only. The content
+type is inferred from the file name. (Pi checks the type and size only as
+each file is uploaded.)
 
 ```json
 {
@@ -607,8 +681,8 @@ Errors:
 - `invalid_id`, `file_unreadable` (extra field `path`), `not_found`.
 - `unsupported_type`: accepted types are `image/*`, `video/*`, `font/*`,
   `application/pdf`, `text/css`, `text/javascript`, `text/csv`,
-  `text/markdown`, `application/json`, `text/plain`.
-- `asset_too_large`: a file exceeds 20 MiB.
+  `text/markdown`, `application/json`, `text/plain` (extra field `path`).
+- `asset_too_large`: a file exceeds 20 MiB (extra field `path`).
 - `body_too_large`: the upload request exceeds 21 MiB.
 
 ### status
@@ -1092,6 +1166,107 @@ the threads changed since the link's cursor (`since`, below), and every
   (agent tokens only, else 400 `invalid_query`) lists only the threads made,
   commented on or resolved at or after `since`.
 
+## Tags
+
+Tags are one list per Clax that the owner keeps, like GitHub's labels: each
+tag a name, a colour and an optional description. An artifact carries any
+of them (at most 20), and everyone who may see the artifact sees its tags,
+agents included: tag names are the owner's words, never a person's, so the
+visibility filter (see "What reaches an agent") leaves them alone.
+
+- **The list is the owner's.** The owner (their browser, the daemon token
+  by hand) and the owner's agents make, rename, recolour and delete tags.
+  The owner's agents are this machine's (the token naming a session) and
+  those of another machine connected as the owner (a grant of the owner's
+  row, within that grant's rights: it needs `clax-artifacts` `update`
+  somewhere); such a grant also administers every artifact. Anyone else
+  is 403 `owner_only` (401 without a credential). On a hosted Clax, members
+  apply the owner's tags; they make none.
+- **Applying is the artifact's administrators'.** Setting an artifact's
+  tags takes what changing its pin does: the owner and the owner's agents
+  on any artifact, a person and that person's agents on the artifacts the
+  person made (`clax_http::agent::administers`). An editor (another
+  person's `update` right, a hosted editor's share) changes the contents,
+  not the tags: 403 `admin_only`. A person's agent needs `clax-artifacts`
+  `update` at the artifact (403 `not_permitted`), and writes from a session
+  (400 `no_session`).
+- **Agents apply only.** A tag that is not on the list is refused
+  (`unknown_tag`), its message listing the tags there are; nothing makes a
+  tag implicitly.
+- **Names** are trimmed, 1 to 40 characters, with no control or hidden
+  format character (bidi controls, zero-width characters), and unique
+  whatever their case (two names that differ only in case are one name,
+  compared lowercased). A name shaped like a tag ID in any case (`t_` and ten
+  lowercase Crockford base32 characters) is refused, so a tag is named by
+  its ID or its name unambiguously. A rename keeps the tag's ID, and every
+  artifact carrying it carries the new name.
+- **Colours** are palette keys, not colours: `gray`, `red`, `orange`,
+  `yellow`, `green`, `teal`, `blue`, `purple`, `pink` and `brown` (default
+  `gray`). Each theme renders a key in shades that keep its text legible.
+- **Descriptions** are one line of at most 200 characters; blank is none.
+- **Deleting a tag** removes it from every artifact.
+- **Bounds:** at most 500 tags (429 `limit_reached`), 20 per artifact (400
+  `too_many_tags`).
+
+**The artifact's shape.** Every artifact view (`GET /api/artifacts`, `GET
+/api/artifacts/<aid>`, a publish's answer, the page's bootstrap) carries
+`tags: [{id, name, colour}]`, sorted by name (`[]` for none). `GET
+/api/artifacts/<aid>` and the page's bootstrap also carry `may_tag`:
+whether the caller may set the artifact's tags (it administers the
+artifact, as below), which the web UI reads to offer its tag editor.
+
+The web UI shows each artifact's tags on its gallery card and under its
+title, filters the gallery and the inbox by them (`?tag=` in the page's
+address, match all), and lists them at `/tags`, where the owner makes,
+edits and deletes them.
+
+**Routes.**
+
+- **`GET /api/tags`** → `{tags, colours, may_manage}`: each tag `{id, name,
+  colour, description, created_at, updated_at, count}`, sorted by name,
+  `count` the artifacts the caller may read that carry it (live pages only
+  for a caller who sees them); `colours`, the palette keys; and whether the
+  caller manages the list. Every signed-in person (the owner, connected
+  people, a hosted Clax's members) and every agent sees every tag, its name
+  and description included, whatever artifacts they may read, so they know
+  what they may apply; only the counts are limited to what they may read. A
+  guest (a viewer who is no connected person, or no credential) sees only
+  the tags of the artifacts it may see.
+  A hosted Clax refuses it to anyone signed out (401 `sign_in_required`).
+- **`POST /api/tags {name, colour?, description?}`** → 201 `{tag}` (with
+  `count: 0`). 400 `invalid_tag` (a bad name or description),
+  `invalid_colour`; 409 `tag_exists`.
+- **`PATCH /api/tags/<tag_id> {name?, colour?, description?}`** → `{tag}`:
+  each field given is set (a blank `description` clears it). 404 for no
+  such tag; the values' errors as for `POST`.
+- **`DELETE /api/tags/<tag_id>`** → `{deleted: true, artifacts}`: how many
+  artifacts carried it. 404 for no such tag.
+- **`PUT /api/artifacts/<aid>/tags {tags: [id or name, …]}`** →
+  `{artifact_id, tags, changed}`: the artifact carries exactly these (`[]`
+  clears them); `tags` is what it carries after (`[{id, name, colour}]`,
+  sorted by name), `changed` whether that differs from before.
+- **`PATCH /api/artifacts/<aid>/tags {add?: […], remove?: […]}`** → the
+  same: adds, then removes. The tools use it.
+- **Filters.** `GET /api/artifacts`, `GET /api/inbox` (with or without
+  `group=artifact`) and `GET /api/inbox/summary` take `tag=<id or name>`,
+  repeatable: only the artifacts (or the items about artifacts) carrying
+  every tag named. A name no tag has matches nothing, and says nothing
+  about which tags exist. On the summary it narrows `questions` and
+  `latest`, not `unread`. `POST /api/inbox/read`'s `filter` takes `tag` (a
+  string or an array) the same way.
+
+The browser's writes keep the viewer routes' origin rule (403
+`forbidden_origin` from another origin). Each change publishes `tags` on
+the event stream (below) and is recorded: `tag.create`, `tag.update`,
+`tag.delete`, and `artifact.update` with `fields.tags` (see "Kinds").
+
+On the command line: `clax tags` lists them; `clax tags create <name>
+[--colour c] [--description d]`, `clax tags edit <tag> [--name n] [--colour
+c] [--description d]` and `clax tags delete <tag>` are the owner's; `clax tag
+<artifact> --add <tag> --remove <tag>` (each repeatable) changes an
+artifact's; `clax publish --tags a,b` adds tags to what it publishes; and
+`clax list --tag <tag>` (repeatable) filters.
+
 ## Sessions
 
 A session is one harness conversation. Publishes made through a session's
@@ -1440,6 +1615,31 @@ viewer comment on it is sent too, to the agent the thread was last sent to
 while that agent's session is live (see below). A viewer comment on a
 resolved thread reopens it.
 
+Comment text, a person's and an agent's reply alike, is Markdown: CommonMark
+with GitHub's extensions (tables, strikethrough, task lists, shown with
+read-only boxes, and bare URLs and email addresses made links), stored and
+returned as typed. The shell and the extension show it rendered, with no
+images and no raw HTML: HTML in a comment shows as its text, an image
+(`![alt](url)`) shows as a link to its address named by its alt text, and
+nothing in a comment is fetched. A link is kept only for an absolute
+`http:`, `https:` or `mailto:` address and opens in a new tab with
+`rel="noopener noreferrer nofollow"`; a link to any other address shows as
+its text alone. Nothing in a comment is hidden from the people reading it:
+a link reference definition (`[x]: https://…`, and so `[//]: # (…)`) shows
+as its text, a link's or an image's title shows after it, a link with no
+text is named by its address, the address of a link that is not made
+follows its text, a code fence's info string shows with the code, and a
+comment nested 20 levels deep, or whose reading would leave out any other
+of its words, shows whole as its text. Previews show a link's address
+after its text.
+Headings are set a step above the comment's text. Previews on one line (a
+folded thread, a pin's title, an inbox row, a notification, a version's
+addressed threads) show the text with the Markdown syntax taken away. An
+approval request shows the withheld comments rendered the same way, each
+led by its author, its first three lines until **Show all**; as everywhere,
+a reading that would leave out a word shows the comment as its text, so
+nothing withheld is hidden from the approver.
+
 A drag in comment mode that starts where no text is under the pointer (empty
 space, padding, an image, a canvas, an inline SVG), or any drag with Shift
 held, draws a rectangle instead of selecting text; a drag that starts over
@@ -1659,6 +1859,91 @@ a new version) makes the publishing session watch the artifact with replies
 on (an existing watch keeps its setting); the `watch` tool adds or removes a watch. Agent replies and resolves need
 a live session and work only on sent threads.
 
+A person's send may also name a live agent that does not watch the
+artifact yet: `POST /api/artifacts/<aid>/threads/<tid>/send {to}` from the
+owner (a browser, or the token by hand) or a connected person (a browser)
+takes, in `to`, a live agent's handle or its name (ignoring case), as an
+`@name` in their comment does. When that agent may read and watch the
+artifact (the owner's agents always; a person's agent where its rights
+allow both, never on a live page) it is given a watch, recorded as the
+sender's, in the send's own transaction, and the thread is sent to it; it
+routes as any send naming an agent (see "Approvals": another person's
+agent waits for that person's approval of the thread's authors, and the
+thread reads `withheld` until then). A resolved thread is 400
+`thread_resolved` whatever `to` names; an agent that may not read the
+artifact is 400 `agent_cannot_read`; one that may read but not watch it,
+or no live agent, 400 `unknown_agent`; none of them gives a watch. `GET
+/api/agents?artifact=<aid>` lists the live agents a send of the caller's
+there may name: those that own or watch it and, from the owner or a
+connected person, any that may read and watch it; none when the caller
+may not send there (`clax-comments` `send`); a live page is 404 to a
+caller `GET /api/agents` lists no live pages to. From
+anyone else (a guest, a LAN viewer, an agent, whose agents hand threads off
+instead) and in a batch send, `to` names only a live owner or watcher of the
+artifact, by handle, as before.
+
+### Starting an artifact from a brief
+
+The gallery's **New** starts an artifact from a brief in a person's
+browser, for an agent to build: `POST /api/artifacts:new {title, brief}`
+answers 201 `{artifact, version, url, thread}`. Version 1 is a placeholder
+page that follows the page contract, titled `title` and saying an agent
+has not built it yet; the brief becomes the artifact's first thread, on
+the whole artifact (`anchor.kind` `artifact`), the person's own comment,
+sent to no agent (an `@` in it sends nothing). The artifact is the
+person's (the owner's has no `person`), and no session's: none owns or
+watches it. `title` is trimmed and checked as any artifact title is: 1
+to 200 characters with no control character and no hidden format
+character (the joiners U+200C and U+200D and the direction marks U+200E,
+U+200F and U+061C are allowed), else 400 `invalid_title`; `brief` is trimmed and non-blank, at most
+the 10,000 characters a person's comment may hold (`invalid_comment`
+elsewhere; the 4096 bytes of the `comments` capability are a page's own
+writes' limit), else 400 `invalid_brief`.
+
+An `Idempotency-Key` header (1 to 128 printable ASCII characters, else 400
+`invalid_args`) makes the request repeatable: a repeat by the same person
+with the same key answers 200 with the artifact, version 1 and brief
+thread the first request made, while that artifact exists (a key whose
+artifact was deleted makes a new one); the dialog makes one key per form
+and sends it again when it retries. The same request sent while the first
+is still running waits for it, then answers what it made (within one
+daemon process). A member's artifact cap applies as to a publish (403
+`quota_exceeded`). Every artifact started
+this way says so to people (not to agents): `brief: {by}` in `GET
+/api/artifacts`, `GET /api/artifacts/<id>`, the page's bootstrap and this
+route's answer, `by` the starter's display name now (`Viewer` without one, as their comments are signed).
+Its line under the title reads "started from a brief by <name>" until an
+agent's session owns it, and its gallery card names <name> where an agent's name would be.
+
+Who may: the owner (a browser, or the token by hand), and a connected
+person (in their browser, on a local daemon or signed in to a hosted one)
+whose rights create artifacts (`clax-artifacts` `create`) and would let
+them read and comment on (`clax-comments` `write`) an artifact of their
+own; anyone else with rights that do not is 403 `not_permitted`. A guest
+(a viewer who is no connected person) is 403 `not_permitted` (on a hosted
+daemon, 401 `sign_in_required`), no credential 401 `unauthorized`, a
+request from another origin 403 `forbidden_origin`, the owner's agents 403
+`not_for_agents` and a person's 403 `forbidden`: agents publish. A new
+artifact is its maker's own, so its live seat is reserved for them (see
+"Live seats and spectators"): a person who is a spectator on another
+artifact starts one, and writes and sends its brief, as anyone does.
+`GET /api/viewers/me` says whether this browser may, in `may_create`,
+and the gallery shows New only then.
+
+New opens a dialog asking for a title and a brief. Once the artifact is
+made, it lists the live agents the daemon says the brief may be sent to
+(`GET /api/agents?artifact=<aid>`, above), read again every 3 seconds: the
+person's own first, then the owner's, then each other person's, by name.
+Picking one sends the brief to it with `to` (above), which gives it its
+watch, and opens the artifact; an agent that has gone by then is named in
+the refusal and the list is read again. With none, it shows a prompt to
+paste into an agent (one with the Clax plugin) that names the artifact's
+address and asks the agent to watch it, read the brief thread and publish
+the page there; the list appears once an agent connects, and the
+artifact's Send reaches an agent once it watches. Every way out of the
+dialog once the artifact is made opens it, a Close while Create is in
+flight included, once Create answers.
+
 ### Reopening and deleting threads
 
 `POST /api/artifacts/<aid>/threads/<tid>/reopen` sets a thread back to open
@@ -1722,7 +2007,7 @@ lists the viewer, so every open view shows the new name.
 
 The owner is made on first use. A browser of the owner's makes it, and its
 IDs are that browser's from then on. The token alone reads the owner
-without making one (`GET /api/viewers/me` answers `{"viewer": null}` before
+without making one (`GET /api/viewers/me` answers `"viewer": null` before
 it exists); acting (a reply, a resolve, a name) makes one, which gives way
 to the first browser claimed below: that browser keeps its user ID, and the
 earlier owner's history, private documents and name move to it.
@@ -2938,7 +3223,9 @@ its text's author line, a batch's `sent_by`, `resolved_by_name`, and an
 artifact's `participants`. Through a session, reading acknowledges the returned comments of sent threads
 for that session (a comment added after the read stays pending).
 
-`comments_reply` posts the reply as the agent; people's views carry its
+`comments_reply` posts the reply as the agent, its `text` Markdown as
+any comment's (GitHub-flavoured, with no images and no raw HTML; see
+"Comments and feedback"); people's views carry its
 agent and person, from which the page shows `<name> (agent, via
 <harness>)` or `<name> (<person>'s agent, via <harness>)` for its viewer. An agent reads a reply's
 `author_name` as `<name> (agent, via <harness>)` when the replying agent is
@@ -2971,8 +3258,13 @@ current port.
 
 Which tool argument names what: an artifact ID, text without a scheme
 (`localhost:7480/a/<id>`, `/a/<id>`), and an `http(s)` URL on the daemon's
-port (whatever its host: `localhost`, `127.0.0.1`, a LAN address, or
-`<id>.localhost`) are Clax references, read as "Shell URLs" describes; any
+port and host are Clax references, read as "Shell URLs" describes. For a
+daemon on a local name (`localhost`, `*.localhost`, `*.local`, a
+single-label name, or a loopback, private or link-local address) the port
+alone tells: any host on it is the daemon's (`localhost`, `127.0.0.1`,
+`<id>.localhost`, a LAN address or name, or a tailnet's `100.x` address or
+`*.ts.net` name); for a daemon on any other name (a remote or hosted Clax,
+often on https's default port), only that name and its subdomains are. Any
 other `http(s)` URL is a page URL, even one whose path holds `/a/<id>`. The
 comment tools, `working` and `wait_for_feedback` resolve a page URL to its
 live page (`invalid_id` when it has none yet), and so does every other tool
@@ -3223,6 +3515,11 @@ apply only to watches with `replies_armed`. While `stop_hook_active` is set,
 the Stop hook blocks only for comments never handed over before, so each
 comment blocks a stop at most once.
 
+`POST /api/sessions/<sid>/feedback/ack` takes `thread_ids` (every row of
+the session on those threads), `comment_ids` (only the rows for those
+comments), or both, each at most 500 IDs (400 `invalid_json` beyond); a
+client with more sends them over several requests.
+
 Feedback polls also tell the daemon where the person is, and tell the agent
 where to ask them (`where_to_ask`, under "Agent questions"):
 
@@ -3471,11 +3768,11 @@ stored for the session that asked it and never deleted.
 
 | Field | Rule |
 |---|---|
-| `question` | 1 to 2,000 characters, not only spaces; unique within the set (it keys `AskUserQuestion`'s answers). |
+| `question` | 1 to 2,000 characters, not only spaces; unique within the set (it keys `AskUserQuestion`'s answers). Shown as Markdown, as a comment is (see "Comments and feedback": GitHub-flavoured, no images, no raw HTML); a one-line preview (an inbox row, a notification) shows it with the syntax taken away. |
 | `header` | 1 to 12 characters for `ask`. A mirrored header longer than 12 is kept and shown cut with `…`. |
 | `options` | None (or empty) for a free-text question, else 2 to 4. |
 | `label` | 1 to 100 characters, unique within the question. |
-| `description` | Optional, at most 500 characters. |
+| `description` | Optional, at most 500 characters; shown as text. |
 | `preview` | Optional, at most 20,000 characters; shown verbatim in monospace. |
 | `recommended` | Optional; at most one option per question. A mirrored label ending in "(Recommended)" (any case) is marked recommended and keeps its label. |
 | `multi_select` | Default false; only on choice questions. |
@@ -3721,7 +4018,7 @@ nothing; the note is kept in the daemon's memory until that poll.
 
 | Argument | Meaning |
 |---|---|
-| `questions` | One to four questions (the shape above). Required unless `question_id`. |
+| `questions` | One to four questions (the shape above): each question's text renders as GitHub-flavoured Markdown, with no images and no raw HTML; labels and descriptions show as plain text, previews verbatim in monospace. Required unless `question_id`. |
 | `question_id` | Keep waiting on a question this session asked. |
 | `url_or_id` | Optional, with `questions`: the artifact, or a web page's URL (its live page), the question is about. |
 | `thread_id` | Optional, with `questions` and `url_or_id`: a thread of that artifact the question arose from; the question shows in that thread. |
@@ -3996,8 +4293,11 @@ cursor or body) and 404 `not_found`.
   - `q`: search text. Every word must start a word of the item. FTS5
     operators are taken as text, so no search text is an error.
   - `kind`: comma-separated kinds.
-  - `artifact`: an artifact ID.
+  - `artifact`: an artifact ID, or `none` for the items about no artifact.
   - `agent`: a harness, or an agent handle (`a_…`).
+  - `tag`: a tag's ID or name, repeatable: items about an artifact
+    carrying every tag named (see "Tags"). Items about an artifact whose
+    comments are withheld from the caller never match one, as for `q`.
   - `since`, `until`: a `YYYY-MM-DD` date (UTC) or an RFC 3339 time. An
     `until` date covers the whole day.
   - `read`: `unread`, `read` or `all`. Default `all`.
@@ -4013,6 +4313,34 @@ cursor or body) and 404 `not_found`.
   - `unread` and `total` are read just after the page, so under concurrent
     writes they may differ from it by the changes the `inbox` topic then
     announces.
+- **`GET /api/inbox?group=artifact`**, with any of the parameters above,
+  → `{groups, next_cursor, unread, total?}`: the matches grouped by the
+  artifact they are about, one group (`artifact: null`) for the items
+  about none, newest group (by its newest match) first. Each group is
+  `{artifact_id, artifact, total, unread, newest_at, items, next_cursor}`:
+  - `artifact_id` keys the group: the artifact's ID, or null for the items
+    about none.
+  - `artifact` is the artifact as its items name it (`{id, title, kind,
+    page_url}`), or null.
+  - `total` counts every match in the group and `unread` those of them
+    unread, not only the items listed.
+  - `newest_at` is its newest match's time.
+  - `items` are its first rows, `rows` of them (default 3, clamped to
+    1..20): its unread matches newest first, then its read ones.
+  - `next_cursor` says where the rest begins, or is null:
+    - `u<seq>`: more unread ones, listed by the plain query with the same
+      parameters, `read=unread`, `artifact` set to the group's
+      `artifact_id` (or `none`) and `before=<seq>`;
+    - `r<seq>`: more read ones, listed the same way with `read=read`;
+    - `r`: its read ones, from the newest (`read=read`, no `before`).
+
+    Once the unread pages end, its read ones follow from `r` while
+    `total` exceeds `unread`. Without the grouping's other parameters the
+    page is not the group's.
+
+  `limit` is groups per page (default 20, clamped to 1..100), `before` the
+  top-level `next_cursor`, and `total` is the plain list's. `rows` without
+  `group=artifact` is 400 `invalid_query`.
 - **`GET /api/inbox?group=agent`**, with no other parameter, → `{agents,
   unread}`: the agent strip. One entry per agent with unread items for the
   caller or an open question or approval request waiting on them:
@@ -4042,8 +4370,11 @@ cursor or body) and 404 `not_found`.
 - **`POST /api/inbox/<id>/unread`** → `{item, unread}`.
 - **`POST /api/inbox/read`** → `{marked, unread}`. The body is one of:
   - `{ids: [...]}`: at most 500 item IDs.
-  - `{all: true, filter?: {q, kind, artifact, agent, since, until}, upto?}`:
-    every unread item matching the filter. With `upto` (the newest `seq`
+  - `{all: true, filter?: {q, kind, artifact, agent, tag, since, until}, upto?,
+    except?}`: every unread item matching the filter (`artifact: "none"`:
+    those about no artifact), but the item IDs in `except` (at most 500).
+    A group's **Mark read** sends its artifact and, in `except`, the items
+    shown as cards above the groups, which it does not count. With `upto` (the newest `seq`
     the client showed), only items up to it, so an item made since is not
     marked unseen. `kind` may be a comma-separated string or an array.
 
@@ -4430,6 +4761,12 @@ router), and a test fails when it differs:
 | `GET /api/artifacts/{aid}/versions/{n}` | Filtered | `clax-artifacts` `read` | 2 MiB | yes |
 | `POST /api/artifacts/{aid}/versions` | Filtered | `clax-artifacts` `update` | 96 MiB | yes |
 | `GET /api/artifacts/{aid}/files` | Filtered | `clax-artifacts` `read` | 2 MiB | yes |
+| `GET /api/tags` | Own | `clax-artifacts` `read` | 2 MiB | yes |
+| `POST /api/tags` | Own | `clax-artifacts` `update` | 2 MiB | yes |
+| `PATCH /api/tags/{tag_id}` | Own | `clax-artifacts` `update` | 2 MiB | yes |
+| `DELETE /api/tags/{tag_id}` | Own | `clax-artifacts` `update` | 2 MiB | yes |
+| `PUT /api/artifacts/{aid}/tags` | Own | `clax-artifacts` `update` | 2 MiB | yes |
+| `PATCH /api/artifacts/{aid}/tags` | Own | `clax-artifacts` `update` | 2 MiB | yes |
 | `GET /api/artifacts/{aid}/versions/{n}/files/{*path}` | Filtered | `clax-artifacts` `read` | 2 MiB | yes |
 | `GET /api/artifacts/{aid}/assets` | Filtered | `clax-artifacts` `read` | 2 MiB | yes |
 | `POST /api/artifacts/{aid}/assets` | Filtered | `clax-artifacts` `update` | 21 MiB | yes |
@@ -4545,6 +4882,7 @@ router), and a test fails when it differs:
 | `POST /api/drafts` | Denied | no |
 | `DELETE /api/drafts/{id}` | Denied | no |
 | `POST /api/drafts/{id}/renders` | Denied | yes: 403 `not_for_agents` |
+| `POST /api/artifacts:new` | Denied | yes: 403 `not_for_agents` |
 | `GET /api/events` | Denied | yes: 403 `not_for_agents` |
 | `GET /api/extension` | Denied | no |
 | `DELETE /api/extension/credentials` | Denied | no |
@@ -4636,6 +4974,7 @@ router), and a test fails when it differs:
 | `ANY /mcp` | Denied | no |
 | `POST /mcp/json` | Denied | no |
 | `GET /people` | Denied | no |
+| `GET /tags` | Denied | no |
 <!-- route-table:end -->
 
 Beyond the table:
@@ -4931,8 +5270,9 @@ versions is a snapshot of the page, taken when a comment is posted.
   wait; an identical snapshot links nothing), and creates the thread on that version as the request's viewer,
   with the anchor's `route` from `url`. An `@agent` mention sends it, as on
   any thread. The page's title is the `title` field with whitespace
-  collapsed and other control characters dropped, cut to 200 characters (the
-  page URL when nothing is left). It answers `201 {thread, page, version,
+  collapsed and other control characters and hidden format characters
+  dropped, cut to 200 characters (the page URL, cut the same way, when
+  nothing is left). It answers `201 {thread, page, version,
   clip_error?}`; a clip that fails the thread clip rules is dropped and
   reported in `clip_error`. With `pick_id`, the request is idempotent for an
   hour: when that pick already made a thread on the page `url` names, and
@@ -6131,8 +6471,8 @@ except as noted:
 
 | Topic | Carries |
 |---|---|
-| `gallery` | `version`, `thread` (summary), `thread_deleted`, `thread_moved`, `artifact_deleted` and `working` (summary) for every artifact. |
-| `artifact:<aid>` | That artifact's `version`, `thread`, `thread_deleted`, `thread_moved`, `feedback_state` and `artifact_deleted`, and `agents` (`{topic}`, naming nothing) when an agent that watched it started, ended or was renamed: refetch its agents. |
+| `gallery` | `version`, `thread` (summary), `thread_deleted`, `thread_moved`, `artifact_deleted`, `working` (summary) and `tags` for every artifact. |
+| `artifact:<aid>` | That artifact's `version`, `thread`, `thread_deleted`, `thread_moved`, `feedback_state`, `tags` and `artifact_deleted`, and `agents` (`{topic}`, naming nothing) when an agent that watched it started, ended or was renamed: refetch its agents. |
 | `presence:<aid>` | Its `presence` changes, and `artifact_deleted`. |
 | `working:<aid>` | Its `working` list, and `artifact_deleted`. |
 | `docs:<aid>` | Its `doc` events the caller may see, and `artifact_deleted`; needs `db` declared, or the token. |
@@ -6151,6 +6491,14 @@ event's data names its `topic`. Events carry what changed:
   On `artifact:<aid>`, `"by_page": true` is added when the page published it
   through the `artifact` capability.
 - `artifact_deleted`: `{topic, artifact_id}`.
+- `tags`: `{type, topic, artifact_id}`: the tags artifact `artifact_id`
+  carries changed (on `gallery` and `artifact:<aid>`), or the list itself
+  changed (a tag made, renamed, recoloured or deleted): on `gallery` with
+  `artifact_id: null`, and on the topic of each artifact carrying the tag
+  renamed, recoloured or deleted, naming that artifact, so a page whose
+  stream holds no gallery hears it too. It names no tag: refetch `GET
+  /api/tags`, and the artifact (`GET /api/artifacts?artifact=<aid>`) or the
+  gallery. `/api/events` does not carry it.
 - `thread` on `artifact:<aid>`: `{topic, artifact_id, thread}`, where
   `thread` is the thread view (as `GET /api/artifacts/<aid>/threads/<tid>`
   answers it without the token, and with no `feedback_state`: each reader
@@ -6799,7 +7147,9 @@ ID>`. An artifact URL whose `#` fragment is neither is the artifact.
   sends to the agent the page would pick when nothing was picked before: the
   most recently active live agent on the artifact; with none live it sends
   without `to`, and the thread waits for the next agent that publishes or
-  watches the artifact. Errors are the routes': `thread_resolved` for a
+  watches the artifact. A `--to` naming a live agent that does not watch
+  the artifact gives it a watch, as the browser's send does (see "Comments
+  and feedback"). Errors are the routes': `thread_resolved` for a
   resolved thread, `unknown_agent` for a `--to` naming no live agent.
   `--json`: reply `{thread_id, ref, replied, comment_id, author_name,
   sent_to_agent}`; resolve `{thread_id, ref, resolved, status}`; reopen
@@ -6876,9 +7226,9 @@ ID>`. An artifact URL whose `#` fragment is neither is the artifact.
   count. The quality gates run it with `--quick` (shorter idle and load
   windows, the same budgets); `just perf` runs it in full.
 - `scripts/quality_gates.sh` takes a lock per checkout
-  (`<git dir>/quality-gates.lock`): a second run in the same checkout waits,
-  a lock whose process has gone is taken over, and separate worktrees run in
-  parallel.
+  (a flock(2) on `<git dir>/quality-gates.flock`): a second run in the same
+  checkout waits, the lock goes with the run that holds it however that run
+  ends, and separate worktrees run in parallel.
 
 ## The event stream
 
@@ -7020,7 +7370,7 @@ the body below.
 | `artifact.create` | `title, kind (html\|live), icon, capabilities, contract_version`; `forked_from{artifact_id, n}` on a fork | first publish, a fork, or a live page's creation |
 | `version.publish` | `n, label, note, title, files{path:{sha256,size,content_type}}, content_sha256, carried[paths], addresses[thread IDs], by_page`; `source{artifact_id, n}` on a fork's version 1; `restored_from` (the version restored) for a restore | every version write, a restore (`versions:restore`) included; for a restore, `carried` names only the files (other than `index.html`) whose bytes equal the previous version's |
 | `version.push_refused` | `commit, person, session, reason (unknown_person\|person_revoked\|not_a_person\|no_right\|session_ended\|foreign_session\|grant_ended)` (`system:daemon`) | a commit pushed to an artifact's repository left unrecorded because its pusher may not publish the artifact, once per commit |
-| `artifact.update` | `fields{title?, description?, icon?, pinned?, capabilities?, db_read_grants?}`; `db_read_grants` is `{"grant": <source ID>}` or `{"revoke": <source ID>}`, with the source as `artifact2_id` | pin, unpin, metadata edits, the owner's cross-app read grants (see "Reading another app's documents") |
+| `artifact.update` | `fields{title?, description?, icon?, pinned?, capabilities?, db_read_grants?, tags?, share?{op (set\|remove), id, person, github_login, access?, reason? (owner)}}`; `db_read_grants` is `{"grant": <source ID>}` or `{"revoke": <source ID>}`, with the source as `artifact2_id` | pin, unpin, metadata edits, the owner's cross-app read grants (see "Reading another app's documents"); a change to its tags (`tags`: the names it carries after); a share set or removed (`reason: owner` when a share is dropped because it reached the owner, at the owner's GitHub sign-in or a viewer folded into the owner) |
 | `artifact.delete` | `title, current_version` | delete |
 | `asset.upload` | `asset_id, path, sha256, size, content_type` | asset store writes |
 | `asset.delete` | `asset_id, path, size, content_type` | asset deletes |
@@ -7060,6 +7410,9 @@ the body below.
 | `session.join` | the same | a hook join or re-registration that changes one of them |
 | `session.end` | `reason (explicit\|ttl)` | an end (the reaper as `system:ttl`) |
 | `backfill.skip` | `table, row_id, reason` (a fixed phrase) | a history row the backfill could not convert |
+| `tag.create` | `tag_id, name, colour, description` | a tag made |
+| `tag.update` | `tag_id, fields{name?, colour?, description?}` | a tag renamed, recoloured or redescribed |
+| `tag.delete` | `tag_id, name, artifacts` (how many carried it) | a tag deleted, and so removed from every artifact |
 
 A system actor's event about someone names them in `body.for_actor`.
 Presence, heartbeats, later delivery tiers, stream subscriptions, reads

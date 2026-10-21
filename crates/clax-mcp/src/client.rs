@@ -6,6 +6,7 @@ use crate::calls::CallScope;
 use crate::git::GitCapture;
 use clax_core::RegisterSession;
 use clax_core::audit::ToolCallReport;
+use clax_core::feedback::MAX_ACK_IDS;
 use clax_core::model::Session;
 #[cfg(not(target_arch = "wasm32"))]
 use clax_core::remote::{
@@ -132,6 +133,8 @@ pub struct DaemonClient {
     via: Option<&'static str>,
     /// The longest one remote clip fetch may take ([`CLIP_FETCH_TIME`]).
     clip_fetch_time: Duration,
+    /// The deadline of a publish or an asset upload ([`PUBLISH_TIMEOUT`]).
+    publish_timeout: Duration,
     auth: Auth,
 }
 
@@ -409,6 +412,7 @@ impl DaemonClient {
             call: None,
             via: None,
             clip_fetch_time: CLIP_FETCH_TIME,
+            publish_timeout: PUBLISH_TIMEOUT,
             auth: Auth::Token,
         }
     }
@@ -456,6 +460,13 @@ impl DaemonClient {
     /// [`CLIP_FETCH_TIME`].
     pub fn with_clip_fetch_time(mut self, t: Duration) -> DaemonClient {
         self.clip_fetch_time = t;
+        self
+    }
+
+    /// This client giving each publish and asset upload at most `t`,
+    /// instead of [`PUBLISH_TIMEOUT`].
+    pub fn with_publish_timeout(mut self, t: Duration) -> DaemonClient {
+        self.publish_timeout = t;
         self
     }
 
@@ -507,6 +518,7 @@ impl DaemonClient {
             call: None,
             via: Some(VIA),
             clip_fetch_time: CLIP_FETCH_TIME,
+            publish_timeout: PUBLISH_TIMEOUT,
             auth: Auth::Token,
         }
     }
@@ -532,6 +544,7 @@ impl DaemonClient {
             call: Some(call),
             via: self.via,
             clip_fetch_time: self.clip_fetch_time,
+            publish_timeout: self.publish_timeout,
             auth: self.auth.clone(),
         }
     }
@@ -583,6 +596,7 @@ impl DaemonClient {
             call: self.call.clone(),
             via: self.via,
             clip_fetch_time: self.clip_fetch_time,
+            publish_timeout: self.publish_timeout,
             auth: self.auth.clone(),
         }
     }
@@ -984,7 +998,7 @@ impl DaemonClient {
     pub async fn create(&self, body: &Value) -> Result<Value> {
         self.json(|c| {
             c.request(reqwest::Method::POST, "/api/artifacts")
-                .timeout(PUBLISH_TIMEOUT)
+                .timeout(self.publish_timeout)
                 .json(body)
         })
         .await
@@ -997,7 +1011,7 @@ impl DaemonClient {
                 reqwest::Method::POST,
                 &format!("/api/artifacts/{id}/versions"),
             )
-            .timeout(PUBLISH_TIMEOUT)
+            .timeout(self.publish_timeout)
             .json(body)
         })
         .await
@@ -1012,12 +1026,39 @@ impl DaemonClient {
         .await
     }
 
+    /// `GET /api/artifacts?tag=…`: the artifacts carrying every tag in
+    /// `tags` (each an ID or a name), as [`Client::list`] gives them.
+    pub async fn list_tagged(&self, tags: &[String]) -> Result<Value> {
+        let query: String = url::form_urlencoded::Serializer::new(String::new())
+            .extend_pairs(tags.iter().map(|t| ("tag", t.as_str())))
+            .finish();
+        let path = format!("/api/artifacts?{query}");
+        self.json(|c| c.request(reqwest::Method::GET, &path)).await
+    }
+
+    /// `GET /api/tags`: `{tags: [{id, name, colour, description, count, …}],
+    /// colours, may_manage}`.
+    pub async fn tags(&self) -> Result<Value> {
+        self.json(|c| c.request(reqwest::Method::GET, "/api/tags"))
+            .await
+    }
+
+    /// `PATCH /api/artifacts/<id>/tags {add, remove}`: changes the tags the
+    /// artifact carries; `{artifact_id, tags, changed}`.
+    pub async fn edit_tags(&self, id: &str, body: &Value) -> Result<Value> {
+        self.json(|c| {
+            c.request(reqwest::Method::PATCH, &format!("/api/artifacts/{id}/tags"))
+                .json(body)
+        })
+        .await
+    }
+
     /// `POST /api/artifacts/<id>/fork`: forks a version (`{version?}`) into a
     /// new artifact; `{artifact, version, url}`.
     pub async fn fork(&self, id: &str, body: &Value) -> Result<Value> {
         self.json(|c| {
             c.request(reqwest::Method::POST, &format!("/api/artifacts/{id}/fork"))
-                .timeout(PUBLISH_TIMEOUT)
+                .timeout(self.publish_timeout)
                 .json(body)
         })
         .await
@@ -1030,7 +1071,7 @@ impl DaemonClient {
     pub async fn push(&self, id: &str, body: &Value) -> Result<Value> {
         self.json(|c| {
             c.request(reqwest::Method::POST, &format!("/api/artifacts/{id}/push"))
-                .timeout(PUBLISH_TIMEOUT)
+                .timeout(self.publish_timeout)
                 .json(body)
         })
         .await
@@ -1085,7 +1126,7 @@ impl DaemonClient {
                     reqwest::Method::POST,
                     &format!("/api/artifacts/{id}/assets"),
                 )
-                .timeout(PUBLISH_TIMEOUT);
+                .timeout(self.publish_timeout);
             match &whole {
                 Some((ct, body)) => req
                     .header(reqwest::header::CONTENT_TYPE, ct)
@@ -1717,31 +1758,35 @@ impl DaemonClient {
     }
 
     /// `POST /api/sessions/<sid>/feedback/ack` `{comment_ids}`: acknowledges
-    /// only the rows for those comments; `{acknowledged}`.
+    /// only the rows for those comments, in requests of at most
+    /// [`MAX_ACK_IDS`] IDs; `{acknowledged}`, summed over the requests.
     pub async fn ack_comments(&self, comment_ids: &[String]) -> Result<Value> {
-        let body = json!({"comment_ids": comment_ids});
-        self.json(|c| {
-            c.request(
-                reqwest::Method::POST,
-                &format!("{}/feedback/ack", c.session_path()),
-            )
-            .json(&body)
-        })
-        .await
+        self.ack_by("comment_ids", comment_ids).await
     }
 
     /// `POST /api/sessions/<sid>/feedback/ack` `{thread_ids}`: acknowledges
-    /// every row on those threads; `{acknowledged}`.
+    /// every row on those threads, in requests of at most [`MAX_ACK_IDS`]
+    /// IDs; `{acknowledged}`, summed over the requests.
     pub async fn ack(&self, thread_ids: &[String]) -> Result<Value> {
-        let body = json!({"thread_ids": thread_ids});
-        self.json(|c| {
-            c.request(
-                reqwest::Method::POST,
-                &format!("{}/feedback/ack", c.session_path()),
-            )
-            .json(&body)
-        })
-        .await
+        self.ack_by("thread_ids", thread_ids).await
+    }
+
+    async fn ack_by(&self, key: &str, ids: &[String]) -> Result<Value> {
+        let mut acknowledged = 0;
+        for chunk in ids.chunks(MAX_ACK_IDS) {
+            let body = json!({ key: chunk });
+            let r = self
+                .json(|c| {
+                    c.request(
+                        reqwest::Method::POST,
+                        &format!("{}/feedback/ack", c.session_path()),
+                    )
+                    .json(&body)
+                })
+                .await?;
+            acknowledged += r["acknowledged"].as_u64().unwrap_or(0);
+        }
+        Ok(json!({"acknowledged": acknowledged}))
     }
 
     /// `PATCH /api/sessions/<id>` `{"heartbeat": true}` for a managed client's

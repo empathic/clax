@@ -4,6 +4,8 @@
 //! frames from the start and then follows it live. When the last reader goes
 //! away before the flight ends, the run is aborted: the provider request is
 //! dropped (the key stops paying) and the call's tool waits are forgotten.
+//! The flight ends then too, with an `upstream_error` frame, so no identical
+//! call follows it and a reader that attached as the last one left ends.
 
 use super::provider::{Block, ProviderEvent, ProviderRequest, Role, Stop, Turn, Usage};
 use super::request::{Prepared, Tier, Verb};
@@ -73,15 +75,20 @@ impl Flight {
         Arc::default()
     }
 
-    /// Appends a frame; a `Done` or `Error` ends the flight (later pushes are ignored).
+    /// Appends a frame; a `Done` or `Error` ends the flight (later pushes are
+    /// ignored). `finished` is read and set under the frames lock, so two
+    /// racing ending frames leave exactly one.
     pub fn push(&self, o: Out) {
-        if self.is_finished() {
-            return;
-        }
-        let ends = o.ends();
-        self.frames.lock().expect("frames lock").push(o);
-        if ends {
-            self.finished.store(true, Ordering::SeqCst);
+        {
+            let mut frames = self.frames.lock().expect("frames lock");
+            if self.is_finished() {
+                return;
+            }
+            let ends = o.ends();
+            frames.push(o);
+            if ends {
+                self.finished.store(true, Ordering::SeqCst);
+            }
         }
         self.notify.notify_waiters();
     }
@@ -105,16 +112,17 @@ impl Flight {
                 let notified = flight.notify.notified();
                 tokio::pin!(notified);
                 notified.as_mut().enable();
-                if let Some(o) = flight
-                    .frames
-                    .lock()
-                    .expect("frames lock")
-                    .get(next)
-                    .cloned()
-                {
+                // Read under the frames lock with `finished`, which `push`
+                // sets under it too: a flight seen finished holds its ending
+                // frame, so it is yielded before the stream ends.
+                let (frame, finished) = {
+                    let frames = flight.frames.lock().expect("frames lock");
+                    (frames.get(next).cloned(), flight.is_finished())
+                };
+                if let Some(o) = frame {
                     return Some((o, (guard, next + 1)));
                 }
-                if flight.is_finished() {
+                if finished {
                     return None;
                 }
                 notified.await;
@@ -131,6 +139,14 @@ impl Drop for ReaderGuard {
             && !self.0.is_finished()
             && let Some(h) = self.0.abort.lock().expect("abort lock").take()
         {
+            // Ended before the abort lands: the task drops later, when the
+            // runtime next handles it, and until then the flight would look
+            // live to an identical call.
+            fail(
+                &self.0,
+                "upstream_error",
+                "the call stopped when its last reader left; call again",
+            );
             h.abort();
         }
     }
@@ -364,17 +380,18 @@ mod tests {
         let early = f.reader();
         f.push(Out::Text("b".into()));
         let late = f.reader();
-        let pusher = f.clone();
-        tokio::spawn(async move {
-            tokio::time::sleep(std::time::Duration::from_millis(20)).await;
-            pusher.push(Out::Done(Done {
+        // Polled after both readers have caught up and wait: they follow it live.
+        let push = async {
+            tokio::task::yield_now().await;
+            f.push(Out::Done(Done {
                 text: "ab".into(),
                 truncated: false,
                 model_tier_applied: Tier::Default,
                 value: None,
             }));
-        });
-        let (x, y): (Vec<Out>, Vec<Out>) = tokio::join!(early.collect(), late.collect());
+        };
+        let (x, y, ()): (Vec<Out>, Vec<Out>, ()) =
+            tokio::join!(early.collect(), late.collect(), push);
         assert_eq!(x, y);
         assert_eq!(x.len(), 3);
         assert!(f.is_finished());
@@ -392,6 +409,64 @@ mod tests {
         drop(b);
         let r = task.await;
         assert!(r.unwrap_err().is_cancelled());
+    }
+
+    #[tokio::test]
+    async fn a_flight_aborted_by_its_last_reader_ends_for_a_reader_that_follows() {
+        use futures::FutureExt as _;
+        let f = Flight::new();
+        f.push(Out::Text("a".into()));
+        let task = tokio::spawn(std::future::pending::<()>());
+        f.set_abort(task.abort_handle());
+        drop(f.reader());
+        // The run's task has not been dropped yet; the flight has ended anyway.
+        assert!(f.is_finished());
+        let frames: Vec<Out> = f
+            .reader()
+            .collect()
+            .now_or_never()
+            .expect("an ended flight's reader ends at once");
+        assert_eq!(frames.len(), 2);
+        assert!(matches!(
+            frames[1],
+            Out::Error {
+                code: "upstream_error",
+                ..
+            }
+        ));
+        assert!(task.await.unwrap_err().is_cancelled());
+    }
+
+    /// Ending frames pushed from many threads at once leave exactly one.
+    #[test]
+    fn racing_ending_frames_leave_one() {
+        for _ in 0..50 {
+            let f = Flight::new();
+            let barrier = Arc::new(std::sync::Barrier::new(8));
+            let threads: Vec<_> = (0..8)
+                .map(|i| {
+                    let (f, b) = (f.clone(), barrier.clone());
+                    std::thread::spawn(move || {
+                        b.wait();
+                        if i % 2 == 0 {
+                            fail(&f, "upstream_error", "stopped");
+                        } else {
+                            f.push(Out::Done(Done {
+                                text: String::new(),
+                                truncated: false,
+                                model_tier_applied: Tier::Default,
+                                value: None,
+                            }));
+                        }
+                    })
+                })
+                .collect();
+            for t in threads {
+                t.join().unwrap();
+            }
+            let frames = f.frames.lock().unwrap();
+            assert_eq!(frames.len(), 1, "{frames:?}");
+        }
     }
 
     #[test]

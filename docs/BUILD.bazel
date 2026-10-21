@@ -1,3 +1,5 @@
+load("@bazel_lib//lib:copy_to_bin.bzl", "copy_to_bin")
+
 # The contract the Rust tests check the daemon against
 # (crates/clax-server/src/routes/guards.rs).
 filegroup(
@@ -7,6 +9,14 @@ filegroup(
         "//apps/clax_app:__pkg__",
         "//crates:__subpackages__",
     ],
+)
+
+# The Terms of Service and Privacy Policy, which the web build renders
+# into web/dist (web/scripts/build-legal.mjs) beside web/'s own files.
+copy_to_bin(
+    name = "legal",
+    srcs = glob(["legal/*.md"]),
+    visibility = ["//web:__pkg__"],
 )
 
 # The docs the release script test checks (scripts/test-release.files).

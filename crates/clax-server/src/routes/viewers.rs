@@ -32,14 +32,29 @@ pub struct NameBody {
     display_name: String,
 }
 
+/// Whether the request's caller may start an artifact from a brief
+/// (`POST /api/artifacts:new`, [`super::artifacts::brief_refusal`]): the
+/// gallery offers New only then.
+async fn may_create(s: &AppState, who: &Identity) -> Result<bool, ApiError> {
+    let who = who.clone();
+    s.store_call(move |st| {
+        let Ok(c) = who.caller(st, None) else {
+            return Ok(false);
+        };
+        Ok(super::artifacts::brief_refusal(st, &c)?.is_none())
+    })
+    .await
+}
+
 async fn respond(s: AppState, who: Identity, name: Option<String>) -> Result<Response, ApiError> {
+    let may_create = may_create(&s, &who).await?;
     // A hosted session's viewer is signed in already: it is answered as it
     // is, and no `clax_viewer` cookie is minted (the hosted gate renames a
     // guest itself).
     if let Some(v) = &who.hosted_viewer
         && name.is_none()
     {
-        return Ok(Json(json!({"viewer": v})).into_response());
+        return Ok(Json(json!({"viewer": v, "may_create": may_create})).into_response());
     }
     let owner = who.is_owner();
     let (before, viewer, fresh) = s
@@ -99,7 +114,7 @@ async fn respond(s: AppState, who: Identity, name: Option<String>) -> Result<Res
     if owner && viewer.is_object() {
         viewer["owner"] = json!(true);
     }
-    let mut res = Json(json!({"viewer": viewer})).into_response();
+    let mut res = Json(json!({"viewer": viewer, "may_create": may_create})).into_response();
     if let Some(c) = fresh {
         res.headers_mut().insert(SET_COOKIE, set_cookie(&c));
     }

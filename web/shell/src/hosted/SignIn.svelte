@@ -14,7 +14,11 @@
   // code it showed), naming the machine and the address it asked from, or
   // denies it. A code is redeemed only by
   // the button, never by loading the page, so a link preview spends
-  // nothing. Signed in, the browser goes to the gallery. Signed out, `/signin`
+  // nothing. Where the instance shows Terms of Service and a Privacy
+  // Policy (`me.legal`), each button that signs this browser in says that
+  // doing so agrees to them, the server records it, and the page ends
+  // with links to both. Every one ends with a link to Clax's source on
+  // GitHub, and the header's mark links to the gallery. Signed in, the browser goes to the gallery. Signed out, `/signin`
   // also lists the public gallery ("Public on Clax"), each artifact opening
   // through its link. The gallery's entry
   // loads this as a chunk of its own on these paths; the header's mark is
@@ -79,6 +83,7 @@
   const signin = () => run(() => page.kind === "signin" ? api.acceptSignin(page.code, current !== null) : Promise.resolve());
   const linkName = $derived(link ? (link.name ?? "an unnamed person") : "");
   const currentName = $derived(current?.display_name ?? "an unnamed person");
+  const legal = $derived(me?.legal ?? null);
   async function signOut() {
     busy = true;
     try { await api.signOut(); me = await api.me(); } catch (x) { err = msg(x); } finally { busy = false; }
@@ -112,7 +117,7 @@
 </script>
 
 <header class="gbar">
-  <span class="mark" data-size="bar" role="img" aria-label="Clax"><svg class="mk" viewBox="0 0 40 24" aria-hidden="true" focusable="false"><path class="l" d="M2 2.5a9.5 9.5 0 0 1 0 19" fill="none" stroke-width="4.2"/><path class="r" d="M38 2.5a9.5 9.5 0 0 0 0 19" fill="none" stroke-width="4.2"/><circle cx="20" cy="12" r="2.6"/></svg></span><h1>Clax</h1><span class="gsp"></span><ThemeSwitch />
+  <a href="/" class="home" aria-label="Gallery"><span class="mark" data-size="bar" role="img" aria-label="Clax"><svg class="mk" viewBox="0 0 40 24" aria-hidden="true" focusable="false"><path class="l" d="M2 2.5a9.5 9.5 0 0 1 0 19" fill="none" stroke-width="4.2"/><path class="r" d="M38 2.5a9.5 9.5 0 0 0 0 19" fill="none" stroke-width="4.2"/><circle cx="20" cy="12" r="2.6"/></svg></span></a><h1>Clax</h1><span class="gsp"></span><ThemeSwitch />
 </header>
 <main class="signin">
   <section class="sicard" aria-labelledby="si-h">
@@ -124,6 +129,7 @@
         <label class="field">Setup secret <input name="secret" type="password" autocomplete="off" required value={secret} oninput={e => { secret = e.currentTarget.value; }} /></label>
         <p class="hint">The secret the daemon was started with (its <code>CLAX_SETUP_SECRET</code>).</p>
         <button class="primary" type="submit" disabled={!name.trim() || !secret}>Create the first person</button>
+        {@render agree("setting up this Clax")}
       </form>
     {:else if page.kind === "join"}
       {#if invite === null}
@@ -136,6 +142,7 @@
           <p class="now" data-testid="signed-in-now">You are signed in here as <strong>{currentName}</strong>{current.guest ? " (a guest)" : current.owner ? ", the owner" : ""}. Joining signs you out of {currentName}.</p>
         {/if}
         <button class="primary" type="button" onclick={join} disabled={busy}>Join as {invite.name ?? "a new person"}</button>
+        {@render agree("joining")}
       {/if}
     {:else if page.kind === "signin"}
       {#if link === null}
@@ -152,6 +159,7 @@
           <p class="now" data-testid="signed-in-now">You are signed in here as <strong>{currentName}</strong>{current.guest ? " (a guest)" : current.owner ? ", the owner" : ""}. Signing in as {linkName} signs you out of {currentName}.</p>
         {/if}
         <button class="primary" type="button" onclick={signin} disabled={busy}>Sign in as {linkName}</button>
+        {@render agree("signing in")}
       {/if}
     {:else if page.kind === "device"}
       {#if me === null}
@@ -166,7 +174,7 @@
       {:else if device}
         <p><strong>{device.client_name}</strong>, from {device.peer_ip || "an unknown address"}, asks to publish here as you, <strong>{me.person.display_name ?? "you"}</strong>. Check that it shows the code <code>{deviceCode.trim().toUpperCase()}</code>.</p>
         {#if !device.same_address}<p class="now" data-testid="other-address">It asked from another address than this browser's. Approve only if you started this sign-in yourself, just now, on that machine: anyone who sent you this link would publish as you.</p>{/if}
-        <p class="hint">It gets an agent token of yours: what it publishes is public as yours, within your rights. It shows on People, where you can revoke it.</p>
+        <p class="hint">It gets an agent token of yours: what it publishes is public as yours, within your rights. It shows on People, where you can revoke it.{#if legal}{" "}<span class="legal">What it does here is yours under the <a href={legal.terms_url} target="_blank" rel="noopener">Terms of Service</a>.</span>{/if}</p>
         <div class="acts"><button class="primary" type="button" disabled={busy} onclick={() => decide(true)}>Approve</button><button type="button" disabled={busy} onclick={() => decide(false)}>Deny</button></div>
       {:else}
         <form onsubmit={lookUp}>
@@ -185,6 +193,7 @@
       {#if me?.github}
         <p>Sign in with your GitHub account. New here? Signing in makes your own space: publish your pages, connect your agents, and see what others share with you.</p>
         <a class="gh primary" href="/auth/github" data-testid="github-signin"><svg viewBox="0 0 16 16" width="18" height="18" aria-hidden="true" focusable="false"><path fill="currentColor" d="M8 0C3.58 0 0 3.58 0 8c0 3.54 2.29 6.53 5.47 7.59.4.07.55-.17.55-.38 0-.19-.01-.82-.01-1.49-2.01.37-2.53-.49-2.69-.94-.09-.23-.48-.94-.82-1.13-.28-.15-.68-.52-.01-.53.63-.01 1.08.58 1.23.82.72 1.21 1.87.87 2.33.66.07-.52.28-.87.51-1.07-1.78-.2-3.64-.89-3.64-3.95 0-.87.31-1.59.82-2.15-.08-.2-.36-1.02.08-2.12 0 0 .67-.21 2.2.82.64-.18 1.32-.27 2-.27.68 0 1.36.09 2 .27 1.53-1.04 2.2-.82 2.2-.82.44 1.1.16 1.92.08 2.12.51.56.82 1.27.82 2.15 0 3.07-1.87 3.75-3.65 3.95.29.25.54.73.54 1.48 0 1.07-.01 1.93-.01 2.2 0 .21.15.46.55.38A8.013 8.013 0 0016 8c0-4.42-3.58-8-8-8z"/></svg>Sign in with GitHub</a>
+        {@render agree("signing in")}
         <p class="hint">Or ask someone here for an invite, or, on a device that is signed in, make a sign-in link on People.</p>
       {:else}
         <p>You are not signed in. Ask someone here for an invite, or, on a device that is signed in, make a sign-in link on People.</p>
@@ -193,6 +202,9 @@
     {/if}
     {#if err}<p class="err" role="alert">{err}</p>{/if}
   </section>
+  {#snippet agree(doing: string)}
+    {#if legal}<p class="hint legal" data-testid="legal-notice">By {doing}, you agree to the <a href={legal.terms_url} target="_blank" rel="noopener">Terms of Service</a> and the <a href={legal.privacy_url} target="_blank" rel="noopener">Privacy Policy</a>.</p>{/if}
+  {/snippet}
   {#if page.kind === "status" && !me?.person && publicList.length}
     <section class="sicard pub" aria-labelledby="pub-h">
       <h2 id="pub-h">Public on Clax</h2>
@@ -201,6 +213,7 @@
       </ul>
     </section>
   {/if}
+  <footer class="silegal">{#if legal}<a href={legal.terms_url}>Terms of Service</a>{" · "}<a href={legal.privacy_url}>Privacy Policy</a>{" · "}{/if}<a href="https://github.com/empathic/clax" target="_blank" rel="noopener">Source on GitHub</a></footer>
 </main>
 
 <style>
@@ -228,6 +241,9 @@
     .signin .pub li + li { border-top: 1px solid var(--border); }
     .signin .pub li a { display: block; padding: 10px 0; font-size: 14.5px; font-weight: 500; text-decoration: none; overflow-wrap: anywhere; }
     .signin .pub li a:hover { text-decoration: underline; }
+    .signin .legal a { color: inherit; text-decoration: underline; }
+    .signin .silegal { margin-top: 16px; text-align: center; font-size: 12.5px; color: var(--muted); }
+    .signin .silegal a { color: inherit; }
     .signin .now { border-inline-start: 3px solid var(--accent); padding: 6px 10px; background: var(--bg); border-radius: 4px; }
     @media (max-width: 520px) {
       .signin { padding-top: 24px; }

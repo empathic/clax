@@ -157,6 +157,25 @@ async fn patch_and_delete() {
     let a: serde_json::Value = res.json().await.unwrap();
     assert_eq!(a["artifact"]["pinned"], true);
     assert_eq!(a["artifact"]["title"], "New");
+    for (body, code) in [
+        (json!({"title": "t".repeat(201)}), "title_too_long"),
+        (json!({"description": "a\u{202E}b"}), "invalid_args"),
+        (json!({"icon": "chart\nmap"}), "invalid_args"),
+        (json!({"title": "\n\t"}), "invalid_args"),
+    ] {
+        let res = ts
+            .authed(
+                ts.client
+                    .patch(format!("{}/api/artifacts/{id}", ts.base))
+                    .json(&body),
+            )
+            .send()
+            .await
+            .unwrap();
+        assert_eq!(res.status(), 400, "{body}");
+        let err: serde_json::Value = res.json().await.unwrap();
+        assert_eq!(err["error"]["code"], code, "{body}");
+    }
     let res = ts
         .authed(ts.client.delete(format!("{}/api/artifacts/{id}", ts.base)))
         .send()
@@ -337,6 +356,23 @@ async fn creating_an_artifact_requires_a_title_but_a_new_version_does_not() {
     assert_eq!(res.status(), 201);
     let v: serde_json::Value = res.json().await.unwrap();
     assert_eq!(v["artifact"]["title"], "Titled");
+    // A blank title on an update is refused, not stored.
+    let res = ts
+        .post_json(
+            &format!("/api/artifacts/{id}/versions"),
+            json!({"title": "\n\t", "files": {"index.html": {"content": "<p>3"}}}),
+        )
+        .await;
+    assert_eq!(res.status(), 400);
+    let err: serde_json::Value = res.json().await.unwrap();
+    assert_eq!(err["error"]["code"], "invalid_args");
+    let a: serde_json::Value = ts
+        .get(&format!("/api/artifacts/{id}"))
+        .await
+        .json()
+        .await
+        .unwrap();
+    assert_eq!(a["artifact"]["title"], "Titled");
 }
 
 #[tokio::test]

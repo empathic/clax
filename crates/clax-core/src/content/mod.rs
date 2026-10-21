@@ -1,7 +1,7 @@
 //! Artifact content: the files of every version and the assets of every
 //! artifact, behind [`ContentStore`].
 //!
-//! The store ([`crate::Store`]) keeps what Clax knows about content in its
+//! The store (`clax_store::Store`) keeps what Clax knows about content in its
 //! database: each version's row lists its files with their sizes, content
 //! types and hashes, and each asset's row its type, size and extension. A
 //! [`ContentStore`] keeps only the bytes. Every read goes through a row first,
@@ -75,7 +75,7 @@
 //!
 //! A backend over git lets a person, or their agent, push to an artifact's
 //! `main` with git or jj. A pushed commit is a version once the store
-//! records it ([`crate::Store::reconcile_pushes_async`]), which it does
+//! records it (`clax_store::Store::reconcile_pushes_async`), which it does
 //! under the artifact's content lock and before every new version:
 //! [`ContentStore::pushed_commits`] lists `main`'s first-parent commits
 //! above the commit of the version pushed past, oldest first, without the
@@ -462,7 +462,7 @@ pub trait ContentStore: Send + Sync {
     /// (`false`, the default). Then the store's synchronous methods fail at
     /// once with [`crate::CoreError::WouldBlock`], before any I/O or write,
     /// rather than start work they could not finish, and
-    /// [`crate::Store::call_async`] awaits its jobs on the caller's task.
+    /// `clax_store::Store::call_async` awaits its jobs on the caller's task.
     fn needs_executor(&self) -> bool {
         false
     }
@@ -667,7 +667,7 @@ impl std::task::Wake for Unpark {
 }
 
 std::thread_local! {
-    /// How many synchronous store methods ([`crate::Store`]'s `block_on`)
+    /// How many synchronous store methods (`clax_store::Store`'s `block_on`)
     /// this thread is inside.
     static SYNC_DRIVEN: std::cell::Cell<u32> = const { std::cell::Cell::new(0) };
 }
@@ -755,25 +755,32 @@ pub struct ArtifactLock<'a> {
 impl ArtifactLocks {
     /// Waits for, then holds, the lock of `id`.
     pub async fn lock(&self, id: &ArtifactId) -> ArtifactLock<'_> {
+        self.lock_key(id.as_str()).await
+    }
+
+    /// Waits for, then holds, the lock named `key`: for a set of locks
+    /// over something other than artifacts (kept in its own
+    /// `ArtifactLocks`), named by any string.
+    pub async fn lock_key(&self, key: &str) -> ArtifactLock<'_> {
         let m = {
             let mut map = self.map.lock().unwrap_or_else(|e| e.into_inner());
-            map.entry(id.as_str().to_string()).or_default().clone()
+            map.entry(key.to_string()).or_default().clone()
         };
         let guard = m.lock_owned().await;
-        self.held(id);
+        self.held(key);
         ArtifactLock {
             locks: self,
-            key: id.as_str().to_string(),
+            key: key.to_string(),
             guard: Some(guard),
         }
     }
 
-    /// Notes that this thread now holds the lock of `id`.
-    fn held(&self, id: &ArtifactId) {
+    /// Notes that this thread now holds the lock named `key`.
+    fn held(&self, key: &str) {
         self.holders
             .lock()
             .unwrap_or_else(|e| e.into_inner())
-            .insert(id.as_str().to_string(), std::thread::current().id());
+            .insert(key.to_string(), std::thread::current().id());
     }
 
     /// Whether the lock of `id` is held, and was taken on this thread.
@@ -796,7 +803,7 @@ impl ArtifactLocks {
             return None;
         };
         drop(map);
-        self.held(id);
+        self.held(id.as_str());
         Some(ArtifactLock {
             locks: self,
             key: id.as_str().to_string(),

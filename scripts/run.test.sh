@@ -24,7 +24,7 @@ _fail() {
 }
 
 mkdir -p "$tmp/sys"
-for tool in bash env sh sed awk grep head tr cat rm mktemp dirname uname find cp chmod mkdir stat; do
+for tool in bash env sh sed awk grep head tr cat rm mktemp dirname uname find cp chmod mkdir; do
     ln -s "$(command -v "$tool")" "$tmp/sys/$tool"
 done
 
@@ -256,12 +256,35 @@ chmod -R a-w "$tmp/bazel-bin"
 _try -- web
 ok=1
 for f in "$repo/web/dist/_clax/bridge.js" "$repo/web/dist-extension/manifest.json"; do
-    links="$(stat -f %l "$f" 2>/dev/null || stat -c %h "$f")"
-    { [ -f "$f" ] && [ ! -L "$f" ] && [ -w "$f" ] && [ "$links" = 1 ]; } || ok=0
+    # find's -links reads the same on GNU and BSD; stat's flags do not (GNU
+    # stat takes BSD's `-f %l` as a file-system query and prints 255).
+    single="$(find "$f" -links 1)"
+    { [ -f "$f" ] && [ ! -L "$f" ] && [ -w "$f" ] && [ "$single" = "$f" ]; } || ok=0
 done
 [ -f "$repo/web/dist/.gitkeep" ] || ok=0
 chmod -R u+w "$tmp/bazel-bin"
 if [ "$status" = 0 ] && [ "$ok" = 1 ]; then _ok "web: copies, writable, one link each"; else _fail "web: copies, writable, one link each"; fi
+
+# Lint: each crate with a clippy.toml of its own is linted with it, alone,
+# whichever crates those are, and the others with the root one.
+mkdir -p "$repo/crates/one" "$repo/crates/two" "$repo/crates/three"
+touch "$repo/crates/one/clippy.toml" "$repo/crates/two/clippy.toml"
+_stubs bazelisk
+_try -- lint
+clippy="bazelisk build --lockfile_mode=error --config=clippy"
+own="--@rules_rust//rust/settings:clippy.toml"
+if [ "$status" = 0 ] &&
+    _called "^$clippy -- //crates/\.\.\. -//crates/one/\.\.\. -//crates/two/\.\.\.$" &&
+    _called "^$clippy $own=//crates/one:clippy.toml //crates/one/\.\.\.$" &&
+    _called "^$clippy $own=//crates/two:clippy.toml //crates/two/\.\.\.$" &&
+    [ "$(grep -c -- "$own" "$tmp/calls")" = 2 ] &&
+    _called "^bazelisk test --lockfile_mode=error //web:lint$"; then
+    _ok "lint: each crate's own clippy.toml, found by glob"
+else
+    { echo "calls:"; cat "$tmp/calls"; } >> "$tmp/out"
+    _fail "lint: each crate's own clippy.toml, found by glob"
+fi
+rm -rf "$repo/crates"
 
 if [ "$fails" -gt 0 ]; then
     echo "$fails check(s) failed" >&2

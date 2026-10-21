@@ -2911,10 +2911,11 @@ async fn export_route_selects_streams_and_refuses_before_writing() {
     let ts = TestServer::spawn().await;
     // Enough history for several chunks of the stream.
     let mut ids = Vec::new();
-    for i in 0..40 {
+    // Titles stay within the 200-character bound.
+    for i in 0..60 {
         let a = ts
             .publish(
-                &format!("Page {i} {}", "x".repeat(200)),
+                &format!("Page {i} {}", "x".repeat(180)),
                 &[("index.html", "<h1>p</h1>")],
             )
             .await;

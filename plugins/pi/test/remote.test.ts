@@ -292,6 +292,56 @@ describe("remote clips while feedback is handed over", () => {
   });
 });
 
+describe("remote clips while the injection loop hands feedback over", () => {
+  it("sends nothing when the session ended while the feedback's clips were fetched", async () => {
+    const AID = "7q3k9mzx2b4t";
+    const TID = "01J9ZZZZZZZZZZZZZZZZZZZZZW";
+    let polls = 0;
+    let clip: ServerResponse | undefined;
+    let clipAsked!: () => void;
+    const asked = new Promise<void>(r => { clipAsked = r; });
+    const server = createServer((req, res) => {
+      req.resume();
+      req.on("end", () => {
+        const reply = (v: unknown) => { res.setHeader("content-type", "application/json"); res.end(JSON.stringify(v)); };
+        if (req.method === "POST" && req.url === "/api/sessions") {
+          return reply({ session: { id: "S1", harness: "pi", harness_session_id: "pi-inject-clip", cwd: "/", pid: null, parent_pid: null, started_at: "", last_seen_at: "", ended_at: null }, session_secret: `cxs_${"c".repeat(43)}` });
+        }
+        if (req.url?.includes("/feedback?tier=inject")) {
+          // The first poll hands over feedback naming a clip; later ones are parked.
+          if (++polls === 1) return reply({ feedback: [{ thread_id: TID }], answers: [], text: `[clax] 1 comment sent to you:\nClip: clax-clip:${AID}/${TID}\nSam: "x"`, waited_s: 0 });
+          return;
+        }
+        if (req.url === `/api/artifacts/${AID}/threads/${TID}/clip`) { clip = res; clipAsked(); return; }
+        return reply({});
+      });
+    });
+    await new Promise<void>(r => server.listen(0, "127.0.0.1", () => r()));
+    const port = (server.address() as { port: number }).port;
+    const { home } = connectedHome(`http://127.0.0.1:${port}`);
+    try {
+      const pi = new FakePi();
+      // A clip fetch that cannot time out within the test: only the held answer ends it.
+      claxExtension({ home, env: { ...process.env, CLAX_BIN: "/nonexistent" }, clipFetchMs: 600_000 })(pi.api);
+      const { ctx } = fakeContext(scratch, "pi-inject-clip");
+      await pi.emit("session_start", { type: "session_start", reason: "startup" }, ctx);
+      await asked;
+      await pi.emit("session_shutdown", { type: "session_shutdown", reason: "quit" }, ctx);
+      clip!.setHeader("content-type", "image/png");
+      clip!.end(PNG);
+      // The clip is stored before the text is rewritten; what follows is promise
+      // continuations only, all run before the next macrotask.
+      const cached = join(home, "remote-cache", "clips", `${AID}-${TID}.png`);
+      await expect.poll(() => existsSync(cached), { timeout: 15_000 }).toBe(true);
+      await new Promise(r => setImmediate(r));
+      expect(pi.sent).toEqual([]);
+    } finally {
+      server.closeAllConnections();
+      server.close();
+    }
+  });
+});
+
 describe("ending a session that already ended", () => {
   it("registers no session just to end it, and removes the credential file", async () => {
     const seen: string[] = [];
@@ -356,6 +406,29 @@ describe("remote retries", () => {
     res.setHeader("content-type", "application/json");
     res.end(JSON.stringify({ error: { code, message: code } }));
   };
+
+  it("takes the daemon's URL as the Rust clients do, and sends each path as given whatever form the URL has", async () => {
+    const hostOf = (url: string) => loadRemote(connectedHome(url).home)!.config;
+    expect(hostOf("http://192.168.1.5")).toMatchObject({ url: "http://192.168.1.5", host: "192.168.1.5" });
+    expect(hostOf("http://1.2.3.4:80/")).toMatchObject({ url: "http://1.2.3.4", host: "1.2.3.4" });
+    expect(hostOf("http://[0:0:0:0:0:0:0:1]:7480")).toMatchObject({ url: "http://[::1]:7480", host: "[::1]:7480" });
+    for (const bad of ["http://clax.local:7480", "https://1.2.3.4:7480", "http://1.2.3.4:7480/x", "http://1.2.3.4:7480/?a", "http://1.2.3.4:7480#f", "http://u:p@1.2.3.4:7480", "1.2.3.4:7480"]) {
+      expect(() => loadRemote(connectedHome(bad).home), bad).toThrow(/the daemon URL is not http:\/\/<IP address>:<port>/);
+    }
+    const seen: { url?: string; host?: string }[] = [];
+    const server = createServer((req, res) => { seen.push({ url: req.url, host: req.headers.host }); req.resume(); req.on("end", () => res.end("{}")); });
+    await new Promise<void>(r => server.listen(0, "127.0.0.1", () => r()));
+    const port = (server.address() as { port: number }).port;
+    try {
+      const r = loadRemote(connectedHome(`http://127.000.000.001:${port}/`).home)!;
+      expect(r.config.host).toBe(`127.0.0.1:${port}`);
+      expect((await sendRemote(r, "/api/artifacts?limit=2", { method: "GET" })).status).toBe(200);
+      expect(seen).toEqual([{ url: "/api/artifacts?limit=2", host: `127.0.0.1:${port}` }]);
+    } finally {
+      server.closeAllConnections();
+      server.close();
+    }
+  });
 
   it("retries busy and limit_reached three times, after 1, 2 and 4 s with up to a quarter more, then gives up", async () => {
     for (const [status, code] of [[503, "busy"], [429, "limit_reached"]] as const) {

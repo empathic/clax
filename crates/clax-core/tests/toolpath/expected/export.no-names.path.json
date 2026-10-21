@@ -4959,13 +4959,115 @@
             ],
             "timestamp": "2026-10-06T14:08:48.082Z"
           }
+        },
+        {
+          "change": {
+            "clax://6a1f0c3e9b2d4785a0c1e2f3d4b5a697": {
+              "structural": {
+                "colour": "blue",
+                "description": "Pages waiting on a design pass",
+                "name": "Design review",
+                "tag_id": "t_7q3k9mzx2b",
+                "type": "clax.tag.create"
+              }
+            }
+          },
+          "meta": {
+            "clax": {
+              "backfilled": false,
+              "clax_commit": "abc1234def5678abc1234def5678abc1234def56",
+              "clax_version": "0.3.1",
+              "install": "6a1f0c3e9b2d4785a0c1e2f3d4b5a697",
+              "kind": "tag.create",
+              "seq": 84,
+              "v": 1,
+              "via": "shell"
+            },
+            "description": "Made tag Design review (t_7q3k9mzx2b)"
+          },
+          "step": {
+            "actor": "human:clax-owner",
+            "id": "e000000000084",
+            "parents": [
+              "e000000000082"
+            ],
+            "timestamp": "2026-10-06T14:08:50.084Z"
+          }
+        },
+        {
+          "change": {
+            "clax://6a1f0c3e9b2d4785a0c1e2f3d4b5a697": {
+              "structural": {
+                "fields": {
+                  "colour": "purple",
+                  "name": "Design"
+                },
+                "tag_id": "t_7q3k9mzx2b",
+                "type": "clax.tag.update"
+              }
+            }
+          },
+          "meta": {
+            "clax": {
+              "backfilled": false,
+              "clax_commit": "abc1234def5678abc1234def5678abc1234def56",
+              "clax_version": "0.3.1",
+              "install": "6a1f0c3e9b2d4785a0c1e2f3d4b5a697",
+              "kind": "tag.update",
+              "seq": 85,
+              "v": 1,
+              "via": "shell"
+            },
+            "description": "Changed the colour and name of tag t_7q3k9mzx2b"
+          },
+          "step": {
+            "actor": "human:clax-owner",
+            "id": "e000000000085",
+            "parents": [
+              "e000000000084"
+            ],
+            "timestamp": "2026-10-06T14:08:51.085Z"
+          }
+        },
+        {
+          "change": {
+            "clax://6a1f0c3e9b2d4785a0c1e2f3d4b5a697": {
+              "structural": {
+                "artifacts": 2,
+                "name": "Design",
+                "tag_id": "t_7q3k9mzx2b",
+                "type": "clax.tag.delete"
+              }
+            }
+          },
+          "meta": {
+            "clax": {
+              "backfilled": false,
+              "clax_commit": "abc1234def5678abc1234def5678abc1234def56",
+              "clax_version": "0.3.1",
+              "install": "6a1f0c3e9b2d4785a0c1e2f3d4b5a697",
+              "kind": "tag.delete",
+              "seq": 86,
+              "v": 1,
+              "via": "shell"
+            },
+            "description": "Deleted tag Design (t_7q3k9mzx2b), which 2 artifacts carried"
+          },
+          "step": {
+            "actor": "human:clax-owner",
+            "id": "e000000000086",
+            "parents": [
+              "e000000000085"
+            ],
+            "timestamp": "2026-10-06T14:08:52.086Z"
+          }
         }
       ],
       "path": {
         "base": {
           "uri": "clax://6a1f0c3e9b2d4785a0c1e2f3d4b5a697"
         },
-        "head": "e000000000082",
+        "head": "e000000000086",
         "id": "clax-install-6a1f0c3e"
       },
       "meta": {
@@ -5142,7 +5244,7 @@
       "clax_version": "0.3.1",
       "first_seq": 1,
       "install": "6a1f0c3e9b2d4785a0c1e2f3d4b5a697",
-      "last_seq": 83,
+      "last_seq": 86,
       "redaction": [
         "no-names"
       ],

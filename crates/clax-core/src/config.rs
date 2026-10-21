@@ -159,6 +159,99 @@ pub struct HostedConfig {
     /// Whether pages may be listed in the public gallery that signed-out
     /// visitors see (`public_gallery`, false when absent).
     pub public_gallery: bool,
+    /// The Terms of Service and Privacy Policy the instance shows and
+    /// people agree to (`legal`, or `terms_url`, `privacy_url` and
+    /// `legal_version`); `None` shows none.
+    pub legal: Option<Legal>,
+}
+
+/// The Terms of Service and Privacy Policy a hosted Clax shows: linked
+/// from its sign-in pages and footers, and agreed to by each person who
+/// signs in under their notice.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub enum Legal {
+    /// The documents in this repository's `docs/legal`, served at
+    /// `/terms` and `/privacy` (`legal = "bundled"`): the hosted service
+    /// Empathic operates.
+    Bundled,
+    /// The deployment's own documents at these `http(s)` URLs; `version`
+    /// names the text a person agrees to, and changing it asks every
+    /// person to agree again.
+    Own {
+        terms_url: String,
+        privacy_url: String,
+        version: String,
+    },
+}
+
+/// The version of the bundled documents a person agrees to. Change it
+/// only for a material change to `docs/legal`: every person is asked to
+/// agree again. Editorial fixes change the documents' "Last Updated" date
+/// alone.
+pub const BUNDLED_LEGAL_VERSION: &str = "2026-10-19";
+
+impl Legal {
+    /// The settings as given (`legal`, `terms_url`, `privacy_url`,
+    /// `version`; empty counts as absent): `legal = "bundled"` alone, or
+    /// all three of the others, or none of them.
+    pub fn from_settings(
+        legal: Option<&str>,
+        terms_url: Option<&str>,
+        privacy_url: Option<&str>,
+        version: Option<&str>,
+    ) -> std::result::Result<Option<Legal>, String> {
+        fn set(v: Option<&str>) -> Option<&str> {
+            v.map(str::trim).filter(|v| !v.is_empty())
+        }
+        let own = [set(terms_url), set(privacy_url), set(version)];
+        match (set(legal), own) {
+            (Some("bundled"), [None, None, None]) => Ok(Some(Legal::Bundled)),
+            (Some("bundled"), _) => {
+                Err("legal = \"bundled\" takes no terms_url, privacy_url or legal_version".into())
+            }
+            (Some(other), _) => Err(format!("legal must be \"bundled\", not \"{other}\"")),
+            (None, [None, None, None]) => Ok(None),
+            (None, [Some(t), Some(p), Some(v)]) => {
+                for u in [t, p] {
+                    if !base_url_ok(u) {
+                        return Err(format!(
+                            "terms_url and privacy_url must be https:// URLs (http:// only on localhost), not \"{u}\""
+                        ));
+                    }
+                }
+                Ok(Some(Legal::Own {
+                    terms_url: t.into(),
+                    privacy_url: p.into(),
+                    version: v.into(),
+                }))
+            }
+            (None, _) => Err("terms_url, privacy_url and legal_version go together".into()),
+        }
+    }
+
+    /// Where the Terms of Service are read.
+    pub fn terms_url(&self) -> &str {
+        match self {
+            Legal::Bundled => "/terms",
+            Legal::Own { terms_url, .. } => terms_url,
+        }
+    }
+
+    /// Where the Privacy Policy is read.
+    pub fn privacy_url(&self) -> &str {
+        match self {
+            Legal::Bundled => "/privacy",
+            Legal::Own { privacy_url, .. } => privacy_url,
+        }
+    }
+
+    /// The version a person agrees to.
+    pub fn version(&self) -> &str {
+        match self {
+            Legal::Bundled => BUNDLED_LEGAL_VERSION,
+            Legal::Own { version, .. } => version,
+        }
+    }
 }
 
 /// `[hosted]`'s GitHub sign-in: a GitHub OAuth App's client ID, the
@@ -194,6 +287,10 @@ struct HostedTable {
     github_oauth_base: Option<String>,
     member_max_artifacts: Option<u64>,
     public_gallery: Option<bool>,
+    legal: Option<String>,
+    terms_url: Option<String>,
+    privacy_url: Option<String>,
+    legal_version: Option<String>,
 }
 
 /// `origin` as hosted mode takes it ([`HostedConfig::public_origin`]): its
@@ -440,6 +537,13 @@ impl HomeConfig {
                 api_base: t.github_api_base,
                 oauth_base: t.github_oauth_base,
             });
+        let legal = Legal::from_settings(
+            t.legal.as_deref(),
+            t.terms_url.as_deref(),
+            t.privacy_url.as_deref(),
+            t.legal_version.as_deref(),
+        )
+        .map_err(bad)?;
         Ok(Some(HostedConfig {
             public_origin,
             setup_secret_env,
@@ -447,6 +551,7 @@ impl HomeConfig {
             github,
             member_max_artifacts: t.member_max_artifacts.unwrap_or(DEFAULT_MAX_ARTIFACTS),
             public_gallery: t.public_gallery.unwrap_or(false),
+            legal,
         }))
     }
 }
@@ -580,6 +685,46 @@ mod tests {
         let dir = tempfile::tempdir().unwrap();
         std::fs::write(dir.path().join(FILE), text).unwrap();
         HomeConfig::load(dir.path()).unwrap()
+    }
+
+    #[test]
+    fn hosted_legal_is_bundled_or_a_deployments_own_or_none() {
+        let legal = |extra: &str| {
+            with(&format!(
+                "[hosted]\npublic_origin = \"https://clax.example\"\n{extra}"
+            ))
+            .hosted()
+            .map(|h| h.unwrap().legal)
+        };
+        assert_eq!(legal("").unwrap(), None);
+        let b = legal("legal = \"bundled\"\n").unwrap().unwrap();
+        assert_eq!(
+            (b.terms_url(), b.privacy_url(), b.version()),
+            ("/terms", "/privacy", BUNDLED_LEGAL_VERSION)
+        );
+        let own = legal(
+            "terms_url = \"https://example.org/terms\"\nprivacy_url = \"https://example.org/privacy\"\nlegal_version = \"3\"\n",
+        )
+        .unwrap()
+        .unwrap();
+        assert_eq!(
+            (own.terms_url(), own.privacy_url(), own.version()),
+            (
+                "https://example.org/terms",
+                "https://example.org/privacy",
+                "3"
+            )
+        );
+        for bad in [
+            "legal = \"yes\"\n",
+            "legal = \"bundled\"\nlegal_version = \"2\"\n",
+            "terms_url = \"https://example.org/terms\"\n",
+            "terms_url = \"http://example.org/t\"\nprivacy_url = \"https://example.org/p\"\nlegal_version = \"1\"\n",
+            "terms_url = \"/terms\"\nprivacy_url = \"https://example.org/p\"\nlegal_version = \"1\"\n",
+        ] {
+            let e = legal(bad).unwrap_err().to_string();
+            assert!(e.contains("hosted"), "{bad}: {e}");
+        }
     }
 
     #[test]

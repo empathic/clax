@@ -421,16 +421,18 @@ impl Store {
         how: SignInVia,
         extra: &[(&str, serde_json::Value)],
     ) -> Result<SignedIn> {
-        if checked_name(name)?.is_none() {
+        let Some(name) = checked_name(name)? else {
             return Err(CoreError::invalid(
                 "invalid_name",
                 "the first person needs a name",
             ));
-        }
+        };
         if !self.hosted_needs_setup()? {
             return Err(not_found());
         }
-        let owner = self.set_owner_name(name, true)?;
+        #[cfg(test)]
+        self.point("hosted.setup.claim");
+        let owner = self.owner_viewer(true)?;
         let signed = self.with_tx(|tx| {
             if tx.execute(
                 "INSERT OR IGNORE INTO hosted_setup (id, viewer_id, created_at) VALUES (1, ?1, ?2)",
@@ -439,6 +441,9 @@ impl Store {
             {
                 return Err(not_found());
             }
+            // Named by the setup that made it, in its transaction: a setup
+            // that loses the race or fails later names no one.
+            super::viewers::name_owner_in(tx, &owner.id, Some(name))?;
             // In the setup's transaction: setup is never done while the
             // owner's agents still hear guests.
             let ids: Vec<String> = tx
@@ -984,6 +989,23 @@ mod tests {
                 .unwrap()
                 .iter()
                 .all(|a| a.author != clax_core::visibility::UNCONNECTED)
+        );
+    }
+
+    #[test]
+    fn a_setup_that_loses_the_race_leaves_the_owner_named_by_the_winner() {
+        let (_d, st, _c) = store();
+        // Ada's setup completes after Bob's has seen setup open.
+        st.at_point("hosted.setup.claim", |st| {
+            st.hosted_setup(&AuditCtx::DAEMON, "Ada").unwrap();
+        });
+        assert_eq!(
+            code_of(st.hosted_setup(&AuditCtx::DAEMON, "Bob").unwrap_err()),
+            "not_found"
+        );
+        assert_eq!(
+            st.owner().unwrap().unwrap().display_name.as_deref(),
+            Some("Ada")
         );
     }
 

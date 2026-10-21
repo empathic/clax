@@ -37,10 +37,13 @@ export class WorkingFeed {
     this.byId = next;
   }
   #newer(id: string, since: number): boolean { return (this.#at[id] ?? 0) > since; }
-  start(onResync: () => void, onChange: (id: string) => void = () => {}, onDelta: (d: CardDelta) => void = () => {}): void {
+  /** `onTags`: a `tags` event, with the artifact whose tags changed (null:
+   * the list changed, which any card may show). */
+  start(onResync: () => void, onChange: (id: string) => void = () => {}, onDelta: (d: CardDelta) => void = () => {}, onTags: (id: string | null) => void = () => {}): void {
     if (this.#stop) return;
     this.#stop = subscribeGallery((e: StreamEvent) => {
       const id = typeof e.artifact_id === "string" ? e.artifact_id : null;
+      if (e.type === "tags") { onTags(id); return; }
       if (e.type === "working" && id) {
         this.#at[id] = ++this.events;
         this.byId = { ...this.byId, [id]: workingFromSummary((e.working ?? []) as WorkingSummary[]) };

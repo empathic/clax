@@ -1367,6 +1367,26 @@ pub const MIGRATIONS: &[&str] = &[
         created_at TEXT NOT NULL,
         UNIQUE (job_id, key)
     );",
+    // 41: tags (`crate::tags`): one list the owner manages, each tag a
+    // name, a palette colour and an optional description, and the tags each
+    // artifact carries. `fold` is the name lowercased, unique, so two
+    // names that differ only in case cannot both exist; a rename keeps the
+    // ID. `artifact_tags_by_tag` serves the filters and a tag's delete.
+    "CREATE TABLE tags (
+        id TEXT PRIMARY KEY,
+        name TEXT NOT NULL,
+        fold TEXT NOT NULL UNIQUE,
+        colour TEXT NOT NULL,
+        description TEXT,
+        created_at TEXT NOT NULL,
+        updated_at TEXT NOT NULL
+    );
+    CREATE TABLE artifact_tags (
+        artifact_id TEXT NOT NULL,
+        tag_id TEXT NOT NULL,
+        PRIMARY KEY (artifact_id, tag_id)
+    );
+    CREATE INDEX artifact_tags_by_tag ON artifact_tags (tag_id, artifact_id);",
 ];
 
 /// The audit journal's migration, as a schema version (the
@@ -2161,8 +2181,6 @@ fn repair(tx: &rusqlite::Transaction<'_>) -> clax_core::Result<()> {
     Ok(())
 }
 
-/// Mints the install ID once: 128 random bits in lowercase hex. It holds
-/// no timestamp, so an exported reference does not date the install.
 /// Keeps every existing viewer's cookie, its row ID, working (spec
 /// 2026-10-08 §21.4): its SHA-256 as a `legacy` cookie of that viewer. The
 /// owner's row is skipped: no browser holds its ID as a cookie.
@@ -2182,6 +2200,8 @@ fn legacy_viewer_cookies(tx: &rusqlite::Transaction<'_>) -> clax_core::Result<()
     Ok(())
 }
 
+/// Mints the install ID once: 128 random bits in lowercase hex. It holds
+/// no timestamp, so an exported reference does not date the install.
 fn install_id(tx: &rusqlite::Transaction<'_>) -> clax_core::Result<()> {
     let id: String = rand::random::<[u8; 16]>()
         .iter()

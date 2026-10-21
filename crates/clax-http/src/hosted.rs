@@ -113,7 +113,6 @@ pub struct Hosted {
     /// The origin is `https`: the cookie is `Secure`.
     pub secure: bool,
     /// The setup secret's SHA-256; `None` keeps setup closed.
-    /// The setup secret, when one is set (`None`: setup stays closed).
     pub setup_secret: Option<[u8; 32]>,
     /// The daemon is behind Cloudflare, whose `CF-Connecting-IP` names the
     /// client ([`Hosted::client`]).
@@ -131,6 +130,12 @@ pub struct Hosted {
     /// ([`Hosted::with_public_gallery`]); off, nothing is listed and no
     /// one may list a page.
     pub public_gallery: bool,
+    /// The Terms of Service and Privacy Policy shown and agreed to
+    /// ([`Hosted::with_legal`]); `None` shows none.
+    pub legal: Option<clax_core::config::Legal>,
+    /// A request for the public or content host came from a loopback peer
+    /// with `behind_cloudflare` off, and was logged ([`Hosted::note_peer`]).
+    proxy_noted: std::sync::atomic::AtomicBool,
 }
 
 impl std::fmt::Debug for Hosted {
@@ -141,6 +146,7 @@ impl std::fmt::Debug for Hosted {
             .field("setup_open", &self.setup_secret.is_some())
             .field("behind_cloudflare", &self.behind_cloudflare)
             .field("github", &self.github)
+            .field("legal", &self.legal)
             .finish()
     }
 }
@@ -307,6 +313,8 @@ impl Hosted {
             github: None,
             member_caps: Default::default(),
             public_gallery: false,
+            legal: None,
+            proxy_noted: std::sync::atomic::AtomicBool::new(false),
         })
     }
 
@@ -364,6 +372,22 @@ impl Hosted {
         }
     }
 
+    /// This hosted mode showing `legal`'s Terms of Service and Privacy
+    /// Policy: linked from the sign-in pages, each browser sign-in under
+    /// their notice recorded as the person agreeing to `legal`'s version,
+    /// and a signed-in person who has not agreed to it asked to. With
+    /// [`Legal::Bundled`](clax_core::config::Legal::Bundled), `/terms` and
+    /// `/privacy` serve the bundled documents.
+    pub fn with_legal(self, legal: Option<clax_core::config::Legal>) -> Hosted {
+        Hosted { legal, ..self }
+    }
+
+    /// Whether this hosted mode serves the bundled documents at `/terms`
+    /// and `/privacy`.
+    pub fn serves_legal(&self) -> bool {
+        matches!(self.legal, Some(clax_core::config::Legal::Bundled))
+    }
+
     /// This hosted mode with its attempts counted on `clock`.
     pub fn with_clock(self, clock: std::sync::Arc<dyn clax_core::working::Clock>) -> Hosted {
         Hosted {
@@ -399,6 +423,7 @@ impl Hosted {
             h.behind_cloudflare(c.behind_cloudflare)
                 .with_github(github, c.member_max_artifacts)
                 .with_public_gallery(c.public_gallery)
+                .with_legal(c.legal.clone())
         })
     }
 
@@ -428,6 +453,29 @@ impl Hosted {
             .flatten();
         cf.or_else(|| crate::identity::peer_of(extensions).map(|p| p.ip()))
             .unwrap_or(std::net::IpAddr::V6(std::net::Ipv6Addr::UNSPECIFIED))
+    }
+
+    /// Logs a warning, once, when a request for the public or content host
+    /// (`host`, its `Host` header) comes from a loopback peer and
+    /// `behind_cloudflare` is off: a proxy on this machine, for which
+    /// [`Hosted::client`] names every client by the proxy's address, so they
+    /// share one client's attempts ([`Hosted::attempt`]) and connections
+    /// (`crate::socket_caps`). The CLI and agents on this machine, which
+    /// name a local host, are not such requests. True when it warned.
+    pub fn note_peer(&self, host: &str, extensions: &axum::http::Extensions) -> bool {
+        use std::sync::atomic::Ordering;
+        let proxied = !self.behind_cloudflare
+            && (host.eq_ignore_ascii_case(&self.host) || self.is_content_host(host))
+            && crate::identity::peer_of(extensions).is_some_and(crate::auth::is_loopback);
+        if !proxied || self.proxy_noted.swap(true, Ordering::Relaxed) {
+            return false;
+        }
+        tracing::warn!(
+            host,
+            "hosted mode is reached from a loopback peer, as through a proxy on this machine: \
+             every client counts as that one address for sign-in limits and connection caps"
+        );
+        true
     }
 
     /// Takes one of the request's client's `what` attempts: 429
@@ -1055,16 +1103,15 @@ impl HostedRequest {
     }
 }
 
-/// The value of the one session cookie (named `name`) in `headers`; `None`
-/// when there is none, or more than one (another page set a cookie of the
-/// name).
-/// The value of the one cookie named `name`; `None` without one, or with
-/// more than one.
-pub fn cookie_value(headers: &HeaderMap, name: &str) -> Option<String> {
-    session_token(headers, name)
+/// The session cookie's value: [`cookie_value`] of the cookie named `name`
+/// ([`Hosted::cookie_name`]).
+pub fn session_token(headers: &HeaderMap, name: &str) -> Option<String> {
+    cookie_value(headers, name)
 }
 
-pub fn session_token(headers: &HeaderMap, name: &str) -> Option<String> {
+/// The value of the one cookie named `name` in `headers`; `None` without
+/// one, or with more than one (another page set a cookie of the name).
+pub fn cookie_value(headers: &HeaderMap, name: &str) -> Option<String> {
     let mut found = headers
         .get_all(header::COOKIE)
         .iter()
@@ -1125,7 +1172,7 @@ pub fn guest_need(method: &Method, path: &str, query: Option<&str>) -> GuestNeed
     };
     let segs: Vec<&str> = path.trim_start_matches('/').split('/').collect();
     match segs.as_slice() {
-        [""] | ["inbox"] | ["people"] if get => Gallery,
+        [""] | ["inbox"] | ["people"] | ["tags"] if get => Gallery,
         ["a", aid, ..] if get => at(aid, RightType::Artifacts, "read", false),
         ["api", "artifacts"] if get => match query_artifact() {
             Some(aid) => at(&aid, RightType::Artifacts, "read", false),
@@ -1380,6 +1427,46 @@ fn forbidden_origin(h: &Hosted) -> Response {
     .into_response()
 }
 
+/// The prefix of hosted mode's own API (`clax_server::hosted::router`).
+pub const OWN_API: &str = "/api/hosted/";
+
+/// Where an agent token revokes itself (`DELETE`): the one route of
+/// [`OWN_API`] an agent token reaches, which takes its
+/// [`crate::agent::BearerGrant`] ([`crate::agent::verify_layer`]).
+pub const SELF_REVOKE_PATH: &str = "/api/hosted/agent-token";
+
+/// Hosted mode's own pages outside [`OWN_API`]
+/// (`clax_server::hosted::router` mounts each): a path, or a prefix when it
+/// ends in `/`. [`LEGAL_PAGES`] are its own only while it serves them.
+pub const OWN_PAGES: &[&str] = &[
+    "/setup",
+    "/signin",
+    "/signin/",
+    "/join/",
+    "/device",
+    "/auth/github",
+    crate::github::CALLBACK_PATH,
+];
+
+/// The bundled legal documents' pages ([`Hosted::serves_legal`]).
+pub const LEGAL_PAGES: &[&str] = &["/terms", "/privacy"];
+
+/// Whether `path` is one of hosted mode's own routes ([`OWN_API`],
+/// [`OWN_PAGES`], and [`LEGAL_PAGES`] when `serves_legal`), which [`gate`]
+/// hands on past a person's rights and a guest's needs: each handler checks
+/// its own caller.
+pub fn own_route(path: &str, serves_legal: bool) -> bool {
+    path.starts_with(OWN_API)
+        || OWN_PAGES.iter().any(|p| {
+            if p.ends_with('/') {
+                path.starts_with(p)
+            } else {
+                path == *p
+            }
+        })
+        || (serves_legal && LEGAL_PAGES.contains(&path))
+}
+
 /// The gate of a hosted daemon, before every route (see the module docs).
 pub async fn gate(State(s): State<AppState>, mut req: Request, next: Next) -> Response {
     let Some(h) = s.hosted.clone() else {
@@ -1407,6 +1494,7 @@ pub async fn gate(State(s): State<AppState>, mut req: Request, next: Next) -> Re
         )
         .into_response();
     }
+    h.note_peer(&host, req.extensions());
     let path = req.uri().path().to_string();
     let method = req.method().clone();
     let origin = headers.get(header::ORIGIN).and_then(|v| v.to_str().ok());
@@ -1529,14 +1617,7 @@ pub async fn gate(State(s): State<AppState>, mut req: Request, next: Next) -> Re
             .and(cookie.as_deref())
             .map(clax_core::secret::sha256_hex),
     });
-    let own = path.starts_with("/api/hosted/")
-        || path == "/setup"
-        || path == "/signin"
-        || path == "/device"
-        || path.starts_with("/signin/")
-        || path.starts_with("/join/")
-        || path == "/auth/github"
-        || path == crate::github::CALLBACK_PATH;
+    let own = own_route(&path, h.serves_legal());
     if let Some(m) = member.as_ref().filter(|_| !open && !own) {
         return member_gate(&s, m, req, next).await;
     }
@@ -1693,6 +1774,60 @@ pub fn signed_in_response(h: &Hosted, signed: SignedIn, mut shape: Value, key: &
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn a_public_host_from_loopback_is_noted_once_and_only_off_cloudflare() {
+        let peer = |p: &str| {
+            let mut e = axum::http::Extensions::new();
+            e.insert(axum::extract::ConnectInfo(crate::auth::Conn {
+                peer: p.parse().unwrap(),
+                local: "127.0.0.1:7490".parse().unwrap(),
+            }));
+            e
+        };
+        let h = Hosted::new("https://clax.example", None).unwrap();
+        assert!(!h.note_peer("clax.example", &peer("203.0.113.9:5000")));
+        assert!(
+            !h.note_peer("localhost:7490", &peer("127.0.0.1:5000")),
+            "the CLI"
+        );
+        assert!(h.note_peer("clax.example", &peer("127.0.0.1:5000")));
+        assert!(
+            !h.note_peer("clax.example", &peer("127.0.0.1:5001")),
+            "once"
+        );
+        let cf = Hosted::new("https://clax.example", None)
+            .unwrap()
+            .behind_cloudflare(true);
+        assert!(!cf.note_peer("clax.example", &peer("127.0.0.1:5000")));
+    }
+
+    #[test]
+    fn hosted_modes_own_routes() {
+        for p in [
+            "/api/hosted/me",
+            "/setup",
+            "/signin",
+            "/signin/abc",
+            "/join/abc",
+            "/device",
+            "/auth/github",
+            "/auth/github/callback",
+        ] {
+            assert!(own_route(p, false), "{p}");
+        }
+        for p in [
+            "/setupx",
+            "/signinx",
+            "/join",
+            "/api/hostedx",
+            "/api/artifacts",
+        ] {
+            assert!(!own_route(p, true), "{p}");
+        }
+        assert!(own_route("/terms", true) && own_route("/privacy", true));
+        assert!(!own_route("/terms", false) && !own_route("/privacy", false));
+    }
 
     #[test]
     fn the_cookie_is_http_only_lax_and_secure_on_https() {
@@ -1964,6 +2099,7 @@ mod tests {
             (Method::GET, "/", None, Gallery),
             (Method::GET, "/people", None, Gallery),
             (Method::GET, "/inbox", None, Gallery),
+            (Method::GET, "/tags", None, Gallery),
             (
                 Method::GET,
                 "/a/7q3k9mzx2b4t",

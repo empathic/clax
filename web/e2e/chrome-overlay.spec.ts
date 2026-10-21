@@ -281,6 +281,35 @@ test("comment on a dev server page, reach the agent, and follow a hot reload", a
   await expect(shell.getByText("The save button needs more room")).toBeVisible();
 });
 
+test("a wide Markdown comment stays inside the side panel: a long word, a long URL, a 12-column table and a long code line", async ({ live }) => {
+  const body = [
+    `One ${"Supercalifragilistic".repeat(15)} word.`,
+    `See https://example.com/${"segment/".repeat(30)}end for the rest.`,
+    `| ${Array.from({ length: 12 }, (_, i) => `column${i}`).join(" | ")} |\n|${"---|".repeat(12)}\n| ${Array.from({ length: 12 }, (_, i) => `value${i}`).join(" | ")} |`,
+    "```ts\nconst line = \"" + "x".repeat(300) + "\";\n```",
+  ].join("\n\n");
+  const h = hook(live);
+  await liveThread(live, live.siteUrl, "#save", "Save", body);
+  const page = await live.ctx.newPage();
+  await page.goto(live.siteUrl);
+  const tabId = await tabIdOf(live, live.siteUrl);
+  await h.comment(tabId, live.siteUrl);
+  const panel = await SidePanel.open(live, page, tabId);
+  await expect.poll(() => panel.eval<number>("document.querySelectorAll('.thread-card .md table th').length")).toBe(12);
+  const m = await panel.eval<{ doc: number; win: number; cards: [number, number][]; inner: [number, number][] }>(`({
+    doc: document.documentElement.scrollWidth, win: innerWidth,
+    cards: [...document.querySelectorAll(".thread-card")].map(c => [c.scrollWidth, c.clientWidth]),
+    inner: [...document.querySelectorAll(".thread-card .md .tbl, .thread-card .md pre")].map(e => [e.scrollWidth, e.clientWidth]),
+  })`);
+  expect(m.doc).toBeLessThanOrEqual(m.win);
+  expect(m.cards.length).toBeGreaterThan(0);
+  for (const [sw, cw] of m.cards) expect(sw).toBeLessThanOrEqual(cw);
+  // The table and the code scroll inside the card.
+  expect(m.inner).toHaveLength(2);
+  for (const [sw, cw] of m.inner) expect(sw).toBeGreaterThan(cw);
+  await panel.shot("panel-markdown-wide");
+});
+
 test("the panel recovers when the daemon restarts on another port", async ({ live }) => {
   const h = hook(live);
   const page = await live.ctx.newPage();

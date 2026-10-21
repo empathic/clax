@@ -545,6 +545,15 @@ pub fn is_loopback(addr: SocketAddr) -> bool {
     addr.ip().to_canonical().is_loopback()
 }
 
+/// Whether a request's connection is trusted as this machine's: its peer
+/// is loopback ([`conn_of`]), and it is not a hosted daemon's request
+/// ([`crate::hosted::HostedRequest`]), whose clients of the internet reach it
+/// through a proxy that may itself connect from loopback.
+pub fn loopback_peer(extensions: &axum::http::Extensions) -> bool {
+    extensions.get::<crate::hosted::HostedRequest>().is_none()
+        && conn_of(extensions).is_some_and(|c| is_loopback(c.peer))
+}
+
 /// True when a `Host` header names this machine literally: `localhost`,
 /// `127.0.0.1` or `[::1]`, with an optional `:port`.
 pub fn is_local_host(host: &str) -> bool {
@@ -682,5 +691,17 @@ mod tests {
             assert!(is_loopback(a.parse().unwrap()), "{a}");
         }
         assert!(!is_loopback("10.0.0.1:1".parse().unwrap()));
+    }
+
+    #[test]
+    fn a_hosted_request_has_no_loopback_peer() {
+        let mut ext = axum::http::Extensions::new();
+        ext.insert(axum::extract::ConnectInfo(Conn {
+            peer: "127.0.0.1:5000".parse().unwrap(),
+            local: "127.0.0.1:7490".parse().unwrap(),
+        }));
+        assert!(loopback_peer(&ext));
+        ext.insert(crate::hosted::HostedRequest::default());
+        assert!(!loopback_peer(&ext), "a same-machine proxy's connection");
     }
 }

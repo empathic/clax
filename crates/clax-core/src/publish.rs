@@ -11,6 +11,12 @@ pub const MAX_FILE_BYTES: u64 = 16 * 1024 * 1024;
 pub const MAX_BODY_BYTES: u64 = 64 * 1024 * 1024;
 /// Longest version label, in characters.
 pub const MAX_LABEL_CHARS: usize = 60;
+/// Longest artifact title, in characters: a derived title's bound too.
+pub const MAX_TITLE_CHARS: usize = MAX_DERIVED_TITLE_CHARS;
+/// Longest artifact description, in characters.
+pub const MAX_DESCRIPTION_CHARS: usize = 1000;
+/// Longest artifact icon word, in characters.
+pub const MAX_ICON_CHARS: usize = 40;
 /// The entry file every version must supply.
 pub const INDEX: &str = "index.html";
 
@@ -102,6 +108,18 @@ pub struct ValidatedPublish {
     /// the content store keeps it with the version's content
     /// ([`crate::content::VersionMeta::step`]).
     pub step: Option<String>,
+    /// The idempotency key an agent token named for this publish (the
+    /// caller fills it): recorded in the transaction that records the
+    /// version, so the version and its key are written together.
+    pub publish_key: Option<PublishKey>,
+}
+
+/// An agent token's idempotency key for a publish.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct PublishKey {
+    /// The agent token's grant.
+    pub grant_id: String,
+    pub key: String,
 }
 
 /// What a restore (`versions:restore`) may set beside the restored files,
@@ -118,13 +136,15 @@ pub struct RestoreDeclaration {
 
 impl RestoreDeclaration {
     /// Checks it as [`validate`] checks a publish's same fields
-    /// ([`check_declared`]). Answers it with whether the note was cut.
+    /// ([`check_declared`], [`check_meta_text`]). Answers it with whether
+    /// the note was cut.
     pub fn validated(self) -> Result<(Self, bool)> {
         let (note, truncated) = check_declared(
             self.capabilities.as_ref(),
             self.label.as_deref(),
             self.note.as_deref(),
         )?;
+        check_meta_text(self.title.as_deref(), None, self.icon.as_deref())?;
         Ok((Self { note, ..self }, truncated))
     }
 }
@@ -183,6 +203,27 @@ pub fn check_path(path: &str) -> Result<()> {
     Ok(())
 }
 
+/// Largest accepted asset in bytes. The cap is inclusive: an asset of exactly this size is accepted.
+pub const MAX_ASSET_BYTES: u64 = 20 * 1024 * 1024;
+
+/// Whether `content_type` (parameters after `;` ignored) is an accepted asset type.
+pub fn is_asset_type(content_type: &str) -> bool {
+    let ct = content_type.split(';').next().unwrap_or("").trim();
+    ct.starts_with("image/")
+        || ct.starts_with("video/")
+        || ct.starts_with("font/")
+        || matches!(
+            ct,
+            "application/pdf"
+                | "text/css"
+                | "text/javascript"
+                | "text/csv"
+                | "text/markdown"
+                | "application/json"
+                | "text/plain"
+        )
+}
+
 /// Content type inferred from the path's extension (as [`std::path::Path::extension`]
 /// defines it, compared case-insensitively); JavaScript is always
 /// `text/javascript`, and paths with no or an unknown extension are
@@ -210,9 +251,12 @@ pub const MAX_DERIVED_TITLE_CHARS: usize = 200;
 /// `<svg>` elements are skipped (an unclosed one hides the rest of the page).
 /// Tag names match in any case and may carry attributes; the five
 /// entities `&amp;` `&lt;` `&gt;` `&quot;` `&apos;` are decoded once (any
-/// other entity is kept as written); runs of whitespace become one space; the
-/// result is trimmed and cut to [`MAX_DERIVED_TITLE_CHARS`] characters. `None`
-/// when there is no closed `<title>` element or its text is empty.
+/// other entity is kept as written); control characters other than
+/// whitespace and hidden format characters ([`crate::text::is_hidden_char`])
+/// are dropped, so the title passes [`check_meta_text`]; runs of whitespace
+/// become one space; the result is trimmed and cut to
+/// [`MAX_DERIVED_TITLE_CHARS`] characters. `None` when there is no closed
+/// `<title>` element or its text is empty.
 pub fn html_title(html: &str) -> Option<String> {
     let lower = html.to_ascii_lowercase();
     let mut from = 0;
@@ -244,7 +288,10 @@ pub fn html_title(html: &str) -> Option<String> {
         from = gt + 1 + lower[gt + 1..].find(&close)? + close.len();
     };
     let body_end = body_start + lower[body_start..].find("</title")?;
-    let text = decode_basic_entities(&html[body_start..body_end]);
+    let text: String = decode_basic_entities(&html[body_start..body_end])
+        .chars()
+        .filter(|&c| c.is_whitespace() || !(c.is_control() || crate::text::is_hidden_char(c)))
+        .collect();
     let title: String = text
         .split_whitespace()
         .collect::<Vec<_>>()
@@ -309,16 +356,106 @@ pub fn require_title(title: Option<&str>) -> Result<()> {
     }
 }
 
+/// `text` fit to pass [`check_meta_text`] as a field bounded by `max`
+/// characters: control characters other than whitespace and hidden format
+/// characters ([`crate::text::is_hidden_char`]) dropped, runs of whitespace
+/// made one space, trimmed, cut to `max`. `None` when nothing is left. For
+/// metadata stored before those checks, sent on to a daemon that makes them.
+pub fn fit_meta_text(text: &str, max: usize) -> Option<String> {
+    let kept: String = text
+        .chars()
+        .filter(|&c| c.is_whitespace() || !(c.is_control() || crate::text::is_hidden_char(c)))
+        .collect();
+    let one: String = kept
+        .split_whitespace()
+        .collect::<Vec<_>>()
+        .join(" ")
+        .chars()
+        .take(max)
+        .collect();
+    let one = one.trim_end().to_string();
+    (!one.is_empty()).then_some(one)
+}
+
+/// A title given on an update: absent keeps the artifact's, and a blank one
+/// is refused rather than stored.
+///
+/// # Errors
+/// `invalid_args` when `title` is blank.
+pub fn check_update_title(title: Option<&str>) -> Result<()> {
+    match title {
+        Some(t) if t.trim().is_empty() => {
+            Err(CoreError::invalid("invalid_args", "title cannot be blank"))
+        }
+        _ => Ok(()),
+    }
+}
+
+/// Checks an artifact's text metadata, as a publish or a metadata edit sets
+/// it: `title` at most [`MAX_TITLE_CHARS`] characters, `description`
+/// [`MAX_DESCRIPTION_CHARS`] and `icon` [`MAX_ICON_CHARS`], and none holding
+/// a control character (line breaks and tabs among them) or a hidden format
+/// character ([`crate::text::is_hidden_char`]: bidi controls, zero-width
+/// spaces, tags), which would make listings and one-line views read
+/// differently from what was stored. Absent fields pass, and so does a
+/// blank title, which [`require_title`] refuses on create and
+/// [`check_update_title`] on an update.
+///
+/// # Errors
+/// `title_too_long`, `description_too_long` or `icon_too_long` past the
+/// bound; `invalid_args` for a refused character.
+pub fn check_meta_text(
+    title: Option<&str>,
+    description: Option<&str>,
+    icon: Option<&str>,
+) -> Result<()> {
+    for (field, value, max, code) in [
+        ("title", title, MAX_TITLE_CHARS, "title_too_long"),
+        (
+            "description",
+            description,
+            MAX_DESCRIPTION_CHARS,
+            "description_too_long",
+        ),
+        ("icon", icon, MAX_ICON_CHARS, "icon_too_long"),
+    ] {
+        let Some(v) = value else { continue };
+        if field == "title" && v.trim().is_empty() {
+            continue;
+        }
+        if v.chars().count() > max {
+            return Err(CoreError::invalid(
+                code,
+                format!("{field} exceeds {max} characters"),
+            ));
+        }
+        if v.chars()
+            .any(|c| c.is_control() || crate::text::is_hidden_char(c))
+        {
+            return Err(CoreError::invalid(
+                "invalid_args",
+                format!("{field} holds a control or hidden format character"),
+            ));
+        }
+    }
+    Ok(())
+}
+
 /// Checks a publish request: `index.html` present and not removed, every path
-/// safe, encodings decodable, size caps and label length respected, and an
-/// `icon.svg` within the icon rules ([`crate::icon::problem`]). Base64
-/// content may contain ASCII whitespace (line breaks from encoders), which is
-/// ignored.
+/// safe, encodings decodable, size caps, label length and the text metadata
+/// ([`check_meta_text`]) respected, and an `icon.svg` within the icon rules
+/// ([`crate::icon::problem`]). Base64 content may contain ASCII whitespace
+/// (line breaks from encoders), which is ignored.
 pub fn validate(req: PublishRequest) -> Result<ValidatedPublish> {
     let (note, note_truncated) = check_declared(
         req.capabilities.as_ref(),
         req.label.as_deref(),
         req.note.as_deref(),
+    )?;
+    check_meta_text(
+        req.title.as_deref(),
+        req.description.as_deref(),
+        req.icon.as_deref(),
     )?;
     match req.files.get(INDEX) {
         Some(Some(_)) => {}
@@ -412,6 +549,7 @@ pub fn validate(req: PublishRequest) -> Result<ValidatedPublish> {
         by_page: false,
         hidden: Vec::new(),
         step: None,
+        publish_key: None,
     })
 }
 
@@ -610,6 +748,82 @@ mod tests {
                 ..
             }
         ));
+    }
+
+    #[test]
+    fn fitted_metadata_passes_the_checks() {
+        let title = format!("a\n\tb\u{202E}\u{200B} {}", "t".repeat(300));
+        let t = fit_meta_text(&title, MAX_TITLE_CHARS).unwrap();
+        assert!(t.starts_with("a b "), "{t}");
+        assert_eq!(t.chars().count(), MAX_TITLE_CHARS);
+        let d = fit_meta_text("line one\r\nline two\u{7}", MAX_DESCRIPTION_CHARS).unwrap();
+        assert_eq!(d, "line one line two");
+        check_meta_text(Some(&t), Some(&d), None).unwrap();
+        assert_eq!(fit_meta_text(" \n\u{FEFF}", MAX_ICON_CHARS), None);
+    }
+
+    #[test]
+    fn a_blank_title_is_refused_on_an_update() {
+        for blank in ["", " ", "\n\t"] {
+            assert!(matches!(
+                check_update_title(Some(blank)),
+                Err(CoreError::Invalid {
+                    code: "invalid_args",
+                    ..
+                })
+            ));
+        }
+        assert!(check_update_title(None).is_ok());
+        assert!(check_update_title(Some("T")).is_ok());
+    }
+
+    #[test]
+    fn bounds_title_description_and_icon() {
+        let with = |f: &dyn Fn(&mut PublishRequest)| {
+            let mut r = req(&[("index.html", utf8("<p>"))]);
+            f(&mut r);
+            validate(r).map(|_| ()).map_err(|e| match e {
+                CoreError::Invalid { code, .. } => code,
+                e => panic!("{e:?}"),
+            })
+        };
+        assert_eq!(
+            with(&|r| {
+                r.title = Some("t".repeat(MAX_TITLE_CHARS));
+                r.description = Some("d".repeat(MAX_DESCRIPTION_CHARS));
+                r.icon = Some("i".repeat(MAX_ICON_CHARS));
+            }),
+            Ok(())
+        );
+        assert_eq!(
+            with(&|r| r.title = Some("é".repeat(MAX_TITLE_CHARS + 1))),
+            Err("title_too_long")
+        );
+        assert_eq!(
+            with(&|r| r.description = Some("d".repeat(MAX_DESCRIPTION_CHARS + 1))),
+            Err("description_too_long")
+        );
+        assert_eq!(
+            with(&|r| r.icon = Some("i".repeat(MAX_ICON_CHARS + 1))),
+            Err("icon_too_long")
+        );
+        for bad in ["a\nb", "\u{202E}txt.exe", "a\u{200B}b", "x\u{E0041}"] {
+            assert_eq!(
+                with(&|r| r.title = Some(bad.into())),
+                Err("invalid_args"),
+                "{bad:?}"
+            );
+            assert_eq!(
+                with(&|r| r.description = Some(bad.into())),
+                Err("invalid_args")
+            );
+            assert_eq!(with(&|r| r.icon = Some(bad.into())), Err("invalid_args"));
+        }
+        // Joiners and direction marks stay: emoji sequences and right-to-left text.
+        assert_eq!(
+            with(&|r| r.title = Some("\u{1F469}\u{200D}\u{1F4BB} \u{05E9}\u{200F}".into())),
+            Ok(())
+        );
     }
 
     #[test]

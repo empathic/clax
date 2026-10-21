@@ -88,6 +88,10 @@ pub enum Cmd {
     Pin(commands::pin::Args),
     /// Unpin an artifact.
     Unpin(commands::pin::Args),
+    /// Add or remove an artifact's tags (existing tags only: see `clax tags`).
+    Tag(commands::tags::TagArgs),
+    /// List the tags; the owner makes, edits and deletes them.
+    Tags(commands::tags::TagsArgs),
     /// Check the installation and storage.
     Doctor(commands::doctor::Args),
     /// Serve the MCP tools over stdin/stdout for one harness session.
@@ -283,6 +287,8 @@ fn remote_ok(cmd: &Cmd) -> bool {
         | Cmd::Delete(_)
         | Cmd::Pin(_)
         | Cmd::Unpin(_)
+        | Cmd::Tag(_)
+        | Cmd::Tags(_)
         | Cmd::Extension(_)
         | Cmd::Toolpath(_)
         | Cmd::People { .. }
@@ -384,6 +390,8 @@ pub(crate) fn main() {
         Cmd::Delete(a) => commands::delete::run(&cli, &home, a),
         Cmd::Pin(a) => commands::pin::run(&cli, &home, a, true),
         Cmd::Unpin(a) => commands::pin::run(&cli, &home, a, false),
+        Cmd::Tag(a) => commands::tags::run_tag(&cli, &home, a),
+        Cmd::Tags(a) => commands::tags::run_tags(&cli, &home, a),
         Cmd::Doctor(a) => commands::doctor::run(&cli, &home, a),
         Cmd::Mcp(a) => commands::mcp::run(&cli, &home, a),
         Cmd::Hook(a) => commands::hook::run(&cli, &home, a),

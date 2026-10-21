@@ -4,9 +4,12 @@
   // The version menu's panel (spec §8): the versions newest first, as a
   // changelog. Escape or a press outside closes it.
   import { type RowInput, excerpt, versionRows } from "../view/version-rows";
+  import { loadMarkdown } from "../view/md-load.svelte";
 
   let { input, hrefFor, onChoose, onClose }: { input: RowInput; hrefFor(n: number): string; onChoose(n: number): void; onClose(): void } = $props();
   const rows = $derived(versionRows(input));
+  // The addressed threads' titles show their first comments as text (`excerpt`).
+  void loadMarkdown();
   const byId = $derived(new Map(input.threads.map(t => [t.id, t])));
   let panel: HTMLDivElement | undefined = $state();
   $effect(() => { panel?.querySelector<HTMLElement>("a[aria-current=page]")?.focus(); });

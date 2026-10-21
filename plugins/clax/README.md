@@ -78,8 +78,8 @@ binary differ.
 
 ## What it adds
 
-- The `clax` MCP server (`clax mcp --agent codex`): thirty tools,
-  `publish`, `read`, `list`, `delete`, `open`, `pin`, `unpin`, `fork`,
+- The `clax` MCP server (`clax mcp --agent codex`): thirty-two tools,
+  `publish`, `read`, `list`, `delete`, `open`, `pin`, `unpin`, `tag`, `tags`, `fork`,
   `asset_upload`, `status`, `comments_read`, `comments_reply`,
   `comments_resolve`, `comments_handoff`, `watch`, `wait_for_feedback`, `working`, `draft`, `git_remote`, `ask`, `where_to_ask`, `publish_public`,
   and the data tools

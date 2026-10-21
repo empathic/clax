@@ -113,8 +113,30 @@ fn entry(
     }
 }
 
-/// `/`, `/inbox` and `/people`: the gallery's entry, which shows the
-/// gallery, the inbox or People by its path.
+/// A page of the bundled Terms of Service or Privacy Policy
+/// (`terms.html`, `privacy.html`, rendered from `docs/legal` by the web
+/// build).
+pub fn legal_page(
+    s: &clax_http::state::AppState,
+    req: &HeaderMap,
+    name: &str,
+) -> Result<Response, ApiError> {
+    // A static page, not the shell: no embedding transport is marked in it.
+    match s.web.get(name) {
+        Some(f) => Ok(unframeable(http_cache::html(
+            req,
+            &String::from_utf8_lossy(&f.data),
+        ))),
+        None => Err(ApiError::new(
+            StatusCode::SERVICE_UNAVAILABLE,
+            "ui_not_built",
+            "the web UI has not been built; run `just web`",
+        )),
+    }
+}
+
+/// `/`, `/inbox`, `/people` and `/tags`: the gallery's entry, which shows
+/// the gallery, the inbox, People or the tags by its path.
 pub async fn gallery_page(
     axum::extract::State(s): axum::extract::State<clax_http::state::AppState>,
     _d: clax_http::agent::DeniedToGrants,

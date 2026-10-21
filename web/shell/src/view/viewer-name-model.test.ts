@@ -1,7 +1,8 @@
 import { afterEach, describe, expect, it, vi } from "vitest";
+import { freshModules } from "../test/modules";
 
 describe("NameSaver", () => {
-  afterEach(() => { vi.unstubAllGlobals(); vi.resetModules(); });
+  afterEach(async () => { vi.unstubAllGlobals(); await freshModules(); });
   it("saves only after the initial lookup answered, skips an unchanged name, and keeps a name the viewer typed first", async () => {
     const calls: string[] = [];
     let answer!: (r: Response) => void;

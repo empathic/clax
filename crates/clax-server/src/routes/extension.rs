@@ -52,7 +52,7 @@ pub async fn mint(
     // A ninth credential revokes the oldest.
     clax_http::extension::end_dead_streams(&s);
     Ok(Json(json!({
-        "credential": m.credential,
+        "credential": m.credential.expose(),
         "viewer": owner,
         "expires_in_s": CREDENTIAL_TTL_DAYS * 86_400,
     })))

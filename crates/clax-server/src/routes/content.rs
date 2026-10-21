@@ -150,11 +150,13 @@ async fn lookup(
         .map(|h| h.origin.clone())
         .or_else(|| s.embed.as_ref().map(|e| e.shell.clone()));
     s.store_call_async(move |st| async move {
+        // A deleted artifact's versions stay behind its row, and its files
+        // until its content is removed: neither is served once it is gone.
+        st.get_artifact(&id)?.ok_or(CoreError::NotFound)?;
         let meta = st.file_meta(&id, n, &file)?.ok_or(CoreError::NotFound)?;
         if !always_wrap && !is_html(&meta.content_type) {
             return Ok(Served::Raw(read_bytes(&st, &id, n, &file).await?, meta));
         }
-        st.get_artifact(&id)?.ok_or(CoreError::NotFound)?;
         // Read ahead of the cache, which wraps synchronously; a page it
         // holds is not read. One evicted between the check and the wrap is
         // read on the next pass.

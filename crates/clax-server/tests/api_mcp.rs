@@ -129,6 +129,8 @@ async fn mcp_lists_the_tools(path: &str) {
             "publish_public",
             "read",
             "status",
+            "tag",
+            "tags",
             "unpin",
             "wait_for_feedback",
             "watch",

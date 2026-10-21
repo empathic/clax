@@ -890,7 +890,7 @@ async fn golden_now() -> Value {
 /// names the narrowest place the question shows (spec
 /// 2026-10-16-ask-where-attention-is-design §2), which
 /// [`compare_with_section_19`] accepts as [`moved_to_its_place`].
-pub const ADDITIVE_KEYS: [&str; 15] = [
+pub const ADDITIVE_KEYS: [&str; 17] = [
     "owner",
     "taken_by",
     "name",
@@ -899,6 +899,7 @@ pub const ADDITIVE_KEYS: [&str; 15] = [
     "withheld",
     "rights",
     "may_fork",
+    "may_tag",
     "linked",
     "wake",
     "wakes",
@@ -906,6 +907,7 @@ pub const ADDITIVE_KEYS: [&str; 15] = [
     "in_terminal",
     "pulled",
     "thread",
+    "tags",
 ];
 
 /// Whether `v`, the value of item 6's key `key` that the golden lacks, is
@@ -913,10 +915,11 @@ pub const ADDITIVE_KEYS: [&str; 15] = [
 /// null; `name`, and an artifact's `owner_name`, null or a name; `person` null or the owner (`owner: true`,
 /// the owner's public ID); a thread's `owner` or `taken_by` null or one of
 /// the owner's agents (`person` null); `rights` the owner's, `clax:full`;
-/// an artifact's `may_fork` true (the owner's agents may fork it); an
-/// answer's `linked` null (no remote is linked); `where_to_ask` a
-/// suggestion; a question asked before them neither in the terminal nor
-/// pulled, in no thread.
+/// an artifact's `may_fork` and `may_tag` true (the owner's agents may fork
+/// and tag it); an answer's `linked` null (no remote is linked);
+/// `where_to_ask` a suggestion; a question asked before them neither in the terminal nor
+/// pulled, in no thread; an artifact's `tags` none (an install migrated
+/// from before tags has none).
 pub fn solo_value(key: &str, v: &Value, owner: &str) -> bool {
     let owners_agent = |a: &Value| {
         a.is_null()
@@ -933,13 +936,14 @@ pub fn solo_value(key: &str, v: &Value, owner: &str) -> bool {
         }
         "owner" | "taken_by" => owners_agent(v),
         "rights" => *v == clax_core::rights::Rights::full().to_json(),
-        "may_fork" => *v == json!(true),
+        "may_fork" | "may_tag" => *v == json!(true),
         "linked" => v.is_null(),
         "wake" => v["when_idle"].is_boolean() && v["do"].is_string(),
         "wakes" => v.is_boolean() || v == "unsure",
         "where_to_ask" => v["surface"].is_string() && v["why"].is_string(),
         "in_terminal" | "pulled" => *v == json!(false),
         "thread" => v.is_null(),
+        "tags" => *v == json!([]),
         _ => false,
     }
 }

@@ -20,8 +20,9 @@
   // trail rule (`guardedAction`). A closed question says what closed it and
   // shows its answers; a card that closes while mounted announces it (and,
   // when something else closed it first, that the person's action was not
-  // taken), and keeps focus when it held it. Every string from the agent is text; previews are
-  // verbatim in a <pre>. Its styles travel with the question module's lazy
+  // taken), and keeps focus when it held it. Every string from the agent is
+  // text; a question's text is Markdown (`ui/Markdown.svelte`), and previews
+  // are verbatim in a <pre>. Its styles travel with the question module's lazy
   // chunk (injected on mount). State shows in data attributes, not class
   // directives, and the card finds its element through its events: the
   // runtime helpers for those belong to the artifact entry's chunk. The text
@@ -34,6 +35,7 @@
   import { relativeTime } from "../format";
   import { aboutLink, agentLabel, answerLine, answerText, closedLabel, complete, cutHeader, emptyDraft, nextOpen, pick, previewOf, questionLink, shownLabel, toBody, typeOther } from "./model";
   import { trail } from "./trail";
+  import Markdown from "../ui/Markdown.svelte";
 
   type Props = {
     q: QuestionView;
@@ -232,7 +234,7 @@
     {#if notTaken}<p class="instead" aria-hidden="true">{notTaken}</p>{/if}
     <dl class="answers">
       {#each p.q.questions as s, i (s.question)}
-        <div><dt>{cutHeader(s.header)}</dt><dd class="q">{s.question}</dd>{#if p.q.answers}<dd class="a">{answerText(p.q, i)}</dd>{/if}</div>
+        <div><dt>{cutHeader(s.header)}</dt><dd class="q"><Markdown text={s.question} /></dd>{#if p.q.answers}<dd class="a">{answerText(p.q, i)}</dd>{/if}</div>
       {/each}
     </dl>
   {:else}
@@ -251,7 +253,7 @@
       <span class="chip solo" title={spec.header}>{cutHeader(spec.header)}</span>
     {/if}
     <div class="panel" id={`${base}-panel`} role={p.q.questions.length > 1 ? "tabpanel" : undefined} aria-labelledby={p.q.questions.length > 1 ? `${base}-tab-${tab}` : undefined}>
-      <p class="qtext" id={`${base}-text-${tab}`}>{spec.question}</p>
+      <div class="qtext" id={`${base}-text-${tab}`}><Markdown text={spec.question} /></div>
       <!-- One body per tab: a new tab's options are new inputs. -->
       {#each [tab] as t (t)}
       <div class="body" data-preview={preview !== null ? "" : undefined}>

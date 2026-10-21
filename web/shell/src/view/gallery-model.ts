@@ -1,10 +1,10 @@
 import type { Artifact } from "../api";
 
-/** The artifacts whose title or description contains `query` (trimmed, any case); all of them for an empty query. */
+/** The artifacts whose title, description or a tag's name contains `query` (trimmed, any case); all of them for an empty query. */
 export function filterArtifacts(list: Artifact[], query: string): Artifact[] {
   const q = query.trim().toLowerCase();
   if (!q) return list;
-  return list.filter(a => a.title.toLowerCase().includes(q) || (a.description ?? "").toLowerCase().includes(q));
+  return list.filter(a => [a.title, a.description ?? "", ...(a.tags ?? []).map(t => t.name)].some(s => s.toLowerCase().includes(q)));
 }
 
 /** Pinned first, then the most recently updated. */

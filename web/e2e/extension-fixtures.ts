@@ -215,7 +215,9 @@ export const test = base.extend<{ live: Live; variant: Variant; gesture: boolean
       daemon, ctx: first.ctx, sw: first.sw, extId: new URL(first.sw.url()).host, site, siteDir, siteUrl, daemonExtId,
       async restartDaemon() {
         await l.daemon.stop({ keepHome: true });
-        l.daemon = await startDaemon({ home: l.daemon.home, config, startMs: DAEMON_START_MS, bind });
+        // A daemon that exits fails the start at once; one still starting is
+        // waited on for as long as the test may run, not a deadline of its own.
+        l.daemon = await startDaemon({ home: l.daemon.home, config, startMs: Infinity, bind });
       },
       async restartBrowser() {
         await l.ctx.close();

@@ -16,6 +16,8 @@ export type Link = {
   /** Local threads stay local; replies and resolves on linked threads still go up. */
   download_only?: boolean;
   sync?: Sync;
+  /** What the last cycle could not read of this link's threads; null when it read them all. */
+  read_error?: string | null;
   /** Writes waiting to go up, and those not sent. */
   pending?: number; failed?: number;
   /** Open questions whose copies there were not sent (Retry sends them). */

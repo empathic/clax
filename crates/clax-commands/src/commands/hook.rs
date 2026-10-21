@@ -50,8 +50,10 @@ const GROK_END_REQUEST_TIMEOUT: Duration = Duration::from_millis(1000);
 /// deadline; past it the hook prints nothing and the terminal dialog opens.
 /// The long poll that follows has its own timeout (see [`ask::Budget`]).
 const ASK_SETUP_DEADLINE: Duration = Duration::from_secs(2);
-/// Time kept back from a hook's deadline when it fetches a remote
-/// daemon's clips, for rewriting and printing what it took.
+/// Time kept back from a hook's deadline for rewriting and printing what it
+/// took: a request that takes feedback must answer before it
+/// ([`HookDaemon::time_left`]), and a remote daemon's clips are fetched
+/// only until it.
 const CLIP_MARGIN: Duration = Duration::from_millis(750);
 /// Each `ask` daemon request other than the long poll is abandoned after this long.
 const ASK_REQUEST_TIMEOUT: Duration = Duration::from_secs(1);
@@ -652,6 +654,13 @@ fn wait_for_credential(
 }
 
 impl Daemon for HookDaemon<'_> {
+    fn time_left(&self) -> Option<Duration> {
+        Some(
+            self.deadline
+                .saturating_duration_since(Instant::now())
+                .saturating_sub(CLIP_MARGIN),
+        )
+    }
     fn browser_url(&self, path: &str) -> String {
         self.client.browser_url(path)
     }

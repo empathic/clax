@@ -1,19 +1,28 @@
 name: Publish Pi package
 
 # Publishes plugins/pi to npm as @empathic/clax-pi, run by hand (Actions,
-# Publish Pi package, Run workflow) on main once the plugins are pinned to
-# the release that shares the package's version (docs/usage.md,
-# "Releasing"). It refuses a package whose wrapper pins another release, a
-# version npm already has, and a package that does not typecheck; the
+# Publish Pi package, Run workflow) or by scripts/release.sh, once the
+# plugins are pinned to the release that shares the package's version
+# (docs/usage.md, "Releasing"). It publishes from the commit `sha` names
+# (by default main's tip), which must be on main with CI passed on it: the
 # package's tests, which need a clax build, are CI's (scripts/run.sh
-# pi-test), so run it on a commit CI passed. With `dry_run` it does
-# everything but publish.
+# pi-test). It refuses a package whose wrapper pins another release, a
+# version npm already has, and a package that does not typecheck. With
+# `dry_run` it does everything but publish. The run is titled "Publish Pi
+# package <sha>", or "Publish Pi package (dry run) <sha>", so a caller can
+# find it.
 #
 # It publishes through npm trusted publishing (OIDC, no token) with
-# provenance, so the package on npmjs.com must name this repository and
-# workflow as its trusted publisher. npm offers that only for a package that
-# exists, so the first version is published by hand (`npm publish` in
-# plugins/pi).
+# provenance, so the package on npmjs.com must name this repository, this
+# workflow and the environment `npm` as its trusted publisher. The job runs
+# in that environment, whose deployment branches the repository's settings
+# limit to main (Settings, Environments, npm, Deployment branches and tags:
+# Selected, main), so npm refuses a token from a run dispatched on any
+# other ref, whatever that ref's copy of this file checks. npm offers
+# trusted publishing only for a package that exists, so the first version
+# is not published here: scripts/release.sh publishes it from the
+# releaser's machine (npm publish from a worktree of the pin commit) and
+# prints that setup.
 on:
   workflow_dispatch:
     inputs:
@@ -21,6 +30,14 @@ on:
         description: "Check and pack only; publish nothing"
         type: boolean
         default: true
+      sha:
+        description: "The commit to publish from: on main, with CI passed (default: main's tip)"
+        type: string
+        default: ""
+
+run-name: >-
+  ${{ inputs.dry_run && 'Publish Pi package (dry run)' || 'Publish Pi package' }}
+  ${{ inputs.sha || github.sha }}
 
 permissions:
   contents: read
@@ -33,14 +50,46 @@ jobs:
   publish:
     name: Publish @empathic/clax-pi
     runs-on: ubuntu-24.04
+    environment: npm
     permissions:
       contents: read
+      actions: read
       id-token: write
     defaults:
       run:
         working-directory: plugins/pi
     steps:
       - uses: actions/checkout@v4
+        with:
+          ref: ${{ inputs.sha || github.sha }}
+          fetch-depth: 0
+      - name: Check the commit is on main and CI passed on it
+        working-directory: .
+        shell: bash
+        env:
+          GH_TOKEN: ${{ github.token }}
+          SHA: ${{ inputs.sha || github.sha }}
+        run: |
+          set -euo pipefail
+          sha="$(git rev-parse --verify "$SHA^{commit}")"
+          git fetch --quiet --no-tags origin main
+          if ! git merge-base --is-ancestor "$sha" FETCH_HEAD; then
+            echo "$sha is not on main" >&2
+            exit 1
+          fi
+          # The gate is ci.yml's bazel job: the run's own conclusion also
+          # counts perf-log, which is cancelled when pushes pile up.
+          run="$(gh run list --repo "$GITHUB_REPOSITORY" --workflow ci.yml --event push --commit "$sha" \
+            --limit 1 --json databaseId --jq '.[0].databaseId // ""')"
+          conclusion=""
+          if [ -n "$run" ]; then
+            conclusion="$(gh run view "$run" --repo "$GITHUB_REPOSITORY" --json jobs \
+              --jq '.jobs[] | select(.name == "bazel") | .conclusion')"
+          fi
+          if [ "$conclusion" != success ]; then
+            echo "CI's bazel job has not passed on $sha (${conclusion:-no run}): publish from a commit CI passed" >&2
+            exit 1
+          fi
       - name: Check the version and the pin
         shell: bash
         run: |

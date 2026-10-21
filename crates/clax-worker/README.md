@@ -151,6 +151,8 @@ npx wrangler queues subscription create clax-artifacts-events --source artifacts
 | `OWNER_GITHUB` | the owner's GitHub login (`deploy.mjs --owner-github`) | Whoever signs in as that account (case-insensitive) is the owner |
 | `MEMBER_MAX_ARTIFACTS` | empty | The most live artifacts a GitHub member keeps; empty takes 200 |
 | `GITHUB_OAUTH_BASE`, `GITHUB_API_BASE` | empty | Tests only: a fake GitHub's bases |
+| `LEGAL` | `bundled` on Empathic's service (`deploy.mjs --legal bundled`), else empty | Serve `docs/legal`'s Terms of Service and Privacy Policy and ask people to agree ([below](#terms-of-service-and-privacy-policy)) |
+| `TERMS_URL`, `PRIVACY_URL`, `LEGAL_VERSION` | empty, or a deployment's own (`--terms-url`, `--privacy-url`, `--legal-version`) | Link your own documents instead; all three or none |
 
 Set them in `wrangler.jsonc`'s `vars` or with `--var` on `wrangler deploy`.
 A hosted instance whose `PUBLIC_ORIGIN` is not an `https://` origin (or
@@ -198,6 +200,25 @@ person on People blocks their GitHub account from signing in or up again.
    ```
 3. Open `https://clax.example.com/signin` and choose **Sign in with
    GitHub**.
+
+### Terms of Service and Privacy Policy
+
+The Terms of Service and Privacy Policy in `docs/legal` are Empathic's, for
+the hosted service it operates; a deployment shows them only when told to:
+
+- `--legal bundled` serves them at `/terms` and `/privacy`.
+- `--terms-url <URL> --privacy-url <URL> --legal-version <v>` links your
+  own documents instead.
+- With neither, the instance shows no documents and asks no one to agree.
+
+With either, the sign-in, join and setup pages say that signing in agrees
+to them, and each sign-in there records the person's agreement to the
+current version. A signed-in person who has not agreed to it, including
+everyone who signed up before the documents were turned on, is asked once.
+Change the version (`BUNDLED_LEGAL_VERSION` in
+`crates/clax-core/src/config.rs` for the bundled documents) only for a
+material change: everyone is asked again. The deploy record keeps the
+setting for later deploys.
 
 ### Deploying by hand
 

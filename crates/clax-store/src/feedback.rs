@@ -224,6 +224,28 @@ pub(crate) fn send_target_value(c: &Connection, to: Option<&str>) -> Result<serd
     Ok(serde_json::json!({"session_id": sid, "agent_handle": handle}))
 }
 
+/// Hands thread `thread_id`'s untargeted, undelivered rows to session
+/// `sid`, first dropping each whose comment `sid` already has a row for
+/// (one row per comment and session). Returns how many rows it handed over.
+pub(crate) fn give_untargeted_in(
+    tx: &Transaction<'_>,
+    thread_id: &str,
+    sid: &str,
+) -> Result<usize> {
+    tx.execute(
+        "DELETE FROM feedback WHERE thread_id = ?1 AND delivered_at IS NULL
+           AND target_session_id IS NULL
+           AND comment_id IN (SELECT comment_id FROM feedback WHERE thread_id = ?1 AND target_session_id = ?2)",
+        params![thread_id, sid],
+    )?;
+    Ok(tx.execute(
+        "UPDATE feedback SET target_session_id = ?2, untargeted_at = NULL, push_failed_at = NULL,
+            notified_at = NULL
+         WHERE thread_id = ?1 AND delivered_at IS NULL AND target_session_id IS NULL",
+        params![thread_id, sid],
+    )?)
+}
+
 /// Marks the thread sent to the agent and creates one row per (viewer
 /// comment without a row, target of `target`), each carrying `batch_id`.
 /// With no target, one untargeted row per comment. Returns the rows it
@@ -258,11 +280,7 @@ pub(crate) fn send_in(
     // A send to one agent gives it the thread's comments it has no row
     // for, as `@name` does, the untargeted rows first.
     if let SendTarget::Agent(sid) = target {
-        tx.execute(
-            "UPDATE feedback SET target_session_id = ?2, untargeted_at = NULL
-             WHERE thread_id = ?1 AND target_session_id IS NULL AND delivered_at IS NULL",
-            params![thread_id, sid],
-        )?;
+        give_untargeted_in(tx, thread_id, sid)?;
     }
     let mut inserted = Vec::new();
     for c in t.comments.iter().filter(|c| c.author_kind == AUTHOR_VIEWER) {
@@ -814,6 +832,25 @@ impl Store {
         route: Route,
         page: bool,
     ) -> Result<(Thread, Touched, Vec<String>)> {
+        self.send_routed_watching(ctx, thread_id, target, route, page, None)
+    }
+
+    /// [`Store::send_routed`], first giving live session `watch` a watch on
+    /// the thread's artifact when it neither owns nor watches it, in the
+    /// send's transaction: a send that is refused (a resolved thread, say)
+    /// gives no watch. The watch is recorded under `ctx`.
+    ///
+    /// # Errors
+    /// As [`Store::send_routed`].
+    pub fn send_routed_watching(
+        &self,
+        ctx: &AuditCtx,
+        thread_id: &str,
+        target: SendTarget<'_>,
+        route: Route,
+        page: bool,
+        watch: Option<&str>,
+    ) -> Result<(Thread, Touched, Vec<String>)> {
         let mut touched = Touched::default();
         // Only a send naming an agent asks its person (§9.2); any other
         // send counts into the requests open there.
@@ -822,6 +859,19 @@ impl Store {
             SendTarget::Everyone | SendTarget::Thread => Route::Join,
         };
         let requests = self.with_tx(|tx| {
+            if let Some(sid) = watch {
+                let aid: String = tx
+                    .query_row(
+                        "SELECT artifact_id FROM threads WHERE id = ?1",
+                        params![thread_id],
+                        |r| r.get(0),
+                    )
+                    .optional()?
+                    .ok_or(CoreError::NotFound)?;
+                if !live_targets_of(tx, &aid)?.iter().any(|s| s == sid) {
+                    super::watches::ensure_watch_in(self, tx, ctx, sid, &ArtifactId::parse(&aid)?)?;
+                }
+            }
             let now = self.now();
             let sent = send_in(tx, thread_id, None, target, &mut touched, &now)?;
             if let Some(old) = &sent.took_from {
@@ -915,11 +965,7 @@ impl Store {
             // `@name` adds agents to a thread; the earlier ones keep their
             // rows (§11), unlike a send naming one agent.
             let now = self.now();
-            tx.execute(
-                "UPDATE feedback SET target_session_id = ?2, untargeted_at = NULL
-                 WHERE thread_id = ?1 AND target_session_id IS NULL AND delivered_at IS NULL",
-                params![thread_id, first],
-            )?;
+            give_untargeted_in(tx, thread_id, first)?;
             for c in t.comments.iter().filter(|c| c.author_kind == AUTHOR_VIEWER) {
                 for sid in sids {
                     tx.execute(
@@ -1072,18 +1118,7 @@ impl Store {
                    AND target_session_id IS NOT NULL AND target_session_id <> ?2",
                 params![tid, to],
             )?;
-            tx.execute(
-                "DELETE FROM feedback WHERE thread_id = ?1 AND delivered_at IS NULL
-                   AND target_session_id IS NULL
-                   AND comment_id IN (SELECT comment_id FROM feedback WHERE thread_id = ?1 AND target_session_id = ?2)",
-                params![tid, to],
-            )?;
-            tx.execute(
-                "UPDATE feedback SET target_session_id = ?2, untargeted_at = NULL,
-                    push_failed_at = NULL, notified_at = NULL
-                 WHERE thread_id = ?1 AND delivered_at IS NULL AND target_session_id IS NULL",
-                params![tid, to],
-            )?;
+            give_untargeted_in(tx, tid, to)?;
             let mut inserted = Vec::new();
             for c in t.comments.iter().filter(|c| c.author_kind == AUTHOR_VIEWER) {
                 let fid = new_ulid();
@@ -1552,7 +1587,8 @@ impl Store {
     /// (`thread_id` or `comment_id`) is one of `ids`, on artifacts
     /// `readable` lets it read, but for undelivered rows whose comment body
     /// `vis` withholds, recording the first delivery of each that was
-    /// undelivered.
+    /// undelivered. A `vis` older than the store's visibility generation is
+    /// rebuilt for its reader inside the write transaction first.
     fn acknowledge_where(
         &self,
         ctx: &AuditCtx,
@@ -1647,6 +1683,16 @@ impl Store {
              ORDER BY f.created_at, f.id"
         );
         {
+            // A view older than the generation is rebuilt here, so a change
+            // committed since it was built (a revocation) is judged too.
+            let fresh;
+            let vis = match vis.reader() {
+                Some(reader) if stale_view(self, vis) => {
+                    fresh = Visibility::for_reader_in(tx, reader, self.visibility_generation())?;
+                    &fresh
+                }
+                _ => vis,
+            };
             let mut sight = Sight::new(tx, vis);
             for id in ids {
                 let found: Vec<(String, String, String, String, bool)> = {
@@ -4343,6 +4389,31 @@ mod delivery {
     }
 
     #[test]
+    fn an_acknowledge_under_a_view_older_than_a_revocation_marks_nothing_delivered() {
+        let w = two_people();
+        let tid = mia_sends_to_sams_agent(&w, 1);
+        let id = w.approve(&w.mia, Scope::Everywhere);
+        let old = w.sam_vis();
+        assert!(!old.is_all());
+        // Revoked after the view was built: the body is withheld again.
+        w.st.revoke_approval(DAEMON, &id, Some(&w.sam)).unwrap();
+        w.st.acknowledge(DAEMON, &w.sid, std::slice::from_ref(&tid), &old, None)
+            .unwrap();
+        assert!(
+            w.rows(&tid)
+                .iter()
+                .all(|f| f.delivered_at.is_none() && f.acknowledged_at.is_none()),
+            "held, not delivered"
+        );
+        // Approved again: the same old view is rebuilt for the current
+        // generation, which sees the body, so the row is acknowledged.
+        w.approve(&w.mia, Scope::Everywhere);
+        w.st.acknowledge(DAEMON, &w.sid, std::slice::from_ref(&tid), &old, None)
+            .unwrap();
+        assert!(w.rows(&tid).iter().all(|f| f.delivered_at.is_some()));
+    }
+
+    #[test]
     fn a_resend_carries_only_bodies_still_visible() {
         let w = two_people();
         let aid = w.publish(&w.sam, "Sam's plan", "Sam's words");
@@ -4949,5 +5020,52 @@ mod ownership {
         assert_eq!(recs.len(), 1, "a send to the owner takes nothing: {recs:?}");
         assert_eq!(recs[0].1["cause"], "send");
         assert!(st.check_not_taken(&tid, &a).is_err());
+    }
+
+    /// A thread whose comment `a` already holds a delivered row for, with
+    /// an untargeted row of the same comment left by a release.
+    fn delivered_and_untargeted() -> (tempfile::TempDir, Store, String, String) {
+        let (d, st) = store();
+        let a = session(&st, "claude", "a");
+        let aid = artifact(&st, None);
+        let tid = thread(&st, &aid, "nobody watched");
+        st.send_to(DAEMON, &tid, SendTarget::Everyone).unwrap();
+        assert_eq!(st.feedback_rows(&tid).unwrap()[0].target_session_id, None);
+        let cid = st.get_thread(&tid).unwrap().unwrap().comments[0].id.clone();
+        st.with_write(|c| {
+            c.execute(
+                "INSERT INTO feedback (id, thread_id, comment_id, target_session_id, created_at,
+                    delivered_at, delivery_tier)
+                 VALUES ('f-done', ?1, ?2, ?3, '2026-01-01T00:00:00.000Z',
+                    '2026-01-01T00:00:01.000Z', 'piggyback')",
+                rusqlite::params![tid, cid, a],
+            )?;
+            Ok(())
+        })
+        .unwrap();
+        st.ensure_watch(DAEMON, &a, &aid).unwrap();
+        (d, st, a, tid)
+    }
+
+    /// The untargeted rows whose comment the agent already has a row for
+    /// are dropped, not handed to it a second time.
+    #[test]
+    fn a_send_naming_an_agent_that_already_has_the_comment_drops_its_untargeted_row() {
+        let (_d, st, a, tid) = delivered_and_untargeted();
+        st.send_to(DAEMON, &tid, SendTarget::Agent(&a)).unwrap();
+        let rows = st.feedback_rows(&tid).unwrap();
+        assert_eq!(rows.len(), 1, "{rows:?}");
+        assert_eq!(rows[0].id, "f-done");
+        assert!(take(&st, &a).items.is_empty(), "delivered stays delivered");
+    }
+
+    #[test]
+    fn a_mention_of_an_agent_that_already_has_the_comment_drops_its_untargeted_row() {
+        let (_d, st, a, tid) = delivered_and_untargeted();
+        st.send_to_named(DAEMON, &tid, std::slice::from_ref(&a))
+            .unwrap();
+        let rows = st.feedback_rows(&tid).unwrap();
+        assert_eq!(rows.len(), 1, "{rows:?}");
+        assert_eq!(rows[0].id, "f-done");
     }
 }

@@ -130,38 +130,12 @@ pub(crate) fn text(name: &str, v: &str) -> Result<(), String> {
     if v.is_empty() {
         return Err(format!("{name} is empty"));
     }
-    if v.chars().any(|c| c.is_control() || is_format_char(c)) {
+    if v.chars()
+        .any(|c| c.is_control() || crate::text::is_format_char(c))
+    {
         return Err(format!("{name} holds a control or format character"));
     }
     Ok(())
-}
-
-/// Unicode format (category Cf) characters, the bidi controls among them.
-fn is_format_char(c: char) -> bool {
-    matches!(
-        c,
-        '\u{00AD}'
-            | '\u{0600}'..='\u{0605}'
-            | '\u{061C}'
-            | '\u{06DD}'
-            | '\u{070F}'
-            | '\u{0890}'..='\u{0891}'
-            | '\u{08E2}'
-            | '\u{180E}'
-            | '\u{200B}'..='\u{200F}'
-            | '\u{202A}'..='\u{202E}'
-            | '\u{2060}'..='\u{2064}'
-            | '\u{2066}'..='\u{206F}'
-            | '\u{FEFF}'
-            | '\u{FFF9}'..='\u{FFFB}'
-            | '\u{110BD}'
-            | '\u{110CD}'
-            | '\u{13430}'..='\u{1343F}'
-            | '\u{1BCA0}'..='\u{1BCA3}'
-            | '\u{1D173}'..='\u{1D17A}'
-            | '\u{E0001}'
-            | '\u{E0020}'..='\u{E007F}'
-    )
 }
 
 /// True when `git check-ref-format --branch` would accept `b`: no space,

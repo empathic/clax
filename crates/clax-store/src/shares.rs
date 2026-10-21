@@ -186,48 +186,138 @@ pub(super) fn share_rights(c: &Connection, viewer_id: &str) -> Result<Option<Rig
 }
 
 /// Binds the shares waiting for GitHub login `login` to viewer row
-/// `viewer_id`, at that account's sign-in. A waiting share of an artifact
-/// the person already holds a share of is dropped when it would give less,
-/// and replaces it otherwise.
+/// `viewer_id`, at that account's sign-in, as [`give_shares`] does.
+/// Returns how many were waiting.
 pub(super) fn bind_github_shares(
+    st: &Store,
+    ctx: &AuditCtx,
     tx: &Transaction<'_>,
     login: &str,
     viewer_id: &str,
 ) -> Result<usize> {
     let login = login.to_ascii_lowercase();
-    let waiting: Vec<(String, String, String)> = {
+    let waiting: Vec<Moving> = {
         let mut stmt = tx.prepare(
-            "SELECT id, artifact_id, access FROM artifact_shares
+            "SELECT id, artifact_id, access, github_login FROM artifact_shares
               WHERE viewer_id IS NULL AND github_login = ?1",
         )?;
-        stmt.query_map(params![login], |r| Ok((r.get(0)?, r.get(1)?, r.get(2)?)))?
-            .collect::<rusqlite::Result<_>>()?
+        stmt.query_map(params![login], |r| {
+            Ok(Moving {
+                id: r.get(0)?,
+                artifact_id: r.get(1)?,
+                access: r.get(2)?,
+                github_login: r.get(3)?,
+                person: None,
+            })
+        })?
+        .collect::<rusqlite::Result<_>>()?
     };
-    for (id, aid, access) in &waiting {
+    let n = waiting.len();
+    give_shares(st, ctx, tx, waiting, viewer_id)?;
+    Ok(n)
+}
+
+/// Moves viewer row `from`'s shares (`from_public` its public ID) to row
+/// `into` (`into_public`), as [`give_shares`] does, and makes `into` the
+/// creator of the shares `from` made, when a viewer is folded into another.
+pub(super) fn fold_shares(
+    st: &Store,
+    ctx: &AuditCtx,
+    tx: &Transaction<'_>,
+    (from, from_public): (&str, &str),
+    (into, into_public): (&str, &str),
+) -> Result<()> {
+    tx.execute(
+        "UPDATE artifact_shares SET created_by = ?2 WHERE created_by = ?1",
+        params![from_public, into_public],
+    )?;
+    let held: Vec<Moving> = {
+        let mut stmt = tx.prepare(
+            "SELECT id, artifact_id, access, github_login FROM artifact_shares
+              WHERE viewer_id = ?1",
+        )?;
+        stmt.query_map(params![from], |r| {
+            Ok(Moving {
+                id: r.get(0)?,
+                artifact_id: r.get(1)?,
+                access: r.get(2)?,
+                github_login: r.get(3)?,
+                person: Some(from_public.to_string()),
+            })
+        })?
+        .collect::<rusqlite::Result<_>>()?
+    };
+    give_shares(st, ctx, tx, held, into)
+}
+
+/// A share changing hands: [`bind_github_shares`]'s and [`fold_shares`]'.
+struct Moving {
+    id: String,
+    artifact_id: String,
+    access: String,
+    github_login: Option<String>,
+    /// The public ID of the person who held it, if any.
+    person: Option<String>,
+}
+
+/// Gives `shares` to viewer row `viewer_id`. A share of an artifact the
+/// person already holds a share of is dropped when it would give less, and
+/// replaces it otherwise. When `viewer_id` is the owner's row, who holds
+/// every right and is never shared with, each share is dropped instead,
+/// recorded as `artifact.update` of its `share` (`op: remove`, `reason:
+/// owner`) under `ctx`.
+fn give_shares(
+    st: &Store,
+    ctx: &AuditCtx,
+    tx: &Transaction<'_>,
+    shares: Vec<Moving>,
+    viewer_id: &str,
+) -> Result<()> {
+    let owner: bool = tx
+        .query_row(
+            "SELECT owner FROM viewers WHERE id = ?1",
+            params![viewer_id],
+            |r| r.get(0),
+        )
+        .optional()?
+        .unwrap_or(false);
+    for m in shares {
+        if owner {
+            tx.execute("DELETE FROM artifact_shares WHERE id = ?1", params![m.id])?;
+            audit_share(
+                st,
+                tx,
+                ctx,
+                &m.artifact_id,
+                json!({"op": "remove", "id": m.id, "person": m.person,
+                       "github_login": m.github_login, "reason": "owner"}),
+            )?;
+            continue;
+        }
         let held: Option<(String, String)> = tx
             .query_row(
                 "SELECT id, access FROM artifact_shares WHERE artifact_id = ?1 AND viewer_id = ?2",
-                params![aid, viewer_id],
+                params![m.artifact_id, viewer_id],
                 |r| Ok((r.get(0)?, r.get(1)?)),
             )
             .optional()?;
         if let Some((held_id, held_access)) = held {
-            let more = ShareAccess::parse(access) > ShareAccess::parse(&held_access);
+            let more = ShareAccess::parse(&m.access) > ShareAccess::parse(&held_access);
             if more {
                 tx.execute(
                     "UPDATE artifact_shares SET access = ?2 WHERE id = ?1",
-                    params![held_id, access],
+                    params![held_id, m.access],
                 )?;
             }
-            tx.execute("DELETE FROM artifact_shares WHERE id = ?1", params![id])?;
+            tx.execute("DELETE FROM artifact_shares WHERE id = ?1", params![m.id])?;
         } else {
             tx.execute(
                 "UPDATE artifact_shares SET viewer_id = ?2 WHERE id = ?1",
-                params![id, viewer_id],
+                params![m.id, viewer_id],
             )?;
         }
     }
-    Ok(waiting.len())
+    Ok(())
 }
 
 const SHARE_SELECT: &str = "SELECT s.id, s.artifact_id, s.access, s.github_login, v.public_id,
@@ -722,6 +812,48 @@ mod tests {
     }
 
     #[test]
+    fn a_login_share_waiting_for_the_owners_account_is_dropped_at_the_owners_sign_in() {
+        let (_d, st, _sam) = hosted();
+        let a = artifact(&st, None);
+        let a = a.as_str();
+        let s = st
+            .share_artifact(
+                DAEMON,
+                a,
+                &ShareTo::GitHub("ada-gh".into()),
+                ShareAccess::Editor,
+                None,
+            )
+            .unwrap();
+        assert_eq!(s.person, None, "the login is linked to no one yet");
+        st.github_sign_in(DAEMON, &gh(1, "ada-gh"), true).unwrap();
+        assert!(
+            st.artifact_shares(a).unwrap().is_empty(),
+            "the owner is never a person an artifact is shared with"
+        );
+        let removed = st
+            .events_after(0, 1000)
+            .unwrap()
+            .into_iter()
+            .filter(|e| e.kind == "artifact.update")
+            .map(|e| serde_json::from_str::<Value>(&e.body).unwrap())
+            .find(|b| b["fields"]["share"]["op"] == "remove")
+            .expect("the dropped share is recorded");
+        assert_eq!(removed["fields"]["share"]["id"], s.id.as_str());
+        assert_eq!(removed["fields"]["share"]["github_login"], "ada-gh");
+        assert_eq!(
+            code_of(st.share_artifact(
+                DAEMON,
+                a,
+                &ShareTo::GitHub("ada-gh".into()),
+                ShareAccess::Viewer,
+                None
+            )),
+            "already_owner"
+        );
+    }
+
+    #[test]
     fn a_pending_share_and_a_persons_share_merge_at_sign_in_keeping_the_more() {
         let (_d, st, _sam) = hosted();
         let a = artifact(&st, None);
@@ -751,7 +883,7 @@ mod tests {
         )
         .unwrap();
         assert_eq!(st.artifact_shares(a).unwrap().len(), 2);
-        st.with_tx(|tx| bind_github_shares(tx, "Mia", &mia.id))
+        st.with_tx(|tx| bind_github_shares(&st, DAEMON, tx, "Mia", &mia.id))
             .unwrap();
         let shares = st.artifact_shares(a).unwrap();
         assert_eq!(shares.len(), 1);

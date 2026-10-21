@@ -114,7 +114,7 @@ function readInfo(home: string): DaemonInfo | null {
 export async function discover(home: string): Promise<DaemonInfo | null> {
   const info = readInfo(home);
   if (!info || !pidAlive(info.pid)) return null;
-  return (await probe(`${endpointOf(info).base}/healthz`)) ? info : null;
+  return (await probe(endpointOf(info).base, "/healthz")) ? info : null;
 }
 
 function executable(path: string): boolean {
@@ -142,8 +142,20 @@ function bash(env: NodeJS.ProcessEnv): string {
  * reason, which names the fix. `wrapper` is the script run in place of
  * [`WRAPPER`]. */
 export function findBinary(home: string, env: NodeJS.ProcessEnv = process.env, wrapper: string = WRAPPER): Promise<string> {
+  return runWrapper([], home, env, wrapper);
+}
+
+/** The `clax` binary [`findBinary`] would give, without ever installing
+ * one: a pinned release not installed yet rejects with the wrapper's
+ * reason, which says so. */
+export function installedBinary(home: string, env: NodeJS.ProcessEnv = process.env, wrapper: string = WRAPPER): Promise<string> {
+  return runWrapper(["which"], home, env, wrapper);
+}
+
+/** Runs `wrapper` with `args` to print a binary's path. */
+function runWrapper(args: string[], home: string, env: NodeJS.ProcessEnv, wrapper: string): Promise<string> {
   return new Promise((resolve, reject) => {
-    execFile(bash(env), [wrapper], { env: { ...env, CLAX_HOME: home }, timeout: RESOLVE_TIMEOUT_MS }, (err, stdout, stderr) => {
+    execFile(bash(env), [wrapper, ...args], { env: { ...env, CLAX_HOME: home }, timeout: RESOLVE_TIMEOUT_MS }, (err, stdout, stderr) => {
       const path = String(stdout).trim();
       if (!err && path) return resolve(path);
       const lines = String(stderr).split("\n").map(l => l.trim()).filter(Boolean);

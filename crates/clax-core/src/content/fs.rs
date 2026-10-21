@@ -17,6 +17,10 @@
 //!   `<…>.png.tmp` and renamed into place.
 //!
 //! Deleting an artifact removes its whole directory.
+//!
+//! A thread ID, asset ID or asset extension is a file name, never a path: one
+//! outside `[A-Za-z0-9_-]` (or empty) names no file, so nothing outside the
+//! artifact's `assets/` and `clips/` is read, written or removed.
 
 use super::{AssetKey, ContentStore, VersionWrite, missing, present, superseded};
 use crate::publish::{INDEX, check_path};
@@ -45,6 +49,24 @@ pub fn file_path(home: &Home, id: &ArtifactId, n: u32, path: &str) -> PathBuf {
 pub fn asset_path(home: &Home, key: &AssetKey) -> PathBuf {
     home.assets_dir(&key.artifact)
         .join(format!("{}.{}", key.id, key.ext))
+}
+
+/// Whether `s` can stand in a file name as a thread ID, asset ID or asset
+/// extension: non-empty, ASCII letters, digits, `_` and `-` only.
+fn is_name(s: &str) -> bool {
+    !s.is_empty()
+        && s.bytes()
+            .all(|b| b.is_ascii_alphanumeric() || b == b'_' || b == b'-')
+}
+
+/// Whether `key` names an asset file ([`is_name`]).
+fn is_asset_name(key: &AssetKey) -> bool {
+    is_name(&key.id) && is_name(&key.ext)
+}
+
+/// The `invalid_path` refusal of a name [`is_name`] does not accept.
+fn bad_name(what: &str, name: &str) -> crate::CoreError {
+    crate::CoreError::invalid("invalid_path", format!("'{name}' is not a valid {what}"))
 }
 
 /// `path` in the version directory `dir`.
@@ -270,7 +292,11 @@ impl ContentStore for FsContent {
         remove_dir_if_present(&self.home.artifact_dir(id))
     }
 
+    /// Refuses (`invalid_path`) a key whose ID or extension is not a name.
     async fn put_asset(&self, key: &AssetKey, bytes: &[u8]) -> Result<()> {
+        if !is_asset_name(key) {
+            return Err(bad_name("asset key", &format!("{}.{}", key.id, key.ext)));
+        }
         std::fs::create_dir_all(self.home.assets_dir(&key.artifact))?;
         let final_path = asset_path(&self.home, key);
         let mut tmp = final_path.clone().into_os_string();
@@ -285,14 +311,24 @@ impl ContentStore for FsContent {
     }
 
     async fn read_asset(&self, key: &AssetKey) -> Result<Option<Vec<u8>>> {
+        if !is_asset_name(key) {
+            return Ok(None);
+        }
         read_if_present(&asset_path(&self.home, key))
     }
 
     async fn delete_asset(&self, key: &AssetKey) -> Result<()> {
+        if !is_asset_name(key) {
+            return Ok(());
+        }
         remove_file_if_present(&asset_path(&self.home, key))
     }
 
+    /// Refuses (`invalid_path`) a thread ID that is not a name.
     async fn put_clip(&self, id: &ArtifactId, thread: &str, bytes: &[u8]) -> Result<()> {
+        if !is_name(thread) {
+            return Err(bad_name("thread ID", thread));
+        }
         std::fs::create_dir_all(self.home.clips_dir(id))?;
         let path = self.home.clip_path(id, thread);
         let tmp = path.with_extension("png.tmp");
@@ -304,10 +340,16 @@ impl ContentStore for FsContent {
     }
 
     async fn read_clip(&self, id: &ArtifactId, thread: &str) -> Result<Option<Vec<u8>>> {
+        if !is_name(thread) {
+            return Ok(None);
+        }
         read_if_present(&self.home.clip_path(id, thread))
     }
 
     async fn delete_clip(&self, id: &ArtifactId, thread: &str) -> Result<()> {
+        if !is_name(thread) {
+            return Ok(());
+        }
         remove_file_if_present(&self.home.clip_path(id, thread))
     }
 
@@ -317,8 +359,11 @@ impl ContentStore for FsContent {
         Some(file_path(&self.home, id, n, path)).filter(|p| p.is_file())
     }
 
-    /// The clip's file when it is there.
+    /// The clip's file when it is there and `thread` is a name.
     fn local_clip(&self, id: &ArtifactId, thread: &str) -> Option<PathBuf> {
+        if !is_name(thread) {
+            return None;
+        }
         Some(self.home.clip_path(id, thread)).filter(|p| p.is_file())
     }
 }
@@ -421,6 +466,51 @@ mod tests {
         assert!(e.to_string().contains("not a safe relative path"), "{e}");
         assert!(!home.artifact_dir(&id).join("escape").exists());
         assert!(!c.has_version(&id, 2));
+    }
+
+    #[test]
+    fn thread_and_asset_names_that_leave_their_directory_name_nothing() {
+        let (_d, home, c) = content();
+        let id = ArtifactId::generate();
+        let other = ArtifactId::generate();
+        // A file one level up from `clips/` and `assets/`, and one in
+        // another artifact's clips: what `../` names would reach.
+        std::fs::create_dir_all(home.clips_dir(&other)).unwrap();
+        std::fs::create_dir_all(home.artifact_dir(&id)).unwrap();
+        std::fs::write(home.artifact_dir(&id).join("x.png"), b"up").unwrap();
+        std::fs::write(home.clips_dir(&other).join("t.png"), b"other").unwrap();
+        let escapes = [
+            "../x".to_string(),
+            format!("../../{}/clips/t", other.as_str()),
+            "a/b".into(),
+            "".into(),
+            "a.b".into(),
+        ];
+        for bad in &escapes {
+            assert_eq!(wait(c.read_clip(&id, bad)).unwrap(), None, "{bad}");
+            assert_eq!(c.local_clip(&id, bad), None, "{bad}");
+            wait(c.delete_clip(&id, bad)).unwrap();
+            let e = wait(c.put_clip(&id, bad, b"png")).unwrap_err();
+            assert!(e.to_string().contains("not a valid thread ID"), "{e}");
+        }
+        for (aid, ext) in [("../x", "png"), ("x", "png/../../x"), ("x", "")] {
+            let key = AssetKey {
+                artifact: id.clone(),
+                id: aid.into(),
+                ext: ext.into(),
+            };
+            assert_eq!(wait(c.read_asset(&key)).unwrap(), None, "{aid}.{ext}");
+            wait(c.delete_asset(&key)).unwrap();
+            assert!(wait(c.put_asset(&key, b"a")).is_err(), "{aid}.{ext}");
+        }
+        assert_eq!(
+            std::fs::read(home.artifact_dir(&id).join("x.png")).unwrap(),
+            b"up"
+        );
+        assert_eq!(
+            std::fs::read(home.clips_dir(&other).join("t.png")).unwrap(),
+            b"other"
+        );
     }
 
     #[test]

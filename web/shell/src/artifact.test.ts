@@ -1,4 +1,5 @@
 import { describe, it, expect, vi } from "vitest";
+import { freshModules } from "./test/modules";
 import { MOUNT_TIMEOUT_MS } from "./test/timeouts";
 import { artifactViewHooks, waitFor, ID, FakeES, artifact, page, viewer, mountView, stubMedia, buttonNamed, fromFrame, gestureIn } from "./test/artifact-view";
 
@@ -379,7 +380,7 @@ describe("ArtifactView", { timeout: MOUNT_TIMEOUT_MS }, () => {
     await import("./view/artifact-questions");
     view.unmount();
     document.body.replaceChildren();
-    vi.resetModules();
+    await freshModules();
     view = await mountView(async () => new Response(JSON.stringify(artifact(1, { "index.html": page }))), undefined, "gone.html");
     root = view.root;
     const msg = await waitFor(() => root.querySelector(".stage .empty"), "not-found message");

@@ -23,6 +23,9 @@ export type ArtifactEvent =
   /** An agent that watched the artifact started, ended or was renamed:
    * refetch its agents (the Send menu lists live ones only). Names nothing. */
   | { type: "agents"; artifact_id?: undefined }
+  /** The artifact's tags changed (`artifact_id`), or the list renamed,
+   * recoloured or deleted one it carries (`artifact_id` null): refetch it. */
+  | { type: "tags"; artifact_id: string | null }
   /** Who has the artifact open, here or away, or was here lately: its whole list. */
   | { type: "presence"; artifact_id: string; people: PresenceView[] }
   /** The watcher's topics went live: on first subscribing, after the page

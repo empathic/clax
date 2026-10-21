@@ -24,9 +24,13 @@ fn invalid(s: &str) -> CallToolResult {
 }
 
 /// What `url_or_id` names, for a daemon reached at `daemon_base`. An
-/// http(s) URL on the daemon's port is an artifact reference (whatever its
-/// host: `localhost`, `127.0.0.1`, a LAN address, or `<id>.localhost`); any
-/// other http(s) URL is a page. An artifact reference, and text without a
+/// http(s) URL on the daemon's port is an artifact reference when its host
+/// is the daemon's: for a daemon on a local name ([`is_local`]), any host
+/// (`localhost`, `127.0.0.1`, a LAN or tailnet address or name, or
+/// `<id>.localhost` all reach it); for a daemon on any other name (a
+/// remote or hosted Clax, often on https's default port), that name or a
+/// subdomain of it. Any other
+/// http(s) URL is a page. An artifact reference, and text without a
 /// scheme, are read as [`artifact_ref`] reads them: an ID, or a Clax path
 /// such as `localhost:7480/a/<id>` or `/c/<id>/v/<n>/…`.
 ///
@@ -40,16 +44,63 @@ pub fn target(url_or_id: &str, daemon_base: &str) -> Result<Target, CallToolResu
         if !matches!(u.scheme(), "http" | "https") {
             return Err(invalid(s));
         }
-        let daemon_port = url::Url::parse(daemon_base)
-            .ok()
-            .and_then(|d| d.port_or_known_default());
-        if daemon_port.is_none() || u.port_or_known_default() != daemon_port {
+        let on_daemon = url::Url::parse(daemon_base).ok().is_some_and(|d| {
+            d.port_or_known_default().is_some()
+                && u.port_or_known_default() == d.port_or_known_default()
+                && same_host(&u, &d)
+        });
+        if !on_daemon {
             return Ok(Target::Page(s.to_string()));
         }
     }
     artifact_ref(s)
         .map(|(id, version)| Target::Artifact { id, version })
         .map_err(|_| invalid(s))
+}
+
+/// Whether `url` is on the host of the daemon at `daemon`: any host when
+/// the daemon's is local (the machine is reached by many names, LAN and
+/// tailnet ones included, so its port alone tells), else the daemon's own
+/// name or a subdomain of it.
+fn same_host(url: &url::Url, daemon: &url::Url) -> bool {
+    let (Some(h), Some(d)) = (url.host(), daemon.host()) else {
+        return false;
+    };
+    if is_local(&d) {
+        return true;
+    }
+    match (h, d) {
+        (url::Host::Domain(h), url::Host::Domain(d)) => {
+            let (h, d) = (h.trim_end_matches('.'), d.trim_end_matches('.'));
+            h == d || h.strip_suffix(d).is_some_and(|sub| sub.ends_with('.'))
+        }
+        (h, d) => h == d,
+    }
+}
+
+/// Whether `host` names this machine or its local network: `localhost`
+/// and `*.localhost`, a `*.local` or single-label name, or a loopback,
+/// private, link-local or unspecified address.
+fn is_local(host: &url::Host<&str>) -> bool {
+    match host {
+        url::Host::Domain(d) => {
+            let d = d.trim_end_matches('.');
+            d == "localhost"
+                || d.ends_with(".localhost")
+                || d.ends_with(".local")
+                || !d.contains('.')
+        }
+        url::Host::Ipv4(ip) => {
+            ip.is_loopback() || ip.is_private() || ip.is_link_local() || ip.is_unspecified()
+        }
+        url::Host::Ipv6(ip) => {
+            let first = ip.segments()[0];
+            ip.is_loopback()
+                || ip.is_unspecified()
+                || first & 0xfe00 == 0xfc00
+                || first & 0xffc0 == 0xfe80
+        }
+    }
 }
 
 #[cfg(test)]
@@ -110,6 +161,60 @@ mod tests {
             page("https://example.com/x?y#/z"),
             Some("https://example.com/x?y#/z".into())
         );
+    }
+
+    #[test]
+    fn a_daemon_on_a_public_name_owns_only_its_own_host() {
+        let t = |s: &str| target(s, "https://clax.example.com").ok();
+        let page = |s: &str| Some(Target::Page(s.into()));
+        let art = |v| {
+            Some(Target::Artifact {
+                id: "7q3k9mzx2b4t".into(),
+                version: v,
+            })
+        };
+        assert_eq!(
+            t("https://staging.example.com/"),
+            page("https://staging.example.com/")
+        );
+        assert_eq!(
+            t("https://example.com/a/7q3k9mzx2b4t"),
+            page("https://example.com/a/7q3k9mzx2b4t"),
+            "another host's /a/ path is a page"
+        );
+        assert_eq!(
+            t("https://localhost/a/7q3k9mzx2b4t"),
+            page("https://localhost/a/7q3k9mzx2b4t")
+        );
+        assert_eq!(
+            t("https://evilclax.example.com/a/7q3k9mzx2b4t"),
+            page("https://evilclax.example.com/a/7q3k9mzx2b4t"),
+            "a name that merely ends in the daemon's is another host"
+        );
+        assert_eq!(
+            t("https://CLAX.example.com/a/7q3k9mzx2b4t/v/2"),
+            art(Some(2))
+        );
+        assert_eq!(
+            t("https://content.clax.example.com/c/7q3k9mzx2b4t/v/1/x.html"),
+            art(Some(1))
+        );
+    }
+
+    #[test]
+    fn a_daemon_on_a_local_name_owns_every_host_on_its_port() {
+        let t = |s: &str| target(s, "http://mac.local:7480").ok();
+        let art = Some(Target::Artifact {
+            id: "7q3k9mzx2b4t".into(),
+            version: None,
+        });
+        assert_eq!(t("http://127.0.0.1:7480/a/7q3k9mzx2b4t"), art);
+        assert_eq!(t("http://[::1]:7480/a/7q3k9mzx2b4t"), art);
+        assert_eq!(t("http://10.0.0.5:7480/a/7q3k9mzx2b4t"), art);
+        // A tailnet's addresses and names reach the daemon too.
+        assert_eq!(t("http://100.101.102.103:7480/a/7q3k9mzx2b4t"), art);
+        assert_eq!(t("http://mac.tail1234.ts.net:7480/a/7q3k9mzx2b4t"), art);
+        assert_eq!(t("http://mac.home.arpa:7480/a/7q3k9mzx2b4t"), art);
     }
 
     #[test]

@@ -30,6 +30,10 @@ pub struct Artifact {
     /// read the source.
     #[serde(skip)]
     pub forked_from: Option<ForkedFrom>,
+    /// The tags it carries, sorted by name (`crate::tags`): owner-managed
+    /// names, shown to everyone who sees the artifact.
+    #[serde(default)]
+    pub tags: Vec<crate::tags::TagRef>,
 }
 
 /// Where a fork came from: version `version` of artifact `artifact_id`,

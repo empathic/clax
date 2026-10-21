@@ -5,7 +5,7 @@ import { existsSync, mkdirSync, mkdtempSync, readFileSync, rmSync, statSync, wri
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { afterAll, beforeAll, describe, expect, it } from "vitest";
-import { binaryVersion, ensure, findBinary, SERVE_TIMEOUT_MS, WRAPPER } from "../src/daemon.ts";
+import { binaryVersion, ensure, findBinary, installedBinary, SERVE_TIMEOUT_MS, WRAPPER } from "../src/daemon.ts";
 import { buildClax, claxBin } from "./daemon-fixture.ts";
 import { fakeExe } from "./fake-exe.ts";
 
@@ -119,6 +119,18 @@ describe("ensure", () => {
       ? new RegExp(`could not install clax ${pin.replaceAll(".", "\\.")}: .*http://127\\.0\\.0\\.1:9/`)
       : /pins no Clax release yet.*clax bin set/;
     await expect(ensure(join(scratch, "nobin"), { env })).rejects.toThrow(reason);
+  });
+
+  it("finds an installed binary without installing one", async () => {
+    // A closed release base: an attempt to download would fail, and say so.
+    const pin = /^PINNED_VERSION="(.*)"$/m.exec(readFileSync(WRAPPER, "utf8"))?.[1];
+    const env: NodeJS.ProcessEnv = { ...process.env, HOME: join(scratch, "nohome"), CLAX_RELEASE_BASE_URL: "http://127.0.0.1:9" };
+    delete env.CLAX_BIN;
+    const home = join(scratch, "uninstalled");
+    const reason = pin ? new RegExp(`clax ${pin.replaceAll(".", "\\.")}, which this plugin runs, is not installed in .* yet \\(not installed\\); it is installed when a clax command first needs it\\.`) : /pins no Clax release yet/;
+    await expect(installedBinary(home, env)).rejects.toThrow(reason);
+    expect(existsSync(join(home, "bin"))).toBe(false);
+    expect(await installedBinary(home, withBin(claxBin))).toBe(claxBin);
   });
 
   it("reads a binary's version only when it reports itself as clax", async () => {

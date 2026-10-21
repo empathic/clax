@@ -90,8 +90,15 @@ export async function createThread(aid: string, input: { anchor: Anchor; body: s
   const headers: Record<string, string> = input.viaPage ? { "x-clax-via": "page" } : {};
   return ok(await fetch(`/api/artifacts/${aid}/threads`, { method: "POST", headers, body: form }));
 }
-export async function addComment(aid: string, tid: string, body: string): Promise<Thread> {
-  return (await ok<{ thread: Thread }>(await post(`/api/artifacts/${aid}/threads/${tid}/comments`, { body }))).thread;
+/** Adds a comment to a thread; `viaPage` marks one the page wrote through
+ * the `comments` capability (`via_page`, `x-clax-via: page`). A refusal
+ * throws `ApiError` with the daemon's code. */
+export async function addComment(aid: string, tid: string, body: string, viaPage = false): Promise<Thread> {
+  const url = `/api/artifacts/${aid}/threads/${tid}/comments`;
+  const res = viaPage
+    ? await fetch(url, { method: "POST", headers: { "content-type": "application/json", "x-clax-via": "page" }, body: JSON.stringify({ body, via_page: true }) })
+    : await post(url, { body });
+  return (await ok<{ thread: Thread }>(res)).thread;
 }
 /** Sends a thread to the agent `to` names (a participant handle), or with
  * `to` null to every live owner and watcher; the body carries no `to` then.

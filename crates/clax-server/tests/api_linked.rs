@@ -67,6 +67,21 @@ impl Pair {
         self.sleeper.fire(BACKSTOP);
     }
 
+    /// Returns once the sync waits out its backstop, however long its
+    /// cycle takes: a cycle reading answers of megabytes may.
+    async fn settled(&self) {
+        until("the sync's cycle ends", || async {
+            (self.sleeper.waiting(BACKSTOP) == 1).then_some(())
+        })
+        .await;
+    }
+
+    /// [`Pair::backstop`] after [`Pair::settled`].
+    async fn backstop_settled(&self) {
+        self.settled().await;
+        self.sleeper.fire(BACKSTOP);
+    }
+
     /// A thread the hosted owner's browser starts on the public copy.
     async fn hosted_thread(&self, body: &str, anchor: Value, clip: Option<&[u8]>) -> Value {
         let mut form = reqwest::multipart::Form::new()
@@ -576,6 +591,208 @@ async fn since_is_an_agent_tokens_and_a_keyed_comment_is_written_once() {
 }
 
 #[tokio::test]
+async fn a_resent_keyed_write_does_the_sends_its_first_write_did_not_reach() {
+    use clax_store::threads::{AUTHOR_VIEWER, NewComment, NewThread};
+    let p = Pair::new().await;
+    let token = p.local.store.remote_token(&p.remote).unwrap().unwrap();
+    let grant = p
+        .local
+        .store
+        .find_remote(&p.remote)
+        .unwrap()
+        .unwrap()
+        .grant_id
+        .unwrap();
+    let ts = &p.public.ts;
+    let st = &ts.store;
+    let req = |m: reqwest::Method, path: &str| {
+        ts.client
+            .request(m, format!("{}{path}", ts.base))
+            .header(HOST, format!("localhost:{}", ts.addr.port()))
+            .bearer_auth(token.expose())
+    };
+    let (s, v) = json_of(
+        req(reqwest::Method::POST, "/api/sessions")
+            .json(&json!({"harness": "claude", "cwd": ""}))
+            .send()
+            .await
+            .unwrap(),
+    )
+    .await;
+    assert_eq!(s, 201, "{v}");
+    let (sid, secret) = (
+        v["session"]["id"].as_str().unwrap().to_string(),
+        v["session_secret"].as_str().unwrap().to_string(),
+    );
+    // The agent watches the artifact, so what is sent there reaches it.
+    let (s, v) = json_of(
+        req(
+            reqwest::Method::PUT,
+            &format!("/api/sessions/{sid}/watches/{}", p.raid),
+        )
+        .header("x-clax-session", &sid)
+        .header(clax_core::remote::SESSION_SECRET_HEADER, &secret)
+        .json(&json!({}))
+        .send()
+        .await
+        .unwrap(),
+    )
+    .await;
+    assert!(s < 300, "{s} {v}");
+    // Each first write ended after its transaction, before its sends.
+    let aid = clax_core::ArtifactId::parse(&p.raid).unwrap();
+    let made = st
+        .create_thread_keyed_async(
+            &clax_core::audit::AuditCtx::DAEMON,
+            &aid,
+            NewThread {
+                version_n: 1,
+                anchor: serde_json::from_value(whole()).unwrap(),
+                author_name: "Ada".into(),
+                author_public_id: None,
+                body: "@agent look".into(),
+                clip: None,
+                via_page: false,
+            },
+            &[],
+            Some((&grant, "clax-linked:thread:k1")),
+        )
+        .await
+        .unwrap();
+    let clax_store::linked::Keyed::Made(t) = made else {
+        panic!("the thread is made");
+    };
+    let other = p.hosted_thread("plain", whole(), None).await;
+    let otid = other["id"].as_str().unwrap();
+    let made = st
+        .add_comment_keyed(
+            &clax_core::audit::AuditCtx::DAEMON,
+            otid,
+            NewComment {
+                author_kind: AUTHOR_VIEWER,
+                author_name: "Ada".into(),
+                author_public_id: None,
+                via_session_id: None,
+                body: "@agent this too".into(),
+                via_page: false,
+            },
+            Some((&grant, "clax-linked:comment:k2")),
+        )
+        .unwrap();
+    let clax_store::linked::Keyed::Made(c) = made else {
+        panic!("the comment is made");
+    };
+    let sent = |tid: &str| st.get_thread(tid).unwrap().unwrap().sent_to_agent;
+    assert!(!sent(&t.id) && !sent(otid));
+    // Their resends answer what was made, and send it.
+    let form = reqwest::multipart::Form::new()
+        .text("anchor", whole().to_string())
+        .text("body", "@agent look")
+        .text("version", "1");
+    let (s, v) = json_of(
+        req(
+            reqwest::Method::POST,
+            &format!("/api/artifacts/{}/threads", p.raid),
+        )
+        .header("x-clax-session", &sid)
+        .header(clax_core::remote::SESSION_SECRET_HEADER, &secret)
+        .header("idempotency-key", "clax-linked:thread:k1")
+        .multipart(form)
+        .send()
+        .await
+        .unwrap(),
+    )
+    .await;
+    assert_eq!(
+        (s, v["thread"]["id"].as_str()),
+        (201, Some(t.id.as_str())),
+        "{v}"
+    );
+    assert!(sent(&t.id));
+    let (s, v) = json_of(
+        req(
+            reqwest::Method::POST,
+            &format!("/api/artifacts/{}/threads/{otid}/comments", p.raid),
+        )
+        .header("x-clax-session", &sid)
+        .header(clax_core::remote::SESSION_SECRET_HEADER, &secret)
+        .header("idempotency-key", "clax-linked:comment:k2")
+        .json(&json!({"body": "@agent this too"}))
+        .send()
+        .await
+        .unwrap(),
+    )
+    .await;
+    assert_eq!(
+        (s, v["comment"]["id"].as_str()),
+        (201, Some(c.id.as_str())),
+        "{v}"
+    );
+    assert!(sent(otid));
+    assert!(st.comment_has_feedback(&c.id).unwrap());
+    assert_eq!(
+        bodies(&p.hosted_thread_by(otid).await),
+        ["plain", "@agent this too"]
+    );
+    // An agent reply whose first write ended before it acknowledged what
+    // its session was sent is acknowledged by its resend.
+    let plain = other["comments"][0]["id"].as_str().unwrap().to_string();
+    let unacked = || {
+        st.feedback_rows(otid)
+            .unwrap()
+            .into_iter()
+            .filter(|f| f.comment_id == plain && f.target_session_id.as_deref() == Some(&sid))
+            .map(|f| f.acknowledged_at.is_none())
+            .collect::<Vec<_>>()
+    };
+    assert_eq!(unacked(), [true]);
+    let made = st
+        .add_agent_reply_keyed(
+            &clax_core::audit::AuditCtx::DAEMON,
+            otid,
+            NewComment {
+                author_kind: clax_store::threads::AUTHOR_AGENT,
+                author_name: "claude".into(),
+                author_public_id: None,
+                via_session_id: Some(sid.clone()),
+                body: "on it".into(),
+                via_page: false,
+            },
+            None,
+            Some((&grant, "clax-linked:comment:k3")),
+        )
+        .unwrap()
+        .0;
+    let clax_store::linked::Keyed::Made(r) = made else {
+        panic!("the reply is made");
+    };
+    let (s, v) = json_of(
+        req(
+            reqwest::Method::POST,
+            &format!("/api/artifacts/{}/threads/{otid}/comments", p.raid),
+        )
+        .header("x-clax-session", &sid)
+        .header(clax_core::remote::SESSION_SECRET_HEADER, &secret)
+        .header("idempotency-key", "clax-linked:comment:k3")
+        .json(&json!({"body": "on it", "author_kind": "agent"}))
+        .send()
+        .await
+        .unwrap(),
+    )
+    .await;
+    assert_eq!(
+        (s, v["comment"]["id"].as_str()),
+        (201, Some(r.id.as_str())),
+        "{v}"
+    );
+    assert_eq!(unacked(), [false]);
+    assert_eq!(
+        bodies(&p.hosted_thread_by(otid).await),
+        ["plain", "@agent this too", "on it"]
+    );
+}
+
+#[tokio::test]
 async fn an_outage_queues_marks_rows_not_sent_at_the_cap_then_drains_in_order() {
     let p = Pair::new().await;
     let t = p.owner_thread(1, "before", whole()).await;
@@ -684,6 +901,55 @@ async fn an_outage_queues_marks_rows_not_sent_at_the_cap_then_drains_in_order() 
         (links["links"][0]["pending"] == 0 && links["links"][0]["failed"] == 0).then_some(())
     })
     .await;
+}
+
+/// The live sessions of the by-hand harness the sync speaks in on the public Clax.
+fn sync_sessions(p: &Pair) -> usize {
+    p.public
+        .ts
+        .store
+        .list_sessions(true)
+        .unwrap()
+        .into_iter()
+        .filter(|s| s.harness == "clax")
+        .count()
+}
+
+#[tokio::test]
+async fn an_outage_keeps_the_syncs_one_session_there() {
+    let p = Pair::new().await;
+    assert_eq!(sync_sessions(&p), 1);
+    // The cycle meets an outage, and the next one the remote back.
+    p.local.state.linked.set_offline(true);
+    p.backstop().await;
+    p.sleeper.wait_for(BACKOFF_FIRST, 1).await;
+    p.local.state.linked.set_offline(false);
+    p.sleeper.fire(BACKOFF_FIRST);
+    p.sleeper.wait_for(BACKSTOP, 1).await;
+    assert_eq!(sync_sessions(&p), 1, "the session there was kept");
+    // A session the remote ended is replaced, not left behind.
+    let sid = p
+        .public
+        .ts
+        .store
+        .list_sessions(true)
+        .unwrap()
+        .into_iter()
+        .find(|s| s.name.as_deref() == Some("clax-sync"))
+        .unwrap()
+        .id;
+    p.public
+        .ts
+        .store
+        .end_session(&clax_core::audit::AuditCtx::DAEMON, &sid)
+        .unwrap();
+    p.local.state.linked.set_offline(true);
+    p.backstop().await;
+    p.sleeper.wait_for(BACKOFF_FIRST, 1).await;
+    p.local.state.linked.set_offline(false);
+    p.sleeper.fire(BACKOFF_FIRST);
+    p.sleeper.wait_for(BACKSTOP, 1).await;
+    assert_eq!(sync_sessions(&p), 1, "a new session, the ended one gone");
 }
 
 #[tokio::test]
@@ -961,6 +1227,383 @@ async fn unlinking_keeps_read_only_history_and_unsent_rows_until_dropped() {
     );
 }
 
+#[tokio::test]
+async fn a_mirrored_thread_deleted_here_stays_gone_and_the_link_keeps_syncing() {
+    let p = Pair::new().await;
+    let r1 = p.hosted_thread("first", whole(), None).await;
+    p.backstop().await;
+    let tid = until("the thread comes down", || async {
+        p.local_threads()
+            .await
+            .first()
+            .map(|t| t["id"].as_str().unwrap().to_string())
+    })
+    .await;
+    p.sleeper.wait_for(BACKSTOP, 1).await;
+    let (s, v) = p
+        .local_req(
+            reqwest::Method::DELETE,
+            &format!("/api/artifacts/{}/threads/{tid}", p.aid),
+            json!(null),
+            None,
+        )
+        .await;
+    assert_eq!(s, 200, "{v}");
+    // A comment there on the thread deleted here, and a new thread there.
+    let (s, v) = p
+        .public
+        .browser(
+            reqwest::Method::POST,
+            &format!(
+                "/api/artifacts/{}/threads/{}/comments",
+                p.raid,
+                r1["id"].as_str().unwrap()
+            ),
+            json!({"body": "still here?"}),
+        )
+        .await;
+    assert_eq!(s, 201, "{v}");
+    p.hosted_thread("second", whole(), None).await;
+    p.backstop().await;
+    until("the second thread comes down", || async {
+        let ts = p.local_threads().await;
+        ts.iter().any(|t| bodies(t) == ["second"]).then_some(())
+    })
+    .await;
+    // The cycle ended well: the sync waits for its backstop, not a backoff.
+    p.sleeper.wait_for(BACKSTOP, 1).await;
+    assert_eq!(p.local.state.linked.status(&p.remote).last_error, None);
+    // The deleted thread did not come back.
+    let ts = p.local_threads().await;
+    assert_eq!(ts.len(), 1, "{ts:?}");
+    assert_eq!(bodies(&ts[0]), ["second"]);
+}
+
+#[tokio::test]
+async fn threads_after_a_run_of_large_ones_all_come_down() {
+    use clax_store::threads::{AUTHOR_VIEWER, NewComment, NewThread};
+    let p = Pair::new().await;
+    let st = &p.public.ts.store;
+    let audit = &clax_core::audit::AuditCtx::DAEMON;
+    let aid = clax_core::ArtifactId::parse(&p.raid).unwrap();
+    // Three threads of about 1.5 MB in a row, each within the 4 MiB a
+    // remote's answer may be but not together, then 60 small ones; then
+    // the first small one, read early, is the newest.
+    let first = p.hosted_thread("large 0", whole(), None).await;
+    let owner = first["comments"][0]["author_public_id"]
+        .as_str()
+        .map(str::to_string);
+    let thread = |body: String| NewThread {
+        version_n: 1,
+        anchor: serde_json::from_value(whole()).unwrap(),
+        author_name: "Ada".into(),
+        author_public_id: owner.clone(),
+        body,
+        clip: None,
+        via_page: false,
+    };
+    let comment = |body: String| NewComment {
+        author_kind: AUTHOR_VIEWER,
+        author_name: "Ada".into(),
+        author_public_id: owner.clone(),
+        via_session_id: None,
+        body,
+        via_page: false,
+    };
+    let made = |k: clax_store::linked::Keyed<clax_core::model::Thread>| match k {
+        clax_store::linked::Keyed::Made(t) => t.id,
+        clax_store::linked::Keyed::Before { .. } => panic!("an unkeyed thread is made"),
+    };
+    let mut large = vec![first["id"].as_str().unwrap().to_string()];
+    for i in 1..3 {
+        let t = st
+            .create_thread_keyed_async(audit, &aid, thread(format!("large {i}")), &[], None)
+            .await
+            .unwrap();
+        large.push(made(t));
+    }
+    let body = "x".repeat(9_000);
+    for tid in &large {
+        for _ in 0..170 {
+            st.add_comment(audit, tid, comment(body.clone())).unwrap();
+        }
+    }
+    let mut small = Vec::new();
+    for i in 0..60 {
+        let t = st
+            .create_thread_keyed_async(audit, &aid, thread(format!("small {i}")), &[], None)
+            .await
+            .unwrap();
+        small.push(made(t));
+    }
+    st.add_comment(audit, &small[0], comment("newest".into()))
+        .unwrap();
+    p.backstop_settled().await;
+    p.settled().await;
+    let v: Value = p
+        .local
+        .get_authed(&format!(
+            "/api/artifacts/{}/threads?include_resolved=true&limit=200",
+            p.aid
+        ))
+        .await
+        .json()
+        .await
+        .unwrap();
+    let ts = v["threads"].as_array().cloned().unwrap_or_default();
+    assert_eq!(ts.len(), 63, "{} threads came down", ts.len());
+    let newest = ts
+        .iter()
+        .find(|t| t["comments"][0]["body"] == "small 0")
+        .unwrap();
+    assert_eq!(bodies(newest), ["small 0", "newest"]);
+    for t in &ts {
+        let n = t["comments"].as_array().unwrap().len();
+        if t["comments"][0]["body"]
+            .as_str()
+            .is_some_and(|b| b.starts_with("large"))
+        {
+            assert_eq!(n, 171);
+        }
+    }
+    assert_eq!(p.local.state.linked.status(&p.remote).last_error, None);
+}
+
+/// Threads `t 1`..=`t {n}` written straight to the public copy's store as
+/// the author of thread `first`, so nothing wakes the sync; their IDs.
+async fn more_threads(p: &Pair, first: &Value, n: usize) -> Vec<String> {
+    let owner = first["comments"][0]["author_public_id"]
+        .as_str()
+        .map(str::to_string);
+    let aid = clax_core::ArtifactId::parse(&p.raid).unwrap();
+    let mut ids = Vec::new();
+    for i in 1..=n {
+        let made = p
+            .public
+            .ts
+            .store
+            .create_thread_keyed_async(
+                &clax_core::audit::AuditCtx::DAEMON,
+                &aid,
+                clax_store::threads::NewThread {
+                    version_n: 1,
+                    anchor: serde_json::from_value(whole()).unwrap(),
+                    author_name: "Ada".into(),
+                    author_public_id: owner.clone(),
+                    body: format!("t {i}"),
+                    clip: None,
+                    via_page: false,
+                },
+                &[],
+                None,
+            )
+            .await
+            .unwrap();
+        let clax_store::linked::Keyed::Made(t) = made else {
+            panic!("an unkeyed thread is made");
+        };
+        ids.push(t.id);
+    }
+    ids
+}
+
+/// The first comments of the local threads, sorted.
+async fn local_firsts(p: &Pair) -> Vec<String> {
+    let mut b: Vec<String> = p
+        .local_threads()
+        .await
+        .iter()
+        .map(|t| t["comments"][0]["body"].as_str().unwrap().to_string())
+        .collect();
+    b.sort();
+    b
+}
+
+#[tokio::test]
+async fn a_read_past_its_pages_goes_on_in_the_next_cycles() {
+    let p = Pair::new().await;
+    // Pages of two threads, one page a cycle.
+    p.local.state.linked.set_read_limits(2, 1);
+    let first = p.hosted_thread("t 0", whole(), None).await;
+    until("the first thread comes down", || async {
+        (p.local_threads().await.len() == 1).then_some(())
+    })
+    .await;
+    p.settled().await;
+    more_threads(&p, &first, 5).await;
+    // One backstop: the read goes on, cycle after cycle, to its end.
+    p.backstop_settled().await;
+    p.settled().await;
+    assert_eq!(
+        local_firsts(&p).await,
+        ["t 0", "t 1", "t 2", "t 3", "t 4", "t 5"]
+    );
+    assert_eq!(p.local.state.linked.status(&p.remote).last_error, None);
+}
+
+#[tokio::test]
+async fn a_read_whose_page_cursor_is_deleted_there_starts_over() {
+    let p = Pair::new().await;
+    // Pages of two threads, one page a cycle; the read waits after its
+    // first.
+    p.local.state.linked.set_read_limits(2, 1);
+    p.local.state.linked.hold_resumed(true);
+    let first = p.hosted_thread("t 0", whole(), None).await;
+    until("the first thread comes down", || async {
+        (p.local_threads().await.len() == 1).then_some(())
+    })
+    .await;
+    p.settled().await;
+    let ids = more_threads(&p, &first, 5).await;
+    p.backstop_settled().await;
+    p.settled().await;
+    assert_eq!(local_firsts(&p).await, ["t 0", "t 1"]);
+    // The read stopped after `t 1`, which is then deleted there.
+    p.public
+        .ts
+        .store
+        .delete_thread(&clax_core::audit::AuditCtx::DAEMON, &ids[0])
+        .unwrap();
+    p.local.state.linked.hold_resumed(false);
+    p.backstop_settled().await;
+    // The cycle ends at the backstop, not in a backoff.
+    until("the cycle ends", || async {
+        (p.sleeper.waiting(BACKSTOP) + p.sleeper.waiting(BACKOFF_FIRST) == 1).then_some(())
+    })
+    .await;
+    assert_eq!(p.local.state.linked.status(&p.remote).last_error, None);
+    assert_eq!(
+        local_firsts(&p).await,
+        ["t 0", "t 1", "t 2", "t 3", "t 4", "t 5"]
+    );
+    assert_eq!(p.local.state.linked.status(&p.remote).last_error, None);
+}
+
+#[tokio::test]
+async fn a_thread_past_the_answer_cap_stops_its_links_read_not_the_remotes() {
+    use clax_store::threads::{AUTHOR_VIEWER, NewComment};
+    let p = Pair::new().await;
+    p.hosted_thread("small", whole(), None).await;
+    p.backstop_settled().await;
+    until("the small thread comes down", || async {
+        (p.local_threads().await.len() == 1).then_some(())
+    })
+    .await;
+    p.settled().await;
+    // One thread of about 4.5 MB: even a page of it alone passes the 4 MiB
+    // a remote's answer may be.
+    // Comments by the thread's own author, whom the sync's token sees.
+    let big = p.hosted_thread("big", whole(), None).await;
+    let owner = big["comments"][0]["author_public_id"]
+        .as_str()
+        .map(str::to_string);
+    let big = big["id"].as_str().unwrap().to_string();
+    let body = "x".repeat(9_000);
+    for _ in 0..500 {
+        p.public
+            .ts
+            .store
+            .add_comment(
+                &clax_core::audit::AuditCtx::DAEMON,
+                &big,
+                NewComment {
+                    author_kind: AUTHOR_VIEWER,
+                    author_name: "Ada".into(),
+                    author_public_id: owner.clone(),
+                    via_session_id: None,
+                    body: body.clone(),
+                    via_page: false,
+                },
+            )
+            .unwrap();
+    }
+    let links = || async {
+        let (s, v) = p
+            .local_req(
+                reqwest::Method::GET,
+                &format!("/api/artifacts/{}/remotes", p.aid),
+                json!(null),
+                None,
+            )
+            .await;
+        assert_eq!(s, 200, "{v}");
+        v["links"][0].clone()
+    };
+    p.backstop_settled().await;
+    // The link says what it could not read; the remote stands reachable.
+    let l = until("the link says what it could not read", || async {
+        let l = links().await;
+        l["read_error"].is_string().then_some(l)
+    })
+    .await;
+    assert!(
+        l["read_error"]
+            .as_str()
+            .is_some_and(|e| e.contains("4 MiB")),
+        "{l}"
+    );
+    assert_eq!(l["sync"]["last_error"], Value::Null, "{l}");
+    assert_eq!(l["sync"]["unreachable_since"], Value::Null, "{l}");
+    assert_eq!(p.local.state.linked.status(&p.remote).last_error, None);
+    // Without the thread there, the link reads to the end again.
+    p.public
+        .ts
+        .store
+        .delete_thread(&clax_core::audit::AuditCtx::DAEMON, &big)
+        .unwrap();
+    p.backstop_settled().await;
+    until("the link reads to the end again", || async {
+        links().await["read_error"].is_null().then_some(())
+    })
+    .await;
+}
+
+#[tokio::test]
+async fn a_page_of_threads_past_the_answer_cap_is_read_in_smaller_pages() {
+    use clax_store::threads::{AUTHOR_VIEWER, NewComment};
+    let p = Pair::new().await;
+    // Five threads of about 900 KB each: one page of them passes the
+    // 4 MiB a remote's answer may be.
+    let body = "x".repeat(9_000);
+    for i in 0..5 {
+        let t = p.hosted_thread(&format!("big {i}"), whole(), None).await;
+        let tid = t["id"].as_str().unwrap();
+        let owner = t["comments"][0]["author_public_id"]
+            .as_str()
+            .map(str::to_string);
+        for _ in 0..100 {
+            p.public
+                .ts
+                .store
+                .add_comment(
+                    &clax_core::audit::AuditCtx::DAEMON,
+                    tid,
+                    NewComment {
+                        author_kind: AUTHOR_VIEWER,
+                        author_name: "Ada".into(),
+                        author_public_id: owner.clone(),
+                        via_session_id: None,
+                        body: body.clone(),
+                        via_page: false,
+                    },
+                )
+                .unwrap();
+        }
+    }
+    p.backstop_settled().await;
+    until("every thread comes down whole", || async {
+        let ts = p.local_threads().await;
+        (ts.len() == 5
+            && ts
+                .iter()
+                .all(|t| t["comments"].as_array().is_some_and(|c| c.len() == 101)))
+        .then_some(())
+    })
+    .await;
+    p.settled().await;
+    assert_eq!(p.local.state.linked.status(&p.remote).last_error, None);
+}
+
 /// An `ask` of one choice question.
 fn ask_body(artifact: Option<&str>, text: &str) -> Value {
     let mut b = json!({"source": "ask", "questions": [{"question": text, "header": "Pick",
@@ -1093,8 +1736,13 @@ async fn a_local_ask_on_a_linked_artifact_is_asked_there_and_answered_from_there
         answered["answers"],
         json!([{"selected": ["Blue"], "text": null}])
     );
-    let local = p.local_question(&qid).await;
-    assert_eq!(local["linked"]["answered_there"], true, "{local}");
+    // The answer closes the question here, which ends the wait, and then the
+    // link records that it came from there.
+    until("the link records the answer as from there", || async {
+        let l = p.local_question(&qid).await;
+        (l["linked"]["answered_there"] == true).then_some(())
+    })
+    .await;
     // A decline there declines here.
     let q2 = p.ask(&sid, Some(&p.aid), "Ship it?").await;
     let there = p.hosted_question("Ship it?").await;

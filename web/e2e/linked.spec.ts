@@ -17,8 +17,14 @@ import { createServer } from "node:net";
 import { join } from "node:path";
 import { fileURLToPath } from "node:url";
 import { type Page } from "@playwright/test";
-import { NO_KEY_CONFIG, api, expect, publish, registerSession, startDaemon, test } from "./fixtures";
+import { NO_KEY_CONFIG, api, expect as baseExpect, publish, registerSession, startDaemon, test } from "./fixtures";
 import { ask, waitAnswer } from "./questions-helpers";
+
+// Each test runs two daemons of its own and goes through a sign-in, a
+// push, an outage and many reloads; each wait is on its condition, and on a
+// loaded machine one may take far past the suite's 5 s, so the test's own
+// timeout bounds the waits, and an expectation fails only after 60 s.
+const expect = baseExpect.configure({ timeout: 60_000 });
 
 const SECRET = "e2e setup secret";
 const SHOTS = !!process.env.CLAX_E2E_SHOTS;
@@ -36,13 +42,13 @@ function freePort(): Promise<number> {
   });
 }
 
-/** Waits until `f` answers something truthy, for up to `ms`. */
-async function until<T>(what: string, f: () => Promise<T | null | undefined | false>, ms = 20_000): Promise<T> {
-  const end = Date.now() + ms;
+/** Waits until `f` answers something truthy, `what` naming it when the test
+ * times out first. */
+async function until<T>(what: string, f: () => Promise<T | null | undefined | false>): Promise<T> {
+  test.info().annotations.push({ type: "waiting", description: what });
   for (;;) {
     const v = await f().catch(() => null);
     if (v) return v;
-    if (Date.now() > end) throw new Error(`never: ${what}`);
     await new Promise(r => setTimeout(r, 200));
   }
 }
@@ -67,7 +73,13 @@ async function shoot(page: Page, name: string, prep: (phone: boolean) => Promise
 
 /** The phone's Threads panel, when the sidebar is not shown beside the page. */
 async function threads(page: Page) {
-  if (!(await page.locator("aside.sidebar").isVisible())) await page.getByRole("button", { name: /Threads/ }).first().click();
+  // Decided once the view shows one or the other: right after a load the
+  // sidebar may not be shown yet, and a click on the first button named
+  // Threads at desktop width would hide the threads instead.
+  const tabs = page.getByRole("group", { name: "Page or threads" });
+  let shown: "sidebar" | "tabs" | null = null;
+  await expect.poll(async () => (shown = (await page.locator("aside.sidebar").isVisible()) ? "sidebar" : (await tabs.isVisible()) ? "tabs" : null)).not.toBeNull();
+  if (shown === "tabs") await tabs.getByRole("button", { name: /^Threads/ }).click();
 }
 
 test("a public comment comes down tagged, a local reply goes up, and an outage shows pending then not sent", async ({ browser }) => {
@@ -93,7 +105,7 @@ test("a public comment comes down tagged, a local reply goes up, and an outage s
     await until("the sign-in connects", async () => {
       const r = await api(local.base, local.token, `/api/remotes/${added.remote.id}/poll`, { method: "POST", body: "{}" }) as { status: string };
       return r.status === "connected";
-    }, 30_000);
+    });
 
     // A local artifact, pushed.
     const { artifact } = await publish(local.base, local.token, "Launch plan", { "index.html": "<title>Launch plan</title><h1>Launch plan</h1><p id=\"x\">We ship on Friday.</p>" });
@@ -118,7 +130,7 @@ test("a public comment comes down tagged, a local reply goes up, and an outage s
     await page.setViewportSize(SIZES.desktop);
     await page.goto(`${local.base}/a/${artifact.id}`);
     const card = page.locator(".thread-card").filter({ hasText: "which Friday" });
-    await expect(card).toBeVisible({ timeout: 20_000 });
+    await expect(card).toBeVisible();
     await expect(card.locator(".link-tag").first()).toHaveText(host);
     await expect(card.locator(".msg .author").first()).toContainText("Ada");
     await shoot(page, "mirrored", async phone => { if (phone) { await page.reload(); await threads(page); } await card.waitFor(); });
@@ -134,7 +146,7 @@ test("a public comment comes down tagged, a local reply goes up, and an outage s
     });
     await owner.reload();
     const there = owner.locator(".thread-card").filter({ hasText: "which Friday" });
-    if (!(await owner.locator("aside.sidebar").isVisible())) await threads(owner);
+    await threads(owner);
     await expect(there).toContainText("The 24th. I have updated the page.");
     await shoot(owner, "hosted-reply", async phone => { await owner.reload(); if (phone) await threads(owner); await there.waitFor(); });
 
@@ -149,7 +161,7 @@ test("a public comment comes down tagged, a local reply goes up, and an outage s
     await until("the reply is queued", async () => {
       const v = await api(local.base, local.token, `/api/artifacts/${artifact.id}/threads`) as { threads: { comments: { body: string; linked?: { state: string | null } }[] }[] };
       return v.threads[0]?.comments.some(c => c.body.startsWith("Also") && c.linked?.state === "pending");
-    }, 40_000);
+    });
     await expect(card.locator(".link-state > span")).toHaveText(`Sending to ${host}…`);
     await shoot(page, "pending", async phone => { await page.reload(); if (phone) await threads(page); await card.locator(".link-state").waitFor(); });
 
@@ -223,7 +235,7 @@ test("a local agent's question is asked on the hosted copy, answered there, and 
     await until("the sign-in connects", async () => {
       const r = await api(local.base, local.token, `/api/remotes/${added.remote.id}/poll`, { method: "POST", body: "{}" }) as { status: string };
       return r.status === "connected";
-    }, 30_000);
+    });
     const { artifact } = await publish(local.base, local.token, "Launch plan", { "index.html": "<title>Launch plan</title><h1>Launch plan</h1><p id=\"x\">We ship on Friday.</p>" });
     const pushed = await api(local.base, local.token, `/api/artifacts/${artifact.id}/push`, { method: "POST", body: "{}" }) as { link: { remote_artifact_id: string } };
     const raid = pushed.link.remote_artifact_id;
@@ -245,7 +257,7 @@ test("a local agent's question is asked on the hosted copy, answered there, and 
     });
     await page.goto(`${local.base}/a/${artifact.id}`);
     const local_card = page.locator(`.qcard[data-question="${qid}"]`).first();
-    await expect(local_card).toBeVisible({ timeout: 20_000 });
+    await expect(local_card).toBeVisible();
     await expect(local_card.locator(".link-tag")).toHaveText(host);
     await expect(local_card.locator(".link-tag")).toHaveAttribute("title", `Also asked on ${host}`);
     await shoot(page, "questions-local-open", async phone => { await page.reload(); if (phone) await threads(page); await local_card.waitFor(); });
@@ -259,13 +271,13 @@ test("a local agent's question is asked on the hosted copy, answered there, and 
     await owner.goto(`${origin}/inbox`);
     const inboxCard = owner.locator(`.qcard[data-question="${rq.id}"]`).first();
     const inboxRow = owner.locator(".irow", { hasText: "Which Friday" }).first();
-    await expect(inboxCard.or(inboxRow)).toBeVisible({ timeout: 20_000 });
+    await expect(inboxCard.or(inboxRow)).toBeVisible();
     await expect(owner.locator(".astrip .achip").first()).toHaveText(/^\S+ · via Ada's Clax · waiting on you/);
     await shoot(owner, "questions-hosted-inbox", async () => { await owner.reload(); await inboxCard.or(inboxRow).waitFor(); });
     await owner.goto(`${origin}/a/${raid}`);
     const there = owner.locator(`.qcard[data-question="${rq.id}"]`).first();
-    if (!(await there.isVisible().catch(() => false))) await threads(owner);
-    await expect(there).toBeVisible({ timeout: 20_000 });
+    await threads(owner);
+    await expect(there).toBeVisible();
     // There the local agent is named, with whose Clax it relays from: on the
     // card, in the top bar's roster and in the Send menu.
     await expect(there.locator(".asker")).toHaveText(/^\S+ · via Ada's Clax$/);
@@ -280,7 +292,7 @@ test("a local agent's question is asked on the hosted copy, answered there, and 
     await page.goto(`${local.base}/a/${artifact.id}`);
     await local_card.waitFor();
     await owner.reload();
-    if (!(await there.isVisible().catch(() => false))) await threads(owner);
+    await threads(owner);
     await there.locator('input[value="The 24th"]').click();
     await there.locator("button.primary").click();
     await expect(there.locator(".closed")).toHaveText("Answered");
@@ -291,15 +303,21 @@ test("a local agent's question is asked on the hosted copy, answered there, and 
     // The local card, open on the artifact page meanwhile, resolves saying
     // where, with its tag (the shell's clock holds it there until a test
     // advances it); the inbox's read row carries the tag too.
-    await expect(local_card.locator(".closed")).toHaveText(`Answered on ${host}`, { timeout: 20_000 });
+    await expect(local_card.locator(".closed")).toHaveText(`Answered on ${host}`);
     await expect(local_card.locator(".link-tag")).toHaveText(host);
     await expect(local_card).toContainText("The 24th");
     await shoot(page, "questions-local-answered", async phone => { if (phone) await threads(page); await local_card.locator(".closed").waitFor(); });
+    // Read now, in its page's group, folded while nothing there is new.
+    const unfold = async () => {
+      const t = page.locator(`.igroup[data-group="${artifact.id}"] .gtoggle`);
+      await t.waitFor();
+      if ((await t.getAttribute("aria-expanded")) === "false") await t.click();
+    };
     await page.goto(`${local.base}/inbox`);
-    await page.getByRole("button", { name: /^Show \d+ read item/ }).click();
+    await unfold();
     const row = page.getByRole("button", { name: /^Question: claude asks: Launch day/ });
     await expect(row.locator(".link-tag")).toHaveText(host);
-    await shoot(page, "questions-local-inbox", async () => { await page.goto(`${local.base}/inbox`); await page.getByRole("button", { name: /^Show \d+ read item/ }).click(); await row.waitFor(); });
+    await shoot(page, "questions-local-inbox", async () => { await page.goto(`${local.base}/inbox`); await unfold(); await row.waitFor(); });
 
     // With the hosted daemon gone, a question's copy is pending; past the
     // backoff's cap it is not sent (marked here on the scratch home's

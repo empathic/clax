@@ -114,6 +114,158 @@ fn write(dir: &std::path::Path, name: &str, content: &str) -> std::path::PathBuf
     p
 }
 
+/// `clax <args> --json`, asserted to succeed: its JSON.
+fn json_of(e: &Env, args: &[&str]) -> serde_json::Value {
+    let out = e
+        .cmd()
+        .args(args)
+        .arg("--json")
+        .assert()
+        .success()
+        .get_output()
+        .stdout
+        .clone();
+    serde_json::from_slice(&out).unwrap()
+}
+
+#[test]
+fn tags_are_made_applied_listed_and_deleted_from_the_command_line() {
+    let e = Env::new();
+    let index = write(e.dir.path(), "index.html", "<title>Plan</title><p>p</p>");
+    // No tags yet: a publish naming one publishes nothing.
+    e.cmd()
+        .args(["publish", "--port", "0", "--tags", "design"])
+        .arg(&index)
+        .assert()
+        .failure()
+        .stderr(predicate::str::contains("no tags yet"));
+    assert_eq!(json_of(&e, &["list"])["artifacts"], serde_json::json!([]));
+    let made = json_of(
+        &e,
+        &[
+            "tags",
+            "create",
+            "design",
+            "--colour",
+            "blue",
+            "--description",
+            "Waiting on a design pass",
+        ],
+    );
+    assert_eq!(made["tag"]["colour"], "blue");
+    json_of(&e, &["tags", "create", "draft"]);
+    e.cmd()
+        .args(["tags", "create", "DESIGN"])
+        .assert()
+        .failure()
+        .stderr(predicate::str::contains("tag_exists"));
+    // Publish with tags, then change them.
+    let out = e
+        .cmd()
+        .args(["publish", "--tags", "Design,draft"])
+        .arg(&index)
+        .assert()
+        .success()
+        .stdout(predicate::str::contains("tags: design, draft"))
+        .get_output()
+        .stdout
+        .clone();
+    let url = String::from_utf8(out).unwrap();
+    let id = url
+        .split("/a/")
+        .nth(1)
+        .unwrap()
+        .split_whitespace()
+        .next()
+        .unwrap()
+        .to_string();
+    let other = write(e.dir.path(), "other.html", "<title>Other</title>");
+    e.cmd().arg("publish").arg(&other).assert().success();
+    let t = json_of(&e, &["tag", &id, "--remove", "draft"]);
+    assert_eq!(t["tags"][0]["name"], "design");
+    assert_eq!(t["tags"].as_array().unwrap().len(), 1);
+    e.cmd()
+        .args(["tag", &id, "--add", "urgent"])
+        .assert()
+        .failure()
+        .stderr(predicate::str::contains("design, draft"));
+    // List and filter.
+    let only = json_of(&e, &["list", "--tag", "design"]);
+    let ids: Vec<&str> = only["artifacts"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .map(|a| a["id"].as_str().unwrap())
+        .collect();
+    assert_eq!(ids, vec![id.as_str()]);
+    e.cmd()
+        .args(["list"])
+        .assert()
+        .success()
+        .stdout(predicate::str::contains("Plan  [design]"));
+    let tags = json_of(&e, &["tags"]);
+    assert_eq!(tags["tags"][0]["name"], "design");
+    assert_eq!(tags["tags"][0]["count"], 1);
+    // Edit by name, then delete: the artifact loses it.
+    let edited = json_of(&e, &["tags", "edit", "design", "--name", "Design review"]);
+    assert_eq!(edited["tag"]["name"], "Design review");
+    let gone = json_of(&e, &["tags", "delete", "design review"]);
+    assert_eq!(gone["artifacts"], 1);
+    let after = json_of(&e, &["list", "--tag", "Design review"]);
+    assert_eq!(after["artifacts"], serde_json::json!([]));
+    e.cmd()
+        .args(["tags", "delete", "nope"])
+        .assert()
+        .failure()
+        .stderr(predicate::str::contains("no tag is named 'nope'"));
+    e.stop();
+}
+
+#[test]
+fn a_publish_whose_tags_are_refused_publishes_and_exits_non_zero() {
+    let e = Env::new();
+    let index = write(e.dir.path(), "index.html", "<title>Full</title><p>1</p>");
+    let max = clax_core::tags::MAX_ARTIFACT_TAGS;
+    let out = e
+        .cmd()
+        .args(["publish", "--json", "--port", "0"])
+        .arg(&index)
+        .assert()
+        .success()
+        .get_output()
+        .stdout
+        .clone();
+    let id = serde_json::from_slice::<serde_json::Value>(&out).unwrap()["id"]
+        .as_str()
+        .unwrap()
+        .to_string();
+    let names: Vec<String> = (0..=max).map(|i| format!("t{i}")).collect();
+    for n in &names {
+        e.cmd().args(["tags", "create", n]).assert().success();
+    }
+    let mut add = vec!["tag".to_string(), id.clone()];
+    for n in &names[..max] {
+        add.extend(["--add".to_string(), n.clone()]);
+    }
+    e.cmd().args(&add).assert().success();
+    // One more is past the bound: the version lands, then the command fails
+    // saying the tags were not applied.
+    write(e.dir.path(), "index.html", "<title>Full</title><p>2</p>");
+    e.cmd()
+        .args(["publish", "--id", &id, "--tags", &names[max]])
+        .arg(&index)
+        .assert()
+        .failure()
+        .stdout(predicate::str::contains("published v2"))
+        .stderr(predicate::str::contains(
+            "published, but the tags were not applied",
+        ));
+    let list = json_of(&e, &["list"]);
+    assert_eq!(list["artifacts"][0]["current_version"], 2);
+    assert_eq!(list["artifacts"][0]["tags"].as_array().unwrap().len(), max);
+    e.stop();
+}
+
 #[test]
 fn publish_list_pin_open_delete_roundtrip() {
     let e = Env::new();
@@ -648,6 +800,29 @@ fn file_spec_splits_only_when_the_source_exists() {
     e.stop();
 }
 
+/// `clax publish` runs the `publish` tool, so it follows the tool's rules:
+/// a `--file` published as index.html is refused, as the tool refuses a
+/// supporting file of that name, rather than replacing the page.
+#[test]
+fn publish_follows_the_publish_tools_rules() {
+    let e = Env::new();
+    let index = write(
+        e.dir.path(),
+        "index.html",
+        "<title>Rules</title><p>page</p>",
+    );
+    let other = write(e.dir.path(), "other.html", "<p>other</p>");
+    e.cmd()
+        .args(["publish", "--port", "0", "--file"])
+        .arg(format!("{}=index.html", other.display()))
+        .arg(&index)
+        .assert()
+        .failure()
+        .stderr(predicate::str::contains("invalid_args"))
+        .stderr(predicate::str::contains("index.html"));
+    e.stop();
+}
+
 #[test]
 fn doctor_lists_the_new_checks() {
     let e = Env::new();
@@ -1008,7 +1183,9 @@ fn every_hook_run_appends_a_line_to_hooks_log() {
         .write_stdin("")
         .assert()
         .success();
-    let log = std::fs::read_to_string(e.dir.path().join("ax/logs/hooks.log")).unwrap();
+    let log = crate::common::as_clax(
+        &std::fs::read_to_string(e.dir.path().join("ax/logs/hooks.log")).unwrap(),
+    );
     let lines: Vec<&str> = log.lines().collect();
     assert_eq!(lines.len(), 2, "{log}");
     let bin = crate::common::clax();

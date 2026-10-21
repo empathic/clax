@@ -4,6 +4,7 @@ import { flush, mount } from "../test/svelte";
 import { guardedAction, keyboardTrail } from "../view/trail";
 import QuestionCard from "./QuestionCard.svelte";
 import { view } from "./fixtures";
+import { loadMarkdown } from "../view/md-load.svelte";
 import { useTrail } from "./trail";
 
 const buttons = (root: Element, text: string) => [...root.querySelectorAll("button")].filter(b => b.textContent === text);
@@ -486,5 +487,35 @@ describe("QuestionCard", () => {
     flush(() => { answer.focus(); two.dispatchEvent(new FocusEvent("focusout", { bubbles: true, relatedTarget: answer })); });
     expect(m.root.querySelector("pre")!.textContent).toBe("|ab|");
     m.unmount();
+  });
+});
+
+// Last in the file: once the Markdown module is loaded, every card after renders with it.
+describe("question text as Markdown", () => {
+  const MD = "Use **`grid`** or [flex](https://example.com)?\n\n- keeps <b>HTML</b> as text\n- ![logo](https://example.com/x.png)";
+  it("renders the question as Markdown, open and closed, and keeps the preview verbatim", async () => {
+    await loadMarkdown();
+    const q = view({ questions: [{ question: MD, header: "Layout", multi_select: false, other: false, options: [
+      { label: "Two", description: "**not** Markdown", preview: "**bold** `code`" }, { label: "One" },
+    ] }] });
+    const m = mount(QuestionCard, { q, onAnswer: vi.fn(), onDecline: vi.fn() });
+    flush();
+    const text = m.root.querySelector(".qtext .md")!;
+    expect(text.querySelector("strong code")!.textContent).toBe("grid");
+    const a = text.querySelector("a")!;
+    expect(a.getAttribute("href")).toBe("https://example.com/");
+    expect(a.getAttribute("rel")).toBe("noopener noreferrer nofollow");
+    expect([...text.querySelectorAll("li")].map(li => li.textContent)).toEqual(["keeps <b>HTML</b> as text", "logo"]);
+    expect(m.root.querySelector("img, b")).toBeNull();
+    // The options' radiogroup is still named by the question.
+    expect(m.root.querySelector(`#${m.root.querySelector(".opts")!.getAttribute("aria-labelledby")}`)).toBe(m.root.querySelector(".qtext"));
+    expect(m.root.querySelector(".desc")!.textContent).toBe("**not** Markdown");
+    expect(m.root.querySelector("pre.preview")!.textContent).toBe("**bold** `code`");
+    expect(m.root.querySelector("pre.preview")!.children).toHaveLength(0);
+    m.unmount();
+    const closed = mount(QuestionCard, { q: { ...q, status: "answered", answered_via: "shell", answers: [{ selected: ["Two"], text: null }] }, onAnswer: vi.fn(), onDecline: vi.fn() });
+    flush();
+    expect(closed.root.querySelector(".answers .q .md strong code")!.textContent).toBe("grid");
+    expect(closed.root.querySelector(".answers .a")!.textContent).toBe("Two");
   });
 });

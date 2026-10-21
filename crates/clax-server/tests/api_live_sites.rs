@@ -108,6 +108,39 @@ async fn suggest(ts: &TestServer, url: &str, title: &str) -> Value {
     .1
 }
 
+/// A page's title is fit to an artifact title: hidden characters dropped,
+/// and a blank one falls back to the page URL cut to the title bound.
+#[tokio::test]
+async fn page_titles_with_hidden_characters_or_long_urls_are_kept_and_cut() {
+    let ts = TestServer::spawn().await;
+    let v = ts.viewer(Some("Ana")).await;
+    let (zw, _) = comment(
+        &ts,
+        &v.cookie,
+        &format!("{A}/zw"),
+        "Zero\u{200B}wi\u{FEFF}dth",
+    )
+    .await;
+    let long = format!("{A}/{}", "p".repeat(250));
+    let (long_page, _) = comment(&ts, &v.cookie, &long, "").await;
+    let title = |aid: String| {
+        let ts = &ts;
+        async move {
+            let a: Value = ts
+                .get_authed(&format!("/api/artifacts/{aid}"))
+                .await
+                .json()
+                .await
+                .unwrap();
+            a["artifact"]["title"].as_str().unwrap().to_string()
+        }
+    };
+    assert_eq!(title(zw).await, "Zerowidth");
+    let t = title(long_page).await;
+    assert_eq!(t.chars().count(), 200, "{t}");
+    assert!(long.starts_with(&t), "{t}");
+}
+
 #[tokio::test]
 async fn a_suggested_join_lists_both_origins_threads_together_and_is_idempotent() {
     let ts = TestServer::spawn().await;

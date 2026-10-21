@@ -12,11 +12,14 @@ use std::sync::Arc;
 
 const ENTRY: &str = include_str!("../../../web/shell/artifact.html");
 
-/// A scratch web UI: the artifact entry and a stand-in gallery.
+/// A scratch web UI: the artifact entry, a stand-in gallery and stand-in
+/// legal documents.
 fn dist() -> tempfile::TempDir {
     let dir = tempfile::tempdir().unwrap();
     std::fs::write(dir.path().join("artifact.html"), ENTRY).unwrap();
     std::fs::write(dir.path().join("index.html"), "<p>gallery</p>").unwrap();
+    std::fs::write(dir.path().join("terms.html"), "<p>terms</p>").unwrap();
+    std::fs::write(dir.path().join("privacy.html"), "<p>privacy</p>").unwrap();
     dir
 }
 
@@ -213,4 +216,38 @@ async fn a_person_who_may_not_read_comments_gets_a_bootstrap_without_threads() {
     assert!(html.contains("id=\"clax-boot\""), "{html}");
     assert!(html.contains("\"threads\":[]"), "{html}");
     assert!(!html.contains("secret words"), "{html}");
+}
+
+#[tokio::test]
+async fn the_bundled_documents_are_public_and_otherwise_absent() {
+    let dist = dist();
+    let clock = Arc::new(ManualClock::at("2026-10-12T10:00:00Z"));
+    let ts = spawn(clock.clone(), &dist).await;
+    for path in ["/terms", "/privacy"] {
+        let r = ts.get(path).await;
+        assert_ne!(r.status(), 200, "{path}");
+    }
+    let web: Arc<dyn clax_core::embedded::FileTree> =
+        Arc::new(clax_core::embedded::DiskTree::new(dist.path()));
+    let ts = TestServer::spawn_hosted_with(clock, Some("s3cret"), move |s| {
+        s.web = web;
+        s.hosted = s.hosted.take().map(|h| {
+            Arc::new(
+                Arc::try_unwrap(h)
+                    .expect("hosted is not shared yet")
+                    .with_legal(Some(clax_core::config::Legal::Bundled)),
+            )
+        });
+    })
+    .await;
+    for (path, body) in [("/terms", "<p>terms</p>"), ("/privacy", "<p>privacy</p>")] {
+        let r = ts.get(path).await;
+        assert_eq!(r.status(), 200, "{path}");
+        assert_eq!(
+            r.headers()["content-security-policy"],
+            "frame-ancestors 'none'",
+            "{path}"
+        );
+        assert_eq!(r.text().await.unwrap(), body, "{path}");
+    }
 }

@@ -318,6 +318,13 @@ fn body_class(kind: &str, field: &str) -> Class {
         ("backfill.skip", "reason") => Text,
         ("backfill.skip", "table" | "row_id") => Safe,
         ("version.push_refused", "commit" | "person" | "session" | "reason") => Safe,
+        // A tag's name and description are the owner's text.
+        ("tag.create", "name" | "description") => Text,
+        ("tag.create", "tag_id" | "colour") => Safe,
+        ("tag.update", "tag_id") => Safe,
+        ("tag.update", "fields") => Fields,
+        ("tag.delete", "name") => Text,
+        ("tag.delete", "tag_id" | "artifacts") => Safe,
         _ => Class::Unclassified,
     }
 }
@@ -343,8 +350,11 @@ fn anchor_class(field: &str) -> Class {
 
 fn fields_class(field: &str) -> Class {
     match field {
-        "icon" | "pinned" | "link_access" | "link_listed" | "db_read_grants" => Class::Safe,
-        "title" | "description" | "capabilities" => Class::Text,
+        "icon" | "pinned" | "link_access" | "link_listed" | "db_read_grants" | "colour" => {
+            Class::Safe
+        }
+        // An artifact's tags and a tag's name are names the owner wrote.
+        "title" | "description" | "capabilities" | "tags" | "name" => Class::Text,
         // A share names a person by public ID and a GitHub login.
         "share" => Class::Name,
         _ => Class::Unclassified,

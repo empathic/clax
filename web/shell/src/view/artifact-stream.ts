@@ -188,6 +188,12 @@ export function onArtifactEvent(c: ArtifactController, e: ArtifactEvent): void {
   }
   if (e.type === "version" && e.n > c.latestKnown) { c.latestKnown = e.n; c.set({ newer: e.n }); }
   if (e.type === "artifact_deleted") c.set({ deleted: true });
+  // Its tags changed, or the list renamed, recoloured or deleted one it
+  // carries. An answer older than one shown is dropped (`setTags`).
+  if (e.type === "tags") {
+    const tt = c.tagTicket();
+    getArtifact(c.id).then(d => { if (!c.disposed) c.setTags(tt, { tags: d.artifact.tags ?? [], may: !!d.artifact.may_tag }); }, () => {});
+  }
   if (e.type === "working") { c.workingAt = ++c.clock; c.set({ working: e.working }); }
   if (e.type === "drafts") { c.draftsAt = ++c.clock; c.draftsChanged(e.drafts); }
   // A name set in another view of this viewer (the owner's other browser,
@@ -206,8 +212,10 @@ export function onArtifactEvent(c: ArtifactController, e: ArtifactEvent): void {
     c.loadDrafts();
     c.reporter?.fetch();
     const t = ++c.clock;
+    const tt = c.tagTicket();
     getArtifact(c.id).then(d => {
       const n = d.artifact.current_version;
+      c.setTags(tt, { tags: d.artifact.tags ?? [], may: !!d.artifact.may_tag });
       // A working delta heard since the request started is newer than its answer.
       c.set(s => ({ working: c.workingAt > t ? s.working : d.artifact.working ?? [], attention: d.attention ?? s.attention, looked: { ...s.looked, ...d.attention?.looked } }));
       c.agentsFetched(t, d.artifact.participants?.agents ?? []);

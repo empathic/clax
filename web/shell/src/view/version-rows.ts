@@ -3,6 +3,7 @@ import type { Version } from "../api";
 import { relativeTime } from "../format";
 import type { Thread } from "../threads";
 import { agentName } from "./history-model";
+import { plainText } from "./md-load.svelte";
 
 /** A thread a version addressed: its pin number (null when it has none on
  * this page), and whether this viewer answered it and it is still open. */
@@ -36,8 +37,8 @@ export function versionRows(i: RowInput): Row[] {
   });
 }
 
-/** The thread's first comment on one line, at most 80 characters. */
+/** The thread's first comment on one line as text (`plainText`), at most 80 characters. */
 export function excerpt(t: Thread): string {
-  const s = (t.comments[0]?.body ?? "").split(/\s+/).filter(Boolean).join(" ");
+  const s = plainText(t.comments[0]?.body ?? "").split(/\s+/).filter(Boolean).join(" ");
   return s.length > 80 ? `${s.slice(0, 80)}…` : s;
 }

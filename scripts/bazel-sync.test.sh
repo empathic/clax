@@ -66,4 +66,21 @@ if (cd "$T/r" && BAZEL_SYNC_TEST_LOG="$T/resolves" BAZEL_SYNC_BAZEL="$T/bin/baze
     pass "a sync whose resolution rewrites Cargo.lock resolves again"
 else fail "a sync whose resolution rewrites Cargo.lock resolves again ($(wc -l < "$T/resolves") resolutions: $(cat "$T/out"))"; fi
 
+# With no BAZEL_SYNC_BAZEL, Bazel is picked as scripts/run.sh picks it: a
+# plain bazel at another version than .bazelversion, and no Bazelisk, is
+# refused, naming .bazelversion, and never run, before anything is derived.
+# PATH holds that bazel and links to the system tools the choice needs.
+mkdir -p "$T/wrong" "$T/sys"
+printf '#!/bin/sh\nif [ "$1" = --version ]; then echo "bazel 0.0.1"; exit 0; fi\necho "$*" >> "%s"\nexit 0\n' "$T/ran" \
+    | fake_exe "$T/wrong/bazel"
+for tool in bash env sed awk tr dirname uname; do
+    ln -s "$(command -v "$tool")" "$T/sys/$tool"
+done
+fresh
+if (cd "$T/r" && env -u BAZEL_SYNC_BAZEL PATH="$T/wrong:$T/sys" scripts/bazel-sync.sh --check) >"$T/out" 2>&1; then
+    fail "a bazel at another version is refused: it passed"
+elif grep -q '.bazelversion' "$T/out" && [ ! -e "$T/ran" ]; then
+    pass "a bazel at another version than .bazelversion is refused, unrun"
+else fail "a bazel at another version is refused (ran: $(cat "$T/ran" 2>/dev/null)): $(cat "$T/out")"; fi
+
 exit "$FAILED"

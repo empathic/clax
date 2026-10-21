@@ -19,8 +19,9 @@ use serde_json::{Value, json};
 use std::path::{Path, PathBuf};
 use std::time::Duration;
 
-/// Longest a client may run.
-const LIMIT: Duration = Duration::from_secs(30);
+/// Longest a client may run: the [`HANG`](crate::HANG) guard, which only
+/// a client that never ends reaches.
+const LIMIT: Duration = crate::HANG;
 
 /// What one channel printed.
 #[derive(Debug)]
@@ -106,7 +107,7 @@ impl<'a> RealClients<'a> {
         drop(input);
         let out = tokio::time::timeout(LIMIT, child.wait_with_output())
             .await
-            .unwrap_or_else(|_| panic!("{what} did not finish within {LIMIT:?}"))
+            .unwrap_or_else(|_| panic!("{what} did not finish within {LIMIT:?} (hang guard)"))
             .unwrap();
         let text = format!(
             "{}\n{}",
@@ -560,9 +561,9 @@ impl<'a> RealClients<'a> {
         };
         tokio::time::timeout(LIMIT, talk)
             .await
-            .unwrap_or_else(|_| panic!("pi did not finish within {LIMIT:?}: {out:?}"));
+            .unwrap_or_else(|_| panic!("pi did not finish within {LIMIT:?} (hang guard): {out:?}"));
         drop(stdin);
-        let status = tokio::time::timeout(Duration::from_secs(10), child.wait())
+        let status = tokio::time::timeout(LIMIT, child.wait())
             .await
             .expect("pi exits once its input ends")
             .unwrap();
@@ -628,7 +629,7 @@ async fn rpc_over_stdio(mut cmd: tokio::process::Command, lines: &[Value], n: us
     };
     let _ = tokio::time::timeout(LIMIT, talk).await;
     drop(stdin);
-    let _ = tokio::time::timeout(Duration::from_secs(10), child.wait()).await;
+    let _ = tokio::time::timeout(LIMIT, child.wait()).await;
     assert_eq!(answered, n, "the shim answered every call: {text}");
     text
 }

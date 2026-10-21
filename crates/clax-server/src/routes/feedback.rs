@@ -9,7 +9,7 @@ use axum::extract::rejection::{JsonRejection, PathRejection, QueryRejection};
 use axum::extract::{Path, Query, State};
 use axum::http::HeaderMap;
 use clax_core::audit::AuditCtx;
-use clax_core::feedback::{Placeholder, ago, quoted, render_delivery, render_notice};
+use clax_core::feedback::{MAX_ACK_IDS, Placeholder, ago, quoted, render_delivery, render_notice};
 use clax_core::model::Artifact;
 use clax_core::questions::render_late;
 use clax_core::surface::ActKind;
@@ -744,7 +744,8 @@ pub struct AckBody {
 /// the caller has not seen stays pending), leaving held every undelivered
 /// row whose body the session's person's agents may not see, and every
 /// row on an artifact a person's agent may not read; either or both, and a body with
-/// neither is 400 `invalid_json`. `{acknowledged: <threads touched>}`.
+/// neither, or with a list of more than [`MAX_ACK_IDS`] IDs, is 400
+/// `invalid_json`. `{acknowledged: <threads touched>}`.
 /// Unknown session: 404; ended session: 400 `unknown_session`.
 pub async fn ack(
     State(s): State<AppState>,
@@ -759,6 +760,16 @@ pub async fn ack(
         return Err(ApiError::bad_request(
             "invalid_json",
             "pass thread_ids, comment_ids, or both",
+        ));
+    }
+    if [&b.thread_ids, &b.comment_ids]
+        .into_iter()
+        .flatten()
+        .any(|ids| ids.len() > MAX_ACK_IDS)
+    {
+        return Err(ApiError::bad_request(
+            "invalid_json",
+            format!("at most {MAX_ACK_IDS} thread_ids and {MAX_ACK_IDS} comment_ids"),
         ));
     }
     let ctx = s.feedback_ctx();

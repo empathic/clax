@@ -59,6 +59,23 @@ impl Site {
         Site { ts, clock, origin }
     }
 
+    /// [`Site::new`] showing `legal`'s Terms of Service and Privacy Policy.
+    async fn with_legal(legal: clax_core::config::Legal) -> Site {
+        let clock = Arc::new(ManualClock::at("2026-10-12T10:00:00Z"));
+        let ts = TestServer::spawn_hosted_with(clock.clone(), Some(SECRET), |s| {
+            s.hosted = s.hosted.take().map(|h| {
+                Arc::new(
+                    Arc::try_unwrap(h)
+                        .expect("hosted is not shared yet")
+                        .with_legal(Some(legal)),
+                )
+            });
+        })
+        .await;
+        let origin = format!("http://localhost:{}", ts.addr.port());
+        Site { ts, clock, origin }
+    }
+
     fn url(&self, path: &str) -> String {
         format!("{}{path}", self.ts.base)
     }
@@ -2544,6 +2561,11 @@ async fn an_agent_token_on_the_api_reaches_only_a_grants_routes() {
             json!({"access": "comment"}),
         ),
         (M::POST, "/api/hosted/signout".to_string(), json!({})),
+        // Hosted mode's own routes are an agent's no more than any other
+        // route outside a grant's: refused before their handlers run, even
+        // the ones open to anyone.
+        (M::GET, "/api/hosted/me".to_string(), json!(null)),
+        (M::GET, "/api/hosted/public".to_string(), json!(null)),
     ];
     for (m, path, body) in refused {
         let mut r = api(m.clone(), &path);
@@ -2577,6 +2599,14 @@ async fn an_agent_token_on_the_api_reaches_only_a_grants_routes() {
         .await;
         assert_eq!((s, code(&v)), (403, "forbidden_origin"), "{k}: {v}");
     }
+    // The one hosted route an agent token reaches: it revokes itself.
+    let r = api(M::DELETE, "/api/hosted/agent-token")
+        .send()
+        .await
+        .unwrap();
+    assert_eq!(r.status(), 204);
+    let (s, v) = json_of(api(M::GET, "/api/artifacts").send().await.unwrap()).await;
+    assert_eq!(s, 401, "{v}");
 }
 
 /// A POST written by hand on its own connection with agent token `token`,
@@ -5073,4 +5103,766 @@ async fn a_live_pages_clip_is_named_by_no_address() {
     site.ts.state.live_ids.insert(&aid, "http://localhost:5173");
     let t = read().await;
     assert!(t.get("clip").is_none(), "{t}");
+}
+
+#[tokio::test]
+async fn a_live_page_is_hidden_from_visitors_though_they_connect_from_loopback() {
+    // The test's client connects from 127.0.0.1, as every visitor does
+    // through a proxy on the hosted daemon's own machine.
+    let site = Site::new().await;
+    let owner = site.owner().await;
+    let aid = site.artifact().await;
+    let (s, v) = site
+        .send(
+            &owner,
+            reqwest::Method::PUT,
+            &format!("/api/hosted/artifacts/{aid}/link"),
+            json!({"access": "commenter"}),
+        )
+        .await;
+    assert_eq!(s, 200, "{v}");
+    let anon = Browser::default();
+    let (s, v) = site.get(&anon, &format!("/api/artifacts/{aid}")).await;
+    assert_eq!(s, 200, "{v}");
+    site.ts.state.live_ids.insert(&aid, "http://localhost:5173");
+    let (s, v) = site.get(&anon, &format!("/api/artifacts/{aid}")).await;
+    assert_eq!((s, code(&v)), (404, "not_found"), "{v}");
+}
+
+#[tokio::test]
+async fn an_instance_without_documents_shows_none_and_takes_no_agreement() {
+    let site = Site::new().await;
+    let owner = site.owner().await;
+    let (s, v) = site.get(&owner, "/api/hosted/me").await;
+    assert_eq!((s, &v["legal"]), (200, &Value::Null), "{v}");
+    let (s, v) = site
+        .post(&owner, "/api/hosted/legal/agree", json!({"version": "1"}))
+        .await;
+    assert_eq!((s, code(&v)), (404, "not_found"), "{v}");
+}
+
+#[tokio::test]
+async fn signing_in_under_the_notice_agrees_and_the_prompt_records_the_rest() {
+    let site = Site::with_legal(clax_core::config::Legal::Own {
+        terms_url: "https://example.org/terms".into(),
+        privacy_url: "https://example.org/privacy".into(),
+        version: "3".into(),
+    })
+    .await;
+    let (s, v) = site.get(&Browser::default(), "/api/hosted/me").await;
+    assert_eq!(s, 200);
+    assert_eq!(
+        v["legal"],
+        json!({"terms_url": "https://example.org/terms", "privacy_url": "https://example.org/privacy", "version": "3", "agreed": null})
+    );
+    // Setup, an invite and a sign-in link each sign in under the notice.
+    let owner = site.owner().await;
+    let bo = site.member(&owner, "Bo").await;
+    let (s, v) = site.post(&bo, "/api/hosted/signin-links", json!({})).await;
+    assert_eq!(s, 200, "{v}");
+    let code_of = v["url"]
+        .as_str()
+        .unwrap()
+        .rsplit('/')
+        .next()
+        .unwrap()
+        .to_string();
+    let mut laptop = Browser::default();
+    site.sign_in(
+        &mut laptop,
+        &format!("/api/hosted/signin-links/{code_of}/accept"),
+        json!({}),
+    )
+    .await;
+    for b in [&owner, &bo, &laptop] {
+        let (_, v) = site.get(b, "/api/hosted/me").await;
+        assert_eq!(v["legal"]["agreed"], true, "{v}");
+    }
+    // A person with no agreement (one who joined before the documents were
+    // shown) is asked, and agreeing to an older text is refused.
+    let conn = rusqlite::Connection::open(site.ts.home.db_path()).unwrap();
+    conn.execute(
+        "DELETE FROM legal_agreements WHERE viewer_id = (SELECT id FROM viewers WHERE display_name = 'Bo')",
+        [],
+    )
+    .unwrap();
+    let (_, v) = site.get(&bo, "/api/hosted/me").await;
+    assert_eq!(v["legal"]["agreed"], false, "{v}");
+    let (s, v) = site
+        .post(&bo, "/api/hosted/legal/agree", json!({"version": "2"}))
+        .await;
+    assert_eq!((s, code(&v)), (409, "legal_changed"), "{v}");
+    let (s, _) = site
+        .post(&bo, "/api/hosted/legal/agree", json!({"version": "3"}))
+        .await;
+    assert_eq!(s, 204);
+    let (_, v) = site.get(&bo, "/api/hosted/me").await;
+    assert_eq!(v["legal"]["agreed"], true, "{v}");
+    let via: String = conn
+        .query_row(
+            "SELECT via FROM legal_agreements WHERE viewer_id = (SELECT id FROM viewers WHERE display_name = 'Bo')",
+            [],
+            |r| r.get(0),
+        )
+        .unwrap();
+    assert_eq!(via, "prompt");
+    // No session agrees to nothing.
+    let (s, _) = site
+        .post(
+            &Browser::default(),
+            "/api/hosted/legal/agree",
+            json!({"version": "3"}),
+        )
+        .await;
+    assert_ne!(s, 204);
+}
+
+#[tokio::test]
+async fn people_start_artifacts_from_briefs_and_guests_may_not() {
+    let site = Site::new().await;
+    site.ts.seats.set_limits(clax_core::seats::SeatLimits {
+        people: 1,
+        guests: 1,
+        agents: 20,
+        idle_ms: 180_000,
+    });
+    let owner = site.owner().await;
+    let plan = site.titled("Plan").await;
+    let new = "/api/artifacts:new";
+    let brief = |title: &str| json!({"title": title, "brief": "A one-page roadmap for Q4"});
+    let may_create = async |b: &Browser| {
+        let (s, v) = site.get(b, "/api/viewers/me").await;
+        assert_eq!(s, 200, "{v}");
+        (v["may_create"].clone(), v["viewer"]["public_id"].clone())
+    };
+    // The owner's browser.
+    assert_eq!(may_create(&owner).await.0, json!(true));
+    let (s, v) = site.post(&owner, new, brief("Roadmap")).await;
+    assert_eq!(s, 201, "{v}");
+    assert!(v["version"]["content_key"].is_string(), "{v}");
+    assert_eq!(v["thread"]["anchor"]["kind"], "artifact");
+    // A person holding the default rights (their own space) starts one
+    // that is theirs, and reads it.
+    let mia = site.member(&owner, "Mia").await;
+    let (may, mia_id) = may_create(&mia).await;
+    assert_eq!(may, json!(true));
+    let (s, v) = site.post(&mia, new, brief("Mia's roadmap")).await;
+    assert_eq!(s, 201, "{v}");
+    let aid = v["artifact"]["id"].as_str().unwrap().to_string();
+    assert_eq!(v["thread"]["comments"][0]["author_public_id"], mia_id);
+    let (st, a, pid) = (
+        site.ts.store.clone(),
+        aid.clone(),
+        mia_id.as_str().unwrap().to_string(),
+    );
+    assert!(
+        tokio::task::spawn_blocking(move || st.artifact_created_by(&a, Some(&pid)))
+            .await
+            .unwrap()
+            .unwrap(),
+        "the artifact is Mia's"
+    );
+    let (s, got) = site.get(&mia, &format!("/api/artifacts/{aid}")).await;
+    assert_eq!(s, 200, "{got}");
+    let (s, threads) = site
+        .get(&mia, &format!("/api/artifacts/{aid}/threads"))
+        .await;
+    assert_eq!(s, 200, "{threads}");
+    assert_eq!(threads["threads"].as_array().unwrap().len(), 1);
+    // A reader may not, and is offered no New.
+    let (sam, _) = site
+        .person_with(&owner, "Sam", json!(["clax:reader"]))
+        .await;
+    assert_eq!(may_create(&sam).await.0, json!(false));
+    let (s, v) = site.post(&sam, new, brief("Nope")).await;
+    assert_eq!((s, code(&v)), (403, "not_permitted"), "{v}");
+    // Lee's stream takes Plan's one seat, so Kim is a spectator there; a
+    // new artifact is Kim's own, whose seat is hers: she starts it and
+    // sends its brief to an agent.
+    let lee = site.person(&owner, "Lee").await;
+    let res = site
+        .req(&lee, reqwest::Method::GET, "/api/stream")
+        .send()
+        .await
+        .unwrap();
+    let mut events = clax_testkit::EventReader::from_response(res);
+    let (_, ready) = events.next().await;
+    let sid = ready["stream"].as_str().unwrap().to_string();
+    let (s, v) = site
+        .post(
+            &lee,
+            &format!("/api/stream/{sid}"),
+            json!({"subscribe": [format!("artifact:{plan}")]}),
+        )
+        .await;
+    assert_eq!(s, 200, "{v}");
+    let kim = site.person(&owner, "Kim").await;
+    let (s, v) = site.thread(&kim, &plan, "on Plan").await;
+    assert_eq!((s, code(&v)), (403, "spectator"), "{v}");
+    let (s, v) = site.post(&kim, new, brief("Kim's roadmap")).await;
+    assert_eq!(s, 201, "{v}");
+    let (kaid, ktid) = (
+        v["artifact"]["id"].as_str().unwrap().to_string(),
+        v["thread"]["id"].as_str().unwrap().to_string(),
+    );
+    let agent = site.ts.register_session("claude", "hosted-brief").await;
+    let (s, v) = site
+        .post(
+            &kim,
+            &format!("/api/artifacts/{kaid}/threads/{ktid}/send"),
+            json!({"to": agent["name"]}),
+        )
+        .await;
+    assert_eq!(s, 200, "{v}");
+    let watching = site
+        .ts
+        .store
+        .list_watches(agent["id"].as_str().unwrap())
+        .unwrap();
+    assert!(
+        watching.iter().any(|w| w.artifact_id == kaid),
+        "{watching:?}"
+    );
+    // A guest of a page shared by link may comment there, never start one.
+    site.send(
+        &owner,
+        reqwest::Method::PUT,
+        &format!("/api/hosted/artifacts/{plan}/link"),
+        json!({"access": "commenter"}),
+    )
+    .await;
+    let mut guest = Browser::default();
+    site.sign_in_put(&mut guest, json!({"display_name": "Gil"}))
+        .await;
+    let (s, v) = site.post(&guest, new, brief("Nope")).await;
+    assert_eq!((s, code(&v)), (401, "sign_in_required"), "{v}");
+    let (s, v) = site.post(&Browser::default(), new, brief("Nope")).await;
+    assert_eq!((s, code(&v)), (401, "sign_in_required"), "{v}");
+    // The owner's session, from another site's page.
+    let cookie = format!("clax_session={}", owner.cookie.as_deref().unwrap());
+    for origin in [None, Some("http://evil.example")] {
+        let mut r = site
+            .ts
+            .client
+            .post(site.url(new))
+            .header(COOKIE, &cookie)
+            .json(&brief("Nope"));
+        if let Some(o) = origin {
+            r = r.header(ORIGIN, o);
+        }
+        let (s, v) = json_of(r.send().await.unwrap()).await;
+        assert_eq!((s, code(&v)), (403, "forbidden_origin"), "{origin:?}");
+    }
+}
+
+#[tokio::test]
+async fn a_member_who_may_not_send_attaches_no_agent_and_agent_tokens_start_nothing() {
+    let site = Site::new().await;
+    let owner = site.owner().await;
+    let new = "/api/artifacts:new";
+    let brief = json!({"title": "Nia's notes", "brief": "Notes from the launch review"});
+    // Nia creates in her own space and comments there, but sends nothing.
+    let (nia, _) = site
+        .person_with(
+            &owner,
+            "Nia",
+            json!([
+                {"type": "clax-artifacts", "actions": ["create"], "locations": ["*"]},
+                {"type": "clax-artifacts", "actions": ["read"], "locations": ["own"]},
+                {"type": "clax-comments", "actions": ["read", "write"], "locations": ["own"]},
+            ]),
+        )
+        .await;
+    let (s, v) = site.post(&nia, new, brief.clone()).await;
+    assert_eq!(s, 201, "{v}");
+    let (aid, tid) = (
+        v["artifact"]["id"].as_str().unwrap().to_string(),
+        v["thread"]["id"].as_str().unwrap().to_string(),
+    );
+    let agent = site.ts.register_session("claude", "hosted-nia").await;
+    let sid = agent["id"].as_str().unwrap().to_string();
+    let (s, v) = site.get(&nia, &format!("/api/agents?artifact={aid}")).await;
+    assert_eq!((s, v["agents"].clone()), (200, json!([])), "{v}");
+    let (s, v) = site
+        .post(
+            &nia,
+            &format!("/api/artifacts/{aid}/threads/{tid}/send"),
+            json!({"to": agent["name"]}),
+        )
+        .await;
+    assert_eq!((s, code(&v)), (403, "not_permitted"), "{v}");
+    let watching = site.ts.store.list_watches(&sid).unwrap();
+    assert!(
+        watching.iter().all(|w| w.artifact_id != aid),
+        "{watching:?}"
+    );
+    // The owner, who may send anywhere, may name it there.
+    let (s, v) = site
+        .get(&owner, &format!("/api/agents?artifact={aid}"))
+        .await;
+    assert_eq!(s, 200, "{v}");
+    assert_eq!(v["agents"].as_array().unwrap().len(), 1, "{v}");
+    // An agent token of a member who creates starts nothing from a brief.
+    let mia = site.member(&owner, "Mia").await;
+    let (s, t) = site
+        .post(
+            &mia,
+            "/api/hosted/agent-tokens",
+            json!({"label": "mia-laptop"}),
+        )
+        .await;
+    assert_eq!(s, 201, "{t}");
+    let token = t["token"].as_str().unwrap();
+    let res = site
+        .ts
+        .client
+        .post(site.url(new))
+        .header(HOST, format!("localhost:{}", site.ts.addr.port()))
+        .bearer_auth(token)
+        .json(&brief)
+        .send()
+        .await
+        .unwrap();
+    let (s, v) = json_of(res).await;
+    assert_eq!((s, code(&v)), (403, "forbidden"), "{v}");
+}
+
+#[tokio::test]
+async fn a_persons_inbox_groups_hold_their_own_items_and_no_withheld_text() {
+    let site = Site::new().await;
+    let owner = site.owner().await;
+    let sid = site.ts.register_session("claude", "h1").await["id"]
+        .as_str()
+        .unwrap()
+        .to_string();
+    let mut pages = Vec::new();
+    for title in ["Plan", "Notes"] {
+        pages.push(
+            site.ts.publish_as(&sid, title, "<h1>Page</h1>").await["artifact"]["id"]
+                .as_str()
+                .unwrap()
+                .to_string(),
+        );
+    }
+    let (plan, notes) = (pages[0].clone(), pages[1].clone());
+    let reads = json!({"type": "clax-artifacts", "actions": ["read"], "locations": [plan, notes]});
+    let comments = |at: Value| json!({"type": "clax-comments", "actions": ["read", "write", "reply"], "locations": at});
+    let (mia, mia_id) = site
+        .person_with(
+            &owner,
+            "Mia",
+            json!([reads, comments(json!([plan, notes]))]),
+        )
+        .await;
+    // Mia asks on each page and the agent answers with a secret.
+    for at in [&plan, &notes] {
+        let (s, t) = site.thread(&mia, at, "a question").await;
+        assert_eq!(s, 201, "{t}");
+        let tid = t["thread"]["id"].as_str().unwrap().to_string();
+        let (s, v) = site
+            .post(
+                &owner,
+                &format!("/api/artifacts/{at}/threads/{tid}/send"),
+                json!({}),
+            )
+            .await;
+        assert_eq!(s, 200, "{v}");
+        site.ts
+            .reply_as_agent(&sid, at, &tid, "secret answer")
+            .await;
+    }
+    let keys = |v: &Value| -> Vec<(String, u64)> {
+        v["groups"]
+            .as_array()
+            .unwrap_or_else(|| panic!("groups: {v}"))
+            .iter()
+            .map(|g| {
+                (
+                    g["artifact_id"].as_str().unwrap_or("none").to_string(),
+                    g["total"].as_u64().unwrap(),
+                )
+            })
+            .collect()
+    };
+    // Her groups count her items alone, not the owner's on the same pages.
+    let (s, v) = site.get(&mia, "/api/inbox?group=artifact").await;
+    assert_eq!(s, 200, "{v}");
+    let (_, flat) = site.get(&mia, "/api/inbox").await;
+    let mine = flat["items"].as_array().unwrap();
+    assert!(!keys(&v).is_empty(), "{v}");
+    for (aid, total) in keys(&v) {
+        let n = mine
+            .iter()
+            .filter(|i| i["artifact"]["id"] == aid.as_str())
+            .count() as u64;
+        assert_eq!(total, n, "{aid}: {v}");
+    }
+    // The owner's items on the same pages (their publications) are not in hers.
+    let ids = |v: &Value| -> Vec<String> {
+        v["groups"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .flat_map(|g| g["items"].as_array().unwrap().iter())
+            .map(|i| i["id"].as_str().unwrap().to_string())
+            .collect()
+    };
+    let (_, owners) = site.get(&owner, "/api/inbox?group=artifact").await;
+    let theirs = ids(&owners);
+    assert!(!theirs.is_empty(), "{owners}");
+    assert!(ids(&v).iter().all(|i| !theirs.contains(i)), "{v} {owners}");
+    let (s, v) = site.get(&mia, "/api/inbox?group=artifact&q=secret").await;
+    assert_eq!(s, 200, "{v}");
+    assert_eq!(keys(&v), vec![(notes.clone(), 1), (plan.clone(), 1)], "{v}");
+    // The owner takes Mia's comment read at Plan away: a search neither
+    // finds nor counts Plan's group by the text withheld from her.
+    let (s, v) = site
+        .send(
+            &owner,
+            reqwest::Method::PUT,
+            &format!("/api/people/{mia_id}/rights"),
+            json!({"rights": [reads, comments(json!([notes]))]}),
+        )
+        .await;
+    assert_eq!(s, 200, "{v}");
+    let (s, v) = site.get(&mia, "/api/inbox?group=artifact&q=secret").await;
+    assert_eq!(s, 200, "{v}");
+    assert_eq!(keys(&v), vec![(notes.clone(), 1)], "{v}");
+    assert_eq!(v["total"], 1, "{v}");
+}
+
+#[tokio::test]
+async fn an_artifacts_answer_with_a_signed_in_viewers_attention_is_private() {
+    let site = Site::new().await;
+    let owner = site.owner().await;
+    let aid = site.artifact().await;
+    let mia = site.person(&owner, "Mia").await;
+    for b in [&owner, &mia] {
+        let res = site
+            .req(b, reqwest::Method::GET, &format!("/api/artifacts/{aid}"))
+            .send()
+            .await
+            .unwrap();
+        assert_eq!(res.status(), 200);
+        assert_eq!(res.headers()["cache-control"], "private, no-cache");
+        assert_eq!(res.headers()["vary"], "Cookie");
+        let v: Value = res.json().await.unwrap();
+        assert!(v.get("attention").is_some(), "{v}");
+    }
+}
+
+/// The names of a list of tags.
+fn tag_names(v: &Value) -> Vec<String> {
+    v.as_array()
+        .unwrap_or(&vec![])
+        .iter()
+        .map(|t| t["name"].as_str().unwrap().to_string())
+        .collect()
+}
+
+#[tokio::test]
+async fn members_apply_the_owners_tags_to_their_own_artifacts_alone() {
+    let site = Site::new().await;
+    let owner = site.owner().await;
+    let plan = site.titled("Plan").await;
+    let tags = |aid: &str| format!("/api/artifacts/{aid}/tags");
+    // The owner's browser makes tags, from the public origin alone.
+    let (s, v) = site
+        .post(
+            &owner,
+            "/api/tags",
+            json!({"name": "draft", "colour": "orange"}),
+        )
+        .await;
+    assert_eq!(s, 201, "{v}");
+    let res = site
+        .ts
+        .client
+        .post(site.url("/api/tags"))
+        .header(HOST, format!("localhost:{}", site.ts.addr.port()))
+        .header(ORIGIN, "http://evil.example")
+        .header(
+            COOKIE,
+            format!("clax_session={}", owner.cookie.clone().unwrap()),
+        )
+        .json(&json!({"name": "csrf"}))
+        .send()
+        .await
+        .unwrap();
+    let (s, v) = json_of(res).await;
+    assert_eq!((s, code(&v)), (403, "forbidden_origin"), "{v}");
+    // A member makes none, sees every tag, and applies them to their own.
+    let sam = site.member(&owner, "Sam").await;
+    let sam_pid = site.pid(&sam).await;
+    let (s, v) = site.post(&sam, "/api/tags", json!({"name": "mine"})).await;
+    assert_eq!((s, code(&v)), (403, "owner_only"), "{v}");
+    let (s, v) = site.get(&sam, "/api/tags").await;
+    assert_eq!(s, 200, "{v}");
+    assert_eq!(tag_names(&v["tags"]), ["draft"]);
+    assert_eq!(v["tags"][0]["count"], 0);
+    let (s, v) = site
+        .post(
+            &sam,
+            "/api/artifacts:new",
+            json!({"title": "Sam's", "brief": "a page"}),
+        )
+        .await;
+    assert_eq!(s, 201, "{v}");
+    let mine = v["artifact"]["id"].as_str().unwrap().to_string();
+    let (s, v) = site
+        .send(
+            &sam,
+            reqwest::Method::PUT,
+            &tags(&mine),
+            json!({"tags": ["DRAFT"]}),
+        )
+        .await;
+    assert_eq!(
+        (s, tag_names(&v["tags"])),
+        (200, vec!["draft".to_string()]),
+        "{v}"
+    );
+    let (s, v) = site
+        .send(
+            &sam,
+            reqwest::Method::PUT,
+            &tags(&mine),
+            json!({"tags": ["nope"]}),
+        )
+        .await;
+    assert_eq!((s, code(&v)), (400, "unknown_tag"), "{v}");
+    let (_, v) = site.get(&sam, "/api/artifacts?tag=draft").await;
+    assert_eq!(listed(&v), vec![mine.clone()]);
+    let (_, v) = site.get(&sam, "/api/tags").await;
+    assert_eq!(v["tags"][0]["count"], 1, "{v}");
+    // Another's artifact: not there until shared, and an editor's share
+    // does not let them tag it.
+    let (s, _) = site
+        .send(
+            &sam,
+            reqwest::Method::PUT,
+            &tags(&plan),
+            json!({"tags": ["draft"]}),
+        )
+        .await;
+    assert_eq!(s, 404);
+    let (s, v) = site
+        .put(
+            &owner,
+            &format!("/api/hosted/artifacts/{plan}/shares"),
+            json!({"person": sam_pid, "access": "editor"}),
+        )
+        .await;
+    assert_eq!(s, 200, "{v}");
+    let (s, v) = site
+        .send(
+            &sam,
+            reqwest::Method::PUT,
+            &tags(&plan),
+            json!({"tags": ["draft"]}),
+        )
+        .await;
+    assert_eq!((s, code(&v)), (403, "admin_only"), "{v}");
+    // The owner tags any artifact, and the member sees the tags there.
+    let (s, v) = site
+        .send(
+            &owner,
+            reqwest::Method::PUT,
+            &tags(&plan),
+            json!({"tags": ["draft"]}),
+        )
+        .await;
+    assert_eq!(s, 200, "{v}");
+    let (_, v) = site.get(&sam, &format!("/api/artifacts/{plan}")).await;
+    assert_eq!(tag_names(&v["artifact"]["tags"]), ["draft"]);
+    // Signed out: no list, no change.
+    let anon = Browser::default();
+    let (s, v) = site.get(&anon, "/api/tags").await;
+    assert_eq!((s, code(&v)), (401, "sign_in_required"), "{v}");
+    let (s, _) = site
+        .send(
+            &anon,
+            reqwest::Method::PUT,
+            &tags(&plan),
+            json!({"tags": []}),
+        )
+        .await;
+    assert!(s == 401 || s == 403, "{s}");
+}
+
+#[tokio::test]
+async fn a_tag_filter_matches_no_item_whose_text_is_withheld() {
+    let site = Site::new().await;
+    let owner = site.owner().await;
+    let sid = site.ts.register_session("claude", "h1").await["id"]
+        .as_str()
+        .unwrap()
+        .to_string();
+    let plan = site.ts.publish_as(&sid, "Plan", "<h1>Plan</h1>").await["artifact"]["id"]
+        .as_str()
+        .unwrap()
+        .to_string();
+    let reads = json!({"type": "clax-artifacts", "actions": ["read"], "locations": [plan]});
+    let (mia, mia_id) = site
+        .person_with(
+            &owner,
+            "Mia",
+            json!([reads, {"type": "clax-comments", "actions": ["read", "write", "reply"], "locations": [plan]}]),
+        )
+        .await;
+    let (s, t) = site.thread(&mia, &plan, "a question").await;
+    assert_eq!(s, 201, "{t}");
+    let tid = t["thread"]["id"].as_str().unwrap().to_string();
+    let (s, v) = site
+        .post(
+            &owner,
+            &format!("/api/artifacts/{plan}/threads/{tid}/send"),
+            json!({}),
+        )
+        .await;
+    assert_eq!(s, 200, "{v}");
+    site.ts.reply_as_agent(&sid, &plan, &tid, "an answer").await;
+    let (s, v) = site
+        .post(&owner, "/api/tags", json!({"name": "layoffs"}))
+        .await;
+    assert_eq!(s, 201, "{v}");
+    let (s, v) = site
+        .send(
+            &owner,
+            reqwest::Method::PUT,
+            &format!("/api/artifacts/{plan}/tags"),
+            json!({"tags": ["layoffs"]}),
+        )
+        .await;
+    assert_eq!(s, 200, "{v}");
+    let about_plan = |v: &Value, key: &str| {
+        v[key]
+            .as_array()
+            .unwrap_or_else(|| panic!("{key}: {v}"))
+            .iter()
+            .filter(|i| i["artifact"]["id"] == json!(plan))
+            .count()
+    };
+    // While she reads its comments, the filter finds her items about it.
+    let (s, v) = site.get(&mia, "/api/inbox?tag=layoffs").await;
+    assert_eq!(s, 200, "{v}");
+    assert!(about_plan(&v, "items") > 0, "{v}");
+    // Once its comments are withheld from her, no tag filter matches them:
+    // it would tell her which tags the page carries now.
+    let (s, v) = site
+        .send(
+            &owner,
+            reqwest::Method::PUT,
+            &format!("/api/people/{mia_id}/rights"),
+            json!({"rights": [reads]}),
+        )
+        .await;
+    assert_eq!(s, 200, "{v}");
+    let (s, v) = site.get(&mia, "/api/inbox").await;
+    assert_eq!(s, 200, "{v}");
+    assert!(about_plan(&v, "items") > 0, "the items stay: {v}");
+    for path in [
+        "/api/inbox?tag=layoffs",
+        "/api/inbox?tag=layoffs&read=unread",
+        "/api/inbox?tag=nope",
+    ] {
+        let (s, v) = site.get(&mia, path).await;
+        assert_eq!(s, 200, "{v}");
+        assert_eq!(v["items"], json!([]), "{path}: {v}");
+        assert_eq!(v["total"], json!(0), "{path}: {v}");
+    }
+    let (s, v) = site
+        .get(&mia, "/api/inbox?group=artifact&tag=layoffs")
+        .await;
+    assert_eq!((s, &v["groups"]), (200, &json!([])), "{v}");
+    let (s, v) = site.get(&mia, "/api/inbox/summary?tag=layoffs").await;
+    assert_eq!(s, 200, "{v}");
+    assert_eq!(about_plan(&v, "latest"), 0, "{v}");
+    assert_eq!(v["questions"], json!([]), "{v}");
+    let (s, v) = site
+        .post(
+            &mia,
+            "/api/inbox/read",
+            json!({"all": true, "filter": {"tag": "layoffs"}}),
+        )
+        .await;
+    assert_eq!((s, &v["marked"]), (200, &json!(0)), "{v}");
+}
+
+#[tokio::test]
+async fn a_members_page_hears_a_tag_it_carries_renamed_or_deleted() {
+    let site = Site::new().await;
+    let owner = site.owner().await;
+    let (s, v) = site
+        .post(&owner, "/api/tags", json!({"name": "draft"}))
+        .await;
+    assert_eq!(s, 201, "{v}");
+    let tag = v["tag"]["id"].as_str().unwrap().to_string();
+    // Sam reads his own artifacts alone: his stream holds no gallery.
+    let sam = site.member(&owner, "Sam").await;
+    let (s, v) = site
+        .post(
+            &sam,
+            "/api/artifacts:new",
+            json!({"title": "Sam's", "brief": "a page"}),
+        )
+        .await;
+    assert_eq!(s, 201, "{v}");
+    let mine = v["artifact"]["id"].as_str().unwrap().to_string();
+    let (s, v) = site
+        .send(
+            &sam,
+            reqwest::Method::PUT,
+            &format!("/api/artifacts/{mine}/tags"),
+            json!({"tags": ["draft"]}),
+        )
+        .await;
+    assert_eq!(s, 200, "{v}");
+    let res = site
+        .req(&sam, reqwest::Method::GET, "/api/stream")
+        .send()
+        .await
+        .unwrap();
+    let mut events = clax_testkit::EventReader::from_response(res);
+    let (_, ready) = events.next().await;
+    let stream = ready["stream"].as_str().unwrap().to_string();
+    let (s, v) = site
+        .post(
+            &sam,
+            &format!("/api/stream/{stream}"),
+            json!({"subscribe": ["gallery", format!("artifact:{mine}")]}),
+        )
+        .await;
+    assert_eq!(s, 200, "{v}");
+    assert_eq!(
+        v["topics"],
+        json!([format!("artifact:{mine}")]),
+        "the gate keeps the gallery from him: {v}"
+    );
+    let (s, v) = site
+        .send(
+            &owner,
+            reqwest::Method::PATCH,
+            &format!("/api/tags/{tag}"),
+            json!({"name": "Draft review"}),
+        )
+        .await;
+    assert_eq!(s, 200, "{v}");
+    let ev = events.next_named("tags").await;
+    assert_eq!(
+        (&ev["topic"], &ev["artifact_id"]),
+        (&json!(format!("artifact:{mine}")), &json!(mine)),
+        "{ev}"
+    );
+    let (s, v) = site
+        .send(
+            &owner,
+            reqwest::Method::DELETE,
+            &format!("/api/tags/{tag}"),
+            json!({}),
+        )
+        .await;
+    assert_eq!((s, &v["artifacts"]), (200, &json!(1)), "{v}");
+    let ev = events.next_named("tags").await;
+    assert_eq!(ev["artifact_id"], json!(mine), "{ev}");
 }

@@ -66,7 +66,7 @@ pub enum Event {
     },
     /// Thread `thread_id`'s delivery state changed for each reader in
     /// `views`, which holds each one's state as it reads it
-    /// ([`crate::Delivery::view`]), by recipient key (empty: the owner; a
+    /// (`clax_store::Delivery::view`), by recipient key (empty: the owner; a
     /// connected person's public ID); `None` once the thread has no
     /// delivery rows left, for those who read one. Only the `artifact`
     /// stream topic carries it, each view to its reader's streams alone
@@ -214,6 +214,20 @@ pub enum Event {
         client: String,
         held: bool,
     },
+    /// Tags changed (`crate::tags`): the tags artifact `artifact_id` carries
+    /// (`Some`), or the list itself (`None`: a tag made, renamed,
+    /// recoloured or deleted, which every artifact carrying it shows).
+    /// Clients refetch: `GET /api/tags`, and the gallery's artifacts or
+    /// the one artifact. The `gallery` topic carries it, and the topic of
+    /// the artifact it names or of each of `carriers`, there naming that
+    /// artifact; `/api/events` never does.
+    Tags {
+        artifact_id: Option<String>,
+        /// A list change's artifacts that carry (or carried) the tag; never
+        /// serialised.
+        #[serde(skip)]
+        carriers: Vec<String>,
+    },
 }
 
 impl Event {
@@ -241,6 +255,8 @@ impl Event {
             | Event::Agents { .. }
             | Event::Job { .. }
             | Event::JobsOwner { .. } => "",
+            // A change to the list itself belongs to no artifact.
+            Event::Tags { artifact_id, .. } => artifact_id.as_deref().unwrap_or(""),
         }
     }
 
@@ -268,6 +284,7 @@ impl Event {
             Event::Agents { .. } => "agents",
             Event::Job { .. } => "job",
             Event::JobsOwner { .. } => "jobs_owner",
+            Event::Tags { .. } => "tags",
         }
     }
 }
@@ -542,6 +559,10 @@ mod tests {
             },
             Event::People {
                 change: serde_json::json!({"what": "grant_requested"}),
+            },
+            Event::Tags {
+                artifact_id: None,
+                carriers: vec![],
             },
         ] {
             assert_eq!(serde_json::to_value(&ev).unwrap()["type"], ev.name());

@@ -5,6 +5,8 @@
 import { test, expect, api, openArtifact, publishAs, registerSession } from "./fixtures";
 import { ask as askAs, waitAnswer } from "./questions-helpers";
 import type { Locator, Page } from "@playwright/test";
+import { mkdirSync } from "node:fs";
+import { join } from "node:path";
 import { fileURLToPath } from "node:url";
 import { advance, settle } from "./time";
 
@@ -55,7 +57,10 @@ test("/inbox lists the unread items, opens one and marks it read, and keeps its 
   const s = await registerSession(d.base, d.token);
   const { artifact } = await publishAs(d.base, d.token, s.id, "Sales dashboard", PAGE);
   await page.goto(`${d.base}/inbox`);
-  const row = page.locator(".inbox .irow", { hasText: "published Sales dashboard" });
+  // Its row, under the page's heading.
+  const group = page.locator(`.inbox .igroup[data-group="${artifact.id}"]`);
+  await expect(group.locator(".gtitle")).toHaveText("Sales dashboard");
+  const row = group.locator(".irow", { hasText: "published the page" });
   await expect(row).toHaveAttribute("data-unread", "");
   await expect(page.locator(".gbar .inbox-link .count")).toHaveText("1");
   await expect(page).toHaveTitle(/^\(1\) /);
@@ -90,6 +95,44 @@ test("an ask answered in the gallery reaches the agent", async ({ page, freshDae
   expect(q.status).toBe("answered");
   expect(q.answered_via).toBe("shell");
   expect(q.answers).toEqual([{ selected: ["One"], text: null }, { selected: [], text: "keep it light" }]);
+});
+
+test("an agent's question renders as Markdown in its card, its options' text and preview as written", async ({ page, freshDaemon: d }) => {
+  const s = await registerSession(d.base, d.token);
+  const { artifact } = await publishAs(d.base, d.token, s.id, "Quarterly Review", PAGE);
+  const question = "Which **layout** should the review use? It sets `grid-template-columns` in [layout.css](https://example.com/layout.css).\n\n- charts first\n- <b>no</b> raw HTML";
+  const preview = "┌──────┬──────┐\n│ **a** │ `b`  │\n└──────┴──────┘";
+  await askAs(d.base, d.token, s.id, { source: "ask", artifact_id: artifact.id, questions: [{ question, header: "Layout",
+    options: [{ label: "Two columns", description: "Charts left, *table* right", preview }, { label: "One column", description: "Everything stacked" }] }] });
+  await page.goto(`${d.base}/inbox`);
+  const card = page.locator(".inbox .qcard[data-question]");
+  const text = card.locator(".qtext .md");
+  await expect(text.locator("strong")).toHaveText("layout");
+  await expect(text.locator("code")).toHaveText("grid-template-columns");
+  await expect(text.locator("a")).toHaveAttribute("href", "https://example.com/layout.css");
+  await expect(text.locator("a")).toHaveAttribute("rel", "noopener noreferrer nofollow");
+  await expect(text.locator("li")).toHaveText(["charts first", "<b>no</b> raw HTML"]);
+  await expect(card.locator("b, img, script")).toHaveCount(0);
+  // The options are still named by the question; descriptions and previews stay as written.
+  await expect(card.getByRole("radiogroup", { name: /Which layout should the review use\?/ })).toBeVisible();
+  await expect(card.locator(".desc").first()).toHaveText("Charts left, *table* right");
+  await card.getByLabel("Two columns").hover();
+  await expect(card.locator("pre.preview")).toHaveText(preview);
+  await expect(card.locator("pre.preview > *")).toHaveCount(0);
+  const dir = process.env.CLAX_MD_SHOTS;
+  if (!dir) return;
+  mkdirSync(dir, { recursive: true });
+  for (const theme of ["light", "dark"] as const) {
+    for (const [size, viewport] of [["desktop", { width: 1440, height: 900 }], ["phone", { width: 390, height: 844 }]] as const) {
+      await page.setViewportSize(viewport);
+      await page.emulateMedia({ colorScheme: theme, reducedMotion: "reduce" });
+      await card.getByLabel("Two columns").hover();
+      await card.scrollIntoViewIfNeeded();
+      await settle(page);
+      await card.screenshot({ path: join(dir, `${theme}-${size}-question.png`) });
+      expect(await page.evaluate(() => document.documentElement.scrollWidth)).toBeLessThanOrEqual(viewport.width);
+    }
+  }
 });
 
 test("a question about an artifact shows above its threads, and another page's thread opens in place below it", async ({ page, freshDaemon: d }) => {

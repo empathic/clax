@@ -472,6 +472,25 @@ describe("trusted input", () => {
   });
 });
 
+describe("the page's own cursor", () => {
+  it("shows a crosshair while on and gives back the cursor the page set on <html>, priority included", () => {
+    const style = document.documentElement.style;
+    style.setProperty("cursor", "wait", "important");
+    try {
+      mode.set(true);
+      expect(style.cursor).toBe("crosshair");
+      mode.set(false);
+      expect([style.getPropertyValue("cursor"), style.getPropertyPriority("cursor")]).toEqual(["wait", "important"]);
+      style.setProperty("cursor", "help");
+      mode.set(true);
+      mode.set(false);
+      expect([style.getPropertyValue("cursor"), style.getPropertyPriority("cursor")]).toEqual(["help", ""]);
+    } finally {
+      style.removeProperty("cursor");
+    }
+  });
+});
+
 describe("Option widening", () => {
   const key = (k: string, type = "keydown") => { const e = new KeyboardEvent(type, { key: k, bubbles: true, cancelable: true }); document.dispatchEvent(e); return e; };
   beforeEach(() => {

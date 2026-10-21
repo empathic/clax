@@ -12,11 +12,14 @@
   // In the Clax app, whose scheme answers nothing under `/api/`, a thread's
   // clip is fetched over the transport and shown by object URL
   // (`api-image.ts`, loaded only there); a browser loads `clip_url` itself.
+  // The drawer's controls (DrawerChrome) go around it; the extension's side
+  // panel mounts Sidebar alone, without them.
   import type { Thread } from "../threads";
   import { onHost } from "../transport";
   import { ownTarget, sendsFor } from "../view/send-menu";
   import type { ArtifactController, Loaded, ViewState } from "../view/artifact-controller";
   import { emptyLayer, writersIn } from "../view/live-layers";
+  import DrawerChrome from "./DrawerChrome.svelte";
   import LiveWriters from "./LiveWriters.svelte";
   import Sidebar from "./Sidebar.svelte";
 
@@ -38,6 +41,7 @@
   {/if}
 {/snippet}
 
+<DrawerChrome onClose={() => ctl.togglePanel()}>
 <Sidebar threads={s.threads} resolved={s.resolved} selected={s.selected} file={s.file} holds={f => ctl.holds(f, s)} me={s.me}
   versions={s.data.versions} shown={ctl.shown(s)} agent={s.data.artifact.owner_name || s.data.artifact.owner_harness || "agent"}
   working={s.working} commenting={s.commenting} agents={s.agents} mine={s.attention?.open_in ?? []}
@@ -48,3 +52,4 @@
   onToggle={(t, shift, order) => ctl.toggleSelect(t, shift, order)} onClear={() => ctl.clearSelection()} onNote={v => ctl.setBatchNote(v)}
   compose={s.spectator ? undefined : { version: ctl.shown(s), host: ctl }} readOnly={!!s.spectator} live={s.spectator ? undefined : live}
   onSendSelection={() => go(() => ctl.sendSelection())} onSendUnsent={() => go(() => ctl.sendUnsent())} onChoose={h => ctl.chooseTarget(h)} {above} />
+</DrawerChrome>

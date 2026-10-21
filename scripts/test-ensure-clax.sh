@@ -705,6 +705,11 @@ leftovers() { PATH="$ORIG_PATH" ls -A "$HOME/.clax/bin" 2>/dev/null | grep '^\.'
 sha_of() { shasum -a 256 "$1" | awk '{ print $1 }'; }
 
 new_env; : > "$REQLOG"
+prun ok which
+if [ "$RC" = 1 ] && [ -z "$OUT" ] && [ "$(requests)" = 0 ] && [ ! -e "$(MANAGED)" ] \
+    && [ "$ERR" = "clax: clax $P, which this plugin runs, is not installed in $(MANAGED) yet (not installed); it is installed when a clax command first needs it." ]; then
+    pass "which never downloads: with the release not installed yet it says so and exits 1"
+else fail "which never downloads (rc=$RC out=$OUT err=$ERR reqs=$(requests))"; fi
 prun ok
 if [ "$RC" = 0 ] && [ "$OUT" = "$(MANAGED)/clax" ] && [ -f "$(MANAGED)/clax.sha256" ] \
     && [ "$(cat "$(MANAGED)/clax.sha256")" = "$(sha_of "$ROOT/payload/clax")" ] \
@@ -718,6 +723,10 @@ prun none exec status
 if [ "$RC" = 0 ] && [ "$OUT" = "managed: status" ] && [ "$(requests)" = 0 ] && [ -z "$ERR" ]; then
     pass "a valid managed install runs without a download"
 else fail "a valid managed install runs without a download (rc=$RC out=$OUT err=$ERR reqs=$(requests))"; fi
+prun none which
+if [ "$RC" = 0 ] && [ "$OUT" = "$(MANAGED)/clax" ] && [ "$(requests)" = 0 ] && [ -z "$ERR" ]; then
+    pass "which prints a valid managed install"
+else fail "which prints a valid managed install (rc=$RC out=$OUT err=$ERR reqs=$(requests))"; fi
 
 new_env
 export CLAX_HOME="$SANDBOX/ch"

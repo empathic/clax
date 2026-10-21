@@ -19,8 +19,9 @@ const DRAFT_SWEEP_INTERVAL: Duration = Duration::from_secs(3600);
 /// How long shutdown waits for the journal appender to close its segment.
 /// The appender stops as shutdown begins, beside the connection drain, and
 /// catches up for at most 0.5 s; a wedged one is left on its own thread,
-/// which the process exit ends. The whole shutdown, [`TASKS_STOP_TIMEOUT`]
-/// included, stays within 6.75 s, inside the 7 s a replacing client waits before it sends SIGTERM; what
+/// which the process exit ends. The drain, the tasks' stop
+/// ([`TASKS_STOP_TIMEOUT`]) and the journal's stop take at most 6.75 s,
+/// inside the 7 s a replacing client waits before it sends SIGTERM; what
 /// the journal does not write, the next start writes from the table.
 const JOURNAL_STOP_TIMEOUT: Duration = Duration::from_millis(1500);
 /// How long [`Core::stop`] waits for its aborted tasks to end: each ends at
@@ -212,6 +213,18 @@ impl Core {
     /// down, as `serve` does after its drain. No task of the core runs
     /// after it returns.
     pub async fn stop(self) {
+        self.stop_within(None).await;
+    }
+
+    /// [`Core::stop`], waiting at most `store_within` for the store's
+    /// queued calls to finish and its threads to stop ([`stop_store`]):
+    /// false when they had not by then and are left running on their own
+    /// threads, which only a process about to exit may leave behind.
+    pub async fn stop_bounded(self, store_within: Duration) -> bool {
+        self.stop_within(Some(store_within)).await
+    }
+
+    async fn stop_within(self, store_within: Option<Duration>) -> bool {
         let _ = self.shutdown.send(true);
         for t in &self.tasks {
             t.abort();
@@ -239,13 +252,39 @@ impl Core {
         drop(self.router);
         drop(self.state);
         // Let queued store calls finish and the database threads stop.
-        if let Err(e) = tokio::task::spawn_blocking(move || store.shutdown()).await {
-            tracing::warn!(error = %e, "store shutdown failed");
-        }
+        let stopped = match store_within {
+            Some(within) => stop_store(store, within).await,
+            None => {
+                if let Err(e) = tokio::task::spawn_blocking(move || store.shutdown()).await {
+                    tracing::warn!(error = %e, "store shutdown failed");
+                }
+                true
+            }
+        };
         #[cfg(test)]
         if let Some(f) = &*STOPPED.lock().unwrap_or_else(|e| e.into_inner()) {
             f(&home);
         }
+        stopped
+    }
+}
+
+/// Stops `store` ([`Store::shutdown`]), waiting at most `within` for its
+/// queued calls to finish and its threads to stop: false when they had not
+/// by then, and are left running on their own threads.
+pub(crate) async fn stop_store(store: Arc<Store>, within: Duration) -> bool {
+    match tokio::time::timeout(
+        within,
+        tokio::task::spawn_blocking(move || store.shutdown()),
+    )
+    .await
+    {
+        Ok(Ok(())) => true,
+        Ok(Err(e)) => {
+            tracing::warn!(error = %e, "store shutdown failed");
+            true
+        }
+        Err(_) => false,
     }
 }
 

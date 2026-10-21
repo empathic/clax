@@ -24,6 +24,16 @@ use tokio::sync::{oneshot, watch};
 /// after it has told its streams and long polls to end; what is still
 /// running then is cut.
 pub const DRAIN_TIMEOUT: Duration = Duration::from_secs(5);
+/// How long a stopping daemon then waits for the store's queued calls to
+/// finish and its threads to stop ([`Core::stop_bounded`]); calls still
+/// running are left on their threads, which the process exit ends (the
+/// caller must not wait for them: `clax serve` shuts its runtime down in
+/// the background as [`serve`] returns), and a write cut short rolls back.
+/// A stop signal once shutdown has begun ends the process at once
+/// ([`on_signals`]), so the SIGTERM a replacing client sends after 7 s
+/// stops the daemon whatever is left; once [`serve`] returns, nothing is
+/// left to wait for.
+const STORE_STOP_TIMEOUT: Duration = Duration::from_secs(2);
 
 /// Publishes this daemon's start in `starting.json` until dropped: the
 /// phase and backfill progress it is given, and a heartbeat every second
@@ -242,27 +252,17 @@ pub struct EmbeddedControl {
 type StopAsked = std::pin::Pin<Box<dyn std::future::Future<Output = ()> + Send>>;
 
 /// The future that completes when `stop` asks the daemon to stop. Under
-/// [`StopOn::Signals`] the SIGTERM and SIGINT handlers are installed here,
-/// at once, so a signal sent once the daemon is ready is never missed;
-/// under [`StopOn::Embedded`] none is, and a task answering the control's
-/// trim requests is started on `store`.
+/// [`StopOn::Signals`] it never does: [`serve`] installed the signal
+/// handlers ([`stop_signals`]), which ask through the core's shutdown as
+/// the shutdown route does. Under [`StopOn::Embedded`] it completes on the
+/// control's stop, and a task answering the control's trim requests is
+/// started on `store`.
 fn stop_asked(
     stop: StopOn,
     store: &Arc<Store>,
 ) -> io::Result<(StopAsked, Option<tokio::task::JoinHandle<()>>)> {
-    use tokio::signal::unix::{SignalKind, signal};
     match stop {
-        StopOn::Signals => {
-            let mut term = signal(SignalKind::terminate())?;
-            let mut int = signal(SignalKind::interrupt())?;
-            let asked = async move {
-                tokio::select! {
-                    _ = term.recv() => {}
-                    _ = int.recv() => {}
-                }
-            };
-            Ok((Box::pin(asked), None))
-        }
+        StopOn::Signals => Ok((Box::pin(std::future::pending()), None)),
         StopOn::Embedded(EmbeddedControl {
             stop: mut rx,
             mut trim,
@@ -381,13 +381,35 @@ pub async fn serve(
         stop: cfg.stop,
     };
     let home = serving.home.clone();
+    // A daemon stopped by signals handles them until the core has stopped:
+    // one sent once shutdown has begun ends the process.
+    let signals = match &serving.stop {
+        StopOn::Signals => match stop_signals(&home, core.shutdown_handle()) {
+            Ok(s) => Some(s),
+            Err(e) => {
+                core.stop().await;
+                return Err(e.into());
+            }
+        },
+        StopOn::Embedded(_) => None,
+    };
     let served = serve_core(serving, &core, listener, port, ready).await;
-    core.stop().await;
-    // Only once the journal has synced and the store has closed: a client
-    // that finds no daemon.json may start another daemon on the home.
+    if signals.is_some() {
+        // The process exits once this returns: a store call that does not
+        // finish is left to that exit.
+        if !core.stop_bounded(STORE_STOP_TIMEOUT).await {
+            tracing::warn!("store calls did not finish in time; exiting");
+        }
+    } else {
+        core.stop().await;
+    }
+    // Only once the journal has synced and the store has closed (or, for a
+    // daemon about to exit, given up on): a client that finds no
+    // daemon.json may start another daemon on the home.
     if read_daemon_info(&home).map(|i| i.pid) == Some(std::process::id()) {
         remove_daemon_info(&home);
     }
+    drop(signals);
     served
 }
 
@@ -502,9 +524,74 @@ async fn serve_core(
     Ok(())
 }
 
+/// Under [`StopOn::Signals`], the daemon's SIGTERM and SIGINT handling
+/// ([`stop_signals`]) until dropped.
+struct StopSignals {
+    forward: tokio::task::JoinHandle<()>,
+    handle: tokio::task::JoinHandle<()>,
+}
+
+impl Drop for StopSignals {
+    fn drop(&mut self) {
+        self.forward.abort();
+        self.handle.abort();
+    }
+}
+
+/// Installs the SIGTERM and SIGINT handlers at once, so a signal sent once
+/// the daemon is ready is never missed: the first begins shutdown (sends
+/// `true` on `shutdown`, as `POST /api/admin/shutdown` does), and any once
+/// shutdown has begun ends the process ([`on_signals`]), removing `home`'s
+/// `daemon.json` when it is still this process's.
+fn stop_signals(home: &Home, shutdown: watch::Sender<bool>) -> io::Result<StopSignals> {
+    use tokio::signal::unix::{SignalKind, signal};
+    let mut sigterm = signal(SignalKind::terminate())?;
+    let mut sigint = signal(SignalKind::interrupt())?;
+    let (signal_tx, signal_rx) = tokio::sync::mpsc::unbounded_channel();
+    let forward = tokio::spawn(async move {
+        loop {
+            let got = tokio::select! {
+                s = sigterm.recv() => s,
+                s = sigint.recv() => s,
+            };
+            if got.is_none() || signal_tx.send(()).is_err() {
+                return;
+            }
+        }
+    });
+    let exit_home = home.clone();
+    let handle = tokio::spawn(on_signals(signal_rx, shutdown, move || {
+        tracing::warn!("a stop signal while shutting down; exiting now");
+        if read_daemon_info(&exit_home).map(|i| i.pid) == Some(std::process::id()) {
+            remove_daemon_info(&exit_home);
+        }
+        std::process::exit(1);
+    }));
+    Ok(StopSignals { forward, handle })
+}
+
+/// Handles the stop signals `signals` delivers: the first begins shutdown
+/// (sends `true` on `shutdown`); one once shutdown has begun, by a signal
+/// or by `POST /api/admin/shutdown`, calls `exit`, so a drain that does not
+/// end never outlasts a second request to stop.
+async fn on_signals(
+    mut signals: tokio::sync::mpsc::UnboundedReceiver<()>,
+    shutdown: watch::Sender<bool>,
+    exit: impl FnOnce(),
+) {
+    while signals.recv().await.is_some() {
+        if *shutdown.borrow() {
+            exit();
+            return;
+        }
+        shutdown.send_replace(true);
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::core::stop_store;
 
     #[test]
     fn a_wall_clock_jump_past_monotonic_time_is_a_sleep() {
@@ -557,6 +644,66 @@ mod tests {
             "daemon.json was there when the core had stopped"
         );
         assert!(read_daemon_info(&home).is_none(), "and is gone after");
+    }
+
+    #[tokio::test]
+    async fn a_signal_begins_shutdown_and_one_after_it_has_begun_exits() {
+        let (tx, rx) = tokio::sync::mpsc::unbounded_channel();
+        let (shutdown, mut begun) = watch::channel(false);
+        let (exited_tx, exited) = oneshot::channel();
+        let task = tokio::spawn(on_signals(rx, shutdown, move || {
+            let _ = exited_tx.send(());
+        }));
+        tx.send(()).unwrap();
+        begun.wait_for(|v| *v).await.unwrap();
+        tx.send(()).unwrap();
+        exited.await.expect("the second signal exits");
+        task.await.unwrap();
+    }
+
+    #[tokio::test]
+    async fn a_signal_after_a_requested_shutdown_exits() {
+        let (tx, rx) = tokio::sync::mpsc::unbounded_channel();
+        let (shutdown, _begun) = watch::channel(false);
+        // `POST /api/admin/shutdown` sends on the same sender.
+        shutdown.send_replace(true);
+        let (exited_tx, exited) = oneshot::channel();
+        let task = tokio::spawn(on_signals(rx, shutdown, move || {
+            let _ = exited_tx.send(());
+        }));
+        tx.send(()).unwrap();
+        exited.await.expect("a signal during shutdown exits");
+        task.await.unwrap();
+    }
+
+    // Real time: a paused clock does not advance while a blocking task runs.
+    #[tokio::test]
+    async fn the_store_stop_gives_up_on_a_call_that_does_not_finish() {
+        let dir = tempfile::tempdir().unwrap();
+        let home = Home::at(dir.path().join("ax"));
+        home.ensure_dirs().unwrap();
+        let store = Arc::new(Store::open(&home).unwrap());
+        let (started_tx, started) = oneshot::channel();
+        let (release, held) = std::sync::mpsc::channel::<()>();
+        let call = tokio::spawn({
+            let store = store.clone();
+            async move {
+                store
+                    .call(move |_| {
+                        let _ = started_tx.send(());
+                        let _ = held.recv();
+                        Ok(())
+                    })
+                    .await
+            }
+        });
+        started.await.unwrap();
+        assert!(
+            !stop_store(store, Duration::from_millis(50)).await,
+            "a call still running is not waited for past the bound"
+        );
+        release.send(()).unwrap();
+        call.await.unwrap().unwrap();
     }
 
     #[test]

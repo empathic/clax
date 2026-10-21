@@ -231,8 +231,8 @@ for src in sys.argv[2:4]:
         quoted = '"' + t["description"].replace("\\", "\\\\").replace('"', '\\"') + '"'
         if quoted not in text:
             missing.append(f"{src}: {t['name']}")
-if len(tools) != 30 or missing:
-    print("; ".join(missing) or f"{len(tools)} tools in the fixture, not 30")
+if len(tools) != 32 or missing:
+    print("; ".join(missing) or f"{len(tools)} tools in the fixture, not 32")
     sys.exit(1)
 PY
 )"; then pass "the thirty tool descriptions match in tools.rs and clax.ts"

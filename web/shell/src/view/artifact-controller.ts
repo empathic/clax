@@ -2,10 +2,11 @@
 // `state` and call the intent methods; the frame is a FrameHost the mount
 // gives it.
 import { type Anchor, type AnchorResult, INDEX_FILE, type ShellToBridge } from "../../../bridge/src/protocol";
-import { ApiError, type Artifact, type Attention, type SampleStatus, type Version, getArtifact, getToken } from "../api";
+import { ApiError, type Artifact, type Attention, type SampleStatus, type TagRef, type Version, getArtifact, getToken } from "../api";
 import { getDrafts, getSampleStatus, putLooked, putSeen } from "./view-api";
 import { acceptByeFromFrame, acceptFromFrame, helloMatches, sendToFrame } from "../bridge-link";
 import type { Declared } from "../caps/availability";
+import { pageAnchor } from "../caps/comments";
 import { HINT_MS, PICK_ATTEST_WAIT_MS, afterHostAttestation, frameGesture, hostArrival, onShieldPress, pickHintAllowed, setForwardedKeys } from "../caps/gesture";
 import { CapabilityHost, type CommentsUi, type DbJournal } from "../caps/host";
 import { REQUEST_STUCK, connTrouble } from "../conn-notice";
@@ -147,6 +148,11 @@ export type ViewState = {
   /** The overlays the Clax app's host draws itself (`claxHost.init`'s
    * `native`, `app/host.ts`): the stage draws no web version of these. */
   native?: readonly string[];
+  /** The artifact's tags and whether the viewer may set them, as last
+   * refetched or set (a `tags` event, the tag editor); null: as `data`
+   * says (`view/title-tags.ts` `tagsOf`). Kept apart from `data`, whose
+   * replacement starts a new capability host. */
+  tags: { tags: TagRef[]; may: boolean } | null;
 };
 
 /** The artifact is loaded and the frame mode decided: the islands show. */
@@ -220,6 +226,19 @@ export class ArtifactController {
   private live = false;
   /** @internal */
   latestKnown = 0;
+  /** The last ticket taken for the artifact's tags, and the one whose answer is shown. */
+  private tagsAsked = 0;
+  private tagsShown = 0;
+  /** A ticket for a request whose answer carries the artifact's tags (a
+   * refetch, the tag editor's change), taken as it starts. */
+  tagTicket(): number { return ++this.tagsAsked; }
+  /** Shows `v`, the tags answered to ticket `t`'s request, unless the answer
+   * to a request started later is shown already. */
+  setTags(t: number, v: { tags: TagRef[]; may: boolean }): void {
+    if (t < this.tagsShown) return;
+    this.tagsShown = t;
+    this.set({ tags: v });
+  }
   /** The artifact, version and origin the gate was last reset for. */
   private gateFor = "";
   /** The view (artifact, version, origin and data) the capability host was made for. */
@@ -350,7 +369,7 @@ export class ArtifactController {
       decided: null, rally: false, menu: null, askName: null, looked: {}, presence: [], shareWhere: readShareWhere(),
       agents: [], selection: EMPTY_SELECTION, batchNote: "", batchBusy: false, sendTo: null, sampleCalls: null,
       spectator: null, viewing: null,
-      drafts: [], showDraft: null, draftChanged: null,
+      drafts: [], showDraft: null, draftChanged: null, tags: null,
     });
     this.threadLoad = new ThreadSync(f => this.set(s => ({ threads: f(s.threads) })));
     this.ownPublish.settled = () => {
@@ -1304,13 +1323,19 @@ export class ArtifactController {
           }
           refuse(); if (pickHintAllowed()) this.showHint(MOVE_TO_PICK); break;
         }
-        if (!m.anchor || typeof m.anchor !== "object" || typeof m.version !== "number") { refuse(); break; }
+        // The page's script can post a start too: the thread goes on the page
+        // the frame greeted as and the version the view shows, with an anchor
+        // rebuilt field by field, of a kind a pick makes.
+        const file = this.s.file;
+        if (m.version !== this.shown() || !file) { refuse(); break; }
+        let anchor: Anchor;
+        try { anchor = pageAnchor(m.anchor, file, { area: true }); } catch { refuse(); break; }
         const pickId = m.pickId;
         this.pendingPick = { pickId, at: Date.now() };
         this.set({ commenting: false });
         this.resumeAfter = pickId;
-        const shown = respaced(m.anchor.quote, m.desc?.text) ?? undefined;
-        this.set({ draft: { pickId, anchor: m.anchor, version: m.version, clip: null, capturing: true, clipToken: pickId, ...(shown ? { shown } : {}) } });
+        const shown = respaced(anchor.quote, m.desc?.text) ?? undefined;
+        this.set({ draft: { pickId, anchor, version: this.shown(), clip: null, capturing: true, clipToken: pickId, ...(shown ? { shown } : {}) } });
         break;
       }
       case "clax:pick": {

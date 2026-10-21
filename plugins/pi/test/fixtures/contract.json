@@ -183,6 +183,68 @@
         "daemon_base": "https://localhost",
         "id": "7q3k9mzx2b4t",
         "version": null
+      },
+      {
+        "input": "https://staging.example.com/",
+        "daemon_base": "https://clax.example.com",
+        "page": "https://staging.example.com/"
+      },
+      {
+        "input": "https://example.com/a/7q3k9mzx2b4t",
+        "daemon_base": "https://clax.example.com",
+        "page": "https://example.com/a/7q3k9mzx2b4t"
+      },
+      {
+        "input": "https://evilclax.example.com/a/7q3k9mzx2b4t",
+        "daemon_base": "https://clax.example.com",
+        "page": "https://evilclax.example.com/a/7q3k9mzx2b4t"
+      },
+      {
+        "input": "https://localhost/a/7q3k9mzx2b4t",
+        "daemon_base": "https://clax.example.com",
+        "page": "https://localhost/a/7q3k9mzx2b4t"
+      },
+      {
+        "input": "https://clax.example.com/a/7q3k9mzx2b4t/v/2",
+        "daemon_base": "https://clax.example.com",
+        "id": "7q3k9mzx2b4t",
+        "version": 2
+      },
+      {
+        "input": "https://content.clax.example.com/c/7q3k9mzx2b4t/v/1/x.html",
+        "daemon_base": "https://clax.example.com",
+        "id": "7q3k9mzx2b4t",
+        "version": 1
+      },
+      {
+        "input": "http://[::1]:7480/a/7q3k9mzx2b4t",
+        "daemon_base": "http://mac.local:7480",
+        "id": "7q3k9mzx2b4t",
+        "version": null
+      },
+      {
+        "input": "http://172.20.0.3:7480/a/7q3k9mzx2b4t",
+        "daemon_base": "http://mac.local:7480",
+        "id": "7q3k9mzx2b4t",
+        "version": null
+      },
+      {
+        "input": "http://100.101.102.103:7480/a/7q3k9mzx2b4t",
+        "daemon_base": "http://localhost:7480",
+        "id": "7q3k9mzx2b4t",
+        "version": null
+      },
+      {
+        "input": "http://mac.tail1234.ts.net:7480/a/7q3k9mzx2b4t/v/3",
+        "daemon_base": "http://localhost:7480",
+        "id": "7q3k9mzx2b4t",
+        "version": 3
+      },
+      {
+        "input": "http://mac.home.arpa:7480/a/7q3k9mzx2b4t",
+        "daemon_base": "http://127.0.0.1:7480",
+        "id": "7q3k9mzx2b4t",
+        "version": null
       }
     ]
   },
@@ -355,7 +417,7 @@
     },
     {
       "html": "<title>﻿a</title>",
-      "title": "﻿a"
+      "title": "a"
     },
     {
       "html": "<title>éééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééé</title>",
@@ -404,12 +466,24 @@
     {
       "html": "<script><title>only in script</title>",
       "title": null
+    },
+    {
+      "html": "<title>a\u200bb \u202ec\u0007d\u00ad</title>",
+      "title": "ab cd"
+    },
+    {
+      "html": "<title>\u200f\u05e9 \ud83d\udc69\u200d\ud83d\udcbb</title>",
+      "title": "\u200f\u05e9 \ud83d\udc69\u200d\ud83d\udcbb"
+    },
+    {
+      "html": "<title>\u202e\u2066</title>",
+      "title": null
     }
   ],
   "tools": [
     {
       "name": "publish",
-      "description": "Publish an HTML page as a new artifact, or as a new version of an existing one (pass `id` or `url`, with `if_version`). Give the page as `html` or `file_path`, plus optional supporting `files`. Returns the artifact ID, its URL for the person, and the new version number. Add a short `note` (at most 280 characters) saying what changed, and list the comment threads this version addresses in `addresses`; threads you were marked working on are added for you. The person sees both as the version's changelog; nothing is resolved by it.",
+      "description": "Publish an HTML page as a new artifact, or as a new version of an existing one (pass `id` or `url`, with `if_version`). Give the page as `html` or `file_path`, plus optional supporting `files`. Returns the artifact ID, its URL for the person, and the new version number. Add a short `note` (at most 280 characters) saying what changed, and list the comment threads this version addresses in `addresses`; threads you were marked working on are added for you. The person sees both as the version's changelog; nothing is resolved by it. Pass `tags` to add existing tags (see `tags`).",
       "annotations": {
         "readOnlyHint": false,
         "destructiveHint": false,
@@ -427,7 +501,7 @@
     },
     {
       "name": "list",
-      "description": "List artifacts, pinned first and then most recently updated, with their URLs and current versions. `scope: mine` lists only those this session created.",
+      "description": "List artifacts, pinned first and then most recently updated, with their URLs, current versions and tags. `scope: mine` lists only those this session created; `tags` only those carrying every tag named.",
       "annotations": {
         "readOnlyHint": true,
         "openWorldHint": false
@@ -470,6 +544,24 @@
         "readOnlyHint": false,
         "destructiveHint": false,
         "idempotentHint": true,
+        "openWorldHint": false
+      }
+    },
+    {
+      "name": "tag",
+      "description": "Add or remove tags on an artifact. Tags are the owner's list (see `tags`); only existing tags apply, and an unknown one fails, listing the tags there are. Needs the right to administer the artifact: its owner, its maker, and their agents. Returns the artifact's tags after.",
+      "annotations": {
+        "readOnlyHint": false,
+        "destructiveHint": false,
+        "idempotentHint": true,
+        "openWorldHint": false
+      }
+    },
+    {
+      "name": "tags",
+      "description": "List the tags artifacts can carry: each one's name, colour, description and how many artifacts you can see carry it. Only the owner makes and changes tags; apply them with `tag` or `publish`'s `tags`.",
+      "annotations": {
+        "readOnlyHint": true,
         "openWorldHint": false
       }
     },
@@ -523,7 +615,7 @@
     },
     {
       "name": "comments_reply",
-      "description": "Reply to a comment thread as the agent; people and agents read its author as your name, your person and your harness, such as `clax-claude (agent, via claude)`. Only threads the person sent to the agent accept agent replies: on other threads the result has `replied: false` and `guidance`, and nothing is written. On a live page, pass `addressed: true` once the page shows your fix.",
+      "description": "Reply to a comment thread as the agent; people and agents read its author as your name, your person and your harness, such as `clax-claude (agent, via claude)`. Only threads the person sent to the agent accept agent replies: on other threads the result has `replied: false` and `guidance`, and nothing is written. On a live page, pass `addressed: true` once the page shows your fix. The reply renders as GitHub-flavoured Markdown (lists, code blocks, tables, links), with no images and no raw HTML: an image shows as a link and HTML as its text.",
       "annotations": {
         "readOnlyHint": false,
         "destructiveHint": false,
@@ -601,7 +693,7 @@
     },
     {
       "name": "ask",
-      "description": "Ask the person one to four questions in Clax and wait for the answers (up to `timeout_s`, default 600 s). Each question has a short `header` (at most 12 characters) and two to four `options` (`label`, optional `description`, `preview` text, `recommended`) or none for a free-text answer; `multi_select` allows several; the person may also type an \"Other\" answer. Pass `url_or_id` when the question is about a page, and `thread_id` when it arose in one of its threads, so it shows there. With `in_terminal: true`, sending each question's `question` and `header` only, it asks nothing: it shows the person in Clax that you are asking in the terminal, returns at once, and you cancel it once they answer. If the result says `call_again`, call `ask` again with `question_id`. The answers come back in `reply`, in the person's own words; write the result's `tell_terminal` line in chat. To ask your person to let you see content withheld from you, pass `approval` (`url_or_id`, optional `thread_id`, and `author`, a public ID from the `withheld` summary's `author_ids`) instead of `questions`: the result's `status` is `approved`, `declined` or `open` (then call again with `approval_id`).",
+      "description": "Ask the person one to four questions in Clax and wait for the answers (up to `timeout_s`, default 600 s). Each question has a short `header` (at most 12 characters) and two to four `options` (`label`, optional `description`, `preview` text, `recommended`) or none for a free-text answer; `multi_select` allows several; the person may also type an \"Other\" answer. A question's text renders as GitHub-flavoured Markdown, with no images and no raw HTML; option labels and descriptions show as plain text, and a preview verbatim in monospace. Pass `url_or_id` when the question is about a page, and `thread_id` when it arose in one of its threads, so it shows there. With `in_terminal: true`, sending each question's `question` and `header` only, it asks nothing: it shows the person in Clax that you are asking in the terminal, returns at once, and you cancel it once they answer. If the result says `call_again`, call `ask` again with `question_id`. The answers come back in `reply`, in the person's own words; write the result's `tell_terminal` line in chat. To ask your person to let you see content withheld from you, pass `approval` (`url_or_id`, optional `thread_id`, and `author`, a public ID from the `withheld` summary's `author_ids`) instead of `questions`: the result's `status` is `approved`, `declined` or `open` (then call again with `approval_id`).",
       "annotations": {
         "readOnlyHint": false,
         "destructiveHint": false,

@@ -7,7 +7,7 @@ use crate::routes::{
     app_drafts, approvals, artifacts, assets, client_imports, connect, content, docs, drafts,
     extension, feedback, git_token, grants, health, inbox, jobs, live, live_layers, mcp_http,
     people, perf, questions, remotes, room, sample, sessions, sites, snapshot, stream, surface,
-    threads, token, toolpath, viewers, watches, working,
+    tags, threads, token, toolpath, viewers, watches, working,
 };
 #[cfg(not(target_arch = "wasm32"))]
 use crate::routes::{events, mcp, net};
@@ -19,7 +19,7 @@ use axum::{
     extract::DefaultBodyLimit,
     handler::Handler,
     http::StatusCode,
-    routing::{delete, get, post},
+    routing::{delete, get, patch, post, put},
 };
 use clax_http::agent::{self, DeniedToGrants};
 use clax_http::auth::RequireToken;
@@ -125,6 +125,15 @@ fn routes(state: AppState, shutdown: Option<tokio::sync::watch::Sender<bool>>) -
             get(artifacts::get_version),
         )
         .route("/api/artifacts/{aid}/files", get(artifacts::files))
+        .route("/api/tags", get(tags::list).post(tags::create))
+        .route(
+            "/api/tags/{tag_id}",
+            patch(tags::update).delete(tags::delete),
+        )
+        .route(
+            "/api/artifacts/{aid}/tags",
+            put(tags::put_artifact).patch(tags::patch_artifact),
+        )
         .route("/api/artifacts/{aid}/assets", get(assets::list))
         .route(
             "/api/artifacts/{aid}/assets/{asset_id}",
@@ -374,9 +383,10 @@ fn routes(state: AppState, shutdown: Option<tokio::sync::watch::Sender<bool>>) -
         get(net::grants).put(net::grant).delete(net::revoke),
     );
     #[cfg(debug_assertions)]
-    let api_fast = api_fast
-        .route("/api/_test/sleep/{ms}", get(test_sleep))
-        .route("/api/_test/slow_publish/{ms}", post(test_slow_publish));
+    let api_fast = api_fast.route("/api/_test/sleep/{ms}", get(test_sleep));
+    // It sleeps a store call's thread, which a Worker has none of.
+    #[cfg(all(debug_assertions, not(target_arch = "wasm32")))]
+    let api_fast = api_fast.route("/api/_test/slow_publish/{ms}", post(test_slow_publish));
     // The audit context answers every caller, cookie and LAN viewer
     // included (what it reports is the point), so it takes no token and is
     // served by the testkit's daemon alone.
@@ -442,6 +452,7 @@ fn routes(state: AppState, shutdown: Option<tokio::sync::watch::Sender<bool>>) -
             post(artifacts::publish.layer(publish_limit)),
         )
         .route("/api/artifacts/{aid}/fork", post(artifacts::fork))
+        .route("/api/artifacts:new", post(artifacts::create_from_brief))
         // Remotes and pushes wait on a public Clax.
         .route("/api/remotes", get(remotes::list).post(remotes::add))
         .route("/api/remotes/{id}", delete(remotes::remove))
@@ -508,6 +519,7 @@ fn routes(state: AppState, shutdown: Option<tokio::sync::watch::Sender<bool>>) -
         .route("/", get(shell::gallery_page))
         .route("/inbox", get(shell::gallery_page))
         .route("/people", get(shell::gallery_page))
+        .route("/tags", get(shell::gallery_page))
         .route("/a/{aid}", get(shell::artifact_page))
         .route("/a/{aid}/", get(shell::artifact_page))
         .route("/a/{aid}/v/{n}", get(shell::artifact_page))
@@ -590,7 +602,13 @@ fn routes(state: AppState, shutdown: Option<tokio::sync::watch::Sender<bool>>) -
     // The tool set's JSON-RPC adapter: `/mcp` on a Durable Object, beside
     // rmcp's `/mcp` in the daemon.
     let r = r.merge(mcp_http::router(&state));
-    let mut r = r;
+    // A hosted daemon's sign-in, sharing and agent-token routes, under the
+    // layers below as every route is.
+    let mut r = if state.hosted.is_some() {
+        r.merge(crate::hosted::router())
+    } else {
+        r
+    };
     if let Some(tx) = shutdown {
         let tx = std::sync::Arc::new(tx);
         r = r.route(
@@ -649,7 +667,7 @@ async fn test_delay(
         .and_then(|v| v.to_str().ok())
         .and_then(|v| v.parse::<u64>().ok());
     if let Some(ms) = ms {
-        tokio::time::sleep(Duration::from_millis(ms)).await;
+        clax_rt::time::sleep(Duration::from_millis(ms)).await;
     }
     next.run(req).await
 }
@@ -728,14 +746,14 @@ async fn test_sleep(
     _t: RequireToken,
     axum::extract::Path(ms): axum::extract::Path<u64>,
 ) -> Result<StatusCode, ApiError> {
-    tokio::time::sleep(test_sleep_ms(ms)?).await;
+    clax_rt::time::sleep(test_sleep_ms(ms)?).await;
     Ok(StatusCode::OK)
 }
 
 /// Creates an artifact after sleeping inside the blocking closure, publishing the event from the
 /// same closure, so tests can observe write side effects surviving a handler timeout. The
-/// owner's token only.
-#[cfg(debug_assertions)]
+/// owner's token only. Native builds only: the sleep holds a store worker's thread.
+#[cfg(all(debug_assertions, not(target_arch = "wasm32")))]
 async fn test_slow_publish(
     axum::extract::State(s): axum::extract::State<AppState>,
     _d: DeniedToGrants,
@@ -745,6 +763,8 @@ async fn test_slow_publish(
     let sleep = test_sleep_ms(ms)?;
     let events = s.events.clone();
     s.store_call(move |st| {
+        // Tests of the binary wait for this line in its log.
+        tracing::info!("slow publish started");
         std::thread::sleep(sleep);
         let p = clax_core::publish::validate(
             serde_json::from_value(serde_json::json!({
@@ -787,16 +807,11 @@ pub fn build_router_with_shutdown(
 // `/api` host check runs after the rewrite (the later `layer` is outermost),
 // then the credential gate on the rewritten path, and the header checks of
 // agent credentials after all three, before any route.
-// A hosted daemon ([`clax_http::hosted`]) serves its sign-in routes too, and
-// its gate stands in for the `/api` host check, which admits only this
-// machine's names.
+// On a hosted daemon ([`clax_http::hosted`]), whose own routes `routes`
+// mounts, its gate stands in for the `/api` host check, which admits only
+// this machine's names.
 fn wrap(state: AppState, inner: axum::Router) -> axum::Router {
     let hosted = state.hosted.is_some();
-    let inner = if hosted {
-        inner.merge(crate::hosted::router(state.clone()))
-    } else {
-        inner
-    };
     // Innermost: a request's git token revocations are done before it
     // answers (`git_remotes::settle_layer`).
     let r = axum::Router::new()
@@ -825,4 +840,16 @@ fn wrap(state: AppState, inner: axum::Router) -> axum::Router {
         state,
         host::rewrite_artifact_host,
     ))
+}
+
+#[cfg(test)]
+mod tests {
+    /// A Worker builds this router too, debug test routes included, and has
+    /// no tokio timer: the routes sleep on `clax_rt::time` (crate docs).
+    #[test]
+    fn the_routes_sleep_on_clax_rt() {
+        let src = include_str!("router.rs");
+        let src = &src[..src.find("#[cfg(test)]\nmod tests").unwrap()];
+        assert!(!src.contains(concat!("tokio", "::time::")));
+    }
 }

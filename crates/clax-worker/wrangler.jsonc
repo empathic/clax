@@ -72,6 +72,12 @@
     // (/setup with the SETUP_SECRET secret, invites, sign-in links,
     // guests), each person's rights, agent tokens on /mcp.
     "HOSTED": "0",
+    // A hosted instance's Terms of Service and Privacy Policy: "bundled"
+    // serves docs/legal's at /terms and /privacy and asks each person to
+    // agree to them; empty shows none. A deployment with its own sets
+    // TERMS_URL, PRIVACY_URL and LEGAL_VERSION instead (deploy.mjs
+    // --legal, --terms-url, --privacy-url, --legal-version).
+    "LEGAL": "",
     // A hosted instance's content origin: a host of its own that serves
     // artifact content and nothing else; empty serves content on the
     // public origin, sandboxed (and on <id>.localhost under wrangler dev).

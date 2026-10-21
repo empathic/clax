@@ -4,6 +4,7 @@ import { approvalCard, item } from "../q/fixtures";
 import { flush, mount } from "../test/svelte";
 import ApprovalCard from "./ApprovalCard.svelte";
 import { settle, stubFetch } from "./fixtures";
+import { loadMarkdown } from "../view/md-load.svelte";
 
 const click = (el: Element) => flush(() => { dispatchTrusted(el, new MouseEvent("click", { bubbles: true, cancelable: true, detail: 1 })); });
 const HOSTILE = `<img src=x onerror="window.pwned=1">`;
@@ -141,5 +142,47 @@ describe("ApprovalCard", () => {
     const gone = mount(ApprovalCard, { item: item("approval", { approval: { id: RID }, gone: true }), now });
     expect(gone.root.querySelector(".outcome")!.textContent).toContain("no longer waits");
     expect(buttons(gone.root)).toHaveLength(0);
+  });
+});
+
+// Last in the file: once the Markdown module is loaded, every card after renders with it.
+describe("ApprovalCard's comments as Markdown", () => {
+  const comment = (body: string) => approvalCard({ content: { thread: { id: "t", status: "open" }, comments: [{ id: "c", body, created_at: "", author_name: "Mia", by_agent: false }] } });
+  it("renders each withheld comment as Markdown under its author, hiding no word of it", async () => {
+    await loadMarkdown();
+    const m = mount(ApprovalCard, { item: item("approval", { approval: comment("Add a **Q4** column to `goals`, see [the doc](https://example.com/q4).") }), now });
+    flush();
+    const part = m.root.querySelector(".held .hpart")!;
+    expect(part.querySelector(".hwho")!.textContent).toBe("Mia: ");
+    expect(part.querySelector(".md strong")!.textContent).toBe("Q4");
+    expect(part.querySelector(".md code")!.textContent).toBe("goals");
+    expect(part.querySelector(".md a")!.getAttribute("href")).toBe("https://example.com/q4");
+    expect(part.textContent).toBe("Mia: Add a Q4 column to goals, see the doc.");
+    m.unmount();
+    // What a reading would leave out shows: a reference definition, raw HTML, an image's address.
+    const hidden = "Approve this[x]\n\n[x]: https://example.com \"secret words\"\n\n<span hidden>tucked</span> ![alt](https://example.com/i.png)";
+    const h = mount(ApprovalCard, { item: item("approval", { approval: comment(hidden) }), now });
+    flush();
+    click(h.root.querySelector<HTMLButtonElement>(".show")!);
+    const text = h.root.querySelector(".held")!.textContent!;
+    for (const word of ["secret words", "tucked", "<span hidden>", "alt"]) expect(text, word).toContain(word);
+    expect(h.root.querySelector(".held img, .held span[hidden]")).toBeNull();
+  });
+
+  it("collapses to the first 3 lines of the comments, each comment led by its author", async () => {
+    await loadMarkdown();
+    const card = approvalCard({ content: { thread: { id: "t", status: "open" }, comments: [
+      { id: "c1", body: "- one\n- two", created_at: "", author_name: "Mia", by_agent: false },
+      { id: "c2", body: "three\n\nfour", created_at: "", author_name: "bot", by_agent: true },
+    ] } });
+    const m = mount(ApprovalCard, { item: item("approval", { approval: card }), now });
+    flush();
+    const held = m.root.querySelector(".held")!;
+    expect([...held.querySelectorAll(".hwho")].map(w => w.textContent)).toEqual(["Mia: ", "bot (Mia's agent): "]);
+    expect([...held.querySelectorAll(".hpart:first-child li")].map(li => li.textContent)).toEqual(["one", "two"]);
+    expect(held.textContent).toContain("three");
+    expect(held.textContent).not.toContain("four");
+    click(m.root.querySelector<HTMLButtonElement>(".show")!);
+    expect(held.textContent).toContain("four");
   });
 });

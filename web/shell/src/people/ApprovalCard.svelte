@@ -11,12 +11,14 @@
   // request in a thread); always on this page; always everywhere; decline.
   // A decision is the browser's (M20); the card then says what was decided,
   // and keeps the keyboard's focus. A decided or withdrawn request says so,
-  // and a gone one says it no longer waits. Every name, title and comment
-  // is text. Its styles travel with the inbox page's chunk (injected on
+  // and a gone one says it no longer waits. Every name and title is text;
+  // a comment is Markdown (`ui/Markdown.svelte`), whose reading shows every
+  // word of it, so nothing withheld is hidden from the approver. Its styles travel with the inbox page's chunk (injected on
   // mount); state shows in data attributes.
   import type { InboxApproval, InboxItem } from "../api";
   import { relativeTime } from "../format";
   import { approvalOf, heldAnchor, heldCount, personName } from "../q/inbox-model";
+  import Markdown from "../ui/Markdown.svelte";
   import * as api from "./api";
 
   type Scope = "thread" | "artifact" | "everywhere" | "decline";
@@ -35,25 +37,38 @@
   // Within a sentence, an unnamed owner is "the owner".
   const named = $derived(author === "The owner" ? "the owner" : author);
   const page = $derived(a?.via_page);
-  // The content as lines: a comment's first line led by its author.
-  type Line = { who?: string; text: string };
-  const lines = $derived.by((): Line[] => {
+  // The content as parts, each led by whose or what it is: a comment's
+  // lines (Markdown), or one line of what a page's request holds.
+  type Part = { who: string; lines: string[]; md?: boolean };
+  const parts = $derived.by((): Part[] => {
     const c = a?.content;
     if (!c) return [];
     if ("comments" in c) {
       // Every comment is the request's author's (or an agent of theirs).
-      return c.comments.flatMap(x => x.body.split(/\r?\n/).map((text, n) => (n ? { text } : { who: x.by_agent ? `${x.author_name ?? "An agent"} (${named}'s agent)` : author, text })));
+      return c.comments.map(x => ({ who: x.by_agent ? `${x.author_name ?? "An agent"} (${named}'s agent)` : author, lines: x.body.split(/\r?\n/), md: true }));
     }
-    const out: Line[] = [];
-    if (c.title) out.push({ who: "Title", text: c.title });
-    if (c.description) out.push({ who: "Description", text: c.description });
-    if (c.files.length) out.push({ who: "Files", text: c.files.join(", ") });
-    if (c.docs.length) out.push({ who: "Data", text: c.docs.join(", ") });
-    if (c.assets.length) out.push({ who: "Uploads", text: c.assets.map(x => x.content_type).join(", ") });
+    const out: Part[] = [];
+    if (c.title) out.push({ who: "Title", lines: [c.title] });
+    if (c.description) out.push({ who: "Description", lines: [c.description] });
+    if (c.files.length) out.push({ who: "Files", lines: [c.files.join(", ")] });
+    if (c.docs.length) out.push({ who: "Data", lines: [c.docs.join(", ")] });
+    if (c.assets.length) out.push({ who: "Uploads", lines: [c.assets.map(x => x.content_type).join(", ")] });
     return out;
   });
   /** How many lines show before Show all. */
   const LINES = 3;
+  const total = $derived(parts.reduce((n, p) => n + p.lines.length, 0));
+  // Collapsed, the parts cut to their first LINES lines.
+  const firstLines = (ps: Part[]): Part[] => {
+    let left = LINES;
+    const out: Part[] = [];
+    for (const p of ps) {
+      if (left <= 0) break;
+      out.push({ ...p, lines: p.lines.slice(0, left) });
+      left -= p.lines.length;
+    }
+    return out;
+  };
   // Whether the collapsed text overflows its 3-line clamp (a line that
   // wraps), measured from its laid-out box after each render and again
   // whenever the box changes size, so no clipped text goes without Show all.
@@ -76,8 +91,8 @@
     addEventListener("resize", measure);
     return () => removeEventListener("resize", measure);
   });
-  const long = $derived(lines.length > LINES || clipped);
-  const shown = $derived(all ? lines : lines.slice(0, LINES));
+  const long = $derived(total > LINES || clipped);
+  const shown = $derived(all ? parts : firstLines(parts));
   const OUTCOME: Record<string, string> = { thread: "Allowed in this thread", artifact: "Allowed on this page", everywhere: "Allowed everywhere" };
   const outcome = $derived(status === "approved" ? `${OUTCOME[scope ?? ""] ?? "Allowed"}` : status === "declined" ? "Declined" : status === "withdrawn" ? "Withdrawn: nothing waits on it any more" : "This request no longer waits for you");
   const threadUrl = $derived(a ? `/a/${encodeURIComponent(a.artifact_id)}${a.thread_id ? `?thread=${encodeURIComponent(a.thread_id)}` : ""}` : null);
@@ -106,8 +121,8 @@
     </header>
     {#if page}<p class="via">{page.authors.map(personName).join(", ")}'s page, via {personName(page.viewer)}'s browser</p>{/if}
     <p class="what">{heldCount(a)} on {#if title}<a href={threadUrl}>{title}</a>{:else}one page{/if}{#if anchor}{` ${anchor}`}{/if}</p>
-    {#if lines.length}
-      <div class="held" id={`held-${id}`} data-open={all ? "" : undefined}><div class="htext">{#each shown as l, n (n)}{#if l.who}<span class="hwho">{`${l.who}: `}</span>{/if}{l.text}{n < shown.length - 1 ? "\n" : ""}{/each}</div></div>
+    {#if parts.length}
+      <div class="held" id={`held-${id}`} data-open={all ? "" : undefined}><div class="htext" data-clipped={clipped && !all ? "" : undefined}>{#each shown as l, n (n)}<div class="hpart"><span class="hwho">{`${l.who}: `}</span>{#if l.md}<Markdown text={l.lines.join("\n")} />{:else}{l.lines.join("\n")}{/if}</div>{/each}</div></div>
       {#if long}<button type="button" class="show ghost" aria-expanded={all} aria-controls={`held-${id}`} onclick={() => { all = !all; }}>{all ? "Show less" : "Show all"}</button>{/if}
     {/if}
   {/if}
@@ -139,9 +154,14 @@
     .acard .what a { color: var(--fg); text-decoration: underline; text-decoration-color: var(--border-strong); text-underline-offset: 2px; }
     .acard .what a:hover { text-decoration-color: currentColor; }
     .acard .held { margin: 2px 0 0; padding: 8px 10px; border-radius: var(--radius-sm); background: var(--bg); border: 1px solid var(--border); white-space: pre-wrap; overflow-wrap: anywhere; font: 13px/1.45 var(--font); }
-    /* Collapsed, a long line wraps to 3 lines at most too. */
-    .acard .held:not([data-open]) .htext { display: -webkit-box; -webkit-box-orient: vertical; -webkit-line-clamp: 3; line-clamp: 3; overflow: hidden; }
-    .acard .hwho { font-weight: 600; }
+    /* Collapsed, the text is 3 lines tall at most, however its lines wrap. */
+    .acard .held:not([data-open]) .htext { max-height: 4.35em; overflow: hidden; }
+    /* Text cut mid-line fades out above Show all. */
+    .acard .held:not([data-open]) .htext[data-clipped] { mask-image: linear-gradient(to bottom, #000 calc(100% - 1.2em), transparent); }
+    /* Whose a part is leads its first line; a comment's block other than a paragraph starts below it. */
+    .acard .hpart { display: flow-root; }
+    .acard .hwho { float: left; font-weight: 600; white-space: pre; }
+    .acard .hpart .md > :not(p) { clear: left; }
     .acard .show { justify-self: start; min-height: 28px; padding: 2px 8px; font-size: 12.5px; }
     .acard .acts { display: flex; flex-wrap: wrap; gap: 6px; margin-top: 4px; }
     .acard .acts button { max-width: 100%; white-space: normal; overflow-wrap: anywhere; text-align: start; }

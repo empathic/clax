@@ -1,4 +1,4 @@
-//! The Clax MCP tool set: thirty tools that call the daemon's REST API.
+//! The Clax MCP tool set: thirty-two tools that call the daemon's REST API.
 
 use crate::client::{ClientError, DaemonClient};
 use crate::render;
@@ -108,6 +108,10 @@ pub struct PublishArgs {
     pub note: Option<String>,
     /// IDs of the comment threads this version addresses.
     pub addresses: Option<Vec<String>>,
+    /// Existing tags (names, from `tags`) to add to the artifact once
+    /// published. Only the owner makes tags: an unknown one fails before
+    /// anything is published, listing the tags there are.
+    pub tags: Option<Vec<String>>,
 }
 
 #[derive(Clone, Debug, Default, Deserialize, JsonSchema)]
@@ -132,6 +136,8 @@ pub struct ListArgs {
     pub limit: Option<u32>,
     /// `all` (default) lists every artifact; `mine` only those this session created.
     pub scope: Option<ListScope>,
+    /// Only artifacts carrying every one of these tags (names or IDs).
+    pub tags: Option<Vec<String>>,
 }
 
 /// Which artifacts `list` returns.
@@ -144,6 +150,21 @@ pub enum ListScope {
     #[default]
     All,
 }
+
+#[derive(Clone, Debug, Default, Deserialize, JsonSchema)]
+#[serde(deny_unknown_fields)]
+pub struct TagArgs {
+    /// Artifact URL or ID.
+    pub url_or_id: String,
+    /// Existing tags (names, from `tags`) to add.
+    pub add: Option<Vec<String>>,
+    /// Tags to remove.
+    pub remove: Option<Vec<String>>,
+}
+
+#[derive(Clone, Debug, Default, Deserialize, JsonSchema)]
+#[serde(deny_unknown_fields)]
+pub struct TagsArgs {}
 
 #[derive(Clone, Debug, Default, Deserialize, JsonSchema)]
 #[serde(deny_unknown_fields)]
@@ -229,7 +250,7 @@ pub struct CommentsReplyArgs {
     pub url_or_id: String,
     /// The thread to reply to.
     pub thread_id: String,
-    /// The reply, shown to the person under its harness's name, such as `claude`.
+    /// The reply, in Markdown, shown to the person under its harness's name, such as `claude`.
     pub text: String,
     /// On a live page: the page now shows the fix, so the thread is listed as
     /// addressed in the page's next snapshot. Not for artifacts (publish with
@@ -584,8 +605,23 @@ pub struct DbBatchArgs {
 /// A tool's outcome before rendering: the success object, or a finished error result.
 type Outcome = Result<Value, CallToolResult>;
 
+/// The `timeout` message of a publish that creates an artifact.
+const CREATE_TIMEOUT: &str = "the daemon did not respond in time, and the artifact may have been created: call list (newest first, after pinned artifacts) and look for it by title before publishing it again";
+
 fn invalid(message: impl Into<String>) -> CallToolResult {
     render::error("invalid_args", message, json!({}))
+}
+
+/// The names of `tags` (an artifact's `[{id, name, colour}]`), in order.
+fn tag_names(tags: &Value) -> Value {
+    json!(
+        tags.as_array()
+            .map(Vec::as_slice)
+            .unwrap_or_default()
+            .iter()
+            .filter_map(|t| t["name"].as_str())
+            .collect::<Vec<_>>()
+    )
 }
 
 fn not_found(message: impl Into<String>) -> CallToolResult {
@@ -899,6 +935,9 @@ pub struct ClaxTools {
     git: Option<crate::git::GitCapture>,
     /// The tool-call reports still being sent.
     reports: crate::calls::Reports,
+    /// Where a tool reads the time to keep within its wait (the system
+    /// clock unless [`ClaxTools::with_clock`] gives another).
+    clock: std::sync::Arc<dyn clax_core::working::Clock>,
     tool_router: std::sync::Arc<ToolRouter<Self>>,
 }
 
@@ -966,6 +1005,7 @@ impl ClaxTools {
             ask_surface: Default::default(),
             git: None,
             reports: Default::default(),
+            clock: std::sync::Arc::new(clax_core::working::SystemClock),
             tool_router: std::sync::Arc::new(Self::tool_router()),
         }
     }
@@ -974,6 +1014,12 @@ impl ClaxTools {
     /// that changes history (spec §9.3).
     pub fn with_git(mut self, git: crate::git::GitCapture) -> ClaxTools {
         self.git = Some(git);
+        self
+    }
+
+    /// These tools reading the time from `clock`.
+    pub fn with_clock(mut self, clock: std::sync::Arc<dyn clax_core::working::Clock>) -> ClaxTools {
+        self.clock = clock;
         self
     }
 
@@ -1130,10 +1176,9 @@ impl ClaxTools {
     /// `tools/call` without an rmcp service around it, for a transport
     /// that answers JSON-RPC itself (`crate::http`): the named tool's
     /// method called directly, under its own call ID and reported, as
-    /// [`ServerHandler::call_tool`] runs it. The answers are the tool
-    /// router's: arguments that do not deserialize are an error result
-    /// naming why, and a name that is no tool is `invalid_params` "tool not
-    /// found".
+    /// [`ServerHandler::call_tool`] runs it. Arguments that do not
+    /// deserialize are an `invalid_args` error result naming why, and a
+    /// name that is no tool is `invalid_params` "tool not found".
     pub async fn call_direct(
         &self,
         request: rmcp::model::CallToolRequestParams,
@@ -1375,14 +1420,37 @@ impl ClaxTools {
             }
             body["addresses"] = json!(t);
         }
+        let tags = a.tags.unwrap_or_default();
+        if !tags.is_empty() {
+            self.check_tags(&tags).await?;
+        }
         let res = match target {
-            None => self.client.create(&body).await,
+            // A create past its deadline may have made the artifact, whose
+            // ID the agent never saw: it is told to look for it before
+            // creating another.
+            None => match self.client.create(&body).await {
+                Err(e @ ClientError::Timeout(_)) => {
+                    return Err(render::client_error_with(
+                        e,
+                        self.daemon_log(),
+                        json!({"message": CREATE_TIMEOUT}),
+                    ));
+                }
+                r => r,
+            },
             Some(id) => {
                 let current = match a.if_version {
                     Some(v) => v,
                     None => {
                         let got = self.client.get(&id).await.map_err(|e| self.fail(e))?;
-                        got["artifact"]["current_version"].as_u64().unwrap_or(0) as u32
+                        got["artifact"]["current_version"]
+                            .as_u64()
+                            .and_then(|n| u32::try_from(n).ok())
+                            .ok_or_else(|| {
+                                self.fail(ClientError::BadResponse(
+                                    "the artifact has no current_version".into(),
+                                ))
+                            })?
                     }
                 };
                 body["if_version"] = json!(current);
@@ -1400,7 +1468,7 @@ impl ClaxTools {
             .as_object()
             .map(|m| m.keys().collect())
             .unwrap_or_default();
-        Ok(json!({
+        let mut out = json!({
             "artifact_id": id,
             "url": self.artifact_url(id),
             "version": res["version"]["n"],
@@ -1409,7 +1477,51 @@ impl ClaxTools {
             "note": res["version"]["note"],
             "note_truncated": res["note_truncated"],
             "addressed": res["version"]["addresses"],
-        }))
+            "tags": tag_names(&res["artifact"]["tags"]),
+        });
+        // The version is published whatever the tags' fate: a refusal is
+        // reported beside it, never as the publish's failure.
+        if !tags.is_empty() {
+            match self.client.edit_tags(id, &json!({"add": tags})).await {
+                Ok(r) => out["tags"] = tag_names(&r["tags"]),
+                Err(ClientError::Api { error, .. }) => out["tags_error"] = error,
+                Err(e) => out["tags_error"] = json!({"message": e.to_string()}),
+            }
+        }
+        Ok(out)
+    }
+
+    /// Refuses `wanted` tags that name no tag (by ID or by name, whatever
+    /// its case), before a publish applies them, naming the tags there are.
+    async fn check_tags(&self, wanted: &[String]) -> std::result::Result<(), CallToolResult> {
+        let res = self.client.tags().await.map_err(|e| self.fail(e))?;
+        let all = res["tags"].as_array().cloned().unwrap_or_default();
+        let known = |w: &str| {
+            let w = w.trim();
+            all.iter().any(|t| {
+                t["id"].as_str() == Some(w)
+                    || t["name"]
+                        .as_str()
+                        .is_some_and(|n| clax_core::tags::fold(n) == clax_core::tags::fold(w))
+            })
+        };
+        if let Some(bad) = wanted.iter().find(|w| !known(w)) {
+            let names: Vec<&str> = all.iter().filter_map(|t| t["name"].as_str()).collect();
+            let there = if names.is_empty() {
+                "there are no tags yet".to_string()
+            } else {
+                format!("the tags are: {}", names.join(", "))
+            };
+            return Err(render::error(
+                "unknown_tag",
+                format!(
+                    "no tag is named '{}': {there}. Only the owner makes tags; nothing was published",
+                    bad.trim()
+                ),
+                json!({}),
+            ));
+        }
+        Ok(())
     }
 
     /// The error result for a publish conflict: the daemon's error plus a summary
@@ -1497,7 +1609,13 @@ impl ClaxTools {
     }
 
     async fn do_list(&self, a: ListArgs) -> Outcome {
-        let res = self.client.list().await.map_err(|e| self.fail(e))?;
+        let tags = a.tags.clone().unwrap_or_default();
+        let res = if tags.is_empty() {
+            self.client.list().await
+        } else {
+            self.client.list_tagged(&tags).await
+        }
+        .map_err(|e| self.fail(e))?;
         let session_id = self.session().map(|s| s.id);
         let limit = a.limit.map_or(usize::MAX, |l| l as usize);
         let mine = |x: &&Value| match a.scope.unwrap_or_default() {
@@ -1521,6 +1639,7 @@ impl ClaxTools {
                     "title": x["title"],
                     "version": x["current_version"],
                     "pinned": x["pinned"],
+                    "tags": tag_names(&x["tags"]),
                     "updated_at": x["updated_at"],
                     "owner_session_id": x["owner_session_id"],
                 })
@@ -1533,6 +1652,43 @@ impl ClaxTools {
         let id = self.resolve_id(&a.url_or_id).await?;
         self.client.delete(&id).await.map_err(|e| self.fail(e))?;
         Ok(json!({"artifact_id": id, "deleted": true}))
+    }
+
+    async fn do_tag(&self, a: TagArgs) -> Outcome {
+        let id = self.resolve_id(&a.url_or_id).await?;
+        let (add, remove) = (a.add.unwrap_or_default(), a.remove.unwrap_or_default());
+        if add.is_empty() && remove.is_empty() {
+            return Err(invalid("pass `add` or `remove` (tag names)"));
+        }
+        let res = self
+            .client
+            .edit_tags(&id, &json!({"add": add, "remove": remove}))
+            .await
+            .map_err(|e| self.fail(e))?;
+        Ok(json!({
+            "artifact_id": id,
+            "tags": tag_names(&res["tags"]),
+            "changed": res["changed"],
+        }))
+    }
+
+    async fn do_tags(&self) -> Outcome {
+        let res = self.client.tags().await.map_err(|e| self.fail(e))?;
+        let tags: Vec<Value> = res["tags"]
+            .as_array()
+            .map(Vec::as_slice)
+            .unwrap_or_default()
+            .iter()
+            .map(|t| {
+                json!({
+                    "name": t["name"],
+                    "colour": t["colour"],
+                    "description": t["description"],
+                    "count": t["count"],
+                })
+            })
+            .collect();
+        Ok(json!({"tags": tags}))
     }
 
     async fn set_pinned(&self, a: TargetArgs, pinned: bool) -> Outcome {
@@ -1583,7 +1739,14 @@ impl ClaxTools {
             .timeout_s
             .unwrap_or_else(|| default_ask_wait(&session.harness))
             .clamp(MIN_WAIT_S, max_ask_wait(&session.harness));
-        let started = std::time::Instant::now();
+        // A push after the person answers starts only while `wait` has
+        // time left (under Codex, so the call ends inside its tool
+        // timeout); else the next call makes it.
+        let started = self.clock.now();
+        let left = || {
+            let spent = (self.clock.now() - started).num_seconds().max(0) as u64;
+            wait.saturating_sub(spent)
+        };
         let mut body = json!({"remote": a.remote, "mode": a.mode, "question_id": a.question_id});
         loop {
             let res = self
@@ -1602,7 +1765,6 @@ impl ClaxTools {
                 }));
             }
             let qid = res["question_id"].as_str().unwrap_or_default().to_string();
-            let left = wait.saturating_sub(started.elapsed().as_secs());
             let pending = || {
                 json!({
                     "status": "approval_pending",
@@ -1612,16 +1774,26 @@ impl ClaxTools {
                     "note": "The person has not answered yet: call publish_public again with this question_id to keep waiting.",
                 })
             };
-            if left == 0 {
+            let wait_s = left();
+            if wait_s == 0 {
                 return Ok(pending());
             }
             let q = self
                 .client
-                .ask_wait(&qid, left)
+                .ask_wait(&qid, wait_s)
                 .await
                 .map_err(|e| self.fail(e))?;
             if q["question"]["status"] == "open" {
                 return Ok(pending());
+            }
+            if left() == 0 {
+                return Ok(json!({
+                    "status": "answered",
+                    "question_id": qid,
+                    "url": res["inbox_url"],
+                    "call_again": true,
+                    "note": "The person answered as this call's wait ran out: call publish_public again with this question_id to publish what they approved.",
+                }));
             }
             body["question_id"] = json!(qid);
         }
@@ -1667,6 +1839,9 @@ impl ClaxTools {
         if paths.is_empty() {
             return Err(invalid("pass file_path or file_paths"));
         }
+        // Every file is read and checked against the daemon's type and size
+        // rules before any is uploaded, so a refusal it would give part way
+        // is given before anything is stored.
         let mut files = Vec::with_capacity(paths.len());
         for p in &paths {
             let path = self.local_path(p)?;
@@ -1675,16 +1850,44 @@ impl ClaxTools {
                 .file_name()
                 .map(|n| n.to_string_lossy().into_owned())
                 .unwrap_or_else(|| "file".to_string());
-            files.push((name, bytes));
+            let content_type = clax_core::publish::content_type_for(&name);
+            if !clax_core::publish::is_asset_type(&content_type) {
+                return Err(render::error(
+                    "unsupported_type",
+                    format!("{p}: '{content_type}' is not an accepted asset type"),
+                    json!({"path": p}),
+                ));
+            }
+            if bytes.len() as u64 > clax_core::publish::MAX_ASSET_BYTES {
+                return Err(render::error(
+                    "asset_too_large",
+                    format!(
+                        "{p}: asset exceeds {} bytes",
+                        clax_core::publish::MAX_ASSET_BYTES
+                    ),
+                    json!({"path": p}),
+                ));
+            }
+            files.push((name, content_type, bytes));
         }
         let mut assets = Vec::with_capacity(files.len());
-        for (name, bytes) in files {
-            let content_type = clax_core::publish::content_type_for(&name);
-            let res = self
+        for ((name, content_type, bytes), p) in files.into_iter().zip(&paths) {
+            let res = match self
                 .client
                 .upload_asset(&id, &name, &content_type, bytes)
                 .await
-                .map_err(|e| self.fail(e))?;
+            {
+                Ok(res) => res,
+                // The files uploaded before this one stay uploaded: the
+                // error names them, so a retry sends only the rest.
+                Err(e) => {
+                    return Err(render::client_error_with(
+                        e,
+                        self.daemon_log(),
+                        json!({"path": p, "uploaded": assets}),
+                    ));
+                }
+            };
             let asset = &res["asset"];
             assets.push(json!({
                 "id": asset["id"],
@@ -2919,9 +3122,10 @@ macro_rules! direct_tools {
         const DIRECT: &[&str] = &[$(stringify!($tool)),*];
 
         impl ClaxTools {
-            /// Calls tool `name`'s method with `arguments`, as the tool
-            /// router does: arguments that do not deserialize are an error
-            /// result naming why, not a protocol error.
+            /// Calls tool `name`'s method with `arguments`: arguments that
+            /// do not deserialize are an `invalid_args` error result naming
+            /// why, shaped as every other error result, not a protocol
+            /// error.
             async fn invoke(
                 &self,
                 name: &str,
@@ -2931,9 +3135,7 @@ macro_rules! direct_tools {
                 let res = match name {
                     $(stringify!($tool) => match parse_json_object(arguments) {
                         Ok(args) => self.$tool(Parameters(args)).await,
-                        Err(e) => Ok(CallToolResult::error(vec![
-                            rmcp::model::ContentBlock::text(e.message),
-                        ])),
+                        Err(e) => Ok(invalid(e.message)),
                     },)*
                     _ => return Err(McpError::invalid_params("tool not found", None)),
                 };
@@ -2953,6 +3155,8 @@ direct_tools!(
     open,
     pin,
     unpin,
+    tag,
+    tags,
     asset_upload,
     status,
     comments_read,
@@ -2979,7 +3183,7 @@ direct_tools!(
 #[tool_router]
 impl ClaxTools {
     #[tool(
-        description = "Publish an HTML page as a new artifact, or as a new version of an existing one (pass `id` or `url`, with `if_version`). Give the page as `html` or `file_path`, plus optional supporting `files`. Returns the artifact ID, its URL for the person, and the new version number. Add a short `note` (at most 280 characters) saying what changed, and list the comment threads this version addresses in `addresses`; threads you were marked working on are added for you. The person sees both as the version's changelog; nothing is resolved by it.",
+        description = "Publish an HTML page as a new artifact, or as a new version of an existing one (pass `id` or `url`, with `if_version`). Give the page as `html` or `file_path`, plus optional supporting `files`. Returns the artifact ID, its URL for the person, and the new version number. Add a short `note` (at most 280 characters) saying what changed, and list the comment threads this version addresses in `addresses`; threads you were marked working on are added for you. The person sees both as the version's changelog; nothing is resolved by it. Pass `tags` to add existing tags (see `tags`).",
         annotations(
             read_only_hint = false,
             destructive_hint = false,
@@ -3006,7 +3210,7 @@ impl ClaxTools {
     }
 
     #[tool(
-        description = "List artifacts, pinned first and then most recently updated, with their URLs and current versions. `scope: mine` lists only those this session created.",
+        description = "List artifacts, pinned first and then most recently updated, with their URLs, current versions and tags. `scope: mine` lists only those this session created; `tags` only those carrying every tag named.",
         annotations(read_only_hint = true, open_world_hint = false)
     )]
     pub async fn list(
@@ -3113,6 +3317,33 @@ impl ClaxTools {
     }
 
     #[tool(
+        description = "Add or remove tags on an artifact. Tags are the owner's list (see `tags`); only existing tags apply, and an unknown one fails, listing the tags there are. Needs the right to administer the artifact: its owner, its maker, and their agents. Returns the artifact's tags after.",
+        annotations(
+            read_only_hint = false,
+            destructive_hint = false,
+            idempotent_hint = true,
+            open_world_hint = false
+        )
+    )]
+    pub async fn tag(
+        &self,
+        Parameters(args): Parameters<TagArgs>,
+    ) -> Result<CallToolResult, McpError> {
+        self.finish(self.do_tag(args).await).await
+    }
+
+    #[tool(
+        description = "List the tags artifacts can carry: each one's name, colour, description and how many artifacts you can see carry it. Only the owner makes and changes tags; apply them with `tag` or `publish`'s `tags`.",
+        annotations(read_only_hint = true, open_world_hint = false)
+    )]
+    pub async fn tags(
+        &self,
+        Parameters(_args): Parameters<TagsArgs>,
+    ) -> Result<CallToolResult, McpError> {
+        self.finish(self.do_tags().await).await
+    }
+
+    #[tool(
         description = "Upload local files (images, video, fonts, data) as assets of an artifact. Returns each asset's URL for the page to reference.",
         annotations(
             read_only_hint = false,
@@ -3162,7 +3393,7 @@ impl ClaxTools {
     }
 
     #[tool(
-        description = "Reply to a comment thread as the agent; people and agents read its author as your name, your person and your harness, such as `clax-claude (agent, via claude)`. Only threads the person sent to the agent accept agent replies: on other threads the result has `replied: false` and `guidance`, and nothing is written. On a live page, pass `addressed: true` once the page shows your fix.",
+        description = "Reply to a comment thread as the agent; people and agents read its author as your name, your person and your harness, such as `clax-claude (agent, via claude)`. Only threads the person sent to the agent accept agent replies: on other threads the result has `replied: false` and `guidance`, and nothing is written. On a live page, pass `addressed: true` once the page shows your fix. The reply renders as GitHub-flavoured Markdown (lists, code blocks, tables, links), with no images and no raw HTML: an image shows as a link and HTML as its text.",
         annotations(
             read_only_hint = false,
             destructive_hint = false,
@@ -3285,7 +3516,7 @@ impl ClaxTools {
     }
 
     #[tool(
-        description = "Ask the person one to four questions in Clax and wait for the answers (up to `timeout_s`, default 600 s). Each question has a short `header` (at most 12 characters) and two to four `options` (`label`, optional `description`, `preview` text, `recommended`) or none for a free-text answer; `multi_select` allows several; the person may also type an \"Other\" answer. Pass `url_or_id` when the question is about a page, and `thread_id` when it arose in one of its threads, so it shows there. With `in_terminal: true`, sending each question's `question` and `header` only, it asks nothing: it shows the person in Clax that you are asking in the terminal, returns at once, and you cancel it once they answer. If the result says `call_again`, call `ask` again with `question_id`. The answers come back in `reply`, in the person's own words; write the result's `tell_terminal` line in chat. To ask your person to let you see content withheld from you, pass `approval` (`url_or_id`, optional `thread_id`, and `author`, a public ID from the `withheld` summary's `author_ids`) instead of `questions`: the result's `status` is `approved`, `declined` or `open` (then call again with `approval_id`).",
+        description = "Ask the person one to four questions in Clax and wait for the answers (up to `timeout_s`, default 600 s). Each question has a short `header` (at most 12 characters) and two to four `options` (`label`, optional `description`, `preview` text, `recommended`) or none for a free-text answer; `multi_select` allows several; the person may also type an \"Other\" answer. A question's text renders as GitHub-flavoured Markdown, with no images and no raw HTML; option labels and descriptions show as plain text, and a preview verbatim in monospace. Pass `url_or_id` when the question is about a page, and `thread_id` when it arose in one of its threads, so it shows there. With `in_terminal: true`, sending each question's `question` and `header` only, it asks nothing: it shows the person in Clax that you are asking in the terminal, returns at once, and you cancel it once they answer. If the result says `call_again`, call `ask` again with `question_id`. The answers come back in `reply`, in the person's own words; write the result's `tell_terminal` line in chat. To ask your person to let you see content withheld from you, pass `approval` (`url_or_id`, optional `thread_id`, and `author`, a public ID from the `withheld` summary's `author_ids`) instead of `questions`: the result's `status` is `approved`, `declined` or `open` (then call again with `approval_id`).",
         annotations(
             read_only_hint = false,
             destructive_hint = false,
@@ -3430,7 +3661,9 @@ impl ServerHandler for ClaxTools {
     /// Runs a tool call under its own call ID and argument hash (spec §6.7):
     /// every request the tool makes carries them, and once the result is
     /// ready the call is reported in the background, so the report never
-    /// delays the result. A name that is no tool is passed on unrecorded.
+    /// delays the result. Arguments that do not deserialize are an
+    /// `invalid_args` error result ([`ClaxTools::invoke`]). A name that is
+    /// no tool is passed on unrecorded.
     async fn call_tool(
         &self,
         request: rmcp::model::CallToolRequestParams,
@@ -3444,11 +3677,10 @@ impl ServerHandler for ClaxTools {
                 .await;
         }
         let call = self.begin_call(&request.name, request.arguments.as_ref());
-        self.reported(call, async |tools: ClaxTools| {
-            tools
-                .tool_router
-                .call(ToolCallContext::new(&tools, request, context))
-                .await
+        let name = request.name;
+        let arguments = request.arguments.unwrap_or_default();
+        self.reported(call, async move |tools: ClaxTools| {
+            tools.invoke(&name, arguments).await
         })
         .await
     }
@@ -3652,12 +3884,12 @@ mod tests {
         }
     }
 
-    /// Thirty tools, `comments_handoff` (spec 2026-10-08 §16) and
-    /// `where_to_ask` (spec 2026-10-16 §1) among them.
+    /// Thirty-two tools, `comments_handoff` (spec 2026-10-08 §16),
+    /// `where_to_ask` (spec 2026-10-16 §1), `tag` and `tags` among them.
     #[test]
-    fn tool_count_is_30() {
-        assert_eq!(ClaxTools::tool_count(), 30);
-        for name in ["comments_handoff", "where_to_ask"] {
+    fn tool_count_is_32() {
+        assert_eq!(ClaxTools::tool_count(), 32);
+        for name in ["comments_handoff", "where_to_ask", "tag", "tags"] {
             assert!(ClaxTools::tools().iter().any(|t| t.name == name), "{name}");
         }
     }

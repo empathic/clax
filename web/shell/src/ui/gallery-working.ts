@@ -13,7 +13,7 @@ import { pageStream } from "../stream";
 
 export { groups } from "../view/attention-model";
 export { default as HaikuLine } from "./HaikuLine.svelte";
-export { default as PeopleLink } from "../people/PeopleLink.svelte";
+export { default as Links } from "./HeaderLinks.svelte";
 export { default as Markers } from "./Markers.svelte";
 export { default as NeedsGroup } from "./NeedsGroup.svelte";
 export { default as Roster } from "./Roster.svelte";
@@ -58,6 +58,15 @@ export function peoplePage(target: Element): () => void {
   let view: Record<string, unknown> | null = null;
   let gone = false;
   void import("../people/People.svelte").then(p => { if (!gone) view = mount(p.default, { target, props: { stream: pageStream() } }); }, () => {});
+  return () => { gone = true; if (view) void unmount(view); };
+}
+
+/** `/tags`: mounts the Tags page (its own chunk) at the end of `target`,
+ * following the page's stream. The result removes it. */
+export function tagsPage(target: Element): () => void {
+  let view: Record<string, unknown> | null = null;
+  let gone = false;
+  void import("./TagsPage.svelte").then(p => { if (!gone) view = mount(p.default, { target, props: { stream: pageStream() } }); }, () => {});
   return () => { gone = true; if (view) void unmount(view); };
 }
 

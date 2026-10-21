@@ -608,6 +608,7 @@ impl World {
                     .replace("{asset_id}", &s.asset)
                     .replace("{n}", "1")
                     .replace("{gid}", "g")
+                    .replace("{tag_id}", "t_0000000000")
                     .replace("{code}", "c")
                     .replace("{call}", "c")
                     .replace("{ms}", "1")
@@ -878,10 +879,11 @@ impl Call {
 /// What event stream `res` sends up to the end of the frame whose `id:`
 /// line is `until` (the replay's last event), or without one, up to its
 /// first whole frame (a blank line) that is not `event: ready`
-/// (`ready` carries no content). Fails when none comes within 30 s.
+/// (`ready` carries no content). Fails when none comes within the
+/// [`HANG`](crate::HANG) guard.
 async fn first_frame(mut res: reqwest::Response, name: &str, until: Option<&str>) -> String {
     let mut out = Vec::new();
-    let got = tokio::time::timeout(std::time::Duration::from_secs(30), async {
+    let got = tokio::time::timeout(crate::HANG, async {
         while let Ok(Some(chunk)) = res.chunk().await {
             out.extend_from_slice(&chunk);
             let done = match until {

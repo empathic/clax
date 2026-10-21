@@ -1542,9 +1542,12 @@ impl Store {
         t: i64,
         nonce: &str,
     ) -> Result<Option<(super::approvals::Approval, clax_core::feedback::Touched)>> {
-        let owner = self.owner_viewer(false)?;
-        let owner_pid = owner.public_id.clone();
-        let found = self.with_tx(|tx| {
+        let owner_pid = self.owner_viewer(false)?.public_id;
+        #[cfg(test)]
+        self.point("people.owner_answer.approve");
+        // The checks and the approval are one transaction: a grant revoked
+        // or disconnected meanwhile approves nothing.
+        self.with_tx(|tx| {
             if !matches(
                 continue_token,
                 stored_hash(tx, gid, "continue_sha256")?.as_deref(),
@@ -1594,19 +1597,20 @@ impl Store {
                     "this person has already decided about the owner's content: change it in People",
                 ));
             }
-            Ok(Some((person, person_actor(tx, gid)?)))
-        })?;
-        let Some((person, actor)) = found else {
-            return Ok(None);
-        };
-        self.approve_touched(
-            &acting(ctx, actor),
-            Some(&person),
-            &owner.public_id,
-            super::approvals::Scope::Everywhere,
-            super::approvals::Via::Connect,
-        )
-        .map(Some)
+            let actor = person_actor(tx, gid)?;
+            let mut touched = clax_core::feedback::Touched::default();
+            let a = self.approve_in(
+                tx,
+                &acting(ctx, actor),
+                Some(&person),
+                &owner_pid,
+                super::approvals::Scope::Everywhere,
+                super::approvals::Via::Connect,
+                None,
+                &mut touched,
+            )?;
+            Ok(Some((a, touched)))
+        })
     }
 
     /// Ends grant `gid` (`by`): its tokens are revoked and its live sessions
@@ -2909,6 +2913,35 @@ pub(crate) mod tests {
         assert_eq!(
             code(st.approve_owner_on_connect(DAEMON, &g.id, cont.expose(), t(), &n())),
             "answer_closed"
+        );
+        assert!(st.live_approvals(g.person.as_deref()).unwrap().is_empty());
+    }
+
+    #[test]
+    fn a_grant_revoked_while_answering_makes_no_approval() {
+        let (_d, _c, st) = store();
+        let (_, c) = st
+            .create_invite(DAEMON, InvitePerson::New("Sam".into()), None)
+            .unwrap();
+        let GrantStart::Approved {
+            grant: g,
+            continue_token,
+            ..
+        } = st
+            .request_grant(DAEMON, grant(KEY_A, Some(c.expose())))
+            .unwrap()
+        else {
+            panic!()
+        };
+        // The owner revokes the grant just before the answer is recorded:
+        // the answer's one transaction then finds no live grant.
+        let gid = g.id.clone();
+        st.at_point("people.owner_answer.approve", move |st| {
+            st.revoke_grant(DAEMON, &gid, EndedBy::Owner).unwrap();
+        });
+        assert_eq!(
+            code(st.approve_owner_on_connect(DAEMON, &g.id, continue_token.expose(), t(), &n())),
+            "not_issued"
         );
         assert!(st.live_approvals(g.person.as_deref()).unwrap().is_empty());
     }

@@ -5,6 +5,7 @@
 use super::Store;
 use super::batches::ThreadSend;
 use super::feedback::{Delivery, deliveries_in, id_array};
+use super::linked::{CommentKey, Keyed};
 use clax_core::anchor::Anchor;
 use clax_core::audit::{AuditCtx, AuditKind, AuditRecord};
 use clax_core::model::{Comment, Thread};
@@ -762,8 +763,9 @@ impl Store {
         id: &ArtifactId,
         t: NewThread,
     ) -> Result<Thread> {
-        self.create_thread_inner(ctx, id, t, &[], |_, _| Ok((None, Vec::new())))
+        self.create_thread_inner(ctx, id, t, &[], None, |_, _| Ok((None, Vec::new())))
             .await
+            .map(Keyed::made)
     }
 
     /// [`Store::create_thread`] for a creator who may not see the files
@@ -792,7 +794,29 @@ impl Store {
         t: NewThread,
         hidden: &[String],
     ) -> Result<Thread> {
-        self.create_thread_inner(ctx, id, t, hidden, |_, _| Ok((None, Vec::new())))
+        self.create_thread_inner(ctx, id, t, hidden, None, |_, _| Ok((None, Vec::new())))
+            .await
+            .map(Keyed::made)
+    }
+
+    /// [`Store::create_thread_hiding_async`] for an agent token's write
+    /// keyed `key` (none: as unkeyed): the key is looked up and recorded in
+    /// the transaction that writes the thread, so two writes under one key
+    /// make one thread, and a thread is never made without its key. A key
+    /// recorded already answers what it made ([`Keyed::Before`]), writing
+    /// nothing.
+    ///
+    /// # Errors
+    /// [`Store::create_thread`]'s.
+    pub async fn create_thread_keyed_async(
+        &self,
+        ctx: &AuditCtx,
+        id: &ArtifactId,
+        t: NewThread,
+        hidden: &[String],
+        key: Option<CommentKey<'_>>,
+    ) -> Result<Keyed<Thread>> {
+        self.create_thread_inner(ctx, id, t, hidden, key, |_, _| Ok((None, Vec::new())))
             .await
     }
 
@@ -811,23 +835,27 @@ impl Store {
             &str,
         ) -> Result<(Option<String>, Vec<clax_core::audit::AuditRecord>)>,
     ) -> Result<Thread> {
-        self.create_thread_inner(ctx, id, t, &[], then).await
+        self.create_thread_inner(ctx, id, t, &[], None, then)
+            .await
+            .map(Keyed::made)
     }
 
     /// [`Store::create_thread_then_async`], an anchor on any of `hidden`
     /// refused as one on a file the version lacks
-    /// ([`Store::create_thread_hiding`]).
+    /// ([`Store::create_thread_hiding`]), keyed `key`
+    /// ([`Store::create_thread_keyed_async`]).
     async fn create_thread_inner(
         &self,
         ctx: &AuditCtx,
         id: &ArtifactId,
         t: NewThread,
         hidden: &[String],
+        key: Option<CommentKey<'_>>,
         then: impl FnOnce(
             &rusqlite::Transaction<'_>,
             &str,
         ) -> Result<(Option<String>, Vec<clax_core::audit::AuditRecord>)>,
-    ) -> Result<Thread> {
+    ) -> Result<Keyed<Thread>> {
         let mut t = t;
         t.anchor = t.anchor.normalized();
         t.anchor.validate()?;
@@ -848,7 +876,14 @@ impl Store {
             }
             None => None,
         };
+        let mut before = None;
         let made = self.with_tx(|tx| {
+            if let Some(k) = key
+                && let Some(found) = super::linked::comment_key_in(tx, k)?
+            {
+                before = Some(found);
+                return Ok(());
+            }
             if !artifact_live(tx, id.as_str())? {
                 return Err(CoreError::NotFound);
             }
@@ -918,6 +953,9 @@ impl Store {
                 Vec::new()
             };
             insert_mentions(tx, &cid, &t.body)?;
+            if let Some(k) = key {
+                super::linked::record_comment_key_in(tx, k, &tid, &cid, &now)?;
+            }
             let (live_path, after) = then(tx, &tid)?;
             let open = open_record(
                 &now,
@@ -950,7 +988,7 @@ impl Store {
             }
             Ok(())
         });
-        if let Err(e) = made {
+        if made.is_err() || before.is_some() {
             if t.clip.is_some()
                 && let Err(gone) = self.content.delete_clip(id, &tid).await
             {
@@ -961,9 +999,17 @@ impl Store {
                     "could not remove the clip of a thread not made"
                 );
             }
-            return Err(e);
+            made?;
         }
-        self.get_thread(&tid)?.ok_or(CoreError::NotFound)
+        if let Some((thread_id, comment_id)) = before {
+            return Ok(Keyed::Before {
+                thread_id,
+                comment_id,
+            });
+        }
+        Ok(Keyed::Made(
+            self.get_thread(&tid)?.ok_or(CoreError::NotFound)?,
+        ))
     }
 
     /// The clip image of thread `tid` of `id`, read from the content store;
@@ -1019,6 +1065,24 @@ impl Store {
     /// or `invalid_comment` for bad input.
     pub fn add_comment(&self, ctx: &AuditCtx, thread_id: &str, c: NewComment) -> Result<Comment> {
         self.add_comment_then(ctx, thread_id, c, |_, _| Ok(()))
+    }
+
+    /// [`Store::add_comment`] for an agent token's write keyed `key` (none:
+    /// as unkeyed): the key is looked up and recorded in the comment's
+    /// transaction, so two writes under one key make one comment, and a
+    /// comment is never made without its key. A key recorded already
+    /// answers what it made ([`Keyed::Before`]), writing nothing.
+    ///
+    /// # Errors
+    /// [`Store::add_comment`]'s.
+    pub fn add_comment_keyed(
+        &self,
+        ctx: &AuditCtx,
+        thread_id: &str,
+        c: NewComment,
+        key: Option<CommentKey<'_>>,
+    ) -> Result<Keyed<Comment>> {
+        self.add_comment_keyed_then(ctx, thread_id, c, key, |_, _| Ok(()))
     }
 
     /// An agent reply `c` on thread `tid` of the live page `id` that also
@@ -1123,6 +1187,24 @@ impl Store {
         c: NewComment,
         addressed: Option<(&ArtifactId, &str)>,
     ) -> Result<(Comment, clax_core::feedback::Touched)> {
+        let (c, touched) = self.add_agent_reply_keyed(ctx, tid, c, addressed, None)?;
+        Ok((c.made(), touched))
+    }
+
+    /// [`Store::add_agent_reply`] keyed `key`, as [`Store::add_comment_keyed`]
+    /// is: a key recorded already answers what it made, and nothing is
+    /// written or taken.
+    ///
+    /// # Errors
+    /// [`Store::add_agent_reply`]'s.
+    pub fn add_agent_reply_keyed(
+        &self,
+        ctx: &AuditCtx,
+        tid: &str,
+        c: NewComment,
+        addressed: Option<(&ArtifactId, &str)>,
+        key: Option<CommentKey<'_>>,
+    ) -> Result<(Keyed<Comment>, clax_core::feedback::Touched)> {
         let Some(sid) = c.via_session_id.clone() else {
             return Err(CoreError::invalid(
                 "unknown_session",
@@ -1131,7 +1213,7 @@ impl Store {
         };
         let seen = self.seen_comments(tid, &sid)?;
         let mut touched = clax_core::feedback::Touched::default();
-        let comment = self.add_comment_then(ctx, tid, c, |tx, t| {
+        let comment = self.add_comment_keyed_then(ctx, tid, c, key, |tx, t| {
             check_not_taken_in(tx, tid, &sid)?;
             if let Some((id, harness)) = addressed {
                 if t.artifact_id != id.as_str() {
@@ -1203,10 +1285,33 @@ impl Store {
         c: NewComment,
         then: impl FnOnce(&rusqlite::Transaction<'_>, &Thread) -> Result<()>,
     ) -> Result<Comment> {
+        self.add_comment_keyed_then(ctx, thread_id, c, None, then)
+            .map(Keyed::made)
+    }
+
+    /// [`Store::add_comment_then`] keyed `key`
+    /// ([`Store::add_comment_keyed`]): a key recorded already writes nothing
+    /// and runs no `then`.
+    fn add_comment_keyed_then(
+        &self,
+        ctx: &AuditCtx,
+        thread_id: &str,
+        c: NewComment,
+        key: Option<CommentKey<'_>>,
+        then: impl FnOnce(&rusqlite::Transaction<'_>, &Thread) -> Result<()>,
+    ) -> Result<Keyed<Comment>> {
         self.with_tx(|tx| {
-            let (comment, t) = self.add_comment_in(tx, ctx, thread_id, c)?;
+            if let Some(k) = key
+                && let Some((thread_id, comment_id)) = super::linked::comment_key_in(tx, k)?
+            {
+                return Ok(Keyed::Before {
+                    thread_id,
+                    comment_id,
+                });
+            }
+            let (comment, t) = self.add_comment_keyed_in(tx, ctx, thread_id, c, key)?;
             then(tx, &t)?;
-            Ok(comment)
+            Ok(Keyed::Made(comment))
         })
     }
 
@@ -1218,6 +1323,20 @@ impl Store {
         ctx: &AuditCtx,
         thread_id: &str,
         c: NewComment,
+    ) -> Result<(Comment, Thread)> {
+        self.add_comment_keyed_in(tx, ctx, thread_id, c, None)
+    }
+
+    /// [`Store::add_comment_in`], recording `key` as having made the
+    /// comment when it names one; the caller has checked that no comment
+    /// holds it yet.
+    fn add_comment_keyed_in(
+        &self,
+        tx: &rusqlite::Transaction<'_>,
+        ctx: &AuditCtx,
+        thread_id: &str,
+        c: NewComment,
+        key: Option<CommentKey<'_>>,
     ) -> Result<(Comment, Thread)> {
         if c.author_kind != AUTHOR_VIEWER && c.author_kind != AUTHOR_AGENT {
             return Err(CoreError::invalid(
@@ -1249,6 +1368,15 @@ impl Store {
         };
         {
             let t = thread_in(tx, thread_id)?.ok_or(CoreError::NotFound)?;
+            if let Some(k) = key {
+                super::linked::record_comment_key_in(
+                    tx,
+                    k,
+                    thread_id,
+                    &comment.id,
+                    &comment.created_at,
+                )?;
+            }
             tx.execute(
                 "INSERT INTO comments (id, thread_id, author_kind, author_name, author_public_id, via_session_id, via_page, body, created_at)
                  VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9)",
@@ -1808,7 +1936,11 @@ impl Store {
 
     /// Deletes thread `thread_id`'s rows, recording `thread.delete`; returns
     /// the thread as it was and the sessions that held undelivered rows of
-    /// it.
+    /// it. A linked thread's pairing stays, ended (`unlinked_at`), so its
+    /// twin on the remote is not written here again; its comments'
+    /// pairings and its unsent writes go. A hosted daemon's `comment_keys`
+    /// rows stay: a resend under a key that made the thread finds it gone
+    /// rather than making it again.
     fn delete_thread_rows(
         &self,
         ctx: &AuditCtx,
@@ -1843,6 +1975,12 @@ impl Store {
             self.thread_going_tx(tx, thread_id)?;
             tx.execute("DELETE FROM threads WHERE id = ?1", params![thread_id])?;
             let now = self.now();
+            tx.execute(
+                "UPDATE linked_threads SET unlinked_at = COALESCE(unlinked_at, ?2) WHERE thread_id = ?1",
+                params![thread_id, now],
+            )?;
+            tx.execute("DELETE FROM linked_comments WHERE thread_id = ?1", params![thread_id])?;
+            tx.execute("DELETE FROM linked_outbox WHERE thread_id = ?1", params![thread_id])?;
             let rec = thread_record(AuditKind::ThreadDelete, &now, &t.artifact_id, thread_id)
                 .with("moved", false);
             self.record_audit(tx, ctx, rec)?;

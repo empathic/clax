@@ -284,13 +284,14 @@ pub fn clean_message(raw: &str) -> (Option<String>, bool) {
 }
 
 /// `raw` as one line: whitespace runs (line and paragraph separators included)
-/// become one space, other control characters are dropped, the ends are
-/// trimmed. Empty is `None`. Past `max` characters it is cut to one
-/// character less plus `…`; the flag says so.
+/// become one space, other control characters and hidden format characters
+/// ([`crate::text::is_hidden_char`]: bidi controls, zero-width spaces, tags)
+/// are dropped, the ends are trimmed. Empty is `None`. Past `max` characters
+/// it is cut to one character less plus `…`; the flag says so.
 pub fn clean_line(raw: &str, max: usize) -> (Option<String>, bool) {
     let kept: String = raw
         .chars()
-        .filter(|c| c.is_whitespace() || !c.is_control())
+        .filter(|&c| c.is_whitespace() || !(c.is_control() || crate::text::is_hidden_char(c)))
         .collect();
     let one = kept.split_whitespace().collect::<Vec<_>>().join(" ");
     if one.is_empty() {
@@ -1126,6 +1127,14 @@ mod tests {
             (Some("a b cd".into()), false)
         );
         assert_eq!(clean_message(" \n "), (None, false));
+        assert_eq!(
+            clean_message("fixed \u{202E}etadpu\u{200B}\u{2066}x\u{2069}"),
+            (Some("fixed etadpux".into()), false)
+        );
+        assert_eq!(
+            clean_message("\u{1F469}\u{200D}\u{1F4BB} \u{200F}abc"),
+            (Some("\u{1F469}\u{200D}\u{1F4BB} \u{200F}abc".into()), false)
+        );
         let long = "x".repeat(141);
         let (m, cut) = clean_message(&long);
         assert!(cut);

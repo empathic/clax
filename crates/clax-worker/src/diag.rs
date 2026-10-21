@@ -30,15 +30,6 @@ use serde_json::{Value, json};
 /// The routes' prefix.
 pub const PREFIX: &str = "/_diag/";
 
-/// Whether `a` and `b` are equal, in time independent of where they differ.
-pub fn same_secret(a: &str, b: &str) -> bool {
-    let (a, b) = (a.as_bytes(), b.as_bytes());
-    if a.len() != b.len() {
-        return false;
-    }
-    a.iter().zip(b).fold(0u8, |acc, (x, y)| acc | (x ^ y)) == 0
-}
-
 /// The shape of a token, never the token: its length, its prefix up to
 /// the first `_`-separated parts, whether it carries an `?expires=` suffix
 /// and when that is.
@@ -64,25 +55,6 @@ pub fn token_shape(token: &str) -> Value {
 /// Whether a key names a credential whose value is shown by its shape.
 pub fn secret_key(key: &str) -> bool {
     matches!(key, "token" | "plaintext" | "secret")
-}
-
-/// `bytes` in standard base64, padded (Basic auth's encoding).
-pub fn base64(bytes: &[u8]) -> String {
-    const A: &[u8; 64] = b"ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789+/";
-    let mut out = String::new();
-    for c in bytes.chunks(3) {
-        let n = (u32::from(c[0]) << 16)
-            | (u32::from(*c.get(1).unwrap_or(&0)) << 8)
-            | u32::from(*c.get(2).unwrap_or(&0));
-        for i in 0..4 {
-            if i <= c.len() {
-                out.push(char::from(A[(n >> (18 - 6 * i) & 63) as usize]));
-            } else {
-                out.push('=');
-            }
-        }
-    }
-    out
 }
 
 /// A smart HTTP advertisement as `{service, refs, capabilities}`: the
@@ -141,13 +113,16 @@ pub use wasm::route;
 
 #[cfg(target_arch = "wasm32")]
 mod wasm {
+    use base64::Engine as _;
+    use base64::engine::general_purpose::STANDARD;
+    use clax_core::secret::constant_time_eq;
     use js_sys::{Array, Function, Object, Promise, Reflect, Uint8Array};
     use serde_json::{Map, Value, json};
     use wasm_bindgen::{JsCast, JsValue};
     use wasm_bindgen_futures::JsFuture;
     use worker::{Env, Fetch, Headers, Method, Request, RequestInit, Response, Result};
 
-    use super::{advertisement, base64, same_secret, secret_key, token_shape};
+    use super::{advertisement, secret_key, token_shape};
     use crate::repos::tokens::{Holder, PERSON_TOKEN_TTL_S, Scope};
     use crate::repos::worker::{ARTIFACTS_BINDING, mint_git_token, repo_store};
 
@@ -190,7 +165,7 @@ mod wasm {
         if token.is_empty() {
             return Response::error("the diagnostics need the CLAX_TOKEN secret set\n", 404);
         }
-        if !same_secret(&presented, &token) {
+        if !constant_time_eq(presented.as_bytes(), token.as_bytes()) {
             return Response::error("the owner token is required\n", 401);
         }
         let url = req.url()?;
@@ -623,7 +598,7 @@ mod wasm {
     /// suffix, and as Basic auth's password.
     async fn adverts(remote: &str, token: &str) -> Vec<Value> {
         let bare = token.split("?expires=").next().unwrap_or(token).to_string();
-        let basic = format!("Basic {}", base64(format!("x:{bare}").as_bytes()));
+        let basic = format!("Basic {}", STANDARD.encode(format!("x:{bare}")));
         let ways = [
             ("bearer, whole token", format!("Bearer {token}")),
             ("bearer, without ?expires=", format!("Bearer {bare}")),
@@ -807,22 +782,6 @@ mod tests {
         let plain = token_shape("cxg_0123");
         assert_eq!(plain["prefix"], "cxg_");
         assert_eq!(plain["expires_suffix"], Value::Null);
-    }
-
-    #[test]
-    fn base64_pads_as_basic_auth_does() {
-        assert_eq!(base64(b"x:art"), "eDphcnQ=");
-        assert_eq!(base64(b"x:ab"), "eDphYg==");
-        assert_eq!(base64(b"x:a"), "eDph");
-        assert_eq!(base64(b""), "");
-    }
-
-    #[test]
-    fn secrets_compare_whole() {
-        assert!(same_secret("abc", "abc"));
-        assert!(!same_secret("abc", "abd"));
-        assert!(!same_secret("abc", "abcd"));
-        assert!(!same_secret("", "a"));
     }
 
     #[test]

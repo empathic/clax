@@ -2,10 +2,12 @@
 //! records the store returns and the API serves (`model`), the event bus,
 //! configuration and the home directory, signing, the visibility
 //! vocabulary, audit records, and the daemon's discovery files. The SQLite
-//! store is `clax-store`'s; nothing here runs a query.
+//! store is `clax-store`'s; the one query run here is the latency
+//! calibration's, on its own in-memory database (`perf`).
 
 pub mod anchor;
 pub mod audit;
+pub mod brief;
 pub mod capabilities;
 pub mod changelog;
 pub mod clips;
@@ -45,6 +47,8 @@ pub mod seats;
 pub mod secret;
 pub mod sig;
 pub mod surface;
+pub mod tags;
+pub mod text;
 pub mod time;
 pub mod visibility;
 pub mod wake;

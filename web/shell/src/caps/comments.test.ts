@@ -3,7 +3,7 @@ import type { ShellToBridge } from "../../../bridge/src/protocol";
 import type { Thread } from "../threads";
 import type { Working } from "../view/working-model";
 import { forgetBudgets } from "./budget";
-import { REFUSED_RATE, WRITE_RATE, cleanLabel, commentsHandler, textProblem } from "./comments";
+import { REFUSED_RATE, WRITE_RATE, cleanLabel, commentsHandler, pageAnchor, textProblem } from "./comments";
 import { forgetGestures, noteShellInput, notePointerAt, notePointerOver } from "./gesture";
 import { Grants } from "./grants";
 import type { CapEnv, CommentsUi } from "./host";
@@ -141,6 +141,16 @@ describe("comments in the shell", () => {
     const { h } = setup({ comments: {} });
     gesture(true);
     await expect(h.call("create", [{ anchor: T("x").anchor, text: "hi" }])).rejects.toMatchObject({ code: "unavailable", message: expect.stringContaining("Lots of people are here") });
+  });
+
+  it("a reply the daemon refuses a spectator is unavailable, not forbidden", async () => {
+    daemon();
+    const { h } = setup({ comments: {} });
+    const { threadId } = (await h.call("create", [{ anchor: T("x").anchor, text: "hi" }])) as { threadId: string };
+    // The seat is lost between the create and the reply.
+    vi.stubGlobal("fetch", vi.fn(async () => new Response(JSON.stringify({ error: { code: "spectator", message: "Lots of people are here" } }), { status: 403 })));
+    gesture(true);
+    await expect(h.call("reply", [threadId, "more"])).rejects.toMatchObject({ code: "unavailable", message: expect.stringContaining("Lots of people are here") });
   });
 
   it("activation the viewer gave the shell is no gesture, and polling without one is cut off", async () => {
@@ -427,6 +437,17 @@ describe("comments in the shell", () => {
     expect(form.get("version")).toBe("1");
     await h.call("openComposer", [{ anchor: { ...T("x").anchor, file: "x.html" }, version: 7 }]);
     expect((ui.openComposer as Fetch).mock.calls[0][0]).toMatchObject({ anchor: { file: "index.html" }, version: 1 });
+  });
+
+  it("an area anchor is rebuilt only where the viewer's own pick may make one", () => {
+    const area = { ...T("x").anchor, kind: "area", area: { x: 0.1, y: 0.2, w: 0.3, h: 0.4, tag: "div", text: "Goals", children: 2, extra: 1 } };
+    expect(() => pageAnchor(area, "index.html")).toThrow(/element or range/);
+    expect(pageAnchor(area, "index.html", { area: true })).toEqual({ ...T("x").anchor, kind: "area", area: { x: 0.1, y: 0.2, w: 0.3, h: 0.4, tag: "div", text: "Goals", children: 2 } });
+    expect(pageAnchor({ ...T("x").anchor, area: area.area }, "index.html", { area: true })).not.toHaveProperty("area");
+    for (const bad of [undefined, { x: 0, y: 0, w: "1", h: 1 }, { x: 0, y: 0, w: 1, h: 1, children: -1 }, { x: 0, y: 0, w: 1, h: 1, tag: "x".repeat(65) }]) {
+      expect(() => pageAnchor({ ...area, area: bad }, "index.html", { area: true })).toThrow();
+    }
+    for (const kind of ["custom", "artifact"]) expect(() => pageAnchor({ ...area, kind }, "index.html", { area: true })).toThrow();
   });
 
   it("page writes are budgeted per tab", async () => {

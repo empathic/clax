@@ -24,7 +24,7 @@ fn yes() -> bool {
 #[derive(Clone, Debug, PartialEq, Serialize, Deserialize, schemars::JsonSchema)]
 #[serde(deny_unknown_fields)]
 pub struct Question {
-    /// The question, 1 to 2,000 characters, unique within the ask.
+    /// The question, 1 to 2,000 characters, unique within the ask; rendered as GitHub-flavoured Markdown, with no images and no raw HTML.
     pub question: String,
     /// A short chip label, 1 to 12 characters.
     pub header: String,
@@ -42,11 +42,11 @@ pub struct Question {
 #[derive(Clone, Debug, PartialEq, Serialize, Deserialize, schemars::JsonSchema)]
 #[serde(deny_unknown_fields)]
 pub struct QOption {
-    /// 1 to 100 characters, unique within the question.
+    /// 1 to 100 characters, unique within the question; plain text.
     pub label: String,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub description: Option<String>,
-    /// Text shown beside the options (a mockup or code), at most 20,000 characters.
+    /// Text shown verbatim in monospace beside the options (a mockup or code), at most 20,000 characters.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub preview: Option<String>,
     /// The option you recommend (at most one per question).

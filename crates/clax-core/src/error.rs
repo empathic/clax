@@ -68,7 +68,7 @@ pub enum CoreError {
     /// A store job panicked, or the thread that would run it stopped.
     #[error("storage task failed")]
     TaskFailed,
-    /// On a store on one connection ([`crate::Store::open_on`]), a job
+    /// On a store on one connection (`clax_store::Store::open_on`), a job
     /// started inside another job on the same thread (`outer` and `inner`
     /// are `read` or `write`): the connection is busy with the outer one.
     /// The pool runs a read inside a read and a write inside a read; this

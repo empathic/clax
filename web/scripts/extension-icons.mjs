@@ -21,24 +21,32 @@ function png(size, rgba) {
   ihdr.writeUInt32BE(size, 0); ihdr.writeUInt32BE(size, 4); ihdr[8] = 8; ihdr[9] = 6;
   return Buffer.concat([Buffer.from([137, 80, 78, 71, 13, 10, 26, 10]), chunk("IHDR", ihdr), chunk("IDAT", deflateSync(raw)), chunk("IEND", Buffer.alloc(0))]);
 }
-// The mark in its 30×24 viewBox (web/shell/src/ui/Mark.svelte).
+// The mark as web/shell/src/ui/Mark.svelte draws it in its 40×24 viewBox,
+// with the favicon's strokes (web/shell/public/_clax/mark.svg), centred in
+// a square 42 units wide: two half-rings of radius 9.5 with round caps, and
+// the ink dot between them.
 const PEOPLE = [0xe0, 0x53, 0x2f], AGENTS = [0x2f, 0x6f, 0x2a], INK = [0x1c, 0x1b, 0x19];
+const HALF = 2.3, R = 9.5;
+function ring(x, y, cx, opens) {
+  const d = Math.hypot(x - cx, y - 12);
+  if (opens * (x - cx) >= 0 && Math.abs(d - R) <= HALF) return true;
+  return Math.hypot(x - cx, y - 2.5) <= HALF || Math.hypot(x - cx, y - 21.5) <= HALF;
+}
 function colourAt(x, y) {
-  const d = (cx, cy) => Math.hypot(x - cx, y - cy);
-  if (x >= 2 && Math.abs(d(2, 12) - 9.5) <= 2.1) return PEOPLE;
-  if (x <= 28 && Math.abs(d(28, 12) - 9.5) <= 2.1) return AGENTS;
-  if (d(15, 12) <= 2.6) return INK;
+  if (ring(x, y, 2, 1)) return PEOPLE;
+  if (ring(x, y, 38, -1)) return AGENTS;
+  if (Math.hypot(x - 20, y - 12) <= 2.8) return INK;
   return null;
 }
 export function drawIcons(dir) {
   mkdirSync(dir, { recursive: true });
   for (const size of [16, 32, 48, 128]) {
     const rgba = Buffer.alloc(size * size * 4);
-    const scale = 30 / size;
+    const scale = 42 / size;
     for (let py = 0; py < size; py++) for (let px = 0; px < size; px++) {
       const sum = [0, 0, 0, 0];
       for (let sy = 0; sy < 4; sy++) for (let sx = 0; sx < 4; sx++) {
-        const c = colourAt((px + (sx + 0.5) / 4) * scale, (py + (sy + 0.5) / 4) * scale - 3);
+        const c = colourAt((px + (sx + 0.5) / 4) * scale - 1, (py + (sy + 0.5) / 4) * scale - 9);
         if (c) { sum[0] += c[0]; sum[1] += c[1]; sum[2] += c[2]; sum[3] += 1; }
       }
       const i = (py * size + px) * 4;

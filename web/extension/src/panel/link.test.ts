@@ -2,7 +2,7 @@ import { afterEach, describe, expect, it, vi } from "vitest";
 import { FakeEvent } from "../../test/fake-chrome";
 import { PanelLink, REQUEST_MS } from "./link.svelte";
 
-function fakes(active = 5) {
+function fakes() {
   const ports: { name: string; sent: unknown[]; onMessage: FakeEvent<[unknown]>; onDisconnect: FakeEvent<[]> }[] = [];
   const runtime = {
     connect: ({ name }: { name: string }) => {
@@ -11,14 +11,13 @@ function fakes(active = 5) {
       return p;
     },
   };
-  const tabs = { query: async () => [{ id: active }], onActivated: new FakeEvent<[{ tabId: number; windowId: number }]>(), onUpdated: new FakeEvent<[number, { url?: string }, { active: boolean; windowId: number }]>() };
-  return { ports, runtime, tabs };
+  return { ports, runtime };
 }
 const settle = async () => { for (let i = 0; i < 5; i++) await Promise.resolve(); };
 let link: PanelLink | null = null;
 afterEach(() => { link?.close(); link = null; vi.useRealTimers(); });
 
-const ENV = (f: ReturnType<typeof fakes>) => ({ runtime: f.runtime as never, tabs: f.tabs as never, search: "", doc: { visibilityState: "visible", addEventListener() {}, removeEventListener() {} } as never });
+const ENV = (f: ReturnType<typeof fakes>, search = "?tab=5") => ({ runtime: f.runtime as never, search, doc: { visibilityState: "visible", addEventListener() {}, removeEventListener() {} } as never });
 
 describe("PanelLink", () => {
   it("asks the worker who approves first, and takes its answer, or none on a failure or a lost worker", async () => {
@@ -87,24 +86,30 @@ describe("PanelLink", () => {
     await expect(move).rejects.toMatchObject({ status: 0, code: "worker_restarted" });
   });
 
-  it("watches the window's active tab and follows it, saying whether the panel is visible", async () => {
+  it("watches its own tab (`?tab=`), saying whether the panel is visible", async () => {
     const f = fakes();
-    link = new PanelLink(2, { runtime: f.runtime as never, tabs: f.tabs as never, search: "", doc: { visibilityState: "visible", addEventListener() {}, removeEventListener() {} } as never });
+    link = new PanelLink(2, ENV(f));
     await settle();
     expect(f.ports[0].name).toBe("panel:2");
     expect(f.ports[0].sent).toEqual([{ t: "watch-tab", tabId: 5 }, { t: "visible", on: true }]);
-    f.tabs.query = async () => [{ id: 8 }];
-    f.tabs.onActivated.fire({ tabId: 8, windowId: 9 });
-    await settle();
-    expect(f.ports[0].sent).toHaveLength(2);
-    f.tabs.onActivated.fire({ tabId: 8, windowId: 2 });
-    await settle();
-    expect(f.ports[0].sent.at(-1)).toEqual({ t: "watch-tab", tabId: 8 });
+  });
+
+  it("watches no tab when its page names none", async () => {
+    vi.useFakeTimers();
+    for (const search of ["", "?tab=0", "?tab=x"]) {
+      const f = fakes();
+      link = new PanelLink(2, ENV(f, search));
+      await vi.advanceTimersByTimeAsync(0);
+      f.ports[0].onDisconnect.fire();
+      await vi.advanceTimersByTimeAsync(1000);
+      expect(f.ports.flatMap(p => p.sent)).toEqual([]);
+      link.close();
+    }
   });
 
   it("takes only the worker's well-formed messages", async () => {
     const f = fakes();
-    link = new PanelLink(2, { runtime: f.runtime as never, tabs: f.tabs as never, search: "", doc: { visibilityState: "visible", addEventListener() {}, removeEventListener() {} } as never });
+    link = new PanelLink(2, ENV(f));
     const p = f.ports[0];
     p.onMessage.fire({ t: "tab", state: { tabId: 5, error: null } });
     expect(link.state).toEqual({ tabId: 5, error: null });
@@ -126,7 +131,7 @@ describe("PanelLink", () => {
   it("asks the worker for a thread's clip, takes only a PNG data URL, and answers null on a failure or a lost worker", async () => {
     vi.useFakeTimers();
     const f = fakes();
-    link = new PanelLink(2, { runtime: f.runtime as never, tabs: f.tabs as never, search: "", doc: { visibilityState: "visible", addEventListener() {}, removeEventListener() {} } as never });
+    link = new PanelLink(2, ENV(f));
     const p = f.ports[0];
     p.onMessage.fire({ t: "tab", state: { tabId: 5, error: null } });
     p.onMessage.fire({ t: "failed", code: "no_page", message: "No live page." });
@@ -156,7 +161,7 @@ describe("PanelLink", () => {
 
   it("keeps the tab's site as the worker last told it", () => {
     const f = fakes();
-    link = new PanelLink(2, { runtime: f.runtime as never, tabs: f.tabs as never, search: "", doc: { visibilityState: "visible", addEventListener() {}, removeEventListener() {} } as never });
+    link = new PanelLink(2, ENV(f));
     const site = { origin: "http://localhost:5173", rules: [], pages: [] };
     f.ports[0].onMessage.fire({ t: "site", site });
     expect(link.site).toEqual(site);
@@ -168,7 +173,7 @@ describe("PanelLink", () => {
 
   it("answers a request with its step, or its failure, without showing that as the tab's error", async () => {
     const f = fakes();
-    link = new PanelLink(2, { runtime: f.runtime as never, tabs: f.tabs as never, search: "", doc: { visibilityState: "visible", addEventListener() {}, removeEventListener() {} } as never });
+    link = new PanelLink(2, ENV(f));
     await settle();
     const p = f.ports[0];
     p.onMessage.fire({ t: "tab", state: { tabId: 5, error: null } });
@@ -193,7 +198,7 @@ describe("PanelLink", () => {
   it("gives up on a request the worker never answers", async () => {
     vi.useFakeTimers();
     const f = fakes();
-    link = new PanelLink(2, { runtime: f.runtime as never, tabs: f.tabs as never, search: "", doc: { visibilityState: "visible", addEventListener() {}, removeEventListener() {} } as never });
+    link = new PanelLink(2, ENV(f));
     const r = link.request({ t: "rule", origin: "http://localhost:5173", pattern: "/users/:id" });
     const done = expect(r).rejects.toMatchObject({ code: "timeout" });
     await vi.advanceTimersByTimeAsync(REQUEST_MS);
@@ -202,7 +207,7 @@ describe("PanelLink", () => {
 
   it("keeps an action's failure shown through later pushes until the next action", async () => {
     const f = fakes();
-    link = new PanelLink(2, { runtime: f.runtime as never, tabs: f.tabs as never, search: "", doc: { visibilityState: "visible", addEventListener() {}, removeEventListener() {} } as never });
+    link = new PanelLink(2, ENV(f));
     await settle();
     const p = f.ports[0];
     p.onMessage.fire({ t: "tab", state: { tabId: 5, error: null } });
@@ -222,21 +227,10 @@ describe("PanelLink", () => {
     expect(link.state?.error).toBeNull();
   });
 
-  it("stays on its own tab (`?tab=`) when other tabs come to the front, in its window or another it moved to", async () => {
-    const f = fakes(5);
-    link = new PanelLink(2, { runtime: f.runtime as never, tabs: f.tabs as never, search: "?tab=7", doc: { visibilityState: "visible", addEventListener() {}, removeEventListener() {} } as never });
-    await settle();
-    f.tabs.onActivated.fire({ tabId: 5, windowId: 2 });
-    f.tabs.onActivated.fire({ tabId: 8, windowId: 3 });
-    f.tabs.onUpdated.fire(5, { url: "http://localhost:5173/x" }, { active: true, windowId: 2 });
-    await settle();
-    expect(f.ports[0].sent.filter(m => (m as { t: string }).t === "watch-tab")).toEqual([{ t: "watch-tab", tabId: 7 }]);
-  });
-
   it("connects again when the worker goes away, and pings while open", async () => {
     vi.useFakeTimers();
     const f = fakes();
-    link = new PanelLink(2, { runtime: f.runtime as never, tabs: f.tabs as never, search: "?tab=7", doc: { visibilityState: "hidden", addEventListener() {}, removeEventListener() {} } as never });
+    link = new PanelLink(2, { runtime: f.runtime as never, search: "?tab=7", doc: { visibilityState: "hidden", addEventListener() {}, removeEventListener() {} } as never });
     await vi.advanceTimersByTimeAsync(0);
     expect(f.ports[0].sent).toEqual([{ t: "watch-tab", tabId: 7 }, { t: "visible", on: false }]);
     await vi.advanceTimersByTimeAsync(20_000);

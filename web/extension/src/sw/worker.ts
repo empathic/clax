@@ -26,8 +26,8 @@ export type WorkerDeps = {
   store?: { get(k: string): Promise<Record<string, unknown>>; set(v: Record<string, unknown>): Promise<void> };
   /** A pick's screenshot (`captureClip`). */
   capture(windowId: number, rect: Rect, dpr: number): Promise<{ png: Blob } | { error: string }>;
-  /** Whether the tab is its window's active tab. */
-  tabActive?(tabId: number): Promise<boolean>;
+  /** Whether the tab is window `windowId`'s active tab. */
+  tabActive?(tabId: number, windowId: number): Promise<boolean>;
   /** The window the tab is in now. */
   windowOf?(tabId: number): Promise<number>;
   now?(): number;

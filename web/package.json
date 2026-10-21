@@ -5,7 +5,7 @@
   "packageManager": "pnpm@12.3.4",
   "type": "module",
   "scripts": {
-    "build": "node scripts/clean-dist.mjs && node scripts/build-parts.mjs && vite build -c vite.bridge.config.ts && vite build -c vite.transport.config.ts && vite build -c vite.shell.config.ts && node scripts/build-extension.mjs",
+    "build": "node scripts/clean-dist.mjs && node scripts/build-parts.mjs && vite build -c vite.bridge.config.ts && vite build -c vite.transport.config.ts && vite build -c vite.shell.config.ts && node scripts/build-legal.mjs && node scripts/build-extension.mjs",
     "build:e2e": "node scripts/build-e2e.mjs",
     "bundle-size": "node scripts/bundle-size.mjs",
     "dev": "vite -c vite.shell.config.ts",
@@ -24,6 +24,7 @@
     "ajv": "^8.20.0",
     "ajv-formats": "^3.0.1",
     "jsdom": "^26.0.0",
+    "marked": "18.0.14",
     "oxlint": "^1.86.0",
     "pako": "2.1.0",
     "svelte-check": "^4.7.6",
@@ -32,6 +33,7 @@
     "vitest": "^3.0.0"
   },
   "dependencies": {
+    "markdown-it": "15.0.3",
     "modern-screenshot": "^4.6.0",
     "svelte": "^5.57.1"
   }

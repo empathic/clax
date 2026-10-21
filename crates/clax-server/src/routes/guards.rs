@@ -39,6 +39,11 @@ mod l10 {
         /// artifact: it names none that exists, so neither parses one from
         /// the request nor names one outside its path.
         Creates,
+        /// It takes `DeniedToGrants`, refuses the owner's agents
+        /// (`refuse_agents`), and makes a new artifact for a person: it
+        /// names none that exists, so neither parses one from the request
+        /// nor names one outside its path.
+        PersonCreates,
         /// It names no artifact.
         NoArtifact,
         /// A browser route (`browser_person`) that names an artifact only to
@@ -70,7 +75,12 @@ mod l10 {
         ("remotes::poll", Owner),
         ("remotes::remove", Owner),
         ("artifacts::list", Filtered),
+        ("tags::list", Filtered),
+        ("tags::create", NoArtifact),
+        ("tags::update", NoArtifact),
+        ("tags::delete", NoArtifact),
         ("artifacts::create", Creates),
+        ("artifacts::create_from_brief", PersonCreates),
         ("sessions::list", AgentPath),
         ("sessions::register", AgentPath),
         ("sessions::join", AgentPath),
@@ -270,6 +280,7 @@ mod l10 {
             "viewers" => include_str!("viewers.rs"),
             "watches" => include_str!("watches.rs"),
             "working" => include_str!("working.rs"),
+            "tags" => include_str!("tags.rs"),
             "agent" => include_str!("../../../clax-http/src/agent.rs"),
             "mcp" => include_str!("mcp.rs"),
             "people" => include_str!("people.rs"),
@@ -832,6 +843,15 @@ mod l10 {
                             assert!(!src.contains(named), "{name} names an artifact ({named})");
                         }
                     }
+                    PersonCreates => {
+                        assert!(
+                            sig.contains("DeniedToGrants") && src.contains(".refuse_agents()?"),
+                            "{name} does not refuse agents"
+                        );
+                        for named in ["parse_id(", "named_artifact(", ".artifact()"] {
+                            assert!(!src.contains(named), "{name} names an artifact ({named})");
+                        }
+                    }
                     SeesLive => assert!(
                         sig.contains("SeesLive") && src.contains(".check("),
                         "{name} does not check SeesLive"
@@ -1022,6 +1042,32 @@ mod agents {
                 "/api/artifacts/{aid}/files",
                 Filtered,
                 Some((Artifacts, "read")),
+            ),
+            ("GET", "/api/tags", Own, Some((Artifacts, "read"))),
+            ("POST", "/api/tags", Own, Some((Artifacts, "update"))),
+            (
+                "PATCH",
+                "/api/tags/{tag_id}",
+                Own,
+                Some((Artifacts, "update")),
+            ),
+            (
+                "DELETE",
+                "/api/tags/{tag_id}",
+                Own,
+                Some((Artifacts, "update")),
+            ),
+            (
+                "PUT",
+                "/api/artifacts/{aid}/tags",
+                Own,
+                Some((Artifacts, "update")),
+            ),
+            (
+                "PATCH",
+                "/api/artifacts/{aid}/tags",
+                Own,
+                Some((Artifacts, "update")),
             ),
             (
                 "GET",
@@ -1926,9 +1972,19 @@ mod agents {
             assert!(n > 0, "{p}");
         }
         // Pi: it resolves the binary through the wrapper (no arguments: the
-        // path), then runs it directly only for `--version`, `status --json`
-        // and `serve --json`, the last two with CLAX_CHANNEL=agent.
+        // path; `which`: the path, never installing), then runs it directly
+        // only for `--version`, `status --json` and `serve --json`, the last
+        // two with CLAX_CHANNEL=agent.
         let daemon = read("plugins/pi/src/daemon.ts");
+        for (i, _) in daemon.match_indices("runWrapper(") {
+            let call = line_at(&daemon, i);
+            assert!(
+                call.starts_with("runWrapper([], ")
+                    || call.starts_with("runWrapper([\"which\"], ")
+                    || call.starts_with("runWrapper(args: string[]"),
+                "plugins/pi/src/daemon.ts: {call}"
+            );
+        }
         let clax = read("plugins/pi/src/clax.ts");
         let client = read("plugins/pi/src/client.ts");
         for (file, text) in [
@@ -1945,6 +2001,7 @@ mod agents {
                     continue; // the browser opener, not clax
                 }
                 let ok = call.contains("[wrapper]")
+                    || call.contains("[wrapper, ...args]")
                     || call.contains("[\"--version\"]")
                     || (call.contains("[\"status\", \"--json\"]")
                         && call.contains("CLAX_CHANNEL: \"agent\""))

@@ -1,6 +1,6 @@
 use clax_mcp::tools::{
     AssetUploadArgs, FileArg, FileEncoding, ForkArgs, ListArgs, ListScope, PublishArgs, ReadArgs,
-    StatusArgs, TargetArgs,
+    StatusArgs, TagArgs, TagsArgs, TargetArgs,
 };
 use clax_mcp::{ClaxTools, DaemonClient};
 use clax_testkit::TestServer;
@@ -367,6 +367,179 @@ async fn asset_upload_returns_blob_urls() {
     assert!(blob_path.starts_with("/_blob/"), "{url}");
     let res = ts.get(blob_path).await;
     assert_eq!(res.bytes().await.unwrap().as_ref(), [1u8, 2, 3]);
+}
+
+/// A file the daemon would refuse for its type is refused before any file
+/// is uploaded, naming it.
+#[tokio::test]
+async fn asset_upload_refuses_an_unsupported_file_before_uploading_any() {
+    let ts = TestServer::spawn().await;
+    let t = tools_for(&ts);
+    let id = ok(t.publish(Parameters(html("A", "<p>"))).await)["artifact_id"]
+        .as_str()
+        .unwrap()
+        .to_string();
+    let dir = tempfile::tempdir().unwrap();
+    let a = dir.path().join("a.png");
+    let b = dir.path().join("b.exe");
+    std::fs::write(&a, [1u8, 2, 3]).unwrap();
+    std::fs::write(&b, [0u8]).unwrap();
+    let b = b.to_string_lossy().to_string();
+    let e = err(t
+        .asset_upload(Parameters(AssetUploadArgs {
+            url_or_id: id.clone(),
+            file_path: None,
+            file_paths: Some(vec![a.to_string_lossy().into(), b.clone()]),
+        }))
+        .await);
+    assert_eq!(e["error"]["code"], "unsupported_type", "{e}");
+    assert_eq!(e["error"]["path"], b.as_str(), "{e}");
+    assert!(
+        ts.store
+            .list_assets(&clax_core::ArtifactId::parse(&id).unwrap())
+            .unwrap()
+            .is_empty(),
+        "nothing was uploaded"
+    );
+}
+
+/// A create past its deadline may have made the artifact, whose ID the
+/// agent never saw: the timeout says to look for it with `list` before
+/// publishing again, not to read an artifact it cannot name.
+#[tokio::test]
+async fn a_create_that_times_out_says_to_look_for_the_artifact_with_list() {
+    // A server that takes every request and never answers.
+    let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
+    let port = listener.local_addr().unwrap().port();
+    tokio::spawn(async move {
+        let mut held = Vec::new();
+        while let Ok((sock, _)) = listener.accept().await {
+            held.push(sock);
+        }
+    });
+    let dir = tempfile::tempdir().unwrap();
+    let t = ClaxTools::new(
+        DaemonClient::new(format!("http://127.0.0.1:{port}"), "t".into(), None)
+            .with_publish_timeout(std::time::Duration::from_millis(200)),
+        format!("http://localhost:{port}"),
+        None,
+        dir.path().join("daemon.log"),
+    );
+    let e = err(t.publish(Parameters(html("A", "<p>"))).await);
+    assert_eq!(e["error"]["code"], "timeout", "{e}");
+    let m = e["error"]["message"].as_str().unwrap();
+    assert!(m.contains("call list"), "{m}");
+    assert!(!m.contains("read the artifact"), "{m}");
+}
+
+/// An update without `if_version` on an artifact the daemon reports no
+/// current version for is `bad_response`, and nothing is published (no
+/// version 0 is sent to conflict on).
+#[tokio::test]
+async fn an_update_without_a_known_current_version_is_bad_response() {
+    use axum::routing::{get, post};
+    let publishes = std::sync::Arc::new(std::sync::atomic::AtomicUsize::new(0));
+    let app = axum::Router::new()
+        .route(
+            "/api/artifacts/{id}",
+            get(|| async { axum::Json(serde_json::json!({"artifact": {"id": "7q3k9mzx2b4t"}})) }),
+        )
+        .route(
+            "/api/artifacts/{id}/versions",
+            post({
+                let publishes = publishes.clone();
+                move || async move {
+                    publishes.fetch_add(1, std::sync::atomic::Ordering::SeqCst);
+                    axum::http::StatusCode::CREATED
+                }
+            }),
+        );
+    let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
+    let port = listener.local_addr().unwrap().port();
+    tokio::spawn(async move { axum::serve(listener, app).await });
+    let dir = tempfile::tempdir().unwrap();
+    let t = ClaxTools::new(
+        DaemonClient::new(format!("http://127.0.0.1:{port}"), "t".into(), None),
+        format!("http://localhost:{port}"),
+        None,
+        dir.path().join("daemon.log"),
+    );
+    let e = err(t
+        .publish(Parameters(PublishArgs {
+            id: Some("7q3k9mzx2b4t".into()),
+            ..html("A", "<p>")
+        }))
+        .await);
+    assert_eq!(e["error"]["code"], "bad_response", "{e}");
+    assert_eq!(publishes.load(std::sync::atomic::Ordering::SeqCst), 0);
+}
+
+/// A daemon refusal part way through names the file it refused and the
+/// assets already uploaded, so a retry sends only the rest.
+#[tokio::test]
+async fn asset_upload_failing_part_way_names_the_assets_already_uploaded() {
+    use axum::routing::post;
+    let uploads = std::sync::Arc::new(std::sync::atomic::AtomicUsize::new(0));
+    let app = axum::Router::new().route(
+        "/api/artifacts/{id}/assets",
+        post({
+            let uploads = uploads.clone();
+            move || async move {
+                use axum::http::StatusCode;
+                let n = uploads.fetch_add(1, std::sync::atomic::Ordering::SeqCst);
+                if n == 0 {
+                    (
+                        StatusCode::CREATED,
+                        axum::Json(serde_json::json!({
+                            "asset": {"id": "01K6AB7D2E3F4G5H6J7K8M9N0P", "content_type": "image/png", "size": 3},
+                            "url": "/_blob/01K6AB7D2E3F4G5H6J7K8M9N0P",
+                        })),
+                    )
+                } else {
+                    (
+                        StatusCode::INSUFFICIENT_STORAGE,
+                        axum::Json(serde_json::json!({
+                            "error": {"code": "storage_full", "message": "no room"},
+                        })),
+                    )
+                }
+            }
+        }),
+    );
+    let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
+    let port = listener.local_addr().unwrap().port();
+    tokio::spawn(async move { axum::serve(listener, app).await });
+    let dir = tempfile::tempdir().unwrap();
+    let t = ClaxTools::new(
+        DaemonClient::new(format!("http://127.0.0.1:{port}"), "t".into(), None),
+        format!("http://localhost:{port}"),
+        None,
+        dir.path().join("daemon.log"),
+    );
+    let a = dir.path().join("a.png");
+    let b = dir.path().join("b.png");
+    std::fs::write(&a, [1u8, 2, 3]).unwrap();
+    std::fs::write(&b, [4u8, 5, 6]).unwrap();
+    let b = b.to_string_lossy().to_string();
+    let e = err(t
+        .asset_upload(Parameters(AssetUploadArgs {
+            url_or_id: "7q3k9mzx2b4t".into(),
+            file_path: None,
+            file_paths: Some(vec![a.to_string_lossy().into(), b.clone()]),
+        }))
+        .await);
+    assert_eq!(e["error"]["code"], "storage_full", "{e}");
+    assert_eq!(e["error"]["path"], b.as_str(), "{e}");
+    assert_eq!(
+        e["error"]["uploaded"],
+        serde_json::json!([{
+            "id": "01K6AB7D2E3F4G5H6J7K8M9N0P",
+            "url": format!("http://localhost:{port}/_blob/01K6AB7D2E3F4G5H6J7K8M9N0P"),
+            "content_type": "image/png",
+            "size": 3,
+        }]),
+        "{e}"
+    );
 }
 
 #[tokio::test]
@@ -1173,4 +1346,163 @@ async fn fork_makes_a_new_artifact_from_the_version_a_url_names() {
         }))
         .await);
     assert_eq!(e["error"]["code"], "not_found", "{e}");
+}
+
+/// Makes tag `name` as the owner does.
+async fn owner_tag(ts: &TestServer, name: &str) {
+    let res = ts
+        .post_json("/api/tags", serde_json::json!({"name": name}))
+        .await;
+    assert_eq!(res.status(), 201);
+}
+
+#[tokio::test]
+async fn tags_lists_publish_applies_tag_changes_and_list_filters() {
+    let ts = TestServer::spawn().await;
+    let t = tools_for(&ts);
+    // None yet: a publish naming a tag publishes nothing.
+    let e = err(t
+        .publish(Parameters(PublishArgs {
+            tags: Some(vec!["draft".into()]),
+            ..html("Plan", "<p>p</p>")
+        }))
+        .await);
+    assert_eq!(e["error"]["code"], "unknown_tag", "{e}");
+    let msg = e["error"]["message"].as_str().unwrap();
+    assert!(
+        msg.contains("no tags yet") && msg.contains("nothing was published"),
+        "{msg}"
+    );
+    assert_eq!(
+        ok(t.list(Parameters(ListArgs::default())).await)["artifacts"],
+        serde_json::json!([])
+    );
+    owner_tag(&ts, "draft").await;
+    owner_tag(&ts, "Final").await;
+    let listed = ok(t.tags(Parameters(TagsArgs::default())).await);
+    assert_eq!(
+        listed["tags"],
+        serde_json::json!([
+            {"name": "draft", "colour": "gray", "description": null, "count": 0},
+            {"name": "Final", "colour": "gray", "description": null, "count": 0},
+        ])
+    );
+    let e = err(t
+        .publish(Parameters(PublishArgs {
+            tags: Some(vec!["draft".into(), "urgent".into()]),
+            ..html("Plan", "<p>p</p>")
+        }))
+        .await);
+    assert!(
+        e["error"]["message"]
+            .as_str()
+            .unwrap()
+            .contains("draft, Final"),
+        "{e}"
+    );
+    // A publish applies existing tags, by name in any case.
+    let p = ok(t
+        .publish(Parameters(PublishArgs {
+            tags: Some(vec!["DRAFT".into()]),
+            ..html("Plan", "<p>p</p>")
+        }))
+        .await);
+    assert_eq!(p["tags"], serde_json::json!(["draft"]), "{p}");
+    let id = p["artifact_id"].as_str().unwrap().to_string();
+    ok(t.publish(Parameters(html("Other", "<p>o</p>"))).await);
+    // `tag` adds and removes.
+    let r = ok(t
+        .tag(Parameters(TagArgs {
+            url_or_id: id.clone(),
+            add: Some(vec!["final".into()]),
+            remove: Some(vec!["draft".into()]),
+        }))
+        .await);
+    assert_eq!(
+        (&r["tags"], &r["changed"]),
+        (&serde_json::json!(["Final"]), &serde_json::json!(true))
+    );
+    let e = err(t
+        .tag(Parameters(TagArgs {
+            url_or_id: id.clone(),
+            add: Some(vec!["urgent".into()]),
+            remove: None,
+        }))
+        .await);
+    assert_eq!(e["error"]["code"], "unknown_tag", "{e}");
+    let e = err(t
+        .tag(Parameters(TagArgs {
+            url_or_id: id.clone(),
+            ..Default::default()
+        }))
+        .await);
+    assert_eq!(e["error"]["code"], "invalid_args", "{e}");
+    // `list` shows the tags and filters on them, every one named.
+    let all = ok(t.list(Parameters(ListArgs::default())).await);
+    let plan = all["artifacts"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .find(|a| a["id"] == serde_json::json!(id))
+        .unwrap()
+        .clone();
+    assert_eq!(plan["tags"], serde_json::json!(["Final"]));
+    let only = ok(t
+        .list(Parameters(ListArgs {
+            tags: Some(vec!["final".into()]),
+            ..Default::default()
+        }))
+        .await);
+    let ids: Vec<&Value> = only["artifacts"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .map(|a| &a["id"])
+        .collect();
+    assert_eq!(ids, vec![&serde_json::json!(id)]);
+    let none = ok(t
+        .list(Parameters(ListArgs {
+            tags: Some(vec!["final".into(), "draft".into()]),
+            ..Default::default()
+        }))
+        .await);
+    assert_eq!(none["artifacts"], serde_json::json!([]));
+    assert_eq!(
+        ok(t.tags(Parameters(TagsArgs::default())).await)["tags"][1]["count"],
+        1
+    );
+}
+
+#[tokio::test]
+async fn a_publish_whose_tags_are_refused_lands_and_reports_tags_error() {
+    let ts = TestServer::spawn().await;
+    let t = tools_for(&ts);
+    let max = clax_core::tags::MAX_ARTIFACT_TAGS;
+    let names: Vec<String> = (0..=max).map(|i| format!("t{i}")).collect();
+    for n in &names {
+        owner_tag(&ts, n).await;
+    }
+    let p = ok(t.publish(Parameters(html("Full", "<p>1</p>"))).await);
+    let id = p["artifact_id"].as_str().unwrap().to_string();
+    let res = ts
+        .authed(
+            ts.client
+                .put(format!("{}/api/artifacts/{id}/tags", ts.base)),
+        )
+        .json(&serde_json::json!({"tags": names[..max].to_vec()}))
+        .send()
+        .await
+        .unwrap();
+    assert_eq!(res.status(), 200);
+    // One more is past the bound: the version lands, the tags do not.
+    let r = ok(t
+        .publish(Parameters(PublishArgs {
+            id: Some(id.clone()),
+            tags: Some(vec![names[max].clone()]),
+            ..html("Full", "<p>2</p>")
+        }))
+        .await);
+    assert_eq!(r["version"], 2, "{r}");
+    assert_eq!(r["tags_error"]["code"], "too_many_tags", "{r}");
+    assert_eq!(r["tags"].as_array().unwrap().len(), max, "{r}");
 }

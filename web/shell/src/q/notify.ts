@@ -9,6 +9,7 @@
 import type { InboxItem } from "../api";
 import { markInbox } from "./api";
 import { itemText, itemTitle } from "./inbox-model";
+import { loadMarkdown } from "../view/md-load.svelte";
 
 /** The longest notification body, in characters, "…" included. */
 export const NOTIFY_BODY = 180;
@@ -46,6 +47,8 @@ export class Notifier {
     private readonly mark: (id: string) => unknown = id => markInbox(id, true).catch(() => {}),
   ) {
     this.shown = new Map();
+    // A reply's or a question's notification shows its text without Markdown syntax once the module is here.
+    void loadMarkdown();
   }
 
   /** Shows `i` (an unread item); `others` are listed beside it, for naming its agent. */

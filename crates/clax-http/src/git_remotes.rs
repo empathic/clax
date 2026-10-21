@@ -325,6 +325,14 @@ fn link_allows(st: &Store, scope: Scope, aid: &str) -> clax_core::Result<bool> {
 /// Whether person `p`'s rights, or the artifact's link's, allow `scope` at
 /// `aid`; a person who is no longer one (revoked) is allowed nothing.
 fn person_allows(st: &Store, p: &str, scope: Scope, aid: &str) -> clax_core::Result<bool> {
+    // A revoked person keeps their row, and their rights in it: they are a
+    // plain viewer from then on.
+    if st
+        .viewer_by_public_id(p)?
+        .is_none_or(|v| v.person_revoked_at.is_some())
+    {
+        return Ok(false);
+    }
     let Ok(rights) = st.person_rights(p) else {
         return Ok(false);
     };
@@ -572,9 +580,11 @@ pub fn not_permitted(scope: Scope) -> ApiError {
     e
 }
 
-/// Checks `asker` may have a token of `scope` on `aid`, mints it and, for
-/// an agent, checks the history again once minted (a version may have
-/// landed meanwhile), revoking it when it is now refused. Answers
+/// Checks `asker` may have a token of `scope` on `aid`, mints it and checks
+/// again once minted, revoking it when it is now refused: the holder's
+/// rights as the store holds them then ([`still_allowed`]: rights may
+/// have narrowed, a session ended, meanwhile) and, for an agent, the
+/// history (a version may have landed). Answers
 /// `{artifact_id, scope, remote, token, expires_at, clone_command,
 /// jj_clone_command, existing_checkout}` ([`Checkout`]).
 ///
@@ -615,11 +625,40 @@ pub async fn mint_for(
     let minted =
         clax_rt::sendable(host.mint(&aid, scope, asker.ttl_s(), origin.as_deref(), &holder))
             .await?;
-    if let Err(e) = check_history(s, &asker, &aid).await {
+    let refused = match still_allowed(s, holder, scope, &aid).await {
+        Ok(()) => check_history(s, &asker, &aid).await,
+        Err(e) => Err(e),
+    };
+    if let Err(e) = refused {
         let _ = clax_rt::sendable(host.revoke(&aid, &minted.id)).await;
         return Err(e);
     }
     answer(&aid, scope, minted)
+}
+
+/// Whether `holder` may still have a token of `scope` at `aid`, read on the
+/// store once the host minted it, as [`recheck`] would judge it: the
+/// artifact still exists, the holder still may hold a token (the session
+/// live, the grant not ended, the person not revoked) and their rights now
+/// allow the scope. A request that narrowed rights or ended a session
+/// while the host minted rechecked or revoked only the tokens the host
+/// listed then, which this one was not yet among; its write is in the
+/// store before this read, so the token is refused here.
+async fn still_allowed(
+    s: &AppState,
+    holder: Holder,
+    scope: Scope,
+    aid: &ArtifactId,
+) -> Result<(), ApiError> {
+    let id = aid.clone();
+    s.store_call(move |st| {
+        st.get_artifact(&id)?.ok_or(CoreError::NotFound)?;
+        Ok(match asker_now(st, &holder)? {
+            Some(now) if allows(st, &now, scope, id.as_str())? => Ok(()),
+            _ => Err(not_permitted(scope)),
+        })
+    })
+    .await?
 }
 
 /// The scopes `asker`'s rights allow at `aid`, read first: what the Clone

@@ -237,6 +237,48 @@ async fn an_error_result_is_recorded_as_an_error_on_the_named_artifact() {
     c.cancel().await.unwrap();
 }
 
+/// Arguments that fail a tool's schema are an `invalid_args` error result,
+/// JSON like every other, over an MCP connection and through `call_direct`
+/// (the daemon's `/mcp`) alike.
+#[tokio::test]
+async fn arguments_that_fail_the_schema_are_invalid_args() {
+    let ts = TestServer::spawn().await;
+    let d = tempfile::tempdir().unwrap();
+    let s = session(&ts, &repo(d.path())).await;
+    let tools = shim_tools(&ts, &s);
+    let c = connect(tools.clone()).await;
+    for args in [
+        json!({"urll": "7q3k9mzx2b4t"}),
+        json!({"url_or_id": 7}),
+        json!({}),
+    ] {
+        let r = call(&c, "read", args.clone()).await;
+        assert_eq!(r.is_error, Some(true), "{args}: {r:?}");
+        let v = result_json(&r);
+        assert_eq!(v["error"]["code"], "invalid_args", "{args}: {v}");
+        assert!(
+            v["error"]["message"]
+                .as_str()
+                .unwrap()
+                .contains("deserialize"),
+            "{v}"
+        );
+        assert_eq!(v["feedback"], json!([]), "{v}");
+        let r = tools
+            .call_direct(
+                CallToolRequestParams::new("read")
+                    .with_arguments(args.as_object().unwrap().clone()),
+            )
+            .await
+            .unwrap();
+        let rmcp::model::CallToolResponse::Complete(r) = r else {
+            panic!("read completes")
+        };
+        assert_eq!(result_json(&r)["error"]["code"], "invalid_args", "{args}");
+    }
+    c.cancel().await.unwrap();
+}
+
 #[tokio::test]
 async fn shim_and_daemon_mcp_send_via_mcp() {
     let ts = TestServer::spawn().await;

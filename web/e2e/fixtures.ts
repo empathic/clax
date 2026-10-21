@@ -346,10 +346,16 @@ export async function namedViewer(base: string, name: string): Promise<string> {
  * input to the shell over the page, the shell covers the page with bands
  * until it sees the pointer move (web/shell/src/caps/gesture.ts); a hand
  * always moves before clicking, but Playwright's `click` and `hover` check
- * their target before moving, so a test reaches the element first. */
+ * their target before moving, so a test reaches the element first. The
+ * move starts a few pixels off the middle: a pointer already resting there
+ * (from an earlier click on the same element) would otherwise send moves
+ * with no movement, which leave the bands up, and the click lands on one. */
 export async function reach(page: Page, loc: Locator) {
   const b = (await loc.boundingBox())!;
-  await page.mouse.move(b.x + b.width / 2, b.y + b.height / 2, { steps: 5 });
+  const x = b.x + b.width / 2;
+  const y = b.y + b.height / 2;
+  await page.mouse.move(x - Math.min(6, b.width / 4), y);
+  await page.mouse.move(x, y, { steps: 5 });
 }
 
 /** Creates a viewer thread on `aid` v1 anchored to `body > main > h2`, as the shell posts it (multipart); returns the thread. */

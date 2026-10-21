@@ -29,6 +29,9 @@
 //!   keeps the mirrored threads as read-only history (`unlinked_at`), and
 //!   their unsent outbox rows until the owner drops them
 //!   ([`Store::drop_unsent`]).
+//! - **Deleting a linked thread** here ends its pairing alone
+//!   (`unlinked_at`) and drops its unsent writes: its twin on the remote
+//!   stays there and is not written here again.
 //!
 //! On a hosted daemon, `comment_keys` keeps the idempotency key an agent
 //! token's comment or new thread named and what it made
@@ -278,6 +281,19 @@ pub fn remote_label(name: &str, remote: &str) -> String {
     format!("{name} (on {remote})")
 }
 
+/// Whether link `l`, read before the transaction `c` is in, still holds:
+/// not ended, nor moved to another public artifact since.
+fn link_holds_in(c: &Connection, l: &RemoteLink) -> Result<bool> {
+    let raid: Option<String> = c
+        .query_row(
+            "SELECT remote_artifact_id FROM remote_links WHERE artifact_id = ?1 AND remote_id = ?2",
+            params![l.artifact_id, l.remote_id],
+            |r| r.get(0),
+        )
+        .optional()?;
+    Ok(raid.as_deref() == Some(l.remote_artifact_id.as_str()))
+}
+
 /// The idempotency key of a local write's up-send: made here, once.
 fn new_key(kind: &str) -> String {
     format!("clax-linked:{kind}:{}", new_ulid().to_lowercase())
@@ -525,7 +541,8 @@ impl Store {
     /// written already for it.
     ///
     /// # Errors
-    /// `NotFound` for an artifact gone; `invalid_comment` for an empty body.
+    /// `NotFound` for an artifact gone, or `link` ended or moved since it
+    /// was read; `invalid_comment` for an empty body.
     #[allow(clippy::too_many_arguments)]
     pub fn mirror_thread(
         &self,
@@ -551,7 +568,7 @@ impl Store {
             {
                 return Ok(tid);
             }
-            if !super::threads::artifact_live(tx, &link.artifact_id)? {
+            if !super::threads::artifact_live(tx, &link.artifact_id)? || !link_holds_in(tx, link)? {
                 return Err(CoreError::NotFound);
             }
             let now = self.now();
@@ -755,6 +772,11 @@ impl Store {
             let now = self.now();
             let mut queued = 0;
             for l in &links {
+                // Read before this transaction: a link ended (or moved)
+                // since queues nothing.
+                if !link_holds_in(tx, l)? {
+                    continue;
+                }
                 if !l.download_only {
                     let mut stmt = tx.prepare(&format!(
                         "SELECT t.id FROM threads t WHERE t.artifact_id = ?1
@@ -1185,6 +1207,9 @@ impl Store {
             let now = self.now();
             let mut paired = 0;
             for l in links.iter().filter(|l| !l.download_only) {
+                if !link_holds_in(tx, l)? {
+                    continue;
+                }
                 let mut stmt = tx.prepare_cached(
                     "SELECT q.id FROM questions q
                      WHERE q.artifact_id = ?1 AND q.status = 'open' AND q.source = 'ask'
@@ -1385,35 +1410,76 @@ impl Store {
     /// On a hosted daemon: the thread and comment that agent token
     /// `grant_id`'s comment or new thread keyed `key` made, if one did.
     pub fn comment_key(&self, grant_id: &str, key: &str) -> Result<Option<(String, String)>> {
-        self.with_read(|c| {
-            Ok(c.query_row(
-                "SELECT thread_id, comment_id FROM comment_keys WHERE grant_id = ?1 AND key = ?2",
-                params![grant_id, key],
-                |r| Ok((r.get(0)?, r.get(1)?)),
-            )
-            .optional()?)
-        })
+        self.with_read(|c| comment_key_in(c, (grant_id, key)))
     }
 
-    /// On a hosted daemon: records that agent token `grant_id`'s write
-    /// keyed `key` made comment `cid` on thread `tid`. A key recorded
-    /// already keeps what it made.
-    pub fn record_comment_key(
-        &self,
-        grant_id: &str,
-        key: &str,
-        tid: &str,
-        cid: &str,
-    ) -> Result<()> {
-        self.with_tx(|tx| {
-            tx.execute(
-                "INSERT OR IGNORE INTO comment_keys (grant_id, key, thread_id, comment_id, created_at)
-                 VALUES (?1, ?2, ?3, ?4, ?5)",
-                params![grant_id, key, tid, cid, self.now()],
-            )?;
-            Ok(())
+    /// Whether comment `cid` was sent to any agent (has a feedback row):
+    /// what a replayed keyed comment checks before sending it again.
+    pub fn comment_has_feedback(&self, cid: &str) -> Result<bool> {
+        self.with_read(|c| {
+            Ok(c.query_row(
+                "SELECT EXISTS (SELECT 1 FROM feedback WHERE comment_id = ?1)",
+                params![cid],
+                |r| r.get(0),
+            )?)
         })
     }
+}
+
+/// An agent token's idempotency key for a comment or new thread on a
+/// hosted daemon: its grant ID and the key.
+pub type CommentKey<'a> = (&'a str, &'a str);
+
+/// What a keyed write did: made `T` now, or found the thread and comment
+/// an earlier write under the same key made, and wrote nothing.
+#[derive(Debug)]
+pub enum Keyed<T> {
+    Made(T),
+    Before {
+        thread_id: String,
+        comment_id: String,
+    },
+}
+
+impl<T> Keyed<T> {
+    /// What an unkeyed write made (it has no earlier write to find).
+    pub(crate) fn made(self) -> T {
+        match self {
+            Keyed::Made(t) => t,
+            Keyed::Before { .. } => unreachable!("only a keyed write finds an earlier one"),
+        }
+    }
+}
+
+/// The thread and comment that write keyed `key` made, if one did.
+pub(crate) fn comment_key_in(
+    c: &Connection,
+    key: CommentKey<'_>,
+) -> Result<Option<(String, String)>> {
+    Ok(c.query_row(
+        "SELECT thread_id, comment_id FROM comment_keys WHERE grant_id = ?1 AND key = ?2",
+        params![key.0, key.1],
+        |r| Ok((r.get(0)?, r.get(1)?)),
+    )
+    .optional()?)
+}
+
+/// Records, in the transaction that made them, that the write keyed `key`
+/// made comment `cid` on thread `tid` (checked absent first with
+/// [`comment_key_in`] in the same transaction).
+pub(crate) fn record_comment_key_in(
+    tx: &Connection,
+    key: CommentKey<'_>,
+    tid: &str,
+    cid: &str,
+    now: &str,
+) -> Result<()> {
+    tx.execute(
+        "INSERT INTO comment_keys (grant_id, key, thread_id, comment_id, created_at)
+         VALUES (?1, ?2, ?3, ?4, ?5)",
+        params![key.0, key.1, tid, cid, now],
+    )?;
+    Ok(())
 }
 
 #[cfg(test)]
@@ -1568,6 +1634,85 @@ mod tests {
         assert_eq!((v.origin.as_str(), v.twin, v.state), ("remote", true, None));
         assert_eq!(v.comments[&made.id].author_name.as_deref(), Some("Sam"));
         // Nothing mirrored goes back up.
+        assert_eq!(w.st.scan_linked(&w.rid).unwrap(), 0);
+    }
+
+    #[test]
+    fn a_link_ended_after_it_was_read_mirrors_nothing() {
+        let w = world();
+        let l = link(&w, (1, 1));
+        w.st.unlink_remote(&w.aid, &w.rid).unwrap();
+        let err =
+            w.st.mirror_thread(
+                &AuditCtx::DAEMON,
+                &l,
+                ("clax.example", "https://clax.example"),
+                1,
+                true,
+                MirrorThread {
+                    remote_thread_id: "rt1".into(),
+                    remote_version: 1,
+                    anchor: whole(),
+                    first: mirror("hi", "rc1"),
+                },
+            )
+            .unwrap_err();
+        assert!(matches!(err, CoreError::NotFound), "{err:?}");
+        assert!(
+            w.st.linked_thread_by_remote(&w.rid, "rt1")
+                .unwrap()
+                .is_none()
+        );
+        let id = ArtifactId::parse(&w.aid).unwrap();
+        assert!(w.st.list_threads(&id, true, None, 10).unwrap().0.is_empty());
+    }
+
+    #[test]
+    fn deleting_a_linked_thread_ends_its_pairing_and_drops_its_unsent_writes() {
+        let w = world();
+        let l = link(&w, (1, 1));
+        let t =
+            w.st.mirror_thread(
+                &AuditCtx::DAEMON,
+                &l,
+                ("clax.example", "https://clax.example"),
+                1,
+                true,
+                MirrorThread {
+                    remote_thread_id: "rt1".into(),
+                    remote_version: 1,
+                    anchor: whole(),
+                    first: mirror("hi", "rc1"),
+                },
+            )
+            .unwrap();
+        w.clock.advance(1);
+        w.st.add_comment(
+            &AuditCtx::DAEMON,
+            &t.id,
+            NewComment {
+                author_kind: AUTHOR_VIEWER,
+                author_name: "Owner".into(),
+                author_public_id: Some(w.owner.clone()),
+                via_session_id: None,
+                body: "unsent".into(),
+                via_page: false,
+            },
+        )
+        .unwrap();
+        assert_eq!(w.st.scan_linked(&w.rid).unwrap(), 1);
+        w.st.delete_thread(&AuditCtx::DAEMON, &t.id).unwrap();
+        let lt =
+            w.st.linked_thread_by_remote(&w.rid, "rt1")
+                .unwrap()
+                .unwrap();
+        assert_eq!(lt.thread_id, t.id);
+        assert!(
+            lt.unlinked_at.is_some(),
+            "ended, so it is not written again"
+        );
+        assert!(w.st.outbox_of(&w.rid).unwrap().is_empty());
+        assert!(!w.st.has_linked_comment(&w.rid, "rc1").unwrap());
         assert_eq!(w.st.scan_linked(&w.rid).unwrap(), 0);
     }
 
@@ -1804,15 +1949,90 @@ mod tests {
     }
 
     #[test]
-    fn a_comment_key_keeps_what_it_made() {
+    fn a_keyed_thread_or_comment_is_made_once_with_its_key() {
         let w = world();
+        let id = ArtifactId::parse(&w.aid).unwrap();
+        let new_thread = |version_n| NewThread {
+            author_public_id: None,
+            version_n,
+            anchor: whole(),
+            author_name: "Ada".into(),
+            body: "hi".into(),
+            clip: None,
+            via_page: false,
+        };
+        let key = Some(("g1", "k"));
+        // A write refused records no key: a resend may still make it.
+        assert!(
+            w.st.block_on(w.st.create_thread_keyed_async(
+                &AuditCtx::DAEMON,
+                &id,
+                new_thread(9),
+                &[],
+                key
+            ))
+            .is_err()
+        );
         assert!(w.st.comment_key("g1", "k").unwrap().is_none());
-        w.st.record_comment_key("g1", "k", "t1", "c1").unwrap();
-        w.st.record_comment_key("g1", "k", "t2", "c2").unwrap();
+        let Keyed::Made(t) =
+            w.st.block_on(w.st.create_thread_keyed_async(
+                &AuditCtx::DAEMON,
+                &id,
+                new_thread(1),
+                &[],
+                key,
+            ))
+            .unwrap()
+        else {
+            panic!("made")
+        };
+        let first = t.comments[0].id.clone();
         assert_eq!(
             w.st.comment_key("g1", "k").unwrap(),
-            Some(("t1".into(), "c1".into()))
+            Some((t.id.clone(), first.clone())),
+            "recorded with the thread"
         );
+        // A second write under the key, however late its own check ran,
+        // finds the first and writes nothing.
+        match w
+            .st
+            .block_on(w.st.create_thread_keyed_async(
+                &AuditCtx::DAEMON,
+                &id,
+                new_thread(1),
+                &[],
+                key,
+            ))
+            .unwrap()
+        {
+            Keyed::Before {
+                thread_id,
+                comment_id,
+            } => assert_eq!((thread_id, comment_id), (t.id.clone(), first)),
+            Keyed::Made(_) => panic!("made twice"),
+        }
+        assert_eq!(w.st.list_threads(&id, true, None, 10).unwrap().0.len(), 1);
+        // A comment the same way.
+        let reply = || NewComment {
+            author_kind: AUTHOR_VIEWER,
+            author_name: "Ada".into(),
+            author_public_id: None,
+            via_session_id: None,
+            body: "again".into(),
+            via_page: false,
+        };
+        let Keyed::Made(c) =
+            w.st.add_comment_keyed(&AuditCtx::DAEMON, &t.id, reply(), Some(("g1", "c")))
+                .unwrap()
+        else {
+            panic!("made")
+        };
+        assert!(matches!(
+            w.st.add_comment_keyed(&AuditCtx::DAEMON, &t.id, reply(), Some(("g1", "c")))
+                .unwrap(),
+            Keyed::Before { comment_id, .. } if comment_id == c.id
+        ));
+        assert_eq!(w.st.get_thread(&t.id).unwrap().unwrap().comments.len(), 2);
         assert!(w.st.comment_key("g2", "k").unwrap().is_none());
     }
 

@@ -78,8 +78,16 @@ pub const BACKSTOP: Duration = Duration::from_secs(60);
 pub const BACKOFF_FIRST: Duration = Duration::from_secs(1);
 /// The longest wait between tries; reaching it marks waiting rows not sent.
 pub const BACKOFF_CAP: Duration = Duration::from_secs(300);
-/// The most pages of 200 threads one read of an artifact takes.
+/// How many threads a page of one read asks for, at most: fewer when a
+/// page's answer passes the client's cap.
+const PAGE: usize = 200;
+/// The most pages one cycle's read of an artifact takes; a read with more
+/// goes on in the next cycle ([`Resume`]).
 const MAX_PAGES: usize = 50;
+/// The most cycles in a row that end with a read to go on before the
+/// task waits (for the feedback poll, a kick or the backstop) as after
+/// any other cycle.
+const MAX_RESUMED: usize = 8;
 /// How long one feedback long-poll waits there, in seconds.
 pub const WAIT_S: u64 = 25;
 /// The name of the sync's own session there, as its people see it.
@@ -255,13 +263,36 @@ enum Stop {
     /// The remote could not be reached, or answered as a remote down does:
     /// try again after the backoff.
     Unreachable(String),
+    /// This daemon's own store failed: try again after the backoff, the
+    /// store's error named as the reason, never the remote.
+    Local(String),
     /// The remote is gone here, or not signed in: the task ends.
     Gone,
 }
 
+/// A store call's error.
 impl From<ApiError> for Stop {
     fn from(e: ApiError) -> Stop {
-        Stop::Unreachable(format!("{}: {}", e.code, e.message))
+        Stop::Local(format!("{}: {}", e.code, e.message))
+    }
+}
+
+impl Stop {
+    /// Why the cycle stopped, as the sync's status shows it.
+    fn reason(&self) -> &str {
+        match self {
+            Stop::Unreachable(why) | Stop::Local(why) => why,
+            Stop::Gone => "the remote is gone",
+        }
+    }
+
+    /// What the writes left unsent at the backoff cap say, the remote
+    /// named `name`.
+    fn not_sent(&self, name: &str) -> String {
+        match self {
+            Stop::Local(why) => format!("Not sent: {why}"),
+            _ => format!("Not sent: {name} unreachable"),
+        }
     }
 }
 
@@ -275,20 +306,49 @@ fn classify(f: &RemoteFail) -> Option<String> {
     }
 }
 
+/// What a heartbeat after an outage makes of the sync's session there.
+#[derive(Debug, PartialEq, Eq)]
+enum Heartbeat {
+    /// The session is live: kept.
+    Keep,
+    /// The remote is still out of reach (no answer, a 5xx or a 429): the
+    /// session is kept and the cycle backs off.
+    Out(String),
+    /// The remote ended the session, no longer knows it, or refuses the
+    /// token: a new one is registered.
+    Replace,
+}
+
+/// What heartbeat `answer` makes of the session ([`Heartbeat`]).
+fn heartbeat(answer: &Result<Value, RemoteFail>) -> Heartbeat {
+    match answer {
+        Ok(v) if v["session"]["ended_at"].is_null() => Heartbeat::Keep,
+        Err(f) if f.status != Some(401) => match classify(f) {
+            Some(why) => Heartbeat::Out(why),
+            None => Heartbeat::Replace,
+        },
+        _ => Heartbeat::Replace,
+    }
+}
+
 /// One remote's task.
 async fn run(s: AppState, rid: String, kick: Arc<Notify>, retry: Arc<Notify>) {
     let mut sync = Sync {
         s: s.clone(),
         rid: rid.clone(),
         client: None,
+        stale: false,
         watched: HashMap::new(),
         acks: Vec::new(),
         agents: HashMap::new(),
         asked_in: HashMap::new(),
         copy_waits: HashMap::new(),
+        reading: HashMap::new(),
+        more: false,
     };
     let mut full = true;
     let mut backoff = Duration::ZERO;
+    let mut resumed = 0;
     loop {
         match sync.cycle(full).await {
             Ok(()) => {
@@ -304,9 +364,12 @@ async fn run(s: AppState, rid: String, kick: Arc<Notify>, retry: Arc<Notify>) {
                 sync.end().await;
                 return;
             }
-            Err(Stop::Unreachable(why)) => {
-                sync.client = None;
-                sync.watched.clear();
+            Err(stop @ (Stop::Unreachable(_) | Stop::Local(_))) => {
+                let local = matches!(stop, Stop::Local(_));
+                let why = stop.reason().to_string();
+                if !local {
+                    sync.stale = true;
+                }
                 backoff = if backoff.is_zero() {
                     BACKOFF_FIRST
                 } else {
@@ -314,14 +377,16 @@ async fn run(s: AppState, rid: String, kick: Arc<Notify>, retry: Arc<Notify>) {
                 };
                 let now = s.store.now();
                 s.linked.set_status(&rid, |st| {
-                    st.unreachable_since.get_or_insert(now);
+                    if !local {
+                        st.unreachable_since.get_or_insert(now);
+                    }
                     st.last_error = Some(why.clone());
                 });
                 if backoff >= BACKOFF_CAP {
                     let (r2, name) = (rid.clone(), remote_label(&s, &rid).await);
+                    let why = stop.not_sent(&name);
                     let _ = s
                         .store_call(move |st| {
-                            let why = format!("Not sent: {name} unreachable");
                             st.outbox_failed_all(&r2, &why)?;
                             st.linked_questions_failed_all(&r2, &why)
                         })
@@ -347,6 +412,15 @@ async fn run(s: AppState, rid: String, kick: Arc<Notify>, retry: Arc<Notify>) {
                 continue;
             }
         }
+        if std::mem::take(&mut sync.more) {
+            resumed += 1;
+            if resumed < MAX_RESUMED {
+                // A read ran out of pages: it goes on before anything waits.
+                full = false;
+                continue;
+            }
+        }
+        resumed = 0;
         let poll = sync.poll();
         tokio::select! {
             r = poll => {
@@ -354,8 +428,7 @@ async fn run(s: AppState, rid: String, kick: Arc<Notify>, retry: Arc<Notify>) {
                 if let Err(why) = r {
                     // The next cycle meets the outage itself.
                     tracing::debug!(remote = rid.as_str(), error = why.as_str(), "feedback poll failed");
-                    sync.client = None;
-                    sync.watched.clear();
+                    sync.stale = true;
                     tokio::select! {
                         _ = retry.notified() => {}
                         _ = s.linked.sleeper.sleep(BACKOFF_FIRST) => {}
@@ -425,8 +498,13 @@ fn publish_questions(
 struct Sync {
     s: AppState,
     rid: String,
-    /// The remote's client, speaking in the sync's session there.
+    /// The remote's client, speaking in the sync's session there. Kept
+    /// across an outage, so the session (and its watches and question
+    /// copies) is not left behind there for a new one.
     client: Option<Client>,
+    /// Whether the session there may have ended since it last answered
+    /// (an outage or a failed poll): the next connect asks it first.
+    stale: bool,
     /// The public artifacts the session watches, each with the local agent
     /// its watch names as the one it relays for (`None`: none, the sync's
     /// own name shows).
@@ -446,6 +524,21 @@ struct Sync {
     /// request each at a time (a remote holds few polls of one question),
     /// kept across feedback polls.
     copy_waits: HashMap<String, clax_rt::JoinHandle<()>>,
+    /// The reads that ran out of pages, by link (local and public
+    /// artifact IDs): the next cycle goes on from where each stopped.
+    reading: HashMap<(String, String), Resume>,
+    /// A read ran out of pages this cycle: the next starts at once.
+    more: bool,
+}
+
+/// Where a read that ran out of pages goes on: its `since`, the page
+/// cursor it stopped at, and the newest activity it has read, which
+/// becomes the link's sync cursor once the read reaches the end.
+#[derive(Clone, Debug)]
+struct Resume {
+    since: Option<String>,
+    cursor: Option<String>,
+    newest: String,
 }
 
 /// The local agent the sync names as the one it relays for on local
@@ -485,10 +578,10 @@ impl Sync {
     /// Ends the sync's sessions there.
     async fn end(&mut self) {
         if let Some(mut c) = self.client.take() {
-            crate::public::sendable(c.end_session()).await;
+            clax_rt::sendable(c.end_session()).await;
         }
         for (_, (mut c, _)) in std::mem::take(&mut self.agents) {
-            crate::public::sendable(c.end_session()).await;
+            clax_rt::sendable(c.end_session()).await;
         }
         self.asked_in.clear();
         for (_, w) in self.copy_waits.drain() {
@@ -533,7 +626,7 @@ impl Sync {
             let path = format!("/api/sessions/{sid}/questions/{q}?wait={WAIT_S}");
             let w = clax_rt::spawn(async move {
                 loop {
-                    match crate::public::sendable(c.get(&path)).await {
+                    match clax_rt::sendable(c.get(&path)).await {
                         Ok(v) if v["question"]["status"] == "open" => {}
                         _ => break,
                     }
@@ -550,6 +643,29 @@ impl Sync {
         if self.s.linked.offline.load(Ordering::SeqCst) {
             return Err(Stop::Unreachable("offline".into()));
         }
+        if self.stale
+            && let Some(c) = self.client.as_ref()
+        {
+            // After an outage the session there is kept when it is still
+            // live, and replaced only when the remote no longer knows it
+            // (or refuses the token, which may have been replaced here).
+            let sid = c.session().map(|s| s.0.clone()).unwrap_or_default();
+            let answer = clax_rt::sendable(c.call(
+                reqwest::Method::PATCH,
+                &format!("/api/sessions/{sid}"),
+                Some(&json!({"heartbeat": true})),
+            ))
+            .await;
+            match heartbeat(&answer) {
+                Heartbeat::Keep => {}
+                Heartbeat::Out(why) => return Err(Stop::Unreachable(why)),
+                Heartbeat::Replace => {
+                    self.client = None;
+                    self.watched.clear();
+                }
+            }
+            self.stale = false;
+        }
         if self.client.is_none() {
             let rid = self.rid.clone();
             let (remote, token) = self
@@ -560,7 +676,7 @@ impl Sync {
                 return Err(Stop::Gone);
             };
             let mut c = Client::new(&remote.origin, Some(token));
-            crate::public::sendable(c.session_for(SYNC_HARNESS, SYNC_NAME))
+            clax_rt::sendable(c.session_for(SYNC_HARNESS, SYNC_NAME))
                 .await
                 .map_err(|f| {
                     Stop::Unreachable(classify(&f).unwrap_or_else(|| f.message.clone()))
@@ -586,21 +702,15 @@ impl Sync {
             }
             let path = format!("/api/sessions/{sid}/watches/{}", l.remote_artifact_id);
             let body = json!({"as": relay.as_ref().map(|(name, harness)| json!({"name": name, "harness": harness}))});
-            let watched =
-                match crate::public::sendable(c.call(reqwest::Method::PUT, &path, Some(&body)))
-                    .await
-                {
-                    // A public Clax older than the relay label watches without it.
-                    Err(f) if f.status == Some(400) => {
-                        crate::public::sendable(c.call(
-                            reqwest::Method::PUT,
-                            &path,
-                            Some(&json!({})),
-                        ))
-                        .await
-                    }
-                    r => r,
-                };
+            let watched = match clax_rt::sendable(c.call(reqwest::Method::PUT, &path, Some(&body)))
+                .await
+            {
+                // A public Clax older than the relay label watches without it.
+                Err(f) if f.status == Some(400) => {
+                    clax_rt::sendable(c.call(reqwest::Method::PUT, &path, Some(&json!({})))).await
+                }
+                r => r,
+            };
             match watched {
                 Ok(_) => {
                     self.watched.insert(l.remote_artifact_id.clone(), relay);
@@ -639,7 +749,7 @@ impl Sync {
         // own, which starts a cycle once the copy is no longer open there.
         self.wait_on_copies().await;
         let c = self.client.as_ref().expect("connected");
-        let v = crate::public::sendable(c.get(&format!(
+        let v = clax_rt::sendable(c.get(&format!(
             "/api/sessions/{sid}/feedback?tier=wait&wait={WAIT_S}"
         )))
         .await
@@ -666,6 +776,12 @@ impl Sync {
         if scan(&self.s, &self.rid).await {
             publish_outbox(&self.s, &self.rid).await;
         }
+        // A read to go on of a link that ended or moved starts over.
+        self.reading.retain(|(aid, raid), _| {
+            links
+                .iter()
+                .any(|l| &l.artifact_id == aid && &l.remote_artifact_id == raid)
+        });
         self.connect(&links).await?;
         self.drain(&links).await?;
         self.questions(&links).await?;
@@ -676,11 +792,13 @@ impl Sync {
             let c = self.client.as_ref().expect("connected");
             let sid = c.session().map(|s| s.0.clone()).unwrap_or_default();
             let ids = std::mem::take(&mut self.acks);
-            let _ = crate::public::sendable(c.post(
-                &format!("/api/sessions/{sid}/feedback/ack"),
-                &json!({"thread_ids": ids}),
-            ))
-            .await;
+            for chunk in ids.chunks(clax_core::feedback::MAX_ACK_IDS) {
+                let _ = clax_rt::sendable(c.post(
+                    &format!("/api/sessions/{sid}/feedback/ack"),
+                    &json!({"thread_ids": chunk}),
+                ))
+                .await;
+            }
         }
         Ok(())
     }
@@ -727,12 +845,16 @@ impl Sync {
                         .store_call(move |st| st.outbox_failed(seq, &why))
                         .await?;
                 }
-                Err(why) => {
+                Err(Stop::Unreachable(why)) => {
                     let (seq, w2) = (row.seq, why.clone());
                     self.s
                         .store_call(move |st| st.outbox_attempted(seq, &w2))
                         .await?;
                     out = Err(Stop::Unreachable(why));
+                    break;
+                }
+                Err(stop) => {
+                    out = Err(stop);
                     break;
                 }
             }
@@ -772,11 +894,11 @@ impl Sync {
                 return Err("the remote is gone".into());
             };
             let mut c = Client::new(&remote.origin, Some(token));
-            crate::public::sendable(c.session_for(harness, name))
+            clax_rt::sendable(c.session_for(harness, name))
                 .await
                 .map_err(|f| classify(&f).unwrap_or(f.message))?;
             let sid = c.session().map(|s| s.0.clone()).unwrap_or_default();
-            let v = crate::public::sendable(c.get(&format!("/api/sessions/{sid}")))
+            let v = clax_rt::sendable(c.get(&format!("/api/sessions/{sid}")))
                 .await
                 .map_err(|f| classify(&f).unwrap_or(f.message))?;
             let handle = v["session"]["agent_handle"]
@@ -818,8 +940,8 @@ impl Sync {
         let mut handed = false;
         loop {
             let wrote = match key {
-                Some(k) => crate::public::sendable(ac.post_keyed(path, body, k)).await,
-                None => crate::public::sendable(ac.post(path, body)).await,
+                Some(k) => clax_rt::sendable(ac.post_keyed(path, body, k)).await,
+                None => clax_rt::sendable(ac.post(path, body)).await,
             };
             match wrote {
                 Ok(v) if v.get("guidance").is_none() => return Ok(Some(v)),
@@ -828,7 +950,7 @@ impl Sync {
                     handed = true;
                     let c = self.client.as_ref().expect("connected");
                     let sid = c.session().map(|s| s.0.clone()).unwrap_or_default();
-                    if crate::public::sendable(c.post(
+                    if clax_rt::sendable(c.post(
                         &format!("/api/sessions/{sid}/threads/{rtid}/handoff"),
                         &json!({"to": handle}),
                     ))
@@ -846,11 +968,8 @@ impl Sync {
 
     /// Records that row `seq` is about to be sent: from now until its
     /// answer is read, the remote may have made it.
-    async fn trying(&self, seq: i64) -> Result<(), String> {
-        self.s
-            .store_call(move |st| st.outbox_trying(seq))
-            .await
-            .map_err(|e| e.message)
+    async fn trying(&self, seq: i64) -> Result<(), Stop> {
+        Ok(self.s.store_call(move |st| st.outbox_trying(seq)).await?)
     }
 
     /// Whether the answer to an up-send is lost (tests).
@@ -869,27 +988,25 @@ impl Sync {
         row: &OutboxRow,
         link: &RemoteLink,
         agents: &mut HashMap<String, (Client, String)>,
-    ) -> Result<Sent, String> {
+    ) -> Result<Sent, Stop> {
         let tid = row.thread_id.clone();
         let (t, lt) = self
             .s
             .store_call(move |st| Ok((st.get_thread(&tid)?, st.linked_thread(&tid)?)))
-            .await
-            .map_err(|e| e.message)?;
+            .await?;
         let (Some(t), Some(lt)) = (t, lt) else {
             // The thread is gone here: nothing to send.
             let seq = row.seq;
             self.s
                 .store_call(move |st| st.ack_outbox(seq, None, None, None))
-                .await
-                .map_err(|e| e.message)?;
+                .await?;
             return Ok(Sent::Acked);
         };
         let c = self.client.as_ref().expect("connected");
         let raid = &link.remote_artifact_id;
-        let fail = |f: RemoteFail| -> Result<Sent, String> {
+        let fail = |f: RemoteFail| -> Result<Sent, Stop> {
             match classify(&f) {
-                Some(why) => Err(why),
+                Some(why) => Err(Stop::Unreachable(why)),
                 None => Ok(Sent::Refused(format!("{}: {}", f.code, f.message))),
             }
         };
@@ -904,8 +1021,7 @@ impl Sync {
                 let twin = self
                     .s
                     .store_call(move |st| st.remote_twin(&rid, &aid, &raid2, n))
-                    .await
-                    .map_err(|e| e.message)?;
+                    .await?;
                 let version = match twin {
                     Some(v) => v,
                     None if t.anchor.is_whole() => link.remote_n,
@@ -922,15 +1038,15 @@ impl Sync {
                 };
                 let clip = if t.has_clip {
                     let (id, tid) = (
-                        clax_core::ArtifactId::parse(&t.artifact_id).map_err(|e| e.to_string())?,
+                        clax_core::ArtifactId::parse(&t.artifact_id)
+                            .map_err(|e| Stop::Local(e.to_string()))?,
                         t.id.clone(),
                     );
                     self.s
                         .store_call_async(
                             move |st| async move { st.read_clip_async(&id, &tid).await },
                         )
-                        .await
-                        .map_err(|e| e.message)?
+                        .await?
                 } else {
                     None
                 };
@@ -949,7 +1065,7 @@ impl Sync {
                     form = form.part("clip", part);
                 }
                 self.trying(row.seq).await?;
-                let v = match crate::public::sendable(c.post_form_keyed(
+                let v = match clax_rt::sendable(c.post_form_keyed(
                     &format!("/api/artifacts/{raid}/threads"),
                     form,
                     &row.idem_key,
@@ -960,9 +1076,9 @@ impl Sync {
                     Err(f) => return fail(f),
                 };
                 if self.lose_answer() {
-                    return Err("the answer was lost".into());
+                    return Err(Stop::Unreachable("the answer was lost".into()));
                 }
-                let rtid = v["thread"]["id"].as_str().map(str::to_string);
+                let rtid = answered_thread(&v);
                 let rcid = v["thread"]["comments"][0]["id"]
                     .as_str()
                     .map(str::to_string);
@@ -974,8 +1090,7 @@ impl Sync {
                     .store_call(move |st| {
                         st.ack_outbox(seq, Some(&rtid), rcid.as_deref(), Some(version))
                     })
-                    .await
-                    .map_err(|e| e.message)?;
+                    .await?;
                 Ok(Sent::Acked)
             }
             "comment" => {
@@ -987,8 +1102,7 @@ impl Sync {
                     let seq = row.seq;
                     self.s
                         .store_call(move |st| st.ack_outbox(seq, None, None, None))
-                        .await
-                        .map_err(|e| e.message)?;
+                        .await?;
                     return Ok(Sent::Acked);
                 };
                 let path = format!("/api/artifacts/{raid}/threads/{rtid}/comments");
@@ -1012,7 +1126,7 @@ impl Sync {
                 }
                 let v = match answer {
                     Some(v) => v,
-                    None => match crate::public::sendable(c.post_keyed(
+                    None => match clax_rt::sendable(c.post_keyed(
                         &path,
                         &json!({"body": body}),
                         &row.idem_key,
@@ -1024,14 +1138,13 @@ impl Sync {
                     },
                 };
                 if self.lose_answer() {
-                    return Err("the answer was lost".into());
+                    return Err(Stop::Unreachable("the answer was lost".into()));
                 }
                 let rcid = v["comment"]["id"].as_str().map(str::to_string);
                 let seq = row.seq;
                 self.s
                     .store_call(move |st| st.ack_outbox(seq, None, rcid.as_deref(), None))
-                    .await
-                    .map_err(|e| e.message)?;
+                    .await?;
                 Ok(Sent::Acked)
             }
             kind => {
@@ -1058,17 +1171,16 @@ impl Sync {
                         Err(f) => return fail(f),
                     }
                 }
-                if !done && let Err(f) = crate::public::sendable(c.post(&path, &json!({}))).await {
+                if !done && let Err(f) = clax_rt::sendable(c.post(&path, &json!({}))).await {
                     return fail(f);
                 }
                 if self.lose_answer() {
-                    return Err("the answer was lost".into());
+                    return Err(Stop::Unreachable("the answer was lost".into()));
                 }
                 let seq = row.seq;
                 self.s
                     .store_call(move |st| st.ack_outbox(seq, None, None, None))
-                    .await
-                    .map_err(|e| e.message)?;
+                    .await?;
                 Ok(Sent::Acked)
             }
         }
@@ -1138,12 +1250,12 @@ impl Sync {
                 continue;
             }
             if let Some((mut c, _)) = agents.remove(&name) {
-                crate::public::sendable(c.end_session()).await;
+                clax_rt::sendable(c.end_session()).await;
             }
         }
         for (c, _) in agents.values() {
             if let Some((sid, _)) = c.session() {
-                let _ = crate::public::sendable(c.call(
+                let _ = clax_rt::sendable(c.call(
                     reqwest::Method::PATCH,
                     &format!("/api/sessions/{sid}"),
                     Some(&json!({"heartbeat": true})),
@@ -1200,7 +1312,7 @@ impl Sync {
             // Closed here first: the copy there is withdrawn (or was
             // closed there already).
             let path = format!("/api/sessions/{sid}/questions/{rqid}/withdraw");
-            match crate::public::sendable(c.post(&path, &json!({}))).await {
+            match clax_rt::sendable(c.post(&path, &json!({}))).await {
                 Ok(_) => {}
                 Err(f) => {
                     if let Some(why) = classify(&f) {
@@ -1211,21 +1323,20 @@ impl Sync {
             self.question_done(&qid, false).await?;
             return Ok(false);
         }
-        let v = match crate::public::sendable(
-            c.get(&format!("/api/sessions/{sid}/questions/{rqid}?wait=0")),
-        )
-        .await
-        {
-            Ok(v) => v,
-            Err(f) => {
-                if let Some(why) = classify(&f) {
-                    return Err(why);
+        let v =
+            match clax_rt::sendable(c.get(&format!("/api/sessions/{sid}/questions/{rqid}?wait=0")))
+                .await
+            {
+                Ok(v) => v,
+                Err(f) => {
+                    if let Some(why) = classify(&f) {
+                        return Err(why);
+                    }
+                    // No longer this token's to read there: asked again.
+                    self.reask(&qid).await?;
+                    return Ok(true);
                 }
-                // No longer this token's to read there: asked again.
-                self.reask(&qid).await?;
-                return Ok(true);
-            }
-        };
+            };
         let q = &v["question"];
         match q["status"].as_str().unwrap_or("open") {
             "answered" => {
@@ -1355,7 +1466,7 @@ impl Sync {
             .store_call(move |st| st.linked_question_trying(&q2))
             .await
             .map_err(|e| e.message)?;
-        let v = match crate::public::sendable(c.post_keyed(
+        let v = match clax_rt::sendable(c.post_keyed(
             &format!("/api/sessions/{sid}/questions"),
             &body,
             &row.idem_key,
@@ -1406,14 +1517,45 @@ impl Sync {
 
     /// Reads link `l`'s public threads (those changed since its cursor,
     /// or all when `full`) and writes here what changed.
+    ///
+    /// Pages come in the remote's creation order and `since` only filters
+    /// each, so the link's sync cursor moves only once a read reaches the
+    /// last page. A page past the answer cap is asked again smaller, and
+    /// the next page at full size. A read that runs out of pages
+    /// ([`MAX_PAGES`]) writes what it read and goes on in the next cycle
+    /// from its page cursor ([`Resume`]). A page cursor the remote refuses
+    /// (a 4xx: its thread was deleted there, say) starts the read over
+    /// from the link's sync cursor.
+    ///
+    /// A thread whose page of one is past the answer cap stops this
+    /// link's read for the cycle: what was read before it is written
+    /// here, the cursor stays, and the link's read error says why
+    /// ([`clax_realtime::linked::Linked::read_error`]) while the remote's
+    /// other links go on. A read to the end clears it.
     async fn read(&mut self, l: &RemoteLink, full: bool) -> Result<(), Stop> {
         let c = self.client.as_ref().expect("connected");
-        let since = if full { None } else { l.sync_cursor.clone() };
+        let key = (l.artifact_id.clone(), l.remote_artifact_id.clone());
+        let (page, max_pages) = (
+            self.s.linked.read_limit(0, PAGE),
+            self.s.linked.read_limit(1, MAX_PAGES),
+        );
+        let mut resume = self.reading.get(&key).cloned();
+        if resume.is_some() && self.s.linked.hold_resumed.load(Ordering::SeqCst) {
+            return Ok(());
+        }
+        let mut since = match &resume {
+            Some(r) => r.since.clone(),
+            None if full => None,
+            None => l.sync_cursor.clone(),
+        };
         let mut threads: Vec<Value> = Vec::new();
-        let mut cursor: Option<String> = None;
-        for _ in 0..MAX_PAGES {
+        let mut cursor: Option<String> = resume.as_ref().and_then(|r| r.cursor.clone());
+        let mut limit = page;
+        let mut cut_off = None;
+        let mut done = false;
+        for _ in 0..max_pages {
             let mut q = format!(
-                "/api/artifacts/{}/threads?include_resolved=true&limit=200",
+                "/api/artifacts/{}/threads?include_resolved=true&limit={limit}",
                 l.remote_artifact_id
             );
             if let Some(s) = &since {
@@ -1422,21 +1564,58 @@ impl Sync {
             if let Some(cu) = &cursor {
                 q.push_str(&format!("&cursor={}", urlencode(cu)));
             }
-            let v = match crate::public::sendable(c.get(&q)).await {
+            let v = match clax_rt::sendable(c.get(&q)).await {
                 Ok(v) => v,
                 Err(f) => match classify(&f) {
                     Some(why) => return Err(Stop::Unreachable(why)),
                     None if f.status == Some(404) => return Ok(()),
+                    // A refused page cursor of a read to go on: the read
+                    // starts over.
+                    None if resume.is_some()
+                        && f.status.is_some_and(|s| (400..500).contains(&s)) =>
+                    {
+                        tracing::debug!(
+                            artifact = %l.artifact_id,
+                            code = %f.code,
+                            "linked threads: a read to go on starts over"
+                        );
+                        self.reading.remove(&key);
+                        resume = None;
+                        since = if full { None } else { l.sync_cursor.clone() };
+                        cursor = None;
+                        threads.clear();
+                        limit = page;
+                        continue;
+                    }
+                    // A page past the answer cap is asked again smaller.
+                    None if f.code == "too_large" && limit > 1 => {
+                        limit = (limit / 4).max(1);
+                        continue;
+                    }
+                    None if f.code == "too_large" => {
+                        cut_off = Some(format!(
+                            "a thread there is past the {} MiB an answer may be",
+                            crate::public::MAX_ANSWER_BYTES >> 20
+                        ));
+                        break;
+                    }
                     None => return Err(Stop::Unreachable(f.message)),
                 },
             };
+            limit = page;
             threads.extend(v["threads"].as_array().cloned().unwrap_or_default());
             match v["next_cursor"].as_str() {
                 Some(n) if Some(n) != cursor.as_deref() => cursor = Some(n.to_string()),
-                _ => break,
+                _ => {
+                    done = true;
+                    break;
+                }
             }
         }
-        let mut newest = l.sync_cursor.clone().unwrap_or_default();
+        let mut newest = match &resume {
+            Some(r) => r.newest.clone(),
+            None => l.sync_cursor.clone().unwrap_or_default(),
+        };
         for rt in &threads {
             if let Some(a) = activity(rt)
                 && a > newest
@@ -1445,6 +1624,26 @@ impl Sync {
             }
             self.mirror(l, rt).await?;
         }
+        let stopped = cut_off.is_some();
+        self.s
+            .linked
+            .set_read_error(&l.artifact_id, &self.rid, cut_off);
+        if stopped {
+            return Ok(());
+        }
+        if !done {
+            self.reading.insert(
+                key,
+                Resume {
+                    since,
+                    cursor,
+                    newest,
+                },
+            );
+            self.more = true;
+            return Ok(());
+        }
+        self.reading.remove(&key);
         if !newest.is_empty() && Some(&newest) != l.sync_cursor.as_ref() {
             let (aid, rid) = (l.artifact_id.clone(), self.rid.clone());
             self.s
@@ -1529,7 +1728,7 @@ impl Sync {
                                 Some(n) => (n, true),
                                 None => (link.pushed_n, false),
                             };
-                        let t = st.mirror_thread(
+                        let t = match st.mirror_thread(
                             &audit,
                             &link,
                             (&remote.name, &remote.origin),
@@ -1541,7 +1740,21 @@ impl Sync {
                                 anchor,
                                 first: first.clone(),
                             },
-                        )?;
+                        ) {
+                            Ok(t) => t,
+                            // The artifact or the link is gone since this
+                            // cycle read it: nothing to write here.
+                            Err(clax_core::CoreError::NotFound) => {
+                                tracing::debug!(
+                                    artifact = %link.artifact_id,
+                                    remote = %rid,
+                                    remote_thread = %rtid,
+                                    "linked threads: not mirrored, its artifact or link is gone"
+                                );
+                                return Ok(None);
+                            }
+                            Err(e) => return Err(e),
+                        };
                         fresh_thread = true;
                         st.linked_thread(&t.id)?
                             .ok_or(clax_core::CoreError::NotFound)?
@@ -1551,6 +1764,11 @@ impl Sync {
                     return Ok(None);
                 }
                 let tid = lt.thread_id.clone();
+                // A twin deleted here (its pairing kept from before deletes
+                // ended it) is not written again.
+                if st.get_thread(&tid)?.is_none() {
+                    return Ok(None);
+                }
                 let mut added = Vec::new();
                 for (_, c) in &comments {
                     if let Some(made) = st.mirror_comment(&audit, &tid, &rid, c)? {
@@ -1637,7 +1855,7 @@ impl Sync {
             l.remote_artifact_id
         );
         let max = clax_store::threads::MAX_CLIP_BYTES;
-        match crate::public::sendable(c.get_bytes(&path, max)).await {
+        match clax_rt::sendable(c.get_bytes(&path, max)).await {
             Ok((bytes, _)) => {
                 let (t2, ctx) = (tid.to_string(), self.store().feedback_ctx());
                 let r = self
@@ -1670,6 +1888,15 @@ fn maybe_made(row: &OutboxRow) -> bool {
 /// names is used in paths only then.
 fn safe_id(id: &str) -> bool {
     !id.is_empty() && id.len() <= 64 && id.bytes().all(|b| b.is_ascii_alphanumeric())
+}
+
+/// The thread there that the answer `v` to an up-sent thread names, when
+/// its ID is one to put in a path ([`safe_id`]).
+fn answered_thread(v: &Value) -> Option<String> {
+    v["thread"]["id"]
+        .as_str()
+        .filter(|x| safe_id(x))
+        .map(str::to_string)
 }
 
 /// The newest time a public thread view was made, commented on or resolved.
@@ -1708,6 +1935,59 @@ mod tests {
     use super::*;
 
     #[test]
+    fn a_store_error_stops_a_cycle_as_local_and_names_itself_not_the_remote() {
+        let stop = Stop::from(ApiError::new(
+            axum::http::StatusCode::INTERNAL_SERVER_ERROR,
+            "store",
+            "database is locked",
+        ));
+        assert!(matches!(stop, Stop::Local(_)), "{stop:?}");
+        assert_eq!(stop.reason(), "store: database is locked");
+        assert_eq!(
+            stop.not_sent("clax.example"),
+            "Not sent: store: database is locked"
+        );
+        let out = Stop::Unreachable("clax.example answered 503".into());
+        assert_eq!(
+            out.not_sent("clax.example"),
+            "Not sent: clax.example unreachable"
+        );
+    }
+
+    #[test]
+    fn a_heartbeat_keeps_the_session_through_an_outage_and_replaces_one_gone() {
+        let fail = |status: Option<u16>| {
+            Err(RemoteFail {
+                origin: "https://clax.example".into(),
+                status,
+                code: "x".into(),
+                message: "x".into(),
+                body: Value::Null,
+            })
+        };
+        assert_eq!(
+            heartbeat(&Ok(json!({"session": {"ended_at": null}}))),
+            Heartbeat::Keep
+        );
+        assert_eq!(
+            heartbeat(&fail(Some(503))),
+            Heartbeat::Out("https://clax.example answered 503".into())
+        );
+        assert_eq!(
+            heartbeat(&fail(Some(429))),
+            Heartbeat::Out("https://clax.example answered 429".into())
+        );
+        assert!(matches!(heartbeat(&fail(None)), Heartbeat::Out(_)));
+        for gone in [
+            Ok(json!({"session": {"ended_at": "2026-10-15T10:00:00.000Z"}})),
+            fail(Some(401)),
+            fail(Some(404)),
+        ] {
+            assert_eq!(heartbeat(&gone), Heartbeat::Replace, "{gone:?}");
+        }
+    }
+
+    #[test]
     fn activity_is_the_newest_time_and_ids_are_checked() {
         let rt = json!({"created_at": "2026-10-15T10:00:00.000Z",
             "comments": [{"created_at": "2026-10-15T10:00:00.000Z"}, {"created_at": "2026-10-15T10:05:00.000Z"}],
@@ -1716,6 +1996,14 @@ mod tests {
         assert!(safe_id("01JABCDEF"));
         assert!(!safe_id("../../etc"));
         assert!(!safe_id(""));
+        let thread = |id: &str| json!({"thread": {"id": id}});
+        assert_eq!(
+            answered_thread(&thread("01JABCDEF")).as_deref(),
+            Some("01JABCDEF")
+        );
+        for bad in ["../x", "a/b", "a?b", "a#b", ""] {
+            assert_eq!(answered_thread(&thread(bad)), None, "{bad}");
+        }
         assert_eq!(
             urlencode("2026-10-15T10:05:00.000Z"),
             "2026-10-15T10%3A05%3A00.000Z"

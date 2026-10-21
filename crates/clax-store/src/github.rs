@@ -127,8 +127,16 @@ fn linked(tx: &Transaction<'_>, github_id: i64) -> Result<Option<(String, bool, 
 /// Links `user` to viewer row `viewer_id` (moving the account's link, and
 /// refreshing its login, name and avatar), noting the sign-in, and binds
 /// the shares waiting for the account's login to that row
-/// ([`super::shares::bind_github_shares`]). Returns how many it bound.
-fn link(tx: &Transaction<'_>, now: &str, user: &GitHubUser, viewer_id: &str) -> Result<usize> {
+/// ([`super::shares::bind_github_shares`], under `ctx`). Returns how many
+/// it bound.
+fn link(
+    st: &Store,
+    ctx: &AuditCtx,
+    tx: &Transaction<'_>,
+    user: &GitHubUser,
+    viewer_id: &str,
+) -> Result<usize> {
+    let now = st.now();
     tx.execute(
         "INSERT INTO github_identities (github_id, viewer_id, login, name, avatar_url, created_at, signed_in_at)
          VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?6)
@@ -137,7 +145,7 @@ fn link(tx: &Transaction<'_>, now: &str, user: &GitHubUser, viewer_id: &str) -> 
              signed_in_at = excluded.signed_in_at",
         params![user.id, viewer_id, user.login, user.name, user.avatar_url, now],
     )?;
-    super::shares::bind_github_shares(tx, &user.login, viewer_id)
+    super::shares::bind_github_shares(st, ctx, tx, &user.login, viewer_id)
 }
 
 /// The names a new person for `user` may take, in order: the profile's
@@ -206,7 +214,7 @@ impl Store {
                         _ => Err(e),
                     })?;
                 let id = signed.who.viewer.id.clone();
-                self.with_tx(|tx| link(tx, &self.now(), user, &id).map(drop))?;
+                self.with_tx(|tx| link(self, ctx, tx, user, &id).map(drop))?;
                 return Ok((signed, GitHubOutcome::Owner));
             }
             // The owner's name follows the account's, when it is free.
@@ -226,7 +234,7 @@ impl Store {
                         "another GitHub account is this Clax's owner's",
                     ));
                 }
-                link(tx, &self.now(), user, &owner.id)?;
+                link(self, ctx, tx, user, &owner.id)?;
                 self.signed_in(tx, ctx, &owner.id, SignInVia::GitHub, &extra)
             })?;
             return Ok((signed, GitHubOutcome::Owner));
@@ -237,7 +245,7 @@ impl Store {
                 if is_blocked {
                     return Err(blocked());
                 }
-                if link(tx, &now, user, &viewer_id)? > 0 {
+                if link(self, ctx, tx, user, &viewer_id)? > 0 {
                     // Shares given to the login before it signed in.
                     self.visibility_changed();
                 }
@@ -275,7 +283,7 @@ impl Store {
             )?;
             // A new person: not `*unconnected` (multi-person M14, M17).
             self.visibility_changed();
-            link(tx, &now, user, &id)?;
+            link(self, ctx, tx, user, &id)?;
             let signed = self.signed_in(tx, ctx, &id, SignInVia::GitHub, &extra)?;
             Ok((signed, GitHubOutcome::New))
         })
@@ -305,40 +313,57 @@ impl Store {
 
     /// Refuses one more artifact for person `person` (a public ID) when it
     /// would take their account past its cap. Only a GitHub member is
-    /// capped, and only while the store has caps.
+    /// capped, and only while the store has caps. A read before the work
+    /// of making the artifact starts; the transaction that inserts it
+    /// checks again ([`Store::check_quota_in`]).
     ///
     /// # Errors
     /// `quota_exceeded`, naming the cap.
     pub(super) fn check_quota(&self, person: Option<&str>) -> Result<()> {
+        if self.member_caps().is_none() || person.is_none() {
+            return Ok(());
+        }
+        self.with_read(|c| self.check_quota_in(c, person))
+    }
+
+    /// [`Store::check_quota`] on `c`: in the transaction that inserts the
+    /// artifact, so the count and the insert are one write and concurrent
+    /// creates never take an account past its cap.
+    ///
+    /// # Errors
+    /// `quota_exceeded`, naming the cap.
+    pub(super) fn check_quota_in(
+        &self,
+        c: &rusqlite::Connection,
+        person: Option<&str>,
+    ) -> Result<()> {
         let (Some(caps), Some(person)) = (self.member_caps(), person) else {
             return Ok(());
         };
-        self.with_read(|c| {
-            let capped: bool = c.query_row(
-                "SELECT EXISTS (SELECT 1 FROM github_identities gi JOIN viewers v ON v.id = gi.viewer_id
-                                 WHERE v.public_id = ?1 AND v.owner = 0)",
-                params![person],
-                |r| r.get(0),
-            )?;
-            if !capped {
-                return Ok(());
-            }
-            let made: i64 = c.query_row(
-                "SELECT COUNT(*) FROM artifacts WHERE person = ?1 AND deleted_at IS NULL",
-                params![person],
-                |r| r.get(0),
-            )?;
-            if made as u64 >= caps.max_artifacts {
-                return Err(CoreError::invalid(
-                    "quota_exceeded",
-                    format!(
-                        "an account here keeps at most {} artifacts: delete one first",
-                        caps.max_artifacts
-                    ),
-                ));
-            }
-            Ok(())
-        })
+        let capped: bool = c.query_row(
+            "SELECT EXISTS (SELECT 1 FROM github_identities gi JOIN viewers v ON v.id = gi.viewer_id
+                             WHERE v.public_id = ?1 AND v.owner = 0)",
+            params![person],
+            |r| r.get(0),
+        )?;
+        if !capped {
+            return Ok(());
+        }
+        let made: i64 = c.query_row(
+            "SELECT COUNT(*) FROM artifacts WHERE person = ?1 AND deleted_at IS NULL",
+            params![person],
+            |r| r.get(0),
+        )?;
+        if made as u64 >= caps.max_artifacts {
+            return Err(CoreError::invalid(
+                "quota_exceeded",
+                format!(
+                    "an account here keeps at most {} artifacts: delete one first",
+                    caps.max_artifacts
+                ),
+            ));
+        }
+        Ok(())
     }
 }
 
@@ -358,4 +383,87 @@ pub(super) fn block_in(tx: &Transaction<'_>, viewer_id: &str, now: &str) -> Resu
         params![viewer_id, now],
     )?;
     Ok(())
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::test_util::{DAEMON, artifact, store};
+    use clax_core::publish::{PublishRequest, ValidatedPublish, validate};
+
+    /// A hosted store whose members keep at most one artifact, and a
+    /// member, Sam: their public ID.
+    fn capped() -> (tempfile::TempDir, Store, String) {
+        let (d, st) = store();
+        st.hosted_setup(DAEMON, "Ada").unwrap();
+        st.set_member_caps(Some(MemberCaps { max_artifacts: 1 }));
+        let sam = GitHubUser {
+            id: 7,
+            login: "sam-lee".into(),
+            name: None,
+            avatar_url: None,
+        };
+        let (signed, _) = st.github_sign_in(DAEMON, &sam, false).unwrap();
+        (d, st, signed.who.viewer.public_id)
+    }
+
+    /// A new artifact's publish, made by `person`.
+    fn by(person: &str) -> ValidatedPublish {
+        let req: PublishRequest = serde_json::from_value(serde_json::json!({
+            "title": "Notes",
+            "files": {"index.html": {"content": "<main></main>", "encoding": "utf8"}}
+        }))
+        .unwrap();
+        let mut p = validate(req).unwrap();
+        p.person = Some(person.to_string());
+        p
+    }
+
+    fn live_made_by(st: &Store, person: &str) -> i64 {
+        st.with_read(|c| {
+            Ok(c.query_row(
+                "SELECT COUNT(*) FROM artifacts WHERE person = ?1 AND deleted_at IS NULL",
+                params![person],
+                |r| r.get(0),
+            )?)
+        })
+        .unwrap()
+    }
+
+    fn quota_code<T: std::fmt::Debug>(r: Result<T>) -> String {
+        match r {
+            Err(CoreError::Invalid { code, .. }) => code.to_string(),
+            other => format!("{other:?}"),
+        }
+    }
+
+    #[test]
+    fn a_create_racing_another_never_takes_a_member_past_the_cap() {
+        let (_d, st, sam) = capped();
+        let other = by(&sam);
+        // Another create by Sam lands between this one's start and its insert.
+        st.at_point("artifact.create.insert", move |st| {
+            st.create_artifact(DAEMON, other, None).unwrap();
+        });
+        assert_eq!(
+            quota_code(st.create_artifact(DAEMON, by(&sam), None)),
+            "quota_exceeded"
+        );
+        assert_eq!(live_made_by(&st, &sam), 1);
+    }
+
+    #[test]
+    fn a_fork_racing_a_create_never_takes_a_member_past_the_cap() {
+        let (_d, st, sam) = capped();
+        let source = artifact(&st, None);
+        let other = by(&sam);
+        st.at_point("artifact.fork.insert", move |st| {
+            st.create_artifact(DAEMON, other, None).unwrap();
+        });
+        assert_eq!(
+            quota_code(st.fork_artifact(DAEMON, &source, None, Some(&sam), None)),
+            "quota_exceeded"
+        );
+        assert_eq!(live_made_by(&st, &sam), 1);
+    }
 }

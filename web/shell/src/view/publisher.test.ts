@@ -13,6 +13,10 @@ describe("publisherText", () => {
   it("names the owner's agent by its name where it has one (spec 2026-10-08 §11)", () => {
     expect(publisherText(a("x", null, { owner_harness: "claude", owner_name: "web" }))).toBe("published by web");
   });
+  it("names who started an artifact from a brief, until an agent publishes it", () => {
+    expect(publisherText(a("x", null, { brief: { by: "Rae" } }))).toBe("started from a brief by Rae");
+    expect(publisherText(a("x", null, { brief: { by: "Rae" }, owner_harness: "claude", owner_name: "web" }))).toBe("published by web");
+  });
   it("names a live page by its URL", () => {
     expect(publisherText(a("x", null, { kind: "live", live: { origin: "http://localhost:5173", path: "/settings", page_url: "http://localhost:5173/settings" } }))).toBe("Live page · localhost:5173/settings");
   });

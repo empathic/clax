@@ -3,7 +3,7 @@
 //! handlers that take an artifact ID outside the path, and the middleware
 //! that answers 404 for the rest.
 
-use crate::auth::{has_token, is_loopback};
+use crate::auth::{has_token, loopback_peer};
 use crate::error::ApiError;
 use axum::extract::FromRequestParts;
 use axum::http::request::Parts;
@@ -11,14 +11,14 @@ use axum::http::{Extensions, HeaderMap};
 use clax_core::CoreError;
 use clax_realtime::live::LiveIds;
 
-/// Whether the request may see live pages: it came from a loopback peer, or
-/// it carries the token; never with an agent credential of another machine,
-/// whatever its peer (spec §7.5). (Unlike [`crate::identity::is_local`],
-/// the `Host` does not matter: the `/api` host rule applies on its own.)
+/// Whether the request may see live pages: it came from a loopback peer
+/// ([`loopback_peer`]: never on a hosted daemon, which a proxy on its
+/// machine may reach from loopback for anyone), or it carries the token;
+/// never with an agent credential of another machine, whatever its peer
+/// (spec §7.5). (Unlike [`crate::identity::is_local`], the `Host` does not
+/// matter: the `/api` host rule applies on its own.)
 pub fn sees_live_pages(headers: &HeaderMap, ext: &Extensions, token: &str) -> bool {
-    !crate::auth::is_grant_request(headers)
-        && (has_token(headers, token)
-            || crate::auth::conn_of(ext).is_some_and(|c| is_loopback(c.peer)))
+    !crate::auth::is_grant_request(headers) && (has_token(headers, token) || loopback_peer(ext))
 }
 
 /// Whether `path` is one of the live-page routes (`/api/live/…`), which
@@ -100,12 +100,14 @@ pub(crate) fn percent_decoded(seg: &str) -> Option<String> {
     String::from_utf8(out).ok()
 }
 
-/// The artifact a path names: `/api/artifacts/<aid>…`, `/c/<aid>/…`,
-/// `/a/<aid>…`, decoded as the handlers decode it (so `%37…` names the
-/// same artifact as `7…`).
+/// The artifact a path names: `/api/artifacts/<aid>…`,
+/// `/api/hosted/artifacts/<aid>…` (hosted mode's sharing routes),
+/// `/c/<aid>/…`, `/a/<aid>…`, decoded as the handlers decode it (so `%37…`
+/// names the same artifact as `7…`).
 pub fn artifact_in(path: &str) -> Option<String> {
     let rest = path
         .strip_prefix("/api/artifacts/")
+        .or_else(|| path.strip_prefix("/api/hosted/artifacts/"))
         .or_else(|| path.strip_prefix("/c/"))
         .or_else(|| path.strip_prefix("/a/"))?;
     let seg = percent_decoded(rest.split('/').next().unwrap_or(""))?;
@@ -153,6 +155,10 @@ mod tests {
             ("/api/artifacts/7q3k9mzx2b4t:x", Some("7q3k9mzx2b4t")),
             ("/c/7q3k9mzx2b4t/v/1/", Some("7q3k9mzx2b4t")),
             ("/a/7q3k9mzx2b4t", Some("7q3k9mzx2b4t")),
+            (
+                "/api/hosted/artifacts/7q3k9mzx2b4t/link",
+                Some("7q3k9mzx2b4t"),
+            ),
             ("/api/artifacts", None),
             ("/api/threads", None),
             ("/_clax/bridge.js", None),
@@ -187,5 +193,20 @@ mod tests {
         assert!(sees_live_pages(&token, &conn("192.168.1.9:5000"), "tok"));
         assert!(!sees_live_pages(&token, &conn("192.168.1.9:5000"), "other"));
         assert!(!sees_live_pages(&none, &Extensions::new(), "tok"));
+    }
+
+    #[test]
+    fn a_hosted_request_from_loopback_sees_no_live_pages_without_the_token() {
+        let mut ext = Extensions::new();
+        ext.insert(ConnectInfo(Conn {
+            peer: "127.0.0.1:5000".parse().unwrap(),
+            local: "127.0.0.1:7490".parse().unwrap(),
+        }));
+        ext.insert(crate::hosted::HostedRequest::default());
+        let none = HeaderMap::new();
+        let mut token = HeaderMap::new();
+        token.insert("authorization", "Bearer tok".parse().unwrap());
+        assert!(!sees_live_pages(&none, &ext, "tok"), "a same-machine proxy");
+        assert!(sees_live_pages(&token, &ext, "tok"));
     }
 }

@@ -4,6 +4,7 @@
 import { readdirSync, readFileSync } from "node:fs";
 import { join } from "node:path";
 import { describe, expect, it } from "vitest";
+import { COLOURS } from "./view/tags-model";
 
 const css = readFileSync(join(__dirname, "theme.css"), "utf8").replace(/\/\*[\s\S]*?\*\//g, "");
 const block = (sel: string) => [...css.matchAll(/([^{}]+)\{([^{}]*)\}/g)].filter(m => m[1].split(",").map(s => s.trim()).includes(sel)).map(m => m[2]).join(";");
@@ -80,6 +81,16 @@ describe("theme", () => {
       expect(ratio(hex(theme, "--border-strong"), g), `--border-strong on ${g}`).toBeGreaterThanOrEqual(3);
       expect(ratio(hex(theme, "--focus"), g), `--focus on ${g}`).toBeGreaterThanOrEqual(3);
     }
+  });
+
+  it.each([["light", light], ["dark", dark], ["system dark", { ...light, ...systemDark }]] as const)("gives every tag colour a tint, AA text on it and a border in %s, each used by its chip", (_, theme) => {
+    for (const c of COLOURS) {
+      const bg = hex(theme, `--tag-${c}-bg`);
+      expect(ratio(hex(theme, `--tag-${c}-fg`), bg), `${c} text on its tint`).toBeGreaterThanOrEqual(4.5);
+      hex(theme, `--tag-${c}-bd`);
+      if (c !== "gray") expect(block(`.tag[data-c="${c}"]`), c).toContain(`--tb: var(--tag-${c}-bg); --tf: var(--tag-${c}-fg); --td: var(--tag-${c}-bd)`);
+    }
+    expect(block(".tag")).toContain("--tb: var(--tag-gray-bg); --tf: var(--tag-gray-fg); --td: var(--tag-gray-bd)");
   });
 
   it("sets no text on a --danger fill: no token reads on it in both themes, and dark mode's is light", () => {

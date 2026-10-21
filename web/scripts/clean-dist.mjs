@@ -13,7 +13,7 @@ if (stat(dist)?.isSymbolicLink()) {
   console.error(`clean-dist: ${dist} is a symlink; refusing to clean outside web/dist. Replace it with a real directory.`);
   process.exit(1);
 }
-for (const name of ["_clax", ".vite", "index.html", "artifact.html"]) {
+for (const name of ["_clax", ".vite", "index.html", "artifact.html", "terms.html", "privacy.html"]) {
   const p = `${dist}/${name}`;
   const s = stat(p);
   if (!s) continue;

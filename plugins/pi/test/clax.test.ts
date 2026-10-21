@@ -8,7 +8,7 @@ import { join } from "node:path";
 import type { ExtensionContext } from "@mariozechner/pi-coding-agent";
 import { afterAll, afterEach, beforeAll, describe, expect, it, vi } from "vitest";
 import { artifactRef, claxExtension, handedOver, handoverOf, htmlTitle, INJECT_RETRY_MS, isText, RENEW_EVERY_MS, START_BUDGET_MS, target, textPrefix, ToolError } from "../src/clax.ts";
-import { DaemonClient, END_TIMEOUT_MS } from "../src/client.ts";
+import { ClientError, DaemonClient, END_TIMEOUT_MS, MAX_ACK_IDS } from "../src/client.ts";
 import { discover, endpointOf, ensure } from "../src/daemon.ts";
 import { api, claxBin, startDaemon, type TestDaemon } from "./daemon-fixture.ts";
 import { FakePi, fakeContext, json } from "./fake-api.ts";
@@ -64,8 +64,13 @@ async function hungHome(hang: "register" | "patch") {
   mkdirSync(home, { recursive: true });
   const seen: string[] = [];
   const registrations: any[] = [];
+  /** Waiters for a request line, resolved when the daemon sees it. */
+  const waiters: { line: string; r: () => void }[] = [];
+  const saw = (line: string) => new Promise<void>(r => { if (seen.includes(line)) r(); else waiters.push({ line, r }); });
   const server = createHttpServer((req, res) => {
-    seen.push(`${req.method} ${req.url}`);
+    const line = `${req.method} ${req.url}`;
+    seen.push(line);
+    for (const w of waiters.filter(w => w.line === line)) w.r();
     const reply = (body: unknown) => { res.setHeader("content-type", "application/json"); res.end(JSON.stringify(body)); };
     if (req.url === "/healthz") return reply({ version: "0.1.0" });
     if (req.method === "POST" && req.url === "/api/sessions" && hang !== "register") {
@@ -84,7 +89,7 @@ async function hungHome(hang: "register" | "patch") {
   writeFileSync(join(home, "daemon.json"), JSON.stringify({
     port, pid: process.pid, token: "t", started_at: "2026-01-01T00:00:00Z", bind: "127.0.0.1", version: "0.1.0",
   }));
-  return { home, seen, registrations, close: () => { server.closeAllConnections(); server.close(); } };
+  return { home, seen, saw, registrations, close: () => { server.closeAllConnections(); server.close(); } };
 }
 
 async function sessions(): Promise<any[]> {
@@ -111,7 +116,7 @@ async function deadHome(): Promise<string> {
 }
 
 describe("clax Pi extension", () => {
-  it("registers the thirty tools with one-line prompt snippets, and the clax command", () => {
+  it("registers the thirty-two tools with one-line prompt snippets, and the clax command", () => {
     const { pi } = load(daemon.home, "s-tools");
     expect([...pi.tools.keys()].sort()).toEqual([...TOOLS].sort());
     for (const t of pi.tools.values()) {
@@ -271,6 +276,50 @@ describe("clax Pi extension", () => {
     expect(listed.artifacts).toHaveLength(1);
     expect(listed.artifacts[0]).toMatchObject({ id: mine.artifact_id, url: mine.url, title: "mine", version: 1, pinned: false });
     expect(listed.artifacts[0].owner_session_id).toBeTypeOf("string");
+  });
+
+  it("publishes a version whose tags are refused and reports tags_error beside it", async () => {
+    const { pi, ctx } = load(daemon.home, "pi-tags-error");
+    await pi.emit("session_start", { type: "session_start", reason: "startup" }, ctx);
+    // An artifact carries at most 20 tags: one more is refused after the version lands.
+    const names = Array.from({ length: 21 }, (_, i) => `pi-full-${i}`);
+    for (const name of names) await api(daemon, "/api/tags", { method: "POST", body: JSON.stringify({ name }) });
+    const p = json(await pi.callTool("clax_publish", { html: "<title>full</title>" }, ctx));
+    await api(daemon, `/api/artifacts/${p.artifact_id}/tags`, { method: "PUT", body: JSON.stringify({ tags: names.slice(0, 20) }) });
+    const r = await pi.callTool("clax_publish", { id: p.artifact_id, html: "<title>full</title><p>2", tags: [names[20]] }, ctx);
+    expect(r.isError).toBe(false);
+    const body = json(r);
+    expect(body.version).toBe(2);
+    expect(body.tags_error).toMatchObject({ code: "too_many_tags" });
+    expect(body.tags).toHaveLength(20);
+  });
+
+  it("applies the owner's tags through publish and tag, and lists and filters by them", async () => {
+    const { pi, ctx } = load(daemon.home, "pi-tags");
+    await pi.emit("session_start", { type: "session_start", reason: "startup" }, ctx);
+    const refused = await pi.callTool("clax_publish", { html: "<title>t</title>", tags: ["pi-unknown"] }, ctx);
+    expect(refused.isError).toBe(true);
+    expect(json(refused).error).toMatchObject({ code: "unknown_tag" });
+    expect(json(refused).error.message).toContain("nothing was published");
+    for (const name of ["pi-draft", "pi-final"]) {
+      await api(daemon, "/api/tags", { method: "POST", body: JSON.stringify({ name }) });
+    }
+    const listed = json(await pi.callTool("clax_tags", {}, ctx));
+    expect(listed.tags).toEqual(expect.arrayContaining([{ name: "pi-draft", colour: "gray", description: null, count: 0 }]));
+    const p = json(await pi.callTool("clax_publish", { html: "<title>tagged</title>", tags: ["PI-DRAFT"] }, ctx));
+    expect(p.tags).toEqual(["pi-draft"]);
+    const t = json(await pi.callTool("clax_tag", { url_or_id: p.artifact_id, add: ["pi-final"], remove: ["pi-draft"] }, ctx));
+    expect(t).toMatchObject({ artifact_id: p.artifact_id, tags: ["pi-final"], changed: true });
+    const unknown = await pi.callTool("clax_tag", { url_or_id: p.artifact_id, add: ["pi-nope"] }, ctx);
+    expect(unknown.isError).toBe(true);
+    expect(json(unknown).error).toMatchObject({ code: "unknown_tag" });
+    const empty = await pi.callTool("clax_tag", { url_or_id: p.artifact_id }, ctx);
+    expect(json(empty).error).toMatchObject({ code: "invalid_args" });
+    const only = json(await pi.callTool("clax_list", { tags: ["pi-final"] }, ctx));
+    expect(only.artifacts.map((a: any) => a.id)).toEqual([p.artifact_id]);
+    expect(only.artifacts[0].tags).toEqual(["pi-final"]);
+    const none = json(await pi.callTool("clax_list", { tags: ["pi-final", "pi-draft"] }, ctx));
+    expect(none.artifacts).toEqual([]);
   });
 
   it("reports daemon_unreachable naming the daemon log when no daemon answers", async () => {
@@ -445,12 +494,20 @@ describe("clax Pi extension", () => {
     const hung = await hungHome("register");
     try {
       const pi = new FakePi();
-      // The daemon never answers, so session_start returns only by giving up.
-      claxExtension({ home: hung.home, env: withBin(join(scratch, "no-such-clax")), startBudgetMs: 50 })(pi.api);
+      // The daemon never answers, so session_start returns only by giving up,
+      // which it does when the budget runs out: here, once the daemon has
+      // the registration.
+      const budget = new AbortController();
+      claxExtension({ home: hung.home, env: withBin(join(scratch, "no-such-clax")), startBudget: () => budget.signal })(pi.api);
       const { ctx } = fakeContext(scratch, "pi-hung-start");
       loaded.push({ pi, ctx });
-      await pi.emit("session_start", { type: "session_start", reason: "startup" }, ctx);
-      expect(hung.seen).toContain("POST /api/sessions");
+      let returned = false;
+      const started = pi.emit("session_start", { type: "session_start", reason: "startup" }, ctx).then(() => { returned = true; });
+      await hung.saw("POST /api/sessions");
+      await new Promise(r => setImmediate(r));
+      expect(returned).toBe(false);
+      budget.abort();
+      await started;
     } finally {
       hung.close();
     }
@@ -499,15 +556,18 @@ describe("clax Pi extension", () => {
         { file_path: "page.html", id, if_version: 2, title: "t", description: "d", icon: "chart", label: "l", capabilities: { db: {} },
           files: { "a.css": { content: "body{}" }, "b.png": { content: "iVBORw0K", encoding: "base64", content_type: "image/png" }, "c.js": { path: "c.js" }, "old.txt": null } },
         { html: "<p>", url: `http://localhost:7480/a/${id}` },
+        { html: "<p>", tags: ["draft"] },
       ],
       clax_read: [{ url_or_id: id }, { url_or_id: id, path: "a.css", version: 1, max_bytes: 10 }],
-      clax_list: [{}, { limit: 5, scope: "mine" }, { scope: "all" }],
+      clax_list: [{}, { limit: 5, scope: "mine" }, { scope: "all" }, { tags: ["draft", "final"] }],
       clax_delete: [{ url_or_id: id }],
       clax_fork: [{ url_or_id: id }, { url_or_id: id, version: 2 }],
       clax_publish_public: [{ url_or_id: id }, { url_or_id: id, remote: "pub", mode: "fork", question_id: "01J0000000000000000000000A", timeout_s: 5 }],
       clax_open: [{ url_or_id: id }],
       clax_pin: [{ url_or_id: id }],
       clax_unpin: [{ url_or_id: id }],
+      clax_tag: [{ url_or_id: id, add: ["draft"] }, { url_or_id: id, add: ["a"], remove: ["b"] }, { url_or_id: id, remove: [] }],
+      clax_tags: [{}],
       clax_asset_upload: [{ url_or_id: id, file_path: "a.png" }, { url_or_id: id, file_paths: ["a.png", "b.mp4"] }],
       clax_status: [{}, { name: "fix-chart-axis" }],
       clax_comments_read: [{ url_or_id: id }, { url_or_id: id, thread_id: "01K6AB3Q9X7N2M4P5R6S8T0V1W", cursor: "01K6AB3Q9X7N2M4P5R6S8T0V1W", include_resolved: true }],
@@ -552,6 +612,8 @@ describe("clax Pi extension", () => {
       clax_open: [{ url_or_id: id, bogus: 1 }],
       clax_pin: [{ url_or_id: id, bogus: 1 }],
       clax_unpin: [{ url_or_id: id, bogus: 1 }],
+      clax_tag: [{ add: ["a"] }, { url_or_id: id, bogus: 1 }],
+      clax_tags: [{ bogus: 1 }],
       clax_asset_upload: [{ url_or_id: id, file_path: "a.png", bogus: 1 }],
       clax_status: [{ bogus: 1 }],
       clax_comments_handoff: [{ url_or_id: id }, { url_or_id: id, thread_id: "x", bogus: 1 }],
@@ -692,6 +754,21 @@ describe("comments", () => {
     const again = await pi.callToolAsPi("clax_list", {}, ctx);
     expect(again.content).toHaveLength(1);
     expect(parts(again).json.feedback).toEqual([]);
+  });
+
+  it("acknowledges more IDs than one request may carry in chunks", async () => {
+    const { pi, ctx } = load(daemon.home, "pi-ack-chunks");
+    let client: DaemonClient | undefined;
+    const real = DaemonClient.prototype.feedback;
+    vi.spyOn(DaemonClient.prototype, "feedback").mockImplementation(function (this: DaemonClient, ...args: Parameters<DaemonClient["feedback"]>) {
+      client = this;
+      return real.apply(this, args);
+    });
+    await pi.callToolAsPi("clax_list", {}, ctx);
+    expect(client).toBeDefined();
+    const ids = Array.from({ length: MAX_ACK_IDS + 1 }, (_, i) => `01J${String(i).padStart(23, "0")}`);
+    expect(await client!.ackComments(ids)).toEqual({ acknowledged: 0 });
+    expect(await client!.ack(ids)).toEqual({ acknowledged: 0 });
   });
 
   it("read, reply, resolve, and watch match the MCP tools", async () => {
@@ -1238,6 +1315,36 @@ describe("comments", () => {
     }
   });
 
+  it("ends the injection loop quietly when Pi refuses the message it hands over", async () => {
+    let polls = 0;
+    const fake = await fakeDaemonHome((req, reply) => {
+      // The first poll hands over feedback; any later one is parked for good.
+      if (req.url?.startsWith("/api/sessions/s1/feedback")) { if (++polls === 1) reply({ feedback: [], text: "[clax] 1 comment sent to you", waited_s: 0 }); return; }
+      return false;
+    });
+    const rejections: unknown[] = [];
+    const heard = (e: unknown) => { rejections.push(e); };
+    process.on("unhandledRejection", heard);
+    try {
+      const pi = new FakePi();
+      let refused = 0;
+      // Pi's sendUserMessage throws once the extension's runtime is stale.
+      const api = { ...pi.api, on: pi.api.on, sendUserMessage: () => { refused++; throw new Error("This extension instance is stale"); } } as typeof pi.api;
+      claxExtension({ home: fake.home, env: withBin(join(scratch, "no-such-clax")) })(api);
+      const { ctx } = fakeContext(scratch, "pi-inject-refused");
+      loaded.push({ pi, ctx });
+      await pi.emit("session_start", {}, ctx);
+      await expect.poll(() => refused, { timeout: 10_000 }).toBe(1);
+      await new Promise(r => setImmediate(r));
+      await new Promise(r => setImmediate(r));
+      expect(rejections).toEqual([]);
+      expect(polls).toBe(1);
+    } finally {
+      process.off("unhandledRejection", heard);
+      fake.close();
+    }
+  });
+
   it("status passes the push object through, including a codex queue failure", async () => {
     const push = { tier: "queue", available: true, last_error: "codex queue exited with code 1", last_error_at: "2026-09-29T10:00:00Z" };
     const fake = await fakeDaemonHome((req, reply) => {
@@ -1711,5 +1818,96 @@ describe("helpers match the shared contract fixture", () => {
 
   it("htmlTitle", () => {
     for (const c of FIXTURE.html_title) expect(htmlTitle(c.html) ?? null, c.html).toBe(c.title);
+  });
+});
+
+/** The JSON error object of an error result. */
+function errorOf(o: { content: { type: string; text?: string }[]; isError: boolean }): any {
+  expect(o.isError).toBe(true);
+  return JSON.parse(o.content[0].text!).error;
+}
+
+// The daemon calls these tests make are stubbed on DaemonClient, as the Rust
+// tests stub them with a fake daemon (crates/clax-mcp/tests).
+describe("publishing failures", () => {
+  /** An extension on a fake daemon home that answers feedback polls empty,
+   * reading the time from `now` when given. */
+  async function setup(name: string, now?: () => number) {
+    const fake = await fakeDaemonHome((req, reply) => {
+      if (req.url?.startsWith("/api/sessions/s1/feedback")) return reply({ feedback: [], text: null, waited_s: 0 });
+      return false;
+    });
+    const pi = new FakePi();
+    claxExtension({ home: fake.home, env: withBin(join(scratch, "no-such-clax")), now })(pi.api);
+    const { ctx } = fakeContext(scratch, name);
+    loaded.push({ pi, ctx });
+    return { pi, ctx, fake };
+  }
+
+  it("a create that times out says to look for the artifact with list", async () => {
+    const { pi, ctx, fake } = await setup("pi-create-timeout");
+    try {
+      vi.spyOn(DaemonClient.prototype, "create").mockRejectedValue(new ClientError("timeout", "deadline passed"));
+      const e = errorOf(await pi.callToolAsPi("clax_publish", { html: "<p>x", title: "T" }, ctx));
+      expect(e.code).toBe("timeout");
+      expect(e.message).toContain("call list");
+      expect(e.message).not.toContain("read the artifact");
+    } finally {
+      fake.close();
+    }
+  });
+
+  it("an update without a known current version is bad_response, and nothing is published", async () => {
+    const { pi, ctx, fake } = await setup("pi-no-current");
+    try {
+      vi.spyOn(DaemonClient.prototype, "get").mockResolvedValue({ artifact: { id: "7q3k9mzx2b4t" } });
+      const publish = vi.spyOn(DaemonClient.prototype, "publishVersion").mockResolvedValue({});
+      const e = errorOf(await pi.callToolAsPi("clax_publish", { html: "<p>x", id: "7q3k9mzx2b4t" }, ctx));
+      expect(e.code).toBe("bad_response");
+      expect(publish).not.toHaveBeenCalled();
+    } finally {
+      fake.close();
+    }
+  });
+
+  it("publish_public leaves the push to the next call when the answer comes as the wait runs out", async () => {
+    let t = 0;
+    const { pi, ctx, fake } = await setup("pi-push-answered", () => t);
+    try {
+      const qid = "01J0000000000000000000000A";
+      const push = vi.spyOn(DaemonClient.prototype, "push").mockResolvedValue({ status: "approval_pending", question_id: qid, inbox_url: "http://x/inbox" });
+      vi.spyOn(DaemonClient.prototype, "askWait").mockImplementation(async () => {
+        t += 31_000;
+        return { question: { status: "answered" } };
+      });
+      const { json } = parts(await pi.callToolAsPi("clax_publish_public", { url_or_id: "7q3k9mzx2b4t", timeout_s: 30 }, ctx));
+      expect(json.status).toBe("answered");
+      expect(json.question_id).toBe(qid);
+      expect(json.call_again).toBe(true);
+      expect(push).toHaveBeenCalledTimes(1);
+    } finally {
+      fake.close();
+    }
+  });
+
+  it("asset_upload failing part way names the file and the assets already uploaded", async () => {
+    const { pi, ctx, fake } = await setup("pi-asset-partial");
+    try {
+      const a = join(scratch, "pi-partial-a.png");
+      const b = join(scratch, "pi-partial-b.png");
+      writeFileSync(a, Buffer.from([1, 2, 3]));
+      writeFileSync(b, Buffer.from([4, 5, 6]));
+      vi.spyOn(DaemonClient.prototype, "uploadAsset")
+        .mockResolvedValueOnce({ asset: { id: "01K6AB7D2E3F4G5H6J7K8M9N0P", content_type: "image/png", size: 3 }, url: "/_blob/01K6AB7D2E3F4G5H6J7K8M9N0P" })
+        .mockRejectedValueOnce(new ClientError("api", "no room", 507, { code: "storage_full", message: "no room" }));
+      const e = errorOf(await pi.callToolAsPi("clax_asset_upload", { url_or_id: "7q3k9mzx2b4t", file_paths: [a, b] }, ctx));
+      expect(e.code).toBe("storage_full");
+      expect(e.path).toBe(b);
+      expect(e.uploaded).toHaveLength(1);
+      expect(e.uploaded[0].id).toBe("01K6AB7D2E3F4G5H6J7K8M9N0P");
+      expect(e.uploaded[0].url).toMatch(/\/_blob\/01K6AB7D2E3F4G5H6J7K8M9N0P$/);
+    } finally {
+      fake.close();
+    }
   });
 });

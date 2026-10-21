@@ -8,8 +8,10 @@
 //! sends, and leaves when it closes. Applying arms the artifact's flush when
 //! none is armed: a task that waits [`FLUSH_MS`] and then sends the batches,
 //! so a burst of updates from many senders costs one flush. A receiver whose
-//! queue is full loses that batch; the relay then sends it every sender whole
-//! at the next flush ([`Relay::resend`]).
+//! queue is full loses that batch and is owed every sender whole: it gets
+//! them at the next flush a sender's news arms, or at the flush armed once
+//! its queue has room again ([`Relay::forget`], [`Relay::resend`]). A queue
+//! that stays full arms no flush of its own.
 
 use clax_core::live_layers::{ClientMessage, FLUSH_MS, Receiver, Relay, pick_color};
 use clax_core::working::Clock;
@@ -33,6 +35,10 @@ struct Socket {
     /// not is sent no typing or drafts, and its own are not relayed.
     text: bool,
     tx: mpsc::Sender<String>,
+    /// It lost a batch and has not been sent one since.
+    owed: bool,
+    /// A task waits for room in its queue ([`LiveLayers::await_room`]).
+    waiting: bool,
 }
 
 #[derive(Default)]
@@ -183,6 +189,8 @@ impl LiveLayers {
                 open: None,
                 text,
                 tx,
+                owed: false,
+                waiting: false,
             },
         );
         room.relay.resend(key);
@@ -265,9 +273,11 @@ impl LiveLayers {
 
     /// Sends each socket of artifact `aid` its batch (see
     /// [`Relay::batches`]); a socket whose queue is full gets everything
-    /// whole at the next flush, which is then armed.
+    /// whole at a later flush: the next one armed for any reason, at the
+    /// latest the one armed when its queue has room again.
     pub fn flush(self: &Arc<Self>, aid: &str) {
         let mut sent = false;
+        let mut wait = Vec::new();
         let again = {
             let mut rooms = self.rooms.lock().unwrap_or_else(PoisonError::into_inner);
             let Some(room) = rooms.get_mut(aid) else {
@@ -289,21 +299,68 @@ impl LiveLayers {
                 .relay
                 .batches(&receivers, &|p| colors.get(p).copied().unwrap_or(0));
             for (key, b) in out {
-                let Some(sock) = room.sockets.get(&key) else {
+                let Some(sock) = room.sockets.get_mut(&key) else {
                     continue;
                 };
                 match sock.tx.try_send(b) {
-                    Ok(()) => sent = true,
-                    Err(mpsc::error::TrySendError::Full(_)) => room.relay.resend(key),
+                    Ok(()) => {
+                        sent = true;
+                        sock.owed = false;
+                    }
+                    Err(mpsc::error::TrySendError::Full(_)) => {
+                        room.relay.forget(key);
+                        sock.owed = true;
+                        if !sock.waiting {
+                            sock.waiting = true;
+                            wait.push((key, sock.tx.clone()));
+                        }
+                    }
                     Err(mpsc::error::TrySendError::Closed(_)) => {}
                 }
             }
             Self::arm(room)
         };
+        for (key, tx) in wait {
+            self.await_room(aid, key, tx);
+        }
         if sent {
             self.queued();
         }
         if again {
+            self.schedule(aid);
+        }
+    }
+
+    /// Waits, without a timer, until socket `key`'s queue has room (or the
+    /// socket closed), then arms the flush that sends it what it is owed.
+    fn await_room(self: &Arc<Self>, aid: &str, key: u64, tx: mpsc::Sender<String>) {
+        let hub = self.clone();
+        let aid = aid.to_string();
+        clax_rt::spawn(async move {
+            let open = tx.reserve().await.is_ok();
+            drop(tx);
+            hub.has_room(&aid, key, open);
+        });
+    }
+
+    /// Socket `key`'s queue has room again (`open`) or the socket closed.
+    fn has_room(self: &Arc<Self>, aid: &str, key: u64, open: bool) {
+        let arm = {
+            let mut rooms = self.rooms.lock().unwrap_or_else(PoisonError::into_inner);
+            let Some(room) = rooms.get_mut(aid) else {
+                return;
+            };
+            let Some(sock) = room.sockets.get_mut(&key) else {
+                return;
+            };
+            sock.waiting = false;
+            if !open || !sock.owed {
+                return;
+            }
+            room.relay.resend(key);
+            Self::arm(room)
+        };
+        if arm {
             self.schedule(aid);
         }
     }
@@ -332,7 +389,21 @@ mod tests {
     }
 
     fn hub() -> Arc<LiveLayers> {
-        Arc::new(LiveLayers::new(Arc::new(Fixed)))
+        let mut h = LiveLayers::new(Arc::new(Fixed));
+        // The tests flush by hand; an armed flush never fires during one.
+        h.flush_after = Duration::from_secs(24 * 60 * 60);
+        Arc::new(h)
+    }
+
+    fn armed(h: &LiveLayers, aid: &str) -> bool {
+        h.rooms.lock().unwrap().get(aid).is_some_and(|r| r.armed)
+    }
+
+    fn draft(text: String) -> ClientMessage {
+        ClientMessage::Draft(LiveDraft {
+            thread_id: None,
+            text,
+        })
     }
 
     fn cursor() -> ClientMessage {
@@ -410,5 +481,67 @@ mod tests {
         let s = &got["senders"][0];
         assert!(s.get("cursor").is_some(), "whole: {s}");
         assert_eq!(s["draft"]["text"], format!("t{}", SOCKET_QUEUE + 1));
+    }
+
+    #[tokio::test]
+    async fn a_full_queue_arms_no_flush_until_it_has_room() {
+        let h = hub();
+        let a = h.join("x", "u_a", true);
+        let mut b = h.join("x", "u_b", true);
+        h.apply("x", a.key, cursor());
+        h.flush("x");
+        // Fill b's queue with changes it never reads; the last is lost.
+        for i in 0..SOCKET_QUEUE {
+            h.apply("x", a.key, draft(format!("t{i}")));
+            h.flush("x");
+        }
+        assert!(
+            !armed(&h, "x"),
+            "a stalled receiver arms no flush while no sender has news"
+        );
+        h.flush("x");
+        assert!(!armed(&h, "x"), "nor after a flush finds it still full");
+        // b reads one batch: its queue has room, and the flush is armed.
+        b.rx.try_recv().unwrap();
+        for _ in 0..1000 {
+            if armed(&h, "x") {
+                break;
+            }
+            tokio::task::yield_now().await;
+        }
+        assert!(armed(&h, "x"), "room in the queue arms the flush");
+        h.flush("x");
+        let mut last = None;
+        while let Ok(m) = b.rx.try_recv() {
+            last = Some(m);
+        }
+        let got: serde_json::Value = serde_json::from_str(&last.unwrap()).unwrap();
+        let s = &got["senders"][0];
+        assert!(s.get("cursor").is_some(), "whole: {s}");
+        assert_eq!(s["draft"]["text"], format!("t{}", SOCKET_QUEUE - 1));
+        assert!(
+            !armed(&h, "x"),
+            "what b was owed is sent; nothing more is due"
+        );
+    }
+
+    #[tokio::test]
+    async fn a_sender_s_news_sends_an_owed_receiver_everything_whole() {
+        let h = hub();
+        let a = h.join("x", "u_a", true);
+        let mut b = h.join("x", "u_b", true);
+        h.apply("x", a.key, cursor());
+        h.flush("x");
+        for i in 0..SOCKET_QUEUE + 1 {
+            h.apply("x", a.key, draft(format!("t{i}")));
+            h.flush("x");
+        }
+        while b.rx.try_recv().is_ok() {}
+        h.apply("x", a.key, draft("last".into()));
+        h.flush("x");
+        let got: serde_json::Value = serde_json::from_str(&b.rx.try_recv().unwrap()).unwrap();
+        let s = &got["senders"][0];
+        assert!(s.get("cursor").is_some(), "whole: {s}");
+        assert_eq!(s["draft"]["text"], "last");
     }
 }

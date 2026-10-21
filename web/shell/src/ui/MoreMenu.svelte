@@ -9,7 +9,9 @@
   // the viewer may clone the artifact (`onClone`), phone width lists Clone
   // with git, which opens the Clone dialog; where the viewer may share the
   // artifact on a hosted Clax (`onShare`), it lists Share; where the owner may publish the
-  // artifact to a public Clax (`onPublish`), it lists Publish. A menu button: opening
+  // artifact to a public Clax (`onPublish`), it lists Publish. On a hosted
+  // Clax that shows Terms of Service and a Privacy Policy (`legal`), it ends
+  // with links to both and to Clax's source on GitHub. A menu button: opening
   // focuses the first item; Up, Down, Home and End move between the items;
   // Escape, Open raw and Copy link close it with focus back on the button; a
   // press outside, or Tab or focus leaving it, closes it. The items are out of
@@ -22,7 +24,7 @@
   import { tick } from "svelte";
   import { onHost } from "../transport";
 
-  let { rawHref, canCopy, onCopy, onVersions, pageHref = null, onFork, onClone = null, onShare = null, onPublish = null }: { rawHref: string | null; canCopy: boolean; onCopy(): void; onVersions?(): void; pageHref?: string | null; onFork?(): void; onClone?: (() => void) | null; onShare?: (() => void) | null; onPublish?: { label: string; open(): void } | null } = $props();
+  let { rawHref, canCopy, onCopy, onVersions, pageHref = null, onFork, onClone = null, onShare = null, onPublish = null, legal = null }: { rawHref: string | null; canCopy: boolean; onCopy(): void; onVersions?(): void; pageHref?: string | null; onFork?(): void; onClone?: (() => void) | null; onShare?: (() => void) | null; onPublish?: { label: string; open(): void } | null; legal?: { terms_url: string; privacy_url: string } | null } = $props();
   let open = $state(false);
   const app = onHost();
   // Phone width, as the bar's `hide-sm` rule draws it; read on each open.
@@ -84,6 +86,12 @@
       {#if phone && onClone}<button type="button" role="menuitem" tabindex="-1" class="ghost" onclick={() => { open = false; onClone(); }}>Clone with git…</button>{/if}
       {#if phone && onShare}<button type="button" role="menuitem" tabindex="-1" class="ghost" onclick={() => { open = false; onShare(); }}>Share…</button>{/if}
       {#if phone && onPublish}<button type="button" role="menuitem" tabindex="-1" class="ghost" onclick={() => { open = false; onPublish.open(); }}>{onPublish.label}</button>{/if}
+      {#if legal}
+        <hr />
+        <a role="menuitem" tabindex="-1" href={legal.terms_url} target="_blank" rel="noopener" onclick={close}>Terms of Service</a>
+        <a role="menuitem" tabindex="-1" href={legal.privacy_url} target="_blank" rel="noopener" onclick={close}>Privacy Policy</a>
+        <a role="menuitem" tabindex="-1" href="https://github.com/empathic/clax" target="_blank" rel="noopener" onclick={close}>Source on GitHub</a>
+      {/if}
     </div>
   {/if}
 </div>
@@ -98,4 +106,5 @@
   .more-menu > a:hover, .more-menu > button:not([aria-disabled]):hover { background: var(--hover); }
   .more-menu > button[aria-disabled]:hover { background: none; }
   .more-menu > button[aria-disabled] { cursor: default; }
+  .more-menu > hr { border: 0; border-top: 1px solid var(--border); margin: 6px 0; }
 </style>

@@ -11,7 +11,7 @@
 //!   goes to the spike object named `name` (below), whose routes check no
 //!   credential; otherwise `/do/` is a path like any other, the instance's;
 //! - on the app host (any host but an artifact's `<id>.localhost` and
-//!   `CONTENT_ORIGIN`'s), `/`, `/inbox` and `/people` are the shell's
+//!   `CONTENT_ORIGIN`'s), `/`, `/inbox`, `/people` and `/tags` are the shell's
 //!   `index.html`, from the static assets, with the headers the daemon's
 //!   `shell::gallery_page` sends (no framing, revalidated), except on a
 //!   hosted instance (`HOSTED` = `1`), whose gate decides who gets them;
@@ -271,7 +271,7 @@ fn content_host(env: &Env, host: &str) -> bool {
 /// file the assets lack.
 async fn static_asset(env: &Env, path: &str, app_host: bool) -> Result<Option<HttpResponse>> {
     let (file, cache, any_origin, entry) = match path {
-        "/" | "/inbox" | "/people" if app_host => {
+        "/" | "/inbox" | "/people" | "/tags" if app_host => {
             ("/index.html".to_string(), "no-cache", false, true)
         }
         _ => match path

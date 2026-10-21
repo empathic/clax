@@ -162,6 +162,15 @@ need!(
     crate::limits::PUBLISH_BODY_LIMIT
 );
 need!(FilesList, Artifacts, "read", Filtered, DEFAULT_LIMIT);
+// Tags are the owner's names, no person's text: `Own`. Making and changing
+// them is the owner's and the owner's agents' (the handlers check); applying
+// them is the artifact's administrators' (`administers`), as its pin.
+need!(TagsList, Artifacts, "read", Own, DEFAULT_LIMIT);
+need!(TagsCreate, Artifacts, "update", Own, DEFAULT_LIMIT);
+need!(TagsUpdate, Artifacts, "update", Own, DEFAULT_LIMIT);
+need!(TagsDelete, Artifacts, "update", Own, DEFAULT_LIMIT);
+need!(ArtifactTagsPut, Artifacts, "update", Own, DEFAULT_LIMIT);
+need!(ArtifactTagsPatch, Artifacts, "update", Own, DEFAULT_LIMIT);
 need!(FileContent, Artifacts, "read", Filtered, DEFAULT_LIMIT);
 need!(AssetsList, Artifacts, "read", Filtered, DEFAULT_LIMIT);
 need!(
@@ -282,6 +291,16 @@ pub const ROUTES: &[(&str, &str, NeedInfo)] = &[
     ("POST", "/api/artifacts/{aid}/versions", Publish::INFO),
     ("POST", "/api/artifacts/{aid}/fork", ArtifactsFork::INFO),
     ("GET", "/api/artifacts/{aid}/files", FilesList::INFO),
+    ("GET", "/api/tags", TagsList::INFO),
+    ("POST", "/api/tags", TagsCreate::INFO),
+    ("PATCH", "/api/tags/{tag_id}", TagsUpdate::INFO),
+    ("DELETE", "/api/tags/{tag_id}", TagsDelete::INFO),
+    ("PUT", "/api/artifacts/{aid}/tags", ArtifactTagsPut::INFO),
+    (
+        "PATCH",
+        "/api/artifacts/{aid}/tags",
+        ArtifactTagsPatch::INFO,
+    ),
     (
         "GET",
         "/api/artifacts/{aid}/versions/{n}/files/{*path}",
@@ -479,6 +498,12 @@ pub const ROUTE_NEEDS: &[RouteNeed] = &[
     route_need!("artifacts::get_version", VersionGet),
     route_need!("artifacts::publish", Publish),
     route_need!("artifacts::files", FilesList),
+    route_need!("tags::list", TagsList),
+    route_need!("tags::create", TagsCreate),
+    route_need!("tags::update", TagsUpdate),
+    route_need!("tags::delete", TagsDelete),
+    route_need!("tags::put_artifact", ArtifactTagsPut),
+    route_need!("tags::patch_artifact", ArtifactTagsPatch),
     route_need!("content::raw_file", FileContent),
     route_need!("assets::list", AssetsList),
     route_need!("assets::upload", AssetsUpload),
@@ -1911,15 +1936,24 @@ fn bearer_key(grant_id: &str) -> [u8; 32] {
 /// grant), within the route's limit. The remote MCP endpoint
 /// (`clax_server::routes::mcp_http`), which serves agent tokens, is handed the
 /// [`BearerGrant`] instead, its body read the same way within the publish
-/// limit.
+/// limit. `DELETE` [`crate::hosted::SELF_REVOKE_PATH`], where the token
+/// revokes itself, is handed the [`BearerGrant`] too, its body unread (the
+/// handler reads none).
 async fn verify_bearer(s: &AppState, b: BearerGrant, mut req: Request, next: Next) -> Response {
     let matched = req.extensions().get::<MatchedPath>().map(|m| m.as_str());
+    let self_revoke =
+        matched == Some(crate::hosted::SELF_REVOKE_PATH) && req.method() == Method::DELETE;
     if matched == Some(crate::headers::MCP_JSON_PATH) {
         let limit = crate::limits::PUBLISH_BODY_LIMIT;
         let mut req = match gated(s, &b, req, limit).await {
             Ok(r) => r,
             Err(e) => return e.into_response(),
         };
+        req.extensions_mut().insert(b);
+        return next.run(req).await;
+    }
+    if self_revoke {
+        // The handler reads no body.
         req.extensions_mut().insert(b);
         return next.run(req).await;
     }

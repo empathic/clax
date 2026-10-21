@@ -164,3 +164,54 @@ async fn publish_public_waits_for_the_owner_and_publishes_only_what_they_approve
     let (err, v) = call(&t, json!({"url_or_id": aid, "mode": "overwrite"})).await;
     assert!(err && v["error"]["code"] == "invalid_args", "{v}");
 }
+
+/// An answer that arrives once the call's wait has run out leaves the push
+/// to the next call, so the call ends within its wait (under Codex, inside
+/// its tool timeout).
+#[tokio::test]
+async fn an_answer_after_the_wait_ran_out_leaves_the_push_to_the_next_call() {
+    let (public, local) = signed_in().await;
+    let clock = Arc::new(ManualClock::at("2026-10-12T10:00:00Z"));
+    let t = agent(&local).await.with_clock(clock.clone());
+    let aid = local
+        .publish("Plan", &[("index.html", "<h1>Plan</h1>")])
+        .await["artifact"]["id"]
+        .as_str()
+        .unwrap()
+        .to_string();
+    let (_, v) = call(&t, json!({"url_or_id": aid, "timeout_s": 1})).await;
+    assert_eq!(v["status"], "approval_pending", "{v}");
+    let qid = v["question_id"].as_str().unwrap().to_string();
+    let waiting = {
+        let (t, aid, qid) = (t.clone(), aid.clone(), qid.clone());
+        tokio::spawn(async move {
+            call(
+                &t,
+                json!({"url_or_id": aid, "question_id": qid, "timeout_s": 30}),
+            )
+            .await
+        })
+    };
+    // The call waits on the question; its wait runs out, then the owner
+    // approves.
+    local.wait_question_waiters(&qid, 1).await;
+    clock.advance(31);
+    local
+        .answer_question(&qid, json!({"answers": [{"selected": ["Publish"]}]}))
+        .await;
+    let (err, v) = waiting.await.unwrap();
+    assert!(!err, "{v}");
+    assert_eq!(v["status"], "answered", "{v}");
+    assert_eq!(v["question_id"], qid.as_str());
+    assert_eq!(v["call_again"], true);
+    let listed: Value = public
+        .get_authed("/api/artifacts")
+        .await
+        .json()
+        .await
+        .unwrap();
+    assert_eq!(listed["artifacts"], json!([]), "nothing is public yet");
+    let (err, v) = call(&t, json!({"url_or_id": aid, "question_id": qid})).await;
+    assert!(!err, "{v}");
+    assert_eq!(v["status"], "published", "{v}");
+}

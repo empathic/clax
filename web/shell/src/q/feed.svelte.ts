@@ -10,7 +10,7 @@
 import { ApiError, type AnswerBody, type InboxFilter, type InboxItem, type QuestionView } from "../api";
 import { after } from "../clock";
 import type { EventStream, StreamEvent } from "../stream";
-import { type Closing, type Forbidden, answerQuestion, declineQuestion, inboxSummary, listInbox, listQuestions, markInbox, markInboxMany, pullQuestion, releaseQuestion } from "./api";
+import { type Closing, type Forbidden, answerQuestion, declineQuestion, inboxSummary, listInbox, listInboxGroups, listQuestions, markInbox, markInboxMany, pullQuestion, releaseQuestion } from "./api";
 
 /** How long a closed question's card stays, showing what closed it. */
 export const LEAVE_MS = 4000;
@@ -248,6 +248,16 @@ export class InboxFeed {
     return r;
   }
 
+  /** One page of the groups of items matching `filter` by artifact, newest
+   * group first, `limit` of them after cursor `before`, each with its first
+   * `rows` items. */
+  async groups(filter: InboxFilter, before?: string | null, rows?: number, limit?: number) {
+    const r = await listInboxGroups(filter, before, rows, limit);
+    if (r === "forbidden") throw forbidden();
+    this.unread = r.unread;
+    return r;
+  }
+
   /** Marks item `id` read or unread; resolves to the item as it is now. */
   async mark(id: string, read: boolean): Promise<InboxItem> {
     const r = await markInbox(id, read);
@@ -258,9 +268,9 @@ export class InboxFeed {
   }
 
   /** Marks every unread item read, or every one matching `filter`, up to
-   * `upto` (the newest `seq` shown) when given. */
-  async markAll(filter?: InboxFilter, upto?: number): Promise<number> {
-    const r = await markInboxMany({ all: true, filter, upto });
+   * `upto` (the newest `seq` shown) when given, but the item IDs `except`. */
+  async markAll(filter?: InboxFilter, upto?: number, except?: string[]): Promise<number> {
+    const r = await markInboxMany({ all: true, filter, upto, except });
     if (r === "forbidden") throw forbidden();
     this.unread = r.unread;
     return r.marked;

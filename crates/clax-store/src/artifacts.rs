@@ -172,7 +172,23 @@ pub(super) fn row_to_artifact(r: &Row<'_>) -> rusqlite::Result<Result<Artifact>>
             }),
             _ => None,
         },
+        tags: tags_of(r.get::<_, Option<String>>("tags_json")?.as_deref()),
     }))
+}
+
+/// The tags in `tags_json` (`[[id, name, colour], …]`, the artifact SELECT's
+/// column), sorted by name as [`clax_core::tags::fold`] folds it; a value
+/// that does not parse (none is written but by SQLite) is no tags.
+fn tags_of(json: Option<&str>) -> Vec<clax_core::tags::TagRef> {
+    let rows: Vec<(String, String, String)> = json
+        .and_then(|j| serde_json::from_str(j).ok())
+        .unwrap_or_default();
+    let mut tags: Vec<clax_core::tags::TagRef> = rows
+        .into_iter()
+        .map(|(id, name, colour)| clax_core::tags::TagRef { id, name, colour })
+        .collect();
+    tags.sort_by_cached_key(|t| (clax_core::tags::fold(&t.name), t.id.clone()));
+    tags
 }
 
 /// Keeps the readable rows, logging and dropping the corrupt ones.
@@ -197,7 +213,11 @@ fn skip_corrupt<T>(rows: Vec<Result<T>>) -> Result<Vec<T>> {
 pub(super) const SELECT: &str =
     "SELECT id, title, description, icon, created_at, updated_at, current_version,
     owner_session_id, pinned, capabilities_json, contract_version, kind, person,
-    text_authors_json, forked_from_id, forked_from_version FROM artifacts";
+    text_authors_json, forked_from_id, forked_from_version,
+    (SELECT json_group_array(json_array(g.id, g.name, g.colour))
+       FROM artifact_tags x JOIN tags g ON g.id = x.tag_id
+      WHERE x.artifact_id = artifacts.id) AS tags_json
+    FROM artifacts";
 
 /// The live artifact `id` (not deleted, at least one version) on `c`, or `None`.
 pub(crate) fn live_artifact_in(c: &rusqlite::Connection, id: &str) -> Result<Option<Artifact>> {
@@ -404,6 +424,10 @@ impl Store {
                 params![id.as_str()],
             )?;
             tx.execute(
+                "DELETE FROM artifact_tags WHERE artifact_id = ?1",
+                params![id.as_str()],
+            )?;
+            tx.execute(
                 "DELETE FROM leases WHERE artifact_id = ?1",
                 params![id.as_str()],
             )?;
@@ -584,42 +608,64 @@ impl Store {
         let ids = self.zero_version_artifacts()?;
         let mut n = 0;
         for id in ids {
-            let aid = ArtifactId::parse(&id).ok();
-            let _lock = match &aid {
-                Some(aid) => Some(self.lock_content(aid).await?),
-                None => None,
-            };
-            let removed = self.with_tx(|tx| {
-                let zero = "SELECT id FROM artifacts WHERE id = ?1 AND current_version = 0 AND deleted_at IS NULL";
-                // A raise naming it goes with it (spec §14).
-                let still: bool = tx.query_row(&format!("SELECT EXISTS ({zero})"), params![id], |r| r.get(0))?;
-                if still {
-                    super::elevations::drop_artifact_in(self, tx, &AuditCtx::DAEMON, &id)?;
-                    self.artifact_going_tx(tx, &id)?;
-                }
-                for table in ["assets", "versions", "docs", "leases"] {
-                    tx.execute(
-                        &format!("DELETE FROM {table} WHERE artifact_id IN ({zero})"),
-                        params![id],
-                    )?;
-                }
-                tx.execute(
-                    &format!("DELETE FROM live_pages WHERE artifact_id IN ({zero})"),
+            if self.delete_zero_version_async(&id).await? {
+                n += 1;
+            }
+        }
+        Ok(n)
+    }
+
+    /// Deletes artifact `id`'s rows (and any files) under its content lock
+    /// while it has no version and is not deleted; whether it did.
+    async fn delete_zero_version_async(&self, id: &str) -> Result<bool> {
+        let aid = ArtifactId::parse(id).ok();
+        let _lock = match &aid {
+            Some(aid) => Some(self.lock_content(aid).await?),
+            None => None,
+        };
+        let removed = self.with_tx(|tx| {
+                let still: bool = tx.query_row(
+                    "SELECT EXISTS (SELECT 1 FROM artifacts
+                        WHERE id = ?1 AND current_version = 0 AND deleted_at IS NULL)",
                     params![id],
+                    |r| r.get(0),
                 )?;
+                if !still {
+                    return Ok(0);
+                }
+                // A raise naming it goes with it (spec §14).
+                super::elevations::drop_artifact_in(self, tx, &AuditCtx::DAEMON, id)?;
+                self.artifact_going_tx(tx, id)?;
+                // Every row naming it: a live page's creation writes its
+                // scope watches before its first version.
+                for sql in [
+                    "DELETE FROM page_authors WHERE kind = 'asset' AND id IN
+                        (SELECT id FROM assets WHERE artifact_id = ?1)",
+                    "DELETE FROM assets WHERE artifact_id = ?1",
+                    "DELETE FROM versions WHERE artifact_id = ?1",
+                    "DELETE FROM docs WHERE artifact_id = ?1",
+                    "DELETE FROM doc_authors WHERE artifact_id = ?1",
+                    "DELETE FROM leases WHERE artifact_id = ?1",
+                    "DELETE FROM watches WHERE artifact_id = ?1",
+                    "DELETE FROM live_pages WHERE artifact_id = ?1",
+                    "DELETE FROM live_merged_pages WHERE artifact_id = ?1",
+                    "UPDATE live_merged_pages SET merged_into = NULL WHERE merged_into = ?1",
+                    "DELETE FROM live_pending WHERE artifact_id = ?1",
+                    "DELETE FROM live_picks WHERE artifact_id = ?1",
+                ] {
+                    tx.execute(sql, params![id])?;
+                }
                 Ok(tx.execute(
                     "DELETE FROM artifacts WHERE id = ?1 AND current_version = 0 AND deleted_at IS NULL",
                     params![id],
                 )?)
             })?;
-            if removed > 0 {
-                n += 1;
-                if let Some(aid) = &aid {
-                    self.content.delete_artifact(aid).await?;
-                }
-            }
+        if removed > 0
+            && let Some(aid) = &aid
+        {
+            self.content.delete_artifact(aid).await?;
         }
-        Ok(n)
+        Ok(removed > 0)
     }
 
     /// Deletes the [`Store::corrupt_rows`] that belong to soft-deleted
@@ -690,6 +736,7 @@ impl Store {
                             "DELETE FROM docs WHERE artifact_id = ?1",
                             "DELETE FROM doc_authors WHERE artifact_id = ?1",
                             "DELETE FROM leases WHERE artifact_id = ?1",
+                            "DELETE FROM artifact_tags WHERE artifact_id = ?1",
                         ] {
                             tx.execute(sql, params![row.artifact_id])?;
                         }
@@ -1082,6 +1129,8 @@ impl Store {
             },
         };
         self.check_quota(creator.as_deref())?;
+        #[cfg(test)]
+        self.point("artifact.create.insert");
         self.with_tx(|tx| {
             // A zero-version row of `id` is an earlier attempt's whose
             // process died before version 1 (a job step's resume writes the
@@ -1090,6 +1139,7 @@ impl Store {
                 "DELETE FROM artifacts WHERE id = ?1 AND current_version = 0",
                 params![id.as_str()],
             )?;
+            self.check_quota_in(tx, creator.as_deref())?;
             tx.execute(
                 "INSERT INTO artifacts (id, title, description, icon, created_at, updated_at, current_version,
                     pinned, capabilities_json, contract_version, owner_session_id, person)
@@ -1100,20 +1150,39 @@ impl Store {
             Ok(())
         })?;
         let written = self
-            .write_version_then_async(ctx, &id, 0, &p, &BTreeMap::new(), session_id, then)
+            .write_version_then_async(ctx, &id, 0, &p, &BTreeMap::new(), session_id, |tx, n| {
+                self.record_key_in(tx, &p, &id, n)?;
+                then(tx, n)
+            })
             .await;
         if written.is_err()
-            && let Err(e) = self.with_tx(|tx| {
-                tx.execute(
-                    "DELETE FROM artifacts WHERE id = ?1 AND current_version = 0",
-                    params![id.as_str()],
-                )?;
-                Ok(())
-            })
+            && let Err(e) = self.delete_zero_version_async(id.as_str()).await
         {
-            tracing::warn!(artifact = id.as_str(), error = %e, "could not remove a failed artifact's row");
+            // Left for `clax doctor --fix` (Store::delete_zero_version_artifacts).
+            tracing::warn!(
+                artifact = id.as_str(),
+                error = %e,
+                "could not remove an artifact whose first version failed"
+            );
         }
         written
+    }
+
+    /// Records `p`'s idempotency key, when it names one, as having made
+    /// version `n` of `id`, in `tx`: the version's transaction.
+    fn record_key_in(
+        &self,
+        tx: &rusqlite::Transaction<'_>,
+        p: &ValidatedPublish,
+        id: &ArtifactId,
+        n: u32,
+    ) -> Result<()> {
+        match &p.publish_key {
+            Some(key) => {
+                super::remotes::record_publish_key_in(tx, key, id.as_str(), n, &self.now())
+            }
+            None => Ok(()),
+        }
     }
 
     /// Publishes the next version of an existing artifact. `p.if_version` must
@@ -1179,7 +1248,10 @@ impl Store {
             &p,
             &prev,
             session_id,
-            then,
+            |tx, n| {
+                self.record_key_in(tx, &p, id, n)?;
+                then(tx, n)
+            },
         )
         .await
     }
@@ -1293,6 +1365,7 @@ impl Store {
             by_page: false,
             hidden: Vec::new(),
             step: None,
+            publish_key: None,
         };
         let previous = self
             .get_version(id, if_version)?
@@ -2435,6 +2508,7 @@ mod tests {
             by_page: false,
             hidden: Vec::new(),
             step: None,
+            publish_key: None,
         };
         let seq = store.events_after(0, 100).unwrap().last().unwrap().seq;
         let e = store
@@ -3167,6 +3241,46 @@ mod tests {
         assert!(store.zero_version_artifacts().unwrap().is_empty());
         assert!(store.get_artifact(&live).unwrap().is_some());
         assert_eq!(store.delete_zero_version_artifacts().unwrap(), 0);
+    }
+
+    /// A live page whose first snapshot never landed keeps the rows its
+    /// creation made: a scope watch, a merged-page record, and an asset
+    /// with its page authors. They go with it.
+    #[test]
+    fn a_zero_version_page_goes_with_its_watches_and_page_rows() {
+        let (_d, store) = store();
+        let sid = crate::test_util::session(&store, "claude", "h1");
+        store
+            .with_write(|c| {
+                c.execute_batch(&format!(
+                    "INSERT INTO artifacts (id, title, created_at, updated_at, current_version, contract_version, kind)
+                         VALUES ('zzzzzzzzzzzz', 'z', 'x', 'x', 0, '1', 'live');
+                     INSERT INTO live_pages (artifact_id, origin, path, created_at)
+                         VALUES ('zzzzzzzzzzzz', 'https://a.example', '/', 'x');
+                     INSERT INTO live_merged_pages (artifact_id, origin, path, merged_at)
+                         VALUES ('zzzzzzzzzzzz', 'https://a.example', '/old', 'x');
+                     INSERT INTO watches (session_id, artifact_id, replies_armed, created_at, source)
+                         VALUES ('{sid}', 'zzzzzzzzzzzz', 1, 'x', 'scope');
+                     INSERT INTO assets (id, artifact_id, content_type, size, ext, created_at)
+                         VALUES ('as1', 'zzzzzzzzzzzz', 'image/png', 1, 'png', 'x');
+                     INSERT INTO page_authors (kind, id, author) VALUES ('asset', 'as1', '*owner');"
+                ))?;
+                Ok(())
+            })
+            .unwrap();
+        assert_eq!(store.delete_zero_version_artifacts().unwrap(), 1);
+        let left: i64 = store
+            .with_read(|c| {
+                Ok(c.query_row(
+                    "SELECT (SELECT COUNT(*) FROM artifacts) + (SELECT COUNT(*) FROM watches)
+                        + (SELECT COUNT(*) FROM live_merged_pages) + (SELECT COUNT(*) FROM assets)
+                        + (SELECT COUNT(*) FROM page_authors)",
+                    [],
+                    |r| r.get(0),
+                )?)
+            })
+            .unwrap();
+        assert_eq!(left, 0);
     }
 
     #[test]

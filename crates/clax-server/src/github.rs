@@ -134,7 +134,7 @@ pub async fn callback(
             "This sign-in expired or was started in another browser.",
         );
     };
-    let user = match crate::public::sendable(fetch_user(&g, &h, &code, &verifier)).await {
+    let user = match clax_rt::sendable(fetch_user(&g, &h, &code, &verifier)).await {
         Ok(u) => u,
         Err(why) => {
             tracing::warn!(error = %why, "GitHub sign-in failed");
@@ -159,10 +159,12 @@ pub async fn callback(
         );
     }
     let old = clax_http::hosted::cookie_value(&headers, h.cookie_name());
+    let legal = h.legal.as_ref().map(|l| l.version().to_string());
     let signed = s
         .store_call(move |st| {
             let ctx = audit.resolve(st)?;
             let signed = st.github_sign_in(&ctx, &user, owner_login)?;
+            crate::hosted::agree_at_sign_in(st, &signed.0, legal.as_deref())?;
             if let Some(t) = old {
                 st.end_browser_session(&ctx, &t, "replaced")?;
             }
@@ -300,18 +302,32 @@ fn escape(s: &str) -> String {
         .replace('"', "&quot;")
 }
 
-/// The page a failed sign-in answers: `why`, and a link to sign in again.
+/// The page a failed sign-in answers: `why`, a link to sign in again, the
+/// instance's Terms of Service and Privacy Policy when it shows them, and
+/// Clax's source on GitHub.
 /// The flow cookie is cleared.
 fn failed(h: &Hosted, status: StatusCode, why: &str) -> Response {
+    let legal = h.legal.as_ref().map_or(String::new(), |l| {
+        format!(
+            "<a href=\"{}\">Terms of Service</a> · <a href=\"{}\">Privacy Policy</a> · ",
+            escape(l.terms_url()),
+            escape(l.privacy_url())
+        )
+    });
+    let footer = format!(
+        "<footer>{legal}<a href=\"https://github.com/empathic/clax\" target=\"_blank\" rel=\"noopener\">Source on GitHub</a></footer>"
+    );
     let html = format!(
         "<!doctype html><html lang=\"en\"><head><meta charset=\"utf-8\"><meta name=\"viewport\" content=\"width=device-width, initial-scale=1\"><title>Sign in · Clax</title>\
 <style>:root{{color-scheme:light dark;--bg:#fafaf9;--fg:#1c1917;--muted:#57534e;--card:#fff;--border:#e7e5e4}}\
 @media (prefers-color-scheme:dark){{:root{{--bg:#1c1917;--fg:#f5f5f4;--muted:#a8a29e;--card:#292524;--border:#44403c}}}}\
 body{{margin:0;background:var(--bg);color:var(--fg);font:15px/1.5 system-ui,sans-serif}}\
 main{{max-width:480px;margin:0 auto;padding:48px 16px}}section{{background:var(--card);border:1px solid var(--border);border-radius:12px;padding:22px 24px}}\
-h1{{margin:0 0 10px;font-size:22px}}p{{margin:0 0 12px}}a{{color:var(--fg)}}</style></head>\
-<body><main><section><h1>Sign-in failed</h1><p>{}</p><p><a href=\"/auth/github\">Sign in again</a> · <a href=\"/signin\">Other ways to sign in</a></p></section></main></body></html>",
-        escape(why)
+h1{{margin:0 0 10px;font-size:22px}}p{{margin:0 0 12px}}a{{color:var(--fg)}}\
+footer{{margin-top:16px;text-align:center;font-size:12.5px;color:var(--muted)}}footer a{{color:inherit}}</style></head>\
+<body><main><section><h1>Sign-in failed</h1><p>{}</p><p><a href=\"/auth/github\">Sign in again</a> · <a href=\"/signin\">Other ways to sign in</a></p></section>{}</main></body></html>",
+        escape(why),
+        footer
     );
     let mut res = (
         status,

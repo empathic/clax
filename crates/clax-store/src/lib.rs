@@ -100,6 +100,7 @@ pub mod audit;
 pub mod backfill;
 pub mod backup;
 pub mod batches;
+pub mod briefs;
 pub mod changelog;
 pub mod device;
 pub mod docs;
@@ -117,6 +118,7 @@ pub mod imports;
 pub mod inbox;
 pub mod jobs;
 pub mod joined;
+pub mod legal;
 pub mod linked;
 pub mod live;
 pub mod migrations;
@@ -131,6 +133,7 @@ pub mod sample_grants;
 pub mod sessions;
 pub mod shares;
 pub mod site;
+pub mod tags;
 pub mod threads;
 pub mod viewers;
 pub mod visibility;
@@ -194,6 +197,12 @@ pub struct Store {
     content: Arc<dyn ContentStore>,
     /// Held across each version write and the transaction recording it.
     content_locks: ArtifactLocks,
+    /// One per agent token's idempotency key, held across a keyed
+    /// publish ([`Store::lock_publish_key`]).
+    publish_key_locks: ArtifactLocks,
+    /// One per starter's brief idempotency key, held across a keyed
+    /// `POST /api/artifacts:new` ([`Store::lock_brief_key`]).
+    brief_key_locks: ArtifactLocks,
     /// Set by [`Store::shutdown`].
     shut_down: AtomicBool,
     /// Changes to `inbox_items` in the write transaction under way, recorded
@@ -232,7 +241,14 @@ pub struct Store {
     /// The jobs the write transaction under way changed, recorded by the
     /// update hook, and their listener ([`Store::set_job_listener`]).
     jobs: jobs::JobChanges,
+    /// The tests' hooks at named points of a method ([`Store::at_point`]).
+    #[cfg(test)]
+    test_points: Mutex<Vec<(&'static str, TestPoint)>>,
 }
+
+/// A test's hook at a named point of a store method, run once.
+#[cfg(test)]
+pub(crate) type TestPoint = Box<dyn FnOnce(&Store) + Send>;
 
 impl Store {
     /// Opens (creating when missing) the home's database, migrates it to
@@ -383,6 +399,8 @@ impl Store {
             exec: exec(conn),
             content,
             content_locks: ArtifactLocks::default(),
+            publish_key_locks: ArtifactLocks::default(),
+            brief_key_locks: ArtifactLocks::default(),
             shut_down: AtomicBool::new(false),
             inbox_changes,
             inbox_listener: RwLock::new(None),
@@ -395,6 +413,8 @@ impl Store {
             pushed_listener: RwLock::new(None),
             resumed_at: Mutex::new(stamp(clock.now())),
             member_caps: RwLock::new(None),
+            #[cfg(test)]
+            test_points: Mutex::new(Vec::new()),
             clock,
             hidden,
             jobs,
@@ -582,6 +602,15 @@ impl Store {
     /// what agents may see ([`Store::visibility_changed`]), the visibility
     /// generation is bumped after the commit. When it wrote any job, the
     /// job listener ([`Store::set_job_listener`]) hears of each once.
+    ///
+    /// The inbox and approval request listeners hear of every row change
+    /// the write connection's update hook saw. SQLite runs no hook when a
+    /// savepoint is rolled back to (only a whole transaction's rollback
+    /// clears the lists), so a job that rolls back to a savepoint after
+    /// writing `inbox_items` or `approval_requests` has those rows'
+    /// changes heard although they were undone: the listeners' readers
+    /// skip rows they do not find, and inbox changes are heard once per
+    /// `seq` (an item made after the rollback may take the undone one's).
     pub(crate) fn with_tx<T>(
         &self,
         f: impl FnOnce(&rusqlite::Transaction<'_>) -> Result<T>,
@@ -604,7 +633,7 @@ impl Store {
             // Taken inside the turn: the next writer's changes are its own.
             Ok((
                 out,
-                std::mem::take(&mut *self.inbox_changes.lock().unwrap()),
+                once_per_seq(std::mem::take(&mut *self.inbox_changes.lock().unwrap())),
                 std::mem::take(&mut *self.request_changes.lock().unwrap()),
                 self.audit.take_recorded(),
                 self.agents_changed.lock().unwrap().take(),
@@ -675,11 +704,56 @@ impl Store {
         *self.request_listener.write().unwrap() = Some(Arc::new(f));
     }
 
+    /// Runs `hook` the next time a method of this store reaches the point
+    /// named `name` ([`Store::point`]), once: a test steps another write
+    /// in there, where a concurrent caller's could land.
+    #[cfg(test)]
+    pub(crate) fn at_point(&self, name: &'static str, hook: impl FnOnce(&Store) + Send + 'static) {
+        self.test_points
+            .lock()
+            .unwrap()
+            .push((name, Box::new(hook)));
+    }
+
+    /// Runs (and forgets) the hook a test set at the point named `name`,
+    /// if any. Called outside any transaction or lock a hook's own write
+    /// would wait on.
+    #[cfg(test)]
+    pub(crate) fn point(&self, name: &'static str) {
+        let hook = {
+            let mut points = self.test_points.lock().unwrap();
+            points
+                .iter()
+                .position(|(n, _)| *n == name)
+                .map(|i| points.remove(i).1)
+        };
+        if let Some(hook) = hook {
+            hook(self);
+        }
+    }
+
     /// Runs `f` on the write connection outside a transaction, for
     /// statements that manage their own (`PRAGMA optimize`).
     pub(crate) fn with_write<T>(&self, f: impl FnOnce(&Connection) -> Result<T>) -> Result<T> {
         self.exec.write(|conn| f(conn))
     }
+}
+
+/// `changes` with one entry per `seq`, in the order each `seq` first
+/// changed, made when any of its changes made it.
+fn once_per_seq(changes: Vec<InboxChange>) -> Vec<InboxChange> {
+    let mut at: std::collections::HashMap<i64, usize> = std::collections::HashMap::new();
+    let mut out: Vec<InboxChange> = Vec::with_capacity(changes.len());
+    for c in changes {
+        match at.get(&c.seq) {
+            Some(&i) => out[i].made |= c.made,
+            None => {
+                at.insert(c.seq, out.len());
+                out.push(c);
+            }
+        }
+    }
+    out
 }
 
 /// The schema version (`user_version`) of `home`'s database, read without
