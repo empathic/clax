@@ -12,7 +12,7 @@
 //! |---|---|
 //! | `pending-make.json` | a `queued` `make` job per request, but for one whose request has only the plan of an app it made (the app moves a make's plan to the app's ID once it is made) |
 //! | `plans.json` | the plan of the make job whose request it is (a plan not yet under an app's ID), else a `stopped` make job holding it while it has features to build |
-//! | `unfinished.json` | the carry of a `stopped` change job per change (a `build:<app>` entry: of that app's make job) |
+//! | `unfinished.json` | the carry of a `stopped` change job per change with a thread still open (a `build:<app>` entry: of that app's make job) |
 //! | `change-ledger.json` | a `change` job per record, with its `publish:<base>` step when version `base + 1` is the one the record made, and its `reply` step (then `done`) when its documents are written or it has none, and each of its addresses still open got an agent reply at or after that version; else `queued`, to run on |
 //! | `asked.json` | a `change` job per entry holding its question, `waiting` while it is open, `queued` once answered or skipped; none for a withdrawn question, an answer handed over that the entry does not hold, or one a ledger record that landed without its reply already answered |
 //! | `stopped.json` | a `cancelled` change job per thread, the thread kept `stopped` |
@@ -576,6 +576,19 @@ impl Import<'_, '_> {
                 );
                 continue;
             };
+            // The app forgets a change none of whose threads is open
+            // (`AgentWorker._pruneUnfinished`): it is not kept going.
+            let mut open = false;
+            for t in &tids {
+                open |= self.open_thread(&aid, t)?;
+            }
+            if !open {
+                self.leave_out(
+                    "unfinished.json",
+                    format!("the change of {key}: its threads are closed or gone"),
+                );
+                continue;
+            }
             let asked: Vec<(String, Vec<String>)> =
                 tids.iter().map(|t| (t.clone(), comments.clone())).collect();
             let (threads, request) = self.change_threads(&aid, &asked)?;
@@ -1477,6 +1490,52 @@ mod tests {
         assert_eq!(
             all[0].job.plan.as_ref().unwrap()["data"]["request"],
             "a habit tracker"
+        );
+    }
+
+    /// An unfinished change none of whose threads is open is over and
+    /// makes no job; a change with one of its threads open is still
+    /// stopped, to keep going.
+    #[test]
+    fn an_unfinished_change_with_no_thread_open_makes_no_job() {
+        let (_d, st) = store();
+        let aid = artifact(&st, None);
+        let (t1, c1) = thread_on(&st, &aid, "make it green");
+        let (t2, c2) = thread_on(&st, &aid, "bigger title");
+        let (t3, c3) = thread_on(&st, &aid, "a footer");
+        st.resolve_thread(DAEMON, &t1, "owner").unwrap();
+        st.resolve_thread(DAEMON, &t2, "owner").unwrap();
+        let unfinished = |threads: Vec<&str>, comments: Vec<&str>| {
+            json!({
+                "artifact": aid.as_str(), "threads": threads, "comments": comments,
+                "limit": "turns", "spent_usd": 1.0, "at": "2026-10-18T10:00:00.000Z",
+                "stops": 1, "notes": [], "edits": {"index.html": "<p>half"},
+                "before": {"index.html": "5:abc"},
+            })
+        };
+        let state = files(&[(
+            "unfinished.json",
+            json!({"version": 1, "threads": {
+                t1.as_str(): unfinished(vec![&t1], vec![&c1]),
+                "01JA8Z3K6Q0V7N2M4P5R6S7T8W": unfinished(vec!["01JA8Z3K6Q0V7N2M4P5R6S7T8W"], vec![]),
+                t2.as_str(): unfinished(vec![&t2, &t3], vec![&c2, &c3]),
+                t3.as_str(): unfinished(vec![&t2, &t3], vec![&c2, &c3]),
+            }}),
+        )]);
+        let s = st.import_client_state(APP_JSON_V1, "app", &state).unwrap();
+        assert_eq!(s.left_out.len(), 2, "{:?}", s.left_out);
+        let changes: Vec<(JobState, BTreeSet<String>)> = jobs(&st)
+            .iter()
+            .map(|j| {
+                (
+                    j.job.state,
+                    j.threads.iter().map(|t| t.thread_id.clone()).collect(),
+                )
+            })
+            .collect();
+        assert_eq!(
+            changes,
+            [(JobState::Stopped, BTreeSet::from([t2.clone(), t3.clone()]))]
         );
     }
 

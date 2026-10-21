@@ -97,9 +97,19 @@ void main() {
       expect(s.already, isFalse);
       expect(s.skipped, isEmpty);
       expect(s.consents, 1);
-      expect(s.leftOut, hasLength(2), reason: 'the question and the thread');
+      expect(
+        s.leftOut,
+        hasLength(3),
+        reason: 'the question, the stopped thread and the unfinished change',
+      );
       expect(s.leftOut.where((l) => l.startsWith('asked.json:')), hasLength(1));
       expect(s.leftOut.where((l) => l.startsWith('stopped.json:')), hasLength(1));
+      // The unfinished change's thread is not open in the core (it never
+      // held it), so the app would forget the change: it is not imported.
+      expect(
+        s.leftOut.where((l) => l.startsWith('unfinished.json:')),
+        hasLength(1),
+      );
       expect(jobs, hasLength(s.jobs), reason: 'every job the import made is open');
       expect(jobs.every((j) => j.id.startsWith('json-')), isTrue);
       final makes = jobs.where((j) => j.kind == JobKind.make).toList();
@@ -121,8 +131,8 @@ void main() {
       );
       expect(
         {for (final j in changes) j.artifactId: j.state},
-        {reading: JobState.queued, habits: JobState.stopped},
-        reason: 'the ledger record to run again, the unfinished change',
+        {reading: JobState.queued},
+        reason: 'the ledger record to run again',
       );
       for (final n in jsonStateFiles) {
         expect(File('${support.path}/$n').existsSync(), isFalse, reason: n);
