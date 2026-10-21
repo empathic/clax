@@ -10,11 +10,11 @@
 //!
 //! | File | Becomes |
 //! |---|---|
-//! | `pending-make.json` | a `queued` `make` job per request |
-//! | `plans.json` | the plan of the make job whose request it is, else a `stopped` make job holding it while it has features to build |
+//! | `pending-make.json` | a `queued` `make` job per request, but for one whose request has only the plan of an app it made (the app moves a make's plan to the app's ID once it is made) |
+//! | `plans.json` | the plan of the make job whose request it is (a plan not yet under an app's ID), else a `stopped` make job holding it while it has features to build |
 //! | `unfinished.json` | the carry of a `stopped` change job per change (a `build:<app>` entry: of that app's make job) |
-//! | `change-ledger.json` | a `change` job per record, with its `publish:<base>` step when version `base + 1` is the one the record made, and its `reply` step (then `done`) when the documents and the reply landed too; else `queued`, to run again |
-//! | `asked.json` | a `change` job per entry holding its question, `waiting` while it is open |
+//! | `change-ledger.json` | a `change` job per record, with its `publish:<base>` step when version `base + 1` is the one the record made, and its `reply` step (then `done`) when its documents are written or it has none, and each of its addresses still open got an agent reply at or after that version; else `queued`, to run on |
+//! | `asked.json` | a `change` job per entry holding its question, `waiting` while it is open, `queued` once answered or skipped; none for a withdrawn question, an answer handed over that the entry does not hold, or one a ledger record that landed without its reply already answered |
 //! | `stopped.json` | a `cancelled` change job per thread, the thread kept `stopped` |
 //! | `agent-read-consent.json` | `agent_read_consents` rows |
 //!
@@ -146,6 +146,7 @@ impl Store {
                 consents: 0,
                 skipped: Vec::new(),
                 left_out: Vec::new(),
+                landed: Vec::new(),
             };
             for name in APP_JSON_FILES {
                 if let Some(text) = files.get(name) {
@@ -246,6 +247,10 @@ struct Import<'a, 't> {
     consents: usize,
     skipped: Vec<String>,
     left_out: Vec<String>,
+    /// Each ledger record whose version landed and whose reply did not:
+    /// its artifact, its addresses and the comments it answered.
+    /// `change-ledger.json` is read before `asked.json`.
+    landed: Vec<(String, BTreeSet<String>, BTreeSet<String>)>,
 }
 
 impl Import<'_, '_> {
@@ -297,6 +302,16 @@ impl Import<'_, '_> {
                 |r| r.get(0),
             )
             .optional()?)
+    }
+
+    /// Whether thread `tid` is there, on artifact `aid`, and open.
+    fn open_thread(&self, aid: &str, tid: &str) -> Result<bool> {
+        Ok(self.tx.query_row(
+            "SELECT EXISTS (SELECT 1 FROM threads
+                 WHERE id = ?1 AND artifact_id = ?2 AND status = 'open')",
+            params![tid, aid],
+            |r| r.get(0),
+        )?)
     }
 
     /// The newest of `comments` on thread `tid`, else the thread's newest
@@ -422,6 +437,8 @@ impl Import<'_, '_> {
         let Some(plans) = v.get("plans").and_then(Value::as_object) else {
             return Ok(false);
         };
+        // The requests whose make made its app.
+        let mut made: BTreeSet<String> = BTreeSet::new();
         for (i, (key, plan)) in plans.iter().enumerate() {
             let Some(request) = plan.get("request").and_then(Value::as_str) else {
                 self.leave_out("plans.json", format!("the plan of {key} names no request"));
@@ -440,17 +457,22 @@ impl Import<'_, '_> {
                     })
                 });
             let held = json!({"plan_rest": false, "data": plan});
-            // The pending make of the same request, not yet given a plan.
-            if let Some(j) = self.jobs.iter_mut().find(|j| {
+            let app = self.artifact(key)?;
+            if app.is_some() {
+                // The app moves a make's plan to the app's ID once the make
+                // made it (`AgentLoop.newApp`): that make is over.
+                made.insert(request.to_string());
+            } else if let Some(j) = self.jobs.iter_mut().find(|j| {
                 j.kind == "make" && j.plan.is_none() && j.input["request"].as_str() == Some(request)
             }) {
+                // The pending make of the same request, not yet given a plan.
                 j.plan = Some(held);
                 continue;
             }
             if !todo {
                 continue;
             }
-            let (artifact_id, title, base) = match self.artifact(key)? {
+            let (artifact_id, title, base) = match app {
                 Some((title, n)) => (Some(key.clone()), Some(title), n),
                 None => (None, None, 0),
             };
@@ -468,6 +490,27 @@ impl Import<'_, '_> {
                 threads: Vec::new(),
                 questions: Vec::new(),
             });
+        }
+        // A pending make whose request has only its made app's plan ended
+        // after it made the app, before the app forgot it: it is not made
+        // again.
+        let mut over = Vec::new();
+        self.jobs.retain(|j| {
+            let request = j.input["request"].as_str().unwrap_or_default();
+            let ended = j.kind == "make"
+                && j.artifact_id.is_none()
+                && j.plan.is_none()
+                && made.contains(request);
+            if ended {
+                over.push(request.to_string());
+            }
+            !ended
+        });
+        for request in over {
+            self.leave_out(
+                "pending-make.json",
+                format!("the make of {request:?} made its app"),
+            );
         }
         Ok(true)
     }
@@ -580,7 +623,18 @@ impl Import<'_, '_> {
                     json!({"artifact_id": rec.artifact_id, "version": n, "docs": rec.docs}),
                     Some(n),
                 ));
-                if rec.docs_done && self.replied(&rec, at)? {
+                let replied = self.replied(&rec, at)?;
+                if !replied {
+                    self.landed.push((
+                        rec.artifact_id.clone(),
+                        rec.addresses.iter().cloned().collect(),
+                        rec.answered.values().flatten().cloned().collect(),
+                    ));
+                }
+                // Its documents are done when written, or when it had none
+                // to write (the app's `_settleDocs`).
+                let docs_done = rec.docs_done || rec.docs == 0;
+                if docs_done && replied {
                     steps.push((
                         "reply".to_string(),
                         json!({"comments": [], "imported": true}),
@@ -653,15 +707,16 @@ impl Import<'_, '_> {
         Ok(Some(at))
     }
 
-    /// Whether the record's reply landed: an agent comment at or after
-    /// `at` on each of its addresses that is still there.
+    /// Whether the record's reply is owed nowhere: each of its addresses
+    /// still open on its artifact has an agent comment at or after `at`. The
+    /// app's recovery replies only on open threads (`AgentLoop.settle`), so a
+    /// record whose addresses are all resolved or gone, or which addresses
+    /// none, has no reply left to post.
     fn replied(&self, rec: &LedgerRecord, at: &str) -> Result<bool> {
-        let mut any = false;
         for tid in &rec.addresses {
-            if self.thread_artifact(tid)?.is_none() {
+            if !self.open_thread(&rec.artifact_id, tid)? {
                 continue;
             }
-            any = true;
             let found: bool = self.tx.query_row(
                 "SELECT EXISTS (SELECT 1 FROM comments
                      WHERE thread_id = ?1 AND author_kind = 'agent' AND created_at >= ?2)",
@@ -672,7 +727,7 @@ impl Import<'_, '_> {
                 return Ok(false);
             }
         }
-        Ok(any)
+        Ok(true)
     }
 
     fn asked(&mut self, v: &Value) -> Result<bool> {
@@ -700,19 +755,45 @@ impl Import<'_, '_> {
                 self.leave_out("asked.json", format!("the question {q} lost its app"));
                 continue;
             };
-            let status: Option<String> = self
+            let status: Option<(String, bool)> = self
                 .tx
                 .query_row(
-                    "SELECT status FROM questions q WHERE id = ?1 AND NOT EXISTS
-                         (SELECT 1 FROM job_questions WHERE question_id = q.id)",
+                    "SELECT status, taken_at IS NOT NULL FROM questions q WHERE id = ?1
+                         AND NOT EXISTS (SELECT 1 FROM job_questions WHERE question_id = q.id)",
                     params![q],
-                    |r| r.get(0),
+                    |r| Ok((r.get(0)?, r.get(1)?)),
                 )
                 .optional()?;
-            let Some(status) = status else {
+            let Some((status, taken)) = status else {
                 self.leave_out("asked.json", format!("the question {q} is gone"));
                 continue;
             };
+            // What the app never runs again: a withdrawn question's change
+            // (called off, or taken over by a later run); an answer handed
+            // over that the entry does not hold (the run that asked took
+            // it); and an answer whose run landed and did not reply, which
+            // the ledger's change job finishes (`AgentLoop.settleAnswered`).
+            let closed = !matches!(status.as_str(), "open" | "released");
+            let why = if status == "withdrawn" {
+                Some("was withdrawn")
+            } else if closed && taken && e.get("answer").and_then(Value::as_str).is_none() {
+                Some("was answered to the run that asked it")
+            } else if closed
+                && !comments.is_empty()
+                && self.landed.iter().any(|(a, addresses, done)| {
+                    a == aid
+                        && tids.iter().any(|t| addresses.contains(t))
+                        && comments.iter().all(|c| done.contains(c))
+                })
+            {
+                Some("was answered to a change that landed")
+            } else {
+                None
+            };
+            if let Some(why) = why {
+                self.leave_out("asked.json", format!("the question {q} {why}"));
+                continue;
+            }
             let asked: Vec<(String, Vec<String>)> =
                 tids.iter().map(|t| (t.clone(), comments.clone())).collect();
             let (threads, request) = self.change_threads(aid, &asked)?;
@@ -887,7 +968,7 @@ impl LedgerRecord {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::questions::{NewQuestion, Source};
+    use crate::questions::{Close, NewQuestion, Source};
     use crate::test_util::{DAEMON, artifact, session, store};
     use crate::threads::{NewComment, NewThread};
     use clax_core::ArtifactId;
@@ -1133,6 +1214,270 @@ mod tests {
         assert!(s2.already);
         assert_eq!(s2.jobs, s.jobs);
         assert_eq!(jobs(&st).len(), all.len());
+    }
+
+    /// Publishes the next version of `aid` from session `app`, noted
+    /// `reply` and addressing `threads`, as a change's publish does.
+    fn publish_change(st: &Store, app: &str, aid: &ArtifactId, reply: &str, threads: &[&str]) {
+        let n = st.get_artifact(aid).unwrap().unwrap().current_version;
+        let p = validate(
+            serde_json::from_value(json!({
+                "if_version": n, "note": reply, "addresses": threads,
+                "files": {"index.html": {"content": format!("<p>{reply}"), "encoding": "utf8"}},
+            }))
+            .unwrap(),
+        )
+        .unwrap();
+        st.publish_version(DAEMON, aid, p, Some(app)).unwrap();
+    }
+
+    /// Posts `body` on thread `tid` as session `app`'s agent.
+    fn agent_reply(st: &Store, app: &str, tid: &str, body: &str) {
+        st.add_agent_reply(
+            DAEMON,
+            tid,
+            NewComment {
+                author_kind: "agent",
+                author_name: "Clax".into(),
+                author_public_id: None,
+                via_session_id: Some(app.to_string()),
+                body: body.into(),
+                via_page: false,
+            },
+            None,
+        )
+        .unwrap();
+    }
+
+    /// A `ChangeRecord.toJson` record of a change on `aid` from `base`
+    /// answering comment `c` of thread `t`, with one document write when
+    /// `db`.
+    fn change_record(
+        aid: &ArtifactId,
+        base: u32,
+        (t, c): (&str, &str),
+        reply: &str,
+        db: bool,
+        docs_done: bool,
+    ) -> Value {
+        let ops = if db {
+            json!([{"op": "set", "collection": "notes", "doc_id": "n1", "data": {"t": 1}}])
+        } else {
+            json!([])
+        };
+        let pins = if db {
+            json!({"notes/n1": null})
+        } else {
+            json!({})
+        };
+        json!({
+            "artifact_id": aid.as_str(), "base": base, "addresses": [t],
+            "answered": {t: [c]}, "reply": reply, "resolve": false,
+            "db": ops, "pins": pins, "docs_done": docs_done,
+        })
+    }
+
+    /// Session `app`'s open `ask` question about `aid`.
+    fn ask(st: &Store, app: &str, aid: &ArtifactId) -> String {
+        let qs = serde_json::from_value(json!([{"question": "Which green?", "header": "Green",
+            "options": [{"label": "Mint"}, {"label": "Forest"}]}]))
+        .unwrap();
+        st.create_question(
+            DAEMON,
+            NewQuestion {
+                session_id: app.to_string(),
+                artifact_id: Some(aid.as_str().into()),
+                source: Source::Ask,
+                tool_use_id: None,
+                questions: qs,
+                released: false,
+                thread_id: None,
+                in_terminal: false,
+            },
+        )
+        .unwrap()
+        .0
+        .id
+    }
+
+    /// The import's change jobs on `aid`, by the base of their input.
+    fn changes_by_base(st: &Store) -> BTreeMap<u64, crate::jobs::JobFull> {
+        jobs(st)
+            .into_iter()
+            .filter(|j| j.job.kind == "change")
+            .map(|j| (j.job.input["base"].as_u64().unwrap(), j))
+            .collect()
+    }
+
+    /// A ledger record is a finished change when its version landed, its
+    /// documents are written or it has none, and no open thread it
+    /// addresses still waits for its reply: `done`, never run again. One
+    /// with documents still to write, or a reply still owed, keeps its
+    /// publish step and runs on; one whose version never landed runs again.
+    #[test]
+    fn a_ledger_change_with_nothing_left_to_apply_is_done() {
+        let (_d, st) = store();
+        let app = session(&st, "app", "h1");
+        let aid = artifact(&st, None);
+        let (t1, c1) = thread_on(&st, &aid, "make it green");
+        let (t2, c2) = thread_on(&st, &aid, "keep my notes");
+        let (t3, c3) = thread_on(&st, &aid, "bigger title");
+        let (t4, c4) = thread_on(&st, &aid, "a footer");
+        let (t5, c5) = thread_on(&st, &aid, "a header");
+        // Version 2: a change that wrote no documents, and replied.
+        publish_change(&st, &app, &aid, "Made it green.", &[&t1]);
+        agent_reply(&st, &app, &t1, "Made it green.");
+        // Version 3: a change with a document write never written, replied.
+        publish_change(&st, &app, &aid, "Kept your notes.", &[&t2]);
+        agent_reply(&st, &app, &t2, "Kept your notes.");
+        // Version 4: no documents, no reply, its thread resolved since.
+        publish_change(&st, &app, &aid, "Added a footer.", &[&t4]);
+        st.resolve_thread(DAEMON, &t4, "owner").unwrap();
+        // Version 5: no documents, its reply still owed on an open thread.
+        publish_change(&st, &app, &aid, "Added a header.", &[&t5]);
+        let ledger = json!({"records": [
+            change_record(&aid, 1, (&t1, &c1), "Made it green.", false, false),
+            change_record(&aid, 2, (&t2, &c2), "Kept your notes.", true, false),
+            change_record(&aid, 3, (&t4, &c4), "Added a footer.", false, false),
+            change_record(&aid, 4, (&t5, &c5), "Added a header.", false, false),
+            // Version 9 was never made: the change runs again.
+            change_record(&aid, 8, (&t3, &c3), "Bigger title.", false, false),
+        ]});
+        let s = st
+            .import_client_state(
+                APP_JSON_V1,
+                "app",
+                &files(&[("change-ledger.json", ledger)]),
+            )
+            .unwrap();
+        assert_eq!(s.jobs, 5);
+        let by = changes_by_base(&st);
+        let shape = |base: u64| -> (JobState, Vec<String>) {
+            let j = &by[&base];
+            (j.job.state, j.steps.iter().map(|s| s.key.clone()).collect())
+        };
+        let keys = |ks: &[&str]| ks.iter().map(|k| k.to_string()).collect::<Vec<_>>();
+        assert_eq!(shape(1), (JobState::Done, keys(&["publish:1", "reply"])));
+        assert_eq!(shape(2), (JobState::Queued, keys(&["publish:2"])));
+        assert_eq!(shape(3), (JobState::Done, keys(&["publish:3", "reply"])));
+        assert_eq!(shape(4), (JobState::Queued, keys(&["publish:4"])));
+        assert_eq!(shape(8), (JobState::Queued, keys(&[])));
+        assert_eq!(by[&1].steps[0].version_n, Some(2));
+    }
+
+    /// An `asked.json` entry the app would never run again makes no job: a
+    /// withdrawn question's, an answer handed over that the entry does not
+    /// hold, and an answer to comments a landed, unreplied ledger change
+    /// already answered (its own job posts the reply). A skipped question
+    /// not yet handed over, or whose entry holds its answer, runs; so does
+    /// one whose landed change replied, as the app runs it.
+    #[test]
+    fn an_asked_entry_the_app_would_not_run_again_makes_no_job() {
+        let (_d, st) = store();
+        let app = session(&st, "app", "h1");
+        let aid = artifact(&st, None);
+        let threads: Vec<(String, String)> = (0..6)
+            .map(|i| thread_on(&st, &aid, &format!("change {i}")))
+            .collect();
+        // Versions 2 and 3: changes answering threads 4 and 5, the second
+        // replied.
+        publish_change(&st, &app, &aid, "Changed four.", &[&threads[4].0]);
+        publish_change(&st, &app, &aid, "Changed five.", &[&threads[5].0]);
+        agent_reply(&st, &app, &threads[5].0, "Changed five.");
+        let qs: Vec<String> = (0..6).map(|_| ask(&st, &app, &aid)).collect();
+        st.close_question(DAEMON, &qs[0], Close::Withdraw).unwrap();
+        for q in &qs[1..] {
+            st.close_question(DAEMON, q, Close::Decline).unwrap();
+        }
+        st.take_question(&qs[1]).unwrap();
+        st.take_question(&qs[3]).unwrap();
+        let entry = |i: usize, answer: Option<&str>| {
+            let mut e = json!({
+                "question_id": qs[i], "artifact_id": aid.as_str(),
+                "thread_ids": [threads[i].0], "comment_ids": [threads[i].1],
+            });
+            if let Some(a) = answer {
+                e["answer"] = json!(a);
+            }
+            e
+        };
+        let state = files(&[
+            (
+                "change-ledger.json",
+                json!({"records": [
+                    change_record(&aid, 1, (&threads[4].0, &threads[4].1), "Changed four.", false, false),
+                    change_record(&aid, 2, (&threads[5].0, &threads[5].1), "Changed five.", false, false),
+                ]}),
+            ),
+            (
+                "asked.json",
+                json!({"version": 1, "entries": [
+                    entry(0, None),
+                    entry(1, None),
+                    entry(2, None),
+                    entry(3, Some("[clax] The person skipped your question")),
+                    entry(4, None),
+                    entry(5, None),
+                ]}),
+            ),
+        ]);
+        let s = st.import_client_state(APP_JSON_V1, "app", &state).unwrap();
+        let held: BTreeSet<String> = jobs(&st)
+            .iter()
+            .flat_map(|j| j.questions.iter().map(|q| q.question_id.clone()))
+            .collect();
+        assert_eq!(
+            held,
+            BTreeSet::from([qs[2].clone(), qs[3].clone(), qs[5].clone()]),
+            "{:?}",
+            s.left_out
+        );
+        assert!(
+            jobs(&st)
+                .iter()
+                .filter(|j| !j.questions.is_empty())
+                .all(|j| j.job.state == JobState::Queued)
+        );
+        assert_eq!(s.left_out.len(), 3, "{:?}", s.left_out);
+    }
+
+    /// A pending make whose request has only the plan of the app it made
+    /// is over and makes no job; a pending make with its own plan still
+    /// does, holding that plan.
+    #[test]
+    fn a_pending_make_that_made_its_app_makes_no_job() {
+        let (_d, st) = store();
+        let aid = artifact(&st, None);
+        let plan = |request: &str| {
+            json!({
+                "request": request,
+                "features": [{"id": "f1", "title": "Totals", "detail": "", "status": "done", "by": "agent"}],
+                "updatedAt": "2026-10-18T10:00:00.000Z", "revision": 2, "spentUsd": 1.5, "stopped": false,
+            })
+        };
+        let state = files(&[
+            (
+                "pending-make.json",
+                json!({"requests": ["a budget", "a habit tracker"]}),
+            ),
+            (
+                "plans.json",
+                json!({"plans": {
+                    aid.as_str(): plan("a budget"),
+                    "new:1": plan("a habit tracker"),
+                }}),
+            ),
+        ]);
+        let s = st.import_client_state(APP_JSON_V1, "app", &state).unwrap();
+        assert_eq!(s.left_out.len(), 1, "{:?}", s.left_out);
+        let all = jobs(&st);
+        assert_eq!(all.len(), 1);
+        assert_eq!(all[0].job.kind, "make");
+        assert_eq!(all[0].job.input["request"], "a habit tracker");
+        assert_eq!(
+            all[0].job.plan.as_ref().unwrap()["data"]["request"],
+            "a habit tracker"
+        );
     }
 
     #[test]
