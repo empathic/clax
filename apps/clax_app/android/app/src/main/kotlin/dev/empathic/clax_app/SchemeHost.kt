@@ -28,7 +28,8 @@ import java.util.concurrent.atomic.AtomicLong
  *
  * The app's origins are `https://app.clax.invalid` (the shell) and
  * `https://<id>.c.clax.invalid` (an artifact's content); a WebView answers
- * requests to those hosts once Dart attaches it:
+ * requests to those hosts once Dart attaches it (a request to one of them
+ * on any scheme but https is answered 403 here and never reaches Dart):
  *
  * - Dart → native `attach {webViewId}` (answers whether that WebView
  *   exists; it must already have webview_flutter's client, which this one
@@ -146,6 +147,11 @@ class SchemeHost(
     private fun intercept(state: Attached, request: WebResourceRequest): WebResourceResponse? {
         val url = request.url
         if (!isAppHost(url.host)) return null
+        // The app's origins are https only: the same hosts on another
+        // scheme (http) are answered here and never reach Dart.
+        if (url.scheme?.lowercase() != "https") {
+            return response(403, mapOf("Content-Type" to "text/plain"), "refused".toByteArray())
+        }
         if (request.isForMainFrame && url.host == SHELL_HOST && url.path?.startsWith("/a/") != true) {
             main.post {
                 if (attached[state.id] === state) {
