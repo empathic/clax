@@ -226,6 +226,33 @@ void main() {
     expect(opened, 1);
   });
 
+  test('a job whose open failed is opened again at its next turn', () async {
+    var fails = 1;
+    final agent = AgentTurns(
+      backend: backend,
+      open: (jobId) async {
+        opened++;
+        if (fails-- > 0) throw const FormatException('the core was busy');
+        return AgentJob(
+          input: const RunInput(system: 'You make apps.', first: []),
+          toolbox: box(),
+        );
+      },
+      serveDraft: (_, _) async => 'd1',
+    );
+    const input = TurnInput(turn: 1, input: job, base: 0);
+    await expectLater(
+      agent.turn('j', input, Future<void>.value()),
+      throwsA(isA<FormatException>()),
+    );
+    backend.answer([
+      _use('w', 'write_file', {'path': 'index.html', 'content': page}),
+    ]);
+    final out = await agent.turn('j', input, Future<void>.value());
+    expect(out.notes.calls.single.id, 'w');
+    expect(opened, 2);
+  });
+
   test('the digest leaves out icon.svg', () {
     expect(
       draftDigest({'index.html': page, 'icon.svg': '<svg/>'}),

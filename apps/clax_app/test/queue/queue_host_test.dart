@@ -187,6 +187,9 @@ final class _ScriptedAgent implements AgentPort {
 
   @override
   void rendered(JobId jobId, int turn, String callId, RenderOutcome outcome) {}
+
+  @override
+  void forget(JobId jobId) {}
 }
 
 /// Waits for [client]'s state to satisfy [ok].

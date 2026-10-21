@@ -193,7 +193,7 @@ final class WorkerJobs {
     final json = a.body.isEmpty ? null : jsonDecode(utf8.decode(a.body));
     final job = a.status == 200 && json is Map ? jobOf(json['job']) : null;
     if (job == null) {
-      throw StateError('job $id could not be read (${a.status})');
+      throw JobUnopened('job $id could not be read (${a.status})');
     }
     return job;
   }
@@ -208,7 +208,7 @@ final class WorkerJobs {
   ];
 
   Future<String> _kit(String name) async =>
-      assets.kit[name] ?? (throw StateError('the kit has no $name'));
+      assets.kit[name] ?? (throw JobUnopened('the kit has no $name'));
 
   Toolbox _toolbox(RunContext ctx, Draft draft, RunBudget budget, RunPlan plan) =>
       Toolbox(RunState(ctx: ctx, draft: draft, budget: budget), _tools(plan));
@@ -248,7 +248,7 @@ final class WorkerJobs {
 
   Future<AgentJob> _change(Job row) async {
     final aid =
-        row.artifactId ?? (throw StateError('change ${row.id} names no app'));
+        row.artifactId ?? (throw JobUnopened('change ${row.id} names no app'));
     final detail = await api.getArtifact(aid);
     final app = detail.artifact;
     final base = row.input.base > 0 ? row.input.base : app.currentVersion;
@@ -485,6 +485,16 @@ final class WorkerJobs {
 
   static String? _capsKey(Map<String, Object?>? caps) =>
       caps == null ? null : jsonEncode(caps);
+}
+
+/// What [WorkerJobs] could not open or load for a job: its row unread, a
+/// change naming no app, or a kit file the worker was not given. The
+/// runner answers it as the turn's or the call's failure.
+final class JobUnopened implements Exception {
+  const JobUnopened(this.message);
+  final String message;
+  @override
+  String toString() => message;
 }
 
 /// A job's draft artifact and what it was last given.

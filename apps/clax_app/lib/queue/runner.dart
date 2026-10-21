@@ -77,6 +77,11 @@ abstract interface class AgentPort {
   /// UI isolate answered it and before the queue hears it: the draft the
   /// [renderSpec] served counts as rendered so.
   void rendered(JobId jobId, int turn, String callId, RenderOutcome outcome);
+
+  /// Lets go of what job [jobId]'s agent holds in this worker (its draft,
+  /// history and budget): the job ended, or its work stopped. A later turn
+  /// or call of it rebuilds them from the job's row.
+  void forget(JobId jobId);
 }
 
 /// A publish [AgentPort.publishPlan] refuses before the core is asked:
@@ -354,6 +359,7 @@ class EffectRunner implements WorkerRunner {
       case StopWork(:final jobId):
         cancelJob(jobId);
         render.cancel(jobId);
+        agent.forget(jobId);
       case ProbeClaude():
         unawaited(_probe(e));
       case Notice():
@@ -403,7 +409,20 @@ class EffectRunner implements WorkerRunner {
   }
 
   void _send(Msg m) {
-    if (!_closed) send(m);
+    if (_closed) return;
+    // A job whose row ended, or that the core no longer holds, has no
+    // more work: its agent lets go of it.
+    switch (m) {
+      case Committed(:final job) || Refused(job: final job?)
+          when job.state.isFinal:
+        agent.forget(job.id);
+      case JobRead(:final jobId, :final job)
+          when job == null || job.state.isFinal:
+        agent.forget(jobId);
+      default:
+        break;
+    }
+    send(m);
   }
 
   // ------------------------------------------------------------ events

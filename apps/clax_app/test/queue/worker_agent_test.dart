@@ -5,6 +5,8 @@ import 'dart:io';
 import 'package:clax_app/agent/backend.dart' show AgentError;
 import 'package:clax_app/agent/runner/turn.dart';
 import 'package:clax_app/agent/tools/budget.dart' show Usage;
+import 'package:clax_app/clax/http_api.dart' show HttpClaxApi;
+import 'package:clax_app/core/core_transport.dart';
 import 'package:clax_app/core/origins.dart';
 import 'package:clax_app/queue/agent_port.dart' show draftDigest;
 import 'package:clax_app/queue/host.dart';
@@ -13,6 +15,7 @@ import 'package:clax_app/queue/model.dart';
 import 'package:clax_app/queue/msg.dart';
 import 'package:clax_app/queue/worker_agent.dart';
 import 'package:clax_app/queue/worker_main.dart' show WorkerContext;
+import 'package:clax_app/platform/clock.dart';
 import 'package:clax_app/ui/render_service.dart';
 import 'package:flutter_test/flutter_test.dart' hide Retry;
 
@@ -115,6 +118,44 @@ void main() {
             s.jobs.single.state == JobState.failed ||
             s.jobs.single.error == builderStopped),
   )).jobs.single;
+
+  test('a job the core cannot read, or a change naming no app, opens as an '
+      'Exception the runner answers, never an Error that ends the worker',
+      () async {
+    final core = FakeCore()
+      ..on('GET', '/api/jobs/{id}', (r, p) {
+        if (p['id'] == 'nameless') {
+          return FakeCore.json({
+            'job': {
+              'job': {
+                'id': 'nameless',
+                'client': 'app',
+                'kind': 'change',
+                'state': 'running',
+                'rev': 2,
+                'input': {'request': 'x', 'base': 1, 'threads': {}},
+              },
+            },
+          });
+        }
+        return FakeCore.error(500, 'internal', 'the store is shut');
+      });
+    final transport = CoreTransport(core);
+    final jobs = WorkerJobs(
+      api: HttpClaxApi.over(transport),
+      transport: transport,
+      assets: const WorkerAgentAssets(
+        system: system,
+        kit: {},
+        installId: 'install-1',
+        pid: 1,
+      ),
+      model: 'claude-haiku-5-5',
+      clock: const SystemClock(),
+    );
+    await expectLater(jobs.open('j1'), throwsA(isA<Exception>()));
+    await expectLater(jobs.open('nameless'), throwsA(isA<Exception>()));
+  });
 
   test('a make ends published, with its render recorded clean; the worker '
       'dying mid-make resumes it with every earlier turn\'s writes', () async {

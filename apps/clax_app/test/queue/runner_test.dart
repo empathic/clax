@@ -4,10 +4,15 @@ import 'dart:io';
 import 'dart:isolate';
 
 import 'package:clax_app/agent/backend.dart';
+import 'package:clax_app/agent/request.dart';
+import 'package:clax_app/agent/runner.dart' show RunInput;
+import 'package:clax_app/agent/runner/turn.dart';
+import 'package:clax_app/agent/tools/budget.dart';
 import 'package:clax_app/clax/transport.dart';
 import 'package:clax_app/core/core_transport.dart';
 import 'package:clax_app/core/frame.dart';
 import 'package:clax_app/core/json_import.dart';
+import 'package:clax_app/queue/agent_port.dart';
 import 'package:clax_app/queue/codec.dart';
 import 'package:clax_app/queue/effect.dart';
 import 'package:clax_app/queue/model.dart';
@@ -17,6 +22,7 @@ import 'package:clax_app/queue/runner.dart';
 import 'package:clax_app/queue/worker_main.dart';
 import 'package:flutter_test/flutter_test.dart' hide Retry;
 
+import '../agent/tools/support.dart';
 import '../support/fake_core.dart';
 import '../support/fake_core_jobs.dart';
 import '../support/paths.dart';
@@ -39,6 +45,7 @@ void main() {
   EffectRunner runnerOn(
     FakeCore c,
     List<Msg> out, {
+    AgentPort? agentPort,
     KillHook? kill,
     Future<ImportSummary?> Function(ClaxTransport core, String token)?
     importState,
@@ -48,7 +55,7 @@ void main() {
       timer: timers.make,
       retryDelay: (_) async {},
     ),
-    agent: agent,
+    agent: agentPort ?? agent,
     render: renders,
     ui: ui,
     probeClaude: () async => probe,
@@ -776,6 +783,40 @@ void main() {
       expect(jobs.renders, isEmpty);
     });
 
+    test('a render past the run\'s renders answers the render as failed '
+        'with the refusal, and the worker goes on', () async {
+      // The queue's own agent, on a run that may render no more.
+      final turns = AgentTurns(
+        backend: _NoTurns(),
+        open: (_) async => AgentJob(
+          input: const RunInput(system: '', first: []),
+          toolbox: toolboxWith(
+            files: const {},
+            kind: RequestKind.newApp,
+            caps: const RunCaps(
+              turns: 8,
+              renders: 0,
+              outputTokens: 32000,
+              wallClock: Duration(seconds: 90),
+            ),
+            extra: queueTools(),
+          ),
+        ),
+        serveDraft: (_, _) async => 'd1',
+      );
+      await runner.close();
+      runner = runnerOn(core, sent, agentPort: turns);
+      runner.run(const Render(1, 'j', 1, 'r', RenderSpec(draftId: '', revision: 0)));
+      await pumpEventQueue();
+      final r = only<Rendered>();
+      expect(r.outcome.clean, isFalse);
+      expect(r.outcome.errors.single, contains('used its 0 renders'));
+      expect(renders.asked, isEmpty);
+      runner.run(const ProbeClaude(2));
+      await pumpEventQueue();
+      expect(only<ClaudeReachable>().reachable, isTrue);
+    });
+
     test('a render not clean that names nothing is recorded with an error, '
         'so it never clears a publish', () async {
       renders.answers.add(
@@ -827,6 +868,20 @@ void main() {
       await pumpEventQueue();
       expect(sent, isEmpty);
       expect(jobs.renders, isEmpty);
+    });
+
+    test('the agent forgets a job at StopWork, at a final row, and when the '
+        'core holds none', () async {
+      runner.run(const StopWork(1, 'a'));
+      expect(agent.forgot, ['a']);
+      await claimed();
+      jobs.seed('b', state: 'running', rev: 2);
+      runner.run(const MoveJob(2, 'b', ifRev: 2, to: JobState.cancelled));
+      await pumpEventQueue();
+      expect(only<Committed>().job.state, JobState.cancelled);
+      runner.run(const ReadJob(3, 'gone'));
+      await pumpEventQueue();
+      expect(agent.forgot, ['a', 'b', 'gone']);
     });
 
     test('ProbeClaude answers ClaudeReachable', () async {
@@ -967,10 +1022,26 @@ class _Agent implements AgentPort {
   @override
   void rendered(JobId jobId, int turn, String callId, RenderOutcome outcome) =>
       drawn.add((jobId, turn, callId, outcome));
+
+  /// The jobs the runner told it to forget, in order.
+  final List<JobId> forgot = [];
+
+  @override
+  void forget(JobId jobId) => forgot.add(jobId);
 }
 
 /// A render port answering from [answers], in order; a render with none
 /// queued fails the test.
+/// A model never asked.
+class _NoTurns implements TurnBackend {
+  @override
+  String get name => 'none';
+
+  @override
+  Future<ModelTurn> turn(TurnRequest r) =>
+      throw UnimplementedError('no turn is asked');
+}
+
 class _Render implements RenderPort {
   final List<Future<RenderResult>> answers = [];
   final List<RenderRequest> asked = [];

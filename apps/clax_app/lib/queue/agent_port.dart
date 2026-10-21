@@ -109,6 +109,15 @@ String draftDigest(Map<String, String> files) => contentHash({
       ),
 });
 
+/// A render [AgentTurns.renderSpec] refuses: the run used its renders.
+/// The runner answers the render as failed with [message].
+final class RendersSpent implements Exception {
+  const RendersSpent(this.message);
+  final String message;
+  @override
+  String toString() => message;
+}
+
 /// A test file of a draft, as the inspect view takes it.
 final _testFile = RegExp(r'^tests/[A-Za-z0-9_\-./]{1,200}\.test\.js$');
 
@@ -212,17 +221,32 @@ final class AgentTurns implements AgentPort {
   final Map<JobId, Future<_Job>> _jobs = {};
   final Map<JobId, _Job> _open = {};
 
-  /// Forgets job [jobId]'s history and tools (it ended).
+  /// Forgets job [jobId]'s history and tools (it ended, or its work
+  /// stopped).
+  @override
   void forget(JobId jobId) {
     unawaited(_jobs.remove(jobId));
     _open.remove(jobId);
   }
 
-  Future<_Job> _jobOf(JobId jobId) => _jobs[jobId] ??= open(jobId).then((a) {
-    final j = _Job(a);
-    _open[jobId] = j;
-    return j;
-  });
+  /// Job [jobId], opened once; an open that failed is not kept, so the
+  /// job's next turn or call opens it again.
+  Future<_Job> _jobOf(JobId jobId) {
+    if (_jobs[jobId] case final held?) return held;
+    late final Future<_Job> opening;
+    opening = open(jobId).then(
+      (a) {
+        final j = _Job(a);
+        _open[jobId] = j;
+        return j;
+      },
+      onError: (Object e, StackTrace s) {
+        if (identical(_jobs[jobId], opening)) _jobs.remove(jobId);
+        Error.throwWithStackTrace(e, s);
+      },
+    );
+    return _jobs[jobId] = opening;
+  }
 
   /// Job [jobId] ready to run turn [turn]'s calls ([calls]) or to start
   /// turn [turn] (not [calls]): opened, and rebuilt from its row when this
@@ -541,7 +565,7 @@ final class AgentTurns implements AgentPort {
     final job = await _ready(jobId, turn, calls: true);
     final budget = job.state.budget;
     if (!budget.canRender) {
-      throw StateError(
+      throw RendersSpent(
         'this run has used its ${budget.caps.renders} renders; finish with '
         'what works',
       );
@@ -642,7 +666,10 @@ final class AgentTurns implements AgentPort {
     return (
       _usageOf(d['usage']),
       [
-        for (final a in (d['attempts'] as List?) ?? const [])
+        for (final a in switch (d['attempts']) {
+          final List l => l,
+          _ => const [],
+        })
           if (a case {'model': final String model})
             (model: model, usage: _usageOf(a['usage'])),
       ],
@@ -814,7 +841,7 @@ final class _Job {
             await toolbox.call(name, AgentTurns._args(args)),
           ),
           RenderCall() => redrawn(j, c.id) ?? _notKept('render'),
-          AskCall() => switch (row!.questionOf(j, c.id)) {
+          AskCall() => switch (row?.questionOf(j, c.id)) {
             final q? => ToolResult.answer(q.answer),
             null => _notKept('ask'),
           },
@@ -860,12 +887,19 @@ final class _Job {
       first = agent.input.first;
       return;
     }
-    final data = carry.data is Map ? carry.data! as Map : const {};
+    final data = switch (carry.data) {
+      final Map d => d,
+      _ => const {},
+    };
     stops = carry.stops;
-    spentBefore = (data['spent_usd'] as num?)?.toDouble() ?? 0;
+    spentBefore = switch (data['spent_usd']) {
+      final num n => n.toDouble(),
+      _ => 0,
+    };
     carriedNotes = [
-      for (final n in (data['notes'] as List?) ?? const [])
-        if (n is String) n,
+      if (data['notes'] case final List l)
+        for (final n in l)
+          if (n is String) n,
     ];
     final base = agent.toolbox.state.budget;
     final capUsd = agent.capUsd;
