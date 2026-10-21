@@ -113,7 +113,7 @@ void main() {
     );
     await settle();
     final r = fake.requests.single;
-    expect(r.as, CallAs.owner);
+    expect(r.as, CallAs.ownerBrowser);
     expect(r.method, 'POST');
     expect(r.path, '/api/artifacts/abc/threads?x=1');
     expect(r.headers, [('content-type', 'application/json')]);

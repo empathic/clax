@@ -11,8 +11,12 @@ const _magic = [0x43, 0x4c, 0x58, 0x31]; // CLX1
 /// Who a request speaks for; the core, not the caller, turns it into
 /// credentials and limits the paths it may reach.
 enum CallAs {
-  /// The app's own code, and the shell calls its host relays.
+  /// The app's own code.
   owner('owner'),
+
+  /// The shell's API calls its host relays (`ChannelRelay`): the owner's
+  /// browser, as a browser's shell is.
+  ownerBrowser('owner-browser'),
 
   /// A scheme request to an artifact's content origin (with its host).
   content('content'),

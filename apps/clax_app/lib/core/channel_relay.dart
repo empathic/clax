@@ -18,8 +18,8 @@ import 'frame.dart';
 /// makes a new relay for each load, disposing the last.
 ///
 /// - `call {id, method, path, headers, body | body64, chunked?}` goes to
-///   the core as an `as: owner` frame with the message's headers but
-///   `Host`; a `chunked` call waits for its `callChunk {id, n, last,
+///   the core as an `as: owner-browser` frame (the owner's browser, as a
+///   browser's shell is) with the message's headers but `Host`; a `chunked` call waits for its `callChunk {id, n, last,
 ///   body64}`s, `n` from 0 (one out of order is dropped). The answer is
 ///   `claxTransport.callResult(nonce, id, {status, headers, body |
 ///   body64})`: `body` for a text or JSON answer that is valid UTF-8, else
@@ -165,6 +165,7 @@ class ChannelRelay {
         c.path,
         headers: c.headers,
         body: bytes.isEmpty ? null : bytes.takeBytes(),
+        as: CallAs.ownerBrowser,
       ),
     );
     c.tag = call.tag;

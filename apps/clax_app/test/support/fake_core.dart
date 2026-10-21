@@ -170,7 +170,7 @@ class FakeCore implements CoreCalls {
   }
 
   /// Whether the core admits [r] (crates/clax-embed/src/core.rs `admit`):
-  /// the owner reaches every path but the routes that hold their
+  /// the owner and its browser reach every path but the routes that hold their
   /// connection open and `/api/admin/shutdown`; the shell's page reads its
   /// document (`/a/`), the web UI's files (`/_clax/`), a version's files
   /// (`/c/`) and blobs (`/_blob/`); an artifact's content origin, named by
@@ -180,7 +180,8 @@ class FakeCore implements CoreCalls {
     if (!path.startsWith('/')) return false;
     final read = r.method == 'GET' || r.method == 'HEAD';
     return switch (r.as) {
-      CallAs.owner => !_heldOpen(path) && path != '/api/admin/shutdown',
+      CallAs.owner || CallAs.ownerBrowser =>
+        !_heldOpen(path) && path != '/api/admin/shutdown',
       CallAs.shellPage =>
         read &&
             const ['/a/', '/_clax/', '/c/', '/_blob/'].any(path.startsWith),

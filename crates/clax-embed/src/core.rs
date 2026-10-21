@@ -723,7 +723,7 @@ pub fn admit(head: &RequestHead) -> Result<(), &'static str> {
     let ok = match head.as_ {
         // A call's response is read whole, so a route that holds its
         // connection open never answers; events go by `subscribe`.
-        As::Owner => {
+        As::Owner | As::OwnerBrowser => {
             !clax_server::router::held_open::matches(path) && path != "/api/admin/shutdown"
         }
         // The shell document and what the core serves it: the web UI's
@@ -807,10 +807,12 @@ fn is_shell_document(path: &str) -> bool {
 }
 
 /// The router's request for `head`: its headers but those the core sets
-/// (an owner frame's all; a page frame's only [`PAGE_HEADERS`]), the
-/// `Host` and credential for who it speaks as (an owner frame the token, a
-/// shell-page frame for the shell document the owner cookie, any other
-/// page frame none), and a loopback peer.
+/// (an owner or owner-browser frame's all but an owner-browser frame's
+/// `Cookie`; a page frame's only [`PAGE_HEADERS`]), the `Host` and
+/// credential for who it speaks as (an owner frame the token, an
+/// owner-browser frame the token and the owner cookie, a shell-page frame
+/// for the shell document the owner cookie, any other page frame none),
+/// and a loopback peer.
 pub(crate) fn request(
     head: &RequestHead,
     body: Bytes,
@@ -821,7 +823,8 @@ pub(crate) fn request(
     let mut b = axum::http::Request::builder()
         .method(method)
         .uri(head.path.as_str());
-    let owner = head.as_ == As::Owner;
+    let browser = head.as_ == As::OwnerBrowser;
+    let owner = browser || head.as_ == As::Owner;
     let mut authorized = false;
     let mut length = false;
     for (k, v) in &head.headers {
@@ -831,6 +834,7 @@ pub(crate) fn request(
         }
         match name.as_str() {
             "host" => continue,
+            "cookie" if browser => continue,
             "authorization" => authorized = true,
             "content-length" => length = true,
             _ => {}
@@ -846,8 +850,10 @@ pub(crate) fn request(
     // `/a/…`, which the host answers to the main frame's navigation alone
     // (spec §4.2, §4.3). The rest it reaches (`/_clax/`, `/c/`, `/_blob/`)
     // answers without a credential and is asked for with none. A content
-    // frame never carries one.
-    if head.as_ == As::ShellPage && is_shell_document(&head.path) {
+    // frame never carries one. The shell's API calls its host relays are
+    // the owner's browser's, as a browser's shell is with the owner cookie
+    // its token request set.
+    if browser || (head.as_ == As::ShellPage && is_shell_document(&head.path)) {
         b = b.header(
             "cookie",
             format!(
@@ -1548,11 +1554,39 @@ mod tests {
     }
 
     #[test]
+    fn an_owner_browser_frame_carries_the_owner_cookie_and_no_cookie_of_its_own() {
+        let cookie = format!(
+            "{}={}",
+            clax_http::identity::owner_cookie_name("localhost"),
+            clax_http::identity::owner_cookie_value("t")
+        );
+        let mut h = head("POST", "/api/artifacts/x/sample", As::OwnerBrowser, None);
+        h.headers = vec![
+            ("authorization".into(), "Bearer shell".into()),
+            ("cookie".into(), "clax_viewer=planted".into()),
+        ];
+        let req = request(&h, Bytes::new(), "t").unwrap();
+        let cookies: Vec<_> = req.headers().get_all("cookie").iter().collect();
+        assert_eq!(cookies, [cookie.as_str()]);
+        assert_eq!(req.headers()["authorization"], "Bearer shell");
+        h.headers.clear();
+        let req = request(&h, Bytes::new(), "t").unwrap();
+        assert_eq!(req.headers()["authorization"], "Bearer t");
+        // The app's own code is no browser.
+        h.as_ = As::Owner;
+        let req = request(&h, Bytes::new(), "t").unwrap();
+        assert!(req.headers().get("cookie").is_none());
+    }
+
+    #[test]
     fn each_speaker_reaches_only_its_paths() {
         let id = Some("7q3k9mzx2b4t");
         for (m, p, a, h, ok) in [
             ("GET", "/api/artifacts", As::Owner, None, true),
             ("POST", "/api/stream/x", As::Owner, None, true),
+            ("POST", "/api/artifacts/x/sample", As::OwnerBrowser, None, true),
+            ("GET", "/api/stream", As::OwnerBrowser, None, false),
+            ("POST", "/api/admin/shutdown", As::OwnerBrowser, None, false),
             ("GET", "/api/stream", As::Owner, None, false),
             ("GET", "/api/stream?x=1", As::Owner, None, false),
             ("GET", "/api/events", As::Owner, None, false),

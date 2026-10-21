@@ -856,3 +856,61 @@ async fn the_queue_owner_is_released_when_its_subscriber_goes() {
     assert_eq!(status, 200, "{v}");
     embed.close();
 }
+
+/// A page's `sample` call as the app's shell makes it
+/// (web/shell/src/caps/sample.ts over the app's transport, relayed as an
+/// `owner-browser` frame): the token from `GET /api/token`, then the grant
+/// and the call with `Authorization: Bearer <token>` and no cookie, since
+/// the app's shell holds none of the core's. The call streams the stub's
+/// answer to its `done`; the same call as the app's own code (`owner`) is
+/// no browser, and is refused as the daemon refuses the token alone.
+#[tokio::test]
+async fn the_apps_shell_samples_as_the_owners_browser() {
+    let dir = tempfile::tempdir().unwrap();
+    let home = dir.path().join("home");
+    std::fs::create_dir_all(&home).unwrap();
+    std::fs::write(
+        home.join("config.toml"),
+        "[sample]\nprovider = \"stub\"\nstub_delay_ms = 0\n",
+    )
+    .unwrap();
+    let (embed, _rx) = open(dir.path());
+    let (status, v) = call_json(
+        &embed,
+        head("POST", "/api/artifacts", As::Owner),
+        Some(json!({"title": "t", "capabilities": {"sample": {}},
+            "files": {"index.html": {"content": "<title>t</title>", "encoding": "utf8"}}})),
+    )
+    .await;
+    assert_eq!(status, 201, "{v}");
+    let aid = v["artifact"]["id"].as_str().unwrap().to_string();
+    let (status, v) = call_json(&embed, head("GET", "/api/token", As::Owner), None).await;
+    assert_eq!(status, 200, "{v}");
+    let bearer = format!("Bearer {}", v["token"].as_str().unwrap());
+    let shell = |as_: As, method: &str, path: &str| {
+        let mut h = head(method, path, as_);
+        h.headers.push(("authorization".into(), bearer.clone()));
+        h
+    };
+    let grant = format!("/api/artifacts/{aid}/sample-grant");
+    let (status, v) = call_json(&embed, shell(As::OwnerBrowser, "PUT", &grant), None).await;
+    assert_eq!(status, 200, "{v}");
+    let sample = format!("/api/artifacts/{aid}/sample");
+    let ask = |as_: As| {
+        let mut h = shell(as_, "POST", &sample);
+        h.headers
+            .push(("content-type".into(), "application/json".into()));
+        h
+    };
+    let (res, body) = call(&embed, ask(As::Owner), br#"{"input":"hello"}"#).await;
+    let v: Value = serde_json::from_slice(&body).unwrap();
+    assert_eq!((res.status, &v["error"]["code"]), (403, &json!("forbidden")), "{v}");
+    let (res, body) = call(&embed, ask(As::OwnerBrowser), br#"{"input":"hello"}"#).await;
+    let body = String::from_utf8_lossy(&body);
+    assert_eq!(res.status, 200, "{body}");
+    assert_eq!(header(&res, "content-type"), Some("text/event-stream"));
+    assert!(body.starts_with("event: start\n"), "{body}");
+    assert!(body.contains("event: done\n"), "{body}");
+    assert!(body.contains("echo: hello"), "{body}");
+    embed.close();
+}

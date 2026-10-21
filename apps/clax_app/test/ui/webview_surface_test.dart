@@ -203,7 +203,7 @@ void main() {
       link.channel(call(n, 1));
       await pumpEventQueue();
       expect(core.requests.last.path, '/api/x');
-      expect(core.requests.last.as, CallAs.owner);
+      expect(core.requests.last.as, CallAs.ownerBrowser);
       expect(
         ran.single,
         startsWith('window.claxTransport.callResult("$n", 1, '),

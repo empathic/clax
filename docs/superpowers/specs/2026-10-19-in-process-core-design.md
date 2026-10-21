@@ -305,7 +305,7 @@ of JSON, then the body bytes:
 ```json
 {"method":"POST","path":"/api/artifacts/abc/threads?x=1",
  "headers":[["content-type","application/json"]],
- "as":"owner" | "content" | "shell-page", "host":"<id>" | null}
+ "as":"owner" | "owner-browser" | "content" | "shell-page", "host":"<id>" | null}
 ```
 
 `as` says who the request speaks for; the core, not the caller, turns it
@@ -313,7 +313,8 @@ into credentials:
 
 | `as` | Who sends it | What the core adds | Paths it may reach |
 |---|---|---|---|
-| `owner` | Dart (the app's own code and agent), and shell calls the host relays (§5) | `Authorization: Bearer <token>` unless the frame carries an `Authorization` (an agent session's own); `Host: localhost`; `ConnectInfo` of a loopback peer | everything but `/api/admin/shutdown` and the routes that hold their connection open (`clax_server::router::held_open`: `/api/stream`, `/api/events`, `/api/artifacts/{aid}/room`, `/api/artifacts/{aid}/live`, `/mcp`), since a call's body is read whole; events go by `subscribe`, and `POST /api/stream/{id}` is allowed |
+| `owner` | Dart (the app's own code and agent) | `Authorization: Bearer <token>` unless the frame carries an `Authorization` (an agent session's own); `Host: localhost`; `ConnectInfo` of a loopback peer | everything but `/api/admin/shutdown` and the routes that hold their connection open (`clax_server::router::held_open`: `/api/stream`, `/api/events`, `/api/artifacts/{aid}/room`, `/api/artifacts/{aid}/live`, `/mcp`), since a call's body is read whole; events go by `subscribe`, and `POST /api/stream/{id}` is allowed |
+| `owner-browser` | the host, for the shell calls it relays (§5) | what `owner` adds, and the owner cookie (`clax_owner_80`) in place of any `Cookie` the frame carries: the shell's calls are the owner's browser's, as a browser's shell is with the cookie its `GET /api/token` set, so the routes only the owner's browser may call (a page's `sample`, among others) answer them | what `owner` reaches |
 | `shell-page` | the host, for a scheme request to the shell's origin (§4.2) | `Host: localhost`; for the shell document (`/a/…`) alone, the owner cookie (`clax_owner_80`), so the shell document is the owner's browser's (§4.3), and no credential for the rest; of the frame's headers, only `Range`, `Accept` and `Service-Worker` (§4.2) | the shell document and what the core serves it only: `/a/…`, `/_clax/…` (the web UI's files), `/c/…`, `/_blob/…`; never `/api/` |
 | `content` | the host, for a scheme request to an artifact's origin | `Host: <host>.localhost`; no credential; of the frame's headers, only `Range`, `Accept` and `Service-Worker` (§4.2) | what `rewrite_artifact_host` admits on an artifact host (`/v/…`, `/draft/…`, `/_blob/…`, `/_clax/…`) |
 
@@ -721,7 +722,7 @@ whichever entry it loads:
   `claxTransport.callResult(nonce, 17, {status, headers, body | body64})`
   with the nonce the call carried; an aborted
   `signal` rejects it with an `AbortError` and posts `{type: "callAbort",
-  id}`. The host relays it as an `as: owner` frame;
+  id}`. The host relays it as an `as: owner-browser` frame;
 - every other request goes to the platform's `fetch` (the scheme answers
   it, §4.2).
 

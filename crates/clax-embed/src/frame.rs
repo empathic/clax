@@ -10,8 +10,11 @@ pub const MAGIC: &[u8; 4] = b"CLX1";
 #[derive(Clone, Copy, Debug, PartialEq, Eq, serde::Deserialize, serde::Serialize)]
 #[serde(rename_all = "kebab-case")]
 pub enum As {
-    /// The app's own code and the shell calls its host relays.
+    /// The app's own code.
     Owner,
+    /// The shell's API calls its host relays: the owner's browser, as the
+    /// shell's own calls were with the owner cookie a browser holds.
+    OwnerBrowser,
     /// A scheme request to an artifact's content origin.
     Content,
     /// A scheme request to the shell's origin.
@@ -147,6 +150,9 @@ mod tests {
         let j = br#"{"method":"GET","path":"/v/1/","as":"shell-page"}"#;
         let bytes = [MAGIC.as_slice(), &(j.len() as u32).to_le_bytes(), j].concat();
         assert_eq!(decode_request(&bytes).unwrap().0.as_, As::ShellPage);
+        let j = br#"{"method":"GET","path":"/api/x","as":"owner-browser"}"#;
+        let bytes = [MAGIC.as_slice(), &(j.len() as u32).to_le_bytes(), j].concat();
+        assert_eq!(decode_request(&bytes).unwrap().0.as_, As::OwnerBrowser);
     }
 
     #[test]
