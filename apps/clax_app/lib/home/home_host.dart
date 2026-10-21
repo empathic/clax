@@ -12,6 +12,7 @@ import 'package:flutter/foundation.dart';
 import '../agent/plan.dart';
 import '../agent/worker.dart';
 import '../clax/api.dart';
+import '../queue/client.dart';
 import '../ui/app_icon.dart';
 import '../ui/build_plan.dart';
 import '../ui/inbox_screen.dart' show resubscribe;
@@ -188,6 +189,8 @@ class HomeHost extends ChangeNotifier {
     this._needsKey = false,
   }) {
     makes.addListener(_onMakes);
+    makes.queue.state.addListener(_onQueue);
+    _queueBuilds = _queueBuildsOf(makes.queue.state.value);
     icons?.addListener(_onIcons);
     if (icons case final i?) unawaited(i.preload());
     _events = stream.events.listen(_onEvent, onError: (Object _) {});
@@ -487,8 +490,10 @@ class HomeHost extends ChangeNotifier {
     _changed();
   }
 
-  /// How far app [aid]'s build is, while one goes.
+  /// How far app [aid]'s build is, while one goes: its job in the queue
+  /// that goes on with a plan, else the worker's build of its plan.
   ({int done, int total})? buildOf(String aid) {
+    if (_queueBuilds[aid] case final c?) return c;
     final plan = _plans[aid];
     final s = _buildStates[aid] ?? builds?.control.buildOf(aid);
     if (!buildGoing(s) || plan == null) return null;
@@ -725,7 +730,7 @@ class HomeHost extends ChangeNotifier {
     final failed = s.failure != null;
     final key = s.planKey;
     final plan = key == null ? null : _makePlans[key];
-    final c = plan == null ? null : planCount(plan);
+    final c = s.progress ?? (plan == null ? null : planCount(plan));
     return HomeMake(
       id: makeIdOf(s),
       request: s.request,
@@ -954,6 +959,32 @@ class HomeHost extends ChangeNotifier {
 
   void _onIcons() => _changed();
 
+  /// The plan progress of each app whose job in the queue goes on, by app
+  /// ID.
+  var _queueBuilds = const <String, PlanProgress>{};
+
+  static Map<String, PlanProgress> _queueBuildsOf(QueueState q) => {
+    for (final j in q.jobs)
+      if ((j.artifactId, j.progress) case (final aid?, final c?)
+          when c.total > 0 && _goes(j.state))
+        aid: c,
+  };
+
+  static bool _goes(JobState s) => switch (s) {
+    JobState.queued ||
+    JobState.running ||
+    JobState.waiting ||
+    JobState.paused => true,
+    _ => false,
+  };
+
+  void _onQueue() {
+    final next = _queueBuildsOf(makes.queue.state.value);
+    if (mapEquals(next, _queueBuilds)) return;
+    _queueBuilds = next;
+    _changed();
+  }
+
   /// Watches the plan of each make that keeps one, and stops watching the
   /// others.
   void _watchMakePlans() {
@@ -978,6 +1009,7 @@ class HomeHost extends ChangeNotifier {
     _dead = true;
     _layout?.dispose();
     makes.removeListener(_onMakes);
+    makes.queue.state.removeListener(_onQueue);
     icons?.removeListener(_onIcons);
     unawaited(_events?.cancel());
     unawaited(_builds?.cancel());

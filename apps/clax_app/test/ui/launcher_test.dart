@@ -1387,6 +1387,31 @@ void main() {
       expect(said(), words, reason: '$view');
     }
   });
+
+  testWidgets('a make the worker runs counts its job\'s plan on its tile', (
+    tester,
+  ) async {
+    final q = FakeQueueClient()..push([makeJob('j', title: 'a stopwatch')]);
+    final makes = MakeService(q);
+    addTearDown(makes.dispose);
+    await tester.pumpWidget(
+      MaterialApp(
+        theme: claxTheme(Brightness.light, TargetPlatform.android),
+        home: Scaffold(
+          body: Center(
+            child: SizedBox(
+              width: 120,
+              child: MakingTile(session: makes.sessionOf('j')!, onTap: () {}),
+            ),
+          ),
+        ),
+      ),
+    );
+    expect(find.text('2/5'), findsNothing);
+    q.put(makeJob('j', title: 'a stopwatch', progress: (done: 2, total: 5)));
+    await tester.pump();
+    expect(find.text('2/5'), findsOneWidget);
+  });
 }
 
 /// Timings that keep nothing.

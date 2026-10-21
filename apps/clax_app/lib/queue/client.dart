@@ -19,6 +19,7 @@ export 'model.dart'
         JobState,
         JobView,
         Offer,
+        PlanProgress,
         QueueState,
         StepKey,
         WaitingFor;

@@ -138,6 +138,10 @@ class MakeSession extends ChangeNotifier {
       : _narration?.stopped ??
             MakeStopped(key: _id, limit: '', stops: 1, spentUsd: 0);
 
+  /// How far the make's plan is, as its job's row shows it; null while it
+  /// planned nothing.
+  PlanProgress? get progress => _view.progress;
+
   /// Whether Keep going is offered.
   bool get canKeepGoing => _view.offers.contains(Offer.keepGoing);
 

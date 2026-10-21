@@ -51,6 +51,7 @@ JobView makeJob(
   WaitingFor? waitingFor,
   String? error,
   Set<Offer>? offers,
+  PlanProgress? progress,
 }) => JobView(
   id: id,
   kind: JobKind.make,
@@ -60,6 +61,7 @@ JobView makeJob(
   waitingFor: waitingFor,
   error: error,
   offers: offers ?? _offers(state),
+  progress: progress,
 );
 
 /// A change's view of app [artifactId] for tests.
@@ -70,6 +72,7 @@ JobView changeJob(
   WaitingFor? waitingFor,
   String? error,
   Set<Offer>? offers,
+  PlanProgress? progress,
 }) => JobView(
   id: id,
   kind: JobKind.change,
@@ -78,6 +81,7 @@ JobView changeJob(
   waitingFor: waitingFor,
   error: error,
   offers: offers ?? _offers(state),
+  progress: progress,
 );
 
 Set<Offer> _offers(JobState s) => switch (s) {

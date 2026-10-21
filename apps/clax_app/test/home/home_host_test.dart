@@ -12,12 +12,14 @@ import 'package:clax_app/clax/fake_api.dart';
 import 'package:clax_app/home/home_host.dart';
 import 'package:clax_app/home/home_install.dart';
 import 'package:clax_app/home/home_settings.dart';
+import 'package:clax_app/queue/client.dart';
 import 'package:clax_app/ui/app_icon.dart';
 import 'package:clax_app/ui/build_plan.dart';
 import 'package:clax_app/ui/make_service.dart';
 import 'dart:typed_data';
 import 'package:flutter_test/flutter_test.dart';
 
+import '../support/fake_queue.dart';
 import '../support/paths.dart';
 
 const _page = {'index.html': '<!doctype html><title>x</title>'};
@@ -452,6 +454,63 @@ void main() {
     expect(host.buildOf(aid), (done: 1, total: 3));
     final apps = await host.call(home, 'apps', {}) as List;
     expect((apps.single as Map)['build'], {'done': 1, 'total': 3});
+  });
+
+  test('a make the worker runs shows its job\'s plan progress, and the app '
+      'its job builds shows it until the job ends', () async {
+    final queue = FakeQueueClient();
+    final service = MakeService(queue);
+    final aid = api.seedArtifact('Runs', _page);
+    final h = HomeHost(
+      api: api,
+      stream: api.stream(),
+      closeStream: true,
+      makes: service,
+      builds: BuildLink(plans: plans, control: control),
+      settings: settings,
+      actions: actions,
+    );
+    addTearDown(() {
+      h.dispose();
+      service.dispose();
+    });
+    await h.load();
+    final told = <HomeEvent>[];
+    h.events.listen(told.add);
+    Future<Object?> makes() async =>
+        ((await h.call(home, 'makes', {}) as List).single as Map)['progress'];
+    Future<Object?> build() async =>
+        ((await h.call(home, 'apps', {}) as List).single as Map)['build'];
+
+    // The make's job planned five features and built two.
+    queue.put(makeJob('mk', title: 'a runs log'));
+    expect(await makes(), isNull, reason: 'nothing planned yet');
+    queue.put(makeJob('mk', title: 'a runs log', progress: (done: 2, total: 5)));
+    expect(await makes(), {'done': 2, 'total': 5});
+    expect(told.where((e) => e.name == 'makes').last.data, [
+      containsPair('progress', {'done': 2, 'total': 5}),
+    ]);
+
+    // A job of the app builds its plan: its tile counts it.
+    expect(await build(), isNull);
+    queue.put(changeJob('ch', aid, progress: (done: 1, total: 3)));
+    expect(h.buildOf(aid), (done: 1, total: 3));
+    expect(await build(), {'done': 1, 'total': 3});
+    expect(told.where((e) => e.name == 'apps').last.data, [
+      containsPair('build', {'done': 1, 'total': 3}),
+    ]);
+    queue.put(changeJob('ch', aid, progress: (done: 2, total: 3)));
+    expect(await build(), {'done': 2, 'total': 3});
+
+    // Once the job ends, nothing builds.
+    queue.put(
+      changeJob('ch', aid, state: JobState.done, progress: (done: 3, total: 3)),
+    );
+    expect(h.buildOf(aid), isNull);
+    expect(await build(), isNull);
+    expect(told.where((e) => e.name == 'apps').last.data, [
+      containsPair('build', null),
+    ]);
   });
 
   test('unread follows the inbox', () async {

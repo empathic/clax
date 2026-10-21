@@ -706,7 +706,9 @@ class MakingTile extends StatelessWidget {
     builder: (context, _) {
       final key = session.planKey;
       final b = link;
-      if (b == null || key == null) return _tile(context, null);
+      // A make the worker isolate runs has no plan here: its job's row
+      // counts its plan.
+      if (b == null || key == null) return _tile(context, session.progress);
       return BuildWatch(
         key: ValueKey('make-plan-$key'),
         link: b,
