@@ -53,8 +53,10 @@ export class PresenceReporter {
   private done = false;
 
   /** `may(s)`: whether `s` may be reported (a viewer cookie exists and the
-   * artifact is loaded and not deleted); `take` receives the artifact's presence. */
-  constructor(private readonly id: string, private readonly state: () => ViewState, private readonly may: (s: ViewState) => boolean, private readonly take: (p: Presence) => void) {
+   * artifact is loaded and not deleted); `take` receives the artifact's
+   * presence with the ticket `ticket` gave as its request started, so the
+   * view can tell an answer from before an event it heard since. */
+  constructor(private readonly id: string, private readonly state: () => ViewState, private readonly may: (s: ViewState) => boolean, private readonly take: (p: Presence, ticket: number) => void, private readonly ticket: () => number = () => 0) {
     document.addEventListener("visibilitychange", this.onVisible);
     addEventListener("focus", this.onFocus);
     addEventListener("blur", this.onFocus);
@@ -66,7 +68,8 @@ export class PresenceReporter {
   }
 
   fetch(): void {
-    void getPresence(this.id).then(p => { if (p && !this.done) this.take(p); });
+    const t = this.ticket();
+    void getPresence(this.id).then(p => { if (p && !this.done) this.take(p, t); });
   }
 
   /** Reports this viewer's presence. A report that says nothing new is
@@ -90,7 +93,8 @@ export class PresenceReporter {
     this.timer?.();
     this.timer = undefined;
     this.reported = { state, where, focused, at: wall() };
-    void putPresence(this.id, state, where, this.tab, false, { focused, ...this.idle() }).then(p => { if (p && !this.done) this.take(p); });
+    const t = this.ticket();
+    void putPresence(this.id, state, where, this.tab, false, { focused, ...this.idle() }).then(p => { if (p && !this.done) this.take(p, t); });
   }
 
   /** Re-reads focus every second while the tab is visible and focus is in a

@@ -198,7 +198,7 @@ export function onArtifactEvent(c: ArtifactController, e: ArtifactEvent): void {
   if (e.type === "drafts") { c.draftsAt = ++c.clock; c.draftsChanged(e.drafts); }
   // A name set in another view of this viewer (the owner's other browser,
   // the CLI) arrives in presence.
-  if (e.type === "presence") { c.set({ presence: e.people }); adoptName(e.people); }
+  if (e.type === "presence") { c.presenceAt = ++c.clock; c.set({ presence: e.people }); adoptName(e.people); }
   // An agent may have started or ended: the Send target and the roster follow.
   if (e.type === "working" || e.type === "version" || e.type === "agents") c.refreshAgents();
   if (e.type === "thread") c.changeThreads(ts => upsert(ts, keepState(ts.find(t => t.id === e.thread.id), e.thread)));

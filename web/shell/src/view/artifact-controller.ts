@@ -27,7 +27,7 @@ import { CAPTURE_LATE, type Draft, MAX_CLIP_BYTES, captureWait, nextDraft, withC
 import type { ArtifactStream } from "./artifact-stream";
 import { FrameGate } from "./frame-gate";
 import type { PresenceView } from "./presence-model";
-import type { PresenceReporter } from "./presence-reporter";
+import type { Presence, PresenceReporter } from "./presence-reporter";
 import type { FrameHost } from "./frame-host";
 import { type KeyAction, holdKeysAcrossLoad, keyAction, keysHeldAtLoad } from "./keys";
 import { keyboardTrail } from "./trail";
@@ -845,12 +845,24 @@ export class ArtifactController {
   // ---- presence (spec §10, "Presence") ----
 
   private presenceAsked = false;
+  /** The ticket of the latest `presence` event (see `clock`). */
+  /** @internal */
+  presenceAt = 0;
+  /** The artifact's presence a request with ticket `t` answered. A
+   * `presence` event heard since the request started may be newer than the
+   * answer, and the events are changes to the list held: the list is
+   * fetched again rather than taken. */
+  private presenceFetched(t: number, p: Presence): void {
+    if (p.viewing !== null) this.set({ viewing: p.viewing });
+    if (this.presenceAt > t) { this.reporter?.fetch(); return; }
+    this.set({ presence: p.people });
+  }
   /** The reporter, once its code loaded after the first paint. */
   /** @internal */
   reporter: PresenceReporter | null = null;
   private startPresence(m: typeof import("./presence-live")): void {
     {
-      const r = new m.PresenceReporter(this.id, () => this.s, s => !!s.me && viewReady(s) && !s.deleted, p => this.set({ presence: p.people, ...p.viewing !== null && { viewing: p.viewing } }));
+      const r = new m.PresenceReporter(this.id, () => this.s, s => !!s.me && viewReady(s) && !s.deleted, (p, t) => this.presenceFetched(t, p), () => ++this.clock);
       this.reporter = r;
       this.life.defer(() => r.dispose());
       r.fetch();

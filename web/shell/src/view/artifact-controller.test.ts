@@ -545,6 +545,33 @@ describe("ArtifactController", { timeout: MOUNT_TIMEOUT_MS }, () => {
     ctl.dispose();
   });
 
+  it("a presence answer to a request made before a presence event does not replace that event's list: the list is fetched again", async () => {
+    const { ctl, frame } = await started({ routes: url => (url === "/api/viewers/me/presence" ? { people: [] } : undefined) });
+    const es = await streamOf(frame);
+    await vi.waitFor(() => expect(ctl.reporter).not.toBeNull());
+    const base = fetch as unknown as (u: string, i?: RequestInit) => Promise<Response>;
+    // Every presence fetch waits here until the test answers it.
+    const held: ((people: unknown[]) => void)[] = [];
+    vi.stubGlobal("fetch", vi.fn((u: string, i?: RequestInit) => u === `/api/artifacts/${ID}/presence`
+      ? new Promise<Response>(r => held.push(people => r(new Response(JSON.stringify({ people })))))
+      : base(u, i)));
+    const owner = { public_id: "u_9", display_name: null, state: "here", where: null, since: "x" };
+    const renamed = { ...owner, display_name: "Alex" };
+    const mia = { public_id: "u_2", display_name: "Mia", state: "here", where: null, since: "y" };
+    ctl.reporter!.fetch();
+    await vi.waitFor(() => expect(held.length).toBeGreaterThan(0));
+    // The owner's rename arrives while the fetch is out; its answer, from before the rename, follows.
+    es.emit("presence", { type: "presence", artifact_id: ID, people: [renamed] });
+    expect(ctl.state.get().presence).toEqual([renamed]);
+    for (const answer of held.splice(0)) answer([owner]);
+    await vi.waitFor(() => expect(held.length).toBeGreaterThan(0));
+    expect(ctl.state.get().presence).toEqual([renamed]);
+    // The fetch made after the event is taken.
+    for (const answer of held.splice(0)) answer([renamed, mia]);
+    await vi.waitFor(() => expect(ctl.state.get().presence).toEqual([renamed, mia]));
+    ctl.dispose();
+  });
+
   it("drops a deleted artifact's frame before the next paint, so nothing the page posts after the deletion is answered", async () => {
     const { ctl, frame } = await started();
     const win = frame.contentWindow!;
