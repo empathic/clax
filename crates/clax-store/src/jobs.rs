@@ -2837,6 +2837,29 @@ mod tests {
         assert_eq!(reaped.ended, [sid]);
     }
 
+    /// The reaper's next alarm (`sessions_next_idle`) leaves out the
+    /// sessions an open job names, as the reaper does: an alarm for one
+    /// would fall due, end nothing and be set in the past again.
+    #[test]
+    fn the_reapers_next_alarm_leaves_out_a_session_an_open_job_names() {
+        let clock = Arc::new(clax_core::working::ManualClock::at("2026-10-19T10:00:00Z"));
+        let (_d, st) = crate::test_util::store_with_clock(clock.clone());
+        let aid = artifact(&st, None);
+        let sid = session(&st, "clax-app", "h1");
+        change(&st, "j1", &aid);
+        let mut step = publish_step(Some(&aid), 1, "<p>v2", false);
+        step.session_id = Some(sid.clone());
+        st.commit_publish_step(DAEMON, "j1", "publish:1", step)
+            .unwrap();
+        let idle = std::time::Duration::from_secs(Store::SESSION_IDLE_SECS);
+        clock.advance(Store::SESSION_IDLE_SECS as i64 + 60);
+        assert_eq!(st.sessions_next_idle(idle).unwrap(), None);
+        // The job ends: the session is due as any other.
+        move_to(&st, "j1", JobState::Cancelled).unwrap();
+        let due = st.sessions_next_idle(idle).unwrap().unwrap();
+        assert!(due <= st.now_utc(), "{due}");
+    }
+
     #[test]
     fn a_begun_publish_steps_session_outlives_the_reaper_until_it_commits() {
         let clock = Arc::new(clax_core::working::ManualClock::at("2026-10-19T10:00:00Z"));

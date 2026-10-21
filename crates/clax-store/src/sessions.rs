@@ -1299,16 +1299,20 @@ impl Store {
     /// next has a session to end: the earliest live session's last request
     /// plus its idle time (`idle` for a local one,
     /// [`Store::REMOTE_SESSION_IDLE_SECS`] for a remote one), one second
-    /// late; `None` without a live session.
+    /// late; `None` without a live session. A session an open job names
+    /// ([`OPEN_JOB_SESSIONS`]) is left out, as the reaper leaves it live:
+    /// its time would fall due and end nothing.
     ///
     /// # Errors
     /// The store's.
     pub fn sessions_next_idle(&self, idle: Duration) -> Result<Option<DateTime<Utc>>> {
         let due: Option<i64> = self.with_read(|c| {
             Ok(c.query_row(
-                "SELECT MIN(unixepoch(last_seen_at)
+                &format!(
+                    "SELECT MIN(unixepoch(last_seen_at)
                             + CASE WHEN grant_id IS NULL THEN ?1 ELSE ?2 END + 1)
-                   FROM sessions WHERE ended_at IS NULL",
+                   FROM sessions WHERE ended_at IS NULL AND id NOT IN ({OPEN_JOB_SESSIONS})"
+                ),
                 params![idle.as_secs() as i64, Self::REMOTE_SESSION_IDLE_SECS as i64],
                 |r| r.get(0),
             )?)
