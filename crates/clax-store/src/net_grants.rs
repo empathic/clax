@@ -1,5 +1,5 @@
 //! Network consent (spec 2026-10-12-flutter-real-apps-design C6): the
-//! owner's grants (`net_grants`, migration 41) letting an app fetch from the
+//! owner's grants (`net_grants`, migration 44) letting an app fetch from the
 //! hosts its `capabilities.net.hosts` declares.
 //!
 //! A grant row names one host. A fetch may reach a host only while the

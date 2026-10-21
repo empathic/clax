@@ -1210,7 +1210,27 @@ pub const MIGRATIONS: &[&str] = &[
         created_at TEXT NOT NULL
     );
     CREATE UNIQUE INDEX briefs_by_key ON briefs (starter, key) WHERE key IS NOT NULL;",
-    // 41: cross-app read grants (spec 2026-10-12-flutter-app-design §3.8): the
+    // 41: tags (`crate::tags`): one list the owner manages, each tag a
+    // name, a palette colour and an optional description, and the tags each
+    // artifact carries. `fold` is the name lowercased, unique, so two
+    // names that differ only in case cannot both exist; a rename keeps the
+    // ID. `artifact_tags_by_tag` serves the filters and a tag's delete.
+    "CREATE TABLE tags (
+        id TEXT PRIMARY KEY,
+        name TEXT NOT NULL,
+        fold TEXT NOT NULL UNIQUE,
+        colour TEXT NOT NULL,
+        description TEXT,
+        created_at TEXT NOT NULL,
+        updated_at TEXT NOT NULL
+    );
+    CREATE TABLE artifact_tags (
+        artifact_id TEXT NOT NULL,
+        tag_id TEXT NOT NULL,
+        PRIMARY KEY (artifact_id, tag_id)
+    );
+    CREATE INDEX artifact_tags_by_tag ON artifact_tags (tag_id, artifact_id);",
+    // 42: cross-app read grants (spec 2026-10-12-flutter-app-design §3.8): the
     // owner let `reader_id` read `source_id`'s documents. Deleting either
     // artifact removes the row: the foreign keys on a row delete, the trigger
     // on the soft delete (`deleted_at` set), which is how artifacts are deleted.
@@ -1226,14 +1246,14 @@ pub const MIGRATIONS: &[&str] = &[
     BEGIN
         DELETE FROM db_read_grants WHERE reader_id = NEW.id OR source_id = NEW.id;
     END;",
-    // 42: draft artifacts (spec 2026-10-12-flutter-app-round2-design §5.1):
+    // 43: draft artifacts (spec 2026-10-12-flutter-app-round2-design §5.1):
     // an agent's work in progress, rendered but never listed. `hidden` keeps
     // a row out of every listing; `draft_of` names the app a draft changes
     // (NULL for a new app's draft), whose documents it copies.
     "ALTER TABLE artifacts ADD COLUMN draft_of TEXT;
     ALTER TABLE artifacts ADD COLUMN hidden INTEGER NOT NULL DEFAULT 0;
     CREATE INDEX artifacts_hidden ON artifacts(hidden, created_at) WHERE hidden = 1;",
-    // 43: network grants (spec 2026-10-12-flutter-real-apps-design C6): the
+    // 44: network grants (spec 2026-10-12-flutter-real-apps-design C6): the
     // owner let `artifact_id` fetch from `host`, one of the hosts its
     // `capabilities.net.hosts` declared when the owner allowed it. Deleting
     // the artifact removes its rows (the foreign key on a row delete, the
@@ -1249,7 +1269,7 @@ pub const MIGRATIONS: &[&str] = &[
     BEGIN
         DELETE FROM net_grants WHERE artifact_id = NEW.id;
     END;",
-    // 44: model use by apps (spec 2026-10-12-flutter-real-apps-design C7):
+    // 45: model use by apps (spec 2026-10-12-flutter-real-apps-design C7):
     // the owner let `artifact_id` call `sample()` (kept until revoked), and
     // what its calls cost each local day, in millionths of a US dollar, for
     // the daily cost cap. Deleting the artifact removes its rows (the
@@ -1270,12 +1290,12 @@ pub const MIGRATIONS: &[&str] = &[
         DELETE FROM sample_grants WHERE artifact_id = NEW.id;
         DELETE FROM sample_spend WHERE artifact_id = NEW.id;
     END;",
-    // 45: whether a draft fetches under its live app's network grants
+    // 46: whether a draft fetches under its live app's network grants
     // (spec 2026-10-12-flutter-real-apps-design C6): 1 for the agent's
     // drafts, 0 for a bundle update's check draft, which stays offline.
     // Meaningless for an artifact that is no draft.
     "ALTER TABLE artifacts ADD COLUMN draft_inherit_net INTEGER NOT NULL DEFAULT 1;",
-    // 46: the app's jobs, their steps, and the agent's read consents (spec
+    // 47: the app's jobs, their steps, and the agent's read consents (spec
     // 2026-10-19-in-process-core-design §8.1): each make or change the
     // app's queue runs, the steps it committed, the threads it answers and
     // the questions it asked; the agent's remembered read consents; the
@@ -1367,26 +1387,6 @@ pub const MIGRATIONS: &[&str] = &[
         created_at TEXT NOT NULL,
         UNIQUE (job_id, key)
     );",
-    // 41: tags (`crate::tags`): one list the owner manages, each tag a
-    // name, a palette colour and an optional description, and the tags each
-    // artifact carries. `fold` is the name lowercased, unique, so two
-    // names that differ only in case cannot both exist; a rename keeps the
-    // ID. `artifact_tags_by_tag` serves the filters and a tag's delete.
-    "CREATE TABLE tags (
-        id TEXT PRIMARY KEY,
-        name TEXT NOT NULL,
-        fold TEXT NOT NULL UNIQUE,
-        colour TEXT NOT NULL,
-        description TEXT,
-        created_at TEXT NOT NULL,
-        updated_at TEXT NOT NULL
-    );
-    CREATE TABLE artifact_tags (
-        artifact_id TEXT NOT NULL,
-        tag_id TEXT NOT NULL,
-        PRIMARY KEY (artifact_id, tag_id)
-    );
-    CREATE INDEX artifact_tags_by_tag ON artifact_tags (tag_id, artifact_id);",
 ];
 
 /// The audit journal's migration, as a schema version (the
@@ -1451,8 +1451,11 @@ pub(crate) const JOBS_TABLES: [&str; 8] = [
 /// tells from it which of them a database lacks. Taking a new migration
 /// of main's below the app's is adding it to [`MIGRATIONS`] and its
 /// [`Mark`] here, nothing else.
-const MAIN_MARKS_ABOVE_38: [Mark<'static>; 2] =
-    [Mark::Table("legal_agreements"), Mark::Table("briefs")];
+const MAIN_MARKS_ABOVE_38: [Mark<'static>; 3] = [
+    Mark::Table("legal_agreements"),
+    Mark::Table("briefs"),
+    Mark::Table("tags"),
+];
 
 /// What a migration leaves in a database, by which adoption tells whether
 /// a database holds it whatever its `user_version`. It must be absent
@@ -1540,7 +1543,7 @@ const APP_MIGRATION_MARKS: [Mark<'static>; 6] = [
 /// the where-to-ask migration ([`WHERE_TO_ASK_MIGRATION`]); and since then
 /// right after main's migrations above it, of which a build held some
 /// number k (the first k of [`MAIN_MARKS_ABOVE_38`]; k is 0 for the builds
-/// that numbered them from 39, 2 for this one). Such a database is
+/// that numbered them from 39, 2 for those from 41, 3 for this one). Such a database is
 /// recognised by its schema, not its `user_version` alone: the
 /// `db_read_grants` table, and either no `questions.thread_id` column
 /// (which [`WHERE_TO_ASK_MIGRATION`] adds) or fewer than all of main's
@@ -4231,12 +4234,12 @@ mod tests {
     }
 
     #[test]
-    fn a_fresh_database_reaches_46() {
+    fn a_fresh_database_reaches_47() {
         let dir = tempfile::tempdir().unwrap();
         let home = Home::at(dir.path().join("ax"));
         drop(Store::open(&home).unwrap());
         let c = Connection::open(home.db_path()).unwrap();
-        assert_eq!(super::JOBS_MIGRATION, 46);
+        assert_eq!(super::JOBS_MIGRATION, 47);
         assert_eq!(user_version(&c), super::JOBS_MIGRATION);
         assert!(super::JOBS_TABLES.contains(&"job_step_marks"));
         for table in super::JOBS_TABLES {
@@ -5096,7 +5099,7 @@ mod tests {
 
     /// A home whose jobs tables a build numbered otherwise made (the jobs
     /// migration at 44 after the app's 39 to 43, at 43 after the app's 38
-    /// to 42) is adopted at 46 with its job rows, and is this numbering's
+    /// to 42) is adopted at 47 with its job rows, and is this numbering's
     /// when opened again.
     #[test]
     fn a_database_with_the_jobs_tables_at_another_version_is_adopted() {
@@ -5259,95 +5262,117 @@ mod tests {
         }
     }
 
+    /// A home of main's at any of its versions from the where-to-ask
+    /// migration to its tip (main's 41, tags) gets main's migrations it
+    /// lacks and the app's after a copy, keeping every row.
     #[test]
-    fn a_home_at_mains_40_gets_the_apps_migrations_after_a_copy() {
+    fn a_home_at_each_of_mains_versions_gets_the_apps_migrations_after_a_copy() {
         let fresh = fresh_shape();
-        let dir = tempfile::tempdir().unwrap();
-        let home = Home::at(dir.path().join("ax"));
-        home.ensure_dirs().unwrap();
-        let main = APP_MIGRATION - 1;
-        {
-            let mut c = Connection::open(home.db_path()).unwrap();
-            c.pragma_update(None, "journal_mode", "wal").unwrap();
-            let tx = c.transaction().unwrap();
-            for v in 1..=main {
-                tx.execute_batch(MIGRATIONS[v as usize - 1]).unwrap();
-                super::rust_step(&tx, v).unwrap();
+        assert_eq!(APP_MIGRATION - 1, 41, "main's numbering ends at 41");
+        for main in WHERE_TO_ASK_MIGRATION..APP_MIGRATION {
+            let dir = tempfile::tempdir().unwrap();
+            let home = Home::at(dir.path().join("ax"));
+            home.ensure_dirs().unwrap();
+            {
+                let mut c = Connection::open(home.db_path()).unwrap();
+                c.pragma_update(None, "journal_mode", "wal").unwrap();
+                let tx = c.transaction().unwrap();
+                for v in 1..=main {
+                    tx.execute_batch(MIGRATIONS[v as usize - 1]).unwrap();
+                    super::rust_step(&tx, v).unwrap();
+                }
+                tx.pragma_update(None, "user_version", main).unwrap();
+                tx.execute_batch(
+                    "INSERT INTO artifacts (id, title, created_at, updated_at, current_version, contract_version)
+                        VALUES ('7q3k9mzx2b4t', 'Budget', 'x', 'x', 1, '0');
+                     INSERT INTO versions (artifact_id, n, created_at, files_json)
+                        VALUES ('7q3k9mzx2b4t', 1, 'x', '{}');
+                     INSERT INTO threads (id, artifact_id, version_n, anchor_json, created_at)
+                        VALUES ('t1', '7q3k9mzx2b4t', 1, '{}', 'x');
+                     INSERT INTO comments (id, thread_id, author_kind, author_name, body, created_at)
+                        VALUES ('c1', 't1', 'viewer', 'Alex', 'make it green', 'x');",
+                )
+                .unwrap();
+                if main >= 39 {
+                    tx.execute_batch(
+                        "INSERT INTO legal_agreements (viewer_id, version, agreed_at, via)
+                            VALUES ('01ARZ3NDEKTSV4RRFFQ69G5FAO', '2026-10-01', 'x', 'signin');",
+                    )
+                    .unwrap();
+                }
+                if main >= 40 {
+                    tx.execute_batch(
+                        "INSERT INTO briefs (artifact_id, starter, key, created_at)
+                            VALUES ('7q3k9mzx2b4t', '*owner', 'k1', 'x');",
+                    )
+                    .unwrap();
+                }
+                if main >= 41 {
+                    tx.execute_batch(
+                        "INSERT INTO tags (id, name, fold, colour, created_at, updated_at)
+                            VALUES ('g1', 'Work', 'work', 'blue', 'x', 'x');
+                         INSERT INTO artifact_tags (artifact_id, tag_id) VALUES ('7q3k9mzx2b4t', 'g1');",
+                    )
+                    .unwrap();
+                }
+                tx.execute_batch(OPENED_BEFORE).unwrap();
+                tx.commit().unwrap();
             }
-            tx.pragma_update(None, "user_version", main).unwrap();
-            tx.execute_batch(
-                "INSERT INTO artifacts (id, title, created_at, updated_at, current_version, contract_version)
-                    VALUES ('7q3k9mzx2b4t', 'Budget', 'x', 'x', 1, '0');
-                 INSERT INTO versions (artifact_id, n, created_at, files_json)
-                    VALUES ('7q3k9mzx2b4t', 1, 'x', '{}');
-                 INSERT INTO threads (id, artifact_id, version_n, anchor_json, created_at)
-                    VALUES ('t1', '7q3k9mzx2b4t', 1, '{}', 'x');
-                 INSERT INTO comments (id, thread_id, author_kind, author_name, body, created_at)
-                    VALUES ('c1', 't1', 'viewer', 'Alex', 'make it green', 'x');
-                 INSERT INTO legal_agreements (viewer_id, version, agreed_at, via)
-                    VALUES ('01ARZ3NDEKTSV4RRFFQ69G5FAO', '2026-10-01', 'x', 'signin');
-                 INSERT INTO briefs (artifact_id, starter, key, created_at)
-                    VALUES ('7q3k9mzx2b4t', '*owner', 'k1', 'x');",
-            )
-            .unwrap();
-            tx.execute_batch(OPENED_BEFORE).unwrap();
-            tx.commit().unwrap();
-        }
-        assert_eq!(main, 40, "main's numbering ends at 40");
-        let (cols, before) = {
-            let old = Connection::open(home.db_path()).unwrap();
-            (columns_of(&old), every_row(&old))
-        };
+            let (cols, before) = {
+                let old = Connection::open(home.db_path()).unwrap();
+                (columns_of(&old), every_row(&old))
+            };
 
-        drop(Store::open(&home).unwrap());
-        let c = Connection::open(home.db_path()).unwrap();
-        assert_eq!(user_version(&c), MIGRATIONS.len() as u32);
-        assert_eq!(shape_of(&c), fresh, "the final schema");
-        assert_eq!(rows_in(&c, &cols), before, "every row kept");
-        let copies = crate::backup::list(&crate::backup::dir(&home));
-        assert_eq!(copies.len(), 1, "{copies:?}");
-        let name = copies[0].file_name().unwrap().to_str().unwrap();
-        assert!(name.starts_with("clax-40-"), "{name}");
-        assert_eq!(every_row(&Connection::open(&copies[0]).unwrap()), before);
+            drop(Store::open(&home).unwrap());
+            let c = Connection::open(home.db_path()).unwrap();
+            assert_eq!(user_version(&c), MIGRATIONS.len() as u32, "at {main}");
+            assert_eq!(shape_of(&c), fresh, "the final schema, at {main}");
+            assert_eq!(rows_in(&c, &cols), before, "every row kept, at {main}");
+            let copies = crate::backup::list(&crate::backup::dir(&home));
+            assert_eq!(copies.len(), 1, "{copies:?}");
+            let name = copies[0].file_name().unwrap().to_str().unwrap();
+            assert!(name.starts_with(&format!("clax-{main}-")), "{name}");
+            assert_eq!(every_row(&Connection::open(&copies[0]).unwrap()), before);
+        }
     }
 
-    /// A migration main might add after its 40, for tests of a later
+    /// A migration main might add after its 41, for tests of a later
     /// numbering: a plain table, which fails if it is run twice.
-    const SIMULATED_MAIN_41: &str = "CREATE TABLE simulated_main_41 (
+    const SIMULATED_MAIN_42: &str = "CREATE TABLE simulated_main_42 (
         id TEXT PRIMARY KEY,
         created_at TEXT NOT NULL
     );";
 
-    /// Migrations main might add after its 40 that make no table, each with
+    /// Migrations main might add after its 41 that make no table, each with
     /// its mark: a column of a table other than `artifacts`, an index, and
     /// one that changes only rows, marked by its marker.
-    const SIMULATED_MAINS_41_WITHOUT_A_TABLE: [(&str, super::Mark<'static>); 3] = [
+    const SIMULATED_MAINS_42_WITHOUT_A_TABLE: [(&str, super::Mark<'static>); 3] = [
         (
-            "ALTER TABLE sessions ADD COLUMN simulated_main_41 TEXT;",
-            super::Mark::Column("sessions", "simulated_main_41"),
+            "ALTER TABLE sessions ADD COLUMN simulated_main_42 TEXT;",
+            super::Mark::Column("sessions", "simulated_main_42"),
         ),
         (
-            "CREATE INDEX simulated_main_41 ON comments(created_at);",
-            super::Mark::Index("simulated_main_41"),
+            "CREATE INDEX simulated_main_42 ON comments(created_at);",
+            super::Mark::Index("simulated_main_42"),
         ),
         (
             concat!(
-                migration_marker!("simulated_main_41"),
+                migration_marker!("simulated_main_42"),
                 "UPDATE artifacts SET title = trim(title);"
             ),
-            super::Mark::Marker("simulated_main_41"),
+            super::Mark::Marker("simulated_main_42"),
         ),
     ];
 
-    /// [`MIGRATIONS`] as a build would have them after taking a 41 more
-    /// of main's ([`SIMULATED_MAIN_41`]): main's 1 to 40, it, then the
-    /// app's from 42; and main's marks above 38 with its mark last.
-    fn with_a_main_41() -> (Vec<&'static str>, Vec<super::Mark<'static>>) {
-        with_main_41(SIMULATED_MAIN_41, super::Mark::Table("simulated_main_41"))
+    /// [`MIGRATIONS`] as a build would have them after taking a 42 more
+    /// of main's ([`SIMULATED_MAIN_42`]): main's 1 to 41, it, then the
+    /// app's from 43; and main's marks above 38 with its mark last.
+    fn with_a_main_42() -> (Vec<&'static str>, Vec<super::Mark<'static>>) {
+        with_main_42(SIMULATED_MAIN_42, super::Mark::Table("simulated_main_42"))
     }
 
-    /// [`MIGRATIONS`] after taking `sql` as main's 41, with its `mark`.
-    fn with_main_41(
+    /// [`MIGRATIONS`] after taking `sql` as main's 42, with its `mark`.
+    fn with_main_42(
         sql: &'static str,
         mark: super::Mark<'static>,
     ) -> (Vec<&'static str>, Vec<super::Mark<'static>>) {
@@ -5381,7 +5406,7 @@ mod tests {
 
     #[test]
     fn a_home_of_this_numbering_takes_a_later_main_migration_and_the_apps_renumbering() {
-        let (migrations, marks) = with_a_main_41();
+        let (migrations, marks) = with_a_main_42();
         let later = super::Numbering {
             migrations: &migrations,
             main_marks: &marks,
@@ -5389,24 +5414,24 @@ mod tests {
         assert_eq!(later.app_first(), APP_MIGRATION + 1);
         let fresh = fresh_shape_of(&later);
 
-        // The owner's home after this build's first open: 43 adopted to 45,
-        // then the jobs migration to 46.
+        // The owner's home after this build's first open: 43 adopted to 46,
+        // then the jobs migration to 47.
         let dir = tempfile::tempdir().unwrap();
         let home = Home::at(dir.path().join("ax"));
         installed_at_43(&home);
         drop(Store::open(&home).unwrap());
         let (cols, before) = {
             let c = Connection::open(home.db_path()).unwrap();
-            assert_eq!(user_version(&c), 46);
+            assert_eq!(user_version(&c), 47);
             (columns_of(&c), every_row(&c))
         };
 
         let copy = open_under(&home, &later);
         let c = Connection::open(home.db_path()).unwrap();
-        assert_eq!(user_version(&c), 47, "the app's 46 is its 47 now");
+        assert_eq!(user_version(&c), 48, "the app's 47 is its 48 now");
         assert_eq!(shape_of(&c), fresh, "the later build's schema");
         assert_eq!(rows_in(&c, &cols), before, "every row kept");
-        assert_eq!(table_count(&c, "simulated_main_41"), 1);
+        assert_eq!(table_count(&c, "simulated_main_42"), 1);
         let approvals: i64 = c
             .query_row(
                 "SELECT COUNT(*) FROM approvals WHERE created_via = 'migration'",
@@ -5421,7 +5446,7 @@ mod tests {
             "ok"
         );
         let copied = Connection::open(&copy).unwrap();
-        assert_eq!(user_version(&copied), 46);
+        assert_eq!(user_version(&copied), 47);
         assert_eq!(
             every_row(&copied),
             before,
@@ -5435,13 +5460,13 @@ mod tests {
         crate::migrate_with(&mut c, &later).unwrap();
         assert_eq!(
             (user_version(&c), schema_of(&c), every_row(&c)),
-            (47, schema, rows)
+            (48, schema, rows)
         );
     }
 
     #[test]
     fn every_layout_adopts_into_a_later_main_numbering() {
-        let (migrations, marks) = with_a_main_41();
+        let (migrations, marks) = with_a_main_42();
         let later = super::Numbering {
             migrations: &migrations,
             main_marks: &marks,
@@ -5451,7 +5476,7 @@ mod tests {
         // Each layout: how a home of it is made, and the version it has
         // with the first `app` of the app's migrations.
         type Layout = (&'static str, MakeNumbered, fn(usize) -> u32);
-        let layouts: [Layout; 5] = [
+        let layouts: [Layout; 6] = [
             ("from 24", pre_rebase_flutter_app, |app| {
                 AUDIT_MIGRATION + app as u32
             }),
@@ -5465,6 +5490,9 @@ mod tests {
                 WHERE_TO_ASK_MIGRATION + app as u32
             }),
             ("from 41", app_numbered_from_41, |app| {
+                WHERE_TO_ASK_MIGRATION + 2 + app as u32
+            }),
+            ("from 42", app_numbered_from_42, |app| {
                 APP_MIGRATION - 1 + app as u32
             }),
         ];
@@ -5493,14 +5521,14 @@ mod tests {
         }
     }
 
-    /// The Clax app's migrations as this numbering has them, at 41 to 45
-    /// after main's 39 and 40, frozen: the layout the owner's devices hold
-    /// once this build has opened their homes.
+    /// The Clax app's migrations, at 41 to 45 after main's 39 and 40 as
+    /// builds up to 01fcc2dd2 numbered them (42 to 46 after main's 41 in
+    /// this numbering), frozen, the same SQL as this numbering's.
     const APP_AT_41: &str =
         include_str!("../tests/fixtures/old-migrations/flutter-app-4479a586c.sql");
 
-    /// The app's jobs migration as this numbering has it, at 46 after
-    /// [`APP_AT_41`]'s five, frozen.
+    /// The app's jobs migration, at 46 after [`APP_AT_41`]'s five (47 in
+    /// this numbering), frozen, the same SQL as this numbering's.
     const JOBS_AT_46: &str =
         include_str!("../tests/fixtures/old-migrations/flutter-app-adbfc62df.sql");
 
@@ -5538,12 +5566,20 @@ mod tests {
         app_rows(&c, app)
     }
 
-    /// A database at this build's numbering, the app's at 41 to 45 after
-    /// main's 39 and 40, holding the first `app` of the app's migrations,
-    /// at version `40 + app`, with the rows of [`app_rows`]. Returns its
-    /// rows.
+    /// A database at the numbering of builds up to 01fcc2dd2, the app's at
+    /// 41 to 46 after main's 39 and 40, holding the first `app` of the
+    /// app's migrations, at version `40 + app`, with the rows of
+    /// [`app_rows`]. Returns its rows.
     fn app_numbered_from_41(home: &Home, app: usize) -> Vec<(String, Vec<String>)> {
         app_after_main(home, 2, app)
+    }
+
+    /// A database at this build's numbering, the app's at 42 to 47 after
+    /// main's 39 to 41, holding the first `app` of the app's migrations,
+    /// at version `41 + app`, with the rows of [`app_rows`]. Returns its
+    /// rows.
+    fn app_numbered_from_42(home: &Home, app: usize) -> Vec<(String, Vec<String>)> {
+        app_after_main(home, 3, app)
     }
 
     #[test]
@@ -5612,21 +5648,21 @@ mod tests {
 
     #[test]
     fn a_home_holding_mains_later_migrations_without_an_earlier_one_is_refused() {
-        let (migrations, marks) = with_a_main_41();
+        let (migrations, marks) = with_a_main_42();
         let later = super::Numbering {
             migrations: &migrations,
             main_marks: &marks,
         };
         let dir = tempfile::tempdir().unwrap();
         let home = Home::at(dir.path().join("ax"));
-        app_numbered_from_41(&home, 5);
+        app_numbered_from_42(&home, 5);
         let mut c = Connection::open(home.db_path()).unwrap();
         c.execute_batch("DROP TABLE legal_agreements;").unwrap();
         let before = (schema_of(&c), every_row(&c));
         let tx = c.transaction().unwrap();
         let err = super::adopt_earlier_flutter_app(&tx, &later).unwrap_err();
         assert!(
-            matches!(&err, clax_core::CoreError::MigrationFailed { at: 45, detail }
+            matches!(&err, clax_core::CoreError::MigrationFailed { at: 46, detail }
                 if detail.contains("briefs") && detail.contains("legal_agreements")),
             "{err:?}"
         );
@@ -5726,15 +5762,15 @@ mod tests {
     /// app's migrations is adopted around it.
     #[test]
     fn a_later_main_migration_making_no_table_is_marked_and_adopted_around() {
-        for (sql, mark) in SIMULATED_MAINS_41_WITHOUT_A_TABLE {
-            let (migrations, marks) = with_main_41(sql, mark);
+        for (sql, mark) in SIMULATED_MAINS_42_WITHOUT_A_TABLE {
+            let (migrations, marks) = with_main_42(sql, mark);
             let later = super::Numbering {
                 migrations: &migrations,
                 main_marks: &marks,
             };
             assert_marks_made(&later);
             let fresh = fresh_shape_of(&later);
-            for (k, app) in [(2, 6), (2, 5), (2, 1), (1, 3), (0, 5), (0, 6)] {
+            for (k, app) in [(3, 6), (3, 1), (2, 6), (2, 5), (2, 1), (1, 3), (0, 5), (0, 6)] {
                 let dir = tempfile::tempdir().unwrap();
                 let home = Home::at(dir.path().join("ax"));
                 let before = app_after_main(&home, k, app);

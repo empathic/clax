@@ -1129,8 +1129,8 @@ answers `ProbeClaude`.
 
 ### 8.1 Jobs and steps
 
-Migration 46 (the next free number after main's 40 and this branch's five
-app migrations, renumbered to 41 to 45 by §10.2; the number moves with
+Migration 47 (the next free number after main's 41 and this branch's five
+app migrations, renumbered to 42 to 46 by §10.2; the number moves with
 main's, as §10.2 says) adds:
 
 ```sql
@@ -1376,7 +1376,7 @@ no row; they are never served. The step's write marks them with the step
 (`clax_store::jobs::step_mark`: the job ID, the key and a nonce, as a
 JSON array). The nonce is 32 hex characters from the operating system's
 random source, minted by the store at the step's first write and kept in
-migration 46's `job_step_marks` (nonce, job, key, the artifact and
+migration 47's `job_step_marks` (nonce, job, key, the artifact and
 version it writes, the session it publishes from); the row goes when the
 step commits or its content is removed, and has no foreign key, so it
 outlives its job. Git's version commit carries the mark as a
@@ -1522,9 +1522,10 @@ branch follows main's, as AGENTS.md requires (a branch takes the next free
 number on main), and installed homes are adopted by their schema.
 
 - **The numbering.** Main's `crates/clax-store/src/migrations.rs` ends at
-  40 today (39: `legal_agreements`, a person agreeing to a hosted Clax's
-  terms; 40: `briefs`, artifacts started from a brief), both plain
-  `CREATE TABLE`s with no Rust step. This branch's list ends at 43, its
+  41 today (39: `legal_agreements`, a person agreeing to a hosted Clax's
+  terms; 40: `briefs`, artifacts started from a brief; 41: `tags` and
+  `artifact_tags`, the owner's tags), all plain `CREATE TABLE`s with no
+  Rust step. This branch's list ends at 43, its
   39 to 43 being the app's five (`db_read_grants`, `artifacts.draft_of`,
   `net_grants`, `sample_grants`, `artifacts.draft_inherit_net`). Before
   migration 46 is written, the branch takes main's 39 and 40 verbatim
@@ -1532,7 +1533,10 @@ number on main), and installed homes are adopted by their schema.
   resolves `migrations.rs` by their shared prefix) and moves the app's five
   to 41 to 45 (`APP_MIGRATION = 41`); the jobs migration is 46. If main has
   gained migrations when that task runs, it takes them all the same way
-  and every number after them moves up by as many.
+  and every number after them moves up by as many. Main's 41 (tags) came
+  that way: the app's five are 42 to 46 (`APP_MIGRATION = 42`) and the
+  jobs migration 47, and homes the builds up to 01fcc2dd2 left at 41 to
+  46 (k = 2) are adopted as below.
 - **Installed homes at this branch's old numbering are adopted, never
   re-run.** The owner's phone and Mac are at `user_version` 43 with this
   branch's 39 to 43: read under the new numbering, 43 would claim main's
@@ -1554,11 +1558,11 @@ number on main), and installed homes are adopted by their schema.
   mismatch and the backup, and the home is left as it was. An adopted
   home runs main's migrations it lacks (from 38 + k + 1 up to the app's
   first, which touch none of the app's tables), and its `user_version`
-  becomes the number its last app migration has now (43 → 45). A home
+  becomes the number its last app migration has now (43 → 46). A home
   holding all of main's marks is of the new numbering and, like any other
   database, is left to the ordinary migrations.
 - **Each main migration below the app's has a mark** (`MAIN_MARKS_ABOVE_38`
-  beside `APP_MIGRATION_MARKS`: `legal_agreements`, `briefs`), so adoption
+  beside `APP_MIGRATION_MARKS`: `legal_agreements`, `briefs`, `tags`), so adoption
   decides from the database which of them a home lacks, whatever its
   version. A mark (`Mark`) is what the migration leaves: a table it makes,
   a column it adds to any table, an index it makes, or, for a migration
@@ -1576,16 +1580,17 @@ number on main), and installed homes are adopted by their schema.
   database, which a store test checks for every main mark from an empty
   database. The rule above holds for any k, so a later
   renumbering adds one mark per new main migration and nothing else: when
-  main adds a 41,
-  a home this build left at 45 (main's two marks, k = 2, the app's from
-  41) is adopted the same way, gets main's 41 after a backup, and its
-  `user_version` becomes 46, never a refusal. Store tests run that case
-  against a simulated main 41 of each kind of mark, and adopt the app's
+  main added its 41 (tags),
+  a home an earlier build left at 46 (main's two marks, k = 2, the app's
+  from 41) is adopted the same way, gets main's 41 after a backup, and its
+  `user_version` becomes 47, never a refusal. Store tests run the same
+  case for a later main against a simulated main 42 of each kind of mark,
+  and adopt the app's
   migrations after every k of main's under this build's own numbering,
   from a frozen copy of the app's SQL
   (`crates/clax-store/tests/fixtures/old-migrations/flutter-app-4479a586c.sql`),
-  so this build's layout (the app's at 41 to 45) stays tested once main
-  adds a 41.
+  so each layout (the app's at 41 to 46, and this build's at 42 to 47)
+  stays tested once main adds a 42.
 - **Backup first, always.** `Store::open` already backs up before any
   migration (`backup::before_migrate`, three kept), adoption included:
   the first open of an installed home leaves `backups/clax-43-<time>.db`
@@ -1605,11 +1610,11 @@ number on main), and installed homes are adopted by their schema.
   `crates/clax-embed/tests/fixtures/homes/flutter-app-43.sql`, the dump of
   a home written by this branch's own `clax` at schema 43, with a few rows
   of every kind, which a test opens through the core: it backs up,
-  adopts, migrates to 46, and keeps every artifact, version, thread and
+  adopts, migrates to 47, and keeps every artifact, version, thread and
   document.
 - **A large old database.** The test home of `scripts/perf-daemon.sh`
   (300 artifacts, 2,400 threads, 7,200 comments) is opened by the core in a
-  test: main's 39 and 40 and the jobs migration add tables only (no
+  test: main's 39 to 41 and the jobs migration add tables only (no
   rewrite of existing rows), so the open takes the time of their
   `CREATE`s. The open's progress messages keep the splash honest meanwhile.
 - **Before installing on the owner's devices**, the plan's last task copies
@@ -1922,8 +1927,8 @@ The inputs most likely to bite a person:
    comment or a corrupted draft.
 6. **A migration on a large old home.** The owner's phone home at this
    branch's old version 43, possibly large. Expected: a backup first, the
-   home adopted by its schema into main's numbering (43 → 45, main's 39 and
-   40 added), never an app migration run twice, migration 46 in seconds at
+   home adopted by its schema into main's numbering (43 → 46, main's 39 to
+   41 added), never an app migration run twice, migration 47 in seconds at
    most, progress on the splash, every artifact and thread kept; a failure
    shows the backup's path.
 7. **Origin isolation.** A page tries to read the shell's document or the
