@@ -53,7 +53,7 @@ test.describe("its tests in the inspect view", () => {
     const tests = (await ofType(page, "tests"))[0] as HostMessage & { passed: number; failed: unknown[]; skipped: number };
     expect(tests.failed).toEqual([]);
     expect(tests.skipped).toBe(0);
-    expect(tests.passed).toBe(94);
+    expect(tests.passed).toBe(93);
   });
 });
 
@@ -332,7 +332,7 @@ test.describe("over a fake host", () => {
     await expect(page.locator(".h-fan")).toHaveCount(0);
   });
 
-  test("search finds an app as it is typed and Enter opens it; a pull down opens search, and back closes it", async ({ page }) => {
+  test("search finds an app as it is typed and Enter opens it, back closes it, and a pull down opens nothing", async ({ page }) => {
     await serve(page, { makes: [] });
     await expect(page.locator(".h-tile[data-id]")).toHaveCount(8);
     await page.getByRole("button", { name: "Search", exact: true }).tap();
@@ -349,9 +349,8 @@ test.describe("over a fake host", () => {
     await touch("touchStart", 120);
     for (let y = 140; y <= 300; y += 20) await touch("touchMove", y);
     await touch("touchEnd", 300);
-    await expect(page.getByRole("searchbox", { name: "Search apps" })).toBeFocused();
-    await page.goBack();
     await expect(page.locator(".h-search")).toHaveCount(0);
+    await expect(page.locator(".h-search-ghost")).toHaveCount(0);
   });
 
   test("Rename from a group's menu opened over search leaves one entry, which one back pops", async ({ page }) => {
@@ -609,10 +608,6 @@ test.describe("renders", () => {
           await page.screenshot({ path: join(shots, `home-search-none-${size}-${scheme}.png`), animations: "disabled" });
           await page.keyboard.press("Escape");
           await expect(page.locator(".h-search")).toHaveCount(0);
-          await page.evaluate(() => { document.documentElement.setAttribute("data-pulling", ""); document.documentElement.style.setProperty("--pull", "0.7"); });
-          await expect(page.locator(".h-search-ghost")).toBeVisible();
-          await page.screenshot({ path: join(shots, `home-search-pull-${size}-${scheme}.png`), animations: "disabled" });
-          await page.evaluate(() => { document.documentElement.removeAttribute("data-pulling"); document.documentElement.style.removeProperty("--pull"); });
           // A starred app, a group and eight apps, every tile in one
           // cell, from a layout an earlier release wrote with big tiles
           // on; then one tile caught mid-drag.

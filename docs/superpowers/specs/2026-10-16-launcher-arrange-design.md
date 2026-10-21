@@ -8,7 +8,7 @@ Builds on `2026-10-16-home-screen-app-design.md`.
 The person arranges their home screen by hand: they star the apps they use
 most, which stay on top; they drag apps into an order that sticks; they
 gather apps into groups that show as a folder or as a BumpTop pile; they
-find any app by pulling down to search. Moving things feels physical:
+find any app with the search icon. Moving things feels physical:
 tiles slide, bump their neighbours aside and settle with a little bounce.
 Apps opened often grow into larger tiles.
 
@@ -29,7 +29,7 @@ home screen by commenting is asked, as for any home release.
   opens it over the grid) or as a pile (tap fans it out in place); the
   person switches between them.
 - **New apps** go first under All apps, marked "New" until opened.
-- **Search**: pull the grid down, or tap a search icon in the top bar; a
+- **Search**: tap the search icon in the top bar; a
   field filters apps by name, inside groups too; Enter opens the first
   match.
 
@@ -157,13 +157,13 @@ Alt+arrows move it one cell.
 
 ## 7. Search
 
-- Pulling down from the top of the grid past 64 px, or the ⌕ in the top
-  bar, shows a field above Starred and focuses it.
+- The ⌕ in the top bar, and nothing else, shows a field above Starred
+  and focuses it; a pull down from the top does nothing.
 - Typing filters every app by title, case- and accent-insensitive,
   matching word starts first, then anywhere; the matches show as one flat
   grid. Enter opens the first; Escape or an empty field with back closes
   search.
-- Pull-to-refresh goes: Refresh stays in the ⋮ menu, and the list already
+- Pull-to-refresh is gone too: Refresh stays in the ⋮ menu, and the list already
   follows `apps` events.
 
 ## 8. The start-up picture and tile reports
@@ -186,8 +186,8 @@ loses the arrangement.
 - Pure functions in `home.js` (reconcile, pack, search ranking, group
   rules, spring step) under vitest, with an injected clock.
 - Home Playwright with the fake host: star from the menu, drag to reorder
-  and to Starred, make a group by hovering, pile fan-out, search by pull and
-  by icon, a new app's mark, the arrangement surviving a reload.
+  and to Starred, make a group by hovering, pile fan-out, search by icon
+  (and a pull opening nothing), a new app's mark, the arrangement surviving a reload.
 - Dart: `menu` with items resolves the chosen ID; bad items refused.
 - Renders at phone and desktop sizes, light and dark, looked at: Starred
   plus groups both looks, a fanned pile, search, a 2×2 tile, a drag midway.
@@ -208,7 +208,7 @@ Each phase ships a home bundle release (1.1.0 onward).
 
 - Hold-then-release opens the menu; hold-then-move drags (the menu can't
   coexist with a page drag).
-- Pull-down becomes search; refresh stays only in the ⋮ menu.
+- A pull down does nothing; search opens from ⌕ only; refresh stays only in the ⋮ menu.
 - Groups don't nest and can't be starred.
 - New groups start as folders.
 - Big tiles: top three apps, at least 5 opens in 14 days, on by default.

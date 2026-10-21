@@ -334,7 +334,7 @@ body {
 
 /* Search: the field under the bar, staying there as the page scrolls. */
 html { overscroll-behavior-y: contain; }
-.h-search, .h-search-ghost {
+.h-search {
   position: sticky; top: calc(56px + var(--k-safe-top)); z-index: 1;
   padding: 4px 16px 8px; background: var(--h-surface);
 }
@@ -359,15 +359,6 @@ html { overscroll-behavior-y: contain; }
   border: 0; border-radius: 50%; padding: 0; background: transparent; color: var(--h-on-sc); cursor: pointer;
 }
 .h-search-close:active, .h-search-close:hover { background: var(--h-state); }
-/* A pull down from the top slides the field out from under the bar and
- * the page down with it, to where the field puts it once open (60 px). */
-.h-search-ghost {
-  position: fixed; left: 0; right: 0; pointer-events: none; visibility: hidden;
-  background: transparent; transform: translateY(calc((var(--pull, 0) - 1) * 60px));
-}
-.h-search-ghost .h-search-box { opacity: var(--pull, 0); }
-html[data-pulling] .h-search-ghost { visibility: visible; }
-html[data-pulling] :is(.h-key, .h-grid-wrap, .h-message) { transform: translateY(calc(var(--pull, 0) * 60px)); }
 .h-results-empty {
   margin: 48px 16px 0; text-align: center; color: var(--h-on-variant);
   font: 400 16px/24px var(--k-font);

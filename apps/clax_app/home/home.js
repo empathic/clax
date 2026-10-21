@@ -21,7 +21,7 @@
 // rows after it down, where its apps are reordered and dragged out of it;
 // its own menu renames and ungroups it.
 //
-// The ⌕ in the top bar, or a pull down from the top of the page, opens a
+// The ⌕ in the top bar opens a
 // search field above the grid (search.js ranks the matches): while it has
 // text, every app whose title matches, groups' included, shows in one
 // grid in their place. Enter opens the first; Escape, Backspace in the
@@ -1617,93 +1617,6 @@ function useActions(home, verbs) {
   return [act, notice, say];
 }
 
-/** How far a pull down from the top of the page goes (half the finger's
- * travel) before its release opens search, and the most it shows. */
-const PULL_PX = 64;
-const PULL_MAX = 96;
-/** How far a touch moves before the pull decides whether it is one. */
-const PULL_DECIDE_PX = 6;
-
-/** Whether `el` is in an element scrolled sideways (overflowing it, as a
- * fanned group's row with more apps than fit). */
-function inSidewaysScroll(el) {
-  for (let n = el instanceof Element ? el : null; n && n !== document.body && n !== document.documentElement; n = n.parentElement) {
-    if (n.scrollWidth > n.clientWidth && /^(auto|scroll)$/.test(getComputedStyle(n).overflowX)) return true;
-  }
-  return false;
-}
-
-/** A touch drag down from the top of the page, while `on`: as it goes,
- * `data-pulling` on the page's root and `--pull` (0 to 1, at PULL_PX)
- * slide a ghost of the search field down under the bar; released past
- * PULL_PX it calls `onOpen`. The touch is a pull only if it starts with
- * the page at its top, outside anything that scrolls sideways, and its
- * first PULL_DECIDE_PX of travel go more down than sideways; until then,
- * and for any other touch, the browser keeps it. A held tile or a group's
- * name field has the finger instead. */
-function usePullSearch(onOpen, on) {
-  const go = useRef(onOpen);
-  go.current = onOpen;
-  useEffect(() => {
-    if (!on) return undefined;
-    const root = document.documentElement;
-    // The touch's start, whether it is a pull (null until decided) and how far it shows.
-    let s = { x: 0, y: null, pull: null, d: 0 };
-    const show = (d) => {
-      if (d > 0) {
-        root.setAttribute('data-pulling', '');
-        root.style.setProperty('--pull', String(Math.min(1, d / PULL_PX)));
-      } else {
-        root.removeAttribute('data-pulling');
-        root.style.removeProperty('--pull');
-      }
-    };
-    const idle = () => ({ x: 0, y: null, pull: null, d: 0 });
-    const start = (e) => {
-      const free = e.touches.length === 1 && scrollY <= 0 && !document.querySelector('.h-name') && !inSidewaysScroll(e.target);
-      s = free ? { x: e.touches[0].clientX, y: e.touches[0].clientY, pull: null, d: 0 } : idle();
-    };
-    const move = (e) => {
-      if (s.y == null) return;
-      // A held or dragged tile has the finger, not the page.
-      if (document.querySelector('.h-tile[data-held]')) { s = idle(); show(0); return; }
-      const dx = e.touches[0].clientX - s.x;
-      const dy = e.touches[0].clientY - s.y;
-      if (s.pull === null) {
-        if (Math.hypot(dx, dy) < PULL_DECIDE_PX) return;
-        if (!(dy > Math.abs(dx))) { s = idle(); return; }
-        s.pull = true;
-      }
-      if (dy <= 0) { s.d = 0; show(0); return; }
-      if (e.cancelable) e.preventDefault();
-      s.d = Math.min(PULL_MAX, dy * 0.5);
-      show(s.d);
-    };
-    const end = () => {
-      const far = s.d >= PULL_PX;
-      s = idle();
-      show(0);
-      if (far) go.current();
-    };
-    addEventListener('touchstart', start, { passive: true });
-    addEventListener('touchmove', move, { passive: false });
-    addEventListener('touchend', end);
-    addEventListener('touchcancel', end);
-    return () => {
-      show(0);
-      removeEventListener('touchstart', start);
-      removeEventListener('touchmove', move);
-      removeEventListener('touchend', end);
-      removeEventListener('touchcancel', end);
-    };
-  }, [on]);
-}
-
-/** The search field as a pull shows it, before it opens. */
-const SearchGhost = () => html`<div class="h-search-ghost" aria-hidden="true">
-  <span class="h-search-box"><${Glyph} name="search" class="h-search-glyph" /><span class="h-search-hint">Search apps</span></span>
-</div>`;
-
 const MAX_TILES = 512;
 /** How long a burst of renders or scroll events settles before the tiles go. */
 const TILES_MS = 50;
@@ -2084,7 +1997,6 @@ function Home({ home, db, clock }) {
   }, [home, drawn]);
   settled.current = useTiles(home, drawn, motion);
   const [dragging, setDragging] = useState(false);
-  usePullSearch(openSearch, ownBar && !searching && drawn && !appsError);
   // Search goes with the bar.
   useEffect(() => { if (!ownBar) closeSearch(); }, [ownBar]);
   const goFirst = useRef(() => {});
@@ -2131,9 +2043,7 @@ function Home({ home, db, clock }) {
   const menuFor = groupMenu && entryOf(groupMenu.gid);
   return html`<main class="h-page" data-dragging=${dragging ? '' : undefined} data-toolbar=${ownBar ? undefined : ''}>
     ${ownBar && html`<${Bar} act=${act} refresh=${refresh} unread=${typeof unread === 'number' ? unread : 0} onSearch=${openSearch} />`}
-    ${ownBar && (searching
-      ? html`<${SearchField} query=${query} setQuery=${setQuery} onGo=${() => goFirst.current()} onClose=${closeSearch} />`
-      : list && html`<${SearchGhost} />`)}
+    ${ownBar && searching && html`<${SearchField} query=${query} setQuery=${setQuery} onGo=${() => goFirst.current()} onClose=${closeSearch} />`}
     ${needsKey === true && html`<${Banner} class="h-key" glyph="key_fill" title="Add your Claude API key to start making apps"
       actions=${html`<button type="button" class="h-text-button" onClick=${() => act('openSettings', [], 'open Settings')}>Add key</button>`} />`}
     ${body}
