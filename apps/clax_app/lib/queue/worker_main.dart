@@ -107,8 +107,8 @@ final class WorkerContext {
   /// Feeds a message back into the loop.
   final void Function(Msg msg) send;
 
-  /// Sends anything else the UI isolate is to hear (a `KeepAlive` or
-  /// `Notice` as [UiEffect], a render or its cancel) as a [WorkerOut].
+  /// Sends anything else the UI isolate is to hear (a `KeepAlive`, `Notice`
+  /// or `Paused` as [UiEffect], a render or its cancel) as a [WorkerOut].
   final void Function(ToUi message) toUi;
 
   /// The worker's renders: each request goes to the UI isolate through

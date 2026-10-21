@@ -66,6 +66,19 @@ void main() {
         for (final (_, e) in effectSamples) encodeEffect(e)['t'],
       }, containsAll(effectTags));
     });
+    test('the wire is version 2, which added the worker\'s Paused; a '
+        'version 1 envelope is refused', () {
+      expect(codecVersion, 2);
+      expect(encodeToUi(const UiEffect(Paused(19))), {
+        'v': 2,
+        't': 'effect',
+        'effect': {'t': 'paused', 'id': 19},
+      });
+      expect(
+        failureOf(decodeEffect({'v': 1, 't': 'paused', 'id': 19})).kind,
+        CodecErrorKind.version,
+      );
+    });
     test('message and effect tags are disjoint', () {
       expect(msgTags.toSet().intersection(effectTags.toSet()), isEmpty);
     });
@@ -849,6 +862,7 @@ final effectSamples = <(String, Effect)>[
     const Notice(18, NoticeKind.made, 'j1', 'Tidy', artifactId: 'a1'),
   ),
   ('keep alive', const KeepAlive(16, true)),
+  ('paused', const Paused(19)),
   ('publish state', PublishState(17, stateSamples.last.$2)),
 ];
 

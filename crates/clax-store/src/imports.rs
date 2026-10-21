@@ -13,7 +13,7 @@
 //! | `pending-make.json` | a `queued` `make` job per request, but for one whose request has only the plan of an app it made (the app moves a make's plan to the app's ID once it is made) |
 //! | `plans.json` | the plan of the make job whose request it is (a plan not yet under an app's ID), else a `stopped` make job holding it while it has features to build |
 //! | `unfinished.json` | the carry of a `stopped` change job per change with a thread still open (a `build:<app>` entry: of that app's make job) |
-//! | `change-ledger.json` | a `change` job per record, with its `publish:<base>` step when version `base + 1` is the one the record made, and its `reply` step (then `done`) when its documents are written or it has none, and each of its addresses still open got an agent reply at or after that version; else `queued`, to run on |
+//! | `change-ledger.json` | a `change` job per record, with its `publish:<base>` step when version `base + 1` is the one the record made, and its `reply` step (then `done`) when its documents are written or it has none, and each of its addresses still open got an agent reply at or after that version; else `queued`, to run on: a landed version not done has a `turn:1` step before its publish step, whose one `finish` call replies on the addresses still owed the reply, so the queue posts it (documents still to write are not written) |
 //! | `asked.json` | a `change` job per entry holding its question, `waiting` while it is open, `queued` once answered or skipped; none for a withdrawn question, an answer handed over that the entry does not hold, one a ledger record that landed without its reply already answered, a question an earlier entry names, or one not of the `ask` tool |
 //! | `stopped.json` | a `cancelled` change job per thread, the thread kept `stopped` |
 //! | `agent-read-consent.json` | `agent_read_consents` rows |
@@ -27,8 +27,10 @@
 //! The rows' JSON (the queue's codec reads them): `input` is `{request,
 //! base, threads: {thread ID: comment ID}}`; `plan` is `{plan_rest: false,
 //! data: <the plan as plans.json kept it>}`; `carry` is `{stops,
-//! can_keep_going, data: <the change as unfinished.json kept it, or
-//! null>}`.
+//! can_keep_going, data}`, `data` null or, of an unfinished.json entry,
+//! `{cap, spent_usd, notes, draft: {edits, before, title?,
+//! capabilities?}}`, the shape the queue's worker reads a stop's carry in
+//! (see `carried`).
 
 use super::Store;
 use super::jobs::JobState;
@@ -539,7 +541,7 @@ impl Import<'_, '_> {
             if !seen.insert(entry.to_string()) {
                 continue;
             }
-            let held = carry(stops, spent, entry.clone());
+            let held = carry(stops, spent, carried(entry, spent));
             if let Some(app) = key.strip_prefix("build:") {
                 // A build's draft: its make job carries it.
                 if let Some(j) = self
@@ -630,13 +632,10 @@ impl Import<'_, '_> {
             let mut steps = Vec::new();
             let n = rec.base + 1;
             let made = self.made_by(&rec, n)?;
+            let mut done = false;
             if let Some(at) = &made {
-                steps.push((
-                    format!("publish:{}", rec.base),
-                    json!({"artifact_id": rec.artifact_id, "version": n, "docs": rec.docs}),
-                    Some(n),
-                ));
-                let replied = self.replied(&rec, at)?;
+                let owed = self.owed(&rec, at)?;
+                let replied = owed.is_empty();
                 if !replied {
                     self.landed.push((
                         rec.artifact_id.clone(),
@@ -647,7 +646,19 @@ impl Import<'_, '_> {
                 // Its documents are done when written, or when it had none
                 // to write (the app's `_settleDocs`).
                 let docs_done = rec.docs_done || rec.docs == 0;
-                if docs_done && replied {
+                done = docs_done && replied;
+                if !done {
+                    // The turn whose `finish` made the version: the queue
+                    // reads a publish step as its finish call's first half,
+                    // and answers the call with the reply it plans.
+                    steps.push(("turn:1".to_string(), finish_turn(&rec, &owed), None));
+                }
+                steps.push((
+                    format!("publish:{}", rec.base),
+                    json!({"artifact_id": rec.artifact_id, "version": n, "docs": rec.docs}),
+                    Some(n),
+                ));
+                if done {
                     steps.push((
                         "reply".to_string(),
                         json!({"comments": [], "imported": true}),
@@ -655,7 +666,7 @@ impl Import<'_, '_> {
                     ));
                 }
             }
-            let state = if steps.len() == 2 {
+            let state = if done {
                 JobState::Done
             } else {
                 JobState::Queued
@@ -720,12 +731,13 @@ impl Import<'_, '_> {
         Ok(Some(at))
     }
 
-    /// Whether the record's reply is owed nowhere: each of its addresses
-    /// still open on its artifact has an agent comment at or after `at`. The
-    /// app's recovery replies only on open threads (`AgentLoop.settle`), so a
-    /// record whose addresses are all resolved or gone, or which addresses
-    /// none, has no reply left to post.
-    fn replied(&self, rec: &LedgerRecord, at: &str) -> Result<bool> {
+    /// The threads still owed the record's reply: each of its addresses
+    /// still open on its artifact with no agent comment at or after `at`.
+    /// The app's recovery replies only on open threads
+    /// (`AgentLoop.settle`), so a record whose addresses are all resolved
+    /// or gone, or which addresses none, owes none: it replied.
+    fn owed(&self, rec: &LedgerRecord, at: &str) -> Result<Vec<String>> {
+        let mut owed = Vec::new();
         for tid in &rec.addresses {
             if !self.open_thread(&rec.artifact_id, tid)? {
                 continue;
@@ -737,10 +749,10 @@ impl Import<'_, '_> {
                 |r| r.get(0),
             )?;
             if !found {
-                return Ok(false);
+                owed.push(tid.clone());
             }
         }
-        Ok(true)
+        Ok(owed)
     }
 
     fn asked(&mut self, v: &Value) -> Result<bool> {
@@ -918,6 +930,60 @@ fn carry(stops: u64, spent: f64, data: Value) -> Value {
     })
 }
 
+/// Step `turn:1` of a ledger record's change whose version landed, as the
+/// queue's runner writes a turn's notes: one `finish` call (ID
+/// `imported`) planned on the record's base, whose reply posts the
+/// record's reply on the threads still `owed` it and acknowledges the
+/// comments it answered there. The queue reads the job's
+/// `publish:<base>` step as the call's publish, and posts the reply.
+fn finish_turn(rec: &LedgerRecord, owed: &[String]) -> Value {
+    let ack: Vec<&String> = owed
+        .iter()
+        .filter_map(|t| rec.answered.get(t))
+        .flatten()
+        .collect();
+    json!({
+        "base": rec.base,
+        "notes": {
+            "calls": [{
+                "id": "imported",
+                "tool": "finish",
+                "publish": {"base": rec.base, "data": null},
+                "reply": {"threads": owed, "body": rec.reply, "resolve": rec.resolve, "ack": ack},
+            }],
+            "data": null,
+        },
+    })
+}
+
+/// The carry's `data` of `unfinished.json` entry `e`, in the shape the
+/// queue's worker reads a stop's (`AgentTurns`' cap stop): the cap it
+/// stopped at (`cap`), what its runs spent (`spent_usd`) and the agent's
+/// notes, with its unfinished draft (`draft`): `edits`, path to the
+/// draft's text or null for a file it deleted, over `before`, the
+/// fingerprint of each such path as the app held it then, and the
+/// draft's `title` and `capabilities` when it changed them. The worker
+/// starts a Keep going run from the draft when the app still holds every
+/// `before`.
+fn carried(e: &Value, spent: f64) -> Value {
+    let field = |k: &str| e.get(k).cloned().unwrap_or(Value::Null);
+    let mut draft = json!({
+        "edits": e.get("edits").cloned().unwrap_or_else(|| json!({})),
+        "before": e.get("before").cloned().unwrap_or_else(|| json!({})),
+    });
+    for k in ["title", "capabilities"] {
+        if !field(k).is_null() {
+            draft[k] = field(k);
+        }
+    }
+    json!({
+        "cap": field("limit"),
+        "spent_usd": spent,
+        "notes": e.get("notes").cloned().unwrap_or_else(|| json!([])),
+        "draft": draft,
+    })
+}
+
 /// What the import reads of an `unfinished.json` entry
 /// (`UnfinishedChange.fromJson`'s required fields).
 struct UnfinishedEntry {
@@ -958,6 +1024,7 @@ struct LedgerRecord {
     addresses: Vec<String>,
     answered: BTreeMap<String, Vec<String>>,
     reply: String,
+    resolve: bool,
     docs: usize,
     docs_done: bool,
 }
@@ -981,6 +1048,7 @@ impl LedgerRecord {
                 .map(|(k, v)| Some((k.clone(), strings(v)?)))
                 .collect::<Option<_>>()?,
             reply: r.get("reply")?.as_str()?.to_string(),
+            resolve: r.get("resolve").and_then(Value::as_bool).unwrap_or(false),
             docs: r.get("db")?.as_array()?.len(),
             docs_done: r.get("docs_done")?.as_bool()?,
         })
@@ -1216,9 +1284,15 @@ mod tests {
         // The unfinished change, stopped with its carry.
         let stopped = by(&|j| j.job.kind == "change" && j.job.state == JobState::Stopped);
         assert_eq!(stopped.len(), 1);
+        // Its carry in the shape the worker's Keep going reads: the cap it
+        // stopped at, its spend and notes, and its draft's edits over what
+        // the app held.
         assert_eq!(
-            stopped[0].job.carry.as_ref().unwrap()["data"]["limit"],
-            "turns"
+            stopped[0].job.carry.as_ref().unwrap()["data"],
+            json!({
+                "cap": "turns", "spent_usd": 5.98, "notes": ["Ran out of turns"],
+                "draft": {"edits": {"index.html": "<p>half"}, "before": {"index.html": "5:abc"}},
+            })
         );
         assert_eq!(stopped[0].threads[0].thread_id, t2);
         // The open question: its job waits on it.
@@ -1385,11 +1459,28 @@ mod tests {
         };
         let keys = |ks: &[&str]| ks.iter().map(|k| k.to_string()).collect::<Vec<_>>();
         assert_eq!(shape(1), (JobState::Done, keys(&["publish:1", "reply"])));
-        assert_eq!(shape(2), (JobState::Queued, keys(&["publish:2"])));
+        assert_eq!(shape(2), (JobState::Queued, keys(&["turn:1", "publish:2"])));
         assert_eq!(shape(3), (JobState::Done, keys(&["publish:3", "reply"])));
-        assert_eq!(shape(4), (JobState::Queued, keys(&["publish:4"])));
+        assert_eq!(shape(4), (JobState::Queued, keys(&["turn:1", "publish:4"])));
         assert_eq!(shape(8), (JobState::Queued, keys(&[])));
         assert_eq!(by[&1].steps[0].version_n, Some(2));
+        // The turn the queue resumes from: its finish call, planned on the
+        // record's base, replies on the threads still owed one.
+        let finish = |base: u64| by[&base].steps[0].result["notes"]["calls"][0].clone();
+        assert_eq!(
+            by[&4].steps[0].result,
+            json!({
+                "base": 4,
+                "notes": {"calls": [{
+                    "id": "imported", "tool": "finish",
+                    "publish": {"base": 4, "data": null},
+                    "reply": {"threads": [t5], "body": "Added a header.", "resolve": false, "ack": [c5]},
+                }], "data": null},
+            })
+        );
+        // Replied already: the reply step owes no thread.
+        assert_eq!(finish(2)["reply"]["threads"], json!([]));
+        assert_eq!(finish(2)["reply"]["ack"], json!([]));
     }
 
     /// An `asked.json` entry the app would never run again makes no job: a

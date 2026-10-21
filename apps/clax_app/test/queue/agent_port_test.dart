@@ -12,9 +12,10 @@ import 'package:clax_app/agent/tools/draft.dart';
 import 'package:clax_app/agent/tools/file_tools.dart';
 import 'package:clax_app/agent/tools/finish.dart' show iconAsk;
 import 'package:clax_app/agent/tools/toolbox.dart';
+import 'package:clax_app/agent/unfinished.dart' show fingerprint;
 import 'package:clax_app/queue/agent_port.dart';
 import 'package:clax_app/queue/model.dart';
-import 'package:clax_app/queue/runner.dart' show PublishRefused;
+import 'package:clax_app/queue/runner.dart' show PublishRefused, jobOf;
 import 'package:flutter_test/flutter_test.dart' hide Retry;
 
 import '../agent/tools/support.dart';
@@ -758,6 +759,171 @@ void main() {
       final b = await fresh();
       expect(jsonEncode(b.messages), jsonEncode(a.messages));
       expect(b.outputBefore, a.outputBefore);
+    });
+  });
+
+  group('a stop imported from the app\'s unfinished.json', () {
+    const old = '<title>Todo</title><p>old</p>';
+    const half = '<title>Todo</title><p>half done</p>';
+
+    /// The carry crates/clax-store/src/imports.rs writes for an
+    /// unfinished change that stopped at its turns, its draft's edits made
+    /// on an app holding [held], read from the job's row as the core
+    /// answers it.
+    Carry imported({String held = old}) => jobOf({
+      'job': {
+        'id': 'j',
+        'kind': 'change',
+        'state': 'stopped',
+        'rev': 1,
+        'input': {'request': 'x', 'base': 3, 'threads': {'t1': 'c1'}},
+        'carry': {
+          'stops': 2,
+          'can_keep_going': true,
+          'data': {
+            'cap': 'turns',
+            'spent_usd': 5.5,
+            'notes': ['Ran out of turns'],
+            'draft': {
+              'edits': {'index.html': half},
+              'before': {'index.html': fingerprint(held)},
+            },
+          },
+        },
+      },
+    })!.carry!;
+
+    Job stopped(Carry carry, {Map<StepKey, StepResult> steps = const {}}) =>
+        Job(
+          id: 'j',
+          kind: JobKind.change,
+          state: JobState.running,
+          step: steps.keys.lastOrNull,
+          rev: 3,
+          input: change,
+          carry: carry,
+          steps: steps,
+        );
+
+    test('Keep going starts a run from its carried draft, its notes and '
+        'what is left of its budget', () async {
+      final carry = imported();
+      final agent = agentOn(
+        files: const {'index.html': old},
+        kind: RequestKind.change,
+        capUsd: 6,
+        row: stopped(carry),
+      );
+      backend.answer([_use('r', 'render', {})]);
+      final one = await agent.turn(
+        'j',
+        TurnInput(turn: 1, input: change, base: 3, carry: carry),
+        Future<void>.value(),
+      );
+      expect(backend.requests.single.messages.single['content'], [
+        {'type': 'text', 'text': 'keep going over 1'},
+      ]);
+      expect(notes.single.limit, 'turns');
+      expect(notes.single.stops, 2);
+      expect(notes.single.notes, ['Ran out of turns']);
+      expect(notes.single.edited, ['index.html']);
+      await runCalls(agent, 1, one.notes);
+      expect(served.single.$2.files, {'index.html': half});
+      expect(boxes.last.state.budget.caps.costUsd, closeTo(0.5, 1e-9));
+    });
+
+    test('a draft the app changed under is not applied', () async {
+      final carry = imported(held: '<p>something else</p>');
+      final agent = agentOn(
+        files: const {'index.html': old},
+        kind: RequestKind.change,
+        capUsd: 6,
+        row: stopped(carry),
+      );
+      backend.answer([_use('r', 'render', {})]);
+      final one = await agent.turn(
+        'j',
+        TurnInput(turn: 1, input: change, base: 3, carry: carry),
+        Future<void>.value(),
+      );
+      expect(notes.single.edited, isNull);
+      expect(notes.single.why, 'the app changed under its unfinished draft');
+      await runCalls(agent, 1, one.notes);
+      expect(served.single.$2.files, {'index.html': old});
+    });
+
+    test('a fresh worker rebuilds the run on the carried draft', () async {
+      final carry = imported();
+      final t1 = TurnNotes(
+        calls: const [
+          OtherCall('a', 'write_file', args: {'path': 'app.js', 'content': 'x'}),
+        ],
+        data: {
+          'assistant': [
+            _use('a', 'write_file', {'path': 'app.js', 'content': 'x'}),
+          ],
+          'usage': {'input': 10, 'cache_write': 0, 'cache_read': 0, 'output': 100},
+        },
+      );
+      final agent = agentOn(
+        files: const {'index.html': old},
+        kind: RequestKind.change,
+        capUsd: 6,
+        row: stopped(carry, steps: {const TurnKey(1): TurnStepResult(t1)}),
+      );
+      backend.answer([_use('r', 'render', {})]);
+      final two = await agent.turn(
+        'j',
+        TurnInput(turn: 2, input: change, base: 3, previous: t1, carry: carry),
+        Future<void>.value(),
+      );
+      final sent = backend.requests.single.messages;
+      expect(sent.first['content'], [
+        {'type': 'text', 'text': 'keep going over 1'},
+      ], reason: 'the run began at turn 1, from the carried draft');
+      expect(sent, hasLength(3));
+      await runCalls(agent, 2, two.notes);
+      expect(served.single.$2.files, {'index.html': half, 'app.js': 'x'});
+    });
+
+    test('a stop of the run carries the draft on', () async {
+      final carry = imported();
+      final agent = agentOn(
+        files: const {'index.html': old},
+        kind: RequestKind.change,
+        caps: const RunCaps(
+          turns: 1,
+          renders: 3,
+          outputTokens: 32000,
+          wallClock: Duration(seconds: 90),
+        ),
+        capUsd: 6,
+        row: stopped(carry),
+      );
+      backend.answer([
+        _use('a', 'write_file', {'path': 'app.js', 'content': 'x'}),
+      ]);
+      final one = await agent.turn(
+        'j',
+        TurnInput(turn: 1, input: change, base: 3, carry: carry),
+        Future<void>.value(),
+      );
+      final results = await runCalls(agent, 1, one.notes);
+      final two = await agent.turn(
+        'j',
+        TurnInput(
+          turn: 2,
+          input: change,
+          base: 3,
+          previous: one.notes,
+          results: results,
+          carry: carry,
+        ),
+        Future<void>.value(),
+      );
+      final data = two.stop!.data! as Map;
+      expect(data['draft'], (carry.data! as Map)['draft']);
+      expect(data['spent_usd'], closeTo(5.5, 1e-9));
     });
   });
 

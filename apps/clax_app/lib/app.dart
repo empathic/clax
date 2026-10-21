@@ -59,7 +59,7 @@ import 'platform/network_pause.dart';
 import 'platform/pending_make.dart';
 import 'platform/secure_key.dart';
 import 'queue/client.dart' show QueueClient, QueueStateJobs;
-import 'queue/effect.dart' as q show Effect, KeepAlive, Notice, NoticeKind;
+import 'queue/effect.dart' as q show Effect, KeepAlive, Notice, NoticeKind, Paused;
 import 'queue/host.dart';
 import 'queue/keep_alive.dart';
 import 'queue/msg.dart' as q show Woke;
@@ -1723,8 +1723,9 @@ class _AppRootState extends State<AppRoot> with WidgetsBindingObserver {
 
   /// The queue worker's news: a KeepAlive holds a background run (the
   /// foreground service on Android, the background task on iOS) while
-  /// jobs run; a Notice of a job that ended while the app was away is a
-  /// notification (in front, the screens' toasts say it).
+  /// jobs run; Paused says its jobs paused when the time ran out; a
+  /// Notice of a job that ended while the app was away is a notification
+  /// (in front, the screens' toasts say it).
   void _onQueueEffect(q.Effect e) {
     switch (e) {
       case q.KeepAlive(:final on):
@@ -1732,6 +1733,8 @@ class _AppRootState extends State<AppRoot> with WidgetsBindingObserver {
         if (!on && _s.quitWhenIdle) {
           unawaited(_shutDown().whenComplete(() => exit(0)));
         }
+      case q.Paused():
+        _keepAlive.workerPaused();
       case q.Notice(:final kind, :final jobId, :final title, :final artifactId):
         if (_presence.foreground) return;
         // The notice comes before the state that shows its job ended: it
@@ -1774,17 +1777,22 @@ class _AppRootState extends State<AppRoot> with WidgetsBindingObserver {
   /// The platform's background time is nearly spent ([BackgroundWork]'s
   /// `stopped` where it [BackgroundWork.pausesRuns]): every run is held
   /// where it is ([AppPresence.pause]), one notice names the newest run's
-  /// app, and the platform is told the runs are paused. Each run goes on
-  /// by itself when Clax is back in front.
+  /// app, and the platform is told the runs are paused once the queue's
+  /// worker paused its jobs too ([QueueKeepAlive.paused]). Each run goes
+  /// on by itself when Clax is back in front.
   Future<void> _pauseRuns() async {
     // The queue's jobs pause where they are (QueueKeepAlive tells the
     // worker), and go on at the next launch or when Clax is back in front.
     _presence.pause();
-    if (!_presence.paused) return;
-    if (_runs.newest case final run?) {
-      _pausedNotice = true;
-      await _s.background.paused(run.app ?? 'Clax', run.artifactId);
+    if (_presence.paused) {
+      if (_runs.newest case final run?) {
+        _pausedNotice = true;
+        await _s.background.paused(run.app ?? 'Clax', run.artifactId);
+      }
     }
+    // The platform hears the runs are paused once the worker's pauses are
+    // answered (its Paused), or at QueueKeepAlive's bound.
+    await _keepAlive.paused;
     await _s.background.pauseDone();
   }
 

@@ -1457,6 +1457,9 @@ class _Ui implements UiPort {
   void keepAlive(KeepAlive keepAlive) => said.add(keepAlive);
 
   @override
+  void paused(Paused paused) => said.add(paused);
+
+  @override
   void publishState(PublishState state) => said.add(state);
 }
 

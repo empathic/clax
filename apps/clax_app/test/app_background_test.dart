@@ -1248,6 +1248,57 @@ void main() {
       expect(run.told.last, isA<q.OutOfTime>());
     });
 
+    testWidgets('on iOS pauseDone waits for the worker\'s Paused, which comes '
+        'once its pauses are answered', (tester) async {
+      work.pausesRuns = true;
+      await pumpApp(tester, startQueue: starter());
+      final w = await started(tester);
+      w.onEffect(const q.KeepAlive(1, true));
+      await tester.pump();
+      work.calls.clear();
+      work.stopNow();
+      await tester.pump();
+      expect(run.told.last, isA<q.OutOfTime>());
+      // The worker's pause moves are not answered yet.
+      await tester.pump(const Duration(milliseconds: 1400));
+      expect(work.calls, isNot(contains('pauseDone')));
+      w.onEffect(const q.Paused(2));
+      await tester.pump();
+      expect(work.calls.where((c) => c == 'pauseDone'), hasLength(1));
+      await tester.pump(const Duration(seconds: 2));
+      expect(work.calls.where((c) => c == 'pauseDone'), hasLength(1));
+    });
+
+    testWidgets('on iOS pauseDone goes at the bound when the worker\'s Paused '
+        'does not come', (tester) async {
+      work.pausesRuns = true;
+      await pumpApp(tester, startQueue: starter());
+      final w = await started(tester);
+      w.onEffect(const q.KeepAlive(1, true));
+      await tester.pump();
+      work.calls.clear();
+      work.stopNow();
+      await tester.pump(const Duration(milliseconds: 1400));
+      expect(work.calls, isNot(contains('pauseDone')));
+      await tester.pump(const Duration(milliseconds: 100));
+      expect(work.calls.where((c) => c == 'pauseDone'), hasLength(1));
+      // A Paused after the bound says nothing more.
+      w.onEffect(const q.Paused(2));
+      await tester.pump();
+      expect(work.calls.where((c) => c == 'pauseDone'), hasLength(1));
+    });
+
+    testWidgets('on iOS with no job running pauseDone goes at once',
+        (tester) async {
+      work.pausesRuns = true;
+      await pumpApp(tester, startQueue: starter());
+      await started(tester);
+      work.calls.clear();
+      work.stopNow();
+      await tester.pump();
+      expect(work.calls.where((c) => c == 'pauseDone'), hasLength(1));
+    });
+
     testWidgets('a job that ends while the app is away is a notification',
         (tester) async {
       await pumpApp(tester, startQueue: starter());

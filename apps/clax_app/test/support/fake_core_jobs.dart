@@ -101,6 +101,10 @@ class FakeJobs {
   /// one without `publishedFrom`.
   final Map<String, String> _publishedFrom = {};
 
+  /// Awaited, when it answers a future, before a `PATCH /api/jobs/{id}`
+  /// of job `id` with body `body` applies: a test answers a move late.
+  Future<void>? Function(String id, Map<String, Object?> body)? beforeMove;
+
   /// Ends session [sid], as the person ending it or a revoked grant does.
   void endSession(String sid) => sessions.remove(sid);
 
@@ -312,7 +316,7 @@ class FakeJobs {
       if (full == null) return FakeCore.error(404, 'not_found', 'no job');
       return FakeCore.json({'job': full});
     });
-    core.on('PATCH', '/api/jobs/{id}', (r, p) {
+    core.on('PATCH', '/api/jobs/{id}', (r, p) async {
       final b = _body(r, const {
         'if_rev',
         'state',
@@ -330,6 +334,7 @@ class FakeJobs {
         return _unprocessable();
       }
       final id = p['id']!;
+      if (beforeMove?.call(id, b) case final hold?) await hold;
       if (!jobs.containsKey(id)) return FakeCore.error(404, 'not_found', '');
       if (!_owner(r)) return _notOwner();
       final job = row(id);
