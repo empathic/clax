@@ -33,7 +33,7 @@ CRATES = {
             "descriptors": "tests/descriptors.rs",
             "integration": "tests/integration.rs"
         },
-        "version": "0.5.0"
+        "version": "0.6.0"
     },
     "crates/clax-commands": {
         "bins": {},
@@ -54,7 +54,7 @@ CRATES = {
         "lib_root": "src/lib.rs",
         "name": "clax-commands",
         "tests": {},
-        "version": "0.5.0"
+        "version": "0.6.0"
     },
     "crates/clax-content-git": {
         "bins": {},
@@ -75,7 +75,7 @@ CRATES = {
         "tests": {
             "integration": "tests/integration.rs"
         },
-        "version": "0.5.0"
+        "version": "0.6.0"
     },
     "crates/clax-core": {
         "bins": {},
@@ -91,7 +91,7 @@ CRATES = {
         "lib_root": "src/lib.rs",
         "name": "clax-core",
         "tests": {},
-        "version": "0.5.0"
+        "version": "0.6.0"
     },
     "crates/clax-embedded": {
         "bins": {},
@@ -105,7 +105,7 @@ CRATES = {
         "lib_root": "src/lib.rs",
         "name": "clax-embedded",
         "tests": {},
-        "version": "0.5.0"
+        "version": "0.6.0"
     },
     "crates/clax-fake-exe": {
         "bins": {},
@@ -119,7 +119,7 @@ CRATES = {
         "lib_root": "src/lib.rs",
         "name": "clax-fake-exe",
         "tests": {},
-        "version": "0.5.0"
+        "version": "0.6.0"
     },
     "crates/clax-git": {
         "bins": {},
@@ -135,7 +135,7 @@ CRATES = {
         "tests": {
             "integration": "tests/integration.rs"
         },
-        "version": "0.5.0"
+        "version": "0.6.0"
     },
     "crates/clax-hooks": {
         "bins": {},
@@ -155,7 +155,7 @@ CRATES = {
         "tests": {
             "golden": "tests/golden.rs"
         },
-        "version": "0.5.0"
+        "version": "0.6.0"
     },
     "crates/clax-http": {
         "bins": {},
@@ -175,7 +175,7 @@ CRATES = {
         "lib_root": "src/lib.rs",
         "name": "clax-http",
         "tests": {},
-        "version": "0.5.0"
+        "version": "0.6.0"
     },
     "crates/clax-mcp": {
         "bins": {},
@@ -199,7 +199,7 @@ CRATES = {
         "tests": {
             "integration": "tests/integration.rs"
         },
-        "version": "0.5.0"
+        "version": "0.6.0"
     },
     "crates/clax-realtime": {
         "bins": {},
@@ -219,7 +219,7 @@ CRATES = {
         "lib_root": "src/lib.rs",
         "name": "clax-realtime",
         "tests": {},
-        "version": "0.5.0"
+        "version": "0.6.0"
     },
     "crates/clax-rt": {
         "bins": {},
@@ -233,7 +233,7 @@ CRATES = {
         "lib_root": "src/lib.rs",
         "name": "clax-rt",
         "tests": {},
-        "version": "0.5.0"
+        "version": "0.6.0"
     },
     "crates/clax-sample": {
         "bins": {},
@@ -250,7 +250,7 @@ CRATES = {
         "lib_root": "src/lib.rs",
         "name": "clax-sample",
         "tests": {},
-        "version": "0.5.0"
+        "version": "0.6.0"
     },
     "crates/clax-server": {
         "bins": {},
@@ -280,7 +280,7 @@ CRATES = {
         "tests": {
             "integration": "tests/integration.rs"
         },
-        "version": "0.5.0"
+        "version": "0.6.0"
     },
     "crates/clax-store": {
         "bins": {},
@@ -298,7 +298,7 @@ CRATES = {
         "lib_root": "src/lib.rs",
         "name": "clax-store",
         "tests": {},
-        "version": "0.5.0"
+        "version": "0.6.0"
     },
     "crates/clax-testkit": {
         "bins": {},
@@ -321,7 +321,7 @@ CRATES = {
         "lib_root": "src/lib.rs",
         "name": "clax-testkit",
         "tests": {},
-        "version": "0.5.0"
+        "version": "0.6.0"
     }
 }
 

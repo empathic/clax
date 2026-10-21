@@ -268,7 +268,7 @@ dependencies = [
 
 [[package]]
 name = "clax-content-git"
-version = "0.5.0"
+version = "0.6.0"
 dependencies = [
  "async-trait",
  "clax-core",
@@ -277,7 +277,7 @@ dependencies = [
 
 [[package]]
 name = "clax-core"
-version = "0.5.0"
+version = "0.6.0"
 dependencies = [
  "async-trait",
  "base64 0.22.1",
@@ -320,11 +320,11 @@ dependencies = [
 
 [[package]]
 name = "clax-fake-exe"
-version = "0.5.0"
+version = "0.6.0"
 
 [[package]]
 name = "clax-git"
-version = "0.5.0"
+version = "0.6.0"
 dependencies = [
  "miniz_oxide",
  "serde_json",
@@ -334,7 +334,7 @@ dependencies = [
 
 [[package]]
 name = "clax-http"
-version = "0.5.0"
+version = "0.6.0"
 dependencies = [
  "axum",
  "base64 0.22.1",
@@ -364,7 +364,7 @@ dependencies = [
 
 [[package]]
 name = "clax-mcp"
-version = "0.5.0"
+version = "0.6.0"
 dependencies = [
  "anyhow",
  "base64 0.22.1",
@@ -386,7 +386,7 @@ dependencies = [
 
 [[package]]
 name = "clax-realtime"
-version = "0.5.0"
+version = "0.6.0"
 dependencies = [
  "bytes",
  "chrono",
@@ -403,7 +403,7 @@ dependencies = [
 
 [[package]]
 name = "clax-rt"
-version = "0.5.0"
+version = "0.6.0"
 dependencies = [
  "futures-channel",
  "futures-util",
@@ -416,7 +416,7 @@ dependencies = [
 
 [[package]]
 name = "clax-sample"
-version = "0.5.0"
+version = "0.6.0"
 dependencies = [
  "base64 0.22.1",
  "chrono",
@@ -433,7 +433,7 @@ dependencies = [
 
 [[package]]
 name = "clax-server"
-version = "0.5.0"
+version = "0.6.0"
 dependencies = [
  "anyhow",
  "axum",
@@ -471,7 +471,7 @@ dependencies = [
 
 [[package]]
 name = "clax-store"
-version = "0.5.0"
+version = "0.6.0"
 dependencies = [
  "async-trait",
  "base64 0.22.1",
@@ -494,7 +494,7 @@ dependencies = [
 
 [[package]]
 name = "clax-testkit"
-version = "0.5.0"
+version = "0.6.0"
 dependencies = [
  "async-trait",
  "axum",

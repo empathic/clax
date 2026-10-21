@@ -1,6 +1,6 @@
 {
   "name": "@empathic/clax-pi",
-  "version": "0.5.0",
+  "version": "0.6.0",
   "description": "Clax tools for the Pi coding agent: publish HTML pages to a local Clax server",
   "keywords": [
     "pi-package",
