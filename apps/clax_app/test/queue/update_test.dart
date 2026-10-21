@@ -1006,6 +1006,33 @@ void main() {
         reason: 'three run again, oldest first; Keep going and the queued job wait',
       );
     });
+
+    test('the worker says Paused once every pause it moved is answered', () {
+      final m0 = model(jobs: [job('x'), job('y', state: JobState.waiting)]);
+      var (m, e) = update(m0, const OutOfTime());
+      expect(e.whereType<Paused>(), isEmpty, reason: 'the moves are in flight');
+      final pauses = e.whereType<MoveJob>().toList();
+      expect(pauses, hasLength(2));
+      final x = m.jobs['x']!.copyWith(state: JobState.paused, rev: 2);
+      (m, e) = update(m, Committed(pauses[0].id, x));
+      expect(e.whereType<Paused>(), isEmpty, reason: 'y is not paused yet');
+      final y = m.jobs['y']!.copyWith(state: JobState.paused, rev: 2);
+      (m, e) = update(m, Committed(pauses[1].id, y));
+      expect(e.whereType<Paused>(), hasLength(1));
+      (m, e) = update(m, Tick(t0));
+      expect(e.whereType<Paused>(), isEmpty, reason: 'said once');
+    });
+
+    test('with nothing running, Paused answers OutOfTime at once; without '
+        'the queue, too', () {
+      final (_, e1) = update(model(), const OutOfTime());
+      expect(e1.whereType<Paused>(), hasLength(1));
+      final (_, e2) = update(
+        model(owned: false, jobs: [job('x')]),
+        const OutOfTime(),
+      );
+      expect(e2.whereType<Paused>(), hasLength(1));
+    });
   });
 
   group('rule 11: keep-alive follows running and waiting jobs', () {

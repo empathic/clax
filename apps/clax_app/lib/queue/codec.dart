@@ -15,8 +15,9 @@ import 'effect.dart';
 import 'model.dart';
 import 'msg.dart';
 
-/// The wire's version; a decoder refuses any other.
-const int codecVersion = 1;
+/// The wire's version; a decoder refuses any other. Version 2 added the
+/// worker's `Paused`.
+const int codecVersion = 2;
 
 // ------------------------------------------------------------ boundary types
 
@@ -123,7 +124,7 @@ sealed class ToUi {
 }
 
 /// One of the worker's effects the UI carries out: `PublishState`,
-/// `Notice` or `KeepAlive`. Any effect encodes.
+/// `Notice`, `KeepAlive` or `Paused`. Any effect encodes.
 final class UiEffect extends ToUi {
   const UiEffect(this.effect);
   final Effect effect;
@@ -886,6 +887,7 @@ Map<String, Object?> _effect(Effect e) => switch (e) {
       'artifactId': artifactId,
     },
   KeepAlive(:final id, :final on) => {'t': 'keepAlive', 'id': id, 'on': on},
+  Paused(:final id) => {'t': 'paused', 'id': id},
   PublishState(:final id, :final state) => {
     't': 'publishState',
     'id': id,
@@ -974,6 +976,7 @@ final Map<String, Effect Function(_R)> _effectDecoders = {
     artifactId: r.strOrNull('artifactId'),
   ),
   'keepAlive': (r) => KeepAlive(r.integer('id'), r.boolean('on')),
+  'paused': (r) => Paused(r.integer('id')),
   'publishState': (r) =>
       PublishState(r.integer('id'), r.obj('state', _stateOf)),
 };

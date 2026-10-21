@@ -45,8 +45,8 @@ const builderStoppedError = 'builder_stopped';
 /// renders are answered by [render]: each worker gets an endpoint of its
 /// own, served at its spawn (so it hears `CanRender` first) and closed at
 /// its end, so a restarted worker is served again and a dead one's renders
-/// end. The worker's other news for the UI (`KeepAlive`, `Notice`) goes to
-/// [onEffect].
+/// end. The worker's other news for the UI (`KeepAlive`, `Notice`,
+/// `Paused`) goes to [onEffect].
 final class IsolateQueueClient implements QueueClient {
   IsolateQueueClient._(
     this._start,
@@ -61,7 +61,8 @@ final class IsolateQueueClient implements QueueClient {
   /// worker's effect runner in the worker isolate. [render] answers the
   /// worker's renders; with none, every render is answered gone and the
   /// worker hears it cannot render. [onEffect] hears the worker's
-  /// `KeepAlive` and `Notice`. Intents sent before the worker is up wait
+  /// `KeepAlive`, `Notice` and `Paused`. Intents sent before the worker is
+  /// up wait
   /// for it.
   static IsolateQueueClient start({
     required int coreHandle,

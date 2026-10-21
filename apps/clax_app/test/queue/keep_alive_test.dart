@@ -5,7 +5,7 @@ import 'package:clax_app/agent/backend.dart' show AgentError;
 import 'package:clax_app/agent/runner/turn.dart';
 import 'package:clax_app/core/origins.dart';
 import 'package:clax_app/platform/background_work.dart';
-import 'package:clax_app/queue/effect.dart' show KeepAlive;
+import 'package:clax_app/queue/effect.dart' show KeepAlive, Paused;
 import 'package:clax_app/queue/host.dart';
 import 'package:clax_app/queue/keep_alive.dart';
 import 'package:clax_app/queue/model.dart';
@@ -107,6 +107,8 @@ void main() {
       tell: (news) => h.tell(news),
       title: 'Making your apps',
       step: 'Starting',
+      // Past any test's time: the worker's Paused alone ends the wait.
+      pauseBound: const Duration(minutes: 10),
     );
     return host = h = QueueHost.start(
       coreHandle: 7,
@@ -126,6 +128,7 @@ void main() {
       ),
       onEffect: (e) {
         if (e is KeepAlive) k.apply(e);
+        if (e is Paused) k.workerPaused();
       },
       attach: server.attach,
     );
@@ -190,6 +193,45 @@ void main() {
     expect(c.jobs.row('j1')['state'], 'paused');
     expect(work.calls.last, 'stop');
     expect(work.asked, isEmpty, reason: 'nothing may schedule a wake');
+  });
+
+  test("iOS's expiry is acknowledged only once the worker's pause is "
+      "answered: a late PATCH holds the platform's pauseDone", () async {
+    final c = coreWith();
+    final work = _Work(pausesRuns: true);
+    final h = start(c.server, work, heldModel);
+    final k = keepAlive!;
+    // The app's acknowledgement (lib/app.dart _pauseRuns): pauseDone once
+    // the worker's jobs are paused.
+    work.stopped.listen((_) async {
+      await k.paused;
+      await work.pauseDone();
+    });
+    h.client.send(const Make('j1', 'a todo app', title: 'a todo app'));
+    await stateWhere(
+      h.client,
+      (s) => s.jobs.isNotEmpty && s.jobs.single.state == JobState.running,
+    );
+    await heard(work, 'start(Making your apps, Starting)');
+
+    final asked = Completer<void>();
+    final answer = Completer<void>();
+    c.jobs.beforeMove = (id, body) {
+      if (body['state'] != 'paused') return null;
+      if (!asked.isCompleted) asked.complete();
+      return answer.future;
+    };
+    var acknowledged = false;
+    work.stopNow();
+    await asked.future;
+    unawaited(k.paused.then((_) => acknowledged = true));
+    expect(acknowledged, isFalse, reason: 'the pause is not answered');
+    expect(work.calls, isNot(contains('pauseDone')));
+
+    answer.complete();
+    await heard(work, 'pauseDone');
+    expect(acknowledged, isTrue);
+    expect(c.jobs.row('j1')['state'], 'paused');
   });
 
   test("on Android's channel a make sends only the service's calls: no wake "

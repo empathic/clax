@@ -452,7 +452,7 @@ class World {
       jobId,
       const RenderOutcome(clean: true),
     ),
-    Notice() || KeepAlive() || PublishState() || StopWork() => null,
+    Notice() || KeepAlive() || Paused() || PublishState() || StopWork() => null,
   };
 
   /// Delivers every answer and event until none is left, [until] holds,
@@ -529,7 +529,7 @@ class Generator {
     for (final e in effects) {
       if (e is CommitEffect) _tokenOf[e.id] = token;
       switch (e) {
-        case Notice() || KeepAlive() || PublishState():
+        case Notice() || KeepAlive() || Paused() || PublishState():
           break;
         case StopWork(:final jobId):
           // The runner abandons the work; an answer it already sent may
@@ -681,7 +681,7 @@ class Generator {
         return rnd.nextInt(3) == 0
             ? RenderLost(id, jobId)
             : Rendered(id, jobId, RenderOutcome(clean: rnd.nextBool()));
-      case Notice() || KeepAlive() || PublishState() || StopWork():
+      case Notice() || KeepAlive() || Paused() || PublishState() || StopWork():
         return null;
     }
   }

@@ -261,14 +261,14 @@ void _handle(QueueTurn t, Msg msg) {
     case Woke(:final foreground):
       if (!foreground) return;
       // In the foreground the time is the app's again: paused jobs resume.
-      t.m = t.m.copyWith(suspended: false);
+      t.m = t.m.copyWith(suspended: false, pausing: false);
       if (t.m.local.values.any((l) => l.waitingFor == WaitingFor.claude)) {
         t.probe();
       }
     case OutOfTime():
       // The resume table pauses what runs, and starts nothing, until the
-      // app is in the foreground again.
-      t.m = t.m.copyWith(suspended: true);
+      // app is in the foreground again; Paused answers once it has.
+      t.m = t.m.copyWith(suspended: true, pausing: true);
   }
 }
 
@@ -589,7 +589,8 @@ void _settle(QueueTurn t) {
   }
 }
 
-/// Keep-alive and the UI's state follow the model.
+/// Keep-alive, the answer to `OutOfTime` and the UI's state follow the
+/// model.
 void _finish(QueueTurn t, QueueModel before) {
   final active = t.m.jobs.values.any(
     (j) => j.state == JobState.running || j.state == JobState.waiting,
@@ -597,6 +598,12 @@ void _finish(QueueTurn t, QueueModel before) {
   if (active != t.m.keepAlive) {
     t.m = t.m.copyWith(keepAlive: active);
     t.emit((id) => KeepAlive(id, active));
+  }
+  // Out of time: answered once no job runs or waits (every pause moved is
+  // answered), or at once by a worker that cannot move them.
+  if (t.m.pausing && (!active || !t.canWrite)) {
+    t.m = t.m.copyWith(pausing: false);
+    t.emit(Paused.new);
   }
   final view = viewOf(t.m);
   if (view != viewOf(before)) t.emit((id) => PublishState(id, view));

@@ -917,7 +917,8 @@ RenderService ◄── RenderRequest ◄─────────────
     in flight is this effect: whether it is the last try, and when it
     counts as lost), `ProbeClaude()`;
   - *the queue's own*: `ClaimOwner()`, `LoadJobs()`, `Notice(kind, jobId,
-    title)`, `KeepAlive(on)`, `PublishState(state)`.
+    title)`, `KeepAlive(on)`, `Paused()` (the answer to `OutOfTime`,
+    §7.6), `PublishState(state)`.
 - **The effect runner** (`lib/queue/runner.dart`) runs each effect and
   feeds its result back as a message. It is the only code in the worker
   that knows the core's routes: it maps each commit effect to its route of
@@ -1095,7 +1096,13 @@ running out of time is `paused` (a `MoveJob`): `OutOfTime` suspends the
 queue (`suspended`), under which `next` pauses every running and waiting
 job and starts nothing (no queued or paused job moves to running, Keep
 going and Retry are held, no turn starts), however many slots the pauses
-free, until `Woke(foreground: true)`. A launch starts unsuspended. A job
+free, until `Woke(foreground: true)`. The worker answers `OutOfTime` with
+`Paused` once no job runs or waits (every pause it moved is answered), or
+at once when it does not hold the queue; on iOS the app tells the
+platform its runs are paused (`pauseDone`, which ends the background
+task) only then, or 1.5 s after the stop if `Paused` has not come, under
+the 2 s `ios/Runner/Background.swift` waits for it (`QueueKeepAlive.paused`;
+the codec's version 2 added `Paused`). A launch starts unsuspended. A job
 interrupted by the OS or a kill on any platform resumes at the next launch
 (S6); nothing wakes the app to run it.
 

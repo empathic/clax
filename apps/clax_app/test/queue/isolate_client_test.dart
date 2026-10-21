@@ -521,7 +521,7 @@ final class _FakeRunner implements WorkerRunner {
         );
       case ProbeClaude():
         scheduleMicrotask(() => context.send(const ClaudeReachable(true)));
-      case KeepAlive() || Notice():
+      case KeepAlive() || Notice() || Paused():
         context.toUi(UiEffect(e));
       case StopWork() || PublishState():
         break;

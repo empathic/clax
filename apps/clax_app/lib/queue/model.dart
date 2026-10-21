@@ -377,6 +377,7 @@ final class QueueModel {
     this.pending = const [],
     this.keepAlive = false,
     this.suspended = false,
+    this.pausing = false,
     this.claude = Reachability.unknown,
     this.canRender = true,
     this.probe = const ProbeIdle(),
@@ -404,6 +405,10 @@ final class QueueModel {
   /// job starts or goes on. A launch starts unsuspended, so paused jobs
   /// resume then.
   final bool suspended;
+
+  /// Whether `OutOfTime` awaits its answer, `Paused`: the worker says it
+  /// once every pause it moved is answered.
+  final bool pausing;
   final Reachability claude;
   final bool canRender;
 
@@ -435,6 +440,7 @@ final class QueueModel {
     List<Intent>? pending,
     bool? keepAlive,
     bool? suspended,
+    bool? pausing,
     Reachability? claude,
     bool? canRender,
     Probe? probe,
@@ -448,6 +454,7 @@ final class QueueModel {
     pending: pending ?? this.pending,
     keepAlive: keepAlive ?? this.keepAlive,
     suspended: suspended ?? this.suspended,
+    pausing: pausing ?? this.pausing,
     claude: claude ?? this.claude,
     canRender: canRender ?? this.canRender,
     probe: probe ?? this.probe,
@@ -465,6 +472,7 @@ final class QueueModel {
       listEquals(other.pending, pending) &&
       other.keepAlive == keepAlive &&
       other.suspended == suspended &&
+      other.pausing == pausing &&
       other.claude == claude &&
       other.canRender == canRender &&
       other.probe == probe &&
@@ -479,6 +487,7 @@ final class QueueModel {
     Object.hashAll(pending),
     keepAlive,
     suspended,
+    pausing,
     claude,
     canRender,
     probe,

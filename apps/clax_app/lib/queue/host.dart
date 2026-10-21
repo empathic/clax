@@ -81,9 +81,10 @@ abstract interface class QueueRun {
 /// - **The platform's news.** [onEffect] hears the worker's `KeepAlive`
 ///   (start or stop the background work: `ChannelBackgroundWork` on
 ///   Android, `IosBackgroundWork` on iOS) and `Notice` (a job ended or
-///   stopped while no view showed it). [tell] passes the app's lifecycle
-///   on: `Woke(foreground:)` when it comes back, `OutOfTime` when the
-///   system's time for it runs out.
+///   stopped while no view showed it), and `Paused` (its jobs paused after
+///   `OutOfTime`). [tell] passes the app's lifecycle on:
+///   `Woke(foreground:)` when it comes back, `OutOfTime` when the system's
+///   time for it runs out.
 ///
 /// Lifecycle: [start] spawns the worker at once and returns; intents sent
 /// before it is up wait for it. [dispose] ends the worker (its claim on

@@ -154,6 +154,9 @@ abstract interface class UiPort {
   /// Whether the app is to keep running for the queue.
   void keepAlive(KeepAlive keepAlive);
 
+  /// The worker's jobs are paused after `OutOfTime`.
+  void paused(Paused paused);
+
   /// What the UI shows of the queue now.
   void publishState(PublishState state);
 }
@@ -167,6 +170,8 @@ final class _ToUi implements UiPort {
   void notice(Notice notice) => _toUi(UiEffect(notice));
   @override
   void keepAlive(KeepAlive keepAlive) => _toUi(UiEffect(keepAlive));
+  @override
+  void paused(Paused paused) => _toUi(UiEffect(paused));
   @override
   void publishState(PublishState state) => _toUi(UiEffect(state));
 }
@@ -224,7 +229,7 @@ class EffectRunner implements WorkerRunner {
   /// core's events at once: its calls go to the worker's core over a
   /// [CoreTransport], its answers to [WorkerContext.send], its renders to
   /// the worker's [WorkerContext.render] (unless [render] is given), and
-  /// `Notice` and `KeepAlive` to [WorkerContext.toUi] as the codec's
+  /// `Notice`, `KeepAlive` and `Paused` to [WorkerContext.toUi] as the codec's
   /// [UiEffect]s. With [importJson], it runs [importJsonState] on the
   /// worker's support directory before each load of the jobs.
   factory EffectRunner.forWorker(
@@ -373,6 +378,8 @@ class EffectRunner implements WorkerRunner {
         ui.notice(e);
       case KeepAlive():
         ui.keepAlive(e);
+      case Paused():
+        ui.paused(e);
       case PublishState():
         ui.publishState(e);
     }

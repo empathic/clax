@@ -394,6 +394,20 @@ final class KeepAlive extends Effect {
   String toString() => 'KeepAlive#$id($on)';
 }
 
+/// The worker's answer to `OutOfTime`: every pause it moved is answered
+/// (no job runs or waits), or it does not hold the queue and can move
+/// none. The app tells the platform its runs are paused only then, or at
+/// its bound (`QueueKeepAlive.paused`).
+final class Paused extends Effect {
+  const Paused(super.id);
+  @override
+  bool operator ==(Object other) => other is Paused && other.id == id;
+  @override
+  int get hashCode => Object.hash(97, id);
+  @override
+  String toString() => 'Paused#$id';
+}
+
 /// What the UI sees changed.
 final class PublishState extends Effect {
   const PublishState(super.id, this.state);
