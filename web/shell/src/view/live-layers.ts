@@ -8,6 +8,8 @@
 
 import type { FramePeer, LivePoint, LiveSelection } from "../../../bridge/src/protocol";
 import { after } from "../clock";
+import { socketUrl } from "../socket-url";
+import { onHost } from "../transport";
 
 /** Colours of the live palette by index, as drawn in the content frame over
  * the page's own colours (one set for both themes; the shell's chrome uses
@@ -306,7 +308,8 @@ export type LiveHandlers = {
  * seat that frees between the socket's request and the stream's leaves the
  * view live. What is sent while it is not open is dropped; `opened` lets the
  * owner send its state again. `pause` closes it until `resume` (a spectator
- * holds no live socket).
+ * holds no live socket). Without a URL (`liveUrl`: the Clax app) it never
+ * opens.
  */
 export class LiveSocket {
   private ws: SocketLike | null = null;
@@ -316,14 +319,14 @@ export class LiveSocket {
   private open = false;
 
   constructor(
-    private readonly url: string,
+    private readonly url: string | null,
     private readonly on: LiveHandlers,
     private readonly make: (url: string) => SocketLike = u => new WebSocket(u) as unknown as SocketLike,
     private readonly timers: Timers = realTimers,
   ) {}
 
   start(): void {
-    if (this.ws || this.stopped || this.paused) return;
+    if (this.ws || this.stopped || this.paused || this.url === null) return;
     const s = this.make(this.url);
     this.ws = s;
     s.onopen = () => {
@@ -378,6 +381,8 @@ export class LiveSocket {
   }
 }
 
-/** The live socket's URL for artifact `id` on this shell's origin. */
-export const liveUrl = (id: string, loc: { protocol: string; host: string } = location): string =>
-  `${loc.protocol === "https:" ? "wss" : "ws"}://${loc.host}/api/artifacts/${encodeURIComponent(id)}/live`;
+/** The live socket's URL for artifact `id` on this shell's origin, or null
+ * where the shell opens no WebSocket (`socketUrl`: in the Clax app, or on
+ * an origin neither `https:` nor `http:`). */
+export const liveUrl = (id: string, loc: { protocol: string; host: string } = location, app = onHost()): string | null =>
+  socketUrl(`${loc.protocol}//${loc.host}`, `/api/artifacts/${encodeURIComponent(id)}/live`, app);

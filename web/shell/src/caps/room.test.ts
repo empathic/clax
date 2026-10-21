@@ -97,6 +97,21 @@ describe("room handler", () => {
     expect(lan.sock().url).not.toContain("token=");
   });
 
+  it("in the Clax app refuses every call capability_disabled and opens no socket, whose URL would carry the owner's token", async () => {
+    Object.defineProperty(window, "claxTransport", { configurable: true, value: Object.freeze({ embed: { transport: "host", shell: "https://app.clax.invalid", content: "https://{id}.c.clax.invalid" } }) });
+    try {
+      const { handler, events } = setup("owner-token");
+      for (const [method, args] of [["connect", []], ["presence", [null, {}]], ["join", ["r"]], ["emit", [null, "t"]], ["leave", ["r"]]] as const) {
+        await expect(handler.call(method, [...args])).rejects.toMatchObject({ code: "capability_disabled" });
+      }
+      await vi.advanceTimersByTimeAsync(60_000);
+      expect(FakeSocket.all).toEqual([]);
+      expect(events()).toEqual([]);
+    } finally {
+      delete (window as { claxTransport?: unknown }).claxTransport;
+    }
+  });
+
   it("emit waits for the ack, passes a nack's code through, and times out as upstream_error", async () => {
     const { handler, sock } = setup();
     await handler.call("connect", []);

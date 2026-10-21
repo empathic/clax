@@ -22,6 +22,8 @@
 // `last_event_id` parameter. Each text message is one SSE block, read as
 // the body's blocks are; the hub sends `ping` every `SOCKET_PING_MS`, which
 // the server answers `pong` without waking, in place of the keep-alive.
+// Only on an `https:` (`wss:`) or plain-`http:` (`ws:`) origin, and never on
+// the app's host (`socketUrl`): there a 426 fails the connection.
 //
 // On the Clax app's host (`host`: the shell runs on the app's transport,
 // `transport.ts`, whose `GET /api/stream` the app fills with the core's
@@ -46,6 +48,7 @@
 // the newest `CATCH_UP_SHOWN` of them.
 import { STUCK_MS, backoff } from "./lifecycle";
 import { parseBlock } from "./sse";
+import { socketUrl } from "./socket-url";
 
 /** What a tab sends the hub. `hello` names the tab's Web Lock (held while
  * the tab lives), when it has one; `topics` is the tab's whole set;
@@ -397,7 +400,8 @@ export class Hub {
     return new Promise<void>((_, reject) => {
       const q = this.streamId ? `?last_event_id=${encodeURIComponent(`${this.streamId}:${this.seq}`)}` : "";
       const origin = this.env.base ?? (globalThis as { location?: { origin: string } }).location?.origin ?? "";
-      const url = origin.replace(/^http/, "ws") + `/api/stream${q}`;
+      const url = socketUrl(origin, `/api/stream${q}`, !!this.env.host);
+      if (url === null) return reject(new Error("no WebSocket here"));
       const ws = (this.env.socket ?? (u => new WebSocket(u)))(url);
       const ping = setInterval(() => { try { ws.send("ping"); } catch { /* closing */ } }, SOCKET_PING_MS);
       let done = false;

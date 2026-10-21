@@ -13,7 +13,7 @@ import { readFileSync } from "node:fs";
 import type { Frame, Page } from "@playwright/test";
 import { hostChannel, host } from "./app-host";
 import { type AppHost, type AppHostOptions, BINDING, PART, SHELL, SseBlocks, answerScripts, content, startEmbedDaemon } from "./app-scheme";
-import { test as base, expect, type Daemon, api, publish } from "./fixtures";
+import { test as base, expect, type Daemon, api, publish, publishWith } from "./fixtures";
 import { quietEval } from "./time";
 import { REQUEST_STUCK } from "../shell/src/conn-notice";
 import { STUCK_MS } from "../shell/src/lifecycle";
@@ -570,6 +570,27 @@ test("a page reads nothing of the shell and reaches nothing on its channel", asy
   await expect.poll(() => shellDocs().length).toBeGreaterThanOrEqual(1);
   const refused = shellDocs();
   expect(refused.map(s => s.status)).toEqual(refused.map(() => 403));
+});
+
+test("the app opens no WebSocket: the live layers start none, and a page's room is refused capability_disabled", async ({ page }) => {
+  // A socket from the app would leave its scheme handlers for the network,
+  // the room's with the owner's token in its URL.
+  const sockets: string[] = [];
+  await page.routeWebSocket(/.*/, ws => { sockets.push(ws.url()); ws.close(); });
+  const html = `<!doctype html><html><head><title>Room</title></head><body><p id="out">waiting</p>
+<script>(async () => { const out = document.getElementById("out"); const room = await claude.use("room"); if (!room) { out.textContent = "null"; return; }
+try { await room.join("table"); out.textContent = "joined"; } catch (e) { out.textContent = e.code; } })();</script></body></html>`;
+  const { artifact } = await publishWith(d.base, d.token, "Transport no sockets", html, { room: {} });
+  const h = await hostChannel(page, { relay: d });
+  await page.goto(`${SHELL}/a/${artifact.id}?app=1`);
+  const frame = await appFrame(page, artifact.id, 1);
+  await live(h);
+  await expect(frame.locator("#out")).toHaveText("capability_disabled");
+  // The live layers start with the presence reporter, whose first read follows the first paint.
+  await expect.poll(() => h.callsTo("GET", `/api/artifacts/${artifact.id}/presence`).length).toBeGreaterThan(0);
+  await h.idle();
+  await h.barrier();
+  expect(sockets).toEqual([]);
 });
 
 test("a page's conditional request is answered whole: the scheme forwards Accept, never If-None-Match or If-Modified-Since", async ({ page }) => {

@@ -8,10 +8,14 @@
 // re-sends nothing. The daemon fixes a socket's level when it opens, so when
 // the viewer's name changes (a LAN viewer who names themselves moves from
 // `view` to `interact`) the shell opens a new socket under the same label,
-// which replaces the old one without the page seeing it leave. Only frames of
+// which replaces the old one without the page seeing it leave. In the Clax
+// app, whose core refuses `/room` and whose scheme handlers see no WebSocket,
+// every call is refused `capability_disabled` and no socket opens. Only frames of
 // the daemon's shapes reach the page (`checkFrame`). This module is a lazy
 // chunk (registry.ts), loaded on the page's first room call.
 import { onViewer } from "../threads";
+import { socketUrl } from "../socket-url";
+import { onHost } from "../transport";
 import { CapError, SPECTATING } from "./errors";
 import type { HandlerFactory } from "./host";
 
@@ -92,6 +96,8 @@ export function makeRoomHandler(
   viewers: Viewers = onViewer as Viewers,
 ): HandlerFactory {
   return env => {
+    // None in the Clax app (`socketUrl`), where every call is refused.
+    const base = socketUrl(location.origin, `/api/artifacts/${env.aid}/room`, onHost());
     let label = peerLabel();
     let ws: SocketLike | null = null;
     let isOpen = false;
@@ -108,8 +114,7 @@ export function makeRoomHandler(
 
     const push = (topic: string, data: unknown) => env.post({ type: "clax:event", ns: "room", topic, data });
     // The owner shell appends the token: a WebSocket cannot send an Authorization header.
-    const url = () => `${location.protocol === "https:" ? "wss" : "ws"}://${location.host}/api/artifacts/${env.aid}/room?peer=${label}`
-      + (env.token ? `&token=${encodeURIComponent(env.token)}` : "");
+    const url = () => `${base}?peer=${label}` + (env.token ? `&token=${encodeURIComponent(env.token)}` : "");
 
     function failWaiters(message: string) {
       for (const w of waiting.values()) { clearTimeout(w.timer); w.reject(new CapError("upstream_error", message)); }
@@ -226,6 +231,7 @@ export function makeRoomHandler(
 
     return {
       async call(method, args) {
+        if (base === null) throw new CapError("capability_disabled", "rooms are not available in this view");
         switch (method) {
           case "connect":
             wanted = true;

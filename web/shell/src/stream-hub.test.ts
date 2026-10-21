@@ -577,6 +577,19 @@ describe("the stream hub on the app's host (`host: true`)", () => {
   afterEach(() => { host.close(); });
   const TEN_MINUTES = 10 * 60_000;
 
+  it("opens no WebSocket, even on a stream answered 426", async () => {
+    host.close();
+    const socks: string[] = [];
+    const f = (async (input: RequestInfo | URL, init?: RequestInit) => String(input) === "/api/stream"
+      ? new Response(JSON.stringify({ error: { code: "websocket_required" } }), { status: 426 })
+      : net.fetch(input, init)) as typeof fetch;
+    host = new Hub({ host: true, fetch: f, send: () => {}, socket: url => { socks.push(url); return { send() {}, close() {} } as unknown as WebSocket; } });
+    host.receive("t1", { t: "topics", topics: [`artifact:${A}`] });
+    await tick();
+    await vi.advanceTimersByTimeAsync(60_000);
+    expect(socks).toEqual([]);
+  });
+
   it("waits on a stream that says nothing, with no status and no reconnect, where a browser's hub gives up", async () => {
     host.receive("t1", { t: "topics", topics: [`artifact:${A}`] });
     await tick();
