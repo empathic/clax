@@ -525,6 +525,7 @@ final class JobView {
     this.artifactId,
     this.error,
     this.offers = const {},
+    this.progress,
   });
 
   final JobId id;
@@ -536,6 +537,9 @@ final class JobView {
   final String? artifactId;
   final String? error;
   final Set<Offer> offers;
+
+  /// How far the job's plan is ([planProgressOf]); null while it has none.
+  final PlanProgress? progress;
 
   @override
   bool operator ==(Object other) =>
@@ -549,7 +553,8 @@ final class JobView {
       other.artifactId == artifactId &&
       other.error == error &&
       other.offers.length == offers.length &&
-      other.offers.containsAll(offers);
+      other.offers.containsAll(offers) &&
+      other.progress == progress;
   @override
   int get hashCode => Object.hash(
     id,
@@ -561,9 +566,74 @@ final class JobView {
     artifactId,
     error,
     Object.hashAllUnordered(offers),
+    progress,
   );
   @override
   String toString() => 'JobView($id, ${state.name}, $offers)';
+}
+
+/// How far a plan is: the features done, of those not dropped.
+typedef PlanProgress = ({int done, int total});
+
+/// How far job [j]'s plan is, from its row alone: the agent's `plan_set`
+/// and `plan_mark` calls of its committed turns, replayed in turn order
+/// as `PlanStore` applies them (lib/agent/plan.dart). A `plan_set` the
+/// tool would refuse (no features, a feature without an ID or a title, an
+/// ID given twice, a status it does not know) changes nothing, nor does a
+/// `plan_mark` of a feature the plan does not hold. Null while the job
+/// planned nothing, or every feature is dropped.
+///
+/// A call counts once its turn is committed, before the queue runs it.
+/// The plan of the worker's `PlanStore` is not read: it lives in the
+/// worker's memory, while the row survives a restart.
+PlanProgress? planProgressOf(Job j) {
+  final turns = <(int, TurnNotes)>[
+    for (final e in j.steps.entries)
+      if ((e.key, e.value) case (
+        TurnKey(:final turn),
+        TurnStepResult(:final notes),
+      ))
+        (turn, notes),
+  ]..sort((a, b) => a.$1.compareTo(b.$1));
+  const statuses = {'todo', 'doing', 'done', 'dropped'};
+  Map<String, String>? plan;
+  for (final (_, notes) in turns) {
+    for (final call in notes.calls) {
+      switch (call) {
+        case OtherCall(name: 'plan_set', args: {'features': final List fs})
+            when fs.isNotEmpty:
+          final set = <String, String>{};
+          for (final f in fs) {
+            if (f case {
+              'id': final String id,
+              'title': final String title,
+              'status': final String status,
+            } when id.trim().isNotEmpty &&
+                title.trim().isNotEmpty &&
+                statuses.contains(status) &&
+                !set.containsKey(id.trim())) {
+              set[id.trim()] = status;
+            } else {
+              set.clear();
+              break;
+            }
+          }
+          if (set.isNotEmpty) plan = set;
+        case OtherCall(
+              name: 'plan_mark',
+              args: {'id': final String id, 'status': final String status},
+            )
+            when statuses.contains(status) && (plan?.containsKey(id) ?? false):
+          plan![id] = status;
+        default:
+          break;
+      }
+    }
+  }
+  if (plan == null) return null;
+  final total = plan.values.where((s) => s != 'dropped').length;
+  if (total == 0) return null;
+  return (done: plan.values.where((s) => s == 'done').length, total: total);
 }
 
 /// What the UI sees (spec §7.2).
@@ -622,6 +692,7 @@ QueueState viewOf(QueueModel m) {
             ? j.error?.code
             : null,
         offers: offersOf(j.state, j.carry),
+        progress: planProgressOf(j),
       ),
     for (final e in m.inFlight.values)
       if (e is CreateJob) ?queued(e.jobId, e.kind, e.title, e.artifactId),

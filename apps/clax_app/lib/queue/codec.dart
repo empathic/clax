@@ -16,8 +16,8 @@ import 'model.dart';
 import 'msg.dart';
 
 /// The wire's version; a decoder refuses any other. Version 2 added the
-/// worker's `Paused`.
-const int codecVersion = 2;
+/// worker's `Paused`; version 3 a job's plan progress in the UI's state.
+const int codecVersion = 3;
 
 // ------------------------------------------------------------ boundary types
 
@@ -1016,6 +1016,10 @@ Map<String, Object?> _view(JobView v) => {
   'artifactId': v.artifactId,
   'error': v.error,
   'offers': [for (final o in v.offers) o.name],
+  'progress': switch (v.progress) {
+    null => null,
+    (:final done, :final total) => {'done': done, 'total': total},
+  },
 };
 
 JobView _viewOf(_R r) {
@@ -1041,6 +1045,10 @@ JobView _viewOf(_R r) {
     artifactId: r.strOrNull('artifactId'),
     error: r.strOrNull('error'),
     offers: offers,
+    progress: r.objOrNull(
+      'progress',
+      (p) => (done: p.integer('done'), total: p.integer('total')),
+    ),
   );
 }
 

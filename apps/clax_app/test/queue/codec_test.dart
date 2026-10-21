@@ -66,18 +66,35 @@ void main() {
         for (final (_, e) in effectSamples) encodeEffect(e)['t'],
       }, containsAll(effectTags));
     });
-    test('the wire is version 2, which added the worker\'s Paused; a '
-        'version 1 envelope is refused', () {
-      expect(codecVersion, 2);
+    test('the wire is version 3, which added a job\'s plan progress; a '
+        'version 2 envelope is refused', () {
+      expect(codecVersion, 3);
       expect(encodeToUi(const UiEffect(Paused(19))), {
-        'v': 2,
+        'v': 3,
         't': 'effect',
         'effect': {'t': 'paused', 'id': 19},
       });
       expect(
-        failureOf(decodeEffect({'v': 1, 't': 'paused', 'id': 19})).kind,
+        failureOf(decodeEffect({'v': 2, 't': 'paused', 'id': 19})).kind,
         CodecErrorKind.version,
       );
+    });
+    test('a job\'s plan progress crosses as {done, total}, or null', () {
+      final wire = encodeQueueState(const QueueState([fullView]));
+      expect(((wire['jobs']! as List).single as Map)['progress'], {
+        'done': 2,
+        'total': 5,
+      });
+      expect(decodeQueueState(wire).valueOrNull!.jobs.single.progress, (
+        done: 2,
+        total: 5,
+      ));
+      final none = encodeQueueState(
+        const QueueState([
+          JobView(id: 'j2', kind: JobKind.make, state: JobState.queued),
+        ]),
+      );
+      expect(((none['jobs']! as List).single as Map)['progress'], isNull);
     });
     test('message and effect tags are disjoint', () {
       expect(msgTags.toSet().intersection(effectTags.toSet()), isEmpty);
@@ -646,6 +663,7 @@ const fullView = JobView(
   artifactId: 'a1',
   error: 'doc_moved',
   offers: {Offer.retry, Offer.discard},
+  progress: (done: 2, total: 5),
 );
 
 final turnInput = TurnInput(

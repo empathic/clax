@@ -1329,6 +1329,183 @@ void main() {
     }
   });
 
+  group('a job\'s plan progress', () {
+    // A make that plans four features, builds two over two turns, then
+    // finishes.
+    TurnOutcome planning(Job job, TurnInput input) => switch (input.turn) {
+      1 => TurnOutcome(TurnNotes(calls: [_planSet(4)])),
+      2 => const TurnOutcome(
+        TurnNotes(
+          calls: [
+            OtherCall('m1', 'plan_mark', args: {'id': 'f1', 'status': 'done'}),
+            OtherCall('w1', 'write_file'),
+          ],
+        ),
+      ),
+      3 => const TurnOutcome(
+        TurnNotes(
+          calls: [
+            OtherCall('m2', 'plan_mark', args: {'id': 'f2', 'status': 'doing'}),
+            OtherCall('m3', 'plan_mark', args: {'id': 'f2', 'status': 'done'}),
+          ],
+        ),
+      ),
+      _ => TurnOutcome(
+        TurnNotes(
+          calls: [FinishCall('f${input.turn}', PublishPlan(base: input.base))],
+        ),
+      ),
+    };
+
+    PlanProgress? shown(QueueModel m) => viewOf(m).jobs.single.progress;
+    bool holds(World w, int turn) =>
+        w.m.jobs['j']?.steps.containsKey(TurnKey(turn)) ?? false;
+
+    test('a make\'s view counts the features its committed turns marked '
+        'done, of those it planned', () {
+      final w = World(FakeJobsCore(), script: planning).start();
+      w.send(const Make('j', 'a todo app'));
+      expect(shown(w.m), isNull, reason: 'nothing planned yet');
+      w.run(until: () => holds(w, 1));
+      expect(shown(w.m), (done: 0, total: 4));
+      w.run(until: () => holds(w, 2));
+      expect(shown(w.m), (done: 1, total: 4));
+      w.run(until: () => holds(w, 3));
+      expect(shown(w.m), (done: 2, total: 4));
+      // Each count was published to the UI.
+      expect(
+        [
+          for (final e in w.effects.whereType<PublishState>())
+            e.state.jobs.single.progress,
+        ],
+        containsAllInOrder(<PlanProgress?>[
+          null,
+          (done: 0, total: 4),
+          (done: 1, total: 4),
+          (done: 2, total: 4),
+        ]),
+      );
+    });
+
+    test('a worker restarted from the rows shows the same progress', () {
+      final core = FakeJobsCore();
+      final w = World(core, script: planning).start();
+      w.send(const Make('j', 'a todo app'));
+      w.run(until: () => holds(w, 3));
+      final before = shown(w.m);
+      expect(before, (done: 2, total: 4));
+
+      // Killed; a new worker knows only the core's rows.
+      core.relaunch();
+      final w2 = World(core, script: planning).start();
+      w2.run(until: () => w2.m.jobs.containsKey('j'));
+      expect(shown(w2.m), before);
+      expect(
+        shown(QueueModel(jobs: {'j': core.read('j')!})),
+        before,
+        reason: 'a model of the row alone',
+      );
+      w2.run();
+      expect(core.read('j')!.state, JobState.done);
+      expect(shown(w2.m), before, reason: 'the finish marked nothing');
+    });
+
+    test('a plan_set the tool refuses, a mark of no feature and the '
+        'features dropped do not count', () {
+      PlanProgress? of(List<List<ToolCall>> turns) => planProgressOf(
+        job(
+          'j',
+          steps: {
+            for (final (i, calls) in turns.indexed)
+              TurnKey(i + 1): turnOf(calls),
+          },
+        ),
+      );
+      OtherCall mark(String id, String status) => OtherCall(
+        'm$id$status',
+        'plan_mark',
+        args: {'id': id, 'status': status},
+      );
+
+      expect(
+        of([
+          [mark('f1', 'done')],
+        ]),
+        isNull,
+        reason: 'no plan yet',
+      );
+      expect(
+        of([
+          [_planSet(3)],
+          [mark('f9', 'done')],
+        ]),
+        (done: 0, total: 3),
+      );
+      expect(
+        of([
+          [_planSet(3)],
+          [mark('f1', 'finished')],
+        ]),
+        (done: 0, total: 3),
+      );
+      expect(
+        of([
+          [_planSet(3)],
+          [mark('f1', 'done'), mark('f2', 'dropped')],
+        ]),
+        (done: 1, total: 2),
+      );
+      expect(
+        of([
+          [_planSet(3)],
+          [
+            const OtherCall(
+              'bad',
+              'plan_set',
+              args: {
+                'features': [
+                  {'id': 'a', 'title': 'A', 'status': 'done'},
+                  {'id': 'a', 'title': 'Again', 'status': 'done'},
+                ],
+              },
+            ),
+          ],
+        ]),
+        (done: 0, total: 3),
+        reason: 'an ID given twice is refused whole',
+      );
+      expect(
+        of([
+          [_planSet(3)],
+          [_planSet(2, done: 1)],
+        ]),
+        (done: 1, total: 2),
+        reason: 'a later plan_set replaces the plan',
+      );
+      expect(
+        of([
+          [_planSet(1)],
+          [mark('f1', 'dropped')],
+        ]),
+        isNull,
+        reason: 'every feature dropped',
+      );
+      // Turns count in their order, whatever order the row lists them in.
+      expect(
+        planProgressOf(
+          job(
+            'j',
+            steps: {
+              const TurnKey(2): turnOf([mark('f1', 'done')]),
+              const TurnKey(1): turnOf([_planSet(2)]),
+            },
+          ),
+        ),
+        (done: 1, total: 2),
+      );
+    });
+  });
+
   group('resume', () {
     for (final (kind, intent) in <(JobKind, Intent)>[
       (JobKind.make, const Make('j', 'a todo app')),
@@ -1788,3 +1965,21 @@ final List<_NextRow> _nextTable = [
     want: null,
   ),
 ];
+
+/// An agent's `plan_set` of [n] features, `f1` to `fn`, the first [done]
+/// of them done.
+OtherCall _planSet(int n, {int done = 0}) => OtherCall(
+  'p$n',
+  'plan_set',
+  args: {
+    'features': [
+      for (var i = 1; i <= n; i++)
+        {
+          'id': 'f$i',
+          'title': 'Feature $i',
+          'detail': '',
+          'status': i <= done ? 'done' : 'todo',
+        },
+    ],
+  },
+);
