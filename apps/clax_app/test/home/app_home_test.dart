@@ -168,13 +168,12 @@ void main() {
     await _finish(tester);
   });
 
-  testWidgets('a launch shows the splash while the core opens, then the '
-      "home app's page under its loading cover, and times home-usable at its "
+  testWidgets("a launch shows no image of the home screen: the home app's "
+      'page comes under its loading cover, and home-usable is timed at its '
       'first shown', (tester) async {
     await recordHome(tester);
     timings.start(homeUsable);
     await tester.pumpWidget(AppRoot(services: services()));
-    expect(find.byKey(const ValueKey('splash')), findsOneWidget);
     expect(find.byType(Image), findsNothing);
     coreHost.set(const CoreReady());
     await _settle(tester);

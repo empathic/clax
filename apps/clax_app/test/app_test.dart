@@ -18,6 +18,7 @@ import 'package:clax_app/platform/intents.dart';
 import 'package:clax_app/platform/secure_key.dart';
 import 'package:clax_app/platform/settings_store.dart';
 import 'package:clax_app/ui/ai_consent_sheet.dart';
+import 'package:clax_app/ui/app_cover.dart';
 import 'package:clax_app/ui/app_screen.dart';
 import 'package:clax_app/ui/host_protocol.dart';
 import 'package:clax_app/ui/inspector_surface.dart';
@@ -779,6 +780,8 @@ void main() {
         Ready(artifact: runs, version: 1, latest: 1, file: 'index.html'),
       );
       await tester.pumpAndSettle();
+      // The cover's mark showed while the route came in: its breath ends.
+      await tester.pump(AppCover.markHold);
       expect(find.byKey(const ValueKey('comment-bar')), findsOneWidget);
       expect(notice.shown, '$runs Runs');
 
@@ -1304,6 +1307,8 @@ void main() {
       Ready(artifact: notes, version: 1, latest: 1, file: 'index.html'),
     );
     await tester.pumpAndSettle();
+    // The cover's mark showed while the route came in: its breath ends.
+    await tester.pump(AppCover.markHold);
     expect(find.byKey(const ValueKey('comment-bar')), findsOneWidget);
     expect(notice.shown, '$notes Notes');
 
@@ -1354,6 +1359,8 @@ void main() {
 
       intents.run('comment');
       await tester.pumpAndSettle();
+      // The cover's mark showed while the route came in: its breath ends.
+      await tester.pump(AppCover.markHold);
       expect(find.byKey(const ValueKey('comment-bar')), findsOneWidget);
       expect(
         tester.widgetList(find.byType(AppScreen, skipOffstage: false)),
@@ -1384,6 +1391,8 @@ void main() {
         Ready(artifact: runs, version: 1, latest: 1, file: 'index.html'),
       );
       await tester.pumpAndSettle();
+      // The cover's mark showed while the route came in: its breath ends.
+      await tester.pump(AppCover.markHold);
       expect(find.byKey(const ValueKey('comment-bar')), findsOneWidget);
     });
 

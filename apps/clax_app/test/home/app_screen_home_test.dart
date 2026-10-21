@@ -240,7 +240,9 @@ void main() {
             (_) {},
           );
 
-      await pump(tester, home, mode: AppMode.home);
+      final page = await pump(tester, home, mode: AppMode.home);
+      // The page is up before the cover's mark: nothing keeps it.
+      page.push(Ready(artifact: home, version: 1, latest: 1, file: 'index.html'));
       await tester.pumpAndSettle();
       // Its own bar carries search and Refresh.
       expect(items.last, ['back', 'forward', 'comment', 'threads']);
