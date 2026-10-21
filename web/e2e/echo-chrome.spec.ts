@@ -2,7 +2,7 @@
 // paint, and the shell's keys (C and ?), which belong to the page while it
 // has focus and to a dialog while one is open, and are held while the viewer
 // may still be typing for the page (spec §8, "Keys"; decisions Q2 and Q6).
-import { type Frame, type Page } from "@playwright/test";
+import { type Frame, type Locator, type Page } from "@playwright/test";
 import { test, expect, type Daemon, api, contentFrame, openArtifact, postThread, publishWith } from "./fixtures";
 import { settle } from "./time";
 
@@ -346,6 +346,17 @@ async function threadState(aid: string, tid: string) {
   return list.find(x => x.id === tid);
 }
 
+/** How many Tabs from the thread pin reach `end`: the shell's focusable,
+ * rendered controls in document order (the shell sets no positive tabindex).
+ * Some chrome mounts after the threads (the New comment box loads apart), so
+ * a test that walks the controls with a fixed count of Tabs waits for this
+ * count first. */
+const tabsFromPin = (end: Locator) => end.evaluate(el => {
+  const stops = [...document.querySelectorAll<HTMLElement>("a[href], button, input, select, textarea, [tabindex]")]
+    .filter(e => e.tabIndex >= 0 && !e.matches(":disabled") && e.getClientRects().length > 0);
+  return stops.indexOf(el as HTMLElement) - stops.findIndex(e => e.matches("button.thread-pin"));
+});
+
 /** Presses `keys` on a schedule, like a person typing: none waits for the last to be handled. */
 async function typeOn(page: Page, keys: string[], spacing: number) {
   const sent: Promise<void>[] = [];
@@ -372,6 +383,7 @@ for (const mode of ["subdomain", "sandbox"] as const) {
     await page.locator(".thread-card").first().waitFor();
     // The pin is placed too: the viewer's Tabs walk it.
     await expect(page.locator("button.thread-pin")).toHaveCount(1);
+    await expect.poll(() => tabsFromPin(page.getByRole("button", { name: /^Send to / }))).toBe(12);
     await frame.locator("#a").click();
     // What looks like a fourteen-field form: Smith, Jones, Unit, City, Zone,
     // Box, Code, Main, Lot, Apt, Zip, Ward, Ref, New York. Its Tabs walk the
@@ -391,6 +403,7 @@ for (const mode of ["subdomain", "sandbox"] as const) {
     await page.locator(".thread-card").first().waitFor();
     // The pin is placed too: the viewer's Tabs walk it.
     await expect(page.locator("button.thread-pin")).toHaveCount(1);
+    await expect.poll(() => tabsFromPin(page.getByRole("textbox", { name: "Reply" }))).toBe(11);
     await frame.locator("#a").click();
     // The pin, the drawer's four layouts, Hide threads and its edge, New
     // comment, the card's box, its head, Resolve, then the Reply field: the
@@ -417,18 +430,17 @@ for (const mode of ["subdomain", "sandbox"] as const) {
   }
 
   test(`${mode}: a viewer who Tabs out of the page sends only with a click: no key clears the trail`, async ({ page }) => {
-    // Skipped in subdomain mode while its fixed count of Tab presses misses Send under load (see web/e2e/.qual).
-    test.fixme(mode === "subdomain", "flakes under load: a fixed count of Tab presses");
     const { artifact } = await publishWith(d.base, d.token, "Keyboard send", FORM, {});
     const t = await postThread(d.base, artifact.id, "Check this", "#t");
     const frame = await openArtifact(page, d.base, artifact.id, 1, mode);
     await page.locator(".thread-card").first().waitFor();
     // The pin is placed too: the viewer's Tabs walk it.
     await expect(page.locator("button.thread-pin")).toHaveCount(1);
+    const send = page.getByRole("button", { name: /^Send to / });
+    await expect.poll(() => tabsFromPin(send)).toBe(12);
     await frame.locator("#b").click();
     await page.keyboard.press("Tab");
     await expect(page.locator("button.thread-pin")).toBeFocused();
-    const send = page.getByRole("button", { name: /^Send to / });
     // The drawer's four layouts, Hide threads and its edge, New comment, Send
     // N unsent, the card's box, its head, Resolve, then Send.
     for (let i = 0; i < 12; i++) await page.keyboard.press("Tab");
