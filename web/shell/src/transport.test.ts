@@ -279,6 +279,33 @@ describe("the transport", () => {
   });
 });
 
+describe("the transport on Apple's origins (clax:)", () => {
+  const APPLE = "clax://app";
+  it("relays /api on clax://app, relative or absolute, and passes anything else to the fallback", async () => {
+    const sent: Record<string, unknown>[] = [];
+    const fb = vi.fn<typeof fetch>(async () => new Response("x"));
+    const t = transport(() => ({ postMessage: (m: string) => sent.push(JSON.parse(m) as Record<string, unknown>) }), fb, APPLE, NONCE);
+    void t.fetch("/api/a?x=1");
+    void t.fetch("clax://app/api/b", { method: "PUT", body: "b" });
+    void t.fetch(new URL("/api/c", APPLE));
+    await vi.waitFor(() => expect(sent.length).toBe(3));
+    // A body is read before its call goes, so the PUT may go last.
+    expect(sent.map(m => [m.method, m.path]).sort((x, y) => String(x[1]).localeCompare(String(y[1])))).toEqual([["GET", "/api/a?x=1"], ["PUT", "/api/b"], ["GET", "/api/c"]]);
+    const elsewhere = ["clax://abcdefghijkl.c/api/x", "clax://abcdefghijkl.c/v/1/", "/_clax/bridge.js", "clax://app/a/abcdefghijkl", "https://app/api/x", "clax://app.c/api/x"];
+    for (const u of elsewhere) await t.fetch(u);
+    expect(fb.mock.calls.map(c => String(c[0]))).toEqual(elsewhere);
+    expect(sent).toHaveLength(3);
+  });
+  it("subscribes to clax://app/api/stream and answers its blocks", async () => {
+    const sent: Record<string, unknown>[] = [];
+    const t = transport(() => ({ postMessage: (m: string) => sent.push(JSON.parse(m) as Record<string, unknown>) }), vi.fn(), APPLE, NONCE);
+    const r = await t.fetch("clax://app/api/stream?last_event_id=s%3A3");
+    expect(sent).toEqual([{ type: "subscribe", id: 1, lastEventId: "s:3", nonce: NONCE }]);
+    t.streamBlock(NONCE, 1, "event: ready\ndata: {}\n\n");
+    expect(new TextDecoder().decode((await r.body!.getReader().read()).value)).toBe("event: ready\ndata: {}\n\n");
+  });
+});
+
 const META = `{"transport":"host","shell":"clax://app","content":"clax://{id}.c"}`;
 
 function fakeWin(meta: string | null, nonce?: string) {

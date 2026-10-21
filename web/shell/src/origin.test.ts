@@ -30,6 +30,15 @@ describe("artifactOrigin in the Clax app", () => {
     }
   });
 
+  it("on Apple's clax: shell has no origin without an embed, and the clax: content origin with one", () => {
+    const apple = { hostname: "app", port: "", protocol: "clax:" } as unknown as Location;
+    expect(artifactOrigin("abcdefghijkl", apple, null)).toBeNull();
+    const o = artifactOrigin("abcdefghijkl", apple, embed("clax://{id}.c"));
+    expect(o).toBe("clax://abcdefghijkl.c");
+    expect(pageSrc("abcdefghijkl", 3, o, "docs/a b.html")).toBe("clax://abcdefghijkl.c/v/3/docs/a%20b.html");
+    expect(contentSrc("abcdefghijkl", 3, o, "k0")).toBe("clax://abcdefghijkl.c/v/3/k/k0/");
+  });
+
   it("reads the embed the app's transport installed", () => {
     Object.defineProperty(window, "claxTransport", { configurable: true, value: Object.freeze({ embed: embed("clax://{id}.c") }) });
     try {
