@@ -12,6 +12,7 @@ export 'mark.dart';
 export 'menu.dart';
 export 'scaffold.dart';
 export 'sheet.dart';
+export 'synapse.dart';
 export 'text_field.dart';
 export 'toast.dart';
 export 'toggles.dart';
