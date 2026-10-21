@@ -16,8 +16,11 @@
 # with 16 KB pages loads no library aligned less, and Google Play takes no
 # such app for SDK 35 and later), the home bundle HOME (the
 # one //apps/clax_app:home_bundle built), the third-party notices, and a
-# debug-key signature, and MainActivity's configChanges keeping the
-# activity through a resize (a Chromebook's window, a foldable unfolding).
+# debug-key signature, MainActivity's configChanges keeping the
+# activity through a resize (a Chromebook's window, a foldable unfolding),
+# and backup rules (android:dataExtractionRules, android:fullBackupContent)
+# that leave out the core's run files and flutter_secure_storage's
+# preferences.
 #
 # apk-check.sh --manifest DUMP checks only the configChanges, in DUMP, an
 # `aapt2 dump xmltree --file AndroidManifest.xml` output.
@@ -101,6 +104,29 @@ if grep -q '^application-debuggable' <<<"$badging"; then bad "a release build is
 if grep -q 'extractNativeLibs' <<<"$manifest"; then bad "the manifest leaves extractNativeLibs to the platform (it sets it)"; else ok "the manifest leaves extractNativeLibs to the platform"; fi
 if grep -q 'networkSecurityConfig' <<<"$manifest"; then bad "the manifest sets no network security config (it sets one)"; else ok "the manifest sets no network security config"; fi
 check_config_changes "$manifest"
+# Backup and device transfer leave out the core's run files and
+# flutter_secure_storage's preferences (res/xml/data_extraction_rules.xml
+# for Android 12 and later, res/xml/backup_rules.xml before): the
+# application names each, and each excludes them.
+for rule in dataExtractionRules:data_extraction_rules fullBackupContent:backup_rules; do
+    attr="${rule%%:*}" name="${rule#*:}"
+    id="$(sed -n "s/.*android:$attr([^)]*)=@\(0x[0-9a-f]*\).*/\1/p" <<<"$manifest" | sed -n 1p)"
+    if [ -z "$id" ] || ! grep -qE "^ *resource $id xml/$name\$" <<<"$resources"; then
+        bad "the application's android:$attr is @xml/$name (it is ${id:-unset})"
+        continue
+    fi
+    path="$(sed -n "/^ *resource $id xml\/$name\$/,/ resource /p" <<<"$resources" | sed -n 's/.*(file) \([^ ]*\).*/\1/p' | sed -n 1p)"
+    rules="$("$aapt2" dump xmltree --file "$path" "$apk" 2>&1 || true)"
+    missing=""
+    for p in clax-home/core.lock clax-home/embed.json clax-home/logs clax-home/net-cache FlutterSecureStorage.xml FlutterSecureKeyStorage.xml; do
+        grep -qF "\"$p\"" <<<"$rules" || missing="$missing $p"
+    done
+    if [ -z "$missing" ]; then
+        ok "the application's android:$attr is @xml/$name, which excludes the run files and the secure storage's preferences"
+    else
+        bad "@xml/$name ($path) excludes the run files and the secure storage's preferences (missing:$missing)"
+    fi
+done
 # Predictive back: Android 13+ shows the back-to-home and in-app back
 # animations only for an application that opts in.
 if grep -q 'enableOnBackInvokedCallback.*=true' <<<"$manifest"; then ok "predictive back is on"; else bad "predictive back is on (no android:enableOnBackInvokedCallback=\"true\")"; fi

@@ -25,10 +25,15 @@
          the back-to-home animation, and Flutter's routes follow the back
          gesture (PredictiveBackPageTransitionsBuilder in lib/ui/theme.dart);
          an app screen keeps a back for its page's own history (AppScreen's
-         PopScope). -->
+         PopScope). dataExtractionRules (Android 12 and later) and
+         fullBackupContent (earlier) leave the core's run files and
+         flutter_secure_storage's preferences out of backup and device
+         transfer (res/xml/data_extraction_rules.xml). -->
     <application
         android:label="Clax"
         android:enableOnBackInvokedCallback="true"
+        android:dataExtractionRules="@xml/data_extraction_rules"
+        android:fullBackupContent="@xml/backup_rules"
         android:name=".ClaxApplication"
         android:icon="@mipmap/ic_launcher"
         android:roundIcon="@mipmap/ic_launcher_round">
