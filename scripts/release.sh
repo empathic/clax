@@ -4,6 +4,7 @@
 #
 #   scripts/release.sh X.Y.Z                              a dry run
 #   scripts/release.sh X.Y.Z --i-know-what-i-am-doing     the release
+#   ... --verbose                                         streams every step's output
 #
 # The dry run, the default, runs the read-only checks and prints every step
 # with whether it is done already; it changes nothing (it fetches origin's
@@ -56,8 +57,21 @@
 # commit); any other change, an untracked file, or a commit on main other
 # than the release's own, refuses to run. It never force-pushes, never deletes a
 # tag, and checks that every commit and the tag it pushes carry a signature.
-# The output of the long steps (just, the waits) is also appended to
-# target/release/X.Y.Z.log.
+#
+# Before the first step it lists every step, done or to do, with an
+# estimate of the time in all and still to run: the steps' durations in
+# earlier runs' logs (target/release/*.log), averaged, or else typical
+# ones (just ci 7m30s, the Release workflow 11m30s, CI on main 9m, the Pi
+# publish 2m). Each step then prints one line, with the share of the
+# estimate done ([42%]; steps found done count in full), and a step that
+# runs longer prints a heartbeat about every 30 seconds: the time it has
+# taken, the time left, and what is cheap to tell (Bazel's tests done out
+# of the total, the workflow run's state and jobs done). Everything a step
+# prints goes to target/release/X.Y.Z.log only; a failed step's last 50
+# lines are printed with the log's path. With --verbose the steps' output
+# streams to the terminal too, as well as to the log, and there is no
+# heartbeat. The npm publish of a first Pi version and what is left by hand
+# always reach the terminal.
 #
 # It works from any directory: the checkout is the one holding this script.
 #
@@ -67,6 +81,11 @@
 #   CLAX_RELEASE_PNPM           the pnpm command (pnpm); for tests
 #   CLAX_RELEASE_POLL_SECONDS   seconds between polls of a workflow run (20)
 #   CLAX_RELEASE_MAX_POLLS      polls before a wait gives up (270, 90 min)
+#   CLAX_RELEASE_HEARTBEAT_SECONDS
+#                               seconds between heartbeats (30; 0: none)
+#   CLAX_RELEASE_NOW_FILE       a file holding the time, in seconds since
+#                               the epoch, read in place of the clock; for
+#                               tests
 set -euo pipefail
 
 ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd -P)"
@@ -80,14 +99,16 @@ NPM_ENV=npm
 PNPM="${CLAX_RELEASE_PNPM:-pnpm}"
 
 usage() {
-    echo "usage: scripts/release.sh X.Y.Z [$ACT_FLAG]" >&2
+    echo "usage: scripts/release.sh X.Y.Z [$ACT_FLAG] [--verbose]" >&2
     exit 2
 }
 V=""
 ACT=0
+VERBOSE=0
 for arg in "$@"; do
     case "$arg" in
         "$ACT_FLAG") ACT=1 ;;
+        --verbose) VERBOSE=1 ;;
         -h|--help) sed -n '2,/^set -euo/p' "${BASH_SOURCE[0]}" | sed '$d; s/^# \{0,1\}//'; exit 0 ;;
         -*) usage ;;
         *) [ -z "$V" ] || usage; V="$arg" ;;
@@ -102,16 +123,139 @@ LOG="$ROOT/target/release/$V.log"
 RESUME="scripts/release.sh $V $ACT_FLAG"
 # 1 once the run acts: from then on, say and logged append to LOG.
 LOGGING=0
+# 1 inside a step that is not --verbose: its output goes to LOG already.
+IN_LOG=0
+HEARTBEAT="${CLAX_RELEASE_HEARTBEAT_SECONDS:-30}"
+# The terminal, for what a quiet step shows there (tell, npm publish).
+exec 3>&1 4>&2
 
 g() { git -C "$ROOT" "$@"; }
 say() {
     printf '%s\n' "$*"
-    if [ "$LOGGING" = 1 ]; then printf '%s\n' "$*" >> "$LOG"; fi
+    if [ "$LOGGING" = 1 ] && [ "$IN_LOG" = 0 ]; then printf '%s\n' "$*" >> "$LOG"; fi
 }
-# Runs a command, its output shown and appended to the log.
+# Says something on the terminal also from inside a quiet step.
+tell() {
+    if [ "$IN_LOG" = 1 ]; then printf '%s\n' "$*" >&3; fi
+    say "$*"
+}
+# Runs a command, its output appended to the log, and shown with --verbose.
 logged() {
-    "$@" 2>&1 | tee -a "$LOG"
+    if [ "$IN_LOG" = 1 ]; then "$@" 2>&1; else "$@" 2>&1 | tee -a "$LOG"; fi
 }
+
+# --- progress -------------------------------------------------------------------
+
+now() {
+    if [ -n "${CLAX_RELEASE_NOW_FILE:-}" ]; then cat "$CLAX_RELEASE_NOW_FILE"; else date +%s; fi
+}
+# A duration in seconds as 45s, 3m12s or 1h05m.
+dur() {
+    local s="$1"
+    if [ "$s" -ge 3600 ]; then printf '%dh%02dm' $((s / 3600)) $((s % 3600 / 60))
+    elif [ "$s" -ge 60 ]; then printf '%dm%02ds' $((s / 60)) $((s % 60))
+    else printf '%ds' "$s"; fi
+}
+# A duration still to come, rounded: "about 18m", or "under a minute".
+about() {
+    if [ "$1" -ge 60 ]; then printf 'about %dm' $((($1 + 30) / 60)); else printf 'under a minute'; fi
+}
+# Each step's expected seconds: typical durations, replaced by the average
+# of the durations earlier runs' logs recorded ("== step N ran Ss").
+WEIGHTS=([1]=10 [2]=5 [3]=30 [4]=450 [5]=5 [6]=5 [7]=10 [8]=690 [9]=5 [10]=450 [11]=5 [12]=15 [13]=540 [14]=120 [15]=5)
+LEARNED_FROM=0
+learn_weights() {
+    local f n s
+    local -a logs=()
+    for f in "$ROOT"/target/release/*.log; do [ -f "$f" ] && logs+=("$f"); done
+    [ "${#logs[@]}" -gt 0 ] || return 0
+    while read -r n s; do
+        WEIGHTS[n]="$s"
+        LEARNED_FROM="${#logs[@]}"
+    done < <(awk '$1 == "==" && $2 == "step" && $4 == "ran" && $3 ~ /^[0-9]+$/ && $5 ~ /^[0-9]+s$/ {
+            sum[$3] += $5 + 0; c[$3]++ }
+        END { for (n in c) { a = int(sum[n] / c[n] + 0.5); print n, (a < 1 ? 1 : a) } }' "${logs[@]}")
+}
+TOTAL_W=0
+total_weight() {
+    local n t=0
+    for n in $(seq 1 15); do t=$((t + WEIGHTS[n])); done
+    echo "$t"
+}
+pct() { echo $(($1 * 100 / TOTAL_W)); }
+# The weight of the steps done, and the step under way: STEP, its start
+# STEP_START, the log's size then STEP_OFFSET.
+DONE_W=0
+STEP=1
+STEP_START=0
+STEP_OFFSET=0
+# HB_DIR holds what a step says of itself for the heartbeat: detail (one
+# line), run (the workflow run it waits for), pause (no heartbeat now).
+HB_DIR=""
+TICKER=""
+detail() { if [ -n "$HB_DIR" ]; then printf '%s\n' "$*" > "$HB_DIR/detail"; fi; }
+# What a heartbeat can tell of the step under way.
+step_detail() {
+    local d="" tests id jobs
+    if [ -s "$HB_DIR/detail" ]; then d="$(cat "$HB_DIR/detail")"; fi
+    # Bazel's progress line ("[1,234 / 2,345] 40 / 56 tests; ..."), in what
+    # this step logged.
+    tests="$(tail -c "+$((STEP_OFFSET + 1))" "$LOG" 2>/dev/null | tail -c 200000 | tr '\r' '\n' \
+        | grep -oE '[0-9,]+ / [0-9,]+ tests' | tail -n 1 | tr -d ', ' | sed 's/tests$/ tests/')" || tests=""
+    if [ -n "$tests" ]; then d="${d:+$d, }$tests"; fi
+    if [ -s "$HB_DIR/run" ]; then
+        id="$(cat "$HB_DIR/run")"
+        jobs="$(gh run view "$id" --json jobs \
+            --jq '"\([.jobs[] | select(.status == "completed")] | length)/\(.jobs | length) jobs done"' 2>/dev/null)" || jobs=""
+        if [ -n "$jobs" ]; then d="${d:+$d, }$jobs"; fi
+    fi
+    printf '%s' "$d"
+}
+# One heartbeat line: "[42%] step 4/15 Run the gates: 40/56 tests, 3m12s
+# (about 18m left)". The step counts for no more than its weight.
+heartbeat() {
+    local e cur d left p
+    e=$(($(now) - STEP_START))
+    cur="$e"
+    [ "$cur" -le "${WEIGHTS[STEP]}" ] || cur="${WEIGHTS[STEP]}"
+    left=$((TOTAL_W - DONE_W - cur))
+    p="$(pct $((DONE_W + cur)))"
+    [ "$p" -le 99 ] || p=99
+    d="$(step_detail)"
+    printf '[%d%%] step %d/15 %s: %s%s (%s left)\n' "$p" "$STEP" "${TITLES[STEP]}" "${d:+$d, }" "$(dur "$e")" "$(about "$left")"
+}
+# Prints a heartbeat to the terminal every HEARTBEAT seconds until stopped.
+HB_SLEEP=""
+ticker() {
+    trap - EXIT
+    trap 'if [ -n "$HB_SLEEP" ]; then kill "$HB_SLEEP" 2>/dev/null; fi; exit 0' TERM
+    while :; do
+        sleep "$HEARTBEAT" &
+        HB_SLEEP=$!
+        wait "$HB_SLEEP" || true
+        HB_SLEEP=""
+        [ -e "$HB_DIR/pause" ] || heartbeat >&3 2>/dev/null || true
+    done
+}
+start_ticker() {
+    rm -f "$HB_DIR/detail" "$HB_DIR/run" "$HB_DIR/pause"
+    if [ "$VERBOSE" = 0 ] && [ "$HEARTBEAT" != 0 ]; then
+        ticker &
+        TICKER=$!
+    fi
+}
+stop_ticker() {
+    if [ -n "$TICKER" ]; then
+        kill "$TICKER" 2>/dev/null || true
+        wait "$TICKER" 2>/dev/null || true
+        TICKER=""
+    fi
+}
+cleanup() {
+    stop_ticker
+    if [ -n "$HB_DIR" ]; then rm -rf "$HB_DIR"; fi
+}
+trap cleanup EXIT
 
 # --- state, read from git and GitHub -------------------------------------------
 
@@ -558,6 +702,8 @@ await_output() {
 await_run() {
     local id="$1" what="$2" read="${3:-run_state}" state last="" polls=0 rc
     say "  $what: run $id (gh run watch $id --repo $GH_REPO)"
+    detail "run $id"
+    if [ -n "$HB_DIR" ]; then printf '%s\n' "$id" > "$HB_DIR/run"; fi
     POLL_FAILS=0
     while :; do
         rc=0
@@ -565,7 +711,11 @@ await_run() {
         [ "$rc" != 2 ] || return 1
         state=""
         [ "$rc" != 0 ] || state="$POLL_OUT"
-        if [ "$rc" = 0 ] && [ "$state" != "$last" ]; then say "  $what: ${state% }"; last="$state"; fi
+        if [ "$rc" = 0 ] && [ "$state" != "$last" ]; then
+            say "  $what: ${state% }"
+            detail "run $id ${state% }"
+            last="$state"
+        fi
         case "$state" in
             "completed success") return 0 ;;
             completed\ *)
@@ -590,6 +740,7 @@ step_3() {
     for n in 1 2 3 4; do
         before="$(worktree_digest)"
         say "  just bazel-sync (run $n)"
+        detail "run $n"
         (cd "$ROOT" && logged just bazel-sync)
         after="$(worktree_digest)"
         if [ "$before" = "$after" ]; then return 0; fi
@@ -616,6 +767,7 @@ step_7() {
 step_8() {
     local id
     say "  waiting for the Release workflow's run on $TAG (polls every ${POLL}s, at most $MAX_POLLS)"
+    detail "waiting for the run to start"
     id="$(await_output find_run release.yml push "$REL_COMMIT")" \
         || { say "  no Release workflow run on $TAG appeared"; return 1; }
     if ! await_run "$id" "Release $TAG"; then
@@ -640,7 +792,7 @@ step_12() {
     local c
     g fetch --quiet --no-tags origin main
     if ! g merge-base --is-ancestor origin/main HEAD; then
-        say "  origin/main has moved on; merging it: $MERGE_SUBJECT"
+        tell "  origin/main has moved on; merging it: $MERGE_SUBJECT"
         if ! g merge -S --no-ff -q -m "$MERGE_SUBJECT" origin/main; then
             g merge --abort 2>/dev/null || true
             say "  the merge does not apply cleanly. Merge by hand, signed and with this subject:"
@@ -670,6 +822,7 @@ step_12() {
 step_13() {
     local id
     say "  waiting for CI's bazel job on $PUBLISH_COMMIT (polls every ${POLL}s, at most $MAX_POLLS; not perf-log)"
+    detail "waiting for the run to start"
     id="$(await_output find_run ci.yml push "$PUBLISH_COMMIT")" || { say "  no CI run on $PUBLISH_COMMIT appeared"; return 1; }
     await_run "$id" "CI on main (bazel)" ci_gate_state
 }
@@ -698,6 +851,7 @@ step_14() {
     case "$state" in
         "" | completed\ *)
             gh workflow run publish-pi.yml --ref main -f dry_run=false -f "sha=$PUBLISH_COMMIT"
+            detail "dispatched; waiting for the run to start"
             id="$(await_output new_publish_run "$PUBLISH_COMMIT" "$id")" \
                 || { say "  no Publish Pi package run for $PUBLISH_COMMIT appeared"; return 1; } ;;
     esac
@@ -722,10 +876,10 @@ pi_first_publish() {
     set -e
     g worktree remove --force "$dir"
     [ "$rc" = 0 ] || return "$rc"
-    say "  $(pi_package)@$V is on npm. Later releases publish through publish-pi.yml, which uses npm"
-    say "  trusted publishing; set it up once, now: on npmjs.com, the package's Settings, Trusted"
-    say "  Publisher, GitHub Actions: organization ${GH_REPO%%/*}, repository ${GH_REPO#*/}, workflow"
-    say "  publish-pi.yml, environment $NPM_ENV."
+    tell "  $(pi_package)@$V is on npm. Later releases publish through publish-pi.yml, which uses npm"
+    tell "  trusted publishing; set it up once, now: on npmjs.com, the package's Settings, Trusted"
+    tell "  Publisher, GitHub Actions: organization ${GH_REPO%%/*}, repository ${GH_REPO#*/}, workflow"
+    tell "  publish-pi.yml, environment $NPM_ENV."
 }
 pi_publish_from() {
     local pkg="$1" version pinned
@@ -738,8 +892,11 @@ pi_publish_from() {
     say "  typecheck: $PNPM install --frozen-lockfile && $PNPM run typecheck"
     logged "$PNPM" install --frozen-lockfile
     logged "$PNPM" run typecheck
-    say "  $NPM publish --access public (plugins/pi at $PUBLISH_COMMIT)"
-    "$NPM" publish --access public
+    # On the terminal, for npm's prompts, with no heartbeat meanwhile.
+    tell "  $NPM publish --access public (plugins/pi at $PUBLISH_COMMIT)"
+    if [ -n "$HB_DIR" ]; then : > "$HB_DIR/pause"; fi
+    "$NPM" publish --access public >&3 2>&4
+    if [ -n "$HB_DIR" ]; then rm -f "$HB_DIR/pause"; fi
     # Kept as soon as npm took the package, so step 15 prints the
     # trusted-publisher setup even if the wait below gives up.
     : > "$ROOT/target/release/$V/pi-first-publish"
@@ -757,32 +914,60 @@ step_15() {
         [ "$(ver_cmp "${t#v}" "$V")" = -1 ] || continue
         if [ -z "$prev" ] || [ "$(ver_cmp "${t#v}" "${prev#v}")" = 1 ]; then prev="$t"; fi
     done
-    say "Left by hand:"
+    tell "Left by hand:"
     if [ -n "$prev" ] && g rev-parse -q --verify "refs/tags/$TAG" >/dev/null; then
         if g diff --quiet "$prev" "$TAG" -- crates/clax-store/src/migrations.rs; then
             migrations="no new migrations since $prev"
         else
             migrations="crates/clax-store/src/migrations.rs changed since $prev"
         fi
-        say "  - redeploy clax.dev with \`just clax-dev-deploy\` (a dry run; then $ACT_FLAG) if the"
-        say "    release has migrations or hosted changes ($migrations)"
+        tell "  - redeploy clax.dev with \`just clax-dev-deploy\` (a dry run; then $ACT_FLAG) if the"
+        tell "    release has migrations or hosted changes ($migrations)"
     else
-        say "  - redeploy clax.dev with \`just clax-dev-deploy\` (a dry run; then $ACT_FLAG) if the"
-        say "    release has migrations or hosted changes"
+        tell "  - redeploy clax.dev with \`just clax-dev-deploy\` (a dry run; then $ACT_FLAG) if the"
+        tell "    release has migrations or hosted changes"
     fi
     if [ -e "$ROOT/target/release/$V/pi-first-publish" ]; then
-        say "  - once: set up npm trusted publishing for $(pi_package) (npmjs.com, the package's Settings,"
-        say "    Trusted Publisher, GitHub Actions: organization ${GH_REPO%%/*}, repository ${GH_REPO#*/},"
-        say "    workflow publish-pi.yml, environment $NPM_ENV), so later releases publish through the workflow"
-        say "  - switch README.md and plugins/pi/README.md to lead their Pi install with"
-        say "    \`pi install npm:$(pi_package)\`"
+        tell "  - once: set up npm trusted publishing for $(pi_package) (npmjs.com, the package's Settings,"
+        tell "    Trusted Publisher, GitHub Actions: organization ${GH_REPO%%/*}, repository ${GH_REPO#*/},"
+        tell "    workflow publish-pi.yml, environment $NPM_ENV), so later releases publish through the workflow"
+        tell "  - switch README.md and plugins/pi/README.md to lead their Pi install with"
+        tell "    \`pi install npm:$(pi_package)\`"
     fi
-    say "  - crates.io is not published by this script (docs/usage.md, \"The crates.io package\")"
-    say "  - the release: https://github.com/${GH_REPO:-empathic/clax}/releases/tag/$TAG"
+    tell "  - crates.io is not published by this script (docs/usage.md, \"The crates.io package\")"
+    tell "  - the release: https://github.com/${GH_REPO:-empathic/clax}/releases/tag/$TAG"
 }
 
 # --- main -------------------------------------------------------------------------
 
+# Lists steps 2-15, done or to do, with the estimate of the time they take;
+# NEXT is the first step to do.
+overview() {
+    local n left=0 from
+    say ""
+    say "The steps (checkout at ${CUR:-?}, plugins pinned to ${PINNED:-?}):"
+    NEXT=""
+    for n in $(seq 2 15); do
+        if [ -z "$NEXT" ] && "done_$n" 2>/dev/null; then
+            say "  $n. [done] ${TITLES[n]}: ${COMMANDS[n]}"
+        else
+            NEXT="${NEXT:-$n}"
+            left=$((left + WEIGHTS[n]))
+            say "  $n. [todo] ${TITLES[n]}: ${COMMANDS[n]}"
+        fi
+    done
+    if [ "$LEARNED_FROM" -gt 0 ]; then
+        from="the steps' durations in $LEARNED_FROM earlier run log(s) under target/release/"
+    else
+        from="typical durations; later runs learn from their logs"
+    fi
+    say "Estimated: $(about "$TOTAL_W") in all, $(about "$left") for the steps to do ($from)."
+    say ""
+}
+
+learn_weights
+TOTAL_W="$(total_weight)"
+T0="$(now)"
 if [ "$ACT" = 0 ]; then
     say "Dry run: nothing is changed. Run with $ACT_FLAG to release."
     say ""
@@ -799,52 +984,64 @@ else
     say "  ok: on main and clean against origin/main ($GH_REPO), gh signed in, $V newer than every tag, signing works"
 fi
 for note in ${NOTES[@]+"${NOTES[@]}"}; do say "  note: $note"; done
+PREFLIGHT_S=$(($(now) - T0))
 
 if [ "$ACT" = 0 ]; then
-    say ""
-    say "The steps (checkout at ${CUR:-?}, plugins pinned to ${PINNED:-?}):"
-    next=""
-    for n in $(seq 2 15); do
-        if [ -z "$next" ] && "done_$n" 2>/dev/null; then
-            say "  $n. [done] ${TITLES[n]}: ${COMMANDS[n]}"
-        else
-            next="${next:-$n}"
-            say "  $n. [todo] ${TITLES[n]}: ${COMMANDS[n]}"
-        fi
-    done
-    say ""
+    overview
     if [ "${#PROBLEMS[@]}" -gt 0 ]; then
         say "Preflight failed: fix the above first. Nothing was changed."
         exit 1
     fi
-    say "A run with $ACT_FLAG starts at step $next. Nothing was changed."
+    say "A run with $ACT_FLAG starts at step $NEXT. Nothing was changed."
     exit 0
 fi
 
 mkdir -p "$ROOT/target/release"
 LOGGING=1
+HB_DIR="$(mktemp -d)"
 say "== $(date -u +%Y-%m-%dT%H:%M:%SZ) release.sh $V in $ROOT; the log: $LOG"
+overview
+say "Starting at step $NEXT. Each step's output goes to the log$([ "$VERBOSE" = 1 ] && echo ", and here (--verbose)")."
+printf '== step 1 ran %ds\n' "$PREFLIGHT_S" >> "$LOG"
+DONE_W="${WEIGHTS[1]}"
+RUN_START="$(now)"
 for n in $(seq 2 15); do
     if ! refresh; then
         say "release.sh: $REFRESH_ERR before step $n; run \`$RESUME\` again to resume."
         exit 1
     fi
+    STEP="$n"
     if "done_$n" 2>/dev/null; then
-        say "Step $n: ${TITLES[n]}: done already"
+        DONE_W=$((DONE_W + WEIGHTS[n]))
+        say "[$(pct "$DONE_W")%] step $n/15 ${TITLES[n]}: done already"
         continue
     fi
-    say "Step $n: ${TITLES[n]}: ${COMMANDS[n]}"
+    say "[$(pct "$DONE_W")%] step $n/15 ${TITLES[n]}: ${COMMANDS[n]}"
+    STEP_START="$(now)"
+    STEP_OFFSET="$(wc -c < "$LOG" | tr -d ' ')"
+    start_ticker
     set +e
-    (set -e; "step_$n")
+    if [ "$VERBOSE" = 1 ]; then
+        (set -e; "step_$n")
+    else
+        (set -e; IN_LOG=1; "step_$n") >> "$LOG" 2>&1
+    fi
     rc=$?
     set -e
+    stop_ticker
     if [ "$rc" != 0 ]; then
+        if [ "$VERBOSE" = 0 ]; then
+            printf '\nThe last 50 lines of %s:\n' "$LOG"
+            tail -n 50 "$LOG"
+        fi
         say ""
         say "release.sh: step $n (${TITLES[n]}) failed."
         say "Fix the cause, then run \`$RESUME\` again: it resumes at the first step not done."
         say "The log: $LOG"
         exit 1
     fi
+    printf '== step %d ran %ds\n' "$n" $(($(now) - STEP_START)) >> "$LOG"
+    DONE_W=$((DONE_W + WEIGHTS[n]))
 done
 say ""
-say "Clax $V is released."
+say "[100%] Clax $V is released. This run took $(dur $(($(now) - RUN_START + PREFLIGHT_S)))."

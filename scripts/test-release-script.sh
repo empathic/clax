@@ -37,6 +37,9 @@ fail() { echo "FAIL: $1"; FAILED=1; }
 # git sees only each scratch repository's own configuration.
 export GIT_CONFIG_GLOBAL=/dev/null GIT_CONFIG_NOSYSTEM=1
 export GH_REPO=empathic/clax-test CLAX_RELEASE_POLL_SECONDS=0 CLAX_RELEASE_MAX_POLLS=3
+# No heartbeat but in the case that checks it; each case's clock stands
+# still at $C/now unless a fake moves it.
+export CLAX_RELEASE_HEARTBEAT_SECONDS=0
 # release.sh runs under the bash running this test (`/bin/bash
 # scripts/test-release-script.sh` tries macOS's bash 3.2).
 TEST_BASH="$BASH"
@@ -68,6 +71,22 @@ case "$1" in
         fi
         echo "fake bazel-sync" ;;
     ci)
+        # $FAKE_STATE/ci-advance: seconds each run moves the clock on.
+        if [ -s "$FAKE_STATE/ci-advance" ]; then
+            echo $(( $(cat "$CLAX_RELEASE_NOW_FILE") + $(cat "$FAKE_STATE/ci-advance") )) > "$CLAX_RELEASE_NOW_FILE"
+        fi
+        # $FAKE_STATE/ci-heartbeat: the next run prints Bazel's progress and
+        # waits, at most a minute, for a heartbeat telling it in release.sh's
+        # output ($FAKE_OUT).
+        if [ -e "$FAKE_STATE/ci-heartbeat" ]; then
+            rm "$FAKE_STATE/ci-heartbeat"
+            echo "[1,000 / 2,000] 40 / 56 tests; Testing //scripts:release_script; 3s darwin-sandbox"
+            i=0
+            while [ "$i" -lt 1200 ] && ! grep -F "40/56 tests" "$FAKE_OUT" >/dev/null 2>&1; do
+                sleep 0.05
+                i=$((i + 1))
+            done
+        fi
         if [ -e "$FAKE_STATE/ci-fail" ]; then echo "fake ci: a gate failed"; exit 1; fi
         echo "fake ci: every gate passed" ;;
     *) echo "fake just: unexpected: $*" >&2; exit 2 ;;
@@ -77,6 +96,8 @@ fake_exe "$T/bin/gh" <<'SH'
 #!/bin/sh
 S="$FAKE_STATE"
 echo "gh $*" >> "$S/calls"
+# A heartbeat's count of a run's jobs.
+case "$*" in *"jobs done"*) echo "1/3 jobs done"; exit 0 ;; esac
 origin() { git --git-dir="$FAKE_REMOTE" "$@"; }
 # Someone else's commit lands on origin's main.
 foreign_push() {
@@ -268,7 +289,8 @@ SH
 new_case() {
     C="$(mktemp -d "$T/case.XXXXXX")"
     mkdir -p "$C/state" "$C/repo/scripts" "$C/repo/bazel" "$C/repo/plugins/pi/scripts"
-    export FAKE_STATE="$C/state" FAKE_REMOTE="$C/origin.git"
+    export FAKE_STATE="$C/state" FAKE_REMOTE="$C/origin.git" FAKE_OUT="$C/out" CLAX_RELEASE_NOW_FILE="$C/now"
+    echo 1000000 > "$C/now"
     git init -q --bare -b main "$C/origin.git"
     git init -q -b main "$C/repo"
     local r="$C/repo"
@@ -338,6 +360,8 @@ snapshot() {
 actions() { grep -E '^(bump|pin|just|gh workflow run|npm publish|pnpm)' "$FAKE_STATE/calls" 2>/dev/null; }
 count() { grep -c -x -- "$1" "$FAKE_STATE/calls"; }
 has() { grep -F -- "$1" "$C/out" >/dev/null; }
+# The release log has it.
+logs() { grep -F -- "$1" "$C/repo/target/release/0.6.0.log" >/dev/null 2>&1; }
 
 # The release a full run leaves: a signed tag v0.6.0 "Clax 0.6.0" on a signed
 # "Release 0.6.0" commit, and origin's main a signed pin commit on it.
@@ -421,16 +445,27 @@ case_2() {
     # Each run's polls, as one line.
     got="$(grep -E '^(bump|pin|just|gh workflow run|gh run view)' "$FAKE_STATE/calls" \
         | sed 's/^\(gh run view [0-9]*\) .*/\1/' | awk '!($0 ~ /^gh run view/ && $0 == prev) { print } { prev = $0 }')"
-    if [ "$rc" = 0 ] && [ "$got" = "$want" ] && released && has "Clax 0.6.0 is released." \
-        && has "Release v0.6.0: in_progress" \
+    if [ "$rc" = 0 ] && [ "$got" = "$want" ] && released && has "[100%] Clax 0.6.0 is released." \
+        && logs "Release v0.6.0: in_progress" \
         && [ -s "$C/repo/target/release/0.6.0.log" ] && has "redeploy clax.dev with \`just clax-dev-deploy\`"; then
         pass "a full run bumps, syncs until settled, tests, signs, tags, pushes, waits, pins and publishes, in order"
     else fail "a full run, in order (rc=$rc; calls: $got; $(cat "$C/out"))"; fi
+    # The terminal has the overview and a line per step; the steps' own
+    # output is in the log alone.
+    if has "  4. [todo] Run the gates: just ci" \
+        && has "Estimated: about 39m in all, about 39m for the steps to do (typical durations" \
+        && has "[0%] step 3/15 Sync Bazel with Cargo: just bazel-sync" && has "[1%] step 4/15 Run the gates: just ci" \
+        && has "[21%] step 8/15 Wait for the Release workflow: " && has "[94%] step 14/15 Publish the Pi package: " \
+        && [ "$(grep -c '^\[[0-9]*%\] step [0-9]*/15 ' "$C/out")" = 14 ] \
+        && ! has "fake ci: every gate passed" && ! has "fake bazel-sync" && ! has "Release v0.6.0: in_progress" \
+        && logs "fake ci: every gate passed" && logs "fake bazel-sync" && logs "== step 4 ran 0s"; then
+        pass "a run shows the steps, then one line per step; the steps' output goes to the log alone"
+    else fail "a run's terminal output ($(cat "$C/out"))"; fi
 
     : > "$FAKE_STATE/calls"
     before="$(snapshot)"
     act; rc=$?
-    if [ "$rc" = 0 ] && [ -z "$(actions)" ] && [ "$before" = "$(snapshot)" ] && has "Step 14: Publish the Pi package: done already"; then
+    if [ "$rc" = 0 ] && [ -z "$(actions)" ] && [ "$before" = "$(snapshot)" ] && has "step 14/15 Publish the Pi package: done already"; then
         pass "a run after a finished release does nothing again"
     else fail "a run after a finished release does nothing again (rc=$rc: $(actions); $(cat "$C/out"))"; fi
 }
@@ -441,6 +476,8 @@ case_3() {
     : > "$FAKE_STATE/ci-fail"
     act; rc=$?
     if [ "$rc" = 1 ] && has "step 4 (Run the gates) failed" && has "scripts/release.sh 0.6.0 --i-know-what-i-am-doing" \
+        && has "The last 50 lines of $C/repo/target/release/0.6.0.log:" && has "fake ci: a gate failed" \
+        && has "The log: $C/repo/target/release/0.6.0.log" \
         && grep -x 'CLAX_VERSION="0.6.0"' "$C/repo/scripts/ensure-clax.sh" >/dev/null \
         && [ -z "$(git -C "$C/repo" tag -l v0.6.0)" ] && [ "$(git -C "$C/repo" log -1 --format=%s)" = "Release 0.5.0" ]; then
         pass "a failing just ci stops the run before the release commit, naming the step and how to resume"
@@ -451,7 +488,7 @@ case_3() {
     else fail "a dry run after a failing just ci (rc=$rc: $(cat "$C/out"))"; fi
     rm "$FAKE_STATE/ci-fail"
     act; rc=$?
-    if [ "$rc" = 0 ] && released && [ "$(count "bump 0.6.0")" = 1 ] && has "Step 2: Bump the version: done already"; then
+    if [ "$rc" = 0 ] && released && [ "$(count "bump 0.6.0")" = 1 ] && has "step 2/15 Bump the version: done already"; then
         pass "the next run resumes at the gates and finishes the release, bumping once"
     else fail "resume after a failing just ci (rc=$rc: $(cat "$C/out"))"; fi
 }
@@ -469,14 +506,14 @@ case_4() {
     else fail "a failed Release run stops the run (rc=$rc: $(cat "$C/out"))"; fi
     echo "in_progress " > "$FAKE_STATE/101"
     act; rc=$?
-    if [ "$rc" = 1 ] && has "Step 7: Push the tag: done already" && has "gave up waiting for run 101 after 3 polls" \
+    if [ "$rc" = 1 ] && has "step 7/15 Push the tag: done already" && has "gave up waiting for run 101 after 3 polls" \
         && has "step 8 (Wait for the Release workflow) failed"; then
         pass "a wait that runs out of polls stops at step 8"
     else fail "a wait that runs out of polls stops at step 8 (rc=$rc: $(cat "$C/out"))"; fi
     echo "completed success" > "$FAKE_STATE/101"
     act; rc=$?
     if [ "$rc" = 0 ] && released && [ "$(count "just ci")" = 2 ] && [ "$(count "bump 0.6.0")" = 1 ] \
-        && has "Step 6: Tag the release: done already"; then
+        && has "step 6/15 Tag the release: done already"; then
         pass "the next run resumes at the wait and finishes the release, tagging and testing once"
     else fail "resume after a failed wait (rc=$rc: $(grep '^just' "$FAKE_STATE/calls"); $(cat "$C/out"))"; fi
 }
@@ -491,7 +528,7 @@ case_5() {
     echo same > "$FAKE_STATE/earlier-run"
     echo "in_progress " > "$FAKE_STATE/101"
     act; rc=$?
-    if [ "$rc" = 0 ] && released && has "Step 8: Wait for the Release workflow: done already"; then
+    if [ "$rc" = 0 ] && released && has "step 8/15 Wait for the Release workflow: done already"; then
         pass "a release built from the tag's tree by an earlier run, as after re-signing, is accepted"
     else fail "a release built from the tag's tree by an earlier run (rc=$rc: $(cat "$C/out"))"; fi
 }
@@ -504,7 +541,7 @@ case_5b() {
     echo same > "$FAKE_STATE/earlier-run"
     echo "in_progress " > "$FAKE_STATE/101"
     act; rc=$?
-    if [ "$rc" = 0 ] && released && has "Step 8: Wait for the Release workflow: done already"; then
+    if [ "$rc" = 0 ] && released && has "step 8/15 Wait for the Release workflow: done already"; then
         pass "a release with no SOURCE_TREE is judged by the run that uploaded it"
     else fail "a release with no SOURCE_TREE judged by its run (rc=$rc: $(cat "$C/out"))"; fi
 }
@@ -564,13 +601,13 @@ case_8() {
     git -C "$C/repo" pull -q --ff-only origin main
     echo "completed success" > "$FAKE_STATE/201"
     act; rc=$?
-    if [ "$rc" = 0 ] && has "Step 12: Push main: done already" \
+    if [ "$rc" = 0 ] && has "step 12/15 Push main: done already" \
         && [ "$(count "gh workflow run publish-pi.yml --ref main -f dry_run=false -f sha=$pin")" = 1 ]; then
         pass "once main has moved past the pin commit, the next run resumes at the CI wait and publishes from the pin"
     else fail "resume after main moved past the pin commit (rc=$rc: $(cat "$C/out"))"; fi
     : > "$FAKE_STATE/calls"
     act; rc=$?
-    if [ "$rc" = 0 ] && [ -z "$(actions)" ] && has "Step 14: Publish the Pi package: done already"; then
+    if [ "$rc" = 0 ] && [ -z "$(actions)" ] && has "step 14/15 Publish the Pi package: done already"; then
         pass "a finished release with main moved on reports every step done"
     else fail "a finished release with main moved on (rc=$rc: $(cat "$C/out"))"; fi
 }
@@ -596,7 +633,7 @@ case_10() {
     rm "$FAKE_STATE/reject-push"
     other_work
     act; rc=$?
-    if [ "$rc" = 0 ] && merged_release && has "Step 11: Commit the pin: done already"; then
+    if [ "$rc" = 0 ] && merged_release && has "step 11/15 Commit the pin: done already"; then
         pass "after main moved on, the next run merges it on top of the pin commit and finishes"
     else fail "resume after a refused push with main moved on (rc=$rc: $(cat "$C/out"))"; fi
 }
@@ -621,7 +658,7 @@ case_12() {
         pass "a failed Publish Pi package run stops at step 14"
     else fail "a failed Publish Pi package run stops at step 14 (rc=$rc: $(cat "$C/out"))"; fi
     act; rc=$?
-    if [ "$rc" = 0 ] && [ "$(grep -c '^gh workflow run' "$FAKE_STATE/calls")" = 2 ] && has "Publish Pi package: run 302"; then
+    if [ "$rc" = 0 ] && [ "$(grep -c '^gh workflow run' "$FAKE_STATE/calls")" = 2 ] && logs "Publish Pi package: run 302"; then
         pass "the next run dispatches the publish again and waits for the new run"
     else fail "resume after a failed publish (rc=$rc: $(cat "$C/out"))"; fi
 }
@@ -706,7 +743,7 @@ case_16() {
     rm "$FAKE_STATE/npm-absent" "$FAKE_STATE/npm-hide"
     mv "$FAKE_STATE/npm-hidden" "$FAKE_STATE/npm-versions"
     act; rc=$?
-    if [ "$rc" = 0 ] && has "Step 14: Publish the Pi package: done already" \
+    if [ "$rc" = 0 ] && has "step 14/15 Publish the Pi package: done already" \
         && has "once: set up npm trusted publishing for @empathic/clax-pi" \
         && [ "$(count "npm publish --access public")" = 1 ]; then
         pass "the rerun finds the publish done and prints the trusted-publisher setup"
@@ -749,7 +786,7 @@ case_17() {
     echo 0.6.0 > "$FAKE_STATE/npm-versions"
     act; rc=$?
     if [ "$rc" = 0 ] && has "note: @empathic/clax-pi@0.6.0 is on npm already: step 14 is done" \
-        && has "Step 14: Publish the Pi package: done already" && ! grep -E '^(gh workflow run|npm publish)' "$FAKE_STATE/calls" >/dev/null; then
+        && has "step 14/15 Publish the Pi package: done already" && ! grep -E '^(gh workflow run|npm publish)' "$FAKE_STATE/calls" >/dev/null; then
         pass "a version npm has already is not published again"
     else fail "a version npm has already (rc=$rc: $(cat "$C/out"))"; fi
 }
@@ -886,10 +923,66 @@ case_37() {
     release 0.6.0 --force; rc=$?
     if [ "$rc" = 2 ] && [ "$before" = "$(snapshot)" ]; then pass "an unknown flag is a usage error"; else fail "an unknown flag is a usage error (rc=$rc)"; fi
 }
+case_38() {
+
+    # --- progress --------------------------------------------------------------------
+    # Steps a run finds done count in full: with typical durations (no
+    # earlier log), steps 1-7 are 515s of 2345s.
+    new_case
+    echo "completed failure" > "$FAKE_STATE/101"
+    act
+    rm "$C/repo/target/release/0.6.0.log"
+    echo "completed success" > "$FAKE_STATE/101"
+    act; rc=$?
+    if [ "$rc" = 0 ] && released && has "  7. [done] Push the tag" && has "  8. [todo] Wait for the Release workflow" \
+        && has "Estimated: about 39m in all, about 31m for the steps to do (typical durations" \
+        && has "[0%] step 2/15 Bump the version: done already" \
+        && has "[21%] step 7/15 Push the tag: done already" \
+        && has "[21%] step 8/15 Wait for the Release workflow: gh run list" \
+        && has "Starting at step 8."; then
+        pass "a resumed run counts the steps done in its percentage"
+    else fail "a resumed run's percentage (rc=$rc: $(cat "$C/out"))"; fi
+}
+case_39() {
+    # The durations a run records in its log make the next estimate: steps
+    # 4 and 10 take 300s each, the rest none (counted as 1s), but 13, which
+    # the run found done (CI on the fake is done at once), keeps its 540s.
+    new_case
+    echo 300 > "$FAKE_STATE/ci-advance"
+    act; rc=$?
+    if [ "$rc" = 0 ] && logs "== step 4 ran 300s" && logs "== step 10 ran 300s" && logs "== step 8 ran 0s" \
+        && has "Clax 0.6.0 is released. This run took 10m00s."; then
+        pass "a run records each step's duration in its log"
+    else fail "a run records each step's duration (rc=$rc: $(cat "$C/out"))"; fi
+    release 0.6.0; rc=$?
+    if [ "$rc" = 0 ] && has "Estimated: about 19m in all, under a minute for the steps to do (the steps' durations in 1 earlier run log(s)"; then
+        pass "the estimate comes from earlier runs' logs"
+    else fail "the estimate from earlier runs' logs (rc=$rc: $(cat "$C/out"))"; fi
+}
+case_40() {
+    # A heartbeat while just ci runs, its clock moved on by 3m12s: Bazel's
+    # tests from the log, the share done ((45 + 192) / 2345) and the time left.
+    new_case
+    echo 192 > "$FAKE_STATE/ci-advance"
+    : > "$FAKE_STATE/ci-heartbeat"
+    CLAX_RELEASE_HEARTBEAT_SECONDS=0.05 act; rc=$?
+    if [ "$rc" = 0 ] && released && has "[10%] step 4/15 Run the gates: 40/56 tests, 3m12s (about 35m left)"; then
+        pass "a heartbeat tells the share done, Bazel's tests, the time taken and the time left"
+    else fail "a heartbeat (rc=$rc: $(cat "$C/out"))"; fi
+}
+case_41() {
+    # --verbose streams the steps' output too, still logging it.
+    new_case
+    release 0.6.0 --i-know-what-i-am-doing --verbose; rc=$?
+    if [ "$rc" = 0 ] && released && has "fake ci: every gate passed" && has "Release v0.6.0: completed success" \
+        && has "[1%] step 4/15 Run the gates: just ci" && logs "fake ci: every gate passed"; then
+        pass "--verbose streams the steps' output and logs it"
+    else fail "--verbose (rc=$rc: $(cat "$C/out"))"; fi
+}
 
 JOBS="$(getconf _NPROCESSORS_ONLN 2>/dev/null || echo 4)"
 [ "$JOBS" -le 8 ] || JOBS=8
-CASES="case_1 case_2 case_3 case_4 case_5 case_5b case_5c case_6 case_7 case_8 case_9 case_10 case_11 case_12 case_13 case_14 case_15 case_15b case_16 case_16b case_16c case_17 case_18 case_19 case_20 case_21 case_22 case_23 case_24 case_25 case_26 case_27 case_28 case_29 case_30 case_31 case_32 case_33 case_34 case_35 case_36 case_37"
+CASES="case_1 case_2 case_3 case_4 case_5 case_5b case_5c case_6 case_7 case_8 case_9 case_10 case_11 case_12 case_13 case_14 case_15 case_15b case_16 case_16b case_16c case_17 case_18 case_19 case_20 case_21 case_22 case_23 case_24 case_25 case_26 case_27 case_28 case_29 case_30 case_31 case_32 case_33 case_34 case_35 case_36 case_37 case_38 case_39 case_40 case_41"
 # A case's subshell exits 0 once its last check has run; one that dies on
 # the way (an unbound variable under set -u, say) exits otherwise, and fails
 # the gate whatever it printed before. Each case's status is collected by its

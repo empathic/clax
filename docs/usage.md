@@ -540,8 +540,15 @@ the perf-log job, which is cancelled when pushes pile up) on the pin
 commit (or the merge on it, below), and runs Publish Pi
 package with `dry_run` off and waits for it. It never force-pushes, never
 deletes a tag, and checks that each commit and the tag it pushes carries a
-signature. The output of `just` and of the waits is also appended to
-`target/release/<version>.log`. Last, it prints what is left by hand:
+signature. Before the first step it lists every step, done or to do, with
+an estimate of the time in all and still to run, from the steps' durations
+in earlier runs' logs or else typical ones. Each step then prints one line
+with the share of the estimate done (steps found done count in full), and
+a long step a heartbeat about every 30 seconds with its time so far, the
+time left, and Bazel's tests done or the workflow run's state and jobs
+done. The steps' own output goes only to `target/release/<version>.log`; a
+failed step prints the log's last 50 lines and its path. `--verbose`
+streams the steps' output to the terminal as well. Last, it prints what is left by hand:
 redeploying clax.dev with `just clax-dev-deploy` (a dry run first, then
 `--i-know-what-i-am-doing`) when the release has migrations or hosted
 changes (it says whether `crates/clax-store/src/migrations.rs` changed
