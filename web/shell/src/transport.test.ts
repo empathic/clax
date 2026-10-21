@@ -307,6 +307,14 @@ describe("installTransport", () => {
     expect(readEmbed(fakeWin(null).doc)).toBeNull();
     expect(readEmbed(fakeWin("{").doc)).toBeNull();
     expect(readEmbed(fakeWin(`{"transport":"http","shell":"x","content":"y"}`).doc)).toBeNull();
+    expect(readEmbed(fakeWin(`{"transport":"host","shell":"https://app.clax.invalid","content":"https://{id}.c.clax.invalid"}`).doc)).toEqual({ transport: "host", shell: "https://app.clax.invalid", content: "https://{id}.c.clax.invalid" });
+  });
+
+  it("refuses an embed whose origins are not https: or clax:, or whose content names {id} other than once", () => {
+    for (const [shell, content] of [["http://app.clax.invalid", "https://{id}.c.clax.invalid"], ["https://app.clax.invalid", "http://{id}.c.clax.invalid"], ["clax://app", "ws://{id}.c"],
+      ["clax://app", "clax://c"], ["clax://app", "clax://{id}.{id}.c"], ["app", "clax://{id}.c"], ["clax:app", "clax://{id}.c"]]) {
+      expect(readEmbed(fakeWin(JSON.stringify({ transport: "host", shell, content })).doc)).toBeNull();
+    }
   });
 
   it("leaves a browser's document alone", () => {

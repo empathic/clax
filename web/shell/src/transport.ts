@@ -65,7 +65,16 @@
  * with `{id}` in place of its ID. */
 export type Embed = { transport: "host"; shell: string; content: string };
 
-/** The embed settings of `doc`, or null without a well-formed meta. */
+const APP_ORIGIN = /^(https|clax):\/\/[^/]/;
+
+/** Whether `shell` and `content` are origins the app may use: `https:` or
+ * `clax:` only, never plain `http:` (spec 2026-10-19-in-process-core-design
+ * §4), and `content` names `{id}` exactly once. */
+export const embedOk = (shell: string, content: string): boolean =>
+  APP_ORIGIN.test(shell) && APP_ORIGIN.test(content) && content.split("{id}").length === 2;
+
+/** The embed settings of `doc`, or null without a well-formed meta (one
+ * whose origins `embedOk` takes). */
 export function readEmbed(doc: Document = document): Embed | null {
   const raw = doc.querySelector('meta[name="clax-embed"]')?.getAttribute("content");
   if (!raw) return null;
@@ -77,7 +86,7 @@ export function readEmbed(doc: Document = document): Embed | null {
   }
   if (typeof v !== "object" || v === null) return null;
   const { transport: kind, shell, content } = v as Record<string, unknown>;
-  if (kind !== "host" || typeof shell !== "string" || typeof content !== "string") return null;
+  if (kind !== "host" || typeof shell !== "string" || typeof content !== "string" || !embedOk(shell, content)) return null;
   return { transport: kind, shell, content };
 }
 

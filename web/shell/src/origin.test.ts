@@ -23,6 +23,13 @@ describe("artifactOrigin in the Clax app", () => {
     }
   });
 
+  it("is null (the sandboxed path) for an embed with an origin neither https: nor clax:, or a content template without {id} once", () => {
+    for (const [shell, content] of [["clax://app", "http://{id}.c.example"], ["http://app.example", "https://{id}.c.clax.invalid"], ["https://app.clax.invalid", "ws://{id}.c"],
+      ["https://app.clax.invalid", "https://c.clax.invalid"], ["clax://app", "clax://{id}.{id}.c"]]) {
+      expect(artifactOrigin("abcdefghijkl", loc("localhost"), { transport: "host", shell, content })).toBeNull();
+    }
+  });
+
   it("reads the embed the app's transport installed", () => {
     Object.defineProperty(window, "claxTransport", { configurable: true, value: Object.freeze({ embed: embed("clax://{id}.c") }) });
     try {
