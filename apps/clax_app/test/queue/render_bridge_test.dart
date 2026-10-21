@@ -374,7 +374,8 @@ void main() {
       expect(w.core.read('j')!.state, JobState.done);
     });
 
-    test('a render lost to a reload is asked again once, then waits', () async {
+    test('a render lost to a detach waits for the UI, its last try kept, '
+        'and is asked anew when the UI is back', () async {
       inspector.hang();
       w.start();
       w.send(const Make('j', 'a todo app'));
@@ -383,25 +384,30 @@ void main() {
       final turns = w.effects.whereType<StartTurn>().length;
       final row = w.core.read('j')!;
 
-      // The UI engine detaches mid-render: the WebView is torn down.
+      // The UI engine detaches mid-render: the WebView is torn down, and
+      // no render can be asked until it is back.
       available.value = false;
       await w.drive();
-      final renders = w.effects.whereType<Render>().toList();
-      expect(renders, hasLength(2), reason: 'asked again once');
-      expect(renders.last.last, isTrue);
-      expect(w.received.whereType<RenderLost>(), hasLength(2));
+      expect(
+        w.effects.whereType<Render>(),
+        hasLength(1),
+        reason: 'nothing asked of no UI',
+      );
+      expect(w.received.whereType<RenderLost>(), hasLength(1));
       expect(
         viewOf(w.m).jobs.single.waitingFor,
         WaitingFor.render,
-        reason: 'the second lost too: the job waits',
+        reason: 'the job waits for a render',
       );
       expect(w.core.read('j'), row, reason: 'its core row unchanged');
       expect(w.effects.whereType<StartTurn>(), hasLength(turns));
 
-      // The engine is back: one more render, and the job goes on.
+      // The engine is back: the render is asked anew, and the job goes on.
       available.value = true;
-      await w.drive(until: () => w.effects.whereType<Render>().length > 2);
-      expect(w.effects.whereType<Render>(), hasLength(3));
+      await w.drive(until: () => w.effects.whereType<Render>().length > 1);
+      final renders = w.effects.whereType<Render>().toList();
+      expect(renders, hasLength(2));
+      expect(renders.last.last, isFalse, reason: 'the last try was not spent');
       expect(
         w.effects.whereType<StartTurn>(),
         hasLength(turns),
