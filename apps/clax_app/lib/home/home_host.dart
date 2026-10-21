@@ -477,8 +477,8 @@ class HomeHost extends ChangeNotifier {
   /// as the shell sends them). Throws [HomeRefused] when [callerAid] is
   /// not the home app, and [HomeBadRequest] for a method or arguments the
   /// capability does not take. `menu` resolves the picked item's ID, or
-  /// null; every other call resolves null. `tiles`, which older home apps
-  /// call with where their tiles are, is taken and does nothing.
+  /// null; every other call resolves null. `tiles` (where the page's tiles
+  /// are, which docs/contract.md still offers) is taken and does nothing.
   Future<Object?> call(
     String callerAid,
     String method,
