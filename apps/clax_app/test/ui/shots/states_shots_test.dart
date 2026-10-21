@@ -67,11 +67,11 @@ void main() {
     final app = (await api.getArtifact(aid)).artifact;
     await s.tester.pumpWidget(
       s.app(
-        Scaffold(body: AppCover(app: app, icons: icons)),
+        Scaffold(body: AppCover(app: app, icons: icons, mark: true)),
         title: app.title,
       ),
     );
-    // Past the 400 ms the mark waits, partway into its breath.
+    // Partway into the mark's breath.
     await s.settle(9);
     await s.take('app-loading');
     await s.tester.pumpWidget(const SizedBox());

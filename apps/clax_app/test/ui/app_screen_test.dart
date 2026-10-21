@@ -11,6 +11,7 @@ import 'package:clax_app/platform/clock.dart';
 import 'package:clax_app/platform/app_notice.dart';
 import 'package:clax_app/platform/settings_store.dart';
 import 'package:clax_app/queue/client.dart' hide Intent;
+import 'package:clax_app/ui/app_cover.dart';
 import 'package:clax_app/ui/app_icon.dart';
 import 'package:clax_app/ui/app_menu.dart';
 import 'package:clax_app/ui/app_screen.dart';
@@ -59,6 +60,31 @@ class _Clock implements Clock {
       c.complete();
     }
     _delays.clear();
+  }
+}
+
+/// A clock whose time moves only by [advance], which ends each delay that
+/// falls due on the way.
+class _StepClock implements Clock {
+  DateTime t = DateTime.utc(2026, 10, 12);
+  final _delays = <(DateTime, Completer<void>)>[];
+  @override
+  DateTime now() => t;
+  @override
+  Future<void> delay(Duration d) {
+    final c = Completer<void>();
+    _delays.add((t.add(d), c));
+    return c.future;
+  }
+
+  void advance(Duration d) {
+    t = t.add(d);
+    for (final (at, c) in List.of(_delays)) {
+      if (!at.isAfter(t)) {
+        c.complete();
+        _delays.remove((at, c));
+      }
+    }
   }
 }
 
@@ -1269,24 +1295,110 @@ void main() {
     },
   );
 
-  testWidgets('loading shows the app’s icon and title, and the working mark '
-      'only once 400 ms have passed', (tester) async {
-    await pumpScreen(tester, clock: const SystemClock());
-    await tester.pump();
+  group('the loading cover', () {
     final cover = find.byKey(const ValueKey('app-cover'));
-    expect(
-      find.descendant(of: cover, matching: find.byType(AppBadge)),
-      findsOneWidget,
-    );
-    expect(find.descendant(of: cover, matching: find.text('Runs')), findsOneWidget);
-    expect(find.byType(CircularProgressIndicator), findsNothing);
-    await tester.pump(const Duration(milliseconds: 390));
-    expect(find.byKey(const ValueKey('app-cover-mark')), findsNothing);
-    await tester.pump(const Duration(milliseconds: 20));
     final mark = find.byKey(const ValueKey('app-cover-mark'));
-    expect(mark, findsOneWidget);
-    expect(tester.widget<ClaxMark>(mark).state, ClaxMarkState.working);
-    await tester.pumpWidget(const SizedBox());
+
+    /// Moves [clock] on by [ms] and lets the screen catch up.
+    Future<void> after(WidgetTester tester, _StepClock clock, int ms) async {
+      clock.advance(Duration(milliseconds: ms));
+      await tester.pump();
+      await tester.pump();
+    }
+
+    testWidgets('is the plain surface for 100 ms, then the working mark at '
+        'its centre', (tester) async {
+      final clock = _StepClock();
+      await pumpScreen(tester, clock: clock);
+      expect(cover, findsOneWidget);
+      expect(mark, findsNothing);
+      expect(find.descendant(of: cover, matching: find.byType(AppBadge)),
+          findsNothing);
+      expect(find.descendant(of: cover, matching: find.text('Runs')),
+          findsNothing);
+      await after(tester, clock, 99);
+      expect(mark, findsNothing);
+      await after(tester, clock, 1);
+      expect(mark, findsOneWidget);
+      expect(tester.widget<ClaxMark>(mark).state, ClaxMarkState.working);
+      expect(tester.getCenter(mark), tester.getCenter(cover));
+      expect(AppCover.markAfter, const Duration(milliseconds: 100));
+      expect(AppCover.markHold, ClaxMotion.markBreath);
+    });
+
+    testWidgets('a page up at 50 ms never shows the mark', (tester) async {
+      final clock = _StepClock();
+      final rig = await pumpScreen(tester, clock: clock);
+      await after(tester, clock, 50);
+      rig.surface.push(rig.ready());
+      await tester.pump();
+      expect(cover, findsNothing);
+      await after(tester, clock, 2000);
+      expect(cover, findsNothing);
+      expect(mark, findsNothing);
+    });
+
+    testWidgets('a page up at 150 ms keeps the cover until the mark’s first '
+        'breath has ended', (tester) async {
+      final clock = _StepClock();
+      final rig = await pumpScreen(tester, clock: clock);
+      await after(tester, clock, 100);
+      await after(tester, clock, 50);
+      expect(mark, findsOneWidget);
+      rig.surface.push(rig.ready());
+      await tester.pump();
+      expect(cover, findsOneWidget);
+      expect(mark, findsOneWidget);
+      // The mark showed at 100 ms: its breath ends at 1700 ms.
+      await after(tester, clock, 1549);
+      expect(cover, findsOneWidget);
+      await after(tester, clock, 1);
+      expect(cover, findsNothing);
+      expect(find.byKey(const ValueKey('fake-surface')), findsOneWidget);
+    });
+
+    testWidgets('a page up after a whole breath lifts it at once',
+        (tester) async {
+      final clock = _StepClock();
+      final rig = await pumpScreen(tester, clock: clock);
+      await after(tester, clock, 100);
+      await after(tester, clock, 1700);
+      expect(mark, findsOneWidget);
+      rig.surface.push(rig.ready());
+      await tester.pump();
+      expect(cover, findsNothing);
+    });
+
+    testWidgets('under reduced motion the still mark is not held',
+        (tester) async {
+      tester.platformDispatcher.accessibilityFeaturesTestValue =
+          const FakeAccessibilityFeatures(disableAnimations: true);
+      addTearDown(tester.platformDispatcher.clearAccessibilityFeaturesTestValue);
+      final clock = _StepClock();
+      final rig = await pumpScreen(tester, clock: clock);
+      await after(tester, clock, 150);
+      expect(mark, findsOneWidget);
+      rig.surface.push(rig.ready());
+      await tester.pump();
+      expect(cover, findsNothing);
+    });
+
+    testWidgets('a reload while the cover waits out the breath keeps it and '
+        'its mark', (tester) async {
+      final clock = _StepClock();
+      final rig = await pumpScreen(tester, clock: clock);
+      await after(tester, clock, 150);
+      rig.surface.push(rig.ready());
+      await tester.pump();
+      rig.surface.fault(const SurfaceFault('gone', reloading: true));
+      await tester.pump();
+      await after(tester, clock, 2000);
+      expect(cover, findsOneWidget);
+      expect(mark, findsOneWidget);
+      rig.surface.push(rig.ready());
+      await tester.pump();
+      expect(cover, findsNothing);
+    });
   });
 
   testWidgets('a page that gave up says so plainly with the app’s icon, Try '

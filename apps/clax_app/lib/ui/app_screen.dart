@@ -52,8 +52,10 @@ import 'working_chip.dart';
 /// Working chip.
 ///
 /// - **Page.** Loads `<base>/a/<aid>?app=1` and keeps it covered until the
-///   shell's `ready`, so the browser view never shows; a load failure
-///   covers it again, with Reload once the surface gives up.
+///   shell's `ready`, so the browser view never shows ([AppCover], timed
+///   by [CoverTiming]: the working mark after 100 ms, held for a full
+///   breath); a load failure covers it again, with Reload once the surface
+///   gives up.
 /// - **Finger attestation.** Every touch and stylus down, up and cancel
 ///   the page gets is passed to the shell (`attestPointer`), in the page's
 ///   pixels: the shell needs it to take a long-press's pick when the
@@ -317,7 +319,7 @@ class AppScreen extends StatefulWidget {
   /// [ToolbarShareFiles], so the share picker shows from the item.
   final Future<void> Function(BuildContext context, BundleFiles files)? share;
 
-  /// The apps' icons, for the cover while the page loads; null reads this
+  /// The apps' icons, for the cover when the page fails; null reads this
   /// app's own.
   final AppIcons? icons;
 
@@ -465,13 +467,23 @@ class _AppScreenState extends State<AppScreen> with WidgetsBindingObserver {
   final _subs = <StreamSubscription<Object?>>[];
 
   // The page.
-  var _covered = true;
+
+  /// When the cover over the page shows its mark and lifts.
+  late final CoverTiming _coverTiming;
+
+  /// Whether the cover is over the page: loading (and the rest of the
+  /// mark's breath), or given up.
+  bool get _covered => _coverTiming.covering;
+
+  void _onCover() {
+    if (mounted) setState(() {});
+  }
   String? _gaveUp;
 
   /// The raw text of the fault [_gaveUp] says plainly, for Developer tools.
   String? _gaveUpDetail;
 
-  /// The app as last read, for the cover's icon and title.
+  /// The app as last read, for the cover's icon and words.
   ArtifactSummary? _app;
   Future<ArtifactSummary?>? _reading;
 
@@ -670,6 +682,7 @@ class _AppScreenState extends State<AppScreen> with WidgetsBindingObserver {
   @override
   void initState() {
     super.initState();
+    _coverTiming = CoverTiming(clock: widget.clock)..addListener(_onCover);
     _changes = ChangeTracker(
       timings: widget.timings,
       artifact: widget.aid,
@@ -1163,6 +1176,7 @@ class _AppScreenState extends State<AppScreen> with WidgetsBindingObserver {
     _comments.unregister(_toggleOpen);
     _ownComments?.dispose();
     _ownIcons?.dispose();
+    _coverTiming.dispose();
     _screenFocus.dispose();
     for (final s in _subs) {
       s.cancel();
@@ -1197,8 +1211,8 @@ class _AppScreenState extends State<AppScreen> with WidgetsBindingObserver {
         setState(() {
           _ready = m;
           _pageWait = false;
-          _covered = false;
           _gaveUp = null;
+          _coverTiming.ready(still: MediaQuery.disableAnimationsOf(context));
           _changes.shown(m.version, pinned: m.pinned);
         });
         if (_newer case final n? when m.version >= n) _endOffer();
@@ -1646,15 +1660,18 @@ class _AppScreenState extends State<AppScreen> with WidgetsBindingObserver {
   void _onFault(SurfaceFault f) {
     if (!mounted) return;
     setState(() {
-      _covered = true;
       _gaveUp = f.reloading ? null : logUserMessage('page', f);
       _gaveUpDetail = f.detail;
+      f.reloading ? _coverTiming.load() : _coverTiming.fail();
     });
     if (!f.reloading) widget.onStoppedLoading?.call();
   }
 
   void _reload() {
-    setState(() => _gaveUp = null);
+    setState(() {
+      _gaveUp = null;
+      _coverTiming.load();
+    });
     unawaited(widget.surface.reload());
   }
 
@@ -3233,13 +3250,13 @@ class _AppScreenState extends State<AppScreen> with WidgetsBindingObserver {
     return AppCover(
       app: _app,
       icons: _app == null ? null : _icons,
+      mark: _coverTiming.mark,
       failure: _gaveUp,
       detail: DeveloperScope.of(context) ? _gaveUpDetail : null,
       onTryAgain: _reload,
       onBack: widget.mode != AppMode.app
           ? null
           : widget.leave ?? (nav.canPop() ? () => nav.pop() : null),
-      clock: widget.clock,
     );
   }
 
