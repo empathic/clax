@@ -1271,7 +1271,8 @@ pub struct Published {
 #[derive(Debug, Default)]
 pub struct Replied {
     /// The session the replies came from: the one that published the job's
-    /// version.
+    /// version while it is live, else the one the step named
+    /// ([`ReplyStep::session_id`]).
     pub session_id: String,
     /// The agent's comments, one per thread, in the step's order.
     pub comments: Vec<Comment>,
