@@ -3402,7 +3402,7 @@ mod tests {
         const LIVE: &str = "01ARZ3NDEKTSV4RRFFQ69G5FAX";
         const ENDED: &str = "01ARZ3NDEKTSV4RRFFQ69G5FAY";
 
-        fn header(sql: &str, key: &str) -> u32 {
+        pub(crate) fn header(sql: &str, key: &str) -> u32 {
             let tag = format!("-- {key}: ");
             sql.lines()
                 .find_map(|l| l.strip_prefix(&tag))
@@ -3443,29 +3443,42 @@ mod tests {
         /// holds it), a thread with the viewer's comment, the agent's reply,
         /// and the viewer's comment's delivery to the agent.
         pub(crate) fn old_build(home: &Home, sql: &str) {
+            old_builds(home, &[sql]);
+        }
+
+        /// [`old_build`] of fixtures laid one after another: each begins
+        /// where the one before it ends, and the home ends at the last's
+        /// `user_version`, which it returns.
+        pub(crate) fn old_builds(home: &Home, fixtures: &[&str]) -> u32 {
             home.ensure_dirs().unwrap();
             let mut c = Connection::open(home.db_path()).unwrap();
-            let first = header(sql, "first");
-            let last = header(sql, "user_version");
+            let first = header(fixtures[0], "first");
             for v in 1..first {
                 let tx = c.transaction().unwrap();
                 tx.execute_batch(MIGRATIONS[v as usize - 1]).unwrap();
                 rust_step(&tx, v).unwrap();
                 tx.commit().unwrap();
             }
-            let mut parts = sql.split("\n-- migration: ").skip(1);
-            for v in first..=last {
-                let part = parts.next().unwrap_or_else(|| panic!("no migration {v}"));
-                let (n, body) = part.split_once('\n').unwrap();
-                assert_eq!(n.trim().parse::<u32>().unwrap(), v);
-                let tx = c.transaction().unwrap();
-                tx.execute_batch(body).unwrap();
-                if v == 25 {
-                    unconnected_approval(&tx).unwrap();
+            let mut v = first;
+            for sql in fixtures {
+                assert_eq!(header(sql, "first"), v, "fixtures one after another");
+                let last = header(sql, "user_version");
+                let mut parts = sql.split("\n-- migration: ").skip(1);
+                for _ in v..=last {
+                    let part = parts.next().unwrap_or_else(|| panic!("no migration {v}"));
+                    let (n, body) = part.split_once('\n').unwrap();
+                    assert_eq!(n.trim().parse::<u32>().unwrap(), v);
+                    let tx = c.transaction().unwrap();
+                    tx.execute_batch(body).unwrap();
+                    if v == 25 {
+                        unconnected_approval(&tx).unwrap();
+                    }
+                    tx.commit().unwrap();
+                    v += 1;
                 }
-                tx.commit().unwrap();
+                assert!(parts.next().is_none());
             }
-            assert!(parts.next().is_none());
+            let last = v - 1;
             c.pragma_update(None, "user_version", last).unwrap();
             let anchor = serde_json::to_string(&crate::test_util::anchor()).unwrap();
             c.execute_batch(&format!(
@@ -3499,6 +3512,7 @@ mod tests {
                 c.execute("UPDATE sessions SET elevate_json = ?1", [rights()])
                     .unwrap();
             }
+            last
         }
 
         /// Every schema object but SQLite's own, by (type, name), as text with
@@ -5582,6 +5596,274 @@ mod tests {
         app_after_main(home, 3, app)
     }
 
+    /// Every home an installed or earlier build may have left, by the
+    /// fixtures in `tests/fixtures/old-migrations` it replays, one after
+    /// another: the repair's builds of multi-person ([`repair::OLD_BUILDS`]),
+    /// the Clax app's numberings (the phone's build d6cf83b75 at 43, the
+    /// app from 41 at 01fcc2dd2 at 46, both halves of it frozen apart) and
+    /// main's tip at 41.
+    fn installed_homes() -> Vec<(&'static str, Vec<&'static str>)> {
+        let mut homes: Vec<(&str, Vec<&str>)> = repair::OLD_BUILDS
+            .iter()
+            .map(|(name, sql)| (*name, vec![*sql]))
+            .collect();
+        homes.extend([
+            ("flutter-app-d6cf83b75", vec![PHONE_AT_43]),
+            ("flutter-app-4508df19f", vec![INSTALLED_AT_43]),
+            ("flutter-app-01fcc2dd2", vec![APP_FROM_41_AT_46]),
+            ("flutter-app-4479a586c", vec![APP_AT_41]),
+            (
+                "flutter-app-4479a586c, flutter-app-adbfc62df",
+                vec![APP_AT_41, JOBS_AT_46],
+            ),
+            ("main-25f2a9169", vec![MAIN_AT_41]),
+        ]);
+        homes
+    }
+
+    /// The build last installed on the owner's phone, d6cf83b75: the app's
+    /// five at 39 to 43, before main's 39 and 40.
+    const PHONE_AT_43: &str =
+        include_str!("../tests/fixtures/old-migrations/flutter-app-d6cf83b75.sql");
+
+    /// The app's six at 41 to 46, after main's 39 and 40, as 01fcc2dd2 had
+    /// them before main's 41.
+    const APP_FROM_41_AT_46: &str =
+        include_str!("../tests/fixtures/old-migrations/flutter-app-01fcc2dd2.sql");
+
+    /// Main's tip, 25f2a9169: legal_agreements, briefs and tags at 39 to 41.
+    const MAIN_AT_41: &str = include_str!("../tests/fixtures/old-migrations/main-25f2a9169.sql");
+
+    /// Rows in the tables of the app's and main's migrations above 38 that
+    /// `c` has, beside [`repair::old_build`]'s, so a home of each layout
+    /// holds a row of every kind it can.
+    fn later_rows(c: &Connection) {
+        let table = |t: &str| table_count(c, t) == 1;
+        let column = |t: &str, col: &str| {
+            c.query_row(
+                "SELECT COUNT(*) FROM pragma_table_info(?1) WHERE name = ?2",
+                params![t, col],
+                |r| r.get::<_, i64>(0),
+            )
+            .unwrap()
+                == 1
+        };
+        if table("db_read_grants") {
+            c.execute_batch(
+                "INSERT INTO artifacts (id, title, created_at, updated_at, current_version, contract_version, doc_seq)
+                    VALUES ('8r4m2nzy3c5v', 'Notes', 'x', 'x', 1, '0', 1);
+                 INSERT INTO versions (artifact_id, n, created_at, files_json)
+                    VALUES ('8r4m2nzy3c5v', 1, 'x', '{\"index.html\":\"c\"}');
+                 INSERT INTO docs (artifact_id, path, collection, json, version, updated_at)
+                    VALUES ('8r4m2nzy3c5v', 'notes/1', 'notes', '{\"text\":\"hi\"}', 1, 'x');
+                 INSERT INTO db_read_grants (reader_id, source_id, granted_at)
+                    VALUES ('8r4m2nzy3c5v', '7q3k9mzx2b4t', 'x');",
+            )
+            .unwrap();
+        }
+        if column("artifacts", "draft_of") {
+            c.execute_batch(
+                "INSERT INTO artifacts (id, title, created_at, updated_at, current_version, contract_version, draft_of, hidden)
+                    VALUES ('9s5n3pza4d6w', 'Plan draft', 'x', 'x', 1, '0', '7q3k9mzx2b4t', 1);
+                 INSERT INTO versions (artifact_id, n, created_at, files_json)
+                    VALUES ('9s5n3pza4d6w', 1, 'x', '{\"index.html\":\"d\"}');",
+            )
+            .unwrap();
+        }
+        if table("net_grants") {
+            c.execute_batch(
+                "INSERT INTO net_grants (artifact_id, host, granted_at)
+                    VALUES ('7q3k9mzx2b4t', 'api.example.com', 'x');",
+            )
+            .unwrap();
+        }
+        if table("sample_grants") {
+            c.execute_batch(
+                "INSERT INTO sample_grants (artifact_id, granted_at) VALUES ('7q3k9mzx2b4t', 'x');
+                 INSERT INTO sample_spend (artifact_id, day, micro_usd)
+                    VALUES ('7q3k9mzx2b4t', '2026-10-14', 1200);",
+            )
+            .unwrap();
+        }
+        if column("artifacts", "draft_inherit_net") {
+            c.execute_batch(
+                "UPDATE artifacts SET draft_inherit_net = 0 WHERE id = '9s5n3pza4d6w';",
+            )
+            .unwrap();
+        }
+        if table("jobs") {
+            c.execute_batch(JOB_ROWS).unwrap();
+        }
+        if table("legal_agreements") {
+            c.execute_batch(
+                "INSERT INTO legal_agreements (viewer_id, version, agreed_at, via)
+                    VALUES ('01ARZ3NDEKTSV4RRFFQ69G5FAO', '2026-10-01', 'x', 'signin');",
+            )
+            .unwrap();
+        }
+        if table("briefs") {
+            c.execute_batch(
+                "INSERT INTO briefs (artifact_id, starter, key, created_at)
+                    VALUES ('7q3k9mzx2b4t', '*owner', 'k1', 'x');",
+            )
+            .unwrap();
+        }
+        if table("tags") {
+            c.execute_batch(
+                "INSERT INTO tags (id, name, fold, colour, created_at, updated_at)
+                    VALUES ('g1', 'Work', 'work', 'blue', 'x', 'x');
+                 INSERT INTO artifact_tags (artifact_id, tag_id) VALUES ('7q3k9mzx2b4t', 'g1');",
+            )
+            .unwrap();
+        }
+    }
+
+    /// How many rows each table of `c` holds, by name.
+    fn table_rows(c: &Connection) -> std::collections::BTreeMap<String, i64> {
+        let tables: Vec<String> = c
+            .prepare(
+                "SELECT name FROM sqlite_master WHERE type = 'table' AND name NOT LIKE 'sqlite_%'",
+            )
+            .unwrap()
+            .query_map([], |r| r.get(0))
+            .unwrap()
+            .collect::<rusqlite::Result<_>>()
+            .unwrap();
+        tables
+            .into_iter()
+            .map(|t| {
+                let n = c
+                    .query_row(&format!("SELECT COUNT(*) FROM \"{t}\""), [], |r| r.get(0))
+                    .unwrap();
+                (t, n)
+            })
+            .collect()
+    }
+
+    /// Each home of [`installed_homes`] opens under this numbering: a copy
+    /// first, holding the home as it was; then this build's last version and
+    /// final schema, every table it had still there with as many rows and
+    /// the same rows, an intact database; and opened again, nothing changes.
+    #[test]
+    fn every_installed_home_opens_at_the_last_migration_keeping_every_table_and_row() {
+        let fresh = fresh_shape();
+        let last = MIGRATIONS.len() as u32;
+        assert_eq!(last, 47);
+        for (name, fixtures) in installed_homes() {
+            let dir = tempfile::tempdir().unwrap();
+            let home = Home::at(dir.path().join("ax"));
+            let old = repair::old_builds(&home, &fixtures);
+            let (counts, cols, before) = {
+                let c = Connection::open(home.db_path()).unwrap();
+                later_rows(&c);
+                assert_eq!(user_version(&c), old, "{name}");
+                (table_rows(&c), columns_of(&c), every_row(&c))
+            };
+            assert!(old < last, "{name}: at {old}");
+
+            let copy = open_under(&home, &super::NUMBERING);
+            let c = Connection::open(home.db_path()).unwrap();
+            assert_eq!(user_version(&c), last, "{name}");
+            assert_eq!(shape_of(&c), fresh, "{name}: the final schema");
+            let after = table_rows(&c);
+            for (table, n) in &counts {
+                assert_eq!(after.get(table), Some(n), "{name}: table {table}");
+            }
+            // Every row, in each column it had that the final schema keeps
+            // (the repair moves `sessions.elevate_json` to
+            // `session_elevations`, which its own tests check).
+            let now = columns_of(&c);
+            let kept: Columns = cols
+                .iter()
+                .map(|(t, cs)| {
+                    let there = &now.iter().find(|(n, _)| n == t).unwrap().1;
+                    (
+                        t.clone(),
+                        cs.iter().filter(|c| there.contains(c)).cloned().collect(),
+                    )
+                })
+                .collect();
+            let copied = Connection::open(&copy).unwrap();
+            assert_eq!(rows_in(&copied, &cols), before, "{name}: the copy");
+            assert_eq!(
+                rows_in(&c, &kept),
+                rows_in(&copied, &kept),
+                "{name}: every row kept"
+            );
+            assert_eq!(
+                c.query_row("PRAGMA integrity_check", [], |r| r.get::<_, String>(0))
+                    .unwrap(),
+                "ok",
+                "{name}"
+            );
+            assert_eq!(user_version(&copied), old, "{name}: the copy");
+            assert_eq!(table_rows(&copied), counts, "{name}: the copy");
+            drop((c, copied));
+
+            // The store opens it, and again, at the last version.
+            drop(Store::open(&home).unwrap());
+            let mut c = Connection::open(home.db_path()).unwrap();
+            assert_eq!(user_version(&c), last, "{name}");
+            let (schema, rows) = (schema_of(&c), every_row(&c));
+            crate::migrate_with(&mut c, &super::NUMBERING).unwrap();
+            assert_eq!(
+                (user_version(&c), schema_of(&c), every_row(&c)),
+                (last, schema, rows),
+                "{name}: opened again"
+            );
+        }
+    }
+
+    /// The homes the owner's devices and branches may hold reach this
+    /// numbering by the path each is meant to take: the phone's at 43 and
+    /// 01fcc2dd2's at 46 adopted (to 46 and 47), main's at 41 by the
+    /// ordinary migrations alone.
+    #[test]
+    fn the_owners_homes_are_adopted_or_migrated_by_their_schema() {
+        for (fixtures, adopted) in [
+            (vec![PHONE_AT_43], Some((43, 46))),
+            (vec![APP_FROM_41_AT_46], Some((46, 47))),
+            (vec![APP_AT_41, JOBS_AT_46], Some((46, 47))),
+            (vec![MAIN_AT_41], None),
+        ] {
+            let dir = tempfile::tempdir().unwrap();
+            let home = Home::at(dir.path().join("ax"));
+            repair::old_builds(&home, &fixtures);
+            let mut c = Connection::open(home.db_path()).unwrap();
+            let tx = c.transaction().unwrap();
+            assert_eq!(
+                super::adopt_earlier_flutter_app(&tx, &super::NUMBERING).unwrap(),
+                adopted,
+                "{:?}",
+                fixtures
+                    .iter()
+                    .map(|f| f.lines().next())
+                    .collect::<Vec<_>>()
+            );
+        }
+    }
+
+    /// The fixture of the phone's build holds the same migrations as the
+    /// one taken from 4508df19f, and 01fcc2dd2's the same as the frozen
+    /// halves, so each layout is replayed from the SQL its build ran.
+    #[test]
+    fn the_owners_fixtures_agree_with_the_frozen_ones() {
+        let migrations = |sql: &'static str| -> Vec<&'static str> {
+            sql.split("\n-- migration: ").skip(1).collect()
+        };
+        assert_eq!(migrations(PHONE_AT_43), migrations(INSTALLED_AT_43));
+        let halves: Vec<_> = migrations(APP_AT_41)
+            .into_iter()
+            .map(str::trim_end)
+            .chain(migrations(JOBS_AT_46).into_iter().map(str::trim_end))
+            .collect();
+        let whole: Vec<_> = migrations(APP_FROM_41_AT_46)
+            .into_iter()
+            .map(str::trim_end)
+            .collect();
+        assert_eq!(whole, halves);
+    }
+
     #[test]
     fn the_frozen_app_migrations_are_this_numberings() {
         let frozen = app_migrations();
@@ -5770,7 +6052,16 @@ mod tests {
             };
             assert_marks_made(&later);
             let fresh = fresh_shape_of(&later);
-            for (k, app) in [(3, 6), (3, 1), (2, 6), (2, 5), (2, 1), (1, 3), (0, 5), (0, 6)] {
+            for (k, app) in [
+                (3, 6),
+                (3, 1),
+                (2, 6),
+                (2, 5),
+                (2, 1),
+                (1, 3),
+                (0, 5),
+                (0, 6),
+            ] {
                 let dir = tempfile::tempdir().unwrap();
                 let home = Home::at(dir.path().join("ax"));
                 let before = app_after_main(&home, k, app);

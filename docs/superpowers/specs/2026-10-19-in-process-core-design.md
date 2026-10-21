@@ -1612,6 +1612,15 @@ number on main), and installed homes are adopted by their schema.
   of every kind, which a test opens through the core: it backs up,
   adopts, migrates to 47, and keeps every artifact, version, thread and
   document.
+- **Fixtures of the homes since.** `flutter-app-d6cf83b75.sql` (the build
+  last installed on the phone: the same migrations as 4508df19f's),
+  `flutter-app-01fcc2dd2.sql` (the app's at 41 to 46, before main's 41)
+  and `main-25f2a9169.sql` (main's 39 to 41) sit beside the others in
+  `crates/clax-store/tests/fixtures/old-migrations`. A store test replays
+  every fixture there, alone or one after another, adds a row of each kind
+  its tables hold, and opens the home: a copy first, then the last
+  version, the final schema, every table with as many rows and the same
+  rows, and nothing changed when opened again.
 - **A large old database.** The test home of `scripts/perf-daemon.sh`
   (300 artifacts, 2,400 threads, 7,200 comments) is opened by the core in a
   test: main's 39 to 41 and the jobs migration add tables only (no
