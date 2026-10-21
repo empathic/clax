@@ -1,6 +1,5 @@
 package dev.empathic.clax_app
 
-import android.app.Activity
 import android.content.ContentResolver
 import android.content.Context
 import android.content.Intent
@@ -30,8 +29,12 @@ import java.util.concurrent.atomic.AtomicReference
  * `opened` {path} or {refused}. `refused` is `too_large` past [MAX_BYTES]
  * and `not_a_bundle` when the URI cannot be read in time. A file that is
  * not a bundle is Dart's reader's to refuse.
+ *
+ * It is made once per engine ([EngineChannels]), on the application
+ * context [context]; each activity that comes on screen hands it its
+ * launching intent ([attach]).
  */
-class BundleIntake(private val activity: Activity, messenger: BinaryMessenger) {
+class BundleIntake(private val context: Context, messenger: BinaryMessenger) {
     private val channel = MethodChannel(messenger, CHANNEL)
     private val main = Handler(Looper.getMainLooper())
     private val io = Executors.newCachedThreadPool()
@@ -55,8 +58,11 @@ class BundleIntake(private val activity: Activity, messenger: BinaryMessenger) {
         // Copies an earlier run left behind are removed first.
         val stale = incomingDir().listFiles()?.toList() ?: emptyList()
         io.execute { stale.forEach { it.delete() } }
+    }
+
+    /** An activity came on screen, launched by [launch]. */
+    fun attach(launch: Intent?) {
         // A launch from recents redelivers the old intent; it opens nothing.
-        val launch = activity.intent
         if (launch != null &&
             launch.flags and Intent.FLAG_ACTIVITY_LAUNCHED_FROM_HISTORY == 0 &&
             onNewIntent(launch)
@@ -68,7 +74,7 @@ class BundleIntake(private val activity: Activity, messenger: BinaryMessenger) {
     /** Takes [intent]'s file when it carries one; true when it did. */
     fun onNewIntent(intent: Intent?): Boolean {
         if (intent?.action != ACTION_OPEN_BUNDLE) return false
-        val uri = acceptable(activity, intent.data) ?: return false
+        val uri = acceptable(context, intent.data) ?: return false
         copying++
         var done = false
         val input = AtomicReference<InputStream?>(null)
@@ -98,7 +104,7 @@ class BundleIntake(private val activity: Activity, messenger: BinaryMessenger) {
         main.postDelayed(watchdog, COPY_TIMEOUT_MS)
         io.execute {
             val event = try {
-                copy(activity.contentResolver, uri, out) { input.set(it) }
+                copy(context.contentResolver, uri, out) { input.set(it) }
             } catch (e: Exception) {
                 out.delete()
                 mapOf("refused" to "not_a_bundle")
@@ -109,11 +115,6 @@ class BundleIntake(private val activity: Activity, messenger: BinaryMessenger) {
             }
         }
         return true
-    }
-
-    fun dispose() {
-        channel.setMethodCallHandler(null)
-        io.shutdown()
     }
 
     private fun answerInitial() {
@@ -131,7 +132,7 @@ class BundleIntake(private val activity: Activity, messenger: BinaryMessenger) {
         if (ready) channel.invokeMethod("opened", event) else pending.add(event)
     }
 
-    private fun incomingDir() = File(activity.cacheDir, "incoming")
+    private fun incomingDir() = File(context.cacheDir, "incoming")
 
     companion object {
         const val CHANNEL = "dev.empathic.clax/bundles"

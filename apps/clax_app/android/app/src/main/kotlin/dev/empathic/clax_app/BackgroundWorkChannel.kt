@@ -3,6 +3,7 @@ package dev.empathic.clax_app
 import android.Manifest
 import android.app.Activity
 import android.app.NotificationManager
+import android.content.Context
 import android.content.Intent
 import android.content.pm.PackageManager
 import android.os.Build
@@ -21,36 +22,52 @@ import io.flutter.plugin.common.MethodChannel
  *   after a start never overtakes it.
  * - `ready` and `failed` {title, text, artifact?} post a notice that opens
  *   the app on that artifact.
- * - `requestPermission` asks for POST_NOTIFICATIONS once per install and
- *   answers whether notifications may be posted.
+ * - `requestPermission` asks for POST_NOTIFICATIONS once per install,
+ *   through the activity on screen, and answers whether notifications may
+ *   be posted; with no activity on screen it asks nothing and answers
+ *   whether they may be posted now.
  * - `launchArtifact` answers, once, the artifact of the notice that
- *   launched the activity.
+ *   launched the first activity.
  *
- * It calls `opened` {artifact} when a notice is tapped while the activity
- * runs ([onNewIntent]), and `stopped` when the service stopped on its own
- * (see [BackgroundRunService]). [ClaxApplication] sends `trim` on the
- * same channel when the system asks the app to trim its memory.
+ * It calls `opened` {artifact} when a notice is tapped while Dart runs
+ * ([onNewIntent], and [attach] of a later activity), and `stopped` when the
+ * service stopped on its own (see [BackgroundRunService]).
+ * [ClaxApplication] sends `trim` on the same channel when the system asks
+ * the app to trim its memory.
+ *
+ * It is made once per engine ([EngineChannels]): the service and the
+ * notices go through the application context [app], and [activity] names
+ * the activity on screen, if any.
  */
-class BackgroundWorkChannel(private val activity: Activity, messenger: BinaryMessenger) :
-    MethodChannel.MethodCallHandler {
+class BackgroundWorkChannel(
+    private val app: Context,
+    messenger: BinaryMessenger,
+    private val activity: () -> Activity?,
+) : MethodChannel.MethodCallHandler {
     private val channel = MethodChannel(messenger, NAME)
-
-    /**
-     * The service and the notices go through the application, since the
-     * engine this channel is on outlives [activity] (ClaxApplication).
-     */
-    private val app = activity.applicationContext
     private var permissionResult: MethodChannel.Result? = null
-    private var launchArtifact: String? = artifactOf(activity.intent)
+    private var launchArtifact: String? = null
+
+    /** Whether Dart has asked `launchArtifact`; later launches go as `opened`. */
+    private var launchAsked = false
 
     init {
         channel.setMethodCallHandler(this)
         BackgroundRunService.onStopped = { channel.invokeMethod("stopped", null) }
+    }
+
+    /** An activity came on screen, launched by [intent]. */
+    fun attach(intent: Intent?) {
         // A launch from recents redelivers the old intent; it opens nothing.
-        if (activity.intent.flags and Intent.FLAG_ACTIVITY_LAUNCHED_FROM_HISTORY != 0) {
-            launchArtifact = null
+        val aid = intent?.takeIf { it.flags and Intent.FLAG_ACTIVITY_LAUNCHED_FROM_HISTORY == 0 }
+            ?.let { artifactOf(it) }
+        intent?.removeExtra(Notices.EXTRA_ARTIFACT)
+        if (aid == null) return
+        if (launchAsked) {
+            channel.invokeMethod("opened", mapOf("artifact" to aid))
+        } else {
+            launchArtifact = aid
         }
-        activity.intent.removeExtra(Notices.EXTRA_ARTIFACT)
     }
 
     override fun onMethodCall(call: MethodCall, result: MethodChannel.Result) {
@@ -98,28 +115,40 @@ class BackgroundWorkChannel(private val activity: Activity, messenger: BinaryMes
             "launchArtifact" -> {
                 result.success(launchArtifact)
                 launchArtifact = null
+                launchAsked = true
             }
             else -> result.notImplemented()
         }
     }
 
     private fun requestPermission(result: MethodChannel.Result) {
-        val nm = activity.getSystemService(NotificationManager::class.java)
+        val nm = app.getSystemService(NotificationManager::class.java)
         if (Build.VERSION.SDK_INT < Build.VERSION_CODES.TIRAMISU ||
-            activity.checkSelfPermission(Manifest.permission.POST_NOTIFICATIONS) ==
+            app.checkSelfPermission(Manifest.permission.POST_NOTIFICATIONS) ==
             PackageManager.PERMISSION_GRANTED
         ) {
             result.success(nm.areNotificationsEnabled())
             return
         }
-        val prefs = activity.getSharedPreferences(PREFS, Activity.MODE_PRIVATE)
-        if (prefs.getBoolean(ASKED, false) || permissionResult != null) {
+        val prefs = app.getSharedPreferences(PREFS, Context.MODE_PRIVATE)
+        val on = activity()
+        if (on == null || prefs.getBoolean(ASKED, false) || permissionResult != null) {
             result.success(false)
             return
         }
         prefs.edit().putBoolean(ASKED, true).apply()
         permissionResult = result
-        activity.requestPermissions(arrayOf(Manifest.permission.POST_NOTIFICATIONS), REQUEST)
+        on.requestPermissions(arrayOf(Manifest.permission.POST_NOTIFICATIONS), REQUEST)
+    }
+
+    /**
+     * The activity that asked is gone: its answer may never come, so the
+     * request is answered with what holds now.
+     */
+    fun detached() {
+        val waiting = permissionResult ?: return
+        permissionResult = null
+        waiting.success(app.getSystemService(NotificationManager::class.java).areNotificationsEnabled())
     }
 
     /** From the activity's `onRequestPermissionsResult`. */

@@ -56,6 +56,10 @@ import java.util.concurrent.atomic.AtomicLong
  * (`isForMainFrame`) takes the WebView's next navigation number, which is
  * kept with its URL (a newer one replaces it); `onPageStarted` for that URL
  * reports the number with the commit, any other URL none.
+ *
+ * It is made once per engine ([EngineChannels]): the WebViews whose clients
+ * it wraps, and the requests it holds for them, live as long as the engine,
+ * not as long as an activity.
  */
 class SchemeHost(
     messenger: BinaryMessenger,
