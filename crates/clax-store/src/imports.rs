@@ -14,7 +14,7 @@
 //! | `plans.json` | the plan of the make job whose request it is (a plan not yet under an app's ID), else a `stopped` make job holding it while it has features to build |
 //! | `unfinished.json` | the carry of a `stopped` change job per change with a thread still open (a `build:<app>` entry: of that app's make job) |
 //! | `change-ledger.json` | a `change` job per record, with its `publish:<base>` step when version `base + 1` is the one the record made, and its `reply` step (then `done`) when its documents are written or it has none, and each of its addresses still open got an agent reply at or after that version; else `queued`, to run on |
-//! | `asked.json` | a `change` job per entry holding its question, `waiting` while it is open, `queued` once answered or skipped; none for a withdrawn question, an answer handed over that the entry does not hold, or one a ledger record that landed without its reply already answered |
+//! | `asked.json` | a `change` job per entry holding its question, `waiting` while it is open, `queued` once answered or skipped; none for a withdrawn question, an answer handed over that the entry does not hold, one a ledger record that landed without its reply already answered, a question an earlier entry names, or one not of the `ask` tool |
 //! | `stopped.json` | a `cancelled` change job per thread, the thread kept `stopped` |
 //! | `agent-read-consent.json` | `agent_read_consents` rows |
 //!
@@ -764,21 +764,33 @@ impl Import<'_, '_> {
                 self.leave_out("asked.json", format!("entry {i} does not parse"));
                 continue;
             };
+            if self.jobs.iter().any(|j| j.questions.iter().any(|x| x == q)) {
+                self.leave_out(
+                    "asked.json",
+                    format!("the question {q} is another entry's"),
+                );
+                continue;
+            }
             let Some((title, n)) = self.artifact(aid)? else {
                 self.leave_out("asked.json", format!("the question {q} lost its app"));
                 continue;
             };
+            // Only an `ask` question, which no job holds, is a job's.
             let status: Option<(String, bool)> = self
                 .tx
                 .query_row(
                     "SELECT status, taken_at IS NOT NULL FROM questions q WHERE id = ?1
+                         AND q.source = 'ask'
                          AND NOT EXISTS (SELECT 1 FROM job_questions WHERE question_id = q.id)",
                     params![q],
                     |r| Ok((r.get(0)?, r.get(1)?)),
                 )
                 .optional()?;
             let Some((status, taken)) = status else {
-                self.leave_out("asked.json", format!("the question {q} is gone"));
+                self.leave_out(
+                    "asked.json",
+                    format!("the question {q} is gone, not the ask tool's, or a job's"),
+                );
                 continue;
             };
             // What the app never runs again: a withdrawn question's change
@@ -1292,6 +1304,11 @@ mod tests {
 
     /// Session `app`'s open `ask` question about `aid`.
     fn ask(st: &Store, app: &str, aid: &ArtifactId) -> String {
+        ask_from(st, app, aid, Source::Ask)
+    }
+
+    /// A question of `source` on `aid` from session `app`; its ID.
+    fn ask_from(st: &Store, app: &str, aid: &ArtifactId, source: Source) -> String {
         let qs = serde_json::from_value(json!([{"question": "Which green?", "header": "Green",
             "options": [{"label": "Mint"}, {"label": "Forest"}]}]))
         .unwrap();
@@ -1300,7 +1317,7 @@ mod tests {
             NewQuestion {
                 session_id: app.to_string(),
                 artifact_id: Some(aid.as_str().into()),
-                source: Source::Ask,
+                source,
                 tool_use_id: None,
                 questions: qs,
                 released: false,
@@ -1452,6 +1469,50 @@ mod tests {
                 .all(|j| j.job.state == JobState::Queued)
         );
         assert_eq!(s.left_out.len(), 3, "{:?}", s.left_out);
+    }
+
+    /// The import is total over `asked.json`: a question two entries name
+    /// is held by the first entry's job, and the second is left out; a
+    /// question of a hook (no job's) is left out. Neither refuses the
+    /// import.
+    #[test]
+    fn an_asked_question_named_twice_or_of_a_hook_is_left_out() {
+        let (_d, st) = store();
+        let app = session(&st, "app", "h1");
+        let aid = artifact(&st, None);
+        let (t, c) = thread_on(&st, &aid, "make it green");
+        let q = ask(&st, &app, &aid);
+        let hook = ask_from(&st, &app, &aid, Source::Hook);
+        let entry = |q: &str| {
+            json!({
+                "question_id": q, "artifact_id": aid.as_str(),
+                "thread_ids": [t], "comment_ids": [c],
+            })
+        };
+        let state = files(&[(
+            "asked.json",
+            json!({"version": 1, "entries": [entry(&q), entry(&q), entry(&hook)]}),
+        )]);
+        let s = st.import_client_state(APP_JSON_V1, "app", &state).unwrap();
+        let all = jobs(&st);
+        assert_eq!(s.jobs, 1, "{:?}", s.left_out);
+        assert_eq!(all.len(), 1);
+        assert_eq!(all[0].questions.len(), 1);
+        assert_eq!(all[0].questions[0].question_id, q);
+        assert_eq!(all[0].job.state, JobState::Waiting);
+        assert_eq!(s.left_out.len(), 2, "{:?}", s.left_out);
+        assert!(
+            s.left_out
+                .iter()
+                .any(|l| l.contains(&q) && l.contains("another entry")),
+            "{:?}",
+            s.left_out
+        );
+        assert!(
+            s.left_out.iter().any(|l| l.contains(&hook)),
+            "{:?}",
+            s.left_out
+        );
     }
 
     /// A pending make whose request has only the plan of the app it made

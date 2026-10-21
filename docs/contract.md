@@ -2581,7 +2581,9 @@ entry. The rows' JSON is `input: {request, base, threads: {thread ID:
 comment ID}}`, `plan: {plan_rest, data}` and `carry: {stops,
 can_keep_going, data}`, `data` the entry as the file kept it. `skipped`
 names the files that did not parse; `left_out` the entries naming an app,
-thread or question the core no longer holds. A key imported before
+thread or question the core no longer holds, and those the app would not
+run again (a question an earlier entry names, or one not of the `ask`
+tool, among them). A key imported before
 answers its summary with `already: true` and changes nothing, so the app
 may delete its files after any 200. Another key or client, or a file of
 another name, is 400 `invalid_args`.
