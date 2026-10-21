@@ -57,6 +57,18 @@ class FakeJobs {
   /// checks it.
   final Map<String, Map<String, FileHash>> files = {};
 
+  /// Each artifact's documents by path (`<collection>/<id>`) with their
+  /// versions. A publish step's document write pinned (`if_version`) to
+  /// another version than the document's (0 for none) refuses the whole
+  /// step 409 `doc_moved` with its `path`.
+  final Map<String, Map<String, int>> docs = {};
+
+  /// Versions (`<artifact>/<n>`) whose content a killed process left with
+  /// no row recording it: a publish step that would write one is 409
+  /// `version_present`, as `version_present` in
+  /// crates/clax-store/src/artifacts.rs refuses it.
+  final Set<String> strayVersions = {};
+
   /// Each question the `ask` tool created: `{id, session, tool_use_id,
   /// artifact_id, source, questions, outcome, answers}`, `outcome` null
   /// while it is open. A question naming an app the core does not hold
@@ -310,7 +322,13 @@ class FakeJobs {
         'carry',
         'error',
       }, required: const {'if_rev'});
-      if (b == null) return _unprocessable();
+      // A state the core does not have is no body of the route's.
+      if (b == null ||
+          (b.containsKey('state') &&
+              (b['state'] is! String ||
+                  JobState.parse(b['state']! as String) == null))) {
+        return _unprocessable();
+      }
       final id = p['id']!;
       if (!jobs.containsKey(id)) return FakeCore.error(404, 'not_found', '');
       if (!_owner(r)) return _notOwner();
@@ -323,9 +341,7 @@ class FakeJobs {
       };
       if (b['state'] case final String s) {
         final want = JobState.parse(s);
-        final to = want == null
-            ? null
-            : mayMove(from, MoveTo(want), waits: _waits(_questions(id)));
+        final to = mayMove(from, MoveTo(want!), waits: _waits(_questions(id)));
         if (to == null) {
           return FakeCore.error(400, 'invalid_move', '$from to $s');
         }
@@ -347,12 +363,13 @@ class FakeJobs {
           )
           .map((e) => e.key)
           .firstOrNull;
-      if (q == null || (asker != null && asker != id)) {
+      // A question the job holds answers its row, whatever its state.
+      if (asker == id) return FakeCore.json({'job': jobs[id]});
+      if (q == null || asker != null || q['source'] != 'ask') {
         return FakeCore.error(400, 'invalid_question', 'not this job\'s');
       }
       final from = JobState.parse(row(id)['state']! as String)!;
       if (from.isFinal) return _moved(id);
-      if (asker == id) return FakeCore.json({'job': jobs[id]});
       final qs = [
         ..._questions(id),
         {
@@ -426,6 +443,13 @@ class FakeJobs {
             when sid is! String || !sessions.contains(sid)) {
           return FakeCore.error(400, 'unknown_session', 'no live session');
         }
+        if (aid == null && pb['base'] != 0) {
+          return FakeCore.error(
+            400,
+            'invalid_base',
+            'a step that makes a new artifact has base 0',
+          );
+        }
         if (current != pb['base']) {
           return FakeCore.error(409, 'version_moved', 'moved', {
             'current': current,
@@ -452,6 +476,32 @@ class FakeJobs {
         }
         final target = aid ?? 'a${(++_minted).toString().padLeft(11, '0')}';
         made = current + 1;
+        if (strayVersions.contains('$target/$made')) {
+          return FakeCore.error(
+            409,
+            'version_present',
+            'version $made of $target holds content no version records',
+          );
+        }
+        final ops = [for (final o in (pb['docs'] as List?) ?? const []) (o as Map).cast<String, Object?>()];
+        final held = docs[target] ?? const <String, int>{};
+        for (final o in ops) {
+          final path = o['path']! as String;
+          if (o['if_version'] case final int pin when pin != (held[path] ?? 0)) {
+            return FakeCore.error(409, 'doc_moved', 'document $path moved', {
+              'path': path,
+            });
+          }
+        }
+        final written = docs[target] ??= {};
+        for (final o in ops) {
+          final path = o['path']! as String;
+          if (o['op'] == 'delete') {
+            written.remove(path);
+          } else {
+            written[path] = (written[path] ?? 0) + 1;
+          }
+        }
         versions[target] = made;
         files[target] = next;
         published.add(pb);

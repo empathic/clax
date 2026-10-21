@@ -2,6 +2,7 @@ import 'dart:async';
 import 'dart:convert';
 import 'dart:io';
 import 'dart:isolate';
+import 'dart:typed_data';
 
 import 'package:clax_app/agent/backend.dart';
 import 'package:clax_app/agent/request.dart';
@@ -886,6 +887,137 @@ void main() {
       );
       await pumpEventQueue();
       expect((only<Refused>().reason as Invalid).code, 'not_found');
+    });
+
+    group('refusals the core makes', () {
+      Publish publish(int id, {String? aid, int base = 0, List<Object?>? docs}) => Publish(
+        id,
+        'j',
+        1,
+        'f',
+        PublishPlan(
+          base: base,
+          data: {
+            'artifact_id': aid,
+            'request': {
+              'title': 'T',
+              'files': {
+                'index.html': {'content': '<p>x'},
+              },
+            },
+            'docs': ?docs,
+          },
+        ),
+        done: false,
+      );
+
+      test('a new app\'s publish on a base past 0 is invalid_base', () async {
+        await claimed();
+        jobs.seed('j', state: 'running', rev: 2);
+        runner.run(publish(1, base: 1));
+        await pumpEventQueue();
+        expect((only<Refused>().reason as Invalid).code, 'invalid_base');
+        expect(jobs.published, isEmpty);
+      });
+
+      test('a pinned document that moved refuses the whole step doc_moved', () async {
+        await claimed();
+        jobs
+          ..versions['abc'] = 1
+          ..docs['abc'] = {'todos/1': 2}
+          ..seed('j', kind: 'change', artifactId: 'abc', state: 'running', rev: 2);
+        runner.run(
+          publish(1, aid: 'abc', base: 1, docs: [
+            {'op': 'set', 'path': 'todos/1', 'data': {'n': 1}, 'if_version': 1},
+          ]),
+        );
+        await pumpEventQueue();
+        expect(only<Refused>().reason, const DocMoved('todos/1'));
+        expect(jobs.versions['abc'], 1);
+        runner.run(
+          publish(2, aid: 'abc', base: 1, docs: [
+            {'op': 'set', 'path': 'todos/1', 'data': {'n': 1}, 'if_version': 2},
+          ]),
+        );
+        await pumpEventQueue();
+        expect(only<Committed>().job.state, JobState.running);
+        expect(jobs.docs['abc'], {'todos/1': 3});
+      });
+
+      test('a version whose content no row records is version_present', () async {
+        await claimed();
+        jobs
+          ..versions['abc'] = 1
+          ..strayVersions.add('abc/2')
+          ..seed('j', kind: 'change', artifactId: 'abc', state: 'running', rev: 2);
+        runner.run(publish(1, aid: 'abc', base: 1));
+        await pumpEventQueue();
+        final a = to('POST', '/api/jobs/j/steps/publish:1').single;
+        expect(body(a)['publish'], isNotNull);
+        expect((only<Refused>().reason as Invalid).code, 'version_present');
+      });
+
+      test('a question asked again of a job that ended answers its row; '
+          'one the ask tool did not make is invalid_question', () async {
+        final token = await claimed();
+        jobs
+          ..sessions.add('s1')
+          ..questions['q9'] = {
+            'id': 'q9',
+            'session': 's1',
+            'tool_use_id': 'j/turn:2/a1',
+            'source': 'ask',
+            'outcome': 'answered',
+            'answers': ['red'],
+          }
+          ..questions['h1'] = {
+            'id': 'h1',
+            'session': 's1',
+            'tool_use_id': null,
+            'source': 'hook',
+            'outcome': null,
+            'answers': null,
+          }
+          ..seed('j', state: 'done', rev: 5, questions: [
+            {
+              'question_id': 'q9',
+              'tool_use_id': 'j/turn:2/a1',
+              'answer': {'outcome': 'answered', 'answers': ['red']},
+            },
+          ])
+          ..seed('k', state: 'running', rev: 2);
+        runner.run(
+          const Ask(1, 'j', 2, 'a1', Question(data: {'questions': [{'question': 'Which?'}]})),
+        );
+        await pumpEventQueue();
+        final c = only<Committed>();
+        expect((c.job.state, c.job.rev), (JobState.done, 5));
+
+        final transport = CoreTransport(core);
+        final a = await transport.send(
+          'PUT',
+          '/api/jobs/k/questions/h1',
+          headers: {'content-type': 'application/json', EffectRunner.ownerHeader: token},
+          body: Uint8List.fromList(utf8.encode('{}')),
+          timeout: const Duration(seconds: 5),
+        );
+        expect(a.status, 400);
+        expect(utf8.decode(a.body), contains('invalid_question'));
+      });
+
+      test('a move to a state the core does not have is 422', () async {
+        final token = await claimed();
+        jobs.seed('j', state: 'running', rev: 2);
+        final a = await CoreTransport(core).send(
+          'PATCH',
+          '/api/jobs/j',
+          headers: {'content-type': 'application/json', EffectRunner.ownerHeader: token},
+          body: Uint8List.fromList(utf8.encode(jsonEncode({'if_rev': 2, 'state': 'sleeping'}))),
+          timeout: const Duration(seconds: 5),
+        );
+        expect(a.status, 422);
+        expect(jobs.row('j')['rev'], 2);
+      });
     });
 
     test('a commit with no answer in its time reads the job back', () async {
