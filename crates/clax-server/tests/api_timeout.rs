@@ -11,7 +11,7 @@ async fn slow_api_requests_time_out_with_json_408() {
         state.request_timeout = std::time::Duration::from_millis(200);
     })
     .await;
-    let res = ts.get_authed("/api/_test/sleep/1000").await;
+    let res = ts.get_authed(&format!("/api/_test/sleep/{HOLD_MS}")).await;
     assert_eq!(res.status(), 408);
     let body: serde_json::Value = res.json().await.unwrap();
     assert_eq!(body["error"]["code"], "timeout");
@@ -103,26 +103,59 @@ async fn concurrent_publishes_all_succeed() {
 /// group's timeout.
 const DELAY: &str = "x-clax-test-delay-ms";
 
+/// Asserts `res` is the 408 of a route group whose timeout is `limit`, as
+/// its message names it.
+async fn timed_out_after(res: reqwest::Response, limit: &str, what: &str) {
+    assert_eq!(res.status(), 408, "{what}");
+    let body: serde_json::Value = res.json().await.unwrap();
+    assert_eq!(
+        body["error"]["message"],
+        format!("request exceeded {limit}"),
+        "{what}"
+    );
+}
+
+/// Each route group's 408 names its own limit, so holding every request
+/// past both limits shows which group a route is in, however slow the
+/// machine.
 #[tokio::test]
 async fn publish_routes_run_under_the_publish_timeout() {
     let ts = TestServer::spawn_with(|state| {
         state.request_timeout = std::time::Duration::from_millis(100);
-        state.publish_timeout = std::time::Duration::from_secs(2);
+        state.publish_timeout = std::time::Duration::from_millis(200);
     })
     .await;
-    // The delay counts against the fast group's timeout.
+    let hold = HOLD_MS.to_string();
+    // Made in the store: a publish over HTTP would run under the timeout.
+    let (artifact, _) = ts
+        .store
+        .create_artifact(
+            &clax_core::audit::AuditCtx::DAEMON,
+            clax_core::publish::validate(
+                serde_json::from_value(serde_json::json!({
+                    "title": "slow",
+                    "files": {"index.html": {"content": "<p>1", "encoding": "utf8"}}
+                }))
+                .unwrap(),
+            )
+            .unwrap(),
+            None,
+        )
+        .unwrap();
+    let id = artifact.id.as_str();
+
     let res = ts
         .client
         .get(format!("{}/api/artifacts", ts.base))
-        .header(DELAY, "500")
+        .header(DELAY, &hold)
         .send()
         .await
         .unwrap();
-    assert_eq!(res.status(), 408);
+    timed_out_after(res, "100ms", "the listing, in the fast group").await;
 
     let res = ts
         .authed(ts.client.post(format!("{}/api/artifacts", ts.base)))
-        .header(DELAY, "500")
+        .header(DELAY, &hold)
         .json(&serde_json::json!({
             "title": "slow",
             "files": {"index.html": {"content": "<p>1"}}
@@ -130,16 +163,14 @@ async fn publish_routes_run_under_the_publish_timeout() {
         .send()
         .await
         .unwrap();
-    assert_eq!(res.status(), 201);
-    let created: serde_json::Value = res.json().await.unwrap();
-    let id = created["artifact"]["id"].as_str().unwrap();
+    timed_out_after(res, "200ms", "a create").await;
 
     let res = ts
         .authed(
             ts.client
                 .post(format!("{}/api/artifacts/{id}/versions", ts.base)),
         )
-        .header(DELAY, "500")
+        .header(DELAY, &hold)
         .json(&serde_json::json!({
             "if_version": 1,
             "files": {"index.html": {"content": "<p>2"}}
@@ -147,7 +178,7 @@ async fn publish_routes_run_under_the_publish_timeout() {
         .send()
         .await
         .unwrap();
-    assert_eq!(res.status(), 201);
+    timed_out_after(res, "200ms", "a publish").await;
 
     let part = reqwest::multipart::Part::bytes(vec![1u8, 2, 3])
         .file_name("a.png")
@@ -158,12 +189,12 @@ async fn publish_routes_run_under_the_publish_timeout() {
             ts.client
                 .post(format!("{}/api/artifacts/{id}/assets", ts.base)),
         )
-        .header(DELAY, "500")
+        .header(DELAY, &hold)
         .multipart(reqwest::multipart::Form::new().part("file", part))
         .send()
         .await
         .unwrap();
-    assert_eq!(res.status(), 201, "{}", res.text().await.unwrap());
+    timed_out_after(res, "200ms", "an asset upload").await;
 }
 
 #[tokio::test]
