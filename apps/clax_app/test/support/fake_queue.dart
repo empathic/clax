@@ -19,8 +19,10 @@ class FakeQueueClient implements QueueClient {
   @override
   void send(Intent intent) => sent.add(intent);
 
-  /// Publishes [jobs] as the queue's state.
-  void push(List<JobView> jobs) => _state.value = QueueState(jobs);
+  /// Publishes [jobs] as the queue's state; [loaded] false as a worker
+  /// publishes it before it has loaded the core's jobs.
+  void push(List<JobView> jobs, {bool loaded = true}) =>
+      _state.value = QueueState(jobs, loaded: loaded);
 
   /// Publishes the state with job [view] in place of the one of its ID,
   /// or added after the others.

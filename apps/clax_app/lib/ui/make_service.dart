@@ -6,6 +6,7 @@ import '../agent/loop.dart' show MakeStopped;
 import '../platform/clock.dart';
 import '../platform/pending_make.dart';
 import '../queue/client.dart';
+import '../queue/isolate_client.dart' show builderStoppedError;
 import 'local_queue.dart';
 import 'making_screen.dart';
 
@@ -102,6 +103,21 @@ class MakeSession extends ChangeNotifier {
   bool get interrupted =>
       _view.state == JobState.failed && _view.error == interruptedError;
 
+  /// Clax's builder stopped: the make shows failed, and goes on only once
+  /// Clax restarts.
+  bool get halted =>
+      _view.state == JobState.failed && _view.error == builderStoppedError;
+
+  /// Its job left the queue before it ended (its creation was refused):
+  /// it shows failed, and Retry makes it again as a new job.
+  bool get left =>
+      _view.state == JobState.failed && _view.error == leftQueueError;
+
+  /// Whether Retry does something: the queue offers it, or the make is
+  /// made again (a stop's Start over, or a make whose job left).
+  bool get canRetry =>
+      _view.offers.contains(Offer.retry) || isStopped || left;
+
   /// Why it failed, as one plain line, while it stands.
   String? get failure {
     if (_view.state != JobState.failed || interrupted) return null;
@@ -139,11 +155,12 @@ class MakeSession extends ChangeNotifier {
   void detach() => _views--;
 
   /// Retry after a failure, or Start over after a stop: a stopped make is
-  /// discarded and made again as a new job.
+  /// discarded and made again as a new job, as is one whose job left the
+  /// queue.
   void retry() {
     if (_view.offers.contains(Offer.retry)) {
       _service.queue.send(Retry(_id));
-    } else if (isStopped) {
+    } else if (isStopped || left) {
       _service._startOver(this);
     }
   }
@@ -155,6 +172,9 @@ class MakeSession extends ChangeNotifier {
 
   /// Stops the make, or discards it once it stopped or failed.
   void cancel() => _service.dismiss(this);
+
+  /// Whether the queue's state has shown the make's job.
+  var _seen = false;
 
   void _show(JobView v) {
     if (v == _view) return;
@@ -276,17 +296,7 @@ class MakeService extends ChangeNotifier {
   /// follows it before [send] tells the queue.
   MakeSession prepare(String request) {
     final id = newJobId(request);
-    final s = MakeSession._(
-      this,
-      id,
-      request,
-      JobView(
-        id: id,
-        kind: JobKind.make,
-        state: JobState.queued,
-        title: request,
-      ),
-    );
+    final s = MakeSession._(this, id, request, _unsent(id, request));
     return _keep(s);
   }
 
@@ -330,12 +340,8 @@ class MakeService extends ChangeNotifier {
     _sessions.remove(old);
     s._drop();
     s._id = newJobId(s.request);
-    s._view = JobView(
-      id: s._id,
-      kind: JobKind.make,
-      state: JobState.queued,
-      title: s.request,
-    );
+    s._seen = false;
+    s._view = _unsent(s._id, s.request);
     _sessions[s._id] = s;
     queue.send(Discard(old));
     send(s);
@@ -343,17 +349,52 @@ class MakeService extends ChangeNotifier {
     _onState();
   }
 
+  /// The view of make [id] of [request] before the queue shows it: queued,
+  /// and it may be stopped.
+  static JobView _unsent(JobId id, String request) => JobView(
+    id: id,
+    kind: JobKind.make,
+    state: JobState.queued,
+    title: request,
+    offers: const {Offer.cancel},
+  );
+
   void _onState() {
     if (_dead) return;
+    final state = queue.state.value;
     final shown = <MakeSession>[];
-    for (final v in queue.state.value.makes) {
+    final listed = <JobId>{};
+    for (final v in state.makes) {
+      listed.add(v.id);
       final s =
           _sessions[v.id] ?? _keep(MakeSession._(this, v.id, v.title ?? '', v));
       final was = s._view.state;
+      s._seen = true;
       s._hook();
       s._show(v);
       if (!s.cancelled && !v.state.isFinal) shown.add(s);
       if (was != v.state && !s.attached) _tell(s);
+    }
+    // A make whose job left a state that holds every job, before it ended,
+    // fails in words: it does not vanish.
+    for (final s in [..._sessions.values]) {
+      if (!s._seen || listed.contains(s.id) || s.cancelled) continue;
+      if (s.left) {
+        shown.add(s);
+      } else if (state.loaded && !s._view.state.isFinal) {
+        s._show(
+          JobView(
+            id: s.id,
+            kind: JobKind.make,
+            state: JobState.failed,
+            title: s._view.title,
+            error: leftQueueError,
+            offers: const {Offer.discard},
+          ),
+        );
+        shown.add(s);
+        if (!s.attached) _tell(s);
+      }
     }
     if (!listEquals(shown, _makes)) {
       _makes = List.unmodifiable(shown);
@@ -386,12 +427,24 @@ class MakeService extends ChangeNotifier {
   }
 }
 
-/// A failed job's error as the person reads it: the queue's codes in
-/// words, and words as they are.
+/// The error of a make whose job left the queue before it ended.
+const leftQueueError = 'left_queue';
+
+/// A failed job's error as the person reads it: each of the queue's codes
+/// in plain words, a code no one words as a sentence of its own, and words
+/// as they are. The code itself is for Developer tools.
 String jobErrorText(String? error) => switch (error) {
-  null || '' => 'Something went wrong.',
   'doc_moved' => 'A document changed while it was being made. Try again.',
   'version_moved' => 'The app changed while it was being made. Try again.',
   'not_rendered_clean' => 'The app didn’t render cleanly. Try again.',
-  _ => error,
+  'turn_failed' => 'Claude couldn’t finish this step. Try again.',
+  'invalid_step' => 'Clax lost track of where this got to. Try again.',
+  'no_draft' => 'Clax couldn’t put the app together to save it. Try again.',
+  'unknown_session' => 'Clax couldn’t start its session. Try again.',
+  'malformed' => 'Clax got an answer it couldn’t read. Try again.',
+  'invalid_thread' => 'A comment it answers was removed. Try again.',
+  builderStoppedError => 'Clax’s builder stopped. Restart Clax to go on.',
+  leftQueueError => 'Clax couldn’t start this make. Try again.',
+  final String words when words.contains(' ') => words,
+  _ => 'Something went wrong. Try again.',
 };

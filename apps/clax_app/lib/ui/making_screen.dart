@@ -1519,12 +1519,13 @@ class _MakingScreenState extends State<MakingScreen> {
                   widget.openSettings!();
                 },
               ),
-            ClaxButton(
-              label: 'Retry',
-              kind: settings ? ClaxButtonKind.tonal : ClaxButtonKind.primary,
-              isDefault: !settings,
-              onPressed: _run,
-            ),
+            if (_session.canRetry)
+              ClaxButton(
+                label: 'Retry',
+                kind: settings ? ClaxButtonKind.tonal : ClaxButtonKind.primary,
+                isDefault: !settings,
+                onPressed: _run,
+              ),
             ClaxButton(
               label: 'Edit',
               onPressed: () => _leave(const EditRequest()),

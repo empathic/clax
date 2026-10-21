@@ -723,7 +723,9 @@ class MakingTile extends StatelessWidget {
     final stopped = session.isStopped;
     final offline = session.running && session.waitingForConnection;
     final status = failed
-        ? 'Couldn’t make it'
+        ? session.halted
+              ? 'Builder stopped'
+              : 'Couldn’t make it'
         : stopped
         ? 'Made a start'
         : offline

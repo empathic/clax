@@ -1,4 +1,5 @@
 import 'package:clax_app/queue/client.dart';
+import 'package:clax_app/queue/isolate_client.dart' show builderStoppedError;
 import 'package:clax_app/ui/local_queue.dart' show interruptedError;
 import 'package:clax_app/ui/make_service.dart';
 import 'package:flutter_test/flutter_test.dart' hide Retry;
@@ -133,6 +134,76 @@ void main() {
     expect(failed, ['b']);
     expect(stopped, ['c']);
     expect([for (final m in makes.makes) m.id], ['c', 'b']);
+  });
+
+  test('a failed make says why in plain words, never its code, which '
+      'Developer tools keep', () {
+    final q = FakeQueueClient()..push([makeJob('j')]);
+    final s = MakeService(q).sessionOf('j')!;
+    for (final code in [
+      'turn_failed',
+      'invalid_step',
+      'no_draft',
+      'unknown_session',
+      'http_500',
+      'malformed',
+      'invalid_thread',
+      'a_code_no_one_words',
+    ]) {
+      q.put(makeJob('j', state: JobState.failed, error: code));
+      expect(s.failure, isNot(contains(code)), reason: code);
+      expect(s.failure, isNot(contains('_')), reason: code);
+      expect(s.failure, endsWith('.'), reason: code);
+      expect(s.failureDetail, code, reason: 'Developer tools show $code');
+    }
+    q.put(makeJob('j', state: JobState.failed, error: 'turn_failed'));
+    expect(s.failure, contains('Claude'));
+  });
+
+  test('a make whose job leaves the queue before it ends fails in words, '
+      'and Retry makes it again', () {
+    final q = FakeQueueClient();
+    final failed = <String>[];
+    final makes = MakeService(q, onFailed: (s) => failed.add(s.request));
+    final s = makes.start('a timer');
+    q.push([makeJob(s.id, state: JobState.queued)]);
+    q.push(const [], loaded: false);
+    expect(s.failure, isNull, reason: 'a state still loading holds not every job');
+    q.push([makeJob(s.id, state: JobState.queued)]);
+    q.push(const []);
+    expect(s.failure, isNotNull);
+    expect(s.failure, isNot(contains('_')));
+    expect(s.running || s.queued, isFalse);
+    expect(s.canRetry, isTrue);
+    expect(failed, ['a timer'], reason: 'no build view shows it: it is told');
+    expect(makes.makes, [s], reason: 'listed, failed, until dismissed');
+    final old = s.id;
+    s.retry();
+    final again = q.sentOf<Make>().last;
+    expect((again.id == old, again.request), (false, 'a timer'));
+    expect(s.queued, isTrue);
+  });
+
+  test('a stopped builder shows its words on a make, and offers no Retry', () {
+    final q = FakeQueueClient()
+      ..push([
+        makeJob('j', state: JobState.failed, error: builderStoppedError, offers: const {}),
+      ]);
+    final s = MakeService(q).sessionOf('j')!;
+    expect(s.halted, isTrue);
+    expect(s.failure, 'Clax’s builder stopped. Restart Clax to go on.');
+    expect(s.canRetry, isFalse);
+    expect(s.running, isFalse);
+  });
+
+  test('a make not yet in the queue can be stopped', () {
+    final q = FakeQueueClient();
+    final makes = MakeService(q);
+    final s = makes.start('a timer');
+    expect(s.view.offers, contains(Offer.cancel));
+    s.cancel();
+    expect(q.sent.last, Cancel(s.id));
+    expect(s.cancelled, isTrue);
   });
 
   test('two makes of the same words are two jobs', () {
