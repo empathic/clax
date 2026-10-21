@@ -2226,6 +2226,13 @@ views below) is carried as the view moves from page to page; any other
 query stays where it was given. The source of truth for this protocol is the
 header of `web/shell/src/app/host.ts`.
 
+**A call the app gives up on.** The app cancels a call to its core whose
+time limit passes, as a loopback timeout aborts its request. The call is
+never answered, and a cancel stops only a write whose store job has not
+started: one that has started commits, and its events follow. So a
+cancelled write's outcome is unknown, as a timed-out one's is: read before
+retrying.
+
 **The view.** With `app=1` in its query, the top-level shell document at an
 artifact path loads the app host module (`web/shell/src/app/host.ts`) and
 marks `<html class="app">`; a browser's view carries none of it, and no

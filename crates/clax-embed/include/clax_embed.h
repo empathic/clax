@@ -39,7 +39,9 @@ uint64_t clax_embed_open(const uint8_t *home, size_t home_len,
 // for it. A cancel frame, {"cancel": <tag>}, is answered 204 at once
 // under its own `tag`, after it aborts the call sent to this `port` with
 // that tag, if the core is still running it: that call is never
-// answered, and a write it had not committed does not happen.
+// answered. A cancel stops only a write whose store job has not started;
+// one that has started runs to its commit, so a cancelled write's outcome
+// is unknown until it is read.
 int32_t clax_embed_call(uint64_t core, const uint8_t *req, size_t req_len,
                         int64_t port, int64_t tag);
 

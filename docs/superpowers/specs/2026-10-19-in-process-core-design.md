@@ -258,7 +258,9 @@ uint64_t clax_embed_open(const uint8_t *home, size_t home_len,
 // for it. A cancel frame, {"cancel": <tag>}, is answered 204 at once
 // under its own `tag`, after it aborts the call sent to this `port` with
 // that tag, if the core is still running it: that call is never
-// answered, and a write it had not committed does not happen.
+// answered. A cancel stops only a write whose store job has not started;
+// one that has started runs to its commit, so a cancelled write's outcome
+// is unknown until it is read.
 int32_t clax_embed_call(uint64_t core, const uint8_t *req, size_t req_len,
                         int64_t port, int64_t tag);
 
@@ -319,7 +321,11 @@ the core keeps each call's task by port and tag until the call has its
 answer, and a cancel aborts that task (dropping the router's future at
 its next await, so a long poll that has not taken its batch takes none,
 and the call is never answered), then answers the cancel 204 under the
-cancel's own tag. A cancel of a call already answered, or of none, is
+cancel's own tag. A cancel stops only a write whose store job has not
+started: a store job handed to a store thread runs to completion
+(`AppState::store_call`), so a write already running commits and its
+events follow, unanswered. A cancelled write's outcome is unknown, as a
+timed-out one's is, until it is read. A cancel of a call already answered, or of none, is
 answered 204 and does nothing more. A call the caller gives up on is
 cancelled this way, so cancelling needs no fifth C function: Dart's
 `CoreCalls.call` answers a `CoreCall` (its tag and its answer) and

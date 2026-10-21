@@ -328,9 +328,12 @@ pub fn ffi_open(home: &[u8], post: Arc<dyn Post>, port: i64) -> u64 {
 /// A cancel frame (`{"cancel": <tag>}`, spec §2.3) is answered 204 at
 /// once, under its own tag, after it aborts the call sent to `port` with
 /// that tag if the call is still running: the call's task is dropped at
-/// its next await, so a write that has not committed does not happen, and
-/// the call is never answered. A cancel of a call already answered, or
-/// never sent, does nothing more.
+/// its next await, and the call is never answered. A store job already
+/// handed to a store thread runs to completion whatever happens to the
+/// task (`AppState::store_call`), so a cancel stops only a write whose
+/// store job has not started; one that has started commits, and its
+/// events follow. A cancel of a call already answered, or never sent,
+/// does nothing more.
 pub fn ffi_call(core: u64, req: &[u8], port: i64, tag: i64) -> i32 {
     let Some(r) = registered(core) else {
         return 1;
