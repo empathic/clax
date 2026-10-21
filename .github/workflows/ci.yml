@@ -85,12 +85,21 @@ jobs:
           name: bazel
           commit: "true"
       # The targets of scripts/bazel-test.sh --ci's test pass, built and not
-      # run, without the format and clippy aspects.
+      # run.
       - name: Build
         run: |
           listed="$(bazelisk query 'tests(//...) except attr(tags, "\bmanual\b", //...)')"
           mapfile -t tests <<< "$listed"
           bazelisk build --keep_going //crates/... //web:playwright "${tests[@]}"
+      # The format and clippy aspects the next run's quick checks start
+      # with. A lint that fails (often why the bazel job did) leaves the
+      # rest of them cached, so this step does not fail on one.
+      - name: Build the format and clippy checks
+        run: |
+          bazelisk build --keep_going --config=fmt --output_groups=rustfmt_checks //crates/... ||
+            echo "a format check fails; the others are kept"
+          bazelisk build --keep_going --config=clippy --output_groups=clippy_checks //crates/... ||
+            echo "a clippy check fails; the others are kept"
       - name: Stop Bazel
         if: ${{ always() }}
         run: bazelisk shutdown || true
@@ -151,13 +160,11 @@ jobs:
     # from 2026-10-21 on: earlier records ran on GitHub's runners.
     runs-on: blacksmith-4vcpu-ubuntu-2404
     timeout-minutes: 60
-    # The one job that writes: the log branch, with GITHUB_TOKEN.
-    permissions: { contents: write }
-    # One run at a time appends; a later push waits rather than races.
-    concurrency: { group: perf-log, cancel-in-progress: false }
+    # It runs what the sticky disk holds, so it holds no write token: the
+    # record goes to perf-log-publish as a workflow artifact.
     steps:
-      # Its credentials stay for scripts/perf-log.sh publish's push.
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with: { persist-credentials: false }
       # main's committed state, read only: the bazel job, which ran just
       # before, built most of what the benchmarks need.
       - uses: ./.github/actions/setup-bazel
@@ -176,10 +183,33 @@ jobs:
             --test_env=CLAX_PERF_JSON="$RUNNER_TEMP/perf/metrics.jsonl" \
             --sandbox_writable_path="$RUNNER_TEMP/perf" \
             //scripts:perf_daemon_full //scripts:perf_clients_full //web:perf_usable_full //web:bundle_size
-      - name: Append the run to the perf log
+      - name: Make the run's record
         run: |
           scripts/perf-log.sh record "$RUNNER_TEMP/perf/metrics.jsonl" > "$RUNNER_TEMP/perf/record.jsonl"
           { echo '**perf log record**'; echo '```'; cat "$RUNNER_TEMP/perf/record.jsonl"; echo '```'; } >> "$GITHUB_STEP_SUMMARY"
-          scripts/perf-log.sh publish "$RUNNER_TEMP/perf/record.jsonl"
+      - uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
+        with:
+          name: perf-record
+          path: ${{ runner.temp }}/perf/record.jsonl
+          retention-days: 1
       - if: always()
         run: bazelisk shutdown || true
+
+  # The one job that writes: perf-log's record, appended to the log branch
+  # with GITHUB_TOKEN, from a fresh checkout that runs nothing the sticky
+  # disk built. A job of its own so that nothing perf-log ran (whose outputs
+  # come from the disk) shares a runner or a workspace with the token.
+  perf-log-publish:
+    needs: perf-log
+    runs-on: blacksmith-4vcpu-ubuntu-2404
+    timeout-minutes: 10
+    permissions: { contents: write }
+    # One run at a time appends; a later push waits rather than races.
+    concurrency: { group: perf-log, cancel-in-progress: false }
+    steps:
+      # Its credentials stay for scripts/perf-log.sh publish's push.
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+      - uses: actions/download-artifact@3e5f45b2cfb9172054b4087a40e8e0b5a5461e7c # v8.0.1
+        with: { name: perf-record, path: "${{ runner.temp }}/perf" }
+      - name: Append the run to the perf log
+        run: scripts/perf-log.sh publish "$RUNNER_TEMP/perf/record.jsonl"

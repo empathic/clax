@@ -460,9 +460,9 @@ benchmarks above and the bundle bytes) beside its budget. Each benchmark
 writes its measures to `CLAX_PERF_JSON` when it is set, and
 `scripts/perf-log.sh record` makes the line. `just perf` prints it and
 appends it to `target/perf-log.jsonl`, and never pushes. CI's `perf-log`
-job runs the benchmarks after every green push to main and appends its line
-to `perf/log.jsonl` on the orphan branch `perf-log`; a number never fails
-it. `scripts/perf-log.sh show` fetches that branch and prints each
+job runs the benchmarks after every green push to main, and its
+`perf-log-publish` job appends the line to `perf/log.jsonl` on the orphan
+branch `perf-log`; a number never fails either. `scripts/perf-log.sh show` fetches that branch and prints each
 measure's trend over the last runs (`--runs N`, default 10; `--file
 target/perf-log.jsonl` for the local log), marking a value over its
 budget.

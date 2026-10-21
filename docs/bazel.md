@@ -311,8 +311,10 @@ wasm32 only): `scripts/worker-checks.sh`, then its browser e2e (`e2e.mjs`)
 on a web UI built with pnpm. The Worker's format check is the `bazel` job's
 (`//crates/clax-worker:rustfmt`). `perf-log` runs the perf benchmarks after
 every green push to main and appends a record to the `perf-log` branch
-(`docs/usage.md`, "Developing Clax"); it gates nothing, and is the only job
-with write access. It runs on 4 cores, as GitHub's runner had; its records
+(`docs/usage.md`, "Developing Clax"); it gates nothing. It runs what the
+sticky disk holds, so it has no write token: `perf-log-publish`, the only
+job with write access, appends its record from a fresh checkout that runs
+nothing the disk built. It runs on 4 cores, as GitHub's runner had; its records
 before 2026-10-21 come from GitHub's runners and are not comparable with
 later ones. The native gates stay a manual workflow (`native-check.yml`).
 
@@ -340,6 +342,8 @@ workflow edited in a pull request). When the `bazel` job fails on a push to
 main, `bazel-seed` builds the same targets on the same disk, runs no test
 and commits if the build succeeded: a failing test or lint leaves later runs
 main's current state, and only a build that fails leaves them the older one.
+It builds the format and clippy checks too, and keeps them even when one
+fails, since the next run's quick checks start with them.
 A failed run cannot carry a failure into the disk: Bazel keeps no failed
 action's output and no failed test's result. `perf-log` mounts the disk and
 commits nothing.
