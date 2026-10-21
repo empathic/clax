@@ -3,9 +3,8 @@
 #                    [--commit <label>] [--record] [--i-know-what-i-am-doing]
 #
 # Cold-starts the Clax app N times (default 9; CLAX_PERF_QUICK=1: 5) and
-# reports the median and p90 of its two launch timings, `home-usable`
-# (launch to the home app's first `shown`) and `home-cover` (launch to the
-# kept snapshot's first frame), from the lines each launch adds to
+# reports the median and p90 of its launch timing, `home-usable` (launch
+# to the home app's first `shown`), from the lines each launch adds to
 # timings.jsonl (docs/usage.md, "Measuring the home screen's start"). It
 # gates nothing. Without --i-know-what-i-am-doing it prints each step and
 # changes nothing.
@@ -45,31 +44,26 @@
 #   start --es` sets an intent extra the app does not read), and an
 #   Android Keystore read asks nothing.
 #
-# One launch more than N runs first and is dropped: it may have no snapshot
-# (on macOS the copy's container is new; on Android the first launch after
-# an install has none) and pays macOS's assessment of new executables. It
-# stays up until its home screen has kept its snapshot
-# (cache/home/home-snapshot.bin, a few seconds after the home screen is up;
-# on Android its `clax-home: snapshot kept` log line; the app keeps none
-# when it is stopped), at most the same 60 s, so every launch after it
-# starts from that snapshot; without one the run stops.
+# One launch more than N runs first and is dropped: on macOS its container
+# is new, and it pays macOS's assessment of new executables.
 #
 # Output: a JSON object on stdout, {"platform", "build", "app_home_usable_ms":
-# {"median", "p90", "runs", "missing"}, "app_home_cover_ms": {…}}, where
+# {"median", "p90", "runs", "missing"}}, where
 # "build" names what was measured: "commit" (--commit's label; without it,
 # the checkout's HEAD when the script built the app, else null), and for a
 # launch loop the app taken ("app"), its "sha256" (of the zip, or of every
 # file of the bundle by path) and its "version" (CFBundleShortVersionString
 # and CFBundleVersion on macOS, versionName and versionCode on Android); and
-# `missing` counts the launches that gave no figure (no home-usable within
-# the cap; no snapshot for home-cover). The median of an even count is the
+# `missing` counts the launches that gave no home-usable within the cap;
+# lines of other timings (an older build's `home-cover` among them) are
+# left out. The median of an even count is the
 # mean of the middle two; the p90 is the nearest rank, the ceil(0.9 n)-th
 # smallest. With CLAX_PERF_JSON set, one
 # line per figure is appended to that file for scripts/perf-log.sh
 # ({"name", "value", "budget", "unit"}), each p90 beside its budget in
-# web/perf/app-budget.json (`<platform>.app_home_usable_ms.budget`, and
-# app_home_cover_ms; CLAX_PERF_BUDGETS names another file), and one line
-# per timing with its `missing` count (unit "launches"). --record writes a
+# web/perf/app-budget.json (`<platform>.app_home_usable_ms.budget`;
+# CLAX_PERF_BUDGETS names another file), and one line with its `missing`
+# count (unit "launches"). --record writes a
 # platform's missing budgets there, the p90 rounded up to the next 50 ms,
 # and refuses (writing nothing, exiting 1) when any launch is missing.
 #
@@ -114,8 +108,8 @@ fi
 case "$runs" in '' | *[!0-9]* | 0) echo "perf-app-launch: --runs takes a count of at least 1" >&2; exit 2 ;; esac
 
 pkg=dev.empathic.clax
-# The wait for each launch's home-usable, and for the dropped launch's
-# snapshot (CLAX_PERF_CAP: another, in seconds, for the test).
+# The wait for each launch's home-usable (CLAX_PERF_CAP: another, in
+# seconds, for the test).
 cap="${CLAX_PERF_CAP:-60}"
 # The app's launch budgets, kept apart from web/perf/budget.json: the web
 # benchmark (web/perf/usable.perf.ts) takes any entry of its file under its
@@ -123,7 +117,7 @@ cap="${CLAX_PERF_CAP:-60}"
 budgets="${CLAX_PERF_BUDGETS:-web/perf/app-budget.json}"
 
 # summarize PLATFORM FILE WANT [BUILD]: the JSON object for FILE's
-# home-usable and home-cover lines (WANT launches were asked for; 0: as
+# home-usable lines (WANT launches were asked for; 0: as
 # many as there are; BUILD: a JSON object naming the build, which gains
 # "commit"), then the perf-log lines and, with --record, the budgets.
 summarize() {
@@ -138,15 +132,8 @@ for raw in open(path, encoding="utf-8"):
         lines.append(json.loads(raw))
     except ValueError:
         pass
-# Each launch adds its home-cover (when it had a snapshot), then its
-# home-usable: the launches are split at each home-usable line.
-launches, cover = [], None
-for r in lines:
-    if r.get("name") == "home-cover":
-        cover = r["elapsed_ms"]
-    elif r.get("name") == "home-usable":
-        launches.append((r["elapsed_ms"], cover))
-        cover = None
+# Each launch adds one home-usable line.
+launches = [r["elapsed_ms"] for r in lines if r.get("name") == "home-usable"]
 def stats(xs):
     xs = sorted(xs)
     n = len(xs)
@@ -154,14 +141,13 @@ def stats(xs):
         return {"median": None, "p90": None, "runs": 0}
     mid = xs[n // 2] if n % 2 else (xs[n // 2 - 1] + xs[n // 2]) / 2
     return {"median": mid, "p90": xs[math.ceil(0.9 * n) - 1], "runs": n}
-measured = {"app_home_usable_ms": [u for u, _ in launches], "app_home_cover_ms": [c for _, c in launches if c is not None]}
+measured = {"app_home_usable_ms": launches}
+labels = {"app_home_usable_ms": "home usable"}
 out = {"platform": platform, "build": build}
 for k, xs in measured.items():
     out[k] = stats(xs)
-# Launches that gave no figure: no home-usable within the cap, or a launch
-# with no snapshot to cover it.
+# Launches that gave no home-usable within the cap.
 out["app_home_usable_ms"]["missing"] = max(0, want - len(launches)) if want else 0
-out["app_home_cover_ms"]["missing"] = len(launches) - len(measured["app_home_cover_ms"])
 try:
     all_budgets = json.load(open(budgets, encoding="utf-8"))
 except (OSError, ValueError):
@@ -170,21 +156,21 @@ mine = all_budgets.get(platform, {})
 if sink:
     with open(sink, "a", encoding="utf-8") as f:
         for k in measured:
-            label = "home usable" if k == "app_home_usable_ms" else "home cover"
+            label = labels[k]
             for fig in ("median", "p90"):
                 if out[k][fig] is None:
                     continue
                 cap = mine.get(k, {}).get("budget") if fig == "p90" else None
                 f.write(json.dumps({"name": f"app launch: {platform} {label} {fig}", "value": out[k][fig], "budget": cap, "unit": "ms"}) + "\n")
         for k in measured:
-            label = "home usable" if k == "app_home_usable_ms" else "home cover"
+            label = labels[k]
             f.write(json.dumps({"name": f"app launch: {platform} {label} missing", "value": out[k]["missing"], "budget": None, "unit": "launches"}) + "\n")
 for k in measured:
     cap = mine.get(k, {}).get("budget")
     p90 = out[k]["p90"]
     if cap is not None and p90 is not None and p90 > cap:
         print(f"perf-app-launch: {k} p90 {p90} ms is over its budget of {cap} ms (reported, not gated)", file=sys.stderr)
-gaps = [f"{'home usable' if k == 'app_home_usable_ms' else 'home cover'}: {out[k]['missing']}" for k in measured if out[k]["missing"]]
+gaps = [f"{labels[k]}: {out[k]['missing']}" for k in measured if out[k]["missing"]]
 if record and gaps:
     print(f"perf-app-launch: --record records no budget from a run with launches missing ({', '.join(gaps)}); {budgets} is unchanged", file=sys.stderr)
     print(json.dumps(out))
@@ -251,8 +237,8 @@ if [ "$target" = macos ]; then
         fi
         echo "  copy it once per build into $work/clax-perf-<sha> (a zip unpacked, an app copied with ditto), set the copy's CFBundleIdentifier to $perf_id (plutil) and sign it again ad hoc: codesign --force --sign - --preserve-metadata=entitlements,flags,runtime <copy>"
         echo "  rm -r $container  (the copy's own container, if an earlier run left it)"
-        echo "  $((runs + 1)) times: CLAX_APP_NO_KEY=1 <copy>/Contents/MacOS/Clax (no saved key read), wait for a new home-usable line in $container/Data/Library/Application Support/$perf_id/timings.jsonl (at most ${cap} s); after the first, wait for its home snapshot, Data/Library/Caches/$perf_id/home/home-snapshot.bin (at most ${cap} s); SIGTERM the app (and an old build's daemon) by PID and wait for them to exit"
-        echo "  drop the first launch; print the median and p90 of home-usable and home-cover${CLAX_PERF_JSON:+ and append them to $CLAX_PERF_JSON}"
+        echo "  $((runs + 1)) times: CLAX_APP_NO_KEY=1 <copy>/Contents/MacOS/Clax (no saved key read), wait for a new home-usable line in $container/Data/Library/Application Support/$perf_id/timings.jsonl (at most ${cap} s); SIGTERM the app (and an old build's daemon) by PID and wait for them to exit"
+        echo "  drop the first launch; print the median and p90 of home-usable${CLAX_PERF_JSON:+ and append them to $CLAX_PERF_JSON}"
         [ -n "$record" ] && echo "  record $(host_platform)'s missing budgets in $budgets"
         echo "  rm -r $container"
         echo "run again with --i-know-what-i-am-doing to do it"
@@ -310,7 +296,6 @@ if [ "$target" = macos ]; then
     [ -x "$exe" ] || { echo "perf-app-launch: no Contents/MacOS/Clax in $bundle" >&2; exit 1; }
     support="$container/Data/Library/Application Support/$perf_id"
     timings="$support/timings.jsonl"
-    snapshot="$container/Data/Library/Caches/$perf_id/home/home-snapshot.bin"
     logs="$copy.logs"
     mkdir -p "$logs"
     if [ -e "$container" ]; then
@@ -340,19 +325,6 @@ if [ "$target" = macos ]; then
             exit 1
         elif [ -z "$got" ]; then
             echo "perf-app-launch: launch $i: no home-usable within ${cap} s (a keychain prompt waiting? the screen locked?); counted as missing" >&2
-        elif [ "$i" = 0 ]; then
-            # The home screen keeps its snapshot a few seconds after it is
-            # up, never on SIGTERM: without one no launch has a cover.
-            kept=""
-            for _ in $(seq $((cap * 4))); do
-                if [ -e "$snapshot" ]; then kept=1; break; fi
-                kill -0 "$pid" 2>/dev/null || break
-                sleep 0.25
-            done
-            if [ -z "$kept" ]; then
-                echo "perf-app-launch: the dropped launch kept no home snapshot within ${cap} s ($snapshot); no launch would have its cover, so nothing is measured" >&2
-                exit 1
-            fi
         fi
         stop_pid "$pid" "the app"
         wait "$pid" 2>/dev/null || true
@@ -386,9 +358,9 @@ adb="${ADB:-}"
 if [ -z "$adb" ]; then adb="$(command -v adb || true)"; fi
 if [ -z "$act" ]; then
     echo "perf-app-launch: would run, on the plugged-in device${ANDROID_SERIAL:+ $ANDROID_SERIAL}:"
-    echo "  $((runs + 1)) times: adb shell am force-stop $pkg; adb shell am start -W -n $pkg/dev.empathic.clax_app.MainActivity; wait for a clax-timing: home-usable line in adb logcat -d --pid=<the app's PID> (at most ${cap} s); after the first, wait for clax-home: snapshot kept in that log (at most ${cap} s)"
+    echo "  $((runs + 1)) times: adb shell am force-stop $pkg; adb shell am start -W -n $pkg/dev.empathic.clax_app.MainActivity; wait for a clax-timing: home-usable line in adb logcat -d --pid=<the app's PID> (at most ${cap} s)"
     echo "  adb shell am force-stop $pkg"
-    echo "  drop the first launch; print the median and p90 of home-usable and home-cover${CLAX_PERF_JSON:+ and append them to $CLAX_PERF_JSON}"
+    echo "  drop the first launch; print the median and p90 of home-usable${CLAX_PERF_JSON:+ and append them to $CLAX_PERF_JSON}"
     [ -n "$record" ] && echo "  record the device's missing budgets in $budgets"
     echo "run again with --i-know-what-i-am-doing to do it"
     exit 0
@@ -428,20 +400,6 @@ for i in $(seq 0 "$runs"); do
         exit 1
     fi
     [ -n "$got" ] || echo "perf-app-launch: launch $i: no home-usable within ${cap} s; counted as missing" >&2
-    if [ -n "$got" ] && [ "$i" = 0 ]; then
-        # As on macOS: the dropped launch keeps the snapshot the others
-        # are covered by, a few seconds after its home screen is up.
-        kept=""
-        for _ in $(seq $((cap * 2))); do
-            if said "$pid" | grep -qF 'clax-home: snapshot kept'; then kept=1; break; fi
-            sleep 0.5
-        done
-        if [ -z "$kept" ]; then
-            echo "perf-app-launch: the dropped launch kept no home snapshot within ${cap} s (no clax-home: snapshot kept in its log); no launch would have its cover, so nothing is measured" >&2
-            "$adb" shell am force-stop "$pkg"
-            exit 1
-        fi
-    fi
     # The dropped launch's lines are not summarized.
     if [ "$i" != 0 ] && [ -n "$pid" ]; then timings "$pid" >>"$work/measured.jsonl"; fi
 done

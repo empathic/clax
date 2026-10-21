@@ -964,7 +964,7 @@ same signature and do not ask.
 The app keeps its own records in its application support directory
 (inside `~/Library/Containers/dev.empathic.clax` for the sandboxed macOS
 build): `settings.json`, `timings.jsonl` (say → usable, long-press →
-landed, home-usable and home-cover times, also listed in Settings),
+landed and home-usable times, also listed in Settings),
 `agent-timings.jsonl`,
 `lineages.json` (which apps were shared or installed as files, and under
 which key), `home.json` (the home app's ID, whether the built-in home
@@ -977,17 +977,18 @@ upgrades them, put back if it fails or Clax ends part way), and
 secure storage beside the API key; uninstalling Clax loses it, and your
 later files then install on others' devices as separate apps. It never touches `~/.clax` or port 7480.
 
-Its cache directory keeps `home/home-snapshot.bin`: the last image of the
-home app's page, with where its app tiles were. A cold start shows it at
-once, under the home app's page as it loads, until the page says it has
-drawn the home screen; a tap on it then opens the app whose tile it fell
-on, if that app is still there.
+A cold start shows the Clax mark while the core opens, then the home
+app's page under its loading cover. An app's page, the home app's
+included, is covered while it loads: the plain surface for 100 ms, then
+the working Clax mark at the centre, which once shown stays for at least
+one full breath (`AppCover` and `CoverTiming` in
+`apps/clax_app/lib/ui/app_cover.dart`); under reduced motion the still
+mark is not held. A new app handed over from its build view shows the
+same cover.
 
-**Measuring the home screen's start.** Two timings run from the app's
-launch (its `main`): `home-usable` ends at the home app's first `shown()`
-and `home-cover` at the first frame of the kept snapshot (none on a first
-run, or after the cache was cleared). Each launch adds one line of each
-to `timings.jsonl`. On the phone:
+**Measuring the home screen's start.** `home-usable` runs from the app's
+launch (its `main`) to the home app's first `shown()`. Each launch adds
+one line to `timings.jsonl`. On the phone:
 
 ```sh
 just app-phone        # build and install the release APK
@@ -996,17 +997,14 @@ adb shell am start -W -n dev.empathic.clax/dev.empathic.clax_app.MainActivity
 ```
 
 Each `am start` after a `force-stop` is a cold start; Settings lists the
-last ten timings ("Launch → home usable", "Launch → home snapshot").
+last ten timings ("Launch → home usable").
 
-A first launch after an install has no snapshot yet; leave the home
-screen up for a second (the snapshot is taken shortly after it is
-drawn, and whenever it is covered or put away) before the next launch.
 On macOS, `CLAX_APP_DIR=<dir inside the app's container>` in the
 environment of the app's executable (`Clax.app/Contents/MacOS/Clax`)
 gives it a scratch support and cache directory.
 
 `scripts/perf-app-launch.sh` does those cold starts and reports the
-median and p90 of both timings; it gates nothing, and without
+median and p90 of `home-usable`; it gates nothing, and without
 `--i-know-what-i-am-doing` it prints its steps and changes nothing:
 
 ```sh
@@ -1031,21 +1029,19 @@ from before the variable was honoured still asks. On Android the
 installed app is measured, on its own home and with its own key (the
 variable does not reach an Android app, and a Keystore read asks
 nothing), and its timings are read from its log: the app says each
-`timings.jsonl` line in logcat after `clax-timing: `, and `clax-home:
-snapshot kept` when it keeps a snapshot, which the script reads with
-`adb logcat -d --pid=<the launch's PID>`. A release build is not
+`timings.jsonl` line in logcat after `clax-timing: `, which the script
+reads with `adb logcat -d --pid=<the launch's PID>`. A release build is not
 debuggable, so `run-as` cannot read its files.
 
-One launch more than `--runs` (default 9) is made and the first dropped;
-it stays up until its home screen has kept its snapshot, so every
-measured launch starts from one. The run stops before the first launch
+One launch more than `--runs` (default 9) is made and the first dropped.
+The run stops before the first launch
 while the Mac's screen is locked, and after a dropped launch that never
 reaches its home screen. The JSON names the build measured (`--commit`,
 the app, its digest and version). `just perf` runs the macOS measure
 after the other benchmarks; with `CLAX_PERF_JSON` set the figures and
-each timing's missing launches go to the perf log (`scripts/perf-log.sh`),
-each p90 beside its budget in `web/perf/app-budget.json`
-(`<platform>.app_home_usable_ms` and `app_home_cover_ms`), which
+the missing launches go to the perf log (`scripts/perf-log.sh`), the p90
+beside its budget in `web/perf/app-budget.json`
+(`<platform>.app_home_usable_ms`), which
 `--record` writes for a platform that has none, the p90 rounded up to
 50 ms, and refuses to write from a run with any launch missing.
 
