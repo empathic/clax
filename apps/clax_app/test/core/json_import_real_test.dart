@@ -1,5 +1,7 @@
 import 'dart:async';
+import 'dart:convert';
 import 'dart:io';
+import 'dart:typed_data';
 
 import 'package:clax_app/clax/api.dart';
 import 'package:clax_app/core/core_transport.dart';
@@ -8,11 +10,17 @@ import 'package:clax_app/queue/effect.dart';
 import 'package:clax_app/queue/model.dart';
 import 'package:clax_app/queue/msg.dart';
 import 'package:clax_app/queue/render.dart';
+import 'package:clax_app/agent/backend.dart' show AgentError;
+import 'package:clax_app/agent/runner/turn.dart';
+import 'package:clax_app/clax/http_api.dart';
 import 'package:clax_app/queue/runner.dart';
+import 'package:clax_app/queue/worker_main.dart' show WorkerContext;
 import 'package:flutter_test/flutter_test.dart';
 
 import '../support/paths.dart';
 import '../support/real_core.dart';
+import '../queue/make_real_test.dart' show ended, startHost;
+import '../queue/worker_agent_test.dart' show unscriptedFile;
 
 /// The fixtures' artifacts (test/fixtures/json-state), replaced by the
 /// real core's.
@@ -155,6 +163,137 @@ void main() {
     skip: RealCore.skip,
     timeout: const Timeout(Duration(minutes: 3)),
   );
+
+  test(
+    'a ledger change whose version landed and whose reply did not posts '
+    'its reply from the worker and ends done, asking the model nothing',
+    () async {
+      final core = await RealCore.open();
+      final api = core.api();
+      await api.registerAppSession(
+        installId: 'install-0',
+        pid: pid,
+        cwd: core.dir.path,
+      );
+      final aid = (await api.createArtifact(
+        PublishRequest(title: 'Habits', files: {'index.html': '<p>Habits</p>'}),
+      )).artifact.id;
+      final tid = await _thread(api, aid, 'a header, please');
+      final cid = (await api.threads(aid))
+          .singleWhere((t) => t.id == tid)
+          .comments
+          .single
+          .id;
+      // The change the app's ledger kept: version 2, published from the
+      // app's session, addressing the thread; the app ended before its
+      // reply.
+      const reply = 'Added a header.';
+      await api.publish(
+        aid,
+        PublishRequest(
+          ifVersion: 1,
+          note: reply,
+          addresses: [tid],
+          files: {'index.html': '<h1>Habits</h1>'},
+        ),
+      );
+
+      final (host, support) = startHost(
+        core,
+        noTurns,
+        importJson: true,
+        seed: (dir) => File('${dir.path}/change-ledger.json').writeAsStringSync(
+          jsonEncode({
+            'records': [
+              {
+                'artifact_id': aid,
+                'base': 1,
+                'addresses': [tid],
+                'answered': {
+                  tid: [cid],
+                },
+                'reply': reply,
+                'resolve': false,
+                'db': <Object?>[],
+                'pins': <String, Object?>{},
+                'docs_done': true,
+              },
+            ],
+          }),
+        ),
+      );
+      final job = await ended(host, support);
+      expect(job.state, JobState.done, reason: '${job.error}');
+      final thread = (await api.threads(aid)).singleWhere((t) => t.id == tid);
+      expect(
+        [
+          for (final c in thread.comments)
+            if (c.byAgent) c.body,
+        ],
+        [reply],
+      );
+      expect((await api.getArtifact(aid)).artifact.currentVersion, 2);
+    },
+    skip: RealCore.skip,
+    timeout: const Timeout(Duration(minutes: 3)),
+  );
+}
+
+/// The model of a worker that must ask it nothing: a turn is written to
+/// [unscriptedFile] and fails.
+TurnBackend noTurns(WorkerContext context) =>
+    _NoTurns(context.start.supportDir);
+
+final class _NoTurns implements TurnBackend {
+  _NoTurns(this.dir);
+  final String dir;
+
+  @override
+  String get name => 'none';
+
+  @override
+  Future<ModelTurn> turn(TurnRequest r) async {
+    File('$dir/$unscriptedFile').writeAsStringSync(jsonEncode(r.messages));
+    throw AgentError('no turn is scripted');
+  }
+}
+
+/// Creates a viewer thread on version 1 of [aid] as the owner, through the
+/// shell's multipart route; its ID.
+Future<String> _thread(HttpClaxApi api, String aid, String body) async {
+  const boundary = 'clax-test-boundary';
+  final parts = {
+    'anchor': jsonEncode({
+      'kind': 'element',
+      'selector': 'body > p',
+      'quote': 'Habits',
+      'prefix': '',
+      'suffix': '',
+      'html_hash': 'sha256:00',
+      'rect': null,
+      'custom_name': null,
+    }),
+    'body': body,
+    'version': '1',
+  };
+  final text = StringBuffer();
+  for (final e in parts.entries) {
+    text
+      ..write('--$boundary\r\n')
+      ..write('content-disposition: form-data; name="${e.key}"\r\n\r\n')
+      ..write('${e.value}\r\n');
+  }
+  text.write('--$boundary--\r\n');
+  final r = await api.transport.send(
+    'POST',
+    '/api/artifacts/$aid/threads',
+    headers: {'content-type': 'multipart/form-data; boundary=$boundary'},
+    body: Uint8List.fromList(utf8.encode(text.toString())),
+    timeout: const Duration(seconds: 35),
+  );
+  final answer = utf8.decode(r.body);
+  expect(r.status, inInclusiveRange(200, 299), reason: answer);
+  return ((jsonDecode(answer) as Map)['thread'] as Map)['id'] as String;
 }
 
 /// The agent, renders and UI, which an import and a load never use.

@@ -110,12 +110,16 @@ void main() {
 
 /// A worker's queue on [core] with the production agent over [model]
 /// and a fake inspector's clean renders, disposed in a tear-down; and
-/// the worker's support directory.
+/// the worker's support directory. With [importJson] the worker imports
+/// the app's JSON state files [seed] writes there first.
 (QueueHost, Directory) startHost(
   RealCore core,
-  TurnBackend Function(WorkerContext context) model,
-) {
+  TurnBackend Function(WorkerContext context) model, {
+  bool importJson = false,
+  void Function(Directory support)? seed,
+}) {
   final support = Directory('${core.dir.path}/worker')..createSync();
+  seed?.call(support);
   final render = RenderService(
     inspector: FakeInspector(),
     origins: RealCore.origins,
@@ -138,6 +142,7 @@ void main() {
       probe: reachable,
     ),
     attach: attachEmbedded,
+    importJson: importJson,
   );
   addTearDown(host.dispose);
   return (host, support);
