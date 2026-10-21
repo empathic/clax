@@ -46,6 +46,7 @@ import 'clax/api.dart';
 import 'platform/clock.dart';
 import 'core/core_client.dart';
 import 'core/core_host.dart';
+import 'core/core_transport.dart';
 import 'platform/app_notice.dart';
 import 'platform/background_work.dart';
 import 'platform/bundle_intake.dart';
@@ -61,6 +62,7 @@ import 'queue/client.dart' show QueueClient, QueueStateJobs;
 import 'queue/effect.dart' as q show Effect, KeepAlive, Notice, NoticeKind, Paused;
 import 'queue/host.dart';
 import 'queue/keep_alive.dart';
+import 'queue/make_hand_off.dart';
 import 'queue/msg.dart' as q show Woke;
 import 'queue/relay.dart';
 import 'ui/render_service.dart';
@@ -957,6 +959,7 @@ class _AppRootState extends State<AppRoot> with WidgetsBindingObserver {
     _s.core.state.addListener(_onState);
     _worker = _runtime.worker.events.listen(_onWorker);
     _builds = _runtime.worker.builds.listen(_buildNotices.onBuild);
+    _queueMakes?.start();
     _runtime.attach();
     _opened = _s.background.opened.listen(_onNews);
     if (_s.background.pausesRuns) {
@@ -1074,6 +1077,7 @@ class _AppRootState extends State<AppRoot> with WidgetsBindingObserver {
     _developer.dispose();
     unawaited(_worker?.cancel());
     unawaited(_builds?.cancel());
+    _queueMakes?.dispose();
     _buildNotices.dispose();
     unawaited(_opened?.cancel());
     unawaited(_pauses?.cancel());
@@ -1138,6 +1142,29 @@ class _AppRootState extends State<AppRoot> with WidgetsBindingObserver {
     control: WorkerBuildControl(_runtime.worker),
   );
   StreamSubscription<BuildState>? _builds;
+
+  /// The plan of each make the worker isolate's queue finishes, handed to
+  /// [_plans] and the worker's build, as [_make] hands its own.
+  late final MakeHandOff? _queueMakes = _relay == null
+      ? null
+      : MakeHandOff(
+          queue: _queue,
+          plans: _plans,
+          readJob: (id) async {
+            final t = CoreTransport(_s.core.calls);
+            try {
+              return await readJobOver(t, id);
+            } finally {
+              t.close();
+            }
+          },
+          startBuild: _runtime.worker.startBuild,
+          model: () => _settings.model,
+          ledger: MakeHandOffLedger(
+            file: File('${_s.supportDir}/queue-makes.json'),
+          ),
+          log: (l) => debugPrint('clax make: $l'),
+        );
 
   /// Each going build, shown as a background run.
   late final _buildNotices = BuildNotices(

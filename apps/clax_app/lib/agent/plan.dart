@@ -304,6 +304,31 @@ class PlanStore {
     );
   });
 
+  /// Keeps [features] as [appId]'s plan, made for [request], with what its
+  /// build has already spent ([spentUsd]), when [appId] has no plan: a
+  /// plan another isolate's run made (a queued make's) handed to this
+  /// store. Answers whether it was kept: a plan [appId] already has, which
+  /// the person may have edited since, is never written over.
+  Future<bool> adopt(
+    String appId,
+    List<PlanFeature> features, {
+    String request = '',
+    double spentUsd = 0,
+  }) async {
+    await _load();
+    if (_plans.containsKey(appId)) return false;
+    final p = Plan(
+      request: request,
+      features: features,
+      updatedAt: clock.now(),
+      spentUsd: spentUsd,
+    );
+    _plans[appId] = p;
+    _watchers[appId]?.add(p);
+    await _save();
+    return true;
+  }
+
   /// Sets the status of feature [id]; throws [StateError] when there is no
   /// such feature. [byPerson]: the person set it, so a drop is theirs and
   /// any other status takes their drop back.

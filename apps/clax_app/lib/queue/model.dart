@@ -575,18 +575,29 @@ final class JobView {
 /// How far a plan is: the features done, of those not dropped.
 typedef PlanProgress = ({int done, int total});
 
-/// How far job [j]'s plan is, from its row alone: the agent's `plan_set`
-/// and `plan_mark` calls of its committed turns, replayed in turn order
-/// as `PlanStore` applies them (lib/agent/plan.dart). A `plan_set` the
-/// tool would refuse (no features, a feature without an ID or a title, an
-/// ID given twice, a status it does not know) changes nothing, nor does a
+/// One feature of a job's plan as [planOf] replays it: its ID, title,
+/// detail and status (`todo`, `doing`, `done` or `dropped`).
+typedef PlannedFeature = ({
+  String id,
+  String title,
+  String detail,
+  String status,
+});
+
+/// Job [j]'s plan, from its row alone: the agent's `plan_set` and
+/// `plan_mark` calls of its committed turns, replayed in turn order as
+/// `PlanSetTool` and `PlanMarkTool` apply them (lib/agent/plan.dart),
+/// in the order the last `plan_set` gave, its IDs, titles and details
+/// trimmed. A `plan_set` the tool would refuse (no features, a feature
+/// without an ID or a title, an ID given twice, a detail that is not
+/// text, a status it does not know) changes nothing, nor does a
 /// `plan_mark` of a feature the plan does not hold. Null while the job
-/// planned nothing, or every feature is dropped.
+/// planned nothing.
 ///
 /// A call counts once its turn is committed, before the queue runs it.
 /// The plan of the worker's `PlanStore` is not read: it lives in the
 /// worker's memory, while the row survives a restart.
-PlanProgress? planProgressOf(Job j) {
+List<PlannedFeature>? planOf(Job j) {
   final turns = <(int, TurnNotes)>[
     for (final e in j.steps.entries)
       if ((e.key, e.value) case (
@@ -596,13 +607,13 @@ PlanProgress? planProgressOf(Job j) {
         (turn, notes),
   ]..sort((a, b) => a.$1.compareTo(b.$1));
   const statuses = {'todo', 'doing', 'done', 'dropped'};
-  Map<String, String>? plan;
+  Map<String, PlannedFeature>? plan;
   for (final (_, notes) in turns) {
     for (final call in notes.calls) {
       switch (call) {
         case OtherCall(name: 'plan_set', args: {'features': final List fs})
             when fs.isNotEmpty:
-          final set = <String, String>{};
+          final set = <String, PlannedFeature>{};
           for (final f in fs) {
             if (f case {
               'id': final String id,
@@ -611,8 +622,14 @@ PlanProgress? planProgressOf(Job j) {
             } when id.trim().isNotEmpty &&
                 title.trim().isNotEmpty &&
                 statuses.contains(status) &&
+                (f['detail'] == null || f['detail'] is String) &&
                 !set.containsKey(id.trim())) {
-              set[id.trim()] = status;
+              set[id.trim()] = (
+                id: id.trim(),
+                title: title.trim(),
+                detail: (f['detail'] as String? ?? '').trim(),
+                status: status,
+              );
             } else {
               set.clear();
               break;
@@ -624,16 +641,30 @@ PlanProgress? planProgressOf(Job j) {
               args: {'id': final String id, 'status': final String status},
             )
             when statuses.contains(status) && (plan?.containsKey(id) ?? false):
-          plan![id] = status;
+          final f = plan![id]!;
+          plan[id] = (
+            id: f.id,
+            title: f.title,
+            detail: f.detail,
+            status: status,
+          );
         default:
           break;
       }
     }
   }
+  return plan?.values.toList();
+}
+
+/// How far job [j]'s plan ([planOf]) is: the features done, of those not
+/// dropped. Null while the job planned nothing, or every feature is
+/// dropped.
+PlanProgress? planProgressOf(Job j) {
+  final plan = planOf(j);
   if (plan == null) return null;
-  final total = plan.values.where((s) => s != 'dropped').length;
+  final total = plan.where((f) => f.status != 'dropped').length;
   if (total == 0) return null;
-  return (done: plan.values.where((s) => s == 'done').length, total: total);
+  return (done: plan.where((f) => f.status == 'done').length, total: total);
 }
 
 /// What the UI sees (spec §7.2).

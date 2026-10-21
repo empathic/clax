@@ -1306,6 +1306,12 @@ void main() {
 
     testWidgets('a job that ends while the app is away is a notification',
         (tester) async {
+      // The made make's plan is looked up for its build: it has none.
+      (coreHost.calls as FakeCore).on(
+        'GET',
+        '/api/jobs/{id}',
+        (_, _) async => FakeCore.error(404, 'not_found', 'no such job'),
+      );
       await pumpApp(tester, startQueue: starter());
       final w = await started(tester);
       // The worker sends a job's notice before the state that shows it
