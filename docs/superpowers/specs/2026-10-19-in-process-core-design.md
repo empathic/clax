@@ -466,6 +466,8 @@ becomes a `call` that cannot fail on transport, and its 4xx is logged).
 
 ## 4. The WebView scheme
 
+No app platform serves or uses anything over plain `http:` or `ws:`: the app's origins are `https:` or `clax:` only, and the shell in app mode opens no WebSocket.
+
 ### 4.1 URLs
 
 | Logical | Android (`shouldInterceptRequest`) | Apple (`WKURLSchemeHandler`) |
