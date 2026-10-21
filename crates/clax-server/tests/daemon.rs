@@ -615,6 +615,9 @@ async fn a_serve_that_fails_after_its_core_started_stops_the_core() {
     // daemon.json is a directory that is not empty, so writing it fails
     // after the core has started.
     std::fs::create_dir_all(home.daemon_json().join("x")).unwrap();
+    // It stops on signals: a SIGTERM another test sends while it stops
+    // would end this process.
+    let _sigterm = no_sigterm().await;
     let served = serve(config_on(&home, 0), None).await;
     assert!(served.is_err(), "daemon.json cannot be written");
     assert_eq!(

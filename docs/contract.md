@@ -4876,13 +4876,13 @@ router), and a test fails when it differs:
 | `GET /api/artifacts/{aid}/snapshot` | Denied | yes: 403 `not_for_agents` |
 | `POST /api/artifacts/{aid}/unsent:drop` | Denied | yes: 403 `not_for_agents` |
 | `POST /api/artifacts/{aid}/versions:restore` | Denied | no |
+| `POST /api/artifacts:new` | Denied | yes: 403 `not_for_agents` |
 | `POST /api/client-imports/{key}` | Denied | yes: 403 `not_for_agents` |
 | `POST /api/core/trim` | Denied | no |
 | `GET /api/drafts` | Denied | no |
 | `POST /api/drafts` | Denied | no |
 | `DELETE /api/drafts/{id}` | Denied | no |
 | `POST /api/drafts/{id}/renders` | Denied | yes: 403 `not_for_agents` |
-| `POST /api/artifacts:new` | Denied | yes: 403 `not_for_agents` |
 | `GET /api/events` | Denied | yes: 403 `not_for_agents` |
 | `GET /api/extension` | Denied | no |
 | `DELETE /api/extension/credentials` | Denied | no |

@@ -40,6 +40,11 @@ struct Dying<C> {
     inner: C,
     die: AtomicBool,
     refuse: AtomicBool,
+    /// Killed by a version write: the removal of the artifact's content
+    /// that the failed write's caller would make next does not happen, as
+    /// the process is gone. Any other content call stands for the resumed
+    /// process.
+    dead: AtomicBool,
     /// The artifact of each version write, in order.
     wrote: std::sync::Mutex<Vec<String>>,
 }
@@ -77,12 +82,14 @@ impl<C: ContentStore> ContentStore for Dying<C> {
         n: u32,
         write: &VersionWrite<'_>,
     ) -> clax_core::Result<()> {
+        self.dead.store(false, Ordering::SeqCst);
         if self.refuse.swap(false, Ordering::SeqCst) {
             return Err(CoreError::invalid("killed", "the process was killed"));
         }
         self.inner.write_version(id, n, write).await?;
         self.wrote.lock().unwrap().push(id.as_str().to_string());
         if self.die.swap(false, Ordering::SeqCst) {
+            self.dead.store(true, Ordering::SeqCst);
             return Err(CoreError::invalid("killed", "the process was killed"));
         }
         Ok(())
@@ -108,12 +115,16 @@ impl<C: ContentStore> ContentStore for Dying<C> {
         self.inner.fork(from, from_n, paths, to, meta).await
     }
     async fn remove_version(&self, id: &ArtifactId, n: u32) -> clax_core::Result<()> {
+        self.dead.store(false, Ordering::SeqCst);
         self.inner.remove_version(id, n).await
     }
     async fn unrecorded_step(&self, id: &ArtifactId, n: u32) -> clax_core::Result<Option<String>> {
         self.inner.unrecorded_step(id, n).await
     }
     async fn delete_artifact(&self, id: &ArtifactId) -> clax_core::Result<()> {
+        if self.dead.swap(false, Ordering::SeqCst) {
+            return Err(CoreError::invalid("killed", "the process was killed"));
+        }
         self.inner.delete_artifact(id).await
     }
     async fn put_asset(&self, key: &AssetKey, bytes: &[u8]) -> clax_core::Result<()> {
@@ -198,6 +209,7 @@ fn fixture<C: ContentStore + 'static>(content: impl FnOnce(&Home) -> C) -> Fixtu
         inner: content(&h),
         die: AtomicBool::new(false),
         refuse: AtomicBool::new(false),
+        dead: AtomicBool::new(false),
         wrote: Default::default(),
     });
     let st = Store::open(&h).unwrap().with_content(content.clone());
