@@ -325,7 +325,7 @@ void main() {
               return made.future;
             },
             build: link,
-            onMade: (_, aid, _) => handed.add(aid),
+            onMade: (_, aid) => handed.add(aid),
           ),
         ),
       );

@@ -454,7 +454,7 @@ class _Rig {
   List<String> haikus = const ['Old pond, a frog jumps'];
 
   /// Given to the screen as its onMade.
-  void Function(BuildContext context, String aid, Uint8List? lastFrame)? onMade;
+  void Function(BuildContext context, String aid)? onMade;
 
   Future<void> pump(WidgetTester tester) async {
     await tester.binding.setSurfaceSize(size);
@@ -720,12 +720,13 @@ void _screen() {
     expect(rig.results.last, isA<Made>().having((m) => m.aid, 'aid', 'a1'));
   });
 
-  testWidgets('with onMade the made app goes to it, with the last render, '
-      'in place of the pop', (tester) async {
+  testWidgets('with onMade the made app goes to it in place of the pop', (
+    tester,
+  ) async {
     final rig = _Rig();
-    final handed = <(String, Uint8List?)>[];
-    rig.onMade = (context, aid, frame) {
-      handed.add((aid, frame));
+    final handed = <String>[];
+    rig.onMade = (context, aid) {
+      handed.add(aid);
       Navigator.of(context).pushReplacement(
         MaterialPageRoute<void>(builder: (_) => const Text('the app')),
         result: Made(aid),
@@ -737,7 +738,7 @@ void _screen() {
     await tester.pump();
     rig.make.result.complete('a1');
     await _settle(tester);
-    expect(handed, [('a1', _png)]);
+    expect(handed, ['a1']);
     expect(find.text('the app'), findsOneWidget);
     expect(rig.results.single, isA<Made>().having((m) => m.aid, 'aid', 'a1'));
   });

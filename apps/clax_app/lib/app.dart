@@ -2714,12 +2714,12 @@ class _AppRootState extends State<AppRoot> with WidgetsBindingObserver {
   }
 
   /// Puts new app [aid] in the place of the making screen whose [context]
-  /// this is, so nothing between them shows; [lastFrame], the making
-  /// screen's last render, covers the app until its page is up.
-  void _handOver(BuildContext context, String aid, Uint8List? lastFrame) {
+  /// this is, so nothing between them shows; the app's screen covers its
+  /// page until it is up, as any opening does.
+  void _handOver(BuildContext context, String aid) {
     unawaited(
       Navigator.of(context)
-          .pushReplacement(_appRoute(aid, cover: lastFrame), result: Made(aid)),
+          .pushReplacement(_appRoute(aid), result: Made(aid)),
     );
   }
 
@@ -2730,7 +2730,6 @@ class _AppRootState extends State<AppRoot> with WidgetsBindingObserver {
     String aid, {
     String? thread,
     int? version,
-    Uint8List? cover,
     AppAction? action,
     String? comment,
   }) {
@@ -2740,7 +2739,6 @@ class _AppRootState extends State<AppRoot> with WidgetsBindingObserver {
     final route = MaterialPageRoute<void>(
       builder: (_) => _AppPage(
         aid: aid,
-        cover: cover,
         base: _base.value!,
         surface: () => open.surface = _aimed(
           _s.surface(),
@@ -3375,20 +3373,17 @@ class _OpenAppScopeState extends State<_OpenAppScope> {
   Widget build(BuildContext context) => widget.builder(_open);
 }
 
-/// The open app's page: a surface on the shell's origin [base]. A [cover]
-/// (the making screen's last render) is shown over it until the shell's
-/// first `ready` for [aid], or until the page fails to load.
+/// The open app's page: a surface on the shell's origin [base], made once
+/// and kept while the page is built again.
 class _AppPage extends StatefulWidget {
   const _AppPage({
     required this.aid,
-    this.cover,
     required this.base,
     required this.surface,
     required this.screen,
   });
 
   final String aid;
-  final Uint8List? cover;
   final Uri base;
   final AppSurface Function() surface;
   final Widget Function(Uri base, AppSurface surface) screen;
@@ -3398,78 +3393,10 @@ class _AppPage extends StatefulWidget {
 }
 
 class _AppPageState extends State<_AppPage> {
-  late AppSurface _surface;
-  Uint8List? _cover;
-  final _watch = <StreamSubscription<Object?>>[];
+  late final AppSurface _surface = widget.surface();
 
   @override
-  void initState() {
-    super.initState();
-    _cover = widget.cover;
-    _surface = _watched(widget.surface());
-  }
-
-  @override
-  void dispose() {
-    _unwatch();
-    super.dispose();
-  }
-
-  /// Watches [s] for the end of the cover.
-  AppSurface _watched(AppSurface s) {
-    _unwatch();
-    if (_cover == null) return s;
-    void uncover() {
-      _unwatch();
-      if (mounted) setState(() => _cover = null);
-    }
-
-    _watch
-      ..add(
-        s.messages.listen((m) {
-          if (m case Ready(:final artifact) when artifact == widget.aid) {
-            uncover();
-          }
-        }),
-      )
-      ..add(s.faults.listen((_) => uncover()));
-    return s;
-  }
-
-  void _unwatch() {
-    for (final w in _watch) {
-      unawaited(w.cancel());
-    }
-    _watch.clear();
-  }
-
-  @override
-  Widget build(BuildContext context) {
-    final screen = widget.screen(widget.base, _surface);
-    final cover = _cover;
-    // One tree shape with or without the cover, so the screen (and its
-    // page) is kept when the cover goes.
-    return Stack(
-      fit: StackFit.expand,
-      children: [
-        screen,
-        if (cover != null)
-          ColoredBox(
-            key: const ValueKey('made-cover'),
-            color: Theme.of(context).colorScheme.surface,
-            child: SafeArea(
-              child: Image.memory(
-                cover,
-                fit: BoxFit.fitWidth,
-                alignment: Alignment.topCenter,
-                gaplessPlayback: true,
-                errorBuilder: (_, _, _) => const SizedBox.shrink(),
-              ),
-            ),
-          ),
-      ],
-    );
-  }
+  Widget build(BuildContext context) => widget.screen(widget.base, _surface);
 }
 
 /// What an app's screen shows while an update runs on it: no page.

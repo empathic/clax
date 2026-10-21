@@ -1,5 +1,4 @@
 import 'dart:async';
-import 'dart:typed_data';
 
 import 'package:flutter/material.dart';
 
@@ -126,11 +125,9 @@ class Launcher extends StatefulWidget {
   final Timings? timings;
 
   /// Opens the new app [aid] in the making screen's place, from that
-  /// screen's [context], with the last render's screenshot ([lastFrame])
-  /// to show until the app's page is up (`MakingScreen.onMade`). When null,
-  /// the making screen closes and [open] opens the app.
-  final void Function(BuildContext context, String aid, Uint8List? lastFrame)?
-  handOver;
+  /// screen's [context] (`MakingScreen.onMade`). When null, the making
+  /// screen closes and [open] opens the app.
+  final void Function(BuildContext context, String aid)? handOver;
 
   /// The app's shared stream; when null the launcher opens its own and
   /// closes it as it goes.
@@ -1147,8 +1144,7 @@ class HomeFlows implements HomeActions {
   onOpenTarget;
   final void Function(String qid)? onOpenQuestion;
   final Timings? timings;
-  final void Function(BuildContext context, String aid, Uint8List? lastFrame)?
-  handOver;
+  final void Function(BuildContext context, String aid)? handOver;
   final List<PermissionSource> inspectorPermissions;
   final BuildLink? build;
   final BundleFlows? bundles;

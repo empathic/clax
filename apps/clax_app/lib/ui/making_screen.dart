@@ -421,11 +421,9 @@ class MakingScreen extends StatefulWidget {
   final Timings? timings;
 
   /// Takes the new app [aid] in place of the pop, with the screen's
-  /// context and the last render's screenshot ([MakingLog.png]; null when
-  /// none), to put the app's route in this one's place
+  /// context, to put the app's route in this one's place
   /// (`pushReplacement(…, result: Made(aid))`).
-  final void Function(BuildContext context, String aid, Uint8List? lastFrame)?
-  onMade;
+  final void Function(BuildContext context, String aid)? onMade;
 
   /// The plans and builds, for the build view; null shows none.
   final BuildLink? build;
@@ -745,7 +743,7 @@ class _MakingScreenState extends State<MakingScreen> {
       return;
     }
     if (widget.onMade case final onMade?) {
-      onMade(context, aid, _log.png);
+      onMade(context, aid);
     } else {
       _pop(Made(aid));
     }
@@ -815,7 +813,7 @@ class _MakingScreenState extends State<MakingScreen> {
     if (aid == null) return;
     _tick?.cancel();
     if (widget.onMade case final onMade?) {
-      onMade(context, aid, _log.png);
+      onMade(context, aid);
     } else {
       _pop(Made(aid));
     }

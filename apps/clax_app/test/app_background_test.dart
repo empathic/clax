@@ -23,6 +23,7 @@ import 'package:clax_app/queue/effect.dart' as q;
 import 'package:clax_app/queue/host.dart';
 import 'package:clax_app/queue/msg.dart' as q show Msg, OutOfTime, Woke;
 import 'package:clax_app/ui/render_service.dart';
+import 'package:clax_app/ui/app_cover.dart';
 import 'package:clax_app/ui/app_screen.dart';
 import 'package:clax_app/ui/host_protocol.dart' show Ready;
 import 'package:clax_app/ui/making_screen.dart' show MakingScreen;
@@ -948,7 +949,7 @@ void main() {
     });
 
     testWidgets('a make streams to the making screen, which hands over to '
-        'the new app in its place, covered by the last render until ready', (
+        'the new app in its place, under its loading cover until ready', (
       tester,
     ) async {
       turns = _Turns();
@@ -979,7 +980,9 @@ void main() {
       expect(find.byType(AppScreen), findsOneWidget);
       expect(makingRoute.isActive, isFalse);
       // The app's route took the making route's place: one pop goes home.
-      final cover = find.byKey(const ValueKey('made-cover'));
+      // No image of the last render: the app's own loading cover.
+      expect(find.byKey(const ValueKey('app-cover-mark')), findsOneWidget);
+      final cover = find.byKey(const ValueKey('app-cover'));
       expect(cover, findsOneWidget);
       final aid = (await api.listArtifacts()).single.id;
       final screen = tester.state(find.byType(AppScreen));
@@ -987,12 +990,14 @@ void main() {
       surface.push(
         Ready(artifact: aid, version: 1, latest: 1, file: 'index.html'),
       );
+      // The mark showed while the route came in: it finishes its breath.
       await tester.pump();
+      expect(cover, findsOneWidget);
+      await tester.pump(AppCover.markHold);
       expect(cover, findsNothing);
       // The same screen and page stay, uncovered by the ready they saw.
       expect(tester.state(find.byType(AppScreen)), same(screen));
       expect(surface.disposed, isFalse);
-      expect(find.byKey(const ValueKey('app-cover')), findsNothing);
       await tester.binding.handlePopRoute();
       await pumpRoute(tester);
       expect(find.byType(AppScreen), findsNothing);

@@ -228,7 +228,7 @@ void main() {
           make: (r, cancelled, stage) => made.future,
           voice: FakeVoice.unsupported('No speech here'),
           timings: timings,
-          handOver: (context, aid, frame) {
+          handOver: (context, aid) {
             handed.add(aid);
             Navigator.of(context).pushReplacement(
               MaterialPageRoute<void>(builder: (_) => const Text('the app')),
