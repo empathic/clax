@@ -297,7 +297,16 @@ final class QueueTurn {
           // became of it.
           final asked = job.questionOf(turn, call.id);
           if (asked == null) {
-            emit((id) => Ask(id, job.id, turn, call.id, question));
+            emit(
+              (id) => Ask(
+                id,
+                job.id,
+                turn,
+                call.id,
+                question,
+                artifactId: job.artifactId,
+              ),
+            );
             return;
           }
           if (asked.answer is AnswerPending) return;

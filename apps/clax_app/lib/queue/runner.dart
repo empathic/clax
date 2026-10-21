@@ -791,7 +791,8 @@ class EffectRunner implements WorkerRunner {
 
   /// Creates the question from the worker's session with the call's tool
   /// call ID (the core answers the same question for the same session and
-  /// tool call), then records it as the job's.
+  /// tool call), about the job's app when it has one, then records it as
+  /// the job's.
   Future<void> _ask(Ask e) async {
     String sid;
     try {
@@ -810,6 +811,7 @@ class EffectRunner implements WorkerRunner {
         },
         'source': 'ask',
         'tool_use_id': e.toolUseId,
+        'artifact_id': ?e.artifactId,
       },
     );
     var asked = await ask(sid);

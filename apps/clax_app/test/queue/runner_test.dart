@@ -865,6 +865,29 @@ void main() {
       expect(sent.whereType<Committed>().last.job.questions, hasLength(1));
     });
 
+    test('an Ask of a change\'s job names its app', () async {
+      await claimed();
+      jobs
+        ..sessions.add('s1')
+        ..versions['abc'] = 1
+        ..seed('j', kind: 'change', artifactId: 'abc', state: 'running', rev: 2);
+      runner.run(
+        const Ask(1, 'j', 2, 'a1', Question(data: {'questions': [{'question': 'Which?'}]}), artifactId: 'abc'),
+      );
+      await pumpEventQueue();
+      expect(body(to('POST', '/api/sessions/s1/questions').single)['artifact_id'], 'abc');
+      expect(jobs.questions.values.single['artifact_id'], 'abc');
+      expect(only<Committed>().job.state, JobState.waiting);
+
+      // An app the core does not hold is refused.
+      jobs.seed('k', kind: 'change', artifactId: 'gone', state: 'running', rev: 2);
+      runner.run(
+        const Ask(2, 'k', 2, 'a1', Question(data: {'questions': [{'question': 'Which?'}]}), artifactId: 'gone'),
+      );
+      await pumpEventQueue();
+      expect((only<Refused>().reason as Invalid).code, 'not_found');
+    });
+
     test('a commit with no answer in its time reads the job back', () async {
       await claimed();
       jobs.seed('j', state: 'running', rev: 2);

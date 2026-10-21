@@ -126,10 +126,21 @@ final class CommitStep extends CommitEffect {
 /// it with that tool call, so `next` asks no call twice, a worker resumed
 /// after a kill included.
 final class Ask extends CommitEffect {
-  const Ask(super.id, super.jobId, this.turn, this.callId, this.question);
+  const Ask(
+    super.id,
+    super.jobId,
+    this.turn,
+    this.callId,
+    this.question, {
+    this.artifactId,
+  });
   final int turn;
   final String callId;
   final Question question;
+
+  /// The app the job changes, which the question is about; null for a
+  /// make, which has none yet.
+  final String? artifactId;
 
   /// The question's `tool_use_id`: unique per job, turn and call, so no
   /// two jobs asking from one session share a question.
@@ -145,9 +156,11 @@ final class Ask extends CommitEffect {
       other.jobId == jobId &&
       other.turn == turn &&
       other.callId == callId &&
-      other.question == question;
+      other.question == question &&
+      other.artifactId == artifactId;
   @override
-  int get hashCode => Object.hash(id, jobId, turn, callId, question);
+  int get hashCode =>
+      Object.hash(id, jobId, turn, callId, question, artifactId);
   @override
   String toString() => 'Ask#$id($jobId, turn $turn, $callId)';
 }

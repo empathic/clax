@@ -1067,6 +1067,15 @@ void main() {
       return (m1, e1.whereType<Ask>().single);
     }
 
+    test('a change\'s question names its app', () {
+      final changing = job('c', rev: 2, kind: JobKind.change, artifactId: 'abc', steps: {
+        const TurnKey(1): turnOf([const AskCall('a', Question(data: 'which colour?'))]),
+      });
+      final (_, e1) = update(model(jobs: [changing]), JobsLoaded([changing]));
+      expect(e1.whereType<Ask>().single.artifactId, 'abc');
+      expect(asked().$2.artifactId, isNull, reason: 'a make has no app yet');
+    });
+
     for (final (name, answer) in [
       ('answered', const Answered({'colour': 'blue'})),
       ('declined', const Declined()),

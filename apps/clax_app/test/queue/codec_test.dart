@@ -791,6 +791,7 @@ final effectSamples = <(String, Effect)>[
   ('move job, keep', const MoveJob(2, 'j1', ifRev: 3, to: JobState.cancelled)),
   ('commit step', const CommitStep(3, 'j1', 2, notes, base: 3)),
   ('ask', const Ask(4, 'j1', 2, 'c3', Question(data: {'q': 'Blue?'}))),
+  ('ask of an app', const Ask(4, 'j1', 2, 'c3', Question(data: {'q': 'Blue?'}), artifactId: 'abc')),
   (
     'publish',
     const Publish(

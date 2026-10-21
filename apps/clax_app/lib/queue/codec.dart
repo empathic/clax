@@ -783,14 +783,23 @@ Map<String, Object?> _effect(Effect e) => switch (e) {
       'notes': _notes(notes),
       'base': base,
     },
-  Ask(:final id, :final jobId, :final turn, :final callId, :final question) => {
-    't': 'ask',
-    'id': id,
-    'jobId': jobId,
-    'turn': turn,
-    'callId': callId,
-    'question': _question(question),
-  },
+  Ask(
+    :final id,
+    :final jobId,
+    :final turn,
+    :final callId,
+    :final question,
+    :final artifactId,
+  ) =>
+    {
+      't': 'ask',
+      'id': id,
+      'jobId': jobId,
+      'turn': turn,
+      'callId': callId,
+      'question': _question(question),
+      'artifactId': artifactId,
+    },
   Publish(
     :final id,
     :final jobId,
@@ -918,6 +927,7 @@ final Map<String, Effect Function(_R)> _effectDecoders = {
     r.integer('turn'),
     r.str('callId'),
     r.obj('question', _questionOf),
+    artifactId: r.strOrNull('artifactId'),
   ),
   'publish': (r) => Publish(
     r.integer('id'),

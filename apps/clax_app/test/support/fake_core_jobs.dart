@@ -58,7 +58,9 @@ class FakeJobs {
   final Map<String, Map<String, FileHash>> files = {};
 
   /// Each question the `ask` tool created: `{id, session, tool_use_id,
-  /// outcome, answers}`, `outcome` null while it is open.
+  /// artifact_id, source, questions, outcome, answers}`, `outcome` null
+  /// while it is open. A question naming an app the core does not hold
+  /// ([versions]) is 404 `not_found`.
   final Map<String, Map<String, Object?>> questions = {};
 
   /// The drafts a render may be recorded of; a test serving
@@ -539,6 +541,10 @@ class FakeJobs {
       if (!sessions.contains(sid)) {
         return FakeCore.error(400, 'unknown_session', 'no live session $sid');
       }
+      final aid = b['artifact_id'];
+      if (aid != null && (aid is! String || !versions.containsKey(aid))) {
+        return FakeCore.error(404, 'not_found', 'no artifact $aid');
+      }
       final tool = b['tool_use_id'] as String?;
       if (tool != null) {
         final held = questions.values
@@ -550,6 +556,7 @@ class FakeJobs {
         'id': 'q${++_minted}',
         'session': sid,
         'tool_use_id': tool,
+        'artifact_id': aid,
         'source': b['source'],
         'questions': b['questions'],
         'outcome': null,
