@@ -67,7 +67,7 @@ void main() {
 
   setUp(() {
     core = FakeCore();
-    jobs = FakeJobs(core);
+    jobs = FakeJobs(core)..drafts.addAll(const ['d', 'd1', 'd2']);
     agent = _Agent();
     renders = _Render();
     ui = _Ui();
@@ -424,7 +424,7 @@ void main() {
               draftId: 'd',
               revision: 2,
               kind: RenderKind.tests,
-              digest: 'sha256:ab',
+              digest: _ab,
               files: ['tests/a.test.js'],
               migration: MigrationSpec(from: 1, to: 2),
             ),
@@ -805,7 +805,7 @@ void main() {
 
     test('a Render is recorded in the core under its spec\'s digest before '
         'Rendered is sent', () async {
-      const spec = RenderSpec(draftId: 'd1', revision: 2, digest: 'sha256:ab');
+      const spec = RenderSpec(draftId: 'd1', revision: 2, digest: _ab);
       const outcome = RenderOutcome(
         clean: false,
         data: {
@@ -823,17 +823,33 @@ void main() {
       await pumpEventQueue();
       expect(jobs.renders.single, {
         'draft': 'd1',
-        'digest': 'sha256:ab',
+        'digest': _ab,
         'errors': ['x is undefined'],
-        'failed_tests': ['adds'],
+        'failed_tests': 1,
       });
       expect(only<Rendered>().outcome, outcome);
+    });
+
+    test('a render whose record the core refuses answers as failed with the '
+        'refusal, so the agent renders again rather than finish', () async {
+      const outcome = RenderOutcome(clean: true, data: {'errors': <String>[]});
+      renders.answers.add(Future.value(const RenderAnswered(1, 'j', outcome)));
+      // A draft the core does not hold: the record is refused 404.
+      runner.run(
+        const Render(1, 'j', 1, 'r', RenderSpec(draftId: 'gone', revision: 2, digest: _ab)),
+      );
+      await pumpEventQueue();
+      expect(jobs.renders, isEmpty);
+      final r = only<Rendered>();
+      expect(r.outcome.clean, isFalse);
+      expect(r.outcome.errors.single, contains('not_found'));
+      expect(agent.drawn.single.$4, r.outcome, reason: 'the agent reads it so');
     });
 
     test('a render draws the spec the agent serves when it runs, and is '
         'recorded under that spec\'s digest', () async {
       const planned = RenderSpec(draftId: '', revision: 0);
-      const spec = RenderSpec(draftId: 'd2', revision: 4, digest: 'sha256:cd', files: ['tests/a.test.js']);
+      const spec = RenderSpec(draftId: 'd2', revision: 4, digest: _cd, files: ['tests/a.test.js']);
       agent.served = (p) async {
         expect(p, planned);
         return spec;
@@ -844,7 +860,7 @@ void main() {
       expect(agent.resolved, [('j', 3, 'r')]);
       expect(renders.asked.single, const RenderRequest(1, 'j', 'r', spec));
       expect(jobs.renders.single['draft'], 'd2');
-      expect(jobs.renders.single['digest'], 'sha256:cd');
+      expect(jobs.renders.single['digest'], _cd);
       expect(only<Rendered>().outcome.clean, isTrue);
     });
 
@@ -906,7 +922,7 @@ void main() {
         ),
       );
       runner.run(
-        const Render(1, 'j', 1, 'r', RenderSpec(draftId: 'd1', revision: 2, digest: 'sha256:ab')),
+        const Render(1, 'j', 1, 'r', RenderSpec(draftId: 'd1', revision: 2, digest: _ab)),
       );
       await pumpEventQueue();
       expect(jobs.renders.single['errors'], ['did not load']);
@@ -925,7 +941,7 @@ void main() {
     test('a render the UI lost is RenderLost, and records nothing', () async {
       renders.answers.add(Future.value(const RenderGone(1, 'j')));
       runner.run(
-        const Render(1, 'j', 1, 'r', RenderSpec(draftId: 'd', revision: 1, digest: 'sha256:ab')),
+        const Render(1, 'j', 1, 'r', RenderSpec(draftId: 'd', revision: 1, digest: _ab)),
       );
       await pumpEventQueue();
       expect(only<RenderLost>().effect, 1);
@@ -936,7 +952,7 @@ void main() {
       final answer = Completer<RenderResult>();
       renders.answers.add(answer.future);
       runner.run(
-        const Render(1, 'j', 1, 'r', RenderSpec(draftId: 'd', revision: 1, digest: 'sha256:ab')),
+        const Render(1, 'j', 1, 'r', RenderSpec(draftId: 'd', revision: 1, digest: _ab)),
       );
       await pumpEventQueue();
       runner.run(const StopWork(2, 'j'));
@@ -1181,3 +1197,7 @@ class _HeldTimer implements Timer {
 }
 
 WorkerRunner _noRunner(WorkerContext _) => throw UnimplementedError();
+
+/// Well-formed render digests.
+const _ab = 'sha256:abababababababababababababababababababababababababababababababab';
+const _cd = 'sha256:cdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcd';

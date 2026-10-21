@@ -49,8 +49,12 @@ class FakeJobs {
   /// outcome, answers}`, `outcome` null while it is open.
   final Map<String, Map<String, Object?>> questions = {};
 
+  /// The drafts a render may be recorded of; a test serving
+  /// `POST /api/drafts` adds the IDs it mints.
+  final Set<String> drafts = {};
+
   /// The renders recorded, in order: `{draft, digest, errors,
-  /// failed_tests}`.
+  /// failed_tests}`, `failed_tests` the count of failing tests.
   final List<Map<String, Object?>> renders = [];
 
   /// The bodies of every publish step committed, in order.
@@ -97,6 +101,8 @@ class FakeJobs {
   int _seconds = 0;
 
   static const ownerHeader = 'x-clax-jobs-owner';
+
+  static final _digest = RegExp(r'^sha256:[0-9a-f]{64}$');
 
   /// A job row in queued, as a test seeds the core with it; its publish
   /// step, if any, made from session [publishedFrom].
@@ -409,13 +415,15 @@ class FakeJobs {
           });
         }
         if (pb['draft'] case final Map d) {
-          final clean = renders.any(
-            (x) =>
-                x['draft'] == d['id'] &&
-                x['digest'] == d['digest'] &&
-                (x['errors'] as List).isEmpty &&
-                (x['failed_tests'] as List).isEmpty,
+          // A later render of the same digest replaces an earlier one.
+          final last = renders.lastWhere(
+            (x) => x['draft'] == d['id'] && x['digest'] == d['digest'],
+            orElse: () => const {},
           );
+          final clean =
+              last.isNotEmpty &&
+              (last['errors']! as List).isEmpty &&
+              last['failed_tests'] == 0;
           if (!clean) {
             return FakeCore.error(409, 'not_rendered_clean', 'no clean render');
           }
@@ -535,9 +543,31 @@ class FakeJobs {
         'errors',
         'failed_tests',
       }, required: const {'digest', 'errors', 'failed_tests'});
-      if (b == null) return _unprocessable();
-      renders.add({'draft': p['id'], ...b});
-      return CoreResponse(204, const [], Uint8List(0));
+      if (b == null ||
+          b['digest'] is! String ||
+          b['errors'] is! List ||
+          b['failed_tests'] is! int ||
+          (b['failed_tests']! as int) < 0) {
+        return _unprocessable();
+      }
+      final digest = b['digest']! as String;
+      if (!_digest.hasMatch(digest)) {
+        return FakeCore.error(
+          400,
+          'invalid_args',
+          'digest is sha256: and 64 lower-case hex digits',
+        );
+      }
+      final id = p['id']!;
+      if (!drafts.contains(id)) {
+        return FakeCore.error(404, 'not_found', 'no draft $id');
+      }
+      final clean =
+          (b['errors']! as List).isEmpty && b['failed_tests'] == 0;
+      renders.add({'draft': id, ...b});
+      return FakeCore.json({
+        'render': {'draft_id': id, 'digest': digest, 'clean': clean},
+      });
     });
   }
 

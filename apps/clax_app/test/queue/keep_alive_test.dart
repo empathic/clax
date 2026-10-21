@@ -78,8 +78,10 @@ void main() {
       ..on('GET', '/api/artifacts', (r, _) => FakeCore.json({'artifacts': []}))
       ..on('POST', '/api/drafts', (r, _) {
         drafts++;
+        final id = 'd${drafts.toString().padLeft(11, '0')}';
+        jobs.drafts.add(id);
         return FakeCore.json({
-          'draft': {'id': 'd${drafts.toString().padLeft(11, '0')}', 'version': 1},
+          'draft': {'id': id, 'version': 1},
         }, status: 201);
       });
     final server = PortCoreServer(core, jobs: jobs);

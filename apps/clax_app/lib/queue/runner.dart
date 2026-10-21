@@ -824,11 +824,13 @@ class EffectRunner implements WorkerRunner {
   }
 
   /// Asks the UI isolate to render, records a render's result in the
-  /// core under the spec's digest (spec §8.2), then answers [Rendered]; a
-  /// render the UI lost is [RenderLost]. A render whose spec has no digest
-  /// is not recorded. A record refused or unanswered leaves the draft
-  /// unrendered: its publish is refused `not_rendered_clean`, and planned
-  /// again.
+  /// core under the spec's digest (spec §8.2: its uncaught errors and how
+  /// many tests failed), then answers [Rendered]; a render the UI lost is
+  /// [RenderLost]. A render whose spec has no digest is not recorded. A
+  /// record the core refuses or does not answer leaves the draft
+  /// unrendered, so the render answers as failed with why, and the agent
+  /// renders again rather than finish on a draft its publish would be
+  /// refused `not_rendered_clean`.
   Future<void> _render(Render e) async {
     _begin(e.jobId, e.id);
     final RenderSpec spec;
@@ -862,23 +864,53 @@ class EffectRunner implements WorkerRunner {
       case RenderGone():
         _end(e.jobId, e.id);
         _send(RenderLost(e.id, e.jobId));
-      case RenderAnswered(:final outcome):
+      case RenderAnswered(outcome: final drawn):
+        var outcome = drawn;
         if (spec.digest case final digest?) {
-          await _call(
+          final recorded = await _call(
             'POST',
             '/api/drafts/${Uri.encodeComponent(spec.draftId)}/renders',
             body: {
               'digest': digest,
-              'errors': outcome.errors,
-              'failed_tests': outcome.failedTests,
+              'errors': drawn.errors,
+              'failed_tests': drawn.failedTests.length,
             },
           );
+          if (_unrecorded(recorded) case final why?) {
+            outcome = _failed(drawn, why);
+          }
         }
         if (!_live(e.jobId, e.id)) return;
         agent.rendered(e.jobId, e.turn, e.callId, outcome);
         if (_end(e.jobId, e.id)) _send(Rendered(e.id, e.jobId, outcome));
     }
   }
+
+  /// Why the core kept no record of a render, from its answer [a] to the
+  /// record; null when it kept one.
+  static String? _unrecorded(_Answer a) => switch (a) {
+    _Ok() => null,
+    _Refused(:final code, :final message) =>
+      'The core refused the render\'s record ($code${message == null ? '' : ': $message'}).',
+    _Unanswered() => 'The core did not answer the render\'s record.',
+  };
+
+  /// [drawn] as a render that failed for [why]: a publish of the draft
+  /// would be refused `not_rendered_clean` without its record, so the
+  /// agent reads it as an error and renders again.
+  static RenderOutcome _failed(RenderOutcome drawn, String why) =>
+      RenderOutcome(
+        clean: false,
+        data: {
+          ...switch (drawn.data) {
+            final Map d => d.cast<String, Object?>(),
+            _ => const <String, Object?>{},
+          },
+          'error': why,
+          'errors': [...drawn.errors, why],
+          'failed_tests': drawn.failedTests,
+        },
+      );
 
   Future<void> _probe(ProbeClaude e) async {
     bool reachable;

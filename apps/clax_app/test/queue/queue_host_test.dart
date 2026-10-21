@@ -2,6 +2,7 @@ import 'dart:async';
 
 import 'package:clax_app/core/origins.dart';
 import 'package:clax_app/queue/client.dart' show QueueClient;
+import 'package:clax_app/queue/agent_port.dart' show draftDigest;
 import 'package:clax_app/queue/effect.dart';
 import 'package:clax_app/queue/host.dart';
 import 'package:clax_app/queue/model.dart';
@@ -35,7 +36,7 @@ void main() {
 
   setUp(() {
     core = FakeCore();
-    jobs = FakeJobs(core);
+    jobs = FakeJobs(core)..drafts.add(draftId);
     server = PortCoreServer(core, jobs: jobs);
     inspector = FakeInspector();
     render = RenderService(inspector: inspector, origins: origins);
@@ -97,7 +98,7 @@ void main() {
         'draft': draftId,
         'digest': digest,
         'errors': <Object?>[],
-        'failed_tests': <Object?>[],
+        'failed_tests': 0,
       },
     ]);
     expect(jobs.published.single['draft'], {'id': draftId, 'digest': digest});
@@ -108,7 +109,10 @@ void main() {
 }
 
 const draftId = 'd0000000000a';
-const digest = 'sha256:0123';
+const page = '<title>Todo</title>';
+
+/// The digest of the draft the script renders and publishes.
+final digest = draftDigest(const {'index.html': page});
 
 /// The worker's agent: turn 1 renders the draft, turn 2 finishes. Any
 /// other turn, any tool call and any question fail the worker loudly.
@@ -125,7 +129,7 @@ final class _ScriptedAgent implements AgentPort {
     TurnInput input,
     Future<void> cancelled,
   ) async => switch (input.turn) {
-    1 => const TurnOutcome(
+    1 => TurnOutcome(
       TurnNotes(
         calls: [
           RenderCall(
@@ -142,12 +146,12 @@ final class _ScriptedAgent implements AgentPort {
             'f1',
             PublishPlan(
               base: input.base,
-              data: const {
+              data: {
                 'artifact_id': null,
                 'request': {
                   'title': 'Todo',
                   'files': {
-                    'index.html': {'content': '<title>Todo</title>'},
+                    'index.html': {'content': page},
                   },
                 },
                 'draft': {'id': draftId, 'digest': digest},

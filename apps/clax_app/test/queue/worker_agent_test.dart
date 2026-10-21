@@ -79,8 +79,10 @@ void main() {
       ..on('GET', '/api/artifacts', (r, _) => FakeCore.json({'artifacts': []}))
       ..on('POST', '/api/drafts', (r, _) {
         drafts.add(FakeCore.bodyOf(r));
+        final id = 'd${drafts.length.toString().padLeft(11, '0')}';
+        jobs.drafts.add(id);
         return FakeCore.json({
-          'draft': {'id': 'd${drafts.length.toString().padLeft(11, '0')}', 'version': 1},
+          'draft': {'id': id, 'version': 1},
         }, status: 201);
       });
     final server = PortCoreServer(core, jobs: jobs);
@@ -183,7 +185,7 @@ void main() {
         'draft': 'd00000000001',
         'digest': draftDigest(files),
         'errors': <Object?>[],
-        'failed_tests': <Object?>[],
+        'failed_tests': 0,
       },
     ]);
     final published = c.jobs.published.single;
@@ -483,11 +485,12 @@ void _seedMidMake(FakeJobs jobs) {
 /// draft `d00000000001` recorded clean and kept in `turn:4`'s notes.
 void _seedBeforePublish(FakeJobs jobs) {
   final digest = draftDigest(const {'index.html': page, 'app.js': script});
+  jobs.drafts.add('d00000000001');
   jobs.renders.add({
     'draft': 'd00000000001',
     'digest': digest,
     'errors': <Object?>[],
-    'failed_tests': <Object?>[],
+    'failed_tests': 0,
   });
   jobs.seed(
     'j1',
