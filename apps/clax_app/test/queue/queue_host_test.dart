@@ -120,6 +120,7 @@ WorkerAgent scriptedAgent(WorkerContext context) => (
   agent: _ScriptedAgent(),
   probeClaude: () async => true,
   session: () async => throw StateError('the scripted make asks nothing'),
+  sessionEnded: (_) {},
 );
 
 final class _ScriptedAgent implements AgentPort {

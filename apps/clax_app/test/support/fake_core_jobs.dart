@@ -27,12 +27,14 @@ import 'fake_core.dart';
 /// the `jobs` topic; each claim and release sends `event: jobs_owner`.
 /// Moves follow [mayMove], the store's table.
 ///
-/// The owner's live sessions are [sessions]. A publish or reply step's
-/// `session_id` must name one (400 `unknown_session`). A reply step is
+/// The owner's live sessions are [sessions]. A publish step's
+/// `session_id`, and the session a question is created from, must name
+/// one (400 `unknown_session`). A reply step is
 /// made from the session the job's last publish step named while it is
 /// live, else from the one the reply names, and is refused
 /// `unknown_session` when neither is live: as `commit_reply_step` in
-/// crates/clax-store/src/jobs.rs.
+/// crates/clax-store/src/jobs.rs (the route leaves an ended session it
+/// names to that rule).
 class FakeJobs {
   FakeJobs(this.core) {
     _routes();
@@ -94,6 +96,9 @@ class FakeJobs {
 
   /// While set, a step's commit waits for it before it is answered.
   Completer<void>? stepGate;
+
+  /// While set, told each step's key once it commits, before its answer.
+  void Function(String key)? afterStep;
 
   /// While set, a publish step's commit waits for it before it is
   /// answered, as a worker killed before the commit leaves it;
@@ -473,15 +478,14 @@ class FakeJobs {
           return _unprocessable();
         }
         final named = rep['session_id'];
-        if (named != null && (named is! String || !sessions.contains(named))) {
-          return FakeCore.error(400, 'unknown_session', 'no live session');
-        }
+        if (named != null && named is! String) return _unprocessable();
         if (!steps.any((s) => (s['key']! as String).startsWith('publish:'))) {
           return FakeCore.error(400, 'invalid_step', 'no publish step');
         }
         final from = switch (_publishedFrom[id]) {
           final sid? when sessions.contains(sid) => sid,
-          _ => named as String?,
+          _ when sessions.contains(named) => named as String?,
+          _ => null,
         };
         if (from == null) {
           return FakeCore.error(
@@ -513,6 +517,7 @@ class FakeJobs {
         MoveStep(done: done),
         waits: _waits(_questions(id)),
       )!;
+      afterStep?.call(key);
       return FakeCore.json({
         'job': _write(id, {'step': key, 'error': null, 'state': to.name}),
         'step': step,
@@ -531,6 +536,9 @@ class FakeJobs {
       }, required: const {'questions', 'source'});
       if (b == null) return _unprocessable();
       final sid = p['sid']!;
+      if (!sessions.contains(sid)) {
+        return FakeCore.error(400, 'unknown_session', 'no live session $sid');
+      }
       final tool = b['tool_use_id'] as String?;
       if (tool != null) {
         final held = questions.values

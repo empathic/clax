@@ -421,6 +421,57 @@ async fn a_reply_step_whose_publishing_session_ended_comes_from_the_session_it_n
     assert_eq!(author, Some(json!("codex")), "from the named session: {t}");
 }
 
+/// A reply step naming a session that ended (a worker's, ended under
+/// it) is made from the publishing session while that one is live: the
+/// named session is the store's fallback, never a reason to refuse.
+#[tokio::test]
+async fn a_reply_step_naming_an_ended_session_comes_from_the_live_publishing_one() {
+    let ts = TestServer::spawn().await;
+    let (_o, token) = owner(&ts).await;
+    let sess = ts.register_session("claude", "h1").await;
+    let sid = sess["id"].as_str().unwrap();
+    let aid = ts
+        .publish_as(sid, "App", "<main><h2>Quarterly goals</h2></main>")
+        .await["artifact"]["id"]
+        .as_str()
+        .unwrap()
+        .to_string();
+    let tid = ts.thread(&aid, 1, "make it green").await["id"]
+        .as_str()
+        .unwrap()
+        .to_string();
+    running(&ts, &token, "j1", "change", Some(&aid)).await;
+    let mut b = publish_body(Some(&aid), 1, "<p>green", false);
+    b["publish"]["session_id"] = json!(sid);
+    let (s, v) = step(&ts, &token, "j1", "publish:1", b).await;
+    assert_eq!(s, 200, "{v}");
+    let worker = ts.register_session("codex", "h2").await;
+    let wid = worker["id"].as_str().unwrap();
+    ts.end_session(wid).await;
+    let body = json!({"reply": {"threads": [tid], "body": "Made it green.",
+        "resolve": true, "session_id": wid}, "state": "done"});
+    let (s, v) = step(&ts, &token, "j1", "reply:0", body).await;
+    assert_eq!(s, 200, "{v}");
+    assert_eq!(v["job"]["job"]["state"], "done", "{v}");
+    let (_, t) = send(authed(
+        &ts,
+        Method::GET,
+        &format!("/api/artifacts/{aid}/threads/{tid}"),
+    ))
+    .await;
+    let author = t["thread"]["comments"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .find(|c| c["author_kind"] == "agent")
+        .map(|c| c["author_name"].clone());
+    assert_eq!(
+        author,
+        Some(json!("claude")),
+        "from the publishing session: {t}"
+    );
+}
+
 #[tokio::test]
 async fn jobs_are_owner_only() {
     let ts = TestServer::spawn().await;

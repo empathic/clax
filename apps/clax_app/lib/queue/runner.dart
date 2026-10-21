@@ -211,6 +211,7 @@ class EffectRunner implements WorkerRunner {
     required this.ui,
     required this.probeClaude,
     required this.session,
+    this.sessionEnded = _keep,
     required this.send,
     this.client = 'app',
     this.requestTimeout = const Duration(seconds: 35),
@@ -232,6 +233,7 @@ class EffectRunner implements WorkerRunner {
     RenderPort? render,
     required Future<bool> Function() probeClaude,
     required Future<String> Function() session,
+    void Function(String sid) sessionEnded = _keep,
     bool importJson = false,
   }) => EffectRunner(
     core: CoreTransport(context.core),
@@ -240,6 +242,7 @@ class EffectRunner implements WorkerRunner {
     ui: _ToUi(context.toUi),
     probeClaude: probeClaude,
     session: session,
+    sessionEnded: sessionEnded,
     send: context.send,
     kill: KillHook.fromEnvironment(context.start.supportDir),
     importState: importJson
@@ -263,6 +266,14 @@ class EffectRunner implements WorkerRunner {
   /// The worker's live session, which asks the `ask` tool's questions and
   /// is named in every reply step.
   final Future<String> Function() session;
+
+  /// Told the session [session] gave when the core says it ended
+  /// (`unknown_session`), before [session] is asked again: the worker
+  /// then registers a new one (spec §8.1). A commit refused so is sent
+  /// once more on the new session.
+  final void Function(String sid) sessionEnded;
+
+  static void _keep(String sid) {}
 
   /// Feeds a result back into the loop.
   final void Function(Msg msg) send;
@@ -618,6 +629,7 @@ class EffectRunner implements WorkerRunner {
     String path,
     Map<String, Object?> body, {
     bool again = true,
+    Future<Map<String, Object?>?> Function()? renewed,
   }) async {
     final a = await _call(
       method,
@@ -652,6 +664,15 @@ class EffectRunner implements WorkerRunner {
             replayed: json['replayed'] == true,
           ),
         );
+      case _Refused(code: 'unknown_session') when renewed != null:
+        // The session the body names ended: once more on a new one.
+        final fresh = await renewed();
+        if (_closed) return;
+        if (fresh == null) {
+          _send(_refusal(e, a));
+          return;
+        }
+        await _commit(e, method, path, fresh, again: again);
       case _Refused():
         _send(_refusal(e, a));
       case _Unanswered(timedOut: true) when e is CreateJob && again:
@@ -704,10 +725,35 @@ class EffectRunner implements WorkerRunner {
     if (kill case final k? when k.at == KillPoint.beforePublishCommit) {
       await k.hold(e.jobId);
     }
-    await _commit(e, 'POST', _step(e.jobId, e.key), {
-      'publish': {..._object(plan.data), 'base': e.base},
+    Map<String, Object?> body(Map<String, Object?> publish) => {
+      'publish': {...publish, 'base': e.base},
       if (e.done) 'state': 'done',
-    });
+    };
+    final publish = _object(plan.data);
+    await _commit(
+      e,
+      'POST',
+      _step(e.jobId, e.key),
+      body(publish),
+      renewed: () async => switch (await _renewed(publish['session_id'])) {
+        final sid? => body({...publish, 'session_id': sid}),
+        null => null,
+      },
+    );
+  }
+
+  /// A new session in place of [ended], which the core said ended
+  /// (`unknown_session`): the worker forgets it and registers again. Null
+  /// when [ended] is no session or none can be had.
+  Future<String?> _renewed(Object? ended) async {
+    if (ended is! String) return null;
+    sessionEnded(ended);
+    try {
+      final sid = await session();
+      return sid == ended ? null : sid;
+    } on Exception {
+      return null;
+    }
   }
 
   /// Commits [e]'s reply step, ending the change, with the worker's
@@ -724,27 +770,37 @@ class EffectRunner implements WorkerRunner {
       sid = null;
     }
     if (_closed) return;
-    await _commit(e, 'POST', _step(e.jobId, e.key), {
+    Map<String, Object?> body(String? sid) => {
       'reply': switch (e.reply.data) {
         final Map d => {...d.cast<String, Object?>(), 'session_id': ?sid},
         final d => d,
       },
       'state': 'done',
-    });
+    };
+    await _commit(
+      e,
+      'POST',
+      _step(e.jobId, e.key),
+      body(sid),
+      renewed: () async => switch (await _renewed(sid)) {
+        final fresh? => body(fresh),
+        null => null,
+      },
+    );
   }
 
   /// Creates the question from the worker's session with the call's tool
   /// call ID (the core answers the same question for the same session and
   /// tool call), then records it as the job's.
   Future<void> _ask(Ask e) async {
-    final String sid;
+    String sid;
     try {
       sid = await session();
     } on Exception catch (err) {
       _send(Refused(e.id, e.jobId, Invalid('unknown_session', '$err')));
       return;
     }
-    final asked = await _call(
+    Future<_Answer> ask(String sid) => _call(
       'POST',
       '/api/sessions/${Uri.encodeComponent(sid)}/questions',
       body: {
@@ -756,6 +812,16 @@ class EffectRunner implements WorkerRunner {
         'tool_use_id': e.toolUseId,
       },
     );
+    var asked = await ask(sid);
+    if (asked case _Refused(code: 'unknown_session')) {
+      // The session ended: asked once more from a new one.
+      if (await _renewed(sid) case final fresh?) {
+        if (_closed) return;
+        sid = fresh;
+        asked = await ask(fresh);
+      }
+    }
+    if (_closed) return;
     switch (asked) {
       case _Ok(json: {'question': {'id': final String qid}}):
         await _commit(

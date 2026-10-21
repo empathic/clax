@@ -755,13 +755,21 @@ pub async fn commit(
         Step::Reply(mut r) => {
             s.store_call(move |st| {
                 let _guard = guard;
-                // A key already committed answers as recorded; a new one
-                // names, if any, a live session of the owner's.
+                // A key already committed answers as recorded. A new one
+                // may name a session of the owner's, which is the store's
+                // fallback for a publishing session no longer live: one
+                // that ended is passed on for the store to refuse only
+                // when the publishing session ended too.
                 let committed = st
                     .job(&id)?
                     .is_some_and(|j| j.steps.iter().any(|x| x.key == key));
                 if !committed && r.session_id.is_some() {
-                    r.session_id = publishing_session(st, &r.session_id, None)?;
+                    r.session_id = match publishing_session(st, &r.session_id, None) {
+                        Err(CoreError::Invalid { code, .. }) if code == "unknown_session" => {
+                            r.session_id
+                        }
+                        other => other?,
+                    };
                 }
                 match st.commit_reply_step(&audit, &id, &key, r) {
                     Ok(c) => {

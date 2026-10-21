@@ -14,12 +14,14 @@ import 'worker_main.dart';
 
 /// What the worker builds its agent from, in the worker isolate: the
 /// [AgentPort] its turns and tools run on, the probe of Claude's
-/// reachability, and the live session the `ask` tool's questions are
-/// asked from.
+/// reachability, the live session the `ask` tool's questions are asked
+/// from, and what forgets that session once the core says it ended, so
+/// the next ask registers another.
 typedef WorkerAgent = ({
   AgentPort agent,
   Future<bool> Function() probeClaude,
   Future<String> Function() session,
+  void Function(String sid) sessionEnded,
 });
 
 /// Builds the worker's agent from its context ([WorkerContext.start]
@@ -151,6 +153,7 @@ RunnerFactory _runnerOf(
     agent: a.agent,
     probeClaude: a.probeClaude,
     session: a.session,
+    sessionEnded: a.sessionEnded,
     importJson: importJson,
   );
 };

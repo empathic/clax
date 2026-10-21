@@ -731,18 +731,116 @@ void main() {
       expect(jobs.replied, isEmpty);
     });
 
-    test('a Reply naming an ended session is refused unknown_session', () async {
+    test('a Reply naming an ended session comes from the live publishing '
+        'session', () async {
       await claimed();
       jobs.sessions.addAll(['s0', 's1']);
       seedPublished(from: 's0');
       jobs.endSession('s1');
       runner.run(reply);
       await pumpEventQueue();
-      expect((only<Refused>().reason as Invalid).code, 'unknown_session');
+      expect(only<Committed>().job.state, JobState.done);
+      expect(jobs.repliedFrom, ['s0']);
+    });
+
+    group('a session that ended under the worker', () {
+      late List<String> given;
+      late List<String> ended;
+
+      setUp(() async {
+        await runner.close();
+        // The worker's sessions in the order it registers them.
+        given = ['s1', 's2'];
+        ended = [];
+        runner = EffectRunner(
+          core: CoreTransport(core, timer: timers.make, retryDelay: (_) async {}),
+          agent: agent,
+          render: renders,
+          ui: ui,
+          probeClaude: () async => probe,
+          session: () async => given.first,
+          sessionEnded: (sid) {
+            ended.add(sid);
+            if (given.first == sid) given.removeAt(0);
+          },
+          send: sent.add,
+        );
+        await claimed();
+        jobs.sessions.addAll(['s0', 's2']);
+      });
+
+      test('is forgotten, and a Reply refused for it is sent once more on '
+          'a new one', () async {
+        seedPublished(from: 's0');
+        jobs.endSession('s0');
+        runner.run(reply);
+        await pumpEventQueue();
+        expect(ended, ['s1']);
+        expect(only<Committed>().job.state, JobState.done);
+        expect(jobs.repliedFrom, ['s2']);
+        expect(
+          [
+            for (final r in to('POST', '/api/jobs/j/steps/reply'))
+              (body(r)['reply']! as Map)['session_id'],
+          ],
+          ['s1', 's2'],
+        );
+      });
+
+      test('a Publish naming it is sent once more on a new one', () async {
+        jobs
+          ..versions['abc'] = 1
+          ..seed('j', kind: 'change', artifactId: 'abc', state: 'running', rev: 2);
+        runner.run(
+          const Publish(
+            1,
+            'j',
+            1,
+            'f',
+            PublishPlan(
+              base: 1,
+              data: {
+                'artifact_id': 'abc',
+                'request': {'note': 'x'},
+                'session_id': 's1',
+              },
+            ),
+            done: false,
+          ),
+        );
+        await pumpEventQueue();
+        expect(ended, ['s1']);
+        expect(only<Committed>().job.artifactId, 'abc');
+        expect(jobs.published.single['session_id'], 's2');
+      });
+
+      test('an Ask is asked once more from a new one', () async {
+        jobs.seed('j', state: 'running', rev: 2);
+        runner.run(
+          const Ask(1, 'j', 2, 'a1', Question(data: {'questions': [{'question': 'Which?'}]})),
+        );
+        await pumpEventQueue();
+        expect(ended, ['s1']);
+        expect(to('POST', '/api/sessions/s1/questions'), hasLength(1));
+        expect(to('POST', '/api/sessions/s2/questions'), hasLength(1));
+        expect(only<Committed>().job.state, JobState.waiting);
+      });
+
+      test('a commit refused again on the new one is Refused', () async {
+        jobs.endSession('s2');
+        jobs.seed('j', state: 'running', rev: 2);
+        runner.run(
+          const Ask(1, 'j', 2, 'a1', Question(data: {'questions': [{'question': 'Which?'}]})),
+        );
+        await pumpEventQueue();
+        expect(ended, ['s1'], reason: 'renewed once');
+        expect((only<Refused>().reason as Invalid).code, 'unknown_session');
+      });
     });
 
     test('Ask creates the question with its tool call, then the job waits on it', () async {
       final token = await claimed();
+      jobs.sessions.add('s1');
       jobs.seed('j', state: 'running', rev: 2);
       const ask = Ask(1, 'j', 2, 'a1', Question(data: {'questions': [{'question': 'Which?'}]}));
       runner.run(ask);

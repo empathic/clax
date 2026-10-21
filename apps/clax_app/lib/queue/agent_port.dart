@@ -396,10 +396,10 @@ final class AgentTurns implements AgentPort {
     return TurnOutcome(TurnNotes(calls: calls, data: notes));
   }
 
-  /// Names the worker's session in [job]'s publish steps, once it is
-  /// known; a session that cannot be had leaves them naming none.
+  /// Names the worker's session in [job]'s publish steps, as it is now
+  /// (a session that ended is registered again); a session that cannot be
+  /// had leaves them naming the one they named before, or none.
   Future<void> _named(_Job job) async {
-    if (job.sessionId != null) return;
     try {
       job.sessionId = await session?.call();
     } on Exception catch (_) {

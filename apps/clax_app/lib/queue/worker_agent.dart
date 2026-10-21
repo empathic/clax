@@ -104,6 +104,7 @@ WorkerAgent _agentOf(
   final backend =
       backendOf?.call(context) ?? MessagesApiBackend(apiKey: () async => key);
   Future<String>? sid;
+  String? held;
   Future<String> session() => sid ??= () async {
     try {
       final s = await api.registerAppSession(
@@ -111,12 +112,19 @@ WorkerAgent _agentOf(
         pid: assets.pid,
         cwd: start.supportDir,
       );
-      return s.id;
+      return held = s.id;
     } on Object {
       sid = null;
       rethrow;
     }
   }();
+  // The session ended under the worker: the next ask registers again.
+  void sessionEnded(String ended) {
+    if (held != ended) return;
+    held = null;
+    sid = null;
+  }
+
   final jobs = WorkerJobs(
     api: api,
     transport: transport,
@@ -135,6 +143,7 @@ WorkerAgent _agentOf(
         probe ??
         () => canConnect(Uri.parse(MessagesApiBackend.defaultBaseUrl).host),
     session: session,
+    sessionEnded: sessionEnded,
   );
 }
 

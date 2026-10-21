@@ -56,19 +56,24 @@ void main() {
   });
 
   /// A core with the job routes and what the worker's agent calls besides:
-  /// its session, the person's apps, drafts and their publishes.
+  /// its sessions (`s1`, then `s2` at a second registration), the
+  /// person's apps, drafts and their publishes.
   ({FakeCore core, FakeJobs jobs, PortCoreServer server, List<Object?> drafts})
   coreWith() {
     final core = FakeCore();
     // The session POST /api/sessions answers below, live in the core.
-    final jobs = FakeJobs(core)..sessions.add('s1');
+    final jobs = FakeJobs(core);
     final drafts = <Object?>[];
+    var registered = 0;
     core
       ..on('POST', '/api/sessions', (r, _) {
         final b = FakeCore.bodyOf(r)! as Map;
+        // A registration after the session ended makes another.
+        final id = 's${++registered}';
+        jobs.sessions.add(id);
         return FakeCore.json({
           'session': {
-            'id': 's1',
+            'id': id,
             'harness': b['harness'],
             'harness_session_id': b['harness_session_id'],
             'cwd': b['cwd'],
@@ -238,6 +243,23 @@ void main() {
       [for (final s in c.jobs.jobs['j1']!['steps']! as List) (s as Map)['key']],
       ['turn:1', 'turn:2', 'turn:3', 'turn:4', 'publish:0'],
     );
+  });
+
+  test('a session that ends mid-make is registered again, and the publish '
+      'refused for it is sent on the new one', () async {
+    final c = coreWith();
+    final gate = c.jobs.publishGate = Completer<void>();
+    final h = start(c.server, FakeInspector());
+    h.client.send(const Make('j1', 'a todo app', title: 'a todo app'));
+    await c.jobs.publishHeld.future;
+    // The person ends the worker's session while its publish is in flight.
+    c.jobs.endSession('s1');
+    c.jobs.publishGate = null;
+    gate.complete();
+    final job = await ended(h);
+    expect(job.state, JobState.done, reason: '${job.error}');
+    expect(c.jobs.published.single['session_id'], 's2');
+    expect(c.jobs.sessions, {'s2'});
   });
 
   test('a host started fresh over the same rows does what another fresh '
