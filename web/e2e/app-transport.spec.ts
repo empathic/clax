@@ -264,6 +264,12 @@ test("an init the app ran for the previous load leaves the next load's channel i
   // The first load's init runs in the second load's document, before its own.
   await h.release();
   await expect.poll(() => h.ofType("ready", second).length).toBeGreaterThan(0);
+  // Both inits ran, the first load's before the second's, so the second
+  // document did take a stale init first.
+  const ran = h.ran.filter(e => e.startsWith("window.claxHost.init("));
+  const at = (nonce: string) => ran.findIndex(e => e.includes(JSON.stringify(nonce)));
+  expect(at(first)).toBeGreaterThanOrEqual(0);
+  expect(at(second)).toBeGreaterThan(at(first));
   expect(h.dropped.filter(m => m.why === "nonce" && (m.message as { nonce?: string }).nonce === first)).toEqual([]);
 });
 
