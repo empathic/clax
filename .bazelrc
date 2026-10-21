@@ -22,8 +22,10 @@ common --java_language_version=17
 common --java_runtime_version=remotejdk_21
 
 # An APK's native libraries, which reach it as Java resources
-# (bazel/flutter/android.bzl), compressed as Gradle packs them for an app
-# that extracts them (android:extractNativeLibs="true").
+# (bazel/flutter/android.bzl), are compressed, and the platform extracts
+# them at install (the manifest leaves extractNativeLibs unset). Gradle's
+# APK differs: AGP stores them uncompressed and page-aligned and sets
+# extractNativeLibs="false".
 build --experimental_android_compress_java_resources
 
 # rules_apple's iOS CPU: the simulator on Apple silicon. A device build

@@ -388,7 +388,9 @@ it with `-c opt` (not debuggable, the AOT snapshot stripped) and without
 the desugared JDK library (the app's minSdk, 29, has the APIs it backports,
 and Gradle's L8 shrinks it away), and `.bazelrc`'s
 `--experimental_android_compress_java_resources` compresses the native
-libraries as Gradle does for an app that extracts them. R8 shrinks the
+libraries, which the platform extracts at install (the manifest leaves
+`extractNativeLibs` unset). Gradle's APK differs there: AGP stores them
+uncompressed and page-aligned and sets `extractNativeLibs="false"`. R8 shrinks the
 code with AGP's optimized defaults (`bazel/android/proguard-android-optimize.txt`),
 Flutter's rules (`bazel/flutter/flutter_proguard_rules.pro`, copied from
 Flutter's Gradle plugin) and each plugin's and library's own, and the

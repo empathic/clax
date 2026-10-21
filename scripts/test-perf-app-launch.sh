@@ -20,7 +20,7 @@ if has "$out" "would run" && has "$out" "./scripts/run.sh app-macos" \
     && has "$out" "CFBundleIdentifier to dev.empathic.clax.perf" \
     && has "$out" "codesign --force --sign - --preserve-metadata=entitlements,flags,runtime" \
     && has "$out" "10 times: CLAX_APP_NO_KEY=1 <copy>/Contents/MacOS/Clax" && has "$out" "Library/Containers/dev.empathic.clax.perf" \
-    && has "$out" "SIGTERM the app and its daemon by PID" && has "$out" "drop the first launch" \
+    && has "$out" "SIGTERM the app (and an old build's daemon) by PID" && has "$out" "drop the first launch" \
     && has "$out" "after the first, wait for its home snapshot, Data/Library/Caches/dev.empathic.clax.perf/home/home-snapshot.bin" \
     && ! has "$out" "Containers/dev.empathic.clax/" && ! has "$out" "CLAX_APP_DIR" \
     && has "$out" "--i-know-what-i-am-doing"; then

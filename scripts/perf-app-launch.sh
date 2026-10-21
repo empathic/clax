@@ -22,15 +22,18 @@
 #   container, dev.empathic.clax's, is never read or written. Each launch
 #   runs the copy's Contents/MacOS/Clax and waits for a new home-usable
 #   line in its support directory's timings.jsonl, at most 60 s (a launch
-#   without one counts as missing), then sends the app SIGTERM by its PID,
-#   and the daemon it started too (by the PID in its daemon.json), waiting
-#   for each to exit. Each launch runs with CLAX_APP_NO_KEY=1: the login
-#   keychain is not kept per container, and the copy would otherwise ask
-#   for the installed app's saved API key item (flutter_secure_storage's),
-#   and macOS whether to let it, before the daemon starts; with it the app
-#   reads no key and saves none (FlutterSecureKey.noKeyVariable,
-#   apps/clax_app/lib/platform/secure_key.dart), and its daemon starts
-#   with sample() off. The app must be a build that honours it.
+#   without one counts as missing), then sends the app SIGTERM by its PID
+#   and waits for it to exit. The app runs its core in its own process; a
+#   build from before that (the launch baseline's, docs/usage.md "Taking
+#   the launch baseline") started a daemon, Contents/Resources/clax, which
+#   is stopped too, by the PID in clax-home/daemon.json, when it outlives
+#   the app. Each launch runs with CLAX_APP_NO_KEY=1: the login keychain
+#   is not kept per container, and the copy would otherwise ask for the
+#   installed app's saved API key item (flutter_secure_storage's), and
+#   macOS whether to let it, before the core opens; with it the app reads
+#   no key and saves none (FlutterSecureKey.noKeyVariable,
+#   apps/clax_app/lib/platform/secure_key.dart), and its core opens with
+#   sample() off. The app must be a build that honours it.
 # --android: on the plugged-in phone or emulator (ANDROID_SERIAL picks
 #   one), with the app already installed (`just app-phone`): `am
 #   force-stop` and `am start -W` N times, each waiting for the launch's
@@ -248,7 +251,7 @@ if [ "$target" = macos ]; then
         fi
         echo "  copy it once per build into $work/clax-perf-<sha> (a zip unpacked, an app copied with ditto), set the copy's CFBundleIdentifier to $perf_id (plutil) and sign it again ad hoc: codesign --force --sign - --preserve-metadata=entitlements,flags,runtime <copy>"
         echo "  rm -r $container  (the copy's own container, if an earlier run left it)"
-        echo "  $((runs + 1)) times: CLAX_APP_NO_KEY=1 <copy>/Contents/MacOS/Clax (no saved key read), wait for a new home-usable line in $container/Data/Library/Application Support/$perf_id/timings.jsonl (at most ${cap} s); after the first, wait for its home snapshot, Data/Library/Caches/$perf_id/home/home-snapshot.bin (at most ${cap} s); SIGTERM the app and its daemon by PID and wait for them to exit"
+        echo "  $((runs + 1)) times: CLAX_APP_NO_KEY=1 <copy>/Contents/MacOS/Clax (no saved key read), wait for a new home-usable line in $container/Data/Library/Application Support/$perf_id/timings.jsonl (at most ${cap} s); after the first, wait for its home snapshot, Data/Library/Caches/$perf_id/home/home-snapshot.bin (at most ${cap} s); SIGTERM the app (and an old build's daemon) by PID and wait for them to exit"
         echo "  drop the first launch; print the median and p90 of home-usable and home-cover${CLAX_PERF_JSON:+ and append them to $CLAX_PERF_JSON}"
         [ -n "$record" ] && echo "  record $(host_platform)'s missing budgets in $budgets"
         echo "  rm -r $container"
@@ -354,7 +357,8 @@ if [ "$target" = macos ]; then
         stop_pid "$pid" "the app"
         wait "$pid" 2>/dev/null || true
         pid=""
-        # The daemon the app started, if it outlived the app.
+        # A build from before the in-process core (the launch baseline's)
+        # started a daemon; it is stopped if it outlived the app.
         info="$support/clax-home/daemon.json"
         if [ -f "$info" ]; then
             dpid="$(python3 -I -c 'import json,sys; print(json.load(open(sys.argv[1])).get("pid", ""))' "$info" 2>/dev/null || true)"
