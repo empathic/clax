@@ -331,7 +331,10 @@ impl AppState {
             live_layers: Arc::new(clax_realtime::live_layers::LiveLayers::new(p.clock.clone())),
             sample: p.sample,
             stream: clax_realtime::stream::Hub::new(live_ids.clone()),
-            seats: crate::seats::LiveSeats::from_env(p.clock.clone()),
+            seats: crate::seats::LiveSeats::new(
+                crate::seats::limits_for(p.embed.is_some(), |k| std::env::var(k).ok()),
+                p.clock.clone(),
+            ),
             sockets: Arc::default(),
             live_ids,
             ext_creds,

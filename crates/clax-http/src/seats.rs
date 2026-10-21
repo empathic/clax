@@ -19,11 +19,23 @@ use crate::error::ApiError;
 use crate::state::AppState;
 use clax_core::ArtifactId;
 use clax_core::rights::Location;
-use clax_core::seats::{Claim, Released};
+use clax_core::seats::{Claim, Released, SeatLimits};
 use clax_store::Store;
 use std::sync::Arc;
 
 pub use clax_realtime::seats::{Counts, IdleListener, LiveSeats, SNAPSHOT_SHARE_MS};
+
+/// The seat limits of a core: none ([`SeatLimits::OFF`]) for the app's
+/// in-process core (`embedded`), where everything runs in the app and its
+/// person is the only one there; a daemon's from `get` (an environment
+/// lookup, [`SeatLimits::from_env`]).
+pub fn limits_for(embedded: bool, get: impl Fn(&str) -> Option<String>) -> SeatLimits {
+    if embedded {
+        SeatLimits::OFF
+    } else {
+        SeatLimits::from_env(get)
+    }
+}
 
 /// The seat key of `caller`, without a store read: `owner`, a connected
 /// person's, a named guest's; `None` for anyone who takes no seat.
@@ -194,4 +206,31 @@ pub fn install(state: &AppState) {
             }
         }
     }));
+}
+
+#[cfg(test)]
+mod tests {
+    use super::limits_for;
+    use clax_core::seats::{Claim, ENV_PEOPLE, SeatLimits, Seats};
+
+    #[test]
+    fn only_the_apps_core_has_no_seats() {
+        let one = |k: &str| (k == ENV_PEOPLE).then(|| "1".to_string());
+        assert_eq!(limits_for(true, one), SeatLimits::OFF);
+        assert_eq!(limits_for(false, |_| None), SeatLimits::default());
+        assert_eq!(limits_for(false, one).people, 1);
+    }
+
+    #[test]
+    fn without_seats_nobody_idles_out_or_is_a_spectator() {
+        let mut s = Seats::new(limits_for(true, |_| None));
+        s.take("a1", &Claim::owner(), "c0", 0);
+        for i in 0..200 {
+            assert!(s.take("a1", &Claim::person(&format!("p{i}"), false), &format!("c{i}"), 0));
+        }
+        assert_eq!(s.next_idle_at(), None);
+        assert!(s.release_idle(i64::MAX).is_empty());
+        assert!(s.seated("a1", clax_core::seats::OWNER_KEY));
+        assert!(s.may_hold("a1", &Claim::guest("g1")));
+    }
 }
