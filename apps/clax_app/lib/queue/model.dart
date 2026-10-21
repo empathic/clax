@@ -559,19 +559,29 @@ final class JobView {
 
 /// What the UI sees (spec §7.2).
 final class QueueState {
-  const QueueState(this.jobs);
+  const QueueState(this.jobs, {this.loaded = true});
   final List<JobView> jobs;
+
+  /// Whether [jobs] holds every job: false while the worker has not loaded
+  /// the core's jobs under the claim it holds, when it shows only the
+  /// creations it was sent. A job missing from a loaded state left the
+  /// queue.
+  final bool loaded;
   @override
   bool operator ==(Object other) =>
-      other is QueueState && listEquals(other.jobs, jobs);
+      other is QueueState &&
+      other.loaded == loaded &&
+      listEquals(other.jobs, jobs);
   @override
-  int get hashCode => Object.hashAll(jobs);
+  int get hashCode => Object.hash(loaded, Object.hashAll(jobs));
   @override
-  String toString() => 'QueueState($jobs)';
+  String toString() => 'QueueState($jobs${loaded ? '' : ', loading'})';
 }
 
-/// The core's rows, then each job not yet the core's as `queued`: its
-/// creation in flight, or its intent waiting for the jobs to load.
+/// The core's rows, then each job not yet the core's as `queued`, which
+/// may be cancelled: its creation in flight, or its intent waiting for the
+/// jobs to load. [QueueState.loaded] while the worker holds the queue with
+/// its jobs loaded.
 QueueState viewOf(QueueModel m) {
   final shown = {...m.jobs.keys};
   JobView? queued(JobId id, JobKind kind, String? title, String? artifactId) {
@@ -582,10 +592,11 @@ QueueState viewOf(QueueModel m) {
       state: JobState.queued,
       title: title,
       artifactId: artifactId,
+      offers: const {Offer.cancel},
     );
   }
 
-  return QueueState([
+  return QueueState(loaded: m.owner is OwnerHeldBy, [
     for (final j in m.jobs.values)
       JobView(
         id: j.id,

@@ -253,6 +253,7 @@ void main() {
               'offers': ['retry', 'retry'],
             },
           ],
+          'loaded': true,
         }),
       );
       expect(e.kind, CodecErrorKind.malformed, reason: '$e');
@@ -842,12 +843,17 @@ final effectSamples = <(String, Effect)>[
   ('load jobs', const LoadJobs(13)),
   ('probe claude', const ProbeClaude(14)),
   ('notice', const Notice(15, NoticeKind.stopped, 'j1', 'Tidy')),
+  (
+    'notice of an app',
+    const Notice(18, NoticeKind.made, 'j1', 'Tidy', artifactId: 'a1'),
+  ),
   ('keep alive', const KeepAlive(16, true)),
   ('publish state', PublishState(17, stateSamples.last.$2)),
 ];
 
 final stateSamples = <(String, QueueState)>[
   ('empty', const QueueState([])),
+  ('loading', const QueueState([], loaded: false)),
   (
     'jobs',
     const QueueState([

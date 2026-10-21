@@ -160,10 +160,12 @@ void _handle(QueueTurn t, Msg msg) {
       if (e is! StartTurn || e.jobId != jobId) return;
       final job = _runningJob(t, jobId);
       if (job == null || t.m.localOf(jobId).intent != null) return;
-      // A turn planned on a step the row has since moved past is dropped:
-      // the resume table plans again from the row.
+      // A turn planned on a turn the row has since moved past is dropped:
+      // the resume table plans again from the row. A publish or a refused
+      // reply after the last turn is no turn: the next turn is planned on
+      // that last turn.
       final turn = e.input.turn;
-      if (job.step != (turn == 1 ? null : TurnKey(turn - 1))) return;
+      if (job.lastTurn != (turn == 1 ? null : turn - 1)) return;
       if (outcome.stop case final stop?) {
         t.move(
           job,
@@ -376,7 +378,9 @@ void _apply(QueueTurn t, Job job, {bool notify = true}) {
     };
     if (kind != null) {
       final title = job.title ?? job.input.request;
-      t.emit((e) => Notice(e, kind, job.id, title));
+      t.emit(
+        (e) => Notice(e, kind, job.id, title, artifactId: job.artifactId),
+      );
     }
   }
 }
@@ -429,11 +433,12 @@ void _callAnswered(
 }
 
 /// A render lost: asked once more as the last try, then the job waits for
-/// a render.
+/// a render. One lost while the UI cannot render waits at once, its last
+/// try kept: the render is asked anew once the UI can.
 void _renderLost(QueueTurn t, EffectId effect) {
   final e = t.answer(effect);
   if (e is! Render) return;
-  if (e.last) {
+  if (e.last || !t.m.canRender) {
     t.setLocal(e.jobId, (l) => l.copyWith(waitingFor: () => WaitingFor.render));
     return;
   }
@@ -496,6 +501,10 @@ void _clearWaiting(QueueTurn t, WaitingFor w) {
 /// does; the row it carried is already applied.
 void _refused(QueueTurn t, Effect? e, JobId jobId, Refusal reason) {
   if (reason is NotOwner) {
+    // A creation refused waits again, as those still in flight do.
+    if (e is CreateJob) {
+      t.m = t.m.copyWith(pending: [...t.m.pending, _intentOf(e)]);
+    }
     _loseOwner(t);
     _claim(t);
     return;

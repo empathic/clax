@@ -1732,9 +1732,11 @@ class _AppRootState extends State<AppRoot> with WidgetsBindingObserver {
         if (!on && _s.quitWhenIdle) {
           unawaited(_shutDown().whenComplete(() => exit(0)));
         }
-      case q.Notice(:final kind, :final jobId, :final title):
+      case q.Notice(:final kind, :final jobId, :final title, :final artifactId):
         if (_presence.foreground) return;
-        final aid = _queue.state.value.job(jobId)?.artifactId;
+        // The notice comes before the state that shows its job ended: it
+        // names the job's app itself.
+        final aid = artifactId ?? _queue.state.value.job(jobId)?.artifactId;
         switch (kind) {
           case q.NoticeKind.made || q.NoticeKind.changed:
             if (aid == null) return;

@@ -345,21 +345,25 @@ final class ProbeClaude extends Effect {
 
 enum NoticeKind { made, changed, stopped, failed }
 
-/// Tells the person a job ended or stopped, when no view shows it.
+/// Tells the person a job ended or stopped, when no view shows it: the
+/// job's app ([artifactId]) as the row that ended it names it, since the
+/// notice goes out before the state that shows that row.
 final class Notice extends Effect {
-  const Notice(super.id, this.kind, this.jobId, this.title);
+  const Notice(super.id, this.kind, this.jobId, this.title, {this.artifactId});
   final NoticeKind kind;
   final JobId jobId;
   final String title;
+  final String? artifactId;
   @override
   bool operator ==(Object other) =>
       other is Notice &&
       other.id == id &&
       other.kind == kind &&
       other.jobId == jobId &&
-      other.title == title;
+      other.title == title &&
+      other.artifactId == artifactId;
   @override
-  int get hashCode => Object.hash(id, kind, jobId, title);
+  int get hashCode => Object.hash(id, kind, jobId, title, artifactId);
   @override
   String toString() => 'Notice#$id(${kind.name}, $jobId)';
 }

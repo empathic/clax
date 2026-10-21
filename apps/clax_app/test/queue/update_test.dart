@@ -175,19 +175,22 @@ void main() {
           kind: JobKind.make,
           state: JobState.queued,
           title: 'Todo',
+          offers: {Offer.cancel},
         ),
         const JobView(
           id: 'c',
           kind: JobKind.change,
           state: JobState.queued,
           artifactId: 'app',
+          offers: {Offer.cancel},
         ),
       ]);
       expect(e1.whereType<PublishState>(), isNotEmpty);
       final (m2, e2) = update(m1, const JobsLoaded([]));
       expect(e2.whereType<CreateJob>().map((c) => c.jobId), ['j', 'c']);
       expect(m2.pending, isEmpty);
-      expect(viewOf(m2), viewOf(m1), reason: 'still queued, now in flight');
+      expect(viewOf(m2).jobs, viewOf(m1).jobs, reason: 'still queued, now in flight');
+      expect((viewOf(m1).loaded, viewOf(m2).loaded), (false, true));
     });
 
     test('a claim refused owner_held waits for the release, then claims', () {
@@ -301,6 +304,22 @@ void main() {
   });
 
   group('rule 3: an intent creates a job', () {
+    test('a creation in flight, or waiting for the jobs, offers Cancel, '
+        'which cancels the job once the core holds it', () {
+      final (p1, _) = update(model(owned: false), const Make('w', 'a timer'));
+      expect(viewOf(p1).jobs.single.offers, {Offer.cancel});
+      final (m1, e1) = update(model(), const Make('j', 'a todo app'));
+      final create = e1.whereType<CreateJob>().single;
+      expect(viewOf(m1).jobs.single.offers, {Offer.cancel});
+      final (m2, e2) = update(m1, const Cancel('j'));
+      expect(e2.whereType<MoveJob>(), isEmpty, reason: 'no row to move yet');
+      final (_, e3) = update(
+        m2,
+        Committed(create.id, job('j', state: JobState.queued)),
+      );
+      expect(e3.whereType<MoveJob>().single.to, JobState.cancelled);
+    });
+
     test('a make creates a job, shown queued until the core answers', () {
       final (m1, e1) = update(model(), const Make('j', 'a todo app'));
       final create = e1.whereType<CreateJob>().single;
@@ -619,15 +638,31 @@ void main() {
           );
         }
 
-        final live = held.state == JobState.failed ? retried(m).$2 : e;
+        final (liveM, live) = held.state == JobState.failed ? retried(m) : (m, e);
         final (fresh, _) = update(model(), JobsLoaded([held]));
-        final rebuilt = held.state == JobState.failed
-            ? retried(fresh).$2
-            : update(model(), JobsLoaded([held])).$2;
+        final (rebuiltM, rebuilt) = held.state == JobState.failed
+            ? retried(fresh)
+            : update(model(), JobsLoaded([held]));
         expect(_jobEffects(live), isNotEmpty);
         expect(_jobEffects(rebuilt), _jobEffects(live));
         expect(live.whereType<Publish>(), isEmpty, reason: 'nothing written again');
         expect(live.whereType<Reply>(), isEmpty, reason: 'nothing written again');
+        // The turn planned from the refusal is committed when it is done,
+        // by both: it is not asked again.
+        List<String> done(QueueModel m, List<Effect> e) {
+          final turn = e.whereType<StartTurn>().single;
+          final (_, after) = update(
+            m,
+            TurnDone(turn.id, 'j', const TurnOutcome(TurnNotes())),
+          );
+          expect(after.whereType<StartTurn>(), isEmpty, reason: 'no turn asked again');
+          expect(after.whereType<CommitStep>().single.turn, turn.input.turn);
+          return _jobEffects(after);
+        }
+
+        if (live.whereType<StartTurn>().isNotEmpty) {
+          expect(done(rebuiltM, rebuilt), done(liveM, live));
+        }
       });
     }
 
@@ -728,6 +763,25 @@ void main() {
       final (_, e4) = update(m3, Tick(t0.add(const Duration(seconds: 60))));
       expect(e4.whereType<Render>().single.id, isNot(r1.id));
       expect(e4.whereType<StartTurn>(), isEmpty);
+    });
+
+    test('a render lost while the UI cannot render waits, its last try '
+        'kept, as a worker rebuilt from the rows does', () {
+      final (m1, e1) = update(model(jobs: [j], now: t0), JobsLoaded([j]));
+      final r1 = e1.whereType<Render>().single;
+      final (m2, _) = update(m1, const CanRender(false));
+      final (m3, e3) = update(m2, RenderLost(r1.id, 'j'));
+      expect(e3.whereType<Render>(), isEmpty, reason: 'nothing asked of no UI');
+      expect(m3.localOf('j').waitingFor, WaitingFor.render);
+      final (_, e4) = update(m3, const CanRender(true));
+      final r2 = e4.whereType<Render>().single;
+      expect(r2.last, isFalse, reason: 'the last try is not spent');
+      final (f1, _) = update(
+        model(jobs: [j], now: t0, canRender: false),
+        JobsLoaded([j]),
+      );
+      final (_, f2) = update(f1, const CanRender(true));
+      expect(_jobEffects(f2), _jobEffects(e4));
     });
 
     test('a worker that cannot render waits without asking', () {
@@ -988,6 +1042,13 @@ void main() {
   });
 
   group('rule 12: each change of what the UI sees is published once', () {
+    test('the state says whether it holds every job: not before the jobs '
+        'are loaded', () {
+      final (m1, _) = update(model(owned: false), const Make('j', 'a todo app'));
+      expect(viewOf(m1).loaded, isFalse);
+      expect(viewOf(model()).loaded, isTrue);
+    });
+
     test('a change publishes once, and nothing changed publishes nothing', () {
       final (m1, e1) = update(model(), const Make('j', 'a todo app'));
       expect(e1.whereType<PublishState>().single.state, viewOf(m1));
@@ -1158,6 +1219,43 @@ void main() {
       );
       expect(e2.whereType<Notice>().single.kind, NoticeKind.failed);
       expect(viewOf(m2).jobs, isEmpty);
+    });
+
+    test('a creation refused not_owner waits for the queue, and is created '
+        'once it is held again, as a fresh worker creates it', () {
+      var (m, e) = update(model(), const Make('mk', 'a todo app'));
+      final create = e.whereType<CreateJob>().single;
+      (m, e) = update(m, Refused(create.id, 'mk', const NotOwner()));
+      expect(m.pending, [const Make('mk', 'a todo app')]);
+      expect(viewOf(m).jobs.single.id, 'mk', reason: 'still shown, queued');
+      final claim = e.whereType<ClaimOwner>().single;
+      (m, e) = update(m, OwnerClaimed(claim.id, 't2'));
+      (m, e) = update(m, const JobsLoaded([]));
+      final again = e.whereType<CreateJob>().single;
+      expect((again.jobId, again.input.request), ('mk', 'a todo app'));
+      // A fresh worker holds no row of it: the client sends it the make
+      // again, and it creates the same job.
+      final (fresh, _) = update(model(), const JobsLoaded([]));
+      final (_, fe) = update(fresh, const Make('mk', 'a todo app'));
+      expect(_jobEffects(fe), _jobEffects(e));
+    });
+
+    test('a job\'s notice names the app of the row that ended it', () {
+      final j = job('j', rev: 3, steps: {const TurnKey(2): finishNotes(base: 0)});
+      final (m1, e1) = update(model(jobs: [j]), JobsLoaded([j]));
+      final pub = e1.whereType<Publish>().single;
+      final done = j.copyWith(
+        state: JobState.done,
+        rev: 4,
+        step: const SetTo(PublishKey(0)),
+        artifactId: const SetTo('app'),
+      );
+      final (_, e2) = update(m1, Committed(pub.id, done));
+      final notice = e2.whereType<Notice>().single;
+      expect((notice.kind, notice.artifactId), (NoticeKind.made, 'app'));
+      final at = e2.indexOf(notice);
+      expect(e2.indexWhere((e) => e is PublishState), greaterThan(at),
+          reason: 'the notice comes before the state that shows the app');
     });
 
     test('a job whose row the core no longer holds leaves the queue', () {

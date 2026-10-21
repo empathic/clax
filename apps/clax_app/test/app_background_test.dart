@@ -1252,27 +1252,44 @@ void main() {
         (tester) async {
       await pumpApp(tester, startQueue: starter());
       final w = await started(tester);
-      run.queue.push(const [
-        JobView(
-          id: 'j1',
-          kind: JobKind.make,
-          state: JobState.done,
-          artifactId: 'a1',
-          title: 'Todo',
-        ),
-      ]);
+      // The worker sends a job's notice before the state that shows it
+      // ended: the notice names the app.
+      const running = JobView(
+        id: 'j1',
+        kind: JobKind.make,
+        state: JobState.running,
+        title: 'Todo',
+      );
+      const done = JobView(
+        id: 'j1',
+        kind: JobKind.make,
+        state: JobState.done,
+        artifactId: 'a1',
+        title: 'Todo',
+      );
+      run.queue.push(const [running]);
       await tester.pump();
-      w.onEffect(const q.Notice(3, q.NoticeKind.made, 'j1', 'Todo'));
+      w.onEffect(
+        const q.Notice(3, q.NoticeKind.made, 'j1', 'Todo', artifactId: 'a1'),
+      );
+      run.queue.push(const [done]);
+      await tester.pump();
       expect(work.calls.where((c) => c.startsWith('ready(')), isEmpty,
           reason: 'in front the screens say it');
       tester.binding.handleAppLifecycleStateChanged(AppLifecycleState.inactive);
       tester.binding.handleAppLifecycleStateChanged(AppLifecycleState.hidden);
       tester.binding.handleAppLifecycleStateChanged(AppLifecycleState.paused);
       await tester.pump();
-      w.onEffect(const q.Notice(4, q.NoticeKind.made, 'j1', 'Todo'));
+      run.queue.push(const [running]);
+      await tester.pump();
+      w.onEffect(
+        const q.Notice(4, q.NoticeKind.made, 'j1', 'Todo', artifactId: 'a1'),
+      );
       await tester.pump();
       expect(work.calls, contains('ready(Todo is ready, Tap to open it)'));
       expect(work.targets.last, 'a1');
+      run.queue.push(const [done]);
+      await tester.pump();
     });
 
     testWidgets('a failed core ends the worker', (tester) async {

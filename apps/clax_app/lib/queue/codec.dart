@@ -861,13 +861,21 @@ Map<String, Object?> _effect(Effect e) => switch (e) {
   ClaimOwner(:final id) => {'t': 'claimOwner', 'id': id},
   LoadJobs(:final id) => {'t': 'loadJobs', 'id': id},
   ProbeClaude(:final id) => {'t': 'probeClaude', 'id': id},
-  Notice(:final id, :final kind, :final jobId, :final title) => {
-    't': 'notice',
-    'id': id,
-    'kind': kind.name,
-    'jobId': jobId,
-    'title': title,
-  },
+  Notice(
+    :final id,
+    :final kind,
+    :final jobId,
+    :final title,
+    :final artifactId,
+  ) =>
+    {
+      't': 'notice',
+      'id': id,
+      'kind': kind.name,
+      'jobId': jobId,
+      'title': title,
+      'artifactId': artifactId,
+    },
   KeepAlive(:final id, :final on) => {'t': 'keepAlive', 'id': id, 'on': on},
   PublishState(:final id, :final state) => {
     't': 'publishState',
@@ -953,6 +961,7 @@ final Map<String, Effect Function(_R)> _effectDecoders = {
     r.enumOf('kind', NoticeKind.values),
     r.str('jobId'),
     r.str('title'),
+    artifactId: r.strOrNull('artifactId'),
   ),
   'keepAlive': (r) => KeepAlive(r.integer('id'), r.boolean('on')),
   'publishState': (r) =>
@@ -978,9 +987,11 @@ Field<T> _fieldOf<T>(_R r, T Function(_R) dec) => r.variant<Field<T>>({
 
 Map<String, Object?> _state(QueueState s) => {
   'jobs': [for (final j in s.jobs) _view(j)],
+  'loaded': s.loaded,
 };
 
-QueueState _stateOf(_R r) => QueueState(r.objs('jobs', _viewOf));
+QueueState _stateOf(_R r) =>
+    QueueState(r.objs('jobs', _viewOf), loaded: r.boolean('loaded'));
 
 Map<String, Object?> _view(JobView v) => {
   'id': v.id,
