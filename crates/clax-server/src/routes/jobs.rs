@@ -927,9 +927,7 @@ mod tests {
     fn made() -> (tempfile::TempDir, clax_store::jobs::Published) {
         let dir = tempfile::tempdir().unwrap();
         let st = Store::open(&Home::at(dir.path().join("ax"))).unwrap();
-        let (a, _) = st
-            .create_artifact(DAEMON, publish("<p>one"), None)
-            .unwrap();
+        let (a, _) = st.create_artifact(DAEMON, publish("<p>one"), None).unwrap();
         st.create_job(NewJob {
             id: "j1".into(),
             client: "app".into(),

@@ -765,10 +765,7 @@ impl Import<'_, '_> {
                 continue;
             };
             if self.jobs.iter().any(|j| j.questions.iter().any(|x| x == q)) {
-                self.leave_out(
-                    "asked.json",
-                    format!("the question {q} is another entry's"),
-                );
+                self.leave_out("asked.json", format!("the question {q} is another entry's"));
                 continue;
             }
             let Some((title, n)) = self.artifact(aid)? else {

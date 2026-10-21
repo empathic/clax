@@ -803,14 +803,12 @@ fn put_paths(p: &ValidatedPublish) -> impl Iterator<Item = &String> {
 /// store never gave), which a retry does not change; `e` otherwise.
 fn version_present(id: &ArtifactId, n: u32, e: CoreError) -> CoreError {
     match &e {
-        CoreError::Io(io) if io.kind() == std::io::ErrorKind::AlreadyExists => {
-            CoreError::invalid(
-                "version_present",
-                format!(
-                    "version {n} of {id} holds content no version records, so it cannot be written; `clax doctor` lists it"
-                ),
-            )
-        }
+        CoreError::Io(io) if io.kind() == std::io::ErrorKind::AlreadyExists => CoreError::invalid(
+            "version_present",
+            format!(
+                "version {n} of {id} holds content no version records, so it cannot be written; `clax doctor` lists it"
+            ),
+        ),
         _ => e,
     }
 }
