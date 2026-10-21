@@ -1,7 +1,7 @@
 import { readFileSync } from "node:fs";
 import { join } from "node:path";
 import { describe, expect, it, vi } from "vitest";
-import { CHUNK, CHUNKED_OVER, type HostReceivers, hostEmbed, installTransport, onHost, readEmbed, transport } from "./transport";
+import { CHUNK, CHUNKED_OVER, type Channel, type HostReceivers, hostEmbed, installTransport, onHost, readEmbed, transport } from "./transport";
 
 const ORIGIN = "https://app.clax.invalid";
 /** For the cases that encode or decode megabytes: they wait on no condition, so only the machine's load bounds them. */
@@ -225,6 +225,30 @@ describe("the transport", () => {
     t.init(NONCE);
     await new Promise(r => setTimeout(r, 0));
     expect(sent).toEqual([]);
+  });
+  it("rejects a call and a stream with a TypeError when the document has no channel, and leaves nothing waiting", async () => {
+    /** Settles with what `p` rejects with, so a call that never settles fails the test by its timeout. */
+    const noChannel = async (p: Promise<unknown>) => {
+      const e = await p.then(() => null, (x: unknown) => x);
+      expect(e).toBeInstanceOf(TypeError);
+      expect((e as Error).message).toBe("no app channel");
+    };
+    let ch: Partial<Channel> | undefined;
+    const sent: Record<string, unknown>[] = [];
+    const t = transport(() => ch as Channel | undefined, vi.fn(), ORIGIN, NONCE);
+    await noChannel(t.fetch("/api/x", { method: "POST", body: "x" }));
+    await noChannel(t.fetch("/api/stream"));
+    ch = {};
+    await noChannel(t.fetch("/api/y"));
+    await noChannel(t.fetch("/api/stream"));
+    ch = { postMessage: m => sent.push(JSON.parse(m) as Record<string, unknown>) };
+    // The refused calls' IDs answer nothing.
+    for (const id of [1, 2, 3, 4]) t.callResult(NONCE, id, { status: 500, headers: [], body: "late" });
+    const p = t.fetch("/api/z");
+    await vi.waitFor(() => expect(sent.length).toBe(1));
+    expect(sent[0]).toMatchObject({ type: "call", path: "/api/z" });
+    t.callResult(NONCE, sent[0].id as number, { status: 204, headers: [] });
+    expect((await p).status).toBe(204);
   });
   it("posts nothing before init, and every call made before it once it comes", async () => {
     const sent: string[] = [];

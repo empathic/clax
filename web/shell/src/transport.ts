@@ -52,7 +52,9 @@
 //   aborted.
 // Calls made before the nonce is known wait for it. One
 // whose signal aborts meanwhile rejects with an `AbortError` and posts
-// nothing.
+// nothing. One made while the document has no channel (no
+// `window.ClaxHost`, or none with a `postMessage`) rejects with a
+// `TypeError` and leaves nothing waiting.
 
 /** The app's embed settings, from the shell document's
  * `<meta name="clax-embed" content='{"transport":"host","shell":…,"content":…}'>`
@@ -172,14 +174,21 @@ export function transport(channel: () => Channel | undefined, fallback: typeof f
   // one.
   const ours = (n: unknown) => nonce !== null && n === nonce;
 
-  const post = (m: Record<string, unknown>) => {
+  /** The channel, when the document has one that posts. */
+  const open = () => {
     const ch = channel();
-    if (nonce !== null && ch && typeof ch.postMessage === "function") ch.postMessage(JSON.stringify({ ...m, nonce }));
+    return ch && typeof ch.postMessage === "function" ? ch : null;
+  };
+  const post = (m: Record<string, unknown>) => open()?.postMessage(JSON.stringify({ ...m, nonce }));
+  /** Throws, before a call or a stream is made, when there is no channel to post it on. */
+  const needOpen = () => {
+    if (!open()) throw new TypeError("no app channel");
   };
 
   const subscribe = async (from: string | null, signal: AbortSignal | null): Promise<Response> => {
     await untilOpen(signal);
     if (signal?.aborted) throw abortError(signal);
+    needOpen();
     const id = ++lastId;
     const stop = () => {
       if (!streams.delete(id)) return;
@@ -211,6 +220,7 @@ export function transport(channel: () => Channel | undefined, fallback: typeof f
     const bytes = new Uint8Array(await req.arrayBuffer());
     await untilOpen(signal);
     if (signal?.aborted) throw abortError(signal);
+    needOpen();
     const id = ++lastId;
     const answer = new Promise<Response>((resolve, reject) => calls.set(id, { resolve, reject }));
     const msg = { type: "call", id, method: req.method, path: url.pathname + url.search, headers: [...req.headers], body: null as string | null, body64: null as string | null };
