@@ -550,9 +550,16 @@ async fn catch_panic(
     }
 }
 
+/// How long an open waits for an earlier app's `clax serve` to end after
+/// its SIGTERM: the daemon drains calls for up to 5 s, then closes its
+/// store.
+#[cfg(not(target_os = "ios"))]
+const OLD_DAEMON_WAIT: Duration = Duration::from_secs(10);
+
 /// Opens the home and starts the core (spec §2.5): takes `core.lock`,
-/// retires an old daemon's `daemon.json`, opens the store and starts the
-/// core with the embed's origins.
+/// stops the `clax serve` an old app's `daemon.json` names (off iOS,
+/// `home_in_use` when it does not stop), retires the file, opens the
+/// store and starts the core with the embed's origins.
 async fn opening(sh: Arc<Shared>, opts: OpenOptions) {
     let home = opts.home;
     let file = std::fs::File::options()
@@ -579,6 +586,35 @@ async fn opening(sh: Arc<Shared>, opts: OpenOptions) {
             );
         }
         Err(e) => return failed(&sh, "open_failed", format!("core.lock: {e}"), None),
+    }
+    // iOS never ran a daemon of its own; elsewhere an earlier app's `clax
+    // serve` may still serve this home, and must be gone before the store
+    // opens beside it.
+    #[cfg(not(target_os = "ios"))]
+    {
+        use clax_core::daemon::OldDaemon;
+        let h = clax_core::Home::at(home.clone());
+        let old = tokio::task::spawn_blocking(move || {
+            clax_core::daemon::stop_old_daemon(&h, OLD_DAEMON_WAIT)
+        })
+        .await;
+        match old {
+            Ok(OldDaemon::Running(pid)) => {
+                return failed(
+                    &sh,
+                    "home_in_use",
+                    format!(
+                        "an earlier app's clax serve (PID {pid}) serves this home and did not stop"
+                    ),
+                    None,
+                );
+            }
+            Ok(OldDaemon::Stopped(pid)) => {
+                tracing::info!(pid, "stopped an earlier app's clax serve on this home");
+            }
+            Ok(OldDaemon::Absent) => {}
+            Err(e) => return failed(&sh, "open_failed", format!("daemon.json: {e}"), None),
+        }
     }
     retire_daemon_json(&home);
     let cfg = CoreConfig {
@@ -649,9 +685,9 @@ fn failed(sh: &Shared, code: &str, message: String, backup: Option<String>) {
     });
 }
 
-/// Renames an old app's `daemon.json` to `daemon.json.retired`: a `clax
-/// serve` it started that still runs finds its file gone on two stale
-/// checks and exits.
+/// Renames an old app's `daemon.json` to `daemon.json.retired`, once the
+/// `clax serve` it names is stopped (or, on iOS, which never ran one, at
+/// once).
 fn retire_daemon_json(home: &Path) {
     let file = home.join("daemon.json");
     if file.exists()

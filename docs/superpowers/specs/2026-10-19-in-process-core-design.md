@@ -417,10 +417,16 @@ of one home at once get one handle and one `home_in_use`. Otherwise `Embed::open
 1. takes `<home>/core.lock` with `std::fs::File::try_lock` (stable since
    Rust 1.89; no unsafe). Held: `failed` with code `home_in_use` (another process
    holds it: a second Mac app instance, or a test that forgot to close);
-2. retires a daemon of the old app: if `<home>/daemon.json` exists it is
-   renamed to `daemon.json.retired`; a `clax serve` child of an earlier app
-   build still running sees its file missing on two stale checks and exits
-   (`serve.rs`'s stale watcher), and its port, token and cookie die with it.
+2. retires a daemon of the old app. Off iOS (which never ran one), when
+   `<home>/daemon.json` names a live process that is `clax serve` by its
+   command line (a program file named `clax` or `libclax.so` and a
+   `serve` argument; `clax_core::daemon::stop_old_daemon`), it is sent
+   SIGTERM and given 10 s to end before the store opens, since its
+   reaper could otherwise end sessions the core's jobs need; one that
+   does not end, or cannot be signalled, fails the open with code
+   `home_in_use`. A PID another program holds is never signalled. Then
+   `daemon.json`, if it exists, is renamed to `daemon.json.retired`, and
+   the old daemon's port, token and cookie die with it.
    `<support>/daemon-port` is deleted by the app (§10);
 3. writes `config.toml`'s `[sample]` section as the supervisor's
    `sampleConfig` did (moved to `CoreHost`, §6);
