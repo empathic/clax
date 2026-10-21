@@ -710,42 +710,29 @@ pub async fn commit(
                     let sid = p.session_id.clone();
                     match st.commit_publish_step_async(&audit, &id, &key, p).await {
                         Ok(c) => {
-                            if let (Some(made), Some(sid)) = (&c.made, &sid) {
-                                published_from(
-                                    st,
-                                    &audit,
-                                    &ctx,
-                                    &drafts,
-                                    sid,
-                                    &made.artifact,
-                                    true,
-                                )?;
-                            }
                             if let Some(made) = &c.made {
-                                events.publish(Event::Version {
-                                    artifact_id: made.artifact.id.clone(),
-                                    n: made.version.n,
-                                    by_page: false,
-                                    title: Some(made.artifact.title.clone()),
-                                    at: Some(made.version.created_at.clone()),
-                                });
-                                for w in &made.docs {
-                                    if let Some(c) = w.change.clone() {
-                                        events.publish(Event::Doc {
-                                            artifact_id: made.artifact.id.clone(),
-                                            path: c.path,
-                                            version: c.version,
-                                            private_to: c.private_to,
-                                            read_level: c.read_level,
-                                            self_read: c.self_read,
-                                        });
-                                    }
-                                }
-                                for tid in &made.version.addresses {
-                                    if let Some(t) = st.get_thread(tid)? {
-                                        crate::routes::threads::publish_thread(&ctx, st, &t)?;
-                                    }
-                                }
+                                after_publish_step(
+                                    &events,
+                                    made,
+                                    || match &sid {
+                                        Some(sid) => published_from(
+                                            st,
+                                            &audit,
+                                            &ctx,
+                                            &drafts,
+                                            sid,
+                                            &made.artifact,
+                                            true,
+                                        ),
+                                        None => Ok(()),
+                                    },
+                                    |tid| {
+                                        if let Some(t) = st.get_thread(tid)? {
+                                            crate::routes::threads::publish_thread(&ctx, st, &t)?;
+                                        }
+                                        Ok(())
+                                    },
+                                );
                             }
                             Ok(Ok((
                                 json!({
@@ -819,6 +806,49 @@ pub async fn commit(
     Ok(Json(out))
 }
 
+/// What follows a publish step's commit, none of which turns the
+/// committed step into an error: the version's event and its documents'
+/// first, then `from` (what a publish from the step's session does for
+/// it), then `thread` for each thread the version addresses, a failure of
+/// either logged. A replay made nothing, and nothing follows it.
+fn after_publish_step(
+    events: &clax_core::events::EventBus,
+    made: &clax_store::jobs::Published,
+    from: impl FnOnce() -> clax_core::Result<()>,
+    mut thread: impl FnMut(&str) -> clax_core::Result<()>,
+) {
+    let aid = &made.artifact.id;
+    events.publish(Event::Version {
+        artifact_id: aid.clone(),
+        n: made.version.n,
+        by_page: false,
+        title: Some(made.artifact.title.clone()),
+        at: Some(made.version.created_at.clone()),
+    });
+    for w in &made.docs {
+        if let Some(c) = w.change.clone() {
+            events.publish(Event::Doc {
+                artifact_id: aid.clone(),
+                path: c.path,
+                version: c.version,
+                private_to: c.private_to,
+                read_level: c.read_level,
+                self_read: c.self_read,
+            });
+        }
+    }
+    if let Err(e) = from() {
+        tracing::warn!(artifact = aid.as_str(), n = made.version.n, error = %e,
+            "a committed publish step's session effects failed");
+    }
+    for tid in &made.version.addresses {
+        if let Err(e) = thread(tid) {
+            tracing::warn!(artifact = aid.as_str(), thread = tid.as_str(), error = %e,
+                "a committed publish step's thread event failed");
+        }
+    }
+}
+
 // ------------------------------------------------------------- consents
 
 /// `GET /api/agent-read-consents`: `{consents: [{reader, source}]}`, the
@@ -873,4 +903,102 @@ pub async fn delete_consent(
         .store_call(move |st| st.delete_agent_read_consent(&reader, &source))
         .await?;
     Ok(Json(json!({ "deleted": deleted })))
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use clax_core::Home;
+    use clax_core::events::EventBus;
+
+    const DAEMON: &AuditCtx = &AuditCtx::DAEMON;
+
+    fn publish(html: &str) -> clax_core::publish::ValidatedPublish {
+        let req: PublishRequest = serde_json::from_value(json!({
+            "title": "Budget",
+            "capabilities": {"db": {}},
+            "files": {"index.html": {"content": html}},
+        }))
+        .unwrap();
+        validate(req).unwrap()
+    }
+
+    /// A publish step committed on a store of its own: what it made.
+    fn made() -> (tempfile::TempDir, clax_store::jobs::Published) {
+        let dir = tempfile::tempdir().unwrap();
+        let st = Store::open(&Home::at(dir.path().join("ax"))).unwrap();
+        let (a, _) = st
+            .create_artifact(DAEMON, publish("<p>one"), None)
+            .unwrap();
+        st.create_job(NewJob {
+            id: "j1".into(),
+            client: "app".into(),
+            kind: "change".into(),
+            artifact_id: Some(a.id.clone()),
+            title: None,
+            input: json!({"request": "make it green"}),
+            plan: None,
+        })
+        .unwrap();
+        st.patch_job(
+            "j1",
+            JobPatch {
+                if_rev: 1,
+                state: Some(JobState::Running),
+                ..JobPatch::default()
+            },
+        )
+        .unwrap();
+        let step = PublishStep {
+            artifact_id: Some(a.id.clone()),
+            base: 1,
+            request: publish("<p>two"),
+            docs: vec![BatchWrite {
+                path: "notes/n1".into(),
+                op: BatchOp::Set(json!({"t": 1})),
+                if_version: None,
+            }],
+            draft: None,
+            session_id: None,
+            done: false,
+        };
+        let c = st
+            .commit_publish_step(DAEMON, "j1", "publish:1", step)
+            .unwrap();
+        (dir, c.made.unwrap())
+    }
+
+    /// The session's effects failing after the commit (its session gone,
+    /// a write of its watch refused) still leaves the version's and its
+    /// documents' events published.
+    #[test]
+    fn a_committed_publish_steps_events_go_out_when_its_session_effects_fail() {
+        let (_d, made) = made();
+        let events = EventBus::new();
+        let mut rx = events.subscribe();
+        let mut from = false;
+        after_publish_step(
+            &events,
+            &made,
+            || {
+                from = true;
+                Err(CoreError::invalid("unknown_session", "gone"))
+            },
+            |_| Err(CoreError::NotFound),
+        );
+        assert!(from);
+        let mut got = Vec::new();
+        while let Ok(s) = rx.try_recv() {
+            got.push(s.event);
+        }
+        assert!(
+            got.iter().any(|e| matches!(e, Event::Version { n: 2, .. })),
+            "{got:?}"
+        );
+        assert!(
+            got.iter()
+                .any(|e| matches!(e, Event::Doc { path, .. } if path == "notes/n1")),
+            "{got:?}"
+        );
+    }
 }

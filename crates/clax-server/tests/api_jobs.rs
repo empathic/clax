@@ -127,6 +127,7 @@ async fn versions(ts: &TestServer, aid: &str) -> u64 {
 async fn a_replayed_publish_step_publishes_once() {
     let ts = TestServer::spawn().await;
     let (_o, token) = owner(&ts).await;
+    let mut ev = ts.events_with("", |r| ts.authed(r)).await;
     running(&ts, &token, "j1", "make", None).await;
     let (s, first) = step(
         &ts,
@@ -155,6 +156,25 @@ async fn a_replayed_publish_step_publishes_once() {
     assert_eq!(again["step"], first["step"]);
     let (_, list) = send(authed(&ts, Method::GET, "/api/artifacts")).await;
     assert_eq!(list["artifacts"].as_array().unwrap().len(), 1, "{list}");
+    // One version event: the replay published none before the next
+    // job's version.
+    let made = first["job"]["job"]["artifact_id"].clone();
+    assert_eq!(ev.next_named("version").await["artifact_id"], made);
+    running(&ts, &token, "j2", "make", None).await;
+    let (s, next) = step(
+        &ts,
+        &token,
+        "j2",
+        "publish:0",
+        publish_body(None, 0, "<p>b", true),
+    )
+    .await;
+    assert_eq!(s, 200, "{next}");
+    let after = ev.next_named("version").await;
+    assert_eq!(
+        after["artifact_id"], next["job"]["job"]["artifact_id"],
+        "{after}"
+    );
 }
 
 #[tokio::test]
