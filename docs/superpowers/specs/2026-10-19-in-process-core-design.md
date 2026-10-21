@@ -64,7 +64,9 @@ After this work:
    receives `QueueState` and sends intents (make, change, cancel, retry,
    keep going, discard). The agent stays Dart and moves into the worker.
    Rendering is asked of the UI isolate by message. Clax's own agent is
-   app-only for now.
+   app-only for now. As built, makes run in the worker; changes and plan
+   builds still run in the UI isolate's `FeedbackWorker` until record
+   66a3e807 (turning the JSON import on) is decided (§7.2).
 5. **Shared logic goes in Rust**: durable job steps (publish atomic with the
    version), the icon and page checks, and the JSON state files as core
    tables (the core owns what it should; app-only preferences may stay).
@@ -414,8 +416,10 @@ skipped, so the home opens afresh. Opens are taken one at a time, an
 open's `Embed::open` and its handle's registration together, so two opens
 of one home at once get one handle and one `home_in_use`. Otherwise `Embed::open(home)`, on the core's runtime:
 
-1. takes `<home>/core.lock` with `std::fs::File::try_lock` (stable since
-   Rust 1.89; no unsafe). Held: `failed` with code `home_in_use` (another process
+1. takes `<home>/core.lock` with an exclusive, non-blocking `flock(2)`
+   through nix's `Flock` (`clax_core::daemon::FileLock::try_exclusive`; no
+   unsafe), not std's `File::try_lock`, which the standard library does
+   not implement for Android. Held: `failed` with code `home_in_use` (another process
    holds it: a second Mac app instance, or a test that forgot to close);
 2. retires a daemon of the old app. Off iOS (which never ran one), when
    `<home>/daemon.json` names a live process that is `clax serve` by its
@@ -910,8 +914,9 @@ RenderService ◄── RenderRequest ◄─────────────
     `tool_use_id` `<job>/turn:<n>/<call ID>`, which the job's row then
     carries), `Publish(id, jobId, turn, callId, publish)` (the publish
     step) and `Reply(id, jobId, turn, callId, reply)` (the reply step,
-    which names no session: the core replies from the one that published
-    the job's version, §8.1);
+    which names the worker's session: the core replies from the session
+    that published the job's version while it is live, and from the one
+    the step names once that has ended or the version names none, §8.1);
   - *work*: `StartTurn(id, jobId, turnInput)`, `RunTool(id, jobId, call)`,
     `Render(id, jobId, turn, callId, renderSpec, last, deadline)` (a render
     in flight is this effect: whether it is the last try, and when it
@@ -946,6 +951,13 @@ and the key; settings and key changes are intents too. `MakeService`,
 `FeedbackWorker`'s UI half, `ChangeTracker`, the launcher's tiles, the
 making screen, the working chip, the change sheet and the thread page read
 `QueueState` and send intents; none awaits a job.
+
+As built, only makes run on the worker's queue. Changes (a comment's
+change) and a plan's builds still run in the UI isolate, in
+`FeedbackWorker` (`lib/agent/loop.dart`), which keeps the JSON state
+files of §9; they move to the worker with the JSON import, which stays
+off (`QueueHost.start` without `importJson`, `lib/main.dart`) until the
+owner decides record 66a3e807.
 
 If the worker isolate dies (an uncaught error), its ports close with it.
 The client restarts it once; the new worker claims the queue's owner token
@@ -1312,8 +1324,9 @@ session acknowledges the publishing session's feedback. When it has
 ended for a reason the reaper does not cover (the person ended it, its
 grant was revoked) or the version names none (a change imported from the
 app's ledger), the step is made from `session_id`, a live session of the
-owner's, which the worker sets to the session it registered at its
-launch on every reply step; 400 `invalid_step` with no publish step,
+owner's, which the worker sets to its own session on every reply step
+(registered when a step first needs one, and again when the core
+answers `unknown_session`: see below); 400 `invalid_step` with no publish step,
 `unknown_session` when neither names a live session. Naming a session
 gives the step no authority a publish step lacks: both are the owner's
 writes, and a publish step names its session the same way. It makes,
@@ -1348,12 +1361,14 @@ resumes. A job row records no session of its own. Every session a step
 of an open job uses is live: a reply step uses the session that
 published the job's version, and a resumed publish step the one it began
 with, both kept from the reaper as above; any other step, and a publish
-step that has not begun, names the session the worker registered at its
-launch (`POST /api/sessions`, before `JobsLoaded`), which is live. A
-session ended for another reason (it ends itself, its grant is revoked)
-is refused as before, and the worker registers again and plans the step
-on its new session; a reply step whose publishing session so ended is
-made from the session it names.
+step that has not begun, names the worker's session. The worker
+registers it lazily (`POST /api/sessions`, when a publish, a reply or an
+`ask` first needs a session, not at launch) and keeps it; a session
+ended for another reason (it ends itself, its grant is revoked) is
+refused `unknown_session` as before, and the worker forgets it,
+registers again and sends the step once more from the new session; a
+reply step whose publishing session so ended is made from the session it
+names.
 
 A process killed after the content files are written and before the
 transaction commits leaves the files at the next version's number with
@@ -1457,35 +1472,37 @@ carries them to the app's prompt.
 
 | File | Becomes |
 |---|---|
-| `pending-make.json` | a `make` job per request, `queued`, or `waiting` for those in `waiting` |
-| `change-ledger.json` | a `change` job per record with a `publish:<base>` step when version `base + 1` exists and names the record's `addresses` (the ledger's own recovery rule), and a `reply` step when its `docs_done` and reply are found on the threads; else the job resumes before the publish |
-| `plans.json` | `plan_json` of the make job whose request matches, or a `stopped` make job holding the plan (Resume build) |
-| `asked.json` | `job_questions` rows of a `change` job per entry, `waiting` on the answer |
+| `pending-make.json` | a `queued` `make` job per request, those the file lists in `waiting` too (as built; the owner's decision on record fd1ed31f is pending: `waiting` is a state the queue leaves only by a question's close), but none for a request whose app the make already made |
+| `change-ledger.json` | a `change` job per record; when version `base + 1` is the one the record made (published from an app session, naming exactly the record's `addresses`, its note starting with the reply), its `publish:<base>` step, and its `reply` step (then `done`) when its documents are written or it had none and each address still open got an agent reply; a landed record not done is `queued` with a `turn:1` step before the publish step, one `finish` call whose reply posts the record's reply on the addresses still owed it, so the queue resumes at the reply; a record whose version never landed is `queued` with no step and runs again |
+| `plans.json` | `plan_json` of the make job whose request matches, or a `stopped` make job holding the plan while it has features to build (Resume build) |
+| `asked.json` | `job_questions` rows of a `change` job per entry, `waiting` while the question is open, `queued` once it closed |
 | `stopped.json` | `job_threads` rows with `stopped = 1` on a `cancelled` change job per thread |
-| `unfinished.json` | `carry_json` of a `stopped` change job per entry (Keep going) |
+| `unfinished.json` | `carry_json` of a `stopped` change job per entry whose threads are still open (Keep going), in the worker's carry shape: `{cap, spent_usd, notes, draft: {edits, before, title?, capabilities?}}`; Keep going seeds the job's draft from `draft` where the app still holds every `before` |
 | `agent-read-consent.json` | `agent_read_consents` rows |
 
-`lib/core/json_import.dart` runs in the worker isolate once, at its first
-start after this build, before it loads jobs:
+`lib/core/json_import.dart` runs in the worker isolate, after the worker
+claims the queue (§7.5) and before each load of the jobs, while
+`QueueHost.start` is given `importJson` (it is not yet: record 66a3e807):
 
-1. if the core's `client_imports` has `app-json-v1`, do nothing;
-2. copy the seven files, as they are, to `<support>/imported-json/<time>/`;
-3. parse each with today's readers (`PendingMake`, `FileChangeLedger`,
-   `PlanStore`, `FileAskedQuestions`, `FileStoppedThreads`,
-   `FileUnfinishedChanges`, `FileConsentMemory`, kept for this and deleted in
-   the last phase); a file that does not parse is skipped and named in the
-   summary;
-4. write the jobs and rows in one `POST /api/client-imports/app-json-v1`
-   `{jobs, consents}`, carrying the queue's owner token (the worker claims
-   the queue before it imports, §7.5), that the core applies in one
-   transaction with the
-   `client_imports` row (a crash before it leaves nothing; after it, the
-   key);
-5. delete the seven files.
+1. read whichever of the seven files exist in the support directory, as
+   UTF-8;
+2. post them raw, `POST /api/client-imports/app-json-v1` `{client:
+   "app", files: {<name>: <text>}}`, carrying the queue's owner token;
+   the core parses each file (`crates/clax-store/src/imports.rs`, as the
+   app's readers wrote them) and writes the jobs and rows in one
+   transaction with the `client_imports` row, answering its summary
+   (`{already, jobs, consents, skipped, left_out, done_at}`: a file that
+   does not parse is named in `skipped`, an entry naming what the core no
+   longer holds in `left_out`); a key imported before answers `already`
+   and changes nothing;
+3. on that 200, copy the files, as they were read, to
+   `<support>/imported-json/<time>/`;
+4. delete them.
 
-Job IDs from the import are derived from the file's content (SHA-256 of the
-entry), so an import that a crash interrupted between 4 and 5 and then
-retried changes nothing.
+Job IDs from the import are derived from the file's name, the entry's
+index and its JSON (SHA-256), so the same files make the same jobs, and
+a crash between the import and the deletes is answered `already` at the
+next run, which deletes what is left.
 
 ## 10. Existing installs
 
