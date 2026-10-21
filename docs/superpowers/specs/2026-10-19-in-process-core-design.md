@@ -1428,12 +1428,17 @@ the CLI, a push, the hosted Worker):
   `require_title`), now with the same wording `finish` uses.
 - **The render gate (S5)**: `POST /api/drafts/{id}/renders` `{digest,
   errors, failed_tests}` records a render of a draft's content, where
-  `digest` is the SHA-256 over the draft's files but `icon.svg` (the
-  content hash of `lib/bundle/content_hash.dart`, moved to
-  `clax_core::digest::files_digest`). A publish step with `draft` is
+  `digest` is the SHA-256 over the files the version a publish of the
+  draft makes holds, but `icon.svg` (the content hash of
+  `lib/bundle/content_hash.dart`, moved to
+  `clax_core::digest::files_digest`): the draft's own files and those of
+  the base the publish carries, such as a change's images and fonts,
+  which the worker reads from the base version's manifest; `failed_tests`
+  is how many tests failed. A publish step with `draft` is
   refused with 409 `not_rendered_clean` unless the draft has a render with
-  that digest, no errors and no failing tests, and the request's files
-  have that digest. A publish without `draft` (an outside agent, a
+  that digest, no errors and no failing tests, and the files of the
+  version it makes (`Store::next_files_digest`: the request's and those
+  it carries) have that digest. A publish without `draft` (an outside agent, a
   restore, an update from a bundle) has no render gate, as today.
 
 Outside agents' publishes that broke an icon rule before now fail. Their
