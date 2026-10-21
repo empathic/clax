@@ -286,14 +286,12 @@ async fn a_reply_step_replies_resolves_and_acks_once() {
     b["publish"]["session_id"] = json!(sid);
     let (s, v) = step(&ts, &token, "j1", "publish:1", b).await;
     assert_eq!(s, 200, "{v}");
-    // The app is relaunched: its new session is not the one the reply
-    // comes from.
-    ts.register_session("codex", "h2").await;
+    // The app is relaunched: its new session, which the step names, is
+    // not the one the reply comes from while the publishing one is live.
+    let relaunched = ts.register_session("codex", "h2").await;
     let mut named = body.clone();
-    named["reply"]["session_id"] = json!(sid);
+    named["reply"]["session_id"] = relaunched["id"].clone();
     let (s, v) = step(&ts, &token, "j1", "reply:0", named).await;
-    assert_eq!(s, 400, "a reply step names no session: {v}");
-    let (s, v) = step(&ts, &token, "j1", "reply:0", body.clone()).await;
     assert_eq!(s, 200, "{v}");
     assert_eq!(
         (v["replayed"].as_bool(), v["job"]["job"]["state"].as_str()),
@@ -331,6 +329,76 @@ async fn a_reply_step_replies_resolves_and_acks_once() {
         Some(json!("claude")),
         "from the publishing session: {t}"
     );
+}
+
+/// A change whose publishing session ended (the person ended it, or it
+/// came from the app's ledger) replies from the live session its step
+/// names: the worker's own, registered at its launch.
+#[tokio::test]
+async fn a_reply_step_whose_publishing_session_ended_comes_from_the_session_it_names() {
+    let ts = TestServer::spawn().await;
+    let (_o, token) = owner(&ts).await;
+    let sess = ts.register_session("claude", "h1").await;
+    let sid = sess["id"].as_str().unwrap();
+    let aid = ts
+        .publish_as(sid, "App", "<main><h2>Quarterly goals</h2></main>")
+        .await["artifact"]["id"]
+        .as_str()
+        .unwrap()
+        .to_string();
+    let tid = ts.thread(&aid, 1, "make it green").await["id"]
+        .as_str()
+        .unwrap()
+        .to_string();
+    running(&ts, &token, "j1", "change", Some(&aid)).await;
+    let mut b = publish_body(Some(&aid), 1, "<p>green", false);
+    b["publish"]["session_id"] = json!(sid);
+    let (s, v) = step(&ts, &token, "j1", "publish:1", b).await;
+    assert_eq!(s, 200, "{v}");
+    ts.end_session(sid).await;
+    let body = json!({"reply": {"threads": [tid], "body": "Made it green.",
+        "resolve": true}, "state": "done"});
+    let (s, v) = step(&ts, &token, "j1", "reply:0", body.clone()).await;
+    assert_eq!(
+        (s, v["error"]["code"].as_str()),
+        (400, Some("unknown_session")),
+        "{v}"
+    );
+    let mut ended = body.clone();
+    ended["reply"]["session_id"] = json!(sid);
+    let (s, v) = step(&ts, &token, "j1", "reply:0", ended).await;
+    assert_eq!(
+        (s, v["error"]["code"].as_str()),
+        (400, Some("unknown_session")),
+        "{v}"
+    );
+    let relaunched = ts.register_session("codex", "h2").await;
+    let mut named = body.clone();
+    named["reply"]["session_id"] = relaunched["id"].clone();
+    let (s, v) = step(&ts, &token, "j1", "reply:0", named.clone()).await;
+    assert_eq!(s, 200, "{v}");
+    assert_eq!(v["job"]["job"]["state"], "done", "{v}");
+    // A replay answers as recorded, whatever session it names.
+    ts.end_session(relaunched["id"].as_str().unwrap()).await;
+    let (s, again) = step(&ts, &token, "j1", "reply:0", named).await;
+    assert_eq!(
+        (s, again["replayed"].as_bool()),
+        (200, Some(true)),
+        "{again}"
+    );
+    let (_, t) = send(authed(
+        &ts,
+        Method::GET,
+        &format!("/api/artifacts/{aid}/threads/{tid}"),
+    ))
+    .await;
+    let author = t["thread"]["comments"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .find(|c| c["author_kind"] == "agent")
+        .map(|c| c["author_name"].clone());
+    assert_eq!(author, Some(json!("codex")), "from the named session: {t}");
 }
 
 #[tokio::test]

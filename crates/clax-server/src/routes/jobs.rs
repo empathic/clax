@@ -549,6 +549,8 @@ pub struct ReplyBody {
     resolve: bool,
     #[serde(default)]
     ack: Vec<String>,
+    #[serde(default)]
+    session_id: Option<String>,
 }
 
 #[derive(Deserialize)]
@@ -633,6 +635,7 @@ fn parse_step(b: StepBody) -> Result<Step, ApiError> {
             resolve: r.resolve,
             ack: r.ack,
             done,
+            session_id: r.session_id,
         })),
         _ => Err(ApiError::bad_request(
             "invalid_step",
@@ -645,7 +648,9 @@ fn parse_step(b: StepBody) -> Result<Step, ApiError> {
 /// state?}`: commits step `key`, with its effects in one transaction (a
 /// publish's version and pinned document writes, a reply's comments,
 /// resolves and acknowledgements, made from the session that published
-/// the job's version); `state: "done"` ends the job in it.
+/// the job's version while it is live, else from the live session of the
+/// owner's that the reply names in `session_id`); `state: "done"` ends
+/// the job in it.
 /// `{job, step, replayed, version?}`: a key the job already has answers
 /// its step as recorded with `replayed: true` and changes nothing. 409
 /// `version_moved` with `current`, `doc_moved` with `path`,
@@ -760,9 +765,17 @@ pub async fn commit(
             }
             v
         }
-        Step::Reply(r) => {
+        Step::Reply(mut r) => {
             s.store_call(move |st| {
                 let _guard = guard;
+                // A key already committed answers as recorded; a new one
+                // names, if any, a live session of the owner's.
+                let committed = st
+                    .job(&id)?
+                    .is_some_and(|j| j.steps.iter().any(|x| x.key == key));
+                if !committed && r.session_id.is_some() {
+                    r.session_id = publishing_session(st, &r.session_id, None)?;
+                }
                 match st.commit_reply_step(&audit, &id, &key, r) {
                     Ok(c) => {
                         if let Some(made) = &c.made {

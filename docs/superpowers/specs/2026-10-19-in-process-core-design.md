@@ -1283,12 +1283,19 @@ the threads the session was working on are linked to the version
 (`End::Publish`), its draft of the artifact ends, it watches the
 artifact (`ensure_watch`), and the artifact's untargeted feedback is
 targeted to it (`retarget_untargeted`). A replayed key does none of it.
-A **reply step** (`reply: {threads, body, resolve?, ack?}`) names no
-session: the store takes the one that published the version of the job's
-last publish step (`versions.session_id`; 400 `invalid_step` with no
-publish step, `unknown_session` when that version names no live session),
-so the one owner of that link is the core, and a worker relaunched under
-a new session acknowledges the publishing session's feedback. It makes,
+A **reply step** (`reply: {threads, body, resolve?, ack?, session_id?}`)
+is made from the session that published the version of the job's last
+publish step (`versions.session_id`) while that session is live, so the
+one owner of that link is the core, and a worker relaunched under a new
+session acknowledges the publishing session's feedback. When it has
+ended for a reason the reaper does not cover (the person ended it, its
+grant was revoked) or the version names none (a change imported from the
+app's ledger), the step is made from `session_id`, a live session of the
+owner's, which the worker sets to the session it registered at its
+launch on every reply step; 400 `invalid_step` with no publish step,
+`unknown_session` when neither names a live session. Naming a session
+gives the step no authority a publish step lacks: both are the owner's
+writes, and a publish step names its session the same way. It makes,
 in one transaction the same way, that session's agent reply
 on each thread (each a thread of the job's artifact, 400 `invalid_thread`
 otherwise), each thread's resolve when `resolve`, the acknowledgement of
@@ -1324,7 +1331,8 @@ step that has not begun, names the session the worker registered at its
 launch (`POST /api/sessions`, before `JobsLoaded`), which is live. A
 session ended for another reason (it ends itself, its grant is revoked)
 is refused as before, and the worker registers again and plans the step
-on its new session.
+on its new session; a reply step whose publishing session so ended is
+made from the session it names.
 
 A process killed after the content files are written and before the
 transaction commits leaves the files at the next version's number with
