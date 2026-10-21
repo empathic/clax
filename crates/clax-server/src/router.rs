@@ -641,22 +641,46 @@ async fn test_sleep(
     Ok(StatusCode::OK)
 }
 
-/// Creates an artifact after sleeping inside the blocking closure, publishing the event from the
-/// same closure, so tests can observe write side effects surviving a handler timeout. The
-/// owner's token only. Native builds only: the sleep holds a store worker's thread.
+/// `POST /api/_test/slow_publish/{ms}`'s query.
+#[cfg(all(debug_assertions, not(target_arch = "wasm32")))]
+#[derive(serde::Deserialize)]
+struct SlowPublishQuery {
+    /// Wait for the handler to be dropped, `ms` at most, in place of
+    /// sleeping `ms`.
+    #[serde(default)]
+    after_drop: bool,
+}
+
+/// Creates an artifact from a blocking closure that first sleeps `ms`
+/// milliseconds, publishing the event from the same closure, so tests can
+/// observe write side effects surviving a handler timeout. With
+/// `?after_drop=true` the closure waits instead until the handler is
+/// dropped (its route group's timeout fired, or the client went away), `ms`
+/// at most, so the artifact is made after the request has ended however
+/// slow the machine. The owner's token only. Native builds only: the wait
+/// holds a store worker's thread.
 #[cfg(all(debug_assertions, not(target_arch = "wasm32")))]
 async fn test_slow_publish(
     axum::extract::State(s): axum::extract::State<AppState>,
     _d: DeniedToGrants,
     _t: RequireToken,
     axum::extract::Path(ms): axum::extract::Path<u64>,
+    axum::extract::Query(q): axum::extract::Query<SlowPublishQuery>,
 ) -> Result<StatusCode, ApiError> {
     let sleep = test_sleep_ms(ms)?;
     let events = s.events.clone();
+    // Lives in this handler's future: dropping the future disconnects
+    // `dropped`.
+    let (_alive, dropped) = std::sync::mpsc::channel::<()>();
     s.store_call(move |st| {
         // Tests of the binary wait for this line in its log.
         tracing::info!("slow publish started");
-        std::thread::sleep(sleep);
+        if q.after_drop {
+            // Disconnected once the handler is dropped; times out after `sleep`.
+            let _ = dropped.recv_timeout(sleep);
+        } else {
+            std::thread::sleep(sleep);
+        }
         let p = clax_core::publish::validate(
             serde_json::from_value(serde_json::json!({
                 "title": "slow",

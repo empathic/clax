@@ -1,5 +1,10 @@
 use clax_testkit::TestServer;
 
+/// How long the tests here hold a request they mean to time out: the test
+/// routes' longest sleep, far past every timeout they set, so only the
+/// route group's timeout ends the request, however slow the machine.
+const HOLD_MS: u64 = 60_000;
+
 #[tokio::test]
 async fn slow_api_requests_time_out_with_json_408() {
     let ts = TestServer::spawn_with(|state| {
@@ -59,11 +64,13 @@ async fn write_side_effects_survive_a_handler_timeout() {
     let events = ts.get("/api/events").await;
     let mut stream = events.bytes_stream();
     assert!(saw_event(&mut stream, "event: ready").await);
+    // The store call publishes only once the timeout has dropped its
+    // handler, so the 408 comes first on any machine.
     let res = ts
-        .authed(
-            ts.client
-                .post(format!("{}/api/_test/slow_publish/300", ts.base)),
-        )
+        .authed(ts.client.post(format!(
+            "{}/api/_test/slow_publish/{HOLD_MS}?after_drop=true",
+            ts.base
+        )))
         .send()
         .await
         .unwrap();
@@ -72,8 +79,9 @@ async fn write_side_effects_survive_a_handler_timeout() {
         saw_event(&mut stream, "event: version").await,
         "version event still published after the 408"
     );
-    let list: serde_json::Value = ts.get("/api/artifacts").await.json().await.unwrap();
-    assert_eq!(list["artifacts"].as_array().unwrap().len(), 1);
+    // Read from the store: `GET /api/artifacts` runs under the same 100 ms
+    // timeout.
+    assert_eq!(ts.store.list_artifacts().unwrap().len(), 1);
 }
 
 #[tokio::test]
