@@ -62,6 +62,8 @@ test("the owner makes tags on /tags, tags an artifact from its page, and the gal
   const editor = page.getByRole("dialog", { name: "Edit tags" });
   await expect(editor.getByLabel("Find a tag")).toBeFocused();
   await page.keyboard.type("q4");
+  // Enter checks the only tag the search shows, once the list has loaded.
+  await expect(editor.getByRole("checkbox", { name: "q4" })).toBeVisible();
   await page.keyboard.press("Enter");
   await expect(titleChips(page)).toHaveText(["q4"]);
   await page.keyboard.press("Backspace");
