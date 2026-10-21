@@ -1635,7 +1635,7 @@ impl Store {
     /// The versions job steps wrote that no row records and that still
     /// carry the step's mark (`clax doctor` lists them): each with the job
     /// and key that wrote it, and whether that step may still commit and
-    /// replace it (`live`); a dead one is removed by the next write of its
+    /// replace it (`live`); either is removed by the next write of its
     /// version. By artifact and version.
     ///
     /// # Errors
@@ -1856,8 +1856,8 @@ pub struct MarkedStray {
     pub job_id: String,
     pub key: String,
     /// The step may still commit (its job is open and the key is not
-    /// committed), and only it may replace the version; else the next
-    /// write of the version removes it.
+    /// committed). Either way the next write of the version removes it; a
+    /// live step's resume after another's write is `version_moved`.
     pub live: bool,
 }
 

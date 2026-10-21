@@ -796,6 +796,25 @@ fn put_paths(p: &ValidatedPublish) -> impl Iterator<Item = &String> {
         .map(|(k, _)| k)
 }
 
+/// The error for a write of version `n` of `id` that failed with `e`
+/// while the artifact is still at `n - 1`: `version_present` when content
+/// no row records already holds `n` (or a newer version) and no step of the
+/// store's may remove it (content another process wrote, or a mark the
+/// store never gave), which a retry does not change; `e` otherwise.
+fn version_present(id: &ArtifactId, n: u32, e: CoreError) -> CoreError {
+    match &e {
+        CoreError::Io(io) if io.kind() == std::io::ErrorKind::AlreadyExists => {
+            CoreError::invalid(
+                "version_present",
+                format!(
+                    "version {n} of {id} holds content no version records, so it cannot be written; `clax doctor` lists it"
+                ),
+            )
+        }
+        _ => e,
+    }
+}
+
 /// Reads a version row; the inner result is `Corrupt` when `files_json` is malformed.
 pub(super) fn row_to_version(r: &Row<'_>) -> rusqlite::Result<Result<Version>> {
     let artifact_id: String = r.get("artifact_id")?;
@@ -1424,21 +1443,25 @@ impl Store {
     }
 
     /// Clears version `n` of `id`, which no row records, when a step's
-    /// killed write left it and its step may not keep it: the step writing
-    /// now (whose mark is `own`) replaces its own, and gets a new nonce
-    /// (its mark was readable on that content, so a commit copying it is a
-    /// push; removed first, then renewed, so a process killed between the
-    /// two leaves nothing under the old mark); a step that can never commit
-    /// leaves it to whoever writes `n`. A live step's and a mark the store
-    /// never gave stay, and refuse the write as `n` is present. The store,
-    /// not the content, says whose it is (the content module's Ordering).
-    /// Under `id`'s content lock, with the artifact at `n - 1`.
+    /// killed write left it. Under the home's lock and `id`'s content lock
+    /// no attempt of any step is writing, so a step's mark on unrecorded
+    /// content is always a killed process's, and any writer of `n` may take
+    /// the version: content whose step may still commit (its own, the step
+    /// writing now's, or another's) is removed and that step given a new
+    /// nonce (its mark was readable on that content, so a commit copying it
+    /// is a push; removed first, then renewed, so a process killed between
+    /// the two leaves nothing under the old mark), and its resume then sees
+    /// the version moved; a step's that can never commit is removed and its
+    /// mark forgotten. A mark the store never gave stays, and refuses the
+    /// write as `version_present`. The store, not the content, says whose it
+    /// is (the content module's Ordering). Under `id`'s content lock, with
+    /// the artifact at `n - 1`.
     async fn clear_stray_locked(&self, id: &ArtifactId, n: u32, own: Option<&str>) -> Result<()> {
         let Some(mark) = self.content.unrecorded_step(id, n).await? else {
             return Ok(());
         };
         match self.mark_of(id, n, &mark, own)? {
-            super::jobs::MarkOf::Own => {
+            super::jobs::MarkOf::Own | super::jobs::MarkOf::Live => {
                 self.content.remove_version(id, n).await?;
                 self.renew_step_mark(&mark)?;
             }
@@ -1446,7 +1469,7 @@ impl Store {
                 self.content.remove_version(id, n).await?;
                 self.forget_step_mark(&mark)?;
             }
-            super::jobs::MarkOf::Live | super::jobs::MarkOf::Foreign => {}
+            super::jobs::MarkOf::Foreign => {}
         }
         Ok(())
     }
@@ -1568,7 +1591,7 @@ impl Store {
                 // Another process may have written `n` and recorded it.
                 return Err(match self.current_version_of(id)? {
                     Some(current) if current != expected => CoreError::Conflict { current },
-                    _ => e,
+                    _ => version_present(id, n, e),
                 });
             }
         };

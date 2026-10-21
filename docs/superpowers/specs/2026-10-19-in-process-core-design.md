@@ -1356,16 +1356,18 @@ its mark (`unrecorded_step` answers a mark only for a version nothing is
 built on), and the step's resume answers `version_moved` as for any
 moved base. Every write of `n` (a publish, a step, an adopted push),
 under the content lock and with the artifact at `n - 1`, asks the store
-what an unrecorded `n`'s mark is: the writing step's own is replaced; a
-mark whose step can never commit (its job gone, `cancelled` or `done`,
-or its key committed) is removed whoever writes, and its row with it,
-since no writer can claim it and the content lock and `core.lock`
-exclude any other, so a job ended after a kill, by any path, never
-blocks its artifact; a live step's mark is left to that step, and the
-write is refused as `n` is present. Content no step marked, or a mark
-the store does not hold, is never replaced: the files refuse the write
-as before (`clax doctor` lists a stray directory), and git records it as
-a push. `clax doctor` lists each marked stray (`Store::marked_strays`)
+what an unrecorded `n`'s mark is. The content lock and `core.lock`
+exclude every other attempt, so a step's mark found there is always a
+killed process's, and any writer of `n` takes the version: a mark whose
+step may still commit (the writing step's own, or another live step's)
+is removed and that step's nonce renewed, and the other step's resume
+then answers `version_moved` as for any moved base; a mark whose step
+can never commit (its job gone, `cancelled` or `done`, or its key
+committed) is removed and its row with it. So a kill, whatever happens
+to its job after, never blocks its artifact. Content no step marked, or
+a mark the store does not hold, is never replaced: the files refuse the
+write as 409 `version_present` (`clax doctor` lists a stray directory),
+and git records it as a push. `clax doctor` lists each marked stray (`Store::marked_strays`)
 with its job, key and whether it is live, among its stale files.
 
 So the change ledger's two unknowns, "did the publish land?" and "did the

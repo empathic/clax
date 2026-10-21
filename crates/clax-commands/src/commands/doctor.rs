@@ -365,7 +365,7 @@ fn artifact_relative(home: &Home, path: &Path) -> String {
 
 /// Staging directories, version directories above `current_version`,
 /// zero-version artifact rows, and versions a job step wrote that no row
-/// records, with the step and whether it may still commit (a dead one goes
+/// records, with the step and whether it may still commit (either goes
 /// at the next write of its version); nothing here is reachable through
 /// the API.
 fn stale_files(home: &Home, store: &Store) -> serde_json::Value {

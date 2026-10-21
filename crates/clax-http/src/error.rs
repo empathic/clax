@@ -123,6 +123,11 @@ impl From<CoreError> for ApiError {
                 code: "push_refused",
                 message,
             } => ApiError::new(StatusCode::CONFLICT, "push_refused", message),
+            // Unrecorded content holds the version (`docs/contract.md`).
+            CoreError::Invalid {
+                code: "version_present",
+                message,
+            } => ApiError::new(StatusCode::CONFLICT, "version_present", message),
             CoreError::Invalid {
                 code: "question_closed",
                 message,
@@ -279,6 +284,11 @@ mod tests {
         assert_eq!(
             (e.status, e.code),
             (StatusCode::TOO_MANY_REQUESTS, "limit_reached")
+        );
+        let e = ApiError::from(CoreError::invalid("version_present", "version 6 holds"));
+        assert_eq!(
+            (e.status, e.code),
+            (StatusCode::CONFLICT, "version_present")
         );
     }
 

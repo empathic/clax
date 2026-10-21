@@ -2,9 +2,10 @@
 //! is written and before its transaction commits, resumed, over both content
 //! stores (the home's files and git): the resumed step replaces the version
 //! its own write left and commits once, with its document writes and its
-//! step; a version no step marked, or another step marked, is never
-//! replaced, and a pushed commit whose message copies or guesses a mark is
-//! a push.
+//! step; another step's, its process killed, is removed by any writer of the
+//! version and that step's resume is `version_moved`; a version no step
+//! marked is never replaced, and a pushed commit whose message copies or
+//! guesses a mark is a push.
 
 use std::collections::BTreeMap;
 use std::sync::Arc;
@@ -465,50 +466,94 @@ fn a_dead_steps_stray_is_removed_by_the_next_write<C: ContentStore + 'static>(
     assert!(f.st.marked_strays().unwrap().is_empty(), "{ending:?}");
 }
 
-/// A live step's stray refuses any other write of its version, and is
-/// listed live.
-fn a_live_steps_stray_refuses_another_write<C: ContentStore + 'static>(
+/// A live step's stray is a killed process's: the store's lock on the home
+/// and the artifact's content lock exclude any attempt in flight, so another
+/// write of its version removes it and takes the version, and the step's
+/// own resume is then `version_moved`.
+fn a_live_steps_stray_is_removed_by_another_write<C: ContentStore + 'static>(
     content: impl FnOnce(&Home) -> C,
 ) {
     let f = fixture(content);
     f.content.kill_next();
     assert!(f.commit("publish:1", "<p>killed</p>").is_err());
-    assert!(
-        f.st.publish_version(DAEMON, &f.id, publish("<p>two</p>", Some(1)), None)
-            .is_err()
-    );
-    assert_eq!(f.versions(), [1]);
-    assert_eq!(f.html(2).as_deref(), Some("<p>killed</p>"));
     assert!(f.st.marked_strays().unwrap()[0].live);
+    let (_, v) =
+        f.st.publish_version(DAEMON, &f.id, publish("<p>two</p>", Some(1)), None)
+            .unwrap();
+    assert_eq!(v.n, 2);
+    assert_eq!(f.versions(), [1, 2]);
+    assert_eq!(f.html(2).as_deref(), Some("<p>two</p>"));
+    assert!(f.st.marked_strays().unwrap().is_empty());
+    let e = f.commit("publish:1", "<p>again</p>").unwrap_err();
+    assert!(matches!(e, StepError::VersionMoved { current: 2 }), "{e:?}");
+    assert_eq!(f.steps(), 0);
+    assert_eq!(f.doc(), None);
+    assert_eq!(f.html(2).as_deref(), Some("<p>two</p>"));
 }
 
+/// A stray no step marked is never replaced. In the home's files the write
+/// it refuses is `version_present`, never a storage error; in git its tag
+/// is a commit no step wrote, which becomes the version as a push, and the
+/// step is `version_moved` (`adopted`).
 fn a_stray_no_step_marked_is_not_replaced<C: ContentStore + 'static>(
     content: impl FnOnce(&Home) -> C,
+    adopted: bool,
 ) {
     let f = fixture(content);
     f.stray("<p>stray</p>", None);
-    assert!(f.commit("publish:1", "<p>two</p>").is_err());
+    let e = f.commit("publish:1", "<p>two</p>").unwrap_err();
+    if adopted {
+        assert!(matches!(e, StepError::VersionMoved { current: 2 }), "{e:?}");
+        assert_eq!(f.versions(), [1, 2]);
+    } else {
+        assert!(
+            matches!(
+                e,
+                StepError::Store(CoreError::Invalid {
+                    code: "version_present",
+                    ..
+                })
+            ),
+            "{e:?}"
+        );
+        let e =
+            f.st.publish_version(DAEMON, &f.id, publish("<p>two</p>", Some(1)), None)
+                .unwrap_err();
+        assert!(
+            matches!(
+                e,
+                CoreError::Invalid {
+                    code: "version_present",
+                    ..
+                }
+            ),
+            "{e:?}"
+        );
+        assert_eq!(f.versions(), [1]);
+    }
     assert_eq!(f.steps(), 0);
     assert_eq!(f.doc(), None);
     assert_eq!(f.html(2).as_deref(), Some("<p>stray</p>"));
 }
 
-fn a_stray_another_step_marked_is_not_replaced<C: ContentStore + 'static>(
+/// Another step's stray, its process killed, is removed by this step's
+/// write, which takes the version; the other step's resume is then
+/// `version_moved`.
+fn a_stray_another_step_marked_is_replaced<C: ContentStore + 'static>(
     content: impl FnOnce(&Home) -> C,
 ) {
     let f = fixture(content);
     // Another live step of the job, killed after its content write.
     f.content.kill_next();
     assert!(f.commit("publish:other", "<p>stray</p>").is_err());
-    assert!(f.commit("publish:1", "<p>two</p>").is_err());
-    assert_eq!(f.steps(), 0);
-    assert_eq!(f.doc(), None);
-    assert_eq!(f.versions(), [1], "nor taken for a push");
-    assert_eq!(f.html(2).as_deref(), Some("<p>stray</p>"));
-    // Its own resume replaces it.
-    let c = f.commit("publish:other", "<p>other</p>").unwrap();
+    let c = f.commit("publish:1", "<p>two</p>").unwrap();
     assert_eq!(c.step.version_n, Some(2));
-    assert_eq!(f.html(2).as_deref(), Some("<p>other</p>"));
+    assert_eq!(f.steps(), 1);
+    assert_eq!(f.versions(), [1, 2]);
+    assert_eq!(f.html(2).as_deref(), Some("<p>two</p>"));
+    let e = f.commit("publish:other", "<p>other</p>").unwrap_err();
+    assert!(matches!(e, StepError::VersionMoved { current: 2 }), "{e:?}");
+    assert_eq!(f.html(2).as_deref(), Some("<p>two</p>"));
 }
 
 /// A killed step's attempt on another base is refused, and removes the
@@ -768,22 +813,22 @@ fn a_killed_step_resumes_once_in_git() {
 
 #[test]
 fn a_stray_no_step_marked_is_not_replaced_on_files() {
-    a_stray_no_step_marked_is_not_replaced(the_store_on_files);
+    a_stray_no_step_marked_is_not_replaced(the_store_on_files, false);
 }
 
 #[test]
 fn a_stray_no_step_marked_is_not_replaced_in_git() {
-    a_stray_no_step_marked_is_not_replaced(the_store_in_git);
+    a_stray_no_step_marked_is_not_replaced(the_store_in_git, true);
 }
 
 #[test]
-fn a_stray_another_step_marked_is_not_replaced_on_files() {
-    a_stray_another_step_marked_is_not_replaced(the_store_on_files);
+fn a_stray_another_step_marked_is_replaced_on_files() {
+    a_stray_another_step_marked_is_replaced(the_store_on_files);
 }
 
 #[test]
-fn a_stray_another_step_marked_is_not_replaced_in_git() {
-    a_stray_another_step_marked_is_not_replaced(the_store_in_git);
+fn a_stray_another_step_marked_is_replaced_in_git() {
+    a_stray_another_step_marked_is_replaced(the_store_in_git);
 }
 
 #[test]
@@ -817,13 +862,13 @@ fn a_done_jobs_stray_is_removed_by_the_next_write_in_git() {
 }
 
 #[test]
-fn a_live_steps_stray_refuses_another_write_on_files() {
-    a_live_steps_stray_refuses_another_write(the_store_on_files);
+fn a_live_steps_stray_is_removed_by_another_write_on_files() {
+    a_live_steps_stray_is_removed_by_another_write(the_store_on_files);
 }
 
 #[test]
-fn a_live_steps_stray_refuses_another_write_in_git() {
-    a_live_steps_stray_refuses_another_write(the_store_in_git);
+fn a_live_steps_stray_is_removed_by_another_write_in_git() {
+    a_live_steps_stray_is_removed_by_another_write(the_store_in_git);
 }
 
 #[test]

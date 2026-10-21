@@ -334,6 +334,12 @@ Errors:
   be fetched, `current_version` (`n`, `label`, `created_at`, `files`, `url`)
   and `hint`. Read the current version, merge, and publish again with
   `if_version` set to `current`.
+- `version_present` (409): the next version's number already holds content
+  no version records and no step of the core's may remove (content another
+  process wrote, or a mark the core never gave). A retry gets the same
+  answer; `clax doctor` lists the content among its stale files. Content a
+  killed job step left is never this: whoever writes the version next
+  removes it.
 - `not_found`: the artifact to update does not exist.
 - `invalid_path`: a published path is empty, absolute, ends in `/`, contains
   `\`, a `.` or `..` segment, or a control character; or two paths differ only
@@ -2541,7 +2547,7 @@ transaction with the step: either both exist, or neither does.
 | `PUT /api/jobs/<id>/threads/<tid>` | token, owner token | `{comment_id, stopped?}` | `{job}`; 400 `invalid_thread` |
 | `DELETE /api/jobs/<id>/threads/<tid>` | token, owner token | — | `{job}` |
 | `PUT /api/jobs/<id>/questions/<qid>` | token, owner token | — | `{job}`, a `running` job `waiting` while the question is open (its answer, decline or withdrawal, `job_end` when the job ends first, is stored in the job and moves it back); 400 `invalid_question` for a question not of the `ask` tool or another job's |
-| `POST /api/jobs/<id>/steps/<key>` | token, owner token | `{result?, publish?, reply?, state?}`, one of `result`, `publish` and `reply`; `state` only `"done"` | `{job, step: {key, result, version_n, created_at}, replayed, version?}`; 409 `version_moved` `{current}`, `doc_moved` `{path}`, `not_rendered_clean`, `job_moved`; 400 `invalid_step` |
+| `POST /api/jobs/<id>/steps/<key>` | token, owner token | `{result?, publish?, reply?, state?}`, one of `result`, `publish` and `reply`; `state` only `"done"` | `{job, step: {key, result, version_n, created_at}, replayed, version?}`; 409 `version_moved` `{current}`, `doc_moved` `{path}`, `not_rendered_clean`, `job_moved`, `version_present`; 400 `invalid_step` |
 | `GET /api/agent-read-consents` | token | — | `{consents: [{reader, source}]}` |
 | `PUT /api/agent-read-consents/<reader>/<source>` | token | — | 204; 404 when either artifact is missing |
 | `DELETE /api/agent-read-consents/<reader>/<source>` | token | — | `{deleted}` |
