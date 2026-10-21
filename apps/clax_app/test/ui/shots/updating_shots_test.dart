@@ -1,9 +1,9 @@
 // The cover an app's screen shows while an update runs on it, rendered into
 // CLAX_SHOTS_DIR (skipped without it) on a phone, light and dark:
 // `updating-<ms>` is the whole screen that long after the update began, and
-// `updating-finish-<ms>` that long into its finish (the page at 420);
+// `updating-finish-<ms>` that long into its finish (the page at 440);
 // `synapse-<frame>` is the synapse alone, large, every 40 ms through its
-// opening, a few firings and a finish, for stitching into a strip or a GIF.
+// start, a stream of dots and a finish, for stitching into a strip or a GIF.
 import 'dart:math' as math;
 
 import 'package:clax_app/ui/kit/kit.dart';
@@ -15,7 +15,7 @@ import 'package:flutter_test/flutter_test.dart';
 import 'rig.dart';
 
 const _times = [0, 160, 420, 560, 700, 1150, 2400, 3500, 6500];
-const _finish = [0, 120, 230, 300, 380, 440];
+const _finish = [0, 120, 240, 340, 440];
 
 Widget _cover(ValueNotifier<bool> updating) => ValueListenableBuilder<bool>(
   valueListenable: updating,

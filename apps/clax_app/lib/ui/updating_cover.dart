@@ -21,9 +21,9 @@ const updatingLines = [
 ];
 
 /// An app's screen while an update runs on it (bundles spec §8.4): while
-/// [updating], no page, but a [ClaxSynapse] firing away over a line that
-/// names the app ([title]: "Updating Notes…", or "Updating…" without one)
-/// and then turns through [lines], shuffled for each showing, never the
+/// [updating], no page, but a [ClaxSynapse] over a line that names the
+/// app ([title]: "Updating Notes…", or "Updating…" without one) and then
+/// turns through [lines], shuffled for each showing, never the
 /// same line twice in a row, cross-faded every [lineEvery].
 ///
 /// When [updating] turns false the cover plays the synapse's finish
@@ -159,7 +159,7 @@ class _UpdatingCoverState extends State<UpdatingCover> {
                 mainAxisSize: MainAxisSize.min,
                 children: [
                   ClaxSynapse(
-                    size: 112,
+                    size: 88,
                     seed: widget.seed,
                     finishing: _phase == _Phase.finishing,
                     onFinished: _finished,

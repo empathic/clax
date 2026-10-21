@@ -1,90 +1,103 @@
 import 'package:clax_app/ui/kit/kit.dart';
-import 'package:clax_app/ui/tokens.g.dart';
 import 'package:flutter_test/flutter_test.dart';
 
-/// When the dot crosses the middle, moving right (true) or left, from 0 to
-/// [until] ms in 4 ms steps.
-List<(double, bool)> _crossings(ClaxSynapseModel m, double until) {
-  final out = <(double, bool)>[];
-  var last = ClaxSynapseModel.centreX;
+typedef _Dot = ({double x, double alpha});
+
+List<_Dot> _dots(ClaxSynapseModel m) => [
+  for (var i = 0; i < m.dotCount; i++)
+    (x: m.dots[2 * i], alpha: m.dots[2 * i + 1]),
+];
+
+/// When each dot leaves, from 0 to [until] ms in 4 ms steps: a new dot is
+/// one more in flight than the step before, or a first one near the arc.
+List<double> _departures(ClaxSynapseModel m, double until) {
+  final out = <double>[];
+  var before = <_Dot>[];
   for (var t = 0.0; t <= until; t += 4) {
     m.seek(t);
-    final mid = ClaxSynapseModel.centreX;
-    if (last != mid &&
-        m.dotX != mid &&
-        (last - mid).sign != (m.dotX - mid).sign) {
-      out.add((t, m.dotX > mid));
+    final now = _dots(m);
+    if (now.isNotEmpty && (before.isEmpty || now.last.x < before.last.x)) {
+      out.add(t);
     }
-    last = m.dotX;
+    before = now;
   }
   return out;
 }
 
 void main() {
-  test('it begins as the mark and opens into a synapse', () {
-    final m = ClaxSynapseModel(seed: 1)..seek(0);
-    expect(m.open, 0);
-    expect(m.dotX, ClaxSynapseModel.centreX);
-    expect(m.dotY, ClaxMarkGeometry.dot.dy);
-    m.seek(ClaxSynapseModel.openMs);
-    expect(m.open, 1);
-  });
+  test(
+    'it begins as the resting mark, and its middle dot fades as the dots start',
+    () {
+      final m = ClaxSynapseModel(seed: 1)..seek(0);
+      expect(m.middle, 1);
+      expect(m.dotCount, 0);
+      m.seek(ClaxSynapseModel.middleFade);
+      expect(m.middle, 0);
+      expect(m.dotCount, greaterThan(0));
+    },
+  );
 
-  test('the dot fires to and fro, each side in turn', () {
+  test('each dot goes from the person’s arc to Clax’s, fading as it goes', () {
     final m = ClaxSynapseModel(seed: 1);
-    final crossings = _crossings(m, 8000);
-    expect(crossings.length, greaterThan(4));
-    for (final (i, (_, right)) in crossings.indexed) {
-      expect(right, i.isEven, reason: 'crossing $i');
+    m.seek(ClaxSynapseModel.firstDot + 200);
+    final early = _dots(m).first;
+    m.seek(ClaxSynapseModel.firstDot + 700);
+    final late = _dots(m).first;
+    expect(early.x, greaterThan(ClaxSynapseModel.fromX));
+    expect(late.x, greaterThan(early.x));
+    expect(late.x, lessThanOrEqualTo(ClaxSynapseModel.toX));
+    expect(late.alpha, lessThan(early.alpha));
+    final all = ClaxSynapseModel(seed: 1);
+    for (var t = 0.0; t < 5000; t += 8) {
+      all.seek(t);
+      for (final d in _dots(all)) {
+        expect(d.alpha, inInclusiveRange(0, 1));
+        expect(
+          d.x,
+          inInclusiveRange(ClaxSynapseModel.fromX, ClaxSynapseModel.toX),
+        );
+      }
     }
   });
 
-  test('the rhythm is not metronomic', () {
+  test('the dots come in a steady stream, a little uneven', () {
     for (var seed = 0; seed < 5; seed++) {
-      final m = ClaxSynapseModel(seed: seed);
-      final at = [for (final (t, _) in _crossings(m, 10000)) t];
-      final gaps = {
-        for (var i = 1; i < at.length; i++) (at[i] - at[i - 1]).round() ~/ 40,
-      };
-      expect(gaps.length, greaterThan(2), reason: 'seed $seed: $at');
+      final at = _departures(ClaxSynapseModel(seed: seed), 8000);
+      final gaps = [for (var i = 1; i < at.length; i++) at[i] - at[i - 1]];
+      expect(gaps.length, greaterThan(10));
+      for (final g in gaps) {
+        expect(
+          g,
+          inInclusiveRange(
+            ClaxSynapseModel.spacing - ClaxSynapseModel.spacingJitter - 8,
+            ClaxSynapseModel.spacing + ClaxSynapseModel.spacingJitter + 8,
+          ),
+          reason: 'seed $seed: $gaps',
+        );
+      }
+      expect(gaps.toSet().length, greaterThan(2), reason: 'seed $seed');
     }
   });
 
-  test('a firing looses ions, and its path leaves the straight line', () {
-    final m = ClaxSynapseModel(seed: 2);
-    var ions = 0;
-    var off = 0.0;
-    for (var t = 0.0; t < 3000; t += 8) {
-      m.seek(t);
-      ions = ions > m.ionCount ? ions : m.ionCount;
-      final d = (m.dotY - ClaxMarkGeometry.dot.dy).abs();
-      if (d > off) off = d;
-    }
-    expect(ions, greaterThanOrEqualTo(3));
-    expect(off, greaterThan(0.2));
-  });
-
-  test('the finish lands, sparkles, and ends as the resting mark', () {
+  test('the finish stops the stream and settles as the resting mark', () {
     final m = ClaxSynapseModel(seed: 3);
     for (var t = 0.0; t <= 1234; t += 16) {
       m.seek(t);
     }
+    expect(m.dotCount, greaterThan(0));
     m.finishAt(1234);
-    m.seek(1234 + ClaxSynapseModel.landMs + 60);
-    expect(m.sparkle, isNotNull);
-    expect(m.agentScale, greaterThan(1.05), reason: 'Clax’s arc nods');
+    var count = m.dotCount;
+    for (var t = 1234.0; t < 1234 + ClaxSynapseModel.finishMs; t += 4) {
+      m.seek(t);
+      expect(m.dotCount, lessThanOrEqualTo(count), reason: 'none leaves');
+      count = m.dotCount;
+    }
     m.seek(1234 + ClaxSynapseModel.finishMs - 1);
     expect(m.finished, isFalse);
     m.seek(1234 + ClaxSynapseModel.finishMs);
     expect(m.finished, isTrue);
-    expect(m.open, 0);
-    expect(m.dotX, ClaxSynapseModel.centreX);
-    expect(m.dotY, ClaxMarkGeometry.dot.dy);
-    expect(m.dotScale, 1);
-    expect(m.youScale, 1);
-    expect(m.agentScale, 1);
-    expect(m.ionCount, 0);
-    expect(m.sparkle, isNull);
+    expect(m.dotCount, 0);
+    expect(m.middle, 1);
     expect(ClaxSynapse.finishLength.inMilliseconds, ClaxSynapseModel.finishMs);
   });
 }
