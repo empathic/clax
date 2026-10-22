@@ -11,7 +11,7 @@ import { existsSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from "no
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { HERE } from "./harness.mjs";
-import { sanCovers, siteDomainOf } from "./deploy.mjs";
+import { sanCovers, siteDomainOf, siteHealthy, workerReadsSiteDomain } from "./deploy.mjs";
 
 const home = mkdtempSync(join(tmpdir(), "clax-deploy-config-"));
 let n = 0;
@@ -76,6 +76,15 @@ try {
   check("the public host as the site domain is refused", () => refused(["--public", "example.com", "--site-domain", "example.com"], /is the public host/));
   check("a site domain under the public host is refused", () => refused(["--public", "example.com", "--site-domain", "sites.example.com"], /under the public host/));
   check("a public host under the site domain is refused", () => refused(["--public", "clax.example.run", "--site-domain", "example.run"], /public host clax\.example\.run is under the site domain/));
+  check("a site domain sharing a parent with the public host is refused", () => refused(["--public", "app.example.com", "--site-domain", "sites.example.com"], /shares example\.com .*registrable domain of its own/));
+  check("an IP literal site domain is refused", () => refused(["--public", "example.com", "--site-domain", "192.0.2.1"], /IP address/));
+  check("one trailing dot is the same site domain", () => {
+    const r = deploy(["--public", "example.com.", "--site-domain", "example.run."]);
+    assert.equal(r.status, 0, r.text);
+    assert.equal(r.config.vars.SITE_DOMAIN, "example.run");
+    assert.equal(r.config.vars.PUBLIC_ORIGIN, "https://example.com");
+    assert.deepEqual(r.config.routes[1], { pattern: "*.example.run/*", zone_name: "example.run" });
+  });
   check("no site domain, no record and no terminal is refused", () => refused(["--public", "fresh.example.com"], /Site domain/));
 
   check("the record's site domain is taken when none is given", () => {
@@ -90,6 +99,33 @@ try {
     const r = deploy(["--public", "kept.example.com", "--site-domain", "other.run"]);
     assert.equal(r.status, 0, r.text);
     assert.equal(r.config.vars.SITE_DOMAIN, "other.run");
+  });
+
+  // Before any wrangler call, so it runs without a login: only while this
+  // checkout's Worker does not read SITE_DOMAIN.
+  if (!workerReadsSiteDomain()) {
+    check("a real deploy is refused while the Worker does not read SITE_DOMAIN", () => {
+      const r = spawnSync(process.execPath, [join(HERE, "deploy.mjs"), "--public", "example.com", "--site-domain", "example.run"], {
+        cwd: HERE,
+        env: { ...process.env, CLAX_DEPLOY_HOME: home },
+        stdio: ["ignore", "pipe", "pipe"],
+        encoding: "utf8",
+      });
+      assert.notEqual(r.status, 0, r.stdout);
+      assert.match(r.stderr, /does not read SITE_DOMAIN/);
+    });
+  }
+
+  check("a site host is healthy only with the Worker's answer", () => {
+    const res = (status, headers = {}) => ({ status, headers: new Headers(headers) });
+    const ok = { "referrer-policy": "no-referrer", "content-type": "application/json" };
+    assert.equal(siteHealthy(res(200, ok), '{"ok":true,"version":"0.9.0"}'), true);
+    assert.equal(siteHealthy(res(200, {}), '{"ok":true,"version":"0.9.0"}'), false, "no Referrer-Policy");
+    assert.equal(siteHealthy(res(200, ok), "<html>parked</html>"), false, "not JSON");
+    assert.equal(siteHealthy(res(200, ok), '{"ok":true}'), false, "no version");
+    assert.equal(siteHealthy(res(403, ok), '{"error":{"code":"forbidden_host"}}'), false, "forbidden_host");
+    assert.equal(siteHealthy(res(302, ok), ""), false, "a redirect");
+    assert.equal(siteHealthy(res(522, {}), "<html>error 522</html>"), false, "Cloudflare's error page");
   });
 
   check("siteDomainOf and sanCovers", () => {

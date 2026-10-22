@@ -36,7 +36,7 @@
 //
 // Every step prints `ok`/`FAIL`/`skip`, its time and what it saw; a step
 // whose inputs failed is skipped; when the site host's health answers 404
-// (a Worker without site hosts) every site step skips. The diagnostics (`/_diag/`, the owner
+// or 403 forbidden_host (a Worker without site hosts) every site step skips. The diagnostics (`/_diag/`, the owner
 // token, CLAX_DIAG_ROUTES=1: `deploy.mjs --diag`; `--local` turns them on
 // for its own Worker) are needed for the probe, the git token and the
 // reconcile; without them those steps are skipped. When a deployed Worker
@@ -460,8 +460,8 @@ async function smoke(c, o) {
     return { detail: `fork ${fork} of v${r.json.version?.n ?? r.json.version ?? "?"} reads v2's content` };
   }, ["read back v1 and v2 (mcp)"]);
 
-  // The artifact's own site host. A Worker without site hosts answers its
-  // health 404, and every later site step skips.
+  // The artifact's own site host. A Worker without site hosts refuses the
+  // host (403 forbidden_host) or answers 404, and every site step skips.
   const site = o.siteDomain;
   const siteOf = (id) => siteOrigin(c.base, site, id);
   const html = { accept: "text/html" };
@@ -482,7 +482,9 @@ async function smoke(c, o) {
   await step("site host: health", async () => {
     if (!site) skip("no site domain (--site-domain, or deploy.mjs's record's site_domain); every site step skips");
     const r = await at(`${siteOf(aid)}/_clax/healthz`);
-    if (r.status === 404) skip(`${siteOf(aid)}/_clax/healthz answers 404: this Worker serves no site hosts (SITE_DOMAIN); every site step skips`);
+    if (r.status === 404 || (r.status === 403 && r.json?.error?.code === "forbidden_host")) {
+      skip(`${siteOf(aid)}/_clax/healthz answers ${r.status}${r.status === 403 ? " forbidden_host" : ""}: this Worker does not serve site hosts yet (SITE_DOMAIN); every site step skips`);
+    }
     if (r.status !== 200) throw new Error(`${siteOf(aid)}/_clax/healthz: ${r.status} ${short(r.text, 200)}`);
     return { detail: `${siteOf(aid)}: ${short(r.json ?? r.text, 160)}` };
   }, ["publish v2 (mcp)"]);
@@ -527,7 +529,11 @@ async function smoke(c, o) {
   }, ["site: /site-signin, then /_clax/session (SameSite=Lax)"]);
 
   await step("site: open to the world, then private again", async () => {
-    const access = (v) => c.browser(`/api/artifacts/${aid}`, { method: "PATCH", body: JSON.stringify({ site_access: v }) });
+    const access = async (v) => {
+      const r = await c.browser(`/api/artifacts/${aid}`, { method: "PATCH", body: JSON.stringify({ site_access: v }) });
+      if (r.status < 200 || r.status > 299) throw new Error(`PATCH site_access ${v}: ${r.status} ${short(r.text, 160)}`);
+      return r;
+    };
     await access("world");
     let open;
     try {
@@ -537,8 +543,11 @@ async function smoke(c, o) {
     }
     if (open.status !== 200 || !open.text.includes(`Smoke ${RUN}`)) throw new Error(`world-open, a signed-out visitor got ${open.status} ${short(open.text, 160)}`);
     const closed = await at(`${siteOf(aid)}/`, { headers: html });
-    if (closed.status === 200) throw new Error("private again, the site still served a signed-out visitor");
-    return { detail: `world: 200 signed out; private again: ${closed.status}` };
+    const loc = closed.res.headers.get("location") ?? "";
+    if (closed.status !== 302 || !loc.startsWith(`${c.base}/site-signin?`)) {
+      throw new Error(`private again, a signed-out navigation answered ${closed.status} ${loc || short(closed.text, 160)}, not a 302 to ${c.base}/site-signin`);
+    }
+    return { detail: "world: 200 signed out; private again: 302 to /site-signin" };
   }, ["site: a private site refused without a session", "owner: setup or session"]);
 
   await step("site: two db artifacts kept apart", async () => {

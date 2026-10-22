@@ -217,7 +217,8 @@ function jsonIn(text) {
 }
 
 export function hostOf(s) {
-  const h = s.replace(/^https?:\/\//, "").replace(/\/.*$/, "").toLowerCase();
+  // One trailing dot (a fully qualified name) names the same host.
+  const h = s.replace(/^https?:\/\//, "").replace(/\/.*$/, "").toLowerCase().replace(/\.$/, "");
   if (!/^[a-z0-9]([a-z0-9-]*[a-z0-9])?(\.[a-z0-9]([a-z0-9-]*[a-z0-9])?)+$/.test(h)) throw new Error(`${s} is not a hostname`);
   return h;
 }
@@ -229,9 +230,24 @@ export function hostOf(s) {
 export function siteDomainOf(s, pub) {
   if (s.includes("*")) throw new Error(`--site-domain takes the domain itself (e.g. example.run), not a wildcard: ${s}`);
   const site = hostOf(s);
+  if (/^[0-9.]+$/.test(site)) throw new Error(`the site domain ${site} is an IP address: give a registrable domain of its own (e.g. example.run)`);
   if (site === pub) throw new Error(`the site domain ${site} is the public host: give a domain of its own (e.g. example.run)`);
   if (site.endsWith(`.${pub}`)) throw new Error(`the site domain ${site} is under the public host ${pub}: give a domain of its own`);
   if (pub.endsWith(`.${site}`)) throw new Error(`the public host ${pub} is under the site domain ${site}: it would be served as a site; give a domain of its own`);
+  // Two hosts sharing a parent below the top-level label (sites.example.com
+  // and app.example.com) are one site to browsers, the route's zone_name
+  // would not be the zone, and <ID>.sites.example.com is a second-level
+  // wildcard Universal SSL does not cover. The check takes the last two
+  // labels as the registrable domain, so under a multi-label public suffix
+  // (co.uk, com.au) it misses a shared parent such as example.co.uk, and
+  // refuses two unrelated domains under that suffix.
+  const parent = (h) => h.split(".").slice(-2).join(".");
+  if (parent(site) === parent(pub)) {
+    throw new Error(
+      `the site domain ${site} shares ${parent(site)} with the public host ${pub}: browsers would treat its sites as the same site as Clax, ` +
+        `and it is not a zone of its own; give a registrable domain of its own (e.g. example.run)`,
+    );
+  }
   return site;
 }
 
@@ -242,8 +258,12 @@ async function ask(o, question, fallback) {
   }
   const rl = createInterface({ input: process.stdin, output: process.stdout });
   try {
-    const a = (await rl.question(`${question}${fallback ? ` [${fallback}]` : ""}: `)).trim();
-    return a || fallback;
+    // Without a default, an empty answer asks again: never undefined.
+    for (;;) {
+      const a = (await rl.question(`${question}${fallback ? ` [${fallback}]` : ""}: `)).trim();
+      if (a || fallback !== undefined) return a || fallback;
+      console.log("   an answer is required");
+    }
   } finally {
     rl.close();
   }
@@ -479,7 +499,8 @@ function waitingOn(e) {
   return `${code} ${msg}`.trim();
 }
 
-/** Polls `url` until `reached(res)` (default: a 2xx) or `seconds` pass. */
+/** Polls `url` until `reached(res, body)` (default: a 2xx) or `seconds`
+ * pass. */
 async function waitHealthy(url, seconds, reached = (res) => res.ok) {
   const end = Date.now() + seconds * 1000;
   const started = Date.now();
@@ -490,7 +511,7 @@ async function waitHealthy(url, seconds, reached = (res) => res.ok) {
     try {
       const res = await fetch(url, { signal: AbortSignal.timeout(10_000), redirect: "manual" });
       const body = await res.text();
-      if (reached(res)) done = `HTTP ${res.status}: ${body}`;
+      if (reached(res, body)) done = `HTTP ${res.status}: ${body}`;
       else if (res.status === 500 && body.includes("could not start")) throw new Error(`the instance did not start: ${body.slice(0, 400)}`);
       else state = `HTTP ${res.status}: ${body.slice(0, 160).replace(/\s+/g, " ")}${res.status === 404 || res.status === 522 || res.status === 530 ? " (the host is not routed to the Worker yet)" : ""}`;
     } catch (e) {
@@ -569,17 +590,40 @@ export function certificateFound(host) {
   });
 }
 
+/** Whether a site host's /_clax/healthz answer is the Worker's: 200, JSON
+ * with a `version`, and `Referrer-Policy: no-referrer`. */
+export function siteHealthy(res, body) {
+  if (res.status !== 200 || res.headers.get("referrer-policy") !== "no-referrer") return false;
+  try {
+    return typeof JSON.parse(body)?.version === "string";
+  } catch {
+    return false;
+  }
+}
+
+/** Whether the Worker built from this checkout reads SITE_DOMAIN: a config
+ * without CONTENT_ORIGIN deployed to a Worker that does not would serve no
+ * artifact on any host. */
+export function workerReadsSiteDomain() {
+  try {
+    return readFileSync(join(HERE, "src/instance.rs"), "utf8").includes("SITE_DOMAIN");
+  } catch {
+    return false;
+  }
+}
+
 /** Checks a random site host's health; failing, prints each manual step
  * with what it found. Answers whether the site host is healthy. */
 async function checkSiteHost(site, account, seconds) {
   const host = `${randomSiteId()}.${site}`;
   const url = `https://${host}/_clax/healthz`;
   step(`Checking a site host: ${url}`);
-  // Any answer of the Worker's below 500 shows the zone, the DNS record,
-  // the certificate and the route at work; the random ID names no
-  // artifact, so the Worker may answer it 404. Cloudflare's own answers for
-  // a host it does not route are 52x and 530.
-  if (await waitHealthy(url, seconds, (res) => res.status < 500)) return true;
+  // The Worker answers /_clax/healthz on every well-formed site host, the
+  // random ID's included, with /healthz's JSON (its `version`) and
+  // `Referrer-Policy: no-referrer`. Anything else (forbidden_host from a
+  // Worker without site hosts, Cloudflare's error pages, a redirect, a
+  // parking page) is not the Worker serving sites.
+  if (await waitHealthy(url, seconds, siteHealthy)) return true;
   const [zone, wildcard, cert] = await Promise.all([zoneFound(site), wildcardFound(host), certificateFound(host)]);
   const mark = (r) => (r.ok ? "done" : "TO DO");
   info(`the site domain's hosts are not served yet. What a wildcard needs, that deploy.mjs cannot do through wrangler:`);
@@ -625,6 +669,13 @@ async function main() {
     console.log(`hosted Clax deploy config (--config-only: no wrangler, no login, no build)`);
     await writeDeployConfig(o, o.account ?? process.env.CLOUDFLARE_ACCOUNT_ID);
     return;
+  }
+  if (!o.dryRun && !workerReadsSiteDomain()) {
+    throw new Error(
+      "this checkout's Worker does not read SITE_DOMAIN (crates/clax-worker/src/instance.rs still reads CONTENT_ORIGIN): " +
+        "the generated config would leave it serving artifacts on no host. Deploy once the Worker serves site hosts " +
+        "(SITE_DOMAIN in src/instance.rs and src/lib.rs, the site-origins plan's Task 11); --dry-run still runs",
+    );
   }
   moveOldRecords();
   if (!existsSync(WRANGLER)) throw new Error(`no wrangler at ${WRANGLER}: run npm install in ${HERE}`);

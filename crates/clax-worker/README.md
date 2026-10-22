@@ -122,8 +122,10 @@ node smoke-remote.mjs --deploy ~/.config/clax/deploy/example.com.json
 `deploy.mjs` (its header lists every option) checks the login, takes the
 public hostname (`--public`; with `--zone example.com` it offers
 `example.com`) and the site domain (`--site-domain example.run`, else the
-record's, else asked on a terminal with no default; never the public host,
-a domain under it, or one it is under), creates what is missing (the R2 bucket; with Artifacts the queue and the
+record's, else asked on a terminal with no default: a registrable domain
+of its own, never the public host, a domain under it, one it is under, one
+sharing its parent domain, or an IP address), refuses a real deploy until
+this checkout's Worker reads `SITE_DOMAIN`, creates what is missing (the R2 bucket; with Artifacts the queue and the
 namespace, which also proves the account has Artifacts), generates
 `SETUP_SECRET` and `CLAX_TOKEN` when the Worker has neither and uploads
 them with the first version (printed once, and kept with the origins in
@@ -175,8 +177,9 @@ comment arriving live on a WebSocket stream. On the artifact's site host
 a private site refused without a session, `/site-signin`'s handshake
 (a `SameSite=Lax` cookie), the shell's one-use code (a `Partitioned`
 cookie), the site opened to the world and closed again, and two db
-artifacts' documents and cookies kept apart; a Worker whose site host
-answers 404 skips them all. When it made the owner it
+artifacts' documents and cookies kept apart; a Worker that does not serve
+site hosts yet (its health there answers 403 `forbidden_host` or 404)
+skips them all. When it made the owner it
 prints a sign-in link for the owner's browser. The diagnostics routes
 (`/_diag/`, `CLAX_DIAG_ROUTES=1` and the owner token) give it the probe,
 the git token and the reconcile.
@@ -242,6 +245,10 @@ Set them in `wrangler.jsonc`'s `vars` or with `--var` on `wrangler deploy`.
 A hosted instance whose `PUBLIC_ORIGIN` is not an `https://` origin (or
 `http://` on localhost), or whose `CONTENT_ORIGIN` shares its host, does not
 start: every request answers 500 naming the var.
+
+`SITE_DOMAIN` (the site domain, e.g. `clax.run`) replaces `CONTENT_ORIGIN`
+once the Worker reads it; `deploy.mjs` already writes `SITE_DOMAIN` and
+refuses a deploy until this checkout's Worker reads it.
 
 ### Secrets
 

@@ -43,6 +43,10 @@ parties, which artifacts are, in its **private** section.
 
    On Cloudflare: the `clax.run` zone > DNS > Records > Add record, type
    `TXT`, name `_psl`. It stays as long as the entry is on the list.
+   Keep the registration renewed with more than a year left at all times:
+   the list's maintainers remove entries whose domains lapse or near
+   expiry, and an expired clax.run could be registered by someone else
+   while browsers still ship it as a suffix.
 3. Fork [github.com/publicsuffix/list](https://github.com/publicsuffix/list)
    and edit `public_suffix_list.dat`: in the private section
    (between `===BEGIN PRIVATE DOMAINS===` and `===END PRIVATE DOMAINS===`),
