@@ -38,6 +38,13 @@
 //!   429 `rate_limited`). Closing the site to the world refuses a visitor
 //!   on their next request (`site_access_layer`) and closes their room
 //!   socket (`super::room`, on `Event::SiteAccess`).
+//! - **Docs reads are validated** ([`docs_tag`]): a `GET docs/<path>` or
+//!   `GET docs` answer (200, or 404 for a document that is not there)
+//!   carries a weak `ETag` of the artifact's document sequence, its
+//!   declaration and the caller; the same `If-None-Match` answers 304
+//!   without reading, so a page polling for changes costs a lookup.
+//! - **A page's upload** meets the contract's rules on the server
+//!   ([`clax_core::publish::check_page_asset`]), whatever the page checked.
 
 use super::{artifacts, assets, docs, room};
 use axum::Json;
@@ -229,6 +236,24 @@ async fn answer(s: AppState, api: axum::Router, mut req: Request) -> Result<Resp
         h.site_write(req.headers(), req.extensions(), site.artifact.as_str())
             .map_err(refuse)?;
     }
+    // A docs read's validator, read before the read itself, so it is never
+    // newer than what it is sent with.
+    let tag = if get && (rest == "docs" || rest.starts_with("docs/")) {
+        docs_tag(&s, &site.artifact, &caller).await
+    } else {
+        None
+    };
+    if let Some(t) = &tag
+        && if_none_match(req.headers(), t)
+    {
+        let mut res = axum::http::StatusCode::NOT_MODIFIED.into_response();
+        let h = res.headers_mut();
+        if let Ok(v) = HeaderValue::from_str(t) {
+            h.insert(header::ETAG, v);
+        }
+        h.insert(header::CACHE_CONTROL, HeaderValue::from_static("no-store"));
+        return Ok(res);
+    }
     let hosted = holder_request(&s, &caller).await.map_err(refuse)?;
     let headers = req.headers_mut();
     let gone: Vec<_> = headers
@@ -265,7 +290,53 @@ async fn answer(s: AppState, api: axum::Router, mut req: Request) -> Result<Resp
     let Ok(mut res) = api.oneshot(req).await;
     res.headers_mut()
         .remove(header::ACCESS_CONTROL_ALLOW_ORIGIN);
+    // A document that is not there is as cacheable as one that is.
+    let answered = matches!(res.status().as_u16(), 200 | 404);
+    if let Some(t) = tag
+        && answered
+        && let Ok(v) = HeaderValue::from_str(&t)
+    {
+        res.headers_mut().insert(header::ETAG, v);
+    }
     Ok(res)
+}
+
+/// The validator of a docs read on `aid` by `caller` (`GET docs/<path>`,
+/// `GET docs`): a weak `ETag` of the artifact's document sequence, which
+/// every change to its documents advances, with the artifact's declaration
+/// and the caller's level and viewer, which decide what a read finds at one
+/// sequence. `None` when either could not be read: the read goes unvalidated.
+async fn docs_tag(s: &AppState, aid: &ArtifactId, caller: &SiteCaller) -> Option<String> {
+    let seq = s
+        .app_data_call(aid, clax_store::app_data::AppDataOp::Seq, |r| r?.into_seq())
+        .await
+        .ok()?;
+    let (caller, aid) = (caller.clone(), aid.clone());
+    let who = s
+        .store_call(move |st| {
+            let c = clax_http::db_caller::site_caller(st, &caller)?;
+            let caps = st.doc_capabilities(&aid)?;
+            Ok(format!(
+                "{}\n{}\n{caps}",
+                c.level.as_str(),
+                c.viewer.unwrap_or_default()
+            ))
+        })
+        .await
+        .ok()?;
+    let h = clax_core::secret::sha256_hex(&who);
+    Some(format!("W/\"{seq}-{}\"", &h[..16]))
+}
+
+/// Whether `headers`' `If-None-Match` names `tag` (or is `*`).
+fn if_none_match(headers: &axum::http::HeaderMap, tag: &str) -> bool {
+    headers
+        .get_all(header::IF_NONE_MATCH)
+        .iter()
+        .filter_map(|v| v.to_str().ok())
+        .flat_map(|v| v.split(','))
+        .map(str::trim)
+        .any(|t| t == tag || t == "*")
 }
 
 fn method_not_allowed() -> ApiError {

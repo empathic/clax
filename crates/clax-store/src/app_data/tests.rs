@@ -2069,3 +2069,30 @@ fn a_reimport_after_a_fold_keeps_the_stores_rows_and_the_fold_applies_once() {
     }
     assert_eq!(ad.fold_mark().unwrap(), 1);
 }
+
+#[test]
+fn the_document_sequence_moves_with_every_change_and_only_then() {
+    let (_d, store) = store();
+    let st = Docs::of(&store);
+    let id = artifact_with_caps(&st, json!({}));
+    let ad = AppData::open(&st.home().app_data_path(&id), st.clock()).unwrap();
+    let seq = |ad: &AppData| match ad.apply(AppDataOp::Seq) {
+        AppDataReply::Seq(n) => n,
+        r => panic!("{r:?}"),
+    };
+    assert_eq!(seq(&ad), 0);
+    let ctx = WriteCtx::of(DAEMON);
+    let rules = Rules::default();
+    ad.doc_set(&ctx, &rules, "t/a", json!({"n": 1}), page(), &admin())
+        .unwrap();
+    let after_write = seq(&ad);
+    assert_eq!(after_write, 1);
+    // A read, and a delete of nothing, leave it.
+    ad.doc_get(&rules, "t/a", &admin()).unwrap();
+    ad.doc_delete(&ctx, &rules, "t/none", page(), &admin())
+        .unwrap();
+    assert_eq!(seq(&ad), after_write);
+    ad.doc_delete(&ctx, &rules, "t/a", page(), &admin())
+        .unwrap();
+    assert_eq!(seq(&ad), after_write + 1);
+}

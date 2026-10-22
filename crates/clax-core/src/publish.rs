@@ -258,6 +258,158 @@ pub fn is_asset_type(content_type: &str) -> bool {
         )
 }
 
+/// The content types a page's `assets` capability uploads
+/// (web/contract/0.3.0/assets.d.ts), exact spellings, no parameters.
+pub const PAGE_ASSET_TYPES: &[&str] = &[
+    "image/png",
+    "image/jpeg",
+    "image/gif",
+    "image/webp",
+    "video/mp4",
+    "video/webm",
+    "application/pdf",
+    "font/woff2",
+    "font/woff",
+    "font/ttf",
+    "font/otf",
+    "image/svg+xml",
+    "text/csv",
+    "text/markdown",
+    "application/json",
+    "text/plain",
+    "text/css",
+    "text/javascript",
+];
+
+/// Largest SVG a page uploads, in bytes.
+pub const PAGE_SVG_MAX_BYTES: u64 = 2 * 1024 * 1024;
+/// Largest stylesheet or script a page uploads, in bytes.
+pub const PAGE_CODE_MAX_BYTES: u64 = 16 * 1024 * 1024;
+/// How much of a binary or SVG upload is read to judge its start.
+const SNIFF_BYTES: usize = 4096;
+
+/// Whether the first non-blank byte, after a UTF-8 byte-order mark, is `<`.
+fn starts_with_markup(b: &[u8]) -> bool {
+    let b = b.strip_prefix(b"\xEF\xBB\xBF").unwrap_or(b);
+    b.iter()
+        .find(|c| !matches!(c, b' ' | b'\t' | b'\n' | b'\r' | b'\x0c'))
+        .is_some_and(|c| *c == b'<')
+}
+
+/// Whether `head` opens an SVG document: `<svg` after any XML prolog,
+/// comments and doctype.
+fn opens_svg(head: &[u8]) -> bool {
+    let text = String::from_utf8_lossy(head);
+    let mut s = text.trim_start_matches('\u{feff}');
+    loop {
+        s = s.trim_start();
+        let skip = |open: &str, close: &str, s: &str| -> Option<usize> {
+            let rest = s.get(open.len()..)?;
+            if !s[..open.len()].eq_ignore_ascii_case(open) {
+                return None;
+            }
+            rest.find(close).map(|i| open.len() + i + close.len())
+        };
+        // A doctype's internal subset (`[…]`) may hold `>` of its own.
+        let doctype = |s: &str| -> Option<usize> {
+            let end = skip("<!DOCTYPE", ">", s)?;
+            match s[..end].find('[') {
+                Some(open) => s[open..]
+                    .find(']')
+                    .and_then(|c| s[open + c..].find('>').map(|g| open + c + g + 1)),
+                None => Some(end),
+            }
+        };
+        let next = skip("<?", "?>", s)
+            .or_else(|| skip("<!--", "-->", s))
+            .or_else(|| doctype(s));
+        match next {
+            Some(n) => s = &s[n..],
+            None => {
+                return s.starts_with("<svg")
+                    && s[4..]
+                        .chars()
+                        .next()
+                        .is_some_and(|c| c.is_whitespace() || c == '/' || c == '>');
+            }
+        }
+    }
+}
+
+/// A page's upload (the `assets` capability, `x-clax-via: page`) checked
+/// against the contract, which the page's own checks only mirror: the type
+/// is one of [`PAGE_ASSET_TYPES`] (else `unsupported_type`); an SVG is at
+/// most [`PAGE_SVG_MAX_BYTES`] and a stylesheet or script
+/// [`PAGE_CODE_MAX_BYTES`] (else `asset_too_large`); a binary type does not
+/// start with markup, and an SVG opens an `<svg>` element (else
+/// `unsupported_type`); a text type is UTF-8 (else `invalid_request`), and a
+/// stylesheet or script holds no NUL and does not start with markup (else
+/// `unsupported_type`).
+pub fn check_page_asset(content_type: &str, bytes: &[u8]) -> Result<()> {
+    let ct = content_type;
+    if !PAGE_ASSET_TYPES.contains(&ct) {
+        return Err(CoreError::invalid(
+            "unsupported_type",
+            format!(
+                "'{ct}' is not an accepted type; exact media types only: {}",
+                PAGE_ASSET_TYPES.join(", ")
+            ),
+        ));
+    }
+    let code = matches!(ct, "text/css" | "text/javascript");
+    let limit = match ct {
+        "image/svg+xml" => PAGE_SVG_MAX_BYTES,
+        _ if code => PAGE_CODE_MAX_BYTES,
+        _ => MAX_ASSET_BYTES,
+    };
+    if bytes.len() as u64 > limit {
+        return Err(CoreError::invalid(
+            "asset_too_large",
+            format!("a {ct} asset is at most {limit} bytes"),
+        ));
+    }
+    let head = &bytes[..bytes.len().min(SNIFF_BYTES)];
+    let unsupported = |why: String| Err(CoreError::invalid("unsupported_type", why));
+    if ct == "image/svg+xml" {
+        return if opens_svg(head) {
+            Ok(())
+        } else {
+            unsupported("the body is not an SVG document".into())
+        };
+    }
+    let text = ct.starts_with("text/") || ct == "application/json";
+    if !text {
+        return if starts_with_markup(head) {
+            unsupported(format!(
+                "a {ct} body starts with markup; markup uploads only as image/svg+xml"
+            ))
+        } else {
+            Ok(())
+        };
+    }
+    if std::str::from_utf8(bytes).is_err() {
+        return Err(CoreError::invalid(
+            "invalid_request",
+            format!("a {ct} file must be UTF-8; re-encode it before uploading"),
+        ));
+    }
+    let nul = bytes.contains(&0);
+    if code && (nul || starts_with_markup(bytes)) {
+        return unsupported(format!(
+            "a {ct} file must read as text and not start with markup"
+        ));
+    }
+    if nul {
+        return Err(CoreError::invalid(
+            "invalid_request",
+            format!(
+                "a {ct} file must be UTF-8 (this one reads as UTF-16 or binary); re-encode it before uploading"
+            ),
+        ));
+    }
+    Ok(())
+}
+
 /// Content type inferred from the path's extension (as [`std::path::Path::extension`]
 /// defines it, compared case-insensitively); JavaScript is always
 /// `text/javascript`, and paths with no or an unknown extension are
@@ -595,6 +747,58 @@ pub fn validate(req: PublishRequest) -> Result<ValidatedPublish> {
 mod tests {
     use super::*;
     use std::collections::BTreeMap;
+
+    fn page_asset_code(ct: &str, bytes: &[u8]) -> Option<&'static str> {
+        match check_page_asset(ct, bytes) {
+            Ok(()) => None,
+            Err(CoreError::Invalid { code, .. }) => Some(code),
+            Err(e) => panic!("{e:?}"),
+        }
+    }
+
+    #[test]
+    fn a_page_upload_meets_the_contracts_types_sizes_and_bodies() {
+        let svg = b"<?xml version=\"1.0\"?>\n<!-- x --><!DOCTYPE svg [<!ENTITY a \"<b>\">]><svg xmlns=\"http://www.w3.org/2000/svg\"/>";
+        for (ct, body) in [
+            ("image/png", &b"\x89PNG\r\n"[..]),
+            ("image/svg+xml", &svg[..]),
+            ("text/markdown", b"<!-- stored as given -->\n# hi"),
+            ("text/plain", "\u{feff}hello".as_bytes()),
+            ("text/css", b"a{}"),
+            ("application/json", b"{}"),
+        ] {
+            assert_eq!(page_asset_code(ct, body), None, "{ct}");
+        }
+        for (ct, body, want) in [
+            ("image/bmp", &b"x"[..], "unsupported_type"),
+            ("image/PNG", b"x", "unsupported_type"),
+            ("text/html", b"<p>", "unsupported_type"),
+            ("text/csv; charset=utf-8", b"a", "unsupported_type"),
+            // A PNG that is markup, as a page could pass off a document.
+            ("image/png", b"  <html><script>", "unsupported_type"),
+            ("image/svg+xml", b"just text", "unsupported_type"),
+            ("text/javascript", b"<script>x</script>", "unsupported_type"),
+            ("text/css", b"a\0b", "unsupported_type"),
+            ("text/csv", b"\xff\xfeA\0", "invalid_request"),
+            ("text/plain", b"a\0b", "invalid_request"),
+        ] {
+            assert_eq!(page_asset_code(ct, body), Some(want), "{ct}");
+        }
+        let big_svg = [
+            b"<svg/>".as_slice(),
+            &vec![b' '; PAGE_SVG_MAX_BYTES as usize],
+        ]
+        .concat();
+        assert_eq!(
+            page_asset_code("image/svg+xml", &big_svg),
+            Some("asset_too_large")
+        );
+        // A multibyte character where a prolog's opener would be is not a panic.
+        assert_eq!(
+            page_asset_code("image/svg+xml", "<éé>".as_bytes()),
+            Some("unsupported_type")
+        );
+    }
 
     fn req(files: &[(&str, Option<FileInput>)]) -> PublishRequest {
         PublishRequest {

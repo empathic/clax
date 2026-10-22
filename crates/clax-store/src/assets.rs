@@ -112,7 +112,8 @@ impl Store {
     /// # Errors
     /// `Invalid { code: "unsupported_type" }` for a type failing [`is_supported`],
     /// `Invalid { code: "asset_too_large" }` when `bytes` exceeds the cap,
-    /// `NotFound` when the artifact does not exist or is deleted, and I/O
+    /// and for a page's upload (`via_page`) whatever
+    /// [`clax_core::publish::check_page_asset`] refuses, `NotFound` when the artifact does not exist or is deleted, and I/O
     /// or database errors otherwise.
     pub fn add_asset(
         &self,
@@ -160,6 +161,11 @@ impl Store {
                 "asset_too_large",
                 format!("asset exceeds {MAX_ASSET_BYTES} bytes"),
             ));
+        }
+        // A page's upload meets the contract's own rules, whatever the page
+        // checked first.
+        if via_page {
+            clax_core::publish::check_page_asset(content_type, bytes)?;
         }
         let _lock = self.lock_content(id).await?;
         self.get_artifact(id)?.ok_or(CoreError::NotFound)?;

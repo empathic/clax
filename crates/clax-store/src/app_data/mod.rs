@@ -924,6 +924,13 @@ impl AppData {
         })
     }
 
+    /// The artifact's document sequence (`doc_seq.seq`): every change to its
+    /// documents (a write, a delete, a fold's move) advances it, so a read
+    /// at an unchanged sequence finds what it found before.
+    pub fn doc_seq(&self) -> Result<i64> {
+        self.with_read(|c| Ok(c.query_row("SELECT seq FROM doc_seq", [], |r| r.get(0))?))
+    }
+
     /// The newest audit record's `seq` (0 when there is none).
     pub fn audit_seq(&self) -> Result<i64> {
         self.with_read(|c| {

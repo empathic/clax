@@ -7,7 +7,7 @@
 //! ([`super::AuditEnv`]), and an error as [`WireError`], whose fixed codes
 //! map back to [`CoreError`].
 
-use super::{AppData, DocView, Exported, Fold, WriteCtx};
+use super::{AppData, DocView, Exported, ExportedDoc, Fold, WriteCtx};
 use crate::audit::AuditRow;
 use crate::docs::{
     Acquire, Acquired, BatchWrite, Doc, DocChange, DocPage, DocQuery, Pin, StrReplace, Written,
@@ -143,6 +143,23 @@ pub enum AppDataOp {
     AuthoredBy { author: String, is_owner: bool },
     /// [`AppData::audit_since`].
     AuditSince { seq: i64 },
+    /// [`AppData::doc_seq`].
+    Seq,
+    /// [`AppData::doc_collections`].
+    Collections {
+        caps: Value,
+        #[serde(default)]
+        caller: Option<WireCaller>,
+    },
+    /// [`AppData::copy_out`].
+    CopyOut {
+        caps: Value,
+        caller: WireCaller,
+        max_docs: usize,
+        max_bytes: usize,
+    },
+    /// [`AppData::seed`].
+    Seed { docs: Vec<ExportedDoc> },
 }
 
 /// A document with its authors.
@@ -227,6 +244,15 @@ pub enum AppDataReply {
     Strings(Vec<String>),
     /// `AuditSince`'s.
     Audit(Vec<WireAuditRow>),
+    /// `Seq`'s, and `Seed`'s (the documents it put).
+    Seq(i64),
+    /// `Collections`': each collection and its document count.
+    Collections(Vec<(String, u64)>),
+    /// `CopyOut`'s: the documents, and whether any were left.
+    Copied {
+        docs: Vec<ExportedDoc>,
+        truncated: bool,
+    },
     /// A change's reply, with the audit records it made here: the
     /// records the store wrote since just before the change, which the
     /// host copies into the instance's history.
@@ -294,6 +320,8 @@ pub const WIRE_CODES: &[&str] = &[
     "old_str_not_found",
     "old_str_not_unique",
     "invalid_capabilities",
+    "key_reused",
+    "invalid_args",
 ];
 
 impl From<&CoreError> for WireError {
@@ -483,6 +511,27 @@ impl AppDataReply {
         }
     }
 
+    pub fn into_seq(self) -> Result<i64> {
+        match self.ok()? {
+            AppDataReply::Seq(n) => Ok(n),
+            r => Err(unexpected("seq", &r)),
+        }
+    }
+
+    pub fn into_collections(self) -> Result<Vec<(String, u64)>> {
+        match self.ok()? {
+            AppDataReply::Collections(c) => Ok(c),
+            r => Err(unexpected("collections", &r)),
+        }
+    }
+
+    pub fn into_copied(self) -> Result<(Vec<ExportedDoc>, bool)> {
+        match self.ok()? {
+            AppDataReply::Copied { docs, truncated } => Ok((docs, truncated)),
+            r => Err(unexpected("copy_out", &r)),
+        }
+    }
+
     pub fn into_audit(self) -> Result<Vec<AuditRow>> {
         match self.ok()? {
             AppDataReply::Audit(rows) => Ok(rows.into_iter().map(AuditRow::from).collect()),
@@ -660,6 +709,21 @@ impl AppData {
                     .map(WireAuditRow::from)
                     .collect(),
             ),
+            AppDataOp::Seq => AppDataReply::Seq(self.doc_seq()?),
+            AppDataOp::Collections { caps, caller } => AppDataReply::Collections(
+                self.doc_collections(&rules(&caps)?, caller.as_ref().map(Caller::from).as_ref())?,
+            ),
+            AppDataOp::CopyOut {
+                caps,
+                caller,
+                max_docs,
+                max_bytes,
+            } => {
+                let (docs, truncated) =
+                    self.copy_out(&rules(&caps)?, &(&caller).into(), max_docs, max_bytes)?;
+                AppDataReply::Copied { docs, truncated }
+            }
+            AppDataOp::Seed { docs } => AppDataReply::Seq(self.seed(&docs)? as i64),
         })
     }
 }

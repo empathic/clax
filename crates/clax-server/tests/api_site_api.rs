@@ -804,3 +804,228 @@ async fn the_owner_deletes_an_asset_of_the_hosts_artifact_alone() {
     let (s, v) = on_a.send(Method::GET, "assets", None).await;
     assert_eq!((s, v["assets"].as_array().map(Vec::len)), (200, Some(0)));
 }
+
+/// An upload of `bytes` as `content_type` through `api`: the status and the answer.
+async fn upload_bytes(api: &Call<'_>, content_type: &str, bytes: Vec<u8>) -> (u16, Value) {
+    let part = reqwest::multipart::Part::bytes(bytes)
+        .file_name("upload")
+        .mime_str(content_type)
+        .unwrap();
+    let res = api
+        .req(Method::POST, "assets")
+        .multipart(reqwest::multipart::Form::new().part("file", part))
+        .send()
+        .await
+        .unwrap();
+    let s = res.status().as_u16();
+    (s, res.json().await.unwrap_or(Value::Null))
+}
+
+#[tokio::test]
+async fn a_page_upload_meets_the_contracts_rules_on_the_server() {
+    let ts = TestServer::spawn().await;
+    let aid = artifact(&ts, json!({"assets": {}})).await;
+    let cookie = ts.site_cookie(&aid).await;
+    let api = on(&ts, &aid, Some(&cookie));
+    // What the page's own checks refuse, the site refuses too: a page that
+    // skips them stores nothing.
+    let big_svg = [b"<svg/>".to_vec(), vec![b' '; 2 * 1024 * 1024]].concat();
+    for (ct, body, want) in [
+        (
+            "image/png",
+            b"  <html><script>alert(1)</script>".to_vec(),
+            "unsupported_type",
+        ),
+        ("text/html", b"<p>hi</p>".to_vec(), "unsupported_type"),
+        ("image/svg+xml", b"not an svg".to_vec(), "unsupported_type"),
+        ("image/svg+xml", big_svg, "asset_too_large"),
+        (
+            "text/javascript",
+            b"<script>x</script>".to_vec(),
+            "unsupported_type",
+        ),
+        ("text/csv", vec![0xff, 0xfe, 0x41, 0x00], "invalid_request"),
+    ] {
+        let (s, v) = upload_bytes(&api, ct, body).await;
+        assert_eq!((s, code(&v)), (400, want), "{ct}: {v}");
+    }
+    let (s, v) = api.send(Method::GET, "assets", None).await;
+    assert_eq!((s, v["assets"].as_array().map(Vec::len)), (200, Some(0)));
+    let svg = b"<?xml version=\"1.0\"?><svg/>".to_vec();
+    let (s, v) = upload_bytes(&api, "image/svg+xml", svg).await;
+    assert_eq!(s, 201, "{v}");
+}
+
+/// Sam, a person the hosted owner (session `owner`) shares `aid` with as
+/// `access`: Sam's browser session.
+async fn shared_with_sam(ts: &TestServer, owner: &str, aid: &str, access: &str) -> String {
+    let invite: Value = serde_json::from_str(
+        &signed_in(
+            ts,
+            "/api/people/invites",
+            json!({"name": "Sam"}),
+            Some(owner),
+        )
+        .await,
+    )
+    .unwrap();
+    let code = invite["invite"]["url"]
+        .as_str()
+        .unwrap()
+        .rsplit('/')
+        .next()
+        .unwrap()
+        .to_string();
+    let sam = signed_in(
+        ts,
+        &format!("/api/hosted/invites/{code}/accept"),
+        json!({}),
+        None,
+    )
+    .await;
+    let me = ts
+        .client
+        .get(format!("{}/api/hosted/me", ts.base))
+        .header(HOST, format!("localhost:{}", ts.addr.port()))
+        .header(COOKIE, format!("clax_session={sam}"))
+        .send()
+        .await
+        .unwrap()
+        .json::<Value>()
+        .await
+        .unwrap();
+    let pid = me["person"]["public_id"].as_str().unwrap().to_string();
+    let shared = ts
+        .client
+        .put(format!("{}/api/hosted/artifacts/{aid}/shares", ts.base))
+        .header(HOST, format!("localhost:{}", ts.addr.port()))
+        .header(ORIGIN, format!("http://localhost:{}", ts.addr.port()))
+        .header(COOKIE, format!("clax_session={owner}"))
+        .json(&json!({"person": pid, "access": access}))
+        .send()
+        .await
+        .unwrap();
+    assert_eq!(shared.status(), 200);
+    sam
+}
+
+#[tokio::test]
+async fn only_the_owner_deletes_an_asset_through_the_site() {
+    let clock = Arc::new(ManualClock::at("2026-10-22T10:00:00Z"));
+    let ts = TestServer::spawn_hosted(clock, Some(SECRET)).await;
+    let owner = signed_in(
+        &ts,
+        "/api/hosted/setup",
+        json!({"secret": SECRET, "name": "Ada"}),
+        None,
+    )
+    .await;
+    let aid = artifact(&ts, json!({"assets": {}})).await;
+    let mine = hosted_cookie(&ts, &owner, &aid).await.unwrap();
+    let (s, v) = upload(&on(&ts, &aid, Some(&mine))).await;
+    assert_eq!(s, 201, "{v}");
+    let path = format!("assets/{}", v["asset"]["id"].as_str().unwrap());
+    // An editor of the artifact, signed in on its site.
+    let sam = shared_with_sam(&ts, &owner, &aid, "editor").await;
+    let theirs = hosted_cookie(&ts, &sam, &aid).await.unwrap();
+    let (s, _) = on(&ts, &aid, Some(&theirs))
+        .send(Method::DELETE, &path, None)
+        .await;
+    assert!(
+        s == 401 || s == 403,
+        "an editor deleted the owner's asset: {s}"
+    );
+    // Nor a visitor, once the site is open to the world.
+    open_to_world(&ts, &aid);
+    let anyone = visitor(&ts, &aid).await;
+    let (s, _) = on(&ts, &aid, Some(&anyone))
+        .send(Method::DELETE, &path, None)
+        .await;
+    assert!(s == 401 || s == 403, "a visitor deleted an asset: {s}");
+    let (s, v) = on(&ts, &aid, Some(&mine))
+        .send(Method::GET, "assets", None)
+        .await;
+    assert_eq!((s, v["assets"].as_array().map(Vec::len)), (200, Some(1)));
+}
+
+/// A GET of `path` through `api` with `If-None-Match: tag`: the status and the `ETag`.
+async fn get_tagged(api: &Call<'_>, path: &str, tag: Option<&str>) -> (u16, Option<String>) {
+    let mut r = api.req(Method::GET, path);
+    if let Some(t) = tag {
+        r = r.header("if-none-match", t);
+    }
+    let res = r.send().await.unwrap();
+    let etag = res
+        .headers()
+        .get("etag")
+        .map(|v| v.to_str().unwrap().to_string());
+    (res.status().as_u16(), etag)
+}
+
+#[tokio::test]
+async fn a_docs_read_answers_304_until_its_artifacts_documents_change() {
+    let ts = TestServer::spawn().await;
+    let aid = artifact(
+        &ts,
+        json!({"db": {"rules": [{"path": "data/guestbook", "read": "public", "write": "public"}]}}),
+    )
+    .await;
+    let cookie = ts.site_cookie(&aid).await;
+    let api = on(&ts, &aid, Some(&cookie));
+    let doc = json!({"data": {"n": 1}});
+    let (s, _) = api
+        .send(Method::PUT, "docs/data/guestbook/e/a", Some(doc))
+        .await;
+    assert_eq!(s, 200);
+    let list = "docs?collection=data/guestbook/e";
+    for path in [
+        "docs/data/guestbook/e/a",
+        list,
+        "docs/data/guestbook/e/none",
+    ] {
+        let (s, tag) = get_tagged(&api, path, None).await;
+        assert!(s == 200 || s == 404, "{path}: {s}");
+        let tag = tag.unwrap_or_else(|| panic!("{path} has no ETag"));
+        let again = get_tagged(&api, path, Some(&tag)).await;
+        assert_eq!(again, (304, Some(tag.clone())), "{path}");
+        let other = get_tagged(&api, path, Some("W/\"other\"")).await;
+        assert_eq!(other.0, s, "{path}");
+    }
+    let before = get_tagged(&api, list, None).await.1.unwrap();
+    // Any write to the artifact's documents, even elsewhere, makes it stale.
+    let (s, _) = api
+        .send(Method::PUT, "docs/other/x", Some(json!({"data": {}})))
+        .await;
+    assert_eq!(s, 200);
+    let (s, after) = get_tagged(&api, list, Some(&before)).await;
+    assert_eq!(s, 200);
+    assert_ne!(after.as_deref(), Some(before.as_str()));
+    // Another caller's validator is never this one's: a visitor reads
+    // other documents at the same sequence.
+    open_to_world(&ts, &aid);
+    let me = visitor(&ts, &aid).await;
+    let theirs = on(&ts, &aid, Some(&me));
+    let (s, tag) = get_tagged(&theirs, list, after.as_deref()).await;
+    assert_eq!(s, 200);
+    assert_ne!(tag, after);
+    // A change to the declaration (its rules) makes it stale too.
+    let res = ts
+        .authed(
+            ts.client
+                .patch(format!("{}/api/artifacts/{aid}", ts.base))
+                .json(&json!({"capabilities": {"db": {}}})),
+        )
+        .send()
+        .await
+        .unwrap();
+    assert_eq!(res.status(), 200);
+    assert_eq!(get_tagged(&api, list, after.as_deref()).await.0, 200);
+    // A write carries none.
+    let res = api
+        .req(Method::PUT, "docs/other/y")
+        .json(&json!({"data": {}}))
+        .send()
+        .await
+        .unwrap();
+    assert!(res.headers().get("etag").is_none());
+}
