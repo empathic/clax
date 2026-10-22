@@ -175,6 +175,9 @@ pub enum Attempt {
     /// The same, counted per artifact ([`Counted::Artifact`]): what every
     /// visitor of one site may write together.
     SiteWriteArtifact,
+    /// Counting an install of an app (`POST /api/artifacts/<id>/installs`):
+    /// a row each.
+    Install,
 }
 
 impl Attempt {
@@ -189,6 +192,7 @@ impl Attempt {
             Attempt::SignUp => (5.0, 600.0),
             Attempt::SiteWrite => (60.0, 1.0),
             Attempt::SiteWriteArtifact => (600.0, 0.1),
+            Attempt::Install => (10.0, 60.0),
         }
     }
 }
@@ -233,41 +237,66 @@ impl Limits {
 
     /// Takes one of `key`'s `what` attempts, as [`Limits::take`].
     pub fn take_for(&self, what: Attempt, key: Counted) -> Result<(), u64> {
-        let client = key;
+        self.take_each(&[(what, key)]).map_err(|(_, after)| after)
+    }
+
+    /// Takes one attempt of each of `keys` when each has one left, and
+    /// none otherwise: `Err` with the index of the first that has none and
+    /// the seconds until its next one.
+    pub fn take_each(&self, keys: &[(Attempt, Counted)]) -> Result<(), (usize, u64)> {
         let now = self.clock.now();
-        let (burst, per) = what.rule();
         let refill = |(tokens, at): (f64, chrono::DateTime<chrono::Utc>), per: f64, burst: f64| {
             let elapsed = (now - at).num_milliseconds().max(0) as f64 / 1000.0;
             (tokens + elapsed / per).min(burst)
         };
         let mut m = self.buckets.lock().unwrap_or_else(|e| e.into_inner());
-        if m.len() >= MAX_CLIENTS && !m.contains_key(&(what, client.clone())) {
-            m.retain(|(w, _), b| {
-                let (burst, per) = w.rule();
-                refill(*b, per, burst) < burst
-            });
-            if m.len() >= MAX_CLIENTS {
-                let fullest = m
-                    .iter()
-                    .map(|((w, c), b)| {
-                        let (burst, per) = w.rule();
-                        (refill(*b, per, burst) / burst, (*w, c.clone()))
-                    })
-                    .max_by(|a, b| a.0.total_cmp(&b.0))
-                    .map(|(_, k)| k);
-                if let Some(k) = fullest {
-                    m.remove(&k);
+        for key in keys {
+            if m.len() >= MAX_CLIENTS && !m.contains_key(key) {
+                m.retain(|(w, _), b| {
+                    let (burst, per) = w.rule();
+                    refill(*b, per, burst) < burst
+                });
+                if m.len() >= MAX_CLIENTS {
+                    let fullest = m
+                        .iter()
+                        .map(|((w, c), b)| {
+                            let (burst, per) = w.rule();
+                            (refill(*b, per, burst) / burst, (*w, c.clone()))
+                        })
+                        .max_by(|a, b| a.0.total_cmp(&b.0))
+                        .map(|(_, k)| k);
+                    if let Some(k) = fullest {
+                        m.remove(&k);
+                    }
                 }
             }
         }
-        let b = m.entry((what, client)).or_insert((burst, now));
-        let tokens = refill(*b, per, burst);
-        if tokens >= 1.0 {
-            *b = (tokens - 1.0, now);
-            Ok(())
-        } else {
-            *b = (tokens, now);
-            Err(((1.0 - tokens) * per).ceil() as u64)
+        let left: Vec<f64> = keys
+            .iter()
+            .map(|key| {
+                let (burst, per) = key.0.rule();
+                let b = m.entry(key.clone()).or_insert((burst, now));
+                refill(*b, per, burst)
+            })
+            .collect();
+        let spent = left.iter().position(|t| *t < 1.0);
+        for (key, tokens) in keys.iter().zip(&left) {
+            let b = m.get_mut(key).expect("entered above");
+            *b = (
+                if spent.is_none() {
+                    tokens - 1.0
+                } else {
+                    *tokens
+                },
+                now,
+            );
+        }
+        match spent {
+            None => Ok(()),
+            Some(i) => {
+                let per = keys[i].0.rule().1;
+                Err((i, ((1.0 - left[i]) * per).ceil() as u64))
+            }
         }
     }
 }
@@ -517,8 +546,8 @@ impl Hosted {
 
     /// Takes a world visitor's write on artifact `aid`'s site: one of the
     /// client's [`Attempt::SiteWrite`] and one of the artifact's
-    /// [`Attempt::SiteWriteArtifact`]; 429 `rate_limited` when either is
-    /// spent.
+    /// [`Attempt::SiteWriteArtifact`], or neither: 429 `rate_limited` when
+    /// either is spent.
     ///
     /// # Errors
     /// 429 as above.
@@ -528,15 +557,20 @@ impl Hosted {
         extensions: &axum::http::Extensions,
         aid: &str,
     ) -> Result<(), ApiError> {
-        self.attempt(Attempt::SiteWrite, headers, extensions)?;
+        let client = client_key(self.client(headers, extensions));
         self.limits
-            .take_for(
-                Attempt::SiteWriteArtifact,
-                Counted::Artifact(aid.to_string()),
-            )
-            .map_err(|after| {
+            .take_each(&[
+                (Attempt::SiteWrite, Counted::Address(client)),
+                (
+                    Attempt::SiteWriteArtifact,
+                    Counted::Artifact(aid.to_string()),
+                ),
+            ])
+            .map_err(|(i, after)| {
                 let mut e = rate_limited(after);
-                e.message = format!("too many writes to this site: try again in {after} s");
+                if i == 1 {
+                    e.message = format!("too many writes to this site: try again in {after} s");
+                }
                 e
             })
     }
@@ -1064,6 +1098,15 @@ pub fn guest_need(method: &Method, path: &str, query: Option<&str>) -> GuestNeed
         ["api", "artifacts", aid, "site-code"] if post => {
             at(aid, RightType::Artifacts, "read", false)
         }
+        // An app's head and bundles, and counting an install of it: anyone
+        // who may open it, as the Clax app does without signing in.
+        ["api", "artifacts", aid, "head"] if get => at(aid, RightType::Artifacts, "read", false),
+        ["api", "artifacts", aid, "versions", _, "bundle"] if get => {
+            at(aid, RightType::Artifacts, "read", false)
+        }
+        ["api", "artifacts", aid, "installs"] if post => {
+            at(aid, RightType::Artifacts, "read", false)
+        }
         // Anyone who reads a page through its link may clone it read-only
         // (`crate::git_remotes::Asker::Link`): what the Clone dialog offers,
         // and the token.
@@ -1317,6 +1360,10 @@ pub const OWN_PAGES: &[&str] = &[
     "/auth/github",
     crate::github::CALLBACK_PATH,
     "/site-signin",
+    // The Clax app's links, which Apple and Google fetch with no session;
+    // each handler answers only on the public host.
+    "/.well-known/apple-app-site-association",
+    "/.well-known/assetlinks.json",
 ];
 
 /// The bundled legal documents' pages ([`Hosted::serves_legal`]).
@@ -1455,7 +1502,10 @@ pub async fn gate(State(s): State<AppState>, mut req: Request, next: Next) -> Re
     );
     // A site host's writes (its `/_clax/api/`) come from the site's own
     // origin, which its routes check (`clax_server::routes::site_api`).
-    if write && !authz && !origin_checked && !machine && !content_host {
+    // An app counting its install sends no `Origin`: such a request
+    // speaks for no session, whatever cookie it carries ([`anonymous_write`]).
+    let anonymous = !authz && !origin_checked && anonymous_write(&method, &path);
+    if write && !authz && !origin_checked && !machine && !content_host && !anonymous {
         return forbidden_origin(&h);
     }
     let session = if authz || anonymous {
@@ -1855,6 +1905,45 @@ mod tests {
             client_key("::ffff:198.51.100.1".parse().unwrap()),
             "198.51.100.1".parse::<std::net::IpAddr>().unwrap()
         );
+    }
+
+    #[test]
+    fn a_site_write_spends_both_its_buckets_or_neither() {
+        let clock =
+            std::sync::Arc::new(clax_core::working::ManualClock::at("2026-10-12T10:00:00Z"));
+        let l = Limits::new(clock);
+        let site = |n: u8| Counted::Artifact(format!("site{n}"));
+        let addr = |n: u8| Counted::Address(std::net::IpAddr::from([198, 51, 100, n]));
+        for i in 0..600u32 {
+            let a = addr((i / 60) as u8);
+            assert_eq!(
+                l.take_each(&[
+                    (Attempt::SiteWrite, a),
+                    (Attempt::SiteWriteArtifact, site(1))
+                ]),
+                Ok(()),
+                "{i}"
+            );
+        }
+        // The site's bucket is spent: a fresh address keeps its own.
+        let fresh = addr(200);
+        assert_eq!(
+            l.take_each(&[
+                (Attempt::SiteWrite, fresh.clone()),
+                (Attempt::SiteWriteArtifact, site(1))
+            ]),
+            Err((1, 1))
+        );
+        for _ in 0..60 {
+            assert_eq!(
+                l.take_each(&[
+                    (Attempt::SiteWrite, fresh.clone()),
+                    (Attempt::SiteWriteArtifact, site(2))
+                ]),
+                Ok(()),
+                "the refused write spent none of the address's"
+            );
+        }
     }
 
     #[test]

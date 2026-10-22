@@ -8731,7 +8731,7 @@ it starts, the runs a previous process left. A build without the
   is not the site's own is 403 `forbidden_origin`, and so is a write
   without one (or a read without one that `Sec-Fetch-Site` says another
   site made); no answer carries `Access-Control-Allow-Origin`. On a hosted
-  Clax a visitor's writes are limited per client address (60, one back a
+  Clax the writes of a visitor, a link viewer and a guest are limited per client address (60, one back a
   second) and per artifact (600, ten back a second): 429 `rate_limited`
   with `retry_after_s`.
 - The viewer probes `http://<id>.localhost:<port>/_clax/healthz` (1 s

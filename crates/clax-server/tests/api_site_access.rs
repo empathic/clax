@@ -1129,6 +1129,60 @@ async fn a_world_site_is_served_to_anyone_and_its_page_is_not() {
 }
 
 #[tokio::test]
+async fn a_world_sites_files_revalidate_within_a_minute_and_only_navigations_set_the_cookie() {
+    let site = Site::new().await;
+    let owner = site.owner().await;
+    let (aid, asset) = site.guestbook().await;
+    site.site_access(&owner, &aid, "world").await;
+    let cc = |r: &reqwest::Response| {
+        assert!(r.headers().get("access-control-allow-origin").is_none());
+        r.headers()["cache-control"].to_str().unwrap().to_string()
+    };
+    for (p, want) in [
+        ("/", "public, no-cache"),
+        // A version's page revalidates; its other files and the assets
+        // keep a minute at most, never `immutable`.
+        ("/_clax/v/1/", "public, no-cache"),
+        (
+            &format!("/_clax/blob/{asset}") as &str,
+            "public, max-age=60, must-revalidate",
+        ),
+    ] {
+        let r = site.on_site(&aid, p, None).await;
+        assert_eq!(r.status(), 200, "{p}");
+        assert!(r.headers().get(SET_COOKIE).is_none(), "{p} sets no cookie");
+        assert_eq!(cc(&r), want, "{p}");
+    }
+    // A navigation sets the cookie, privately.
+    let r = site
+        .raw
+        .get(format!("{}/", site.ts.base))
+        .header(HOST, site.site_host(&aid))
+        .header(ACCEPT, "text/html")
+        .send()
+        .await
+        .unwrap();
+    assert!(r.headers().get(SET_COOKIE).is_some());
+    assert_eq!(cc(&r), "private, no-store");
+    // So does the runtime's first call; a forged cookie is replaced.
+    let r = site
+        .raw
+        .get(format!("{}/_clax/api/whoami", site.ts.base))
+        .header(HOST, site.site_host(&aid))
+        .header(COOKIE, "clax_visitor=someone-elses.id")
+        .send()
+        .await
+        .unwrap();
+    assert!(
+        r.headers()[SET_COOKIE]
+            .to_str()
+            .unwrap()
+            .starts_with("clax_visitor=")
+    );
+    assert_eq!(cc(&r), "private, no-store");
+}
+
+#[tokio::test]
 async fn closing_a_world_site_refuses_the_next_visitor_request() {
     let site = Site::new().await;
     let owner = site.owner().await;

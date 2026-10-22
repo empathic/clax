@@ -21,7 +21,8 @@
 //! - **Who calls** is who the site's access check found
 //!   ([`clax_http::site_access::SiteCaller`]), and no one else: the request's
 //!   own `Authorization` is refused (401 `unauthorized`), its cookies and
-//!   Clax headers are dropped, and the route sees the holder's identity as
+//!   every `x-clax-…` header are dropped (so a page forges no tool call or
+//!   git context into the audit), and the route sees the holder's identity as
 //!   the public host would for their browser (the owner's with the token,
 //!   as the owner's shell; a person's with their rights; a guest's; a link
 //!   viewer's or a visitor's, which is no one's). Its `db` level is
@@ -30,11 +31,12 @@
 //!   `forbidden_origin`, and a write (any method but `GET` and `HEAD`)
 //!   without one is too. No answer carries `Access-Control-Allow-Origin`.
 //! - **A visitor** (a site open to the world) reads only `artifact`'s
-//!   `{artifact: {id, title, current_version}}`, and on a hosted daemon each
-//!   write is counted per client address and per artifact
-//!   ([`clax_http::hosted::Hosted::site_write`], 429 `rate_limited`).
-//!   Closing the site to the world refuses them on their next request
-//!   (`site_access_layer`).
+//!   `{artifact: {id, title, current_version}}`. On a hosted daemon each
+//!   write of a visitor, a link viewer or a guest is counted per client
+//!   address and per artifact ([`clax_http::hosted::Hosted::site_write`],
+//!   429 `rate_limited`). Closing the site to the world refuses a visitor
+//!   on their next request (`site_access_layer`) and closes their room
+//!   socket (`super::room`, on `Event::SiteAccess`).
 
 use super::{artifacts, assets, docs, room};
 use axum::Json;
@@ -60,15 +62,13 @@ use serde_json::{Value, json};
 /// Where the site API is mounted on a site host.
 pub const PREFIX: &str = "/_clax/api/";
 
-/// The headers a request on the site API never passes on: credentials and
-/// the Clax headers that would make it speak for someone else.
-const DROPPED: &[&str] = &[
-    "cookie",
-    "x-clax-session",
-    "x-clax-session-secret",
-    "x-clax-channel",
-    "x-clax-via",
-];
+/// Whether a request on the site API never passes header `name` on: its
+/// cookies, and every Clax header (`x-clax-…`: a session, a channel, a
+/// tool call, a git context), which would make it speak for someone else
+/// or forge what its audit records.
+fn dropped(name: &str) -> bool {
+    name.eq_ignore_ascii_case("cookie") || name.to_ascii_lowercase().starts_with("x-clax-")
+}
 
 /// The public host's routes the site API reaches, each at its
 /// `/api/artifacts/{aid}/…` path and with its body limit there
@@ -203,7 +203,13 @@ async fn answer(s: AppState, api: axum::Router, mut req: Request) -> Result<Resp
         }
         return visitor_artifact(&s, &site.artifact).await.map_err(refuse);
     }
-    if visitor
+    // Who signed in as no one (a visitor, a link viewer, a guest) is
+    // counted: their writes are anyone's.
+    let anyone = matches!(
+        caller,
+        SiteCaller::Visitor(_) | SiteCaller::Holder(Holder::Link | Holder::Guest(_))
+    );
+    if anyone
         && !get
         && let Some(h) = &s.hosted
     {
@@ -212,8 +218,13 @@ async fn answer(s: AppState, api: axum::Router, mut req: Request) -> Result<Resp
     }
     let hosted = holder_request(&s, &caller).await.map_err(refuse)?;
     let headers = req.headers_mut();
-    for name in DROPPED {
-        headers.remove(*name);
+    let gone: Vec<_> = headers
+        .keys()
+        .filter(|n| dropped(n.as_str()))
+        .cloned()
+        .collect();
+    for name in gone {
+        headers.remove(name);
     }
     headers.insert(
         clax_http::headers::VIA_HEADER,

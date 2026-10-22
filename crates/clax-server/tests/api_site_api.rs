@@ -568,3 +568,126 @@ async fn the_room_opens_on_the_site_host_from_its_own_origin() {
         other => panic!("another origin's socket opened: {:?}", other.is_ok()),
     }
 }
+
+#[tokio::test]
+async fn a_page_forges_no_tool_call_or_git_context_into_the_audit() {
+    use clax_core::audit::{CallHeader, encode_call_header};
+    use clax_core::gitctx::{GitContext, GitField, encode_header};
+    let ts = TestServer::spawn().await;
+    let aid = artifact(&ts, json!({"db": {}})).await;
+    let cookie = ts.site_cookie(&aid).await;
+    let call = CallHeader {
+        call_id: "01JBC0000000000000000000AA".into(),
+        tool: "publish".into(),
+        harness_tool: None,
+        args_sha256: format!("sha256:{}", "c6".repeat(32)),
+        started_at: "2026-10-06T14:03:11.402Z".into(),
+        harness_call_id: None,
+    };
+    let git = GitContext {
+        repo_root: "/forged/repo".into(),
+        remote: None,
+        remote_url: None,
+        branch: Some("forged-branch".into()),
+        head: None,
+        dirty: false,
+        diff_sha256: None,
+        diff_bytes: None,
+        diff_truncated: false,
+        diff_unavailable: false,
+        untracked: 0,
+        captured_at: "2026-10-06T14:03:11.512Z".into(),
+    };
+    let res = on(&ts, &aid, Some(&cookie))
+        .req(Method::PUT, "docs/tasks/t1")
+        .header("x-clax-call", encode_call_header(&call).unwrap())
+        .header("x-clax-git", encode_header(&GitField::Ok(git)).unwrap())
+        .header("x-clax-channel", "agent")
+        .json(&json!({"data": {"n": 1}}))
+        .send()
+        .await
+        .unwrap();
+    assert_eq!(res.status(), 200);
+    let c = rusqlite::Connection::open(ts.home.db_path()).unwrap();
+    let forged: i64 = c
+        .query_row(
+            "SELECT count(*) FROM audit_events
+             WHERE call_id IS NOT NULL OR body LIKE '%forged%'",
+            [],
+            |r| r.get(0),
+        )
+        .unwrap();
+    assert_eq!(forged, 0);
+    let wrote: i64 = c
+        .query_row(
+            "SELECT count(*) FROM audit_events WHERE artifact_id = ?1",
+            [&aid],
+            |r| r.get(0),
+        )
+        .unwrap();
+    assert!(wrote > 0, "the write is audited");
+}
+
+#[tokio::test]
+async fn a_link_viewers_writes_are_counted_as_a_visitors() {
+    let clock = Arc::new(ManualClock::at("2026-10-22T10:00:00Z"));
+    let ts = TestServer::spawn_hosted(clock, Some(SECRET)).await;
+    let owner = signed_in(
+        &ts,
+        "/api/hosted/setup",
+        json!({"secret": SECRET, "name": "Ada"}),
+        None,
+    )
+    .await;
+    let aid = artifact(
+        &ts,
+        json!({"db": {"rules": [{"path": "data/guestbook", "read": "public", "write": "public"}]}}),
+    )
+    .await;
+    let public = format!("localhost:{}", ts.addr.port());
+    let res = ts
+        .client
+        .put(format!("{}/api/hosted/artifacts/{aid}/link", ts.base))
+        .header(HOST, &public)
+        .header(ORIGIN, format!("http://{public}"))
+        .header(COOKIE, format!("clax_session={owner}"))
+        .json(&json!({"access": "viewer"}))
+        .send()
+        .await
+        .unwrap();
+    assert_eq!(res.status(), 200);
+    // A link viewer: a site code with no session.
+    let res = ts
+        .client
+        .post(format!("{}/api/artifacts/{aid}/site-code", ts.base))
+        .header(HOST, &public)
+        .header(ORIGIN, format!("http://{public}"))
+        .json(&json!({}))
+        .send()
+        .await
+        .unwrap();
+    assert_eq!(res.status(), 200);
+    let v: Value = res.json().await.unwrap();
+    let cookie = ts.redeem_site_code(v["src"].as_str().unwrap()).await;
+    let api = on(&ts, &aid, Some(&cookie));
+    let (s, v) = api.send(Method::GET, "whoami", None).await;
+    assert_eq!((s, v["kind"].as_str()), (200, Some("link")), "{v}");
+    for n in 0..60 {
+        let (s, v) = api
+            .send(
+                Method::PUT,
+                &format!("docs/data/guestbook/entries/g{n}"),
+                Some(json!({"data": {}})),
+            )
+            .await;
+        assert_eq!(s, 200, "{n}: {v}");
+    }
+    let (s, v) = api
+        .send(
+            Method::PUT,
+            "docs/data/guestbook/entries/x",
+            Some(json!({"data": {}})),
+        )
+        .await;
+    assert_eq!((s, code(&v)), (429, "rate_limited"), "{v}");
+}

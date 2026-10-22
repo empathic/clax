@@ -5,8 +5,14 @@
 //!   as a [`SiteCaller::Visitor`], unless a site session names its holder.
 //!   A visitor is known by the visitor cookie ([`VISITOR_COOKIE`], on
 //!   `https` [`SECURE_VISITOR_COOKIE`]: host-only, `HttpOnly`, `Path=/`,
-//!   `SameSite=Lax`, a year), which the first response without one sets:
-//!   it holds a secret, from which [`visitor_id`] derives their ID.
+//!   `SameSite=Lax`, a year), which the first navigation or `/_clax/api/`
+//!   response without one sets: it holds a secret this daemon minted
+//!   (anything else is replaced), from which [`visitor_id`] derives their
+//!   ID.
+//! - Every response the access decides carries no
+//!   `Access-Control-Allow-Origin`, one that sets a cookie is `private,
+//!   no-store`, and a world visitor's revalidates within a minute
+//!   ([`site_response_headers`]).
 //! - Any other site needs the site cookie ([`SITE_COOKIE`], on `https`
 //!   [`SECURE_SITE_COOKIE`]), naming a site session
 //!   ([`clax_store::site_sessions`]) of this artifact whose holder may read
@@ -99,22 +105,84 @@ pub fn visitor_cookie(secure: bool, value: &str) -> HeaderValue {
     .expect("visitor secrets are header-safe")
 }
 
-/// Whether `v` has the form of a visitor secret: 43 base64url characters
-/// ([`clax_core::secret::token`] with no prefix).
-fn visitor_secret_ok(v: &str) -> bool {
-    v.len() == 43
-        && v.bytes()
-            .all(|b| b.is_ascii_alphanumeric() || b == b'-' || b == b'_')
+/// What the visitor cookie's secret is keyed by ([`crate::hosted::keyed_mac`]).
+const VISITOR_SECRET_LABEL: &str = "clax site visitor cookie";
+/// What a visitor ID is keyed by.
+const VISITOR_ID_LABEL: &str = "clax site visitor ID";
+
+/// A new visitor secret, minted by this daemon: 22 base64url characters
+/// (16 random bytes), a `.`, and their MAC under a key made from the daemon
+/// token `token`.
+pub fn mint_visitor_secret(token: &str) -> String {
+    let nonce = clax_core::secret::token("").expose()[..22].to_string();
+    let mac = crate::hosted::keyed_mac(token, VISITOR_SECRET_LABEL, &nonce);
+    format!("{nonce}.{mac}")
 }
 
-/// The visitor ID the cookie's secret stands for on artifact `aid`'s site:
-/// `v_` and 22 lowercase hex characters of the SHA-256 of both. The cookie
-/// holds the secret, never the ID, so an ID a page shows (a document's
-/// path, the room's presence) cannot be replayed as a cookie; and one
-/// browser's IDs on two sites are unrelated.
-pub fn visitor_id(aid: &ArtifactId, secret: &str) -> String {
-    let h = clax_core::secret::sha256_hex(&format!("{}:{secret}", aid.as_str()));
-    format!("v_{}", &h[..22])
+/// Whether `v` is a visitor secret this daemon minted
+/// ([`mint_visitor_secret`]): anything else, a value a client chose
+/// among them, is no visitor's and is replaced.
+pub fn visitor_secret_ok(token: &str, v: &str) -> bool {
+    let Some((nonce, mac)) = v.split_once('.') else {
+        return false;
+    };
+    nonce.len() == 22
+        && nonce
+            .bytes()
+            .all(|b| b.is_ascii_alphanumeric() || b == b'-' || b == b'_')
+        && clax_core::secret::constant_time_eq(
+            mac.as_bytes(),
+            crate::hosted::keyed_mac(token, VISITOR_SECRET_LABEL, nonce).as_bytes(),
+        )
+}
+
+/// The visitor ID visitor secret `secret` stands for on artifact `aid`'s
+/// site: `v_` and 22 lowercase hex characters of a MAC of both under a key
+/// made from the daemon token `token`. The cookie holds the secret, never
+/// the ID, so an ID a page shows (a document's path, the room's presence)
+/// cannot be replayed as a cookie, and one browser's IDs on two sites are
+/// unrelated.
+pub fn visitor_id(token: &str, aid: &ArtifactId, secret: &str) -> String {
+    let msg = format!("{secret} {}", aid.as_str());
+    let mac = crate::hosted::keyed_mac(token, VISITOR_ID_LABEL, &msg);
+    format!("v_{}", &mac[..22])
+}
+
+/// A site response's caching and CORS headers, by who it was answered to:
+/// it never carries `Access-Control-Allow-Origin`; one that sets a cookie
+/// is `private, no-store`; a visitor's on a site open to the world
+/// (`world_visitor`) revalidates within a minute at most: `no-cache`
+/// becomes `public, no-cache`, and anything longer (a version's files, an
+/// asset's `immutable`) `public, max-age=60, must-revalidate`, so a site
+/// made private stops being served from a shared cache within a minute.
+pub fn site_response_headers(res: &mut Response, world_visitor: bool) {
+    let h = res.headers_mut();
+    h.remove(header::ACCESS_CONTROL_ALLOW_ORIGIN);
+    if h.contains_key(header::SET_COOKIE) {
+        h.insert(
+            header::CACHE_CONTROL,
+            HeaderValue::from_static("private, no-store"),
+        );
+        return;
+    }
+    if !world_visitor {
+        return;
+    }
+    let cc = h
+        .get(header::CACHE_CONTROL)
+        .and_then(|v| v.to_str().ok())
+        .unwrap_or("")
+        .to_ascii_lowercase();
+    let short = if cc.contains("no-store") || cc.contains("private") {
+        None
+    } else if cc.contains("immutable") || cc.contains("max-age") {
+        Some("public, max-age=60, must-revalidate")
+    } else {
+        Some("public, no-cache")
+    };
+    if let Some(v) = short {
+        h.insert(header::CACHE_CONTROL, HeaderValue::from_static(v));
+    }
 }
 
 /// Whether the site is served on `https` (the public origin is).
@@ -421,6 +489,12 @@ pub async fn site_access_layer(
         Ok(h) => h,
         Err(e) => return e.into_response(),
     };
+    if let Some(h) = holder {
+        req.extensions_mut().insert(SiteCaller::Holder(h));
+        let mut res = next.run(req).await;
+        site_response_headers(&mut res, false);
+        return res;
+    }
     let aid = site.artifact.clone();
     let world = match s.store_call(move |st| st.site_open_to_world(&aid)).await {
         Ok(w) => w,
@@ -429,16 +503,25 @@ pub async fn site_access_layer(
     if world {
         let secure = secure(&s);
         let held = cookie_value(req.headers(), visitor_cookie_name(secure))
-            .filter(|v| visitor_secret_ok(v));
-        let minted = held.is_none();
-        let secret = held.unwrap_or_else(|| clax_core::secret::token("").expose().to_string());
-        req.extensions_mut()
-            .insert(SiteCaller::Visitor(visitor_id(&site.artifact, &secret)));
+            .filter(|v| visitor_secret_ok(&s.token, v));
+        // Only a navigation and the runtime's own calls set the cookie: a
+        // file or an asset a shared cache may keep never does. Two first
+        // requests at once each set one; the browser keeps the last set.
+        let mints = held.is_none()
+            && (navigation(req.method(), req.headers())
+                || req.uri().path().starts_with("/_clax/api/"));
+        let secret = held.unwrap_or_else(|| mint_visitor_secret(&s.token));
+        req.extensions_mut().insert(SiteCaller::Visitor(visitor_id(
+            &s.token,
+            &site.artifact,
+            &secret,
+        )));
         let mut res = next.run(req).await;
-        if minted {
+        if mints {
             res.headers_mut()
                 .append(header::SET_COOKIE, visitor_cookie(secure, &secret));
         }
+        site_response_headers(&mut res, true);
         return res;
     }
     if navigation(req.method(), req.headers()) {
@@ -499,16 +582,65 @@ mod tests {
             local,
             "clax_visitor=s; Path=/; Max-Age=31536000; HttpOnly; SameSite=Lax"
         );
-        let secret = clax_core::secret::token("").expose().to_string();
-        assert!(visitor_secret_ok(&secret));
-        assert!(!visitor_secret_ok("v_0123456789abcdef012345"));
+        let secret = mint_visitor_secret("tok");
+        assert!(visitor_secret_ok("tok", &secret));
+        assert!(!visitor_secret_ok("another token", &secret));
+        let (nonce, _) = secret.split_once('.').unwrap();
+        for forged in [
+            nonce.to_string(),
+            format!("{nonce}.00000000000000000000000000000000"),
+            "v_0123456789abcdef012345".to_string(),
+            clax_core::secret::token("").expose().to_string(),
+        ] {
+            assert!(!visitor_secret_ok("tok", &forged), "{forged}");
+        }
         let a = ArtifactId::parse("7q3k9mzx2b4t").unwrap();
         let b = ArtifactId::parse("8q3k9mzx2b4t").unwrap();
-        let id = visitor_id(&a, &secret);
+        let id = visitor_id("tok", &a, &secret);
         assert!(id.starts_with("v_") && id.len() == 24, "{id}");
-        assert_eq!(id, visitor_id(&a, &secret));
-        assert_ne!(id, visitor_id(&b, &secret));
+        assert_eq!(id, visitor_id("tok", &a, &secret));
+        assert_ne!(id, visitor_id("tok", &b, &secret));
         assert!(clax_core::db::doc_path(&format!("data/users/{id}/n")).is_ok());
+    }
+
+    #[test]
+    fn a_world_visitors_answer_revalidates_within_a_minute_and_a_cookie_is_private() {
+        let after = |cc: &str, cookie: bool, world: bool| {
+            let mut r = Response::new(Body::empty());
+            let h = r.headers_mut();
+            h.insert(header::CACHE_CONTROL, HeaderValue::from_str(cc).unwrap());
+            h.insert(
+                header::ACCESS_CONTROL_ALLOW_ORIGIN,
+                HeaderValue::from_static("*"),
+            );
+            if cookie {
+                h.insert(header::SET_COOKIE, HeaderValue::from_static("a=b"));
+            }
+            site_response_headers(&mut r, world);
+            assert!(
+                r.headers()
+                    .get(header::ACCESS_CONTROL_ALLOW_ORIGIN)
+                    .is_none()
+            );
+            r.headers()[header::CACHE_CONTROL]
+                .to_str()
+                .unwrap()
+                .to_string()
+        };
+        let year = "public, max-age=31536000, immutable";
+        assert_eq!(after("no-cache", false, true), "public, no-cache");
+        assert_eq!(
+            after(year, false, true),
+            "public, max-age=60, must-revalidate"
+        );
+        assert_eq!(after("no-store", false, true), "no-store");
+        assert_eq!(after("no-cache", true, true), "private, no-store");
+        assert_eq!(after(year, true, false), "private, no-store");
+        assert_eq!(
+            after("no-cache", false, false),
+            "no-cache",
+            "a holder's stays"
+        );
     }
 
     #[test]
