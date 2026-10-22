@@ -14,11 +14,15 @@
 // Steps: health; the diagnostics' view of the bindings; with Artifacts, the
 // binding's raw calls on a scratch repository (src/diag.rs's probe: get of
 // a missing repository, create, tokens, reads of missing objects, the
-// remote's advertisements, a fork, deletes); setup with the secret when
-// setup is open (else the given owner session); an agent token; two
-// versions published over /mcp and read back; a fork, read back; the
-// artifact's own site host (`<ID>.<site domain>`, from --site-domain or the
-// record; `localhost` with --local): its health, a private site refused
+// remote's advertisements, a fork, deletes); the owner: the given owner
+// session (--session), else setup with the secret when setup is open, else
+// the owner token (CLAX_TOKEN: --token, or deploy.mjs's record), as on
+// every deploy after the first, with which the steps that only a signed-in
+// browser can take (an agent token, /site-signin) skip and say so, and the
+// rest act as the owner token (no credential at all is a FAIL); an agent
+// token; two versions published over /mcp and read back; a fork, read back;
+// the artifact's own site host (`<ID>.<site domain>`, from --site-domain or
+// the record; `localhost` with --local): its health, a private site refused
 // without a session (a navigation redirected to /site-signin, an API call
 // 401), /site-signin's code redeemed at /_clax/session beside the state
 // the site set, for a `SameSite=Lax` cookie, the shell's code (`POST
@@ -150,7 +154,9 @@ async function at(url, init = {}) {
   return { res, status: res.status, text, json };
 }
 
-/** The client: the public origin, the owner token, the owner's session cookie. */
+/** The client: the public origin, the owner token, the owner's session
+ * cookie, and which of the two the owner's calls carry (`as`: "session",
+ * or "token" when setup is closed and no session was given). */
 class Client {
   constructor(base) {
     this.base = base.replace(/\/$/, "");
@@ -231,9 +237,9 @@ function siteCookie(res) {
 }
 
 /** The handshake's state cookie `res` sets (`clax_site_state`, on https
- * `__Secure-clax_site_state`): its `name=value` pair and its value. */
+ * `__Host-clax_site_state`): its `name=value` pair and its value. */
 function stateCookie(res) {
-  const raw = (res.headers.getSetCookie?.() ?? []).find((s) => /^(__Secure-)?clax_site_state=[^;]/.test(s));
+  const raw = (res.headers.getSetCookie?.() ?? []).find((s) => /^(__Host-)?clax_site_state=[^;]/.test(s));
   if (!raw) return null;
   const pair = raw.split(";")[0];
   return { pair, value: pair.slice(pair.indexOf("=") + 1), raw };
@@ -322,7 +328,7 @@ const OWNER = "owner: setup, session or owner token";
  * /api/hosted/agent-tokens refuse any request with Authorization; the
  * MCP steps then use the owner token, as the daemon token's sessionless
  * agent). */
-const SESSION_ONLY = ["agent token"];
+const SESSION_ONLY = ["agent token", "/site-signin"];
 
 async function smoke(c, o) {
   const store = { value: o.store ?? null };
@@ -523,6 +529,7 @@ async function smoke(c, o) {
   }, ["site host: health"]);
 
   await step("site: /site-signin, then /_clax/session (SameSite=Lax)", async () => {
+    if (c.as === "token") skip("only a signed-in browser is signed in to a site at /site-signin (--session <cookie> runs this step)");
     const cookie = await signInTo(aid);
     const attrs = cookie.raw.split(";").slice(1).map((a) => a.trim()).join("; ");
     if (!/SameSite=Lax/i.test(cookie.raw) || /Partitioned/i.test(cookie.raw) || !/HttpOnly/i.test(cookie.raw)) {
@@ -531,7 +538,7 @@ async function smoke(c, o) {
     const page = await at(`${siteOf(aid)}/`, { headers: { ...html, cookie: cookie.pair } });
     if (page.status !== 200 || !page.text.includes(`Smoke ${RUN}`)) throw new Error(`with the cookie, / answered ${page.status} ${short(page.text, 160)}`);
     return { detail: `${cookie.pair.split("=")[0]}; ${attrs}; / served` };
-  }, ["site: a private site refused without a session", "owner: setup or session"]);
+  }, ["site: a private site refused without a session", OWNER]);
 
   await step("site: the shell's code (state-bound, Partitioned, single use)", async () => {
     // The frame's first page sets the state and hands it to the shell.
@@ -540,7 +547,9 @@ async function smoke(c, o) {
     if (start.status !== 200 || !state || !start.text.includes(`"state":"${state.value}"`)) {
       throw new Error(`/_clax/session/start answered ${start.status} ${short(start.text, 160)} ${state ? "" : "without a state cookie"}`);
     }
-    const code = async (body) => c.browser(`/api/artifacts/${aid}/site-code`, { method: "POST", body: JSON.stringify(body) });
+    // Not c.owner: a refusal (400) is one of the answers this step expects.
+    const code = async (body) =>
+      c.raw(`/api/artifacts/${aid}/site-code`, { method: "POST", headers: { origin: c.base, "content-type": "application/json", ...c.credential() }, body: JSON.stringify(body) });
     const none = await code({ next: "/", partitioned: true });
     if (none.status !== 400) throw new Error(`site-code without a state answered ${none.status}, not 400`);
     // A code redeemed without its state signs no browser in.
@@ -558,11 +567,11 @@ async function smoke(c, o) {
     const page = await at(`${siteOf(aid)}/`, { headers: { ...html, cookie: cookie.pair } });
     if (page.status !== 200) throw new Error(`with the partitioned cookie, / answered ${page.status}`);
     return { detail: `no state: 400, no state cookie: no session; Partitioned cookie, / served; a second redeem answered ${again.status} without a cookie` };
-  }, ["site: /site-signin, then /_clax/session (SameSite=Lax)"]);
+  }, ["site: a private site refused without a session", OWNER]);
 
   await step("site: open to the world, then private again", async () => {
     const access = async (v) => {
-      const r = await c.browser(`/api/artifacts/${aid}`, { method: "PATCH", body: JSON.stringify({ site_access: v }) });
+      const r = await c.owner(`/api/artifacts/${aid}`, { method: "PATCH", body: JSON.stringify({ site_access: v }) });
       if (r.status < 200 || r.status > 299) throw new Error(`PATCH site_access ${v}: ${r.status} ${short(r.text, 160)}`);
       return r;
     };
@@ -580,9 +589,10 @@ async function smoke(c, o) {
       throw new Error(`private again, a signed-out navigation answered ${closed.status} ${loc || short(closed.text, 160)}, not a 302 to ${c.base}/site-signin`);
     }
     return { detail: "world: 200 signed out; private again: 302 to /site-signin" };
-  }, ["site: a private site refused without a session", "owner: setup or session"]);
+  }, ["site: a private site refused without a session", OWNER]);
 
   await step("site: two db artifacts kept apart", async () => {
+    if (c.as === "token") skip("each site is signed in to at /site-signin, which only a signed-in browser is (--session <cookie> runs this step)");
     for (const n of ["A", "B"]) {
       const r = await c.tool("publish", { html: PAGE(`db ${n} ${RUN}`), title: `Smoke db ${n} ${RUN}`, capabilities: { db: {} } });
       const id = r.json?.id ?? r.json?.artifact?.id ?? /\b([0-9a-z]{12})\b/.exec(r.text)?.[1];
@@ -767,7 +777,7 @@ async function smoke(c, o) {
     const r = await run(wr, ["queues", "subscription", "delete", "clax-artifacts-events", "--id", subscription, "--force"], { cwd: HERE, env: { ...process.env, WRANGLER_SEND_METRICS: "false" } });
     console.log(`     subscription ${subscription}: ${r.code === 0 ? "deleted" : `left (${short(r.err || r.out, 200)})`}`);
   }
-  if (!flag("--keep") && c.agent) {
+  if (!flag("--keep") && c.mcpBearer) {
     for (const id of [...dbIds, fork, aid].filter(Boolean)) {
       const r = await c.tool("delete", { url_or_id: id }).then(() => "deleted", (e) => `left: ${short(e.message, 160)}`);
       console.log(`     artifact ${id}: ${r}`);

@@ -20,7 +20,8 @@
 //! shell's site; made for a top-level visit, `SameSite=Lax`.
 //!
 //! Every code is bound to a **state** the redeeming browser holds in a
-//! cookie of the site host ([`STATE_COOKIE`], `Path=/_clax/session`, ten
+//! cookie of the site host ([`STATE_COOKIE`], on `https`
+//! [`SECURE_STATE_COOKIE`]: host-only, `Path=/`, ten
 //! minutes, a fresh value per handshake): `/_clax/session` redeems a code
 //! only beside it, so a code minted for one browser signs no other in. A
 //! top-level handshake's state is set by the site's redirect to
@@ -54,12 +55,14 @@ pub const SECURE_SITE_COOKIE: &str = "__Host-clax_site";
 
 /// The state cookie's name on an `http` site.
 pub const STATE_COOKIE: &str = "clax_site_state";
-/// The state cookie's name on an `https` site. `__Host-` would need
-/// `Path=/`; `__Secure-` keeps a page on `http` from setting it, and with no
-/// `Domain` it stays host-only.
-pub const SECURE_STATE_COOKIE: &str = "__Secure-clax_site_state";
-/// The path the state cookie is sent on: the session's redemption alone.
-pub const STATE_PATH: &str = "/_clax/session";
+/// The state cookie's name on an `https` site: the `__Host-` prefix makes
+/// the browser refuse one with a `Domain` (or another path, or unsecured),
+/// so a sibling site under the site domain cannot plant its own state in a
+/// victim's browser (until the site domain is on the Public Suffix List
+/// such a sibling is same-site).
+pub const SECURE_STATE_COOKIE: &str = "__Host-clax_site_state";
+/// The state cookie's path, as `__Host-` requires.
+pub const STATE_PATH: &str = "/";
 /// How long a handshake's state lasts.
 pub const STATE_TTL_SECS: i64 = 600;
 /// The longest `next` kept ([`safe_next`]).
@@ -123,7 +126,7 @@ pub fn new_state() -> String {
 }
 
 /// `Set-Cookie` for handshake state `value` (empty with `max_age` 0 clears
-/// it): `Path=/_clax/session`, `HttpOnly`, partitioned as the site cookie
+/// it): host-only, `Path=/`, `HttpOnly`, partitioned as the site cookie
 /// it leads to.
 fn state_cookie_with(secure: bool, partitioned: bool, value: &str, max_age: i64) -> HeaderValue {
     let name = state_cookie_name(secure);
@@ -143,6 +146,13 @@ fn state_cookie_with(secure: bool, partitioned: bool, value: &str, max_age: i64)
 /// `Set-Cookie` for handshake state `value`, good for [`STATE_TTL_SECS`].
 pub fn state_cookie(secure: bool, partitioned: bool, value: &str) -> HeaderValue {
     state_cookie_with(secure, partitioned, value, STATE_TTL_SECS)
+}
+
+/// The state cookie of `headers` ([`state_cookie_name`]): one cookie of
+/// that very name, or `None` (on `https`, a `clax_site_state` or
+/// `__Secure-clax_site_state` a sibling host could set counts for nothing).
+pub fn state_in(headers: &HeaderMap, secure: bool) -> Option<String> {
+    cookie_value(headers, state_cookie_name(secure)).filter(|v| !v.is_empty())
 }
 
 /// `Set-Cookie` that clears the state cookie.
@@ -429,19 +439,41 @@ mod tests {
     fn the_state_cookie_is_sent_to_the_session_alone_for_ten_minutes() {
         assert_eq!(
             state_cookie(true, true, "s").to_str().unwrap(),
-            "__Secure-clax_site_state=s; Path=/_clax/session; Max-Age=600; HttpOnly; Secure; SameSite=None; Partitioned"
+            "__Host-clax_site_state=s; Path=/; Max-Age=600; HttpOnly; Secure; SameSite=None; Partitioned"
         );
         assert_eq!(
             state_cookie(false, false, "s").to_str().unwrap(),
-            "clax_site_state=s; Path=/_clax/session; Max-Age=600; HttpOnly; SameSite=Lax"
+            "clax_site_state=s; Path=/; Max-Age=600; HttpOnly; SameSite=Lax"
         );
         assert!(
             clear_state_cookie(false, true)
                 .to_str()
                 .unwrap()
-                .starts_with("clax_site_state=; Path=/_clax/session; Max-Age=0;")
+                .starts_with("clax_site_state=; Path=/; Max-Age=0;")
         );
         assert_ne!(new_state(), new_state());
+        // On https the state is `__Host-`: host-only, `Path=/`, never a
+        // `Domain`, so no sibling host's cookie can stand for it.
+        for partitioned in [false, true] {
+            let c = state_cookie(true, partitioned, "s")
+                .to_str()
+                .unwrap()
+                .to_string();
+            assert!(c.starts_with("__Host-clax_site_state=s; Path=/;"), "{c}");
+            assert!(c.contains("Secure") && !c.contains("Domain"), "{c}");
+        }
+        let mut h = HeaderMap::new();
+        h.insert(
+            header::COOKIE,
+            HeaderValue::from_static("clax_site_state=planted; __Secure-clax_site_state=planted"),
+        );
+        assert_eq!(state_in(&h, true), None, "a cookie a sibling could set");
+        assert_eq!(state_in(&h, false).as_deref(), Some("planted"));
+        h.insert(
+            header::COOKIE,
+            HeaderValue::from_static("__Host-clax_site_state=mine"),
+        );
+        assert_eq!(state_in(&h, true).as_deref(), Some("mine"));
     }
 
     #[test]

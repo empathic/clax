@@ -103,7 +103,7 @@ async fn session(
     let next = sa::safe_next(q.next.as_deref().unwrap_or("/"));
     let code = q.code.clone().unwrap_or_default();
     let secure = sa::secure(&s);
-    let state = clax_http::hosted::cookie_value(&headers, sa::state_cookie_name(secure));
+    let state = sa::state_in(&headers, secure);
     let aid = site.artifact.clone();
     let redeemed = s
         .store_call(move |st| st.site_code_redeem(&code, &aid, state.as_deref()))

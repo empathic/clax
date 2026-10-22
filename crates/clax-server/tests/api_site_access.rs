@@ -255,7 +255,7 @@ async fn a_private_site_without_a_session_redirects_to_site_signin() {
     let set = r.headers()[SET_COOKIE].to_str().unwrap();
     assert!(
         set.starts_with(&format!(
-            "clax_site_state={state}; Path=/_clax/session; Max-Age=600; HttpOnly"
+            "clax_site_state={state}; Path=/; Max-Age=600; HttpOnly"
         )),
         "{set}"
     );
@@ -658,9 +658,7 @@ async fn a_frame_starts_its_handshake_with_a_state_the_shell_binds_its_code_to()
     assert_eq!(r.headers()["cache-control"], "no-store");
     let set = r.headers()[SET_COOKIE].to_str().unwrap().to_string();
     assert!(
-        set.contains("Path=/_clax/session")
-            && set.contains("Partitioned")
-            && set.contains("HttpOnly"),
+        set.contains("Path=/;") && set.contains("Partitioned") && set.contains("HttpOnly"),
         "{set}"
     );
     let state = set
@@ -723,7 +721,7 @@ async fn a_frame_starts_its_handshake_with_a_state_the_shell_binds_its_code_to()
         "{sets:?}"
     );
     assert!(
-        sets[1].starts_with("clax_site_state=; Path=/_clax/session; Max-Age=0"),
+        sets[1].starts_with("clax_site_state=; Path=/; Max-Age=0"),
         "{sets:?}"
     );
     let cookie = sets[0].split(';').next().unwrap();

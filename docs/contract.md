@@ -8661,8 +8661,8 @@ it starts, the runs a previous process left. A build without the
   (`/_clax/v/<n>/…` and assets), and never `Access-Control-Allow-Origin`.
 - A site session is made from a one-use code good for 60 s, bound to a
   **state** the browser holds in the site host's state cookie
-  (`clax_site_state`, on `https` `__Secure-clax_site_state`;
-  `Path=/_clax/session`, `HttpOnly`, ten minutes, a fresh value per
+  (`clax_site_state`, on `https` `__Host-clax_site_state`, so no sibling
+  site can set it; host-only, `Path=/`, `HttpOnly`, ten minutes, a fresh value per
   handshake): `/_clax/session?code=<code>&next=<path>` redeems the code
   only beside that cookie, so a code minted for one browser signs no other
   in, and clears the state. Top-level, the site's redirect to
