@@ -265,7 +265,7 @@ async fn a_private_site_without_a_session_redirects_to_site_signin() {
         "{set}"
     );
     assert_eq!(r.headers()["referrer-policy"], "no-referrer");
-    assert_eq!(r.headers()["cache-control"], "no-store");
+    assert_eq!(r.headers()["cache-control"], "private, no-store");
     let r = site
         .raw
         .get(format!("{}/a.css?x=1", site.ts.base))
@@ -895,12 +895,12 @@ async fn a_world_site_is_read_by_anyone_until_it_is_private_again() {
     site.ts.store.set_site_open_to_world(&id, true).unwrap();
     let r = site.on_site(&aid, "/a.css", None).await;
     assert_eq!(r.status(), 200);
-    // An open site's files keep their public caching.
-    assert_eq!(r.headers()["cache-control"], "no-cache");
+    // An open site's files are public, revalidated within a minute.
+    assert_eq!(r.headers()["cache-control"], "public, no-cache");
     let r = site.on_site(&aid, "/_clax/v/1/a.css", None).await;
     assert_eq!(
         r.headers()["cache-control"],
-        "public, max-age=31536000, immutable"
+        "public, max-age=60, must-revalidate"
     );
     site.ts.store.set_site_open_to_world(&id, false).unwrap();
     assert_eq!(site.on_site(&aid, "/a.css", None).await.status(), 401);
@@ -1245,7 +1245,7 @@ async fn the_open_site_link_signs_the_owner_in_on_a_world_site() {
         .public(
             &owner,
             reqwest::Method::GET,
-            &format!("/site-signin?host={host}&next=%2F"),
+            &format!("/site-signin?host={host}&next=%2F&state={STATE}"),
         )
         .send()
         .await
