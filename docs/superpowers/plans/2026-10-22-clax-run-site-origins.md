@@ -532,7 +532,52 @@ site caller, not computed from the shell token).
     instance, sends `AppDataOp::Import`, marks `app_data_moved` and forgets
     them, in that order (a crash between import and forget re-imports the
     same rows, which `import` treats as already present).
-  - Deleting an artifact deletes its `artifacts/<id>/` directory.
+  - Deleting an artifact deletes its `artifacts/<id>/` directory (locally
+    `FsContent::delete_artifact` already does; the Worker's erase is Task 11).
+
+**Where the instance touches app data beyond `Store::doc_*` (all in scope):**
+- *Viewer claims* (`crates/clax-store/src/viewers.rs` `fold`:
+  `fold_authorship`, `move_private_docs`) rewrite authors and
+  `data/users/<old>/…` across every artifact inside the instance's
+  transaction. Replace with a fold log: migration 44 also creates
+  `app_data_folds(seq INTEGER PRIMARY KEY, old TEXT NOT NULL, new TEXT NOT NULL, into_owner INTEGER NOT NULL)`,
+  written by `fold`. `AppData` keeps the last fold `seq` it applied;
+  `MovingAppData` sends `AppDataOp::Fold { folds }` before an artifact's
+  call when the log is ahead; `AppData` skips folds at or below its mark.
+  `Exported` carries the fold `seq` read in the same snapshot as its rows,
+  and `import` sets it.
+- *Approvals* (`crates/clax-store/src/approvals.rs`
+  `withheld_outside_threads`, `authored_outside_threads`; callers
+  `crates/clax-server/src/routes/approvals.rs:432`,
+  `crates/clax-http/src/views/approval.rs:134`): the callers fetch distinct
+  authors, and the paths one author wrote, through the host first
+  (`AppDataOp::Authors`, `AppDataOp::AuthoredBy`) and pass them in.
+- *Visibility inside the scan* (`doc_query_visible`, `refuse_withheld`,
+  `acquire`: withheld counts, gap-free paging, byte budgets): the instance
+  projects the reader's `Visibility` onto one artifact as a serialisable
+  `DocView { reader, owner, approved_keys, people: Option<…> }` that
+  `AppData` applies in the scan; rules and the reader decision stay with
+  the instance.
+- *Page authors* (`artifacts::page_authors_in`, for `Caller.via_page`
+  writes): the instance passes them with the op.
+- *Wire types*: `Caller`, `Author`, `Rules`, `AuditCtx`, `AuditRecord` and
+  `CoreError` are not serde. `AppDataOp`/`AppDataReply` carry mirror types:
+  rules as the capabilities JSON, the caller as plain fields, the audit
+  envelope pre-rendered (`audit::body_json`), and a wire error with a fixed
+  code list (`invalid_argument`, `quota_exceeded`, `resource_exhausted`,
+  `old_str_not_found`, `old_str_not_unique`, `doc_not_found`, `conflict`,
+  `busy`) mapped back to `CoreError`. The trait is
+  `#[cfg_attr(target_arch = "wasm32", async_trait(?Send))]`, as
+  `ContentStore` is.
+- *`AppState`*: set `app_data` inside `assemble` (no new `StateParts`
+  field), so the Worker compiles until Task 11 overrides it.
+- *Audit*: `doc.write` records live in each `AppData`. The toolpath export
+  (`crates/clax-server/tests/api_toolpath.rs`) gathers them from the
+  artifacts it exports through `AppDataOp::AuditSince`, so the export
+  keeps its document writes; tests that read the instance's `docs` or
+  `doc_authors` directly (`golden_single_owner.rs`, `api_visibility.rs`,
+  `sessions.rs`, `visibility.rs`, `crates/clax-testkit/src/people.rs`,
+  `crates/clax-cli/tests/comments.rs`) are ported to the host.
 
 - [ ] **Step 1: Write the failing tests:**
   `app_data` unit tests ported from today's `docs.rs` tests;
