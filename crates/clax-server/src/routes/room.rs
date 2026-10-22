@@ -398,6 +398,7 @@ impl Conn {
 }
 
 #[cfg(not(target_arch = "wasm32"))]
+#[allow(clippy::too_many_arguments)]
 async fn session(
     s: AppState,
     aid: String,
