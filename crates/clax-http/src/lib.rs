@@ -10,6 +10,7 @@
 //! router and `serve` are `clax-server`'s.
 
 pub mod agent;
+pub mod app_data_host;
 pub mod audit;
 pub mod auth;
 pub mod blocking;

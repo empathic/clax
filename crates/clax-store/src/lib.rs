@@ -92,7 +92,7 @@
 //! [`Store::stray_asset_temp_files`], [`assets::AssetRow::path`]); on a
 //! home with no files they find nothing.
 
-pub mod app_bundles;
+pub mod app_data;
 pub mod approvals;
 pub mod artifacts;
 pub mod assets;
@@ -583,6 +583,12 @@ impl Store {
     /// The current time by the store's clock.
     pub fn now_utc(&self) -> DateTime<Utc> {
         self.clock.now()
+    }
+
+    /// The store's clock, for what keeps time beside it (an artifact's
+    /// store, [`app_data::AppData`]).
+    pub fn clock(&self) -> Arc<dyn Clock> {
+        self.clock.clone()
     }
 
     /// Records that the daemon resumes watching sessions now, after time in

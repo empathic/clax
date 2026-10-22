@@ -241,6 +241,36 @@ impl Visibility {
         authors.iter().all(|a| self.sees_one(a, artifact, thread))
     }
 
+    /// This view projected onto artifact `artifact`'s documents (outside
+    /// any thread), for its store to withhold in its scans
+    /// ([`DocView`](crate::app_data::DocView)); `None` when it sees
+    /// everything.
+    pub fn doc_view(&self, artifact: &str) -> Option<crate::app_data::DocView> {
+        let View::Filtered(a) = &self.view else {
+            return None;
+        };
+        let approved_keys = a
+            .everywhere
+            .iter()
+            .cloned()
+            .chain(
+                a.artifacts
+                    .iter()
+                    .filter(|(_, aid)| aid == artifact)
+                    .map(|(key, _)| key.clone()),
+            )
+            .collect();
+        Some(crate::app_data::DocView {
+            reader: match &self.reader {
+                Some(Reader::Person(p)) => Some(p.clone()),
+                _ => None,
+            },
+            owner: a.owner.clone(),
+            approved_keys,
+            people: (!a.people.is_empty()).then(|| a.people.iter().cloned().collect()),
+        })
+    }
+
     /// The authors of `authors` this view withholds there, normalised.
     pub fn withheld_authors(
         &self,
@@ -387,6 +417,7 @@ mod tests {
         assert_eq!(Visibility::all().label("Lan", &p("u_lan")), "Lan");
     }
     use crate::RegisterSession;
+    use crate::app_data::shim::Docs;
     use crate::approvals::{Scope, Via};
     use crate::docs::Pin;
     use crate::people::tests::{approved, store};
@@ -546,16 +577,13 @@ mod tests {
                 lww: true,
             };
             match op {
-                "set" => self
-                    .st
+                "set" => Docs::of(&self.st)
                     .doc_set(DAEMON, aid, path, data, pin, &caller)
                     .map(|_| ()),
-                "update" => self
-                    .st
+                "update" => Docs::of(&self.st)
                     .doc_update(DAEMON, aid, path, data, pin, &caller)
                     .map(|_| ()),
-                "delete" => self
-                    .st
+                "delete" => Docs::of(&self.st)
                     .doc_delete(DAEMON, aid, path, pin, &caller)
                     .map(|_| ()),
                 _ => unreachable!(),
@@ -770,7 +798,7 @@ mod tests {
         );
         w.write_doc(&a1, p(&w.sam), false, "update", "notes/1", json!({"n": 2}));
         assert_eq!(
-            w.st.doc_authors(&a1, "notes/1").unwrap(),
+            Docs::of(&w.st).doc_authors(&a1, "notes/1").unwrap(),
             vec![p(&w.mia), p(&w.sam)]
         );
         w.write_doc(
@@ -782,7 +810,7 @@ mod tests {
             json!({"text": "mine"}),
         );
         assert_eq!(
-            w.st.doc_authors(&a1, "notes/1").unwrap(),
+            Docs::of(&w.st).doc_authors(&a1, "notes/1").unwrap(),
             vec![p(&w.mia), p(&w.sam)],
             "a full set adds, never replaces"
         );
@@ -796,7 +824,10 @@ mod tests {
             "notes/1",
             json!({"text": "new"}),
         );
-        assert_eq!(w.st.doc_authors(&a1, "notes/1").unwrap(), vec![p(&w.sam)]);
+        assert_eq!(
+            Docs::of(&w.st).doc_authors(&a1, "notes/1").unwrap(),
+            vec![p(&w.sam)]
+        );
     }
 
     #[test]
@@ -805,21 +836,17 @@ mod tests {
         let a1 = w.db_artifact();
         w.write_doc(&a1, Author::Owner, false, "set", "notes/1", json!({"n": 1}));
         assert_eq!(
-            w.st.doc_authors(&a1, "notes/1").unwrap(),
+            Docs::of(&w.st).doc_authors(&a1, "notes/1").unwrap(),
             vec![Author::Owner]
         );
-        let rows = |st: &Store| {
-            st.with_read(|c| {
-                Ok(c.query_row("SELECT COUNT(*) FROM doc_authors", [], |r| {
-                    r.get::<_, i64>(0)
-                })?)
-            })
-            .unwrap()
-        };
-        assert_eq!(rows(&w.st), 0, "the owner's alone needs no rows");
+        assert_eq!(
+            Docs::of(&w.st).count(&a1, "doc_authors"),
+            0,
+            "the owner's alone needs no rows"
+        );
         w.write_doc(&a1, p(&w.mia), false, "update", "notes/1", json!({"n": 2}));
         assert_eq!(
-            w.st.doc_authors(&a1, "notes/1").unwrap(),
+            Docs::of(&w.st).doc_authors(&a1, "notes/1").unwrap(),
             vec![Author::Owner, p(&w.mia)]
         );
         // A page's write: the browser's viewer and the page's publisher.
@@ -831,7 +858,7 @@ mod tests {
         let page = ArtifactId::parse(&page.id).unwrap();
         w.write_doc(&page, p(&w.lan), true, "set", "notes/2", json!({"n": 1}));
         assert_eq!(
-            w.st.doc_authors(&page, "notes/2").unwrap(),
+            Docs::of(&w.st).doc_authors(&page, "notes/2").unwrap(),
             vec![p(&w.lan), p(&w.sam)]
         );
         w.write_doc(
@@ -843,21 +870,13 @@ mod tests {
             json!({"n": 1}),
         );
         assert_eq!(
-            w.st.doc_authors(&page, "notes/3").unwrap(),
+            Docs::of(&w.st).doc_authors(&page, "notes/3").unwrap(),
             vec![Author::Owner, p(&w.sam)]
         );
-        // Deleting the artifact drops its documents' authors.
+        // Deleting the artifact drops its documents' authors, with its store.
+        let file = w.st.home().app_data_path(&page);
         w.st.delete_artifact(DAEMON, &page).unwrap();
-        let left: i64 =
-            w.st.with_read(|c| {
-                Ok(c.query_row(
-                    "SELECT COUNT(*) FROM doc_authors WHERE artifact_id = ?1",
-                    [page.as_str()],
-                    |r| r.get(0),
-                )?)
-            })
-            .unwrap();
-        assert_eq!(left, 0);
+        assert!(crate::test_util::on_one_connection() || !file.exists());
     }
 
     #[test]
@@ -1197,7 +1216,7 @@ mod tests {
             .unwrap();
         assert_eq!(w.st.visibility_generation(), g + 1);
         assert_eq!(
-            w.st.doc_authors(&a1, "notes/1").unwrap(),
+            Docs::of(&w.st).doc_authors(&a1, "notes/1").unwrap(),
             vec![Author::Owner, p(&w.mia)]
         );
         let thread = w.st.get_thread(&t.id).unwrap().unwrap();
@@ -1869,7 +1888,7 @@ mod tests {
             "notes/9",
             json!({"t": "MIA's words"}),
         );
-        let doc = w.st.doc_authors(&aid, "notes/9").unwrap();
+        let doc = Docs::of(&w.st).doc_authors(&aid, "notes/9").unwrap();
         assert_eq!(doc, vec![Author::Owner, p(&w.mia)]);
         let t =
             w.st.create_thread(

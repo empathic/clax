@@ -93,9 +93,11 @@ pub fn approval_view(st: &Store, a: &Approval) -> clax_core::Result<Value> {
 /// What an approval card shows its approver (§9.5): the request, the
 /// withheld content itself (people are not filtered: the author's
 /// comments in the thread, or, outside threads, the artifact's title and
-/// description), and, for a page's send, the page's authors and the
-/// viewer whose browser ran it ("<publisher>'s page, via <viewer>'s
-/// browser"). `None` when the request is gone or is not `approver`'s.
+/// description, the files and uploads the author holds there and, once
+/// [`fill_card_docs`] has run over the view, the documents), and, for a
+/// page's send, the page's authors and the viewer whose browser ran it
+/// ("<publisher>'s page, via <viewer>'s browser"). `None` when the request
+/// is gone or is not `approver`'s.
 pub fn card(
     st: &Store,
     rid: &str,
@@ -139,12 +141,14 @@ pub fn card(
         },
         None => {
             let a = st.get_artifact(&clax_core::ArtifactId::parse(&r.artifact_id)?)?;
-            let (files, docs, assets) = match st.authored_outside_threads(&r.artifact_id, &r.author)
-            {
-                Ok(x) => x,
-                Err(clax_core::CoreError::NotFound) => Default::default(),
-                Err(e) => return Err(e),
-            };
+            // The documents come from the artifact's store, once the view
+            // is made ([`fill_card_docs`]).
+            let (files, docs, assets) =
+                match st.authored_outside_threads(&r.artifact_id, &r.author, Vec::new()) {
+                    Ok(x) => x,
+                    Err(clax_core::CoreError::NotFound) => Default::default(),
+                    Err(e) => return Err(e),
+                };
             let assets: Vec<Value> = assets
                 .into_iter()
                 .map(|(id, content_type, size)| json!({"id": id, "content_type": content_type, "size": size}))
@@ -223,4 +227,61 @@ pub fn listen(s: &AppState) -> clax_rt::JoinHandle<()> {
             }
         }
     })
+}
+
+/// Fills in the documents of every approval card in `v` (a view, or a
+/// tree of views, holding [`card`]s) outside threads: the paths of the
+/// documents its author holds at its artifact, from the artifact's store
+/// ([`AppDataOp::AuthoredBy`](clax_store::app_data::AppDataOp::AuthoredBy)).
+/// A card whose artifact is gone keeps none.
+///
+/// # Errors
+/// The artifact store's, other than a gone artifact.
+pub async fn fill_card_docs(s: &AppState, v: &mut Value) -> Result<(), crate::error::ApiError> {
+    let mut cards: Vec<&mut Value> = Vec::new();
+    collect_cards(v, &mut cards);
+    for card in cards {
+        let aid = card["artifact_id"]
+            .as_str()
+            .and_then(|a| clax_core::ArtifactId::parse(a).ok());
+        let author = card["author"]["public_id"].as_str().map(str::to_string);
+        let (Some(aid), Some(author)) = (aid, author) else {
+            continue;
+        };
+        let op = clax_store::app_data::AppDataOp::AuthoredBy {
+            author,
+            is_owner: card["author"]["owner"].as_bool().unwrap_or(false),
+        };
+        let docs = s
+            .app_data_call(&aid, op, |r| match r {
+                Err(clax_core::CoreError::NotFound) => Ok(Vec::new()),
+                r => r?.into_strings(),
+            })
+            .await?;
+        card["content"]["docs"] = json!(docs);
+    }
+    Ok(())
+}
+
+/// Whether `v` is an approval card outside threads: a null `thread_id`
+/// and a `content` holding `docs` and `files`.
+fn is_card(v: &Value) -> bool {
+    v.get("thread_id").is_some_and(Value::is_null)
+        && v.get("content").is_some_and(|c| {
+            c.get("docs").is_some_and(Value::is_array)
+                && c.get("files").is_some_and(Value::is_array)
+        })
+}
+
+/// Every approval card outside threads in `v`.
+fn collect_cards<'a>(v: &'a mut Value, out: &mut Vec<&'a mut Value>) {
+    if is_card(v) {
+        out.push(v);
+        return;
+    }
+    match v {
+        Value::Object(m) => m.values_mut().for_each(|x| collect_cards(x, out)),
+        Value::Array(xs) => xs.iter_mut().for_each(|x| collect_cards(x, out)),
+        _ => {}
+    }
 }

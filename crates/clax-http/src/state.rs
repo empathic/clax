@@ -201,9 +201,10 @@ pub struct AppState {
     /// Linked threads' sync with remotes (`clax_server::linked`); idle on a
     /// hosted daemon.
     pub linked: Arc<clax_realtime::linked::Linked>,
-    /// The queue owner of each job client ([`crate::jobs_owner`]), in
-    /// memory only: empty at every start.
-    pub jobs_owners: Arc<crate::jobs_owner::JobsOwners>,
+    /// Where each artifact's app data is ([`crate::app_data_host`]):
+    /// [`AppState::assemble`] sets the host's default (each artifact's file
+    /// in the home natively), which a host with its own stores replaces.
+    pub app_data: Arc<dyn crate::app_data_host::AppDataHost>,
     /// Debug builds: whether this is the testkit's daemon, which honours
     /// the `x-clax-test-delay-ms` header (so a test can make a real route
     /// slow) and serves `GET /api/_test/audit/ctx` (`clax_server::router`).
@@ -321,16 +322,7 @@ impl AppState {
         let ext_creds = Arc::new(crate::extension::Credentials::load(&p.store)?);
         let grant_auth = Arc::new(crate::grant_auth::GrantAuth::load(&p.store)?);
         let vis_gen = VisGen::install(&p.store);
-        let settings = Arc::new(crate::settings::Settings::at_start(
-            &p.home,
-            p.hosted.is_some(),
-        ));
-        // A hosted server, and the Worker always, send ClaxBot's instance
-        // key only to a public https host.
-        if p.hosted.is_some() || cfg!(target_arch = "wasm32") {
-            p.store
-                .set_base_url_policy(clax_store::bot_settings::BaseUrlPolicy::Hosted);
-        }
+        let app_data = crate::app_data_host::default_host(&p.store, &p.home);
         Ok(AppState {
             settings,
             bot: Arc::default(),
@@ -395,6 +387,7 @@ impl AppState {
                 p.hosted
             },
             test_daemon: false,
+            app_data,
             web: p.web,
             embed: p.embed,
             clax_app: Arc::default(),

@@ -1116,3 +1116,109 @@ async fn the_events_cookie_counts_as_the_token_on_the_event_stream_only() {
         .unwrap();
     assert_ne!(res.status(), 200);
 }
+
+/// Each artifact's documents live in its own store: after a write through
+/// the route, the instance's database holds none.
+#[tokio::test]
+async fn the_instance_database_holds_no_documents_after_a_write() {
+    let ts = TestServer::spawn().await;
+    let aid = artifact(&ts, json!({"db": {}})).await;
+    let url = format!("/api/artifacts/{aid}/docs/tasks/t1");
+    let (s, v) =
+        send(req(&ts, Method::PUT, &url, &Who::Token).json(&json!({"data": {"title": "Ship"}})))
+            .await;
+    assert_eq!(s, 200, "{v}");
+    let (s, v) = send(
+        req(
+            &ts,
+            Method::POST,
+            &format!("/api/artifacts/{aid}/docs:acquire"),
+            &Who::Token,
+        )
+        .json(&json!({"path": "tasks/t1", "holder": "h"})),
+    )
+    .await;
+    assert_eq!((s, v["acquired"].as_bool()), (200, Some(true)), "{v}");
+    let instance = rusqlite::Connection::open(ts.home.db_path()).unwrap();
+    for table in ["docs", "doc_authors", "leases"] {
+        let n: i64 = instance
+            .query_row(&format!("SELECT COUNT(*) FROM {table}"), [], |r| r.get(0))
+            .unwrap();
+        assert_eq!(n, 0, "{table}");
+    }
+    let data = ts.app_data_db(&aid);
+    let (docs, leases): (i64, i64) = data
+        .query_row(
+            "SELECT (SELECT COUNT(*) FROM docs), (SELECT COUNT(*) FROM leases)",
+            [],
+            |r| Ok((r.get(0)?, r.get(1)?)),
+        )
+        .unwrap();
+    assert_eq!((docs, leases), (1, 1));
+    let (s, v) = send(req(&ts, Method::GET, &url, &Who::Token)).await;
+    assert_eq!((s, v["doc"]["data"]["title"].as_str()), (200, Some("Ship")));
+}
+
+/// An artifact's documents from before it had a store of its own move
+/// there on its first call, once; deleting the artifact removes its store.
+#[tokio::test]
+async fn documents_the_instance_held_move_once_and_go_with_the_artifact() {
+    let ts = TestServer::spawn().await;
+    let aid = artifact(&ts, json!({"db": {}})).await;
+    let instance = rusqlite::Connection::open(ts.home.db_path()).unwrap();
+    instance
+        .execute_batch(&format!(
+            "INSERT INTO docs (artifact_id, path, collection, json, version, updated_at)
+                VALUES ('{aid}', 'tasks/old', 'tasks', '{{\"n\":1}}', 7, 'x');
+             UPDATE artifacts SET doc_seq = 7 WHERE id = '{aid}';"
+        ))
+        .unwrap();
+    let (s, v) = send(req(
+        &ts,
+        Method::GET,
+        &format!("/api/artifacts/{aid}/docs/tasks/old"),
+        &Who::Token,
+    ))
+    .await;
+    assert_eq!((s, v["doc"]["version"].as_u64()), (200, Some(7)), "{v}");
+    let left: i64 = instance
+        .query_row("SELECT COUNT(*) FROM docs", [], |r| r.get(0))
+        .unwrap();
+    assert_eq!(left, 0, "the instance forgot what moved");
+    let (s, v) = send(
+        req(
+            &ts,
+            Method::PUT,
+            &format!("/api/artifacts/{aid}/docs/tasks/new"),
+            &Who::Token,
+        )
+        .json(&json!({"data": {}})),
+    )
+    .await;
+    assert_eq!((s, v["doc"]["version"].as_u64()), (200, Some(8)), "{v}");
+    let file = ts
+        .home
+        .app_data_path(&clax_core::ArtifactId::parse(&aid).unwrap());
+    assert!(file.exists());
+    let (s, _) = send(req(
+        &ts,
+        Method::DELETE,
+        &format!("/api/artifacts/{aid}"),
+        &Who::Token,
+    ))
+    .await;
+    assert_eq!(s, 204);
+    assert!(!file.exists(), "its store goes with it");
+    let (s, _) = send(req(
+        &ts,
+        Method::GET,
+        &format!("/api/artifacts/{aid}/docs/tasks/new"),
+        &Who::Token,
+    ))
+    .await;
+    assert_eq!(s, 404);
+    assert!(
+        !file.exists(),
+        "a call on a deleted artifact makes no store"
+    );
+}

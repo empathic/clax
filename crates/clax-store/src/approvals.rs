@@ -934,6 +934,10 @@ pub struct AskApproval {
     pub thread_id: Option<String>,
     /// A public ID.
     pub author: Option<String>,
+    /// For an artifact outside its threads: every author its documents
+    /// name, as its store answers them
+    /// ([`AppData::authors`](crate::app_data::AppData::authors)).
+    pub doc_authors: Vec<String>,
 }
 
 /// What [`request_in`] did for one author.
@@ -1573,13 +1577,15 @@ pub(crate) fn withdraw_person_in(
 
 /// The authors withheld from `vis` at artifact `aid` outside its threads
 /// (§9.2's `thread_id` NULL): its text fields, its current version's
-/// label, note and files, its documents and its assets, each counted once
-/// per field that holds them.
+/// label, note and files, its documents (`docs`, every author they name,
+/// from the artifact's store) and its assets, each counted once per field
+/// that holds them.
 fn withheld_outside_threads(
     tx: &Transaction<'_>,
     vis: &Visibility,
     aid: &str,
     owner: Option<&str>,
+    docs: &[String],
 ) -> Result<Vec<(String, u32)>> {
     let Some(a) = super::artifacts::live_artifact_in(tx, aid)? else {
         return Err(CoreError::NotFound);
@@ -1602,15 +1608,8 @@ fn withheld_outside_threads(
             fields.push(visibility::authors_of_file(&v, path));
         }
     }
-    let docs: Vec<String> = {
-        let mut stmt = tx.prepare_cached(
-            "SELECT DISTINCT author FROM doc_authors WHERE artifact_id = ?1 ORDER BY author",
-        )?;
-        stmt.query_map(params![aid], |r| r.get(0))?
-            .collect::<rusqlite::Result<_>>()?
-    };
     for d in docs {
-        fields.push(vec![Author::of_token(Some(&d))]);
+        fields.push(vec![Author::of_token(Some(d))]);
     }
     let uploaders: Vec<Option<String>> = {
         let mut stmt = tx.prepare_cached(
@@ -1763,7 +1762,7 @@ impl Store {
                     (t.artifact_id.clone(), Some(t.id.clone()), w)
                 }
                 (None, Some(aid)) => {
-                    let w = withheld_outside_threads(tx, &vis, aid, owner.as_deref())?;
+                    let w = withheld_outside_threads(tx, &vis, aid, owner.as_deref(), &q.doc_authors)?;
                     (aid.clone(), None, w)
                 }
                 (None, None) => {
@@ -1832,8 +1831,9 @@ impl Store {
     /// What author `author` (a public ID; the owner's stands for the owner)
     /// holds at artifact `aid` outside its threads, for an approval card
     /// (§9.5): the current version's files they wrote, the documents they
-    /// hold fields of (by path; a document without recorded authors is the
-    /// owner's), and their uploads (`[asset ID, content type, size]`).
+    /// hold fields of (`docs`, by path, as the artifact's store answers
+    /// them: [`AppData::authored_by`](crate::app_data::AppData::authored_by)),
+    /// and their uploads (`[asset ID, content type, size]`).
     ///
     /// # Errors
     /// `NotFound` for an artifact that is gone.
@@ -1842,6 +1842,7 @@ impl Store {
         &self,
         aid: &str,
         author: &str,
+        docs: Vec<String>,
     ) -> Result<(Vec<String>, Vec<String>, Vec<(String, String, i64)>)> {
         self.with_read(|c| {
             let a = super::artifacts::live_artifact_in(c, aid)?.ok_or(CoreError::NotFound)?;
@@ -1866,24 +1867,15 @@ impl Store {
                 .transpose()?
             {
                 for path in v.files.keys() {
-                    let by =
-                        visibility::normalise(&visibility::authors_of_file(&v, path), owner.as_deref());
+                    let by = visibility::normalise(
+                        &visibility::authors_of_file(&v, path),
+                        owner.as_deref(),
+                    );
                     if by.contains(&who) {
                         files.push(path.clone());
                     }
                 }
             }
-            let docs: Vec<String> = c
-                .prepare(
-                    "SELECT d.path FROM docs d WHERE d.artifact_id = ?1
-                       AND (EXISTS (SELECT 1 FROM doc_authors x WHERE x.artifact_id = d.artifact_id
-                                      AND x.path = d.path AND (x.author = ?2 OR (?3 AND x.author = '*owner')))
-                            OR (?3 AND NOT EXISTS (SELECT 1 FROM doc_authors x
-                                      WHERE x.artifact_id = d.artifact_id AND x.path = d.path)))
-                     ORDER BY d.path",
-                )?
-                .query_map(params![aid, author, is_owner], |r| r.get(0))?
-                .collect::<rusqlite::Result<_>>()?;
             let assets: Vec<(String, String, i64)> = c
                 .prepare(
                     "SELECT id, content_type, size FROM assets WHERE artifact_id = ?1
@@ -3007,6 +2999,7 @@ mod tests {
                     artifact_id: artifact.map(str::to_string),
                     thread_id: thread.map(str::to_string),
                     author: author.map(str::to_string),
+                    doc_authors: Vec::new(),
                 },
             )
         };

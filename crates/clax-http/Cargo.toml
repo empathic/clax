@@ -13,8 +13,7 @@ clax-store = { path = "../clax-store" }
 clax-realtime = { path = "../clax-realtime" }
 clax-sample = { path = "../clax-sample" }
 clax-rt = { path = "../clax-rt" }
-clax-bot = { path = "../clax-bot" }
-clax-bot-sandbox = { path = "../clax-bot-sandbox" }
+async-trait = "0.1"
 axum.workspace = true
 chrono.workspace = true
 futures = "0.3"

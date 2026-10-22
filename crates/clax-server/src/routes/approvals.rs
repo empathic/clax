@@ -34,6 +34,7 @@ use clax_http::views::approval::{approval_view, request_view};
 use clax_realtime::feedback::apply_decision;
 use clax_rt::time::Instant;
 use clax_store::Store;
+use clax_store::app_data::AppDataOp;
 use clax_store::approvals::{AskApproval, Decision, OVERFLOW_BANNER, RequestStatus, Scope, Via};
 use serde::Deserialize;
 use serde_json::{Value, json};
@@ -409,7 +410,7 @@ pub async fn ask(
     }
     // The artifact through the agent's gate: named, or the thread's.
     let named = match &b.artifact_id {
-        Some(raw) => Some(a.named_artifact(&s, raw).await?.to_string()),
+        Some(raw) => Some(a.named_artifact(&s, raw).await?),
         None => None,
     };
     if let Some(tid) = b.thread_id.clone() {
@@ -419,11 +420,20 @@ pub async fn ask(
             .ok_or_else(ApiError::not_found)?;
         a.named_artifact(&s, &aid).await?;
     }
+    // Outside threads, the artifact's documents' authors, from its store.
+    let doc_authors = match (&b.thread_id, &named) {
+        (None, Some(id)) => {
+            s.app_data_call(id, AppDataOp::Authors, |r| r?.into_strings())
+                .await?
+        }
+        _ => Vec::new(),
+    };
     let q = AskApproval {
         session_id: sid.clone(),
-        artifact_id: named,
+        artifact_id: named.map(|id| id.to_string()),
         thread_id: b.thread_id,
         author: b.author,
+        doc_authors,
     };
     let v = s
         .store_call(move |db| {

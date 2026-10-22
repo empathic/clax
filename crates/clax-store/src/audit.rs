@@ -268,6 +268,13 @@ pub(crate) fn tool_call_record(
 /// The envelope wins over a record field of the same name.
 fn body_json(ctx: &AuditCtx, rec: AuditRecord) -> String {
     let mut body = rec.body;
+    body.extend(envelope(ctx));
+    serde_json::to_string(&body).expect("serialisable body")
+}
+
+/// The envelope [`body_json`] adds to a record made under `ctx`.
+pub(crate) fn envelope(ctx: &AuditCtx) -> serde_json::Map<String, serde_json::Value> {
+    let mut body = serde_json::Map::new();
     body.insert("v".into(), 1.into());
     body.insert("via".into(), ctx.via.as_str().into());
     body.insert("clax_version".into(), env!("CARGO_PKG_VERSION").into());
@@ -287,7 +294,7 @@ fn body_json(ctx: &AuditCtx, rec: AuditRecord) -> String {
             serde_json::to_value(call).expect("serialisable call header"),
         );
     }
-    serde_json::to_string(&body).expect("serialisable body")
+    body
 }
 
 /// Inserts one event row: the single INSERT behind [`Store::record_audit`]
@@ -642,7 +649,120 @@ impl Store {
     /// Writes the export `req` to `w` (spec §8): [`project::export`] over
     /// [`Store::select`].
     pub fn export(&self, req: &Export, env: &ExportEnv, w: &mut dyn std::io::Write) -> Result<()> {
-        self.select(|src| project::export(src, req, env, w))
+        self.export_with(req, env, Vec::new(), w)
+    }
+
+    /// [`Store::export`] of the history with `app_data`, the audit records
+    /// of artifacts' own stores ([`AppData::audit_since`](crate::app_data::AppData::audit_since)),
+    /// after it: each numbered, in the order given, past the newest `seq`
+    /// of the snapshot the export reads, so its step ID is unique in the
+    /// export (though not across exports, as the history grows).
+    pub fn export_with(
+        &self,
+        req: &Export,
+        env: &ExportEnv,
+        app_data: Vec<AuditRow>,
+        w: &mut dyn std::io::Write,
+    ) -> Result<()> {
+        self.exec.read(false, |c| {
+            let newest: i64 = c
+                .query_row(NEWEST_SEQ, [], |r| r.get::<_, Option<i64>>(0))?
+                .unwrap_or(0);
+            let extra = app_data
+                .into_iter()
+                .zip(newest + 1..)
+                .map(|(row, seq)| AuditRow { seq, ..row })
+                .collect();
+            let inner = StoreSource {
+                c,
+                shut_down: &self.shut_down,
+            };
+            project::export(
+                &WithAppData {
+                    inner: &inner,
+                    extra,
+                },
+                req,
+                env,
+                w,
+            )
+        })
+    }
+}
+
+/// A history with the audit records of artifacts' own stores (`extra`,
+/// numbered past every row of `inner`) after its rows.
+struct WithAppData<'a> {
+    inner: &'a dyn Source,
+    extra: Vec<AuditRow>,
+}
+
+impl WithAppData<'_> {
+    /// Whether `row` of `extra` is in `scope`, as [`StoreSource`] selects.
+    fn in_scope(row: &AuditRow, scope: Scope<'_>) -> bool {
+        let on = |a: &str| {
+            row.ids.artifact.as_deref() == Some(a) || row.ids.artifact2.as_deref() == Some(a)
+        };
+        match scope {
+            Scope::Artifact(a) => on(a),
+            Scope::Install => row.ids.artifact.is_none() && row.ids.artifact2.is_none(),
+            Scope::All => true,
+            Scope::Mentioning(values) => values.iter().any(|v| {
+                row.ids.session.as_deref() == Some(v.as_str())
+                    || row.actor.contains(v.as_str())
+                    || row.body.contains(v.as_str())
+            }),
+        }
+    }
+}
+
+impl Source for WithAppData<'_> {
+    fn rows(&self, scope: Scope<'_>, f: &mut dyn FnMut(AuditRow) -> Result<bool>) -> Result<()> {
+        let mut more = true;
+        self.inner.rows(scope, &mut |r| {
+            more = f(r)?;
+            Ok(more)
+        })?;
+        for r in self
+            .extra
+            .iter()
+            .filter(|r| more && Self::in_scope(r, scope))
+        {
+            if !f(r.clone())? {
+                break;
+            }
+        }
+        Ok(())
+    }
+
+    fn row(&self, seq: i64) -> Result<Option<AuditRow>> {
+        match self.inner.row(seq)? {
+            Some(r) => Ok(Some(r)),
+            None => Ok(self.extra.iter().find(|r| r.seq == seq).cloned()),
+        }
+    }
+
+    fn artifact_ids(&self) -> Result<Vec<String>> {
+        let mut ids: std::collections::BTreeSet<String> =
+            self.inner.artifact_ids()?.into_iter().collect();
+        ids.extend(self.extra.iter().filter_map(|r| r.ids.artifact.clone()));
+        Ok(ids.into_iter().collect())
+    }
+
+    fn artifact_known(&self, id: &str) -> Result<bool> {
+        Ok(self.inner.artifact_known(id)?
+            || self
+                .extra
+                .iter()
+                .any(|r| r.ids.artifact.as_deref() == Some(id)))
+    }
+
+    fn live_artifacts(&self, key: &PageKey) -> Result<Vec<String>> {
+        self.inner.live_artifacts(key)
+    }
+
+    fn artifact(&self, id: &str) -> Result<ArtifactInfo> {
+        self.inner.artifact(id)
     }
 }
 

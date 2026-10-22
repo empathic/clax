@@ -19,6 +19,7 @@ use clax_http::error::ApiError;
 use clax_http::identity::Identity;
 use clax_http::state::AppState;
 use clax_http::viewer::SameOrigin;
+use clax_http::views::approval::fill_card_docs;
 use clax_http::views::inbox::{recipient_of, view as inbox_view, views as inbox_views};
 use clax_store::inbox::{
     Agent, InboxQuery, Kind, MAX_GROUP_ROWS, MAX_GROUPS, MAX_PAGE, ReadFilter, is_item_id,
@@ -465,11 +466,12 @@ pub async fn list(
         }
         Ok(out)
     };
-    let out = if filtered || grouped {
+    let mut out = if filtered || grouped {
         s.store_call_bulk(job).await?
     } else {
         s.store_call(job).await?
     };
+    fill_card_docs(&s, &mut out).await?;
     Ok(Json(out))
 }
 
@@ -492,7 +494,7 @@ pub async fn summary(
     let me = recipient_of(&s, &who).await?;
     let hosted = s.hosted.is_some();
     let tags = super::tags::tag_params(raw.as_deref());
-    let out = s
+    let mut out = s
         .store_call(move |db| {
             let tag_ids = db.tag_filter_ids(&tags)?;
             // What a person may not read matches no tag filter: its items
@@ -550,6 +552,7 @@ pub async fn summary(
             }))
         })
         .await?;
+    fill_card_docs(&s, &mut out).await?;
     Ok(Json(out))
 }
 
@@ -576,7 +579,7 @@ pub async fn get_one(
     let me = recipient_of(&s, &who).await?;
     let hosted = s.hosted.is_some();
     let id = item_id(p)?;
-    let item = s
+    let mut item = s
         .store_call(move |db| {
             let i = db
                 .inbox_item(&id, me.as_deref())?
@@ -584,6 +587,7 @@ pub async fn get_one(
             inbox_view(db, &i, hosted)
         })
         .await?;
+    fill_card_docs(&s, &mut item).await?;
     Ok(Json(json!({"item": item})))
 }
 
@@ -595,7 +599,7 @@ async fn mark_one(
     read: bool,
 ) -> Result<Json<Value>, ApiError> {
     let hosted = s.hosted.is_some();
-    let out = s
+    let mut out = s
         .store_call(move |db| {
             let me = me.as_deref();
             db.inbox_item(&id, me)?.ok_or(CoreError::NotFound)?;
@@ -604,6 +608,7 @@ async fn mark_one(
             Ok(json!({"item": inbox_view(db, &i, hosted)?, "unread": db.inbox_unread(me)?}))
         })
         .await?;
+    fill_card_docs(&s, &mut out).await?;
     Ok(Json(out))
 }
 

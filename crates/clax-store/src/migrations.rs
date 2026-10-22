@@ -1230,12 +1230,20 @@ pub const MIGRATIONS: &[&str] = &[
         PRIMARY KEY (artifact_id, tag_id)
     );
     CREATE INDEX artifact_tags_by_tag ON artifact_tags (tag_id, artifact_id);",
-    // 42: legacy paths (`clax_core::publish::check_path_for`). Every
-    // artifact made before site hosts keeps `/_blob/<id>` for its assets on
-    // its site host, where its pages and documents name them; one made
-    // after owns `_blob/` (only `/_clax/` is Clax's there).
-    "ALTER TABLE artifacts ADD COLUMN legacy_paths INTEGER NOT NULL DEFAULT 0;
-    UPDATE artifacts SET legacy_paths = 1;",
+    // 42: each artifact's app data in a store of its own (`crate::app_data`).
+    // `app_data_moved` names the artifacts whose documents, authors and
+    // leases moved there; the `docs`, `doc_authors` and `leases` tables
+    // keep the others' until each moves, on its store's first call. The
+    // viewer folds since (`crate::viewers`) are logged in `app_data_folds`
+    // with their audit envelope, for every store to apply once, by `seq`.
+    "CREATE TABLE app_data_moved (artifact_id TEXT PRIMARY KEY);
+    CREATE TABLE app_data_folds (
+        seq INTEGER PRIMARY KEY,
+        old TEXT NOT NULL,
+        new TEXT NOT NULL,
+        into_owner INTEGER NOT NULL,
+        audit TEXT NOT NULL
+    );",
 ];
 
 /// The ClaxBot migration, as a schema version (spec
@@ -2768,7 +2776,8 @@ mod tests {
             if_version: None,
             lww: true,
         };
-        let w = st
+        // The sequence moves with the documents to the artifact's store.
+        let w = crate::app_data::shim::Docs::of(&st)
             .doc_set(DAEMON, &id, "t/c", serde_json::json!({}), pin, &admin)
             .unwrap();
         assert_eq!(w.doc.unwrap().version, 6);

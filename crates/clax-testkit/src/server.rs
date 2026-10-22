@@ -296,6 +296,23 @@ pub struct TestServer {
 }
 
 impl TestServer {
+    /// Artifact `aid`'s own store (`clax_store::app_data`), where its
+    /// documents are once a request on them moved them from the instance.
+    pub fn app_data(&self, aid: &str) -> clax_store::app_data::AppData {
+        let id = clax_core::ArtifactId::parse(aid).unwrap();
+        clax_store::app_data::AppData::open(&self.home.app_data_path(&id), self.store.clock())
+            .unwrap()
+    }
+
+    /// A connection to artifact `aid`'s own store's database, for reading
+    /// its tables.
+    pub fn app_data_db(&self, aid: &str) -> rusqlite::Connection {
+        let id = clax_core::ArtifactId::parse(aid).unwrap();
+        let c = rusqlite::Connection::open(self.home.app_data_path(&id)).unwrap();
+        c.busy_timeout(std::time::Duration::from_secs(10)).unwrap();
+        c
+    }
+
     pub async fn spawn() -> TestServer {
         Self::spawn_with(|_| {}).await
     }
@@ -596,6 +613,7 @@ impl TestServer {
         let started_at = store.now();
         let grant_auth = Arc::new(clax_http::grant_auth::GrantAuth::load(&store).unwrap());
         let vis_gen = clax_http::state::VisGen::install(&store);
+        let app_data = clax_http::app_data_host::default_host(&store, &home);
         let mut state = AppState {
             settings: Arc::new(clax_http::settings::Settings::at_start(&home, false)),
             // A fixed key-encryption key, so key routes work; no driver:
@@ -664,6 +682,7 @@ impl TestServer {
             ))),
             vis_gen,
             test_daemon: true,
+            app_data,
             // The checkout's web UI; tests of the shell serve their own
             // with `spawn_with_web`.
             web: web_ui(),

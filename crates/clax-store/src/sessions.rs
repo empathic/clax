@@ -3211,6 +3211,7 @@ mod tests {
                     artifact_id: None,
                     thread_id: Some(w.asked.clone()),
                     author: None,
+                    doc_authors: Vec::new(),
                 },
             )
             .unwrap();
@@ -3771,6 +3772,7 @@ mod tests {
                     artifact_id: None,
                     thread_id: Some(w.owned.clone()),
                     author: None,
+                    doc_authors: Vec::new(),
                 },
             )
             .unwrap();

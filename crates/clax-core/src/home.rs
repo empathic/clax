@@ -65,6 +65,11 @@ impl Home {
     pub fn artifact_dir(&self, id: &ArtifactId) -> PathBuf {
         self.root.join("artifacts").join(id.as_str())
     }
+    /// `artifacts/<aid>/data.sqlite`: the artifact's app data (its `db`
+    /// documents, leases and their audit records), a store of its own.
+    pub fn app_data_path(&self, id: &ArtifactId) -> PathBuf {
+        self.artifact_dir(id).join("data.sqlite")
+    }
     pub fn version_dir(&self, id: &ArtifactId, n: u32) -> PathBuf {
         self.artifact_dir(id).join("versions").join(n.to_string())
     }

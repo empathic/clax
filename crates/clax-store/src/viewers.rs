@@ -359,6 +359,11 @@ pub(super) fn name_owner_in(
 /// with a `viewer_id` column fails the fold (see `assert_folded`), so a
 /// table added later cannot be missed silently. When `from` is the owner's
 /// row, `into` becomes the owner, as the owner's credentials move to it.
+///
+/// The documents and their authors are folded here only for artifacts
+/// whose app data has not moved to a store of its own: the fold is logged
+/// (`app_data_folds`), and each artifact store applies it before its next
+/// call ([`super::app_data::AppData::fold`]).
 fn fold(
     st: &Store,
     ctx: &AuditCtx,
@@ -441,6 +446,9 @@ fn fold(
         params![from.id],
     )?;
     move_private_docs(st, ctx, tx, old, new)?;
+    // The artifacts whose app data moved to stores of their own apply it
+    // there, each before its store's next call.
+    super::app_data::log_fold(tx, ctx, old, new, into_owner)?;
     forget_cookies(tx, &from.id)?;
     assert_folded(tx, &from.id)?;
     tx.execute("DELETE FROM viewers WHERE id = ?1", params![from.id])?;
@@ -669,7 +677,8 @@ fn record_claim(
     Ok(())
 }
 
-/// Moves every `data/users/<old>/...` document to `data/users/<new>/...`,
+/// Moves every `data/users/<old>/...` document the instance still holds
+/// (of an artifact whose app data has not moved) to `data/users/<new>/...`,
 /// each with the next version of its artifact; a document whose destination
 /// exists is left in place (and logged), and the destination kept. Each move
 /// is recorded as `doc.move` under `ctx`, with both paths and the document's
