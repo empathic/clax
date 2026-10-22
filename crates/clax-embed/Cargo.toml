@@ -1,0 +1,41 @@
+[package]
+name = "clax-embed"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+
+# The workspace forbids unsafe_code; this crate denies it and allows it
+# only in src/ffi.rs (AGENTS.md; scripts/check-no-unsafe.sh checks it).
+# An unsafe operation in an `unsafe fn` needs its own `unsafe` block,
+# which the check sees.
+[lints.rust]
+unsafe_code = "deny"
+unsafe_op_in_unsafe_fn = "forbid"
+unexpected_cfgs = { level = "warn", check-cfg = ['cfg(clax_embedded)', 'cfg(clax_split)', 'cfg(clax_split, values(any()))'] }
+
+[lib]
+crate-type = ["rlib", "cdylib", "staticlib"]
+
+[dependencies]
+clax-core = { path = "../clax-core" }
+clax-server = { path = "../clax-server" }
+clax-sample = { path = "../clax-sample" }
+clax-realtime = { path = "../clax-realtime" }
+clax-http = { path = "../clax-http" }
+clax-embedded = { path = "../clax-embedded" }
+clax-store = { path = "../clax-store" }
+anyhow.workspace = true
+axum.workspace = true
+bytes.workspace = true
+futures.workspace = true
+http-body-util.workspace = true
+serde.workspace = true
+serde_json.workspace = true
+tokio = { workspace = true, features = ["rt-multi-thread", "sync", "time", "macros"] }
+tower.workspace = true
+tracing.workspace = true
+tracing-subscriber.workspace = true
+
+[dev-dependencies]
+rusqlite.workspace = true
+tempfile.workspace = true
