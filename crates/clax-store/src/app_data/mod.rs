@@ -937,6 +937,10 @@ impl AppData {
 /// whose schema is newer than this binary knows.
 fn migrate(conn: &Connection) -> Result<()> {
     let known = migrations::MIGRATIONS.len() as u32;
+    // A store at the current schema takes no write lock to find that out.
+    if conn.query_row("PRAGMA user_version", [], |r| r.get::<_, u32>(0))? == known {
+        return Ok(());
+    }
     loop {
         let tx = Transaction::new_unchecked(conn, TransactionBehavior::Immediate)?;
         let version: u32 = tx.query_row("PRAGMA user_version", [], |r| r.get(0))?;
