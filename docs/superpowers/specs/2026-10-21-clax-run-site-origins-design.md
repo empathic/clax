@@ -320,8 +320,10 @@ mode"), and the Worker. All three run this model.
 
 - The clax.run zone on the same account; the Worker on the route
   `*.clax.run/*` (custom domains cannot be wildcards); a proxied wildcard DNS
-  record; a certificate covering `*.clax.run` (Universal SSL does not cover
-  a wildcard on its own: Advanced Certificate Manager or Total TLS).
+  record; a certificate covering `*.clax.run` (Universal SSL covers the
+  zone's first-level wildcard when clax.run is a zone of its own; Advanced
+  Certificate Manager or Total TLS otherwise; the deploy's TLS check
+  decides).
   `deploy.mjs` takes `--site-domain clax.run`, generates the route, and
   creates or checks the DNS record and certificate; what it cannot do
   through wrangler it prints as a step with a check that it was done.
