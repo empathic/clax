@@ -1,0 +1,316 @@
+/// The changes that stopped at a limit, kept so Keep going can run them
+/// on from where they stopped.
+library;
+
+import 'dart:convert';
+import 'dart:io';
+
+import 'failure.dart' show FileChange;
+import 'line_diff.dart';
+
+/// At most this many bytes of unfinished changes are kept on disk
+/// ([FileUnfinishedChanges]): past it the oldest changes are dropped. No
+/// age drops a change: its draft is kept for Keep going as long as the app
+/// still holds what its edits were made on ([UnfinishedChange.before]),
+/// and the worker forgets it once its threads close.
+const maxUnfinishedBytes = 8 * 1024 * 1024;
+
+/// At most this many of the agent's notes are kept for a change across
+/// its Keep going runs: the newest.
+const maxUnfinishedNotes = 60;
+
+/// The key [UnfinishedChanges] keeps the draft of a change that planned
+/// the rest of itself under ([plannedStopReply]): the build of [appId]
+/// starts its next continue run from it.
+String buildDraftKey(String appId) => 'build:$appId';
+
+/// What [draft] holds beyond [from]: each path whose text differs, to the
+/// draft's text, and each path of [from] the draft lacks, to null.
+Map<String, String?> keptEdits(
+  Map<String, String> draft,
+  Map<String, String> from,
+) => {
+  for (final e in draft.entries)
+    if (from[e.key] != e.value) e.key: e.value,
+  for (final p in from.keys)
+    if (!draft.containsKey(p)) p: null,
+};
+
+/// The files [edits] change over [from], by path, with their line counts.
+List<FileChange> changedFiles(
+  Map<String, String?> edits,
+  Map<String, String> from,
+) => [
+  for (final p in edits.keys.toList()..sort())
+    if (lineChanges(from[p], edits[p]) case (:final added, :final removed))
+      (path: p, added: added, removed: removed),
+];
+
+/// A short fingerprint of a file's text (FNV-1a over its UTF-8 bytes, with
+/// its length), or null for no file: what [UnfinishedChange.before] keeps
+/// instead of the whole text.
+String? fingerprint(String? text) {
+  if (text == null) return null;
+  final bytes = utf8.encode(text);
+  var h = 0xcbf29ce484222325;
+  for (final b in bytes) {
+    h ^= b;
+    h *= 0x100000001b3;
+  }
+  return '${bytes.length}:${h.toUnsigned(64).toRadixString(16)}';
+}
+
+/// One change that stopped at a limit: its app and comments, what its
+/// runs cost, the agent's notes, and its unfinished draft as edits on the
+/// app: [edits] (path to the draft's text, null for a file the draft
+/// deleted) over [before] (the [fingerprint] of each of those paths as
+/// the app held it then, null where it had none), so a later run applies
+/// them only where the app still holds what they were made on.
+class UnfinishedChange {
+  const UnfinishedChange({
+    required this.artifactId,
+    required this.threadIds,
+    required this.commentIds,
+    required this.limit,
+    required this.spentUsd,
+    required this.at,
+    this.stops = 1,
+    this.notes = const [],
+    this.answers,
+    this.lastRender,
+    this.edits = const {},
+    this.before = const {},
+    this.title,
+    this.capabilities,
+  });
+
+  factory UnfinishedChange.fromJson(Map<String, Object?> j) => UnfinishedChange(
+    artifactId: j['artifact']! as String,
+    threadIds: [for (final t in j['threads']! as List) t as String],
+    commentIds: [for (final c in j['comments']! as List) c as String],
+    limit: j['limit']! as String,
+    spentUsd: (j['spent_usd']! as num).toDouble(),
+    at: DateTime.parse(j['at']! as String),
+    stops: j['stops'] as int? ?? 1,
+    notes: [for (final n in j['notes'] as List? ?? const []) n as String],
+    answers: j['answers'] as String?,
+    lastRender: j['last_render'] as String?,
+    edits: {
+      for (final e in (j['edits'] as Map? ?? const {}).entries)
+        e.key as String: e.value as String?,
+    },
+    before: {
+      for (final e in (j['before'] as Map? ?? const {}).entries)
+        e.key as String: e.value as String?,
+    },
+    title: j['title'] as String?,
+    capabilities: (j['capabilities'] as Map?)?.cast<String, Object?>(),
+  );
+
+  final String artifactId;
+  final List<String> threadIds;
+
+  /// The viewer comments the change answered.
+  final List<String> commentIds;
+
+  /// The cap it stopped at, as [RunBudget.hardStop] names it.
+  final String limit;
+
+  /// What the change's runs have cost so far, in US dollars.
+  final double spentUsd;
+
+  /// When it stopped.
+  final DateTime at;
+
+  /// How many of its runs stopped at a limit, this one included.
+  final int stops;
+
+  /// The agent's words over the change's runs, oldest first: what each
+  /// narrated, then why it stopped; the newest [maxUnfinishedNotes].
+  final List<String> notes;
+
+  /// What the person answered (or skipped) of the questions the change's
+  /// runs asked, as late-answer text ([answerText]), or null.
+  final String? answers;
+
+  /// What the stopped run's last render found, for the next run to read;
+  /// null when that run did not render.
+  final String? lastRender;
+
+  final Map<String, String?> edits;
+  final Map<String, String?> before;
+
+  /// The draft's title and capability declaration, when it changed them.
+  final String? title;
+  final Map<String, Object?>? capabilities;
+
+  Map<String, Object?> toJson() => {
+    'artifact': artifactId,
+    'threads': threadIds,
+    'comments': commentIds,
+    'limit': limit,
+    'spent_usd': spentUsd,
+    'at': at.toUtc().toIso8601String(),
+    'stops': stops,
+    'notes': notes,
+    'answers': ?answers,
+    'last_render': ?lastRender,
+    'edits': edits,
+    'before': before,
+    'title': ?title,
+    'capabilities': ?capabilities,
+  };
+}
+
+/// The [UnfinishedChange]s, one per thread: a change that answered
+/// several threads is kept under each.
+abstract interface class UnfinishedChanges {
+  Future<UnfinishedChange?> get(String threadId);
+
+  /// Every kept change, by thread ID.
+  Future<Map<String, UnfinishedChange>> all();
+
+  /// Keeps [c] under each of its threads.
+  Future<void> put(UnfinishedChange c);
+
+  /// Forgets what is kept under each of [threadIds].
+  Future<void> remove(Iterable<String> threadIds);
+}
+
+class MemoryUnfinishedChanges implements UnfinishedChanges {
+  final _byThread = <String, UnfinishedChange>{};
+
+  @override
+  Future<UnfinishedChange?> get(String threadId) async => _byThread[threadId];
+
+  @override
+  Future<Map<String, UnfinishedChange>> all() async => Map.of(_byThread);
+
+  @override
+  Future<void> put(UnfinishedChange c) async {
+    for (final t in c.threadIds) {
+      _byThread[t] = c;
+    }
+  }
+
+  @override
+  Future<void> remove(Iterable<String> threadIds) async {
+    for (final t in threadIds) {
+      _byThread.remove(t);
+    }
+  }
+}
+
+/// [UnfinishedChanges] kept in [file] as `{"version": 1, "threads": {tid:
+/// change}}`, read once and written whole through a temporary file and a
+/// rename; a file that does not parse reads as empty, and a change that
+/// does not parse is left out. The file stays small (a draft's edited
+/// files once, with fingerprints of what they replaced, at most
+/// [maxBytes]), so it is read and written synchronously, as
+/// [FileStoppedThreads] is: the worker never waits on the event loop for
+/// it. A file past [maxBytes] is not read; a change whose own entry is
+/// past it is not kept; a write that would pass it drops the oldest
+/// changes first (by [UnfinishedChange.at]).
+class FileUnfinishedChanges implements UnfinishedChanges {
+  FileUnfinishedChanges(this.file, {this.maxBytes = maxUnfinishedBytes});
+
+  final File file;
+  final int maxBytes;
+  Map<String, UnfinishedChange>? _byThread;
+
+  Map<String, UnfinishedChange> get _all => _byThread ??= _read();
+
+  Map<String, UnfinishedChange> _read() {
+    final out = <String, UnfinishedChange>{};
+    try {
+      if (!file.existsSync()) return out;
+      // Past the bound it was not written by this store: nothing is read.
+      if (file.lengthSync() > maxBytes) return out;
+      final j = jsonDecode(file.readAsStringSync());
+      if (j case {'threads': final Map<String, Object?> threads}) {
+        for (final e in threads.entries) {
+          try {
+            out[e.key] = UnfinishedChange.fromJson(
+              (e.value! as Map).cast<String, Object?>(),
+            );
+          } on Object {
+            // Not a change: left out.
+          }
+        }
+      }
+    } on Object {
+      // Unreadable: nothing is kept.
+    }
+    return out;
+  }
+
+  /// Writes [m], first dropping its oldest changes while it would pass
+  /// [maxBytes]. Each entry is encoded once; the file once.
+  void _save(Map<String, UnfinishedChange> m) {
+    final entries = {
+      for (final e in m.entries)
+        e.key: '${jsonEncode(e.key)}:${jsonEncode(e.value.toJson())}',
+    };
+    int bytes(String s) => utf8.encode(s).length;
+    final sizes = {for (final e in entries.entries) e.key: bytes(e.value)};
+    const frame = '{"version":1,"threads":{}}';
+    var total =
+        bytes(frame) +
+        sizes.values.fold(0, (a, b) => a + b) +
+        (sizes.isEmpty ? 0 : sizes.length - 1);
+    // Oldest first; a change kept under several threads goes whole.
+    final byAge = m.keys.toList()..sort((a, b) => m[a]!.at.compareTo(m[b]!.at));
+    for (final t in byAge) {
+      if (total <= maxBytes) break;
+      final c = m[t];
+      if (c == null) continue;
+      for (final other in m.keys.toList()) {
+        final o = m[other]!;
+        if (o.artifactId == c.artifactId && o.at == c.at) {
+          total -= sizes[other]! + 1;
+          entries.remove(other);
+          sizes.remove(other);
+          m.remove(other);
+        }
+      }
+    }
+    final text = '{"version":1,"threads":{${entries.values.join(',')}}}';
+    file.parent.createSync(recursive: true);
+    final tmp = File('${file.path}.tmp');
+    tmp.writeAsStringSync(text, flush: true);
+    tmp.renameSync(file.path);
+  }
+
+  @override
+  Future<UnfinishedChange?> get(String threadId) async => _all[threadId];
+
+  @override
+  Future<Map<String, UnfinishedChange>> all() async => Map.of(_all);
+
+  /// Keeps [c] under each of its threads, unless its own entry would pass
+  /// [maxBytes]: then nothing is kept for them, and a Keep going of them
+  /// starts again from the app.
+  @override
+  Future<void> put(UnfinishedChange c) async {
+    final m = _all;
+    final one = utf8.encode(jsonEncode(c.toJson())).length;
+    for (final t in c.threadIds) {
+      if (one > maxBytes) {
+        m.remove(t);
+      } else {
+        m[t] = c;
+      }
+    }
+    _save(m);
+  }
+
+  @override
+  Future<void> remove(Iterable<String> threadIds) async {
+    final m = _all;
+    var changed = false;
+    for (final t in threadIds) {
+      changed = m.remove(t) != null || changed;
+    }
+    if (changed) _save(m);
+  }
+}

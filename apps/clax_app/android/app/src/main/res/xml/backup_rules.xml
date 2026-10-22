@@ -1,0 +1,14 @@
+<?xml version="1.0" encoding="utf-8"?>
+<!-- What Android 11 and earlier back up (android:fullBackupContent in
+     AndroidManifest.xml); data_extraction_rules.xml says the same for
+     Android 12 and later, and why each is left out. -->
+<full-backup-content>
+    <exclude domain="file" path="clax-home/core.lock"/>
+    <exclude domain="file" path="clax-home/embed.json"/>
+    <exclude domain="file" path="clax-home/logs"/>
+    <exclude domain="file" path="clax-home/net-cache"/>
+    <exclude domain="sharedpref" path="FlutterSecureStorage.xml"/>
+    <exclude domain="sharedpref" path="FlutterSecureKeyStorage.xml"/>
+    <exclude domain="sharedpref" path="FlutterSecureStorageConfiguration.xml"/>
+    <exclude domain="sharedpref" path="FlutterSecureStorageConfiguration:FlutterSecureStorage.xml"/>
+</full-backup-content>

@@ -1,0 +1,996 @@
+# The Clax app (Flutter). Its kit and home app are web files the browser
+# tests also load (web/e2e/home-app.spec.ts, lockdown.spec.ts, map.spec.ts),
+# as js_library targets so rules_js copies them beside the tests.
+
+load("@aspect_rules_js//js:defs.bzl", "js_library")
+load("@bazel_skylib//rules:build_test.bzl", "build_test")
+load("@bazel_skylib//rules:diff_test.bzl", "diff_test")
+load("@clax_app_dart_graph//:graph.bzl", "LIBS", "SUITES")
+load("@rules_apple//apple:macos.bzl", "macos_unit_test")
+load("@rules_apple//apple:versioning.bzl", "apple_bundle_version")
+load("@rules_dart//dart:defs.bzl", "dart_analysis_config", "dart_analysis_options", "dart_analysis_test", "dart_binary", "dart_library")
+load("@rules_flutter//flutter:defs.bzl", "flutter_application", "flutter_library", "flutter_test")
+load("@rules_flutter//flutter:macos.bzl", "flutter_macos_app")
+load("@rules_shell//shell:sh_test.bzl", "sh_test")
+load("@rules_swift//swift:swift_library.bzl", "swift_library")
+load("//bazel/flutter:android.bzl", "clax_android_integration_tests", "flutter_fat_apk")
+load("//bazel/flutter:ios.bzl", "clax_ios_app", "clax_ios_integration_tests")
+load("//bazel/flutter:macos.bzl", "debug_app", "integration_main", "macos_dylib")
+load("//bazel/flutter:notices.bzl", "flutter_notices", "pub_licenses", "pub_licenses_test")
+load("//bazel/flutter:tests.bzl", "flutter_test_suite")
+
+js_library(
+    name = "kit",
+    srcs = glob(
+        ["assets/kit/**"],
+        exclude = ["**/.qual"],
+    ),
+    visibility = ["//web:__pkg__"],
+)
+
+js_library(
+    name = "home",
+    srcs = glob(
+        ["home/**"],
+        exclude = ["**/.qual"],
+    ),
+    visibility = ["//web:__pkg__"],
+)
+
+js_library(
+    name = "home_unit",
+    srcs = glob(
+        ["home_unit/**"],
+        exclude = ["**/.qual"],
+    ),
+    visibility = ["//web:__pkg__"],
+)
+exports_files(["pubspec.lock"])
+
+# The scripts the host relay runs for one long answer, which
+# test/core/channel_relay_test.dart writes and the web's unit and browser
+# tests run against the shell's transport and the e2e stand-in.
+js_library(
+    name = "relay_fixture",
+    srcs = ["test/fixtures/relay_answer_parts.json"],
+    visibility = ["//web:__pkg__"],
+)
+
+# `flutter analyze`'s rules for the app's Dart targets (the dart_analyze
+# aspect .bazelrc applies to every test run).
+dart_analysis_options(
+    name = "analysis_options",
+    src = "analysis_options.yaml",
+    deps = ["@clax_app_pub//:flutter_lints"],
+)
+
+dart_analysis_config(
+    name = "analysis_config",
+    options = [":analysis_options"],
+    visibility = ["//visibility:public"],
+)
+
+# The app's whole library (lib/), which the app, its integration tests and
+# the analysis build on.
+flutter_library(
+    name = "clax_app",
+    package_name = "clax_app",
+    srcs = glob(["lib/**/*.dart"]),
+    tags = ["no-dart-format"],
+    deps = [
+        "@clax_app_pub//:archive",
+        "@clax_app_pub//:cryptography",
+        "@clax_app_pub//:ffi",
+        "@clax_app_pub//:file_picker",
+        "@clax_app_pub//:flutter",
+        "@clax_app_pub//:flutter_local_notifications",
+        "@clax_app_pub//:flutter_secure_storage",
+        "@clax_app_pub//:flutter_svg",
+        "@clax_app_pub//:flutter_timezone",
+        "@clax_app_pub//:geolocator",
+        "@clax_app_pub//:image_picker",
+        "@clax_app_pub//:path_provider",
+        "@clax_app_pub//:share_plus",
+        "@clax_app_pub//:speech_to_text",
+        "@clax_app_pub//:timezone",
+        "@clax_app_pub//:webview_flutter",
+        "@clax_app_pub//:webview_flutter_wkwebview",
+        "@clax_app_pub//:xml",
+    ],
+)
+
+# lib/ by its imports, for the unit tests: a library per Dart library (a
+# file, or the files of an import cycle), named lib_<path>, which depends on
+# the libraries and pub packages it imports. @clax_app_dart_graph derives
+# them when the package loads (bazel/flutter/dart_graph.bzl), so no import
+# is ever undeclared; `python3 bazel/flutter/dart_graph.py apps/clax_app
+# --report` prints the graph.
+[flutter_library(
+    name = name,
+    package_name = "clax_app",
+    srcs = lib["srcs"],
+    tags = ["no-dart-format"],
+    deps = [":" + d for d in lib["deps"]] + ["@clax_app_pub//:" + p for p in lib["pub"]],
+) for name, lib in LIBS.items()]
+
+TEST_DATA = glob(
+    [
+        "assets/**",
+        "home/**",
+        "test/fixtures/**",
+        "tool/eval/prompts.json",
+    ],
+    # assets/home holds the home bundle, :home_bundle builds it (a native
+    # build packs it there too: scripts/build-home-bundle.sh).
+    exclude = [
+        "**/.qual",
+        "assets/home/**",
+    ],
+) + [
+    ":home_bundle",
+    "pubspec.yaml",
+    # The icon rule vectors the core runs too (test/agent/icon_fixtures_test.dart).
+    "//crates/clax-core:icon_fixtures",
+    # The store's table of job moves (test/queue/job_moves_test.dart).
+    "//crates/clax-store:job_moves_fixture",
+    "//web:contract_files",
+]
+
+# The app's unit and widget tests (`flutter test`), a test target per file,
+# //apps/clax_app:<dir>_<file>, each run in a flutter_tester of its own. A
+# suite (SUITES, bazel/flutter/dart_graph.py) compiles its files together
+# (bazel/flutter/tests.bzl says why), against the libraries they and the
+# test-side files they import (test support, tool/, integration_test/)
+# import, so a change selects only the suites that reach it. The
+# *_real_test.dart files, which run the real embedded core, form a suite of
+# their own with the host's libclax_embed.
+[flutter_test_suite(
+    name = name,
+    size = "medium",
+    package_name = "clax_app",
+    srcs = suite["srcs"],
+    assets = glob(
+        [
+            "assets/kit/**",
+            "assets/prompt/**",
+        ],
+        exclude = ["**/.qual"],
+    ) + [
+        "LICENSE",
+        "assets/haiku.json",
+        ":home_bundle",
+    ],
+    data = TEST_DATA + ([
+        "//crates/clax-embed:clax_embed_host",
+    ] if suite["real"] else []),
+    # APP_NAME, as `flutter test` sets it beside UNIT_TEST_ASSETS
+    # (flutter_test_suite): flutter_test then reads an asset from disk at
+    # once, where through the engine the read would not finish within a
+    # test's fake time.
+    env = {"APP_NAME": "clax_app"} | (select({
+        # The core as this host builds it, relative to the runfiles root.
+        "@platforms//os:macos": {"CLAX_EMBED_LIB": "crates/clax-embed/libclax_embed.dylib"},
+        "//conditions:default": {"CLAX_EMBED_LIB": "crates/clax-embed/libclax_embed.so"},
+    }) if suite["real"] else {}),
+    # NOTICES, for the suites whose files show the licences.
+    license_files = [":notices"] if suite["notices"] else [],
+    names = {t: t[len("test/"):-len(".dart")].replace("/", "_") for t in suite["tests"]},
+    tests = suite["tests"],
+    deps = [":" + d for d in suite["deps"]] + ["@clax_app_pub//:" + p for p in suite["pub"]],
+) for name, suite in SUITES.items()]
+
+# A test file in no suite would never run.
+[fail("%s is in no suite of @clax_app_dart_graph (bazel/flutter/dart_graph.py)" % t) for t in glob(["test/**/*_test.dart"]) if not [s for s in SUITES.values() if t in s["tests"]]]
+
+# `flutter analyze` (analysis_options.yaml) over the app's Dart: its
+# library, and its tests, integration tests and tools as a library of their
+# own, which nothing compiles but the analysis. No format check: the app's
+# code is not `dart format`ted.
+flutter_library(
+    name = "checked_sources",
+    package_name = "clax_app",
+    srcs = glob([
+        "integration_test/*.dart",
+        "test/**/*.dart",
+        "tool/**/*.dart",
+    ]),
+    tags = [
+        "manual",
+        "no-dart-format",
+    ],
+    deps = [
+        ":clax_app",
+        "@clax_app_pub//:archive",
+        "@clax_app_pub//:cryptography",
+        "@clax_app_pub//:flutter_test",
+        "@clax_app_pub//:integration_test",
+        "@clax_app_pub//:xml",
+    ],
+)
+
+dart_analysis_test(
+    name = "dart_analyze",
+    targets = [
+        ":checked_sources",
+        ":clax_app",
+    ],
+)
+
+# :dart_analyze reads :analysis_config through the flag .bazelrc sets, an
+# edge `bazel query` cannot see. This test names both, so an edit to
+# analysis_options.yaml selects the analysis (scripts/affected-tests.sh).
+build_test(
+    name = "dart_analyze_options",
+    targets = [
+        ":analysis_config",
+        ":dart_analyze",
+    ],
+)
+
+# The prompt's copies of the contract match it (scripts/sync-app-prompt.sh).
+sh_test(
+    name = "prompt_sync",
+    srcs = ["//scripts:sync-app-prompt.sh"],
+    args = ["--check"],
+    data = glob(["assets/prompt/**"]) + [
+        "//docs:contract",
+        "//web:contract_files",
+    ],
+)
+
+# pubspec.yaml's assets: the files directly in each directory it names, as
+# Flutter bundles them; assets/home's are the built home bundle.
+APP_ASSETS = glob(
+    [
+        "assets/kit/*",
+        "assets/prompt/*",
+    ],
+    exclude = ["**/.qual"],
+) + [
+    "LICENSE",
+    "assets/haiku.json",
+    ":home_bundle",
+]
+
+# What scripts/build-app-icons.sh writes (the icons, the text files beside
+# them and the source hash), for its checks (//design:icons_sync,
+# //scripts:build_app_icons). The PNGs' pixels are never compared.
+filegroup(
+    name = "icon_outputs",
+    srcs = glob(
+        [
+            "android/app/src/main/res/drawable/ic_launcher_*.xml",
+            "android/app/src/main/res/mipmap-*/ic_launcher*",
+            "android/app/src/main/res/values/ic_launcher_colors.xml",
+            "icons/**",
+            "macos/Runner/AppIcon.icon/**",
+            "macos/Runner/Assets.xcassets/AppIcon.appiconset/**",
+        ],
+        exclude = ["**/.qual"],
+    ),
+    visibility = [
+        "//design:__pkg__",
+        "//scripts:__pkg__",
+    ],
+)
+
+# What scripts/sync-tokens.py writes into the app (design/tokens.json), and
+# the stylesheets whose color-mix() guards it checks, for its checks
+# (//design:tokens_sync, //scripts:sync_tokens).
+filegroup(
+    name = "token_outputs",
+    srcs = [
+        "assets/haiku.json",
+        "assets/kit/kit.css",
+        "assets/kit/map.js",
+        "home/home.css",
+        "home/mark.css",
+        "home/tokens.css",
+        "lib/ui/tokens.g.dart",
+    ],
+    visibility = [
+        "//design:__pkg__",
+        "//scripts:__pkg__",
+    ],
+)
+
+# The pub packages the app's Dart code reaches, whose licences its
+# licences page lists: :notices_pub_test fails naming any the app gains or
+# loses.
+APP_PUB_PACKAGES = [
+    "android_file_picker",
+    "archive",
+    "args",
+    "async",
+    "characters",
+    "clock",
+    "code_assets",
+    "collection",
+    "cross_file",
+    "crypto",
+    "cryptography",
+    "dbus",
+    "equatable",
+    "ffi",
+    "ffi_leak_tracker",
+    "file",
+    "file_picker",
+    "file_picker_darwin",
+    "file_picker_linux",
+    "file_picker_platform_interface",
+    "file_picker_web",
+    "file_selector_linux",
+    "file_selector_macos",
+    "file_selector_platform_interface",
+    "file_selector_windows",
+    "fixnum",
+    "flutter",
+    "flutter_local_notifications",
+    "flutter_local_notifications_linux",
+    "flutter_local_notifications_platform_interface",
+    "flutter_local_notifications_web",
+    "flutter_local_notifications_windows",
+    "flutter_plugin_android_lifecycle",
+    "flutter_secure_storage",
+    "flutter_secure_storage_darwin",
+    "flutter_secure_storage_linux",
+    "flutter_secure_storage_platform_interface",
+    "flutter_secure_storage_web",
+    "flutter_secure_storage_windows",
+    "flutter_svg",
+    "flutter_timezone",
+    "flutter_web_plugins",
+    "geoclue",
+    "geolocator",
+    "geolocator_android",
+    "geolocator_apple",
+    "geolocator_linux",
+    "geolocator_platform_interface",
+    "geolocator_web",
+    "geolocator_windows",
+    "gsettings",
+    "hooks",
+    "http",
+    "http_parser",
+    "image_picker",
+    "image_picker_android",
+    "image_picker_for_web",
+    "image_picker_ios",
+    "image_picker_linux",
+    "image_picker_macos",
+    "image_picker_platform_interface",
+    "image_picker_windows",
+    "jni",
+    "jni_flutter",
+    "jni_util",
+    "json_annotation",
+    "logging",
+    "material_color_utilities",
+    "meta",
+    "mime",
+    "objective_c",
+    "package_config",
+    "package_info_plus",
+    "package_info_plus_platform_interface",
+    "path",
+    "path_parsing",
+    "path_provider",
+    "path_provider_android",
+    "path_provider_foundation",
+    "path_provider_linux",
+    "path_provider_platform_interface",
+    "path_provider_windows",
+    "petitparser",
+    "platform",
+    "plugin_platform_interface",
+    "posix",
+    "pub_semver",
+    "record_use",
+    "share_plus",
+    "share_plus_platform_interface",
+    "source_span",
+    "speech_to_text",
+    "speech_to_text_platform_interface",
+    "speech_to_text_windows",
+    "string_scanner",
+    "term_glyph",
+    "timezone",
+    "typed_data",
+    "url_launcher_linux",
+    "url_launcher_platform_interface",
+    "url_launcher_web",
+    "url_launcher_windows",
+    "uuid",
+    "vector_graphics",
+    "vector_graphics_codec",
+    "vector_graphics_compiler",
+    "vector_math",
+    "web",
+    "webview_flutter",
+    "webview_flutter_android",
+    "webview_flutter_platform_interface",
+    "webview_flutter_wkwebview",
+    "win32",
+    "windows_file_picker",
+    "xdg_directories",
+    "xml",
+    "yaml",
+]
+
+# NOTICES, which the app bundles as NOTICES.Z for its licences page
+# (bazel/flutter/notices.bzl): the pub packages', the Flutter engine's and
+# the embedded core's Rust crates' licences.
+# flutter_web_plugins, part of the Flutter SDK, has no LICENSE of its own:
+# the SDK's (package:flutter's) covers it.
+APP_PUB_LICENSES = pub_licenses(
+    "clax_app_pub",
+    APP_PUB_PACKAGES,
+    license_of = {"flutter_web_plugins": "flutter"},
+)
+
+flutter_notices(
+    name = "notices",
+    pub_licenses = APP_PUB_LICENSES,
+    engine_license = "@flutter_sky_engine//sky_engine:LICENSE",
+    rust_binaries = [
+        "//crates/clax-embed:clax_embed_android_arm64",
+        "//crates/clax-embed:clax_embed_android_x86_64",
+        # The library itself, in the configuration of the app being built (the
+        # Mac, iOS): the same crates as clax_embed_macos and clax_embed_ios_c.
+        "//crates/clax-embed:clax_embed_shared",
+    ],
+)
+
+# NOTICES's pub packages are exactly those the app's Dart code reaches.
+pub_licenses_test(
+    name = "notices_pub_test",
+    hub = "clax_app_pub",
+    pub_licenses = APP_PUB_LICENSES,
+    deps = [":clax_app"],
+)
+
+# The files whose user-facing copy scripts/check-copy.py checks
+# (//scripts:check_copy): the app's screens, the home app and the kit.
+# The kit's vendored bundles (preact.js, dates.js) are left out.
+filegroup(
+    name = "copy_sources",
+    srcs = glob(
+        [
+            "assets/kit/*.js",
+            "home/*.js",
+            "lib/agent/failure.dart",
+            "lib/app.dart",
+            "lib/home/**/*.dart",
+            "lib/ui/**/*.dart",
+        ],
+        exclude = [
+            "assets/kit/dates.js",
+            "assets/kit/preact.js",
+            "lib/ui/tokens.g.dart",
+        ],
+    ),
+    visibility = ["//scripts:__pkg__"],
+)
+
+flutter_application(
+    name = "app",
+    package_name = "clax_app",
+    srcs = glob(["lib/**/*.dart"]),
+    assets = APP_ASSETS,
+    license_files = [":notices"],
+    main = "lib/main.dart",
+    deps = [
+        ":clax_app",
+        "@rules_flutter//flutter:material_icons",
+    ],
+)
+
+# pubspec.yaml's `version: <name>+<code>`.
+VERSION_NAME = "1.0.0"
+
+VERSION_CODE = "1"
+
+sh_test(
+    name = "version_sync",
+    srcs = ["tool/version-sync.sh"],
+    args = [
+        VERSION_NAME,
+        VERSION_CODE,
+    ],
+    data = ["pubspec.yaml"],
+)
+
+# The app's LICENSE, its licences page's Clax entry, carries the text of
+# LICENSES/GPL-2.0-only.txt.
+sh_test(
+    name = "licence_check",
+    srcs = ["tool/licence-check.sh"],
+    data = [
+        "LICENSE",
+        "//:LICENSES/GPL-2.0-only.txt",
+    ],
+)
+
+# The runner of every APK of the app: its manifest, resources and Kotlin,
+# and what the Kotlin uses (bazel/flutter/android.bzl).
+ANDROID_RUNNER = {
+    "debug_key": "@android_debug_keystore//:key",
+    "kotlin_srcs": glob(["android/app/src/main/kotlin/**/*.kt"]),
+    "manifest": "android/app/src/main/AndroidManifest.xml",
+    # As android/app/build.gradle.kts gives them: minSdk 29, Flutter's
+    # target SDK, and pubspec.yaml's version (:version_sync checks it).
+    "manifest_values": {
+        "minSdkVersion": "29",
+        "targetSdkVersion": "36",
+        "versionCode": VERSION_CODE,
+        "versionName": VERSION_NAME,
+    },
+    "namespace": "dev.empathic.clax_app",
+    "package_name": "dev.empathic.clax",
+    "pub_hub_name": "clax_app_pub",
+    "resources": glob(
+        ["android/app/src/main/res/**"],
+        exclude = ["**/.qual"],
+    ),
+    # As android/app/build.gradle.kts's dependencies give them: the splash
+    # screen, and androidx.webkit for the WebViews' ClaxHost listener
+    # (SchemeHost.kt).
+    "runner_deps": [
+        "@rules_android_maven//:androidx_core_core_splashscreen",
+        "@rules_android_maven//:androidx_webkit_webkit",
+    ],
+}
+
+# The release APK, for both Android CPUs the app ships, with the embedded
+# core for each (libclax_embed.so, bazel/android/embed.bzl;
+# bazel/flutter/android.bzl).
+flutter_fat_apk(
+    name = "apk",
+    application = ":app",
+    debug_key = ANDROID_RUNNER["debug_key"],
+    kotlin_srcs = ANDROID_RUNNER["kotlin_srcs"],
+    manifest = ANDROID_RUNNER["manifest"],
+    manifest_values = ANDROID_RUNNER["manifest_values"],
+    namespace = ANDROID_RUNNER["namespace"],
+    native_files = {
+        "//crates/clax-embed:clax_embed_android_arm64": "arm64-v8a/libclax_embed.so",
+        "//crates/clax-embed:clax_embed_android_x86_64": "x86_64/libclax_embed.so",
+    },
+    # Shrunk with R8 as Gradle's release build is: AGP's optimized defaults
+    # and Flutter's rules; each plugin's and library's own rules come with it.
+    proguard_specs = [
+        "//bazel/android:proguard-android-optimize.txt",
+        "//bazel/flutter:flutter_proguard_rules.pro",
+    ],
+    package_name = ANDROID_RUNNER["package_name"],
+    pub_hub_name = ANDROID_RUNNER["pub_hub_name"],
+    resources = ANDROID_RUNNER["resources"],
+    runner_deps = ANDROID_RUNNER["runner_deps"],
+    shrink_resources = 1,
+    tags = ["no-remote"],
+)
+
+# The APK has what the Gradle build gives it (tool/apk-check.sh).
+sh_test(
+    name = "apk_test",
+    srcs = ["tool/apk-check.sh"],
+    args = [
+        "$(rootpath :apk)",
+        "$(rootpath @androidsdk//:aapt2)",
+        "$(rootpath @androidsdk//:apksigner)",
+        "$(rootpath :assets/home/home.clax)",
+        "$(rootpath //crates/clax-embed:ndk_nm)",
+    ],
+    data = [
+        ":apk",
+        ":assets/home/home.clax",
+        "//crates/clax-embed:ndk_nm",
+        "@androidsdk//:aapt2",
+        "@androidsdk//:apksigner",
+    ],
+    env = {
+        "VERSION_CODE": VERSION_CODE,
+        "VERSION_NAME": VERSION_NAME,
+    },
+    tags = ["no-remote"],
+)
+
+# apk-check.sh's reading of MainActivity's configChanges, without an APK.
+sh_test(
+    name = "apk_check_test",
+    srcs = ["tool/apk-check-test.sh"],
+    args = ["$(rootpath tool/apk-check.sh)"],
+    data = ["tool/apk-check.sh"],
+)
+
+# The embedded core for the macOS app's Contents/Frameworks, optimized for
+# this Mac's CPU and signed ad hoc (bazel/flutter/macos.bzl), which the app
+# loads into its own process (lib/core/ffi.dart).
+macos_dylib(
+    name = "macos_core",
+    filename = "libclax_embed.dylib",
+    lib = "//crates/clax-embed:clax_embed_macos",
+)
+
+# pubspec.yaml's version, as Flutter's Xcode build gives it to the bundle.
+apple_bundle_version(
+    name = "macos_version",
+    build_version = VERSION_CODE,
+    short_version_string = VERSION_NAME,
+)
+
+# The Runner's Info.plist with the copyright of
+# macos/Runner/Configs/AppInfo.xcconfig, as the Xcode build fills it in.
+genrule(
+    name = "macos_info_plist",
+    srcs = [
+        "macos/Runner/Configs/AppInfo.xcconfig",
+        "macos/Runner/Info.plist",
+    ],
+    outs = ["macos_info_plist/Info.plist"],
+    cmd = "$(location tool/macos-info-plist.sh) $(location macos/Runner/Info.plist) $(location macos/Runner/Configs/AppInfo.xcconfig) $@",
+    tools = ["tool/macos-info-plist.sh"],
+)
+
+flutter_macos_app(
+    name = "macos_app",
+    additional_contents = {":macos_core": "Frameworks"},
+    # The Xcode build's PRODUCT_NAME (macos/Runner/Configs/AppInfo.xcconfig).
+    app_name = "Clax",
+    application = ":app",
+    bundle_id = "dev.empathic.clax",
+    info_plist = ":macos_info_plist",
+    version = ":macos_version",
+)
+
+# The app's zip: `$(rootpath :macos_app)` names its launcher script.
+filegroup(
+    name = "macos_app_zip",
+    srcs = [":macos_app"],
+    tags = ["manual"],
+)
+
+# The macOS app has what the Xcode build gives it (tool/macos-app-check.sh).
+sh_test(
+    name = "macos_app_test",
+    srcs = ["tool/macos-app-check.sh"],
+    args = [
+        "$(rootpath :macos_app_zip)",
+        "$(rootpath :assets/home/home.clax)",
+        "$(rootpath macos/Runner/DebugProfile.entitlements)",
+    ],
+    data = [
+        "macos/Runner/DebugProfile.entitlements",
+        ":assets/home/home.clax",
+        ":macos_app_zip",
+    ],
+    env = {
+        "VERSION_CODE": VERSION_CODE,
+        "VERSION_NAME": VERSION_NAME,
+    },
+    tags = ["no-remote"],
+    target_compatible_with = ["@platforms//os:macos"],
+)
+
+# The iOS app (iPhone and iPad) with the core linked into its runner
+# (crates/clax-embed), its simulator build and :ios_app_test, a check of
+# both that is also the iOS form of :version_sync (bazel/flutter/ios.bzl).
+clax_ios_app(
+    name = "ios_app",
+    version_code = VERSION_CODE,
+    version_name = VERSION_NAME,
+)
+
+# The simulator integration tests, //apps/clax_app:integration_ios_<name>
+# for each integration_test/ios_<name>_test.dart, run on "Clax iPhone";
+# manual, as the macOS ones are: `just app-integration --ios` runs them.
+clax_ios_integration_tests(
+    assets = APP_ASSETS,
+    deps = [
+        ":clax_app",
+        "@clax_app_pub//:flutter_test",
+        "@clax_app_pub//:integration_test",
+        "@rules_flutter//flutter:material_icons",
+    ],
+)
+
+# The Mac's and the iPhone's scheme host are one file, kept as two because
+# each runner takes every *.swift of its own Runner directory.
+diff_test(
+    name = "scheme_host_sync",
+    file1 = "macos/Runner/SchemeHost.swift",
+    file2 = "ios/Runner/SchemeHost.swift",
+)
+
+# The Android integration tests, //apps/clax_app:integration_android_<name>
+# for each integration_test/android_<name>_test.dart, run on the emulator
+# "Clax Pixel" (scripts/app-android-emulator.sh); manual, as the macOS ones
+# are: `just app-integration --android` runs them.
+clax_android_integration_tests(
+    assets = APP_ASSETS,
+    deps = [
+        ":clax_app",
+        "@clax_app_pub//:flutter_test",
+        "@clax_app_pub//:integration_test",
+        "@rules_flutter//flutter:material_icons",
+    ],
+    runner = ANDROID_RUNNER,
+)
+
+# The About panel's credits (macos/Runner/About.swift), on their own.
+swift_library(
+    name = "macos_about_test_lib",
+    testonly = True,
+    srcs = [
+        "macos/Runner/About.swift",
+        "macos/RunnerTests/AboutTests.swift",
+    ],
+    data = ["assets/haiku.json"],
+    module_name = "AboutTests",
+    tags = ["manual"],
+    target_compatible_with = ["@platforms//os:macos"],
+)
+
+macos_unit_test(
+    name = "macos_about_test",
+    minimum_os_version = "12.0",
+    tags = ["no-remote"],
+    target_compatible_with = ["@platforms//os:macos"],
+    deps = [":macos_about_test_lib"],
+)
+
+# The menus and alerts of macos/Runner/NativeDialogs.swift, on their own.
+swift_library(
+    name = "macos_dialogs_test_lib",
+    testonly = True,
+    srcs = [
+        "macos/Runner/NativeDialogs.swift",
+        "macos/RunnerTests/NativeDialogsTests.swift",
+    ],
+    module_name = "NativeDialogsTests",
+    tags = ["manual"],
+    target_compatible_with = ["@platforms//os:macos"],
+)
+
+macos_unit_test(
+    name = "macos_dialogs_test",
+    minimum_os_version = "12.0",
+    tags = ["no-remote"],
+    target_compatible_with = ["@platforms//os:macos"],
+    deps = [":macos_dialogs_test_lib"],
+)
+
+# The windows, sidebar material and Escape of macos/Runner/WindowBridge.swift,
+# on their own.
+swift_library(
+    name = "macos_window_bridge_test_lib",
+    testonly = True,
+    srcs = [
+        "macos/Runner/WindowBridge.swift",
+        "macos/RunnerTests/WindowBridgeTests.swift",
+    ],
+    module_name = "WindowBridgeTests",
+    tags = ["manual"],
+    target_compatible_with = ["@platforms//os:macos"],
+)
+
+macos_unit_test(
+    name = "macos_window_bridge_test",
+    minimum_os_version = "12.0",
+    tags = ["no-remote"],
+    target_compatible_with = ["@platforms//os:macos"],
+    deps = [":macos_window_bridge_test_lib"],
+)
+
+# The window toolbars of macos/Runner/Toolbar.swift, on their own.
+swift_library(
+    name = "macos_toolbar_test_lib",
+    testonly = True,
+    srcs = [
+        "macos/Runner/Toolbar.swift",
+        "macos/RunnerTests/ToolbarTests.swift",
+    ],
+    module_name = "ToolbarTests",
+    tags = ["manual"],
+    target_compatible_with = ["@platforms//os:macos"],
+)
+
+macos_unit_test(
+    name = "macos_toolbar_test",
+    minimum_os_version = "12.0",
+    tags = ["no-remote"],
+    target_compatible_with = ["@platforms//os:macos"],
+    deps = [":macos_toolbar_test_lib"],
+)
+
+# The capture sheet and its channel of macos/Runner/Camera.swift, on their
+# own, with the system and the sheet stood in for: no camera is opened.
+swift_library(
+    name = "macos_camera_test_lib",
+    testonly = True,
+    srcs = [
+        "macos/Runner/Camera.swift",
+        "macos/RunnerTests/CameraTests.swift",
+    ],
+    module_name = "CameraTests",
+    tags = ["manual"],
+    target_compatible_with = ["@platforms//os:macos"],
+)
+
+macos_unit_test(
+    name = "macos_camera_test",
+    minimum_os_version = "12.0",
+    tags = ["no-remote"],
+    target_compatible_with = ["@platforms//os:macos"],
+    deps = [":macos_camera_test_lib"],
+)
+
+# The home app's bundle, assets/home/home.clax, and its release record,
+# assets/home/release.json, packed from home/ and the kit files its manifest
+# names by tool/pack_home.dart (which needs only the bundle format and no
+# Flutter), at the version and with the key of this machine's home release
+# (bazel/flutter/home_release.bzl): the app's assets, so the APK and the
+# macOS app carry the bundle of their own sources. Built locally: the key
+# is this machine's.
+dart_library(
+    name = "bundle_format",
+    package_name = "clax_app",
+    srcs = [
+        "lib/agent/icon_svg.dart",
+        "lib/bundle/bundle_reader.dart",
+        "lib/bundle/bundle_writer.dart",
+        "lib/bundle/content_hash.dart",
+        "lib/bundle/manifest.dart",
+        "lib/bundle/signing.dart",
+    ],
+    deps = [
+        "@clax_app_pub//:archive",
+        "@clax_app_pub//:cryptography",
+        "@clax_app_pub//:xml",
+    ],
+)
+
+dart_binary(
+    name = "pack_home",
+    main = "tool/pack_home.dart",
+    deps = [":bundle_format"],
+)
+
+genrule(
+    name = "home_bundle",
+    srcs = glob(
+        [
+            "assets/kit/**",
+            "home/**",
+        ],
+        exclude = ["**/.qual"],
+    ) + [
+        "@clax_home_release//:key",
+        "@clax_home_release//:mode",
+        "@clax_home_release//:version",
+    ],
+    outs = [
+        "assets/home/home.clax",
+        "assets/home/release.json",
+    ],
+    cmd = """
+        dev=""
+        if [ "$$(cat $(location @clax_home_release//:mode))" = dev ]; then dev=--dev; fi
+        $(execpath :pack_home) --app apps/clax_app \
+            --key $(location @clax_home_release//:key) \
+            --version "$$(cat $(location @clax_home_release//:version))" \
+            --out $(RULEDIR)/assets/home $$dev > /dev/null
+    """,
+    tags = ["no-remote"],
+    tools = [":pack_home"],
+)
+
+# The version the home bundle takes (tool/home-version.sh): the same while
+# its sources are, higher whenever they change.
+sh_test(
+    name = "home_version_test",
+    srcs = ["tool/home-version-test.sh"],
+    args = ["$(rootpath tool/home-version.sh)"],
+    data = ["tool/home-version.sh"],
+)
+
+# The macOS integration tests (`flutter test integration_test/<name>_test.dart
+# -d macos`), a target per file but the iOS and Android ones (`ios_*`,
+# `android_*`),
+# //apps/clax_app:integration_<name>: the
+# debug app with the test as its entry point and the embedded core, run in
+# the logged-in session. They open the app's window and take minutes, so
+# they are `manual`: `just app-integration` runs them. A test's entry in
+# INTEGRATION_EXTRA adds launch arguments, data and environment.
+INTEGRATION_EXTRA = {
+    # The window chrome test: its menu golden, and a purple system accent
+    # (System Settings › Appearance's, for this launch only), so its renders
+    # show whether the Apple family follows the accent.
+    "mac_chrome": {
+        "args": [
+            "-AppleAccentColor",
+            "5",
+        ],
+        "data": ["integration_test/goldens/main_menu.txt"],
+        "env": {"CLAX_MENU_GOLDEN": "$(rootpath integration_test/goldens/main_menu.txt)"},
+    },
+    # Kill and resume: the debug app it runs as a child process.
+    "kill_resume": {
+        "data": [":macos_debug"],
+        "env": {"CLAX_CHILD_APP": "$(rootpath :macos_debug)"},
+    },
+}
+
+# The app as Flutter's debug build, for the tests that run it as a child
+# process (integration_test/kill_resume_test.dart): its debug hooks
+# (CLAX_SCRIPTED_TURNS, CLAX_TEST_KILL_AT, CLAX_TEST_QUIT_WHEN_IDLE) are
+# compiled out of the release build.
+debug_app(
+    name = "macos_debug",
+    app = ":macos_app",
+    tags = ["manual"],
+)
+
+[
+    (
+        integration_main(
+            name = "_integration_%s_main" % test[len("integration_test/"):-len("_test.dart")],
+            srcs = glob(["integration_test/*.dart"]),
+            test = test,
+            tags = ["manual"],
+        ),
+        flutter_application(
+            name = "_integration_%s_app" % test[len("integration_test/"):-len("_test.dart")],
+            package_name = "clax_app",
+            srcs = glob(["lib/**/*.dart"]) + [":_integration_%s_main" % test[len("integration_test/"):-len("_test.dart")]],
+            assets = APP_ASSETS,
+            main = ":_integration_%s_main.dart" % test[len("integration_test/"):-len("_test.dart")],
+            tags = ["manual"],
+            deps = [
+                ":clax_app",
+                "@clax_app_pub//:flutter_test",
+                "@clax_app_pub//:integration_test",
+                "@rules_flutter//flutter:material_icons",
+            ],
+        ),
+        flutter_macos_app(
+            name = "_integration_%s_macos" % test[len("integration_test/"):-len("_test.dart")],
+            additional_contents = {":macos_core": "Frameworks"},
+            app_name = "Clax",
+            application = ":_integration_%s_app" % test[len("integration_test/"):-len("_test.dart")],
+            bundle_id = "dev.empathic.clax",
+            info_plist = ":macos_info_plist",
+            tags = ["manual"],
+            version = ":macos_version",
+        ),
+        debug_app(
+            name = "_integration_%s_debug" % test[len("integration_test/"):-len("_test.dart")],
+            app = ":_integration_%s_macos" % test[len("integration_test/"):-len("_test.dart")],
+            tags = ["manual"],
+        ),
+        sh_test(
+            name = "integration_%s" % test[len("integration_test/"):-len("_test.dart")],
+            timeout = "long",
+            srcs = ["tool/integration-run.sh"],
+            args = ["$(rootpath :_integration_%s_debug)" % test[len("integration_test/"):-len("_test.dart")]] +
+                   INTEGRATION_EXTRA.get(test[len("integration_test/"):-len("_test.dart")], {}).get("args", []),
+            data = [":_integration_%s_debug" % test[len("integration_test/"):-len("_test.dart")]] +
+                   INTEGRATION_EXTRA.get(test[len("integration_test/"):-len("_test.dart")], {}).get("data", []),
+            env = INTEGRATION_EXTRA.get(test[len("integration_test/"):-len("_test.dart")], {}).get("env", {}),
+            tags = [
+                "exclusive",
+                "manual",
+                "no-remote",
+                "no-sandbox",
+            ],
+            target_compatible_with = ["@platforms//os:macos"],
+        ),
+    )
+    for test in glob(
+        ["integration_test/*_test.dart"],
+        exclude = [
+            "integration_test/android_*_test.dart",
+            "integration_test/ios_*_test.dart",
+        ],
+    )
+]

@@ -1,0 +1,434 @@
+/* Clax's home screen, over kit.css. The colours are the brand's, from
+ * tokens.css (generated from design/tokens.json, light and dark); the kit's
+ * tokens are set to them for anything the kit draws. */
+
+:root {
+  --h-surface: var(--bg); /* alias for release 1.6; removed in 1.7 */
+  --h-on-surface: var(--fg); /* alias for release 1.6; removed in 1.7 */
+  --h-on-variant: var(--muted); /* alias for release 1.6; removed in 1.7 */
+  --h-primary: var(--agent); /* alias for release 1.6; removed in 1.7 */
+  --h-pc: var(--accent-tint); /* alias for release 1.6; removed in 1.7 */
+  --h-on-pc: var(--agent-ink); /* alias for release 1.6; removed in 1.7 */
+  --h-ec: var(--danger-tint); /* alias for release 1.6; removed in 1.7 */
+  --h-on-ec: var(--danger); /* alias for release 1.6; removed in 1.7 */
+  --h-error: var(--danger); /* alias for release 1.6; removed in 1.7 */
+  --h-on-error: var(--on-accent); /* alias for release 1.6; removed in 1.7 */
+  --h-sc: var(--hover); /* alias for release 1.6; removed in 1.7 */
+  --h-on-sc: var(--fg); /* alias for release 1.6; removed in 1.7 */
+  --h-track: var(--border); /* alias for release 1.6; removed in 1.7 */
+  --h-menu-bg: var(--overlay); /* alias for release 1.6; removed in 1.7 */
+  --h-inverse: var(--fg); /* alias for release 1.6; removed in 1.7 */
+  --h-on-inverse: var(--bg); /* alias for release 1.6; removed in 1.7 */
+  --h-state: var(--hover); /* alias for release 1.6; removed in 1.7 */
+  --h-menu-hover: var(--menu-hover);
+  --h-menu-press: var(--menu-press);
+  --h-fab-shadow: var(--elev-2); /* alias for release 1.6; removed in 1.7 */
+  --h-menu-shadow: var(--elev-2); /* alias for release 1.6; removed in 1.7 */
+  --h-lift-shadow: var(--elev-3); /* alias for release 1.6; removed in 1.7 */
+
+  --k-bg: var(--h-surface);
+  --k-surface: var(--h-surface);
+  --k-fg: var(--h-on-surface);
+  --k-fg-2: var(--h-on-variant);
+  --k-accent: var(--h-primary);
+  --k-danger: var(--h-error);
+
+  accent-color: var(--accent);
+}
+
+@media (prefers-color-scheme: dark) {
+  :root:not([data-theme="light"]) .h-face { background: var(--t-b); color: var(--t-a); }
+}
+
+::selection { background: var(--selection-bg); color: var(--selection-fg); }
+
+/* Every color-mix() sits in @supports, after a plain fallback: a
+ * declaration that uses var() is accepted when parsed, so a WebView
+ * without color-mix() would drop it only when computing, and a fallback
+ * before it would never apply. */
+
+@media (pointer: coarse) {
+  button { min-height: 44px; min-width: 44px; }
+}
+
+html, body { background: var(--h-surface); color: var(--h-on-surface); }
+body {
+  font: 400 14px/1.25 var(--k-font);
+  letter-spacing: 0;
+  min-height: 100vh;
+}
+
+.h-glyph { display: inline-grid; line-height: 0; }
+.h-page { min-height: 100vh; }
+/* Under the window's toolbar the page has no bar: the grid starts below
+ * the safe area the bar would have kept. */
+.h-page[data-toolbar] { padding-top: var(--k-safe-top); }
+
+/* Top bar: 56 px, the mark and "Clax" in title-1, then the actions. Its
+ * end keeps 8 px, so a focused action's ring (2 px, 2 px out) is never
+ * clipped. */
+.h-bar {
+  position: sticky; top: 0; z-index: 2;
+  display: flex; align-items: center;
+  height: calc(56px + var(--k-safe-top)); padding: var(--k-safe-top) 8px 0 16px;
+  background: var(--bg);
+}
+.h-title {
+  flex: 1; min-width: 0; margin: 0;
+  display: flex; align-items: center; gap: 10px;
+  font: var(--type-title-1); color: var(--fg);
+}
+.h-title .h-mark { flex: none; }
+.h-actions { display: flex; align-items: center; }
+.h-action {
+  width: 48px; height: 48px; display: grid; place-items: center;
+  border: 0; border-radius: 50%; background: transparent; color: var(--muted);
+  cursor: pointer; padding: 0;
+}
+.h-action:active { background: var(--hover); }
+@media (hover: hover) { .h-action:hover { background: var(--hover); } }
+.h-action:focus { outline: none; }
+/* Longhands, so the ring's size reads back without its colour's var(). */
+.h-action:focus-visible { outline-width: 2px; outline-style: solid; outline-color: var(--focus); outline-offset: 2px; }
+.h-badged { position: relative; display: inline-grid; }
+/* The app's ClaxBadge: `you`, caption, hidden at 0, "99+" above 99. */
+.h-badge {
+  position: absolute; top: -5px; left: 12px;
+  min-width: 16px; height: 16px; padding: 0 5px; border-radius: var(--radius-full);
+  background: var(--you); color: var(--on-you);
+  font: 500 11px/16px var(--font); text-align: center; white-space: nowrap;
+}
+.h-more { position: relative; }
+.h-scrim { position: fixed; inset: 0; z-index: 3; border: 0; background: transparent; cursor: default; }
+.h-menu {
+  position: absolute; top: 40px; right: 0; z-index: 4;
+  width: max-content; min-width: 112px; max-width: 280px; padding: 8px 0; border-radius: var(--radius);
+  background: var(--overlay); box-shadow: var(--elev-2);
+}
+/* Level 2 in dark is outlined too: a shadow barely shows there. */
+@media (prefers-color-scheme: dark) {
+  :root:not([data-theme="light"]) :is(.h-menu, .h-name-input) { box-shadow: var(--elev-2), 0 0 0 1px var(--border-hover); }
+}
+:root[data-theme="dark"] :is(.h-menu, .h-name-input) { box-shadow: var(--elev-2), 0 0 0 1px var(--border-hover); }
+.h-menu-item {
+  display: block; width: 100%; height: 48px; padding: 0 12px; border: 0;
+  background: transparent; color: var(--h-on-surface); text-align: left; white-space: nowrap;
+  font: var(--type-body); cursor: pointer;
+}
+/* On the menu's own fill: in dark the page's hover is the menu's colour. */
+.h-menu-item:hover { background: var(--h-menu-hover); }
+.h-menu-item:active { background: var(--h-menu-press); }
+
+/* Banners (the key banner): the app's ClaxBanner, a radius-lg card on
+ * `card` within the reading width, the glyph leading, its actions under the
+ * text at the end on a phone and beside it from 600 px. */
+.h-banner {
+  display: flex; flex-wrap: wrap; align-items: flex-start; column-gap: 16px; row-gap: 8px;
+  width: calc(100% - 32px); max-width: 720px; margin: 0 auto 8px; padding: 16px 16px 8px;
+  border: 1px solid var(--border); border-radius: var(--radius-lg);
+  background: var(--card); color: var(--fg);
+}
+.h-banner-icon { flex: none; margin-top: -2px; color: var(--agent); }
+.h-banner-icon.h-danger { color: var(--danger); }
+.h-banner-text { flex: 1; min-width: 0; }
+.h-banner-title { margin: 0; font: var(--type-title-3); }
+.h-banner-body { margin: 4px 0 0; font: var(--type-body); color: var(--muted); }
+.h-banner-actions { flex-basis: 100%; display: flex; flex-wrap: wrap; justify-content: flex-end; gap: 8px; }
+@media (min-width: 600px) {
+  .h-banner { flex-wrap: nowrap; align-items: center; padding-bottom: 16px; }
+  .h-banner-icon { margin-top: 0; }
+  .h-banner-actions { flex-basis: auto; margin: -8px 0; }
+}
+.h-text-button {
+  height: 40px; padding: 0 12px; border: 0; border-radius: var(--radius-sm); background: transparent;
+  color: var(--agent-ink); font: 500 14px/20px var(--font); cursor: pointer;
+}
+.h-text-button:active, .h-text-button:hover { background: var(--h-pc); }
+@supports (color: color-mix(in srgb, red, red)) { .h-text-button:active, .h-text-button:hover { background: color-mix(in srgb, var(--h-primary) 10%, transparent); } }
+
+/* The grid: centred, at most 960 wide, inside 16 px gutters. */
+.h-grid-wrap { max-width: calc(960px + 32px); margin-inline: auto; padding: 8px 16px 112px; }
+.h-grid {
+  display: grid; grid-template-columns: repeat(var(--cols, 4), minmax(0, 1fr));
+  column-gap: 4px; row-gap: 8px; grid-auto-rows: 116px;
+}
+.h-section + .h-section { margin-top: 8px; }
+/* A heading starts where the first column's 60 px icon does. */
+.h-heading {
+  margin: 8px 0 4px calc((100% - (var(--cols, 4) - 1) * 4px) / var(--cols, 4) / 2 - 30px);
+  color: var(--h-on-variant);
+  font: 500 14px/20px var(--k-font);
+}
+.h-new {
+  position: absolute; top: -6px; left: -6px; z-index: 1;
+  height: 18px; padding: 0 6px; border-radius: 9px;
+  background: var(--h-primary); color: var(--h-surface);
+  font: 500 11px/18px var(--k-font);
+}
+.h-tile {
+  display: flex; flex-direction: column; align-items: center;
+  min-width: 0; height: 116px; padding: 8px 4px 4px; border: 0; border-radius: 20px;
+  background: transparent; color: var(--h-on-surface); font: inherit; letter-spacing: inherit;
+  cursor: pointer; touch-action: manipulation;
+  -webkit-touch-callout: none; -webkit-user-select: none; user-select: none;
+  position: relative; will-change: transform;
+}
+.h-tile:active { background: var(--h-state); }
+.h-icon { position: relative; width: var(--face, 60px); height: var(--face, 60px); flex: none; }
+.h-face {
+  width: var(--face, 60px); height: var(--face, 60px); border-radius: calc(var(--face, 60px) / 4); overflow: hidden;
+  display: grid; place-items: center;
+  background: var(--t-a); color: var(--t-b);
+}
+.h-face img { width: var(--face, 60px); height: var(--face, 60px); object-fit: cover; -webkit-user-drag: none; }
+.h-emoji { font-size: 28px; line-height: 1; }
+.h-mono { font: 600 22px/1 var(--k-font); letter-spacing: 0; }
+.h-make { background: var(--h-pc); color: var(--h-on-pc); }
+.h-make.h-failed { background: var(--h-ec); color: var(--h-on-ec); }
+:root[data-theme="dark"] .h-face { background: var(--t-b); color: var(--t-a); }
+.h-face.h-make, :root[data-theme="dark"] .h-face.h-make { background: var(--h-pc); color: var(--h-on-pc); }
+.h-face.h-make.h-failed, :root[data-theme="dark"] .h-face.h-make.h-failed { background: var(--h-ec); color: var(--h-on-ec); }
+@media (prefers-color-scheme: dark) {
+  :root:not([data-theme="light"]) .h-face.h-make { background: var(--h-pc); color: var(--h-on-pc); }
+  :root:not([data-theme="light"]) .h-face.h-make.h-failed { background: var(--h-ec); color: var(--h-on-ec); }
+}
+.h-label {
+  margin-top: 8px; max-width: 100%; text-align: center; overflow: hidden;
+  font: var(--type-caption);
+  overflow-wrap: normal; word-break: normal; hyphens: auto;
+}
+/* Before a label is measured into lines (or where it cannot be), CSS
+ * wraps it between words. */
+.h-two { display: -webkit-box; -webkit-box-orient: vertical; -webkit-line-clamp: 2; line-clamp: 2; }
+.h-one { display: block; white-space: nowrap; text-overflow: ellipsis; }
+/* A measured line: whole words, cut with an ellipsis when too wide. */
+.h-line { display: block; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+.h-status {
+  max-width: 100%; color: var(--muted); text-align: center; font: var(--type-caption);
+  overflow: hidden; white-space: nowrap; text-overflow: ellipsis;
+}
+.h-status[data-state="making"] { color: var(--agent-ink); }
+.h-status[data-state="failed"], .h-status.h-error { color: var(--danger); }
+/* An app whose build goes: its icon at full strength in a 3 px ring of
+ * `agent`, with how far it is in a badge at the corner. */
+.h-build-ring {
+  position: absolute; inset: -5px; pointer-events: none;
+  border: 3px solid var(--agent); border-radius: calc(var(--face, 60px) / 4 + 5px);
+}
+.h-badge.h-tile-badge { top: -7px; left: auto; right: -9px; z-index: 1; font-variant-numeric: tabular-nums; }
+
+/* A make's ring, `agent` on `border`, round the breathing mark. */
+.h-ring { position: relative; width: 36px; height: 36px; display: grid; place-items: center; }
+.h-ring svg:not(.clax-mark) { position: absolute; inset: 0; display: block; fill: none; }
+.h-ring-track { stroke: var(--border); stroke-width: 3; }
+.h-ring-arc { stroke: var(--agent); stroke-width: 3; stroke-linecap: round; }
+
+/* Messages: empty, load error, elsewhere. The app's ClaxEmpty: a centred
+ * column at most 360 wide, the mark or a muted glyph, title-2, the body
+ * muted with balanced lines, then the action. */
+.h-message {
+  min-height: calc(100vh - 56px); padding: 0 24px 96px;
+  display: flex; flex-direction: column; align-items: center; justify-content: center; text-align: center;
+}
+.h-away .h-message { min-height: 100vh; }
+.h-message > * { max-width: 360px; }
+.h-message-glyph { color: var(--muted); }
+.h-message .h-mark { display: block; height: auto; }
+.h-message-title { margin: 16px 0 0; font: var(--type-title-2); color: var(--fg); text-wrap: balance; }
+.h-message-hint { margin: 8px 0 0; color: var(--muted); font: var(--type-body); text-wrap: balance; }
+.h-message .h-text-button, .h-message .h-filled-button { margin-top: 20px; }
+.h-filled-button {
+  display: inline-flex; align-items: center; justify-content: center; gap: 8px;
+  min-height: 40px; padding: 0 20px; border: 0; border-radius: 20px;
+  background: var(--fg); color: var(--bg);
+  font: 500 14px/20px var(--k-font); cursor: pointer;
+}
+.h-filled-button.h-message-new { padding-left: 16px; }
+.h-filled-button:active { transform: scale(0.97); }
+@media (prefers-reduced-motion: reduce) { .h-filled-button:active { transform: none; } }
+
+/* New app: an extended FAB on accent-tint, in agent-ink, with a mic. */
+.h-fab {
+  position: fixed; z-index: 2;
+  right: 16px; bottom: calc(16px + var(--k-safe-bottom));
+  display: flex; align-items: center; gap: 12px;
+  height: 56px; padding: 0 20px 0 16px; border: 0; border-radius: var(--radius-lg);
+  background: var(--accent-tint); color: var(--agent-ink); box-shadow: var(--elev-2);
+  font: 600 14px/20px var(--font); cursor: pointer;
+}
+.h-fab:focus { outline: none; }
+.h-fab:focus-visible, .h-filled-button:focus-visible, .h-text-button:focus-visible { outline: 2px solid var(--focus); outline-offset: 2px; }
+.h-fab:active { background: var(--h-pc); filter: brightness(0.94); }
+@supports (color: color-mix(in srgb, red, red)) { .h-fab:active { background: color-mix(in srgb, var(--h-on-pc) 10%, var(--h-pc)); filter: none; } }
+
+/* Under a fine pointer a tile lifts as it is hovered: 1.03 and level 1. */
+@media (hover: hover) and (pointer: fine) {
+  .h-page:not([data-dragging]) .h-tile:not([data-held]):not([data-grouping]):hover .h-icon > .h-face { transform: scale(1.03); }
+  .h-page:not([data-dragging]) .h-tile:not([data-held]):not([data-grouping]):hover .h-icon > .h-face { box-shadow: var(--elev-1); }
+}
+@media (hover: hover) and (pointer: fine) and (prefers-color-scheme: dark) {
+  :root:not([data-theme="light"]) .h-page:not([data-dragging]) .h-tile:not([data-held]):not([data-grouping]):hover .h-icon > .h-face { box-shadow: var(--elev-1), 0 0 0 1px var(--border); }
+}
+@media (hover: hover) and (pointer: fine) {
+  :root[data-theme="dark"] .h-page:not([data-dragging]) .h-tile:not([data-held]):not([data-grouping]):hover .h-icon > .h-face { box-shadow: var(--elev-1), 0 0 0 1px var(--border); }
+}
+
+/* A press held long enough to lift the tile: it grows and casts a shadow,
+ * and stays so while it is dragged, above its neighbours. */
+.h-icon > * { transition: transform var(--k-fast) var(--k-ease), box-shadow var(--k-fast) var(--k-ease); }
+.h-tile[data-held] .h-icon > * { transform: scale(1.08); }
+.h-tile[data-held] .h-face, .h-tile[data-dragging] .h-face { box-shadow: var(--h-lift-shadow); }
+/* In dark a shadow barely shows, so the lifted face is outlined as well. */
+@media (prefers-color-scheme: dark) {
+  :root:not([data-theme="light"]) :is(.h-tile[data-held], .h-tile[data-dragging]) .h-face { box-shadow: var(--h-lift-shadow), 0 0 0 1px var(--border-hover); }
+}
+:root[data-theme="dark"] :is(.h-tile[data-held], .h-tile[data-dragging]) .h-face { box-shadow: var(--h-lift-shadow), 0 0 0 1px var(--border-hover); }
+.h-tile[data-held], .h-tile[data-held]:active { background: transparent; }
+.h-tile[data-dragging] { z-index: 5; pointer-events: none; }
+.h-page[data-dragging] .h-tile:not([data-dragging]) { cursor: grabbing; }
+/* Room to scroll by while a drag is on, so the drop zone opening above
+ * the grid never moves the tiles under the finger. */
+.h-page[data-dragging] { padding-bottom: 100vh; }
+/* The kit's reduced motion gives every element a 1 ms transition of every
+ * property. What the page uses in the render that changes it changes at
+ * once: the room below, which the drag's render scrolls the page into, and
+ * a group's name field (its visibility inherited by the input), shown and
+ * focused in the same render. */
+@media (prefers-reduced-motion: reduce) { .h-page, .h-name, .h-name-input { transition-property: none; } }
+/* New app steps aside while a tile is dragged, leaving its corner free. */
+.h-fab { transition: opacity var(--k-fast) var(--k-ease); }
+.h-page[data-dragging] .h-fab { opacity: 0; pointer-events: none; }
+/* A dragged tile's name on a backing of its own, readable over the
+ * zone's border and the tiles it passes. */
+.h-tile[data-dragging] .h-label {
+  padding: 0 6px; border-radius: 8px;
+  background: var(--h-surface);
+}
+/* Where a drag stars an app while nothing is starred. Its star and words
+ * stack on the side away from the dragged tile (data-side), so the tile
+ * never covers them. */
+.h-drop {
+  margin: 8px 4px; height: 116px; border-radius: 20px;
+  border: 2px dashed var(--h-primary);
+  display: flex; flex-direction: column; justify-content: center; align-items: flex-start; gap: 4px;
+  padding: 0 20px; color: var(--h-on-variant);
+  font: 500 14px/20px var(--k-font);
+}
+.h-drop[data-side="end"] { align-items: flex-end; }
+.h-drop[data-over] { background: var(--h-pc); color: var(--h-primary); }
+@supports (color: color-mix(in srgb, red, red)) {
+  .h-drop { border-color: color-mix(in srgb, var(--h-primary) 60%, transparent); }
+  .h-drop[data-over] { background: color-mix(in srgb, var(--h-primary) 10%, transparent); }
+}
+@media (prefers-reduced-motion: reduce) { .h-icon > * { transition: none; } }
+
+/* What an action that failed says, and Tap again to retry it: the app's
+ * ClaxToast, the page's width less 16 px each side, at most 560. */
+.h-notice {
+  position: fixed; z-index: 8; left: 16px; right: 16px; margin-inline: auto;
+  bottom: calc(88px + var(--k-safe-bottom)); max-width: 560px;
+  padding: 14px 16px; border: 0; border-radius: var(--radius-sm);
+  background: var(--fg); color: var(--bg); box-shadow: var(--elev-2);
+  font: var(--type-body); text-align: left; cursor: pointer;
+}
+
+/* Search: the field under the bar, staying there as the page scrolls. */
+html { overscroll-behavior-y: contain; }
+.h-search {
+  position: sticky; top: calc(56px + var(--k-safe-top)); z-index: 1;
+  padding: 4px 16px 8px; background: var(--h-surface);
+}
+.h-search-box {
+  max-width: 960px; margin-inline: auto;
+  display: flex; align-items: center; gap: 12px;
+  height: 48px; padding: 0 4px 0 16px; border-radius: 24px;
+  background: var(--h-sc); color: var(--h-on-sc); cursor: text;
+}
+.h-search-glyph { flex: none; }
+/* 16 px, so a phone does not zoom in on focus. */
+.h-search-input, .h-search-hint {
+  flex: 1; min-width: 0; height: 100%; padding: 0; border: 0; outline: none;
+  background: transparent; color: var(--h-on-surface);
+  font: 400 16px/24px var(--k-font);
+}
+.h-search-hint { display: flex; align-items: center; }
+.h-search-input::placeholder, .h-search-hint { color: var(--h-on-variant); opacity: 1; }
+.h-search-input::-webkit-search-cancel-button { -webkit-appearance: none; appearance: none; display: none; }
+.h-search-close {
+  flex: none; width: 40px; height: 40px; display: grid; place-items: center;
+  border: 0; border-radius: 50%; padding: 0; background: transparent; color: var(--h-on-sc); cursor: pointer;
+}
+.h-search-close:active, .h-search-close:hover { background: var(--h-state); }
+.h-results-empty {
+  margin: 48px 16px 0; text-align: center; color: var(--h-on-variant);
+  font: 400 16px/24px var(--k-font);
+}
+
+/* Groups. A group's tile: a rounded square on the highest surface tone
+ * (Material's folder backing), showing up
+ * to four of its apps' icons, two by two, filled from the top left. */
+.h-face.h-folder-face, :root[data-theme="dark"] .h-face.h-folder-face {
+  background: var(--surface-container-highest); color: var(--fg);
+  display: grid; grid-template-columns: repeat(2, 26px); grid-auto-rows: 26px;
+  gap: 2px; padding: 3px; place-content: start;
+}
+@media (prefers-color-scheme: dark) {
+  :root:not([data-theme="light"]) .h-face.h-folder-face { background: var(--surface-container-highest); color: var(--fg); }
+}
+.h-folder-face .h-face { width: 26px; height: 26px; border-radius: 7px; transition: opacity var(--k-fast) var(--k-ease); }
+.h-folder-face .h-face img { width: 26px; height: 26px; }
+.h-folder-face .h-glyph svg { width: 14px; height: 14px; }
+.h-folder-face .h-mono { font-size: 10px; }
+.h-folder-face .h-emoji { font-size: 14px; }
+/* Fanned out, its apps are in the row below: the preview stays, faint. */
+.h-group[data-fanned] .h-folder-face > .h-face { opacity: 0.35; }
+
+/* Where a dragged app would make a group: the app under it grows onto a
+ * folder's backing, ringed in `agent`; a group under it grows, ringed. */
+.h-icon > .h-folder-back {
+  position: absolute; inset: -7px; z-index: -1; pointer-events: none;
+  border-radius: calc((var(--face, 60px) + 14px) / 4);
+  background: var(--surface-container-highest);
+  opacity: 0; transform: scale(0.8);
+  transition: opacity 140ms var(--k-ease), transform 140ms var(--k-ease);
+}
+.h-tile[data-grouping] .h-icon > .h-folder-back { opacity: 1; transform: scale(1.06); box-shadow: 0 0 0 2px var(--h-primary); }
+.h-tile[data-grouping] .h-icon > .h-face { transform: scale(1.08); }
+.h-group[data-grouping] .h-icon > .h-folder-face { transform: scale(1.14); box-shadow: 0 0 0 2px var(--h-primary); }
+.h-tile[data-grouping-with] .h-label { visibility: hidden; }
+@media (prefers-reduced-motion: reduce) { .h-icon > .h-folder-back, .h-folder-face .h-face { transition: none; } }
+
+/* A dropped app on its way into a group's preview (home.js gatherInto). */
+.h-gather {
+  position: fixed; z-index: 6; pointer-events: none;
+  width: var(--face, 60px); height: var(--face, 60px);
+}
+.h-gather > .h-face { box-shadow: var(--h-lift-shadow); }
+
+/* A group's name, in a field over its tile's name. */
+.h-scrim.h-name-scrim { z-index: 6; }
+.h-name { position: absolute; z-index: 7; }
+.h-name-input {
+  display: block; width: 100%; height: 40px; padding: 0 12px; border: 0; border-radius: var(--radius-sm);
+  border-bottom: 2px solid var(--h-primary); outline: none;
+  background: var(--raised); color: var(--h-on-surface); box-shadow: var(--elev-2); text-align: center;
+  font: 400 16px/24px var(--k-font); letter-spacing: 0;
+}
+
+/* A group's own menu, at its tile. */
+.h-scrim.h-group-scrim { z-index: 6; }
+.h-menu.h-group-menu { position: fixed; top: auto; right: auto; z-index: 7; min-width: 200px; }
+
+/* A fanned group's apps, in the row under it: cells as wide as the grid's,
+ * scrolling sideways when there are more than fit. */
+.h-fan {
+  display: flex; gap: 4px; overflow-x: auto; overflow-y: hidden;
+  scroll-snap-type: x proximity; overscroll-behavior-x: contain; scrollbar-width: none;
+  border-radius: 20px; background: var(--h-sc);
+}
+@supports (color: color-mix(in srgb, red, red)) { .h-fan { background: color-mix(in srgb, var(--h-sc) 50%, transparent); } }
+.h-fan::-webkit-scrollbar { display: none; }
+.h-fan .h-tile {
+  flex: 0 0 calc((100% - (var(--cols, 4) - 1) * 4px) / var(--cols, 4));
+  scroll-snap-align: start;
+}

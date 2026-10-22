@@ -1,0 +1,295 @@
+/// What the person answered each app for each device capability, Allow or
+/// Don't allow (for location: Precise, Approximate or Don't allow), kept
+/// until they revoke it (the app inspector lists the
+/// answers with [DeviceGrants.list] and revokes with
+/// [DeviceGrants.revoke]; then the next call asks again).
+library;
+
+import 'dart:async';
+import 'dart:convert';
+import 'dart:io';
+
+import 'device_ports.dart' show Precision;
+
+export 'device_ports.dart' show Precision;
+
+/// The device capabilities, in the order they are listed.
+const deviceCaps = ['notify', 'share', 'file', 'camera', 'location'];
+
+/// What each device capability lets an app do, in words for the person.
+const deviceCapWords = {
+  'notify': 'send you notifications and reminders',
+  'share': 'share text and files through other apps',
+  'file': 'open files you pick and save files where you choose',
+  'camera': 'take photos and pick photos from your library',
+  'location': 'see where your device is',
+};
+
+/// The person's answer for one app and capability, and when; for an
+/// allowed `location`, the [precision] it was allowed at (null otherwise).
+class DeviceDecision {
+  const DeviceDecision({
+    required this.allowed,
+    required this.at,
+    this.precision,
+  });
+
+  final bool allowed;
+  final DateTime at;
+  final Precision? precision;
+
+  @override
+  bool operator ==(Object other) =>
+      other is DeviceDecision &&
+      other.allowed == allowed &&
+      other.at == at &&
+      other.precision == precision;
+
+  @override
+  int get hashCode => Object.hash(allowed, at, precision);
+
+  @override
+  String toString() =>
+      'DeviceDecision(allowed: $allowed, at: $at, precision: $precision)';
+}
+
+/// [precision] as kept for [cap]: an allowed location's, Precise when not
+/// given; null for anything else.
+Precision? _precisionFor(String cap, bool allowed, Precision? precision) =>
+    cap == 'location' && allowed ? (precision ?? Precision.precise) : null;
+
+abstract interface class DeviceGrants {
+  /// The person's answer for app [aid] and [cap]; null when never asked
+  /// (or revoked since).
+  Future<DeviceDecision?> decision(String aid, String cap);
+
+  /// Keeps the person's answer for app [aid] and [cap]; an allowed
+  /// `location` keeps [precision] (Precise when null).
+  Future<void> decide(
+    String aid,
+    String cap, {
+    required bool allowed,
+    Precision? precision,
+  });
+
+  /// Forgets app [aid]'s answer for [cap]; its next call asks again.
+  Future<void> revoke(String aid, String cap);
+
+  /// Forgets every answer of app [aid] (it was deleted).
+  Future<void> forget(String aid);
+
+  /// App [aid]'s answers, in [deviceCaps] order.
+  Future<Map<String, DeviceDecision>> list(String aid);
+
+  /// The ID of each app whose answers changed.
+  Stream<String> get changes;
+
+  /// The install's approximate-grid shift (fractions of a cell, from 0 to
+  /// 1; `location_coarsen.dart`): [draw]n once, kept for good, never
+  /// redrawn, whatever is revoked or deleted.
+  Future<(double, double)> gridShift((double, double) Function() draw);
+}
+
+Map<String, DeviceDecision> _ordered(Map<String, DeviceDecision>? m) => {
+  for (final c in deviceCaps) c: ?m?[c],
+};
+
+/// [DeviceGrants] kept in memory, for tests and as a fallback.
+class MemoryDeviceGrants implements DeviceGrants {
+  MemoryDeviceGrants({DateTime Function()? now}) : _now = now ?? DateTime.now;
+
+  final DateTime Function() _now;
+  final _all = <String, Map<String, DeviceDecision>>{};
+  final _changes = StreamController<String>.broadcast();
+
+  @override
+  Future<DeviceDecision?> decision(String aid, String cap) async =>
+      _all[aid]?[cap];
+
+  @override
+  Future<void> decide(
+    String aid,
+    String cap, {
+    required bool allowed,
+    Precision? precision,
+  }) async {
+    (_all[aid] ??= {})[cap] = DeviceDecision(
+      allowed: allowed,
+      at: _now(),
+      precision: _precisionFor(cap, allowed, precision),
+    );
+    _changes.add(aid);
+  }
+
+  @override
+  Future<void> revoke(String aid, String cap) async {
+    if (_all[aid]?.remove(cap) != null) _changes.add(aid);
+  }
+
+  @override
+  Future<void> forget(String aid) async {
+    if (_all.remove(aid) != null) _changes.add(aid);
+  }
+
+  @override
+  Future<Map<String, DeviceDecision>> list(String aid) async =>
+      _ordered(_all[aid]);
+
+  @override
+  Stream<String> get changes => _changes.stream;
+
+  (double, double)? _shift;
+
+  @override
+  Future<(double, double)> gridShift((double, double) Function() draw) async =>
+      _shift ??= draw();
+}
+
+/// [DeviceGrants] in one JSON file (`<support>/device-grants.json`):
+/// `{"<app ID>": {"<capability>": {"allowed": bool, "at": "<ISO time>"}}}`,
+/// with `"precision": "precise" | "approximate"` on an allowed `location`,
+/// and the install's grid shift under `"_grid": [lat, lon]`. A per-app
+/// `"shift"` an earlier build kept is ignored, and dropped on the next save.
+/// An allowed `location` kept before precisions existed (no `precision`)
+/// reads as Precise, and is written with it on the next save.
+/// A save writes a sibling temporary file and renames it over the old one.
+class FileDeviceGrants implements DeviceGrants {
+  FileDeviceGrants(this.file, {DateTime Function()? now})
+    : _now = now ?? DateTime.now;
+
+  final File file;
+  final DateTime Function() _now;
+  final _changes = StreamController<String>.broadcast();
+
+  static DeviceDecision? _parse(String cap, Object? v) {
+    if (v is! Map || v['allowed'] is! bool || v['at'] is! String) return null;
+    final at = DateTime.tryParse(v['at'] as String);
+    final allowed = v['allowed'] as bool;
+    return at == null
+        ? null
+        : DeviceDecision(
+            allowed: allowed,
+            at: at,
+            precision: _precisionFor(
+              cap,
+              allowed,
+              v['precision'] == 'approximate' ? Precision.approximate : null,
+            ),
+          );
+  }
+
+  Map<String, Map<String, DeviceDecision>> _read() {
+    try {
+      final j = jsonDecode(file.readAsStringSync());
+      if (j is! Map) return {};
+      return {
+        for (final MapEntry(:key, :value) in j.entries)
+          if (key is String && value is Map)
+            key: {
+              for (final MapEntry(key: c, value: d) in value.entries)
+                if (c is String && deviceCaps.contains(c)) c: ?_parse(c, d),
+            },
+      };
+    } on FileSystemException {
+      return {};
+    } on FormatException {
+      return {};
+    }
+  }
+
+  /// The kept `_grid` shift, if any.
+  (double, double)? _readShift() {
+    try {
+      final j = jsonDecode(file.readAsStringSync());
+      final v = j is Map ? j['_grid'] : null;
+      if (v is List &&
+          v.length == 2 &&
+          v.every((x) => x is num && x >= 0 && x < 1)) {
+        return ((v[0] as num).toDouble(), (v[1] as num).toDouble());
+      }
+    } on FileSystemException {
+      return null;
+    } on FormatException {
+      return null;
+    }
+    return null;
+  }
+
+  void _write(
+    Map<String, Map<String, DeviceDecision>> all, {
+    (double, double)? shift,
+  }) {
+    final grid = shift ?? _readShift();
+    file.parent.createSync(recursive: true);
+    final tmp = File('${file.path}.tmp');
+    tmp.writeAsStringSync(
+      jsonEncode({
+        if (grid case (final a, final b)) '_grid': [a, b],
+        for (final MapEntry(:key, :value) in all.entries)
+          if (value.isNotEmpty)
+            key: {
+              for (final MapEntry(key: c, value: d) in value.entries)
+                c: {
+                  'allowed': d.allowed,
+                  'at': d.at.toUtc().toIso8601String(),
+                  'precision': ?d.precision?.name,
+                },
+            },
+      }),
+      flush: true,
+    );
+    tmp.renameSync(file.path);
+  }
+
+  @override
+  Future<DeviceDecision?> decision(String aid, String cap) async =>
+      _read()[aid]?[cap];
+
+  @override
+  Future<void> decide(
+    String aid,
+    String cap, {
+    required bool allowed,
+    Precision? precision,
+  }) async {
+    final all = _read();
+    (all[aid] ??= {})[cap] = DeviceDecision(
+      allowed: allowed,
+      at: _now(),
+      precision: _precisionFor(cap, allowed, precision),
+    );
+    _write(all);
+    _changes.add(aid);
+  }
+
+  @override
+  Future<void> revoke(String aid, String cap) async {
+    final all = _read();
+    if (all[aid]?.remove(cap) == null) return;
+    _write(all);
+    _changes.add(aid);
+  }
+
+  @override
+  Future<void> forget(String aid) async {
+    final all = _read();
+    if (all.remove(aid) == null) return;
+    _write(all);
+    _changes.add(aid);
+  }
+
+  @override
+  Future<Map<String, DeviceDecision>> list(String aid) async =>
+      _ordered(_read()[aid]);
+
+  @override
+  Stream<String> get changes => _changes.stream;
+
+  @override
+  Future<(double, double)> gridShift((double, double) Function() draw) async {
+    if (_readShift() case final kept?) return kept;
+    final shift = draw();
+    _write(_read(), shift: shift);
+    return shift;
+  }
+}

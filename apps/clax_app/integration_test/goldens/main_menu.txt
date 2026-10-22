@@ -1,0 +1,65 @@
+Clax
+  About Clax
+  ---
+  Settings…  ⌘,  [on]
+  ---
+  Services
+  ---
+  Hide Clax  ⌘H
+  Hide Others  ⌥⌘H
+  Show All
+  ---
+  Quit Clax  ⌘Q
+File
+  New App…  ⌘N  [on]
+  Import App…  ⌘O  [on]
+  Share App…  [off]
+  ---
+  Close Window  ⌘W
+  Close All  ⌥⌘W  (alternate)
+Edit
+  Undo  ⌘Z
+  Redo  ⇧⌘Z
+  ---
+  Cut  ⌘X
+  Copy  ⌘C
+  Paste  ⌘V
+  Paste and Match Style  ⌥⇧⌘V
+  Delete
+  Select All  ⌘A
+  ---
+  Find
+    Find…  ⌘F
+  ---
+View
+  Hide Sidebar  ⌃⌘S  [on]
+  ---
+  Comment  ⇧⌘K  [on]
+  Show Threads  ⌘K  [on]
+  ---
+  Refresh  ⌘R  [on]
+  ---
+  Actual Size  ⌘0  [off]
+  Zoom In  ⌘+  [off]
+  Zoom Out  ⌘-  [off]
+  ---
+  Enter Full Screen  F
+App
+  Back  ⌘[  [on]
+  Forward  ⌘]  [off]
+  Home  ⇧⌘H  [on]
+  ---
+  Inspect  ⌥⌘I  [off]
+  Versions…  [off]
+  Star  [off]
+  Resume Build  [off]
+Window
+  Minimize  ⌘M
+  Zoom
+  ---
+  Inbox  ⇧⌘I  [on]
+  ---
+  Bring All to Front
+  ---
+Help
+  Clax Help

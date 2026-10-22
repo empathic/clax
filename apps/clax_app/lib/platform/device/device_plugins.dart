@@ -1,0 +1,391 @@
+/// The device ports over their plugins: flutter_local_notifications (with
+/// timezone), share_plus, file_picker, image_picker and geolocator. Where a
+/// platform lacks a feature the port throws [DeviceError] `unavailable`.
+library;
+
+import 'dart:async';
+import 'dart:ui' as ui;
+
+import 'package:file_picker/file_picker.dart';
+import 'package:flutter/foundation.dart';
+import 'package:flutter_local_notifications/flutter_local_notifications.dart';
+import 'package:flutter_timezone/flutter_timezone.dart';
+import 'package:geolocator/geolocator.dart';
+import 'package:image_picker/image_picker.dart';
+import 'package:share_plus/share_plus.dart';
+import 'package:timezone/data/latest.dart' as tzdata;
+import 'package:timezone/timezone.dart' as tz;
+
+import '../local_notifications.dart';
+import '../share_anchor.dart';
+import 'device_ports.dart';
+import 'mac_camera.dart';
+
+bool get _android => defaultTargetPlatform == TargetPlatform.android;
+bool get _iOS => defaultTargetPlatform == TargetPlatform.iOS;
+bool get _macOS => defaultTargetPlatform == TargetPlatform.macOS;
+
+/// Notifications through flutter_local_notifications, by way of the app's
+/// one [NotificationHub] (payloads of kind `reminder`): the app's reminders
+/// channel on Android (inexact alarms allowed while idle, so no exact-alarm
+/// permission is needed), the notification center on iOS and macOS.
+class PluginNotifier implements NotifierPort {
+  PluginNotifier(this._hub);
+
+  final NotificationHub _hub;
+  static const _kind = 'reminder';
+  StreamSubscription<String>? _taps;
+  static const _channel = AndroidNotificationDetails(
+    'reminders',
+    'Reminders',
+    channelDescription: 'Reminders your apps schedule',
+    importance: Importance.high,
+    priority: Priority.high,
+  );
+
+  @override
+  Future<void> init(void Function(String payload) onTap) async {
+    if (!_android && !_iOS && !_macOS) {
+      throw const DeviceError.unavailable('no notifications on this platform');
+    }
+    tzdata.initializeTimeZones();
+    try {
+      final zone = await FlutterTimezone.getLocalTimezone();
+      tz.setLocalLocation(tz.getLocation(zone.identifier));
+    } on Object {
+      // The zone is unknown: times are taken as UTC.
+    }
+    await _hub.ready;
+    unawaited(_taps?.cancel());
+    _taps = _hub.taps(_kind).listen(onTap);
+  }
+
+  @override
+  Future<String?> launchPayload() => _hub.launch(_kind);
+
+  @override
+  Future<bool> requestPermission() => _hub.requestPermission();
+
+  @override
+  Future<void> schedule({
+    required int id,
+    required String title,
+    required String body,
+    required DateTime at,
+    Repeat? repeat,
+    required String payload,
+  }) => _hub.plugin.zonedSchedule(
+    id: id,
+    title: title,
+    body: body.isEmpty ? null : body,
+    scheduledDate: tz.TZDateTime.from(at, tz.local),
+    notificationDetails: const NotificationDetails(
+      android: _channel,
+      iOS: DarwinNotificationDetails(),
+      macOS: DarwinNotificationDetails(),
+    ),
+    androidScheduleMode: AndroidScheduleMode.inexactAllowWhileIdle,
+    matchDateTimeComponents: switch (repeat) {
+      null => null,
+      Repeat.daily => DateTimeComponents.time,
+      Repeat.weekly => DateTimeComponents.dayOfWeekAndTime,
+    },
+    payload: NotificationHub.payload(_kind, payload),
+  );
+
+  @override
+  Future<void> cancel(int id) => _hub.cancel(id);
+
+  @override
+  Future<Set<int>> pendingIds() async {
+    await _hub.ready;
+    return {
+      for (final r in await _hub.plugin.pendingNotificationRequests()) r.id,
+    };
+  }
+}
+
+/// Shares through share_plus, anchored at the screen's centre: a page's
+/// share names no button of the app's to point from, and an iPad's share
+/// popover needs a rect ([screenCentreAnchor]).
+class PluginShare implements SharePort {
+  static bool _done(ShareResult r) => r.status != ShareResultStatus.dismissed;
+
+  @override
+  Future<bool> text(String text) async => _done(
+    await SharePlus.instance.share(
+      ShareParams(text: text, sharePositionOrigin: screenCentreAnchor()),
+    ),
+  );
+
+  @override
+  Future<bool> file(String name, String mime, Uint8List data) async => _done(
+    await SharePlus.instance.share(
+      ShareParams(
+        files: [XFile.fromData(data, mimeType: mime, name: name)],
+        fileNameOverrides: [name],
+        sharePositionOrigin: screenCentreAnchor(),
+      ),
+    ),
+  );
+}
+
+class PluginFiles implements FilesPort {
+  @override
+  Future<FileData?> pick(List<String> extensions) async {
+    final f = await FilePicker.pickFile(
+      type: extensions.isEmpty ? FileType.any : FileType.custom,
+      allowedExtensions: extensions.isEmpty ? null : extensions,
+    );
+    if (f == null) return null;
+    final ext = (f.extension ?? '').toLowerCase();
+    return FileData(f.name, _mimeOf(ext), await f.readAsBytes());
+  }
+
+  @override
+  Future<bool> save(String name, String mime, Uint8List data) async =>
+      await FilePicker.saveFile(fileName: name, bytes: data, mimeType: mime) !=
+      null;
+}
+
+String _mimeOf(String ext) => switch (ext) {
+  'csv' => 'text/csv',
+  'txt' => 'text/plain',
+  'md' => 'text/markdown',
+  'json' => 'application/json',
+  'pdf' => 'application/pdf',
+  'png' => 'image/png',
+  'jpg' || 'jpeg' => 'image/jpeg',
+  'gif' => 'image/gif',
+  'webp' => 'image/webp',
+  'heic' => 'image/heic',
+  _ => 'application/octet-stream',
+};
+
+/// Photos through image_picker, downscaled by the platform to at most
+/// [CameraPort.maxSide] on each side. image_picker has no camera source on
+/// macOS: there [take] is Clax's own capture sheet ([MacCamera]).
+class PluginCamera implements CameraPort {
+  PluginCamera({TargetPlatform? platform})
+    : _platform = platform ?? defaultTargetPlatform;
+
+  final TargetPlatform _platform;
+  final _picker = ImagePicker();
+
+  Future<Photo?> _get(ImageSource source) async {
+    if (!_picker.supportsImageSource(source)) {
+      throw const DeviceError.unavailable(
+        'this device has no camera to take photos with',
+      );
+    }
+    final x = await _picker.pickImage(
+      source: source,
+      maxWidth: CameraPort.maxSide.toDouble(),
+      maxHeight: CameraPort.maxSide.toDouble(),
+      imageQuality: 85,
+    );
+    if (x == null) return null;
+    final bytes = await x.readAsBytes();
+    final (w, h) = await _size(bytes);
+    final ext = x.name.split('.').last.toLowerCase();
+    return Photo(x.mimeType ?? _mimeOf(ext), bytes, w, h);
+  }
+
+  static Future<(int, int)> _size(Uint8List bytes) async {
+    final buffer = await ui.ImmutableBuffer.fromUint8List(bytes);
+    final d = await ui.ImageDescriptor.encoded(buffer);
+    final size = (d.width, d.height);
+    d.dispose();
+    buffer.dispose();
+    return size;
+  }
+
+  @override
+  Future<Photo?> take() => _platform == TargetPlatform.macOS
+      ? const MacCamera().take()
+      : _get(ImageSource.camera);
+
+  @override
+  Future<Photo?> pick() => _get(ImageSource.gallery);
+}
+
+/// Location through geolocator, on Android and macOS (and iOS, where the
+/// shell asks WebKit instead). macOS needs `NSLocationUsageDescription` in
+/// the Runner's Info.plist and the
+/// `com.apple.security.personal-information.location` entitlement, which
+/// the Runner has.
+///
+/// Precise asks for high accuracy, Approximate for low power (Android's
+/// coarse location, iOS's reduced accuracy). A fix is precise only when it
+/// was asked precise and the system lets Clax have a precise location (the
+/// person may grant approximate only; the Mac has no such grant); on iOS a
+/// precise request while Clax has only reduced accuracy first asks for
+/// precise location this once ([preciseFix]).
+class PluginLocation implements LocationPort {
+  PluginLocation({TargetPlatform? platform, this._geolocator})
+    : _platform = platform ?? defaultTargetPlatform;
+
+  final TargetPlatform _platform;
+  final GeolocatorPlatform? _geolocator;
+
+  /// geolocator's platform side: the one given, else the registered one.
+  GeolocatorPlatform get _geo => _geolocator ?? GeolocatorPlatform.instance;
+
+  bool get _iOS => _platform == TargetPlatform.iOS;
+  bool get _macOS => _platform == TargetPlatform.macOS;
+  bool get _supported => _platform == TargetPlatform.android || _iOS || _macOS;
+
+  /// The system's own name for where Clax's location permission is set.
+  String get _settingsName => switch (_platform) {
+    TargetPlatform.iOS => 'iOS Settings',
+    TargetPlatform.macOS => 'System Settings',
+    _ => 'Android settings',
+  };
+
+  String get _systemName => switch (_platform) {
+    TargetPlatform.iOS => 'iOS',
+    TargetPlatform.macOS => 'macOS',
+    _ => 'Android',
+  };
+
+  /// Checks the platform, the device's location and Clax's permission,
+  /// asking for it when the system still may.
+  Future<void> _ready() async {
+    if (!_supported) {
+      throw const DeviceError.unavailable(
+        'location is not available on this platform',
+      );
+    }
+    if (!await _geo.isLocationServiceEnabled()) {
+      throw const DeviceError(
+        'location_off',
+        'location is off on this device; turn it on in settings',
+      );
+    }
+    var p = await _geo.checkPermission();
+    if (p == LocationPermission.denied) {
+      p = await _geo.requestPermission();
+    }
+    if (p == LocationPermission.deniedForever) {
+      throw DeviceError(
+        'system_denied',
+        'location is off for Clax in $_settingsName, and $_systemName will '
+            'not ask again',
+      );
+    }
+    if (p == LocationPermission.denied ||
+        p == LocationPermission.unableToDetermine) {
+      throw const DeviceError.notGranted('location is not allowed for Clax');
+    }
+  }
+
+  /// Whether a fix asked at [precision] is precise.
+  Future<bool> _precise(Precision precision) => preciseFix(
+    precision,
+    iOS: _iOS,
+    accuracy: _geo.getLocationAccuracy,
+    askTemporary: (key) => _geo.requestTemporaryFullAccuracy(purposeKey: key),
+  );
+
+  /// Whether a fix asked at [precision] is precise, given the system's
+  /// [accuracy]. On [iOS], a precise request on reduced accuracy first
+  /// [askTemporary] for full accuracy, by the purpose `precise` of the
+  /// app's `NSLocationTemporaryUsageDescriptionDictionary`; iOS asks the
+  /// person, and the answer holds until Clax is no longer in use.
+  @visibleForTesting
+  static Future<bool> preciseFix(
+    Precision precision, {
+    required bool iOS,
+    required Future<LocationAccuracyStatus> Function() accuracy,
+    required Future<LocationAccuracyStatus> Function(String purposeKey)
+    askTemporary,
+  }) async {
+    if (precision != Precision.precise) return false;
+    var now = await accuracy();
+    if (iOS && now == LocationAccuracyStatus.reduced) {
+      now = await askTemporary('precise');
+    }
+    return now == LocationAccuracyStatus.precise;
+  }
+
+  static LocationAccuracy _accuracy(Precision p) =>
+      p == Precision.precise ? LocationAccuracy.high : LocationAccuracy.low;
+
+  @override
+  Future<LocationFix> current(Precision precision) async {
+    await _ready();
+    final precise = await _precise(precision);
+    try {
+      final pos = await _geo.getCurrentPosition(
+        locationSettings: LocationSettings(
+          accuracy: _accuracy(precision),
+          timeLimit: const Duration(seconds: 20),
+        ),
+      );
+      return LocationFix(
+        pos.latitude,
+        pos.longitude,
+        pos.accuracy,
+        precise: precise,
+      );
+    } on TimeoutException {
+      throw const DeviceError.unavailable(
+        'the device did not find its location in time',
+      );
+    }
+  }
+
+  @override
+  Future<Stream<LocationFix>> watch(
+    Precision precision, {
+    required double minDistance,
+  }) async {
+    await _ready();
+    final precise = await _precise(precision);
+    return _geo.getPositionStream(
+      locationSettings: _iOS || _macOS
+          ? AppleSettings(
+              accuracy: _accuracy(precision),
+              distanceFilter: minDistance.round(),
+              allowBackgroundLocationUpdates: false,
+            )
+          : AndroidSettings(
+              accuracy: _accuracy(precision),
+              distanceFilter: minDistance.round(),
+              intervalDuration: const Duration(seconds: 1),
+            ),
+    ).transform(
+      StreamTransformer.fromHandlers(
+        handleData: (pos, sink) => sink.add(
+          LocationFix(
+            pos.latitude,
+            pos.longitude,
+            pos.accuracy,
+            precise: precise,
+          ),
+        ),
+        handleError: (e, st, sink) => sink.addError(switch (e) {
+          LocationServiceDisabledException() => const DeviceError(
+            'location_off',
+            'location was turned off on this device',
+          ),
+          PermissionDeniedException() => const DeviceError.notGranted(
+            'location is no longer allowed for Clax',
+          ),
+          _ => DeviceError.unavailable('$e'),
+        }),
+      ),
+    );
+  }
+
+  @override
+  Future<void> openSettings(LocationSettingsPage page) async {
+    if (!_supported) return;
+    switch (page) {
+      case LocationSettingsPage.app:
+        await _geo.openAppSettings();
+      case LocationSettingsPage.location:
+        await _geo.openLocationSettings();
+    }
+  }
+}

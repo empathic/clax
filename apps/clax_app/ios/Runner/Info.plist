@@ -1,0 +1,137 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
+<plist version="1.0">
+<dict>
+    <key>CADisableMinimumFrameDurationOnPhone</key>
+    <true/>
+    <key>CFBundleDevelopmentRegion</key>
+    <string>en</string>
+    <key>CFBundleDisplayName</key>
+    <string>Clax</string>
+    <!-- A .clax is an app someone made in Clax (docs/contract.md, "bundle"):
+         Files, Mail, Messages and the share sheet hand it to Clax. -->
+    <key>CFBundleDocumentTypes</key>
+    <array>
+        <dict>
+            <key>CFBundleTypeName</key>
+            <string>Clax App</string>
+            <key>CFBundleTypeRole</key>
+            <string>Viewer</string>
+            <key>LSHandlerRank</key>
+            <string>Owner</string>
+            <key>LSItemContentTypes</key>
+            <array>
+                <string>dev.empathic.clax.bundle</string>
+            </array>
+        </dict>
+    </array>
+    <key>CFBundleExecutable</key>
+    <string>$(EXECUTABLE_NAME)</string>
+    <key>CFBundleIdentifier</key>
+    <string>$(PRODUCT_BUNDLE_IDENTIFIER)</string>
+    <key>CFBundleName</key>
+    <string>Clax</string>
+    <key>CFBundlePackageType</key>
+    <string>APPL</string>
+    <key>CFBundleShortVersionString</key>
+    <string>1.0</string>
+    <key>CFBundleVersion</key>
+    <string>1</string>
+    <key>LSRequiresIPhoneOS</key>
+    <true/>
+    <!-- iOS copies an opened .clax into Clax's Documents/Inbox; Clax reads
+         that copy (ios/Runner/BundleIntake.swift), never the original. -->
+    <key>LSSupportsOpeningDocumentsInPlace</key>
+    <false/>
+    <!-- The words under each permission prompt. Camera, photos and
+         location are asked for by an app made in Clax (through Clax's own
+         grant first); the microphone and speech recognition by Clax's
+         dictation, for a request or a comment. -->
+    <key>NSCameraUsageDescription</key>
+    <string>An app you made in Clax can take a photo when you let it.</string>
+    <key>NSLocationTemporaryUsageDescriptionDictionary</key>
+    <dict>
+        <key>precise</key>
+        <string>This app asked for your precise location.</string>
+    </dict>
+    <key>NSLocationWhenInUseUsageDescription</key>
+    <string>An app you made in Clax can use your location when you let it.</string>
+    <key>NSMicrophoneUsageDescription</key>
+    <string>Clax listens while you speak a request or a comment.</string>
+    <key>NSPhotoLibraryUsageDescription</key>
+    <string>An app you made in Clax can use a photo you pick.</string>
+    <key>NSSpeechRecognitionUsageDescription</key>
+    <string>Clax turns what you say into text for your request or comment.</string>
+    <key>UIApplicationSceneManifest</key>
+    <dict>
+        <key>UIApplicationSupportsMultipleScenes</key>
+        <false/>
+        <key>UISceneConfigurations</key>
+        <dict>
+            <key>UIWindowSceneSessionRoleApplication</key>
+            <array>
+                <dict>
+                    <key>UISceneClassName</key>
+                    <string>UIWindowScene</string>
+                    <key>UISceneConfigurationName</key>
+                    <string>flutter</string>
+                    <key>UISceneDelegateClassName</key>
+                    <string>$(PRODUCT_MODULE_NAME).SceneDelegate</string>
+                    <key>UISceneStoryboardFile</key>
+                    <string>Main</string>
+                </dict>
+            </array>
+        </dict>
+    </dict>
+    <key>UIApplicationSupportsIndirectInputEvents</key>
+    <true/>
+    <key>UILaunchStoryboardName</key>
+    <string>LaunchScreen</string>
+    <key>UIMainStoryboardFile</key>
+    <string>Main</string>
+    <key>UIRequiredDeviceCapabilities</key>
+    <array>
+        <string>arm64</string>
+    </array>
+    <key>UISupportedInterfaceOrientations</key>
+    <array>
+        <string>UIInterfaceOrientationPortrait</string>
+        <string>UIInterfaceOrientationLandscapeLeft</string>
+        <string>UIInterfaceOrientationLandscapeRight</string>
+    </array>
+    <key>UISupportedInterfaceOrientations~ipad</key>
+    <array>
+        <string>UIInterfaceOrientationPortrait</string>
+        <string>UIInterfaceOrientationPortraitUpsideDown</string>
+        <string>UIInterfaceOrientationLandscapeLeft</string>
+        <string>UIInterfaceOrientationLandscapeRight</string>
+    </array>
+    <!-- The Mac's declaration of the same type (macos/Runner/Info.plist),
+         except that it conforms to public.data alone, so Files offers Clax
+         for a .clax rather than treating it as an archive to expand. -->
+    <key>UTExportedTypeDeclarations</key>
+    <array>
+        <dict>
+            <key>UTTypeConformsTo</key>
+            <array>
+                <string>public.data</string>
+            </array>
+            <key>UTTypeDescription</key>
+            <string>Clax App</string>
+            <key>UTTypeIdentifier</key>
+            <string>dev.empathic.clax.bundle</string>
+            <key>UTTypeTagSpecification</key>
+            <dict>
+                <key>public.filename-extension</key>
+                <array>
+                    <string>clax</string>
+                </array>
+                <key>public.mime-type</key>
+                <array>
+                    <string>application/vnd.empathic.clax+zip</string>
+                </array>
+            </dict>
+        </dict>
+    </array>
+</dict>
+</plist>

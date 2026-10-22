@@ -1,0 +1,25 @@
+// Application-level settings for the Runner target.
+//
+// This may be replaced with something auto-generated from metadata (e.g., pubspec.yaml) in the
+// future. If not, the values below would default to using the project name when this becomes a
+// 'flutter create' template.
+
+// The application's name. By default this is also the title of the Flutter window.
+// The Bazel build's `app_name` (apps/clax_app/BUILD.bazel) is the same.
+PRODUCT_NAME = Clax
+
+// The application's bundle identifier
+PRODUCT_BUNDLE_IDENTIFIER = dev.empathic.clax
+
+// The copyright displayed in application information, as LICENSE states it.
+// The Bazel build reads it from here (tool/macos-info-plist.sh).
+PRODUCT_COPYRIGHT = Copyright © 2026 Empathic, Inc.
+
+// Signing. With no `macos/Signing.xcconfig` the app and its embedded
+// `clax` are signed ad hoc (the project's CODE_SIGN_IDENTITY "-"), a new
+// signature each build. The optional, gitignored `macos/Signing.xcconfig`
+// (copy `Signing.xcconfig.example`) names a team and the Apple Development
+// identity, so rebuilds keep one signature and the keychain trusts them.
+// It is included here, in the Runner target's base configuration, because
+// target settings outrank the project-level CODE_SIGN_IDENTITY "-".
+#include? "../../Signing.xcconfig"

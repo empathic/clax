@@ -1,0 +1,35 @@
+<?xml version="1.0" encoding="utf-8"?>
+<resources>
+    <!-- The window while the app starts: the system's splash screen (from
+         androidx core-splashscreen on API 29-30), the Clax mark on `bg`,
+         light or dark with the system (values-night/clax_colors.xml).
+         MainActivity's installSplashScreen() moves the window to
+         postSplashScreenTheme. -->
+    <style name="Theme.Clax.Starting" parent="Theme.SplashScreen">
+        <item name="windowSplashScreenBackground">@color/clax_bg</item>
+        <item name="windowSplashScreenAnimatedIcon">@drawable/splash_mark</item>
+        <item name="postSplashScreenTheme">@style/Theme.Clax</item>
+    </style>
+
+    <!-- The window behind Flutter once it runs: `bg`, no title, and
+         transparent status and navigation bars that Flutter draws under, their
+         icons dark on the light theme.
+         The framework's DayNight theme has an action bar, turned off here. -->
+    <style name="Theme.Clax" parent="@android:style/Theme.DeviceDefault.DayNight">
+        <item name="android:windowActionBar">false</item>
+        <item name="android:windowNoTitle">true</item>
+        <item name="android:windowBackground">@color/clax_bg</item>
+        <item name="android:colorBackground">@color/clax_bg</item>
+        <item name="android:windowDrawsSystemBarBackgrounds">true</item>
+        <item name="android:statusBarColor">@android:color/transparent</item>
+        <item name="android:navigationBarColor">@android:color/transparent</item>
+        <item name="android:windowLightStatusBar">?android:attr/isLightTheme</item>
+        <item name="android:windowLightNavigationBar">?android:attr/isLightTheme</item>
+    </style>
+
+    <!-- The names the manifest gives MainActivity's themes: LaunchTheme while
+         the process starts, NormalTheme (FlutterActivity's
+         io.flutter.embedding.android.NormalTheme) once Flutter runs. -->
+    <style name="LaunchTheme" parent="Theme.Clax.Starting"/>
+    <style name="NormalTheme" parent="Theme.Clax"/>
+</resources>

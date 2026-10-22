@@ -1,0 +1,46 @@
+name: clax_app
+description: "Clax on the device: say a thing, get a working app, change it while using it."
+publish_to: 'none'
+version: 1.0.0+1
+
+environment:
+  sdk: ^3.13.5
+
+dependencies:
+  archive: ^4.5.2
+  cryptography: ^2.9.0
+  ffi: ^2.2.0
+  file_picker: ^13.1.0
+  flutter:
+    sdk: flutter
+  flutter_local_notifications: ^22.3.2
+  flutter_secure_storage: ^11.2.0
+  flutter_svg: ^2.3.0
+  flutter_timezone: ^5.1.1
+  geolocator: ^14.1.1
+  image_picker: ^1.2.4
+  path_provider: ^2.1.6
+  share_plus: ^13.3.1
+  speech_to_text: ^7.5.0
+  timezone: ^0.11.2
+  webview_flutter: ^4.14.1
+  webview_flutter_wkwebview: ^3.27.0
+  xml: ^7.0.1
+
+dev_dependencies:
+  flutter_lints: ^6.0.0
+  flutter_test:
+    sdk: flutter
+  integration_test:
+    sdk: flutter
+  # The fake WebView platform the surface's tests run on.
+  webview_flutter_platform_interface: ^2.15.1
+
+flutter:
+  uses-material-design: true
+  assets:
+    - assets/prompt/
+    - assets/kit/
+    - assets/home/
+    - assets/haiku.json
+    - LICENSE

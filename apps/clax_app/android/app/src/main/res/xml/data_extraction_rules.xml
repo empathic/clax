@@ -1,0 +1,32 @@
+<?xml version="1.0" encoding="utf-8"?>
+<!-- What Android 12 and later back up to the cloud and move to a new device
+     (android:dataExtractionRules in AndroidManifest.xml); backup_rules.xml
+     says the same for Android 11 and earlier. Everything is kept but:
+     - the core's run files in its home (files/clax-home, under the support
+       directory): core.lock and embed.json, which each run makes again,
+       and logs/ and net-cache/ (CoreHost.runFiles in
+       lib/core/core_host.dart);
+     - flutter_secure_storage's preferences (the saved API key and its
+       wrapped key), whose ciphertext only this device's Keystore opens. -->
+<data-extraction-rules>
+    <cloud-backup>
+        <exclude domain="file" path="clax-home/core.lock"/>
+        <exclude domain="file" path="clax-home/embed.json"/>
+        <exclude domain="file" path="clax-home/logs"/>
+        <exclude domain="file" path="clax-home/net-cache"/>
+        <exclude domain="sharedpref" path="FlutterSecureStorage.xml"/>
+        <exclude domain="sharedpref" path="FlutterSecureKeyStorage.xml"/>
+        <exclude domain="sharedpref" path="FlutterSecureStorageConfiguration.xml"/>
+        <exclude domain="sharedpref" path="FlutterSecureStorageConfiguration:FlutterSecureStorage.xml"/>
+    </cloud-backup>
+    <device-transfer>
+        <exclude domain="file" path="clax-home/core.lock"/>
+        <exclude domain="file" path="clax-home/embed.json"/>
+        <exclude domain="file" path="clax-home/logs"/>
+        <exclude domain="file" path="clax-home/net-cache"/>
+        <exclude domain="sharedpref" path="FlutterSecureStorage.xml"/>
+        <exclude domain="sharedpref" path="FlutterSecureKeyStorage.xml"/>
+        <exclude domain="sharedpref" path="FlutterSecureStorageConfiguration.xml"/>
+        <exclude domain="sharedpref" path="FlutterSecureStorageConfiguration:FlutterSecureStorage.xml"/>
+    </device-transfer>
+</data-extraction-rules>
