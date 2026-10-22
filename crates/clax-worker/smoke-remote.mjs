@@ -20,8 +20,10 @@
 // artifact's own site host (`<ID>.<site domain>`, from --site-domain or the
 // record; `localhost` with --local): its health, a private site refused
 // without a session (a navigation redirected to /site-signin, an API call
-// 401), /site-signin's code redeemed at /_clax/session for a `SameSite=Lax`
-// cookie, the shell's code (`POST /api/artifacts/<ID>/site-code`) for a
+// 401), /site-signin's code redeemed at /_clax/session beside the state
+// the site set, for a `SameSite=Lax` cookie, the shell's code (`POST
+// /api/artifacts/<ID>/site-code` with the state /_clax/session/start set;
+// none without one, and no session without the state cookie) for a
 // Partitioned one that works once, the site opened to the world and served
 // signed out, then private again and refused, and two db artifacts whose
 // documents stay apart and whose cookies do not cross; a git
@@ -226,6 +228,15 @@ class Client {
 function siteCookie(res) {
   const raw = (res.headers.getSetCookie?.() ?? []).find((s) => /^(__Host-)?clax_site=/.test(s));
   return raw ? { pair: raw.split(";")[0], raw } : null;
+}
+
+/** The handshake's state cookie `res` sets (`clax_site_state`, on https
+ * `__Secure-clax_site_state`): its `name=value` pair and its value. */
+function stateCookie(res) {
+  const raw = (res.headers.getSetCookie?.() ?? []).find((s) => /^(__Secure-)?clax_site_state=[^;]/.test(s));
+  if (!raw) return null;
+  const pair = raw.split(";")[0];
+  return { pair, value: pair.slice(pair.indexOf("=") + 1), raw };
 }
 
 /** An artifact's site origin: the public origin's scheme and port on
@@ -465,16 +476,25 @@ async function smoke(c, o) {
   const site = o.siteDomain;
   const siteOf = (id) => siteOrigin(c.base, site, id);
   const html = { accept: "text/html" };
-  /** Signs the owner in to artifact `id`'s site through /site-signin:
-   * the site cookie /_clax/session set. */
+  /** Signs the owner in to artifact `id`'s site as a browser does at the
+   * top level: the site's redirect to /site-signin (with the state it sets),
+   * /site-signin's code, redeemed at /_clax/session beside the state: the
+   * site cookie it set. */
   const signInTo = async (id) => {
     const host = new URL(siteOf(id)).host;
-    const signin = await at(`${c.base}/site-signin?host=${encodeURIComponent(host)}&next=%2F`, { headers: { ...html, cookie: c.cookie } });
+    const nav = await at(`${siteOf(id)}/`, { headers: html });
+    const state = stateCookie(nav.res);
+    const to = nav.res.headers.get("location") ?? "";
+    if (nav.status !== 302 || !state || !to.startsWith(`${c.base}/site-signin?`)) {
+      throw new Error(`${siteOf(id)}/ signed out answered ${nav.status} ${to || short(nav.text, 160)} ${state ? "" : "without a state cookie"}`);
+    }
+    if (new URL(to).searchParams.get("state") !== state.value) throw new Error("/site-signin is not asked for the state the site set");
+    const signin = await at(to, { headers: { ...html, cookie: c.cookie } });
     const loc = new URL(signin.res.headers.get("location") ?? "/", c.base).href;
     if (signin.status !== 302 || !loc.startsWith(`${siteOf(id)}/_clax/session?`)) {
       throw new Error(`/site-signin for ${host} answered ${signin.status} ${signin.res.headers.get("location") ?? short(signin.text, 160)}, not a 302 to ${siteOf(id)}/_clax/session`);
     }
-    const session = await at(loc, { headers: html });
+    const session = await at(loc, { headers: { ...html, cookie: state.pair } });
     const cookie = siteCookie(session.res);
     if (!cookie) throw new Error(`${siteOf(id)}/_clax/session answered ${session.status} without a site cookie`);
     return cookie;
@@ -513,19 +533,31 @@ async function smoke(c, o) {
     return { detail: `${cookie.pair.split("=")[0]}; ${attrs}; / served` };
   }, ["site: a private site refused without a session", "owner: setup or session"]);
 
-  await step("site: the shell's code (Partitioned, single use)", async () => {
-    const r = await c.browser(`/api/artifacts/${aid}/site-code`, { method: "POST", body: JSON.stringify({ next: "/", partitioned: true }) });
+  await step("site: the shell's code (state-bound, Partitioned, single use)", async () => {
+    // The frame's first page sets the state and hands it to the shell.
+    const start = await at(`${siteOf(aid)}/_clax/session/start?next=%2F`, { headers: { ...html, "sec-fetch-dest": "iframe" } });
+    const state = stateCookie(start.res);
+    if (start.status !== 200 || !state || !start.text.includes(`"state":"${state.value}"`)) {
+      throw new Error(`/_clax/session/start answered ${start.status} ${short(start.text, 160)} ${state ? "" : "without a state cookie"}`);
+    }
+    const code = async (body) => c.browser(`/api/artifacts/${aid}/site-code`, { method: "POST", body: JSON.stringify(body) });
+    const none = await code({ next: "/", partitioned: true });
+    if (none.status !== 400) throw new Error(`site-code without a state answered ${none.status}, not 400`);
+    // A code redeemed without its state signs no browser in.
+    const stolen = (await code({ next: "/", partitioned: true, state: state.value })).json?.src ?? "";
+    if (siteCookie((await at(stolen, { headers: html })).res)) throw new Error("a code was redeemed without its state cookie");
+    const r = await code({ next: "/", partitioned: true, state: state.value });
     const src = r.json?.src ?? "";
     if (!src.startsWith(`${siteOf(aid)}/_clax/session?`)) throw new Error(`site-code answered src ${short(src || r.text, 200)}`);
-    const first = await at(src, { headers: html });
+    const first = await at(src, { headers: { ...html, cookie: state.pair } });
     const cookie = siteCookie(first.res);
     if (!cookie) throw new Error(`redeeming the code answered ${first.status} without a site cookie`);
     if (!/Partitioned/i.test(cookie.raw) || !/SameSite=None/i.test(cookie.raw)) throw new Error(`the framed site cookie is ${cookie.raw.split(";").slice(1).join(";")}: expected SameSite=None; Partitioned`);
-    const again = await at(src, { headers: html });
+    const again = await at(src, { headers: { ...html, cookie: state.pair } });
     if (siteCookie(again.res)) throw new Error("the code was redeemed a second time");
     const page = await at(`${siteOf(aid)}/`, { headers: { ...html, cookie: cookie.pair } });
     if (page.status !== 200) throw new Error(`with the partitioned cookie, / answered ${page.status}`);
-    return { detail: `Partitioned cookie, / served; a second redeem answered ${again.status} without a cookie` };
+    return { detail: `no state: 400, no state cookie: no session; Partitioned cookie, / served; a second redeem answered ${again.status} without a cookie` };
   }, ["site: /site-signin, then /_clax/session (SameSite=Lax)"]);
 
   await step("site: open to the world, then private again", async () => {

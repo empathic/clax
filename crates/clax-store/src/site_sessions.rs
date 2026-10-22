@@ -5,7 +5,10 @@
 //!   ([`Store::site_code_mint`]): by the shell for its frame, or by the
 //!   public host's `/site-signin` for a top-level visit. It is good for
 //!   [`SITE_CODE_TTL_SECS`] and for one redemption, on that artifact's host
-//!   alone ([`Store::site_code_redeem`]), which makes a site session.
+//!   alone ([`Store::site_code_redeem`]), which makes a site session, and
+//!   only beside the state it was minted for: a value the redeeming
+//!   browser holds in a cookie of the site host, so a code minted for one
+//!   browser signs no other in (login CSRF).
 //! - **A site session** names its [`Holder`] for one artifact. It lasts
 //!   [`SITE_SESSION_TTL_SECS`] from its last use, each use renewing it
 //!   ([`Store::site_session`]), and ends with the browser session it was
@@ -71,14 +74,23 @@ fn bound_session_live(st: &Store, browser_session: Option<&str>) -> Result<bool>
 }
 
 /// A site code's row: its artifact, holder kind and holder, browser
-/// session, whether it is partitioned, and its expiry.
-type CodeRow = (String, String, Option<String>, Option<String>, bool, String);
+/// session, whether it is partitioned, its state's SHA-256 and its expiry.
+type CodeRow = (
+    String,
+    String,
+    Option<String>,
+    Option<String>,
+    bool,
+    String,
+    String,
+);
 
 impl Store {
     /// A new site code for `holder` on artifact `aid`, bound to the browser
     /// session whose cookie's SHA-256 is `browser_session` (when made from
-    /// one), whose session cookie is to be `partitioned`. Expired codes and
-    /// sessions are swept as it is made.
+    /// one), whose session cookie is to be `partitioned`, redeemed only
+    /// beside `state` (the redeeming browser's state cookie). Expired codes
+    /// and sessions are swept as it is made.
     ///
     /// # Errors
     /// The database's.
@@ -88,6 +100,7 @@ impl Store {
         holder: &Holder,
         browser_session: Option<&str>,
         partitioned: bool,
+        state: &str,
     ) -> Result<String> {
         let code = secret::token("");
         let (kind, who) = holder.parts();
@@ -105,8 +118,8 @@ impl Store {
             )?;
             tx.execute(
                 "INSERT INTO site_codes (code_hash, artifact_id, holder_kind, holder,
-                    browser_session, partitioned, expires_at)
-                 VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7)",
+                    browser_session, partitioned, state_hash, expires_at)
+                 VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8)",
                 params![
                     code.sha256_hex(),
                     aid.as_str(),
@@ -114,6 +127,7 @@ impl Store {
                     who,
                     browser_session,
                     partitioned,
+                    sha256_hex(state),
                     expires
                 ],
             )?;
@@ -125,8 +139,9 @@ impl Store {
     /// Redeems site code `code` on artifact `aid`'s host: the new site
     /// session's ID, its holder, and whether its cookie is partitioned.
     /// `None` for a code that is unknown, used, expired, another
-    /// artifact's, or bound to a browser session that has ended. A code is
-    /// gone once presented, whatever the answer.
+    /// artifact's, presented without the state it was minted for (`state`,
+    /// the request's state cookie), or bound to a browser session that has
+    /// ended. A code is gone once presented, whatever the answer.
     ///
     /// # Errors
     /// The database's.
@@ -134,6 +149,7 @@ impl Store {
         &self,
         code: &str,
         aid: &ArtifactId,
+        state: Option<&str>,
     ) -> Result<Option<(String, Holder, bool)>> {
         let hash = sha256_hex(code);
         let now = self.now();
@@ -141,7 +157,7 @@ impl Store {
             let row: Option<CodeRow> = tx
                 .query_row(
                     "SELECT artifact_id, holder_kind, holder, browser_session, partitioned,
-                        expires_at
+                        state_hash, expires_at
                      FROM site_codes WHERE code_hash = ?1",
                     params![hash],
                     |r| {
@@ -152,6 +168,7 @@ impl Store {
                             r.get(3)?,
                             r.get(4)?,
                             r.get(5)?,
+                            r.get(6)?,
                         ))
                     },
                 )
@@ -159,10 +176,13 @@ impl Store {
             tx.execute("DELETE FROM site_codes WHERE code_hash = ?1", params![hash])?;
             Ok(row)
         })?;
-        let Some((artifact, kind, who, browser, partitioned, expires)) = row else {
+        let Some((artifact, kind, who, browser, partitioned, state_hash, expires)) = row else {
             return Ok(None);
         };
-        if artifact != aid.as_str() || expires <= now {
+        let held = state.is_some_and(|s| {
+            secret::constant_time_eq(sha256_hex(s).as_bytes(), state_hash.as_bytes())
+        });
+        if artifact != aid.as_str() || expires <= now || !held {
             return Ok(None);
         }
         let Some(holder) = Holder::from_parts(&kind, who.clone()) else {
@@ -295,25 +315,75 @@ mod tests {
         let clock = Arc::new(ManualClock::at("2026-10-22T10:00:00Z"));
         let (_d, st) = store_with_clock(clock.clone());
         let (a, b) = (artifact(&st), artifact(&st));
-        let code = st.site_code_mint(&a, &Holder::Owner, None, true).unwrap();
+        let code = st
+            .site_code_mint(&a, &Holder::Owner, None, true, "st")
+            .unwrap();
         assert_eq!(code.len(), 43);
         assert!(
-            st.site_code_redeem(&code, &b).unwrap().is_none(),
+            st.site_code_redeem(&code, &b, Some("st"))
+                .unwrap()
+                .is_none(),
             "B's host"
         );
         // Presented once, on another host, it is gone.
-        assert!(st.site_code_redeem(&code, &a).unwrap().is_none());
-        let code = st.site_code_mint(&a, &Holder::Link, None, false).unwrap();
-        let (id, holder, partitioned) = st.site_code_redeem(&code, &a).unwrap().unwrap();
+        assert!(
+            st.site_code_redeem(&code, &a, Some("st"))
+                .unwrap()
+                .is_none()
+        );
+        let code = st
+            .site_code_mint(&a, &Holder::Link, None, false, "st")
+            .unwrap();
+        let (id, holder, partitioned) =
+            st.site_code_redeem(&code, &a, Some("st")).unwrap().unwrap();
         assert_eq!((holder, partitioned), (Holder::Link, false));
         assert_eq!(st.site_session(&id, &a).unwrap(), Some(Holder::Link));
         assert_eq!(st.site_session(&id, &b).unwrap(), None);
-        assert!(st.site_code_redeem(&code, &a).unwrap().is_none(), "used");
+        assert!(
+            st.site_code_redeem(&code, &a, Some("st"))
+                .unwrap()
+                .is_none(),
+            "used"
+        );
         let late = st
-            .site_code_mint(&a, &Holder::Person("p1".into()), None, false)
+            .site_code_mint(&a, &Holder::Person("p1".into()), None, false, "st")
             .unwrap();
         clock.advance(SITE_CODE_TTL_SECS);
-        assert!(st.site_code_redeem(&late, &a).unwrap().is_none(), "expired");
+        assert!(
+            st.site_code_redeem(&late, &a, Some("st"))
+                .unwrap()
+                .is_none(),
+            "expired"
+        );
+    }
+
+    #[test]
+    fn a_code_redeems_only_beside_the_state_it_was_minted_for() {
+        let (_d, st) = crate::test_util::store();
+        let a = artifact(&st);
+        for other in [None, Some("another"), Some("")] {
+            let code = st
+                .site_code_mint(&a, &Holder::Owner, None, false, "st")
+                .unwrap();
+            assert!(
+                st.site_code_redeem(&code, &a, other).unwrap().is_none(),
+                "{other:?}"
+            );
+            assert!(
+                st.site_code_redeem(&code, &a, Some("st"))
+                    .unwrap()
+                    .is_none(),
+                "gone once presented"
+            );
+        }
+        let code = st
+            .site_code_mint(&a, &Holder::Owner, None, false, "st")
+            .unwrap();
+        assert!(
+            st.site_code_redeem(&code, &a, Some("st"))
+                .unwrap()
+                .is_some()
+        );
     }
 
     #[test]
@@ -322,9 +392,9 @@ mod tests {
         let (_d, st) = store_with_clock(clock.clone());
         let a = artifact(&st);
         let code = st
-            .site_code_mint(&a, &Holder::Guest("g1".into()), None, false)
+            .site_code_mint(&a, &Holder::Guest("g1".into()), None, false, "st")
             .unwrap();
-        let (id, _, _) = st.site_code_redeem(&code, &a).unwrap().unwrap();
+        let (id, _, _) = st.site_code_redeem(&code, &a, Some("st")).unwrap().unwrap();
         clock.advance(SITE_SESSION_TTL_SECS - 1);
         assert_eq!(
             st.site_session(&id, &a).unwrap(),
@@ -343,17 +413,21 @@ mod tests {
         let signed = st.hosted_setup(DAEMON, "Owner").unwrap();
         let browser = signed.session.sha256_hex();
         let code = st
-            .site_code_mint(&a, &Holder::Owner, Some(&browser), true)
+            .site_code_mint(&a, &Holder::Owner, Some(&browser), true, "st")
             .unwrap();
-        let (id, _, _) = st.site_code_redeem(&code, &a).unwrap().unwrap();
+        let (id, _, _) = st.site_code_redeem(&code, &a, Some("st")).unwrap().unwrap();
         assert_eq!(st.site_session(&id, &a).unwrap(), Some(Holder::Owner));
         let unused = st
-            .site_code_mint(&a, &Holder::Owner, Some(&browser), true)
+            .site_code_mint(&a, &Holder::Owner, Some(&browser), true, "st")
             .unwrap();
         st.end_browser_session(DAEMON, signed.session.expose(), "sign_out")
             .unwrap();
         assert!(st.site_session(&id, &a).unwrap().is_none());
-        assert!(st.site_code_redeem(&unused, &a).unwrap().is_none());
+        assert!(
+            st.site_code_redeem(&unused, &a, Some("st"))
+                .unwrap()
+                .is_none()
+        );
     }
 
     #[test]

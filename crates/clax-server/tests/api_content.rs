@@ -18,7 +18,7 @@ async fn serves_wrapped_index_and_files_with_caching_headers() {
     let res = ts.site_get(id, "/_clax/v/1/").await;
     assert_eq!(res.status(), 200);
     assert_eq!(res.headers()["content-type"], "text/html; charset=utf-8");
-    assert_eq!(res.headers()["cache-control"], "no-cache");
+    assert_eq!(res.headers()["cache-control"], "private, no-cache");
     let html = res.text().await.unwrap();
     assert!(html.starts_with("<!doctype html>"));
     assert!(html.contains(&format!(
@@ -28,10 +28,10 @@ async fn serves_wrapped_index_and_files_with_caching_headers() {
     assert_eq!(res.headers()["content-type"], "text/css");
     assert_eq!(
         res.headers()["cache-control"],
-        "public, max-age=31536000, immutable"
+        "private, max-age=31536000, immutable"
     );
     assert_eq!(res.headers()["x-content-type-options"], "nosniff");
-    assert_eq!(res.headers()["access-control-allow-origin"], "*");
+    assert!(res.headers().get("access-control-allow-origin").is_none());
     assert_eq!(res.text().await.unwrap(), "p{color:red}");
     assert_eq!(ts.site_get(id, "/_clax/v/1/missing.js").await.status(), 404);
     assert_eq!(ts.site_get(id, "/_clax/v/9/").await.status(), 404);
@@ -80,8 +80,10 @@ async fn a_deleted_artifacts_files_are_not_served_while_its_content_remains() {
     for p in &paths {
         assert_eq!(ts.get(p).await.status(), 404, "{p}");
     }
+    // Its site's access check refuses it first: no one reads a deleted
+    // artifact's site.
     for p in site {
-        assert_eq!(ts.site_get(id, p).await.status(), 404, "{p}");
+        assert_eq!(ts.site_get(id, p).await.status(), 401, "{p}");
     }
 }
 
@@ -662,7 +664,7 @@ async fn supporting_html_files_are_wrapped_like_the_index_and_others_are_not() {
     let res = ts.site_get(id, "/_clax/v/1/about.html").await;
     assert_eq!(res.status(), 200);
     assert_eq!(res.headers()["content-type"], "text/html; charset=utf-8");
-    assert_eq!(res.headers()["cache-control"], "no-cache");
+    assert_eq!(res.headers()["cache-control"], "private, no-cache");
     let html = res.text().await.unwrap();
     assert_eq!(html.matches("/_clax/bridge.js").count(), 1, "{html}");
     // The bridge goes right after the doctype, before any page script.
@@ -698,7 +700,7 @@ async fn supporting_html_files_are_wrapped_like_the_index_and_others_are_not() {
         assert_eq!(res.headers()["content-type"], ct, "{path}");
         assert_eq!(
             res.headers()["cache-control"],
-            "public, max-age=31536000, immutable"
+            "private, max-age=31536000, immutable"
         );
         assert_eq!(res.text().await.unwrap(), body, "{path} untouched");
     }
@@ -791,12 +793,20 @@ async fn every_html_page_is_revalidated_and_answers_not_modified() {
     ] {
         let res = get_on(&ts, on, &path, None).await;
         assert_eq!(res.status(), 200, "{path}");
-        assert_eq!(res.headers()["cache-control"], "no-cache", "{path}");
+        assert_eq!(
+            res.headers()["cache-control"],
+            "private, no-cache",
+            "{path}"
+        );
         let etag = res.headers()["etag"].to_str().unwrap().to_string();
         assert!(etag.starts_with('"') && etag.ends_with('"'), "{etag}");
         let again = get_on(&ts, on, &path, Some(&etag)).await;
         assert_eq!(again.status(), 304, "{path}");
-        assert_eq!(again.headers()["cache-control"], "no-cache", "{path}");
+        assert_eq!(
+            again.headers()["cache-control"],
+            "private, no-cache",
+            "{path}"
+        );
         assert_eq!(again.headers()["etag"], etag.as_str(), "{path}");
         assert!(again.bytes().await.unwrap().is_empty());
         let other = get_on(&ts, on, &path, Some("\"elsewhere\"")).await;
@@ -805,7 +815,7 @@ async fn every_html_page_is_revalidated_and_answers_not_modified() {
     let css = get_on(&ts, Some(host.as_str()), "/_clax/v/1/a.css", None).await;
     assert_eq!(
         css.headers()["cache-control"],
-        "public, max-age=31536000, immutable"
+        "private, max-age=31536000, immutable"
     );
     let shell = ts.get("/").await;
     if shell.status() == 200 {
@@ -908,7 +918,7 @@ async fn wrapped_pages_are_cached_per_file_until_the_artifact_is_deleted() {
         .unwrap();
     assert_eq!(res.status(), 204);
     assert!(!cache.contains(id, 1, "index.html") && !cache.contains(id, 1, "about.html"));
-    assert_eq!(ts.site_get(id, "/_clax/v/1/about.html").await.status(), 404);
+    assert_eq!(ts.site_get(id, "/_clax/v/1/about.html").await.status(), 401);
 }
 
 #[tokio::test]
@@ -939,7 +949,7 @@ async fn an_html_file_that_is_not_utf8_is_served_as_stored_and_remembered() {
         assert_eq!(res.status(), 200);
         assert_eq!(
             res.headers()["cache-control"],
-            "no-cache",
+            "private, no-cache",
             "HTML is revalidated, wrapped or not"
         );
         let etag = res.headers()["etag"].to_str().unwrap().to_string();
@@ -953,7 +963,7 @@ async fn an_html_file_that_is_not_utf8_is_served_as_stored_and_remembered() {
             .await
             .unwrap();
         assert_eq!(again.status(), 304);
-        assert_eq!(again.headers()["cache-control"], "no-cache");
+        assert_eq!(again.headers()["cache-control"], "private, no-cache");
         assert_eq!(res.bytes().await.unwrap().as_ref(), b"<p>caf\xe9</p>");
         assert!(
             cache.contains(&id, 1, "latin1.html"),

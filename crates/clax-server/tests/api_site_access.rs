@@ -10,6 +10,8 @@ use serde_json::{Value, json};
 use std::sync::Arc;
 
 const SECRET: &str = "the setup secret";
+/// The handshake state this file's browser holds ([`Site::redeem`]).
+const STATE: &str = "this-browsers-state";
 
 /// A hosted daemon on a stopped clock, whose sites are `<id>.localhost`.
 struct Site {
@@ -162,8 +164,12 @@ impl Site {
         self.ts.site_host(aid)
     }
 
-    /// `b`'s site code for `aid`: the status, and the `src` it answers.
-    async fn code(&self, b: &Browser, aid: &str, body: Value) -> (u16, String) {
+    /// `b`'s site code for `aid`, bound to [`STATE`] unless `body` names
+    /// a state: the status, and the `src` it answers.
+    async fn code(&self, b: &Browser, aid: &str, mut body: Value) -> (u16, String) {
+        if body.get("state").is_none() {
+            body["state"] = json!(STATE);
+        }
         let (s, v) = self
             .send(
                 b,
@@ -175,15 +181,23 @@ impl Site {
         (s, v["src"].as_str().unwrap_or_default().to_string())
     }
 
-    /// Follows `src` on `aid`'s site host: the response, unfollowed.
+    /// Follows `src` on `aid`'s site host with [`STATE`]'s cookie: the
+    /// response, unfollowed.
     async fn redeem(&self, aid: &str, src: &str) -> reqwest::Response {
+        self.redeem_as(aid, src, Some(STATE)).await
+    }
+
+    /// [`Site::redeem`] by a browser holding `state` (none: no state cookie).
+    async fn redeem_as(&self, aid: &str, src: &str, state: Option<&str>) -> reqwest::Response {
         let path = &src[src.find("/_clax/session").expect("a session address")..];
-        self.raw
+        let mut r = self
+            .raw
             .get(format!("{}{path}", self.ts.base))
-            .header(HOST, self.site_host(aid))
-            .send()
-            .await
-            .unwrap()
+            .header(HOST, self.site_host(aid));
+        if let Some(st) = state {
+            r = r.header(COOKIE, format!("clax_site_state={st}"));
+        }
+        r.send().await.unwrap()
     }
 
     /// The `Cookie` header of the site session `src` makes.
@@ -207,6 +221,14 @@ impl Site {
     }
 }
 
+/// Whether `r` sets a site session's cookie.
+fn sets_session(r: &reqwest::Response) -> bool {
+    r.headers()
+        .get_all(SET_COOKIE)
+        .iter()
+        .any(|c| c.to_str().unwrap().starts_with("clax_site="))
+}
+
 fn code_of(v: &Value) -> &str {
     v["error"]["code"].as_str().unwrap_or_default()
 }
@@ -225,11 +247,24 @@ async fn a_private_site_without_a_session_redirects_to_site_signin() {
         .unwrap();
     assert_eq!(r.status(), 302);
     let host = site.site_host(&aid).replace(':', "%3A");
-    assert_eq!(
-        r.headers()[LOCATION],
-        format!("{}/site-signin?host={host}&next=%2F", site.origin)
+    let to = r.headers()[LOCATION].to_str().unwrap().to_string();
+    let prefix = format!("{}/site-signin?host={host}&next=%2F&state=", site.origin);
+    assert!(to.starts_with(&prefix), "{to}");
+    // The handshake's state, named in the address and held by the browser.
+    let state = &to[prefix.len()..];
+    let set = r.headers()[SET_COOKIE].to_str().unwrap();
+    assert!(
+        set.starts_with(&format!(
+            "clax_site_state={state}; Path=/_clax/session; Max-Age=600; HttpOnly"
+        )),
+        "{set}"
+    );
+    assert!(
+        set.contains("SameSite=Lax") && !set.contains("Partitioned"),
+        "{set}"
     );
     assert_eq!(r.headers()["referrer-policy"], "no-referrer");
+    assert_eq!(r.headers()["cache-control"], "no-store");
     let r = site
         .raw
         .get(format!("{}/a.css?x=1", site.ts.base))
@@ -244,7 +279,7 @@ async fn a_private_site_without_a_session_redirects_to_site_signin() {
         r.headers()[LOCATION]
             .to_str()
             .unwrap()
-            .ends_with("&next=%2Fa.css%3Fx%3D1"),
+            .contains("&next=%2Fa.css%3Fx%3D1&state="),
         "{:?}",
         r.headers()[LOCATION]
     );
@@ -337,7 +372,7 @@ async fn a_code_is_single_use_and_expires_after_sixty_seconds() {
     site.session(&aid, &src).await;
     let again = site.redeem(&aid, &src).await;
     assert_eq!(again.status(), 302);
-    assert!(again.headers().get(SET_COOKIE).is_none());
+    assert!(!sets_session(&again));
     assert!(
         again.headers()[LOCATION]
             .to_str()
@@ -347,7 +382,7 @@ async fn a_code_is_single_use_and_expires_after_sixty_seconds() {
     let (_, late) = site.code(&owner, &aid, json!({})).await;
     site.clock.advance(61);
     let r = site.redeem(&aid, &late).await;
-    assert!(r.headers().get(SET_COOKIE).is_none());
+    assert!(!sets_session(&r));
     assert!(
         r.headers()[LOCATION]
             .to_str()
@@ -441,7 +476,7 @@ async fn a_link_viewer_reads_without_signing_in_until_the_link_is_turned_off() {
         .public(
             &anon,
             reqwest::Method::GET,
-            &format!("/site-signin?host={host}&next=%2Fa.css"),
+            &format!("/site-signin?host={host}&next=%2Fa.css&state={STATE}"),
         )
         .send()
         .await
@@ -465,7 +500,7 @@ async fn a_site_session_is_for_one_artifact() {
     let (_, src) = site.code(&owner, &a, json!({})).await;
     // A's code redeems on A's host alone.
     let r = site.redeem(&b, &src).await;
-    assert!(r.headers().get(SET_COOKIE).is_none());
+    assert!(!sets_session(&r));
     let (_, src) = site.code(&owner, &a, json!({})).await;
     let cookie = site.session(&a, &src).await;
     assert_eq!(site.on_site(&a, "/", Some(&cookie)).await.status(), 200);
@@ -515,7 +550,11 @@ async fn site_signin_signs_in_checks_the_right_and_sends_the_browser_back() {
     let aid = site.artifact("Plan").await;
     let host = site.site_host(&aid);
     let at = |b: &Browser, q: String| {
-        let r = site.public(b, reqwest::Method::GET, &format!("/site-signin?{q}"));
+        let r = site.public(
+            b,
+            reqwest::Method::GET,
+            &format!("/site-signin?{q}&state={STATE}"),
+        );
         async move { r.send().await.unwrap() }
     };
     for q in [
@@ -580,7 +619,7 @@ async fn a_local_daemons_owner_holds_the_site_and_no_one_else() {
 }
 
 #[tokio::test]
-async fn a_local_shells_frame_signs_itself_in_through_site_signin_partitioned() {
+async fn a_frame_starts_its_handshake_with_a_state_the_shell_binds_its_code_to() {
     let ts = TestServer::spawn().await;
     let aid = ts.publish("Doc", &[("index.html", "<p>doc")]).await["artifact"]["id"]
         .as_str()
@@ -590,30 +629,77 @@ async fn a_local_shells_frame_signs_itself_in_through_site_signin_partitioned() 
         .redirect(reqwest::redirect::Policy::none())
         .build()
         .unwrap();
-    // The frame's first load carries no site session: to the sign-in.
+    // The frame's first page: a state in a partitioned cookie, handed to
+    // the shell's origin alone by a script only it runs.
     let r = raw
-        .get(format!("{}/_clax/v/1/", ts.base))
+        .get(format!(
+            "{}/_clax/session/start?next=%2F_clax%2Fv%2F1%2F",
+            ts.base
+        ))
         .header(HOST, ts.site_host(&aid))
-        .header("sec-fetch-mode", "navigate")
         .header("sec-fetch-dest", "iframe")
         .send()
         .await
         .unwrap();
-    assert_eq!(r.status(), 302);
-    let to = r.headers()[LOCATION].to_str().unwrap().to_string();
-    let path = &to[to.find("/site-signin").expect("the sign-in")..];
-    assert!(path.ends_with("&next=%2F_clax%2Fv%2F1%2F"), "{to}");
-    // The owner's browser, framed: a partitioned session.
-    let r = raw
-        .get(format!("{}{path}", ts.base))
-        .header(COOKIE, ts.owner_cookie())
-        .header("sec-fetch-dest", "iframe")
-        .send()
-        .await
-        .unwrap();
-    assert_eq!(r.status(), 302);
-    let src = r.headers()[LOCATION].to_str().unwrap().to_string();
-    assert!(src.contains("/_clax/session?code="), "{src}");
+    assert_eq!(r.status(), 200);
+    let shell = ts.state.browser_base.trim_end_matches('/').to_string();
+    let csp = r.headers()["content-security-policy"]
+        .to_str()
+        .unwrap()
+        .to_string();
+    assert!(
+        csp.starts_with("default-src 'none'; script-src 'nonce-"),
+        "{csp}"
+    );
+    assert!(
+        csp.ends_with(&format!("; frame-ancestors 'self' {shell}")),
+        "{csp}"
+    );
+    assert_eq!(r.headers()["cache-control"], "no-store");
+    let set = r.headers()[SET_COOKIE].to_str().unwrap().to_string();
+    assert!(
+        set.contains("Path=/_clax/session")
+            && set.contains("Partitioned")
+            && set.contains("HttpOnly"),
+        "{set}"
+    );
+    let state = set
+        .strip_prefix("clax_site_state=")
+        .unwrap()
+        .split(';')
+        .next()
+        .unwrap()
+        .to_string();
+    let html = r.text().await.unwrap();
+    assert!(
+        html.contains(&format!(
+            "parent.postMessage({{\"next\":\"/_clax/v/1/\",\"state\":\"{state}\",\"type\":\"clax:site-state\"}}, \"{shell}\")"
+        )),
+        "{html}"
+    );
+    // The shell asks for a code bound to it; the frame redeems it beside
+    // its state cookie, which the redemption clears.
+    let code = |state: Option<&str>| {
+        let mut body = json!({"next": "/_clax/v/1/", "partitioned": true});
+        if let Some(st) = state {
+            body["state"] = json!(st);
+        }
+        let req = ts
+            .authed(
+                ts.client
+                    .post(format!("{}/api/artifacts/{aid}/site-code", ts.base)),
+            )
+            .json(&body);
+        async move { req.send().await.unwrap() }
+    };
+    let r = code(None).await;
+    assert_eq!(r.status(), 400, "a code needs a state");
+    assert_eq!(
+        r.json::<Value>().await.unwrap()["error"]["code"],
+        "invalid_args"
+    );
+    let src: Value = code(Some(&state)).await.json().await.unwrap();
+    let src = src["src"].as_str().unwrap();
     let r = raw
         .get(format!(
             "{}{}",
@@ -621,16 +707,26 @@ async fn a_local_shells_frame_signs_itself_in_through_site_signin_partitioned() 
             &src[src.find("/_clax/session").unwrap()..]
         ))
         .header(HOST, ts.site_host(&aid))
+        .header(COOKIE, format!("clax_site_state={state}"))
         .send()
         .await
         .unwrap();
     assert_eq!(r.headers()[LOCATION], "/_clax/v/1/");
-    let set = r.headers()[SET_COOKIE].to_str().unwrap();
+    let sets: Vec<String> = r
+        .headers()
+        .get_all(SET_COOKIE)
+        .iter()
+        .map(|v| v.to_str().unwrap().to_string())
+        .collect();
     assert!(
-        set.contains("Partitioned") && set.contains("SameSite=None"),
-        "{set}"
+        sets[0].starts_with("clax_site=") && sets[0].contains("Partitioned"),
+        "{sets:?}"
     );
-    let cookie = set.split(';').next().unwrap();
+    assert!(
+        sets[1].starts_with("clax_site_state=; Path=/_clax/session; Max-Age=0"),
+        "{sets:?}"
+    );
+    let cookie = sets[0].split(';').next().unwrap();
     let r = raw
         .get(format!("{}/_clax/v/1/", ts.base))
         .header(HOST, ts.site_host(&aid))
@@ -639,7 +735,220 @@ async fn a_local_shells_frame_signs_itself_in_through_site_signin_partitioned() 
         .await
         .unwrap();
     assert_eq!(r.status(), 200);
-    // A browser that is not the owner's is sent to the artifact's page.
-    let r = raw.get(format!("{}{path}", ts.base)).send().await.unwrap();
-    assert_eq!(r.headers()[LOCATION], format!("/a/{aid}"));
+}
+
+#[tokio::test]
+async fn a_code_minted_for_one_browser_signs_no_other_in() {
+    let site = Site::new().await;
+    let owner = site.owner().await;
+    let aid = site.artifact("Plan").await;
+    // An attacker's code, minted for the attacker's own state, handed to a
+    // victim's browser: no state cookie, or the victim's own, redeems it.
+    for victim in [None, Some("the-victims-state")] {
+        let (_, src) = site
+            .code(&owner, &aid, json!({"state": "the-attackers-state"}))
+            .await;
+        let r = site.redeem_as(&aid, &src, victim).await;
+        assert_eq!(r.status(), 302, "{victim:?}");
+        let sets: Vec<String> = r
+            .headers()
+            .get_all(SET_COOKIE)
+            .iter()
+            .map(|v| v.to_str().unwrap().to_string())
+            .collect();
+        assert!(
+            sets.iter().all(|c| !c.starts_with("clax_site=")),
+            "{victim:?}: {sets:?}"
+        );
+        assert!(
+            r.headers()[LOCATION]
+                .to_str()
+                .unwrap()
+                .starts_with(&format!("{}/site-signin?", site.origin))
+        );
+    }
+    // The top-level handshake: the site's redirect sets the state the
+    // sign-in binds its code to.
+    let r = site
+        .raw
+        .get(format!("{}/", site.ts.base))
+        .header(HOST, site.site_host(&aid))
+        .header(ACCEPT, "text/html")
+        .send()
+        .await
+        .unwrap();
+    let to = r.headers()[LOCATION].to_str().unwrap().to_string();
+    let state = to.rsplit_once("&state=").unwrap().1.to_string();
+    let r = site
+        .public(
+            &owner,
+            reqwest::Method::GET,
+            &to[to.find("/site-signin").unwrap()..],
+        )
+        .send()
+        .await
+        .unwrap();
+    let src = r.headers()[LOCATION].to_str().unwrap().to_string();
+    assert!(
+        site.redeem_as(&aid, &src, Some("another"))
+            .await
+            .headers()
+            .get_all(SET_COOKIE)
+            .iter()
+            .all(|c| !c.to_str().unwrap().starts_with("clax_site="))
+    );
+    let r = site
+        .public(
+            &owner,
+            reqwest::Method::GET,
+            &to[to.find("/site-signin").unwrap()..],
+        )
+        .send()
+        .await
+        .unwrap();
+    let src = r.headers()[LOCATION].to_str().unwrap().to_string();
+    let r = site.redeem_as(&aid, &src, Some(&state)).await;
+    assert!(
+        r.headers()[SET_COOKIE]
+            .to_str()
+            .unwrap()
+            .starts_with("clax_site=")
+    );
+    // /site-signin without a state mints nothing.
+    let host = site.site_host(&aid);
+    let r = site
+        .public(
+            &owner,
+            reqwest::Method::GET,
+            &format!("/site-signin?host={host}&next=%2F"),
+        )
+        .send()
+        .await
+        .unwrap();
+    assert_eq!(r.status(), 400);
+}
+
+#[tokio::test]
+async fn removing_a_person_ends_their_site_session_on_the_next_request() {
+    let site = Site::new().await;
+    let owner = site.owner().await;
+    let aid = site.artifact("Plan").await;
+    let (sam, sam_pid) = site.member(&owner, "Sam").await;
+    let shares = format!("/api/hosted/artifacts/{aid}/shares");
+    let (s, v) = site
+        .send(
+            &owner,
+            reqwest::Method::PUT,
+            &shares,
+            json!({"person": sam_pid, "access": "viewer"}),
+        )
+        .await;
+    assert_eq!(s, 200, "{v}");
+    let (_, src) = site.code(&sam, &aid, json!({})).await;
+    let cookie = site.session(&aid, &src).await;
+    assert_eq!(site.on_site(&aid, "/", Some(&cookie)).await.status(), 200);
+    let (s, v) = site
+        .send(
+            &owner,
+            reqwest::Method::DELETE,
+            &format!("/api/people/{sam_pid}"),
+            Value::Null,
+        )
+        .await;
+    assert!(s == 200 || s == 204, "{s} {v}");
+    assert_eq!(site.on_site(&aid, "/", Some(&cookie)).await.status(), 401);
+}
+
+#[tokio::test]
+async fn deleting_the_artifact_ends_every_site_session_the_owners_too() {
+    let site = Site::new().await;
+    let owner = site.owner().await;
+    let aid = site.artifact("Plan").await;
+    let (_, src) = site.code(&owner, &aid, json!({})).await;
+    let cookie = site.session(&aid, &src).await;
+    assert_eq!(site.on_site(&aid, "/", Some(&cookie)).await.status(), 200);
+    let r = site
+        .ts
+        .authed(
+            site.ts
+                .client
+                .delete(format!("{}/api/artifacts/{aid}", site.ts.base)),
+        )
+        .header(HOST, site.public_host())
+        .send()
+        .await
+        .unwrap();
+    assert!(r.status().is_success(), "{}", r.status());
+    for p in ["/", "/a.css", "/_clax/v/1/"] {
+        assert_eq!(
+            site.on_site(&aid, p, Some(&cookie)).await.status(),
+            401,
+            "{p}"
+        );
+    }
+}
+
+#[tokio::test]
+async fn a_world_site_is_read_by_anyone_until_it_is_private_again() {
+    let site = Site::new().await;
+    let aid = site.artifact("Plan").await;
+    let id = clax_core::ArtifactId::parse(&aid).unwrap();
+    site.ts.store.set_site_open_to_world(&id, true).unwrap();
+    let r = site.on_site(&aid, "/a.css", None).await;
+    assert_eq!(r.status(), 200);
+    // An open site's files keep their public caching.
+    assert_eq!(r.headers()["cache-control"], "no-cache");
+    let r = site.on_site(&aid, "/_clax/v/1/a.css", None).await;
+    assert_eq!(
+        r.headers()["cache-control"],
+        "public, max-age=31536000, immutable"
+    );
+    site.ts.store.set_site_open_to_world(&id, false).unwrap();
+    assert_eq!(site.on_site(&aid, "/a.css", None).await.status(), 401);
+}
+
+#[tokio::test]
+async fn a_private_sites_responses_are_private_to_their_browser() {
+    let site = Site::new().await;
+    let owner = site.owner().await;
+    let aid = site.artifact("Plan").await;
+    let form = reqwest::multipart::Form::new().part(
+        "file",
+        reqwest::multipart::Part::bytes(clax_testkit::FAKE_PNG.to_vec())
+            .file_name("a.png")
+            .mime_str("image/png")
+            .unwrap(),
+    );
+    let up: Value = site
+        .ts
+        .authed(
+            site.ts
+                .client
+                .post(format!("{}/api/artifacts/{aid}/assets", site.ts.base)),
+        )
+        .multipart(form)
+        .send()
+        .await
+        .unwrap()
+        .json()
+        .await
+        .unwrap();
+    let blob = up["url"].as_str().unwrap().to_string();
+    let (_, src) = site.code(&owner, &aid, json!({})).await;
+    let cookie = site.session(&aid, &src).await;
+    for (path, cache) in [
+        ("/", "private, no-cache"),
+        ("/a.css", "private, no-cache"),
+        ("/_clax/v/1/", "private, no-cache"),
+        ("/_clax/v/1/a.css", "private, max-age=31536000, immutable"),
+        (blob.as_str(), "private, max-age=31536000, immutable"),
+    ] {
+        let r = site.on_site(&aid, path, Some(&cookie)).await;
+        assert_eq!(r.status(), 200, "{path}");
+        assert_eq!(r.headers()["cache-control"], cache, "{path}");
+        assert!(
+            r.headers().get("access-control-allow-origin").is_none(),
+            "{path}"
+        );
+    }
 }

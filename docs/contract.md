@@ -8644,27 +8644,44 @@ it starts, the runs a previous process left. A build without the
   rebinding) a local daemon still serves `/c/<id>/v/<n>/…` by ID, for a
   shell that has no site origins. A hosted Clax's public origin serves no
   content.
-- A site's every path but `/_clax/healthz`, `/_clax/session` and the UI's
-  files is decided by its artifact's access on every request. A site open
-  to the world is read by anyone. Any other needs the site cookie
+- A site's every path but `/_clax/healthz`, `/_clax/session…` and the
+  UI's files is decided by its artifact's access on every request. A site
+  open to the world is read by anyone. Any other needs the site cookie
   (`clax_site`, on `https` `__Host-clax_site`; host-only, `HttpOnly`,
   `Path=/`, for the browser's session), naming a site session of that
-  artifact whose holder may read it now: removing a share, turning a link
-  off or signing out refuses the very next request. Without one, a
-  navigation (top-level, or a frame's) is sent (302) to the main origin's
-  `/site-signin?host=<site host>&next=<path>`, and anything else answers
-  401 `site_session_required`. A session is made from a one-use code good
-  for 60 s: the shell asks `POST /api/artifacts/<id>/site-code` (`{"next":
-  "<path>", "partitioned": true}`, the owner's credential on a local
-  daemon, the browser's session on a hosted Clax, 404 for who may not read
-  it) for `{"src": "<site origin>/_clax/session?code=<code>&next=<path>"}`;
-  `/site-signin` signs the browser in when it must, sends one without the
-  right to the artifact's page, and else to the same address (partitioned
-  for a frame, `Sec-Fetch-Dest: iframe`). The site's
-  `/_clax/session` sets the cookie (`SameSite=None; Secure; Partitioned`
-  for the shell's frame, else `SameSite=Lax`) and redirects to `next`, a
-  path on that host (anything else is `/`). A session lasts an hour from
-  its last use.
+  artifact whose holder may read it now: removing a share or the person,
+  turning a link off, deleting the artifact or signing out refuses the
+  very next request. Without one, a navigation (a browser's
+  `Sec-Fetch-Mode: navigate` of a document or frame, or a `GET` that
+  accepts `text/html` and names no subresource) is sent (302) to the main
+  origin's `/site-signin?host=<site host>&next=<path>&state=<state>`, and
+  anything else answers 401 `site_session_required`. Such a site's
+  responses are private to the browser: `Cache-Control` `private,
+  no-cache` (the current version), `private, max-age=31536000, immutable`
+  (`/_clax/v/<n>/…` and assets), and never `Access-Control-Allow-Origin`.
+- A site session is made from a one-use code good for 60 s, bound to a
+  **state** the browser holds in the site host's state cookie
+  (`clax_site_state`, on `https` `__Secure-clax_site_state`;
+  `Path=/_clax/session`, `HttpOnly`, ten minutes, a fresh value per
+  handshake): `/_clax/session?code=<code>&next=<path>` redeems the code
+  only beside that cookie, so a code minted for one browser signs no other
+  in, and clears the state. Top-level, the site's redirect to
+  `/site-signin` sets the state (`SameSite=Lax`) and names it; framed, the
+  site's `/_clax/session/start?next=<path>` sets it partitioned and posts
+  `{"type": "clax:site-state", "state", "next"}` to the public origin alone
+  (its page runs only its own script and only the public origin may frame
+  it), and the shell asks `POST /api/artifacts/<id>/site-code` (`{"next":
+  "<path>", "partitioned": true, "state": "<state>"}`, the owner's
+  credential on a local daemon, the browser's session on a hosted Clax; 400
+  without a state, 404 for who may not read it) for `{"src": "<site
+  origin>/_clax/session?code=<code>&next=<path>"}`. `/site-signin` (400
+  without a state) signs the browser in when it must, sends one without
+  the right to the artifact's page, and else to the same address; a frame
+  sent there gets a partitioned session, a hosted Clax's fallback only (a
+  local daemon's owner cookie is not sent there). The cookie is
+  `SameSite=None; Secure; Partitioned` for a frame, else `SameSite=Lax`;
+  `next` is a path on that host of at most 2048 bytes (anything else is
+  `/`). A session lasts an hour from its last use.
 - The viewer probes `http://<id>.localhost:<port>/_clax/healthz` (1 s
   timeout, cached per browser session) when the gallery is opened on
   `localhost` or `127.0.0.1`. When it answers, the content iframe loads

@@ -18,6 +18,20 @@
 //! Made for the shell's frame (a third-party context on a site domain of
 //! its own) it is `SameSite=None; Secure; Partitioned`, keyed to the
 //! shell's site; made for a top-level visit, `SameSite=Lax`.
+//!
+//! Every code is bound to a **state** the redeeming browser holds in a
+//! cookie of the site host ([`STATE_COOKIE`], `Path=/_clax/session`, ten
+//! minutes, a fresh value per handshake): `/_clax/session` redeems a code
+//! only beside it, so a code minted for one browser signs no other in. A
+//! top-level handshake's state is set by the site's redirect to
+//! `/site-signin`, which names it (`&state=`); a frame's by
+//! `/_clax/session/start`, which hands it to the shell (`postMessage`) for
+//! `POST /api/artifacts/<id>/site-code`.
+//!
+//! A response to a site that is not open to the world is private to its
+//! browser: `Cache-Control` says `private` (`public` becomes `private`,
+//! `no-cache` becomes `private, no-cache`) and it carries no
+//! `Access-Control-Allow-Origin`.
 
 use crate::error::ApiError;
 use crate::host::SiteRequest;
@@ -37,6 +51,19 @@ pub const SITE_COOKIE: &str = "clax_site";
 /// The site cookie's name on an `https` site: the `__Host-` prefix keeps a
 /// sibling host from setting one for this host.
 pub const SECURE_SITE_COOKIE: &str = "__Host-clax_site";
+
+/// The state cookie's name on an `http` site.
+pub const STATE_COOKIE: &str = "clax_site_state";
+/// The state cookie's name on an `https` site. `__Host-` would need
+/// `Path=/`; `__Secure-` keeps a page on `http` from setting it, and with no
+/// `Domain` it stays host-only.
+pub const SECURE_STATE_COOKIE: &str = "__Secure-clax_site_state";
+/// The path the state cookie is sent on: the session's redemption alone.
+pub const STATE_PATH: &str = "/_clax/session";
+/// How long a handshake's state lasts.
+pub const STATE_TTL_SECS: i64 = 600;
+/// The longest `next` kept ([`safe_next`]).
+pub const MAX_NEXT: usize = 2048;
 
 /// Who a site request reads as ([`site_access_layer`] inserts it).
 #[derive(Clone, Debug, PartialEq, Eq)]
@@ -80,10 +107,54 @@ pub fn site_cookie(secure: bool, partitioned: bool, value: &str) -> HeaderValue 
         .expect("site session IDs are header-safe")
 }
 
+/// The state cookie's name: [`SECURE_STATE_COOKIE`] when `secure`, else
+/// [`STATE_COOKIE`].
+pub fn state_cookie_name(secure: bool) -> &'static str {
+    if secure {
+        SECURE_STATE_COOKIE
+    } else {
+        STATE_COOKIE
+    }
+}
+
+/// A new handshake state: 32 random bytes, base64url.
+pub fn new_state() -> String {
+    clax_core::secret::token("").expose().to_string()
+}
+
+/// `Set-Cookie` for handshake state `value` (empty with `max_age` 0 clears
+/// it): `Path=/_clax/session`, `HttpOnly`, partitioned as the site cookie
+/// it leads to.
+fn state_cookie_with(secure: bool, partitioned: bool, value: &str, max_age: i64) -> HeaderValue {
+    let name = state_cookie_name(secure);
+    let tail = if partitioned {
+        "; Secure; SameSite=None; Partitioned"
+    } else if secure {
+        "; Secure; SameSite=Lax"
+    } else {
+        "; SameSite=Lax"
+    };
+    HeaderValue::from_str(&format!(
+        "{name}={value}; Path={STATE_PATH}; Max-Age={max_age}; HttpOnly{tail}"
+    ))
+    .expect("states are header-safe")
+}
+
+/// `Set-Cookie` for handshake state `value`, good for [`STATE_TTL_SECS`].
+pub fn state_cookie(secure: bool, partitioned: bool, value: &str) -> HeaderValue {
+    state_cookie_with(secure, partitioned, value, STATE_TTL_SECS)
+}
+
+/// `Set-Cookie` that clears the state cookie.
+pub fn clear_state_cookie(secure: bool, partitioned: bool) -> HeaderValue {
+    state_cookie_with(secure, partitioned, "", 0)
+}
+
 /// Whether `holder` may read artifact `aid` now, as `GET
 /// /api/artifacts/<id>` decides for them: the owner always; a person by
 /// their rights (their shares among them) or the artifact's link; a guest
-/// and a link viewer while it is shared by link.
+/// and a link viewer while it is shared by link. No one reads one that is
+/// deleted, or that does not exist.
 ///
 /// # Errors
 /// The store's.
@@ -92,6 +163,9 @@ pub fn holder_reads(
     holder: &Holder,
     aid: &ArtifactId,
 ) -> clax_core::Result<bool> {
+    if st.get_artifact(aid)?.is_none() {
+        return Ok(false);
+    }
     match holder {
         Holder::Owner => Ok(true),
         Holder::Person(pid) => {
@@ -130,10 +204,12 @@ pub fn site_origin(s: &AppState, aid: &ArtifactId, host: &str) -> String {
     s.sites().origin(aid, scheme, port)
 }
 
-/// `next` as a path on the site's own host: one that starts with a single
-/// `/` and holds no backslash or control character; anything else is `/`.
+/// `next` as a path on the site's own host: one of at most [`MAX_NEXT`]
+/// bytes that starts with a single `/` and holds no backslash or control
+/// character; anything else is `/`.
 pub fn safe_next(next: &str) -> String {
-    let ok = next.starts_with('/')
+    let ok = next.len() <= MAX_NEXT
+        && next.starts_with('/')
         && !next.starts_with("//")
         && !next.contains('\\')
         && !next.chars().any(char::is_control);
@@ -167,13 +243,61 @@ pub fn framed(headers: &HeaderMap) -> bool {
         .is_some_and(|d| d == "iframe" || d == "frame")
 }
 
-/// The public host's sign-in for site `host` that returns to `next`.
-pub fn signin_url(s: &AppState, host: &str, next: &str) -> String {
+/// The public host's sign-in for site `host` that returns to `next`, for
+/// the handshake whose state is `state`.
+pub fn signin_url(s: &AppState, host: &str, next: &str, state: &str) -> String {
     let q = url::form_urlencoded::Serializer::new(String::new())
         .append_pair("host", host)
         .append_pair("next", next)
+        .append_pair("state", state)
         .finish();
     format!("{}/site-signin?{q}", public_origin(s))
+}
+
+/// A site's 302 to the public host's `/site-signin` for `next`: a new
+/// handshake state, set in the state cookie (partitioned for a frame,
+/// `headers` being a framed navigation's) and named in the address.
+pub fn signin_redirect(s: &AppState, headers: &HeaderMap, next: &str) -> Response {
+    let host = headers
+        .get(header::HOST)
+        .and_then(|h| h.to_str().ok())
+        .unwrap_or("");
+    let state = new_state();
+    let to = signin_url(s, host, next, &state);
+    let mut res = (StatusCode::FOUND, [(header::LOCATION, to)]).into_response();
+    let h = res.headers_mut();
+    h.insert(header::CACHE_CONTROL, HeaderValue::from_static("no-store"));
+    h.insert(
+        header::SET_COOKIE,
+        state_cookie(secure(s), framed(headers), &state),
+    );
+    res
+}
+
+/// `res` made private to its browser, as every response of a site that is
+/// not open to the world is (see the module docs).
+fn private(mut res: Response) -> Response {
+    let h = res.headers_mut();
+    h.remove(header::ACCESS_CONTROL_ALLOW_ORIGIN);
+    let cache = h
+        .get(header::CACHE_CONTROL)
+        .and_then(|v| v.to_str().ok())
+        .map(str::to_string);
+    let private = match cache.as_deref() {
+        Some(c) if c.starts_with("public") => format!("private{}", &c["public".len()..]),
+        Some(c)
+            if c.split(',')
+                .any(|d| d.trim() == "private" || d.trim() == "no-store") =>
+        {
+            c.to_string()
+        }
+        Some(c) => format!("private, {c}"),
+        None => "private".to_string(),
+    };
+    if let Ok(v) = HeaderValue::from_str(&private) {
+        h.insert(header::CACHE_CONTROL, v);
+    }
+    res
 }
 
 /// Who a request on the public host would read an artifact's site as, and
@@ -248,43 +372,36 @@ pub async fn site_access_layer(
         Ok(h) => h,
         Err(e) => return e.into_response(),
     };
-    if let Some(h) = holder {
-        req.extensions_mut().insert(SiteCaller::Holder(h));
-        return next.run(req).await;
-    }
     let aid = site.artifact.clone();
     let world = match s.store_call(move |st| st.site_open_to_world(&aid)).await {
         Ok(w) => w,
         Err(e) => return e.into_response(),
     };
-    if world {
-        req.extensions_mut()
-            .insert(SiteCaller::Visitor(String::new()));
-        return next.run(req).await;
-    }
-    if navigation(req.method(), req.headers()) {
-        let host = req
-            .headers()
-            .get(header::HOST)
-            .and_then(|h| h.to_str().ok())
-            .unwrap_or("");
-        let next = req
-            .uri()
-            .path_and_query()
-            .map_or("/", |p| p.as_str())
-            .to_string();
-        let to = signin_url(&s, host, &next);
-        let mut res = (StatusCode::FOUND, [(header::LOCATION, to)]).into_response();
-        res.headers_mut()
-            .insert(header::CACHE_CONTROL, HeaderValue::from_static("no-store"));
-        return res;
-    }
-    ApiError::new(
-        StatusCode::UNAUTHORIZED,
-        "site_session_required",
-        "this artifact's site needs a site session: open it from Clax",
-    )
-    .into_response()
+    let caller = match holder {
+        Some(h) => SiteCaller::Holder(h),
+        None if world => SiteCaller::Visitor(String::new()),
+        None if navigation(req.method(), req.headers()) => {
+            let next = req
+                .uri()
+                .path_and_query()
+                .map_or("/", |p| p.as_str())
+                .to_string();
+            return private(signin_redirect(&s, req.headers(), &safe_next(&next)));
+        }
+        None => {
+            return private(
+                ApiError::new(
+                    StatusCode::UNAUTHORIZED,
+                    "site_session_required",
+                    "this artifact's site needs a site session: open it from Clax",
+                )
+                .into_response(),
+            );
+        }
+    };
+    req.extensions_mut().insert(caller);
+    let res = next.run(req).await;
+    if world { res } else { private(res) }
 }
 
 #[cfg(test)]
@@ -309,6 +426,57 @@ mod tests {
     }
 
     #[test]
+    fn the_state_cookie_is_sent_to_the_session_alone_for_ten_minutes() {
+        assert_eq!(
+            state_cookie(true, true, "s").to_str().unwrap(),
+            "__Secure-clax_site_state=s; Path=/_clax/session; Max-Age=600; HttpOnly; Secure; SameSite=None; Partitioned"
+        );
+        assert_eq!(
+            state_cookie(false, false, "s").to_str().unwrap(),
+            "clax_site_state=s; Path=/_clax/session; Max-Age=600; HttpOnly; SameSite=Lax"
+        );
+        assert!(
+            clear_state_cookie(false, true)
+                .to_str()
+                .unwrap()
+                .starts_with("clax_site_state=; Path=/_clax/session; Max-Age=0;")
+        );
+        assert_ne!(new_state(), new_state());
+    }
+
+    #[test]
+    fn a_private_sites_response_is_private_to_its_browser() {
+        let with = |cache: Option<&str>| {
+            let mut r = Response::new(Body::empty());
+            if let Some(c) = cache {
+                r.headers_mut()
+                    .insert(header::CACHE_CONTROL, HeaderValue::from_str(c).unwrap());
+            }
+            r.headers_mut().insert(
+                header::ACCESS_CONTROL_ALLOW_ORIGIN,
+                HeaderValue::from_static("*"),
+            );
+            let r = private(r);
+            assert!(
+                r.headers()
+                    .get(header::ACCESS_CONTROL_ALLOW_ORIGIN)
+                    .is_none()
+            );
+            r.headers()[header::CACHE_CONTROL]
+                .to_str()
+                .unwrap()
+                .to_string()
+        };
+        assert_eq!(
+            with(Some("public, max-age=31536000, immutable")),
+            "private, max-age=31536000, immutable"
+        );
+        assert_eq!(with(Some("no-cache")), "private, no-cache");
+        assert_eq!(with(Some("no-store")), "no-store");
+        assert_eq!(with(None), "private");
+    }
+
+    #[test]
     fn next_stays_on_the_site_host() {
         for (given, want) in [
             ("/", "/"),
@@ -322,6 +490,9 @@ mod tests {
         ] {
             assert_eq!(safe_next(given), want, "{given:?}");
         }
+        let long = format!("/{}", "a".repeat(MAX_NEXT));
+        assert_eq!(safe_next(&long), "/");
+        assert_eq!(safe_next(&long[..MAX_NEXT]), &long[..MAX_NEXT]);
     }
 
     #[test]

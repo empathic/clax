@@ -4,15 +4,23 @@
 //! (`crate::routes::site`, `/_clax/session`).
 //!
 //! - `POST /api/artifacts/<id>/site-code` (`{"next": "<path>",
-//!   "partitioned": true}`): the shell's frame. Answers `{"src":
-//!   "<site origin>/_clax/session?code=<code>&next=<path>"}`, 404 when the
-//!   caller may not read the artifact.
-//! - `GET /site-signin?host=<site host>&next=<path>`: a visit the site sent
-//!   here, top-level or in a frame. An unknown host is 404; with no session
-//!   and no link to the artifact, the sign-in page, which returns here;
-//!   without the right, the artifact's page, which tells them; else a code
-//!   (partitioned for a frame, `Sec-Fetch-Dest: iframe`) and on to the
-//!   site's `/_clax/session`.
+//!   "partitioned": true, "state": "<state>"}`): the shell's frame, with
+//!   the state its frame's `/_clax/session/start` handed it. Answers
+//!   `{"src": "<site origin>/_clax/session?code=<code>&next=<path>"}`, 400
+//!   without a state, 404 when the caller may not read the artifact.
+//! - `GET /site-signin?host=<site host>&next=<path>&state=<state>`: a visit
+//!   the site sent here with a state (400 without one). An unknown host is
+//!   404; with no session and no link to the artifact, the sign-in page,
+//!   which returns here; without the right, the artifact's page, which
+//!   tells them; else a code and on to the site's `/_clax/session`. A frame
+//!   is sent here too (`Sec-Fetch-Dest: iframe`: a partitioned code), a
+//!   hosted Clax's fallback for a frame whose shell asked no code: its
+//!   session cookie is `SameSite=Lax`, so a frame of the public origin's
+//!   shell carries it; a local daemon's owner cookie is scoped to `/api`
+//!   and `/a`, so a local frame needs the shell's code.
+//!
+//! Every code is bound to its state: `/_clax/session` redeems it only
+//! beside the state cookie that names it.
 //!
 //! Both answer `no-store` and `Referrer-Policy: no-referrer`: the code is
 //! in the address they hand out.
@@ -42,6 +50,29 @@ pub struct CodeBody {
     /// Whether the session's cookie is partitioned (the shell's frame).
     #[serde(default)]
     partitioned: bool,
+    /// The handshake's state, from the frame's `/_clax/session/start`.
+    #[serde(default)]
+    state: Option<String>,
+}
+
+/// What a code is minted for: where it leads, whether its session is
+/// partitioned, and the state it is bound to.
+struct Ask<'a> {
+    next: &'a str,
+    partitioned: bool,
+    state: &'a str,
+}
+
+/// The state a request names: 400 `invalid_args` without one.
+fn state_of(state: Option<&str>) -> Result<&str, ApiError> {
+    state
+        .filter(|s| !s.is_empty() && s.len() <= 128)
+        .ok_or_else(|| {
+            ApiError::bad_request(
+                "invalid_args",
+                "a site code is bound to the browser's state: send the state its site handed out",
+            )
+        })
 }
 
 /// `no-store` and no referrer: the answer carries a code.
@@ -71,9 +102,9 @@ async fn mint(
     sees: &SeesLive,
     aid: ArtifactId,
     (holder, browser): (Holder, Option<String>),
-    next: &str,
-    partitioned: bool,
+    ask: Ask<'_>,
 ) -> Result<Option<String>, ApiError> {
+    let (next, partitioned, state) = (ask.next, ask.partitioned, ask.state.to_string());
     if sees.check(&s.live_ids, aid.as_str()).is_err() {
         return Ok(None);
     }
@@ -84,7 +115,7 @@ async fn mint(
             if !holder_reads(st, &holder, &lookup)? {
                 return Ok(None);
             }
-            st.site_code_mint(&lookup, &holder, browser.as_deref(), partitioned)
+            st.site_code_mint(&lookup, &holder, browser.as_deref(), partitioned, &state)
                 .map(Some)
         })
         .await;
@@ -125,7 +156,13 @@ pub async fn site_code(
     let Some(holder) = request_holder(&s, &headers, &extensions) else {
         return Err(ApiError::not_found());
     };
-    match mint(&s, &headers, &sees, aid, holder, &next, body.partitioned).await? {
+    let state = state_of(body.state.as_deref())?;
+    let ask = Ask {
+        next: &next,
+        partitioned: body.partitioned,
+        state,
+    };
+    match mint(&s, &headers, &sees, aid, holder, ask).await? {
         Some(src) => Ok(private(Json(json!({"src": src})).into_response())),
         None => Err(ApiError::not_found()),
     }
@@ -136,13 +173,15 @@ pub async fn site_code(
 pub struct SigninQuery {
     host: Option<String>,
     next: Option<String>,
+    state: Option<String>,
 }
 
 fn found(to: &str) -> Response {
     private((StatusCode::FOUND, [(header::LOCATION, to.to_string())]).into_response())
 }
 
-/// `GET /site-signin?host=<site host>&next=<path>` (see the module docs).
+/// `GET /site-signin?host=<site host>&next=<path>&state=<state>` (see the
+/// module docs).
 pub async fn page(
     State(s): State<AppState>,
     d: DeniedToGrants,
@@ -162,6 +201,7 @@ pub async fn page(
     let aid = target.artifact;
     sees.check(&s.live_ids, aid.as_str())?;
     let next = safe_next(q.next.as_deref().unwrap_or("/"));
+    state_of(q.state.as_deref())?;
     let holder = request_holder(&s, &headers, &extensions);
     let signed_in = !matches!(holder, None | Some((Holder::Link, _)));
     if !signed_in && s.hosted.is_some() {
@@ -180,8 +220,12 @@ pub async fn page(
     }
     let src = match holder {
         Some(h) => {
-            let partitioned = clax_http::site_access::framed(&headers);
-            mint(&s, &headers, &sees, aid.clone(), h, &next, partitioned).await?
+            let ask = Ask {
+                next: &next,
+                partitioned: clax_http::site_access::framed(&headers),
+                state: state_of(q.state.as_deref())?,
+            };
+            mint(&s, &headers, &sees, aid.clone(), h, ask).await?
         }
         None => None,
     };

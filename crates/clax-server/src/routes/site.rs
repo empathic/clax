@@ -11,14 +11,15 @@
 //! - `/_clax/healthz`: health, on any well-formed site host, whether or not
 //!   its artifact exists: it says nothing of the artifact.
 //! - `/_clax/session?code=&next=`: redeems a site code for a site session
-//!   ([`clax_http::site_access`]).
+//!   beside the browser's state cookie ([`clax_http::site_access`]);
+//!   `/_clax/session/start?next=` begins a frame's handshake with a state.
 //! - `/_clax/…`: the UI's files and the bridge (`crate::shell::static_file`);
 //!   any other `/_clax/` path is 404.
 //! - On a legacy artifact (`Artifact::legacy_paths`) `/_blob/<asset ID>` is
 //!   its assets' too, as its pages name them; on any other, `_blob/` is the
 //!   artifact's own path.
 //!
-//! Every route but health, the session and the UI's files is decided by the
+//! Every route but health, the session's and the UI's files is decided by the
 //! artifact's access (`clax_http::site_access::site_access_layer`); before
 //! that, a live page's site answers 404 to a caller that may not see live
 //! pages (`clax_http::live_access::sees_live_pages`), as a missing one does.
@@ -76,6 +77,7 @@ pub fn site_routes(state: &AppState) -> Router<AppState> {
             ),
         )
         .route("/_clax/session", get(session))
+        .route("/_clax/session/start", get(session_start))
         .route("/_clax/{*path}", get(crate::shell::static_file))
         .merge(site)
         .fallback(|| async { ApiError::not_found() })
@@ -84,10 +86,12 @@ pub fn site_routes(state: &AppState) -> Router<AppState> {
 
 /// `/_clax/session?code=<code>&next=<path>`: redeems a site code made for
 /// this artifact (`POST /api/artifacts/<id>/site-code`, or the public
-/// host's `/site-signin`), sets the site cookie (partitioned as the code
-/// says) and redirects to `next`, a path on this host
+/// host's `/site-signin`) beside the state cookie it was minted for, sets
+/// the site cookie (partitioned as the code says), clears the state and
+/// redirects to `next`, a path on this host
 /// ([`clax_http::site_access::safe_next`]). A code that does not redeem
-/// sets nothing and sends the browser to `/site-signin` for `next`.
+/// sets no session and sends the browser to `/site-signin` for `next`, with
+/// a new state.
 async fn session(
     State(s): State<AppState>,
     site: Extension<SiteRequest>,
@@ -95,30 +99,28 @@ async fn session(
     q: Query<SessionQuery>,
 ) -> Result<Response, ApiError> {
     use axum::http::{HeaderValue, StatusCode, header};
-    let next = clax_http::site_access::safe_next(q.next.as_deref().unwrap_or("/"));
+    use clax_http::site_access as sa;
+    let next = sa::safe_next(q.next.as_deref().unwrap_or("/"));
     let code = q.code.clone().unwrap_or_default();
+    let secure = sa::secure(&s);
+    let state = clax_http::hosted::cookie_value(&headers, sa::state_cookie_name(secure));
     let aid = site.artifact.clone();
     let redeemed = s
-        .store_call(move |st| st.site_code_redeem(&code, &aid))
+        .store_call(move |st| st.site_code_redeem(&code, &aid, state.as_deref()))
         .await?;
-    let found = |to: String| {
-        let mut res = (StatusCode::FOUND, [(header::LOCATION, to)]).into_response();
-        res.headers_mut()
-            .insert(header::CACHE_CONTROL, HeaderValue::from_static("no-store"));
-        res
-    };
     let Some((id, _, partitioned)) = redeemed else {
-        let host = headers
-            .get(header::HOST)
-            .and_then(|h| h.to_str().ok())
-            .unwrap_or("");
-        return Ok(found(clax_http::site_access::signin_url(&s, host, &next)));
+        return Ok(sa::signin_redirect(&s, &headers, &next));
     };
-    let secure = clax_http::site_access::secure(&s);
-    let mut res = found(next);
-    res.headers_mut().insert(
+    let mut res = (StatusCode::FOUND, [(header::LOCATION, next)]).into_response();
+    let h = res.headers_mut();
+    h.insert(header::CACHE_CONTROL, HeaderValue::from_static("no-store"));
+    h.insert(
         header::SET_COOKIE,
-        clax_http::site_access::site_cookie(secure, partitioned, &id),
+        sa::site_cookie(secure, partitioned, &id),
+    );
+    h.append(
+        header::SET_COOKIE,
+        sa::clear_state_cookie(secure, partitioned),
     );
     Ok(res)
 }
@@ -127,6 +129,49 @@ async fn session(
 #[derive(serde::Deserialize)]
 struct SessionQuery {
     code: Option<String>,
+    next: Option<String>,
+}
+
+/// `/_clax/session/start?next=<path>`: the framed handshake's first step.
+/// Sets a new state in the partitioned state cookie and answers a page that
+/// hands the state to the shell framing it (`postMessage` of `{type:
+/// "clax:site-state", state, next}` to the public origin alone), which asks
+/// `POST /api/artifacts/<id>/site-code` for a code bound to it. The page
+/// runs only its own script (a nonce) and only the public origin may frame
+/// it.
+async fn session_start(State(s): State<AppState>, q: Query<StartQuery>) -> Response {
+    use axum::http::{HeaderValue, header};
+    use clax_http::site_access as sa;
+    let next = sa::safe_next(q.next.as_deref().unwrap_or("/"));
+    let state = sa::new_state();
+    let nonce = sa::new_state();
+    let shell = sa::public_origin(&s);
+    let message = serde_json::json!({"type": "clax:site-state", "state": state, "next": next});
+    // Inside a script element: no `<` may close it.
+    let script = |v: &serde_json::Value| v.to_string().replace('<', "\\u003c");
+    let html = format!(
+        "<!doctype html><meta charset=\"utf-8\"><script nonce=\"{nonce}\">parent.postMessage({}, {});</script>",
+        script(&message),
+        script(&serde_json::Value::String(shell.clone())),
+    );
+    let mut res = axum::response::Html(html).into_response();
+    let h = res.headers_mut();
+    h.insert(header::CACHE_CONTROL, HeaderValue::from_static("no-store"));
+    if let Ok(v) = HeaderValue::from_str(&format!(
+        "default-src 'none'; script-src 'nonce-{nonce}'; frame-ancestors 'self' {shell}"
+    )) {
+        h.insert(header::CONTENT_SECURITY_POLICY, v);
+    }
+    h.insert(
+        header::SET_COOKIE,
+        sa::state_cookie(sa::secure(&s), true, &state),
+    );
+    res
+}
+
+/// `/_clax/session/start`'s query.
+#[derive(serde::Deserialize)]
+struct StartQuery {
     next: Option<String>,
 }
 

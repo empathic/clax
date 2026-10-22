@@ -47,9 +47,10 @@ async fn upload_serve_list_delete() {
     assert_eq!(res.headers()["content-type"], "image/png");
     assert_eq!(
         res.headers()["cache-control"],
-        "public, max-age=31536000, immutable"
+        "private, max-age=31536000, immutable"
     );
-    assert_eq!(res.headers()["access-control-allow-origin"], "*");
+    // A private artifact's asset is its browser's alone.
+    assert!(res.headers().get("access-control-allow-origin").is_none());
     assert_eq!(res.headers()["content-security-policy"], "sandbox");
     assert_eq!(res.bytes().await.unwrap().to_vec(), vec![137, 80, 78, 71]);
     let list: serde_json::Value = ts
@@ -154,11 +155,12 @@ async fn blob_404s_after_artifact_delete_and_cross_artifact_delete_is_404() {
         .send()
         .await
         .unwrap();
+    // No one reads a deleted artifact's site.
     let res = ts.site_get(&aid, &url).await;
-    assert_eq!(res.status(), 404);
+    assert_eq!(res.status(), 401);
     assert_eq!(
         res.json::<serde_json::Value>().await.unwrap()["error"]["code"],
-        "not_found"
+        "site_session_required"
     );
 }
 

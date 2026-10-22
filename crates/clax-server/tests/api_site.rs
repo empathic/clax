@@ -67,7 +67,7 @@ async fn the_root_serves_the_current_version() {
     assert_eq!(res.status(), 201);
     let res = ts.site_get(&id, "/").await;
     assert_eq!(res.status(), 200);
-    assert_eq!(res.headers()["cache-control"], "no-cache");
+    assert_eq!(res.headers()["cache-control"], "private, no-cache");
     assert_eq!(res.headers()["referrer-policy"], "no-referrer");
     let etag = res.headers()["etag"].to_str().unwrap().to_string();
     let html = res.text().await.unwrap();
@@ -77,7 +77,7 @@ async fn the_root_serves_the_current_version() {
     // bytes change with the next version.
     let res = ts.site_get(&id, "/a.css").await;
     assert_eq!(res.status(), 200);
-    assert_eq!(res.headers()["cache-control"], "no-cache");
+    assert_eq!(res.headers()["cache-control"], "private, no-cache");
     assert!(res.headers().contains_key("etag"));
     assert_eq!(res.text().await.unwrap(), "b{}");
     let res = ts
@@ -116,7 +116,7 @@ async fn an_older_version_is_served_under_clax_v() {
     assert_eq!(res.status(), 200);
     assert_eq!(
         res.headers()["cache-control"],
-        "public, max-age=31536000, immutable"
+        "private, max-age=31536000, immutable"
     );
     assert_eq!(res.text().await.unwrap(), "p{}");
     assert!(

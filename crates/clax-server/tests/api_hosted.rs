@@ -3080,7 +3080,7 @@ async fn a_site_domain_names_the_sites_and_the_retired_content_origin_only_redir
         .post(
             &owner,
             &format!("/api/artifacts/{aid}/site-code"),
-            json!({"partitioned": true}),
+            json!({"partitioned": true, "state": "st"}),
         )
         .await;
     assert_eq!(s, 200, "{v}");
@@ -3092,6 +3092,7 @@ async fn a_site_domain_names_the_sites_and_the_retired_content_origin_only_redir
     let r = raw
         .get(site.url(&src[src.find("/_clax/").unwrap()..]))
         .header(HOST, &host)
+        .header(COOKIE, "clax_site_state=st")
         .send()
         .await
         .unwrap();

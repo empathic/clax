@@ -255,6 +255,9 @@ impl clax_core::content::ContentStore for Deferred {
     }
 }
 
+/// The handshake state [`TestServer::site_cookie`] binds its codes to.
+pub const SITE_STATE: &str = "testkit-site-state";
+
 /// A running test daemon with its own temporary home and the fixed token `test-token`.
 pub struct TestServer {
     pub base: String,
@@ -891,7 +894,7 @@ impl TestServer {
                 self.client
                     .post(format!("{}/api/artifacts/{id}/site-code", self.base)),
             )
-            .json(&serde_json::json!({"next": "/"}))
+            .json(&serde_json::json!({"next": "/", "state": SITE_STATE}))
             .send()
             .await
             .unwrap();
@@ -899,16 +902,19 @@ impl TestServer {
             return None;
         }
         let v: serde_json::Value = res.json().await.unwrap();
-        Some(self.redeem_site_code(v["src"].as_str().unwrap()).await)
+        Some(
+            self.redeem_site_code(v["src"].as_str().unwrap(), SITE_STATE)
+                .await,
+        )
     }
 
     /// Follows `src` (a site code's `/_clax/session` address, on the site
-    /// host it names) to this daemon: the `Cookie` header of the session it
-    /// sets.
+    /// host it names) to this daemon with the state cookie of `state` (the
+    /// code's): the `Cookie` header of the session it sets.
     ///
     /// # Panics
     /// When it sets no site cookie.
-    pub async fn redeem_site_code(&self, src: &str) -> String {
+    pub async fn redeem_site_code(&self, src: &str, state: &str) -> String {
         let rest = src.split_once("://").map_or(src, |(_, r)| r);
         let at = rest.find('/').unwrap_or(rest.len());
         let (host, path) = rest.split_at(at);
@@ -918,6 +924,10 @@ impl TestServer {
             .unwrap()
             .get(format!("{}{path}", self.base))
             .header(reqwest::header::HOST, host)
+            .header(
+                reqwest::header::COOKIE,
+                format!("{}={state}", clax_http::site_access::STATE_COOKIE),
+            )
             .send()
             .await
             .unwrap();

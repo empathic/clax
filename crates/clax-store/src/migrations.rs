@@ -1252,8 +1252,10 @@ pub const MIGRATIONS: &[&str] = &[
     // 44: site sessions (`crate::site_sessions`). A one-use code, made for
     // someone who may read an artifact, is redeemed on the artifact's site
     // host for a session there; only each one's SHA-256 is kept. Each is
-    // bound to one artifact and, when made from a browser's sign-in, to
-    // that browser session (its cookie's SHA-256, `browser_sessions`).
+    // bound to one artifact, to the state its browser holds in a cookie of
+    // the site host (`state_hash`, its SHA-256: a code redeems only beside
+    // it), and, when made from a browser's sign-in, to that browser
+    // session (its cookie's SHA-256, `browser_sessions`).
     // `artifacts.site_access` is whether the site is open to the world.
     "CREATE TABLE site_codes (
         code_hash TEXT PRIMARY KEY,
@@ -1262,6 +1264,7 @@ pub const MIGRATIONS: &[&str] = &[
         holder TEXT,
         browser_session TEXT,
         partitioned INTEGER NOT NULL,
+        state_hash TEXT NOT NULL,
         expires_at TEXT NOT NULL
     );
     CREATE TABLE site_sessions (
