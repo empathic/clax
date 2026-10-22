@@ -1,6 +1,7 @@
 export type CommentPart = typeof import("./comment");
 export type ClipPart = typeof import("./clip");
 export type CapsPart = typeof import("./caps");
+export type OriginPart = typeof import("./origin");
 export type RoomPart = typeof import("./room");
 export type SamplePart = typeof import("./sample");
 export type LivePart = typeof import("./live");
@@ -11,6 +12,7 @@ export type Parts = {
   comment(attempt?: number): Promise<CommentPart>;
   clip(attempt?: number): Promise<ClipPart>;
   caps(attempt?: number): Promise<CapsPart>;
+  origin(attempt?: number): Promise<OriginPart>;
   room(attempt?: number): Promise<RoomPart>;
   sample(attempt?: number): Promise<SamplePart>;
   live(attempt?: number): Promise<LivePart>;

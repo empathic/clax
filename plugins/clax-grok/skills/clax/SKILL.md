@@ -652,7 +652,8 @@ What a page written for claude.ai meets in Clax, beyond the gesture rules:
   machine enters a name, it keeps its old answer until the page reloads,
   though their writes already succeed, so reload or try the write.
   `profiles()` caches names for the life of the page and never refreshes
-  them. `can()` never answers `null`, `email` is always `null`, and
+  them. `can()` answers `null` only when the site cannot say who the viewer
+  is, `email` is always `null`, and
   `search()` works only in the person's browser.
 - `downloads`: at most one prompt at a time and 3 per 30 seconds;
   `request` (export answers) always rejects `request_unknown`.

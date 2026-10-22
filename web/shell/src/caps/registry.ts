@@ -1,9 +1,10 @@
 // One handler factory per capability the shell serves a framed page. `db`,
 // `assets`, `user` and `room` are the page's own origin's (the bridge calls
 // its site, web/bridge/src/caps/origin.ts): the shell keeps only `db`'s
-// change reports and `user`'s lookups of other people. Those a page calls
-// rarely, or only on a viewer's action (downloads, sample, the lookups), are
-// lazy chunks loaded on the page's first call (lazy.ts), off the artifact entry.
+// change reports, `room`'s viewer reports and `user`'s lookups of other
+// people. Those a page calls rarely, or only on a viewer's action
+// (downloads, sample, the room's and the lookups), are lazy chunks loaded on
+// the page's first call (lazy.ts), off the artifact entry.
 import { artifactHandler } from "./artifact";
 import { commentsHandler } from "./comments";
 import { dbHandler } from "./db";
@@ -38,6 +39,7 @@ export const REGISTRY: Record<string, HandlerFactory> = {
   downloads: lazyHandler(() => import("./downloads").then(m => m.downloadsHandler)),
   net: lazyHandler(() => import("./net").then(m => m.netHandler)),
   permissions: permissionsHandler,
+  room: lazyHandler(() => import("./room").then(m => m.roomHandler)),
   sample: lazyHandler(() => import("./sample").then(m => m.sampleHandler)),
   user: lazyHandler(() => import("./user").then(m => m.userHandler)),
 };

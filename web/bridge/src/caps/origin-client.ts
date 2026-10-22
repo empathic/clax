@@ -5,7 +5,9 @@
 // calls, and the site answers for its own artifact alone. Requests go with
 // `credentials: "same-origin"` and no `Authorization`; the site counts every
 // write as the page's. Daemon errors become the contract's codes
-// (web/contract/0.3.0 db.d.ts, assets.d.ts).
+// (web/contract/0.3.0 db.d.ts, assets.d.ts). A docs read sends the `ETag`
+// of its last answer back as `If-None-Match`, and the site's 304 (nothing
+// changed since) stands for that answer.
 import { CapabilityError } from "../rpc";
 import { checkUpload } from "./asset-checks";
 
@@ -27,6 +29,9 @@ export type OriginClient = {
 export const API = "/_clax/api/";
 const MIN_LEASE_MS = 1_000;
 const MAX_LEASE_MS = 600_000;
+/** Most docs reads whose answers a client keeps for `If-None-Match`. */
+export const MAX_VALIDATED = 128;
+type Validated = { tag: string; status: number; body: unknown };
 /** Asset IDs as the site issues them (ULIDs). */
 const ULID = /^[0-7][0-9A-HJKMNP-TV-Z]{25}$/;
 
@@ -78,19 +83,47 @@ const wire = (d: ApiDoc): WireDoc => ({ path: d.path, id: d.id, data: d.data, ve
 export function originClient(base: URL): OriginClient {
   const at = (path: string) => new URL(API + path, base).href;
 
+  /** The docs reads' last answers by URL, with their `ETag`: sent again as
+   * `If-None-Match`, a 304 stands for the answer kept. */
+  const validated = new Map<string, Validated>();
+
   /** The answer's JSON (null for 204), or the rejection `fail` makes of it;
    * `missing` answers a 404 instead. */
   async function send(path: string, init: RequestInit, fail: (status: number, err: ApiError) => CapabilityError, missing?: unknown): Promise<any> {
+    const url = at(path);
+    const read = (init.method ?? "GET") === "GET" && path.startsWith("docs");
+    const kept = read ? validated.get(url) : undefined;
+    const headers = new Headers(init.headers);
+    if (kept) headers.set("if-none-match", kept.tag);
     let res: Response;
     try {
-      res = await fetch(at(path), { credentials: "same-origin", ...init });
+      res = await fetch(url, { credentials: "same-origin", cache: "no-store", ...init, headers });
     } catch {
       throw fail(0, {});
     }
-    if (res.ok) return res.status === 204 ? null : res.json();
-    if (missing !== undefined && res.status === 404) return missing;
-    const err = ((await res.json().catch(() => ({}))) as { error?: ApiError }).error ?? {};
-    throw fail(res.status, err);
+    let status = res.status;
+    let body: any;
+    if (status === 304 && kept) {
+      ({ status, body } = kept);
+    } else {
+      body = status === 204 ? null : await res.json().catch(() => (res.ok ? undefined : {}));
+      if (res.ok && body === undefined) throw fail(status, { message: "the site's answer was not JSON" });
+      const tag = res.headers.get("etag");
+      if (read && tag && (status === 200 || status === 404)) keep(url, { tag, status, body });
+    }
+    if (status >= 200 && status < 300) return body;
+    if (missing !== undefined && status === 404) return missing;
+    throw fail(status, (body as { error?: ApiError } | null)?.error ?? {});
+  }
+
+  function keep(url: string, v: Validated) {
+    validated.delete(url);
+    validated.set(url, v);
+    // The oldest go first: a page polls at most its subscriptions' reads.
+    for (const old of validated.keys()) {
+      if (validated.size <= MAX_VALIDATED) break;
+      validated.delete(old);
+    }
   }
 
   const db = (method: string, path: string, body?: unknown, missing?: unknown) =>

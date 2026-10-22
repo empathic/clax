@@ -235,7 +235,7 @@ export type BridgeToShell =
    * error, for debugging: the page can post this too, so the shell shows only
    * its own words for `part`, and none for `live` (the live layers are best
    * effort: others' pointers are simply not drawn). */
-  | { type: "clax:degraded"; part: "comment" | "clip" | "caps" | "room" | "sample" | "live" | "test"; message: string }
+  | { type: "clax:degraded"; part: "comment" | "clip" | "caps" | "origin" | "room" | "sample" | "live"; message: string }
   /** This viewer's pointer (null once it left the page) and selection: the
    * text selected, or the area being drawn in comment mode; and `pick`, the
    * last pick made in comment mode (what the shell shows others while that

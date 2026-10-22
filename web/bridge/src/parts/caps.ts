@@ -1,6 +1,12 @@
-// What claude.use() resolves: the capabilities' page-side members, and the
-// client of the page's own origin that `db`, `assets` and `user` call.
-// Loaded on the page's first claude.use().
+// What claude.use() resolves of the framing shell's capabilities, and their
+// page-side members: loaded on a framed page's first claude.use() of one.
+// (The page's own origin's are parts/origin.ts.) Also the app shell's scroll
+// report and restore, its watch of the page's pushState routes and its
+// report of the page's edge colours, loaded on its welcome (`app: true`).
+import { reportChrome } from "../chrome";
+import { type RouteReport, type Routes, appRoutes } from "../routes";
+import { appScroll } from "../scroll";
+
 export { resolveUse } from "../caps/resolve";
 export type { CapsEnv } from "../caps/comments";
 

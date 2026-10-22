@@ -1,13 +1,16 @@
 // The `assets` namespace (assets.d.ts): argument checks in the page; the
-// shell checks the type, size, and body, and uploads with the owner's token.
+// origin's client (origin-client.ts) checks the type, size and body against
+// the contract and uploads to the page's own site, which checks them again
+// and decides (only the owner's site session may upload or delete).
 import type { Local } from "../capabilities";
 import { CapabilityError, type Rpc } from "../rpc";
 
 const refuse = (message: string) => Promise.reject(new CapabilityError("invalid_request", message));
 
-/** The asset ID in `ref`: the ID itself, or the part of a `/_clax/blob/<id>`
- * (or a legacy artifact's `/_blob/<id>`) URL after that prefix. */
-const REF = /^(?:.*\/(?:_clax\/blob|_blob)\/)?([0-9A-Za-z]{1,64})(?:[?#].*)?$/s;
+/** The asset ID in `ref`: the ID itself, or the last part of a
+ * `/_clax/blob/<id>` URL (or of a legacy artifact's `/_blob/<id>`, or of
+ * `/_blob/<artifact ID>/<id>`). */
+const REF = /^(?:.*\/(?:_clax\/blob|_blob(?:\/[0-9a-z]{12})?)\/)?([0-9A-Za-z]{1,64})(?:[?#].*)?$/s;
 
 export function assetsLocals(rpc: Pick<Rpc, "call">): Local {
   return {

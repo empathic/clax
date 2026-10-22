@@ -2,6 +2,7 @@ import { describe, it, expect, beforeAll, afterEach, vi } from "vitest";
 
 import { BRIDGE_TYPES } from "../src/protocol";
 import { hashFor, helloFor, isBridgeSrc, isFirstBridge, readMeta } from "../src/meta";
+import { requests } from "../src/parts-static";
 
 declare global { interface Window { claude?: { use(name: string): Promise<unknown>; assetUrl(id: unknown): string }; __clax?: { artifact: string; version: number; contract: string; file: string } } }
 
@@ -36,10 +37,14 @@ describe("bridge", () => {
     }));
     try {
       expect(Object.keys(window.claude!)).toEqual(["use"]);
-      for (const name of ["artifact", "self", "permissions", "comments", "room", "sample", "assets", "nonsense"]) {
+      // The shell's capabilities are null at once: no part loads for them.
+      for (const name of ["artifact", "self", "permissions", "comments", "sample", "nonsense"]) {
         await expect(window.claude!.use(name), name).resolves.toBeNull();
       }
+      expect(requests).toEqual([]);
+      for (const name of ["room", "assets"]) await expect(window.claude!.use(name), name).resolves.toBeNull();
       expect(Object.keys((await window.claude!.use("db")) as object).sort()).toEqual(["collection", "doc"]);
+      expect(requests).toEqual(["origin"]);
       const user = (await window.claude!.use("user")) as { isOwner(): Promise<boolean>; id(): Promise<string | null> };
       expect([await user.isOwner(), await user.id()]).toEqual([false, null]);
       expect(window.claude!.use("self")).toBe(window.claude!.use("artifact"));

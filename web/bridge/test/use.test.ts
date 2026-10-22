@@ -1,7 +1,5 @@
 import { describe, expect, it, vi } from "vitest";
 import { type UseContext, resolveUse } from "../src/caps/resolve";
-import { siteOf } from "../src/caps/origin";
-import type { OriginClient } from "../src/caps/origin-client";
 import { commentsContext } from "../src/comments-context";
 import { makeUse } from "../src/use";
 
@@ -13,20 +11,13 @@ function fakeRpc(granted: Record<string, unknown>) {
   };
 }
 
-/** A context whose shell grants `granted`; the page's own site declares `declared`. */
-function context(framed: boolean, granted: Record<string, unknown>, declared: Record<string, unknown> = {}) {
+/** A framed page's context whose shell grants `granted`. */
+function context(granted: Record<string, unknown>) {
   const rpc = fakeRpc(granted);
-  const client: OriginClient = {
-    call: async (cap, method) => (cap === "artifact" ? { capabilities: declared } : method === "whoami" ? { kind: "person", level: "view", can_edit: false } : null),
-    socket: () => { throw new Error("no socket"); },
-  };
   const o: UseContext = {
-    framed,
     rpc: rpc as never,
-    room: async () => ({ roomNamespace: () => Object.freeze({ part: "room" }), originRoom: () => ({}) }) as never,
     sample: async () => ({ sampleNamespace: () => Object.freeze({ part: "sample" }) }) as never,
     env: { ctx: commentsContext, clip: () => import("../src/parts/clip") },
-    site: siteOf(client),
   };
   return { rpc, resolve: (n: string) => resolveUse(n, o) };
 }
@@ -42,37 +33,32 @@ describe("use()", () => {
     expect(await p).toBe("ns");
   });
 
-  it("aliases self to artifact, and never rejects", async () => {
+  it("aliases self to artifact, takes a plain null, and never rejects", async () => {
     const asked: string[] = [];
     const use = makeUse(async n => { asked.push(n); throw new Error("no part"); });
     expect(use("self")).toBe(use("artifact"));
     await expect(use("self")).resolves.toBeNull();
     await expect(use(42 as unknown as string)).resolves.toBeNull();
     expect(asked).toEqual(["artifact", ""]);
+    await expect(makeUse(() => null)("db")).resolves.toBeNull();
   });
 });
 
-describe("resolveUse", () => {
-  it("resolves the origin's capabilities from the site, framed or top-level, never asking the shell", async () => {
-    for (const framed of [false, true]) {
-      const { rpc, resolve } = context(framed, { db: {}, room: {}, assets: {} }, { db: {}, room: {} });
-      expect(Object.keys((await resolve("db")) as object).sort()).toEqual(["collection", "doc"]);
-      expect(await resolve("room")).toEqual({ part: "room" });
-      expect(await resolve("user")).not.toBeNull();
-      // Declared but not the owner's: refused, whatever a shell would grant.
-      expect(await resolve("assets")).toBeNull();
-      expect(rpc.use.mock.calls.map(c => c[0]).filter(n => n !== "db" && n !== "user")).toEqual([]);
-    }
+describe("resolveUse (a framed page's shell capabilities)", () => {
+  it("the device capabilities resolve namespaces whose members call the shell", async () => {
+    const { resolve } = context({ notify: {}, share: {}, file: {}, camera: {}, location: {} });
+    const members = async (n: string) => Object.keys((await resolve(n)) as object).sort();
+    expect(await members("notify")).toEqual(["cancel", "list", "schedule"]);
+    expect(await members("share")).toEqual(["file", "text"]);
+    expect(await members("file")).toEqual(["pick", "save"]);
+    expect(await members("camera")).toEqual(["pick", "take"]);
+    expect(await members("location")).toEqual(["current", "watch"]);
+    const notify = (await resolve("notify")) as Record<string, (...a: unknown[]) => Promise<unknown>>;
+    await expect(notify.cancel("water")).resolves.toEqual({ ns: "notify", method: "cancel", args: ["water"] });
   });
 
-  it("resolves the shell's capabilities null top-level, without asking any shell", async () => {
-    const { rpc, resolve } = context(false, { permissions: {}, artifact: {}, sample: {} });
-    for (const n of ["permissions", "artifact", "comments", "sample", "downloads"]) await expect(resolve(n)).resolves.toBeNull();
-    expect(rpc.use).not.toHaveBeenCalled();
-  });
-
-  it("framed, resolves what the shell grants as a frozen namespace calling it, and null for the rest", async () => {
-    const { rpc, resolve } = context(true, { permissions: {}, sample: {} });
+  it("resolves what the shell grants as a frozen namespace calling it, and null for the rest", async () => {
+    const { rpc, resolve } = context({ permissions: {}, sample: {} });
     const ns = (await resolve("permissions")) as Record<string, (...a: unknown[]) => Promise<unknown>>;
     expect(Object.isFrozen(ns)).toBe(true);
     expect(Object.keys(ns).sort()).toEqual(["request", "state"]);
@@ -81,5 +67,12 @@ describe("resolveUse", () => {
     for (const n of ["artifact", "comments", "files", "mcp", "toString", "__proto__", "nonsense"]) await expect(resolve(n)).resolves.toBeNull();
     // Unknown names reach no shell.
     expect(rpc.use.mock.calls.map(c => c[0])).toEqual(["permissions", "sample", "artifact", "comments"]);
+  });
+
+  it("resolves a granted artifact with its page-side members", async () => {
+    const { resolve } = context({ artifact: {} });
+    const ns = (await resolve("artifact")) as Record<string, (...a: unknown[]) => Promise<unknown>>;
+    expect(Object.keys(ns).sort()).toEqual(["edit", "publish", "sync"]);
+    await expect(ns.edit()).rejects.toMatchObject({ code: "invalid_content" });
   });
 });

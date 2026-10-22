@@ -4,9 +4,10 @@
 // `canEdit`, `can`, …) the bridge answers from its site's `whoami`
 // (web/bridge/src/caps/origin.ts). Identity is the viewer's public ID (the
 // cookie's viewer, never the cookie); names come from the viewers table and
-// need scope "profile". `email` is always null and `guest` always false.
-// Every read resolves; none rejects. A lazy chunk (registry.ts), loaded on
-// the page's first lookup.
+// need scope "profile". `email` is always null. `guest` is false in every
+// entry here: the shell does not know who is a guest, and the bridge marks
+// the viewer's own entry from `whoami`'s kind. Every read resolves; none
+// rejects. A lazy chunk (registry.ts), loaded on the page's first lookup.
 import { avatarFor, colorFor } from "../../../bridge/src/caps/avatar";
 import { CapError } from "./errors";
 import type { HandlerFactory, ViewerInfo } from "./host";

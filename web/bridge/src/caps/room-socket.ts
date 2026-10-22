@@ -5,6 +5,13 @@
 // pushes of ns "room" (`welcome`, `peers`, `peer`, `left`, `msg`,
 // `connection`, `error`). The label is kept across reconnects; on reconnect
 // the page's latest presence is sent again and its rooms joined again.
+//
+// The site fixes a socket's level when it opens, so when the viewer changes
+// (a guest who names themselves moves to a higher level) the room opens a
+// new socket under the same label, which replaces the old one without the
+// page seeing it leave. It learns of the change from a framing Clax shell
+// (`room/viewer`, after `room.watch`), and, top-level, from the site's
+// `whoami` read again as the page comes back into view.
 import { CapabilityError, type Rpc } from "../rpc";
 import type { OriginClient } from "./origin-client";
 
@@ -21,9 +28,15 @@ export function peerLabel(): string {
 
 type Frame = { t: string; id?: number; code?: string; message?: string; dropped?: boolean; [k: string]: unknown };
 type Waiter = { resolve(f: Frame): void; reject(e: unknown): void; timer: ReturnType<typeof setTimeout> };
+type Shell = Pick<Rpc, "use" | "call" | "on">;
+type Who = { kind?: unknown; id?: unknown; level?: unknown } | null;
 
-/** The room's connection for room.ts's `roomNamespace`. */
-export function originRoom(client: Pick<OriginClient, "socket">): Pick<Rpc, "call" | "on"> {
+/** Who `w` is, as far as the room's level goes. */
+const whoKey = (w: Who) => (w ? `${String(w.kind)}|${String(w.id ?? "")}|${String(w.level)}` : "");
+
+/** The room's connection for room.ts's `roomNamespace`; `shell` is the
+ * framing shell's connection (false top-level). */
+export function originRoom(client: Pick<OriginClient, "socket" | "call">, shell: Shell | false): Pick<Rpc, "call" | "on"> {
   let label = peerLabel();
   const listeners = new Map<string, Set<(d: unknown) => void>>();
   const push = (topic: string, data: unknown) => { for (const fn of [...(listeners.get(topic) ?? [])]) fn(data); };
@@ -36,8 +49,13 @@ export function originRoom(client: Pick<OriginClient, "socket">): Pick<Rpc, "cal
   const presence = new Map<string | null, unknown>();
   const joined = new Set<string>();
   const waiting = new Map<number, Waiter>();
+  // The socket a viewer change replaced: closed once its successor opens.
+  let retired: WebSocket | null = null;
+  // Who the site said the viewer was when the socket last opened.
+  let who: string | null = null;
 
   const send = (m: unknown) => { if (ws && isOpen) ws.send(JSON.stringify(m)); };
+  const whoami = () => client.call("user", "whoami", []).then(w => whoKey(w as Who), () => null);
 
   function failWaiters(message: string) {
     for (const w of waiting.values()) { clearTimeout(w.timer); w.reject(new CapabilityError("upstream_error", message)); }
@@ -89,8 +107,12 @@ export function originRoom(client: Pick<OriginClient, "socket">): Pick<Rpc, "cal
       return;
     }
     ws = s;
+    // Top-level, who the viewer is now, to notice a change later.
+    if (!shell) void whoami().then(k => { if (ws === s && k !== null) who = k; });
     s.onopen = () => {
       if (ws !== s) return;
+      retired?.close(1000, "renamed");
+      retired = null;
       isOpen = true;
       attempt = 0;
       push("connection", { connected: true });
@@ -124,6 +146,35 @@ export function originRoom(client: Pick<OriginClient, "socket">): Pick<Rpc, "cal
     };
   }
 
+  /** The viewer changed: a new socket under the same label, at their new
+   * level, replaces the old one once it opens; the page sees no leave. */
+  function renamed() {
+    if (!wanted || terminal || !ws) return;
+    const old = ws;
+    old.onopen = old.onmessage = old.onclose = null;
+    retired?.close(1000, "renamed");
+    retired = old;
+    ws = null;
+    isOpen = false;
+    failWaiters("the room reconnected");
+    connect();
+  }
+
+  if (shell) {
+    void shell.use("room").then(g => {
+      if (!g) return;
+      shell.on("room", "viewer", renamed);
+      return shell.call("room", "watch", []);
+    }).catch(() => {});
+  }
+  document.addEventListener("visibilitychange", () => {
+    if (shell || document.visibilityState !== "visible" || who === null) return;
+    void whoami().then(k => {
+      if (k === null || k === who) return;
+      who = k;
+      renamed();
+    });
+  });
   // A page leaving for good (not kept whole in the back/forward cache) closes its socket.
   addEventListener("pagehide", e => {
     if (e.persisted) return;

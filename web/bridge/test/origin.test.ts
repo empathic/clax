@@ -67,18 +67,72 @@ describe("db on the page's own origin", () => {
     expect(calls.filter(c => !["get", "query"].includes(c[1])).map(c => c[1])).toEqual(["set", "update", "delete", "acquire"]);
   });
 
-  it("polls every subscription while no shell says what changed, and stops with the last unsubscribe", async () => {
+  it("polls while no shell says what changed, slower while nothing does, and stops with the last unsubscribe", async () => {
     vi.useFakeTimers();
-    const { client, calls } = site(() => doc("tasks/t1", 1));
+    let v = 1;
+    const { client, calls } = site(m => (m === "get" ? doc("tasks/t1", v) : (v++, null)));
     const t = dbTransport(client, false);
+    const got = pushes(t);
     await t.call("db", "subscribe", ["s1", sub("tasks/t1")]);
     expect(gets(calls)).toBe(1);
-    await vi.advanceTimersByTimeAsync(UNWATCHED_POLL_MS + SNAPSHOT_DEBOUNCE_MS);
-    await vi.advanceTimersByTimeAsync(UNWATCHED_POLL_MS);
-    expect(gets(calls)).toBe(3);
+    // Nothing changes: 5, then 10, 20 and 30 s apart, and never slower.
+    const at: number[] = [];
+    for (const ms of [5_000, 10_000, 20_000, 30_000, 30_000]) {
+      await vi.advanceTimersByTimeAsync(ms - 1);
+      at.push(gets(calls));
+      await vi.advanceTimersByTimeAsync(1);
+    }
+    expect(at).toEqual([1, 2, 3, 4, 5]);
+    expect(gets(calls)).toBe(6);
+    expect(UNWATCHED_POLL_MS.at(-1)).toBe(POLL_MS);
+    // The page's own write hurries it back to 5 s.
+    await t.call("db", "set", ["tasks/t1", {}]);
+    await vi.advanceTimersByTimeAsync(0);
+    const n = gets(calls);
+    await vi.advanceTimersByTimeAsync(UNWATCHED_POLL_MS[0]);
+    expect(gets(calls)).toBe(n + 1);
+    // A poll that finds something new keeps it at 5 s.
+    v = 10;
+    await vi.advanceTimersByTimeAsync(UNWATCHED_POLL_MS[1]);
+    expect(gets(calls)).toBe(n + 2);
+    await vi.advanceTimersByTimeAsync(UNWATCHED_POLL_MS[0]);
+    expect(gets(calls)).toBe(n + 3);
+    // A poll that found nothing new delivered nothing.
+    expect(got.map(g => (g.data.docs as WireDoc[])[0].version)).toEqual([1, 2, 10]);
     await t.call("db", "unsubscribe", ["s1"]);
-    await vi.advanceTimersByTimeAsync(UNWATCHED_POLL_MS * 4);
-    expect(gets(calls)).toBe(3);
+    await vi.advanceTimersByTimeAsync(POLL_MS * 4);
+    expect(gets(calls)).toBe(n + 3);
+  });
+
+  it("polls nothing while the page is hidden, catches up as it comes back, and hurries on focus", async () => {
+    vi.useFakeTimers();
+    const state = { v: "visible" };
+    Object.defineProperty(document, "visibilityState", { configurable: true, get: () => state.v });
+    try {
+      const { client, calls } = site(() => doc("tasks/t1", 1));
+      const t = dbTransport(client, false);
+      await t.call("db", "subscribe", ["s1", sub("tasks/t1")]);
+      await vi.advanceTimersByTimeAsync(5_000 + 10_000 + 20_000);
+      expect(gets(calls)).toBe(4);
+      state.v = "hidden";
+      document.dispatchEvent(new Event("visibilitychange"));
+      await vi.advanceTimersByTimeAsync(POLL_MS * 10);
+      expect(gets(calls)).toBe(4);
+      state.v = "visible";
+      document.dispatchEvent(new Event("visibilitychange"));
+      await vi.advanceTimersByTimeAsync(SNAPSHOT_DEBOUNCE_MS);
+      expect(gets(calls)).toBe(5);
+      await vi.advanceTimersByTimeAsync(UNWATCHED_POLL_MS[0]);
+      expect(gets(calls)).toBe(6);
+      // Slowed down again, a focus brings the next poll back to 5 s.
+      await vi.advanceTimersByTimeAsync(10_000 + 20_000);
+      expect(gets(calls)).toBe(8);
+      dispatchEvent(new Event("focus"));
+      await vi.advanceTimersByTimeAsync(UNWATCHED_POLL_MS[0]);
+      expect(gets(calls)).toBe(9);
+    } finally {
+      delete (document as unknown as { visibilityState?: string }).visibilityState;
+    }
   });
 
   it("follows a watching shell's reports instead of polling, and polls only while its stream is down", async () => {
@@ -92,7 +146,7 @@ describe("db on the page's own origin", () => {
     expect(sh.asked).toEqual(["db.watch"]);
     await t.call("db", "subscribe", ["q", tasks]);
     await t.call("db", "subscribe", ["d", sub("tasks/t1")]);
-    await vi.advanceTimersByTimeAsync(UNWATCHED_POLL_MS * 3);
+    await vi.advanceTimersByTimeAsync(POLL_MS * 3);
     expect(gets(calls)).toBe(2);
     v = 2;
     // A change elsewhere refetches nothing; one under the collection, the query; `{}`, everything.
@@ -117,7 +171,7 @@ describe("db on the page's own origin", () => {
     const sh = shell([]);
     const t = dbTransport(client, sh);
     await t.call("db", "subscribe", ["s1", sub("tasks/t1")]);
-    await vi.advanceTimersByTimeAsync(UNWATCHED_POLL_MS + SNAPSHOT_DEBOUNCE_MS);
+    await vi.advanceTimersByTimeAsync(UNWATCHED_POLL_MS[0]);
     expect(gets(calls)).toBe(2);
     expect(sh.asked).toEqual([]);
   });
@@ -206,7 +260,8 @@ describe("user on the page's own origin", () => {
     expect([await h.isOwner(), await h.canEdit(), await h.can("files.write"), await h.id(), await h.name(), await h.avatarUrl()]).toEqual([true, true, true, null, "", null]);
     const down = ns(null);
     expect(await down.me()).toMatchObject({ id: null, name: "", isOwner: false, canEdit: false });
-    expect([await down.can("data.write"), await down.search("sa")]).toEqual([false, []]);
+    // The site said nothing of who this is: can() is null, not "cannot" (user.d.ts).
+    expect([await down.can("data.write"), await down.can("files.write"), await down.search("sa")]).toEqual([null, null, []]);
   });
 
   it("can() follows the caller's level against the declared root write rule", async () => {
@@ -234,6 +289,14 @@ describe("user on the page's own origin", () => {
     expect(await framed.profiles([OTHER])).toEqual({ [OTHER]: { id: OTHER, name: "Sam" } });
     expect(await framed.search("sa")).toEqual([{ id: OTHER, name: "Sam" }]);
     expect(sh.asked).toEqual(["user.profiles", "user.search"]);
+    // The viewer's own entry is a guest exactly when the site says they are one.
+    const guest = ns({ kind: "guest", id: ME, name: "Gus", level: "public" });
+    expect(((await guest.profiles([ME, OTHER])) as Record<string, { guest: boolean }>)[ME].guest).toBe(true);
+    expect(((await guest.profiles([OTHER])) as Record<string, { guest: boolean }>)[OTHER].guest).toBe(false);
+    const viaShell = shell(["user"], { "user.profiles": () => ({ [ME]: { id: ME, name: "Gus", guest: false }, [OTHER]: { id: OTHER, guest: false } }) });
+    const framedGuest = (await ns({ kind: "guest", id: ME, level: "public" }, undefined, viaShell).profiles([ME, OTHER])) as Record<string, { guest: boolean }>;
+    expect([framedGuest[ME].guest, framedGuest[OTHER].guest]).toEqual([true, false]);
+    expect(((await alone.profiles([ME])) as Record<string, { guest: boolean }>)[ME].guest).toBe(false);
     // A shell that does not serve user (a frame no Clax shell answers) is never asked.
     const foreign = shell([]);
     expect(await ns({ id: ME }, undefined, foreign).search("sa")).toEqual([]);
@@ -242,14 +305,15 @@ describe("user on the page's own origin", () => {
 });
 
 describe("originUse", () => {
-  const room = async () => ({ roomNamespace: (t: unknown) => ({ room: t }), originRoom: () => "socket" }) as never;
+  const room = async () => ({ roomNamespace: (t: { call: unknown; on: unknown }) => ({ room: typeof t.call === "function" && typeof t.on === "function" }) }) as never;
   const at = (declared: unknown, w: Partial<Whoami> | null = { kind: "visitor", level: "public", can_edit: false }) =>
     siteOf(site(m => (m === "get" ? { capabilities: declared } : m === "whoami" ? (w ?? new CapabilityError("unavailable", "x")) : null)).client);
 
   it("resolves db and room when declared, assets for the owner alone, user always, and undefined for the shell's", async () => {
     const declared = { db: {}, room: {}, assets: {} };
     expect(Object.keys((await originUse("db", false, room, at(declared))) as object).sort()).toEqual(["collection", "doc"]);
-    expect(await originUse("room", false, room, at(declared))).toEqual({ room: "socket" });
+    // The room's namespace over the origin's socket.
+    expect(await originUse("room", false, room, at(declared))).toEqual({ room: true });
     expect(await originUse("assets", false, room, at(declared))).toBeNull();
     expect(Object.keys((await originUse("assets", false, room, at(declared, { kind: "owner", level: "admin", can_edit: true }))) as object).sort()).toEqual(["delete", "list", "upload"]);
     for (const n of ["db", "room", "assets"]) expect(await originUse(n, false, room, at({}, { kind: "owner", level: "admin", can_edit: true }))).toBeNull();

@@ -78,6 +78,31 @@ describe("the origin client", () => {
     expect(sent[5].body).toEqual({ path: "locks/l1", holder: "me", ttl_ms: 1000 });
   });
 
+  it("sends a docs read's last ETag back, and takes the site's 304 as that answer", async () => {
+    let seq = 1;
+    const sent = stub(s => {
+      const tag = `W/"${seq}-x"`;
+      if (s.url.includes("/docs/") && new Headers(s.init.headers).get("if-none-match") === tag) return new Response(null, { status: 304, headers: { etag: tag } });
+      if (s.url.endsWith("/missing")) return new Response(JSON.stringify({ error: { code: "not_found" } }), { status: 404, headers: { etag: tag } });
+      return new Response(JSON.stringify({ doc: doc("tasks/t1", seq) }), { status: 200, headers: { etag: tag } });
+    });
+    const c = originClient(new URL(SITE));
+    const first = await c.call("db", "get", ["tasks/t1"]);
+    const again = await c.call("db", "get", ["tasks/t1"]);
+    expect(again).toEqual(first);
+    expect(sent.map(s => new Headers(s.init.headers).get("if-none-match"))).toEqual([null, 'W/"1-x"']);
+    expect(sent.every(s => s.init.cache === "no-store")).toBe(true);
+    // A document that is not there stays not there on a 304.
+    expect(await c.call("db", "get", ["tasks/missing"])).toBeNull();
+    expect(await c.call("db", "get", ["tasks/missing"])).toBeNull();
+    // Changed since: a fresh answer.
+    seq = 2;
+    expect(await c.call("db", "get", ["tasks/t1"])).toMatchObject({ version: 2 });
+    // Writes send no validator.
+    await c.call("db", "set", ["tasks/t1", {}]);
+    expect(new Headers(sent.at(-1)!.init.headers).get("if-none-match")).toBeNull();
+  });
+
   it("opens the room's socket on the site, on the matching WebSocket scheme", () => {
     const urls: string[] = [];
     vi.stubGlobal("WebSocket", function socket(u: string) { urls.push(u); });

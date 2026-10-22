@@ -6290,7 +6290,8 @@ What a page written for claude.ai meets in Clax, beyond the gesture rules:
   machine enters a name, it keeps its old answer until the page reloads,
   though their writes already succeed, so reload or try the write.
   `profiles()` caches names for the life of the page and never refreshes
-  them. `can()` never answers `null`, `email` is always `null`, and
+  them. `can()` answers `null` only when the site cannot say who the viewer
+  is, `email` is always `null`, and
   `search()` works only in the person's browser.
 - `downloads`: at most one prompt at a time and 3 per 30 seconds;
   `request` (export answers) always rejects `request_unknown`.
@@ -6344,7 +6345,10 @@ plan for:
   stream: in the Clax viewer the shell tells the page what changed, and
   while its event stream is down every subscription is refetched every 30
   seconds; a page with no Clax viewer around it refetches every subscription
-  every 5 seconds. A refetch the site could not answer, or answered with a
+  5 seconds after a change, its own write, a focus or coming back into view,
+  then 10, 20 and 30 seconds apart while nothing changes, and not at all
+  while it is hidden; a docs read sends its last `ETag` back, and an
+  unchanged one is the site's 304. A refetch the site could not answer, or answered with a
   timeout, is retried.
   `resource_exhausted` is returned for a view's 65th subscription, for a
   lease beyond 100 in force, and when the daemon answers 429. An ordered
@@ -6701,19 +6705,23 @@ the shell adds `unavailable` (the daemon could not be reached) and
 
 A page's `room` is its site's: the bridge opens `/_clax/api/room?peer=<label>`
 on the artifact's own site (the socket below, as whoever the site's cookie
-names), framed or not, and keeps its label for the document's life.
+names), framed or not. It picks the label once per open document and reuses
+it on every reconnect, unless the site closes the socket 4403 `peer_taken`
+(another viewer's socket holds it), when it takes a fresh one. When the
+viewer changes (the Clax viewer reports it, or, opened directly, the site's
+`whoami` says so as the page comes back into view) it opens a new socket
+under the same label at the new level, which replaces the old one.
 
 **The socket.** `GET /api/artifacts/<aid>/room?peer=<label>[&token=<bearer>]`
-upgrades to a WebSocket. `<label>` is 16 characters of `[0-9a-z]`, picked by
-the shell once per open document and reused on reconnect. A WebSocket cannot
+(on a site, `/_clax/api/room?peer=<label>`, never with a token) upgrades to
+a WebSocket. `<label>` is 16 characters of `[0-9a-z]`. A WebSocket cannot
 send an `Authorization` header, so the shell appends `token` when it holds
 the token; the query string is never logged. The level is fixed when the
 socket opens, as for the `db` routes: a valid token from a browser (the
 owner or events cookie, or a viewer cookie) is `admin`, as the owner; a
 valid token from no browser is `owner`; without the token, the viewer the
 request speaks for is `interact` when named and `view` otherwise, and
-anything else is `view`. The shell reconnects under the
-same label when the viewer's name changes.
+anything else is `view`.
 
 Refused before the upgrade: 403 `forbidden_origin` (a foreign `Origin`), 403
 `forbidden_host` (the `/api` host rule), 400 `invalid_argument` (a bad label

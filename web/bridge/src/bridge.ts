@@ -55,10 +55,12 @@
  * capabilities' page-side members are lazy parts (parts/*.ts) imported from
  * beside this script, never before the page has parsed: comment mode on the
  * first shell order that needs it (in practice right after the welcome),
- * clips when comment mode turns on, and on the page's first claude.use() the
- * `caps` part, which decides what each name resolves and holds most
- * capabilities' members and the origin's client (`room` and `sample` each
- * load a part of their own once granted). A part that cannot load is reported to the
+ * clips when comment mode turns on, on the page's first claude.use() of an
+ * origin capability the `origin` part (the site's client, those
+ * capabilities' members and the room's socket), on a framed page's first
+ * claude.use() of a shell capability the `caps` part (an unframed page gets
+ * null for those without loading anything), and `room` and `sample` each a
+ * part of their own once granted. A part that cannot load is reported to the
  * shell once (clax:degraded). Waiting for the parse keeps the parts' module
  * loads from ever coming before the page's own import maps; the shell hears
  * of the first need that waits for it and of the parse's end (clax:wait),
@@ -80,6 +82,7 @@ import { Rpc } from "./rpc";
 import type { Routes } from "./routes";
 import { whenParsed } from "./parsed";
 import { makeUse } from "./use";
+import { ORIGIN_CAPABILITIES } from "./capabilities";
 
 /** How long the focus outline flashes after a scroll-to (`showFocus` with
  * `flash` in comment-mode.ts: two 0.9 s pulses). */
@@ -156,10 +159,14 @@ type PartName = keyof Parts;
     const next = retrying(name, load, failed(name), clock);
     return () => parsed ? next() : (wait(), whenDone.then(next));
   };
-  const parts = Object.fromEntries(Object.entries(loaders).map(([name, load]) => [name, onNeed(name as PartName, load as (attempt: number) => Promise<unknown>)])) as unknown as { [K in PartName]: () => ReturnType<Parts[K]> };
+  const parts = { comment: onNeed("comment", loaders.comment), clip: onNeed("clip", loaders.clip), caps: onNeed("caps", loaders.caps), origin: onNeed("origin", loaders.origin), room: onNeed("room", loaders.room), sample: onNeed("sample", loaders.sample), live: onNeed("live", loaders.live) };
   const clips = () => parts.clip();
   const rpc = new Rpc(m => post(m));
-  const use = makeUse(name => parts.caps().then(c => c.resolveUse(name, { framed, rpc, room: parts.room, sample: parts.sample, env: { ctx: commentsContext, clip: clips } })));
+  // The origin's capabilities load the `origin` part, framed or not; the
+  // shell's load the `caps` part, framed only: unframed they are null at once.
+  const use = makeUse(name => ORIGIN_CAPABILITIES.includes(name)
+    ? parts.origin().then(o => o.originUse(name, framed && rpc, parts.room))
+    : framed ? parts.caps().then(c => c.resolveUse(name, { rpc, sample: parts.sample, env: { ctx: commentsContext, clip: clips } })) : null);
 
   // The URL of this artifact's asset `id`, as `assets` gives it: assets are
   // served per artifact, and a page loads only its own.

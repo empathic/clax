@@ -8,16 +8,14 @@
 // need no declaration). A Clax shell framing the page (`shell`) adds only
 // what the site cannot know: which documents changed (its event stream),
 // and other people's names (`user.profiles`, `user.search`).
-import { type Local, buildNamespace } from "../capabilities";
+import { type Local, ORIGIN_CAPABILITIES, buildNamespace } from "../capabilities";
 import type { RoomPart } from "../parts/types";
 import { CapabilityError, type Rpc, isCapabilityError } from "../rpc";
 import { assetsLocals } from "./assets";
 import { avatarFor, colorFor } from "./avatar";
 import { makeDb } from "./db";
 import { type OriginClient, type WireDoc, originClient } from "./origin-client";
-
-/** The capabilities the page's own origin serves. */
-export const ORIGIN_CAPABILITIES: readonly string[] = ["db", "assets", "user", "room"];
+import { originRoom } from "./room-socket";
 
 export type Whoami = { kind: string; id?: string; name?: string; level: string; can_edit: boolean };
 type Declared = Record<string, Record<string, unknown> | undefined>;
@@ -58,7 +56,7 @@ export async function originUse(name: string, shell: Shell | false, room: () => 
     case "assets":
       return has("assets") && (await s.whoami())?.kind === "owner" ? buildNamespace("assets", direct, assetsLocals(direct)) : null;
     case "room":
-      return has("room") ? room().then(p => p.roomNamespace(p.originRoom(s.client))) : null;
+      return has("room") ? room().then(p => p.roomNamespace(originRoom(s.client, shell))) : null;
     default:
       return buildNamespace("user", direct, userLocals(s, declared ?? {}, shell));
   }
@@ -70,11 +68,15 @@ type Spec = { kind: "doc"; path: string } | { kind: "query"; collection: string;
 
 export const SNAPSHOT_DEBOUNCE_MS = 25;
 export const MAX_SUBSCRIPTIONS = 64;
-/** Refresh period for every subscription while a watching shell's event stream is down. */
+/** Refresh period for every subscription while a watching shell's event
+ * stream is down, and the longest the polling ever waits (the contract's
+ * "about 30 seconds"). */
 export const POLL_MS = 30_000;
-/** Refresh period for every subscription while no shell says what changed
- * (top-level, or a frame no Clax shell answers): the site has no change stream. */
-export const UNWATCHED_POLL_MS = 5_000;
+/** Refresh periods while no shell says what changed (top-level, or a frame
+ * no Clax shell answers; the site has no change stream): the first after a
+ * change, this page's own write, the window's focus or the page coming back
+ * into view, then each after a poll that found nothing new. */
+export const UNWATCHED_POLL_MS = [5_000, 10_000, 20_000, POLL_MS] as const;
 /** Delays before retrying a refetch that failed `unavailable`: the first, then every later one. */
 export const RETRY_MS = [5_000, 30_000] as const;
 
@@ -85,10 +87,14 @@ const pathOf = (args: unknown[]) => String(args[0]);
 /** The `db` namespace's connection (the calls and pushes of db.ts): reads
  * and writes go to the site; subscriptions refetch, debounced, on each change
  * the framing shell reports (`db/changed`, after `db.watch`), right after
- * this page's own writes, every [`UNWATCHED_POLL_MS`] while no shell
- * watches, and every [`POLL_MS`] while the shell's stream is down; a refetch
- * the site could not answer is retried after [`RETRY_MS`]. Snapshots are
- * pushed as `db/snapshot`, a subscription's end as `db/snapshot-error`. */
+ * this page's own writes, by polling while no shell watches
+ * ([`UNWATCHED_POLL_MS`], slower while nothing changes) and every
+ * [`POLL_MS`] while the shell's stream is down, never while the page is
+ * hidden (it refetches as it comes back into view); a refetch the site could
+ * not answer is retried after [`RETRY_MS`]. A snapshot is pushed as
+ * `db/snapshot` when it differs from the subscription's last, a
+ * subscription's end as `db/snapshot-error`. The site's validators (an
+ * unchanged read is its 304, origin-client.ts) keep a poll cheap. */
 export function dbTransport(client: OriginClient, shell: Shell | false): Transport {
   const listeners = new Map<string, Set<(d: unknown) => void>>();
   const emit = (topic: string, data: unknown) => { for (const fn of [...(listeners.get(topic) ?? [])]) fn(data); };
@@ -103,9 +109,14 @@ export function dbTransport(client: OriginClient, shell: Shell | false): Transpo
   // The highest version delivered per document subscription: an older
   // result is never delivered after it (versions are never reused).
   const delivered = new Map<string, number>();
+  // What each subscription last delivered (paths and versions), so a poll
+  // that finds the same delivers nothing and counts as nothing new.
+  const sigs = new Map<string, string>();
   let watched = false;
   let streamDown = false;
-  let poll: ReturnType<typeof setInterval> | null = null;
+  let poll: ReturnType<typeof setTimeout> | null = null;
+  let step = 0;
+  const hidden = () => typeof document !== "undefined" && document.visibilityState === "hidden";
 
   const current = async (spec: Spec): Promise<WireDoc[]> => {
     if (spec.kind === "query") return (await client.call("db", "query", [spec])) as WireDoc[];
@@ -113,25 +124,30 @@ export function dbTransport(client: OriginClient, shell: Shell | false): Transpo
     return d ? [d] : [];
   };
 
-  async function push(sub: string): Promise<void> {
+  /** Refetches `sub`; true when it delivered something new. */
+  async function push(sub: string): Promise<boolean> {
     const spec = subs.get(sub);
-    if (!spec) return;
+    if (!spec) return false;
     const n = ++fetchSeq;
     fetches.set(sub, n);
     const live = () => subs.get(sub) === spec && fetches.get(sub) === n;
     try {
       const docs = await current(spec);
-      if (!live()) return;
+      if (!live()) return false;
       failures.delete(sub);
       clearTimeout(retries.get(sub));
       retries.delete(sub);
       if (spec.kind === "doc" && docs.length) {
-        if (docs[0].version < (delivered.get(sub) ?? 0)) return;
+        if (docs[0].version < (delivered.get(sub) ?? 0)) return false;
         delivered.set(sub, docs[0].version);
       }
+      const sig = docs.map(d => `${d.path}@${d.version}`).join("\n");
+      if (sigs.get(sub) === sig) return false;
+      sigs.set(sub, sig);
       emit("snapshot", { sub, docs });
+      return true;
     } catch (e) {
-      if (!live()) return;
+      if (!live()) return false;
       const code = isCapabilityError(e) ? e.code : "unavailable";
       if (code === "unavailable") {
         // Retried after a backoff (and by any change before then).
@@ -139,10 +155,11 @@ export function dbTransport(client: OriginClient, shell: Shell | false): Transpo
         failures.set(sub, k);
         clearTimeout(retries.get(sub));
         retries.set(sub, setTimeout(() => { retries.delete(sub); void push(sub); }, RETRY_MS[Math.min(k, RETRY_MS.length) - 1]));
-        return;
+        return false;
       }
       drop(sub);
       emit("snapshot-error", { sub, code, message: e instanceof Error ? e.message : String(e) });
+      return false;
     }
   }
 
@@ -151,12 +168,38 @@ export function dbTransport(client: OriginClient, shell: Shell | false): Transpo
     timers.set(sub, setTimeout(() => { timers.delete(sub); void push(sub); }, SNAPSHOT_DEBOUNCE_MS));
   }
 
-  /** Polls at the period that holds now, or not at all. */
+  /** Plans the next poll at the period that holds now, or none: none while
+   * the page is hidden, a watching shell's stream is up, or nothing is
+   * subscribed. */
   function repoll(): void {
-    if (poll !== null) clearInterval(poll);
+    if (poll !== null) clearTimeout(poll);
     poll = null;
-    const ms = !watched ? UNWATCHED_POLL_MS : streamDown ? POLL_MS : 0;
-    if (ms && subs.size) poll = setInterval(() => { for (const sub of subs.keys()) schedule(sub); }, ms);
+    const ms = !watched ? UNWATCHED_POLL_MS[step] : streamDown ? POLL_MS : 0;
+    if (ms && subs.size && !hidden()) poll = setTimeout(() => void tick(), ms);
+  }
+
+  /** One poll: every subscription refetched; while nothing comes back new
+   * the next one waits longer, up to [`POLL_MS`]. */
+  async function tick(): Promise<void> {
+    poll = null;
+    const found = await Promise.all([...subs.keys()].map(push));
+    step = found.includes(true) ? 0 : Math.min(step + 1, UNWATCHED_POLL_MS.length - 1);
+    if (poll === null) repoll();
+  }
+
+  /** Polls at the shortest period again (a write, focus, the page in view). */
+  function hurry(): void {
+    step = 0;
+    repoll();
+  }
+
+  if (typeof document !== "undefined") {
+    // Hidden, nothing is polled; back in view, every subscription catches up.
+    document.addEventListener("visibilitychange", () => {
+      if (!hidden()) for (const sub of subs.keys()) schedule(sub);
+      hurry();
+    });
+    addEventListener("focus", hurry);
   }
 
   function drop(sub: string): void {
@@ -164,6 +207,7 @@ export function dbTransport(client: OriginClient, shell: Shell | false): Transpo
     fetches.delete(sub);
     failures.delete(sub);
     delivered.delete(sub);
+    sigs.delete(sub);
     clearTimeout(timers.get(sub));
     timers.delete(sub);
     clearTimeout(retries.get(sub));
@@ -171,8 +215,10 @@ export function dbTransport(client: OriginClient, shell: Shell | false): Transpo
     if (subs.size === 0) repoll();
   }
 
-  /** This page wrote `path`: its matching subscriptions refetch now. */
+  /** This page wrote `path`: its matching subscriptions refetch now, and
+   * the polling hurries again. */
   function echo(path: string): void {
+    hurry();
     for (const [sub, spec] of subs) {
       if (!touches(spec, path)) continue;
       clearTimeout(timers.get(sub));
@@ -287,11 +333,24 @@ export function userLocals(s: Site, declared: Declared, shell: Shell | false): L
     return alone(x);
   };
 
+  /** `r` (profiles by ID) with the viewer's own entry a guest when the site
+   * says so: no one else's guest flag is known here. */
+  const markGuest = async (r: unknown) => {
+    const w = await s.whoami();
+    const mine = decl && w?.id && r && typeof r === "object" ? (r as Record<string, unknown>)[w.id] : undefined;
+    if (mine && typeof mine === "object") (r as Record<string, unknown>)[w!.id!] = { ...mine, guest: w!.kind === "guest" };
+    return r;
+  };
+  const lookUp = ask("profiles", profiles);
+
   return {
     isOwner: async () => (await me()).isOwner,
     canEdit: async () => (await me()).canEdit,
+    /** null when the site could not say who the viewer is (user.d.ts: the
+     * platform told this page nothing). */
     async can(what: unknown) {
       const w = await s.whoami();
+      if (!w) return null;
       if (what === "data.write") return (RANK[w?.level ?? ""] ?? -1) >= RANK[rootWrite(declared)];
       if (what === "files.write") return w?.can_edit === true;
       if (what === "assets.write") return w?.kind === "owner";
@@ -305,7 +364,7 @@ export function userLocals(s: Site, declared: Declared, shell: Shell | false): L
       return prof && m.id ? m.avatarUrl : null;
     },
     email: async () => null,
-    profiles: ask("profiles", profiles),
+    profiles: async (x: unknown) => markGuest(await lookUp(x)),
     search: ask("search", async () => []),
   } as unknown as Local;
 }

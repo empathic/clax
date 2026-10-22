@@ -79,3 +79,19 @@ test("a document that leaves takes its peer with it, and nothing of the room rea
   const got = await rec.evaluate(() => (window as unknown as { got: { type?: string }[] }).got);
   expect(got.filter(m => m && typeof m === "object" && String(m.type).startsWith("clax:"))).toEqual([]);
 });
+
+// A viewer who is not the owner, as a hosted Clax's guest is, named on the
+// local daemon by its stand-in for one (`lan: true`, a viewer without the token).
+test("guest: naming yourself reconnects the room at the new level, so an interact topic opens", async ({ page }) => {
+  const { artifact } = await publishWith(d.base, d.token, "Room guest", PAGE, CAPS);
+  const f = await openArtifact(page, d.base, artifact.id, 1, "sandbox", { lan: true });
+  await expect(f.locator("#status")).toHaveText("connected");
+  await f.locator("#wave").click();
+  await expect(f.locator("#log")).toContainText("refused: not_permitted");
+  await setName(page, "Ben");
+  await expect(async () => {
+    await f.locator("#wave").click();
+    await expect(f.locator("#log")).toContainText("wave from this tab", { timeout: 1000 });
+  }).toPass({ timeout: 15_000 });
+  await expect(f.locator("#count")).toHaveText("1");
+});

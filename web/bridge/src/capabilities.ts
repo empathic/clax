@@ -24,6 +24,10 @@ export const CAPABILITY_METHODS = {
 
 export type CapabilityName = keyof typeof CAPABILITY_METHODS;
 
+/** The capabilities the page's own origin serves, framed or top-level
+ * (caps/origin.ts, in the `origin` part); every other is the framing shell's. */
+export const ORIGIN_CAPABILITIES: readonly string[] = ["db", "assets", "user", "room"];
+
 /** Other spellings `use()` accepts, mapped to their canonical name. */
 export const ALIASES: Readonly<Record<string, CapabilityName>> = Object.freeze({ self: "artifact" });
 
