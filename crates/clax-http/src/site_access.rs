@@ -21,7 +21,10 @@
 //! - Without one, a navigation (top-level, or of a frame) is sent to the
 //!   public host's `/site-signin?host=<host>&next=<path>`, which makes a
 //!   session when the browser may read the artifact (partitioned for a
-//!   frame); anything else answers 401 `site_session_required`.
+//!   frame), except a frame that sends none of the site's cookies, which
+//!   gets [`no_cookie_page`] (the browser keeps them from it, so that
+//!   sign-in could not land); anything else answers 401
+//!   `site_session_required`.
 //!
 //! The cookie is host-only, `HttpOnly` and `Path=/`, and lasts as long as
 //! the browser's session; its session row lasts an hour from its last use.
@@ -498,28 +501,65 @@ pub fn signin_redirect(s: &AppState, headers: &HeaderMap, next: &str) -> Respons
     res
 }
 
-/// `res` made private to its browser, as every response of a site that is
-/// not open to the world is (see the module docs).
-fn private(mut res: Response) -> Response {
+/// Whether `headers` are a framed request's that carries none of the site's
+/// cookies (its site cookie, its state cookie): the browser keeps them
+/// from the frame, as one that refuses a third-party context's cookies,
+/// partitioned or not, does. Every framed handshake sets the state cookie
+/// first (`/_clax/session/start`) and a redemption the site cookie, so a
+/// frame whose browser keeps cookies sends one of them.
+pub fn cookieless_frame(s: &AppState, headers: &HeaderMap) -> bool {
+    let secure = secure(s);
+    framed(headers)
+        && cookie_value(headers, site_cookie_name(secure)).is_none()
+        && state_in(headers, secure).is_none()
+}
+
+/// How a site sends a navigation without a session on to sign in for
+/// `next`: [`signin_redirect`], or for a frame without the site's cookies
+/// ([`cookieless_frame`]), where that sign-in could not land,
+/// [`no_cookie_page`].
+pub fn signin(s: &AppState, headers: &HeaderMap, next: &str) -> Response {
+    if cookieless_frame(s, headers) {
+        no_cookie_page(s, headers)
+    } else {
+        signin_redirect(s, headers, next)
+    }
+}
+
+/// The document a frame without the site's cookies gets
+/// ([`cookieless_frame`]): it tells the shell's origins alone
+/// (`postMessage` of `{"type": "clax:no-cookie"}`, [`shell_origins`]) and
+/// answers the shell's `{"type": "clax:storage-access"}` with
+/// `document.requestStorageAccess()`'s outcome (`{"type":
+/// "clax:storage-access", "granted"}`), to the shell's window and origin
+/// alone. It runs only its own script (a nonce), only the shell may frame
+/// it, and it says nothing of the artifact.
+pub fn no_cookie_page(s: &AppState, headers: &HeaderMap) -> Response {
+    let host = headers
+        .get(header::HOST)
+        .and_then(|h| h.to_str().ok())
+        .unwrap_or("");
+    let shells = shell_origins(s, host);
+    let nonce = new_state();
+    // Inside a script element: no `<` may close it.
+    let list = serde_json::json!(shells)
+        .to_string()
+        .replace('<', "\\u003c");
+    let html = format!(
+        "<!doctype html><meta charset=\"utf-8\"><script nonce=\"{nonce}\">const S={list};\
+addEventListener(\"message\",e=>{{if(e.source!==parent||!S.includes(e.origin)||!e.data||e.data.type!==\"clax:storage-access\")return;\
+Promise.resolve(document.requestStorageAccess?.()).then(()=>!!document.requestStorageAccess,()=>!1)\
+.then(g=>parent.postMessage({{type:\"clax:storage-access\",granted:g}},e.origin))}});\
+for(const o of S)parent.postMessage({{type:\"clax:no-cookie\"}},o);</script>"
+    );
+    let mut res = axum::response::Html(html).into_response();
     let h = res.headers_mut();
-    h.remove(header::ACCESS_CONTROL_ALLOW_ORIGIN);
-    let cache = h
-        .get(header::CACHE_CONTROL)
-        .and_then(|v| v.to_str().ok())
-        .map(str::to_string);
-    let private = match cache.as_deref() {
-        Some(c) if c.starts_with("public") => format!("private{}", &c["public".len()..]),
-        Some(c)
-            if c.split(',')
-                .any(|d| d.trim() == "private" || d.trim() == "no-store") =>
-        {
-            c.to_string()
-        }
-        Some(c) => format!("private, {c}"),
-        None => "private".to_string(),
-    };
-    if let Ok(v) = HeaderValue::from_str(&private) {
-        h.insert(header::CACHE_CONTROL, v);
+    h.insert(header::CACHE_CONTROL, HeaderValue::from_static("no-store"));
+    if let Ok(v) = HeaderValue::from_str(&format!(
+        "default-src 'none'; script-src 'nonce-{nonce}'; frame-ancestors {}",
+        shells.join(" ")
+    )) {
+        h.insert(header::CONTENT_SECURITY_POLICY, v);
     }
     res
 }
@@ -643,8 +683,18 @@ pub async fn site_access_layer(
                 .path_and_query()
                 .map_or("/", |p| p.as_str())
                 .to_string();
-            let mut res = signin_redirect(&s, req.headers(), &safe_next(&next));
-            site_response_headers(&mut res, false);
+            let mut res = signin(&s, req.headers(), &safe_next(&next));
+            res.extensions_mut().insert(SiteAnswer::default());
+            return res;
+        }
+        None => {
+            let mut res = ApiError::new(
+                StatusCode::UNAUTHORIZED,
+                "site_session_required",
+                "this artifact's site needs a site session: open it from Clax",
+            )
+            .into_response();
+            res.extensions_mut().insert(SiteAnswer::default());
             return res;
         }
     };

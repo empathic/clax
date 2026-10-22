@@ -363,11 +363,14 @@ export class ArtifactController {
    * site's `/_clax/session/start`, which posts a state (`start`); the shell
    * asks a code for it (`asking`) and sends the frame to the code
    * (`code`), whose redemption lands on the page, which greets (`done`). A
-   * load in `code` before a greeting is a redemption that did not land
-   * (the browser refused the frame's cookies): the handshake starts once
-   * more, then the stage offers the page in a tab. `page` is false for a
-   * draft, which never greets. */
-  private hs: { el: HTMLIFrameElement; phase: "start" | "asking" | "code" | "done"; tries: number; page: boolean } | null = null;
+   * frame whose document the site has no session from reports
+   * `clax:no-cookie` (the site's document for a framed navigation without
+   * one, or the bridge on a 401 `whoami`): the shell asks that document for
+   * storage access (`storage`, until it answers); granted, or refused the
+   * first time, the handshake starts once more, and a second refusal
+   * offers the page in a tab. `page` is false for a draft, which never
+   * greets. */
+  private hs: { el: HTMLIFrameElement; phase: "start" | "asking" | "code" | "done"; tries: number; page: boolean; storage?: boolean } | null = null;
 
   /** `init.boot`: the daemon's first-load data for this artifact, read in
    * place of the first requests (the artifact, its threads, the viewer). */
@@ -767,6 +770,30 @@ export class ArtifactController {
     this.frame.go(src);
   }
 
+  /** The frame's document reported `clax:no-cookie` (the site has no
+   * session from it: the browser kept the frame's cookie, or its session
+   * ended): the shell asks it for storage access, once per report. The
+   * page's own script can post the report too, which costs it only a fresh
+   * handshake or the frame. */
+  private noCookie(): void {
+    const hs = this.hs;
+    if (!hs || hs.el !== this.frame?.el || hs.storage) return;
+    hs.storage = true;
+    this.send({ type: "clax:storage-access" });
+  }
+
+  /** The frame answered the storage-access request: granted, or for the
+   * first refusal, the handshake starts once more; a second refusal offers
+   * the page in a tab. */
+  private storageAnswered(granted: boolean): void {
+    const hs = this.hs;
+    if (!hs || hs.el !== this.frame?.el || !hs.storage) return;
+    hs.storage = false;
+    if (!granted && ++hs.tries >= 2) { this.refused(); return; }
+    hs.phase = "start";
+    this.frame.again();
+  }
+
   /** The frame's handshake did not land: the stage offers the page in a tab. */
   private refused(): void {
     this.hs = null;
@@ -784,12 +811,9 @@ export class ArtifactController {
   frameLoaded(): void {
     if (this.disposed) return;
     this.openStream();
+    // A draft never greets: its redemption's load ends the handshake.
     const hs = this.hs;
-    if (hs?.phase === "code" && hs.el === this.frame?.el) {
-      if (!hs.page) hs.phase = "done";
-      else if (++hs.tries < 2) { hs.phase = "start"; this.frame.again(); }
-      else this.refused();
-    }
+    if (hs?.phase === "code" && !hs.page && hs.el === this.frame?.el) hs.phase = "done";
     const wasOpen = this.gate.open;
     if (this.gate.load()) {
       this.leaveDocument();
@@ -1254,6 +1278,8 @@ export class ArtifactController {
     const m = acceptFromFrame(e, this.frameWin(), origin);
     if (!m) return;
     switch (m.type) {
+      case "clax:no-cookie": this.noCookie(); break;
+      case "clax:storage-access": this.storageAnswered(m.granted === true); break;
       case "clax:hello": {
         // A stale or foreign document in the frame, or one naming a page
         // this version does not hold, gets no welcome, no anchors, and no pins;

@@ -154,6 +154,9 @@ describe("the origin client", () => {
     // A document that is not there (or not readable) reads as null; a write there is refused.
     expect(await c.call("db", "get", ["tasks/t1"])).toBeNull();
     await expect(c.call("db", "set", ["tasks/t1", {}])).rejects.toMatchObject({ code: "invalid_argument", name: "CapabilityError" });
+    // No session reached the site: whoami says so apart from any other failure.
+    stub(() => json({ error: { code: "site_session_required", message: "open it from Clax" } }, 401));
+    await expect(c.call("user", "whoami", [])).rejects.toMatchObject({ code: "unauthenticated" });
     vi.stubGlobal("fetch", vi.fn(async () => { throw new TypeError("offline"); }));
     await expect(c.call("db", "get", ["tasks/t1"])).rejects.toMatchObject({ code: "unavailable" });
     await expect(c.call("user", "whoami", [])).rejects.toMatchObject({ code: "unavailable" });

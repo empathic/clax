@@ -220,7 +220,8 @@ export function originClient(base: URL): OriginClient {
         return { deleted: r !== false };
       }
       case "user.whoami":
-        return send("whoami", {}, otherError);
+        // A 401 is the site's `site_session_required`: no session reached it.
+        return send("whoami", {}, (s, e) => (s === 401 ? new CapabilityError("unauthenticated", e.message ?? "no site session") : otherError(s, e)));
       case "artifact.get":
         return ((await send("artifact", {}, otherError)) as { artifact: unknown }).artifact;
       default:

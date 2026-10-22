@@ -1,5 +1,6 @@
 import { readFileSync } from "node:fs";
-import { test, expect, type Daemon, openArtifact, publishWith } from "./fixtures";
+import { test, expect, type Daemon, openArtifact, publishWith, setName } from "./fixtures";
+import { guestOn, hostedDaemon, ownerOf, shareByLink } from "./hosted-helpers";
 import { settle } from "./time";
 
 let d: Daemon;
@@ -80,18 +81,32 @@ test("a document that leaves takes its peer with it, and nothing of the room rea
   expect(got.filter(m => m && typeof m === "object" && String(m.type).startsWith("clax:"))).toEqual([]);
 });
 
-// A viewer who is not the owner, as a hosted Clax's guest is, named on the
-// local daemon by its stand-in for one (`lan: true`, a viewer without the token).
-test("guest: naming yourself reconnects the room at the new level, so an interact topic opens", async ({ page }) => {
-  const { artifact } = await publishWith(d.base, d.token, "Room guest", PAGE, CAPS);
-  const f = await openArtifact(page, d.base, artifact.id, 1, "sandbox", { lan: true });
-  await expect(f.locator("#status")).toHaveText("connected");
-  await f.locator("#wave").click();
-  await expect(f.locator("#log")).toContainText("refused: not_permitted");
-  await setName(page, "Ben");
-  await expect(async () => {
+// A viewer who is not the owner: a hosted daemon's guest, on a page the
+// owner shares by link (a local daemon frames pages for the owner alone).
+// The site's socket is at the level its session's holder has
+// (clax_http::db_caller::site_caller): a link viewer's or a guest's is
+// public, named or not, so an interact topic stays closed to them; naming
+// themselves reconnects the room under the same peer.
+test("guest: the room is at a guest's level, named or not, and naming keeps its peer", async ({ browser }) => {
+  const { d: h, origin } = await hostedDaemon();
+  try {
+    const { artifact } = await publishWith(h.base, h.token, "Room guest", PAGE, CAPS);
+    await shareByLink(await ownerOf(browser, origin), artifact.id);
+    const { page, frame: f } = await guestOn(browser, origin, artifact.id);
+    await expect(f.locator("#status")).toHaveText("connected");
+    await expect(f.locator("#count")).toHaveText("1");
+    const peer = await f.locator("#peers li").getAttribute("data-peer");
+    await f.locator("#pick-a").click();
+    await expect(f.locator("#peers")).toContainText("this tab: A");
     await f.locator("#wave").click();
-    await expect(f.locator("#log")).toContainText("wave from this tab", { timeout: 1000 });
-  }).toPass({ timeout: 15_000 });
-  await expect(f.locator("#count")).toHaveText("1");
+    await expect(f.locator("#log li")).toHaveText(["refused: not_permitted"]);
+    await setName(page, "Ben");
+    await expect(f.locator("#status")).toHaveText("connected");
+    await f.locator("#wave").click();
+    await expect(f.locator("#log li")).toHaveText(["refused: not_permitted", "refused: not_permitted"]);
+    await expect(f.locator("#count")).toHaveText("1");
+    await expect(f.locator("#peers li")).toHaveAttribute("data-peer", peer!);
+  } finally {
+    await h.stop();
+  }
 });

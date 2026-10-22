@@ -323,6 +323,30 @@ describe("originUse", () => {
     for (const n of ["permissions", "artifact", "comments", "downloads", "sample"]) expect(await originUse(n, false, room, at(declared))).toBeUndefined();
   });
 
+  it("reports a refused session once, framed, only while the browser has not granted storage access", async () => {
+    const refused = () => site(m => (m === "get" ? { capabilities: { db: {} } } : m === "whoami" ? new CapabilityError("unauthenticated", "no site session") : null)).client;
+    const access = (granted: boolean | undefined) => Object.defineProperty(document, "hasStorageAccess", { value: granted === undefined ? undefined : async () => granted, configurable: true });
+    try {
+      for (const [granted, want] of [[false, 1], [undefined, 1], [true, 0]] as const) {
+        access(granted);
+        let told = 0;
+        const s = siteOf(refused(), () => { told++; });
+        // The first use() asks who the viewer is, whatever it names.
+        await originUse("db", false, room, s);
+        await s.whoami();
+        expect(told, `hasStorageAccess ${granted}`).toBe(want);
+      }
+      // Any other failure is not a refused session.
+      access(false);
+      let told = 0;
+      const down = siteOf(site(m => (m === "whoami" ? new CapabilityError("unavailable", "x") : null)).client, () => { told++; });
+      expect(await down.whoami()).toBeNull();
+      expect(told).toBe(0);
+    } finally {
+      delete (document as { hasStorageAccess?: unknown }).hasStorageAccess;
+    }
+  });
+
   it("resolves only user when the declaration cannot be read", async () => {
     const s = siteOf(site(() => new CapabilityError("unavailable", "down")).client);
     expect(await originUse("db", false, room, s)).toBeNull();

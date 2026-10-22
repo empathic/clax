@@ -87,10 +87,8 @@ test("a world-open site opened top-level writes and reads its db", async ({ brow
 });
 
 // The shell frames each site through a site code (POST
-// /api/artifacts/<id>/site-code, /_clax/session/start); until the shell
-// takes that path, a local shell's frame never arrives (qualifier record
-// c0919532 on crates/clax-server/src/shell/boot.rs). Enable this with it.
-test.fixme("a private site framed in the shell reads its db through its own origin", async ({ page }) => {
+// /api/artifacts/<id>/site-code, /_clax/session/start).
+test("a private site framed in the shell reads its db through its own origin", async ({ page }) => {
   const { artifact } = await publishWith(d.base, d.token, "Private guestbook", GUESTBOOK, { db: {}, user: {} });
   await api(d.base, d.token, `/api/artifacts/${artifact.id}/docs/data/guestbook/entries/grace`, { method: "PUT", body: JSON.stringify({ data: { text: "grace", n: 1 } }) });
   const site = siteOf(artifact.id);
@@ -99,7 +97,7 @@ test.fixme("a private site framed in the shell reads its db through its own orig
     const f = r.frame();
     if (f !== page.mainFrame() && f.url().startsWith(site)) fromFrame.push(`${r.method()} ${r.url()}`);
   });
-  const frame = await openArtifact(page, d.base, artifact.id, 1, "subdomain");
+  const frame = await openArtifact(page, d.base, artifact.id, 1);
   await expect(frame.locator("#list")).toHaveText("grace");
   expect(JSON.parse((await frame.locator("#me").textContent())!)).toMatchObject({ db: true, owner: true });
   await frame.locator("#text").fill("hopper");

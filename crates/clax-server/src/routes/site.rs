@@ -94,7 +94,8 @@ pub fn site_routes(state: &AppState) -> Router<AppState> {
 /// redemption clears the state; a frame's keeps it, as another tab's frame
 /// may be signing in with it ([`clax_http::site_access::state_for`]). A
 /// code that does not redeem sets no session and sends the browser to
-/// `/site-signin` for `next`.
+/// `/site-signin` for `next` ([`clax_http::site_access::signin`]: a frame
+/// that sent none of the site's cookies gets the no-cookie page instead).
 async fn session(
     State(s): State<AppState>,
     site: Extension<SiteRequest>,
@@ -112,7 +113,7 @@ async fn session(
         .store_call(move |st| st.site_code_redeem(&code, &aid, state.as_deref()))
         .await?;
     let Some((id, _, partitioned)) = redeemed else {
-        return Ok(sa::signin_redirect(&s, &headers, &next));
+        return Ok(sa::signin(&s, &headers, &next));
     };
     let mut res = (StatusCode::FOUND, [(header::LOCATION, next)]).into_response();
     let h = res.headers_mut();

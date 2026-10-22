@@ -8794,14 +8794,29 @@ it starts, the runs a previous process left. A build without the
   Clax the writes of a visitor, a link viewer and a guest are limited per client address (60, one back a
   second) and per artifact (600, ten back a second): 429 `rate_limited`
   with `retry_after_s`.
-- The viewer probes `http://<id>.localhost:<port>/_clax/healthz` (1 s
-  timeout, cached per browser session) when the gallery is opened on
-  `localhost` or `127.0.0.1`. When it answers, the content iframe loads
-  `/_clax/v/<n>/` from the artifact's origin with no `sandbox` attribute;
-  the distinct origin is the isolation. Otherwise it loads the same address
-  with `sandbox="allow-scripts allow-forms allow-modals allow-popups
-  allow-downloads"` and no `allow-same-origin`, so the content runs in an
-  opaque origin.
+- The viewer's content iframe has no `sandbox` attribute (the distinct
+  origin is the isolation) and `allow="clipboard-write; fullscreen;
+  storage-access"`. It opens on the site's `/_clax/session/start?next=<the
+  page's path>` (the `/a/<id>` page carries it in its HTML, and its
+  bootstrap's `site`, `{"domain", "scheme", "port"}`, as `GET
+  /api/artifacts/<id>` answers it, names the site hosts), takes the
+  `clax:site-state` only from that frame's window at the site origin while
+  it waits for one, asks for the code, and sends the frame to the `src`
+  answered. A frame whose browser keeps the site's cookies from it says
+  so with `{"type": "clax:no-cookie"}`: the site posts it from the page
+  it serves a framed navigation (or redemption) that sent none of its
+  cookies, in place of the sign-in redirect, and the bridge when the
+  site's first `/_clax/api/whoami` answers 401 while
+  `document.hasStorageAccess()` is false. The shell then asks that
+  document for storage access (`{"type": "clax:storage-access"}`,
+  answered `{"type": "clax:storage-access", "granted"}` with
+  `document.requestStorageAccess()`'s outcome); granted, or refused the
+  first time, the handshake starts once more, and a second refusal, or a
+  code refused, shows "Open in a tab" with the page's address on its
+  site in place of the frame. The
+  bridge takes orders only from the origin its tag's `data-origin` names
+  (the daemon's public origin, always written; for a local daemon's
+  loopback names, each of them at its port).
 - On the main origin `/_blob/<asset ID>` (with or without the old `?k=`)
   and `/_clax/blob/<asset ID>` serve no bytes: they answer 301 to the
   asset's address on its artifact's site, whose access decides. The old

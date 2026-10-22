@@ -103,6 +103,23 @@ describe("the shell's request to greet again", () => {
   });
 });
 
+describe("the shell's storage-access request", () => {
+  it("is answered with what the browser decided", async () => {
+    const answers = () => posted.filter(m => m.type === "clax:storage-access");
+    const decide = (v: unknown) => Object.defineProperty(document, "requestStorageAccess", { value: v, configurable: true });
+    try {
+      for (const [ask, granted] of [[async () => undefined, true], [async () => { throw new DOMException("no", "NotAllowedError"); }, false], [undefined, false]] as const) {
+        posted.length = 0;
+        decide(ask);
+        send({ type: "clax:storage-access" });
+        await expect.poll(answers).toEqual([{ type: "clax:storage-access", granted }]);
+      }
+    } finally {
+      delete (document as { requestStorageAccess?: unknown }).requestStorageAccess;
+    }
+  });
+});
+
 describe("the shell's fragment", () => {
   it("moves the page itself, in place", async () => {
     const entries = history.length;

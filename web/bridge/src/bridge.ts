@@ -165,7 +165,7 @@ type PartName = keyof Parts;
   // The origin's capabilities load the `origin` part, framed or not; the
   // shell's load the `caps` part, framed only: unframed they are null at once.
   const use = makeUse(name => ORIGIN_CAPABILITIES.includes(name)
-    ? parts.origin().then(o => o.originUse(name, framed && rpc, parts.room))
+    ? parts.origin().then(o => o.originUse(name, framed && rpc, parts.room, undefined, () => post({ type: "clax:no-cookie" })))
     : framed ? parts.caps().then(c => c.resolveUse(name, { rpc, sample: parts.sample, env: { ctx: commentsContext, clip: clips } })) : null);
 
   // The URL of this artifact's asset `id`, as `assets` gives it: assets are
@@ -347,8 +347,13 @@ type PartName = keyof Parts;
       // In place, with no entry of its own, and only ever its fragment: the
       // URL up to `#` is the page's own (absolute, so no <base> moves it).
       case "clax:hash": location.replace(location.href.split("#")[0] + "#" + m.hash.slice(1)); break;
-      case "clax:greet": post({ ...helloFor(meta), again: true }); routes?.report(); break;
-      case "clax:back": routes?.back(m.depth); break;
+      case "clax:greet": post(helloFor(meta)); break;
+      // After this page reported clax:no-cookie: granted, the shell starts
+      // the handshake again.
+      case "clax:storage-access":
+        Promise.resolve(document.requestStorageAccess?.()).then(() => !!document.requestStorageAccess, () => false)
+          .then(granted => post({ type: "clax:storage-access", granted }));
+        break;
       case "clax:resolve-anchors": {
         if (commentsContext.live) break;
         // The anchors take effect (for reflows too) once the page has parsed,

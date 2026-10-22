@@ -120,6 +120,10 @@ export type ShellToBridge =
    * after a load that brought no hello, which in Chromium can come with no
    * new document (Back or Forward across the page's own fragments). */
   | { type: "clax:greet" }
+  /** Asks the frame's document for storage access
+   * (`document.requestStorageAccess()`), after it reported `clax:no-cookie`;
+   * it answers `clax:storage-access`. */
+  | { type: "clax:storage-access" }
   /** After a welcome with `app: true`: return to the page's route at
    * `depth` (below the one it shows, as its `clax:route` reported), back
    * through the page's own entries, or in place once a fragment entry lies
@@ -235,7 +239,7 @@ export type BridgeToShell =
    * error, for debugging: the page can post this too, so the shell shows only
    * its own words for `part`, and none for `live` (the live layers are best
    * effort: others' pointers are simply not drawn). */
-  | { type: "clax:degraded"; part: "comment" | "clip" | "caps" | "origin" | "room" | "sample" | "live"; message: string }
+  | { type: "clax:degraded"; part: "comment" | "clip" | "caps" | "origin" | "room" | "sample" | "live" | "test"; message: string }
   /** This viewer's pointer (null once it left the page) and selection: the
    * text selected, or the area being drawn in comment mode; and `pick`, the
    * last pick made in comment mode (what the shell shows others while that
@@ -245,6 +249,14 @@ export type BridgeToShell =
   /** Where the page drew each peer's pointer, in its viewport's pixels,
    * after each draw, scroll and resize: the shell puts the names there. */
   | { type: "clax:peer-at"; peers: { key: string; x: number; y: number }[] }
+  /** The site refused this framed document's runtime for want of a site
+   * session (its first `whoami` answered 401) and the browser has not
+   * granted it storage access: the browser keeps the frame's cookie from
+   * the site. The site posts the same from the document it serves a framed
+   * navigation that has no session. */
+  | { type: "clax:no-cookie" }
+  /** The answer to the shell's `clax:storage-access`. */
+  | { type: "clax:storage-access"; granted: boolean }
   /** The page's vertical scroll position (CSS pixels) on its `file`, after a
    * welcome with `app: true`: at most every 250 ms while the page scrolls,
    * the last position of a burst always sent; only the app shell reads it
@@ -282,5 +294,5 @@ export type BridgeToShell =
   | UseRequest
   | CallRequest;
 
-export const SHELL_TYPES: ReadonlySet<string> = new Set(["clax:welcome", "clax:comment-mode", "clax:hash", "clax:greet", "clax:back", "clax:resolve-anchors", "clax:scroll-to", "clax:focus", "clax:key", "clax:pick-refused", "clax:composer-ready", "clax:inspect", "clax:test", "clax:migrate", "clax:peers", "clax:use-result", "clax:call-result", "clax:event"]);
-export const BRIDGE_TYPES: ReadonlySet<string> = new Set(["clax:hello", "clax:hover", "clax:pick-start", "clax:pick", "clax:anchors", "clax:cancel", "clax:bye", "clax:navigate", "clax:hash", "clax:degraded", "clax:cursor", "clax:peer-at", "clax:scroll", "clax:route", "clax:chrome", "clax:wait", "clax:inspection", "clax:tests", "clax:migration", "clax:use", "clax:call"]);
+export const SHELL_TYPES: ReadonlySet<string> = new Set(["clax:welcome", "clax:comment-mode", "clax:hash", "clax:greet", "clax:back", "clax:resolve-anchors", "clax:scroll-to", "clax:focus", "clax:key", "clax:pick-refused", "clax:composer-ready", "clax:inspect", "clax:test", "clax:migrate", "clax:peers", "clax:storage-access", "clax:use-result", "clax:call-result", "clax:event"]);
+export const BRIDGE_TYPES: ReadonlySet<string> = new Set(["clax:hello", "clax:hover", "clax:pick-start", "clax:pick", "clax:anchors", "clax:cancel", "clax:bye", "clax:navigate", "clax:hash", "clax:degraded", "clax:cursor", "clax:peer-at", "clax:no-cookie", "clax:storage-access", "clax:scroll", "clax:route", "clax:chrome", "clax:wait", "clax:inspection", "clax:tests", "clax:migration", "clax:use", "clax:call"]);

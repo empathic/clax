@@ -753,6 +753,80 @@ async fn a_frame_starts_its_handshake_with_a_state_the_shell_binds_its_code_to()
 }
 
 #[tokio::test]
+async fn a_frame_without_the_sites_cookies_is_told_so_rather_than_sent_to_sign_in() {
+    let ts = TestServer::spawn().await;
+    let aid = ts
+        .publish("Doc", &[("index.html", "<p>secret words")])
+        .await["artifact"]["id"]
+        .as_str()
+        .unwrap()
+        .to_string();
+    let raw = reqwest::Client::builder()
+        .redirect(reqwest::redirect::Policy::none())
+        .build()
+        .unwrap();
+    let port = ts.addr.port();
+    let shell_list = format!("[\"http://localhost:{port}\",\"http://127.0.0.1:{port}\"]");
+    let get = |path: &str, framed: bool, cookie: Option<&str>| {
+        let mut req = raw
+            .get(format!("{}{path}", ts.base))
+            .header(HOST, ts.site_host(&aid))
+            .header("sec-fetch-mode", "navigate")
+            .header("sec-fetch-dest", if framed { "iframe" } else { "document" });
+        if let Some(c) = cookie {
+            req = req.header(COOKIE, c);
+        }
+        async move { req.send().await.unwrap() }
+    };
+    // The redemption's redirect to the page, and a code redeemed, with no
+    // cookie at all: the browser keeps the frame's cookies from the site.
+    for path in [
+        "/_clax/v/1/",
+        "/_clax/session?code=nope&next=%2F_clax%2Fv%2F1%2F",
+    ] {
+        let r = get(path, true, None).await;
+        assert_eq!(r.status(), 200, "{path}");
+        assert_eq!(r.headers()["cache-control"], "no-store", "{path}");
+        assert!(r.headers().get(SET_COOKIE).is_none(), "{path}");
+        let csp = r.headers()["content-security-policy"]
+            .to_str()
+            .unwrap()
+            .to_string();
+        assert!(
+            csp.starts_with("default-src 'none'; script-src 'nonce-"),
+            "{csp}"
+        );
+        assert!(
+            csp.ends_with(&format!(
+                "; frame-ancestors http://localhost:{port} http://127.0.0.1:{port}"
+            )),
+            "{csp}"
+        );
+        let html = r.text().await.unwrap();
+        assert!(
+            html.contains(&format!("const S={shell_list};"))
+                && html
+                    .contains("for(const o of S)parent.postMessage({type:\"clax:no-cookie\"},o);")
+                && html.contains("document.requestStorageAccess"),
+            "{html}"
+        );
+        assert!(!html.contains("secret words"), "{html}");
+    }
+    // A frame that holds the state cookie, and any top-level visit, still
+    // go to sign in.
+    for (framed, cookie) in [(true, Some("clax_site_state=s")), (false, None)] {
+        let r = get("/_clax/v/1/", framed, cookie).await;
+        assert_eq!(r.status(), 302, "{framed} {cookie:?}");
+        assert!(
+            r.headers()[LOCATION]
+                .to_str()
+                .unwrap()
+                .contains("/site-signin?")
+        );
+    }
+}
+
+#[tokio::test]
 async fn a_code_minted_for_one_browser_signs_no_other_in() {
     let site = Site::new().await;
     let owner = site.owner().await;

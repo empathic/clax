@@ -26,13 +26,20 @@ type Transport = Pick<Rpc, "call" | "on">;
  * when it could not be read) and the caller (null likewise). */
 export type Site = { client: OriginClient; declared(): Promise<Declared | null>; whoami(): Promise<Whoami | null> };
 
-export function siteOf(client: OriginClient): Site {
+/** `noCookie` runs when the site refuses the whoami for want of a session
+ * (`unauthenticated`, its 401) while the browser has not granted this
+ * document storage access (`document.hasStorageAccess()`): the browser
+ * keeps the site's cookie from it. */
+export function siteOf(client: OriginClient, noCookie?: () => void): Site {
   let declared: Promise<Declared | null> | null = null;
   let who: Promise<Whoami | null> | null = null;
   return {
     client,
     declared: () => declared ??= client.call("artifact", "get", []).then(a => ((a as { capabilities?: Declared } | null)?.capabilities ?? {}), () => null),
-    whoami: () => who ??= client.call("user", "whoami", []).then(w => w as Whoami, () => null),
+    whoami: () => who ??= client.call("user", "whoami", []).then(w => w as Whoami, async e => {
+      if (noCookie && isCapabilityError(e) && e.code === "unauthenticated" && !(await Promise.resolve(document.hasStorageAccess?.()).catch(() => false))) noCookie();
+      return null;
+    }),
   };
 }
 
@@ -40,10 +47,14 @@ let page: Site | null = null;
 
 /** `use(name)` for a capability of the origin's: its frozen namespace, or
  * null when this view does not get it; `undefined` for any other name.
- * `shell` is the framing shell's connection (false top-level). */
-export async function originUse(name: string, shell: Shell | false, room: () => Promise<RoomPart>, site?: Site): Promise<unknown> {
+ * `shell` is the framing shell's connection (false top-level); `noCookie`
+ * tells it the site refused this frame its session (`siteOf`). The caller
+ * is asked for at once, so a frame without its cookie says so on its first
+ * use(). */
+export async function originUse(name: string, shell: Shell | false, room: () => Promise<RoomPart>, site?: Site, noCookie?: () => void): Promise<unknown> {
   if (!ORIGIN_CAPABILITIES.includes(name)) return undefined;
-  const s = site ?? (page ??= siteOf(originClient(new URL(location.origin))));
+  const s = site ?? (page ??= siteOf(originClient(new URL(location.origin)), shell ? noCookie : undefined));
+  void s.whoami();
   const declared = await s.declared();
   const has = (n: string) => !!declared && Object.hasOwn(declared, n);
   const direct: Transport = { call: (ns, m, a) => s.client.call(ns, m, a), on: () => () => {} };

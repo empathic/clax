@@ -1248,21 +1248,57 @@ describe("ArtifactController", { timeout: MOUNT_TIMEOUT_MS }, () => {
       });
     }
 
-    it("starts once more when the redemption lands on no greeting page, then offers the page in a tab", async () => {
+    it("asks a frame without its cookie for storage access, starts once more when refused, then offers the page in a tab", async () => {
       const { ctl, frame } = await started();
       const calls = codes(sent);
       const went = await goes();
-      fromFrame(frame.contentWindow!, STATE);
+      const win = frame.contentWindow!;
+      const posted: unknown[] = [];
+      win.postMessage = ((m: unknown) => { posted.push(m); }) as Window["postMessage"];
+      const asks = () => posted.filter(m => (m as { type?: string }).type === "clax:storage-access").length;
+      fromFrame(win, STATE);
       await vi.waitFor(() => expect(went.at(-1)).toBe(CODE));
+      // A load that brings no greeting is not judged by itself.
       frame.dispatchEvent(new Event("load"));
+      expect(went).toEqual([CODE]);
+      fromFrame(win, { type: "clax:no-cookie" });
+      // Another window's report is not the frame's.
+      fromFrame(window, { type: "clax:no-cookie" });
+      expect(asks()).toBe(1);
+      // One request per report: a second report before the answer asks nothing more.
+      fromFrame(win, { type: "clax:no-cookie" });
+      expect(asks()).toBe(1);
+      fromFrame(win, { type: "clax:storage-access", granted: false });
       expect(went).toEqual([CODE, START]);
       expect(ctl.state.get().openInTab).toBeNull();
-      fromFrame(frame.contentWindow!, { ...STATE, state: "s2" });
+      fromFrame(win, { ...STATE, state: "s2" });
       await vi.waitFor(() => expect(calls).toHaveLength(2));
       await vi.waitFor(() => expect(went).toEqual([CODE, START, CODE]));
-      frame.dispatchEvent(new Event("load"));
+      // An answer nobody asked for does nothing.
+      fromFrame(win, { type: "clax:storage-access", granted: false });
+      expect(ctl.state.get().openInTab).toBeNull();
+      fromFrame(win, { type: "clax:no-cookie" });
+      expect(asks()).toBe(2);
+      fromFrame(win, { type: "clax:storage-access", granted: false });
       expect(ctl.state.get().openInTab).toBe(`${SITE}/_clax/v/2/`);
       expect(frame.isConnected).toBe(false);
+      ctl.dispose();
+    });
+
+    it("starts the handshake again once the frame is granted storage access", async () => {
+      const { ctl, frame } = await started();
+      codes(sent);
+      const went = await goes();
+      const win = frame.contentWindow!;
+      win.postMessage = (() => {}) as Window["postMessage"];
+      fromFrame(win, STATE);
+      await vi.waitFor(() => expect(went.at(-1)).toBe(CODE));
+      for (let i = 0; i < 3; i++) {
+        fromFrame(win, { type: "clax:no-cookie" });
+        fromFrame(win, { type: "clax:storage-access", granted: true });
+      }
+      expect(went).toEqual([CODE, START, START, START]);
+      expect(ctl.state.get().openInTab).toBeNull();
       ctl.dispose();
     });
 
