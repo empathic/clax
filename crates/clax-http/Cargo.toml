@@ -14,6 +14,8 @@ clax-realtime = { path = "../clax-realtime" }
 clax-sample = { path = "../clax-sample" }
 clax-rt = { path = "../clax-rt" }
 async-trait = "0.1"
+clax-bot = { path = "../clax-bot" }
+clax-bot-sandbox = { path = "../clax-bot-sandbox" }
 axum.workspace = true
 chrono.workspace = true
 futures = "0.3"
@@ -46,4 +48,5 @@ tokio = { workspace = true, features = ["full"] }
 send_wrapper = "0.6"
 
 [dev-dependencies]
+rusqlite.workspace = true
 tempfile.workspace = true

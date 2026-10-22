@@ -1222,3 +1222,46 @@ async fn documents_the_instance_held_move_once_and_go_with_the_artifact() {
         "a call on a deleted artifact makes no store"
     );
 }
+
+/// The local daemon's start sweep moves every artifact whose documents the
+/// instance still holds, so the instance's tables empty without waiting for
+/// each artifact's first call.
+#[tokio::test]
+async fn the_start_sweep_moves_every_artifact_the_instance_still_holds() {
+    let ts = TestServer::spawn().await;
+    let (a, b) = (
+        artifact(&ts, json!({"db": {}})).await,
+        artifact(&ts, json!({"db": {}})).await,
+    );
+    let instance = rusqlite::Connection::open(ts.home.db_path()).unwrap();
+    for aid in [&a, &b] {
+        instance
+            .execute_batch(&format!(
+                "INSERT INTO docs (artifact_id, path, collection, json, version, updated_at)
+                    VALUES ('{aid}', 'tasks/old', 'tasks', '{{}}', 1, 'x');
+                 INSERT INTO leases (artifact_id, path, holder, expires_at)
+                    VALUES ('{aid}', 'tasks/old', 'h', '2999-01-01T00:00:00.000Z');"
+            ))
+            .unwrap();
+    }
+    let moved = clax_http::app_data_host::move_pending(&ts.store, &*ts.state.app_data).await;
+    assert_eq!(moved, 2);
+    for table in ["docs", "leases"] {
+        let n: i64 = instance
+            .query_row(&format!("SELECT COUNT(*) FROM {table}"), [], |r| r.get(0))
+            .unwrap();
+        assert_eq!(n, 0, "{table}");
+    }
+    for aid in [&a, &b] {
+        let n: i64 = ts
+            .app_data_db(aid)
+            .query_row("SELECT COUNT(*) FROM docs", [], |r| r.get(0))
+            .unwrap();
+        assert_eq!(n, 1);
+    }
+    assert_eq!(
+        clax_http::app_data_host::move_pending(&ts.store, &*ts.state.app_data).await,
+        0,
+        "nothing is left to move"
+    );
+}

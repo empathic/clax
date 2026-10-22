@@ -471,7 +471,7 @@ pub async fn list(
     } else {
         s.store_call(job).await?
     };
-    fill_card_docs(&s, &mut out).await?;
+    fill_card_docs(&s, &mut out).await;
     Ok(Json(out))
 }
 
@@ -552,7 +552,7 @@ pub async fn summary(
             }))
         })
         .await?;
-    fill_card_docs(&s, &mut out).await?;
+    fill_card_docs(&s, &mut out).await;
     Ok(Json(out))
 }
 
@@ -587,7 +587,7 @@ pub async fn get_one(
             inbox_view(db, &i, hosted)
         })
         .await?;
-    fill_card_docs(&s, &mut item).await?;
+    fill_card_docs(&s, &mut item).await;
     Ok(Json(json!({"item": item})))
 }
 
@@ -608,7 +608,7 @@ async fn mark_one(
             Ok(json!({"item": inbox_view(db, &i, hosted)?, "unread": db.inbox_unread(me)?}))
         })
         .await?;
-    fill_card_docs(&s, &mut out).await?;
+    fill_card_docs(&s, &mut out).await;
     Ok(Json(out))
 }
 

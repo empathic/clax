@@ -2015,3 +2015,57 @@ fn a_document_view_withholds_as_the_readers_visibility_does() {
     };
     assert!(owner_reads.sees(&[Author::Owner, p(owner)]));
 }
+
+/// A move that imported its rows but failed to forget them in the
+/// instance, a viewer fold, and the move again: the second import adds
+/// nothing, and the fold applies to the store once, from its own mark.
+#[test]
+fn a_reimport_after_a_fold_keeps_the_stores_rows_and_the_fold_applies_once() {
+    let (_d, store) = store();
+    let st = Docs::of(&store);
+    let id = artifact_with_caps(&st, json!({"db": {}}));
+    let mine = format!("data/users/{A}/p");
+    st.with_tx(|tx| {
+        tx.execute_batch(&format!(
+            "INSERT INTO docs (artifact_id, path, collection, json, version, updated_at)
+                VALUES ('{id}', '{mine}', 'data/users/{A}', '{{}}', 3, 'x'), ('{id}', 't/1', 't', '{{}}', 5, 'x');
+             INSERT INTO doc_authors (artifact_id, path, author) VALUES ('{id}', '{mine}', '{A}'), ('{id}', 't/1', '{A}');
+             UPDATE artifacts SET doc_seq = 5 WHERE id = '{id}';"
+        ))?;
+        Ok(())
+    })
+    .unwrap();
+    let ad = AppData::open(&st.home().app_data_path(&id), st.clock()).unwrap();
+    ad.import(st.export_app_data(&id).unwrap()).unwrap();
+    // The instance still holds the rows, and a fold of A into B rewrites
+    // them there, as `viewers::fold` does, and logs it.
+    st.with_tx(|tx| {
+        log_fold(tx, DAEMON, A, B, false)?;
+        tx.execute_batch(&format!(
+            "UPDATE docs SET path = 'data/users/{B}/p', collection = 'data/users/{B}' WHERE path = '{mine}';
+             UPDATE doc_authors SET path = 'data/users/{B}/p' WHERE path = '{mine}';
+             UPDATE doc_authors SET author = '{B}' WHERE author = '{A}';"
+        ))?;
+        Ok(())
+    })
+    .unwrap();
+    ad.import(st.export_app_data(&id).unwrap()).unwrap();
+    ad.fold(&st.app_data_folds_after(ad.fold_mark().unwrap()).unwrap())
+        .unwrap();
+    let paths: Vec<String> = st
+        .with_data(&id, |c| {
+            Ok(c.prepare("SELECT path FROM docs ORDER BY path")?
+                .query_map([], |r| r.get(0))?
+                .collect::<rusqlite::Result<_>>()?)
+        })
+        .unwrap();
+    assert_eq!(paths, [format!("data/users/{B}/p"), "t/1".to_string()]);
+    for path in [format!("data/users/{B}/p"), "t/1".to_string()] {
+        assert_eq!(
+            ad.doc_authors(&path).unwrap(),
+            vec![Author::Person(B.into())],
+            "{path}"
+        );
+    }
+    assert_eq!(ad.fold_mark().unwrap(), 1);
+}

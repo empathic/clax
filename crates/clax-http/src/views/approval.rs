@@ -233,11 +233,9 @@ pub fn listen(s: &AppState) -> clax_rt::JoinHandle<()> {
 /// tree of views, holding [`card`]s) outside threads: the paths of the
 /// documents its author holds at its artifact, from the artifact's store
 /// ([`AppDataOp::AuthoredBy`](clax_store::app_data::AppDataOp::AuthoredBy)).
-/// A card whose artifact is gone keeps none.
-///
-/// # Errors
-/// The artifact store's, other than a gone artifact.
-pub async fn fill_card_docs(s: &AppState, v: &mut Value) -> Result<(), crate::error::ApiError> {
+/// A card whose artifact is gone keeps none, and so does one whose store
+/// fails to answer (logged): a card never fails the view it is in.
+pub async fn fill_card_docs(s: &AppState, v: &mut Value) {
     let mut cards: Vec<&mut Value> = Vec::new();
     collect_cards(v, &mut cards);
     for card in cards {
@@ -257,10 +255,13 @@ pub async fn fill_card_docs(s: &AppState, v: &mut Value) -> Result<(), crate::er
                 Err(clax_core::CoreError::NotFound) => Ok(Vec::new()),
                 r => r?.into_strings(),
             })
-            .await?;
+            .await
+            .unwrap_or_else(|e| {
+                tracing::warn!(artifact = aid.as_str(), error = %e.message, "an approval card's documents were not read");
+                Vec::new()
+            });
         card["content"]["docs"] = json!(docs);
     }
-    Ok(())
 }
 
 /// Whether `v` is an approval card outside threads: a null `thread_id`

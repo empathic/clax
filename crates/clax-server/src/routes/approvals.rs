@@ -420,12 +420,19 @@ pub async fn ask(
             .ok_or_else(ApiError::not_found)?;
         a.named_artifact(&s, &aid).await?;
     }
-    // Outside threads, the artifact's documents' authors, from its store.
+    // Outside threads, the artifact's documents' authors, from its store;
+    // a store that fails to answer (logged) holds none here.
     let doc_authors = match (&b.thread_id, &named) {
-        (None, Some(id)) => {
-            s.app_data_call(id, AppDataOp::Authors, |r| r?.into_strings())
-                .await?
-        }
+        (None, Some(id)) => s
+            .app_data_call(id, AppDataOp::Authors, |r| match r {
+                Err(CoreError::NotFound) => Ok(Vec::new()),
+                r => r?.into_strings(),
+            })
+            .await
+            .unwrap_or_else(|e| {
+                tracing::warn!(artifact = id.as_str(), error = %e.message, "an artifact's document authors were not read");
+                Vec::new()
+            }),
         _ => Vec::new(),
     };
     let q = AskApproval {

@@ -1232,11 +1232,16 @@ pub const MIGRATIONS: &[&str] = &[
     CREATE INDEX artifact_tags_by_tag ON artifact_tags (tag_id, artifact_id);",
     // 42: each artifact's app data in a store of its own (`crate::app_data`).
     // `app_data_moved` names the artifacts whose documents, authors and
-    // leases moved there; the `docs`, `doc_authors` and `leases` tables
-    // keep the others' until each moves, on its store's first call. The
-    // viewer folds since (`crate::viewers`) are logged in `app_data_folds`
-    // with their audit envelope, for every store to apply once, by `seq`.
-    "CREATE TABLE app_data_moved (artifact_id TEXT PRIMARY KEY);
+    // leases moved there, and the newest of the store's audit records the
+    // instance's history holds a copy of (`audit_seq`); the `docs`,
+    // `doc_authors` and `leases` tables keep the others' until each moves.
+    // The viewer folds since (`crate::viewers`) are logged in
+    // `app_data_folds` with their audit envelope, for every store to apply
+    // once, by `seq`.
+    "CREATE TABLE app_data_moved (
+        artifact_id TEXT PRIMARY KEY,
+        audit_seq INTEGER NOT NULL DEFAULT 0
+    );
     CREATE TABLE app_data_folds (
         seq INTEGER PRIMARY KEY,
         old TEXT NOT NULL,

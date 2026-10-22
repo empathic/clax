@@ -330,7 +330,6 @@ pub async fn export(
     })?;
     let (view_base, version) = (s.browser_base.clone(), s.version);
     let store = s.store.clone();
-    let app_data = app_data_audit(&s).await?;
     stream_export(content_type, &s.exports, move |mut w| {
         clax_rt::spawn(async move {
             store
@@ -341,28 +340,12 @@ pub async fn export(
                         clax_version: version.to_string(),
                         clax_commit: clax_core::build_commit().to_string(),
                     };
-                    st.export_with(&req, &env, app_data, &mut w)
+                    st.export(&req, &env, &mut w)
                 })
                 .await
         })
     })
     .await
-}
-
-/// The audit records every live artifact's own store holds (its documents'
-/// writes and moves, [`clax_store::app_data`]), artifact by artifact, for
-/// an export to carry after the instance's history.
-#[cfg(not(target_arch = "wasm32"))]
-async fn app_data_audit(
-    s: &AppState,
-) -> Result<Vec<clax_store::audit::AuditRow>, clax_http::error::ApiError> {
-    let ids = s.store_call(|st| st.app_data_artifacts()).await?;
-    let mut rows = Vec::new();
-    for id in ids {
-        let op = clax_store::app_data::AppDataOp::AuditSince { seq: 0 };
-        rows.extend(s.app_data_call(&id, op, |r| r?.into_audit()).await?);
-    }
-    Ok(rows)
 }
 
 /// `GET /api/toolpath/status` (spec §3.5, §8.3): the journal's state.

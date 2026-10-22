@@ -649,120 +649,59 @@ impl Store {
     /// Writes the export `req` to `w` (spec §8): [`project::export`] over
     /// [`Store::select`].
     pub fn export(&self, req: &Export, env: &ExportEnv, w: &mut dyn std::io::Write) -> Result<()> {
-        self.export_with(req, env, Vec::new(), w)
+        self.select(|src| project::export(src, req, env, w))
     }
 
-    /// [`Store::export`] of the history with `app_data`, the audit records
-    /// of artifacts' own stores ([`AppData::audit_since`](crate::app_data::AppData::audit_since)),
-    /// after it: each numbered, in the order given, past the newest `seq`
-    /// of the snapshot the export reads, so its step ID is unique in the
-    /// export (though not across exports, as the history grows).
-    pub fn export_with(
+    /// Copies `rows`, audit records of artifact `aid`'s own store
+    /// ([`crate::app_data`]), into the history, each once, as recorded
+    /// there (its actor, envelope, IDs and body: a document's path,
+    /// version, operation and hash, never its content), so the journal,
+    /// the exports and a tool call's `produced` hold every document change
+    /// as they did when the instance kept the documents. The instance keeps
+    /// the newest it copied (`app_data_moved.audit_seq`): rows at or below
+    /// it are skipped. Unless `force`, rows that do not follow on from it
+    /// (one made by a change whose copy was lost, as a crash loses it) copy
+    /// nothing, and the answer is `Some` of where the copies stand, for the
+    /// caller to fetch the store's records after it and copy them with
+    /// `force`.
+    pub fn mirror_app_data_audit(
         &self,
-        req: &Export,
-        env: &ExportEnv,
-        app_data: Vec<AuditRow>,
-        w: &mut dyn std::io::Write,
-    ) -> Result<()> {
-        self.exec.read(false, |c| {
-            let newest: i64 = c
-                .query_row(NEWEST_SEQ, [], |r| r.get::<_, Option<i64>>(0))?
-                .unwrap_or(0);
-            let extra = app_data
-                .into_iter()
-                .zip(newest + 1..)
-                .map(|(row, seq)| AuditRow { seq, ..row })
-                .collect();
-            let inner = StoreSource {
-                c,
-                shut_down: &self.shut_down,
+        aid: &clax_core::ArtifactId,
+        rows: &[AuditRow],
+        force: bool,
+    ) -> Result<Option<i64>> {
+        self.with_tx(|tx| {
+            let id = aid.as_str();
+            tx.execute(
+                "INSERT OR IGNORE INTO app_data_moved (artifact_id) VALUES (?1)",
+                params![id],
+            )?;
+            let seq: i64 = tx.query_row(
+                "SELECT audit_seq FROM app_data_moved WHERE artifact_id = ?1",
+                params![id],
+                |r| r.get(0),
+            )?;
+            let fresh: Vec<&AuditRow> = rows.iter().filter(|r| r.seq > seq).collect();
+            let Some(last) = fresh.last() else {
+                return Ok(None);
             };
-            project::export(
-                &WithAppData {
-                    inner: &inner,
-                    extra,
-                },
-                req,
-                env,
-                w,
-            )
-        })
-    }
-}
-
-/// A history with the audit records of artifacts' own stores (`extra`,
-/// numbered past every row of `inner`) after its rows.
-struct WithAppData<'a> {
-    inner: &'a dyn Source,
-    extra: Vec<AuditRow>,
-}
-
-impl WithAppData<'_> {
-    /// Whether `row` of `extra` is in `scope`, as [`StoreSource`] selects.
-    fn in_scope(row: &AuditRow, scope: Scope<'_>) -> bool {
-        let on = |a: &str| {
-            row.ids.artifact.as_deref() == Some(a) || row.ids.artifact2.as_deref() == Some(a)
-        };
-        match scope {
-            Scope::Artifact(a) => on(a),
-            Scope::Install => row.ids.artifact.is_none() && row.ids.artifact2.is_none(),
-            Scope::All => true,
-            Scope::Mentioning(values) => values.iter().any(|v| {
-                row.ids.session.as_deref() == Some(v.as_str())
-                    || row.actor.contains(v.as_str())
-                    || row.body.contains(v.as_str())
-            }),
-        }
-    }
-}
-
-impl Source for WithAppData<'_> {
-    fn rows(&self, scope: Scope<'_>, f: &mut dyn FnMut(AuditRow) -> Result<bool>) -> Result<()> {
-        let mut more = true;
-        self.inner.rows(scope, &mut |r| {
-            more = f(r)?;
-            Ok(more)
-        })?;
-        for r in self
-            .extra
-            .iter()
-            .filter(|r| more && Self::in_scope(r, scope))
-        {
-            if !f(r.clone())? {
-                break;
+            if !force && fresh[0].seq != seq + 1 {
+                return Ok(Some(seq));
             }
-        }
-        Ok(())
-    }
-
-    fn row(&self, seq: i64) -> Result<Option<AuditRow>> {
-        match self.inner.row(seq)? {
-            Some(r) => Ok(Some(r)),
-            None => Ok(self.extra.iter().find(|r| r.seq == seq).cloned()),
-        }
-    }
-
-    fn artifact_ids(&self) -> Result<Vec<String>> {
-        let mut ids: std::collections::BTreeSet<String> =
-            self.inner.artifact_ids()?.into_iter().collect();
-        ids.extend(self.extra.iter().filter_map(|r| r.ids.artifact.clone()));
-        Ok(ids.into_iter().collect())
-    }
-
-    fn artifact_known(&self, id: &str) -> Result<bool> {
-        Ok(self.inner.artifact_known(id)?
-            || self
-                .extra
-                .iter()
-                .any(|r| r.ids.artifact.as_deref() == Some(id)))
-    }
-
-    fn live_artifacts(&self, key: &PageKey) -> Result<Vec<String>> {
-        self.inner.live_artifacts(key)
-    }
-
-    fn artifact(&self, id: &str) -> Result<ArtifactInfo> {
-        self.inner.artifact(id)
+            for r in &fresh {
+                let ids = AuditIds {
+                    artifact: r.ids.artifact.clone().or_else(|| Some(id.to_string())),
+                    ..r.ids.clone()
+                };
+                insert_row(tx, &r.at, &r.kind, &r.actor, &ids, &r.body, r.backfilled)?;
+            }
+            tx.execute(
+                "UPDATE app_data_moved SET audit_seq = ?2 WHERE artifact_id = ?1",
+                params![id, last.seq],
+            )?;
+            self.audit.recorded.store(true, Ordering::Relaxed);
+            Ok(None)
+        })
     }
 }
 

@@ -547,11 +547,7 @@ pub fn listen(s: &AppState) -> Vec<clax_rt::JoinHandle<()>> {
                             }
                             Announce::Items(recipient, views, unread) => {
                                 for mut item in views {
-                                    if let Err(e) =
-                                        crate::views::approval::fill_card_docs(&st, &mut item).await
-                                    {
-                                        tracing::warn!(error = %e.message, "an approval card's documents not read");
-                                    }
+                                    crate::views::approval::fill_card_docs(&st, &mut item).await;
                                     st.events.publish(Event::InboxItem {
                                         item,
                                         unread,

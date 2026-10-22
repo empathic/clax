@@ -4,8 +4,9 @@
 //! The daemon's is [`LocalAppData`], a SQLite file per artifact in the
 //! home; the Worker's calls the artifact's Durable Object. Every
 //! deployment wraps its host in [`MovingAppData`], which moves an
-//! artifact's rows out of the instance before its store's first call and
-//! hands the store the viewer folds it has not applied.
+//! artifact's rows out of the instance before its store's first call,
+//! hands the store the viewer folds it has not applied, and copies the
+//! audit records each change makes there into the instance's history.
 //!
 //! The instance decides everything a call needs before it is made (the
 //! caller, the artifact's declared rules, a page's authors, the reader's
@@ -15,15 +16,24 @@ use clax_core::content::ArtifactLocks;
 use clax_core::{ArtifactId, CoreError, Result};
 use clax_store::Store;
 use clax_store::app_data::{AppDataOp, AppDataReply};
-use std::collections::HashMap;
+use clax_store::audit::AuditRow;
+use std::collections::{HashMap, HashSet};
 use std::sync::{Arc, Mutex};
 
 /// Runs operations on artifacts' stores. A reply is never
-/// [`AppDataReply::Error`]: a failed operation is the call's error.
+/// [`AppDataReply::Error`]: a failed operation is the call's error. Only
+/// [`AppDataOp::Import`] makes a store; any other operation on an artifact
+/// that has none is `NotFound`.
 #[cfg_attr(not(target_arch = "wasm32"), async_trait::async_trait)]
 #[cfg_attr(target_arch = "wasm32", async_trait::async_trait(?Send))]
 pub trait AppDataHost: Send + Sync {
     async fn call(&self, aid: &ArtifactId, op: AppDataOp) -> Result<AppDataReply>;
+
+    /// Removes artifact `aid`'s store, when it has one: for a store an
+    /// import made for an artifact deleted meanwhile.
+    async fn erase(&self, _aid: &ArtifactId) -> Result<()> {
+        Ok(())
+    }
 }
 
 /// Each artifact's store as a SQLite file in the home
@@ -46,14 +56,36 @@ impl LocalAppData {
 #[async_trait::async_trait]
 impl AppDataHost for LocalAppData {
     async fn call(&self, aid: &ArtifactId, op: AppDataOp) -> Result<AppDataReply> {
+        use clax_store::app_data::AppData;
         let path = self.home.app_data_path(aid);
         let clock = self.clock.clone();
         clax_rt::spawn_blocking(move || {
-            clax_store::app_data::AppData::open(&path, clock).map(|ad| ad.apply(op))
+            let ad = match op {
+                AppDataOp::Import { .. } => AppData::open(&path, clock)?,
+                _ => AppData::open_existing(&path, clock)?,
+            };
+            Ok::<_, CoreError>(ad.apply(op))
         })
         .await
         .map_err(|_| CoreError::TaskFailed)??
-        .ok()
+        .checked()
+    }
+
+    async fn erase(&self, aid: &ArtifactId) -> Result<()> {
+        let path = self.home.app_data_path(aid);
+        clax_rt::spawn_blocking(move || -> Result<()> {
+            for suffix in ["", "-wal", "-shm"] {
+                let mut p = path.clone().into_os_string();
+                p.push(suffix);
+                match std::fs::remove_file(&p) {
+                    Err(e) if e.kind() != std::io::ErrorKind::NotFound => return Err(e.into()),
+                    _ => {}
+                }
+            }
+            Ok(())
+        })
+        .await
+        .map_err(|_| CoreError::TaskFailed)?
     }
 }
 
@@ -72,21 +104,33 @@ impl AppDataHost for NoAppData {
 }
 
 /// `inner`, with each artifact's rows moved from the instance (`store`)
-/// before its store's first call, and the viewer folds its store has not
-/// applied handed to it before any call.
+/// before its store's first call, the viewer folds its store has not
+/// applied handed to it before any call, and the audit records each change
+/// makes there copied into the instance's history
+/// ([`Store::mirror_app_data_audit`]).
 ///
 /// The move exports the artifact's rows, sends [`AppDataOp::Import`],
 /// then marks the artifact moved and forgets its rows in one instance
 /// transaction ([`Store::forget_app_data`]), under a per-artifact lock so
 /// two first calls move once. A move that stops between the import and the
-/// forget imports the same rows again next time, which the import treats
-/// as already present.
+/// forget imports again next time, which a store that has its rows already
+/// ignores; the folds made meanwhile reach it past its own mark. When the
+/// artifact is deleted while it moves, the store the import made is erased
+/// and the call is `NotFound`.
+///
+/// The copies of a store's audit records keep up as each change answers;
+/// a copy lost (the process stopped between the change and its copy) is
+/// made up at the artifact's first call after a start, and at the next
+/// change, which finds the copies behind ([`AppDataOp::AuditSince`]).
 pub struct MovingAppData<H: AppDataHost> {
     inner: H,
     store: Arc<Store>,
     moving: ArtifactLocks,
+    copying: ArtifactLocks,
     /// Each artifact store's fold mark, as it last answered.
     marks: Mutex<HashMap<String, i64>>,
+    /// The artifacts whose audit copies were made up since the start.
+    caught_up: Mutex<HashSet<String>>,
 }
 
 impl<H: AppDataHost> MovingAppData<H> {
@@ -95,7 +139,9 @@ impl<H: AppDataHost> MovingAppData<H> {
             inner,
             store,
             moving: ArtifactLocks::default(),
+            copying: ArtifactLocks::default(),
             marks: Mutex::new(HashMap::new()),
+            caught_up: Mutex::new(HashSet::new()),
         }
     }
 
@@ -115,6 +161,49 @@ impl<H: AppDataHost> MovingAppData<H> {
             .insert(aid.as_str().to_string(), mark);
     }
 
+    /// `op` on `aid`'s store, its audit records copied to the instance.
+    async fn send(&self, aid: &ArtifactId, op: AppDataOp) -> Result<AppDataReply> {
+        let (reply, audit) = self.inner.call(aid, op).await?.audited();
+        if !audit.is_empty() {
+            // The change committed: a copy that fails is made up later,
+            // never the caller's failure.
+            if let Err(e) = self.copy_audit(aid, audit).await {
+                tracing::warn!(artifact = aid.as_str(), error = %e, "an artifact store's audit records were not copied");
+            }
+        }
+        Ok(reply)
+    }
+
+    /// Copies `rows` of `aid`'s store into the instance's history, and,
+    /// when they do not follow on from what it holds, every record after.
+    async fn copy_audit(&self, aid: &ArtifactId, rows: Vec<AuditRow>) -> Result<()> {
+        let _held = self.copying.lock(aid).await;
+        let id = aid.clone();
+        let behind = self
+            .store
+            .call(move |st| st.mirror_app_data_audit(&id, &rows, false))
+            .await?;
+        if let Some(seq) = behind {
+            self.copy_after(aid, seq).await?;
+        }
+        Ok(())
+    }
+
+    /// Copies every record of `aid`'s store after `seq`; the caller holds
+    /// the copying lock.
+    async fn copy_after(&self, aid: &ArtifactId, seq: i64) -> Result<()> {
+        let rows = self
+            .inner
+            .call(aid, AppDataOp::AuditSince { seq })
+            .await?
+            .into_audit()?;
+        let id = aid.clone();
+        self.store
+            .call(move |st| st.mirror_app_data_audit(&id, &rows, true))
+            .await?;
+        Ok(())
+    }
+
     /// Moves `aid`'s rows to its store, unless another call did first.
     async fn move_rows(&self, aid: &ArtifactId) -> Result<()> {
         let _held = self.moving.lock(aid).await;
@@ -123,22 +212,22 @@ impl<H: AppDataHost> MovingAppData<H> {
         }
         let id = aid.clone();
         let rows = self.store.call(move |st| st.export_app_data(&id)).await?;
-        let folded = rows.fold_seq;
         self.inner
             .call(aid, AppDataOp::Import { rows })
             .await?
             .into_done()?;
         let id = aid.clone();
         self.store.call(move |st| st.forget_app_data(&id)).await?;
-        // The store's mark is at least the rows' (it may be past them).
-        if self.mark(aid).is_none_or(|m| m < folded) {
-            self.set_mark(aid, folded);
+        // Deleted while it moved: the store the import made goes too.
+        if let Err(CoreError::NotFound) = self.state(aid).await {
+            self.inner.erase(aid).await?;
+            return Err(CoreError::NotFound);
         }
         Ok(())
     }
 
-    /// Hands `aid`'s store the folds past its mark, when the log's newest
-    /// (`newest`) is.
+    /// Hands `aid`'s store the folds past its own mark, when the log's
+    /// newest (`newest`) is.
     async fn catch_up(&self, aid: &ArtifactId, newest: i64) -> Result<()> {
         if newest == 0 || self.mark(aid).is_some_and(|m| m >= newest) {
             return Ok(());
@@ -157,14 +246,30 @@ impl<H: AppDataHost> MovingAppData<H> {
                 .call(move |st| st.app_data_folds_after(mark))
                 .await?;
             let mark = self
-                .inner
-                .call(aid, AppDataOp::Fold { folds })
+                .send(aid, AppDataOp::Fold { folds })
                 .await?
                 .into_folded()?;
             self.set_mark(aid, mark);
         } else {
             self.set_mark(aid, mark);
         }
+        Ok(())
+    }
+
+    /// Makes up `aid`'s audit copies once after a start, from where the
+    /// instance's stand (`audit_seq`).
+    async fn copies_once(&self, aid: &ArtifactId, audit_seq: i64) -> Result<()> {
+        if self.caught_up.lock().unwrap().contains(aid.as_str()) {
+            return Ok(());
+        }
+        {
+            let _held = self.copying.lock(aid).await;
+            self.copy_after(aid, audit_seq).await?;
+        }
+        self.caught_up
+            .lock()
+            .unwrap()
+            .insert(aid.as_str().to_string());
         Ok(())
     }
 }
@@ -179,9 +284,44 @@ impl<H: AppDataHost> AppDataHost for MovingAppData<H> {
         if !state.moved {
             self.move_rows(aid).await?;
         }
+        self.copies_once(aid, state.audit_seq).await?;
         self.catch_up(aid, state.folds).await?;
-        self.inner.call(aid, op).await
+        self.send(aid, op).await
     }
+
+    async fn erase(&self, aid: &ArtifactId) -> Result<()> {
+        self.inner.erase(aid).await
+    }
+}
+
+/// Moves every artifact whose rows the instance still holds
+/// ([`Store::app_data_pending`]) to its store through `host`, one at a
+/// time, logging each that fails; returns how many moved. The local daemon
+/// runs it once as it starts, so the instance's tables empty without
+/// waiting for each artifact's first call; the Worker moves each on its
+/// first call.
+pub async fn move_pending(store: &Arc<Store>, host: &dyn AppDataHost) -> usize {
+    let pending = match store.call(|st| st.app_data_pending()).await {
+        Ok(p) => p,
+        Err(e) => {
+            tracing::warn!(error = %e, "the artifacts to move to their stores were not read");
+            return 0;
+        }
+    };
+    let mut moved = 0;
+    for aid in pending {
+        match host.call(&aid, AppDataOp::FoldMark).await {
+            Ok(_) => moved += 1,
+            Err(CoreError::NotFound) => {}
+            Err(e) => {
+                tracing::warn!(artifact = aid.as_str(), error = %e, "an artifact's app data did not move to its store")
+            }
+        }
+    }
+    if moved > 0 {
+        tracing::info!(moved, "moved artifacts' app data to their own stores");
+    }
+    moved
 }
 
 /// The host a deployment starts with: natively each artifact's file in
@@ -300,5 +440,174 @@ mod tests {
             Err(CoreError::NotFound)
         ));
         assert!(!st.home().app_data_path(&aid).exists());
+    }
+
+    fn local(st: &Arc<Store>) -> LocalAppData {
+        LocalAppData::new(st.home().clone(), st.clock())
+    }
+
+    /// The instance's copies of `aid`'s document records, by operation.
+    fn copied(st: &Store, aid: &ArtifactId) -> Vec<String> {
+        st.events_after(0, 1000)
+            .unwrap()
+            .into_iter()
+            .filter(|r| r.kind == "doc.write" && r.ids.artifact.as_deref() == Some(aid.as_str()))
+            .map(|r| {
+                serde_json::from_str::<serde_json::Value>(&r.body).unwrap()["doc_id"].to_string()
+            })
+            .collect()
+    }
+
+    /// A host whose import deletes the artifact once the store took its
+    /// rows: the delete landing while the artifact moves.
+    struct DeletedWhileMoving {
+        inner: LocalAppData,
+        store: Arc<Store>,
+    }
+
+    #[async_trait::async_trait]
+    impl AppDataHost for DeletedWhileMoving {
+        async fn call(&self, aid: &ArtifactId, op: AppDataOp) -> Result<AppDataReply> {
+            let import = matches!(op, AppDataOp::Import { .. });
+            let reply = self.inner.call(aid, op).await?;
+            if import {
+                let (st, id) = (self.store.clone(), aid.clone());
+                st.call(move |st| st.delete_artifact(&AuditCtx::DAEMON, &id))
+                    .await?;
+            }
+            Ok(reply)
+        }
+
+        async fn erase(&self, aid: &ArtifactId) -> Result<()> {
+            self.inner.erase(aid).await
+        }
+    }
+
+    #[tokio::test]
+    async fn a_delete_during_the_move_leaves_no_store() {
+        let (_d, st, aid) = store();
+        let file = st.home().app_data_path(&aid);
+        let host = MovingAppData::new(
+            DeletedWhileMoving {
+                inner: local(&st),
+                store: st.clone(),
+            },
+            st.clone(),
+        );
+        assert!(matches!(
+            host.call(&aid, set("t/a")).await,
+            Err(CoreError::NotFound)
+        ));
+        assert!(!file.exists(), "the store the import made is erased");
+    }
+
+    #[tokio::test]
+    async fn only_an_import_makes_a_store() {
+        let (_d, st, aid) = store();
+        let file = st.home().app_data_path(&aid);
+        assert!(matches!(
+            local(&st).call(&aid, set("t/a")).await,
+            Err(CoreError::NotFound)
+        ));
+        assert!(!file.exists());
+    }
+
+    #[tokio::test]
+    async fn each_changes_records_are_copied_into_the_instances_history_once() {
+        let (_d, st, aid) = store();
+        let host = MovingAppData::new(local(&st), st.clone());
+        host.call(&aid, set("t/a")).await.unwrap();
+        assert_eq!(copied(&st, &aid), ["\"a\""]);
+        // A change whose copy was lost (the store wrote it, the process
+        // stopped): the next change finds the copies behind.
+        local(&st).call(&aid, set("t/b")).await.unwrap();
+        host.call(&aid, set("t/c")).await.unwrap();
+        assert_eq!(copied(&st, &aid), ["\"a\"", "\"b\"", "\"c\""]);
+        // A lost copy and a start: the first call, a read, makes it up.
+        local(&st).call(&aid, set("t/d")).await.unwrap();
+        let restarted = MovingAppData::new(local(&st), st.clone());
+        restarted.call(&aid, AppDataOp::FoldMark).await.unwrap();
+        assert_eq!(copied(&st, &aid), ["\"a\"", "\"b\"", "\"c\"", "\"d\""]);
+        restarted.call(&aid, set("t/e")).await.unwrap();
+        assert_eq!(copied(&st, &aid).len(), 5, "each copied once");
+    }
+
+    #[tokio::test]
+    async fn an_error_keeps_its_status_code_and_extras_across_the_wire() {
+        use clax_core::visibility::Author;
+        use clax_store::app_data::WireError;
+        let cases = vec![
+            CoreError::DocWithheld {
+                path: "c/1".into(),
+                authors: vec![
+                    Author::Owner,
+                    Author::Person("u_00000000000000000000aa".into()),
+                    Author::Unconnected,
+                ],
+            },
+            CoreError::DocConflict {
+                path: "c/1".into(),
+                current: Some(3),
+            },
+            CoreError::DocConflict {
+                path: "c/1".into(),
+                current: None,
+            },
+            CoreError::DocPinRequired {
+                path: "c/1".into(),
+                current: 2,
+            },
+            CoreError::DocNotFound { path: "c/1".into() },
+            CoreError::NotFound,
+            CoreError::invalid("invalid_argument", "bad"),
+            CoreError::invalid("quota_exceeded", "full"),
+            CoreError::invalid("resource_exhausted", "big"),
+            CoreError::invalid("old_str_not_found", "absent"),
+            CoreError::invalid("old_str_not_unique", "twice"),
+            CoreError::invalid("invalid_capabilities", "rules"),
+            CoreError::InBatch {
+                op: 1,
+                path: "c/2".into(),
+                error: Box::new(CoreError::invalid("quota_exceeded", "full")),
+            },
+            CoreError::Db(rusqlite::Error::SqliteFailure(
+                rusqlite::ffi::Error::new(rusqlite::ffi::SQLITE_BUSY),
+                Some("database is locked".into()),
+            )),
+            CoreError::Corrupt {
+                artifact_id: "zafbtm2ff2jg".into(),
+                column: "docs.json",
+                version: None,
+            },
+            CoreError::SchemaNewer { found: 3, known: 1 },
+        ];
+        for e in cases {
+            let wire: WireError =
+                serde_json::from_str(&serde_json::to_string(&WireError::from(&e)).unwrap())
+                    .unwrap();
+            let back = CoreError::from(wire);
+            if let (
+                CoreError::DocWithheld { authors: a, .. },
+                CoreError::DocWithheld { authors: b, .. },
+            ) = (&e, &back)
+            {
+                assert_eq!(a, b, "withheld authors");
+            }
+            let got = crate::error::ApiError::from(back);
+            let orig = crate::error::ApiError::from(e);
+            assert_eq!(
+                (got.status, got.code, &got.extra),
+                (orig.status, orig.code, &orig.extra),
+                "{}",
+                orig.message
+            );
+        }
+        assert_eq!(
+            crate::error::ApiError::from(CoreError::from(WireError::from(
+                &CoreError::SchemaNewer { found: 3, known: 1 }
+            )))
+            .code,
+            "schema_newer"
+        );
     }
 }

@@ -18,6 +18,9 @@ pub struct AppDataState {
     pub moved: bool,
     /// The newest viewer fold in the log (0 when there is none).
     pub folds: i64,
+    /// The newest of its store's audit records the instance's history
+    /// holds a copy of ([`Store::mirror_app_data_audit`]).
+    pub audit_seq: i64,
 }
 
 /// Appends a fold of viewer `old` into `new` to the log, in the fold's
@@ -47,13 +50,15 @@ impl Store {
         self.with_read(|c| {
             c.query_row(
                 "SELECT EXISTS (SELECT 1 FROM app_data_moved WHERE artifact_id = ?1),
-                        COALESCE((SELECT MAX(seq) FROM app_data_folds), 0)
+                        COALESCE((SELECT MAX(seq) FROM app_data_folds), 0),
+                        COALESCE((SELECT audit_seq FROM app_data_moved WHERE artifact_id = ?1), 0)
                    FROM artifacts WHERE id = ?1 AND deleted_at IS NULL",
                 params![aid.as_str()],
                 |r| {
                     Ok(AppDataState {
                         moved: r.get(0)?,
                         folds: r.get(1)?,
+                        audit_seq: r.get(2)?,
                     })
                 },
             )
@@ -181,14 +186,19 @@ impl Store {
         self.with_read(|c| crate::artifacts::page_authors_in(c, aid.as_str()))
     }
 
-    /// The live artifacts whose rows moved to their stores, in ID order.
-    pub fn app_data_artifacts(&self) -> Result<Vec<ArtifactId>> {
+    /// The live artifacts whose rows the instance still holds (documents,
+    /// authors or leases) and has not moved to their stores, in ID order.
+    pub fn app_data_pending(&self) -> Result<Vec<ArtifactId>> {
         self.with_read(|c| {
             let ids: Vec<String> = c
                 .prepare(
-                    "SELECT m.artifact_id FROM app_data_moved m
-                       JOIN artifacts a ON a.id = m.artifact_id AND a.deleted_at IS NULL
-                      ORDER BY m.artifact_id",
+                    "SELECT a.id FROM artifacts a
+                      WHERE a.deleted_at IS NULL
+                        AND NOT EXISTS (SELECT 1 FROM app_data_moved m WHERE m.artifact_id = a.id)
+                        AND (EXISTS (SELECT 1 FROM docs d WHERE d.artifact_id = a.id)
+                          OR EXISTS (SELECT 1 FROM doc_authors x WHERE x.artifact_id = a.id)
+                          OR EXISTS (SELECT 1 FROM leases l WHERE l.artifact_id = a.id))
+                      ORDER BY a.id",
                 )?
                 .query_map([], |r| r.get(0))?
                 .collect::<rusqlite::Result<_>>()?;

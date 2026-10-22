@@ -237,6 +237,25 @@ impl AppData {
         AppData::open_on(conn, clock)
     }
 
+    /// Opens the store at `path` only when it exists: `NotFound` when it
+    /// does not, so no call but the import that moves an artifact's rows
+    /// ([`AppData::open`]) makes a store, and a call that races its
+    /// artifact's delete never makes one again.
+    pub fn open_existing(path: &std::path::Path, clock: Arc<dyn Clock>) -> Result<AppData> {
+        use rusqlite::OpenFlags;
+        let flags = OpenFlags::SQLITE_OPEN_READ_WRITE | OpenFlags::SQLITE_OPEN_NO_MUTEX;
+        let conn = match Connection::open_with_flags(path, flags) {
+            Err(rusqlite::Error::SqliteFailure(f, _))
+                if f.code == rusqlite::ErrorCode::CannotOpen =>
+            {
+                return Err(CoreError::NotFound);
+            }
+            c => c?,
+        };
+        conn.busy_timeout(crate::exec::BUSY_TIMEOUT)?;
+        AppData::open_on(conn, clock)
+    }
+
     /// The store on `conn`, one connection its host opened (a Durable
     /// Object's), migrated; the journal mode and busy timeout are the
     /// host's.
@@ -805,17 +824,20 @@ impl AppData {
         })
     }
 
-    /// Takes in `rows`, an artifact's rows from the instance: documents,
-    /// authors and leases already here are kept as they are (so importing
-    /// the same rows again, after a move that stopped before the instance
-    /// forgot them, changes nothing), and the sequence and the fold mark
-    /// move up to the rows' when they are behind. Names the store's
-    /// artifact when none is named yet.
+    /// Takes in `rows`, an artifact's rows from the instance, and names the
+    /// store's artifact, in one transaction: its documents, authors and
+    /// leases, its sequence, and the fold mark the rows reflect. Once the
+    /// store names its artifact it has taken its rows in, and importing
+    /// again (after a move that stopped before the instance forgot them,
+    /// whose rows may since have been folded there) changes nothing: the
+    /// store applies the folds past its own mark ([`AppData::fold`]).
     pub fn import(&self, rows: Exported) -> Result<()> {
         self.with_tx(|tx| {
+            if AppData::artifact_in(tx)?.is_some() {
+                return Ok(());
+            }
             tx.execute(
-                "UPDATE doc_seq SET artifact_id = COALESCE(artifact_id, ?1),
-                    seq = MAX(seq, ?2), folded = MAX(folded, ?3)",
+                "UPDATE doc_seq SET artifact_id = ?1, seq = MAX(seq, ?2), folded = MAX(folded, ?3)",
                 params![rows.artifact_id, rows.doc_seq, rows.fold_seq],
             )?;
             for d in &rows.docs {
@@ -899,6 +921,17 @@ impl AppData {
             )?
             .query_map(params![author, is_owner], |r| r.get(0))?
             .collect::<rusqlite::Result<_>>()?)
+        })
+    }
+
+    /// The newest audit record's `seq` (0 when there is none).
+    pub fn audit_seq(&self) -> Result<i64> {
+        self.with_read(|c| {
+            Ok(
+                c.query_row("SELECT COALESCE(MAX(seq), 0) FROM audit_events", [], |r| {
+                    r.get(0)
+                })?,
+            )
         })
     }
 

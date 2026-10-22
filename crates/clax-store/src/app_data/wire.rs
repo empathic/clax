@@ -227,6 +227,13 @@ pub enum AppDataReply {
     Strings(Vec<String>),
     /// `AuditSince`'s.
     Audit(Vec<WireAuditRow>),
+    /// A change's reply, with the audit records it made here: the
+    /// records the store wrote since just before the change, which the
+    /// host copies into the instance's history.
+    Audited {
+        reply: Box<AppDataReply>,
+        audit: Vec<WireAuditRow>,
+    },
     /// The operation failed.
     Error(WireError),
 }
@@ -264,6 +271,11 @@ pub enum WireError {
     NotFound,
     Corrupt {
         artifact_id: String,
+    },
+    /// The store's schema is newer than this binary knows.
+    SchemaNewer {
+        found: u32,
+        known: u32,
     },
     /// SQLite was busy past its timeout.
     Busy {
@@ -323,6 +335,10 @@ impl From<&CoreError> for WireError {
             CoreError::Corrupt { artifact_id, .. } => WireError::Corrupt {
                 artifact_id: artifact_id.clone(),
             },
+            CoreError::SchemaNewer { found, known } => WireError::SchemaNewer {
+                found: *found,
+                known: *known,
+            },
             CoreError::Db(rusqlite::Error::SqliteFailure(f, m))
                 if f.code == rusqlite::ErrorCode::DatabaseBusy =>
             {
@@ -364,6 +380,7 @@ impl From<WireError> for CoreError {
                 column: "docs.json",
                 version: None,
             },
+            WireError::SchemaNewer { found, known } => CoreError::SchemaNewer { found, known },
             WireError::Busy { message } => CoreError::Db(rusqlite::Error::SqliteFailure(
                 rusqlite::ffi::Error::new(rusqlite::ffi::SQLITE_BUSY),
                 Some(message),
@@ -382,11 +399,31 @@ fn unexpected(want: &str, got: &AppDataReply) -> CoreError {
 }
 
 impl AppDataReply {
-    /// The reply, or its error.
+    /// The reply, or its error; a change's reply without its audit
+    /// records ([`AppDataReply::audited`] takes them).
     pub fn ok(self) -> Result<AppDataReply> {
         match self {
             AppDataReply::Error(e) => Err(e.into()),
+            AppDataReply::Audited { reply, .. } => reply.ok(),
             r => Ok(r),
+        }
+    }
+
+    /// The reply, or its error, keeping a change's audit records.
+    pub fn checked(self) -> Result<AppDataReply> {
+        match self {
+            AppDataReply::Error(e) => Err(e.into()),
+            r => Ok(r),
+        }
+    }
+
+    /// The reply and the audit records it carries (none for a read).
+    pub fn audited(self) -> (AppDataReply, Vec<AuditRow>) {
+        match self {
+            AppDataReply::Audited { reply, audit } => {
+                (*reply, audit.into_iter().map(AuditRow::from).collect())
+            }
+            r => (r, Vec::new()),
         }
     }
 
@@ -455,10 +492,43 @@ impl AppDataReply {
 }
 
 impl AppData {
-    /// Runs `op`; a failure is the reply's [`AppDataReply::Error`].
+    /// Runs `op`; a failure is the reply's [`AppDataReply::Error`]. A
+    /// change (a write, a batch, an acquire, a fold) answers
+    /// [`AppDataReply::Audited`] when it recorded anything, with every
+    /// audit record written since just before it (another caller's
+    /// among them, when two change the store at once).
     pub fn apply(&self, op: AppDataOp) -> AppDataReply {
-        self.run(op)
-            .unwrap_or_else(|e| AppDataReply::Error(WireError::from(&e)))
+        let changes = matches!(
+            op,
+            AppDataOp::Set { .. }
+                | AppDataOp::Update { .. }
+                | AppDataOp::Delete { .. }
+                | AppDataOp::StrReplace { .. }
+                | AppDataOp::Batch { .. }
+                | AppDataOp::Acquire { .. }
+                | AppDataOp::Fold { .. }
+        );
+        let out = (|| {
+            let before = if changes { self.audit_seq()? } else { 0 };
+            let reply = self.run(op)?;
+            if !changes {
+                return Ok(reply);
+            }
+            let audit: Vec<WireAuditRow> = self
+                .audit_since(before)?
+                .into_iter()
+                .map(WireAuditRow::from)
+                .collect();
+            Ok(if audit.is_empty() {
+                reply
+            } else {
+                AppDataReply::Audited {
+                    reply: Box::new(reply),
+                    audit,
+                }
+            })
+        })();
+        out.unwrap_or_else(|e| AppDataReply::Error(WireError::from(&e)))
     }
 
     fn run(&self, op: AppDataOp) -> Result<AppDataReply> {
