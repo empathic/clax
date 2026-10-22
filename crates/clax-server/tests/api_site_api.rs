@@ -232,12 +232,24 @@ async fn a_visitor_reads_and_writes_only_what_public_rules_allow() {
     assert_eq!(s, 404, "the default rules grant a visitor nothing");
     let (s, _) = api.send(Method::GET, "docs/tasks/t1", None).await;
     assert_eq!(s, 404);
-    // The artifact reads as itself, and nothing of who works on it.
+    // The artifact reads as itself, with what its page declares (from which
+    // the bridge decides what `use()` resolves), and nothing of who works
+    // on it.
     let (s, v) = api.send(Method::GET, "artifact", None).await;
     assert_eq!(s, 200);
     assert_eq!(v["artifact"]["id"], json!(aid));
-    let keys: Vec<&String> = v["artifact"].as_object().unwrap().keys().collect();
-    assert_eq!(keys.len(), 3, "{v}");
+    assert_eq!(
+        v["artifact"]["capabilities"]["db"]["rules"][0]["path"],
+        json!("data/guestbook"),
+        "{v}"
+    );
+    let mut keys: Vec<&String> = v["artifact"].as_object().unwrap().keys().collect();
+    keys.sort();
+    assert_eq!(
+        keys,
+        ["capabilities", "current_version", "id", "title"],
+        "{v}"
+    );
     // A visitor uploads nothing.
     let (s, _) = api.send(Method::POST, "assets", Some(json!({}))).await;
     assert!(s == 401 || s == 403 || s == 400, "{s}");
@@ -727,4 +739,68 @@ async fn a_link_viewers_writes_are_counted_as_a_visitors() {
         )
         .await;
     assert_eq!((s, code(&v)), (429, "rate_limited"), "{v}");
+}
+
+/// An `image/png` upload through `api`: the status and the answer.
+async fn upload(api: &Call<'_>) -> (u16, Value) {
+    let part = reqwest::multipart::Part::bytes(clax_testkit::FAKE_PNG.to_vec())
+        .file_name("logo.png")
+        .mime_str("image/png")
+        .unwrap();
+    let res = api
+        .req(Method::POST, "assets")
+        .multipart(reqwest::multipart::Form::new().part("file", part))
+        .send()
+        .await
+        .unwrap();
+    let s = res.status().as_u16();
+    (s, res.json().await.unwrap_or(Value::Null))
+}
+
+#[tokio::test]
+async fn the_owner_deletes_an_asset_of_the_hosts_artifact_alone() {
+    let ts = TestServer::spawn().await;
+    let a = artifact(&ts, json!({"assets": {}})).await;
+    let b = artifact(&ts, json!({"assets": {}})).await;
+    let (ca, cb) = (ts.site_cookie(&a).await, ts.site_cookie(&b).await);
+    let (on_a, on_b) = (on(&ts, &a, Some(&ca)), on(&ts, &b, Some(&cb)));
+    let (s, v) = upload(&on_a).await;
+    assert_eq!(s, 201, "{v}");
+    let mine = v["asset"]["id"].as_str().unwrap().to_string();
+    assert_eq!(v["url"], json!(format!("/_clax/blob/{mine}")));
+    let (s, v) = upload(&on_b).await;
+    assert_eq!(s, 201, "{v}");
+    let theirs = v["asset"]["id"].as_str().unwrap().to_string();
+    // B's asset is nothing on A's host.
+    let (s, _) = on_a
+        .send(Method::DELETE, &format!("assets/{theirs}"), None)
+        .await;
+    assert_eq!(s, 404);
+    let (s, v) = on_b.send(Method::GET, "assets", None).await;
+    assert_eq!((s, v["assets"].as_array().map(Vec::len)), (200, Some(1)));
+    // Nor is any other path under it.
+    for p in [
+        format!("assets/{mine}/x"),
+        format!("assets/{mine}%2F"),
+        "assets/".to_string(),
+    ] {
+        let (s, _) = on_a.send(Method::DELETE, &p, None).await;
+        assert!(s == 404 || s == 400, "{p}: {s}");
+    }
+    // Without the site's Origin a delete is refused.
+    let (s, v) = Call {
+        origin: Some(""),
+        ..on(&ts, &a, Some(&ca))
+    }
+    .send(Method::DELETE, &format!("assets/{mine}"), None)
+    .await;
+    assert_eq!((s, code(&v)), (403, "forbidden_origin"));
+    let res = on_a
+        .req(Method::DELETE, &format!("assets/{mine}"))
+        .send()
+        .await
+        .unwrap();
+    assert_eq!(res.status(), 204);
+    let (s, v) = on_a.send(Method::GET, "assets", None).await;
+    assert_eq!((s, v["assets"].as_array().map(Vec::len)), (200, Some(0)));
 }

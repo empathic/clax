@@ -11,6 +11,7 @@
 //! | `docs` | `GET` (a query) | `/api/artifacts/<id>/docs` |
 //! | `docs:batch`, `docs:acquire`, `docs:str_replace` | `POST` | `/api/artifacts/<id>/docs:…` |
 //! | `assets` | `POST` (an upload), `GET` (the list) | `/api/artifacts/<id>/assets` |
+//! | `assets/<asset ID>` | `DELETE` | `/api/artifacts/<id>/assets/<asset ID>` (an asset of `<id>`'s alone) |
 //! | `room` | `GET` (a WebSocket) | `/api/artifacts/<id>/room` |
 //! | `artifact` | `GET` | `/api/artifacts/<id>` |
 //! | `whoami` | `GET` | `{kind, id?, name?, level, can_edit}` ([`whoami`]) |
@@ -31,7 +32,7 @@
 //!   `forbidden_origin`, and a write (any method but `GET` and `HEAD`)
 //!   without one is too. No answer carries `Access-Control-Allow-Origin`.
 //! - **A visitor** (a site open to the world) reads only `artifact`'s
-//!   `{artifact: {id, title, current_version}}`. On a hosted daemon each
+//!   `{artifact: {id, title, current_version, capabilities}}`. On a hosted daemon each
 //!   write of a visitor, a link viewer or a guest is counted per client
 //!   address and per artifact ([`clax_http::hosted::Hosted::site_write`],
 //!   429 `rate_limited`). Closing the site to the world refuses a visitor
@@ -100,6 +101,10 @@ fn inner(state: &AppState) -> axum::Router {
             get(assets::list).post(
                 assets::upload.layer(DefaultBodyLimit::max(clax_http::limits::UPLOAD_BODY_LIMIT)),
             ),
+        )
+        .route(
+            "/api/artifacts/{aid}/assets/{asset_id}",
+            axum::routing::delete(assets::delete),
         );
     #[cfg(not(target_arch = "wasm32"))]
     let r = r.route("/api/artifacts/{aid}/room", get(room::room));
@@ -134,6 +139,14 @@ fn inner_path(aid: &ArtifactId, rest: &str) -> Option<String> {
             Some(format!("{base}/{rest}"))
         }
         r if r.starts_with("docs/") => Some(format!("{base}/{r}")),
+        // One segment: the asset's ID, which the route checks is this
+        // artifact's.
+        r if r
+            .strip_prefix("assets/")
+            .is_some_and(|id| !id.is_empty() && id.bytes().all(|b| b.is_ascii_alphanumeric())) =>
+        {
+            Some(format!("{base}/{r}"))
+        }
         _ => None,
     }
 }
@@ -362,8 +375,9 @@ async fn whoami(s: &AppState, aid: &ArtifactId, caller: &SiteCaller) -> Result<R
     Ok(no_store(Json(v).into_response()))
 }
 
-/// `artifact` for a visitor: `{artifact: {id, title, current_version}}`,
-/// what a page reads of itself, and nothing of who works on it.
+/// `artifact` for a visitor: `{artifact: {id, title, current_version,
+/// capabilities}}`, what a page reads of itself (its declaration, from which
+/// the bridge decides what `use()` resolves), and nothing of who works on it.
 async fn visitor_artifact(s: &AppState, aid: &ArtifactId) -> Result<Response, ApiError> {
     let aid = aid.clone();
     let v: Value = s
@@ -375,6 +389,7 @@ async fn visitor_artifact(s: &AppState, aid: &ArtifactId) -> Result<Response, Ap
                 "id": a.id.as_str(),
                 "title": a.title,
                 "current_version": a.current_version,
+                "capabilities": a.capabilities,
             }}))
         })
         .await?;
@@ -400,6 +415,13 @@ mod tests {
             ("docs/a/b", Some("/api/artifacts/7q3k9mzx2b4t/docs/a/b")),
             ("docs:batch", Some("/api/artifacts/7q3k9mzx2b4t/docs:batch")),
             ("assets", Some("/api/artifacts/7q3k9mzx2b4t/assets")),
+            (
+                "assets/01J0000000000000000000000A",
+                Some("/api/artifacts/7q3k9mzx2b4t/assets/01J0000000000000000000000A"),
+            ),
+            ("assets/", None),
+            ("assets/a/b", None),
+            ("assets/..", None),
             ("room", Some("/api/artifacts/7q3k9mzx2b4t/room")),
             ("threads", None),
             ("artifact/8q3k9mzx2b4t", None),
