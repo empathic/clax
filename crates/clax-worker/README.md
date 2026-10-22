@@ -124,7 +124,10 @@ public hostname (`--public`; with `--zone example.com` it offers
 `example.com`) and the site domain (`--site-domain example.run`, else the
 record's, else asked on a terminal with no default: a registrable domain
 of its own, never the public host, a domain under it, one it is under, one
-sharing its parent domain, or an IP address), refuses a real deploy until
+sharing a parent domain with it, or an IP address; the shared parent is
+judged by the last two labels, so under a multi-label public suffix such as
+`co.uk` it misses `sites.example.co.uk` beside `app.example.co.uk` and
+refuses two unrelated `*.co.uk` domains), refuses a real deploy until
 this checkout's Worker reads `SITE_DOMAIN`, creates what is missing (the R2 bucket; with Artifacts the queue and the
 namespace, which also proves the account has Artifacts), generates
 `SETUP_SECRET` and `CLAX_TOKEN` when the Worker has neither and uploads

@@ -601,12 +601,14 @@ export function siteHealthy(res, body) {
   }
 }
 
-/** Whether the Worker built from this checkout reads SITE_DOMAIN: a config
- * without CONTENT_ORIGIN deployed to a Worker that does not would serve no
- * artifact on any host. */
-export function workerReadsSiteDomain() {
+/** Whether the Worker built from this checkout reads SITE_DOMAIN (the read
+ * `var(env, "SITE_DOMAIN")` in `source`, by default src/instance.rs; a
+ * mention in a comment does not count): a config without CONTENT_ORIGIN
+ * deployed to a Worker that does not would serve no artifact on any host. */
+export function workerReadsSiteDomain(source) {
   try {
-    return readFileSync(join(HERE, "src/instance.rs"), "utf8").includes("SITE_DOMAIN");
+    const text = source ?? readFileSync(join(HERE, "src/instance.rs"), "utf8");
+    return /\bvar\(\s*env\s*,\s*"SITE_DOMAIN"\s*\)/.test(text);
   } catch {
     return false;
   }

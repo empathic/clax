@@ -116,6 +116,13 @@ try {
     });
   }
 
+  check("the guard matches the Worker's read of SITE_DOMAIN, not a mention", () => {
+    assert.equal(workerReadsSiteDomain('let site = var(env, "SITE_DOMAIN");'), true);
+    assert.equal(workerReadsSiteDomain('let site = var( env , "SITE_DOMAIN" );'), true);
+    assert.equal(workerReadsSiteDomain("//! SITE_DOMAIN replaces CONTENT_ORIGIN later"), false);
+    assert.equal(workerReadsSiteDomain('let content = var(env, "CONTENT_ORIGIN");'), false);
+  });
+
   check("a site host is healthy only with the Worker's answer", () => {
     const res = (status, headers = {}) => ({ status, headers: new Headers(headers) });
     const ok = { "referrer-policy": "no-referrer", "content-type": "application/json" };
