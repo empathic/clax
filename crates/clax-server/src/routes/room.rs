@@ -34,6 +34,7 @@ use clax_core::{CoreError, Event};
 use clax_http::db_caller::Subscriber;
 use clax_http::error::ApiError;
 use clax_http::headers::parse_id;
+use clax_http::site_access::SiteCaller;
 use clax_http::state::AppState;
 use clax_http::viewer::SameOrigin;
 use clax_realtime::room::{Frame, Membership, Rooms, Sender, Who};
@@ -197,6 +198,7 @@ pub async fn room(
     let topics = declared.map(|a| Topics::from_capabilities(&a.capabilities).unwrap_or_default());
     let declares_user = declared.is_some_and(|a| a.capabilities.get("user").is_some());
     let Caller { level, viewer, .. } = caller;
+    let site = extensions.get::<SiteCaller>().cloned();
     let who = Who {
         peer: q.peer,
         by: if declares_user { viewer.clone() } else { None },
@@ -205,7 +207,7 @@ pub async fn room(
     Ok(ws
         .max_message_size(MAX_ROOM_MESSAGE_BYTES)
         .max_frame_size(MAX_ROOM_MESSAGE_BYTES)
-        .on_upgrade(move |socket| session(s, aid, who, level, topics, seat, slot, socket)))
+        .on_upgrade(move |socket| session(s, aid, who, level, topics, seat, site, slot, socket)))
 }
 
 #[cfg(not(target_arch = "wasm32"))]
@@ -403,6 +405,7 @@ async fn session(
     level: Level,
     topics: Option<Topics>,
     seat: Option<clax_core::seats::Claim>,
+    site: Option<SiteCaller>,
     _slot: clax_http::socket_caps::SocketSlot,
     mut socket: WebSocket,
 ) {
@@ -410,7 +413,11 @@ async fn session(
         let _ = socket.send(close(4403, "not_granted")).await;
         return;
     };
-    let claim = s.rooms.claim(&aid, &who.peer);
+    // A label another viewer holds is theirs (4403 `peer_taken`).
+    let Some(claim) = s.rooms.claim(&aid, &who.peer, who.viewer.as_deref()) else {
+        let _ = socket.send(close(4403, "peer_taken")).await;
+        return;
+    };
     let (lobby, rx) = s.rooms.enter(&aid, None, who.clone());
     let mut streams: Streams = StreamMap::new();
     streams.insert(None, BroadcastStream::new(rx));
@@ -453,6 +460,9 @@ async fn session(
             Ok(stamped) = events.recv() => {
                 let gone = match &stamped.event {
                     Event::ArtifactDeleted { artifact_id } => *artifact_id == aid,
+                    Event::SiteAccess { artifact_id, world } if *artifact_id == aid => {
+                        site_revoked(&s, &aid, site.as_ref(), *world).await
+                    }
                     // A new version may drop `room` (a metadata edit emits no
                     // event: it takes effect at the next connection).
                     Event::Version { artifact_id, .. } if *artifact_id == aid => {
@@ -506,6 +516,29 @@ async fn session(
     }
 }
 
+/// Whether a room socket on `aid`'s site host, opened as `site`, may no
+/// longer stay once the site is open to the world (`world`) or private: a
+/// visitor's when it closes; a holder's when they no longer read the
+/// artifact. A socket opened on the public host (`None`) is never.
+#[cfg(not(target_arch = "wasm32"))]
+async fn site_revoked(s: &AppState, aid: &str, site: Option<&SiteCaller>, world: bool) -> bool {
+    match site {
+        None => false,
+        Some(SiteCaller::Visitor(_)) => !world,
+        Some(SiteCaller::Holder(h)) => {
+            let (h, aid) = (h.clone(), aid.to_string());
+            !matches!(
+                s.store_call(move |st| {
+                    let id = clax_core::ArtifactId::parse(&aid).map_err(|_| CoreError::NotFound)?;
+                    clax_http::site_access::holder_reads(st, &h, &id)
+                })
+                .await,
+                Ok(true)
+            )
+        }
+    }
+}
+
 /// What a host that holds a room socket itself (a Durable Object) does next.
 #[derive(Debug, PartialEq, Eq)]
 pub enum RoomStep {
@@ -530,6 +563,8 @@ pub struct RoomSocket {
     receivers: Receivers,
     claim: clax_realtime::room::Claim,
     events: tokio::sync::broadcast::Receiver<clax_core::events::Stamped>,
+    /// Who its site host's access found, for a socket opened there.
+    site: Option<SiteCaller>,
     /// Its place in its client's cap ([`clax_http::socket_caps`]).
     _slot: Option<clax_http::socket_caps::SocketSlot>,
 }
@@ -543,6 +578,8 @@ pub struct RoomAdmission {
     pub level: Level,
     pub topics: Option<Topics>,
     pub seat: Option<clax_core::seats::Claim>,
+    /// Who its site host's access found, for a socket opened there.
+    pub site: Option<SiteCaller>,
 }
 
 impl RoomSocket {
@@ -561,7 +598,9 @@ impl RoomSocket {
         let Some(topics) = a.topics else {
             return Err(RoomStep::Close(4403, "not_granted"));
         };
-        let claim = s.rooms.claim(&a.aid, &a.who.peer);
+        let Some(claim) = s.rooms.claim(&a.aid, &a.who.peer, a.who.viewer.as_deref()) else {
+            return Err(RoomStep::Close(4403, "peer_taken"));
+        };
         let (lobby, rx) = s.rooms.enter(&a.aid, None, a.who.clone());
         let mut receivers = Receivers::new();
         receivers.insert(None, rx);
@@ -595,6 +634,7 @@ impl RoomSocket {
                 receivers,
                 claim,
                 events: s.events.subscribe(),
+                site: a.site,
                 _slot: None,
             },
             first,
@@ -647,6 +687,18 @@ impl RoomSocket {
                     }
                     Event::Version { artifact_id, .. } if *artifact_id == self.conn.aid => {
                         recheck = true;
+                    }
+                    // A visitor's socket closes with its site; a holder's
+                    // is checked again.
+                    Event::SiteAccess { artifact_id, world } if *artifact_id == self.conn.aid => {
+                        match &self.site {
+                            Some(SiteCaller::Visitor(_)) if !world => {
+                                out.push(RoomStep::Close(4403, "revoked"));
+                                return out;
+                            }
+                            Some(SiteCaller::Holder(_)) => recheck = true,
+                            _ => {}
+                        }
                     }
                     _ => {}
                 },
@@ -701,6 +753,7 @@ fn admission(
     peer: String,
     caller: Option<&clax_http::auth::Caller>,
     resolved: Caller,
+    site: Option<SiteCaller>,
 ) -> clax_core::Result<RoomAdmission> {
     let id = clax_core::ArtifactId::parse(aid).map_err(|_| CoreError::NotFound)?;
     let artifact = st.get_artifact(&id)?;
@@ -726,6 +779,7 @@ fn admission(
         level,
         topics,
         seat,
+        site,
     })
 }
 
@@ -786,10 +840,11 @@ pub async fn room_socket(
     let mut creds = subscriber.credentials(&s.token, &extensions);
     creds.address = client.address();
     let (a, peer) = (aid.clone(), q.peer.clone());
+    let site = extensions.get::<SiteCaller>().cloned();
     let admitted = s
         .store_call(move |st| {
             let resolved = subscriber.resolve(st)?;
-            admission(st, &a, peer, caller.as_ref(), resolved)
+            admission(st, &a, peer, caller.as_ref(), resolved, site)
         })
         .await?;
     let opened = RoomSocket::open(&s, admitted, &[]).map(|(r, f)| (r.holding(slot), f));
@@ -843,7 +898,7 @@ pub async fn reopen(
                 return Err(CoreError::NotFound);
             }
             let resolved = clax_http::db_caller::base_caller(st, who.token, &who)?;
-            admission(st, &a, peer, caller.as_ref(), resolved)
+            admission(st, &a, peer, caller.as_ref(), resolved, None)
         })
         .await
         .ok()?;

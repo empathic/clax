@@ -3,7 +3,10 @@
 //!
 //! - `private` closes the site; `world` opens it, so anyone loads it and
 //!   uses its runtime as a visitor (`clax_http::site_access`). Either takes
-//!   effect on the next request: every site request reads it.
+//!   effect on the next request: every site request reads it. Each change
+//!   publishes `Event::SiteAccess`, on which a visitor's room socket closes
+//!   (4403 `revoked`) when the site closes, and a holder's is checked again
+//!   (`super::room`).
 //! - Who may manage the artifact changes it
 //!   ([`clax_http::agent::administers`]: the owner, by hand or in their
 //!   browser, their agents, and the page's maker); anyone else 403
@@ -110,9 +113,14 @@ pub async fn change(
             }
         }
     }
-    let id = id.clone();
-    s.store_call(move |st| st.set_site_open_to_world(&id, world))
+    let i2 = id.clone();
+    s.store_call(move |st| st.set_site_open_to_world(&i2, world))
         .await?;
+    // Its room sockets of visitors close when it closes.
+    s.events.publish(clax_core::Event::SiteAccess {
+        artifact_id: id.as_str().to_string(),
+        world,
+    });
     Ok(Change::Done)
 }
 

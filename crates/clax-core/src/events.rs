@@ -30,6 +30,13 @@ pub enum Event {
     ArtifactDeleted {
         artifact_id: String,
     },
+    /// Artifact `artifact_id`'s site was opened to the world (`world`) or
+    /// made private: its room sockets of visitors close when it closes.
+    /// No stream carries it.
+    SiteAccess {
+        artifact_id: String,
+        world: bool,
+    },
     /// A thread was created or changed; `thread` is its full view (upsert).
     Thread {
         artifact_id: String,
@@ -242,6 +249,7 @@ impl Event {
         match self {
             Event::Version { artifact_id, .. }
             | Event::ArtifactDeleted { artifact_id }
+            | Event::SiteAccess { artifact_id, .. }
             | Event::Thread { artifact_id, .. }
             | Event::Comment { artifact_id, .. }
             | Event::ThreadResolved { artifact_id, .. }
@@ -273,6 +281,7 @@ impl Event {
         match self {
             Event::Version { .. } => "version",
             Event::ArtifactDeleted { .. } => "artifact_deleted",
+            Event::SiteAccess { .. } => "site_access",
             Event::Thread { .. } => "thread",
             Event::Comment { .. } => "comment",
             Event::ThreadResolved { .. } => "thread_resolved",

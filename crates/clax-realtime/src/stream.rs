@@ -772,6 +772,8 @@ fn routes_loud(ev: &Event) -> Vec<(Chan, Gate)> {
             .collect(),
         // The thread delta carries the newest comment and the resolve.
         Event::Comment { .. } | Event::ThreadResolved { .. } => vec![],
+        // The room sockets act on it; no stream carries it.
+        Event::SiteAccess { .. } => vec![],
         // Only the recipient's streams hold its channel (checked at
         // subscribe time).
         Event::Question { recipient, .. } => vec![

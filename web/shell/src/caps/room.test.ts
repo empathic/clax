@@ -228,6 +228,18 @@ describe("room handler", () => {
     expect(sock().url).not.toBe(first.url);
   });
 
+  it("a label another viewer holds is given up for a fresh one, quietly", async () => {
+    const { handler, events, sock } = setup();
+    await handler.call("connect", []);
+    const first = sock();
+    first.drop(4403, "peer_taken");
+    expect(events().filter(e => e.topic === "error")).toEqual([]);
+    vi.advanceTimersByTime(RECONNECT_MS[0]);
+    const second = sock();
+    expect(second).not.toBe(first);
+    expect(second.url.split("peer=")[1]).not.toBe(first.url.split("peer=")[1]);
+  });
+
   it("a rename reconnects under the same label without telling the page it went offline", async () => {
     let rename = () => {};
     const off = vi.fn();

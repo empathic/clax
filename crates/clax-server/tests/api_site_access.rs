@@ -5,6 +5,7 @@
 
 use clax_core::working::ManualClock;
 use clax_testkit::TestServer;
+use futures::StreamExt;
 use reqwest::header::{ACCEPT, COOKIE, HOST, LOCATION, ORIGIN, SET_COOKIE};
 use serde_json::{Value, json};
 use std::sync::Arc;
@@ -972,7 +973,7 @@ impl Site {
                 "/api/artifacts",
                 json!({
                     "title": "Guestbook",
-                    "capabilities": {"db": {"rules": [
+                    "capabilities": {"room": {}, "db": {"rules": [
                         {"path": "data/guestbook", "read": "public", "write": "public"}
                     ]}},
                     "files": {"index.html": {"content": "<h1>Guestbook</h1>", "encoding": "utf8"}}
@@ -1005,6 +1006,32 @@ impl Site {
             .unwrap()
             .to_string();
         (aid, asset)
+    }
+
+    /// A signed-out visitor's room socket on `aid`'s host, from its own
+    /// origin.
+    async fn visitor_room(
+        &self,
+        aid: &str,
+    ) -> tokio_tungstenite::WebSocketStream<tokio_tungstenite::MaybeTlsStream<tokio::net::TcpStream>>
+    {
+        use tokio_tungstenite::tungstenite::client::IntoClientRequest;
+        let mut req = format!(
+            "{}/_clax/api/room?peer=0123456789abcdef",
+            self.ts.base.replacen("http://", "ws://", 1)
+        )
+        .into_client_request()
+        .unwrap();
+        let h = req.headers_mut();
+        h.insert("host", self.site_host(aid).parse().unwrap());
+        h.insert(
+            "origin",
+            format!("http://{}", self.site_host(aid)).parse().unwrap(),
+        );
+        tokio_tungstenite::connect_async(req)
+            .await
+            .expect("upgrade")
+            .0
     }
 
     /// A signed-out visitor's runtime call on `aid`'s host, from its own
@@ -1120,8 +1147,22 @@ async fn closing_a_world_site_refuses_the_next_visitor_request() {
         )
         .await;
     assert_eq!(r.status(), 200);
+    // A visitor's room socket, open while the site is.
+    let mut ws = site.visitor_room(&aid).await;
+    let welcome = ws.next().await.unwrap().unwrap();
+    assert!(welcome.to_text().unwrap().contains("welcome"));
     let (s, v) = site.site_access(&owner, &aid, "private").await;
     assert_eq!((s, &v["artifact"]["site_access"]), (200, &json!("private")));
+    let closed = loop {
+        match ws.next().await.expect("a frame").expect("readable") {
+            tokio_tungstenite::tungstenite::Message::Close(c) => break c.expect("a close frame"),
+            _ => continue,
+        }
+    };
+    assert_eq!(
+        (u16::from(closed.code), closed.reason.as_str()),
+        (4403, "revoked")
+    );
     for p in ["/", "/index.html", blob.as_str()] {
         let r = site.on_site(&aid, p, None).await;
         assert!(

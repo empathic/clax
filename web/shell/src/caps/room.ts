@@ -187,7 +187,9 @@ export function makeRoomHandler(
         isOpen = false;
         failWaiters("the room connection closed");
         if (was) push("connection", { connected: false });
-        if (e.code === 4403) {
+        // Another viewer's socket holds the label: take a fresh one.
+        if (e.code === 4403 && e.reason === "peer_taken") label = peerLabel();
+        else if (e.code === 4403) {
           terminal = true;
           const code = e.reason === "revoked" ? "revoked" : "not_granted";
           push("error", { room: null, code, message: code === "revoked" ? "this view's access to the room was withdrawn" : "this view cannot join the room" });
@@ -226,6 +228,8 @@ export function makeRoomHandler(
       ws = null;
       isOpen = false;
       failWaiters("the room reconnected");
+      // A rename keeps its viewer and so its label; a new viewer is
+      // refused it (4403 `peer_taken`) and takes a fresh one.
       connect();
     });
 

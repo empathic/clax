@@ -98,8 +98,9 @@ struct Room {
 #[derive(Default)]
 struct Inner {
     rooms: HashMap<Key, Room>,
-    /// The current socket of each `(artifact, label)`.
-    claims: HashMap<(String, String), Arc<Notify>>,
+    /// The current socket of each `(artifact, label)`, and the viewer
+    /// (public or visitor ID) that holds it.
+    claims: HashMap<(String, String), (Option<String>, Arc<Notify>)>,
     serial: u64,
 }
 
@@ -122,7 +123,7 @@ impl Drop for Claim {
         let mut g = lock(&self.inner);
         if g.claims
             .get(&self.key)
-            .is_some_and(|n| Arc::ptr_eq(n, &self.replaced))
+            .is_some_and(|(_, n)| Arc::ptr_eq(n, &self.replaced))
         {
             g.claims.remove(&self.key);
         }
@@ -134,22 +135,32 @@ fn lock(m: &Mutex<Inner>) -> std::sync::MutexGuard<'_, Inner> {
 }
 
 impl Rooms {
-    /// Claims `peer` on artifact `aid` for a new socket, waking the socket
-    /// that held it.
-    pub fn claim(&self, aid: &str, peer: &str) -> Claim {
+    /// Claims `peer` on artifact `aid` for a new socket of `viewer`,
+    /// waking the socket that held it; `None`, claiming nothing, while a
+    /// socket of another viewer holds it: a label is never taken from
+    /// another viewer.
+    pub fn claim(&self, aid: &str, peer: &str, viewer: Option<&str>) -> Option<Claim> {
         let key = (aid.to_string(), peer.to_string());
         let replaced = Arc::new(Notify::new());
-        if let Some(old) = lock(&self.inner)
+        let mut g = lock(&self.inner);
+        if g.claims
+            .get(&key)
+            .is_some_and(|(held, _)| held.as_deref() != viewer)
+        {
+            return None;
+        }
+        if let Some((_, old)) = g
             .claims
-            .insert(key.clone(), replaced.clone())
+            .insert(key.clone(), (viewer.map(str::to_string), replaced.clone()))
         {
             old.notify_one();
         }
-        Claim {
+        drop(g);
+        Some(Claim {
             inner: self.inner.clone(),
             key,
             replaced,
-        }
+        })
     }
 
     /// Enters `who` into artifact `aid`'s lobby (`room: None`) or named room
@@ -212,7 +223,7 @@ impl Rooms {
         }
         g.rooms.retain(|_, r| !r.members.is_empty());
         for key in &left {
-            if let Some(n) = g.claims.get(key) {
+            if let Some((_, n)) = g.claims.get(key) {
                 n.notify_one();
             }
         }
@@ -322,7 +333,7 @@ mod tests {
     #[tokio::test]
     async fn evicting_a_viewer_closes_its_sockets_and_tells_the_room() {
         let rooms = Rooms::default();
-        let claim = rooms.claim("a1", "aaaaaaaaaaaaaaaa");
+        let claim = rooms.claim("a1", "aaaaaaaaaaaaaaaa", None).unwrap();
         let (_gone, _) = rooms.enter("a1", None, who("aaaaaaaaaaaaaaaa", Some("u_old")));
         let (stay, mut rx) = rooms.enter("a1", None, who("bbbbbbbbbbbbbbbb", Some("u_other")));
         assert_eq!(rooms.evict_viewer("u_old"), 1);
@@ -390,8 +401,8 @@ mod tests {
     #[test]
     fn a_newer_claim_wakes_the_older_and_outlives_it() {
         let rooms = Rooms::default();
-        let old = rooms.claim("x", "a");
-        let new = rooms.claim("x", "a");
+        let old = rooms.claim("x", "a", Some("u_1")).unwrap();
+        let new = rooms.claim("x", "a", Some("u_1")).unwrap();
         assert!(
             futures::FutureExt::now_or_never(old.replaced.notified()).is_some(),
             "the old claim is woken"
@@ -399,9 +410,27 @@ mod tests {
         drop(old);
         let g = lock(&rooms.inner);
         assert!(Arc::ptr_eq(
-            &g.claims[&("x".into(), "a".into())],
+            &g.claims[&("x".into(), "a".into())].1,
             &new.replaced
         ));
+    }
+
+    #[test]
+    fn another_viewer_never_takes_a_label() {
+        let rooms = Rooms::default();
+        let mine = rooms.claim("x", "a", Some("v_1")).unwrap();
+        assert!(rooms.claim("x", "a", Some("v_2")).is_none());
+        assert!(rooms.claim("x", "a", None).is_none());
+        assert!(
+            futures::FutureExt::now_or_never(mine.replaced.notified()).is_none(),
+            "the holder stays"
+        );
+        assert!(rooms.claim("y", "a", Some("v_2")).is_some(), "per artifact");
+        drop(mine);
+        assert!(
+            rooms.claim("x", "a", Some("v_2")).is_some(),
+            "once it is free"
+        );
     }
 
     #[test]

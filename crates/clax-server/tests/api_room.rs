@@ -437,6 +437,28 @@ async fn a_second_socket_with_the_same_label_replaces_the_first() {
 }
 
 #[tokio::test]
+async fn another_viewer_cannot_take_a_label() {
+    let ts = TestServer::spawn().await;
+    let aid = artifact(&ts, caps()).await;
+    let (ann, bob) = (ts.viewer(Some("Ann")).await, ts.viewer(Some("Bob")).await);
+    let mut held = connect(&ts, &aid, A, None, &[cookie(&ann)]).await;
+    held.next().await;
+    let mut thief = try_connect(&ts, &aid, A, None, &[cookie(&bob)])
+        .await
+        .expect("upgrade");
+    assert_eq!(
+        thief.next().await,
+        json!({"t": "_close", "code": 4403, "reason": "peer_taken"})
+    );
+    // The holder keeps the label: the same viewer still replaces it.
+    let _again = connect(&ts, &aid, A, None, &[cookie(&ann)]).await;
+    assert_eq!(
+        held.until(|f| f["t"] == "_close").await,
+        json!({"t": "_close", "code": 4409, "reason": "replaced"})
+    );
+}
+
+#[tokio::test]
 async fn closing_a_socket_is_left_for_everyone() {
     let ts = TestServer::spawn().await;
     let aid = artifact(&ts, caps()).await;

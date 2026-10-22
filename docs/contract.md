@@ -6754,8 +6754,11 @@ admits `admin` and above; presence admits everyone. A refused emit answers
 
 **Close codes.** 4403 with reason `not_granted` (the artifact is missing or
 does not declare `room`) or `revoked` (the artifact was deleted, or a new
-version stopped declaring `room`, while the socket was open); 4409 `replaced`
-(a newer socket took this label; it is never refused); 1001 on shutdown.
+version stopped declaring `room`, while the socket was open; or, on an
+artifact's site, the site was made private under a visitor's socket, or a
+holder no longer reads the artifact) or `peer_taken` (a socket of another
+viewer holds this label: a new socket gets it at once); 4409 `replaced` (a
+newer socket of the same viewer took this label); 1001 on shutdown.
 
 **Budget and bounds.** Emits and presence share 40 a second, burst 80; an
 emit past it answers `ack` with `dropped: true`; presence past it waits and is
