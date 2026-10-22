@@ -194,6 +194,14 @@ person's browser session ends). The cookie holds only an opaque session ID:
   A visitor without the right sees clax.dev's ordinary "no access" page.
 - The code is the only thing in a URL. It is redeemed once, expires in
   seconds, and is sent with `Referrer-Policy: no-referrer`.
+- *Every code is bound to a `state`* the visitor's own browser holds as a
+  cookie on the site host (`clax_site_state`, path `/_clax/session`, ten
+  minutes), so an attacker cannot push a victim into the attacker's
+  session (login CSRF). Top-level, the site host's redirect to
+  `/site-signin` sets it and passes `state`; framed, the frame first loads
+  `/_clax/session/start`, which sets it partitioned and posts it to the
+  shell (`clax:site-state`, to the public origin), and the shell passes it
+  to `site-code`. `/_clax/session` redeems only with the matching cookie.
 
 **Opening to the world** is a new per-artifact state
 (`artifacts.site_access`: `private` or `world`), set by whoever may manage
