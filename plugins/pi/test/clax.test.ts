@@ -11,18 +11,31 @@ import { artifactRef, claxExtension, handedOver, handoverOf, htmlTitle, INJECT_R
 import { ClientError, DaemonClient, END_TIMEOUT_MS, MAX_ACK_IDS } from "../src/client.ts";
 import { discover, endpointOf, ensure } from "../src/daemon.ts";
 
-/** The body of a GET of `url`, a site host's (`<id>.localhost:<port>`),
- * sent to this machine with that `Host`. */
-function siteBytes(url: URL): Promise<Buffer> {
+/** A GET of `url`, a site host's (`<id>.localhost:<port>`), sent to this
+ * machine with that `Host` and `headers`: its `Set-Cookie` and its body. */
+function siteGet(url: URL, headers: Record<string, string>): Promise<{ cookie: string; body: Buffer }> {
   return new Promise((done, fail) => {
-    const req = httpRequest({ host: "127.0.0.1", port: url.port, path: url.pathname, headers: { host: url.host } }, res => {
+    const req = httpRequest({ host: "127.0.0.1", port: url.port, path: url.pathname + url.search, headers: { host: url.host, ...headers } }, res => {
       const parts: Buffer[] = [];
       res.on("data", (c: Buffer) => parts.push(c));
-      res.on("end", () => done(Buffer.concat(parts)));
+      res.on("end", () => done({ cookie: (res.headers["set-cookie"]?.[0] ?? "").split(";")[0] ?? "", body: Buffer.concat(parts) }));
     });
     req.on("error", fail);
     req.end();
   });
+}
+
+/** The body of a GET of `url` on its artifact's site host as `d`'s owner:
+ * with a site session made from a code the token mints, as the shell's. */
+async function siteBytes(url: URL, d: TestDaemon): Promise<Buffer> {
+  const id = url.hostname.split(".")[0];
+  const code = await fetch(`${d.base}/api/artifacts/${id}/site-code`, {
+    method: "POST",
+    headers: { authorization: `Bearer ${d.token}`, "content-type": "application/json" },
+    body: "{}",
+  });
+  const { cookie } = await siteGet(new URL((await code.json()).src), {});
+  return (await siteGet(url, { cookie })).body;
 }
 import { api, claxBin, startDaemon, type TestDaemon } from "./daemon-fixture.ts";
 import { FakePi, fakeContext, json } from "./fake-api.ts";
@@ -381,7 +394,7 @@ describe("clax Pi extension", () => {
     const url = new URL(res.assets[0].url);
     expect(url.hostname).toBe(`${p.artifact_id}.localhost`);
     expect(url.pathname).toMatch(/^\/_clax\/blob\//);
-    expect(await siteBytes(url)).toEqual(png);
+    expect(await siteBytes(url, daemon)).toEqual(png);
   });
 
   it("leaves the asset content type to the daemon, which infers it from the file name", async () => {
@@ -1542,7 +1555,7 @@ describe("comments", () => {
     const seen = await (await fetch(`${daemon.base}/api/artifacts/${pub.artifact_id}/drafts`, { headers: { authorization: `Bearer ${daemon.token}` } })).json();
     expect(seen.drafts[0]).toMatchObject({ harness: "pi", note: "rewording", base_version: 1 });
     expect(d.content[0].text).not.toContain(seen.drafts[0].token);
-    const page = (await siteBytes(new URL(`http://${pub.artifact_id}.localhost:${new URL(daemon.base).port}/_clax/draft/${seen.drafts[0].agent}/${seen.drafts[0].token}/`))).toString("utf8");
+    const page = (await siteBytes(new URL(`http://${pub.artifact_id}.localhost:${new URL(daemon.base).port}/_clax/draft/${seen.drafts[0].agent}/${seen.drafts[0].token}/`), daemon)).toString("utf8");
     expect(page).toContain("<p data-clax-draft-changed>Two</p>");
     expect(page).toContain("<h2>Goals</h2>");
     const done = await pi.callTool("clax_draft", { url_or_id: pub.artifact_id, done: true }, ctx);

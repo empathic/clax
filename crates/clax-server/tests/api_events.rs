@@ -183,6 +183,7 @@ async fn events_are_not_served_on_an_artifact_origin() {
         .client
         .get(format!("{}/api/events", ts.base))
         .header("host", format!("{aid}.localhost"))
+        .header("cookie", ts.site_cookie(aid).await)
         .send()
         .await
         .unwrap();

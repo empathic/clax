@@ -1249,6 +1249,33 @@ pub const MIGRATIONS: &[&str] = &[
         into_owner INTEGER NOT NULL,
         audit TEXT NOT NULL
     );",
+    // 44: site sessions (`crate::site_sessions`). A one-use code, made for
+    // someone who may read an artifact, is redeemed on the artifact's site
+    // host for a session there; only each one's SHA-256 is kept. Each is
+    // bound to one artifact and, when made from a browser's sign-in, to
+    // that browser session (its cookie's SHA-256, `browser_sessions`).
+    // `artifacts.site_access` is whether the site is open to the world.
+    "CREATE TABLE site_codes (
+        code_hash TEXT PRIMARY KEY,
+        artifact_id TEXT NOT NULL,
+        holder_kind TEXT NOT NULL CHECK (holder_kind IN ('person','guest','link','owner')),
+        holder TEXT,
+        browser_session TEXT,
+        partitioned INTEGER NOT NULL,
+        expires_at TEXT NOT NULL
+    );
+    CREATE TABLE site_sessions (
+        id_hash TEXT PRIMARY KEY,
+        artifact_id TEXT NOT NULL,
+        holder_kind TEXT NOT NULL,
+        holder TEXT,
+        browser_session TEXT,
+        expires_at TEXT NOT NULL,
+        created_at TEXT NOT NULL
+    );
+    CREATE INDEX site_sessions_by_browser ON site_sessions(browser_session);
+    ALTER TABLE artifacts ADD COLUMN site_access TEXT NOT NULL DEFAULT 'private'
+        CHECK (site_access IN ('private','world'));",
 ];
 
 /// The ClaxBot migration, as a schema version (spec

@@ -13,9 +13,8 @@ import { REQUEST_STUCK, connTrouble } from "../conn-notice";
 import { Lifecycle, onPageCache, retrying } from "../lifecycle";
 import { LOAD_FAILED, OPEN_FAILED, PART_FAILED, POST_FAILED, REOPEN_FAILED, RESOLVE_FAILED, SEND_FAILED, SHEET_FAILED, report, scopedNotice } from "../failure";
 import { nav } from "../nav";
-import { artifactOrigin, cachedOriginOk, pageSrc, probeOrigin } from "../origin";
-import { hostEmbed } from "../transport";
-import { appQuery, parseShellPath, shellPath } from "../route";
+import { artifactOrigin, cachedOriginOk, frameSite, pageSrc, probeOrigin } from "../origin";
+import { parseShellPath, shellPath } from "../route";
 import { type Thread, type Viewer, addComment, createThread, currentViewer, fetchThread, getViewer, listThreads, onViewer, reopenThread, resolveThread, seedViewer, sendBatch, sendToAgent, upsert } from "../threads";
 import { after } from "../clock";
 import { afterPaint, nextFrame } from "./after-paint";
@@ -49,8 +48,7 @@ export const REOPEN_NAME_MS = 120_000;
 
 export type ArtifactProps = { id: string; pinnedVersion: number | null; file?: string };
 /** `attention` is the viewer's, when the request carried the viewer cookie. */
-/** `content_origin`: a hosted daemon's content origin, where every frame is sandboxed. */
-export type Loaded = { artifact: Artifact; versions: Version[]; attention?: Attention; content_origin?: string };
+export type Loaded = { artifact: Artifact; versions: Version[]; attention?: Attention };
 export type ViewState = {
   /** The version the shell URL pins, null for the latest (a prop). */
   pinnedVersion: number | null;
@@ -487,19 +485,14 @@ export class ArtifactController {
     return this.pageAt(this.pageNow(s), s);
   }
 
-  /** Where the frame shows `file` of the shown version (at its content key
-   * on a hosted daemon). */
+  /** Where the frame shows `file` of the shown version. */
   private pageAt(file: string, s: ViewState = this.s): string {
-    return pageSrc(this.id, this.shown(s), this.site(s), file, this.version(s)?.content_key, s.data?.content_origin);
+    return pageSrc(this.id, this.shown(s), this.site(s), file);
   }
 
-  /** The site origin the frame loads from: the subdomain mode's origin; in
-   * sandbox mode, on a local daemon, the artifact's site origin still
-   * (sandboxed by the frame), and none on a hosted daemon, whose versions
-   * carry content keys and whose sandboxed content is at keyed `/c/`
-   * addresses. */
+  /** The site origin the frame loads from ([`frameSite`]). */
   site(s: ViewState = this.s): string | null {
-    return s.origin ?? (this.version(s)?.content_key ? null : artifactOrigin(this.id));
+    return frameSite(this.id, s.origin);
   }
 
   openCount(s: ViewState = this.s): number {
@@ -865,7 +858,7 @@ export class ArtifactController {
     if (this.disposed) return;
     this.latestKnown = Math.max(this.latestKnown, d.artifact.current_version);
     // The stream opens after the load starts: a working delta already heard is newer.
-    this.set(s => ({ ...(d.content_origin ? { origin: null } : {}), data: d, working: this.workingAt ? s.working : d.artifact.working ?? [], attention, looked: { ...s.looked, ...attention?.looked }, newer: s.newer !== null && s.newer <= d.artifact.current_version ? null : s.newer }));
+    this.set(s => ({ data: d, working: this.workingAt ? s.working : d.artifact.working ?? [], attention, looked: { ...s.looked, ...attention?.looked }, newer: s.newer !== null && s.newer <= d.artifact.current_version ? null : s.newer }));
     this.agentsChanged(d.artifact.participants?.agents ?? []);
     this.viewChanged();
     this.decideChangelog();
@@ -976,15 +969,11 @@ export class ArtifactController {
     const o = artifactOrigin(this.id, location, embed);
     const decided = (origin: string | null) => {
       if (this.disposed) return;
-      // A hosted daemon's content origin frames every page sandboxed.
-      if (this.s.data?.content_origin) origin = null;
       rememberFrameMode(origin);
       this.set({ origin });
       this.viewChanged();
     };
-    if (!o || boot?.artifact.content_origin) { decided(null); return; }
-    // The app answers every content origin itself: there is nothing to probe.
-    if (embed) { decided(o); return; }
+    if (!o) { decided(null); return; }
     const cached = cachedOriginOk();
     if (cached !== null) { decided(cached ? o : null); return; }
     if (boot?.frame) {

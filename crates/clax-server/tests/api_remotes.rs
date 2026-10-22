@@ -680,21 +680,10 @@ async fn a_pages_assets_are_uploaded_and_its_references_rewritten() {
         .unwrap();
     let html = String::from_utf8(bytes).unwrap();
     assert!(!html.contains(&asset_id), "{html}");
-    let url = clax_http::hosted::asset_url(&public.ts.state, &assets[0].id, false);
+    let url = clax_http::hosted::asset_url(&assets[0].id, false);
     assert_eq!(html.matches(&url).count(), 2, "{html} {url}");
-    // The page's asset loads from the public Clax.
-    let res = public
-        .ts
-        .client
-        .get(format!(
-            "{}{}",
-            public.ts.base,
-            url.trim_start_matches(&public.origin)
-        ))
-        .header(HOST, format!("localhost:{}", public.ts.addr.port()))
-        .send()
-        .await
-        .unwrap();
+    // The page's asset loads from its site on the public Clax.
+    let res = public.ts.site_get(&rid, &url).await;
     assert_eq!(res.status(), 200);
     assert_eq!(&res.bytes().await.unwrap()[..], png);
     // A later version referencing it again uploads nothing new.

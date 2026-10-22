@@ -7,7 +7,7 @@ const draft = (agent: string, over: Partial<DraftView> = {}): DraftView => ({
 const name = (h: string, harness: string) => (h === "a_2222" ? "codex" : harness);
 
 describe("draft model", () => {
-  it("builds the draft URL under /_clax/draft/ on the artifact's site origin, or under a hosted daemon's /c/, with the page and the tint", () => {
+  it("builds the draft URL under /_clax/draft/ on the artifact's site origin, or under /c/ on this host, with the page and the tint", () => {
     const d = draft("a_1111");
     expect(draftSrc("7q3k9mzx2b4t", d, null, "index.html", "2f6f2a")).toBe(`/c/7q3k9mzx2b4t/draft/a_1111/${d.token}/#tint=%232f6f2a`);
     expect(draftSrc("7q3k9mzx2b4t", d, "http://7q3k9mzx2b4t.localhost:7481", "docs/a b.html", "7cc36f"))

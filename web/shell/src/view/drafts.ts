@@ -52,7 +52,7 @@ export class Drafts {
   showIn(frame: FrameHost, s: ViewState): boolean {
     const d = this.shown(s);
     if (!d || s.origin === undefined) return false;
-    frame.show(draftSrc(this.host.id, d, this.host.site(s), this.page ?? this.host.startFile, tint(), s.data?.content_origin), s.origin === null, `draft-${d.agent}-${d.token}-${s.origin ? "o" : "s"}`);
+    frame.show(draftSrc(this.host.id, d, this.host.site(s), this.page ?? this.host.startFile, tint()), s.origin === null, `draft-${d.agent}-${d.token}-${s.origin ? "o" : "s"}`);
     return true;
   }
 

@@ -235,8 +235,7 @@ mod l10 {
         ("shell::static_file", NoArtifact),
         ("health::healthz", NoArtifact),
         ("assets::blob", SeesLive),
-        ("threads::keyed_clip", SeesLive),
-        ("assets::scoped_blob", SeesLive),
+        ("site_signin::page", SeesLive),
         ("perf::calibrate", Token),
         ("perf::verify_times", Token),
         ("toolpath::export", Bot),
@@ -330,6 +329,7 @@ mod l10 {
             "shell" => include_str!("../shell/mod.rs"),
             "get_page" => include_str!("../shell/get_page.rs"),
             "sites" => include_str!("sites.rs"),
+            "site_signin" => include_str!("site_signin.rs"),
             "snapshot" => include_str!("snapshot.rs"),
             "stream" => include_str!("stream.rs"),
             "surface" => include_str!("surface.rs"),
@@ -503,16 +503,8 @@ mod l10 {
     const UNAUDITED: &[(&str, &str)] = &[
         ("working::renew", "a heartbeat (§6.11)"),
         (
-            "app_bundles::record_install",
-            "an anonymous count of an app's installs, of no one's content",
-        ),
-        (
-            "admin::test",
-            "a read of the provider's model list, recorded as the view view.admin {page: provider.test}",
-        ),
-        (
-            "settings::put",
-            "writes the home's config.toml, not the store; its changes are recorded as admin.settings by the SettingsAudit hook (clax_http::bot::SettingsRecorded)",
+            "site_signin::site_code",
+            "mints a one-use code for the caller's own browser to read a site it may read; changes nothing",
         ),
         (
             "remotes::add",

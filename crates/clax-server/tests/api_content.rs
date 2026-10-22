@@ -38,6 +38,7 @@ async fn serves_wrapped_index_and_files_with_caching_headers() {
     let res = no_redirect_client()
         .get(format!("{}/_clax/v/1", ts.base))
         .header("host", ts.site_host(id))
+        .header("cookie", ts.site_cookie(id).await)
         .send()
         .await
         .unwrap();
@@ -94,6 +95,7 @@ async fn artifact_host_routes_to_content_and_nothing_else() {
         .client
         .get(format!("{}/_clax/v/1/", ts.base))
         .header("host", &host)
+        .header("cookie", ts.site_cookie(id).await)
         .send()
         .await
         .unwrap();
@@ -103,6 +105,7 @@ async fn artifact_host_routes_to_content_and_nothing_else() {
         .client
         .get(format!("{}/_clax/healthz", ts.base))
         .header("host", &host)
+        .header("cookie", ts.site_cookie(id).await)
         .send()
         .await
         .unwrap();
@@ -111,6 +114,7 @@ async fn artifact_host_routes_to_content_and_nothing_else() {
         .client
         .get(format!("{}/api/artifacts", ts.base))
         .header("host", &host)
+        .header("cookie", ts.site_cookie(id).await)
         .send()
         .await
         .unwrap();
@@ -152,6 +156,7 @@ async fn the_main_origin_serves_no_content_and_the_artifact_origin_is_not_sandbo
             .client
             .get(format!("{}{path}", ts.base))
             .header("host", &host)
+            .header("cookie", ts.site_cookie(id).await)
             .send()
             .await
             .unwrap();
@@ -182,6 +187,7 @@ async fn only_the_shell_and_the_artifact_frame_content_on_an_artifact_origin() {
                 .client
                 .get(format!("{}{path}", ts.base))
                 .header("host", &host)
+                .header("cookie", ts.site_cookie(id).await)
                 .send()
                 .await
                 .unwrap();
@@ -195,11 +201,13 @@ async fn only_the_shell_and_the_artifact_frame_content_on_an_artifact_origin() {
     }
     // A revalidation keeps the policy.
     let host = format!("{id}.localhost:4321");
+    let cookie = ts.site_cookie(id).await;
     let get = |etag: Option<String>| {
         let mut req = ts
             .client
             .get(format!("{}/_clax/v/1/", ts.base))
-            .header("host", &host);
+            .header("host", &host)
+            .header("cookie", &cookie);
         if let Some(e) = etag {
             req = req.header("if-none-match", e);
         }
@@ -503,6 +511,7 @@ async fn redirects_are_relative() {
     let res = c
         .get(format!("{}/_clax/v/1", ts.base))
         .header("host", format!("{id}.localhost"))
+        .header("cookie", ts.site_cookie(id).await)
         .send()
         .await
         .unwrap();
@@ -511,6 +520,7 @@ async fn redirects_are_relative() {
     let res = c
         .get(format!("{}/index.html", ts.base))
         .header("host", format!("{id}.localhost"))
+        .header("cookie", ts.site_cookie(id).await)
         .send()
         .await
         .unwrap();
@@ -519,6 +529,7 @@ async fn redirects_are_relative() {
     let res = c
         .get(format!("{}/_clax/v/1/index.html", ts.base))
         .header("host", format!("{id}.localhost"))
+        .header("cookie", ts.site_cookie(id).await)
         .send()
         .await
         .unwrap();
@@ -537,6 +548,7 @@ async fn artifact_host_passes_blob_and_bridge_paths_to_router() {
             .client
             .get(format!("{}{path}", ts.base))
             .header("host", &host)
+            .header("cookie", ts.site_cookie(id).await)
             .send()
             .await
             .unwrap();
@@ -619,6 +631,7 @@ async fn every_page_path_under_an_artifact_serves_the_artifact_entry() {
         .client
         .get(format!("{}/a/{id}/about.html", ts.base))
         .header("host", format!("{id}.localhost"))
+        .header("cookie", ts.site_cookie(id).await)
         .send()
         .await
         .unwrap();
@@ -695,6 +708,7 @@ async fn supporting_html_files_are_wrapped_like_the_index_and_others_are_not() {
         .client
         .get(format!("{}/_clax/v/1/about.html", ts.base))
         .header("host", &host)
+        .header("cookie", ts.site_cookie(id).await)
         .send()
         .await
         .unwrap();
@@ -732,7 +746,8 @@ async fn a_supporting_page_carrying_a_bridge_tag_is_served_with_one() {
     assert!(html.contains(&format!("data-artifact=\"{id}\"")));
 }
 
-/// `GET path`, on `host` when given, with `If-None-Match: etag` when given.
+/// `GET path`, on `host` when given (a site host's with the owner's site
+/// session), with `If-None-Match: etag` when given.
 async fn get_on(
     ts: &TestServer,
     host: Option<&str>,
@@ -742,6 +757,10 @@ async fn get_on(
     let mut req = ts.client.get(format!("{}{path}", ts.base));
     if let Some(h) = host {
         req = req.header("host", h);
+        // A site host's: with a site session of the owner's.
+        if let Some((id, _)) = h.split_once(".localhost") {
+            req = req.header("cookie", ts.site_cookie(id).await);
+        }
     }
     if let Some(e) = etag {
         req = req.header("if-none-match", e);
@@ -928,6 +947,7 @@ async fn an_html_file_that_is_not_utf8_is_served_as_stored_and_remembered() {
             .client
             .get(format!("{}/_clax/v/1/latin1.html", ts.base))
             .header("host", ts.site_host(&id))
+            .header("cookie", ts.site_cookie(&id).await)
             .header("if-none-match", &etag)
             .send()
             .await

@@ -3551,11 +3551,11 @@ line names it. `clip_path` is the absolute path of the clip, or
 `null` when none was captured. An agent whose Clax is on another machine
 reaching it through a hosted Clax's MCP adapter with an agent token (no
 shim fetches clips for it) has `clip_path` `null` and, for a clip it is
-shown, `clip: {url, note}`: `url` is the clip's keyed address
-(`<origin>/_clip/<aid>/<tid>?k=<key>`, the content origin's when the Clax
-has one, else its public origin's), which serves the PNG with no
-credential and is cached privately as immutable (a live page's clip has
-no such address); `note` says what it is and how to see it. A listing attaches no image; `thread_id` attaches that thread's
+shown, `clip: {url, note}`: `url` is the clip's route on the Clax's
+public origin (`<origin>/api/artifacts/<aid>/threads/<tid>/clip`), which
+serves the PNG to the reader's own credential (the agent token) alone and
+is cached privately (a live page's clip is named by none); `note` says
+what it is and how to see it. A listing attaches no image; `thread_id` attaches that thread's
 clip to the result as an MCP image block (`image/png`), unless it is over
 1 MiB or a side is over 4096 pixels, when `note` says it is not attached
 and why. Any agent of a hosted Clax reads `clip` beside its other fields.
@@ -5193,8 +5193,8 @@ router), and a test fails when it differs:
 | `GET /.well-known/assetlinks.json` | Denied | no |
 | `GET /_blob/{aid}/{asset_id}` | Denied | yes: 403 `not_for_agents` |
 | `GET /_blob/{asset_id}` | Denied | yes: 403 `not_for_agents` |
+| `GET /_clax/blob/{asset_id}` | Denied | yes: 403 `not_for_agents` |
 | `GET /_clax/{*path}` | Denied | no |
-| `GET /_clip/{aid}/{tid}` | Denied | no |
 | `GET /a/{aid}` | Denied | yes: 403 `not_for_agents` |
 | `GET /a/{aid}/` | Denied | yes: 403 `not_for_agents` |
 | `GET /a/{aid}/get` | Denied | yes: 403 `not_for_agents` |
@@ -5255,6 +5255,7 @@ router), and a test fails when it differs:
 | `GET /api/artifacts/{aid}/sample-grant` | Denied | no |
 | `PUT /api/artifacts/{aid}/sample-grant` | Denied | no |
 | `POST /api/artifacts/{aid}/sample/{call}/tool_result` | Denied | no |
+| `POST /api/artifacts/{aid}/site-code` | Denied | yes: 403 `not_for_agents` |
 | `GET /api/artifacts/{aid}/snapshot` | Denied | yes: 403 `not_for_agents` |
 | `POST /api/artifacts/{aid}/unsent:drop` | Denied | yes: 403 `not_for_agents` |
 | `POST /api/artifacts/{aid}/versions:restore` | Denied | no |
@@ -5388,7 +5389,7 @@ router), and a test fails when it differs:
 | `POST /mcp/json` | Denied | no |
 | `GET /me` | Denied | no |
 | `GET /people` | Denied | no |
-| `GET /settings` | Denied | no |
+| `GET /site-signin` | Denied | yes: 403 `not_for_agents` |
 | `GET /tags` | Denied | no |
 <!-- route-table:end -->
 
@@ -8635,8 +8636,34 @@ it starts, the runs a previous process left. A build without the
   `/_blob/<asset ID>` for its assets. Publishing refuses a file under
   `_clax/`, and under `_blob/` for such an artifact. Every response there
   carries `Referrer-Policy: no-referrer`. The host must be exactly a valid
-  12-character lowercase artifact ID followed by `.localhost` and an
-  optional numeric port. The main origin serves no content.
+  12-character lowercase artifact ID followed by `.localhost` (a hosted
+  Clax's `[hosted] site_domain`) and an optional numeric port. On a request
+  whose `Host` is `localhost` or `127.0.0.1` the main origin serves no
+  content; to any other `Host` that reaches the daemon (a LAN viewer's
+  address, `[::1]`, or a name that resolves to this machine, as in DNS
+  rebinding) a local daemon still serves `/c/<id>/v/<n>/…` by ID, for a
+  shell that has no site origins. A hosted Clax's public origin serves no
+  content.
+- A site's every path but `/_clax/healthz`, `/_clax/session` and the UI's
+  files is decided by its artifact's access on every request. A site open
+  to the world is read by anyone. Any other needs the site cookie
+  (`clax_site`, on `https` `__Host-clax_site`; host-only, `HttpOnly`,
+  `Path=/`, for the browser's session), naming a site session of that
+  artifact whose holder may read it now: removing a share, turning a link
+  off or signing out refuses the very next request. Without one, a
+  top-level navigation is sent (302) to the main origin's
+  `/site-signin?host=<site host>&next=<path>`, and anything else answers
+  401 `site_session_required`. A session is made from a one-use code good
+  for 60 s: the shell asks `POST /api/artifacts/<id>/site-code` (`{"next":
+  "<path>", "partitioned": true}`, the owner's credential on a local
+  daemon, the browser's session on a hosted Clax, 404 for who may not read
+  it) for `{"src": "<site origin>/_clax/session?code=<code>&next=<path>"}`;
+  `/site-signin` signs the browser in when it must, sends one without the
+  right to the artifact's page, and else to the same address. The site's
+  `/_clax/session` sets the cookie (`SameSite=None; Secure; Partitioned`
+  for the shell's frame, else `SameSite=Lax`) and redirects to `next`, a
+  path on that host (anything else is `/`). A session lasts an hour from
+  its last use.
 - The viewer probes `http://<id>.localhost:<port>/_clax/healthz` (1 s
   timeout, cached per browser session) when the gallery is opened on
   `localhost` or `127.0.0.1`. When it answers, the content iframe loads
@@ -8645,7 +8672,11 @@ it starts, the runs a previous process left. A build without the
   with `sandbox="allow-scripts allow-forms allow-modals allow-popups
   allow-downloads"` and no `allow-same-origin`, so the content runs in an
   opaque origin.
-- `/_blob/...` responses and the raw file route
+- On the main origin `/_blob/<asset ID>` (with or without the old `?k=`)
+  and `/_clax/blob/<asset ID>` serve no bytes: they answer 301 to the
+  asset's address on its artifact's site, whose access decides. The old
+  keyed addresses `/c/<id>/v/<n>/k/<key>/…` and `/_clip/…` are 404.
+- Asset responses and the raw file route
   (`/api/artifacts/<id>/versions/<n>/files/...`) carry
   `Content-Security-Policy: sandbox`, so opening any of them as a top-level
   page cannot reach the API same-origin. Content on an artifact's own origin
@@ -8703,11 +8734,9 @@ it starts, the runs a previous process left. A build without the
   requests with the token and never in `/api/events`; the clip itself
   (`GET /api/artifacts/<aid>/threads/<tid>/clip`) is served with
   `Content-Security-Policy: sandbox` and `X-Content-Type-Options: nosniff`.
-  A hosted Clax also serves it at `/_clip/<aid>/<tid>?k=<key>` (404
-  without the key, and on a local daemon), the address the thread views an
-  agent reads name in `clip_link` when the agent is shown the clip; whoever
-  saw the address keeps reading the clip, as with a version's keyed
-  content address.
+  The thread views an agent of a hosted Clax reads name that route, on the
+  public origin, in `clip_link` when the agent is shown the clip; it reads
+  it with its own credential.
   Comment text is untrusted input: tool results and the skill say so, and the
   payload quotes it as a JSON string.
 - The `db` routes (`/api/artifacts/<id>/docs...`) refuse requests whose

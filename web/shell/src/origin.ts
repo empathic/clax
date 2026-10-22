@@ -49,17 +49,23 @@ export async function probeOrigin(origin: string, f: typeof fetch = fetch): Prom
   return v === 1;
 }
 
+/** The site origin the frame loads from, as `frame_site` in
+ * crates/clax-server/src/shell/boot.rs: the subdomain mode's `origin`; in
+ * sandbox mode the artifact's site origin still on `localhost` or
+ * `127.0.0.1` (the frame sandboxes it), and none elsewhere. */
+export function frameSite(id: string, origin: string | null | undefined, loc: Location = location): string | null {
+  return origin ?? artifactOrigin(id, loc);
+}
+
 /** A version's content root: on the artifact's site origin (`site`),
- * `/_clax/v/<n>/`; without one (a hosted daemon's sandboxed content), the
- * keyed `/c/<id>/v/<n>/k/<key>/`, on its content origin (`base`) when it
- * has one. */
-export function contentSrc(id: string, n: number, site: string | null, key?: string | null, base?: string | null): string {
-  return site ? `${site}/_clax/v/${n}/` : `${base ?? ""}/c/${id}/v/${n}/` + (key ? `k/${key}/` : "");
+ * `/_clax/v/<n>/`; without one, `/c/<id>/v/<n>/` on this host. */
+export function contentSrc(id: string, n: number, site: string | null): string {
+  return site ? `${site}/_clax/v/${n}/` : `/c/${id}/v/${n}/`;
 }
 
 /** Where the frame shows the page published at `file`: the version's root
  * for `index.html`, else the file's path under it, each segment encoded. */
-export function pageSrc(id: string, n: number, site: string | null, file: string, key?: string | null, base?: string | null): string {
-  const root = contentSrc(id, n, site, key, base);
+export function pageSrc(id: string, n: number, site: string | null, file: string): string {
+  const root = contentSrc(id, n, site);
   return file === "index.html" ? root : root + file.split("/").map(encodeURIComponent).join("/");
 }

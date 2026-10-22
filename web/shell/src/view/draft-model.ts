@@ -21,10 +21,9 @@ export function oldestFirst(list: DraftView[]): DraftView[] {
 
 /** Where the frame shows `file` of draft `d` on artifact `id`: under the
  * artifact's own origin when it has one, else under `/c/<id>/` on this one,
- * each path segment encoded (there on a hosted daemon's content origin,
- * `base`); the fragment names the tint colour. */
-export function draftSrc(id: string, d: DraftView, origin: string | null, file: string, tint: string, base?: string | null): string {
-  const root = origin ? `${origin}/_clax/draft/` : `${base ?? ""}/c/${id}/draft/`;
+ * each path segment encoded; the fragment names the tint colour. */
+export function draftSrc(id: string, d: DraftView, origin: string | null, file: string, tint: string): string {
+  const root = origin ? `${origin}/_clax/draft/` : `/c/${id}/draft/`;
   const path = file === "index.html" ? "" : file.split("/").map(encodeURIComponent).join("/");
   return `${root}${encodeURIComponent(d.agent)}/${encodeURIComponent(d.token)}/${path}#tint=%23${tint}`;
 }

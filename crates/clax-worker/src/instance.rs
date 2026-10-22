@@ -18,9 +18,10 @@
 //! (`clax_http::hosted`): people sign in through the browser (`/setup`
 //! with the `SETUP_SECRET` secret, invites, sign-in links, guests), each
 //! person's browser and agents act within their rights, and agent tokens
-//! reach `/mcp`. Its public origin is `PUBLIC_ORIGIN` (required), artifact
-//! content is served on `CONTENT_ORIGIN` when set (and never on the public
-//! origin), and clients are named by `CF-Connecting-IP`. The owner's token
+//! reach `/mcp`. Its public origin is `PUBLIC_ORIGIN` (required), each
+//! artifact's content is served on its site host alone, `CONTENT_ORIGIN`
+//! (when set) is the retired content origin, where an asset's old address
+//! redirects to its site, and clients are named by `CF-Connecting-IP`. The owner's token
 //! (`CLAX_TOKEN`, else one the object made and keeps) still works for the
 //! CLI. Without `HOSTED`, no request reaches the object over a connection
 //! of the owner's machine (`clax_http::auth::conn_of` is `None` on
@@ -388,7 +389,7 @@ fn hosted(env: &Env) -> Result<Option<Arc<clax_http::hosted::Hosted>>> {
     let h = if content.is_empty() {
         h
     } else {
-        h.with_content_origin(&content).ok_or_else(|| {
+        h.with_retired_content_origin(&content).ok_or_else(|| {
             rust_err(format!(
                 "CONTENT_ORIGIN must be an origin of its own host, not {content:?}"
             ))

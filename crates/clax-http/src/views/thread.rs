@@ -311,16 +311,15 @@ pub struct VisFor {
     /// How thread views read their delivery state ([`clax_store::Delivery::view`]).
     pub viewer: DeliveryViewer,
     /// For an agent on a hosted daemon: how its thread views name a shown
-    /// clip's keyed address (`clip_link`).
+    /// clip's address (`clip_link`).
     pub clip_links: Option<ClipLinks>,
 }
 
-/// How a hosted daemon names a thread's clip at its keyed address
+/// How a hosted daemon names a thread's clip at its address
 /// ([`crate::hosted::clip_link`]) in the thread views an agent reads.
 #[derive(Clone)]
 pub struct ClipLinks {
     hosted: std::sync::Arc<crate::hosted::Hosted>,
-    token: String,
     live: std::sync::Arc<clax_realtime::live::LiveIds>,
 }
 
@@ -329,17 +328,14 @@ impl ClipLinks {
     pub fn of(s: &AppState) -> Option<ClipLinks> {
         s.hosted.as_ref().map(|h| ClipLinks {
             hosted: h.clone(),
-            token: s.token.clone(),
             live: s.live_ids.clone(),
         })
     }
 
-    /// The keyed address of thread `tid`'s clip on artifact `aid`; `None`
-    /// for a live page's, which the address does not serve to a caller
-    /// with no credential (`clax_server::routes::threads::keyed_clip`).
+    /// The address of thread `tid`'s clip on artifact `aid`; `None` for a
+    /// live page's, which no agent of another machine reads.
     pub fn link(&self, aid: &str, tid: &str) -> Option<String> {
-        (!self.live.contains(aid))
-            .then(|| crate::hosted::clip_link_at(&self.hosted, &self.token, aid, tid))
+        (!self.live.contains(aid)).then(|| crate::hosted::clip_link_at(&self.hosted, aid, tid))
     }
 }
 
@@ -528,7 +524,7 @@ impl Vis {
             }
         }
         // A clip the reader is shown (its `clip_url` survived the filter)
-        // is named at its keyed address too, but for a live page's.
+        // is named at its address too, but for a live page's.
         if let Some(links) = &self.clip_links {
             for (t, view) in threads.iter().zip(&mut views) {
                 if !view["clip_url"].is_null()

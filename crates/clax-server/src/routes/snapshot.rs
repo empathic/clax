@@ -10,10 +10,7 @@
 //! resolved ones included, `viewing` counts the people seated and the
 //! spectators seen in the last 15 s, `seats_free` the people seats free for
 //! a connected person and `guest_seats_free` those free for a guest, and
-//! `built_at` is the daemon's time of the build in ms. On a hosted daemon
-//! each version carries its `content_key` ([`clax_http::hosted`]), as the
-//! artifact's own view does, so a spectator's page loads a newer version's
-//! files. Every caller gets
+//! `built_at` is the daemon's time of the build in ms. Every caller gets
 //! the same bytes, so a build is shared for 5 s per artifact and head
 //! version: `x-clax-cache` says `hit` or `miss`, and a new version is a
 //! miss at once.
@@ -150,7 +147,6 @@ pub async fn snapshot(
         })
         .await?;
     strip_sessions(&mut v);
-    clax_http::hosted::stamp_content_keys(&s, &mut v);
     let counts = s.seats.counts(id.as_str());
     v["viewing"] = json!(counts.viewing);
     v["seats_free"] = json!(counts.seats_free);

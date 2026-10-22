@@ -80,8 +80,6 @@ export type Version = {
   content_sha256?: string | null;
   /** The agent's note on what changed; the IDs of the threads this version addresses. */
   note?: string | null; addresses?: string[];
-  /** A hosted daemon's key to the version's content (its frame's `k/<key>/`). */
-  content_key?: string;
 };
 
 /** A non-OK API response; `status` is the HTTP status code, `code` the

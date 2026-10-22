@@ -1064,37 +1064,48 @@ async fn a_guests_stream_holds_only_shared_pages_topics() {
 }
 
 #[tokio::test]
-async fn content_is_served_only_at_its_key_and_an_id_alone_reads_nothing() {
+async fn content_is_served_on_its_site_alone_and_keyed_addresses_are_gone() {
     let site = Site::new().await;
     let owner = site.owner().await;
     let aid = site.artifact().await;
     let anon = Browser::default();
     let port = site.ts.addr.port();
-    let status = |b: &Browser, p: String, host: Option<String>| {
-        let mut r = site
-            .ts
-            .client
-            .get(site.url(&p))
-            .header(HOST, host.unwrap_or(format!("localhost:{port}")));
+    let raw = reqwest::Client::builder()
+        .redirect(reqwest::redirect::Policy::none())
+        .build()
+        .unwrap();
+    let at = |b: &Browser, p: String, host: String, cookie: Option<String>| {
+        let mut r = raw.get(site.url(&p)).header(HOST, host);
+        let mut cookies: Vec<String> = Vec::new();
         if let Some(c) = &b.cookie {
-            r = r.header(COOKIE, format!("clax_session={c}"));
+            cookies.push(format!("clax_session={c}"));
+        }
+        if let Some(c) = cookie {
+            cookies.push(c);
+        }
+        if !cookies.is_empty() {
+            r = r.header(COOKIE, cookies.join("; "));
         }
         async move { r.send().await.unwrap() }
     };
-    let content_host = Some(format!("{aid}.localhost:{port}"));
-    // By its ID alone, nothing: not on the public host, not on its content
-    // host, not with a member's session, not the API's raw file.
+    let public = format!("localhost:{port}");
+    let site_host = site.ts.site_host(&aid);
+    // On the public host, nothing: not by ID, not at a version's keyed
+    // address of before, not with a member's session.
     for b in [&anon, &owner] {
         for p in [
             format!("/c/{aid}/v/1/"),
-            format!("/c/{aid}/v/1/index.html"),
             format!("/c/{aid}/v/1"),
             format!("/c/{aid}/v/1/k/00000000000000000000000000000000/"),
+            format!("/c/{aid}/draft/a_s1/AAAAAAAAAAAAAAAAAAAAAA/"),
+            format!("/_clip/{aid}/01J9ZZZZZZZZZZZZZZZZZZZZZZ?k=00"),
         ] {
-            assert_eq!(status(b, p.clone(), None).await.status(), 404, "{p}");
+            assert_eq!(
+                at(b, p.clone(), public.clone(), None).await.status(),
+                404,
+                "{p}"
+            );
         }
-        let r = status(b, "/v/1/".into(), content_host.clone()).await;
-        assert_eq!(r.status(), 404);
     }
     let (s, v) = site
         .get(
@@ -1103,87 +1114,44 @@ async fn content_is_served_only_at_its_key_and_an_id_alone_reads_nothing() {
         )
         .await;
     assert_eq!((s, code(&v)), (404, "not_found"));
-    // Who may read the artifact is handed its versions' keys.
+    // No view hands out a content key any more.
     let (s, v) = site.get(&owner, &format!("/api/artifacts/{aid}")).await;
     assert_eq!(s, 200, "{v}");
-    let key = v["versions"][0]["content_key"]
-        .as_str()
-        .unwrap()
-        .to_string();
-    assert_eq!(key.len(), 32);
-    let (_, vs) = site
-        .get(&owner, &format!("/api/artifacts/{aid}/versions"))
-        .await;
-    assert_eq!(vs["versions"][0]["content_key"], json!(key));
-    // At the key, the content, with no referrer (its URL is the key).
-    let r = status(&anon, format!("/c/{aid}/v/1/k/{key}/"), None).await;
+    assert!(v["versions"][0].get("content_key").is_none(), "{v}");
+    assert!(v.get("content_origin").is_none(), "{v}");
+    // On its site host, its content, behind a site session.
+    let r = at(&anon, "/_clax/v/1/".into(), site_host.clone(), None).await;
+    assert_eq!(r.status(), 401);
+    let session = site.ts.site_cookie(&aid).await;
+    let r = at(
+        &anon,
+        "/_clax/v/1/".into(),
+        site_host.clone(),
+        Some(session.clone()),
+    )
+    .await;
     assert_eq!(r.status(), 200);
     assert_eq!(r.headers()["referrer-policy"], "no-referrer");
-    assert!(r.text().await.unwrap().contains("<h1>Plan</h1>"));
-    // A site host has no keyed addresses: `/v/1/k/<key>/` is its own path.
-    let r = status(&anon, format!("/v/1/k/{key}/"), content_host.clone()).await;
-    assert_eq!(r.status(), 404);
-    let r = reqwest::Client::builder()
-        .redirect(reqwest::redirect::Policy::none())
-        .build()
-        .unwrap()
-        .get(site.url(&format!("/c/{aid}/v/1/k/{key}")))
-        .header(HOST, format!("localhost:{port}"))
-        .send()
+    assert_eq!(
+        r.headers()["content-security-policy"],
+        format!("frame-ancestors 'self' {}", site.origin)
+    );
+    let html = r.text().await.unwrap();
+    assert!(html.contains("<h1>Plan</h1>"));
+    assert!(
+        html.contains(&format!("data-origin=\"{}\"", site.origin)),
+        "{html}"
+    );
+    // The artifact page frames nothing itself: the shell asks for a site
+    // code first.
+    let page = at(&owner, format!("/a/{aid}"), public.clone(), None)
         .await
-        .unwrap();
-    assert_eq!(r.status(), 308);
-    assert_eq!(r.headers()["location"], format!("{key}/"));
-    // Another version's address, a version in another form, or a key cut
-    // short reads nothing.
-    let (s, _) = site
-        .ts
-        .authed(site.ts.client.post(site.url(&format!("/api/artifacts/{aid}/versions"))))
-        .header(HOST, format!("localhost:{port}"))
-        .json(&json!({"if_version": 1, "files": {"index.html": {"content": "<h1>Two</h1>", "encoding": "utf8"}}}))
-        .send()
-        .await
-        .map(|r| (r.status().as_u16(), ()))
-        .unwrap();
-    assert_eq!(s, 201);
-    for p in [
-        format!("/c/{aid}/v/2/k/{key}/"),
-        format!("/c/{aid}/v/01/k/{key}/"),
-        format!("/c/{aid}/v/1/k/{}/", &key[..31]),
-        format!("/c/{aid}/v/1/k/{}/", key.to_uppercase()),
-    ] {
-        assert_eq!(status(&anon, p.clone(), None).await.status(), 404, "{p}");
-    }
-    // The artifact page frames the latest version at its key.
-    let page = site
-        .ts
-        .client
-        .get(site.url(&format!("/a/{aid}")))
-        .header(HOST, format!("localhost:{port}"))
-        .header(
-            COOKIE,
-            format!(
-                "clax_session={}; clax_frame=sandbox",
-                owner.cookie.as_deref().unwrap()
-            ),
-        )
-        .send()
-        .await
-        .unwrap()
         .text()
         .await
         .unwrap();
-    let (_, v2) = site
-        .get(&owner, &format!("/api/artifacts/{aid}/versions/2"))
-        .await;
-    let key2 = v2["version"]["content_key"].as_str().unwrap();
-    assert_ne!(key2, key);
-    assert!(
-        page.contains(&format!("src=\"/c/{aid}/v/2/k/{key2}/\"")),
-        "{page}"
-    );
-    assert!(page.contains(&format!("\"content_key\":\"{key2}\"")));
-    // An asset: by its ID nothing, at its keyed URL its bytes.
+    assert!(!page.contains("class=\"frame\""), "{page}");
+    assert!(!page.contains("content_key"), "{page}");
+    // An asset is named on its site host.
     let form = reqwest::multipart::Form::new().part(
         "file",
         reqwest::multipart::Part::bytes(clax_testkit::FAKE_PNG.to_vec())
@@ -1198,7 +1166,7 @@ async fn content_is_served_only_at_its_key_and_an_id_alone_reads_nothing() {
                 .client
                 .post(site.url(&format!("/api/artifacts/{aid}/assets"))),
         )
-        .header(HOST, format!("localhost:{port}"))
+        .header(HOST, &public)
         .multipart(form)
         .send()
         .await
@@ -1206,31 +1174,21 @@ async fn content_is_served_only_at_its_key_and_an_id_alone_reads_nothing() {
     let (s, up) = json_of(r).await;
     assert_eq!(s, 201, "{up}");
     let asset = up["asset"]["id"].as_str().unwrap().to_string();
-    let url = up["url"].as_str().unwrap().to_string();
-    assert!(url.starts_with(&format!("/_blob/{asset}?k=")), "{url}");
+    assert_eq!(up["url"], json!(format!("/_clax/blob/{asset}")));
     let (_, listed) = site
         .get(&owner, &format!("/api/artifacts/{aid}/assets"))
         .await;
-    assert_eq!(listed["assets"][0]["url"], json!(url));
-    for p in [
-        format!("/_blob/{asset}"),
-        format!("/_blob/{asset}?k=0"),
-        format!("{url}0"),
-    ] {
-        assert_eq!(status(&anon, p.clone(), None).await.status(), 404, "{p}");
-    }
-    let r = status(&anon, url.clone(), None).await;
-    assert_eq!(r.status(), 200);
-    assert_eq!(r.headers()["referrer-policy"], "no-referrer");
-    // On the site host its keyed address is the artifact's own path; its
-    // asset is at `/_clax/blob/<id>`.
-    assert_eq!(status(&anon, url, content_host.clone()).await.status(), 404);
+    assert_eq!(listed["assets"][0]["url"], up["url"]);
+    let blob = format!("/_clax/blob/{asset}");
     assert_eq!(
-        status(&anon, format!("/_clax/blob/{asset}"), content_host)
+        at(&anon, blob.clone(), site_host.clone(), None)
             .await
             .status(),
-        200
+        401
     );
+    let r = at(&anon, blob.clone(), site_host.clone(), Some(session)).await;
+    assert_eq!(r.status(), 200);
+    assert_eq!(r.bytes().await.unwrap().as_ref(), clax_testkit::FAKE_PNG);
     assert_eq!(
         site.req(&anon, reqwest::Method::GET, "/healthz")
             .send()
@@ -1239,6 +1197,102 @@ async fn content_is_served_only_at_its_key_and_an_id_alone_reads_nothing() {
             .status(),
         200
     );
+}
+
+#[tokio::test]
+async fn an_old_keyed_asset_url_only_redirects_to_its_site() {
+    let site = Site::new().await;
+    let aid = site.artifact().await;
+    let port = site.ts.addr.port();
+    let raw = reqwest::Client::builder()
+        .redirect(reqwest::redirect::Policy::none())
+        .build()
+        .unwrap();
+    rusqlite::Connection::open(site.ts.home.db_path())
+        .unwrap()
+        .execute(
+            "UPDATE artifacts SET legacy_paths = 1 WHERE id = ?1",
+            [&aid],
+        )
+        .unwrap();
+    let form = reqwest::multipart::Form::new().part(
+        "file",
+        reqwest::multipart::Part::bytes(clax_testkit::FAKE_PNG.to_vec())
+            .file_name("a.png")
+            .mime_str("image/png")
+            .unwrap(),
+    );
+    let (s, up) = json_of(
+        site.ts
+            .authed(
+                site.ts
+                    .client
+                    .post(site.url(&format!("/api/artifacts/{aid}/assets"))),
+            )
+            .header(HOST, format!("localhost:{port}"))
+            .multipart(form)
+            .send()
+            .await
+            .unwrap(),
+    )
+    .await;
+    assert_eq!(s, 201, "{up}");
+    let asset = up["asset"]["id"].as_str().unwrap().to_string();
+    assert_eq!(
+        up["url"],
+        json!(format!("/_blob/{asset}")),
+        "a legacy page's address"
+    );
+    let site_host = site.ts.site_host(&aid);
+    for p in [
+        format!("/_blob/{asset}?k=0123456789abcdef0123456789abcdef"),
+        format!("/_blob/{asset}"),
+        format!("/_clax/blob/{asset}"),
+    ] {
+        let r = raw
+            .get(site.url(&p))
+            .header(HOST, format!("localhost:{port}"))
+            .send()
+            .await
+            .unwrap();
+        assert_eq!(r.status(), 301, "{p}");
+        assert_eq!(
+            r.headers()["location"],
+            format!("http://{site_host}/_blob/{asset}"),
+            "{p}"
+        );
+        assert!(r.bytes().await.unwrap().is_empty(), "{p}: no bytes");
+    }
+    let r = raw
+        .get(site.url("/_blob/01J9Z3K4M5N6P7Q8R9S0T1V2W3?k=0"))
+        .header(HOST, format!("localhost:{port}"))
+        .send()
+        .await
+        .unwrap();
+    assert_eq!(r.status(), 404, "an unknown asset");
+    // Followed with no site session, the site sends the browser to sign in.
+    let r = raw
+        .get(site.url(&format!("/_blob/{asset}")))
+        .header(HOST, &site_host)
+        .header("accept", "text/html")
+        .send()
+        .await
+        .unwrap();
+    assert_eq!(r.status(), 302);
+    assert!(
+        r.headers()["location"]
+            .to_str()
+            .unwrap()
+            .starts_with(&format!("{}/site-signin?", site.origin))
+    );
+    let r = raw
+        .get(site.url(&format!("/_blob/{asset}")))
+        .header(HOST, &site_host)
+        .header(COOKIE, site.ts.site_cookie(&aid).await)
+        .send()
+        .await
+        .unwrap();
+    assert_eq!(r.status(), 200);
 }
 
 #[tokio::test]
@@ -1878,7 +1932,7 @@ fn rand_suffix() -> usize {
 }
 
 #[tokio::test]
-async fn seats_hold_behind_a_persons_rights_and_a_spectators_snapshot_carries_keys() {
+async fn seats_hold_behind_a_persons_rights_and_a_spectator_reads_the_snapshot() {
     let site = Site::new().await;
     site.ts.seats.set_limits(clax_core::seats::SeatLimits {
         people: 1,
@@ -1937,18 +1991,11 @@ async fn seats_hold_behind_a_persons_rights_and_a_spectators_snapshot_carries_ke
         .get(&sam, &format!("/api/artifacts/{plan}/snapshot"))
         .await;
     assert_eq!((s, code(&v)), (404, "not_found"), "{v}");
-    // The spectator's snapshot hands each version its content key, as the
-    // artifact's own view does.
-    let (_, a) = site.get(&mia, &format!("/api/artifacts/{plan}")).await;
-    let key = a["versions"][0]["content_key"]
-        .as_str()
-        .unwrap()
-        .to_string();
     let (s, snap) = site
         .get(&kim, &format!("/api/artifacts/{plan}/snapshot"))
         .await;
     assert_eq!(s, 200, "{snap}");
-    assert_eq!(snap["versions"][0]["content_key"], json!(key));
+    assert_eq!(snap["versions"][0]["n"], json!(1));
     // A guest of a page shared by link reads its snapshot too.
     site.send(
         &owner,
@@ -1964,7 +2011,7 @@ async fn seats_hold_behind_a_persons_rights_and_a_spectators_snapshot_carries_ke
         .get(&guest, &format!("/api/artifacts/{plan}/snapshot"))
         .await;
     assert_eq!(s, 200, "{snap}");
-    assert_eq!(snap["versions"][0]["content_key"], json!(key));
+    assert_eq!(snap["versions"][0]["n"], json!(1));
 }
 
 /// A WebSocket to `aid`'s live socket from `b`, as the shell opens it: its
@@ -2059,27 +2106,28 @@ async fn drafts_and_live_layers_reach_signed_in_people_who_may_read_the_page() {
         live_socket(&site, &mia, &plan).await.unwrap()["t"],
         "welcome"
     );
-    // The draft URL's token is its capability, as a version's content key
-    // is: the frame carries no cookie, and an ID alone reads nothing.
+    // A draft is served on the artifact's site host, to a site session,
+    // at its token's address; the public host serves none.
     let anon = Browser::default();
     let url = format!(
-        "/c/{plan}/draft/{}/{}/",
+        "/_clax/draft/{}/{}/",
         d["agent"].as_str().unwrap(),
         d["token"].as_str().unwrap()
     );
-    let r = site
-        .req(&anon, reqwest::Method::GET, &url)
-        .send()
-        .await
-        .unwrap();
+    assert_eq!(site.ts.site_get_anon(&plan, &url).await.status(), 401);
+    let r = site.ts.site_get(&plan, &url).await;
     assert_eq!(r.status(), 200);
     assert_eq!(r.headers()["referrer-policy"], "no-referrer");
     assert!(r.text().await.unwrap().contains("in May"));
     let wrong = format!(
-        "/c/{plan}/draft/{}/AAAAAAAAAAAAAAAAAAAAAA/",
+        "/_clax/draft/{}/AAAAAAAAAAAAAAAAAAAAAA/",
         d["agent"].as_str().unwrap()
     );
-    assert_eq!(site.get(&anon, &wrong).await.0, 404);
+    assert_eq!(site.ts.site_get(&plan, &wrong).await.status(), 404);
+    assert_eq!(
+        site.get(&anon, &format!("/c/{plan}{}", &url[5..])).await.0,
+        404
+    );
     // Shared by link: a guest sees the drafts and the live layers; a
     // visitor who gave no name sees neither.
     site.send(
@@ -2809,7 +2857,6 @@ async fn a_member_forks_what_they_may_read_into_their_own_artifact() {
         v["artifact"]["forked_from"],
         json!({"artifact_id": plan, "version": 1, "title": "Plan"})
     );
-    assert!(v["version"]["content_key"].is_string(), "{v}");
     let (s, got) = site.get(&mia, &format!("/api/artifacts/{fid}")).await;
     assert_eq!(s, 200, "{got}");
     assert_eq!(got["artifact"]["forked_from"]["title"], json!("Plan"));
@@ -3015,84 +3062,129 @@ async fn an_agent_token_forks_through_the_mcp_adapter_within_its_persons_rights(
 }
 
 #[tokio::test]
-async fn with_a_content_origin_content_is_served_there_alone_and_its_pages_name_the_shell() {
+async fn a_site_domain_names_the_sites_and_the_retired_content_origin_only_redirects() {
     let clock = Arc::new(ManualClock::at("2026-10-12T10:00:00Z"));
-    let ts = TestServer::spawn_hosted_with_content(clock.clone(), Some(SECRET)).await;
+    let ts =
+        TestServer::spawn_hosted_with_site_domain(clock.clone(), Some(SECRET), "clax.test").await;
     let port = ts.addr.port();
     let origin = format!("http://localhost:{port}");
     let site = Site { ts, clock, origin };
     let owner = site.owner().await;
     let aid = site.artifact().await;
-    let (s, v) = site.get(&owner, &format!("/api/artifacts/{aid}")).await;
+    let host = format!("{aid}.clax.test:{port}");
+    let raw = reqwest::Client::builder()
+        .redirect(reqwest::redirect::Policy::none())
+        .build()
+        .unwrap();
+    let (s, v) = site
+        .post(
+            &owner,
+            &format!("/api/artifacts/{aid}/site-code"),
+            json!({"partitioned": true}),
+        )
+        .await;
     assert_eq!(s, 200, "{v}");
-    let content = format!("http://[::1]:{port}");
-    assert_eq!(v["content_origin"], json!(content));
-    let key = v["versions"][0]["content_key"]
-        .as_str()
-        .unwrap()
-        .to_string();
-    let at = |host: String, path: String| {
-        site.ts
-            .client
-            .get(site.url(&path))
-            .header(HOST, host)
-            .send()
-    };
-    let public = format!("localhost:{port}");
-    let content_host = format!("[::1]:{port}");
-    let keyed = format!("/c/{aid}/v/1/k/{key}/");
-    // On the content origin, at its key, with the sandbox; the page's bridge
-    // talks to the public origin.
-    let r = at(content_host.clone(), keyed.clone()).await.unwrap();
-    assert_eq!(r.status(), 200);
+    let src = v["src"].as_str().unwrap();
     assert!(
-        r.headers()["content-security-policy"]
-            .to_str()
-            .unwrap()
-            .contains("sandbox")
+        src.starts_with(&format!("http://{host}/_clax/session?code=")),
+        "{src}"
     );
-    let html = r.text().await.unwrap();
-    assert!(
-        html.contains(&format!("data-origin=\"{}\"", site.origin)),
-        "{html}"
-    );
-    // Never on the public origin.
-    assert_eq!(
-        at(public.clone(), keyed.clone()).await.unwrap().status(),
-        404
-    );
-    // The content origin serves no API, shell or sign-in.
-    for p in ["/api/artifacts", "/", "/setup", &format!("/a/{aid}")] {
-        let r = at(content_host.clone(), p.to_string()).await.unwrap();
-        assert_eq!(r.status(), 404, "{p}");
-    }
-    assert_eq!(
-        at(content_host.clone(), "/healthz".into())
-            .await
-            .unwrap()
-            .status(),
-        200
-    );
-    // The shell's first load frames the page there, sandboxed.
-    let r = site
-        .req(&owner, reqwest::Method::GET, &format!("/a/{aid}"))
+    let r = raw
+        .get(site.url(&src[src.find("/_clax/").unwrap()..]))
+        .header(HOST, &host)
         .send()
         .await
         .unwrap();
-    let page = r.text().await.unwrap();
-    assert!(
-        page.contains(&format!("src=\"{content}{keyed}\"")),
-        "{page}"
+    assert_eq!(r.status(), 302);
+    let cookie = r.headers()["set-cookie"]
+        .to_str()
+        .unwrap()
+        .split(';')
+        .next()
+        .unwrap()
+        .to_string();
+    let r = raw
+        .get(site.url("/"))
+        .header(HOST, &host)
+        .header(COOKIE, &cookie)
+        .send()
+        .await
+        .unwrap();
+    assert_eq!(r.status(), 200);
+    assert_eq!(
+        r.headers()["content-security-policy"],
+        format!("frame-ancestors 'self' {}", site.origin)
     );
-    // An asset's URL names the content origin.
-    let (s, v) = site
-        .get(&owner, &format!("/api/artifacts/{aid}/assets"))
-        .await;
-    assert_eq!(s, 200, "{v}");
+    assert!(
+        r.text()
+            .await
+            .unwrap()
+            .contains(&format!("data-origin=\"{}\"", site.origin))
+    );
+    // `<id>.localhost` is no site host here.
+    let r = raw
+        .get(site.url("/"))
+        .header(HOST, format!("{aid}.localhost:{port}"))
+        .send()
+        .await
+        .unwrap();
+    assert_eq!(r.status(), 403);
+    // The retired content origin answers an asset's old address with its
+    // site, and nothing else.
+    let form = reqwest::multipart::Form::new().part(
+        "file",
+        reqwest::multipart::Part::bytes(clax_testkit::FAKE_PNG.to_vec())
+            .file_name("a.png")
+            .mime_str("image/png")
+            .unwrap(),
+    );
+    let (_, up) = json_of(
+        site.ts
+            .authed(
+                site.ts
+                    .client
+                    .post(site.url(&format!("/api/artifacts/{aid}/assets"))),
+            )
+            .header(HOST, format!("localhost:{port}"))
+            .multipart(form)
+            .send()
+            .await
+            .unwrap(),
+    )
+    .await;
+    let asset = up["asset"]["id"].as_str().unwrap();
+    let retired = format!("[::1]:{port}");
+    let r = raw
+        .get(site.url(&format!("/_blob/{asset}?k=00")))
+        .header(HOST, &retired)
+        .send()
+        .await
+        .unwrap();
+    assert_eq!(r.status(), 301);
+    assert_eq!(
+        r.headers()["location"],
+        format!("http://{host}/_clax/blob/{asset}")
+    );
+    for p in [
+        "/api/artifacts".to_string(),
+        "/".into(),
+        "/setup".into(),
+        "/healthz".into(),
+        format!("/a/{aid}"),
+        format!("/c/{aid}/v/1/"),
+    ] {
+        let r = raw
+            .get(site.url(&p))
+            .header(HOST, &retired)
+            .send()
+            .await
+            .unwrap();
+        assert_eq!(r.status(), 404, "{p}");
+    }
     assert!(
         clax_http::hosted::Hosted::new(&site.origin, None)
             .unwrap()
-            .with_content_origin(&site.origin)
+            .with_retired_content_origin(&site.origin)
             .is_none(),
         "the public origin is no content origin"
     );
@@ -5339,25 +5431,33 @@ async fn an_agent_tokens_agent_reads_a_clip_by_link_in_listings_and_as_an_image_
     assert_eq!(t["thread_id"], json!(tid), "{listed}");
     assert_eq!(t["clip_path"], Value::Null, "{t}");
     let url = t["clip"]["url"].as_str().expect("a clip url").to_string();
-    assert!(
-        url.starts_with(&format!("{}/_clip/{budget}/{tid}?k=", site.origin)),
-        "{url}"
+    assert_eq!(
+        url,
+        format!("{}/api/artifacts/{budget}/threads/{tid}/clip", site.origin)
     );
     assert_eq!(t["clip"]["note"], clax_core::clips::LINK_NOTE, "{t}");
     assert!(!r.to_string().contains("clax-clip:"), "{r}");
-    // The address serves the PNG with no credential, cached as immutable;
-    // a wrong key, or none, reads nothing.
-    let res = site.ts.client.get(&url).send().await.unwrap();
+    // The address serves the PNG to the agent's own credential, and to no
+    // one without one.
+    let path = path_of(&url);
+    let host = format!("localhost:{}", site.ts.addr.port());
+    let res = site
+        .ts
+        .client
+        .get(site.url(&path))
+        .header(HOST, &host)
+        .bearer_auth(&agent.token)
+        .send()
+        .await
+        .unwrap();
     assert_eq!(res.status(), 200);
     assert_eq!(res.headers()["content-type"], "image/png");
-    let cache = res.headers()["cache-control"].to_str().unwrap().to_string();
-    assert!(cache.contains("immutable"), "{cache}");
     assert_eq!(res.bytes().await.unwrap().as_ref(), png.as_slice());
-    let (bare, _) = url.split_once("?k=").unwrap();
-    for wrong in [format!("{bare}?k=00"), bare.to_string()] {
-        let res = site.ts.client.get(&wrong).send().await.unwrap();
-        assert_eq!(res.status(), 404, "{wrong}");
-    }
+    assert_eq!(
+        get_at(&site, &host, &path).await.status(),
+        404,
+        "no credential"
+    );
     // Reading the one thread attaches the clip as an image.
     let (_, r) = agent
         .call(
@@ -5457,7 +5557,7 @@ async fn a_clip_withheld_from_an_agent_or_on_an_artifact_it_may_not_read_reaches
     let t = &tool_json(&r)["threads"][0];
     assert_eq!(t["clip_withheld"], true, "{t}");
     assert!(t.get("clip").is_none(), "{t}");
-    assert!(!r.to_string().contains("/_clip/"), "{r}");
+    assert!(!r.to_string().contains("/clip"), "{r}");
     // Plan is not Sam's to read: neither its threads nor their clips reach
     // his agent.
     let ptid = site
@@ -5471,7 +5571,7 @@ async fn a_clip_withheld_from_an_agent_or_on_an_artifact_it_may_not_read_reaches
         .await;
     assert_ne!(tool_code(&r), "", "{r}");
     assert!(images(&r).is_empty(), "{r}");
-    assert!(!r.to_string().contains("/_clip/"), "{r}");
+    assert!(!r.to_string().contains("/clip"), "{r}");
     let _ = sam;
 }
 
@@ -5530,22 +5630,39 @@ fn path_of(url: &str) -> String {
 }
 
 #[tokio::test]
-async fn a_clip_address_is_private_to_caches_and_ends_with_its_thread_or_artifact() {
+async fn a_clip_is_served_to_its_reader_alone() {
     let site = Site::new().await;
     let owner = site.owner().await;
     let host = format!("localhost:{}", site.ts.addr.port());
+    let (sam, _) = (site.member(&owner, "Sam").await, ());
     for gone in ["thread", "artifact"] {
         let aid = site.titled("Budget").await;
         let tid = site
             .thread_with_clip(&owner, &aid, "a note", &png_of(8, 8))
             .await;
         let url = clax_http::hosted::clip_link(&site.ts.state, &aid, &tid).unwrap();
-        let r = get_at(&site, &host, &path_of(&url)).await;
-        assert_eq!(r.status(), 200, "{gone}");
         assert_eq!(
-            r.headers()["cache-control"],
-            "private, max-age=31536000, immutable"
+            url,
+            format!("{}/api/artifacts/{aid}/threads/{tid}/clip", site.origin)
         );
+        let path = path_of(&url);
+        let r = site
+            .req(&owner, reqwest::Method::GET, &path)
+            .send()
+            .await
+            .unwrap();
+        assert_eq!(r.status(), 200, "{gone}");
+        assert_eq!(r.headers()["cache-control"], "private, max-age=3600");
+        assert_eq!(r.bytes().await.unwrap().as_ref(), png_of(8, 8).as_slice());
+        // No credential, or one without the right, reads nothing.
+        let r = get_at(&site, &host, &path).await;
+        assert_eq!(r.status(), 404, "signed out");
+        let r = site
+            .req(&sam, reqwest::Method::GET, &path)
+            .send()
+            .await
+            .unwrap();
+        assert_eq!(r.status(), 404, "a member who may not read it");
         let s = if gone == "thread" {
             let path = format!("/api/artifacts/{aid}/threads/{tid}");
             site.send(&owner, reqwest::Method::DELETE, &path, json!(null))
@@ -5560,32 +5677,13 @@ async fn a_clip_address_is_private_to_caches_and_ends_with_its_thread_or_artifac
             req.send().await.unwrap().status().as_u16()
         };
         assert!(s == 200 || s == 204, "{gone}: {s}");
-        let r = get_at(&site, &host, &path_of(&url)).await;
+        let r = site
+            .req(&owner, reqwest::Method::GET, &path)
+            .send()
+            .await
+            .unwrap();
         assert_eq!(r.status(), 404, "after its {gone} is deleted");
     }
-}
-
-#[tokio::test]
-async fn with_a_content_origin_a_clip_is_served_there_alone() {
-    let clock = Arc::new(ManualClock::at("2026-10-12T10:00:00Z"));
-    let ts = TestServer::spawn_hosted_with_content(clock.clone(), Some(SECRET)).await;
-    let port = ts.addr.port();
-    let origin = format!("http://localhost:{port}");
-    let site = Site { ts, clock, origin };
-    let owner = site.owner().await;
-    let aid = site.titled("Budget").await;
-    let png = png_of(8, 8);
-    let tid = site.thread_with_clip(&owner, &aid, "a note", &png).await;
-    let url = clax_http::hosted::clip_link(&site.ts.state, &aid, &tid).unwrap();
-    assert!(
-        url.starts_with(&format!("http://[::1]:{port}/_clip/")),
-        "{url}"
-    );
-    let r = get_at(&site, &format!("[::1]:{port}"), &path_of(&url)).await;
-    assert_eq!(r.status(), 200);
-    assert_eq!(r.bytes().await.unwrap().as_ref(), png.as_slice());
-    let r = get_at(&site, &format!("localhost:{port}"), &path_of(&url)).await;
-    assert_eq!(r.status(), 404, "never on the public origin");
 }
 
 #[tokio::test]
@@ -5752,7 +5850,6 @@ async fn people_start_artifacts_from_briefs_and_guests_may_not() {
     assert_eq!(may_create(&owner).await.0, json!(true));
     let (s, v) = site.post(&owner, new, brief("Roadmap")).await;
     assert_eq!(s, 201, "{v}");
-    assert!(v["version"]["content_key"].is_string(), "{v}");
     assert_eq!(v["thread"]["anchor"]["kind"], "artifact");
     // A person holding the default rights (their own space) starts one
     // that is theirs, and reads it.

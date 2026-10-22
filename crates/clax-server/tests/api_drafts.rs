@@ -195,6 +195,7 @@ async fn people_list_a_draft_and_its_url_serves_marked_pages_over_the_base() {
             d["agent"].as_str().unwrap()
         ))
         .header("host", format!("{aid}.localhost:4321"))
+        .header("cookie", ts.site_cookie(&aid).await)
         .send()
         .await
         .unwrap();
@@ -499,7 +500,9 @@ async fn drafting_needs_the_publish_right_and_drafts_reach_people_only() {
     ] {
         let mut req = ts.authed(ts.client.get(format!("{}{path}", ts.base)));
         if let Some(h) = &host {
-            req = req.header("host", h);
+            req = req
+                .header("host", h)
+                .header("cookie", ts.site_cookie(&aid).await);
         }
         let r = req.header("x-clax-session", &sid).send().await.unwrap();
         assert_eq!(code(r).await.1["error"]["code"], "not_for_agents", "{path}");

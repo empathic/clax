@@ -117,7 +117,8 @@ fn is_html(content_type: &str) -> bool {
         .eq_ignore_ascii_case("text/html")
 }
 
-/// The draft's files decoded: each path safe, at most [`MAX_DRAFT_BYTES`]
+/// The draft's files decoded: each path safe (one the artifact's site
+/// serves itself is refused where its row is read), at most [`MAX_DRAFT_BYTES`]
 /// in all (413 `too_large`), at least one (400 `invalid_args`).
 fn decode(
     files: BTreeMap<String, Option<FileInput>>,
@@ -255,6 +256,13 @@ pub async fn put(
             let n = art.current_version;
             if if_version.is_some_and(|v| v != n) {
                 return Err(CoreError::Conflict { current: n });
+            }
+            // A file the artifact's site serves itself is refused, as
+            // publishing refuses it; one may still be removed.
+            for (path, change) in &files {
+                if matches!(change, FileChange::Put(_)) {
+                    clax_core::publish::check_path_for(path, art.legacy_paths)?;
+                }
             }
             let actor = Actor {
                 session_id: sess.id.clone(),
@@ -499,13 +507,7 @@ pub(crate) async fn serve(
         .into_response();
     res.headers_mut().insert(
         header::CONTENT_SECURITY_POLICY,
-        clax_http::content_policy::content_policy(
-            origin.is_some(),
-            req,
-            &clax_http::content_policy::own_host(s),
-            None,
-            s.embed.as_ref(),
-        ),
+        super::content::content_policy(s, origin, req),
     );
     Ok(res)
 }

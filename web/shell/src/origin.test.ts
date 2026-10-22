@@ -1,5 +1,5 @@
 import { describe, it, expect, vi, afterEach, beforeEach } from "vitest";
-import { artifactOrigin, cachedOriginOk, probeOrigin, contentSrc, pageSrc } from "./origin";
+import { artifactOrigin, cachedOriginOk, probeOrigin, contentSrc, frameSite, pageSrc } from "./origin";
 import srcCases from "./frame-src-cases.json";
 
 const loc = (hostname: string, port = "7480") => ({ hostname, port, protocol: "http:" } as unknown as Location);
@@ -134,18 +134,17 @@ describe("probeOrigin", () => {
 
 describe("pageSrc", () => {
   it("is the version's root for the index and the file's path otherwise, segments encoded", () => {
-    expect(pageSrc("7q3k9mzx2b4t", 2, null, "index.html", "k0")).toBe("/c/7q3k9mzx2b4t/v/2/k/k0/");
-    expect(pageSrc("7q3k9mzx2b4t", 2, null, "a.html", "k0", "https://content.example")).toBe("https://content.example/c/7q3k9mzx2b4t/v/2/k/k0/a.html");
+    expect(pageSrc("7q3k9mzx2b4t", 2, null, "index.html")).toBe("/c/7q3k9mzx2b4t/v/2/");
+    expect(pageSrc("7q3k9mzx2b4t", 2, null, "a.html")).toBe("/c/7q3k9mzx2b4t/v/2/a.html");
     expect(pageSrc("7q3k9mzx2b4t", 2, "http://7q3k9mzx2b4t.localhost:7480", "docs/a b.html")).toBe("http://7q3k9mzx2b4t.localhost:7480/_clax/v/2/docs/a%20b.html");
     expect(pageSrc("7q3k9mzx2b4t", 2, "http://7q3k9mzx2b4t.localhost:7480", "about.html")).toBe("http://7q3k9mzx2b4t.localhost:7480/_clax/v/2/about.html");
   });
 });
 
 describe("contentSrc", () => {
-  it("is under /_clax/v/<n>/ on the site origin, else the keyed path", () => {
+  it("is under /_clax/v/<n>/ on the site origin, else under /c/ on this host", () => {
     expect(contentSrc("7q3k9mzx2b4t", 2, "http://7q3k9mzx2b4t.localhost:7480")).toBe("http://7q3k9mzx2b4t.localhost:7480/_clax/v/2/");
-    expect(contentSrc("7q3k9mzx2b4t", 2, null, "k0")).toBe("/c/7q3k9mzx2b4t/v/2/k/k0/");
-    expect(contentSrc("7q3k9mzx2b4t", 2, null, "k0", "https://content.example")).toBe("https://content.example/c/7q3k9mzx2b4t/v/2/k/k0/");
+    expect(contentSrc("7q3k9mzx2b4t", 2, null)).toBe("/c/7q3k9mzx2b4t/v/2/");
   });
 });
 
@@ -159,7 +158,10 @@ describe("probeOrigin's request", () => {
 });
 
 describe("pageSrc and the daemon agree", () => {
-  it.each(srcCases)("$file", (c: { id: string; n: number; origin: string | null; key?: string; file: string; src: string }) => {
-    expect(pageSrc(c.id, c.n, c.origin, c.file, c.key ?? null)).toBe(c.src);
+  it.each(srcCases)("$file at $location", (c: { id: string; n: number; origin: string | null; location?: string; file: string; src: string }) => {
+    // A case with a `location` is the shell's at that address, which derives
+    // the frame's site itself, as the daemon's first frame does.
+    const site = c.location ? frameSite(c.id, c.origin, new URL(c.location) as unknown as Location) : c.origin;
+    expect(pageSrc(c.id, c.n, site, c.file)).toBe(c.src);
   });
 });

@@ -4,7 +4,8 @@
   { "id": "7q3k9mzx2b4t", "n": 1, "origin": "http://7q3k9mzx2b4t.localhost:7481", "file": "docs/a b.html", "src": "http://7q3k9mzx2b4t.localhost:7481/_clax/v/1/docs/a%20b.html" },
   { "id": "7q3k9mzx2b4t", "n": 1, "origin": "http://7q3k9mzx2b4t.localhost:7481", "file": "✓/é (1)!*~'.html", "src": "http://7q3k9mzx2b4t.localhost:7481/_clax/v/1/%E2%9C%93/%C3%A9%20(1)!*~'.html" },
   { "id": "7q3k9mzx2b4t", "n": 1, "origin": null, "file": "a#b?c&d.html", "src": "/c/7q3k9mzx2b4t/v/1/a%23b%3Fc%26d.html" },
-  { "id": "7q3k9mzx2b4t", "n": 3, "origin": null, "key": "0123456789abcdef0123456789abcdef", "file": "index.html", "src": "/c/7q3k9mzx2b4t/v/3/k/0123456789abcdef0123456789abcdef/" },
-  { "id": "7q3k9mzx2b4t", "n": 3, "origin": null, "key": "0123456789abcdef0123456789abcdef", "file": "docs/a b.html", "src": "/c/7q3k9mzx2b4t/v/3/k/0123456789abcdef0123456789abcdef/docs/a%20b.html" },
-  { "id": "7q3k9mzx2b4t", "n": 3, "origin": "http://7q3k9mzx2b4t.localhost:7481", "key": "0123456789abcdef0123456789abcdef", "file": "index.html", "src": "http://7q3k9mzx2b4t.localhost:7481/_clax/v/3/" }
+  { "id": "7q3k9mzx2b4t", "n": 2, "origin": null, "location": "http://localhost:7481", "file": "index.html", "src": "http://7q3k9mzx2b4t.localhost:7481/_clax/v/2/" },
+  { "id": "7q3k9mzx2b4t", "n": 2, "origin": null, "location": "http://127.0.0.1:7481", "file": "a b.html", "src": "http://7q3k9mzx2b4t.localhost:7481/_clax/v/2/a%20b.html" },
+  { "id": "7q3k9mzx2b4t", "n": 2, "origin": null, "location": "http://192.168.1.2:7481", "file": "index.html", "src": "/c/7q3k9mzx2b4t/v/2/" },
+  { "id": "7q3k9mzx2b4t", "n": 2, "origin": "http://7q3k9mzx2b4t.localhost:7481", "location": "http://localhost:7481", "file": "index.html", "src": "http://7q3k9mzx2b4t.localhost:7481/_clax/v/2/" }
 ]

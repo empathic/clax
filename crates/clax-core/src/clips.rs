@@ -149,7 +149,7 @@ pub struct ClipLink {
 }
 
 /// The note on a clip link in a listing or a feedback item: how to see it.
-pub const LINK_NOTE: &str = "a screenshot of what the comment is on: call comments_read with this thread_id to receive it as an image, or fetch the url";
+pub const LINK_NOTE: &str = "a screenshot of what the comment is on: call comments_read with this thread_id to receive it as an image, or fetch the url with your Clax credential";
 
 /// The note on a clip link whose image is attached to the same result.
 pub const ATTACHED_NOTE: &str =

@@ -23,10 +23,25 @@ async fn upload_serve_list_delete() {
     let body: serde_json::Value = res.json().await.unwrap();
     let url = body["url"].as_str().unwrap().to_string();
     // An address on the artifact's site host; the public host's
-    // `/_blob/<id>` serves it too, for pages that name that.
+    // `/_blob/<id>` only redirects there, for pages that name that.
     assert!(url.starts_with("/_clax/blob/"), "{url}");
     let asset_id = body["asset"]["id"].as_str().unwrap();
-    assert_eq!(ts.get(&format!("/_blob/{asset_id}")).await.status(), 200);
+    let res = reqwest::Client::builder()
+        .redirect(reqwest::redirect::Policy::none())
+        .build()
+        .unwrap()
+        .get(format!("{}/_blob/{asset_id}", ts.base))
+        .send()
+        .await
+        .unwrap();
+    assert_eq!(res.status(), 301);
+    assert_eq!(
+        res.headers()["location"],
+        format!(
+            "http://{id}.localhost:{}/_clax/blob/{asset_id}",
+            ts.addr.port()
+        )
+    );
     let res = ts.site_get(id, &url).await;
     assert_eq!(res.status(), 200);
     assert_eq!(res.headers()["content-type"], "image/png");

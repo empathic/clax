@@ -26,9 +26,9 @@
 //! `__Host-clax_session`, else `clax_session`.
 //! [`gate`] runs before every route:
 //!
-//! - the `Host` must be the public origin's, the content origin's
-//!   ([`Hosted::with_content_origin`]), a local name (the CLI and agents
-//!   on the machine), or an artifact's content host;
+//! - the `Host` must be the public origin's, the retired content origin's
+//!   ([`Hosted::with_retired_content_origin`]), a local name (the CLI and
+//!   agents on the machine), or an artifact's site host;
 //! - a write (any method but `GET`, `HEAD` and `OPTIONS`) without an
 //!   `Authorization` header must carry `Origin` equal to the public origin
 //!   (CSRF), else 403 `forbidden_origin`; the one exception is counting an
@@ -39,23 +39,13 @@
 //!   and anyone else 403 `not_owner`: no request is from this machine, so
 //!   nothing hands out the daemon token. The gate takes the shell token,
 //!   beside the session's cookie, as the daemon token;
-//! - content is served only at its key's address: a version's files at
-//!   `/c/<aid>/v/<n>/k/<key>/…` ([`content_key`]), an asset's bytes at
-//!   `/_blob/<id>?k=<key>` ([`asset_key`]), a thread's clip at
-//!   `/_clip/<aid>/<tid>?k=<key>` ([`clip_key`]; the address agents of
-//!   other machines read a clip at), each with no referrer, else 404,
-//!   on the public host and the content host alike; with a content origin,
-//!   there and on an artifact's content host only, never on the public
-//!   host, and the content origin serves nothing else but the UI's files
-//!   and `/healthz`. The content frame is
-//!   sandboxed, so its requests carry no cookie: the key, which only the
-//!   routes that hand the version to someone who may read it carry, is the
-//!   capability. An ID alone reads nothing. An agent's draft revision is
-//!   served at its draft URL (`/c/<aid>/draft/<agent>/<token>/…`), whose
-//!   token is the
-//!   capability in the same way: minted per revision, it travels only in
-//!   the drafts listing and the `drafts` events, which reach only people
-//!   who may read the artifact (`clax_server::routes::drafts`);
+//! - an artifact's content is served on its site host alone, whose own
+//!   access check decides every request ([`crate::site_access`]): on the
+//!   public host the keyed addresses of before (`/c/…`, `/_clip/…`) are
+//!   404, and an asset's (`/_blob/<id>`, `/_clax/blob/<id>`) only
+//!   redirects to its artifact's site; the retired content origin answers
+//!   that redirect and nothing else. A thread's clip is read with the
+//!   reader's own credential ([`clip_link`]);
 //! - the shell's static files and `/healthz` are open;
 //! - a request with `Authorization` (the daemon token, a grant, an agent
 //!   token) is as on a local daemon, and so is the owner's session; any
@@ -121,9 +111,9 @@ pub struct Hosted {
     behind_cloudflare: bool,
     /// Each client's attempts at setup, sign-in and naming a guest.
     limits: Limits,
-    /// The content origin ([`Hosted::with_content_origin`]): its origin and
-    /// its authority as a `Host` header names it.
-    content: Option<(String, String)>,
+    /// The retired content origin's authority as a `Host` header names it
+    /// ([`Hosted::with_retired_content_origin`]).
+    retired_content: Option<String>,
     /// GitHub sign-in ([`crate::github`], [`Hosted::with_github`]).
     pub github: Option<crate::github::GitHub>,
     /// Each GitHub member's caps.
@@ -147,7 +137,7 @@ impl std::fmt::Debug for Hosted {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         f.debug_struct("Hosted")
             .field("origin", &self.origin)
-            .field("content_origin", &self.content_origin())
+            .field("retired_content", &self.retired_content)
             .field("setup_open", &self.setup_secret.is_some())
             .field("behind_cloudflare", &self.behind_cloudflare)
             .field("github", &self.github)
@@ -319,7 +309,7 @@ impl Hosted {
             setup_secret: setup_secret.filter(|s| !s.is_empty()).map(sha256),
             behind_cloudflare: false,
             limits: Limits::new(std::sync::Arc::new(clax_core::working::SystemClock)),
-            content: None,
+            retired_content: None,
             github: None,
             member_caps: Default::default(),
             public_gallery: false,
@@ -329,37 +319,29 @@ impl Hosted {
         })
     }
 
-    /// This hosted mode with artifact content on an origin of its own,
-    /// `origin` (normalized as the public origin is; its host must differ
-    /// from the public origin's): every version's files, drafts and asset
-    /// bytes are served there, at their keys' addresses, and never on the
-    /// public origin, which serves everything else and no content; the
-    /// content origin serves only content, the web UI's files and
-    /// `/healthz`. Content is framed sandboxed there (one origin for every
-    /// artifact), and its bridge talks to the public origin only. `None`
-    /// for an origin hosted mode does not take, or the public one's host.
-    pub fn with_content_origin(self, origin: &str) -> Option<Hosted> {
+    /// This hosted mode answering at `origin`, the retired content origin
+    /// that served every artifact's content at keyed addresses before each
+    /// artifact had a site of its own: there an asset's old address
+    /// (`/_blob/<id>?k=…`) redirects to its artifact's site, and nothing
+    /// else is served. `None` for an origin hosted mode does not take, or
+    /// the public one's host.
+    pub fn with_retired_content_origin(self, origin: &str) -> Option<Hosted> {
         let origin = clax_core::config::hosted_origin(origin)?;
         let host = authority(&origin)?;
         if host.eq_ignore_ascii_case(&self.host) {
             return None;
         }
         Some(Hosted {
-            content: Some((origin, host)),
+            retired_content: Some(host),
             ..self
         })
     }
 
-    /// The content origin, when content has one of its own.
-    pub fn content_origin(&self) -> Option<&str> {
-        self.content.as_ref().map(|(o, _)| o.as_str())
-    }
-
-    /// Whether `host` (a `Host` header) is the content origin's.
-    pub fn is_content_host(&self, host: &str) -> bool {
-        self.content
+    /// Whether `host` (a `Host` header) is the retired content origin's.
+    pub fn is_retired_content_host(&self, host: &str) -> bool {
+        self.retired_content
             .as_ref()
-            .is_some_and(|(_, h)| h.eq_ignore_ascii_case(host))
+            .is_some_and(|h| h.eq_ignore_ascii_case(host))
     }
 
     /// This hosted mode signing people in with GitHub too, `github`
@@ -487,7 +469,7 @@ impl Hosted {
     pub fn note_peer(&self, host: &str, extensions: &axum::http::Extensions) -> bool {
         use std::sync::atomic::Ordering;
         let proxied = !self.behind_cloudflare
-            && (host.eq_ignore_ascii_case(&self.host) || self.is_content_host(host))
+            && (host.eq_ignore_ascii_case(&self.host) || self.is_retired_content_host(host))
             && crate::identity::peer_of(extensions).is_some_and(crate::auth::is_loopback);
         if !proxied || self.proxy_noted.swap(true, Ordering::Relaxed) {
             return false;
@@ -601,231 +583,38 @@ fn keyed(token: &str, label: &str, msg: &str) -> String {
         .collect()
 }
 
-/// The content key of version `n` of artifact `aid`: on a hosted daemon,
-/// its content is served only at `/c/<aid>/v/<n>/k/<key>/…` (and
-/// `/v/<n>/k/<key>/…` on its content host), so its ID alone reads nothing.
-/// The routes that hand a version to someone who may read it carry it
-/// ([`stamp_content_keys`]).
-pub fn content_key(token: &str, aid: &str, n: u64) -> String {
-    keyed(token, "clax hosted content key", &format!("{aid}/{n}"))
-}
-
-/// The key of asset `asset_id`: on a hosted daemon, its bytes are served
-/// only at `/_blob/<asset_id>?k=<key>`.
-pub fn asset_key(token: &str, asset_id: &str) -> String {
-    keyed(token, "clax hosted asset key", asset_id)
-}
-
-/// The URL a hosted daemon serves asset `asset_id` at; a local daemon's
-/// address on the asset's artifact's site host: `/_clax/blob/<asset_id>`,
-/// or `/_blob/<asset_id>` for a `legacy` artifact (`Artifact::legacy_paths`),
-/// whose pages already name that.
-pub fn asset_url(s: &AppState, asset_id: &str, legacy: bool) -> String {
-    match &s.hosted {
-        Some(h) => format!(
-            "{}/_blob/{asset_id}?k={}",
-            h.content_origin().unwrap_or(""),
-            asset_key(&s.token, asset_id)
-        ),
-        None if legacy => format!("/_blob/{asset_id}"),
-        None => format!("/_clax/blob/{asset_id}"),
+/// The URL asset `asset_id` is served at, relative to its artifact's site
+/// host: `/_clax/blob/<asset_id>`, or `/_blob/<asset_id>` for a `legacy`
+/// artifact (`Artifact::legacy_paths`), whose pages already name that.
+pub fn asset_url(asset_id: &str, legacy: bool) -> String {
+    if legacy {
+        format!("/_blob/{asset_id}")
+    } else {
+        format!("/_clax/blob/{asset_id}")
     }
 }
 
-/// The key of thread `tid`'s clip on artifact `aid`: on a hosted daemon,
-/// the clip's PNG is served only at `/_clip/<aid>/<tid>?k=<key>`
-/// ([`clip_link`]).
-pub fn clip_key(token: &str, aid: &str, tid: &str) -> String {
-    keyed(token, "clax hosted clip key", &format!("{aid}/{tid}"))
-}
-
-/// The address a hosted daemon serves thread `tid`'s clip on artifact
-/// `aid` at, with no credential: its content origin's, else its public
-/// origin's `/_clip/<aid>/<tid>?k=<key>` ([`clip_key`]). A clip never
-/// changes once its thread has it, so the address is cached as immutable,
-/// though `private` where `/_blob` is `public`: a shared cache in front of
-/// the daemon must not keep a clip whose thread was deleted or restricted.
-/// `None` on a local daemon, which serves no such address.
+/// The address a hosted daemon names thread `tid`'s clip on artifact `aid`
+/// by, for an agent of another machine: its public origin's `GET
+/// /api/artifacts/<aid>/threads/<tid>/clip`, which takes the reader's own
+/// credential. `None` on a local daemon, whose agents read the clip's file.
 pub fn clip_link(s: &AppState, aid: &str, tid: &str) -> Option<String> {
-    s.hosted
-        .as_ref()
-        .map(|h| clip_link_at(h, &s.token, aid, tid))
+    s.hosted.as_ref().map(|h| clip_link_at(h, aid, tid))
 }
 
-/// [`clip_link`] on `h`, whose keys `token` makes.
-pub fn clip_link_at(h: &Hosted, token: &str, aid: &str, tid: &str) -> String {
-    format!(
-        "{}/_clip/{aid}/{tid}?k={}",
-        h.content_origin().unwrap_or(&h.origin),
-        clip_key(token, aid, tid)
-    )
-}
-
-/// On a hosted daemon, sets `content_key` on every version of view `v`
-/// (its `version` and each of its `versions`, which name their
-/// `artifact_id` and `n`), and with a content origin, `content_origin` on
-/// the view: where the shell frames its content
-/// (`<content_origin>/c/<aid>/v/<n>/k/<key>/…`, sandboxed) and its drafts.
-/// A local daemon's views are left as they are.
-pub fn stamp_content_keys(s: &AppState, v: &mut Value) {
-    let Some(h) = &s.hosted else {
-        return;
-    };
-    if let (Some(o), Some(m)) = (h.content_origin(), v.as_object_mut()) {
-        m.insert("content_origin".into(), json!(o));
-    }
-    let stamp = |x: &mut Value| {
-        let aid = x.get("artifact_id").and_then(Value::as_str);
-        let n = x.get("n").and_then(Value::as_u64);
-        if let (Some(aid), Some(n)) = (aid, n) {
-            x["content_key"] = json!(content_key(&s.token, aid, n));
-        }
-    };
-    if let Some(x) = v.get_mut("version") {
-        stamp(x);
-    }
-    for x in v
-        .get_mut("versions")
-        .and_then(Value::as_array_mut)
-        .into_iter()
-        .flatten()
-    {
-        stamp(x);
-    }
+/// [`clip_link`] on `h`.
+pub fn clip_link_at(h: &Hosted, aid: &str, tid: &str) -> String {
+    format!("{}/api/artifacts/{aid}/threads/{tid}/clip", h.origin)
 }
 
 /// Sets `url` on every asset of `assets` (each naming its `id`), assets of
 /// one artifact, `legacy` or not, to [`asset_url`].
-pub fn stamp_asset_urls(s: &AppState, assets: &mut [Value], legacy: bool) {
+pub fn stamp_asset_urls(assets: &mut [Value], legacy: bool) {
     for a in assets {
         if let Some(id) = a.get("id").and_then(Value::as_str).map(str::to_string) {
-            a["url"] = json!(asset_url(s, &id, legacy));
+            a["url"] = json!(asset_url(&id, legacy));
         }
     }
-}
-
-/// What a hosted daemon makes of a content path (`/c/…`).
-#[derive(Debug, PartialEq, Eq)]
-enum Content {
-    /// `/c/<aid>/v/<n>/k/<key>/<rest>` with the version's key: the path the
-    /// content routes serve, `/c/<aid>/v/<n>/<rest>`.
-    Unlocked(String),
-    /// `/c/<aid>/v/<n>/k/<key>` with the version's key: its index is at the
-    /// key with a slash.
-    Slash(String),
-    /// `/c/<aid>/draft/…`: a draft URL, whose token the route checks.
-    Draft,
-    /// Anything else: no such content.
-    Locked,
-}
-
-fn content_path(token: &str, path: &str) -> Content {
-    let Some(rest) = path.strip_prefix("/c/") else {
-        return Content::Locked;
-    };
-    if let Some((aid, tail)) = rest.split_once('/')
-        && tail.starts_with("draft/")
-        && clax_core::ArtifactId::parse(aid).is_ok()
-    {
-        return Content::Draft;
-    }
-    let mut parts = rest.splitn(6, '/');
-    let (Some(aid), Some("v"), Some(n), Some("k"), Some(key)) = (
-        parts.next(),
-        parts.next(),
-        parts.next(),
-        parts.next(),
-        parts.next(),
-    ) else {
-        return Content::Locked;
-    };
-    let tail = parts.next();
-    let (Ok(id), Ok(num)) = (clax_core::ArtifactId::parse(aid), n.parse::<u32>()) else {
-        return Content::Locked;
-    };
-    // The version as the routes read it: no leading zeros, no sign.
-    if num.to_string() != n {
-        return Content::Locked;
-    }
-    let want = content_key(token, id.as_str(), u64::from(num));
-    if !clax_core::secret::constant_time_eq(key.as_bytes(), want.as_bytes()) {
-        return Content::Locked;
-    }
-    match tail {
-        None => Content::Slash(format!("{key}/")),
-        Some(t) => Content::Unlocked(format!("/c/{aid}/v/{n}/{t}")),
-    }
-}
-
-/// Whether `/_blob/<asset_id>` with `query` carries the asset's key.
-fn blob_unlocked(token: &str, path: &str, query: Option<&str>) -> bool {
-    let Some(id) = path.strip_prefix("/_blob/") else {
-        return false;
-    };
-    let given = query
-        .unwrap_or("")
-        .split('&')
-        .find_map(|kv| kv.strip_prefix("k="))
-        .unwrap_or("");
-    let want = asset_key(token, id);
-    clax_core::secret::constant_time_eq(given.as_bytes(), want.as_bytes())
-}
-
-/// Whether `/_clip/<aid>/<tid>` with `query` carries the clip's key.
-fn clip_unlocked(token: &str, path: &str, query: Option<&str>) -> bool {
-    let Some((aid, tid)) = path.strip_prefix("/_clip/").and_then(|r| r.split_once('/')) else {
-        return false;
-    };
-    if clax_core::ArtifactId::parse(aid).is_err() || !clax_core::ids::is_ulid(tid) {
-        return false;
-    }
-    let given = query
-        .unwrap_or("")
-        .split('&')
-        .find_map(|kv| kv.strip_prefix("k="))
-        .unwrap_or("");
-    let want = clip_key(token, aid, tid);
-    clax_core::secret::constant_time_eq(given.as_bytes(), want.as_bytes())
-}
-
-/// The gate's handling of content (`/c/…`, `/_blob/…`, `/_clip/…`):
-/// unlocked by its key, served with no referrer (its URL is the key); else
-/// 404.
-async fn serve_content(s: &AppState, mut req: Request, next: Next) -> Response {
-    let path = req.uri().path().to_string();
-    let query = req.uri().query().map(str::to_string);
-    if path.starts_with("/c/") {
-        match content_path(&s.token, &path) {
-            Content::Unlocked(p) => {
-                let uri = match &query {
-                    Some(q) => format!("{p}?{q}"),
-                    None => p,
-                };
-                match uri.parse() {
-                    Ok(u) => *req.uri_mut() = u,
-                    Err(_) => return ApiError::not_found().into_response(),
-                }
-            }
-            Content::Slash(to) => return no_referrer(Redirect::permanent(&to).into_response()),
-            Content::Draft => {}
-            Content::Locked => return ApiError::not_found().into_response(),
-        }
-    } else if path.starts_with("/_clip/") {
-        if !clip_unlocked(&s.token, &path, query.as_deref()) {
-            return ApiError::not_found().into_response();
-        }
-    } else if !blob_unlocked(&s.token, &path, query.as_deref()) {
-        return ApiError::not_found().into_response();
-    }
-    no_referrer(next.run(req).await)
-}
-
-fn no_referrer(mut res: Response) -> Response {
-    res.headers_mut().insert(
-        header::REFERRER_POLICY,
-        HeaderValue::from_static("no-referrer"),
-    );
-    res
 }
 
 /// What [`gate`] found, on every request it lets through.
@@ -1227,13 +1016,8 @@ pub fn guest_need(method: &Method, path: &str, query: Option<&str>) -> GuestNeed
         ["api", "artifacts", aid, "snapshot"] if get => {
             at(aid, RightType::Artifacts, "read", false)
         }
-        // An app's head and bundles, and counting an install of it: anyone
-        // who may open it, as the Clax app does without signing in.
-        ["api", "artifacts", aid, "head"] if get => at(aid, RightType::Artifacts, "read", false),
-        ["api", "artifacts", aid, "versions", _, "bundle"] if get => {
-            at(aid, RightType::Artifacts, "read", false)
-        }
-        ["api", "artifacts", aid, "installs"] if post => {
+        // A site session for the page's frame: a link viewer's.
+        ["api", "artifacts", aid, "site-code"] if post => {
             at(aid, RightType::Artifacts, "read", false)
         }
         // Anyone who reads a page through its link may clone it read-only
@@ -1488,10 +1272,7 @@ pub const OWN_PAGES: &[&str] = &[
     "/device",
     "/auth/github",
     crate::github::CALLBACK_PATH,
-    // The Clax app's links, which Apple and Google fetch with no session;
-    // each handler answers only on the public host.
-    "/.well-known/apple-app-site-association",
-    "/.well-known/assetlinks.json",
+    "/site-signin",
 ];
 
 /// The bundled legal documents' pages ([`Hosted::serves_legal`]).
@@ -1535,9 +1316,9 @@ pub async fn gate(State(s): State<AppState>, mut req: Request, next: Next) -> Re
         .unwrap_or("")
         .to_string();
     let content_host = req.extensions().get::<crate::host::SiteRequest>().is_some();
-    let on_content = h.is_content_host(&host);
+    let on_retired = h.is_retired_content_host(&host);
     if !(host.eq_ignore_ascii_case(&h.host)
-        || on_content
+        || on_retired
         || crate::auth::is_local_host(&host)
         || content_host)
     {
@@ -1557,24 +1338,18 @@ pub async fn gate(State(s): State<AppState>, mut req: Request, next: Next) -> Re
         return ApiError::not_found().into_response();
     }
     // A site host's paths are its artifact's own (`/c/…` among them): the
-    // site routes serve them.
-    let content = !content_host
-        && (path.starts_with("/c/") || path.starts_with("/_blob/") || path.starts_with("/_clip/"));
-    // The content origin serves content, the UI's files and `/healthz`
-    // alone; with one, the public origin serves no content.
-    if on_content && !content {
-        if path == "/healthz" || path.starts_with("/_clax/") {
+    // site routes serve them. Elsewhere no content is served: a version's
+    // keyed addresses (`/c/…`) and a clip's (`/_clip/…`) are gone, and an
+    // asset's address only redirects to its artifact's site, whose access
+    // check decides; the retired content origin serves nothing else.
+    if !content_host {
+        if path.starts_with("/_blob/") || path.starts_with("/_clax/blob/") {
             req.extensions_mut().insert(HostedRequest::default());
             return next.run(req).await;
         }
-        return ApiError::not_found().into_response();
-    }
-    if content {
-        if h.content_origin().is_some() && !on_content {
+        if on_retired || path.starts_with("/c/") || path.starts_with("/_clip/") {
             return ApiError::not_found().into_response();
         }
-        req.extensions_mut().insert(HostedRequest::default());
-        return serve_content(&s, req, next).await;
     }
     let open = content_host || path == "/healthz" || path.starts_with("/_clax/");
     let cookie = (!open)
@@ -1944,90 +1719,37 @@ mod tests {
     }
 
     #[test]
-    fn a_clip_opens_only_at_its_threads_key() {
+    fn a_clip_is_named_at_the_route_that_takes_the_readers_credential() {
         let (aid, tid) = ("7q3k9mzx2b4t", "01J9ZZZZZZZZZZZZZZZZZZZZZZ");
-        let k = clip_key("tok", aid, tid);
-        assert_eq!(k.len(), 32);
-        assert_ne!(k, clip_key("other", aid, tid));
-        assert_ne!(k, clip_key("tok", aid, "01J9ZZZZZZZZZZZZZZZZZZZZZY"));
-        assert_ne!(k, asset_key("tok", &format!("{aid}/{tid}")));
-        let path = format!("/_clip/{aid}/{tid}");
-        assert!(clip_unlocked("tok", &path, Some(&format!("k={k}"))));
-        assert!(clip_unlocked("tok", &path, Some(&format!("v=1&k={k}"))));
-        for (p, q) in [
-            (path.clone(), None),
-            (path.clone(), Some(format!("k={k}x"))),
-            (path.clone(), Some("k=".to_string())),
-            (
-                format!("/_clip/{aid}/01J9ZZZZZZZZZZZZZZZZZZZZZY"),
-                Some(format!("k={k}")),
-            ),
-            (format!("/_clip/{aid}/{tid}/x"), Some(format!("k={k}"))),
-            (format!("/_clip/not-an-id/{tid}"), Some(format!("k={k}"))),
-            (format!("/_clip/{aid}"), Some(format!("k={k}"))),
-        ] {
-            assert!(!clip_unlocked("tok", &p, q.as_deref()), "{p} {q:?}");
-        }
         let h = Hosted::new("https://clax.example", None).unwrap();
         assert_eq!(
-            clip_link_at(&h, "tok", aid, tid),
-            format!("https://clax.example/_clip/{aid}/{tid}?k={k}")
+            clip_link_at(&h, aid, tid),
+            format!("https://clax.example/api/artifacts/{aid}/threads/{tid}/clip")
+        );
+        assert_eq!(
+            asset_url("01J9Z3K4M5N6P7Q8R9S0T1V2W3", false),
+            "/_clax/blob/01J9Z3K4M5N6P7Q8R9S0T1V2W3"
+        );
+        assert_eq!(
+            asset_url("01J9Z3K4M5N6P7Q8R9S0T1V2W3", true),
+            "/_blob/01J9Z3K4M5N6P7Q8R9S0T1V2W3"
         );
     }
 
     #[test]
-    fn content_opens_only_at_its_versions_key() {
-        let aid = "7q3k9mzx2b4t";
-        let k = content_key("tok", aid, 3);
-        assert_eq!(k.len(), 32);
-        assert_ne!(k, content_key("tok", aid, 4));
-        assert_ne!(k, content_key("other", aid, 3));
-        assert_ne!(k, asset_key("tok", &format!("{aid}/3")));
-        assert_eq!(
-            content_path("tok", &format!("/c/{aid}/v/3/k/{k}/a/b.css")),
-            Content::Unlocked(format!("/c/{aid}/v/3/a/b.css"))
+    fn a_retired_content_origin_is_a_host_of_its_own() {
+        let h = Hosted::new("https://clax.example", None).unwrap();
+        assert!(
+            Hosted::new("https://clax.example", None)
+                .unwrap()
+                .with_retired_content_origin("https://clax.example")
+                .is_none()
         );
-        assert_eq!(
-            content_path("tok", &format!("/c/{aid}/v/3/k/{k}/")),
-            Content::Unlocked(format!("/c/{aid}/v/3/"))
-        );
-        assert_eq!(
-            content_path("tok", &format!("/c/{aid}/v/3/k/{k}")),
-            Content::Slash(format!("{k}/"))
-        );
-        assert_eq!(
-            content_path("tok", &format!("/c/{aid}/draft/a_s1/tok/index.html")),
-            Content::Draft
-        );
-        for bad in [
-            "/c/not-an-id/draft/a_s1/tok/".to_string(),
-            format!("/c/{aid}/drafts/a_s1/tok/"),
-            format!("/c/{aid}/v/3/"),
-            format!("/c/{aid}/v/3/k/{k}x/"),
-            format!("/c/{aid}/v/03/k/{k}/"),
-            format!("/c/{aid}/v/4/k/{k}/"),
-            format!("/c/{aid}/x/3/k/{k}/"),
-            format!("/c/not-an-id/v/3/k/{k}/"),
-            "/c/".to_string(),
-        ] {
-            assert_eq!(content_path("tok", &bad), Content::Locked, "{bad}");
-        }
-        let a = asset_key("tok", "01J9Z3K4M5N6P7Q8R9S0T1V2W3");
-        assert!(blob_unlocked(
-            "tok",
-            "/_blob/01J9Z3K4M5N6P7Q8R9S0T1V2W3",
-            Some(&format!("x=1&k={a}"))
-        ));
-        assert!(!blob_unlocked(
-            "tok",
-            "/_blob/01J9Z3K4M5N6P7Q8R9S0T1V2W3",
-            None
-        ));
-        assert!(!blob_unlocked(
-            "tok",
-            "/_blob/01J9Z3K4M5N6P7Q8R9S0T1V2W4",
-            Some(&format!("k={a}"))
-        ));
+        let h = h
+            .with_retired_content_origin("https://content.clax.example")
+            .unwrap();
+        assert!(h.is_retired_content_host("Content.Clax.Example"));
+        assert!(!h.is_retired_content_host("clax.example"));
     }
 
     #[test]

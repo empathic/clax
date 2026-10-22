@@ -4,11 +4,10 @@
 //! testkit's delay middleware are here too.
 
 use crate::routes::{
-    admin, app_bundles, app_drafts, approvals, artifacts, assets, audit_trail, bot, client_imports,
-    connect, content, docs, drafts, extension, feedback, git_token, grants, health, inbox, jobs,
-    live, live_layers, mcp_http, people, perf, questions, remote_apps, remotes, room, sample,
-    sessions, settings, sites, snapshot, stream, surface, tags, threads, token, toolpath, viewers,
-    watches, working,
+    approvals, artifacts, assets, connect, content, docs, drafts, extension, feedback, git_token,
+    grants, health, inbox, live, live_layers, mcp_http, people, perf, questions, remotes, room,
+    sample, sessions, site_signin, sites, snapshot, stream, surface, tags, threads, token,
+    toolpath, viewers, watches, working,
 };
 #[cfg(not(target_arch = "wasm32"))]
 use crate::routes::{events, mcp, net};
@@ -127,14 +126,9 @@ fn routes(state: AppState, shutdown: Option<tokio::sync::watch::Sender<bool>>) -
             get(artifacts::get_version),
         )
         .route("/api/artifacts/{aid}/files", get(artifacts::files))
-        .route("/api/artifacts/{aid}/head", get(app_bundles::head))
         .route(
-            "/api/artifacts/{aid}/versions/{n}/bundle",
-            get(app_bundles::get_bundle),
-        )
-        .route(
-            "/api/artifacts/{aid}/installs",
-            post(app_bundles::record_install),
+            "/api/artifacts/{aid}/site-code",
+            post(site_signin::site_code),
         )
         .route("/api/tags", get(tags::list).post(tags::create))
         .route(
@@ -666,18 +660,18 @@ fn routes(state: AppState, shutdown: Option<tokio::sync::watch::Sender<bool>>) -
         .merge(api_fast)
         .merge(api_slow)
         .merge(shell_routes)
+        // An asset's addresses of before site hosts redirect to its site.
         .route("/_blob/{asset_id}", get(assets::blob))
-        .route("/_clip/{aid}/{tid}", get(threads::keyed_clip))
+        .route("/_clax/blob/{asset_id}", get(assets::blob))
         .route("/connect/b/{code}", get(connect::browser_link))
+        .route("/site-signin", get(site_signin::page))
         .route(
             "/api/artifacts/{aid}/versions/{n}/files/{*path}",
             get(content::raw_file),
         );
-    // Content on the public host: a hosted daemon's keyed content
-    // addresses, on its content origin or its public host (the gate checks
-    // their keys); on a local daemon, only for a shell with no site origins
-    // ([`without_site_origins`]). Every other shell frames each artifact's
-    // site host (`routes::site`).
+    // Content on the public host: on a local daemon, only for a shell with
+    // no site origins ([`without_site_origins`]); never on a hosted one.
+    // Every other shell frames each artifact's site host (`routes::site`).
     let content_routes = Router::new()
         .route("/c/{aid}/v/{n}", get(content::redirect_to_slash))
         .route("/c/{aid}/v/{n}/", get(content::index))
@@ -689,7 +683,7 @@ fn routes(state: AppState, shutdown: Option<tokio::sync::watch::Sender<bool>>) -
         .route("/c/{aid}/draft/{agent}/{token}/", get(drafts::index))
         .route("/c/{aid}/draft/{agent}/{token}/{*path}", get(drafts::file));
     let r = if state.hosted.is_some() {
-        r.merge(content_routes)
+        r
     } else {
         r.merge(content_routes.route_layer(axum::middleware::from_fn(without_site_origins)))
     };

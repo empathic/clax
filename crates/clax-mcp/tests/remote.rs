@@ -97,11 +97,7 @@ async fn the_shim_registers_and_uploads_signed_on_a_remote_daemon() {
         .await
         .unwrap();
     let asset = up["asset"]["id"].as_str().unwrap().to_string();
-    let res = ts
-        .authed(ts.client.get(format!("{}/_blob/{asset}", ts.base)))
-        .send()
-        .await
-        .unwrap();
+    let res = ts.site_get(&aid, &format!("/_clax/blob/{asset}")).await;
     assert_eq!(res.bytes().await.unwrap().as_ref(), b"asset bytes");
     assert!(client.list().await.unwrap()["artifacts"].is_array());
 }

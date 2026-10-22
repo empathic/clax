@@ -32,19 +32,24 @@ const SANDBOX: &str = "sandbox allow-scripts allow-forms allow-modals allow-popu
 ///   artifact's page framed by another of its pages. Framed by another site,
 ///   the page reaches nothing of the viewer's: it runs at an opaque origin,
 ///   and its bridge talks only to a parent at the shell's origin.
-/// - On an artifact origin (`<id>.localhost[:port]`, subdomain mode): framed
-///   only by the artifact's own pages (`'self'`) and the shell, at
-///   `localhost` or `127.0.0.1` on the same port, the only hosts from which
-///   the shell uses subdomain frames.
+/// - On an artifact's site host: framed only by the artifact's own pages
+///   (`'self'`) and the shell: a hosted daemon's at its public origin; a
+///   local daemon's at `localhost` or `127.0.0.1` on the same port, the only
+///   hosts from which the shell uses subdomain frames.
 ///
 /// The policy is a separate one: a page's own `<meta>` policy still applies
 /// in full beside it, and cannot set `frame-ancestors` itself.
 pub(crate) fn content_policy(
+    s: &AppState,
     origin: &Option<Extension<SiteRequest>>,
     req: &HeaderMap,
 ) -> HeaderValue {
     if origin.is_none() {
         return HeaderValue::from_static(SANDBOX);
+    }
+    if let Some(h) = &s.hosted {
+        return HeaderValue::from_str(&format!("frame-ancestors 'self' {}", h.origin))
+            .unwrap_or_else(|_| HeaderValue::from_static("frame-ancestors 'self'"));
     }
     // The rewrite accepted this host only with a numeric port, or none.
     let port = req
@@ -90,24 +95,22 @@ fn snapshot_policy(req: &HeaderMap, fallback: &str) -> HeaderValue {
 /// names its artifact ID and the daemon's port, out of the `Referer` of
 /// every request the page makes.
 fn framed_by_shell(
+    s: &AppState,
     mut res: Response,
     origin: &Option<Extension<SiteRequest>>,
     req: &HeaderMap,
     (id, own, embed): (&str, &str, Option<&clax_http::state::EmbedOrigins>),
     live: bool,
 ) -> Response {
-    let lockdown = (!live).then_some(id);
     res.headers_mut().insert(
         header::CONTENT_SECURITY_POLICY,
-        content_policy(origin.is_some(), req, own, lockdown, embed),
+        content_policy(s, origin, req),
     );
-    res.headers_mut().insert(
-        header::REFERRER_POLICY,
-        HeaderValue::from_static("no-referrer"),
-    );
-    if live {
-        res.headers_mut()
-            .append(header::CONTENT_SECURITY_POLICY, snapshot_policy(req, own));
+    if let Some(fallback) = live {
+        res.headers_mut().append(
+            header::CONTENT_SECURITY_POLICY,
+            snapshot_policy(req, fallback),
+        );
     }
     res.extensions_mut().insert(ContentPolicySet);
     res
@@ -173,14 +176,8 @@ async fn lookup(
     // A page wrapped concurrently with a debug rebuild may keep the old
     // `?v=`; a debug build serves every bridge URL revalidated, current bytes.
     cache.follow_bridge(&bridge);
-    // Content framed by a shell on another origin names it: a hosted
-    // daemon's public origin, or the app's shell origin (AppState.embed).
-    let shell = s
-        .hosted
-        .as_ref()
-        .filter(|h| h.content_origin().is_some())
-        .map(|h| h.origin.clone())
-        .or_else(|| s.embed.as_ref().map(|e| e.shell.clone()));
+    // Content on a hosted daemon's site hosts talks to its public origin.
+    let shell = s.hosted.as_ref().map(|h| h.origin.clone());
     s.store_call_async(move |st| async move {
         // A deleted artifact's versions stay behind its row, and its files
         // until its content is removed: neither is served once it is gone.
@@ -296,6 +293,7 @@ pub(crate) async fn serve_version(
     let (bytes, meta) = match lookup(s, id, n, rel, index).await? {
         Served::Page(html) => {
             return Ok(framed_by_shell(
+                s,
                 http_cache::html(req, &html),
                 origin,
                 req,
@@ -327,7 +325,7 @@ pub(crate) async fn serve_version(
             )
                 .into_response()
         });
-        return Ok(framed_by_shell(res, origin, req, live));
+        return Ok(framed_by_shell(s, res, origin, req, live));
     }
     let res = (
         StatusCode::OK,
@@ -340,7 +338,7 @@ pub(crate) async fn serve_version(
         body,
     )
         .into_response();
-    Ok(framed_by_shell(res, origin, req, live))
+    Ok(framed_by_shell(s, res, origin, req, live))
 }
 
 /// `GET /api/artifacts/<id>/versions/<n>/files/<path>`: a file's stored bytes,

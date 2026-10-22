@@ -341,7 +341,7 @@ async fn renders_the_frame_only_when_the_mode_is_known() {
         &[("host", format!("{id}.localhost:{port}"))],
     )
     .await;
-    assert_eq!(res.status(), 404, "never served on an artifact origin");
+    assert_eq!(res.status(), 401, "never served on an artifact origin");
 }
 
 #[tokio::test]

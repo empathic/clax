@@ -84,6 +84,7 @@ async fn the_root_serves_the_current_version() {
         .client
         .get(format!("{}/", ts.base))
         .header("host", ts.site_host(&id))
+        .header("cookie", ts.site_cookie(&id).await)
         .header("if-none-match", &etag)
         .send()
         .await
@@ -250,8 +251,11 @@ async fn an_unknown_clax_path_is_404() {
     // The bridge and the UI's files are served there, as on the public host.
     let res = ts.site_get(&id, "/_clax/bridge.js").await;
     assert_eq!(res.status(), 200);
-    // An unknown artifact's host serves nothing.
-    assert_site_404(&ts, "abcdefghjkmn", "/").await;
+    // An unknown artifact's host serves nothing, and says no more of it
+    // than of a private one's.
+    let res = ts.site_get("abcdefghjkmn", "/").await;
+    assert_eq!(res.status(), 401);
+    assert_eq!(res.headers()["referrer-policy"], "no-referrer");
 }
 
 #[tokio::test]
@@ -322,4 +326,161 @@ async fn clax_healthz_answers_on_any_site_host() {
         .unwrap();
     assert_eq!(res.status(), 404);
     assert!(res.headers().get("referrer-policy").is_none());
+}
+
+/// The status of `GET <path>` sent as written (no client normalizes its dot
+/// segments or escapes) to the daemon with `Host: host` and `cookie`.
+async fn raw_status(ts: &TestServer, host: &str, path: &str, cookie: &str) -> u16 {
+    use tokio::io::{AsyncReadExt, AsyncWriteExt};
+    let mut s = tokio::net::TcpStream::connect(ts.addr).await.unwrap();
+    let req = format!(
+        "GET {path} HTTP/1.1\r\nHost: {host}\r\nCookie: {cookie}\r\nConnection: close\r\n\r\n"
+    );
+    s.write_all(req.as_bytes()).await.unwrap();
+    let mut out = Vec::new();
+    s.read_to_end(&mut out).await.unwrap();
+    let head = String::from_utf8_lossy(&out);
+    head.split(' ').nth(1).unwrap().parse().unwrap()
+}
+
+#[tokio::test]
+async fn probed_paths_reach_no_other_artifact_and_no_file_outside_the_version() {
+    let ts = TestServer::spawn().await;
+    let a = id_of(
+        &ts.publish("A", &[("index.html", "<p>a"), ("a.css", "p{}")])
+            .await,
+    );
+    let b = id_of(&ts.publish("B", &[("index.html", "<p>b")]).await);
+    let b_asset = upload(&ts, &b).await["asset"]["id"]
+        .as_str()
+        .unwrap()
+        .to_string();
+    // B's draft, and its token.
+    let sid = ts.register_session("claude", "h1").await["id"]
+        .as_str()
+        .unwrap()
+        .to_string();
+    let r = ts
+        .authed(
+            ts.client
+                .put(format!("{}/api/sessions/{sid}/drafts/{b}", ts.base)),
+        )
+        .json(&json!({"files": {"index.html": {"content": "<p>draft", "encoding": "utf8"}}}))
+        .send()
+        .await
+        .unwrap();
+    assert_eq!(r.status(), 200, "{}", r.text().await.unwrap());
+    let drafts: Value = ts
+        .client
+        .get(format!("{}/api/artifacts/{b}/drafts", ts.base))
+        .header("cookie", ts.owner_cookie())
+        .send()
+        .await
+        .unwrap()
+        .json()
+        .await
+        .unwrap();
+    let d = &drafts["drafts"][0];
+    let b_draft = format!(
+        "/_clax/draft/{}/{}/",
+        d["agent"].as_str().unwrap(),
+        d["token"].as_str().unwrap()
+    );
+    assert_eq!(ts.site_get(&b, &b_draft).await.status(), 200, "on B's host");
+    let host = ts.site_host(&a);
+    let cookie = ts.site_cookie(&a).await;
+    assert_eq!(raw_status(&ts, &host, "/a.css", &cookie).await, 200);
+    for legacy in [false, true] {
+        if legacy {
+            make_legacy(&ts, &a);
+        }
+        for path in [
+            "/..",
+            "/../",
+            "/../index.html",
+            "/_clax/v/1/../../index.html",
+            "/_clax/v/1/%2e%2e/%2e%2e/a.css",
+            "/%2e%2e/",
+            "/_clax/v/1/..%2Fa.css",
+            "/_clax/v/1/%2Fa.css",
+            "/%2Fa.css",
+            "//",
+            "//a.css",
+            "//index.html",
+            "/_clax",
+            "/_clax/",
+            "/_CLAX/v/1/",
+            "/_Clax/v/1/a.css",
+            "/%5Fclax/v/1/",
+            "/%5fclax/v/1/a.css",
+            "/_clax/v/0/",
+            "/_clax/v/4294967296/",
+            "/_clax/v/99999999999999999999999/",
+            "/_clax/v/+1/",
+            "/_clax/v/01/",
+            "/_clax/v/1%2F/",
+            "/_clax/v/-1/",
+            "/_clax/v/+1",
+            "/_clax/v/01/a.css",
+            &b_draft,
+            &format!("{b_draft}index.html"),
+            &format!("/_clax/blob/{b_asset}"),
+            &format!("/_blob/{b_asset}"),
+            &format!("/_clax/%62lob/{b_asset}"),
+            &format!("/_clax/blob/{b_asset}/"),
+            &format!("/_clax/blob/../blob/{b_asset}"),
+        ] {
+            let got = raw_status(&ts, &host, path, &cookie).await;
+            assert_eq!(got, 404, "{path} (legacy {legacy})");
+        }
+    }
+}
+
+#[tokio::test]
+async fn a_version_has_one_spelling() {
+    let ts = TestServer::spawn().await;
+    let id = id_of(&ts.publish("S", &[("index.html", "<p>one")]).await);
+    assert_eq!(ts.site_get(&id, "/_clax/v/1/").await.status(), 200);
+    for path in [
+        "/_clax/v/+1/",
+        "/_clax/v/01/",
+        "/_clax/v/01",
+        "/_clax/v/+1/index.html",
+    ] {
+        assert_site_404(&ts, &id, path).await;
+    }
+}
+
+#[tokio::test]
+async fn a_draft_refuses_a_path_its_site_serves_itself() {
+    let ts = TestServer::spawn().await;
+    let sid = ts.register_session("claude", "h1").await["id"]
+        .as_str()
+        .unwrap()
+        .to_string();
+    let id = id_of(&ts.publish("S", &[("index.html", "<p>one")]).await);
+    let put = |path: &'static str| {
+        let req = ts
+            .authed(
+                ts.client
+                    .put(format!("{}/api/sessions/{sid}/drafts/{id}", ts.base)),
+            )
+            .json(&json!({"files": {path: {"content": "x", "encoding": "utf8"}}}));
+        async move { req.send().await.unwrap() }
+    };
+    let r = put("_clax/x.js").await;
+    assert_eq!(r.status(), 400);
+    assert_eq!(
+        r.json::<Value>().await.unwrap()["error"]["code"],
+        "invalid_path"
+    );
+    // A new artifact owns `_blob/`; a legacy one's site serves it itself.
+    assert_eq!(put("_blob/a.txt").await.status(), 200);
+    make_legacy(&ts, &id);
+    let r = put("_blob/a.txt").await;
+    assert_eq!(r.status(), 400);
+    assert_eq!(
+        r.json::<Value>().await.unwrap()["error"]["code"],
+        "invalid_path"
+    );
 }

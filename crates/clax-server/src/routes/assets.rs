@@ -102,8 +102,7 @@ pub async fn upload(
             })
             .await?;
         let (asset, legacy) = asset;
-        let url =
-            clax_http::hosted::asset_url(&s, asset["id"].as_str().unwrap_or_default(), legacy);
+        let url = clax_http::hosted::asset_url(asset["id"].as_str().unwrap_or_default(), legacy);
         return Ok((
             StatusCode::CREATED,
             Json(json!({"asset": asset, "url": url})),
@@ -132,7 +131,7 @@ pub async fn list(
             Ok((vis.filter_assets(&st.list_assets(&id)?), a.legacy_paths))
         })
         .await?;
-    clax_http::hosted::stamp_asset_urls(&s, &mut assets, legacy);
+    clax_http::hosted::stamp_asset_urls(&mut assets, legacy);
     Ok(Json(json!({"assets": assets})))
 }
 
@@ -159,17 +158,52 @@ pub async fn delete(
     Ok(StatusCode::NO_CONTENT)
 }
 
-/// `/_blob/<asset ID>` on the public host: the asset's bytes ([`serve_blob`]).
+/// `/_blob/<asset ID>` and `/_clax/blob/<asset ID>` on the public host
+/// (and a hosted daemon's retired content origin), an asset's addresses of
+/// before each artifact had a site: 301 to the asset's address on its
+/// artifact's site (`/_blob/<id>` for a legacy artifact, else
+/// `/_clax/blob/<id>`), whose access check decides; no bytes are served
+/// here. An unknown asset, or a live page's to a caller that may not see
+/// live pages, is 404.
 pub async fn blob(
     State(s): State<AppState>,
     d: DeniedToGrants,
     sees: SeesLive,
+    headers: axum::http::HeaderMap,
     asset_id: Result<Path<String>, PathRejection>,
 ) -> Result<Response, ApiError> {
     // An asset's bytes serve browsers (spec §7.5): agents read through the routes the filter covers.
     d.refuse_agents()?;
     let asset_id = path(asset_id)?;
-    serve_blob(&s, sees, asset_id, None).await
+    let live_ids = s.live_ids.clone();
+    let (aid, asset_id, legacy) = s
+        .store_call(move |st| {
+            let asset = st.get_asset(&asset_id)?.ok_or(CoreError::NotFound)?;
+            if sees.check(&live_ids, &asset.artifact_id).is_err() {
+                return Err(CoreError::NotFound);
+            }
+            let aid = ArtifactId::parse(&asset.artifact_id)?;
+            let a = st.get_artifact(&aid)?.ok_or(CoreError::NotFound)?;
+            Ok((aid, asset.id, a.legacy_paths))
+        })
+        .await?;
+    let host = headers
+        .get(header::HOST)
+        .and_then(|h| h.to_str().ok())
+        .unwrap_or("");
+    let to = format!(
+        "{}{}",
+        clax_http::site_access::site_origin(&s, &aid, host),
+        clax_http::hosted::asset_url(&asset_id, legacy)
+    );
+    Ok((
+        StatusCode::MOVED_PERMANENTLY,
+        [
+            (header::LOCATION, to.as_str()),
+            (header::REFERRER_POLICY, "no-referrer"),
+        ],
+    )
+        .into_response())
 }
 
 /// The asset's bytes; with `owner` (a site host's artifact), only when the

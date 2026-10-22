@@ -28,8 +28,9 @@
 //! serves `<id>.localhost[:port]` as that artifact's origin (its host
 //! rewrite), and browsers send `*.localhost` to this machine, so under
 //! `wrangler dev` the content origin works unchanged. A deployed hosted
-//! instance serves content on a host of its own, `CONTENT_ORIGIN`, framed
-//! sandboxed, and none on its public origin (`clax_http::hosted::Hosted::with_content_origin`;
+//! instance serves no content on its public origin; on `CONTENT_ORIGIN`,
+//! the retired content origin, an asset's old address only redirects to
+//! its artifact's site (`clax_http::hosted::Hosted::with_retired_content_origin`;
 //! `README.md` has the deploy).
 //!
 //! # The spike's routes

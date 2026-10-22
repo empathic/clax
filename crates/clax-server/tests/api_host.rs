@@ -109,6 +109,7 @@ async fn content_and_the_shell_are_not_api_routes() {
         .client
         .get(format!("{}/", ts.base))
         .header("host", format!("{aid}.localhost:{port}"))
+        .header("cookie", ts.site_cookie(aid).await)
         .send()
         .await
         .unwrap();
@@ -118,6 +119,7 @@ async fn content_and_the_shell_are_not_api_routes() {
         .client
         .get(format!("{}/api/artifacts", ts.base))
         .header("host", format!("{aid}.localhost:{port}"))
+        .header("cookie", ts.site_cookie(aid).await)
         .send()
         .await
         .unwrap();
@@ -202,10 +204,12 @@ async fn a_configured_site_domain_names_the_artifact_hosts() {
     // A site host reaches only what a site host serves: the hosted gate
     // admits it (it is not the public host), its artifact's current
     // version is at its root, and `/api` is not among its paths.
+    let cookie = ts.site_cookie(aid).await;
     let res = ts
         .client
         .get(format!("{}/", ts.base))
         .header("host", &site)
+        .header("cookie", &cookie)
         .send()
         .await
         .unwrap();
@@ -216,12 +220,15 @@ async fn a_configured_site_domain_names_the_artifact_hosts() {
     );
     let (status, _) = status_with_host(&ts, &ts.base, "/_clax/healthz", &site).await;
     assert_eq!(status, 200, "{site} /_clax/healthz");
-    let (status, body) = status_with_host(&ts, &ts.base, "/api/artifacts", &site).await;
-    assert_eq!(
-        (status, body["error"]["code"].as_str()),
-        (404, Some("not_found")),
-        "{site} /api"
-    );
+    let res = ts
+        .client
+        .get(format!("{}/api/artifacts", ts.base))
+        .header("host", &site)
+        .header("cookie", &cookie)
+        .send()
+        .await
+        .unwrap();
+    assert_eq!(res.status(), 404, "{site} /api");
     for host in [
         format!("abcdefghjkmn.localhost:{port}"),
         format!("x.abcdefghjkmn.clax.test:{port}"),

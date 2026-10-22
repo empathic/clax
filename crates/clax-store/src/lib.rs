@@ -141,6 +141,7 @@ pub mod secrets;
 pub mod sessions;
 pub mod shares;
 pub mod site;
+pub mod site_sessions;
 pub mod tags;
 pub mod threads;
 pub mod viewers;

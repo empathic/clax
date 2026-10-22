@@ -77,14 +77,11 @@ pub fn encode_component(s: &str) -> String {
 
 /// Where the frame shows `file` of version `n`, as `pageSrc` in `web/shell/src/origin.ts`:
 /// on the artifact's site origin (`site`) under `/_clax/v/<n>/`; without
-/// one (a hosted daemon's sandboxed content), at `/c/<id>/v/<n>/`, under
-/// `k/<key>/` when the version has a content key
-/// ([`clax_http::hosted::content_key`]).
-pub fn page_src(id: &str, n: u64, site: Option<&str>, key: Option<&str>, file: &str) -> String {
-    let root = match (site, key) {
-        (Some(o), _) => format!("{o}/_clax/v/{n}/"),
-        (None, Some(k)) => format!("/c/{id}/v/{n}/k/{k}/"),
-        (None, None) => format!("/c/{id}/v/{n}/"),
+/// one (a LAN viewer's shell), at `/c/<id>/v/<n>/` on the daemon's host.
+pub fn page_src(id: &str, n: u64, site: Option<&str>, file: &str) -> String {
+    let root = match site {
+        Some(o) => format!("{o}/_clax/v/{n}/"),
+        None => format!("/c/{id}/v/{n}/"),
     };
     if file == "index.html" {
         return root;
@@ -188,6 +185,18 @@ fn local_site(headers: &HeaderMap, id: &str) -> String {
     match clax_core::ArtifactId::parse(id) {
         Ok(aid) => clax_http::host::SiteHosts::local().origin(&aid, "http", port),
         Err(_) => format!("http://{id}.localhost"),
+    }
+}
+
+/// The site origin a local daemon's frame loads from, as `frameSite` in
+/// web/shell/src/origin.ts: the subdomain mode's `origin`; in sandbox mode
+/// the artifact's site origin still on `localhost` or `127.0.0.1` (the
+/// frame sandboxes it), and none elsewhere (a LAN viewer's shell).
+fn frame_site(headers: &HeaderMap, id: &str, origin: Option<&str>) -> Option<String> {
+    match origin {
+        Some(o) => Some(o.to_string()),
+        None if on_loopback_name(headers) => Some(local_site(headers, id)),
+        None => None,
     }
 }
 
@@ -380,32 +389,16 @@ pub async fn assemble(
         .iter()
         .find(|v| u64::from(v.n) == n)
         .is_some_and(|v| file == "index.html" || v.files.contains_key(&file));
-    // A hosted daemon's content origin frames every page sandboxed, there;
-    // an embedding app's content origins each frame their artifact.
-    let content_origin = s.hosted.as_ref().and_then(|h| h.content_origin());
-    let mode = match (content_origin, &s.embed) {
-        (Some(_), _) => Some(None),
-        (None, Some(e)) => Some(Some(e.content_of(id.as_str()))),
-        (None, None) => frame_origin(headers, id.as_str()),
+    // A hosted daemon's frame needs a site session the shell asks for, so
+    // the page carries none.
+    let mode = match &s.hosted {
+        Some(_) => None,
+        None => frame_origin(headers, id.as_str()),
     };
     let (frame, frame_json) = match mode {
         Some(origin) if holds => {
-            let key = s
-                .hosted
-                .as_ref()
-                .map(|_| clax_http::hosted::content_key(&s.token, id.as_str(), n));
-            // A local daemon's sandboxed frame loads the site origin too;
-            // a hosted daemon's loads its keyed content.
-            let site = match (&origin, &s.hosted) {
-                (Some(o), _) => Some(o.clone()),
-                (None, None) if on_loopback_name(headers) => Some(local_site(headers, id.as_str())),
-                _ => None,
-            };
-            let src = page_src(id.as_str(), n, site.as_deref(), key.as_deref(), &file);
-            let src = match site {
-                Some(_) => src,
-                None => format!("{}{src}", content_origin.unwrap_or("")),
-            };
+            let site = frame_site(headers, id.as_str(), origin.as_deref());
+            let src = page_src(id.as_str(), n, site.as_deref(), &file);
             (
                 Some(frame_html(&src, origin.is_none(), frame_name(query))),
                 json!({"mode": if origin.is_some() { "subdomain" } else { "sandbox" }, "src": src}),
@@ -413,11 +406,10 @@ pub async fn assemble(
         }
         _ => (None, Value::Null),
     };
-    let mut artifact = without_sessions(
+    let artifact = without_sessions(
         artifact_json,
         serde_json::to_value(&versions).expect("versions serialise"),
     );
-    clax_http::hosted::stamp_content_keys(s, &mut artifact);
     let mut boot = json!({
         "v": 1,
         "artifact": artifact,
@@ -523,11 +515,22 @@ mod tests {
         ))
         .unwrap();
         for c in cases.as_array().unwrap() {
+            let id = c["id"].as_str().unwrap();
+            // A case with a `location` is the shell's at that address,
+            // which derives the frame's site itself (`frameSite`).
+            let site = match c["location"].as_str() {
+                Some(loc) => {
+                    let host = loc.split_once("://").unwrap().1;
+                    let mut h = HeaderMap::new();
+                    h.insert(header::HOST, host.parse().unwrap());
+                    frame_site(&h, id, c["origin"].as_str())
+                }
+                None => c["origin"].as_str().map(str::to_string),
+            };
             let got = page_src(
-                c["id"].as_str().unwrap(),
+                id,
                 c["n"].as_u64().unwrap(),
-                c["origin"].as_str(),
-                c["key"].as_str(),
+                site.as_deref(),
                 c["file"].as_str().unwrap(),
             );
             assert_eq!(got, c["src"].as_str().unwrap(), "{c}");

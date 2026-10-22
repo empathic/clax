@@ -353,6 +353,7 @@ async fn snapshots_are_served_with_a_policy_that_runs_only_claxs_scripts() {
             .client
             .get(format!("{}{path}", ts.base))
             .header("host", &host)
+            .header("cookie", ts.site_cookie(aid).await)
             .send()
             .await
             .unwrap();
@@ -1102,7 +1103,9 @@ async fn a_live_pages_blob_is_refused_before_its_bytes_are_read() {
     std::fs::create_dir(&path).unwrap();
     let blob = format!("/_blob/{}", asset.id);
     assert_eq!(
-        ts.get(&blob).await.status(),
+        ts.site_get(aid, &format!("/_clax/blob/{}", asset.id))
+            .await
+            .status(),
         500,
         "loopback reads the bytes"
     );
@@ -1144,14 +1147,24 @@ async fn a_live_pages_blobs_and_snapshots_route_are_hidden_from_the_lan() {
     let blob = format!("/_blob/{}", asset.id);
     let lan_get = |path: String| lc.get(format!("{lan}{path}")).send();
     assert_eq!(lan_get(blob.clone()).await.unwrap().status(), 404);
-    assert_eq!(ts.get(&blob).await.status(), 200, "loopback sees it");
+    assert_eq!(
+        ts.site_get(aid, &format!("/_clax/blob/{}", asset.id))
+            .await
+            .status(),
+        200,
+        "loopback sees it"
+    );
+    let raw = ts.lan_unfollowed();
     let st = ts
-        .authed(lc.get(format!("{lan}{blob}")))
+        .authed(raw.get(format!("{lan}{blob}")))
         .send()
         .await
         .unwrap()
         .status();
-    assert_eq!(st, 200, "the token from the LAN sees it");
+    assert_eq!(
+        st, 301,
+        "the token from the LAN is sent to the asset's site"
+    );
     let form = reqwest::multipart::Form::new()
         .text("url", "http://localhost:5173/")
         .text("pending", "[]")
@@ -1175,10 +1188,13 @@ async fn a_live_pages_blobs_and_snapshots_route_are_hidden_from_the_lan() {
             FAKE_PNG,
         )
         .unwrap();
-    assert_eq!(
-        lan_get(format!("/_blob/{}", a.id)).await.unwrap().status(),
-        200
-    );
+    let st = raw
+        .get(format!("{lan}/_blob/{}", a.id))
+        .send()
+        .await
+        .unwrap()
+        .status();
+    assert_eq!(st, 301, "sent to the asset's site");
 }
 
 #[tokio::test]

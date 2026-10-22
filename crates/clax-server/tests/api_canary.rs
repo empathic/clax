@@ -342,7 +342,6 @@ async fn the_owner_by_hand_sees_every_canary() {
         format!("/api/artifacts/{aid}/versions/1"),
         format!("/api/artifacts/{aid}/versions/1/files/index.html"),
         format!("/api/artifacts/{aid}/versions/2/files/MIACANARYcarried.css"),
-        format!("/_blob/{}", w.read.asset),
         format!("/api/artifacts/{aid}/docs?collection=notes"),
         format!("/api/artifacts/{aid}/threads?include_resolved=true"),
         format!("/api/artifacts/{aid}/threads/{}/clip", w.read.thread),
@@ -352,6 +351,10 @@ async fn the_owner_by_hand_sees_every_canary() {
         assert!(r.status().is_success(), "{path}: {}", r.status());
         seen.push_str(&String::from_utf8_lossy(&r.bytes().await.unwrap()));
     }
+    let blob = format!("/_clax/blob/{}", w.read.asset);
+    let r = ts.site_get(aid, &blob).await;
+    assert!(r.status().is_success(), "{blob}: {}", r.status());
+    seen.push_str(&String::from_utf8_lossy(&r.bytes().await.unwrap()));
     // Mia's agent's question is hers: the owner's list leaves it out.
     let db = rusqlite::Connection::open(ts.home.db_path()).unwrap();
     let questions: String = db

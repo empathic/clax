@@ -10,19 +10,23 @@
 //! - `/_clax/blob/<asset ID>`: an asset of this artifact, and no other's.
 //! - `/_clax/healthz`: health, on any well-formed site host, whether or not
 //!   its artifact exists: it says nothing of the artifact.
+//! - `/_clax/session?code=&next=`: redeems a site code for a site session
+//!   ([`clax_http::site_access`]).
 //! - `/_clax/…`: the UI's files and the bridge (`crate::shell::static_file`);
 //!   any other `/_clax/` path is 404.
 //! - On a legacy artifact (`Artifact::legacy_paths`) `/_blob/<asset ID>` is
 //!   its assets' too, as its pages name them; on any other, `_blob/` is the
 //!   artifact's own path.
 //!
-//! A live page's site answers 404 to a caller that may not see live pages
-//! (`clax_http::live_access::sees_live_pages`), as a missing one does.
+//! Every route but health, the session and the UI's files is decided by the
+//! artifact's access (`clax_http::site_access::site_access_layer`); before
+//! that, a live page's site answers 404 to a caller that may not see live
+//! pages (`clax_http::live_access::sees_live_pages`), as a missing one does.
 
 use super::{assets, content, drafts, health};
 use axum::Router;
 use axum::extract::rejection::PathRejection;
-use axum::extract::{Extension, Path, Request, State};
+use axum::extract::{Extension, Path, Query, Request, State};
 use axum::http::HeaderMap;
 use axum::middleware::Next;
 use axum::response::{IntoResponse, Redirect, Response};
@@ -38,6 +42,9 @@ use clax_http::state::AppState;
 /// The site routes, mounted for a request that carries [`SiteRequest`]
 /// (`crate::router`).
 pub fn site_routes(state: &AppState) -> Router<AppState> {
+    // What the artifact's access decides (`site_access_layer`), after a
+    // live page is hidden from who may not see it (the later route layer
+    // is outermost).
     let site = Router::new()
         .route("/", get(current_index))
         .route("/_clax/v/{n}", get(version_slash))
@@ -47,16 +54,19 @@ pub fn site_routes(state: &AppState) -> Router<AppState> {
         .route("/_clax/draft/{agent}/{token}/", get(draft_index))
         .route("/_clax/draft/{agent}/{token}/{*path}", get(draft_file))
         .route("/_clax/blob/{asset_id}", get(blob))
-        .route("/_clax/{*path}", get(crate::shell::static_file))
         .route("/_blob/{asset_id}", get(legacy_blob))
         .route("/{*path}", get(current_file))
+        .route_layer(axum::middleware::from_fn_with_state(
+            state.clone(),
+            clax_http::site_access::site_access_layer,
+        ))
         .route_layer(axum::middleware::from_fn_with_state(
             state.clone(),
             hide_live_site,
         ));
     Router::new()
-        // The shell probes it from its own origin (`probeOrigin` in
-        // web/shell/src/origin.ts), and a deploy from anywhere.
+        // A deploy probes it from anywhere, and the shell from its own
+        // origin.
         .route(
             "/_clax/healthz",
             get(health::healthz).layer(
@@ -65,9 +75,59 @@ pub fn site_routes(state: &AppState) -> Router<AppState> {
                     .allow_methods(tower_http::cors::Any),
             ),
         )
+        .route("/_clax/session", get(session))
+        .route("/_clax/{*path}", get(crate::shell::static_file))
         .merge(site)
         .fallback(|| async { ApiError::not_found() })
         .layer(clax_http::http_cache::compression())
+}
+
+/// `/_clax/session?code=<code>&next=<path>`: redeems a site code made for
+/// this artifact (`POST /api/artifacts/<id>/site-code`, or the public
+/// host's `/site-signin`), sets the site cookie (partitioned as the code
+/// says) and redirects to `next`, a path on this host
+/// ([`clax_http::site_access::safe_next`]). A code that does not redeem
+/// sets nothing and sends the browser to `/site-signin` for `next`.
+async fn session(
+    State(s): State<AppState>,
+    site: Extension<SiteRequest>,
+    headers: HeaderMap,
+    q: Query<SessionQuery>,
+) -> Result<Response, ApiError> {
+    use axum::http::{HeaderValue, StatusCode, header};
+    let next = clax_http::site_access::safe_next(q.next.as_deref().unwrap_or("/"));
+    let code = q.code.clone().unwrap_or_default();
+    let aid = site.artifact.clone();
+    let redeemed = s
+        .store_call(move |st| st.site_code_redeem(&code, &aid))
+        .await?;
+    let found = |to: String| {
+        let mut res = (StatusCode::FOUND, [(header::LOCATION, to)]).into_response();
+        res.headers_mut()
+            .insert(header::CACHE_CONTROL, HeaderValue::from_static("no-store"));
+        res
+    };
+    let Some((id, _, partitioned)) = redeemed else {
+        let host = headers
+            .get(header::HOST)
+            .and_then(|h| h.to_str().ok())
+            .unwrap_or("");
+        return Ok(found(clax_http::site_access::signin_url(&s, host, &next)));
+    };
+    let secure = clax_http::site_access::secure(&s);
+    let mut res = found(next);
+    res.headers_mut().insert(
+        header::SET_COOKIE,
+        clax_http::site_access::site_cookie(secure, partitioned, &id),
+    );
+    Ok(res)
+}
+
+/// `/_clax/session`'s query.
+#[derive(serde::Deserialize)]
+struct SessionQuery {
+    code: Option<String>,
+    next: Option<String>,
 }
 
 /// A live page's site is 404 to a caller that may not see live pages.
@@ -88,6 +148,15 @@ async fn hide_live_site(
 /// A path parameter that does not parse names nothing on a site: 404.
 fn param<T>(p: Result<Path<T>, PathRejection>) -> Result<T, ApiError> {
     p.map(|Path(v)| v).map_err(|_| ApiError::not_found())
+}
+
+/// A version segment in its one form, `n.to_string()` (no sign, no leading
+/// zero); any other names nothing: 404.
+fn version(seg: &str) -> Result<u32, ApiError> {
+    seg.parse::<u32>()
+        .ok()
+        .filter(|n| n.to_string() == seg)
+        .ok_or_else(ApiError::not_found)
 }
 
 /// The artifact's current version: 404 when it does not exist (or has none).
@@ -157,10 +226,10 @@ async fn serve_current(
 /// `/_clax/v/<n>`: the version's root, with its slash.
 async fn version_slash(
     d: DeniedToGrants,
-    p: Result<Path<u32>, PathRejection>,
+    p: Result<Path<String>, PathRejection>,
 ) -> Result<Redirect, ApiError> {
     d.refuse_agents()?;
-    let n = param(p)?;
+    let n = version(&param(p)?)?;
     Ok(Redirect::permanent(&format!("{n}/")))
 }
 
@@ -170,10 +239,10 @@ async fn version_index(
     d: DeniedToGrants,
     site: Extension<SiteRequest>,
     req: HeaderMap,
-    p: Result<Path<u32>, PathRejection>,
+    p: Result<Path<String>, PathRejection>,
 ) -> Result<Response, ApiError> {
     d.refuse_agents()?;
-    let n = param(p)?;
+    let n = version(&param(p)?)?;
     let origin = Some(site.clone());
     content::serve_version(
         &s,
@@ -194,10 +263,11 @@ async fn version_file(
     d: DeniedToGrants,
     site: Extension<SiteRequest>,
     req: HeaderMap,
-    p: Result<Path<(u32, String)>, PathRejection>,
+    p: Result<Path<(String, String)>, PathRejection>,
 ) -> Result<Response, ApiError> {
     d.refuse_agents()?;
     let (n, rel) = param(p)?;
+    let n = version(&n)?;
     if rel == INDEX {
         return Ok(Redirect::permanent("./").into_response());
     }

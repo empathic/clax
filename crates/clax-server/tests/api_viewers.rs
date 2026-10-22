@@ -139,7 +139,7 @@ async fn the_shells_own_https_origin_is_its_own_and_another_https_one_is_not() {
     let artifact = get("https://7q3k9mzx2b4t.localhost", "7q3k9mzx2b4t.localhost")
         .await
         .unwrap();
-    assert_eq!(artifact.status(), 404, "an artifact host reaches no API");
+    assert_eq!(artifact.status(), 401, "an artifact host reaches no API");
 }
 
 /// A page's `<img src=".../api/viewers/me">` is a no-cors GET, which carries

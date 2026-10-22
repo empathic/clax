@@ -449,57 +449,6 @@ pub async fn get(
     Ok(Json(json!({"thread": view})))
 }
 
-/// `GET /_clip/<aid>/<tid>?k=<key>` on a hosted daemon: thread `tid`'s
-/// clip PNG at the address agents of other machines read it at
-/// ([`clax_http::hosted::clip_link`]). The hosted gate has checked the key,
-/// which only a thread view that shows the clip carries, so no credential
-/// is asked for (a request carrying a grant's is refused, as on `/_blob`),
-/// and a live page's clip is 404 to a caller who does not see live pages;
-/// the PNG never changes, so it is cached as immutable, but privately, so
-/// no shared cache keeps it once its thread is deleted or restricted. A
-/// local daemon serves no such address: 404.
-pub async fn keyed_clip(
-    State(s): State<AppState>,
-    _d: clax_http::agent::DeniedToGrants,
-    sees: clax_http::live_access::SeesLive,
-    p: Result<Path<(String, String)>, PathRejection>,
-) -> Result<Response, ApiError> {
-    if s.hosted.is_none() {
-        return Err(ApiError::not_found());
-    }
-    let (aid, tid) = path(p)?;
-    let id = parse_id(&aid)?;
-    let live_ids = s.live_ids.clone();
-    let bytes = s
-        .store_call_async(move |st| async move {
-            let st = &*st;
-            if sees.check(&live_ids, id.as_str()).is_err() {
-                return Err(CoreError::NotFound);
-            }
-            let t = thread_of(st, &id, &tid)?;
-            if !t.has_clip {
-                return Err(CoreError::NotFound);
-            }
-            st.read_clip_async(&id, &t.id)
-                .await?
-                .ok_or(CoreError::NotFound)
-        })
-        .await?;
-    Ok((
-        [
-            (header::CONTENT_TYPE, "image/png"),
-            (header::CONTENT_SECURITY_POLICY, "sandbox"),
-            (header::X_CONTENT_TYPE_OPTIONS, "nosniff"),
-            (
-                header::CACHE_CONTROL,
-                "private, max-age=31536000, immutable",
-            ),
-        ],
-        Body::from(bytes),
-    )
-        .into_response())
-}
-
 /// The clip PNG, sandboxed like `/_blob`. A clip an agent's visibility
 /// withholds (spec §8.3) is 403 `withheld`, naming its `authors`: none of
 /// it is read.

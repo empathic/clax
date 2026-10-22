@@ -290,6 +290,9 @@ pub struct TestServer {
     /// (a socket's reopening).
     pub state: AppState,
     extension_id: String,
+    /// The owner's site session per artifact that [`TestServer::site_get`]
+    /// made, as a browser keeps its cookie.
+    site_sessions: std::sync::Mutex<std::collections::HashMap<String, String>>,
     /// The IPv6 loopback twin of an IPv4 daemon's port ([`listen`]).
     _v6_twin: Option<tokio::net::TcpSocket>,
     _dir: Arc<tempfile::TempDir>,
@@ -433,21 +436,28 @@ impl TestServer {
         .await
     }
 
-    /// [`TestServer::spawn_hosted`] with artifact content on a content
-    /// origin of its own, `http://[::1]:<its port>`
-    /// ([`clax_http::hosted::Hosted::with_content_origin`]).
-    pub async fn spawn_hosted_with_content(
+    /// [`TestServer::spawn_hosted`] serving each artifact's site under
+    /// `domain` (`<id>.<domain>:<its port>`, [`clax_http::hosted::Hosted::with_sites`]),
+    /// and answering at the retired content origin `http://[::1]:<its port>`
+    /// ([`clax_http::hosted::Hosted::with_retired_content_origin`]).
+    pub async fn spawn_hosted_with_site_domain(
         clock: Arc<ManualClock>,
         secret: Option<&str>,
+        domain: &str,
     ) -> TestServer {
         let dir = tempfile::tempdir().unwrap();
         let secret = secret.map(str::to_string);
         let limits_clock: Arc<dyn clax_core::working::Clock> = clock.clone();
+        let sites = clax_http::host::SiteHosts::new(domain).expect("a site domain");
         let hosted = move |s: &mut AppState| {
             let origin = format!("http://localhost:{}", s.port);
-            let content = format!("http://[::1]:{}", s.port);
+            let retired = format!("http://[::1]:{}", s.port);
             s.hosted = clax_http::hosted::Hosted::new(&origin, secret.as_deref())
-                .and_then(|h| h.with_clock(limits_clock).with_content_origin(&content))
+                .and_then(|h| {
+                    h.with_clock(limits_clock)
+                        .with_sites(Some(sites))
+                        .with_retired_content_origin(&retired)
+                })
                 .map(Arc::new);
         };
         Self::start(
@@ -761,6 +771,7 @@ impl TestServer {
             live_layers,
             state: kept_state,
             extension_id,
+            site_sessions: std::sync::Mutex::default(),
             _v6_twin: v6_twin,
             _dir: dir,
         }
@@ -784,6 +795,21 @@ impl TestServer {
         (client, self.base.clone())
     }
 
+    /// [`TestServer::lan`]'s client, sending no redirect on.
+    pub fn lan_unfollowed(&self) -> reqwest::Client {
+        let mut h = reqwest::header::HeaderMap::new();
+        h.insert(LAN_HEADER, reqwest::header::HeaderValue::from_static("1"));
+        h.insert(
+            reqwest::header::HOST,
+            format!("{LAN_LOCAL}:{}", self.addr.port()).parse().unwrap(),
+        );
+        reqwest::Client::builder()
+            .default_headers(h)
+            .redirect(reqwest::redirect::Policy::none())
+            .build()
+            .unwrap()
+    }
+
     pub async fn get(&self, path: &str) -> reqwest::Response {
         self.client
             .get(format!("{}{}", self.base, path))
@@ -797,15 +823,111 @@ impl TestServer {
         format!("{id}.localhost:{}", self.addr.port())
     }
 
-    /// A GET of `path` on artifact `id`'s site host: sent to this daemon's
-    /// address with [`TestServer::site_host`] as its `Host`.
+    /// A GET of `path` on artifact `id`'s site host as the owner's browser:
+    /// sent to this daemon's address with [`TestServer::site_host`] as its
+    /// `Host`, carrying the owner's site session there, kept from the last
+    /// call or made anew ([`TestServer::site_cookie`]) when it has none or
+    /// it has ended (none for an artifact that does not exist).
     pub async fn site_get(&self, id: &str, path: &str) -> reqwest::Response {
+        let send = |cookie: Option<String>| {
+            let mut req = self
+                .client
+                .get(format!("{}{}", self.base, path))
+                .header(reqwest::header::HOST, self.site_host(id));
+            if let Some(c) = cookie {
+                req = req.header(reqwest::header::COOKIE, c);
+            }
+            async move { req.send().await.unwrap() }
+        };
+        let kept = self
+            .site_sessions
+            .lock()
+            .unwrap_or_else(|e| e.into_inner())
+            .get(id)
+            .cloned();
+        if let Some(c) = kept {
+            let res = send(Some(c)).await;
+            if res.status() != reqwest::StatusCode::UNAUTHORIZED {
+                return res;
+            }
+        }
+        let fresh = self.try_site_cookie(id).await;
+        if let Some(c) = &fresh {
+            self.site_sessions
+                .lock()
+                .unwrap_or_else(|e| e.into_inner())
+                .insert(id.to_string(), c.clone());
+        }
+        send(fresh).await
+    }
+
+    /// [`TestServer::site_get`] with no site session.
+    pub async fn site_get_anon(&self, id: &str, path: &str) -> reqwest::Response {
         self.client
             .get(format!("{}{}", self.base, path))
             .header(reqwest::header::HOST, self.site_host(id))
             .send()
             .await
             .unwrap()
+    }
+
+    /// The `Cookie` header of a new site session of the owner's on
+    /// artifact `id`'s site host (`clax_site=<ID>`), made as the shell
+    /// makes one: a code from `POST /api/artifacts/<id>/site-code` with the
+    /// token, redeemed at the site's `/_clax/session`.
+    ///
+    /// # Panics
+    /// When the daemon mints no code or sets no cookie.
+    pub async fn site_cookie(&self, id: &str) -> String {
+        self.try_site_cookie(id)
+            .await
+            .unwrap_or_else(|| panic!("no site code for {id}"))
+    }
+
+    /// [`TestServer::site_cookie`], `None` when the daemon mints no code.
+    pub async fn try_site_cookie(&self, id: &str) -> Option<String> {
+        let res = self
+            .authed(
+                self.client
+                    .post(format!("{}/api/artifacts/{id}/site-code", self.base)),
+            )
+            .json(&serde_json::json!({"next": "/"}))
+            .send()
+            .await
+            .unwrap();
+        if res.status() != 200 {
+            return None;
+        }
+        let v: serde_json::Value = res.json().await.unwrap();
+        Some(self.redeem_site_code(v["src"].as_str().unwrap()).await)
+    }
+
+    /// Follows `src` (a site code's `/_clax/session` address, on the site
+    /// host it names) to this daemon: the `Cookie` header of the session it
+    /// sets.
+    ///
+    /// # Panics
+    /// When it sets no site cookie.
+    pub async fn redeem_site_code(&self, src: &str) -> String {
+        let rest = src.split_once("://").map_or(src, |(_, r)| r);
+        let at = rest.find('/').unwrap_or(rest.len());
+        let (host, path) = rest.split_at(at);
+        let res = reqwest::Client::builder()
+            .redirect(reqwest::redirect::Policy::none())
+            .build()
+            .unwrap()
+            .get(format!("{}{path}", self.base))
+            .header(reqwest::header::HOST, host)
+            .send()
+            .await
+            .unwrap();
+        let set = res
+            .headers()
+            .get(reqwest::header::SET_COOKIE)
+            .unwrap_or_else(|| panic!("no site cookie from {src}: {}", res.status()))
+            .to_str()
+            .unwrap();
+        set.split(';').next().unwrap().to_string()
     }
 
     /// A GET carrying the bearer token.
