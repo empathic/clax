@@ -51,8 +51,8 @@ Node (`deploy.mjs`, `e2e-hosted.mjs`, `smoke-remote.mjs`).
   --test_arg=api_site`, `bazelisk test //crates/clax-http:clax-http_lib_test`,
   `just web-test`, `just web-e2e`, `just worker-test`. A `just test-native …`
   in a task below means the equivalent Bazel target, never native Cargo.
-- Migration numbers are fixed across the parallel branches: 42
-  `legacy_paths`, 43 site sessions and `site_access`, 44 `app_data_moved`.
+- Migration numbers (as merged): 42 `legacy_paths`, 43 `app_data_moved`
+  and `app_data_folds`, 44 site sessions and `site_access`.
 
 ## Review Focus
 
@@ -191,7 +191,7 @@ Node (`deploy.mjs`, `e2e-hosted.mjs`, `smoke-remote.mjs`).
 **Files:**
 - Create: `crates/clax-store/src/site_sessions.rs`
 - Create: `crates/clax-http/src/site_access.rs` (the access layer and cookies)
-- Modify: `crates/clax-store/src/migrations.rs` (migration 43, below)
+- Modify: `crates/clax-store/src/migrations.rs` (migration 44, below)
 - Modify: `crates/clax-server/src/routes/site.rs` (`/_clax/session`)
 - Modify: `crates/clax-server/src/routes/artifacts.rs` (`POST /api/artifacts/{aid}/site-code`)
 - Create: `crates/clax-server/src/routes/site_signin.rs` (`GET /site-signin` on the public host)
@@ -202,7 +202,7 @@ Closes ad4d8d8c (with Task 4, which removes the keys).
 **Interfaces:**
 - Consumes: `SiteRequest` (Task 1), `site_routes` (Task 2).
 - Produces:
-  - Migration 43:
+  - Migration 44:
     ```sql
     CREATE TABLE site_codes (code_hash TEXT PRIMARY KEY, artifact_id TEXT NOT NULL,
       holder_kind TEXT NOT NULL CHECK (holder_kind IN ('person','guest','link','owner')),
