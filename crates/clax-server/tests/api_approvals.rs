@@ -3418,3 +3418,28 @@ async fn a_withheld_summary_names_the_public_ids_ask_takes() {
     let (status, v) = ask(w["author_ids"][0].clone()).await;
     assert!((200..300).contains(&status), "{status} {v}");
 }
+
+/// Asking outside threads reads the artifact's documents' authors from its
+/// store: a store that fails (here one that is not a database) fails the
+/// ask rather than asking as if the documents had no authors.
+#[tokio::test]
+async fn an_ask_outside_threads_fails_when_the_artifacts_store_does() {
+    let t = Two::new().await;
+    let id = clax_core::ArtifactId::parse(&t.aid).unwrap();
+    let file = t.w.ts.home.app_data_path(&id);
+    std::fs::create_dir_all(file.parent().unwrap()).unwrap();
+    std::fs::write(&file, b"not a database, sixteen bytes and more").unwrap();
+    let sid = t.w.sam_session.clone();
+    let (status, v) = t
+        .sam_agent(
+            "POST",
+            &format!("/api/sessions/{sid}/approvals"),
+            Some(json!({"artifact_id": t.aid})),
+        )
+        .await;
+    assert_eq!(
+        (status, v["error"]["code"].as_str()),
+        (500, Some("internal")),
+        "{v}"
+    );
+}

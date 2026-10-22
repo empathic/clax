@@ -82,6 +82,11 @@ impl AppDataHost for LocalAppData {
                     _ => {}
                 }
             }
+            // The artifact's directory too, when nothing else is in it (an
+            // import made it): `remove_dir` leaves one that holds anything.
+            if let Some(dir) = path.parent() {
+                let _ = std::fs::remove_dir(dir);
+            }
             Ok(())
         })
         .await
@@ -499,6 +504,10 @@ mod tests {
             Err(CoreError::NotFound)
         ));
         assert!(!file.exists(), "the store the import made is erased");
+        assert!(
+            !file.parent().unwrap().exists(),
+            "and its artifact's directory, which held nothing else"
+        );
     }
 
     #[tokio::test]
