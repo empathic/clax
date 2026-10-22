@@ -451,6 +451,91 @@ impl Rules {
     }
 }
 
+/// Most artifact IDs in `db.read` and in `db.share.read`, each.
+pub const MAX_READ_IDS: usize = 16;
+
+/// An artifact's cross-app read declaration: `db.read` names the artifacts whose documents
+/// it asks to read, and
+/// `db.share.read` the artifacts it lets read its own. Declaring a read grants
+/// nothing alone; [`Store::may_read`](crate::Store::may_read) also needs the
+/// source's share or the owner's grant.
+#[derive(Clone, Debug, PartialEq, Eq, Default)]
+pub struct ReadDecl {
+    /// `db.read`: the sources this artifact asks to read, first mention order.
+    pub reads: Vec<String>,
+    /// `db.share.read`: the readers this artifact lets read it.
+    pub shares_read: Vec<String>,
+}
+
+impl ReadDecl {
+    /// Parses `caps.db.read` and `caps.db.share.read` of the artifact `own`;
+    /// absent lists are empty, and a repeated ID counts once.
+    ///
+    /// # Errors
+    /// `invalid_capabilities` when a list is not an array of at most
+    /// [`MAX_READ_IDS`] artifact ID strings, when one names `own`, or when
+    /// `db.share` is not an object holding only `read`.
+    pub fn from_capabilities(caps: &Value, own: &str) -> Result<ReadDecl> {
+        ReadDecl::parse(caps, Some(own))
+    }
+
+    /// Every check of [`ReadDecl::from_capabilities`] but the one against the
+    /// artifact's own ID, for a declaration whose artifact has no ID yet.
+    ///
+    /// # Errors
+    /// As [`ReadDecl::from_capabilities`], except a list naming its own artifact.
+    pub fn check(caps: &Value) -> Result<()> {
+        ReadDecl::parse(caps, None).map(|_| ())
+    }
+
+    fn parse(caps: &Value, own: Option<&str>) -> Result<ReadDecl> {
+        let db = caps.get("db");
+        let reads = ids_at(db.and_then(|d| d.get("read")), "db.read", own)?;
+        let shares_read = match db.and_then(|d| d.get("share")) {
+            None | Some(Value::Null) => Vec::new(),
+            Some(Value::Object(share)) => {
+                if let Some(k) = share.keys().find(|k| k.as_str() != "read") {
+                    return Err(bad_decl(format!(
+                        "db.share has unknown field '{k}'; only read can be shared"
+                    )));
+                }
+                ids_at(share.get("read"), "db.share.read", own)?
+            }
+            Some(_) => return Err(bad_decl("db.share must be an object")),
+        };
+        Ok(ReadDecl { reads, shares_read })
+    }
+}
+
+/// The artifact IDs of the list at `at`, deduplicated in first mention order.
+fn ids_at(v: Option<&Value>, at: &str, own: Option<&str>) -> Result<Vec<String>> {
+    let arr = match v {
+        None | Some(Value::Null) => return Ok(Vec::new()),
+        Some(Value::Array(a)) => a,
+        Some(_) => return Err(bad_decl(format!("{at} must be an array of artifact IDs"))),
+    };
+    if arr.len() > MAX_READ_IDS {
+        return Err(bad_decl(format!(
+            "{at} holds at most {MAX_READ_IDS} artifact IDs"
+        )));
+    }
+    let mut out: Vec<String> = Vec::with_capacity(arr.len());
+    for (i, x) in arr.iter().enumerate() {
+        let s = x
+            .as_str()
+            .ok_or_else(|| bad_decl(format!("{at}[{i}] must be an artifact ID string")))?;
+        crate::ArtifactId::parse(s)
+            .map_err(|_| bad_decl(format!("{at}[{i}]: '{s}' is not an artifact ID")))?;
+        if own == Some(s) {
+            return Err(bad_decl(format!("{at}[{i}] names this artifact itself")));
+        }
+        if !out.iter().any(|o| o == s) {
+            out.push(s.to_string());
+        }
+    }
+    Ok(out)
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -831,5 +916,50 @@ mod tests {
             );
             assert_eq!(r.read_level(&path, Some(me)), Level::Admin, "{rules:?}");
         }
+    }
+
+    const A: &str = "7q3k9mzx2b4t";
+    const B: &str = "8r4m0nay3c5v";
+
+    #[test]
+    fn read_decl_parses_reads_and_shares() {
+        let caps = json!({"db": {"read": [B], "share": {"read": [B]}}});
+        let d = ReadDecl::from_capabilities(&caps, A).unwrap();
+        assert_eq!(d.reads, vec![B.to_string()]);
+        assert_eq!(d.shares_read, vec![B.to_string()]);
+        assert!(Rules::from_capabilities(&caps).is_ok());
+        let none = ReadDecl::from_capabilities(&json!({"db": {}}), A).unwrap();
+        assert_eq!(none, ReadDecl::default());
+        let dup = ReadDecl::from_capabilities(&json!({"db": {"read": [B, B]}}), A).unwrap();
+        assert_eq!(dup.reads, vec![B.to_string()], "a repeated ID counts once");
+    }
+
+    #[test]
+    fn read_decl_refuses_bad_lists() {
+        let many: Vec<String> = (0..=MAX_READ_IDS)
+            .map(|i| format!("7q3k9mzx2b{:02}", i))
+            .collect();
+        for caps in [
+            json!({"db": {"read": "x"}}),
+            json!({"db": {"read": [A]}}),
+            json!({"db": {"read": ["not an id"]}}),
+            json!({"db": {"read": [1]}}),
+            json!({"db": {"read": many}}),
+            json!({"db": {"share": {"read": [A]}}}),
+            json!({"db": {"share": {"read": many}}}),
+            json!({"db": {"share": {"write": []}}}),
+            json!({"db": {"share": []}}),
+            json!({"db": {"share": {"read": {}}}}),
+        ] {
+            let e = ReadDecl::from_capabilities(&caps, A).unwrap_err();
+            assert_eq!(code(e), "invalid_capabilities", "{caps}");
+        }
+    }
+
+    #[test]
+    fn read_decl_shape_check_leaves_only_the_self_check() {
+        assert!(ReadDecl::check(&json!({"db": {"read": [A], "share": {"read": [A]}}})).is_ok());
+        assert!(ReadDecl::check(&json!({"db": {"read": ["nope"]}})).is_err());
+        assert!(ReadDecl::check(&json!({"db": {"share": {"write": [A]}}})).is_err());
     }
 }

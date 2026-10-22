@@ -19,7 +19,18 @@ cargo_package(
         "//crates/clax-server:rust_sources",
         "//crates/clax-store:rust_sources",
         "//plugins/pi:test_fixtures",
+        # The icon rule vectors (src/icon.rs).
+        ":icon_fixtures",
     ],
+)
+
+# The icon rule vectors, each file's answer in expect.json: src/icon.rs's
+# tests and the app's (apps/clax_app/test/agent/icon_fixtures_test.dart)
+# run them alike.
+filegroup(
+    name = "icon_fixtures",
+    srcs = glob(["tests/fixtures/icons/**"]),
+    visibility = ["//visibility:public"],
 )
 
 # The tool path test vectors other crates' tests read.

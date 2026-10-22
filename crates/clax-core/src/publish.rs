@@ -104,6 +104,10 @@ pub struct ValidatedPublish {
     /// collision with any other path is refused. So a publish never
     /// confirms a withheld name by refusing it.
     pub hidden: Vec<String>,
+    /// The mark of the job step that publishes it (the caller fills it):
+    /// the content store keeps it with the version's content
+    /// ([`crate::content::VersionMeta::step`]).
+    pub step: Option<String>,
     /// The idempotency key an agent token named for this publish (the
     /// caller fills it): recorded in the transaction that records the
     /// version, so the version and its key are written together.
@@ -116,6 +120,60 @@ pub struct PublishKey {
     /// The agent token's grant.
     pub grant_id: String,
     pub key: String,
+}
+
+/// What a restore (`versions:restore`) may set beside the restored files,
+/// each field as a publish sets it; `None` keeps the artifact's title,
+/// icon and capabilities, and the restore's own label and note.
+#[derive(Clone, Debug, Default, Deserialize)]
+pub struct RestoreDeclaration {
+    pub title: Option<String>,
+    pub icon: Option<String>,
+    pub capabilities: Option<serde_json::Value>,
+    pub label: Option<String>,
+    pub note: Option<String>,
+}
+
+impl RestoreDeclaration {
+    /// Checks it as [`validate`] checks a publish's same fields
+    /// ([`check_declared`], [`check_meta_text`]). Answers it with whether
+    /// the note was cut.
+    pub fn validated(self) -> Result<(Self, bool)> {
+        let (note, truncated) = check_declared(
+            self.capabilities.as_ref(),
+            self.label.as_deref(),
+            self.note.as_deref(),
+        )?;
+        check_meta_text(self.title.as_deref(), None, self.icon.as_deref())?;
+        Ok((Self { note, ..self }, truncated))
+    }
+}
+
+/// The checks a publish ([`validate`]) and a restore
+/// ([`RestoreDeclaration::validated`]) both run on what they declare beside
+/// files: the capabilities validate, the label is at most
+/// [`MAX_LABEL_CHARS`], and the note is cleaned and cut to the changelog's
+/// length. Answers the cleaned note and whether it was cut.
+fn check_declared(
+    capabilities: Option<&serde_json::Value>,
+    label: Option<&str>,
+    note: Option<&str>,
+) -> Result<(Option<String>, bool)> {
+    if let Some(caps) = capabilities {
+        crate::capabilities::validate(caps)?;
+    }
+    if let Some(label) = label
+        && label.chars().count() > MAX_LABEL_CHARS
+    {
+        return Err(CoreError::invalid(
+            "label_too_long",
+            format!("label exceeds {MAX_LABEL_CHARS} characters"),
+        ));
+    }
+    Ok(match note {
+        Some(n) => crate::working::clean_line(n, crate::changelog::MAX_NOTE_CHARS),
+        None => (None, false),
+    })
 }
 
 /// Accepts a relative path of one or more non-empty segments, with no `.` or
@@ -385,25 +443,20 @@ pub fn check_meta_text(
 
 /// Checks a publish request: `index.html` present and not removed, every path
 /// safe, encodings decodable, size caps, label length and the text metadata
-/// ([`check_meta_text`]) respected. Base64 content may contain ASCII
-/// whitespace (line breaks from encoders), which is ignored.
+/// ([`check_meta_text`]) respected, and an `icon.svg` within the icon rules
+/// ([`crate::icon::problem`]). Base64 content may contain ASCII whitespace
+/// (line breaks from encoders), which is ignored.
 pub fn validate(req: PublishRequest) -> Result<ValidatedPublish> {
-    if let Some(caps) = &req.capabilities {
-        crate::capabilities::validate(caps)?;
-    }
+    let (note, note_truncated) = check_declared(
+        req.capabilities.as_ref(),
+        req.label.as_deref(),
+        req.note.as_deref(),
+    )?;
     check_meta_text(
         req.title.as_deref(),
         req.description.as_deref(),
         req.icon.as_deref(),
     )?;
-    if let Some(label) = &req.label
-        && label.chars().count() > MAX_LABEL_CHARS
-    {
-        return Err(CoreError::invalid(
-            "label_too_long",
-            format!("label exceeds {MAX_LABEL_CHARS} characters"),
-        ));
-    }
     match req.files.get(INDEX) {
         Some(Some(_)) => {}
         _ => {
@@ -413,10 +466,6 @@ pub fn validate(req: PublishRequest) -> Result<ValidatedPublish> {
             ));
         }
     }
-    let (note, note_truncated) = match req.note.as_deref() {
-        Some(n) => crate::working::clean_line(n, crate::changelog::MAX_NOTE_CHARS),
-        None => (None, false),
-    };
     let addresses = req.addresses.clone().unwrap_or_default();
     if addresses.len() > crate::changelog::MAX_ADDRESSES {
         return Err(CoreError::invalid(
@@ -468,6 +517,11 @@ pub fn validate(req: PublishRequest) -> Result<ValidatedPublish> {
                         format!("publish exceeds {MAX_BODY_BYTES} bytes"),
                     ));
                 }
+                if path == crate::icon::ICON_PATH
+                    && let Some(p) = crate::icon::problem(&bytes)
+                {
+                    return Err(CoreError::InvalidIcon(p));
+                }
                 let content_type = f.content_type.unwrap_or_else(|| content_type_for(&path));
                 files.insert(
                     path,
@@ -494,6 +548,7 @@ pub fn validate(req: PublishRequest) -> Result<ValidatedPublish> {
         person: None,
         by_page: false,
         hidden: Vec::new(),
+        step: None,
         publish_key: None,
     })
 }
@@ -524,6 +579,32 @@ mod tests {
             encoding: Encoding::Utf8,
             content_type: None,
         })
+    }
+
+    #[test]
+    fn a_bad_icon_refuses_the_publish() {
+        let bad = r#"<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 9 9"><script>x()</script></svg>"#;
+        let e = validate(req(&[("index.html", utf8("<p>")), ("icon.svg", utf8(bad))])).unwrap_err();
+        assert!(
+            matches!(&e, CoreError::InvalidIcon(p) if p.code() == "element"),
+            "{e:?}"
+        );
+        assert!(e.to_string().starts_with("icon.svg uses <script>"), "{e}");
+        // Only the app's icon is checked: another .svg, or icon.svg in a
+        // folder, is any file; a removal is no icon.
+        for (path, file) in [
+            ("art.svg", utf8(bad)),
+            ("img/icon.svg", utf8(bad)),
+            ("icon.svg", None),
+        ] {
+            validate(req(&[("index.html", utf8("<p>")), (path, file)])).unwrap();
+        }
+        let good = r#"<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 9 9"/>"#;
+        validate(req(&[
+            ("index.html", utf8("<p>")),
+            ("icon.svg", utf8(good)),
+        ]))
+        .unwrap();
     }
 
     #[test]

@@ -98,11 +98,13 @@ pub mod assets;
 pub mod attention;
 pub mod audit;
 pub mod backfill;
+pub mod backup;
 pub mod batches;
 pub mod briefs;
 pub mod changelog;
 pub mod device;
 pub mod docs;
+pub mod drafts;
 pub mod elevations;
 pub mod engagement;
 pub mod exec;
@@ -110,19 +112,24 @@ pub mod extension;
 pub mod feedback;
 pub mod forks;
 pub mod github;
+pub mod grants;
 pub mod hosted;
+pub mod imports;
 pub mod inbox;
+pub mod jobs;
 pub mod joined;
 pub mod legal;
 pub mod linked;
 pub mod live;
 pub mod migrations;
+pub mod net_grants;
 pub mod people;
 #[cfg(test)]
 mod plans;
 pub mod pushes;
 pub mod questions;
 pub mod remotes;
+pub mod sample_grants;
 pub mod sessions;
 pub mod shares;
 pub mod site;
@@ -159,6 +166,15 @@ use std::sync::{Arc, Mutex, RwLock};
 pub const ANALYSIS_LIMIT: u32 = 400;
 /// How often the daemon refreshes planner statistics ([`Store::optimize`]).
 pub const OPTIMIZE_INTERVAL: std::time::Duration = std::time::Duration::from_secs(3600);
+
+/// What [`Store::trim_memory`] did: the WAL's frames and how many the
+/// `PASSIVE` checkpoint copied into the database (equal when no reader held
+/// an older snapshot; both -1 when the database is not in WAL mode).
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
+pub struct TrimReport {
+    pub wal_frames: i64,
+    pub checkpointed: i64,
+}
 
 /// The installed inbox listener, cloned out of its lock to be called.
 type SharedListener = Arc<dyn Fn(Vec<InboxChange>) + Send + Sync>;
@@ -220,6 +236,11 @@ pub struct Store {
     resumed_at: Mutex<String>,
     /// Each GitHub member's caps ([`Store::set_member_caps`]).
     member_caps: RwLock<Option<github::MemberCaps>>,
+    /// The hidden artifacts (drafts), for event routing.
+    hidden: drafts::HiddenIds,
+    /// The jobs the write transaction under way changed, recorded by the
+    /// update hook, and their listener ([`Store::set_job_listener`]).
+    jobs: jobs::JobChanges,
     /// The tests' hooks at named points of a method ([`Store::at_point`]).
     #[cfg(test)]
     test_points: Mutex<Vec<(&'static str, TestPoint)>>,
@@ -239,9 +260,11 @@ impl Store {
         Store::open_reporting(home, &mut |_| {})
     }
 
-    /// [`Store::open`], reporting the audit backfill's progress to
-    /// `report` while it runs (only on the first open after the audit
-    /// schema arrives, when there is history to record).
+    /// [`Store::open`], reporting to `report` the copy made before a
+    /// migration ([`backfill::Phase::BackingUp`]), each migration
+    /// ([`backfill::Phase::Migrating`]), and the audit backfill's progress
+    /// while it runs (only on the first open after the audit schema
+    /// arrives, when there is history to record).
     pub fn open_reporting(
         home: &Home,
         report: &mut dyn FnMut(&backfill::Progress),
@@ -256,7 +279,9 @@ impl Store {
     }
 
     /// [`Store::open_with_clock`], reporting the audit backfill's progress
-    /// to `report` as [`Store::open_reporting`] does.
+    /// to `report` as [`Store::open_reporting`] does. A
+    /// [`CoreError::MigrationFailed`] after the database was copied names
+    /// the copy.
     pub fn open_with(
         home: &Home,
         clock: Arc<dyn Clock>,
@@ -265,8 +290,27 @@ impl Store {
         home.ensure_dirs()?;
         let path = home.db_path();
         let conn = exec::open_writer(&path)?;
+        // A copy of the database before any migration changes it; the
+        // home's disk only (a host's own connection keeps its own). One is
+        // made for a database with a schema older than this binary's, as
+        // `backup::before_migrate_reporting` decides, and reported first.
+        let copy = backup::before_migrate_reporting(
+            &conn,
+            home,
+            migrations::MIGRATIONS.len() as u32,
+            clock.now(),
+            &mut || {
+                report(&backfill::Progress {
+                    phase: backfill::Phase::BackingUp,
+                    done: 0,
+                    total: 0,
+                    bytes: 0,
+                })
+            },
+        )?;
         let content = Arc::new(FsContent::new(home.clone()));
         Store::assemble(home, conn, |c| Exec::pool(c, path), content, clock, report)
+            .map_err(|e| naming_the_copy(e, copy.as_deref()))
     }
 
     /// A store on `conn`, one connection its host opened (a Durable
@@ -308,9 +352,10 @@ impl Store {
         clock: Arc<dyn Clock>,
         report: &mut dyn FnMut(&backfill::Progress),
     ) -> Result<Store> {
-        migrate(&mut conn)?;
+        migrate_reporting(&mut conn, &migrations::NUMBERING, report)?;
         backfill::run(&mut conn, home, report)?;
         approvals::record_migration_approval(&mut conn)?;
+        let hidden = drafts::HiddenIds::load(&conn)?;
         conn.execute_batch(&format!(
             "PRAGMA analysis_limit={ANALYSIS_LIMIT}; PRAGMA optimize=0x10002;"
         ))?;
@@ -319,6 +364,8 @@ impl Store {
         let request_changes = Arc::new(Mutex::new(Vec::new()));
         let made = inbox_changes.clone();
         let requested = request_changes.clone();
+        let jobs = jobs::JobChanges::default();
+        let jobs_written = jobs.rowids.clone();
         conn.update_hook(Some(
             move |action: rusqlite::hooks::Action, _db: &str, table: &str, rowid: i64| {
                 if table == "inbox_items" {
@@ -331,14 +378,21 @@ impl Store {
                     if !r.contains(&rowid) {
                         r.push(rowid);
                     }
+                } else if table == "jobs" {
+                    let mut j = jobs_written.lock().unwrap();
+                    if !j.contains(&rowid) {
+                        j.push(rowid);
+                    }
                 }
             },
         ))?;
         let dropped = inbox_changes.clone();
         let dropped_requests = request_changes.clone();
+        let dropped_jobs = jobs.rowids.clone();
         conn.rollback_hook(Some(move || {
             dropped.lock().unwrap().clear();
             dropped_requests.lock().unwrap().clear();
+            dropped_jobs.lock().unwrap().clear();
         }))?;
         Ok(Store {
             home: home.clone(),
@@ -362,6 +416,8 @@ impl Store {
             #[cfg(test)]
             test_points: Mutex::new(Vec::new()),
             clock,
+            hidden,
+            jobs,
         })
     }
 
@@ -375,6 +431,19 @@ impl Store {
                 "PRAGMA analysis_limit={ANALYSIS_LIMIT}; PRAGMA optimize;"
             ))?;
             Ok(())
+        })
+    }
+
+    /// Releases what SQLite caches on every connection (`PRAGMA
+    /// shrink_memory`) and runs one `PASSIVE` checkpoint, so a process
+    /// killed afterwards loses nothing committed. Blocks the caller; must
+    /// not be called from inside a [`Store::call`] job. A reader running a
+    /// read meanwhile keeps its cache.
+    pub fn trim_memory(&self) -> Result<TrimReport> {
+        let (wal_frames, checkpointed) = self.exec.trim()?;
+        Ok(TrimReport {
+            wal_frames,
+            checkpointed,
         })
     }
 
@@ -531,7 +600,8 @@ impl Store {
     /// recorded an audit event ([`Store::record_audit`]), the audit nudge
     /// ([`Store::set_audit_nudge`]) fires after the commit. When `f` changed
     /// what agents may see ([`Store::visibility_changed`]), the visibility
-    /// generation is bumped after the commit.
+    /// generation is bumped after the commit. When it wrote any job, the
+    /// job listener ([`Store::set_job_listener`]) hears of each once.
     ///
     /// The inbox and approval request listeners hear of every row change
     /// the write connection's update hook saw. SQLite runs no hook when a
@@ -545,14 +615,18 @@ impl Store {
         &self,
         f: impl FnOnce(&rusqlite::Transaction<'_>) -> Result<T>,
     ) -> Result<T> {
-        let (out, changes, requests, recorded, agents) = self.exec.write(|conn| {
+        let (out, changes, requests, recorded, agents, jobs) = self.exec.write(|conn| {
             self.inbox_changes.lock().unwrap().clear();
             self.request_changes.lock().unwrap().clear();
+            self.jobs.clear();
             let _job = self.audit.begin();
             self.visibility.begin();
             *self.agents_changed.lock().unwrap() = None;
             let tx = conn.transaction_with_behavior(rusqlite::TransactionBehavior::Immediate)?;
             let out = f(&tx)?;
+            // Read before the commit: a job the transaction deleted after
+            // changing it is heard of as it was last.
+            let jobs = self.jobs.collect(&tx)?;
             tx.commit()?;
             // Inside the turn, so generations follow commit order.
             self.visibility.committed();
@@ -563,6 +637,7 @@ impl Store {
                 std::mem::take(&mut *self.request_changes.lock().unwrap()),
                 self.audit.take_recorded(),
                 self.agents_changed.lock().unwrap().take(),
+                jobs,
             ))
         })?;
         if recorded {
@@ -587,6 +662,7 @@ impl Store {
                 listen(artifacts.into_iter().collect());
             }
         }
+        self.jobs.tell(jobs);
         Ok(out)
     }
 
@@ -699,10 +775,80 @@ pub fn schema_version(home: &Home) -> Result<Option<u32>> {
 /// SQL, then its [Rust step](migrations::rust_step)) in its
 /// own `IMMEDIATE` transaction that re-reads the version under the write
 /// lock, so two processes opening the database at once apply each migration
-/// once. Refuses a database whose schema is newer than this binary knows
+/// once. A database an earlier Clax app build numbered differently is first
+/// brought into this numbering
+/// ([`migrations::adopt_earlier_flutter_app`]), in a transaction of its
+/// own. Refuses a database whose schema is newer than this binary knows
 /// ([`CoreError::SchemaNewer`]) without changing it.
+///
+/// # Errors
+/// A migration that fails is rolled back, leaving the database at the
+/// version before it, and reported as [`CoreError::MigrationFailed`]
+/// (except a busy or locked database, reported as itself, since it may
+/// pass on a retry).
+#[cfg(test)]
 fn migrate(conn: &mut Connection) -> Result<()> {
-    let known = migrations::MIGRATIONS.len() as u32;
+    migrate_with(conn, &migrations::NUMBERING)
+}
+
+/// [`migrate`] to the migrations of `numbering`, which is
+/// [`migrations::NUMBERING`] but in tests of a later numbering.
+#[cfg(test)]
+pub(crate) fn migrate_with(
+    conn: &mut Connection,
+    numbering: &migrations::Numbering<'_>,
+) -> Result<()> {
+    migrate_reporting(conn, numbering, &mut |_| {})
+}
+
+/// [`migrate_with`], reporting [`backfill::Phase::Migrating`] to `report`
+/// before each migration it applies.
+fn migrate_reporting(
+    conn: &mut Connection,
+    numbering: &migrations::Numbering<'_>,
+    report: &mut dyn FnMut(&backfill::Progress),
+) -> Result<()> {
+    migrate_steps(conn, numbering, report).map_err(|e| match e {
+        e @ (CoreError::SchemaNewer { .. } | CoreError::MigrationFailed { .. }) => e,
+        CoreError::Db(rusqlite::Error::SqliteFailure(f, m))
+            if matches!(
+                f.code,
+                rusqlite::ErrorCode::DatabaseBusy | rusqlite::ErrorCode::DatabaseLocked
+            ) =>
+        {
+            CoreError::Db(rusqlite::Error::SqliteFailure(f, m))
+        }
+        other => CoreError::MigrationFailed {
+            at: conn
+                .query_row("PRAGMA user_version", [], |r| r.get(0))
+                .unwrap_or(0),
+            detail: other.to_string(),
+        },
+    })
+}
+
+/// `e`, with a [`CoreError::MigrationFailed`]'s detail naming `copy`, the
+/// copy [`backup::before_migrate`] made before the failed open, so the
+/// person can be told where the database as it was is kept.
+fn naming_the_copy(e: CoreError, copy: Option<&std::path::Path>) -> CoreError {
+    match (e, copy) {
+        (CoreError::MigrationFailed { at, detail }, Some(copy)) => CoreError::MigrationFailed {
+            at,
+            detail: format!(
+                "{detail}; a copy of the database as it was before is at {}",
+                copy.display()
+            ),
+        },
+        (e, _) => e,
+    }
+}
+
+fn migrate_steps(
+    conn: &mut Connection,
+    numbering: &migrations::Numbering<'_>,
+    report: &mut dyn FnMut(&backfill::Progress),
+) -> Result<()> {
+    let known = numbering.migrations.len() as u32;
     let check = |version: u32| {
         if version > known {
             Err(CoreError::SchemaNewer {
@@ -718,6 +864,19 @@ fn migrate(conn: &mut Connection) -> Result<()> {
     if version == known {
         return Ok(());
     }
+    {
+        let tx = conn.transaction_with_behavior(rusqlite::TransactionBehavior::Immediate)?;
+        if let Some((from, to)) = migrations::adopt_earlier_flutter_app(&tx, numbering)? {
+            tx.commit()?;
+            tracing::warn!(
+                from,
+                to,
+                "renumbered a database from an earlier Clax app build"
+            );
+        }
+    }
+    // From where the database stands after any adoption.
+    let from: u32 = conn.query_row("PRAGMA user_version", [], |r| r.get(0))?;
     loop {
         let tx = conn.transaction_with_behavior(rusqlite::TransactionBehavior::Immediate)?;
         let version: u32 = tx.query_row("PRAGMA user_version", [], |r| r.get(0))?;
@@ -725,12 +884,21 @@ fn migrate(conn: &mut Connection) -> Result<()> {
         if version == known {
             return Ok(());
         }
-        tx.execute_batch(migrations::MIGRATIONS[version as usize])?;
+        report(&backfill::Progress {
+            phase: backfill::Phase::Migrating,
+            done: u64::from(version.saturating_sub(from)),
+            total: u64::from(known.saturating_sub(from)),
+            bytes: 0,
+        });
+        tx.execute_batch(numbering.migrations[version as usize])?;
         migrations::rust_step(&tx, version + 1)?;
         tx.pragma_update(None, "user_version", version + 1)?;
         tx.commit()?;
     }
 }
+
+#[cfg(test)]
+mod job_moves_fixture;
 
 #[cfg(test)]
 pub(crate) mod test_util {
@@ -873,59 +1041,37 @@ pub(crate) mod test_util {
             area: None,
             file: "index.html".into(),
             route: None,
+            label: None,
+            name: None,
         }
-    }
-}
-
-#[cfg(test)]
-mod tests {
-    use super::test_util::{anchor, artifact};
-    use super::threads::NewThread;
-    use crate::{RegisterSession, Store};
-    use clax_core::Home;
-    use clax_core::audit::AuditCtx;
-    use clax_core::working::ManualClock;
-    use std::sync::Arc;
-
-    /// The store's tests and the journal's (`toolpath::tests`), which open
-    /// their stores through `test_util::store`, pass on one connection too:
-    /// this test binary runs them again with
-    /// [`STORE_MODE_VAR`](super::test_util::STORE_MODE_VAR) set. The pool's
-    /// own tests (`exec::tests`) are left out; they open the pool whichever
-    /// the mode, and its one-connection tests are run here.
-    #[test]
-    fn the_store_tests_pass_on_one_connection() {
-        if super::test_util::on_one_connection() {
-            return;
-        }
-        let out = std::process::Command::new(std::env::current_exe().unwrap())
-            .args(["--skip", "exec::tests::"])
-            .env(super::test_util::STORE_MODE_VAR, "single")
-            .output()
-            .unwrap();
-        let stdout = String::from_utf8_lossy(&out.stdout);
-        let stderr = String::from_utf8_lossy(&out.stderr);
-        assert!(out.status.success(), "{stdout}\n{stderr}");
-        let passed: usize = stdout
-            .lines()
-            .find_map(|l| l.strip_prefix("test result: ok. "))
-            .and_then(|l| l.split(' ').next())
-            .and_then(|n| n.parse().ok())
-            .unwrap_or_else(|| panic!("no test result in:\n{stdout}"));
-        // The filter matched the store's tests, not nothing.
-        assert!(passed > 300, "{passed} passed:\n{stdout}");
     }
 
     /// A content store whose version writes wait until `open`, as a
     /// Durable Object's wait on a JavaScript promise.
-    struct Gated {
+    pub struct Gated {
         inner: clax_core::content::memory::MemContent,
         open: std::sync::atomic::AtomicBool,
         waker: std::sync::Mutex<Option<std::task::Waker>>,
     }
 
+    impl Default for Gated {
+        fn default() -> Gated {
+            Gated::new()
+        }
+    }
+
     impl Gated {
-        fn set_open(&self, open: bool) {
+        /// An empty store whose writes go through.
+        pub fn new() -> Gated {
+            Gated {
+                inner: clax_core::content::memory::MemContent::new(),
+                open: std::sync::atomic::AtomicBool::new(true),
+                waker: std::sync::Mutex::new(None),
+            }
+        }
+
+        /// Lets writes through (`true`), or holds the next ones (`false`).
+        pub fn set_open(&self, open: bool) {
             self.open.store(open, std::sync::atomic::Ordering::SeqCst);
             if open && let Some(w) = self.waker.lock().unwrap().take() {
                 w.wake();
@@ -987,6 +1133,77 @@ mod tests {
             self.inner.delete_asset(key).await
         }
     }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::test_util::{Gated, anchor, artifact};
+    use super::threads::NewThread;
+    use crate::{RegisterSession, Store};
+    use clax_core::Home;
+    use clax_core::audit::AuditCtx;
+    use clax_core::working::ManualClock;
+    use std::sync::Arc;
+
+    #[test]
+    fn opening_a_home_reports_each_migration_and_a_current_one_none() {
+        use crate::backfill::Phase;
+        let dir = tempfile::tempdir().unwrap();
+        let home = Home::at(dir.path().join("ax"));
+        let mut seen = Vec::new();
+        let store = Store::open_reporting(&home, &mut |p| seen.push(*p)).unwrap();
+        store.shutdown();
+        drop(store);
+        let n = crate::migrations::MIGRATIONS.len() as u64;
+        let migrating: Vec<(u64, u64)> = seen
+            .iter()
+            .filter(|p| p.phase == Phase::Migrating)
+            .map(|p| (p.done, p.total))
+            .collect();
+        assert_eq!(migrating, (0..n).map(|k| (k, n)).collect::<Vec<_>>());
+        assert!(
+            !seen.iter().any(|p| p.phase == Phase::BackingUp),
+            "a new database has nothing to copy"
+        );
+
+        let mut again = Vec::new();
+        let _store = Store::open_reporting(&home, &mut |p| again.push(*p)).unwrap();
+        assert!(
+            !again
+                .iter()
+                .any(|p| matches!(p.phase, Phase::Migrating | Phase::BackingUp)),
+            "{again:?}"
+        );
+    }
+
+    /// The store's tests and the journal's (`toolpath::tests`), which open
+    /// their stores through `test_util::store`, pass on one connection too:
+    /// this test binary runs them again with
+    /// [`STORE_MODE_VAR`](super::test_util::STORE_MODE_VAR) set. The pool's
+    /// own tests (`exec::tests`) are left out; they open the pool whichever
+    /// the mode, and its one-connection tests are run here.
+    #[test]
+    fn the_store_tests_pass_on_one_connection() {
+        if super::test_util::on_one_connection() {
+            return;
+        }
+        let out = std::process::Command::new(std::env::current_exe().unwrap())
+            .args(["--skip", "exec::tests::"])
+            .env(super::test_util::STORE_MODE_VAR, "single")
+            .output()
+            .unwrap();
+        let stdout = String::from_utf8_lossy(&out.stdout);
+        let stderr = String::from_utf8_lossy(&out.stderr);
+        assert!(out.status.success(), "{stdout}\n{stderr}");
+        let passed: usize = stdout
+            .lines()
+            .find_map(|l| l.strip_prefix("test result: ok. "))
+            .and_then(|l| l.split(' ').next())
+            .and_then(|n| n.parse().ok())
+            .unwrap_or_else(|| panic!("no test result in:\n{stdout}"));
+        // The filter matched the store's tests, not nothing.
+        assert!(passed > 300, "{passed} passed:\n{stdout}");
+    }
 
     fn next_version(n: u32, html: &str) -> clax_core::publish::ValidatedPublish {
         clax_core::publish::validate(
@@ -1019,11 +1236,7 @@ mod tests {
         let home = Home::at(dir.path().join("ax"));
         home.ensure_dirs().unwrap();
         let conn = rusqlite::Connection::open(home.db_path()).unwrap();
-        let gated = Arc::new(Gated {
-            inner: clax_core::content::memory::MemContent::new(),
-            open: std::sync::atomic::AtomicBool::new(true),
-            waker: std::sync::Mutex::new(None),
-        });
+        let gated = Arc::new(Gated::new());
         let st = Store::open_on(
             &home,
             conn,

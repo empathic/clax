@@ -122,7 +122,16 @@
 //!   version again and records `n`. If the transaction fails, `n` is removed.
 //!   Bytes at `n` without a row (a process that died between the two) are
 //!   never served, and block the next write of `n` until removed, as a stray
-//!   version directory always has; `clax doctor` lists them.
+//!   version directory always has; `clax doctor` lists them. A job step's
+//!   write carries the step's mark ([`VersionMeta::step`]), which holds a
+//!   random nonce the store minted for that step and keeps: when that step
+//!   commits again (its resume), under the lock and with the artifact still
+//!   at `n - 1`, an unrecorded `n` carrying its own mark
+//!   ([`ContentStore::unrecorded_step`]) is removed and written again. The
+//!   store decides whose a mark is, never the content: only a mark it holds
+//!   for that artifact and version is a step's, a step commits once, so no
+//!   other writer's version is ever replaced, and a mark copied into a
+//!   pushed commit's message counts for nothing.
 //! - **Asset upload**: the bytes are written, then the row inserted; if the
 //!   insert fails the bytes are deleted.
 //! - **Asset delete**: the bytes are deleted, then the row; deleting bytes
@@ -188,8 +197,9 @@ pub struct VersionWrite<'a> {
 /// when it writes the version's content. A backend that keeps history
 /// records them with the version (git: the commit's author, message and
 /// `Clax-Publisher` and `Clax-Agent` trailers), so the history itself shows
-/// who made each version; the filesystem and memory stores ignore them.
-/// The version's row stays the record Clax reads.
+/// who made each version; the filesystem and memory stores ignore them,
+/// all but the step mark, which every store keeps. The version's row stays
+/// the record Clax reads.
 #[derive(Clone, Debug, Default, PartialEq, Eq)]
 pub struct VersionMeta {
     /// The publishing person's public ID: the owner's, or a connected
@@ -202,6 +212,14 @@ pub struct VersionMeta {
     pub agent: Option<String>,
     /// The publish note, when one was given.
     pub note: Option<String>,
+    /// The job step that writes the version, when one does: its mark
+    /// (`clax_store::jobs::step_mark`, with the nonce the store keeps for
+    /// the step). Every backend keeps it with the
+    /// version's content (git: a `Clax-Step` trailer; the filesystem: a
+    /// `versions/<n>.step` file beside the version's directory) and answers
+    /// it from [`ContentStore::unrecorded_step`], so the step that wrote a
+    /// version no row records, and only that step, may replace it.
+    pub step: Option<String>,
 }
 
 /// An asset's address: its artifact, its ID and its extension.
@@ -310,10 +328,27 @@ pub trait ContentStore: Send + Sync {
         self.copy_version(from, from_n, paths, to, 1).await
     }
 
-    /// Removes version `n` of `id`, which no row records. Succeeds when it
-    /// is not there; fails, changing nothing, while a version above `n` is
-    /// present (only the newest version is removed).
+    /// Removes version `n` of `id`, which no row records, with its step
+    /// mark. Succeeds when it is not there; fails, changing nothing, while
+    /// a version above `n` is present (only the newest version is removed).
     async fn remove_version(&self, id: &ArtifactId, n: u32) -> Result<()>;
+
+    /// The step mark version `n` of `id` was written with
+    /// ([`VersionMeta::step`]); `None` when the version is absent, was
+    /// written without one, or has anything built on it (a version above
+    /// it; in git, a commit `main` holds above it, which makes it a push;
+    /// a `main` moved off it by a push that was not a fast forward builds
+    /// nothing on it).
+    /// The store asks it of a version no row records,
+    /// a write a process killed before its transaction committed left (see
+    /// [Ordering](self#ordering)). Every store keeps the marks
+    /// ([`contract`] checks it); the default answers `None`, which leaves a
+    /// killed step's version to block that step's resume as an unmarked one
+    /// does, for a wrapping store that does not pass the call on.
+    async fn unrecorded_step(&self, id: &ArtifactId, n: u32) -> Result<Option<String>> {
+        let _ = (id, n);
+        Ok(None)
+    }
 
     /// Removes every version and asset of `id`. Succeeds when there are
     /// none.
@@ -358,10 +393,16 @@ pub trait ContentStore: Send + Sync {
     }
 
     /// The files of pushed commit `commit` of `id`, each compared with the
-    /// same path in version `base` (see [`PushedContent`]): a store reads
-    /// each changed blob once, however many paths name it, and at most
+    /// same path among `published`, the files version `base` publishes
+    /// (see [`PushedContent`]). A path `base`'s commit holds unchanged but
+    /// `base` left out (a pushed file a publish refused) is
+    /// [`PushedContent::LeftOut`], unread, except
+    /// [`ICON_PATH`](crate::icon::ICON_PATH), which is read again for the
+    /// icon rules to name its reason. A store reads each changed blob
+    /// once, however many paths name it, and at most
     /// [`MAX_BODY_BYTES`](crate::publish::MAX_BODY_BYTES) of them in all
-    /// (or less, as its host bounds it), answering the files past that
+    /// (or less, as its host bounds it; a left-out `icon.svg` read again
+    /// is not counted), answering the files past that
     /// [`PushedContent::TooLarge`]; a commit whose trees hold more than
     /// [`MAX_PUSHED_ENTRIES`] is `push_too_large`.
     async fn pushed_files(
@@ -369,8 +410,9 @@ pub trait ContentStore: Send + Sync {
         id: &ArtifactId,
         commit: &str,
         base: u32,
+        published: &std::collections::BTreeMap<String, crate::model::FileMeta>,
     ) -> Result<Vec<PushedFile>> {
-        let _ = base;
+        let _ = (base, published);
         Err(unsupported(id, commit))
     }
 
@@ -467,6 +509,24 @@ pub struct PushedCommit {
     /// pushed past is not in `main`'s history: this commit is `main`'s
     /// head, standing for all of them.
     pub collapsed: bool,
+    /// The version tag the commit carries and the job step mark its
+    /// message names ([`VersionMeta::step`]), when it carries both: a
+    /// step's version whose process died before recording it, or a
+    /// pushed commit whose message names a mark and which a reconcile
+    /// tagged before it was killed. The store tells which: a mark it holds
+    /// for that artifact and version is a step's, any other is a push's
+    /// words.
+    pub marked: Option<MarkedTag>,
+}
+
+/// A pushed commit's version tag and the step mark its message names
+/// ([`PushedCommit::marked`]).
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct MarkedTag {
+    /// The version its tag names.
+    pub n: u32,
+    /// The mark, as its message has it.
+    pub mark: String,
 }
 
 /// One file of a pushed commit.
@@ -480,7 +540,7 @@ pub struct PushedFile {
 /// compared with.
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub enum PushedContent {
-    /// The same bytes as the same path in that version.
+    /// The same bytes as the same path in that version, which publishes it.
     Same,
     /// Other bytes, or a path that version does not have.
     Bytes(Vec<u8>),
@@ -489,6 +549,9 @@ pub enum PushedContent {
     /// Other bytes, not read: the files before it in path order changed
     /// as many bytes as the store reads of one commit.
     TooLarge,
+    /// The same bytes as the same path in that version's commit, which
+    /// that version left out: not read, and left out again.
+    LeftOut,
 }
 
 /// The most entries (files and trees, a tree each time it is reached) a

@@ -1237,6 +1237,45 @@ impl Store {
         Ok((comment, touched))
     }
 
+    /// An agent reply `c` on thread `tid` from the session `c` names, inside
+    /// the caller's transaction, with [`Store::add_agent_reply`]'s
+    /// ownership rules: `seen` is what that session's reader saw of the
+    /// thread's viewer comments ([`Store::seen_comments`], read before the
+    /// transaction). What the take changed is added to `touched`.
+    ///
+    /// # Errors
+    /// As [`Store::add_agent_reply`].
+    pub(crate) fn add_agent_reply_in(
+        &self,
+        tx: &rusqlite::Transaction<'_>,
+        ctx: &AuditCtx,
+        tid: &str,
+        c: NewComment,
+        seen: &[String],
+        touched: &mut clax_core::feedback::Touched,
+    ) -> Result<(Comment, Thread)> {
+        let Some(sid) = c.via_session_id.clone() else {
+            return Err(CoreError::invalid(
+                "unknown_session",
+                "an agent reply comes from a session",
+            ));
+        };
+        check_not_taken_in(tx, tid, &sid)?;
+        let out = self.add_comment_in(tx, ctx, tid, c)?;
+        take_in(
+            self,
+            tx,
+            ctx,
+            tid,
+            &sid,
+            "reply",
+            seen,
+            &self.now(),
+            touched,
+        )?;
+        Ok(out)
+    }
+
     /// [`Store::add_comment`], running `then` with the thread in the
     /// comment's transaction; an error from `then` writes nothing.
     fn add_comment_then(
@@ -1261,6 +1300,44 @@ impl Store {
         key: Option<CommentKey<'_>>,
         then: impl FnOnce(&rusqlite::Transaction<'_>, &Thread) -> Result<()>,
     ) -> Result<Keyed<Comment>> {
+        self.with_tx(|tx| {
+            if let Some(k) = key
+                && let Some((thread_id, comment_id)) = super::linked::comment_key_in(tx, k)?
+            {
+                return Ok(Keyed::Before {
+                    thread_id,
+                    comment_id,
+                });
+            }
+            let (comment, t) = self.add_comment_keyed_in(tx, ctx, thread_id, c, key)?;
+            then(tx, &t)?;
+            Ok(Keyed::Made(comment))
+        })
+    }
+
+    /// [`Store::add_comment`] inside the caller's transaction: the comment
+    /// and its thread as it was before it.
+    pub(crate) fn add_comment_in(
+        &self,
+        tx: &rusqlite::Transaction<'_>,
+        ctx: &AuditCtx,
+        thread_id: &str,
+        c: NewComment,
+    ) -> Result<(Comment, Thread)> {
+        self.add_comment_keyed_in(tx, ctx, thread_id, c, None)
+    }
+
+    /// [`Store::add_comment_in`], recording `key` as having made the
+    /// comment when it names one; the caller has checked that no comment
+    /// holds it yet.
+    fn add_comment_keyed_in(
+        &self,
+        tx: &rusqlite::Transaction<'_>,
+        ctx: &AuditCtx,
+        thread_id: &str,
+        c: NewComment,
+        key: Option<CommentKey<'_>>,
+    ) -> Result<(Comment, Thread)> {
         if c.author_kind != AUTHOR_VIEWER && c.author_kind != AUTHOR_AGENT {
             return Err(CoreError::invalid(
                 "invalid_author_kind",
@@ -1289,14 +1366,7 @@ impl Store {
             agent_person: None,
             agent: None,
         };
-        let mut before = None;
-        self.with_tx(|tx| {
-            if let Some(k) = key
-                && let Some(found) = super::linked::comment_key_in(tx, k)?
-            {
-                before = Some(found);
-                return Ok(());
-            }
+        {
             let t = thread_in(tx, thread_id)?.ok_or(CoreError::NotFound)?;
             if let Some(k) = key {
                 super::linked::record_comment_key_in(
@@ -1369,15 +1439,8 @@ impl Store {
                     self.record_audit(tx, ctx, reopen)?;
                 }
             }
-            then(tx, &t)
-        })?;
-        if let Some((thread_id, comment_id)) = before {
-            return Ok(Keyed::Before {
-                thread_id,
-                comment_id,
-            });
+            Ok((comment, t))
         }
-        Ok(Keyed::Made(comment))
     }
 
     /// The thread with its comments, or `None` when it or its artifact is gone.
@@ -1722,7 +1785,26 @@ impl Store {
         person: Option<&str>,
         then: impl FnOnce(&rusqlite::Transaction<'_>, &Thread) -> Result<Option<u32>>,
     ) -> Result<(Thread, clax_core::feedback::Touched)> {
-        let touched = self.with_tx(|tx| {
+        let touched =
+            self.with_tx(|tx| self.resolve_thread_in(tx, ctx, thread_id, by, person, then))?;
+        Ok((
+            self.get_thread(thread_id)?.ok_or(CoreError::NotFound)?,
+            touched,
+        ))
+    }
+
+    /// [`Store::resolve_thread_then`] inside the caller's transaction:
+    /// what it changed.
+    pub(crate) fn resolve_thread_in(
+        &self,
+        tx: &rusqlite::Transaction<'_>,
+        ctx: &AuditCtx,
+        thread_id: &str,
+        by: &str,
+        person: Option<&str>,
+        then: impl FnOnce(&rusqlite::Transaction<'_>, &Thread) -> Result<Option<u32>>,
+    ) -> Result<clax_core::feedback::Touched> {
+        {
             let t = thread_in(tx, thread_id)?.ok_or(CoreError::NotFound)?;
             let now = self.now();
             // The resolver's person goes with the resolver: only when this
@@ -1750,7 +1832,14 @@ impl Store {
             }
             // Its open approval requests go with its held rows (spec
             // 2026-10-08 §9.2).
-            super::approvals::withdraw_thread_in(self, tx, ctx, thread_id, "thread_resolved", &now)?;
+            super::approvals::withdraw_thread_in(
+                self,
+                tx,
+                ctx,
+                thread_id,
+                "thread_resolved",
+                &now,
+            )?;
             if let Some(n) = linked.filter(|_| t.status == "resolved") {
                 let rec = addressed_record(&now, &t.artifact_id, thread_id, n);
                 self.record_audit(tx, ctx, rec)?;
@@ -1763,11 +1852,7 @@ impl Store {
                 touched.withdrawn.insert(thread_id.to_string(), readers);
             }
             Ok(touched)
-        })?;
-        Ok((
-            self.get_thread(thread_id)?.ok_or(CoreError::NotFound)?,
-            touched,
-        ))
+        }
     }
 
     /// Reopens a thread: status `open`, `resolved_at` and `resolved_by`
@@ -1887,6 +1972,7 @@ impl Store {
                 params![thread_id],
             )?;
             tx.execute("DELETE FROM comments WHERE thread_id = ?1", params![thread_id])?;
+            self.thread_going_tx(tx, thread_id)?;
             tx.execute("DELETE FROM threads WHERE id = ?1", params![thread_id])?;
             let now = self.now();
             tx.execute(

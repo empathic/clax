@@ -39,9 +39,12 @@
 //! collides with one kept before it (the same name in another letter case,
 //! or a file over a directory), a file over [`MAX_FILE_BYTES`], changed
 //! files past [`MAX_BODY_BYTES`] in all, or past what the content store
-//! reads of one commit ([`PushedContent::TooLarge`]), and anything but a
-//! regular file (a symbolic link, a submodule) are left out of the version
-//! (they stay in git), and its note names them. A commit whose trees hold
+//! reads of one commit ([`PushedContent::TooLarge`]), anything but a
+//! regular file (a symbolic link, a submodule), and an `icon.svg` the
+//! commit changes that breaks the icon rules ([`clax_core::icon::problem`])
+//! are left out of the version (they stay in git), and its note names
+//! them. An `icon.svg` the commit leaves as it was is kept unchecked, as
+//! history holds it. A commit whose trees hold
 //! more than [`clax_core::content::MAX_PUSHED_ENTRIES`] is refused as a commit
 //! whose pusher may not publish is (`push_too_large`). The note is the commit's message,
 //! after a line saying so when the commit does not simply follow the
@@ -132,7 +135,17 @@ impl Store {
             return Ok(out);
         };
         let mut current = a.current_version;
-        let pushed = self.content.pushed_commits(id, current).await?;
+        let mut pushed = self.content.pushed_commits(id, current).await?;
+        // A step's version its process died before recording, while it is
+        // main's head, is the step's to replace (or, its step dead, the next
+        // writer's to remove), never a push; a mark the store holds for no
+        // step of that version is a push's words. Once a commit is built on
+        // it, it is the push it has become.
+        if let Some(m) = pushed.last().and_then(|c| c.marked.as_ref())
+            && self.is_step_mark(id, m.n, &m.mark)?
+        {
+            pushed.pop();
+        }
         if pushed.is_empty() {
             return Ok(out);
         }
@@ -342,11 +355,17 @@ impl Store {
         let below = self.get_version(id, current)?;
         let prev: BTreeMap<String, FileMeta> =
             below.as_ref().map(|v| v.files.clone()).unwrap_or_default();
-        let mut files = self.content.pushed_files(id, &c.commit, current).await?;
+        let mut files = self
+            .content
+            .pushed_files(id, &c.commit, current, &prev)
+            .await?;
         files.sort_by(|a, b| a.path.cmp(&b.path));
         let mut changes: BTreeMap<String, FileChange> = BTreeMap::new();
         let mut kept = KeptPaths::default();
         let mut skipped: Vec<String> = Vec::new();
+        // A pushed icon.svg that breaks the icon rules, which every
+        // publish runs: left out as a file over the limits is.
+        let mut bad_icon = None;
         let mut total: u64 = 0;
         for f in files {
             if check_path(&f.path).is_err() || kept.collides(&f.path) {
@@ -354,15 +373,20 @@ impl Store {
                 continue;
             }
             match f.content {
-                PushedContent::Same if prev.contains_key(&f.path) => kept.keep(f.path),
-                // Left out of the version below as well.
-                PushedContent::Same | PushedContent::NotAFile | PushedContent::TooLarge => {
+                PushedContent::Same => kept.keep(f.path),
+                PushedContent::NotAFile | PushedContent::TooLarge | PushedContent::LeftOut => {
                     skipped.push(f.path)
                 }
                 PushedContent::Bytes(bytes) => {
                     let size = bytes.len() as u64;
                     if size > MAX_FILE_BYTES || total + size > MAX_BODY_BYTES {
                         skipped.push(f.path);
+                        continue;
+                    }
+                    if f.path == clax_core::icon::ICON_PATH
+                        && let Some(p) = clax_core::icon::problem(&bytes)
+                    {
+                        bad_icon = Some(p);
                         continue;
                     }
                     total += size;
@@ -397,7 +421,7 @@ impl Store {
         }
         self.revoke_blind_tokens(id, &authors).await?;
         let (note, note_truncated) = clax_core::working::clean_line(
-            &push_note(c, current, &skipped, refused),
+            &push_note(c, current, &skipped, bad_icon.as_ref(), refused),
             clax_core::changelog::MAX_NOTE_CHARS,
         );
         let p = ValidatedPublish {
@@ -415,6 +439,7 @@ impl Store {
             person,
             by_page: false,
             hidden: Vec::new(),
+            step: None,
             publish_key: None,
         };
         self.record_version_locked(
@@ -503,9 +528,15 @@ pub(super) fn push_refused(commit: &str) -> CoreError {
 /// The note of the version made from `c`, pushed past version `prev`:
 /// lines saying how it relates to `prev` when it does not simply follow
 /// it (`refused`: the commits between them left out because whoever
-/// pushed them may not publish) and which files were left out, then its
-/// message.
-fn push_note(c: &PushedCommit, prev: u32, skipped: &[String], refused: &[String]) -> String {
+/// pushed them may not publish), which files were left out and the icon
+/// rule a left-out `icon.svg` breaks, then its message.
+fn push_note(
+    c: &PushedCommit,
+    prev: u32,
+    skipped: &[String],
+    bad_icon: Option<&clax_core::icon::IconProblem>,
+    refused: &[String],
+) -> String {
     let short = &c.commit[..c.commit.len().min(12)];
     let mut lead: Vec<String> = Vec::new();
     if !refused.is_empty() {
@@ -541,6 +572,13 @@ fn push_note(c: &PushedCommit, prev: u32, skipped: &[String], refused: &[String]
             shown.join(", ")
         ));
     }
+    if let Some(p) = bad_icon {
+        lead.push(format!(
+            "{} was not taken (it breaks the icon rules: {}; still in git).",
+            clax_core::icon::ICON_PATH,
+            p.code()
+        ));
+    }
     let message = c.message.trim();
     match (lead.is_empty(), message.is_empty()) {
         (true, _) => message.to_string(),
@@ -559,29 +597,31 @@ mod tests {
             message: "Fix the header\n\nLonger body".into(),
             follows,
             collapsed,
+            marked: None,
         }
     }
 
     #[test]
     fn a_push_note_is_the_message_after_what_was_left_out_or_rewritten() {
         assert_eq!(
-            push_note(&commit(true, false), 3, &[], &[]),
+            push_note(&commit(true, false), 3, &[], None, &[]),
             "Fix the header\n\nLonger body"
         );
         assert_eq!(
-            push_note(&commit(false, false), 3, &["a\tb".into()], &[]),
+            push_note(&commit(false, false), 3, &["a\tb".into()], None, &[]),
             "History was rewritten: 0123456789ab does not follow v3. 1 file was not taken (over Clax's path or size limits, or not a regular file; still in git): a\tb. Fix the header\n\nLonger body"
         );
         assert!(
-            push_note(&commit(true, true), 3, &[], &[])
+            push_note(&commit(true, true), 3, &[], None, &[])
                 .starts_with("main's head 0123456789ab stands for every commit pushed after v3.")
         );
         let many: Vec<String> = (0..12).map(|i| format!("f{i}")).collect();
         assert!(
-            push_note(&commit(true, false), 1, &many, &[]).starts_with("12 files were not taken")
+            push_note(&commit(true, false), 1, &many, None, &[])
+                .starts_with("12 files were not taken")
         );
         assert!(
-            push_note(&commit(false, false), 3, &[], &["fedcba9876543210".into()]).starts_with(
+            push_note(&commit(false, false), 3, &[], None, &["fedcba9876543210".into()]).starts_with(
                 "Not versions (pushed by someone who may not publish here; 0123456789ab carries their changes): fedcba987654."
             )
         );

@@ -195,6 +195,24 @@ pub enum Event {
         #[serde(skip)]
         artifacts: Vec<String>,
     },
+    /// A committed write changed job `id` of `client`, whichever path made it (a
+    /// job route, a question's close, a delete that cancels it): its
+    /// `state`, `step` and `rev` after it. Only the owner-only `jobs`
+    /// stream topic carries it; `/api/events` never does.
+    Job {
+        id: String,
+        client: String,
+        state: String,
+        step: Option<String>,
+        rev: i64,
+    },
+    /// `client`'s queue owner claimed it (`held`) or released it (spec
+    /// §7.5). Only the `jobs` stream topic carries it; `/api/events` never
+    /// does.
+    JobsOwner {
+        client: String,
+        held: bool,
+    },
     /// Tags changed (`crate::tags`): the tags artifact `artifact_id` carries
     /// (`Some`), or the list itself (`None`: a tag made, renamed,
     /// recoloured or deleted, which every artifact carrying it shows).
@@ -233,7 +251,9 @@ impl Event {
             | Event::InboxRead { .. }
             | Event::ApprovalRequest { .. }
             | Event::People { .. }
-            | Event::Agents { .. } => "",
+            | Event::Agents { .. }
+            | Event::Job { .. }
+            | Event::JobsOwner { .. } => "",
             // A change to the list itself belongs to no artifact.
             Event::Tags { artifact_id, .. } => artifact_id.as_deref().unwrap_or(""),
         }
@@ -261,6 +281,8 @@ impl Event {
             Event::ApprovalRequest { .. } => "approval_request",
             Event::People { .. } => "people",
             Event::Agents { .. } => "agents",
+            Event::Job { .. } => "job",
+            Event::JobsOwner { .. } => "jobs_owner",
             Event::Tags { .. } => "tags",
         }
     }

@@ -10,7 +10,7 @@ use clax_core::model::ARTIFACT_TEXT_FIELDS;
 use clax_core::model::{
     Artifact, ArtifactAuthors, CONTRACT_VERSION, FileMeta, ForkedFrom, Version, VersionAuthors,
 };
-use clax_core::publish::{FileChange, INDEX, ValidatedPublish};
+use clax_core::publish::{DecodedFile, FileChange, INDEX, RestoreDeclaration, ValidatedPublish};
 use clax_core::visibility::OWNER;
 use clax_core::visibility::{Author, file_authors};
 use clax_core::{ArtifactId, CoreError, Result};
@@ -238,13 +238,15 @@ impl Store {
         self.with_read(|c| live_artifact_in(c, id.as_str()))
     }
 
-    /// Live artifacts (not deleted, at least one version): pinned first, then
-    /// most recently updated, ties broken by ID. Rows with a malformed JSON
-    /// column are logged and left out (see [`Store::corrupt_rows`]).
+    /// Live artifacts (not deleted, at least one version, not hidden
+    /// drafts): pinned first, then most recently updated, ties broken by ID.
+    /// Rows with a malformed JSON column are logged and left out (see
+    /// [`Store::corrupt_rows`]).
     pub fn list_artifacts(&self) -> Result<Vec<Artifact>> {
         self.with_read(|c| {
             let mut stmt = c.prepare(&format!(
-                "{SELECT} WHERE deleted_at IS NULL AND current_version > 0 ORDER BY pinned DESC, updated_at DESC, id"
+                "{SELECT} WHERE deleted_at IS NULL AND current_version > 0 AND hidden = 0
+                 ORDER BY pinned DESC, updated_at DESC, id"
             ))?;
             let rows = stmt.query_map([], row_to_artifact)?;
             skip_corrupt(rows.collect::<rusqlite::Result<Vec<_>>>()?)
@@ -266,20 +268,26 @@ impl Store {
     /// Overwrites each field that is `Some` in `patch` (a `capabilities` value
     /// replaces the whole declaration; `{}` clears it) and leaves the others
     /// untouched; any other field therefore cannot be cleared through this
-    /// call. The caller validates `capabilities`. Does not
+    /// call. The caller validates `capabilities`; this call refuses a read
+    /// declaration naming the artifact itself
+    /// ([`ReadDecl::from_capabilities`](clax_core::db::ReadDecl::from_capabilities)). Does not
     /// bump `updated_at` (metadata edits are not new content). Recorded,
     /// in the same transaction, as `artifact.update` under `ctx`, naming in
     /// `fields` each field the patch sets, even to the value it had (an
     /// explicit request); a patch that sets nothing records nothing.
     ///
     /// # Errors
-    /// `NotFound` when the artifact does not exist or is deleted.
+    /// `NotFound` when the artifact does not exist or is deleted;
+    /// `invalid_capabilities` when `db.read` or `db.share.read` names it.
     pub fn update_meta(
         &self,
         ctx: &AuditCtx,
         id: &ArtifactId,
         patch: MetaPatch,
     ) -> Result<Artifact> {
+        if let Some(caps) = &patch.capabilities {
+            clax_core::db::ReadDecl::from_capabilities(caps, id.as_str())?;
+        }
         self.with_tx(|tx| {
             let Some(before) = tx
                 .query_row(
@@ -356,6 +364,9 @@ impl Store {
             set("icon", patch.icon.clone().map(Into::into));
             set("pinned", patch.pinned.map(Into::into));
             set("capabilities", patch.capabilities.clone());
+            if let Some(caps) = &patch.capabilities {
+                self.drop_undeclared_grants(tx, ctx, id, caps)?;
+            }
             if !fields.is_empty() {
                 let mut rec =
                     AuditRecord::new(AuditKind::ArtifactUpdate, self.now()).with("fields", fields);
@@ -401,6 +412,7 @@ impl Store {
                 return Err(CoreError::NotFound);
             };
             self.record_audit(tx, ctx, delete_record(&now, id.as_str(), &title, current))?;
+            self.artifact_going_tx(tx, id.as_str())?;
             super::approvals::withdraw_artifact_in(self, tx, ctx, id.as_str(), &now)?;
             super::elevations::drop_artifact_in(self, tx, ctx, id.as_str())?;
             tx.execute(
@@ -623,6 +635,7 @@ impl Store {
                 }
                 // A raise naming it goes with it (spec §14).
                 super::elevations::drop_artifact_in(self, tx, &AuditCtx::DAEMON, id)?;
+                self.artifact_going_tx(tx, id)?;
                 // Every row naming it: a live page's creation writes its
                 // scope watches before its first version.
                 for sql in [
@@ -695,6 +708,8 @@ impl Store {
                             &AuditCtx::DAEMON,
                             &row.artifact_id,
                         )?;
+                        self.artifact_going_tx(tx, &row.artifact_id)?;
+                        self.artifact_threads_going_tx(tx, &row.artifact_id)?;
                         for sql in [
                             "DELETE FROM version_threads WHERE artifact_id = ?1",
                             "DELETE FROM version_threads WHERE thread_id IN (SELECT id FROM threads WHERE artifact_id = ?1)",
@@ -798,13 +813,18 @@ pub(super) enum VersionStep<'a> {
     /// Pushed commit `.0`, made the version as it is
     /// ([`clax_core::content::ContentStore::tag_pushed`]).
     Adopt(&'a str),
+    /// A restore of version `from`: written as [`VersionStep::Write`] is,
+    /// from a publish that puts every file of `from`. Its `version.publish`
+    /// record's `carried` is `unchanged` (the paths whose bytes equal the
+    /// previous version's) and it adds `restored_from`.
+    Restore { from: u32, unchanged: &'a [String] },
 }
 
 /// The paths of `prev` a new version made from `p` carries: every one `p`
 /// does not name, but `index.html`, which a publish always gives, unless
 /// `adopt` (a pushed commit, which carries it like any other file); and
 /// none withheld from `p`'s publisher that collides with a path it puts.
-fn carried_of<'a>(
+pub(super) fn carried_of<'a>(
     prev: &'a BTreeMap<String, FileMeta>,
     p: &ValidatedPublish,
     adopt: bool,
@@ -821,6 +841,23 @@ fn put_paths(p: &ValidatedPublish) -> impl Iterator<Item = &String> {
         .iter()
         .filter(|(_, c)| matches!(c, FileChange::Put(_)))
         .map(|(k, _)| k)
+}
+
+/// The error for a write of version `n` of `id` that failed with `e`
+/// while the artifact is still at `n - 1`: `version_present` when content
+/// no row records already holds `n` (or a newer version) and no step of the
+/// store's may remove it (content another process wrote, or a mark the
+/// store never gave), which a retry does not change; `e` otherwise.
+fn version_present(id: &ArtifactId, n: u32, e: CoreError) -> CoreError {
+    match &e {
+        CoreError::Io(io) if io.kind() == std::io::ErrorKind::AlreadyExists => CoreError::invalid(
+            "version_present",
+            format!(
+                "version {n} of {id} holds content no version records, so it cannot be written; `clax doctor` lists it"
+            ),
+        ),
+        _ => e,
+    }
 }
 
 /// Reads a version row; the inner result is `Corrupt` when `files_json` is malformed.
@@ -1048,7 +1085,27 @@ impl Store {
         p: ValidatedPublish,
         session_id: Option<&str>,
     ) -> Result<(Artifact, Version)> {
-        let id = ArtifactId::generate();
+        self.create_artifact_then_async(ctx, &ArtifactId::generate(), p, session_id, |_, _| Ok(()))
+            .await
+            .map(|(a, v, ())| (a, v))
+    }
+
+    /// [`Store::create_artifact_async`] of artifact `id` (a fresh ID, or
+    /// the one a job step's earlier attempt wrote, whose zero-version row
+    /// and marked version 1 are replaced), running `then` in version 1's
+    /// transaction as
+    /// [`Store::write_version_then`] does. When version 1 does not land
+    /// (`then` refused it among other causes), the zero-version row goes
+    /// too.
+    pub(crate) async fn create_artifact_then_async<T>(
+        &self,
+        ctx: &AuditCtx,
+        id: &ArtifactId,
+        p: ValidatedPublish,
+        session_id: Option<&str>,
+        then: impl FnOnce(&rusqlite::Transaction<'_>, u32) -> Result<T>,
+    ) -> Result<(Artifact, Version, T)> {
+        let id = id.clone();
         let now = self.now();
         let title = p
             .title
@@ -1075,6 +1132,13 @@ impl Store {
         #[cfg(test)]
         self.point("artifact.create.insert");
         self.with_tx(|tx| {
+            // A zero-version row of `id` is an earlier attempt's whose
+            // process died before version 1 (a job step's resume writes the
+            // ID its first attempt did): it is replaced.
+            tx.execute(
+                "DELETE FROM artifacts WHERE id = ?1 AND current_version = 0",
+                params![id.as_str()],
+            )?;
             self.check_quota_in(tx, creator.as_deref())?;
             tx.execute(
                 "INSERT INTO artifacts (id, title, description, icon, created_at, updated_at, current_version,
@@ -1085,12 +1149,13 @@ impl Store {
             )?;
             Ok(())
         })?;
-        let made = self
+        let written = self
             .write_version_then_async(ctx, &id, 0, &p, &BTreeMap::new(), session_id, |tx, n| {
-                self.record_key_in(tx, &p, &id, n)
+                self.record_key_in(tx, &p, &id, n)?;
+                then(tx, n)
             })
             .await;
-        if made.is_err()
+        if written.is_err()
             && let Err(e) = self.delete_zero_version_async(id.as_str()).await
         {
             // Left for `clax doctor --fix` (Store::delete_zero_version_artifacts).
@@ -1100,7 +1165,7 @@ impl Store {
                 "could not remove an artifact whose first version failed"
             );
         }
-        made.map(|(a, v, ())| (a, v))
+        written
     }
 
     /// Records `p`'s idempotency key, when it names one, as having made
@@ -1145,6 +1210,21 @@ impl Store {
         p: ValidatedPublish,
         session_id: Option<&str>,
     ) -> Result<(Artifact, Version)> {
+        self.publish_version_then_async(ctx, id, p, session_id, |_, _| Ok(()))
+            .await
+            .map(|(a, v, ())| (a, v))
+    }
+
+    /// [`Store::publish_version_async`], running `then` in the version's
+    /// transaction as [`Store::write_version_then`] does.
+    pub(crate) async fn publish_version_then_async<T>(
+        &self,
+        ctx: &AuditCtx,
+        id: &ArtifactId,
+        p: ValidatedPublish,
+        session_id: Option<&str>,
+        then: impl FnOnce(&rusqlite::Transaction<'_>, u32) -> Result<T>,
+    ) -> Result<(Artifact, Version, T)> {
         let current = self.get_artifact(id)?.ok_or(CoreError::NotFound)?;
         let Some(expected) = p.if_version else {
             return Err(CoreError::invalid(
@@ -1168,7 +1248,151 @@ impl Store {
             &p,
             &prev,
             session_id,
-            |tx, n| self.record_key_in(tx, &p, id, n),
+            |tx, n| {
+                self.record_key_in(tx, &p, id, n)?;
+                then(tx, n)
+            },
+        )
+        .await
+    }
+
+    /// Republishes version `n`'s files, `index.html` included, as the next
+    /// version of `id`, labelled `Restored v<n>` with the note `Restored
+    /// version <n>`. `if_version` must equal the current version (`Conflict`
+    /// otherwise, checked again inside the version's transaction). Each file
+    /// keeps version `n`'s bytes, content type and hash, so the new version's
+    /// `content_sha256` equals `n`'s; files of the current version that `n`
+    /// lacks are not carried. Title, description, icon and capabilities stay
+    /// as they are, and documents are not touched. `session_id` is recorded
+    /// on the new version, and the version as `version.publish` under `ctx`
+    /// with `restored_from: n`; its `carried` names only the files (other
+    /// than `index.html`) whose bytes equal the previous version's.
+    ///
+    /// # Errors
+    /// `NotFound` for an unknown artifact or version `n`; `Corrupt` when
+    /// version `n`'s `files_json` is malformed.
+    pub fn restore_version(
+        &self,
+        ctx: &AuditCtx,
+        id: &ArtifactId,
+        n: u32,
+        if_version: u32,
+        session_id: Option<&str>,
+    ) -> Result<(Artifact, Version)> {
+        self.block_on(self.restore_version_async(ctx, id, n, if_version, session_id))
+    }
+
+    /// [`Store::restore_version`], awaiting its content store. Version
+    /// `n`'s files are read from the content store and written again as
+    /// the new version's, so nothing of the current version is carried.
+    pub async fn restore_version_async(
+        &self,
+        ctx: &AuditCtx,
+        id: &ArtifactId,
+        n: u32,
+        if_version: u32,
+        session_id: Option<&str>,
+    ) -> Result<(Artifact, Version)> {
+        self.restore_version_declaring_async(
+            ctx,
+            id,
+            n,
+            if_version,
+            session_id,
+            RestoreDeclaration::default(),
+        )
+        .await
+    }
+
+    /// [`Store::restore_version_async`] that also sets `declaration`'s
+    /// title, icon and capabilities (a full set) in the same version, and
+    /// labels and notes it with `declaration`'s label and note when it has
+    /// them. The caller validates `declaration`
+    /// ([`RestoreDeclaration::validated`]); the restored files are never
+    /// checked, as history.
+    pub async fn restore_version_declaring_async(
+        &self,
+        ctx: &AuditCtx,
+        id: &ArtifactId,
+        n: u32,
+        if_version: u32,
+        session_id: Option<&str>,
+        declaration: RestoreDeclaration,
+    ) -> Result<(Artifact, Version)> {
+        let current = self.get_artifact(id)?.ok_or(CoreError::NotFound)?;
+        if if_version != current.current_version {
+            return Err(CoreError::Conflict {
+                current: current.current_version,
+            });
+        }
+        let source = self.get_version(id, n)?.ok_or(CoreError::NotFound)?;
+        let mut files = BTreeMap::new();
+        for (path, meta) in &source.files {
+            let bytes = self
+                .content
+                .read_file(id, n, path)
+                .await?
+                .ok_or_else(|| clax_core::content::missing(id, n, path))?;
+            files.insert(
+                path.clone(),
+                FileChange::Put(DecodedFile {
+                    bytes,
+                    content_type: meta.content_type.clone(),
+                }),
+            );
+        }
+        let p = ValidatedPublish {
+            title: declaration.title,
+            description: None,
+            icon: declaration.icon,
+            label: Some(
+                declaration
+                    .label
+                    .unwrap_or_else(|| format!("Restored v{n}")),
+            ),
+            if_version: Some(if_version),
+            capabilities: declaration.capabilities,
+            files,
+            note: Some(
+                declaration
+                    .note
+                    .unwrap_or_else(|| format!("Restored version {n}")),
+            ),
+            note_truncated: false,
+            addresses: Vec::new(),
+            working_threads: Vec::new(),
+            person: None,
+            by_page: false,
+            hidden: Vec::new(),
+            step: None,
+            publish_key: None,
+        };
+        let previous = self
+            .get_version(id, if_version)?
+            .map(|v| v.files)
+            .unwrap_or_default();
+        let unchanged: Vec<String> = source
+            .files
+            .iter()
+            .filter(|(path, meta)| {
+                *path != INDEX
+                    && meta.sha256.is_some()
+                    && previous.get(*path).map(|m| &m.sha256) == Some(&meta.sha256)
+            })
+            .map(|(path, _)| path.clone())
+            .collect();
+        self.write_version_step_async(
+            ctx,
+            id,
+            if_version,
+            &p,
+            &BTreeMap::new(),
+            session_id,
+            VersionStep::Restore {
+                from: n,
+                unchanged: &unchanged,
+            },
+            |_, _| Ok(()),
         )
         .await
         .map(|(a, v, ())| (a, v))
@@ -1195,9 +1419,9 @@ impl Store {
     /// not a live page (whose creation is recorded when the page is made)
     /// is preceded by `artifact.create`.
     ///
-    /// `then` runs in the version's transaction once the version row and
-    /// its links are written, with the new version's number; an error from
-    /// `then` rolls the version back.
+    /// `then` runs in the version's transaction once the version row, its
+    /// links and the artifact's row are written, with the new version's
+    /// number; an error from `then` rolls the version back.
     #[cfg(test)]
     #[allow(clippy::too_many_arguments)]
     pub(super) fn write_version_then<T>(
@@ -1225,9 +1449,45 @@ impl Store {
         session_id: Option<&str>,
         then: impl FnOnce(&rusqlite::Transaction<'_>, u32) -> Result<T>,
     ) -> Result<(Artifact, Version, T)> {
+        self.write_version_step_async(
+            ctx,
+            id,
+            expected,
+            p,
+            prev,
+            session_id,
+            VersionStep::Write,
+            then,
+        )
+        .await
+    }
+
+    /// [`Store::write_version_then_async`], with `step` saying how the
+    /// version is written and recorded ([`VersionStep::Write`] or
+    /// [`VersionStep::Restore`]).
+    #[allow(clippy::too_many_arguments)]
+    async fn write_version_step_async<T>(
+        &self,
+        ctx: &AuditCtx,
+        id: &ArtifactId,
+        expected: u32,
+        p: &ValidatedPublish,
+        prev: &BTreeMap<String, FileMeta>,
+        session_id: Option<&str>,
+        step: VersionStep<'_>,
+        then: impl FnOnce(&rusqlite::Transaction<'_>, u32) -> Result<T>,
+    ) -> Result<(Artifact, Version, T)> {
         // Refused before waiting for the lock.
         check_collisions(carried_of(prev, p, false).into_iter().chain(put_paths(p)))?;
         let _lock = self.lock_content(id).await?;
+        if expected > 0 && self.current_version_of(id)? == Some(expected) {
+            // First, so that commits pushed beside a stray step version
+            // (main moved off it by a push that was not a fast forward),
+            // which cannot take its number while it is there, are recorded
+            // below.
+            self.clear_stray_locked(id, expected + 1, p.step.as_deref())
+                .await?;
+        }
         if expected > 0 {
             // Commits pushed since `expected` become versions first, so a
             // push never blocks a publish and a publish that did not see
@@ -1249,17 +1509,40 @@ impl Store {
                 }
             }
         }
-        self.record_version_locked(
-            ctx,
-            id,
-            expected,
-            p,
-            prev,
-            session_id,
-            VersionStep::Write,
-            then,
-        )
-        .await
+        self.record_version_locked(ctx, id, expected, p, prev, session_id, step, then)
+            .await
+    }
+
+    /// Clears version `n` of `id`, which no row records, when a step's
+    /// killed write left it. Under the home's lock and `id`'s content lock
+    /// no attempt of any step is writing, so a step's mark on unrecorded
+    /// content is always a killed process's, and any writer of `n` may take
+    /// the version: content whose step may still commit (its own, the step
+    /// writing now's, or another's) is removed and that step given a new
+    /// nonce (its mark was readable on that content, so a commit copying it
+    /// is a push; removed first, then renewed, so a process killed between
+    /// the two leaves nothing under the old mark), and its resume then sees
+    /// the version moved; a step's that can never commit is removed and its
+    /// mark forgotten. A mark the store never gave stays, and refuses the
+    /// write as `version_present`. The store, not the content, says whose it
+    /// is (the content module's Ordering). Under `id`'s content lock, with
+    /// the artifact at `n - 1`.
+    async fn clear_stray_locked(&self, id: &ArtifactId, n: u32, own: Option<&str>) -> Result<()> {
+        let Some(mark) = self.content.unrecorded_step(id, n).await? else {
+            return Ok(());
+        };
+        match self.mark_of(id, n, &mark, own)? {
+            super::jobs::MarkOf::Own | super::jobs::MarkOf::Live => {
+                self.content.remove_version(id, n).await?;
+                self.renew_step_mark(&mark)?;
+            }
+            super::jobs::MarkOf::Dead => {
+                self.content.remove_version(id, n).await?;
+                self.forget_step_mark(&mark)?;
+            }
+            super::jobs::MarkOf::Foreign => {}
+        }
+        Ok(())
     }
 
     /// The rest of [`Store::write_version_then_async`], under the content
@@ -1278,16 +1561,28 @@ impl Store {
         step: VersionStep<'_>,
         then: impl FnOnce(&rusqlite::Transaction<'_>, u32) -> Result<T>,
     ) -> Result<(Artifact, Version, T)> {
+        if let Some(caps) = &p.capabilities {
+            // The publish check has no artifact ID; a declaration may not
+            // read or share with its own artifact.
+            clax_core::db::ReadDecl::from_capabilities(caps, id.as_str())?;
+        }
         let n = expected + 1;
         let adopt = matches!(step, VersionStep::Adopt(_));
         let carried = carried_of(prev, p, adopt);
-        let carried_paths: Vec<String> = carried.iter().map(|p| (*p).clone()).collect();
+        let carried_paths: Vec<String> = match step {
+            VersionStep::Restore { unchanged, .. } => unchanged.to_vec(),
+            _ => carried.iter().map(|p| (*p).clone()).collect(),
+        };
         check_collisions(carried.iter().copied().chain(put_paths(p)))?;
         if let Some(current) = self.current_version_of(id)?
             && current != expected
         {
             return Err(CoreError::Conflict { current });
         }
+        self.clear_stray_locked(id, n, p.step.as_deref()).await?;
+        // The step's mark as the store holds it now: a new one once its
+        // own stray was removed.
+        let step_mark = self.held_step_mark(p.step.as_deref())?;
         let mut files: BTreeMap<String, FileMeta> = BTreeMap::new();
         for path in &carried {
             let mut meta = prev[*path].clone();
@@ -1320,7 +1615,7 @@ impl Store {
                 );
             }
         }
-        if expected > 0 && matches!(step, VersionStep::Write) {
+        if expected > 0 && matches!(step, VersionStep::Write | VersionStep::Restore { .. }) {
             // Every agent's repository token blind to the publisher goes
             // before the commit exists (an adopted commit's were revoked
             // before it was recorded; a new artifact has none): refused
@@ -1345,11 +1640,14 @@ impl Store {
         }
         // Whether this call made `n` (an adopted commit may already be it).
         let written = match step {
-            VersionStep::Write => {
+            VersionStep::Write | VersionStep::Restore { .. } => {
                 let write = VersionWrite {
                     carry: carried.iter().map(|p| p.as_str()).collect(),
                     put,
-                    meta: self.version_meta(p, session_id)?,
+                    meta: VersionMeta {
+                        step: step_mark,
+                        ..self.version_meta(p, session_id)?
+                    },
                 };
                 self.content
                     .write_version(id, n, &write)
@@ -1364,7 +1662,7 @@ impl Store {
                 // Another process may have written `n` and recorded it.
                 return Err(match self.current_version_of(id)? {
                     Some(current) if current != expected => CoreError::Conflict { current },
-                    _ => e,
+                    _ => version_present(id, n, e),
                 });
             }
         };
@@ -1407,7 +1705,6 @@ impl Store {
                 ],
             )?;
             link_version(tx, id.as_str(), n, p, &self.now())?;
-            let extra = then(tx, n)?;
             // Each text field it sets is its writers' now; the rest keep
             // their authors (spec §8.2).
             let before = tx.query_row(
@@ -1437,6 +1734,9 @@ impl Store {
                     text
                 ],
             )?;
+            if let Some(caps) = &p.capabilities {
+                self.drop_undeclared_grants(tx, ctx, id, caps)?;
+            }
             super::inbox::note_version(
                 tx,
                 id.as_str(),
@@ -1445,6 +1745,9 @@ impl Store {
                 p.note.as_deref(),
                 &self.now(),
             )?;
+            // Last, so it sees the artifact as the version leaves it (its
+            // capabilities among them).
+            let extra = then(tx, n)?;
             let a = tx.query_row(
                 &format!("{SELECT} WHERE id = ?1"),
                 params![id.as_str()],
@@ -1464,7 +1767,10 @@ impl Store {
             if expected == 0 && a.kind != KIND_LIVE {
                 self.record_audit(tx, ctx, create_record(&a, &v.created_at))?;
             }
-            let rec = version_record(&a, &v, &carried_paths, Some(p.by_page), page.as_ref());
+            let mut rec = version_record(&a, &v, &carried_paths, Some(p.by_page), page.as_ref());
+            if let VersionStep::Restore { from, .. } = step {
+                rec = rec.with("restored_from", from);
+            }
             self.record_audit(tx, ctx, rec)?;
             Ok((a, v, extra))
         });
@@ -1474,7 +1780,9 @@ impl Store {
         if result.is_err()
             && made
             && let Err(e) = match step {
-                VersionStep::Write => self.content.remove_version(id, n).await,
+                VersionStep::Write | VersionStep::Restore { .. } => {
+                    self.content.remove_version(id, n).await
+                }
                 VersionStep::Adopt(commit) => self.content.untag_pushed(id, n, commit).await,
             }
         {
@@ -1492,9 +1800,14 @@ impl Store {
     /// Who publishes `p` from `session_id`, for the content store: the
     /// person [`version_authors`] records (`p.person`, else the session's,
     /// else the owner's public ID) with their display name, the session's
-    /// agent name (its name, else its harness), and the note.
+    /// agent name (its name, else its harness), the note, and the step mark
+    /// `p.step`.
     fn version_meta(&self, p: &ValidatedPublish, session_id: Option<&str>) -> Result<VersionMeta> {
-        self.publisher_meta(p.person.as_deref(), session_id, p.note.as_deref())
+        let meta = self.publisher_meta(p.person.as_deref(), session_id, p.note.as_deref())?;
+        Ok(VersionMeta {
+            step: p.step.clone(),
+            ..meta
+        })
     }
 
     /// [`Store::version_meta`] of a version published as `person` (a
@@ -1544,6 +1857,7 @@ impl Store {
                 person_name: person_name.filter(|n| !n.trim().is_empty()),
                 agent: session.map(|(_, name, harness)| name.unwrap_or(harness)),
                 note: note.filter(|n| !n.trim().is_empty()).map(str::to_string),
+                step: None,
             })
         })
     }
@@ -2139,6 +2453,186 @@ mod tests {
         assert_eq!(store.get_artifact(&id).unwrap().unwrap().current_version, 1);
     }
 
+    /// Versions 1 (`index.html` "v1", `a.css` "a", `b.css` "b") and 2
+    /// (`index.html` "v2", `b.css` "b2", `a.css` carried).
+    fn two_versions(store: &Store) -> clax_core::ArtifactId {
+        let (a, _) = store
+            .create_artifact(
+                DAEMON,
+                publish(
+                    &[
+                        ("index.html", Some("v1")),
+                        ("a.css", Some("a")),
+                        ("b.css", Some("b")),
+                    ],
+                    None,
+                ),
+                None,
+            )
+            .unwrap();
+        let id = clax_core::ArtifactId::parse(&a.id).unwrap();
+        store
+            .publish_version(
+                DAEMON,
+                &id,
+                publish(
+                    &[("index.html", Some("v2")), ("b.css", Some("b2"))],
+                    Some(1),
+                ),
+                None,
+            )
+            .unwrap();
+        id
+    }
+
+    #[test]
+    fn a_version_landing_before_the_restore_transaction_is_a_conflict() {
+        let (_d, store) = store();
+        let id = two_versions(&store);
+        let v1 = store.get_version(&id, 1).unwrap().unwrap();
+        // The state restore_version sees when version 2 lands after its own
+        // check against version 1: the transaction's re-check refuses it.
+        let p = super::ValidatedPublish {
+            title: None,
+            description: None,
+            icon: None,
+            label: Some("Restored v1".into()),
+            if_version: Some(1),
+            capabilities: None,
+            files: BTreeMap::new(),
+            note: None,
+            note_truncated: false,
+            addresses: Vec::new(),
+            working_threads: Vec::new(),
+            person: None,
+            by_page: false,
+            hidden: Vec::new(),
+            step: None,
+            publish_key: None,
+        };
+        let seq = store.events_after(0, 100).unwrap().last().unwrap().seq;
+        let e = store
+            .block_on(store.record_version_locked(
+                DAEMON,
+                &id,
+                1,
+                &p,
+                &v1.files,
+                None,
+                super::VersionStep::Restore {
+                    from: 1,
+                    unchanged: &[],
+                },
+                |_, _| Ok(()),
+            ))
+            .unwrap_err();
+        assert!(
+            matches!(e, clax_core::CoreError::Conflict { current: 2 }),
+            "{e:?}"
+        );
+        assert_eq!(store.get_artifact(&id).unwrap().unwrap().current_version, 2);
+        assert_eq!(store.list_versions(&id).unwrap().len(), 2);
+        assert!(store.read_file(&id, 3, "index.html").unwrap().is_none());
+        assert_eq!(store.events_after(seq, 100).unwrap(), vec![]);
+    }
+
+    #[test]
+    fn a_restore_records_its_source_and_only_unchanged_files_as_carried() {
+        let (_d, store) = store();
+        let id = two_versions(&store);
+        let seq = store.events_after(0, 100).unwrap().last().unwrap().seq;
+        let (_, v) = store.restore_version(DAEMON, &id, 1, 2, None).unwrap();
+        assert_eq!(v.n, 3);
+        let rows = store.events_after(seq, 100).unwrap();
+        assert_eq!(rows.len(), 1, "{rows:?}");
+        assert_eq!(rows[0].kind, "version.publish");
+        let body: serde_json::Value = serde_json::from_str(&rows[0].body).unwrap();
+        assert_eq!(body["n"], 3);
+        assert_eq!(body["restored_from"], 1);
+        assert_eq!(body["label"], "Restored v1");
+        assert_eq!(body["note"], "Restored version 1");
+        assert_eq!(
+            body["carried"],
+            serde_json::json!(["a.css"]),
+            "b.css and index.html differ from version 2"
+        );
+        let files: Vec<&String> = body["files"].as_object().unwrap().keys().collect();
+        assert_eq!(files, ["a.css", "b.css", "index.html"]);
+    }
+
+    /// Restore and fork copy history as it is: an `icon.svg` an older build
+    /// took, which the icon rules now refuse, comes back unchanged, since
+    /// neither runs a publish's checks on the files it copies.
+    #[test]
+    fn restore_and_fork_carry_an_icon_the_rules_now_refuse_unchanged() {
+        let (_d, store) = store();
+        let old = r#"<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 9 9"><script>x()</script></svg>"#;
+        assert!(clax_core::icon::problem(old.as_bytes()).is_some());
+        use clax_core::publish::{DecodedFile, FileChange};
+        let mut v1 = publish(&[("index.html", Some("v1"))], None);
+        v1.files.insert(
+            "icon.svg".into(),
+            FileChange::Put(DecodedFile {
+                bytes: old.as_bytes().to_vec(),
+                content_type: "image/svg+xml".into(),
+            }),
+        );
+        let (a, _) = store.create_artifact(DAEMON, v1, None).unwrap();
+        let id = clax_core::ArtifactId::parse(&a.id).unwrap();
+        store
+            .publish_version(
+                DAEMON,
+                &id,
+                publish(&[("index.html", Some("v2")), ("icon.svg", None)], Some(1)),
+                None,
+            )
+            .unwrap();
+        let (_, v3) = store.restore_version(DAEMON, &id, 1, 2, None).unwrap();
+        assert_eq!(v3.n, 3);
+        let (bytes, _) = store.read_file(&id, 3, "icon.svg").unwrap().unwrap();
+        assert_eq!(bytes, old.as_bytes());
+        let (fork, _) = store
+            .fork_artifact(DAEMON, &id, Some(1), None, None)
+            .unwrap();
+        let fork = clax_core::ArtifactId::parse(&fork.id).unwrap();
+        let (bytes, _) = store.read_file(&fork, 1, "icon.svg").unwrap().unwrap();
+        assert_eq!(bytes, old.as_bytes());
+    }
+
+    #[test]
+    fn a_publish_records_no_source_version() {
+        let (_d, store) = store();
+        two_versions(&store);
+        let last = store.events_after(0, 100).unwrap().pop().unwrap();
+        let body: serde_json::Value = serde_json::from_str(&last.body).unwrap();
+        assert_eq!(body["carried"], serde_json::json!(["a.css"]));
+        assert!(body.get("restored_from").is_none(), "{body}");
+    }
+
+    #[test]
+    fn a_publish_after_a_restore_carries_the_restored_files() {
+        let (_d, store) = store();
+        let id = two_versions(&store);
+        store.restore_version(DAEMON, &id, 1, 2, None).unwrap();
+        let (_, v4) = store
+            .publish_version(
+                DAEMON,
+                &id,
+                publish(&[("index.html", Some("v4"))], Some(3)),
+                None,
+            )
+            .unwrap();
+        assert_eq!(v4.n, 4);
+        let read = |n: u32, path: &str| {
+            let (bytes, _) = store.read_file(&id, n, path).unwrap().unwrap();
+            String::from_utf8(bytes).unwrap()
+        };
+        assert_eq!(read(4, "index.html"), "v4");
+        assert_eq!(read(4, "a.css"), "a");
+        assert_eq!(read(4, "b.css"), "b", "version 1's b.css, restored in 3");
+        assert_eq!(read(3, "index.html"), "v1", "version 1's index.html");
+    }
+
     #[test]
     fn zero_version_rows_are_hidden() {
         let (_d, store) = store();
@@ -2607,6 +3101,7 @@ mod tests {
                         person_name: Some("Alex".into()),
                         agent: session.name.clone(),
                         note: Some("Tighter layout".into()),
+                        step: None,
                     }
                 ),
                 (
@@ -2616,6 +3111,7 @@ mod tests {
                         person_name: Some("Rae".into()),
                         agent: None,
                         note: None,
+                        step: None,
                     }
                 ),
             ]

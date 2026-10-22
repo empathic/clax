@@ -16,3 +16,12 @@ filegroup(
     srcs = glob(["tests/fixtures/old-migrations/*.sql"]),
     visibility = ["//crates/clax-server:__pkg__"],
 )
+
+# may_move's table (tests/fixtures/job-moves.json), which src/job_moves_fixture.rs
+# and the app's queue tests (apps/clax_app/test/queue/job_moves_test.dart)
+# check alike.
+filegroup(
+    name = "job_moves_fixture",
+    srcs = ["tests/fixtures/job-moves.json"],
+    visibility = ["//apps/clax_app:__pkg__"],
+)

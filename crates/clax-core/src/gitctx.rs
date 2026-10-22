@@ -354,7 +354,7 @@ pub const DIFF_CAP: u64 = 64 << 20;
 
 /// The git executable named `git` on `path` (a `PATH` value), when there
 /// is one.
-#[cfg(unix)]
+#[cfg(all(unix, not(target_os = "ios")))]
 pub fn find_git(path: Option<&std::ffi::OsStr>) -> Option<std::path::PathBuf> {
     use std::os::unix::fs::PermissionsExt;
     std::env::split_paths(path?)
@@ -365,9 +365,9 @@ pub fn find_git(path: Option<&std::ffi::OsStr>) -> Option<std::path::PathBuf> {
         })
 }
 
-/// No git: off unix (a hosted build) there is no git to run, so no capture
-/// starts.
-#[cfg(not(unix))]
+/// No git: off unix (a hosted build), and on iOS, whose sandbox refuses
+/// `posix_spawn`, there is no git to run, so no capture starts.
+#[cfg(any(not(unix), target_os = "ios"))]
 pub fn find_git(_path: Option<&std::ffi::OsStr>) -> Option<std::path::PathBuf> {
     None
 }
@@ -619,8 +619,9 @@ impl GitProbe {
 /// now). It never fails: without a context it is the outcome
 ///
 /// - `no-cwd` when `cwd` is empty or not a directory;
-/// - `unavailable` when `git` is older than [`MIN_GIT`] (then nothing is
-///   run), cannot be run, or a git command after the first fails;
+/// - `unavailable` on iOS, which lets an app start no other program, when
+///   `git` is older than [`MIN_GIT`] (then nothing is run), cannot be run,
+///   or a git command after the first fails;
 /// - `not-a-repo` when `git rev-parse --show-toplevel` fails (as it does
 ///   for a repository another user owns: `safe.directory` is never passed);
 /// - `timeout` when `deadline` passes first: every git child still running
@@ -646,6 +647,11 @@ impl GitProbe {
 /// fetch, and is `diff_unavailable`. Only hashes and counts are kept: diff
 /// contents and file names never leave this function.
 pub fn capture(cwd: &std::path::Path, deadline: std::time::Instant, git: &Git) -> GitField {
+    // iOS lets an app start no other program: no session there has a
+    // repository context.
+    if cfg!(target_os = "ios") {
+        return GitField::Capture("unavailable");
+    }
     if cwd.as_os_str().is_empty() || !cwd.is_dir() {
         return GitField::Capture("no-cwd");
     }

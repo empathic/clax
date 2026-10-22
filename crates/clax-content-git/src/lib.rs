@@ -12,8 +12,10 @@
 //!   of its predecessor, the newest version below `n` (none for the first).
 //!   Its message is the publish note ([`VersionWrite::meta`]; `Version <n>`
 //!   without one) followed by the trailers `Clax-Version: <n>`,
-//!   `Clax-Publisher: <person ID>` and, when an agent published,
-//!   `Clax-Agent: <agent name>`. Author and committer are the publishing
+//!   `Clax-Publisher: <person ID>`, when an agent published
+//!   `Clax-Agent: <agent name>`, and when a job step wrote it
+//!   `Clax-Step: <step mark>` ([`VersionMeta::step`],
+//!   [`ContentStore::unrecorded_step`]). Author and committer are the publishing
 //!   person, `<name> <<person ID>@users.clax.dev>` (`someone` for a person
 //!   without a name; `<`, `>` and control characters dropped, as git drops
 //!   them), at the clock's time in UTC; a write whose metadata names no
@@ -73,7 +75,12 @@
 //!   a push to `main` puts commits above the newest version that no tag
 //!   names. [`ContentStore::pushed_commits`] lists them, oldest first, by
 //!   `main`'s first parents down to the commit of the version pushed past,
-//!   leaving out the publish attempts a remove left directly above it;
+//!   leaving out the publish attempts a remove left directly above it; a
+//!   tagged commit whose message carries `Clax-Step` is listed with its tag
+//!   and mark ([`PushedCommit::marked`]), and the store, which alone holds
+//!   the marks its steps were given, tells a step's version whose process
+//!   died before recording it (that step's to replace, while it is `main`'s
+//!   head) from a push; one with commits built on it is a push;
 //!   more than 64 of them, or a `main` that no longer leads to that
 //!   version, are its head alone. [`ContentStore::tag_pushed`] creates
 //!   `v<n>` on one (create-only) and leaves `main` where it is, so the next
@@ -93,7 +100,7 @@ use std::collections::{BTreeMap, BTreeSet};
 use std::sync::Arc;
 
 use clax_core::content::{
-    AssetKey, ContentStore, MAX_PUSHED_ENTRIES, PushLedger, PushedCommit, PushedContent,
+    AssetKey, ContentStore, MAX_PUSHED_ENTRIES, MarkedTag, PushLedger, PushedCommit, PushedContent,
     PushedFile, Pusher, RepoToken, VersionMeta, VersionWrite, missing, present, superseded,
 };
 use clax_core::working::Clock;
@@ -224,6 +231,10 @@ fn parse_commit(hex: &str) -> Result<ObjectId> {
     })
 }
 
+/// The trailer a job step's version commit carries its step mark in
+/// ([`VersionMeta::step`]).
+pub const STEP_TRAILER: &str = "Clax-Step";
+
 fn version_ref(n: u32) -> String {
     tag_ref(&version_tag(u64::from(n))).expect("v<n> is a valid tag name")
 }
@@ -352,6 +363,9 @@ impl<H: RepoHost, A: AssetStore> GitContent<H, A> {
         {
             trailers.push(("Clax-Agent".to_string(), agent));
         }
+        if let Some(step) = &meta.step {
+            trailers.push((STEP_TRAILER.to_string(), step.clone()));
+        }
         trailers.extend(extra);
         let message = with_trailers(subject, &trailers).map_err(core_error)?;
         Ok((message, sig))
@@ -406,6 +420,35 @@ impl<H: RepoHost, A: AssetStore> GitContent<H, A> {
             if meta.trailer("Clax-Version").is_none() {
                 return Ok(false);
             }
+            at = meta.parents.first().copied();
+        }
+        Ok(false)
+    }
+
+    /// Whether `head`'s first-parent history (`main`'s) leaves out
+    /// `commit`, the newest version's: the walk meets another of the
+    /// `tagged` versions' commits, which lies below it, or ends, first. `false` when it meets
+    /// `commit` or is longer than [`MAX_PUSHED`] and [`MAX_LEFT`] allow.
+    async fn off_main(
+        repo: &H::Repo,
+        head: Option<ObjectId>,
+        commit: &ObjectId,
+        tagged: &BTreeSet<ObjectId>,
+    ) -> Result<bool> {
+        let mut at = head;
+        for _ in 0..=MAX_PUSHED + MAX_LEFT {
+            let Some(c) = at else {
+                return Ok(true);
+            };
+            if c == *commit {
+                return Ok(false);
+            }
+            if tagged.contains(&c) {
+                return Ok(true);
+            }
+            let Some(meta) = repo.read_commit_meta(&c).await.map_err(core_error)? else {
+                return Ok(false);
+            };
             at = meta.parents.first().copied();
         }
         Ok(false)
@@ -672,17 +715,48 @@ impl<H: RepoHost + Send + Sync, A: AssetStore> ContentStore for GitContent<H, A>
         if main == Some(commit)
             || main == parent
             || Self::left_above(&repo, main, Some(commit), &tagged).await?
+            || Self::off_main(&repo, main, &commit, &tagged).await?
         {
             // A first version, whose main stays (deleting the current
-            // branch is refused); main already back below the version; or
-            // main on commits a remove left above it: nothing is built on
-            // the version.
+            // branch is refused); main already back below the version; main
+            // on commits a remove left above it; or main moved off it by a
+            // push that was not a fast forward: nothing is built on the
+            // version.
             return Self::apply_all(&repo, Vec::new(), &[tag]).await;
         }
         Err(unavailable(format!(
             "main of {} is not at version {n}'s commit {commit}; version {n} is left",
             repo_name(id.as_str())
         )))
+    }
+
+    /// The `Clax-Step` trailer of the commit tagged `v<n>`, while nothing
+    /// is built on it: `main` is at it, or `main`'s first-parent history
+    /// does not pass through it (a push that was not a fast forward moved
+    /// `main` off it). A commit built on it makes it a push, and so does
+    /// a history too long to walk.
+    async fn unrecorded_step(&self, id: &ArtifactId, n: u32) -> Result<Option<String>> {
+        let Some(repo) = self.open(id).await? else {
+            return Ok(None);
+        };
+        let refs = repo.refs().await.map_err(core_error)?;
+        let tags = versions_of(&refs);
+        let Some(commit) = tags.get(&n) else {
+            return Ok(None);
+        };
+        if tags.range(n.saturating_add(1)..).next().is_some() {
+            return Ok(None);
+        }
+        let main = refs.get(MAIN).copied();
+        let tagged: BTreeSet<ObjectId> = tags.values().copied().collect();
+        if main != Some(*commit) && !Self::off_main(&repo, main, commit, &tagged).await? {
+            return Ok(None);
+        }
+        Ok(repo
+            .read_commit_meta(commit)
+            .await
+            .map_err(core_error)?
+            .and_then(|m| m.trailer(STEP_TRAILER).map(str::to_string)))
     }
 
     async fn pushed_commits(&self, id: &ArtifactId, after: u32) -> Result<Vec<PushedCommit>> {
@@ -721,13 +795,23 @@ impl<H: RepoHost + Send + Sync, A: AssetStore> ContentStore for GitContent<H, A>
             at = meta.parents.first().copied();
             chain.push(meta);
         }
-        let tagged: BTreeSet<ObjectId> = tags.values().copied().collect();
+        let tagged: BTreeMap<ObjectId, u32> = tags.iter().map(|(n, c)| (*c, *n)).collect();
+        // The tag and step mark of a tagged commit whose message names one:
+        // the store tells a step's unrecorded version from a push's words.
+        let marked = |c: &clax_git::CommitMeta| {
+            Some(MarkedTag {
+                n: *tagged.get(&c.commit)?,
+                mark: c.trailer(STEP_TRAILER)?.to_string(),
+            })
+        };
         if reached {
             chain.reverse();
             // Publish attempts a remove left directly above the base.
             let left = chain
                 .iter()
-                .take_while(|c| !tagged.contains(&c.commit) && c.trailer("Clax-Version").is_some())
+                .take_while(|c| {
+                    !tagged.contains_key(&c.commit) && c.trailer("Clax-Version").is_some()
+                })
                 .count();
             chain.drain(..left);
             if chain.is_empty() {
@@ -739,6 +823,7 @@ impl<H: RepoHost + Send + Sync, A: AssetStore> ContentStore for GitContent<H, A>
                 return Ok(chain
                     .into_iter()
                     .map(|c| PushedCommit {
+                        marked: marked(&c),
                         commit: c.commit.to_hex(),
                         message: c.message,
                         follows: true,
@@ -754,11 +839,12 @@ impl<H: RepoHost + Send + Sync, A: AssetStore> ContentStore for GitContent<H, A>
             .await
             .map_err(core_error)?
             .ok_or_else(|| unavailable(format!("Commit {head} is missing")))?;
-        if !reached && meta.trailer("Clax-Version").is_some() && !tagged.contains(&head) {
+        if !reached && meta.trailer("Clax-Version").is_some() && !tagged.contains_key(&head) {
             // An untagged publish attempt on a history that lost the base.
             return Ok(Vec::new());
         }
         Ok(vec![PushedCommit {
+            marked: marked(&meta),
             commit: head.to_hex(),
             message: meta.message,
             follows: false,
@@ -771,6 +857,7 @@ impl<H: RepoHost + Send + Sync, A: AssetStore> ContentStore for GitContent<H, A>
         id: &ArtifactId,
         commit: &str,
         base: u32,
+        published: &BTreeMap<String, clax_core::model::FileMeta>,
     ) -> Result<Vec<PushedFile>> {
         let repo = self
             .open(id)
@@ -779,6 +866,8 @@ impl<H: RepoHost + Send + Sync, A: AssetStore> ContentStore for GitContent<H, A>
         let commit = parse_commit(commit)?;
         let tree = Self::tree_of(&repo, &commit).await?;
         let refs = repo.refs().await.map_err(core_error)?;
+        // The base commit's regular files; those of them the version left
+        // out are not the version's.
         let base_entries: BTreeMap<String, ObjectId> = match versions_of(&refs).get(&base) {
             Some(c) => {
                 let base_tree = Self::tree_of(&repo, c).await?;
@@ -802,15 +891,27 @@ impl<H: RepoHost + Send + Sync, A: AssetStore> ContentStore for GitContent<H, A>
             ));
         };
         let mut out = Vec::new();
-        // Each blob is read once (`None`: it did not fit), and the files
-        // answered carry at most PUSHED_BYTES in all.
+        // Each blob is read once (`None`: it did not fit), and the changed
+        // files answered carry at most PUSHED_BYTES in all.
         let mut read: BTreeMap<ObjectId, Option<Vec<u8>>> = BTreeMap::new();
         let mut total = 0usize;
         for e in entries {
+            let unchanged = base_entries.get(&e.path) == Some(&e.id);
             let content = if !is_regular(e.mode) {
                 PushedContent::NotAFile
-            } else if base_entries.get(&e.path) == Some(&e.id) {
+            } else if unchanged && published.contains_key(&e.path) {
                 PushedContent::Same
+            } else if unchanged && e.path == clax_core::icon::ICON_PATH {
+                // Left out for a reason only the icon rules name: read
+                // again for them, outside the changed files' bytes.
+                let blob = repo
+                    .read_object(&e.id)
+                    .await
+                    .map_err(core_error)?
+                    .ok_or_else(|| unavailable(format!("Blob {} is missing", e.id)))?;
+                PushedContent::Bytes(blob.data)
+            } else if unchanged {
+                PushedContent::LeftOut
             } else {
                 if let std::collections::btree_map::Entry::Vacant(slot) = read.entry(e.id) {
                     let blob = if total >= PUSHED_BYTES {

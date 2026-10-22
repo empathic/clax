@@ -452,7 +452,7 @@ fn now_plus(now: chrono::DateTime<chrono::Utc>, ms: u64) -> String {
 
 /// The live artifact's declared capabilities; `NotFound` when it is missing
 /// or deleted.
-fn caps_in(c: &Connection, id: &ArtifactId) -> Result<Value> {
+pub(super) fn caps_in(c: &Connection, id: &ArtifactId) -> Result<Value> {
     let caps: Option<String> = c
         .query_row(
             "SELECT capabilities_json FROM artifacts WHERE id = ?1 AND deleted_at IS NULL AND current_version > 0",
@@ -507,6 +507,56 @@ fn doc_in(c: &Connection, id: &ArtifactId, path: &str) -> Result<Option<Doc>> {
     .optional()?
     .map(|p| to_doc(id, p))
     .transpose()
+}
+
+/// Checks a batch's paths, duplicates and update bodies, and serialises its
+/// set bodies, ahead of its transaction.
+///
+/// # Errors
+/// As [`Store::doc_batch`].
+fn prepare_batch(writes: Vec<BatchWrite>) -> Result<Vec<(String, Option<u64>, Prepared)>> {
+    if writes.is_empty() || writes.len() > MAX_BATCH {
+        return Err(invalid_argument(format!(
+            "a batch holds 1 to {MAX_BATCH} writes"
+        )));
+    }
+    let in_batch = |op: usize, path: &str, error: CoreError| CoreError::InBatch {
+        op,
+        path: path.to_string(),
+        error: Box::new(error),
+    };
+    for (i, w) in writes.iter().enumerate() {
+        doc_path(&w.path).map_err(|e| in_batch(i, &w.path, e))?;
+    }
+    let mut seen = HashSet::new();
+    for (i, w) in writes.iter().enumerate() {
+        if !seen.insert(w.path.as_str()) {
+            return Err(in_batch(
+                i,
+                &w.path,
+                invalid_argument(format!(
+                    "a batch addresses each document at most once; '{}' appears twice",
+                    w.path
+                )),
+            ));
+        }
+        if let BatchOp::Update(p) = &w.op {
+            check_body(p, true).map_err(|e| in_batch(i, &w.path, e))?;
+        }
+    }
+    // Set bodies are checked and serialised before the transaction; a bad
+    // one still fails at its own place in the batch.
+    Ok(writes
+        .into_iter()
+        .map(|w| {
+            let op = match w.op {
+                BatchOp::Set(data) => Prepared::Set(Body::new(data)),
+                BatchOp::Update(patch) => Prepared::Update(patch),
+                BatchOp::Delete => Prepared::Delete,
+            };
+            (w.path, w.if_version, op)
+        })
+        .collect())
 }
 
 fn check_pin(path: &str, current: Option<u64>, pin: Pin) -> Result<()> {
@@ -871,6 +921,34 @@ impl Store {
         })
     }
 
+    /// Each collection holding documents, with its document count, sorted by
+    /// path. Collections under a private per-viewer prefix (`data/users/<id>`
+    /// and each `{self}` rule's prefix not opened by a rule at it) are left
+    /// out, so no viewer's public ID or private count shows.
+    ///
+    /// # Errors
+    /// `NotFound` when the artifact is missing or deleted.
+    pub fn doc_collections(&self, id: &ArtifactId) -> Result<Vec<(String, u64)>> {
+        self.with_read(|c| {
+            let rules = rules_in(c, id)?;
+            let mut stmt = c.prepare(
+                "SELECT collection, COUNT(*) FROM docs WHERE artifact_id = ?1
+                 GROUP BY collection ORDER BY collection",
+            )?;
+            let rows = stmt.query_map(params![id.as_str()], |r| {
+                Ok((r.get::<_, String>(0)?, r.get::<_, i64>(1)?))
+            })?;
+            let mut out = Vec::new();
+            for row in rows {
+                let (collection, n) = row?;
+                if rules.private_to(&collection).is_none() {
+                    out.push((collection, n as u64));
+                }
+            }
+            Ok(out)
+        })
+    }
+
     /// The document at `path`, or `None` when it is absent or `caller` may not read it.
     pub fn doc_get(&self, id: &ArtifactId, path: &str, caller: &Caller) -> Result<Option<Doc>> {
         let dp = doc_path(path)?;
@@ -1219,102 +1297,96 @@ impl Store {
         caller: &Caller,
         vis: Option<&Visibility>,
     ) -> Result<Vec<Written>> {
-        if writes.is_empty() || writes.len() > MAX_BATCH {
-            return Err(invalid_argument(format!(
-                "a batch holds 1 to {MAX_BATCH} writes"
-            )));
-        }
+        let writes = prepare_batch(writes)?;
+        self.with_tx(|tx| self.apply_batch_in(tx, ctx, id, writes, lww, caller, vis))
+    }
+
+    /// [`Store::doc_batch`] inside the caller's transaction: all land or
+    /// the caller rolls back.
+    ///
+    /// # Errors
+    /// As [`Store::doc_batch`].
+    pub(crate) fn doc_batch_in(
+        &self,
+        tx: &rusqlite::Transaction<'_>,
+        ctx: &AuditCtx,
+        id: &ArtifactId,
+        writes: Vec<BatchWrite>,
+        lww: bool,
+        caller: &Caller,
+    ) -> Result<Vec<Written>> {
+        let writes = prepare_batch(writes)?;
+        self.apply_batch_in(tx, ctx, id, writes, lww, caller, None)
+    }
+
+    /// Applies prepared `writes` in order in `tx`.
+    #[allow(clippy::too_many_arguments)]
+    fn apply_batch_in(
+        &self,
+        tx: &rusqlite::Transaction<'_>,
+        ctx: &AuditCtx,
+        id: &ArtifactId,
+        writes: Vec<(String, Option<u64>, Prepared)>,
+        lww: bool,
+        caller: &Caller,
+        vis: Option<&Visibility>,
+    ) -> Result<Vec<Written>> {
         let in_batch = |op: usize, path: &str, error: CoreError| CoreError::InBatch {
             op,
             path: path.to_string(),
             error: Box::new(error),
         };
-        for (i, w) in writes.iter().enumerate() {
-            doc_path(&w.path).map_err(|e| in_batch(i, &w.path, e))?;
-        }
-        let mut seen = HashSet::new();
-        for (i, w) in writes.iter().enumerate() {
-            if !seen.insert(w.path.as_str()) {
-                return Err(in_batch(
-                    i,
-                    &w.path,
-                    invalid_argument(format!(
-                        "a batch addresses each document at most once; '{}' appears twice",
-                        w.path
-                    )),
-                ));
-            }
-            if let BatchOp::Update(p) = &w.op {
-                check_body(p, true).map_err(|e| in_batch(i, &w.path, e))?;
-            }
-        }
-        // Set bodies are checked and serialised before the transaction; a bad
-        // one still fails at its own place in the batch.
-        let writes: Vec<(String, Option<u64>, Prepared)> = writes
+        let rules = rules_in(tx, id)?;
+        writes
             .into_iter()
-            .map(|w| {
-                let op = match w.op {
-                    BatchOp::Set(data) => Prepared::Set(Body::new(data)),
-                    BatchOp::Update(patch) => Prepared::Update(patch),
-                    BatchOp::Delete => Prepared::Delete,
+            .enumerate()
+            .map(|(i, (path, if_version, op))| {
+                let pin = Pin { if_version, lww };
+                let path = path.as_str();
+                let rc = |op| Recorder {
+                    st: self,
+                    tx,
+                    ctx,
+                    op,
                 };
-                (w.path, w.if_version, op)
+                match op {
+                    Prepared::Set(body) => write_in(
+                        &rc("set"),
+                        id,
+                        &rules,
+                        caller,
+                        path,
+                        pin,
+                        &self.now(),
+                        |_| body.map(Some),
+                    ),
+                    Prepared::Update(patch) => refuse_withheld(tx, id, &rules, caller, path, vis)
+                        .and_then(|()| {
+                            write_in(
+                                &rc("update"),
+                                id,
+                                &rules,
+                                caller,
+                                path,
+                                pin,
+                                &self.now(),
+                                |cur| Body::of(update_body(path, cur, patch)),
+                            )
+                        }),
+                    Prepared::Delete => write_in(
+                        &rc("delete"),
+                        id,
+                        &rules,
+                        caller,
+                        path,
+                        pin,
+                        &self.now(),
+                        |_| Ok(None),
+                    ),
+                }
+                .map_err(|e| in_batch(i, path, e))
             })
-            .collect();
-        self.with_tx(|tx| {
-            let rules = rules_in(tx, id)?;
-            writes
-                .into_iter()
-                .enumerate()
-                .map(|(i, (path, if_version, op))| {
-                    let pin = Pin { if_version, lww };
-                    let path = path.as_str();
-                    let rc = |op| Recorder {
-                        st: self,
-                        tx,
-                        ctx,
-                        op,
-                    };
-                    match op {
-                        Prepared::Set(body) => write_in(
-                            &rc("set"),
-                            id,
-                            &rules,
-                            caller,
-                            path,
-                            pin,
-                            &self.now(),
-                            |_| body.map(Some),
-                        ),
-                        Prepared::Update(patch) => {
-                            refuse_withheld(tx, id, &rules, caller, path, vis).and_then(|()| {
-                                write_in(
-                                    &rc("update"),
-                                    id,
-                                    &rules,
-                                    caller,
-                                    path,
-                                    pin,
-                                    &self.now(),
-                                    |cur| Body::of(update_body(path, cur, patch)),
-                                )
-                            })
-                        }
-                        Prepared::Delete => write_in(
-                            &rc("delete"),
-                            id,
-                            &rules,
-                            caller,
-                            path,
-                            pin,
-                            &self.now(),
-                            |_| Ok(None),
-                        ),
-                    }
-                    .map_err(|e| in_batch(i, path, e))
-                })
-                .collect()
-        })
+            .collect()
     }
 
     /// Grants `a.holder` the lease on `path` unless another holder's lease is

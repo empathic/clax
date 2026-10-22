@@ -222,7 +222,7 @@ fn body_class(kind: &str, field: &str) -> Class {
         (
             "version.publish" | "live.snapshot",
             "n" | "files" | "content_sha256" | "carried" | "addresses" | "by_page" | "origin"
-            | "path" | "source" | "files_unreadable",
+            | "path" | "source" | "files_unreadable" | "restored_from",
         ) => Safe,
         ("artifact.update", "fields") => Fields,
         ("artifact.delete", "title") => Text,
@@ -350,7 +350,9 @@ fn anchor_class(field: &str) -> Class {
 
 fn fields_class(field: &str) -> Class {
     match field {
-        "icon" | "pinned" | "link_access" | "link_listed" | "colour" => Class::Safe,
+        "icon" | "pinned" | "link_access" | "link_listed" | "db_read_grants" | "colour" => {
+            Class::Safe
+        }
         // An artifact's tags and a tag's name are names the owner wrote.
         "title" | "description" | "capabilities" | "tags" | "name" => Class::Text,
         // A share names a person by public ID and a GitHub login.

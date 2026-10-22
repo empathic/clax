@@ -617,6 +617,20 @@ fn people_and_their_agents_render_with_grant_and_person() {
     }
 }
 
+#[test]
+fn the_app_harness_is_the_clax_app_by_anthropic() {
+    let app = Actor::Agent(AgentActor {
+        session_id: Some("01JB9S00000000000000000009".into()),
+        harness: Some("app".into()),
+        harness_session_id: Some("install-1".into()),
+        ..AgentActor::default()
+    });
+    let def = actor_def(&app, "i", "c", &Redaction::NONE);
+    assert_eq!(def["name"], "Clax app");
+    assert_eq!(def["provider"], "anthropic");
+    assert_eq!(actor_string(&app, "0.3.1"), "agent:app/install-1");
+}
+
 /// A row of `kind` by `actor` with `ids` and the kind's `body` fields (the
 /// envelope added).
 fn row(seq: i64, kind: &str, actor: Value, ids: AuditIds, body: Value) -> AuditRow {
@@ -1769,7 +1783,36 @@ fn every_recorded_kind_is_classified_and_renders_conformant() {
         st.set_session_name(ctx, &sid, "named-one", crate::NameSource::Agent)
             .unwrap();
     }
+    // A restore (`version.publish` with `restored_from`) and a read grant
+    // made and revoked (`artifact.update` with `db_read_grants`).
+    {
+        use crate::test_util::artifact;
+        let dctx = &clax_core::audit::AuditCtx::DAEMON;
+        let a = artifact(&st, None);
+        let req: clax_core::publish::PublishRequest = serde_json::from_value(json!({
+            "if_version": 1,
+            "files": {"index.html": {"content": "<main>v2</main>", "encoding": "utf8"}}
+        }))
+        .unwrap();
+        st.publish_version(dctx, &a, clax_core::publish::validate(req).unwrap(), None)
+            .unwrap();
+        st.restore_version(dctx, &a, 1, 2, None).unwrap();
+        let b = artifact(&st, None);
+        st.grant_read(dctx, &a, &b).unwrap();
+        assert!(st.revoke_read(dctx, &a, &b).unwrap());
+    }
     let live = st.events_after(0, 100_000).unwrap();
+    let restored = live
+        .iter()
+        .any(|r| r.kind == "version.publish" && r.body.contains("\"restored_from\""));
+    let granted = live
+        .iter()
+        .filter(|r| r.kind == "artifact.update" && r.body.contains("\"db_read_grants\""))
+        .count();
+    assert!(
+        restored && granted == 2,
+        "the restore and the grant change are in the fixture"
+    );
     let home = st.home().clone();
     st.with_write(|c| {
         c.execute_batch("DELETE FROM audit_events; DELETE FROM install WHERE k = 'backfill';")?;
@@ -2710,7 +2753,10 @@ fn golden_questions_match_the_live_builders() {
             (_, Some(Reason::Timer | Reason::Created | Reason::Explicit | Reason::Lapsed)) => {
                 &["agent"]
             }
-            (_, Some(Reason::Unwaited | Reason::DaemonStart | Reason::DaemonStop)) => &["system"],
+            (
+                _,
+                Some(Reason::Unwaited | Reason::DaemonStart | Reason::DaemonStop | Reason::JobEnd),
+            ) => &["system"],
             (_, Some(Reason::SessionEnd)) => &["agent", "system"],
             (_, None) => &["system"],
         };

@@ -78,6 +78,30 @@ impl Exec {
             readers.set_limit(limit);
         }
     }
+
+    /// Releases what SQLite caches (`PRAGMA shrink_memory`) on every reader
+    /// not running a read and on the write connection, then runs one
+    /// `PASSIVE` checkpoint on the write connection, in its turn. Returns
+    /// the WAL's frames and how many the checkpoint copied (both -1 outside
+    /// WAL mode). The background checkpoint thread's own connection is left
+    /// as it is: it caches no more than the checkpoint needs.
+    pub(crate) fn trim(&self) -> Result<(i64, i64)> {
+        let checkpoint = |c: &mut Connection| -> Result<(i64, i64)> {
+            c.execute_batch("PRAGMA shrink_memory")?;
+            Ok(c.query_row("PRAGMA wal_checkpoint(PASSIVE)", [], |r| {
+                Ok((r.get(1)?, r.get(2)?))
+            })?)
+        };
+        match self {
+            Exec::Pool {
+                writer, readers, ..
+            } => {
+                readers.shrink_idle()?;
+                writer.run(checkpoint)
+            }
+            Exec::Single(s) => s.write(checkpoint),
+        }
+    }
 }
 
 // --- one connection --------------------------------------------------------
@@ -477,6 +501,19 @@ impl Readers {
                 .wait(idle)
                 .unwrap_or_else(PoisonError::into_inner);
         }
+    }
+
+    /// Runs `PRAGMA shrink_memory` on every reader not leased. They are
+    /// taken out of the pool meanwhile, so a read that wants one waits for
+    /// them to come back.
+    fn shrink_idle(&self) -> Result<()> {
+        let taken = std::mem::take(&mut lock(&self.idle).readers);
+        let out = taken
+            .iter()
+            .try_for_each(|r| r.conn.execute_batch("PRAGMA shrink_memory"));
+        lock(&self.idle).readers.extend(taken);
+        self.freed.notify_all();
+        Ok(out?)
     }
 
     fn open_one(&self) -> Result<Reader> {
@@ -1811,5 +1848,19 @@ mod tests {
         let again = Store::open(&home).unwrap();
         assert_eq!(viewers(&again), 1);
         drop(d);
+    }
+
+    #[test]
+    fn trim_memory_checkpoints_the_wal() {
+        let (_d, st) = store();
+        crate::test_util::artifact(&st, None);
+        // A reader has been opened, so the trim reaches one besides the
+        // write connection.
+        assert_eq!(viewers(&st), 0);
+        let r = st.trim_memory().unwrap();
+        assert!(r.wal_frames > 0, "{r:?}");
+        assert_eq!(r.checkpointed, r.wal_frames, "{r:?}");
+        st.with_tx(|tx| Ok(tx.execute(INSERT_VIEWER, [])?)).unwrap();
+        assert_eq!(viewers(&st), 1);
     }
 }

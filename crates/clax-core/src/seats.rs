@@ -87,6 +87,15 @@ impl Default for SeatLimits {
 }
 
 impl SeatLimits {
+    /// No seats: every pool unbounded and no seat ever idle, so nobody is a
+    /// spectator. The app's in-process core runs with these.
+    pub const OFF: SeatLimits = SeatLimits {
+        people: u32::MAX,
+        guests: u32::MAX,
+        agents: u32::MAX,
+        idle_ms: i64::MAX,
+    };
+
     /// The limits `get` (an environment lookup) sets through [`ENV_PEOPLE`],
     /// [`ENV_GUESTS`], [`ENV_AGENTS`] and [`ENV_IDLE_S`], each falling back
     /// to its default when unset or not a whole number (the idle time also
@@ -307,7 +316,11 @@ impl Seats {
             let gone: Vec<String> = book
                 .held
                 .iter()
-                .filter(|(_, h)| h.pool == Pool::People && now_ms - h.input_ms >= idle)
+                .filter(|(_, h)| {
+                    idle != SeatLimits::OFF.idle_ms
+                        && h.pool == Pool::People
+                        && now_ms.saturating_sub(h.input_ms) >= idle
+                })
                 .map(|(k, _)| k.clone())
                 .collect();
             for key in gone {
@@ -325,13 +338,15 @@ impl Seats {
         out
     }
 
-    /// When the next people seat goes idle, in ms; `None` with none held.
+    /// When the next people seat goes idle, in ms; `None` with none held,
+    /// or with seats that never go idle ([`SeatLimits::OFF`]).
     pub fn next_idle_at(&self) -> Option<i64> {
         self.books
             .values()
             .flat_map(|b| b.held.values())
             .filter(|h| h.pool == Pool::People)
-            .map(|h| h.input_ms + self.limits.idle_ms)
+            .filter(|_| self.limits.idle_ms != SeatLimits::OFF.idle_ms)
+            .map(|h| h.input_ms.saturating_add(self.limits.idle_ms))
             .min()
     }
 

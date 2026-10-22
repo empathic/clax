@@ -153,6 +153,110 @@ pub fn pid_alive(pid: u32) -> bool {
     }
 }
 
+/// What [`stop_old_daemon`] found of the daemon a home's `daemon.json`
+/// names.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum OldDaemon {
+    /// No `daemon.json`, or it names this process, no live process, or one
+    /// that is not `clax serve` (its PID taken by another program).
+    Absent,
+    /// It named a running `clax serve`, which ended after a SIGTERM.
+    Stopped(u32),
+    /// It names a running `clax serve` that could not be signalled, or
+    /// that had not ended when the wait was over.
+    Running(u32),
+}
+
+/// Stops the `clax serve` a home's `daemon.json` names, before another
+/// process opens the home's store in its place (the Clax app's core on a
+/// home an earlier app's daemon served): SIGTERM, then up to `wait` for it
+/// to end. The process must still be `clax serve` by its command line (a
+/// program file named `clax` or `libclax.so`, the first or, for a
+/// script, the second argument, and a `serve` argument), so a PID taken
+/// since by another program is never signalled. Nothing is removed; the
+/// caller retires the file.
+pub fn stop_old_daemon(home: &Home, wait: Duration) -> OldDaemon {
+    use nix::sys::signal::{Signal, kill};
+    let Some(pid) = read_daemon_info(home).map(|i| i.pid) else {
+        return OldDaemon::Absent;
+    };
+    if pid == std::process::id()
+        || !pid_alive(pid)
+        || !process_args(pid).is_some_and(|a| is_clax_serve(&a))
+    {
+        return OldDaemon::Absent;
+    }
+    match kill(nix::unistd::Pid::from_raw(pid as i32), Signal::SIGTERM) {
+        Ok(()) => {}
+        Err(nix::errno::Errno::ESRCH) => return OldDaemon::Stopped(pid),
+        Err(_) => return OldDaemon::Running(pid),
+    }
+    let deadline = std::time::Instant::now() + wait;
+    loop {
+        if !pid_alive(pid) {
+            return OldDaemon::Stopped(pid);
+        }
+        if std::time::Instant::now() >= deadline {
+            return OldDaemon::Running(pid);
+        }
+        std::thread::sleep(Duration::from_millis(20));
+    }
+}
+
+/// Whether command line `args` runs `clax serve`: the program, or a
+/// script's path after its interpreter, is a file named `clax` or
+/// `libclax.so` (the Android app's), and an argument is `serve`.
+fn is_clax_serve(args: &[String]) -> bool {
+    let named = args.iter().take(2).any(|a| {
+        std::path::Path::new(a)
+            .file_name()
+            .is_some_and(|n| n == "clax" || n == "libclax.so")
+    });
+    named && args.iter().skip(1).any(|a| a == "serve")
+}
+
+/// The command line of process `pid`, the program first, read from the
+/// kernel: `/proc/<pid>/cmdline` on Linux and Android, `sysinfo`
+/// (`KERN_PROCARGS2`) on macOS. A script's is its interpreter, then the
+/// script's path, then its arguments. `None` when it cannot be read (no
+/// such process, another user's, or another system, such as iOS, whose
+/// sandbox shows no other process).
+pub fn process_args(pid: u32) -> Option<Vec<String>> {
+    #[cfg(any(target_os = "linux", target_os = "android"))]
+    {
+        let raw = std::fs::read(format!("/proc/{pid}/cmdline")).ok()?;
+        let args: Vec<String> = raw
+            .split(|b| *b == 0)
+            .filter(|a| !a.is_empty())
+            .map(|a| String::from_utf8_lossy(a).into_owned())
+            .collect();
+        (!args.is_empty()).then_some(args)
+    }
+    #[cfg(target_os = "macos")]
+    {
+        use sysinfo::{Pid, ProcessRefreshKind, ProcessesToUpdate, System, UpdateKind};
+        let pid = Pid::from_u32(pid);
+        let mut sys = System::new();
+        sys.refresh_processes_specifics(
+            ProcessesToUpdate::Some(&[pid]),
+            true,
+            ProcessRefreshKind::nothing().with_cmd(UpdateKind::Always),
+        );
+        let args: Vec<String> = sys
+            .process(pid)?
+            .cmd()
+            .iter()
+            .map(|a| a.to_string_lossy().into_owned())
+            .collect();
+        (!args.is_empty()).then_some(args)
+    }
+    #[cfg(not(any(target_os = "linux", target_os = "android", target_os = "macos")))]
+    {
+        let _ = pid;
+        None
+    }
+}
+
 /// The host part of a URL that reaches a daemon bound to `bind`: an unspecified
 /// address (`0.0.0.0`, `::`) maps to the same-family loopback, a specific
 /// address is used as-is, and IPv6 is bracketed. Text that is not an IP address
@@ -176,30 +280,61 @@ pub fn browser_host(bind: &str) -> String {
     }
 }
 
-/// Exclusive advisory lock on `daemon.lock`, released when dropped
-/// (the open descriptor holds the lock).
-pub struct DaemonLock(#[allow(dead_code)] File);
+/// An exclusive advisory lock (`flock(2)`) on an open file, held while
+/// this value lives. It belongs to the file's open description: dropping
+/// the value, or the process ending in any way, releases it, and another
+/// open of the same path in this process or any other does not share it.
+///
+/// `flock` comes through `nix`, so the lock behaves the same on Linux,
+/// Android, macOS and iOS (std's `File::lock` family answers
+/// `Unsupported` on Android).
+#[derive(Debug)]
+pub struct FileLock(#[allow(dead_code)] nix::fcntl::Flock<File>);
 
-impl DaemonLock {
-    /// Blocks until the lock is held (`flock(LOCK_EX)`, through
-    /// [`File::lock`]). A wait interrupted by a signal (`EINTR`) is retried;
+impl FileLock {
+    /// Locks `f`, waiting while another open description holds it
+    /// (`LOCK_EX`). A wait interrupted by a signal (`EINTR`) is retried;
     /// any other failure is returned.
-    pub fn acquire(home: &Home) -> io::Result<DaemonLock> {
-        let f = File::create(home.daemon_lock())?;
-        retry_interrupted(|| f.lock())?;
-        Ok(DaemonLock(f))
+    pub fn exclusive(f: File) -> io::Result<FileLock> {
+        use nix::fcntl::{Flock, FlockArg};
+        let mut f = f;
+        loop {
+            match Flock::lock(f, FlockArg::LockExclusive) {
+                Ok(held) => return Ok(FileLock(held)),
+                Err((back, nix::errno::Errno::EINTR)) => f = back,
+                Err((_, e)) => return Err(e.into()),
+            }
+        }
     }
 
-    /// Takes the lock without waiting (`flock(LOCK_EX | LOCK_NB)`, through
-    /// [`File::try_lock`]): `Ok(None)` when another open descriptor holds it
-    /// (`EWOULDBLOCK`, which equals `EAGAIN` on Linux and macOS).
+    /// Locks `f` without waiting (`LOCK_EX | LOCK_NB`): `Ok(None)` when
+    /// another open description holds it (`EWOULDBLOCK`).
+    pub fn try_exclusive(f: File) -> io::Result<Option<FileLock>> {
+        use nix::fcntl::{Flock, FlockArg};
+        match Flock::lock(f, FlockArg::LockExclusiveNonblock) {
+            Ok(held) => Ok(Some(FileLock(held))),
+            Err((_, e)) if e == nix::errno::Errno::EWOULDBLOCK => Ok(None),
+            Err((_, e)) => Err(e.into()),
+        }
+    }
+}
+
+/// Exclusive advisory lock on `daemon.lock`, released when dropped
+/// (a [`FileLock`]).
+pub struct DaemonLock(#[allow(dead_code)] FileLock);
+
+impl DaemonLock {
+    /// Blocks until the lock is held ([`FileLock::exclusive`]).
+    pub fn acquire(home: &Home) -> io::Result<DaemonLock> {
+        let f = File::create(home.daemon_lock())?;
+        FileLock::exclusive(f).map(DaemonLock)
+    }
+
+    /// Takes the lock without waiting ([`FileLock::try_exclusive`]):
+    /// `Ok(None)` when another open description holds it.
     pub fn try_acquire(home: &Home) -> io::Result<Option<DaemonLock>> {
         let f = File::create(home.daemon_lock())?;
-        match f.try_lock() {
-            Ok(()) => Ok(Some(DaemonLock(f))),
-            Err(std::fs::TryLockError::WouldBlock) => Ok(None),
-            Err(std::fs::TryLockError::Error(e)) => Err(e),
-        }
+        Ok(FileLock::try_exclusive(f)?.map(DaemonLock))
     }
 }
 
@@ -249,6 +384,123 @@ pub fn first_unheld_port(start: u16) -> Option<u16> {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use std::process::{ChildStdin, Command, ExitStatus, Stdio};
+    use std::thread::JoinHandle;
+
+    /// A `clax serve` that says `ready`, then blocks on its standard input
+    /// until a signal ends it; with `trap '' TERM`, one that a SIGTERM
+    /// does not end, ready once the trap is set.
+    const SERVE: &str = "#!/bin/sh\necho ready\nread line\n";
+    const STUBBORN: &str = "#!/bin/sh\ntrap '' TERM\necho ready\nread line\n";
+
+    /// A daemon's process, run by the test: its PID, a thread that reaps it
+    /// (a child that ended is a zombie, alive to `kill(pid, 0)`, until it
+    /// is reaped) and answers its exit status, and its standard input, held
+    /// open so its `read` blocks until a signal ends it or a line arrives.
+    struct Daemon {
+        pid: u32,
+        reaped: JoinHandle<ExitStatus>,
+        stdin: ChildStdin,
+    }
+
+    /// Runs the script `text` installed as `name` with `args`, records its
+    /// PID in `home`'s `daemon.json`, and waits until it says `ready`.
+    fn daemon(home: &Home, name: &str, text: &str, args: &[&str]) -> Daemon {
+        let exe = clax_fake_exe::install(&home.root().join("bin").join(name), text);
+        let mut child = Command::new(&exe)
+            .args(args)
+            .stdin(Stdio::piped())
+            .stdout(Stdio::piped())
+            .spawn()
+            .unwrap();
+        let stdin = child.stdin.take().unwrap();
+        let pid = child.id();
+        write_daemon_info(
+            home,
+            &DaemonInfo {
+                port: 1,
+                pid,
+                token: "t".into(),
+                started_at: "2026-10-20T00:00:00Z".into(),
+                bind: "127.0.0.1".into(),
+                version: "0.5.0".into(),
+                exe: None,
+                commit: None,
+            },
+        )
+        .unwrap();
+        let mut ready = String::new();
+        std::io::BufRead::read_line(
+            &mut std::io::BufReader::new(child.stdout.take().unwrap()),
+            &mut ready,
+        )
+        .unwrap();
+        assert_eq!(ready, "ready\n");
+        Daemon {
+            pid,
+            reaped: std::thread::spawn(move || child.wait().unwrap()),
+            stdin,
+        }
+    }
+
+    fn home() -> (tempfile::TempDir, Home) {
+        let d = tempfile::tempdir().unwrap();
+        let home = Home::at(d.path().join("clax"));
+        std::fs::create_dir_all(home.root()).unwrap();
+        (d, home)
+    }
+
+    #[test]
+    fn an_old_clax_serve_is_stopped_by_its_daemon_json() {
+        let (_d, home) = home();
+        let d = daemon(&home, "clax", SERVE, &["serve", "--port", "1"]);
+        assert_eq!(
+            stop_old_daemon(&home, Duration::from_secs(600)),
+            OldDaemon::Stopped(d.pid)
+        );
+        let status = d.reaped.join().unwrap();
+        assert!(!status.success(), "ended by its signal: {status:?}");
+        drop(d.stdin);
+    }
+
+    #[test]
+    fn an_old_clax_serve_that_will_not_go_is_running() {
+        let (_d, home) = home();
+        let d = daemon(&home, "clax", STUBBORN, &["serve"]);
+        assert_eq!(
+            stop_old_daemon(&home, Duration::from_millis(1)),
+            OldDaemon::Running(d.pid)
+        );
+        assert!(pid_alive(d.pid));
+        nix::sys::signal::kill(
+            nix::unistd::Pid::from_raw(d.pid as i32),
+            nix::sys::signal::Signal::SIGKILL,
+        )
+        .unwrap();
+        d.reaped.join().unwrap();
+    }
+
+    /// A PID another program holds, or a `clax` that is not `serve`, is
+    /// never signalled.
+    #[test]
+    fn a_daemon_json_naming_another_program_signals_nothing() {
+        for (name, args) in [("other", &["serve"][..]), ("clax", &["mcp"][..])] {
+            let (_d, home) = home();
+            let mut d = daemon(&home, name, SERVE, args);
+            assert_eq!(
+                stop_old_daemon(&home, Duration::from_secs(600)),
+                OldDaemon::Absent,
+                "{name} {args:?}"
+            );
+            // Still running: it reads the line, then exits 0.
+            use std::io::Write;
+            d.stdin.write_all(b"done\n").unwrap();
+            drop(d.stdin);
+            assert!(d.reaped.join().unwrap().success(), "{name} {args:?}");
+        }
+        let (_d, home) = home();
+        assert_eq!(stop_old_daemon(&home, Duration::ZERO), OldDaemon::Absent);
+    }
 
     #[test]
     fn probe_host_maps_unspecified_to_same_family_loopback() {

@@ -753,6 +753,7 @@ impl Held {
 
 fn waiting_on(harness: &str, has_hsid: bool, armed: bool, codex_push: bool) -> Tier {
     match (harness, armed) {
+        ("app", _) => Tier::Wait,
         ("codex", true) if has_hsid && codex_push => Tier::Queue,
         ("pi", true) => Tier::Inject,
         ("claude" | "codex" | "grok", true) => Tier::StopHook,
@@ -1597,16 +1598,91 @@ impl Store {
         vis: &Visibility,
         readable: Option<&(dyn Fn(&Artifact) -> bool + Sync)>,
     ) -> Result<Touched> {
+        let mut touched = Touched::default();
+        self.with_tx(|tx| {
+            self.acknowledge_in(
+                tx,
+                ctx,
+                column,
+                session_id,
+                ids,
+                vis,
+                readable,
+                &mut touched,
+            )
+        })?;
+        Ok(touched)
+    }
+
+    /// [`Store::acknowledge_comments`] inside the caller's transaction,
+    /// adding what it changed to `touched`.
+    #[allow(clippy::too_many_arguments)]
+    pub(crate) fn acknowledge_comments_in(
+        &self,
+        tx: &Transaction<'_>,
+        ctx: &AuditCtx,
+        session_id: &str,
+        comment_ids: &[String],
+        vis: &Visibility,
+        touched: &mut Touched,
+    ) -> Result<()> {
+        self.acknowledge_in(
+            tx,
+            ctx,
+            "comment_id",
+            session_id,
+            comment_ids,
+            vis,
+            None,
+            touched,
+        )
+    }
+
+    /// [`Store::acknowledge`] inside the caller's transaction, adding what
+    /// it changed to `touched`.
+    pub(crate) fn acknowledge_threads_in(
+        &self,
+        tx: &Transaction<'_>,
+        ctx: &AuditCtx,
+        session_id: &str,
+        thread_ids: &[String],
+        vis: &Visibility,
+        touched: &mut Touched,
+    ) -> Result<()> {
+        self.acknowledge_in(
+            tx,
+            ctx,
+            "thread_id",
+            session_id,
+            thread_ids,
+            vis,
+            None,
+            touched,
+        )
+    }
+
+    /// The body of [`Store::acknowledge_where`], in the caller's transaction.
+    #[allow(clippy::too_many_arguments)]
+    fn acknowledge_in(
+        &self,
+        tx: &Transaction<'_>,
+        ctx: &AuditCtx,
+        column: &str,
+        session_id: &str,
+        ids: &[String],
+        vis: &Visibility,
+        readable: Option<&(dyn Fn(&Artifact) -> bool + Sync)>,
+        touched: &mut Touched,
+    ) -> Result<()> {
         debug_assert!(matches!(column, "thread_id" | "comment_id"));
         let now = self.now();
-        let mut touched = Touched::default();
         let rows = format!(
             "SELECT f.id, f.thread_id, t.artifact_id, f.comment_id, f.delivered_at IS NULL
              FROM feedback f JOIN threads t ON t.id = f.thread_id
              WHERE f.{column} = ?1 AND f.target_session_id = ?2 AND f.acknowledged_at IS NULL
              ORDER BY f.created_at, f.id"
         );
-        self.with_tx(|tx| {
+        {
             // A view older than the generation is rebuilt here, so a change
             // committed since it was built (a revocation) is judged too.
             let fresh;
@@ -1674,15 +1750,14 @@ impl Store {
                             "first_delivery",
                             std::slice::from_ref(&cid),
                             &now,
-                            &mut touched,
+                            touched,
                         )?;
                     }
                     touched.threads.insert((aid, tid));
                 }
             }
             Ok(())
-        })?;
-        Ok(touched)
+        }
     }
 
     /// Gives every untargeted, undelivered row on artifact `id` to `session_id`
@@ -1872,7 +1947,8 @@ impl Store {
     /// on (`queue` for an armed Codex session with a known session ID when
     /// `codex_push` and `codex queue` has not failed to take the row,
     /// `inject` for an armed Pi session, `stop_hook` for other armed
-    /// sessions, else `piggyback`); else `agent_ended`.
+    /// sessions, `wait` for an app session armed or not, else
+    /// `piggyback`); else `agent_ended`.
     pub fn feedback_state(
         &self,
         thread_id: &str,
@@ -3400,6 +3476,26 @@ mod tests {
         assert_eq!(
             st.feedback_state(&tid, false).unwrap().unwrap().tier,
             Some(Tier::StopHook)
+        );
+    }
+
+    #[test]
+    fn an_app_session_waits_on_its_feedback_poll_armed_or_not() {
+        let (_d, st) = store();
+        let app = session(&st, "app", "install-1");
+        let aid = artifact(&st, Some(&app));
+        let tid = thread(&st, &aid, "hi");
+        st.send_to_agent(DAEMON, &tid).unwrap();
+        assert_eq!(
+            st.feedback_state(&tid, true).unwrap().unwrap().tier,
+            Some(Tier::Wait),
+            "unarmed"
+        );
+        st.ensure_watch(DAEMON, &app, &aid).unwrap();
+        assert_eq!(
+            st.feedback_state(&tid, true).unwrap().unwrap().tier,
+            Some(Tier::Wait),
+            "armed"
         );
     }
 

@@ -974,6 +974,8 @@ mod tests {
                         area: None,
                         file: clax_core::anchor::WHOLE_FILE.into(),
                         route: None,
+                        label: None,
+                        name: None,
                     },
                     author_name: "Sam".into(),
                     author_public_id: Some(w.sam.clone()),

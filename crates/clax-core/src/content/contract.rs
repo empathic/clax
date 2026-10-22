@@ -15,6 +15,7 @@ pub async fn run(c: &dyn ContentStore) {
     a_present_version_is_never_replaced(c).await;
     a_failed_write_leaves_nothing(c).await;
     an_unrecorded_version_can_be_removed_and_written_again(c).await;
+    a_version_keeps_the_step_mark_it_was_written_with(c).await;
     versions_are_written_in_order_and_only_the_newest_is_removed(c).await;
     a_copy_holds_the_source_files(c).await;
     a_fork_makes_version_one_of_a_new_artifact(c).await;
@@ -189,6 +190,48 @@ pub async fn an_unrecorded_version_can_be_removed_and_written_again(c: &dyn Cont
     c.write_version(&id, 2, &w).await.unwrap();
     assert_eq!(read(c, &id, 2, "index.html").await.unwrap(), b"<p>1");
     assert_eq!(read(c, &id, 2, "f.js").await, None);
+}
+
+pub async fn a_version_keeps_the_step_mark_it_was_written_with(c: &dyn ContentStore) {
+    let id = ArtifactId::generate();
+    let marked = |n: u32, step: Option<&str>| VersionWrite {
+        carry: Vec::new(),
+        put: vec![file("index.html", b"<p>")],
+        meta: VersionMeta {
+            step: step.map(str::to_string),
+            note: Some(format!("version {n}")),
+            ..Default::default()
+        },
+    };
+    assert_eq!(c.unrecorded_step(&id, 1).await.unwrap(), None, "no version");
+    c.write_version(&id, 1, &marked(1, None)).await.unwrap();
+    assert_eq!(c.unrecorded_step(&id, 1).await.unwrap(), None, "no mark");
+    c.write_version(&id, 2, &marked(2, Some(r#"["j1","publish:1"]"#)))
+        .await
+        .unwrap();
+    assert_eq!(
+        c.unrecorded_step(&id, 2).await.unwrap().as_deref(),
+        Some(r#"["j1","publish:1"]"#)
+    );
+    assert_eq!(c.unrecorded_step(&id, 1).await.unwrap(), None);
+    // The mark goes with the version, and a write without one has none.
+    c.remove_version(&id, 2).await.unwrap();
+    assert_eq!(c.unrecorded_step(&id, 2).await.unwrap(), None);
+    c.write_version(&id, 2, &marked(2, None)).await.unwrap();
+    assert_eq!(c.unrecorded_step(&id, 2).await.unwrap(), None);
+    c.remove_version(&id, 2).await.unwrap();
+    c.write_version(&id, 2, &marked(2, Some("other")))
+        .await
+        .unwrap();
+    assert_eq!(
+        c.unrecorded_step(&id, 2).await.unwrap().as_deref(),
+        Some("other")
+    );
+    // A version built on it makes it no step's to replace.
+    c.write_version(&id, 3, &marked(3, None)).await.unwrap();
+    assert_eq!(c.unrecorded_step(&id, 2).await.unwrap(), None, "built on");
+    c.delete_artifact(&id).await.unwrap();
+    assert_eq!(c.unrecorded_step(&id, 2).await.unwrap(), None);
 }
 
 pub async fn versions_are_written_in_order_and_only_the_newest_is_removed(c: &dyn ContentStore) {
