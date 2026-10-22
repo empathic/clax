@@ -195,10 +195,6 @@ pub struct AppState {
     pub vis_gen: VisGen,
     /// Hosted mode ([`crate::hosted`]); `None` for the local daemon.
     pub hosted: Option<Arc<crate::hosted::Hosted>>,
-    /// The host-to-artifact lookup ([`crate::host::site_layer`]): hosted
-    /// mode's site domain when it has one ([`crate::hosted::Hosted::sites`]),
-    /// else `<id>.localhost`.
-    pub sites: crate::host::SiteHosts,
     /// The host's git remotes ([`crate::git_remotes`]), once it installs
     /// them; empty on the native daemon.
     pub git_remotes: Arc<crate::git_remotes::Slot>,
@@ -221,7 +217,21 @@ pub struct AppState {
     pub bot: Arc<crate::bot::Bot>,
 }
 
+/// [`AppState::sites`] without a site domain.
+static LOCAL_SITES: std::sync::LazyLock<crate::host::SiteHosts> =
+    std::sync::LazyLock::new(crate::host::SiteHosts::local);
+
 impl AppState {
+    /// The host-to-artifact lookup ([`crate::host::site_layer`]): hosted
+    /// mode's site domain when it has one ([`crate::hosted::Hosted::sites`],
+    /// its only source), else `<id>.localhost`.
+    pub fn sites(&self) -> &crate::host::SiteHosts {
+        self.hosted
+            .as_deref()
+            .and_then(|h| h.sites.as_ref())
+            .unwrap_or(&LOCAL_SITES)
+    }
+
     pub fn feedback_ctx(&self) -> FeedbackCtx {
         FeedbackCtx {
             events: self.events.clone(),
@@ -378,11 +388,6 @@ impl AppState {
             grant_auth,
             agent_gate: Arc::new(crate::agent::Gate::new(p.agent_timer)),
             vis_gen,
-            sites: p
-                .hosted
-                .as_ref()
-                .and_then(|h| h.sites.clone())
-                .unwrap_or_else(crate::host::SiteHosts::local),
             hosted: {
                 if let Some(h) = &p.hosted {
                     p.store.set_member_caps(Some(h.member_caps));

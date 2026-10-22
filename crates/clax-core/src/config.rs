@@ -1182,18 +1182,33 @@ struct HostedTable {
 }
 
 /// `domain` as a site domain ([`HostedConfig::site_domain`]): lowercased,
-/// or `None` unless it is a bare host name, dot-separated labels of ASCII
-/// letters, digits and `-`, none empty (so no scheme, port, path or leading
-/// dot).
+/// or `None` unless it is a bare host name: dot-separated labels of 1 to 63
+/// ASCII letters, digits and `-`, none starting or ending with `-` (so no
+/// scheme, port, path or leading dot), whose last label is not all digits
+/// (so no IP literal).
 pub fn site_domain(domain: &str) -> Option<String> {
-    let ok = !domain.is_empty()
-        && domain.split('.').all(|label| {
-            !label.is_empty()
-                && label
-                    .bytes()
-                    .all(|b| b.is_ascii_alphanumeric() || b == b'-')
-        });
+    let label_ok = |label: &str| {
+        (1..=63).contains(&label.len())
+            && !label.starts_with('-')
+            && !label.ends_with('-')
+            && label
+                .bytes()
+                .all(|b| b.is_ascii_alphanumeric() || b == b'-')
+    };
+    let last = domain.rsplit('.').next().unwrap_or("");
+    let ok = domain.split('.').all(label_ok) && !last.bytes().all(|b| b.is_ascii_digit());
     ok.then(|| domain.to_ascii_lowercase())
+}
+
+/// Whether domain names `a` and `b` (lowercase) are the same name or one is
+/// under the other (`example.com` and `clax.example.com`).
+fn nested_names(a: &str, b: &str) -> bool {
+    let under = |child: &str, parent: &str| {
+        child
+            .strip_suffix(parent)
+            .is_some_and(|rest| rest.ends_with('.'))
+    };
+    a == b || under(a, b) || under(b, a)
 }
 
 /// `origin` as hosted mode takes it ([`HostedConfig::public_origin`]): its
@@ -1442,11 +1457,25 @@ impl HomeConfig {
         .map_err(bad)?;
         let site_domain = match t.site_domain.as_deref() {
             None => None,
-            Some(d) => Some(site_domain(d).ok_or_else(|| {
-                bad(format!(
-                    "site_domain must be a bare domain name such as clax.run, not \"{d}\""
-                ))
-            })?),
+            Some(d) => {
+                let domain = site_domain(d).ok_or_else(|| {
+                    bad(format!(
+                        "site_domain must be a bare domain name such as clax.run, not \"{d}\""
+                    ))
+                })?;
+                // Sites share nothing with the public origin: not its host,
+                // nor a name above or below it.
+                let public_host = url::Url::parse(&public_origin)
+                    .ok()
+                    .and_then(|u| u.host_str().map(str::to_ascii_lowercase))
+                    .unwrap_or_default();
+                if nested_names(&domain, &public_host) {
+                    return Err(bad(format!(
+                        "site_domain \"{domain}\" must not be public_origin's host {public_host}, a domain above it or one under it"
+                    )));
+                }
+                Some(domain)
+            }
         };
         Ok(Some(HostedConfig {
             public_origin,
@@ -2173,11 +2202,51 @@ mod tests {
             ".clax.run",
             "clax.run/",
             "clax..run",
+            &format!("{}.run", "a".repeat(64)),
+            "-clax.run",
+            "clax-.run",
+            "clax.run-",
+            "127.0.0.1",
+            "10.0.0.1",
         ] {
             let e = site(&format!("site_domain = \"{bad}\"\n"))
                 .unwrap_err()
                 .to_string();
             assert!(e.contains("site_domain"), "{bad}: {e}");
+        }
+        let longest = format!("{}.run", "a".repeat(63));
+        assert_eq!(
+            site(&format!("site_domain = \"{longest}\"\n"))
+                .unwrap()
+                .unwrap()
+                .site_domain,
+            Some(longest)
+        );
+        assert!(site("site_domain = \"my-clax.run\"\n").is_ok());
+    }
+
+    #[test]
+    fn hosted_site_domain_shares_nothing_with_the_public_host() {
+        let site = |domain: &str| {
+            with(&format!(
+                "[hosted]\npublic_origin = \"https://clax.example.com:8443\"\nsite_domain = \"{domain}\"\n"
+            ))
+            .hosted()
+        };
+        for bad in [
+            "clax.example.com",
+            "CLAX.example.com",
+            "example.com",
+            "x.clax.example.com",
+        ] {
+            let e = site(bad).unwrap_err().to_string();
+            assert!(
+                e.contains("site_domain") && e.contains("public_origin"),
+                "{bad}: {e}"
+            );
+        }
+        for good in ["clax.run", "ample.com", "example.co"] {
+            assert!(site(good).is_ok(), "{good}");
         }
     }
 

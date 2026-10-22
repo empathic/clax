@@ -113,6 +113,20 @@ pub fn artifact_host(host: &str) -> Option<ArtifactId> {
     SiteHosts::local().target(host).map(|t| t.artifact)
 }
 
+/// The site request `host` (a `Host` header) makes under `sites`, or `None`
+/// when it is not a site host: its origin is `https` when `secure` (the
+/// public origin is), else `http`, with the `Host` header's port unless it
+/// is the scheme's default.
+fn site_request(sites: &SiteHosts, secure: bool, host: &str) -> Option<SiteRequest> {
+    let target = sites.target(host)?;
+    let port = split_port(host).and_then(|(_, p)| p);
+    let scheme = if secure { "https" } else { "http" };
+    Some(SiteRequest {
+        origin: sites.origin(&target.artifact, scheme, port),
+        artifact: target.artifact,
+    })
+}
+
 /// Before every route: on a site host ([`AppState::sites`]) inserts
 /// [`SiteRequest`], its origin on the public origin's scheme (`http` on a
 /// local daemon). Until the site routes are mounted it also routes the host
@@ -126,18 +140,9 @@ pub async fn site_layer(State(s): State<AppState>, mut req: Request<Body>, next:
         .get(axum::http::header::HOST)
         .and_then(|h| h.to_str().ok())
         .unwrap_or("");
-    let Some(target) = s.sites.target(host) else {
+    let secure = s.hosted.as_ref().is_some_and(|h| h.secure);
+    let Some(site) = site_request(s.sites(), secure, host) else {
         return next.run(req).await;
-    };
-    let port = split_port(host).and_then(|(_, p)| p);
-    let scheme = if s.hosted.as_ref().is_some_and(|h| h.secure) {
-        "https"
-    } else {
-        "http"
-    };
-    let site = SiteRequest {
-        origin: s.sites.origin(&target.artifact, scheme, port),
-        artifact: target.artifact,
     };
     let path = req.uri().path().to_string();
     let query = req
@@ -163,7 +168,52 @@ pub async fn site_layer(State(s): State<AppState>, mut req: Request<Body>, next:
 
 #[cfg(test)]
 mod tests {
-    use super::{SiteHosts, artifact_host};
+    use super::{SiteHosts, artifact_host, site_request};
+
+    #[test]
+    fn a_site_request_takes_its_scheme_from_hosted_mode_and_its_port_from_the_host() {
+        let sites = SiteHosts::new("clax.run").unwrap();
+        let cases = [
+            (
+                true,
+                "abcdefghjkmn.clax.run",
+                "https://abcdefghjkmn.clax.run",
+            ),
+            (
+                true,
+                "abcdefghjkmn.clax.run:443",
+                "https://abcdefghjkmn.clax.run",
+            ),
+            (
+                true,
+                "abcdefghjkmn.clax.run:8443",
+                "https://abcdefghjkmn.clax.run:8443",
+            ),
+            (
+                false,
+                "abcdefghjkmn.clax.run:80",
+                "http://abcdefghjkmn.clax.run",
+            ),
+            (
+                false,
+                "abcdefghjkmn.clax.run:7490",
+                "http://abcdefghjkmn.clax.run:7490",
+            ),
+        ];
+        for (secure, host, origin) in cases {
+            let site = site_request(&sites, secure, host).unwrap_or_else(|| panic!("{host}"));
+            assert_eq!(site.artifact.as_str(), "abcdefghjkmn", "{host}");
+            assert_eq!(site.origin, origin, "{host}");
+        }
+        assert_eq!(
+            site_request(&SiteHosts::local(), false, "abcdefghjkmn.localhost:7480")
+                .unwrap()
+                .origin,
+            "http://abcdefghjkmn.localhost:7480"
+        );
+        assert!(site_request(&sites, true, "clax.run").is_none());
+        assert!(site_request(&sites, true, "abcdefghjkmn.localhost").is_none());
+    }
 
     #[test]
     fn target_accepts_an_id_under_the_domain_with_or_without_a_port() {

@@ -1,8 +1,10 @@
 //! Every `/api` route answers only to a `Host` that names this machine
 //! literally, or to the address the daemon is bound to (DNS rebinding).
+use clax_core::working::ManualClock;
 use clax_testkit::TestServer;
 use serde_json::Value;
 use std::net::{IpAddr, Ipv4Addr, UdpSocket};
+use std::sync::Arc;
 
 /// A non-loopback IPv4 address of this machine (see `api_auth.rs`).
 fn non_loopback_ipv4() -> Option<IpAddr> {
@@ -160,31 +162,53 @@ async fn a_daemon_bound_to_a_lan_address_admits_exactly_that_host() {
 
 #[tokio::test]
 async fn a_configured_site_domain_names_the_artifact_hosts() {
-    let ts = TestServer::spawn_with(|s| {
-        s.sites = clax_http::host::SiteHosts::new("clax.test").unwrap();
+    // `[hosted] site_domain` as a home's config sets it, through
+    // `Hosted::from_config` into the daemon's state.
+    let home = tempfile::tempdir().unwrap();
+    let config_dir = home.path().to_path_buf();
+    let clock = Arc::new(ManualClock::at("2026-10-22T10:00:00Z"));
+    let ts = TestServer::spawn_hosted_with(clock, None, move |s| {
+        std::fs::write(
+            config_dir.join("config.toml"),
+            format!(
+                "[hosted]\npublic_origin = \"http://localhost:{}\"\nsite_domain = \"clax.test\"\n",
+                s.port
+            ),
+        )
+        .unwrap();
+        let c = clax_core::config::HomeConfig::load(&config_dir)
+            .unwrap()
+            .hosted()
+            .unwrap()
+            .unwrap();
+        s.hosted = clax_http::hosted::Hosted::from_config(&c).map(Arc::new);
     })
     .await;
-    let a = ts.publish("Doc", &[("index.html", "<h2>x</h2>")]).await;
-    let aid = a["artifact"]["id"].as_str().unwrap();
     let port = ts.addr.port();
-    let get = |host: String| {
-        ts.client
-            .get(format!("{}/v/1/", ts.base))
-            .header("host", host)
-            .send()
-    };
-    let res = get(format!("{aid}.clax.test:{port}")).await.unwrap();
-    assert_eq!(res.status(), 200, "a site host under the site domain");
-    assert!(res.text().await.unwrap().contains("<h2>x</h2>"));
+    let site = format!("abcdefghjkmn.clax.test:{port}");
+    // A site host reaches only what a site host serves: the hosted gate
+    // admits it (it is not the public host), and `/api` is not among them.
+    let (status, _) = status_with_host(&ts, &ts.base, "/healthz", &site).await;
+    assert_eq!(status, 200, "{site} /healthz");
+    let (status, body) = status_with_host(&ts, &ts.base, "/api/artifacts", &site).await;
+    assert_eq!(
+        (status, body["error"]["code"].as_str()),
+        (404, Some("not_found")),
+        "{site} /api"
+    );
     for host in [
-        format!("{aid}.localhost:{port}"),
-        format!("x.{aid}.clax.test:{port}"),
-        format!("{aid}.clax.test.evil.example:{port}"),
+        format!("abcdefghjkmn.localhost:{port}"),
+        format!("x.abcdefghjkmn.clax.test:{port}"),
+        format!("abcdefghjkmn.clax.test.evil.example:{port}"),
+        format!("clax.test:{port}"),
     ] {
-        let res = get(host.clone()).await.unwrap();
-        assert!(
-            !res.text().await.unwrap().contains("<h2>x</h2>"),
-            "{host} is not a site host"
-        );
+        for path in ["/healthz", "/v/1/"] {
+            let (status, body) = status_with_host(&ts, &ts.base, path, &host).await;
+            assert_eq!(
+                (status, body["error"]["code"].as_str()),
+                (403, Some("forbidden_host")),
+                "{host}{path} is not a site host"
+            );
+        }
     }
 }

@@ -668,7 +668,6 @@ impl TestServer {
             // with `spawn_with_web`.
             web: web_ui(),
             hosted: None,
-            sites: clax_http::host::SiteHosts::local(),
             git_remotes: Arc::default(),
             linked: Arc::new(clax_realtime::linked::Linked::new(Arc::new(
                 clax_realtime::questions::TokioSleeper,
