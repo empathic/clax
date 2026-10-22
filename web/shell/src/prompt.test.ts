@@ -2,10 +2,15 @@ import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { dispatchTrusted } from "../../bridge/test/trusted";
 import { flush, mount } from "./test/svelte";
 import PromptDialog from "./ui/PromptDialog.svelte";
+import StageIsland from "./ui/StageIsland.svelte";
+import type { ArtifactController, ViewState } from "./view/artifact-controller";
+import { Store } from "./view/store";
+import { FRAME_FALLBACK_MS } from "./view/after-paint";
 import { ALLOW_DELAY_MS, type Ask } from "./view/prompt-queue";
+import { visibility } from "./visibility";
 
 const button = (root: Element, name: string) => Array.from(root.querySelectorAll("button")).find(b => b.textContent === name)!;
-const askFor = (answer = vi.fn()): Ask => ({ prompt: { title: "Allow this page to act as you?", body: "b", allow: "Allow", deny: "Don't allow" }, answer });
+const askFor = (answer = vi.fn()): Ask => ({ id: "a-1", prompt: { kind: "capability", title: "Allow this page to act as you?", body: "b", allow: "Allow", deny: "Don't allow" }, answer });
 
 // Animation frames are held until the test runs them (jsdom has no
 // PointerEvent; a MouseEvent named pointerdown stands in): a frame is the
@@ -88,6 +93,78 @@ describe("PromptDialog", () => {
     expect(answer).toHaveBeenCalledWith("allow");
   });
 
+  describe("in the Clax app, where no animation frame ever comes", () => {
+    let said: boolean | null = null;
+    const shown = visibility.shown;
+    /** The app's host says shown (true), hidden (false), or has said nothing yet (null). */
+    const hostSays = (v: boolean | null) => flush(() => { said = v; visibility.changed(); });
+    beforeEach(() => { said = null; visibility.shown = () => said; });
+    afterEach(() => { visibility.shown = shown; });
+
+    it("arms Allow while the host says shown, still only after the delay", () => {
+      hostSays(true);
+      const { root, answer } = mountDialog();
+      const allow = button(root, "Allow");
+      wait(2 * FRAME_FALLBACK_MS);
+      wait(ALLOW_DELAY_MS - 1);
+      expect(allow.disabled).toBe(true);
+      pressClick(allow);
+      expect(answer).not.toHaveBeenCalled();
+      wait(1);
+      expect(allow.disabled).toBe(false);
+      pressClick(allow);
+      expect(answer).toHaveBeenCalledWith("allow");
+    });
+
+    it("opened before the host's init, arms the delay after it says shown", () => {
+      const { root } = mountDialog();
+      const allow = button(root, "Allow");
+      wait(10_000);
+      expect(allow.disabled).toBe(true);
+      hostSays(true);
+      wait(2 * FRAME_FALLBACK_MS + ALLOW_DELAY_MS - 1);
+      expect(allow.disabled).toBe(true);
+      wait(1);
+      expect(allow.disabled).toBe(false);
+    });
+
+    it("hidden mid-delay does not arm, and counts the full delay again from the next shown", () => {
+      hostSays(true);
+      const { root, answer } = mountDialog();
+      const allow = button(root, "Allow");
+      wait(2 * FRAME_FALLBACK_MS + ALLOW_DELAY_MS - 100);
+      hostSays(false);
+      wait(10_000);
+      expect(allow.disabled).toBe(true);
+      hostSays(true);
+      wait(2 * FRAME_FALLBACK_MS + ALLOW_DELAY_MS - 1);
+      expect(allow.disabled).toBe(true);
+      wait(1);
+      expect(allow.disabled).toBe(false);
+      // Hidden once armed: disarmed at once, and a press then counts for nothing.
+      hostSays(false);
+      expect(allow.disabled).toBe(true);
+      pressClick(allow);
+      expect(answer).not.toHaveBeenCalled();
+    });
+
+    it("opened while the host says hidden, arms only after it says shown", () => {
+      hostSays(false);
+      const { root } = mountDialog();
+      wait(10_000);
+      expect(button(root, "Allow").disabled).toBe(true);
+      hostSays(true);
+      wait(2 * FRAME_FALLBACK_MS + ALLOW_DELAY_MS);
+      expect(button(root, "Allow").disabled).toBe(false);
+    });
+  });
+
+  it("never arms Allow without a frame outside the app (a hidden browser tab)", () => {
+    const { root } = mountDialog();
+    wait(10_000);
+    expect(button(root, "Allow").disabled).toBe(true);
+  });
+
   it("disarms Allow at once for the next ask, and arms it 500 ms after the next paint", () => {
     const { root, answer, update } = mountDialog();
     arm();
@@ -102,6 +179,27 @@ describe("PromptDialog", () => {
     pressClick(button(root, "Allow"));
     expect(next.answer).toHaveBeenCalledWith("allow");
     expect(answer).not.toHaveBeenCalled();
+  });
+
+  it("stays armed in the stage island while the view's other state changes under the same ask", () => {
+    const answer = vi.fn();
+    const ask = askFor(answer);
+    const state = new Store({
+      pinnedVersion: null, startFile: "index.html", data: { versions: [] }, error: null, origin: null,
+      deleted: false, threads: [], resolved: {}, draft: null, hint: null, notice: null, file: null,
+      working: [], decided: null, looked: {}, sheet: null, busy: 0, ask, drafts: [], spectator: null,
+    } as unknown as ViewState);
+    const ctl = { id: "7q3k9mzx2b4t", state, shown: () => 1, missing: () => null } as unknown as ArtifactController;
+    const { root } = mount(StageIsland, { ctl });
+    arm();
+    const allow = button(root, "Allow");
+    expect(allow.disabled).toBe(false);
+    // A send in flight, a thread refetch: the view changes, the ask does not.
+    flush(() => state.set({ busy: 1 }));
+    flush(() => state.set({ threads: [] as never[], busy: 0 }));
+    expect(allow.disabled).toBe(false);
+    pressClick(allow);
+    expect(answer).toHaveBeenCalledWith("allow");
   });
 
   it("grants on no pointer press that began before Allow was armed, only on one after", () => {

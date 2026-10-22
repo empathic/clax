@@ -3,15 +3,16 @@ import type { FeedbackState, Tier } from "./threads";
 
 // Both maps cover every tier so the types stay total, but the daemon emits
 // only some pairs: `sent` names the tier the target session waits on, which is
-// never `wait` or `prompt_hook`, and a `piggyback` or `wait` delivery is
+// `wait` only for the Clax app's agent (it long-polls its session's feedback)
+// and never `prompt_hook`, and a `piggyback` or `wait` delivery is
 // acknowledged at once, so it is never `delivered` via those. The
-// `wait`/`prompt_hook` entries of WAITING_ON and the `piggyback`/`wait`
-// entries of DELIVERED_VIA exist for type completeness only.
+// `prompt_hook` entry of WAITING_ON and the `piggyback`/`wait` entries of
+// DELIVERED_VIA exist for type completeness only.
 const WAITING_ON: Record<Tier, string> = {
   piggyback: "its next clax tool call",
   stop_hook: "the agent finishing its current work",
   prompt_hook: "your next message to it",
-  wait: "its wait_for_feedback loop",
+  wait: "its next feedback poll",
   queue: "Codex to pick up the queued message",
   inject: "Pi to take the message",
 };
@@ -19,7 +20,7 @@ const DELIVERED_VIA: Record<Tier, string> = {
   piggyback: "a tool result",
   stop_hook: "the Stop hook",
   prompt_hook: "your next prompt",
-  wait: "wait_for_feedback",
+  wait: "its feedback poll",
   queue: "codex queue",
   inject: "a Pi message",
 };

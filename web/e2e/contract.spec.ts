@@ -242,8 +242,12 @@ test.fixme("LAN: the tracker is readable, and writable only as far as the viewer
   await f.locator("#save-note").click();
   await expect(f.locator("#status")).toHaveText("note invalid_argument");
   const name = await nameField(page);
-  await name.fill("Sam");
-  await Promise.all([page.waitForResponse(r => r.url().endsWith("/api/viewers/me") && r.request().method() === "PUT"), name.press("Enter")]);
+  // A name no other test gives the owner, a person or an agent: this
+  // worker's daemon is shared, and a viewer may not take one of theirs
+  // (409 name_taken), which would leave it unnamed and at the view level.
+  await name.fill("Tracker Quill");
+  const [named] = await Promise.all([page.waitForResponse(r => r.url().endsWith("/api/viewers/me") && r.request().method() === "PUT"), name.press("Enter")]);
+  expect(named.status()).toBe(200);
   // After input to the shell the viewer's next click in the page comes after
   // a move onto it, as a hand's does (see `reach`).
   await reach(page, f.getByRole("button", { name: "Add" }));

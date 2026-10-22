@@ -24,16 +24,39 @@ function setup(answer: PromptAnswer = "allow") {
 
 afterEach(() => { vi.unstubAllGlobals(); });
 
+type Fetch = (url: string, init?: RequestInit) => Promise<Response>;
+
+/** A daemon over `inner` that answers the grant route itself: no grant until
+ * a PUT saves one (`granted` starts it saved). `grants` records each grant request. */
+function daemon(inner: Fetch, granted = false) {
+  const grantCalls: string[] = [];
+  const f = vi.fn(async (url: string, init?: RequestInit) => {
+    if (url.endsWith("/sample-grant")) {
+      const method = init?.method ?? "GET";
+      grantCalls.push(method);
+      if (method === "PUT") granted = true;
+      return new Response(JSON.stringify({ granted }), { headers: { "content-type": "application/json" } });
+    }
+    return inner(url, init);
+  });
+  return Object.assign(f, { grantCalls });
+}
+
+/** The calls `f` made outside the grant route. */
+const calls = (f: ReturnType<typeof vi.fn>) => f.mock.calls.filter(c => !String(c[0]).endsWith("/sample-grant"));
+
 describe("sample handler", () => {
   it("asks once, posts the call, relays its frames, and reports the count", async () => {
-    const fetchMock = vi.fn(async () => new Response(sseBody([["start", { call_id: "c1", cached: false, calls_today: 3, daily_call_cap: null }], ["text", { delta: "hi" }], ["done", { text: "hi", truncated: false, model_tier_applied: "default" }]]), { headers: { "content-type": "text/event-stream" } }));
+    const fetchMock = daemon(async () => new Response(sseBody([["start", { call_id: "c1", cached: false, calls_today: 3, daily_call_cap: null }], ["text", { delta: "hi" }], ["done", { text: "hi", truncated: false, model_tier_applied: "default" }]]), { headers: { "content-type": "text/event-stream" } }));
     vi.stubGlobal("fetch", fetchMock);
     const { handler, ask, frames, counts } = setup();
     await handler.call("run", ["s1", { input: "q" }]);
     await handler.call("run", ["s2", { input: "q" }]);
     expect(ask).toHaveBeenCalledTimes(1);
     expect(ask.mock.calls[0][0]).toMatchObject({ body: expect.stringContaining("Anthropic API key") });
-    const [url, init] = fetchMock.mock.calls[0] as unknown as [string, RequestInit];
+    // The view read the daemon's grant, found none, and saved the owner's Allow.
+    expect(fetchMock.grantCalls).toEqual(["GET", "PUT"]);
+    const [url, init] = calls(fetchMock)[0] as unknown as [string, RequestInit];
     expect(url).toBe("/api/artifacts/7q3k9mzx2b4t/sample");
     expect(new Headers(init.headers).get("authorization")).toBe("Bearer tk");
     expect(JSON.parse(String(init.body))).toEqual({ input: "q" });
@@ -42,22 +65,47 @@ describe("sample handler", () => {
   });
 
   it("a declined viewer gets not_granted and nothing is sent", async () => {
-    const fetchMock = vi.fn();
+    const fetchMock = daemon(vi.fn());
     vi.stubGlobal("fetch", fetchMock);
     const { handler } = setup("deny");
     await expect(handler.call("run", ["s1", { input: "q" }])).rejects.toMatchObject({ code: "not_granted" });
     await expect(handler.call("run", ["s2", { input: "q" }])).rejects.toMatchObject({ code: "not_granted" });
-    expect(fetchMock).not.toHaveBeenCalled();
+    expect(calls(fetchMock)).toHaveLength(0);
+    expect(fetchMock.grantCalls).toEqual(["GET"]);
+  });
+
+  it("an app the owner already allowed is not asked, and two first calls read the grant once", async () => {
+    const fetchMock = daemon(async () => new Response(sseBody([["start", { call_id: "c", cached: false, calls_today: 1 }], ["done", { text: "t", truncated: false, model_tier_applied: "default" }]])), true);
+    vi.stubGlobal("fetch", fetchMock);
+    const { handler, ask } = setup();
+    await Promise.all([handler.call("run", ["s1", { input: "a" }]), handler.call("run", ["s2", { input: "b" }])]);
+    expect(ask).not.toHaveBeenCalled();
+    expect(fetchMock.grantCalls).toEqual(["GET"]);
+    expect(calls(fetchMock)).toHaveLength(2);
+  });
+
+  it("an Allow the daemon could not save sends nothing and asks again next time", async () => {
+    const inner = vi.fn();
+    const f = vi.fn(async (url: string, init?: RequestInit) => {
+      if (url.endsWith("/sample-grant")) return init?.method === "PUT" ? new Response("{}", { status: 500 }) : new Response(JSON.stringify({ granted: false }));
+      return inner(url, init);
+    });
+    vi.stubGlobal("fetch", f);
+    const { handler, ask } = setup();
+    await expect(handler.call("run", ["s1", { input: "q" }])).rejects.toMatchObject({ code: "upstream_error" });
+    expect(inner).not.toHaveBeenCalled();
+    await expect(handler.call("run", ["s2", { input: "q" }])).rejects.toMatchObject({ code: "upstream_error" });
+    expect(ask).toHaveBeenCalledTimes(2);
   });
 
   it("a refusal before the stream rejects with the daemon's code", async () => {
-    vi.stubGlobal("fetch", vi.fn(async () => new Response(JSON.stringify({ error: { code: "rate_limited", message: "cap" } }), { status: 429 })));
+    vi.stubGlobal("fetch", daemon(async () => new Response(JSON.stringify({ error: { code: "rate_limited", message: "cap" } }), { status: 429 })));
     const { handler } = setup();
     await expect(handler.call("run", ["s1", { input: "q" }])).rejects.toMatchObject({ code: "rate_limited", message: "cap" });
   });
 
   it("a stream that stops without done or error ends upstream_error", async () => {
-    vi.stubGlobal("fetch", vi.fn(async () => new Response(sseBody([["start", { call_id: "c", cached: false, calls_today: 1 }], ["text", { delta: "par" }]]))));
+    vi.stubGlobal("fetch", daemon(async () => new Response(sseBody([["start", { call_id: "c", cached: false, calls_today: 1 }], ["text", { delta: "par" }]]))));
     const { handler, frames } = setup();
     await handler.call("run", ["s1", { input: "q" }]);
     expect(frames().at(-1)).toMatchObject({ call: "s1", event: "error", data: { code: "upstream_error" } });
@@ -65,14 +113,14 @@ describe("sample handler", () => {
 
   it("cancel aborts the request; a call cancelled during consent is never sent", async () => {
     let seen: AbortSignal | undefined;
-    vi.stubGlobal("fetch", vi.fn((_u: string, init: RequestInit) => { seen = init.signal ?? undefined; return new Promise(() => {}); }));
+    vi.stubGlobal("fetch", daemon((_u: string, init?: RequestInit) => { seen = init?.signal ?? undefined; return new Promise(() => {}); }));
     const { handler } = setup();
     void handler.call("run", ["s1", { input: "q" }]);
     await vi.waitFor(() => expect(seen).toBeDefined());
     await handler.call("cancel", ["s1"]);
     expect(seen!.aborted).toBe(true);
 
-    const fetchMock = vi.fn();
+    const fetchMock = daemon(vi.fn());
     vi.stubGlobal("fetch", fetchMock);
     let answer!: (a: PromptAnswer) => void;
     const posted: ShellToBridge[] = [];
@@ -83,7 +131,7 @@ describe("sample handler", () => {
     await h.call("cancel", ["s9"]);
     answer("allow");
     await expect(p).resolves.toBeNull();
-    expect(fetchMock).not.toHaveBeenCalled();
+    expect(calls(fetchMock)).toHaveLength(0);
   });
 
   it("tool results go to the daemon", async () => {
@@ -101,7 +149,7 @@ describe("sample handler", () => {
     await expect(handler.call("limits", [])).resolves.toEqual({ maxPromptBytes: 65536, tools: { maxCount: 16 } });
   });
   it("tool results use the daemon's call ID from the start frame", async () => {
-    const fetchMock = vi.fn(async (url: string) => (url.endsWith("/sample")
+    const fetchMock = daemon(async (url: string) => (url.endsWith("/sample")
       ? new Response(sseBody([["start", { call_id: "01JDAEMON", cached: false, calls_today: 1 }], ["tool_call", { id: "toolu_1", name: "t", input: {} }]]))
       : new Response(null, { status: 204 })));
     vi.stubGlobal("fetch", fetchMock);
@@ -123,14 +171,14 @@ describe("sample handler", () => {
       [403, "not_declared", "not_declared"],
       [429, "rate_limited", "rate_limited"],
     ] as const) {
-      vi.stubGlobal("fetch", vi.fn(async () => new Response(JSON.stringify({ error: { code, message: "m" } }), { status })));
+      vi.stubGlobal("fetch", daemon(async () => new Response(JSON.stringify({ error: { code, message: "m" } }), { status })));
       await expect(handler.call("run", [`s${status}${code}`, { input: "q" }]), `${status} ${code}`).rejects.toMatchObject({ code: want });
     }
   });
 
   it("leave aborts every call in flight", async () => {
     const signals: AbortSignal[] = [];
-    vi.stubGlobal("fetch", vi.fn((_u: string, init: RequestInit) => { signals.push(init.signal!); return new Promise(() => {}); }));
+    vi.stubGlobal("fetch", daemon((_u: string, init?: RequestInit) => { signals.push(init!.signal!); return new Promise(() => {}); }));
     const { handler } = setup();
     void handler.call("run", ["s1", { input: "a" }]);
     void handler.call("run", ["s2", { input: "b" }]);

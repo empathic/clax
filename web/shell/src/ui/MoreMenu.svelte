@@ -17,11 +17,16 @@
   // press outside, or Tab or focus leaving it, closes it. The items are out of
   // the Tab order (`tabindex="-1"`), and a disabled item stays focusable. While
   // it is open no key typed in it reaches the shell's keys: the keys it
-  // handles, and every printable key (so C and ? do nothing there).
+  // handles, and every printable key (so C and ? do nothing there). In the
+  // Clax app (`onHost`) it has no Open raw or Copy link, whose addresses
+  // are the app's own (the app's bar shares the artifact's link), and so
+  // shows at phone width only, where it holds the bar's hidden items.
   import { tick } from "svelte";
+  import { onHost } from "../transport";
 
   let { rawHref, canCopy, onCopy, onVersions, pageHref = null, onFork, onClone = null, onShare = null, onPublish = null, legal = null }: { rawHref: string | null; canCopy: boolean; onCopy(): void; onVersions?(): void; pageHref?: string | null; onFork?(): void; onClone?: (() => void) | null; onShare?: (() => void) | null; onPublish?: { label: string; open(): void } | null; legal?: { terms_url: string; privacy_url: string } | null } = $props();
   let open = $state(false);
+  const app = onHost();
   // Phone width, as the bar's `hide-sm` rule draws it; read on each open.
   let phone = $state(false);
   let button: HTMLButtonElement | undefined = $state();
@@ -61,7 +66,7 @@
 <svelte:window onpointerdown={outside} />
 
 <!-- svelte-ignore a11y_no_static_element_interactions -->
-<div class="more" onkeydown={key} onfocusout={leave}>
+<div class="more" class:phone-only={app} onkeydown={key} onfocusout={leave}>
   <button type="button" class="icon" bind:this={button} aria-label="More" aria-haspopup="menu" aria-expanded={open} onclick={toggle}>
     <svg viewBox="0 0 16 16" aria-hidden="true"><circle cx="3" cy="8" r="1.4" fill="currentColor"/><circle cx="8" cy="8" r="1.4" fill="currentColor"/><circle cx="13" cy="8" r="1.4" fill="currentColor"/></svg>
   </button>
@@ -70,12 +75,14 @@
       {#if phone && onVersions}<button type="button" role="menuitem" tabindex="-1" class="ghost" onclick={() => { open = false; onVersions(); }}>{pageHref ? "Snapshots" : "Versions"}</button>{/if}
       {#if phone && onFork}<button type="button" role="menuitem" tabindex="-1" class="ghost" onclick={() => { open = false; onFork(); }}>Fork</button>{/if}
       {#if phone && pageHref && /^https?:\/\//.test(pageHref)}<a role="menuitem" tabindex="-1" href={pageHref} target="_blank" rel="noopener noreferrer" onclick={close}>Open page</a>{/if}
-      {#if rawHref}
+      {#if app}
+        <!-- The app's bar has Share. -->
+      {:else if rawHref}
         <a role="menuitem" tabindex="-1" href={rawHref} target="_blank" rel="noopener" onclick={close}>Open raw</a>
       {:else}
         <button type="button" role="menuitem" tabindex="-1" class="ghost muted" aria-disabled="true">Open raw</button>
       {/if}
-      {#if canCopy}<button type="button" role="menuitem" tabindex="-1" class="ghost" onclick={() => { onCopy(); close(); }}>Copy link</button>{/if}
+      {#if canCopy && !app}<button type="button" role="menuitem" tabindex="-1" class="ghost" onclick={() => { onCopy(); close(); }}>Copy link</button>{/if}
       {#if phone && onClone}<button type="button" role="menuitem" tabindex="-1" class="ghost" onclick={() => { open = false; onClone(); }}>Clone with git…</button>{/if}
       {#if phone && onShare}<button type="button" role="menuitem" tabindex="-1" class="ghost" onclick={() => { open = false; onShare(); }}>Share…</button>{/if}
       {#if phone && onPublish}<button type="button" role="menuitem" tabindex="-1" class="ghost" onclick={() => { open = false; onPublish.open(); }}>{onPublish.label}</button>{/if}
@@ -93,6 +100,7 @@
      artifact entry's eager CSS does not carry them. -->
 <style>
   .more { position: relative; }
+  @media (min-width: 701px) { .more.phone-only { display: none; } }
   .more-menu { position: absolute; right: 0; top: calc(100% + 8px); z-index: 20; min-width: 180px; background: var(--raised); border: 1px solid var(--border-hover); border-radius: var(--radius); box-shadow: var(--elev-lg); padding: 6px 0; display: flex; flex-direction: column; }
   .more-menu > a, .more-menu > button { display: block; width: 100%; padding: 8px 14px; text-align: left; font: 500 14px/1.2 var(--font); justify-content: flex-start; min-height: 0; border: 0; border-radius: 0; }
   .more-menu > a:hover, .more-menu > button:not([aria-disabled]):hover { background: var(--hover); }

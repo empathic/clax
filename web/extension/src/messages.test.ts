@@ -412,6 +412,15 @@ describe("messages", () => {
 
   it("checks anchors field by field", () => {
     expect(isAnchor(anchor)).toBe(true);
+    expect(isAnchor({ ...anchor, quote: "Mon5 km", label: "Mon 5 km" })).toBe(true);
+    expect(isAnchor({ ...anchor, label: 5 })).toBe(false);
+    expect(isAnchor({ ...anchor, name: "Save" })).toBe(true);
+    expect(isAnchor({ ...anchor, name: "é".repeat(120) })).toBe(true);
+    expect(isAnchor({ ...anchor, name: "x".repeat(121) })).toBe(false);
+    expect(isAnchor({ ...anchor, name: "  " })).toBe(false);
+    expect(isAnchor({ ...anchor, name: "a\nb" })).toBe(false);
+    expect(isAnchor({ ...anchor, name: "a\u2028b" })).toBe(false);
+    expect(isAnchor({ ...anchor, name: 5 })).toBe(false);
     expect(isAnchor({ ...anchor, kind: "area", area: { x: 0.1, y: 0.2, w: 0.3, h: 0.4 }, rect: { x: 1, y: 2, w: 3, h: 4, scrollX: 0, scrollY: 0, viewportW: 800 } })).toBe(true);
     expect(isAnchor({ ...anchor, kind: "script" })).toBe(false);
     expect(isAnchor({ ...anchor, selector: "x".repeat(1025) })).toBe(false);

@@ -1,6 +1,15 @@
+import { type Embed, embedOk, hostEmbed } from "./transport";
+
 const CACHE_KEY = "clax.origin-ok";
 
-export function artifactOrigin(id: string, loc: Location = location): string | null {
+/** Artifact `id`'s own content origin: in the Clax app the embed's (its
+ * `content` template, `hostEmbed`), or null (the sandboxed path) when the
+ * embed's origins are not ones the app may use (`embedOk`: `https:` or
+ * `clax:`, `{id}` once); else `<id>.localhost` on the daemon's port when
+ * the shell is on a local host, which the browser may or may not resolve
+ * ([`probeOrigin`]); else null. */
+export function artifactOrigin(id: string, loc: Location = location, embed: Embed | null = hostEmbed()): string | null {
+  if (embed) return embedOk(embed.shell, embed.content) ? embed.content.replace("{id}", id) : null;
   if (loc.hostname !== "localhost" && loc.hostname !== "127.0.0.1") return null;
   const port = loc.port ? `:${loc.port}` : "";
   return `${loc.protocol}//${id}.localhost${port}`;

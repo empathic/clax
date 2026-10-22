@@ -24,11 +24,11 @@
 // budgeted, so a page polling on a timer is soon cut off. Clax has no public links: every view
 // that serves the declaration gets the namespace.
 import { AFFIX, MAX_QUOTE, MAX_SELECTOR } from "../../../bridge/src/anchor";
-import { type Anchor, type AnchorArea, type AnchorRect, type Box, INDEX_FILE } from "../../../bridge/src/protocol";
+import { type Anchor, type AnchorArea, type AnchorRect, type Box, INDEX_FILE, MAX_NAME } from "../../../bridge/src/protocol";
 import { nameProblem, textProblem } from "../../../bridge/src/text-rule";
 import { ApiError, getArtifact } from "../api";
 import type { ArtifactEvent } from "../events";
-import { type Thread, addComment, createThread, deleteThread, reopenThread, resolveThread, sendToAgent } from "../threads";
+import { type Thread, addComment, createThread, deleteThread, reopenThread, resolveThread, respaced, sendToAgent } from "../threads";
 import { declaredConfig } from "./availability";
 import { seconds, takeSlot } from "./budget";
 import { CapError, SPECTATING } from "./errors";
@@ -120,7 +120,9 @@ function pickedArea(v: unknown): AnchorArea {
 
 /** A DOM anchor the page built (element or range, and with `opts.area` an
  * area, which only the viewer's own pick makes), rebuilt field by field on
- * page `file`; `invalid` for anything else. */
+ * page `file`, keeping its `label` only when it reads as its quote respaced
+ * and its `name` (what the element is called) when it is one line of text;
+ * `invalid` for anything else. */
 export function pageAnchor(a: unknown, file: string, opts: { area?: boolean } = {}): Anchor {
   if (!a || typeof a !== "object") throw invalid("anchor is an object");
   const x = a as Record<string, unknown>;
@@ -138,10 +140,13 @@ export function pageAnchor(a: unknown, file: string, opts: { area?: boolean } = 
     if (typeof r !== "object" || !keys.every(k => finite(r[k]))) throw invalid("anchor.rect holds finite numbers");
     rect = Object.fromEntries(keys.map(k => [k, r[k]])) as unknown as AnchorRect;
   }
+  const quote = optText(x.quote, MAX_QUOTE, "quote");
+  const label = respaced(quote, optText(x.label, MAX_QUOTE, "label"));
+  const name = optText(x.name, MAX_NAME, "name")?.trim();
   return {
     kind: area ? "area" : (x.kind as "element" | "range"),
     selector: x.selector,
-    quote: optText(x.quote, MAX_QUOTE, "quote"),
+    quote,
     prefix: optText(x.prefix, AFFIX, "prefix"),
     suffix: optText(x.suffix, AFFIX, "suffix"),
     html_hash: (hash as string | null | undefined) ?? null,
@@ -149,6 +154,8 @@ export function pageAnchor(a: unknown, file: string, opts: { area?: boolean } = 
     custom_name: null,
     ...(area ? { area } : {}),
     file,
+    ...(label && !CONTROL.test(label) ? { label } : {}),
+    ...(name && !CONTROL.test(name) ? { name } : {}),
   };
 }
 

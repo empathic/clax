@@ -3,7 +3,12 @@
 // a port, says `hello` with the name of a Web Lock it holds while it lives,
 // and sends its topics; a tab that ends without `bye` (a crash, a killed
 // process) is dropped when its lock frees, or when its port closes.
-import { Hub, type TabMsg } from "./stream-hub";
+//
+// Each port is welcomed as it connects. A browser may end this worker and
+// start it anew while its tabs' ports stay open (WebKit does, and hands the
+// new instance each open port): the instance knows nothing of those tabs,
+// and the welcome has each send its state again.
+import { Hub, type HubMsg, type TabMsg } from "./stream-hub";
 
 // The worker's global, typed by what this file uses (the DOM library has no
 // SharedWorkerGlobalScope).
@@ -31,4 +36,5 @@ scope.onconnect = (e: MessageEvent) => {
   // Where the browser says so, a port whose tab went away closes.
   port.addEventListener("close", gone);
   port.start();
+  port.postMessage({ t: "welcome" } satisfies HubMsg);
 };

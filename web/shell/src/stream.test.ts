@@ -2,7 +2,7 @@ import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { STREAM_DOWN, connNoticeText } from "./conn-notice";
 import { DEAD_MS, EventStream, HIDDEN_MS, type Link, type LinkMaker, NOTICE_MS, type StreamEvent, TOKEN_WAIT_MS, leaderLink } from "./stream";
 import { ownerBrowser } from "./owner";
-import type { HubMsg, TabMsg } from "./stream-hub";
+import { type HubMsg, PING_MS, type TabMsg } from "./stream-hub";
 import { Net } from "./test/fake-net";
 
 const A = "7q3k9mzx2b4t";
@@ -332,6 +332,52 @@ describe("EventStream", () => {
     w.watch(["gallery"], () => {});
     await vi.advanceTimersByTimeAsync(TOKEN_WAIT_MS + 5000);
     expect(made).toBe(1);
+    w.close();
+  });
+});
+
+describe("in the Clax app", () => {
+  afterEach(() => { delete (window as { claxTransport?: unknown }).claxTransport; });
+
+  it("runs the hub in the page on the app's transport: no shared worker, and no notice through a long silence", async () => {
+    let workers = 0;
+    vi.stubGlobal("SharedWorker", vi.fn(() => { workers++; throw new Error("no worker in the app"); }));
+    const net = new Net();
+    vi.stubGlobal("fetch", net.fetch);
+    // What `installTransport` leaves on a shell document in the app.
+    Object.defineProperty(window, "claxTransport", { configurable: true, value: Object.freeze({ embed: { transport: "host", shell: "https://app.clax.invalid", content: "https://{id}.c.clax.invalid" } }) });
+    const w = new EventStream(window);
+    const heard: StreamEvent[] = [];
+    w.watch([`artifact:${A}`], e => heard.push(e));
+    await flush();
+    expect(net.conns).toHaveLength(1);
+    net.ready(net.conns[0], "0123456789abcdef0123456789abcdef");
+    await flush();
+    net.event(net.conns[0], "0123456789abcdef0123456789abcdef", 3, `artifact:${A}`, "version", { n: 2 });
+    await flush();
+    await vi.advanceTimersByTimeAsync(10 * 60_000);
+    expect(workers).toBe(0);
+    expect(net.conns).toHaveLength(1);
+    expect(heard.map(e => e.type)).toEqual(["ready", "version"]);
+    expect(connNoticeText()).toBeNull();
+    w.close();
+  });
+
+  it("keeps the page's topics through a suspension longer than a tab's expiry", async () => {
+    const net = new Net();
+    vi.stubGlobal("fetch", net.fetch);
+    Object.defineProperty(window, "claxTransport", { configurable: true, value: Object.freeze({ embed: { transport: "host", shell: "https://app.clax.invalid", content: "https://{id}.c.clax.invalid" } }) });
+    const w = new EventStream(window);
+    w.watch(["gallery"], () => {});
+    await flush();
+    net.ready(net.conns[0], "0123456789abcdef0123456789abcdef");
+    await flush();
+    await vi.advanceTimersByTimeAsync(30_000);
+    // The WebView was suspended: no timer ran while the clock moved on.
+    vi.setSystemTime(Date.now() + 10 * 60_000);
+    await vi.advanceTimersByTimeAsync(PING_MS + 5000);
+    expect(net.conns).toHaveLength(1);
+    expect(net.conns[0].aborted).toBe(false);
     w.close();
   });
 });

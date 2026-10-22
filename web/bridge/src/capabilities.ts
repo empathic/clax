@@ -1,4 +1,5 @@
-// The capability namespaces of contract 0.2.61 (web/contract/0.2.61): each
+// The capability namespaces of contract 0.2.61 (web/contract/0.2.61), and
+// Clax's device capabilities (web/contract/clax-extensions.d.ts): each
 // name `use()` can resolve and the members its namespace carries. The lists
 // are checked against the .d.ts files (bridge/test/capabilities.test.ts).
 import type { Rpc } from "./rpc";
@@ -6,11 +7,19 @@ import type { Rpc } from "./rpc";
 export const CAPABILITY_METHODS = {
   permissions: ["state", "request"],
   artifact: ["publish", "edit", "sync"],
-  db: ["doc", "collection"],
+  db: ["doc", "collection", "artifact"],
   downloads: ["save"],
   user: ["isOwner", "canEdit", "can", "me", "id", "profiles", "name", "avatarUrl", "search", "email"],
   comments: ["openComposer", "anchorFor", "create", "reply", "sendToClaude", "canSendToClaude", "resolve", "delete", "customAnchors", "working", "onWorking"],
   assets: ["upload", "list", "delete"],
+  // Clax's device capabilities, in the Clax app only (clax-extensions.d.ts `Device`).
+  notify: ["schedule", "cancel", "list"],
+  share: ["text", "file"],
+  file: ["pick", "save"],
+  camera: ["take", "pick"],
+  location: ["current", "watch"],
+  // Clax's network, through the daemon (clax-extensions.d.ts `Net`).
+  net: ["fetch"],
 } as const satisfies Record<string, readonly string[]>;
 
 export type CapabilityName = keyof typeof CAPABILITY_METHODS;
@@ -18,9 +27,10 @@ export type CapabilityName = keyof typeof CAPABILITY_METHODS;
 /** Other spellings `use()` accepts, mapped to their canonical name. */
 export const ALIASES: Readonly<Record<string, CapabilityName>> = Object.freeze({ self: "artifact" });
 
-/** Capabilities whose page side is a lazy part of its own (parts/<name>.ts):
- * the part builds the whole frozen namespace, and its member list lives there. */
-export const PART_CAPABILITIES = ["room", "sample"] as const;
+/** Capabilities whose page side is a lazy part of its own (parts/<name>.ts),
+ * or `home`, built in the caps part (caps/home.ts): the part builds the
+ * whole frozen namespace, and its member list lives there. */
+export const PART_CAPABILITIES = ["room", "sample", "home"] as const;
 export type PartCapabilityName = (typeof PART_CAPABILITIES)[number];
 export type UsableName = CapabilityName | PartCapabilityName;
 

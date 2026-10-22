@@ -1,4 +1,4 @@
-import { beforeAll, describe, expect, it } from "vitest";
+import { beforeAll, describe, expect, it, vi } from "vitest";
 import { commentsContext } from "../src/comments-context";
 import { settle } from "../src/parts-static";
 import { dispatchTrusted } from "./trusted";
@@ -55,7 +55,7 @@ describe("bridge orders that arrive before <body>", () => {
     expect(anchorsFor("r3")).toEqual([expect.objectContaining({ results: [expect.objectContaining({ found: false })] })]);
     const before = anchorsFor(null).length;
     document.body.insertAdjacentHTML("beforeend", "<div id=\"late\">Rendered late</div>");
-    await frames();
+    await vi.waitFor(() => expect(anchorsFor(null).length).toBeGreaterThan(before));
     const after = anchorsFor(null).slice(before);
     expect(after).toEqual([expect.objectContaining({ results: [expect.objectContaining({ id: "b", found: true })] })]);
   });
@@ -96,10 +96,10 @@ describe("leaving the page", () => {
 });
 
 describe("the shell's request to greet again", () => {
-  it("is answered with the page's hello", () => {
+  it("is answered with the page's hello, marked as this document's again", () => {
     posted.length = 0;
     send({ type: "clax:greet" });
-    expect(posted).toEqual([{ type: "clax:hello", artifact: "7q3k9mzx2b4t", version: 1, file: "index.html" }]);
+    expect(posted).toEqual([{ type: "clax:hello", artifact: "7q3k9mzx2b4t", version: 1, file: "index.html", again: true }]);
   });
 });
 
@@ -126,5 +126,34 @@ describe("the shell's fragment", () => {
     send({ type: "clax:hash", hash: "" });
     expect(location.hash).toBe("");
     expect(history.length).toBe(entries);
+  });
+});
+
+describe("the app shell's scroll", () => {
+  it("is reported only after a welcome with app: true, which also restores the position it carries", async () => {
+    const scrolls = () => posted.filter(m => m.type === "clax:scroll");
+    const scrollTo = vi.spyOn(window, "scrollTo").mockImplementation(() => {});
+    Object.defineProperty(document.documentElement, "scrollHeight", { value: 5000, configurable: true });
+    try {
+      posted.length = 0;
+      send({ type: "clax:welcome", mode: "view", restoreScroll: 300 });
+      await settle();
+      dispatchEvent(new Event("scroll"));
+      expect(scrolls()).toEqual([]);
+      expect(scrollTo).not.toHaveBeenCalled();
+      send({ type: "clax:welcome", mode: "view", app: true, restoreScroll: 420 });
+      // The report and the restore are in the caps part, loaded on that welcome.
+      await settle();
+      expect(scrollTo).toHaveBeenCalledWith(0, 420);
+      Object.defineProperty(window, "scrollY", { value: 420, configurable: true });
+      dispatchEvent(new Event("scroll"));
+      expect(scrolls()).toEqual([{ type: "clax:scroll", file: "index.html", y: 420 }]);
+    } finally {
+      scrollTo.mockRestore();
+      Object.defineProperty(window, "scrollY", { value: 0, configurable: true });
+      Object.defineProperty(document.documentElement, "scrollHeight", { value: 0, configurable: true });
+    }
+    // The scroll's reflow of the earlier tests' anchors runs on the next frame.
+    await frames();
   });
 });

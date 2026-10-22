@@ -1,13 +1,23 @@
 // Per-viewer, per-artifact permission state (permissions.d.ts). Grants persist
 // in localStorage under `clax.grants.v1:<aid>:<viewer public ID>`, except
-// `sample`'s, which lasts for the view (sample.d.ts: the first call in a view
-// asks); a denial or a dismissed prompt lasts for the page load only. One
-// dialog at a time.
+// `sample`'s, which the daemon keeps per app until the owner revokes it
+// (caps/sample.ts reads and saves it), so here it lasts for the view; a
+// denial or a dismissed prompt lasts for the page load only. One dialog at a
+// time.
 import { CAPABILITIES, type Declared, type Served, consentGated, isAvailable } from "./availability";
 
 export type PermissionState = "granted" | "prompt" | "denied" | "unavailable";
-export type Prompt = { title: string; body: string; allow: string; deny: string };
+/** What a prompt asks for: a capability (`comments` and `sample` asked
+ * alone have their own), a download, or a read of another app's data. */
+export type PromptKind = "capability" | "download" | "crossRead" | "sample" | "comments";
+/** A consent prompt. `always`, the label of an "always" choice, is given
+ * where an Allow is kept beyond this view (`ALWAYS`); the Clax app's host
+ * may draw it, and its answer is an Allow (`app/native.ts`). */
+export type Prompt = { kind: PromptKind; title: string; body: string; allow: string; deny: string; always?: string };
 export type PromptAnswer = "allow" | "deny" | "dismiss";
+
+/** The "always" choice's label, on prompts whose Allow is kept. */
+export const ALWAYS = "Always for this app";
 
 export const grantsKey = (aid: string, viewer: string) => `clax.grants.v1:${aid}:${viewer}`;
 
@@ -19,10 +29,12 @@ const ASKS: Record<string, string> = {
 /** The dialog of a capability asked on its own. */
 const ALONE: Record<string, Prompt> = {
   sample: {
-    title: "Let this page ask Claude?",
-    body: "Each request this page sends to Claude is paid for by this machine's Anthropic API key. Clax asks again the next time this page loads.",
+    kind: "sample",
+    title: "Let this app ask Claude?",
+    body: "Each request this app sends to Claude is paid for by this machine's Anthropic API key, within a daily spending cap for the app. Clax keeps your answer for this app until you revoke it.",
     allow: "Allow",
     deny: "Don't allow",
+    always: ALWAYS,
   },
 };
 
@@ -80,6 +92,17 @@ export class Grants {
     return out;
   }
 
+  /** Marks `name` granted for this view without asking (a grant kept
+   * elsewhere, such as the daemon's for `sample`); never stored here. */
+  allow(name: string): void {
+    this.granted.add(name);
+  }
+
+  /** Drops this view's grant of `name`, so its next use asks again. */
+  forget(name: string): void {
+    this.granted.delete(name);
+  }
+
   /** Why a consent-gated write cannot go ahead: `forbidden` after "Don't
    * allow", `consent_required` after a dismissed prompt; `null` otherwise. */
   refusal(name: string): "forbidden" | "consent_required" | null {
@@ -95,11 +118,14 @@ export class Grants {
       const askable = [...new Set(names)].filter(n => this.state(n) === "prompt");
       if (!askable.length) return;
       const alone = askable.length === 1 ? ALONE[askable[0]] : undefined;
+      // Allow is kept: in storage here, or by the daemon for sample.
       const answer = await this.ask(alone ?? {
+        kind: askable.length === 1 && askable[0] === "comments" ? "comments" : "capability",
         title: "Allow this page to act as you?",
         body: `This page asks to ${askable.map(n => ASKS[n] ?? `use ${n}`).join(" and ")}.`,
         allow: "Allow",
         deny: "Don't allow",
+        always: ALWAYS,
       });
       for (const n of askable) {
         if (answer === "allow") this.granted.add(n);

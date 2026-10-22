@@ -64,13 +64,29 @@ export function stop(): void {
   started = false;
 }
 
+/** The app's question sheet's slot (`app/host.ts` makes it, in app mode only). */
+const APP_SLOT = ".app-questions > .questions-slot";
+
+/** What the artifact view's question surfaces tell the page whenever the
+ * questions about the artifact change (a `clax-questions` event on the
+ * document), before their cards are rendered: the IDs of the `open` ones,
+ * and of those `closed` moments ago (their cards still say what closed
+ * them), oldest first. App mode's host tells the app how many are open,
+ * shows the sheet for a question the app asked for, and closes it when no
+ * card is left. */
+export type QuestionsChange = { open: string[]; closed: string[] };
+
 /** The artifact view's surfaces for artifact `aid`, for the owner or a connected person: **Inbox**
  * in the top bar (before the island's controls), the questions about it at
  * the top of the sidebar (in the sidebar's `.questions-slot`, each time it
  * mounts), the questions asked in each thread inside that thread's card
- * (its `.thread-q-slot`), and the dot on the threads controls. `trail` is
- * the view's keyboard trail, which its cards follow. The result removes them and stops
- * the feeds (`stop`). */
+ * (its `.thread-q-slot`), and the dot on the threads controls. In app mode
+ * (`html.app`) the sidebar's questions go in the app's sheet
+ * (`.app-questions`, its slot announced the same way) instead of the hidden
+ * sidebar. Each change of the questions about `aid` is told as a
+ * `clax-questions` event (`QuestionsChange`). `trail` is the view's keyboard
+ * trail, which its cards follow. The result removes them and stops the
+ * feeds (`stop`). */
 export function artifact(aid: string, trail: Trail, stream: EventStream, doc: Document = document): () => void {
   useTrail(trail);
   let off: (() => void)[] = [];
@@ -80,7 +96,15 @@ export function artifact(aid: string, trail: Trail, stream: EventStream, doc: Do
     if (side) void unmount(side.c);
     side = { el, c: mount(SidebarQuestions, { target: el, props: { aid } }) };
   };
-  const onSlot = (e: Event) => fill(e.target as Element);
+  // In app mode the sheet's slot, whichever slot announced itself; else the one that did.
+  const slot = (from: Element | null) => (doc.documentElement.classList.contains("app") ? doc.querySelector(APP_SLOT) : null) ?? from;
+  const onSlot = (e: Event) => fill(slot(e.target as Element));
+  const { questions } = shared();
+  const tell = (c: QuestionsChange) => doc.dispatchEvent(new CustomEvent<QuestionsChange>("clax-questions", { detail: c }));
+  const count = () => {
+    const list = questions.byArtifact(aid);
+    tell({ open: list.filter(q => q.status === "open").map(q => q.id), closed: list.filter(q => q.status !== "open").map(q => q.id) });
+  };
   start(stream);
   // In the top bar before the controls; at phone width in the tab bar
   // instead, so the top bar keeps its title.
@@ -89,11 +113,10 @@ export function artifact(aid: string, trail: Trail, stream: EventStream, doc: Do
     off.push(() => { void unmount(link); });
   }
   doc.addEventListener("clax-questions-slot", onSlot);
-  fill(doc.querySelector(".sidebar > .questions-slot"));
+  fill(slot(doc.querySelector(".sidebar > .questions-slot")));
   // The questions asked in each thread show inside its card
   // (`thread-slots`), loaded (`later`) with the first asked in an open
   // thread here.
-  const { questions } = shared();
   let slots: (() => void) | null = null;
   let live = true;
   const check = () => {
@@ -103,13 +126,14 @@ export function artifact(aid: string, trail: Trail, stream: EventStream, doc: Do
   };
   const unlisten = questions.listen(check);
   check();
-  off.push(() => {
+  off.push(questions.listen(count), () => {
     doc.removeEventListener("clax-questions-slot", onSlot);
     if (side) void unmount(side.c);
     side = null;
     live = false;
     unlisten();
     slots?.();
+    tell({ open: [], closed: [] });
   }, followDot(doc, aid));
   return () => {
     for (const f of off) f();

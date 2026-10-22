@@ -130,6 +130,27 @@
 // whatever that input was meant for. The cost: a viewer who clicks a page's
 // control within that time after using the shell is refused
 // (`shell_input_recent`) and must click again.
+//
+// App mode's host attestation (`hostArrival`). In the Clax app the frame
+// sits in an Android WebView, where a finger on a cross-origin frame sends
+// the shell nothing, and a long-press may end with no click: no counted
+// arrival, so the long-press's pick would be refused. There the app's host,
+// which sees the real pointer over the WebView, attests each finger press
+// and release (`claxHost.attestPointer`, `app/host.ts`). A press attested on
+// the frame after the viewer's latest shell input counts as the pointer's
+// arrival for condition 3 while that pointer is down (at most `HELD_MAX_MS`,
+// in `app/host.ts`), and its paired release for `ATTEST_MS` after it, so a
+// hold that then drags for seconds still picks. The host's attestations
+// reach the shell by `runJavaScript`, in no fixed order with the frame's
+// messages: a pick start that finds no counted arrival while an attested
+// press still awaits its release waits up to `PICK_ATTEST_WAIT_MS` for that
+// release (`afterHostAttestation`) and is judged again; with no press
+// pending it is refused at once. Conditions 1 and 2 still hold as they are. Only app mode
+// sets `hostArrival.fresh`; outside it, it is always false. Nothing in the
+// content frame can reach it: the frame is cross-origin (subdomain mode) or
+// an opaque origin (sandbox mode), so `parent.claxHost` throws there, and
+// no message from the frame calls it; only script in the shell's own
+// document, which the app's host runs by `runJavaScript`, can.
 
 import { after, now } from "../clock";
 
@@ -528,7 +549,7 @@ export function frameGesture(doc: Document = document): boolean {
   const ua = (navigator as Navigator & { userActivation?: { isActive: boolean } }).userActivation;
   if (ua?.isActive !== true) return false;
   if (!isFrame(doc.activeElement)) return false;
-  if (pointerFresh()) return true;
+  if (pointerFresh() || hostArrival.fresh(lastShellInputAt)) return true;
   return lastShellInput < frameEnteredAt && entryByViewer;
 }
 
@@ -538,6 +559,46 @@ export function frameGesture(doc: Document = document): boolean {
 export function frameGestureStrict(doc: Document = document): "ok" | "no_gesture" | "shell_input_recent" {
   if (!frameGesture(doc)) return "no_gesture";
   return now() - lastShellInputAt < SHELL_QUIET_MS ? "shell_input_recent" : "ok";
+}
+
+/** The viewer's gesture as it was when a capability call arrived, judged
+ * before anything is awaited, for a handler whose code loads after the call
+ * (`caps/lazy.ts`): by then a click's activation can have lapsed, or a click
+ * given while it loads would count for a call made without one. `composer` is
+ * `frameGesture()`; `strict`, set for a handler of the strict tier, is
+ * `frameGestureStrict()`. */
+export type ArrivalGesture = { composer: boolean; strict?: ReturnType<typeof frameGestureStrict> };
+
+/** How long a pick start with no counted arrival waits for a pending
+ * release attestation from the app's host (see the header). */
+export const PICK_ATTEST_WAIT_MS = 300;
+
+/** Who waits for the host's next attestation (`afterHostAttestation`). */
+const attestWaiters = new Set<() => void>();
+
+/** App mode's host attestation of a finger on the frame (see the header).
+ * `fresh`: whether one counts now, given when (`now()`) the latest shell
+ * input was. `pending`: whether a press attested on the frame awaits its
+ * release. Both never, until `app/host.ts` sets them; it calls `attested`
+ * after each attestation it counts. */
+export const hostArrival = {
+  /** How many presses on the frame the host has attested: a call that
+   * spends the person's tap (`caps/device.ts`) waits for a new one. */
+  presses: 0,
+  fresh: (_since: number): boolean => false,
+  pending: (): boolean => false,
+  attested(): void { for (const f of [...attestWaiters]) f(); },
+};
+
+/** Runs `f` once, at the host's next counted attestation or after `ms` of
+ * the shell's clock, whichever is first; returns its cancel. */
+export function afterHostAttestation(ms: number, f: () => void): () => void {
+  let stop = () => {};
+  const fire = () => { cancel(); f(); };
+  const cancel = () => { attestWaiters.delete(fire); stop(); };
+  attestWaiters.add(fire);
+  stop = after(ms, fire);
+  return cancel;
 }
 
 /** Forgets what was recorded (tests). */

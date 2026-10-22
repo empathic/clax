@@ -136,15 +136,15 @@ function paintedLuminance(c: string): { lum: number; alpha: number } | null {
 }
 
 /** Outline colours over the CSS colour `bg` (transparent or unreadable counts
- * as white): the comment colour (`--pin`, #ed5439) as the border, which the
- * overlay keeps legible on any ground between a white and a brown hairline,
+ * as white): the comment colour (`--pin`, #e0532f) as the border, which the
+ * overlay keeps legible on any ground between a white and a near-black hairline,
  * and a tint of it, stronger over dark grounds, of at least 16%. */
 export function outlineColors(bg: string): { border: string; tint: string; tintAlpha: number } {
   const c = colorLuminance(bg);
   const lum = c && c.alpha > 0 ? c.lum : 1;
   return lum < 0.4
-    ? { border: "#ed5439", tint: "rgba(237, 84, 57, 0.24)", tintAlpha: 0.24 }
-    : { border: "#ed5439", tint: "rgba(237, 84, 57, 0.16)", tintAlpha: 0.16 };
+    ? { border: "#e0532f", tint: "rgba(224, 83, 47, 0.24)", tintAlpha: 0.24 }
+    : { border: "#e0532f", tint: "rgba(224, 83, 47, 0.16)", tintAlpha: 0.16 };
 }
 
 /** The colour behind `el`: the background of the nearest of it and its

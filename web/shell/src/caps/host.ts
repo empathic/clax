@@ -8,7 +8,9 @@ import type { ArtifactEvent } from "../events";
 import type { Thread } from "../threads";
 import type { Working } from "../view/working-model";
 import { type Declared, type Served, declaredConfig, isAvailable } from "./availability";
+import { deviceLink } from "./device-link";
 import { CapError } from "./errors";
+import type { ArrivalGesture } from "./gesture";
 import { Grants, type Prompt, type PromptAnswer, grantsKey } from "./grants";
 import { REGISTRY } from "./registry";
 
@@ -83,10 +85,21 @@ export interface CapEnv {
    * 2026-10-11-clax-dev-hosted-design §16.1): the page's writes as the
    * viewer (db, comments, room) reject `unavailable` without a request. */
   spectating?(): boolean;
+  /** The write journal of an app bundle's live migration (app/host.ts),
+   * while one runs: `db` sends each document's value before the first write
+   * to it, and writes only once the journal has it. */
+  journal?(): DbJournal | null;
 }
 
+/** Keeps `before`, the data of the document at `path` (null when there is
+ * none), before a write to it; rejects when it could not. */
+export type DbJournal = (e: { path: string; before: Record<string, unknown> | null }) => Promise<void>;
+
 export interface Handler {
-  call(method: string, args: unknown[]): Promise<unknown>;
+  /** `gesture`: the viewer's gesture as judged when the call arrived, given
+   * by a lazy handler (`lazy.ts`) whose chunk loaded after it; without it a
+   * handler judges the gesture itself, now. */
+  call(method: string, args: unknown[], gesture?: ArrivalGesture): Promise<unknown>;
   onEvent?(e: ArtifactEvent): void;
   /** The frame loaded a new document: drop per-document state. */
   reset?(): void;
@@ -138,8 +151,10 @@ export class CapabilityHost {
     const { env, grants } = await this.ready;
     if (this.dead) return;
     const named = m.type === "clax:use" ? m.name : m.ns;
+    this.served.device = deviceLink.call !== null;
     // Only a request about sample (or permissions, which lists it) waits for the daemon's answer.
     if (named === "sample" || named === "permissions") await this.checkServed(env);
+    if (named === "home") this.served.home = await deviceLink.home?.();
     if (this.dead) return;
     const owner = env.token !== null;
     if (m.type === "clax:use") {

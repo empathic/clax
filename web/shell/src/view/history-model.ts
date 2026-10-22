@@ -10,10 +10,12 @@
 import type { AnchorResult } from "../../../bridge/src/protocol";
 import type { Version } from "../api";
 import type { Comment, Thread } from "../threads";
+import { harnessName } from "./working-model";
 
 export type HistoryEvent = { v: number | null; who: string; agent: boolean; verb: string };
 
-export const agentName = (h: string | null | undefined): string => h || "agent";
+/** An agent's name by its harness (`harnessName`), or "agent" when unknown. */
+export const agentName = (h: string | null | undefined): string => (h ? harnessName(h) : "agent");
 
 /** What a version tag needs of a version (all the side panel has of another page's). */
 export type VersionTag = Pick<Version, "n" | "created_at" | "agent_harness">;

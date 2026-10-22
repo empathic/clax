@@ -45,6 +45,19 @@ describe("use()", () => {
     expect(rpc.use.mock.calls.map(c => c[0])).toEqual(["artifact", "room", "sample", "db"]);
   });
 
+  it("the device capabilities resolve namespaces whose members call the shell", async () => {
+    const rpc = fakeRpc({ notify: {}, share: {}, file: {}, camera: {}, location: {} });
+    const use = makeUse({ framed: true, rpc: rpc as never, locals });
+    const members = async (n: string) => Object.keys((await use(n)) as object).sort();
+    expect(await members("notify")).toEqual(["cancel", "list", "schedule"]);
+    expect(await members("share")).toEqual(["file", "text"]);
+    expect(await members("file")).toEqual(["pick", "save"]);
+    expect(await members("camera")).toEqual(["pick", "take"]);
+    expect(await members("location")).toEqual(["current", "watch"]);
+    const notify = (await use("notify")) as Record<string, (...a: unknown[]) => Promise<unknown>>;
+    await expect(notify.cancel("water")).resolves.toEqual({ ns: "notify", method: "cancel", args: ["water"] });
+  });
+
   it("resolves a frozen namespace whose members call the shell", async () => {
     const rpc = fakeRpc({ permissions: {} });
     const use = makeUse({ framed: true, rpc: rpc as never, locals });

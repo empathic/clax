@@ -153,6 +153,57 @@ describe("the questions in the artifact view", () => {
     expect(document.querySelector(".thread-q-slot .qcard")).toBeNull();
   });
 
+  it("in app mode mounts the questions into the app's sheet, not the hidden sidebar, and tells the page each change", async () => {
+    vi.resetModules();
+    const q = view();
+    const elsewhere = view({ id: "Q3", artifact: { id: "other", title: "Other", kind: "html" } });
+    vi.stubGlobal("fetch", vi.fn(async (url: string) => new Response(JSON.stringify(url.startsWith("/api/inbox/summary") ? { unread: 0, questions: [], latest: [] } : { questions: [q, elsewhere], open: 2 }))));
+    document.documentElement.classList.add("app");
+    document.body.innerHTML = `<aside class="sidebar"><div class="questions-slot"></div></aside><section class="app-questions"><div class="questions-slot"></div></section>`;
+    const counts: unknown[] = [];
+    const hear = (e: Event) => counts.push((e as CustomEvent).detail);
+    document.addEventListener("clax-questions", hear);
+    try {
+      const qmod = await import("./index");
+      const stream = fakeStream();
+      const stop = qmod.artifact(AID, { keyboardTrail: { onClear: () => () => {} }, guardedAction: (_e, _v, act) => { act(); return null; } }, stream as never);
+      for (const f of stream.on.values()) f({ type: "ready" });
+      await settle();
+      expect(document.querySelectorAll(".app-questions .qcard")).toHaveLength(1);
+      expect(document.querySelector(".sidebar .side-q")).toBeNull();
+      expect(counts.at(-1)).toEqual({ open: [q.id], closed: [] });
+      // The sidebar mounting again does not take the list from the sheet.
+      const side = document.querySelector(".sidebar > .questions-slot")!;
+      flush(() => side.dispatchEvent(new CustomEvent("clax-questions-slot", { bubbles: true })));
+      expect(document.querySelectorAll(".app-questions .qcard")).toHaveLength(1);
+      expect(side.querySelector(".side-q")).toBeNull();
+      // Answered: none open, its card still shown saying so.
+      flush(() => stream.on.get("questions")!({ type: "question", question: { ...q, status: "answered", answered_via: "shell" } }));
+      expect(counts.at(-1)).toEqual({ open: [], closed: [q.id] });
+      stop();
+      flush();
+      expect(counts.at(-1)).toEqual({ open: [], closed: [] });
+      expect(document.querySelector(".app-questions .qcard")).toBeNull();
+    } finally {
+      document.removeEventListener("clax-questions", hear);
+      document.documentElement.classList.remove("app");
+    }
+  });
+
+  it("outside app mode fills the sidebar even when a sheet's slot is in the document", async () => {
+    vi.resetModules();
+    vi.stubGlobal("fetch", vi.fn(async (url: string) => new Response(JSON.stringify(url.startsWith("/api/inbox/summary") ? { unread: 0, questions: [], latest: [] } : { questions: [view()], open: 1 }))));
+    document.body.innerHTML = `<aside class="sidebar"><div class="questions-slot"></div></aside><section class="app-questions"><div class="questions-slot"></div></section>`;
+    const qmod = await import("./index");
+    const stream = fakeStream();
+    const stop = qmod.artifact(AID, { keyboardTrail: { onClear: () => () => {} }, guardedAction: (_e, _v, act) => { act(); return null; } }, stream as never);
+    for (const f of stream.on.values()) f({ type: "ready" });
+    await settle();
+    expect(document.querySelectorAll(".sidebar .qcard")).toHaveLength(1);
+    expect(document.querySelector(".app-questions .qcard")).toBeNull();
+    stop();
+  });
+
   it("closes the notifications shown once nothing is left unread, as after a bulk mark", async () => {
     vi.resetModules();
     const made: { closed: boolean }[] = [];

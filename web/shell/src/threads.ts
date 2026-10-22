@@ -214,10 +214,22 @@ export function resolvedByLabel(by: string, me?: Viewer | null, name?: string | 
   return name || "Viewer";
 }
 
-/** A short label for an anchor: the quote in «», else `Area in <selector>
- * (<w>% × <h>%)` for a drawn area, else the selector. */
+/** `text`, when it reads as `quote` with only its whitespace (and control
+ * characters) changed (it may stop short of a long quote's end): an anchor's
+ * `label` or a picked element's spaced text, shown in place of its
+ * run-together quote; else null. */
+export function respaced(quote: string | null | undefined, text: unknown): string | null {
+  if (!quote || typeof text !== "string") return null;
+  const squash = (s: string) => s.replace(/[\s\p{Cc}]+/gu, "");
+  const t = squash(text);
+  return t && squash(quote).startsWith(t) ? text : null;
+}
+
+/** A short label for an anchor: the quote (its `label` when it has one) in
+ * «», else `Area in <selector> (<w>% × <h>%)` for a drawn area, else the
+ * selector. */
 export function anchorLabel(a: Anchor): string {
-  const q = a.quote?.replace(/\s+/g, " ").trim();
+  const q = (respaced(a.quote, a.label) ?? a.quote)?.replace(/\s+/g, " ").trim();
   if (q) return `«${q.length > 80 ? `${q.slice(0, 80)}…` : q}»`;
   if (a.kind === "area") return areaLabel(a);
   return a.kind === "custom" ? `custom: ${a.custom_name ?? ""}` : a.selector ?? "";

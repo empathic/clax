@@ -1,4 +1,5 @@
-import { afterEach, describe, expect, it, vi } from "vitest";
+import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
+import { visibility } from "../stream";
 import type { ViewState } from "./artifact-controller";
 import { PresenceReporter } from "./presence-reporter";
 
@@ -159,5 +160,46 @@ describe("PresenceReporter", () => {
     expect(bodies[0].idle_ms).toBeGreaterThanOrEqual(0);
     expect(vi.mocked(fetch).mock.calls[0][1]?.keepalive).toBe(true);
     r.dispose();
+  });
+});
+
+describe("PresenceReporter visibility", () => {
+  // The reports go out through fetch (`putPresence` in presence-reporter.ts).
+  const fetchSpy = vi.fn(async (_url: string, _init?: RequestInit) => new Response("{}", { status: 500 }));
+  /** The state the last presence report sent. */
+  const lastState = () => {
+    const init = fetchSpy.mock.calls.at(-1)?.[1];
+    return init ? (JSON.parse(String(init.body)) as { state: string }).state : undefined;
+  };
+  const state = { shareWhere: false, threads: [], selected: null } as unknown as ViewState;
+  const rule = visibility.hidden;
+  let r: PresenceReporter | null = null;
+  beforeEach(() => {
+    fetchSpy.mockClear();
+    vi.stubGlobal("fetch", fetchSpy);
+  });
+  afterEach(() => {
+    vi.unstubAllGlobals();
+    visibility.hidden = rule;
+    r?.dispose();
+    r = null;
+    Object.defineProperty(document, "visibilityState", { configurable: true, get: () => "visible" });
+  });
+
+  it("follows the shared hidden rule, not the document's own visibility (app mode)", () => {
+    // The app's WebView reports its document hidden while the app shows it.
+    Object.defineProperty(document, "visibilityState", { configurable: true, get: () => "hidden" });
+    visibility.hidden = () => false;
+    r = new PresenceReporter("a1", () => state, () => true, () => {});
+    r.report(true);
+    expect(fetchSpy).toHaveBeenLastCalledWith("/api/viewers/me/presence", expect.objectContaining({ method: "PUT" }));
+    expect(lastState()).toBe("here");
+  });
+
+  it("reports away when the rule says hidden, whatever the document says", () => {
+    visibility.hidden = () => true;
+    r = new PresenceReporter("a1", () => state, () => true, () => {});
+    r.report(true);
+    expect(lastState()).toBe("away");
   });
 });

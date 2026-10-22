@@ -37,7 +37,7 @@ for (const mode of ["subdomain", "sandbox"] as const) {
     const out = JSON.parse(await frame.locator("#out").textContent() ?? "{}");
     expect(out).toMatchObject({
       sync: false, sameSelf: true,
-      permissions: "request,state", db: "collection,doc", artifact: "edit,publish,sync", self: "edit,publish,sync",
+      permissions: "request,state", db: "artifact,collection,doc", artifact: "edit,publish,sync", self: "edit,publish,sync",
       comments: "anchorFor,canSendToClaude,create,customAnchors,delete,onWorking,openComposer,reply,resolve,sendToClaude,working",
       user: "avatarUrl,can,canEdit,email,id,isOwner,me,name,profiles,search", downloads: null, assets: null, files: null, mcp: null, room: null, sample: null, nonsense: null,
       permissionsFrozen: true, dbFrozen: true,

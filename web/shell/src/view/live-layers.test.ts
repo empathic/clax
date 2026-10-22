@@ -223,4 +223,23 @@ describe("LiveSocket", () => {
     expect(liveUrl("7q3k9mzx2b4t", { protocol: "http:", host: "localhost:7480" })).toBe("ws://localhost:7480/api/artifacts/7q3k9mzx2b4t/live");
     expect(liveUrl("7q3k9mzx2b4t", { protocol: "https:", host: "clax.example" })).toBe("wss://clax.example/api/artifacts/7q3k9mzx2b4t/live");
   });
+
+  it("has no URL in the Clax app, nor on a scheme it would have to guess a WebSocket scheme for", () => {
+    expect(liveUrl("7q3k9mzx2b4t", { protocol: "https:", host: "app.clax.invalid" }, true)).toBeNull();
+    expect(liveUrl("7q3k9mzx2b4t", { protocol: "clax:", host: "app" }, true)).toBeNull();
+    expect(liveUrl("7q3k9mzx2b4t", { protocol: "clax:", host: "app" }, false)).toBeNull();
+  });
+
+  it("opens no socket without a URL, on start or on resume", () => {
+    const t = manual();
+    const { made, make } = fakeSockets();
+    const ls = new LiveSocket(null, { welcome() {}, batch() {}, opened() {}, closed() {} }, make, t);
+    ls.start();
+    ls.pause();
+    ls.resume();
+    t.advance(60_000);
+    ls.send({ t: "open", thread_id: null });
+    ls.stop();
+    expect(made).toEqual([]);
+  });
 });

@@ -4,6 +4,7 @@
 // registered custom name ("custom"); otherwise the anchor is detached.
 
 import { type Anchor, type AnchorRect, INDEX_FILE, type ResolveMethod } from "./protocol";
+import { nameOf } from "./describe";
 import { sha256Hex } from "./sha256";
 
 export const AFFIX = 32;
@@ -138,6 +139,39 @@ function affixes(idx: TextIndex, start: number, quote: string) {
   return { prefix: cut(idx.text, Math.max(0, start - AFFIX), start), suffix: cut(idx.text, start + quote.length, start + quote.length + AFFIX) };
 }
 
+/** `idx.text` from `start` to `end` as a reader sees it: a space between two
+ * text nodes of different elements (unless the join has one, or the second
+ * opens with closing punctuation), whitespace and control characters
+ * collapsed to one space, trimmed, cut at `max` characters; null when empty. */
+export function spacedText(idx: TextIndex, start: number, end: number, max: number): string | null {
+  let out = "";
+  let prev: Element | null = null;
+  for (const { node, start: s } of idx.pieces) {
+    if (s >= end) break;
+    if (s + node.data.length <= start) continue;
+    const data = node.data.slice(Math.max(0, start - s), end - s);
+    const parent = node.parentElement;
+    out += (prev && parent !== prev && !/^[\s.,;:!?)\]}]/.test(data) ? " " : "") + data;
+    prev = parent;
+    if (out.length > 4 * max) break;
+  }
+  const t = [...out.replace(/[\s\p{Cc}\u2028\u2029]+/gu, " ").trim()].slice(0, max).join("");
+  return t || null;
+}
+
+/** `{ label }`, the quote at `start` as a reader sees it (`spacedText`), when
+ * that differs from the quote with its whitespace collapsed; else nothing. */
+function labelOf(idx: TextIndex, start: number, quote: string): { label?: string } {
+  const label = spacedText(idx, start, start + quote.length, MAX_QUOTE);
+  return label && label !== quote.replace(/\s+/g, " ").trim() ? { label } : {};
+}
+
+/** `{ name }`, what `el` is called (`nameOf`), when it has a name; else nothing. */
+export function named(el: Element): { name?: string } {
+  const name = nameOf(el);
+  return name ? { name } : {};
+}
+
 /** An anchor on `el` of the page published at `file`. */
 export function buildElementAnchor(doc: Document, el: Element, file: string = INDEX_FILE): Anchor {
   const idx = textIndex(doc.body);
@@ -145,11 +179,13 @@ export function buildElementAnchor(doc: Document, el: Element, file: string = IN
   let quote: string | null = null;
   let prefix: string | null = null;
   let suffix: string | null = null;
+  let label = {};
   if (s && idx.text.slice(s[0], s[1]).trim()) {
     quote = cut(idx.text, s[0], Math.min(s[1], s[0] + MAX_QUOTE));
     ({ prefix, suffix } = affixes(idx, s[0], quote));
+    label = labelOf(idx, s[0], quote);
   }
-  return { kind: "element", selector: cssPath(el), quote, prefix, suffix, html_hash: htmlHash(el), rect: anchorRect(el, doc.defaultView!), custom_name: null, file };
+  return { kind: "element", selector: cssPath(el), quote, prefix, suffix, html_hash: htmlHash(el), rect: anchorRect(el, doc.defaultView!), custom_name: null, file, ...label, ...named(el) };
 }
 
 /** An anchor on `range` of the page published at `file`. */
@@ -160,7 +196,7 @@ export function buildRangeAnchor(doc: Document, range: Range, file: string = IND
   const quote = cut(idx.text, start, Math.min(end, start + MAX_QUOTE));
   const c = range.commonAncestorContainer;
   const el = c.nodeType === Node.ELEMENT_NODE ? (c as Element) : c.parentElement!;
-  return { kind: "range", selector: cssPath(el), quote, ...affixes(idx, start, quote), html_hash: htmlHash(el), rect: anchorRect(range, doc.defaultView!), custom_name: null, file };
+  return { kind: "range", selector: cssPath(el), quote, ...affixes(idx, start, quote), html_hash: htmlHash(el), rect: anchorRect(range, doc.defaultView!), custom_name: null, file, ...labelOf(idx, start, quote), ...named(el) };
 }
 
 const commonSuffix = (a: string, b: string) => { let n = 0; while (n < a.length && n < b.length && a[a.length - 1 - n] === b[b.length - 1 - n]) n++; return n; };

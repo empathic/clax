@@ -36,9 +36,9 @@ function closure(entry: string): Set<string> {
 const rel = (f: string) => f.startsWith(SRC) ? f.slice(SRC.length + 1) : f;
 
 describe("the bridge split", () => {
-  it("keeps comment mode, anchoring, areas, clips and capability members out of the eager bridge", () => {
+  it("keeps comment mode, anchoring, areas, clips, capability members and the app's scroll report out of the eager bridge", () => {
     const eager = [...closure(resolve(SRC, "bridge.ts"))].map(rel);
-    const lazy = ["anchor.ts", "area.ts", "clip.ts", "comment-mode.ts", "target.ts", "text-walk.ts", "sha256.ts", "modern-screenshot"];
+    const lazy = ["anchor.ts", "area.ts", "clip.ts", "comment-mode.ts", "long-press.ts", "scroll.ts", "target.ts", "text-walk.ts", "sha256.ts", "modern-screenshot"];
     expect(eager.filter(f => lazy.includes(f) || f.startsWith("caps/") || (f.startsWith("parts/") && f !== "parts/types.ts"))).toEqual([]);
   });
   it("lets no part import the eager bridge's state", () => {

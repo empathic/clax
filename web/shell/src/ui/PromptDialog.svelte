@@ -16,11 +16,17 @@
   // of the shell is inert and Tab stays among its buttons ("Don't allow"
   // alone until "Allow" is armed).
   import { after as later } from "../clock";
+  import { nextFrame } from "../view/after-paint";
+  import { onHostVisibility, visibility } from "../visibility";
   import { ALLOW_DELAY_MS, type Ask } from "../view/prompt-queue";
   import { guardedAction } from "../view/trail";
   import { inertOutside, trapTab } from "./modal";
 
   let { ask }: { ask: Ask } = $props();
+  // The ask by identity: a parent that passes a field of a larger state
+  // (`StageIsland`'s `s.ask`) re-reads the prop on every change of that
+  // state, and only a new ask may disarm "Allow" below.
+  const current = $derived(ask);
   let deny = $state<HTMLButtonElement>();
   let box = $state<HTMLElement>();
   let armed = $state(false);
@@ -39,22 +45,37 @@
   // refusing button and disarms "Allow" at once, so it never paints armed,
   // then arms it ALLOW_DELAY_MS after the dialog's next paint: the second
   // animation frame runs only once the first one, which painted the dialog,
-  // is done (in a hidden tab, not until the tab is shown).
+  // is done (in a hidden tab, not until the tab is shown). In the Clax app,
+  // whose WebView may run no frames while the app shows the page, each frame
+  // falls back to a short timer while the app's host says the page is shown
+  // (`nextFrame` with `whenShown`), so the delay still counts from about
+  // when the dialog could first be seen. Arming follows the host's word: the
+  // waits start again when it says shown (a dialog opened before the app's
+  // `init`, or while hidden), and while it says hidden "Allow" is disarmed
+  // and nothing counts, so the full delay runs again from the next shown.
   $effect(() => {
-    const a = ask;
+    const a = current;
     armed = false;
     armedAt = Infinity;
     fresh = new Map();
     lastFresh = false;
     hint = null;
     deny?.focus();
-    let second = 0;
+    let first = () => {};
+    let second = () => {};
     let disarm = () => {};
-    const first = requestAnimationFrame(() => {
-      second = requestAnimationFrame(() => {
-        disarm = later(ALLOW_DELAY_MS, () => { armedAt = performance.now(); armed = true; });
-      });
-    });
+    const stop = () => { first(); second(); disarm(); armed = false; armedAt = Infinity; };
+    const start = () => {
+      stop();
+      if (visibility.shown() === false) return;
+      first = nextFrame(() => {
+        second = nextFrame(() => {
+          disarm = later(ALLOW_DELAY_MS, () => { armedAt = performance.now(); armed = true; });
+        }, true);
+      }, true);
+    };
+    start();
+    const offVisibility = onHostVisibility(start);
     const onKey = (e: KeyboardEvent) => { if (e.key === "Escape") a.answer("dismiss"); };
     const onPress = (e: PointerEvent) => {
       lastFresh = after(e);
@@ -63,9 +84,8 @@
     addEventListener("keydown", onKey);
     addEventListener("pointerdown", onPress, true);
     return () => {
-      cancelAnimationFrame(first);
-      cancelAnimationFrame(second);
-      disarm();
+      offVisibility();
+      stop();
       removeEventListener("keydown", onKey);
       removeEventListener("pointerdown", onPress, true);
     };

@@ -31,7 +31,32 @@ export interface Anchor {
   file: string;
   /** A live page's route (`?query#/hash-route`), set by the daemon; absent on artifacts. */
   route?: string;
+  /** The quote as a reader sees it, spaced where its text runs from one
+   * element into another (the quote is not, for re-anchoring); shown in
+   * place of the quote. Absent when it would read as the quote. */
+  label?: string;
+  /** What the picked element is called, read at pick time (`describe.ts`
+   * `nameOf`): its accessible name, else the start of its text, else its
+   * kind word with the nearest heading before it ("Chart under ‘p95 by
+   * four-hour window’"), at most `MAX_NAME` characters of plain text. Absent
+   * when it has none, and on anchors made before names were recorded. */
+  name?: string;
 }
+/** The longest `Anchor.name`, in characters (the daemon's limit). */
+export const MAX_NAME = 120;
+/** The word for what an element is, by its ARIA role or else its tag, as a
+ * thread's title gives it when the element has no name of its own: the
+ * bridge writes it into `Anchor.name` ("Chart under ‘…’") and the app reads
+ * only these words outside quote marks. */
+export const KIND_WORDS: Readonly<Record<string, string>> = {
+  table: "Table", grid: "Table", canvas: "Chart", svg: "Chart", img: "Image", image: "Image", picture: "Image",
+  video: "Video", audio: "Audio player", iframe: "Embedded page", button: "Button", a: "Link", link: "Link",
+  input: "Field", textarea: "Text box", textbox: "Text box", select: "Menu", combobox: "Menu", checkbox: "Checkbox",
+  radio: "Option", switch: "Switch", slider: "Slider", heading: "Heading", h1: "Heading", h2: "Heading", h3: "Heading",
+  h4: "Heading", h5: "Heading", h6: "Heading", p: "Paragraph", ul: "List", ol: "List", list: "List", li: "List item",
+  listitem: "List item", form: "Form", figure: "Figure", nav: "Navigation", navigation: "Navigation", dialog: "Dialog",
+  progress: "Progress bar", progressbar: "Progress bar", blockquote: "Quote", pre: "Code block", code: "Code",
+};
 /** A rectangle in the content frame's viewport pixels. */
 export interface Box { x: number; y: number; w: number; h: number }
 export type ResolveMethod = "exact" | "selector" | "quote" | "custom";
@@ -76,7 +101,12 @@ export type CallResult =
 export type CapEvent = { type: "clax:event"; ns: string; topic: string; data: unknown };
 
 export type ShellToBridge =
-  | { type: "clax:welcome"; mode: "comment" | "view" }
+  /** `app`: the shell is the Clax app's (`/a/<id>?app=1`); the page then
+   * reports its scroll position (`clax:scroll`), and scrolls to
+   * `restoreScroll` (CSS pixels from the top) once the document is tall
+   * enough, or after 2 s as far as it reaches: the app shell sends it when it
+   * loaded a newer version in place of the one the viewer was scrolling. */
+  | { type: "clax:welcome"; mode: "comment" | "view"; app?: boolean; restoreScroll?: number }
   | { type: "clax:comment-mode"; on: boolean }
   /** Moves the page to the fragment `hash` (`#…`, or `""` for none) in
    * place, replacing its history entry (the page's own `clax:hash` reports
@@ -90,6 +120,11 @@ export type ShellToBridge =
    * after a load that brought no hello, which in Chromium can come with no
    * new document (Back or Forward across the page's own fragments). */
   | { type: "clax:greet" }
+  /** After a welcome with `app: true`: return to the page's route at
+   * `depth` (below the one it shows, as its `clax:route` reported), back
+   * through the page's own entries, or in place once a fragment entry lies
+   * among them (`routes.ts`), with a `popstate` the page's router follows. */
+  | { type: "clax:back"; depth: number }
   /** `sameVersion`: the thread was made on the version the frame shows (an
    * area's element fingerprint is then not checked: its content may be live). */
   /** `highlight`: an open thread, whose quote the page highlights while its anchor resolves to text. */
@@ -118,18 +153,66 @@ export type ShellToBridge =
    * anything), so the page reports this viewer's pointer; until a message
    * draws someone or says `here`, the page reports nothing. */
   | { type: "clax:peers"; peers: FramePeer[]; here?: boolean }
+  /** The app's inspect view (`/a/<id>?app=1&inspect=1`, `web/shell/src/app/host.ts`)
+   * asks for an inspection of the page (`inspect.ts`): it waits until the
+   * page settles (at most `settleMs`), then answers `clax:inspection` with
+   * the same `requestId`, its screenshot at most `maxBytes`. */
+  | { type: "clax:inspect"; requestId: string; settleMs?: number; maxBytes?: number }
+  /** The app's inspect view asks the bridge to run the draft's test files
+   * (`harness.ts`), paths relative to the page, each test for at most
+   * `testMs`, the run for at most `totalMs`; `clax:tests` answers with the
+   * same `requestId`. Honoured only in the frame named `INSPECT_FRAME`. */
+  | { type: "clax:test"; requestId: string; files: string[]; testMs?: number; totalMs?: number }
+  /** The app's inspect view asks the bridge to run an app bundle's
+   * migration (`harness.ts`): import `file` (relative to the page), call its
+   * default export with the page's `db` and `{from, to}`, all within
+   * `totalMs`; `clax:migration` answers with the same `requestId`.
+   * Honoured only in the frame named `MIGRATE_FRAME`. */
+  | { type: "clax:migrate"; requestId: string; file: string; from: number; to: number; totalMs?: number }
   | UseResult
   | CallResult
   | CapEvent;
 
+/** The name (`window.name`) the app's inspect view gives its content frame:
+ * the bridge keeps the page's errors from its first script only there. A
+ * page can name its own frame so; it then only keeps its own errors. */
+export const INSPECT_FRAME = "clax-inspect";
+/** The name the app's migration view (`?app=1&inspect=1&migrate=1`) gives
+ * its content frame: there the bridge, the document's first script, ends
+ * the page's markup before any of it runs (the rest of the document parses
+ * as hidden text), so only an app bundle's migration (`clax:migrate`) runs
+ * against the page's `db`. */
+export const MIGRATE_FRAME = "clax-migrate";
+/** One of a page's errors since its first script (`inspect.ts`): an `error`
+ * event, an unhandled promise rejection, or a `console.error` call. */
+export interface InspectError { kind: "error" | "unhandledrejection" | "console"; text: string }
+/** What an inspection found (`inspect.ts`): `png`, the viewport; `failed`,
+ * the URLs of resources that failed to load; `text`, an outline of the
+ * page; `height`, the document's scroll height in CSS pixels. */
+export interface Inspection { png: ArrayBuffer; errors: InspectError[]; failed: string[]; text: string; title: string; height: number }
+/** What a test run found (`harness.ts`): how many tests `passed`, each that
+ * `failed` (or test file that did not load) with why, and how many were
+ * `skipped` because the run's time ran out. */
+export interface TestResults { passed: number; failed: { name: string; error: string }[]; skipped: number }
+/** What a migration run found (`harness.ts`): it finished, or why not. */
+export type MigrationResult = { ok: true } | { ok: false; error: string };
+
+/** What a picked element is, for the app's words about it (`describe.ts`):
+ * its tag, its ARIA role and its accessible name, as the page gives them, and
+ * `text`, its text spaced where it runs from one element into another (the
+ * anchor's quote is not), for showing in place of the quote. */
+export interface PickDesc { tag: string; role: string | null; name: string | null; text?: string | null }
+
 export type BridgeToShell =
-  | { type: "clax:hello"; artifact: string; version: number; file: string }
+  /** `again`: the answer to `clax:greet`, from the document that greeted
+   * before, its state (its routes) as it was. */
+  | { type: "clax:hello"; artifact: string; version: number; file: string; again?: true }
   | { type: "clax:hover"; selector: string | null; rect: Box | null }
   /** Sent at the viewer's pick itself (the click or release), before its
    * clip is rendered, with the pick's anchor: the shell opens the composer
    * for it at once, focused and waiting for the screenshot, only when this
    * arrived while the frame held the viewer's gesture. */
-  | { type: "clax:pick-start"; pickId: string; version: number; anchor: Anchor }
+  | { type: "clax:pick-start"; pickId: string; version: number; anchor: Anchor; desc?: PickDesc }
   /** The pick's screenshot (or why there is none); the shell takes it only
    * for the composer its accepted start opened, and ignores the anchor here. */
   | { type: "clax:pick"; pickId: string; version: number; anchor: Anchor; clipPng?: ArrayBuffer; clipError?: string }
@@ -152,7 +235,7 @@ export type BridgeToShell =
    * error, for debugging: the page can post this too, so the shell shows only
    * its own words for `part`, and none for `live` (the live layers are best
    * effort: others' pointers are simply not drawn). */
-  | { type: "clax:degraded"; part: "comment" | "clip" | "caps" | "room" | "sample" | "live"; message: string }
+  | { type: "clax:degraded"; part: "comment" | "clip" | "caps" | "room" | "sample" | "live" | "test"; message: string }
   /** This viewer's pointer (null once it left the page) and selection: the
    * text selected, or the area being drawn in comment mode; and `pick`, the
    * last pick made in comment mode (what the shell shows others while that
@@ -162,8 +245,42 @@ export type BridgeToShell =
   /** Where the page drew each peer's pointer, in its viewport's pixels,
    * after each draw, scroll and resize: the shell puts the names there. */
   | { type: "clax:peer-at"; peers: { key: string; x: number; y: number }[] }
+  /** The page's vertical scroll position (CSS pixels) on its `file`, after a
+   * welcome with `app: true`: at most every 250 ms while the page scrolls,
+   * the last position of a burst always sent; only the app shell reads it
+   * (`web/shell/src/app/host.ts`). */
+  | { type: "clax:scroll"; file: string; y: number }
+  /** The page moved among its own `history.pushState` routes, after a
+   * welcome with `app: true` (`routes.ts`): `depth` is the number of the
+   * page's pushes above the entry it loaded at, `hash` its fragment; only the
+   * app shell reads it, for its back. */
+  | { type: "clax:route"; depth: number; hash: string }
+  /** The page's background colours (`#rrggbb`) at the middle of the
+   * viewport's top and bottom edges, after a welcome with `app: true`
+   * (`chrome.ts`): the first opaque background from the element there up
+   * to the root, else white; sent soon after the welcome and whenever
+   * either changes. Only the app shell reads it, for the system bars. */
+  | { type: "clax:chrome"; top: string; bottom: string }
+  /** A need of the shell's (comment mode, a capability's members) came
+   * before the page had parsed and waits for it (`waiting: true`, once per
+   * document), and the parse has ended (`waiting: false`). Only the app
+   * shell reads it, to say the page is slow. */
+  | { type: "clax:wait"; waiting: boolean }
+  /** The answer to `clax:inspect` (`inspect.ts`): the viewport as a PNG,
+   * the page's errors and failed loads, an outline of its text, its title
+   * and height; or why there is none. The page can post this too, so the
+   * shell takes it only for the request it has open and checks its shape. */
+  | ({ type: "clax:inspection"; requestId: string } & (Inspection | { error: string }))
+  /** The answer to `clax:test` (`harness.ts`), or why there is none. The page
+   * can post this too: the shell takes it only for the request it has open
+   * and checks its shape. */
+  | ({ type: "clax:tests"; requestId: string } & (TestResults | { error: string }))
+  /** The answer to `clax:migrate` (`harness.ts`). The page can post this
+   * too: the shell takes it only for the request it has open and checks its
+   * shape. */
+  | ({ type: "clax:migration"; requestId: string } & MigrationResult)
   | UseRequest
   | CallRequest;
 
-export const SHELL_TYPES: ReadonlySet<string> = new Set(["clax:welcome", "clax:comment-mode", "clax:hash", "clax:greet", "clax:resolve-anchors", "clax:scroll-to", "clax:focus", "clax:key", "clax:pick-refused", "clax:composer-ready", "clax:peers", "clax:use-result", "clax:call-result", "clax:event"]);
-export const BRIDGE_TYPES: ReadonlySet<string> = new Set(["clax:hello", "clax:hover", "clax:pick-start", "clax:pick", "clax:anchors", "clax:cancel", "clax:bye", "clax:navigate", "clax:hash", "clax:degraded", "clax:cursor", "clax:peer-at", "clax:use", "clax:call"]);
+export const SHELL_TYPES: ReadonlySet<string> = new Set(["clax:welcome", "clax:comment-mode", "clax:hash", "clax:greet", "clax:back", "clax:resolve-anchors", "clax:scroll-to", "clax:focus", "clax:key", "clax:pick-refused", "clax:composer-ready", "clax:inspect", "clax:test", "clax:migrate", "clax:peers", "clax:use-result", "clax:call-result", "clax:event"]);
+export const BRIDGE_TYPES: ReadonlySet<string> = new Set(["clax:hello", "clax:hover", "clax:pick-start", "clax:pick", "clax:anchors", "clax:cancel", "clax:bye", "clax:navigate", "clax:hash", "clax:degraded", "clax:cursor", "clax:peer-at", "clax:scroll", "clax:route", "clax:chrome", "clax:wait", "clax:inspection", "clax:tests", "clax:migration", "clax:use", "clax:call"]);

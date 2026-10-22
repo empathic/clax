@@ -15,14 +15,41 @@
 // cannot pick for them with synthetic events. The outline is clamped to the viewport so all four borders show,
 // with a tint judged from the background behind the target. A selection that
 // already existed when the mode was turned on is not a pick; turning the
-// mode off drops any pending hover, drag, and widening. The overlay lives in
+// mode off drops any pending hover, drag, and widening. The pointer leaving
+// the page drops the outline; a drag whose release never reached the page
+// (its button up as the pointer leaves or comes back, or the page losing
+// focus) is dropped, and a pick hook that throws ends its capture at once,
+// so nothing stays drawn over the page. The overlay lives in
 // a shadow root on <html>, so it never changes the page's body, selectors, or
 // text; it also draws the dashed outline of a focused thread's area.
+// On a touch screen a finger held still outlines its target, and lifting it
+// picks: the click the browser sends after the release picks, as a tap's
+// does, and when none comes within `TOUCH_CLICK_WAIT_MS` (after a long-press
+// on Android, say) comment mode picks what is under the finger itself,
+// moving focus into the page as an area drag's press does (`long-press.ts`).
+// While a finger is held, text selection and the context menu are cancelled,
+// so a long-press neither selects nor opens a menu. A mouse or pen keeps
+// selecting text and opening its menu. A held finger that then moves drags:
+// from text under it at arming, the selection runs from that caret to the
+// last text caret under the finger (shown in the outline tint) and the release
+// picks it as a mouse selection is picked; from anywhere else it draws an area
+// as a mouse drag does. A drag whose range is empty, or whose area is under
+// `AREA_MIN`, picks what a tap at the arming point would. A second finger or
+// `touchcancel` drops the drag, its selection and its rectangle. In a browser
+// a drag's release brings no click, and the shell takes a pick only once the
+// viewer's finger is seen arriving on the frame, so the release offers the
+// pick: the selection, rectangle or outline stays with a "Comment" chip beside
+// it, whose tap (a real click) picks; a touch elsewhere, a scroll, or the
+// mode going off drops the offer, and that touch's click picks nothing. In
+// app mode (`confirmDrag` false) the host attests the finger, and the release
+// picks at once.
 
 import { OVERLAY_TAG } from "./anchor";
+import { nextFrame } from "./frame";
 import { type AreaRect, REPLACED, Widen, dragRect, isClickSized, nonTextAt, widenedTarget } from "./area";
+import { LongPress, type Timers, windowTimers } from "./long-press";
 import type { Box } from "./protocol";
-import { backgroundBehind, chooseTarget, outlineBox, outlineColors, rectOf, viewportOf } from "./target";
+import { backgroundBehind, caretAt, chooseTarget, outlineBox, outlineColors, rectOf, viewportOf } from "./target";
 
 export interface ModeHooks {
   hover(target: Element | Range | null): void;
@@ -38,19 +65,46 @@ export interface ModeHooks {
 }
 
 // Shell tokens do not reach this shadow root, so the values repeat them:
-// #ed5439 is --pin, #2f0b04 --on-pin, #ffffff --pin-ring. The red-orange
-// border sits between a white outer and a brown inner hairline, so one of the
+// #e0532f is --pin, #141413 --on-pin, #ffffff --pin-ring. The red-orange
+// border sits between a white outer and a near-black inner hairline, so one of the
 // two keeps at least 3:1 against any page colour.
 const CSS = `:host{all:initial}
-.o,.a,.f{position:fixed;box-sizing:border-box;pointer-events:none;border:2px solid #ed5439;border-radius:0;box-shadow:0 0 0 1px #fff,inset 0 0 0 1px #2f0b04;background:var(--ax-tint,rgba(237,84,57,.16));z-index:2147483647;display:none}
+.o,.a,.f{position:fixed;box-sizing:border-box;pointer-events:none;border:2px solid #e0532f;border-radius:0;box-shadow:0 0 0 1px #fff,inset 0 0 0 1px #141413;background:var(--ax-tint,rgba(224,83,47,.16));z-index:2147483647;display:none}
 .a.capturing,.f{border-style:dashed;background:none}
 .o.flash,.f.flash{animation:f .9s ease-out 2}
-.pin{position:fixed;pointer-events:none;width:18px;height:18px;margin:-20px 0 0 4px;border-radius:50% 50% 50% 0;background:#ed5439;border:1.5px solid #fff;box-sizing:border-box;box-shadow:0 1px 3px rgba(47,11,4,.45);z-index:2147483647;display:none}
-@keyframes f{50%{background:rgba(237,84,57,.4)}}
-@media (prefers-reduced-motion:reduce){.o.flash,.f.flash{animation:none;background:rgba(237,84,57,.3)}}`;
+.c{position:fixed;pointer-events:auto;display:none;z-index:2147483647;margin:0;padding:0 16px;min-height:40px;border:1.5px solid #fff;border-radius:20px;background:#e0532f;color:#141413;font:600 15px/40px system-ui,sans-serif;box-shadow:0 1px 4px rgba(20,20,19,.45);cursor:pointer;-webkit-tap-highlight-color:transparent}
+.pin{position:fixed;pointer-events:none;width:18px;height:18px;margin:-20px 0 0 4px;border-radius:50% 50% 50% 0;background:#e0532f;border:1.5px solid #fff;box-sizing:border-box;box-shadow:0 1px 3px rgba(20,20,19,.45);z-index:2147483647;display:none}
+@keyframes f{50%{background:rgba(224,83,47,.4)}}
+@media (prefers-reduced-motion:reduce){.o.flash,.f.flash{animation:none;background:rgba(224,83,47,.3)}}`;
+
+/** Added to the page while comment mode is on: a long-press opens no link
+ * callout (it has no effect on a mouse). */
+const GUARD_CSS = "html{-webkit-touch-callout:none}";
+
+/** How long after a long-press's release comment mode waits for the
+ * browser's click before it picks what is under the finger itself. */
+export const TOUCH_CLICK_WAIT_MS = 400;
 
 /** A drag that draws an area: where it started, in page coordinates. */
 type Drag = { x: number; y: number };
+
+/** A text position. */
+type Caret = { node: Node; offset: number };
+
+/** A held finger's drag: where it armed (viewport), and for text, the caret
+ * there and the last text caret under the finger. `none` is a drag that
+ * started while another pick's clip was taken: it does nothing. */
+type TouchDrag =
+  | { kind: "text"; x: number; y: number; from: Caret; to: Caret }
+  | { kind: "area"; x: number; y: number }
+  | { kind: "none" };
+
+/** A drag released in a browser, waiting for its chip's tap: what kind of
+ * pick it offers, and the pick. */
+type Offer = { kind: "text" | "area" | "target"; pick: () => void };
+
+/** How far (px) the chip sits from what it offers. */
+const CHIP_GAP = 8;
 
 export class CommentMode {
   private on = false;
@@ -60,7 +114,7 @@ export class CommentMode {
   private readonly focusBox: HTMLElement;
   private readonly pin: HTMLElement;
   private suppressClick = false;
-  private frame = 0;
+  private frame: (() => void) | null = null;
   private hovered: Element | Range | null = null;
   /** The target under the pointer before widening. */
   private base: Element | Range | null = null;
@@ -74,6 +128,21 @@ export class CommentMode {
    * in flight. */
   private capturing = false;
   private readonly trustedOnly: boolean;
+  private readonly longPress: LongPress;
+  /** The callout guard, in the page while the mode is on. */
+  private guard: HTMLStyleElement | null = null;
+  private readonly timers: Timers;
+  /** A long-press released, waiting for the browser's click: the timer that
+   * picks without it. */
+  private touchWait: number | null = null;
+  /** A held finger's drag in progress. */
+  private touchDrag: TouchDrag | null = null;
+  /** A released drag offered with the chip (browser only). */
+  private offer: Offer | null = null;
+  /** A touch that dropped an offer: its click picks nothing. */
+  private swallowTap = false;
+  private readonly chip: HTMLElement;
+  private readonly confirmDrag: () => boolean;
   /** The inline `cursor` the page had on <html> before the mode's crosshair,
    * given back when the mode ends. */
   private cursorBefore: { value: string; priority: string } | null = null;
@@ -81,16 +150,30 @@ export class CommentMode {
   /** `opts.trustedOnly` (default true) ignores events the page dispatched
    * itself; tests that synthesise input turn it off. `opts.shadow`
    * (default "open") is the drawing's shadow root mode: the Chrome
-   * extension's overlay uses "closed", so page scripts cannot reach it. */
-  constructor(private readonly doc: Document, private readonly hooks: ModeHooks, opts: { trustedOnly?: boolean; shadow?: "open" | "closed" } = {}) {
+   * extension's overlay uses "closed", so page scripts cannot reach it.
+   * `opts.timers` (default the window's) times the long-press.
+   * `opts.confirmDrag` (default always) says whether a hold-then-drag's
+   * release offers its pick with the chip rather than picking at once. */
+  constructor(private readonly doc: Document, private readonly hooks: ModeHooks, opts: { trustedOnly?: boolean; shadow?: "open" | "closed"; timers?: Timers; confirmDrag?: () => boolean } = {}) {
     this.trustedOnly = opts.trustedOnly ?? true;
+    this.confirmDrag = opts.confirmDrag ?? (() => true);
+    this.timers = opts.timers ?? windowTimers(doc.defaultView!);
+    this.longPress = new LongPress(doc, {
+      armed: (x, y) => this.hoverAt(this.elementAt(x, y), x, y),
+      pick: (x, y) => this.touchPick(x, y),
+      abandoned: () => { this.endTouchDrag(); this.unhover(); },
+      dragStart: (x, y) => this.touchDragStart(x, y),
+      dragMove: (x, y) => this.touchDragMove(x, y),
+      dragEnd: (x, y) => this.touchDragEnd(x, y),
+    }, this.timers, { trustedOnly: this.trustedOnly });
     this.host = doc.createElement(OVERLAY_TAG);
     const root = this.host.attachShadow({ mode: opts.shadow ?? "open" });
-    root.innerHTML = `<style>${CSS}</style><div class="f"></div><div class="o"></div><div class="a"></div><div class="pin"></div>`;
+    root.innerHTML = `<style>${CSS}</style><div class="f"></div><div class="o"></div><div class="a"></div><div class="pin"></div><button class="c" type="button" tabindex="-1">Comment</button>`;
     this.outline = root.querySelector(".o")!;
     this.areaBox = root.querySelector(".a")!;
     this.focusBox = root.querySelector(".f")!;
     this.pin = root.querySelector(".pin")!;
+    this.chip = root.querySelector(".c")!;
     doc.documentElement.appendChild(this.host);
   }
 
@@ -104,11 +187,23 @@ export class CommentMode {
       ["click", this.onClick as EventListener],
       ["keydown", this.onKey as EventListener],
       ["keyup", this.onKeyUp as EventListener],
+      ["contextmenu", this.onHeld],
+      ["selectstart", this.onHeld],
+      ["touchstart", this.onTouchStart as EventListener],
+      ["scroll", this.onScroll],
+      ["mouseout", this.onOut as EventListener],
     ];
     for (const [type, fn] of listeners) {
       if (on) this.doc.addEventListener(type, fn, true);
       else this.doc.removeEventListener(type, fn, true);
     }
+    const win = this.doc.defaultView;
+    if (on) win?.addEventListener("blur", this.onBlur);
+    else win?.removeEventListener("blur", this.onBlur);
+    this.longPress.set(on);
+    this.swallowTap = false;
+    this.dropOffer();
+    this.setGuard(on);
     const style = this.doc.documentElement.style;
     if (on) {
       this.cursorBefore = { value: style.getPropertyValue("cursor"), priority: style.getPropertyPriority("cursor") };
@@ -121,21 +216,32 @@ export class CommentMode {
     if (!on) this.cursorBefore = null;
     if (on) this.ensureLast();
     this.suppressClick = false;
+    this.endTouchWait();
     if (on) {
       const sel = this.doc.getSelection();
       this.selectionBefore = sel && !sel.isCollapsed && sel.rangeCount ? sel.getRangeAt(0).cloneRange() : null;
     } else {
-      if (this.frame) cancelAnimationFrame(this.frame);
-      this.frame = 0;
+      this.frame?.();
+      this.frame = null;
       this.selectionBefore = null;
       this.outline.style.display = "none";
       this.pin.style.display = "none";
       this.hovered = null;
       this.base = null;
       this.widen.stop();
+      this.endTouchDrag();
       this.endDrag();
       this.captured();
     }
+  }
+
+  /** Adds or removes the callout guard; `selection` (a colour) also tints
+   * the page's selection, for a text drag. */
+  private setGuard(on: boolean, selection?: string): void {
+    if (!on) { this.guard?.remove(); this.guard = null; return; }
+    this.guard ??= this.doc.createElement("style");
+    this.guard.textContent = selection ? `${GUARD_CSS}::selection{background:${selection}}` : GUARD_CSS;
+    (this.doc.head ?? this.doc.documentElement).appendChild(this.guard);
   }
 
   /** Ends comment mode and removes its drawing from the page for good. */
@@ -148,6 +254,18 @@ export class CommentMode {
    * while the tab's screenshot is taken). */
   setVisible(on: boolean): void {
     this.host.style.visibility = on ? "" : "hidden";
+  }
+
+  /** Starts a pick with `hook`: no other pick starts until `captured`. A
+   * hook that throws has started nothing, so the capture ends at once. */
+  private startPick(hook: () => void): void {
+    this.capturing = true;
+    try {
+      hook();
+    } catch (e) {
+      console.warn("clax: the pick could not start", e);
+      this.captured();
+    }
   }
 
   /** The pick's clip was taken (the pick was posted): an area's rectangle is
@@ -315,17 +433,228 @@ export class CommentMode {
     }
     this.pointer = { x: e.clientX, y: e.clientY, el: this.target(e) };
     if (this.frame) return;
-    this.frame = requestAnimationFrame(() => {
-      this.frame = 0;
+    this.frame = nextFrame(() => {
+      this.frame = null;
       if (!this.on || this.drag) return;
-      this.base = this.choose(this.pointer.el, this.pointer.x, this.pointer.y);
-      const t = this.widened(this.base);
-      if (sameTarget(t, this.hovered)) return;
-      this.hovered = t;
-      if (t) this.place(t);
-      else this.outline.style.display = "none";
-      this.hooks.hover(t);
+      this.hoverAt(this.pointer.el, this.pointer.x, this.pointer.y);
     });
+  };
+
+  /** Outlines and reports the target for a pointer or finger at (`x`, `y`)
+   * over `el`, unless it is the one already reported. */
+  private hoverAt(el: Element | null, x: number, y: number): void {
+    if (!this.on) return;
+    this.base = this.choose(el, x, y);
+    const t = this.widened(this.base);
+    if (sameTarget(t, this.hovered)) return;
+    this.hovered = t;
+    if (t) this.place(t);
+    else this.outline.style.display = "none";
+    this.hooks.hover(t);
+  }
+
+  /** Drops the outline and reports that nothing is hovered (a long-press
+   * abandoned). */
+  private unhover(): void {
+    this.base = null;
+    this.outline.style.display = "none";
+    if (this.hovered === null) return;
+    this.hovered = null;
+    this.hooks.hover(null);
+  }
+
+  /** The element under (`x`, `y`) in the viewport, as `target` takes an
+   * event's. */
+  private elementAt(x: number, y: number): Element | null {
+    const el = this.doc.elementFromPoint?.(x, y) ?? null;
+    if (!el || el === this.host || el === this.doc.documentElement || el === this.doc.body) return null;
+    return el.closest?.(OVERLAY_TAG) ? null : el;
+  }
+
+  /** A long-press released at (`x`, `y`): the browser's click, if it comes
+   * within `TOUCH_CLICK_WAIT_MS`, picks; else focus moves into the page, as
+   * the press of an area drag moves it, and what a click there would pick is
+   * picked. */
+  private touchPick(x: number, y: number): void {
+    if (!this.on) return;
+    this.endTouchWait();
+    this.touchWait = this.timers.set(() => {
+      this.touchWait = null;
+      this.focusPage();
+      this.pickAt(this.elementAt(x, y), x, y, false);
+    }, TOUCH_CLICK_WAIT_MS);
+  }
+
+  private endTouchWait(): void {
+    if (this.touchWait !== null) this.timers.clear(this.touchWait);
+    this.touchWait = null;
+  }
+
+  /** A held finger moved beyond the slop from (`x`, `y`), where it armed:
+   * a text drag when text is under that point, else an area drag. None
+   * starts while another pick's clip is taken. */
+  private touchDragStart(x: number, y: number): void {
+    if (!this.on) return;
+    this.endTouchWait();
+    this.dropOffer();
+    if (this.capturing) { this.touchDrag = { kind: "none" }; return; }
+    const el = this.elementAt(x, y);
+    const from = nonTextAt(this.doc, el, x, y) ? null : caretAt(this.doc, x, y);
+    this.unhover();
+    if (from) {
+      this.touchDrag = { kind: "text", x, y, from, to: from };
+      this.colour(el ?? this.doc.body);
+      this.setGuard(true, this.tint);
+      return;
+    }
+    this.touchDrag = { kind: "area", x, y };
+    const win = this.doc.defaultView!;
+    this.drag = { x: x + win.scrollX, y: y + win.scrollY };
+    this.colour(el ?? this.doc.body);
+  }
+
+  /** The dragging finger is at (`x`, `y`): the selection runs to the text
+   * caret there (the last one found stays when there is none, over an image
+   * or off the page), or the area's rectangle is redrawn to it. */
+  private touchDragMove(x: number, y: number): void {
+    const d = this.touchDrag;
+    if (!this.on || !d || d.kind === "none") return;
+    if (d.kind === "area") {
+      const b = outlineBox(rectOf0(this.dragRectTo(x, y)), viewportOf(this.doc));
+      if (b) {
+        this.ensureLast();
+        Object.assign(this.areaBox.style, { display: "block", left: `${b.left}px`, top: `${b.top}px`, width: `${b.width}px`, height: `${b.height}px` });
+      }
+      return;
+    }
+    const c = caretAt(this.doc, x, y);
+    if (c && c.node.nodeType === Node.TEXT_NODE && this.doc.body.contains(c.node)) d.to = c;
+    this.doc.getSelection()?.setBaseAndExtent(d.from.node, d.from.offset, d.to.node, d.to.offset);
+  }
+
+  /** The dragging finger was lifted at (`x`, `y`): focus moves into the
+   * page, as the press of a mouse area drag moves it, and the range or the
+   * area is picked; an empty range or an area under `AREA_MIN` picks what a
+   * tap at the arming point would. */
+  private touchDragEnd(x: number, y: number): void {
+    const d = this.touchDrag;
+    if (!this.on || !d || d.kind === "none") { this.touchDrag = null; return; }
+    this.touchDragMove(x, y);
+    let range: Range | null = null;
+    let area: AreaRect | null = null;
+    if (d.kind === "text") {
+      const sel = this.doc.getSelection();
+      if (sel && !sel.isCollapsed && sel.rangeCount) range = sel.getRangeAt(0).cloneRange();
+    } else {
+      const r = this.dragRectTo(x, y);
+      if (!isClickSized(r)) area = r;
+    }
+    if (range && !this.doc.body.contains(range.commonAncestorContainer)) range = null;
+    // A click the browser may still send for the release picks nothing.
+    this.suppressClick = true;
+    const offer: Offer = area
+      ? { kind: "area", pick: () => { this.areaBox.style.display = "block"; this.areaBox.classList.add("capturing"); this.startPick(() => this.hooks.pickArea(area)); } }
+      : range
+        ? { kind: "text", pick: () => this.startPick(() => this.hooks.pickRange(range)) }
+        : { kind: "target", pick: () => this.pickAt(this.elementAt(d.x, d.y), d.x, d.y, false) };
+    if (!this.confirmDrag()) {
+      this.endTouchDrag();
+      this.focusPage();
+      offer.pick();
+      return;
+    }
+    // Offered: the selection or the rectangle stays as the drag left it.
+    this.touchDrag = null;
+    if (offer.kind === "text") this.doc.getSelection()?.setBaseAndExtent(range!.startContainer, range!.startOffset, range!.endContainer, range!.endOffset);
+    let at = area ? rectOf0(area) : range ? rectOf(range) : null;
+    if (offer.kind === "target") {
+      this.drag = null;
+      this.areaBox.style.display = "none";
+      const t = this.choose(this.elementAt(d.x, d.y), d.x, d.y);
+      if (!t) return;
+      this.place(t);
+      at = rectOf(t);
+    }
+    this.offer = offer;
+    this.showChip(at, x, y);
+  }
+
+  /** Shows the chip below `r` (above it when there is no room), near `x`,
+   * inside the viewport. */
+  private showChip(r: { left: number; top: number; bottom: number } | null, x: number, y: number): void {
+    this.ensureLast();
+    const c = this.chip;
+    c.style.display = "block";
+    const vp = viewportOf(this.doc);
+    const w = c.offsetWidth || 100;
+    const h = c.offsetHeight || 40;
+    const below = (r?.bottom ?? y) + CHIP_GAP;
+    const top = below + h <= vp.h ? below : Math.max(0, (r?.top ?? y) - CHIP_GAP - h);
+    const left = Math.min(Math.max(0, x - w / 2), Math.max(0, vp.w - w));
+    Object.assign(c.style, { left: `${left}px`, top: `${Math.min(top, Math.max(0, vp.h - h))}px` });
+  }
+
+  /** Drops an offer: the chip, and the selection, rectangle or outline it
+   * kept. */
+  private dropOffer(): void {
+    const o = this.offer;
+    this.offer = null;
+    this.chip.style.display = "none";
+    if (!o) return;
+    if (o.kind === "text") {
+      this.doc.getSelection()?.removeAllRanges();
+      if (this.guard) this.setGuard(this.on);
+    } else if (o.kind === "area") {
+      this.drag = null;
+      if (!this.capturing) this.areaBox.style.display = "none";
+    } else {
+      this.outline.style.display = "none";
+    }
+  }
+
+  /** Whether `e` reached the chip (by its path, or, from a closed shadow
+   * root, by where it landed). */
+  private onChip(e: Event): boolean {
+    if (!this.offer) return false;
+    if (e.composedPath().includes(this.chip)) return true;
+    const p = e as MouseEvent;
+    if (typeof p.clientX !== "number") return false;
+    const b = this.chip.getBoundingClientRect();
+    return b.width > 0 && p.clientX >= b.left && p.clientX <= b.right && p.clientY >= b.top && p.clientY <= b.bottom;
+  }
+
+  /** A touch: one that does not reach the chip drops an offer, and the
+   * click of that touch picks nothing. */
+  private onTouchStart = (e: TouchEvent) => {
+    if (!this.real(e)) return;
+    this.swallowTap = false;
+    if (!this.offer || this.onChip(e) || e.composedPath().includes(this.chip)) return;
+    this.dropOffer();
+    this.swallowTap = true;
+  };
+
+  /** A scroll drops an offer. */
+  private onScroll = () => {
+    if (this.offer) this.dropOffer();
+  };
+
+  /** Ends a held finger's drag: its selection is cleared, the selection
+   * tint dropped, and its rectangle removed (a capturing one stays). */
+  private endTouchDrag(): void {
+    const d = this.touchDrag;
+    this.touchDrag = null;
+    if (d?.kind === "text") {
+      this.doc.getSelection()?.removeAllRanges();
+      if (this.guard) this.setGuard(this.on);
+    } else if (d?.kind === "area") {
+      this.endDrag();
+    }
+  }
+
+  /** A text selection or context menu starting while a finger is held: the
+   * long-press's, cancelled. */
+  private onHeld = (e: Event) => {
+    if (this.longPress.holding) e.preventDefault();
   };
 
   /** A new press ends any click suppression left by a drag that produced no
@@ -334,6 +663,10 @@ export class CommentMode {
    * image, is then prevented). */
   private onDown = (e: MouseEvent) => {
     if (!this.real(e)) return;
+    // The chip's press keeps the offered selection and starts no drag; it
+    // moves focus into the page, as the press it prevented would have.
+    if (this.onChip(e)) { e.preventDefault(); this.focusPage(); return; }
+    if (this.offer) this.dropOffer();
     this.suppressClick = false;
     this.endDrag();
     if (e.button !== 0) return;
@@ -355,7 +688,7 @@ export class CommentMode {
   };
 
   private onUp = (e: MouseEvent) => {
-    if (!this.real(e)) return;
+    if (!this.real(e) || this.onChip(e)) return;
     if (this.drag) {
       const r = this.dragRectTo(e.clientX, e.clientY);
       this.drag = null;
@@ -363,10 +696,9 @@ export class CommentMode {
       if (!isClickSized(r)) {
         this.suppressClick = true;
         this.hovered = null;
-        this.capturing = true;
         this.areaBox.classList.add("capturing");
         this.hooks.live?.picked(r);
-        this.hooks.pickArea(r);
+        this.startPick(() => this.hooks.pickArea(r));
         return;
       }
       this.areaBox.style.display = "none";
@@ -385,25 +717,73 @@ export class CommentMode {
     if (this.widen.active || e.altKey) {
       // Option widens a drag selection like a click: to the enclosing element.
       const w = widenedTarget(r, Math.max(1, this.widen.level)).target;
-      if (w instanceof Element) { this.capturing = true; this.hooks.live?.picked(w); this.hooks.pickElement(w); return; }
+      if (w instanceof Element) { this.hooks.live?.picked(w); this.startPick(() => this.hooks.pickElement(w)); return; }
     }
-    this.capturing = true;
     this.hooks.live?.picked(r);
-    this.hooks.pickRange(r);
+    this.startPick(() => this.hooks.pickRange(r));
   };
 
   private onClick = (e: MouseEvent) => {
     if (!this.real(e)) return;
     e.preventDefault();
     e.stopPropagation();
+    // The chip's tap takes the offer: its click is the viewer's own, in the
+    // frame, so the shell sees the finger arrive.
+    if (this.onChip(e)) {
+      const o = this.offer!;
+      this.offer = null;
+      this.chip.style.display = "none";
+      if (o.kind === "text") { this.doc.getSelection()?.removeAllRanges(); this.setGuard(this.on); }
+      else if (o.kind === "target") this.outline.style.display = "none";
+      this.suppressClick = false;
+      o.pick();
+      return;
+    }
+    // A touch that dropped an offer: its click is not a pick (a long-press
+    // made with it picks as ever).
+    if (this.swallowTap && this.touchWait === null) { this.swallowTap = false; return; }
+    this.swallowTap = false;
+    // A long-press's release brought its click: it picks.
+    this.endTouchWait();
     if (this.suppressClick) { this.suppressClick = false; return; }
+    this.pickAt(this.target(e), e.clientX, e.clientY, e.altKey);
+  };
+
+  /** Picks the comment target for a click at (`x`, `y`) over `el` (widened
+   * while Option is held, or once for `alt`), unless another pick's clip is
+   * being taken. */
+  private pickAt(el: Element | null, x: number, y: number, alt: boolean): void {
     // No other pick while an area's clip is being taken.
     if (this.capturing) return;
-    let t = this.choose(this.target(e), e.clientX, e.clientY);
-    if (t && (this.widen.active || e.altKey)) t = widenedTarget(t, this.widen.active ? this.widen.level : 1).target;
-    if (t) { this.capturing = true; this.hooks.live?.picked(t); }
-    if (t instanceof Element) this.hooks.pickElement(t);
-    else if (t) this.hooks.pickRange(t);
+    let t = this.choose(el, x, y);
+    if (t && (this.widen.active || alt)) t = widenedTarget(t, this.widen.active ? this.widen.level : 1).target;
+    if (t) this.hooks.live?.picked(t);
+    if (t instanceof Element) this.startPick(() => this.hooks.pickElement(t));
+    else if (t) this.startPick(() => this.hooks.pickRange(t));
+  }
+
+  /** The pointer left the page (into the shell, or out of the WebView or the
+   * window, where no further move reaches the page): the outline and the pin
+   * go, and nothing is hovered. A mouse drag still drawing stays (the
+   * rectangle is clamped to the viewport) while its button is held; with the
+   * button up its release was lost, and the drag is dropped. A held finger
+   * and an offer keep what they show. */
+  private onOut = (e: MouseEvent) => {
+    if (!this.real(e) || e.relatedTarget !== null || this.touchDrag || this.longPress.holding || this.offer) return;
+    if (this.drag) {
+      if (!(e.buttons & 1)) this.endDrag();
+      return;
+    }
+    this.frame?.();
+    this.frame = null;
+    this.pin.style.display = "none";
+    this.unhover();
+  };
+
+  /** The page lost focus (the viewer switched windows or apps): a mouse
+   * drag's release will not reach the page, so the drag is dropped. */
+  private onBlur = () => {
+    if (this.drag && !this.touchDrag) this.endDrag();
   };
 
   private onKey = (e: KeyboardEvent) => {

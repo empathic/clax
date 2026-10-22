@@ -8,7 +8,8 @@
  * (target "*"; artifact, version, and the page's published file, no page
  * content), then takes orders only from `window.parent` at
  * an origin in `shellOrigins` of its tag's `data-origin` (a hosted daemon's
- * public origin, for content on its content origin) or else of
+ * public origin, for content on its content origin, or the Clax app's shell
+ * origin, for content on the app's content origin) or else of
  * `location.href`, and replies to that origin only:
  * comment mode (hover outline, element and range picks with anchors and PNG
  * clips within the budget in `clip.ts`, drawn areas clipped to exactly the
@@ -25,9 +26,23 @@
  * is cancelled and handed to the shell (`clax:navigate`), which follows it
  * with one history entry; a link to this page under another spelling of its
  * path (`index.html` for `/v/<n>/`) is followed in place (`followInPlace`). After the welcome and
- * on every `hashchange` it reports the page's fragment (`clax:hash`). On
+ * on every `hashchange` it reports the page's fragment (`clax:hash`). After
+ * a welcome with `app: true` (the Clax app's shell) it reports the page's
+ * scroll position as it scrolls (`clax:scroll`), and scrolls the page to the
+ * position the welcome carries (`restoreScroll`), with `scroll.ts` from the
+ * caps part, loaded on that welcome, so a page outside the app loads none of
+ * it; with `routes.ts` from the same part it reports the page's own
+ * `history.pushState` routes (`clax:route`) and takes the shell back among
+ * them (`clax:back`). On
  * `pagehide` it says `clax:bye`, and the shell stops sending until the next
- * document greets.
+ * document greets. In a frame the shell named `INSPECT_FRAME` it keeps the
+ * page's errors from before its first script (`inspect.ts`); it answers the
+ * app's inspect view's `clax:inspect` with the clip part's inspection
+ * (`clax:inspection`), and there only, its `clax:test` with the test part's
+ * run of the draft's test files (`clax:tests`). In a frame named
+ * `MIGRATE_FRAME` it ends the page's markup before any of it runs, and
+ * answers `clax:migrate` with the test part's run of an app bundle's
+ * migration (`clax:migration`).
  * The daemon serves it right after the doctype (first in the skeleton's
  * `<head>` for a fragment), and only the document's first bridge tag runs, so
  * `window.claude` exists before any page script; shell
@@ -44,22 +59,33 @@
  * claude.use() of it the shell grants (`room` and `sample` each in a part of
  * its own, the rest in `caps`). A part that cannot load is reported to the
  * shell once (clax:degraded). Waiting for the parse keeps the parts' module
- * loads from ever coming before the page's own import maps.
+ * loads from ever coming before the page's own import maps; the shell hears
+ * of the first need that waits for it and of the parse's end (clax:wait),
+ * so a page slow to parse can be named as the wait.
  */
 import { loadParts } from "clax-bridge-parts";
 import { now } from "../../shell/src/clock";
 import type { Resolved } from "./anchor";
 import { acceptFromShell, forwardedKey, shellOrigins } from "./channel";
 import { commentsContext } from "./comments-context";
+import { type ErrorRing, installErrorRing } from "./inspect";
 import { hashFor, helloFor, isFirstBridge, readMeta } from "./meta";
 import { followInPlace, linkToHandOver } from "./nav";
 import type { CommentPart, Parts } from "./parts/types";
 import { type Clock, retrying } from "./part-loader";
 import { PickFlow } from "./pick";
-import type { Anchor, AnchorResult, Box, BridgeToShell } from "./protocol";
+import { type Anchor, type AnchorResult, type Box, type BridgeToShell, INSPECT_FRAME, MIGRATE_FRAME } from "./protocol";
 import { Rpc } from "./rpc";
+import type { Routes } from "./routes";
 import { whenParsed } from "./parsed";
 import { makeUse } from "./use";
+
+/** How long the focus outline flashes after a scroll-to (`showFocus` with
+ * `flash` in comment-mode.ts: two 0.9 s pulses). */
+const FOCUS_FLASH_MS = 1800;
+
+/** How often, at most, anchors are resolved again while the page scrolls or resizes. */
+const REFLOW_MS = 50;
 
 type Mode = InstanceType<CommentPart["CommentMode"]>;
 type Cache = InstanceType<CommentPart["AnchorCache"]>;
@@ -73,6 +99,11 @@ type PartName = keyof Parts;
   // (a copy the page carried in, or a second injection) stands down.
   const script = document.currentScript as HTMLScriptElement | null;
   if (!isFirstBridge(script)) return;
+  // In the app's migration view the page runs none of its own markup: the
+  // bridge, its first script, turns the rest of the document into hidden
+  // text before the parser reaches any of it, so only the migration writes.
+  const migrateFrame = window.parent !== window && window.name === MIGRATE_FRAME;
+  if (migrateFrame && document.readyState === "loading") document.write("<plaintext hidden>");
   const meta = readMeta(script);
   (window as any).__clax = meta;
   commentsContext.version = meta.version;
@@ -93,6 +124,12 @@ type PartName = keyof Parts;
   // bridge posts, nor pose as the shell.
   const shellWin = window.parent;
   const framed = shellWin !== window;
+  // In a frame the shell named for inspection, the page's errors from its
+  // first script on (`inspect.ts`); the observer the settle wait uses, as it
+  // is now.
+  const inspectFrame = framed && window.name === INSPECT_FRAME;
+  const ring: ErrorRing = inspectFrame ? installErrorRing(window) : [[], []];
+  const Observer = MutationObserver;
   let shellOrigin: string | null = null;
   const post = (m: BridgeToShell, transfer: Transferable[] = []) =>
     shellWin.postMessage(m, shellOrigin ?? "*", transfer);
@@ -104,12 +141,21 @@ type PartName = keyof Parts;
   };
   // Each part loads on need, never before the page has parsed (so never
   // before the page's own import maps), within a time limit, and again on a
-  // later need after a failure (part-loader.ts).
+  // later need after a failure (part-loader.ts). The shell hears of the
+  // first need that waits for the parse, and of the parse's end
+  // (`clax:wait`).
+  let waited = false;
+  const wait = () => {
+    if (waited || shellOrigin === null) return;
+    waited = true;
+    post({ type: "clax:wait", waiting: true });
+    void whenDone.then(() => post({ type: "clax:wait", waiting: false }));
+  };
   const onNeed = <T>(name: PartName, load: (attempt: number) => Promise<T>) => {
     const next = retrying(name, load, failed(name), clock);
-    return () => parsed ? next() : whenDone.then(next);
+    return () => parsed ? next() : (wait(), whenDone.then(next));
   };
-  const parts = { comment: onNeed("comment", loaders.comment), clip: onNeed("clip", loaders.clip), caps: onNeed("caps", loaders.caps), room: onNeed("room", loaders.room), sample: onNeed("sample", loaders.sample), live: onNeed("live", loaders.live) };
+  const parts = Object.fromEntries(Object.entries(loaders).map(([name, load]) => [name, onNeed(name as PartName, load as (attempt: number) => Promise<unknown>)])) as unknown as { [K in PartName]: () => ReturnType<Parts[K]> };
   const clips = () => parts.clip();
   const rpc = new Rpc(m => post(m));
   const use = makeUse({
@@ -122,9 +168,13 @@ type PartName = keyof Parts;
         : parts.caps().then(c => c.localsFor(name, r, config, { ctx: commentsContext, clip: clips })),
   });
 
+  // The URL of this artifact's asset `id`, as `assets` gives it: assets are
+  // served per artifact, and a page loads only its own.
+  const assetUrl = (id: unknown) => `/_blob/${meta.artifact}/${encodeURIComponent(String(id))}`;
+
   try {
     Object.defineProperty(window, "claude", {
-      value: Object.freeze({ use }),
+      value: Object.freeze({ use, assetUrl }),
       writable: false,
       configurable: false,
       enumerable: true,
@@ -136,8 +186,8 @@ type PartName = keyof Parts;
 
   if (!framed) return; // opened directly: there is no shell
 
-  // A hosted daemon's content origin names the shell's origin in the tag
-  // (`data-origin`): its own URL does not.
+  // A hosted daemon's content origin and the Clax app's name the shell's
+  // origin in the tag (`data-origin`): their own URL does not.
   const origins = shellOrigins(script?.dataset.origin || location.href);
   const box = (t: Element | Range): Box => { const r = t.getBoundingClientRect(); return { x: r.x, y: r.y, w: r.width, h: r.height }; };
 
@@ -159,6 +209,11 @@ type PartName = keyof Parts;
   // a custom-anchors registration is live.
   let shellMode = false;
   let welcomed = false;
+  // Welcomed by the Clax app's shell, whose host attests the viewer's finger:
+  // a hold-then-drag picks on its release, with no chip to confirm it.
+  let appShell = false;
+  // The page's own pushState routes, watched once the app shell welcomed.
+  let routes: Routes | undefined;
 
   // A pick's clip is rendered only once the shell's composer for it has
   // focus (see `pick.ts`).
@@ -179,7 +234,7 @@ type PartName = keyof Parts;
         const layer: Hook = new part.LiveHook(document, post, clock, parts.live);
         const mode: Mode = new part.CommentMode(document, {
           hover: t => post({ type: "clax:hover", selector: t ? part.cssPath(t instanceof Element ? t : part.blockAncestor(t.commonAncestorContainer, window)) : null, rect: t ? box(t) : null }),
-          pickElement: el => { void picks.start(part.buildElementAnchor(document, el, meta.file), () => clips().then(c => c.renderTargetClip(el))).finally(() => mode.captured()); },
+          pickElement: el => { void picks.start(part.buildElementAnchor(document, el, meta.file), () => clips().then(c => c.renderTargetClip(el)), part.desc(el)).finally(() => mode.captured()); },
           pickRange: r => { void picks.start(part.buildRangeAnchor(document, r, meta.file), () => clips().then(c => c.renderTargetClip(r))).finally(() => mode.captured()); },
           // The clip is the drawn rectangle, placed on its element at release,
           // cropped out of a render of that element. The rectangle stays drawn
@@ -192,7 +247,7 @@ type PartName = keyof Parts;
           },
           cancel: () => { mode.set(false); post({ type: "clax:cancel" }); },
           live: layer,
-        });
+        }, { confirmDrag: () => !appShell });
         commentsContext.liveChanged = () => mode.set(shellMode && !commentsContext.live);
         return {
           part,
@@ -209,6 +264,8 @@ type PartName = keyof Parts;
     live.then(f, () => {});
   };
 
+  /** The pending steps of the last scroll-to's flash. */
+  const flashTimers: ReturnType<typeof setTimeout>[] = [];
   const updateFocus = (l: Live, flash = false) => {
     const f = focusId === null || commentsContext.live ? undefined : anchors.find(a => a.id === focusId);
     const r = f?.anchor.kind === "area" ? l.cache().resolve(f.id, f.anchor, f.sameVersion === true) : null;
@@ -225,13 +282,17 @@ type PartName = keyof Parts;
     post({ type: "clax:anchors", requestId, results });
     updateFocus(l);
   };
-  let raf = 0;
+  let reflowing = false;
+  // Anchors are resolved again at most every REFLOW_MS of scrolling or
+  // resizing, by a timer: a document the browser treats as hidden (the Clax
+  // app's WebView, while the app shows it) runs no animation frames.
   const reflow = () => {
     // While the page anchors threads itself (comments.customAnchors), it
     // re-reports its placements, and the shell's anchors are not resolved.
     commentsContext.reflow?.();
-    if (commentsContext.live || !anchors.length || raf) return;
-    raf = requestAnimationFrame(() => { raf = 0; withComment(l => resolveAll(l, null)); });
+    if (commentsContext.live || !anchors.length || reflowing) return;
+    reflowing = true;
+    setTimeout(() => { reflowing = false; withComment(l => resolveAll(l, null)); }, REFLOW_MS);
   };
   addEventListener("scroll", reflow, { passive: true, capture: true });
   addEventListener("resize", reflow);
@@ -277,15 +338,17 @@ type PartName = keyof Parts;
     shellOrigin = e.origin;
     switch (m.type) {
       case "clax:welcome":
-        welcomed = true; shellMode = m.mode === "comment"; followMode(); rpc.connect(); post(hashFor(location.hash));
+        welcomed = true; appShell = m.app === true; shellMode = m.mode === "comment"; followMode(); rpc.connect(); post(hashFor(location.hash));
         prefetch();
+        if (m.app) void parts.caps().then(c => { routes = c.app(window, post, meta.file, m.restoreScroll); }, () => {});
         break;
       case "clax:use-result": case "clax:call-result": case "clax:event": rpc.accept(m); break;
       case "clax:comment-mode": shellMode = m.on; followMode(); break;
       // In place, with no entry of its own, and only ever its fragment: the
       // URL up to `#` is the page's own (absolute, so no <base> moves it).
       case "clax:hash": location.replace(location.href.split("#")[0] + "#" + m.hash.slice(1)); break;
-      case "clax:greet": post(helloFor(meta)); break;
+      case "clax:greet": post({ ...helloFor(meta), again: true }); routes?.report(); break;
+      case "clax:back": routes?.back(m.depth); break;
       case "clax:resolve-anchors": {
         if (commentsContext.live) break;
         // The anchors take effect (for reflows too) once the page has parsed,
@@ -309,6 +372,8 @@ type PartName = keyof Parts;
       }
       case "clax:scroll-to": whenParsed(document, () => withComment(l => {
         if (commentsContext.live) return;
+        // A later scroll-to replaces an earlier one's flash.
+        for (const t of flashTimers.splice(0)) clearTimeout(t);
         const r = l.part.resolveAnchor(document, m.anchor, undefined, meta.file, undefined, m.sameVersion === true);
         if (!r) return;
         const behavior: ScrollBehavior = self.matchMedia?.("(prefers-reduced-motion: reduce)").matches ? "auto" : "smooth";
@@ -316,10 +381,15 @@ type PartName = keyof Parts;
           // The drawn area is centred, not its element (often far taller).
           const a = placeOf(l, m.anchor, r);
           scrollBy({ left: a.x + a.w / 2 - innerWidth / 2, top: a.y + a.h / 2 - innerHeight / 2, behavior });
-          setTimeout(() => l.mode.showFocus(placeOf(l, m.anchor, r), true), 350);
+          // After its flash the outline follows the focused thread again:
+          // it stays only while the shell focuses this thread.
+          flashTimers.push(setTimeout(() => {
+            l.mode.showFocus(placeOf(l, m.anchor, r), true);
+            flashTimers.push(setTimeout(() => updateFocus(l), FOCUS_FLASH_MS));
+          }, 350));
         } else {
           r.element.scrollIntoView({ block: "center", behavior });
-          setTimeout(() => l.mode.flash(r.range ?? r.element), 350);
+          flashTimers.push(setTimeout(() => l.mode.flash(r.range ?? r.element), 350));
         }
       })); break;
       // The focused thread's area is outlined once the page has parsed.
@@ -330,6 +400,21 @@ type PartName = keyof Parts;
       case "clax:peers": withComment(l => l.layer.peers(m)); break;
       case "clax:pick-refused": if (typeof m.pickId === "string") picks.answer(m.pickId, false); break;
       case "clax:composer-ready": if (typeof m.pickId === "string") picks.answer(m.pickId, true); break;
+      // The app's inspect view asks what the page looks like once it settles
+      // (`inspect.ts`), with the clip part; the answer goes to the shell only.
+      case "clax:inspect": void clips().then(c => c.inspect(window, ring, m, post, clock, Observer), () => {}); break;
+      // The inspect view asks the draft's page to run its test files
+      // (`harness.ts`), with the test part, only in the frame it named.
+      case "clax:test": if (inspectFrame && typeof m.requestId === "string") {
+        const requestId = m.requestId;
+        void parts.test().then(t => t.test(window, m, post, clock), err => post({ type: "clax:tests", requestId, error: `the test harness did not load: ${err instanceof Error ? err.message : String(err)}` }));
+      } break;
+      // And, only in the migration view's frame, an app bundle's migration
+      // (`harness.ts`), the same way.
+      case "clax:migrate": if (migrateFrame && typeof m.requestId === "string") {
+        const requestId = m.requestId;
+        void parts.test().then(t => t.migrate(window, m, post, clock), err => post({ type: "clax:migration", requestId, ok: false, error: `the test harness did not load: ${err instanceof Error ? err.message : String(err)}` }));
+      } break;
       case "clax:key": {
         const k = forwardedKey(m);
         // Keys count only in comment mode, which loads as it turns on.

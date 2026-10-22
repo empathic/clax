@@ -13,6 +13,43 @@ describe("artifactOrigin", () => {
   });
 });
 
+describe("artifactOrigin in the Clax app", () => {
+  const embed = (content: string) => ({ transport: "host" as const, shell: "clax://app", content });
+
+  it("is the embed's content origin for the ID, whatever the location", () => {
+    for (const l of [loc("localhost"), loc("192.168.1.20"), loc("app", "")]) {
+      expect(artifactOrigin("abcdefghijkl", l, embed("clax://{id}.c"))).toBe("clax://abcdefghijkl.c");
+      expect(artifactOrigin("abcdefghijkl", l, embed("https://{id}.c.clax.invalid"))).toBe("https://abcdefghijkl.c.clax.invalid");
+    }
+  });
+
+  it("is null (the sandboxed path) for an embed with an origin neither https: nor clax:, or a content template without {id} once", () => {
+    for (const [shell, content] of [["clax://app", "http://{id}.c.example"], ["http://app.example", "https://{id}.c.clax.invalid"], ["https://app.clax.invalid", "ws://{id}.c"],
+      ["https://app.clax.invalid", "https://c.clax.invalid"], ["clax://app", "clax://{id}.{id}.c"]]) {
+      expect(artifactOrigin("abcdefghijkl", loc("localhost"), { transport: "host", shell, content })).toBeNull();
+    }
+  });
+
+  it("on Apple's clax: shell has no origin without an embed, and the clax: content origin with one", () => {
+    const apple = { hostname: "app", port: "", protocol: "clax:" } as unknown as Location;
+    expect(artifactOrigin("abcdefghijkl", apple, null)).toBeNull();
+    const o = artifactOrigin("abcdefghijkl", apple, embed("clax://{id}.c"));
+    expect(o).toBe("clax://abcdefghijkl.c");
+    expect(pageSrc("abcdefghijkl", 3, o, "docs/a b.html")).toBe("clax://abcdefghijkl.c/v/3/docs/a%20b.html");
+    expect(contentSrc("abcdefghijkl", 3, o, "k0")).toBe("clax://abcdefghijkl.c/v/3/k/k0/");
+  });
+
+  it("reads the embed the app's transport installed", () => {
+    Object.defineProperty(window, "claxTransport", { configurable: true, value: Object.freeze({ embed: embed("clax://{id}.c") }) });
+    try {
+      expect(artifactOrigin("abcdefghijkl", loc("192.168.1.20"))).toBe("clax://abcdefghijkl.c");
+    } finally {
+      delete (window as { claxTransport?: unknown }).claxTransport;
+    }
+    expect(artifactOrigin("abcdefghijkl", loc("192.168.1.20"))).toBeNull();
+  });
+});
+
 describe("probeOrigin", () => {
   const O = "http://x.localhost:1";
   type Answer = () => Promise<Response>;

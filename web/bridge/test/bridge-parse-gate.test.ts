@@ -5,7 +5,9 @@ import { dispatchTrusted } from "./trusted";
 // The bridge loaded from <head> while the document is still parsing: no part
 // is requested until the parse ends, whatever the shell asks for meanwhile,
 // so a part's module load never comes before the page's own import maps.
-const posted: { type: string; requestId?: string | null }[] = [];
+// The shell hears that a need is waiting on the parse (`clax:wait`), once,
+// and that the wait is over.
+const posted: { type: string; requestId?: string | null; waiting?: boolean }[] = [];
 const shell = { postMessage: (m: { type: string }) => { posted.push(m); } };
 const setReadyState = (state: DocumentReadyState) => Object.defineProperty(document, "readyState", { value: state, configurable: true });
 const send = (data: unknown) => dispatchTrusted(window, new MessageEvent("message", { data, origin: location.origin, source: shell as unknown as Window }));
@@ -31,6 +33,7 @@ describe("the parts while the page parses", () => {
     send({ type: "clax:key", key: "Alt", down: true });
     await new Promise(r => setTimeout(r, 20));
     expect(requests).toEqual([]);
+    expect(posted.filter(m => m.type === "clax:wait")).toEqual([{ type: "clax:wait", waiting: true }]);
     document.documentElement.appendChild(document.createElement("body")).innerHTML = "<h2>Goals</h2>";
     setReadyState("interactive");
     document.dispatchEvent(new Event("readystatechange"));
@@ -39,5 +42,8 @@ describe("the parts while the page parses", () => {
     expect(requests).toContain("clip");
     expect(document.documentElement.style.cursor).toBe("crosshair");
     expect(posted.filter(m => m.type === "clax:anchors" && m.requestId === "r1")).toHaveLength(1);
+    expect(posted.filter(m => m.type === "clax:wait")).toEqual([{ type: "clax:wait", waiting: true }, { type: "clax:wait", waiting: false }]);
+    // The order the wait's end comes in: before the part it held.
+    expect(posted.findIndex(m => m.type === "clax:wait" && m.waiting === false)).toBeLessThan(posted.findIndex(m => m.type === "clax:anchors"));
   });
 });

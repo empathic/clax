@@ -1,5 +1,6 @@
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
-import { CommentMode, type ModeHooks } from "../src/comment-mode";
+import { CommentMode, type ModeHooks, TOUCH_CLICK_WAIT_MS } from "../src/comment-mode";
+import { FRAME_FALLBACK_MS } from "../src/frame";
 
 // A backstop for a loaded machine; no test here times anything.
 vi.setConfig({ testTimeout: 20_000 });
@@ -28,11 +29,43 @@ beforeEach(() => {
 afterEach(() => { mode.set(false); });
 
 describe("CommentMode", () => {
+  it("outlines the hovered element where the document runs no animation frames (a hidden WebView)", async () => {
+    vi.useFakeTimers({ toFake: ["setTimeout", "clearTimeout"] });
+    vi.stubGlobal("requestAnimationFrame", () => 1);
+    vi.stubGlobal("cancelAnimationFrame", () => {});
+    try {
+      mode.set(true);
+      fire(document.querySelector("h2")!, "mousemove");
+      expect(hooks.hover).not.toHaveBeenCalled();
+      vi.advanceTimersByTime(FRAME_FALLBACK_MS);
+      expect(hooks.hover).toHaveBeenCalledWith(document.querySelector("h2"));
+    } finally {
+      vi.unstubAllGlobals();
+      vi.useRealTimers();
+    }
+  });
+
   it("outlines and reports the hovered element on the next frame", async () => {
     mode.set(true);
     fire(document.querySelector("h2")!, "mousemove");
     await nextFrame();
     expect(hooks.hover).toHaveBeenCalledWith(document.querySelector("h2"));
+    expect(outline().style.display).toBe("block");
+  });
+
+  it("drops the outline and the pin, and reports nothing hovered, when the pointer leaves the page", async () => {
+    mode.set(true);
+    fire(document.querySelector("h2")!, "mousemove");
+    await nextFrame();
+    expect(outline().style.display).toBe("block");
+    document.querySelector("h2")!.dispatchEvent(new MouseEvent("mouseout", { bubbles: true, relatedTarget: null }));
+    expect(outline().style.display).toBe("none");
+    expect(document.querySelector("clax-overlay")!.shadowRoot!.querySelector<HTMLElement>(".pin")!.style.display).toBe("none");
+    expect(hooks.hover).toHaveBeenLastCalledWith(null);
+    // Moving within the page is not leaving it.
+    fire(document.querySelector("h2")!, "mousemove");
+    await nextFrame();
+    document.querySelector("h2")!.dispatchEvent(new MouseEvent("mouseout", { bubbles: true, relatedTarget: document.querySelector("p") }));
     expect(outline().style.display).toBe("block");
   });
 
@@ -117,10 +150,10 @@ describe("CommentMode", () => {
     fire(document.querySelector("h3")!, "mousemove");
     await nextFrame();
     const host = document.querySelector<HTMLElement>("clax-overlay")!;
-    expect(host.style.getPropertyValue("--ax-tint")).toBe("rgba(237, 84, 57, 0.24)");
+    expect(host.style.getPropertyValue("--ax-tint")).toBe("rgba(224, 83, 47, 0.24)");
     fire(document.getElementById("l")!, "mousemove");
     await nextFrame();
-    expect(host.style.getPropertyValue("--ax-tint")).toBe("rgba(237, 84, 57, 0.16)");
+    expect(host.style.getPropertyValue("--ax-tint")).toBe("rgba(224, 83, 47, 0.16)");
   });
 
   it("keeps the outline of an oversized element inside the viewport", async () => {
@@ -287,6 +320,45 @@ describe("drawing areas", () => {
     expect(areaBox().style.display).toBe("none");
     at(img, "mouseup", 120, 70);
     expect(hooks.pickArea).not.toHaveBeenCalled();
+  });
+
+  it("drops a drag when the pointer leaves the page with the button up, or the page loses focus", () => {
+    mode.set(true);
+    const img = document.querySelector("#i")!;
+    const leave = (buttons: number) => document.body.dispatchEvent(new MouseEvent("mouseout", { bubbles: true, relatedTarget: null, buttons }));
+    at(img, "mousedown", 10, 10);
+    at(img, "mousemove", 110, 60);
+    // Leaving with the button held keeps drawing (the rectangle is clamped to the viewport).
+    leave(1);
+    expect(areaBox().style.display).toBe("block");
+    leave(0);
+    expect(areaBox().style.display).toBe("none");
+    at(img, "mousedown", 10, 10);
+    at(img, "mousemove", 110, 60);
+    window.dispatchEvent(new FocusEvent("blur"));
+    expect(areaBox().style.display).toBe("none");
+    // A release that reaches the page later picks nothing.
+    at(img, "mouseup", 120, 70);
+    expect(hooks.pickArea).not.toHaveBeenCalled();
+  });
+
+  it("ends the capture when a pick hook throws, so the rectangle goes and the next pick starts", () => {
+    hooks.pickArea.mockImplementationOnce(() => { throw new Error("no anchor"); });
+    const warn = vi.spyOn(console, "warn").mockImplementation(() => {});
+    try {
+      mode.set(true);
+      const img = document.querySelector("#i")!;
+      at(img, "mousedown", 10, 10);
+      at(img, "mousemove", 110, 60);
+      at(img, "mouseup", 110, 60);
+      expect(areaBox().style.display).toBe("none");
+      expect(areaBox().classList.contains("capturing")).toBe(false);
+      at(img, "mousedown", 10, 10);
+      at(img, "mousemove", 110, 60);
+      at(img, "mouseup", 110, 60);
+      expect(hooks.pickArea).toHaveBeenCalledTimes(2);
+      expect(areaBox().classList.contains("capturing")).toBe(true);
+    } finally { warn.mockRestore(); }
   });
 
   it("treats a drag narrower or shorter than 8 px as a click", () => {
@@ -495,5 +567,557 @@ describe("Option widening", () => {
     p.dispatchEvent(new MouseEvent("mousemove", { bubbles: true, clientX: 7, clientY: 5 }));
     await nextFrame();
     expect(hooks.hover).toHaveBeenLastCalledWith(p);
+  });
+});
+
+describe("touch long-press", () => {
+  function fakeTimers() {
+    let next = 1;
+    const due = new Map<number, { fn: () => void; ms: number }>();
+    return {
+      t: { set: (fn: () => void, ms: number) => { due.set(next, { fn, ms }); return next++; }, clear: (id: number) => { due.delete(id); } },
+      /** Runs the timers set with delay `ms` (all of them without one). */
+      fire: (ms?: number) => { for (const [id, d] of [...due]) if (ms === undefined || d.ms === ms) { due.delete(id); d.fn(); } },
+    };
+  }
+  const touch = (el: Element, type: string, x: number, y: number) => {
+    const t = [{ identifier: 0, clientX: x, clientY: y, target: el }] as unknown as Touch[];
+    const e = new TouchEvent(type, { bubbles: true, cancelable: true, touches: type === "touchend" ? [] : t, changedTouches: t });
+    el.dispatchEvent(e);
+    return e;
+  };
+  const d = document as unknown as { elementFromPoint?: (x: number, y: number) => Element | null; caretRangeFromPoint?: (x: number, y: number) => Range | null };
+  let f: ReturnType<typeof fakeTimers>;
+  let under: Element | null;
+  beforeEach(() => {
+    mode.set(false);
+    document.querySelectorAll("clax-overlay").forEach(n => n.remove());
+    f = fakeTimers();
+    mode = new CommentMode(document, hooks, { trustedOnly: false, timers: f.t });
+    under = null;
+    d.elementFromPoint = () => under;
+  });
+  afterEach(() => { delete d.elementFromPoint; delete d.caretRangeFromPoint; });
+
+  /** Holds a finger on `el` at (x, y) past the hold, then lifts it there,
+   * and no click follows the release (as after a long-press on Android). */
+  const longPress = (el: Element, x = 10, y = 10) => {
+    under = el;
+    touch(el, "touchstart", x, y);
+    f.fire(450);
+    const end = touch(el, "touchend", x, y);
+    f.fire(TOUCH_CLICK_WAIT_MS);
+    return end;
+  };
+  const click = (el: Element, x = 10, y = 10) => {
+    const e = new MouseEvent("click", { bubbles: true, cancelable: true, clientX: x, clientY: y });
+    el.dispatchEvent(e);
+    return e;
+  };
+
+  it("long_press picks the element under the finger when no click follows the release", () => {
+    mode.set(true);
+    const h2 = document.querySelector("h2")!;
+    under = h2;
+    touch(h2, "touchstart", 10, 10);
+    f.fire(450);
+    expect(hooks.hover).toHaveBeenLastCalledWith(h2);
+    expect(outline().style.display).toBe("block");
+    expect(hooks.pickElement).not.toHaveBeenCalled();
+    const end = touch(h2, "touchend", 10, 10);
+    expect(end.defaultPrevented).toBe(false);
+    expect(hooks.pickElement).not.toHaveBeenCalled();
+    f.fire(TOUCH_CLICK_WAIT_MS);
+    expect(hooks.pickElement).toHaveBeenCalledWith(h2);
+    expect(hooks.pickElement).toHaveBeenCalledTimes(1);
+  });
+
+  it("the browser's click after a long-press picks, once", () => {
+    mode.set(true);
+    const h2 = document.querySelector("h2")!;
+    under = h2;
+    touch(h2, "touchstart", 10, 10);
+    f.fire(450);
+    touch(h2, "touchend", 10, 10);
+    expect(click(h2).defaultPrevented).toBe(true);
+    expect(hooks.pickElement).toHaveBeenCalledWith(h2);
+    f.fire(TOUCH_CLICK_WAIT_MS);
+    expect(hooks.pickElement).toHaveBeenCalledTimes(1);
+  });
+
+  it("long_press_on_link_picks_without_navigating", () => {
+    document.body.innerHTML = `<a href="#x">go</a>`;
+    const hash = location.hash;
+    mode.set(true);
+    const a = document.querySelector("a")!;
+    under = a;
+    touch(a, "touchstart", 10, 10);
+    f.fire(450);
+    touch(a, "touchend", 10, 10);
+    // The click the browser sends after the release: it picks, and is cancelled.
+    expect(click(a).defaultPrevented).toBe(true);
+    expect(location.hash).toBe(hash);
+    expect(hooks.pickElement).toHaveBeenCalledWith(a);
+    f.fire(TOUCH_CLICK_WAIT_MS);
+    expect(hooks.pickElement).toHaveBeenCalledTimes(1);
+  });
+
+  it("leaves the viewer's next click after a long-press pick to pick again", () => {
+    mode.set(true);
+    const h2 = document.querySelector("h2")!;
+    longPress(h2);
+    mode.captured();
+    click(h2);
+    expect(hooks.pickElement).toHaveBeenCalledTimes(2);
+  });
+
+  it("long_press_pick_moves_focus_into_the_page_first when no click follows", () => {
+    const order: string[] = [];
+    const focus = vi.spyOn(window, "focus").mockImplementation(() => { order.push("focus"); });
+    hooks.pickElement.mockImplementation(() => { order.push("pick"); });
+    try {
+      mode.set(true);
+      longPress(document.querySelector("h2")!);
+      expect(order).toEqual(["focus", "pick"]);
+    } finally {
+      focus.mockRestore();
+    }
+  });
+
+  it("off before the wait ends drops the long-press pick", () => {
+    mode.set(true);
+    const h2 = document.querySelector("h2")!;
+    under = h2;
+    touch(h2, "touchstart", 10, 10);
+    f.fire(450);
+    touch(h2, "touchend", 10, 10);
+    mode.set(false);
+    f.fire();
+    expect(hooks.pickElement).not.toHaveBeenCalled();
+  });
+
+  it("long_press_on_oversized_element_picks_its_line", () => {
+    document.body.innerHTML = `<main><pre style="white-space: pre">alpha one\nbeta two\ngamma three</pre></main>`;
+    const pre = document.querySelector("pre")!;
+    pre.getBoundingClientRect = () => ({ left: 0, top: -2630, right: 900, bottom: 18445, width: 900, height: 21075, x: 0, y: -2630, toJSON() {} }) as DOMRect;
+    d.caretRangeFromPoint = (_x, y) => { const r = document.createRange(); r.setStart(pre.firstChild!, y < 50 ? 2 : 13); return r; };
+    mode.set(true);
+    under = pre;
+    touch(pre, "touchstart", 10, 60);
+    f.fire(450);
+    expect(String(hooks.hover.mock.calls.at(-1)![0])).toBe("beta two");
+    touch(pre, "touchend", 10, 60);
+    f.fire(TOUCH_CLICK_WAIT_MS);
+    expect(hooks.pickElement).not.toHaveBeenCalled();
+    expect(String(hooks.pickRange.mock.calls[0][0])).toBe("beta two");
+  });
+
+  it("an abandoned long-press drops its outline and picks nothing", () => {
+    mode.set(true);
+    const h2 = document.querySelector("h2")!;
+    under = h2;
+    touch(h2, "touchstart", 10, 10);
+    f.fire(450);
+    expect(outline().style.display).toBe("block");
+    touch(h2, "touchcancel", 10, 10);
+    expect(outline().style.display).toBe("none");
+    expect(hooks.hover).toHaveBeenLastCalledWith(null);
+    touch(h2, "touchend", 10, 10);
+    f.fire();
+    expect(hooks.pickElement).not.toHaveBeenCalled();
+  });
+
+  it("starts no long-press pick while another pick's clip is taken", () => {
+    mode.set(true);
+    const h2 = document.querySelector("h2")!;
+    longPress(h2);
+    longPress(h2);
+    expect(hooks.pickElement).toHaveBeenCalledTimes(1);
+  });
+
+  it("a short tap keeps picking by the synthesized click", () => {
+    mode.set(true);
+    const h2 = document.querySelector("h2")!;
+    under = h2;
+    touch(h2, "touchstart", 10, 10);
+    const end = touch(h2, "touchend", 10, 10);
+    expect(end.defaultPrevented).toBe(false);
+    expect(hooks.pickElement).not.toHaveBeenCalled();
+    h2.dispatchEvent(new MouseEvent("click", { bubbles: true, cancelable: true }));
+    expect(hooks.pickElement).toHaveBeenCalledWith(h2);
+  });
+
+  const guard = () => [...document.querySelectorAll("style")].find(s => s.textContent!.includes("-webkit-touch-callout:none"));
+  const cancelled = (type: string) => { const e = new Event(type, { bubbles: true, cancelable: true }); document.body.dispatchEvent(e); return e.defaultPrevented; };
+
+  it("mouse_selection_and_context_menu_are_untouched", () => {
+    mode.set(true);
+    // A mouse drag over text selects it, and the right button's menu opens:
+    // nothing in the page's styles or these events changes for a mouse.
+    expect(guard()?.textContent).not.toContain("user-select");
+    expect(cancelled("selectstart")).toBe(false);
+    expect(cancelled("contextmenu")).toBe(false);
+    const p = document.querySelector("p")!;
+    p.dispatchEvent(new MouseEvent("mousedown", { bubbles: true, cancelable: true, button: 0 }));
+    expect(cancelled("selectstart")).toBe(false);
+    select(p, 0, 4);
+    p.dispatchEvent(new MouseEvent("mouseup", { bubbles: true, cancelable: true }));
+    expect(String(hooks.pickRange.mock.calls[0][0])).toBe("Grow");
+  });
+
+  it("guard_is_on_only_for_a_touch_hold_in_comment_mode", () => {
+    expect(guard()).toBeUndefined();
+    mode.set(true);
+    expect(guard()).toBeDefined();
+    const h2 = document.querySelector("h2")!;
+    under = h2;
+    touch(h2, "touchstart", 10, 10);
+    expect(cancelled("contextmenu")).toBe(true);
+    expect(cancelled("selectstart")).toBe(true);
+    f.fire(450);
+    expect(cancelled("contextmenu")).toBe(true);
+    expect(cancelled("selectstart")).toBe(true);
+    touch(h2, "touchend", 10, 10);
+    expect(cancelled("contextmenu")).toBe(false);
+    expect(cancelled("selectstart")).toBe(false);
+    touch(h2, "touchstart", 10, 10);
+    touch(h2, "touchmove", 40, 10);
+    expect(cancelled("selectstart")).toBe(false);
+    touch(h2, "touchend", 40, 10);
+    mode.set(false);
+    expect(guard()).toBeUndefined();
+    const hovers = hooks.hover.mock.calls.length;
+    touch(h2, "touchstart", 10, 10);
+    expect(cancelled("contextmenu")).toBe(false);
+    f.fire();
+    expect(hooks.hover).toHaveBeenCalledTimes(hovers);
+    touch(h2, "touchend", 10, 10);
+  });
+  describe("hold, then drag", () => {
+    const areaBox = () => document.querySelector("clax-overlay")!.shadowRoot!.querySelector<HTMLElement>(".a")!;
+    const rects = Range.prototype.getClientRects;
+    let p: HTMLElement;
+    let img: HTMLElement;
+    /** Text to x < 200 (5 px a character), the image from 200 to 300, and
+     * nothing (off the page) beyond. */
+    beforeEach(() => {
+      document.body.innerHTML = `<p id="t">alpha beta gamma delta</p><img id="i">`;
+      p = document.querySelector("#t")!;
+      img = document.querySelector("#i")!;
+      d.elementFromPoint = (x: number) => (x < 200 ? p : x < 300 ? img : null);
+      d.caretRangeFromPoint = (x: number) => {
+        if (x >= 300) return null;
+        const r = document.createRange();
+        if (x >= 200) r.setStart(document.body, 1); // the caret before the image, in no text
+        else r.setStart(p.firstChild!, Math.min(p.firstChild!.textContent!.length, Math.floor(x / 5)));
+        return r;
+      };
+      Range.prototype.getClientRects = function () { return [{ left: 0, top: 0, right: 1000, bottom: 1000, width: 1000, height: 1000 }] as unknown as DOMRectList; };
+    });
+    afterEach(() => { Range.prototype.getClientRects = rects; });
+    /** One finger down at (x, y), held past the hold. */
+    const arm = (el: Element, x: number, y: number) => { touch(el, "touchstart", x, y); f.fire(450); };
+    /** Comment mode as app mode has it: a drag picks on its release. */
+    const appMode = () => {
+      mode.set(false);
+      document.querySelectorAll("clax-overlay").forEach(n => n.remove());
+      mode = new CommentMode(document, hooks, { trustedOnly: false, timers: f.t, confirmDrag: () => false });
+    };
+    beforeEach(appMode);
+
+    it("drag after arming selects a text range and picks it on release", () => {
+      mode.set(true);
+      arm(p, 1, 10);
+      touch(p, "touchmove", 52, 12);
+      expect(document.getSelection()!.toString()).toBe("alpha beta");
+      expect(outline().style.display).toBe("none");
+      touch(p, "touchend", 52, 12);
+      expect(hooks.pickRange).toHaveBeenCalledTimes(1);
+      expect(String(hooks.pickRange.mock.calls[0][0])).toBe("alpha beta");
+      // The selection is not left behind, and nothing else is picked.
+      expect(document.getSelection()!.isCollapsed).toBe(true);
+      f.fire();
+      expect(hooks.pickElement).not.toHaveBeenCalled();
+      expect(hooks.pickArea).not.toHaveBeenCalled();
+    });
+
+    it("a text drag backwards selects from the finger to the arming caret", () => {
+      mode.set(true);
+      arm(p, 52, 10);
+      touch(p, "touchmove", 31, 12);
+      touch(p, "touchend", 31, 12);
+      expect(String(hooks.pickRange.mock.calls[0][0])).toBe("beta");
+    });
+
+    it("shows the selection in the outline tint while dragging, and drops the tint after", () => {
+      mode.set(true);
+      const tinted = () => [...document.querySelectorAll("style")].some(s => s.textContent!.includes("::selection"));
+      arm(p, 1, 10);
+      expect(tinted()).toBe(false);
+      touch(p, "touchmove", 52, 12);
+      expect(tinted()).toBe(true);
+      touch(p, "touchend", 52, 12);
+      expect(tinted()).toBe(false);
+    });
+
+    it("text_drag_ending_off_text_keeps_the_last_caret", () => {
+      mode.set(true);
+      arm(p, 1, 10);
+      touch(p, "touchmove", 52, 12);
+      touch(p, "touchmove", 250, 12); // over the image
+      expect(document.getSelection()!.toString()).toBe("alpha beta");
+      touch(p, "touchmove", 400, 12); // off the page
+      touch(p, "touchend", 400, 12);
+      expect(String(hooks.pickRange.mock.calls[0][0])).toBe("alpha beta");
+      expect(hooks.pickArea).not.toHaveBeenCalled();
+    });
+
+    it("drag from empty space draws an area and picks it", () => {
+      mode.set(true);
+      arm(img, 210, 10);
+      touch(img, "touchmove", 260, 60);
+      expect(areaBox().style.display).toBe("block");
+      expect(document.getSelection()!.isCollapsed).toBe(true);
+      touch(img, "touchend", 280, 70);
+      expect(hooks.pickArea).toHaveBeenCalledWith({ left: 210, top: 10, width: 70, height: 60 });
+      expect(areaBox().classList.contains("capturing")).toBe(true);
+      expect(hooks.pickRange).not.toHaveBeenCalled();
+      expect(hooks.pickElement).not.toHaveBeenCalled();
+      // The rectangle goes once its clip is taken, as a mouse area's does.
+      mode.captured();
+      expect(areaBox().style.display).toBe("none");
+    });
+
+    it("an area drag moves focus into the page before it picks", () => {
+      const order: string[] = [];
+      const focus = vi.spyOn(window, "focus").mockImplementation(() => { order.push("focus"); });
+      hooks.pickArea.mockImplementation(() => { order.push("pick"); });
+      try {
+        mode.set(true);
+        arm(img, 210, 10);
+        touch(img, "touchmove", 260, 60);
+        touch(img, "touchend", 260, 60);
+        expect(order).toEqual(["focus", "pick"]);
+      } finally {
+        focus.mockRestore();
+      }
+    });
+
+    it("small drag is a tap pick", () => {
+      mode.set(true);
+      arm(img, 210, 10);
+      touch(img, "touchmove", 240, 13); // 30 px across, 3 px down: under AREA_MIN
+      touch(img, "touchend", 240, 13);
+      expect(hooks.pickArea).not.toHaveBeenCalled();
+      expect(hooks.pickElement).toHaveBeenCalledWith(img);
+      expect(areaBox().style.display).toBe("none");
+      f.fire();
+      expect(hooks.pickElement).toHaveBeenCalledTimes(1);
+    });
+
+    it("a text drag that comes back to its arming caret is a tap pick", () => {
+      mode.set(true);
+      arm(p, 1, 10);
+      touch(p, "touchmove", 30, 10);
+      touch(p, "touchend", 3, 10);
+      // What a tap at the arming point picks: the paragraph.
+      expect(hooks.pickElement).toHaveBeenCalledWith(p);
+      expect(hooks.pickRange).not.toHaveBeenCalled();
+      expect(document.getSelection()!.isCollapsed).toBe(true);
+    });
+
+    it("second finger or touchcancel abandons and clears the selection", () => {
+      mode.set(true);
+      arm(p, 1, 10);
+      touch(p, "touchmove", 52, 12);
+      expect(document.getSelection()!.isCollapsed).toBe(false);
+      const two = [{ identifier: 0, clientX: 52, clientY: 12, target: p }, { identifier: 1, clientX: 150, clientY: 80, target: p }] as unknown as Touch[];
+      p.dispatchEvent(new TouchEvent("touchstart", { bubbles: true, cancelable: true, touches: two, changedTouches: [two[1]] }));
+      expect(document.getSelection()!.isCollapsed).toBe(true);
+      touch(p, "touchend", 52, 12);
+      // An area drag, cancelled: its box goes.
+      arm(img, 210, 10);
+      touch(img, "touchmove", 260, 60);
+      expect(areaBox().style.display).toBe("block");
+      touch(img, "touchcancel", 260, 60);
+      expect(areaBox().style.display).toBe("none");
+      touch(img, "touchend", 260, 60);
+      f.fire();
+      expect(hooks.pickRange).not.toHaveBeenCalled();
+      expect(hooks.pickArea).not.toHaveBeenCalled();
+      expect(hooks.pickElement).not.toHaveBeenCalled();
+      expect(hooks.hover).toHaveBeenLastCalledWith(null);
+    });
+
+    it("comment mode off mid-drag clears the selection and the box", () => {
+      mode.set(true);
+      arm(p, 1, 10);
+      touch(p, "touchmove", 52, 12);
+      mode.set(false);
+      expect(document.getSelection()!.isCollapsed).toBe(true);
+      expect([...document.querySelectorAll("style")].some(s => s.textContent!.includes("::selection"))).toBe(false);
+      mode.set(true);
+      arm(img, 210, 10);
+      touch(img, "touchmove", 260, 60);
+      mode.set(false);
+      expect(areaBox().style.display).toBe("none");
+    });
+
+    it("starts no drag while another pick's clip is taken", () => {
+      mode.set(true);
+      arm(img, 210, 10);
+      touch(img, "touchmove", 260, 60);
+      touch(img, "touchend", 260, 60);
+      expect(hooks.pickArea).toHaveBeenCalledTimes(1);
+      arm(p, 1, 10);
+      touch(p, "touchmove", 52, 12);
+      expect(document.getSelection()!.isCollapsed).toBe(true);
+      touch(p, "touchend", 52, 12);
+      expect(hooks.pickRange).not.toHaveBeenCalled();
+    });
+
+    it("leaves a mouse selection's pick path as it was", () => {
+      mode.set(true);
+      arm(p, 1, 10);
+      touch(p, "touchmove", 52, 12);
+      touch(p, "touchend", 52, 12);
+      mode.captured();
+      // A click the browser may still send after the drag picks nothing.
+      p.dispatchEvent(new MouseEvent("click", { bubbles: true, cancelable: true }));
+      expect(hooks.pickElement).not.toHaveBeenCalled();
+      expect(hooks.pickRange).toHaveBeenCalledTimes(1);
+    });
+  
+    describe("in a browser, a Comment chip confirms the drag", () => {
+      const chip = () => document.querySelector("clax-overlay")!.shadowRoot!.querySelector<HTMLElement>(".c")!;
+      /** A tap on the chip, as the browser delivers it: touches, then the
+       * compatibility mouse events and the click, from inside the overlay. */
+      const tapChip = () => {
+        const c = chip();
+        const t = [{ identifier: 0, clientX: 1, clientY: 1, target: c }] as unknown as Touch[];
+        c.dispatchEvent(new TouchEvent("touchstart", { bubbles: true, cancelable: true, composed: true, touches: t, changedTouches: t }));
+        c.dispatchEvent(new TouchEvent("touchend", { bubbles: true, cancelable: true, composed: true, touches: [], changedTouches: t }));
+        const out: Record<string, boolean> = {};
+        for (const type of ["mousedown", "mouseup", "click"]) {
+          const e = new MouseEvent(type, { bubbles: true, cancelable: true, composed: true, button: 0 });
+          c.dispatchEvent(e);
+          out[type] = e.defaultPrevented;
+        }
+        return out;
+      };
+      beforeEach(() => {
+        mode.set(false);
+        document.querySelectorAll("clax-overlay").forEach(n => n.remove());
+        mode = new CommentMode(document, hooks, { trustedOnly: false, timers: f.t });
+      });
+
+      it("keeps a text drag's selection with the chip, and the chip's tap picks it", () => {
+        mode.set(true);
+        expect(chip().style.display).not.toBe("block");
+        arm(p, 1, 10);
+        touch(p, "touchmove", 52, 12);
+        touch(p, "touchend", 52, 12);
+        f.fire();
+        expect(hooks.pickRange).not.toHaveBeenCalled();
+        expect(document.getSelection()!.toString()).toBe("alpha beta");
+        expect(chip().style.display).toBe("block");
+        expect(chip().textContent).toBe("Comment");
+        const tap = tapChip();
+        // The chip's press neither moves the selection nor starts a drag.
+        expect(tap.mousedown).toBe(true);
+        expect(tap.click).toBe(true);
+        expect(hooks.pickRange).toHaveBeenCalledTimes(1);
+        expect(String(hooks.pickRange.mock.calls[0][0])).toBe("alpha beta");
+        expect(hooks.pickArea).not.toHaveBeenCalled();
+        expect(hooks.pickElement).not.toHaveBeenCalled();
+        expect(chip().style.display).toBe("none");
+        expect(document.getSelection()!.isCollapsed).toBe(true);
+      });
+
+      it("keeps an area drag's box with the chip, and the chip's tap picks the area", () => {
+        mode.set(true);
+        arm(img, 210, 10);
+        touch(img, "touchmove", 260, 60);
+        touch(img, "touchend", 280, 70);
+        expect(hooks.pickArea).not.toHaveBeenCalled();
+        expect(areaBox().style.display).toBe("block");
+        expect(chip().style.display).toBe("block");
+        tapChip();
+        expect(hooks.pickArea).toHaveBeenCalledWith({ left: 210, top: 10, width: 70, height: 60 });
+        expect(areaBox().classList.contains("capturing")).toBe(true);
+        expect(hooks.pickRange).not.toHaveBeenCalled();
+        expect(hooks.pickElement).not.toHaveBeenCalled();
+      });
+
+      it("offers a small drag's target with the chip", () => {
+        mode.set(true);
+        arm(img, 210, 10);
+        touch(img, "touchmove", 240, 13);
+        touch(img, "touchend", 240, 13);
+        expect(hooks.pickElement).not.toHaveBeenCalled();
+        expect(chip().style.display).toBe("block");
+        tapChip();
+        expect(hooks.pickElement).toHaveBeenCalledWith(img);
+        expect(hooks.pickElement).toHaveBeenCalledTimes(1);
+      });
+
+      it("a tap elsewhere dismisses the chip and its selection, and picks nothing", () => {
+        mode.set(true);
+        arm(p, 1, 10);
+        touch(p, "touchmove", 52, 12);
+        touch(p, "touchend", 52, 12);
+        touch(p, "touchstart", 30, 10);
+        expect(chip().style.display).toBe("none");
+        expect(document.getSelection()!.isCollapsed).toBe(true);
+        touch(p, "touchend", 30, 10);
+        p.dispatchEvent(new MouseEvent("mousedown", { bubbles: true, cancelable: true, button: 0 }));
+        p.dispatchEvent(new MouseEvent("mouseup", { bubbles: true, cancelable: true }));
+        expect(click(p).defaultPrevented).toBe(true);
+        f.fire();
+        expect(hooks.pickRange).not.toHaveBeenCalled();
+        expect(hooks.pickElement).not.toHaveBeenCalled();
+        // The tap after that picks as a tap does.
+        touch(p, "touchstart", 30, 10);
+        touch(p, "touchend", 30, 10);
+        click(p);
+        expect(hooks.pickElement).toHaveBeenCalledWith(p);
+      });
+
+      it("a scroll dismisses the chip and its box", () => {
+        mode.set(true);
+        arm(img, 210, 10);
+        touch(img, "touchmove", 260, 60);
+        touch(img, "touchend", 260, 60);
+        document.dispatchEvent(new Event("scroll"));
+        expect(chip().style.display).toBe("none");
+        expect(areaBox().style.display).toBe("none");
+        expect(hooks.pickArea).not.toHaveBeenCalled();
+      });
+
+      it("comment mode off dismisses the chip", () => {
+        mode.set(true);
+        arm(p, 1, 10);
+        touch(p, "touchmove", 52, 12);
+        touch(p, "touchend", 52, 12);
+        mode.set(false);
+        expect(chip().style.display).toBe("none");
+        expect(document.getSelection()!.isCollapsed).toBe(true);
+        expect([...document.querySelectorAll("style")].some(s => s.textContent!.includes("::selection"))).toBe(false);
+      });
+
+      it("a new hold-then-drag replaces the offer", () => {
+        mode.set(true);
+        arm(img, 210, 10);
+        touch(img, "touchmove", 260, 60);
+        touch(img, "touchend", 260, 60);
+        arm(p, 1, 10);
+        expect(areaBox().style.display).toBe("none");
+        touch(p, "touchmove", 52, 12);
+        touch(p, "touchend", 52, 12);
+        tapChip();
+        expect(hooks.pickArea).not.toHaveBeenCalled();
+        expect(String(hooks.pickRange.mock.calls[0][0])).toBe("alpha beta");
+      });
+    });
   });
 });

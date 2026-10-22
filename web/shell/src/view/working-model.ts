@@ -9,21 +9,27 @@ export type AgentView = Participants["agents"][number];
 export type SummaryInput = { working: Working[]; names: Map<string, string>; mine: Set<string>; open: number; idle: string[]; addressed: string | null; published: number | null; rally: boolean; now: Date; live?: boolean };
 export type Summary = { line1: string; agent: boolean; line2: string; elapsed: string | null };
 
-const LABELS: Record<string, string> = { claude: "Claude Code", codex: "Codex", pi: "Pi" };
+const LABELS: Record<string, string> = { claude: "Claude Code", codex: "Codex", pi: "Pi", app: "Clax" };
 /** The harness as a product name ("Claude Code"), for the page capability. */
 export const harnessLabel = (h: string): string => LABELS[h] ?? h;
+
+/** The name the shell shows for an agent of harness `h`: the harness itself
+ * ("claude"), except the Clax app's agent (harness `app`), shown "Clax". */
+export const harnessName = (h: string): string => (h === "app" ? LABELS.app : h);
 
 export function newestFirst(list: Working[]): Working[] {
   return [...list].sort((a, b) => b.started_at.localeCompare(a.started_at) || b.key.localeCompare(a.key));
 }
 
-/** Handle → name: its agent name (spec 2026-10-08 §11), else the harness, with the handle's first four hex digits when two agents share it. */
+/** Handle → name: its agent name (spec 2026-10-08 §11), else the harness, with the handle's first four hex digits when two agents share it. The Clax app's agent (harness `app`) is "Clax" whatever its session's name, and never takes the digits. */
 export function agentNames(list: Working[], agents: AgentView[]): Map<string, string> {
-  const all = new Map<string, string>(agents.map(a => [a.handle, shownName(a.name || a.harness, a.via)]));
-  for (const w of list) if (!all.has(w.agent)) all.set(w.agent, w.name || w.harness);
+  const named = (name: string | null | undefined, h: string) => (h === "app" ? harnessName(h) : name || harnessName(h));
+  const all = new Map<string, string>(agents.map(a => [a.handle, shownName(named(a.name, a.harness), a.via)]));
+  for (const w of list) if (!all.has(w.agent)) all.set(w.agent, named(w.name, w.harness));
+  const apps = new Set([...agents.filter(a => a.harness === "app").map(a => a.handle), ...list.filter(w => w.harness === "app").map(w => w.agent)]);
   const count = new Map<string, number>();
   for (const h of all.values()) count.set(h, (count.get(h) ?? 0) + 1);
-  return new Map([...all].map(([handle, h]) => [handle, (count.get(h) ?? 0) > 1 ? `${h} ${handle.slice(2, 6)}` : h]));
+  return new Map([...all].map(([handle, h]) => [handle, !apps.has(handle) && (count.get(h) ?? 0) > 1 ? `${h} ${handle.slice(2, 6)}` : h]));
 }
 
 export function clock(since: string, now: Date): string {
@@ -45,7 +51,7 @@ export function summary(i: SummaryInput): Summary {
   const idle = !i.idle.length ? "" : i.idle.length <= 2 ? ` · ${i.idle.join(", ")} idle` : ` · ${i.idle.length} agents idle`;
   const list = newestFirst(i.working);
   if (list.length) {
-    const who = fewNames([...new Set(list.map(w => i.names.get(w.agent) ?? w.harness))]);
+    const who = fewNames([...new Set(list.map(w => i.names.get(w.agent) ?? harnessName(w.harness)))]);
     const threads = workingThreads(list);
     const line1 = list.length === 1 && list[0].message ? `${who}: ${list[0].message}` : threads.size ? `${who} working on ${threads.size}` : `${who} working`;
     const mine = [...threads].filter(t => i.mine.has(t)).length;
@@ -59,16 +65,16 @@ export function summary(i: SummaryInput): Summary {
 
 export function threadMarker(list: Working[], threadId: string, names: Map<string, string>): { text: string; since: string } | null {
   const w = newestFirst(list).find(x => x.thread_ids.includes(threadId));
-  return w ? { text: `${names.get(w.agent) ?? w.harness} is working on it`, since: w.started_at } : null;
+  return w ? { text: `${names.get(w.agent) ?? harnessName(w.harness)} is working on it`, since: w.started_at } : null;
 }
 
 export function threadAgent(list: Working[], threadId: string, names: Map<string, string>): string | null {
   const w = newestFirst(list).find(x => x.thread_ids.includes(threadId));
-  return w ? names.get(w.agent) ?? w.harness : null;
+  return w ? names.get(w.agent) ?? harnessName(w.harness) : null;
 }
 
 export function stripText(w: Working, names: Map<string, string>, numbers: Map<string, number>, mine: Set<string>): string {
-  const who = names.get(w.agent) ?? w.harness;
+  const who = names.get(w.agent) ?? harnessName(w.harness);
   if (w.message) return `${who}: ${w.message}`;
   if (!w.thread_ids.length) return `${who} is working`;
   const numbered = w.thread_ids.filter(t => numbers.has(t));
@@ -78,7 +84,7 @@ export function stripText(w: Working, names: Map<string, string>, numbers: Map<s
 }
 
 export function chips(list: Working[], names: Map<string, string>): string[] {
-  return newestFirst(list).map(w => (w.thread_ids.length ? `${names.get(w.agent) ?? w.harness} working on ${w.thread_ids.length}` : `${names.get(w.agent) ?? w.harness} working`));
+  return newestFirst(list).map(w => (w.thread_ids.length ? `${names.get(w.agent) ?? harnessName(w.harness)} working on ${w.thread_ids.length}` : `${names.get(w.agent) ?? harnessName(w.harness)} working`));
 }
 
 /** An agent's person's name mid-sentence: the daemon names an unnamed owner "The

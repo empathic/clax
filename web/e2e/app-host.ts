@@ -1,0 +1,58 @@
+// The Clax app's side of app mode (`/a/<id>?app=1`), as the app's WebView
+// plays it: the channel the shell posts its host messages to
+// (`window.ClaxHost`), the `init` with this load's nonce, and calls into
+// `window.claxHost`. Every call goes in through the DevTools protocol with no
+// user gesture (`quietEval`), as the app's `runJavaScript` does.
+import type { Page } from "@playwright/test";
+import { appHost, type AppHost, type AppHostOptions } from "./app-scheme";
+import { expect, type Daemon } from "./fixtures";
+import { quietEval } from "./time";
+
+export type HostMessage = { type: string; [k: string]: unknown };
+
+/** Installs the app's channel on the shell's window before it loads: every
+ * message the view posts to its host is kept, parsed, in `claxToHost`.
+ * With `relay`, the app's scheme and host instead, against that daemon (an
+ * embed daemon, `startEmbedDaemon`): the channel only in the shell's
+ * frames, messages taken only from its main frame under the load's nonce,
+ * and the transport's calls and streams relayed (./app-scheme.ts). */
+export async function hostChannel(page: Page): Promise<void>;
+export async function hostChannel(page: Page, opts: { relay: Daemon } & AppHostOptions): Promise<AppHost>;
+export async function hostChannel(page: Page, opts?: { relay: Daemon } & AppHostOptions): Promise<AppHost | void> {
+  if (opts) return appHost(page, opts.relay, opts);
+  await page.addInitScript(() => {
+    if (window.top !== window) return;
+    (window as unknown as { claxToHost: unknown[] }).claxToHost = [];
+    (window as unknown as { ClaxHost: unknown }).ClaxHost = { postMessage: (m: string) => (window as unknown as { claxToHost: unknown[] }).claxToHost.push(JSON.parse(m)) };
+  });
+}
+
+/** This load's nonce, as the app makes one per load of the shell. */
+export const NONCE = "e2e-nonce-0123456789abcdef";
+
+/** What the shell posted with this load's nonce (the app drops the rest). */
+export const toHost = (page: Page) => quietEval<HostMessage[]>(page, `window.claxToHost.filter(m => m.nonce === ${JSON.stringify(NONCE)}).map(({ nonce, ...m }) => m)`);
+
+/** The app's `init`, once the shell's host module has loaded: `native`, the
+ * overlays the app draws itself (none sent when absent, as an older app
+ * sends none), and its `platform`. */
+export async function initHost(page: Page, opts: { native?: string[]; platform?: string } = {}) {
+  await expect.poll(() => quietEval<string>(page, "typeof window.claxHost")).toBe("object");
+  await quietEval(page, `window.claxHost.init(${JSON.stringify({ nonce: NONCE, ...opts })})`);
+}
+
+/** The host messages of `type` posted so far, oldest first. */
+export const ofType = async (page: Page, type: string) => (await toHost(page)).filter(m => m.type === type);
+
+/** Calls `window.claxHost.<call>` as the app does. */
+export const host = (page: Page, call: string) => quietEval<unknown>(page, `window.claxHost.${call}`);
+
+/** Makes every frame of `page` (the shell and the artifact's page) run no
+ * animation frames, as the macOS app's WKWebView does for a document it
+ * treats as hidden: `requestAnimationFrame` never calls back. */
+export async function noFrames(page: Page) {
+  await page.addInitScript(() => {
+    window.requestAnimationFrame = () => 0;
+    window.cancelAnimationFrame = () => {};
+  });
+}

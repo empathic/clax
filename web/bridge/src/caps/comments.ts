@@ -5,6 +5,7 @@
 // thread; the page never lists them. Every anchor built here names this
 // page's published file. `canSendToClaude`, `resolve`, and `delete` are plain
 // shell calls; the shell checks every argument again.
+import { nextFrame } from "../frame";
 import { buildElementAnchor, buildRangeAnchor, cssPath } from "../anchor";
 import type { Local } from "../capabilities";
 import type { CommentsContext } from "../comments-context";
@@ -95,7 +96,7 @@ export function commentsLocals(rpc: Pick<Rpc, "call" | "on">, config: unknown, e
     let modeOn: boolean | null = null;
     let placedOnce = false;
     let lastPlaced: Record<string, DocPoint> = {};
-    let frame = 0;
+    let frame: (() => void) | null = null;
     const minted = new Set<string>();
     // Callbacks are cheap and infallible by contract; a throw is discarded.
     const safe = (f: () => void) => { try { f(); } catch { /* discarded */ } };
@@ -123,7 +124,7 @@ export function commentsLocals(rpc: Pick<Rpc, "call" | "on">, config: unknown, e
     env.ctx.live = true;
     env.ctx.reflow = () => {
       if (!placedOnce || frame) return;
-      frame = requestAnimationFrame(() => { frame = 0; if (!released) sendPlaced(); });
+      frame = nextFrame(() => { frame = null; if (!released) sendPlaced(); });
     };
     env.ctx.liveChanged?.();
     const release = () => {
@@ -131,7 +132,7 @@ export function commentsLocals(rpc: Pick<Rpc, "call" | "on">, config: unknown, e
       released = true;
       registered = false;
       for (const off of offs) off();
-      if (frame) cancelAnimationFrame(frame);
+      frame?.();
       env.ctx.live = false;
       env.ctx.reflow = null;
       env.ctx.liveChanged?.();

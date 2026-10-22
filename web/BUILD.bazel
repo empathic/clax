@@ -54,6 +54,7 @@ copy_to_bin(
         "vite.bridge.config.ts",
         "vite.bridge-parts.config.ts",
         "vite.shell.config.ts",
+        "vite.transport.config.ts",
         "vitest.config.ts",
     ],
     visibility = ["//visibility:public"],
@@ -138,6 +139,20 @@ npm_script_build(
     visibility = ["//visibility:public"],
 )
 
+# What scripts/sync-tokens.py reads from the shell: the haikus it copies
+# into the app, and the app-mode colours it checks against design/tokens.json.
+filegroup(
+    name = "token_inputs",
+    srcs = [
+        "shell/src/theme.css",
+        "shell/src/view/haiku.json",
+    ],
+    visibility = [
+        "//design:__pkg__",
+        "//scripts:__pkg__",
+    ],
+)
+
 # The extension's key directory, which clax-core's build script reads
 # (crates/clax-core/build.rs).
 filegroup(
@@ -152,7 +167,7 @@ exports_files(
     visibility = ["//crates:__subpackages__"],
 )
 
-# The shell's files the Rust code and its tests include, to check that both
+# The shell's and the bridge's files the Rust code and its tests include, to check that both
 # sides agree (include_str! in crates/clax-server and crates/clax-commands).
 filegroup(
     name = "shell_cases",
@@ -160,22 +175,35 @@ filegroup(
         "shell/src/*-cases.json",
         "shell/src/view/frame-host.ts",
         "shell/src/view/haiku.json",
-    ]) + ["shell/artifact.html"],
+    ]) + [
+        "bridge/src/protocol.ts",
+        "shell/artifact.html",
+    ],
     visibility = ["//crates:__subpackages__"],
 )
 
-# The contract files clax-server embeds (src/shell/mod.rs).
+# The contract files clax-server embeds (src/shell/mod.rs), and the Clax
+# app's prompt test compares with its copies.
 filegroup(
     name = "contract_files",
     srcs = glob(["contract/**"], exclude = ["**/.qual"]),
-    visibility = ["//crates:__subpackages__"],
+    visibility = [
+        "//apps/clax_app:__pkg__",
+        "//crates:__subpackages__",
+    ],
 )
 
-# What the unit tests and the typecheck read outside web/ (the browser
-# tests of the hosted demo import demo/lib).
+# What the unit tests and the typecheck read outside web/: the toolpath
+# vectors, the browser tests of the hosted demo (they import demo/lib), the
+# home app's modules, its unit tests and the kit (apps/clax_app/home_unit),
+# and the host relay's scripts for one long answer (relay_fixture).
 UNIT_DATA = [
     ":files",
     ":node_modules",
+    "//apps/clax_app:home",
+    "//apps/clax_app:home_unit",
+    "//apps/clax_app:kit",
+    "//apps/clax_app:relay_fixture",
     "//crates/clax-core:toolpath_vectors_bin",
     "//demo:files",
 ]
@@ -217,8 +245,12 @@ npm_script_test(
 # The browser tests (pnpm run e2e), one target per Playwright project, on
 # the pinned Chromium (bazel/playwright) and the warmed clax. The binary and
 # the browsers are read where Bazel put them, not copied
-# (web/e2e/bazel-env.ts).
+# (web/e2e/bazel-env.ts). `e2e_shots` renders the app's web pieces into
+# CLAX_SHOTS_DIR (e2e/app-shots.spec.ts) and is run on demand only.
 E2E_DATA = [
+    "//apps/clax_app:home",
+    "//apps/clax_app:kit",
+    "//apps/clax_app:relay_fixture",
     ":dist",
     ":dist_e2e",
     ":dist_extension_test",
@@ -255,12 +287,13 @@ E2E_SKIPS = ["crates/clax-cli/clax"]
     tags = [
         "cpu:8",
         "no-sandbox",
-    ],
+    ] + (["manual"] if project == "shots" else []),
     script = "e2e",
 ) for project in [
     "gesture",
     "chrome-overlay",
     "rest",
+    "shots",
 ]]
 
 # Time to usable (pnpm run perf), on demand only (`just perf`): alone; it

@@ -6,7 +6,7 @@
 // type's (optional ones aside), each checked for type and bounds; an
 // unknown field, a field read through a prototype, or a symbol key refuses
 // it.
-import type { Anchor, AnchorResult } from "../../bridge/src/protocol";
+import { type Anchor, type AnchorResult, MAX_NAME } from "../../bridge/src/protocol";
 import type { AnswerBody, InboxFilter, InboxItem, InboxKind, InboxPage, Participants, QuestionView, Version } from "../../shell/src/api";
 import type { Thread } from "../../shell/src/threads";
 import type { PresenceView } from "../../shell/src/view/presence-model";
@@ -308,6 +308,8 @@ const ANCHOR = ["kind", "selector", "quote", "prefix", "suffix", "html_hash", "r
 const ANCHOR_RECT = ["x", "y", "w", "h", "scrollX", "scrollY", "viewportW"];
 /** At most 64 characters, none of them a control character or a line separator (the daemon's fingerprint rule). */
 const fingerprint = (v: unknown) => v === undefined || (typeof v === "string" && [...v].length <= 64 && !/[\p{Cc}\u2028\u2029]/u.test(v));
+/** An anchor's `name`: at most `MAX_NAME` characters, not only spaces, none a control character or a line separator (the daemon's rule). */
+const anchorName = (v: unknown) => typeof v === "string" && [...v].length <= MAX_NAME && v.trim().length > 0 && !/[\p{Cc}\u2028\u2029]/u.test(v);
 /** A drawn rectangle as fractions of its element's box, inside it, with some width and height. */
 function area(v: unknown): boolean {
   if (!shape(v, BOX, ["tag", "text", "children"]) || !BOX.every(k => num(v[k]) && (v[k] as number) >= 0 && (v[k] as number) <= 1)) return false;
@@ -317,11 +319,13 @@ function area(v: unknown): boolean {
 }
 /** An anchor as the overlay builds one (spec main §9 "Anchors"); the daemon validates it again. */
 export function isAnchor(v: unknown): v is Anchor {
-  if (!shape(v, ANCHOR, ["area"]) || typeof v.kind !== "string" || !KINDS.has(v.kind) || v.file !== "index.html") return false;
+  if (!shape(v, ANCHOR, ["area", "label", "name"]) || typeof v.kind !== "string" || !KINDS.has(v.kind) || v.file !== "index.html") return false;
   if (!strOrNull(v.selector, 1024) || !strOrNull(v.quote, 2000) || !strOrNull(v.prefix, 64) || !strOrNull(v.suffix, 64)) return false;
   if (!strOrNull(v.html_hash, 80) || v.custom_name !== null) return false;
   if (v.rect !== null && !(shape(v.rect, ANCHOR_RECT) && ANCHOR_RECT.every(k => num((v.rect as Obj)[k])))) return false;
   if (Object.hasOwn(v, "area") && !area(v.area)) return false;
+  if (Object.hasOwn(v, "label") && !str(v.label, 2000)) return false;
+  if (Object.hasOwn(v, "name") && !anchorName(v.name)) return false;
   return true;
 }
 

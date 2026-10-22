@@ -27,12 +27,15 @@ export default defineConfig({
   // clock can shorten, so they run beside the busier tests rather than all
   // at once. The Chrome overlay's tests launch browsers of their own, each
   // with the extension in a fresh profile (e2e/extension-fixtures.ts).
+  // `shots` renders the app's web pieces for a person to look at, on
+  // demand only (//web:e2e_shots, e2e/app-shots.spec.ts).
   projects: [
     // A gesture test waits out Chromium's real 5 s activation, some twice,
     // so one counts as hung only after 90 s.
     { name: "gesture", testMatch: /gesture\.spec\.ts$/, workers: Math.ceil(workers * 5 / 8), timeout: 90_000 },
     { name: "chrome-overlay", testMatch: /chrome-overlay\.spec\.ts$/ },
-    { name: "rest", testIgnore: /(gesture|chrome-overlay)\.spec\.ts$/ },
+    { name: "shots", testMatch: /app-shots\.spec\.ts$/ },
+    { name: "rest", testIgnore: /(gesture|chrome-overlay|app-shots)\.spec\.ts$/ },
   ],
   reporter: "list",
 });

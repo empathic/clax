@@ -1,4 +1,5 @@
 import { describe, expect, it, vi } from "vitest";
+import { INSPECT_FRAME } from "../../../bridge/src/protocol";
 import { FRAME_SANDBOX, FrameHost } from "./frame-host";
 
 function stage() {
@@ -68,6 +69,28 @@ describe("FrameHost", () => {
     expect(host.takeFragment()).toBe(null);
     expect(host.show("/c/x/v/1/#part-2", true, "1")).toBe(served);
     expect(host.takeFragment(), "only an adoption keeps one").toBe(null);
+  });
+  it("names the frame for inspection in the app's inspect view, and adopts a served frame there only with that name", () => {
+    const served = (name: string | null) => {
+      const s = stage();
+      s.insertAdjacentHTML("afterbegin", `<iframe class="frame"${name === null ? "" : ` name="${name}"`} title="artifact content" src="/c/x/v/1/" allow="clipboard-write; fullscreen" sandbox="${FRAME_SANDBOX}"></iframe>`);
+      return { s, el: s.querySelector("iframe")! };
+    };
+    history.replaceState(null, "", "/a/x?app=1&inspect=1");
+    try {
+      const named = served(INSPECT_FRAME);
+      expect(new FrameHost(named.s, () => {}).show("/c/x/v/1/", true, "1-s")).toBe(named.el);
+      const unnamed = served(null);
+      const made = new FrameHost(unnamed.s, () => {}).show("/c/x/v/1/", true, "1-s");
+      expect(made).not.toBe(unnamed.el);
+      expect(made.name).toBe(INSPECT_FRAME);
+    } finally {
+      history.replaceState(null, "", "/");
+    }
+    // Outside the inspect view, a named served frame is not the shell's.
+    const named = served(INSPECT_FRAME);
+    expect(new FrameHost(named.s, () => {}).show("/c/x/v/1/", true, "1-s")).not.toBe(named.el);
+    expect(new FrameHost(stage(), () => {}).show("/c/x/v/1/", true, "1-s").name).toBe("");
   });
   it("removes a served frame it did not adopt", () => {
     const s = stage();

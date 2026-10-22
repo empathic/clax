@@ -5,7 +5,10 @@
 // opens or closes on a view change. The hub lives in a shared worker, so
 // every Clax tab of this origin shares one connection; where shared workers
 // are missing, the tabs elect a leader that holds it for them (Web Locks and
-// a BroadcastChannel), and without those each tab holds its own.
+// a BroadcastChannel), and without those each tab holds its own. In the
+// Clax app (`onHost`) the page holds its own hub on the app's transport,
+// which carries the core's events: the app owns liveness, so that hub never
+// says the stream is down (`HubEnv.host`).
 //
 // A watcher hears `ready` when its topics go live (refetch, then apply the
 // deltas that follow), `resync` when a topic's events were dropped (refetch
@@ -25,10 +28,17 @@
 // with the hub. The page tells the hub whether it has focus (on `focus`,
 // `blur` and `visibilitychange`, and once it joins), so the hub can ask the
 // most recently focused tab to notify when no tab has focus (`onNotify`).
+//
+// Hidden means `visibility.hidden`: the document's visibility, except in the
+// Clax app, whose WebView may report its document hidden while the app is in
+// front: there the app's host says (`app/host.ts`, `claxHost.setVisible`),
+// and calls `visibilityChanged` when it does.
 import { getToken } from "./api";
 import { after } from "./clock";
 import { STREAM_DOWN, connTrouble } from "./conn-notice";
+import { visibility } from "./visibility";
 import { backoff } from "./lifecycle";
+import { onHost } from "./transport";
 import type { HubMsg, TabMsg } from "./stream-hub";
 
 /** One message on the stream, as a watcher hears it: `ready`, `resync`
@@ -39,6 +49,8 @@ export type StreamEvent = { type: string; topic?: string; [field: string]: unkno
 
 /** How long the stream may be down before the notice shows. */
 export const NOTICE_MS = 1500;
+export { visibility };
+
 /** How long a hidden page keeps its topics. */
 export const HIDDEN_MS = 30_000;
 /** How long a shared worker's hub may stay silent (it pings every 10 s)
@@ -73,13 +85,31 @@ const newId = () => (typeof crypto !== "undefined" && "randomUUID" in crypto ? c
  * load, say): this page uses the fallbacks from then on. */
 let workerBroken = false;
 
-/** A link to the shared worker's hub. */
+/** A link to the shared worker's hub. The worker welcomes the port when it
+ * takes it, the first time and again after the browser started it anew: then
+ * the page's `hello`, latest topics and focus go to it again. */
 export const workerLink: LinkMaker = async (on, lost) => {
   const w = new SharedWorker(new URL("./stream-worker.ts", import.meta.url), { name: "clax-stream" });
   const port = w.port;
   let closed = false;
   let heard = false;
-  port.onmessage = e => { heard = true; if (!closed) on(e.data as HubMsg); };
+  // What a new instance of the worker needs to hear: set once `hello` is sent.
+  let hello: TabMsg | null = null;
+  let topics: TabMsg | null = null;
+  let focus: TabMsg | null = null;
+  const welcomed = () => {
+    if (!hello) return;
+    port.postMessage(hello);
+    if (topics) port.postMessage(topics);
+    if (focus) port.postMessage(focus);
+  };
+  port.onmessage = e => {
+    heard = true;
+    if (closed) return;
+    const m = e.data as HubMsg;
+    if (m?.t === "welcome") welcomed();
+    else on(m);
+  };
   // Where the browser says so, the worker's end closing (it crashed).
   port.addEventListener("close", () => { if (!closed) lost(); });
   w.addEventListener("error", () => {
@@ -89,10 +119,16 @@ export const workerLink: LinkMaker = async (on, lost) => {
   port.start();
   const lock = `clax-tab:${newId()}`;
   const release = await holdLock(lock);
-  port.postMessage({ t: "hello", lock: release ? lock : undefined } satisfies TabMsg);
+  hello = { t: "hello", lock: release ? lock : undefined };
+  port.postMessage(hello);
   return {
     pinged: true,
-    send: m => { if (!closed) port.postMessage(m); },
+    send: m => {
+      if (closed) return;
+      if (m.t === "topics") topics = m;
+      if (m.t === "focus") focus = m;
+      port.postMessage(m);
+    },
     close: () => {
       if (closed) return;
       port.postMessage({ t: "bye" } satisfies TabMsg);
@@ -169,15 +205,20 @@ export const leaderLink: LinkMaker = async on => {
   };
 };
 
-/** A hub of this tab's own: one connection per tab. */
+/** A hub of this tab's own: one connection per tab; on the app's host
+ * when the page runs on its transport. The hub lives and dies with its one
+ * tab, which holds it as a lock that never frees, so a page whose timers
+ * stood still (a suspended WebView, a sleeping laptop) is never expired. */
 export const localLink: LinkMaker = async on => {
   const { Hub } = await import("./stream-hub");
-  const hub = new Hub({ notify: true, send: (_ids, msg) => on(msg) });
+  const hub = new Hub({ notify: true, host: onHost(), send: (_ids, msg) => on(msg), watchLock: () => {} });
+  hub.receive("self", { t: "hello", lock: "self" });
   return { send: m => hub.receive("self", m), close: () => hub.close() };
 };
 
-/** The best link this browser supports. */
+/** The best link this browser supports; the page's own in the app. */
 export const bestLink: LinkMaker = async (on, lost) => {
+  if (onHost()) return localLink(on, lost);
   if (typeof SharedWorker === "function" && !workerBroken) {
     try { return await workerLink(on, lost); } catch { /* blocked: fall back */ }
   }
@@ -303,14 +344,14 @@ export class EventStream {
     this.win.document.addEventListener("visibilitychange", this.onVisibility);
     this.win.addEventListener("focus", this.onFocus);
     this.win.addEventListener("blur", this.onFocus);
-    if (this.win.document.visibilityState === "hidden") this.onVisibility();
+    if (visibility.hidden(this.win.document)) this.onVisibility();
   }
 
   /** Tells the hub whether this page has focus, when that changed. */
   private onFocus = () => {
     if (!this.link) return;
     const d = this.win.document;
-    const focused = d.visibilityState !== "hidden" && d.hasFocus();
+    const focused = !visibility.hidden(d) && d.hasFocus();
     if (focused === this.focusSent) return;
     this.focusSent = focused;
     this.link.send({ t: "focus", focused });
@@ -327,11 +368,16 @@ export class EventStream {
     this.schedule();
   };
 
+  /** The page's visibility (`visibility.hidden`) may have changed: a hidden
+   * page releases its topics after `HIDDEN_MS`; a shown one takes them again
+   * (each watcher hears `ready` and refetches). */
+  visibilityChanged(): void { this.onVisibility(); }
+
   private onVisibility = () => {
     this.onFocus();
     this.hiddenTimer?.();
     this.hiddenTimer = undefined;
-    if (this.win.document.visibilityState === "hidden") {
+    if (visibility.hidden(this.win.document)) {
       this.hiddenTimer = after(HIDDEN_MS, () => {
         this.hiddenTimer = undefined;
         this.released = true;
@@ -449,7 +495,7 @@ export class EventStream {
   }
 
   private check(): void {
-    if (!this.link || !this.sent || this.win.document.visibilityState === "hidden") return;
+    if (!this.link || !this.sent || visibility.hidden(this.win.document)) return;
     if (Date.now() - this.heard > DEAD_MS) this.lost(this.link);
   }
 

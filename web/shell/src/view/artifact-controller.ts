@@ -7,23 +7,24 @@ import { getDrafts, getSampleStatus, putLooked, putSeen } from "./view-api";
 import { acceptByeFromFrame, acceptFromFrame, helloMatches, sendToFrame } from "../bridge-link";
 import type { Declared } from "../caps/availability";
 import { pageAnchor } from "../caps/comments";
-import { HINT_MS, frameGesture, onShieldPress, pickHintAllowed, setForwardedKeys } from "../caps/gesture";
-import { CapabilityHost, type CommentsUi } from "../caps/host";
+import { HINT_MS, PICK_ATTEST_WAIT_MS, afterHostAttestation, frameGesture, hostArrival, onShieldPress, pickHintAllowed, setForwardedKeys } from "../caps/gesture";
+import { CapabilityHost, type CommentsUi, type DbJournal } from "../caps/host";
 import { REQUEST_STUCK, connTrouble } from "../conn-notice";
 import { Lifecycle, onPageCache, retrying } from "../lifecycle";
 import { LOAD_FAILED, OPEN_FAILED, PART_FAILED, POST_FAILED, REOPEN_FAILED, RESOLVE_FAILED, SEND_FAILED, SHEET_FAILED, report, scopedNotice } from "../failure";
 import { nav } from "../nav";
 import { artifactOrigin, cachedOriginOk, pageSrc, probeOrigin } from "../origin";
-import { parseShellPath, shellPath } from "../route";
+import { hostEmbed } from "../transport";
+import { appQuery, parseShellPath, shellPath } from "../route";
 import { type Thread, type Viewer, addComment, createThread, currentViewer, fetchThread, getViewer, listThreads, onViewer, reopenThread, resolveThread, seedViewer, sendBatch, sendToAgent, upsert } from "../threads";
 import { after } from "../clock";
-import { afterPaint } from "./after-paint";
+import { afterPaint, nextFrame } from "./after-paint";
 import { EMPTY_SELECTION, type Selection, prune, toggle, unsent } from "./batch-model";
 import { AnchorHandles } from "./anchor-handles";
 import type { Decided } from "./changelog-model";
 import { rallyOnce } from "./rally";
 import { type Boot, rememberFrameMode } from "./boot";
-import { CAPTURE_LATE, type Draft, MAX_CLIP_BYTES, captureWait, nextDraft, withClip } from "./composer-model";
+import { CAPTURE_LATE, type Draft, MAX_CLIP_BYTES, captureWait, nextDraft, respaced, withClip } from "./composer-model";
 import type { ArtifactStream } from "./artifact-stream";
 import { FrameGate } from "./frame-gate";
 import type { PresenceView } from "./presence-model";
@@ -144,6 +145,9 @@ export type ViewState = {
   /** Other people's pointers, selections, typing and drafts (the live
    * layers); none until their code loads after the first paint. */
   live?: LiveUi;
+  /** The overlays the Clax app's host draws itself (`claxHost.init`'s
+   * `native`, `app/host.ts`): the stage draws no web version of these. */
+  native?: readonly string[];
   /** The artifact's tags and whether the viewer may set them, as last
    * refetched or set (a `tags` event, the tag editor); null: as `data`
    * says (`view/title-tags.ts` `tagsOf`). Kept apart from `data`, whose
@@ -192,11 +196,29 @@ const REVEAL_MS = 5000;
 export class ArtifactController {
   readonly state: Store<ViewState>;
   readonly id: string;
-  /** The URL fragment the frame opens at. */
-  readonly startHash: string;
+  /** The URL fragment the frame opens at (app mode's auto-follow moves it to
+   * the frame's latest, `app/host.ts`). */
+  startHash: string;
   /** The content frame; the mount sets it before `start`. */
   frame: FrameHost | null = null;
   readonly commentsUi: CommentsUi;
+  /** App mode's hooks (`app/host.ts` sets them; null in a browser): what the
+   * welcome adds for a page that greeted with `file` (`app`, and the scroll
+   * position to restore after a newer version loaded in place), and what
+   * follows a post from the composer (its Send also sends the thread to the
+   * agent), and that the composer cancelled a post it queued behind the
+   * screenshot (`dropped`: its text changed, or it moved to another anchor;
+   * the app's Send waits on that post), and the anchors besides the
+   * threads' the page resolves for it (`anchors`: an open pick's, by an ID
+   * of the app's own, its place then in `resolved` under that ID). */
+  /** @internal */
+  app: { welcome(file: string, again: boolean): { app: true; restoreScroll?: number }; posted(t: Thread): void; dropped(): void; anchors(): { id: string; anchor: Anchor; sameVersion?: boolean }[] } | null = null;
+  /** The write journal of a live migration in the app's migration view
+   * (app/host.ts), while one runs: every `db` write of the page waits for it. */
+  dbJournal: DbJournal | null = null;
+  /** The thread the app's own thread view shows (`focusThread`), outlined
+   * while it is open; null when none is. */
+  private appFocus: string | null = null;
 
   /** @internal (read by the stream module) */
   disposed = false;
@@ -223,7 +245,8 @@ export class ArtifactController {
   private hostFor: { key: string; data: Loaded } | null = null;
   // Whether the frame's latest hello named the shown artifact and version
   // (see FrameGate).
-  private readonly gate = new FrameGate();
+  /** @internal */
+  readonly gate = new FrameGate();
   private readonly anchorIds = new AnchorHandles();
   /** @internal */
   readonly threadLoad: ThreadSync;
@@ -231,6 +254,8 @@ export class ArtifactController {
   // opened the composer, while its screenshot is still to come, with when
   // the start arrived.
   private pendingPick: { pickId: string; at: number } | null = null;
+  /** A pick start waiting for the app host's release attestation: its cancel. */
+  private pickWait: (() => void) | null = null;
   /** The bridge's lazy parts the greeted page reported it could not load
    * (`clax:degraded`); forgotten whenever the gate closes (another page,
    * version or origin, or a document that loaded without greeting) and at
@@ -241,7 +266,8 @@ export class ArtifactController {
   // closes.
   private resumeAfter: string | null = null;
   // What the open composer holds, so a page's open never replaces typed text.
-  private composerText = "";
+  /** @internal (read by app mode's host) */
+  composerText = "";
   /** The thread a viewer asked to reopen before naming itself, reopened if it
    * names itself within REOPEN_NAME_MS, unless it closed the prompt with no name. */
   private reopenAfterName: { id: string; until: number } | null = null;
@@ -269,13 +295,14 @@ export class ArtifactController {
    * then brought into view (`reveal`). */
   private wantThread: string | null = new URLSearchParams(location.search).get("thread");
   // The frame's latest known fragment.
-  private frameHash: string;
+  /** @internal (read by app mode's host) */
+  frameHash: string;
   /** A fragment for the frame's page to move to once it greets: an adopted
    * frame's (`FrameHost.takeFragment`), or one the address bar moved to
    * while no page had greeted. */
   private pendingFragment: string | null = null;
-  // The pending animation frame that copies `frameHash` into the address bar.
-  private hashFrame = 0;
+  // Cancels the pending frame that copies `frameHash` into the address bar.
+  private hashFrame: (() => void) | null = null;
   private hintTimer: (() => void) | undefined;
   private captureTimer: (() => void) | undefined;
   private stream: ArtifactStream | null = null;
@@ -442,9 +469,10 @@ export class ArtifactController {
     return s.file ?? (r.kind === "artifact" ? r.file : INDEX_FILE);
   }
 
-  /** The shell URL of the current page in `version` (null: the latest). */
+  /** The shell URL of the current page in `version` (null: the latest), with
+   * app mode's `?app=1` (`appQuery`). */
   here(version: number | null, s: ViewState = this.s): string {
-    return shellPath(this.id, version, this.pageNow(s), this.shown(s));
+    return shellPath(this.id, version, this.pageNow(s), this.shown(s)) + appQuery(location.search);
   }
 
   /** The "open raw" link: the current page in the shown version. */
@@ -542,6 +570,8 @@ export class ArtifactController {
     }
     if (threadIds(prev.threads) !== threadIds(next.threads) || this.shown(prev) !== this.shown(next) || prev.origin !== next.origin) this.resolveAll();
     if (prev.commenting !== next.commenting) this.send({ type: "clax:comment-mode", on: next.commenting });
+    // The app's thread view does not outlast comment mode's end.
+    if (prev.commenting && !next.commenting && this.appFocus !== null) { this.appFocus = null; this.sendFocus(); }
     if (prev.draft !== next.draft) this.draftChanged(next.draft, next.deleted);
     if (prev.hovered !== next.hovered || prev.selected !== next.selected || prev.threads !== next.threads) this.sendFocus();
     this.liveView?.react(prev, next);
@@ -604,7 +634,8 @@ export class ArtifactController {
     this.hintTimer = after(HINT_MS, () => this.set({ hint: null }));
   }
 
-  private whileBusy<T>(p: Promise<T>): Promise<T> {
+  /** @internal */
+  whileBusy<T>(p: Promise<T>): Promise<T> {
     this.set(s => ({ busy: s.busy + 1 }));
     return p.finally(() => this.set(s => ({ busy: s.busy - 1 })));
   }
@@ -620,7 +651,8 @@ export class ArtifactController {
    * origin, to a frame whose document has not greeted (`gate`). Nothing is
    * lost: the hello that opens the gate sends the welcome, the anchors and
    * the focus again. */
-  private send(m: ShellToBridge): void {
+  /** @internal */
+  send(m: ShellToBridge): void {
     if (this.held || (!this.s.origin && !this.gate.open)) return;
     sendToFrame(this.frameWin(), this.s.origin ?? null, m);
   }
@@ -646,7 +678,9 @@ export class ArtifactController {
     if (this.hostFor?.key !== key || this.hostFor.data !== s.data) {
       this.hostFor = { key, data: s.data };
       // A replaced host (another artifact, version, or view) and the host at
-      // dispose are disposed, so their timers and late results never reach a frame.
+      // dispose are disposed, so their timers and late results never reach a
+      // frame, and the prompts its page asked are dismissed.
+      if (this.host) this.prompt.cancel();
       this.host?.dispose();
       const data = s.data;
       this.host = new CapabilityHost(getToken().then(token => {
@@ -669,6 +703,7 @@ export class ArtifactController {
           sampleStatus: token === null ? undefined : () => status ??= getSampleStatus(this.id, token),
           onSampleCalls: (n: number, cap: number | null) => this.set({ sampleCalls: { n, cap } }),
           spectating: () => this.s.spectator !== null,
+          journal: () => this.dbJournal,
         };
       }));
       // It hears of the UI in the next reaction pass, as the effect that
@@ -712,17 +747,21 @@ export class ArtifactController {
     }
   }
 
-  private resolveAll(): void {
+  /** @internal (app mode's host asks again for a new pick) */
+  resolveAll(): void {
     if (this.customLive) return;
     const file = this.s.file;
-    this.send({ type: "clax:resolve-anchors", requestId: `r${Date.now()}`, anchors: this.s.threads.filter(t => t.anchor.file === file).map(t => ({ id: this.anchorIds.handle(t.id), anchor: t.anchor, sameVersion: t.version_n === this.shown(), highlight: t.status === "open" })) });
+    this.send({ type: "clax:resolve-anchors", requestId: `r${Date.now()}`, anchors: [...this.s.threads.filter(t => t.anchor.file === file).map(t => ({ id: t.id, anchor: t.anchor, sameVersion: t.version_n === this.shown(), highlight: t.status === "open" })), ...this.app?.anchors() ?? []].map(a => ({ ...a, id: this.anchorIds.handle(a.id) })) });
   }
 
   /** Tells the frame which thread's drawn area to outline dashed: the
    * hovered, else the selected thread, by the handle the frame knows it by
-   * (none when it was not sent to this page). */
+   * (none when it was not sent to this page). In the Clax app (`app`) no
+   * shell panel shows or clears the selection: the hovered thread is
+   * outlined, else the one the app's thread view shows (`focusThread`); a
+   * thread brought into view flashes its outline (`clax:scroll-to`). */
   private sendFocus(): void {
-    const tid = this.s.hovered ?? this.s.selected;
+    const tid = this.s.hovered ?? (this.app ? this.appFocus : this.s.selected);
     this.send({ type: "clax:focus", id: tid === null ? null : this.anchorIds.known(tid) });
   }
 
@@ -770,7 +809,7 @@ export class ArtifactController {
    * still moves, with an entry of its own (the page's greeting then updates
    * the address bar in place). */
   private openPage(target: string, hash = ""): void {
-    const pushed = setUrl(shellPath(this.id, this.pinnedVersion, target, this.shown()) + hash, true);
+    const pushed = setUrl(shellPath(this.id, this.pinnedVersion, target, this.shown()) + appQuery(location.search) + hash, true);
     this.navigateFrame(target, pushed, hash);
   }
 
@@ -804,7 +843,7 @@ export class ArtifactController {
     this.life.timeout(() => this.openStream(), STREAM_WAIT_MS);
   }
 
-  /** @internal */
+  /** @internal (also app mode's auto-follow: a newer version loaded in place) */
   loaded(d: Loaded, attention: Attention | null = d.attention ?? null): void {
     if (this.disposed) return;
     this.latestKnown = Math.max(this.latestKnown, d.artifact.current_version);
@@ -910,12 +949,14 @@ export class ArtifactController {
     void putSeen(this.id, latest);
   }
 
-  /** The frame mode: this tab's cached probe; else the daemon's guess (from
-   * the `clax_frame` cookie, when it served a frame), confirmed or corrected
-   * by a probe; else a probe. The decision is remembered in the cookie for
-   * the next load's HTML. */
+  /** The frame mode: in the Clax app, the embed's content origin; else this
+   * tab's cached probe; else the daemon's guess (from the `clax_frame`
+   * cookie, when it served a frame), confirmed or corrected by a probe; else
+   * a probe. The decision is remembered in the cookie for the next load's
+   * HTML. */
   private decideOrigin(boot: Boot | null): void {
-    const o = artifactOrigin(this.id);
+    const embed = hostEmbed();
+    const o = artifactOrigin(this.id, location, embed);
     const decided = (origin: string | null) => {
       if (this.disposed) return;
       // A hosted daemon's content origin frames every page sandboxed.
@@ -925,6 +966,8 @@ export class ArtifactController {
       this.viewChanged();
     };
     if (!o || boot?.artifact.content_origin) { decided(null); return; }
+    // The app answers every content origin itself: there is nothing to probe.
+    if (embed) { decided(o); return; }
     const cached = cachedOriginOk();
     if (cached !== null) { decided(cached ? o : null); return; }
     if (boot?.frame) {
@@ -980,6 +1023,8 @@ export class ArtifactController {
   dispose(): void {
     if (this.disposed) return;
     this.disposed = true;
+    this.pickWait?.();
+    this.pickWait = null;
     this.live = false;
     this.life.dispose();
     this.cancelFlush();
@@ -995,8 +1040,8 @@ export class ArtifactController {
     this.lookTimer?.();
     this.hintTimer?.();
     this.captureTimer?.();
-    if (this.hashFrame) cancelAnimationFrame(this.hashFrame);
-    this.hashFrame = 0;
+    this.hashFrame?.();
+    this.hashFrame = null;
   }
 
   private listen(): void {
@@ -1182,7 +1227,9 @@ export class ArtifactController {
     this.liveView?.left();
   }
 
-  private onMessage(e: MessageEvent): void {
+  /** `waited`: a pick start judged again after waiting for the app host's
+   * release attestation (see `clax:pick-start`). */
+  private onMessage(e: MessageEvent, waited = false): void {
     if (this.disposed) return;
     if (acceptByeFromFrame(e, this.frameWin(), this.s.origin ?? null)) { this.frameLeft(); return; }
     const m = acceptFromFrame(e, this.frameWin(), this.s.origin ?? null);
@@ -1214,7 +1261,7 @@ export class ArtifactController {
           this.send({ type: "clax:hash", hash: this.pendingFragment });
           this.pendingFragment = null;
         }
-        this.send({ type: "clax:welcome", mode: this.s.commenting ? "comment" : "view" });
+        this.send({ type: "clax:welcome", mode: this.s.commenting ? "comment" : "view", ...this.app?.welcome(greeted, m.again === true) });
         this.resolveAll();
         this.sendFocus();
         this.liveView?.hello();
@@ -1278,7 +1325,16 @@ export class ArtifactController {
         }
         if (!this.s.commenting) { refuse(); break; }
         this.pendingPick = null;
-        if (!frameGesture()) { refuse(); if (pickHintAllowed()) this.showHint(MOVE_TO_PICK); break; }
+        if (!frameGesture()) {
+          // In app mode the host's release attestation may still be on its
+          // way: the start is judged again once it lands, or after the wait.
+          if (!waited && hostArrival.pending()) {
+            this.pickWait?.();
+            this.pickWait = afterHostAttestation(PICK_ATTEST_WAIT_MS, () => { this.pickWait = null; this.onMessage(e, true); });
+            break;
+          }
+          refuse(); if (pickHintAllowed()) this.showHint(MOVE_TO_PICK); break;
+        }
         // The page's script can post a start too: the thread goes on the page
         // the frame greeted as and the version the view shows, with an anchor
         // rebuilt field by field, of a kind a pick makes.
@@ -1290,7 +1346,8 @@ export class ArtifactController {
         this.pendingPick = { pickId, at: Date.now() };
         this.set({ commenting: false });
         this.resumeAfter = pickId;
-        this.set({ draft: { pickId, anchor, version: this.shown(), clip: null, capturing: true, clipToken: pickId } });
+        const shown = respaced(anchor.quote, m.desc?.text) ?? undefined;
+        this.set({ draft: { pickId, anchor, version: this.shown(), clip: null, capturing: true, clipToken: pickId, ...(shown ? { shown } : {}) } });
         break;
       }
       case "clax:pick": {
@@ -1324,13 +1381,14 @@ export class ArtifactController {
       case "clax:cancel": this.set({ commenting: false }); break;
       case "clax:hash":
         // The page's fragment moved (a link, a script): the address bar
-        // follows in place, once per animation frame with the latest
-        // fragment; the frame's own history entry carries the move.
+        // follows in place, once per animation frame (or `nextFrame`'s
+        // timer, where frames do not come) with the latest fragment; the
+        // frame's own history entry carries the move.
         if (!this.gate.open || !validHash(m.hash)) break;
         this.frameHash = m.hash;
         if (!this.hashFrame) {
-          this.hashFrame = requestAnimationFrame(() => {
-            this.hashFrame = 0;
+          this.hashFrame = nextFrame(() => {
+            this.hashFrame = null;
             if (location.hash !== this.frameHash) setUrl(location.pathname + location.search + this.frameHash);
           });
         }
@@ -1494,7 +1552,8 @@ export class ArtifactController {
    * success. A target that ended since the last refetch (`unknown_agent`)
    * refetches the agents, so the next Send names a live one; the failure
    * shows and the send is never retried without `to`. */
-  private sendTracked<T>(p: Promise<T>, to: string | null): Promise<T> {
+  /** @internal */
+  sendTracked<T>(p: Promise<T>, to: string | null): Promise<T> {
     return p.then(v => { if (to !== null) rememberTarget(this.id, to); return v; }, (e: unknown) => {
       if (e instanceof ApiError && e.code === "unknown_agent") this.refreshAgents();
       throw e;
@@ -1638,6 +1697,13 @@ export class ArtifactController {
     watch.observe(document.body, { childList: true, subtree: true });
     this.life.defer(done);
   }
+  /** The app's thread view opened on thread `id` (outlined while it is
+   * open), or closed (null). */
+  focusThread(id: string | null): void {
+    if (id === this.appFocus) return;
+    this.appFocus = id;
+    this.sendFocus();
+  }
   /** A pin's click: the sidebar opens on its thread. */
   openPin(t: Thread): void { this.set({ panel: true }); this.selectThread(t); }
 
@@ -1695,8 +1761,9 @@ export class ArtifactController {
   composerFocused(pickId: string): void { if (this.pendingPick?.pickId === pickId) this.send({ type: "clax:composer-ready", pickId }); }
   cancelDraft(): void { this.set({ draft: null }); }
 
-  /** Posts `draft`'s comment (the open composer's); a failure shows in the
-   * notice and is rethrown so the composer stays. */
+  /** Posts `draft`'s comment (the open composer's), and in app mode hands
+   * the thread to `app.posted` to send; a failure to post shows in the notice
+   * and is rethrown so the composer stays. */
   async submitDraft(body: string, draft: Draft | null = this.s.draft): Promise<void> {
     if (!draft) return;
     try {
@@ -1705,6 +1772,7 @@ export class ArtifactController {
       this.noticeFor(CLIP_DROPPED)(clipError ? `${CLIP_DROPPED}: ${clipError}` : null);
       this.changeThreads(ts => upsert(ts, thread));
       this.set({ selected: thread.id, draft: null, panel: true });
+      this.app?.posted(thread);
     } catch (e) {
       void report(Promise.reject(e), POST_FAILED, this.noticeFor(POST_FAILED));
       // A hosted daemon's visitor comments once named (a guest): the people

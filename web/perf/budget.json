@@ -7,7 +7,8 @@
         "control": 44,
         "framePaint": 46,
         "readyLatency": 33,
-        "coldLatency": 8
+        "coldLatency": 8,
+        "appReady": 45
       },
       "sandbox": {
         "firstPaint": 50,
@@ -15,7 +16,8 @@
         "control": 44,
         "framePaint": 45,
         "readyLatency": 32,
-        "coldLatency": 8
+        "coldLatency": 8,
+        "appReady": 42
       }
     },
     "budget": {
@@ -24,14 +26,16 @@
         "commentReady": 86,
         "framePaint": 76,
         "readyLatency": 63,
-        "coldLatency": 38
+        "coldLatency": 38,
+        "appReady": 75
       },
       "sandbox": {
         "firstPaint": 75,
         "commentReady": 86,
         "framePaint": 75,
         "readyLatency": 62,
-        "coldLatency": 38
+        "coldLatency": 38,
+        "appReady": 72
       }
     },
     "control": {

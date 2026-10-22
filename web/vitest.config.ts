@@ -11,8 +11,10 @@ export default defineConfig({
   define: { __CLAX_TEST_CLOCK__: "true", __CLAX_EXT_TEST__: "false" },
   // The bridge loads its lazy parts from source here (parts-static.ts).
   resolve: { alias: { "clax-bridge-parts": fileURLToPath(new URL("./bridge/src/parts-static.ts", import.meta.url)) } },
+  // The home app's unit tests (apps/clax_app/home_unit) import its modules and the kit from outside web/.
+  server: { fs: { allow: [fileURLToPath(new URL("..", import.meta.url))] } },
   // Every test and hook may take up to MOUNT_TIMEOUT_MS: a limit that ends a
   // test that hangs, well above what a loaded machine takes to load a fresh
   // module registry, so it never decides whether a test passes.
-  test: { environment: "jsdom", testTimeout: MOUNT_TIMEOUT_MS, hookTimeout: MOUNT_TIMEOUT_MS, setupFiles: ["shell/test-setup.ts"], include: ["bridge/test/**/*.test.ts", "extension/src/**/*.test.ts", "shell/src/**/*.test.ts", "scripts/**/*.test.ts"] },
+  test: { environment: "jsdom", testTimeout: MOUNT_TIMEOUT_MS, hookTimeout: MOUNT_TIMEOUT_MS, setupFiles: ["shell/test-setup.ts"], include: ["bridge/test/**/*.test.ts", "extension/src/**/*.test.ts", "shell/src/**/*.test.ts", "scripts/**/*.test.ts", "../apps/clax_app/home_unit/**/*.test.js"] },
 });
