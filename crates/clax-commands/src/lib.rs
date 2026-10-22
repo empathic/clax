@@ -56,6 +56,12 @@ pub struct ServeArgs {
     /// Debug builds only: serve the web UI from this directory, laid out
     /// like `web/dist`, in place of the binary's.
     pub web_dist: Option<PathBuf>,
+    /// Answer no request without a credential but `/healthz`, the web
+    /// UI's static files and page content by artifact ID.
+    pub require_credential: bool,
+    /// Debug builds only: serve as the core an app embeds with these
+    /// origins, the shell's and an artifact's content template with `{id}`.
+    pub embed: Option<(String, String)>,
 }
 
 static ENV: OnceLock<Env> = OnceLock::new();

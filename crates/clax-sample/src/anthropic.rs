@@ -17,10 +17,37 @@ use tokio_stream::wrappers::ReceiverStream;
 
 pub const API_VERSION: &str = "2023-06-01";
 
+/// Where the `anthropic` provider reads its key on each call.
+pub enum KeySource {
+    /// A key read once, when the daemon started.
+    Fixed(String),
+    /// The slot a host app's daemon fills over loopback; read on every call.
+    Slot(crate::KeySlot),
+}
+
+impl KeySource {
+    /// The key a call sends now; `None` while a slot is empty.
+    fn key(&self) -> Option<String> {
+        match self {
+            KeySource::Fixed(k) => Some(k.clone()),
+            KeySource::Slot(slot) => slot.get(),
+        }
+    }
+}
+
+impl std::fmt::Debug for KeySource {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        match self {
+            KeySource::Fixed(_) => f.write_str("Fixed(..)"),
+            KeySource::Slot(slot) => f.debug_tuple("Slot").field(slot).finish(),
+        }
+    }
+}
+
 pub struct AnthropicProvider {
     client: reqwest::Client,
     base_url: String,
-    api_key: String,
+    key: KeySource,
 }
 
 impl std::fmt::Debug for AnthropicProvider {
@@ -33,10 +60,16 @@ impl std::fmt::Debug for AnthropicProvider {
 
 impl AnthropicProvider {
     pub fn new(base_url: impl Into<String>, api_key: impl Into<String>) -> AnthropicProvider {
+        AnthropicProvider::with_source(base_url, KeySource::Fixed(api_key.into()))
+    }
+
+    /// A provider reading its key from `key` on every call; a call made
+    /// while a slot is empty ends in one `sampling_disabled` error.
+    pub fn with_source(base_url: impl Into<String>, key: KeySource) -> AnthropicProvider {
         AnthropicProvider {
             client: client(),
             base_url: base_url.into().trim_end_matches('/').to_string(),
-            api_key: api_key.into(),
+            key,
         }
     }
 }
@@ -177,6 +210,7 @@ pub struct Accumulator {
     blocks: Vec<Value>,
     partial: HashMap<usize, String>,
     stop: Option<Stop>,
+    usage: Usage,
 }
 
 impl Accumulator {
@@ -191,6 +225,21 @@ impl Accumulator {
         let b = self.block(i);
         let now = format!("{}{piece}", b[field].as_str().unwrap_or(""));
         b[field] = Value::String(now);
+    }
+
+    /// Keeps the counts a `usage` object reports. `message_start` carries the
+    /// input side and `message_delta` the running totals, so a later count
+    /// replaces an earlier one and an absent count keeps it.
+    fn take_usage(&mut self, u: &Value) {
+        let set = |field: &str, slot: &mut u64| {
+            if let Some(n) = u[field].as_u64() {
+                *slot = n;
+            }
+        };
+        set("input_tokens", &mut self.usage.input);
+        set("output_tokens", &mut self.usage.output);
+        set("cache_read_input_tokens", &mut self.usage.cache_read);
+        set("cache_creation_input_tokens", &mut self.usage.cache_write);
     }
 
     /// Applies one SSE event; returns what it produced for the orchestrator.
@@ -254,10 +303,15 @@ impl Accumulator {
                     input,
                 }]
             }
+            "message_start" => {
+                self.take_usage(&v["message"]["usage"]);
+                Vec::new()
+            }
             "message_delta" => {
                 if let Some(r) = v["delta"]["stop_reason"].as_str() {
                     self.stop = Some(stop_from(r));
                 }
+                self.take_usage(&v["usage"]);
                 Vec::new()
             }
             "message_stop" => vec![ProviderEvent::End {
@@ -266,6 +320,7 @@ impl Accumulator {
                     .into_iter()
                     .filter(|b| !b.is_null())
                     .collect(),
+                usage: self.usage,
             }],
             "error" => {
                 let e = &v["error"];
@@ -369,10 +424,16 @@ impl super::provider::SampleProvider for AnthropicProvider {
 
     fn stream(&self, req: ProviderRequest) -> EventStream {
         let (tx, rx) = mpsc::channel(64);
-        let (client, url, key) = (
+        let Some(key) = self.key.key() else {
+            let _ = tx.try_send(ProviderEvent::Error {
+                code: ProviderErrorCode::Unavailable,
+                message: "no API key is set on this machine".into(),
+            });
+            return Box::pin(ReceiverStream::new(rx));
+        };
+        let (client, url) = (
             self.client.clone(),
             format!("{}/v1/messages", self.base_url),
-            self.api_key.clone(),
         );
         clax_rt::spawn(async move {
             let closed = tx.clone();
@@ -405,7 +466,7 @@ mod tests {
             &[
                 (
                     "message_start",
-                    json!({"type": "message_start", "message": {"id": "msg_1"}}),
+                    json!({"type": "message_start", "message": {"id": "msg_1", "usage": {"input_tokens": 12, "cache_read_input_tokens": 3, "output_tokens": 1}}}),
                 ),
                 (
                     "content_block_start",
@@ -442,7 +503,7 @@ mod tests {
                 ),
                 (
                     "message_delta",
-                    json!({"type": "message_delta", "delta": {"stop_reason": "end_turn"}}),
+                    json!({"type": "message_delta", "delta": {"stop_reason": "end_turn"}, "usage": {"output_tokens": 40}}),
                 ),
                 ("message_stop", json!({"type": "message_stop"})),
             ],
@@ -458,6 +519,12 @@ mod tests {
                         json!({"type": "thinking", "thinking": "hmm", "signature": "sig"}),
                         json!({"type": "text", "text": "Hello"}),
                     ],
+                    usage: Usage {
+                        input: 12,
+                        output: 40,
+                        cache_read: 3,
+                        cache_write: 0
+                    },
                 },
             ]
         );
@@ -516,7 +583,10 @@ mod tests {
                 input: json!({})
             }
         );
-        let ProviderEvent::End { stop, assistant } = &out[2] else {
+        let ProviderEvent::End {
+            stop, assistant, ..
+        } = &out[2]
+        else {
             panic!("{out:?}")
         };
         assert_eq!(*stop, Stop::ToolUse);
@@ -548,7 +618,8 @@ mod tests {
                 out,
                 vec![ProviderEvent::End {
                     stop,
-                    assistant: vec![]
+                    assistant: vec![],
+                    usage: Usage::default()
                 }],
                 "{reason}"
             );

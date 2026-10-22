@@ -2,48 +2,38 @@
 //! the open-file limit, and shutdown. The discovery files clients read are
 //! `clax_core::daemon`.
 
+use crate::core::{Core, CoreConfig};
 use clax_core::Home;
 use clax_core::daemon::DaemonInfo;
 use clax_core::daemon::StartingInfo;
-use clax_core::daemon::browser_host;
 use clax_core::daemon::pid_alive;
 use clax_core::daemon::port_held;
 use clax_core::daemon::port_range;
-use clax_core::daemon::probe_host;
 use clax_core::daemon::read_daemon_info;
 use clax_core::daemon::remove_daemon_info;
 use clax_core::daemon::write_daemon_info;
 use clax_core::daemon::write_starting_info;
-use clax_http::state::AppState;
-use clax_store::Store;
+use clax_store::{Store, TrimReport};
 use std::io;
 use std::net::{IpAddr, SocketAddr};
 use std::sync::Arc;
 use std::time::{Duration, Instant};
 use tokio::sync::{oneshot, watch};
 
-/// A session unseen for this long, with no live process, is ended by the reaper.
-const SESSION_IDLE: Duration = Duration::from_secs(Store::SESSION_IDLE_SECS);
-const DRAIN_TIMEOUT: Duration = Duration::from_secs(5);
-/// How long shutdown waits for the journal appender to close its segment.
-/// The appender stops as shutdown begins, beside the connection drain
-/// ([`DRAIN_TIMEOUT`]), and catches up for at most 0.5 s; a wedged one is
-/// left on its own thread, which the process exit ends. The drain and the
-/// journal's stop take at most 6.5 s, inside the 7 s a replacing client
-/// waits before it sends SIGTERM; what the journal does not write, the next
-/// start writes from the table.
-const JOURNAL_STOP_TIMEOUT: Duration = Duration::from_millis(1500);
-/// How long shutdown then waits for the store's queued calls to finish and
-/// its threads to stop ([`stop_store`]); calls still running are left on
-/// their threads, which the process exit ends (the caller must not wait
-/// for them: `clax serve` shuts its runtime down in the background as
-/// [`serve`] returns), and a write cut short rolls back. A stop signal
-/// once shutdown has begun ends the process at once ([`on_signals`]), so
-/// the SIGTERM a replacing client sends after 7 s stops the daemon
-/// whatever is left; once [`serve`] returns, nothing is left to wait for.
+/// How long a stopping core lets the requests it already took finish,
+/// after it has told its streams and long polls to end; what is still
+/// running then is cut.
+pub const DRAIN_TIMEOUT: Duration = Duration::from_secs(5);
+/// How long a stopping daemon then waits for the store's queued calls to
+/// finish and its threads to stop ([`Core::stop_bounded`]); calls still
+/// running are left on their threads, which the process exit ends (the
+/// caller must not wait for them: `clax serve` shuts its runtime down in
+/// the background as [`serve`] returns), and a write cut short rolls back.
+/// A stop signal once shutdown has begun ends the process at once
+/// ([`on_signals`]), so the SIGTERM a replacing client sends after 7 s
+/// stops the daemon whatever is left; once [`serve`] returns, nothing is
+/// left to wait for.
 const STORE_STOP_TIMEOUT: Duration = Duration::from_secs(2);
-/// How often grants due to expire are expired and the nonce caches swept.
-const GRANT_SWEEP_INTERVAL: Duration = Duration::from_secs(60);
 
 /// Publishes this daemon's start in `starting.json` until dropped: the
 /// phase and backfill progress it is given, and a heartbeat every second
@@ -94,13 +84,19 @@ impl Starting {
     }
 
     /// Records the backfill's progress, writing it at most every 100 ms
-    /// within a phase.
+    /// within a phase. The copy before a migration and the migrations are
+    /// `opening`, as before they reported, so `starting.json` and what the
+    /// CLI says of it keep their phases.
     pub fn progress(&mut self, p: &clax_store::backfill::Progress) {
+        use clax_store::backfill::Phase;
         let mut info = self.info.lock().unwrap_or_else(|e| e.into_inner());
-        let phase = p.phase.label().to_string();
+        let (phase, (done, total, bytes)) = match p.phase {
+            Phase::BackingUp | Phase::Migrating => ("opening", (0, 0, 0)),
+            other => (other.label(), (p.done, p.total, p.bytes)),
+        };
         let changed = info.phase != phase;
-        info.phase = phase;
-        (info.done, info.total, info.bytes) = (p.done, p.total, p.bytes);
+        info.phase = phase.to_string();
+        (info.done, info.total, info.bytes) = (done, total, bytes);
         if changed || self.written.elapsed() >= Duration::from_millis(100) {
             if let Err(e) = write_starting_info(&self.home, &info) {
                 tracing::warn!(error = %e, "could not write starting.json");
@@ -217,6 +213,93 @@ pub struct ServeConfig {
     /// [`clax_http::hosted::Hosted::from_config`] on the home's `[hosted]`), or
     /// `None` for the local daemon.
     pub hosted: Option<Arc<clax_http::hosted::Hosted>>,
+    /// Serve nothing but `/healthz`, static files and content by ID without
+    /// a credential ([`clax_http::state::AppState::require_credential`]).
+    pub require_credential: bool,
+    /// The origins of an app that embeds the core ([`CoreConfig::embed`]),
+    /// which its shell documents, content policy and bridge tags name;
+    /// `None` for `clax serve`, but for the browser tests of the app's
+    /// transport (`clax serve --embed-origins`, debug builds only).
+    pub embed: Option<clax_http::state::EmbedOrigins>,
+    /// How the daemon is asked to stop. `Signals` is `clax serve`'s: SIGTERM,
+    /// Ctrl-C and the shutdown route. `Embedded` is a daemon inside another
+    /// app's process: only its control and the shutdown route, and no signal
+    /// handler is installed, since the process's signals are the app's.
+    pub stop: StopOn,
+}
+
+/// How the daemon is asked to stop. `Signals` is `clax serve`'s: SIGTERM,
+/// Ctrl-C and the shutdown route. `Embedded` is a daemon inside another
+/// app's process: only its control and the shutdown route, and no signal
+/// handler is installed, since the process's signals are the app's.
+pub enum StopOn {
+    Signals,
+    Embedded(EmbeddedControl),
+}
+
+/// What a host app holds to drive a daemon in its own process.
+pub struct EmbeddedControl {
+    /// `true` asks the daemon to stop, as SIGTERM does for `clax serve`;
+    /// so does dropping the sender.
+    pub stop: watch::Receiver<bool>,
+    /// Each sender asks for one [`clax_store::Store::trim_memory`]; its
+    /// report is sent back on it ([`TrimReport::default`] when the trim
+    /// failed).
+    pub trim: tokio::sync::mpsc::Receiver<std::sync::mpsc::Sender<TrimReport>>,
+}
+
+/// A stop asked of the daemon other than through the shutdown route.
+type StopAsked = std::pin::Pin<Box<dyn std::future::Future<Output = ()> + Send>>;
+
+/// The future that completes when `stop` asks the daemon to stop. Under
+/// [`StopOn::Signals`] it never does: [`serve`] installed the signal
+/// handlers ([`stop_signals`]), which ask through the core's shutdown as
+/// the shutdown route does. Under [`StopOn::Embedded`] it completes on the
+/// control's stop, and a task answering the control's trim requests is
+/// started on `store`.
+fn stop_asked(
+    stop: StopOn,
+    store: &Arc<Store>,
+) -> io::Result<(StopAsked, Option<tokio::task::JoinHandle<()>>)> {
+    match stop {
+        StopOn::Signals => Ok((Box::pin(std::future::pending()), None)),
+        StopOn::Embedded(EmbeddedControl {
+            stop: mut rx,
+            mut trim,
+        }) => {
+            let store = store.clone();
+            let trimmer = tokio::spawn(async move {
+                while let Some(reply) = trim.recv().await {
+                    let st = store.clone();
+                    let report = match tokio::task::spawn_blocking(move || st.trim_memory()).await {
+                        Ok(Ok(r)) => r,
+                        Ok(Err(e)) => {
+                            tracing::warn!(error = %e, "memory trim failed");
+                            TrimReport::default()
+                        }
+                        Err(e) => {
+                            tracing::warn!(error = %e, "memory trim failed");
+                            TrimReport::default()
+                        }
+                    };
+                    tracing::info!(
+                        wal_frames = report.wal_frames,
+                        checkpointed = report.checkpointed,
+                        "trimmed memory"
+                    );
+                    let _ = reply.send(report);
+                }
+            });
+            let asked = async move {
+                while !*rx.borrow_and_update() {
+                    if rx.changed().await.is_err() {
+                        break;
+                    }
+                }
+            };
+            Ok((Box::pin(asked), Some(trimmer)))
+        }
+    }
 }
 
 /// Binds the first port of [`port_range`]`(start)` that no other program
@@ -249,7 +332,8 @@ async fn bind_first_free(bind: IpAddr, start: u16) -> io::Result<tokio::net::Tcp
 
 /// Runs the daemon until shutdown is requested, a newer daemon takes over,
 /// `daemon.json` is missing on two consecutive stale checks (its home directory
-/// was deleted), or a termination signal arrives.
+/// was deleted), or [`ServeConfig::stop`] asks it to: a termination signal
+/// under [`StopOn::Signals`], its control under [`StopOn::Embedded`].
 ///
 /// `daemon.json` is written exactly once, at startup. That write-once invariant is what
 /// makes the stale watcher race-free: a different live pid in the file can only mean
@@ -269,33 +353,91 @@ pub async fn serve(
     }
     let listener = bind_first_free(cfg.bind, cfg.port).await?;
     let port = listener.local_addr()?.port();
-    let store = Arc::new(Store::open_reporting(&cfg.home, &mut |p| {
-        starting.progress(p)
-    })?);
+    let core = Core::start(
+        CoreConfig {
+            home: cfg.home.clone(),
+            version: cfg.version,
+            reap_interval: cfg.reap_interval,
+            codex: cfg.codex,
+            sample: cfg.sample,
+            web: cfg.web,
+            hosted: cfg.hosted,
+            require_credential: cfg.require_credential,
+            bind: cfg.bind,
+            port,
+            embed: cfg.embed,
+        },
+        &mut |p| starting.progress(p),
+    )
+    .await?;
     drop(starting);
-    // Hooks that waited on the previous daemon are gone: their questions
-    // are withdrawn (and kept, as every question is).
-    let gone = store.withdraw_hook_questions_on_start()?;
-    if !gone.is_empty() {
-        tracing::info!(count = gone.len(), "withdrew mirrored questions left open");
-    }
-    let terminal_after_s = match clax_core::config::HomeConfig::load(cfg.home.root()) {
-        Ok(c) => c.questions_terminal_after_s(),
-        Err(e) => {
-            tracing::warn!(error = %e, "config.toml unreadable; questions use the defaults");
-            clax_core::config::TERMINAL_AFTER_S
-        }
+    // Every way out after the core started stops it: its tasks, journal
+    // and listeners run on the caller's runtime, which may outlive this.
+    let serving = Serving {
+        home: cfg.home,
+        bind: cfg.bind,
+        version: cfg.version,
+        stale_check_interval: cfg.stale_check_interval,
+        stop: cfg.stop,
     };
-    let reaper_store = store.clone();
-    let optimize_store = store.clone();
-    let drain_store = store.clone();
-    let token = generate_token();
-    let started_at = store.now();
+    let home = serving.home.clone();
+    // A daemon stopped by signals handles them until the core has stopped:
+    // one sent once shutdown has begun ends the process.
+    let signals = match &serving.stop {
+        StopOn::Signals => match stop_signals(&home, core.shutdown_handle()) {
+            Ok(s) => Some(s),
+            Err(e) => {
+                core.stop().await;
+                return Err(e.into());
+            }
+        },
+        StopOn::Embedded(_) => None,
+    };
+    let served = serve_core(serving, &core, listener, port, ready).await;
+    if signals.is_some() {
+        // The process exits once this returns: a store call that does not
+        // finish is left to that exit.
+        if !core.stop_bounded(STORE_STOP_TIMEOUT).await {
+            tracing::warn!("store calls did not finish in time; exiting");
+        }
+    } else {
+        core.stop().await;
+    }
+    // Only once the journal has synced and the store has closed (or, for a
+    // daemon about to exit, given up on): a client that finds no
+    // daemon.json may start another daemon on the home.
+    if read_daemon_info(&home).map(|i| i.pid) == Some(std::process::id()) {
+        remove_daemon_info(&home);
+    }
+    drop(signals);
+    served
+}
+
+/// What [`serve_core`] takes of a [`ServeConfig`] the core did not.
+struct Serving {
+    home: Home,
+    bind: IpAddr,
+    version: &'static str,
+    stale_check_interval: Duration,
+    stop: StopOn,
+}
+
+/// [`serve`] once its core started: `daemon.json`, the listener, the
+/// stale watcher and the drain, until shutdown. [`serve`] removes
+/// `daemon.json`, when it is still this process's, after the core stops.
+async fn serve_core(
+    cfg: Serving,
+    core: &Core,
+    listener: tokio::net::TcpListener,
+    port: u16,
+    ready: Option<oneshot::Sender<DaemonInfo>>,
+) -> anyhow::Result<()> {
+    let state = core.state();
     let info = DaemonInfo {
         port,
         pid: std::process::id(),
-        token: token.clone(),
-        started_at: started_at.clone(),
+        token: state.token.clone(),
+        started_at: state.started_at.clone(),
         bind: cfg.bind.to_string(),
         version: cfg.version.to_string(),
         exe: std::env::current_exe()
@@ -305,69 +447,9 @@ pub async fn serve(
         commit: Some(clax_core::build_commit().to_string()),
     };
     write_daemon_info(&cfg.home, &info)?;
-
-    let (shutdown_tx, mut shutdown_rx) = watch::channel(false);
-    let events_shutdown = shutdown_tx.subscribe();
-    let state = AppState::assemble(clax_http::state::StateParts {
-        store,
-        home: cfg.home.clone(),
-        token,
-        started_at,
-        version: cfg.version,
-        shutdown: events_shutdown,
-        self_base: format!("http://{}:{port}", probe_host(&info.bind)),
-        browser_base: format!("http://{}:{port}", browser_host(&info.bind)),
-        codex: cfg.codex.clone(),
-        sample: cfg.sample.clone(),
-        clock: Arc::new(clax_core::working::SystemClock),
-        question_sleeper: Arc::new(clax_realtime::questions::TokioSleeper),
-        agent_timer: Arc::new(clax_http::agent::TokioTimer::default()),
-        extension_id: clax_core::extension::extension_id_in_effect(cfg.home.root()),
-        terminal_after_s,
-        bind: cfg.bind,
-        port,
-        hosted: cfg.hosted.clone(),
-        web: cfg.web.clone(),
-    })?;
-    state.audit_wake.install(&state.store);
-    // The appender recovers the journal and catches it up on its own
-    // thread, so the daemon serves at once.
-    let journal = clax_http::audit::start_journal(
-        clax_http::audit::JournalStart {
-            store: state.store.clone(),
-            dir: clax_http::audit::journal_dir(&cfg.home),
-            wake: state.audit_wake.clone(),
-            status: state.journal.clone(),
-            version: cfg.version.to_string(),
-        },
-        clax_core::config::HomeConfig::load(cfg.home.root()).and_then(|c| c.toolpath()),
-    );
-    // The journal stops as shutdown begins, beside the connection drain:
-    // it syncs and closes its segment, and the next start writes from the
-    // table whatever it did not.
-    let journal_stopped = journal.map(|j| {
-        let mut begun = shutdown_tx.subscribe();
-        tokio::spawn(async move {
-            while !*begun.borrow() {
-                if begun.changed().await.is_err() {
-                    break;
-                }
-            }
-            if !j.stop_within(JOURNAL_STOP_TIMEOUT).await {
-                tracing::warn!(
-                    "the audit journal did not stop in time; the next start recovers it"
-                );
-            }
-        })
-    });
-    crate::start_listeners(&state);
-    tracing::info!(codex = ?state.codex.bin, source = ?state.codex.source, "codex push");
-    tracing::info!(provider = ?state.sample.provider_name(), "sample provider");
-    let fctx = state.feedback_ctx();
-    let reap_state = state.clone();
-    let grant_state = state.clone();
-    let sweep_state = state.clone();
-    let app = crate::router::build_router_with_shutdown(state, shutdown_tx.clone());
+    let (asked, trimmer) = stop_asked(cfg.stop, &state.store)?;
+    let app = core.router();
+    let mut shutdown_rx = core.shutdown_requested();
     if let Some(tx) = ready {
         let _ = tx.send(info.clone());
     }
@@ -401,98 +483,8 @@ pub async fn serve(
         }
     });
 
-    let reap_interval = cfg.reap_interval;
-    let reaper = tokio::spawn(async move {
-        let mut since = (std::time::SystemTime::now(), Instant::now());
-        loop {
-            tokio::time::sleep(reap_interval).await;
-            let now = (std::time::SystemTime::now(), Instant::now());
-            let woke = slept(
-                now.0.duration_since(since.0).unwrap_or_default(),
-                now.1.duration_since(since.1),
-            );
-            since = now;
-            let ctx = fctx.clone();
-            let st = reap_state.clone();
-            let reaped = reaper_store
-                .call(move |store| {
-                    if woke {
-                        // Remote agents could not reach a sleeping daemon:
-                        // their idle time counts from now (spec §14).
-                        store.mark_resumed();
-                    }
-                    let r = reap_idle(&ctx, store, SESSION_IDLE, &pid_alive)?;
-                    clax_http::views::question::announce_ids(&st, store, &r.withdrawn_questions);
-                    Ok(r)
-                })
-                .await;
-            match reaped {
-                Ok(r) if r.ended.is_empty() => {}
-                Ok(r) => tracing::info!(count = r.ended.len(), "ended idle sessions"),
-                Err(e) => tracing::warn!(error = %e, "session reaper failed"),
-            }
-        }
-    });
-
-    // Grants due to expire on start, then every minute; the nonce caches
-    // forget what is older than their window.
-    let grant_sweeper = tokio::spawn(async move {
-        let mut every = tokio::time::interval(GRANT_SWEEP_INTERVAL);
-        loop {
-            every.tick().await;
-            match crate::routes::grants::sweep(&grant_state).await {
-                Ok(0) => {}
-                Ok(n) => tracing::info!(count = n, "expired grants"),
-                Err(e) => tracing::warn!(code = e.code, "grant sweep failed"),
-            }
-        }
-    });
-
-    let optimizer = tokio::spawn(async move {
-        let mut every = tokio::time::interval(clax_store::OPTIMIZE_INTERVAL);
-        every.tick().await;
-        loop {
-            every.tick().await;
-            if let Err(e) = optimize_store.call(|store| store.optimize()).await {
-                tracing::warn!(error = %e, "planner statistics refresh failed");
-            }
-        }
-    });
-
-    let sweeper = tokio::spawn(async move {
-        let mut every = tokio::time::interval(clax_realtime::working::SWEEP_INTERVAL);
-        loop {
-            every.tick().await;
-            sweep_state.sweep().await;
-        }
-    });
-
     let (fired_tx, fired_rx) = oneshot::channel::<()>();
-    // SIGTERM and Ctrl-C, for the process's whole life: the first begins
-    // shutdown, and any once it has begun ends the process.
-    use tokio::signal::unix::{SignalKind, signal};
-    let mut sigterm = signal(SignalKind::terminate())?;
-    let mut sigint = signal(SignalKind::interrupt())?;
-    let (signal_tx, signal_rx) = tokio::sync::mpsc::unbounded_channel();
-    let forward_signals = tokio::spawn(async move {
-        loop {
-            let got = tokio::select! {
-                s = sigterm.recv() => s,
-                s = sigint.recv() => s,
-            };
-            if got.is_none() || signal_tx.send(()).is_err() {
-                return;
-            }
-        }
-    });
-    let exit_home = cfg.home.clone();
-    let signals = tokio::spawn(on_signals(signal_rx, shutdown_tx.clone(), move || {
-        tracing::warn!("a stop signal while shutting down; exiting now");
-        if read_daemon_info(&exit_home).map(|i| i.pid) == Some(std::process::id()) {
-            remove_daemon_info(&exit_home);
-        }
-        std::process::exit(1);
-    }));
+    let begin = core.shutdown_handle();
     let server = axum::serve(
         clax_http::auth::TunedListener(listener),
         app.into_make_service_with_connect_info::<clax_http::auth::Conn>(),
@@ -500,16 +492,17 @@ pub async fn serve(
     .with_graceful_shutdown(async move {
         tokio::select! {
             _ = async {
-                while shutdown_rx.changed().await.is_ok() {
-                    if *shutdown_rx.borrow() {
+                while !*shutdown_rx.borrow_and_update() {
+                    if shutdown_rx.changed().await.is_err() {
                         break;
                     }
                 }
             } => {}
             _ = stale => {}
+            _ = asked => {}
         }
         // Tell open SSE streams to end, and start the drain deadline.
-        let _ = shutdown_tx.send(true);
+        let _ = begin.send(true);
         let _ = fired_tx.send(());
     });
     // Graceful shutdown waits for every open connection; bound the drain so a
@@ -525,25 +518,56 @@ pub async fn serve(
         res = server => res?,
         _ = drain_deadline => tracing::warn!("connections did not drain in time; exiting"),
     }
-    reaper.abort();
-    grant_sweeper.abort();
-    optimizer.abort();
-    sweeper.abort();
-    // The journal has closed its segment (it began to as shutdown began)
-    // before the store stops.
-    if let Some(stopped) = journal_stopped {
-        let _ = tokio::time::timeout(JOURNAL_STOP_TIMEOUT, stopped).await;
+    if let Some(t) = trimmer {
+        t.abort();
     }
-    // Let queued store calls finish and the database threads stop.
-    if !stop_store(drain_store, STORE_STOP_TIMEOUT).await {
-        tracing::warn!("store calls did not finish in time; exiting");
-    }
-    if read_daemon_info(&cfg.home).map(|i| i.pid) == Some(std::process::id()) {
-        remove_daemon_info(&cfg.home);
-    }
-    signals.abort();
-    forward_signals.abort();
     Ok(())
+}
+
+/// Under [`StopOn::Signals`], the daemon's SIGTERM and SIGINT handling
+/// ([`stop_signals`]) until dropped.
+struct StopSignals {
+    forward: tokio::task::JoinHandle<()>,
+    handle: tokio::task::JoinHandle<()>,
+}
+
+impl Drop for StopSignals {
+    fn drop(&mut self) {
+        self.forward.abort();
+        self.handle.abort();
+    }
+}
+
+/// Installs the SIGTERM and SIGINT handlers at once, so a signal sent once
+/// the daemon is ready is never missed: the first begins shutdown (sends
+/// `true` on `shutdown`, as `POST /api/admin/shutdown` does), and any once
+/// shutdown has begun ends the process ([`on_signals`]), removing `home`'s
+/// `daemon.json` when it is still this process's.
+fn stop_signals(home: &Home, shutdown: watch::Sender<bool>) -> io::Result<StopSignals> {
+    use tokio::signal::unix::{SignalKind, signal};
+    let mut sigterm = signal(SignalKind::terminate())?;
+    let mut sigint = signal(SignalKind::interrupt())?;
+    let (signal_tx, signal_rx) = tokio::sync::mpsc::unbounded_channel();
+    let forward = tokio::spawn(async move {
+        loop {
+            let got = tokio::select! {
+                s = sigterm.recv() => s,
+                s = sigint.recv() => s,
+            };
+            if got.is_none() || signal_tx.send(()).is_err() {
+                return;
+            }
+        }
+    });
+    let exit_home = home.clone();
+    let handle = tokio::spawn(on_signals(signal_rx, shutdown, move || {
+        tracing::warn!("a stop signal while shutting down; exiting now");
+        if read_daemon_info(&exit_home).map(|i| i.pid) == Some(std::process::id()) {
+            remove_daemon_info(&exit_home);
+        }
+        std::process::exit(1);
+    }));
+    Ok(StopSignals { forward, handle })
 }
 
 /// Handles the stop signals `signals` delivers: the first begins shutdown
@@ -564,28 +588,10 @@ async fn on_signals(
     }
 }
 
-/// Stops `store` ([`Store::shutdown`]), waiting at most `within` for its
-/// queued calls to finish and its threads to stop: false when they had not
-/// by then, and are left running on their own threads.
-async fn stop_store(store: Arc<Store>, within: Duration) -> bool {
-    match tokio::time::timeout(
-        within,
-        tokio::task::spawn_blocking(move || store.shutdown()),
-    )
-    .await
-    {
-        Ok(Ok(())) => true,
-        Ok(Err(e)) => {
-            tracing::warn!(error = %e, "store shutdown failed");
-            true
-        }
-        Err(_) => false,
-    }
-}
-
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::core::stop_store;
 
     #[test]
     fn a_wall_clock_jump_past_monotonic_time_is_a_sleep() {
@@ -594,6 +600,50 @@ mod tests {
         assert!(!slept(m + SLEEP_SLACK, m), "within the slack");
         assert!(slept(Duration::from_secs(3600), m), "an hour asleep");
         assert!(!slept(Duration::ZERO, m), "a clock set back");
+    }
+
+    #[tokio::test]
+    async fn daemon_json_goes_only_once_the_core_has_stopped() {
+        let dir = tempfile::tempdir().unwrap();
+        let home = Home::at(dir.path().join("ax"));
+        let present = std::sync::Arc::new(std::sync::Mutex::new(Vec::new()));
+        let (seen, ours) = (present.clone(), home.clone());
+        *crate::core::STOPPED.lock().unwrap() = Some(Box::new(move |h: &Home| {
+            if h.root() == ours.root() {
+                seen.lock().unwrap().push(ours.daemon_json().exists());
+            }
+        }));
+        let (stop, stop_rx) = watch::channel(false);
+        let (_trim, trim_rx) = tokio::sync::mpsc::channel(1);
+        let cfg = ServeConfig {
+            home: home.clone(),
+            bind: IpAddr::V4(std::net::Ipv4Addr::LOCALHOST),
+            port: 0,
+            version: "test",
+            stale_check_interval: Duration::from_secs(30),
+            reap_interval: Duration::from_secs(60),
+            codex: Default::default(),
+            sample: std::sync::Arc::new(clax_sample::Sampler::disabled()),
+            web: std::sync::Arc::new(clax_core::embedded::MemTree::default()),
+            hosted: None,
+            require_credential: false,
+            embed: None,
+            stop: StopOn::Embedded(EmbeddedControl {
+                stop: stop_rx,
+                trim: trim_rx,
+            }),
+        };
+        let (tx, rx) = oneshot::channel();
+        let served = tokio::spawn(serve(cfg, Some(tx)));
+        rx.await.unwrap();
+        stop.send(true).unwrap();
+        served.await.unwrap().unwrap();
+        assert_eq!(
+            *present.lock().unwrap(),
+            [true],
+            "daemon.json was there when the core had stopped"
+        );
+        assert!(read_daemon_info(&home).is_none(), "and is gone after");
     }
 
     #[tokio::test]

@@ -93,7 +93,11 @@ async fn streams_text_with_the_key_and_version_headers() {
         out[2],
         ProviderEvent::End {
             stop: Stop::EndTurn,
-            assistant: vec![json!({"type": "text", "text": "Hello"})]
+            assistant: vec![json!({"type": "text", "text": "Hello"})],
+            usage: Usage {
+                output: 3,
+                ..Usage::default()
+            }
         }
     );
     let (headers, body) = seen.lock().unwrap()[0].clone();
@@ -132,7 +136,10 @@ async fn tool_calls_arrive_parsed_with_the_turn_to_echo() {
             input: json!({"shade": "dark"})
         }
     );
-    let ProviderEvent::End { stop, assistant } = &out[1] else {
+    let ProviderEvent::End {
+        stop, assistant, ..
+    } = &out[1]
+    else {
         panic!("{out:?}")
     };
     assert_eq!(*stop, Stop::ToolUse);
@@ -234,4 +241,35 @@ async fn a_stream_that_stops_early_or_an_unreachable_host_is_upstream_error() {
             ..
         }]
     ));
+}
+
+#[tokio::test]
+async fn a_slot_provider_reads_the_key_on_every_call() {
+    use clax_sample::{KeySlot, KeySource};
+    let (base, seen) = mock(200, text_turn(&["ok"], "end_turn")).await;
+    let slot = KeySlot::new();
+    let p = AnthropicProvider::with_source(base, KeySource::Slot(slot.clone()));
+    let empty: Vec<ProviderEvent> = p.stream(req("x")).collect().await;
+    assert!(
+        matches!(
+            &empty[..],
+            [ProviderEvent::Error {
+                code: ProviderErrorCode::Unavailable,
+                ..
+            }]
+        ),
+        "{empty:?}"
+    );
+    assert!(seen.lock().unwrap().is_empty());
+    slot.set(Some("sk-a".into()));
+    let _: Vec<ProviderEvent> = p.stream(req("x")).collect().await;
+    slot.set(Some("sk-b".into()));
+    let _: Vec<ProviderEvent> = p.stream(req("x")).collect().await;
+    let keys: Vec<String> = seen
+        .lock()
+        .unwrap()
+        .iter()
+        .map(|(h, _)| h["x-api-key"].to_str().unwrap().to_string())
+        .collect();
+    assert_eq!(keys, ["sk-a", "sk-b"]);
 }

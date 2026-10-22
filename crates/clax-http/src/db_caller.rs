@@ -10,6 +10,14 @@
 //! browser writer of documents), so they add the page's publisher to a
 //! document's authors as well as the writer (spec
 //! 2026-10-08-multi-agent-multi-person §8.2).
+//!
+//! A request carrying `X-Clax-Reader: <A>` reads another app's documents on
+//! A's behalf: it is served only
+//! when [`Store::may_read`] says `Granted`, at `min(level, view)` with no
+//! viewer identity, so neither a rule above `view` nor a private
+//! `data/users/<id>/` document is ever readable that way. Writes with the
+//! header, and the header on any route but the document reads, are refused
+//! before any handler runs ([`refuse_reader_elsewhere`]).
 
 use crate::error::ApiError;
 use crate::identity::Identity;
@@ -20,6 +28,127 @@ use clax_core::db::{Caller, Level};
 use clax_core::visibility::Author;
 use clax_core::{ArtifactId, CoreError};
 use clax_store::Store;
+use clax_store::grants::ReadAccess;
+
+/// The header naming the app a request reads another app's documents for.
+pub const READER_HEADER: &str = "x-clax-reader";
+
+/// The artifact `X-Clax-Reader` names; `Ok(None)` without the header.
+///
+/// # Errors
+/// 400 `invalid_args` when the header is repeated or its value is not an
+/// artifact ID.
+pub fn reader_of(headers: &axum::http::HeaderMap) -> Result<Option<ArtifactId>, ApiError> {
+    let mut values = headers.get_all(READER_HEADER).iter();
+    let Some(v) = values.next() else {
+        return Ok(None);
+    };
+    if values.next().is_some() {
+        return Err(ApiError::bad_request(
+            "invalid_args",
+            "X-Clax-Reader names one artifact",
+        ));
+    }
+    v.to_str()
+        .ok()
+        .and_then(|v| ArtifactId::parse(v).ok())
+        .map(Some)
+        .ok_or_else(|| ApiError::bad_request("invalid_args", "X-Clax-Reader is not an artifact ID"))
+}
+
+/// Whether `path` is a route that serves a reader: an artifact's document
+/// list (`/api/artifacts/<aid>/docs`), one document
+/// (`/api/artifacts/<aid>/docs/<path>`), or `docs:collections` (which
+/// refuses it itself). Matched on the raw path, so any other spelling is
+/// another route.
+pub fn reader_route(path: &str) -> bool {
+    let segs: Vec<&str> = path.split('/').collect();
+    match segs.as_slice() {
+        ["", "api", "artifacts", aid, "docs", rest @ ..] => {
+            !aid.is_empty() && rest.iter().all(|s| !s.is_empty())
+        }
+        ["", "api", "artifacts", aid, "docs:collections"] => !aid.is_empty(),
+        _ => false,
+    }
+}
+
+/// Refuses a request that carries `X-Clax-Reader` anywhere it is not
+/// honoured, before any handler runs: a reader only ever reads, and only
+/// another app's documents. With a method other than `GET` or `HEAD`: 403
+/// `read_only`. A `GET` or `HEAD` outside the document read routes
+/// ([`reader_route`]): 403 `not_granted`, since serving it with the
+/// caller's own credentials would ignore the reader. The event stream takes
+/// its reader as `?reader=`, and `/api/stream` in its topic, never the
+/// header.
+pub async fn refuse_reader_elsewhere(
+    req: axum::extract::Request,
+    next: axum::middleware::Next,
+) -> axum::response::Response {
+    use axum::http::Method;
+    use axum::response::IntoResponse;
+    if !req.headers().contains_key(READER_HEADER) {
+        return next.run(req).await;
+    }
+    if !matches!(*req.method(), Method::GET | Method::HEAD) {
+        return ApiError::forbidden(
+            "read_only",
+            "a request with X-Clax-Reader only reads another app's documents",
+        )
+        .into_response();
+    }
+    if !reader_route(req.uri().path()) {
+        return ApiError::forbidden(
+            "not_granted",
+            "X-Clax-Reader is honoured only on an artifact's document reads",
+        )
+        .into_response();
+    }
+    next.run(req).await
+}
+
+/// The caller `reader` reading `source`'s documents with the credentials
+/// that give `level`: `min(level, view)` with no viewer, once
+/// [`Store::may_read`] says `Granted` and `source` declares `db`.
+///
+/// # Errors
+/// `NotFound` when either artifact is missing or `source` is a draft (its
+/// documents are the owner's alone); `not_granted` (403) without consent;
+/// [`CoreError::NotDeclared`] when `source` does not declare `db`.
+pub fn reader_caller(
+    st: &Store,
+    reader: &ArtifactId,
+    source: &ArtifactId,
+    level: Level,
+) -> clax_core::Result<Caller> {
+    if st.is_hidden(source.as_str()) {
+        return Err(CoreError::NotFound);
+    }
+    if st.may_read(reader, source)? != ReadAccess::Granted {
+        return Err(not_granted(reader, source));
+    }
+    if !st.doc_declared(source)? {
+        return Err(CoreError::NotDeclared { capability: "db" });
+    }
+    Ok(Caller::new(level.min(Level::View), None))
+}
+
+/// Whether app `reader` may read `source`'s documents now (both artifact
+/// IDs, as the stream hub holds them), as [`reader_caller`] decides; an
+/// error is no.
+pub fn reads_now(st: &Store, reader: &str, source: &str) -> bool {
+    match (ArtifactId::parse(reader), ArtifactId::parse(source)) {
+        (Ok(r), Ok(s)) => reader_caller(st, &r, &s, Level::View).is_ok(),
+        _ => false,
+    }
+}
+
+/// 403 `not_granted`: `reader` may not read `source`'s documents.
+pub fn not_granted(reader: &ArtifactId, source: &ArtifactId) -> CoreError {
+    CoreError::invalid(
+        "not_granted",
+        format!("{reader} may not read {source}'s documents"),
+    )
+}
 
 /// The value of the first `key=` parameter of `parts`' query string,
 /// percent-decoded (`+` is a space). `Some(None)` when the value's encoding
@@ -117,9 +246,11 @@ pub fn caller_of(st: &Store, token: bool, who: &Identity) -> clax_core::Result<C
 }
 
 /// Who is making a `db` request: whether it carries the bearer token, its
-/// viewer cookie, and the `?as_level=` it narrows to (percent-decoded).
+/// viewer cookie, the `?as_level=` it narrows to (percent-decoded), and the
+/// app it reads for (`X-Clax-Reader`, [`reader_of`]).
 /// Rejects an `as_level` other than `view`, `interact`, or `admin`, or one
-/// not validly encoded, with 400 `invalid_argument`.
+/// not validly encoded, with 400 `invalid_argument`, and a reader header
+/// that names no artifact with 400 `invalid_args`.
 pub struct CallerParts {
     pub token: bool,
     pub who: Identity,
@@ -133,6 +264,7 @@ pub struct CallerParts {
     /// It names itself a page's (`x-clax-via: page`, which the shell's `db`
     /// capability sends): its writes add the page's authors.
     pub page: bool,
+    pub reader: Option<ArtifactId>,
 }
 
 impl FromRequestParts<AppState> for CallerParts {
@@ -187,14 +319,15 @@ impl FromRequestParts<AppState> for CallerParts {
                 axum::http::Method::GET | axum::http::Method::HEAD
             ),
             page,
+            reader: reader_of(&parts.headers)?,
         })
     }
 }
 
 impl CallerParts {
     /// The caller, looking up the cookie's viewer (a cookie with no viewer row
-    /// is no viewer).
-    pub fn resolve(&self, st: &Store) -> clax_core::Result<Caller> {
+    /// is no viewer), before any reader clamp.
+    fn resolve(&self, st: &Store) -> clax_core::Result<Caller> {
         let base = base_caller(st, self.token, &self.who)?;
         self.narrowed(base)
     }
@@ -213,13 +346,25 @@ impl CallerParts {
     /// [`CoreError::NotDeclared`] when the artifact's current declaration
     /// does not include `db` (a publish or a metadata edit can drop it); the
     /// token keeps access, so agents can seed data before the page that
-    /// reads it is published.
+    /// reads it is published. With a reader, the caller is
+    /// [`reader_caller`]'s, whatever the token.
     ///
     /// A person's agent's level is its rights' `clax-db` level for the
     /// request's action at `id` (`view` when none), its viewer its person's
     /// (the owner's for a grant of the owner's row); it needs the
     /// declaration as a viewer does.
+    ///
+    /// A draft's documents
+    /// are a copy of an app's at the owner's level, whatever rules the draft
+    /// declares: a caller without the token is refused `NotFound`.
     pub fn resolve_for(&self, st: &Store, id: &ArtifactId) -> clax_core::Result<Caller> {
+        if !self.token && st.is_hidden(id.as_str()) {
+            return Err(CoreError::NotFound);
+        }
+        if let Some(reader) = &self.reader {
+            let level = self.resolve(st)?.level;
+            return reader_caller(st, reader, id, level);
+        }
         if let Some((person, rights)) = &self.agent {
             if !st.doc_declared(id)? {
                 return Err(CoreError::NotDeclared { capability: "db" });
@@ -306,6 +451,11 @@ impl Subscriber {
         }
     }
 
+    /// Whether the subscriber holds the token.
+    pub fn holds_token(&self) -> bool {
+        self.token
+    }
+
     /// The subscriber's level and viewer, as `base_caller` decides them.
     pub fn resolve(&self, st: &Store) -> clax_core::Result<Caller> {
         base_caller(st, self.token, &self.who)
@@ -314,7 +464,34 @@ impl Subscriber {
 
 #[cfg(test)]
 mod tests {
-    use super::percent_decode;
+    use super::{percent_decode, reader_route};
+
+    #[test]
+    fn only_the_document_reads_are_reader_routes() {
+        for ok in [
+            "/api/artifacts/7q3k9mzx2b4t/docs",
+            "/api/artifacts/7q3k9mzx2b4t/docs/runs/r1",
+            "/api/artifacts/7q3k9mzx2b4t/docs:collections",
+        ] {
+            assert!(reader_route(ok), "{ok}");
+        }
+        for no in [
+            "/api/artifacts/7q3k9mzx2b4t",
+            "/api/artifacts/7q3k9mzx2b4t/",
+            "/api/artifacts/7q3k9mzx2b4t/docs/",
+            "/api/artifacts/7q3k9mzx2b4t/docs//x",
+            "/api/artifacts//docs",
+            "/api/artifacts/7q3k9mzx2b4t/do%63s",
+            "/api/artifacts/7q3k9mzx2b4t/docs:batch",
+            "/api/artifacts/7q3k9mzx2b4t/threads",
+            "/api/artifacts/7q3k9mzx2b4t/versions/1/files/docs",
+            "/c/7q3k9mzx2b4t/v/1/docs",
+            "/api/events",
+            "//api/artifacts/7q3k9mzx2b4t/docs",
+        ] {
+            assert!(!reader_route(no), "{no}");
+        }
+    }
 
     #[test]
     fn percent_decoding_fails_closed() {

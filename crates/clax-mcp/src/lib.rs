@@ -5,7 +5,8 @@
 //! to serve over `http` (MCP's Streamable HTTP answered without rmcp's
 //! transport) with a client that reaches its daemon in-process
 //! (`client::InProcess`); the stdio shim and its transports (`shim`, `probe`,
-//! `standdown`) run on tokio's runtime and are native only.
+//! `standdown`) run on tokio's runtime and are native only, and not built
+//! for iOS, where no agent runs beside the app to start them.
 
 pub mod calls;
 pub mod channel;
@@ -13,12 +14,12 @@ pub mod client;
 pub mod git;
 pub mod http;
 pub mod plugin;
-#[cfg(not(target_arch = "wasm32"))]
+#[cfg(not(any(target_arch = "wasm32", target_os = "ios")))]
 pub mod probe;
 pub mod render;
-#[cfg(not(target_arch = "wasm32"))]
+#[cfg(not(any(target_arch = "wasm32", target_os = "ios")))]
 pub mod shim;
-#[cfg(not(target_arch = "wasm32"))]
+#[cfg(not(any(target_arch = "wasm32", target_os = "ios")))]
 pub mod standdown;
 pub mod target;
 pub mod tools;

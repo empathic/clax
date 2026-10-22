@@ -532,3 +532,137 @@ async fn boot_marks_the_owners_viewer() {
         .unwrap();
     assert_eq!(boot(&html).1["viewer"], me["viewer"]);
 }
+
+/// The `content` attribute of the `clax-embed` meta, unescaped, and where
+/// the meta starts.
+fn embed_meta(html: &str) -> Option<(usize, Value)> {
+    let open = r#"<meta name="clax-embed" content=""#;
+    let start = html.find(open)?;
+    let rest = &html[start + open.len()..];
+    let raw = &rest[..rest.find('"').unwrap()];
+    let text = raw
+        .replace("&quot;", "\"")
+        .replace("&#39;", "'")
+        .replace("&lt;", "<")
+        .replace("&gt;", ">")
+        .replace("&amp;", "&");
+    Some((start, serde_json::from_str(&text).unwrap()))
+}
+
+#[tokio::test]
+async fn an_embedded_core_marks_every_shell_document_and_frames_content_on_its_origin() {
+    let dist = dist();
+    std::fs::create_dir(dist.path().join("_clax")).unwrap();
+    std::fs::write(dist.path().join("_clax/transport.js"), "/* transport */").unwrap();
+    let ts = TestServer::spawn_with_web(dist.path()).await;
+    let embedded = {
+        let web = std::sync::Arc::new(clax_core::embedded::DiskTree::new(dist.path()));
+        TestServer::spawn_with(move |s| {
+            s.web = web;
+            s.embed = Some(clax_http::state::EmbedOrigins {
+                shell: "clax://app".into(),
+                content: "clax://{id}.c".into(),
+            });
+        })
+        .await
+    };
+    let created = embedded
+        .publish("Report", &[("index.html", "<p>x</p>")])
+        .await;
+    let id = created["artifact"]["id"].as_str().unwrap().to_string();
+
+    let html = page(&embedded, &format!("/a/{id}?app=1"), &[])
+        .await
+        .text()
+        .await
+        .unwrap();
+    let (at, meta) = embed_meta(&html).expect("the clax-embed meta");
+    assert_eq!(
+        meta,
+        json!({"transport": "host", "shell": "clax://app", "content": "clax://{id}.c"})
+    );
+    assert!(at < html.find("<script").unwrap(), "before any script");
+    let (_, b) = boot(&html);
+    assert_eq!(b["frame"]["mode"], "subdomain");
+    let src = b["frame"]["src"].as_str().unwrap();
+    assert!(src.starts_with(&format!("clax://{id}.c/v/1/")), "{src}");
+    assert!(
+        html.contains(&format!("src=\"clax://{id}.c/v/1/\"")),
+        "{html}"
+    );
+
+    let gallery = page(&embedded, "/", &[]).await.text().await.unwrap();
+    assert!(embed_meta(&gallery).is_some(), "{gallery}");
+
+    // The app's transport is a classic script right after the meta, so it
+    // runs before any of the shell's own, named by the version of its bytes
+    // so that a document never runs a cached transport of another build.
+    let v = clax_server::shell::transport_version(&*embedded.web);
+    assert_eq!(v.len(), 12, "{v}");
+    let tag = format!(r#"<script src="/_clax/transport.js?v={v}"></script>"#);
+    for doc in [&html, &gallery] {
+        let tag = tag.as_str();
+        let (meta_at, _) = embed_meta(doc).unwrap();
+        let script_at = doc.find(tag).expect("the transport's script");
+        assert_eq!(doc.matches(tag).count(), 1, "{doc}");
+        assert!(meta_at < script_at, "{doc}");
+        assert_eq!(
+            doc.find("<script"),
+            Some(script_at),
+            "first of the scripts: {doc}"
+        );
+    }
+
+    // The content frame's bridge takes orders from the app's shell, which
+    // its own origin does not name.
+    let port = embedded.addr.port();
+    let content = page(
+        &embedded,
+        "/v/1/",
+        &[("host", format!("{id}.localhost:{port}"))],
+    )
+    .await
+    .text()
+    .await
+    .unwrap();
+    assert!(content.contains(r#"data-origin="clax://app""#), "{content}");
+
+    let plain = ts.publish("Report", &[("index.html", "<p>x</p>")]).await;
+    let pid = plain["artifact"]["id"].as_str().unwrap().to_string();
+    let port = ts.addr.port();
+    let content = page(&ts, "/v/1/", &[("host", format!("{pid}.localhost:{port}"))])
+        .await
+        .text()
+        .await
+        .unwrap();
+    assert!(content.contains("<p>x</p>"), "{content}");
+    assert!(!content.contains("data-origin"), "{content}");
+    let html = page(&ts, &format!("/a/{pid}?app=1"), &[])
+        .await
+        .text()
+        .await
+        .unwrap();
+    assert!(embed_meta(&html).is_none());
+    assert!(!html.contains("clax-embed"));
+    assert!(!html.contains("/_clax/transport.js"));
+
+    // The versioned URL is immutable in a release build (a debug build reads
+    // the file from disk, where it can change under the same daemon); any
+    // other URL of it is revalidated against its ETag.
+    let current = page(&embedded, &format!("/_clax/transport.js?v={v}"), &[]).await;
+    assert_eq!(current.status(), 200);
+    let expected = if cfg!(debug_assertions) {
+        "no-cache"
+    } else {
+        "public, max-age=31536000, immutable"
+    };
+    assert_eq!(current.headers()["cache-control"], expected);
+    assert_eq!(current.headers()["content-type"], "text/javascript");
+    for stale in ["/_clax/transport.js", "/_clax/transport.js?v=000000000000"] {
+        let res = page(&embedded, stale, &[]).await;
+        assert_eq!(res.headers()["cache-control"], "no-cache", "{stale}");
+        let etag = res.headers()["etag"].to_str().unwrap().to_string();
+        let again = page(&embedded, stale, &[("if-none-match", etag)]).await;
+        assert_eq!(again.status(), 304, "{stale}");
+    }
+}

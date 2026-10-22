@@ -111,7 +111,7 @@ pub fn process_argv(pid: u32) -> Result<Vec<String>, String> {
 /// The command line of process `pid`, from `ps -ww -o args=`, split on
 /// whitespace. `ps` joins the arguments with spaces. Channel entries contain
 /// none, so they come back whole.
-#[cfg(not(any(target_os = "linux", target_arch = "wasm32")))]
+#[cfg(not(any(target_os = "linux", target_arch = "wasm32", target_os = "ios")))]
 pub fn process_argv(pid: u32) -> Result<Vec<String>, String> {
     let out = crate::shim::run_with_timeout(
         std::process::Command::new("ps").args(["-ww", "-o", "args=", "-p", &pid.to_string()]),
@@ -126,8 +126,9 @@ pub fn process_argv(pid: u32) -> Result<Vec<String>, String> {
     }
 }
 
-/// No command line on wasm32: a Worker has no processes to read.
-#[cfg(target_arch = "wasm32")]
+/// No command line on wasm32, where a Worker has no processes to read, or on
+/// iOS, whose sandbox refuses `posix_spawn` and hides other apps' processes.
+#[cfg(any(target_arch = "wasm32", target_os = "ios"))]
 pub fn process_argv(pid: u32) -> Result<Vec<String>, String> {
     Err(format!("no process table to read process {pid} from"))
 }

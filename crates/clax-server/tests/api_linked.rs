@@ -2189,3 +2189,28 @@ async fn a_keyed_question_is_asked_once_and_only_its_tokens_sessions_reach_it() 
         "{v}"
     );
 }
+
+#[tokio::test]
+async fn a_stopped_sync_ends_its_tasks_and_its_supervisor_starts_none() {
+    let p = Pair::new().await;
+    let linked = &p.local.state.linked;
+    assert!(linked.running(&p.remote));
+    let ended = clax_server::linked::stop(&p.local.state);
+    assert_eq!(ended.len(), 1, "the remote's task");
+    for t in ended {
+        assert!(t.await.is_err_and(|e| e.is_cancelled()));
+    }
+    assert!(!linked.running(&p.remote));
+    // The supervisor (a core stops it too; this server does not) wakes
+    // with the link still connected: it starts no task once stopped.
+    linked.artifacts.lock().unwrap().clear();
+    linked.links_changed();
+    until("the supervisor reads the links again", || async {
+        (!linked.artifacts.lock().unwrap().is_empty()).then_some(())
+    })
+    .await;
+    assert!(
+        !linked.running(&p.remote),
+        "a stopped sync started a task for the remote"
+    );
+}

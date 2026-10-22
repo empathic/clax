@@ -363,14 +363,20 @@ fn artifact_relative(home: &Home, path: &Path) -> String {
     rel.replacen('/', ":", 1)
 }
 
-/// Staging directories, version directories above `current_version`, and
-/// zero-version artifact rows; nothing here is reachable through the API.
+/// Staging directories, version directories above `current_version`,
+/// zero-version artifact rows, and versions a job step wrote that no row
+/// records, with the step and whether it may still commit (either goes
+/// at the next write of its version); nothing here is reachable through
+/// the API.
 fn stale_files(home: &Home, store: &Store) -> serde_json::Value {
     let dirs = store.stray_version_dirs();
     let zero = store.zero_version_artifacts();
-    let (dirs, zero) = match (dirs, zero) {
-        (Ok(d), Ok(z)) => (d, z),
-        (Err(e), _) | (_, Err(e)) => return check("stale_files", false, e.to_string()),
+    let marked = store.marked_strays();
+    let (dirs, zero, marked) = match (dirs, zero, marked) {
+        (Ok(d), Ok(z), Ok(m)) => (d, z, m),
+        (Err(e), _, _) | (_, Err(e), _) | (_, _, Err(e)) => {
+            return check("stale_files", false, e.to_string());
+        }
     };
     let problems: Vec<String> = dirs
         .iter()
@@ -379,6 +385,16 @@ fn stale_files(home: &Home, store: &Store) -> serde_json::Value {
             zero.iter()
                 .map(|id| format!("{id}: zero-version artifact row")),
         )
+        .chain(marked.iter().map(|m| {
+            format!(
+                "{}: version {} written by step {} of job {} ({})",
+                m.artifact_id,
+                m.n,
+                m.key,
+                m.job_id,
+                if m.live { "live" } else { "dead" }
+            )
+        }))
         .collect();
     check(
         "stale_files",

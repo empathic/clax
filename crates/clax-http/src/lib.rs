@@ -15,6 +15,7 @@ pub mod auth;
 pub mod blocking;
 #[cfg(not(target_arch = "wasm32"))]
 pub mod conn;
+pub mod content_policy;
 pub mod db_caller;
 pub mod error;
 pub mod exports;
@@ -27,8 +28,13 @@ pub mod host;
 pub mod hosted;
 pub mod http_cache;
 pub mod identity;
+pub mod jobs_owner;
 pub mod limits;
 pub mod live_access;
+#[cfg(not(target_arch = "wasm32"))]
+pub mod net;
+#[cfg(not(target_arch = "wasm32"))]
+pub mod net_cache;
 pub mod perf;
 pub mod pushes;
 pub mod seats;

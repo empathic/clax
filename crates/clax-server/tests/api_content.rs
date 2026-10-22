@@ -139,6 +139,12 @@ fn no_redirect_client() -> reqwest::Client {
 const SANDBOXED: &str =
     "sandbox allow-scripts allow-forms allow-modals allow-popups allow-downloads";
 
+/// The first directive of a content response's policy (its framing part).
+fn framing(res: &reqwest::Response) -> String {
+    let csp = res.headers()["content-security-policy"].to_str().unwrap();
+    csp.split("; ").next().unwrap().to_string()
+}
+
 #[tokio::test]
 async fn main_origin_content_is_sandboxed_but_artifact_origin_is_not() {
     let ts = TestServer::spawn().await;
@@ -148,11 +154,7 @@ async fn main_origin_content_is_sandboxed_but_artifact_origin_is_not() {
     let id = created["artifact"]["id"].as_str().unwrap();
     for path in [format!("/c/{id}/v/1/"), format!("/c/{id}/v/1/a.css")] {
         let res = ts.get(&path).await;
-        assert_eq!(
-            res.headers()["content-security-policy"],
-            SANDBOXED,
-            "{path}"
-        );
+        assert_eq!(framing(&res), SANDBOXED, "{path}");
     }
     let host = format!("{id}.localhost");
     for path in ["/v/1/", "/v/1/a.css"] {
@@ -195,9 +197,8 @@ async fn only_the_shell_and_the_artifact_frame_content_on_an_artifact_origin() {
                 .unwrap();
             assert_eq!(res.status(), 200);
             assert_eq!(
-                res.headers()["content-security-policy"],
-                format!("frame-ancestors 'self' http://localhost{port} http://127.0.0.1{port}")
-                    .as_str(),
+                framing(&res),
+                format!("frame-ancestors 'self' http://localhost{port} http://127.0.0.1{port}"),
                 "{host}{path}"
             );
         }
@@ -219,9 +220,288 @@ async fn only_the_shell_and_the_artifact_frame_content_on_an_artifact_origin() {
     let again = get(Some(etag)).await.unwrap();
     assert_eq!(again.status(), 304);
     assert_eq!(
-        again.headers()["content-security-policy"],
+        framing(&again),
         "frame-ancestors 'self' http://localhost:4321 http://127.0.0.1:4321"
     );
+    assert!(
+        again.headers()["content-security-policy"]
+            .to_str()
+            .unwrap()
+            .contains("connect-src 'self' ")
+    );
+}
+
+/// The directives of a policy, by name.
+fn directives(csp: &str) -> std::collections::HashMap<String, Vec<String>> {
+    csp.split(';')
+        .filter_map(|d| {
+            let mut words = d.split_whitespace().map(str::to_string);
+            Some((words.next()?, words.collect()))
+        })
+        .collect()
+}
+
+#[tokio::test]
+async fn an_artifacts_content_loads_only_its_own_files_and_connects_nowhere() {
+    let ts = TestServer::spawn().await;
+    let created = ts
+        .publish(
+            "R",
+            &[
+                ("index.html", "<p>hi</p>"),
+                ("about.html", "<p>a</p>"),
+                ("a.css", "p{}"),
+                ("data.json", "{}"),
+                ("app.js", "export {}"),
+            ],
+        )
+        .await;
+    let id = created["artifact"]["id"].as_str().unwrap();
+    let port = ts.addr.port();
+    let paths = ["/", "/about.html", "/a.css", "/data.json", "/app.js"];
+    // Sandbox mode: the page's origin is opaque, so its own files are named
+    // by host and path; the API on the same host is not among them.
+    for host in [format!("localhost:{port}"), format!("127.0.0.1:{port}")] {
+        for p in paths {
+            let path = format!("/c/{id}/v/1{p}");
+            let res = get_on(&ts, Some(&host), &path, None).await;
+            assert_eq!(res.status(), 200, "{path}");
+            let csp = res.headers()["content-security-policy"].to_str().unwrap();
+            assert!(csp.starts_with(SANDBOXED), "{csp}");
+            let d = directives(csp);
+            let own = [
+                format!("http://{host}/c/{id}/"),
+                format!("http://{host}/_clax/bridge.js"),
+                format!("http://{host}/_clax/bridge/"),
+            ];
+            for name in ["default-src", "script-src", "style-src"] {
+                for o in &own {
+                    assert!(d[name].contains(o), "{name} lacks {o}: {csp}");
+                }
+                assert!(!d[name].contains(&"'self'".to_string()), "{csp}");
+                assert!(
+                    !d[name]
+                        .iter()
+                        .any(|s| s.contains('*') || s == "http:" || s == "https:"),
+                    "{csp}"
+                );
+            }
+            assert!(d["default-src"].contains(&format!("http://localhost:{port}/_blob/{id}/")));
+            assert!(d["default-src"].contains(&format!("http://127.0.0.1:{port}/_blob/{id}/")));
+            assert!(
+                !d["default-src"].iter().any(|s| s.ends_with("/_blob/")),
+                "{csp}"
+            );
+            assert!(d["default-src"].contains(&"data:".to_string()));
+            assert!(d["default-src"].contains(&"blob:".to_string()));
+            // It fetches its own files and assets, never the API.
+            assert_eq!(
+                d["connect-src"][0],
+                format!("http://{host}/c/{id}/"),
+                "{csp}"
+            );
+            assert!(
+                d["connect-src"][1..]
+                    .iter()
+                    .all(|s| s.ends_with(&format!("/_blob/{id}/"))),
+                "{csp}"
+            );
+            assert_eq!(d["object-src"], ["'none'"]);
+            assert_eq!(d["base-uri"], ["'none'"]);
+            assert_eq!(d["form-action"], ["'none'"]);
+            assert!(!csp.contains("frame-ancestors"), "{csp}");
+        }
+    }
+    // Subdomain mode: the artifact's origin is its own files.
+    for host in [format!("{id}.localhost:{port}"), format!("{id}.localhost")] {
+        for p in paths {
+            let path = format!("/v/1{p}");
+            let res = get_on(&ts, Some(&host), &path, None).await;
+            assert_eq!(res.status(), 200, "{host}{path}");
+            let csp = res.headers()["content-security-policy"].to_str().unwrap();
+            assert!(csp.starts_with("frame-ancestors 'self' "), "{csp}");
+            let d = directives(csp);
+            assert_eq!(d["default-src"][0], "'self'", "{csp}");
+            assert_eq!(
+                d["script-src"][..3],
+                ["'self'", "'unsafe-inline'", "'unsafe-eval'"],
+                "{csp}"
+            );
+            assert_eq!(d["connect-src"][0], "'self'", "{csp}");
+            assert!(
+                d["connect-src"][1..]
+                    .iter()
+                    .all(|s| s.ends_with(&format!("/_blob/{id}/"))),
+                "{csp}"
+            );
+            assert_eq!(d["form-action"], ["'none'"], "{csp}");
+            assert!(!csp.contains("sandbox"), "{csp}");
+        }
+    }
+}
+
+/// Every response a page could frame or open on its artifact's host, or
+/// under its `/c/<id>/` path, holds it to the artifact's policy: errors,
+/// `/healthz`, `/_clax/...`, `/_blob/...` and redirects included.
+#[tokio::test]
+async fn every_response_for_an_artifacts_content_carries_its_policy() {
+    let ts = TestServer::spawn().await;
+    let created = ts.publish("R", &[("index.html", "<p>hi</p>")]).await;
+    let id = created["artifact"]["id"].as_str().unwrap();
+    let port = ts.addr.port();
+    let host = format!("{id}.localhost:{port}");
+    let main = format!("127.0.0.1:{port}");
+    let client = no_redirect_client();
+    for (h, path, own) in [
+        (&host, "/healthz".to_string(), "'self'".to_string()),
+        (&host, "/nope".to_string(), "'self'".to_string()),
+        (&host, "/v/1/missing.txt".to_string(), "'self'".to_string()),
+        (&host, "/v/9/".to_string(), "'self'".to_string()),
+        (&host, "/v/1".to_string(), "'self'".to_string()),
+        (&host, "/_clax/bridge.js".to_string(), "'self'".to_string()),
+        (
+            &host,
+            "/_clax/nothing-here".to_string(),
+            "'self'".to_string(),
+        ),
+        (
+            &host,
+            "/_blob/01K6AB7D2E3F4G5H6J7K8M9N0P".to_string(),
+            "'self'".to_string(),
+        ),
+        (
+            &main,
+            format!("/c/{id}/v/1/missing.txt"),
+            format!("http://{main}/c/{id}/"),
+        ),
+        (
+            &main,
+            format!("/c/{id}/v/1"),
+            format!("http://{main}/c/{id}/"),
+        ),
+        (
+            &main,
+            format!("/c/{id}/v/9/"),
+            format!("http://{main}/c/{id}/"),
+        ),
+    ] {
+        let res = client
+            .get(format!("{}{path}", ts.base))
+            .header("host", h)
+            .send()
+            .await
+            .unwrap();
+        let policies: Vec<String> = res
+            .headers()
+            .get_all("content-security-policy")
+            .iter()
+            .map(|v| v.to_str().unwrap().to_string())
+            .collect();
+        assert!(
+            policies
+                .iter()
+                .any(|p| p.contains(&format!("connect-src {own} "))
+                    && p.contains("default-src ")
+                    && !p.contains('*')),
+            "{h}{path} ({}): {policies:?}",
+            res.status()
+        );
+        assert_eq!(res.headers()["referrer-policy"], "no-referrer", "{h}{path}");
+    }
+    // A /c/ path that names no artifact runs nothing.
+    let res = ts.get("/c/NOT-AN-ID/v/1/").await;
+    assert_eq!(
+        res.headers()["content-security-policy"],
+        "sandbox; default-src 'none'"
+    );
+}
+
+/// A service worker script asked for on an artifact's content is Clax's,
+/// which removes itself: a page's own worker never runs.
+#[tokio::test]
+async fn a_service_worker_script_on_content_is_one_that_unregisters_itself() {
+    let ts = TestServer::spawn().await;
+    let created = ts
+        .publish(
+            "R",
+            &[
+                ("index.html", "<p>hi</p>"),
+                ("sw.js", "self.onfetch = () => {};"),
+            ],
+        )
+        .await;
+    let id = created["artifact"]["id"].as_str().unwrap();
+    let host = format!("{id}.localhost:{}", ts.addr.port());
+    for (h, path) in [
+        (Some(host.as_str()), "/v/1/sw.js".to_string()),
+        (Some(host.as_str()), "/healthz".to_string()),
+        (None, format!("/c/{id}/v/1/sw.js")),
+    ] {
+        let mut req = ts
+            .client
+            .get(format!("{}{path}", ts.base))
+            .header("service-worker", "script");
+        if let Some(h) = h {
+            req = req.header("host", h);
+        }
+        let res = req.send().await.unwrap();
+        assert_eq!(res.status(), 200, "{path}");
+        assert_eq!(res.headers()["content-type"], "text/javascript");
+        assert!(
+            res.headers()["content-security-policy"]
+                .to_str()
+                .unwrap()
+                .contains("connect-src ")
+        );
+        let body = res.text().await.unwrap();
+        assert_eq!(body, clax_http::host::SERVICE_WORKER_KILL_SWITCH, "{path}");
+    }
+    // Without the header the file is served as stored.
+    let res = ts.get(&format!("/c/{id}/v/1/sw.js")).await;
+    assert_eq!(res.text().await.unwrap(), "self.onfetch = () => {};");
+}
+
+/// What a page may fetch on its own files and its artifact's host takes
+/// only GET and HEAD: nothing there accepts a write.
+#[tokio::test]
+async fn an_artifacts_own_files_and_host_refuse_every_write() {
+    let ts = TestServer::spawn().await;
+    let created = ts.publish("R", &[("index.html", "<p>hi</p>")]).await;
+    let id = created["artifact"]["id"].as_str().unwrap();
+    let host = format!("{id}.localhost:{}", ts.addr.port());
+    for (h, path) in [
+        (None, format!("/c/{id}/v/1/")),
+        (None, format!("/c/{id}/v/1/index.html")),
+        (Some(host.as_str()), "/v/1/".to_string()),
+        (Some(host.as_str()), "/_clax/bridge.js".to_string()),
+        (
+            Some(host.as_str()),
+            "/_blob/01K6AB7D2E3F4G5H6J7K8M9N0P".to_string(),
+        ),
+        (Some(host.as_str()), "/healthz".to_string()),
+        (Some(host.as_str()), "/api/artifacts".to_string()),
+        (Some(host.as_str()), format!("/api/artifacts/{id}/docs/a/b")),
+    ] {
+        for method in [
+            reqwest::Method::POST,
+            reqwest::Method::PUT,
+            reqwest::Method::PATCH,
+            reqwest::Method::DELETE,
+        ] {
+            let mut req = ts
+                .client
+                .request(method.clone(), format!("{}{path}", ts.base))
+                .body("{}");
+            if let Some(h) = h {
+                req = req.header("host", h);
+            }
+            let status = req.send().await.unwrap().status().as_u16();
+            assert!(
+                status == 404 || status == 405,
+                "{method} {h:?}{path}: {status}"
+            );
+        }
+    }
 }
 
 #[tokio::test]
@@ -371,7 +651,7 @@ async fn supporting_html_files_are_wrapped_like_the_index_and_others_are_not() {
     assert_eq!(res.status(), 200);
     assert_eq!(res.headers()["content-type"], "text/html; charset=utf-8");
     assert_eq!(res.headers()["cache-control"], "no-cache");
-    assert_eq!(res.headers()["content-security-policy"], SANDBOXED);
+    assert_eq!(framing(&res), SANDBOXED);
     let html = res.text().await.unwrap();
     assert_eq!(html.matches("/_clax/bridge.js").count(), 1, "{html}");
     // The bridge goes right after the doctype, before any page script.
@@ -422,7 +702,7 @@ async fn supporting_html_files_are_wrapped_like_the_index_and_others_are_not() {
         .unwrap();
     assert_eq!(res.status(), 200);
     assert_eq!(
-        res.headers()["content-security-policy"],
+        framing(&res),
         "frame-ancestors 'self' http://localhost http://127.0.0.1"
     );
     let html = res.text().await.unwrap();

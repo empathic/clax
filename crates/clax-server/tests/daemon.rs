@@ -3,7 +3,7 @@ use clax_core::daemon::{
     DaemonInfo, DaemonLock, pid_alive, port_held, read_daemon_info, retry_interrupted,
     write_daemon_info,
 };
-use clax_server::serve::{ServeConfig, serve};
+use clax_server::serve::{EmbeddedControl, ServeConfig, StopOn, serve};
 use std::net::{IpAddr, Ipv4Addr};
 
 #[test]
@@ -87,9 +87,8 @@ fn lock_is_exclusive_and_released_on_drop() {
 
 #[test]
 fn an_interrupted_lock_wait_is_retried() {
-    // `DaemonLock::acquire` waits through `retry_interrupted`: an `EINTR`
-    // from a signal arriving while `flock` blocks is retried, any other
-    // error is returned.
+    // `retry_interrupted` retries an `EINTR` from a signal arriving while
+    // a call blocks, and returns any other error.
     let mut calls = 0;
     let out = retry_interrupted(|| {
         calls += 1;
@@ -112,6 +111,7 @@ fn an_interrupted_lock_wait_is_retried() {
 
 #[tokio::test]
 async fn serve_picks_a_free_port_writes_info_and_shuts_down_on_request() {
+    let _sigterm = no_sigterm().await;
     let dir = tempfile::tempdir().unwrap();
     let home = Home::at(dir.path().join("ax"));
     let busy = std::net::TcpListener::bind("127.0.0.1:0").unwrap();
@@ -129,6 +129,9 @@ async fn serve_picks_a_free_port_writes_info_and_shuts_down_on_request() {
         sample: std::sync::Arc::new(clax_sample::Sampler::disabled()),
         web: clax_testkit::web_ui(),
         hosted: None,
+        require_credential: false,
+        stop: StopOn::Signals,
+        embed: None,
     };
     let handle = tokio::spawn(serve(cfg, Some(tx)));
     let info = rx.await.unwrap();
@@ -171,11 +174,15 @@ fn config_on(home: &Home, port: u16) -> ServeConfig {
         sample: std::sync::Arc::new(clax_sample::Sampler::disabled()),
         web: clax_testkit::web_ui(),
         hosted: None,
+        require_credential: false,
+        stop: StopOn::Signals,
+        embed: None,
     }
 }
 
 /// Starts a daemon asked for `port`, returns the port it took, and stops it.
 async fn port_taken_for(port: u16) -> u16 {
+    let _sigterm = no_sigterm().await;
     let dir = tempfile::tempdir().unwrap();
     let home = Home::at(dir.path().join("ax"));
     let (tx, rx) = tokio::sync::oneshot::channel();
@@ -252,6 +259,7 @@ async fn serve_fails_when_every_port_it_would_try_is_held() {
 
 #[tokio::test]
 async fn shutdown_completes_while_an_sse_client_stays_connected() {
+    let _sigterm = no_sigterm().await;
     let dir = tempfile::tempdir().unwrap();
     let home = Home::at(dir.path().join("ax"));
     let (tx, rx) = tokio::sync::oneshot::channel();
@@ -267,6 +275,9 @@ async fn shutdown_completes_while_an_sse_client_stays_connected() {
         sample: std::sync::Arc::new(clax_sample::Sampler::disabled()),
         web: clax_testkit::web_ui(),
         hosted: None,
+        require_credential: false,
+        stop: StopOn::Signals,
+        embed: None,
     };
     let handle = tokio::spawn(serve(cfg, Some(tx)));
     let info = rx.await.unwrap();
@@ -295,6 +306,7 @@ async fn shutdown_completes_while_an_sse_client_stays_connected() {
 
 #[tokio::test]
 async fn serve_exits_when_daemon_json_is_deleted() {
+    let _sigterm = no_sigterm().await;
     let dir = tempfile::tempdir().unwrap();
     let home = Home::at(dir.path().join("ax"));
     let (tx, rx) = tokio::sync::oneshot::channel();
@@ -310,6 +322,9 @@ async fn serve_exits_when_daemon_json_is_deleted() {
         sample: std::sync::Arc::new(clax_sample::Sampler::disabled()),
         web: clax_testkit::web_ui(),
         hosted: None,
+        require_credential: false,
+        stop: StopOn::Signals,
+        embed: None,
     };
     let handle = tokio::spawn(serve(cfg, Some(tx)));
     rx.await.unwrap();
@@ -323,6 +338,7 @@ async fn serve_exits_when_daemon_json_is_deleted() {
 
 #[tokio::test]
 async fn reaper_ends_idle_sessions_whose_process_is_gone() {
+    let _sigterm = no_sigterm().await;
     let dir = tempfile::tempdir().unwrap();
     let home = Home::at(dir.path().join("ax"));
     let (tx, rx) = tokio::sync::oneshot::channel();
@@ -338,6 +354,9 @@ async fn reaper_ends_idle_sessions_whose_process_is_gone() {
         sample: std::sync::Arc::new(clax_sample::Sampler::disabled()),
         web: clax_testkit::web_ui(),
         hosted: None,
+        require_credential: false,
+        stop: StopOn::Signals,
+        embed: None,
     };
     let handle = tokio::spawn(serve(cfg, Some(tx)));
     let info = rx.await.unwrap();
@@ -414,4 +433,263 @@ fn a_record_without_exe_still_parses() {
     )
     .unwrap();
     assert_eq!(v.exe, None);
+}
+
+/// A SIGTERM goes to the whole test process. The tests that send one hold
+/// this for writing, and every test running a daemon that stops on signals
+/// holds it for reading, so the signal never stops another test's daemon.
+static SIGTERM: tokio::sync::RwLock<()> = tokio::sync::RwLock::const_new(());
+
+/// Holds off the tests that send SIGTERM while the caller's daemon runs.
+async fn no_sigterm() -> tokio::sync::RwLockReadGuard<'static, ()> {
+    SIGTERM.read().await
+}
+
+/// Sends SIGTERM to this process.
+fn sigterm_this_process() {
+    nix::sys::signal::kill(nix::unistd::Pid::this(), nix::sys::signal::Signal::SIGTERM).unwrap();
+}
+
+/// A daemon on a free port that stops only on its control and the shutdown
+/// route, and the control's two senders.
+struct Embedded {
+    stop: tokio::sync::watch::Sender<bool>,
+    trim: tokio::sync::mpsc::Sender<std::sync::mpsc::Sender<clax_store::TrimReport>>,
+    info: DaemonInfo,
+    handle: tokio::task::JoinHandle<anyhow::Result<()>>,
+}
+
+async fn embedded(home: &Home) -> Embedded {
+    let (stop, stop_rx) = tokio::sync::watch::channel(false);
+    let (trim, trim_rx) = tokio::sync::mpsc::channel(1);
+    let cfg = ServeConfig {
+        stop: StopOn::Embedded(EmbeddedControl {
+            stop: stop_rx,
+            trim: trim_rx,
+        }),
+        ..config_on(home, 0)
+    };
+    let (tx, rx) = tokio::sync::oneshot::channel();
+    let handle = tokio::spawn(serve(cfg, Some(tx)));
+    let info = rx.await.unwrap();
+    Embedded {
+        stop,
+        trim,
+        info,
+        handle,
+    }
+}
+
+async fn healthz(port: u16) -> reqwest::StatusCode {
+    reqwest::get(format!("http://127.0.0.1:{port}/healthz"))
+        .await
+        .unwrap()
+        .status()
+}
+
+/// Asks `d` to stop through its control and waits for `serve` to return.
+async fn stop_embedded(d: Embedded) {
+    d.stop.send(true).unwrap();
+    tokio::time::timeout(std::time::Duration::from_secs(20), d.handle)
+        .await
+        .expect("serve returns once its control asks it to stop")
+        .unwrap()
+        .unwrap();
+}
+
+#[tokio::test]
+async fn an_embedded_daemon_stops_on_its_control_and_removes_daemon_json() {
+    let dir = tempfile::tempdir().unwrap();
+    let home = Home::at(dir.path().join("ax"));
+    let d = embedded(&home).await;
+    assert_eq!(healthz(d.info.port).await, 200);
+    assert_eq!(read_daemon_info(&home).unwrap().port, d.info.port);
+    stop_embedded(d).await;
+    assert!(
+        read_daemon_info(&home).is_none(),
+        "daemon.json removed on clean exit"
+    );
+}
+
+#[tokio::test]
+async fn an_embedded_daemon_installs_no_signal_handler() {
+    let _only = SIGTERM.write().await;
+    let mut term =
+        tokio::signal::unix::signal(tokio::signal::unix::SignalKind::terminate()).unwrap();
+    let dir = tempfile::tempdir().unwrap();
+    let home = Home::at(dir.path().join("ax"));
+    let d = embedded(&home).await;
+    sigterm_this_process();
+    tokio::time::timeout(std::time::Duration::from_secs(5), term.recv())
+        .await
+        .expect("the test's own handler hears the SIGTERM");
+    assert_eq!(
+        healthz(d.info.port).await,
+        200,
+        "the SIGTERM did not stop the daemon"
+    );
+    assert!(!d.handle.is_finished());
+    stop_embedded(d).await;
+}
+
+#[tokio::test]
+async fn a_signals_daemon_stops_on_sigterm() {
+    let _only = SIGTERM.write().await;
+    let mut term =
+        tokio::signal::unix::signal(tokio::signal::unix::SignalKind::terminate()).unwrap();
+    let dir = tempfile::tempdir().unwrap();
+    let home = Home::at(dir.path().join("ax"));
+    let (tx, rx) = tokio::sync::oneshot::channel();
+    let handle = tokio::spawn(serve(config_on(&home, 0), Some(tx)));
+    let info = rx.await.unwrap();
+    assert_eq!(healthz(info.port).await, 200);
+    sigterm_this_process();
+    tokio::time::timeout(std::time::Duration::from_secs(20), handle)
+        .await
+        .expect("serve returns on SIGTERM")
+        .unwrap()
+        .unwrap();
+    assert!(read_daemon_info(&home).is_none());
+    tokio::time::timeout(std::time::Duration::from_secs(5), term.recv())
+        .await
+        .expect("the test's own handler hears the SIGTERM too");
+}
+
+#[tokio::test]
+async fn an_embedded_daemon_trims_on_request() {
+    let dir = tempfile::tempdir().unwrap();
+    let home = Home::at(dir.path().join("ax"));
+    let d = embedded(&home).await;
+    let (tx, rx) = std::sync::mpsc::channel();
+    d.trim.send(tx).await.unwrap();
+    let report =
+        tokio::task::spawn_blocking(move || rx.recv_timeout(std::time::Duration::from_secs(5)))
+            .await
+            .unwrap()
+            .expect("the daemon answers a trim");
+    assert_eq!(report.checkpointed, report.wal_frames, "{report:?}");
+    stop_embedded(d).await;
+}
+
+/// The tasks alive on this runtime, once those `Core::stop` aborted have
+/// been dropped: a bounded number of yields lets the scheduler drop them.
+async fn alive_tasks() -> usize {
+    let metrics = tokio::runtime::Handle::current().metrics();
+    let mut alive = metrics.num_alive_tasks();
+    for _ in 0..100 {
+        tokio::task::yield_now().await;
+        alive = metrics.num_alive_tasks();
+    }
+    alive
+}
+
+#[tokio::test]
+async fn a_serve_that_fails_after_its_core_started_stops_the_core() {
+    // A started and stopped core leaves no task behind: its background
+    // tasks, its listeners and the linked threads' sync all end.
+    let dir = tempfile::tempdir().unwrap();
+    let before = alive_tasks().await;
+    let core = clax_server::core::Core::start(
+        clax_server::core::CoreConfig {
+            home: Home::at(dir.path().join("stopped")),
+            version: "test",
+            reap_interval: std::time::Duration::from_secs(60),
+            codex: Default::default(),
+            sample: std::sync::Arc::new(clax_sample::Sampler::disabled()),
+            web: clax_testkit::web_ui(),
+            hosted: None,
+            require_credential: false,
+            bind: IpAddr::V4(Ipv4Addr::LOCALHOST),
+            port: 0,
+            embed: None,
+        },
+        &mut |_| {},
+    )
+    .await
+    .unwrap();
+    core.stop().await;
+    assert_eq!(alive_tasks().await, before, "a stopped core leaves no task");
+
+    let home = Home::at(dir.path().join("ax"));
+    home.ensure_dirs().unwrap();
+    // daemon.json is a directory that is not empty, so writing it fails
+    // after the core has started.
+    std::fs::create_dir_all(home.daemon_json().join("x")).unwrap();
+    // It stops on signals: a SIGTERM another test sends while it stops
+    // would end this process.
+    let _sigterm = no_sigterm().await;
+    let served = serve(config_on(&home, 0), None).await;
+    assert!(served.is_err(), "daemon.json cannot be written");
+    assert_eq!(
+        alive_tasks().await,
+        before,
+        "the failed serve's core leaves no task either"
+    );
+}
+
+#[tokio::test]
+async fn a_stopped_core_leaves_no_task_of_its_linked_sync() {
+    // A connected remote with a linked artifact: the sync keeps a task for
+    // it (its remote unreachable, the task waits out its backoff), which a
+    // stopped core has ended, not only aborted, by the time stop returns.
+    use clax_core::Secret;
+    use clax_store::remotes::{PendingSignIn, SignedInAs};
+    let dir = tempfile::tempdir().unwrap();
+    let home = Home::at(dir.path().join("linked"));
+    home.ensure_dirs().unwrap();
+    let rid = {
+        let st = clax_store::Store::open(&home).unwrap();
+        let sign_in = PendingSignIn {
+            device_code: Secret::new("cxd_1".into()),
+            user_code: "WXYZ-4821".into(),
+            verification_url: "http://127.0.0.1:9/device".into(),
+            expires_at: "2026-10-12T10:10:00.000Z".into(),
+            interval_s: 5,
+        };
+        let r = st
+            .add_pending_remote("http://127.0.0.1:9", "unreachable", &sign_in)
+            .unwrap();
+        st.connect_remote(
+            &r.id,
+            &SignedInAs {
+                token: Secret::new("cxa_1".into()),
+                person_public_id: "p1".into(),
+                person_name: None,
+                grant_id: "g1".into(),
+            },
+        )
+        .unwrap();
+        st.record_remote_push("a1", &r.id, "b1", "http://127.0.0.1:9/a/b1", (1, 1), None)
+            .unwrap();
+        st.shutdown();
+        r.id
+    };
+    let before = alive_tasks().await;
+    let core = clax_server::core::Core::start(
+        clax_server::core::CoreConfig {
+            home,
+            version: "test",
+            reap_interval: std::time::Duration::from_secs(60),
+            codex: Default::default(),
+            sample: std::sync::Arc::new(clax_sample::Sampler::disabled()),
+            web: clax_testkit::web_ui(),
+            hosted: None,
+            require_credential: false,
+            bind: IpAddr::V4(Ipv4Addr::LOCALHOST),
+            port: 0,
+            embed: None,
+        },
+        &mut |_| {},
+    )
+    .await
+    .unwrap();
+    while !core.state().linked.running(&rid) {
+        tokio::task::yield_now().await;
+    }
+    core.stop().await;
+    // Counted at once: every task of the core has ended as stop returns.
+    let left = tokio::runtime::Handle::current()
+        .metrics()
+        .num_alive_tasks();
+    assert_eq!(left, before, "a task of the stopped core's sync still runs");
 }

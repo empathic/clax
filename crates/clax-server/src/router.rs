@@ -4,13 +4,13 @@
 //! testkit's delay middleware are here too.
 
 use crate::routes::{
-    approvals, artifacts, assets, connect, content, docs, drafts, extension, feedback, git_token,
-    grants, health, inbox, live, live_layers, mcp_http, people, perf, questions, remotes, room,
-    sample, sessions, sites, snapshot, stream, surface, tags, threads, token, toolpath, viewers,
-    watches, working,
+    app_drafts, approvals, artifacts, assets, client_imports, connect, content, docs, drafts,
+    extension, feedback, git_token, grants, health, inbox, jobs, live, live_layers, mcp_http,
+    people, perf, questions, remotes, room, sample, sessions, sites, snapshot, stream, surface,
+    tags, threads, token, toolpath, viewers, watches, working,
 };
 #[cfg(not(target_arch = "wasm32"))]
-use crate::routes::{events, mcp};
+use crate::routes::{events, mcp, net};
 use crate::shell;
 #[cfg(not(target_arch = "wasm32"))]
 use axum::error_handling::HandleErrorLayer;
@@ -88,6 +88,24 @@ fn routes(state: AppState, shutdown: Option<tokio::sync::watch::Sender<bool>>) -
         .route("/api/sessions/join", post(sessions::join))
         .route("/api/push", get(sessions::push_status))
         .route("/api/sample", get(sample::daemon))
+        .route("/api/sample/key", axum::routing::put(sample::put_key))
+        .route("/api/core/trim", post(health::trim))
+        .route("/api/jobs/owner", post(jobs::claim).delete(jobs::release))
+        .route("/api/jobs", get(jobs::list).post(jobs::create))
+        .route("/api/jobs/{id}", get(jobs::get_one).patch(jobs::patch))
+        .route(
+            "/api/jobs/{id}/threads/{tid}",
+            axum::routing::put(jobs::put_thread).delete(jobs::delete_thread),
+        )
+        .route(
+            "/api/jobs/{id}/questions/{qid}",
+            axum::routing::put(jobs::put_question),
+        )
+        .route("/api/agent-read-consents", get(jobs::consents))
+        .route(
+            "/api/agent-read-consents/{reader}/{source}",
+            axum::routing::put(jobs::put_consent).delete(jobs::delete_consent),
+        )
         .route(
             "/api/sessions/{id}",
             get(sessions::get).patch(sessions::patch),
@@ -275,6 +293,24 @@ fn routes(state: AppState, shutdown: Option<tokio::sync::watch::Sender<bool>>) -
             post(docs::str_replace),
         )
         .route("/api/artifacts/{aid}/docs:acquire", post(docs::acquire))
+        .route(
+            "/api/artifacts/{aid}/docs:collections",
+            get(docs::collections),
+        )
+        .route("/api/drafts", get(app_drafts::list))
+        .route("/api/drafts/{id}", delete(app_drafts::delete))
+        .route("/api/drafts/{id}/renders", post(app_drafts::render))
+        .route("/api/artifacts/{aid}/db-grants", get(docs::grants))
+        .route(
+            "/api/artifacts/{aid}/db-grants/{source}",
+            axum::routing::put(docs::grant).delete(docs::revoke),
+        )
+        .route(
+            "/api/artifacts/{aid}/sample-grant",
+            get(sample::grant_status)
+                .put(sample::grant)
+                .delete(sample::revoke),
+        )
         .route("/api/artifacts/{aid}/working", get(working::for_artifact))
         .route("/api/artifacts/{aid}/presence", get(artifacts::presence))
         .route("/api/artifacts/{aid}/snapshot", get(snapshot::snapshot))
@@ -339,6 +375,13 @@ fn routes(state: AppState, shutdown: Option<tokio::sync::watch::Sender<bool>>) -
             "/api/agents/{handle}/elevate",
             axum::routing::put(people::elevate_agent).delete(people::unelevate_agent),
         );
+    // The `net` capability fetches from this machine (sockets, DNS, a disk
+    // cache): the daemon's alone, as a Durable Object has none of them.
+    #[cfg(not(target_arch = "wasm32"))]
+    let api_fast = api_fast.route(
+        "/api/artifacts/{aid}/net-grants",
+        get(net::grants).put(net::grant).delete(net::revoke),
+    );
     #[cfg(debug_assertions)]
     let api_fast = api_fast.route("/api/_test/sleep/{ms}", get(test_sleep));
     // It sleeps a store call's thread, which a Worker has none of.
@@ -428,6 +471,21 @@ fn routes(state: AppState, shutdown: Option<tokio::sync::watch::Sender<bool>>) -
             post(remotes::drop_unsent),
         )
         .route("/api/artifacts/{aid}/push", post(remotes::push))
+        .route("/api/drafts", post(app_drafts::create.layer(publish_limit)))
+        // A publish step carries a publish.
+        .route(
+            "/api/jobs/{id}/steps/{key}",
+            post(jobs::commit.layer(publish_limit)),
+        )
+        // The app's state files, up to its 8 MiB of unfinished changes.
+        .route(
+            "/api/client-imports/{key}",
+            post(client_imports::import.layer(publish_limit)),
+        )
+        .route(
+            "/api/artifacts/{aid}/versions:restore",
+            post(artifacts::restore),
+        )
         .route(
             "/api/artifacts/{aid}/assets",
             post(assets::upload.layer(asset_limit)),
@@ -491,6 +549,7 @@ fn routes(state: AppState, shutdown: Option<tokio::sync::watch::Sender<bool>>) -
         .route("/_blob/{asset_id}", get(assets::blob))
         .route("/_clip/{aid}/{tid}", get(threads::keyed_clip))
         .route("/connect/b/{code}", get(connect::browser_link))
+        .route("/_blob/{aid}/{asset_id}", get(assets::scoped_blob))
         .route("/c/{aid}/v/{n}", get(content::redirect_to_slash))
         .route("/c/{aid}/v/{n}/", get(content::index))
         .route("/c/{aid}/v/{n}/{*path}", get(content::file))
@@ -504,6 +563,13 @@ fn routes(state: AppState, shutdown: Option<tokio::sync::watch::Sender<bool>>) -
             "/api/artifacts/{aid}/versions/{n}/files/{*path}",
             get(content::raw_file),
         );
+    // Bounded by the fetch's own deadline (`net::TIMEOUT`); the daemon's
+    // alone, as the grants above.
+    #[cfg(not(target_arch = "wasm32"))]
+    let r = r.route(
+        "/api/artifacts/{aid}/net:fetch",
+        post(net::fetch.layer(DefaultBodyLimit::max(net::NET_BODY_LIMIT))),
+    );
     // What holds its connection open: the daemon's. A Durable Object
     // carries the streams and rooms over its own hibernatable sockets and
     // serves `/mcp` with the tool set's JSON-RPC adapter (see the crate
@@ -563,6 +629,11 @@ fn routes(state: AppState, shutdown: Option<tokio::sync::watch::Sender<bool>>) -
         state.clone(),
         agent::verify_layer,
     ));
+    // A request reading for another app only reads that app's documents: the header is
+    // refused on every other route and method.
+    let r = r.layer(axum::middleware::from_fn(
+        clax_http::db_caller::refuse_reader_elsewhere,
+    ));
     // Live pages answer 404 to callers that may not see them, before any
     // handler runs (spec 2026-10-05-chrome-overlay-design L10).
     // The extension gateway runs first (the last layer is outermost): only
@@ -617,6 +688,43 @@ async fn test_audit_ctx(ctx: clax_core::audit::AuditCtx) -> axum::Json<serde_jso
 /// store worker, for at most this long.
 #[cfg(debug_assertions)]
 const TEST_SLEEP_MAX_MS: u64 = 60_000;
+
+/// The routes whose response lasts as long as its reader does: the event
+/// streams, a page's room and live layers (the daemon's block that holds
+/// connections open, in [`build_router_with_shutdown`]) and rmcp's `/mcp`.
+/// A caller that reads a response whole (the in-process core's `call`)
+/// refuses them by [`held_open::matches`]. A test reads the router's
+/// source, so a route added to that block fails it until it is listed here.
+pub mod held_open {
+    /// The owner's change events (SSE).
+    pub const EVENTS: &str = "/api/events";
+    /// The stream hub's connection (SSE; `POST /api/stream/{id}` is not one).
+    pub const STREAM: &str = "/api/stream";
+    /// A page's room.
+    pub const ROOM: &str = "/api/artifacts/{aid}/room";
+    /// A page's live layers.
+    pub const LIVE: &str = "/api/artifacts/{aid}/live";
+    /// rmcp's streamable HTTP endpoint.
+    pub const MCP: &str = "/mcp";
+    /// Every one of them.
+    pub const ALL: [&str; 5] = [EVENTS, STREAM, ROOM, LIVE, MCP];
+
+    /// Whether `path` (without its query) is one of [`ALL`], a `{…}`
+    /// segment standing for any one segment.
+    pub fn matches(path: &str) -> bool {
+        ALL.iter().any(|route| {
+            let mut want = route.split('/');
+            let mut got = path.split('/');
+            loop {
+                match (want.next(), got.next()) {
+                    (None, None) => return true,
+                    (Some(w), Some(g)) if w == g || (w.starts_with('{') && !g.is_empty()) => {}
+                    _ => return false,
+                }
+            }
+        })
+    }
+}
 
 /// `ms`, refused (400 `bad_request`) above [`TEST_SLEEP_MAX_MS`].
 #[cfg(debug_assertions)]
@@ -720,7 +828,8 @@ pub fn build_router_with_shutdown(
 // `Router::layer` runs after route matching, so the host rewrite has to wrap the
 // whole inner router (mounted as the outer fallback) to influence routing. The
 // `/api` host check runs after the rewrite (the later `layer` is outermost),
-// and the header checks of agent credentials after both, before any route.
+// then the credential gate on the rewritten path, and the header checks of
+// agent credentials after all three, before any route.
 // On a hosted daemon ([`clax_http::hosted`]), whose own routes `routes`
 // mounts, its gate stands in for the `/api` host check, which admits only
 // this machine's names.
@@ -737,16 +846,23 @@ fn wrap(state: AppState, inner: axum::Router) -> axum::Router {
         .layer(axum::middleware::from_fn_with_state(
             state.clone(),
             agent::authenticate,
+        ))
+        .layer(axum::middleware::from_fn_with_state(
+            state.clone(),
+            auth::require_credential,
         ));
     let r = if hosted {
         r.layer(axum::middleware::from_fn_with_state(
-            state,
+            state.clone(),
             clax_http::hosted::gate,
         ))
     } else {
         r.layer(axum::middleware::from_fn(auth::require_api_host))
     };
-    r.layer(axum::middleware::from_fn(host::rewrite_artifact_host))
+    r.layer(axum::middleware::from_fn_with_state(
+        state,
+        host::rewrite_artifact_host,
+    ))
 }
 
 #[cfg(test)]

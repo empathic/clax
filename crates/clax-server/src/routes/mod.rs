@@ -2,9 +2,11 @@
 //! them is `crate::router`; `guards` checks every route against the rules
 //! a handler's signature must show.
 
+pub mod app_drafts;
 pub mod approvals;
 pub mod artifacts;
 pub mod assets;
+pub mod client_imports;
 pub mod connect;
 pub mod content;
 pub mod docs;
@@ -17,11 +19,14 @@ pub mod git_token;
 pub mod grants;
 pub mod health;
 pub mod inbox;
+pub mod jobs;
 pub mod live;
 pub mod live_layers;
 #[cfg(not(target_arch = "wasm32"))]
 pub mod mcp;
 pub mod mcp_http;
+#[cfg(not(target_arch = "wasm32"))]
+pub mod net;
 pub mod people;
 pub mod perf;
 pub mod questions;

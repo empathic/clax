@@ -424,13 +424,26 @@ pub(crate) fn main() {
             std::process::exit(2);
         }
         eprintln!("error: {e:#}");
-        std::process::exit(1);
+        std::process::exit(clax_core::exit::status_of(e.as_ref()));
     }
 }
 
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn anyhow_context_keeps_a_failed_migration_in_the_source_chain() {
+        let e = anyhow::Error::from(clax_core::CoreError::MigrationFailed {
+            at: 27,
+            detail: "duplicate column name: draft_of".into(),
+        })
+        .context("starting the daemon");
+        assert_eq!(
+            clax_core::exit::status_of(e.as_ref()),
+            clax_core::exit::MIGRATION_FAILED
+        );
+    }
 
     fn cli(args: &[&str]) -> Cli {
         Cli::try_parse_from(args).unwrap()

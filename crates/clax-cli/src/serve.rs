@@ -37,6 +37,11 @@ pub fn run(home: &Home, a: ServeArgs) -> anyhow::Result<()> {
         })),
         web,
         hosted: hosted(home)?,
+        require_credential: a.require_credential,
+        embed: a
+            .embed
+            .map(|(shell, content)| clax_http::state::EmbedOrigins { shell, content }),
+        stop: clax_server::serve::StopOn::Signals,
     };
     let r = rt.block_on(serve(cfg, None));
     // Dropping the runtime would wait without limit for its blocking tasks:

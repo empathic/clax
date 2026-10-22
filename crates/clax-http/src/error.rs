@@ -123,6 +123,11 @@ impl From<CoreError> for ApiError {
                 code: "push_refused",
                 message,
             } => ApiError::new(StatusCode::CONFLICT, "push_refused", message),
+            // Unrecorded content holds the version (`docs/contract.md`).
+            CoreError::Invalid {
+                code: "version_present",
+                message,
+            } => ApiError::new(StatusCode::CONFLICT, "version_present", message),
             CoreError::Invalid {
                 code: "question_closed",
                 message,
@@ -157,7 +162,23 @@ impl From<CoreError> for ApiError {
                     | "quota_exceeded" | "github_blocked" | "github_not_owner"),
                 message,
             } => ApiError::new(StatusCode::FORBIDDEN, code, message),
+            // A cross-app read without consent.
+            CoreError::Invalid {
+                code: "not_granted",
+                message,
+            } => ApiError::forbidden("not_granted", message),
+            // What a draft refuses.
+            CoreError::Invalid {
+                code: "draft",
+                message,
+            } => ApiError::forbidden("draft", message),
             CoreError::Invalid { code, message } => ApiError::bad_request(code, message),
+            // The rule broken rides beside the sentence (`docs/contract.md`).
+            CoreError::InvalidIcon(p) => {
+                let mut err = ApiError::bad_request("invalid_icon", p.to_string());
+                err.extra.insert("rule".into(), json!(p.code()));
+                err
+            }
             CoreError::ThreadTaken { name } => {
                 let message = CoreError::ThreadTaken { name: name.clone() }.to_string();
                 let mut err = ApiError::new(StatusCode::CONFLICT, "thread_taken", message);
@@ -192,6 +213,14 @@ impl From<CoreError> for ApiError {
                 ApiError::new(
                     StatusCode::INTERNAL_SERVER_ERROR,
                     "schema_newer",
+                    e.to_string(),
+                )
+            }
+            e @ CoreError::MigrationFailed { .. } => {
+                tracing::error!(error = %e, "database upgrade failed");
+                ApiError::new(
+                    StatusCode::INTERNAL_SERVER_ERROR,
+                    "migration_failed",
                     e.to_string(),
                 )
             }
@@ -255,6 +284,11 @@ mod tests {
         assert_eq!(
             (e.status, e.code),
             (StatusCode::TOO_MANY_REQUESTS, "limit_reached")
+        );
+        let e = ApiError::from(CoreError::invalid("version_present", "version 6 holds"));
+        assert_eq!(
+            (e.status, e.code),
+            (StatusCode::CONFLICT, "version_present")
         );
     }
 

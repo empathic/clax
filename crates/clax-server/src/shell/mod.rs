@@ -34,11 +34,34 @@ pub fn bridge_version(web: &dyn FileTree) -> String {
         .unwrap_or_default()
 }
 
-/// The bridge's `Cache-Control`: in a release build, immutable at the URL
-/// naming the version of the bytes served (`?v=<hash of them>`) and
-/// revalidated at any other; in a debug build, where the file can change
-/// under the same daemon, always revalidated.
-fn bridge_cache_control(query: Option<&str>, served: &str) -> &'static str {
+/// Where the app's transport script sits in the web UI.
+const TRANSPORT: &str = "_clax/transport.js";
+
+/// The transport's version: a short hash of `/_clax/transport.js`, which an
+/// embedded core's shell documents name as `?v=<version>`
+/// ([`boot::with_embed_meta`]). Empty when the UI is not built.
+pub fn transport_version(web: &dyn FileTree) -> String {
+    web.sha256(TRANSPORT)
+        .map(|h| short_hash(&h))
+        .unwrap_or_default()
+}
+
+/// The transport's version for an embedded core's shell documents; empty
+/// (and not hashed) when the core is not embedded.
+fn embedded_transport(s: &clax_http::state::AppState) -> String {
+    if s.embed.is_some() {
+        transport_version(&*s.web)
+    } else {
+        String::new()
+    }
+}
+
+/// The `Cache-Control` of a file named by version (the bridge, the
+/// transport): in a release build, immutable at the URL naming the version
+/// of the bytes served (`?v=<hash of them>`) and revalidated at any other;
+/// in a debug build, where the file can change under the same daemon,
+/// always revalidated.
+fn versioned_cache_control(query: Option<&str>, served: &str) -> &'static str {
     let v = query
         .unwrap_or("")
         .split('&')
@@ -65,12 +88,22 @@ fn unframeable(mut res: Response) -> Response {
     res
 }
 
-/// An entry of the shell (`index.html` or `artifact.html`) as an HTML page.
-fn entry(web: &dyn FileTree, req: &HeaderMap, name: &str) -> Result<Response, ApiError> {
-    match web.get(name) {
+/// An entry of the shell (`index.html` or `artifact.html`) as an HTML page,
+/// marked for an embedding app's transport when the core is embedded
+/// ([`boot::with_embed_meta`]).
+fn entry(
+    s: &clax_http::state::AppState,
+    req: &HeaderMap,
+    name: &str,
+) -> Result<Response, ApiError> {
+    match s.web.get(name) {
         Some(f) => Ok(unframeable(http_cache::html(
             req,
-            &String::from_utf8_lossy(&f.data),
+            &boot::with_embed_meta(
+                &String::from_utf8_lossy(&f.data),
+                s.embed.as_ref(),
+                &embedded_transport(s),
+            ),
         ))),
         None => Err(ApiError::new(
             StatusCode::SERVICE_UNAVAILABLE,
@@ -88,7 +121,18 @@ pub fn legal_page(
     req: &HeaderMap,
     name: &str,
 ) -> Result<Response, ApiError> {
-    entry(&*s.web, req, name)
+    // A static page, not the shell: no embedding transport is marked in it.
+    match s.web.get(name) {
+        Some(f) => Ok(unframeable(http_cache::html(
+            req,
+            &String::from_utf8_lossy(&f.data),
+        ))),
+        None => Err(ApiError::new(
+            StatusCode::SERVICE_UNAVAILABLE,
+            "ui_not_built",
+            "the web UI has not been built; run `just web`",
+        )),
+    }
 }
 
 /// `/`, `/inbox`, `/people` and `/tags`: the gallery's entry, which shows
@@ -98,7 +142,7 @@ pub async fn gallery_page(
     _d: clax_http::agent::DeniedToGrants,
     req: HeaderMap,
 ) -> Result<Response, ApiError> {
-    entry(&*s.web, &req, "index.html")
+    entry(&s, &req, "index.html")
 }
 
 /// `/a/…`: `artifact.html` with the first-load data ([`boot`]), or the
@@ -127,10 +171,10 @@ pub async fn artifact_page(
     d.refuse_agents()?;
     let route = route::parse_shell_path(uri.path());
     if matches!(route, route::ShellRoute::Gallery) {
-        return entry(&*s.web, &req, "index.html");
+        return entry(&s, &req, "index.html");
     }
     let Some(f) = s.web.get("artifact.html") else {
-        return entry(&*s.web, &req, "artifact.html");
+        return entry(&s, &req, "artifact.html");
     };
     let template = String::from_utf8_lossy(&f.data).into_owned();
     // A hosted daemon's gate checked the host already ([`clax_http::hosted::gate`]).
@@ -141,13 +185,18 @@ pub async fn artifact_page(
     let injected = if host_ok {
         within(
             s.request_timeout,
-            boot::assemble(&s, route, &req, &extensions),
+            boot::assemble(&s, route, uri.query(), &req, &extensions),
         )
         .await
     } else {
         None
     };
-    let mut res = http_cache::html(&req, &boot::inject(&template, injected.as_ref()));
+    let page = boot::with_embed_meta(
+        &boot::inject(&template, injected.as_ref()),
+        s.embed.as_ref(),
+        &embedded_transport(&s),
+    );
+    let mut res = http_cache::html(&req, &page);
     let h = res.headers_mut();
     h.insert(
         header::CACHE_CONTROL,
@@ -306,8 +355,8 @@ pub async fn static_file(
             .first_or_octet_stream()
             .to_string()
     };
-    if file == BRIDGE {
-        let cc = bridge_cache_control(query.as_deref(), &short_hash(&f.sha256));
+    if file == BRIDGE || file == TRANSPORT {
+        let cc = versioned_cache_control(query.as_deref(), &short_hash(&f.sha256));
         return Ok(http_cache::tagged(&req, &f.data, cc, || {
             ([(header::CONTENT_TYPE, ct)], f.data.clone().into_owned()).into_response()
         }));
@@ -357,11 +406,11 @@ pub async fn static_file(
 /// How [`static_file`] caches `/_clax/<path>` when another host serves the
 /// web UI's files (a Worker's static assets): the `Cache-Control`, and
 /// whether any origin may read it (`Access-Control-Allow-Origin: *`).
-/// `None` for the paths only the server answers: the bridge, whose URL is
-/// immutable only at the version it serves, and the contract's type
-/// definitions, which are built in.
+/// `None` for the paths only the server answers: the bridge and the
+/// transport, whose URLs are immutable only at the version they serve, and
+/// the contract's type definitions, which are built in.
 pub fn asset_cache(path: &str) -> Option<(&'static str, bool)> {
-    if path == "bridge.js" || path.starts_with("contract/") {
+    if path == "bridge.js" || path == "transport.js" || path.starts_with("contract/") {
         return None;
     }
     let fixed = if cfg!(debug_assertions) {
@@ -521,19 +570,29 @@ mod tests {
             IMMUTABLE
         };
         assert_eq!(
-            bridge_cache_control(Some("v=0123456789ab"), served),
+            versioned_cache_control(Some("v=0123456789ab"), served),
             current
         );
         assert_eq!(
-            bridge_cache_control(Some("x=1&v=0123456789ab"), served),
+            versioned_cache_control(Some("x=1&v=0123456789ab"), served),
             current
         );
-        assert_eq!(bridge_cache_control(None, served), REVALIDATE);
-        assert_eq!(bridge_cache_control(Some(""), served), REVALIDATE);
+        assert_eq!(versioned_cache_control(None, served), REVALIDATE);
+        assert_eq!(versioned_cache_control(Some(""), served), REVALIDATE);
         assert_eq!(
-            bridge_cache_control(Some("v=ffffffffffff"), served),
+            versioned_cache_control(Some("v=ffffffffffff"), served),
             REVALIDATE
         );
         assert_eq!(short_hash(&[0xab; 32]), "abababababab");
+    }
+
+    #[test]
+    fn another_host_never_serves_the_files_named_by_version() {
+        assert_eq!(asset_cache("bridge.js"), None);
+        assert_eq!(asset_cache("transport.js"), None);
+        assert_eq!(
+            asset_cache("mark.svg"),
+            Some(("public, max-age=3600", false))
+        );
     }
 }

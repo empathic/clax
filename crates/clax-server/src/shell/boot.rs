@@ -96,17 +96,64 @@ pub fn page_src(id: &str, n: u64, origin: Option<&str>, key: Option<&str>, file:
         .join("/")
 }
 
+/// The name the Clax app's inspect view gives its content frame
+/// (`INSPECT_FRAME` in `web/bridge/src/protocol.ts`): the page's bridge keeps
+/// its errors from its first script only in a frame so named.
+pub const INSPECT_FRAME: &str = "clax-inspect";
+/// The name the Clax app's migration view gives its content frame
+/// (`MIGRATE_FRAME` in `web/bridge/src/protocol.ts`): the page's bridge ends
+/// the page's markup before any of it runs only in a frame so named.
+pub const MIGRATE_FRAME: &str = "clax-migrate";
+
+/// Whether a shell URL's query asks for the Clax app's inspect view, as the
+/// shell reads it (`inspectQuery` in `web/shell/src/route.ts`): the first
+/// `app` is `1` and the first `inspect` is `1`.
+pub fn inspect_query(query: Option<&str>) -> bool {
+    let Some(q) = query else { return false };
+    let first = |key: &str| {
+        url::form_urlencoded::parse(q.as_bytes())
+            .find(|(k, _)| k == key)
+            .map(|(_, v)| v.into_owned())
+    };
+    first("app").as_deref() == Some("1") && first("inspect").as_deref() == Some("1")
+}
+
+/// The content frame's name for a shell URL's query, as `frameName` in
+/// `web/shell/src/view/frame-host.ts` gives it: [`MIGRATE_FRAME`] in the
+/// migration view (the inspect view's query with the first `migrate` `1`),
+/// [`INSPECT_FRAME`] in the inspect view, none elsewhere.
+pub fn frame_name(query: Option<&str>) -> Option<&'static str> {
+    if !inspect_query(query) {
+        return None;
+    }
+    let migrate = query.and_then(|q| {
+        url::form_urlencoded::parse(q.as_bytes())
+            .find(|(k, _)| k == "migrate")
+            .map(|(_, v)| v.into_owned())
+    });
+    Some(if migrate.as_deref() == Some("1") {
+        MIGRATE_FRAME
+    } else {
+        INSPECT_FRAME
+    })
+}
+
 /// The content frame's markup, with the attributes `FrameHost.show` in
 /// `web/shell/src/view/frame-host.ts` gives it: sandboxed exactly when there
-/// is no artifact origin.
-pub fn frame_html(src: &str, sandboxed: bool) -> String {
+/// is no artifact origin, and named `name` ([`frame_name`]), so the shell
+/// adopts it in the inspect and migration views too.
+pub fn frame_html(src: &str, sandboxed: bool, name: Option<&str>) -> String {
     let sandbox = if sandboxed {
         format!(" sandbox=\"{FRAME_SANDBOX}\"")
     } else {
         String::new()
     };
+    let name = match name {
+        Some(n) => format!(" name=\"{}\"", html_escape(n)),
+        None => String::new(),
+    };
     format!(
-        "<iframe class=\"frame\" title=\"artifact content\" src=\"{}\" allow=\"clipboard-write; fullscreen\"{sandbox}></iframe>",
+        "<iframe class=\"frame\"{name} title=\"artifact content\" src=\"{}\" allow=\"clipboard-write; fullscreen\"{sandbox}></iframe>",
         html_escape(src)
     )
 }
@@ -171,6 +218,7 @@ fn without_sessions(artifact: Value, versions: Value) -> Value {
 pub async fn assemble(
     s: &AppState,
     route: ShellRoute,
+    query: Option<&str>,
     headers: &HeaderMap,
     extensions: &axum::http::Extensions,
 ) -> Result<Option<Injected>, ApiError> {
@@ -296,11 +344,13 @@ pub async fn assemble(
         .iter()
         .find(|v| u64::from(v.n) == n)
         .is_some_and(|v| file == "index.html" || v.files.contains_key(&file));
-    // A hosted daemon's content origin frames every page sandboxed, there.
+    // A hosted daemon's content origin frames every page sandboxed, there;
+    // an embedding app's content origins each frame their artifact.
     let content_origin = s.hosted.as_ref().and_then(|h| h.content_origin());
-    let mode = match content_origin {
-        Some(_) => Some(None),
-        None => frame_origin(headers, id.as_str()),
+    let mode = match (content_origin, &s.embed) {
+        (Some(_), _) => Some(None),
+        (None, Some(e)) => Some(Some(e.content_of(id.as_str()))),
+        (None, None) => frame_origin(headers, id.as_str()),
     };
     let (frame, frame_json) = match mode {
         Some(origin) if holds => {
@@ -311,7 +361,7 @@ pub async fn assemble(
             let src = page_src(id.as_str(), n, origin.as_deref(), key.as_deref(), &file);
             let src = format!("{}{src}", content_origin.unwrap_or(""));
             (
-                Some(frame_html(&src, origin.is_none())),
+                Some(frame_html(&src, origin.is_none(), frame_name(query))),
                 json!({"mode": if origin.is_some() { "subdomain" } else { "sandbox" }, "src": src}),
             )
         }
@@ -341,6 +391,51 @@ pub async fn assemble(
         frame,
         title: a.title.clone(),
     }))
+}
+
+/// The `clax-embed` meta an embedding app's shell documents carry: the
+/// transport the shell uses there (`host`: the app's channel) and the two
+/// origins, as attribute-escaped JSON.
+pub fn embed_meta(e: &clax_http::state::EmbedOrigins) -> String {
+    let v = json!({"transport": "host", "shell": e.shell, "content": e.content});
+    format!(
+        "<meta name=\"clax-embed\" content=\"{}\">",
+        html_escape(&v.to_string())
+    )
+}
+
+/// The tag of the app's transport (`web/shell/src/transport.ts`, built on
+/// its own) at `version` ([`super::transport_version`]): a classic script, so
+/// it runs before the shell's modules, which replaces their `fetch` with the
+/// app's channel. The URL names the version of the bytes, so a shell
+/// document (never cached) always loads the transport of its own build.
+pub fn transport_script(version: &str) -> String {
+    if version.is_empty() {
+        r#"<script src="/_clax/transport.js"></script>"#.to_string()
+    } else {
+        format!(r#"<script src="/_clax/transport.js?v={version}"></script>"#)
+    }
+}
+
+/// `html` (a shell document) with [`embed_meta`] and then
+/// [`transport_script`] at `transport` first in its `<head>`, so before any
+/// other script, when the core is embedded (`embed`); else unchanged.
+pub fn with_embed_meta(
+    html: &str,
+    embed: Option<&clax_http::state::EmbedOrigins>,
+    transport: &str,
+) -> String {
+    let Some(e) = embed else {
+        return html.to_string();
+    };
+    let meta = format!("{}{}", embed_meta(e), transport_script(transport));
+    match html.find("<head>") {
+        Some(at) => {
+            let end = at + "<head>".len();
+            format!("{}{meta}{}", &html[..end], &html[end..])
+        }
+        None => format!("{meta}{html}"),
+    }
 }
 
 /// `template` (the built `artifact.html`) with `i` injected at its markers,
@@ -413,12 +508,59 @@ mod tests {
             assert!(host.contains(attr), "frame-host.ts no longer sets: {attr}");
         }
         assert_eq!(
-            frame_html("/c/x/v/1/\"><b>", true),
+            frame_html("/c/x/v/1/\"><b>", true, None),
             format!(
                 "<iframe class=\"frame\" title=\"artifact content\" src=\"/c/x/v/1/&quot;&gt;&lt;b&gt;\" allow=\"clipboard-write; fullscreen\" sandbox=\"{FRAME_SANDBOX}\"></iframe>"
             )
         );
-        assert!(!frame_html("http://x.localhost:1/v/1/", false).contains("sandbox"));
+        assert!(!frame_html("http://x.localhost:1/v/1/", false, None).contains("sandbox"));
+    }
+
+    #[test]
+    fn the_inspect_views_frame_is_named_as_frame_host_names_it() {
+        let host = include_str!("../../../../web/shell/src/view/frame-host.ts");
+        assert!(host.contains(
+            "migrateQuery(location.search) ? MIGRATE_FRAME : inspecting() ? INSPECT_FRAME : null"
+        ));
+        let proto = include_str!("../../../../web/bridge/src/protocol.ts");
+        assert!(proto.contains(&format!(
+            "export const INSPECT_FRAME = \"{INSPECT_FRAME}\";"
+        )));
+        assert!(proto.contains(&format!(
+            "export const MIGRATE_FRAME = \"{MIGRATE_FRAME}\";"
+        )));
+        assert_eq!(
+            frame_html("/c/x/v/1/", true, frame_name(Some("app=1&inspect=1"))),
+            format!(
+                "<iframe class=\"frame\" name=\"clax-inspect\" title=\"artifact content\" src=\"/c/x/v/1/\" allow=\"clipboard-write; fullscreen\" sandbox=\"{FRAME_SANDBOX}\"></iframe>"
+            )
+        );
+        assert!(!frame_html("/c/x/v/1/", true, frame_name(Some("app=1"))).contains("name="));
+        for (q, want) in [
+            (Some("app=1&inspect=1&migrate=1"), Some(MIGRATE_FRAME)),
+            (Some("migrate=1&inspect=1&app=1"), Some(MIGRATE_FRAME)),
+            (Some("app=1&inspect=1&migrate=0"), Some(INSPECT_FRAME)),
+            (Some("app=1&migrate=1"), None),
+            (None, None),
+        ] {
+            assert_eq!(frame_name(q), want, "{q:?}");
+        }
+    }
+
+    #[test]
+    fn inspect_query_needs_app_and_inspect_as_the_shell_reads_them() {
+        for (q, want) in [
+            (Some("app=1&inspect=1"), true),
+            (Some("inspect=1&x=2&app=1"), true),
+            (Some("app=%31&inspect=1"), true),
+            (Some("inspect=1"), false),
+            (Some("app=1"), false),
+            (Some("app=1&inspect=0"), false),
+            (Some("app=2&app=1&inspect=1"), false),
+            (None, false),
+        ] {
+            assert_eq!(inspect_query(q), want, "{q:?}");
+        }
     }
 
     #[test]

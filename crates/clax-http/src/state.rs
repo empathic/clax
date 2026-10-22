@@ -58,11 +58,33 @@ impl VisGen {
     }
 }
 
+/// The origins an app embedding the core gives its WebViews: the shell's,
+/// and each artifact's content origin.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct EmbedOrigins {
+    /// The shell's origin, e.g. "https://app.clax.invalid" or "clax://app".
+    pub shell: String,
+    /// An artifact's content origin with `{id}` for its ID, e.g.
+    /// "https://{id}.c.clax.invalid" or "clax://{id}.c".
+    pub content: String,
+}
+
+impl EmbedOrigins {
+    /// The content origin of artifact `id`.
+    pub fn content_of(&self, id: &str) -> String {
+        self.content.replace("{id}", id)
+    }
+}
+
 #[derive(Clone)]
 pub struct AppState {
     pub store: Arc<Store>,
     pub home: Home,
     pub token: String,
+    /// Every request but [`crate::auth::open_without_credential`]'s needs a
+    /// credential, `GET /api/token` included ([`crate::auth::require_credential`]);
+    /// `clax serve --require-credential`, off by default.
+    pub require_credential: bool,
     pub events: EventBus,
     pub started_at: String,
     pub version: &'static str,
@@ -105,6 +127,10 @@ pub struct AppState {
     pub live_layers: Arc<clax_realtime::live_layers::LiveLayers>,
     /// The `sample` capability's provider and settings.
     pub sample: Arc<clax_sample::Sampler>,
+    /// The `net` capability's fetcher ([`crate::net::Net::default`] in the daemon);
+    /// none on wasm32, where a Durable Object has no sockets of its own.
+    #[cfg(not(target_arch = "wasm32"))]
+    pub net: Arc<crate::net::Net>,
     /// The multiplexed event stream's topics and streams (`/api/stream`);
     /// fed by `events` once [`clax_realtime::stream::Hub::listen`] has run.
     pub stream: Arc<clax_realtime::stream::Hub>,
@@ -169,12 +195,18 @@ pub struct AppState {
     pub vis_gen: VisGen,
     /// Hosted mode ([`crate::hosted`]); `None` for the local daemon.
     pub hosted: Option<Arc<crate::hosted::Hosted>>,
+    /// The origins of the app that embeds this core, which its shell
+    /// documents and content policy name; `None` for a daemon.
+    pub embed: Option<EmbedOrigins>,
     /// The host's git remotes ([`crate::git_remotes`]), once it installs
     /// them; empty on the native daemon.
     pub git_remotes: Arc<crate::git_remotes::Slot>,
     /// Linked threads' sync with remotes (`clax_server::linked`); idle on a
     /// hosted daemon.
     pub linked: Arc<clax_realtime::linked::Linked>,
+    /// The queue owner of each job client ([`crate::jobs_owner`]), in
+    /// memory only: empty at every start.
+    pub jobs_owners: Arc<crate::jobs_owner::JobsOwners>,
     /// Debug builds: whether this is the testkit's daemon, which honours
     /// the `x-clax-test-delay-ms` header (so a test can make a real route
     /// slow) and serves `GET /api/_test/audit/ctx` (`clax_server::router`).
@@ -229,6 +261,9 @@ pub struct StateParts {
     pub home: Home,
     /// The owner's bearer token.
     pub token: String,
+    /// Whether every request but the exempt ones needs a credential
+    /// ([`AppState::require_credential`]).
+    pub require_credential: bool,
     /// When the server started (the store's clock, RFC 3339).
     pub started_at: String,
     pub version: &'static str,
@@ -251,6 +286,9 @@ pub struct StateParts {
     pub hosted: Option<Arc<crate::hosted::Hosted>>,
     /// The web UI the daemon serves.
     pub web: Arc<dyn clax_core::embedded::FileTree>,
+    /// The origins of the app that embeds the core
+    /// ([`AppState::embed`]); `None` for a daemon.
+    pub embed: Option<EmbedOrigins>,
 }
 
 impl AppState {
@@ -269,11 +307,14 @@ impl AppState {
         Ok(AppState {
             home: p.home,
             token: p.token,
+            require_credential: p.require_credential,
             events: EventBus::new(),
             started_at: p.started_at,
             version: p.version,
             shutdown: p.shutdown,
             wrap_cache: Arc::new(WrapCache::new(crate::wrap_cache::DEFAULT_MAX_BYTES)),
+            #[cfg(not(target_arch = "wasm32"))]
+            net: Arc::new(crate::net::Net::default()),
             request_timeout: Duration::from_secs(30),
             publish_timeout: Duration::from_secs(120),
             sse_keep_alive: Duration::from_secs(15),
@@ -290,7 +331,10 @@ impl AppState {
             live_layers: Arc::new(clax_realtime::live_layers::LiveLayers::new(p.clock.clone())),
             sample: p.sample,
             stream: clax_realtime::stream::Hub::new(live_ids.clone()),
-            seats: crate::seats::LiveSeats::from_env(p.clock.clone()),
+            seats: crate::seats::LiveSeats::new(
+                crate::seats::limits_for(p.embed.is_some(), |k| std::env::var(k).ok()),
+                p.clock.clone(),
+            ),
             sockets: Arc::default(),
             live_ids,
             ext_creds,
@@ -323,10 +367,12 @@ impl AppState {
             },
             test_daemon: false,
             web: p.web,
+            embed: p.embed,
             git_remotes: Arc::default(),
             linked: Arc::new(clax_realtime::linked::Linked::new(Arc::new(
                 clax_realtime::questions::TokioSleeper,
             ))),
+            jobs_owners: Arc::default(),
             store: p.store,
         })
     }
@@ -417,14 +463,24 @@ impl AppState {
     /// streams' events: the stream hub's listener, the live seats' link to
     /// it, and the inbox, approvals, pushes and git remotes listeners. The
     /// daemon's `clax_server::start_listeners` adds the people routes' and
-    /// the linked threads' sync.
-    pub fn start_listeners(&self) {
+    /// the linked threads' sync. Returns the handles of the tasks they
+    /// spawn, which run until aborted.
+    pub fn start_listeners(&self) -> Vec<clax_rt::JoinHandle<()>> {
         self.stream.listen(&self.events);
+        {
+            let store = self.store.clone();
+            self.stream.check_reads(move |reader, source| {
+                crate::db_caller::reads_now(&store, reader, source)
+            });
+            let store = self.store.clone();
+            self.stream.hide(move |aid| store.is_hidden(aid));
+        }
         crate::seats::install(self);
-        crate::views::inbox::listen(self);
-        crate::views::approval::listen(self);
+        let mut tasks = crate::views::inbox::listen(self);
+        tasks.push(crate::views::approval::listen(self));
         crate::pushes::listen(self);
-        crate::git_remotes::listen(self);
+        tasks.push(crate::git_remotes::listen(self));
+        tasks
     }
 }
 

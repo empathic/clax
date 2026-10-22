@@ -13,59 +13,13 @@ use clax_core::model::FileMeta;
 use clax_core::publish::INDEX;
 use clax_core::wrap::wrap_page_framed_by;
 use clax_core::{ArtifactId, CoreError};
+use clax_http::content_policy::{ContentPolicySet, content_policy, own_host, plain_host};
 use clax_http::error::ApiError;
 use clax_http::headers::parse_id;
 use clax_http::host::OnArtifactOrigin;
 use clax_http::http_cache;
 use clax_http::state::AppState;
 use std::sync::Arc;
-
-/// Content served on the main origin must not run same-origin with the API.
-const SANDBOX: &str = "sandbox allow-scripts allow-forms allow-modals allow-popups allow-downloads";
-
-/// The `Content-Security-Policy` of a content response.
-///
-/// - On the main origin (sandbox mode): the sandbox, and no
-///   `frame-ancestors`. A sandboxed page has an opaque origin, which no
-///   `frame-ancestors` source matches, so any such list would also refuse an
-///   artifact's page framed by another of its pages. Framed by another site,
-///   the page reaches nothing of the viewer's: it runs at an opaque origin,
-///   and its bridge talks only to a parent at the shell's origin.
-/// - On an artifact origin (`<id>.localhost[:port]`, subdomain mode): framed
-///   only by the artifact's own pages (`'self'`) and the shell, at
-///   `localhost` or `127.0.0.1` on the same port, the only hosts from which
-///   the shell uses subdomain frames.
-///
-/// The policy is a separate one: a page's own `<meta>` policy still applies
-/// in full beside it, and cannot set `frame-ancestors` itself.
-pub(crate) fn content_policy(
-    origin: &Option<Extension<OnArtifactOrigin>>,
-    req: &HeaderMap,
-) -> HeaderValue {
-    if origin.is_none() {
-        return HeaderValue::from_static(SANDBOX);
-    }
-    // The rewrite accepted this host only with a numeric port, or none.
-    let port = req
-        .get(header::HOST)
-        .and_then(|h| h.to_str().ok())
-        .and_then(|h| h.split_once(':'))
-        .map(|(_, p)| format!(":{p}"))
-        .unwrap_or_default();
-    HeaderValue::from_str(&format!(
-        "frame-ancestors 'self' http://localhost{port} http://127.0.0.1{port}"
-    ))
-    .unwrap_or_else(|_| HeaderValue::from_static("frame-ancestors 'self'"))
-}
-
-/// The host and port in the daemon's browser base URL.
-fn own_host(s: &AppState) -> String {
-    s.browser_base
-        .strip_prefix("http://")
-        .unwrap_or(&s.browser_base)
-        .trim_end_matches('/')
-        .to_string()
-}
 
 /// The second policy on a live page's content (spec
 /// 2026-10-05-chrome-overlay-design §8.4): of scripts, only Clax's own under
@@ -74,39 +28,41 @@ fn own_host(s: &AppState) -> String {
 /// that is not a plain host and port (letters, digits, `.`, `-`, `:`, `[`,
 /// `]`) is not trusted: `fallback` (the daemon's own host) is used instead.
 fn snapshot_policy(req: &HeaderMap, fallback: &str) -> HeaderValue {
-    let plain = |h: &str| {
-        !h.is_empty()
-            && h.bytes()
-                .all(|b| b.is_ascii_alphanumeric() || b".-:[]".contains(&b))
-    };
-    let host = req
-        .get(header::HOST)
-        .and_then(|h| h.to_str().ok())
-        .filter(|h| plain(h))
-        .unwrap_or(fallback);
+    let host = plain_host(req, fallback);
     HeaderValue::from_str(&format!(
         "script-src http://{host}/_clax/; object-src 'none'; base-uri 'none'; form-action 'none'; frame-src 'none'; connect-src 'none'; worker-src 'none'"
     ))
     .unwrap_or_else(|_| HeaderValue::from_static("script-src 'none'"))
 }
 
-/// Sets the content policy on `res`, and for a live page's content (`live`:
-/// the daemon's host, the policy's fallback) appends [`snapshot_policy`]:
-/// both apply.
+/// Sets the content policy of artifact `id`'s content on `res` (`own`: the
+/// daemon's host): one that frames it and keeps it to its own files; or, for
+/// a `live` page's content, the framing policy and [`snapshot_policy`]
+/// beside it, both applying, so a snapshot still loads styles, images and
+/// fonts from its site. `Referrer-Policy: no-referrer` keeps the page's URL, which
+/// names its artifact ID and the daemon's port, out of the `Referer` of
+/// every request the page makes.
 fn framed_by_shell(
     mut res: Response,
     origin: &Option<Extension<OnArtifactOrigin>>,
     req: &HeaderMap,
-    live: Option<&str>,
+    (id, own, embed): (&str, &str, Option<&clax_http::state::EmbedOrigins>),
+    live: bool,
 ) -> Response {
-    res.headers_mut()
-        .insert(header::CONTENT_SECURITY_POLICY, content_policy(origin, req));
-    if let Some(fallback) = live {
-        res.headers_mut().append(
-            header::CONTENT_SECURITY_POLICY,
-            snapshot_policy(req, fallback),
-        );
+    let lockdown = (!live).then_some(id);
+    res.headers_mut().insert(
+        header::CONTENT_SECURITY_POLICY,
+        content_policy(origin.is_some(), req, own, lockdown, embed),
+    );
+    res.headers_mut().insert(
+        header::REFERRER_POLICY,
+        HeaderValue::from_static("no-referrer"),
+    );
+    if live {
+        res.headers_mut()
+            .append(header::CONTENT_SECURITY_POLICY, snapshot_policy(req, own));
     }
+    res.extensions_mut().insert(ContentPolicySet);
     res
 }
 
@@ -131,12 +87,15 @@ pub async fn index(
     let (aid, n) = path(p)?;
     let id = parse_id(&aid)?;
     let own = own_host(&s);
-    let live = s.live_ids.contains(id.as_str()).then_some(own.as_str());
+    let live = s.live_ids.contains(id.as_str());
+    let aid = id.as_str().to_string();
+    let app = (aid.as_str(), own.as_str(), s.embed.as_ref());
     match lookup(&s, id, n, INDEX.to_string(), true).await? {
         Served::Page(html) => Ok(framed_by_shell(
             http_cache::html(&req, &html),
             &origin,
             &req,
+            app,
             live,
         )),
         Served::Raw(..) => Err(ApiError::from(CoreError::Io(std::io::Error::new(
@@ -182,12 +141,14 @@ async fn lookup(
     // A page wrapped concurrently with a debug rebuild may keep the old
     // `?v=`; a debug build serves every bridge URL revalidated, current bytes.
     cache.follow_bridge(&bridge);
-    // Content on a hosted daemon's content origin talks to the public one.
+    // Content framed by a shell on another origin names it: a hosted
+    // daemon's public origin, or the app's shell origin (AppState.embed).
     let shell = s
         .hosted
         .as_ref()
         .filter(|h| h.content_origin().is_some())
-        .map(|h| h.origin.clone());
+        .map(|h| h.origin.clone())
+        .or_else(|| s.embed.as_ref().map(|e| e.shell.clone()));
     s.store_call_async(move |st| async move {
         // A deleted artifact's versions stay behind its row, and its files
         // until its content is removed: neither is served once it is gone.
@@ -280,13 +241,16 @@ pub async fn file(
     }
     let tag_source = format!("{aid}/{n}/{rel}");
     let own = own_host(&s);
-    let live = s.live_ids.contains(id.as_str()).then_some(own.as_str());
+    let live = s.live_ids.contains(id.as_str());
+    let aid = id.as_str().to_string();
+    let app = (aid.as_str(), own.as_str(), s.embed.as_ref());
     let (bytes, meta) = match lookup(&s, id, n, rel, false).await? {
         Served::Page(html) => {
             return Ok(framed_by_shell(
                 http_cache::html(&req, &html),
                 &origin,
                 &req,
+                app,
                 live,
             ));
         }
@@ -310,7 +274,7 @@ pub async fn file(
             )
                 .into_response()
         });
-        return Ok(framed_by_shell(res, &origin, &req, live));
+        return Ok(framed_by_shell(res, &origin, &req, app, live));
     }
     let cache_control = http_cache::IMMUTABLE;
     let res = (
@@ -324,7 +288,7 @@ pub async fn file(
         body,
     )
         .into_response();
-    Ok(framed_by_shell(res, &origin, &req, live))
+    Ok(framed_by_shell(res, &origin, &req, app, live))
 }
 
 /// `GET /api/artifacts/<id>/versions/<n>/files/<path>`: a file's stored bytes,
@@ -420,6 +384,30 @@ mod tests {
                 .to_str()
                 .unwrap()
                 .contains("http://localhost:7480/_clax/")
+        );
+    }
+
+    #[test]
+    fn the_content_policy_names_a_plain_host_and_never_a_crafted_one() {
+        let mut h = HeaderMap::new();
+        h.insert(header::HOST, HeaderValue::from_static("x;script-src *:80"));
+        let p = content_policy(false, &h, "localhost:7480", Some("7q3k9mzx2b4t"), None);
+        let p = p.to_str().unwrap();
+        assert!(p.contains("http://localhost:7480/c/7q3k9mzx2b4t/ "), "{p}");
+        assert!(!p.contains('*') && !p.contains("x;"), "{p}");
+        assert!(p.contains("http://127.0.0.1:7480/_blob/"), "{p}");
+        assert!(
+            p.contains(
+                "connect-src http://localhost:7480/c/7q3k9mzx2b4t/ http://localhost:7480/_blob/"
+            ),
+            "{p}"
+        );
+        // Without the lockdown (a live page), the framing policy alone.
+        assert_eq!(
+            content_policy(false, &h, "localhost:7480", None, None)
+                .to_str()
+                .unwrap(),
+            clax_http::content_policy::SANDBOX
         );
     }
 }

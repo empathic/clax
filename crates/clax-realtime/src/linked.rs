@@ -49,6 +49,9 @@ pub struct Linked {
     /// Tests: a read to go on waits while set, its page cursor kept.
     pub hold_resumed: AtomicBool,
     pub started: AtomicBool,
+    /// Set under [`Linked::tasks`]'s lock once the sync stopped: no task is
+    /// started after.
+    pub stopped: AtomicBool,
 }
 
 impl Linked {
@@ -66,6 +69,7 @@ impl Linked {
             read_limits: Default::default(),
             hold_resumed: AtomicBool::new(false),
             started: AtomicBool::new(false),
+            stopped: AtomicBool::new(false),
         }
     }
 

@@ -101,6 +101,44 @@ async fn validation_errors_are_400_with_codes() {
     );
 }
 
+/// A publish whose `icon.svg` breaks the icon rules is 400 `invalid_icon`,
+/// with the rule broken in `rule` beside the sentence, on a new artifact
+/// and on a new version alike.
+#[tokio::test]
+async fn a_bad_icon_is_invalid_icon_with_its_rule() {
+    let ts = TestServer::spawn().await;
+    let files =
+        |icon: &str| json!({"index.html": {"content": "<p>x</p>"}, "icon.svg": {"content": icon}});
+    let bad =
+        r#"<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 9 9"><script>x()</script></svg>"#;
+    let res = ts
+        .post_json("/api/artifacts", json!({"files": files(bad)}))
+        .await;
+    assert_eq!(res.status(), 400);
+    let err: serde_json::Value = res.json().await.unwrap();
+    assert_eq!(err["error"]["code"], "invalid_icon", "{err}");
+    assert_eq!(err["error"]["rule"], "element", "{err}");
+    assert!(
+        err["error"]["message"]
+            .as_str()
+            .unwrap()
+            .starts_with("icon.svg uses <script>"),
+        "{err}"
+    );
+    let created = ts.publish("Iconic", &[("index.html", "<p>x</p>")]).await;
+    let id = created["artifact"]["id"].as_str().unwrap();
+    let res = ts
+        .post_json(
+            &format!("/api/artifacts/{id}/versions"),
+            json!({"if_version": 1, "files": files(r#"<svg viewBox="0 0 9 8"/>"#)}),
+        )
+        .await;
+    assert_eq!(res.status(), 400);
+    let err: serde_json::Value = res.json().await.unwrap();
+    assert_eq!(err["error"]["code"], "invalid_icon", "{err}");
+    assert_eq!(err["error"]["rule"], "view_box", "{err}");
+}
+
 #[tokio::test]
 async fn patch_and_delete() {
     let ts = TestServer::spawn().await;
@@ -503,4 +541,43 @@ async fn publish_capabilities_are_a_full_set_and_validated() {
         )
         .await;
     assert_eq!(bad.status(), 400);
+}
+
+#[tokio::test]
+async fn a_read_declaration_naming_its_own_artifact_is_refused() {
+    let ts = TestServer::spawn().await;
+    let created = ts.publish("A", &[("index.html", "<p>v1</p>")]).await;
+    let aid = created["artifact"]["id"].as_str().unwrap().to_string();
+    let other = ts.publish("B", &[("index.html", "<p>b</p>")]).await;
+    let bid = other["artifact"]["id"].as_str().unwrap().to_string();
+    let code = |v: serde_json::Value| v["error"]["code"].clone();
+    for caps in [
+        json!({"db": {"read": [bid, aid]}}),
+        json!({"db": {"share": {"read": [aid]}}}),
+    ] {
+        let res = patch(&ts, &aid, json!({"capabilities": caps})).await;
+        assert_eq!(res.status(), 400, "PATCH {caps}");
+        assert_eq!(code(res.json().await.unwrap()), "invalid_capabilities");
+        let res = ts
+            .post_json(
+                &format!("/api/artifacts/{aid}/versions"),
+                json!({"if_version": 1, "capabilities": caps,
+                       "files": {"index.html": {"content": "<p>v2</p>", "encoding": "utf8"}}}),
+            )
+            .await;
+        assert_eq!(res.status(), 400, "publish {caps}");
+        assert_eq!(code(res.json().await.unwrap()), "invalid_capabilities");
+    }
+    let got: serde_json::Value = ts
+        .authed(ts.client.get(format!("{}/api/artifacts/{aid}", ts.base)))
+        .send()
+        .await
+        .unwrap()
+        .json()
+        .await
+        .unwrap();
+    assert_eq!(got["artifact"]["current_version"], 1, "{got}");
+    assert_eq!(got["artifact"]["capabilities"], json!({}), "{got}");
+    let res = patch(&ts, &aid, json!({"capabilities": {"db": {"read": [bid]}}})).await;
+    assert_eq!(res.status(), 200, "naming another artifact is accepted");
 }

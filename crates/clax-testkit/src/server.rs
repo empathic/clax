@@ -190,6 +190,15 @@ impl clax_core::content::ContentStore for Deferred {
         self.inner.remove_version(id, n).await
     }
 
+    async fn unrecorded_step(
+        &self,
+        id: &clax_core::ArtifactId,
+        n: u32,
+    ) -> clax_core::Result<Option<String>> {
+        Self::executor().await?;
+        self.inner.unrecorded_step(id, n).await
+    }
+
     async fn delete_artifact(&self, id: &clax_core::ArtifactId) -> clax_core::Result<()> {
         Self::executor().await?;
         self.inner.delete_artifact(id).await
@@ -283,7 +292,7 @@ pub struct TestServer {
     extension_id: String,
     /// The IPv6 loopback twin of an IPv4 daemon's port ([`listen`]).
     _v6_twin: Option<tokio::net::TcpSocket>,
-    _dir: tempfile::TempDir,
+    _dir: Arc<tempfile::TempDir>,
 }
 
 impl TestServer {
@@ -485,7 +494,7 @@ impl TestServer {
             Arc::new(SystemClock),
             |_| {},
             false,
-            Some(content),
+            Some((content, true)),
         )
         .await
     }
@@ -498,28 +507,80 @@ impl TestServer {
     ) -> TestServer {
         let dir = tempfile::tempdir().unwrap();
         let bind = IpAddr::V4(Ipv4Addr::LOCALHOST);
-        Self::start(dir, bind, Arc::new(SystemClock), f, false, Some(content)).await
+        Self::start(
+            dir,
+            bind,
+            Arc::new(SystemClock),
+            f,
+            false,
+            Some((content, true)),
+        )
+        .await
+    }
+
+    /// A test daemon whose store runs on its pool of database threads, as
+    /// the daemon's does, keeping version files, assets and clips in
+    /// `content`.
+    pub async fn spawn_on_pool_with_content(
+        content: Arc<dyn clax_core::content::ContentStore>,
+    ) -> TestServer {
+        let dir = tempfile::tempdir().unwrap();
+        let bind = IpAddr::V4(Ipv4Addr::LOCALHOST);
+        Self::start(
+            dir,
+            bind,
+            Arc::new(SystemClock),
+            |_| {},
+            false,
+            Some((content, false)),
+        )
+        .await
+    }
+
+    /// A second daemon on this one's home, started as after a restart:
+    /// the database and files are this one's, and nothing held in memory
+    /// (streams, claims, caches) carries over. Both serve until dropped.
+    pub async fn reopened(&self) -> TestServer {
+        Self::start(
+            self._dir.clone(),
+            IpAddr::V4(Ipv4Addr::LOCALHOST),
+            Arc::new(SystemClock),
+            |_| {},
+            false,
+            None,
+        )
+        .await
     }
 
     /// Serves the home `ax` under `dir` on `bind`, every time read from
-    /// `clock`: on the store's pool and the home's files, or with `content`
-    /// on one connection ([`TestServer::spawn_on_one_connection`]).
+    /// `clock`: on the store's pool and the home's files, or with `content`,
+    /// on one connection when its flag says so
+    /// ([`TestServer::spawn_on_one_connection`]), else on the pool
+    /// ([`TestServer::spawn_on_pool_with_content`]).
     async fn start(
-        dir: tempfile::TempDir,
+        dir: impl Into<Arc<tempfile::TempDir>>,
         bind: IpAddr,
         clock: Arc<dyn Clock>,
         f: impl FnOnce(&mut AppState),
         shutdown: bool,
-        content: Option<Arc<dyn clax_core::content::ContentStore>>,
+        content: Option<(Arc<dyn clax_core::content::ContentStore>, bool)>,
     ) -> TestServer {
+        let dir: Arc<tempfile::TempDir> = dir.into();
         let home = Home::at(dir.path().join("ax"));
         let content = content.or_else(|| {
-            deferred_content()
-                .then(|| Arc::new(Deferred::new()) as Arc<dyn clax_core::content::ContentStore>)
+            deferred_content().then(|| {
+                (
+                    Arc::new(Deferred::new()) as Arc<dyn clax_core::content::ContentStore>,
+                    true,
+                )
+            })
         });
         let store = Arc::new(match content {
             None => Store::open_with_clock(&home, clock.clone()).unwrap(),
-            Some(content) => {
+            Some((content, false)) => Store::open_with_clock(&home, clock.clone())
+                .unwrap()
+                .with_content(content),
+            Some((content, true)) => {
                 home.ensure_dirs().unwrap();
                 let conn = rusqlite::Connection::open(home.db_path()).unwrap();
                 Store::open_on(&home, conn, clock.clone(), content).unwrap()
@@ -539,6 +600,7 @@ impl TestServer {
             store,
             home: home.clone(),
             token: token.clone(),
+            require_credential: false,
             events: EventBus::new(),
             started_at,
             version: "test",
@@ -561,6 +623,8 @@ impl TestServer {
             live_layers: Arc::new(clax_realtime::live_layers::LiveLayers::new(clock.clone())),
             // Sampling off; tests that sample set their own with `spawn_with`.
             sample: Arc::new(clax_sample::Sampler::disabled()),
+            // The system resolver and reqwest; tests of `net` set their own.
+            net: Arc::new(clax_http::net::Net::default()),
             stream: clax_realtime::stream::Hub::new(live_ids.clone()),
             seats: clax_http::seats::LiveSeats::new(Default::default(), clock.clone()),
             sockets: Arc::default(),
@@ -597,10 +661,12 @@ impl TestServer {
             // with `spawn_with_web`.
             web: web_ui(),
             hosted: None,
+            embed: None,
             git_remotes: Arc::default(),
             linked: Arc::new(clax_realtime::linked::Linked::new(Arc::new(
                 clax_realtime::questions::TokioSleeper,
             ))),
+            jobs_owners: Arc::default(),
         };
         f(&mut state);
         state.audit_wake.install(&state.store);
@@ -608,9 +674,18 @@ impl TestServer {
         clax_http::seats::install(&state);
         let seats = state.seats.clone();
         let live_layers = state.live_layers.clone();
+        {
+            let store = state.store.clone();
+            state.stream.check_reads(move |reader, source| {
+                clax_http::db_caller::reads_now(&store, reader, source)
+            });
+            let store = state.store.clone();
+            state.stream.hide(move |aid| store.is_hidden(aid));
+        }
         clax_http::views::inbox::listen(&state);
         clax_http::views::approval::listen(&state);
         clax_server::routes::people::listen(&state);
+        clax_server::routes::jobs::listen(&state);
         clax_http::pushes::listen(&state);
         clax_http::git_remotes::listen(&state);
         clax_server::linked::listen(&state);

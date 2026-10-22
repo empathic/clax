@@ -13,6 +13,10 @@
 mod api_agent_auth;
 #[cfg(any(not(clax_split), clax_split = "api_agents"))]
 mod api_agents;
+#[cfg(any(not(clax_split), clax_split = "api_app_drafts"))]
+mod api_app_drafts;
+#[cfg(any(not(clax_split), clax_split = "api_app_session"))]
+mod api_app_session;
 #[cfg(any(not(clax_split), clax_split = "api_approvals"))]
 mod api_approvals;
 #[cfg(any(not(clax_split), clax_split = "api_artifacts"))]
@@ -33,8 +37,12 @@ mod api_caching;
 mod api_canary;
 #[cfg(any(not(clax_split), clax_split = "api_changelog"))]
 mod api_changelog;
+#[cfg(any(not(clax_split), clax_split = "api_client_imports"))]
+mod api_client_imports;
 #[cfg(any(not(clax_split), clax_split = "api_content"))]
 mod api_content;
+#[cfg(any(not(clax_split), clax_split = "api_db_read"))]
+mod api_db_read;
 #[cfg(any(not(clax_split), clax_split = "api_docs"))]
 mod api_docs;
 #[cfg(any(not(clax_split), clax_split = "api_drafts"))]
@@ -63,6 +71,8 @@ mod api_hosted_content;
 mod api_hosted_github;
 #[cfg(any(not(clax_split), clax_split = "api_inbox"))]
 mod api_inbox;
+#[cfg(any(not(clax_split), clax_split = "api_jobs"))]
+mod api_jobs;
 #[cfg(any(not(clax_split), clax_split = "api_linked"))]
 mod api_linked;
 #[cfg(any(not(clax_split), clax_split = "api_live"))]
@@ -75,10 +85,14 @@ mod api_live_site;
 mod api_live_sites;
 #[cfg(any(not(clax_split), clax_split = "api_live_watch"))]
 mod api_live_watch;
+#[cfg(any(not(clax_split), clax_split = "api_locked"))]
+mod api_locked;
 #[cfg(any(not(clax_split), clax_split = "api_mcp"))]
 mod api_mcp;
 #[cfg(any(not(clax_split), clax_split = "api_mcp_http"))]
 mod api_mcp_http;
+#[cfg(any(not(clax_split), clax_split = "api_net"))]
+mod api_net;
 #[cfg(any(not(clax_split), clax_split = "api_notices"))]
 mod api_notices;
 #[cfg(any(not(clax_split), clax_split = "api_owner"))]
@@ -97,6 +111,8 @@ mod api_pushes;
 mod api_questions;
 #[cfg(any(not(clax_split), clax_split = "api_remotes"))]
 mod api_remotes;
+#[cfg(any(not(clax_split), clax_split = "api_restore"))]
+mod api_restore;
 #[cfg(any(not(clax_split), clax_split = "api_room"))]
 mod api_room;
 #[cfg(any(not(clax_split), clax_split = "api_sample"))]
@@ -131,6 +147,8 @@ mod api_working;
 mod api_working_auto;
 #[cfg(any(not(clax_split), clax_split = "bridge_dev"))]
 mod bridge_dev;
+#[cfg(any(not(clax_split), clax_split = "core_start"))]
+mod core_start;
 #[cfg(any(not(clax_split), clax_split = "daemon"))]
 mod daemon;
 mod deferred;

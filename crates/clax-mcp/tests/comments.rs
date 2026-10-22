@@ -642,6 +642,62 @@ async fn comments_read_describes_a_drawn_area() {
     assert_eq!(a["summary"], "area in body > main (42% × 18%)");
 }
 
+/// An anchor's display `label` is stored and returned with the thread, and
+/// the summary shows it in place of the run-together quote; a label longer
+/// than the quote's cap is refused.
+#[tokio::test]
+async fn a_label_is_stored_and_summarised_in_place_of_the_quote() {
+    let ts = TestServer::spawn().await;
+    let (t, _sid) = session_tools(&ts).await;
+    let aid = publish(&t).await;
+    let post = |anchor: Value| {
+        let form = reqwest::multipart::Form::new()
+            .text("anchor", anchor.to_string())
+            .text("body", "x")
+            .text("version", "1");
+        ts.client
+            .post(format!("{}/api/artifacts/{aid}/threads", ts.base))
+            .multipart(form)
+            .send()
+    };
+    let anchor = json!({"kind": "element", "selector": "body > div", "quote": "Mon5 km", "label": "Mon 5 km"});
+    let res = post(anchor).await.unwrap();
+    assert_eq!(res.status(), 201);
+    let v: Value = res.json().await.unwrap();
+    assert_eq!(v["thread"]["anchor"]["label"], "Mon 5 km");
+    let tid = v["thread"]["id"].as_str().unwrap().to_string();
+    let listed: Value = ts
+        .client
+        .get(format!("{}/api/artifacts/{aid}/threads", ts.base))
+        .send()
+        .await
+        .unwrap()
+        .json()
+        .await
+        .unwrap();
+    let row = listed["threads"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .find(|r| r["id"] == tid.as_str())
+        .unwrap();
+    assert_eq!(row["anchor"]["label"], "Mon 5 km");
+    let (v, _) = blocks(
+        &t.comments_read(Parameters(CommentsReadArgs {
+            url_or_id: aid.clone(),
+            ..Default::default()
+        }))
+        .await
+        .unwrap(),
+    );
+    let a = &v["threads"][0]["anchor"];
+    assert_eq!(a["quote"], "Mon5 km");
+    assert_eq!(a["summary"], "body > div  «Mon 5 km»");
+    let long = json!({"kind": "element", "selector": "body > div", "quote": "w".repeat(2000),
+                      "label": "w ".repeat(1001).trim_end()});
+    assert_eq!(post(long).await.unwrap().status(), 400);
+}
+
 /// A comment on the whole artifact reaches the agent with its anchor line,
 /// reads back with an `artifact` anchor on no page, and is answered and
 /// resolved like any sent thread.

@@ -171,8 +171,8 @@ pub fn card(
 /// Installs the store's request listener: each committed change to a
 /// request wakes the `ask` polls holding it ([`AppState::questions`],
 /// keyed by its ID) and publishes its view as `approval_request` to its
-/// approver's `inbox` topic.
-pub fn listen(s: &AppState) {
+/// approver's `inbox` topic. Returns the publishing task's handle.
+pub fn listen(s: &AppState) -> clax_rt::JoinHandle<()> {
     let (tx, mut rx) = tokio::sync::mpsc::unbounded_channel::<Vec<i64>>();
     let waiters = s.questions.clone();
     let st0 = s.store.clone();
@@ -214,5 +214,5 @@ pub fn listen(s: &AppState) {
                 Err(e) => tracing::warn!(error = %e, "approval request change not announced"),
             }
         }
-    });
+    })
 }

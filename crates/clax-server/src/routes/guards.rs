@@ -86,9 +86,29 @@ mod l10 {
         ("sessions::join", AgentPath),
         ("sessions::get", AgentPath),
         ("sessions::patch", AgentPath),
+        ("app_drafts::create", Token),
+        ("app_drafts::list", Token),
+        ("app_drafts::delete", Token),
+        ("app_drafts::render", Token),
+        ("client_imports::import", Token),
         ("sessions::push_status", NoArtifact),
         ("sessions::tool_call_ids", NoArtifact),
         ("sample::daemon", Token),
+        ("sample::put_key", Token),
+        ("health::trim", Token),
+        ("jobs::claim", Token),
+        ("jobs::release", Token),
+        ("jobs::create", Token),
+        ("jobs::list", Token),
+        ("jobs::get_one", Token),
+        ("jobs::patch", Token),
+        ("jobs::put_thread", Token),
+        ("jobs::delete_thread", Token),
+        ("jobs::put_question", Token),
+        ("jobs::commit", Token),
+        ("jobs::consents", Token),
+        ("jobs::put_consent", Token),
+        ("jobs::delete_consent", Token),
         ("threads::list_all", GrantsKept),
         ("working::roster", Filtered),
         ("working::for_session", AgentPath),
@@ -164,6 +184,7 @@ mod l10 {
         ("health::healthz", NoArtifact),
         ("assets::blob", SeesLive),
         ("threads::keyed_clip", SeesLive),
+        ("assets::scoped_blob", SeesLive),
         ("perf::calibrate", Token),
         ("perf::verify_times", Token),
         ("toolpath::export", Owner),
@@ -222,6 +243,8 @@ mod l10 {
 
     pub(super) fn module_source_opt(m: &str) -> Option<&'static str> {
         Some(match m {
+            "app_drafts" => include_str!("app_drafts.rs"),
+            "client_imports" => include_str!("client_imports.rs"),
             "approvals" => include_str!("approvals.rs"),
             "artifacts" => include_str!("artifacts.rs"),
             "assets" => include_str!("assets.rs"),
@@ -236,7 +259,9 @@ mod l10 {
             "git_token" => include_str!("git_token.rs"),
             "health" => include_str!("health.rs"),
             "inbox" => include_str!("inbox.rs"),
+            "jobs" => include_str!("jobs.rs"),
             "live" => include_str!("live.rs"),
+            "net" => include_str!("net.rs"),
             "perf" => include_str!("perf.rs"),
             "questions" => include_str!("questions.rs"),
             "remotes" => include_str!("remotes.rs"),
@@ -340,6 +365,42 @@ mod l10 {
     /// handlers that record events take it (or a
     /// [`DeferredAudit`](clax_http::audit::DeferredAudit) to resolve it later),
     /// and no `GET` handler does.
+    /// `X-Clax-Reader` is admitted on exactly the document read routes:
+    /// every mounted path, with each `{param}` filled in, passes
+    /// `reader_route` only when it is one of them, so a new route under
+    /// `…/docs/` cannot take the header without being added here.
+    #[test]
+    fn only_the_document_reads_admit_the_reader_header() {
+        let src = include_str!("../router.rs");
+        let admitted = [
+            "/api/artifacts/{aid}/docs",
+            "/api/artifacts/{aid}/docs/{*path}",
+            "/api/artifacts/{aid}/docs:collections",
+        ];
+        let fill = |template: &str| -> String {
+            template
+                .split('/')
+                .map(|seg| match seg {
+                    s if s.starts_with("{*") => "a/b".to_string(),
+                    s if s.starts_with('{') => "7q3k9mzx2b4t".to_string(),
+                    s => s.to_string(),
+                })
+                .collect::<Vec<_>>()
+                .join("/")
+        };
+        let mut seen = 0;
+        for (path, _) in routes(src) {
+            let want = admitted.contains(&path.as_str());
+            assert_eq!(
+                clax_http::db_caller::reader_route(&fill(&path)),
+                want,
+                "{path}"
+            );
+            seen += usize::from(want);
+        }
+        assert_eq!(seen, admitted.len(), "every admitted route is mounted");
+    }
+
     #[test]
     fn no_get_route_resolves_the_audit_context() {
         let src = include_str!("../router.rs");
@@ -420,6 +481,58 @@ mod l10 {
         ),
         ("extension::mint", "an extension credential grant (§6.11)"),
         (
+            "sample::put_key",
+            "sets the key a host app's daemon samples with, in memory only; no history changes, and the key is never recorded",
+        ),
+        (
+            "health::trim",
+            "releases SQLite's caches and checkpoints the WAL of an embedded core; no history changes",
+        ),
+        (
+            "app_drafts::render",
+            "the app's record of a draft's render, for the render gate; what a step then publishes is recorded by its step",
+        ),
+        (
+            "client_imports::import",
+            "the app's queue state, imported once into the jobs tables; what a job publishes or replies is recorded by its step",
+        ),
+        (
+            "jobs::claim",
+            "claims a client's queue in memory only; no history changes",
+        ),
+        (
+            "jobs::release",
+            "releases a client's queue in memory only; no history changes",
+        ),
+        (
+            "jobs::create",
+            "the app's queue state, kept in the jobs tables; what a job publishes or replies is recorded by its step",
+        ),
+        (
+            "jobs::patch",
+            "the app's queue state, kept in the jobs tables; what a job publishes or replies is recorded by its step",
+        ),
+        (
+            "jobs::put_thread",
+            "the app's queue state: which comment a job answers; the thread is unchanged",
+        ),
+        (
+            "jobs::delete_thread",
+            "the app's queue state: which comment a job answers; the thread is unchanged",
+        ),
+        (
+            "jobs::put_question",
+            "the app's queue state: which question a job waits on; the question is recorded where it is asked",
+        ),
+        (
+            "jobs::put_consent",
+            "the app's remembered consent to read another app's documents for its agent, kept for the app's prompt",
+        ),
+        (
+            "jobs::delete_consent",
+            "the app's remembered consent to read another app's documents for its agent, kept for the app's prompt",
+        ),
+        (
             "git_token::mint",
             "a repository credential, kept in the host's token ledger; what its pushes make is recorded as versions",
         ),
@@ -441,6 +554,7 @@ mod l10 {
             "sample::tool_result",
             "a page's model request; changes no history",
         ),
+        ("net::fetch", "a page's network request; changes no history"),
         (
             "perf::calibrate",
             "the latency gate's calibration read; changes no history",
@@ -1340,6 +1454,7 @@ mod agents {
         "grants::create_invite",
         "grants::revoke_invite",
         "assets::blob",
+        "assets::scoped_blob",
         "content::index",
         "content::file",
         "shell::artifact_page",
@@ -1904,5 +2019,53 @@ mod agents {
             client.matches("\"x-clax-channel\": \"agent\"").count() >= 2,
             "Pi's DaemonClient must send the marker on every request"
         );
+    }
+}
+
+/// [`crate::router::held_open`] is the router's block of routes that hold
+/// their connection open, read from its source, and rmcp's `/mcp`.
+#[cfg(test)]
+mod held_open {
+    use crate::router::held_open::{ALL, MCP, matches};
+
+    #[test]
+    fn the_held_open_list_is_the_routers_block_and_mcp() {
+        let src = include_str!("../router.rs");
+        let block = &src[src
+            .find("// What holds its connection open")
+            .expect("the block")..];
+        let block = &block[..block.find(".merge(mcp)").expect("its end")];
+        let mut mounted: Vec<String> = super::l10::routes(block)
+            .into_iter()
+            .map(|(path, _)| path)
+            // A finite document, streamed so memory holds a few chunks:
+            // read whole, it answers.
+            .filter(|p| p != "/api/toolpath/export")
+            .collect();
+        assert!(include_str!("mcp.rs").contains(".route_service(\"/mcp\""));
+        mounted.push(MCP.to_string());
+        mounted.sort();
+        let mut listed: Vec<String> = ALL.iter().map(|p| p.to_string()).collect();
+        listed.sort();
+        assert_eq!(mounted, listed);
+    }
+
+    #[test]
+    fn a_held_open_route_matches_with_any_id_and_nothing_else() {
+        for (path, held) in [
+            ("/api/events", true),
+            ("/api/stream", true),
+            ("/api/stream/abc", false),
+            ("/api/artifacts/7q3k9mzx2b4t/room", true),
+            ("/api/artifacts//room", false),
+            ("/api/artifacts/7q3k9mzx2b4t/live", true),
+            ("/api/artifacts/7q3k9mzx2b4t/live/x", false),
+            ("/api/artifacts/7q3k9mzx2b4t/threads", false),
+            ("/mcp", true),
+            ("/mcp/", false),
+            ("/api/toolpath/export", false),
+        ] {
+            assert_eq!(matches(path), held, "{path}");
+        }
     }
 }

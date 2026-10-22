@@ -441,6 +441,7 @@ impl Instance {
             store,
             home,
             token,
+            require_credential: false,
             version: clax_server::VERSION,
             shutdown,
             self_base: base.clone(),
@@ -458,6 +459,7 @@ impl Instance {
             port: 0,
             hosted,
             web: Arc::new(crate::web::WebUi),
+            embed: None,
         })
         .map_err(rust_err)?;
         app.seats

@@ -856,7 +856,8 @@ fn relevant(e: &clax_core::Event) -> bool {
 /// Rechecks the live tokens ([`recheck`]) after every event that may
 /// change who may hold one and every change to what agents may see, one
 /// recheck for each burst. Does nothing on a daemon that serves no git.
-pub fn listen(s: &AppState) {
+/// Returns the rechecking task's handle.
+pub fn listen(s: &AppState) -> clax_rt::JoinHandle<()> {
     use tokio::sync::broadcast::error::{RecvError, TryRecvError};
     let mut rx = s.events.subscribe();
     let st = s.clone();
@@ -888,5 +889,5 @@ pub fn listen(s: &AppState) {
             st.git_remotes.recheck_soon();
             settle(&st).await;
         }
-    });
+    })
 }

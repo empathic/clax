@@ -870,14 +870,13 @@ fn update_bin_setting(home: &Home, install: bool) -> Value {
 
 /// Exclusive advisory lock on `<home>/init.lock`, held until dropped, so
 /// concurrent `init` and `uninit` runs take turns.
-pub(crate) struct InitLock(#[allow(dead_code)] std::fs::File);
+pub(crate) struct InitLock(#[allow(dead_code)] clax_core::daemon::FileLock);
 
 impl InitLock {
     pub(crate) fn acquire(home: &Home) -> std::io::Result<InitLock> {
         super::extension::create_home(home)?;
         let f = std::fs::File::create(home.root().join("init.lock"))?;
-        clax_core::daemon::retry_interrupted(|| f.lock())?;
-        Ok(InitLock(f))
+        clax_core::daemon::FileLock::exclusive(f).map(InitLock)
     }
 }
 

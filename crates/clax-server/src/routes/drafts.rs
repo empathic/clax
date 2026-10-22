@@ -498,7 +498,13 @@ async fn serve(
         .into_response();
     res.headers_mut().insert(
         header::CONTENT_SECURITY_POLICY,
-        super::content::content_policy(origin, req),
+        clax_http::content_policy::content_policy(
+            origin.is_some(),
+            req,
+            &clax_http::content_policy::own_host(s),
+            None,
+            s.embed.as_ref(),
+        ),
     );
     Ok(res)
 }

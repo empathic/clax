@@ -28,7 +28,18 @@ async fn stub_server_with(
     (ts, stub, sampler)
 }
 
+/// A new artifact declaring `caps`; one that declares `sample` has the
+/// owner's grant ([`grant`]).
 async fn artifact(ts: &TestServer, caps: Value) -> String {
+    let aid = ungranted(ts, caps.clone()).await;
+    if caps.get("sample").is_some() {
+        assert_eq!(grant(ts, &aid, reqwest::Method::PUT).await.0, 200);
+    }
+    aid
+}
+
+/// A new artifact declaring `caps`, without the owner's sample grant.
+async fn ungranted(ts: &TestServer, caps: Value) -> String {
     let res = ts
         .post_json("/api/artifacts", json!({"title": "Ask", "capabilities": caps, "files": {"index.html": {"content": "<p>", "encoding": "utf8"}}}))
         .await;
@@ -37,6 +48,22 @@ async fn artifact(ts: &TestServer, caps: Value) -> String {
         .as_str()
         .unwrap()
         .to_string()
+}
+
+/// `method` on `/api/artifacts/{aid}/sample-grant` with the token: the status and body.
+async fn grant(ts: &TestServer, aid: &str, method: reqwest::Method) -> (u16, Value) {
+    let res = ts
+        .authed(ts.client.request(
+            method,
+            format!("{}/api/artifacts/{aid}/sample-grant", ts.base),
+        ))
+        .send()
+        .await
+        .unwrap();
+    (
+        res.status().as_u16(),
+        res.json().await.unwrap_or(Value::Null),
+    )
 }
 
 /// One sample call's open stream.
@@ -865,4 +892,211 @@ async fn a_flood_from_one_viewer_is_rate_limited() {
     for h in &held {
         h.abort();
     }
+}
+
+#[tokio::test]
+async fn an_app_calls_only_with_the_owners_grant_kept_until_revoked() {
+    let (ts, stub, _) = stub_server(false, SampleSettings::default()).await;
+    let aid = ungranted(&ts, json!({"sample": {}})).await;
+    let (status, e) = start(&ts, &aid, json!({"input": "hi"}), None)
+        .await
+        .err()
+        .expect("not granted");
+    assert_eq!(
+        (status, e["error"]["code"].as_str().unwrap()),
+        (403, "not_granted")
+    );
+    assert!(stub.requests().is_empty());
+    let (_, g) = grant(&ts, &aid, reqwest::Method::GET).await;
+    assert_eq!(
+        (g["granted"].clone(), g["daily_cost_cap_usd"].clone()),
+        (json!(false), json!(0.5))
+    );
+    let (status, g) = grant(&ts, &aid, reqwest::Method::PUT).await;
+    assert_eq!((status, g["granted"].clone()), (200, json!(true)));
+    assert!(g["granted_at"].is_string());
+    let (_, frames) = done_of(&ts, &aid, json!({"input": "hi"}), None).await;
+    assert_eq!(text_of(&frames), "echo: hi");
+    let (status, r) = grant(&ts, &aid, reqwest::Method::DELETE).await;
+    assert_eq!((status, r["revoked"].clone()), (200, json!(true)));
+    let (status, _) = start(&ts, &aid, json!({"input": "again", "cache": false}), None)
+        .await
+        .err()
+        .expect("revoked");
+    assert_eq!(status, 403);
+    // An artifact that does not declare sample cannot be granted it.
+    let plain = ungranted(&ts, json!({})).await;
+    let (status, e) = grant(&ts, &plain, reqwest::Method::PUT).await;
+    assert_eq!(
+        (status, e["error"]["code"].as_str().unwrap()),
+        (403, "not_declared")
+    );
+    // The grant routes need the token.
+    let res = ts
+        .client
+        .put(format!("{}/api/artifacts/{aid}/sample-grant", ts.base))
+        .send()
+        .await
+        .unwrap();
+    assert_eq!(res.status(), 401);
+}
+
+#[tokio::test]
+async fn the_daily_cost_cap_stops_an_app_once_its_spend_reaches_it() {
+    // The stub bills one token per byte; on the default tier's model
+    // (claude-sonnet-5-5: $2 in, $10 out per million) "echo: 12345678"
+    // (14 bytes out, 8 in) costs 156 micro-USD. A cap of 100 micro-USD is
+    // passed by the first call.
+    let settings = SampleSettings {
+        daily_cost_cap: Some(100),
+        ..SampleSettings::default()
+    };
+    let (ts, stub, _) = stub_server(false, settings).await;
+    let aid = artifact(&ts, json!({"sample": {}})).await;
+    let (_, frames) = done_of(&ts, &aid, json!({"input": "12345678"}), None).await;
+    assert_eq!(text_of(&frames), "echo: 12345678");
+    // The spend is recorded as the round ends, before `done`.
+    let (_, g) = grant(&ts, &aid, reqwest::Method::GET).await;
+    let spent = g["spent_today_usd"].as_f64().unwrap();
+    assert!((spent - 0.000156).abs() < 1e-9, "{spent}");
+    let (status, e) = start(&ts, &aid, json!({"input": "more", "cache": false}), None)
+        .await
+        .err()
+        .expect("capped");
+    assert_eq!(
+        (status, e["error"]["code"].as_str().unwrap()),
+        (429, "rate_limited")
+    );
+    assert!(
+        e["error"]["message"]
+            .as_str()
+            .unwrap()
+            .contains("daily cost cap"),
+        "{e}"
+    );
+    assert_eq!(stub.requests().len(), 1);
+    // A cached answer costs nothing and is still served.
+    let (s, _) = done_of(&ts, &aid, json!({"input": "12345678"}), None).await;
+    assert_eq!(s["cached"], true);
+    // Revoking and granting again does not reset the day's spend.
+    grant(&ts, &aid, reqwest::Method::DELETE).await;
+    grant(&ts, &aid, reqwest::Method::PUT).await;
+    let (status, _) = start(&ts, &aid, json!({"input": "more", "cache": false}), None)
+        .await
+        .err()
+        .expect("still capped");
+    assert_eq!(status, 429);
+    // Another app has its own cap.
+    let other = artifact(&ts, json!({"sample": {}})).await;
+    done_of(&ts, &other, json!({"input": "x"}), None).await;
+}
+
+/// A writer every clone of which appends to one buffer: the test's log.
+#[derive(Clone, Default)]
+struct Log(Arc<std::sync::Mutex<Vec<u8>>>);
+
+impl std::io::Write for Log {
+    fn write(&mut self, b: &[u8]) -> std::io::Result<usize> {
+        self.0.lock().unwrap().extend_from_slice(b);
+        Ok(b.len())
+    }
+    fn flush(&mut self) -> std::io::Result<()> {
+        Ok(())
+    }
+}
+
+/// `PUT /api/sample/key` with `body`, with the token or without it.
+async fn put_key(ts: &TestServer, body: &str, token: bool) -> (u16, Value) {
+    let req = ts
+        .client
+        .put(format!("{}/api/sample/key", ts.base))
+        .header("content-type", "application/json")
+        .body(body.to_string());
+    let req = if token { ts.authed(req) } else { req };
+    let res = req.send().await.unwrap();
+    (
+        res.status().as_u16(),
+        res.json().await.unwrap_or(Value::Null),
+    )
+}
+
+#[tokio::test]
+async fn a_slot_daemon_takes_its_key_over_put_and_never_logs_it() {
+    let log = Log::default();
+    let writer = log.clone();
+    use tracing_subscriber::util::SubscriberInitExt;
+    let _logging = tracing_subscriber::fmt()
+        .with_max_level(tracing::Level::TRACE)
+        .with_writer(move || writer.clone())
+        .set_default();
+    let home = tempfile::tempdir().unwrap();
+    let sampler = Arc::new(Sampler::from_home_with_slot(
+        home.path(),
+        clax_sample::KeySlot::new(),
+    ));
+    let s = sampler.clone();
+    let ts = TestServer::spawn_with(move |st| st.sample = s).await;
+    let status = || async {
+        ts.get_authed("/api/sample")
+            .await
+            .json::<Value>()
+            .await
+            .unwrap()
+    };
+    assert_eq!(status().await["reason"], "no_key");
+
+    let key = r#"{"key": "sk-slot-secret"}"#;
+    assert_eq!(put_key(&ts, key, false).await.0, 401);
+    assert_eq!(status().await["available"], false);
+    assert_eq!(put_key(&ts, key, true).await.0, 204);
+    let v = status().await;
+    assert_eq!(
+        (
+            v["available"].clone(),
+            v["provider"].clone(),
+            v["reason"].clone()
+        ),
+        (json!(true), json!("anthropic"), Value::Null)
+    );
+
+    assert_eq!(put_key(&ts, r#"{"key": null}"#, true).await.0, 204);
+    let v = status().await;
+    assert_eq!(
+        (v["available"].clone(), v["reason"].clone()),
+        (json!(false), json!("no_key"))
+    );
+    let (code, err) = put_key(&ts, r#""sk-slot-secret""#, true).await;
+    assert_eq!(code, 400, "{err}");
+    assert_eq!(err["error"]["code"], "bad_request");
+    assert!(!err.to_string().contains("sk-slot-secret"), "{err}");
+    assert_eq!(
+        put_key(&ts, r#"{"token": "sk-slot-secret"}"#, true).await.0,
+        400
+    );
+    assert_eq!(put_key(&ts, key, true).await.0, 204);
+    assert!(sampler.available());
+
+    let text = String::from_utf8(log.0.lock().unwrap().clone()).unwrap();
+    assert!(!text.is_empty(), "the daemon logged nothing");
+    assert!(!text.contains("sk-slot-secret"), "{text}");
+}
+
+#[tokio::test]
+async fn a_daemon_without_a_slot_answers_put_key_404() {
+    let ts = TestServer::spawn().await;
+    let (code, err) = put_key(&ts, r#"{"key": "sk-x"}"#, true).await;
+    assert_eq!(code, 404, "{err}");
+    assert_eq!(err["error"]["code"], "not_found");
+    assert_eq!(
+        err["error"]["message"],
+        "this daemon takes its key from its environment"
+    );
+    let env = TestServer::spawn_with(|st| {
+        st.sample = Arc::new(Sampler::from_config(&Default::default(), |_| {
+            Some("sk-env".into())
+        }));
+    })
+    .await;
+    assert_eq!(put_key(&env, r#"{"key": "sk-x"}"#, true).await.0, 404);
+    assert_eq!(put_key(&env, r#"{"key": "sk-x"}"#, false).await.0, 401);
 }

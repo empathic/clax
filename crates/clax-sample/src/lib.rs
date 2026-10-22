@@ -10,12 +10,14 @@ pub mod anthropic;
 pub mod cache;
 pub mod flight;
 pub mod json_reply;
+pub mod pricing;
 pub mod provider;
 pub mod quota;
 pub mod request;
 pub mod sse;
 pub mod stub;
 
+pub use anthropic::KeySource;
 use clax_core::config::{HomeConfig, SampleConfig, SampleModels};
 use provider::SampleProvider;
 use std::collections::HashMap;
@@ -29,6 +31,8 @@ pub struct SampleSettings {
     pub models: SampleModels,
     pub max_tokens: u32,
     pub daily_call_cap: Option<u32>,
+    /// Most micro-USD of model use per artifact per local day.
+    pub daily_cost_cap: Option<u64>,
     /// Most provider rounds of one call with tools; the last must answer.
     pub max_rounds: usize,
     /// How long a round waits for a page tool's result before sending an error result.
@@ -47,6 +51,7 @@ impl SampleSettings {
             models: cfg.models.clone(),
             max_tokens: cfg.max_tokens,
             daily_call_cap: cfg.daily_call_cap,
+            daily_cost_cap: cfg.daily_cost_cap_usd.map(pricing::micro),
             max_rounds: 5,
             tool_timeout: Duration::from_secs(150),
         }
@@ -56,7 +61,8 @@ impl SampleSettings {
 /// Why sampling is off on this daemon (`clax doctor` and `GET /api/sample` report it).
 #[derive(Clone, Debug, PartialEq)]
 pub enum OffReason {
-    /// The `anthropic` provider's key variable is unset or empty.
+    /// The `anthropic` provider's key variable is unset or empty, or the
+    /// slot it reads ([`KeySlot`]) holds no key.
     NoKey,
     /// `config.toml` or its `[sample]` table is invalid; the message names the problem.
     BadConfig(String),
@@ -64,8 +70,47 @@ pub enum OffReason {
     Disabled,
 }
 
+/// The owner's key, held in memory by a host app's daemon and set over
+/// loopback (`PUT /api/sample/key`). Never written to disk, never logged:
+/// `Debug` prints whether it is set, not the key.
+#[derive(Clone, Default)]
+pub struct KeySlot(Arc<std::sync::RwLock<Option<String>>>);
+
+impl KeySlot {
+    pub fn new() -> KeySlot {
+        KeySlot::default()
+    }
+
+    /// Sets the key; `None` or a blank key clears it.
+    pub fn set(&self, key: Option<String>) {
+        let key = key.filter(|k| !k.trim().is_empty());
+        *self.0.write().unwrap_or_else(|e| e.into_inner()) = key;
+    }
+
+    pub fn get(&self) -> Option<String> {
+        self.0.read().unwrap_or_else(|e| e.into_inner()).clone()
+    }
+
+    fn is_set(&self) -> bool {
+        self.0.read().unwrap_or_else(|e| e.into_inner()).is_some()
+    }
+}
+
+impl std::fmt::Debug for KeySlot {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.debug_struct("KeySlot")
+            .field("set", &self.is_set())
+            .finish()
+    }
+}
+
 pub struct Sampler {
     provider: Option<Arc<dyn SampleProvider>>,
+    /// The slot `PUT /api/sample/key` fills, when built with one.
+    slot: Option<KeySlot>,
+    /// Whether the provider reads its key from [`Sampler::slot`], so an
+    /// empty slot turns sampling off (`false` for the stub).
+    reads_slot: bool,
     reason: Option<OffReason>,
     /// The key variable the provider reads (named in reports, never its value).
     key_env: Option<String>,
@@ -91,6 +136,8 @@ impl Sampler {
     ) -> Sampler {
         Sampler {
             provider,
+            slot: None,
+            reads_slot: false,
             reason,
             key_env,
             settings,
@@ -139,20 +186,64 @@ impl Sampler {
     pub fn from_home(home_root: &std::path::Path, env: impl Fn(&str) -> Option<String>) -> Sampler {
         match HomeConfig::load(home_root).and_then(|c| c.sample()) {
             Ok(cfg) => Sampler::from_config(&cfg, env),
-            Err(e) => {
-                tracing::warn!(error = %e, "sample() is off");
-                Sampler::build(
-                    None,
-                    Some(OffReason::BadConfig(e.to_string())),
-                    None,
-                    SampleSettings::default(),
-                )
-            }
+            Err(e) => Sampler::bad_config(e),
         }
     }
 
-    /// Why sampling is off; `None` when a provider is configured.
+    /// Sampling off for an invalid `config.toml`, with one warning.
+    fn bad_config(e: impl std::fmt::Display) -> Sampler {
+        tracing::warn!(error = %e, "sample() is off");
+        Sampler::build(
+            None,
+            Some(OffReason::BadConfig(e.to_string())),
+            None,
+            SampleSettings::default(),
+        )
+    }
+
+    /// The home's `[sample]` as [`Sampler::from_home`] reads it, with the
+    /// `anthropic` provider's key read from `slot` on every call; sampling
+    /// is off (`NoKey`) while the slot is empty. A `stub` provider ignores
+    /// the slot.
+    pub fn from_home_with_slot(home_root: &std::path::Path, slot: KeySlot) -> Sampler {
+        let mut s = match HomeConfig::load(home_root).and_then(|c| c.sample()) {
+            Ok(cfg) if cfg.provider == "stub" => Sampler::from_config(&cfg, |_| None),
+            Ok(cfg) => {
+                let p = anthropic::AnthropicProvider::with_source(
+                    cfg.base_url.clone(),
+                    KeySource::Slot(slot.clone()),
+                );
+                let mut s = Sampler::build(
+                    Some(Arc::new(p)),
+                    None,
+                    None,
+                    SampleSettings::from_config(&cfg),
+                );
+                s.reads_slot = true;
+                s
+            }
+            Err(e) => Sampler::bad_config(e),
+        };
+        s.slot = Some(slot);
+        s
+    }
+
+    /// The slot this sampler reads, when it was built with one.
+    pub fn key_slot(&self) -> Option<&KeySlot> {
+        self.slot.as_ref()
+    }
+
+    /// Whether the provider waits on an empty slot.
+    fn slot_empty(&self) -> bool {
+        self.reads_slot && self.slot.as_ref().is_some_and(|s| !s.is_set())
+    }
+
+    /// Why sampling is off; `None` when a provider is configured (and, for
+    /// a slot sampler, its slot holds a key).
     pub fn reason(&self) -> Option<OffReason> {
+        if self.slot_empty() {
+            return Some(OffReason::NoKey);
+        }
         self.reason.clone()
     }
 
@@ -161,16 +252,20 @@ impl Sampler {
         self.key_env.as_deref()
     }
 
+    /// The provider calls go to; `None` while sampling is off.
     pub fn provider(&self) -> Option<&Arc<dyn SampleProvider>> {
+        if self.slot_empty() {
+            return None;
+        }
         self.provider.as_ref()
     }
 
     pub fn available(&self) -> bool {
-        self.provider.is_some()
+        self.provider().is_some()
     }
 
     pub fn provider_name(&self) -> Option<&'static str> {
-        self.provider.as_ref().map(|p| p.name())
+        self.provider().map(|p| p.name())
     }
 }
 
@@ -297,6 +392,60 @@ mod tests {
     }
 
     #[test]
+    fn a_slot_sampler_samples_only_while_its_slot_holds_a_key() {
+        let dir = tempfile::tempdir().unwrap();
+        let slot = KeySlot::new();
+        let s = Sampler::from_home_with_slot(dir.path(), slot.clone());
+        assert!(s.key_slot().is_some());
+        assert!(!s.available());
+        assert_eq!(s.reason(), Some(OffReason::NoKey));
+        assert_eq!(s.provider_name(), None);
+        assert_eq!(s.key_env(), None);
+        slot.set(Some("sk-test".into()));
+        assert!(s.available());
+        assert_eq!(s.reason(), None);
+        assert_eq!(s.provider_name(), Some("anthropic"));
+        slot.set(Some("  ".into()));
+        assert!(!s.available());
+        assert_eq!(s.reason(), Some(OffReason::NoKey));
+        slot.set(Some("sk-test".into()));
+        slot.set(None);
+        assert!(s.provider().is_none());
+        assert!(
+            Sampler::from_home(dir.path(), |_| None)
+                .key_slot()
+                .is_none()
+        );
+    }
+
+    #[test]
+    fn a_stub_ignores_the_slot_but_keeps_it() {
+        let dir = tempfile::tempdir().unwrap();
+        std::fs::write(
+            dir.path().join("config.toml"),
+            "[sample]\nprovider = \"stub\"\n",
+        )
+        .unwrap();
+        let s = Sampler::from_home_with_slot(dir.path(), KeySlot::new());
+        assert_eq!(s.provider_name(), Some("stub"));
+        assert!(s.available());
+        assert!(s.key_slot().is_some());
+    }
+
+    #[test]
+    fn the_slot_prints_whether_it_is_set_and_never_the_key() {
+        let slot = KeySlot::new();
+        assert_eq!(format!("{slot:?}"), "KeySlot { set: false }");
+        slot.set(Some("sk-test".into()));
+        let shown = format!("{slot:?}");
+        assert_eq!(shown, "KeySlot { set: true }");
+        assert!(!shown.contains("sk-test"));
+        assert_eq!(slot.get().as_deref(), Some("sk-test"));
+        let source = KeySource::Slot(slot.clone());
+        assert!(!format!("{source:?}").contains("sk-test"));
+    }
+
+    #[test]
     fn settings_follow_the_config() {
         let cfg = SampleConfig {
             daily_call_cap: Some(3),
@@ -304,6 +453,7 @@ mod tests {
             ..SampleConfig::default()
         };
         let s = SampleSettings::from_config(&cfg);
+        assert_eq!(s.daily_cost_cap, Some(500_000));
         assert_eq!(
             (s.daily_call_cap, s.max_tokens, s.max_rounds),
             (Some(3), 99, 5)

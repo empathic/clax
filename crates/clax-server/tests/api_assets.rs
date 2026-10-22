@@ -22,7 +22,8 @@ async fn upload_serve_list_delete() {
     assert_eq!(res.status(), 201);
     let body: serde_json::Value = res.json().await.unwrap();
     let url = body["url"].as_str().unwrap().to_string();
-    assert!(url.starts_with("/_blob/"));
+    let asset_id = body["asset"]["id"].as_str().unwrap();
+    assert_eq!(url, format!("/_blob/{id}/{asset_id}"));
     let res = ts.get(&url).await;
     assert_eq!(res.status(), 200);
     assert_eq!(res.headers()["content-type"], "image/png");
@@ -40,7 +41,6 @@ async fn upload_serve_list_delete() {
         .await
         .unwrap();
     assert_eq!(list["assets"].as_array().unwrap().len(), 1);
-    let asset_id = body["asset"]["id"].as_str().unwrap();
     let res = ts
         .authed(
             ts.client
@@ -250,5 +250,82 @@ async fn a_pages_upload_carries_every_author_of_the_page() {
         authors(res.json().await.unwrap()),
         vec![Author::Owner],
         "the owner's agent's upload is the owner's"
+    );
+}
+
+/// An asset is served under its own artifact only: another artifact's
+/// prefix, or another artifact's origin, answers 404 as a missing asset does.
+#[tokio::test]
+async fn an_asset_is_served_only_under_its_own_artifact() {
+    let ts = TestServer::spawn().await;
+    let upload = |id: String| {
+        let ts = &ts;
+        async move {
+            let part = reqwest::multipart::Part::bytes(vec![137, 80, 78, 71])
+                .file_name("logo.png")
+                .mime_str("image/png")
+                .unwrap();
+            let res = ts
+                .authed(
+                    ts.client
+                        .post(format!("{}/api/artifacts/{id}/assets", ts.base))
+                        .multipart(reqwest::multipart::Form::new().part("file", part)),
+                )
+                .send()
+                .await
+                .unwrap();
+            let body: serde_json::Value = res.json().await.unwrap();
+            body["asset"]["id"].as_str().unwrap().to_string()
+        }
+    };
+    let a = ts.publish("A", &[("index.html", "<p>")]).await["artifact"]["id"]
+        .as_str()
+        .unwrap()
+        .to_string();
+    let b = ts.publish("B", &[("index.html", "<p>")]).await["artifact"]["id"]
+        .as_str()
+        .unwrap()
+        .to_string();
+    let asset = upload(a.clone()).await;
+    assert_eq!(ts.get(&format!("/_blob/{a}/{asset}")).await.status(), 200);
+    assert_eq!(ts.get(&format!("/_blob/{b}/{asset}")).await.status(), 404);
+    let on = |host: String, path: String| {
+        let ts = &ts;
+        async move {
+            ts.client
+                .get(format!("{}{path}", ts.base))
+                .header("host", host)
+                .send()
+                .await
+                .unwrap()
+                .status()
+        }
+    };
+    let port = ts.addr.port();
+    // On A's origin: by asset ID, or under A's prefix.
+    assert_eq!(
+        on(format!("{a}.localhost:{port}"), format!("/_blob/{asset}")).await,
+        200
+    );
+    assert_eq!(
+        on(
+            format!("{a}.localhost:{port}"),
+            format!("/_blob/{a}/{asset}")
+        )
+        .await,
+        200
+    );
+    // On B's origin, A's asset is not there, whatever the path names.
+    assert_eq!(
+        on(format!("{b}.localhost:{port}"), format!("/_blob/{asset}")).await,
+        404
+    );
+    assert_eq!(
+        on(
+            format!("{b}.localhost:{port}"),
+            format!("/_blob/{a}/{asset}")
+        )
+        .await,
+        404
     );
 }
