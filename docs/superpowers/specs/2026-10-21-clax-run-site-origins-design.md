@@ -365,7 +365,12 @@ These were settled by the design's author, not by the owner:
   sites have no visible sign-in.
 - An agent opening an artifact to the world needs the person's approval.
 - The daemon in hosted mode follows the same model (`site_domain`).
-- Per-document audit records move into the artifact store with the data.
+- Per-document audit records are written in the artifact store and
+  mirrored, metadata only (path, version, op, hash), into the instance's
+  journal, so the journal and a tool call's `produced` keep every event
+  (`docs/contract.md`, "The journal").
+- Existing documents move lazily on each artifact's first call; the local
+  daemon also sweeps every artifact at start.
 - Clips move to the public origin behind the reader's credential.
 - Other sites may not frame an artifact.
 
