@@ -231,6 +231,10 @@ Closes ad4d8d8c (with Task 4, which removes the keys).
     302 to `<public origin>/site-signin?host=<host>&next=<path>`; a
     subresource or API call → 401 `site_session_required`.
     `pub enum SiteCaller { Holder(Holder), Visitor(String /*visitor ID*/) }`.
+    `/_clax/healthz` (and the bridge's static `/_clax/` files) stay outside
+    the check: `/_clax/healthz` answers 200 with `/healthz`'s JSON on any
+    well-formed site host, whether or not the artifact exists, and reveals
+    nothing about it (the deploy probes a random ID).
     `pub fn site_cookie(secure: bool, partitioned: bool, value: &str) -> HeaderValue`.
   - `POST /api/artifacts/{aid}/site-code` (public host, the shell's own
     credential) → `{"src": "<site origin>/_clax/session?code=<c>&next=<path>"}`;
