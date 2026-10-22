@@ -1,193 +1,252 @@
-//! Per-artifact origins: `<id>.localhost[:port]` serves only that artifact's content.
+//! Site hosts: `<id>.<site domain>[:port]` is artifact `<id>`'s own origin
+//! (`<id>.localhost[:port]` on a local daemon). [`SiteHosts`] is the one
+//! place a `Host` header is turned into an artifact; [`site_layer`] runs it
+//! before every route.
 
 use crate::content_policy::{ContentPolicySet, content_policy, own_host};
 use crate::error::ApiError;
 use crate::state::AppState;
 use axum::body::Body;
 use axum::extract::{Request, State};
-use axum::http::{HeaderValue, StatusCode, Uri, header};
+use axum::http::Uri;
 use axum::middleware::Next;
 use axum::response::{IntoResponse, Response};
 use clax_core::ArtifactId;
 
-/// Accepts `<12-char lowercase ID>.localhost` with an optional numeric `:port`; anything else is `None`.
-pub fn artifact_host(host: &str) -> Option<ArtifactId> {
-    let host = host.split_once(':').map_or(host, |(h, port)| {
-        if port.is_empty() || !port.bytes().all(|b| b.is_ascii_digit()) {
-            ""
-        } else {
-            h
+/// The site domain of [`SiteHosts::local`].
+pub const LOCAL_SITE_DOMAIN: &str = "localhost";
+
+/// The host-to-artifact lookup, configured with the site domain
+/// (`[hosted] site_domain`; `localhost` on a local daemon).
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct SiteHosts {
+    domain: String,
+}
+
+/// What a site host names. Vanity names and custom hostnames will resolve
+/// here too, in [`SiteHosts::target`].
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct SiteTarget {
+    pub artifact: ArtifactId,
+}
+
+/// Request extension: the request arrived on `artifact`'s site host, whose
+/// origin is `origin` (`https://<id>.clax.run`, `http://<id>.localhost:7480`).
+#[derive(Clone, Debug)]
+pub struct SiteRequest {
+    pub artifact: ArtifactId,
+    pub origin: String,
+}
+
+/// `host` (a `Host` header) split at its port: `None` when a `:` is followed
+/// by an empty or non-numeric port, or one past `u16`.
+fn split_port(host: &str) -> Option<(&str, Option<u16>)> {
+    match host.split_once(':') {
+        None => Some((host, None)),
+        Some((name, port)) => {
+            if port.is_empty() || !port.bytes().all(|b| b.is_ascii_digit()) {
+                return None;
+            }
+            Some((name, Some(port.parse().ok()?)))
         }
-    });
-    let id = host.strip_suffix(".localhost")?;
-    if id.contains('.') {
-        return None;
     }
-    ArtifactId::parse(id).ok()
 }
 
-/// Marker request extension: the request arrived on a per-artifact origin.
-#[derive(Clone, Copy)]
-pub struct OnArtifactOrigin;
+impl SiteHosts {
+    /// The local daemon's: sites at `<id>.localhost[:port]`.
+    pub fn local() -> SiteHosts {
+        SiteHosts {
+            domain: LOCAL_SITE_DOMAIN.to_string(),
+        }
+    }
 
-/// A service worker script for any registration or update on an artifact's
-/// content: it installs, then unregisters itself, and handles no fetch. A
-/// page's own worker script never runs (a worker answers its frames with
-/// documents that carry no policy), and a worker an artifact registered
-/// before is replaced and removed at its next update check.
-pub const SERVICE_WORKER_KILL_SWITCH: &str = "self.addEventListener(\"install\",()=>self.skipWaiting());\
-self.addEventListener(\"activate\",e=>e.waitUntil(self.registration.unregister()));";
+    /// Sites under `domain`, lowercased; `None` unless it is a bare host
+    /// name ([`clax_core::config::site_domain`]): no scheme, port, path,
+    /// leading dot or empty label.
+    pub fn new(domain: &str) -> Option<SiteHosts> {
+        Some(SiteHosts {
+            domain: clax_core::config::site_domain(domain)?,
+        })
+    }
 
-/// The artifact a main-origin path is content of: `/c/<id>/...`. `Some(None)`
-/// for a `/c/...` path whose ID does not parse.
-fn content_path(path: &str) -> Option<Option<ArtifactId>> {
-    let rest = path.strip_prefix("/c/")?;
-    let id = rest.split('/').next().unwrap_or("");
-    Some(ArtifactId::parse(id).ok())
+    /// The site domain (`clax.run`, `localhost`).
+    pub fn domain(&self) -> &str {
+        &self.domain
+    }
+
+    /// What `host` (a `Host` header) names: a `<12-char lowercase ID>` label
+    /// directly under the site domain (the domain compared without regard
+    /// to case), with an optional numeric port. Anything else, a nested
+    /// name or the domain itself among them, is `None`.
+    pub fn target(&self, host: &str) -> Option<SiteTarget> {
+        let (name, _) = split_port(host)?;
+        let cut = name.len().checked_sub(self.domain.len() + 1)?;
+        let (label, rest) = name.split_at_checked(cut)?;
+        let domain = rest.strip_prefix('.')?;
+        if !domain.eq_ignore_ascii_case(&self.domain) || label.contains('.') {
+            return None;
+        }
+        Some(SiteTarget {
+            artifact: ArtifactId::parse(label).ok()?,
+        })
+    }
+
+    /// `id`'s site origin on `scheme`, naming `port` unless it is the
+    /// scheme's default (80 for `http`, 443 for `https`).
+    pub fn origin(&self, id: &ArtifactId, scheme: &str, port: Option<u16>) -> String {
+        let default = match scheme {
+            "http" => Some(80),
+            "https" => Some(443),
+            _ => None,
+        };
+        match port.filter(|p| Some(*p) != default) {
+            Some(p) => format!("{scheme}://{id}.{}:{p}", self.domain),
+            None => format!("{scheme}://{id}.{}", self.domain),
+        }
+    }
 }
 
-/// On an artifact host: `/healthz` and `/_clax/*` pass through, `/v/*` and
-/// `/draft/*` are rewritten to `/c/<id>/v/*` and `/c/<id>/draft/*`,
-/// `/_blob/<asset>` (or `/_blob/<id>/<asset>`) to `/_blob/<id>/<asset>`, which
-/// serves only the artifact's own assets (a `/_blob/<other ID>/<asset>`
-/// becomes a path that matches no asset; on a hosted daemon `/_blob/*`
-/// passes through, its keyed URLs naming one asset each), and everything
-/// else is a JSON 404; other hosts are untouched.
-///
-/// Every response on an artifact host, and every response under `/c/` on any
-/// host, carries the artifact's content policy (`content_policy` with its
-/// lockdown) unless the content route set the policy itself
-/// ([`ContentPolicySet`]): a 404, `/healthz`, `/_clax/*`, a redirect or a
-/// refusal framed or opened by the page is held to the page's own rules,
-/// whatever route answers it now or later. A `/c/` path with no valid ID
-/// gets `sandbox; default-src 'none'`. A request for a service worker script
-/// there (`Service-Worker: script`) is answered with
-/// [`SERVICE_WORKER_KILL_SWITCH`].
-pub async fn rewrite_artifact_host(
-    State(s): State<AppState>,
-    mut req: Request<Body>,
-    next: Next,
-) -> Response {
+/// Accepts `<12-char lowercase ID>.localhost` with an optional numeric
+/// `:port`; anything else is `None` ([`SiteHosts::local`]). Its callers move
+/// to [`AppState::sites`] with the site routes.
+pub fn artifact_host(host: &str) -> Option<ArtifactId> {
+    SiteHosts::local().target(host).map(|t| t.artifact)
+}
+
+/// Before every route: on a site host ([`AppState::sites`]) inserts
+/// [`SiteRequest`], its origin on the public origin's scheme (`http` on a
+/// local daemon). Until the site routes are mounted it also routes the host
+/// as the per-artifact origin always has: `/healthz`, `/_clax/*` and
+/// `/_blob/*` pass through, `/v/*` and `/draft/*` are rewritten to
+/// `/c/<id>/v/*` and `/c/<id>/draft/*`, and everything else is a JSON 404.
+/// Other hosts are untouched.
+pub async fn site_layer(State(s): State<AppState>, mut req: Request<Body>, next: Next) -> Response {
     let host = req
         .headers()
         .get(axum::http::header::HOST)
         .and_then(|h| h.to_str().ok())
-        .unwrap_or("")
-        .to_string();
-    let (artifact, on_origin) = if let Some(id) = artifact_host(&host) {
-        let path = req.uri().path().to_string();
-        let query = req
-            .uri()
-            .query()
-            .map(|q| format!("?{q}"))
-            .unwrap_or_default();
-        // A hosted daemon's assets are served at their keys
-        // (`hosted::asset_url`), which already name one asset each: their
-        // paths pass through as they are.
-        let blob = path
-            .strip_prefix("/_blob/")
-            .filter(|_| s.hosted.is_none())
-            .map(|rest| {
-                // The artifact's own assets only: `/_blob/<asset>` and
-                // `/_blob/<this ID>/<asset>` both name this artifact's.
-                let asset = rest
-                    .strip_prefix(&format!("{}/", id.as_str()))
-                    .unwrap_or(rest);
-                format!("/_blob/{}/{asset}", id.as_str())
-            });
-        let new_path = if let Some(blob) = blob {
-            blob
-        } else if path == "/healthz" || path.starts_with("/_clax/") || path.starts_with("/_blob/") {
+        .unwrap_or("");
+    let Some(target) = s.sites.target(host) else {
+        return next.run(req).await;
+    };
+    let port = split_port(host).and_then(|(_, p)| p);
+    let scheme = if s.hosted.as_ref().is_some_and(|h| h.secure) {
+        "https"
+    } else {
+        "http"
+    };
+    let site = SiteRequest {
+        origin: s.sites.origin(&target.artifact, scheme, port),
+        artifact: target.artifact,
+    };
+    let path = req.uri().path().to_string();
+    let query = req
+        .uri()
+        .query()
+        .map(|q| format!("?{q}"))
+        .unwrap_or_default();
+    let new_path =
+        if path == "/healthz" || path.starts_with("/_clax/") || path.starts_with("/_blob/") {
             path
         } else if path.starts_with("/v/") || path.starts_with("/draft/") {
-            format!("/c/{}{}", id.as_str(), path)
+            format!("/c/{}{}", site.artifact.as_str(), path)
         } else {
-            return locked(
-                ApiError::not_found().into_response(),
-                true,
-                req.headers(),
-                &own_host(&s),
-                Some(&id),
-                s.embed.as_ref(),
-            );
+            return ApiError::not_found().into_response();
         };
-        let uri: Uri = format!("{new_path}{query}")
-            .parse()
-            .expect("rewritten uri is valid");
-        *req.uri_mut() = uri;
-        req.extensions_mut().insert(OnArtifactOrigin);
-        (Some(id), true)
-    } else {
-        match content_path(req.uri().path()) {
-            Some(id) => (id, false),
-            None => return next.run(req).await,
-        }
-    };
-    let own = own_host(&s);
-    let headers = req.headers().clone();
-    if headers
-        .get("service-worker")
-        .is_some_and(|v| v.as_bytes().eq_ignore_ascii_case(b"script"))
-    {
-        let res = (
-            StatusCode::OK,
-            [
-                (header::CONTENT_TYPE, "text/javascript"),
-                (header::CACHE_CONTROL, "no-store"),
-            ],
-            SERVICE_WORKER_KILL_SWITCH,
-        )
-            .into_response();
-        return locked(
-            res,
-            on_origin,
-            &headers,
-            &own,
-            artifact.as_ref(),
-            s.embed.as_ref(),
-        );
-    }
-    let res = next.run(req).await;
-    if res.extensions().get::<ContentPolicySet>().is_some() {
-        return res;
-    }
-    locked(
-        res,
-        on_origin,
-        &headers,
-        &own,
-        artifact.as_ref(),
-        s.embed.as_ref(),
-    )
-}
-
-/// `res` with artifact `id`'s lockdown policy added beside any policy it
-/// has (policies only narrow), and `Referrer-Policy: no-referrer`; with no
-/// ID, a policy that loads and runs nothing.
-fn locked(
-    mut res: Response,
-    on_origin: bool,
-    req: &axum::http::HeaderMap,
-    own: &str,
-    id: Option<&ArtifactId>,
-    embed: Option<&crate::state::EmbedOrigins>,
-) -> Response {
-    let policy = match id {
-        Some(id) => content_policy(on_origin, req, own, Some(id.as_str()), embed),
-        None => HeaderValue::from_static("sandbox; default-src 'none'"),
-    };
-    res.headers_mut()
-        .append(header::CONTENT_SECURITY_POLICY, policy);
-    res.headers_mut().insert(
-        header::REFERRER_POLICY,
-        HeaderValue::from_static("no-referrer"),
-    );
-    res
+    let uri: Uri = format!("{new_path}{query}")
+        .parse()
+        .expect("rewritten uri is valid");
+    *req.uri_mut() = uri;
+    req.extensions_mut().insert(site);
+    next.run(req).await
 }
 
 #[cfg(test)]
 mod tests {
-    use super::artifact_host;
+    use super::{SiteHosts, artifact_host};
+
+    #[test]
+    fn target_accepts_an_id_under_the_domain_with_or_without_a_port() {
+        let sites = SiteHosts::new("clax.run").unwrap();
+        for host in ["abcdefghjkmn.clax.run", "abcdefghjkmn.clax.run:443"] {
+            let t = sites.target(host).unwrap_or_else(|| panic!("{host}"));
+            assert_eq!(t.artifact.as_str(), "abcdefghjkmn", "{host}");
+        }
+    }
+
+    #[test]
+    fn target_refuses_nested_uppercase_and_foreign_hosts() {
+        let sites = SiteHosts::new("clax.run").unwrap();
+        for bad in [
+            "a.b.clax.run",
+            "x.abcdefghjkmn.clax.run",
+            "ABCDEFGHJKMN.clax.run",
+            "abcdefghjkmn.clax.run.evil.com",
+            "clax.run",
+            ".clax.run",
+            "abcdefghjkmn.clax.dev",
+            "abcdefghjkmnclax.run",
+            "abcdefghjkmn.clax.run:",
+            "abcdefghjkmn.clax.run:x",
+        ] {
+            assert!(sites.target(bad).is_none(), "{bad}");
+        }
+    }
+
+    #[test]
+    fn local_hosts_keep_the_localhost_form() {
+        let sites = SiteHosts::local();
+        assert_eq!(sites.domain(), "localhost");
+        assert_eq!(
+            sites
+                .target("abcdefghjkmn.localhost:7480")
+                .unwrap()
+                .artifact
+                .as_str(),
+            "abcdefghjkmn"
+        );
+        for bad in ["abcdefghjkmn.localhost:", "abcdefghjkmn.localhost:x"] {
+            assert!(sites.target(bad).is_none(), "{bad}");
+        }
+    }
+
+    #[test]
+    fn a_site_domain_is_a_bare_host_name() {
+        assert_eq!(SiteHosts::new("Clax.Run").unwrap().domain(), "clax.run");
+        for bad in [
+            "",
+            " ",
+            "https://clax.run",
+            "clax.run:443",
+            ".clax.run",
+            "clax.run/",
+            "clax..run",
+        ] {
+            assert!(SiteHosts::new(bad).is_none(), "{bad:?}");
+        }
+    }
+
+    #[test]
+    fn origin_names_the_scheme_and_any_port_but_the_default() {
+        let sites = SiteHosts::new("clax.run").unwrap();
+        let id = clax_core::ArtifactId::parse("abcdefghjkmn").unwrap();
+        assert_eq!(
+            sites.origin(&id, "https", None),
+            "https://abcdefghjkmn.clax.run"
+        );
+        assert_eq!(
+            sites.origin(&id, "https", Some(443)),
+            "https://abcdefghjkmn.clax.run"
+        );
+        assert_eq!(
+            SiteHosts::local().origin(&id, "http", Some(7480)),
+            "http://abcdefghjkmn.localhost:7480"
+        );
+        assert_eq!(
+            SiteHosts::local().origin(&id, "http", Some(80)),
+            "http://abcdefghjkmn.localhost"
+        );
+    }
 
     #[test]
     fn accepts_only_anchored_lowercase_ids() {

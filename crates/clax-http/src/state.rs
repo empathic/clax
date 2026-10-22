@@ -195,18 +195,10 @@ pub struct AppState {
     pub vis_gen: VisGen,
     /// Hosted mode ([`crate::hosted`]); `None` for the local daemon.
     pub hosted: Option<Arc<crate::hosted::Hosted>>,
-    /// What a hosted Clax says about the Clax app: its app links and store
-    /// pages (`[hosted] app_links` and `stores`, or the Worker's vars),
-    /// which the host sets after [`AppState::assemble`]; none by default.
-    pub clax_app: Arc<clax_core::config::ClaxApp>,
-    /// The build identity the host was given, which `/healthz` reports as
-    /// `build`: on a Worker the `CLAX_BUILD` var a deploy sets, unique to
-    /// each upload, which the host sets after [`AppState::assemble`]; `None`
-    /// by default.
-    pub build: Option<String>,
-    /// The origins of the app that embeds this core, which its shell
-    /// documents and content policy name; `None` for a daemon.
-    pub embed: Option<EmbedOrigins>,
+    /// The host-to-artifact lookup ([`crate::host::site_layer`]): hosted
+    /// mode's site domain when it has one ([`crate::hosted::Hosted::sites`]),
+    /// else `<id>.localhost`.
+    pub sites: crate::host::SiteHosts,
     /// The host's git remotes ([`crate::git_remotes`]), once it installs
     /// them; empty on the native daemon.
     pub git_remotes: Arc<crate::git_remotes::Slot>,
@@ -386,6 +378,11 @@ impl AppState {
             grant_auth,
             agent_gate: Arc::new(crate::agent::Gate::new(p.agent_timer)),
             vis_gen,
+            sites: p
+                .hosted
+                .as_ref()
+                .and_then(|h| h.sites.clone())
+                .unwrap_or_else(crate::host::SiteHosts::local),
             hosted: {
                 if let Some(h) = &p.hosted {
                     p.store.set_member_caps(Some(h.member_caps));

@@ -16,10 +16,57 @@ use clax_core::{ArtifactId, CoreError};
 use clax_http::content_policy::{ContentPolicySet, content_policy, own_host, plain_host};
 use clax_http::error::ApiError;
 use clax_http::headers::parse_id;
-use clax_http::host::OnArtifactOrigin;
+use clax_http::host::SiteRequest;
 use clax_http::http_cache;
 use clax_http::state::AppState;
 use std::sync::Arc;
+
+/// Content served on the main origin must not run same-origin with the API.
+const SANDBOX: &str = "sandbox allow-scripts allow-forms allow-modals allow-popups allow-downloads";
+
+/// The `Content-Security-Policy` of a content response.
+///
+/// - On the main origin (sandbox mode): the sandbox, and no
+///   `frame-ancestors`. A sandboxed page has an opaque origin, which no
+///   `frame-ancestors` source matches, so any such list would also refuse an
+///   artifact's page framed by another of its pages. Framed by another site,
+///   the page reaches nothing of the viewer's: it runs at an opaque origin,
+///   and its bridge talks only to a parent at the shell's origin.
+/// - On an artifact origin (`<id>.localhost[:port]`, subdomain mode): framed
+///   only by the artifact's own pages (`'self'`) and the shell, at
+///   `localhost` or `127.0.0.1` on the same port, the only hosts from which
+///   the shell uses subdomain frames.
+///
+/// The policy is a separate one: a page's own `<meta>` policy still applies
+/// in full beside it, and cannot set `frame-ancestors` itself.
+pub(crate) fn content_policy(
+    origin: &Option<Extension<SiteRequest>>,
+    req: &HeaderMap,
+) -> HeaderValue {
+    if origin.is_none() {
+        return HeaderValue::from_static(SANDBOX);
+    }
+    // The rewrite accepted this host only with a numeric port, or none.
+    let port = req
+        .get(header::HOST)
+        .and_then(|h| h.to_str().ok())
+        .and_then(|h| h.split_once(':'))
+        .map(|(_, p)| format!(":{p}"))
+        .unwrap_or_default();
+    HeaderValue::from_str(&format!(
+        "frame-ancestors 'self' http://localhost{port} http://127.0.0.1{port}"
+    ))
+    .unwrap_or_else(|_| HeaderValue::from_static("frame-ancestors 'self'"))
+}
+
+/// The host and port in the daemon's browser base URL.
+fn own_host(s: &AppState) -> String {
+    s.browser_base
+        .strip_prefix("http://")
+        .unwrap_or(&s.browser_base)
+        .trim_end_matches('/')
+        .to_string()
+}
 
 /// The second policy on a live page's content (spec
 /// 2026-10-05-chrome-overlay-design §8.4): of scripts, only Clax's own under
@@ -44,7 +91,7 @@ fn snapshot_policy(req: &HeaderMap, fallback: &str) -> HeaderValue {
 /// every request the page makes.
 fn framed_by_shell(
     mut res: Response,
-    origin: &Option<Extension<OnArtifactOrigin>>,
+    origin: &Option<Extension<SiteRequest>>,
     req: &HeaderMap,
     (id, own, embed): (&str, &str, Option<&clax_http::state::EmbedOrigins>),
     live: bool,
@@ -78,7 +125,7 @@ pub async fn redirect_to_slash(
 pub async fn index(
     State(s): State<AppState>,
     d: clax_http::agent::DeniedToGrants,
-    origin: Option<Extension<OnArtifactOrigin>>,
+    origin: Option<Extension<SiteRequest>>,
     req: HeaderMap,
     p: Result<Path<(String, u32)>, PathRejection>,
 ) -> Result<Response, ApiError> {
@@ -228,7 +275,7 @@ async fn read_bytes(
 pub async fn file(
     State(s): State<AppState>,
     d: clax_http::agent::DeniedToGrants,
-    origin: Option<Extension<OnArtifactOrigin>>,
+    origin: Option<Extension<SiteRequest>>,
     req: HeaderMap,
     p: Result<Path<(String, u32, String)>, PathRejection>,
 ) -> Result<Response, ApiError> {

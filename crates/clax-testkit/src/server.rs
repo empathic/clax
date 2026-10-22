@@ -668,10 +668,7 @@ impl TestServer {
             // with `spawn_with_web`.
             web: web_ui(),
             hosted: None,
-            // No app links or store pages; tests of them set their own.
-            clax_app: Arc::default(),
-            build: None,
-            embed: None,
+            sites: clax_http::host::SiteHosts::local(),
             git_remotes: Arc::default(),
             linked: Arc::new(clax_realtime::linked::Linked::new(Arc::new(
                 clax_realtime::questions::TokioSleeper,

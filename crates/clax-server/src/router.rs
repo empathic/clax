@@ -957,11 +957,11 @@ pub fn build_router_with_shutdown(
     wrap(state.clone(), routes(state, Some(shutdown)))
 }
 
-// `Router::layer` runs after route matching, so the host rewrite has to wrap the
-// whole inner router (mounted as the outer fallback) to influence routing. The
-// `/api` host check runs after the rewrite (the later `layer` is outermost),
-// then the credential gate on the rewritten path, and the header checks of
-// agent credentials after all three, before any route.
+// `Router::layer` runs after route matching, so the site host lookup
+// (`host::site_layer`) has to wrap the whole inner router (mounted as the
+// outer fallback) to influence routing. The `/api` host check runs after
+// the lookup (the later `layer` is outermost),
+// and the header checks of agent credentials after both, before any route.
 // On a hosted daemon ([`clax_http::hosted`]), whose own routes `routes`
 // mounts, its gate stands in for the `/api` host check, which admits only
 // this machine's names.
@@ -998,7 +998,7 @@ fn wrap(state: AppState, inner: axum::Router) -> axum::Router {
     };
     r.layer(axum::middleware::from_fn_with_state(
         state,
-        host::rewrite_artifact_host,
+        host::site_layer,
     ))
 }
 

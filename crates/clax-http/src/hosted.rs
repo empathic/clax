@@ -135,6 +135,9 @@ pub struct Hosted {
     /// The Terms of Service and Privacy Policy shown and agreed to
     /// ([`Hosted::with_legal`]); `None` shows none.
     pub legal: Option<clax_core::config::Legal>,
+    /// The site domain ([`Hosted::with_sites`]); `None` serves sites at
+    /// `<id>.localhost` alone ([`crate::host::SiteHosts::local`]).
+    pub sites: Option<crate::host::SiteHosts>,
     /// A request for the public or content host came from a loopback peer
     /// with `behind_cloudflare` off, and was logged ([`Hosted::note_peer`]).
     proxy_noted: std::sync::atomic::AtomicBool,
@@ -149,6 +152,7 @@ impl std::fmt::Debug for Hosted {
             .field("behind_cloudflare", &self.behind_cloudflare)
             .field("github", &self.github)
             .field("legal", &self.legal)
+            .field("sites", &self.sites)
             .finish()
     }
 }
@@ -320,6 +324,7 @@ impl Hosted {
             member_caps: Default::default(),
             public_gallery: false,
             legal: None,
+            sites: None,
             proxy_noted: std::sync::atomic::AtomicBool::new(false),
         })
     }
@@ -388,6 +393,12 @@ impl Hosted {
         Hosted { legal, ..self }
     }
 
+    /// This hosted mode serving each artifact's site under `sites`'s domain
+    /// (`None`: at `<id>.localhost` alone).
+    pub fn with_sites(self, sites: Option<crate::host::SiteHosts>) -> Hosted {
+        Hosted { sites, ..self }
+    }
+
     /// Whether this hosted mode serves the bundled documents at `/terms`
     /// and `/privacy`.
     pub fn serves_legal(&self) -> bool {
@@ -430,6 +441,11 @@ impl Hosted {
                 .with_github(github, c.member_max_artifacts)
                 .with_public_gallery(c.public_gallery)
                 .with_legal(c.legal.clone())
+                .with_sites(
+                    c.site_domain
+                        .as_deref()
+                        .and_then(crate::host::SiteHosts::new),
+                )
         })
     }
 
@@ -1518,10 +1534,7 @@ pub async fn gate(State(s): State<AppState>, mut req: Request, next: Next) -> Re
         .and_then(|v| v.to_str().ok())
         .unwrap_or("")
         .to_string();
-    let content_host = req
-        .extensions()
-        .get::<crate::host::OnArtifactOrigin>()
-        .is_some();
+    let content_host = req.extensions().get::<crate::host::SiteRequest>().is_some();
     let on_content = h.is_content_host(&host);
     if !(host.eq_ignore_ascii_case(&h.host)
         || on_content

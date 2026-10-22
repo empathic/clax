@@ -34,7 +34,7 @@ use clax_http::audit::DeferredAudit;
 use clax_http::auth::Caller;
 use clax_http::error::ApiError;
 use clax_http::headers::parse_id;
-use clax_http::host::OnArtifactOrigin;
+use clax_http::host::SiteRequest;
 use clax_http::state::AppState;
 use clax_http::views::thread::VisFor;
 use clax_store::Store;
@@ -418,7 +418,7 @@ pub async fn redirect_to_slash(
 pub async fn index(
     State(s): State<AppState>,
     d: DeniedToGrants,
-    origin: Option<Extension<OnArtifactOrigin>>,
+    origin: Option<Extension<SiteRequest>>,
     req: HeaderMap,
     p: Result<Path<(String, String, String)>, PathRejection>,
 ) -> Result<Response, ApiError> {
@@ -432,7 +432,7 @@ pub async fn index(
 pub async fn file(
     State(s): State<AppState>,
     d: DeniedToGrants,
-    origin: Option<Extension<OnArtifactOrigin>>,
+    origin: Option<Extension<SiteRequest>>,
     req: HeaderMap,
     p: Result<Path<(String, String, String, String)>, PathRejection>,
 ) -> Result<Response, ApiError> {
@@ -457,7 +457,7 @@ async fn serve(
     agent: &str,
     token: &str,
     rel: String,
-    origin: &Option<Extension<OnArtifactOrigin>>,
+    origin: &Option<Extension<SiteRequest>>,
     req: &HeaderMap,
 ) -> Result<Response, ApiError> {
     let id = parse_id(aid)?;

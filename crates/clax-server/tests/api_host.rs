@@ -157,3 +157,34 @@ async fn a_daemon_bound_to_a_lan_address_admits_exactly_that_host() {
         );
     }
 }
+
+#[tokio::test]
+async fn a_configured_site_domain_names_the_artifact_hosts() {
+    let ts = TestServer::spawn_with(|s| {
+        s.sites = clax_http::host::SiteHosts::new("clax.test").unwrap();
+    })
+    .await;
+    let a = ts.publish("Doc", &[("index.html", "<h2>x</h2>")]).await;
+    let aid = a["artifact"]["id"].as_str().unwrap();
+    let port = ts.addr.port();
+    let get = |host: String| {
+        ts.client
+            .get(format!("{}/v/1/", ts.base))
+            .header("host", host)
+            .send()
+    };
+    let res = get(format!("{aid}.clax.test:{port}")).await.unwrap();
+    assert_eq!(res.status(), 200, "a site host under the site domain");
+    assert!(res.text().await.unwrap().contains("<h2>x</h2>"));
+    for host in [
+        format!("{aid}.localhost:{port}"),
+        format!("x.{aid}.clax.test:{port}"),
+        format!("{aid}.clax.test.evil.example:{port}"),
+    ] {
+        let res = get(host.clone()).await.unwrap();
+        assert!(
+            !res.text().await.unwrap().contains("<h2>x</h2>"),
+            "{host} is not a site host"
+        );
+    }
+}
