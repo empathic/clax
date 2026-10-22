@@ -148,6 +148,10 @@ jobs:
       # two browsers, on the build test-wasm.mjs made.
       - name: Run the Worker's e2e
         run: cd crates/clax-worker && node e2e.mjs --no-build
+      # The instance as a hosted Clax, with each artifact's site on its own
+      # host and its app data in its own object, on the same build.
+      - name: Run the Worker's hosted e2e
+        run: cd crates/clax-worker && node e2e-hosted.mjs --no-build
 
   # The perf benchmarks after every green push to main, kept in a log, never
   # a gate (docs/usage.md, "Developing Clax"): each run appends one JSON line to

@@ -1,37 +1,46 @@
 //! A Cloudflare Worker that runs the Clax server: one Durable Object per
-//! Clax instance ([`instance::InstanceDo`]), the web UI from Workers Static
-//! Assets, and, beside them, the SQLite-on-Durable-Object spike
-//! ([`ClaxDb`]) the VFS was proved with.
+//! Clax instance ([`instance::InstanceDo`]), one per artifact for its app
+//! data ([`app_data::AppDataDo`]), the web UI from Workers Static Assets,
+//! and, beside them, the SQLite-on-Durable-Object spike ([`ClaxDb`]) the
+//! VFS was proved with.
 //!
 //! # The Worker
 //!
-//! Every request goes to the Worker first (`run_worker_first`):
+//! Every request goes to the Worker first (`run_worker_first`), which
+//! classifies it by its host before its path (`route`):
 //!
+//! - `/_internal/` on any host, and any request naming an internal host
+//!   ([`INSTANCE_INTERNAL`], `app_data::APP_DATA_INTERNAL`), is 404 (see
+//!   Pushes);
+//! - a site host, `<artifact ID>.<SITE_DOMAIN>` (`<artifact ID>.localhost`
+//!   without `SITE_DOMAIN` or `HOSTED`; `instance::site_hosts`), is that
+//!   artifact's site: the instance's site routes answer every path there
+//!   (`clax_server::routes::site`), the UI's files under `/_clax/` from the
+//!   static assets as the site routes serve them (with the site layer's
+//!   `Referrer-Policy: no-referrer`). No path-first route below is reached
+//!   on a site host: `/git/`, `/_diag/`, `/_dev/repos/` and `/do/` are the
+//!   site's own paths, as `/mcp` and `/api/` are;
 //! - with `CLAX_TEST_ROUTES` = `1` (`0` in `wrangler.jsonc`), `/do/{name}/…`
 //!   goes to the spike object named `name` (below), whose routes check no
 //!   credential; otherwise `/do/` is a path like any other, the instance's;
-//! - on the app host (any host but an artifact's `<id>.localhost` and
-//!   `CONTENT_ORIGIN`'s), `/`, `/inbox`, `/people`, `/tags`, `/admin`,
-//!   `/settings`, `/me` and `/audit` are the shell's
+//! - on the app host, `/`, `/inbox`, `/people` and `/tags` are the shell's
 //!   `index.html`, from the static assets, with the headers the daemon's
 //!   `shell::gallery_page` sends (no framing, revalidated), except on a
 //!   hosted instance (`HOSTED` = `1`), whose gate decides who gets them;
-//! - on any host, `/_clax/<path>` is the web UI's file from the static
-//!   assets with the daemon's caching (`shell::asset_cache`), except the
-//!   bridge and the contract's type definitions, which the server answers;
-//! - everything else (the API, `/a/…` with its first-load data, artifact
-//!   content, the stream's WebSocket) goes to the instance's object, named
-//!   by `CLAX_INSTANCE` (`default` when unset). A file the assets lack goes
+//! - `/_clax/<path>` is the web UI's file from the static assets with the
+//!   daemon's caching (`shell::asset_cache`), except the bridge and the
+//!   contract's type definitions, which the server answers;
+//! - everything else (the API, `/a/…` with its first-load data, the
+//!   stream's WebSocket) goes to the instance's object, named by
+//!   `CLAX_INSTANCE` (`default` when unset). A file the assets lack goes
 //!   there too.
 //!
-//! Artifact content keeps its own origin as on the daemon: the server
-//! serves `<id>.localhost[:port]` as that artifact's origin (its host
-//! rewrite), and browsers send `*.localhost` to this machine, so under
-//! `wrangler dev` the content origin works unchanged. A deployed hosted
-//! instance serves no content on its public origin; on `CONTENT_ORIGIN`,
-//! the retired content origin, an asset's old address only redirects to
-//! its artifact's site (`clax_http::hosted::Hosted::with_retired_content_origin`;
-//! `README.md` has the deploy).
+//! A `SITE_DOMAIN` hosted mode refuses (`instance::site_hosts`: not a bare
+//! domain, or `PUBLIC_ORIGIN`'s host, above it or under it) makes every
+//! request 500, naming the var. Browsers send `*.localhost` to this
+//! machine, so under `wrangler dev` the site hosts work with `SITE_DOMAIN`
+//! = `localhost`; a deploy routes `*.<SITE_DOMAIN>/*` to the Worker
+//! (`README.md` has the DNS).
 //!
 //! # The spike's routes
 //!
@@ -82,7 +91,7 @@
 //! checks the spike's routes under `wrangler dev --local` across a restart,
 //! and `npm run e2e` (`e2e.mjs`) the Clax instance in two browsers.
 
-pub mod bot;
+mod app_data;
 pub mod diag;
 mod instance;
 pub mod repos;
@@ -107,6 +116,9 @@ use worker::{
     WebSocketIncomingMessage, WebSocketPair, durable_object, event,
 };
 
+use clax_http::host::SiteHosts;
+
+pub use crate::app_data::AppDataDo;
 pub use crate::instance::InstanceDo;
 
 /// The web UI's static assets (`assets.binding` in `wrangler.jsonc`); the
@@ -122,51 +134,125 @@ use crate::store::DoPageStore;
 async fn fetch(req: Request, env: Env, _ctx: worker::Context) -> Result<Response> {
     console_error_panic_hook::set_once();
     let path = req.path();
-    // Calls between objects only (see Pushes): never forwarded, whatever
-    // host a request names.
-    if path.starts_with("/_internal/") || req.url()?.host_str() == Some(INSTANCE_INTERNAL) {
-        return Response::error("Not found", 404);
-    }
-    #[cfg(target_arch = "wasm32")]
-    if path.starts_with(diag::PREFIX)
-        && let Some(res) = diag::route(&env, &req).await
-    {
-        return res;
-    }
-    #[cfg(target_arch = "wasm32")]
-    if path.starts_with("/git/") {
-        return repos::worker::forward_git(&env, req).await;
-    }
-    #[cfg(target_arch = "wasm32")]
-    if path.starts_with("/_dev/repos/") {
-        return repos::worker::dev_route(&env, req).await;
-    }
+    let url_host = req.url()?.host_str().map(str::to_owned);
+    let host = req.headers().get("host")?.unwrap_or_default();
+    let sites = match instance::site_hosts(&env) {
+        Ok(s) => s.unwrap_or_else(SiteHosts::local),
+        Err(e) => return Response::error(format!("the instance could not start: {e}"), 500),
+    };
     // The spike's routes write to its objects unauthenticated: tests only.
     let spike = env
         .var("CLAX_TEST_ROUTES")
         .is_ok_and(|v| v.to_string() == "1");
-    if let Some(rest) = path.strip_prefix("/do/").filter(|_| spike) {
-        let Some(name) = rest.split('/').next().filter(|n| !n.is_empty()) else {
+    match route(&path, url_host.as_deref(), &host, &sites, spike) {
+        Route::Refused => return Response::error("Not found", 404),
+        #[cfg(target_arch = "wasm32")]
+        Route::Diag => {
+            if let Some(res) = diag::route(&env, &req).await {
+                return res;
+            }
+        }
+        #[cfg(target_arch = "wasm32")]
+        Route::Git => return repos::worker::forward_git(&env, req).await,
+        #[cfg(target_arch = "wasm32")]
+        Route::DevRepos => return repos::worker::dev_route(&env, req).await,
+        #[cfg(not(target_arch = "wasm32"))]
+        Route::Diag | Route::Git | Route::DevRepos => {}
+        Route::Spike(None) => {
             let headers = worker::Headers::new();
             headers.set("x-clax-error", "routes live under /do/{name}/")?;
             return Ok(Response::empty()?.with_status(404).with_headers(headers));
-        };
-        let stub = env.durable_object("CLAX_DB")?.get_by_name(name)?;
-        return stub.fetch_with_request(req).await;
+        }
+        Route::Spike(Some(name)) => {
+            let stub = env.durable_object("CLAX_DB")?.get_by_name(name)?;
+            return stub.fetch_with_request(req).await;
+        }
+        Route::Site => {
+            if let Some(mut res) = static_asset(&env, &path, false).await? {
+                // As the site layer marks every site response.
+                res.headers_mut().insert(
+                    header::REFERRER_POLICY,
+                    HeaderValue::from_static("no-referrer"),
+                );
+                return Response::try_from(res);
+            }
+            return to_instance(&env, req).await;
+        }
+        Route::App => {}
     }
-    let host = req.headers().get("host")?.unwrap_or_default();
     // A hosted instance's gate decides who gets the gallery pages (a
     // guest is sent to sign in), so the instance serves them there.
     let hosted = env.var("HOSTED").is_ok_and(|v| v.to_string() == "1");
-    let app_host =
-        clax_http::host::artifact_host(&host).is_none() && !content_host(&env, &host) && !hosted;
-    if let Some(res) = static_asset(&env, &path, app_host).await? {
+    if let Some(res) = static_asset(&env, &path, !hosted).await? {
         return Response::try_from(res);
     }
+    to_instance(&env, req).await
+}
+
+/// `req` for the instance's object, unless its declared body is too large.
+async fn to_instance(env: &Env, req: Request) -> Result<Response> {
     if let Some(res) = instance::refuse_declared(&req)? {
         return Ok(res);
     }
-    instance_stub(&env)?.fetch_with_request(req).await
+    instance_stub(env)?.fetch_with_request(req).await
+}
+
+/// Where the Worker sends a request (see the crate docs).
+#[derive(Debug, PartialEq, Eq)]
+enum Route<'a> {
+    /// A call between objects (see Pushes), never forwarded: 404.
+    Refused,
+    /// `/_diag/…` ([`diag`]).
+    Diag,
+    /// `/git/…` ([`repos`]).
+    Git,
+    /// `/_dev/repos/…` ([`repos`]).
+    DevRepos,
+    /// `/do/{name}/…` with the test routes on: the spike's object `name`
+    /// (`None` when the path names none).
+    Spike(Option<&'a str>),
+    /// A site host's request: the instance's site routes, and nothing
+    /// else, answer it (the UI's static files under `/_clax/` among them).
+    Site,
+    /// The app host's: its static entries and files, else the instance.
+    App,
+}
+
+/// Classifies a request by its path, its URL's host (`url_host`) and its
+/// `Host` header (`host`), the host first: `/_internal/` and the internal
+/// hosts are refused on any host; a site host under `sites` is
+/// [`Route::Site`] whatever its path, so no path-first route (`/git/`,
+/// `/_diag/`, `/_dev/repos/`, `/do/`) is reached there.
+fn route<'a>(
+    path: &'a str,
+    url_host: Option<&str>,
+    host: &str,
+    sites: &SiteHosts,
+    spike: bool,
+) -> Route<'a> {
+    let internal = [INSTANCE_INTERNAL, app_data::APP_DATA_INTERNAL];
+    if path.starts_with("/_internal/")
+        || url_host.is_some_and(|h| internal.contains(&h))
+        || internal.iter().any(|h| h.eq_ignore_ascii_case(host))
+    {
+        return Route::Refused;
+    }
+    if sites.target(host).is_some() {
+        return Route::Site;
+    }
+    if path.starts_with(diag::PREFIX) {
+        return Route::Diag;
+    }
+    if path.starts_with("/git/") {
+        return Route::Git;
+    }
+    if path.starts_with("/_dev/repos/") {
+        return Route::DevRepos;
+    }
+    match path.strip_prefix("/do/").filter(|_| spike) {
+        Some(rest) => Route::Spike(rest.split('/').next().filter(|n| !n.is_empty())),
+        None => Route::App,
+    }
 }
 
 /// The instance's object, named by `CLAX_INSTANCE` (`default` when unset).
@@ -251,23 +337,6 @@ async fn queue(batch: worker::MessageBatch<Value>, env: Env, _ctx: worker::Conte
         }
     }
     Ok(())
-}
-
-/// Whether `host` (a `Host` header) is `CONTENT_ORIGIN`'s, which serves no
-/// shell page.
-fn content_host(env: &Env, host: &str) -> bool {
-    let origin = env
-        .var("CONTENT_ORIGIN")
-        .map(|v| v.to_string())
-        .unwrap_or_default();
-    worker::Url::parse(&origin).ok().is_some_and(|u| {
-        let authority = match (u.host_str(), u.port()) {
-            (Some(h), Some(p)) => format!("{h}:{p}"),
-            (Some(h), None) => h.to_string(),
-            _ => return false,
-        };
-        authority.eq_ignore_ascii_case(host)
-    })
 }
 
 /// The web UI's file for `path` from the static assets, with the headers
@@ -625,5 +694,105 @@ impl DurableObject for ClaxDb {
         _clean: bool,
     ) -> Result<()> {
         ws.close(Some(code as u16), Some(reason))
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::{Route, SiteHosts, route};
+
+    const SITE: &str = "abcdefghjkmn.clax.run";
+    const APP: &str = "clax.example.com";
+
+    #[test]
+    fn a_site_host_reaches_no_path_first_route() {
+        let sites = SiteHosts::new("clax.run").unwrap();
+        let first = [
+            "/git/a-abcdefghjkmn.git/info/refs",
+            "/_diag/bindings",
+            "/_dev/repos/x",
+            "/do/n/notes",
+            "/mcp",
+            "/api/artifacts",
+            "/_worker/hibernate",
+        ];
+        for path in first {
+            for host in [SITE, "abcdefghjkmn.clax.run:443", "abcdefghjkmn.CLAX.RUN"] {
+                assert_eq!(
+                    route(path, Some(host), host, &sites, true),
+                    Route::Site,
+                    "{host}{path}"
+                );
+            }
+        }
+        // The same paths on the app host reach their routes.
+        assert_eq!(route(first[0], Some(APP), APP, &sites, true), Route::Git);
+        assert_eq!(route(first[1], Some(APP), APP, &sites, true), Route::Diag);
+        assert_eq!(
+            route(first[2], Some(APP), APP, &sites, true),
+            Route::DevRepos
+        );
+        assert_eq!(
+            route(first[3], Some(APP), APP, &sites, true),
+            Route::Spike(Some("n"))
+        );
+        assert_eq!(
+            route("/do/", Some(APP), APP, &sites, true),
+            Route::Spike(None)
+        );
+        assert_eq!(route(first[3], Some(APP), APP, &sites, false), Route::App);
+        assert_eq!(route("/mcp", Some(APP), APP, &sites, true), Route::App);
+    }
+
+    #[test]
+    fn calls_between_objects_are_refused_on_every_host() {
+        let sites = SiteHosts::new("clax.run").unwrap();
+        for host in [SITE, APP] {
+            assert_eq!(
+                route("/_internal/pushed", Some(host), host, &sites, true),
+                Route::Refused
+            );
+        }
+        for internal in [super::INSTANCE_INTERNAL, super::app_data::APP_DATA_INTERNAL] {
+            assert_eq!(
+                route("/", Some(internal), APP, &sites, true),
+                Route::Refused,
+                "{internal} in the URL"
+            );
+            assert_eq!(
+                route("/", Some(APP), internal, &sites, true),
+                Route::Refused,
+                "{internal} as the Host"
+            );
+        }
+    }
+
+    #[test]
+    fn only_hosts_under_the_site_domain_are_sites() {
+        let sites = SiteHosts::new("clax.run").unwrap();
+        for host in [
+            "clax.run",
+            "a.b.clax.run",
+            "abcdefghjkmn.localhost:8787",
+            APP,
+        ] {
+            assert_eq!(
+                route("/", Some(host), host, &sites, true),
+                Route::App,
+                "{host}"
+            );
+        }
+        let local = SiteHosts::local();
+        let host = "abcdefghjkmn.localhost:8787";
+        assert_eq!(
+            route(
+                "/_diag/x",
+                Some("abcdefghjkmn.localhost"),
+                host,
+                &local,
+                true
+            ),
+            Route::Site
+        );
     }
 }

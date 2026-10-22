@@ -26,14 +26,19 @@
       { "name": "CLAX_INSTANCE_DO", "class_name": "InstanceDo" },
       // Git repositories when REPO_STORE is "memory", and the repository
       // token ledger (src/repos/).
-      { "name": "REPO", "class_name": "RepoDO" }
+      { "name": "REPO", "class_name": "RepoDO" },
+      // Each artifact's app data (the db capability's documents), one
+      // object per artifact named by its ID (src/app_data.rs); only the
+      // instance's object calls it.
+      { "name": "APP_DATA", "class_name": "AppDataDo" }
     ]
   },
   // SQLite-backed storage: synchronous ctx.storage.sql and transactionSync.
   "migrations": [
     { "tag": "v1", "new_sqlite_classes": ["ClaxDb"] },
     { "tag": "v2", "new_sqlite_classes": ["InstanceDo"] },
-    { "tag": "v3", "new_sqlite_classes": ["RepoDO"] }
+    { "tag": "v3", "new_sqlite_classes": ["RepoDO"] },
+    { "tag": "v4", "new_sqlite_classes": ["AppDataDo"] }
   ],
 
   // The Worker Loader: ClaxBot's code-mode sandbox runs each script in a
@@ -84,10 +89,14 @@
     // TERMS_URL, PRIVACY_URL and LEGAL_VERSION instead (deploy.mjs
     // --legal, --terms-url, --privacy-url, --legal-version).
     "LEGAL": "",
-    // A hosted instance's content origin: a host of its own that serves
-    // artifact content and nothing else; empty serves content on the
-    // public origin, sandboxed (and on <id>.localhost under wrangler dev).
-    "CONTENT_ORIGIN": "",
+    // A hosted instance's site domain: each artifact's site is served at
+    // <artifact ID>.<SITE_DOMAIN> (e.g. clax.run), a domain sharing no name
+    // with PUBLIC_ORIGIN's host; empty serves sites at <id>.localhost.
+    "SITE_DOMAIN": "",
+    // The content origin of before sites (deploy.mjs carries a deploy
+    // record's content_origin here): its old asset addresses redirect to
+    // their artifacts' sites, and it serves nothing else. Empty: none.
+    "RETIRED_CONTENT_ORIGIN": "",
     // Live seats per artifact (people, the guests' share of them, agents)
     // and a people seat's idle time in seconds; empty takes the defaults
     // (100, 20, 20, 180).

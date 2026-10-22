@@ -19,9 +19,9 @@
 //! with the `SETUP_SECRET` secret, invites, sign-in links, guests), each
 //! person's browser and agents act within their rights, and agent tokens
 //! reach `/mcp`. Its public origin is `PUBLIC_ORIGIN` (required), each
-//! artifact's content is served on its site host alone, `CONTENT_ORIGIN`
-//! (when set) is the retired content origin, where an asset's old address
-//! redirects to its site, and clients are named by `CF-Connecting-IP`. The owner's token
+//! artifact's site is served at `<artifact ID>.<SITE_DOMAIN>` (at
+//! `<artifact ID>.localhost` without one; [`site_hosts`]), and clients are
+//! named by `CF-Connecting-IP`. The owner's token
 //! (`CLAX_TOKEN`, else one the object made and keeps) still works for the
 //! CLI. Without `HOSTED`, no request reaches the object over a connection
 //! of the owner's machine (`clax_http::auth::conn_of` is `None` on
@@ -68,6 +68,15 @@
 //! connection takes the seat again or it goes idle, so nobody who arrives
 //! first after a wake takes it, and presence chips do not empty while tabs
 //! report again.
+//!
+//! # App data
+//!
+//! Each artifact's app data is in its own object (`crate::app_data`): the
+//! server's `AppState::app_data` is `MovingAppData` over
+//! `crate::app_data::WorkerAppData`, as the daemon's is over its files, so
+//! an artifact's rows still in the instance's database move to its object
+//! at its first call. When an artifact is deleted (`Event::ArtifactDeleted`)
+//! its object's storage is erased ([`erase_deleted`]).
 //!
 //! # Pushes
 //!
@@ -118,6 +127,7 @@ use std::sync::Arc;
 
 use clax_core::Home;
 use clax_core::content::ContentStore;
+use clax_http::host::SiteHosts;
 use clax_http::identity::SocketCredentials;
 use clax_http::state::AppState;
 use clax_realtime::stream::Conn;
@@ -385,16 +395,7 @@ fn hosted(env: &Env) -> Result<Option<Arc<clax_http::hosted::Hosted>>> {
             ))
         })?
         .behind_cloudflare(true);
-    let content = var(env, "CONTENT_ORIGIN");
-    let h = if content.is_empty() {
-        h
-    } else {
-        h.with_retired_content_origin(&content).ok_or_else(|| {
-            rust_err(format!(
-                "CONTENT_ORIGIN must be an origin of its own host, not {content:?}"
-            ))
-        })?
-    };
+    let h = h.with_sites(site_hosts(env).map_err(rust_err)?);
     // GitHub sign-in: on with `GITHUB_CLIENT_ID` and the secret
     // `GITHUB_CLIENT_SECRET`; `OWNER_GITHUB` names the owner's login;
     // `GITHUB_OAUTH_BASE` and `GITHUB_API_BASE` point a test at a fake.
@@ -429,92 +430,45 @@ fn hosted(env: &Env) -> Result<Option<Arc<clax_http::hosted::Hosted>>> {
     Ok(Some(Arc::new(h)))
 }
 
-/// What the instance says about the Clax app: its app links
-/// (`APPLE_TEAM_ID`; `ANDROID_PACKAGE` with `ANDROID_SHA256`) and store
-/// pages (`IOS_STORE_URL`, `ANDROID_STORE_URL`); none without them, and
-/// an error for a value [`clax_core::config::ClaxApp::from_settings`]
-/// refuses.
-fn clax_app(env: &Env) -> Result<clax_core::config::ClaxApp> {
-    let opt = |name: &str| Some(var(env, name)).filter(|v| !v.is_empty());
-    clax_core::config::ClaxApp::from_settings(
-        opt("APPLE_TEAM_ID").as_deref(),
-        opt("ANDROID_PACKAGE").as_deref(),
-        opt("ANDROID_SHA256").as_deref(),
-        opt("IOS_STORE_URL").as_deref(),
-        opt("ANDROID_STORE_URL").as_deref(),
+/// The site hosts of a hosted instance (see the module docs): under
+/// `SITE_DOMAIN`, else `None` (`<artifact ID>.localhost`, as without
+/// `HOSTED`). The Worker classifies every request by them before any route
+/// (`crate::fetch`), and the instance's hosted mode serves sites under them.
+pub(crate) fn site_hosts(env: &Env) -> std::result::Result<Option<SiteHosts>, String> {
+    sites_of(
+        var(env, "HOSTED") == "1",
+        &var(env, "SITE_DOMAIN"),
+        &var(env, "PUBLIC_ORIGIN"),
     )
-    .map_err(rust_err)
 }
 
-/// ClaxBot's state for the routes and its driver (`crate::bot`), as the
-/// daemon's `clax_server::bot::driver` makes them: the key-encryption key
-/// from the `CLAX_KEK` secret alone (never a plain var; unset or not a
-/// key: no key is stored or opened, the key routes answer 503 `no_kek`
-/// and a send to ClaxBot is refused `not_configured`), no configured
-/// overrides and no environment key; the Worker Loader sandbox, made
-/// first (when it cannot be, ClaxBot is off: `enabled` is false and a send
-/// is refused `not_configured`); the server's host; and a driver of its
-/// own ID, installed as the routes' run seam.
-fn worker_bot(env: &Env, app: &mut AppState) -> crate::bot::WorkerBot {
-    let kek_secret = env
-        .secret("CLAX_KEK")
-        .map(|v| v.to_string())
-        .unwrap_or_default();
-    let kek = match crate::bot::kek_of(&kek_secret) {
-        Ok(Some(k)) => Some(k),
-        Ok(None) => {
-            worker::console_warn!("CLAX_KEK is not set: ClaxBot stores and opens no model key");
-            None
+/// [`site_hosts`] from the vars' values: an empty `domain`, or any when not
+/// `hosted`, is `None`; `domain` must be a bare domain name that is neither
+/// `public`'s host nor a domain above or under it, the rule
+/// `[hosted] site_domain` follows (`clax_core::config::hosted_site_domain`).
+fn sites_of(
+    hosted: bool,
+    domain: &str,
+    public: &str,
+) -> std::result::Result<Option<SiteHosts>, String> {
+    use clax_core::config::{SiteDomainError, hosted_site_domain};
+    if !hosted || domain.is_empty() {
+        return Ok(None);
+    }
+    let domain = hosted_site_domain(domain, public).map_err(|e| match e {
+        SiteDomainError::NotBare => {
+            format!("SITE_DOMAIN must be a bare domain name such as clax.run, not {domain:?}")
         }
-        Err(why) => {
-            worker::console_error!("{why}: ClaxBot stores and opens no model key");
-            None
-        }
-    };
-    let sandbox = crate::bot::sandbox(env).map_err(|e| {
-        worker::console_error!("ClaxBot is off: its sandbox could not be made: {e}");
-    });
-    let enabled = sandbox.is_ok();
-    let sandbox = sandbox.unwrap_or_else(|()| Arc::new(clax_server::bot::UnavailableSandbox));
-    let first = crate::bot::routes_bot(kek, enabled, Arc::new(clax_http::bot::NoRuns));
-    let (events, views, keys) = (first.events.clone(), first.views.clone(), first.keys());
-    app.bot = Arc::new(first);
-    // The server's own host, over the state the routes see.
-    let server_host = Arc::new(clax_server::bot::ServerHost::new(app.clone()));
-    let host: Arc<dyn clax_bot::BotHost> = server_host.clone();
-    let (bot, kicks) = crate::bot::WorkerBot::new(crate::bot::Parts {
-        store: app.store.clone(),
-        sandbox,
-        host,
-        enabled,
-        keys: keys.clone(),
-        events: events.clone(),
-        resume_after: resume_after(env),
-    });
-    // A run's end may start a follow-up: it goes to the driver as the
-    // routes' wakes do, and wants the alarm.
-    server_host.set_runs(kicks.clone());
-    app.bot = Arc::new(clax_http::bot::Bot {
-        kek: keys.kek,
-        env_key: None,
-        enabled,
-        views,
-        runs: kicks,
-        events,
-    });
-    bot
-}
-
-/// How far ahead the alarm is kept while ClaxBot drives:
-/// `crate::bot::RESUME_AFTER`, or with the test routes on,
-/// `CLAX_TEST_RESUME_AFTER_MS` (a test that waits for a resume from the
-/// alarm alone).
-fn resume_after(env: &Env) -> std::time::Duration {
-    let set = (var(env, "CLAX_TEST_ROUTES") == "1")
-        .then(|| var(env, "CLAX_TEST_RESUME_AFTER_MS").parse::<u64>().ok())
-        .flatten()
-        .filter(|ms| *ms >= 1_000);
-    set.map_or(crate::bot::RESUME_AFTER, std::time::Duration::from_millis)
+        SiteDomainError::SharesPublicHost {
+            domain,
+            public_host,
+        } => format!(
+            "SITE_DOMAIN {domain:?} must not be PUBLIC_ORIGIN's host {public_host}, a domain above it or one under it"
+        ),
+    })?;
+    SiteHosts::new(&domain)
+        .map(Some)
+        .ok_or_else(|| format!("SITE_DOMAIN {domain:?} is not a site domain"))
 }
 
 /// The seats and presence the object keeps across a wake.
@@ -542,6 +496,10 @@ impl Instance {
         let clock: Arc<dyn clax_core::working::Clock> = Arc::new(clax_core::working::SystemClock);
         let store =
             Arc::new(Store::open_on(&home, conn, clock.clone(), content).map_err(rust_err)?);
+        let app_data = Arc::new(clax_http::app_data_host::MovingAppData::new(
+            crate::app_data::WorkerAppData::new(env.clone()),
+            store.clone(),
+        ));
         let token = owner_token(state, env)?;
         let public = var(env, "PUBLIC_ORIGIN");
         let base = if public.is_empty() {
@@ -576,21 +534,9 @@ impl Instance {
             embed: None,
         })
         .map_err(rust_err)?;
-        app.clax_app = Arc::new(clax_app(env)?);
-        // A test's scripted provider listens on a loopback http port; only
-        // the test vars, never a setting an admin reaches, let the key go
-        // there (the Worker otherwise sends it to public https hosts alone).
-        if var(env, "CLAX_TEST_ROUTES") == "1" && var(env, "CLAX_TEST_LOOPBACK_PROVIDER") == "1" {
-            app.store.set_base_url_policy(
-                clax_store::bot_settings::BaseUrlPolicy::HostedLoopbackForTests,
-            );
-        }
-        // What `/healthz` reports: the commit the Worker was built from
-        // (`CLAX_BUILD_COMMIT` in the build's environment, which deploy.mjs
-        // sets) and the deploy's build identity (the `CLAX_BUILD` var).
-        clax_core::set_build_commit(BUILD_COMMIT);
-        app.build = Some(var(env, "CLAX_BUILD")).filter(|b| !b.is_empty());
-        let bot = worker_bot(env, &mut app);
+        // Each artifact's object, not the default (no stores on wasm32).
+        app.app_data = app_data;
+        erase_deleted(&app);
         app.seats
             .set_limits(clax_core::seats::SeatLimits::from_env(|k| {
                 Some(var(env, k)).filter(|v| !v.is_empty())
@@ -738,6 +684,37 @@ impl Instance {
             *self.kept.borrow_mut() = json;
         }
     }
+}
+
+/// Erases each deleted artifact's store (`AppDataHost::erase`: its object's
+/// storage) as the instance publishes its deletion, from a task of its own.
+fn erase_deleted(app: &AppState) {
+    use tokio::sync::broadcast::error::RecvError;
+    let mut rx = app.events.subscribe();
+    let host = app.app_data.clone();
+    wasm_bindgen_futures::spawn_local(async move {
+        loop {
+            let aid = match rx.recv().await {
+                Ok(e) => match e.event {
+                    clax_core::Event::ArtifactDeleted { artifact_id } => artifact_id,
+                    _ => continue,
+                },
+                Err(RecvError::Lagged(n)) => {
+                    worker::console_error!(
+                        "{n} events passed unread: a deleted artifact's store may be kept"
+                    );
+                    continue;
+                }
+                Err(RecvError::Closed) => return,
+            };
+            let Ok(id) = clax_core::ArtifactId::parse(&aid) else {
+                continue;
+            };
+            if let Err(e) = host.erase(&id).await {
+                worker::console_error!("the store of deleted artifact {aid} was not erased: {e}");
+            }
+        }
+    });
 }
 
 /// A room socket's artifact, from its attachment.
@@ -1228,12 +1205,15 @@ impl InstanceDo {
     /// - `POST /_worker/hibernate` drops the server and builds it again on
     ///   the same storage, as a wake from hibernation does, keeping the
     ///   sockets;
-    /// - `GET /_worker/alarm`: `{alarm, now, bot}`, the time the object's
-    ///   alarm is set for (ms, `null` with none), the object's time, and
-    ///   when ClaxBot's driver wants the alarm (`null`: never);
-    /// - `GET` and `POST /_worker/sandbox`: the ClaxBot sandbox's
-    ///   conformance cases against the Worker Loader sandbox, run on this
-    ///   object (`crate::sandbox::checks`).
+    /// - `GET /_worker/alarm`: `{alarm, now}`, the time the object's alarm
+    ///   is set for (ms, `null` with none) and the object's time;
+    /// - `GET /_worker/app-data?artifact=<ID>&path=<doc path>`: where the
+    ///   artifact's documents are: `{instance_docs, object_store,
+    ///   object_doc}`, the documents the instance's database still holds
+    ///   for it, whether its object holds a store, and the document at
+    ///   `path` there, read from the object directly (not through the move).
+    ///
+    /// On a site host they are the site's paths, as every path is.
     async fn test_route(
         &self,
         inst: &Rc<Instance>,
@@ -1242,28 +1222,27 @@ impl InstanceDo {
         let path = req.uri().path();
         if !matches!(
             path,
-            "/_worker/hibernate" | "/_worker/alarm" | "/_worker/sandbox"
+            "/_worker/hibernate" | "/_worker/alarm" | "/_worker/app-data"
         ) || var(&self.env, "CLAX_TEST_ROUTES") != "1"
         {
+            return None;
+        }
+        let host = req
+            .headers()
+            .get(axum::http::header::HOST)
+            .and_then(|h| h.to_str().ok())
+            .unwrap_or("");
+        if inst.app.sites().target(host).is_some() {
             return None;
         }
         if !clax_http::auth::has_token(req.headers(), &inst.app.token) {
             return Some(Response::error("the token is required", 401));
         }
-        if path == "/_worker/sandbox" {
-            #[cfg(target_arch = "wasm32")]
-            {
-                let query = req.uri().query().unwrap_or_default().to_string();
-                return crate::sandbox::checks::route(
-                    &self.env,
-                    path,
-                    req.method().as_str(),
-                    &query,
-                )
-                .await;
-            }
-            #[cfg(not(target_arch = "wasm32"))]
-            return None;
+        if path == "/_worker/app-data" {
+            return Some(
+                self.app_data_probe(inst, req.uri().query().unwrap_or(""))
+                    .await,
+            );
         }
         if path == "/_worker/alarm" {
             let alarm = match self.state.storage().get_alarm().await {
@@ -1291,6 +1270,44 @@ impl InstanceDo {
         let _ = self.inner.replace(Ok(fresh));
         self.revived.set(false);
         Some(Response::ok("rebuilt"))
+    }
+
+    /// `GET /_worker/app-data` (see [`InstanceDo::test_route`]).
+    async fn app_data_probe(&self, inst: &Rc<Instance>, query: &str) -> Result<Response> {
+        use clax_http::app_data_host::AppDataHost;
+        use clax_store::app_data::{AppDataOp, WireCaller};
+        let url = worker::Url::parse(&format!("http://probe/?{query}")).map_err(rust_err)?;
+        let arg = |name: &str| {
+            url.query_pairs()
+                .find(|(k, _)| k == name)
+                .map(|(_, v)| v.into_owned())
+                .unwrap_or_default()
+        };
+        let Ok(aid) = clax_core::ArtifactId::parse(&arg("artifact")) else {
+            return Response::error("not an artifact ID", 400);
+        };
+        let id = aid.clone();
+        let instance_docs = match inst.app.store.call(move |st| st.export_app_data(&id)).await {
+            Ok(rows) => rows.docs.len(),
+            Err(e) => return Response::error(format!("{e}"), 500),
+        };
+        let owner = clax_core::db::Caller::new(clax_core::db::Level::Owner, None);
+        let get = AppDataOp::Get {
+            caps: serde_json::json!({"db": {}}),
+            path: arg("path"),
+            caller: WireCaller::from(&owner),
+        };
+        let direct = crate::app_data::WorkerAppData::new(self.env.clone());
+        let (store, doc) = match direct.call(&aid, get).await.and_then(|r| r.into_doc()) {
+            Ok(d) => (true, d.map(|(doc, _)| doc)),
+            Err(clax_core::CoreError::NotFound) => (false, None),
+            Err(e) => return Response::error(format!("{e}"), 500),
+        };
+        Response::from_json(&serde_json::json!({
+            "instance_docs": instance_docs,
+            "object_store": store,
+            "object_doc": doc,
+        }))
     }
 }
 
@@ -1576,6 +1593,28 @@ mod tests {
         let e = checked_token("short").unwrap_err();
         assert!(e.contains("CLAX_TOKEN") && e.contains("32"), "{e}");
         assert!(checked_token(&"a".repeat(MIN_TOKEN_CHARS)).is_ok());
+    }
+
+    #[test]
+    fn the_site_domain_follows_the_hosted_rule() {
+        let public = "https://clax.example.com";
+        let run = sites_of(true, "Clax.Run", public).unwrap().unwrap();
+        assert_eq!(run.domain(), "clax.run");
+        assert_eq!(sites_of(true, "", public), Ok(None));
+        assert_eq!(sites_of(false, "clax.run", public), Ok(None));
+        let local = sites_of(true, "localhost", "http://localhost:8787").unwrap();
+        assert_eq!(local.unwrap().domain(), "localhost");
+        for shared in ["clax.example.com", "example.com", "sites.clax.example.com"] {
+            let e = sites_of(true, shared, public).unwrap_err();
+            assert!(
+                e.contains("SITE_DOMAIN") && e.contains("PUBLIC_ORIGIN"),
+                "{shared}: {e}"
+            );
+        }
+        for bad in ["https://clax.run", "clax.run:443", ".clax.run", "10.0.0.1"] {
+            let e = sites_of(true, bad, public).unwrap_err();
+            assert!(e.contains("bare domain name"), "{bad}: {e}");
+        }
     }
 
     #[test]

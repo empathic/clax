@@ -960,7 +960,7 @@ async fn without_site_origins(
         _ => host,
     };
     if name.eq_ignore_ascii_case("localhost") || name == "127.0.0.1" {
-        return ApiError::not_found().into_response();
+        return clax_http::error::ApiError::not_found().into_response();
     }
     next.run(req).await
 }

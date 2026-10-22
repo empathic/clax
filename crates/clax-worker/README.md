@@ -25,8 +25,9 @@ refuses to run without it, `build.rs`, and recompiles when it changes), then
   for the jj clone check);
 - `node e2e.mjs`: the instance in two browsers with the owner token;
 - `node e2e-hosted.mjs`: the instance as a hosted Clax: setup, an invite, a
-  sign-in link, an agent token on `/mcp`, a guest, content on its own
-  origin, live pointers, a spectator, and seats across a simulated wake;
+  sign-in link, an agent token on `/mcp`, a guest, each artifact's site
+  on its own host (`SITE_DOMAIN=localhost`), app data in each artifact's
+  object, live pointers, a spectator, and seats across a simulated wake;
 - `node smoke-remote.mjs --local`: the deployed instance's smoke (below)
   against a fresh hosted `wrangler dev --local` with `REPO_STORE=memory`.
 
@@ -196,6 +197,7 @@ account.
 |---|---|---|
 | `CLAX_INSTANCE_DO` | Durable Object (`InstanceDo`, SQLite-backed) | One Clax instance: its database (through the VFS), its sockets, its alarm |
 | `REPO` | Durable Object (`RepoDO`, SQLite-backed) | The git stand-in's repositories (`REPO_STORE=memory`) and the repository token ledger in both modes |
+| `APP_DATA` | Durable Object (`AppDataDo`, SQLite-backed) | One artifact's app data (the `db` capability's documents, leases and their audit records), one object per artifact named by its ID (`src/app_data.rs`); only the instance's object calls it |
 | `CLAX_DB` | Durable Object (`ClaxDb`) | The VFS spike; reached only with `CLAX_TEST_ROUTES=1` |
 | `ASSETS` | R2 bucket `clax-assets` | Artifact assets, in both `REPO_STORE` modes |
 | `ARTIFACTS` | Cloudflare Artifacts, namespace `clax` | Artifact versions as git repositories, when `REPO_STORE=artifacts` |
@@ -226,14 +228,13 @@ npx wrangler queues subscription create clax-artifacts-events --source artifacts
 |---|---|---|
 | `HOSTED` | `1` | A hosted Clax: browser sign-in, people's rights, guests, agent tokens |
 | `PUBLIC_ORIGIN` | `https://clax.example.com` | Where people reach Clax; every link the server writes names it |
-| `CONTENT_ORIGIN` | `https://content.clax.example.com` | Where artifact content is served, and nothing else |
+| `SITE_DOMAIN` | `clax.run` (`deploy.mjs --site-domain`) | Each artifact's site is served at `<artifact ID>.<SITE_DOMAIN>`; empty serves sites at `<artifact ID>.localhost` |
 | `REPO_STORE` | `artifacts` (or `memory`) | Where versions are kept |
 | `GIT_SMART_HTTP` | `0` with `artifacts` | `1` serves the stand-in over git smart HTTP at `/git/*` |
 | `CLAX_INSTANCE` | empty | The instance object's name (`default`) |
 | `CLAX_LIVE_PEOPLE_SEATS`, `CLAX_LIVE_GUEST_SEATS`, `CLAX_LIVE_AGENT_SEATS`, `CLAX_LIVE_SEAT_IDLE_S` | empty | Live seats per artifact and the idle release; empty takes 100, 20, 20 and 180 s |
 | `CLAX_TEST_ROUTES`, `REPO_DEV_ROUTES` | `0` | Test-only routes; never `1` on a deploy |
 | `CLAX_DIAG_ROUTES` | `0`; `1` (`deploy.mjs --diag`) only until the smoke is green | `/_diag/` for the owner token (`src/diag.rs`): what the platform's bindings answer |
-
 | `GITHUB_CLIENT_ID` | the OAuth App's client ID (`deploy.mjs --github-client-id`) | GitHub sign-in; off without it or without `GITHUB_CLIENT_SECRET` |
 | `OWNER_GITHUB` | the owner's GitHub login (`deploy.mjs --owner-github`) | Whoever signs in as that account (case-insensitive) is the owner |
 | `MEMBER_MAX_ARTIFACTS` | empty | The most live artifacts a GitHub member keeps; empty takes 200 |
@@ -246,12 +247,13 @@ npx wrangler queues subscription create clax-artifacts-events --source artifacts
 
 Set them in `wrangler.jsonc`'s `vars` or with `--var` on `wrangler deploy`.
 A hosted instance whose `PUBLIC_ORIGIN` is not an `https://` origin (or
-`http://` on localhost), or whose `CONTENT_ORIGIN` shares its host, does not
-start: every request answers 500 naming the var.
-
-`SITE_DOMAIN` (the site domain, e.g. `clax.run`) replaces `CONTENT_ORIGIN`
-once the Worker reads it; `deploy.mjs` already writes `SITE_DOMAIN` and
-refuses a deploy until this checkout's Worker reads it.
+`http://` on localhost), or whose `SITE_DOMAIN` is not a bare domain name
+or is `PUBLIC_ORIGIN`'s host, a domain above it or one under it (the rule
+of the daemon's `[hosted] site_domain`; `localhost` under a `localhost`
+public origin is allowed), does not start: every request answers 500
+naming the var. On a site host the Worker serves that artifact's site and
+nothing else: its own routes (`/git/`, `/_diag/`, `/_dev/repos/`, `/do/`)
+and the instance's API are the site's paths there (`src/lib.rs`).
 
 ### Secrets
 

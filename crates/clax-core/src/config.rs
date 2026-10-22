@@ -761,6 +761,24 @@ impl HomeConfig {
             stores.and_then(|s| s.android.as_deref()),
         )
         .map_err(|e| bad("app_links", e))?;
+        let site_domain = match t.site_domain.as_deref() {
+            None => None,
+            Some(d) => Some(hosted_site_domain(d, &public_origin).map_err(|e| match e {
+                SiteDomainError::NotBare => bad(
+                    "site_domain",
+                    format!("site_domain must be a bare domain name such as clax.run, not \"{d}\""),
+                ),
+                SiteDomainError::SharesPublicHost {
+                    domain,
+                    public_host,
+                } => bad(
+                    "site_domain",
+                    format!(
+                        "site_domain \"{domain}\" must not be public_origin's host {public_host}, a domain above it or one under it"
+                    ),
+                ),
+            })?),
+        };
         Ok(Some(HostedConfig {
             public_origin,
             setup_secret_env,
@@ -769,6 +787,7 @@ impl HomeConfig {
             member_max_artifacts: t.member_max_artifacts.unwrap_or(DEFAULT_MAX_ARTIFACTS),
             public_gallery: t.public_gallery.unwrap_or(false),
             legal,
+            site_domain,
             clax_app,
         }))
     }
@@ -1050,6 +1069,116 @@ pub struct HostedConfig {
     /// `<id>.<site_domain>` (`site_domain`, normalized by [`site_domain`]);
     /// `None` serves sites at `<id>.localhost` alone.
     pub site_domain: Option<String>,
+    /// What the instance says about the Clax app (`app_links` and
+    /// `stores`): none of it when absent.
+    pub clax_app: ClaxApp,
+}
+
+/// The Clax app's bundle ID on iOS and macOS, which the Apple app site
+/// association names after the team ID.
+pub const APPLE_BUNDLE_ID: &str = "dev.empathic.clax";
+
+/// What a hosted Clax says about the Clax app: the app links its
+/// `/.well-known` files declare, and the store pages its Get in Clax page
+/// offers (`[hosted] app_links = {apple_team_id, android_package,
+/// android_sha256}` and `stores = {ios, android}`, every key optional).
+#[derive(Clone, Debug, Default, PartialEq, Eq)]
+pub struct ClaxApp {
+    /// The Apple developer team ID that signs the app (10 uppercase
+    /// letters and digits): `/.well-known/apple-app-site-association`
+    /// names `<team>.`[`APPLE_BUNDLE_ID`]. `None` serves no such file.
+    pub apple_team_id: Option<String>,
+    /// The Android app's package and its signing certificate's SHA-256
+    /// fingerprint (32 uppercase hex bytes joined by `:`):
+    /// `/.well-known/assetlinks.json` names them. `None` serves no such file.
+    pub android: Option<AndroidApp>,
+    /// The App Store page of the app (an `https://` URL).
+    pub ios_store: Option<String>,
+    /// The Play Store page of the app (an `https://` URL).
+    pub android_store: Option<String>,
+}
+
+/// [`ClaxApp::android`].
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct AndroidApp {
+    pub package: String,
+    pub sha256: String,
+}
+
+impl ClaxApp {
+    /// The settings as given (empty counts as absent): a team ID of 10
+    /// uppercase letters and digits; a package (dot-separated Java
+    /// identifiers) and a fingerprint (32 hex bytes joined by `:`, read
+    /// in any case and kept in uppercase) together or neither; store pages
+    /// as `https://` URLs.
+    pub fn from_settings(
+        apple_team_id: Option<&str>,
+        android_package: Option<&str>,
+        android_sha256: Option<&str>,
+        ios_store: Option<&str>,
+        android_store: Option<&str>,
+    ) -> std::result::Result<ClaxApp, String> {
+        fn set(v: Option<&str>) -> Option<&str> {
+            v.map(str::trim).filter(|v| !v.is_empty())
+        }
+        let team = set(apple_team_id);
+        if let Some(t) = team {
+            let ok = t.len() == 10
+                && t.bytes()
+                    .all(|b| b.is_ascii_uppercase() || b.is_ascii_digit());
+            if !ok {
+                return Err(format!(
+                    "apple_team_id is 10 uppercase letters and digits, not \"{t}\""
+                ));
+            }
+        }
+        let android = match (set(android_package), set(android_sha256)) {
+            (None, None) => None,
+            (Some(p), Some(f)) => {
+                let ident = |s: &str| {
+                    s.chars().next().is_some_and(|c| c.is_ascii_alphabetic())
+                        && s.chars().all(|c| c.is_ascii_alphanumeric() || c == '_')
+                };
+                if !(p.contains('.') && p.split('.').all(ident)) {
+                    return Err(format!(
+                        "android_package is a package name such as dev.empathic.clax, not \"{p}\""
+                    ));
+                }
+                let f = f.to_ascii_uppercase();
+                let parts: Vec<&str> = f.split(':').collect();
+                let ok = parts.len() == 32
+                    && parts
+                        .iter()
+                        .all(|h| h.len() == 2 && h.bytes().all(|b| b.is_ascii_hexdigit()));
+                if !ok {
+                    return Err(
+                        "android_sha256 is a SHA-256 fingerprint: 32 hex bytes joined by ':'"
+                            .into(),
+                    );
+                }
+                Some(AndroidApp {
+                    package: p.into(),
+                    sha256: f,
+                })
+            }
+            _ => return Err("android_package and android_sha256 go together".into()),
+        };
+        let store = |name: &str, v: Option<&str>| match set(v) {
+            None => Ok(None),
+            Some(u) if u.to_ascii_lowercase().starts_with("https://") && base_url_ok(u) => {
+                Ok(Some(u.to_string()))
+            }
+            Some(u) => Err(format!(
+                "stores.{name} must be an https:// URL, not \"{u}\""
+            )),
+        };
+        Ok(ClaxApp {
+            apple_team_id: team.map(str::to_string),
+            android,
+            ios_store: store("ios", ios_store)?,
+            android_store: store("android", android_store)?,
+        })
+    }
 }
 
 /// The Terms of Service and Privacy Policy a hosted Clax shows: linked
@@ -1179,6 +1308,23 @@ struct HostedTable {
     privacy_url: Option<String>,
     legal_version: Option<String>,
     site_domain: Option<String>,
+    app_links: Option<AppLinksTable>,
+    stores: Option<StoresTable>,
+}
+
+#[derive(Deserialize)]
+#[serde(deny_unknown_fields)]
+struct AppLinksTable {
+    apple_team_id: Option<String>,
+    android_package: Option<String>,
+    android_sha256: Option<String>,
+}
+
+#[derive(Deserialize)]
+#[serde(deny_unknown_fields)]
+struct StoresTable {
+    ios: Option<String>,
+    android: Option<String>,
 }
 
 /// `domain` as a site domain ([`HostedConfig::site_domain`]): lowercased,
@@ -1211,6 +1357,41 @@ fn nested_names(a: &str, b: &str) -> bool {
     a == b || under(a, b) || under(b, a)
 }
 
+/// Why [`hosted_site_domain`] refused a site domain.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub enum SiteDomainError {
+    /// Not a bare host name ([`site_domain`]).
+    NotBare,
+    /// `domain` is the public origin's host `public_host`, a domain above
+    /// it or one under it.
+    SharesPublicHost { domain: String, public_host: String },
+}
+
+/// `domain` as the site domain of a hosted instance whose public origin is
+/// `public_origin` (`[hosted] site_domain`, the Worker's `SITE_DOMAIN`):
+/// [`site_domain`]'s form, sharing nothing with the public origin: not its
+/// host, nor a name above or below it. `localhost` under a `localhost`
+/// public origin is the exception: the names reach this machine alone, so
+/// no registrable domain is shared.
+pub fn hosted_site_domain(
+    domain: &str,
+    public_origin: &str,
+) -> std::result::Result<String, SiteDomainError> {
+    let domain = site_domain(domain).ok_or(SiteDomainError::NotBare)?;
+    let public_host = url::Url::parse(public_origin)
+        .ok()
+        .and_then(|u| u.host_str().map(str::to_ascii_lowercase))
+        .unwrap_or_default();
+    let loopback = domain == "localhost" && public_host == "localhost";
+    if !loopback && nested_names(&domain, &public_host) {
+        return Err(SiteDomainError::SharesPublicHost {
+            domain,
+            public_host,
+        });
+    }
+    Ok(domain)
+}
+
 /// `origin` as hosted mode takes it ([`HostedConfig::public_origin`]): its
 /// normalized serialization, or `None` when it is not a bare `https://`
 /// origin or an `http://` one on a loopback name.
@@ -1230,268 +1411,6 @@ pub fn hosted_origin(origin: &str) -> Option<String> {
     let ok =
         bare && u.host().is_some() && (u.scheme() == "https" || (u.scheme() == "http" && local));
     ok.then(|| u.origin().ascii_serialization())
-}
-
-impl HomeConfig {
-    /// `<home_root>/config.toml`; a missing file is an empty config.
-    ///
-    /// # Errors
-    /// `Invalid { code: "bad_config" }` naming the file when it exists but
-    /// cannot be read or does not parse.
-    pub fn load(home_root: &Path) -> Result<HomeConfig> {
-        let path = home_root.join(FILE);
-        let bad = |e: &dyn std::fmt::Display| {
-            CoreError::invalid("bad_config", format!("{}: {e}", path.display()))
-        };
-        let table = match std::fs::read_to_string(&path) {
-            Ok(text) => text.parse::<toml::Table>().map_err(|e| bad(&e))?,
-            Err(e) if e.kind() == std::io::ErrorKind::NotFound => toml::Table::new(),
-            Err(e) => return Err(bad(&e)),
-        };
-        if let Some(serve) = table.get("serve").and_then(|v| v.as_table()) {
-            for key in serve.keys().filter(|k| !SERVE_KEYS.contains(&k.as_str())) {
-                tracing::warn!("{}: unknown key [serve] {key} ignored", path.display());
-            }
-        }
-        Ok(HomeConfig { path, table })
-    }
-
-    /// The top-level `bin` setting, the clax the plugins run (spec §13):
-    /// `None` when absent.
-    ///
-    /// # Errors
-    /// `Invalid { code: "bad_config" }` naming the file and the key when it
-    /// is not a string that [`bin_path_ok`] accepts.
-    pub fn bin(&self) -> Result<Option<std::path::PathBuf>> {
-        let Some(v) = self.table.get("bin") else {
-            return Ok(None);
-        };
-        match v.as_str() {
-            Some(s) if bin_path_ok(s) => Ok(Some(s.into())),
-            _ => Err(CoreError::invalid(
-                "bad_config",
-                format!(
-                    "{}: bin must be an absolute path with no quote, backslash or control character, not {v}",
-                    self.path.display()
-                ),
-            )),
-        }
-    }
-
-    /// `[serve] port`: `None` when absent.
-    ///
-    /// # Errors
-    /// `Invalid { code: "bad_config" }` naming the file and the key when
-    /// `[serve]` is not a table, or the port is not an integer in 1..=65535.
-    pub fn serve_port(&self) -> Result<Option<u16>> {
-        let bad = |what: String| {
-            CoreError::invalid("bad_config", format!("{}: {what}", self.path.display()))
-        };
-        let Some(serve) = self.table.get("serve") else {
-            return Ok(None);
-        };
-        let Some(serve) = serve.as_table() else {
-            return Err(bad(format!(
-                "[serve] must be a table, not {}",
-                serve.type_str()
-            )));
-        };
-        let Some(port) = serve.get("port") else {
-            return Ok(None);
-        };
-        port.as_integer()
-            .and_then(|p| u16::try_from(p).ok())
-            .filter(|p| *p > 0)
-            .map(Some)
-            .ok_or_else(|| {
-                bad(format!(
-                    "[serve] port must be an integer from 1 to 65535, not {port}"
-                ))
-            })
-    }
-
-    /// `[sample]`: the default when absent.
-    ///
-    /// # Errors
-    /// `Invalid { code: "bad_config" }` naming the file and `[sample]` when it
-    /// is not a table, has an unknown key or a mistyped value, names a
-    /// provider other than `anthropic` or `stub`, sets `max_tokens = 0`,
-    /// leaves a model ID empty, or sets a `base_url` that [`base_url_ok`] refuses. The caller turns sampling off; it never stops
-    /// the daemon.
-    pub fn sample(&self) -> Result<SampleConfig> {
-        let bad = |what: String| {
-            CoreError::invalid(
-                "bad_config",
-                format!("{}: [sample] {what}", self.path.display()),
-            )
-        };
-        let Some(v) = self.table.get("sample") else {
-            return Ok(SampleConfig::default());
-        };
-        if !v.is_table() {
-            return Err(bad(format!("must be a table, not {}", v.type_str())));
-        }
-        let s: SampleConfig = v
-            .clone()
-            .try_into()
-            .map_err(|e: toml::de::Error| bad(e.message().to_string()))?;
-        if !matches!(s.provider.as_str(), "anthropic" | "stub") {
-            return Err(bad(format!(
-                "provider is \"anthropic\" or \"stub\", not \"{}\"",
-                s.provider
-            )));
-        }
-        if s.max_tokens == 0 {
-            return Err(bad("max_tokens must be at least 1".into()));
-        }
-        for (tier, id) in [
-            ("quick", &s.models.quick),
-            ("default", &s.models.default),
-            ("complex", &s.models.complex),
-        ] {
-            if id.trim().is_empty() {
-                return Err(bad(format!("models.{tier} is empty")));
-            }
-        }
-        if !base_url_ok(&s.base_url) {
-            return Err(bad(format!(
-                "base_url must be https://, or http:// on localhost, 127.0.0.1 or [::1], not \"{}\"",
-                s.base_url
-            )));
-        }
-        Ok(s)
-    }
-
-    /// `[questions] terminal_after_s` (spec 2026-10-06-agent-questions-and-inbox
-    /// §6.7): how many seconds a mirrored AskUserQuestion waits in Clax
-    /// before the terminal dialog appears; 0 never holds it. Default
-    /// [`TERMINAL_AFTER_S`], clamped to `0..=`[`MAX_TERMINAL_AFTER_S`]; an
-    /// out-of-range or mistyped value is logged.
-    pub fn questions_terminal_after_s(&self) -> u64 {
-        let v = self
-            .table
-            .get("questions")
-            .and_then(|t| t.as_table())
-            .and_then(|t| t.get("terminal_after_s"));
-        match v {
-            None => TERMINAL_AFTER_S,
-            Some(toml::Value::Integer(n)) => {
-                let clamped = (*n).clamp(0, MAX_TERMINAL_AFTER_S as i64);
-                if clamped != *n {
-                    tracing::warn!(
-                        value = *n,
-                        used = clamped,
-                        "questions.terminal_after_s is out of range"
-                    );
-                }
-                clamped as u64
-            }
-            Some(v) => {
-                tracing::warn!(
-                    kind = v.type_str(),
-                    used = TERMINAL_AFTER_S,
-                    "questions.terminal_after_s is not an integer"
-                );
-                TERMINAL_AFTER_S
-            }
-        }
-    }
-}
-
-impl HomeConfig {
-    /// `[hosted]`: `None` when absent (the local daemon).
-    ///
-    /// # Errors
-    /// `Invalid { code: "bad_config" }` naming the file and `[hosted]` when
-    /// it is not a table, has an unknown key or a mistyped value, lacks
-    /// `public_origin`, names an origin [`hosted_origin`] refuses, or names
-    /// an empty `setup_secret_env`. A daemon refuses to start on it: falling
-    /// back to the local daemon would serve the internet as a LAN.
-    pub fn hosted(&self) -> Result<Option<HostedConfig>> {
-        let bad = |what: String| {
-            CoreError::invalid(
-                "bad_config",
-                format!("{}: [hosted] {what}", self.path.display()),
-            )
-        };
-        let Some(v) = self.table.get("hosted") else {
-            return Ok(None);
-        };
-        if !v.is_table() {
-            return Err(bad(format!("must be a table, not {}", v.type_str())));
-        }
-        let t: HostedTable = v
-            .clone()
-            .try_into()
-            .map_err(|e: toml::de::Error| bad(e.message().to_string()))?;
-        let public_origin = hosted_origin(&t.public_origin).ok_or_else(|| {
-            bad(format!(
-                "public_origin must be an https:// origin with no path, or http:// on localhost, 127.0.0.1 or [::1], not \"{}\"",
-                t.public_origin
-            ))
-        })?;
-        let setup_secret_env = t
-            .setup_secret_env
-            .unwrap_or_else(|| SETUP_SECRET_ENV.into());
-        if setup_secret_env.trim().is_empty() {
-            return Err(bad("setup_secret_env is empty".into()));
-        }
-        let github = t
-            .github_client_id
-            .filter(|c| !c.trim().is_empty())
-            .map(|client_id| GitHubConfig {
-                client_id: client_id.trim().to_string(),
-                client_secret_env: t
-                    .github_client_secret_env
-                    .unwrap_or_else(|| GITHUB_CLIENT_SECRET_ENV.into()),
-                owner_login: t.owner_github.filter(|o| !o.trim().is_empty()),
-                api_base: t.github_api_base,
-                oauth_base: t.github_oauth_base,
-            });
-        let legal = Legal::from_settings(
-            t.legal.as_deref(),
-            t.terms_url.as_deref(),
-            t.privacy_url.as_deref(),
-            t.legal_version.as_deref(),
-        )
-        .map_err(bad)?;
-        let site_domain = match t.site_domain.as_deref() {
-            None => None,
-            Some(d) => {
-                let domain = site_domain(d).ok_or_else(|| {
-                    bad(format!(
-                        "site_domain must be a bare domain name such as clax.run, not \"{d}\""
-                    ))
-                })?;
-                // Sites share nothing with the public origin: not its host,
-                // nor a name above or below it. `localhost` under a
-                // `localhost` public origin is the exception: the names
-                // reach this machine alone, so no registrable domain is
-                // shared.
-                let public_host = url::Url::parse(&public_origin)
-                    .ok()
-                    .and_then(|u| u.host_str().map(str::to_ascii_lowercase))
-                    .unwrap_or_default();
-                let loopback = domain == "localhost" && public_host == "localhost";
-                if !loopback && nested_names(&domain, &public_host) {
-                    return Err(bad(format!(
-                        "site_domain \"{domain}\" must not be public_origin's host {public_host}, a domain above it or one under it"
-                    )));
-                }
-                Some(domain)
-            }
-        };
-        Ok(Some(HostedConfig {
-            public_origin,
-            setup_secret_env,
-            behind_cloudflare: t.behind_cloudflare.unwrap_or(false),
-            github,
-            member_max_artifacts: t.member_max_artifacts.unwrap_or(DEFAULT_MAX_ARTIFACTS),
-            public_gallery: t.public_gallery.unwrap_or(false),
-            legal,
-            site_domain,
-        }))
-    }
 }
 
 /// [`HomeConfig::questions_terminal_after_s`] when the key is absent.
@@ -2227,6 +2146,32 @@ mod tests {
             Some(longest)
         );
         assert!(site("site_domain = \"my-clax.run\"\n").is_ok());
+    }
+
+    #[test]
+    fn the_site_domain_rule_is_one_function_for_every_host() {
+        assert_eq!(
+            super::hosted_site_domain("Clax.Run", "https://clax.dev"),
+            Ok("clax.run".to_string())
+        );
+        assert_eq!(
+            super::hosted_site_domain("localhost", "http://localhost:8787"),
+            Ok("localhost".to_string())
+        );
+        assert_eq!(
+            super::hosted_site_domain("https://clax.run", "https://clax.dev"),
+            Err(super::SiteDomainError::NotBare)
+        );
+        for shared in ["clax.dev", "dev", "sites.clax.dev"] {
+            assert_eq!(
+                super::hosted_site_domain(shared, "https://clax.dev"),
+                Err(super::SiteDomainError::SharesPublicHost {
+                    domain: shared.to_string(),
+                    public_host: "clax.dev".to_string(),
+                }),
+                "{shared}"
+            );
+        }
     }
 
     #[test]

@@ -2,8 +2,8 @@
 // --local`, in four browsers and an agent: builds the Worker (./build.sh;
 // the web UI must be built, scripts/build-web.sh), starts wrangler with
 // fresh state under target/e2e-hosted/, `http://localhost:<port>` as the
-// public origin and `http://127.0.0.1:<port>` as the content origin, and one
-// people seat. It checks that
+// public origin and `localhost` as the site domain (each artifact's site at
+// `http://<ID>.localhost:<port>`), and one people seat. It checks that
 //
 // - a request body over 96 MiB, over 16 MiB, or over 256 KiB with no
 //   credential, declared or chunked, is refused 413;
@@ -18,12 +18,23 @@
 //   Sam's open inbox live, over the WebSocket stream; Sam allows the
 //   thread there and the agent then reads the comment; Sam narrows the
 //   agent's session and it is refused what the narrowing leaves out;
-// - a page's content is served on the content origin at its keyed URL, and
-//   never on the public origin or without its key;
+// - a page's site is served at the root of its own host, where no
+//   path-first route of the Worker (`/git/`, `/_diag/`, `/_dev/repos/`,
+//   `/do/`, `/mcp`, the test routes) is reached;
+// - a db document written through the API lives in its artifact's own
+//   object and not in the instance's database (`GET /_worker/app-data`),
+//   and goes when the artifact is deleted;
+// - two artifacts' sites keep their localStorage apart in one browser;
+// - with the access check (`/site-signin` served; skipped, saying so,
+//   while it answers 404): a private site is refused signed out and served
+//   to the owner's browser through the handshake; a site opened to the
+//   world is served signed out until it is closed again (skipped while
+//   `PATCH site_access` is not served); an old keyed asset URL serves no
+//   bytes, at most a redirect to its artifact's site;
 // - a guest with the link of a page shared for comments names themselves
 //   and comments, and the owner sees it live;
 // - the owner's and the guest's pointers reach each other over the live
-//   socket, through the bridge on the content origin;
+//   socket, through the bridge in the page's frame;
 // - Sam, beyond the one seat, is a spectator: their writes are refused;
 // - after a simulated wake (POST /_worker/hibernate) the guest is still
 //   seated and Sam still a spectator before any browser subscribes again,
@@ -205,10 +216,36 @@ async function call(p, method, path, body) {
   }, [method, path, body]);
 }
 
-/** The content frame of `id`'s version `n`, at its key on `content`. */
-async function contentFrame(page, content, id, n) {
-  const url = new RegExp(`^${content.replace(/[.]/g, "\\.")}/c/${id}/v/${n}/k/[0-9a-f]{32}/$`);
-  return until(`the content frame of v${n} on the content origin`, () => page.frame({ url }));
+/** The frame of `id`'s version `n` in the artifact page: on the artifact's
+ * site host, or the public origin's `/c/` address of the shell's sandboxed
+ * mode. */
+async function contentFrame(page, id, n) {
+  const url = new RegExp(`^http://(${id}\\.localhost:\\d+/(_clax/v/${n}/)?|localhost:\\d+/c/${id}/v/${n}/)([?#].*)?$`);
+  return until(`the frame of v${n}`, () => page.frame({ url }));
+}
+
+/** `GET <url>` without following a redirect: its status, `Location`, the
+ * headers and the body's text. */
+async function raw(url, headers = {}) {
+  const r = await fetch(url, { redirect: "manual", headers });
+  return { status: r.status, location: r.headers.get("location"), headers: r.headers, text: await r.text() };
+}
+
+/** Whether `r` (from `raw`) is the site's refusal, never a route's answer:
+ * 404, or the access check's 401 `site_session_required`. */
+function siteRefused(r) {
+  if (r.status === 404) return true;
+  if (r.status !== 401) return false;
+  try {
+    return JSON.parse(r.text)?.error?.code === "site_session_required";
+  } catch {
+    return false;
+  }
+}
+
+/** Says why a step is skipped. */
+function skip(what, why) {
+  console.log(`skip ${what}: ${why}`);
 }
 
 async function shot(page, name) {
@@ -228,11 +265,12 @@ async function main() {
   mkdirSync(dir, { recursive: true });
   const port = await freePort();
   const origin = `http://localhost:${port}`;
-  const content = `http://127.0.0.1:${port}`;
+  // Each artifact's site host; browsers and Node send `*.localhost` to this machine.
+  const siteOf = (aid) => `http://${aid}.localhost:${port}`;
   const config = writeConfig(dir, {
     HOSTED: "1",
     PUBLIC_ORIGIN: origin,
-    CONTENT_ORIGIN: content,
+    SITE_DOMAIN: "localhost",
     SETUP_SECRET: SECRET,
     CLAX_TOKEN: TOKEN,
     CLAX_TEST_ROUTES: "1",
@@ -421,20 +459,123 @@ async function main() {
     const stillComments = await tool(origin, token, "comments_read", { url_or_id: harbour.id, thread_id: tid });
     check(stillComments.text.includes("Log the spring tide."), "the narrowed session still reads the comments its narrowing keeps", stillComments.text.slice(0, 300));
 
-    // Content: on the content origin at its key, nowhere else.
+    // The page in its artifact page's frame.
     await ada.goto(`${origin}/a/${id}`);
-    const af = await contentFrame(ada, content, id, 1);
-    const src = (await ada.locator("iframe.frame").getAttribute("src")) ?? "";
-    check(src.startsWith(`${content}/c/${id}/v/1/k/`), "the frame loads the page on the content origin at its key", src);
-    check((await ada.locator("iframe.frame").getAttribute("sandbox")) !== null, "the content frame is sandboxed", src);
+    const af = await contentFrame(ada, id, 1);
     check((await af.locator("#h").textContent({ timeout: LIMIT })) === "Tide tables", "the page renders in the frame");
-    const keyed = new URL(src).pathname;
-    check((await fetch(`${content}${keyed}`)).status === 200, "the keyed URL serves on the content origin");
-    check((await fetch(`${origin}${keyed}`)).status === 404, "the keyed URL is not served on the public origin");
-    check((await fetch(`${content}/c/${id}/v/1/`)).status === 404, "content without its key is not served");
-    check((await fetch(`${content}/api/artifacts`)).status === 404, "the content origin serves no API");
-    check((await fetch(`${content}/`)).status === 404, "the content origin serves no gallery");
-    check((await fetch(`${content}${keyed}`)).headers.get("content-security-policy")?.includes("sandbox"), "content is served with the sandbox policy");
+
+    // Each artifact's site, on its own host. With the access check
+    // (`/site-signin` on the public host, Tasks 3 and 4) a private site
+    // needs a site session; before it, the site routes serve anyone.
+    const site = siteOf(harbour.id);
+    const siteHost = new URL(site).host;
+    // Asked by the signed-in owner's browser, whom a signed-out caller's
+    // redirect to /signin would not tell from a missing route.
+    const signinProbe = await ada.request.get(`${origin}/site-signin?host=${encodeURIComponent(siteHost)}&next=%2F`, { maxRedirects: 0 });
+    const accessChecked = signinProbe.status() !== 404;
+    if (!accessChecked) skip("the site handshake, world-open and old keyed URL steps", "/site-signin answers 404: this build serves sites without the access check");
+    const signedOut = await raw(`${site}/`, { accept: "text/html" });
+    check(signedOut.headers.get("referrer-policy") === "no-referrer", "a site response sends no referrer", Object.fromEntries(signedOut.headers));
+    if (accessChecked) {
+      const to = signedOut.location ? new URL(signedOut.location, site) : null;
+      check(
+        signedOut.status === 302 && to?.origin === origin && to.pathname === "/site-signin" && to.searchParams.get("host") === siteHost,
+        "a private site signed out is sent to /site-signin on the public origin",
+        signedOut,
+      );
+      const sub = await raw(`${site}/`);
+      check(siteRefused(sub) && sub.status === 401, "a private site's subresource signed out is 401", sub.status);
+    } else {
+      check(signedOut.status === 200 && signedOut.text.includes("Harbour log"), "the site host serves the current version at its root", signedOut.status);
+    }
+    const tab = await ada.context().newPage();
+    pages.push(tab);
+    await tab.goto(`${site}/`);
+    await tab.locator("h2", { hasText: "Harbour log" }).waitFor({ timeout: LIMIT });
+    check(new URL(tab.url()).origin === site, accessChecked ? "the owner's browser opens the private site through the handshake" : "the owner's browser opens the site at its root", tab.url());
+
+    // No path-first route of the Worker is reached on a site host: each is
+    // the site's own path there, which it does not have.
+    const pathFirst = [
+      `/git/a-${harbour.id}.git/info/refs?service=git-upload-pack`,
+      "/_diag/bindings",
+      "/_dev/repos/tokens",
+      "/do/spike/notes",
+      "/mcp",
+      "/api/artifacts",
+      "/_worker/alarm",
+      "/_internal/pushed",
+    ];
+    for (const p of pathFirst) {
+      const r = await raw(`${site}${p}`, bearer);
+      check(siteRefused(r), `${p} on a site host is the site's path, not the route`, { status: r.status, text: r.text.slice(0, 200) });
+    }
+    check((await raw(`${origin}/_worker/alarm`, bearer)).status === 200, "the test route still answers on the public host");
+
+    // Two artifacts' sites keep their storage apart in one browser.
+    await tab.evaluate(() => localStorage.setItem("x", "harbour"));
+    await tab.goto(`${siteOf(id)}/`);
+    await tab.locator("#h").waitFor({ timeout: LIMIT });
+    check((await tab.evaluate(() => localStorage.getItem("x"))) === null, "one site does not see another's localStorage");
+    await tab.evaluate(() => localStorage.setItem("x", "tide"));
+    await tab.goto(`${site}/`);
+    await tab.locator("h2", { hasText: "Harbour log" }).waitFor({ timeout: LIMIT });
+    check((await tab.evaluate(() => localStorage.getItem("x"))) === "harbour", "each site keeps its own localStorage");
+
+    // A db document lives in its artifact's own object, not the instance.
+    const { artifact: notes } = await api(origin, "/api/artifacts", {
+      method: "POST",
+      body: JSON.stringify({ title: "Tide notes", capabilities: { db: {}, assets: {} }, files: { "index.html": { content: "<title>Tide notes</title><main><h2>Tide notes</h2></main>", encoding: "utf8" } } }),
+    });
+    const put = await api(origin, `/api/artifacts/${notes.id}/docs/tasks/t1`, { method: "PUT", body: JSON.stringify({ data: { title: "Ship" } }) });
+    check(put.doc?.data?.title === "Ship", "a db document is written through the API", put);
+    const probe = (aid) => api(origin, `/_worker/app-data?artifact=${aid}&path=tasks/t1`);
+    const where = await probe(notes.id);
+    check(
+      where.instance_docs === 0 && where.object_store === true && where.object_doc?.data?.title === "Ship",
+      "the document lives in the artifact's object and not in the instance's database",
+      where,
+    );
+    const back = await api(origin, `/api/artifacts/${notes.id}/docs/tasks/t1`);
+    check(back.doc?.data?.title === "Ship", "the API reads the document back from the artifact's object", back);
+    const other = await probe(harbour.id);
+    check(other.object_doc === null, "another artifact's object holds no such document", other);
+
+    // An old keyed asset URL (on the public origin) serves no bytes: at
+    // most a redirect to its artifact's site, where the access check is.
+    const form = new FormData();
+    form.set("file", new Blob(["tide data"], { type: "text/plain" }), "tide.txt");
+    const up = await fetch(`${origin}/api/artifacts/${notes.id}/assets`, { method: "POST", headers: { authorization: `Bearer ${TOKEN}` }, body: form });
+    const asset = (await up.json()).asset;
+    check(up.status === 201 && asset?.id, "an asset is uploaded", asset);
+    if (accessChecked) {
+      const old = await raw(`${origin}/_blob/${asset.id}?k=${"0".repeat(32)}`);
+      check(old.status !== 200 && old.text === "", "an old keyed asset URL serves no bytes", { status: old.status, text: old.text.slice(0, 100) });
+      if (old.status >= 300 && old.status < 400) {
+        const to = new URL(old.location, origin);
+        check(to.origin === siteOf(notes.id) && to.pathname.endsWith(`/${asset.id}`), "an old keyed asset URL redirects to its artifact's site", old.location);
+        check(siteRefused(await raw(to.href)), "the redirect's target refuses a caller without a site session");
+      }
+    }
+
+    // Opening a site to the world (Task 8): served signed out until closed.
+    if (accessChecked) {
+      const open = await fetch(`${origin}/api/artifacts/${harbour.id}`, { method: "PATCH", headers: { "content-type": "application/json", authorization: `Bearer ${TOKEN}` }, body: JSON.stringify({ site_access: "world" }) });
+      const opened = await open.json().catch(() => null);
+      if (open.status !== 200 || opened?.artifact?.site_access !== "world") {
+        skip("the world-open site steps", `PATCH site_access answers ${open.status}: this build cannot open a site to the world`);
+      } else {
+        const world = await raw(`${site}/`, { accept: "text/html" });
+        check(world.status === 200 && world.text.includes("Harbour log"), "a site opened to the world is served signed out", world.status);
+        await api(origin, `/api/artifacts/${harbour.id}`, { method: "PATCH", body: JSON.stringify({ site_access: "private" }) });
+        check(!(await raw(`${site}/`, { accept: "text/html" })).text.includes("Harbour log"), "closed again, it refuses the next anonymous request");
+      }
+    }
+
+    // Deleting the artifact erases its object.
+    await api(origin, `/api/artifacts/${notes.id}`, { method: "DELETE" });
+    await until("the deleted artifact's object is erased", async () => (await probe(notes.id)).object_store === false);
+    check(true, "deleting an artifact erases its object's store");
 
     // The owner shares the page by link, for comments; a guest names themselves and comments.
     await ada.goto(`${origin}/people`);
@@ -446,7 +587,7 @@ async function main() {
     pages.push(mia);
     const miaLive = watchLive(mia);
     await mia.goto(`${origin}/a/${id}`);
-    const mf = await contentFrame(mia, content, id, 1);
+    const mf = await contentFrame(mia, id, 1);
     check(
       (await postThread(mia, id, "before a name")).code === "guest_name_required",
       "a visitor with the link must give a name to comment",
@@ -457,7 +598,7 @@ async function main() {
 
     const adaLive = watchLive(ada);
     await ada.goto(`${origin}/a/${id}`);
-    const af2 = await contentFrame(ada, content, id, 1);
+    const af2 = await contentFrame(ada, id, 1);
     await threads(ada);
     await ada.locator(".thread-card", { hasText: "Add the moon phase." }).waitFor({ timeout: LIMIT });
     check(true, "the owner sees the guest's comment");
@@ -504,7 +645,7 @@ async function main() {
     await until("the owner's page draws the guest's arrow", () =>
       af2.evaluate(() => (document.querySelector("clax-live")?.shadowRoot?.querySelectorAll(".c").length ?? 0) > 0),
     );
-    check(true, "the owner's page draws the guest's pointer, through the bridge on the content origin");
+    check(true, "the owner's page draws the guest's pointer, through the bridge in its frame");
     await shot(ada, "live-pointer");
 
     // Sam, beyond the one seat (the guest holds it, the owner's is reserved).

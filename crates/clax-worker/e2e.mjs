@@ -111,7 +111,7 @@ async function comment(page, text) {
 const cardWith = (page, text) => page.locator(".thread-card", { hasText: text });
 
 async function frameText(page, id, n, selector) {
-  const url = new RegExp(`(${id}\\.localhost:\\d+/v/${n}/|/c/${id}/v/${n}/)$`);
+  const url = new RegExp(`(${id}\\.localhost:\\d+/(_clax/)?v/${n}/|/c/${id}/v/${n}/)$`);
   const frame = await until(`the content frame of v${n}`, () => page.frame({ url }));
   return until(`${selector} in the content frame`, () => frame.locator(selector).textContent({ timeout: 1000 }));
 }
