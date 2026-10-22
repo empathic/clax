@@ -3,6 +3,10 @@
 //!
 //! - A site open to the world (`artifacts.site_access`) is read by anyone,
 //!   as a [`SiteCaller::Visitor`], unless a site session names its holder.
+//!   A visitor is known by the visitor cookie ([`VISITOR_COOKIE`], on
+//!   `https` [`SECURE_VISITOR_COOKIE`]: host-only, `HttpOnly`, `Path=/`,
+//!   `SameSite=Lax`, a year), which the first response without one sets:
+//!   it holds a secret, from which [`visitor_id`] derives their ID.
 //! - Any other site needs the site cookie ([`SITE_COOKIE`], on `https`
 //!   [`SECURE_SITE_COOKIE`]), naming a site session
 //!   ([`clax_store::site_sessions`]) of this artifact whose holder may read
@@ -53,29 +57,64 @@ pub const SITE_COOKIE: &str = "clax_site";
 /// sibling host from setting one for this host.
 pub const SECURE_SITE_COOKIE: &str = "__Host-clax_site";
 
-/// The state cookie's name on an `http` site.
-pub const STATE_COOKIE: &str = "clax_site_state";
-/// The state cookie's name on an `https` site: the `__Host-` prefix makes
-/// the browser refuse one with a `Domain` (or another path, or unsecured),
-/// so a sibling site under the site domain cannot plant its own state in a
-/// victim's browser (until the site domain is on the Public Suffix List
-/// such a sibling is same-site).
-pub const SECURE_STATE_COOKIE: &str = "__Host-clax_site_state";
-/// The state cookie's path, as `__Host-` requires.
-pub const STATE_PATH: &str = "/";
-/// How long a handshake's state lasts.
-pub const STATE_TTL_SECS: i64 = 600;
-/// The longest `next` kept ([`safe_next`]).
-pub const MAX_NEXT: usize = 2048;
+/// The visitor cookie's name on an `http` site (a local daemon).
+pub const VISITOR_COOKIE: &str = "clax_visitor";
+/// The visitor cookie's name on an `https` site.
+pub const SECURE_VISITOR_COOKIE: &str = "__Host-clax_visitor";
+/// How long a visitor cookie lasts: a year.
+pub const VISITOR_MAX_AGE_S: u64 = 365 * 24 * 60 * 60;
 
 /// Who a site request reads as ([`site_access_layer`] inserts it).
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub enum SiteCaller {
     /// A site session's holder, who may read the artifact.
     Holder(Holder),
-    /// Anyone, on a site open to the world: their visitor ID (empty until
-    /// the site mints them one).
+    /// Anyone, on a site open to the world: their visitor ID
+    /// ([`visitor_id`]), stable per browser and per site.
     Visitor(String),
+}
+
+/// The visitor cookie's name: [`SECURE_VISITOR_COOKIE`] when `secure`, else
+/// [`VISITOR_COOKIE`].
+pub fn visitor_cookie_name(secure: bool) -> &'static str {
+    if secure {
+        SECURE_VISITOR_COOKIE
+    } else {
+        VISITOR_COOKIE
+    }
+}
+
+/// `Set-Cookie` for visitor secret `value`: host-only, `Path=/`, `HttpOnly`,
+/// `SameSite=Lax` (`Secure` when `secure`), for [`VISITOR_MAX_AGE_S`].
+pub fn visitor_cookie(secure: bool, value: &str) -> HeaderValue {
+    let name = visitor_cookie_name(secure);
+    let tail = if secure {
+        "; Secure; SameSite=Lax"
+    } else {
+        "; SameSite=Lax"
+    };
+    HeaderValue::from_str(&format!(
+        "{name}={value}; Path=/; Max-Age={VISITOR_MAX_AGE_S}; HttpOnly{tail}"
+    ))
+    .expect("visitor secrets are header-safe")
+}
+
+/// Whether `v` has the form of a visitor secret: 43 base64url characters
+/// ([`clax_core::secret::token`] with no prefix).
+fn visitor_secret_ok(v: &str) -> bool {
+    v.len() == 43
+        && v.bytes()
+            .all(|b| b.is_ascii_alphanumeric() || b == b'-' || b == b'_')
+}
+
+/// The visitor ID the cookie's secret stands for on artifact `aid`'s site:
+/// `v_` and 22 lowercase hex characters of the SHA-256 of both. The cookie
+/// holds the secret, never the ID, so an ID a page shows (a document's
+/// path, the room's presence) cannot be replayed as a cookie; and one
+/// browser's IDs on two sites are unrelated.
+pub fn visitor_id(aid: &ArtifactId, secret: &str) -> String {
+    let h = clax_core::secret::sha256_hex(&format!("{}:{secret}", aid.as_str()));
+    format!("v_{}", &h[..22])
 }
 
 /// Whether the site is served on `https` (the public origin is).
@@ -387,31 +426,44 @@ pub async fn site_access_layer(
         Ok(w) => w,
         Err(e) => return e.into_response(),
     };
-    let caller = match holder {
-        Some(h) => SiteCaller::Holder(h),
-        None if world => SiteCaller::Visitor(String::new()),
-        None if navigation(req.method(), req.headers()) => {
-            let next = req
-                .uri()
-                .path_and_query()
-                .map_or("/", |p| p.as_str())
-                .to_string();
-            return private(signin_redirect(&s, req.headers(), &safe_next(&next)));
+    if world {
+        let secure = secure(&s);
+        let held = cookie_value(req.headers(), visitor_cookie_name(secure))
+            .filter(|v| visitor_secret_ok(v));
+        let minted = held.is_none();
+        let secret = held.unwrap_or_else(|| clax_core::secret::token("").expose().to_string());
+        req.extensions_mut()
+            .insert(SiteCaller::Visitor(visitor_id(&site.artifact, &secret)));
+        let mut res = next.run(req).await;
+        if minted {
+            res.headers_mut()
+                .append(header::SET_COOKIE, visitor_cookie(secure, &secret));
         }
-        None => {
-            return private(
-                ApiError::new(
-                    StatusCode::UNAUTHORIZED,
-                    "site_session_required",
-                    "this artifact's site needs a site session: open it from Clax",
-                )
-                .into_response(),
-            );
-        }
-    };
-    req.extensions_mut().insert(caller);
-    let res = next.run(req).await;
-    if world { res } else { private(res) }
+        return res;
+    }
+    if navigation(req.method(), req.headers()) {
+        let host = req
+            .headers()
+            .get(header::HOST)
+            .and_then(|h| h.to_str().ok())
+            .unwrap_or("");
+        let next = req
+            .uri()
+            .path_and_query()
+            .map_or("/", |p| p.as_str())
+            .to_string();
+        let to = signin_url(&s, host, &next);
+        let mut res = (StatusCode::FOUND, [(header::LOCATION, to)]).into_response();
+        res.headers_mut()
+            .insert(header::CACHE_CONTROL, HeaderValue::from_static("no-store"));
+        return res;
+    }
+    ApiError::new(
+        StatusCode::UNAUTHORIZED,
+        "site_session_required",
+        "this artifact's site needs a site session: open it from Clax",
+    )
+    .into_response()
 }
 
 #[cfg(test)]
@@ -436,76 +488,27 @@ mod tests {
     }
 
     #[test]
-    fn the_state_cookie_is_sent_to_the_session_alone_for_ten_minutes() {
+    fn the_visitor_cookie_lasts_a_year_and_holds_a_secret_not_the_id() {
+        let c = visitor_cookie(true, "s").to_str().unwrap().to_string();
         assert_eq!(
-            state_cookie(true, true, "s").to_str().unwrap(),
-            "__Host-clax_site_state=s; Path=/; Max-Age=600; HttpOnly; Secure; SameSite=None; Partitioned"
+            c,
+            "__Host-clax_visitor=s; Path=/; Max-Age=31536000; HttpOnly; Secure; SameSite=Lax"
         );
+        let local = visitor_cookie(false, "s").to_str().unwrap().to_string();
         assert_eq!(
-            state_cookie(false, false, "s").to_str().unwrap(),
-            "clax_site_state=s; Path=/; Max-Age=600; HttpOnly; SameSite=Lax"
+            local,
+            "clax_visitor=s; Path=/; Max-Age=31536000; HttpOnly; SameSite=Lax"
         );
-        assert!(
-            clear_state_cookie(false, true)
-                .to_str()
-                .unwrap()
-                .starts_with("clax_site_state=; Path=/; Max-Age=0;")
-        );
-        assert_ne!(new_state(), new_state());
-        // On https the state is `__Host-`: host-only, `Path=/`, never a
-        // `Domain`, so no sibling host's cookie can stand for it.
-        for partitioned in [false, true] {
-            let c = state_cookie(true, partitioned, "s")
-                .to_str()
-                .unwrap()
-                .to_string();
-            assert!(c.starts_with("__Host-clax_site_state=s; Path=/;"), "{c}");
-            assert!(c.contains("Secure") && !c.contains("Domain"), "{c}");
-        }
-        let mut h = HeaderMap::new();
-        h.insert(
-            header::COOKIE,
-            HeaderValue::from_static("clax_site_state=planted; __Secure-clax_site_state=planted"),
-        );
-        assert_eq!(state_in(&h, true), None, "a cookie a sibling could set");
-        assert_eq!(state_in(&h, false).as_deref(), Some("planted"));
-        h.insert(
-            header::COOKIE,
-            HeaderValue::from_static("__Host-clax_site_state=mine"),
-        );
-        assert_eq!(state_in(&h, true).as_deref(), Some("mine"));
-    }
-
-    #[test]
-    fn a_private_sites_response_is_private_to_its_browser() {
-        let with = |cache: Option<&str>| {
-            let mut r = Response::new(Body::empty());
-            if let Some(c) = cache {
-                r.headers_mut()
-                    .insert(header::CACHE_CONTROL, HeaderValue::from_str(c).unwrap());
-            }
-            r.headers_mut().insert(
-                header::ACCESS_CONTROL_ALLOW_ORIGIN,
-                HeaderValue::from_static("*"),
-            );
-            let r = private(r);
-            assert!(
-                r.headers()
-                    .get(header::ACCESS_CONTROL_ALLOW_ORIGIN)
-                    .is_none()
-            );
-            r.headers()[header::CACHE_CONTROL]
-                .to_str()
-                .unwrap()
-                .to_string()
-        };
-        assert_eq!(
-            with(Some("public, max-age=31536000, immutable")),
-            "private, max-age=31536000, immutable"
-        );
-        assert_eq!(with(Some("no-cache")), "private, no-cache");
-        assert_eq!(with(Some("no-store")), "no-store");
-        assert_eq!(with(None), "private");
+        let secret = clax_core::secret::token("").expose().to_string();
+        assert!(visitor_secret_ok(&secret));
+        assert!(!visitor_secret_ok("v_0123456789abcdef012345"));
+        let a = ArtifactId::parse("7q3k9mzx2b4t").unwrap();
+        let b = ArtifactId::parse("8q3k9mzx2b4t").unwrap();
+        let id = visitor_id(&a, &secret);
+        assert!(id.starts_with("v_") && id.len() == 24, "{id}");
+        assert_eq!(id, visitor_id(&a, &secret));
+        assert_ne!(id, visitor_id(&b, &secret));
+        assert!(clax_core::db::doc_path(&format!("data/users/{id}/n")).is_ok());
     }
 
     #[test]

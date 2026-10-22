@@ -242,7 +242,8 @@ async fn an_unknown_clax_path_is_404() {
     for path in [
         "/_clax/nope",
         "/_clax/v/x/",
-        "/_clax/api/docs",
+        "/_clax/api/nope",
+        "/_clax/api/threads",
         "/_clax/blob/",
         "/_clax/draft/a/b/",
     ] {

@@ -11,8 +11,9 @@
 //! - `/_clax/healthz`: health, on any well-formed site host, whether or not
 //!   its artifact exists: it says nothing of the artifact.
 //! - `/_clax/session?code=&next=`: redeems a site code for a site session
-//!   beside the browser's state cookie ([`clax_http::site_access`]);
-//!   `/_clax/session/start?next=` begins a frame's handshake with a state.
+//!   ([`clax_http::site_access`]).
+//! - `/_clax/api/…`: the page runtime's backend, on this artifact alone
+//!   ([`super::site_api`]).
 //! - `/_clax/…`: the UI's files and the bridge (`crate::shell::static_file`);
 //!   any other `/_clax/` path is 404.
 //! - On a legacy artifact (`Artifact::legacy_paths`) `/_blob/<asset ID>` is
@@ -57,6 +58,7 @@ pub fn site_routes(state: &AppState) -> Router<AppState> {
         .route("/_clax/blob/{asset_id}", get(blob))
         .route("/_blob/{asset_id}", get(legacy_blob))
         .route("/{*path}", get(current_file))
+        .merge(super::site_api::routes(state))
         .route_layer(axum::middleware::from_fn_with_state(
             state.clone(),
             clax_http::site_access::site_access_layer,

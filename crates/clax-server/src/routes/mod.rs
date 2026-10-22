@@ -40,6 +40,7 @@ pub mod room;
 pub mod sample;
 pub mod sessions;
 pub mod site;
+pub mod site_api;
 pub mod site_signin;
 pub mod sites;
 pub mod snapshot;

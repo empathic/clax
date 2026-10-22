@@ -169,9 +169,12 @@ pub enum Attempt {
     GitToken,
     /// A GitHub sign-in that makes a new person ([`crate::github`]).
     SignUp,
-    /// Counting an install of an app (`POST /api/artifacts/<id>/installs`):
-    /// a row each.
-    Install,
+    /// A world visitor's write through a site's `/_clax/api/` (a document,
+    /// a batch, a lease, an asset), counted per client address.
+    SiteWrite,
+    /// The same, counted per artifact ([`Counted::Artifact`]): what every
+    /// visitor of one site may write together.
+    SiteWriteArtifact,
 }
 
 impl Attempt {
@@ -184,9 +187,18 @@ impl Attempt {
             Attempt::Device => (5.0, 60.0),
             Attempt::DevicePoll => (30.0, 2.0),
             Attempt::SignUp => (5.0, 600.0),
-            Attempt::Install => (10.0, 60.0),
+            Attempt::SiteWrite => (60.0, 1.0),
+            Attempt::SiteWriteArtifact => (600.0, 0.1),
         }
     }
+}
+
+/// What [`Limits`] counts attempts for: a client address ([`client_key`]),
+/// or an artifact.
+#[derive(Clone, Debug, PartialEq, Eq, Hash)]
+pub enum Counted {
+    Address(std::net::IpAddr),
+    Artifact(String),
 }
 
 /// The most clients [`Limits`] keeps; past it, those whose attempts are all
@@ -199,7 +211,7 @@ const MAX_CLIENTS: usize = 10_000;
 /// attempt takes one; they come back at [`Attempt::rule`]'s pace.
 pub struct Limits {
     clock: std::sync::Arc<dyn clax_core::working::Clock>,
-    buckets: std::sync::Mutex<std::collections::HashMap<(Attempt, std::net::IpAddr), Bucket>>,
+    buckets: std::sync::Mutex<std::collections::HashMap<(Attempt, Counted), Bucket>>,
 }
 
 /// A bucket's attempts left and when they were last counted.
@@ -216,6 +228,12 @@ impl Limits {
     /// Takes one of `client`'s `what` attempts; `Err` with the seconds until
     /// the next one when none is left.
     pub fn take(&self, what: Attempt, client: std::net::IpAddr) -> Result<(), u64> {
+        self.take_for(what, Counted::Address(client))
+    }
+
+    /// Takes one of `key`'s `what` attempts, as [`Limits::take`].
+    pub fn take_for(&self, what: Attempt, key: Counted) -> Result<(), u64> {
+        let client = key;
         let now = self.clock.now();
         let (burst, per) = what.rule();
         let refill = |(tokens, at): (f64, chrono::DateTime<chrono::Utc>), per: f64, burst: f64| {
@@ -223,7 +241,7 @@ impl Limits {
             (tokens + elapsed / per).min(burst)
         };
         let mut m = self.buckets.lock().unwrap_or_else(|e| e.into_inner());
-        if m.len() >= MAX_CLIENTS && !m.contains_key(&(what, client)) {
+        if m.len() >= MAX_CLIENTS && !m.contains_key(&(what, client.clone())) {
             m.retain(|(w, _), b| {
                 let (burst, per) = w.rule();
                 refill(*b, per, burst) < burst
@@ -233,7 +251,7 @@ impl Limits {
                     .iter()
                     .map(|((w, c), b)| {
                         let (burst, per) = w.rule();
-                        (refill(*b, per, burst) / burst, (*w, *c))
+                        (refill(*b, per, burst) / burst, (*w, c.clone()))
                     })
                     .max_by(|a, b| a.0.total_cmp(&b.0))
                     .map(|(_, k)| k);
@@ -495,6 +513,32 @@ impl Hosted {
     ) -> Result<(), ApiError> {
         let client = client_key(self.client(headers, extensions));
         self.limits.take(what, client).map_err(rate_limited)
+    }
+
+    /// Takes a world visitor's write on artifact `aid`'s site: one of the
+    /// client's [`Attempt::SiteWrite`] and one of the artifact's
+    /// [`Attempt::SiteWriteArtifact`]; 429 `rate_limited` when either is
+    /// spent.
+    ///
+    /// # Errors
+    /// 429 as above.
+    pub fn site_write(
+        &self,
+        headers: &HeaderMap,
+        extensions: &axum::http::Extensions,
+        aid: &str,
+    ) -> Result<(), ApiError> {
+        self.attempt(Attempt::SiteWrite, headers, extensions)?;
+        self.limits
+            .take_for(
+                Attempt::SiteWriteArtifact,
+                Counted::Artifact(aid.to_string()),
+            )
+            .map_err(|after| {
+                let mut e = rate_limited(after);
+                e.message = format!("too many writes to this site: try again in {after} s");
+                e
+            })
     }
 
     /// Whether the daemon has a setup secret: `/setup` is open until the
@@ -1409,10 +1453,9 @@ pub async fn gate(State(s): State<AppState>, mut req: Request, next: Next) -> Re
         path.as_str(),
         "/api/hosted/device/code" | "/api/hosted/device/token"
     );
-    // An app counting its install sends no `Origin`: such a request
-    // speaks for no session, whatever cookie it carries ([`anonymous_write`]).
-    let anonymous = !authz && !origin_checked && anonymous_write(&method, &path);
-    if write && !authz && !origin_checked && !machine && !anonymous {
+    // A site host's writes (its `/_clax/api/`) come from the site's own
+    // origin, which its routes check (`clax_server::routes::site_api`).
+    if write && !authz && !origin_checked && !machine && !content_host {
         return forbidden_origin(&h);
     }
     let session = if authz || anonymous {
