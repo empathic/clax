@@ -651,16 +651,22 @@ fn absolute_asset_url(base: &str, id: &str, url: &str) -> String {
 /// or a URL of one of these forms (query and fragment ignored):
 /// `.../a/<id>`, `.../a/<id>/v/<n>`, either followed by a page's path
 /// (`.../a/<id>/about.html`), `.../c/<id>/v/<n>/...`, and the artifact's
-/// site `http://<id>.localhost:<port>/...` (its current version) or
-/// `.../_clax/v/<n>/...`. The CLI's reading of a
-/// reference; the tools read theirs with [`crate::target::target`], which
-/// also takes page URLs.
+/// site `http://<id>.localhost:<port>/...` (its current version: `/v/<n>/`
+/// there is the artifact's own path) or `.../_clax/v/<n>/...`. A version is
+/// `n` in its one spelling (no sign, no leading zero), as the site routes
+/// read it. The CLI's reading of a reference; the tools read theirs with
+/// [`crate::target::target`], which also takes page URLs.
 pub fn artifact_ref(url_or_id: &str) -> Result<(String, Option<u32>), CallToolResult> {
     let s = url_or_id.trim();
     let s = s.split(['?', '#']).next().unwrap_or("");
     let parse = |c: &str| ArtifactId::parse(c).ok().map(|id| id.as_str().to_string());
+    let number = |n: &str| n.parse::<u32>().ok().filter(|v| v.to_string() == n);
     let version_in = |segs: &[&str]| match segs {
-        ["v", n, ..] | ["_clax", "v", n, ..] => n.parse::<u32>().ok(),
+        ["v", n, ..] => number(n),
+        _ => None,
+    };
+    let site_version_in = |segs: &[&str]| match segs {
+        ["_clax", "v", n, ..] => number(n),
         _ => None,
     };
     if let Some(id) = parse(s) {
@@ -673,7 +679,7 @@ pub fn artifact_ref(url_or_id: &str) -> Result<(String, Option<u32>), CallToolRe
     let segs: Vec<&str> = path.split('/').filter(|seg| !seg.is_empty()).collect();
     let hostname = host.rsplit_once(':').map_or(host, |(h, _)| h);
     if let Some(id) = hostname.strip_suffix(".localhost").and_then(parse) {
-        return Ok((id, version_in(&segs)));
+        return Ok((id, site_version_in(&segs)));
     }
     for (i, seg) in segs.iter().enumerate() {
         if matches!(*seg, "a" | "c")

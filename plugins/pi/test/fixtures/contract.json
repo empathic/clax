@@ -54,7 +54,7 @@
     {
       "input": "http://7q3k9mzx2b4t.localhost:7480/v/4/",
       "id": "7q3k9mzx2b4t",
-      "version": 4
+      "version": null
     },
     {
       "input": "http://7q3k9mzx2b4t.localhost:7480/_clax/v/6/docs/a.html",
@@ -64,10 +64,40 @@
     {
       "input": "http://7q3k9mzx2b4t.localhost/v/5/app.js?x#y",
       "id": "7q3k9mzx2b4t",
-      "version": 5
+      "version": null
     },
     {
       "input": "http://7q3k9mzx2b4t.localhost:7480/",
+      "id": "7q3k9mzx2b4t",
+      "version": null
+    },
+    {
+      "input": "http://7q3k9mzx2b4t.localhost:7480/_clax/_clax/v/1/",
+      "id": "7q3k9mzx2b4t",
+      "version": null
+    },
+    {
+      "input": "http://7q3k9mzx2b4t.localhost:7480/_clax/v/01/",
+      "id": "7q3k9mzx2b4t",
+      "version": null
+    },
+    {
+      "input": "http://7q3k9mzx2b4t.localhost:7480/_clax/v/+1/",
+      "id": "7q3k9mzx2b4t",
+      "version": null
+    },
+    {
+      "input": "http://7q3k9mzx2b4t.localhost:7480/_clax/v/4294967296/",
+      "id": "7q3k9mzx2b4t",
+      "version": null
+    },
+    {
+      "input": "http://localhost:7480/a/7q3k9mzx2b4t/_clax/v/2",
+      "id": "7q3k9mzx2b4t",
+      "version": null
+    },
+    {
+      "input": "http://localhost:7480/a/7q3k9mzx2b4t/v/02",
       "id": "7q3k9mzx2b4t",
       "version": null
     },
@@ -117,6 +147,11 @@
       },
       {
         "input": "http://7q3k9mzx2b4t.localhost:7480/v/1/",
+        "id": "7q3k9mzx2b4t",
+        "version": null
+      },
+      {
+        "input": "http://7q3k9mzx2b4t.localhost:7480/_clax/v/1/",
         "id": "7q3k9mzx2b4t",
         "version": 1
       },

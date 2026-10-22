@@ -10,7 +10,9 @@
 //!   is the forking session's when an agent forks.
 //! - Its content comes from [`ContentStore::fork`]: a backend that keeps
 //!   history gives the fork the source's history behind version 1 (git:
-//!   `Clax-Forked-From`), the others copy the files. Assets, threads,
+//!   `Clax-Forked-From`), the others copy the files. It keeps the source's
+//!   `legacy_paths`, and refuses a file its site would serve itself
+//!   ([`clax_core::publish::check_path_for`]). Assets, threads,
 //!   documents, shares and link access are not copied.
 //! - `artifacts.forked_from_id` and `forked_from_version` record where it
 //!   came from ([`clax_core::model::ForkedFrom`]); version 1's note says it,
@@ -114,6 +116,11 @@ impl Store {
                 format!("{} has no version {n}", from.as_str()),
             )
         })?;
+        // The fork's site reserves what the source's does (`legacy_paths`,
+        // inherited below): a path it would serve itself is refused.
+        for path in v.files.keys() {
+            clax_core::publish::check_path_for(path, src.legacy_paths)?;
+        }
         let mut files: BTreeMap<String, FileMeta> = BTreeMap::new();
         for (path, meta) in &v.files {
             let mut meta = meta.clone();
@@ -178,8 +185,8 @@ impl Store {
             tx.execute(
                 "INSERT INTO artifacts (id, title, description, icon, created_at, updated_at,
                     current_version, pinned, capabilities_json, contract_version, owner_session_id,
-                    person, text_authors_json, forked_from_id, forked_from_version)
-                 VALUES (?1, ?2, ?3, ?4, ?5, ?5, 1, 0, ?6, ?7, ?8, ?9, ?10, ?11, ?12)",
+                    person, text_authors_json, forked_from_id, forked_from_version, legacy_paths)
+                 VALUES (?1, ?2, ?3, ?4, ?5, ?5, 1, 0, ?6, ?7, ?8, ?9, ?10, ?11, ?12, ?13)",
                 params![
                     id.as_str(),
                     src.title,
@@ -193,6 +200,7 @@ impl Store {
                     stored_authors(&text_map, creator.as_deref()),
                     from.as_str(),
                     n,
+                    src.legacy_paths,
                 ],
             )?;
             tx.execute(
@@ -339,6 +347,7 @@ mod tests {
     use crate::test_util::{DAEMON, anchor, content_file, store};
     use crate::threads::NewThread;
     use clax_core::ArtifactId;
+    use rusqlite::params;
 
     /// A connected person's public ID, as the store records one.
     const MIA: &str = "p_mia0000000000";
@@ -378,6 +387,39 @@ mod tests {
                 id.clone()
             }
         }
+    }
+
+    #[test]
+    fn a_fork_keeps_its_sources_reserved_paths() {
+        let (_d, st) = store();
+        let src = publish(&st, None, &[("index.html", "<p>one")]);
+        let (a, _) = st.fork_artifact(DAEMON, &src, None, None, None).unwrap();
+        assert!(!a.legacy_paths);
+        st.with_tx(|tx| {
+            tx.execute(
+                "UPDATE artifacts SET legacy_paths = 1 WHERE id = ?1",
+                params![src.as_str()],
+            )?;
+            Ok(())
+        })
+        .unwrap();
+        let (a, _) = st.fork_artifact(DAEMON, &src, None, None, None).unwrap();
+        assert!(a.legacy_paths, "a legacy artifact's fork keeps /_blob/");
+        // A new artifact owns `_blob/`; once its site reserves it, no fork
+        // copies a file there.
+        let new = publish(&st, None, &[("index.html", "<p>"), ("_blob/a.txt", "a")]);
+        st.with_tx(|tx| {
+            tx.execute(
+                "UPDATE artifacts SET legacy_paths = 1 WHERE id = ?1",
+                params![new.as_str()],
+            )?;
+            Ok(())
+        })
+        .unwrap();
+        let e = st
+            .fork_artifact(DAEMON, &new, None, None, None)
+            .unwrap_err();
+        assert!(e.to_string().contains("reserved"), "{e}");
     }
 
     #[test]

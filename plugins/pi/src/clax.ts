@@ -441,13 +441,16 @@ export function absoluteAssetUrl(base: string, id: string, url: string): string 
  * or a URL of one of these forms (query and fragment ignored): `.../a/<id>`,
  * `.../a/<id>/v/<n>`, either followed by a page's path (`.../a/<id>/about.html`),
  * `.../c/<id>/v/<n>/...`, and the artifact's site
- * `http://<id>.localhost:<port>/...` (its current version) or
- * `.../_clax/v/<n>/...`. */
+ * `http://<id>.localhost:<port>/...` (its current version: `/v/<n>/` there is
+ * the artifact's own path) or `.../_clax/v/<n>/...`. A version is `n` in its
+ * one spelling (no sign, no leading zero). */
 export function artifactRef(urlOrId: string): { id: string; version?: number } {
   const s = urlOrId.trim().split(/[?#]/)[0] ?? "";
   if (ID_RE.test(s)) return { id: s };
+  // A version in its one spelling (no sign, no leading zero), as the site routes read it.
   const versionIn = (segs: string[]): number | undefined =>
-    segs[0] === "_clax" ? versionIn(segs.slice(1)) : segs[0] === "v" && /^\d+$/.test(segs[1] ?? "") ? Number(segs[1]) : undefined;
+    segs[0] === "v" && /^(0|[1-9]\d{0,9})$/.test(segs[1] ?? "") && Number(segs[1]) <= 0xffffffff ? Number(segs[1]) : undefined;
+  const siteVersionIn = (segs: string[]): number | undefined => (segs[0] === "_clax" ? versionIn(segs.slice(1)) : undefined);
   const scheme = s.indexOf("://");
   let host = "";
   let path = s;
@@ -462,7 +465,7 @@ export function artifactRef(urlOrId: string): { id: string; version?: number } {
   const hostname = colon >= 0 ? host.slice(0, colon) : host;
   if (hostname.endsWith(".localhost")) {
     const id = hostname.slice(0, -".localhost".length);
-    if (ID_RE.test(id)) return { id, version: versionIn(segs) };
+    if (ID_RE.test(id)) return { id, version: siteVersionIn(segs) };
   }
   for (let i = 0; i < segs.length; i++) {
     const id = segs[i + 1];
