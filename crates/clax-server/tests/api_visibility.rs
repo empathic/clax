@@ -1813,26 +1813,27 @@ fn no_doc_field(what: &str, text: &str) {
     );
 }
 
-/// The document at `path` of `aid` as stored: its data and version, and
-/// its authors' tokens.
+/// The document at `path` of `aid` as its store holds it: its data and
+/// version, and its authors' tokens.
 fn stored_doc(w: &World, aid: &str, path: &str) -> (Option<(Value, u64)>, Vec<String>) {
     let id = clax_core::ArtifactId::parse(aid).unwrap();
-    let doc =
-        w.ts.store
-            .doc_get(
-                &id,
-                path,
-                &clax_core::db::Caller::new(clax_core::db::Level::Owner, None),
-            )
-            .unwrap()
-            .map(|d| (d.data, d.version));
-    let authors =
-        w.ts.store
-            .doc_authors(&id, path)
-            .unwrap()
-            .iter()
-            .map(|a| a.token().unwrap().to_string())
-            .collect();
+    let rules = clax_core::db::Rules::from_capabilities(&w.ts.store.doc_capabilities(&id).unwrap())
+        .unwrap();
+    let data = w.ts.app_data(aid);
+    let doc = data
+        .doc_get(
+            &rules,
+            path,
+            &clax_core::db::Caller::new(clax_core::db::Level::Owner, None),
+        )
+        .unwrap()
+        .map(|d| (d.data, d.version));
+    let authors = data
+        .doc_authors(path)
+        .unwrap()
+        .iter()
+        .map(|a| a.token().unwrap().to_string())
+        .collect();
     (doc, authors)
 }
 
@@ -2240,10 +2241,10 @@ async fn a_persons_agent_never_writes_documents_as_a_page() {
     // Nothing was written: no document, no lease, Mia's untouched.
     assert_eq!(stored_doc(&w, aid, MIA_DOC), before);
     assert_eq!(stored_doc(&w, aid, "notes/page").0, None);
-    let leases: i64 = rusqlite::Connection::open(w.ts.home.db_path())
-        .unwrap()
-        .query_row("SELECT COUNT(*) FROM leases", [], |r| r.get(0))
-        .unwrap();
+    let leases: i64 =
+        w.ts.app_data_db(aid)
+            .query_row("SELECT COUNT(*) FROM leases", [], |r| r.get(0))
+            .unwrap();
     assert_eq!(leases, 0);
 }
 

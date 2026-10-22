@@ -16,9 +16,9 @@
 //! publishes herself (`artifacts.person` and `owner_session_id`, Mia's
 //! agent's session, `versions.person`,
 //! `versions.file_authors_json`, `assets.person`) and writes her document
-//! (`doc_authors`); her browser writes the comments, the anchor, the clip,
-//! the batch note and the resolution, and her agent the working message
-//! and the question.
+//! (`doc_authors`, in the artifact's own store); her browser writes the
+//! comments, the anchor, the clip, the batch note and the resolution, and
+//! her agent the working message and the question.
 
 use crate::TestServer;
 use crate::{FAKE_PNG, TestClient};
@@ -385,17 +385,18 @@ impl World {
             rusqlite::params![asset, mia],
         )
         .unwrap();
-        db.execute(
-            "INSERT INTO doc_authors (artifact_id, path, author) VALUES (?1, ?2, ?3)",
-            rusqlite::params![aid, format!("notes/{DOC_PATH}"), mia],
-        )
-        .unwrap();
-        db.execute(
-            "INSERT INTO doc_authors (artifact_id, path, author) VALUES (?1, ?2, ?3)",
-            rusqlite::params![aid, format!("notes/{DOC_UNNAMED}"), mia],
-        )
-        .unwrap();
         drop(db);
+        // Her documents' authors, in the artifact's own store, where the
+        // writes above moved its documents.
+        let data = ts.app_data_db(&aid);
+        for path in [DOC_PATH, DOC_UNNAMED] {
+            data.execute(
+                "INSERT INTO doc_authors (path, author) VALUES (?1, ?2)",
+                rusqlite::params![format!("notes/{path}"), mia],
+            )
+            .unwrap();
+        }
+        drop(data);
         // Mia's browser: a thread with her anchor, clip and comment, sent
         // in a batch with her note; another she resolves.
         let thread = self.mia_thread(&aid, COMMENT, true).await;

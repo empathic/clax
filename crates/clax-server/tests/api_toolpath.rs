@@ -311,18 +311,53 @@ fn db(ts: &TestServer) -> rusqlite::Connection {
     rusqlite::Connection::open(ts.home.db_path()).unwrap()
 }
 
-/// The newest event's `seq` (0 when there is none).
-fn last_seq(ts: &TestServer) -> i64 {
-    db(ts)
-        .query_row("SELECT COALESCE(MAX(seq), 0) FROM audit_events", [], |r| {
-            r.get(0)
-        })
-        .unwrap()
+/// How far the audit records had come: the instance's newest `seq`, and
+/// each artifact store's (a document's records live in its artifact's own
+/// store), by artifact ID.
+#[derive(Clone, Debug, Default)]
+struct Seen {
+    instance: i64,
+    stores: std::collections::BTreeMap<String, i64>,
 }
 
-/// The events recorded after `seq`, oldest first.
-fn events_since(ts: &TestServer, seq: i64) -> Vec<Rec> {
-    let c = db(ts);
+/// Every artifact store in the home, by artifact ID, in ID order.
+fn stores(ts: &TestServer) -> Vec<(String, rusqlite::Connection)> {
+    let mut out: Vec<(String, rusqlite::Connection)> =
+        std::fs::read_dir(ts.home.root().join("artifacts"))
+            .unwrap()
+            .filter_map(|e| {
+                let e = e.ok()?;
+                let file = e.path().join("data.sqlite");
+                file.exists().then(|| {
+                    let id = e.file_name().to_string_lossy().into_owned();
+                    (id, rusqlite::Connection::open(file).unwrap())
+                })
+            })
+            .collect();
+    out.sort_by(|a, b| a.0.cmp(&b.0));
+    out
+}
+
+const NEWEST: &str = "SELECT COALESCE(MAX(seq), 0) FROM audit_events";
+
+/// The newest event's `seq` (0 when there is none).
+fn last_seq(ts: &TestServer) -> i64 {
+    db(ts).query_row(NEWEST, [], |r| r.get(0)).unwrap()
+}
+
+/// How far the audit records have come, the artifact stores' included.
+fn seen(ts: &TestServer) -> Seen {
+    Seen {
+        instance: db(ts).query_row(NEWEST, [], |r| r.get(0)).unwrap(),
+        stores: stores(ts)
+            .into_iter()
+            .map(|(id, c)| (id, c.query_row(NEWEST, [], |r| r.get(0)).unwrap()))
+            .collect(),
+    }
+}
+
+/// The events of `c` recorded after `seq`, oldest first.
+fn events_in(c: &rusqlite::Connection, seq: i64) -> Vec<Rec> {
     let mut q = c
         .prepare(
             "SELECT kind, actor, artifact_id, artifact2_id, session_id, call_id, origin, body
@@ -344,6 +379,21 @@ fn events_since(ts: &TestServer, seq: i64) -> Vec<Rec> {
     .unwrap()
     .map(Result::unwrap)
     .collect()
+}
+
+/// The events recorded after `seq`, oldest first.
+fn events_since(ts: &TestServer, seq: i64) -> Vec<Rec> {
+    events_in(&db(ts), seq)
+}
+
+/// The events recorded since `seen`: the instance's, oldest first, then
+/// each artifact store's, by artifact.
+fn events_after(ts: &TestServer, seen: Seen) -> Vec<Rec> {
+    let mut out = events_in(&db(ts), seen.instance);
+    for (id, c) in stores(ts) {
+        out.extend(events_in(&c, seen.stores.get(&id).copied().unwrap_or(0)));
+    }
+    out
 }
 
 /// One request of [`every_mutation_records_one_event`]: its name, the
@@ -405,7 +455,7 @@ async fn every_mutation_records_one_event() {
         |r: reqwest::RequestBuilder| r.header("cookie", format!("clax_viewer={}", sam.cookie));
 
     // An artifact with a db, made by the agent under a tool call.
-    let seq = last_seq(&ts);
+    let seq = seen(&ts);
     let (code, v) = status(
         agent(ts.client.post(format!("{b}/api/artifacts"))).json(&json!({
             "title": "Tracker",
@@ -418,7 +468,7 @@ async fn every_mutation_records_one_event() {
     let aid = v["artifact"]["id"].as_str().unwrap().to_string();
     let mut table: Vec<Row> = vec![(
         "create",
-        events_since(&ts, seq),
+        events_after(&ts, seq),
         vec!["artifact.create", "version.publish", "watch.start"],
         "agent",
         true,
@@ -554,10 +604,10 @@ async fn every_mutation_records_one_event() {
     ];
     let mut live = None;
     for (name, req, want, actor, with_call) in steps {
-        let seq = last_seq(&ts);
+        let seq = seen(&ts);
         let (code, v) = status(req).await;
         assert!((200..300).contains(&code), "{name}: {code} {v}");
-        table.push((name, events_since(&ts, seq), want, actor, with_call));
+        table.push((name, events_after(&ts, seq), want, actor, with_call));
         if name == "live page" {
             live = Some((
                 v["page"]["artifact_id"].as_str().unwrap().to_string(),
@@ -566,12 +616,12 @@ async fn every_mutation_records_one_event() {
         }
         if name == "asset upload" {
             let asset = v["asset"]["id"].as_str().unwrap().to_string();
-            let seq = last_seq(&ts);
+            let seq = seen(&ts);
             let (code, v) = status(owner(ts.client.delete(format!("{a}/assets/{asset}")))).await;
             assert_eq!(code, 204, "{v}");
             table.push((
                 "asset delete",
-                events_since(&ts, seq),
+                events_after(&ts, seq),
                 vec!["asset.delete"],
                 "owner",
                 false,
@@ -591,7 +641,7 @@ async fn every_mutation_records_one_event() {
     )
     .await;
     assert_eq!(code, 201, "{v}");
-    let seq = last_seq(&ts);
+    let seq = seen(&ts);
     let form = reqwest::multipart::Form::new()
         .text("url", "http://localhost:5173/settings")
         .text("title", "Settings")
@@ -602,13 +652,13 @@ async fn every_mutation_records_one_event() {
     assert_eq!(code, 200, "{v}");
     table.push((
         "live snapshot",
-        events_since(&ts, seq),
+        events_after(&ts, seq),
         vec!["live.snapshot"],
         "viewer",
         false,
     ));
     // A scope watch on a page not yet seen makes it.
-    let seq = last_seq(&ts);
+    let seq = seen(&ts);
     let (code, v) = status(
         agent(
             ts.client
@@ -620,7 +670,7 @@ async fn every_mutation_records_one_event() {
     assert_eq!(code, 200, "{v}");
     table.push((
         "live watch",
-        events_since(&ts, seq),
+        events_after(&ts, seq),
         vec![
             "artifact.create",
             "live.page",
@@ -809,10 +859,10 @@ async fn every_mutation_records_one_event() {
         ),
     ];
     for (name, req, want, actor, with_call) in thread_steps {
-        let seq = last_seq(&ts);
+        let seq = seen(&ts);
         let (code, v) = status(req).await;
         assert!((200..300).contains(&code), "{name}: {code} {v}");
-        table.push((name, events_since(&ts, seq), want, actor, with_call));
+        table.push((name, events_after(&ts, seq), want, actor, with_call));
     }
 
     // Watches, working records, rules, moves and sessions (§6.3–§6.5,
@@ -1040,10 +1090,10 @@ async fn every_mutation_records_one_event() {
     let mut rule_id = None;
     let mut codex = None;
     for (name, req, want, actor, with_call) in later_steps {
-        let seq = last_seq(&ts);
+        let seq = seen(&ts);
         let (code, v) = status(req).await;
         assert!((200..300).contains(&code), "{name}: {code} {v}");
-        table.push((name, events_since(&ts, seq), want, actor, with_call));
+        table.push((name, events_after(&ts, seq), want, actor, with_call));
         if name == "rule" {
             rule_id = Some(v["rule"]["id"].as_str().unwrap().to_string());
         }
@@ -1051,19 +1101,19 @@ async fn every_mutation_records_one_event() {
             codex = Some(v["session"]["id"].as_str().unwrap().to_string());
         }
     }
-    let seq = last_seq(&ts);
+    let seq = seen(&ts);
     let rule_id = rule_id.unwrap();
     let (code, v) = status(owner(ts.client.delete(format!("{rules}/{rule_id}")))).await;
     assert_eq!(code, 200, "{v}");
     table.push((
         "rule delete",
-        events_since(&ts, seq),
+        events_after(&ts, seq),
         vec!["live.rule", "live.rule"],
         "owner",
         false,
     ));
     let codex = codex.unwrap();
-    let seq = last_seq(&ts);
+    let seq = seen(&ts);
     let (code, v) = status(
         owner(ts.client.patch(format!("{b}/api/sessions/{codex}"))).json(&json!({"ended": true})),
     )
@@ -1071,7 +1121,7 @@ async fn every_mutation_records_one_event() {
     assert_eq!(code, 200, "{v}");
     table.push((
         "session end",
-        events_since(&ts, seq),
+        events_after(&ts, seq),
         vec!["session.end"],
         "agent",
         false,
@@ -1084,12 +1134,12 @@ async fn every_mutation_records_one_event() {
             .0,
         200
     );
-    let seq = last_seq(&ts);
+    let seq = seen(&ts);
     let (code, v) = status(owner(ts.client.delete(&a))).await;
     assert_eq!(code, 204, "{v}");
     table.push((
         "delete",
-        events_since(&ts, seq),
+        events_after(&ts, seq),
         vec!["artifact.delete", "working.stop"],
         "owner",
         false,
@@ -1468,7 +1518,7 @@ async fn doc_write_records_hash_not_content() {
         .unwrap()
         .to_string();
     let secret = "the launch code is 0000";
-    let seq = last_seq(&ts);
+    let seq = seen(&ts);
     let (code, v) = status(
         ts.authed(
             ts.client
@@ -1478,14 +1528,13 @@ async fn doc_write_records_hash_not_content() {
     )
     .await;
     assert_eq!(code, 200, "{v}");
-    let recs = events_since(&ts, seq);
+    let recs = events_after(&ts, seq);
     assert_eq!(kinds(&recs), ["doc.write"]);
-    let stored: String = db(&ts)
-        .query_row(
-            "SELECT json FROM docs WHERE artifact_id = ?1 AND path = 'notes/n1'",
-            [&aid],
-            |r| r.get(0),
-        )
+    let stored: String = ts
+        .app_data_db(&aid)
+        .query_row("SELECT json FROM docs WHERE path = 'notes/n1'", [], |r| {
+            r.get(0)
+        })
         .unwrap();
     let body = &recs[0].body;
     assert_eq!(
@@ -1497,7 +1546,8 @@ async fn doc_write_records_hash_not_content() {
         (&json!("notes"), &json!("n1"), &json!("set"))
     );
     assert_eq!(body["version"], v["doc"]["version"]);
-    let raw: String = db(&ts)
+    let raw: String = ts
+        .app_data_db(&aid)
         .query_row(
             "SELECT body FROM audit_events WHERE kind = 'doc.write'",
             [],
@@ -1506,14 +1556,14 @@ async fn doc_write_records_hash_not_content() {
         .unwrap();
     assert!(!raw.contains("launch code"), "{raw}");
     // A delete names no hash.
-    let seq = last_seq(&ts);
+    let seq = seen(&ts);
     let (code, _) = status(ts.authed(ts.client.delete(format!(
         "{}/api/artifacts/{aid}/docs/notes/n1?lww=true",
         ts.base
     ))))
     .await;
     assert_eq!(code, 200);
-    let del = events_since(&ts, seq);
+    let del = events_after(&ts, seq);
     assert_eq!(
         (&del[0].body["op"], &del[0].body["sha256"]),
         (&json!("delete"), &Value::Null)

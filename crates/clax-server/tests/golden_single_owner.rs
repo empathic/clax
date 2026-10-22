@@ -624,20 +624,35 @@ fn artifact_ids(ts: &TestServer) -> Vec<String> {
         .unwrap()
 }
 
-/// The collections of `aid`'s page database, in order.
+/// The collections of `aid`'s page database, in order: those the instance
+/// still holds (the fixture's, until the artifact's first `db` call moves
+/// them) and those its own store holds.
 fn collections(ts: &TestServer, aid: &str) -> Vec<String> {
-    let c = rusqlite::Connection::open_with_flags(
-        ts.home.db_path(),
-        rusqlite::OpenFlags::SQLITE_OPEN_READ_ONLY,
-    )
-    .unwrap();
-    let mut st = c
-        .prepare("SELECT DISTINCT collection FROM docs WHERE artifact_id = ?1 ORDER BY collection")
-        .unwrap();
-    st.query_map([aid], |r| r.get(0))
-        .unwrap()
-        .collect::<rusqlite::Result<_>>()
-        .unwrap()
+    let read = |path: &Path, sql: &str| -> Vec<String> {
+        if !path.exists() {
+            return Vec::new();
+        }
+        let c =
+            rusqlite::Connection::open_with_flags(path, rusqlite::OpenFlags::SQLITE_OPEN_READ_ONLY)
+                .unwrap();
+        let mut st = c.prepare(sql).unwrap();
+        st.query_map([], |r| r.get(0))
+            .unwrap()
+            .collect::<rusqlite::Result<_>>()
+            .unwrap()
+    };
+    let id = clax_core::ArtifactId::parse(aid).unwrap();
+    let mut out = read(
+        &ts.home.db_path(),
+        &format!("SELECT DISTINCT collection FROM docs WHERE artifact_id = '{aid}'"),
+    );
+    out.extend(read(
+        &ts.home.app_data_path(&id),
+        "SELECT DISTINCT collection FROM docs",
+    ));
+    out.sort();
+    out.dedup();
+    out
 }
 
 // --- normalisation ---------------------------------------------------------

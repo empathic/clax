@@ -903,7 +903,9 @@ fn tool_commands_are_recorded_as_the_owner_on_cli() {
         json!({"db": {}}),
     );
     d.json(&["db", "set", &aid, "tasks", "t1", r#"{"title": "Ship"}"#]);
-    let c = rusqlite::Connection::open(d.home().join("clax.db")).unwrap();
+    // A document's audit records live in its artifact's own store.
+    let c = rusqlite::Connection::open(d.home().join("artifacts").join(&aid).join("data.sqlite"))
+        .unwrap();
     let (actor, body): (String, String) = c
         .query_row(
             "SELECT actor, body FROM audit_events WHERE kind = 'doc.write' ORDER BY seq DESC LIMIT 1",
