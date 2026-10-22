@@ -144,7 +144,9 @@ web UI and the Worker, deploys, waits for `/healthz` on the public host
 `https://<random ID>.<site domain>/_clax/healthz` and, when that fails,
 prints the steps [below](#dns-for-the-public-host-and-the-site-domain) with
 what it found for each, and prints the setup URL and the next steps. Run again, it changes only what differs; secrets are kept
-unless `--rotate-secrets`.
+unless `--rotate-secrets`, which also re-identifies every visitor of a site
+open to the world (visitor IDs are keyed by the daemon token) and orphans
+their `data/users/<id>` subtrees.
 
 - `--dry-run` does everything but change the account, ending at `wrangler
   deploy --dry-run` with the upload size; without a login it skips each

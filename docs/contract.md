@@ -8709,7 +8709,9 @@ it starts, the runs a previous process left. A build without the
   replaced); the visitor's ID, `v_` and 22 hex characters, is a MAC of it
   and the artifact, so it is stable per browser and site, and no ID a page
   shows can be replayed as a cookie. Two first requests at once each set
-  one, and the browser keeps the last. A visitor's answers carry no
+  one, and the browser keeps the last. Both are keyed by the daemon token:
+  rotating it re-identifies every world-site visitor, and their old
+  `data/users/<id>` subtrees are orphaned. A visitor's answers carry no
   `Access-Control-Allow-Origin` and are cached for a minute at most
   (`public, no-cache`, or `public, max-age=60, must-revalidate` for a
   version's files and assets), so closing the site holds at a shared cache
