@@ -140,20 +140,21 @@ pub fn safe_next(next: &str) -> String {
     if ok { next.to_string() } else { "/".into() }
 }
 
-/// Whether `req` is a navigation of a document, top-level or framed
-/// (`Sec-Fetch-Mode: navigate` with `Sec-Fetch-Dest: document`, `iframe` or
-/// `frame`; without Fetch metadata, a `GET` that accepts `text/html`).
+/// Whether `req` is a navigation of a document, top-level or framed: a
+/// `GET` with `Sec-Fetch-Mode: navigate` and `Sec-Fetch-Dest: document`,
+/// `iframe` or `frame`, or one that accepts `text/html` and names no
+/// subresource as its destination (no `Sec-Fetch-Dest`, or `empty`), as a
+/// client that is not a browser sends (Node's `fetch` says `cors`).
 fn navigation(method: &Method, headers: &HeaderMap) -> bool {
     if method != Method::GET && method != Method::HEAD {
         return false;
     }
     let h = |n: &str| headers.get(n).and_then(|v| v.to_str().ok());
-    match (h("sec-fetch-mode"), h("sec-fetch-dest")) {
-        (Some(mode), dest) => {
-            mode == "navigate" && dest.is_none_or(|d| matches!(d, "document" | "iframe" | "frame"))
-        }
-        (None, _) => h("accept").is_some_and(|a| a.contains("text/html")),
+    let dest = h("sec-fetch-dest");
+    if h("sec-fetch-mode") == Some("navigate") {
+        return dest.is_none_or(|d| matches!(d, "document" | "iframe" | "frame"));
     }
+    dest.is_none_or(|d| d == "empty") && h("accept").is_some_and(|a| a.contains("text/html"))
 }
 
 /// Whether `headers` are a framed navigation's (`Sec-Fetch-Dest: iframe` or
@@ -330,6 +331,11 @@ mod tests {
         assert!(navigation(&Method::GET, &h));
         assert!(!navigation(&Method::POST, &h));
         h.insert("sec-fetch-mode", HeaderValue::from_static("cors"));
+        assert!(navigation(&Method::GET, &h), "a client's fetch of a page");
+        h.insert("sec-fetch-dest", HeaderValue::from_static("script"));
+        assert!(!navigation(&Method::GET, &h));
+        h.remove("sec-fetch-dest");
+        h.insert("accept", HeaderValue::from_static("application/json"));
         assert!(!navigation(&Method::GET, &h));
         h.insert("sec-fetch-mode", HeaderValue::from_static("navigate"));
         h.insert("sec-fetch-dest", HeaderValue::from_static("document"));
