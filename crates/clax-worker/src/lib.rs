@@ -218,11 +218,30 @@ enum Route<'a> {
     App,
 }
 
+/// Whether `host` (a `Host` header) is the site domain or a name under it
+/// (its port, a trailing dot and case aside). The apex `localhost` is not:
+/// with the local site domain it is the app host.
+fn under_site_domain(host: &str, sites: &SiteHosts) -> bool {
+    let name = match host.rsplit_once(':') {
+        Some((n, p)) if p.bytes().all(|b| b.is_ascii_digit()) => n,
+        _ => host,
+    };
+    let name = name.trim_end_matches('.').to_ascii_lowercase();
+    let domain = sites.domain();
+    if name == domain {
+        return domain != clax_http::host::LOCAL_SITE_DOMAIN;
+    }
+    name.strip_suffix(domain)
+        .is_some_and(|rest| rest.ends_with('.'))
+}
+
 /// Classifies a request by its path, its URL's host (`url_host`) and its
 /// `Host` header (`host`), the host first: `/_internal/` and the internal
 /// hosts are refused on any host; a site host under `sites` is
 /// [`Route::Site`] whatever its path, so no path-first route (`/git/`,
-/// `/_diag/`, `/_dev/repos/`, `/do/`) is reached there.
+/// `/_diag/`, `/_dev/repos/`, `/do/`) is reached there; any other name
+/// under the site domain (its apex, a nested name, an uppercase or
+/// malformed ID, a trailing dot) is refused, never the app's.
 fn route<'a>(
     path: &'a str,
     url_host: Option<&str>,
@@ -239,6 +258,9 @@ fn route<'a>(
     }
     if sites.target(host).is_some() {
         return Route::Site;
+    }
+    if under_site_domain(host, sites) {
+        return Route::Refused;
     }
     if path.starts_with(diag::PREFIX) {
         return Route::Diag;
@@ -771,10 +793,10 @@ mod tests {
     fn only_hosts_under_the_site_domain_are_sites() {
         let sites = SiteHosts::new("clax.run").unwrap();
         for host in [
-            "clax.run",
-            "a.b.clax.run",
             "abcdefghjkmn.localhost:8787",
             APP,
+            "clax.run.evil.com",
+            "xclax.run",
         ] {
             assert_eq!(
                 route("/", Some(host), host, &sites, true),
@@ -782,7 +804,42 @@ mod tests {
                 "{host}"
             );
         }
+        // Any other name under the site domain is no site, and never the app.
+        for host in [
+            "clax.run",
+            "CLAX.RUN:443",
+            "clax.run.",
+            "a.b.clax.run",
+            "abcdefghjkmn.a.clax.run",
+            "ABCDEFGHJKMN.clax.run",
+            "abcdefghjkmn.clax.run.",
+            "abcdefghjkm.clax.run",
+            "abcdefghjkmn0.clax.run",
+        ] {
+            for path in ["/", "/_diag/x", "/_dev/repos/x", "/mcp"] {
+                assert_eq!(
+                    route(path, Some(host), host, &sites, true),
+                    Route::Refused,
+                    "{host}{path}"
+                );
+            }
+        }
         let local = SiteHosts::local();
+        // The local apex is the app host; names under it are not.
+        assert_eq!(
+            route("/", Some("localhost"), "localhost:8787", &local, true),
+            Route::App
+        );
+        assert_eq!(
+            route(
+                "/",
+                Some("a.b.localhost"),
+                "a.b.localhost:8787",
+                &local,
+                true
+            ),
+            Route::Refused
+        );
         let host = "abcdefghjkmn.localhost:8787";
         assert_eq!(
             route(

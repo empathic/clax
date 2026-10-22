@@ -93,7 +93,7 @@ async function main() {
   const config = writeConfig(dir, {
     HOSTED: "1",
     PUBLIC_ORIGIN: origin,
-    CONTENT_ORIGIN: `http://127.0.0.1:${port}`,
+    SITE_DOMAIN: "localhost",
     SETUP_SECRET: SECRET,
     CLAX_TOKEN: TOKEN,
     GITHUB_CLIENT_ID: "e2e-client",

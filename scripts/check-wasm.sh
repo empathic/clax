@@ -11,6 +11,9 @@
 # /usr/lib/llvm-<N> that can target wasm32.
 # Arguments, when given, go to cargo in place of the crate list (for example
 # `-p clax-server`).
+# It checks the dev profile only: the release wasm build, whose cfgs differ
+# (`debug_assertions` off), is covered by crates/clax-worker/test-wasm.mjs,
+# which builds it through build.sh.
 set -euo pipefail
 cd "$(dirname "$0")/.."
 

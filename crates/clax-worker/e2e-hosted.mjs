@@ -274,6 +274,10 @@ async function main() {
     SETUP_SECRET: SECRET,
     CLAX_TOKEN: TOKEN,
     CLAX_TEST_ROUTES: "1",
+    // The Worker's own path-first routes, on, so the site host's refusal
+    // of them is checked against routes that answer on the public host.
+    CLAX_DIAG_ROUTES: "1",
+    REPO_DEV_ROUTES: "1",
     CLAX_LIVE_PEOPLE_SEATS: "1",
     CLAX_LIVE_GUEST_SEATS: "1",
   });
@@ -472,11 +476,20 @@ async function main() {
     // Asked by the signed-in owner's browser, whom a signed-out caller's
     // redirect to /signin would not tell from a missing route.
     const signinProbe = await ada.request.get(`${origin}/site-signin?host=${encodeURIComponent(siteHost)}&next=%2F`, { maxRedirects: 0 });
-    const accessChecked = signinProbe.status() !== 404;
-    if (!accessChecked) skip("the site handshake, world-open and old keyed URL steps", "/site-signin answers 404: this build serves sites without the access check");
     const signedOut = await raw(`${site}/`, { accept: "text/html" });
     check(signedOut.headers.get("referrer-policy") === "no-referrer", "a site response sends no referrer", Object.fromEntries(signedOut.headers));
-    if (accessChecked) {
+    // The steps of the access check skip only while the build has none at
+    // all: /site-signin is missing and a private site is served signed out.
+    // A site that refuses a signed-out caller with /site-signin missing is
+    // a failure.
+    const signinMissing = signinProbe.status() === 404;
+    const servedSignedOut = signedOut.status === 200 && signedOut.text.includes("Harbour log");
+    check(!signinMissing || servedSignedOut, "a site that refuses signed-out callers has /site-signin to sign them in", { signin: signinProbe.status(), site: signedOut.status });
+    const accessChecked = !signinMissing;
+    if (!accessChecked) {
+      skip("the site handshake, world-open and old keyed URL steps", "/site-signin answers 404 and the site is served signed out: this build has no access check");
+      check(servedSignedOut, "the site host serves the current version at its root", signedOut.status);
+    } else {
       const to = signedOut.location ? new URL(signedOut.location, site) : null;
       check(
         signedOut.status === 302 && to?.origin === origin && to.pathname === "/site-signin" && to.searchParams.get("host") === siteHost,
@@ -485,8 +498,6 @@ async function main() {
       );
       const sub = await raw(`${site}/`);
       check(siteRefused(sub) && sub.status === 401, "a private site's subresource signed out is 401", sub.status);
-    } else {
-      check(signedOut.status === 200 && signedOut.text.includes("Harbour log"), "the site host serves the current version at its root", signedOut.status);
     }
     const tab = await ada.context().newPage();
     pages.push(tab);
@@ -496,21 +507,25 @@ async function main() {
 
     // No path-first route of the Worker is reached on a site host: each is
     // the site's own path there, which it does not have.
+    // Each answers on the public host (with the diagnostics, the dev
+    // routes and the test routes on), so its 404 on the site host is the
+    // site's, not a route turned off.
     const pathFirst = [
       `/git/a-${harbour.id}.git/info/refs?service=git-upload-pack`,
-      "/_diag/bindings",
-      "/_dev/repos/tokens",
+      "/_diag/env",
+      "/_dev/repos/publish",
       "/do/spike/notes",
       "/mcp",
       "/api/artifacts",
       "/_worker/alarm",
-      "/_internal/pushed",
     ];
     for (const p of pathFirst) {
+      const pub = await raw(`${origin}${p}`, bearer);
+      check(pub.status !== 404, `${p} answers on the public host`, { status: pub.status, text: pub.text.slice(0, 200) });
       const r = await raw(`${site}${p}`, bearer);
       check(siteRefused(r), `${p} on a site host is the site's path, not the route`, { status: r.status, text: r.text.slice(0, 200) });
     }
-    check((await raw(`${origin}/_worker/alarm`, bearer)).status === 200, "the test route still answers on the public host");
+    check(siteRefused(await raw(`${site}/_internal/pushed`, bearer)), "/_internal/ is refused on a site host");
 
     // Two artifacts' sites keep their storage apart in one browser.
     await tab.evaluate(() => localStorage.setItem("x", "harbour"));

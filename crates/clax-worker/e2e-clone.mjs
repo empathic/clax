@@ -2,7 +2,7 @@
 // (HOSTED=1), end to end under `wrangler dev --local`: builds the Worker
 // (./build.sh; the web UI must be built, scripts/build-web.sh), starts
 // wrangler with fresh state under target/e2e-clone/, `http://localhost:<port>`
-// as the public origin and `http://127.0.0.1:<port>` as the content origin,
+// as the public origin and `localhost` as the site domain,
 // publishes an artifact with the owner token (the CLI's credential), and
 // signs the first person, Ada, in with the setup secret. Her browser opens
 // the artifact at 1280 and 390 pixels wide, light and dark, signed in by its
@@ -97,7 +97,7 @@ async function main() {
   const config = writeConfig(dir, {
     HOSTED: "1",
     PUBLIC_ORIGIN: origin,
-    CONTENT_ORIGIN: `http://127.0.0.1:${port}`,
+    SITE_DOMAIN: "localhost",
     SETUP_SECRET: SECRET,
     CLAX_TOKEN: TOKEN,
   });
