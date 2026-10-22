@@ -25,16 +25,20 @@ function siteGet(url: URL, headers: Record<string, string>): Promise<{ cookie: s
   });
 }
 
-/** The body of a GET of `url` on its artifact's site host as `d`'s owner:
- * with a site session made from a code the token mints, as the shell's. */
+/** The body of a GET of `url` on its artifact's site host as `d`'s owner,
+ * with a site session made as the shell's frame makes one: the site's
+ * `/_clax/session/start` sets the handshake's state cookie, the token
+ * mints a code bound to that state, and the code is redeemed beside it. */
 async function siteBytes(url: URL, d: TestDaemon): Promise<Buffer> {
   const id = url.hostname.split(".")[0];
+  const start = await siteGet(new URL("/_clax/session/start?next=%2F", url.origin), {});
+  const state = start.cookie.slice(start.cookie.indexOf("=") + 1);
   const code = await fetch(`${d.base}/api/artifacts/${id}/site-code`, {
     method: "POST",
     headers: { authorization: `Bearer ${d.token}`, "content-type": "application/json" },
-    body: "{}",
+    body: JSON.stringify({ state }),
   });
-  const { cookie } = await siteGet(new URL((await code.json()).src), {});
+  const { cookie } = await siteGet(new URL((await code.json()).src), { cookie: start.cookie });
   return (await siteGet(url, { cookie })).body;
 }
 import { api, claxBin, startDaemon, type TestDaemon } from "./daemon-fixture.ts";

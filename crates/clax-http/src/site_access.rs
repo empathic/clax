@@ -148,13 +148,17 @@ pub fn visitor_id(token: &str, aid: &ArtifactId, secret: &str) -> String {
     format!("v_{}", &mac[..22])
 }
 
-/// A site response's caching and CORS headers, by who it was answered to:
-/// it never carries `Access-Control-Allow-Origin`; one that sets a cookie
-/// is `private, no-store`; a visitor's on a site open to the world
-/// (`world_visitor`) revalidates within a minute at most: `no-cache`
-/// becomes `public, no-cache`, and anything longer (a version's files, an
-/// asset's `immutable`) `public, max-age=60, must-revalidate`, so a site
-/// made private stops being served from a shared cache within a minute.
+/// A site response's caching and CORS headers, by who it was answered to,
+/// in one place: it never carries `Access-Control-Allow-Origin`; one that
+/// sets a cookie is `private, no-store`; a visitor's on a site open to the
+/// world (`world_visitor`) revalidates within a minute at most (`no-cache`
+/// becomes `public, no-cache`, anything longer, a version's files or an
+/// asset's `immutable`, `public, max-age=60, must-revalidate`), so a site
+/// made private stops being served from a shared cache within a minute;
+/// anyone else's is private to their browser (`public` becomes `private`,
+/// `no-cache` `private, no-cache`; `no-store` stays). A world visitor's
+/// public answer varies by `Cookie`; the access layer never makes the page
+/// runtime's (`/_clax/api/`) public.
 pub fn site_response_headers(res: &mut Response, world_visitor: bool) {
     let h = res.headers_mut();
     h.remove(header::ACCESS_CONTROL_ALLOW_ORIGIN);
@@ -175,8 +179,17 @@ pub fn site_response_headers(res: &mut Response, world_visitor: bool) {
         .to_ascii_lowercase();
     let short = if cc.contains("no-store") || cc.contains("private") {
         None
-    } else if cc.contains("immutable") || cc.contains("max-age") {
-        Some("public, max-age=60, must-revalidate")
+    } else if world_visitor {
+        // One cache entry for every visitor; a holder's cookie makes a
+        // request theirs, never served from it.
+        h.append(header::VARY, HeaderValue::from_static("Cookie"));
+        Some(
+            if lower.contains("immutable") || lower.contains("max-age") {
+                "public, max-age=60, must-revalidate".to_string()
+            } else {
+                "public, no-cache".to_string()
+            },
+        )
     } else {
         Some("public, no-cache")
     };
@@ -500,26 +513,45 @@ pub async fn site_access_layer(
         Ok(w) => w,
         Err(e) => return e.into_response(),
     };
-    if world {
-        let secure = secure(&s);
-        let held = cookie_value(req.headers(), visitor_cookie_name(secure))
-            .filter(|v| visitor_secret_ok(&s.token, v));
-        // Only a navigation and the runtime's own calls set the cookie: a
-        // file or an asset a shared cache may keep never does. Two first
-        // requests at once each set one; the browser keeps the last set.
-        let mints = held.is_none()
-            && (navigation(req.method(), req.headers())
-                || req.uri().path().starts_with("/_clax/api/"));
-        let secret = held.unwrap_or_else(|| mint_visitor_secret(&s.token));
-        req.extensions_mut().insert(SiteCaller::Visitor(visitor_id(
-            &s.token,
-            &site.artifact,
-            &secret,
-        )));
-        let mut res = next.run(req).await;
-        if mints {
-            res.headers_mut()
-                .append(header::SET_COOKIE, visitor_cookie(secure, &secret));
+    let caller = match holder {
+        Some(h) => SiteCaller::Holder(h),
+        None if world => {
+            let path = req.uri().path().to_string();
+            let secure = secure(&s);
+            let held = cookie_value(req.headers(), visitor_cookie_name(secure))
+                .filter(|v| visitor_secret_ok(&s.token, v));
+            // Only a navigation and the runtime's own calls set the cookie: a
+            // file or an asset a shared cache may keep never does. Two first
+            // requests at once each set one; the browser keeps the last set.
+            let mints = held.is_none()
+                && (navigation(req.method(), req.headers())
+                    || req.uri().path().starts_with("/_clax/api/"));
+            let secret = held.unwrap_or_else(|| mint_visitor_secret(&s.token));
+            req.extensions_mut().insert(SiteCaller::Visitor(visitor_id(
+                &s.token,
+                &site.artifact,
+                &secret,
+            )));
+            let mut res = next.run(req).await;
+            if mints {
+                res.headers_mut()
+                    .append(header::SET_COOKIE, visitor_cookie(secure, &secret));
+            }
+            // The runtime's answers are the caller's own (its documents,
+            // its whoami): never a shared cache's.
+            let public = !path.starts_with("/_clax/api/");
+            site_response_headers(&mut res, public);
+            return res;
+        }
+        None if navigation(req.method(), req.headers()) => {
+            let next = req
+                .uri()
+                .path_and_query()
+                .map_or("/", |p| p.as_str())
+                .to_string();
+            let mut res = signin_redirect(&s, req.headers(), &safe_next(&next));
+            site_response_headers(&mut res, false);
+            return res;
         }
         site_response_headers(&mut res, true);
         return res;
@@ -629,6 +661,15 @@ mod tests {
         };
         let year = "public, max-age=31536000, immutable";
         assert_eq!(after("no-cache", false, true), "public, no-cache");
+        let mut r = Response::new(Body::empty());
+        r.headers_mut()
+            .insert(header::CACHE_CONTROL, HeaderValue::from_static("no-cache"));
+        site_response_headers(&mut r, true);
+        assert_eq!(
+            r.headers()[header::VARY],
+            "Cookie",
+            "a public answer varies by Cookie"
+        );
         assert_eq!(
             after(year, false, true),
             "public, max-age=60, must-revalidate"

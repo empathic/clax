@@ -1279,3 +1279,47 @@ async fn the_open_site_link_signs_the_owner_in_on_a_world_site() {
     let v: Value = r.json().await.unwrap();
     assert_eq!(v["kind"], "visitor");
 }
+
+#[tokio::test]
+async fn a_world_visitors_runtime_answers_are_never_public() {
+    let site = Site::new().await;
+    let owner = site.owner().await;
+    let (aid, _) = site.guestbook().await;
+    let (s, v) = site.site_access(&owner, &aid, "world").await;
+    assert_eq!(s, 200, "{v}");
+    let put = site
+        .visitor_api(
+            &aid,
+            reqwest::Method::PUT,
+            "docs/data/guestbook/entries/hello",
+            Some(json!({"data": {"hi": 1}})),
+        )
+        .await;
+    assert_eq!(put.status(), 200);
+    let cookie = put.headers()[SET_COOKIE]
+        .to_str()
+        .unwrap()
+        .split(';')
+        .next()
+        .unwrap()
+        .to_string();
+    let read = site
+        .raw
+        .get(format!(
+            "{}/_clax/api/docs/data/guestbook/entries/hello",
+            site.ts.base
+        ))
+        .header(HOST, site.site_host(&aid))
+        .header(ORIGIN, format!("http://{}", site.site_host(&aid)))
+        .header(COOKIE, &cookie)
+        .send()
+        .await
+        .unwrap();
+    assert_eq!(read.status(), 200);
+    let cache = read.headers()["cache-control"].to_str().unwrap();
+    assert!(cache.starts_with("private"), "{cache}");
+    // A visitor's page, by contrast, is public and varies by Cookie.
+    let page = site.on_site(&aid, "/", Some(&cookie)).await;
+    assert_eq!(page.headers()["cache-control"], "public, no-cache");
+    assert_eq!(page.headers()["vary"], "Cookie");
+}
