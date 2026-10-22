@@ -49,8 +49,10 @@ async fn upload_serve_list_delete() {
         res.headers()["cache-control"],
         "private, max-age=31536000, immutable"
     );
-    // A private artifact's asset is its browser's alone.
-    assert!(res.headers().get("access-control-allow-origin").is_none());
+    assert!(
+        res.headers().get("access-control-allow-origin").is_none(),
+        "a site answer is its own origin's"
+    );
     assert_eq!(res.headers()["content-security-policy"], "sandbox");
     assert_eq!(res.bytes().await.unwrap().to_vec(), vec![137, 80, 78, 71]);
     let list: serde_json::Value = ts

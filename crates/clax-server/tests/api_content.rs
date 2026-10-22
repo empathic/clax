@@ -22,7 +22,7 @@ async fn serves_wrapped_index_and_files_with_caching_headers() {
     let html = res.text().await.unwrap();
     assert!(html.starts_with("<!doctype html>"));
     assert!(html.contains(&format!(
-        "data-artifact=\"{id}\" data-version=\"1\" data-contract=\"0.2.61\""
+        "data-artifact=\"{id}\" data-version=\"1\" data-contract=\"0.3.0\""
     )));
     let res = ts.site_get(id, "/_clax/v/1/css/a.css").await;
     assert_eq!(res.headers()["content-type"], "text/css");
@@ -31,7 +31,10 @@ async fn serves_wrapped_index_and_files_with_caching_headers() {
         "private, max-age=31536000, immutable"
     );
     assert_eq!(res.headers()["x-content-type-options"], "nosniff");
-    assert!(res.headers().get("access-control-allow-origin").is_none());
+    assert!(
+        res.headers().get("access-control-allow-origin").is_none(),
+        "a site answer is its own origin's"
+    );
     assert_eq!(res.text().await.unwrap(), "p{color:red}");
     assert_eq!(ts.site_get(id, "/_clax/v/1/missing.js").await.status(), 404);
     assert_eq!(ts.site_get(id, "/_clax/v/9/").await.status(), 404);
@@ -668,7 +671,7 @@ async fn supporting_html_files_are_wrapped_like_the_index_and_others_are_not() {
     let html = res.text().await.unwrap();
     assert_eq!(html.matches("/_clax/bridge.js").count(), 1, "{html}");
     // The bridge goes right after the doctype, before any page script.
-    let tag = bridge_tag_for(id, 1, "0.2.61", "about.html", &bridge_version(&*ts.web));
+    let tag = bridge_tag_for(id, 1, "0.3.0", "about.html", &bridge_version(&*ts.web));
     assert!(
         html.starts_with(&format!(
             "<!doctype html>{tag}<html><head><title>About</title>"
@@ -683,7 +686,7 @@ async fn supporting_html_files_are_wrapped_like_the_index_and_others_are_not() {
         .await
         .unwrap();
     // A fragment gets the skeleton, with the bridge first in its <head>.
-    let tag = bridge_tag_for(id, 1, "0.2.61", "docs/part.htm", &bridge_version(&*ts.web));
+    let tag = bridge_tag_for(id, 1, "0.3.0", "docs/part.htm", &bridge_version(&*ts.web));
     assert!(
         part.starts_with(&format!(
             "<!doctype html><html><head>{tag}<meta charset=utf8>"
@@ -834,7 +837,7 @@ async fn the_bridge_is_named_by_version_and_only_the_versioned_url_is_immutable_
     let v = v.as_str();
     let html = ts.site_get(id, "/_clax/v/1/").await.text().await.unwrap();
     assert!(
-        html.contains(&bridge_tag_for(id, 1, "0.2.61", "index.html", v)),
+        html.contains(&bridge_tag_for(id, 1, "0.3.0", "index.html", v)),
         "{html}"
     );
     let bare = ts.get("/_clax/bridge.js").await;
@@ -981,13 +984,13 @@ async fn the_runtime_contract_type_definitions_are_served_as_text() {
     let text = res.text().await.unwrap();
     assert_eq!(text, include_str!("../../../web/contract/0.2.61/db.d.ts"));
     // Clax's own contract version, with a level for a world site's visitors.
-    let res = ts.get("/_clax/contract/clax-1/db.d.ts").await;
+    let res = ts.get("/_clax/contract/0.3.0/db.d.ts").await;
     assert_eq!(res.status(), 200);
     let text = res.text().await.unwrap();
-    assert_eq!(text, include_str!("../../../web/contract/clax-1/db.d.ts"));
+    assert_eq!(text, include_str!("../../../web/contract/0.3.0/db.d.ts"));
     assert!(text.contains("PUBLIC.") && !text.contains("organization-internal"));
     assert_eq!(
-        ts.get("/_clax/contract/clax-1/nope.d.ts").await.status(),
+        ts.get("/_clax/contract/0.3.0/nope.d.ts").await.status(),
         404
     );
     // Clax's additions sit beside the unchanged files.

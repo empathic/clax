@@ -300,66 +300,66 @@ const CONTRACT_FILES: &[(&str, &str)] = &[
 ];
 
 /// Where Clax's own contract version is served under `/_clax/`.
-const CLAX_CONTRACT_PREFIX: &str = "contract/clax-1/";
+const CLAX_CONTRACT_PREFIX: &str = "contract/0.3.0/";
 
-/// The type definitions of Clax's contract `clax-1` (`web/contract/clax-1/`):
+/// The type definitions of Clax's contract `0.3.0` (`web/contract/0.3.0/`):
 /// 0.2.61's, with what each artifact's own site changes (a `db` level for
 /// visitors of a site open to the world, `public`; assets at
 /// `/_clax/blob/<id>`; an artifact that declares `db`, `assets` or
 /// `comments` may be opened to the world), served at
-/// `/_clax/contract/clax-1/<name>.d.ts`.
+/// `/_clax/contract/0.3.0/<name>.d.ts`.
 const CLAX_CONTRACT_FILES: &[(&str, &str)] = &[
     (
         "artifact.d.ts",
-        include_str!("../../../../web/contract/clax-1/artifact.d.ts"),
+        include_str!("../../../../web/contract/0.3.0/artifact.d.ts"),
     ),
     (
         "assets.d.ts",
-        include_str!("../../../../web/contract/clax-1/assets.d.ts"),
+        include_str!("../../../../web/contract/0.3.0/assets.d.ts"),
     ),
     (
         "claude.d.ts",
-        include_str!("../../../../web/contract/clax-1/claude.d.ts"),
+        include_str!("../../../../web/contract/0.3.0/claude.d.ts"),
     ),
     (
         "comments.d.ts",
-        include_str!("../../../../web/contract/clax-1/comments.d.ts"),
+        include_str!("../../../../web/contract/0.3.0/comments.d.ts"),
     ),
     (
         "db.d.ts",
-        include_str!("../../../../web/contract/clax-1/db.d.ts"),
+        include_str!("../../../../web/contract/0.3.0/db.d.ts"),
     ),
     (
         "downloads.d.ts",
-        include_str!("../../../../web/contract/clax-1/downloads.d.ts"),
+        include_str!("../../../../web/contract/0.3.0/downloads.d.ts"),
     ),
     (
         "files.d.ts",
-        include_str!("../../../../web/contract/clax-1/files.d.ts"),
+        include_str!("../../../../web/contract/0.3.0/files.d.ts"),
     ),
     (
         "mcp.d.ts",
-        include_str!("../../../../web/contract/clax-1/mcp.d.ts"),
+        include_str!("../../../../web/contract/0.3.0/mcp.d.ts"),
     ),
     (
         "permissions.d.ts",
-        include_str!("../../../../web/contract/clax-1/permissions.d.ts"),
+        include_str!("../../../../web/contract/0.3.0/permissions.d.ts"),
     ),
     (
         "room.d.ts",
-        include_str!("../../../../web/contract/clax-1/room.d.ts"),
+        include_str!("../../../../web/contract/0.3.0/room.d.ts"),
     ),
     (
         "sample.d.ts",
-        include_str!("../../../../web/contract/clax-1/sample.d.ts"),
+        include_str!("../../../../web/contract/0.3.0/sample.d.ts"),
     ),
     (
         "self.d.ts",
-        include_str!("../../../../web/contract/clax-1/self.d.ts"),
+        include_str!("../../../../web/contract/0.3.0/self.d.ts"),
     ),
     (
         "user.d.ts",
-        include_str!("../../../../web/contract/clax-1/user.d.ts"),
+        include_str!("../../../../web/contract/0.3.0/user.d.ts"),
     ),
 ];
 
@@ -367,7 +367,7 @@ const CLAX_CONTRACT_FILES: &[(&str, &str)] = &[
 /// revalidated at the bare one (both carry an `ETag`); the shell's bundles
 /// and the bridge's lazy parts (`bridge/…`) have content-hashed names.
 /// `contract/0.2.61/<name>.d.ts` is one of the runtime contract's type
-/// definitions, `contract/clax-1/<name>.d.ts` one of Clax's contract
+/// definitions, `contract/0.3.0/<name>.d.ts` one of Clax's contract
 /// version's, and `contract/clax-extensions.d.ts` Clax's additions to
 /// them, as plain text.
 pub async fn static_file(
@@ -553,7 +553,7 @@ mod tests {
 
     #[test]
     fn every_contract_file_is_built_in() {
-        for (version, files) in [("0.2.61", CONTRACT_FILES), ("clax-1", CLAX_CONTRACT_FILES)] {
+        for (version, files) in [("0.2.61", CONTRACT_FILES), ("0.3.0", CLAX_CONTRACT_FILES)] {
             let dir = format!(
                 "{}/../../web/contract/{version}",
                 env!("CARGO_MANIFEST_DIR")

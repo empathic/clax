@@ -2466,7 +2466,7 @@ name or a person ID: the shell gives it opaque keys and colours
 
 A page that declares `capabilities: {comments: {}}` (or `{"composer_only":
 true}`, optionally with `"customAnchors": true`) gets `claude.use("comments")`
-per the clax-1 `comments.d.ts`, in every view of the artifact's page: a
+per the 0.3.0 `comments.d.ts`, in every view of the artifact's page: a
 visitor of its site opened to the world is offered no comments.
 `openComposer` and `customAnchors().compose` open the shell's composer on the
 page's element, range, or anchor; the viewer types and posts. The write
@@ -6172,10 +6172,10 @@ Minimal skeleton:
 ## Runtime capabilities
 
 A page reaches runtime capabilities with `await window.claude.use(name)`,
-exactly as on claude.ai. The type definitions of contract clax-1 (claude.ai's
+exactly as on claude.ai. The type definitions of contract 0.3.0 (claude.ai's
 0.2.61, with what each artifact's own site changes) are the contract:
 before writing a page, fetch the one you use from your daemon,
-`<daemon_url>/_clax/contract/clax-1/<name>.d.ts`, where `daemon_url`
+`<daemon_url>/_clax/contract/0.3.0/<name>.d.ts`, where `daemon_url`
 comes from the `status` tool (names: `claude`, `permissions`, `artifact`,
 `db`, `downloads`, `user`, `comments`, `assets`, `room`, `sample`).
 
@@ -8932,8 +8932,8 @@ it starts, the runs a previous process left. A build without the
 - The runtime contract's type definitions,
   `/_clax/contract/0.2.61/<name>.d.ts` (built into the daemon from
   `web/contract/0.2.61/`, claude.ai's files unchanged), Clax's own
-  version of them, `/_clax/contract/clax-1/<name>.d.ts` (from
-  `web/contract/clax-1/`: 0.2.61's, with the `db` level `public`, assets
+  version of them, `/_clax/contract/0.3.0/<name>.d.ts` (from
+  `web/contract/0.3.0/`: 0.2.61's, with the `db` level `public`, assets
   at `/_clax/blob/<id>`, and artifacts declaring `db`, `assets` or
   `comments` open to the world), and Clax's additions
   to them, `/_clax/contract/clax-extensions.d.ts` (from

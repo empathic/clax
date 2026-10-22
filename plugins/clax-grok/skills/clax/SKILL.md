@@ -528,10 +528,10 @@ there. Tell your person; do not work around it.
 ## Runtime capabilities
 
 A page reaches runtime capabilities with `await window.claude.use(name)`,
-exactly as on claude.ai. The type definitions of contract clax-1 (claude.ai's
+exactly as on claude.ai. The type definitions of contract 0.3.0 (claude.ai's
 0.2.61, with what each artifact's own site changes) are the contract:
 before writing a page, fetch the one you use from your daemon,
-`<daemon_url>/_clax/contract/clax-1/<name>.d.ts`, where `daemon_url`
+`<daemon_url>/_clax/contract/0.3.0/<name>.d.ts`, where `daemon_url`
 comes from the `status` tool (names: `claude`, `permissions`, `artifact`,
 `db`, `downloads`, `user`, `comments`, `assets`, `room`, `sample`).
 

@@ -166,7 +166,7 @@ pub struct Session {
     pub name_source: Option<String>,
 }
 
-pub const CONTRACT_VERSION: &str = "0.2.61";
+pub const CONTRACT_VERSION: &str = "0.3.0";
 
 /// A comment thread anchored to one version of an artifact. `status` is `open`
 /// or `resolved`; `comments` are oldest first.
