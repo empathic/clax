@@ -1107,6 +1107,24 @@ pub struct PatchBody {
     icon: Option<String>,
     pinned: Option<bool>,
     capabilities: Option<Value>,
+    /// `private` or `world` ([`super::world`]).
+    site_access: Option<String>,
+    /// The approval question an agent's earlier `site_access: "world"`
+    /// returned.
+    question_id: Option<String>,
+}
+
+impl PatchBody {
+    /// It changes the site's access alone, which the owner's or the page's
+    /// maker's browser may do without the token.
+    fn site_access_only(&self) -> bool {
+        self.site_access.is_some()
+            && self.title.is_none()
+            && self.description.is_none()
+            && self.icon.is_none()
+            && self.pinned.is_none()
+            && self.capabilities.is_none()
+    }
 }
 
 /// `GET /api/artifacts/<aid>/presence` (no token): `{people, viewing}`, the
@@ -1136,29 +1154,52 @@ pub async fn presence(
     Ok(Json(json!({"people": people, "viewing": viewing})))
 }
 
-/// Pins or edits an artifact's metadata. A person's agent edits from a
-/// session, never as a page (spec §6.7); the answer is filtered for an
-/// agent channel's reader.
+/// Pins or edits an artifact's metadata, or opens its site to the world or
+/// closes it (`site_access`, [`super::world`]: a browser of the owner's or
+/// of the page's maker may change it alone without the token). A person's
+/// agent edits from a session, never as a page (spec §6.7); the answer is
+/// filtered for an agent channel's reader, and carries `site_access`. An
+/// agent's opening to the world that waits on its person answers 202
+/// `{status: "approval_pending", question_id, inbox_url}` and changes
+/// nothing.
 pub async fn patch(
     State(s): State<AppState>,
-    a: TokenOrAgent<clax_http::agent::ArtifactsPatch>,
+    a: Agent<clax_http::agent::ArtifactsPatch>,
     headers: HeaderMap,
     audit: AuditCtx,
+    deferred: clax_http::audit::DeferredAudit,
     aid: Result<Path<String>, PathRejection>,
     req: Result<Json<PatchBody>, JsonRejection>,
-) -> Result<Json<Value>, ApiError> {
+) -> Result<Response, ApiError> {
     let id = parse_id(&path(aid)?)?;
-    let b = body(req)?;
-    person_agent_session(&a.0.caller)?;
+    let mut b = body(req)?;
+    if !b.site_access_only() {
+        a.require_credential()?;
+    }
+    person_agent_session(&a.caller)?;
+    if let Some(v) = b.site_access.take() {
+        let world = super::world::parse(&v)?;
+        let qid = b.question_id.take();
+        if let super::world::Change::Pending(body) =
+            super::world::change(&s, &a.caller, deferred, &id, world, qid).await?
+        {
+            return Ok((StatusCode::ACCEPTED, Json(body)).into_response());
+        }
+    } else if b.question_id.is_some() {
+        return Err(ApiError::bad_request(
+            "invalid_args",
+            "question_id goes with site_access",
+        ));
+    }
     // Who sets the text fields (spec §8.2): a person's agent's person, else
     // the owner; a page's patch also carries its page's authors.
-    let by = match &a.0.caller {
+    let by = match &a.caller {
         clax_http::auth::Caller::PersonAgent { person, .. } => {
             clax_core::visibility::Author::of_token(person.as_deref())
         }
         _ => clax_core::visibility::Author::Owner,
     };
-    let via_page = page_marker(&a.0.caller, &headers)?;
+    let via_page = page_marker(&a.caller, &headers)?;
     if let Some(c) = &b.capabilities {
         clax_core::capabilities::validate(c)?;
     }
@@ -1168,8 +1209,13 @@ pub async fn patch(
         b.description.as_deref(),
         b.icon.as_deref(),
     )?;
-    admin_change(&s, &a.0.caller, &id, b.pinned, b.capabilities.clone()).await?;
-    let vf = VisFor::of(&a.0.caller, &s);
+    admin_change(&s, &a.caller, &id, b.pinned, b.capabilities.clone()).await?;
+    let vf = VisFor::of(&a.caller, &s);
+    let host = headers
+        .get(header::HOST)
+        .and_then(|h| h.to_str().ok())
+        .unwrap_or_default();
+    let site_url = format!("{}/", clax_http::site_access::site_origin(&s, &id, host));
     let artifact = s
         .store_call(move |st| {
             let a = st.update_meta(
@@ -1188,14 +1234,24 @@ pub async fn patch(
             let mut view = json!(a);
             let vis = vf.build(st)?;
             vis.filter_artifact(st, &a, &[], &mut view)?;
+            view["site_access"] = json!(site_access_of(st, &id)?);
             Ok(view)
         })
         .await?;
-    let mut v = json!({"artifact": artifact});
-    if !a.0.holds_token() {
+    let mut v = json!({"artifact": artifact, "site_url": site_url});
+    if !a.holds_token() {
         strip_sessions(&mut v);
     }
-    Ok(Json(v))
+    Ok(Json(v).into_response())
+}
+
+/// Artifact `id`'s `site_access`: `world` or `private`.
+pub fn site_access_of(st: &Store, id: &ArtifactId) -> clax_core::Result<&'static str> {
+    Ok(if st.site_open_to_world(id)? {
+        "world"
+    } else {
+        "private"
+    })
 }
 
 /// Deletes an artifact. A person's agent deletes from a session (400

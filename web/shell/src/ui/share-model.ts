@@ -2,7 +2,7 @@
 // routes): the words for each access, a GitHub login as the daemon checks
 // it, the suggestions the add field offers, and the link request each
 // general access makes. Pure: the dialog renders it.
-import type { GeneralAccess, LinkAccess, Share, ShareAccess, ShareCandidate } from "../hosted/api";
+import type { GeneralAccess, LinkAccess, Share, ShareAccess, ShareCandidate, SiteAccess } from "../hosted/api";
 
 export const ACCESS_LABEL: Record<ShareAccess, string> = { viewer: "Can view", commenter: "Can comment", editor: "Can edit" };
 /** Listed by key: a destructuring `#each` would pull a helper into a shared chunk. */
@@ -14,6 +14,11 @@ export const GENERAL_NOTE: Record<GeneralAccess, string> = {
   restricted: "Only the people added can open it.",
   link: "Anyone with the link can open it, without signing in.",
   public: "Anyone with the link can open it, and it is listed on this Clax's public page.",
+};
+/** What each site access means, before the site's address. */
+export const SITE_NOTE: Record<SiteAccess, string> = {
+  private: "Only the people with access load its site, at ",
+  world: "Anyone loads its site and uses its data as its rules allow, without signing in, at ",
 };
 
 /** The Comments switch (spec 2026-10-21-app-push-pull §5.6), and the line under it, on and off. */

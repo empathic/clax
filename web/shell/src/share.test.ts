@@ -22,7 +22,7 @@ function serve(state: { sharing: Sharing }, sent: { method: string; url: string;
   vi.stubGlobal("fetch", vi.fn(async (url: string, init?: RequestInit) => {
     const method = init?.method ?? "GET";
     if (url === `${BASE}/sharing` && method === "GET") return new Response(JSON.stringify(state.sharing));
-    if (url.startsWith(BASE)) {
+    if (url.startsWith(BASE) || url === `/api/artifacts/${ID}`) {
       const body = init?.body ? JSON.parse(String(init.body)) as Record<string, unknown> : null;
       sent.push({ method, url, body });
       if (url === `${BASE}/comments` && method === "PUT") return new Response(JSON.stringify({ artifact_id: ID, comments: body?.on }));
@@ -289,6 +289,33 @@ describe("Share dialog", () => {
     const general = m.root.querySelector<HTMLSelectElement>("select[aria-label='General access']")!;
     expect([...general.options].map(o => o.textContent)).toEqual(["Restricted", "Anyone with the link"]);
     m.unmount();
+  });
+
+  it("opens the site to the world and closes it, showing its address", async () => {
+    const site_url = `https://${ID}.clax.run/`;
+    const state = { sharing: open({ site_access: "private", site_url }) as Sharing };
+    const sent = serve(state);
+    const m = mount(ShareDialog, { id: ID, title: "Plan", initial: open({ site_access: "private", site_url }), onClose: vi.fn() });
+    const root = m.root;
+    const box = root.querySelector<HTMLInputElement>("input[name=world]")!;
+    const note = () => root.querySelector("[data-testid=site-note]")!.textContent ?? "";
+    expect(box.checked).toBe(false);
+    expect(note()).toMatch(/^Only the people with access/);
+    expect(root.querySelector<HTMLAnchorElement>("a.site")!.getAttribute("href")).toBe(site_url);
+    state.sharing = open({ site_access: "world", site_url });
+    flush(() => box.click());
+    await until(() => note().startsWith("Anyone"));
+    expect(sent).toEqual([{ method: "PATCH", url: `/api/artifacts/${ID}`, body: { site_access: "world" } }]);
+    expect(box.checked).toBe(true);
+    state.sharing = open({ site_access: "private", site_url });
+    flush(() => box.click());
+    await until(() => note().startsWith("Only"));
+    expect(sent[1].body).toEqual({ site_access: "private" });
+    m.unmount();
+    // A daemon that does not say offers no toggle.
+    const old = mount(ShareDialog, { id: ID, title: "Plan", initial: open(), onClose: vi.fn() });
+    expect(old.root.querySelector("input[name=world]")).toBeNull();
+    old.unmount();
   });
 
   it("says what the daemon refused", async () => {

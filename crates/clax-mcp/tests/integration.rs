@@ -29,6 +29,8 @@ mod publish_public;
 mod remote;
 #[cfg(any(not(clax_split), clax_split = "shim"))]
 mod shim;
+#[cfg(any(not(clax_split), clax_split = "site_access"))]
+mod site_access;
 #[cfg(any(not(clax_split), clax_split = "tools"))]
 mod tools;
 

@@ -950,3 +950,237 @@ async fn a_private_sites_responses_are_private_to_their_browser() {
         );
     }
 }
+
+impl Site {
+    /// `b`'s `PATCH /api/artifacts/<aid> {site_access: v}`.
+    async fn site_access(&self, b: &Browser, aid: &str, v: &str) -> (u16, Value) {
+        self.send(
+            b,
+            reqwest::Method::PATCH,
+            &format!("/api/artifacts/{aid}"),
+            json!({"site_access": v}),
+        )
+        .await
+    }
+
+    /// A Clax DB artifact whose `data/guestbook` anyone reads and writes,
+    /// with an uploaded asset: its ID and the asset's.
+    async fn guestbook(&self) -> (String, String) {
+        let r = self
+            .ts
+            .post_json(
+                "/api/artifacts",
+                json!({
+                    "title": "Guestbook",
+                    "capabilities": {"db": {"rules": [
+                        {"path": "data/guestbook", "read": "public", "write": "public"}
+                    ]}},
+                    "files": {"index.html": {"content": "<h1>Guestbook</h1>", "encoding": "utf8"}}
+                }),
+            )
+            .await;
+        assert_eq!(r.status(), 201);
+        let aid = r.json::<Value>().await.unwrap()["artifact"]["id"]
+            .as_str()
+            .unwrap()
+            .to_string();
+        let part = reqwest::multipart::Part::bytes(vec![137, 80, 78, 71])
+            .file_name("logo.png")
+            .mime_str("image/png")
+            .unwrap();
+        let r = self
+            .ts
+            .authed(
+                self.ts
+                    .client
+                    .post(format!("{}/api/artifacts/{aid}/assets", self.ts.base))
+                    .multipart(reqwest::multipart::Form::new().part("file", part)),
+            )
+            .send()
+            .await
+            .unwrap();
+        assert_eq!(r.status(), 201);
+        let asset = r.json::<Value>().await.unwrap()["asset"]["id"]
+            .as_str()
+            .unwrap()
+            .to_string();
+        (aid, asset)
+    }
+
+    /// A signed-out visitor's runtime call on `aid`'s host, from its own
+    /// origin.
+    async fn visitor_api(
+        &self,
+        aid: &str,
+        method: reqwest::Method,
+        path: &str,
+        body: Option<Value>,
+    ) -> reqwest::Response {
+        let mut r = self
+            .raw
+            .request(method, format!("{}/_clax/api/{path}", self.ts.base))
+            .header(HOST, self.site_host(aid))
+            .header(ORIGIN, format!("http://{}", self.site_host(aid)));
+        if let Some(b) = body {
+            r = r.json(&b);
+        }
+        r.send().await.unwrap()
+    }
+}
+
+#[tokio::test]
+async fn a_world_site_is_served_to_anyone_and_its_page_is_not() {
+    let site = Site::new().await;
+    let owner = site.owner().await;
+    let (aid, _) = site.guestbook().await;
+    let (s, v) = site.site_access(&owner, &aid, "world").await;
+    assert_eq!(s, 200, "{v}");
+    assert_eq!(v["artifact"]["site_access"], "world");
+    let (_, got) = site
+        .send(
+            &owner,
+            reqwest::Method::GET,
+            &format!("/api/hosted/artifacts/{aid}/sharing"),
+            Value::Null,
+        )
+        .await;
+    assert_eq!(got["site_access"], "world", "{got}");
+    assert_eq!(got["site_url"], format!("http://{}/", site.site_host(&aid)));
+    assert_eq!(v["site_url"], got["site_url"]);
+    let r = site
+        .raw
+        .get(format!("{}/", site.ts.base))
+        .header(HOST, site.site_host(&aid))
+        .header(ACCEPT, "text/html")
+        .send()
+        .await
+        .unwrap();
+    assert_eq!(r.status(), 200);
+    assert!(
+        r.headers()[SET_COOKIE]
+            .to_str()
+            .unwrap()
+            .starts_with("clax_visitor=")
+    );
+    assert!(r.text().await.unwrap().contains("<h1>Guestbook</h1>"));
+    // The artifact's page on the public host keeps its own access.
+    let r = site
+        .public(
+            &Browser::default(),
+            reqwest::Method::GET,
+            &format!("/a/{aid}"),
+        )
+        .send()
+        .await
+        .unwrap();
+    assert_ne!(r.status(), 200);
+    assert!(!r.text().await.unwrap().contains("Guestbook"));
+    let (s, _) = site
+        .send(
+            &Browser::default(),
+            reqwest::Method::GET,
+            &format!("/api/artifacts/{aid}/threads"),
+            Value::Null,
+        )
+        .await;
+    assert!(s == 401 || s == 404, "{s}");
+    // Only who manages it opens it: a person it is shared with does not.
+    let (sam, sam_pid) = site.member(&owner, "Sam").await;
+    let (s, _) = site
+        .send(
+            &owner,
+            reqwest::Method::PUT,
+            &format!("/api/hosted/artifacts/{aid}/shares"),
+            json!({"person": sam_pid, "access": "viewer"}),
+        )
+        .await;
+    assert_eq!(s, 200);
+    let (s, v) = site.site_access(&sam, &aid, "private").await;
+    assert!(s == 403, "{s} {v}");
+    let (s, v) = site.site_access(&owner, &aid, "everyone").await;
+    assert_eq!((s, code_of(&v)), (400, "invalid_argument"));
+}
+
+#[tokio::test]
+async fn closing_a_world_site_refuses_the_next_visitor_request() {
+    let site = Site::new().await;
+    let owner = site.owner().await;
+    let (aid, asset) = site.guestbook().await;
+    site.site_access(&owner, &aid, "world").await;
+    let blob = format!("/_clax/blob/{asset}");
+    let doc = "docs/data/guestbook/entries/e1";
+    assert_eq!(site.on_site(&aid, "/", None).await.status(), 200);
+    assert_eq!(site.on_site(&aid, &blob, None).await.status(), 200);
+    let r = site
+        .visitor_api(
+            &aid,
+            reqwest::Method::PUT,
+            doc,
+            Some(json!({"data": {"hi": 1}})),
+        )
+        .await;
+    assert_eq!(r.status(), 200);
+    let (s, v) = site.site_access(&owner, &aid, "private").await;
+    assert_eq!((s, &v["artifact"]["site_access"]), (200, &json!("private")));
+    for p in ["/", "/index.html", blob.as_str()] {
+        let r = site.on_site(&aid, p, None).await;
+        assert!(
+            r.status() == 401 || r.status() == 301,
+            "{p}: {}",
+            r.status()
+        );
+    }
+    for m in [reqwest::Method::GET, reqwest::Method::PUT] {
+        let body = (m == reqwest::Method::PUT).then(|| json!({"data": {}}));
+        let r = site.visitor_api(&aid, m.clone(), doc, body).await;
+        assert_eq!(r.status(), 401, "{m}");
+    }
+}
+
+#[tokio::test]
+async fn the_open_site_link_signs_the_owner_in_on_a_world_site() {
+    let site = Site::new().await;
+    let owner = site.owner().await;
+    let (aid, _) = site.guestbook().await;
+    site.site_access(&owner, &aid, "world").await;
+    // "Open site" goes through /site-signin, which makes the owner's site
+    // session there too.
+    let host = site.site_host(&aid);
+    let r = site
+        .public(
+            &owner,
+            reqwest::Method::GET,
+            &format!("/site-signin?host={host}&next=%2F"),
+        )
+        .send()
+        .await
+        .unwrap();
+    assert_eq!(r.status(), 302);
+    let to = r.headers()[LOCATION].to_str().unwrap().to_string();
+    let cookie = site.session(&aid, &to).await;
+    let r = site
+        .raw
+        .get(format!("{}/_clax/api/whoami", site.ts.base))
+        .header(HOST, &host)
+        .header(COOKIE, &cookie)
+        .send()
+        .await
+        .unwrap();
+    assert_eq!(r.status(), 200);
+    assert!(
+        r.headers().get(SET_COOKIE).is_none(),
+        "a holder is no visitor"
+    );
+    let v: Value = r.json().await.unwrap();
+    assert_eq!(
+        (v["kind"].as_str(), v["can_edit"].as_bool()),
+        (Some("owner"), Some(true)),
+        "{v}"
+    );
+    // Without it, the same site reads them as a visitor.
+    let r = site
+        .visitor_api(&aid, reqwest::Method::GET, "whoami", None)
+        .await;
+    let v: Value = r.json().await.unwrap();
+    assert_eq!(v["kind"], "visitor");
+}

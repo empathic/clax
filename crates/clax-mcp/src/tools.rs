@@ -201,6 +201,11 @@ pub struct PublishPublicArgs {
     /// Seconds to wait for the person's answer (default 600, 50 under
     /// Codex).
     pub timeout_s: Option<u64>,
+    /// Instead of publishing on a public Clax: `world` opens this
+    /// artifact's own site (`site_url`) to anyone, without signing in,
+    /// once the person approves; `private` closes it again at once. Takes
+    /// no `remote` or `mode`.
+    pub site_access: Option<String>,
 }
 
 #[derive(Clone, Debug, Default, Deserialize, JsonSchema)]
@@ -1759,12 +1764,25 @@ impl ClaxTools {
         {
             return Err(invalid(format!("'{q}' is not a question ID")));
         }
+        if let Some(v) = &a.site_access {
+            if !["world", "private"].contains(&v.as_str()) {
+                return Err(invalid("site_access is world or private"));
+            }
+            if a.remote.is_some() || a.mode.is_some() {
+                return Err(invalid(
+                    "site_access opens this artifact's own site: it takes no remote or mode",
+                ));
+            }
+        }
         let session = self.require_session().await?;
         let id = self.resolve_id(&a.url_or_id).await?;
         let wait = a
             .timeout_s
             .unwrap_or_else(|| default_ask_wait(&session.harness))
             .clamp(MIN_WAIT_S, max_ask_wait(&session.harness));
+        if let Some(v) = &a.site_access {
+            return self.set_site_access(&id, v, a.question_id, wait).await;
+        }
         // A push after the person answers starts only while `wait` has
         // time left (under Codex, so the call ends inside its tool
         // timeout); else the next call makes it.
@@ -1820,6 +1838,59 @@ impl ClaxTools {
                     "call_again": true,
                     "note": "The person answered as this call's wait ran out: call publish_public again with this question_id to publish what they approved.",
                 }));
+            }
+            body["question_id"] = json!(qid);
+        }
+    }
+
+    /// `publish_public`'s `site_access`: `PATCH /api/artifacts/<id>
+    /// {site_access}`, waiting up to `wait` seconds on the person's answer
+    /// when the daemon asks them (opening to the world).
+    async fn set_site_access(
+        &self,
+        id: &str,
+        access: &str,
+        question_id: Option<String>,
+        wait: u64,
+    ) -> Outcome {
+        let started = self.clock.now();
+        let left = || {
+            let spent = (self.clock.now() - started).num_seconds().max(0) as u64;
+            wait.saturating_sub(spent)
+        };
+        let mut body = json!({"site_access": access, "question_id": question_id});
+        loop {
+            let res = self
+                .client
+                .patch(id, &body)
+                .await
+                .map_err(|e| self.fail(e))?;
+            if res["status"] != "approval_pending" {
+                return Ok(json!({
+                    "status": if res["artifact"]["site_access"] == "world" { "open" } else { "private" },
+                    "site_access": res["artifact"]["site_access"],
+                    "site_url": res["site_url"],
+                }));
+            }
+            let qid = res["question_id"].as_str().unwrap_or_default().to_string();
+            let pending = json!({
+                "status": "approval_pending",
+                "question_id": qid,
+                "url": res["inbox_url"],
+                "call_again": true,
+                "note": "The person has not answered yet: call publish_public again with this site_access and question_id to keep waiting.",
+            });
+            let wait_s = left();
+            if wait_s == 0 {
+                return Ok(pending);
+            }
+            let q = self
+                .client
+                .ask_wait(&qid, wait_s)
+                .await
+                .map_err(|e| self.fail(e))?;
+            if q["question"]["status"] == "open" {
+                return Ok(pending);
             }
             body["question_id"] = json!(qid);
         }

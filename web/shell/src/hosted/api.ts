@@ -34,11 +34,14 @@ export type GeneralAccess = "restricted" | "link" | "public";
 export type Share = { id: string; access: ShareAccess; github_login: string | null; person: string | null; name: string | null; pending: boolean };
 /** A person the owner's sharing dialog suggests. */
 export type ShareCandidate = { person: string; name: string | null; github_login: string | null };
-/** `GET /api/hosted/artifacts/<id>/sharing`: everything for whoever may share it, else `can_share: false` alone.
- * `comments` is its Comments switch: off, nobody comments there, whatever their access. */
+/** Whether an artifact's site is open to anyone, without signing in, or only to those it is shared with. */
+export type SiteAccess = "private" | "world";
+/** `GET /api/hosted/artifacts/<id>/sharing`: everything for whoever may share it, else `can_share: false` alone;
+ * `site_access` and its site's address, `site_url`, where the daemon says them. `comments` is its Comments
+ * switch: off, nobody comments there, whatever their access. */
 export type Sharing =
   | { artifact_id: string; can_share: false }
-  | { artifact_id: string; can_share: true; comments: boolean; general: GeneralAccess; public_gallery?: boolean; link_access: LinkAccess | null; url: string; people: Share[]; suggestions: ShareCandidate[] };
+  | { artifact_id: string; can_share: true; comments: boolean; general: GeneralAccess; public_gallery?: boolean; link_access: LinkAccess | null; url: string; people: Share[]; suggestions: ShareCandidate[]; site_access?: SiteAccess; site_url?: string };
 /** An artifact in the public gallery. */
 export type PublicArtifact = { artifact_id: string; title: string; url: string };
 
@@ -80,6 +83,9 @@ export const links = () => call<{ links: SharedLink[] }>("/api/hosted/links");
 export const setLink = (aid: string, access: LinkAccess | null, listed?: boolean) =>
   call<{ artifact_id: string; access: LinkAccess | null; listed: boolean; url: string }>(`/api/hosted/artifacts/${e(aid)}/link`, "PUT", listed === undefined ? { access } : { access, listed });
 export const sharing = (aid: string) => call<Sharing>(`/api/hosted/artifacts/${e(aid)}/sharing`);
+/** Opens `aid`'s site to the world, or makes it private again. */
+export const setSiteAccess = (aid: string, access: SiteAccess) =>
+  call<unknown>(`/api/artifacts/${e(aid)}`, "PATCH", { site_access: access });
 /** Shares `aid` with a GitHub login or a person (by public ID), or changes their access. */
 export const share = (aid: string, to: { github_login: string } | { person: string }, access: ShareAccess) =>
   call<{ share: Share }>(`/api/hosted/artifacts/${e(aid)}/shares`, "PUT", { ...to, access });

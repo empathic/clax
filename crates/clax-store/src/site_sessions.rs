@@ -28,6 +28,12 @@ pub const SITE_CODE_TTL_SECS: i64 = 60;
 /// How long a site session lasts unused.
 pub const SITE_SESSION_TTL_SECS: i64 = 3600;
 
+/// The `remote_id` of a `push_approvals` row that approves opening its
+/// artifact's site to the world rather than a push: an agent's request to
+/// open one waits on the person's answer to its question, which is spent
+/// once used, as a push's is ([`Store::create_push_approval`]).
+pub const OPEN_TO_WORLD: &str = "site:world";
+
 /// Who a site code or session reads as.
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub enum Holder {

@@ -818,9 +818,11 @@ fn share_view(sh: &clax_store::shares::Share) -> Value {
 /// `GET /api/hosted/artifacts/<aid>/sharing` (a member's browser, or
 /// their own device, [`browser_or_device`]) → for
 /// whoever may share it ([`may_share`]) `{artifact_id, can_share: true,
-/// comments, general, link_access, url, people: [{id, access, github_login,
-/// person, name, pending}], suggestions}`, `comments` its Comments switch, the suggestions (people here, with
-/// their GitHub logins) for the owner alone; for another member who may
+/// general, link_access, url, people: [{id, access, github_login, person,
+/// name, pending}], suggestions, site_access, site_url}`, the suggestions
+/// (people here, with their GitHub logins) for the owner alone, and
+/// whether its site (at `site_url`) is open to the world (`world` or
+/// `private`, `PATCH /api/artifacts/<aid>` changes it); for another member who may
 /// read it, `{artifact_id, can_share: false}`. 404 for an artifact the
 /// caller may not read, 401 without a session, 403 for a guest.
 async fn get_sharing(
@@ -835,6 +837,11 @@ async fn get_sharing(
     let gallery = h.public_gallery;
     let aid = clax_http::headers::parse_id(&crate::routes::artifacts::path(aid)?)?;
     let url = h.url(&format!("/a/{}", aid.as_str()));
+    let host = headers
+        .get(axum::http::header::HOST)
+        .and_then(|v| v.to_str().ok())
+        .unwrap_or_default();
+    let site_url = format!("{}/", clax_http::site_access::site_origin(&s, &aid, host));
     let v = s
         .store_call(move |st| {
             if st.get_artifact(&aid)?.is_none() {
@@ -865,6 +872,8 @@ async fn get_sharing(
                 "url": url,
                 "people": people,
                 "suggestions": suggestions,
+                "site_access": crate::routes::artifacts::site_access_of(st, &aid)?,
+                "site_url": site_url,
             }))
         })
         .await?;

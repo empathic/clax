@@ -10,7 +10,9 @@
   // at its first GitHub sign-in. The people with access, each with their
   // access and Remove. General access: Restricted (the people added alone),
   // Anyone with the link, or Public (listed on the public page too), the
-  // last two at Can view or Can comment. Copy link. Names and logins are
+  // last two at Can view or Can comment. Site: Open to the world, with the
+  // site's address (when the daemon says them; the comments and history
+  // keep the access above). Copy link. Names and logins are
   // people's text, rendered as text. A modal dialog: everything else is
   // inert while it is open, Tab stays inside, Escape, Done or a click
   // outside closes it and focus goes back.
@@ -18,7 +20,7 @@
   import * as api from "../hosted/api";
   import { inertOutside, trapTab } from "./modal";
   import {
-    ACCESS_LABEL, ACCESSES, COMMENTS_LABEL, COMMENTS_NOTE, GENERAL_LABEL, GENERAL_NOTE, GENERALS, LINK_ACCESSES,
+    ACCESS_LABEL, ACCESSES, COMMENTS_LABEL, COMMENTS_NOTE, GENERAL_LABEL, GENERAL_NOTE, GENERALS, LINK_ACCESSES, SITE_NOTE,
     linkRequest, shareDetail, shareName, subject, suggest,
   } from "./share-model";
 
@@ -90,6 +92,11 @@
     const r = linkRequest(g, a);
     return act(() => api.setLink(id, r.access, r.listed));
   };
+
+  /** Opens the site to the world or closes it as `box` says; a change refused (or one while another is in flight) puts the box back. */
+  async function setWorld(box: HTMLInputElement) {
+    if (!(await act(() => api.setSiteAccess(id, box.checked ? "world" : "private")))) box.checked = data.site_access === "world";
+  }
 
   function copy() {
     void navigator.clipboard?.writeText(data.url).then(() => {
@@ -170,6 +177,13 @@
     </div>
     <p class="meta" data-testid="general-note">{GENERAL_NOTE[data.general]}</p>
 
+    {#if data.site_access && data.site_url}
+      <h3>Site</h3>
+      <label class="world"><input type="checkbox" name="world" checked={data.site_access === "world"}
+        onchange={e => { void setWorld(e.currentTarget); }} />Open to the world</label>
+      <p class="meta" data-testid="site-note">{SITE_NOTE[data.site_access]}<a class="site" href={data.site_url} target="_blank" rel="noopener noreferrer">{data.site_url}</a></p>
+    {/if}
+
     {#if err}<p class="error" role="alert">{err}</p>{/if}
     <footer>
       <button type="button" class="copy" onclick={copy}>{copied ? "Copied" : "Copy link"}</button>
@@ -211,6 +225,8 @@
   .sw input:checked + .track::after { transform: translateX(14px); }
   .sw input:focus-visible + .track { outline: 2px solid var(--focus); outline-offset: 2px; }
   .general { display: flex; flex-wrap: wrap; gap: 8px; }
+  .world { display: flex; align-items: center; gap: 8px; font-size: 14px; }
+  .site { overflow-wrap: anywhere; }
   .meta, .none { margin: 8px 0 0; font-size: 12.5px; color: var(--muted); line-height: 1.5; }
   .none { margin: 0; }
   .small { min-height: 28px; padding: 3px 10px; font-size: 12.5px; }

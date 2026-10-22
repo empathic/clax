@@ -39,6 +39,7 @@ pub mod remotes;
 pub mod room;
 pub mod sample;
 pub mod sessions;
+pub mod settings;
 pub mod site;
 pub mod site_api;
 pub mod site_signin;
@@ -53,6 +54,7 @@ pub mod toolpath;
 pub mod viewers;
 pub mod watches;
 pub mod working;
+pub mod world;
 
 #[cfg(test)]
 mod guards;
