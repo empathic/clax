@@ -4,7 +4,7 @@
 Run through scripts/perf-daemon.sh, which builds the release binary. This
 script starts that binary on a scratch CLAX_HOME and a free port, seeds a
 large home over HTTP, then runs rounds of phases. In each phase a probe
-process loops on cheap requests (`/healthz`, `/a/<id>`, `/c/<id>/v/1/`,
+process loops on cheap requests (`/healthz`, `/a/<id>`, `<id>.localhost/_clax/v/1/`,
 `/api/artifacts/<id>`) for `window_s` seconds while one load runs alongside:
 
 - idle: no load; the baseline that scales the limits;
@@ -156,7 +156,7 @@ from concurrent.futures import ThreadPoolExecutor
 from perf_metrics import metric, write as write_metrics
 
 RESERVED_PORTS = {7480, 7481, 7490}
-CHEAP = ["GET /healthz", "GET /a/<id>", "GET /c/<id>/v/1/", "GET /api/artifacts/<id>"]
+CHEAP = ["GET /healthz", "GET /a/<id>", "GET <id>.localhost/_clax/v/1/", "GET /api/artifacts/<id>"]
 REQUEST_TIMEOUT_S = 60
 
 # --- HTTP ---------------------------------------------------------------------
@@ -711,18 +711,18 @@ def p95(xs):
     return s[max(0, math.ceil(0.95 * len(s)) - 1)]
 
 
-def targets(st):
+def targets(st, port):
     aid, ck = st["probe_aid"], {"Cookie": "clax_viewer=" + st["viewer"]}
     return [
         {"label": "GET /healthz", "path": "/healthz", "headers": {}, "auth": False},
         {"label": "GET /a/<id>", "path": f"/a/{aid}", "headers": ck, "auth": False},
-        {"label": "GET /c/<id>/v/1/", "path": f"/c/{aid}/v/1/", "headers": {}, "auth": False},
+        {"label": "GET <id>.localhost/_clax/v/1/", "path": "/_clax/v/1/", "headers": {"Host": f"{aid}.localhost:{port}"}, "auth": False},
         {"label": "GET /api/artifacts/<id>", "path": f"/api/artifacts/{aid}", "headers": ck, "auth": True},
     ]
 
 
 def run_phase(d, loads, st, method, window):
-    probes = Probes(d.port, d.token, targets(st))
+    probes = Probes(d.port, d.token, targets(st, d.port))
     try:
         time.sleep(0.2)  # the probes' first requests land before the load starts
         info = getattr(loads, method)(time.time() + window)

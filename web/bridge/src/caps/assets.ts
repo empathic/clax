@@ -5,9 +5,9 @@ import { CapabilityError, type Rpc } from "../rpc";
 
 const refuse = (message: string) => Promise.reject(new CapabilityError("invalid_request", message));
 
-/** The asset ID in `ref`: the ID itself, or the last part of a
- * `/_blob/<id>` or `/_blob/<artifact ID>/<id>` URL. */
-const REF = /^(?:.*\/_blob\/(?:[0-9a-z]{12}\/)?)?([0-9A-Za-z]{1,64})(?:[?#].*)?$/s;
+/** The asset ID in `ref`: the ID itself, or the part of a `/_clax/blob/<id>`
+ * (or a legacy artifact's `/_blob/<id>`) URL after that prefix. */
+const REF = /^(?:.*\/(?:_clax\/blob|_blob)\/)?([0-9A-Za-z]{1,64})(?:[?#].*)?$/s;
 
 export function assetsLocals(rpc: Pick<Rpc, "call">): Local {
   return {

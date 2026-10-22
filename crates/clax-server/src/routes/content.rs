@@ -122,6 +122,7 @@ pub async fn redirect_to_slash(
     Ok(Redirect::permanent(&format!("{n}/")))
 }
 
+/// `/c/<aid>/v/<n>/`: version `n`'s `index.html` (a hosted daemon's).
 pub async fn index(
     State(s): State<AppState>,
     d: clax_http::agent::DeniedToGrants,
@@ -133,23 +134,7 @@ pub async fn index(
     d.refuse_agents()?;
     let (aid, n) = path(p)?;
     let id = parse_id(&aid)?;
-    let own = own_host(&s);
-    let live = s.live_ids.contains(id.as_str());
-    let aid = id.as_str().to_string();
-    let app = (aid.as_str(), own.as_str(), s.embed.as_ref());
-    match lookup(&s, id, n, INDEX.to_string(), true).await? {
-        Served::Page(html) => Ok(framed_by_shell(
-            http_cache::html(&req, &html),
-            &origin,
-            &req,
-            app,
-            live,
-        )),
-        Served::Raw(..) => Err(ApiError::from(CoreError::Io(std::io::Error::new(
-            std::io::ErrorKind::InvalidData,
-            "index.html is not UTF-8",
-        )))),
-    }
+    serve_version(&s, id, n, INDEX.to_string(), false, &origin, &req).await
 }
 
 /// Whether a stored content type is `text/html` (parameters ignored).
@@ -267,11 +252,9 @@ async fn read_bytes(
         .ok_or(CoreError::NotFound)
 }
 
-/// A supporting file of a version. A `text/html` file in UTF-8 is served like
-/// the index: wrapped with the bridge (`data-file` naming its path),
-/// revalidated by the browser on every load, cached by the daemon per file.
-/// Any other file is served as stored: immutable, except an HTML file that
-/// is not UTF-8, which is revalidated like every page.
+/// `/c/<aid>/v/<n>/<path>`: a supporting file of version `n` (a hosted
+/// daemon's), as [`serve_version`] serves it; `index.html` redirects to
+/// the version's root.
 pub async fn file(
     State(s): State<AppState>,
     d: clax_http::agent::DeniedToGrants,
@@ -286,31 +269,54 @@ pub async fn file(
     if rel == INDEX {
         return Ok(Redirect::permanent("./").into_response());
     }
-    let tag_source = format!("{aid}/{n}/{rel}");
-    let own = own_host(&s);
-    let live = s.live_ids.contains(id.as_str());
-    let aid = id.as_str().to_string();
-    let app = (aid.as_str(), own.as_str(), s.embed.as_ref());
-    let (bytes, meta) = match lookup(&s, id, n, rel, false).await? {
+    serve_version(&s, id, n, rel, false, &origin, &req).await
+}
+
+/// File `rel` of version `n` of `id`. `index.html`, and any other
+/// `text/html` file in UTF-8, is a page: wrapped with the bridge
+/// (`data-file` naming its path), revalidated by the browser on every
+/// load, cached by the daemon per file. Any other file is served as
+/// stored: immutable, unless `current` (the version a site's root serves,
+/// whose files change with its next version: then revalidated, with an
+/// `ETag` of its artifact, version, path and size); an HTML file that is
+/// not UTF-8 is revalidated like every page.
+pub(crate) async fn serve_version(
+    s: &AppState,
+    id: ArtifactId,
+    n: u32,
+    rel: String,
+    current: bool,
+    origin: &Option<Extension<SiteRequest>>,
+    req: &HeaderMap,
+) -> Result<Response, ApiError> {
+    let tag_source = format!("{}/{n}/{rel}", id.as_str());
+    let own = own_host(s);
+    let live = s.live_ids.contains(id.as_str()).then_some(own.as_str());
+    let index = rel == INDEX;
+    let (bytes, meta) = match lookup(s, id, n, rel, index).await? {
         Served::Page(html) => {
             return Ok(framed_by_shell(
-                http_cache::html(&req, &html),
-                &origin,
-                &req,
-                app,
+                http_cache::html(req, &html),
+                origin,
+                req,
                 live,
             ));
+        }
+        Served::Raw(..) if index => {
+            return Err(ApiError::from(CoreError::Io(std::io::Error::new(
+                std::io::ErrorKind::InvalidData,
+                "index.html is not UTF-8",
+            ))));
         }
         Served::Raw(bytes, meta) => (bytes, meta),
     };
     let body = Body::from(bytes);
-    if is_html(&meta.content_type) {
-        // An HTML file that is not UTF-8 is still a page: revalidated, never
-        // immutable. A version's files never change, so its artifact, version,
-        // path and size identify its bytes.
+    if is_html(&meta.content_type) || current {
+        // A version's files never change, so its artifact, version, path
+        // and size identify its bytes.
         let etag = http_cache::etag_of(format!("{tag_source}\0{}", meta.size).as_bytes());
         let ct = meta.content_type.clone();
-        let res = http_cache::tagged_as(&req, etag, http_cache::REVALIDATE, move || {
+        let res = http_cache::tagged_as(req, etag, http_cache::REVALIDATE, move || {
             (
                 [
                     (header::CONTENT_TYPE, ct),
@@ -321,21 +327,20 @@ pub async fn file(
             )
                 .into_response()
         });
-        return Ok(framed_by_shell(res, &origin, &req, app, live));
+        return Ok(framed_by_shell(res, origin, req, live));
     }
-    let cache_control = http_cache::IMMUTABLE;
     let res = (
         StatusCode::OK,
         [
             (header::CONTENT_TYPE, meta.content_type.as_str()),
-            (header::CACHE_CONTROL, cache_control),
+            (header::CACHE_CONTROL, http_cache::IMMUTABLE),
             (header::X_CONTENT_TYPE_OPTIONS, "nosniff"),
             (header::ACCESS_CONTROL_ALLOW_ORIGIN, "*"),
         ],
         body,
     )
         .into_response();
-    Ok(framed_by_shell(res, &origin, &req, app, live))
+    Ok(framed_by_shell(res, origin, req, live))
 }
 
 /// `GET /api/artifacts/<id>/versions/<n>/files/<path>`: a file's stored bytes,

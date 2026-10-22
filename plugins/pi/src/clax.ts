@@ -418,15 +418,36 @@ function clientError(e: unknown, log: string): ToolError {
 
 const ID_RE = /^[0-9abcdefghjkmnpqrstvwxyz]{12}$/;
 
+/** An asset's address as `clax_asset_upload` reports it, from the daemon's
+ * answer `url`, as the MCP tool makes it: an absolute one as it is; a site
+ * host's (`/_clax/blob/<id>`) on artifact `id`'s site origin, the browser
+ * base `base` with `<id>.` before a `localhost` or `127.0.0.1` host; any
+ * other on `base`. */
+export function absoluteAssetUrl(base: string, id: string, url: string): string {
+  if (url.includes("://")) return url;
+  if (url.startsWith("/_clax/")) {
+    try {
+      const u = new URL(base);
+      if (u.hostname === "localhost" || u.hostname === "127.0.0.1") {
+        u.hostname = `${id}.localhost`;
+        return `${u.origin}${url}`;
+      }
+    } catch { /* not a URL: on the base as it is */ }
+  }
+  return `${base}${url}`;
+}
+
 /** The artifact ID, and the version when the reference names one, in a bare ID
  * or a URL of one of these forms (query and fragment ignored): `.../a/<id>`,
  * `.../a/<id>/v/<n>`, either followed by a page's path (`.../a/<id>/about.html`),
- * `.../c/<id>/v/<n>/...`, and the per-artifact origin
- * `http://<id>.localhost:<port>/v/<n>/...`. */
+ * `.../c/<id>/v/<n>/...`, and the artifact's site
+ * `http://<id>.localhost:<port>/...` (its current version) or
+ * `.../_clax/v/<n>/...`. */
 export function artifactRef(urlOrId: string): { id: string; version?: number } {
   const s = urlOrId.trim().split(/[?#]/)[0] ?? "";
   if (ID_RE.test(s)) return { id: s };
-  const versionIn = (segs: string[]) => (segs[0] === "v" && /^\d+$/.test(segs[1] ?? "") ? Number(segs[1]) : undefined);
+  const versionIn = (segs: string[]): number | undefined =>
+    segs[0] === "_clax" ? versionIn(segs.slice(1)) : segs[0] === "v" && /^\d+$/.test(segs[1] ?? "") ? Number(segs[1]) : undefined;
   const scheme = s.indexOf("://");
   let host = "";
   let path = s;
@@ -1360,7 +1381,7 @@ class Tools {
       const asset = res.asset ?? {};
       assets.push({
         id: asset.id ?? null,
-        url: `${this.browserBase(c)}${res.url ?? ""}`,
+        url: absoluteAssetUrl(this.browserBase(c), id, res.url ?? ""),
         content_type: asset.content_type ?? null,
         size: asset.size ?? null,
       });

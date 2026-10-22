@@ -39,7 +39,7 @@ const bridges = (f: Frame) => f.evaluate(() => Array.from(document.querySelector
 const SLOW = `<!doctype html><html><head><title>Slow</title><script src="slow.js"></script></head><body><main><h2>Quarterly goals</h2><p>Grow revenue.</p></main></body></html>`;
 
 async function frameAt(page: Page, id: string, file: string): Promise<Frame> {
-  const url = new RegExp(`(${id}\\.localhost:\\d+/v/1/${file.replace(".", "\\.")}|/c/${id}/v/1/${file.replace(".", "\\.")})$`);
+  const url = new RegExp(`(${id}\\.localhost:\\d+/_clax/v/1/${file.replace(".", "\\.")})$`);
   await expect.poll(() => page.frame({ url }) !== null, { timeout: 30_000 }).toBe(true);
   return page.frame({ url })!;
 }

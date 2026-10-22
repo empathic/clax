@@ -373,7 +373,7 @@ describe("ArtifactView", { timeout: MOUNT_TIMEOUT_MS }, () => {
     let view = await mountView(async () => new Response(JSON.stringify(artifact(1, { "index.html": page, "docs/about.html": page }))), undefined, "docs/about.html");
     let root = view.root;
     const frame = await waitFor(() => root.querySelector<HTMLIFrameElement>("iframe.frame"), "viewer");
-    expect(frame.getAttribute("src")).toBe(`/c/${ID}/v/1/docs/about.html`);
+    expect(frame.getAttribute("src")).toBe(`http://${ID}.localhost:3000/_clax/v/1/docs/about.html`);
     // The view's stream loads the owner's question surfaces: let that load
     // finish before the registry is reset, or the next view's imports race a
     // half-loaded copy of the modules they share.
@@ -394,7 +394,7 @@ describe("ArtifactView", { timeout: MOUNT_TIMEOUT_MS }, () => {
     const view = await mountView(async () => new Response(JSON.stringify(artifact(1, { "index.html": page, "about.html": page }))), undefined, "about.html");
     const root = view.root;
     const frame = await waitFor(() => root.querySelector<HTMLIFrameElement>("iframe.frame"), "viewer");
-    expect(frame.getAttribute("src")).toBe(`/c/${ID}/v/1/about.html#docs%2Fcontract.md`);
+    expect(frame.getAttribute("src")).toBe(`http://${ID}.localhost:3000/_clax/v/1/about.html#docs%2Fcontract.md`);
     const win = frame.contentWindow!;
     win.postMessage = (() => {}) as typeof win.postMessage;
     const depth = history.length;
@@ -451,7 +451,7 @@ describe("ArtifactView", { timeout: MOUNT_TIMEOUT_MS }, () => {
       fromFrame(win, { type: "clax:hash", hash: "#x" });
       await new Promise(r => setTimeout(r, 40));
       fromFrame(win, { type: "clax:navigate", file: "about.html" });
-      await waitFor(() => frame.getAttribute("src") === `/c/${ID}/v/1/about.html`, "the frame on the about page");
+      await waitFor(() => frame.getAttribute("src") === `http://${ID}.localhost:3000/_clax/v/1/about.html`, "the frame on the about page");
       expect(push).toHaveBeenCalled();
       expect(replace).toHaveBeenCalled();
       expect(errors).toEqual([]);
@@ -531,7 +531,7 @@ describe("ArtifactView", { timeout: MOUNT_TIMEOUT_MS }, () => {
     const card = await waitFor(() => root.querySelector('.section-detached [data-thread="tG"]'), "the detached card");
     card.querySelector<HTMLButtonElement>("button.card-head")!.click();
     await new Promise(r => setTimeout(r, 30));
-    expect(frame.getAttribute("src")).toBe(`/c/${ID}/v/1/`);
+    expect(frame.getAttribute("src")).toBe(`http://${ID}.localhost:3000/_clax/v/1/`);
     expect(location.pathname).toBe(`/a/${ID}`);
   });
 
@@ -563,7 +563,7 @@ describe("ArtifactView", { timeout: MOUNT_TIMEOUT_MS }, () => {
     expect(location.hash).toBe("#team");
     // Not an HTML page: the frame loads it in place, the URL stays.
     fromFrame(win, { type: "clax:navigate", file: "doc.pdf" });
-    await waitFor(() => frame.getAttribute("src") === `/c/${ID}/v/1/doc.pdf`, "the PDF in the frame");
+    await waitFor(() => frame.getAttribute("src") === `http://${ID}.localhost:3000/_clax/v/1/doc.pdf`, "the PDF in the frame");
     expect(location.pathname).toBe(`/a/${ID}/about.html`);
     win = tap();
     // Malformed requests are ignored: a non-string, a path outside the version, a missing page.

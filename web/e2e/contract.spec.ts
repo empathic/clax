@@ -22,10 +22,9 @@ const EXTENSIONS = ["working-cap.html"];
  * screenshots (scenes.ts): no capabilities, so no contract case. */
 const SHOTS = ["sample-report.html"];
 
-/** The content frame's URL in each frame mode: the artifact's own origin, or
- * the main origin's sandboxed `/c/` path. */
-const frameUrl = (mode: FrameMode, id: string) =>
-  mode === "subdomain" ? new RegExp(`^http://${id}\\.localhost:\\d+/v/1/$`) : new RegExp(`^http://localhost:\\d+/c/${id}/v/1/$`);
+/** The content frame's URL in either frame mode: on the artifact's own
+ * origin (sandboxed by the frame in sandbox mode). */
+const frameUrl = (_mode: FrameMode, id: string) => new RegExp(`^http://${id}\\.localhost:\\d+/_clax/v/1/$`);
 
 /** `page`, when set, makes the published page from the file (the file as
  * is, otherwise). */

@@ -3,14 +3,11 @@
 //! place a `Host` header is turned into an artifact; [`site_layer`] runs it
 //! before every route.
 
-use crate::content_policy::{ContentPolicySet, content_policy, own_host};
-use crate::error::ApiError;
 use crate::state::AppState;
 use axum::body::Body;
 use axum::extract::{Request, State};
-use axum::http::Uri;
 use axum::middleware::Next;
-use axum::response::{IntoResponse, Response};
+use axum::response::Response;
 use clax_core::ArtifactId;
 
 /// The site domain of [`SiteHosts::local`].
@@ -129,11 +126,10 @@ fn site_request(sites: &SiteHosts, secure: bool, host: &str) -> Option<SiteReque
 
 /// Before every route: on a site host ([`AppState::sites`]) inserts
 /// [`SiteRequest`], its origin on the public origin's scheme (`http` on a
-/// local daemon). Until the site routes are mounted it also routes the host
-/// as the per-artifact origin always has: `/healthz`, `/_clax/*` and
-/// `/_blob/*` pass through, `/v/*` and `/draft/*` are rewritten to
-/// `/c/<id>/v/*` and `/c/<id>/draft/*`, and everything else is a JSON 404.
-/// Other hosts are untouched.
+/// local daemon), and leaves the path as it is: the router sends a site
+/// request to the site routes alone. Every site response, an error's
+/// included, carries `Referrer-Policy: no-referrer`. Other hosts are
+/// untouched.
 pub async fn site_layer(State(s): State<AppState>, mut req: Request<Body>, next: Next) -> Response {
     let host = req
         .headers()
@@ -144,26 +140,13 @@ pub async fn site_layer(State(s): State<AppState>, mut req: Request<Body>, next:
     let Some(site) = site_request(s.sites(), secure, host) else {
         return next.run(req).await;
     };
-    let path = req.uri().path().to_string();
-    let query = req
-        .uri()
-        .query()
-        .map(|q| format!("?{q}"))
-        .unwrap_or_default();
-    let new_path =
-        if path == "/healthz" || path.starts_with("/_clax/") || path.starts_with("/_blob/") {
-            path
-        } else if path.starts_with("/v/") || path.starts_with("/draft/") {
-            format!("/c/{}{}", site.artifact.as_str(), path)
-        } else {
-            return ApiError::not_found().into_response();
-        };
-    let uri: Uri = format!("{new_path}{query}")
-        .parse()
-        .expect("rewritten uri is valid");
-    *req.uri_mut() = uri;
     req.extensions_mut().insert(site);
-    next.run(req).await
+    let mut res = next.run(req).await;
+    res.headers_mut().insert(
+        axum::http::header::REFERRER_POLICY,
+        axum::http::HeaderValue::from_static("no-referrer"),
+    );
+    res
 }
 
 #[cfg(test)]

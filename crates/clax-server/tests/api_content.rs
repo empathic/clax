@@ -15,7 +15,7 @@ async fn serves_wrapped_index_and_files_with_caching_headers() {
         )
         .await;
     let id = created["artifact"]["id"].as_str().unwrap();
-    let res = ts.get(&format!("/c/{id}/v/1/")).await;
+    let res = ts.site_get(id, "/_clax/v/1/").await;
     assert_eq!(res.status(), 200);
     assert_eq!(res.headers()["content-type"], "text/html; charset=utf-8");
     assert_eq!(res.headers()["cache-control"], "no-cache");
@@ -24,7 +24,7 @@ async fn serves_wrapped_index_and_files_with_caching_headers() {
     assert!(html.contains(&format!(
         "data-artifact=\"{id}\" data-version=\"1\" data-contract=\"0.2.61\""
     )));
-    let res = ts.get(&format!("/c/{id}/v/1/css/a.css")).await;
+    let res = ts.site_get(id, "/_clax/v/1/css/a.css").await;
     assert_eq!(res.headers()["content-type"], "text/css");
     assert_eq!(
         res.headers()["cache-control"],
@@ -33,19 +33,18 @@ async fn serves_wrapped_index_and_files_with_caching_headers() {
     assert_eq!(res.headers()["x-content-type-options"], "nosniff");
     assert_eq!(res.headers()["access-control-allow-origin"], "*");
     assert_eq!(res.text().await.unwrap(), "p{color:red}");
-    assert_eq!(
-        ts.get(&format!("/c/{id}/v/1/missing.js")).await.status(),
-        404
-    );
-    assert_eq!(ts.get(&format!("/c/{id}/v/9/")).await.status(), 404);
-    let res = ts
-        .client
-        .get(format!("{}/c/{id}/v/1", ts.base))
+    assert_eq!(ts.site_get(id, "/_clax/v/1/missing.js").await.status(), 404);
+    assert_eq!(ts.site_get(id, "/_clax/v/9/").await.status(), 404);
+    let res = no_redirect_client()
+        .get(format!("{}/_clax/v/1", ts.base))
+        .header("host", ts.site_host(id))
         .send()
         .await
         .unwrap();
-    assert!(
-        res.url().path().ends_with("/v/1/"),
+    assert_eq!(res.status(), 308);
+    assert_eq!(
+        res.headers()["location"],
+        "1/",
         "redirected to trailing slash"
     );
 }
@@ -60,12 +59,13 @@ async fn a_deleted_artifacts_files_are_not_served_while_its_content_remains() {
         )
         .await;
     let id = created["artifact"]["id"].as_str().unwrap();
-    let paths = [
-        format!("/c/{id}/v/1/css/a.css"),
-        format!("/api/artifacts/{id}/versions/1/files/css/a.css"),
-    ];
+    let site = ["/_clax/v/1/css/a.css", "/css/a.css", "/"];
+    let paths = [format!("/api/artifacts/{id}/versions/1/files/css/a.css")];
     for p in &paths {
         assert_eq!(ts.get(p).await.status(), 200, "{p}");
+    }
+    for p in site {
+        assert_eq!(ts.site_get(id, p).await.status(), 200, "{p}");
     }
     // What a delete whose content removal failed leaves: the row marked
     // deleted, the versions and the files in place.
@@ -79,6 +79,9 @@ async fn a_deleted_artifacts_files_are_not_served_while_its_content_remains() {
     for p in &paths {
         assert_eq!(ts.get(p).await.status(), 404, "{p}");
     }
+    for p in site {
+        assert_eq!(ts.site_get(id, p).await.status(), 404, "{p}");
+    }
 }
 
 #[tokio::test]
@@ -89,7 +92,7 @@ async fn artifact_host_routes_to_content_and_nothing_else() {
     let host = format!("{id}.localhost");
     let res = ts
         .client
-        .get(format!("{}/v/1/", ts.base))
+        .get(format!("{}/_clax/v/1/", ts.base))
         .header("host", &host)
         .send()
         .await
@@ -98,7 +101,7 @@ async fn artifact_host_routes_to_content_and_nothing_else() {
     assert!(res.text().await.unwrap().contains("<p>hi</p>"));
     let res = ts
         .client
-        .get(format!("{}/healthz", ts.base))
+        .get(format!("{}/_clax/healthz", ts.base))
         .header("host", &host)
         .send()
         .await
@@ -114,11 +117,11 @@ async fn artifact_host_routes_to_content_and_nothing_else() {
     assert_eq!(
         res.status(),
         404,
-        "API is not reachable on an artifact origin"
+        "API is not reachable on an artifact origin: /api/ is its own path"
     );
     let res = ts
         .client
-        .get(format!("{}/v/1/", ts.base))
+        .get(format!("{}/_clax/v/1/", ts.base))
         .header("host", format!("{id}.localhost.attacker.com"))
         .send()
         .await
@@ -133,31 +136,18 @@ fn no_redirect_client() -> reqwest::Client {
         .unwrap()
 }
 
-/// The policy of content on the main origin: sandboxed. It names no
-/// `frame-ancestors`, which would refuse a page framed by another page of its
-/// artifact (a sandboxed parent's origin is opaque).
-const SANDBOXED: &str =
-    "sandbox allow-scripts allow-forms allow-modals allow-popups allow-downloads";
-
-/// The first directive of a content response's policy (its framing part).
-fn framing(res: &reqwest::Response) -> String {
-    let csp = res.headers()["content-security-policy"].to_str().unwrap();
-    csp.split("; ").next().unwrap().to_string()
-}
-
 #[tokio::test]
-async fn main_origin_content_is_sandboxed_but_artifact_origin_is_not() {
+async fn the_main_origin_serves_no_content_and_the_artifact_origin_is_not_sandboxed() {
     let ts = TestServer::spawn().await;
     let created = ts
         .publish("R", &[("index.html", "<p>hi</p>"), ("a.css", "p{}")])
         .await;
     let id = created["artifact"]["id"].as_str().unwrap();
     for path in [format!("/c/{id}/v/1/"), format!("/c/{id}/v/1/a.css")] {
-        let res = ts.get(&path).await;
-        assert_eq!(framing(&res), SANDBOXED, "{path}");
+        assert_eq!(ts.get(&path).await.status(), 404, "{path}");
     }
     let host = format!("{id}.localhost");
-    for path in ["/v/1/", "/v/1/a.css"] {
+    for path in ["/_clax/v/1/", "/_clax/v/1/a.css", "/", "/a.css"] {
         let res = ts
             .client
             .get(format!("{}{path}", ts.base))
@@ -187,7 +177,7 @@ async fn only_the_shell_and_the_artifact_frame_content_on_an_artifact_origin() {
         (format!("{id}.localhost:4321"), ":4321"),
         (format!("{id}.localhost"), ""),
     ] {
-        for path in ["/v/1/", "/v/1/about.html"] {
+        for path in ["/_clax/v/1/", "/_clax/v/1/about.html", "/", "/about.html"] {
             let res = ts
                 .client
                 .get(format!("{}{path}", ts.base))
@@ -208,7 +198,7 @@ async fn only_the_shell_and_the_artifact_frame_content_on_an_artifact_origin() {
     let get = |etag: Option<String>| {
         let mut req = ts
             .client
-            .get(format!("{}/v/1/", ts.base))
+            .get(format!("{}/_clax/v/1/", ts.base))
             .header("host", &host);
         if let Some(e) = etag {
             req = req.header("if-none-match", e);
@@ -511,14 +501,23 @@ async fn redirects_are_relative() {
     let id = created["artifact"]["id"].as_str().unwrap();
     let c = no_redirect_client();
     let res = c
-        .get(format!("{}/c/{id}/v/1", ts.base))
+        .get(format!("{}/_clax/v/1", ts.base))
+        .header("host", format!("{id}.localhost"))
         .send()
         .await
         .unwrap();
     assert_eq!(res.status(), 308);
     assert_eq!(res.headers()["location"], "1/");
     let res = c
-        .get(format!("{}/v/1/index.html", ts.base))
+        .get(format!("{}/index.html", ts.base))
+        .header("host", format!("{id}.localhost"))
+        .send()
+        .await
+        .unwrap();
+    assert_eq!(res.status(), 308);
+    assert_eq!(res.headers()["location"], "./");
+    let res = c
+        .get(format!("{}/_clax/v/1/index.html", ts.base))
         .header("host", format!("{id}.localhost"))
         .send()
         .await
@@ -606,7 +605,7 @@ async fn every_page_path_under_an_artifact_serves_the_artifact_entry() {
         );
     }
     // Content, the API, and the shell's own assets keep their routes.
-    let res = ts.get(&format!("/c/{id}/v/1/docs/about.html")).await;
+    let res = ts.site_get(id, "/_clax/v/1/docs/about.html").await;
     assert!(
         res.text()
             .await
@@ -644,14 +643,13 @@ async fn supporting_html_files_are_wrapped_like_the_index_and_others_are_not() {
         )
         .await;
     let id = created["artifact"]["id"].as_str().unwrap();
-    let index = ts.get(&format!("/c/{id}/v/1/")).await.text().await.unwrap();
+    let index = ts.site_get(id, "/_clax/v/1/").await.text().await.unwrap();
     assert!(index.contains("data-file=\"index.html\""), "{index}");
 
-    let res = ts.get(&format!("/c/{id}/v/1/about.html")).await;
+    let res = ts.site_get(id, "/_clax/v/1/about.html").await;
     assert_eq!(res.status(), 200);
     assert_eq!(res.headers()["content-type"], "text/html; charset=utf-8");
     assert_eq!(res.headers()["cache-control"], "no-cache");
-    assert_eq!(framing(&res), SANDBOXED);
     let html = res.text().await.unwrap();
     assert_eq!(html.matches("/_clax/bridge.js").count(), 1, "{html}");
     // The bridge goes right after the doctype, before any page script.
@@ -664,7 +662,7 @@ async fn supporting_html_files_are_wrapped_like_the_index_and_others_are_not() {
     );
 
     let part = ts
-        .get(&format!("/c/{id}/v/1/docs/part.htm"))
+        .site_get(id, "/_clax/v/1/docs/part.htm")
         .await
         .text()
         .await
@@ -683,7 +681,7 @@ async fn supporting_html_files_are_wrapped_like_the_index_and_others_are_not() {
         ("a.css", "text/css", "p{}"),
         ("data.json", "application/json", "{\"x\":1}"),
     ] {
-        let res = ts.get(&format!("/c/{id}/v/1/{path}")).await;
+        let res = ts.site_get(id, &format!("/_clax/v/1/{path}")).await;
         assert_eq!(res.headers()["content-type"], ct, "{path}");
         assert_eq!(
             res.headers()["cache-control"],
@@ -695,7 +693,7 @@ async fn supporting_html_files_are_wrapped_like_the_index_and_others_are_not() {
     let host = format!("{id}.localhost");
     let res = ts
         .client
-        .get(format!("{}/v/1/about.html", ts.base))
+        .get(format!("{}/_clax/v/1/about.html", ts.base))
         .header("host", &host)
         .send()
         .await
@@ -725,7 +723,7 @@ async fn a_supporting_page_carrying_a_bridge_tag_is_served_with_one() {
         .await;
     let id = created["artifact"]["id"].as_str().unwrap();
     let html = ts
-        .get(&format!("/c/{id}/v/1/about.html"))
+        .site_get(id, "/_clax/v/1/about.html")
         .await
         .text()
         .await
@@ -767,10 +765,10 @@ async fn every_html_page_is_revalidated_and_answers_not_modified() {
     let id = created["artifact"]["id"].as_str().unwrap();
     let host = format!("{id}.localhost");
     for (on, path) in [
-        (None, format!("/c/{id}/v/1/")),
-        (None, format!("/c/{id}/v/1/about.html")),
-        (Some(host.as_str()), "/v/1/".to_string()),
-        (Some(host.as_str()), "/v/1/about.html".to_string()),
+        (Some(host.as_str()), "/".to_string()),
+        (Some(host.as_str()), "/about.html".to_string()),
+        (Some(host.as_str()), "/_clax/v/1/".to_string()),
+        (Some(host.as_str()), "/_clax/v/1/about.html".to_string()),
     ] {
         let res = get_on(&ts, on, &path, None).await;
         assert_eq!(res.status(), 200, "{path}");
@@ -785,7 +783,7 @@ async fn every_html_page_is_revalidated_and_answers_not_modified() {
         let other = get_on(&ts, on, &path, Some("\"elsewhere\"")).await;
         assert_eq!(other.status(), 200, "{path}");
     }
-    let css = get_on(&ts, None, &format!("/c/{id}/v/1/a.css"), None).await;
+    let css = get_on(&ts, Some(host.as_str()), "/_clax/v/1/a.css", None).await;
     assert_eq!(
         css.headers()["cache-control"],
         "public, max-age=31536000, immutable"
@@ -805,7 +803,7 @@ async fn the_bridge_is_named_by_version_and_only_the_versioned_url_is_immutable_
     let id = created["artifact"]["id"].as_str().unwrap();
     let v = bridge_version(&*ts.web);
     let v = v.as_str();
-    let html = ts.get(&format!("/c/{id}/v/1/")).await.text().await.unwrap();
+    let html = ts.site_get(id, "/_clax/v/1/").await.text().await.unwrap();
     assert!(
         html.contains(&bridge_tag_for(id, 1, "0.2.61", "index.html", v)),
         "{html}"
@@ -862,9 +860,9 @@ async fn wrapped_pages_are_cached_per_file_until_the_artifact_is_deleted() {
         .await;
     let id = created["artifact"]["id"].as_str().unwrap();
     let get = |p: &'static str| {
-        let url = format!("/c/{id}/v/1/{p}");
+        let url = format!("/_clax/v/1/{p}");
         let ts = &ts;
-        async move { ts.get(&url).await.text().await.unwrap() }
+        async move { ts.site_get(id, &url).await.text().await.unwrap() }
     };
     assert!(get("").await.contains("<p>index</p>"));
     assert!(!cache.contains(id, 1, "about.html"));
@@ -891,10 +889,7 @@ async fn wrapped_pages_are_cached_per_file_until_the_artifact_is_deleted() {
         .unwrap();
     assert_eq!(res.status(), 204);
     assert!(!cache.contains(id, 1, "index.html") && !cache.contains(id, 1, "about.html"));
-    assert_eq!(
-        ts.get(&format!("/c/{id}/v/1/about.html")).await.status(),
-        404
-    );
+    assert_eq!(ts.site_get(id, "/_clax/v/1/about.html").await.status(), 404);
 }
 
 #[tokio::test]
@@ -921,7 +916,7 @@ async fn an_html_file_that_is_not_utf8_is_served_as_stored_and_remembered() {
         .unwrap()
         .to_string();
     for _ in 0..2 {
-        let res = ts.get(&format!("/c/{id}/v/1/latin1.html")).await;
+        let res = ts.site_get(&id, "/_clax/v/1/latin1.html").await;
         assert_eq!(res.status(), 200);
         assert_eq!(
             res.headers()["cache-control"],
@@ -931,7 +926,8 @@ async fn an_html_file_that_is_not_utf8_is_served_as_stored_and_remembered() {
         let etag = res.headers()["etag"].to_str().unwrap().to_string();
         let again = ts
             .client
-            .get(format!("{}/c/{id}/v/1/latin1.html", ts.base))
+            .get(format!("{}/_clax/v/1/latin1.html", ts.base))
+            .header("host", ts.site_host(&id))
             .header("if-none-match", &etag)
             .send()
             .await

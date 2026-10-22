@@ -1,6 +1,6 @@
 import { execFileSync } from "node:child_process";
 import { copyFileSync, existsSync, mkdirSync, mkdtempSync, readFileSync, realpathSync, rmSync, statSync, writeFileSync } from "node:fs";
-import { createServer as createHttpServer } from "node:http";
+import { createServer as createHttpServer, request as httpRequest } from "node:http";
 import { createServer } from "node:net";
 import { validateToolArguments, type Tool } from "@mariozechner/pi-ai";
 import { tmpdir } from "node:os";
@@ -10,6 +10,20 @@ import { afterAll, afterEach, beforeAll, describe, expect, it, vi } from "vitest
 import { artifactRef, claxExtension, handedOver, handoverOf, htmlTitle, INJECT_RETRY_MS, isText, RENEW_EVERY_MS, START_BUDGET_MS, target, textPrefix, ToolError } from "../src/clax.ts";
 import { ClientError, DaemonClient, END_TIMEOUT_MS, MAX_ACK_IDS } from "../src/client.ts";
 import { discover, endpointOf, ensure } from "../src/daemon.ts";
+
+/** The body of a GET of `url`, a site host's (`<id>.localhost:<port>`),
+ * sent to this machine with that `Host`. */
+function siteBytes(url: URL): Promise<Buffer> {
+  return new Promise((done, fail) => {
+    const req = httpRequest({ host: "127.0.0.1", port: url.port, path: url.pathname, headers: { host: url.host } }, res => {
+      const parts: Buffer[] = [];
+      res.on("data", (c: Buffer) => parts.push(c));
+      res.on("end", () => done(Buffer.concat(parts)));
+    });
+    req.on("error", fail);
+    req.end();
+  });
+}
 import { api, claxBin, startDaemon, type TestDaemon } from "./daemon-fixture.ts";
 import { FakePi, fakeContext, json } from "./fake-api.ts";
 import { fakeExe } from "./fake-exe.ts";
@@ -363,8 +377,11 @@ describe("clax Pi extension", () => {
     const res = json(await pi.callTool("clax_asset_upload", { url_or_id: p.artifact_id, file_path: "dot.png" }, ctx));
     expect(res.assets).toHaveLength(1);
     expect(res.assets[0]).toMatchObject({ content_type: "image/png", size: png.length });
-    const got = await fetch(res.assets[0].url.replace("localhost", "127.0.0.1"));
-    expect(Buffer.from(await got.arrayBuffer())).toEqual(png);
+    // On the artifact's site host, where its pages name it.
+    const url = new URL(res.assets[0].url);
+    expect(url.hostname).toBe(`${p.artifact_id}.localhost`);
+    expect(url.pathname).toMatch(/^\/_clax\/blob\//);
+    expect(await siteBytes(url)).toEqual(png);
   });
 
   it("leaves the asset content type to the daemon, which infers it from the file name", async () => {
@@ -1525,7 +1542,7 @@ describe("comments", () => {
     const seen = await (await fetch(`${daemon.base}/api/artifacts/${pub.artifact_id}/drafts`, { headers: { authorization: `Bearer ${daemon.token}` } })).json();
     expect(seen.drafts[0]).toMatchObject({ harness: "pi", note: "rewording", base_version: 1 });
     expect(d.content[0].text).not.toContain(seen.drafts[0].token);
-    const page = await (await fetch(`${daemon.base}/c/${pub.artifact_id}/draft/${seen.drafts[0].agent}/${seen.drafts[0].token}/`)).text();
+    const page = (await siteBytes(new URL(`http://${pub.artifact_id}.localhost:${new URL(daemon.base).port}/_clax/draft/${seen.drafts[0].agent}/${seen.drafts[0].token}/`))).toString("utf8");
     expect(page).toContain("<p data-clax-draft-changed>Two</p>");
     expect(page).toContain("<h2>Goals</h2>");
     const done = await pi.callTool("clax_draft", { url_or_id: pub.artifact_id, done: true }, ctx);

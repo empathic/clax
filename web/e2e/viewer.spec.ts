@@ -6,7 +6,7 @@ test.beforeEach(({ daemon }) => { d = daemon; });
 
 /** The artifact's content frame for version `n`, once it exists; locators on it auto-wait. */
 async function contentFrame(page: Page, id: string, n: number) {
-  const url = new RegExp(`(${id}\\.localhost:\\d+/v/${n}/|/c/${id}/v/${n}/)$`);
+  const url = new RegExp(`(${id}\\.localhost:\\d+/_clax/v/${n}/)$`);
   await expect.poll(() => page.frame({ url }) !== null).toBe(true);
   return page.frame({ url })!;
 }
@@ -32,7 +32,7 @@ test("viewer renders content with the bridge, and offers Reload on republish", a
   const sandbox = await page.locator("iframe.frame").getAttribute("sandbox");
   if (src.includes(".localhost:")) { console.log("frame mode: subdomain"); expect(sandbox).toBeNull(); }
   else { console.log("frame mode: sandboxed fallback"); expect(sandbox).not.toBeNull(); }
-  expect(src).toMatch(new RegExp(`(${artifact.id}\\.localhost:\\d+/v/1/|/c/${artifact.id}/v/1/)$`));
+  expect(src).toMatch(new RegExp(`(${artifact.id}\\.localhost:\\d+/_clax/v/1/)$`));
   await publish(d.base, d.token, "Live", { "index.html": "<h1 id=h>v2</h1>" }, 1, artifact.id);
   await expect(page.locator(".who .sum b.l1")).toHaveText("v2 published");
   await page.getByRole("button", { name: "Reload" }).click();
@@ -43,17 +43,17 @@ test("viewer renders content with the bridge, and offers Reload on republish", a
   await expect((await contentFrame(page, artifact.id, 1)).locator("#h")).toHaveText("v1");
 });
 
-test("fallback mode uses the sandboxed path-based frame", async ({ page }) => {
+test("fallback mode sandboxes the frame on the artifact's origin", async ({ page }) => {
   const { artifact } = await publish(d.base, d.token, "Fallback", { "index.html": "<p id=p>fallback</p>" });
   await page.addInitScript(() => { try { sessionStorage.setItem("clax.origin-ok", "0"); } catch {} });
   await page.goto(`${d.base}/a/${artifact.id}`);
   const iframe = page.locator("iframe.frame");
   await expect(iframe).toHaveAttribute("sandbox", /allow-scripts/);
   const src = await iframe.getAttribute("src");
-  expect(src).toMatch(new RegExp(`/c/${artifact.id}/v/1/`));
-  await expect((await contentFrame(page, artifact.id, 1)).locator("#p")).toHaveText("fallback");
-  const res = await page.request.get(new URL(src!, d.base).toString());
-  expect(res.headers()["content-security-policy"]).toContain("sandbox");
+  expect(src).toMatch(new RegExp(`^http://${artifact.id}\\.localhost:\\d+/_clax/v/1/$`));
+  const frame = await contentFrame(page, artifact.id, 1);
+  await expect(frame.locator("#p")).toHaveText("fallback");
+  expect(await frame.evaluate(() => origin)).toBe("null");
 });
 
 test("viewer shows the deleted state", async ({ page }) => {

@@ -1,5 +1,6 @@
 import { test as playwrightTest, expect as playwrightExpect, type Frame, type Locator, type Page, type Response } from "@playwright/test";
 import { spawn, type ChildProcess } from "node:child_process";
+import { request as httpRequest } from "node:http";
 import { mkdtempSync, readFileSync, existsSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
@@ -186,11 +187,28 @@ export async function skewWorking(base: string, token: string, secs: number) {
 
 export type FrameMode = "subdomain" | "sandbox";
 
+/** A GET of `path` on artifact `id`'s site host (`<id>.localhost:<port>`),
+ * sent to the daemon at `base` with that `Host`, as a browser on this
+ * machine reaches it. */
+export function siteGet(base: string, id: string, path: string): Promise<{ status: number; headers: Record<string, string | string[] | undefined>; text: string }> {
+  const u = new URL(base);
+  return new Promise((done, fail) => {
+    const req = httpRequest({ host: u.hostname, port: u.port, path, headers: { host: `${id}.localhost:${u.port}` } }, res => {
+      let text = "";
+      res.setEncoding("utf8");
+      res.on("data", c => { text += c; });
+      res.on("end", () => done({ status: res.statusCode ?? 0, headers: res.headers, text }));
+    });
+    req.on("error", fail);
+    req.end();
+  });
+}
+
 /** The content frame showing version `n` of artifact `id`, in either frame
  * mode, once its document has been parsed (a test that reads or scrolls the
  * page at once would otherwise race the parser). */
 export async function contentFrame(page: Page, id: string, n: number): Promise<Frame> {
-  const url = new RegExp(`(${id}\\.localhost:\\d+/v/${n}/|/c/${id}/v/${n}/)$`);
+  const url = new RegExp(`(${id}\\.localhost:\\d+/_clax/v/${n}/)$`);
   await expect.poll(() => page.frame({ url }) !== null, { timeout: 10_000 }).toBe(true);
   const frame = page.frame({ url })!;
   await frame.waitForLoadState("domcontentloaded");

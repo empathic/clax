@@ -11,7 +11,7 @@ async function toFrame(page: Page, msg: unknown) {
 }
 
 async function contentFrame(page: Page, id: string, n: number) {
-  const url = new RegExp(`(${id}\\.localhost:\\d+/v/${n}/|/c/${id}/v/${n}/)$`);
+  const url = new RegExp(`(${id}\\.localhost:\\d+/_clax/v/${n}/)$`);
   await expect.poll(() => page.frame({ url }) !== null).toBe(true);
   return page.frame({ url })!;
 }

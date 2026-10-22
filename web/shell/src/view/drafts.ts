@@ -18,6 +18,8 @@ export type DraftsHost = {
   set(patch: Partial<ViewState> | ((s: ViewState) => Partial<ViewState>)): void;
   /** Opens the frame on what the state shows: the shown draft, or the version. */
   showFrame(): void;
+  /** The site origin the frame loads from (`ArtifactController.site`). */
+  site(s: ViewState): string | null;
 };
 
 export class Drafts {
@@ -50,7 +52,7 @@ export class Drafts {
   showIn(frame: FrameHost, s: ViewState): boolean {
     const d = this.shown(s);
     if (!d || s.origin === undefined) return false;
-    frame.show(draftSrc(this.host.id, d, s.origin, this.page ?? this.host.startFile, tint(), s.data?.content_origin), s.origin === null, `draft-${d.agent}-${d.token}-${s.origin ? "o" : "s"}`);
+    frame.show(draftSrc(this.host.id, d, this.host.site(s), this.page ?? this.host.startFile, tint(), s.data?.content_origin), s.origin === null, `draft-${d.agent}-${d.token}-${s.origin ? "o" : "s"}`);
     return true;
   }
 

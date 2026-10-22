@@ -107,12 +107,21 @@ async fn content_and_the_shell_are_not_api_routes() {
     let port = ts.addr.port();
     let res = ts
         .client
-        .get(format!("{}/v/1/", ts.base))
+        .get(format!("{}/", ts.base))
         .header("host", format!("{aid}.localhost:{port}"))
         .send()
         .await
         .unwrap();
     assert_eq!(res.status(), 200, "artifact content host");
+    // A site's `/api/…` is its artifact's own path: no API host check.
+    let res = ts
+        .client
+        .get(format!("{}/api/artifacts", ts.base))
+        .header("host", format!("{aid}.localhost:{port}"))
+        .send()
+        .await
+        .unwrap();
+    assert_eq!(res.status(), 404, "a site's own path");
     let res = ts
         .client
         .get(format!("{}/a/{aid}", ts.base))
@@ -185,11 +194,28 @@ async fn a_configured_site_domain_names_the_artifact_hosts() {
     })
     .await;
     let port = ts.addr.port();
-    let site = format!("abcdefghjkmn.clax.test:{port}");
+    let a = ts
+        .publish("Site", &[("index.html", "<p>on its own host</p>")])
+        .await;
+    let aid = a["artifact"]["id"].as_str().unwrap();
+    let site = format!("{aid}.clax.test:{port}");
     // A site host reaches only what a site host serves: the hosted gate
-    // admits it (it is not the public host), and `/api` is not among them.
-    let (status, _) = status_with_host(&ts, &ts.base, "/healthz", &site).await;
-    assert_eq!(status, 200, "{site} /healthz");
+    // admits it (it is not the public host), its artifact's current
+    // version is at its root, and `/api` is not among its paths.
+    let res = ts
+        .client
+        .get(format!("{}/", ts.base))
+        .header("host", &site)
+        .send()
+        .await
+        .unwrap();
+    assert_eq!(res.status(), 200, "{site} /");
+    assert!(
+        res.text().await.unwrap().contains("<p>on its own host</p>"),
+        "{site} /"
+    );
+    let (status, _) = status_with_host(&ts, &ts.base, "/_clax/healthz", &site).await;
+    assert_eq!(status, 200, "{site} /_clax/healthz");
     let (status, body) = status_with_host(&ts, &ts.base, "/api/artifacts", &site).await;
     assert_eq!(
         (status, body["error"]["code"].as_str()),
@@ -202,7 +228,7 @@ async fn a_configured_site_domain_names_the_artifact_hosts() {
         format!("abcdefghjkmn.clax.test.evil.example:{port}"),
         format!("clax.test:{port}"),
     ] {
-        for path in ["/healthz", "/v/1/"] {
+        for path in ["/healthz", "/"] {
             let (status, body) = status_with_host(&ts, &ts.base, path, &host).await;
             assert_eq!(
                 (status, body["error"]["code"].as_str()),

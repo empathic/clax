@@ -1,7 +1,7 @@
 import { afterEach, describe, expect, it } from "vitest";
 import { type PlaceLocation, followInPlace, linkToHandOver, linkedPage } from "../src/nav";
 
-const SUB = "http://7q3k9mzx2b4t.localhost:7480/v/2/";
+const SUB = "http://7q3k9mzx2b4t.localhost:7480/_clax/v/2/";
 const MAIN = "http://localhost:7480/c/7q3k9mzx2b4t/v/2/";
 
 describe("linkedPage", () => {
@@ -26,7 +26,7 @@ describe("linkedPage", () => {
   it("leaves other links alone", () => {
     expect(linkedPage("about.html?x=1", SUB, "index.html"), "a query the shell URL cannot carry").toBeNull();
     expect(linkedPage("https://example.com/", SUB, "index.html"), "another site").toBeNull();
-    expect(linkedPage("/v/1/about.html", SUB, "index.html"), "another version").toBeNull();
+    expect(linkedPage("/_clax/v/1/about.html", SUB, "index.html"), "another version").toBeNull();
     expect(linkedPage("/c/9zzzzzzzzzzz/v/2/a.html", MAIN, "index.html"), "another artifact").toBeNull();
     for (const href of ["mailto:x@y.z", "javascript:void(0)", "data:text/html,<p>x</p>", `blob:${SUB}0f7c`]) {
       expect(linkedPage(href, SUB, "index.html"), href).toBeNull();

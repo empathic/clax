@@ -773,6 +773,22 @@ impl TestServer {
             .unwrap()
     }
 
+    /// Artifact `id`'s site host on this daemon: `<id>.localhost:<port>`.
+    pub fn site_host(&self, id: &str) -> String {
+        format!("{id}.localhost:{}", self.addr.port())
+    }
+
+    /// A GET of `path` on artifact `id`'s site host: sent to this daemon's
+    /// address with [`TestServer::site_host`] as its `Host`.
+    pub async fn site_get(&self, id: &str, path: &str) -> reqwest::Response {
+        self.client
+            .get(format!("{}{}", self.base, path))
+            .header(reqwest::header::HOST, self.site_host(id))
+            .send()
+            .await
+            .unwrap()
+    }
+
     /// A GET carrying the bearer token.
     pub async fn get_authed(&self, path: &str) -> reqwest::Response {
         self.authed(self.client.get(format!("{}{}", self.base, path)))

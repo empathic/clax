@@ -1067,7 +1067,7 @@ fn asset_upload_prints_the_asset_upload_tool_result() {
     assert!(assets[0]["id"].is_string());
     let url = assets[0]["url"].as_str().unwrap();
     assert!(
-        url.starts_with("http://localhost:") && url.contains("/_blob/"),
+        url.starts_with(&format!("http://{id}.localhost:")) && url.contains("/_clax/blob/"),
         "{url}"
     );
 
@@ -1080,7 +1080,7 @@ fn asset_upload_prints_the_asset_upload_tool_result() {
         .get_output()
         .stdout
         .clone();
-    assert!(String::from_utf8(text).unwrap().contains("/_blob/"));
+    assert!(String::from_utf8(text).unwrap().contains("/_clax/blob/"));
     e.cmd()
         .args(["asset", "upload", &id, "/no/such/file.png"])
         .assert()

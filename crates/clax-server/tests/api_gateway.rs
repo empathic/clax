@@ -316,6 +316,15 @@ async fn everything_else_is_refused() {
             "{m} {path}: a refusal is readable by the extension"
         );
     }
+    // A site host's content is not among its routes either.
+    for path in ["/", "/_clax/v/1/"] {
+        let res = ext(&ts, Method::GET, path, &cred)
+            .header("host", ts.site_host(&aid))
+            .send()
+            .await
+            .unwrap();
+        assert_eq!(res.status().as_u16(), 403, "site {path}");
+    }
     // An artifact ID in a body names a live page too.
     for (path, body) in [
         (

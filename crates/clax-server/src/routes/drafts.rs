@@ -400,7 +400,8 @@ pub async fn list(
     Ok(Json(json!({"drafts": list})))
 }
 
-/// `/c/<aid>/draft/<agent>/<token>`: the draft's root, with its slash.
+/// `/c/<aid>/draft/<agent>/<token>` (a hosted daemon's; a site host's is
+/// `/_clax/draft/…`, `super::site`): the draft's root, with its slash.
 pub async fn redirect_to_slash(
     d: DeniedToGrants,
     p: Result<Path<(String, String, String)>, PathRejection>,
@@ -451,7 +452,7 @@ pub async fn file(
 /// overrides it). 404 for an
 /// unknown, revised or ended draft, a path it removes, and a base file
 /// withheld from the drafting agent.
-async fn serve(
+pub(crate) async fn serve(
     s: &AppState,
     aid: &str,
     agent: &str,

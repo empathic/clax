@@ -62,11 +62,11 @@ async fn content_routes_await_a_content_store_that_needs_an_executor() {
     assert_eq!(res.status(), 201, "{}", res.text().await.unwrap());
 
     // Pages wrapped, files raw, and the API's raw read.
-    let page = ts.get(&format!("/c/{id}/v/2/")).await.text().await.unwrap();
+    let page = ts.site_get(&id, "/").await.text().await.unwrap();
     assert!(page.contains("<p>two</p>"), "{page}");
-    let about = ts.get(&format!("/c/{id}/v/2/about.html")).await;
+    let about = ts.site_get(&id, "/_clax/v/2/about.html").await;
     assert!(about.text().await.unwrap().contains("<p>about</p>"));
-    let js = ts.get(&format!("/c/{id}/v/2/app.js")).await;
+    let js = ts.site_get(&id, "/_clax/v/2/app.js").await;
     assert_eq!(js.text().await.unwrap(), "let a = 1;");
     let raw = ts
         .get_authed(&format!("/api/artifacts/{id}/versions/1/files/index.html"))
@@ -76,7 +76,7 @@ async fn content_routes_await_a_content_store_that_needs_an_executor() {
     // An asset's upload, bytes and delete.
     let asset = upload(&ts, &id).await;
     let blob = asset["url"].as_str().unwrap().to_string();
-    let res = ts.get(&blob).await;
+    let res = ts.site_get(&id, &blob).await;
     assert_eq!(res.status(), 200);
     assert_eq!(res.bytes().await.unwrap().as_ref(), FAKE_PNG);
     let asset_id = asset["asset"]["id"].as_str().unwrap();
@@ -89,7 +89,7 @@ async fn content_routes_await_a_content_store_that_needs_an_executor() {
         .await
         .unwrap();
     assert_eq!(res.status(), 204);
-    assert_eq!(ts.get(&blob).await.status(), 404);
+    assert_eq!(ts.site_get(&id, &blob).await.status(), 404);
 
     // A thread with a clip, its clip, and its delete.
     let res = ts

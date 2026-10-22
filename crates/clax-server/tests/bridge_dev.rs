@@ -24,7 +24,7 @@ async fn a_rebuilt_bridge_gets_a_new_url_and_is_never_immutable() {
     let id = created["artifact"]["id"].as_str().unwrap();
     let page = |id: String| {
         let ts = &ts;
-        async move { ts.get(&format!("/c/{id}/v/1/")).await.text().await.unwrap() }
+        async move { ts.site_get(&id, "/_clax/v/1/").await.text().await.unwrap() }
     };
     let a = bridge_version(&*ts.web);
     assert_eq!(a.len(), 12);

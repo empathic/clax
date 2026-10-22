@@ -12,7 +12,7 @@ const ABOUT = `<!doctype html><html><head><title>About</title></head><body><main
 
 /** The content frame once it shows `about.html` of version 1. */
 async function aboutFrame(page: Page, id: string): Promise<Frame> {
-  const url = new RegExp(`(${id}\\.localhost:\\d+/v/1/about\\.html|/c/${id}/v/1/about\\.html)(#.*)?$`);
+  const url = new RegExp(`(${id}\\.localhost:\\d+/_clax/v/1/about\\.html)(#.*)?$`);
   await expect.poll(() => page.frame({ url }) !== null, { timeout: 15_000 }).toBe(true);
   return page.frame({ url })!;
 }

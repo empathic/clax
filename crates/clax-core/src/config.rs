@@ -1464,12 +1464,16 @@ impl HomeConfig {
                     ))
                 })?;
                 // Sites share nothing with the public origin: not its host,
-                // nor a name above or below it.
+                // nor a name above or below it. `localhost` under a
+                // `localhost` public origin is the exception: the names
+                // reach this machine alone, so no registrable domain is
+                // shared.
                 let public_host = url::Url::parse(&public_origin)
                     .ok()
                     .and_then(|u| u.host_str().map(str::to_ascii_lowercase))
                     .unwrap_or_default();
-                if nested_names(&domain, &public_host) {
+                let loopback = domain == "localhost" && public_host == "localhost";
+                if !loopback && nested_names(&domain, &public_host) {
                     return Err(bad(format!(
                         "site_domain \"{domain}\" must not be public_origin's host {public_host}, a domain above it or one under it"
                     )));
@@ -2248,6 +2252,33 @@ mod tests {
         for good in ["clax.run", "ample.com", "example.co"] {
             assert!(site(good).is_ok(), "{good}");
         }
+    }
+
+    #[test]
+    fn a_loopback_public_origin_may_put_its_sites_under_localhost() {
+        let site = |origin: &str, domain: &str| {
+            with(&format!(
+                "[hosted]\npublic_origin = \"{origin}\"\nsite_domain = \"{domain}\"\n"
+            ))
+            .hosted()
+        };
+        // `<id>.localhost` names this machine alone: no registrable domain
+        // is shared with anyone.
+        assert_eq!(
+            site("http://localhost:7490", "localhost")
+                .unwrap()
+                .unwrap()
+                .site_domain
+                .as_deref(),
+            Some("localhost")
+        );
+        assert!(site("http://127.0.0.1:7490", "localhost").is_ok());
+        // Only `localhost` itself: a name under it still nests with the
+        // public host.
+        let e = site("http://localhost:7490", "x.localhost")
+            .unwrap_err()
+            .to_string();
+        assert!(e.contains("site_domain"), "{e}");
     }
 
     #[test]

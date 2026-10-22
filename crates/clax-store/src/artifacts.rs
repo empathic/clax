@@ -173,6 +173,7 @@ pub(super) fn row_to_artifact(r: &Row<'_>) -> rusqlite::Result<Result<Artifact>>
             _ => None,
         },
         tags: tags_of(r.get::<_, Option<String>>("tags_json")?.as_deref()),
+        legacy_paths: r.get::<_, i64>("legacy_paths")? != 0,
     }))
 }
 
@@ -213,7 +214,7 @@ fn skip_corrupt<T>(rows: Vec<Result<T>>) -> Result<Vec<T>> {
 pub(super) const SELECT: &str =
     "SELECT id, title, description, icon, created_at, updated_at, current_version,
     owner_session_id, pinned, capabilities_json, contract_version, kind, person,
-    text_authors_json, forked_from_id, forked_from_version,
+    text_authors_json, forked_from_id, forked_from_version, legacy_paths,
     (SELECT json_group_array(json_array(g.id, g.name, g.colour))
        FROM artifact_tags x JOIN tags g ON g.id = x.tag_id
       WHERE x.artifact_id = artifacts.id) AS tags_json
@@ -1400,6 +1401,9 @@ impl Store {
         then: impl FnOnce(&rusqlite::Transaction<'_>, u32) -> Result<T>,
     ) -> Result<(Artifact, Version, T)> {
         let current = self.get_artifact(id)?.ok_or(CoreError::NotFound)?;
+        for path in put_paths(&p) {
+            clax_core::publish::check_path_for(path, current.legacy_paths)?;
+        }
         let Some(expected) = p.if_version else {
             return Err(CoreError::invalid(
                 "if_version_required",

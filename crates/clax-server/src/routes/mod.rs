@@ -39,7 +39,7 @@ pub mod remotes;
 pub mod room;
 pub mod sample;
 pub mod sessions;
-pub mod settings;
+pub mod site;
 pub mod sites;
 pub mod snapshot;
 pub mod stream;

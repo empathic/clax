@@ -352,7 +352,7 @@ async fn asset_upload_returns_blob_urls() {
     std::fs::write(&b, "hello").unwrap();
     let r = ok(t
         .asset_upload(Parameters(AssetUploadArgs {
-            url_or_id: id,
+            url_or_id: id.clone(),
             file_path: Some(a.to_string_lossy().into()),
             file_paths: Some(vec![b.to_string_lossy().into()]),
         }))
@@ -362,10 +362,12 @@ async fn asset_upload_returns_blob_urls() {
     assert_eq!(assets[0]["content_type"], "image/png");
     assert_eq!(assets[0]["size"], 3);
     assert_eq!(assets[1]["content_type"], "text/plain");
+    // On the artifact's site host, where its pages name it.
     let url = assets[0]["url"].as_str().unwrap();
-    let blob_path = url.split_once(&format!(":{}", ts.addr.port())).unwrap().1;
-    assert!(blob_path.starts_with("/_blob/"), "{url}");
-    let res = ts.get(blob_path).await;
+    let (origin, blob_path) = url.split_once(&format!(":{}", ts.addr.port())).unwrap();
+    assert_eq!(origin, format!("http://{id}.localhost"), "{url}");
+    assert!(blob_path.starts_with("/_clax/blob/"), "{url}");
+    let res = ts.site_get(&id, blob_path).await;
     assert_eq!(res.bytes().await.unwrap().as_ref(), [1u8, 2, 3]);
 }
 
@@ -740,7 +742,7 @@ async fn read_accepts_every_url_form_and_takes_the_version_from_it() {
         (format!("http://localhost:{port}/a/{id}/v/1"), 1, "<p>one"),
         (format!("http://127.0.0.1:{port}/c/{id}/v/1/"), 1, "<p>one"),
         (
-            format!("http://{id}.localhost:{port}/v/1/index.html"),
+            format!("http://{id}.localhost:{port}/_clax/v/1/index.html"),
             1,
             "<p>one",
         ),
@@ -1107,10 +1109,10 @@ async fn draft_shows_people_work_in_progress_until_done_or_a_publish() {
         "the agent never holds the URL: {d}"
     );
     let page = ts
-        .get(&format!(
-            "/c/{id}/draft/{}/{token}/",
-            l["agent"].as_str().unwrap()
-        ))
+        .site_get(
+            &id,
+            &format!("/_clax/draft/{}/{token}/", l["agent"].as_str().unwrap()),
+        )
         .await
         .text()
         .await

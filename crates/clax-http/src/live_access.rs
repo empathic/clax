@@ -117,8 +117,8 @@ pub fn artifact_in(path: &str) -> Option<String> {
 /// Middleware: a live page's API, content and shell paths, and the
 /// `/api/live/…` routes, answer 404 to a caller [`sees_live_pages`]
 /// refuses, exactly as a missing artifact does.
-/// Requests to an artifact host (`<aid>.localhost`) reach it rewritten to
-/// `/c/<aid>/…`, so they are covered too.
+/// A site host's requests (`<aid>.localhost`) reach the site routes, which
+/// hide a live page's site themselves (`clax_server::routes::site`).
 pub async fn hide_live_pages(
     axum::extract::State(s): axum::extract::State<crate::state::AppState>,
     req: axum::extract::Request,

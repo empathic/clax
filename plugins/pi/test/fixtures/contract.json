@@ -57,6 +57,11 @@
       "version": 4
     },
     {
+      "input": "http://7q3k9mzx2b4t.localhost:7480/_clax/v/6/docs/a.html",
+      "id": "7q3k9mzx2b4t",
+      "version": 6
+    },
+    {
       "input": "http://7q3k9mzx2b4t.localhost/v/5/app.js?x#y",
       "id": "7q3k9mzx2b4t",
       "version": 5

@@ -25,7 +25,7 @@ async function liveToken(aid: string): Promise<string> {
 
 /** The frame showing the draft revision `token` (any, when absent) of `aid`, once loaded. */
 async function draftFrame(page: Page, aid: string, token = "[A-Za-z0-9_-]{22}"): Promise<Frame> {
-  const url = new RegExp(`(${aid}\\.localhost:\\d+|/c/${aid})/draft/a_[^/]+/${token}/`);
+  const url = new RegExp(`${aid}\\.localhost:\\d+/_clax/draft/a_[^/]+/${token}/`);
   await expect.poll(() => page.frame({ url }) !== null, { timeout: 10_000 }).toBe(true);
   const f = page.frame({ url })!;
   await f.waitForLoadState("load");

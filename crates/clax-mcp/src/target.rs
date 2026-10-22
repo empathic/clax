@@ -32,7 +32,8 @@ fn invalid(s: &str) -> CallToolResult {
 /// subdomain of it. Any other
 /// http(s) URL is a page. An artifact reference, and text without a
 /// scheme, are read as [`artifact_ref`] reads them: an ID, or a Clax path
-/// such as `localhost:7480/a/<id>` or `/c/<id>/v/<n>/…`.
+/// such as `localhost:7480/a/<id>`, `<id>.localhost:7480/_clax/v/<n>/…` or
+/// `/c/<id>/v/<n>/…`.
 ///
 /// # Errors
 /// `invalid_id` for anything else, including a URL on the daemon's port
@@ -137,8 +138,12 @@ mod tests {
             Some(("7q3k9mzx2b4t".into(), None))
         );
         assert_eq!(
-            art("http://7q3k9mzx2b4t.localhost:7480/v/1/"),
+            art("http://7q3k9mzx2b4t.localhost:7480/_clax/v/1/"),
             Some(("7q3k9mzx2b4t".into(), Some(1)))
+        );
+        assert_eq!(
+            art("http://7q3k9mzx2b4t.localhost:7480/about.html"),
+            Some(("7q3k9mzx2b4t".into(), None))
         );
         assert_eq!(
             art("localhost:7480/a/7q3k9mzx2b4t"),

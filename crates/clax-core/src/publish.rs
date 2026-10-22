@@ -214,6 +214,29 @@ pub fn check_path(path: &str) -> Result<()> {
     Ok(())
 }
 
+/// The first path segment Clax keeps for itself on every site host: its
+/// versions, drafts, assets, bridge and health live under `/_clax/`.
+pub const RESERVED_SEGMENT: &str = "_clax";
+
+/// The first path segment a legacy artifact's site host also keeps: its
+/// assets' `/_blob/<id>` addresses, which pages made before site hosts use.
+pub const LEGACY_RESERVED_SEGMENT: &str = "_blob";
+
+/// [`check_path`], and a path that a site host serves itself is refused
+/// (`invalid_path`, "'_clax/…' is reserved"): one whose first segment is
+/// `_clax`, and for a `legacy` artifact (`artifacts.legacy_paths`) `_blob`.
+pub fn check_path_for(path: &str, legacy: bool) -> Result<()> {
+    check_path(path)?;
+    let first = path.split('/').next().unwrap_or("");
+    if first == RESERVED_SEGMENT || (legacy && first == LEGACY_RESERVED_SEGMENT) {
+        return Err(CoreError::invalid(
+            "invalid_path",
+            format!("'{path}': '{first}/…' is reserved for Clax on the artifact's site"),
+        ));
+    }
+    Ok(())
+}
+
 /// Largest accepted asset in bytes. The cap is inclusive: an asset of exactly this size is accepted.
 pub const MAX_ASSET_BYTES: u64 = 20 * 1024 * 1024;
 
@@ -495,10 +518,14 @@ pub fn validate(req: PublishRequest) -> Result<ValidatedPublish> {
     for (path, input) in req.files {
         check_path(&path)?;
         match input {
+            // A file published before its path was reserved can still be removed.
             None => {
                 files.insert(path, FileChange::Remove);
             }
             Some(f) => {
+                // `_blob/` is refused for a legacy artifact where its row
+                // is read (`Store::publish_version`).
+                check_path_for(&path, false)?;
                 let bytes = match f.encoding {
                     Encoding::Utf8 => f.content.into_bytes(),
                     Encoding::Base64 => base64::engine::general_purpose::STANDARD

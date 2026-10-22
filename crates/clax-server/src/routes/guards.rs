@@ -959,10 +959,23 @@ mod l10 {
                             assert!(!src.contains(named), "{name} names an artifact ({named})");
                         }
                     }
-                    SeesLive => assert!(
-                        sig.contains("SeesLive") && src.contains(".check("),
-                        "{name} does not check SeesLive"
-                    ),
+                    SeesLive => {
+                        // The check may sit in the module's `serve_blob`,
+                        // which the handler hands its `SeesLive` to (the
+                        // site routes share it).
+                        let module = module_source(&m);
+                        let helper = module.find("pub(crate) async fn serve_blob(").map(|i| {
+                            let rest = &module[i..];
+                            &rest[..rest.find("\n}\n").map_or(rest.len(), |e| e + 3)]
+                        });
+                        let checks = src.contains(".check(")
+                            || (src.contains("serve_blob(")
+                                && helper.is_some_and(|h| h.contains("sees.check(")));
+                        assert!(
+                            sig.contains("SeesLive") && checks,
+                            "{name} does not check SeesLive"
+                        );
+                    }
                     Filtered => assert!(
                         src.contains("sees_live_pages"),
                         "{name} does not filter by sees_live_pages"

@@ -680,7 +680,7 @@ async fn a_pages_assets_are_uploaded_and_its_references_rewritten() {
         .unwrap();
     let html = String::from_utf8(bytes).unwrap();
     assert!(!html.contains(&asset_id), "{html}");
-    let url = clax_http::hosted::asset_url(&public.ts.state, &assets[0].id);
+    let url = clax_http::hosted::asset_url(&public.ts.state, &assets[0].id, false);
     assert_eq!(html.matches(&url).count(), 2, "{html} {url}");
     // The page's asset loads from the public Clax.
     let res = public

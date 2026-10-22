@@ -1,6 +1,6 @@
 import { readFileSync } from "node:fs";
 import { type Frame, type Page } from "@playwright/test";
-import { test, expect, type Daemon, reach, contentFrame, openArtifact, publishWith, streamLive } from "./fixtures";
+import { test, expect, type Daemon, reach, contentFrame, openArtifact, publishWith, siteGet, streamLive } from "./fixtures";
 import { advance, settle } from "./time";
 
 let d: Daemon;
@@ -14,7 +14,7 @@ async function current(id: string): Promise<number> {
 
 /** The frame showing `file` of version `n`. */
 async function fileFrame(page: Page, id: string, n: number, file: string): Promise<Frame> {
-  const url = new RegExp(`(${id}\\.localhost:\\d+/v/${n}/|/c/${id}/v/${n}/)${file.replace(/[.]/g, "\\.")}$`);
+  const url = new RegExp(`(${id}\\.localhost:\\d+/_clax/v/${n}/)${file.replace(/[.]/g, "\\.")}$`);
   await expect.poll(() => page.frame({ url }) !== null, { timeout: 15_000 }).toBe(true);
   return page.frame({ url })!;
 }
@@ -38,7 +38,7 @@ for (const mode of ["subdomain", "sandbox"] as const) {
     const stored = await (await fetch(`${d.base}/api/artifacts/${artifact.id}/versions/2/files/index.html`)).text();
     expect(stored.startsWith("<!doctype html>")).toBe(true);
     expect(stored).not.toContain("/_clax/bridge.js");
-    const served = await (await fetch(`${d.base}/c/${artifact.id}/v/2/`)).text();
+    const served = (await siteGet(d.base, artifact.id, "/_clax/v/2/")).text;
     expect(served.match(/\/_clax\/bridge\.js/g)?.length).toBe(1);
     // The bridge goes right after the doctype and its whitespace; the page
     // follows as stored.

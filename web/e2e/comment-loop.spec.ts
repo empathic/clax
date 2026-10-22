@@ -6,7 +6,7 @@ let d: Daemon;
 test.beforeEach(({ daemon }) => { d = daemon; });
 
 async function contentFrame(page: Page, id: string, n: number) {
-  const url = new RegExp(`(${id}\\.localhost:\\d+/v/${n}/|/c/${id}/v/${n}/)$`);
+  const url = new RegExp(`(${id}\\.localhost:\\d+/_clax/v/${n}/)$`);
   await expect.poll(() => page.frame({ url }) !== null).toBe(true);
   return page.frame({ url })!;
 }
@@ -22,7 +22,8 @@ for (const mode of ["subdomain", "sandbox"] as const) test(`${mode}: comment in 
 
   // Browser side, for real: comment mode, pick, compose, send.
   const frame = await contentFrame(page, artifact.id, 1);
-  expect(frame.url()).toContain(mode === "subdomain" ? `${artifact.id}.localhost:` : `/c/${artifact.id}/v/1/`);
+  expect(frame.url()).toContain(`${artifact.id}.localhost:`);
+  expect(await page.locator("iframe.frame").getAttribute("sandbox") !== null).toBe(mode === "sandbox");
   await page.getByRole("button", { name: "Comment", exact: true }).click();
   await commentModeIn(frame);
   await frame.locator("h2").hover();

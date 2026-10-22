@@ -34,6 +34,12 @@ pub struct Artifact {
     /// names, shown to everyone who sees the artifact.
     #[serde(default)]
     pub tags: Vec<crate::tags::TagRef>,
+    /// Made before site hosts (`artifacts.legacy_paths`, migration 42): its
+    /// site host also keeps `/_blob/<id>` for its assets, so it may not
+    /// publish under `_blob/` ([`crate::publish::check_path_for`]). Never
+    /// served.
+    #[serde(skip)]
+    pub legacy_paths: bool,
 }
 
 /// Where a fork came from: version `version` of artifact `artifact_id`,

@@ -628,11 +628,31 @@ fn not_found(message: impl Into<String>) -> CallToolResult {
     render::error("not_found", message, json!({}))
 }
 
+/// An asset's address as `asset_upload` reports it, from the daemon's
+/// answer `url`: an absolute one as it is; a site host's
+/// (`/_clax/blob/<id>`) on artifact `id`'s site origin, the daemon's
+/// browser base `base` with `<id>.` before a `localhost` host
+/// (`clax_http::host::SiteHosts::local`); any other on `base`.
+fn absolute_asset_url(base: &str, id: &str, url: &str) -> String {
+    if url.contains("://") {
+        return url.to_string();
+    }
+    if url.starts_with("/_clax/")
+        && let Ok(mut u) = url::Url::parse(base)
+        && matches!(u.host_str(), Some("localhost" | "127.0.0.1"))
+        && u.set_host(Some(&format!("{id}.localhost"))).is_ok()
+    {
+        return format!("{}{url}", u.as_str().trim_end_matches('/'));
+    }
+    format!("{base}{url}")
+}
+
 /// The artifact ID, and the version when the reference names one, in a bare ID
 /// or a URL of one of these forms (query and fragment ignored):
 /// `.../a/<id>`, `.../a/<id>/v/<n>`, either followed by a page's path
-/// (`.../a/<id>/about.html`), `.../c/<id>/v/<n>/...`, and the per-artifact
-/// origin `http://<id>.localhost:<port>/v/<n>/...`. The CLI's reading of a
+/// (`.../a/<id>/about.html`), `.../c/<id>/v/<n>/...`, and the artifact's
+/// site `http://<id>.localhost:<port>/...` (its current version) or
+/// `.../_clax/v/<n>/...`. The CLI's reading of a
 /// reference; the tools read theirs with [`crate::target::target`], which
 /// also takes page URLs.
 pub fn artifact_ref(url_or_id: &str) -> Result<(String, Option<u32>), CallToolResult> {
@@ -640,7 +660,7 @@ pub fn artifact_ref(url_or_id: &str) -> Result<(String, Option<u32>), CallToolRe
     let s = s.split(['?', '#']).next().unwrap_or("");
     let parse = |c: &str| ArtifactId::parse(c).ok().map(|id| id.as_str().to_string());
     let version_in = |segs: &[&str]| match segs {
-        ["v", n, ..] => n.parse::<u32>().ok(),
+        ["v", n, ..] | ["_clax", "v", n, ..] => n.parse::<u32>().ok(),
         _ => None,
     };
     if let Some(id) = parse(s) {
@@ -1891,7 +1911,7 @@ impl ClaxTools {
             let asset = &res["asset"];
             assets.push(json!({
                 "id": asset["id"],
-                "url": format!("{}{}", self.browser_base(), res["url"].as_str().unwrap_or_default()),
+                "url": absolute_asset_url(&self.browser_base(), &id, res["url"].as_str().unwrap_or_default()),
                 "content_type": asset["content_type"],
                 "size": asset["size"],
             }));

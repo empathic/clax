@@ -13,8 +13,8 @@ const loaded = { artifact: { id: ID, title: "T", description: null, icon: null, 
 const viewer = { public_id: "u_0123456789abcdef012345", display_name: null, created_at: "x" };
 const boot = (frame: { mode: "subdomain" | "sandbox"; src: string } | null) => ({ v: 1 as const, artifact: loaded, threads: [], viewer, frame });
 const EARLY = /<script id="clax-early">([\s\S]*?)<\/script>/.exec(readFileSync(join(__dirname, "../artifact.html"), "utf8"))![1];
-const SUB = `http://${ID}.localhost:3000/v/2/`;
-const SANDBOXED = `<iframe class="frame" title="artifact content" src="/c/${ID}/v/2/" allow="clipboard-write; fullscreen" sandbox="${FRAME_SANDBOX}"></iframe>`;
+const SUB = `http://${ID}.localhost:3000/_clax/v/2/`;
+const SANDBOXED = `<iframe class="frame" title="artifact content" src="http://${ID}.localhost:3000/_clax/v/2/" allow="clipboard-write; fullscreen" sandbox="${FRAME_SANDBOX}"></iframe>`;
 const SUBDOMAIN = `<iframe class="frame" title="artifact content" src="${SUB}" allow="clipboard-write; fullscreen"></iframe>`;
 const HELLO = { type: "clax:hello", artifact: ID, version: 2, file: "index.html" };
 
@@ -101,7 +101,7 @@ describe("the first load from the daemon's HTML", { timeout: MOUNT_TIMEOUT_MS },
     const posted = posts(frame);
     fromFrame(frame.contentWindow!, HELLO);
     fromFrame(frame.contentWindow!, { type: "clax:use", id: "early", name: "permissions" });
-    await mountServed(root, boot({ mode: "sandbox", src: `/c/${ID}/v/2/` }));
+    await mountServed(root, boot({ mode: "sandbox", src: `http://${ID}.localhost:3000/_clax/v/2/` }));
     expect(root.querySelector("iframe")).toBe(frame);
     await waitFor(() => posted.some(m => m.type === "clax:welcome"), "the welcome");
     await waitFor(() => posted.some(m => m.type === "clax:use-result" && m.id === "early"), "the early request's answer");
@@ -122,7 +122,7 @@ describe("the first load from the daemon's HTML", { timeout: MOUNT_TIMEOUT_MS },
     const frame = root.querySelector("iframe")!;
     const posted = posts(frame);
     fromFrame(frame.contentWindow!, { type: "clax:use", id: "too-soon", name: "permissions" });
-    await mountServed(root, boot({ mode: "sandbox", src: `/c/${ID}/v/2/` }));
+    await mountServed(root, boot({ mode: "sandbox", src: `http://${ID}.localhost:3000/_clax/v/2/` }));
     fromFrame(frame.contentWindow!, { type: "clax:use", id: "still-too-soon", name: "permissions" });
     await sleep(30);
     expect(posted).toEqual([]);
@@ -140,7 +140,7 @@ describe("the first load from the daemon's HTML", { timeout: MOUNT_TIMEOUT_MS },
     const posted = posts(frame);
     fromFrame(frame.contentWindow!, HELLO);
     frame.dispatchEvent(new Event("load"));
-    await mountServed(root, boot({ mode: "sandbox", src: `/c/${ID}/v/2/` }));
+    await mountServed(root, boot({ mode: "sandbox", src: `http://${ID}.localhost:3000/_clax/v/2/` }));
     await waitFor(() => posted.some(m => m.type === "clax:welcome"), "the welcome");
     // The frame navigates to a document without the bridge: its load, with no
     // hello since the previous one, closes the gate.
@@ -161,7 +161,7 @@ describe("the first load from the daemon's HTML", { timeout: MOUNT_TIMEOUT_MS },
     document.body.append(other);
     fromFrame(other.contentWindow!, HELLO);
     fromFrame(window, HELLO);
-    await mountServed(root, boot({ mode: "sandbox", src: `/c/${ID}/v/2/` }));
+    await mountServed(root, boot({ mode: "sandbox", src: `http://${ID}.localhost:3000/_clax/v/2/` }));
     await sleep(30);
     expect(answered(posted)).toEqual([]);
   });
@@ -180,7 +180,7 @@ describe("the first load from the daemon's HTML", { timeout: MOUNT_TIMEOUT_MS },
     expect(now).not.toBe(stale);
     expect(stale.isConnected).toBe(false);
     expect(root.querySelectorAll("iframe")).toHaveLength(1);
-    expect(now.getAttribute("src")).toBe(`/c/${ID}/v/2/`);
+    expect(now.getAttribute("src")).toBe(`http://${ID}.localhost:3000/_clax/v/2/`);
     expect(now.getAttribute("sandbox")).toBe(FRAME_SANDBOX);
     expect(now.getAttribute("allow")).toBe("clipboard-write; fullscreen");
     await sleep(30);
@@ -201,9 +201,9 @@ describe("the first load from the daemon's HTML", { timeout: MOUNT_TIMEOUT_MS },
   it("keeps a served frame whose attributes differ from the shell's out of the page", async () => {
     stubFetch(async () => new Response("{}"));
     sessionStorage.setItem("clax.origin-ok", "0");
-    const root = served(`<iframe class="frame" title="artifact content" src="/c/${ID}/v/2/" allow="clipboard-write; fullscreen" sandbox="allow-scripts allow-same-origin"></iframe>`);
+    const root = served(`<iframe class="frame" title="artifact content" src="http://${ID}.localhost:3000/_clax/v/2/" allow="clipboard-write; fullscreen" sandbox="allow-scripts allow-same-origin"></iframe>`);
     const odd = root.querySelector("iframe")!;
-    await mountServed(root, boot({ mode: "sandbox", src: `/c/${ID}/v/2/` }));
+    await mountServed(root, boot({ mode: "sandbox", src: `http://${ID}.localhost:3000/_clax/v/2/` }));
     expect(odd.isConnected).toBe(false);
     expect(root.querySelector("iframe")!.getAttribute("sandbox")).toBe(FRAME_SANDBOX);
   });
@@ -236,7 +236,7 @@ describe("the first load from the daemon's HTML", { timeout: MOUNT_TIMEOUT_MS },
     const guess = replaced.querySelector("iframe")!;
     await mountServed(replaced, boot({ mode: "subdomain", src: SUB }));
     await waitFor(() => replaced.querySelector("iframe") !== guess, "the replacement");
-    expect(replaced.querySelector("iframe")!.getAttribute("src")).toBe(`/c/${ID}/v/2/`);
+    expect(replaced.querySelector("iframe")!.getAttribute("src")).toBe(`http://${ID}.localhost:3000/_clax/v/2/`);
     expect(replaced.querySelector("iframe")!.getAttribute("sandbox")).toBe(FRAME_SANDBOX);
     expect(document.cookie).toContain("clax_frame=sandbox");
   });
@@ -300,7 +300,7 @@ describe("the first load from the daemon's HTML", { timeout: MOUNT_TIMEOUT_MS },
     document.body.append(other);
     for (let i = 0; i < 300; i++) fromFrame(other.contentWindow!, HELLO);
     fromFrame(frame.contentWindow!, HELLO);
-    await mountServed(root, boot({ mode: "sandbox", src: `/c/${ID}/v/2/` }));
+    await mountServed(root, boot({ mode: "sandbox", src: `http://${ID}.localhost:3000/_clax/v/2/` }));
     await waitFor(() => posted.some(m => m.type === "clax:welcome"), "the welcome");
   });
 
@@ -312,7 +312,7 @@ describe("the first load from the daemon's HTML", { timeout: MOUNT_TIMEOUT_MS },
     const frame = root.querySelector("iframe")!;
     const posted = posts(frame);
     window.dispatchEvent(new MessageEvent("message", { data: HELLO, origin: "null", source: frame.contentWindow }));
-    await mountServed(root, boot({ mode: "sandbox", src: `/c/${ID}/v/2/` }));
+    await mountServed(root, boot({ mode: "sandbox", src: `http://${ID}.localhost:3000/_clax/v/2/` }));
     await sleep(30);
     expect(answered(posted)).toEqual([]);
   });
@@ -324,11 +324,11 @@ describe("the first load from the daemon's HTML", { timeout: MOUNT_TIMEOUT_MS },
     const root = served(SANDBOXED);
     const frame = root.querySelector("iframe")!;
     const posted = posts(frame);
-    await mountServed(root, boot({ mode: "sandbox", src: `/c/${ID}/v/2/` }));
+    await mountServed(root, boot({ mode: "sandbox", src: `http://${ID}.localhost:3000/_clax/v/2/` }));
     expect(root.querySelector("iframe")).toBe(frame);
     // The frame is not navigated: a fragment navigation the shell starts
     // fires a load event at it in Chromium, which would close the gate.
-    expect(frame.getAttribute("src")).toBe(`/c/${ID}/v/2/`);
+    expect(frame.getAttribute("src")).toBe(`http://${ID}.localhost:3000/_clax/v/2/`);
     fromFrame(frame.contentWindow!, HELLO);
     expect(posted.slice(0, 2)).toEqual([{ type: "clax:hash", hash: "#part-2" }, expect.objectContaining({ type: "clax:welcome" })]);
     expect(location.hash).toBe("#part-2");

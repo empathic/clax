@@ -218,7 +218,7 @@ async fn the_daemons_own_origin_and_other_schemes_are_refused() {
         format!("http://localhost:{port}/a/7q3k9mzx2b4t"),
         format!("http://127.0.0.1:{port}/"),
         format!("http://[::1]:{port}/"),
-        format!("http://7q3k9mzx2b4t.localhost:{port}/v/1/"),
+        format!("http://7q3k9mzx2b4t.localhost:{port}/_clax/v/1/"),
     ] {
         let res = post_thread(&ts, &v.cookie, &own, "<p>").await;
         assert_eq!(res.status(), 400, "{own}");
@@ -339,7 +339,8 @@ async fn snapshots_are_served_with_a_policy_that_runs_only_claxs_scripts() {
     .await
     .unwrap();
     let aid = body["page"]["artifact_id"].as_str().unwrap();
-    let host = format!("localhost:{}", ts.addr.port());
+    // On the artifact's own host, at its root and under `/_clax/v/1/`.
+    let host = format!("{aid}.localhost:{}", ts.addr.port());
     let policies = |res: &reqwest::Response| -> Vec<String> {
         res.headers()
             .get_all("content-security-policy")
@@ -347,7 +348,7 @@ async fn snapshots_are_served_with_a_policy_that_runs_only_claxs_scripts() {
             .map(|v| v.to_str().unwrap().to_string())
             .collect()
     };
-    for path in [format!("/c/{aid}/v/1/"), format!("/c/{aid}/v/1/index.html")] {
+    for path in ["/", "/_clax/v/1/", "/_clax/v/1/index.html"] {
         let res = ts
             .client
             .get(format!("{}{path}", ts.base))
@@ -367,35 +368,13 @@ async fn snapshots_are_served_with_a_policy_that_runs_only_claxs_scripts() {
         // A snapshot still loads its site's styles, images and fonts.
         assert!(!p.iter().any(|p| p.contains("default-src")), "{p:?}");
     }
-    // On the artifact's own host too.
-    let ahost = format!("{aid}.localhost:{}", ts.addr.port());
-    let res = ts
-        .client
-        .get(format!("{}/v/1/", ts.base))
-        .header("host", &ahost)
-        .send()
-        .await
-        .unwrap();
-    assert_eq!(res.status(), 200);
-    assert!(
-        policies(&res)
-            .iter()
-            .any(|p| p.contains(&format!("script-src http://{ahost}/_clax/"))),
-        "{:?}",
-        policies(&res)
-    );
-    // An HTML artifact has no such policy: its one policy keeps it to its
-    // own files.
+    // An HTML artifact has no such policy.
     let a = ts.publish("T", &[("index.html", "<p>")]).await;
     let res = ts
-        .get(&format!(
-            "/c/{}/v/1/",
-            a["artifact"]["id"].as_str().unwrap()
-        ))
+        .site_get(a["artifact"]["id"].as_str().unwrap(), "/_clax/v/1/")
         .await;
-    let p = policies(&res);
-    assert_eq!(p.len(), 1, "{p:?}");
-    assert!(!p[0].contains("/_clax/;"), "{p:?}");
+    assert_eq!(res.status(), 200);
+    assert!(!policies(&res).iter().any(|v| v.contains("script-src")));
 }
 
 #[tokio::test]
@@ -663,15 +642,19 @@ async fn live_pages_stay_hidden_from_the_lan_whatever_form_the_request_takes() {
         .await
         .unwrap();
     assert_eq!(list["artifacts"], json!([]));
-    // The artifact host, sent to the LAN address.
-    let st = lc
-        .get(format!("{lan}/v/1/"))
-        .header("host", format!("{aid}.localhost:{}", ts.addr.port()))
-        .send()
-        .await
-        .unwrap()
-        .status();
-    assert_eq!(st, 404);
+    // The artifact host, sent to the LAN address: its site, and its assets
+    // and health aside, nothing (the same paths answer on this machine).
+    for path in ["/", "/_clax/v/1/", "/index.html"] {
+        let st = lc
+            .get(format!("{lan}{path}"))
+            .header("host", format!("{aid}.localhost:{}", ts.addr.port()))
+            .send()
+            .await
+            .unwrap()
+            .status();
+        assert_eq!(st, 404, "{path}");
+        assert_eq!(ts.site_get(aid, path).await.status(), 200, "{path}");
+    }
     // A stream opened from the LAN cannot subscribe to the page's topics.
     let res = lc.get(format!("{lan}/api/stream")).send().await.unwrap();
     assert_eq!(res.status(), 200);

@@ -281,20 +281,21 @@ async fn renders_the_frame_only_when_the_mode_is_known() {
         vec![("cookie", "clax_frame=sandbox".into())],
     )
     .await;
-    assert!(sandbox.contains(&format!(r#"<iframe class="frame" title="artifact content" src="/c/{id}/v/2/" allow="clipboard-write; fullscreen" sandbox="{FRAME_SANDBOX}"></iframe>"#)), "{sandbox}");
+    // A sandboxed frame loads the artifact's site origin too.
+    assert!(sandbox.contains(&format!(r#"<iframe class="frame" title="artifact content" src="http://{id}.localhost:{port}/_clax/v/2/" allow="clipboard-write; fullscreen" sandbox="{FRAME_SANDBOX}"></iframe>"#)), "{sandbox}");
     assert_eq!(
         boot(&sandbox).1["frame"],
-        json!({"mode": "sandbox", "src": format!("/c/{id}/v/2/")})
+        json!({"mode": "sandbox", "src": format!("http://{id}.localhost:{port}/_clax/v/2/")})
     );
     let sub = get(
         format!("/a/{id}"),
         vec![("cookie", "clax_frame=subdomain".into())],
     )
     .await;
-    assert!(sub.contains(&format!(r#"<iframe class="frame" title="artifact content" src="http://{id}.localhost:{port}/v/2/" allow="clipboard-write; fullscreen"></iframe>"#)), "{sub}");
+    assert!(sub.contains(&format!(r#"<iframe class="frame" title="artifact content" src="http://{id}.localhost:{port}/_clax/v/2/" allow="clipboard-write; fullscreen"></iframe>"#)), "{sub}");
     assert_eq!(
         boot(&sub).1["frame"],
-        json!({"mode": "subdomain", "src": format!("http://{id}.localhost:{port}/v/2/")})
+        json!({"mode": "subdomain", "src": format!("http://{id}.localhost:{port}/_clax/v/2/")})
     );
     // A loopback host not named `localhost` (as on a LAN view: no artifact
     // origins) is always sandboxed, whatever the cookie says.
@@ -317,7 +318,9 @@ async fn renders_the_frame_only_when_the_mode_is_known() {
     )
     .await;
     assert!(
-        pinned.contains(&format!(r#"src="/c/{id}/v/1/docs/a%20b.html""#)),
+        pinned.contains(&format!(
+            r#"src="http://{id}.localhost:{port}/_clax/v/1/docs/a%20b.html""#
+        )),
         "{pinned}"
     );
     let missing = get(

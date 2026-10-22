@@ -408,7 +408,7 @@ wrapping.
 
 | Name | Type | Required | Meaning |
 |---|---|---|---|
-| `url_or_id` | string | yes | Artifact ID or URL. A URL naming a version (`/a/<id>/v/<n>`, `/c/<id>/v/<n>/...`, `http://<id>.localhost:<port>/v/<n>/...`) selects it. |
+| `url_or_id` | string | yes | Artifact ID or URL. A URL naming a version (`/a/<id>/v/<n>`, `/c/<id>/v/<n>/...`, `http://<id>.localhost:<port>/_clax/v/<n>/...`) selects it. |
 | `path` | string | no | Published path; default `index.html`. |
 | `version` | integer ≥ 0 | no | Version to read; default the URL's version, else the current version. |
 | `max_bytes` | integer ≥ 0 | no | Cap on returned bytes; default 200000. |
@@ -3693,8 +3693,8 @@ in the daemon's memory only: a restart drops them.
 The owner and connected people see `<agent> is drafting…` at the foot of
 the stage, with **Show draft**; LAN viewers who are not connected, and
 agents, are never shown a draft. Showing it puts the draft in the frame from
-`/c/<id>/draft/<agent handle>/<token>/<path>` (on an artifact origin,
-`/draft/<agent handle>/<token>/<path>`), served like content (the content
+`/_clax/draft/<agent handle>/<token>/<path>` on the artifact's origin,
+served like content (the content
 policy, `no-store`, `Referrer-Policy: no-referrer`) and never wrapped with
 the bridge: no pins, no comment mode and no page capabilities while it
 shows (the shell welcomes no greeting from a draft page). The token is new
@@ -5789,10 +5789,8 @@ versions is a snapshot of the page, taken when a comment is posted.
   the page or the page does not exist (it never creates a page). A viewer
   route, as `POST /api/live/threads` is.
 - **Serving a snapshot.** Every content response of a live page
-  (`/c/<id>/v/<n>/...` and `<id>.localhost`) carries, besides its framing
-  policy (the sandbox or `frame-ancestors` alone: unlike an artifact's own
-  content, a snapshot is not kept to its own files), a second
-  `Content-Security-Policy`: `script-src
+  (on `<id>.localhost`) carries, besides its usual
+  policy, a second `Content-Security-Policy`: `script-src
   http://<Host>/_clax/; object-src 'none'; base-uri 'none'; form-action
   'none'; frame-src 'none'; connect-src 'none'; worker-src 'none'`, where
   `<Host>` is the request's `Host` (the daemon's own host when that is not
@@ -5801,7 +5799,7 @@ versions is a snapshot of the page, taken when a comment is posted.
 - **This machine only.** Live pages are visible only to a request from a
   loopback peer or one carrying the token: for anyone else (a LAN viewer)
   they are left out of `GET /api/artifacts`, and every path naming one
-  (`/api/artifacts/<id>...`, `/c/<id>/...`, `/a/<id>...`, with the ID
+  (`/api/artifacts/<id>...`, `/a/<id>...`, its site `<id>.localhost`, with the ID
   percent-encoded or not) answers 404 `not_found`, as for a missing
   artifact; so do `/api/live/...` and the viewer routes that name an
   artifact in a query or body (`/api/viewers/me/seen`, `.../looked`,
@@ -8625,68 +8623,35 @@ it starts, the runs a previous process left. A build without the
   and other viewers").
 - `/mcp` requires the bearer token on every request and accepts only a `Host`
   of `localhost`, `127.0.0.1`, `::1`, or the daemon's own address and port.
-- Each artifact has its own origin, `http://<id>.localhost:<port>`. On that
-  host the daemon serves only `/v/<n>/...` (that artifact's content),
-  `/healthz`, `/_clax/...` and `/_blob/...` (only that artifact's assets:
-  `/_blob/<asset>` and `/_blob/<id>/<asset>` are served as
-  `/_blob/<id>/<asset>`); every other path, the API
-  included, is a 404. The host must be exactly a valid 12-character lowercase
-  artifact ID followed by `.localhost` and an optional numeric port.
-- The viewer probes `http://<id>.localhost:<port>/healthz` (1 s timeout,
-  cached per browser session) when the gallery is opened on `localhost` or
-  `127.0.0.1`. When it answers, the content iframe loads from the artifact's
-  origin with no `sandbox` attribute; the distinct origin is the isolation.
-  Otherwise, and always when the gallery is opened on any other host (the
-  LAN), the iframe loads `/c/<id>/v/<n>/` from the main origin with
-  `sandbox="allow-scripts allow-forms allow-modals allow-popups
+- Each artifact has its own origin, its site, `http://<id>.localhost:<port>`.
+  Its paths are the artifact's: `/...` serves the current version's files
+  (`/` its `index.html`; revalidated on every load, with an `ETag`), and
+  everything of Clax's is under `/_clax/`: `/_clax/v/<n>/...` (version
+  `n`), `/_clax/draft/<agent handle>/<token>/...` (a draft),
+  `/_clax/blob/<asset ID>` (an asset of that artifact only),
+  `/_clax/healthz` (on any well-formed site host, saying nothing of the
+  artifact) and the UI's files; any other `/_clax/` path is a 404. An
+  artifact made before sites (`legacy_paths`) also keeps
+  `/_blob/<asset ID>` for its assets. Publishing refuses a file under
+  `_clax/`, and under `_blob/` for such an artifact. Every response there
+  carries `Referrer-Policy: no-referrer`. The host must be exactly a valid
+  12-character lowercase artifact ID followed by `.localhost` and an
+  optional numeric port. The main origin serves no content.
+- The viewer probes `http://<id>.localhost:<port>/_clax/healthz` (1 s
+  timeout, cached per browser session) when the gallery is opened on
+  `localhost` or `127.0.0.1`. When it answers, the content iframe loads
+  `/_clax/v/<n>/` from the artifact's origin with no `sandbox` attribute;
+  the distinct origin is the isolation. Otherwise it loads the same address
+  with `sandbox="allow-scripts allow-forms allow-modals allow-popups
   allow-downloads"` and no `allow-same-origin`, so the content runs in an
   opaque origin.
-- Content served on the main origin (`/c/<id>/v/<n>/...`) carries
-  `Content-Security-Policy: sandbox allow-scripts allow-forms allow-modals
-  allow-popups allow-downloads`, `/_blob/...` responses and the raw file route
+- `/_blob/...` responses and the raw file route
   (`/api/artifacts/<id>/versions/<n>/files/...`) carry
   `Content-Security-Policy: sandbox`, so opening any of them as a top-level
   page cannot reach the API same-origin. Content on an artifact's own origin
-  carries `Content-Security-Policy: frame-ancestors 'self'
-  http://localhost<:port> http://127.0.0.1<:port>` (the request's port), so
-  only the artifact's own pages and the shell may frame it, and no sandbox:
-  the origin is the boundary. On either origin the same policy goes on to
-  keep the page to its own files: `default-src <own> <blobs> data: blob:;
-  script-src <own> 'unsafe-inline' 'unsafe-eval' data: blob:; style-src <own>
-  'unsafe-inline' data: blob:; connect-src <files> <blobs>; object-src
-  'none'; base-uri 'none'; form-action 'none'`. `<own>` is `'self'` on the
-  artifact's origin, and on the main origin, where the sandboxed page's
-  origin is opaque, `http://<Host>/c/<id>/ http://<Host>/_clax/bridge.js
-  http://<Host>/_clax/bridge/` (`<Host>` the request's, or the daemon's own
-  when that is not a plain host and port), so the API on that host is not
-  among them. `<files>` is `'self'` on the artifact's origin (which serves
-  only GET and HEAD of the artifact's content, `/_clax/...`, `/_blob/...`
-  and `/healthz`, and no API) and `http://<Host>/c/<id>/` on the main
-  origin. `<blobs>` is `http://<host>/_blob/<id>/`, the artifact's own
-  assets (`/_blob/<id>/<asset>` serves only the artifact that owns the
-  asset, 404 otherwise), for the request's host,
-  the daemon's own, and `localhost` and `127.0.0.1` on the request's port.
-  So a page loads its files, the bridge and its parts, its assets, and
-  `data:` and `blob:` URLs; it fetches (`fetch`, `XMLHttpRequest`,
-  `WebSocket`, `EventSource`, beacons, JSON modules) its own files and
-  assets and nothing else, and none of them takes a write; it loads no script,
-  style, font, image, media, frame or worker from another site; it posts
-  no form. Everything else it does goes through the shell by `postMessage`
-  (`db`, `comments`, `net`, `sample` and the other capabilities). Every
-  other response on an artifact's origin, and under `/c/<id>/` on the main
-  origin (a 404, `/healthz`, `/_clax/...`, `/_blob/...`, a redirect, a
-  refusal), carries the artifact's policy too, beside any of its own, so a
-  page that frames or opens one cannot use that window to escape; a `/c/`
-  path naming no artifact carries `sandbox; default-src 'none'`. A request
-  there for a service worker script (`Service-Worker: script`) is answered
-  with Clax's own script, which installs, unregisters itself and handles
-  no fetch: a page's own worker never runs, and one registered before is
-  removed at its next update check. A live
-  page's snapshot carries instead, on either origin, only the framing part
-  and a second policy that runs no script but Clax's own. Supporting files and blobs are
-  sent with `X-Content-Type-Options: nosniff`. Content, on either origin, and
-  blobs carry `Referrer-Policy: no-referrer`, so what a page loads from
-  another host names neither its artifact ID nor the daemon's port.
+  is framed only by the shell and the artifact's own pages
+  (`frame-ancestors`); the origin is the boundary. Supporting files and
+  blobs are sent with `X-Content-Type-Options: nosniff`.
 - The viewer routes (creating a thread, commenting, sending to the agent,
   resolving, reopening, deleting, `GET`/`PUT /api/viewers/me`, `GET`/`PUT
   /api/viewers/me/seen`, `GET /api/viewers/me/attention` and `PUT

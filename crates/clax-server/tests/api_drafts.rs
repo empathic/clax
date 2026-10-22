@@ -78,9 +78,10 @@ async fn listed(ts: &TestServer, aid: &str) -> Vec<Value> {
         .clone()
 }
 
-fn draft_url(aid: &str, d: &Value, path: &str) -> String {
+/// The draft's address on artifact `_aid`'s site host.
+fn draft_url(_aid: &str, d: &Value, path: &str) -> String {
     format!(
-        "/c/{aid}/draft/{}/{}/{path}",
+        "/_clax/draft/{}/{}/{path}",
         d["agent"].as_str().unwrap(),
         d["token"].as_str().unwrap()
     )
@@ -120,7 +121,7 @@ async fn people_list_a_draft_and_its_url_serves_marked_pages_over_the_base() {
     assert!(!answered.to_string().contains(token), "{answered}");
     assert!(!d.to_string().contains(&sid), "{d}");
 
-    let r = ts.get(&draft_url(&aid, d, "")).await;
+    let r = ts.site_get(&aid, &draft_url(&aid, d, "")).await;
     assert_eq!(r.status(), 200);
     assert_eq!(r.headers()["cache-control"], "no-store");
     assert_eq!(r.headers()["x-content-type-options"], "nosniff");
@@ -130,7 +131,7 @@ async fn people_list_a_draft_and_its_url_serves_marked_pages_over_the_base() {
         r.headers()["content-security-policy"]
             .to_str()
             .unwrap()
-            .starts_with("sandbox allow-scripts"),
+            .starts_with("frame-ancestors 'self'"),
         "{:?}",
         r.headers()
     );
@@ -151,7 +152,7 @@ async fn people_list_a_draft_and_its_url_serves_marked_pages_over_the_base() {
     // Not wrapped: a draft page never greets the shell.
     assert!(!page.contains("/_clax/bridge"), "{page}");
     assert_eq!(
-        ts.get(&draft_url(&aid, d, "index.html"))
+        ts.site_get(&aid, &draft_url(&aid, d, "index.html"))
             .await
             .text()
             .await
@@ -159,35 +160,37 @@ async fn people_list_a_draft_and_its_url_serves_marked_pages_over_the_base() {
         page
     );
     // A path the draft does not write comes from the base version.
-    let css = ts.get(&draft_url(&aid, d, "style.css")).await;
+    let css = ts.site_get(&aid, &draft_url(&aid, d, "style.css")).await;
     assert_eq!(css.status(), 200);
     assert_eq!(css.headers()["cache-control"], "no-store");
     assert_eq!(css.headers()["referrer-policy"], "no-referrer");
     assert_eq!(css.text().await.unwrap(), CSS);
     assert_eq!(
-        ts.get(&draft_url(&aid, d, "missing.css")).await.status(),
+        ts.site_get(&aid, &draft_url(&aid, d, "missing.css"))
+            .await
+            .status(),
         404
     );
     // The root without its slash goes to it.
     let bare = draft_url(&aid, d, "");
-    let r = ts.get(bare.trim_end_matches('/')).await;
+    let r = ts.site_get(&aid, bare.trim_end_matches('/')).await;
     assert_eq!(r.status(), 200);
     // A wrong token, a malformed one, and another agent's handle answer 404.
     let wrong = format!(
-        "/c/{aid}/draft/{}/{}/",
+        "/_clax/draft/{}/{}/",
         d["agent"].as_str().unwrap(),
         "A".repeat(22)
     );
-    assert_eq!(ts.get(&wrong).await.status(), 404);
-    let short = format!("/c/{aid}/draft/{}/abc/", d["agent"].as_str().unwrap());
-    assert_eq!(ts.get(&short).await.status(), 404);
-    let other = format!("/c/{aid}/draft/a_someoneelse/{token}/");
-    assert_eq!(ts.get(&other).await.status(), 404);
+    assert_eq!(ts.site_get(&aid, &wrong).await.status(), 404);
+    let short = format!("/_clax/draft/{}/abc/", d["agent"].as_str().unwrap());
+    assert_eq!(ts.site_get(&aid, &short).await.status(), 404);
+    let other = format!("/_clax/draft/a_someoneelse/{token}/");
+    assert_eq!(ts.site_get(&aid, &other).await.status(), 404);
     // On the artifact's own origin it is framed by the shell alone.
     let r = ts
         .client
         .get(format!(
-            "{}/draft/{}/{token}/",
+            "{}/_clax/draft/{}/{token}/",
             ts.base,
             d["agent"].as_str().unwrap()
         ))
@@ -212,9 +215,14 @@ async fn a_revision_gets_a_new_token_and_the_old_url_stops_answering() {
     put_ok(&ts, &sid, &aid, "<p>Second take</p>").await;
     let second = listed(&ts, &aid).await[0].clone();
     assert_ne!(first["token"], second["token"]);
-    assert_eq!(ts.get(&draft_url(&aid, &first, "")).await.status(), 404);
+    assert_eq!(
+        ts.site_get(&aid, &draft_url(&aid, &first, ""))
+            .await
+            .status(),
+        404
+    );
     let page = ts
-        .get(&draft_url(&aid, &second, ""))
+        .site_get(&aid, &draft_url(&aid, &second, ""))
         .await
         .text()
         .await
@@ -236,7 +244,9 @@ async fn a_revision_gets_a_new_token_and_the_old_url_stops_answering() {
     let third = listed(&ts, &aid).await[0].clone();
     assert_eq!(third["paths"], json!(["index.html", "style.css"]));
     assert_eq!(
-        ts.get(&draft_url(&aid, &third, "style.css")).await.status(),
+        ts.site_get(&aid, &draft_url(&aid, &third, "style.css"))
+            .await
+            .status(),
         404
     );
 }
@@ -286,11 +296,11 @@ async fn people_hear_each_change_and_publishing_ends_the_draft() {
     assert_eq!(stream.next_named("version").await["n"], 2);
     assert!(listed(&ts, &aid).await.is_empty());
     let gone = format!(
-        "/c/{aid}/draft/{}/{}/",
+        "/_clax/draft/{}/{}/",
         d["agent"].as_str().unwrap(),
         token.as_str().unwrap()
     );
-    assert_eq!(ts.get(&gone).await.status(), 404);
+    assert_eq!(ts.site_get(&aid, &gone).await.status(), 404);
     // `/api/events` never carries a draft: it reached the version without one.
     loop {
         let (name, _) = old.next().await;
@@ -483,21 +493,23 @@ async fn drafting_needs_the_publish_right_and_drafts_reach_people_only() {
     // token naming its session, nor a person's.
     put_ok(&ts, &sid, &aid, DRAFT).await;
     let d2 = listed(&ts, &aid).await[0].clone();
-    for path in [
-        format!("/api/artifacts/{aid}/drafts"),
-        draft_url(&aid, &d2, ""),
+    for (host, path) in [
+        (None, format!("/api/artifacts/{aid}/drafts")),
+        (Some(ts.site_host(&aid)), draft_url(&aid, &d2, "")),
     ] {
-        let r = ts
-            .authed(ts.client.get(format!("{}{path}", ts.base)))
-            .header("x-clax-session", &sid)
-            .send()
-            .await
-            .unwrap();
+        let mut req = ts.authed(ts.client.get(format!("{}{path}", ts.base)));
+        if let Some(h) = &host {
+            req = req.header("host", h);
+        }
+        let r = req.header("x-clax-session", &sid).send().await.unwrap();
         assert_eq!(code(r).await.1["error"]["code"], "not_for_agents", "{path}");
         let r = sam.agent("GET", &path, Some(&ssid), None).await;
         assert_eq!(r.status(), 403, "{path}");
     }
-    assert_eq!(ts.get(&draft_url(&own, &d, "")).await.status(), 404);
+    assert_eq!(
+        ts.site_get(&own, &draft_url(&own, &d, "")).await.status(),
+        404
+    );
 }
 
 #[tokio::test]
@@ -515,7 +527,12 @@ async fn a_draft_is_compared_only_with_base_files_its_agent_may_see() {
     .await;
     assert_eq!(r.status(), 200, "{}", r.text().await.unwrap());
     let d = listed(ts, aid).await[0].clone();
-    let page = ts.get(&draft_url(aid, &d, "")).await.text().await.unwrap();
+    let page = ts
+        .site_get(aid, &draft_url(aid, &d, ""))
+        .await
+        .text()
+        .await
+        .unwrap();
     assert!(
         page.contains("<h2 data-clax-draft-changed>Quarterly goals</h2>"),
         "{page}"
@@ -529,9 +546,13 @@ async fn a_draft_is_compared_only_with_base_files_its_agent_may_see() {
         clax_testkit::people::FILE_NAME,
         clax_testkit::people::CARRIED_NAME,
     ] {
-        assert_eq!(ts.get(&draft_url(aid, &d, p)).await.status(), 404, "{p}");
+        assert_eq!(
+            ts.site_get(aid, &draft_url(aid, &d, p)).await.status(),
+            404,
+            "{p}"
+        );
     }
-    let mine = ts.get(&draft_url(aid, &d, "owner.html")).await;
+    let mine = ts.site_get(aid, &draft_url(aid, &d, "owner.html")).await;
     assert_eq!(mine.status(), 200);
     assert_eq!(mine.text().await.unwrap(), "<p>mine</p>");
     for c in w.canaries() {
@@ -680,14 +701,19 @@ async fn a_base_page_past_the_comparison_budget_is_compared_with_nothing() {
     .await;
     assert_eq!(r.status(), 200, "{}", r.text().await.unwrap());
     let d = listed(&ts, &aid).await[0].clone();
-    let page = ts.get(&draft_url(&aid, &d, "")).await.text().await.unwrap();
+    let page = ts
+        .site_get(&aid, &draft_url(&aid, &d, ""))
+        .await
+        .text()
+        .await
+        .unwrap();
     assert!(
         page.contains("<h1 data-clax-draft-changed>Kept heading</h1>"),
         "{page}"
     );
     // A small page is still compared.
     let small = ts
-        .get(&draft_url(&aid, &d, "small.html"))
+        .site_get(&aid, &draft_url(&aid, &d, "small.html"))
         .await
         .text()
         .await

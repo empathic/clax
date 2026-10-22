@@ -490,7 +490,16 @@ export class ArtifactController {
   /** Where the frame shows `file` of the shown version (at its content key
    * on a hosted daemon). */
   private pageAt(file: string, s: ViewState = this.s): string {
-    return pageSrc(this.id, this.shown(s), s.origin ?? null, file, this.version(s)?.content_key, s.data?.content_origin);
+    return pageSrc(this.id, this.shown(s), this.site(s), file, this.version(s)?.content_key, s.data?.content_origin);
+  }
+
+  /** The site origin the frame loads from: the subdomain mode's origin; in
+   * sandbox mode, on a local daemon, the artifact's site origin still
+   * (sandboxed by the frame), and none on a hosted daemon, whose versions
+   * carry content keys and whose sandboxed content is at keyed `/c/`
+   * addresses. */
+  site(s: ViewState = this.s): string | null {
+    return s.origin ?? (this.version(s)?.content_key ? null : artifactOrigin(this.id));
   }
 
   openCount(s: ViewState = this.s): number {

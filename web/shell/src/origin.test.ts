@@ -134,17 +134,27 @@ describe("probeOrigin", () => {
 
 describe("pageSrc", () => {
   it("is the version's root for the index and the file's path otherwise, segments encoded", () => {
-    expect(pageSrc("7q3k9mzx2b4t", 2, null, "index.html")).toBe("/c/7q3k9mzx2b4t/v/2/");
+    expect(pageSrc("7q3k9mzx2b4t", 2, null, "index.html", "k0")).toBe("/c/7q3k9mzx2b4t/v/2/k/k0/");
     expect(pageSrc("7q3k9mzx2b4t", 2, null, "a.html", "k0", "https://content.example")).toBe("https://content.example/c/7q3k9mzx2b4t/v/2/k/k0/a.html");
-    expect(pageSrc("7q3k9mzx2b4t", 2, null, "docs/a b.html")).toBe("/c/7q3k9mzx2b4t/v/2/docs/a%20b.html");
-    expect(pageSrc("7q3k9mzx2b4t", 2, "http://7q3k9mzx2b4t.localhost:7480", "about.html")).toBe("http://7q3k9mzx2b4t.localhost:7480/v/2/about.html");
+    expect(pageSrc("7q3k9mzx2b4t", 2, "http://7q3k9mzx2b4t.localhost:7480", "docs/a b.html")).toBe("http://7q3k9mzx2b4t.localhost:7480/_clax/v/2/docs/a%20b.html");
+    expect(pageSrc("7q3k9mzx2b4t", 2, "http://7q3k9mzx2b4t.localhost:7480", "about.html")).toBe("http://7q3k9mzx2b4t.localhost:7480/_clax/v/2/about.html");
   });
 });
 
 describe("contentSrc", () => {
-  it("picks the origin or the same-origin path", () => {
-    expect(contentSrc("7q3k9mzx2b4t", 2, "http://7q3k9mzx2b4t.localhost:7480")).toBe("http://7q3k9mzx2b4t.localhost:7480/v/2/");
-    expect(contentSrc("7q3k9mzx2b4t", 2, null)).toBe("/c/7q3k9mzx2b4t/v/2/");
+  it("is under /_clax/v/<n>/ on the site origin, else the keyed path", () => {
+    expect(contentSrc("7q3k9mzx2b4t", 2, "http://7q3k9mzx2b4t.localhost:7480")).toBe("http://7q3k9mzx2b4t.localhost:7480/_clax/v/2/");
+    expect(contentSrc("7q3k9mzx2b4t", 2, null, "k0")).toBe("/c/7q3k9mzx2b4t/v/2/k/k0/");
+    expect(contentSrc("7q3k9mzx2b4t", 2, null, "k0", "https://content.example")).toBe("https://content.example/c/7q3k9mzx2b4t/v/2/k/k0/");
+  });
+});
+
+describe("probeOrigin's request", () => {
+  it("asks the site's /_clax/healthz, which no published file shadows", async () => {
+    sessionStorage.clear();
+    const f = vi.fn(async (_url: RequestInfo | URL, _init?: RequestInit) => new Response("{}", { status: 200 }));
+    expect(await probeOrigin("http://x.localhost:1", f)).toBe(true);
+    expect(f.mock.calls.map(([u]) => String(u))).toContain("http://x.localhost:1/_clax/healthz");
   });
 });
 

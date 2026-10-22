@@ -11,7 +11,7 @@ describe("assets (page side)", () => {
     await expect(a.upload(new Blob(["x"]), "image/png")).rejects.toMatchObject({ code: "invalid_request" });
     await a.upload(new Blob(["x"], { type: "image/png" }));
     await a.delete("http://7q3k9mzx2b4t.localhost:7480/_blob/01J9ZZZZZZZZZZZZZZZZZZZZZZ");
-    await a.delete("/_blob/7q3k9mzx2b4t/01J9ZZZZZZZZZZZZZZZZZZZZZY");
+    await a.delete("/_clax/blob/01J9ZZZZZZZZZZZZZZZZZZZZZY");
     await expect(a.delete("")).rejects.toMatchObject({ code: "invalid_request" });
     await expect(a.delete("../../api/x")).rejects.toMatchObject({ code: "invalid_request" });
     await expect(a.delete(7)).rejects.toMatchObject({ code: "invalid_request" });

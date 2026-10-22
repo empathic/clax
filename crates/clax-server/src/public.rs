@@ -31,8 +31,8 @@
 //! version it made, not refused as the public copy having moved.
 //!
 //! Assets: an asset of the artifact that a pushed version's text files
-//! reference by the address this daemon gave it (`/_blob/<asset ID>`,
-//! alone or after an `http(s)://` origin) is uploaded to the public
+//! reference by an address this daemon gave it (`/_blob/<asset ID>` or
+//! `/_clax/blob/<asset ID>`, alone or after an `http(s)://` origin) is uploaded to the public
 //! artifact once, and those references are rewritten to the address the
 //! remote gave it ([`rewrite_assets`]). Nothing else in a page changes;
 //! an asset no pushed version references stays here. A public artifact
@@ -914,8 +914,10 @@ fn outgoing(
     Ok(out)
 }
 
-/// The path segment this daemon serves asset bytes under.
-const BLOB: &str = "/_blob/";
+/// The paths this daemon serves asset bytes under: `/_blob/` (the public
+/// host's, and a legacy artifact's site host's) and `/_clax/blob/` (an
+/// artifact's site host's, `crate::routes::site`).
+const BLOBS: [&str; 2] = ["/_blob/", "/_clax/blob/"];
 
 /// Whether a file of `content_type` is text a page's asset references can
 /// be in: HTML, CSS, JavaScript, JSON, SVG and other text.
@@ -924,14 +926,28 @@ fn textual(content_type: &str) -> bool {
     t.starts_with("text/") || t.ends_with("javascript") || t.ends_with("json") || t.ends_with("xml")
 }
 
-/// One reference in `text` to an asset `ids` holds: the byte range it
-/// takes (with the `http(s)://<host>` before `/_blob/`, when there is one)
-/// and the asset's ID.
+/// Each reference in `text` to an asset `ids` holds, in order: the byte
+/// range it takes (with the `http(s)://<host>` before `/_blob/` or
+/// `/_clax/blob/`, when there is one) and the asset's ID.
 fn asset_refs<'a>(text: &'a str, ids: &BTreeSet<&str>) -> Vec<(std::ops::Range<usize>, &'a str)> {
+    let mut out: Vec<_> = BLOBS
+        .iter()
+        .flat_map(|blob| asset_refs_under(text, ids, blob))
+        .collect();
+    out.sort_by_key(|(r, _)| r.start);
+    out
+}
+
+/// [`asset_refs`] under the one path `blob`.
+fn asset_refs_under<'a>(
+    text: &'a str,
+    ids: &BTreeSet<&str>,
+    blob: &str,
+) -> Vec<(std::ops::Range<usize>, &'a str)> {
     let mut out = Vec::new();
     let mut from = 0;
-    while let Some(at) = text[from..].find(BLOB).map(|i| from + i) {
-        let id_at = at + BLOB.len();
+    while let Some(at) = text[from..].find(blob).map(|i| from + i) {
+        let id_at = at + blob.len();
         from = id_at;
         // Asset IDs are ULIDs: 26 ASCII letters and digits.
         let Some(id) = text.get(id_at..id_at + 26) else {
@@ -1893,6 +1909,23 @@ mod tests {
 
     fn urls() -> HashMap<String, String> {
         HashMap::from([(A.to_string(), "https://c.example/_blob/X?k=1".to_string())])
+    }
+
+    #[test]
+    fn a_site_hosts_asset_references_are_rewritten_too() {
+        let page = format!(
+            "<img src=\"/_clax/blob/{A}\"><img src=\"http://abcdefghjkmn.localhost:7480/_clax/blob/{A}?w=2\">\
+             <img src=\"/_blob/{A}\"><p>x/_clax/blob/{A}</p>"
+        );
+        let out = String::from_utf8(rewrite_assets(page.as_bytes(), "text/html", &urls()).unwrap())
+            .unwrap();
+        assert_eq!(
+            out,
+            format!(
+                "<img src=\"https://c.example/_blob/X?k=1\"><img src=\"https://c.example/_blob/X?k=1&w=2\">\
+                 <img src=\"https://c.example/_blob/X?k=1\"><p>x/_clax/blob/{A}</p>"
+            )
+        );
     }
 
     #[test]

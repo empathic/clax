@@ -263,10 +263,10 @@ async function sample(browser: Browser, base: string, port: string, id: string, 
     // The control, in both modes, is a direct navigation to the artifact's
     // own host. Leaving the shell's origin for it is a cross-site move that
     // starts a new renderer process, so it slows down with the machine (44 ms
-    // quiet, 72 ms under load here). A same-site `/c/` navigation takes about
+    // quiet, 72 ms under load here). A same-site navigation takes about
     // 16 ms, under the noise floor, and barely moves under load, so it could
     // not scale the sandbox budgets.
-    await page.goto(`http://${id}.localhost:${port}/v/1/`);
+    await page.goto(`http://${id}.localhost:${port}/_clax/v/1/`);
     const ctl = await poll(() => page.evaluate(() => {
       const r = (window as unknown as { claxPerf?: Rec }).claxPerf;
       const p = r ? r.paint ?? r.raf : null;

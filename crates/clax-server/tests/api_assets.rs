@@ -22,9 +22,12 @@ async fn upload_serve_list_delete() {
     assert_eq!(res.status(), 201);
     let body: serde_json::Value = res.json().await.unwrap();
     let url = body["url"].as_str().unwrap().to_string();
+    // An address on the artifact's site host; the public host's
+    // `/_blob/<id>` serves it too, for pages that name that.
+    assert!(url.starts_with("/_clax/blob/"), "{url}");
     let asset_id = body["asset"]["id"].as_str().unwrap();
-    assert_eq!(url, format!("/_blob/{id}/{asset_id}"));
-    let res = ts.get(&url).await;
+    assert_eq!(ts.get(&format!("/_blob/{asset_id}")).await.status(), 200);
+    let res = ts.site_get(id, &url).await;
     assert_eq!(res.status(), 200);
     assert_eq!(res.headers()["content-type"], "image/png");
     assert_eq!(
@@ -50,7 +53,7 @@ async fn upload_serve_list_delete() {
         .await
         .unwrap();
     assert_eq!(res.status(), 204);
-    assert_eq!(ts.get(&url).await.status(), 404);
+    assert_eq!(ts.site_get(id, &url).await.status(), 404);
 }
 
 #[tokio::test]
@@ -116,7 +119,7 @@ async fn blob_404s_after_artifact_delete_and_cross_artifact_delete_is_404() {
     assert_eq!(body["asset"]["ext"], "png");
     let url = body["url"].as_str().unwrap().to_string();
     let asset_id = body["asset"]["id"].as_str().unwrap().to_string();
-    let res = ts.get(&url).await;
+    let res = ts.site_get(&aid, &url).await;
     assert_eq!(res.headers()["content-length"], "1");
     let res = ts
         .authed(
@@ -128,7 +131,7 @@ async fn blob_404s_after_artifact_delete_and_cross_artifact_delete_is_404() {
         .unwrap();
     assert_eq!(res.status(), 404);
     assert_eq!(
-        ts.get(&url).await.status(),
+        ts.site_get(&aid, &url).await.status(),
         200,
         "cross-artifact delete did nothing"
     );
@@ -136,7 +139,7 @@ async fn blob_404s_after_artifact_delete_and_cross_artifact_delete_is_404() {
         .send()
         .await
         .unwrap();
-    let res = ts.get(&url).await;
+    let res = ts.site_get(&aid, &url).await;
     assert_eq!(res.status(), 404);
     assert_eq!(
         res.json::<serde_json::Value>().await.unwrap()["error"]["code"],

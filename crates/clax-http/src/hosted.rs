@@ -617,15 +617,18 @@ pub fn asset_key(token: &str, asset_id: &str) -> String {
 }
 
 /// The URL a hosted daemon serves asset `asset_id` at; a local daemon's
-/// `/_blob/<asset_id>`.
-pub fn asset_url(s: &AppState, asset_id: &str) -> String {
+/// address on the asset's artifact's site host: `/_clax/blob/<asset_id>`,
+/// or `/_blob/<asset_id>` for a `legacy` artifact (`Artifact::legacy_paths`),
+/// whose pages already name that.
+pub fn asset_url(s: &AppState, asset_id: &str, legacy: bool) -> String {
     match &s.hosted {
         Some(h) => format!(
             "{}/_blob/{asset_id}?k={}",
             h.content_origin().unwrap_or(""),
             asset_key(&s.token, asset_id)
         ),
-        None => format!("/_blob/{asset_id}"),
+        None if legacy => format!("/_blob/{asset_id}"),
+        None => format!("/_clax/blob/{asset_id}"),
     }
 }
 
@@ -691,15 +694,12 @@ pub fn stamp_content_keys(s: &AppState, v: &mut Value) {
     }
 }
 
-/// On a hosted daemon, sets `url` on every asset of `assets` (each naming
-/// its `id`) to [`asset_url`].
-pub fn stamp_asset_urls(s: &AppState, assets: &mut [Value]) {
-    if s.hosted.is_none() {
-        return;
-    }
+/// Sets `url` on every asset of `assets` (each naming its `id`), assets of
+/// one artifact, `legacy` or not, to [`asset_url`].
+pub fn stamp_asset_urls(s: &AppState, assets: &mut [Value], legacy: bool) {
     for a in assets {
         if let Some(id) = a.get("id").and_then(Value::as_str).map(str::to_string) {
-            a["url"] = json!(asset_url(s, &id));
+            a["url"] = json!(asset_url(s, &id, legacy));
         }
     }
 }
@@ -1556,8 +1556,10 @@ pub async fn gate(State(s): State<AppState>, mut req: Request, next: Next) -> Re
     if path.starts_with("/connect/b/") {
         return ApiError::not_found().into_response();
     }
-    let content =
-        path.starts_with("/c/") || path.starts_with("/_blob/") || path.starts_with("/_clip/");
+    // A site host's paths are its artifact's own (`/c/…` among them): the
+    // site routes serve them.
+    let content = !content_host
+        && (path.starts_with("/c/") || path.starts_with("/_blob/") || path.starts_with("/_clip/"));
     // The content origin serves content, the UI's files and `/healthz`
     // alone; with one, the public origin serves no content.
     if on_content && !content {
@@ -1568,7 +1570,7 @@ pub async fn gate(State(s): State<AppState>, mut req: Request, next: Next) -> Re
         return ApiError::not_found().into_response();
     }
     if content {
-        if h.content_origin().is_some() && !on_content && !content_host {
+        if h.content_origin().is_some() && !on_content {
             return ApiError::not_found().into_response();
         }
         req.extensions_mut().insert(HostedRequest::default());

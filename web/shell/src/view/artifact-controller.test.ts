@@ -95,7 +95,7 @@ describe("ArtifactController", { timeout: MOUNT_TIMEOUT_MS }, () => {
     const { ctl, frame } = await started();
     expect(ctl.state.get().data?.artifact.title).toBe("T");
     expect(ctl.state.get().origin).toBeNull();
-    expect(frame.getAttribute("src")).toBe(`/c/${ID}/v/2/`);
+    expect(frame.getAttribute("src")).toBe(`http://${ID}.localhost:3000/_clax/v/2/`);
     const posted: { type: string }[] = [];
     frame.contentWindow!.postMessage = ((m: { type: string }) => { posted.push(m); }) as Window["postMessage"];
     // A hello for another version of the artifact is not welcomed.
@@ -163,7 +163,7 @@ describe("ArtifactController", { timeout: MOUNT_TIMEOUT_MS }, () => {
     history.pushState(null, "", `/a/${ID}#later`);
     dispatchEvent(new PopStateEvent("popstate"));
     expect(posted).toEqual([{ type: "clax:hash", hash: "#later" }]);
-    expect(frame.getAttribute("src")).toBe(`/c/${ID}/v/2/`);
+    expect(frame.getAttribute("src")).toBe(`http://${ID}.localhost:3000/_clax/v/2/`);
     ctl.dispose();
   });
 
@@ -496,7 +496,7 @@ describe("ArtifactController", { timeout: MOUNT_TIMEOUT_MS }, () => {
     ctl.toggleComment();
     ctl.showDraftOf(d.agent);
     expect(ctl.state.get()).toMatchObject({ showDraft: d.agent, commenting: false, draftChanged: null });
-    expect(src()).toBe(`/c/${ID}/draft/a_1111aaaa/${d.token}/#tint=%232f6f2a`);
+    expect(src()).toBe(`http://${ID}.localhost:3000/_clax/draft/a_1111aaaa/${d.token}/#tint=%232f6f2a`);
     // Comments go on versions: comment mode stays off while the draft shows.
     ctl.toggleComment();
     expect(ctl.state.get().commenting).toBe(false);

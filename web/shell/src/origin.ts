@@ -23,7 +23,7 @@ export function cachedOriginOk(): boolean | null {
 /** Whether the browser resolves `<id>.localhost`. A sure answer is cached
  * for the session ([`cachedOriginOk`]), which callers consult first.
  *
- * The artifact origin's `/healthz` and this page's own `/healthz` are asked
+ * The artifact origin's `/_clax/healthz` and this page's own `/healthz` are asked
  * together. The artifact origin is judged against the daemon, not the
  * clock: it gets 1 s from the moment the daemon answers on its own
  * origin, so a slow daemon is waited for instead of being taken for a name
@@ -42,24 +42,24 @@ export async function probeOrigin(origin: string, f: typeof fetch = fetch): Prom
     setTimeout(done, 10_000);
     // Truthy once the daemon answered here, which starts the grace.
     const up = f("/healthz", ctl).then(r => r.ok && setTimeout(done, 1000, 0), () => false);
-    f(`${origin}/healthz`, ctl).then(r => done(+r.ok), () => up.then(u => done(u ? 0 : undefined)));
+    f(`${origin}/_clax/healthz`, ctl).then(r => done(+r.ok), () => up.then(u => done(u ? 0 : undefined)));
   });
   ctl.abort();
   if (v !== undefined) try { sessionStorage.setItem(CACHE_KEY, `${v}`); } catch { /* storage unavailable */ }
   return v === 1;
 }
 
-/** A version's content root; under `k/<key>/` when the version has a
- * content key (a hosted daemon serves its content only there); on a
- * hosted daemon's content origin (`base`), the sandboxed path is there. */
-export function contentSrc(id: string, n: number, origin: string | null, key?: string | null, base?: string | null): string {
-  return (origin ? `${origin}/v/${n}/` : `${base ?? ""}/c/${id}/v/${n}/`) + (key ? `k/${key}/` : "");
+/** A version's content root: on the artifact's site origin (`site`),
+ * `/_clax/v/<n>/`; without one (a hosted daemon's sandboxed content), the
+ * keyed `/c/<id>/v/<n>/k/<key>/`, on its content origin (`base`) when it
+ * has one. */
+export function contentSrc(id: string, n: number, site: string | null, key?: string | null, base?: string | null): string {
+  return site ? `${site}/_clax/v/${n}/` : `${base ?? ""}/c/${id}/v/${n}/` + (key ? `k/${key}/` : "");
 }
 
 /** Where the frame shows the page published at `file`: the version's root
  * for `index.html`, else the file's path under it, each segment encoded. */
-export function pageSrc(id: string, n: number, origin: string | null, file: string, key?: string | null, base?: string | null): string {
-  const root = contentSrc(id, n, origin, key, base);
+export function pageSrc(id: string, n: number, site: string | null, file: string, key?: string | null, base?: string | null): string {
+  const root = contentSrc(id, n, site, key, base);
   return file === "index.html" ? root : root + file.split("/").map(encodeURIComponent).join("/");
 }
-

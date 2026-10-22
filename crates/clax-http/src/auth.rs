@@ -520,9 +520,10 @@ pub fn request_host_allowed(
 }
 
 /// Middleware: every `/api` path answers 403 `forbidden_host` unless the
-/// request's `Host` passes [`api_host_allowed`]. Artifact hosts never reach
-/// `/api` (the host rewrite answers them first), and non-API paths (the shell,
-/// content, `/healthz`) are not checked.
+/// request's `Host` passes [`api_host_allowed`]. A site host's request
+/// ([`crate::host::SiteRequest`]) is not checked: its paths, `/api/…` among
+/// them, are its artifact's, which the site routes serve; nor are non-API
+/// paths (the shell, `/healthz`).
 pub async fn require_api_host(
     req: axum::extract::Request,
     next: axum::middleware::Next,
@@ -530,6 +531,7 @@ pub async fn require_api_host(
     use axum::response::IntoResponse;
     let path = req.uri().path();
     if (path == "/api" || path.starts_with("/api/"))
+        && req.extensions().get::<crate::host::SiteRequest>().is_none()
         && !request_host_allowed(req.headers(), req.uri(), req.extensions())
     {
         return ApiError::forbidden(

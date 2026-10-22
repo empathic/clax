@@ -1113,7 +1113,9 @@ async fn a_grant_credential_is_refused_wherever_no_need_is_declared() {
     routes.push(("POST".into(), "/api/admin/shutdown".into(), false));
     let mut checked = 0;
     for (method, path, agent) in routes {
-        if agent {
+        // Content on the public host, which a local daemon serves only to
+        // a shell with no site origins (`without_site_origins`).
+        if agent || path.starts_with("/c/") {
             continue;
         }
         let concrete = path

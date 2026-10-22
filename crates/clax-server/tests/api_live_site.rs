@@ -339,7 +339,7 @@ async fn moving_a_thread_refiles_it_and_tells_both_pages() {
     // The snapshot came along: the thread's version on /b holds /a's page.
     let n = t["version_n"].as_u64().unwrap();
     let html = ts
-        .get(&format!("/c/{b}/v/{n}/"))
+        .site_get(&b, &format!("/_clax/v/{n}/"))
         .await
         .text()
         .await

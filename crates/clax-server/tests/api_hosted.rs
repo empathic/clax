@@ -1120,8 +1120,9 @@ async fn content_is_served_only_at_its_key_and_an_id_alone_reads_nothing() {
     assert_eq!(r.status(), 200);
     assert_eq!(r.headers()["referrer-policy"], "no-referrer");
     assert!(r.text().await.unwrap().contains("<h1>Plan</h1>"));
+    // A site host has no keyed addresses: `/v/1/k/<key>/` is its own path.
     let r = status(&anon, format!("/v/1/k/{key}/"), content_host.clone()).await;
-    assert_eq!(r.status(), 200);
+    assert_eq!(r.status(), 404);
     let r = reqwest::Client::builder()
         .redirect(reqwest::redirect::Policy::none())
         .build()
@@ -1221,7 +1222,15 @@ async fn content_is_served_only_at_its_key_and_an_id_alone_reads_nothing() {
     let r = status(&anon, url.clone(), None).await;
     assert_eq!(r.status(), 200);
     assert_eq!(r.headers()["referrer-policy"], "no-referrer");
-    assert_eq!(status(&anon, url, content_host).await.status(), 200);
+    // On the site host its keyed address is the artifact's own path; its
+    // asset is at `/_clax/blob/<id>`.
+    assert_eq!(status(&anon, url, content_host.clone()).await.status(), 404);
+    assert_eq!(
+        status(&anon, format!("/_clax/blob/{asset}"), content_host)
+            .await
+            .status(),
+        200
+    );
     assert_eq!(
         site.req(&anon, reqwest::Method::GET, "/healthz")
             .send()

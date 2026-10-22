@@ -669,7 +669,16 @@ fn routes(state: AppState, shutdown: Option<tokio::sync::watch::Sender<bool>>) -
         .route("/_blob/{asset_id}", get(assets::blob))
         .route("/_clip/{aid}/{tid}", get(threads::keyed_clip))
         .route("/connect/b/{code}", get(connect::browser_link))
-        .route("/_blob/{aid}/{asset_id}", get(assets::scoped_blob))
+        .route(
+            "/api/artifacts/{aid}/versions/{n}/files/{*path}",
+            get(content::raw_file),
+        );
+    // Content on the public host: a hosted daemon's keyed content
+    // addresses, on its content origin or its public host (the gate checks
+    // their keys); on a local daemon, only for a shell with no site origins
+    // ([`without_site_origins`]). Every other shell frames each artifact's
+    // site host (`routes::site`).
+    let content_routes = Router::new()
         .route("/c/{aid}/v/{n}", get(content::redirect_to_slash))
         .route("/c/{aid}/v/{n}/", get(content::index))
         .route("/c/{aid}/v/{n}/{*path}", get(content::file))
@@ -678,18 +687,12 @@ fn routes(state: AppState, shutdown: Option<tokio::sync::watch::Sender<bool>>) -
             get(drafts::redirect_to_slash),
         )
         .route("/c/{aid}/draft/{agent}/{token}/", get(drafts::index))
-        .route("/c/{aid}/draft/{agent}/{token}/{*path}", get(drafts::file))
-        .route(
-            "/api/artifacts/{aid}/versions/{n}/files/{*path}",
-            get(content::raw_file),
-        );
-    // Bounded by the fetch's own deadline (`net::TIMEOUT`); the daemon's
-    // alone, as the grants above.
-    #[cfg(not(target_arch = "wasm32"))]
-    let r = r.route(
-        "/api/artifacts/{aid}/net:fetch",
-        post(net::fetch.layer(DefaultBodyLimit::max(net::NET_BODY_LIMIT))),
-    );
+        .route("/c/{aid}/draft/{agent}/{token}/{*path}", get(drafts::file));
+    let r = if state.hosted.is_some() {
+        r.merge(content_routes)
+    } else {
+        r.merge(content_routes.route_layer(axum::middleware::from_fn(without_site_origins)))
+    };
     // What holds its connection open: the daemon's. A Durable Object
     // carries the streams and rooms over its own hibernatable sockets and
     // serves `/mcp` with the tool set's JSON-RPC adapter (see the crate
@@ -943,9 +946,66 @@ async fn test_slow_publish(
     Ok(StatusCode::CREATED)
 }
 
+/// A local daemon's `/c/…` content answers only a request whose `Host` is
+/// not `localhost` or `127.0.0.1` (a LAN viewer's, or `[::1]`): a shell
+/// there has no site origins (`artifactOrigin` in web/shell/src/origin.ts)
+/// and frames the content sandboxed on this host. Anywhere else it is 404:
+/// the artifact's site host serves it.
+async fn without_site_origins(
+    req: axum::extract::Request,
+    next: axum::middleware::Next,
+) -> axum::response::Response {
+    use axum::response::IntoResponse;
+    let host = req
+        .headers()
+        .get(axum::http::header::HOST)
+        .and_then(|h| h.to_str().ok())
+        .unwrap_or("");
+    let name = match host.rsplit_once(':') {
+        Some((n, p)) if p.bytes().all(|b| b.is_ascii_digit()) => n,
+        _ => host,
+    };
+    if name.eq_ignore_ascii_case("localhost") || name == "127.0.0.1" {
+        return ApiError::not_found().into_response();
+    }
+    next.run(req).await
+}
+
 /// The daemon's router.
 pub fn build_router(state: AppState) -> axum::Router {
     wrap(state.clone(), routes(state, None))
+}
+
+/// `instance` (the public host's routes, [`routes`]) beside the site routes
+/// ([`crate::routes::site::site_routes`]): a request on a site host (one
+/// [`host::site_layer`] gave a [`clax_http::host::SiteRequest`]) reaches
+/// the site routes alone, any other the instance's alone.
+fn by_host(state: &AppState, instance: axum::Router) -> axum::Router {
+    // The extension gateway covers the site routes as it does the
+    // instance's ([`routes`]): what the extension's origin may reach is its
+    // rule's routes alone.
+    let site = crate::routes::site::site_routes(state)
+        .layer(axum::middleware::from_fn_with_state(
+            state.clone(),
+            clax_http::extension::gateway,
+        ))
+        .with_state(state.clone());
+    axum::Router::new().fallback(move |req: axum::extract::Request| {
+        let to = if req
+            .extensions()
+            .get::<clax_http::host::SiteRequest>()
+            .is_some()
+        {
+            site.clone()
+        } else {
+            instance.clone()
+        };
+        async move {
+            use tower::ServiceExt as _;
+            let Ok(res) = to.oneshot(req).await;
+            res
+        }
+    })
 }
 
 /// The daemon's router with `POST /api/admin/shutdown`, which sends on
@@ -959,7 +1019,8 @@ pub fn build_router_with_shutdown(
 
 // `Router::layer` runs after route matching, so the site host lookup
 // (`host::site_layer`) has to wrap the whole inner router (mounted as the
-// outer fallback) to influence routing. The `/api` host check runs after
+// outer fallback, [`by_host`]) to choose between the site routes and the
+// instance's. The `/api` host check runs after
 // the lookup (the later `layer` is outermost),
 // and the header checks of agent credentials after both, before any route.
 // On a hosted daemon ([`clax_http::hosted`]), whose own routes `routes`
@@ -969,8 +1030,7 @@ fn wrap(state: AppState, inner: axum::Router) -> axum::Router {
     let hosted = state.hosted.is_some();
     // Innermost: a request's git token revocations are done before it
     // answers (`git_remotes::settle_layer`).
-    let r = axum::Router::new()
-        .fallback_service(inner)
+    let r = by_host(&state, inner)
         .layer(axum::middleware::from_fn_with_state(
             state.clone(),
             clax_http::git_remotes::settle_layer,

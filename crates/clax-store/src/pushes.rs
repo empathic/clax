@@ -35,7 +35,8 @@
 //!   cannot be, nothing more is recorded, and the next reconcile tries
 //!   again.
 //!
-//! Publish's rules hold: a path [`check_path`] refuses, a path that
+//! Publish's rules hold: a path [`check_path_for`] refuses (one a site
+//! host keeps for Clax among them), a path that
 //! collides with one kept before it (the same name in another letter case,
 //! or a file over a directory), a file over [`MAX_FILE_BYTES`], changed
 //! files past [`MAX_BODY_BYTES`] in all, or past what the content store
@@ -61,7 +62,7 @@ use clax_core::audit::{AuditCtx, AuditKind, AuditRecord};
 use clax_core::content::{PushedCommit, PushedContent};
 use clax_core::model::{Artifact, FileMeta, Version};
 use clax_core::publish::{
-    DecodedFile, FileChange, MAX_BODY_BYTES, MAX_FILE_BYTES, ValidatedPublish, check_path,
+    DecodedFile, FileChange, MAX_BODY_BYTES, MAX_FILE_BYTES, ValidatedPublish, check_path_for,
     content_type_for,
 };
 use clax_core::rights::RightType;
@@ -355,6 +356,7 @@ impl Store {
         let below = self.get_version(id, current)?;
         let prev: BTreeMap<String, FileMeta> =
             below.as_ref().map(|v| v.files.clone()).unwrap_or_default();
+        let legacy = self.get_artifact(id)?.is_some_and(|a| a.legacy_paths);
         let mut files = self
             .content
             .pushed_files(id, &c.commit, current, &prev)
@@ -368,7 +370,7 @@ impl Store {
         let mut bad_icon = None;
         let mut total: u64 = 0;
         for f in files {
-            if check_path(&f.path).is_err() || kept.collides(&f.path) {
+            if check_path_for(&f.path, legacy).is_err() || kept.collides(&f.path) {
                 skipped.push(f.path);
                 continue;
             }

@@ -6,8 +6,10 @@
 //! version (its base): each `draft` call replaces the one before. People
 //! see that the agent is drafting and can show the draft in the frame, from
 //!
-//!   /c/<artifact ID>/draft/<agent handle>/<token>/<path>
+//!   /_clax/draft/<agent handle>/<token>/<path>
 //!
+//! on the artifact's site host (`/c/<artifact ID>/draft/…` on a hosted
+//! daemon's keyed content addresses),
 //! where the token is minted afresh for every revision and travels only in
 //! the `drafts` event and the people's listing, so the URL is a capability
 //! held by the people who were shown that revision; it stops answering

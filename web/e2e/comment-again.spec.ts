@@ -83,7 +83,7 @@ for (const mode of ["subdomain", "sandbox"] as const) {
 
     // A second page of the artifact behaves the same.
     await frame.locator("#to-about").click();
-    const aboutUrl = new RegExp(`(${id}\\.localhost:\\d+/v/1/about\\.html|/c/${id}/v/1/about\\.html)$`);
+    const aboutUrl = new RegExp(`(${id}\\.localhost:\\d+/_clax/v/1/about\\.html)$`);
     await expect.poll(() => page.frame({ url: aboutUrl }) !== null).toBe(true);
     const about = page.frame({ url: aboutUrl })!;
     await expect(about.locator("#team")).toHaveText("Our team");

@@ -4,7 +4,7 @@ import { trusted } from "./trusted";
 
 describe("shellOrigins", () => {
   it("allows the loopback shell for subdomain content", () => {
-    expect(shellOrigins("http://7q3k9mzx2b4t.localhost:7480/v/1/")).toEqual(["http://localhost:7480", "http://127.0.0.1:7480", "http://[::1]:7480"]);
+    expect(shellOrigins("http://7q3k9mzx2b4t.localhost:7480/_clax/v/1/")).toEqual(["http://localhost:7480", "http://127.0.0.1:7480", "http://[::1]:7480"]);
   });
   it("allows only the content URL's own origin for path-based content", () => {
     expect(shellOrigins("http://192.168.1.5:7480/c/7q3k9mzx2b4t/v/1/")).toEqual(["http://192.168.1.5:7480"]);

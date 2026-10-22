@@ -600,7 +600,11 @@ async fn mcp_uploads_an_asset(path: &str) {
     assert_eq!(asset["size"], 6, "{r}");
     let url = asset["url"].as_str().unwrap();
     let blob = url.split_once(&format!(":{}", ts.addr.port())).unwrap().1;
-    let res = ts.get(blob).await;
+    assert!(
+        url.starts_with(&format!("http://{aid}.localhost:")),
+        "{url}"
+    );
+    let res = ts.site_get(&aid, blob).await;
     assert_eq!(res.bytes().await.unwrap().as_ref(), bytes);
 }
 both!(mcp_uploads_an_asset);
