@@ -236,6 +236,7 @@ mod l10 {
         ("health::healthz", NoArtifact),
         ("assets::blob", SeesLive),
         ("site_signin::page", SeesLive),
+        ("assets::scoped_blob", SeesLive),
         ("perf::calibrate", Token),
         ("perf::verify_times", Token),
         ("toolpath::export", Bot),
@@ -505,6 +506,18 @@ mod l10 {
         (
             "site_signin::site_code",
             "mints a one-use code for the caller's own browser to read a site it may read; changes nothing",
+        ),
+        (
+            "app_bundles::record_install",
+            "an anonymous count of an app's installs, of no one's content",
+        ),
+        (
+            "admin::test",
+            "a read of the provider's model list, recorded as the view view.admin {page: provider.test}",
+        ),
+        (
+            "settings::put",
+            "writes the home's config.toml, not the store; its changes are recorded as admin.settings by the SettingsAudit hook (clax_http::bot::SettingsRecorded)",
         ),
         (
             "remotes::add",
@@ -1624,8 +1637,6 @@ mod agents {
         "grants::revoke_invite",
         "assets::blob",
         "assets::scoped_blob",
-        "content::index",
-        "content::file",
         "shell::artifact_page",
         "people::rename_agent",
         "extension::mint",

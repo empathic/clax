@@ -39,13 +39,15 @@ describe("the protocol between the shell and the bridge", () => {
     expect(SHELL_TYPES.has("clax:cursor")).toBe(false);
   });
 
-  it("takes a pointer from the sandboxed frame's opaque origin only", () => {
+  it("takes a pointer from the frame at the artifact's site origin only", () => {
     const frame = {} as Window;
+    const site = "http://7q3k9mzx2b4t.localhost:7480";
     const data = { type: "clax:cursor", anchor: { path: [0], offset: -1, x: 0.5, y: 0.5 }, selection: null };
     const e = (origin: string, source: unknown) => ({ isTrusted: true, source, origin, data }) as unknown as MessageEvent;
-    expect(acceptFromFrame(e("null", frame), frame, null)).toEqual(data);
-    expect(acceptFromFrame(e("http://localhost:7480", frame), frame, null)).toBeNull();
-    expect(acceptFromFrame(e("null", {}), frame, null)).toBeNull();
+    expect(acceptFromFrame(e(site, frame), frame, site)).toEqual(data);
+    expect(acceptFromFrame(e("http://localhost:7480", frame), frame, site)).toBeNull();
+    expect(acceptFromFrame(e("null", frame), frame, site)).toBeNull();
+    expect(acceptFromFrame(e(site, {}), frame, site)).toBeNull();
   });
 });
 

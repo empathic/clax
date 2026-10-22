@@ -294,10 +294,9 @@ async fn invalid_questions_and_limits() {
         res.json::<Value>().await.unwrap()["error"]["code"],
         "limit_reached"
     );
-    let lan = ts.lan();
-    let res = lan
-        .0
-        .post(format!("{}/api/sessions/{sid}/questions", lan.1))
+    let res = ts
+        .client
+        .post(format!("{}/api/sessions/{sid}/questions", ts.base))
         .json(&body())
         .send()
         .await

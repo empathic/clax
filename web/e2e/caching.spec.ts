@@ -4,12 +4,12 @@ import { test, expect, type Daemon, openArtifact, publish } from "./fixtures";
 let d: Daemon;
 test.beforeEach(({ daemon }) => { d = daemon; });
 
-for (const mode of ["subdomain", "sandbox"] as const) {
-  test(`${mode}: pages are revalidated and the frame loads the bridge at its versioned URL`, async ({ page }) => {
-    const { artifact } = await publish(d.base, d.token, `Caching ${mode}`, { "index.html": "<p id=\"hi\">hi</p>" });
+{
+  test(`pages are revalidated and the frame loads the bridge at its versioned URL`, async ({ page }) => {
+    const { artifact } = await publish(d.base, d.token, `Caching`, { "index.html": "<p id=\"hi\">hi</p>" });
     const seen: Response[] = [];
     page.on("response", r => { seen.push(r); });
-    const frame = await openArtifact(page, d.base, artifact.id, 1, mode);
+    const frame = await openArtifact(page, d.base, artifact.id, 1);
     await expect(frame.locator("#hi")).toHaveText("hi");
     await expect.poll(() => frame.evaluate(() => typeof (window as unknown as { claude?: unknown }).claude)).toBe("object");
 
@@ -18,7 +18,8 @@ for (const mode of ["subdomain", "sandbox"] as const) {
     expect(shell.headers()["etag"]).toBeTruthy();
 
     const doc = seen.find(r => r.url() === frame.url())!;
-    expect(doc.headers()["cache-control"]).toBe("no-cache");
+    // A private site's page is private to the browser, revalidated on every load.
+    expect(doc.headers()["cache-control"]).toBe("private, no-cache");
     expect(doc.headers()["etag"]).toBeTruthy();
 
     const src = await frame.evaluate(() => document.querySelector("script[data-artifact]")!.getAttribute("src"));

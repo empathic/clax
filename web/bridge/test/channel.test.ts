@@ -3,15 +3,18 @@ import { acceptFromShell, forwardedKey, shellOrigins } from "../src/channel";
 import { trusted } from "./trusted";
 
 describe("shellOrigins", () => {
-  it("allows the loopback shell for subdomain content", () => {
-    expect(shellOrigins("http://7q3k9mzx2b4t.localhost:7480/_clax/v/1/")).toEqual(["http://localhost:7480", "http://127.0.0.1:7480", "http://[::1]:7480"]);
+  it("allows a local daemon's shell on each loopback name at its port", () => {
+    const loopback = ["http://localhost:7480", "http://127.0.0.1:7480"];
+    expect(shellOrigins("http://localhost:7480")).toEqual(loopback);
+    expect(shellOrigins("http://127.0.0.1:7480")).toEqual(loopback);
   });
-  it("allows only the content URL's own origin for path-based content", () => {
-    expect(shellOrigins("http://192.168.1.5:7480/c/7q3k9mzx2b4t/v/1/")).toEqual(["http://192.168.1.5:7480"]);
-  });
-  it("allows only the origin the bridge tag names (data-origin), for content on a hosted content origin", () => {
+  it("allows only the origin the bridge tag names (data-origin) otherwise", () => {
     expect(shellOrigins("https://clax.example")).toEqual(["https://clax.example"]);
-    expect(shellOrigins("http://localhost:7480")).toEqual(["http://localhost:7480"]);
+    expect(shellOrigins("http://192.168.1.5:7480")).toEqual(["http://192.168.1.5:7480"]);
+  });
+  it("allows no one without an origin, or with one that does not parse", () => {
+    expect(shellOrigins(undefined)).toEqual([]);
+    expect(shellOrigins("not an origin")).toEqual([]);
   });
 });
 

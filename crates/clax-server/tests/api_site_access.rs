@@ -643,7 +643,10 @@ async fn a_frame_starts_its_handshake_with_a_state_the_shell_binds_its_code_to()
         .await
         .unwrap();
     assert_eq!(r.status(), 200);
-    let shell = ts.state.browser_base.trim_end_matches('/').to_string();
+    // A local daemon's shell, on any of its loopback names.
+    let port = ts.addr.port();
+    let shells = format!("http://localhost:{port} http://127.0.0.1:{port}");
+    let shell_list = format!("[\"http://localhost:{port}\",\"http://127.0.0.1:{port}\"]");
     let csp = r.headers()["content-security-policy"]
         .to_str()
         .unwrap()
@@ -653,7 +656,7 @@ async fn a_frame_starts_its_handshake_with_a_state_the_shell_binds_its_code_to()
         "{csp}"
     );
     assert!(
-        csp.ends_with(&format!("; frame-ancestors 'self' {shell}")),
+        csp.ends_with(&format!("; frame-ancestors {shells}")),
         "{csp}"
     );
     assert_eq!(r.headers()["cache-control"], "no-store");
@@ -672,12 +675,28 @@ async fn a_frame_starts_its_handshake_with_a_state_the_shell_binds_its_code_to()
     let html = r.text().await.unwrap();
     assert!(
         html.contains(&format!(
-            "parent.postMessage({{\"next\":\"/_clax/v/1/\",\"state\":\"{state}\",\"type\":\"clax:site-state\"}}, \"{shell}\")"
+            "for(const o of {shell_list})parent.postMessage({{\"next\":\"/_clax/v/1/\",\"state\":\"{state}\",\"type\":\"clax:site-state\"}},o);"
         )),
         "{html}"
     );
+    // Another tab's frame starting while this one signs in shares the
+    // state the browser holds, so neither undoes the other's.
+    let again = raw
+        .get(format!("{}/_clax/session/start?next=%2F", ts.base))
+        .header(HOST, ts.site_host(&aid))
+        .header("sec-fetch-dest", "iframe")
+        .header(COOKIE, format!("clax_site_state={state}"))
+        .send()
+        .await
+        .unwrap();
+    assert!(
+        again.headers()[SET_COOKIE]
+            .to_str()
+            .unwrap()
+            .starts_with(&format!("clax_site_state={state};"))
+    );
     // The shell asks for a code bound to it; the frame redeems it beside
-    // its state cookie, which the redemption clears.
+    // its state cookie, which a frame's redemption keeps for those tabs.
     let code = |state: Option<&str>| {
         let mut body = json!({"next": "/_clax/v/1/", "partitioned": true});
         if let Some(st) = state {
@@ -721,10 +740,7 @@ async fn a_frame_starts_its_handshake_with_a_state_the_shell_binds_its_code_to()
         sets[0].starts_with("clax_site=") && sets[0].contains("Partitioned"),
         "{sets:?}"
     );
-    assert!(
-        sets[1].starts_with("clax_site_state=; Path=/; Max-Age=0"),
-        "{sets:?}"
-    );
+    assert_eq!(sets.len(), 1, "{sets:?}");
     let cookie = sets[0].split(';').next().unwrap();
     let r = raw
         .get(format!("{}/_clax/v/1/", ts.base))

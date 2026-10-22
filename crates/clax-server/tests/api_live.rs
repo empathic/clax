@@ -369,17 +369,20 @@ async fn snapshots_are_served_with_a_policy_that_runs_only_claxs_scripts() {
         // A snapshot still loads its site's styles, images and fonts.
         assert!(!p.iter().any(|p| p.contains("default-src")), "{p:?}");
     }
-    // An HTML artifact has no such policy.
+    // An HTML artifact has no such policy: its one policy keeps it to its
+    // own files.
     let a = ts.publish("T", &[("index.html", "<p>")]).await;
     let res = ts
         .site_get(a["artifact"]["id"].as_str().unwrap(), "/_clax/v/1/")
         .await;
     assert_eq!(res.status(), 200);
-    assert!(!policies(&res).iter().any(|v| v.contains("script-src")));
+    let p = policies(&res);
+    assert_eq!(p.len(), 1, "{p:?}");
+    assert!(!p[0].contains("/_clax/;"), "{p:?}");
 }
 
 #[tokio::test]
-async fn live_pages_are_hidden_from_lan_callers_without_the_token() {
+async fn live_pages_and_all_else_are_refused_to_lan_callers() {
     let ts = TestServer::spawn_on("0.0.0.0".parse().unwrap(), |_| {}).await;
     let (lc, lan) = ts.lan();
     let v = ts.viewer(Some("Alex")).await;
@@ -391,46 +394,26 @@ async fn live_pages_are_hidden_from_lan_callers_without_the_token() {
     let aid = body["page"]["artifact_id"].as_str().unwrap();
     let html = ts.publish("T", &[("index.html", "<p>")]).await;
     let html_id = html["artifact"]["id"].as_str().unwrap();
-    let list: Value = lc
-        .get(format!("{lan}/api/artifacts"))
-        .send()
-        .await
-        .unwrap()
-        .json()
-        .await
-        .unwrap();
-    let ids: Vec<&Value> = list["artifacts"]
-        .as_array()
-        .unwrap()
-        .iter()
-        .map(|a| &a["id"])
-        .collect();
-    assert!(!ids.contains(&&json!(aid)), "{ids:?}");
-    assert!(ids.contains(&&json!(html_id)), "{ids:?}");
+    // A caller of another machine reaches nothing of a local daemon's
+    // (`clax_http::identity::local_peers`), the token in hand or not: no
+    // listing, no artifact, no live-page route.
     for path in [
+        "/api/artifacts".to_string(),
         format!("/api/artifacts/{aid}"),
         format!("/api/artifacts/{aid}/threads"),
-        format!("/c/{aid}/v/1/"),
+        format!("/api/artifacts/{html_id}"),
         format!("/a/{aid}"),
+        "/api/live/pages?url=http%3A%2F%2Flocalhost%3A5173%2F".to_string(),
     ] {
-        let st = lc
-            .get(format!("{lan}{path}"))
-            .send()
-            .await
-            .unwrap()
-            .status();
-        assert_eq!(st, 404, "{path}");
+        for authed in [false, true] {
+            let req = lc.get(format!("{lan}{path}"));
+            let req = if authed { ts.authed(req) } else { req };
+            let res = req.send().await.unwrap();
+            assert_eq!(res.status(), 403, "{path} {authed}");
+            let v: Value = res.json().await.unwrap();
+            assert_eq!(v["error"]["code"], "forbidden_host", "{path} {authed}");
+        }
     }
-    // The live-page routes themselves are not there for the LAN.
-    let st = lc
-        .get(format!(
-            "{lan}/api/live/pages?url=http%3A%2F%2Flocalhost%3A5173%2F"
-        ))
-        .send()
-        .await
-        .unwrap()
-        .status();
-    assert_eq!(st, 404);
     let form = reqwest::multipart::Form::new()
         .text("url", "http://localhost:5173/")
         .text("anchor", anchor())
@@ -443,32 +426,10 @@ async fn live_pages_are_hidden_from_lan_callers_without_the_token() {
         .await
         .unwrap()
         .status();
-    assert_eq!(st, 404);
-    // An HTML artifact stays visible from the LAN.
-    let st = lc
-        .get(format!("{lan}/api/artifacts/{html_id}"))
-        .send()
-        .await
-        .unwrap()
-        .status();
-    assert_eq!(st, 200);
-    // Loopback, and the token from the LAN, still see it.
+    assert_eq!(st, 403);
+    // Loopback still sees it.
     assert_eq!(ts.get(&format!("/api/artifacts/{aid}")).await.status(), 200);
-    let st = ts
-        .authed(lc.get(format!("{lan}/api/artifacts/{aid}")))
-        .send()
-        .await
-        .unwrap()
-        .status();
-    assert_eq!(st, 200);
-    let list: Value = ts
-        .authed(lc.get(format!("{lan}/api/artifacts")))
-        .send()
-        .await
-        .unwrap()
-        .json()
-        .await
-        .unwrap();
+    let list: Value = ts.get("/api/artifacts").await.json().await.unwrap();
     assert!(
         list["artifacts"]
             .as_array()
@@ -555,7 +516,7 @@ async fn next_event(
 #[tokio::test]
 async fn the_event_stream_carries_no_live_page_event_to_the_lan() {
     let ts = TestServer::spawn_on("0.0.0.0".parse().unwrap(), |_| {}).await;
-    let (lc, lan) = ts.lan();
+    let (lc, lan) = ts.lan_person("Lee").await;
     let v = ts.viewer(Some("Alex")).await;
     let res = lc.get(format!("{lan}/api/events")).send().await.unwrap();
     assert_eq!(res.status(), 200);
@@ -599,7 +560,7 @@ fn encoded(aid: &str) -> String {
 #[tokio::test]
 async fn live_pages_stay_hidden_from_the_lan_whatever_form_the_request_takes() {
     let ts = TestServer::spawn_on("0.0.0.0".parse().unwrap(), |_| {}).await;
-    let (lc, lan) = ts.lan();
+    let (lc, lan) = ts.lan_person("Lee").await;
     let v = ts.viewer(Some("Alex")).await;
     let body: Value = post_thread(&ts, &v.cookie, "http://localhost:5173/", "<p>")
         .await
@@ -678,8 +639,9 @@ async fn live_pages_stay_hidden_from_the_lan_whatever_form_the_request_takes() {
 #[tokio::test]
 async fn a_lan_viewer_learns_nothing_of_live_pages_through_the_viewer_routes() {
     let ts = TestServer::spawn_on("0.0.0.0".parse().unwrap(), |_| {}).await;
-    let (lc, lan) = ts.lan();
-    let v = ts.viewer(Some("Alex")).await;
+    let (lc, lan) = ts.lan_person("Lee").await;
+    // A connected person, whose browser another machine may be.
+    let v = ts.person("Alex").await;
     let body: Value = post_thread(&ts, &v.cookie, "http://localhost:5173/", "<p>")
         .await
         .json()
@@ -1078,7 +1040,7 @@ async fn a_live_pages_blob_is_refused_before_its_bytes_are_read() {
     })
     .await;
     let store = store.unwrap();
-    let (lc, lan) = ts.lan();
+    let (lc, lan) = ts.lan_person("Lee").await;
     let v = ts.viewer(Some("Alex")).await;
     let body: Value = post_thread(&ts, &v.cookie, "http://localhost:5173/", "<p>")
         .await
@@ -1126,7 +1088,7 @@ async fn a_live_pages_blobs_and_snapshots_route_are_hidden_from_the_lan() {
     })
     .await;
     let store = store.unwrap();
-    let (lc, lan) = ts.lan();
+    let (lc, lan) = ts.lan_person("Lee").await;
     let v = ts.viewer(Some("Alex")).await;
     let body: Value = post_thread(&ts, &v.cookie, "http://localhost:5173/", "<p>")
         .await
@@ -1154,6 +1116,7 @@ async fn a_live_pages_blobs_and_snapshots_route_are_hidden_from_the_lan() {
         200,
         "loopback sees it"
     );
+    // The token from another machine reaches nothing.
     let raw = ts.lan_unfollowed();
     let st = ts
         .authed(raw.get(format!("{lan}{blob}")))
@@ -1161,10 +1124,9 @@ async fn a_live_pages_blobs_and_snapshots_route_are_hidden_from_the_lan() {
         .await
         .unwrap()
         .status();
-    assert_eq!(
-        st, 301,
-        "the token from the LAN is sent to the asset's site"
-    );
+    assert_eq!(st, 403, "the token from the LAN is refused");
+    let lee = ts.person("Lou").await;
+    let person = format!("clax_viewer={}", lee.cookie);
     let form = reqwest::multipart::Form::new()
         .text("url", "http://localhost:5173/")
         .text("pending", "[]")
@@ -1190,6 +1152,7 @@ async fn a_live_pages_blobs_and_snapshots_route_are_hidden_from_the_lan() {
         .unwrap();
     let st = raw
         .get(format!("{lan}/_blob/{}", a.id))
+        .header("cookie", &person)
         .send()
         .await
         .unwrap()

@@ -147,17 +147,6 @@ test("the viewer name attributes comments", async ({ page }) => {
   await expect(page.locator(".section-resolved .thread-card .hist")).toContainText("Alex resolved");
 });
 
-test("sandboxed frames support comment mode too", async ({ page }) => {
-  const { artifact } = await publish(d.base, d.token, "Sandboxed", { "index.html": PAGE });
-  await page.addInitScript(() => { try { sessionStorage.setItem("clax.origin-ok", "0"); } catch {} });
-  await page.goto(`${d.base}/a/${artifact.id}`);
-  await expect(page.locator("iframe.frame")).toHaveAttribute("sandbox", /allow-scripts/);
-  await pickHeading(page, artifact.id, 1);
-  await page.locator(".composer textarea").fill("sandbox note");
-  await page.locator(".composer").getByRole("button", { name: "Post comment" }).click();
-  await expect(page.locator(".section-open .thread-card").filter({ hasText: "sandbox note" })).toHaveCount(1);
-});
-
 test("a failed send shows in the banner and clears on the next success", async ({ page }) => {
   const s = await registerSession(d.base, d.token);
   const { artifact } = await publishAs(d.base, d.token, s.id, "Failing send", { "index.html": PAGE });

@@ -5,6 +5,7 @@
 // (tinted, at the page the frame showed), the count of what its page tinted,
 // and the banner that offers Show draft and Back.
 import type { FrameHost } from "./frame-host";
+import { startSrc } from "../origin";
 import type { ViewState } from "./artifact-controller";
 import { type DraftView, draftSrc, oldestFirst, parseDiff, tintOf } from "./draft-model";
 import DraftBanner from "../ui/DraftBanner.svelte";
@@ -19,7 +20,7 @@ export type DraftsHost = {
   /** Opens the frame on what the state shows: the shown draft, or the version. */
   showFrame(): void;
   /** The site origin the frame loads from (`ArtifactController.site`). */
-  site(s: ViewState): string | null;
+  site(s: ViewState): string;
 };
 
 export class Drafts {
@@ -47,12 +48,14 @@ export class Drafts {
     return s.showDraft === null ? undefined : s.drafts.find(d => d.agent === s.showDraft);
   }
 
-  /** Opens `frame` on the shown draft, if one is shown; whether it did. A
-   * draft page never greets: the gate stays closed and no pins are drawn over it. */
+  /** Opens `frame` on the shown draft, through its site's handshake, if one
+   * is shown; whether it did. A draft page never greets: the gate stays
+   * closed and no pins are drawn over it. */
   showIn(frame: FrameHost, s: ViewState): boolean {
     const d = this.shown(s);
     if (!d || s.origin === undefined) return false;
-    frame.show(draftSrc(this.host.id, d, this.host.site(s), this.page ?? this.host.startFile, tint()), s.origin === null, `draft-${d.agent}-${d.token}-${s.origin ? "o" : "s"}`);
+    const site = this.host.site(s);
+    frame.show(startSrc(site, draftSrc(d, site, this.page ?? this.host.startFile, tint())), `draft-${d.agent}-${d.token}`);
     return true;
   }
 

@@ -11,19 +11,18 @@ async function contentFrame(page: Page, id: string, n: number) {
   return page.frame({ url })!;
 }
 
-for (const mode of ["subdomain", "sandbox"] as const) test(`${mode}: comment in the browser, the agent receives it, replies, and resolves`, async ({ page }) => {
-  const s = await registerSession(d.base, d.token, "claude", `loop-e2e-${mode}`);
+test(`comment in the browser, the agent receives it, replies, and resolves`, async ({ page }) => {
+  const s = await registerSession(d.base, d.token, "claude", `loop-e2e`);
   const { artifact } = await publishAs(d.base, d.token, s.id, "Quarterly Review", {
     "index.html": "<main><h2>Quarterly goals</h2><ul><li>Ship</li><li>Grow</li><li>Drop this</li></ul></main>",
   });
-  if (mode === "sandbox") await page.addInitScript(() => { try { sessionStorage.setItem("clax.origin-ok", "0"); } catch { /* storage blocked */ } });
   await page.goto(`${d.base}/a/${artifact.id}`);
   await setName(page, "Alex");
 
   // Browser side, for real: comment mode, pick, compose, send.
   const frame = await contentFrame(page, artifact.id, 1);
   expect(frame.url()).toContain(`${artifact.id}.localhost:`);
-  expect(await page.locator("iframe.frame").getAttribute("sandbox") !== null).toBe(mode === "sandbox");
+  expect(await page.locator("iframe.frame").getAttribute("sandbox")).toBeNull();
   await page.getByRole("button", { name: "Comment", exact: true }).click();
   await commentModeIn(frame);
   await frame.locator("h2").hover();

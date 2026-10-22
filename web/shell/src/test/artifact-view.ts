@@ -62,7 +62,6 @@ export async function mountView(fetchImpl: (url: string, init?: RequestInit) => 
     }
     return fetchImpl(url, init);
   }));
-  sessionStorage.setItem("clax.origin-ok", "0");
   const { mountArtifactView } = await import("../artifact");
   gesture = await import("../caps/gesture");
   gestureModules.add(gesture);
@@ -101,9 +100,13 @@ export function buttonNamed(root: Element, name: string | RegExp): HTMLButtonEle
   return b;
 }
 
-/** A message from the content frame as a sandboxed (opaque-origin) bridge sends it. */
+/** The artifact's site origin under the test's location, as the view
+ * derives it when the daemon names no site hosts. */
+export const SITE = `${location.protocol}//${ID}.localhost${location.port ? `:${location.port}` : ""}`;
+
+/** A message from the content frame, as the bridge on the artifact's site sends it. */
 export function fromFrame(win: Window, data: unknown) {
-  dispatchTrusted(window, new MessageEvent("message", { data, origin: "null", source: win }));
+  dispatchTrusted(window, new MessageEvent("message", { data, origin: SITE, source: win }));
 }
 
 /** The viewer's gesture in the content frame: transient activation, with

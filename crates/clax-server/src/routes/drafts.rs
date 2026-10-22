@@ -19,7 +19,7 @@ use axum::body::Body;
 use axum::extract::rejection::{JsonRejection, PathRejection};
 use axum::extract::{Extension, Path, State};
 use axum::http::{HeaderMap, StatusCode, header};
-use axum::response::{IntoResponse, Redirect, Response};
+use axum::response::{IntoResponse, Response};
 use clax_core::ArtifactId;
 use clax_core::CoreError;
 use clax_core::drafts::{
@@ -27,14 +27,13 @@ use clax_core::drafts::{
     served_page,
 };
 use clax_core::model::FileMeta;
-use clax_core::publish::{FileChange, FileInput, INDEX, check_path, content_type_for};
+use clax_core::publish::{FileChange, FileInput, check_path, content_type_for};
 use clax_core::working::Actor;
 use clax_http::agent::{DeniedToGrants, TokenOrAgent};
 use clax_http::audit::DeferredAudit;
 use clax_http::auth::Caller;
 use clax_http::error::ApiError;
 use clax_http::headers::parse_id;
-use clax_http::host::SiteRequest;
 use clax_http::state::AppState;
 use clax_http::views::thread::VisFor;
 use clax_store::Store;
@@ -408,48 +407,6 @@ pub async fn list(
     Ok(Json(json!({"drafts": list})))
 }
 
-/// `/c/<aid>/draft/<agent>/<token>` (a hosted daemon's; a site host's is
-/// `/_clax/draft/…`, `super::site`): the draft's root, with its slash.
-pub async fn redirect_to_slash(
-    d: DeniedToGrants,
-    p: Result<Path<(String, String, String)>, PathRejection>,
-) -> Result<Redirect, ApiError> {
-    d.refuse_agents()?;
-    let (aid, _, token) = path(p)?;
-    parse_id(&aid)?;
-    if !is_token(&token) {
-        return Err(ApiError::not_found());
-    }
-    Ok(Redirect::permanent(&format!("{token}/")))
-}
-
-/// `/c/<aid>/draft/<agent>/<token>/`: the draft's `index.html`.
-pub async fn index(
-    State(s): State<AppState>,
-    d: DeniedToGrants,
-    origin: Option<Extension<SiteRequest>>,
-    req: HeaderMap,
-    p: Result<Path<(String, String, String)>, PathRejection>,
-) -> Result<Response, ApiError> {
-    d.refuse_agents()?;
-    let (aid, agent, token) = path(p)?;
-    serve(&s, &aid, &agent, &token, INDEX.to_string(), &origin, &req).await
-}
-
-/// `/c/<aid>/draft/<agent>/<token>/<path>`: a file of the draft revision
-/// ([`serve`]).
-pub async fn file(
-    State(s): State<AppState>,
-    d: DeniedToGrants,
-    origin: Option<Extension<SiteRequest>>,
-    req: HeaderMap,
-    p: Result<Path<(String, String, String, String)>, PathRejection>,
-) -> Result<Response, ApiError> {
-    d.refuse_agents()?;
-    let (aid, agent, token, rel) = path(p)?;
-    serve(&s, &aid, &agent, &token, rel, &origin, &req).await
-}
-
 /// File `rel` of agent `agent`'s draft revision `token` on `aid`: the
 /// draft's bytes for a path it writes (its HTML marked and tinted), or the
 /// base version's for one it does not, as stored (never wrapped: a draft
@@ -466,7 +423,6 @@ pub(crate) async fn serve(
     agent: &str,
     token: &str,
     rel: String,
-    origin: &Option<Extension<SiteRequest>>,
     req: &HeaderMap,
 ) -> Result<Response, ApiError> {
     let id = parse_id(aid)?;
@@ -507,7 +463,7 @@ pub(crate) async fn serve(
         .into_response();
     res.headers_mut().insert(
         header::CONTENT_SECURITY_POLICY,
-        super::content::content_policy(s, origin, req),
+        super::content::content_policy(s, req),
     );
     Ok(res)
 }

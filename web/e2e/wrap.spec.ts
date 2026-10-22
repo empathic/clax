@@ -44,10 +44,10 @@ async function frameAt(page: Page, id: string, file: string): Promise<Frame> {
   return page.frame({ url })!;
 }
 
-for (const mode of ["subdomain", "sandbox"] as const) {
-  test(`${mode}: a <head> script sees window.claude.use`, async ({ page }) => {
-    const { artifact } = await publishWith(d.base, d.token, `Early ${mode}`, EARLY, {});
-    const f = await openArtifact(page, d.base, artifact.id, 1, mode);
+{
+  test(`a <head> script sees window.claude.use`, async ({ page }) => {
+    const { artifact } = await publishWith(d.base, d.token, `Early`, EARLY, {});
+    const f = await openArtifact(page, d.base, artifact.id, 1);
     await expect(f.locator("#out")).toHaveText("function");
     // Exactly one bridge runs in the served document, first in the head the
     // parser builds after the doctype, and
@@ -56,17 +56,17 @@ for (const mode of ["subdomain", "sandbox"] as const) {
     expect(await f.evaluate(() => document.documentElement.lang)).toBe("en");
   });
 
-  test(`${mode}: a script in an implied <head> sees window.claude.use`, async ({ page }) => {
-    const { artifact } = await publishWith(d.base, d.token, `Early no head ${mode}`, EARLY_NO_HEAD, {});
-    const f = await openArtifact(page, d.base, artifact.id, 1, mode);
+  test(`a script in an implied <head> sees window.claude.use`, async ({ page }) => {
+    const { artifact } = await publishWith(d.base, d.token, `Early no head`, EARLY_NO_HEAD, {});
+    const f = await openArtifact(page, d.base, artifact.id, 1);
     await expect(f.locator("#out")).toHaveText("function");
     expect(await bridges(f)).toEqual([{ first: true, version: "1" }]);
     expect(await f.evaluate(() => document.documentElement.lang)).toBe("fr");
   });
 
-  test(`${mode}: a page republished from its served DOM runs one bridge, for the new version`, async ({ page }) => {
-    const { artifact } = await publishWith(d.base, d.token, `Round trip ${mode}`, ROUND_TRIP, { artifact: {} });
-    const f = await openArtifact(page, d.base, artifact.id, 1, mode);
+  test(`a page republished from its served DOM runs one bridge, for the new version`, async ({ page }) => {
+    const { artifact } = await publishWith(d.base, d.token, `Round trip`, ROUND_TRIP, { artifact: {} });
+    const f = await openArtifact(page, d.base, artifact.id, 1);
     await expect(f.locator("#out")).toHaveText("function");
     const headOf = (fr: Frame) => fr.evaluate(() => {
       const h = document.head.cloneNode(true) as HTMLHeadElement;
@@ -98,10 +98,10 @@ for (const mode of ["subdomain", "sandbox"] as const) {
     }
   });
 
-  test(`${mode}: a sub page's <head> script sees window.claude.use`, async ({ page }) => {
+  test(`a sub page's <head> script sees window.claude.use`, async ({ page }) => {
     const index = `<main><a id="go" href="early.html">Early</a></main>`;
-    const { artifact } = await publish(d.base, d.token, `Early sub ${mode}`, { "index.html": index, "early.html": EARLY });
-    const home = await openArtifact(page, d.base, artifact.id, 1, mode);
+    const { artifact } = await publish(d.base, d.token, `Early sub`, { "index.html": index, "early.html": EARLY });
+    const home = await openArtifact(page, d.base, artifact.id, 1);
     await home.locator("#go").click();
     const f = await frameAt(page, artifact.id, "early.html");
     await expect(f.locator("#out")).toHaveText("function");
@@ -109,10 +109,10 @@ for (const mode of ["subdomain", "sandbox"] as const) {
     expect(await bridges(f)).toEqual([{ first: true, version: "1" }]);
   });
 
-  test(`${mode}: a thread on content a module script renders pins without a scroll`, async ({ page, browser }) => {
-    const { artifact } = await publish(d.base, d.token, `Late ${mode}`, { "index.html": LATE, "slow.js": "window.slow = 1;" });
+  test(`a thread on content a module script renders pins without a scroll`, async ({ page, browser }) => {
+    const { artifact } = await publish(d.base, d.token, `Late`, { "index.html": LATE, "slow.js": "window.slow = 1;" });
     const id = artifact.id;
-    const f = await openArtifact(page, d.base, id, 1, mode);
+    const f = await openArtifact(page, d.base, id, 1);
     await page.getByRole("button", { name: "Comment", exact: true }).click();
     await commentModeIn(f);
     await f.locator("h2").hover();
@@ -129,7 +129,7 @@ for (const mode of ["subdomain", "sandbox"] as const) {
       // the shell has the thread and has had a frame to place it in.
       const threads = slow.waitForResponse(r => new URL(r.url()).pathname === `/api/artifacts/${id}/threads`);
       await slow.route("**/slow.js", async r => { await threads; await settle(slow); await r.continue(); });
-      const g = await openArtifact(slow, d.base, id, 1, mode);
+      const g = await openArtifact(slow, d.base, id, 1);
       await expect(g.locator("h2")).toHaveText("Quarterly goals");
       await expect(slow.locator("button.thread-pin")).toHaveCount(1);
       expect(await g.evaluate(() => scrollY)).toBe(0);
@@ -138,10 +138,10 @@ for (const mode of ["subdomain", "sandbox"] as const) {
     }
   });
 
-  test(`${mode}: anchors requested before <body> exists resolve once the page has parsed`, async ({ page, browser }) => {
-    const { artifact } = await publish(d.base, d.token, `Slow ${mode}`, { "index.html": SLOW, "slow.js": "window.slow = 1;" });
+  test(`anchors requested before <body> exists resolve once the page has parsed`, async ({ page, browser }) => {
+    const { artifact } = await publish(d.base, d.token, `Slow`, { "index.html": SLOW, "slow.js": "window.slow = 1;" });
     const id = artifact.id;
-    const f = await openArtifact(page, d.base, id, 1, mode);
+    const f = await openArtifact(page, d.base, id, 1);
     const toggle = page.getByRole("button", { name: "Comment", exact: true });
     await toggle.click();
     await f.locator("h2").hover();
@@ -160,7 +160,7 @@ for (const mode of ["subdomain", "sandbox"] as const) {
       // parsing, for its anchors.
       const threads = slow.waitForResponse(r => new URL(r.url()).pathname === `/api/artifacts/${id}/threads`);
       await slow.route("**/slow.js", async r => { await threads; await settle(slow); released = true; await r.continue(); });
-      const g = await openArtifact(slow, d.base, id, 1, mode);
+      const g = await openArtifact(slow, d.base, id, 1);
       await expect(g.locator("h2")).toHaveText("Quarterly goals");
       expect(released).toBe(true);
       await expect(slow.locator("button.thread-pin")).toHaveCount(1);

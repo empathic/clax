@@ -475,7 +475,7 @@ async fn joins_are_refused_for_the_daemons_own_origin_unknown_sites_and_one_orig
 #[tokio::test]
 async fn the_sites_routes_are_hidden_from_the_lan_and_admitted_for_the_extension() {
     let ts = TestServer::spawn_on("0.0.0.0".parse().unwrap(), |_| {}).await;
-    let (lc, lan) = ts.lan();
+    let (lc, lan) = ts.lan_person("Lee").await;
     let v = ts.viewer(Some("Ana")).await;
     comment(&ts, &v.cookie, &format!("{A}/"), "App").await;
     for (m, path, body) in [
@@ -662,7 +662,7 @@ async fn shell_thread(ts: &TestServer, cookie: &str, aid: &str) -> (u16, Value) 
 async fn a_merged_away_page_takes_no_thread_hides_from_the_lan_and_is_released_when_its_page_goes()
 {
     let ts = TestServer::spawn_on("0.0.0.0".parse().unwrap(), |_| {}).await;
-    let (lc, lan) = ts.lan();
+    let (lc, lan) = ts.lan_person("Lee").await;
     let v = ts.viewer(Some("Ana")).await;
     let (a_home, _) = comment(&ts, &v.cookie, &format!("{A}/"), "App").await;
     let (b_home, _) = comment(&ts, &v.cookie, &format!("{B}/"), "App").await;

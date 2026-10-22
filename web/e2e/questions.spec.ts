@@ -1,8 +1,8 @@
 // The question and inbox surfaces against the real daemon: the gallery's
 // unread summary, `/inbox`, the artifact sidebar, a question card that closes
-// and then leaves, notifications, and what a LAN viewer does not see (spec
+// and then leaves, and notifications (spec
 // 2026-10-06-agent-questions-and-inbox §9).
-import { test, expect, api, openArtifact, publishAs, registerSession } from "./fixtures";
+import { test, expect, api, publishAs, registerSession } from "./fixtures";
 import { ask as askAs, waitAnswer } from "./questions-helpers";
 import type { Locator, Page } from "@playwright/test";
 import { mkdirSync } from "node:fs";
@@ -167,21 +167,6 @@ test("a question about an artifact shows above its threads, and another page's t
   await expect(page).toHaveURL(`${d.base}/a/${artifact.id}`);
   const shots = process.env.CLAX_E2E_SHOTS;
   if (shots) await page.screenshot({ path: `${shots}/shell-sidebar-question-and-in-place.png` });
-});
-
-test("a LAN viewer sees no questions and no inbox, and asks for neither", async ({ page, freshDaemon: d }) => {
-  const s = await registerSession(d.base, d.token);
-  const { artifact } = await publishAs(d.base, d.token, s.id, "Board", PAGE);
-  await askAs(d.base, d.token, s.id, { source: "ask", questions: [{ question: "Q", header: "H" }] });
-  const asked: string[] = [];
-  page.on("request", r => { const u = new URL(r.url()); if (/^\/api\/(questions|inbox)/.test(u.pathname)) asked.push(u.pathname); });
-  await openArtifact(page, d.base, artifact.id, 1, "sandbox", { lan: true });
-  await expect(page.locator(".sidebar")).toBeVisible();
-  await expect(page.locator(".sidebar .qcard, .inbox-link")).toHaveCount(0);
-  await page.goto(`${d.base}/`);
-  await expect(page.locator(".card", { hasText: "Board" }).first()).toBeVisible();
-  await expect(page.locator(".inbox-sum .qcard, .inbox-sum .irow, .inbox-link")).toHaveCount(0);
-  expect(asked).toEqual([]);
 });
 
 test("a notification fires when no Clax tab has focus", async ({ page, freshDaemon: d }) => {

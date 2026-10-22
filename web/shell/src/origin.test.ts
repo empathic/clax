@@ -1,167 +1,47 @@
-import { describe, it, expect, vi, afterEach, beforeEach } from "vitest";
-import { artifactOrigin, cachedOriginOk, probeOrigin, contentSrc, frameSite, pageSrc } from "./origin";
+import { describe, it, expect } from "vitest";
+import { artifactOrigin, contentSrc, pageSrc, startSrc } from "./origin";
 import srcCases from "./frame-src-cases.json";
 
-const loc = (hostname: string, port = "7480") => ({ hostname, port, protocol: "http:" } as unknown as Location);
-
 describe("artifactOrigin", () => {
-  it("uses <id>.localhost on local hosts only", () => {
-    expect(artifactOrigin("7q3k9mzx2b4t", loc("localhost"))).toBe("http://7q3k9mzx2b4t.localhost:7480");
-    expect(artifactOrigin("7q3k9mzx2b4t", loc("127.0.0.1"))).toBe("http://7q3k9mzx2b4t.localhost:7480");
-    expect(artifactOrigin("7q3k9mzx2b4t", loc("192.168.1.20"))).toBeNull();
-    expect(artifactOrigin("7q3k9mzx2b4t", loc("mymac.local"))).toBeNull();
-  });
-});
-
-describe("artifactOrigin in the Clax app", () => {
-  const embed = (content: string) => ({ transport: "host" as const, shell: "clax://app", content });
-
-  it("is the embed's content origin for the ID, whatever the location", () => {
-    for (const l of [loc("localhost"), loc("192.168.1.20"), loc("app", "")]) {
-      expect(artifactOrigin("abcdefghijkl", l, embed("clax://{id}.c"))).toBe("clax://abcdefghijkl.c");
-      expect(artifactOrigin("abcdefghijkl", l, embed("https://{id}.c.clax.invalid"))).toBe("https://abcdefghijkl.c.clax.invalid");
-    }
+  it("is the artifact's host under the site domain, on its scheme, with a port only when one is named", () => {
+    expect(artifactOrigin("7q3k9mzx2b4t", { domain: "localhost", scheme: "http", port: 7480 })).toBe("http://7q3k9mzx2b4t.localhost:7480");
+    expect(artifactOrigin("7q3k9mzx2b4t", { domain: "clax.run", scheme: "https", port: null })).toBe("https://7q3k9mzx2b4t.clax.run");
+    expect(artifactOrigin("7q3k9mzx2b4t", { domain: "sites.example", scheme: "https", port: 8443 })).toBe("https://7q3k9mzx2b4t.sites.example:8443");
   });
 
-  it("is null (the sandboxed path) for an embed with an origin neither https: nor clax:, or a content template without {id} once", () => {
-    for (const [shell, content] of [["clax://app", "http://{id}.c.example"], ["http://app.example", "https://{id}.c.clax.invalid"], ["https://app.clax.invalid", "ws://{id}.c"],
-      ["https://app.clax.invalid", "https://c.clax.invalid"], ["clax://app", "clax://{id}.{id}.c"]]) {
-      expect(artifactOrigin("abcdefghijkl", loc("localhost"), { transport: "host", shell, content })).toBeNull();
-    }
-  });
-
-  it("on Apple's clax: shell has no origin without an embed, and the clax: content origin with one", () => {
-    const apple = { hostname: "app", port: "", protocol: "clax:" } as unknown as Location;
-    expect(artifactOrigin("abcdefghijkl", apple, null)).toBeNull();
-    const o = artifactOrigin("abcdefghijkl", apple, embed("clax://{id}.c"));
-    expect(o).toBe("clax://abcdefghijkl.c");
-    expect(pageSrc("abcdefghijkl", 3, o, "docs/a b.html")).toBe("clax://abcdefghijkl.c/v/3/docs/a%20b.html");
-    expect(contentSrc("abcdefghijkl", 3, o, "k0")).toBe("clax://abcdefghijkl.c/v/3/k/k0/");
-  });
-
-  it("reads the embed the app's transport installed", () => {
-    Object.defineProperty(window, "claxTransport", { configurable: true, value: Object.freeze({ embed: embed("clax://{id}.c") }) });
-    try {
-      expect(artifactOrigin("abcdefghijkl", loc("192.168.1.20"))).toBe("clax://abcdefghijkl.c");
-    } finally {
-      delete (window as { claxTransport?: unknown }).claxTransport;
-    }
-    expect(artifactOrigin("abcdefghijkl", loc("192.168.1.20"))).toBeNull();
-  });
-});
-
-describe("probeOrigin", () => {
-  const O = "http://x.localhost:1";
-  type Answer = () => Promise<Response>;
-  /** A fetch that answers the daemon's own `/healthz` with `daemon` and the
-   * artifact origin's with `name`; each rejects when its request is aborted. */
-  const net = (daemon: Answer, name: Answer) => vi.fn((url: RequestInfo | URL, init?: RequestInit) => new Promise<Response>((res, rej) => {
-    init?.signal?.addEventListener("abort", () => rej(new DOMException("aborted", "AbortError")));
-    (String(url) === "/healthz" ? daemon : name)().then(res, rej);
-  }));
-  const ok = async () => new Response("{}", { status: 200 });
-  const never = () => new Promise<Response>(() => {});
-  const later = (ms: number, r: Answer = ok) => () => new Promise<Response>(res => { setTimeout(() => { void r().then(res); }, ms); });
-  const dns = async (): Promise<Response> => { throw new TypeError("dns"); };
-  const cache = () => sessionStorage.getItem("clax.origin-ok");
-  /** The probe's answer, or "pending" while it has none. */
-  const state = (p: Promise<boolean>) => { let v: boolean | "pending" = "pending"; void p.then(x => { v = x; }); return () => v; };
-
-  beforeEach(() => { sessionStorage.clear(); });
-  afterEach(() => { vi.unstubAllGlobals(); vi.useRealTimers(); });
-
-  it("is true when the artifact origin answers, false when it fails or answers non-OK while the daemon answers, each cached", async () => {
-    expect(await probeOrigin(O, net(ok, ok))).toBe(true);
-    expect(cache()).toBe("1");
-    sessionStorage.clear();
-    expect(await probeOrigin(O, net(ok, dns))).toBe(false);
-    expect(cache()).toBe("0");
-    sessionStorage.clear();
-    expect(await probeOrigin(O, net(ok, async () => new Response("no", { status: 502 })))).toBe(false);
-    expect(cache()).toBe("0");
-  });
-
-  it("waits for a slow daemon instead of falling back", async () => {
-    vi.useFakeTimers();
-    const got = state(probeOrigin(O, net(later(3000), later(3000))));
-    await vi.advanceTimersByTimeAsync(2999);
-    expect(got()).toBe("pending");
-    await vi.advanceTimersByTimeAsync(1);
-    expect(got()).toBe(true);
-    expect(cache()).toBe("1");
-  });
-
-  it("falls back a grace after the daemon answered when the artifact origin hangs, and caches that", async () => {
-    vi.useFakeTimers();
-    const f = net(later(400), never);
-    const got = state(probeOrigin(O, f));
-    await vi.advanceTimersByTimeAsync(1399);
-    expect(got()).toBe("pending");
-    await vi.advanceTimersByTimeAsync(1);
-    expect(got()).toBe(false);
-    expect(cache()).toBe("0");
-    // The artifact origin's request, still out, is aborted.
-    const name = f.mock.calls.find(([u]) => String(u) !== "/healthz")!;
-    expect(name[1]?.signal?.aborted).toBe(true);
-  });
-
-  it("is false but not cached when the daemon does not answer either", async () => {
-    vi.useFakeTimers();
-    const hung = state(probeOrigin(O, net(never, never)));
-    await vi.advanceTimersByTimeAsync(10_000);
-    expect(hung()).toBe(false);
-    expect(cache()).toBeNull();
-    // The artifact origin failing while the daemon is down says nothing of the name.
-    const down = state(probeOrigin(O, net(dns, dns)));
-    await vi.advanceTimersByTimeAsync(0);
-    expect(down()).toBe(false);
-    expect(cache()).toBeNull();
-  });
-
-  it("still answers when storage throws on write", async () => {
-    const boom = () => { throw new DOMException("denied", "SecurityError"); };
-    vi.stubGlobal("sessionStorage", { getItem: boom, setItem: boom, clear: boom });
-    expect(await probeOrigin(O, net(ok, ok))).toBe(true);
-    expect(cachedOriginOk()).toBeNull();
-  });
-
-  it("caches a sure answer for the session", async () => {
-    expect(cachedOriginOk()).toBeNull();
-    await probeOrigin(O, net(ok, ok));
-    expect(cachedOriginOk()).toBe(true);
+  it("in the Clax app is the app's content origin, as its core names the site hosts", () => {
+    expect(artifactOrigin("abcdefghjkmn", { domain: "c", scheme: "clax", port: null })).toBe("clax://abcdefghjkmn.c");
+    expect(artifactOrigin("abcdefghjkmn", { domain: "c.clax.invalid", scheme: "https", port: null })).toBe("https://abcdefghjkmn.c.clax.invalid");
   });
 });
 
 describe("pageSrc", () => {
   it("is the version's root for the index and the file's path otherwise, segments encoded", () => {
-    expect(pageSrc("7q3k9mzx2b4t", 2, null, "index.html")).toBe("/c/7q3k9mzx2b4t/v/2/");
-    expect(pageSrc("7q3k9mzx2b4t", 2, null, "a.html")).toBe("/c/7q3k9mzx2b4t/v/2/a.html");
-    expect(pageSrc("7q3k9mzx2b4t", 2, "http://7q3k9mzx2b4t.localhost:7480", "docs/a b.html")).toBe("http://7q3k9mzx2b4t.localhost:7480/_clax/v/2/docs/a%20b.html");
-    expect(pageSrc("7q3k9mzx2b4t", 2, "http://7q3k9mzx2b4t.localhost:7480", "about.html")).toBe("http://7q3k9mzx2b4t.localhost:7480/_clax/v/2/about.html");
+    const site = "http://7q3k9mzx2b4t.localhost:7480";
+    expect(pageSrc(2, site, "index.html")).toBe(`${site}/_clax/v/2/`);
+    expect(pageSrc(2, site, "docs/a b.html")).toBe(`${site}/_clax/v/2/docs/a%20b.html`);
+    expect(contentSrc(2, site)).toBe(`${site}/_clax/v/2/`);
   });
 });
 
-describe("contentSrc", () => {
-  it("is under /_clax/v/<n>/ on the site origin, else under /c/ on this host", () => {
-    expect(contentSrc("7q3k9mzx2b4t", 2, "http://7q3k9mzx2b4t.localhost:7480")).toBe("http://7q3k9mzx2b4t.localhost:7480/_clax/v/2/");
-    expect(contentSrc("7q3k9mzx2b4t", 2, null)).toBe("/c/7q3k9mzx2b4t/v/2/");
+describe("startSrc", () => {
+  it("names the target's path and fragment as next, and / for an address off the site", () => {
+    const site = "https://7q3k9mzx2b4t.clax.run";
+    expect(startSrc(site, `${site}/_clax/v/2/a.html#part-2`)).toBe(`${site}/_clax/session/start?next=%2F_clax%2Fv%2F2%2Fa.html%23part-2`);
+    expect(startSrc(site, site)).toBe(`${site}/_clax/session/start?next=%2F`);
+    expect(startSrc(site, "https://evil.example/x")).toBe(`${site}/_clax/session/start?next=%2F`);
+    expect(startSrc(site, `${site}.evil.example/x`)).toBe(`${site}/_clax/session/start?next=%2F`);
+  });
+
+  it("names the path on the app's clax: origins too", () => {
+    const site = "clax://abcdefghjkmn.c";
+    expect(startSrc(site, `${site}/_clax/v/3/docs/a%20b.html`)).toBe(`${site}/_clax/session/start?next=%2F_clax%2Fv%2F3%2Fdocs%2Fa%2520b.html`);
   });
 });
 
-describe("probeOrigin's request", () => {
-  it("asks the site's /_clax/healthz, which no published file shadows", async () => {
-    sessionStorage.clear();
-    const f = vi.fn(async (_url: RequestInfo | URL, _init?: RequestInit) => new Response("{}", { status: 200 }));
-    expect(await probeOrigin("http://x.localhost:1", f)).toBe(true);
-    expect(f.mock.calls.map(([u]) => String(u))).toContain("http://x.localhost:1/_clax/healthz");
-  });
-});
-
-describe("pageSrc and the daemon agree", () => {
-  it.each(srcCases)("$file at $location", (c: { id: string; n: number; origin: string | null; location?: string; file: string; src: string }) => {
-    // A case with a `location` is the shell's at that address, which derives
-    // the frame's site itself, as the daemon's first frame does.
-    const site = c.location ? frameSite(c.id, c.origin, new URL(c.location) as unknown as Location) : c.origin;
-    expect(pageSrc(c.id, c.n, site, c.file)).toBe(c.src);
+describe("pageSrc, startSrc and the daemon agree", () => {
+  it.each(srcCases)("$file on $site", (c: { site: string; n: number; file: string; src: string; start: string }) => {
+    expect(pageSrc(c.n, c.site, c.file)).toBe(c.src);
+    expect(startSrc(c.site, c.src)).toBe(c.start);
   });
 });

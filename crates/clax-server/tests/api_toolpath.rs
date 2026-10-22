@@ -86,7 +86,8 @@ async fn ctx_owner_cookie_is_owner_shell() {
 #[tokio::test]
 async fn ctx_lan_viewer_has_public_id_and_name() {
     let ts = TestServer::spawn().await;
-    let sam = ts.viewer(Some("Sam")).await;
+    // A connected person's browser: another machine's a local daemon serves.
+    let sam = ts.person("Sam").await;
     let (lan, base) = ts.lan();
     let url = format!("{base}{CTX}");
     let v = ctx(lan
@@ -95,7 +96,7 @@ async fn ctx_lan_viewer_has_public_id_and_name() {
     .await;
     assert_eq!(
         v["actor"],
-        json!({"type": "viewer", "public_id": sam.public_id, "display_name": "Sam"})
+        json!({"type": "viewer", "public_id": sam.public_id, "display_name": "Sam", "person": true})
     );
     assert_eq!(v["via"], "lan");
     // A viewer's claims of a channel, a session, git state or a tool call
@@ -115,21 +116,19 @@ async fn ctx_lan_viewer_has_public_id_and_name() {
         (&v["git"], &v["git_capture"], &v["call"]),
         (&Value::Null, &Value::Null, &Value::Null)
     );
-    // A cookie that names no viewer (one the daemon never minted) makes
-    // none: the request is anonymous, and stays so.
+    // A cookie that names no person (one the daemon never minted), or
+    // none, is another machine's unconnected viewer: refused, and no
+    // viewer is made.
     let fresh = "01J9Z3K4M5N6P7Q8R9S0T1V2W3";
-    for _ in 0..2 {
-        let v = ctx(lan
-            .get(&url)
-            .header("cookie", format!("clax_viewer={fresh}")))
-        .await;
-        assert_eq!(v["actor"], json!({"type": "anonymous"}), "{v}");
+    for cookie in [Some(fresh), None] {
+        let mut req = lan.get(&url);
+        if let Some(c) = cookie {
+            req = req.header("cookie", format!("clax_viewer={c}"));
+        }
+        let res = req.send().await.unwrap();
+        assert_eq!(res.status(), 403, "{cookie:?}");
     }
     assert!(ts.store.get_viewer(fresh).unwrap().is_none());
-    // No cookie: anonymous.
-    let v = ctx(lan.get(&url)).await;
-    assert_eq!(v["actor"], json!({"type": "anonymous"}));
-    assert_eq!(v["via"], "lan");
 }
 
 #[tokio::test]
@@ -1722,7 +1721,7 @@ async fn a_refused_owner_write_writes_nothing() {
         .send()
         .await
         .unwrap();
-    assert_eq!(res.status(), 404, "the LAN sees no live routes");
+    assert_eq!(res.status(), 403, "another machine's viewer is refused");
     // A first-time viewer on this machine is refused before its row is
     // made, and so is the owner's browser without the token, before the
     // owner row would be made.
@@ -1792,7 +1791,8 @@ async fn lan_reply_records_viewer_identity() {
     let session = ts.register_session("claude", "hs-lan").await;
     let sid = session["id"].as_str().unwrap().to_string();
     let (aid, tid) = sent_thread(&ts, &sid).await;
-    let sam = ts.viewer(Some("Sam")).await;
+    // A connected person's browser: another machine's a local daemon serves.
+    let sam = ts.person("Sam").await;
     let (lan, base) = ts.lan();
     let seq = last_seq(&ts);
     let res = lan
@@ -1807,7 +1807,7 @@ async fn lan_reply_records_viewer_identity() {
     let recs = events_since(&ts, seq);
     // The thread was sent, so the comment is forwarded too.
     assert_eq!(kinds(&recs), ["comment.add", "thread.send"]);
-    let viewer = json!({"type": "viewer", "public_id": sam.public_id, "display_name": "Sam"});
+    let viewer = json!({"type": "viewer", "public_id": sam.public_id, "display_name": "Sam", "person": true});
     for r in &recs {
         assert_eq!(r.actor, viewer, "{r:?}");
         assert_eq!(r.body["via"], "lan");
@@ -2838,7 +2838,9 @@ async fn lan_viewer_cannot_export() {
             let res = req.send().await.unwrap();
             assert_eq!(res.status(), 403, "{path} request {i}");
             let body: Value = res.json().await.unwrap();
-            assert_eq!(body["error"]["code"], "forbidden");
+            // Another machine's viewer is refused before any route.
+            let want = if i < 2 { "forbidden_host" } else { "forbidden" };
+            assert_eq!(body["error"]["code"], want, "{path} request {i}");
         }
     }
     assert_eq!((viewer_count(&ts), last_seq(&ts)), (viewers, seq));

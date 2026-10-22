@@ -2,7 +2,7 @@
 //! daemon serving a scratch web UI.
 #![cfg(debug_assertions)]
 
-use clax_server::shell::boot::FRAME_SANDBOX;
+use clax_server::shell::boot::FRAME_ALLOW;
 use clax_testkit::TestServer;
 use serde_json::{Value, json};
 
@@ -47,8 +47,10 @@ async fn publish_version(ts: &TestServer, id: &str, html: &str) {
     assert!(res.status().is_success(), "{}", res.text().await.unwrap());
 }
 
-/// The artifact API's answer less the session IDs the bootstrap leaves out.
+/// The artifact API's answer less the session IDs the bootstrap leaves out,
+/// and the site hosts, which the bootstrap names beside it.
 fn without_sessions(mut api: Value) -> Value {
+    api.as_object_mut().unwrap().remove("site");
     api["artifact"]
         .as_object_mut()
         .unwrap()
@@ -88,13 +90,19 @@ async fn embeds_what_the_api_answers_and_never_the_token() {
         .await
         .unwrap();
     assert_eq!(b["v"], 1);
+    assert_eq!(b["site"], api["site"]);
+    assert_eq!(
+        b["site"],
+        json!({"domain": "localhost", "scheme": "http", "port": ts.addr.port()})
+    );
     assert_eq!(b["artifact"], without_sessions(api));
     assert_eq!(b["threads"], threads["threads"]);
     assert_eq!(b["viewer"], Value::Null);
-    assert_eq!(b["frame"], Value::Null);
+    assert!(b.get("frame").is_none());
     assert!(!html.contains(&ts.token));
     assert!(html.contains("<h1>Report</h1>"));
     assert!(!html.contains("<!--clax:boot-->") && !html.contains("<!--clax:frame-->"));
+    assert!(html.contains("<iframe"));
 }
 
 #[tokio::test]
@@ -221,15 +229,11 @@ async fn hostile_titles_and_comments_stay_data() {
         .to_string();
     let body = "</script><!--<script>\u{2028}\u{2029}&</SCRIPT ><img src=x onerror=alert(1)>";
     ts.thread(&id, 1, body).await;
-    let html = page(
-        &ts,
-        &format!("/a/{id}"),
-        &[("cookie", "clax_frame=sandbox".into())],
-    )
-    .await
-    .text()
-    .await
-    .unwrap();
+    let html = page(&ts, &format!("/a/{id}"), &[])
+        .await
+        .text()
+        .await
+        .unwrap();
     let (text, b) = boot(&html);
     for bad in ['<', '>', '&', '\u{2028}', '\u{2029}'] {
         assert!(!text.contains(bad), "{bad:?} in {text}");
@@ -249,7 +253,7 @@ async fn hostile_titles_and_comments_stay_data() {
 }
 
 #[tokio::test]
-async fn renders_the_frame_only_when_the_mode_is_known() {
+async fn renders_the_frame_on_its_sites_handshake() {
     let dist = dist();
     let ts = TestServer::spawn_with_web(dist.path()).await;
     let created = ts
@@ -265,75 +269,31 @@ async fn renders_the_frame_only_when_the_mode_is_known() {
         let ts = &ts;
         async move { page(ts, &path, &headers).await.text().await.unwrap() }
     };
-    assert!(!get(format!("/a/{id}"), vec![]).await.contains("<iframe"));
-    for odd in [
-        "clax_frame=",
-        "clax_frame=Subdomain",
-        "clax_frame=subdomain1",
-        "xclax_frame=subdomain",
-    ] {
-        let html = get(format!("/a/{id}"), vec![("cookie", odd.into())]).await;
-        assert!(!html.contains("<iframe"), "{odd}");
-        assert_eq!(boot(&html).1["frame"], Value::Null, "{odd}");
+    let site = format!("http://{id}.localhost:{port}");
+    // Whatever the frame mode cookie of before says: there is one mode.
+    for cookie in ["", "clax_frame=sandbox", "clax_frame=subdomain"] {
+        let html = get(format!("/a/{id}"), vec![("cookie", cookie.into())]).await;
+        assert!(html.contains(&format!(r#"<iframe class="frame" title="artifact content" src="{site}/_clax/session/start?next=%2F_clax%2Fv%2F2%2F" allow="{FRAME_ALLOW}"></iframe>"#)), "{cookie}: {html}");
+        assert!(!html.contains("sandbox="), "{cookie}");
     }
-    let sandbox = get(
-        format!("/a/{id}"),
-        vec![("cookie", "clax_frame=sandbox".into())],
-    )
-    .await;
-    // A sandboxed frame loads the artifact's site origin too.
-    assert!(sandbox.contains(&format!(r#"<iframe class="frame" title="artifact content" src="http://{id}.localhost:{port}/_clax/v/2/" allow="clipboard-write; fullscreen" sandbox="{FRAME_SANDBOX}"></iframe>"#)), "{sandbox}");
-    assert_eq!(
-        boot(&sandbox).1["frame"],
-        json!({"mode": "sandbox", "src": format!("http://{id}.localhost:{port}/_clax/v/2/")})
-    );
-    let sub = get(
-        format!("/a/{id}"),
-        vec![("cookie", "clax_frame=subdomain".into())],
-    )
-    .await;
-    assert!(sub.contains(&format!(r#"<iframe class="frame" title="artifact content" src="http://{id}.localhost:{port}/_clax/v/2/" allow="clipboard-write; fullscreen"></iframe>"#)), "{sub}");
-    assert_eq!(
-        boot(&sub).1["frame"],
-        json!({"mode": "subdomain", "src": format!("http://{id}.localhost:{port}/_clax/v/2/")})
-    );
-    // A loopback host not named `localhost` (as on a LAN view: no artifact
-    // origins) is always sandboxed, whatever the cookie says.
-    let v6 = get(
-        format!("/a/{id}"),
-        vec![
-            ("host", format!("[::1]:{port}")),
-            ("cookie", "clax_frame=subdomain".into()),
-        ],
-    )
-    .await;
-    assert!(
-        v6.contains(&format!(r#"src="/c/{id}/v/2/""#))
-            && v6.contains(&format!(r#"sandbox="{FRAME_SANDBOX}""#)),
-        "{v6}"
-    );
-    let pinned = get(
-        format!("/a/{id}/v/1/docs/a%20b.html"),
-        vec![("cookie", "clax_frame=sandbox".into())],
-    )
-    .await;
+    // On 127.0.0.1 and [::1] too, the site is the artifact's under localhost.
+    for host in [format!("127.0.0.1:{port}"), format!("[::1]:{port}")] {
+        let html = get(format!("/a/{id}"), vec![("host", host.clone())]).await;
+        assert!(
+            html.contains(&format!(r#"src="{site}/_clax/session/start?"#)),
+            "{host}: {html}"
+        );
+    }
+    let pinned = get(format!("/a/{id}/v/1/docs/a%20b.html"), vec![]).await;
     assert!(
         pinned.contains(&format!(
-            r#"src="http://{id}.localhost:{port}/_clax/v/1/docs/a%20b.html""#
+            r#"src="{site}/_clax/session/start?next=%2F_clax%2Fv%2F1%2Fdocs%2Fa%2520b.html""#
         )),
         "{pinned}"
     );
-    let missing = get(
-        format!("/a/{id}/nope.html"),
-        vec![("cookie", "clax_frame=sandbox".into())],
-    )
-    .await;
+    let missing = get(format!("/a/{id}/nope.html"), vec![]).await;
     assert!(!missing.contains("<iframe"));
-    let no_version = get(
-        format!("/a/{id}/v/9"),
-        vec![("cookie", "clax_frame=sandbox".into())],
-    )
-    .await;
+    let no_version = get(format!("/a/{id}/v/9"), vec![]).await;
     assert!(!no_version.contains("<iframe"));
     let res = page(
         &ts,
@@ -365,7 +325,8 @@ async fn the_etag_covers_the_injected_bytes() {
     assert_eq!(after.status(), 200);
     let after_tag = after.headers()["etag"].to_str().unwrap().to_string();
     assert_ne!(after_tag, tag);
-    // Another viewer, or another frame mode, never gets a 304 for these bytes.
+    // Another viewer never gets a 304 for these bytes; a cookie that names
+    // no viewer changes nothing in them (there is one frame mode).
     let v = ts.viewer(None).await;
     let as_viewer = page(
         &ts,
@@ -378,7 +339,7 @@ async fn the_etag_covers_the_injected_bytes() {
     .await;
     assert_eq!(as_viewer.status(), 200);
     assert_ne!(as_viewer.headers()["etag"].to_str().unwrap(), after_tag);
-    let framed = page(
+    let stray = page(
         &ts,
         &format!("/a/{id}"),
         &[
@@ -387,20 +348,15 @@ async fn the_etag_covers_the_injected_bytes() {
         ],
     )
     .await;
-    assert_eq!(framed.status(), 200);
-    assert_eq!(framed.headers()["vary"], "Cookie");
+    assert_eq!(stray.status(), 304);
+    assert_eq!(stray.headers()["vary"], "Cookie");
 }
 
 #[tokio::test]
 async fn an_unknown_artifact_gets_the_bare_entry() {
     let dist = dist();
     let ts = TestServer::spawn_with_web(dist.path()).await;
-    let res = page(
-        &ts,
-        "/a/7q3k9mzx2b4t",
-        &[("cookie", "clax_frame=sandbox".into())],
-    )
-    .await;
+    let res = page(&ts, "/a/7q3k9mzx2b4t", &[]).await;
     assert_eq!(res.status(), 200);
     let html = res.text().await.unwrap();
     assert!(!html.contains(OPEN) && !html.contains("<!--clax:boot-->"));
@@ -421,7 +377,7 @@ async fn a_host_the_api_refuses_gets_no_data() {
     ts.thread(&id, 1, "a private remark").await;
     let v = ts.viewer(Some("Ada")).await;
     let port = ts.addr.port();
-    let cookie = format!("clax_viewer={}; clax_frame=sandbox", v.cookie);
+    let cookie = format!("clax_viewer={}", v.cookie);
     for host in [
         format!("evil.example:{port}"),
         "evil.example:7480".to_string(),

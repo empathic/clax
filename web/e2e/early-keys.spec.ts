@@ -104,10 +104,10 @@ async function releaseAndType(page: Page, keys: CDPSession[], text?: readonly st
   await up;
 }
 
-async function open(page: Page, mode: "subdomain" | "sandbox", title: string, heavy = true) {
+async function open(page: Page, title: string, heavy = true) {
   const { artifact } = await publish(d.base, d.token, title, { "index.html": PAGE });
   await instrument(page);
-  const f = await openArtifact(page, d.base, artifact.id, 1, mode);
+  const f = await openArtifact(page, d.base, artifact.id, 1);
   await expect(f.locator("body")).toHaveAttribute("data-ready", "yes");
   await commentMode(page, f);
   if (heavy) await f.evaluate(() => { (window as any).armed = true; });
@@ -133,9 +133,9 @@ async function expectAllInComposer(page: Page, f: Frame, heavy = true) {
   test.info().annotations.push({ type: "timing", description: `${heavy ? "heavy" : "light"}: focus ${focusAt - upAt} ms, last key landed ${fullAt - upAt} ms after the release` });
 }
 
-for (const mode of ["subdomain", "sandbox"] as const) {
-  test(`${mode}: on a heavy page, a sentence typed from 60 ms after clicking an element lands whole in the composer, and the page hears none of it`, async ({ page }) => {
-    const { f, cdp } = await open(page, mode, `Early keys ${mode}`);
+{
+  test(`on a heavy page, a sentence typed from 60 ms after clicking an element lands whole in the composer, and the page hears none of it`, async ({ page }) => {
+    const { f, cdp } = await open(page, `Early keys`);
     const b = (await f.locator("#p1").boundingBox())!;
     await page.mouse.move(b.x + 40, b.y + 12, { steps: 10 });
     await page.mouse.down();
@@ -144,8 +144,8 @@ for (const mode of ["subdomain", "sandbox"] as const) {
     await expect(composer(page).locator(".composer-quote")).toContainText("A paragraph worth");
   });
 
-  test(`${mode}: on a heavy page, a sentence typed from 60 ms after dragging an area lands whole in the composer, and the page hears none of it`, async ({ page }) => {
-    const { f, cdp } = await open(page, mode, `Early keys area ${mode}`);
+  test(`on a heavy page, a sentence typed from 60 ms after dragging an area lands whole in the composer, and the page hears none of it`, async ({ page }) => {
+    const { f, cdp } = await open(page, `Early keys area`);
     const s = (await f.locator("#space").boundingBox())!;
     await page.mouse.move(s.x + 10, s.y + 10, { steps: 10 });
     await page.mouse.down();
@@ -156,8 +156,8 @@ for (const mode of ["subdomain", "sandbox"] as const) {
     await expect(composer(page).locator("img.clip")).toBeVisible();
   });
 
-  test(`${mode}: on a light page, a sentence typed from 60 ms after clicking an element lands whole in the composer`, async ({ page }) => {
-    const { f, cdp } = await open(page, mode, `Early keys light ${mode}`, false);
+  test(`on a light page, a sentence typed from 60 ms after clicking an element lands whole in the composer`, async ({ page }) => {
+    const { f, cdp } = await open(page, `Early keys light`, false);
     const b = (await f.locator("#p1").boundingBox())!;
     await page.mouse.move(b.x + 40, b.y + 12, { steps: 10 });
     await page.mouse.down();
@@ -165,8 +165,8 @@ for (const mode of ["subdomain", "sandbox"] as const) {
     await expectAllInComposer(page, f, false);
   });
 
-  test(`${mode}: on a heavy page, "ok", Tab, Tab, Enter typed while the screenshot is taken posts "ok" once it is in`, async ({ page }) => {
-    const { f, cdp } = await open(page, mode, `Early keys post ${mode}`);
+  test(`on a heavy page, "ok", Tab, Tab, Enter typed while the screenshot is taken posts "ok" once it is in`, async ({ page }) => {
+    const { f, cdp } = await open(page, `Early keys post`);
     const b = (await f.locator("#p1").boundingBox())!;
     await page.mouse.move(b.x + 40, b.y + 12, { steps: 10 });
     await page.mouse.down();

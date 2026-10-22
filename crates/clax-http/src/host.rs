@@ -128,24 +128,23 @@ fn site_request(sites: &SiteHosts, secure: bool, host: &str) -> Option<SiteReque
 /// [`SiteRequest`], its origin on the public origin's scheme (`http` on a
 /// local daemon), and leaves the path as it is: the router sends a site
 /// request to the site routes alone. Every site response, an error's
-/// included, carries `Referrer-Policy: no-referrer`. Other hosts are
+/// included, carries the site's isolation headers
+/// ([`crate::site_access::site_response_headers`]). Other hosts are
 /// untouched.
 pub async fn site_layer(State(s): State<AppState>, mut req: Request<Body>, next: Next) -> Response {
     let host = req
         .headers()
         .get(axum::http::header::HOST)
         .and_then(|h| h.to_str().ok())
-        .unwrap_or("");
+        .unwrap_or("")
+        .to_string();
     let secure = s.hosted.as_ref().is_some_and(|h| h.secure);
-    let Some(site) = site_request(s.sites(), secure, host) else {
+    let Some(site) = site_request(s.sites(), secure, &host) else {
         return next.run(req).await;
     };
     req.extensions_mut().insert(site);
     let mut res = next.run(req).await;
-    res.headers_mut().insert(
-        axum::http::header::REFERRER_POLICY,
-        axum::http::HeaderValue::from_static("no-referrer"),
-    );
+    crate::site_access::site_response_headers(&s, &host, &mut res);
     res
 }
 

@@ -148,7 +148,7 @@ clax doctor                          # check the home directory, daemon, databas
 clax doctor --fix                    # also remove stray temp files and stale rows (never live artifacts' rows)
 clax doctor --agent codex            # also check each layer of a harness's plugin: claude, codex, pi or grok
 clax stop                            # stop the daemon
-clax serve --bind 0.0.0.0            # serve on the LAN (stop a running daemon first)
+clax serve --bind 0.0.0.0            # serve connected people on the LAN (stop a running daemon first)
 clax connect <invite URL>            # connect this machine to someone else's Clax as a person (--status, --off)
 clax people                          # (the owner) list people, their rights, machines and agents, and the People link
 clax agents                          # list your agents; clax agents rename <agent> <name> renames one
@@ -177,7 +177,7 @@ A new artifact needs a title: `--title`, or else the page's `<title>`. Updates k
 
 Tags sort the gallery. The owner keeps one list of them, each a name, a colour (`gray`, `red`, `orange`, `yellow`, `green`, `teal`, `blue`, `purple`, `pink` or `brown`) and an optional description: `clax tags create design --colour blue --description "Waiting on a design pass"`, `clax tags edit design --name "Design review"` (the artifacts carrying it follow the rename), `clax tags delete design` (removes it from every artifact). Anyone who may see an artifact sees its tags. The owner tags any artifact, and a person the artifacts they made; agents apply existing tags (`clax publish page.html --tags design,draft`, or the `tag` tool) and never make one: a tag that is not on the list is refused, naming the ones that are.
 
-To serve on the LAN, stop a running daemon first, then run `clax serve --bind 0.0.0.0`.
+To serve connected people on the LAN, stop a running daemon first, then run `clax serve --bind 0.0.0.0`. A local daemon serves this machine: from another machine it answers only connected people's machines and browsers (People, below), and refuses anyone else (403 `forbidden_host`). Each artifact's page is served on its own site, `http://<artifact ID>.localhost:<port>`, which resolves on this machine alone, so the pages themselves open only here; a connected person's browser on another machine has the inbox, People and the comments, not the pages.
 
 To serve the internet (hosted mode), put the daemon behind a proxy that terminates TLS and keeps the `Host` header, and name its public origin in `config.toml`:
 
@@ -241,12 +241,13 @@ cookie acts as its person in the browser.
   decide. People lists who reaches your agents and lets you revoke an
   approval. Approving happens only in a browser: `clax approvals` lists,
   and prints the People link.
-- **Viewers who are not connected.** Comments from LAN viewers who are not
-  connected people reach your agents without asking, as before. The
-  switch in People turns that off.
+- **Viewers who are not connected.** A browser on another machine that is
+  not a connected person's is refused. Comments from viewers who are not
+  connected people (a hosted daemon's guests) reach your agents without
+  asking; the switch in People turns that off.
 - **Revoking.** Revoking a person or one of their machines in People ends
-  their agents' sessions at once. Their browser becomes a plain viewer's,
-  and what they wrote stays theirs.
+  their agents' sessions at once. Their browser on another machine is
+  refused from then on, and what they wrote stays theirs.
 
 ### Publishing to a public Clax
 
@@ -502,8 +503,9 @@ the LAN (`just watch --bind 0.0.0.0`), open People as the owner
 (http://localhost:7481/people), choose **Invite a person**, and pass the
 command's invite URL to the script. It connects a scratch Clax home (never
 `~/.clax` or the dev home) as that person's machine, prints the browser link
-that makes a browser that person (open it at the LAN address), and
-registers one agent of theirs. `scripts/dev-second-person.sh --off <home>`
+that makes a browser that person (open it at the LAN address: there the
+pages themselves do not open, as an artifact's site, `<ID>.localhost`, is
+this machine's), and registers one agent of theirs. `scripts/dev-second-person.sh --off <home>`
 disconnects it and removes the home.
 
 Edit the plugin, skill or hooks, then start a new `just dev` session to pick
@@ -1555,8 +1557,8 @@ assembled from in `BUILD_COMMIT`, so `clax --version` names it.
 
 ## Security model
 
-Clax traffic on the LAN is not encrypted: serve on the LAN (`clax serve --bind 0.0.0.0`) only on a network you trust.
+Clax traffic on the LAN is not encrypted: serve on the LAN (`clax serve --bind 0.0.0.0`) only on a network you trust. A local daemon answers another machine only for a connected person (a signed request of their machine, or their browser's cookie); anyone else is refused with 403 `forbidden_host`.
 
-Writes, and reads of the session list (working directories, process IDs, harness session IDs), need the token in `~/.clax/daemon.json` (mode 0600, served only to localhost browsers), or a connected person's machine key. A LAN viewer who is not connected can read artifacts and comment on them, but not publish or change them. A connected person's agents publish, reply, resolve and write page data with that person's rights, as the owner set them. They sign every request with their machine's key, which never leaves that machine, so a request seen on the network cannot be replayed. Connecting machines, approvals, rights and raises change only in the owner's or the person's own browser: no agent, tool or CLI command can change them. What another person wrote reaches an agent only once that agent's person approves its author. An agent of the owner's that has a shell runs as the owner's OS user, and is trusted as the owner. Every `/api` route answers only to a `Host` of `localhost`, `127.0.0.1`, `[::1]`, or the exact IP and port the connection arrived on (403 `forbidden_host` otherwise), which defeats DNS rebinding. The comment routes need no token but refuse requests from another origin, including published pages. The viewer cookie never leaves the daemon; viewers are named by a public ID, comment threads carry no session IDs, and the daemon's `codex` path is served only with the token. Published content is isolated on `<id>.localhost` origins or sandboxed. Content and asset URLs are fetchable by anyone who knows the unguessable ID.
+Writes, and reads of the session list (working directories, process IDs, harness session IDs), need the token in `~/.clax/daemon.json` (mode 0600, served only to localhost browsers), or a connected person's machine key. A connected person's agents publish, reply, resolve and write page data with that person's rights, as the owner set them. They sign every request with their machine's key, which never leaves that machine, so a request seen on the network cannot be replayed. Connecting machines, approvals, rights and raises change only in the owner's or the person's own browser: no agent, tool or CLI command can change them. What another person wrote reaches an agent only once that agent's person approves its author. An agent of the owner's that has a shell runs as the owner's OS user, and is trusted as the owner. Every `/api` route answers only to a `Host` of `localhost`, `127.0.0.1`, `[::1]`, or the exact IP and port the connection arrived on (403 `forbidden_host` otherwise), which defeats DNS rebinding. The comment routes need no token but refuse requests from another origin, including published pages. The viewer cookie never leaves the daemon; viewers are named by a public ID, comment threads carry no session IDs, and the daemon's `codex` path is served only with the token. Each artifact's content is served on a site of its own, `<id>.localhost`, never on the daemon's own host: a page runs on that origin alone, and only the owner's shell and the artifact's own pages may frame it. The site answers only a site session (made through the shell, `/_clax/session/start` and a one-use code), so a page reached under any other name, a rebound one among them, reads nothing.
 
 Runtime capabilities arrive in a later phase.

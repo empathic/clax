@@ -2,6 +2,28 @@ use clax_core::wrap::bridge_tag_for;
 use clax_server::shell::bridge_version;
 use clax_testkit::TestServer;
 
+/// The bridge tag of version 1's page `file` of `id` as served: naming the
+/// shell's origin, the daemon's public origin (`data-origin`).
+fn shell_tag(ts: &TestServer, id: &str, file: &str) -> String {
+    bridge_tag_for(id, 1, "0.2.61", file, &bridge_version(&*ts.web)).replace(
+        "></script>",
+        &format!(
+            " data-origin=\"http://localhost:{}\"></script>",
+            ts.addr.port()
+        ),
+    )
+}
+
+/// `html` without its content frame: the shell entry for every page of an
+/// artifact, less the frame that opens the page itself.
+fn without_frame(html: &[u8]) -> String {
+    let html = String::from_utf8_lossy(html).into_owned();
+    match (html.find("<iframe"), html.find("</iframe>")) {
+        (Some(a), Some(b)) => format!("{}{}", &html[..a], &html[b + "</iframe>".len()..]),
+        _ => html,
+    }
+}
+
 #[tokio::test]
 async fn serves_wrapped_index_and_files_with_caching_headers() {
     let ts = TestServer::spawn().await;
@@ -616,8 +638,8 @@ async fn every_page_path_under_an_artifact_serves_the_artifact_entry() {
         let res = ts.get(&path).await;
         assert_eq!(res.status(), status, "{path}");
         assert_eq!(
-            res.bytes().await.unwrap(),
-            body,
+            without_frame(&res.bytes().await.unwrap()),
+            without_frame(&body),
             "{path} is the artifact entry"
         );
     }
@@ -671,7 +693,7 @@ async fn supporting_html_files_are_wrapped_like_the_index_and_others_are_not() {
     let html = res.text().await.unwrap();
     assert_eq!(html.matches("/_clax/bridge.js").count(), 1, "{html}");
     // The bridge goes right after the doctype, before any page script.
-    let tag = bridge_tag_for(id, 1, "0.3.0", "about.html", &bridge_version(&*ts.web));
+    let tag = shell_tag(&ts, id, "about.html");
     assert!(
         html.starts_with(&format!(
             "<!doctype html>{tag}<html><head><title>About</title>"
@@ -686,7 +708,7 @@ async fn supporting_html_files_are_wrapped_like_the_index_and_others_are_not() {
         .await
         .unwrap();
     // A fragment gets the skeleton, with the bridge first in its <head>.
-    let tag = bridge_tag_for(id, 1, "0.3.0", "docs/part.htm", &bridge_version(&*ts.web));
+    let tag = shell_tag(&ts, id, "docs/part.htm");
     assert!(
         part.starts_with(&format!(
             "<!doctype html><html><head>{tag}<meta charset=utf8>"
@@ -836,10 +858,7 @@ async fn the_bridge_is_named_by_version_and_only_the_versioned_url_is_immutable_
     let v = bridge_version(&*ts.web);
     let v = v.as_str();
     let html = ts.site_get(id, "/_clax/v/1/").await.text().await.unwrap();
-    assert!(
-        html.contains(&bridge_tag_for(id, 1, "0.3.0", "index.html", v)),
-        "{html}"
-    );
+    assert!(html.contains(&shell_tag(&ts, id, "index.html")), "{html}");
     let bare = ts.get("/_clax/bridge.js").await;
     if bare.status() == 404 {
         assert!(v.is_empty(), "no bridge built, no version");
@@ -1021,4 +1040,59 @@ async fn the_runtime_contract_type_definitions_are_served_as_text() {
     )
     .await;
     assert_eq!(res.status(), 200);
+}
+
+/// A local daemon serves this machine alone: a browser of another machine
+/// that is no connected person's reads nothing, not the shell's page, not
+/// the API, not an artifact's site (`clax_http::identity::local_peers`).
+#[tokio::test]
+async fn a_lan_viewer_is_refused() {
+    let ts = TestServer::spawn().await;
+    let id = ts.publish("R", &[("index.html", "<p>hi</p>")]).await["artifact"]["id"]
+        .as_str()
+        .unwrap()
+        .to_string();
+    let (lan, base) = ts.lan();
+    let site = ts.site_host(&id);
+    let paths: [(&str, String, Option<&str>); 5] = [
+        ("shell page", format!("/a/{id}"), None),
+        ("artifact", format!("/api/artifacts/{id}"), None),
+        ("threads", format!("/api/artifacts/{id}/threads"), None),
+        ("site root", "/".to_string(), Some(site.as_str())),
+        (
+            "handshake",
+            "/_clax/session/start?next=%2F".to_string(),
+            Some(site.as_str()),
+        ),
+    ];
+    for peer in [None, Some("192.168.1.2")] {
+        for (what, path, host) in &paths {
+            let mut req = lan.get(format!("{base}{path}"));
+            if let Some(h) = host {
+                req = req.header("host", *h);
+            }
+            if let Some(p) = peer {
+                req = req.header(clax_testkit::PEER_HEADER, p);
+            }
+            let res = req.send().await.unwrap();
+            assert_eq!(res.status(), 403, "{what} from {peer:?}");
+            let v: serde_json::Value = res.json().await.unwrap();
+            assert_eq!(v["error"]["code"], "forbidden_host", "{what} from {peer:?}");
+        }
+    }
+    // The same from this machine.
+    for (what, path, host) in &paths {
+        let res = match host {
+            Some(_) if path == "/" => ts.site_get(&id, path).await,
+            Some(h) => ts
+                .client
+                .get(format!("{}{path}", ts.base))
+                .header("host", *h)
+                .send()
+                .await
+                .unwrap(),
+            None => ts.get(path).await,
+        };
+        assert!(res.status().is_success(), "{what}: {}", res.status());
+    }
 }

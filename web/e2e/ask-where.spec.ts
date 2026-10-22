@@ -104,7 +104,7 @@ for (const theme of THEMES) {
       const s = await namedSession(d.base, d.token);
       const { artifact } = await publishAs(d.base, d.token, s.id, "Quarterly Review", PAGE);
       const tid = await threadAsOwner(d.base, d.token, artifact.id, "Make the title bigger?");
-      await openArtifact(page, d.base, artifact.id, 1, "sandbox");
+      await openArtifact(page, d.base, artifact.id, 1);
       await showThreads(page, size);
       const card = page.locator(`.thread-card[data-thread="${tid}"]`);
       await expect(card).toBeVisible();
@@ -154,7 +154,7 @@ for (const theme of THEMES) {
       const s = await namedSession(d.base, d.token);
       const { artifact } = await publishAs(d.base, d.token, s.id, "Quarterly Review", PAGE);
       const tid = await threadAsOwner(d.base, d.token, artifact.id, "Which chart reads best?");
-      await openArtifact(page, d.base, artifact.id, 1, "sandbox");
+      await openArtifact(page, d.base, artifact.id, 1);
       await showThreads(page, size);
       await expect(page.locator(`.thread-card[data-thread="${tid}"]`)).toBeVisible();
       await expect(inboxCount(page, size)).toHaveCount(0);
@@ -227,7 +227,7 @@ for (const theme of THEMES) {
       const { artifact } = await publishAs(d.base, d.token, s.id, "Quarterly Review", TWO_PAGES);
       const tid = await threadAsOwner(d.base, d.token, artifact.id, "Name the team?", "about.html");
       const q = await ask(d.base, d.token, s.id, { source: "ask", artifact_id: artifact.id, thread_id: tid, questions: [{ question: "Which name?", header: "Team", options: [{ label: "Makers" }, { label: "Crew" }] }] });
-      await openArtifact(page, d.base, artifact.id, 1, "sandbox");
+      await openArtifact(page, d.base, artifact.id, 1);
       await showThreads(page, size);
       const card = page.locator(`.thread-card[data-thread="${tid}"]`);
       await expect(card).toHaveClass(/\bfolded\b/);
@@ -248,7 +248,6 @@ for (const theme of THEMES) {
       await threadAsOwner(d.base, d.token, artifact.id, "Is this the right heading?");
       const tid = await threadAsOwner(d.base, d.token, artifact.id, "Make the title bigger?");
       const q = await ask(d.base, d.token, s.id, { source: "ask", artifact_id: artifact.id, thread_id: tid, questions: [SIZE_Q] });
-      await page.addInitScript(() => { try { sessionStorage.setItem("clax.origin-ok", "0"); } catch { /* storage unavailable */ } });
       await page.goto(`${d.base}/a/${artifact.id}?thread=${tid}`);
       await expect(page.locator("aside.sidebar")).toBeVisible();
       const card = page.locator(`.thread-card[data-thread="${tid}"]`);
@@ -266,7 +265,7 @@ for (const size of SIZES) {
     const s = await namedSession(d.base, d.token);
     const { artifact } = await publishAs(d.base, d.token, s.id, "Quarterly Review", PAGE);
     const tid = await threadAsOwner(d.base, d.token, artifact.id, "Make the title bigger?");
-    await openArtifact(page, d.base, artifact.id, 1, "sandbox");
+    await openArtifact(page, d.base, artifact.id, 1);
     await showThreads(page, size);
     const card = page.locator(`.thread-card[data-thread="${tid}"]`);
     await expect(card).toBeVisible();
@@ -294,7 +293,7 @@ for (const size of SIZES) {
     const { artifact } = await publishAs(d.base, d.token, s.id, "Quarterly Review", PAGE);
     const tid = await threadAsOwner(d.base, d.token, artifact.id, "Make the title bigger?");
     const q = await ask(d.base, d.token, s.id, { source: "ask", artifact_id: artifact.id, thread_id: tid, questions: [SIZE_Q] });
-    await openArtifact(page, d.base, artifact.id, 1, "sandbox");
+    await openArtifact(page, d.base, artifact.id, 1);
     await showThreads(page, size);
     await expect(page.locator(`.thread-card[data-thread="${tid}"] .qcard[data-question="${q.question.id}"]`)).toBeVisible();
     await expect(page.locator(".side-q .qcard")).toHaveCount(0);

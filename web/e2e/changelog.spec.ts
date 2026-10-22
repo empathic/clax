@@ -17,13 +17,11 @@ async function commentAs(page: Page, aid: string, name: string, body: string): P
   }, [aid, name, body] as const);
 }
 
-for (const mode of ["subdomain", "sandbox"] as const) {
-  // The shell and the daemon alone decide this; the frame only shows the
-  // page, the same in either mode: one mode each.
-  if (mode === "sandbox") test(`${mode}: a new version puts nothing over the page: a dot, a summary line, and the Addressed group`, async ({ page }) => {
-    const s = await registerSession(d.base, d.token, "claude", `cl-${mode}`);
-    const { artifact } = await publishAs(d.base, d.token, s.id, `Changelog ${mode}`, { "index.html": PAGE });
-    await openArtifact(page, d.base, artifact.id, 1, mode);
+{
+  test(`a new version puts nothing over the page: a dot, a summary line, and the Addressed group`, async ({ page }) => {
+    const s = await registerSession(d.base, d.token, "claude", `cl`);
+    const { artifact } = await publishAs(d.base, d.token, s.id, `Changelog`, { "index.html": PAGE });
+    await openArtifact(page, d.base, artifact.id, 1);
     const tid = await commentAs(page, artifact.id, "alex", "Two columns");
     // The viewer was made behind the shell's back, which learns of them as
     // the page loads again, and then marks v1 seen.
@@ -48,13 +46,13 @@ for (const mode of ["subdomain", "sandbox"] as const) {
     await expect(page.locator(".vbtn .new")).toHaveCount(0);
   });
 
-  if (mode === "subdomain") test(`${mode}: the version menu reads as a changelog, opens from the version button, and closes with Escape`, async ({ page }) => {
-    const s = await registerSession(d.base, d.token, "claude", `menu-${mode}`);
-    const { artifact } = await publishAs(d.base, d.token, s.id, `Menu ${mode}`, { "index.html": PAGE });
-    await openArtifact(page, d.base, artifact.id, 1, mode);
+  test(`the version menu reads as a changelog, opens from the version button, and closes with Escape`, async ({ page }) => {
+    const s = await registerSession(d.base, d.token, "claude", `menu`);
+    const { artifact } = await publishAs(d.base, d.token, s.id, `Menu`, { "index.html": PAGE });
+    await openArtifact(page, d.base, artifact.id, 1);
     const tid = await commentAs(page, artifact.id, "alex", "Two columns");
     await publishNext(d.base, d.token, s.id, artifact.id, 1, { addresses: [tid], note: "Two columns" });
-    await openArtifact(page, d.base, artifact.id, 2, mode);
+    await openArtifact(page, d.base, artifact.id, 2);
     await page.getByRole("button", { name: /^Version 2 of 2/ }).click();
     const dialog = page.getByRole("dialog", { name: "Versions" });
     await expect(dialog.locator(".vrow").first()).toContainText("Two columns");
@@ -67,10 +65,10 @@ for (const mode of ["subdomain", "sandbox"] as const) {
     await expect(page).toHaveURL(new RegExp(`/a/${artifact.id}/v/1$`));
   });
 
-  test(`${mode}: a pinned view writes no seen mark, and a group card jumps with a highlight and resolves`, async ({ page }) => {
-    const s = await registerSession(d.base, d.token, "claude", `jump-${mode}`);
-    const { artifact } = await publishAs(d.base, d.token, s.id, `Jump ${mode}`, { "index.html": PAGE });
-    await openArtifact(page, d.base, artifact.id, 1, mode);
+  test(`a pinned view writes no seen mark, and a group card jumps with a highlight and resolves`, async ({ page }) => {
+    const s = await registerSession(d.base, d.token, "claude", `jump`);
+    const { artifact } = await publishAs(d.base, d.token, s.id, `Jump`, { "index.html": PAGE });
+    await openArtifact(page, d.base, artifact.id, 1);
     const tid = await commentAs(page, artifact.id, "alex", "Two columns");
     // The viewer was made behind the shell's back, which learns of them as
     // the page loads again, and then marks v1 seen.
@@ -90,7 +88,7 @@ for (const mode of ["subdomain", "sandbox"] as const) {
     await settle(page);
     expect(await seenOf(page, artifact.id)).toBe(1);
     await page.setViewportSize(size);
-    const frame = await openArtifact(page, d.base, artifact.id, 2, mode);
+    const frame = await openArtifact(page, d.base, artifact.id, 2);
     if (!(await page.locator("aside.sidebar").isVisible())) await page.getByRole("button", { name: /Threads/ }).first().click();
     const card = page.locator(`.section-addressed .thread-card[data-thread="${tid}"]`);
     await reach(page, card.locator(".card-head"));

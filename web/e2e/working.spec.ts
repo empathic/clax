@@ -6,12 +6,12 @@ let d: Daemon;
 test.beforeEach(({ daemon }) => { d = daemon; });
 const PAGE = "<main><h2>Quarterly goals</h2></main>";
 
-for (const mode of ["subdomain", "sandbox"] as const) {
-  test(`${mode}: the page reads working state through the comments capability`, async ({ page }) => {
+{
+  test(`the page reads working state through the comments capability`, async ({ page }) => {
     const html = readFileSync(new URL("./pages/working-cap.html", import.meta.url), "utf8");
-    const s = await registerSession(d.base, d.token, "codex", `cap-${mode}`);
-    const { artifact } = await publishWith(d.base, d.token, `Cap ${mode}`, html, { comments: {} });
-    const frame = await openArtifact(page, d.base, artifact.id, 1, mode);
+    const s = await registerSession(d.base, d.token, "codex", `cap`);
+    const { artifact } = await publishWith(d.base, d.token, `Cap`, html, { comments: {} });
+    const frame = await openArtifact(page, d.base, artifact.id, 1);
     await expect(frame.locator("#state")).toHaveText("none");
     await setName(page, "Alex");
     // A write as the viewer needs their click in the page 5.5 s clear of
@@ -29,16 +29,14 @@ for (const mode of ["subdomain", "sandbox"] as const) {
     await expect(frame.locator("#state")).toHaveText("none");
   });
 
-  // The shell and the daemon alone decide this; the frame only shows the
-  // page, the same in either mode: one mode each.
-  if (mode === "subdomain") test(`${mode}: the summary, roster, marker, pin and gallery chip follow the working record`, async ({ page }) => {
-    const s = await registerSession(d.base, d.token, "claude", `work-${mode}`);
+  test(`the summary, roster, marker, pin and gallery chip follow the working record`, async ({ page }) => {
+    const s = await registerSession(d.base, d.token, "claude", `work`);
     // The shell names the agent (spec 2026-10-08 §19 item 1): `claude`, or
     // `claude-2` and so on while other tests' agents on this daemon hold it.
     const n = s.name ?? "claude";
-    const { artifact } = await publishAs(d.base, d.token, s.id, `Working ${mode}`, { "index.html": PAGE });
+    const { artifact } = await publishAs(d.base, d.token, s.id, `Working`, { "index.html": PAGE });
     const t = await postThread(d.base, artifact.id, "@agent two columns");
-    await openArtifact(page, d.base, artifact.id, 1, mode);
+    await openArtifact(page, d.base, artifact.id, 1);
     const line1 = page.locator(".who .sum b.l1");
     await expect(line1).toHaveText("Nobody working");
     await expect(page.locator(".who [role=status]")).toHaveAttribute("aria-live", "polite");
@@ -57,18 +55,18 @@ for (const mode of ["subdomain", "sandbox"] as const) {
     await expect(line1).toHaveText(`${n}: Two columns`);
     const gallery = await page.context().newPage();
     await gallery.goto(`${d.base}/`);
-    await expect(gallery.locator(".card-wrap", { hasText: `Working ${mode}` }).locator(".chip.ag")).toHaveText(`${n} working on 1`);
+    await expect(gallery.locator(".card-wrap", { hasText: `Working` }).locator(".chip.ag")).toHaveText(`${n} working on 1`);
     await api(d.base, d.token, `/api/artifacts/${artifact.id}/threads/${t.id}/comments`, { method: "POST", session: s.id, body: JSON.stringify({ body: "Done.", author_kind: "agent" }) });
     await expect(card.locator(".st.ag")).toHaveCount(0);
     await expect(line1).toHaveText("Nobody working");
-    await expect(gallery.locator(".card-wrap", { hasText: `Working ${mode}` }).locator(".chip.ag")).toHaveCount(0, { timeout: 10_000 });
+    await expect(gallery.locator(".card-wrap", { hasText: `Working` }).locator(".chip.ag")).toHaveCount(0, { timeout: 10_000 });
   });
 
-  if (mode === "sandbox") test(`${mode}: a record lapses 2 minutes after its last renewal`, async ({ page }) => {
-    const s = await registerSession(d.base, d.token, "pi", `lapse-${mode}`);
-    const { artifact } = await publishAs(d.base, d.token, s.id, `Lapse ${mode}`, { "index.html": PAGE });
+  test(`a record lapses 2 minutes after its last renewal`, async ({ page }) => {
+    const s = await registerSession(d.base, d.token, "pi", `lapse`);
+    const { artifact } = await publishAs(d.base, d.token, s.id, `Lapse`, { "index.html": PAGE });
     await setWorking(d.base, d.token, s.id, artifact.id, { message: "Tidying" });
-    await openArtifact(page, d.base, artifact.id, 1, mode);
+    await openArtifact(page, d.base, artifact.id, 1);
     await expect(page.locator(".who .sum b.l1")).toHaveText(`${s.name}: Tidying`);
     await skewWorking(d.base, d.token, 121);
     await expect(page.locator(".who .sum b.l1")).toHaveText("Nobody working");
@@ -81,7 +79,7 @@ test("at phone width in dark mode with reduced motion the roster shrinks and not
   await setWorking(d.base, d.token, s.id, artifact.id, { message: "Rebuilding the quarterly chart with the new numbers" });
   await page.setViewportSize({ width: 390, height: 844 });
   await page.emulateMedia({ colorScheme: "dark", reducedMotion: "reduce" });
-  await openArtifact(page, d.base, artifact.id, 1, "subdomain");
+  await openArtifact(page, d.base, artifact.id, 1);
   await expect(page.locator(".who .agt .tok.work")).toBeVisible();
   await expect(page.locator(".who .sum")).toBeHidden();
   expect(await page.evaluate(() => document.documentElement.scrollWidth)).toBeLessThanOrEqual(390);

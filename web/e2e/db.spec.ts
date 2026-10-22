@@ -1,4 +1,5 @@
-import { test, expect, type Daemon, api, openArtifact, publishWith, nameField, setName } from "./fixtures";
+import { test, expect, type Daemon, openArtifact, publishWith } from "./fixtures";
+import { hostedDaemon, memberOf, openAt, ownerOf, rightsOn } from "./hosted-helpers";
 
 let d: Daemon;
 test.beforeEach(({ daemon }) => { d = daemon; });
@@ -24,13 +25,12 @@ const BOARD = `<!doctype html><html><head><title>Board</title></head><body>
 })();
 </script></body></html>`;
 
-for (const mode of ["subdomain", "sandbox"] as const) {
-  test(`${mode}: a write in one tab reaches the other tab's onSnapshot through the event stream`, async ({ browser }) => {
-    const { artifact } = await publishWith(d.base, d.token, `Board ${mode}`, BOARD, { db: {} });
+test("a write in one tab reaches the other tab's onSnapshot through the event stream", async ({ browser }) => {
+    const { artifact } = await publishWith(d.base, d.token, "Board", BOARD, { db: {} });
     const ctx = await browser.newContext();
     const [pa, pb] = [await ctx.newPage(), await ctx.newPage()];
-    const a = await openArtifact(pa, d.base, artifact.id, 1, mode);
-    const b = await openArtifact(pb, d.base, artifact.id, 1, mode);
+    const a = await openArtifact(pa, d.base, artifact.id, 1);
+    const b = await openArtifact(pb, d.base, artifact.id, 1);
     await expect(a.locator("#out")).toHaveText(JSON.stringify({ n: 0, lag: null, changes: [] }));
     await expect(b.locator("#out")).toHaveText(JSON.stringify({ n: 0, lag: null, changes: [] }));
     await expect(a.locator("#grammar")).toHaveText("TypeError");
@@ -46,26 +46,6 @@ for (const mode of ["subdomain", "sandbox"] as const) {
     await b.locator("#lock").click();
     await expect(b.locator("#lockout")).toHaveText("false");
     await ctx.close();
-  });
-}
-
-test("LAN: an unnamed viewer reads but cannot write; naming them makes them a writer", async ({ page }) => {
-  const { artifact } = await publishWith(d.base, d.token, "Board LAN", BOARD, { db: {} });
-  const f = await openArtifact(page, d.base, artifact.id, 1, "sandbox", { lan: true });
-  await expect(f.locator("#out")).toHaveText(JSON.stringify({ n: 0, lag: null, changes: [] }));
-  await f.locator("#add").click();
-  await expect(f.locator("#err")).toHaveText("invalid_argument");
-  // A name no test gives this worker's shared daemon's owner (comment-flows
-  // names the owner Sam): one that reads like the owner's is refused.
-  const name = await nameField(page);
-  await name.fill("Lan Writer");
-  const [named] = await Promise.all([
-    page.waitForResponse(r => r.url().endsWith("/api/viewers/me") && r.request().method() === "PUT"),
-    name.press("Enter"),
-  ]);
-  expect(named.status(), await named.text()).toBe(200);
-  await f.locator("#add").click();
-  await expect(f.locator("#out")).toContainText('"n":1');
 });
 
 const PROBE = `<!doctype html><html><head><title>Probe</title></head><body><p id="p">probe</p></body></html>`;
@@ -83,10 +63,9 @@ async function publicId(page: import("@playwright/test").Page): Promise<string> 
   return page.evaluate(async () => (await (await fetch("/api/viewers/me")).json()).viewer.public_id as string);
 }
 
-for (const mode of ["subdomain", "sandbox"] as const) {
-  test(`${mode}: get, update and delete round trip, and a where + limit query`, async ({ page }) => {
-    const { artifact } = await publishWith(d.base, d.token, `Probe ${mode}`, PROBE, { db: {} });
-    const f = await openArtifact(page, d.base, artifact.id, 1, mode);
+test("get, update and delete round trip, and a where + limit query", async ({ page }) => {
+    const { artifact } = await publishWith(d.base, d.token, "Probe", PROBE, { db: {} });
+    const f = await openArtifact(page, d.base, artifact.id, 1);
     const r = await withDb<unknown>(f, `
       const t = db.doc("tasks/t1");
       const out = [];
@@ -106,26 +85,18 @@ for (const mode of ["subdomain", "sandbox"] as const) {
       try { await db.collection("tasks").where("n", "~", 1).get(); } catch (e) { out.push(e.code); }
       return out;`);
     expect(r).toEqual([false, { title: "Ship", n: 1 }, { title: "Ship", n: 2, done: true }, [false, true], [["q5", 5]], ["q2", "q4"], "invalid_argument"]);
-  });
+});
 
-  test(`${mode}: a viewer's data/users/<id>/ documents are invisible to another viewer`, async ({ browser }) => {
-    const { artifact } = await publishWith(d.base, d.token, `Private ${mode}`, PROBE, { db: {} });
-    const [ca, cb] = [await browser.newContext(), await browser.newContext()];
-    const [pa, pb] = [await ca.newPage(), await cb.newPage()];
-    const fa = await openArtifact(pa, d.base, artifact.id, 1, mode);
-    // B is on another machine: every browser of the owner's here is one viewer.
-    const fb = await openArtifact(pb, d.base, artifact.id, 1, mode, { lan: true });
-    // Named, so B may write its own private documents. Through the shell's
-    // name field, which saves only once the shell's first viewer lookup
-    // answered: a PUT without B's cookie while that lookup is out mints a
-    // second viewer, and whichever cookie lands last is B.
-    const name = await nameField(pb);
-    await name.fill("B");
-    const [named] = await Promise.all([
-      pb.waitForResponse(r => r.url().endsWith("/api/viewers/me") && r.request().method() === "PUT"),
-      name.press("Enter"),
-    ]);
-    expect(named.status(), await named.text()).toBe(200);
+test("a viewer's data/users/<id>/ documents are invisible to another viewer", async ({ browser }) => {
+  const { d: h, origin } = await hostedDaemon();
+  try {
+    const { artifact } = await publishWith(h.base, h.token, "Private", PROBE, { db: {} });
+    const pa = await ownerOf(browser, origin);
+    const fa = await openAt(pa, origin, artifact.id, 1);
+    // B is another person, who may read the page and write its data: every
+    // browser of the owner's is one viewer.
+    const pb = await memberOf(browser, pa, origin, "Bea", rightsOn(artifact.id));
+    const fb = await openAt(pb, origin, artifact.id, 1);
     const [ida, idb] = [await publicId(pa), await publicId(pb)];
     expect(ida).not.toBe(idb);
     await withDb(fa, `await db.doc("data/users/" + arg + "/profile").set({ pick: 3 });`, ida);
@@ -140,22 +111,16 @@ for (const mode of ["subdomain", "sandbox"] as const) {
       return out;`, { a: ida, b: idb });
     expect(seenByB).toEqual([false, 0, "invalid_argument", { pick: 5 }]);
     expect(await withDb(fa, `return (await db.doc("data/users/" + arg + "/profile").get()).data();`, ida)).toEqual({ pick: 3 });
-    await ca.close();
-    await cb.close();
-  });
-
-  test(`${mode}: use("db") resolves null for a page that does not declare it`, async ({ page }) => {
-    const { artifact } = await publishWith(d.base, d.token, `Undeclared ${mode}`, PROBE, {});
-    const f = await openArtifact(page, d.base, artifact.id, 1, mode);
-    expect(await f.evaluate(async () => (await (window as unknown as { claude: { use(n: string): Promise<unknown> } }).claude.use("db")) === null)).toBe(true);
-  });
-}
-
-test("LAN: naming the viewer refetches subscriptions under its new level", async ({ page }) => {
-  const { artifact } = await publishWith(d.base, d.token, "Board LAN read", BOARD, { db: { rules: [{ path: "", read: "interact" }] } });
-  await api(d.base, d.token, `/api/artifacts/${artifact.id}/docs/cards/c1`, { method: "PUT", body: JSON.stringify({ data: { at: 0 }, lww: true }) });
-  const f = await openArtifact(page, d.base, artifact.id, 1, "sandbox", { lan: true });
-  await expect(f.locator("#out")).toHaveText(JSON.stringify({ n: 0, lag: null, changes: [] }));
-  await setName(page, "Ada");
-  await expect(f.locator("#out")).toContainText('"n":1');
+    await pa.context().close();
+    await pb.context().close();
+  } finally {
+    await h.stop();
+  }
 });
+
+test('use("db") resolves null for a page that does not declare it', async ({ page }) => {
+  const { artifact } = await publishWith(d.base, d.token, "Undeclared", PROBE, {});
+  const f = await openArtifact(page, d.base, artifact.id, 1);
+  expect(await f.evaluate(async () => (await (window as unknown as { claude: { use(n: string): Promise<unknown> } }).claude.use("db")) === null)).toBe(true);
+});
+

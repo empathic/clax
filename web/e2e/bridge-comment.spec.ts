@@ -16,11 +16,10 @@ async function contentFrame(page: Page, id: string, n: number) {
   return page.frame({ url })!;
 }
 
-for (const mode of ["subdomain", "sandbox"] as const) {
-  test(`${mode}: hover outlines, element and range picks carry anchors and clips`, async ({ page }) => {
-    const { artifact } = await publish(d.base, d.token, `Bridge ${mode}`, { "index.html": PAGE });
+{
+  test(`hover outlines, element and range picks carry anchors and clips`, async ({ page }) => {
+    const { artifact } = await publish(d.base, d.token, `Bridge`, { "index.html": PAGE });
     await record(page);
-    if (mode === "sandbox") await page.addInitScript(() => { try { sessionStorage.setItem("clax.origin-ok", "0"); } catch {} });
     await page.goto(`${d.base}/a/${artifact.id}`);
     const frame = await contentFrame(page, artifact.id, 1);
     expect((await last(page, "clax:hello")).version).toBe(1);

@@ -32,7 +32,6 @@ async function started(seed: Seed = {}) {
       : url === "/api/token" ? { token: "tk" }
       : { ...loaded, artifact: { ...loaded.artifact, ...seed.artifact }, versions: seed.versions ?? loaded.versions, ...(seed.attention ? { attention: seed.attention } : {}) }));
   }));
-  sessionStorage.setItem("clax.origin-ok", "0");
   const { ArtifactController } = await import("./artifact-controller");
   const { FrameHost } = await import("./frame-host");
   const stage = document.createElement("div");
@@ -55,7 +54,12 @@ async function streamOf(frame: HTMLIFrameElement) {
   return FakeES.last!;
 }
 
-const fromFrame = (win: Window, data: unknown) => dispatchTrusted(window, new MessageEvent("message", { data, origin: "null", source: win }));
+/** The artifact's site origin under the test's location (the daemon's
+ * answers here name no site hosts). */
+const SITE = `${location.protocol}//${ID}.localhost${location.port ? `:${location.port}` : ""}`;
+/** The frame's first address: the site's handshake for version 2's index. */
+const START = `${SITE}/_clax/session/start?next=%2F_clax%2Fv%2F2%2F`;
+const fromFrame = (win: Window, data: unknown, origin = SITE) => dispatchTrusted(window, new MessageEvent("message", { data, origin, source: win }));
 const hello = (win: Window, version = 2) => fromFrame(win, { type: "clax:hello", artifact: ID, version, file: "index.html" });
 
 const seed: Seed = {
@@ -91,11 +95,12 @@ describe("ArtifactController", { timeout: MOUNT_TIMEOUT_MS }, () => {
     vi.useRealTimers();
   });
 
-  it("inserts the frame only once the artifact and the frame mode are known, with the gate already reset", async () => {
+  it("inserts the frame on its site's handshake only once the artifact and its site are known, with the gate already reset", async () => {
     const { ctl, frame } = await started();
     expect(ctl.state.get().data?.artifact.title).toBe("T");
-    expect(ctl.state.get().origin).toBeNull();
-    expect(frame.getAttribute("src")).toBe(`http://${ID}.localhost:3000/_clax/v/2/`);
+    expect(ctl.state.get().origin).toBe(SITE);
+    expect(frame.getAttribute("src")).toBe(START);
+    expect(frame.hasAttribute("sandbox")).toBe(false);
     const posted: { type: string }[] = [];
     frame.contentWindow!.postMessage = ((m: { type: string }) => { posted.push(m); }) as Window["postMessage"];
     // A hello for another version of the artifact is not welcomed.
@@ -163,7 +168,7 @@ describe("ArtifactController", { timeout: MOUNT_TIMEOUT_MS }, () => {
     history.pushState(null, "", `/a/${ID}#later`);
     dispatchEvent(new PopStateEvent("popstate"));
     expect(posted).toEqual([{ type: "clax:hash", hash: "#later" }]);
-    expect(frame.getAttribute("src")).toBe(`http://${ID}.localhost:3000/_clax/v/2/`);
+    expect(frame.getAttribute("src")).toBe(START);
     ctl.dispose();
   });
 
@@ -322,7 +327,7 @@ describe("ArtifactController", { timeout: MOUNT_TIMEOUT_MS }, () => {
     expect(ctl.state.get()).toBe(before);
   });
 
-  it("in sandbox mode, posts nothing to a document that has not greeted, and sends it all again at its hello", async () => {
+  it("answers nothing a document that has not greeted asks, and sends the page it all again at its hello", async () => {
     const { ctl, frame } = await started();
     const win = frame.contentWindow!;
     const posted: { type: string; anchors?: { id: string }[] }[] = [];
@@ -338,8 +343,11 @@ describe("ArtifactController", { timeout: MOUNT_TIMEOUT_MS }, () => {
     const { upsert } = await import("../threads");
     ctl.commentsUi.upsert(t1 as Parameters<typeof upsert>[1]);
     ctl.toggleComment();
+    fromFrame(win, { type: "clax:use", id: "u1", name: "storage" });
     await new Promise(r => setTimeout(r, 50));
-    expect(posted).toEqual([]);
+    expect(posted.map(m => m.type)).not.toContain("clax:welcome");
+    expect(posted.map(m => m.type)).not.toContain("clax:use-result");
+    posted.length = 0;
     hello(win);
     expect(posted.map(m => m.type)).toEqual(expect.arrayContaining(["clax:welcome", "clax:resolve-anchors", "clax:focus"]));
     expect(posted.find(m => m.type === "clax:resolve-anchors")!.anchors).toHaveLength(1);
@@ -354,14 +362,15 @@ describe("ArtifactController", { timeout: MOUNT_TIMEOUT_MS }, () => {
     hello(win);
     expect(ctl.state.get().file).toBe("index.html");
     // As it arrives in Chromium: once the next document replaced the page, with no source.
-    dispatchTrusted(window, new MessageEvent("message", { data: { type: "clax:bye" }, origin: "null", source: null }));
+    dispatchTrusted(window, new MessageEvent("message", { data: { type: "clax:bye" }, origin: SITE, source: null }));
     expect(ctl.state.get().file).toBeNull();
     posted.length = 0;
-    // The frame now shows another site's document, which has not loaded yet.
+    // The frame now shows another document, which has not loaded yet.
     ctl.toggleComment();
     fromFrame(win, { type: "clax:use", id: "u1", name: "storage" });
     await new Promise(r => setTimeout(r, 50));
-    expect(posted).toEqual([]);
+    expect(posted.map(m => m.type)).not.toContain("clax:welcome");
+    expect(posted.map(m => m.type)).not.toContain("clax:use-result");
     hello(win);
     expect(posted.map(m => m.type)).toContain("clax:welcome");
     expect(ctl.state.get().file).toBe("index.html");
@@ -373,7 +382,7 @@ describe("ArtifactController", { timeout: MOUNT_TIMEOUT_MS }, () => {
     const win = frame.contentWindow!;
     win.postMessage = (() => {}) as Window["postMessage"];
     hello(win);
-    window.dispatchEvent(new MessageEvent("message", { data: { type: "clax:bye" }, origin: "null", source: win }));
+    window.dispatchEvent(new MessageEvent("message", { data: { type: "clax:bye" }, origin: SITE, source: win }));
     expect(ctl.state.get().file).toBe("index.html");
     ctl.dispose();
   });
@@ -496,7 +505,8 @@ describe("ArtifactController", { timeout: MOUNT_TIMEOUT_MS }, () => {
     ctl.toggleComment();
     ctl.showDraftOf(d.agent);
     expect(ctl.state.get()).toMatchObject({ showDraft: d.agent, commenting: false, draftChanged: null });
-    expect(src()).toBe(`http://${ID}.localhost:3000/_clax/draft/a_1111aaaa/${d.token}/#tint=%232f6f2a`);
+    // Through the site's handshake, the draft's tint carried in `next`.
+    expect(src()).toBe(`${SITE}/_clax/session/start?next=${encodeURIComponent(`/_clax/draft/a_1111aaaa/${d.token}/#tint=%232f6f2a`)}`);
     // Comments go on versions: comment mode stays off while the draft shows.
     ctl.toggleComment();
     expect(ctl.state.get().commenting).toBe(false);
@@ -1163,64 +1173,114 @@ describe("ArtifactController", { timeout: MOUNT_TIMEOUT_MS }, () => {
     }
   });
 
-  it("app mode composer Send posts and sends; browser mode Post only posts", async () => {
-    const t9 = thread("t9");
-    const { ctl, frame } = await started({ routes: (url, init) => (init?.method === "POST" && url === `/api/artifacts/${ID}/threads` ? { thread: t9 } : undefined) });
-    const anchor = t9.anchor;
-    const posts = () => (fetch as unknown as ReturnType<typeof vi.fn>).mock.calls.filter(([, i]) => (i as RequestInit | undefined)?.method === "POST").map(([u]) => String(u));
-    // A browser's view: Post posts, and nothing is sent.
-    await ctl.submitDraft("first", { pickId: "p1", anchor, version: 2, clip: null, capturing: false, clipToken: "p1" });
-    expect(posts()).toEqual([`/api/artifacts/${ID}/threads`]);
-    // App mode: each post is handed to the app's hook, which sends it.
-    const posted = vi.fn();
-    const welcome = vi.fn((_file: string) => ({ app: true as const, restoreScroll: 40 }));
-    ctl.app = { welcome, posted, dropped: () => {}, anchors: () => [] };
-    await ctl.submitDraft("second", { pickId: "p2", anchor, version: 2, clip: null, capturing: false, clipToken: "p2" });
-    expect(posted).toHaveBeenCalledWith(t9);
-    // The welcome carries what the hook adds, for the page that greeted.
-    const sent: { type: string }[] = [];
-    frame.contentWindow!.postMessage = ((m: { type: string }) => { sent.push(m); }) as Window["postMessage"];
-    hello(frame.contentWindow!);
-    expect(welcome).toHaveBeenCalledWith("index.html", false);
-    expect(sent.find(m => m.type === "clax:welcome")).toEqual({ type: "clax:welcome", mode: "view", app: true, restoreScroll: 40 });
-    ctl.dispose();
-  });
+  describe("the frame's handshake with its site", () => {
+    const CODE = `${SITE}/_clax/session?code=c1&next=%2F_clax%2Fv%2F2%2F`;
+    const STATE = { type: "clax:site-state", state: "s1", next: "/_clax/v/2/" };
+    /** Answers `POST /api/artifacts/<id>/site-code` with `answer`, keeping each call. */
+    function codes(answer: () => Response) {
+      const base = fetch;
+      const calls: [string, RequestInit | undefined][] = [];
+      vi.stubGlobal("fetch", vi.fn(async (u: string, i?: RequestInit) => {
+        if (String(u).endsWith("/site-code")) { calls.push([String(u), i]); return answer(); }
+        return base(u, i);
+      }));
+      return calls;
+    }
+    const sent = () => new Response(JSON.stringify({ src: CODE }));
+    /** Where the frame was sent (`FrameHost.go`, which navigates it in
+     * place: jsdom does not follow that navigation). */
+    async function goes() {
+      const { FrameHost } = await import("./frame-host");
+      const went: string[] = [];
+      const go = FrameHost.prototype.go;
+      vi.spyOn(FrameHost.prototype, "go").mockImplementation(function (this: InstanceType<typeof FrameHost>, url: string) { went.push(url); go.call(this, url); });
+      return went;
+    }
 
-  it("outlines the selected thread's area in a browser, but in app mode only a hovered thread's", async () => {
-    const t9 = thread("t9");
-    const { ctl, frame } = await started({ routes: (url, init) => (init?.method === "POST" && url === `/api/artifacts/${ID}/threads` ? { thread: t9 } : undefined) });
-    const sent: { type: string; id?: string | null }[] = [];
-    frame.contentWindow!.postMessage = ((m: { type: string }) => { sent.push(m); }) as Window["postMessage"];
-    hello(frame.contentWindow!);
-    const focuses = () => sent.filter(m => m.type === "clax:focus");
-    /** The focus the shell sends after `act`, once it has. */
-    const focusAfter = async (act: () => unknown) => {
-      const n = focuses().length;
-      await act();
-      await vi.waitFor(() => expect(focuses().length).toBeGreaterThan(n));
-      return focuses().at(-1)!.id ?? null;
-    };
-    const draft = (pickId: string) => ({ pickId, anchor: t9.anchor, version: 2, clip: null, capturing: false, clipToken: pickId });
-    // A browser's view: the posted thread is selected, and its area outlined.
-    expect(await focusAfter(() => ctl.submitDraft("first", draft("p1")))).not.toBeNull();
-    expect(ctl.state.get().selected).toBe("t9");
-    expect(await focusAfter(() => ctl.set({ selected: null }))).toBeNull();
-    // App mode: the posted thread is selected, but no panel shows it, so nothing stays outlined.
-    ctl.app = { welcome: () => ({ app: true as const }), posted: vi.fn(), dropped: () => {}, anchors: () => [] };
-    expect(await focusAfter(() => ctl.submitDraft("second", draft("p2")))).toBeNull();
-    expect(ctl.state.get().selected).toBe("t9");
-    expect(await focusAfter(() => ctl.hover(t9))).not.toBeNull();
-    expect(await focusAfter(() => ctl.hover(null))).toBeNull();
-    ctl.dispose();
-  });
+    it("asks a code for the state the frame's site posts, with the token, and sends the frame to it", async () => {
+      const { ctl, frame } = await started();
+      const calls = codes(sent);
+      const went = await goes();
+      const win = frame.contentWindow!;
+      // Another origin's or another window's state is not the frame's site's.
+      fromFrame(win, STATE, `http://9zzzzzzzzzzz.localhost${location.port ? `:${location.port}` : ""}`);
+      fromFrame(win, STATE, "null");
+      fromFrame(window, STATE);
+      await new Promise(r => setTimeout(r, 30));
+      expect(calls).toEqual([]);
+      fromFrame(win, STATE);
+      await vi.waitFor(() => expect(went.at(-1)).toBe(CODE));
+      expect(calls).toHaveLength(1);
+      expect(calls[0][0]).toBe(`/api/artifacts/${ID}/site-code`);
+      expect(calls[0][1]?.method).toBe("POST");
+      expect((calls[0][1]!.headers as Record<string, string>).authorization).toBe("Bearer tk");
+      expect(JSON.parse(String(calls[0][1]?.body))).toEqual({ next: "/_clax/v/2/", partitioned: true, state: "s1" });
+      // Past its start, the frame's states ask nothing more.
+      fromFrame(win, { ...STATE, state: "s2" });
+      await new Promise(r => setTimeout(r, 30));
+      expect(calls).toHaveLength(1);
+      expect(ctl.state.get().openInTab).toBeNull();
+      ctl.dispose();
+    });
 
-  it("carries app=1 in its URLs and no other query", async () => {
-    const { ctl } = await started();
-    history.replaceState(null, "", `/a/${ID}?thread=t1`);
-    expect(ctl.here(null)).toBe(`/a/${ID}`);
-    expect(ctl.here(1)).toBe(`/a/${ID}/v/1`);
-    history.replaceState(null, "", `/a/${ID}?thread=t1&app=1`);
-    expect(ctl.here(null)).toBe(`/a/${ID}?app=1`);
-    ctl.dispose();
+    it("asks without a token when the shell has none", async () => {
+      const { ctl, frame } = await started({ lan: true });
+      const calls = codes(sent);
+      const went = await goes();
+      fromFrame(frame.contentWindow!, STATE);
+      await vi.waitFor(() => expect(went.at(-1)).toBe(CODE));
+      expect((calls[0][1]!.headers as Record<string, string>).authorization).toBeUndefined();
+      ctl.dispose();
+    });
+
+    for (const [what, answer] of [
+      ["a code off the site's origin", () => new Response(JSON.stringify({ src: "http://evil.example/_clax/session?code=c1" }))],
+      ["a refused code", () => new Response(JSON.stringify({ error: { code: "not_found", message: "no" } }), { status: 404 })],
+    ] as const) {
+      it(`offers the page in a tab, and removes the frame, for ${what}`, async () => {
+        const { ctl, frame } = await started();
+        codes(answer);
+        fromFrame(frame.contentWindow!, STATE);
+        await vi.waitFor(() => expect(ctl.state.get().openInTab).toBe(`${SITE}/_clax/v/2/`));
+        expect(frame.isConnected).toBe(false);
+        expect(document.querySelector("iframe")).toBeNull();
+        ctl.dispose();
+      });
+    }
+
+    it("starts once more when the redemption lands on no greeting page, then offers the page in a tab", async () => {
+      const { ctl, frame } = await started();
+      const calls = codes(sent);
+      const went = await goes();
+      fromFrame(frame.contentWindow!, STATE);
+      await vi.waitFor(() => expect(went.at(-1)).toBe(CODE));
+      frame.dispatchEvent(new Event("load"));
+      expect(went).toEqual([CODE, START]);
+      expect(ctl.state.get().openInTab).toBeNull();
+      fromFrame(frame.contentWindow!, { ...STATE, state: "s2" });
+      await vi.waitFor(() => expect(calls).toHaveLength(2));
+      await vi.waitFor(() => expect(went).toEqual([CODE, START, CODE]));
+      frame.dispatchEvent(new Event("load"));
+      expect(ctl.state.get().openInTab).toBe(`${SITE}/_clax/v/2/`);
+      expect(frame.isConnected).toBe(false);
+      ctl.dispose();
+    });
+
+    it("is done once the page greets before its load", async () => {
+      const { ctl, frame } = await started();
+      codes(sent);
+      const went = await goes();
+      fromFrame(frame.contentWindow!, STATE);
+      await vi.waitFor(() => expect(went.at(-1)).toBe(CODE));
+      const win = frame.contentWindow!;
+      win.postMessage = (() => {}) as Window["postMessage"];
+      hello(win);
+      frame.dispatchEvent(new Event("load"));
+      frame.dispatchEvent(new Event("load"));
+      expect(went).toEqual([CODE]);
+      expect(ctl.state.get().openInTab).toBeNull();
+      expect(frame.isConnected).toBe(true);
+      ctl.dispose();
+    });
   });
 });

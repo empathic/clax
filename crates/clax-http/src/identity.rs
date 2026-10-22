@@ -99,6 +99,66 @@ pub fn is_local(headers: &HeaderMap, peer: Option<std::net::SocketAddr>) -> bool
     peer.is_some_and(crate::auth::is_loopback) && crate::auth::is_local_host(host)
 }
 
+/// Middleware of a local daemon, which serves this machine alone: a request
+/// from another machine (a peer that is neither loopback nor the address
+/// the connection arrived on) answers 403
+/// `forbidden_host` unless it is a connected person's: an agent credential
+/// of another machine or its signed grant request ([`crate::auth::is_grant_request`],
+/// `Clax-Signature`), the grant routes a machine connects through
+/// (`/api/grants…`, which check their own signatures), the browser link that makes a browser that person's
+/// (`/connect/b/<code>`), or a browser whose `clax_viewer` cookie names a
+/// person who is not revoked. A viewer who is not connected reads nothing
+/// from another machine: artifacts are read on their site hosts
+/// (`<id>.localhost`), which resolve on this machine alone. A hosted
+/// daemon's requests, and a Worker's (no connection), pass.
+pub async fn local_peers(
+    axum::extract::State(s): axum::extract::State<AppState>,
+    req: axum::extract::Request,
+    next: axum::middleware::Next,
+) -> axum::response::Response {
+    use axum::response::IntoResponse;
+    if s.hosted.is_some() {
+        return next.run(req).await;
+    }
+    // This machine: a loopback peer, or one at the very address the
+    // connection arrived on (a daemon bound to a LAN address, reached from
+    // its own machine).
+    let peer = match crate::auth::conn_of(req.extensions()) {
+        Some(c)
+            if !crate::auth::is_loopback(c.peer)
+                && c.peer.ip().to_canonical() != c.local.ip().to_canonical() =>
+        {
+            c.peer
+        }
+        _ => return next.run(req).await,
+    };
+    let h = req.headers();
+    if crate::auth::is_grant_request(h)
+        || h.contains_key("clax-signature")
+        || req.uri().path().starts_with("/connect/b/")
+        || req.uri().path().starts_with("/api/grants")
+    {
+        return next.run(req).await;
+    }
+    if let Some(cookie) = Identity::of(h, &s.token, Some(peer)).cookie {
+        let person = s
+            .store_call(move |st| {
+                Ok(st
+                    .get_viewer(&cookie)?
+                    .is_some_and(|v| v.person && v.person_revoked_at.is_none()))
+            })
+            .await;
+        if matches!(person, Ok(true)) {
+            return next.run(req).await;
+        }
+    }
+    ApiError::forbidden(
+        "forbidden_host",
+        "this daemon serves this machine alone, and the machines and browsers of people connected to it",
+    )
+    .into_response()
+}
+
 /// `Set-Cookie` that removes the `clax_viewer` cookie, once the viewer it
 /// named has been claimed for the owner.
 pub fn clear_viewer_cookie() -> HeaderValue {

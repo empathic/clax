@@ -89,11 +89,12 @@ pub fn site_routes(state: &AppState) -> Router<AppState> {
 /// `/_clax/session?code=<code>&next=<path>`: redeems a site code made for
 /// this artifact (`POST /api/artifacts/<id>/site-code`, or the public
 /// host's `/site-signin`) beside the state cookie it was minted for, sets
-/// the site cookie (partitioned as the code says), clears the state and
-/// redirects to `next`, a path on this host
-/// ([`clax_http::site_access::safe_next`]). A code that does not redeem
-/// sets no session and sends the browser to `/site-signin` for `next`, with
-/// a new state.
+/// the site cookie (partitioned as the code says) and redirects to `next`,
+/// a path on this host ([`clax_http::site_access::safe_next`]). A top-level
+/// redemption clears the state; a frame's keeps it, as another tab's frame
+/// may be signing in with it ([`clax_http::site_access::state_for`]). A
+/// code that does not redeem sets no session and sends the browser to
+/// `/site-signin` for `next`.
 async fn session(
     State(s): State<AppState>,
     site: Extension<SiteRequest>,
@@ -120,10 +121,9 @@ async fn session(
         header::SET_COOKIE,
         sa::site_cookie(secure, partitioned, &id),
     );
-    h.append(
-        header::SET_COOKIE,
-        sa::clear_state_cookie(secure, partitioned),
-    );
+    if !partitioned {
+        h.append(header::SET_COOKIE, sa::clear_state_cookie(secure, false));
+    }
     Ok(res)
 }
 
@@ -135,32 +135,44 @@ struct SessionQuery {
 }
 
 /// `/_clax/session/start?next=<path>`: the framed handshake's first step.
-/// Sets a new state in the partitioned state cookie and answers a page that
+/// Sets the browser's state ([`clax_http::site_access::state_for`]) in the
+/// partitioned state cookie and answers a page that
 /// hands the state to the shell framing it (`postMessage` of `{type:
-/// "clax:site-state", state, next}` to the public origin alone), which asks
-/// `POST /api/artifacts/<id>/site-code` for a code bound to it. The page
-/// runs only its own script (a nonce) and only the public origin may frame
-/// it.
-async fn session_start(State(s): State<AppState>, q: Query<StartQuery>) -> Response {
+/// "clax:site-state", state, next}` to the shell's origins alone,
+/// [`clax_http::site_access::shell_origins`]: the public origin, or a local
+/// daemon's loopback names), which asks `POST
+/// /api/artifacts/<id>/site-code` for a code bound to it. The page runs
+/// only its own script (a nonce) and only the shell may frame it.
+async fn session_start(
+    State(s): State<AppState>,
+    headers: HeaderMap,
+    q: Query<StartQuery>,
+) -> Response {
     use axum::http::{HeaderValue, header};
     use clax_http::site_access as sa;
     let next = sa::safe_next(q.next.as_deref().unwrap_or("/"));
-    let state = sa::new_state();
+    let state = sa::state_for(&headers, sa::secure(&s));
     let nonce = sa::new_state();
-    let shell = sa::public_origin(&s);
+    let host = headers
+        .get(header::HOST)
+        .and_then(|h| h.to_str().ok())
+        .unwrap_or("");
+    let shells = sa::shell_origins(&s, host);
     let message = serde_json::json!({"type": "clax:site-state", "state": state, "next": next});
-    // Inside a script element: no `<` may close it.
+    // Inside a script element: no `<` may close it. A post to an origin
+    // that is not the parent's is dropped.
     let script = |v: &serde_json::Value| v.to_string().replace('<', "\\u003c");
     let html = format!(
-        "<!doctype html><meta charset=\"utf-8\"><script nonce=\"{nonce}\">parent.postMessage({}, {});</script>",
+        "<!doctype html><meta charset=\"utf-8\"><script nonce=\"{nonce}\">for(const o of {})parent.postMessage({},o);</script>",
+        script(&serde_json::json!(shells)),
         script(&message),
-        script(&serde_json::Value::String(shell.clone())),
     );
     let mut res = axum::response::Html(html).into_response();
     let h = res.headers_mut();
     h.insert(header::CACHE_CONTROL, HeaderValue::from_static("no-store"));
     if let Ok(v) = HeaderValue::from_str(&format!(
-        "default-src 'none'; script-src 'nonce-{nonce}'; frame-ancestors 'self' {shell}"
+        "default-src 'none'; script-src 'nonce-{nonce}'; frame-ancestors {}",
+        shells.join(" ")
     )) {
         h.insert(header::CONTENT_SECURITY_POLICY, v);
     }
@@ -230,17 +242,7 @@ async fn current_index(
 ) -> Result<Response, ApiError> {
     d.refuse_agents()?;
     let n = current_of(&s, &site.artifact).await?;
-    let origin = Some(site.clone());
-    content::serve_version(
-        &s,
-        site.artifact.clone(),
-        n,
-        INDEX.into(),
-        true,
-        &origin,
-        &req,
-    )
-    .await
+    content::serve_version(&s, site.artifact.clone(), n, INDEX.into(), true, &req).await
 }
 
 /// `/<path>`: a file of the current version; `/index.html` is `/`.
@@ -266,8 +268,7 @@ async fn serve_current(
         return Ok(Redirect::permanent("./").into_response());
     }
     let n = current_of(s, &site.artifact).await?;
-    let origin = Some(site.clone());
-    content::serve_version(s, site.artifact.clone(), n, rel, true, &origin, req).await
+    content::serve_version(s, site.artifact.clone(), n, rel, true, req).await
 }
 
 /// `/_clax/v/<n>`: the version's root, with its slash.
@@ -290,17 +291,7 @@ async fn version_index(
 ) -> Result<Response, ApiError> {
     d.refuse_agents()?;
     let n = version(&param(p)?)?;
-    let origin = Some(site.clone());
-    content::serve_version(
-        &s,
-        site.artifact.clone(),
-        n,
-        INDEX.into(),
-        false,
-        &origin,
-        &req,
-    )
-    .await
+    content::serve_version(&s, site.artifact.clone(), n, INDEX.into(), false, &req).await
 }
 
 /// `/_clax/v/<n>/<path>`: a file of version `n`; `index.html` redirects to
@@ -318,8 +309,7 @@ async fn version_file(
     if rel == INDEX {
         return Ok(Redirect::permanent("./").into_response());
     }
-    let origin = Some(site.clone());
-    content::serve_version(&s, site.artifact.clone(), n, rel, false, &origin, &req).await
+    content::serve_version(&s, site.artifact.clone(), n, rel, false, &req).await
 }
 
 /// `/_clax/draft/<agent>/<token>`: the draft's root, with its slash.
@@ -345,14 +335,12 @@ async fn draft_index(
 ) -> Result<Response, ApiError> {
     d.refuse_agents()?;
     let (agent, token) = param(p)?;
-    let origin = Some(site.clone());
     drafts::serve(
         &s,
         site.artifact.as_str(),
         &agent,
         &token,
         INDEX.into(),
-        &origin,
         &req,
     )
     .await
@@ -368,17 +356,7 @@ async fn draft_file(
 ) -> Result<Response, ApiError> {
     d.refuse_agents()?;
     let (agent, token, rel) = param(p)?;
-    let origin = Some(site.clone());
-    drafts::serve(
-        &s,
-        site.artifact.as_str(),
-        &agent,
-        &token,
-        rel,
-        &origin,
-        &req,
-    )
-    .await
+    drafts::serve(&s, site.artifact.as_str(), &agent, &token, rel, &req).await
 }
 
 /// `/_clax/blob/<asset ID>`: the asset's bytes, when it is this artifact's.

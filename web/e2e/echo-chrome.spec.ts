@@ -48,7 +48,7 @@ test("the first paint already has the theme: the system's, or the stored choice 
 
 test("keys pressed in the page are the page's: C and ? do nothing in the shell", async ({ page }) => {
   const { artifact } = await publishWith(d.base, d.token, "Frame keys", PAGE, {});
-  const frame = await openArtifact(page, d.base, artifact.id, 1, "subdomain");
+  const frame = await openArtifact(page, d.base, artifact.id, 1);
   const comment = page.getByRole("button", { name: "Comment", exact: true });
   await page.locator("body").press("c");
   await expect(comment).toHaveAttribute("aria-pressed", "true");
@@ -65,7 +65,7 @@ test("keys pressed in the page are the page's: C and ? do nothing in the shell",
 test("C and ? are the shell's only letter keys: T, J, K, S, R and Enter do nothing", async ({ page }) => {
   const { artifact } = await publishWith(d.base, d.token, "Only keys", PAGE, { comments: {} });
   const t = await postThread(d.base, artifact.id, "Check this", "#t");
-  await openArtifact(page, d.base, artifact.id, 1, "subdomain");
+  await openArtifact(page, d.base, artifact.id, 1);
   const card = page.locator(`[data-thread="${t.id}"]`);
   await card.locator(".card-head").click();
   await expect(card).toHaveClass(/selected/);
@@ -99,7 +99,7 @@ claude.use("artifact").then(a => {
 
 test("after a reload the page's publish caused, the viewer's typing stays inert until they press in the shell", async ({ page }) => {
   const { artifact } = await publishWith(d.base, d.token, "Republish keys", REPUBLISH, { artifact: {} });
-  const frame = await openArtifact(page, d.base, artifact.id, 1, "subdomain");
+  const frame = await openArtifact(page, d.base, artifact.id, 1);
   const comment = page.getByRole("button", { name: "Comment", exact: true });
   // The page listens for keys.
   await expect(frame.locator("body")).toHaveAttribute("data-ready", "yes");
@@ -137,7 +137,7 @@ claude.use("permissions").then(perm => {
 test("a consent prompt raised while the viewer types takes the keys: C, ? and the rest do nothing", async ({ page }) => {
   const { artifact } = await publishWith(d.base, d.token, "Consent keys", CONSENT, { comments: {} });
   const t = await postThread(d.base, artifact.id, "Check this", "#t");
-  const frame = await openArtifact(page, d.base, artifact.id, 1, "subdomain");
+  const frame = await openArtifact(page, d.base, artifact.id, 1);
   const card = page.locator(`[data-thread="${t.id}"]`);
   await card.locator(".card-head").click();
   await expect(card).toHaveClass(/selected/);
@@ -172,7 +172,7 @@ for (const closer of ["Space", "Enter", "Escape"]) {
     const { artifact } = await publishWith(d.base, d.token, `Consent close ${closer}`, CONSENT, { comments: {} });
     const t = await postThread(d.base, artifact.id, "Check this", "#t");
     const other = await postThread(d.base, artifact.id, "And this", "#t");
-    const frame = await openArtifact(page, d.base, artifact.id, 1, "subdomain");
+    const frame = await openArtifact(page, d.base, artifact.id, 1);
     const card = page.locator(`[data-thread="${t.id}"]`);
     await card.locator(".card-head").click();
     await expect(card).toHaveClass(/selected/);
@@ -208,7 +208,7 @@ for (const closer of ["Space", "Enter", "Escape"]) {
 async function promptRaised(page: Page, title: string) {
   const { artifact } = await publishWith(d.base, d.token, title, CONSENT, { comments: {} });
   const t = await postThread(d.base, artifact.id, "Check this", "#t");
-  const frame = await openArtifact(page, d.base, artifact.id, 1, "subdomain");
+  const frame = await openArtifact(page, d.base, artifact.id, 1);
   const card = page.locator(`[data-thread="${t.id}"]`);
   await card.locator(".card-head").click();
   await expect(card).toHaveClass(/selected/);
@@ -289,12 +289,12 @@ const FORM = form();
 /** Whether the frame's own document has focus, so the viewer's keys reach the page. */
 const pageHasFocus = (frame: Frame) => frame.evaluate(() => document.hasFocus());
 
-for (const mode of ["subdomain", "sandbox"] as const) {
+{
   for (const busy of [0, 400]) {
-    test(`${mode}${busy ? `, page busy ${busy} ms` : ""}: the viewer typing straight on after the page drops focus to the shell's body keeps their Tab and text in the page`, async ({ page }) => {
+    test(`${busy ? `page busy ${busy} ms: ` : ""}the viewer typing straight on after the page drops focus to the shell's body keeps their Tab and text in the page`, async ({ page }) => {
       const { artifact } = await publishWith(d.base, d.token, "Dropped focus", form(busy), {});
       const t = await postThread(d.base, artifact.id, "Check this", "#t");
-      const frame = await openArtifact(page, d.base, artifact.id, 1, mode);
+      const frame = await openArtifact(page, d.base, artifact.id, 1);
       await page.locator(".thread-card").first().waitFor();
       // The pin is placed too: the viewer's Tabs walk it.
       await expect(page.locator("button.thread-pin")).toHaveCount(1);
@@ -325,7 +325,7 @@ for (const mode of ["subdomain", "sandbox"] as const) {
 test("the viewer's own Tab or Shift+Tab out of the page stays on the shell control it reached", async ({ page }) => {
   const { artifact } = await publishWith(d.base, d.token, "Tab out", FORM, {});
   await postThread(d.base, artifact.id, "Check this", "#t");
-  const frame = await openArtifact(page, d.base, artifact.id, 1, "subdomain");
+  const frame = await openArtifact(page, d.base, artifact.id, 1);
   for (const [field, key] of [["#b", "Tab"], ["#a", "Shift+Tab"]] as const) {
     // After shell input the gesture shield covers the frame but for a hole
     // under the pointer, so the click moves the pointer there first.
@@ -375,11 +375,11 @@ const EVERY = `<!doctype html><html><head><title>Every</title></head><body><main
 addEventListener("keydown", () => { parent.focus(); const t = performance.now(); while (performance.now() - t < 150); }, true);
 </script></body></html>`;
 
-for (const mode of ["subdomain", "sandbox"] as const) {
-  test(`${mode}: a page that runs out of fields on the viewer's Tab cannot have their typing send or resolve a thread`, async ({ page }) => {
+{
+  test(`a page that runs out of fields on the viewer's Tab cannot have their typing send or resolve a thread`, async ({ page }) => {
     const { artifact } = await publishWith(d.base, d.token, "Shrink", SHRINK, {});
     const t = await postThread(d.base, artifact.id, "Check this", "#t");
-    const frame = await openArtifact(page, d.base, artifact.id, 1, mode);
+    const frame = await openArtifact(page, d.base, artifact.id, 1);
     await page.locator(".thread-card").first().waitFor();
     // The pin is placed too: the viewer's Tabs walk it.
     await expect(page.locator("button.thread-pin")).toHaveCount(1);
@@ -395,11 +395,11 @@ for (const mode of ["subdomain", "sandbox"] as const) {
     expect(await threadState(artifact.id, t.id)).toMatchObject({ status: "open", sent_to_agent: false });
   });
 
-  test(`${mode}: typing for the page that walks into a sent thread's Reply, Escape and Enter included, posts nothing`, async ({ page }) => {
+  test(`typing for the page that walks into a sent thread's Reply, Escape and Enter included, posts nothing`, async ({ page }) => {
     const { artifact } = await publishWith(d.base, d.token, "Shrink reply", SHRINK, {});
     const t = await postThread(d.base, artifact.id, "Check this", "#t");
     await api(d.base, d.token, `/api/artifacts/${artifact.id}/threads/${t.id}/send`, { method: "POST", body: "{}" });
-    const frame = await openArtifact(page, d.base, artifact.id, 1, mode);
+    const frame = await openArtifact(page, d.base, artifact.id, 1);
     await page.locator(".thread-card").first().waitFor();
     // The pin is placed too: the viewer's Tabs walk it.
     await expect(page.locator("button.thread-pin")).toHaveCount(1);
@@ -417,10 +417,10 @@ for (const mode of ["subdomain", "sandbox"] as const) {
   });
 
   for (const spacing of [0, 60]) {
-    test(`${mode}, keys ${spacing} ms apart: a page that pushes focus out on every key cannot have the viewer's typing send or resolve a thread`, async ({ page }) => {
+    test(`keys ${spacing} ms apart: a page that pushes focus out on every key cannot have the viewer's typing send or resolve a thread`, async ({ page }) => {
       const { artifact } = await publishWith(d.base, d.token, "Every", EVERY, {});
       const t = await postThread(d.base, artifact.id, "Check this", "#t");
-      const frame = await openArtifact(page, d.base, artifact.id, 1, mode);
+      const frame = await openArtifact(page, d.base, artifact.id, 1);
       await page.locator(".thread-card").first().waitFor();
       // The pin is placed too: the viewer's Tabs walk it.
       await expect(page.locator("button.thread-pin")).toHaveCount(1);
@@ -431,10 +431,10 @@ for (const mode of ["subdomain", "sandbox"] as const) {
     });
   }
 
-  test(`${mode}: a viewer who Tabs out of the page sends only with a click: no key clears the trail`, async ({ page }) => {
+  test(`a viewer who Tabs out of the page sends only with a click: no key clears the trail`, async ({ page }) => {
     const { artifact } = await publishWith(d.base, d.token, "Keyboard send", FORM, {});
     const t = await postThread(d.base, artifact.id, "Check this", "#t");
-    const frame = await openArtifact(page, d.base, artifact.id, 1, mode);
+    const frame = await openArtifact(page, d.base, artifact.id, 1);
     await page.locator(".thread-card").first().waitFor();
     // The pin is placed too: the viewer's Tabs walk it.
     await expect(page.locator("button.thread-pin")).toHaveCount(1);
@@ -457,9 +457,9 @@ for (const mode of ["subdomain", "sandbox"] as const) {
     await expect.poll(async () => (await threadState(artifact.id, t.id))?.sent_to_agent).toBe(true);
   });
 
-  test(`${mode}: the artifact deleted while the viewer types in it leaves the keyboard free: Tab reaches the shell's controls`, async ({ page }) => {
+  test(`the artifact deleted while the viewer types in it leaves the keyboard free: Tab reaches the shell's controls`, async ({ page }) => {
     const { artifact } = await publishWith(d.base, d.token, "Gone", FORM, {});
-    const frame = await openArtifact(page, d.base, artifact.id, 1, mode);
+    const frame = await openArtifact(page, d.base, artifact.id, 1);
     await frame.locator("#a").click();
     await page.keyboard.type("hi");
     await api(d.base, d.token, `/api/artifacts/${artifact.id}`, { method: "DELETE" });
@@ -480,7 +480,7 @@ claude.use("comments").then(c => c.customAnchors({ mode(on) { document.body.data
 test("a pin the page places under the pointer does not take the viewer's click", async ({ page }) => {
   const { artifact } = await publishWith(d.base, d.token, "Placed pin", PLACED, { comments: { customAnchors: true } });
   const t = await postThread(d.base, artifact.id, "Check this", "#t");
-  const frame = await openArtifact(page, d.base, artifact.id, 1, "subdomain");
+  const frame = await openArtifact(page, d.base, artifact.id, 1);
   const comment = page.getByRole("button", { name: "Comment", exact: true });
   // Comment mode once, so the page holds handles it may place.
   await comment.click();

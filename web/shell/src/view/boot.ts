@@ -1,10 +1,13 @@
 import type { Attention } from "../api";
+import type { SiteHosts } from "../origin";
 import type { Thread, Viewer } from "../threads";
 import type { Loaded } from "./artifact-controller";
 
 /** The daemon's first-load data for `/a/…` (spec §8 Time to usable). */
 export type Boot = {
-  v: 1; artifact: Loaded; threads: Thread[]; viewer: Viewer | null; frame: { mode: "subdomain" | "sandbox"; src: string } | null;
+  v: 1; artifact: Loaded; threads: Thread[]; viewer: Viewer | null;
+  /** The site hosts the frame opens the artifact on. */
+  site: SiteHosts;
   /** The cookie's viewer's attention on this artifact; absent without a viewer. */
   attention?: Attention | null;
 };
@@ -46,15 +49,4 @@ export function readBoot(doc: Document = document, navType: string = navigationT
 export function takeEarly(win: Window = window): Event[] {
   const early = (win as unknown as { __claxEarly?: { take(): Event[] } }).__claxEarly;
   return early ? early.take() : [];
-}
-
-export const FRAME_COOKIE = "clax_frame";
-
-/** Tells the daemon which frame the next load of this browser can get in its
- * HTML. The cookie holds the mode only; the shell still decides the mode on
- * every load and replaces a served frame that disagrees. */
-export function rememberFrameMode(origin: string | null, doc: Document = document): void {
-  try {
-    doc.cookie = `${FRAME_COOKIE}=${origin ? "subdomain" : "sandbox"}; Path=/; Max-Age=2592000; SameSite=Lax`;
-  } catch { /* cookies unavailable */ }
 }

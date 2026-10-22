@@ -3,12 +3,12 @@ import { test, expect, type Daemon, contentFrame, openArtifact, publishAs, publi
 let d: Daemon;
 test.beforeEach(({ daemon }) => { d = daemon; });
 
-for (const mode of ["subdomain", "sandbox"] as const) {
-  test(`${mode}: the top bar reads Echo, and comment mode shows the red-orange rule`, async ({ page }) => {
-    const s = await registerSession(d.base, d.token, "claude", `echo-${mode}`);
-    const { artifact } = await publishAs(d.base, d.token, s.id, `Echo ${mode}`, { "index.html": "<main><h2>Goals</h2></main>" });
-    await openArtifact(page, d.base, artifact.id, 1, mode);
-    await expect(page.locator(".topbar h1")).toHaveText(`Echo ${mode}`);
+{
+  test(`the top bar reads Echo, and comment mode shows the red-orange rule`, async ({ page }) => {
+    const s = await registerSession(d.base, d.token, "claude", `echo`);
+    const { artifact } = await publishAs(d.base, d.token, s.id, `Echo`, { "index.html": "<main><h2>Goals</h2></main>" });
+    await openArtifact(page, d.base, artifact.id, 1);
+    await expect(page.locator(".topbar h1")).toHaveText(`Echo`);
     // By the owner agent's name (spec 2026-10-08 §11), which a shared daemon may have suffixed.
     await expect(page.locator(".topbar .by")).toHaveText(`published by ${s.name}`);
     // The title is the system sans; the page asks for no font file.
@@ -33,7 +33,7 @@ test("at phone width the bar keeps the mark, title, Comment and the more menu in
   const s = await registerSession(d.base, d.token, "claude", "echo-phone");
   const { artifact } = await publishAs(d.base, d.token, s.id, "A long title that has to fit a phone without pushing anything sideways", { "index.html": "<main><h2>Goals</h2></main>" });
   await page.setViewportSize({ width: 390, height: 844 });
-  await openArtifact(page, d.base, artifact.id, 1, "subdomain");
+  await openArtifact(page, d.base, artifact.id, 1);
   await expect(page.locator(".topbar a.home")).toBeVisible();
   await expect(page.getByRole("button", { name: "Comment", exact: true })).toBeVisible();
   await expect(page.getByRole("button", { name: "More", exact: true })).toBeVisible();
@@ -55,13 +55,13 @@ test("on a phone the more menu still opens raw and copies the link, and the gall
   await context.grantPermissions(["clipboard-read", "clipboard-write"]);
   const page = await context.newPage();
   const { artifact } = await publishAs(d.base, d.token, (await registerSession(d.base, d.token, "claude", "echo-phone-more")).id, "Phone more", { "index.html": "<main><h2>Goals</h2></main>" });
-  await openArtifact(page, d.base, artifact.id, 1, "subdomain");
+  await openArtifact(page, d.base, artifact.id, 1);
   const home = (await page.locator(".topbar a.home").boundingBox())!;
   expect(Math.min(home.width, home.height)).toBeGreaterThanOrEqual(44);
   await page.getByRole("button", { name: "More", exact: true }).click();
   const raw = page.getByRole("menuitem", { name: "Open raw" });
   await expect(raw).toBeVisible();
-  expect(await raw.getAttribute("href")).toBe(await page.locator("iframe.frame").getAttribute("src"));
+  expect(await raw.getAttribute("href")).toBe((await contentFrame(page, artifact.id, 1)).url());
   await page.getByRole("menuitem", { name: "Copy link" }).click();
   expect(await page.evaluate(() => navigator.clipboard.readText())).toContain(`/a/${artifact.id}`);
   await context.close();
@@ -72,7 +72,7 @@ test("at phone width the more menu's Versions item opens the version menu as a s
   const { artifact } = await publishAs(d.base, d.token, s.id, "Phone versions", { "index.html": "<main><h2>Goals</h2></main>" });
   await publishNext(d.base, d.token, s.id, artifact.id, 1, {});
   await page.setViewportSize({ width: 390, height: 844 });
-  await openArtifact(page, d.base, artifact.id, 2, "subdomain");
+  await openArtifact(page, d.base, artifact.id, 2);
   await expect(page.locator(".topbar .vbtn")).toBeHidden();
   await page.getByRole("button", { name: "More", exact: true }).click();
   await page.getByRole("menuitem", { name: "Versions" }).click();
@@ -90,12 +90,12 @@ test("at phone width the more menu's Versions item opens the version menu as a s
 test("the more menu opens raw and copies the link, and Escape closes it with focus back on its button", async ({ page, context }) => {
   await context.grantPermissions(["clipboard-read", "clipboard-write"]);
   const { artifact } = await publishAs(d.base, d.token, (await registerSession(d.base, d.token, "claude", "echo-more")).id, "Echo more", { "index.html": "<main><h2>Goals</h2></main>" });
-  await openArtifact(page, d.base, artifact.id, 1, "subdomain");
+  await openArtifact(page, d.base, artifact.id, 1);
   const more = page.getByRole("button", { name: "More", exact: true });
   await more.click();
   const raw = page.getByRole("menuitem", { name: "Open raw" });
   await expect(raw).toBeFocused();
-  expect(await raw.getAttribute("href")).toBe(await page.locator("iframe.frame").getAttribute("src"));
+  expect(await raw.getAttribute("href")).toBe((await contentFrame(page, artifact.id, 1)).url());
   await page.keyboard.press("Escape");
   await expect(page.getByRole("menu")).toHaveCount(0);
   await expect(more).toBeFocused();
@@ -121,25 +121,20 @@ test("the more menu opens raw and copies the link, and Escape closes it with foc
   await expect(more).toBeFocused();
 });
 
-test("the sidebar holds its width from the first paint, so the frame is laid out once, however late the thread list's code arrives", async ({ page }) => {
+test("the sidebar holds its width from the first paint, so the page is laid out once, however late the thread list's code arrives", async ({ page }) => {
   const s = await registerSession(d.base, d.token, "claude", "echo-reserve");
-  const { artifact } = await publishAs(d.base, d.token, s.id, "Echo reserve", { "index.html": "<main><h2>Goals</h2></main>" });
+  // The page notes every width it is laid out at. (The frame in the HTML
+  // shows the site's handshake first, at whatever width; the page comes
+  // once the shell has asked for its code.)
+  const page1 = `<main><h2>Goals</h2></main><script>window.widths = [innerWidth]; addEventListener("resize", () => widths.push(innerWidth));</script>`;
+  const { artifact } = await publishAs(d.base, d.token, s.id, "Echo reserve", { "index.html": page1 });
   await page.setViewportSize({ width: 1440, height: 900 });
   // The thread list's chunk arrives 300 ms late.
   await page.route("**/ShellSidebar-*.js", async r => { await new Promise(f => setTimeout(f, 300)); await r.continue(); });
-  await page.addInitScript(() => {
-    const widths: number[] = [];
-    (window as unknown as { frameWidths: number[] }).frameWidths = widths;
-    new MutationObserver((_, o) => {
-      const f = document.querySelector("iframe.frame");
-      if (!f) return;
-      o.disconnect();
-      new ResizeObserver(() => widths.push(Math.round(f.getBoundingClientRect().width))).observe(f);
-    }).observe(document, { childList: true, subtree: true });
-  });
-  await openArtifact(page, d.base, artifact.id, 1, "subdomain");
+  const frame = await openArtifact(page, d.base, artifact.id, 1);
   await expect(page.locator("aside.sidebar .gh")).toHaveCount(3);
-  expect(new Set(await page.evaluate(() => (window as unknown as { frameWidths: number[] }).frameWidths)).size).toBe(1);
+  const widths = await frame.evaluate(() => (window as unknown as { widths: number[] }).widths);
+  expect(new Set(widths).size, JSON.stringify(widths)).toBe(1);
   expect((await page.locator(".drawer").boundingBox())!.width).toBe(392);
 });
 
@@ -148,7 +143,7 @@ test("at phone width the thread list's code is fetched after the first paint, be
   const { artifact } = await publishAs(d.base, d.token, s.id, "Echo prefetch", { "index.html": "<main><h2>Goals</h2></main>" });
   await page.setViewportSize({ width: 390, height: 844 });
   const fetched = page.waitForRequest(/\/ShellSidebar-[^/]*\.js$/);
-  await openArtifact(page, d.base, artifact.id, 1, "subdomain");
+  await openArtifact(page, d.base, artifact.id, 1);
   await fetched;
   await expect(page.locator("aside.sidebar")).toHaveCount(0);
 });
@@ -157,7 +152,7 @@ test("the tenth version, viewed first in this browser, reads rally of 10 in the 
   const s = await registerSession(d.base, d.token, "claude", "echo-rally");
   const { artifact } = await publishAs(d.base, d.token, s.id, "Echo rally", { "index.html": "<main><h2>Goals</h2></main>" });
   for (let v = 1; v < 10; v++) await publishNext(d.base, d.token, s.id, artifact.id, v, {});
-  await openArtifact(page, d.base, artifact.id, 10, "subdomain");
+  await openArtifact(page, d.base, artifact.id, 10);
   await expect(page.locator(".who .sum .l2")).toContainText("rally of 10");
   await page.reload();
   await contentFrame(page, artifact.id, 10);

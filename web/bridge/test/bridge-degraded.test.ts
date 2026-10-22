@@ -16,7 +16,7 @@ beforeAll(async () => {
   document.body.innerHTML = `<h2 id="h">Goals</h2>`;
   const script = document.createElement("script");
   script.setAttribute("src", "/_clax/bridge.js?v=0123456789ab");
-  script.dataset.artifact = "7q3k9mzx2b4t"; script.dataset.version = "1"; script.dataset.contract = "0.2.61"; script.dataset.file = "index.html";
+  script.dataset.artifact = "7q3k9mzx2b4t"; script.dataset.version = "1"; script.dataset.contract = "0.2.61"; script.dataset.file = "index.html"; script.dataset.origin = location.origin;
   document.head.appendChild(script);
   Object.defineProperty(document, "currentScript", { value: script, configurable: true });
   failParts(["caps", "clip", "room"]);

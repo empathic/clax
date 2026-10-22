@@ -185,8 +185,6 @@ export async function skewWorking(base: string, token: string, secs: number) {
   return api(base, token, "/api/_test/working/skew", { method: "POST", body: JSON.stringify({ secs }) });
 }
 
-export type FrameMode = "subdomain" | "sandbox";
-
 /** A GET of `path` on artifact `id`'s site host (`<id>.localhost:<port>`),
  * sent to the daemon at `base` with that `Host`, as a browser on this
  * machine reaches it. */
@@ -204,11 +202,12 @@ export function siteGet(base: string, id: string, path: string): Promise<{ statu
   });
 }
 
-/** The content frame showing version `n` of artifact `id`, in either frame
- * mode, once its document has been parsed (a test that reads or scrolls the
- * page at once would otherwise race the parser). */
+/** The content frame showing version `n` of artifact `id` on its site
+ * origin, once its handshake (`/_clax/session/start`, then the site code)
+ * has landed on the page and its document has been parsed (a test that
+ * reads or scrolls the page at once would otherwise race the parser). */
 export async function contentFrame(page: Page, id: string, n: number): Promise<Frame> {
-  const url = new RegExp(`(${id}\\.localhost:\\d+/_clax/v/${n}/)$`);
+  const url = new RegExp(`${id}\\.localhost:\\d+/_clax/v/${n}/(#.*)?$`);
   await expect.poll(() => page.frame({ url }) !== null, { timeout: 10_000 }).toBe(true);
   const frame = page.frame({ url })!;
   await frame.waitForLoadState("domcontentloaded");
@@ -232,18 +231,8 @@ export async function commentModeIn(frame: Frame): Promise<void> {
   await expect.poll(() => frame.evaluate(() => document.documentElement.style.cursor)).toBe("crosshair");
 }
 
-/** Opens the artifact's shell in `mode`. `lan: true` answers `/api/token` with
- * 403, so the shell behaves as a LAN viewer's (no token, sandboxed frame). */
-export async function openArtifact(page: Page, base: string, id: string, n: number, mode: FrameMode, opts: { lan?: boolean } = {}): Promise<Frame> {
-  if (mode === "sandbox" || opts.lan) await page.addInitScript(() => { try { sessionStorage.setItem("clax.origin-ok", "0"); } catch { /* storage unavailable */ } });
-  if (opts.lan) {
-    await page.route("**/api/token", r => r.fulfill({ status: 403, contentType: "application/json", body: JSON.stringify({ error: { code: "not_loopback", message: "not a loopback connection" } }) }));
-    // No route reaches a shared worker's requests, and the stream hub's
-    // worker asks GET /api/token again after a failed connection, which
-    // would make this browser the owner. The hub runs in the page instead,
-    // where the route above answers it.
-    await page.addInitScript(() => { delete (window as unknown as { SharedWorker?: unknown }).SharedWorker; });
-  }
+/** Opens the artifact's shell and waits for version `n` in its frame. */
+export async function openArtifact(page: Page, base: string, id: string, n: number): Promise<Frame> {
   await page.goto(`${base}/a/${id}`);
   return contentFrame(page, id, n);
 }

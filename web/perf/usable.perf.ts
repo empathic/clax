@@ -2,7 +2,10 @@ import { test, type Browser } from "@playwright/test";
 import { appendFileSync, existsSync, readFileSync, writeFileSync } from "node:fs";
 import { arch, platform } from "node:os";
 import { fileURLToPath } from "node:url";
-import { type FrameMode, contentFrame, publish, startDaemon } from "../e2e/fixtures";
+import { contentFrame, publish, startDaemon } from "../e2e/fixtures";
+
+/** The frame on the artifact's own site, the one frame mode (web/perf/budget.json keys its budgets by it). */
+type FrameMode = "subdomain";
 
 /** What the harness measures, in milliseconds, per frame mode:
  * - `firstPaint`: link → the frame's first contentful paint, in the tab
@@ -59,7 +62,7 @@ const WARMUPS = QUICK ? 1 : 2;
 const SAMPLES = QUICK ? 5 : 9;
 /** Runs per recording: a baseline or budget is the median of their medians. */
 const RECORD_RUNS = 3;
-const MODES: FrameMode[] = ["subdomain", "sandbox"];
+const MODES: FrameMode[] = ["subdomain"];
 /** What `CLAX_PERF_RECORD` asks for: nothing, the first baseline, or lower budgets. */
 const RECORD = process.env.CLAX_PERF_RECORD ?? "";
 /** The key of this machine's entry in budget.json, e.g. `darwin-arm64`. */
@@ -112,11 +115,10 @@ async function poll<T>(f: () => Promise<T | null>, what: string): Promise<T> {
  * the link and does nothing else. Paint timing is waited for; the
  * animation-frame fallback counts only where none comes within half a second
  * of it. */
-async function quietPaint(browser: Browser, base: string, id: string, mode: FrameMode): Promise<{ paint: number; source: "paint" | "raf" }> {
+async function quietPaint(browser: Browser, base: string, id: string): Promise<{ paint: number; source: "paint" | "raf" }> {
   const ctx = await browser.newContext();
   try {
     await ctx.addInitScript(recorder);
-    if (mode === "sandbox") await ctx.addInitScript(() => { try { sessionStorage.setItem("clax.origin-ok", "0"); } catch { /* storage unavailable */ } });
     const first = await ctx.newPage();
     await first.goto(`${base}/a/${id}`);
     await contentFrame(first, id, 1);
@@ -169,11 +171,10 @@ function appHost() {
 
 /** Link → the shell's first `ready` to the app, in a context set up as
  * `sample`'s (a first tab that loaded the app's view), in a fresh tab. */
-async function appReady(browser: Browser, base: string, id: string, mode: FrameMode): Promise<number> {
+async function appReady(browser: Browser, base: string, id: string): Promise<number> {
   const ctx = await browser.newContext();
   try {
     await ctx.addInitScript(appHost);
-    if (mode === "sandbox") await ctx.addInitScript(() => { try { sessionStorage.setItem("clax.origin-ok", "0"); } catch { /* storage unavailable */ } });
     const first = await ctx.newPage();
     await first.goto(`${base}/a/${id}?app=1`, { waitUntil: "commit" });
     await poll(() => first.evaluate(() => (window as unknown as { claxApp: { ready: number | null } }).claxApp.ready), "the first app tab's ready");
@@ -194,11 +195,10 @@ async function appReady(browser: Browser, base: string, id: string, mode: FrameM
 /** Click on Comment → crosshair in a context set up as `sample`'s, in a tab
  * whose frame gets the comment part's bytes only once the click has been
  * dispatched. */
-async function coldLatency(browser: Browser, base: string, id: string, mode: FrameMode): Promise<number> {
+async function coldLatency(browser: Browser, base: string, id: string): Promise<number> {
   const ctx = await browser.newContext();
   try {
     await ctx.addInitScript(recorder);
-    if (mode === "sandbox") await ctx.addInitScript(() => { try { sessionStorage.setItem("clax.origin-ok", "0"); } catch { /* storage unavailable */ } });
     const first = await ctx.newPage();
     await first.goto(`${base}/a/${id}`);
     await contentFrame(first, id, 1);
@@ -231,11 +231,10 @@ async function coldLatency(browser: Browser, base: string, id: string, mode: Fra
 
 /** One sample: a context that has seen the artifact once (a first tab that
  * loaded it and pressed nothing), then a fresh tab opening the link. */
-async function sample(browser: Browser, base: string, port: string, id: string, mode: FrameMode): Promise<Sample> {
+async function sample(browser: Browser, base: string, port: string, id: string): Promise<Sample> {
   const ctx = await browser.newContext();
   try {
     await ctx.addInitScript(recorder);
-    if (mode === "sandbox") await ctx.addInitScript(() => { try { sessionStorage.setItem("clax.origin-ok", "0"); } catch { /* storage unavailable */ } });
     const first = await ctx.newPage();
     await first.goto(`${base}/a/${id}`);
     await contentFrame(first, id, 1);
@@ -274,9 +273,9 @@ async function sample(browser: Browser, base: string, port: string, id: string, 
     }), "the control page's first paint");
 
 
-    const q = await quietPaint(browser, base, id, mode);
-    const cold = await coldLatency(browser, base, id, mode);
-    const app = await appReady(browser, base, id, mode);
+    const q = await quietPaint(browser, base, id);
+    const cold = await coldLatency(browser, base, id);
+    const app = await appReady(browser, base, id);
     return {
       firstPaint: (rec.paint ?? rec.raf)! - shell,
       commentReady: rec.crosshair! - shell,
@@ -399,9 +398,9 @@ for (const mode of MODES) {
     // A recording takes the median of several runs' medians; a check, one run.
     const runs: { median: Metrics & Shell & { control: number }; samples: Sample[] }[] = [];
     for (let run = 0; run < (RECORD ? RECORD_RUNS : 1); run++) {
-      for (let i = 0; i < WARMUPS; i++) await sample(browser, d.base, port, id, mode);
+      for (let i = 0; i < WARMUPS; i++) await sample(browser, d.base, port, id);
       const xs: Sample[] = [];
-      for (let i = 0; i < SAMPLES; i++) xs.push(await sample(browser, d.base, port, id, mode));
+      for (let i = 0; i < SAMPLES; i++) xs.push(await sample(browser, d.base, port, id));
       const of = (k: keyof (Metrics & Shell) | "control") => median(xs.map(x => x[k]));
       runs.push({ median: { firstPaint: of("firstPaint"), commentReady: of("commentReady"), framePaint: of("framePaint"), readyLatency: of("readyLatency"), coldLatency: of("coldLatency"), appReady: of("appReady"), control: of("control") }, samples: xs });
     }

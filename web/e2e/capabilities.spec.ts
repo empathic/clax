@@ -1,4 +1,5 @@
 import { test, expect, type Daemon, reach, contentFrame, openArtifact, publishWith } from "./fixtures";
+import { guestOn, hostedDaemon, ownerOf, shareByLink } from "./hosted-helpers";
 
 let d: Daemon;
 test.beforeEach(({ daemon }) => { d = daemon; });
@@ -29,55 +30,63 @@ const PERMS = `<!doctype html><html><head><title>Perms</title></head><body>
 })();
 </script></body></html>`;
 
-for (const mode of ["subdomain", "sandbox"] as const) {
-  test(`${mode}: use() resolves declared names asynchronously, frozen, and null for the rest`, async ({ page }) => {
-    const { artifact } = await publishWith(d.base, d.token, `Probe ${mode}`, PROBE, { db: {}, artifact: {}, comments: { composer_only: true } });
-    const frame = await openArtifact(page, d.base, artifact.id, 1, mode);
-    await expect(frame.locator("#out")).not.toHaveText("waiting");
-    const out = JSON.parse(await frame.locator("#out").textContent() ?? "{}");
-    expect(out).toMatchObject({
-      sync: false, sameSelf: true,
-      permissions: "request,state", db: "artifact,collection,doc", artifact: "edit,publish,sync", self: "edit,publish,sync",
-      comments: "anchorFor,canSendToClaude,create,customAnchors,delete,onWorking,openComposer,reply,resolve,sendToClaude,working",
-      user: "avatarUrl,can,canEdit,email,id,isOwner,me,name,profiles,search", downloads: null, assets: null, files: null, mcp: null, room: null, sample: null, nonsense: null,
-      permissionsFrozen: true, dbFrozen: true,
-    });
-    await expect(page.getByRole("dialog")).toHaveCount(0);
+test(`use() resolves declared names asynchronously, frozen, and null for the rest`, async ({ page }) => {
+  const { artifact } = await publishWith(d.base, d.token, `Probe`, PROBE, { db: {}, artifact: {}, comments: { composer_only: true } });
+  const frame = await openArtifact(page, d.base, artifact.id, 1);
+  await expect(frame.locator("#out")).not.toHaveText("waiting");
+  const out = JSON.parse(await frame.locator("#out").textContent() ?? "{}");
+  expect(out).toMatchObject({
+    sync: false, sameSelf: true,
+    permissions: "request,state", db: "artifact,collection,doc", artifact: "edit,publish,sync", self: "edit,publish,sync",
+    comments: "anchorFor,canSendToClaude,create,customAnchors,delete,onWorking,openComposer,reply,resolve,sendToClaude,working",
+    user: "avatarUrl,can,canEdit,email,id,isOwner,me,name,profiles,search", downloads: null, assets: null, files: null, mcp: null, room: null, sample: null, nonsense: null,
+    permissionsFrozen: true, dbFrozen: true,
   });
+  await expect(page.getByRole("dialog")).toHaveCount(0);
+});
 
-  test(`${mode}: permissions.request shows one dialog; a denial is final for the load, a grant persists`, async ({ page }) => {
-    const { artifact } = await publishWith(d.base, d.token, `Perms ${mode}`, PERMS, { comments: {}, db: {} });
-    let frame = await openArtifact(page, d.base, artifact.id, 1, mode);
-    await expect(frame.locator("#out")).toHaveText(JSON.stringify({ comments: "prompt", all: { db: "granted", user: "granted", comments: "prompt" } }));
-    await expect(page.getByRole("dialog")).toHaveCount(0);
-    await frame.locator("#ask").click();
-    const dialog = page.getByRole("dialog");
-    await expect(dialog).toContainText("post comments on this artifact under your name");
-    await dialog.getByRole("button", { name: "Don't allow" }).click();
-    await expect(frame.locator("#out")).toHaveText(JSON.stringify({ comments: "denied" }));
-    await reach(page, frame.locator("#ask"));
-    await frame.locator("#ask").click();
-    await expect(frame.locator("#out")).toHaveText(JSON.stringify({ comments: "denied" }));
-    await expect(page.getByRole("dialog")).toHaveCount(0);
-    await page.reload();
-    frame = await contentFrame(page, artifact.id, 1);
-    await expect(frame.locator("#out")).toHaveText(JSON.stringify({ comments: "prompt", all: { db: "granted", user: "granted", comments: "prompt" } }));
-    await frame.locator("#ask").click();
-    await page.getByRole("dialog").getByRole("button", { name: "Allow", exact: true }).click();
-    await expect(frame.locator("#out")).toHaveText(JSON.stringify({ comments: "granted" }));
-    await page.reload();
-    frame = await contentFrame(page, artifact.id, 1);
-    await expect(frame.locator("#out")).toContainText('"comments":"granted"');
-  });
-}
+test(`permissions.request shows one dialog; a denial is final for the load, a grant persists`, async ({ page }) => {
+  const { artifact } = await publishWith(d.base, d.token, `Perms`, PERMS, { comments: {}, db: {} });
+  let frame = await openArtifact(page, d.base, artifact.id, 1);
+  await expect(frame.locator("#out")).toHaveText(JSON.stringify({ comments: "prompt", all: { db: "granted", user: "granted", comments: "prompt" } }));
+  await expect(page.getByRole("dialog")).toHaveCount(0);
+  await frame.locator("#ask").click();
+  const dialog = page.getByRole("dialog");
+  await expect(dialog).toContainText("post comments on this artifact under your name");
+  await dialog.getByRole("button", { name: "Don't allow" }).click();
+  await expect(frame.locator("#out")).toHaveText(JSON.stringify({ comments: "denied" }));
+  await reach(page, frame.locator("#ask"));
+  await frame.locator("#ask").click();
+  await expect(frame.locator("#out")).toHaveText(JSON.stringify({ comments: "denied" }));
+  await expect(page.getByRole("dialog")).toHaveCount(0);
+  await page.reload();
+  frame = await contentFrame(page, artifact.id, 1);
+  await expect(frame.locator("#out")).toHaveText(JSON.stringify({ comments: "prompt", all: { db: "granted", user: "granted", comments: "prompt" } }));
+  await frame.locator("#ask").click();
+  await page.getByRole("dialog").getByRole("button", { name: "Allow", exact: true }).click();
+  await expect(frame.locator("#out")).toHaveText(JSON.stringify({ comments: "granted" }));
+  await page.reload();
+  frame = await contentFrame(page, artifact.id, 1);
+  await expect(frame.locator("#out")).toContainText('"comments":"granted"');
+});
 
-test("LAN view: assets resolves null without the token", async ({ page }) => {
+// A viewer who is not the owner: a hosted daemon's guest on a page shared by
+// link (a local daemon frames pages for the owner alone).
+test("a guest's view: assets resolves null without the token", async ({ page, browser }) => {
   const html = `<!doctype html><html><head><title>L</title></head><body><pre id="out">waiting</pre><script>
     claude.use("assets").then(a => { document.getElementById("out").textContent = a === null ? "null" : "object"; });
   </script></body></html>`;
-  const { artifact } = await publishWith(d.base, d.token, "LAN assets", html, { assets: {} });
-  const frame = await openArtifact(page, d.base, artifact.id, 1, "sandbox", { lan: true });
-  await expect(frame.locator("#out")).toHaveText("null");
-  const mine = await openArtifact(await page.context().newPage(), d.base, artifact.id, 1, "sandbox");
+  const { d: h, origin } = await hostedDaemon();
+  try {
+    const { artifact } = await publishWith(h.base, h.token, "Guest assets", html, { assets: {} });
+    await shareByLink(await ownerOf(browser, origin), artifact.id);
+    const { frame } = await guestOn(browser, origin, artifact.id);
+    await expect(frame.locator("#out")).toHaveText("null");
+  } finally {
+    await h.stop();
+  }
+  // The owner's own view has it.
+  const { artifact } = await publishWith(d.base, d.token, "Own assets", html, { assets: {} });
+  const mine = await openArtifact(page, d.base, artifact.id, 1);
   await expect(mine.locator("#out")).toHaveText("object");
 });

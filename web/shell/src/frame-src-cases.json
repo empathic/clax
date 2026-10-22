@@ -1,11 +1,6 @@
 [
-  { "id": "7q3k9mzx2b4t", "n": 1, "origin": null, "file": "index.html", "src": "/c/7q3k9mzx2b4t/v/1/" },
-  { "id": "7q3k9mzx2b4t", "n": 12, "origin": "http://7q3k9mzx2b4t.localhost:7481", "file": "index.html", "src": "http://7q3k9mzx2b4t.localhost:7481/_clax/v/12/" },
-  { "id": "7q3k9mzx2b4t", "n": 1, "origin": "http://7q3k9mzx2b4t.localhost:7481", "file": "docs/a b.html", "src": "http://7q3k9mzx2b4t.localhost:7481/_clax/v/1/docs/a%20b.html" },
-  { "id": "7q3k9mzx2b4t", "n": 1, "origin": "http://7q3k9mzx2b4t.localhost:7481", "file": "✓/é (1)!*~'.html", "src": "http://7q3k9mzx2b4t.localhost:7481/_clax/v/1/%E2%9C%93/%C3%A9%20(1)!*~'.html" },
-  { "id": "7q3k9mzx2b4t", "n": 1, "origin": null, "file": "a#b?c&d.html", "src": "/c/7q3k9mzx2b4t/v/1/a%23b%3Fc%26d.html" },
-  { "id": "7q3k9mzx2b4t", "n": 2, "origin": null, "location": "http://localhost:7481", "file": "index.html", "src": "http://7q3k9mzx2b4t.localhost:7481/_clax/v/2/" },
-  { "id": "7q3k9mzx2b4t", "n": 2, "origin": null, "location": "http://127.0.0.1:7481", "file": "a b.html", "src": "http://7q3k9mzx2b4t.localhost:7481/_clax/v/2/a%20b.html" },
-  { "id": "7q3k9mzx2b4t", "n": 2, "origin": null, "location": "http://192.168.1.2:7481", "file": "index.html", "src": "/c/7q3k9mzx2b4t/v/2/" },
-  { "id": "7q3k9mzx2b4t", "n": 2, "origin": "http://7q3k9mzx2b4t.localhost:7481", "location": "http://localhost:7481", "file": "index.html", "src": "http://7q3k9mzx2b4t.localhost:7481/_clax/v/2/" }
+  { "site": "http://7q3k9mzx2b4t.localhost:7481", "n": 12, "file": "index.html", "src": "http://7q3k9mzx2b4t.localhost:7481/_clax/v/12/", "start": "http://7q3k9mzx2b4t.localhost:7481/_clax/session/start?next=%2F_clax%2Fv%2F12%2F" },
+  { "site": "http://7q3k9mzx2b4t.localhost:7481", "n": 1, "file": "docs/a b.html", "src": "http://7q3k9mzx2b4t.localhost:7481/_clax/v/1/docs/a%20b.html", "start": "http://7q3k9mzx2b4t.localhost:7481/_clax/session/start?next=%2F_clax%2Fv%2F1%2Fdocs%2Fa%2520b.html" },
+  { "site": "http://7q3k9mzx2b4t.localhost:7481", "n": 1, "file": "✓/é (1)!*~'.html", "src": "http://7q3k9mzx2b4t.localhost:7481/_clax/v/1/%E2%9C%93/%C3%A9%20(1)!*~'.html", "start": "http://7q3k9mzx2b4t.localhost:7481/_clax/session/start?next=%2F_clax%2Fv%2F1%2F%25E2%259C%2593%2F%25C3%25A9%2520(1)!*~'.html" },
+  { "site": "https://7q3k9mzx2b4t.clax.run", "n": 2, "file": "a#b?c&d.html", "src": "https://7q3k9mzx2b4t.clax.run/_clax/v/2/a%23b%3Fc%26d.html", "start": "https://7q3k9mzx2b4t.clax.run/_clax/session/start?next=%2F_clax%2Fv%2F2%2Fa%2523b%253Fc%2526d.html" }
 ]

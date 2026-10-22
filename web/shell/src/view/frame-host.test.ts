@@ -1,6 +1,9 @@
 import { describe, expect, it, vi } from "vitest";
 import { INSPECT_FRAME } from "../../../bridge/src/protocol";
-import { FRAME_SANDBOX, FrameHost } from "./frame-host";
+import { FrameHost } from "./frame-host";
+
+const ALLOW = "clipboard-write; fullscreen; storage-access";
+const START = "http://x.localhost:1/_clax/session/start?next=%2F_clax%2Fv%2F1%2F";
 
 function stage() {
   const s = document.createElement("div");
@@ -10,78 +13,58 @@ function stage() {
 }
 
 describe("FrameHost", () => {
-  it("creates the frame first in the stage with the shell's attributes, and keeps it for the same key", () => {
+  it("creates the frame first in the stage with the shell's attributes and no sandbox, and keeps it for the same key", () => {
     const s = stage();
     const host = new FrameHost(s, () => {});
-    const el = host.show("/c/x/v/1/", true, "1-s");
+    const el = host.show(START, "1");
     expect(s.firstElementChild).toBe(el);
     expect(el.className).toBe("frame");
     expect(el.title).toBe("artifact content");
-    expect(el.getAttribute("allow")).toBe("clipboard-write; fullscreen");
-    expect(el.getAttribute("sandbox")).toBe(FRAME_SANDBOX);
-    expect(host.show("/c/x/v/1/", true, "1-s")).toBe(el);
-    const next = host.show("http://x.localhost:1/v/2/", false, "2-o");
+    expect(el.getAttribute("allow")).toBe(ALLOW);
+    expect(el.hasAttribute("sandbox")).toBe(false);
+    expect(host.show(START, "1")).toBe(el);
+    const next = host.show("http://x.localhost:1/_clax/session/start?next=%2F_clax%2Fv%2F2%2F", "2");
     expect(next).not.toBe(el);
     expect(el.isConnected).toBe(false);
-    expect(next.hasAttribute("sandbox")).toBe(false);
   });
-  it("adopts a frame already in the stage when its src and sandboxing match, and replaces it otherwise", () => {
+  it("adopts a served frame only with the shell's exact src and attributes, and replaces it otherwise", () => {
+    const attrs = (src = START, allow = ALLOW, title = "artifact content", sandbox: string | null = null) =>
+      `<iframe class="frame" title="${title}" src="${src}" allow="${allow}"${sandbox === null ? "" : ` sandbox="${sandbox}"`}></iframe>`;
     const s = stage();
-    s.insertAdjacentHTML("afterbegin", `<iframe class="frame" title="artifact content" src="/c/x/v/1/" allow="clipboard-write; fullscreen" sandbox="${FRAME_SANDBOX}"></iframe>`);
+    s.insertAdjacentHTML("afterbegin", attrs());
     const served = s.querySelector("iframe")!;
     const onLoad = vi.fn();
-    expect(new FrameHost(s, onLoad).show("/c/x/v/1/", true, "1-s")).toBe(served);
+    expect(new FrameHost(s, onLoad).show(START, "1")).toBe(served);
     served.dispatchEvent(new Event("load"));
     expect(onLoad).toHaveBeenCalledTimes(1);
-    const other = stage();
-    other.insertAdjacentHTML("afterbegin", `<iframe class="frame" title="artifact content" src="http://x.localhost:1/v/1/" allow="clipboard-write; fullscreen"></iframe>`);
-    const stale = other.querySelector("iframe")!;
-    const made = new FrameHost(other, () => {}).show("/c/x/v/1/", true, "1-s");
-    expect(made).not.toBe(stale);
-    expect(stale.isConnected).toBe(false);
-  });
-  it("adopts a served frame only with the shell's exact attributes, and keeps the fragment for its page rather than navigating it", () => {
-    const attrs = (sandbox: string | null, allow = "clipboard-write; fullscreen", title = "artifact content") =>
-      `<iframe class="frame" title="${title}" src="/c/x/v/1/" allow="${allow}"${sandbox === null ? "" : ` sandbox="${sandbox}"`}></iframe>`;
-    for (const [markup, sandboxed] of [
-      [attrs(null), true],
-      [attrs(`${FRAME_SANDBOX} allow-same-origin`), true],
-      [attrs("allow-scripts"), true],
-      [attrs(FRAME_SANDBOX, "clipboard-write; fullscreen; camera"), true],
-      [attrs(FRAME_SANDBOX, "clipboard-write; fullscreen", "x"), true],
-      [attrs(FRAME_SANDBOX), false],
-    ] as const) {
-      const s = stage();
-      s.insertAdjacentHTML("afterbegin", markup);
-      const served = s.querySelector("iframe")!;
-      const el = new FrameHost(s, () => {}).show("/c/x/v/1/", sandboxed, "1");
-      expect(el, markup).not.toBe(served);
-      expect(served.isConnected).toBe(false);
-      expect(el.getAttribute("sandbox")).toBe(sandboxed ? FRAME_SANDBOX : null);
+    for (const markup of [
+      attrs("http://x.localhost:1/_clax/v/1/"),
+      attrs(START, "clipboard-write; fullscreen"),
+      attrs(START, `${ALLOW}; camera`),
+      attrs(START, ALLOW, "x"),
+      attrs(START, ALLOW, "artifact content", "allow-scripts allow-same-origin"),
+    ]) {
+      const t = stage();
+      t.insertAdjacentHTML("afterbegin", markup);
+      const odd = t.querySelector("iframe")!;
+      const el = new FrameHost(t, () => {}).show(START, "1");
+      expect(el, markup).not.toBe(odd);
+      expect(odd.isConnected).toBe(false);
+      expect(el.hasAttribute("sandbox")).toBe(false);
     }
-    const s = stage();
-    s.insertAdjacentHTML("afterbegin", attrs(FRAME_SANDBOX));
-    const served = s.querySelector("iframe")!;
-    const host = new FrameHost(s, () => {});
-    expect(host.show("/c/x/v/1/#part-2", true, "1")).toBe(served);
-    expect(served.getAttribute("src")).toBe("/c/x/v/1/");
-    expect(host.takeFragment()).toBe("#part-2");
-    expect(host.takeFragment()).toBe(null);
-    expect(host.show("/c/x/v/1/#part-2", true, "1")).toBe(served);
-    expect(host.takeFragment(), "only an adoption keeps one").toBe(null);
   });
   it("names the frame for inspection in the app's inspect view, and adopts a served frame there only with that name", () => {
     const served = (name: string | null) => {
       const s = stage();
-      s.insertAdjacentHTML("afterbegin", `<iframe class="frame"${name === null ? "" : ` name="${name}"`} title="artifact content" src="/c/x/v/1/" allow="clipboard-write; fullscreen" sandbox="${FRAME_SANDBOX}"></iframe>`);
+      s.insertAdjacentHTML("afterbegin", `<iframe class="frame"${name === null ? "" : ` name="${name}"`} title="artifact content" src="${START}" allow="${ALLOW}"></iframe>`);
       return { s, el: s.querySelector("iframe")! };
     };
     history.replaceState(null, "", "/a/x?app=1&inspect=1");
     try {
       const named = served(INSPECT_FRAME);
-      expect(new FrameHost(named.s, () => {}).show("/c/x/v/1/", true, "1-s")).toBe(named.el);
+      expect(new FrameHost(named.s, () => {}).show(START, "1")).toBe(named.el);
       const unnamed = served(null);
-      const made = new FrameHost(unnamed.s, () => {}).show("/c/x/v/1/", true, "1-s");
+      const made = new FrameHost(unnamed.s, () => {}).show(START, "1");
       expect(made).not.toBe(unnamed.el);
       expect(made.name).toBe(INSPECT_FRAME);
     } finally {
@@ -89,34 +72,64 @@ describe("FrameHost", () => {
     }
     // Outside the inspect view, a named served frame is not the shell's.
     const named = served(INSPECT_FRAME);
-    expect(new FrameHost(named.s, () => {}).show("/c/x/v/1/", true, "1-s")).not.toBe(named.el);
-    expect(new FrameHost(stage(), () => {}).show("/c/x/v/1/", true, "1-s").name).toBe("");
+    expect(new FrameHost(named.s, () => {}).show(START, "1")).not.toBe(named.el);
+    expect(new FrameHost(stage(), () => {}).show(START, "1").name).toBe("");
   });
   it("removes a served frame it did not adopt", () => {
     const s = stage();
-    s.insertAdjacentHTML("afterbegin", `<iframe class="frame" src="/c/x/v/1/"></iframe>`);
+    s.insertAdjacentHTML("afterbegin", `<iframe class="frame" src="${START}"></iframe>`);
     new FrameHost(s, () => {}).remove();
     expect(s.querySelector("iframe")).toBeNull();
   });
   it("sends a frame kept for the same key to a new src, and leaves it alone for the same src", () => {
     const s = stage();
     const host = new FrameHost(s, () => {});
-    const el = host.show("/c/x/v/1/", true, "1-s");
-    el.src = "/c/x/v/1/about.html";
-    expect(host.show("/c/x/v/1/", true, "1-s")).toBe(el);
-    expect(el.getAttribute("src")).toBe("/c/x/v/1/about.html");
-    expect(host.show("/c/x/v/1/#moved", true, "1-s")).toBe(el);
-    expect(el.getAttribute("src")).toBe("/c/x/v/1/#moved");
+    const el = host.show(START, "1");
+    el.src = "http://x.localhost:1/_clax/v/1/about.html";
+    expect(host.show(START, "1")).toBe(el);
+    expect(el.getAttribute("src")).toBe("http://x.localhost:1/_clax/v/1/about.html");
+    const moved = `${START}%23moved`;
+    expect(host.show(moved, "1")).toBe(el);
+    expect(el.getAttribute("src")).toBe(moved);
+  });
+  it("goes to the handshake's next step in place of the frame's history entry, keeping the src it was given, and back to that src again", () => {
+    const s = stage();
+    const host = new FrameHost(s, () => {});
+    const el = host.show(START, "1");
+    const replace = vi.fn();
+    Object.defineProperty(el, "contentWindow", { configurable: true, get: () => ({ location: { replace } }) });
+    const code = "http://x.localhost:1/_clax/session?code=c&next=%2F";
+    host.go(code);
+    expect(replace).toHaveBeenLastCalledWith(code);
+    expect(el.getAttribute("src")).toBe(START);
+    // The same src again leaves the frame where the handshake sent it.
+    expect(host.show(START, "1")).toBe(el);
+    expect(replace).toHaveBeenCalledTimes(1);
+    host.again();
+    expect(replace).toHaveBeenLastCalledWith(START);
+  });
+  it("falls back to the frame's src when its window cannot be navigated in place", () => {
+    const s = stage();
+    const host = new FrameHost(s, () => {});
+    const el = host.show(START, "1");
+    Object.defineProperty(el, "contentWindow", { configurable: true, get: () => ({ location: { replace() { throw new DOMException("no", "SecurityError"); } } }) });
+    const code = "http://x.localhost:1/_clax/session?code=c&next=%2F";
+    host.go(code);
+    expect(el.getAttribute("src")).toBe(code);
+    host.again();
+    expect(el.getAttribute("src")).toBe(START);
   });
   it("removes the frame and stops hearing its loads", () => {
     const s = stage();
     const onLoad = vi.fn();
     const host = new FrameHost(s, onLoad);
-    const el = host.show("/c/x/v/1/", true, "k");
+    const el = host.show(START, "k");
     host.remove();
     el.dispatchEvent(new Event("load"));
     expect(onLoad).not.toHaveBeenCalled();
     expect(host.el).toBeNull();
     expect(s.querySelector("iframe")).toBeNull();
+    host.go("x");
+    host.again();
   });
 });

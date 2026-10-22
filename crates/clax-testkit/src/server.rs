@@ -798,6 +798,30 @@ impl TestServer {
         (client, self.base.clone())
     }
 
+    /// [`TestServer::lan`]'s client as the browser of a connected person
+    /// named `name` ([`TestServer::person`]), its `clax_viewer` cookie on
+    /// every request that names no cookie of its own: another machine's
+    /// browser a local daemon still serves (an unconnected viewer's it
+    /// refuses), and the base URL.
+    pub async fn lan_person(&self, name: &str) -> (reqwest::Client, String) {
+        let v = self.person(name).await;
+        let mut h = reqwest::header::HeaderMap::new();
+        h.insert(LAN_HEADER, reqwest::header::HeaderValue::from_static("1"));
+        h.insert(
+            reqwest::header::HOST,
+            format!("{LAN_LOCAL}:{}", self.addr.port()).parse().unwrap(),
+        );
+        h.insert(
+            reqwest::header::COOKIE,
+            format!("clax_viewer={}", v.cookie).parse().unwrap(),
+        );
+        let client = reqwest::Client::builder()
+            .default_headers(h)
+            .build()
+            .unwrap();
+        (client, self.base.clone())
+    }
+
     /// [`TestServer::lan`]'s client, sending no redirect on.
     pub fn lan_unfollowed(&self) -> reqwest::Client {
         let mut h = reqwest::header::HeaderMap::new();

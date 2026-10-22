@@ -975,7 +975,8 @@ fn publisher(caller: &clax_http::auth::Caller) -> Option<String> {
 /// session ID is included. From a browser with a viewer
 /// (the owner for the owner cookie, else the viewer cookie's or a hosted
 /// session's; see [`clax_http::identity`]), also that viewer's `attention`,
-/// and the response is private to the cookie.
+/// and the response is private to the cookie. `site` names the site hosts
+/// the shell frames it on (`crate::shell::boot::site_of`).
 pub async fn get(
     State(s): State<AppState>,
     a: Agent<clax_http::agent::ArtifactsGet>,
@@ -1048,6 +1049,8 @@ pub async fn get(
     if !a.holds_token() {
         strip_sessions(&mut v);
     }
+    // Where the shell frames it (the bootstrap's `site`).
+    v["site"] = crate::shell::boot::site_of(&s, &headers);
     if has_viewer {
         Ok((
             [

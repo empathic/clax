@@ -5,7 +5,7 @@
 // labels, downloads, and the daemon's API.
 import { readdirSync, readFileSync } from "node:fs";
 import { type Frame, type Page } from "@playwright/test";
-import { test, expect, type Daemon, api, contentFrame, namedViewer, openArtifact, publishWith, reach, type FrameMode, nameField } from "./fixtures";
+import { test, expect, type Daemon, api, contentFrame, namedViewer, openArtifact, publishWith, reach, nameField } from "./fixtures";
 
 let d: Daemon;
 test.beforeEach(({ daemon }) => { d = daemon; });
@@ -22,9 +22,8 @@ const EXTENSIONS = ["working-cap.html"];
  * screenshots (scenes.ts): no capabilities, so no contract case. */
 const SHOTS = ["sample-report.html"];
 
-/** The content frame's URL in either frame mode: on the artifact's own
- * origin (sandboxed by the frame in sandbox mode). */
-const frameUrl = (_mode: FrameMode, id: string) => new RegExp(`^http://${id}\\.localhost:\\d+/_clax/v/1/$`);
+/** The content frame's URL: on the artifact's own origin. */
+const frameUrl = (id: string) => new RegExp(`^http://${id}\\.localhost:\\d+/_clax/v/1/$`);
 
 /** `page`, when set, makes the published page from the file (the file as
  * is, otherwise). */
@@ -206,56 +205,23 @@ test("every sample page is a plain claude.ai page with a case here", () => {
   }
 });
 
-for (const mode of ["subdomain", "sandbox"] as const) {
+{
   for (const [file, c] of Object.entries(CASES)) {
     // who.html reads the owner's name, unset only on a daemon of its own
     // (the owner is one viewer per daemon, and other tests name it).
     const run = async (page: Page) => {
       const src = c.page ? await c.page() : html(file);
-      const { artifact } = await publishWith(d.base, d.token, `${file} ${mode}`, src, c.caps);
+      const { artifact } = await publishWith(d.base, d.token, `${file}`, src, c.caps);
       if (file === "tracker.html") {
         expect(await seed(artifact.id, "tasks/a", { title: "Seeded one", created: 1 })).toBe(200);
         expect(await seed(artifact.id, "tasks/b", { title: "Seeded two", created: 2 })).toBe(200);
       }
-      const f = await openArtifact(page, d.base, artifact.id, 1, mode);
-      expect(f.url()).toMatch(frameUrl(mode, artifact.id));
+      const f = await openArtifact(page, d.base, artifact.id, 1);
+      expect(f.url()).toMatch(frameUrl(artifact.id));
       await c.check(f, page, artifact.id);
     };
-    if (file === "who.html") test(`${mode}: ${file} runs unchanged`, async ({ page, freshDaemon }) => { d = freshDaemon; await run(page); });
-    else test(`${mode}: ${file} runs unchanged`, async ({ page }) => run(page));
+    if (file === "who.html") test(`${file} runs unchanged`, async ({ page, freshDaemon }) => { d = freshDaemon; await run(page); });
+    else test(`${file} runs unchanged`, async ({ page }) => run(page));
   }
 }
 
-// Skipped while it flakes under load: the LAN viewer's click on Add sometimes adds nothing (see web/e2e/.qual).
-test.fixme("LAN: the tracker is readable, and writable only as far as the viewer's level allows", async ({ page }) => {
-  const { artifact } = await publishWith(d.base, d.token, "Tracker LAN", html("tracker.html"), CASES["tracker.html"].caps);
-  expect(await seed(artifact.id, "tasks/a", { title: "Seeded one", created: 1 })).toBe(200);
-  // The token without a viewer cannot write a viewer's private subtree either.
-  expect(await seed(artifact.id, "data/users/u_ffffffffffffffffffffff/prefs", { note: "not yours" })).toBe(404);
-  const f = await openArtifact(page, d.base, artifact.id, 1, "sandbox", { lan: true });
-  expect(f.url()).toMatch(frameUrl("sandbox", artifact.id));
-  await expect(f.locator("#status")).toHaveText("tasks 1");
-  await f.getByRole("textbox", { name: "New task" }).fill("From the LAN");
-  await f.getByRole("button", { name: "Add" }).click();
-  await expect(f.locator("#status")).toHaveText("add invalid_argument");
-  await f.locator("#save-note").click();
-  await expect(f.locator("#status")).toHaveText("note invalid_argument");
-  const name = await nameField(page);
-  // A name no other test gives the owner, a person or an agent: this
-  // worker's daemon is shared, and a viewer may not take one of theirs
-  // (409 name_taken), which would leave it unnamed and at the view level.
-  await name.fill("Tracker Quill");
-  const [named] = await Promise.all([page.waitForResponse(r => r.url().endsWith("/api/viewers/me") && r.request().method() === "PUT"), name.press("Enter")]);
-  expect(named.status()).toBe(200);
-  // After input to the shell the viewer's next click in the page comes after
-  // a move onto it, as a hand's does (see `reach`).
-  await reach(page, f.getByRole("button", { name: "Add" }));
-  await f.getByRole("button", { name: "Add" }).click();
-  await expect(f.locator("#tasks li")).toHaveText(["Seeded one", "From the LAN"]);
-  await reach(page, f.locator("#save-note"));
-  await f.locator("#save-note").click();
-  await expect(f.locator("#status")).toHaveText("note saved");
-  await reach(page, f.locator("#lock"));
-  await f.locator("#lock").click();
-  await expect(f.locator("#status")).toHaveText("lock invalid_argument");
-});

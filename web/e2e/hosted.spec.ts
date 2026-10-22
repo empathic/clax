@@ -209,7 +209,7 @@ test("the owner's browser has the owner's surfaces, a person's rights limit thei
     await expect(owner.getByRole("button", { name: "Unpin Plan" })).toBeVisible();
     // The frame loads the version from the artifact's site host.
     await owner.goto(`${origin}/a/${plan.id}`);
-    await expect(owner.locator("iframe.frame")).toHaveAttribute("src", new RegExp(`^http://${plan.id}\\.localhost:\\d+/_clax/v/1/$`));
+    await expect.poll(() => owner.frames().map(f => f.url())).toContainEqual(expect.stringMatching(new RegExp(`^http://${plan.id}\\.localhost:\\d+/_clax/v/1/$`)));
     await expect(owner.frameLocator("iframe.frame").locator("h1")).toHaveText("Plan");
     await shots(owner, "artifact-owner");
 
@@ -305,9 +305,9 @@ test("a guest on a page shared by link sees an agent drafting and shows the draf
     const banner = guest.locator(".banner.draft");
     await expect(banner).toContainText("claude is drafting…");
     await banner.getByRole("button", { name: "Show draft" }).click();
-    // On the artifact's own host, or under /c/ (sandboxed): no content key either way.
-    const url = new RegExp(`(${artifact.id}\\.localhost:\\d+/_clax|/c/${artifact.id})/draft/a_[^/]+/[A-Za-z0-9_-]{22}/`);
-    await expect(guest.locator("iframe.frame")).toHaveAttribute("src", url);
+    // On the artifact's own host, through its handshake: no content key.
+    const url = new RegExp(`${artifact.id}\\.localhost:\\d+/_clax/draft/a_[^/]+/[A-Za-z0-9_-]{22}/`);
+    await expect.poll(() => guest.frames().map(f => f.url())).toContainEqual(expect.stringMatching(url));
     await expect(guest.frameLocator("iframe.frame").locator("[data-clax-draft-changed]")).toHaveText("Ship the beta in May");
   } finally {
     await d.stop();

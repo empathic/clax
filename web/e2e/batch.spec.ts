@@ -16,12 +16,10 @@ const panel = async (page: import("@playwright/test").Page) => {
   if (!(await page.locator("aside.sidebar").isVisible())) await page.getByRole("button", { name: /Threads/ }).first().click();
 };
 
-for (const mode of ["subdomain", "sandbox"] as const) {
-  // The shell and the daemon alone decide what the sidebar sends; the frame only shows the
-  // page, the same in either mode: one mode each.
-  if (mode === "subdomain") test(`${mode}: tick a shift range, send with a note, and the agent gets one delivery`, async ({ page }) => {
-    const { sid, aid, ids } = await fresh(`Batch ${mode}`, 4);
-    await openArtifact(page, d.base, aid, 1, mode);
+{
+  test(`tick a shift range, send with a note, and the agent gets one delivery`, async ({ page }) => {
+    const { sid, aid, ids } = await fresh(`Batch`, 4);
+    await openArtifact(page, d.base, aid, 1);
     await panel(page);
     const box = (id: string) => page.locator(`.thread-card[data-thread="${id}"] .thread-check`);
     await box(ids[0]).click();
@@ -45,17 +43,17 @@ for (const mode of ["subdomain", "sandbox"] as const) {
     await expect(bar).toHaveCount(0);
     const got = await api(d.base, d.token, `/api/sessions/${sid}/feedback?tier=piggyback`);
     expect(got.feedback.map((f: { thread_id: string }) => f.thread_id)).toEqual(ids.slice(0, 3));
-    expect(got.text.split("\n")[1]).toBe(`[clax] 3 comments on "Batch ${mode}", sent together by Viewer. Note: "Before the demo"`);
+    expect(got.text.split("\n")[1]).toBe(`[clax] 3 comments on "Batch", sent together by Viewer. Note: "Before the demo"`);
     await expect(page.locator(`.thread-card[data-thread="${ids[1]}"] .hist`)).toContainText("sent it with 2 others · “Before the demo”");
     await page.getByRole("button", { name: "Send 1 unsent to claude" }).click();
     await expect(page.getByRole("button", { name: /unsent to/ })).toHaveCount(0);
   });
 
-  if (mode === "sandbox") test(`${mode}: with two live agents the caret picks one, and only that agent gets the rows`, async ({ page }) => {
-    const { sid, aid, ids } = await fresh(`Pick ${mode}`, 1);
-    const other = await registerSession(d.base, d.token, "codex", `pick-${mode}`);
+  test(`with two live agents the caret picks one, and only that agent gets the rows`, async ({ page }) => {
+    const { sid, aid, ids } = await fresh(`Pick`, 1);
+    const other = await registerSession(d.base, d.token, "codex", `pick`);
     await api(d.base, d.token, `/api/sessions/${other.id}/watches/${aid}`, { method: "PUT" });
-    await openArtifact(page, d.base, aid, 1, mode);
+    await openArtifact(page, d.base, aid, 1);
     await panel(page);
     const card = page.locator(`.thread-card[data-thread="${ids[0]}"]`);
     await card.getByRole("button", { name: "Choose the agent" }).click();
@@ -71,10 +69,10 @@ for (const mode of ["subdomain", "sandbox"] as const) {
     expect(await page.evaluate(id => localStorage.getItem(`clax.sendTo.${id}`), aid)).toMatch(/^a_/);
   });
 
-  if (mode === "subdomain") test(`${mode}: with no live agent Send goes without to, and the comment waits for the next session`, async ({ page }) => {
-    const { sid, aid, ids } = await fresh(`Nobody ${mode}`, 1);
+  test(`with no live agent Send goes without to, and the comment waits for the next session`, async ({ page }) => {
+    const { sid, aid, ids } = await fresh(`Nobody`, 1);
     await api(d.base, d.token, `/api/sessions/${sid}`, { method: "PATCH", body: JSON.stringify({ ended: true }) });
-    await openArtifact(page, d.base, aid, 1, mode);
+    await openArtifact(page, d.base, aid, 1);
     await panel(page);
     const card = page.locator(`.thread-card[data-thread="${ids[0]}"]`);
     // The caret is ClaxBot's alone, listed and not configured here.
@@ -82,14 +80,14 @@ for (const mode of ["subdomain", "sandbox"] as const) {
     const sent = page.waitForRequest(r => r.url().endsWith(`/threads/${ids[0]}/send`));
     await card.getByRole("button", { name: /^Send to / }).click();
     expect((await sent).postData() ?? "").not.toContain("\"to\"");
-    const next = await registerSession(d.base, d.token, "codex", `nobody-next-${mode}`);
+    const next = await registerSession(d.base, d.token, "codex", `nobody-next`);
     await api(d.base, d.token, `/api/sessions/${next.id}/watches/${aid}`, { method: "PUT" });
     expect((await api(d.base, d.token, `/api/sessions/${next.id}/feedback?tier=piggyback`)).feedback).toHaveLength(1);
   });
 
-  if (mode === "sandbox") test(`${mode}: a ticked thread that disappears leaves the selection, and the rest sends`, async ({ page }) => {
-    const { aid, ids } = await fresh(`Prune ${mode}`, 2);
-    await openArtifact(page, d.base, aid, 1, mode);
+  test(`a ticked thread that disappears leaves the selection, and the rest sends`, async ({ page }) => {
+    const { aid, ids } = await fresh(`Prune`, 2);
+    await openArtifact(page, d.base, aid, 1);
     await panel(page);
     for (const id of ids) await page.locator(`.thread-card[data-thread="${id}"] .thread-check`).click();
     const bar = page.getByRole("region", { name: "Selected comments" });

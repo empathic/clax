@@ -126,12 +126,12 @@ async function forge() {
 addEventListener("message", e => { if (e.data && e.data.type === "clax:comment-mode" && e.data.on) setTimeout(forge, 150); });
 </script></body></html>`;
 
-for (const mode of ["subdomain", "sandbox"] as const) {
-  test(`${mode}: a page that pulls focus cannot open the composer after the viewer clicks the shell's name field; the viewer's click in the page can`, async ({ page }) => {
-    const id = await publishLive(`Pull open ${mode}`, PULLER("open"), { comments: { composer_only: true } });
+{
+  test(`a page that pulls focus cannot open the composer after the viewer clicks the shell's name field; the viewer's click in the page can`, async ({ page }) => {
+    const id = await publishLive(`Pull open`, PULLER("open"), { comments: { composer_only: true } });
     await record(page);
     await page.addInitScript(() => addEventListener("message", e => { if (e.data === "puller-idle") (window as unknown as { pullerIdle: boolean }).pullerIdle = true; }));
-    const f = await openArtifact(page, d.base, id, 1, mode);
+    const f = await openArtifact(page, d.base, id, 1);
     // The page pulls focus and calls before the click, and goes on after it.
     await callsMore(page, 6);
     await (await nameField(page)).click();
@@ -175,9 +175,9 @@ for (const mode of ["subdomain", "sandbox"] as const) {
     await expect(page.locator(".composer")).toHaveCount(1);
   });
 
-  test(`${mode}: a page that pulls focus cannot ride keys typed in the shell with the pointer resting on the page`, async ({ page }) => {
-    const id = await publishLive(`Pull typing ${mode}`, PULLER("open", false), { comments: { composer_only: true } });
-    const f = await openArtifact(page, d.base, id, 1, mode);
+  test(`a page that pulls focus cannot ride keys typed in the shell with the pointer resting on the page`, async ({ page }) => {
+    const id = await publishLive(`Pull typing`, PULLER("open", false), { comments: { composer_only: true } });
+    const f = await openArtifact(page, d.base, id, 1);
     const name = await nameField(page);
     await name.click();
     // The pointer comes to rest on the page, and the click's activation lapses.
@@ -195,10 +195,10 @@ for (const mode of ["subdomain", "sandbox"] as const) {
     await expect(page.locator(".composer")).toHaveCount(0);
   });
 
-  test(`${mode}: a page that pulls focus cannot send to the agent after the viewer clicks the shell's name field; the viewer's click in the page can`, async ({ page }) => {
-    const id = await publishLive(`Pull send ${mode}`, PULLER("send"), { comments: {} });
+  test(`a page that pulls focus cannot send to the agent after the viewer clicks the shell's name field; the viewer's click in the page can`, async ({ page }) => {
+    const id = await publishLive(`Pull send`, PULLER("send"), { comments: {} });
     await record(page);
-    const f = await openArtifact(page, d.base, id, 1, mode);
+    const f = await openArtifact(page, d.base, id, 1);
     await callsMore(page, 6);
     await (await nameField(page)).click();
     await callsMore(page, 8);
@@ -224,9 +224,9 @@ for (const mode of ["subdomain", "sandbox"] as const) {
     await expect.poll(async () => (await threads()).map(t => t.sent_to_agent)).toEqual([true]);
   });
 
-  test(`${mode}: a Tab from the shell into the page and a key there opens the composer`, async ({ page }) => {
-    const id = await publishLive(`Tab ${mode}`, PULLER("open", false), { comments: { composer_only: true } });
-    const f = await openArtifact(page, d.base, id, 1, mode);
+  test(`a Tab from the shell into the page and a key there opens the composer`, async ({ page }) => {
+    const id = await publishLive(`Tab`, PULLER("open", false), { comments: { composer_only: true } });
+    const f = await openArtifact(page, d.base, id, 1);
     await expect(f.locator("#t")).toHaveAttribute("data-ready", "yes");
     await (await nameField(page)).click();
     for (let i = 0; i < 30 && (await f.locator("#focused").textContent()) !== "yes"; i++) await page.keyboard.press("Tab");
@@ -236,9 +236,9 @@ for (const mode of ["subdomain", "sandbox"] as const) {
     await expect(page.locator(".composer")).toHaveCount(1);
   });
 
-  test(`${mode}: a key in the page after a click there opens the composer with the pointer moved back over the shell`, async ({ page }) => {
-    const id = await publishLive(`Keys ${mode}`, PULLER("open", false), { comments: { composer_only: true } });
-    const f = await openArtifact(page, d.base, id, 1, mode);
+  test(`a key in the page after a click there opens the composer with the pointer moved back over the shell`, async ({ page }) => {
+    const id = await publishLive(`Keys`, PULLER("open", false), { comments: { composer_only: true } });
+    const f = await openArtifact(page, d.base, id, 1);
     // The page listens for the key only once its setup is done.
     await expect(f.locator("#t")).toHaveAttribute("data-ready", "yes");
     await f.locator("#t").click();
@@ -248,10 +248,10 @@ for (const mode of ["subdomain", "sandbox"] as const) {
     await expect(page.locator(".composer")).toHaveCount(1);
   });
 
-  test(`${mode}: a pick the page forges after the viewer clicks Comment opens no composer; the viewer's click and area drag do`, async ({ page }) => {
-    const id = await publishLive(`Forger ${mode}`, FORGER, {});
+  test(`a pick the page forges after the viewer clicks Comment opens no composer; the viewer's click and area drag do`, async ({ page }) => {
+    const id = await publishLive(`Forger`, FORGER, {});
     await record(page);
-    const f = await openArtifact(page, d.base, id, 1, mode);
+    const f = await openArtifact(page, d.base, id, 1);
     const comment = page.getByRole("button", { name: "Comment", exact: true });
     const forgedSeen = (n: number) => expect.poll(() => page.evaluate(pid => (window as any).claxMsgs.filter((m: any) => m.pickId === pid).length, `forged${n}`)).toBe(2);
     await comment.click();
@@ -349,8 +349,8 @@ async function go(f: Frame, kind: "open" | "send" | "forge", delayMs = 0) {
 const threadsOf = async (id: string) => ((await api(d.base, d.token, `/api/artifacts/${id}/threads?include_resolved=true`)) as { threads: { id: string; sent_to_agent: boolean; comments: { body: string }[] }[] }).threads;
 
 /** Opens `id` and waits for its page to set up. */
-async function openReady(page: Page, id: string, mode: "subdomain" | "sandbox") {
-  const f = await openArtifact(page, d.base, id, 1, mode);
+async function openReady(page: Page, id: string) {
+  const f = await openArtifact(page, d.base, id, 1);
   await expect(f.locator("#t")).toHaveAttribute("data-ready", "yes");
   return f;
 }
@@ -366,12 +366,12 @@ async function pickPara(page: Page, f: Frame) {
   return composer;
 }
 
-for (const mode of ["subdomain", "sandbox"] as const) {
+{
   for (const delay of [0, 500]) {
-    test(`${mode}: a page forging a pick${delay ? " 500 ms" : ""} after the viewer's Cancel in the composer opens nothing; comment mode resumes and the viewer's next click picks`, async ({ page }) => {
-      const id = await publishLive(`Cancel ${mode} ${delay}`, ATTACKER(false), { comments: { composer_only: true } });
+    test(`a page forging a pick${delay ? " 500 ms" : ""} after the viewer's Cancel in the composer opens nothing; comment mode resumes and the viewer's next click picks`, async ({ page }) => {
+      const id = await publishLive(`Cancel ${delay}`, ATTACKER(false), { comments: { composer_only: true } });
       await record(page);
-      const f = await openReady(page, id, mode);
+      const f = await openReady(page, id);
       const composer = await pickPara(page, f);
       await composer.getByRole("button", { name: "Cancel" }).click();
       await expect(composer).toHaveCount(0);
@@ -391,10 +391,10 @@ for (const mode of ["subdomain", "sandbox"] as const) {
     });
   }
 
-  test(`${mode}: a page forging a pick after the viewer's Post opens nothing`, async ({ page }) => {
-    const id = await publishLive(`Post ${mode}`, ATTACKER(false), { comments: { composer_only: true } });
+  test(`a page forging a pick after the viewer's Post opens nothing`, async ({ page }) => {
+    const id = await publishLive(`Post`, ATTACKER(false), { comments: { composer_only: true } });
     await record(page);
-    const f = await openReady(page, id, mode);
+    const f = await openReady(page, id);
     const composer = await pickPara(page, f);
     await composer.locator("textarea").fill("A real comment.");
     await composer.getByRole("button", { name: "Post comment" }).click();
@@ -408,9 +408,9 @@ for (const mode of ["subdomain", "sandbox"] as const) {
     expect((await threadsOf(id)).map(t => t.comments[0].body)).toEqual(["A real comment."]);
   });
 
-  test(`${mode}: after the viewer clicks Allow for the page's own create, the page cannot send to the agent`, async ({ page }) => {
-    const id = await publishLive(`Allow ${mode}`, ATTACKER(true), { comments: {} });
-    const f = await openReady(page, id, mode);
+  test(`after the viewer clicks Allow for the page's own create, the page cannot send to the agent`, async ({ page }) => {
+    const id = await publishLive(`Allow`, ATTACKER(true), { comments: {} });
+    const f = await openReady(page, id);
     const allow = consent(page).getByRole("button", { name: "Allow", exact: true });
     // The dialog sits over the frame, so its buttons do too.
     const fb = await frameBox(page);
@@ -424,9 +424,9 @@ for (const mode of ["subdomain", "sandbox"] as const) {
     expect((await threadsOf(id)).filter(t => t.sent_to_agent)).toHaveLength(0);
   });
 
-  test(`${mode}: Enter on Allow, the pointer resting over the page, grants nothing and the page cannot send to the agent`, async ({ page }) => {
-    const id = await publishLive(`Allow key ${mode}`, ATTACKER(true), { comments: {} });
-    const f = await openReady(page, id, mode);
+  test(`Enter on Allow, the pointer resting over the page, grants nothing and the page cannot send to the agent`, async ({ page }) => {
+    const id = await publishLive(`Allow key`, ATTACKER(true), { comments: {} });
+    const f = await openReady(page, id);
     const dialog = consent(page);
     const allow = dialog.getByRole("button", { name: "Allow", exact: true });
     await expect(allow).toBeEnabled();
@@ -446,9 +446,9 @@ for (const mode of ["subdomain", "sandbox"] as const) {
     expect((await threadsOf(id)).filter(t => t.sent_to_agent)).toHaveLength(0);
   });
 
-  test(`${mode}: after the viewer clicks Don't allow, the page cannot reach sendToClaude or the composer`, async ({ page }) => {
-    const id = await publishLive(`Deny ${mode}`, ATTACKER(true), { comments: {} });
-    const f = await openReady(page, id, mode);
+  test(`after the viewer clicks Don't allow, the page cannot reach sendToClaude or the composer`, async ({ page }) => {
+    const id = await publishLive(`Deny`, ATTACKER(true), { comments: {} });
+    const f = await openReady(page, id);
     await consent(page).getByRole("button", { name: "Don't allow", exact: true }).click();
     await expect(f.locator("#t")).not.toHaveAttribute("data-asked", "yes");
     await settle(page);
@@ -461,14 +461,14 @@ for (const mode of ["subdomain", "sandbox"] as const) {
     await expect(consent(page)).toHaveCount(0);
   });
 
-  test(`${mode}: after the viewer clicks a pin that the page's scroll moves away, the page cannot open the composer`, async ({ page }) => {
-    const id = await publishLive(`Pin ${mode}`, ATTACKER(false), { comments: { composer_only: true } });
+  test(`after the viewer clicks a pin that the page's scroll moves away, the page cannot open the composer`, async ({ page }) => {
+    const id = await publishLive(`Pin`, ATTACKER(false), { comments: { composer_only: true } });
     const form = new FormData();
     form.set("anchor", JSON.stringify({ kind: "element", selector: "#target", quote: "Pinned target", prefix: null, suffix: null, html_hash: null, rect: null, custom_name: null }));
     form.set("body", "A pinned note.");
     form.set("version", "1");
     expect((await fetch(`${d.base}/api/artifacts/${id}/threads`, { method: "POST", body: form })).status).toBe(201);
-    const f = await openReady(page, id, mode);
+    const f = await openReady(page, id);
     const pin = page.locator(".thread-pin");
     await expect(pin).toHaveCount(1);
     const before = (await pin.boundingBox())!;
@@ -481,13 +481,13 @@ for (const mode of ["subdomain", "sandbox"] as const) {
     await expect(page.locator(".composer")).toHaveCount(0);
   });
 
-  test(`${mode}: after the viewer dismisses a banner over the page, the page cannot open the composer`, async ({ page }) => {
-    const id = await publishLive(`Banner ${mode}`, ATTACKER(false), { comments: { composer_only: true } });
+  test(`after the viewer dismisses a banner over the page, the page cannot open the composer`, async ({ page }) => {
+    const id = await publishLive(`Banner`, ATTACKER(false), { comments: { composer_only: true } });
     // The thread list fails, so the shell says so in a banner.
     await page.route(u => u.pathname === `/api/artifacts/${id}/threads`, route => route.request().method() !== "GET"
       ? route.continue()
       : route.fulfill({ status: 500, contentType: "application/json", body: JSON.stringify({ error: { code: "internal", message: "down" } }) }));
-    const f = await openReady(page, id, mode);
+    const f = await openReady(page, id);
     const banner = page.locator(".banner.notice");
     await expect(banner).toContainText("Could not load comments");
     const fb = await frameBox(page);
@@ -501,11 +501,11 @@ for (const mode of ["subdomain", "sandbox"] as const) {
     await expect(page.locator(".composer")).toHaveCount(0);
   });
 
-  test(`${mode}: a tap on the page's button after a tap on the shell's name field opens the composer`, async ({ browser }) => {
-    const id = await publishLive(`Tap ${mode}`, ATTACKER(false), { comments: { composer_only: true } });
+  test(`a tap on the page's button after a tap on the shell's name field opens the composer`, async ({ browser }) => {
+    const id = await publishLive(`Tap`, ATTACKER(false), { comments: { composer_only: true } });
     const ctx = await browser.newContext({ hasTouch: true });
     const page = await ctx.newPage();
-    const f = await openReady(page, id, mode);
+    const f = await openReady(page, id);
     const nb = (await (await nameField(page)).boundingBox())!;
     await page.touchscreen.tap(nb.x + nb.width / 2, nb.y + nb.height / 2);
     const bb = (await f.locator("#b").boundingBox())!;
@@ -515,15 +515,15 @@ for (const mode of ["subdomain", "sandbox"] as const) {
     await ctx.close();
   });
 
-  test(`${mode}: a Shift+Tab from the shell back into the page and a key there opens the composer`, async ({ page }) => {
-    const id = await publishLive(`Shift-Tab ${mode}`, PULLER("open", false), { comments: { composer_only: true } });
+  test(`a Shift+Tab from the shell back into the page and a key there opens the composer`, async ({ page }) => {
+    const id = await publishLive(`Shift-Tab`, PULLER("open", false), { comments: { composer_only: true } });
     // A thread, so the Threads panel after the page has controls to start from.
     const form = new FormData();
     form.set("anchor", JSON.stringify({ kind: "element", selector: "#t", quote: "Title", prefix: null, suffix: null, html_hash: null, rect: null, custom_name: null }));
     form.set("body", "A note.");
     form.set("version", "1");
     expect((await fetch(`${d.base}/api/artifacts/${id}/threads`, { method: "POST", body: form })).status).toBe(201);
-    const f = await openArtifact(page, d.base, id, 1, mode);
+    const f = await openArtifact(page, d.base, id, 1);
     // The page reports focus on its button only once its setup is done.
     await expect(f.locator("#t")).toHaveAttribute("data-ready", "yes");
     const threads = page.getByRole("button", { name: /^Threads/ });
@@ -543,7 +543,7 @@ for (const mode of ["subdomain", "sandbox"] as const) {
     await expect(page.locator(".composer")).toHaveCount(1);
   });
 
-  test(`${mode}: a page republishing itself on a timer after the viewer clicked the shell is refused; the viewer's click in the page publishes`, async ({ page }) => {
+  test(`a page republishing itself on a timer after the viewer clicked the shell is refused; the viewer's click in the page publishes`, async ({ page }) => {
     const html = `<!doctype html><html><head><title>Autosave</title></head><body><p id="status">-</p><button id="save">Save</button><script>(async () => {
   const a = await claude.use("artifact");
   const next = "<!doctype html><html><body><p id=\\"done\\">republished</p></body></html>";
@@ -552,10 +552,10 @@ for (const mode of ["subdomain", "sandbox"] as const) {
   document.getElementById("save").addEventListener("click", () => { a.publish(next).catch(() => {}); });
 })();</script></body></html>`;
     const res = await fetch(`${d.base}/api/artifacts`, { method: "POST", headers: { "content-type": "application/json", authorization: `Bearer ${d.token}` },
-      body: JSON.stringify({ title: `Autosave ${mode}`, capabilities: { artifact: {} }, files: { "index.html": { content: html, encoding: "utf8" } } }) });
+      body: JSON.stringify({ title: `Autosave`, capabilities: { artifact: {} }, files: { "index.html": { content: html, encoding: "utf8" } } }) });
     const id = ((await res.json()) as { artifact: { id: string } }).artifact.id;
     await record(page);
-    const f = await openArtifact(page, d.base, id, 1, mode);
+    const f = await openArtifact(page, d.base, id, 1);
     await callsMore(page, 3);
     // The press on the name field lands over the frame's box (the panel
     // overlaps it), so the shield goes up: the same on every platform's fonts.
@@ -592,11 +592,11 @@ async function restAt(page: Page, x: number, y: number) {
   await settle(page);
 }
 
-for (const mode of ["subdomain", "sandbox"] as const) {
+{
   for (const key of ["Enter", "Space"] as const) {
-    test(`${mode}: with the pointer resting on the page, ${key} on the page's own consent dialog grants nothing and gives it no gesture (A1)`, async ({ page }) => {
-      const id = await publishLive(`A1 ${key} ${mode}`, ATTACKER(false), { comments: {} });
-      const f = await openReady(page, id, mode);
+    test(`with the pointer resting on the page, ${key} on the page's own consent dialog grants nothing and gives it no gesture (A1)`, async ({ page }) => {
+      const id = await publishLive(`A1 ${key}`, ATTACKER(false), { comments: {} });
+      const f = await openReady(page, id);
       await (await nameField(page)).click();
       const fb = await frameBox(page);
       await restAt(page, fb.x + fb.width / 2, fb.y + fb.height / 2);
@@ -621,14 +621,14 @@ for (const mode of ["subdomain", "sandbox"] as const) {
   }
 
   for (const order of ["pin, then typing", "typing, then pin"] as const) {
-    test(`${mode}: a pin the page scrolls under the resting pointer and away gives it no gesture on keys typed in the shell (A2, ${order})`, async ({ page }) => {
-      const id = await publishLive(`A2 ${order} ${mode}`, ATTACKER(false), { comments: { composer_only: true } });
+    test(`a pin the page scrolls under the resting pointer and away gives it no gesture on keys typed in the shell (A2, ${order})`, async ({ page }) => {
+      const id = await publishLive(`A2 ${order}`, ATTACKER(false), { comments: { composer_only: true } });
       const form = new FormData();
       form.set("anchor", JSON.stringify({ kind: "element", selector: "#target", quote: "Pinned target", prefix: null, suffix: null, html_hash: null, rect: null, custom_name: null }));
       form.set("body", "A pinned note.");
       form.set("version", "1");
       expect((await fetch(`${d.base}/api/artifacts/${id}/threads`, { method: "POST", body: form })).status).toBe(201);
-      const f = await openReady(page, id, mode);
+      const f = await openReady(page, id);
       const pin = page.locator(".thread-pin");
       await expect(pin).toHaveCount(1);
       const name = await nameField(page);
@@ -690,18 +690,6 @@ const timerPage = (armAtLoad?: "send" | "publish") => `<!doctype html><html><hea
 })();</script></body></html>`;
 const TIMER_PAGE = timerPage();
 
-/** The shell-input variants (N4, N11, N13, N14) run in one frame mode each,
- * the modes taking turns down each list. The input they judge goes to the
- * shell, never the frame, and the page's part (a timer calling through the
- * bridge) is the same in both modes, so one mode per variant covers both. */
-const turns = new Map<string, number>();
-function inTurn(mode: "subdomain" | "sandbox", ...variant: string[]): boolean {
-  const key = variant.join("|");
-  if (!turns.has(key)) turns.set(key, turns.size);
-  const i = turns.get(key)!;
-  return mode === ((i + Math.floor(i / 2)) % 2 ? "sandbox" : "subdomain");
-}
-
 /** Drops `text` at (x, y) of the shell's viewport, as a drag from another
  * application does (no pointer or key event reaches the shell). */
 async function dropText(page: Page, x: number, y: number, text: string) {
@@ -711,13 +699,12 @@ async function dropText(page: Page, x: number, y: number, text: string) {
   await cdp.detach();
 }
 
-for (const mode of ["subdomain", "sandbox"] as const) {
+{
   for (const verb of ["send", "publish"] as const) {
     for (const target of ["composer", "name field"] as const) {
-      if (!inTurn(mode, verb, target)) continue;
-      test(`${mode}: text dropped into the ${target}, then a move onto the page, gives the page no strict gesture for ${verb === "send" ? "sendToClaude" : "artifact.publish"} (N4)`, async ({ page }) => {
-        const id = await publishLive(`Drop ${verb} ${target} ${mode}`, TIMER_PAGE, { comments: {}, artifact: {} });
-        const f = await openArtifact(page, d.base, id, 1, mode);
+      test(`text dropped into the ${target}, then a move onto the page, gives the page no strict gesture for ${verb === "send" ? "sendToClaude" : "artifact.publish"} (N4)`, async ({ page }) => {
+        const id = await publishLive(`Drop ${verb} ${target}`, TIMER_PAGE, { comments: {}, artifact: {} });
+        const f = await openArtifact(page, d.base, id, 1);
         await expect(f.locator("body")).toHaveAttribute("data-ready", "yes");
         if (verb === "send") {
           // A grant stored once.
@@ -769,9 +756,9 @@ for (const mode of ["subdomain", "sandbox"] as const) {
     }
   }
 
-  test(`${mode}: after a click on Cancel over the page, at most one pointer move is lost to the page (N8)`, async ({ page }) => {
-    const id = await publishLive(`Moves ${mode}`, ATTACKER(false), { comments: { composer_only: true } });
-    const f = await openReady(page, id, mode);
+  test(`after a click on Cancel over the page, at most one pointer move is lost to the page (N8)`, async ({ page }) => {
+    const id = await publishLive(`Moves`, ATTACKER(false), { comments: { composer_only: true } });
+    const f = await openReady(page, id);
     await f.evaluate(() => { const w = window as unknown as { moves: number[] }; w.moves = []; addEventListener("mousemove", e => w.moves.push(e.clientX), true); });
     const bb = (await f.locator("#b").boundingBox())!;
     await page.mouse.move(bb.x + bb.width / 2, bb.y + bb.height / 2, { steps: 6 });
@@ -799,9 +786,9 @@ for (const mode of ["subdomain", "sandbox"] as const) {
     expect(lost).toHaveLength(1);
   });
 
-  test(`${mode}: the second click of a double-click on Cancel over the page does not reach the page (N9)`, async ({ page }) => {
-    const id = await publishLive(`Double ${mode}`, ATTACKER(false), { comments: { composer_only: true } });
-    const f = await openReady(page, id, mode);
+  test(`the second click of a double-click on Cancel over the page does not reach the page (N9)`, async ({ page }) => {
+    const id = await publishLive(`Double`, ATTACKER(false), { comments: { composer_only: true } });
+    const f = await openReady(page, id);
     await f.evaluate(() => { const w = window as unknown as { presses: number }; w.presses = 0; addEventListener("pointerdown", () => { w.presses++; }, true); });
     const bb = (await f.locator("#b").boundingBox())!;
     await page.mouse.move(bb.x + bb.width / 2, bb.y + bb.height / 2, { steps: 6 });
@@ -818,8 +805,8 @@ for (const mode of ["subdomain", "sandbox"] as const) {
     expect(await presses()).toBe(before);
   });
 
-  test(`${mode}: a page posting pick starts cannot show the hint while the viewer is idle on a shell control, moves over the shell, or types in it (N10)`, async ({ page }) => {
-    const id = await publishLive(`Hint ${mode}`, ATTACKER(false), { comments: { composer_only: true } });
+  test(`a page posting pick starts cannot show the hint while the viewer is idle on a shell control, moves over the shell, or types in it (N10)`, async ({ page }) => {
+    const id = await publishLive(`Hint`, ATTACKER(false), { comments: { composer_only: true } });
     await record(page);
     /** Waits until the page has posted `n` more pick starts. */
     const spam = async (n: number) => {
@@ -834,7 +821,7 @@ for (const mode of ["subdomain", "sandbox"] as const) {
       new MutationObserver(ms => { for (const m of ms) for (const n of m.addedNodes) if (n instanceof Element && n.matches(".gesture-hint")) w.hints++; })
         .observe(document, { childList: true, subtree: true });
     });
-    const f = await openReady(page, id, mode);
+    const f = await openReady(page, id);
     // On comment mode, the page posts a pick start of its own every 100 ms.
     await f.evaluate(() => {
       let n = 0;
@@ -866,9 +853,9 @@ for (const mode of ["subdomain", "sandbox"] as const) {
     expect(await page.evaluate(() => (window as unknown as { hints: number }).hints)).toBe(0);
   });
 
-  test(`${mode}: the viewer's own second refused press in the page, after the hint has gone, shows the hint again (N10)`, async ({ page }) => {
-    const id = await publishLive(`Hint again ${mode}`, ATTACKER(false), { comments: { composer_only: true } });
-    const f = await openReady(page, id, mode);
+  test(`the viewer's own second refused press in the page, after the hint has gone, shows the hint again (N10)`, async ({ page }) => {
+    const id = await publishLive(`Hint again`, ATTACKER(false), { comments: { composer_only: true } });
+    const f = await openReady(page, id);
     const composer = await pickPara(page, f);
     const cancel = composer.getByRole("button", { name: "Cancel" });
     const cb = (await cancel.boundingBox())!;
@@ -892,11 +879,11 @@ for (const mode of ["subdomain", "sandbox"] as const) {
     await expect(composer).toHaveCount(0);
   });
 
-  test(`${mode}: a touch tap that lands on a band counts as the finger's arrival: it opens the composer (N12)`, async ({ browser }) => {
-    const id = await publishLive(`Touch band ${mode}`, ATTACKER(false), { comments: { composer_only: true } });
+  test(`a touch tap that lands on a band counts as the finger's arrival: it opens the composer (N12)`, async ({ browser }) => {
+    const id = await publishLive(`Touch band`, ATTACKER(false), { comments: { composer_only: true } });
     const ctx = await browser.newContext({ hasTouch: true });
     const page = await ctx.newPage();
-    const f = await openReady(page, id, mode);
+    const f = await openReady(page, id);
     const name = await nameField(page);
     const nb = (await name.boundingBox())!;
     await page.mouse.move(nb.x + nb.width / 2, nb.y + nb.height / 2, { steps: 4 });
@@ -938,14 +925,13 @@ async function expectRefused(page: Page, f: Frame | null, id: string, verb: "sen
   }
 }
 
-for (const mode of ["subdomain", "sandbox"] as const) {
+{
   for (const verb of ["send", "publish"] as const) {
     const call = verb === "send" ? "sendToClaude" : "artifact.publish";
     for (const how of ["a composition, then its commit", "a commit alone (the emoji picker, dictation)"] as const) {
-      if (!inTurn(mode, verb, how)) continue;
-      test(`${mode}: ${how} from an input method into the name field, then a move onto the page, gives the page no strict gesture for ${call} (N11)`, async ({ page }) => {
-        const id = await publishLive(`IME ${verb} ${how.slice(0, 8)} ${mode}`, TIMER_PAGE, { comments: {}, artifact: {} });
-        const f = await openArtifact(page, d.base, id, 1, mode);
+      test(`${how} from an input method into the name field, then a move onto the page, gives the page no strict gesture for ${call} (N11)`, async ({ page }) => {
+        const id = await publishLive(`IME ${verb} ${how.slice(0, 8)}`, TIMER_PAGE, { comments: {}, artifact: {} });
+        const f = await openArtifact(page, d.base, id, 1);
         await expect(f.locator("body")).toHaveAttribute("data-ready", "yes");
         if (verb === "send") await grant(page, f);
         // Focus in the name field, by the viewer's click.
@@ -975,12 +961,11 @@ for (const mode of ["subdomain", "sandbox"] as const) {
     }
 
     for (const how of ["a key", "a click"] as const) {
-      if (!inTurn(mode, verb, how)) continue;
-      test(`${mode}: ${how} on the shell before its script runs, then a move onto the page as it loads, gives the page no strict gesture for ${call} (N13)`, async ({ page }) => {
-        const id = await publishLive(`Load ${verb} ${how} ${mode}`, timerPage(verb), { comments: {}, artifact: {} });
+      test(`${how} on the shell before its script runs, then a move onto the page as it loads, gives the page no strict gesture for ${call} (N13)`, async ({ page }) => {
+        const id = await publishLive(`Load ${verb} ${how}`, timerPage(verb), { comments: {}, artifact: {} });
         await record(page);
         // Learn the frame's box on a first load; the layout is the same next time.
-        const f0 = await openArtifact(page, d.base, id, 1, mode);
+        const f0 = await openArtifact(page, d.base, id, 1);
         await expect(f0.locator("body")).toHaveAttribute("data-ready", "yes");
         const fb = await frameBox(page);
         // The click lands on the top bar's title, which is no link (the
@@ -1015,9 +1000,9 @@ for (const mode of ["subdomain", "sandbox"] as const) {
       });
     }
 
-    for (const host of ["plain", "open", "closed"] as const) for (const from of ["the shell", "the page"] as const) if (inTurn(mode, verb, host, from)) test(`${mode}: with focus in ${from}, a click in another frame in the shell document (a password manager's menu${host === "plain" ? "" : `, in a ${host} shadow root`}), then a move onto the page, gives the page no strict gesture for ${call} (N14)`, async ({ page }) => {
-      const id = await publishLive(`Other frame ${verb} ${host} ${mode}`, TIMER_PAGE, { comments: {}, artifact: {} });
-      const f = await openArtifact(page, d.base, id, 1, mode);
+    for (const host of ["plain", "open", "closed"] as const) for (const from of ["the shell", "the page"] as const) test(`with focus in ${from}, a click in another frame in the shell document (a password manager's menu${host === "plain" ? "" : `, in a ${host} shadow root`}), then a move onto the page, gives the page no strict gesture for ${call} (N14)`, async ({ page }) => {
+      const id = await publishLive(`Other frame ${verb} ${host}`, TIMER_PAGE, { comments: {}, artifact: {} });
+      const f = await openArtifact(page, d.base, id, 1);
       await expect(f.locator("body")).toHaveAttribute("data-ready", "yes");
       if (verb === "send") await grant(page, f);
       // A frame of another origin beside the name field, as an extension injects.
@@ -1061,9 +1046,9 @@ for (const mode of ["subdomain", "sandbox"] as const) {
     });
   }
 
-  test(`${mode}: after a click in the page, a wheel over the shell and a click back in the page still count`, async ({ page }) => {
-    const id = await publishLive(`Wheel shell ${mode}`, ATTACKER(false), { comments: { composer_only: true } });
-    const f = await openReady(page, id, mode);
+  test(`after a click in the page, a wheel over the shell and a click back in the page still count`, async ({ page }) => {
+    const id = await publishLive(`Wheel shell`, ATTACKER(false), { comments: { composer_only: true } });
+    const f = await openReady(page, id);
     const pb = (await f.locator("#para").boundingBox())!;
     await page.mouse.move(pb.x + 20, pb.y + pb.height / 2, { steps: 8 });
     await page.mouse.down();

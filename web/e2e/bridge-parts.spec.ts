@@ -1,4 +1,4 @@
-import { test, expect, type Daemon, type FrameMode, openArtifact, publish, publishWith } from "./fixtures";
+import { test, expect, type Daemon, openArtifact, publish, publishWith } from "./fixtures";
 
 let d: Daemon;
 test.beforeEach(({ daemon }) => { d = daemon; });
@@ -6,10 +6,10 @@ test.beforeEach(({ daemon }) => { d = daemon; });
 const partsLoaded = (frame: import("@playwright/test").Frame) =>
   frame.evaluate(() => performance.getEntriesByType("resource").map(e => e.name).filter(n => n.includes("/_clax/bridge/")));
 
-for (const mode of ["subdomain", "sandbox"] as FrameMode[]) {
-  test(`loads comment mode lazily and says so when the page's CSP blocks it (${mode})`, async ({ page }) => {
+{
+  test(`loads comment mode lazily and says so when the page's CSP blocks it`, async ({ page }) => {
     const ok = await publish(d.base, d.token, "Parts", { "index.html": "<h1 id=h>Parts</h1>" });
-    const frame = await openArtifact(page, d.base, ok.artifact.id, 1, mode);
+    const frame = await openArtifact(page, d.base, ok.artifact.id, 1);
     // The comment part loads from the daemon's /_clax/bridge/, once the page has greeted.
     await expect.poll(async () => (await partsLoaded(frame)).some(n => /\/_clax\/bridge\/comment-[^/]+\.js$/.test(n))).toBe(true);
     const host = new URL(frame.url()).host;
@@ -23,7 +23,7 @@ for (const mode of ["subdomain", "sandbox"] as FrameMode[]) {
     // the skeleton's <body>, where a browser ignores it). The bridge comes
     // before it, so only the lazy parts are blocked.
     const blocked = await publish(d.base, d.token, "Strict", { "index.html": `<!doctype html><html><head><meta http-equiv="Content-Security-Policy" content="script-src 'unsafe-inline'"></head><body><h1>Strict</h1></body></html>` });
-    const strict = await openArtifact(page, d.base, blocked.artifact.id, 1, mode);
+    const strict = await openArtifact(page, d.base, blocked.artifact.id, 1);
     const alert = page.getByRole("alert");
     await expect(alert).toContainText("Comment mode could not load in this page");
     // Pressing Comment there keeps comment mode off and says why again, even
@@ -37,7 +37,7 @@ for (const mode of ["subdomain", "sandbox"] as FrameMode[]) {
     expect(await strict.evaluate(() => document.documentElement.style.cursor)).not.toBe("crosshair");
   });
 
-  test(`recovers from a comment part that failed once: capabilities load, and a later need loads comment mode again (${mode})`, async ({ page }) => {
+  test(`recovers from a comment part that failed once: capabilities load, and a later need loads comment mode again`, async ({ page }) => {
     const html = `<!doctype html><html><head><title>Flaky</title></head><body><h1 id="t">Flaky</h1><button id="use">Use</button><p id="out">waiting</p>
 <script>document.getElementById("use").onclick = async () => { const c = await claude.use("comments"); document.getElementById("out").textContent = c ? "ready" : "null"; };</script></body></html>`;
     const { artifact } = await publishWith(d.base, d.token, "Flaky", html, { comments: {} });
@@ -51,7 +51,7 @@ for (const mode of ["subdomain", "sandbox"] as FrameMode[]) {
         await route.fulfill({ status: 404, headers: { "access-control-allow-origin": "*" }, body: "gone" });
       } else await route.continue();
     });
-    const frame = await openArtifact(page, d.base, artifact.id, 1, mode);
+    const frame = await openArtifact(page, d.base, artifact.id, 1);
     await expect(page.getByRole("alert")).toContainText("Comment mode could not load in this page");
     // The capability members load on their own, with no request for the comment part's file.
     await frame.locator("#use").click();
@@ -68,14 +68,14 @@ for (const mode of ["subdomain", "sandbox"] as FrameMode[]) {
     expect(seen).toContain("comment.js?retry=1");
   });
 
-  test(`a capability loads only its own part: db the caps part, room its own part and never caps (${mode})`, async ({ page }) => {
+  test(`a capability loads only its own part: db the caps part, room its own part and never caps`, async ({ page }) => {
     const parts: string[] = [];
     page.on("request", r => { const m = new URL(r.url()).pathname.match(/^\/_clax\/bridge\/([a-z]+)[-.][^/]*$/); if (m) parts.push(m[1]); });
     const pageFor = (name: string) => `<!doctype html><html><head><title>${name}</title></head><body><button id="use">Use</button><p id="out">waiting</p>
 <script>document.getElementById("use").onclick = async () => { const c = await claude.use(${JSON.stringify(name)}); document.getElementById("out").textContent = c ? "ready" : "null"; };</script></body></html>`;
 
     const db = await publishWith(d.base, d.token, "Db part", pageFor("db"), { db: {} });
-    let frame = await openArtifact(page, d.base, db.artifact.id, 1, mode);
+    let frame = await openArtifact(page, d.base, db.artifact.id, 1);
     await frame.locator("#use").click();
     await expect(frame.locator("#out")).toHaveText("ready");
     expect(parts).toContain("caps");
@@ -83,7 +83,7 @@ for (const mode of ["subdomain", "sandbox"] as FrameMode[]) {
 
     parts.length = 0;
     const room = await publishWith(d.base, d.token, "Room part", pageFor("room"), { room: {} });
-    frame = await openArtifact(page, d.base, room.artifact.id, 1, mode);
+    frame = await openArtifact(page, d.base, room.artifact.id, 1);
     await frame.locator("#use").click();
     // A granted room loads the room part, and never the caps part.
     await expect(frame.locator("#out")).toHaveText("ready");
@@ -94,11 +94,11 @@ for (const mode of ["subdomain", "sandbox"] as FrameMode[]) {
   // A smoke test only: Chromium honours an import map added after a module
   // load, so this passes with or without the bridge's wait for the parse.
   // bridge-parse-gate.test.ts guards that wait.
-  test(`smoke: a page's own import map and comment mode work together (${mode})`, async ({ page }) => {
+  test(`smoke: a page's own import map and comment mode work together`, async ({ page }) => {
     const html = `<!doctype html><script type="importmap">{"imports":{"greeting":"data:text/javascript,export default 'mapped'"}}</script>`
       + `<script type="module">import g from "greeting"; document.getElementById("out").textContent = g;</script><p id="out">waiting</p>`;
     const ok = await publish(d.base, d.token, "Import map", { "index.html": html });
-    const frame = await openArtifact(page, d.base, ok.artifact.id, 1, mode);
+    const frame = await openArtifact(page, d.base, ok.artifact.id, 1);
     await expect(frame.locator("#out")).toHaveText("mapped");
     await page.getByRole("button", { name: "Comment", exact: true }).click();
     await expect.poll(() => frame.evaluate(() => document.documentElement.style.cursor)).toBe("crosshair");

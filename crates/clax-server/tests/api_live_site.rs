@@ -266,7 +266,7 @@ async fn a_site_topic_carries_every_page_of_its_origin_and_nothing_else() {
 #[tokio::test]
 async fn the_site_routes_and_topic_are_hidden_from_the_lan() {
     let ts = TestServer::spawn_on("0.0.0.0".parse().unwrap(), |_| {}).await;
-    let (lc, lan) = ts.lan();
+    let (lc, lan) = ts.lan_person("Lee").await;
     let v = ts.viewer(Some("Ana")).await;
     let (_, tid, _) = comment(&ts, &v.cookie, &format!("{ORIGIN}/a"), "x").await;
     let site_url = format!("{lan}/api/live/site?origin={}", enc(ORIGIN));

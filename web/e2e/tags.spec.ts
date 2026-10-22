@@ -9,6 +9,7 @@
 import { mkdirSync } from "node:fs";
 import { type Page } from "@playwright/test";
 import { type Daemon, api, expect, openArtifact, publish, publishAs, registerSession, streamLive, test } from "./fixtures";
+import { hostedDaemon, openAt, ownerOf } from "./hosted-helpers";
 
 const PAGE = { "index.html": "<main><h2>Board</h2><p>Numbers</p></main>" };
 const SHOTS = process.env.CLAX_E2E_SHOTS;
@@ -195,10 +196,10 @@ test("the tag editor shows a refusal past twenty tags and closes on a press outs
   await page.locator(".topbar h1").click();
   await expect(editor).toHaveCount(0);
 
-  // On a phone, a viewer who may not tag reads "20 tags", which lists them.
+  // On a phone, the title reads "20 tags", which lists them.
   const ctx = await browser.newContext({ viewport: { width: 390, height: 844 } });
   const phone = await ctx.newPage();
-  await openArtifact(phone, d.base, plan, 1, "sandbox", { lan: true });
+  await openArtifact(phone, d.base, plan, 1);
   const count = phone.getByRole("button", { name: "All 20 tags" });
   await expect(count).toHaveText("20 tags");
   await expect(phone.locator(".topbar .tedit")).toHaveCount(0);
@@ -217,22 +218,35 @@ test("the tag editor shows a refusal past twenty tags and closes on a press outs
   await ctx.close();
 });
 
-test("a viewer who may not tag sees an artifact's tags and no controls, here or on the Tags page", async ({ browser, freshDaemon: d }) => {
-  const plan = (await publish(d.base, d.token, "Launch plan", PAGE)).artifact.id;
-  await makeTag(d, "q4", "blue", "Fourth quarter");
-  await tagArtifact(d, plan, ["q4"]);
-  const ctx = await browser.newContext();
-  const page = await ctx.newPage();
-  await openArtifact(page, d.base, plan, 1, "sandbox", { lan: true });
-  await expect(titleChips(page)).toHaveText(["q4"]);
-  await expect(page.locator(".topbar .tedit")).toHaveCount(0);
-  await page.goto(`${d.base}/tags`);
-  await expect(page.locator(".trow")).toContainText("Fourth quarter");
-  await expect(page.getByRole("button", { name: "New tag" })).toHaveCount(0);
-  await expect(page.locator(".trow button")).toHaveCount(0);
-  await page.goto(`${d.base}/`);
-  await expect(page.getByRole("group", { name: "Filter by tags" }).getByRole("link", { name: "All tags" })).toBeVisible();
-  await ctx.close();
+// A viewer who may not tag: a hosted daemon's person who may read the page
+// (a local daemon frames pages for the owner alone, who may tag).
+test("a viewer who may not tag sees an artifact's tags and no controls, here or on the Tags page", async ({ browser }) => {
+  const { d, origin } = await hostedDaemon();
+  try {
+    const plan = (await publish(d.base, d.token, "Launch plan", PAGE)).artifact.id;
+    await makeTag(d, "q4", "blue", "Fourth quarter");
+    await tagArtifact(d, plan, ["q4"]);
+    const owner = await ownerOf(browser, origin);
+    const join = await owner.evaluate(async id => {
+      const r = await fetch("/api/people/invites", { method: "POST", headers: { "content-type": "application/json" }, body: JSON.stringify({ name: "Sam", rights: [{ type: "clax-artifacts", actions: ["read"], locations: [id] }] }) });
+      return (await r.json()).invite.url as string;
+    }, plan);
+    const page = await (await browser.newContext()).newPage();
+    await page.goto(join);
+    await page.getByRole("button", { name: "Join as Sam" }).click();
+    await page.waitForURL(`${origin}/`);
+    await openAt(page, origin, plan, 1);
+    await expect(titleChips(page)).toHaveText(["q4"]);
+    await expect(page.locator(".topbar .tedit")).toHaveCount(0);
+    await page.goto(`${origin}/tags`);
+    await expect(page.locator(".trow")).toContainText("Fourth quarter");
+    await expect(page.getByRole("button", { name: "New tag" })).toHaveCount(0);
+    await expect(page.locator(".trow button")).toHaveCount(0);
+    await page.goto(`${origin}/`);
+    await expect(page.getByRole("group", { name: "Filter by tags" }).getByRole("link", { name: "All tags" })).toBeVisible();
+  } finally {
+    await d.stop();
+  }
 });
 
 test("the inbox's Tags filter keeps the items about artifacts carrying every tag picked, in its address", async ({ page, freshDaemon: d }) => {

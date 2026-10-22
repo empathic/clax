@@ -1,17 +1,17 @@
 // A thread held for an agent that lost access (spec 2026-10-08-multi-agent-
-// multi-person §7.5, §10): a LAN viewer's comment sent to Sam's agent waits
-// for Sam's approval; the owner then narrows Sam's rights so the agent may
-// no longer read the page, and the agent's next take is told so. The owner
-// and Sam read the wait with the lost access beside it; the comment's author,
-// a LAN viewer, reads only "sent to <agent>". The daemon listens on every
-// interface, so its invites name this machine's LAN address; on a machine
-// with none the test skips.
+// multi-person §7.5, §10): Mia's comment sent to Sam's agent waits for
+// Sam's approval; the owner then narrows Sam's rights so the agent may no
+// longer read the page, and the agent's next take is told so. The owner and
+// Sam read the wait with the lost access beside it. The daemon listens on
+// every interface, so its invites name this machine's LAN address; on a
+// machine with none the test skips.
 import { spawnSync } from "node:child_process";
 import { mkdirSync, mkdtempSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import type { Page } from "@playwright/test";
-import { api, expect, openArtifact, publish, startDaemon, test } from "./fixtures";
+import { api, expect, publish, startDaemon, test } from "./fixtures";
+import { type Person, connect, invite, leave, threadFrom } from "./people-helpers";
 
 /** Runs the CLI as the person, on their scratch home, outside any agent channel. */
 function asPerson(home: string, args: string[], input?: string, cwd?: string) {
@@ -29,12 +29,12 @@ async function from(page: Page, method: string, path: string, body: unknown): Pr
   }, [method, path, body]);
 }
 
-test("the owner and the agent's person read a wait beside the lost access; the author reads it as sent", async ({ browser }) => {
+test("the owner and the agent's person read a wait beside the lost access", async ({ browser }) => {
   const d = await startDaemon({ bind: "0.0.0.0" });
   const sam = mkdtempSync(join(tmpdir(), "clax-e2e-sam-"));
   const ownerCtx = await browser.newContext();
   const personCtx = await browser.newContext();
-  const lanCtx = await browser.newContext();
+  let mia: Person | undefined;
   try {
     const owner = await ownerCtx.newPage();
     await owner.goto(`${d.base}/people`);
@@ -58,18 +58,10 @@ test("the owner and the agent's person read a wait beside the lost access; the a
 
     const aid = (await publish(d.base, d.token, "Plan", { "index.html": "<main><h2>Quarterly goals</h2></main>" })).artifact.id;
     const other = (await publish(d.base, d.token, "Elsewhere", { "index.html": "<main><h2>Other</h2></main>" })).artifact.id;
-    // A LAN viewer (not connected) asks Sam's agent by name: Sam has not
-    // approved them, so the comment waits for his approval.
-    const lan = await lanCtx.newPage();
-    await openArtifact(lan, d.base, aid, 1, "sandbox", { lan: true });
-    await lan.evaluate(async a => {
-      const form = new FormData();
-      form.set("anchor", JSON.stringify({ kind: "element", selector: "body > main > h2", quote: null, prefix: null, suffix: null, html_hash: null, rect: null, custom_name: null, file: "index.html" }));
-      form.set("body", "@sam-notes please widen the goals");
-      form.set("version", "1");
-      const res = await fetch(`/api/artifacts/${a}/threads`, { method: "POST", body: form });
-      if (!res.ok) throw new Error(`${res.status} ${await res.text()}`);
-    }, aid);
+    // Mia, another connected person, asks Sam's agent by name: Sam has not
+    // approved her, so the comment waits for his approval.
+    mia = await connect(browser, ((await invite(d, "Mia")) as { command: string }).command, "Mia");
+    await threadFrom(mia.page, mia.lan, aid, "@sam-notes please widen the goals");
 
     // The agent's take tells it of the withheld comment, which then waits
     // for Sam's approval: a row no take told of before the narrowing reads
@@ -98,12 +90,10 @@ test("the owner and the agent's person read a wait beside the lost access; the a
     await person.waitForURL(/\/people$/);
     await person.goto(new URL(`/a/${aid}`, link).href);
     await expect(waiting(person)).toHaveText("waiting for your approval · the agent no longer has access");
-    await lan.reload();
-    await expect(waiting(lan)).toHaveText("sent to sam-notes");
   } finally {
     await ownerCtx.close();
     await personCtx.close();
-    await lanCtx.close();
+    await leave(mia);
     rmSync(sam, { recursive: true, force: true });
     await d.stop();
   }

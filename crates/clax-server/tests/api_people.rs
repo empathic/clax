@@ -2723,12 +2723,13 @@ fn set_cookie_of(res: &reqwest::Response) -> Option<String> {
         })
 }
 
-/// `GET /api/viewers/me` from the LAN with `cookie`: the answer's cookie
-/// (when it sets one) and its viewer.
-async fn viewers_me_from_lan(ts: &TestServer, cookie: &str) -> (Option<String>, Value) {
-    let (client, base) = ts.lan();
-    let res = client
-        .get(format!("{base}/api/viewers/me"))
+/// `GET /api/viewers/me` from a browser of this machine that is not the
+/// owner's, with `cookie`: the answer's cookie (when it sets one) and its
+/// viewer.
+async fn viewers_me_with(ts: &TestServer, cookie: &str) -> (Option<String>, Value) {
+    let res = ts
+        .client
+        .get(format!("{}/api/viewers/me", ts.base))
         .header("cookie", format!("clax_viewer={cookie}"))
         .send()
         .await
@@ -2761,7 +2762,7 @@ async fn a_legacy_viewer_cookie_is_replaced_and_never_names_a_person() {
         ts.store.get_viewer(legacy).unwrap().unwrap().public_id,
         lan.public_id
     );
-    let (fresh, v) = viewers_me_from_lan(&ts, legacy).await;
+    let (fresh, v) = viewers_me_with(&ts, legacy).await;
     let fresh = fresh.expect("a fresh cookie");
     assert_eq!(v["public_id"], json!(lan.public_id), "the same viewer");
     assert!(fresh.starts_with("cxv_"), "{fresh}");
@@ -2811,7 +2812,7 @@ async fn parallel_swaps_of_one_legacy_cookie_keep_one_viewer() {
     let legacy = "01J9Z3K4M5N6P7Q8R9S0T1V2W5";
     let lan = ts.store.upsert_viewer(legacy, Some("Name-v2")).unwrap();
     let rows = viewer_rows(&ts);
-    let answers = futures::future::join_all((0..4).map(|_| viewers_me_from_lan(&ts, legacy))).await;
+    let answers = futures::future::join_all((0..4).map(|_| viewers_me_with(&ts, legacy))).await;
     let mut cookies = Vec::new();
     for (set, v) in answers {
         assert_eq!(v["public_id"], json!(lan.public_id), "{v}");
@@ -2828,7 +2829,7 @@ async fn parallel_swaps_of_one_legacy_cookie_keep_one_viewer() {
     assert_eq!(cookies.len(), 4, "each answer its own secret");
     assert_eq!(viewer_rows(&ts), rows, "no new viewer");
     // An in-flight request with the old cookie acts as the same viewer.
-    let (_, again) = viewers_me_from_lan(&ts, legacy).await;
+    let (_, again) = viewers_me_with(&ts, legacy).await;
     assert_eq!(again["public_id"], json!(lan.public_id));
     assert_eq!(viewer_rows(&ts), rows);
 }
@@ -2846,7 +2847,7 @@ async fn a_planted_cookie_never_binds_to_a_viewer() {
         .await;
     let aid = a["artifact"]["id"].as_str().unwrap().to_string();
     let rows = viewer_rows(&ts);
-    let (set, v) = viewers_me_from_lan(&ts, &planted).await;
+    let (set, v) = viewers_me_with(&ts, &planted).await;
     let fresh = set.expect("a minted cookie replaces the planted one");
     assert_ne!(fresh, planted);
     assert!(ts.store.get_viewer(&planted).unwrap().is_none());
@@ -2856,9 +2857,9 @@ async fn a_planted_cookie_never_binds_to_a_viewer() {
     );
     assert_eq!(viewer_rows(&ts), rows + 1);
     // A write carrying the planted value makes no viewer.
-    let (client, base) = ts.lan();
-    let _ = client
-        .put(format!("{base}/api/viewers/me/seen"))
+    let _ = ts
+        .client
+        .put(format!("{}/api/viewers/me/seen", ts.base))
         .header("cookie", format!("clax_viewer={planted}"))
         .json(&json!({"artifact_id": aid, "version": 1}))
         .send()

@@ -1441,14 +1441,14 @@ async fn whole_artifact_threads_follow_the_comment_loop() {
     assert_eq!(t["anchor"]["selector"], Value::Null);
     assert_eq!(t["version_n"], 1);
 
-    let (lan, base) = ts.lan();
-    let res = lan
-        .post(format!("{base}/api/artifacts/{aid}/threads"))
+    let res = ts
+        .client
+        .post(format!("{}/api/artifacts/{aid}/threads", ts.base))
         .multipart(form(json!({"kind": "artifact", "file": ""}), false))
         .send()
         .await
         .unwrap();
-    assert_eq!(res.status(), 201, "a LAN viewer");
+    assert_eq!(res.status(), 201, "a viewer who is not the owner");
     let lt = res.json::<Value>().await.unwrap()["thread"].clone();
     assert_eq!(lt["anchor"]["kind"], "artifact");
     assert_eq!(lt["comments"][0]["author_kind"], "viewer");

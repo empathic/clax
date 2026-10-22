@@ -1,4 +1,5 @@
-import { test, expect, type Daemon, openArtifact, publish } from "./fixtures";
+import { test, expect, type Daemon, publish } from "./fixtures";
+import { guestOn, hostedDaemon, ownerOf, shareByLink } from "./hosted-helpers";
 
 let d: Daemon;
 test.beforeEach(({ daemon }) => { d = daemon; });
@@ -44,10 +45,18 @@ test("at phone width Fork is in the more menu and the source stays named", async
   await expect(page.locator(".ttl .by a.lineage")).toBeVisible();
 });
 
-test("a LAN viewer, who may not fork, is offered no Fork", async ({ page }) => {
-  const id = await twoVersions("Not yours");
-  await openArtifact(page, d.base, id, 2, "sandbox", { lan: true });
-  // The more menu has loaded, and Fork stays out.
-  await expect(page.locator(".topbar button[aria-label=More]")).toBeVisible();
-  await expect(page.locator(".topbar button.fork")).toHaveCount(0);
+// A viewer who is not the owner: a hosted daemon's guest on a page shared by
+// link (a local daemon frames pages for the owner alone).
+test("a guest, who may not fork, is offered no Fork", async ({ browser }) => {
+  const { d: h, origin } = await hostedDaemon();
+  try {
+    const { artifact } = await publish(h.base, h.token, "Not yours", { "index.html": "<main><h2>One</h2></main>" });
+    await shareByLink(await ownerOf(browser, origin), artifact.id);
+    const { page } = await guestOn(browser, origin, artifact.id);
+    // The more menu has loaded, and Fork stays out.
+    await expect(page.locator(".topbar button[aria-label=More]")).toBeVisible();
+    await expect(page.locator(".topbar button.fork")).toHaveCount(0);
+  } finally {
+    await h.stop();
+  }
 });

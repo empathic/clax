@@ -30,9 +30,9 @@
 //! shell's site; made for a top-level visit, `SameSite=Lax`.
 //!
 //! Every code is bound to a **state** the redeeming browser holds in a
-//! cookie of the site host ([`STATE_COOKIE`], on `https`
-//! [`SECURE_STATE_COOKIE`]: host-only, `Path=/`, ten
-//! minutes, a fresh value per handshake): `/_clax/session` redeems a code
+//! cookie of the site host ([`STATE_COOKIE`], `Path=/_clax/session`, ten
+//! minutes, shared by the browser's handshakes, [`state_for`]):
+//! `/_clax/session` redeems a code
 //! only beside it, so a code minted for one browser signs no other in. A
 //! top-level handshake's state is set by the site's redirect to
 //! `/site-signin`, which names it (`&state=`); a frame's by
@@ -245,6 +245,22 @@ pub fn new_state() -> String {
     clax_core::secret::token("").expose().to_string()
 }
 
+/// The handshake state for a request with `headers`: the browser's own,
+/// when its state cookie holds one ([`new_state`]'s form, 43 base64url
+/// characters), else a new one. A browser's handshakes share their state,
+/// so two of its tabs signing in at once never overwrite each other's (the
+/// one cookie per host and partition holds one); a state is the browser's
+/// alone either way, and each code it is bound to redeems once.
+pub fn state_for(headers: &HeaderMap, secure: bool) -> String {
+    cookie_value(headers, state_cookie_name(secure))
+        .filter(|v| {
+            v.len() == 43
+                && v.bytes()
+                    .all(|b| b.is_ascii_alphanumeric() || b == b'-' || b == b'_')
+        })
+        .unwrap_or_else(new_state)
+}
+
 /// `Set-Cookie` for handshake state `value` (empty with `max_age` 0 clears
 /// it): host-only, `Path=/`, `HttpOnly`, partitioned as the site cookie
 /// it leads to.
@@ -325,6 +341,84 @@ pub fn public_origin(s: &AppState) -> String {
     }
 }
 
+/// The origins of the shell that frames the pages of the site whose `Host`
+/// is `host`: a hosted daemon's public origin; on a local daemon the
+/// shell's loopback names `localhost` and `127.0.0.1` at the
+/// `Host`'s port (CSP names no IPv6 literal, so a shell at `[::1]` frames
+/// no site).
+pub fn shell_origins(s: &AppState, host: &str) -> Vec<String> {
+    if let Some(h) = &s.hosted {
+        return vec![h.origin.clone()];
+    }
+    let port = host
+        .rsplit_once(':')
+        .filter(|(_, p)| !p.is_empty() && p.bytes().all(|b| b.is_ascii_digit()))
+        .map(|(_, p)| format!(":{p}"))
+        .unwrap_or_default();
+    ["localhost", "127.0.0.1"]
+        .iter()
+        .map(|n| format!("http://{n}{port}"))
+        .collect()
+}
+
+/// `frame-ancestors 'self' <shell origins>` for the site whose `Host` is
+/// `host` ([`shell_origins`]): only the artifact's own pages and the shell
+/// may frame a site page.
+pub fn frame_ancestors(s: &AppState, host: &str) -> String {
+    let mut p = String::from("frame-ancestors 'self'");
+    for o in shell_origins(s, host) {
+        p.push(' ');
+        p.push_str(&o);
+    }
+    p
+}
+
+/// `max-age` of `Strict-Transport-Security` on an `https` site: a year.
+pub const HSTS: &str = "max-age=31536000; includeSubDomains";
+
+/// `Cross-Origin-Resource-Policy`, which `http` names no constant for.
+pub const CORP: axum::http::HeaderName =
+    axum::http::HeaderName::from_static("cross-origin-resource-policy");
+
+/// The headers every response of the site whose `Host` is `host` carries
+/// (the site layer, [`crate::host::site_layer`], sets them, an error's
+/// included): `Referrer-Policy: no-referrer`, `X-Content-Type-Options:
+/// nosniff`, `Cross-Origin-Resource-Policy: same-origin` unless the
+/// response named one (a site open to the world's are `cross-origin`,
+/// [`site_access_layer`]), `Strict-Transport-Security` ([`HSTS`]) on
+/// `https`, and on an HTML response without a policy of its own
+/// `Content-Security-Policy:` [`frame_ancestors`].
+pub fn site_response_headers(s: &AppState, host: &str, res: &mut Response) {
+    let h = res.headers_mut();
+    h.insert(
+        header::REFERRER_POLICY,
+        HeaderValue::from_static("no-referrer"),
+    );
+    h.insert(
+        header::X_CONTENT_TYPE_OPTIONS,
+        HeaderValue::from_static("nosniff"),
+    );
+    if !h.contains_key(CORP) {
+        h.insert(CORP, HeaderValue::from_static("same-origin"));
+    }
+    if secure(s) {
+        h.insert(
+            header::STRICT_TRANSPORT_SECURITY,
+            HeaderValue::from_static(HSTS),
+        );
+    }
+    let html = h
+        .get(header::CONTENT_TYPE)
+        .and_then(|v| v.to_str().ok())
+        .is_some_and(|t| t.trim_start().to_ascii_lowercase().starts_with("text/html"));
+    if html
+        && !h.contains_key(header::CONTENT_SECURITY_POLICY)
+        && let Ok(v) = HeaderValue::from_str(&frame_ancestors(s, host))
+    {
+        h.insert(header::CONTENT_SECURITY_POLICY, v);
+    }
+}
+
 /// Artifact `aid`'s site origin for a request whose `Host` is `host`
 /// (the public host's or a site host's): the public origin's scheme, and
 /// the `Host`'s port unless it is the scheme's default.
@@ -384,15 +478,15 @@ pub fn signin_url(s: &AppState, host: &str, next: &str, state: &str) -> String {
     format!("{}/site-signin?{q}", public_origin(s))
 }
 
-/// A site's 302 to the public host's `/site-signin` for `next`: a new
-/// handshake state, set in the state cookie (partitioned for a frame,
+/// A site's 302 to the public host's `/site-signin` for `next`: the
+/// handshake's state ([`state_for`]), set in the state cookie (partitioned for a frame,
 /// `headers` being a framed navigation's) and named in the address.
 pub fn signin_redirect(s: &AppState, headers: &HeaderMap, next: &str) -> Response {
     let host = headers
         .get(header::HOST)
         .and_then(|h| h.to_str().ok())
         .unwrap_or("");
-    let state = new_state();
+    let state = state_for(headers, secure(s));
     let to = signin_url(s, host, next, &state);
     let mut res = (StatusCode::FOUND, [(header::LOCATION, to)]).into_response();
     let h = res.headers_mut();
@@ -553,32 +647,16 @@ pub async fn site_access_layer(
             site_response_headers(&mut res, false);
             return res;
         }
-        site_response_headers(&mut res, true);
-        return res;
+    };
+    req.extensions_mut().insert(caller);
+    let mut res = next.run(req).await;
+    if !world {
+        return private(res);
     }
-    if navigation(req.method(), req.headers()) {
-        let host = req
-            .headers()
-            .get(header::HOST)
-            .and_then(|h| h.to_str().ok())
-            .unwrap_or("");
-        let next = req
-            .uri()
-            .path_and_query()
-            .map_or("/", |p| p.as_str())
-            .to_string();
-        let to = signin_url(&s, host, &next);
-        let mut res = (StatusCode::FOUND, [(header::LOCATION, to)]).into_response();
-        res.headers_mut()
-            .insert(header::CACHE_CONTROL, HeaderValue::from_static("no-store"));
-        return res;
-    }
-    ApiError::new(
-        StatusCode::UNAUTHORIZED,
-        "site_session_required",
-        "this artifact's site needs a site session: open it from Clax",
-    )
-    .into_response()
+    // A public site's images and files may be embedded elsewhere.
+    res.headers_mut()
+        .insert(CORP, HeaderValue::from_static("cross-origin"));
+    res
 }
 
 #[cfg(test)]

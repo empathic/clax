@@ -905,7 +905,9 @@ async fn golden_now() -> Value {
 /// names the narrowest place the question shows (spec
 /// 2026-10-16-ask-where-attention-is-design §2), which
 /// [`compare_with_section_19`] accepts as [`moved_to_its_place`].
-pub const ADDITIVE_KEYS: [&str; 21] = [
+/// `site` (`GET /api/artifacts/<id>`'s) names the site hosts the shell
+/// frames an artifact on, on every install.
+pub const ADDITIVE_KEYS: [&str; 22] = [
     "owner",
     "taken_by",
     "name",
@@ -924,6 +926,7 @@ pub const ADDITIVE_KEYS: [&str; 21] = [
     "pulled",
     "thread",
     "tags",
+    "site",
     "comments",
     "forks",
     "app",
@@ -965,6 +968,7 @@ pub fn solo_value(key: &str, v: &Value, owner: &str) -> bool {
         "in_terminal" | "pulled" => *v == json!(false),
         "thread" => v.is_null(),
         "tags" => *v == json!([]),
+        "site" => v["domain"].is_string() && v["scheme"].is_string(),
         "comments" => *v == json!(true),
         "forks" => v.is_u64(),
         "app" => v.is_null(),

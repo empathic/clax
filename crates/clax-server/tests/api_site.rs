@@ -270,16 +270,22 @@ async fn the_public_host_serves_no_content() {
     ] {
         assert_eq!(ts.get(&path).await.status(), 404, "{path}");
     }
-    // A shell with no site origins (on a host other than `localhost` or
-    // `127.0.0.1`, as a LAN viewer's) still frames it on this host.
-    let res = ts
-        .client
-        .get(format!("{}/c/{id}/v/1/", ts.base))
-        .header("host", format!("[::1]:{}", ts.addr.port()))
-        .send()
-        .await
-        .unwrap();
-    assert_eq!(res.status(), 200);
+    // On any other name of this machine, a DNS-rebinding one among them,
+    // neither: content is on its site alone.
+    for host in [
+        format!("[::1]:{}", ts.addr.port()),
+        format!("192.168.1.5:{}", ts.addr.port()),
+        format!("rebind.example:{}", ts.addr.port()),
+    ] {
+        let res = ts
+            .client
+            .get(format!("{}/c/{id}/v/1/", ts.base))
+            .header("host", &host)
+            .send()
+            .await
+            .unwrap();
+        assert_eq!(res.status(), 404, "{host}");
+    }
     // Nor do the old site paths reach a version: `/v/1/` is the site's own.
     assert_site_404(&ts, &id, "/v/1/").await;
 }
@@ -484,4 +490,102 @@ async fn a_draft_refuses_a_path_its_site_serves_itself() {
         r.json::<Value>().await.unwrap()["error"]["code"],
         "invalid_path"
     );
+}
+
+/// The isolation headers `res` must carry: no referrer, no sniffing, a
+/// resource policy of `corp`, and on an HTML page the shell-only
+/// `frame-ancestors`.
+fn assert_isolated(res: &reqwest::Response, corp: &str, page: bool, what: &str) {
+    let h = res.headers();
+    assert_eq!(h["referrer-policy"], "no-referrer", "{what}");
+    assert_eq!(h["x-content-type-options"], "nosniff", "{what}");
+    assert_eq!(h["cross-origin-resource-policy"], corp, "{what}");
+    assert!(h.get("strict-transport-security").is_none(), "{what}: http");
+    if page {
+        let csp = h["content-security-policy"].to_str().unwrap();
+        assert!(
+            csp.starts_with("frame-ancestors 'self' http://localhost:"),
+            "{what}: {csp}"
+        );
+    }
+}
+
+#[tokio::test]
+async fn site_responses_carry_the_isolation_headers() {
+    let ts = TestServer::spawn().await;
+    let id = id_of(
+        &ts.publish("S", &[("index.html", "<p>one"), ("a.css", "p{}")])
+            .await,
+    );
+    let up = upload(&ts, &id).await;
+    let blob = format!("/_clax/blob/{}", up["asset"]["id"].as_str().unwrap());
+    // Private: same-origin, and never readable by another origin.
+    for (path, page) in [
+        ("/", true),
+        ("/_clax/v/1/", true),
+        ("/a.css", false),
+        (blob.as_str(), false),
+    ] {
+        let res = ts.site_get(&id, path).await;
+        assert_eq!(res.status(), 200, "{path}");
+        assert_isolated(&res, "same-origin", page, path);
+        assert!(
+            res.headers().get("access-control-allow-origin").is_none(),
+            "{path}"
+        );
+    }
+    // A 404 on the site host, and a refusal without a session, too.
+    let res = ts.site_get(&id, "/nope.html").await;
+    assert_eq!(res.status(), 404);
+    assert_isolated(&res, "same-origin", false, "404");
+    let res = ts
+        .client
+        .get(format!("{}/a.css", ts.base))
+        .header("host", ts.site_host(&id))
+        .send()
+        .await
+        .unwrap();
+    assert_eq!(res.status(), 401);
+    assert_isolated(&res, "same-origin", false, "401");
+    // Open to the world: its files may be embedded anywhere.
+    ts.store
+        .set_site_open_to_world(&clax_core::ArtifactId::parse(&id).unwrap(), true)
+        .unwrap();
+    for (path, page) in [("/", true), ("/a.css", false), (blob.as_str(), false)] {
+        let res = ts
+            .client
+            .get(format!("{}{path}", ts.base))
+            .header("host", ts.site_host(&id))
+            .send()
+            .await
+            .unwrap();
+        assert_eq!(res.status(), 200, "{path}");
+        assert_isolated(&res, "cross-origin", page, path);
+    }
+}
+
+#[tokio::test]
+async fn an_https_sites_responses_carry_strict_transport_security() {
+    let clock = std::sync::Arc::new(clax_core::working::ManualClock::at("2026-10-22T10:00:00Z"));
+    let ts = TestServer::spawn_hosted_with(clock, None, |s| {
+        s.hosted = clax_http::hosted::Hosted::new(&format!("https://localhost:{}", s.port), None)
+            .map(std::sync::Arc::new);
+    })
+    .await;
+    let id = id_of(&ts.publish("S", &[("index.html", "<p>one")]).await);
+    for path in ["/", "/_clax/healthz", "/nope.html"] {
+        let res = ts
+            .client
+            .get(format!("{}{path}", ts.base))
+            .header("host", ts.site_host(&id))
+            .send()
+            .await
+            .unwrap();
+        assert_eq!(
+            res.headers()["strict-transport-security"],
+            "max-age=31536000; includeSubDomains",
+            "{path}"
+        );
+        assert_eq!(res.headers()["x-content-type-options"], "nosniff", "{path}");
+    }
 }

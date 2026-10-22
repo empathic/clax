@@ -5,9 +5,9 @@ use crate::routes::artifacts::path;
 use crate::shell::bridge_version;
 use axum::body::Body;
 use axum::extract::rejection::PathRejection;
-use axum::extract::{Extension, Path, State};
+use axum::extract::{Path, State};
 use axum::http::{HeaderMap, HeaderValue, StatusCode, header};
-use axum::response::{IntoResponse, Redirect, Response};
+use axum::response::{IntoResponse, Response};
 use clax_core::model::CONTRACT_VERSION;
 use clax_core::model::FileMeta;
 use clax_core::publish::INDEX;
@@ -16,52 +16,25 @@ use clax_core::{ArtifactId, CoreError};
 use clax_http::content_policy::{ContentPolicySet, content_policy, own_host, plain_host};
 use clax_http::error::ApiError;
 use clax_http::headers::parse_id;
-use clax_http::host::SiteRequest;
 use clax_http::http_cache;
 use clax_http::state::AppState;
 use std::sync::Arc;
 
-/// Content served on the main origin must not run same-origin with the API.
-const SANDBOX: &str = "sandbox allow-scripts allow-forms allow-modals allow-popups allow-downloads";
-
-/// The `Content-Security-Policy` of a content response.
-///
-/// - On the main origin (sandbox mode): the sandbox, and no
-///   `frame-ancestors`. A sandboxed page has an opaque origin, which no
-///   `frame-ancestors` source matches, so any such list would also refuse an
-///   artifact's page framed by another of its pages. Framed by another site,
-///   the page reaches nothing of the viewer's: it runs at an opaque origin,
-///   and its bridge talks only to a parent at the shell's origin.
-/// - On an artifact's site host: framed only by the artifact's own pages
-///   (`'self'`) and the shell: a hosted daemon's at its public origin; a
-///   local daemon's at `localhost` or `127.0.0.1` on the same port, the only
-///   hosts from which the shell uses subdomain frames.
+/// The `Content-Security-Policy` of a content response on an artifact's
+/// site host: framed only by the artifact's own pages (`'self'`) and the
+/// shell (`clax_http::site_access::frame_ancestors`): a hosted daemon's at
+/// its public origin, a local daemon's at its loopback names on the same
+/// port.
 ///
 /// The policy is a separate one: a page's own `<meta>` policy still applies
 /// in full beside it, and cannot set `frame-ancestors` itself.
-pub(crate) fn content_policy(
-    s: &AppState,
-    origin: &Option<Extension<SiteRequest>>,
-    req: &HeaderMap,
-) -> HeaderValue {
-    if origin.is_none() {
-        return HeaderValue::from_static(SANDBOX);
-    }
-    if let Some(h) = &s.hosted {
-        return HeaderValue::from_str(&format!("frame-ancestors 'self' {}", h.origin))
-            .unwrap_or_else(|_| HeaderValue::from_static("frame-ancestors 'self'"));
-    }
-    // The rewrite accepted this host only with a numeric port, or none.
-    let port = req
+pub(crate) fn content_policy(s: &AppState, req: &HeaderMap) -> HeaderValue {
+    let host = req
         .get(header::HOST)
         .and_then(|h| h.to_str().ok())
-        .and_then(|h| h.split_once(':'))
-        .map(|(_, p)| format!(":{p}"))
-        .unwrap_or_default();
-    HeaderValue::from_str(&format!(
-        "frame-ancestors 'self' http://localhost{port} http://127.0.0.1{port}"
-    ))
-    .unwrap_or_else(|_| HeaderValue::from_static("frame-ancestors 'self'"))
+        .unwrap_or("");
+    HeaderValue::from_str(&clax_http::site_access::frame_ancestors(s, host))
+        .unwrap_or_else(|_| HeaderValue::from_static("frame-ancestors 'self'"))
 }
 
 /// The host and port in the daemon's browser base URL.
@@ -79,10 +52,20 @@ fn own_host(s: &AppState) -> String {
 /// plugins, base URL, form posts, frames, connections or workers. A `Host`
 /// that is not a plain host and port (letters, digits, `.`, `-`, `:`, `[`,
 /// `]`) is not trusted: `fallback` (the daemon's own host) is used instead.
-fn snapshot_policy(req: &HeaderMap, fallback: &str) -> HeaderValue {
-    let host = plain_host(req, fallback);
+/// `scheme` is the site's (`https` when the public origin is).
+fn snapshot_policy(scheme: &str, req: &HeaderMap, fallback: &str) -> HeaderValue {
+    let plain = |h: &str| {
+        !h.is_empty()
+            && h.bytes()
+                .all(|b| b.is_ascii_alphanumeric() || b".-:[]".contains(&b))
+    };
+    let host = req
+        .get(header::HOST)
+        .and_then(|h| h.to_str().ok())
+        .filter(|h| plain(h))
+        .unwrap_or(fallback);
     HeaderValue::from_str(&format!(
-        "script-src http://{host}/_clax/; object-src 'none'; base-uri 'none'; form-action 'none'; frame-src 'none'; connect-src 'none'; worker-src 'none'"
+        "script-src {scheme}://{host}/_clax/; object-src 'none'; base-uri 'none'; form-action 'none'; frame-src 'none'; connect-src 'none'; worker-src 'none'"
     ))
     .unwrap_or_else(|_| HeaderValue::from_static("script-src 'none'"))
 }
@@ -97,47 +80,25 @@ fn snapshot_policy(req: &HeaderMap, fallback: &str) -> HeaderValue {
 fn framed_by_shell(
     s: &AppState,
     mut res: Response,
-    origin: &Option<Extension<SiteRequest>>,
     req: &HeaderMap,
     (id, own, embed): (&str, &str, Option<&clax_http::state::EmbedOrigins>),
     live: bool,
 ) -> Response {
-    res.headers_mut().insert(
-        header::CONTENT_SECURITY_POLICY,
-        content_policy(s, origin, req),
-    );
+    res.headers_mut()
+        .insert(header::CONTENT_SECURITY_POLICY, content_policy(s, req));
     if let Some(fallback) = live {
+        let scheme = if clax_http::site_access::secure(s) {
+            "https"
+        } else {
+            "http"
+        };
         res.headers_mut().append(
             header::CONTENT_SECURITY_POLICY,
-            snapshot_policy(req, fallback),
+            snapshot_policy(scheme, req, fallback),
         );
     }
     res.extensions_mut().insert(ContentPolicySet);
     res
-}
-
-pub async fn redirect_to_slash(
-    _d: clax_http::agent::DeniedToGrants,
-    p: Result<Path<(String, u32)>, PathRejection>,
-) -> Result<Redirect, ApiError> {
-    let (aid, n) = path(p)?;
-    parse_id(&aid)?;
-    Ok(Redirect::permanent(&format!("{n}/")))
-}
-
-/// `/c/<aid>/v/<n>/`: version `n`'s `index.html` (a hosted daemon's).
-pub async fn index(
-    State(s): State<AppState>,
-    d: clax_http::agent::DeniedToGrants,
-    origin: Option<Extension<SiteRequest>>,
-    req: HeaderMap,
-    p: Result<Path<(String, u32)>, PathRejection>,
-) -> Result<Response, ApiError> {
-    // A version's page serves browsers (spec §7.5): agents read its files through the routes the filter covers.
-    d.refuse_agents()?;
-    let (aid, n) = path(p)?;
-    let id = parse_id(&aid)?;
-    serve_version(&s, id, n, INDEX.to_string(), false, &origin, &req).await
 }
 
 /// Whether a stored content type is `text/html` (parameters ignored).
@@ -176,8 +137,9 @@ async fn lookup(
     // A page wrapped concurrently with a debug rebuild may keep the old
     // `?v=`; a debug build serves every bridge URL revalidated, current bytes.
     cache.follow_bridge(&bridge);
-    // Content on a hosted daemon's site hosts talks to its public origin.
-    let shell = s.hosted.as_ref().map(|h| h.origin.clone());
+    // The bridge talks to the shell at the public origin alone (a local
+    // daemon's bridge takes its loopback names at that port).
+    let shell = clax_http::site_access::public_origin(s);
     s.store_call_async(move |st| async move {
         // A deleted artifact's versions stay behind its row, and its files
         // until its content is removed: neither is served once it is gone.
@@ -207,7 +169,7 @@ async fn lookup(
                         CONTRACT_VERSION,
                         &file,
                         &bridge,
-                        shell.as_deref(),
+                        Some(&shell),
                     )),
                     Err(e) => {
                         unwrapped = Some(e.into_bytes());
@@ -249,26 +211,6 @@ async fn read_bytes(
         .ok_or(CoreError::NotFound)
 }
 
-/// `/c/<aid>/v/<n>/<path>`: a supporting file of version `n` (a hosted
-/// daemon's), as [`serve_version`] serves it; `index.html` redirects to
-/// the version's root.
-pub async fn file(
-    State(s): State<AppState>,
-    d: clax_http::agent::DeniedToGrants,
-    origin: Option<Extension<SiteRequest>>,
-    req: HeaderMap,
-    p: Result<Path<(String, u32, String)>, PathRejection>,
-) -> Result<Response, ApiError> {
-    // A version's file serves browsers (spec §7.5): agents read it through the routes the filter covers.
-    d.refuse_agents()?;
-    let (aid, n, rel) = path(p)?;
-    let id = parse_id(&aid)?;
-    if rel == INDEX {
-        return Ok(Redirect::permanent("./").into_response());
-    }
-    serve_version(&s, id, n, rel, false, &origin, &req).await
-}
-
 /// File `rel` of version `n` of `id`. `index.html`, and any other
 /// `text/html` file in UTF-8, is a page: wrapped with the bridge
 /// (`data-file` naming its path), revalidated by the browser on every
@@ -283,7 +225,6 @@ pub(crate) async fn serve_version(
     n: u32,
     rel: String,
     current: bool,
-    origin: &Option<Extension<SiteRequest>>,
     req: &HeaderMap,
 ) -> Result<Response, ApiError> {
     let tag_source = format!("{}/{n}/{rel}", id.as_str());
@@ -292,13 +233,7 @@ pub(crate) async fn serve_version(
     let index = rel == INDEX;
     let (bytes, meta) = match lookup(s, id, n, rel, index).await? {
         Served::Page(html) => {
-            return Ok(framed_by_shell(
-                s,
-                http_cache::html(req, &html),
-                origin,
-                req,
-                live,
-            ));
+            return Ok(framed_by_shell(s, http_cache::html(req, &html), req, live));
         }
         Served::Raw(..) if index => {
             return Err(ApiError::from(CoreError::Io(std::io::Error::new(
@@ -325,7 +260,7 @@ pub(crate) async fn serve_version(
             )
                 .into_response()
         });
-        return Ok(framed_by_shell(s, res, origin, req, live));
+        return Ok(framed_by_shell(s, res, req, live));
     }
     let res = (
         StatusCode::OK,
@@ -338,7 +273,7 @@ pub(crate) async fn serve_version(
         body,
     )
         .into_response();
-    Ok(framed_by_shell(s, res, origin, req, live))
+    Ok(framed_by_shell(s, res, req, live))
 }
 
 /// `GET /api/artifacts/<id>/versions/<n>/files/<path>`: a file's stored bytes,
@@ -405,7 +340,7 @@ mod tests {
     fn the_snapshot_policy_names_a_plain_host_and_never_a_crafted_one() {
         let mut h = HeaderMap::new();
         h.insert(header::HOST, HeaderValue::from_static("127.0.0.1:7480"));
-        let p = snapshot_policy(&h, "localhost:7480");
+        let p = snapshot_policy("http", &h, "localhost:7480");
         assert!(
             p.to_str()
                 .unwrap()
@@ -415,7 +350,7 @@ mod tests {
             header::HOST,
             HeaderValue::from_static("a 'strict-dynamic' b"),
         );
-        let p = snapshot_policy(&h, "localhost:7480");
+        let p = snapshot_policy("http", &h, "localhost:7480");
         let p = p.to_str().unwrap();
         assert!(
             p.starts_with("script-src http://localhost:7480/_clax/;"),
@@ -424,13 +359,13 @@ mod tests {
         assert!(!p.contains("strict-dynamic"));
         h.insert(header::HOST, HeaderValue::from_static("x;script-src *"));
         assert!(
-            !snapshot_policy(&h, "localhost:7480")
+            !snapshot_policy("http", &h, "localhost:7480")
                 .to_str()
                 .unwrap()
                 .contains('*')
         );
         assert!(
-            snapshot_policy(&HeaderMap::new(), "localhost:7480")
+            snapshot_policy("http", &HeaderMap::new(), "localhost:7480")
                 .to_str()
                 .unwrap()
                 .contains("http://localhost:7480/_clax/")

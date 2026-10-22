@@ -19,7 +19,7 @@ async function open(page: Page, name: string, threads = 1): Promise<{ aid: strin
   const s = await registerSession(d.base, d.token, "claude", `drawer-${name}`);
   const { artifact } = await publishAs(d.base, d.token, s.id, `Drawer ${name}`, { "index.html": PAGE });
   for (let i = 0; i < threads; i++) await postThread(d.base, artifact.id, `Thread ${i + 1} on the goals`);
-  const frame = await openArtifact(page, d.base, artifact.id, 1, "subdomain");
+  const frame = await openArtifact(page, d.base, artifact.id, 1);
   await expect(page.locator(".drawer .drawer-bar")).toBeVisible();
   return { aid: artifact.id, frame };
 }

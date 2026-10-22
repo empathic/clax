@@ -31,13 +31,12 @@ async function backOn(page: Page, frame: Frame, sel: string) {
   await expect.poll(() => outlined(frame)).toBe(true);
 }
 
-for (const mode of ["subdomain", "sandbox"] as const) {
-  test(`${mode}: comment mode comes back after each post, so the viewer comments on an element, then an area, then on a second page, pressing Comment once per page`, async ({ page }) => {
-    const { artifact } = await publish(d.base, d.token, `Again ${mode}`, { "index.html": INDEX, "about.html": ABOUT });
+{
+  test(`comment mode comes back after each post, so the viewer comments on an element, then an area, then on a second page, pressing Comment once per page`, async ({ page }) => {
+    const { artifact } = await publish(d.base, d.token, `Again`, { "index.html": INDEX, "about.html": ABOUT });
     const id = artifact.id;
-    const frame = await openArtifact(page, d.base, id, 1, mode);
-    if (mode === "sandbox") await expect(page.locator("iframe.frame")).toHaveAttribute("sandbox", /allow-scripts/);
-    else await expect(page.locator("iframe.frame")).not.toHaveAttribute("sandbox", /.*/);
+    const frame = await openArtifact(page, d.base, id, 1);
+    await expect(page.locator("iframe.frame")).not.toHaveAttribute("sandbox", /.*/);
     const toggle = page.getByRole("button", { name: "Comment", exact: true });
     await toggle.click();
     await expect(toggle).toHaveAttribute("aria-pressed", "true");
@@ -53,7 +52,7 @@ for (const mode of ["subdomain", "sandbox"] as const) {
     await expect(toggle).toHaveAttribute("aria-pressed", "false");
     await post(page, "Which quarter?");
     await backOn(page, frame, "#para");
-    await page.screenshot({ path: test.info().outputPath(`${mode}-after-first-post.png`) });
+    await page.screenshot({ path: test.info().outputPath(`after-first-post.png`) });
 
     // Second, with no press of Comment: an area drawn over the image.
     const pic = await frame.evaluate(() => { const b = document.querySelector("#pic")!.getBoundingClientRect(); return { x: b.x, y: b.y }; });
@@ -67,7 +66,7 @@ for (const mode of ["subdomain", "sandbox"] as const) {
     await expect(toggle).toHaveAttribute("aria-pressed", "false");
     await post(page, "What is this red square?");
     await backOn(page, frame, "#title");
-    await page.screenshot({ path: test.info().outputPath(`${mode}-after-area-post.png`) });
+    await page.screenshot({ path: test.info().outputPath(`after-area-post.png`) });
 
     const { threads } = await api(d.base, d.token, `/api/artifacts/${id}/threads`) as { threads: { anchor: { kind: string; selector: string } }[] };
     expect(threads.map(t => [t.anchor.kind, t.anchor.selector]).sort()).toEqual([["area", "#pic"], ["element", "#title"]]);

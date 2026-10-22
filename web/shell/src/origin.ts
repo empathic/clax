@@ -1,71 +1,36 @@
-import { type Embed, embedOk, hostEmbed } from "./transport";
+/** The site hosts the shell frames each artifact on, as the daemon names
+ * them (the bootstrap's and `GET /api/artifacts/<id>`'s `site`). In the Clax
+ * app they are the app's content origins, which its core serves the sites
+ * on: `clax` or `https`, under its content domain, with no port. */
+export type SiteHosts = { domain: string; scheme: string; port: number | null };
 
-const CACHE_KEY = "clax.origin-ok";
-
-/** Artifact `id`'s own content origin: in the Clax app the embed's (its
- * `content` template, `hostEmbed`), or null (the sandboxed path) when the
- * embed's origins are not ones the app may use (`embedOk`: `https:` or
- * `clax:`, `{id}` once); else `<id>.localhost` on the daemon's port when
- * the shell is on a local host, which the browser may or may not resolve
- * ([`probeOrigin`]); else null. */
-export function artifactOrigin(id: string, loc: Location = location, embed: Embed | null = hostEmbed()): string | null {
-  if (embed) return embedOk(embed.shell, embed.content) ? embed.content.replace("{id}", id) : null;
-  if (loc.hostname !== "localhost" && loc.hostname !== "127.0.0.1") return null;
-  const port = loc.port ? `:${loc.port}` : "";
-  return `${loc.protocol}//${id}.localhost${port}`;
+/** Artifact `id`'s site origin: `<scheme>://<id>.<domain>[:<port>]`. */
+export function artifactOrigin(id: string, site: SiteHosts): string {
+  return `${site.scheme}://${id}.${site.domain}${site.port === null ? "" : `:${site.port}`}`;
 }
 
-/** This tab's cached probe result: true or false once probed, null before (or without storage). */
-export function cachedOriginOk(): boolean | null {
-  try { const v = sessionStorage.getItem(CACHE_KEY); return v === null ? null : v === "1"; } catch { return null; }
+/** A version's content root on the artifact's site origin `site`:
+ * `/_clax/v/<n>/`. */
+export function contentSrc(n: number, site: string): string {
+  return `${site}/_clax/v/${n}/`;
 }
 
-/** Whether the browser resolves `<id>.localhost`. A sure answer is cached
- * for the session ([`cachedOriginOk`]), which callers consult first.
- *
- * The artifact origin's `/_clax/healthz` and this page's own `/healthz` are asked
- * together. The artifact origin is judged against the daemon, not the
- * clock: it gets 1 s from the moment the daemon answers on its own
- * origin, so a slow daemon is waited for instead of being taken for a name
- * that does not resolve, while a name that hangs still falls back about
- * 1 s after the daemon proved itself up. A verdict is cached only
- * when it is sure: the artifact origin answered, or it failed or hung while
- * the daemon answered here. When neither answers within 10 s (or the
- * artifact origin failed and the daemon is unreachable), the answer is
- * false for now and the next view probes again. */
-export async function probeOrigin(origin: string, f: typeof fetch = fetch): Promise<boolean> {
-  // 1 or 0 when sure (the cached form), undefined when not; the first to
-  // settle it wins, and the request still out is then aborted. A timer left
-  // behind fires within 10 s and does nothing.
-  const ctl = new AbortController();
-  const v = await new Promise<number | undefined>(done => {
-    setTimeout(done, 10_000);
-    // Truthy once the daemon answered here, which starts the grace.
-    const up = f("/healthz", ctl).then(r => r.ok && setTimeout(done, 1000, 0), () => false);
-    f(`${origin}/_clax/healthz`, ctl).then(r => done(+r.ok), () => up.then(u => done(u ? 0 : undefined)));
-  });
-  ctl.abort();
-  if (v !== undefined) try { sessionStorage.setItem(CACHE_KEY, `${v}`); } catch { /* storage unavailable */ }
-  return v === 1;
-}
-
-/** The site origin the frame loads from, as `frame_site` in
- * crates/clax-server/src/shell/boot.rs: the subdomain mode's `origin`; in
- * sandbox mode the artifact's site origin still on `localhost` or
- * `127.0.0.1` (the frame sandboxes it), and none elsewhere. */
-export function frameSite(id: string, origin: string | null | undefined, loc: Location = location): string | null {
-  return origin ?? artifactOrigin(id, loc);
-}
-
-/** A version's content root: on the artifact's site origin (`site`),
- * `/_clax/v/<n>/`; without one, `/c/<id>/v/<n>/` on this host. */
-export function contentSrc(id: string, n: number, site: string | null): string {
-  return site ? `${site}/_clax/v/${n}/` : `/c/${id}/v/${n}/`;
-}
-
-/** Where the frame shows the page published at `file`: the version's root
- * for `index.html`, else the file's path under it, each segment encoded. */
-export function pageSrc(id: string, n: number, site: string | null, file: string): string {
-  const root = contentSrc(id, n, site);
+/** Where the frame shows the page published at `file`, as `page_src` in
+ * crates/clax-server/src/shell/boot.rs: the version's root for
+ * `index.html`, else the file's path under it, each segment encoded. */
+export function pageSrc(n: number, site: string, file: string): string {
+  const root = contentSrc(n, site);
   return file === "index.html" ? root : root + file.split("/").map(encodeURIComponent).join("/");
+}
+
+/** The handshake that opens `target` (an address on the site origin `site`)
+ * in the frame, as `start_src` in
+ * crates/clax-server/src/shell/boot.rs: the site's `/_clax/session/start`,
+ * with `target`'s path and fragment as `next`. */
+export function startSrc(site: string, target: string): string {
+  // By prefix, not by `URL.origin`: a URL of the app's `clax:` origins has
+  // no origin of its own.
+  const rest = target.startsWith(site) ? target.slice(site.length) : "";
+  const next = rest.startsWith("/") ? rest : "/";
+  return `${site}/_clax/session/start?next=${encodeURIComponent(next)}`;
 }

@@ -1,5 +1,6 @@
 import { readFileSync } from "node:fs";
-import { test, expect, type Daemon, namedViewer, openArtifact, publishWith, nameField } from "./fixtures";
+import { test, expect, type Daemon, openArtifact, publishWith, nameField } from "./fixtures";
+import { guestOn, hostedDaemon, openAt, ownerOf, shareByLink } from "./hosted-helpers";
 
 let d: Daemon;
 test.beforeEach(({ daemon }) => { d = daemon; });
@@ -16,56 +17,56 @@ const facts = async (f: import("@playwright/test").Frame) => {
   return out!;
 };
 
-for (const mode of ["subdomain", "sandbox"] as const) {
-  test(`${mode}: user in the owner shell`, async ({ page, freshDaemon }) => {
-    // A daemon of its own: the owner is one viewer per daemon, and this test
-    // starts with it unnamed.
-    d = freshDaemon;
-    const { artifact } = await publishWith(d.base, d.token, `Who ${mode}`, html("who.html"), { user: { scopes: ["profile"] }, db: {} });
-    const f = await openArtifact(page, d.base, artifact.id, 1, mode);
-    expect(await facts(f)).toMatchObject({ isOwner: true, canEdit: true, dataWrite: true, filesWrite: true, idShape: true, name: "", isMe: true, stranger: "", other: null, search: 0 });
-    const name = await nameField(page);
-    await name.fill("Alex");
-    await Promise.all([page.waitForResponse(r => r.url().endsWith("/api/viewers/me") && r.request().method() === "PUT"), name.press("Enter")]);
-    await f.locator("#refresh").click();
-    await expect(f.locator("#greeting")).toHaveText("Hello, Alex");
-    await expect.poll(async () => (await facts(f)).search).toBe(1);
-    expect(await facts(f)).toMatchObject({ name: "Alex", meResolved: "Alex", search: 1 });
-  });
-
-  test(`${mode}: assets upload, display, list, and delete`, async ({ page }) => {
-    const { artifact } = await publishWith(d.base, d.token, `Gallery ${mode}`, html("gallery.html"), { assets: {}, db: {} });
-    const f = await openArtifact(page, d.base, artifact.id, 1, mode);
-    await expect(f.locator("#status")).toHaveText("ready");
-    await f.locator("#upload").click();
-    await expect(f.locator("#status")).toHaveText(JSON.stringify({ loaded: 40, files: 1, type: "image/png" }));
-    await f.locator("#remove").click();
-    await expect(f.locator("#status")).toHaveText(JSON.stringify({ first: true, second: false }));
-  });
-}
-
-test("LAN: user is not the owner, resolves other viewers by name, and can write data from the next document once named; assets resolves null", async ({ page }) => {
-  const other = await namedViewer(d.base, "Ärger Ölund");
-  const who = html("who.html").replace('data-other="u_ffffffffffffffffffffff"', `data-other="${other}"`);
-  const { artifact } = await publishWith(d.base, d.token, "Who LAN", who, { user: { scopes: ["profile"] }, db: {} });
-  const f = await openArtifact(page, d.base, artifact.id, 1, "sandbox", { lan: true });
-  expect(await facts(f)).toMatchObject({ isOwner: false, canEdit: false, dataWrite: false, filesWrite: false, idShape: true, search: 0, other: "Ärger Ölund", stranger: "" });
-  // A name no test gives this worker's shared daemon's owner (comment-flows
-  // names the owner Sam): one that reads like the owner's is refused.
+test(`user in the owner shell`, async ({ page, freshDaemon }) => {
+  // A daemon of its own: the owner is one viewer per daemon, and this test
+  // starts with it unnamed.
+  d = freshDaemon;
+  const { artifact } = await publishWith(d.base, d.token, `Who`, html("who.html"), { user: { scopes: ["profile"] }, db: {} });
+  const f = await openArtifact(page, d.base, artifact.id, 1);
+  expect(await facts(f)).toMatchObject({ isOwner: true, canEdit: true, dataWrite: true, filesWrite: true, idShape: true, name: "", isMe: true, stranger: "", other: null, search: 0 });
   const name = await nameField(page);
-  await name.fill("Lan Reader");
-  const [named] = await Promise.all([page.waitForResponse(r => r.url().endsWith("/api/viewers/me") && r.request().method() === "PUT"), name.press("Enter")]);
-  expect(named.status(), await named.text()).toBe(200);
-  // can() is fixed for the life of the frame's document: naming does not change it.
+  await name.fill("Alex");
+  await Promise.all([page.waitForResponse(r => r.url().endsWith("/api/viewers/me") && r.request().method() === "PUT"), name.press("Enter")]);
   await f.locator("#refresh").click();
-  await expect.poll(async () => (await facts(f)).name).toBe("Lan Reader");
-  expect(await facts(f)).toMatchObject({ name: "Lan Reader", dataWrite: false });
-  // The next document is given the named viewer's level.
-  await f.evaluate(() => location.reload()).catch(() => { /* the reload ends this document mid-call */ });
-  await expect.poll(async () => (await facts(f)).dataWrite).toBe(true);
-  expect(await facts(f)).toMatchObject({ name: "Lan Reader", other: "Ärger Ölund", isOwner: false });
-  const { artifact: g } = await publishWith(d.base, d.token, "Gallery LAN", html("gallery.html"), { assets: {} });
-  const page2 = await page.context().newPage();
-  const f2 = await openArtifact(page2, d.base, g.id, 1, "sandbox", { lan: true });
-  await expect(f2.locator("#status")).toHaveText("read-only");
+  await expect(f.locator("#greeting")).toHaveText("Hello, Alex");
+  await expect.poll(async () => (await facts(f)).search).toBe(1);
+  expect(await facts(f)).toMatchObject({ name: "Alex", meResolved: "Alex", search: 1 });
+});
+
+test(`assets upload, display, list, and delete`, async ({ page }) => {
+  const { artifact } = await publishWith(d.base, d.token, `Gallery`, html("gallery.html"), { assets: {}, db: {} });
+  const f = await openArtifact(page, d.base, artifact.id, 1);
+  await expect(f.locator("#status")).toHaveText("ready");
+  await f.locator("#upload").click();
+  await expect(f.locator("#status")).toHaveText(JSON.stringify({ loaded: 40, files: 1, type: "image/png" }));
+  await f.locator("#remove").click();
+  await expect(f.locator("#status")).toHaveText(JSON.stringify({ first: true, second: false }));
+});
+
+// A viewer who is not the owner: a hosted daemon's guest on a page shared by
+// link (a local daemon frames pages for the owner alone).
+test("a guest: user is not the owner, resolves other viewers by name, and can write data from the next document once named; assets are read-only", async ({ browser }) => {
+  const { d: h, origin } = await hostedDaemon();
+  try {
+    const owner = await ownerOf(browser, origin, "Ärger Ölund");
+    const other = await owner.evaluate(async () => (await (await fetch("/api/viewers/me")).json()).viewer.public_id as string);
+    const who = html("who.html").replace('data-other="u_ffffffffffffffffffffff"', `data-other="${other}"`);
+    const { artifact } = await publishWith(h.base, h.token, "Who guest", who, { user: { scopes: ["profile"] }, db: {} });
+    const { artifact: g } = await publishWith(h.base, h.token, "Gallery guest", html("gallery.html"), { assets: {} });
+    await shareByLink(owner, artifact.id);
+    await shareByLink(owner, g.id);
+    const { page, frame: first } = await guestOn(browser, origin, artifact.id);
+    // A guest has no viewer of their own until named.
+    expect(await facts(first)).toMatchObject({ isOwner: false, canEdit: false, dataWrite: false, filesWrite: false, idShape: false });
+    const name = await nameField(page);
+    await name.fill("Guest Reader");
+    const [named] = await Promise.all([page.waitForResponse(r => r.url().endsWith("/api/viewers/me") && r.request().method() === "PUT"), name.press("Enter")]);
+    expect(named.status(), await named.text()).toBe(200);
+    const f = await openAt(page, origin, artifact.id, 1);
+    expect(await facts(f)).toMatchObject({ name: "Guest Reader", isOwner: false, canEdit: false, dataWrite: true, filesWrite: false, idShape: true, search: 0, other: "Ärger Ölund", stranger: "" });
+    const f2 = await openAt(await page.context().newPage(), origin, g.id, 1);
+    await expect(f2.locator("#status")).toHaveText("read-only");
+  } finally {
+    await h.stop();
+  }
 });

@@ -66,11 +66,11 @@ async function post(page: Page, text: string) {
   return card;
 }
 
-for (const mode of ["subdomain", "sandbox"] as const) {
-  test(`${mode}: a drag over an image draws an area, clipped to exactly the rectangle, pinned at its top right, and it re-anchors after content is added above`, async ({ page }) => {
-    const { artifact } = await publish(d.base, d.token, `Area image ${mode}`, { "index.html": PAGE });
+{
+  test(`a drag over an image draws an area, clipped to exactly the rectangle, pinned at its top right, and it re-anchors after content is added above`, async ({ page }) => {
+    const { artifact } = await publish(d.base, d.token, `Area image`, { "index.html": PAGE });
     await record(page);
-    const frame = await openArtifact(page, d.base, artifact.id, 1, mode);
+    const frame = await openArtifact(page, d.base, artifact.id, 1);
     await commentMode(page, frame);
     const pic = await rectOf(frame, "#pic");
     // Over the red square and some green around it: 120 × 100.
@@ -114,9 +114,9 @@ for (const mode of ["subdomain", "sandbox"] as const) {
     expect(Math.abs(f.w - (r.w + 4))).toBeLessThan(3);
 
     // A republish that adds a 180 px banner above: the area follows the image.
-    await publish(d.base, d.token, `Area image ${mode}`, { "index.html": TALLER }, 1, artifact.id);
+    await publish(d.base, d.token, `Area image`, { "index.html": TALLER }, 1, artifact.id);
     await page.goto(`${d.base}/a/${artifact.id}`);
-    const v2 = await openArtifact(page, d.base, artifact.id, 2, mode);
+    const v2 = await openArtifact(page, d.base, artifact.id, 2);
     await expect(page.locator(`.section-open [data-thread="${tid}"]`)).toHaveCount(1);
     await expect(page.locator(".section-detached .thread-card")).toHaveCount(0);
     const pic2 = await rectOf(v2, "#pic");
@@ -142,10 +142,10 @@ for (const mode of ["subdomain", "sandbox"] as const) {
     await expect.poll(async () => (await focus(v2)).shown).toBe(true);
   });
 
-  test(`${mode}: a drag over empty space draws an area in its panel, Shift-drag draws one over text, and a plain text drag still selects text`, async ({ page }) => {
-    const { artifact } = await publish(d.base, d.token, `Area space ${mode}`, { "index.html": PAGE });
+  test(`a drag over empty space draws an area in its panel, Shift-drag draws one over text, and a plain text drag still selects text`, async ({ page }) => {
+    const { artifact } = await publish(d.base, d.token, `Area space`, { "index.html": PAGE });
     await record(page);
-    const frame = await openArtifact(page, d.base, artifact.id, 1, mode);
+    const frame = await openArtifact(page, d.base, artifact.id, 1);
     await commentMode(page, frame);
     const panel = await rectOf(frame, "#panel");
     const badge = await rectOf(frame, "#badge");
@@ -181,10 +181,10 @@ for (const mode of ["subdomain", "sandbox"] as const) {
     expect("The quick brown fox jumps").toContain(pick.anchor.quote.trim().slice(0, 10));
   });
 
-  test(`${mode}: Option widens the target from a line to the whole oversized <pre>, and a click picks it`, async ({ page }) => {
-    const { artifact } = await publish(d.base, d.token, `Widen ${mode}`, { "index.html": LONG });
+  test(`Option widens the target from a line to the whole oversized <pre>, and a click picks it`, async ({ page }) => {
+    const { artifact } = await publish(d.base, d.token, `Widen`, { "index.html": LONG });
     await record(page);
-    const frame = await openArtifact(page, d.base, artifact.id, 1, mode);
+    const frame = await openArtifact(page, d.base, artifact.id, 1);
     await frame.evaluate(() => scrollTo(0, 2000));
     await commentMode(page, frame);
     const outline = () => frame.evaluate(() => {
@@ -222,11 +222,11 @@ for (const mode of ["subdomain", "sandbox"] as const) {
   });
 }
 
-for (const mode of ["subdomain", "sandbox"] as const) {
-  test(`${mode}: an area over an inline SVG chart anchors on the <svg> and its clip is the exact rectangle of the chart`, async ({ page }) => {
-    const { artifact } = await publish(d.base, d.token, `Chart ${mode}`, { "index.html": CHART });
+{
+  test(`an area over an inline SVG chart anchors on the <svg> and its clip is the exact rectangle of the chart`, async ({ page }) => {
+    const { artifact } = await publish(d.base, d.token, `Chart`, { "index.html": CHART });
     await record(page);
-    const frame = await openArtifact(page, d.base, artifact.id, 1, mode);
+    const frame = await openArtifact(page, d.base, artifact.id, 1);
     await commentMode(page, frame);
     const chart = await rectOf(frame, "#chart");
     // 260 × 120 from inside the red bar's column across into the blue bar.
@@ -247,10 +247,10 @@ for (const mode of ["subdomain", "sandbox"] as const) {
     expect(blue).toBeLessThan(0.37);
   });
 
-  test(`${mode}: an area drawn below a short page anchors on the document, unclamped, with a clip of what is there`, async ({ page }) => {
-    const { artifact } = await publish(d.base, d.token, `Short page ${mode}`, { "index.html": SHORT_PAGE });
+  test(`an area drawn below a short page anchors on the document, unclamped, with a clip of what is there`, async ({ page }) => {
+    const { artifact } = await publish(d.base, d.token, `Short page`, { "index.html": SHORT_PAGE });
     await record(page);
-    const frame = await openArtifact(page, d.base, artifact.id, 1, mode);
+    const frame = await openArtifact(page, d.base, artifact.id, 1);
     await commentMode(page, frame);
     const box = await rectOf(frame, "#box");
     // From inside the green box down into the empty canvas below the page.
@@ -277,10 +277,10 @@ for (const mode of ["subdomain", "sandbox"] as const) {
     }).toBe(true);
   });
 
-  test(`${mode}: a drag selection made with Option picks the whole paragraph as an element`, async ({ page }) => {
-    const { artifact } = await publish(d.base, d.token, `Option drag ${mode}`, { "index.html": PAGE });
+  test(`a drag selection made with Option picks the whole paragraph as an element`, async ({ page }) => {
+    const { artifact } = await publish(d.base, d.token, `Option drag`, { "index.html": PAGE });
     await record(page);
-    const frame = await openArtifact(page, d.base, artifact.id, 1, mode);
+    const frame = await openArtifact(page, d.base, artifact.id, 1);
     await commentMode(page, frame);
     const para = await rectOf(frame, "#para");
     const fb = await frameBox(page);
@@ -298,11 +298,11 @@ for (const mode of ["subdomain", "sandbox"] as const) {
   });
 }
 
-for (const mode of ["subdomain", "sandbox"] as const) {
-  test(`${mode}: a pick the page forges outside the viewer's gesture opens no composer`, async ({ page }) => {
-    const { artifact } = await publish(d.base, d.token, `Forged ${mode}`, { "index.html": PAGE });
+{
+  test(`a pick the page forges outside the viewer's gesture opens no composer`, async ({ page }) => {
+    const { artifact } = await publish(d.base, d.token, `Forged`, { "index.html": PAGE });
     await record(page);
-    const frame = await openArtifact(page, d.base, artifact.id, 1, mode);
+    const frame = await openArtifact(page, d.base, artifact.id, 1);
     await commentMode(page, frame);
     // A magenta 1 × 1 PNG as "the screenshot", with and without a forged start.
     await frame.evaluate(async () => {
@@ -330,10 +330,10 @@ for (const mode of ["subdomain", "sandbox"] as const) {
     await expect(page.locator(".composer .composer-quote")).not.toHaveText(/forged/);
   });
 
-  test(`${mode}: an area on the document stays where it was drawn when the window is resized`, async ({ page }) => {
-    const { artifact } = await publish(d.base, d.token, `Resize ${mode}`, { "index.html": SHORT_PAGE });
+  test(`an area on the document stays where it was drawn when the window is resized`, async ({ page }) => {
+    const { artifact } = await publish(d.base, d.token, `Resize`, { "index.html": SHORT_PAGE });
     await record(page);
-    const frame = await openArtifact(page, d.base, artifact.id, 1, mode);
+    const frame = await openArtifact(page, d.base, artifact.id, 1);
     await commentMode(page, frame);
     const box = await rectOf(frame, "#box");
     const r: R = { x: 40, y: box.y + 60, w: 200, h: 340 };
@@ -352,10 +352,10 @@ for (const mode of ["subdomain", "sandbox"] as const) {
     await expect.poll(pinInFrame).toEqual({ x: Math.round(r.x + r.w - 12), y: Math.round(r.y - 12) });
   });
 
-  test(`${mode}: Escape drops a drag in the page, picking nothing and keeping comment mode, then ends it`, async ({ page }) => {
-    const { artifact } = await publish(d.base, d.token, `Escape ${mode}`, { "index.html": PAGE });
+  test(`Escape drops a drag in the page, picking nothing and keeping comment mode, then ends it`, async ({ page }) => {
+    const { artifact } = await publish(d.base, d.token, `Escape`, { "index.html": PAGE });
     await record(page);
-    const frame = await openArtifact(page, d.base, artifact.id, 1, mode);
+    const frame = await openArtifact(page, d.base, artifact.id, 1);
     await commentMode(page, frame);
     const panel = await rectOf(frame, "#panel");
     const fb = await frameBox(page);

@@ -1142,14 +1142,20 @@ async fn content_is_served_on_its_site_alone_and_keyed_addresses_are_gone() {
         html.contains(&format!("data-origin=\"{}\"", site.origin)),
         "{html}"
     );
-    // The artifact page frames nothing itself: the shell asks for a site
-    // code first.
+    // The artifact page frames the site's handshake, which the shell
+    // completes with a site code; the page itself carries no credential.
     let page = at(&owner, format!("/a/{aid}"), public.clone(), None)
         .await
         .text()
         .await
         .unwrap();
-    assert!(!page.contains("class=\"frame\""), "{page}");
+    let scheme = site.origin.split_once("://").unwrap().0;
+    assert!(
+        page.contains(&format!(
+            "src=\"{scheme}://{site_host}/_clax/session/start?next=%2F_clax%2Fv%2F1%2F\""
+        )),
+        "{page}"
+    );
     assert!(!page.contains("content_key"), "{page}");
     // An asset is named on its site host.
     let form = reqwest::multipart::Form::new().part(

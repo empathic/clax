@@ -499,15 +499,11 @@ async fn a_credential_from_another_machine_is_refused() {
         .send()
         .await
         .unwrap();
+    // Another machine reaches nothing of a local daemon's, whatever it
+    // presents (`clax_http::identity::local_peers`).
     assert_eq!(res.status(), 403);
     let v: Value = res.json().await.unwrap();
-    assert!(
-        v["error"]["message"]
-            .as_str()
-            .unwrap()
-            .contains("on this machine only"),
-        "{v}"
-    );
+    assert_eq!(v["error"]["code"], "forbidden_host", "{v}");
     let pre = lc
         .request(Method::OPTIONS, format!("{lan}{path}"))
         .header("origin", origin(&ts))

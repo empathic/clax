@@ -16,7 +16,7 @@ test("an agent no comment wakes is marked until a follower connects", async ({ p
   // The gallery's card draws it the same.
   await page.goto(`${d.base}/`);
   await expect(page.locator(".card-wrap", { hasText: "Wake" }).locator(".ros .tok.a")).toHaveClass(/nowake/);
-  await openArtifact(page, d.base, artifact.id, 1, "subdomain");
+  await openArtifact(page, d.base, artifact.id, 1);
   const token = page.locator(".who .agt .tok.a");
   await expect(token).toHaveClass(/nowake/);
   await expect(token).toHaveAttribute("title", /won't be woken by comments until it next acts$/);
@@ -42,7 +42,7 @@ test("an agent no comment wakes is marked until a follower connects", async ({ p
 test("an agent woken only through its Claude Code channel is marked unsure", async ({ page }) => {
   const s = await registerSession(d.base, d.token, "claude", `chan-${Math.random().toString(36).slice(2)}`);
   const { artifact } = await publishAs(d.base, d.token, s.id, "Channel", { "index.html": PAGE });
-  await openArtifact(page, d.base, artifact.id, 1, "subdomain");
+  await openArtifact(page, d.base, artifact.id, 1);
   const token = page.locator(".who .agt .tok.a");
   await expect(token).toHaveClass(/nowake/);
   await expect.poll(() => page.evaluate(() => (window as unknown as { claxStreamLive?: number }).claxStreamLive ?? 0)).toBeGreaterThan(0);
@@ -70,7 +70,7 @@ for (const theme of ["light", "dark"] as const) {
       await page.goto(`${d.base}/`);
       await expect(page.locator(".card-wrap", { hasText: "Quarterly goals" }).first().locator(".ros .tok.a.nowake")).toHaveCount(1);
       await page.screenshot({ path: `${SHOTS}/${theme}-${width}-gallery.png` });
-      await openArtifact(page, d.base, artifact.id, 1, "subdomain");
+      await openArtifact(page, d.base, artifact.id, 1);
       await expect(page.locator(".who .agt .tok.a.nowake")).toHaveCount(1);
       await page.screenshot({ path: `${SHOTS}/${theme}-${width}-roster.png` });
       await page.locator("button.who").click();

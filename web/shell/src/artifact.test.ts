@@ -1,7 +1,7 @@
 import { describe, it, expect, vi } from "vitest";
 import { freshModules } from "./test/modules";
 import { MOUNT_TIMEOUT_MS } from "./test/timeouts";
-import { artifactViewHooks, waitFor, ID, FakeES, artifact, page, viewer, mountView, stubMedia, buttonNamed, fromFrame, gestureIn } from "./test/artifact-view";
+import { artifactViewHooks, waitFor, ID, FakeES, artifact, page, viewer, mountView, stubMedia, buttonNamed, fromFrame, gestureIn, SITE } from "./test/artifact-view";
 
 describe("ArtifactView", { timeout: MOUNT_TIMEOUT_MS }, () => {
   artifactViewHooks();
@@ -373,7 +373,8 @@ describe("ArtifactView", { timeout: MOUNT_TIMEOUT_MS }, () => {
     let view = await mountView(async () => new Response(JSON.stringify(artifact(1, { "index.html": page, "docs/about.html": page }))), undefined, "docs/about.html");
     let root = view.root;
     const frame = await waitFor(() => root.querySelector<HTMLIFrameElement>("iframe.frame"), "viewer");
-    expect(frame.getAttribute("src")).toBe(`http://${ID}.localhost:3000/_clax/v/1/docs/about.html`);
+    // Opened through the site's handshake, which leads to the page.
+    expect(frame.getAttribute("src")).toBe(`${SITE}/_clax/session/start?next=${encodeURIComponent("/_clax/v/1/docs/about.html")}`);
     // The view's stream loads the owner's question surfaces: let that load
     // finish before the registry is reset, or the next view's imports race a
     // half-loaded copy of the modules they share.
@@ -394,15 +395,18 @@ describe("ArtifactView", { timeout: MOUNT_TIMEOUT_MS }, () => {
     const view = await mountView(async () => new Response(JSON.stringify(artifact(1, { "index.html": page, "about.html": page }))), undefined, "about.html");
     const root = view.root;
     const frame = await waitFor(() => root.querySelector<HTMLIFrameElement>("iframe.frame"), "viewer");
-    expect(frame.getAttribute("src")).toBe(`http://${ID}.localhost:3000/_clax/v/1/about.html#docs%2Fcontract.md`);
+    expect(frame.getAttribute("src")).toBe(`${SITE}/_clax/session/start?next=${encodeURIComponent("/_clax/v/1/about.html")}`);
     const win = frame.contentWindow!;
-    win.postMessage = (() => {}) as typeof win.postMessage;
+    const posted: { type: string; hash?: string }[] = [];
+    win.postMessage = ((m: { type: string }) => { posted.push(m); }) as typeof win.postMessage;
     const depth = history.length;
     const settle = () => new Promise(r => setTimeout(r, 20));
     fromFrame(win, { type: "clax:hash", hash: "#early" });
     await settle();
     expect(location.hash).toBe("#docs%2Fcontract.md");
     fromFrame(win, { type: "clax:hello", artifact: ID, version: 1, file: "about.html" });
+    // The page moves to the URL's fragment once it greets, ahead of its welcome.
+    expect(posted.slice(0, 2)).toEqual([{ type: "clax:hash", hash: "#docs%2Fcontract.md" }, expect.objectContaining({ type: "clax:welcome" })]);
     fromFrame(win, { type: "clax:hash", hash: "#crates%2Fa.rs" });
     await waitFor(() => location.hash === "#crates%2Fa.rs", "the frame's fragment in the address bar");
     expect([location.pathname, history.length]).toEqual([`/a/${ID}/about.html`, depth]);
@@ -531,7 +535,7 @@ describe("ArtifactView", { timeout: MOUNT_TIMEOUT_MS }, () => {
     const card = await waitFor(() => root.querySelector('.section-detached [data-thread="tG"]'), "the detached card");
     card.querySelector<HTMLButtonElement>("button.card-head")!.click();
     await new Promise(r => setTimeout(r, 30));
-    expect(frame.getAttribute("src")).toBe(`http://${ID}.localhost:3000/_clax/v/1/`);
+    expect(frame.getAttribute("src")).toBe(`${SITE}/_clax/session/start?next=${encodeURIComponent("/_clax/v/1/")}`);
     expect(location.pathname).toBe(`/a/${ID}`);
   });
 

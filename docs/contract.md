@@ -5386,13 +5386,6 @@ router), and a test fails when it differs:
 | `PUT /api/viewers/me/presence` | Denied | no |
 | `GET /api/viewers/me/seen` | Denied | no |
 | `PUT /api/viewers/me/seen` | Denied | no |
-| `GET /audit` | Denied | no |
-| `GET /c/{aid}/draft/{agent}/{token}` | Denied | yes: 403 `not_for_agents` |
-| `GET /c/{aid}/draft/{agent}/{token}/` | Denied | yes: 403 `not_for_agents` |
-| `GET /c/{aid}/draft/{agent}/{token}/{*path}` | Denied | yes: 403 `not_for_agents` |
-| `GET /c/{aid}/v/{n}` | Denied | no |
-| `GET /c/{aid}/v/{n}/` | Denied | yes: 403 `not_for_agents` |
-| `GET /c/{aid}/v/{n}/{*path}` | Denied | yes: 403 `not_for_agents` |
 | `GET /connect/b/{code}` | Denied | no |
 | `GET /healthz` | Denied | no |
 | `GET /inbox` | Denied | no |
@@ -5508,8 +5501,9 @@ every take, so a decision or revocation reaches even a waiting
 The filter is a guarantee about what Clax hands an agent through its agent
 channels (tools, hooks, every feedback tier and notice, the sessionless
 `/mcp`, and `clax` run under a harness). It is not an access-control
-boundary on the LAN: pages and threads stay readable to any LAN viewer,
-so an agent that opens them with a web or browser tool, or an owner agent
+boundary: pages and threads stay readable to whoever may read them (on
+this machine, its browsers), so an agent that opens them with a web or
+browser tool, or an owner agent
 that runs the CLI by hand or reads `~/.clax`, goes around it. The skills
 tell agents not to.
 
@@ -6694,7 +6688,7 @@ the shell adds `unavailable` (the daemon could not be reached) and
 ## Room protocol
 
 A page's `room` is relayed by the shell: the frame never reaches the
-daemon's socket itself, in either frame mode.
+daemon's socket itself.
 
 **The socket.** `GET /api/artifacts/<aid>/room?peer=<label>[&token=<bearer>]`
 upgrades to a WebSocket. `<label>` is 16 characters of `[0-9a-z]`, picked by
@@ -8556,10 +8550,15 @@ it starts, the runs a previous process left. A build without the
   directory, process IDs and the harness's session ID; without it they are 401
   `unauthorized`. The comparison is constant time. The other read routes
   (`GET /api/artifacts...` including threads and clips, `GET /api/push`, the
-  gallery, content, blobs) need no token, so LAN viewers can read artifacts
-  and comment on them but not publish or change them. `GET /api/push` names
+  gallery) need no token, so this machine's browsers and connected people
+  can read artifacts and comment on them but not publish or change them
+  (a viewer on another machine who is not connected is refused, 403
+  `forbidden_host`; content and blobs are their site's, behind its site
+  session). `GET /api/push` names
   the daemon's `codex` path (`bin`) only to a request with the token. `GET /api/artifacts/<id>` returns
-  `{artifact, versions}`; like each entry of the artifact list, `artifact`
+  `{artifact, versions, site}` (`site`: the site hosts the shell frames it
+  on, `{"domain", "scheme", "port"}`, `port` null for the scheme's default);
+  like each entry of the artifact list, `artifact`
   carries `owner_live`, `owner_harness`, `owner_name` (the owner
   agent's name, or null) and `participants`, never the
   owner's session row, and `owner_session_id` (with each version's
@@ -8653,104 +8652,81 @@ it starts, the runs a previous process left. A build without the
   artifact) and the UI's files; any other `/_clax/` path is a 404. An
   artifact made before sites (`legacy_paths`) also keeps
   `/_blob/<asset ID>` for its assets. Publishing refuses a file under
-  `_clax/`, and under `_blob/` for such an artifact. Every response there
-  carries `Referrer-Policy: no-referrer`. The host must be exactly a valid
-  12-character lowercase artifact ID followed by `.localhost` (a hosted
-  Clax's `[hosted] site_domain`) and an optional numeric port. On a request
-  whose `Host` is `localhost` or `127.0.0.1` the main origin serves no
-  content; to any other `Host` that reaches the daemon (a LAN viewer's
-  address, `[::1]`, or a name that resolves to this machine, as in DNS
-  rebinding) a local daemon still serves `/c/<id>/v/<n>/…` by ID, for a
-  shell that has no site origins. A hosted Clax's public origin serves no
-  content.
+  `_clax/`, and under `_blob/` for such an artifact. Every response there,
+  an error's included, carries `Referrer-Policy: no-referrer`,
+  `X-Content-Type-Options: nosniff`, `Cross-Origin-Resource-Policy:
+  same-origin` (`cross-origin` on a site open to the world), on `https`
+  `Strict-Transport-Security: max-age=31536000; includeSubDomains`, and on
+  every page `Content-Security-Policy: frame-ancestors 'self' <shell>`,
+  the shell being a hosted Clax's public origin, or a local daemon's
+  `http://localhost:<port>` and `http://127.0.0.1:<port>` (a policy names
+  no IPv6 literal, so a shell at `[::1]` frames no site). The host must be exactly a valid 12-character
+  lowercase artifact ID followed by `.localhost` (a hosted Clax's
+  `[hosted] site_domain`) and an optional numeric port. The main origin
+  serves no content under any `Host`: there is no `/c/…`.
+- A local daemon serves this machine: a request from another machine (a
+  peer that is neither loopback nor the address the connection arrived
+  on) answers 403 `forbidden_host` unless it is a connected person's: a
+  signed request of their machine (`Authorization: Clax-Grant`, an agent
+  token, or a `Clax-Signature` grant request), the browser link that makes
+  a browser theirs (`/connect/b/<code>`), or a browser whose `clax_viewer`
+  cookie names a person who is not revoked. A viewer who is not connected
+  reads nothing from another machine.
 - A site's every path but `/_clax/healthz`, `/_clax/session…` and the
   UI's files is decided by its artifact's access on every request. A site
   open to the world is read by anyone. Any other needs the site cookie
   (`clax_site`, on `https` `__Host-clax_site`; host-only, `HttpOnly`,
   `Path=/`, for the browser's session), naming a site session of that
-  artifact whose holder may read it now: removing a share, turning a link
-  off or signing out refuses the very next request. Without one, a
-  navigation (top-level, or a frame's) is sent (302) to the main origin's
-  `/site-signin?host=<site host>&next=<path>`, and anything else answers
-  401 `site_session_required`. A session is made from a one-use code good
-  for 60 s: the shell asks `POST /api/artifacts/<id>/site-code` (`{"next":
-  "<path>", "partitioned": true}`, the owner's credential on a local
-  daemon, the browser's session on a hosted Clax, 404 for who may not read
-  it) for `{"src": "<site origin>/_clax/session?code=<code>&next=<path>"}`;
-  `/site-signin` signs the browser in when it must, sends one without the
-  right to the artifact's page, and else to the same address (partitioned
-  for a frame, `Sec-Fetch-Dest: iframe`). The site's
-  `/_clax/session` sets the cookie (`SameSite=None; Secure; Partitioned`
-  for the shell's frame, else `SameSite=Lax`) and redirects to `next`, a
-  path on that host (anything else is `/`). A session lasts an hour from
-  its last use.
-- A site is private until whoever administers its artifact (the owner, by
-  hand or in their browser, and the page's maker) sends `PATCH
-  /api/artifacts/<id> {"site_access": "world"}` (`"private"` closes it;
-  anything else is 400 `invalid_argument`; anyone else 403 `admin_only`).
-  The answer adds `artifact.site_access` and `site_url`, the site's
-  address; a hosted Clax's sharing route says both too. Their browser may
-  send it alone without the token. An agent's opening waits on its
-  person: its first call answers 202 `{"status": "approval_pending",
-  "question_id", "inbox_url"}` and asks them a question the daemon writes
-  (`Open to the world` or `Keep it private`); its call again with
-  `question_id` opens the site once they chose to in Clax's browser or the
-  extension, else 403 `not_approved`; an approval is used once (409
-  `approval_used`), and an agent without a session gets 400 `no_session`
-  (`publish_public` with `site_access` makes these calls). Closing never
-  asks, and either change holds from the next request: a page, an asset
-  or an API call of a visitor is refused right after.
-- On a site open to the world, a request with no site session of a holder
-  who may read it is a visitor's: the first navigation or `/_clax/api/`
-  response without the visitor cookie sets it (`clax_visitor`, on `https`
-  `__Host-clax_visitor`; host-only, `HttpOnly`, `Path=/`, `SameSite=Lax`,
-  a year), as `private, no-store`; a file or an asset never sets it. It
-  holds a secret the daemon minted and signed (any other value is
-  replaced); the visitor's ID, `v_` and 22 hex characters, is a MAC of it
-  and the artifact, so it is stable per browser and site, and no ID a page
-  shows can be replayed as a cookie. Two first requests at once each set
-  one, and the browser keeps the last. Both are keyed by the daemon token:
-  rotating it re-identifies every world-site visitor, and their old
-  `data/users/<id>` subtrees are orphaned. A visitor's answers carry no
-  `Access-Control-Allow-Origin` and are cached for a minute at most
-  (`public, no-cache`, or `public, max-age=60, must-revalidate` for a
-  version's files and assets), so closing the site holds at a shared cache
-  within a minute. A site cookie of a holder still makes
-  its request theirs, so the shell's "Open site" (through `/site-signin`)
-  acts as the person there.
-- `/_clax/api/` on a site host is the page runtime's backend for that
-  artifact alone, the main origin's routes with no `<id>` and the same
-  bodies: `docs/<path>` (`GET`, `PUT`, `PATCH`, `DELETE`), `docs` (the
-  query), `docs:batch`, `docs:acquire`, `docs:str_replace`, `assets`
-  (`POST` an upload, `GET` the list), `room` (the WebSocket), `artifact`
-  (`GET`) and `whoami` (`GET`); any other path is 404, comments and
-  threads among them. No field of a path, query or body names another
-  artifact. The caller is who the site's access found, and no one else: a
-  request carrying `Authorization` is 401, its cookies and `x-clax-*`
-  headers are dropped, and every write is a page's. The owner is `admin`
-  (as the owner's shell, the token's routes included), a person by their
-  rights as in their browser (`interact` with a name, else `view`), and a
-  guest, a link viewer and a visitor `public`, below `view`: they read and
-  write only where a `db` rule names `public`, the default rules granting
-  them nothing. A visitor's `artifact` is `{"artifact": {"id", "title",
-  "current_version"}}` alone. `whoami` is `{"kind": "owner" | "person" |
-  "guest" | "link" | "visitor", "id"?, "name"?, "level", "can_edit"}`:
-  `id` the viewer's public ID or the visitor's ID, `level` the `db` level,
-  `can_edit` whether they may publish versions. A request whose `Origin`
-  is not the site's own is 403 `forbidden_origin`, and so is a write
-  without one (or a read without one that `Sec-Fetch-Site` says another
-  site made); no answer carries `Access-Control-Allow-Origin`. On a hosted
-  Clax the writes of a visitor, a link viewer and a guest are limited per client address (60, one back a
-  second) and per artifact (600, ten back a second): 429 `rate_limited`
-  with `retry_after_s`.
-- The viewer probes `http://<id>.localhost:<port>/_clax/healthz` (1 s
-  timeout, cached per browser session) when the gallery is opened on
-  `localhost` or `127.0.0.1`. When it answers, the content iframe loads
-  `/_clax/v/<n>/` from the artifact's origin with no `sandbox` attribute;
-  the distinct origin is the isolation. Otherwise it loads the same address
-  with `sandbox="allow-scripts allow-forms allow-modals allow-popups
-  allow-downloads"` and no `allow-same-origin`, so the content runs in an
-  opaque origin.
+  artifact whose holder may read it now: removing a share or the person,
+  turning a link off, deleting the artifact or signing out refuses the
+  very next request. Without one, a navigation (a browser's
+  `Sec-Fetch-Mode: navigate` of a document or frame, or a `GET` that
+  accepts `text/html` and names no subresource) is sent (302) to the main
+  origin's `/site-signin?host=<site host>&next=<path>&state=<state>`, and
+  anything else answers 401 `site_session_required`. Such a site's
+  responses are private to the browser: `Cache-Control` `private,
+  no-cache` (the current version), `private, max-age=31536000, immutable`
+  (`/_clax/v/<n>/…` and assets), and never `Access-Control-Allow-Origin`.
+- A site session is made from a one-use code good for 60 s, bound to a
+  **state** the browser holds in the site host's state cookie
+  (`clax_site_state`, on `https` `__Secure-clax_site_state`;
+  `Path=/_clax/session`, `HttpOnly`, ten minutes): `/_clax/session?code=<code>&next=<path>` redeems the code
+  only beside that cookie, so a code minted for one browser signs no other
+  in; a top-level redemption clears the state, a frame's keeps it, and a
+  handshake reuses the state the browser holds (a fresh one when it holds
+  none), so two tabs signing in at once share it. Top-level, the site's redirect to
+  `/site-signin` sets the state (`SameSite=Lax`) and names it; framed, the
+  site's `/_clax/session/start?next=<path>` sets it partitioned and posts
+  `{"type": "clax:site-state", "state", "next"}` to the shell's origins
+  alone (the public origin, or a local daemon's loopback names at its
+  port; its page runs only its own script and only the shell may frame
+  it), and the shell asks `POST /api/artifacts/<id>/site-code` (`{"next":
+  "<path>", "partitioned": true, "state": "<state>"}`, the owner's
+  credential on a local daemon, the browser's session on a hosted Clax; 400
+  without a state, 404 for who may not read it) for `{"src": "<site
+  origin>/_clax/session?code=<code>&next=<path>"}`. `/site-signin` (400
+  without a state) signs the browser in when it must, sends one without
+  the right to the artifact's page, and else to the same address; a frame
+  sent there gets a partitioned session, a hosted Clax's fallback only (a
+  local daemon's owner cookie is not sent there). The cookie is
+  `SameSite=None; Secure; Partitioned` for a frame, else `SameSite=Lax`;
+  `next` is a path on that host of at most 2048 bytes (anything else is
+  `/`). A session lasts an hour from its last use.
+- The viewer's content iframe has no `sandbox` attribute (the distinct
+  origin is the isolation) and `allow="clipboard-write; fullscreen;
+  storage-access"`. It opens on the site's `/_clax/session/start?next=<the
+  page's path>` (the `/a/<id>` page carries it in its HTML, and its
+  bootstrap's `site`, `{"domain", "scheme", "port"}`, as `GET
+  /api/artifacts/<id>` answers it, names the site hosts), takes the
+  `clax:site-state` only from that frame's window at the site origin while
+  it waits for one, asks for the code, and sends the frame to the `src`
+  answered. A redemption that loads anything but the page (no hello
+  before its load: the browser refused the frame's cookies) starts the
+  handshake once more; a second such, or a code refused, shows "Open in a
+  tab" with the page's address on its site in place of the frame. The
+  bridge takes orders only from the origin its tag's `data-origin` names
+  (the daemon's public origin, always written; for a local daemon's
+  loopback names, each of them at its port).
 - On the main origin `/_blob/<asset ID>` (with or without the old `?k=`)
   and `/_clax/blob/<asset ID>` serve no bytes: they answer 301 to the
   asset's address on its artifact's site, whose access decides. The old
@@ -9024,7 +9000,7 @@ it starts, the runs a previous process left. A build without the
   key can be told from one the page coaxed. Safari and Firefox on macOS do
   not focus a button on click, so there a click on a button acts but leaves
   the trail tainted; a click in a text field clears it.
-- A subdomain-mode page has no `sandbox`, so with the viewer's activation it
+- A page has no `sandbox` (its own site is the isolation), so with the viewer's activation it
   can navigate the whole window, to another site or to a fresh Clax load,
   and it can `window.open` the shell's URL. A fresh load starts with the
   trail tainted and C and `?` live, as every load does.
@@ -9066,7 +9042,8 @@ it starts, the runs a previous process left. A build without the
 - People (see "People and their agents"): the daemon serves plain HTTP,
   so a LAN observer reads everything that crosses it. The visibility
   filter governs what Clax's agent channels hand an agent, not what an
-  agent can fetch as a LAN viewer with a web or browser tool. Revoking an
+  agent can fetch with a web or browser tool on a machine whose browser
+  may read it. Revoking an
   approval stops future delivery and cannot unread anything; content an
   agent writes after reading becomes its person's, and a page running in
   a person's browser can copy what it reads into a comment or document as

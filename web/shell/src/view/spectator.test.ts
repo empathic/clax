@@ -31,7 +31,6 @@ async function started() {
       : url === "/api/token" ? { error: { code: "not_loopback", message: "not a loopback connection" } }
       : { artifact: artifact(1), versions: [version(1)] }), { status: url === "/api/token" ? 403 : 200 });
   }));
-  sessionStorage.setItem("clax.origin-ok", "0");
   const { ArtifactController } = await import("./artifact-controller");
   const { FrameHost } = await import("./frame-host");
   const stage = document.createElement("div");

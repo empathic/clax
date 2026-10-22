@@ -178,7 +178,10 @@ test("Mia declines Sam's comment: those concerned read it declined by Mia, a vis
     await owner.goto(threadPage(d.base, aid, ownersTid));
     const reply = (p: Page) => p.locator(`.thread-card[data-thread="${ownersTid}"] .msg.agent .author`);
     await expect(reply(owner)).toHaveText(/^mia-notes \(Mia's agent, via \S.*\)$/);
+    // Mia's browser, at the LAN address, has the threads but not the page
+    // (an artifact's site is this machine's): she opens the card herself.
     await mia.page.goto(threadPage(mia.lan, aid, ownersTid));
+    await mia.page.locator(`.thread-card[data-thread="${ownersTid}"] button.card-head`).click();
     await expect(reply(mia.page)).toHaveText(/^mia-notes \(agent, via \S.*\)$/);
 
     // Each agent reads the delivery state of the threads sent to it alone.

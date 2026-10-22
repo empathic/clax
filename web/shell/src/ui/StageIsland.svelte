@@ -9,7 +9,9 @@
   // live seat free, spec 2026-10-11-clax-dev-hosted-design §16.1) sees a
   // banner saying so, with Join live once a seat is free. The drafts' banner
   // and the spectator's are lazy chunks (view/drafts.ts, view/spectator.ts),
-  // loaded the first time there is a draft or the view is a spectator.
+  // loaded the first time there is a draft or the view is a spectator; so
+  // is the notice that offers the page in a tab when the frame could not
+  // open it (view/open-in-tab.svelte).
   import type { Component } from "svelte";
   import { fromStore } from "svelte/store";
   import { INDEX_FILE } from "../../../bridge/src/protocol";
@@ -46,6 +48,9 @@
     loading = true;
     import("./KeysSheet.svelte").then(m => { KeysSheet = m.default; }, () => ctl.sheetFailed()).finally(() => { loading = false; });
   });
+  // The page in a tab, the first time the frame could not open it.
+  let OpenInTab: Component<{ href: string | null }> | null = $state(null);
+  $effect(() => { if ((s.openInTab || s.elsewhere) && !OpenInTab) import("../view/open-in-tab.svelte").then(m => { OpenInTab = m.default; }, () => {}); });
   // A spectator's banner loads with spectator mode, the first time the view is one.
   let SpectatorBanner: Component<{ code: string; joinable: boolean; onJoin(): void }> | null = $state(null);
   $effect(() => { if (s.spectator && !SpectatorBanner) import("../view/spectator").then(m => { SpectatorBanner = m.SpectatorBanner; }, () => {}); });
@@ -61,8 +66,10 @@
     <p class="empty">This artifact was deleted.</p>
   {:else if missing}
     <p class="empty">v{shown} has no page {missing}. <a href={shellPath(ctl.id, s.pinnedVersion, INDEX_FILE)}>Open the index</a></p>
+  {:else if (s.openInTab || s.elsewhere) && OpenInTab}
+    <OpenInTab href={s.openInTab} />
   {/if}
-  {#if !s.deleted && !missing}
+  {#if !s.deleted && !missing && !s.openInTab && !s.elsewhere}
     <div class="frame-shield" aria-hidden="true" {@attach shield}><div></div><div></div><div></div><div></div></div>
   {/if}
   <!-- The stage's foot: what sits at the bottom of the stage stacks here,

@@ -31,7 +31,6 @@ it("styles the topbar controls through the island: a 3px red-orange rule under t
   vi.stubGlobal("fetch", vi.fn(async (url: string) => new Response(JSON.stringify(
     url.includes("/threads") ? { threads: [], next_cursor: null } : url.startsWith("/api/viewers") ? { viewer: { public_id: "u_1", display_name: null, created_at: "x" } } : url === "/api/token" ? { token: "tk" } : loaded))));
   Object.defineProperty(navigator, "clipboard", { value: { writeText: async () => {} }, configurable: true });
-  sessionStorage.setItem("clax.origin-ok", "0");
   const root = document.createElement("div");
   document.body.append(root);
   const view = (await import("./artifact")).mountArtifactView(root, { id: ID, pinnedVersion: null });

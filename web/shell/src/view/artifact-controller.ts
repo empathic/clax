@@ -4,7 +4,7 @@
 import { type Anchor, type AnchorResult, INDEX_FILE, type ShellToBridge } from "../../../bridge/src/protocol";
 import { ApiError, type Artifact, type Attention, type SampleStatus, type TagRef, type Version, getArtifact, getToken } from "../api";
 import { getDrafts, getSampleStatus, putLooked, putSeen } from "./view-api";
-import { acceptByeFromFrame, acceptFromFrame, helloMatches, sendToFrame } from "../bridge-link";
+import { acceptByeFromFrame, acceptFromFrame, acceptSiteState, helloMatches, sendToFrame } from "../bridge-link";
 import type { Declared } from "../caps/availability";
 import { pageAnchor } from "../caps/comments";
 import { HINT_MS, PICK_ATTEST_WAIT_MS, afterHostAttestation, frameGesture, hostArrival, onShieldPress, pickHintAllowed, setForwardedKeys } from "../caps/gesture";
@@ -13,7 +13,7 @@ import { REQUEST_STUCK, connTrouble } from "../conn-notice";
 import { Lifecycle, onPageCache, retrying } from "../lifecycle";
 import { LOAD_FAILED, OPEN_FAILED, PART_FAILED, POST_FAILED, REOPEN_FAILED, RESOLVE_FAILED, SEND_FAILED, SHEET_FAILED, report, scopedNotice } from "../failure";
 import { nav } from "../nav";
-import { artifactOrigin, cachedOriginOk, frameSite, pageSrc, probeOrigin } from "../origin";
+import { type SiteHosts, artifactOrigin, pageSrc, startSrc } from "../origin";
 import { parseShellPath, shellPath } from "../route";
 import { type Thread, type Viewer, addComment, createThread, currentViewer, fetchThread, getViewer, listThreads, onViewer, reopenThread, resolveThread, seedViewer, sendBatch, sendToAgent, upsert } from "../threads";
 import { after } from "../clock";
@@ -22,8 +22,8 @@ import { EMPTY_SELECTION, type Selection, prune, toggle, unsent } from "./batch-
 import { AnchorHandles } from "./anchor-handles";
 import type { Decided } from "./changelog-model";
 import { rallyOnce } from "./rally";
-import { type Boot, rememberFrameMode } from "./boot";
-import { CAPTURE_LATE, type Draft, MAX_CLIP_BYTES, captureWait, nextDraft, respaced, withClip } from "./composer-model";
+import type { Boot } from "./boot";
+import { CAPTURE_LATE, type Draft, MAX_CLIP_BYTES, captureWait, nextDraft, withClip } from "./composer-model";
 import type { ArtifactStream } from "./artifact-stream";
 import { FrameGate } from "./frame-gate";
 import type { PresenceView } from "./presence-model";
@@ -48,7 +48,7 @@ export const REOPEN_NAME_MS = 120_000;
 
 export type ArtifactProps = { id: string; pinnedVersion: number | null; file?: string };
 /** `attention` is the viewer's, when the request carried the viewer cookie. */
-export type Loaded = { artifact: Artifact; versions: Version[]; attention?: Attention };
+export type Loaded = { artifact: Artifact; versions: Version[]; attention?: Attention; site?: SiteHosts };
 export type ViewState = {
   /** The version the shell URL pins, null for the latest (a prop). */
   pinnedVersion: number | null;
@@ -56,8 +56,16 @@ export type ViewState = {
   startFile: string;
   data: Loaded | null;
   error: string | null;
-  /** The artifact origin, null in sandbox mode, undefined until decided. */
-  origin: string | null | undefined;
+  /** The artifact's site origin, undefined until the artifact is known. */
+  origin: string | undefined;
+  /** The page's own address on its site, when the frame could not open it
+   * (its handshake refused): the stage offers it in a tab. */
+  openInTab: string | null;
+  /** The shell is reached at another machine's address (a connected
+   * person's browser on the LAN) while the sites are a local daemon's,
+   * `<id>.localhost`, which resolve on its machine alone: no page opens
+   * here. */
+  elsewhere: boolean;
   newer: number | null;
   deleted: boolean;
   commenting: boolean;
@@ -153,14 +161,7 @@ export type ViewState = {
   tags: { tags: TagRef[]; may: boolean } | null;
 };
 
-/** The artifact's Comments switch is off (spec 2026-10-21-app-push-pull
- * §5.6): nobody comments on it, whatever their access, so the view opens no
- * composer, as for a spectator. */
-export function commentsOff(s: ViewState): boolean {
-  return s.data?.artifact.comments === false;
-}
-
-/** The artifact is loaded and the frame mode decided: the islands show. */
+/** The artifact and its site are known: the islands show. */
 export function viewReady(s: ViewState): s is ViewState & { data: Loaded } {
   return !s.error && !!s.data && s.origin !== undefined;
 }
@@ -184,8 +185,11 @@ export const LOOK_EVERY_MS = 1000;
 export const MOVE_TO_PICK = "Move the pointer to pick";
 export const MOVE_TO_CLICK = "Move the pointer, then click again";
 
-/** A load of the content frame, kept in `held`. */
-const LOADED = Symbol("loaded");
+/** The site hosts of a daemon that names none: this host's port under
+ * `localhost`. */
+function localSite(): SiteHosts {
+  return { domain: "localhost", scheme: location.protocol === "https:" ? "https" : "http", port: location.port ? Number(location.port) : null };
+}
 
 const media = (q: string) => typeof matchMedia === "function" && matchMedia(q).matches;
 const SHARE_WHERE_KEY = "clax.shareWhere";
@@ -355,9 +359,15 @@ export class ArtifactController {
   private keysOwned = !this.heldAtLoad;
   // A prompt closes the keys sheet, so nothing covers or disables the prompt.
   private readonly prompt = promptQueue(ask => this.set(ask ? { ask, sheet: null } : { ask }));
-  /** While a guessed subdomain frame awaits the probe (`decideOrigin`), the
-   * messages to the shell and the frame's loads (`LOADED`), in order. */
-  private held: (MessageEvent | typeof LOADED)[] | null = null;
+  /** The frame's handshake with its site (`showFrame`): `el` opened on the
+   * site's `/_clax/session/start`, which posts a state (`start`); the shell
+   * asks a code for it (`asking`) and sends the frame to the code
+   * (`code`), whose redemption lands on the page, which greets (`done`). A
+   * load in `code` before a greeting is a redemption that did not land
+   * (the browser refused the frame's cookies): the handshake starts once
+   * more, then the stage offers the page in a tab. `page` is false for a
+   * draft, which never greets. */
+  private hs: { el: HTMLIFrameElement; phase: "start" | "asking" | "code" | "done"; tries: number; page: boolean } | null = null;
 
   /** `init.boot`: the daemon's first-load data for this artifact, read in
    * place of the first requests (the artifact, its threads, the viewer). */
@@ -367,7 +377,7 @@ export class ArtifactController {
     this.frameHash = this.startHash;
     this.state = new Store<ViewState>({
       pinnedVersion, startFile,
-      data: null, error: null, origin: undefined, newer: null, deleted: false, commenting: false,
+      data: null, error: null, origin: undefined, openInTab: null, elsewhere: false, newer: null, deleted: false, commenting: false,
       panel: media("(min-width: 900px)"), narrow: media("(max-width: 480px)"),
       threads: [], resolved: {}, draft: null, selected: null, hovered: null, busy: 0,
       notice: null, hint: null, me: null, ask: null, file: startFile, sheet: null, working: [], attention: null,
@@ -487,12 +497,12 @@ export class ArtifactController {
 
   /** Where the frame shows `file` of the shown version. */
   private pageAt(file: string, s: ViewState = this.s): string {
-    return pageSrc(this.id, this.shown(s), this.site(s), file);
+    return pageSrc(this.shown(s), this.site(s), file);
   }
 
-  /** The site origin the frame loads from ([`frameSite`]). */
-  site(s: ViewState = this.s): string | null {
-    return frameSite(this.id, s.origin);
+  /** The artifact's site origin, the frame's (empty until it is known). */
+  site(s: ViewState = this.s): string {
+    return s.origin ?? "";
   }
 
   openCount(s: ViewState = this.s): number {
@@ -573,7 +583,7 @@ export class ArtifactController {
    * taken from that render come from `next`, others from the current state,
    * and `host` is the one that render made or kept. */
   private react(prev: ViewState, next: ViewState, host: CapabilityHost | null): void {
-    if (this.wantThread && this.gate.open) {
+    if (this.wantThread && (this.gate.open || next.elsewhere)) {
       const t = next.threads.find(x => x.id === this.wantThread);
       if (t) { this.wantThread = null; this.openPin(t); this.reveal(t.id); }
     }
@@ -655,18 +665,12 @@ export class ArtifactController {
     return this.frame?.el?.contentWindow ?? null;
   }
 
-  /** Posts `m` to the frame, except to a frame still held for the probe
-   * (`held`), and, in sandbox mode, where the post cannot name its receiver's
-   * origin, to a frame whose document has not greeted (`gate`). Nothing is
-   * lost: the hello that opens the gate sends the welcome, the anchors and
-   * the focus again. */
-  /** @internal */
-  send(m: ShellToBridge): void {
-    if (this.held || (!this.s.origin && !this.gate.open)) return;
-    sendToFrame(this.frameWin(), this.s.origin ?? null, m);
+  /** Posts `m` to the frame, at the site origin only. */
+  private send(m: ShellToBridge): void {
+    if (this.s.origin) sendToFrame(this.frameWin(), this.s.origin, m);
   }
 
-  /** Runs when the artifact or the frame mode becomes known, before the frame
+  /** Runs when the artifact and its site become known, before the frame
    * for them exists: the gate is reset and the capability host made first, so
    * a hello or a request that arrives as soon as the frame is inserted is
    * judged against the shown artifact and version. */
@@ -681,6 +685,7 @@ export class ArtifactController {
       this.gateFor = key;
       this.gate.reset();
       this.failedParts.clear();
+      if (s.openInTab) this.set({ openInTab: null });
     }
     // Made before the frame it serves is inserted: a hello and a capability
     // request can arrive as soon as it is.
@@ -723,18 +728,50 @@ export class ArtifactController {
     this.showFrame();
   }
 
-  /** The content frame for the shown version and frame mode, opened on the
-   * URL's page at its fragment; none once the artifact is deleted or when the
-   * version lacks that page. */
+  /** The content frame for the shown version, opened through its site's
+   * handshake (`hs`) on the URL's page, which moves to the URL's fragment
+   * once it greets; none once the artifact is deleted, when the version
+   * lacks that page, or once the stage offers the page in a tab. */
   /** @internal */
   showFrame(): void {
     const s = this.s;
     if (!this.frame || !s.data || s.origin === undefined) return;
-    if (s.deleted || this.missing()) { this.frame.remove(); return; }
-    if (this.drafts?.showIn(this.frame, s)) return;
-    this.frame.show(this.pageAt(this.startFile) + this.startHash, s.origin === null, `${this.shown()}-${s.origin ? "o" : "s"}`);
-    const fragment = this.frame.takeFragment();
-    if (fragment !== null) this.pendingFragment = fragment;
+    if (s.deleted || this.missing() || s.openInTab || s.elsewhere) { this.frame.remove(); return; }
+    const before = this.frame.el;
+    const draft = !!this.drafts?.showIn(this.frame, s);
+    if (!draft) this.frame.show(startSrc(s.origin, this.pageAt(this.startFile)), `${this.shown()}`);
+    const el = this.frame.el;
+    if (!el || el === before) return;
+    this.hs = { el, phase: "start", tries: 0, page: !draft };
+    if (!draft && this.startHash) this.pendingFragment = this.startHash;
+  }
+
+  /** The frame's site handed over its state: the shell asks its own API
+   * for a code bound to it (`POST /api/artifacts/<id>/site-code`) and sends
+   * the frame to it; a code refused offers the page in a tab. */
+  private async redeem(hs: NonNullable<ArtifactController["hs"]>, st: { state: string; next: string }): Promise<void> {
+    hs.phase = "asking";
+    let src: string | null = null;
+    try {
+      const token = await getToken();
+      const r = await fetch(`/api/artifacts/${encodeURIComponent(this.id)}/site-code`, {
+        method: "POST",
+        headers: { "content-type": "application/json", ...(token ? { authorization: `Bearer ${token}` } : {}) },
+        body: JSON.stringify({ next: st.next, partitioned: true, state: st.state }),
+      });
+      if (r.ok) src = ((await r.json()) as { src?: unknown }).src as string;
+    } catch { /* refused below */ }
+    if (this.disposed || this.hs !== hs || this.frame?.el !== hs.el) return;
+    if (typeof src !== "string" || !src.startsWith(`${this.s.origin}/`)) { this.refused(); return; }
+    hs.phase = "code";
+    this.frame.go(src);
+  }
+
+  /** The frame's handshake did not land: the stage offers the page in a tab. */
+  private refused(): void {
+    this.hs = null;
+    this.set({ openInTab: this.rawHref() });
+    this.frame?.remove();
   }
 
   /** The frame loaded a document; one that never greeted since the previous
@@ -747,13 +784,18 @@ export class ArtifactController {
   frameLoaded(): void {
     if (this.disposed) return;
     this.openStream();
-    if (this.held) { this.held.push(LOADED); return; }
+    const hs = this.hs;
+    if (hs?.phase === "code" && hs.el === this.frame?.el) {
+      if (!hs.page) hs.phase = "done";
+      else if (++hs.tries < 2) { hs.phase = "start"; this.frame.again(); }
+      else this.refused();
+    }
     const wasOpen = this.gate.open;
     if (this.gate.load()) {
       this.leaveDocument();
       this.failedParts.clear();
       this.set({ file: null, resolved: {} });
-      if (wasOpen) sendToFrame(this.frameWin(), this.s.origin ?? null, { type: "clax:greet" });
+      if (wasOpen) this.send({ type: "clax:greet" });
     }
   }
 
@@ -808,7 +850,7 @@ export class ArtifactController {
    * fragment when it does. */
   private moveFragment(hash: string): void {
     this.frameHash = hash;
-    if (this.gate.open && !this.held) this.send({ type: "clax:hash", hash });
+    if (this.gate.open) this.send({ type: "clax:hash", hash });
     else this.pendingFragment = hash;
   }
 
@@ -840,7 +882,6 @@ export class ArtifactController {
       retrying(this.life, signal => getArtifact(this.id, { signal }), { retry: e => !(e instanceof ApiError), trouble: on => connTrouble("artifact", on, REQUEST_STUCK) })
         .then(d => this.loaded(d), e => { if (!this.disposed) this.set({ error: e instanceof ApiError && e.status === 404 ? "Artifact not found" : String(e) }); });
     }
-    this.decideOrigin(boot);
     // Leaving the page ends the view: nothing it started outlives it, also
     // into the back/forward cache (`artifact-main` reloads a restored page).
     onPageCache(this.life, () => { this.reporter?.leave(); this.dispose(); }, () => {});
@@ -856,6 +897,12 @@ export class ArtifactController {
   /** @internal (also app mode's auto-follow: a newer version loaded in place) */
   loaded(d: Loaded, attention: Attention | null = d.attention ?? null): void {
     if (this.disposed) return;
+    // The site hosts, as the daemon names them; a daemon that names none
+    // serves them on this host's name under `localhost`.
+    if (this.s.origin === undefined) {
+      const site = d.site ?? this.init.boot?.site ?? localSite();
+      this.set({ origin: artifactOrigin(this.id, site), elsewhere: site.domain === "localhost" && !/^(localhost|127\.0\.0\.1)$/.test(location.hostname) });
+    }
     this.latestKnown = Math.max(this.latestKnown, d.artifact.current_version);
     // The stream opens after the load starts: a working delta already heard is newer.
     this.set(s => ({ data: d, working: this.workingAt ? s.working : d.artifact.working ?? [], attention, looked: { ...s.looked, ...attention?.looked }, newer: s.newer !== null && s.newer <= d.artifact.current_version ? null : s.newer }));
@@ -959,45 +1006,6 @@ export class ArtifactController {
     void putSeen(this.id, latest);
   }
 
-  /** The frame mode: in the Clax app, the embed's content origin; else this
-   * tab's cached probe; else the daemon's guess (from the `clax_frame`
-   * cookie, when it served a frame), confirmed or corrected by a probe; else
-   * a probe. The decision is remembered in the cookie for the next load's
-   * HTML. */
-  private decideOrigin(boot: Boot | null): void {
-    const embed = hostEmbed();
-    const o = artifactOrigin(this.id, location, embed);
-    const decided = (origin: string | null) => {
-      if (this.disposed) return;
-      rememberFrameMode(origin);
-      this.set({ origin });
-      this.viewChanged();
-    };
-    if (!o) { decided(null); return; }
-    const cached = cachedOriginOk();
-    if (cached !== null) { decided(cached ? o : null); return; }
-    if (boot?.frame) {
-      const guess = boot.frame.mode === "subdomain" ? o : null;
-      // An unsandboxed frame shown on the cookie's word alone is heard only
-      // once this tab's probe agrees: until then what it posts, and its
-      // loads, wait in order, and the gate stays as it was reset.
-      if (guess) this.held = [];
-      decided(guess);
-      void probeOrigin(o).then(ok => {
-        const held = this.held ?? [];
-        this.held = null;
-        if ((ok ? o : null) !== guess) { decided(ok ? o : null); return; }
-        for (const e of held) {
-          if (this.disposed) return;
-          if (e === LOADED) this.frameLoaded();
-          else this.onMessage(e);
-        }
-      });
-      return;
-    }
-    void probeOrigin(o).then(ok => decided(ok ? o : null));
-  }
-
   /** What the page's inline listener kept before the shell listened (see
    * `takeEarly`), in order: a message goes through the same checks as one
    * heard now; a load counts only when it is the adopted frame's. */
@@ -1007,10 +1015,9 @@ export class ArtifactController {
     else if (e.type === "load" && this.frame?.el && e.target === this.frame.el) this.frameLoaded();
   }
 
-  /** A message to the shell: judged now, or kept in order while `held`. */
+  /** A message to the shell. */
   private hear(e: MessageEvent): void {
-    if (this.held) this.held.push(e);
-    else this.onMessage(e);
+    this.onMessage(e);
   }
 
   /** Shows other props for the same artifact as a re-render of the view with
@@ -1237,8 +1244,14 @@ export class ArtifactController {
    * release attestation (see `clax:pick-start`). */
   private onMessage(e: MessageEvent, waited = false): void {
     if (this.disposed) return;
-    if (acceptByeFromFrame(e, this.frameWin(), this.s.origin ?? null)) { this.frameLeft(); return; }
-    const m = acceptFromFrame(e, this.frameWin(), this.s.origin ?? null);
+    const origin = this.s.origin ?? "";
+    const hs = this.hs;
+    if (hs?.phase === "start" && hs.el === this.frame?.el) {
+      const st = acceptSiteState(e, this.frameWin(), origin);
+      if (st) { void this.redeem(hs, st); return; }
+    }
+    if (acceptByeFromFrame(e, this.frameWin(), origin)) { this.frameLeft(); return; }
+    const m = acceptFromFrame(e, this.frameWin(), origin);
     if (!m) return;
     switch (m.type) {
       case "clax:hello": {
@@ -1248,6 +1261,7 @@ export class ArtifactController {
         // agent's script may greet as one: it gets no capability).
         const greeted = typeof m.file === "string" && m.file ? m.file : INDEX_FILE;
         this.gate.hello(this.s.showDraft === null && helloMatches(m, this.id, this.shown()) && this.holds(greeted));
+        if (this.hs?.phase === "code") this.hs.phase = "done";
         this.pendingPick = null;
         this.failedParts.clear();
         this.set({ resolved: {} });

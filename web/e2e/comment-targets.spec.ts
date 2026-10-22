@@ -35,11 +35,11 @@ async function hoverLine(page: Page, frame: Frame, n: number) {
   await page.mouse.move(fb.x + r.x + 30, fb.y + r.y + r.h / 2);
 }
 
-for (const mode of ["subdomain", "sandbox"] as const) {
-  test(`${mode}: inside an oversized <pre>, comment mode targets the line under the pointer`, async ({ page }) => {
-    const { artifact } = await publish(d.base, d.token, `Long ${mode}`, { "index.html": LONG });
+{
+  test(`inside an oversized <pre>, comment mode targets the line under the pointer`, async ({ page }) => {
+    const { artifact } = await publish(d.base, d.token, `Long`, { "index.html": LONG });
     await record(page);
-    const frame = await openArtifact(page, d.base, artifact.id, 1, mode);
+    const frame = await openArtifact(page, d.base, artifact.id, 1);
     await frame.evaluate(() => scrollTo(0, 3000));
     await page.getByRole("button", { name: "Comment", exact: true }).click();
     // The shell's message reaches the page asynchronously; a move before it is not seen.
@@ -106,11 +106,11 @@ const hlLine = (frame: Frame, n: number) => frame.evaluate(line => {
   return { x: b.x, y: b.y, w: b.width, h: b.height };
 }, n);
 
-for (const mode of ["subdomain", "sandbox"] as const) {
-  test(`${mode}: in 2,000 lines of highlighted code, the outline is one line from tokens and gaps, hover stays fast, and a pick clips its region`, async ({ page }) => {
-    const { artifact } = await publish(d.base, d.token, `Highlighted ${mode}`, { "index.html": HIGHLIGHTED });
+{
+  test(`in 2,000 lines of highlighted code, the outline is one line from tokens and gaps, hover stays fast, and a pick clips its region`, async ({ page }) => {
+    const { artifact } = await publish(d.base, d.token, `Highlighted`, { "index.html": HIGHLIGHTED });
     await record(page);
-    const frame = await openArtifact(page, d.base, artifact.id, 1, mode);
+    const frame = await openArtifact(page, d.base, artifact.id, 1);
     await frame.evaluate(() => document.querySelectorAll(".k")[999].scrollIntoView({ block: "center" }));
     await page.getByRole("button", { name: "Comment", exact: true }).click();
     await expect.poll(() => frame.evaluate(() => document.documentElement.style.cursor)).toBe("crosshair");
@@ -148,10 +148,10 @@ for (const mode of ["subdomain", "sandbox"] as const) {
     expect(band.bottom - band.top).toBeLessThan(30);
   });
 
-  test(`${mode}: a drag selection in a code block taller than the viewport but within the clip budget carries a clip`, async ({ page }) => {
-    const { artifact } = await publish(d.base, d.token, `Short ${mode}`, { "index.html": SHORT });
+  test(`a drag selection in a code block taller than the viewport but within the clip budget carries a clip`, async ({ page }) => {
+    const { artifact } = await publish(d.base, d.token, `Short`, { "index.html": SHORT });
     await record(page);
-    const frame = await openArtifact(page, d.base, artifact.id, 1, mode);
+    const frame = await openArtifact(page, d.base, artifact.id, 1);
     await page.getByRole("button", { name: "Comment", exact: true }).click();
     await expect.poll(() => frame.evaluate(() => document.documentElement.style.cursor)).toBe("crosshair");
     const fb = (await page.locator("iframe.frame").boundingBox())!;
@@ -170,11 +170,11 @@ for (const mode of ["subdomain", "sandbox"] as const) {
 
 const TALL = `<!doctype html><html><head><title>Tall</title><style>body{margin:0;background:#fff}#big{position:relative;height:5000px;margin:0 16px;background:repeating-linear-gradient(#fff 0 40px,#1d4ed8 40px 60px)}</style></head><body><section id="big"><i id="mark" style="position:absolute;left:0;width:100px;height:40px;background:#dc2626"></i></section></body></html>`;
 
-for (const mode of ["subdomain", "sandbox"] as const) {
-  test(`${mode}: picking an element taller than the clip budget clips its part in view, grown to the budget`, async ({ page }) => {
-    const { artifact } = await publish(d.base, d.token, `Tall ${mode}`, { "index.html": TALL });
+{
+  test(`picking an element taller than the clip budget clips its part in view, grown to the budget`, async ({ page }) => {
+    const { artifact } = await publish(d.base, d.token, `Tall`, { "index.html": TALL });
     await record(page);
-    const frame = await openArtifact(page, d.base, artifact.id, 1, mode);
+    const frame = await openArtifact(page, d.base, artifact.id, 1);
     // A red mark near the bottom of the view: inside the region in view, and
     // outside the first 2,400 px of the section.
     await frame.evaluate(() => { scrollTo(0, 2000); document.getElementById("mark")!.style.top = `${2000 + document.documentElement.clientHeight - 60}px`; });
@@ -199,11 +199,11 @@ const RADIO_LINES = Array.from({ length: 300 }, (_, i) => (i === 149
   : `line ${i + 1}: the quick brown fox`)).join("\n");
 const RADIOS = `<!doctype html><html><head><title>Radios</title><style>body{margin:0;font:14px/20px monospace}pre{margin:0;padding:8px}</style></head><body><main><pre id="src">${RADIO_LINES}</pre></main></body></html>`;
 
-for (const mode of ["subdomain", "sandbox"] as const) {
-  test(`${mode}: a region clip leaves the reader's radio choice alone`, async ({ page }) => {
-    const { artifact } = await publish(d.base, d.token, `Radios ${mode}`, { "index.html": RADIOS });
+{
+  test(`a region clip leaves the reader's radio choice alone`, async ({ page }) => {
+    const { artifact } = await publish(d.base, d.token, `Radios`, { "index.html": RADIOS });
     await record(page);
-    const frame = await openArtifact(page, d.base, artifact.id, 1, mode);
+    const frame = await openArtifact(page, d.base, artifact.id, 1);
     await frame.evaluate(() => document.querySelector('input[value="b"]')!.scrollIntoView({ block: "center" }));
     await frame.locator('input[value="b"]').check();
     const checked = () => frame.evaluate(() => Array.from(document.querySelectorAll<HTMLInputElement>('input[name="g"]')).map(i => i.checked));
@@ -222,10 +222,10 @@ for (const mode of ["subdomain", "sandbox"] as const) {
     expect(await frame.evaluate(() => document.querySelectorAll("pre").length)).toBe(1);
   });
 
-  test(`${mode}: a selection taller than the clip budget clips a region from its start, within the budget`, async ({ page }) => {
-    const { artifact } = await publish(d.base, d.token, `Tall range ${mode}`, { "index.html": LONG });
+  test(`a selection taller than the clip budget clips a region from its start, within the budget`, async ({ page }) => {
+    const { artifact } = await publish(d.base, d.token, `Tall range`, { "index.html": LONG });
     await record(page);
-    const frame = await openArtifact(page, d.base, artifact.id, 1, mode);
+    const frame = await openArtifact(page, d.base, artifact.id, 1);
     await frame.evaluate(() => scrollTo(0, 900));
     await page.getByRole("button", { name: "Comment", exact: true }).click();
     await expect.poll(() => frame.evaluate(() => document.documentElement.style.cursor)).toBe("crosshair");

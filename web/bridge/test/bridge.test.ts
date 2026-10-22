@@ -19,7 +19,7 @@ beforeAll(async () => {
   // A page's own global of the bridge's name does not keep the bridge out.
   (window as { __clax?: unknown }).__clax = { preset: true };
   const script = first = bridgeScript();
-  script.dataset.artifact = "7q3k9mzx2b4t"; script.dataset.version = "3"; script.dataset.contract = "0.2.61"; script.dataset.file = "docs/about.html";
+  script.dataset.artifact = "7q3k9mzx2b4t"; script.dataset.version = "3"; script.dataset.contract = "0.2.61"; script.dataset.file = "docs/about.html"; script.dataset.origin = location.origin;
   document.body.appendChild(script);
   Object.defineProperty(document, "currentScript", { value: script, configurable: true });
   await import("../src/bridge");

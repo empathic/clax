@@ -46,8 +46,8 @@ async function publishLive(title: string, withThread = false) {
   return id;
 }
 
-async function open(page: Page, id: string, mode: "subdomain" | "sandbox") {
-  const f = await openArtifact(page, d.base, id, 1, mode);
+async function open(page: Page, id: string) {
+  const f = await openArtifact(page, d.base, id, 1);
   await expect(f.locator("body")).toHaveAttribute("data-ready", "yes");
   return f;
 }
@@ -112,9 +112,9 @@ async function firstPick(page: Page, f: Frame) {
   await page.keyboard.type("A first comment.");
 }
 
-for (const mode of ["subdomain", "sandbox"] as const) {
-  test(`${mode}: flow 1, Post by click, then click a different element: works`, async ({ page }) => {
-    const f = await open(page, await publishLive(`Flow 1 ${mode}`), mode);
+{
+  test(`flow 1, Post by click, then click a different element: works`, async ({ page }) => {
+    const f = await open(page, await publishLive(`Flow 1`));
     await firstPick(page, f);
     await clickShell(page, composer(page).getByRole("button", { name: "Post comment" }));
     await expect(composer(page)).toHaveCount(0);
@@ -122,8 +122,8 @@ for (const mode of ["subdomain", "sandbox"] as const) {
     await expect(quote(page)).toContainText("Second paragraph");
   });
 
-  test(`${mode}: flow 2, Post with the keyboard, pointer resting on the page, then click a different element: works`, async ({ page }) => {
-    const f = await open(page, await publishLive(`Flow 2 ${mode}`), mode);
+  test(`flow 2, Post with the keyboard, pointer resting on the page, then click a different element: works`, async ({ page }) => {
+    const f = await open(page, await publishLive(`Flow 2`));
     await firstPick(page, f);
     // Post is enabled once the screenshot is in (it is taken after the
     // composer has focus); Tab skips it while disabled.
@@ -137,8 +137,8 @@ for (const mode of ["subdomain", "sandbox"] as const) {
     await expect(quote(page)).toContainText("Second paragraph");
   });
 
-  test(`${mode}: flow 2 with Cmd+Enter in the textarea, pointer resting on the page, then click a different element: works`, async ({ page }) => {
-    const f = await open(page, await publishLive(`Flow 2 Cmd+Enter ${mode}`), mode);
+  test(`flow 2 with Cmd+Enter in the textarea, pointer resting on the page, then click a different element: works`, async ({ page }) => {
+    const f = await open(page, await publishLive(`Flow 2 Cmd+Enter`));
     const threads = page.getByRole("button", { name: /^Threads/ });
     if ((await threads.getAttribute("aria-pressed")) !== "true") await clickShell(page, threads);
     await firstPick(page, f);
@@ -149,8 +149,8 @@ for (const mode of ["subdomain", "sandbox"] as const) {
     await expect(quote(page)).toContainText("Second paragraph");
   });
 
-  test(`${mode}: flow 3, after Post, drag an area without moving first: the hint shows, and after a move the drag works`, async ({ page }) => {
-    const f = await open(page, await publishLive(`Flow 3 ${mode}`), mode);
+  test(`flow 3, after Post, drag an area without moving first: the hint shows, and after a move the drag works`, async ({ page }) => {
+    const f = await open(page, await publishLive(`Flow 3`));
     await firstPick(page, f);
     const post = composer(page).getByRole("button", { name: "Post comment" });
     const pb = (await post.boundingBox())!;
@@ -173,8 +173,8 @@ for (const mode of ["subdomain", "sandbox"] as const) {
     await expect(quote(page)).toHaveText(/^Area in/);
   });
 
-  test(`${mode}: flow 4, Cancel, then click the same spot: the hint shows, and after a move a click works`, async ({ page }) => {
-    const f = await open(page, await publishLive(`Flow 4 ${mode}`), mode);
+  test(`flow 4, Cancel, then click the same spot: the hint shows, and after a move a click works`, async ({ page }) => {
+    const f = await open(page, await publishLive(`Flow 4`));
     await firstPick(page, f);
     await clickShell(page, composer(page).getByRole("button", { name: "Cancel" }));
     await expect(composer(page)).toHaveCount(0);
@@ -188,8 +188,8 @@ for (const mode of ["subdomain", "sandbox"] as const) {
     await expect(quote(page)).toContainText("Second paragraph");
   });
 
-  test(`${mode}: flow 5, a reply in the sidebar, then a click in the page: works`, async ({ page }) => {
-    const f = await open(page, await publishLive(`Flow 5 ${mode}`, true), mode);
+  test(`flow 5, a reply in the sidebar, then a click in the page: works`, async ({ page }) => {
+    const f = await open(page, await publishLive(`Flow 5`, true));
     const threads = page.getByRole("button", { name: /^Threads/ });
     await expect(threads).toHaveText("Threads 1");
     if ((await threads.getAttribute("aria-pressed")) !== "true") await clickShell(page, threads);
@@ -203,8 +203,8 @@ for (const mode of ["subdomain", "sandbox"] as const) {
     await expect(quote(page)).toContainText("Second paragraph");
   });
 
-  test(`${mode}: flow 5 with Cmd+Enter in the reply box, then a click in the page: works`, async ({ page }) => {
-    const f = await open(page, await publishLive(`Flow 5 Cmd+Enter ${mode}`, true), mode);
+  test(`flow 5 with Cmd+Enter in the reply box, then a click in the page: works`, async ({ page }) => {
+    const f = await open(page, await publishLive(`Flow 5 Cmd+Enter`, true));
     const threads = page.getByRole("button", { name: /^Threads/ });
     await expect(threads).toHaveText("Threads 1");
     if ((await threads.getAttribute("aria-pressed")) !== "true") await clickShell(page, threads);
@@ -219,9 +219,9 @@ for (const mode of ["subdomain", "sandbox"] as const) {
     await expect(quote(page)).toContainText("Second paragraph");
   });
 
-  test(`${mode}: flow 6, the page's buttons after the name field: openComposer works; sendToClaude asks to click again within 5.5 s, then sends`, async ({ page }) => {
-    const id = await publishLive(`Flow 6 ${mode}`);
-    const f = await open(page, id, mode);
+  test(`flow 6, the page's buttons after the name field: openComposer works; sendToClaude asks to click again within 5.5 s, then sends`, async ({ page }) => {
+    const id = await publishLive(`Flow 6`);
+    const f = await open(page, id);
     const name = await nameField(page);
     await clickShell(page, name);
     await page.keyboard.type("Sam");
@@ -244,8 +244,8 @@ for (const mode of ["subdomain", "sandbox"] as const) {
     expect(((await api(d.base, d.token, `/api/artifacts/${id}/threads`)) as { threads: { sent_to_agent: boolean }[] }).threads.map(t => t.sent_to_agent)).toEqual([true]);
   });
 
-  test(`${mode}: flow 1 with a hand's ease-in move (1, 1, 2 px) from a whole-pixel Post: works (N12)`, async ({ page }) => {
-    const f = await open(page, await publishLive(`Flow 1 ease ${mode}`), mode);
+  test(`flow 1 with a hand's ease-in move (1, 1, 2 px) from a whole-pixel Post: works (N12)`, async ({ page }) => {
+    const f = await open(page, await publishLive(`Flow 1 ease`));
     await firstPick(page, f);
     const post = await whole(composer(page).getByRole("button", { name: "Post comment" }));
     await page.mouse.move(post.x, post.y, { steps: 10 });
@@ -259,8 +259,8 @@ for (const mode of ["subdomain", "sandbox"] as const) {
     await expect(quote(page)).toContainText("Second paragraph");
   });
 
-  test(`${mode}: flow 4 with a hand's ease-in move (1, 1, 2 px) after the hint: works (N12)`, async ({ page }) => {
-    const f = await open(page, await publishLive(`Flow 4 ease ${mode}`), mode);
+  test(`flow 4 with a hand's ease-in move (1, 1, 2 px) after the hint: works (N12)`, async ({ page }) => {
+    const f = await open(page, await publishLive(`Flow 4 ease`));
     await firstPick(page, f);
     const cancel = await whole(composer(page).getByRole("button", { name: "Cancel" }));
     await page.mouse.move(cancel.x, cancel.y, { steps: 10 });
@@ -277,8 +277,8 @@ for (const mode of ["subdomain", "sandbox"] as const) {
     await expect(quote(page)).toContainText("Second paragraph");
   });
 
-  test(`${mode}: flow 6 variant, then a hand's ease-in move (1, 1, 2 px) after the hint: works (N12)`, async ({ page }) => {
-    const f = await open(page, await publishLive(`Flow 6b ease ${mode}`), mode);
+  test(`flow 6 variant, then a hand's ease-in move (1, 1, 2 px) after the hint: works (N12)`, async ({ page }) => {
+    const f = await open(page, await publishLive(`Flow 6b ease`));
     await clickShell(page, await nameField(page));
     await clickShell(page, page.getByRole("dialog", { name: "People and agents" }).getByRole("button", { name: "Close" }));
     const c = await whole(f.locator("#open"));
@@ -294,8 +294,8 @@ for (const mode of ["subdomain", "sandbox"] as const) {
     await expect(f.locator("#result")).toHaveText(JSON.stringify({ opened: true }));
   });
 
-  test(`${mode}: flow 6 variant, then a wheel on a band: the page's button works after it (N12)`, async ({ page }) => {
-    const f = await open(page, await publishLive(`Flow 6b wheel ${mode}`), mode);
+  test(`flow 6 variant, then a wheel on a band: the page's button works after it (N12)`, async ({ page }) => {
+    const f = await open(page, await publishLive(`Flow 6b wheel`));
     await clickShell(page, await nameField(page));
     await clickShell(page, page.getByRole("dialog", { name: "People and agents" }).getByRole("button", { name: "Close" }));
     const c = await whole(f.locator("#open"));
@@ -315,10 +315,10 @@ for (const mode of ["subdomain", "sandbox"] as const) {
   });
 
   for (const how of ["keys typed with the mouse resting on the page", "Post clicked with the mouse"] as const) {
-    test(`${mode}: a finger's first tap on the page after ${how}: works (N12)`, async ({ browser }) => {
+    test(`a finger's first tap on the page after ${how}: works (N12)`, async ({ browser }) => {
       const ctx = await browser.newContext({ hasTouch: true });
       const page = await ctx.newPage();
-      const f = await open(page, await publishLive(`Hybrid ${how.slice(0, 4)} ${mode}`), mode);
+      const f = await open(page, await publishLive(`Hybrid ${how.slice(0, 4)}`));
       if (how === "Post clicked with the mouse") {
         await firstPick(page, f);
         await clickShell(page, composer(page).getByRole("button", { name: "Post comment" }));
@@ -348,8 +348,8 @@ for (const mode of ["subdomain", "sandbox"] as const) {
   }
 
   for (const delay of [30, 120]) {
-    test(`${mode}: flow 6 variant, typing in the name field at ${delay} ms a key with the pointer resting on the page: a click without moving shows the hint; after a move it works`, async ({ page }) => {
-      const f = await open(page, await publishLive(`Flow 6b ${delay} ${mode}`), mode);
+    test(`flow 6 variant, typing in the name field at ${delay} ms a key with the pointer resting on the page: a click without moving shows the hint; after a move it works`, async ({ page }) => {
+      const f = await open(page, await publishLive(`Flow 6b ${delay}`));
       const name = await nameField(page);
       await clickShell(page, name);
       const c = await centre(f, "#open");

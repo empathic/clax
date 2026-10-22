@@ -19,11 +19,11 @@ export function oldestFirst(list: DraftView[]): DraftView[] {
   return [...list].sort((a, b) => a.updated_at.localeCompare(b.updated_at) || a.agent.localeCompare(b.agent));
 }
 
-/** Where the frame shows `file` of draft `d` on artifact `id`: under the
- * artifact's own origin when it has one, else under `/c/<id>/` on this one,
- * each path segment encoded; the fragment names the tint colour. */
-export function draftSrc(id: string, d: DraftView, origin: string | null, file: string, tint: string): string {
-  const root = origin ? `${origin}/_clax/draft/` : `/c/${id}/draft/`;
+/** Where the frame shows `file` of draft `d`: under `/_clax/draft/` on the
+ * artifact's site origin `origin`, each path segment encoded; the fragment
+ * names the tint colour. */
+export function draftSrc(d: DraftView, origin: string, file: string, tint: string): string {
+  const root = `${origin}/_clax/draft/`;
   const path = file === "index.html" ? "" : file.split("/").map(encodeURIComponent).join("/");
   return `${root}${encodeURIComponent(d.agent)}/${encodeURIComponent(d.token)}/${path}#tint=%23${tint}`;
 }

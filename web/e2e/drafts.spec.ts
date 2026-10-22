@@ -32,13 +32,13 @@ async function draftFrame(page: Page, aid: string, token = "[A-Za-z0-9_-]{22}"):
   return f;
 }
 
-for (const mode of ["subdomain", "sandbox"] as const) {
-  test(`${mode}: a viewer sees an agent drafting, shows the draft tinted, goes back, and sees it clear on publish`, async ({ page }) => {
-    const s = await registerSession(d.base, d.token, "claude", `draft-${mode}`);
+{
+  test(`a viewer sees an agent drafting, shows the draft tinted, goes back, and sees it clear on publish`, async ({ page }) => {
+    const s = await registerSession(d.base, d.token, "claude", `draft`);
     // The worker's daemon is shared: other live claude sessions make this one claude-<n>.
     const who = s.name;
-    const { artifact } = await publishAs(d.base, d.token, s.id, `Drafts ${mode}`, { "index.html": PAGE, "style.css": CSS });
-    await openArtifact(page, d.base, artifact.id, 1, mode);
+    const { artifact } = await publishAs(d.base, d.token, s.id, `Drafts`, { "index.html": PAGE, "style.css": CSS });
+    await openArtifact(page, d.base, artifact.id, 1);
     await streamLive(page);
     const banner = page.locator(".banner.draft");
     await expect(banner).toHaveCount(0);
@@ -81,7 +81,7 @@ for (const mode of ["subdomain", "sandbox"] as const) {
     await expect(banner).toContainText("2 changes highlighted");
 
     // The agent publishes: the draft ends, the view goes back to v1 and offers v2.
-    await publishAs(d.base, d.token, s.id, `Drafts ${mode}`, { "index.html": DRAFT, "style.css": CSS }, 1, artifact.id);
+    await publishAs(d.base, d.token, s.id, `Drafts`, { "index.html": DRAFT, "style.css": CSS }, 1, artifact.id);
     await expect(banner).toHaveCount(0);
     await contentFrame(page, artifact.id, 1);
     await expect(page.locator(".topbar button.reload")).toBeVisible();
@@ -93,7 +93,7 @@ test("at phone width in dark mode the banner fits and the draft is tinted in the
   const { artifact } = await publishAs(d.base, d.token, s.id, "A long title for a phone-width draft check", { "index.html": PAGE, "style.css": CSS });
   await page.setViewportSize({ width: 390, height: 844 });
   await page.emulateMedia({ colorScheme: "dark", reducedMotion: "reduce" });
-  await openArtifact(page, d.base, artifact.id, 1, "subdomain");
+  await openArtifact(page, d.base, artifact.id, 1);
   await streamLive(page);
   await putDraft(s.id, artifact.id, DRAFT, "rebuilding the quarterly plan with the new numbers");
   const banner = page.locator(".banner.draft");

@@ -111,7 +111,7 @@ async function comment(page, text) {
 const cardWith = (page, text) => page.locator(".thread-card", { hasText: text });
 
 async function frameText(page, id, n, selector) {
-  const url = new RegExp(`(${id}\\.localhost:\\d+/(_clax/)?v/${n}/|/c/${id}/v/${n}/)$`);
+  const url = new RegExp(`${id}\\.localhost:\\d+/_clax/v/${n}/$`);
   const frame = await until(`the content frame of v${n}`, () => page.frame({ url }));
   return until(`${selector} in the content frame`, () => frame.locator(selector).textContent({ timeout: 1000 }));
 }
@@ -166,8 +166,12 @@ async function main() {
     const tok = await fetch(`${base}/api/token`);
     check(tok.status === 403, "GET /api/token serves no one", tok.status);
 
-    const a = await browser.newContext({ viewport: { width: 1280, height: 800 } });
-    const b = await browser.newContext({ viewport: { width: 1280, height: 800 } });
+    // A Worker that is not hosted signs no browser in, and a private
+    // artifact's site answers only a site session, which the shell asks for
+    // with the owner's credential: each browser carries the owner's token.
+    const owner = { viewport: { width: 1280, height: 800 }, extraHTTPHeaders: { authorization: `Bearer ${TOKEN}` } };
+    const a = await browser.newContext(owner);
+    const b = await browser.newContext(owner);
     const pa = await a.newPage();
     const pb = await b.newPage();
     // The second browser's stream hub runs in its tab, not a shared worker,

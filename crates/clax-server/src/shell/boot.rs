@@ -1,7 +1,8 @@
 //! The first-load data the daemon puts into `artifact.html` for `/a/…`
-//! (spec §8 Time to usable): the bootstrap block, the page title and, when
-//! the frame mode is known, the content frame. String injection at comment
-//! markers the shell build keeps; no template engine.
+//! (spec §8 Time to usable): the bootstrap block, the page title and the
+//! content frame, opened on its site's handshake
+//! (`/_clax/session/start`, `crate::routes::site`). String injection at
+//! comment markers the shell build keeps; no template engine.
 
 use super::route::ShellRoute;
 use axum::http::{HeaderMap, header};
@@ -10,18 +11,15 @@ use clax_http::state::AppState;
 use clax_http::views::artifact::with_owner;
 use serde_json::{Value, json};
 
-/// The frame's sandbox, as `FRAME_SANDBOX` in `web/shell/src/view/frame-host.ts`.
-pub const FRAME_SANDBOX: &str =
-    "allow-scripts allow-forms allow-modals allow-popups allow-downloads";
-/// Set by the shell once it has decided the frame mode: `subdomain` or `sandbox`.
-/// It names a mode only, never anything secret.
-pub const FRAME_COOKIE: &str = "clax_frame";
+/// The permissions the content frame delegates, as `FRAME_ALLOW` in
+/// `web/shell/src/view/frame-host.ts`.
+pub const FRAME_ALLOW: &str = "clipboard-write; fullscreen; storage-access";
 const BOOT_MARK: &str = "<!--clax:boot-->";
 const FRAME_MARK: &str = "<!--clax:frame-->";
 const TITLE_MARK: &str = "<h1>Clax</h1>";
 
 /// What goes into `artifact.html`: the bootstrap JSON (already escaped by
-/// [`script_json`]), the frame's markup when the mode is known, the title.
+/// [`script_json`]), the frame's markup when the page exists, the title.
 pub struct Injected {
     pub boot: String,
     pub frame: Option<String>,
@@ -75,14 +73,11 @@ pub fn encode_component(s: &str) -> String {
     out
 }
 
-/// Where the frame shows `file` of version `n`, as `pageSrc` in `web/shell/src/origin.ts`:
-/// on the artifact's site origin (`site`) under `/_clax/v/<n>/`; without
-/// one (a LAN viewer's shell), at `/c/<id>/v/<n>/` on the daemon's host.
-pub fn page_src(id: &str, n: u64, site: Option<&str>, file: &str) -> String {
-    let root = match site {
-        Some(o) => format!("{o}/_clax/v/{n}/"),
-        None => format!("/c/{id}/v/{n}/"),
-    };
+/// Where the frame shows `file` of version `n`, as `pageSrc` in
+/// `web/shell/src/origin.ts`: on the artifact's site origin `site`, under
+/// `/_clax/v/<n>/`, each segment of `file` encoded.
+pub fn page_src(site: &str, n: u64, file: &str) -> String {
+    let root = format!("{site}/_clax/v/{n}/");
     if file == "index.html" {
         return root;
     }
@@ -93,77 +88,24 @@ pub fn page_src(id: &str, n: u64, site: Option<&str>, file: &str) -> String {
         .join("/")
 }
 
-/// The name the Clax app's inspect view gives its content frame
-/// (`INSPECT_FRAME` in `web/bridge/src/protocol.ts`): the page's bridge keeps
-/// its errors from its first script only in a frame so named.
-pub const INSPECT_FRAME: &str = "clax-inspect";
-/// The name the Clax app's migration view gives its content frame
-/// (`MIGRATE_FRAME` in `web/bridge/src/protocol.ts`): the page's bridge ends
-/// the page's markup before any of it runs only in a frame so named.
-pub const MIGRATE_FRAME: &str = "clax-migrate";
-
-/// Whether a shell URL's query asks for the Clax app's inspect view, as the
-/// shell reads it (`inspectQuery` in `web/shell/src/route.ts`): the first
-/// `app` is `1` and the first `inspect` is `1`.
-pub fn inspect_query(query: Option<&str>) -> bool {
-    let Some(q) = query else { return false };
-    let first = |key: &str| {
-        url::form_urlencoded::parse(q.as_bytes())
-            .find(|(k, _)| k == key)
-            .map(|(_, v)| v.into_owned())
-    };
-    first("app").as_deref() == Some("1") && first("inspect").as_deref() == Some("1")
-}
-
-/// The content frame's name for a shell URL's query, as `frameName` in
-/// `web/shell/src/view/frame-host.ts` gives it: [`MIGRATE_FRAME`] in the
-/// migration view (the inspect view's query with the first `migrate` `1`),
-/// [`INSPECT_FRAME`] in the inspect view, none elsewhere.
-pub fn frame_name(query: Option<&str>) -> Option<&'static str> {
-    if !inspect_query(query) {
-        return None;
-    }
-    let migrate = query.and_then(|q| {
-        url::form_urlencoded::parse(q.as_bytes())
-            .find(|(k, _)| k == "migrate")
-            .map(|(_, v)| v.into_owned())
-    });
-    Some(if migrate.as_deref() == Some("1") {
-        MIGRATE_FRAME
-    } else {
-        INSPECT_FRAME
-    })
+/// The handshake that opens `target` (an address on the site origin `site`)
+/// in the frame, as `startSrc` in `web/shell/src/origin.ts`: the site's
+/// `/_clax/session/start`, with `target`'s path as `next`.
+pub fn start_src(site: &str, target: &str) -> String {
+    let next = target
+        .strip_prefix(site)
+        .filter(|n| n.starts_with('/'))
+        .unwrap_or("/");
+    format!("{site}/_clax/session/start?next={}", encode_component(next))
 }
 
 /// The content frame's markup, with the attributes `FrameHost.show` in
-/// `web/shell/src/view/frame-host.ts` gives it: sandboxed exactly when there
-/// is no artifact origin, and named `name` ([`frame_name`]), so the shell
-/// adopts it in the inspect and migration views too.
-pub fn frame_html(src: &str, sandboxed: bool, name: Option<&str>) -> String {
-    let sandbox = if sandboxed {
-        format!(" sandbox=\"{FRAME_SANDBOX}\"")
-    } else {
-        String::new()
-    };
-    let name = match name {
-        Some(n) => format!(" name=\"{}\"", html_escape(n)),
-        None => String::new(),
-    };
+/// `web/shell/src/view/frame-host.ts` gives it.
+pub fn frame_html(src: &str) -> String {
     format!(
-        "<iframe class=\"frame\"{name} title=\"artifact content\" src=\"{}\" allow=\"clipboard-write; fullscreen\"{sandbox}></iframe>",
+        "<iframe class=\"frame\" title=\"artifact content\" src=\"{}\" allow=\"{FRAME_ALLOW}\"></iframe>",
         html_escape(src)
     )
-}
-
-fn cookie(headers: &HeaderMap, name: &str) -> Option<String> {
-    headers
-        .get_all(header::COOKIE)
-        .iter()
-        .filter_map(|v| v.to_str().ok())
-        .flat_map(|v| v.split(';'))
-        .filter_map(|kv| kv.trim().split_once('='))
-        .find(|(k, _)| *k == name)
-        .map(|(_, v)| v.to_string())
 }
 
 /// `host` (a `Host` header) split into its name and numeric port.
@@ -174,56 +116,32 @@ fn host_port(host: &str) -> (&str, Option<&str>) {
     }
 }
 
-/// Artifact `id`'s site origin on a local daemon reached at the request's
-/// `Host`: `http://<id>.localhost` on its port.
-fn local_site(headers: &HeaderMap, id: &str) -> String {
+/// The site hosts the shell frames, as the bootstrap's `site` names them
+/// (`artifactOrigin` in `web/shell/src/origin.ts`): the site domain, the
+/// public origin's scheme, and the request's port unless it is the scheme's
+/// default.
+pub fn site_of(s: &AppState, headers: &HeaderMap) -> Value {
     let host = headers
         .get(header::HOST)
         .and_then(|h| h.to_str().ok())
         .unwrap_or("");
-    let port = host_port(host).1.and_then(|p| p.parse().ok());
-    match clax_core::ArtifactId::parse(id) {
-        Ok(aid) => clax_http::host::SiteHosts::local().origin(&aid, "http", port),
-        Err(_) => format!("http://{id}.localhost"),
-    }
+    let secure = clax_http::site_access::secure(s);
+    let scheme = if secure { "https" } else { "http" };
+    let default = if secure { 443 } else { 80 };
+    let port = host_port(host)
+        .1
+        .and_then(|p| p.parse::<u16>().ok())
+        .filter(|p| *p != default);
+    json!({"domain": s.sites().domain(), "scheme": scheme, "port": port})
 }
 
-/// The site origin a local daemon's frame loads from, as `frameSite` in
-/// web/shell/src/origin.ts: the subdomain mode's `origin`; in sandbox mode
-/// the artifact's site origin still on `localhost` or `127.0.0.1` (the
-/// frame sandboxes it), and none elsewhere (a LAN viewer's shell).
-fn frame_site(headers: &HeaderMap, id: &str, origin: Option<&str>) -> Option<String> {
-    match origin {
-        Some(o) => Some(o.to_string()),
-        None if on_loopback_name(headers) => Some(local_site(headers, id)),
-        None => None,
-    }
-}
-
-/// Whether the request's `Host` is `localhost` or `127.0.0.1`, where the
-/// shell has site origins (`artifactOrigin` in web/shell/src/origin.ts).
-fn on_loopback_name(headers: &HeaderMap) -> bool {
-    let host = headers
-        .get(header::HOST)
-        .and_then(|h| h.to_str().ok())
-        .unwrap_or("");
-    let (name, _) = host_port(host);
-    name.eq_ignore_ascii_case("localhost") || name == "127.0.0.1"
-}
-
-/// The frame mode the shell will choose, when the daemon can know it: `Some(None)`
-/// for sandbox (always on a non-loopback host, where the shell has no artifact
-/// origins), `Some(Some(origin))` for the subdomain the cookie names; `None`
-/// when a loopback browser has not decided yet (no cookie, or a value that is
-/// neither mode).
-fn frame_origin(headers: &HeaderMap, id: &str) -> Option<Option<String>> {
-    if !on_loopback_name(headers) {
-        return Some(None);
-    }
-    match cookie(headers, FRAME_COOKIE).as_deref() {
-        Some("subdomain") => Some(Some(local_site(headers, id))),
-        Some("sandbox") => Some(None),
-        _ => None,
+/// Artifact `id`'s site origin under [`site_of`]'s `site`.
+fn site_origin(site: &Value, id: &str) -> String {
+    let scheme = site["scheme"].as_str().unwrap_or("http");
+    let domain = site["domain"].as_str().unwrap_or("localhost");
+    match site["port"].as_u64() {
+        Some(p) => format!("{scheme}://{id}.{domain}:{p}"),
+        None => format!("{scheme}://{id}.{domain}"),
     }
 }
 
@@ -389,23 +307,13 @@ pub async fn assemble(
         .iter()
         .find(|v| u64::from(v.n) == n)
         .is_some_and(|v| file == "index.html" || v.files.contains_key(&file));
-    // A hosted daemon's frame needs a site session the shell asks for, so
-    // the page carries none.
-    let mode = match &s.hosted {
-        Some(_) => None,
-        None => frame_origin(headers, id.as_str()),
-    };
-    let (frame, frame_json) = match mode {
-        Some(origin) if holds => {
-            let site = frame_site(headers, id.as_str(), origin.as_deref());
-            let src = page_src(id.as_str(), n, site.as_deref(), &file);
-            (
-                Some(frame_html(&src, origin.is_none(), frame_name(query))),
-                json!({"mode": if origin.is_some() { "subdomain" } else { "sandbox" }, "src": src}),
-            )
-        }
-        _ => (None, Value::Null),
-    };
+    // The frame opens on its site's handshake, which the shell completes
+    // with a code (`POST /api/artifacts/<id>/site-code`).
+    let site = site_of(s, headers);
+    let frame = holds.then(|| {
+        let origin = site_origin(&site, id.as_str());
+        frame_html(&start_src(&origin, &page_src(&origin, n, &file)))
+    });
     let artifact = without_sessions(
         artifact_json,
         serde_json::to_value(&versions).expect("versions serialise"),
@@ -415,7 +323,7 @@ pub async fn assemble(
         "artifact": artifact,
         "threads": threads,
         "viewer": viewer,
-        "frame": frame_json,
+        "site": site,
     });
     if let Some(att) = attention {
         boot["attention"] = json!(att);
@@ -515,54 +423,35 @@ mod tests {
         ))
         .unwrap();
         for c in cases.as_array().unwrap() {
-            let id = c["id"].as_str().unwrap();
-            // A case with a `location` is the shell's at that address,
-            // which derives the frame's site itself (`frameSite`).
-            let site = match c["location"].as_str() {
-                Some(loc) => {
-                    let host = loc.split_once("://").unwrap().1;
-                    let mut h = HeaderMap::new();
-                    h.insert(header::HOST, host.parse().unwrap());
-                    frame_site(&h, id, c["origin"].as_str())
-                }
-                None => c["origin"].as_str().map(str::to_string),
-            };
-            let got = page_src(
-                id,
-                c["n"].as_u64().unwrap(),
-                site.as_deref(),
-                c["file"].as_str().unwrap(),
-            );
+            let site = c["site"].as_str().unwrap();
+            let got = page_src(site, c["n"].as_u64().unwrap(), c["file"].as_str().unwrap());
             assert_eq!(got, c["src"].as_str().unwrap(), "{c}");
+            assert_eq!(start_src(site, &got), c["start"].as_str().unwrap(), "{c}");
         }
     }
 
     #[test]
     fn the_frame_has_the_shells_attributes() {
         let host = include_str!("../../../../web/shell/src/view/frame-host.ts");
-        assert!(
-            host.contains(&format!(
-                "export const FRAME_SANDBOX = \"{FRAME_SANDBOX}\";"
-            )),
-            "FRAME_SANDBOX differs from frame-host.ts"
-        );
         for attr in [
-            "const FRAME_ALLOW = \"clipboard-write; fullscreen\";",
+            &format!("const FRAME_ALLOW = \"{FRAME_ALLOW}\";"),
             "const FRAME_TITLE = \"artifact content\";",
             "el.className = \"frame\";",
             "el.title = FRAME_TITLE;",
             "el.setAttribute(\"allow\", FRAME_ALLOW);",
-            "if (sandboxed) el.setAttribute(\"sandbox\", FRAME_SANDBOX);",
         ] {
             assert!(host.contains(attr), "frame-host.ts no longer sets: {attr}");
         }
+        assert!(
+            !host.contains("setAttribute(\"sandbox\""),
+            "frame-host.ts sandboxes a frame"
+        );
         assert_eq!(
-            frame_html("/c/x/v/1/\"><b>", true, None),
+            frame_html("http://x.localhost:1/_clax/v/1/\"><b>"),
             format!(
-                "<iframe class=\"frame\" title=\"artifact content\" src=\"/c/x/v/1/&quot;&gt;&lt;b&gt;\" allow=\"clipboard-write; fullscreen\" sandbox=\"{FRAME_SANDBOX}\"></iframe>"
+                "<iframe class=\"frame\" title=\"artifact content\" src=\"http://x.localhost:1/_clax/v/1/&quot;&gt;&lt;b&gt;\" allow=\"{FRAME_ALLOW}\"></iframe>"
             )
         );
-        assert!(!frame_html("http://x.localhost:1/_clax/v/1/", false).contains("sandbox"));
     }
 
     #[test]
@@ -614,42 +503,20 @@ mod tests {
         assert!(out.contains("<h1>&lt;!--clax:frame--&gt;&lt;!--clax:boot--&gt;</h1>"));
     }
 
-    fn headers(host: &str, cookie: Option<&str>) -> HeaderMap {
-        let mut h = HeaderMap::new();
-        h.insert(header::HOST, host.parse().unwrap());
-        if let Some(c) = cookie {
-            h.insert(header::COOKIE, c.parse().unwrap());
-        }
-        h
-    }
-
     #[test]
-    fn the_frame_mode_comes_from_the_host_and_the_cookie() {
-        let id = "7q3k9mzx2b4t";
-        assert_eq!(frame_origin(&headers("localhost:7", None), id), None);
+    fn the_site_names_the_domain_the_scheme_and_a_port_that_is_not_the_default() {
+        let site = json!({"domain": "localhost", "scheme": "http", "port": 7481});
         assert_eq!(
-            frame_origin(&headers("localhost:7", Some("clax_frame=bogus")), id),
-            None
+            site_origin(&site, "7q3k9mzx2b4t"),
+            "http://7q3k9mzx2b4t.localhost:7481"
         );
+        let site = json!({"domain": "clax.run", "scheme": "https", "port": null});
         assert_eq!(
-            frame_origin(&headers("localhost:7", Some("a=1; clax_frame=sandbox")), id),
-            Some(None)
+            site_origin(&site, "7q3k9mzx2b4t"),
+            "https://7q3k9mzx2b4t.clax.run"
         );
-        assert_eq!(
-            frame_origin(&headers("127.0.0.1:7", Some("clax_frame=subdomain")), id),
-            Some(Some(format!("http://{id}.localhost:7")))
-        );
-        assert_eq!(
-            frame_origin(&headers("localhost", Some("clax_frame=subdomain")), id),
-            Some(Some(format!("http://{id}.localhost")))
-        );
-        // A LAN or other host is always sandboxed, whatever the cookie says.
-        for host in ["192.168.1.5:7", "[::1]:7", "example.com", "localhost.:7"] {
-            assert_eq!(
-                frame_origin(&headers(host, Some("clax_frame=subdomain")), id),
-                Some(None),
-                "{host}"
-            );
-        }
+        assert_eq!(host_port("localhost:7481"), ("localhost", Some("7481")));
+        assert_eq!(host_port("clax.dev"), ("clax.dev", None));
+        assert_eq!(host_port("[::1]:7"), ("[::1]", Some("7")));
     }
 }
