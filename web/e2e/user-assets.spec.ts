@@ -27,10 +27,12 @@ test(`user in the owner shell`, async ({ page, freshDaemon }) => {
   const name = await nameField(page);
   await name.fill("Alex");
   await Promise.all([page.waitForResponse(r => r.url().endsWith("/api/viewers/me") && r.request().method() === "PUT"), name.press("Enter")]);
-  await f.locator("#refresh").click();
-  await expect(f.locator("#greeting")).toHaveText("Hello, Alex");
-  await expect.poll(async () => (await facts(f)).search).toBe(1);
-  expect(await facts(f)).toMatchObject({ name: "Alex", meResolved: "Alex", search: 1 });
+  // The page reads who the viewer is from its site once: the next document knows the name.
+  const next = await openArtifact(page, d.base, artifact.id, 1);
+  await next.locator("#refresh").click();
+  await expect(next.locator("#greeting")).toHaveText("Hello, Alex");
+  await expect.poll(async () => (await facts(next)).search).toBe(1);
+  expect(await facts(next)).toMatchObject({ name: "Alex", meResolved: "Alex", search: 1 });
 });
 
 test(`assets upload, display, list, and delete`, async ({ page }) => {
@@ -45,7 +47,7 @@ test(`assets upload, display, list, and delete`, async ({ page }) => {
 
 // A viewer who is not the owner: a hosted daemon's guest on a page shared by
 // link (a local daemon frames pages for the owner alone).
-test("a guest: user is not the owner, resolves other viewers by name, and can write data from the next document once named; assets are read-only", async ({ browser }) => {
+test("a guest: user is not the owner, resolves other viewers by name, and names them from the next document once named; data and assets are read-only", async ({ browser }) => {
   const { d: h, origin } = await hostedDaemon();
   try {
     const owner = await ownerOf(browser, origin, "Ärger Ölund");
@@ -56,14 +58,15 @@ test("a guest: user is not the owner, resolves other viewers by name, and can wr
     await shareByLink(owner, artifact.id);
     await shareByLink(owner, g.id);
     const { page, frame: first } = await guestOn(browser, origin, artifact.id);
-    // A guest has no viewer of their own until named.
+    // A guest has no viewer of their own until named, and named writes
+    // only where a db rule names `public` (docs/contract.md, the site's level).
     expect(await facts(first)).toMatchObject({ isOwner: false, canEdit: false, dataWrite: false, filesWrite: false, idShape: false });
     const name = await nameField(page);
     await name.fill("Guest Reader");
     const [named] = await Promise.all([page.waitForResponse(r => r.url().endsWith("/api/viewers/me") && r.request().method() === "PUT"), name.press("Enter")]);
     expect(named.status(), await named.text()).toBe(200);
     const f = await openAt(page, origin, artifact.id, 1);
-    expect(await facts(f)).toMatchObject({ name: "Guest Reader", isOwner: false, canEdit: false, dataWrite: true, filesWrite: false, idShape: true, search: 0, other: "Ärger Ölund", stranger: "" });
+    expect(await facts(f)).toMatchObject({ name: "Guest Reader", isOwner: false, canEdit: false, dataWrite: false, filesWrite: false, idShape: true, search: 0, other: "Ärger Ölund", stranger: "" });
     const f2 = await openAt(await page.context().newPage(), origin, g.id, 1);
     await expect(f2.locator("#status")).toHaveText("read-only");
   } finally {

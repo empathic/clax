@@ -68,7 +68,7 @@ const partsLoaded = (frame: import("@playwright/test").Frame) =>
     expect(seen).toContain("comment.js?retry=1");
   });
 
-  test(`a capability loads only its own part: db the caps part, room its own part and never caps`, async ({ page }) => {
+  test(`a capability loads only its own part: db the origin part, room the origin part and its own, and never caps`, async ({ page }) => {
     const parts: string[] = [];
     page.on("request", r => { const m = new URL(r.url()).pathname.match(/^\/_clax\/bridge\/([a-z]+)[-.][^/]*$/); if (m) parts.push(m[1]); });
     const pageFor = (name: string) => `<!doctype html><html><head><title>${name}</title></head><body><button id="use">Use</button><p id="out">waiting</p>
@@ -78,7 +78,8 @@ const partsLoaded = (frame: import("@playwright/test").Frame) =>
     let frame = await openArtifact(page, d.base, db.artifact.id, 1);
     await frame.locator("#use").click();
     await expect(frame.locator("#out")).toHaveText("ready");
-    expect(parts).toContain("caps");
+    expect(parts).toContain("origin");
+    expect(parts).not.toContain("caps");
     expect(parts).not.toContain("room");
 
     parts.length = 0;
@@ -87,6 +88,7 @@ const partsLoaded = (frame: import("@playwright/test").Frame) =>
     await frame.locator("#use").click();
     // A granted room loads the room part, and never the caps part.
     await expect(frame.locator("#out")).toHaveText("ready");
+    expect(parts).toContain("origin");
     expect(parts).toContain("room");
     expect(parts).not.toContain("caps");
   });

@@ -8810,10 +8810,10 @@ it starts, the runs a previous process left. A build without the
   `document.hasStorageAccess()` is false. The shell then asks that
   document for storage access (`{"type": "clax:storage-access"}`,
   answered `{"type": "clax:storage-access", "granted"}` with
-  `document.requestStorageAccess()`'s outcome); granted, or refused the
-  first time, the handshake starts once more, and a second refusal, or a
-  code refused, shows "Open in a tab" with the page's address on its
-  site in place of the frame. The
+  `document.requestStorageAccess()`'s outcome) and, once it answers,
+  starts the handshake once more; a second report, or a code refused,
+  shows "Open in a tab" with the page's address on its site in place of
+  the frame. The
   bridge takes orders only from the origin its tag's `data-origin` names
   (the daemon's public origin, always written; for a local daemon's
   loopback names, each of them at its port).

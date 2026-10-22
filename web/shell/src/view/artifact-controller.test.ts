@@ -1285,7 +1285,7 @@ describe("ArtifactController", { timeout: MOUNT_TIMEOUT_MS }, () => {
       ctl.dispose();
     });
 
-    it("starts the handshake again once the frame is granted storage access", async () => {
+    it("starts once more after a grant, and a frame still without its cookie never loops", async () => {
       const { ctl, frame } = await started();
       codes(sent);
       const went = await goes();
@@ -1293,12 +1293,14 @@ describe("ArtifactController", { timeout: MOUNT_TIMEOUT_MS }, () => {
       win.postMessage = (() => {}) as Window["postMessage"];
       fromFrame(win, STATE);
       await vi.waitFor(() => expect(went.at(-1)).toBe(CODE));
-      for (let i = 0; i < 3; i++) {
-        fromFrame(win, { type: "clax:no-cookie" });
-        fromFrame(win, { type: "clax:storage-access", granted: true });
-      }
-      expect(went).toEqual([CODE, START, START, START]);
+      fromFrame(win, { type: "clax:no-cookie" });
+      fromFrame(win, { type: "clax:storage-access", granted: true });
+      expect(went).toEqual([CODE, START]);
       expect(ctl.state.get().openInTab).toBeNull();
+      fromFrame(win, { type: "clax:no-cookie" });
+      fromFrame(win, { type: "clax:storage-access", granted: true });
+      expect(went).toEqual([CODE, START]);
+      expect(ctl.state.get().openInTab).toBe(`${SITE}/_clax/v/2/`);
       ctl.dispose();
     });
 

@@ -366,10 +366,9 @@ export class ArtifactController {
    * frame whose document the site has no session from reports
    * `clax:no-cookie` (the site's document for a framed navigation without
    * one, or the bridge on a 401 `whoami`): the shell asks that document for
-   * storage access (`storage`, until it answers); granted, or refused the
-   * first time, the handshake starts once more, and a second refusal
-   * offers the page in a tab. `page` is false for a draft, which never
-   * greets. */
+   * storage access (`storage`, until it answers), then starts the
+   * handshake once more; a second report offers the page in a tab. `page`
+   * is false for a draft, which never greets. */
   private hs: { el: HTMLIFrameElement; phase: "start" | "asking" | "code" | "done"; tries: number; page: boolean; storage?: boolean } | null = null;
 
   /** `init.boot`: the daemon's first-load data for this artifact, read in
@@ -782,14 +781,15 @@ export class ArtifactController {
     this.send({ type: "clax:storage-access" });
   }
 
-  /** The frame answered the storage-access request: granted, or for the
-   * first refusal, the handshake starts once more; a second refusal offers
-   * the page in a tab. */
-  private storageAnswered(granted: boolean): void {
+  /** The frame answered the storage-access request (`granted` or not, the
+   * browser's grant is what a new handshake can use): the handshake starts
+   * once more, and a second report offers the page in a tab, so a frame
+   * whose cookies stay refused, granted or not, never loops. */
+  private storageAnswered(): void {
     const hs = this.hs;
     if (!hs || hs.el !== this.frame?.el || !hs.storage) return;
     hs.storage = false;
-    if (!granted && ++hs.tries >= 2) { this.refused(); return; }
+    if (++hs.tries >= 2) { this.refused(); return; }
     hs.phase = "start";
     this.frame.again();
   }
@@ -1279,7 +1279,7 @@ export class ArtifactController {
     if (!m) return;
     switch (m.type) {
       case "clax:no-cookie": this.noCookie(); break;
-      case "clax:storage-access": this.storageAnswered(m.granted === true); break;
+      case "clax:storage-access": this.storageAnswered(); break;
       case "clax:hello": {
         // A stale or foreign document in the frame, or one naming a page
         // this version does not hold, gets no welcome, no anchors, and no pins;

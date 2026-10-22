@@ -3,7 +3,7 @@
 // the frame opens through the site's handshake, unsandboxed, so each
 // artifact's storage is its own; no other site may frame a site page; and
 // when the frame cannot sign in, the stage offers the page in a tab.
-import { createServer } from "node:http";
+import { createServer, request as httpRequest } from "node:http";
 import type { AddressInfo } from "node:net";
 import { test, expect, type Daemon, contentFrame, openArtifact, publish } from "./fixtures";
 
@@ -62,13 +62,38 @@ test("a frame whose code is refused offers the page in a tab", async ({ page }) 
   await expect(page.locator(".stage > iframe.frame")).toHaveCount(0);
 });
 
-test("a redemption that never lands on the page is tried once more, then the page is offered in a tab", async ({ page }) => {
+test("a frame whose browser keeps its cookies from the site is told so, asked for storage access, tried once more, then offered in a tab", async ({ page }) => {
   const { artifact } = await publish(d.base, d.token, "Cookies refused", { "index.html": `<p id="hi">hi</p>` });
-  // As where the browser refuses the frame's cookies: the redemption does
-  // not reach the page.
+  // As where the browser refuses the frame's cookies: the site's answers
+  // reach the frame without their cookies (fetched outside the browser, so
+  // its cookie store never sees them), and its requests carry none, so the
+  // redemption fails and the site answers its no-cookie page.
   let redemptions = 0;
-  await page.route(`http://${artifact.id}.localhost:*/_clax/session?*`, r => { redemptions++; return r.fulfill({ status: 200, contentType: "text/html", body: "<p>not the page</p>" }); });
+  await page.route(`http://${artifact.id}.localhost:*/**`, async r => {
+    const u = new URL(r.request().url());
+    if (u.pathname === "/_clax/session") redemptions++;
+    // The browser adds its Sec-Fetch headers after interception: a frame's
+    // navigation says what it is, as Chromium's does.
+    const nav: Record<string, string> = r.request().isNavigationRequest() ? { "sec-fetch-mode": "navigate", "sec-fetch-dest": "iframe" } : {};
+    const headers: Record<string, string> = { ...(await r.request().allHeaders()), ...nav, host: u.host };
+    delete headers.cookie;
+    const res = await new Promise<{ status: number; headers: Record<string, string>; body: Buffer }>((resolve, reject) => {
+      const req = httpRequest({ host: "127.0.0.1", port: u.port, path: u.pathname + u.search, method: r.request().method(), headers }, answer => {
+        const chunks: Buffer[] = [];
+        answer.on("data", (c: Buffer) => { chunks.push(c); });
+        answer.on("end", () => {
+          const h: Record<string, string> = {};
+          for (const [k, v] of Object.entries(answer.headers)) if (k !== "set-cookie" && v !== undefined) h[k] = String(v);
+          resolve({ status: answer.statusCode ?? 502, headers: h, body: Buffer.concat(chunks) });
+        });
+      });
+      req.on("error", reject);
+      req.end(r.request().postDataBuffer() ?? undefined);
+    });
+    await r.fulfill(res);
+  });
   await page.goto(`${d.base}/a/${artifact.id}`);
   await expect(page.getByRole("link", { name: "Open in a tab" })).toBeVisible();
   expect(redemptions).toBe(2);
+  await expect(page.locator(".stage > iframe.frame")).toHaveCount(0);
 });
