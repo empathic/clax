@@ -4,6 +4,7 @@
 //   node smoke-remote.mjs --deploy ~/.config/clax/deploy/example.com.json   # deploy.mjs's record
 //   node smoke-remote.mjs --url https://clax.example.com --setup-secret … --token …
 //   node smoke-remote.mjs --url … --session <the clax session cookie's value> --token …
+//   node smoke-remote.mjs --url … --site-domain example.run …   # the site domain (else the record's site_domain)
 //   node smoke-remote.mjs --local [--no-build]   # against a fresh `wrangler dev --local`, REPO_STORE=memory
 //   node smoke-remote.mjs --local --setup-done   # the same, its setup done beforehand, as after an earlier
 //                                                # deploy (--without-token: and no owner token: a FAIL)
@@ -13,13 +14,17 @@
 // Steps: health; the diagnostics' view of the bindings; with Artifacts, the
 // binding's raw calls on a scratch repository (src/diag.rs's probe: get of
 // a missing repository, create, tokens, reads of missing objects, the
-// remote's advertisements, a fork, deletes); the owner: the given owner
-// session (--session), else setup with the secret when setup is open, else
-// the owner token (CLAX_TOKEN: --token, or deploy.mjs's record), as on
-// every deploy after the first, with which the steps that only a signed-in
-// browser can take (an agent token) skip and say so, and the rest act as
-// the owner token (no credential at all is a FAIL); an agent token; two
-// versions published over /mcp and read back; a fork, read back; a git
+// remote's advertisements, a fork, deletes); setup with the secret when
+// setup is open (else the given owner session); an agent token; two
+// versions published over /mcp and read back; a fork, read back; the
+// artifact's own site host (`<ID>.<site domain>`, from --site-domain or the
+// record; `localhost` with --local): its health, a private site refused
+// without a session (a navigation redirected to /site-signin, an API call
+// 401), /site-signin's code redeemed at /_clax/session for a `SameSite=Lax`
+// cookie, the shell's code (`POST /api/artifacts/<ID>/site-code`) for a
+// Partitioned one that works once, the site opened to the world and served
+// signed out, then private again and refused, and two db artifacts whose
+// documents stay apart and whose cookies do not cross; a git
 // token, the remote's receive-pack advertisement, `git clone`, the
 // clone's tree against the binding's (Artifacts); with Artifacts and a
 // wrangler login, a queue subscription for the artifact's repository;
@@ -30,7 +35,8 @@
 // when it made the owner, prints a sign-in link for the owner's browser.
 //
 // Every step prints `ok`/`FAIL`/`skip`, its time and what it saw; a step
-// whose inputs failed is skipped. The diagnostics (`/_diag/`, the owner
+// whose inputs failed is skipped; when the site host's health answers 404
+// (a Worker without site hosts) every site step skips. The diagnostics (`/_diag/`, the owner
 // token, CLAX_DIAG_ROUTES=1: `deploy.mjs --diag`; `--local` turns them on
 // for its own Worker) are needed for the probe, the git token and the
 // reconcile; without them those steps are skipped. When a deployed Worker
@@ -128,9 +134,21 @@ function run(cmd, argv, opts = {}) {
   });
 }
 
-/** The client: the public origin, the owner token, the owner's session
- * cookie, and which of the two the owner's calls carry (`as`: "session",
- * or "token" when setup is closed and no session was given). */
+/** Fetches `url` (any origin; redirects not followed unless `init.redirect`
+ * says so): {res, status, text, json}. */
+async function at(url, init = {}) {
+  const res = await fetch(url, { redirect: "manual", ...init, signal: AbortSignal.timeout(STEP_LIMIT) });
+  const text = await res.text();
+  let json = null;
+  try {
+    json = text ? JSON.parse(text) : null;
+  } catch {
+    // not JSON
+  }
+  return { res, status: res.status, text, json };
+}
+
+/** The client: the public origin, the owner token, the owner's session cookie. */
 class Client {
   constructor(base) {
     this.base = base.replace(/\/$/, "");
@@ -148,15 +166,7 @@ class Client {
   }
 
   async raw(path, init = {}) {
-    const res = await fetch(`${this.base}${path}`, { ...init, signal: AbortSignal.timeout(STEP_LIMIT) });
-    const text = await res.text();
-    let json = null;
-    try {
-      json = text ? JSON.parse(text) : null;
-    } catch {
-      // not JSON
-    }
-    return { res, status: res.status, text, json };
+    return at(`${this.base}${path}`, { redirect: "follow", ...init });
   }
 
   /** The owner's credential as headers: the owner token, or the cookie. */
@@ -210,6 +220,19 @@ class Client {
     }
     return { text, json };
   }
+}
+
+/** The site cookie a response set: {pair: "name=value", raw: the whole Set-Cookie}. */
+function siteCookie(res) {
+  const raw = (res.headers.getSetCookie?.() ?? []).find((s) => /^(__Host-)?clax_site=/.test(s));
+  return raw ? { pair: raw.split(";")[0], raw } : null;
+}
+
+/** An artifact's site origin: the public origin's scheme and port on
+ * `<ID>.<site domain>`. */
+function siteOrigin(base, site, id) {
+  const u = new URL(base);
+  return `${u.protocol}//${id}.${site}${u.port ? `:${u.port}` : ""}`;
 }
 
 function sessionCookie(res) {
@@ -295,6 +318,7 @@ async function smoke(c, o) {
   const git = mkdtempSync(join(o.work, "git-"));
   let aid = "";
   let fork = "";
+  const dbIds = [];
   let agentTokenId = "";
   let subscription = "";
   let madeOwner = false;
@@ -435,6 +459,115 @@ async function smoke(c, o) {
     if (!read.text.includes(`v2 ${RUN}`)) throw new Error(`the fork reads ${short(read.text)}`);
     return { detail: `fork ${fork} of v${r.json.version?.n ?? r.json.version ?? "?"} reads v2's content` };
   }, ["read back v1 and v2 (mcp)"]);
+
+  // The artifact's own site host. A Worker without site hosts answers its
+  // health 404, and every later site step skips.
+  const site = o.siteDomain;
+  const siteOf = (id) => siteOrigin(c.base, site, id);
+  const html = { accept: "text/html" };
+  /** Signs the owner in to artifact `id`'s site through /site-signin:
+   * the site cookie /_clax/session set. */
+  const signInTo = async (id) => {
+    const host = new URL(siteOf(id)).host;
+    const signin = await at(`${c.base}/site-signin?host=${encodeURIComponent(host)}&next=%2F`, { headers: { ...html, cookie: c.cookie } });
+    const loc = new URL(signin.res.headers.get("location") ?? "/", c.base).href;
+    if (signin.status !== 302 || !loc.startsWith(`${siteOf(id)}/_clax/session?`)) {
+      throw new Error(`/site-signin for ${host} answered ${signin.status} ${signin.res.headers.get("location") ?? short(signin.text, 160)}, not a 302 to ${siteOf(id)}/_clax/session`);
+    }
+    const session = await at(loc, { headers: html });
+    const cookie = siteCookie(session.res);
+    if (!cookie) throw new Error(`${siteOf(id)}/_clax/session answered ${session.status} without a site cookie`);
+    return cookie;
+  };
+  await step("site host: health", async () => {
+    if (!site) skip("no site domain (--site-domain, or deploy.mjs's record's site_domain); every site step skips");
+    const r = await at(`${siteOf(aid)}/_clax/healthz`);
+    if (r.status === 404) skip(`${siteOf(aid)}/_clax/healthz answers 404: this Worker serves no site hosts (SITE_DOMAIN); every site step skips`);
+    if (r.status !== 200) throw new Error(`${siteOf(aid)}/_clax/healthz: ${r.status} ${short(r.text, 200)}`);
+    return { detail: `${siteOf(aid)}: ${short(r.json ?? r.text, 160)}` };
+  }, ["publish v2 (mcp)"]);
+
+  await step("site: a private site refused without a session", async () => {
+    const nav = await at(`${siteOf(aid)}/`, { headers: html });
+    const loc = nav.res.headers.get("location") ?? "";
+    if (nav.status !== 302 || !loc.startsWith(`${c.base}/site-signin?`)) {
+      throw new Error(`a signed-out navigation answered ${nav.status} ${loc || short(nav.text, 160)}, not a 302 to ${c.base}/site-signin`);
+    }
+    const host = new URL(loc).searchParams.get("host");
+    if (host !== new URL(siteOf(aid)).host) throw new Error(`/site-signin is asked for host ${host}, not ${new URL(siteOf(aid)).host}`);
+    const api = await at(`${siteOf(aid)}/_clax/api/whoami`);
+    if (api.status !== 401) throw new Error(`a signed-out API call answered ${api.status} ${short(api.text, 160)}, not 401`);
+    return { detail: `navigation 302 to /site-signin; API call 401 ${api.json?.error?.code ?? ""}`.trim() };
+  }, ["site host: health"]);
+
+  await step("site: /site-signin, then /_clax/session (SameSite=Lax)", async () => {
+    const cookie = await signInTo(aid);
+    const attrs = cookie.raw.split(";").slice(1).map((a) => a.trim()).join("; ");
+    if (!/SameSite=Lax/i.test(cookie.raw) || /Partitioned/i.test(cookie.raw) || !/HttpOnly/i.test(cookie.raw)) {
+      throw new Error(`the top-level site cookie is ${attrs}: expected HttpOnly, SameSite=Lax, not Partitioned`);
+    }
+    const page = await at(`${siteOf(aid)}/`, { headers: { ...html, cookie: cookie.pair } });
+    if (page.status !== 200 || !page.text.includes(`Smoke ${RUN}`)) throw new Error(`with the cookie, / answered ${page.status} ${short(page.text, 160)}`);
+    return { detail: `${cookie.pair.split("=")[0]}; ${attrs}; / served` };
+  }, ["site: a private site refused without a session", "owner: setup or session"]);
+
+  await step("site: the shell's code (Partitioned, single use)", async () => {
+    const r = await c.browser(`/api/artifacts/${aid}/site-code`, { method: "POST", body: JSON.stringify({ next: "/", partitioned: true }) });
+    const src = r.json?.src ?? "";
+    if (!src.startsWith(`${siteOf(aid)}/_clax/session?`)) throw new Error(`site-code answered src ${short(src || r.text, 200)}`);
+    const first = await at(src, { headers: html });
+    const cookie = siteCookie(first.res);
+    if (!cookie) throw new Error(`redeeming the code answered ${first.status} without a site cookie`);
+    if (!/Partitioned/i.test(cookie.raw) || !/SameSite=None/i.test(cookie.raw)) throw new Error(`the framed site cookie is ${cookie.raw.split(";").slice(1).join(";")}: expected SameSite=None; Partitioned`);
+    const again = await at(src, { headers: html });
+    if (siteCookie(again.res)) throw new Error("the code was redeemed a second time");
+    const page = await at(`${siteOf(aid)}/`, { headers: { ...html, cookie: cookie.pair } });
+    if (page.status !== 200) throw new Error(`with the partitioned cookie, / answered ${page.status}`);
+    return { detail: `Partitioned cookie, / served; a second redeem answered ${again.status} without a cookie` };
+  }, ["site: /site-signin, then /_clax/session (SameSite=Lax)"]);
+
+  await step("site: open to the world, then private again", async () => {
+    const access = (v) => c.browser(`/api/artifacts/${aid}`, { method: "PATCH", body: JSON.stringify({ site_access: v }) });
+    await access("world");
+    let open;
+    try {
+      open = await at(`${siteOf(aid)}/`, { headers: html });
+    } finally {
+      await access("private");
+    }
+    if (open.status !== 200 || !open.text.includes(`Smoke ${RUN}`)) throw new Error(`world-open, a signed-out visitor got ${open.status} ${short(open.text, 160)}`);
+    const closed = await at(`${siteOf(aid)}/`, { headers: html });
+    if (closed.status === 200) throw new Error("private again, the site still served a signed-out visitor");
+    return { detail: `world: 200 signed out; private again: ${closed.status}` };
+  }, ["site: a private site refused without a session", "owner: setup or session"]);
+
+  await step("site: two db artifacts kept apart", async () => {
+    for (const n of ["A", "B"]) {
+      const r = await c.tool("publish", { html: PAGE(`db ${n} ${RUN}`), title: `Smoke db ${n} ${RUN}`, capabilities: { db: {} } });
+      const id = r.json?.id ?? r.json?.artifact?.id ?? /\b([0-9a-z]{12})\b/.exec(r.text)?.[1];
+      if (!id) throw new Error(`no artifact ID in ${short(r.text)}`);
+      dbIds.push(id);
+    }
+    const [a, b] = dbIds;
+    const ca = (await signInTo(a)).pair;
+    const cb = (await signInTo(b)).pair;
+    const doc = (id) => `${siteOf(id)}/_clax/api/docs/smoke/one`;
+    const put = (id, cookie, who) =>
+      at(doc(id), { method: "PUT", headers: { cookie, origin: siteOf(id), "content-type": "application/json" }, body: JSON.stringify({ data: { who } }) });
+    const get = (id, cookie) => at(doc(id), { headers: { cookie } });
+    const pa = await put(a, ca, "A");
+    if (pa.status !== 200) throw new Error(`PUT on A's host: ${pa.status} ${short(pa.text, 200)}`);
+    const before = await get(b, cb);
+    if (before.status !== 404) throw new Error(`B's host reads smoke/one before B wrote it: ${before.status} ${short(before.text, 160)}`);
+    const pb = await put(b, cb, "B");
+    if (pb.status !== 200) throw new Error(`PUT on B's host: ${pb.status} ${short(pb.text, 200)}`);
+    const ga = await get(a, ca);
+    const gb = await get(b, cb);
+    if (ga.json?.doc?.data?.who !== "A" || gb.json?.doc?.data?.who !== "B") throw new Error(`A reads ${short(ga.json)}, B reads ${short(gb.json)}`);
+    const cross = await get(b, ca);
+    if (cross.status < 400) throw new Error(`A's site cookie was taken on B's host: ${cross.status}`);
+    return { detail: `${a} and ${b} each read their own smoke/one; A's cookie on B's host: ${cross.status}` };
+  }, ["site: /site-signin, then /_clax/session (SameSite=Lax)", "mcp: initialize and tools/list"]);
 
   let remote = "";
   let gitToken = "";
@@ -593,8 +726,8 @@ async function smoke(c, o) {
     const r = await run(wr, ["queues", "subscription", "delete", "clax-artifacts-events", "--id", subscription, "--force"], { cwd: HERE, env: { ...process.env, WRANGLER_SEND_METRICS: "false" } });
     console.log(`     subscription ${subscription}: ${r.code === 0 ? "deleted" : `left (${short(r.err || r.out, 200)})`}`);
   }
-  if (!flag("--keep") && c.mcpBearer) {
-    for (const id of [fork, aid].filter(Boolean)) {
+  if (!flag("--keep") && c.agent) {
+    for (const id of [...dbIds, fork, aid].filter(Boolean)) {
       const r = await c.tool("delete", { url_or_id: id }).then(() => "deleted", (e) => `left: ${short(e.message, 160)}`);
       console.log(`     artifact ${id}: ${r}`);
     }
@@ -623,7 +756,8 @@ async function local(o) {
   const config = writeConfig(dir, {
     HOSTED: "1",
     PUBLIC_ORIGIN: `http://localhost:${port}`,
-    CONTENT_ORIGIN: `http://127.0.0.1:${port}`,
+    // Node's fetch resolves `<ID>.localhost` to the loopback address.
+    SITE_DOMAIN: "localhost",
     REPO_STORE: remoteArtifacts ? "artifacts" : "memory",
     GIT_SMART_HTTP: remoteArtifacts ? "0" : "1",
     SETUP_SECRET: secret,
@@ -663,6 +797,7 @@ async function main() {
     session: opt("--session") ?? process.env.CLAX_SESSION,
     local: flag("--local"),
     account: opt("--account") ?? process.env.CLOUDFLARE_ACCOUNT_ID,
+    siteDomain: opt("--site-domain"),
   };
   let base = opt("--url");
   let token = opt("--token") ?? process.env.CLAX_TOKEN;
@@ -675,6 +810,7 @@ async function main() {
     token ??= r.owner_token;
     o.secret ??= r.setup_secret;
     o.account ??= r.account;
+    o.siteDomain ??= r.site_domain;
     o.onSetup = () => writeFileSync(record, JSON.stringify({ ...r, setup_done: true }, null, 2) + "\n", { mode: 0o600 });
   }
   if (o.local) {
@@ -683,6 +819,7 @@ async function main() {
     token = l.token;
     o.secret = l.secret;
     o.work = l.work;
+    o.siteDomain = "localhost";
     stop = l.stop;
   }
   if (!base) throw new Error("give --deploy <record>, --url <public origin> or --local (see the top of smoke-remote.mjs)");

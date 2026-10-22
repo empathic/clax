@@ -4,7 +4,8 @@
 # its own Cargo.lock, which Bazel does not resolve, and its wasm build needs
 # worker-build and a clang that targets wasm32 (docs/bazel.md, "Run outside
 # Bazel"). In order: npm ci, its tests (the VFS's among them), clippy with
-# warnings denied, then test-wasm.mjs, which builds the wasm Worker and
+# warnings denied, test-deploy-config.mjs (the config deploy.mjs generates,
+# without wrangler), then test-wasm.mjs, which builds the wasm Worker and
 # checks it under `wrangler dev --local`, test-sandbox.mjs, ClaxBot's
 # sandbox conformance suite on that build, and test-bot.mjs, a ClaxBot run
 # driven by the instance's alarm against a scripted Messages API, across a
@@ -20,6 +21,7 @@ cd "$(dirname "$0")/.."
 cd crates/clax-worker
 cargo test -q --workspace
 cargo clippy -q --workspace --all-targets -- -D warnings
+node test-deploy-config.mjs
 node test-wasm.mjs
 node test-sandbox.mjs --no-build
 node test-bot.mjs --no-build

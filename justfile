@@ -277,7 +277,7 @@ crate-package: web
 hosted-demo *ARGS:
     node demo/local.ts "$@"
 
-# Deploy hosted Clax to the Cloudflare account `npx wrangler login` signed in to (crates/clax-worker/deploy.mjs): bucket, queue, Artifacts namespace, secrets, both hosts as custom domains, build, deploy, wait for /healthz (args: --zone, --public, --content, --store artifacts|memory, --dry-run, --diag, --no-build, --rotate-secrets)
+# Deploy hosted Clax to the Cloudflare account `npx wrangler login` signed in to (crates/clax-worker/deploy.mjs): bucket, queue, Artifacts namespace, secrets, the public host as a custom domain and the site domain as the route *.<site domain>/*, build, deploy, wait for /healthz and check a site host (args: --zone, --public, --site-domain, --store artifacts|memory, --dry-run, --config-only, --out, --diag, --no-build, --rotate-secrets)
 hosted-deploy *ARGS:
     cd crates/clax-worker && node deploy.mjs "$@"
 

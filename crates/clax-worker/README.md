@@ -94,7 +94,9 @@ provider listens on 127.0.0.1, which the test vars
 ### In one command
 
 On an account with Workers Paid (and the Artifacts beta, for
-`REPO_STORE=artifacts`), with a zone on it for the two hostnames:
+`REPO_STORE=artifacts`), with a zone on it for the public hostname and a
+zone of its own for the site domain (each artifact is served at
+`<artifact ID>.<site domain>`, e.g. `<ID>.clax.run`):
 
 `scripts/cloudflare-setup.sh` does all of it, from any directory, and is
 safe to run again: it checks the tools (Node 26, rustup's wasm32 target, an
@@ -104,8 +106,8 @@ aren't signed in, then runs `deploy.mjs`, which creates only what is missing.
 It is a dry run unless you pass `--i-know-what-i-am-doing`:
 
 ```sh
-scripts/cloudflare-setup.sh --zone example.com                                   # dry run: changes nothing on the account
-scripts/cloudflare-setup.sh --zone example.com --smoke --i-know-what-i-am-doing  # sign in if needed, deploy, smoke it, redeploy without diagnostics
+scripts/cloudflare-setup.sh --zone example.com --site-domain example.run         # dry run: changes nothing on the account
+scripts/cloudflare-setup.sh --smoke --i-know-what-i-am-doing                     # sign in if needed, deploy, smoke it, redeploy without diagnostics
 scripts/cloudflare-setup.sh --login                                              # only sign in
 ```
 
@@ -113,30 +115,36 @@ Or step by step, in this directory:
 
 ```sh
 npx wrangler login                      # once, in this directory (npm install first)
-just hosted-deploy --zone example.com   # or: node deploy.mjs --zone example.com
+just hosted-deploy --zone example.com --site-domain example.run   # or: node deploy.mjs …
 node smoke-remote.mjs --deploy ~/.config/clax/deploy/example.com.json
 ```
 
 `deploy.mjs` (its header lists every option) checks the login, takes the
-two hostnames (`--public`, `--content`; with `--zone example.com` it offers
-`example.com` and `content.example.com`, asking on a terminal),
-creates what is missing (the R2 bucket; with Artifacts the queue and the
+public hostname (`--public`; with `--zone example.com` it offers
+`example.com`) and the site domain (`--site-domain example.run`, else the
+record's, else asked on a terminal with no default; never the public host,
+a domain under it, or one it is under), creates what is missing (the R2 bucket; with Artifacts the queue and the
 namespace, which also proves the account has Artifacts), generates
 `SETUP_SECRET` and `CLAX_TOKEN` when the Worker has neither and uploads
 them with the first version (printed once, and kept with the origins in
 `~/.config/clax/deploy/<public host>.json`, 0600, outside the
-repository), writes `target/deploy/wrangler.deploy.jsonc` (this file's config with `HOSTED=1`, both origins,
-the store, both hosts as custom domains, `workers_dev` and preview URLs
-off, Workers Logs on, `CLAX_DIAG_ROUTES=1`), builds the web UI and the
-Worker, deploys, waits for `/healthz` on the public host to report the
-build it uploaded (saying whether it waits on DNS, the certificate, the
-Worker or the build from before the deploy), and prints the setup URL and
-the next steps. Run again, it changes only what differs; secrets are kept
+repository), writes `target/deploy/wrangler.deploy.jsonc` (or `--out
+<path>`: this file's config with `HOSTED=1`, the public origin,
+`SITE_DOMAIN`, the store, the public host as a custom domain and the route
+`*.<site domain>/*` on the site domain's zone, `workers_dev` and preview
+URLs off, Workers Logs on, the diagnostics off unless `--diag`), builds the
+web UI and the Worker, deploys, waits for `/healthz` on the public host
+(saying whether it waits on DNS, the certificate or the Worker), checks
+`https://<random ID>.<site domain>/_clax/healthz` and, when that fails,
+prints the steps [below](#dns-for-the-public-host-and-the-site-domain) with
+what it found for each, and prints the setup URL and the next steps. Run again, it changes only what differs; secrets are kept
 unless `--rotate-secrets`.
 
 - `--dry-run` does everything but change the account, ending at `wrangler
   deploy --dry-run` with the upload size; without a login it skips each
   account call and names it.
+- `--config-only` only writes the config: no wrangler, no login, no build
+  (`test-deploy-config.mjs` checks what it writes).
 - `--store memory` deploys with the `RepoDO` stand-in instead of Artifacts
   (no `ARTIFACTS` binding, no queue; git over `/git/` on the public host),
   so the demo runs on real Cloudflare when Artifacts misbehaves.
@@ -162,7 +170,13 @@ clone`, the clone's trees against the binding's; `git push` and the push
 becoming a version (through the queue's `pushed` event, for which it
 subscribes the artifact's repository while it runs; when no event comes, a
 direct reconcile tells a missing event from a failing reconcile); and a
-comment arriving live on a WebSocket stream. When it made the owner it
+comment arriving live on a WebSocket stream. On the artifact's site host
+(`--site-domain`, else the record's; `localhost` with `--local`) it checks
+a private site refused without a session, `/site-signin`'s handshake
+(a `SameSite=Lax` cookie), the shell's one-use code (a `Partitioned`
+cookie), the site opened to the world and closed again, and two db
+artifacts' documents and cookies kept apart; a Worker whose site host
+answers 404 skips them all. When it made the owner it
 prints a sign-in link for the owner's browser. The diagnostics routes
 (`/_diag/`, `CLAX_DIAG_ROUTES=1` and the owner token) give it the probe,
 the git token and the reconcile.
@@ -312,36 +326,50 @@ npx wrangler deploy
 run size` prints the upload size without deploying. `deploy.mjs` does this
 with its generated `target/deploy/wrangler.deploy.jsonc` instead.
 
-### DNS for the two origins
+### DNS for the public host and the site domain
 
-Both origins are the same Worker on two hostnames of a zone on Cloudflare
-(so `CF-Connecting-IP` names each client, which the sign-in limits count
-by):
+The public host and every site host are the same Worker, on zones on
+Cloudflare (so `CF-Connecting-IP` names each client, which the sign-in
+limits count by): the public host (`clax.example.com`) is a custom domain,
+and the site domain (`example.run`) a zone of its own whose first-level
+names, `<artifact ID>.example.run`, each serve one artifact. A custom
+domain cannot be a wildcard, so the site domain is a route:
 
-1. Add the zone (`clax.example.com`'s) to Cloudflare.
-2. Route both hostnames to the Worker (`deploy.mjs` does this and the next
-   two steps), as custom domains (Workers > the
-   Worker > Settings > Domains & Routes > Add custom domain, once for
-   `clax.example.com` and once for `content.clax.example.com`), which makes
-   the DNS records and certificates; or with `routes` in `wrangler.jsonc`:
+1. Add both zones to Cloudflare, on the Worker's account.
+2. Route the public host as a custom domain and the site domain's hosts as
+   a route on its zone (`deploy.mjs` does this), with `routes` in
+   `wrangler.jsonc`:
 
    ```jsonc
    "routes": [
      { "pattern": "clax.example.com", "custom_domain": true },
-     { "pattern": "content.clax.example.com", "custom_domain": true }
+     { "pattern": "*.example.run/*", "zone_name": "example.run" }
    ]
    ```
-3. Set `PUBLIC_ORIGIN` and `CONTENT_ORIGIN` to those two `https://`
-   origins and deploy again.
-4. Turn the Worker's `workers.dev` address and preview URLs off
+3. In the site domain's zone, add a proxied DNS record for `*` (type
+   `AAAA`, content `100::`, Proxied): a route answers only for names that
+   resolve to Cloudflare.
+4. A certificate whose hosts include `*.example.run`: Universal SSL's covers
+   a zone's first-level wildcard when the site domain is a zone of its own;
+   otherwise Advanced Certificate Manager or Total TLS. `deploy.mjs`
+   connects to a random site host and reads the certificate's names, which
+   decides.
+5. Set `PUBLIC_ORIGIN` to the public host's `https://` origin and
+   `SITE_DOMAIN` to the site domain, and deploy again.
+6. Turn the Worker's `workers.dev` address and preview URLs off
    (`"workers_dev": false` and `"preview_urls": false` in
    `wrangler.jsonc`): the instance refuses their host (403
    `forbidden_host`), but the Worker would still answer there.
 
-The content host must be one of its own, not a path of the public one: a
-page's scripts run there, so it must share no cookies or storage with the
-app. Its frames are sandboxed (an opaque origin per frame), and the page's
-bridge talks only to the public origin, which its tag names.
+`deploy.mjs` cannot make steps 1, 3 and 4 through wrangler; after a deploy
+it prints each one that a site host's health shows undone, with what it
+found (the zone's name servers, where a site host resolves, the
+certificate's names). The site domain must be a domain of its own, neither
+the public host nor under it nor above it: each artifact's scripts run on
+its host, so it must share no cookies or storage with the app or with the
+other artifacts. Until the site domain is on the Public Suffix List
+(`docs/hosted/public-suffix.md`), sibling site hosts are same-site to
+browsers; the platform's cookies are host-only (`__Host-`) either way.
 
 ### After the deploy
 

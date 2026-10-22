@@ -1,16 +1,20 @@
 // Deploys hosted Clax to the Cloudflare account `wrangler login` signed in
 // to, in one command (README.md, "Deploy to Cloudflare"):
 //
-//   node deploy.mjs --zone example.com            # example.com, content.example.com
-//   node deploy.mjs --public example.com --content content.example.com
+//   node deploy.mjs --zone example.com --site-domain example.run   # example.com, sites at <ID>.example.run
+//   node deploy.mjs --public clax.example.com --site-domain example.run
 //   node deploy.mjs --dry-run ...                 # no account changes; ends at `wrangler deploy --dry-run`
+//   node deploy.mjs --dry-run --config-only ...   # only writes the deploy config: no wrangler, no login, no build
 //   node deploy.mjs --store memory ...            # versions in the RepoDO stand-in, no Artifacts
 //
 // In order, it
 //
 // 1. checks `wrangler whoami` (without a login, a dry run skips every
 //    account call and says so; a deploy stops);
-// 2. takes the two hostnames (asked for on a terminal when not given);
+// 2. takes the public hostname and the site domain (asked for on a
+//    terminal when not given; the site domain, a zone of its own on the
+//    account, serves each artifact at `<artifact ID>.<site domain>`; a later
+//    deploy takes it from the record);
 // 3. creates what is missing, each step idempotent: the R2 bucket, and with
 //    `--store artifacts` the Queue, and the Artifacts namespace (made by
 //    creating and deleting a probe repository, which also proves the
@@ -23,29 +27,34 @@
 //    first version already has them), prints them once and keeps them in
 //    `~/.config/clax/deploy/<public host>.json` (0600; $CLAX_DEPLOY_HOME or $XDG_CONFIG_HOME/clax/deploy when set) for
 //    `smoke-remote.mjs`;
-// 5. writes `target/deploy/wrangler.deploy.jsonc`: `wrangler.jsonc` with `HOSTED=1`, the
-//    two origins, the store, both hosts as custom domains, `workers_dev`
+// 5. writes `target/deploy/wrangler.deploy.jsonc` (or `--out <path>`):
+//    `wrangler.jsonc` with `HOSTED=1`, the public origin, `SITE_DOMAIN`, the
+//    store, the public host as a custom domain and the route
+//    `*.<site domain>/*` on the site domain's zone, `workers_dev`
 //    and preview URLs off, Workers Logs on, and the diagnostics routes off
 //    (`--diag` turns them on, for `smoke-remote.mjs`'s probe, git token and
 //    reconcile steps, with a reminder before and after the deploy to deploy
 //    again without it);
 // 6. builds the web UI and then the Worker (release), unless `--no-build`;
 // 7. runs `wrangler deploy` (with `--dry-run`, `wrangler deploy --dry-run`)
-//    and reports the upload size against the Workers Paid limit; when it
-//    fails only because the triggers (custom domains) were left partially
-//    updated, it runs the same deploy once more, without rebuilding;
-// 8. waits for `/healthz` on the public host to report this upload's build
-//    (`CLAX_BUILD`, a build ID made per deploy from the commit, the time and
-//    a random part; the instance from before the deploy answers 200 too),
-//    naming what it is waiting on (DNS, the certificate, the Worker, the
-//    previous build), and prints the setup URL and the next steps.
+//    and reports the upload size against the Workers Paid limit;
+// 8. waits for `/healthz` on the public host, naming what it is waiting
+//    on (DNS, the certificate, the Worker), then checks
+//    `https://<random ID>.<site domain>/_clax/healthz`; when that fails it
+//    prints the manual steps a wildcard needs (the zone on the account, a
+//    proxied `*` DNS record, a certificate covering `*.<site domain>`), each
+//    with what it found; then the setup URL and the next steps.
 //
-// Options: --public <host>, --content <host>, --zone <zone>, --store
+// `--config-only` stops after step 5 and runs neither wrangler nor a build:
+// it needs no login and changes nothing but the config file.
+//
+// Options: --public <host>, --site-domain <domain>, --zone <zone>, --store
 // artifacts|memory (default artifacts), --name <worker> (default clax),
 // --account <ID> (else CLOUDFLARE_ACCOUNT_ID, else the login's one account),
 // --rotate-secrets, --diag (--no-diag, the default, keeps them off),
-// --no-build, --wait <s> (default 600),
-// --dry-run, --yes (no questions; fails on what it would ask).
+// --no-build, --wait <s> (default 600), --out <path>, --config-only,
+// --dry-run, --yes (no questions; fails on what it would ask). --content is
+// gone: artifacts are served on the site domain's hosts.
 //
 // GitHub sign-in: --github-client-id <ID> (a GitHub OAuth App's) and
 // --owner-github <login> (whoever signs in as that GitHub account is the
@@ -62,13 +71,15 @@
 // to agree again.
 
 import { spawn } from "node:child_process";
-import { randomBytes } from "node:crypto";
+import { randomBytes, randomInt } from "node:crypto";
+import { promises as dns } from "node:dns";
+import { BlockList, isIPv6 } from "node:net";
+import { connect as tlsConnect } from "node:tls";
+import { fileURLToPath } from "node:url";
 import { chmodSync, existsSync, mkdirSync, readFileSync, readdirSync, renameSync, rmdirSync, rmSync, writeFileSync } from "node:fs";
 import { homedir } from "node:os";
 import { createInterface } from "node:readline/promises";
-import { join, resolve } from "node:path";
-import { fileURLToPath } from "node:url";
-import { buildId, healthOf, partialTriggerUpdate } from "./deploy-lib.mjs";
+import { dirname, join, resolve } from "node:path";
 import { HERE, baseConfig, embedsWebUi } from "./harness.mjs";
 
 const WRANGLER = join(HERE, "node_modules/.bin/wrangler");
@@ -99,13 +110,16 @@ const NAMESPACE = "clax";
 // Workers Paid: 10 MB after compression; Free: 3 MB.
 const PAID_LIMIT_KIB = 10 * 1024;
 
-function parseArgs(argv) {
-  const o = { store: "artifacts", name: "clax", wait: 600, diag: false, build: true, dryRun: false, yes: false, rotate: false };
-  const takes = new Set(["--public", "--content", "--zone", "--store", "--name", "--account", "--wait", "--github-client-id", "--owner-github", "--legal", "--terms-url", "--privacy-url", "--legal-version"]);
+export function parseArgs(argv) {
+  const o = { store: "artifacts", name: "clax", wait: 600, diag: false, build: true, dryRun: false, yes: false, rotate: false, configOnly: false };
+  const takes = new Set(["--public", "--site-domain", "--zone", "--store", "--name", "--account", "--wait", "--out", "--github-client-id", "--owner-github", "--legal", "--terms-url", "--privacy-url", "--legal-version"]);
   for (let i = 0; i < argv.length; i++) {
     const a = argv[i];
     const [flag, inline] = a.includes("=") ? a.split(/=(.*)/s) : [a, undefined];
     const value = () => inline ?? argv[++i];
+    if (flag === "--content") {
+      throw new Error("--content is gone: each artifact is served at <artifact ID>.<site domain>; give --site-domain <domain> (a zone of its own, e.g. example.run)");
+    }
     if (takes.has(flag)) {
       const v = value();
       if (v === undefined) throw new Error(`${flag} takes a value`);
@@ -115,6 +129,7 @@ function parseArgs(argv) {
     else if (flag === "--diag") o.diag = true;
     else if (flag === "--no-diag") o.diag = false;
     else if (flag === "--no-build") o.build = false;
+    else if (flag === "--config-only") o.configOnly = true;
     else if (flag === "--rotate-secrets") o.rotate = true;
     else if (flag === "--help" || flag === "-h") o.help = true;
     else throw new Error(`unknown option ${a} (see the top of deploy.mjs)`);
@@ -201,10 +216,23 @@ function jsonIn(text) {
   return JSON.parse(text.slice(Math.min(...at)));
 }
 
-function hostOf(s) {
+export function hostOf(s) {
   const h = s.replace(/^https?:\/\//, "").replace(/\/.*$/, "").toLowerCase();
   if (!/^[a-z0-9]([a-z0-9-]*[a-z0-9])?(\.[a-z0-9]([a-z0-9-]*[a-z0-9])?)+$/.test(h)) throw new Error(`${s} is not a hostname`);
   return h;
+}
+
+/** The site domain `s` for the public host `pub`: a domain whose
+ * first-level names are artifact hosts. It shares no host with the public
+ * one either way, so no cookie or route of one reaches the other (the
+ * Worker refuses the same at start). */
+export function siteDomainOf(s, pub) {
+  if (s.includes("*")) throw new Error(`--site-domain takes the domain itself (e.g. example.run), not a wildcard: ${s}`);
+  const site = hostOf(s);
+  if (site === pub) throw new Error(`the site domain ${site} is the public host: give a domain of its own (e.g. example.run)`);
+  if (site.endsWith(`.${pub}`)) throw new Error(`the site domain ${site} is under the public host ${pub}: give a domain of its own`);
+  if (pub.endsWith(`.${site}`)) throw new Error(`the public host ${pub} is under the site domain ${site}: it would be served as a site; give a domain of its own`);
+  return site;
 }
 
 async function ask(o, question, fallback) {
@@ -227,12 +255,15 @@ async function hostnames(o) {
     zone = hostOf(await ask(o, "The zone (a domain on this Cloudflare account) to serve Clax under, e.g. example.com"));
   }
   const pub = hostOf(o.public ?? (await ask(o, "Public hostname", zone)));
-  const content = hostOf(o.content ?? (await ask(o, "Content hostname (a host of its own)", `content.${zone ?? pub}`)));
-  if (pub === content) throw new Error("the content hostname must differ from the public one");
-  if (content.endsWith(`.${pub}`)) {
-    info(`note: ${content} is under ${pub}; Universal SSL covers one level of subdomain, the custom domain gets its own certificate`);
-  }
-  return { pub, content };
+  // No default: the site domain is a zone of its own, never derived from
+  // the public one.
+  const site = siteDomainOf(
+    o["site-domain"] ??
+      readRecord(pub).site_domain ??
+      (await ask(o, "Site domain (a zone of its own on this account; each artifact is served at <ID>.<site domain>), e.g. example.run")),
+    pub,
+  );
+  return { pub, site };
 }
 
 /** The login and the account to use; `null` when not logged in. */
@@ -350,8 +381,8 @@ function writeKek(pub, kek) {
 }
 
 /** The secret names the Worker has; empty when it does not exist yet. */
-async function secretNames(account) {
-  const r = await wrangler(["secret", "list", "--config", DEPLOY_CONFIG, "--format", "json"], { account });
+async function secretNames(account, configPath) {
+  const r = await wrangler(["secret", "list", "--config", configPath, "--format", "json"], { account });
   if (r.code !== 0) return [];
   try {
     return jsonIn(r.out).map((s) => s.name);
@@ -360,7 +391,7 @@ async function secretNames(account) {
   }
 }
 
-function deployConfig(o, pub, content, account, github, legal, build) {
+function deployConfig(o, pub, site, account, github, legal, out) {
   const c = baseConfig();
   delete c.$schema;
   // The config lives in target/deploy/, so its paths name the crate's files.
@@ -372,16 +403,22 @@ function deployConfig(o, pub, content, account, github, legal, build) {
   if (account) c.account_id = account;
   c.workers_dev = false;
   c.preview_urls = false;
+  // A custom domain cannot be a wildcard: the site domain is a route on
+  // its own zone, with a proxied `*` DNS record and a certificate covering
+  // `*.<site>` (README.md, "DNS for the public host and the site domain").
   c.routes = [
     { pattern: pub, custom_domain: true },
-    { pattern: content, custom_domain: true },
+    { pattern: `*.${site}/*`, zone_name: site },
   ];
   c.observability = { enabled: true, head_sampling_rate: 1 };
+  // The base config's CONTENT_ORIGIN, if it still has one, is the retired
+  // content host's.
+  const { CONTENT_ORIGIN: _retired, ...base } = c.vars ?? {};
   c.vars = {
-    ...c.vars,
+    ...base,
     HOSTED: "1",
     PUBLIC_ORIGIN: `https://${pub}`,
-    CONTENT_ORIGIN: `https://${content}`,
+    SITE_DOMAIN: site,
     REPO_STORE: o.store,
     GIT_SMART_HTTP: o.store === "memory" ? "1" : "0",
     CLAX_TEST_ROUTES: "0",
@@ -402,8 +439,8 @@ function deployConfig(o, pub, content, account, github, legal, build) {
   const header =
     "// Generated by deploy.mjs from wrangler.jsonc; edit that, or deploy.mjs's\n" +
     "// options, and run deploy.mjs again. Not checked in.\n";
-  mkdirSync(join(ROOT, "target/deploy"), { recursive: true });
-  writeFileSync(DEPLOY_CONFIG, header + JSON.stringify(c, null, 2) + "\n");
+  mkdirSync(dirname(out), { recursive: true });
+  writeFileSync(out, header + JSON.stringify(c, null, 2) + "\n");
   return c;
 }
 
@@ -442,10 +479,8 @@ function waitingOn(e) {
   return `${code} ${msg}`.trim();
 }
 
-/** Waits until `/healthz` on `pub` reports build `build`, the one just
- * uploaded: an instance started before the deploy answers 200 too. */
-async function waitHealthy(pub, seconds, build) {
-  const url = `https://${pub}/healthz`;
+/** Polls `url` until `reached(res)` (default: a 2xx) or `seconds` pass. */
+async function waitHealthy(url, seconds, reached = (res) => res.ok) {
   const end = Date.now() + seconds * 1000;
   const started = Date.now();
   let last = "";
@@ -455,12 +490,9 @@ async function waitHealthy(pub, seconds, build) {
     try {
       const res = await fetch(url, { signal: AbortSignal.timeout(10_000), redirect: "manual" });
       const body = await res.text();
-      if (res.ok) {
-        const h = healthOf(body, build);
-        if (h.done) done = body;
-        else state = h.waiting;
-      } else if (res.status === 500 && body.includes("could not start")) throw new Error(`the instance did not start: ${body.slice(0, 400)}`);
-      else state = `HTTP ${res.status}: ${body.slice(0, 160).replace(/\s+/g, " ")}${res.status === 404 || res.status === 522 || res.status === 530 ? " (the custom domain is not routed to the Worker yet)" : ""}`;
+      if (reached(res)) done = `HTTP ${res.status}: ${body}`;
+      else if (res.status === 500 && body.includes("could not start")) throw new Error(`the instance did not start: ${body.slice(0, 400)}`);
+      else state = `HTTP ${res.status}: ${body.slice(0, 160).replace(/\s+/g, " ")}${res.status === 404 || res.status === 522 || res.status === 530 ? " (the host is not routed to the Worker yet)" : ""}`;
     } catch (e) {
       if (`${e.message}`.startsWith("the instance did not start")) throw e;
       state = waitingOn(e);
@@ -478,13 +510,123 @@ async function waitHealthy(pub, seconds, build) {
   }
 }
 
+// Cloudflare's published edge ranges (https://www.cloudflare.com/ips/): a
+// proxied record resolves into them.
+const CLOUDFLARE_V4 = ["173.245.48.0/20", "103.21.244.0/22", "103.22.200.0/22", "103.31.4.0/22", "141.101.64.0/18", "108.162.192.0/18", "190.93.240.0/20", "188.114.96.0/20", "197.234.240.0/22", "198.41.128.0/17", "162.158.0.0/15", "104.16.0.0/13", "104.24.0.0/14", "172.64.0.0/13", "131.0.72.0/22"];
+const CLOUDFLARE_V6 = ["2400:cb00::/32", "2606:4700::/32", "2803:f800::/32", "2405:b500::/32", "2405:8100::/32", "2a06:98c0::/29", "2c0f:f248::/32"];
+const cloudflareIps = new BlockList();
+for (const r of CLOUDFLARE_V4) cloudflareIps.addSubnet(r.split("/")[0], Number(r.split("/")[1]), "ipv4");
+for (const r of CLOUDFLARE_V6) cloudflareIps.addSubnet(r.split("/")[0], Number(r.split("/")[1]), "ipv6");
+
+const ID_ALPHABET = "0123456789abcdefghjkmnpqrstvwxyz";
+/** A random artifact-shaped ID (clax_core::ids::ALPHABET, 12 characters). */
+export function randomSiteId() {
+  return Array.from({ length: 12 }, () => ID_ALPHABET[randomInt(ID_ALPHABET.length)]).join("");
+}
+
+/** Whether a certificate's subjectaltname (`DNS:a, DNS:b`) covers `host`. */
+export function sanCovers(san, host) {
+  return (san ?? "").split(/,\s*/).map((e) => e.replace(/^DNS:/, "").toLowerCase()).some((n) => n === host || (n.startsWith("*.") && host.endsWith(n.slice(1)) && !host.slice(0, -n.length + 1).includes(".")));
+}
+
+/** The site domain's zone: its NS records, and whether they are Cloudflare's. */
+export async function zoneFound(site) {
+  try {
+    const ns = await dns.resolveNs(site);
+    const cf = ns.every((n) => n.toLowerCase().endsWith(".cloudflare.com"));
+    return { ok: cf && ns.length > 0, found: `NS ${ns.join(", ")}${cf ? "" : " (not Cloudflare's)"}` };
+  } catch (e) {
+    return { ok: false, found: `no NS records (${e.code ?? e.message})` };
+  }
+}
+
+/** A name under the wildcard: whether it resolves into Cloudflare's ranges. */
+export async function wildcardFound(host) {
+  try {
+    const all = await dns.lookup(host, { all: true });
+    const off = all.filter((a) => !cloudflareIps.check(a.address, isIPv6(a.address) ? "ipv6" : "ipv4"));
+    const list = all.map((a) => a.address).join(", ");
+    return off.length ? { ok: false, found: `${host} resolves to ${list}, not all Cloudflare's: the record is not proxied` } : { ok: true, found: `${host} resolves to ${list} (Cloudflare's)` };
+  } catch (e) {
+    return { ok: false, found: `${host} does not resolve (${e.code ?? e.message})` };
+  }
+}
+
+/** The certificate the edge presents for `host`: whether its hosts cover it. */
+export function certificateFound(host) {
+  return new Promise((done) => {
+    const socket = tlsConnect({ host, port: 443, servername: host, rejectUnauthorized: false, timeout: 10_000 });
+    const end = (r) => {
+      socket.destroy();
+      done(r);
+    };
+    socket.once("secureConnect", () => {
+      const san = socket.getPeerCertificate()?.subjectaltname ?? "";
+      end(sanCovers(san, host) ? { ok: true, found: `the certificate's hosts are ${san}` } : { ok: false, found: `the certificate's hosts are ${san || "(none)"}, which do not cover ${host}` });
+    });
+    socket.once("timeout", () => end({ ok: false, found: "no TLS answer within 10 s" }));
+    socket.once("error", (e) => end({ ok: false, found: `TLS failed: ${e.code ?? e.message}` }));
+  });
+}
+
+/** Checks a random site host's health; failing, prints each manual step
+ * with what it found. Answers whether the site host is healthy. */
+async function checkSiteHost(site, account, seconds) {
+  const host = `${randomSiteId()}.${site}`;
+  const url = `https://${host}/_clax/healthz`;
+  step(`Checking a site host: ${url}`);
+  // Any answer of the Worker's below 500 shows the zone, the DNS record,
+  // the certificate and the route at work; the random ID names no
+  // artifact, so the Worker may answer it 404. Cloudflare's own answers for
+  // a host it does not route are 52x and 530.
+  if (await waitHealthy(url, seconds, (res) => res.status < 500)) return true;
+  const [zone, wildcard, cert] = await Promise.all([zoneFound(site), wildcardFound(host), certificateFound(host)]);
+  const mark = (r) => (r.ok ? "done" : "TO DO");
+  info(`the site domain's hosts are not served yet. What a wildcard needs, that deploy.mjs cannot do through wrangler:`);
+  info(`1. [${mark(zone)}] the zone ${site} on account ${account ?? "(this one)"} (dashboard > Add a domain), its registrar pointing at Cloudflare's name servers`);
+  info(`   found: ${zone.found}`);
+  info(`2. [${mark(wildcard)}] a proxied DNS record for * in ${site} (dashboard > ${site} > DNS > Records: type AAAA, name *, content 100::, Proxied)`);
+  info(`   found: ${wildcard.found}`);
+  info(`3. [${mark(cert)}] a certificate whose hosts include *.${site} (if Universal SSL's does not: Advanced Certificate Manager or Total TLS)`);
+  info(`   found: ${cert.found}`);
+  info(`then run deploy.mjs again (it checks ${url.replace(host, `<ID>.${site}`)} again)`);
+  return false;
+}
+
+/** Takes the hostnames and writes the deploy config (steps 2 and 5). */
+async function writeDeployConfig(o, account) {
+  step("Hostnames");
+  const { pub, site } = await hostnames(o);
+  info(`public https://${pub}`);
+  info(`sites  https://<artifact ID>.${site}`);
+
+  step("Deploy config");
+  const early = readRecord(pub);
+  const github = {
+    client_id: o["github-client-id"] ?? early.github_client_id,
+    owner: o["owner-github"] ?? early.owner_github,
+  };
+  if (github.client_id) info(`GitHub sign-in: OAuth App ${github.client_id}, owner ${github.owner ? `@${github.owner}` : "(none named)"}`);
+  const legal = legalSettings(o, early);
+  info(`Terms and Privacy: ${legal.legal ? "the bundled documents" : legal.terms_url ? `${legal.terms_url}, ${legal.privacy_url} (version ${legal.legal_version})` : "none"}`);
+  const configPath = o.out ? resolve(o.out) : DEPLOY_CONFIG;
+  const config = deployConfig(o, pub, site, account, github, legal, configPath);
+  info(`wrote ${configPath} (worker ${config.name}, REPO_STORE=${o.store}, SITE_DOMAIN=${site}, diagnostics ${o.diag ? "on" : "off"})`);
+  return { pub, site, github, legal, config, configPath };
+}
+
 async function main() {
   const o = parseArgs(process.argv.slice(2));
-  moveOldRecords();
   if (o.help) {
     console.log(readFileSync(new URL(import.meta.url), "utf8").split("\n").filter((l) => l.startsWith("//")).map((l) => l.slice(3)).join("\n"));
     return;
   }
+  if (o.configOnly) {
+    console.log(`hosted Clax deploy config (--config-only: no wrangler, no login, no build)`);
+    await writeDeployConfig(o, o.account ?? process.env.CLOUDFLARE_ACCOUNT_ID);
+    return;
+  }
+  moveOldRecords();
   if (!existsSync(WRANGLER)) throw new Error(`no wrangler at ${WRANGLER}: run npm install in ${HERE}`);
   const version = (await wrangler(["--version"])).out.trim();
   console.log(`hosted Clax deploy${o.dryRun ? " (dry run: no account changes)" : ""}; wrangler ${version}; store ${o.store}`);
@@ -499,24 +641,7 @@ async function main() {
   }
   const account = who?.account.id;
 
-  step("Hostnames");
-  const { pub, content } = await hostnames(o);
-  info(`public  https://${pub}`);
-  info(`content https://${content}`);
-
-  step("Deploy config");
-  const early = readRecord(pub);
-  const github = {
-    client_id: o["github-client-id"] ?? early.github_client_id,
-    owner: o["owner-github"] ?? early.owner_github,
-  };
-  if (github.client_id) info(`GitHub sign-in: OAuth App ${github.client_id}, owner ${github.owner ? `@${github.owner}` : "(none named)"}`);
-  const legal = legalSettings(o, early);
-  info(`Terms and Privacy: ${legal.legal ? "the bundled documents" : legal.terms_url ? `${legal.terms_url}, ${legal.privacy_url} (version ${legal.legal_version})` : "none"}`);
-  const commit = await sourceCommit();
-  const build = buildId(commit, new Date(), randomBytes(4).toString("hex"));
-  const config = deployConfig(o, pub, content, account, github, legal, build);
-  info(`wrote ${DEPLOY_CONFIG} (worker ${config.name}, REPO_STORE=${o.store}, diagnostics ${o.diag ? "on" : "off"}, build ${build})`);
+  const { pub, site, github, legal, config, configPath } = await writeDeployConfig(o, account);
   if (o.diag) diagReminder(pub);
 
   step("Resources");
@@ -544,7 +669,7 @@ async function main() {
 
   step("Secrets");
   const record = readRecord(pub);
-  const have = who ? await secretNames(account) : [];
+  const have = who ? await secretNames(account, configPath) : [];
   let secrets = null;
   const needed = ["SETUP_SECRET", "CLAX_TOKEN"].filter((n) => o.rotate || !have.includes(n));
   if (!who) info("skipped (no login): wrangler secret list; a deploy generates SETUP_SECRET and CLAX_TOKEN when the Worker has neither");
@@ -604,7 +729,7 @@ async function main() {
   info("the Worker embeds the web UI in web/dist");
 
   step(o.dryRun ? "wrangler deploy --dry-run" : "wrangler deploy");
-  const args = ["deploy", "--config", DEPLOY_CONFIG];
+  const args = ["deploy", "--config", configPath];
   let secretsFile;
   if (o.dryRun) args.push("--dry-run", "--outdir", join(ROOT, "target/deploy/dry-run"));
   if (secrets) {
@@ -636,15 +761,17 @@ async function main() {
 
   if (o.dryRun) {
     step("Dry run done");
-    info(`config: ${DEPLOY_CONFIG}; bundle: ${join(ROOT, "target/deploy/dry-run")}`);
+    info(`config: ${configPath}; bundle: ${join(ROOT, "target/deploy/dry-run")}`);
     info(who ? "deploy with the same options, without --dry-run" : "after `npx wrangler login`, run the same command without --dry-run");
     return;
   }
 
+  // The retired content host's origin is dropped from older records.
+  const { content_origin: _retired, ...kept } = record;
   const next = {
-    ...record,
+    ...kept,
     public_origin: `https://${pub}`,
-    content_origin: `https://${content}`,
+    site_domain: site,
     worker: o.name,
     account,
     store: o.store,
@@ -660,17 +787,15 @@ async function main() {
   };
   writeRecord(pub, next);
 
-  step(`Waiting for https://${pub}/healthz to report build ${build} (custom domains take a few minutes the first time)`);
-  const healthy = await waitHealthy(pub, o.wait, build);
+  step(`Waiting for https://${pub}/healthz (custom domains take a few minutes the first time)`);
+  const healthy = await waitHealthy(`https://${pub}/healthz`, o.wait);
   if (!healthy) {
     info(`not healthy within ${o.wait} s. Check: the zone of ${pub} is on account ${account}; ` +
-      `Workers > ${o.name} > Settings > Domains & Routes lists both hosts; \`npx wrangler tail ${o.name}\``);
+      `Workers > ${o.name} > Settings > Domains & Routes lists ${pub} and *.${site}/*; \`npx wrangler tail ${o.name}\``);
   }
-  const contentRes = await fetch(`https://${content}/`, { signal: AbortSignal.timeout(10_000) }).then(
-    (res) => `HTTP ${res.status}`,
-    (e) => waitingOn(e),
-  );
-  info(`content host https://${content}/: ${contentRes} (404 from the Worker is right: it serves no gallery)`);
+  // The wildcard's DNS record and certificate are the account's, not the
+  // deploy's: a shorter wait, then the steps that are left.
+  await checkSiteHost(site, account, Math.min(o.wait, 120));
 
   step("Done");
   if (secrets) {
@@ -706,7 +831,7 @@ ${bar}
 ${bar}`);
 }
 
-// Run as a program; imported (test-bot.mjs checks kekPlan), it deploys nothing.
+// Run as a program, not when a test imports the helpers.
 if (process.argv[1] && resolve(process.argv[1]) === fileURLToPath(import.meta.url)) {
   main().catch((e) => {
     console.error(`\ndeploy failed: ${e instanceof Error ? e.message : e}`);

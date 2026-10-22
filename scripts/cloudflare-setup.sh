@@ -11,15 +11,18 @@
 #   scripts/cloudflare-setup.sh --smoke --i-know-what-i-am-doing  # deploy, then smoke it
 #   scripts/cloudflare-setup.sh --login                    # only sign in to Cloudflare
 #
-# The first run asks, on a terminal, for the public hostname, the content
-# hostname, where versions live, and (optionally) a GitHub OAuth App's
+# The first run asks, on a terminal, for the public hostname, the site
+# domain (a zone of its own on the account: each artifact is served at
+# <artifact ID>.<site domain>; no default), where versions live, and
+# (optionally) a GitHub OAuth App's
 # Client ID and secret and your GitHub login, and keeps the answers in
 # ~/.config/clax/deploy/setup.env (readable only by you; $CLAX_DEPLOY_HOME or
 # $XDG_CONFIG_HOME/clax/deploy when set).
 # Later runs need no flags. To change a setting, pass it once:
-# --public <host>, --content <host>, --zone <domain> (public <domain>,
-# content content.<domain>), --store artifacts|memory, --github-client-id
-# <ID>, --owner-github <login>; or edit or delete setup.env.
+# --public <host>, --site-domain <domain>, --zone <domain> (the public host
+# only), --store artifacts|memory, --github-client-id <ID>, --owner-github
+# <login>; or edit or delete setup.env. --content is gone: a setup.env's
+# CONTENT_HOST is ignored, and the site domain asked for once.
 #
 # Every other option is passed to crates/clax-worker/deploy.mjs (see the top of
 # that file), e.g. --store memory, --account <ID>, --rotate-secrets, --yes,
@@ -53,11 +56,14 @@ settings="$records/setup.env"
 # Settings an earlier version kept under crates/ move here once.
 [ -f "$worker/.deploy/setup.env" ] && [ ! -f "$settings" ] && { mkdir -p "$records" && chmod 700 "$records" && mv "$worker/.deploy/setup.env" "$settings"; }
 
+say() { printf '\n== %s\n' "$*"; }
+fail() { printf 'cloudflare-setup: %s\n' "$*" >&2; exit 1; }
+
 smoke=0
 dry=1
 login_only=0
 args=()
-set_public="" set_content="" set_store="" set_gh_id="" set_owner=""
+set_public="" set_site="" set_store="" set_gh_id="" set_owner=""
 while [ $# -gt 0 ]; do
   case "$1" in
     --smoke) smoke=1 ;;
@@ -65,33 +71,31 @@ while [ $# -gt 0 ]; do
     --i-know-what-i-am-doing) dry=0 ;;
     --dry-run) ;;
     --public) set_public="$2"; shift ;;
-    --content) set_content="$2"; shift ;;
+    --site-domain) set_site="$2"; shift ;;
+    --content) fail "--content is gone: each artifact is served at <artifact ID>.<site domain>; pass --site-domain <domain> (a zone of its own, e.g. example.run)" ;;
     --store) set_store="$2"; shift ;;
     --github-client-id) set_gh_id="$2"; shift ;;
     --owner-github) set_owner="$2"; shift ;;
-    --zone) set_public="$2"; set_content="content.$2"; shift ;;
-    -h|--help) sed -n '2,45p' "$0"; exit 0 ;;
+    --zone) set_public="$2"; shift ;;
+    -h|--help) sed -n '2,48p' "$0"; exit 0 ;;
     *) args+=("$1") ;;
   esac
   shift
 done
 
-say() { printf '\n== %s\n' "$*"; }
-fail() { printf 'cloudflare-setup: %s\n' "$*" >&2; exit 1; }
-
 # The settings this script keeps between runs, in a git-ignored file only you
 # can read. A flag given on the command line replaces its saved value.
-PUBLIC_HOST="" CONTENT_HOST="" STORE="" GITHUB_CLIENT_ID="" OWNER_GITHUB="" GITHUB_CLIENT_SECRET="${GITHUB_CLIENT_SECRET:-}"
+PUBLIC_HOST="" SITE_DOMAIN="" STORE="" GITHUB_CLIENT_ID="" OWNER_GITHUB="" GITHUB_CLIENT_SECRET="${GITHUB_CLIENT_SECRET:-}"
 if [ -f "$settings" ]; then
   while IFS='=' read -r k v; do
     case "$k" in
-      PUBLIC_HOST|CONTENT_HOST|STORE|GITHUB_CLIENT_ID|OWNER_GITHUB) printf -v "$k" '%s' "$v" ;;
+      PUBLIC_HOST|SITE_DOMAIN|STORE|GITHUB_CLIENT_ID|OWNER_GITHUB) printf -v "$k" '%s' "$v" ;;
       GITHUB_CLIENT_SECRET) [ -n "$GITHUB_CLIENT_SECRET" ] || GITHUB_CLIENT_SECRET="$v" ;;
     esac
   done < "$settings"
 fi
 [ -n "$set_public" ] && PUBLIC_HOST="$set_public"
-[ -n "$set_content" ] && CONTENT_HOST="$set_content"
+[ -n "$set_site" ] && SITE_DOMAIN="$set_site"
 [ -n "$set_store" ] && STORE="$set_store"
 [ -n "$set_gh_id" ] && GITHUB_CLIENT_ID="$set_gh_id"
 [ -n "$set_owner" ] && OWNER_GITHUB="$set_owner"
@@ -111,7 +115,8 @@ ask() {
 if [ "$login_only" = 0 ]; then
   ask PUBLIC_HOST "Public hostname (where people reach Clax)"
   [ -n "$PUBLIC_HOST" ] || fail "no public hostname: run on a terminal, or pass --public <host> once"
-  ask CONTENT_HOST "Content hostname (a host of its own for artifact content)" "content.$PUBLIC_HOST"
+  ask SITE_DOMAIN "Site domain (a zone of its own on the account; each artifact is served at <ID>.<site domain>), e.g. example.run"
+  [ -n "$SITE_DOMAIN" ] || fail "no site domain: run on a terminal, or pass --site-domain <domain> once"
   ask STORE "Where versions live: artifacts (Cloudflare Artifacts) or memory" "artifacts"
   ask GITHUB_CLIENT_ID "GitHub OAuth App Client ID (blank: no GitHub sign-in)"
   if [ -n "$GITHUB_CLIENT_ID" ]; then
@@ -120,16 +125,16 @@ if [ "$login_only" = 0 ]; then
   fi
   mkdir -p "$records" && chmod 700 "$records"
   ( umask 077
-    { echo "PUBLIC_HOST=$PUBLIC_HOST"; echo "CONTENT_HOST=$CONTENT_HOST"; echo "STORE=$STORE"
+    { echo "PUBLIC_HOST=$PUBLIC_HOST"; echo "SITE_DOMAIN=$SITE_DOMAIN"; echo "STORE=$STORE"
       echo "GITHUB_CLIENT_ID=$GITHUB_CLIENT_ID"; echo "OWNER_GITHUB=$OWNER_GITHUB"
       echo "GITHUB_CLIENT_SECRET=$GITHUB_CLIENT_SECRET"; } > "$settings" )
-  args+=(--public "$PUBLIC_HOST" --content "$CONTENT_HOST" --store "${STORE:-artifacts}")
+  args+=(--public "$PUBLIC_HOST" --site-domain "$SITE_DOMAIN" --store "${STORE:-artifacts}")
   if [ -n "$GITHUB_CLIENT_ID" ]; then
     args+=(--github-client-id "$GITHUB_CLIENT_ID")
     [ -n "$OWNER_GITHUB" ] && args+=(--owner-github "$OWNER_GITHUB")
     export GITHUB_CLIENT_SECRET
   fi
-  echo "Settings: https://$PUBLIC_HOST, content https://$CONTENT_HOST, store ${STORE:-artifacts}, GitHub sign-in ${GITHUB_CLIENT_ID:+on (owner @$OWNER_GITHUB)}${GITHUB_CLIENT_ID:-off} (saved in $settings)"
+  echo "Settings: https://$PUBLIC_HOST, sites https://<ID>.$SITE_DOMAIN, store ${STORE:-artifacts}, GitHub sign-in ${GITHUB_CLIENT_ID:+on (owner @$OWNER_GITHUB)}${GITHUB_CLIENT_ID:-off} (saved in $settings)"
 fi
 
 [ "$dry" = 1 ] && [ "$login_only" = 0 ] && args+=("--dry-run")
