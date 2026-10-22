@@ -107,6 +107,7 @@ const PublishPublicArgs = Type.Object({
   mode: opt(str("`update` (default): publish it, or push its new versions to its public copy. `fork`: push onto a fork of the public copy. `new`: publish it again as a new public artifact.")),
   question_id: opt(str("The approval question an earlier call returned, to keep waiting on it.")),
   timeout_s: opt(Type.Integer({ minimum: 0, description: "Seconds to wait for the person's answer (default 600, 50 under Codex)." })),
+  site_access: opt(str("Instead of publishing on a public Clax: `world` opens this artifact's own site (`site_url`) to anyone, without signing in, once the person approves; `private` closes it again at once. Takes no `remote` or `mode`.")),
 }, strict);
 
 const ForkArgs = Type.Object({
@@ -1298,11 +1299,40 @@ class Tools {
   async publishPublic(ctx: ExtensionContext, a: Static<typeof PublishPublicArgs>): Promise<Json> {
     if (a.mode !== undefined && !["update", "new", "fork"].includes(a.mode)) throw invalid("mode is update, new or fork");
     if (a.question_id !== undefined && !ULID_RE.test(a.question_id)) throw invalid(`'${a.question_id}' is not a question ID`);
+    if (a.site_access !== undefined) {
+      if (!["world", "private"].includes(a.site_access)) throw invalid("site_access is world or private");
+      if (a.remote !== undefined || a.mode !== undefined) throw invalid("site_access opens this artifact's own site: it takes no remote or mode");
+    }
     const c = this.clientFor(ctx);
     const { id } = await this.resolveRef(c, a.url_or_id);
     const wait = Math.min(Math.max(a.timeout_s ?? DEFAULT_ASK_WAIT_S, MIN_WAIT_S), MAX_ASK_WAIT_S);
     const now = this.opts.now ?? (() => Date.now());
     const started = now();
+    if (a.site_access !== undefined) {
+      // PATCH /api/artifacts/<id> {site_access}: the daemon asks the person
+      // before opening to the world, as for a push.
+      const req: Record<string, unknown> = { site_access: a.site_access, question_id: a.question_id ?? null };
+      for (;;) {
+        const res = await this.call(() => c.patch(id, req));
+        if (res.status !== "approval_pending") {
+          const access = res.artifact?.site_access ?? null;
+          return { status: access === "world" ? "open" : "private", site_access: access, site_url: res.site_url ?? null };
+        }
+        const qid = String(res.question_id ?? "");
+        const pending = {
+          status: "approval_pending",
+          question_id: qid,
+          url: res.inbox_url ?? null,
+          call_again: true,
+          note: "The person has not answered yet: call publish_public again with this site_access and question_id to keep waiting.",
+        };
+        const waitS = Math.max(0, wait - Math.floor((now() - started) / 1000));
+        if (waitS === 0) return pending;
+        const q = await this.call(() => c.askWait(qid, waitS));
+        if (q.question?.status === "open") return pending;
+        req.question_id = qid;
+      }
+    }
     const body: Record<string, unknown> = { remote: a.remote ?? null, mode: a.mode ?? null, question_id: a.question_id ?? null };
     for (;;) {
       const res = await this.call(() => c.push(id, body));

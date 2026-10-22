@@ -980,6 +980,16 @@ async fn the_runtime_contract_type_definitions_are_served_as_text() {
     assert_eq!(res.headers()["content-type"], "text/plain; charset=utf-8");
     let text = res.text().await.unwrap();
     assert_eq!(text, include_str!("../../../web/contract/0.2.61/db.d.ts"));
+    // Clax's own contract version, with a level for a world site's visitors.
+    let res = ts.get("/_clax/contract/clax-1/db.d.ts").await;
+    assert_eq!(res.status(), 200);
+    let text = res.text().await.unwrap();
+    assert_eq!(text, include_str!("../../../web/contract/clax-1/db.d.ts"));
+    assert!(text.contains("PUBLIC.") && !text.contains("organization-internal"));
+    assert_eq!(
+        ts.get("/_clax/contract/clax-1/nope.d.ts").await.status(),
+        404
+    );
     // Clax's additions sit beside the unchanged files.
     let res = ts.get("/_clax/contract/clax-extensions.d.ts").await;
     assert_eq!(res.status(), 200);

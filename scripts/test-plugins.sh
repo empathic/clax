@@ -451,7 +451,7 @@ done
 same_section "Where to ask" "${skill_copies[@]}"
 # The runtime capabilities section is the same in the four skills and in
 # docs/contract.md, and it points at the contract files the daemon serves
-# (built in from web/contract/0.2.61/, which must hold all of them).
+# (built in from web/contract/clax-1/, which must hold all of them).
 for f in "${skill_copies[@]}" docs/contract.md; do
     if [ -n "$(section "$f" "Runtime capabilities")" ]; then pass "$f has a Runtime capabilities section"; else fail "$f has no '## Runtime capabilities' section"; fi
 done
@@ -467,9 +467,9 @@ if echo "$rc" | grep '^- `sample`' >/dev/null; then pass "the Runtime capabiliti
 else fail "the Runtime capabilities section has no '- \`sample\`' bullet"; fi
 if grep -qF 'Rooms and `sample()` (phase 5)' "${skill_copies[0]}"; then fail "${skill_copies[0]} still says rooms and sample() are not available"
 else pass "${skill_copies[0]} no longer says rooms and sample() are not available"; fi
-if section docs/contract.md "Runtime capabilities" | grep '/_clax/contract/0.2.61/<name>.d.ts' >/dev/null; then pass "the Runtime capabilities section points at /_clax/contract/0.2.61/"; else fail "the Runtime capabilities section does not point at the daemon's /_clax/contract/0.2.61/<name>.d.ts"; fi
+if section docs/contract.md "Runtime capabilities" | grep '/_clax/contract/clax-1/<name>.d.ts' >/dev/null; then pass "the Runtime capabilities section points at /_clax/contract/clax-1/"; else fail "the Runtime capabilities section does not point at the daemon's /_clax/contract/clax-1/<name>.d.ts"; fi
 for name in claude permissions artifact self assets comments db downloads user files mcp room sample; do
-    if [ -f "web/contract/0.2.61/$name.d.ts" ]; then pass "web/contract/0.2.61/$name.d.ts exists"; else fail "web/contract/0.2.61/$name.d.ts is missing"; fi
+    if [ -f "web/contract/clax-1/$name.d.ts" ]; then pass "web/contract/clax-1/$name.d.ts exists"; else fail "web/contract/clax-1/$name.d.ts is missing"; fi
 done
 for f in "${skill_copies[@]}"; do
     if [ -n "$(section "$f" "Data (db)")" ]; then pass "$f has a Data (db) section"; else fail "$f has no '## Data (db)' section"; fi

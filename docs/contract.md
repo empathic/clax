@@ -605,6 +605,16 @@ Errors: `invalid_id`, `not_found`, `unknown_version`, `not_permitted`.
 | `mode` | string | no | `update` (default): publish it, or push its new versions to its public copy; `fork`: push onto a fork of the public copy; `new`: publish it again as a new public artifact. |
 | `question_id` | string | no | The approval question an earlier call returned (`call_again`), to keep waiting on it. |
 | `timeout_s` | integer | no | Seconds to wait for the person's answer, 1 to 600 (default 600); under Codex 1 to 50 (default 50). |
+| `site_access` | string | no | Instead of publishing on a public Clax: `world` opens the artifact's own site to anyone once the person approves, `private` closes it at once. Takes no `remote` or `mode`. |
+
+With `site_access`, the tool sends `PATCH /api/artifacts/<id>
+{site_access, question_id}` (see "Security model"): opening asks the
+person `Open to the world` or `Keep it private` and waits as below, and
+the result is `{status: "open" | "private", site_access, site_url}`, or
+`{status: "approval_pending", question_id, url, call_again: true, note}`
+(call again with the same `site_access` and `question_id`). Errors:
+`not_approved`, `approval_used`, `admin_only`, `no_session`,
+`invalid_args`.
 
 Publishes an artifact on a public Clax this Clax is signed in to (see
 "Publishing to a public Clax"). Making content public is the person's
@@ -2456,7 +2466,8 @@ name or a person ID: the shell gives it opaque keys and colours
 
 A page that declares `capabilities: {comments: {}}` (or `{"composer_only":
 true}`, optionally with `"customAnchors": true`) gets `claude.use("comments")`
-per the 0.2.61 `comments.d.ts`, in every view: Clax has no public links.
+per the clax-1 `comments.d.ts`, in every view of the artifact's page: a
+visitor of its site opened to the world is offered no comments.
 `openComposer` and `customAnchors().compose` open the shell's composer on the
 page's element, range, or anchor; the viewer types and posts. The write
 verbs (`create`, `reply`, `sendToClaude`, `resolve`, `delete`) need the full
@@ -6161,9 +6172,10 @@ Minimal skeleton:
 ## Runtime capabilities
 
 A page reaches runtime capabilities with `await window.claude.use(name)`,
-exactly as on claude.ai. The type definitions of contract 0.2.61 are the
-contract: before writing a page, fetch the one you use from your daemon,
-`<daemon_url>/_clax/contract/0.2.61/<name>.d.ts`, where `daemon_url`
+exactly as on claude.ai. The type definitions of contract clax-1 (claude.ai's
+0.2.61, with what each artifact's own site changes) are the contract:
+before writing a page, fetch the one you use from your daemon,
+`<daemon_url>/_clax/contract/clax-1/<name>.d.ts`, where `daemon_url`
 comes from the `status` tool (names: `claude`, `permissions`, `artifact`,
 `db`, `downloads`, `user`, `comments`, `assets`, `room`, `sample`).
 
@@ -6184,7 +6196,11 @@ capability first and light features up when it resolves.
   private to the viewer whose `user.id()` is `<id>`. Levels: agents and
   scripts with the token are `owner`, the person's browser is `admin`, a
   viewer on another machine who entered a name is `interact`, one who did
-  not is `view`.
+  not is `view`. On a site open to the world (`publish_public` with
+  `site_access: "world"`, once the person approves), a visitor who is not
+  signed in is `public`, below `view`, with a `data/users/<id>/` of their
+  browser's: they read and write only where a rule names `public`, as
+  `{"path": "data/guestbook", "read": "public", "write": "public"}`.
 - `downloads`: `save({filename, data})` saves once the viewer accepts.
 - `user`: `isOwner()`, `canEdit()`, `can(name)`, and `me()` need no
   declaration; `id()` and `profiles(ids)` need `{"user": {}}`; names and
@@ -6196,10 +6212,8 @@ capability first and light features up when it resolves.
   `{}` (not `{"composer_only": true}`) the page may also `create`, `reply`,
   `resolve`, `delete`, and `sendToClaude` as the viewer after one consent;
   `{"customAnchors": true}` lets a canvas-like page place pins itself.
-- `assets`: `upload`, `list`, `delete`, in the person's browser only. Use
-  an asset's `url` as given; to show an asset whose ID a page stored,
-  `claude.assetUrl(id)` (any viewer), never `"/_blob/" + id`: assets are
-  served per app, and a page loads only its own.
+- `assets`: `upload`, `list`, `delete`, in the person's browser only. An
+  asset is served at `/_clax/blob/<id>` on the artifact's own site.
 - `room`: `emit`, `on`, `presence`, `peers`, `onPeers`, `join`, `connected`,
   and `onConnection` reach every view of the artifact that is open now;
   nothing is stored. Presence works for every viewer. A topic declared
@@ -6252,15 +6266,16 @@ field, composer, dialogs) in the last 5.5 seconds: inside that time they
 reject `shell_input_recent` with nothing written, so show a message and let
 the viewer click again. That code is Clax's own: it and Clax's other
 additions are declared in `<daemon_url>/_clax/contract/clax-extensions.d.ts`,
-beside the unchanged 0.2.61 files. Call these only from a click or key press in the page,
+beside the contract's files. Call these only from a click or key press in the page,
 never on load or a timer.
 
 ### Differences from claude.ai
 
 What a page written for claude.ai meets in Clax, beyond the gesture rules:
 
-- Everywhere: nobody is a guest, and there are no organizations or public
-  links.
+- Everywhere: nobody is a guest and there are no organizations; an
+  artifact's site opened to the world is its only public view, and its
+  comments stay with those it is shared with.
 - `permissions`: allowing is remembered in the viewer's browser for the
   artifact, across reloads and versions. "Don't allow" lasts until the Clax
   tab is reloaded or shows another version; there is no standing refusal.
@@ -8630,6 +8645,7 @@ it starts, the runs a previous process left. A build without the
   everything of Clax's is under `/_clax/`: `/_clax/v/<n>/...` (version
   `n`), `/_clax/draft/<agent handle>/<token>/...` (a draft),
   `/_clax/blob/<asset ID>` (an asset of that artifact only),
+  `/_clax/api/...` (the page runtime's backend, below),
   `/_clax/healthz` (on any well-formed site host, saying nothing of the
   artifact) and the UI's files; any other `/_clax/` path is a 404. An
   artifact made before sites (`legacy_paths`) also keeps
@@ -8649,39 +8665,72 @@ it starts, the runs a previous process left. A build without the
   open to the world is read by anyone. Any other needs the site cookie
   (`clax_site`, on `https` `__Host-clax_site`; host-only, `HttpOnly`,
   `Path=/`, for the browser's session), naming a site session of that
-  artifact whose holder may read it now: removing a share or the person,
-  turning a link off, deleting the artifact or signing out refuses the
-  very next request. Without one, a navigation (a browser's
-  `Sec-Fetch-Mode: navigate` of a document or frame, or a `GET` that
-  accepts `text/html` and names no subresource) is sent (302) to the main
-  origin's `/site-signin?host=<site host>&next=<path>&state=<state>`, and
-  anything else answers 401 `site_session_required`. Such a site's
-  responses are private to the browser: `Cache-Control` `private,
-  no-cache` (the current version), `private, max-age=31536000, immutable`
-  (`/_clax/v/<n>/…` and assets), and never `Access-Control-Allow-Origin`.
-- A site session is made from a one-use code good for 60 s, bound to a
-  **state** the browser holds in the site host's state cookie
-  (`clax_site_state`, on `https` `__Host-clax_site_state`, so no sibling
-  site can set it; host-only, `Path=/`, `HttpOnly`, ten minutes, a fresh value per
-  handshake): `/_clax/session?code=<code>&next=<path>` redeems the code
-  only beside that cookie, so a code minted for one browser signs no other
-  in, and clears the state. Top-level, the site's redirect to
-  `/site-signin` sets the state (`SameSite=Lax`) and names it; framed, the
-  site's `/_clax/session/start?next=<path>` sets it partitioned and posts
-  `{"type": "clax:site-state", "state", "next"}` to the public origin alone
-  (its page runs only its own script and only the public origin may frame
-  it), and the shell asks `POST /api/artifacts/<id>/site-code` (`{"next":
-  "<path>", "partitioned": true, "state": "<state>"}`, the owner's
-  credential on a local daemon, the browser's session on a hosted Clax; 400
-  without a state, 404 for who may not read it) for `{"src": "<site
-  origin>/_clax/session?code=<code>&next=<path>"}`. `/site-signin` (400
-  without a state) signs the browser in when it must, sends one without
-  the right to the artifact's page, and else to the same address; a frame
-  sent there gets a partitioned session, a hosted Clax's fallback only (a
-  local daemon's owner cookie is not sent there). The cookie is
-  `SameSite=None; Secure; Partitioned` for a frame, else `SameSite=Lax`;
-  `next` is a path on that host of at most 2048 bytes (anything else is
-  `/`). A session lasts an hour from its last use.
+  artifact whose holder may read it now: removing a share, turning a link
+  off or signing out refuses the very next request. Without one, a
+  navigation (top-level, or a frame's) is sent (302) to the main origin's
+  `/site-signin?host=<site host>&next=<path>`, and anything else answers
+  401 `site_session_required`. A session is made from a one-use code good
+  for 60 s: the shell asks `POST /api/artifacts/<id>/site-code` (`{"next":
+  "<path>", "partitioned": true}`, the owner's credential on a local
+  daemon, the browser's session on a hosted Clax, 404 for who may not read
+  it) for `{"src": "<site origin>/_clax/session?code=<code>&next=<path>"}`;
+  `/site-signin` signs the browser in when it must, sends one without the
+  right to the artifact's page, and else to the same address (partitioned
+  for a frame, `Sec-Fetch-Dest: iframe`). The site's
+  `/_clax/session` sets the cookie (`SameSite=None; Secure; Partitioned`
+  for the shell's frame, else `SameSite=Lax`) and redirects to `next`, a
+  path on that host (anything else is `/`). A session lasts an hour from
+  its last use.
+- A site is private until whoever administers its artifact (the owner, by
+  hand or in their browser, and the page's maker) sends `PATCH
+  /api/artifacts/<id> {"site_access": "world"}` (`"private"` closes it;
+  anything else is 400 `invalid_argument`; anyone else 403 `admin_only`).
+  The answer adds `artifact.site_access` and `site_url`, the site's
+  address; a hosted Clax's sharing route says both too. Their browser may
+  send it alone without the token. An agent's opening waits on its
+  person: its first call answers 202 `{"status": "approval_pending",
+  "question_id", "inbox_url"}` and asks them a question the daemon writes
+  (`Open to the world` or `Keep it private`); its call again with
+  `question_id` opens the site once they chose to in Clax's browser or the
+  extension, else 403 `not_approved`; an approval is used once (409
+  `approval_used`), and an agent without a session gets 400 `no_session`
+  (`publish_public` with `site_access` makes these calls). Closing never
+  asks, and either change holds from the next request: a page, an asset
+  or an API call of a visitor is refused right after.
+- On a site open to the world, a request with no site session of a holder
+  who may read it is a visitor's: the first response without the visitor
+  cookie sets it (`clax_visitor`, on `https` `__Host-clax_visitor`;
+  host-only, `HttpOnly`, `Path=/`, `SameSite=Lax`, a year). It holds a
+  secret; the visitor's ID, `v_` and 22 hex characters, is derived from it
+  and the artifact, so it is stable per browser and site, and no ID a page
+  shows can be replayed as a cookie. A site cookie of a holder still makes
+  its request theirs, so the shell's "Open site" (through `/site-signin`)
+  acts as the person there.
+- `/_clax/api/` on a site host is the page runtime's backend for that
+  artifact alone, the main origin's routes with no `<id>` and the same
+  bodies: `docs/<path>` (`GET`, `PUT`, `PATCH`, `DELETE`), `docs` (the
+  query), `docs:batch`, `docs:acquire`, `docs:str_replace`, `assets`
+  (`POST` an upload, `GET` the list), `room` (the WebSocket), `artifact`
+  (`GET`) and `whoami` (`GET`); any other path is 404, comments and
+  threads among them. No field of a path, query or body names another
+  artifact. The caller is who the site's access found, and no one else: a
+  request carrying `Authorization` is 401, its cookies and `x-clax-*`
+  headers are dropped, and every write is a page's. The owner is `admin`
+  (as the owner's shell, the token's routes included), a person by their
+  rights as in their browser (`interact` with a name, else `view`), and a
+  guest, a link viewer and a visitor `public`, below `view`: they read and
+  write only where a `db` rule names `public`, the default rules granting
+  them nothing. A visitor's `artifact` is `{"artifact": {"id", "title",
+  "current_version"}}` alone. `whoami` is `{"kind": "owner" | "person" |
+  "guest" | "link" | "visitor", "id"?, "name"?, "level", "can_edit"}`:
+  `id` the viewer's public ID or the visitor's ID, `level` the `db` level,
+  `can_edit` whether they may publish versions. A request whose `Origin`
+  is not the site's own is 403 `forbidden_origin`, and so is a write
+  without one (or a read without one that `Sec-Fetch-Site` says another
+  site made); no answer carries `Access-Control-Allow-Origin`. On a hosted
+  Clax a visitor's writes are limited per client address (60, one back a
+  second) and per artifact (600, ten back a second): 429 `rate_limited`
+  with `retry_after_s`.
 - The viewer probes `http://<id>.localhost:<port>/_clax/healthz` (1 s
   timeout, cached per browser session) when the gallery is opened on
   `localhost` or `127.0.0.1`. When it answers, the content iframe loads
@@ -8872,7 +8921,11 @@ it starts, the runs a previous process left. A build without the
   stored.
 - The runtime contract's type definitions,
   `/_clax/contract/0.2.61/<name>.d.ts` (built into the daemon from
-  `web/contract/0.2.61/`, claude.ai's files unchanged), and Clax's additions
+  `web/contract/0.2.61/`, claude.ai's files unchanged), Clax's own
+  version of them, `/_clax/contract/clax-1/<name>.d.ts` (from
+  `web/contract/clax-1/`: 0.2.61's, with the `db` level `public`, assets
+  at `/_clax/blob/<id>`, and artifacts declaring `db`, `assets` or
+  `comments` open to the world), and Clax's additions
   to them, `/_clax/contract/clax-extensions.d.ts` (from
   `web/contract/clax-extensions.d.ts`), are served as
   `text/plain; charset=utf-8` with `Cache-Control: no-cache`; any other name

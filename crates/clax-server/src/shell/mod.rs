@@ -299,11 +299,76 @@ const CONTRACT_FILES: &[(&str, &str)] = &[
     ),
 ];
 
+/// Where Clax's own contract version is served under `/_clax/`.
+const CLAX_CONTRACT_PREFIX: &str = "contract/clax-1/";
+
+/// The type definitions of Clax's contract `clax-1` (`web/contract/clax-1/`):
+/// 0.2.61's, with what each artifact's own site changes (a `db` level for
+/// visitors of a site open to the world, `public`; assets at
+/// `/_clax/blob/<id>`; an artifact that declares `db`, `assets` or
+/// `comments` may be opened to the world), served at
+/// `/_clax/contract/clax-1/<name>.d.ts`.
+const CLAX_CONTRACT_FILES: &[(&str, &str)] = &[
+    (
+        "artifact.d.ts",
+        include_str!("../../../../web/contract/clax-1/artifact.d.ts"),
+    ),
+    (
+        "assets.d.ts",
+        include_str!("../../../../web/contract/clax-1/assets.d.ts"),
+    ),
+    (
+        "claude.d.ts",
+        include_str!("../../../../web/contract/clax-1/claude.d.ts"),
+    ),
+    (
+        "comments.d.ts",
+        include_str!("../../../../web/contract/clax-1/comments.d.ts"),
+    ),
+    (
+        "db.d.ts",
+        include_str!("../../../../web/contract/clax-1/db.d.ts"),
+    ),
+    (
+        "downloads.d.ts",
+        include_str!("../../../../web/contract/clax-1/downloads.d.ts"),
+    ),
+    (
+        "files.d.ts",
+        include_str!("../../../../web/contract/clax-1/files.d.ts"),
+    ),
+    (
+        "mcp.d.ts",
+        include_str!("../../../../web/contract/clax-1/mcp.d.ts"),
+    ),
+    (
+        "permissions.d.ts",
+        include_str!("../../../../web/contract/clax-1/permissions.d.ts"),
+    ),
+    (
+        "room.d.ts",
+        include_str!("../../../../web/contract/clax-1/room.d.ts"),
+    ),
+    (
+        "sample.d.ts",
+        include_str!("../../../../web/contract/clax-1/sample.d.ts"),
+    ),
+    (
+        "self.d.ts",
+        include_str!("../../../../web/contract/clax-1/self.d.ts"),
+    ),
+    (
+        "user.d.ts",
+        include_str!("../../../../web/contract/clax-1/user.d.ts"),
+    ),
+];
+
 /// `/_clax/<path>`. The bridge is immutable at its versioned URL and
 /// revalidated at the bare one (both carry an `ETag`); the shell's bundles
 /// and the bridge's lazy parts (`bridge/…`) have content-hashed names.
 /// `contract/0.2.61/<name>.d.ts` is one of the runtime contract's type
-/// definitions, and `contract/clax-extensions.d.ts` Clax's additions to
+/// definitions, `contract/clax-1/<name>.d.ts` one of Clax's contract
+/// version's, and `contract/clax-extensions.d.ts` Clax's additions to
 /// them, as plain text.
 pub async fn static_file(
     axum::extract::State(s): axum::extract::State<clax_http::state::AppState>,
@@ -315,8 +380,15 @@ pub async fn static_file(
     let path = path(p)?;
     let contract = if path == EXTENSIONS_PATH {
         Some(EXTENSIONS)
-    } else if let Some(name) = path.strip_prefix(CONTRACT_PREFIX) {
-        let (_, text) = CONTRACT_FILES
+    } else if let Some((name, files)) = path
+        .strip_prefix(CONTRACT_PREFIX)
+        .map(|n| (n, CONTRACT_FILES))
+        .or_else(|| {
+            path.strip_prefix(CLAX_CONTRACT_PREFIX)
+                .map(|n| (n, CLAX_CONTRACT_FILES))
+        })
+    {
+        let (_, text) = files
             .iter()
             .find(|(n, _)| *n == name)
             .ok_or_else(ApiError::not_found)?;
@@ -481,14 +553,20 @@ mod tests {
 
     #[test]
     fn every_contract_file_is_built_in() {
-        let dir = concat!(env!("CARGO_MANIFEST_DIR"), "/../../web/contract/0.2.61");
-        let mut on_disk: Vec<String> = std::fs::read_dir(dir)
-            .unwrap()
-            .map(|e| e.unwrap().file_name().into_string().unwrap())
-            .collect();
-        on_disk.sort();
-        let built: Vec<String> = CONTRACT_FILES.iter().map(|(n, _)| n.to_string()).collect();
-        assert_eq!(built, on_disk);
+        for (version, files) in [("0.2.61", CONTRACT_FILES), ("clax-1", CLAX_CONTRACT_FILES)] {
+            let dir = format!(
+                "{}/../../web/contract/{version}",
+                env!("CARGO_MANIFEST_DIR")
+            );
+            let mut on_disk: Vec<String> = std::fs::read_dir(dir)
+                .unwrap()
+                .map(|e| e.unwrap().file_name().into_string().unwrap())
+                .filter(|n| n.ends_with(".d.ts"))
+                .collect();
+            on_disk.sort();
+            let built: Vec<String> = files.iter().map(|(n, _)| n.to_string()).collect();
+            assert_eq!(built, on_disk, "{version}");
+        }
     }
 
     /// SHA-256 of claude.ai's 0.2.61 files as shipped; Clax's additions go
