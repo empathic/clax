@@ -22,7 +22,7 @@ const read = (p: string) => readFileSync(join(__dirname, p), "utf8");
 
 /** Capability handlers that write on a page's behalf, and the helpers they
  * write through (`caps/comments.ts` writes only through `threads.ts`). */
-const PAGE_WRITERS = ["caps/artifact.ts", "caps/assets.ts", "caps/db.ts", "threads.ts"];
+const PAGE_WRITERS = ["caps/artifact.ts", "threads.ts"];
 /** Capability handlers that send a write method and why they need no marker. */
 const NOT_PAGE_CONTENT: Record<string, string> = {
   "caps/sample.ts": "a model request: it writes no content of the page's into the store",

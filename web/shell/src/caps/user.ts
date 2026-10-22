@@ -1,17 +1,19 @@
-// user.d.ts in the shell. Identity is the viewer's public ID (the cookie's
-// viewer, never the cookie); names come from the viewers table and need scope
-// "profile". Clax has no emails and no guests: `email` is always null and
-// `guest` always false. Every read resolves; none rejects.
-import type { Declared } from "./availability";
+// user.d.ts's lookups of other people in the shell: `profiles` and `search`,
+// which a framed page's bridge asks here because its site serves no
+// viewers' names. Everything about the viewer themselves (`me`, `isOwner`,
+// `canEdit`, `can`, …) the bridge answers from its site's `whoami`
+// (web/bridge/src/caps/origin.ts). Identity is the viewer's public ID (the
+// cookie's viewer, never the cookie); names come from the viewers table and
+// need scope "profile". `email` is always null and `guest` always false.
+// Every read resolves; none rejects. A lazy chunk (registry.ts), loaded on
+// the page's first lookup.
+import { avatarFor, colorFor } from "../../../bridge/src/caps/avatar";
 import { CapError } from "./errors";
-import type { CapEnv, HandlerFactory, ViewerInfo } from "./host";
+import type { HandlerFactory, ViewerInfo } from "./host";
 
 type Profile = { id: string; name: string; avatarUrl: string; color: string; email: null; isMe: boolean; guest: false };
 type ApiViewer = { id: string; display_name: string | null };
 
-const PALETTE = ["#2b5fd9", "#c2410c", "#15803d", "#7c3aed", "#be185d", "#0e7490", "#a16207", "#4d7c0f"];
-const NEUTRAL = "#6b7280";
-const RANK: Record<string, number> = { view: 0, interact: 1, admin: 2, owner: 3 };
 const PUBLIC_ID = /^u_[0-9a-f]{22}$/;
 
 /** Most public IDs one lookup request carries (the daemon's `MAX_LOOKUP_IDS`). */
@@ -25,42 +27,8 @@ export const MAX_HITS = 8;
 /** How long `search()` waits for a newer call before asking the daemon. */
 export const SEARCH_DEBOUNCE_MS = 150;
 
-/** A stable color per ID, readable under white initials in both themes; neutral without an ID. */
-export function colorFor(id: string | null): string {
-  if (!id) return NEUTRAL;
-  let h = 0;
-  for (const c of id) h = (Math.imul(h, 31) + c.charCodeAt(0)) >>> 0;
-  return PALETTE[h % PALETTE.length];
-}
-
-/** An initials avatar on `color` as a data: URL (`?` when there is no name). */
-export function avatarFor(name: string, color: string): string {
-  const letters = name.trim().split(/\s+/).filter(Boolean).slice(0, 2).map(w => [...w][0].toUpperCase()).join("") || "?";
-  const text = letters.replace(/[&<>"']/g, c => `&#${c.charCodeAt(0)};`);
-  const fill = /^#[0-9a-f]{6}$/i.test(color) ? color : NEUTRAL;
-  const svg = `<svg xmlns="http://www.w3.org/2000/svg" width="64" height="64" viewBox="0 0 64 64"><circle cx="32" cy="32" r="32" fill="${fill}"/><text x="32" y="41" font-family="system-ui,sans-serif" font-size="26" font-weight="600" text-anchor="middle" fill="#ffffff">${text}</text></svg>`;
-  return `data:image/svg+xml;utf8,${encodeURIComponent(svg)}`;
-}
-
-/** The write level of shared documents at the root: the declared root rule's, else `interact`. */
-export function rootWrite(declared: Declared): string {
-  const rules = (declared.db as { rules?: unknown } | undefined)?.rules;
-  if (Array.isArray(rules)) {
-    const root = rules.find(r => r && typeof r === "object" && (r as { path?: unknown }).path === "") as { write?: unknown } | undefined;
-    if (typeof root?.write === "string" && root.write in RANK) return root.write;
-  }
-  return "interact";
-}
-
-/** The daemon's level for this view: the owner shell is `admin`, a named viewer `interact`, else `view`. */
-function levelOf(env: CapEnv, name: string | null): string {
-  if (env.token) return "admin";
-  return name ? "interact" : "view";
-}
-
 export const userHandler: HandlerFactory = env => {
-  // Without the declaration only the universal members answer (user.d.ts):
-  // no id, no names, no lookups.
+  // Without the declaration (user.d.ts): no names, no lookups.
   const declared = Object.prototype.hasOwnProperty.call(env.declared, "user");
   const scopes = (env.declared.user as { scopes?: unknown } | undefined)?.scopes;
   const profileScope = declared && Array.isArray(scopes) && scopes.includes("profile");
@@ -72,9 +40,6 @@ export const userHandler: HandlerFactory = env => {
   const inflight = new Set<AbortController>();
   let disposed = false;
   let warned = false;
-  /** The level this frame document was given at its first use of it (user.d.ts:
-   * fixed for the life of a view); a new document (`reset`) takes a new one. */
-  let level: Promise<string> | null = null;
   /** The newest `search()`'s number; an older call's own result is dropped. */
   let searchGen = 0;
   /** The promise every call since the last settled search returns: the newest
@@ -95,14 +60,6 @@ export const userHandler: HandlerFactory = env => {
     const color = colorFor(id);
     return { id, name: shown, avatarUrl: avatarFor(shown, color), color, email: null, isMe: id === meId, guest: false };
   };
-
-  async function me() {
-    const v = await viewer();
-    const id = declared && v ? v.publicId : null;
-    const name = profileScope && id ? (v?.name ?? "") : "";
-    const color = colorFor(id);
-    return { id, name, avatarUrl: avatarFor(name, color), color, email: null, isOwner: owner, canEdit: owner };
-  }
 
   async function get(url: string, headers: Record<string, string> = {}, ac = new AbortController()): Promise<ApiViewer[] | null> {
     if (disposed || ac.signal.aborted) return null;
@@ -162,7 +119,6 @@ export const userHandler: HandlerFactory = env => {
     return Object.fromEntries(ids.map(id => [id, profile(id, nameOf(id), meId)]));
   }
 
-  const levelNow = (): Promise<string> => (level ??= viewer().then(v => levelOf(env, v?.name ?? null)));
 
   /** Waits [`SEARCH_DEBOUNCE_MS`]; false when disposed meanwhile. */
   const pause = () => new Promise<boolean>(resolve => {
@@ -215,27 +171,6 @@ export const userHandler: HandlerFactory = env => {
   return {
     async call(method, args) {
       switch (method) {
-        case "isOwner":
-        case "canEdit":
-          return owner;
-        case "can": {
-          const what = args[0];
-          if (what === "data.write") return RANK[await levelNow()] >= RANK[rootWrite(env.declared)];
-          if (what === "files.write" || what === "assets.write") return owner;
-          return false;
-        }
-        case "me":
-          return me();
-        case "id":
-          return (await me()).id;
-        case "name":
-          return (await me()).name;
-        case "avatarUrl": {
-          const m = await me();
-          return profileScope && m.id ? m.avatarUrl : null;
-        }
-        case "email":
-          return null;
         case "profiles":
           return profiles(args[0]);
         case "search":
@@ -245,10 +180,9 @@ export const userHandler: HandlerFactory = env => {
       }
     },
     reset() {
-      // Resolved names and the level live for the page's lifetime (user.d.ts).
+      // Resolved names live for the page's lifetime (user.d.ts).
       cache = new Map();
       pending = new Map();
-      level = null;
       // The old document's searches end: nothing of theirs reaches the new one.
       docEpoch++;
       searchGen++;

@@ -1,10 +1,10 @@
-// Page-side members of each capability; the rest are plain shell calls.
+// Page-side members of each capability the framing shell serves; the rest
+// are plain shell calls. (`db`, `assets`, `user` and `room` are the page's
+// own origin's: origin.ts.)
 import type { CapabilityName, Local } from "../capabilities";
 import type { Rpc } from "../rpc";
 import { artifactLocals } from "./artifact";
-import { assetsLocals } from "./assets";
 import { type CapsEnv, commentsLocals } from "./comments";
-import { makeDb } from "./db";
 import { downloadsLocals } from "./downloads";
 import { homeNamespace } from "./home";
 import { locationLocals } from "./location";
@@ -14,12 +14,8 @@ export function localsFor(name: CapabilityName | "home", rpc: Rpc, config: unkno
   switch (name) {
     case "artifact":
       return artifactLocals(rpc);
-    case "assets":
-      return assetsLocals(rpc);
     case "comments":
       return commentsLocals(rpc, config, env);
-    case "db":
-      return makeDb(rpc) as unknown as Local;
     case "downloads":
       return downloadsLocals(rpc);
     case "net":

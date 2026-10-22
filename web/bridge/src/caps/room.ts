@@ -1,7 +1,7 @@
 // The `room` capability (contract 0.2.61 room.d.ts), page side, in the
-// bridge's lazy `room` part (parts/room.ts). The shell owns
-// the WebSocket (web/shell/src/caps/room.ts) and relays the daemon's frames as
-// `clax:event`s of ns "room"; this module keeps each room's peers as frozen
+// bridge's lazy `room` part (parts/room.ts). Its connection (room-socket.ts,
+// the WebSocket on the page's own origin) hands it the daemon's frames as
+// pushes of ns "room"; this module keeps each room's peers as frozen
 // snapshots, applies and coalesces this page's presence, batches onPeers per
 // animation frame, checks every argument, and turns terminal errors into one
 // onError per listener.

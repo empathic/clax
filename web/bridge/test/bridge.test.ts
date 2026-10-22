@@ -28,12 +28,26 @@ beforeAll(async () => {
 describe("bridge", () => {
   afterEach(() => { vi.restoreAllMocks(); });
 
-  it("exposes only use() and resolves null for every capability when unframed", async () => {
-    expect(Object.keys(window.claude!)).toEqual(["use", "assetUrl"]);
-    for (const name of ["db", "artifact", "self", "permissions", "room", "sample", "nonsense"]) {
-      await expect(window.claude!.use(name)).resolves.toBeNull();
+  it("exposes only use(); unframed, it resolves its origin's capabilities from the site and null for the shell's", async () => {
+    const urls: string[] = [];
+    vi.stubGlobal("fetch", vi.fn(async (url: string, init: RequestInit) => {
+      urls.push(`${init.credentials} ${url}`);
+      return new Response(JSON.stringify(url.endsWith("/artifact") ? { artifact: { capabilities: { db: {}, artifact: {}, comments: {} } } } : { kind: "visitor", id: "v_00000000000000000000aa", level: "public", can_edit: false }));
+    }));
+    try {
+      expect(Object.keys(window.claude!)).toEqual(["use"]);
+      for (const name of ["artifact", "self", "permissions", "comments", "room", "sample", "assets", "nonsense"]) {
+        await expect(window.claude!.use(name), name).resolves.toBeNull();
+      }
+      expect(Object.keys((await window.claude!.use("db")) as object).sort()).toEqual(["collection", "doc"]);
+      const user = (await window.claude!.use("user")) as { isOwner(): Promise<boolean>; id(): Promise<string | null> };
+      expect([await user.isOwner(), await user.id()]).toEqual([false, null]);
+      expect(window.claude!.use("self")).toBe(window.claude!.use("artifact"));
+      // Each read once, from the page's own origin, with its cookie.
+      expect(urls.sort()).toEqual([`same-origin ${location.origin}/_clax/api/artifact`, `same-origin ${location.origin}/_clax/api/whoami`]);
+    } finally {
+      vi.unstubAllGlobals();
     }
-    expect(window.claude!.use("self")).toBe(window.claude!.use("artifact"));
   });
 
   it("is frozen and memoised", async () => {

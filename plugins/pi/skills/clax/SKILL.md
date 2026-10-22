@@ -59,8 +59,9 @@ dark mode, and on a phone:
   render correctly without it.
 - `window.claude.use(name)` is the entry point for runtime capabilities (see
   "Runtime capabilities"). It resolves `null` for undeclared names (other than
-  `permissions` and `user`) and outside the viewer, so pages must handle
-  `null` and work without it.
+  `permissions` and `user`) and outside the viewer, except that `db`, `assets`,
+  `user` and `room` also work on the artifact's own site opened directly, so
+  pages must handle `null` and work without it.
 - Supporting files (stylesheets, scripts, images, data) are referenced with
   relative paths, for example `<link rel="stylesheet" href="style.css">`, and
   published under the same relative path in `files`. Do not use absolute
@@ -515,7 +516,8 @@ Declare what the page uses in `capabilities` on `publish`, for example
 `{"db": {}, "user": {"scopes": ["profile"]}}`. The object is the full set:
 passing it replaces the stored one, omitting it keeps it, and `{}` clears it.
 `use()` never rejects: it resolves `null` for a name the page did not declare,
-for `files` and `mcp`, and outside the Clax viewer, so render without the
+for `files` and `mcp`, and outside the Clax viewer (on the artifact's own site
+opened directly, `db`, `assets`, `user` and `room` still resolve), so render without the
 capability first and light features up when it resolves.
 `permissions` and `user` need no declaration.
 

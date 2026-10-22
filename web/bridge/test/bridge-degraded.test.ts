@@ -1,4 +1,5 @@
 import { beforeAll, describe, expect, it } from "vitest";
+import { RETRY_MS } from "../src/part-loader";
 import { failParts, requests, settle } from "../src/parts-static";
 import { dispatchTrusted } from "./trusted";
 
@@ -9,6 +10,8 @@ const posted: Msg[] = [];
 const shell = { postMessage: (m: Msg) => { posted.push(m); } };
 const send = (data: unknown) => dispatchTrusted(window, new MessageEvent("message", { data, origin: location.origin, source: shell as unknown as Window }));
 const degraded = (part: string) => posted.filter(m => m.type === "clax:degraded" && m.part === part);
+/** The shell's test clock (shell/src/clock.ts), which the bridge's part retries read. */
+const claxTestClock = () => (globalThis as unknown as { claxTestClock: { advance(ms: number): number } }).claxTestClock;
 const press = (el: Element) => { for (const t of ["mousedown", "mouseup", "click"]) dispatchTrusted(el, new MouseEvent(t, { bubbles: true, cancelable: true })); };
 
 beforeAll(async () => {
@@ -24,43 +27,50 @@ beforeAll(async () => {
 });
 
 describe("parts that cannot load", () => {
-  it("are reported only after the welcome, once per failed attempt", async () => {
-    // The page asks for a capability before the welcome: nothing is loaded or reported yet.
+  it("are reported to the shell once it has welcomed the page, once per failed attempt", async () => {
+    // `db` is the page's own origin's: its members and the origin's client
+    // load at once, framed or not, with no shell to report a failure to yet.
     const use = (window as unknown as { claude: { use(n: string): Promise<unknown> } }).claude.use("db");
-    await settle();
-    expect(requests).not.toContain("caps");
-    expect(posted.filter(m => m.type === "clax:degraded")).toEqual([]);
-    send({ type: "clax:welcome", mode: "view" });
-    await settle();
-    // The page's use() is now sent; the shell grants it, and the caps part fails.
-    const req = posted.find(m => m.type === "clax:use" && m.name === "db")!;
-    expect(req).toBeDefined();
-    send({ type: "clax:use-result", id: req.id, granted: true, config: {} });
     // M2: a capability whose page-side members cannot load resolves null, as a refused one.
     await expect(use).resolves.toBeNull();
     await settle();
-    expect(degraded("caps")).toHaveLength(1);
-    // A second need inside the backoff neither loads again nor reports again.
-    const again = (window as unknown as { claude: { use(n: string): Promise<unknown> } }).claude.use("comments");
+    expect(requests.filter(r => r === "caps")).toHaveLength(1);
+    expect(posted.filter(m => m.type === "clax:degraded")).toEqual([]);
+    expect(posted.filter(m => m.type === "clax:use")).toEqual([]);
+    send({ type: "clax:welcome", mode: "view" });
     await settle();
-    const req2 = posted.find(m => m.type === "clax:use" && m.name === "comments")!;
-    send({ type: "clax:use-result", id: req2.id, granted: true, config: {} });
+    // After the backoff, the next need loads again, and its failure is reported.
+    claxTestClock().advance(RETRY_MS);
+    const again = (window as unknown as { claude: { use(n: string): Promise<unknown> } }).claude.use("comments");
     await expect(again).resolves.toBeNull();
     await settle();
-    expect(requests.filter(r => r === "caps")).toHaveLength(1);
+    expect(requests.filter(r => r === "caps")).toHaveLength(2);
+    expect(degraded("caps")).toHaveLength(1);
+    // A further need inside the backoff neither loads again nor reports again.
+    const third = (window as unknown as { claude: { use(n: string): Promise<unknown> } }).claude.use("downloads");
+    await expect(third).resolves.toBeNull();
+    await settle();
+    expect(requests.filter(r => r === "caps")).toHaveLength(2);
     expect(degraded("caps")).toHaveLength(1);
   });
 
-  it("a room part that cannot load resolves use(\"room\") null and is reported as room, without loading caps", async () => {
-    const before = requests.filter(r => r === "caps").length;
-    const use = (window as unknown as { claude: { use(n: string): Promise<unknown> } }).claude.use("room");
-    await settle();
-    const req = posted.find(m => m.type === "clax:use" && m.name === "room")!;
-    send({ type: "clax:use-result", id: req.id, granted: true, config: {} });
-    await expect(use).resolves.toBeNull();
-    await settle();
+  it("a room part that cannot load resolves use(\"room\") null and is reported as room", async () => {
+    failParts(["clip", "room"]);
+    claxTestClock().advance(RETRY_MS * 2);
+    // The site declares `room`.
+    const real = globalThis.fetch;
+    globalThis.fetch = (async (url: string) => new Response(JSON.stringify(String(url).endsWith("/artifact") ? { artifact: { capabilities: { room: {} } } } : { kind: "visitor", level: "public", can_edit: false }))) as typeof fetch;
+    try {
+      const use = (window as unknown as { claude: { use(n: string): Promise<unknown> } }).claude.use("room");
+      await expect(use).resolves.toBeNull();
+      await settle();
+    } finally {
+      globalThis.fetch = real;
+    }
+    expect(requests).toContain("room");
     expect(degraded("room")).toHaveLength(1);
-    expect(requests.filter(r => r === "caps")).toHaveLength(before);
+    // Never asked of the shell: the room is the origin's.
+    expect(posted.filter(m => m.type === "clax:use" && m.name === "room")).toEqual([]);
   });
 
   it("a granted sample loads its own part and resolves its callable namespace, never through caps", async () => {

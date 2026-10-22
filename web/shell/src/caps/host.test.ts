@@ -97,32 +97,27 @@ describe("CapabilityHost", () => {
     expect(storage.setItem).not.toHaveBeenCalled();
   });
 
-  it("dispose ends every handler: no further fetches, and late results post nothing", async () => {
-    vi.useFakeTimers();
+  it("dispose ends every handler: no further fetches, and late results and stream events post nothing", async () => {
     try {
       let release: (r: Response) => void = () => {};
       let fetches = 0;
-      vi.stubGlobal("fetch", vi.fn(() => {
-        fetches++;
-        return fetches === 1 ? Promise.resolve(new Response(JSON.stringify({ doc: { path: "t/1", id: "1", data: {}, version: 1 } })))
-          : new Promise<Response>(r => { release = r; });
-      }));
-      const { e, posted } = env({ declared: { db: {} } });
+      vi.stubGlobal("fetch", vi.fn(() => { fetches++; return new Promise<Response>(r => { release = r; }); }));
+      const { e, posted } = env({ declared: { db: {}, user: { scopes: ["profile"] } } });
       const host = new CapabilityHost(Promise.resolve(e), REGISTRY, null);
-      await host.handle({ type: "clax:call", id: "c1", ns: "db", method: "subscribe", args: ["s1", { kind: "doc", path: "t/1" }] });
-      host.onEvent({ type: "stream_down" });
-      const late = host.handle({ type: "clax:call", id: "c2", ns: "db", method: "get", args: ["t/2"] });
-      await vi.advanceTimersByTimeAsync(0);
+      await host.handle({ type: "clax:call", id: "c1", ns: "db", method: "watch", args: [] });
+      host.onEvent({ type: "doc", artifact_id: "7q3k9mzx2b4t", path: "t/1", version: 1 });
+      expect(posted.at(-1)).toEqual({ type: "clax:event", ns: "db", topic: "changed", data: { path: "t/1" } });
+      const late = host.handle({ type: "clax:call", id: "c2", ns: "user", method: "profiles", args: [["u_00000000000000000000bb"]] });
+      await vi.waitFor(() => expect(fetches).toBe(1));
       const before = posted.length;
       host.dispose();
-      release(new Response(JSON.stringify({ doc: { path: "t/2", id: "2", data: {}, version: 2 } })));
+      release(new Response(JSON.stringify({ viewers: [] })));
       await late;
-      await vi.advanceTimersByTimeAsync(120_000);
-      await host.handle({ type: "clax:call", id: "c3", ns: "db", method: "get", args: ["t/3"] });
+      host.onEvent({ type: "doc", artifact_id: "7q3k9mzx2b4t", path: "t/1", version: 2 });
+      await host.handle({ type: "clax:call", id: "c3", ns: "user", method: "profiles", args: [["u_00000000000000000000cc"]] });
       await host.handle({ type: "clax:use", id: "u", name: "db" });
-      expect([fetches, posted.length]).toEqual([2, before]);
+      expect([fetches, posted.length]).toEqual([1, before]);
     } finally {
-      vi.useRealTimers();
       vi.unstubAllGlobals();
     }
   });

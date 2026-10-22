@@ -1,12 +1,7 @@
-// The capabilities' page-side members: loaded on the first claude.use() the
-// shell grants. Also the app shell's scroll report and restore, its watch
-// of the page's pushState routes and its report of the page's edge colours,
-// loaded on its welcome (`app: true`).
-import { reportChrome } from "../chrome";
-import { type RouteReport, type Routes, appRoutes } from "../routes";
-import { appScroll } from "../scroll";
-
-export { localsFor } from "../caps/index";
+// What claude.use() resolves: the capabilities' page-side members, and the
+// client of the page's own origin that `db`, `assets` and `user` call.
+// Loaded on the page's first claude.use().
+export { resolveUse } from "../caps/resolve";
 export type { CapsEnv } from "../caps/comments";
 
 let routes: Routes | undefined;

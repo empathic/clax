@@ -1,9 +1,11 @@
 /**
  * Runtime bridge injected into every published page.
  * It exposes `window.claude.use(name)`, which resolves the frozen namespace of
- * each capability the shell grants and `null` for the rest (see `use.ts`);
- * unframed, every name resolves `null`. Capability calls and the shell's
- * answers travel as `clax:use`/`call`/`event` messages (see `protocol.ts`),
+ * each capability this view gets and `null` for the rest (see `use.ts`).
+ * `db`, `assets`, `user` and `room` call the page's own origin
+ * (`/_clax/api/…`, caps/origin.ts), framed or top-level; the others are the
+ * framing shell's, and unframed they resolve `null`. Calls to the shell and
+ * its answers travel as `clax:use`/`call`/`event` messages (see `protocol.ts`),
  * queued until the shell's welcome. When framed, it greets the shell with `clax:hello`
  * (target "*"; artifact, version, and the page's published file, no page
  * content), then takes orders only from `window.parent` at
@@ -53,9 +55,10 @@
  * capabilities' page-side members are lazy parts (parts/*.ts) imported from
  * beside this script, never before the page has parsed: comment mode on the
  * first shell order that needs it (in practice right after the welcome),
- * clips when comment mode turns on, a capability's members on the first
- * claude.use() of it the shell grants (`room` and `sample` each in a part of
- * its own, the rest in `caps`). A part that cannot load is reported to the
+ * clips when comment mode turns on, and on the page's first claude.use() the
+ * `caps` part, which decides what each name resolves and holds most
+ * capabilities' members and the origin's client (`room` and `sample` each
+ * load a part of their own once granted). A part that cannot load is reported to the
  * shell once (clax:degraded). Waiting for the parse keeps the parts' module
  * loads from ever coming before the page's own import maps; the shell hears
  * of the first need that waits for it and of the parse's end (clax:wait),
@@ -156,15 +159,7 @@ type PartName = keyof Parts;
   const parts = Object.fromEntries(Object.entries(loaders).map(([name, load]) => [name, onNeed(name as PartName, load as (attempt: number) => Promise<unknown>)])) as unknown as { [K in PartName]: () => ReturnType<Parts[K]> };
   const clips = () => parts.clip();
   const rpc = new Rpc(m => post(m));
-  const use = makeUse({
-    framed,
-    rpc,
-    locals: (name, r, config) => name === "room"
-      ? parts.room().then(p => p.roomNamespace(r))
-      : name === "sample"
-        ? parts.sample().then(p => p.sampleNamespace(r))
-        : parts.caps().then(c => c.localsFor(name, r, config, { ctx: commentsContext, clip: clips })),
-  });
+  const use = makeUse(name => parts.caps().then(c => c.resolveUse(name, { framed, rpc, room: parts.room, sample: parts.sample, env: { ctx: commentsContext, clip: clips } })));
 
   // The URL of this artifact's asset `id`, as `assets` gives it: assets are
   // served per artifact, and a page loads only its own.

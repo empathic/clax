@@ -1,6 +1,7 @@
 import { afterEach, describe, expect, it, vi } from "vitest";
 import type { CapEnv } from "./host";
-import { avatarFor, colorFor, rootWrite, userHandler } from "./user";
+import { avatarFor, colorFor } from "../../../bridge/src/caps/avatar";
+import { userHandler } from "./user";
 
 const ME = "u_00000000000000000000aa";
 const OTHER = "u_00000000000000000000bb";
@@ -9,46 +10,14 @@ function env(token: string | null, name: string | null, declared: Record<string,
   return { aid: "7q3k9mzx2b4t", token, declared, viewer: async () => ({ publicId: ME, name }) } as unknown as CapEnv;
 }
 
-describe("user in the shell", () => {
+describe("user lookups in the shell", () => {
   afterEach(() => { vi.unstubAllGlobals(); });
 
-  it("answers identity and ownership from the view", async () => {
-    const owner = userHandler(env("tok", "Alex"), null as never);
-    expect(await owner.call("isOwner", [])).toBe(true);
-    expect(await owner.call("canEdit", [])).toBe(true);
-    expect(await owner.call("id", [])).toBe(ME);
-    expect(await owner.call("name", [])).toBe("Alex");
-    expect(await owner.call("email", [])).toBeNull();
-    const me = (await owner.call("me", [])) as Record<string, unknown>;
-    expect(me).toMatchObject({ id: ME, name: "Alex", email: null, isOwner: true, canEdit: true, color: colorFor(ME) });
-    expect(String(me.avatarUrl)).toMatch(/^data:image\/svg\+xml/);
-    const lan = userHandler(env(null, null), null as never);
-    expect([await lan.call("isOwner", []), await lan.call("canEdit", []), await lan.call("name", [])]).toEqual([false, false, ""]);
-    const noScope = userHandler(env("tok", "Alex", { user: {} }), null as never);
-    expect(await noScope.call("name", [])).toBe("");
-    expect(((await noScope.call("me", [])) as { name: string }).name).toBe("");
-  });
-
-  it("without the declaration, the universal members answer and the rest resolve the all-absent values", async () => {
+  it("without the declaration, profiles resolve unnamed and search finds no one, with no request", async () => {
     vi.stubGlobal("fetch", vi.fn(async () => { throw new Error("no lookups without the declaration"); }));
     const h = userHandler(env("tok", "Alex", {}), null as never);
-    expect([await h.call("isOwner", []), await h.call("canEdit", []), await h.call("can", ["files.write"])]).toEqual([true, true, true]);
-    expect(await h.call("me", [])).toMatchObject({ id: null, name: "", email: null, isOwner: true, canEdit: true, color: colorFor(null) });
-    expect([await h.call("id", []), await h.call("avatarUrl", []), await h.call("name", [])]).toEqual([null, null, ""]);
     expect(await h.call("profiles", [[OTHER]])).toMatchObject({ [OTHER]: { id: OTHER, name: "", isMe: false, guest: false } });
     expect(await h.call("search", ["sa"])).toEqual([]);
-  });
-
-  it("can() follows the level and the declared root write rule", async () => {
-    const rules = { user: {}, db: { rules: [{ path: "", write: "admin" }] } };
-    expect(await userHandler(env("tok", null, rules), null as never).call("can", ["data.write"])).toBe(true);
-    expect(await userHandler(env(null, "Sam", rules), null as never).call("can", ["data.write"])).toBe(false);
-    expect(await userHandler(env(null, "Sam", { user: {} }), null as never).call("can", ["data.write"])).toBe(true);
-    expect(await userHandler(env(null, null, { user: {} }), null as never).call("can", ["data.write"])).toBe(false);
-    expect(await userHandler(env(null, "Sam"), null as never).call("can", ["files.write"])).toBe(false);
-    expect(await userHandler(env("tok", null), null as never).call("can", ["assets.write"])).toBe(true);
-    expect(await userHandler(env("tok", null), null as never).call("can", ["launch.rockets"])).toBe(false);
-    expect(rootWrite({})).toBe("interact");
   });
 
   it("profiles resolves every ID it is given, batched, unknown ones unresolved", async () => {
@@ -123,9 +92,8 @@ describe("user in the shell", () => {
   it("a failed viewer lookup reads as no identity, never a rejection", async () => {
     const e = { ...env("tok", "Alex"), viewer: async () => { throw new Error("down"); } } as unknown as CapEnv;
     const h = userHandler(e, null as never);
-    expect(await h.call("me", [])).toMatchObject({ id: null, name: "", isOwner: true });
-    expect([await h.call("id", []), await h.call("name", []), await h.call("can", ["data.write"])]).toEqual([null, "", true]);
     expect(await h.call("search", [""])).toEqual([]);
+    expect(await h.call("profiles", [[ME]])).toMatchObject({ [ME]: { id: ME, isMe: false } });
   });
 
   it("reset forgets resolved names, and a disposed handler fetches nothing", async () => {
@@ -214,16 +182,11 @@ describe("user in the shell", () => {
     expect(fetchSpy).toHaveBeenCalledTimes(1);
   });
 
-  it("can() and the level fields of me() are fixed per frame document, until reset", async () => {
-    let name: string | null = null;
-    const e = { ...env(null, null, { user: { scopes: ["profile"] } }), viewer: async () => ({ publicId: ME, name }) } as unknown as CapEnv;
-    const h = userHandler(e, null as never);
-    expect(await h.call("can", ["data.write"])).toBe(false);
-    name = "Sam";
-    expect(await h.call("can", ["data.write"])).toBe(false);
-    expect(await h.call("name", [])).toBe("Sam");
-    h.reset?.();
-    expect(await h.call("can", ["data.write"])).toBe(true);
+  it("answers only the lookups: the viewer's own facts are the bridge's", async () => {
+    const h = userHandler(env("tok", "Alex"), null as never);
+    for (const m of ["me", "isOwner", "canEdit", "can", "id", "name", "avatarUrl", "email"]) {
+      await expect(h.call(m, [])).rejects.toMatchObject({ code: "capability_removed" });
+    }
   });
 
   it("avatars escape and color every ID the same way", () => {

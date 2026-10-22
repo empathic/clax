@@ -6111,8 +6111,9 @@ dark mode, and on a phone:
   render correctly without it.
 - `window.claude.use(name)` is the entry point for runtime capabilities (see
   "Runtime capabilities"). It resolves `null` for undeclared names (other than
-  `permissions` and `user`) and outside the viewer, so pages must handle
-  `null` and work without it.
+  `permissions` and `user`) and outside the viewer, except that `db`, `assets`,
+  `user` and `room` also work on the artifact's own site opened directly, so
+  pages must handle `null` and work without it.
 - Supporting files (stylesheets, scripts, images, data) are referenced with
   relative paths, for example `<link rel="stylesheet" href="style.css">`, and
   published under the same relative path in `files`. Do not use absolute
@@ -6177,7 +6178,8 @@ Declare what the page uses in `capabilities` on `publish`, for example
 `{"db": {}, "user": {"scopes": ["profile"]}}`. The object is the full set:
 passing it replaces the stored one, omitting it keeps it, and `{}` clears it.
 `use()` never rejects: it resolves `null` for a name the page did not declare,
-for `files` and `mcp`, and outside the Clax viewer, so render without the
+for `files` and `mcp`, and outside the Clax viewer (on the artifact's own site
+opened directly, `db`, `assets`, `user` and `room` still resolve), so render without the
 capability first and light features up when it resolves.
 `permissions` and `user` need no declaration.
 
@@ -6319,10 +6321,14 @@ What a page written for claude.ai meets in Clax, beyond the gesture rules:
 Further differences from the 0.2.61 contract, which a page rarely needs to
 plan for:
 
-- Everywhere: `files` and `mcp` resolve `null`. `use()` resolves `null` at
-  once in a page that is not framed, and after 10 seconds in a frame that is
-  not the Clax viewer. A call the shell never answers
-  stays pending; it does not reject `upstream_error`.
+- Everywhere: `files` and `mcp` resolve `null`. `db`, `assets`, `user` and
+  `room` are the artifact's own site's (its `/_clax/api/`, as whoever the
+  site's cookie names), framed or not: `use()` resolves them from the
+  artifact's current declaration and `whoami`, `assets` only for the owner.
+  The others are the Clax viewer's: `use()` resolves them `null` at once in
+  a page that is not framed, and after 10 seconds in a frame that is not
+  the Clax viewer. A call the shell never answers stays pending; it does not
+  reject `upstream_error`.
 - The viewer's gesture is judged by the Clax window from its own events (see
   "The viewer's gesture" under "The `comments` capability" for the exact
   rules). Without it, `create`, `reply`, `resolve`, and `delete` reject
@@ -6334,9 +6340,12 @@ plan for:
 - `db`: `revoked` is returned only on another machine, once the artifact's
   current declaration no longer includes `db` (a publish or a metadata edit
   can drop it, and a pinned older version is judged by it too): the daemon
-  then refuses every caller without the token. While the event stream is
-  down, every subscription is refetched every 30 seconds, and a refetch the
-  daemon could not answer, or answered with a timeout, is retried.
+  then refuses every caller without the token. The site has no change
+  stream: in the Clax viewer the shell tells the page what changed, and
+  while its event stream is down every subscription is refetched every 30
+  seconds; a page with no Clax viewer around it refetches every subscription
+  every 5 seconds. A refetch the site could not answer, or answered with a
+  timeout, is retried.
   `resource_exhausted` is returned for a view's 65th subscription, for a
   lease beyond 100 in force, and when the daemon answers 429. An ordered
   query without `limit` returns every match, up to 32 MiB of document
@@ -6362,7 +6371,10 @@ plan for:
   and served with `Content-Security-Policy: sandbox`. There is no quota, so
   `usage.maxFiles` and `usage.maxBytes` are `Number.MAX_SAFE_INTEGER`.
 - `user`: IDs are per Clax install. Names are whatever each viewer typed
-  into the viewer, and avatars are initials, never photos.
+  into the viewer, and avatars are initials, never photos. Who the viewer
+  is (`me`, `isOwner`, `canEdit`, `can`) is the site's `whoami`; other
+  people's names (`profiles`, `search`) come from the Clax viewer, so a page
+  opened directly on its site names only its viewer and finds no one.
 - `comments`: page-written comments reach the agent as
   `<name> (written by the page): "…"`. A compose `label` is shown in the
   composer but never stored, and `detail` is dropped. Pins cannot be
@@ -6687,8 +6699,9 @@ the shell adds `unavailable` (the daemon could not be reached) and
 
 ## Room protocol
 
-A page's `room` is relayed by the shell: the frame never reaches the
-daemon's socket itself.
+A page's `room` is its site's: the bridge opens `/_clax/api/room?peer=<label>`
+on the artifact's own site (the socket below, as whoever the site's cookie
+names), framed or not, and keeps its label for the document's life.
 
 **The socket.** `GET /api/artifacts/<aid>/room?peer=<label>[&token=<bearer>]`
 upgrades to a WebSocket. `<label>` is 16 characters of `[0-9a-z]`, picked by
@@ -8712,21 +8725,75 @@ it starts, the runs a previous process left. A build without the
   `SameSite=None; Secure; Partitioned` for a frame, else `SameSite=Lax`;
   `next` is a path on that host of at most 2048 bytes (anything else is
   `/`). A session lasts an hour from its last use.
-- The viewer's content iframe has no `sandbox` attribute (the distinct
-  origin is the isolation) and `allow="clipboard-write; fullscreen;
-  storage-access"`. It opens on the site's `/_clax/session/start?next=<the
-  page's path>` (the `/a/<id>` page carries it in its HTML, and its
-  bootstrap's `site`, `{"domain", "scheme", "port"}`, as `GET
-  /api/artifacts/<id>` answers it, names the site hosts), takes the
-  `clax:site-state` only from that frame's window at the site origin while
-  it waits for one, asks for the code, and sends the frame to the `src`
-  answered. A redemption that loads anything but the page (no hello
-  before its load: the browser refused the frame's cookies) starts the
-  handshake once more; a second such, or a code refused, shows "Open in a
-  tab" with the page's address on its site in place of the frame. The
-  bridge takes orders only from the origin its tag's `data-origin` names
-  (the daemon's public origin, always written; for a local daemon's
-  loopback names, each of them at its port).
+- A site is private until whoever administers its artifact (the owner, by
+  hand or in their browser, and the page's maker) sends `PATCH
+  /api/artifacts/<id> {"site_access": "world"}` (`"private"` closes it;
+  anything else is 400 `invalid_argument`; anyone else 403 `admin_only`).
+  The answer adds `artifact.site_access` and `site_url`, the site's
+  address; a hosted Clax's sharing route says both too. Their browser may
+  send it alone without the token. An agent's opening waits on its
+  person: its first call answers 202 `{"status": "approval_pending",
+  "question_id", "inbox_url"}` and asks them a question the daemon writes
+  (`Open to the world` or `Keep it private`); its call again with
+  `question_id` opens the site once they chose to in Clax's browser or the
+  extension, else 403 `not_approved`; an approval is used once (409
+  `approval_used`), and an agent without a session gets 400 `no_session`
+  (`publish_public` with `site_access` makes these calls). Closing never
+  asks, and either change holds from the next request: a page, an asset
+  or an API call of a visitor is refused right after.
+- On a site open to the world, a request with no site session of a holder
+  who may read it is a visitor's: the first navigation or `/_clax/api/`
+  response without the visitor cookie sets it (`clax_visitor`, on `https`
+  `__Host-clax_visitor`; host-only, `HttpOnly`, `Path=/`, `SameSite=Lax`,
+  a year), as `private, no-store`; a file or an asset never sets it. It
+  holds a secret the daemon minted and signed (any other value is
+  replaced); the visitor's ID, `v_` and 22 hex characters, is a MAC of it
+  and the artifact, so it is stable per browser and site, and no ID a page
+  shows can be replayed as a cookie. Two first requests at once each set
+  one, and the browser keeps the last. Both are keyed by the daemon token:
+  rotating it re-identifies every world-site visitor, and their old
+  `data/users/<id>` subtrees are orphaned. A visitor's answers carry no
+  `Access-Control-Allow-Origin` and are cached for a minute at most
+  (`public, no-cache`, or `public, max-age=60, must-revalidate` for a
+  version's files and assets), so closing the site holds at a shared cache
+  within a minute. A site cookie of a holder still makes
+  its request theirs, so the shell's "Open site" (through `/site-signin`)
+  acts as the person there.
+- `/_clax/api/` on a site host is the page runtime's backend for that
+  artifact alone, the main origin's routes with no `<id>` and the same
+  bodies: `docs/<path>` (`GET`, `PUT`, `PATCH`, `DELETE`), `docs` (the
+  query), `docs:batch`, `docs:acquire`, `docs:str_replace`, `assets`
+  (`POST` an upload, `GET` the list), `assets/<asset ID>` (`DELETE`, an
+  asset of this artifact's alone), `room` (the WebSocket), `artifact`
+  (`GET`) and `whoami` (`GET`); any other path is 404, comments and
+  threads among them. No field of a path, query or body names another
+  artifact. The caller is who the site's access found, and no one else: a
+  request carrying `Authorization` is 401, its cookies and `x-clax-*`
+  headers are dropped, and every write is a page's. The owner is `admin`
+  (as the owner's shell, the token's routes included), a person by their
+  rights as in their browser (`interact` with a name, else `view`), and a
+  guest, a link viewer and a visitor `public`, below `view`: they read and
+  write only where a `db` rule names `public`, the default rules granting
+  them nothing. A visitor's `artifact` is `{"artifact": {"id", "title",
+  "current_version", "capabilities"}}` alone (what the page declares, from
+  which the bridge decides what `use()` resolves). `whoami` is `{"kind": "owner" | "person" |
+  "guest" | "link" | "visitor", "id"?, "name"?, "level", "can_edit"}`:
+  `id` the viewer's public ID or the visitor's ID, `level` the `db` level,
+  `can_edit` whether they may publish versions. A request whose `Origin`
+  is not the site's own is 403 `forbidden_origin`, and so is a write
+  without one (or a read without one that `Sec-Fetch-Site` says another
+  site made); no answer carries `Access-Control-Allow-Origin`. On a hosted
+  Clax the writes of a visitor, a link viewer and a guest are limited per client address (60, one back a
+  second) and per artifact (600, ten back a second): 429 `rate_limited`
+  with `retry_after_s`.
+- The viewer probes `http://<id>.localhost:<port>/_clax/healthz` (1 s
+  timeout, cached per browser session) when the gallery is opened on
+  `localhost` or `127.0.0.1`. When it answers, the content iframe loads
+  `/_clax/v/<n>/` from the artifact's origin with no `sandbox` attribute;
+  the distinct origin is the isolation. Otherwise it loads the same address
+  with `sandbox="allow-scripts allow-forms allow-modals allow-popups
+  allow-downloads"` and no `allow-same-origin`, so the content runs in an
+  opaque origin.
 - On the main origin `/_blob/<asset ID>` (with or without the old `?k=`)
   and `/_clax/blob/<asset ID>` serve no bytes: they answer 301 to the
   asset's address on its artifact's site, whose access decides. The old
