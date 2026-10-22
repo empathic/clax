@@ -64,6 +64,26 @@ dark mode, and on a phone:
   relative paths, for example `<link rel="stylesheet" href="style.css">`, and
   published under the same relative path in `files`. Do not use absolute
   `/...` paths or hard-coded hosts.
+- A page loads and fetches only its own files, its assets, `data:` and
+  `blob:` URLs: no scripts, styles, fonts or images from CDNs or other
+  sites, and no `fetch`, `XMLHttpRequest`, `WebSocket` or `EventSource` to
+  anywhere else. The daemon's content policy refuses the rest. Data from
+  the web comes through the `net` capability.
+- `icon.svg` at the top of the files is the app's icon, a square
+  full-bleed design. Every publish refuses one that breaks these rules
+  (`invalid_icon`), and a version a git push makes leaves it out, naming
+  it in the version's note; restoring or forking a version copies its icon
+  as it is. The rules: at most 32 KB of well-formed XML without a
+  `<!DOCTYPE>`, its elements nested at most 64 deep; an `<svg>` root with
+  a square `viewBox` of four numbers, such as `0 0 1024 1024`; only the
+  elements `svg`, `g`, `defs`, `title`, `desc`, `path`, `rect`, `circle`,
+  `ellipse`, `line`, `polyline`, `polygon`, `linearGradient`,
+  `radialGradient`, `stop`, `clipPath`, `mask`, `use`, `symbol`, `text`
+  and `tspan`; no `on*` attribute and no `filter` attribute; `href` (or
+  `xlink:href`, its prefix declared) only to `#id` within the file, and
+  every `url()` a `url(#id)`; no animation, filter or `@` rule in a
+  `style`; `<use>`s drawing at most 64 copies, nested at most 3 deep.
+  Other `.svg` files are ordinary files.
 
 Minimal skeleton:
 
@@ -543,7 +563,10 @@ capability first and light features up when it resolves.
   `{}` (not `{"composer_only": true}`) the page may also `create`, `reply`,
   `resolve`, `delete`, and `sendToClaude` as the viewer after one consent;
   `{"customAnchors": true}` lets a canvas-like page place pins itself.
-- `assets`: `upload`, `list`, `delete`, in the person's browser only.
+- `assets`: `upload`, `list`, `delete`, in the person's browser only. Use
+  an asset's `url` as given; to show an asset whose ID a page stored,
+  `claude.assetUrl(id)` (any viewer), never `"/_blob/" + id`: assets are
+  served per app, and a page loads only its own.
 - `room`: `emit`, `on`, `presence`, `peers`, `onPeers`, `join`, `connected`,
   and `onConnection` reach every view of the artifact that is open now;
   nothing is stored. Presence works for every viewer. A topic declared
@@ -553,8 +576,35 @@ capability first and light features up when it resolves.
 - `sample`: `sample(input, options)`, `sample.json`, and `sample.limits` ask
   Claude with the API key configured on the person's machine, and only in
   the person's own browser: everywhere else, and when no key is configured,
-  `use("sample")` resolves `null`. The first call in each view asks the
-  person to allow it.
+  `use("sample")` resolves `null`. The first call asks the person to allow
+  it, once per app: the daemon keeps the grant until the person revokes it.
+  Each app may spend up to `daily_cost_cap_usd` a day (default $0.50); past
+  it, calls reject `rate_limited`.
+- `net` (Clax's own): `fetch(url, {method, headers, body})` resolves
+  `{status, ok, url, headers, text(), json()}`, made by the daemon (the
+  page itself cannot connect). Declare every host,
+  `{"net": {"hosts": ["api.example.com"]}}`; only `https` URLs on those
+  hosts are fetched, at most 5 MB each way and 20 s. The person is asked
+  once per app for its host list. Only the person's own views get it:
+  elsewhere `use("net")` resolves `null`. Types:
+  `ClaxExtensions.Net` in `clax-extensions.d.ts`.
+- `notify`, `share`, `file`, `camera`, `location`: Clax's device
+  capabilities, served only in the Clax app and `null` everywhere else;
+  their types are `ClaxExtensions.Device` in `clax-extensions.d.ts`. Call
+  them from a click handler (all but `notify.list` and `notify.cancel`
+  reject `no_gesture` otherwise). `location.watch` follows the device only
+  while the app is on screen. See "Device capabilities in the Clax app"
+  below.
+- `home` (Clax's own): the Clax app's home screen. Declaring it grants
+  nothing: the app serves it to the one app it shows as its home screen,
+  and `use("home")` resolves `null` for every other app, in a browser and
+  in the draft preview. `apps()`, `makes()`, `unread()`, `needsKey()`, the
+  actions `open`, `openMake`, `newApp`, `menu`, `openInbox`,
+  `openSettings` and `importApp` (from a click handler, as for the device
+  capabilities), `shown()` once the home screen is drawn, `tiles(list)`
+  after each render that moves its tiles, `chrome()` (the window's form
+  and the pointer in use), and `on(name, fn)`. Types: `ClaxExtensions.Home` in
+  `clax-extensions.d.ts`. See "The home screen's capability" below.
 - `permissions`: `state()` and `request()`; the only prompt is the consent
   to the first page-written comment.
 
@@ -615,9 +665,10 @@ What a page written for claude.ai meets in Clax, beyond the gesture rules:
   the room: each view stays on its version until it reloads. A viewer's
   level is fixed per connection; entering a name reconnects at the new level.
 - `sample`: the person's own API key pays for every call, not the viewer's
-  account, so only their browser can call it. Allowing lasts for the view,
-  not for the artifact. Answers are cached per browser in the daemon and
-  forgotten, with the day's call counts, when it restarts. A daemon
+  account, so only their browser can call it. Allowing lasts for the app
+  until revoked, not for the view. Answers are cached per browser in the
+  daemon and forgotten, with the day's call counts, when it restarts; the
+  day's spend against the cost cap is stored and survives a restart. A daemon
   restart under an open tab ends its calls with `session_expired`.
 
 ## What is not yet available

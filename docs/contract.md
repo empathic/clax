@@ -247,6 +247,31 @@ answer `{artifact, version, url, note_truncated}`: `note_truncated` is `true`
 when the given `note` was longer than 280 characters and was cut to them,
 else `false`. The tool result passes it on.
 
+`POST /api/artifacts/<id>/versions:restore` (token required) with
+`{"version": <n>, "if_version": <current>}` makes version `n`'s files the
+next version, in one store transaction: every file of `n`, `index.html`
+included, with its bytes, content type and hash, so the new version's
+`content_sha256` equals `n`'s, and no file of the current version that `n`
+lacks. The files are copied as they are, without a publish's checks: an
+`icon.svg` the icon rules now refuse comes back unchanged. The new version
+is labelled `Restored v<n>` with the note `Restored version <n>`; the
+title, description, icon and capabilities stay as they are, and documents
+are not touched. The body may also carry `title`, `icon`, `capabilities`
+(a full set), `label` and `note`, set in the same version as a publish
+sets them and checked as a publish's (400 `invalid_capabilities`,
+`label_too_long`; a longer note is cut, with `note_truncated: true`): the
+Clax app rolls an update back to the version before it this way, with
+that version's declaration. An `X-Clax-Session`, when given, must
+name a live session (400 `unknown_session` otherwise), which the version
+records. It
+answers as a publish does (201 `{artifact, version, url, note_truncated}`),
+and a `version` event follows. Errors: 409 `conflict` with `current` when
+`if_version` is not the current version; 404 `not_found` for an unknown
+artifact or version; 400 `invalid_args` when `version` or `if_version` is
+missing; 400 `live_page` for a live page. Each restore stores `n`'s files
+again under the new version, so it adds their size on disk. The Clax app's
+Versions tab uses it for undo.
+
 The declaration can also be changed without publishing a version:
 `PATCH /api/artifacts/<id>` (token required) with `{"capabilities": {...}}`
 replaces it the same way (omitted or `null` keeps, `{}` clears) and returns
@@ -325,6 +350,12 @@ Errors:
   be fetched, `current_version` (`n`, `label`, `created_at`, `files`, `url`)
   and `hint`. Read the current version, merge, and publish again with
   `if_version` set to `current`.
+- `version_present` (409): the next version's number already holds content
+  no version records and no step of the core's may remove (content another
+  process wrote, or a mark the core never gave). A retry gets the same
+  answer; `clax doctor` lists the content among its stale files. Content a
+  killed job step left is never this: whoever writes the version next
+  removes it.
 - `not_found`: the artifact to update does not exist.
 - `invalid_path`: a published path is empty, absolute, ends in `/`, contains
   `\`, a `.` or `..` segment, or a control character; or two paths differ only
@@ -334,6 +365,11 @@ Errors:
 - `body_too_large`: the files together exceed 64 MiB decoded, or the request
   body exceeds 96 MiB.
 - `label_too_long`: `label` exceeds 60 characters.
+- `invalid_icon`: `icon.svg` breaks a rule of the icon subset ("Page
+  contract"). The message is the sentence to act on; extra field `rule`
+  names the rule: `too_large`, `not_xml`, `doctype`, `nesting`,
+  `not_svg`, `view_box`, `element`, `event_attribute`, `external_href`,
+  `filter`, `external_url`, `style`, `use_too_many` or `use_too_deep`.
 - `title_too_long`, `description_too_long`, `icon_too_long`: `title` exceeds
   200 characters, `description` 1000 or `icon` 40. `invalid_args` when one
   of them holds a control character (a line break or tab among them) or a
@@ -533,7 +569,9 @@ agent writes from a session).
 | `version` | integer | no | The version to fork; defaults to the URL's version, else the current version. |
 
 Makes a new artifact whose version 1 holds the chosen version's files,
-title, description, icon and capabilities. It is the agent's person's (the
+title, description, icon and capabilities. The files are copied as they
+are, without a publish's checks (an `icon.svg` the icon rules now refuse
+included). It is the agent's person's (the
 owner's for the owner's agents) and the session's, which watches it; the
 source's comment threads, assets, documents and sharing are not copied.
 Version 1's note is `Forked from <artifact ID>@v<n>`. A daemon that keeps
@@ -627,7 +665,7 @@ each file is uploaded.)
   "assets": [
     {
       "id": "01K6AB7D2E3F4G5H6J7K8M9N0P",
-      "url": "http://localhost:7480/_blob/01K6AB7D2E3F4G5H6J7K8M9N0P",
+      "url": "http://localhost:7480/_blob/7q3k9mzx2b4t/01K6AB7D2E3F4G5H6J7K8M9N0P",
       "content_type": "image/png",
       "size": 48213
     }
@@ -1240,12 +1278,12 @@ The shim takes `harness_session_id` from `CLAUDE_CODE_SESSION_ID` under Claude
 Code and from `GROK_SESSION_ID` under Grok Build, else from `CLAX_SESSION_ID`
 for any harness, else sends none.
 
-A session row has `harness` (`claude`, `codex`, `grok`, `pi`), `harness_session_id`
-(the harness's own ID, when known), `cwd`, `pid` (the shim or Pi process),
-`parent_pid`, and timestamps. Registration and join accept only those four
-harness names (anything else is 400 `invalid_args` `harness must be one of
-claude, codex, grok, pi`); an empty `harness_session_id` on registration counts as
-none. The daemon matches registrations to existing
+A session row has `harness` (`claude`, `codex`, `grok`, `pi`, `app`),
+`harness_session_id` (the harness's own ID, when known), `cwd`, `pid` (the
+shim, Pi or Clax app process), `parent_pid`, and timestamps. Registration and
+join accept only those five harness names (anything else is 400
+`invalid_args` `harness must be one of claude, codex, grok, pi, app`); an
+empty `harness_session_id` on registration counts as none. The daemon matches registrations to existing
 live rows so that a shim and a hook for the same conversation share one row:
 
 - A registration with a `harness_session_id` reuses the live row with the same
@@ -1270,7 +1308,9 @@ live rows so that a shim and a hook for the same conversation share one row:
 Rows end when the shim's stdin closes or it receives SIGTERM (3 s deadline),
 when a `SessionEnd` hook or Pi's `session_shutdown` ends them, or when the
 daemon's reaper finds a row unseen for 300 seconds whose `pid` is unknown or no
-longer alive. The shim marks its row seen every 60 seconds; hook-only rows and
+longer alive and that no open job of the app's queue names (the publisher of a
+version one of its steps recorded, or the asker of a question it waits on;
+`/api/jobs`). The shim marks its row seen every 60 seconds; hook-only rows and
 Pi rows get no heartbeat. An ended row is never revived. A shim or Pi
 extension whose row was ended under it registers a new row with the same
 harness session ID on its next tool call (see `unknown_session`), and a shim
@@ -1382,6 +1422,109 @@ when it does not finish, the first tool call registers instead. On
 `session_shutdown` the extension ends the row (3 s deadline). It sends no
 heartbeat: a row whose Pi process has exited without a clean shutdown is ended
 by the reaper.
+
+### The Clax app's agent
+
+The Clax app (`apps/clax_app`) runs Clax's core in its own process and its
+own agent on the device (see "The Clax app" under "Comments and
+feedback"). Its agent registers once the core is open: `POST /api/sessions` with `{"harness":
+"app", "harness_session_id": <install ID>, "cwd": <the app's application
+support directory>, "pid": <the app's PID>}`, where the install ID is a random UUID the app keeps in its support
+directory, so a reopened core or a restarted app reuses the live row. It creates
+apps with `X-Clax-Session` naming that row, so the session owns and watches
+them, and registers again when a call answers `unknown_session`. It has no
+hooks and no MCP, and sends no heartbeat.
+
+Comments sent to an `app` session wait on tier `wait` (`push` reports
+`{"tier": "wait", "available": true}`), armed or not: the app long-polls
+`GET /api/sessions/<sid>/feedback?tier=wait&wait=50` one poll at a time,
+and the thread reads "waiting on its next feedback poll". A row is
+acknowledged when that poll hands it over and is never resent; a change
+that the app's or the daemon's exit cut short is found again from the
+threads when the app starts (an open thread sent to the app's session,
+whose feedback is `acknowledged`, with no agent comment after its last
+viewer comment) and run again. The app replies, resolves, marks itself
+working and acknowledges with the session routes the shim uses. People
+see this agent as "Clax app", and its Toolpath steps carry the harness
+"Clax app" (company `anthropic`).
+
+**Runs.** The agent is a tool loop over the Claude API's Messages API, on
+the model chosen in the app's settings (Sonnet 5.5, `claude-sonnet-5-5`,
+on a new install). A new app's **first** run sets a plan and publishes a
+usable first version; **continue** runs then build the plan's remaining
+features in order, a few a run, each publishing a version, until none is
+left to build, the build has spent $6, or the person stops it. A comment
+sent to the app's session starts a **change** run. Up to three apps run at
+once, one run at a time per app. Each run has caps:
+
+| | First | Continue | Change |
+|---|---|---|---|
+| Model turns | 14 | 18 | 10 |
+| `render` calls | 4 | 5 | 3 |
+| Output tokens (also the task budget sent with each turn) | 48,000 | 64,000 | 32,000 |
+| Wall clock, not counting a question's wait | 150 s | 240 s | 120 s |
+| Cost | $1.50 | $1.50 | $1.50 |
+
+Once two turns or fewer remain, or 60% of the clock, the tokens or the cost
+is spent, the next tool results end with "Time is nearly up: call finish
+now with what works." At a cap the run stops calling the model: it
+publishes its last draft that rendered clean, replying that it stopped
+early and leaving the threads open, or, without one, publishes nothing and
+replies "Couldn't make that change: …", and the app offers Retry. On macOS
+without an API key, a debug build can instead make each change with one
+`claude -p` call (tools off) that returns the whole edit, without the
+tools, plan or caps below.
+
+**Tools**, declared in this order every turn: `plan_set`, `plan_mark`,
+`list_files`, `read_file`, `write_file`, `str_replace`, `delete_file`,
+`set_meta`, `add_kit`, `db_collections`, `db_list`, `db_get`, `db_query`,
+`db_write`, `render`, `ask`, `finish`, `give_up`. A refused call answers
+the model with the reason and the run goes on.
+
+- `plan_set` (the whole feature list) and `plan_mark` (`{id, status}`,
+  `todo`, `doing`, `done` or `dropped`) keep the app's plan, which the app
+  stores and the person edits while the build goes. The agent never
+  removes a feature the person added, nor takes up one they dropped.
+- The file tools and `set_meta` (title and capabilities) edit a **draft**
+  of the app, never the live version (see "Drafts" under "The Clax app").
+  `add_kit` copies parts of the vendored kit into the draft under `kit/`:
+  `preact` (Preact, its hooks and htm), `kit` (components and `kit.css`;
+  brings `preact` and `icons`), `chart`, `dates`, `icons` and `map` (a
+  slippy map whose tiles come through `net` as `blob:` images, so the app
+  declares its tile host, `tile.openstreetmap.org` by default), which pages
+  import by relative path (`./kit/preact.js`).
+- `icon.svg` among an app's files is its launcher icon: a square
+  `viewBox`, at most 32 KB, in a subset of SVG (shapes, paths, groups,
+  gradients, clip paths, masks, references within the file, and a single
+  glyph of `text`; no script, image, style, filter or animation), the
+  rules every publish checks ("Page contract").
+  `write_file` refuses one outside it. A first run writes one after its
+  first clean render; later runs change it only when asked.
+- `db_collections`, `db_list`, `db_get` and `db_query` read this app's
+  documents, or another app's by ID, at the owner's level with private
+  `data/users/<id>/` documents left out. The first message lists the other
+  apps that declare `db` by ID and title only, and the agent reads one
+  only once the owner has
+  allowed it (once, or always for that pair of apps), a consent separate
+  from any page's grant. `db_write` stages writes to this app alone: they
+  are applied to the draft's documents for rendering and to the app at
+  `finish`, each pinned to the version the run read.
+- `render` serves the draft and loads it in the app's hidden inspect view
+  (`?app=1&inspect=1`), then answers with a screenshot, the page's
+  uncaught errors and failed loads, an outline of its text, its title and
+  height. When that load is clean and the draft has tests
+  (`tests/<name>.test.js`, which `index.html` never loads), the tests then
+  run in a second load against a scratch copy of the documents (5 s a
+  test, 30 s in all), and the result adds `tests: {passed, failed:
+  [{name, error}], skipped}`.
+- `ask` is Clax's `ask` (see "Agent questions"), once per run.
+- `finish` is the only write to the live app: it publishes the draft
+  (`if_version` the run's base, `addresses` the threads), writes the staged
+  documents in one batch, replies on the threads (resolving them when
+  asked) and deletes the draft. It refuses a draft changed since its last
+  render, one whose last render had uncaught errors or failing tests, and
+  a new app without a title or `index.html`. `give_up` publishes nothing
+  and replies "Couldn't make that change: <reason>".
 
 ### No session
 
@@ -1599,6 +1742,38 @@ with the Comment button, nor one that closes after the artifact was deleted.
 Comment mode still ends when the viewer presses Comment or presses Escape
 with no composer open.
 
+On a touch screen, comment mode picks with a long-press: one finger held
+450 ms within 10 px of where it went down outlines the target under it (the
+same target rules as the pointer, oversized elements included), and lifting
+it there picks that target as a click would. The pick waits for the release
+because the browser grants user activation on `touchend`, not while a finger
+rests. The click the browser sends after the release picks, as a tap's does;
+when none comes within 400 ms (after a long-press on Android, say), comment
+mode moves focus into the page, as an area drag's press does, and picks what
+is under the finger itself. Moving beyond 10 px before the 450 ms, a second
+finger, or `touchcancel` abandons the hold (the page scrolls as usual); a
+release before 450 ms is an ordinary tap. Only the viewer's own touches
+count.
+
+A held finger that then moves beyond 10 px **drags**, and the page does
+not scroll while it does. When text was under the finger as the hold
+armed, the drag selects from that point to the text under the finger
+(shown in the outline's tint) and the release picks the range as a mouse
+selection is picked; from anywhere else it draws an area rectangle, as a
+mouse drag does, and the release picks the area. A drag whose range is
+empty, or whose area is too small to be one, picks what a tap at the
+arming point would. A second finger or `touchcancel` drops the drag, its
+selection and its rectangle. In a browser the release brings no click, so
+the shell would see no arrival of the finger on the frame: the release
+therefore keeps the selection, rectangle or outline with a **Comment**
+chip beside it, whose tap picks, and a touch elsewhere, a scroll or comment
+mode going off drops it. In the Clax app the app attests the finger (see
+"The viewer's gesture in the Clax app"), and the release picks at once. While a finger is held in comment mode,
+`selectstart` and `contextmenu` are cancelled, so a long-press neither
+selects text nor opens a menu, and while comment mode is on the page gets
+`-webkit-touch-callout: none`, so it opens no link callout. A mouse or pen
+keeps selecting text and opening its menu.
+
 Every HTML page of a version is commentable: `index.html` and every supporting
 file stored as `text/html` are served with the bridge (a fragment inside the
 document skeleton, a full document as written plus the bridge tag; a page that
@@ -1622,12 +1797,40 @@ labelled "on <file>", and opening one takes the frame to that page and scrolls
 to the thread. A thread detaches only when its anchor is not found on its own
 page.
 
+An element or range anchor's `quote` is the page's text nodes joined as they
+are, which re-anchoring matches, so text that runs from one element into
+another reads run together (`<b>Mon</b><span>5 km</span>` quotes `Mon5 km`).
+The bridge then also sends `label`, the quote as a reader sees it, with a
+space where its text runs into another element (`Mon 5 km`), whitespace
+collapsed; it is left out when it would read as the quote. The daemon stores
+it with the anchor and returns it with the thread; it is optional, at most
+2000 characters with no control characters or line separators, and must read
+as the quote, or its start, with only whitespace and control characters
+changed, or the thread is refused with `invalid_anchor`. Thread cards, the
+composer, the app's thread labels and the anchor summary show the label in
+place of the quote when there is one, and the quote otherwise (as for
+threads made before it existed).
+
+An element, range or area anchor may also carry `name`: what the picked
+element is called, read by the bridge at pick time. It is the element's
+accessible name (`aria-label`, `aria-labelledby`, `alt`, `title`, a table's
+or figure's caption), else the first 60 characters of its text as a reader
+sees it, else its kind word ("Chart", "Table", "Image", …) followed by
+` under ‘<heading>’`, the nearest heading before it, or the kind word alone;
+it is left out when the element has none of these (an area drawn on the
+document has none). The daemon stores it with the anchor and returns it
+with the thread; it is optional, at most 120 characters, not blank, with no
+control characters or line separators, or the thread is refused with
+`invalid_anchor`. The app titles a thread that quotes nothing by it, and
+never by its selector; a thread made before it existed reads by its kind
+word, else "A spot on the page".
+
 A comment can also be about the whole artifact ("make the colours warmer")
 rather than a spot on it. The threads panel opens with a **New comment** box
 for it: pressing it opens the usual composer in the panel, labelled "The
 whole artifact", with no screenshot. Its thread's anchor is `{"kind":
 "artifact"}`: every target field (`selector`, `quote`, `prefix`, `suffix`,
-`html_hash`, `rect`, `custom_name`, `area`, `route`) is null and `file` is
+`html_hash`, `rect`, `custom_name`, `area`, `route`, `label`, `name`) is null and `file` is
 empty, `""`, since it is on no page. A create may send the anchor without
 `file` (read as `index.html`) or with `file: ""`; the daemon stores `""`.
 An `artifact` anchor with any target field or another `file` is refused
@@ -2252,8 +2455,9 @@ Clax extension (not in claude.ai's contract; declared in
 `onWorking(fn)` report which agents are working on this artifact:
 `{working: boolean, agents: [{harness, label, message, since, threads,
 otherThreads}]}`. `threads` are handles of threads this document created;
-`otherThreads` counts the rest. `harness` is `claude`, `codex` or `pi`;
-`label` is its product name (`Claude Code`, `Codex`, `Pi`); `message` is
+`otherThreads` counts the rest. `harness` is `claude`, `codex`, `pi` or
+`app`; `label` is its product name (`Claude Code`, `Codex`, `Pi`, `Clax
+app`); `message` is
 the agent's message or `null`; `since` is when the work started. Available
 under either declaration form,
 without consent or gesture.
@@ -2292,6 +2496,677 @@ fragment (`/a/<id>/source.html#docs%2Fcontract.md`) opens the frame at it,
 back and forward carry it to the frame, and a fragment change inside the page
 (a link or a script) replaces the address bar's fragment without a history
 entry of the shell's own; copy link includes it.
+
+### The Clax app
+
+The Clax app (`apps/clax_app`, Android, macOS, iPhone and iPad) runs
+Clax's core, what `clax serve` runs without its listener, inside its own
+process (`crates/clax-embed`), with a home of its own, and shows each
+artifact full screen in a WebView that loads from a scheme the app answers
+(see "Security model" for its origins), at `/a/<id>?app=1`: the artifact view without
+chrome, driven by the app. `/a/<id>/v/<n>?app=1` and the page forms
+(`/a/<id>/<file>?app=1`) work the same way. Of the shell URL's query only
+`app=1` (with `inspect=1`, and `migrate=1`, in the inspect and migration
+views below) is carried as the view moves from page to page; any other
+query stays where it was given. The source of truth for this protocol is the
+header of `web/shell/src/app/host.ts`.
+
+**A call the app gives up on.** The app cancels a call to its core whose
+time limit passes, as a loopback timeout aborts its request. The call is
+never answered, and a cancel stops only a write whose store job has not
+started: one that has started commits, and its events follow. So a
+cancelled write's outcome is unknown, as a timed-out one's is: read before
+retrying.
+
+**The view.** With `app=1` in its query, the top-level shell document at an
+artifact path loads the app host module (`web/shell/src/app/host.ts`) and
+marks `<html class="app">`; a browser's view carries none of it, and no
+other document (a frame, another shell path) installs it. In app mode the
+top bar, the sidebar and the phone tabs are hidden, the frame fills the
+viewport, pins show only while comment mode is on, and the composer is a
+sheet docked at the bottom. The composer's primary button is **Send**: one
+press posts the thread and sends it to the agent the view sends to. When
+the send fails, the thread stays posted and unsent; the host hears
+`sendFailed` and may call `resend`.
+
+**Auto-follow.** When a newer version is published and the view is not
+pinned to a version, the view loads it in place at once (or, while a
+composer is open, once it closes), on the page and fragment the frame shows.
+After the welcome with `app: true`, a page reports its scroll position as
+`clax:scroll {file, y}`, at once and then at most every 250 ms while it
+scrolls. The first welcome of the newer version's page carries
+`restoreScroll: <y>` (CSS pixels), the last position that page reported, and
+the page scrolls there once its document is tall enough, or after 2 s as far
+as the document then reaches. Later welcomes of the same document carry
+none, so a re-greet never moves the page back. There is no
+`clax:restore-scroll` message.
+
+**Back.** The app's back button goes back through the app's own history,
+not the WebView's: the pages and fragments the page moved through in this
+shell document, and the routes it pushed with `history.pushState`, newest
+last, at most 50. `history {back}` tells the app whether there is one to go
+back to, and `back()` goes there. To a page or a fragment, the frame moves in
+place, without a history entry, as the shell's own back does; a version swap
+keeps them. After the welcome with `app: true`, the page's bridge watches its
+`history.pushState` and its own back and forward, and reports each move
+among its routes as `clax:route {depth, hash}`: `depth` is the number of the
+page's pushes above the entry it loaded at, `hash` its fragment. Each route
+is an entry of the app's history, and a move of the page's own back or
+forward drops the routes above it. To a route below, the shell sends the
+bridge `clax:back {depth}`, and the page goes back through its own entries
+to that route (`history.go`), hearing the `popstate` its router follows, so
+its own back and forward go on from there. Once a fragment entry lies among
+the page's routes, the bridge cannot count its entries, and moves in place
+instead: the entry is replaced with that route's URL and state, and the
+page hears a `popstate`. A page's routes leave the app's history when
+another document greets.
+
+**`window.claxHost`** (the app calls it by `runJavaScript` in the shell's
+document; a page cannot reach it, since its frame is cross-origin to the
+shell in subdomain mode and an opaque origin in sandbox mode):
+
+| Method | Effect |
+|---|---|
+| `init({nonce, platform?, native?})` | Starts the channel with this load's nonce (16 to 128 characters of `A-Z a-z 0-9 _ -`); only the first valid call in a document counts. It posts the current `state` and `threads` at once, `ready` when a page has greeted, and the latest `questions` when the question module has told any. `platform` names the app's platform (`"android"`, `"ios"`, `"macos"`); on `"macos"` the shell's controls show the arrow cursor. `native` lists the overlays the app draws itself (see "Native overlays" below). |
+| `setVisible(visible)` | Whether the app shows this view (see "Visibility" below). |
+| `enterCommentMode()` / `exitCommentMode()` | Turns comment mode on or off; nothing when it already is. |
+| `loadVersion(n)` | Shows version `n`, or the latest for `null`. |
+| `reloadLatest()` | Loads the latest version in place, keeping page, fragment and scroll, pinned or not, composer or not. |
+| `setDraftText(text, {composer?})` | Replaces the open composer's text; nothing without a composer. A focused text field of the questions sheet takes it instead (dictation into a question), unless `composer: true` (the app's composer typing). |
+| `submitDraft({text?})` | Presses Send on the open composer, waiting for its screenshot as Send does; with `text`, that is the comment (the app's composer). The thread is posted on the pick's anchor and screenshot. |
+| `cancelDraft()` | Closes the composer. |
+| `composeArtifact()` | Opens the composer on the whole app (an `artifact` anchor, labelled "The whole app", no screenshot), unless one holding typed text is open. |
+| `openThread(id)` | Selects the thread and brings it into view. |
+| `focusThread(id)` | The app's own thread view opened on thread `id`: its area stays outlined while the view is open, until `focusThread(null)` (the view closed) or comment mode ends. An ID of no listed thread clears it. |
+| `resend(id)` | Sends an open thread that is not yet sent (after `sendFailed`), as Send does. |
+| `attestPointer({pointer, phase, x, y})` | A real finger press (`down`), release (`up`) or cancelled touch (`cancel`, the system took it back) the app saw reach the WebView, at CSS pixels in its viewport (see "The viewer's gesture in the Clax app" below). |
+| `openQuestions({question?})` | Shows the questions sheet (see "Questions" below). With `question` (an ID), with that question's card in focus as soon as the shell knows it open, waiting until it shows, closes, or the sheet is closed; without, the cards there are, the first in focus. |
+| `closeQuestions()` | Closes the questions sheet and drops a waiting `openQuestions`. |
+| `inspect({settleMs?, maxBytes?})` | In the inspect view only: asks the page for an inspection, answered by `inspection` (see "The inspect view" below). |
+| `runTests({files, testMs?, totalMs?})` | In the inspect view only: runs the draft's test files, answered by `tests`. |
+| `runMigration({file, from, to, totalMs?})` | In the migration view only: runs a shared app's migration, answered by `migration` (see "The migration view" below). |
+| `deviceResult({id, ok, value})` / `deviceResult({id, ok: false, error: {code, message}})` | The app's answer to a `device` message; an ID no call waits on is dropped. |
+| `openRoute(hash)` | Moves the page to fragment `hash` (`#` and at most 511 more characters), as a tapped reminder asks. |
+| `back()` | Goes back in the app's own history (see "Back" above); nothing when there is nothing to go back to. |
+| `askAnswer(id, answer)` | Answers the prompt `ask` `id` posted: `"allow"`, `"deny"`, `"always"` (an Allow, kept as an Allow is) or `"dismiss"`. An ID other than the prompt shown, or one after its `askCancel`, changes nothing. |
+| `noticeAction(id)` | Runs the action a `notice` carried. |
+| `showDraft(by?)` / `hideDraft()` | The draft banner's Show draft (the draft of the agent named `by`, else the first) and Back. |
+
+**Messages to the app** go on the WebView's JavaScript channel `ClaxHost`
+(`window.ClaxHost.postMessage(<JSON>)`), and a page without it (a browser)
+drops them. Every message carries `nonce`:
+
+| `type` | Fields | When |
+|---|---|---|
+| `ready` | `artifact`, `version`, `latest`, `file` | Each document the frame loads greets. |
+| `state` | `commenting`, `draft: {key, kind, label, quote, text, clip: "pending" \| "ready" \| "none", byPage?: true, at?: {x, y, w, h}} \| null`, `busy` | Any change of those. `key` is the composer's identity (new for each pick); `kind` its anchor's kind; `label` says what the composer's anchor is in words (never a selector); `quote` is the text it quotes as a reader sees it (spaced, quote marks made `'`, at most 280 characters and "…"), or null; `byPage` marks a composer the page opened; `at` is where the viewer's pick is in the WebView, CSS pixels from its top left, where the shell last placed the pick's anchor in the page (as it places the threads', so it follows the page's scrolling; the app places its composer by it; none for a composer the page opened, one on the whole app, or a pick not placed). |
+| `draftClip` | `key`, `png` (base64) | The open composer `key`'s screenshot, once per screenshot taken, and again at `init`. |
+| `threads` | `threads: [{id, status, summary, label, sent, comments, version, clip}]` | Any change of the view's threads. `summary` is the first comment cut to 140 characters; `label` the anchor in words; `clip` whether it has a screenshot. |
+| `sent` | `thread` | Send posted a thread and sent it to the agent. |
+| `sendFailed` | `thread`, `text` | The send failed; the thread stays posted and unsent until `resend`. |
+| `landed` | `version` | The page of a version auto-follow loaded has greeted. |
+| `notice` | `text`; with `notice` native, `tone` (`"error"` for every shell notice so far, or `"info"`) and `action?: {id, label}` | A shell notice (a failed post, a failed follow, …). When the composer cancels a post it queued behind its screenshot (its text changed, or it moved to another anchor), a fresh `Not sent: …` notice each time, so the app's Send stops waiting on it. A failed follow carries the action Try again. |
+| `history` | `back` | Whether `back()` has a page, fragment or route to go back to; at `init`, and whenever that changes. |
+| `device` | `id`, `cap`, `method`, `args` | The page called a device capability (see "Device capabilities in the Clax app" below). Calls made before `init` are posted by it. Not in the inspect view. |
+| `questions` | `open`, `showing`; with `questions` native, `ids` and `raise` | How many of the owner's open questions are about the artifact, and whether the questions sheet shows; posted whenever either changes. With `questions` native, `showing` is false, `ids` lists the open questions' IDs, and `raise` is true when one of them was not open before in this view and the app shows the view (`setVisible`); the first count of a load raises none. |
+| `ask` | `id`, `kind` (`"capability"`, `"download"`, `"crossRead"`, `"sample"`, `"comments"`), `title`, `body`, `allow`, `deny`, `always?`, `armMs` | With `ask` native: a page's consent prompt reached the head of the queue. `always` labels an "always" choice where an Allow is kept; `armMs` (500) is how long Allow stays disabled. `askAnswer` answers. |
+| `askCancel` | `id` | With `ask` native: prompt `id` ended without the app's answer (its page went away, or the view is unloading). |
+| `draft` | `state`: `null`, `{kind: "drafting", by, note?}` or `{kind: "showing", by, base, detail}` | With `draft` native: whenever the draft banner's text would change. `by` is the agent's name ("Clax" for the app's own). |
+| `gone` | none | When `init` gave `native` (even an empty list): once, when the artifact is deleted. |
+| `chrome` | `top`, `bottom` (`#rrggbb`, lowercase) | The page's background at the middle of the viewport's top and bottom edges (the first opaque background from the element there up to the root, else white), which the app paints the system's status and navigation bars in: on the page's first paint, whenever either changes, and the latest again at `init`. |
+| `pageWait` | `waiting` | `true` once a page still parsing (its own scripts slow the parse) has held up what the view asked of it, such as comment mode or a `use()`, for 400 ms, and again at `init` while it does; `false` when the parse ends or the page goes. A shorter wait is never posted. |
+| `inspection` | `png`, `errors`, `failed`, `text`, `title`, `height`; or `error` | The answer to `inspect`. |
+| `tests` | `passed`, `failed: [{name, error}]`, `skipped`; or `error` | The answer to `runTests`. |
+| `migration` | `ok: true`; or `ok: false`, `error` | The answer to `runMigration`. |
+
+**The channel and its nonce.** The WebView injects `ClaxHost` into every
+frame, the artifact's page included, so the page can post on it too. The
+app therefore makes a fresh random nonce for each load of the shell
+document and, once that document has loaded, calls `claxHost.init({nonce})`
+in the main frame. Before `init` the shell posts nothing; from then on every
+message carries the nonce, and a second `init` in the same document is
+ignored. The app drops every message without this load's nonce, and every
+message before its `init`. The shell never posts the nonce to the frame.
+
+**Visibility.** A WebView may report the shell's document hidden while the
+app shows it (macOS's does from load on), and a page hidden for 30 s stops
+following its artifact, so no change would land. From `init` on, the shell
+counts itself visible unless the app says otherwise with
+`setVisible(false)` (the app paused or hidden, or its screen not shown);
+`setVisible(true)` follows the artifact's events again and fetches what it
+missed. Before `init` the document's own visibility applies.
+
+**Questions.** The owner's open agent questions about the artifact are the
+shell's own question cards (see "Agent questions"), which a browser shows
+in the sidebar. App mode has no sidebar, so the cards dock in a sheet at
+the bottom, over the composer, closed until `openQuestions`. The person
+closes it (its Close button, Escape), the app does (`closeQuestions`, on
+Android's back before anything else), and it closes by itself once no
+card is left. The shell posts `questions {open, showing}` whenever either
+changes, from `init` on; until the question module has loaded (after the
+first paint, in the owner's view only) none is posted. A question about
+no artifact, or about another app, the app shows in its own question
+sheet: a WebView of the shell's inbox at that one question
+(`/inbox?q=<question ID>`), whose top level may be only that inbox, which
+closes once the question is answered, declined or withdrawn.
+
+**Native overlays.** `init`'s `native` lists the overlays the app draws
+itself, any of `"ask"` (a page's consent prompt), `"questions"`,
+`"notice"` and `"draft"` (the draft banner). The shell draws none of
+those and posts them instead (`ask` and `askCancel`, `notice` with `tone`,
+`questions` with `ids` and `raise`, `draft`); with `"questions"` it builds
+no questions sheet, and the app never calls `openQuestions` or
+`closeQuestions`. An overlay the app leaves out keeps its web version, as
+every overlay does for an app that sends no `native`. The inspect view
+draws and posts none of them.
+
+**The inspect view.** With `inspect=1` beside `app=1`
+(`/a/<id>?app=1&inspect=1`), the app loads a draft (see "Drafts" below)
+in a WebView the person never sees, to check what its agent made. The view
+shows no comment UI (no comment mode, composer or pins), follows no events
+and no newer version, answers every consent prompt "Don't allow" without
+showing it, offers no device capability and no questions sheet.
+`inspect({settleMs, maxBytes})` asks the page's bridge for an inspection
+once the page's DOM has been still for 300 ms, or after `settleMs` (3,000
+by default, at most 10,000), and posts it as `inspection`: `png`, the
+viewport (a base64 PNG of at most `maxBytes`, 1 MiB by default, at most
+16 MiB); `errors`, the page's newest 20 uncaught errors, unhandled
+rejections and `console.error` calls since its first script, each
+`{kind, text}` (`kind` `error`, `unhandledrejection` or `console`) cut to
+501 characters; `failed`, the URLs that failed
+to load; `text`, an outline of what it shows (at most 3 KiB); `title`;
+and `height`, its scroll height in CSS pixels. Or `{error}` when there is
+none. `runTests({files, testMs, totalMs})` runs the draft's test files
+(`tests/<name>.test.js`, at most 50) with the bridge's harness, each test
+for at most `testMs` (at most 30 s) and the run for at most `totalMs` (at
+most 120 s), and posts `tests`: how many `passed`, each that `failed` (or
+file that did not load) with its error, and how many were `skipped` for
+lack of time. The harness gives tests `test(name, fn)`, `expect(v)` with
+`toBe`, `toEqual`, `toBeTruthy`, `toContain` and `toBeGreaterThan`, and
+`ui` with `click(selectorOrText)`, `type(selector, text)`,
+`text(selector?)`, `exists(selector)`, `waitFor(fn, ms)` and `go(hash)`.
+The answers are taken only from the content frame, only for the latest
+request, and only in these shapes; the page shares the bridge's window, so
+it could answer in its place, but it can describe only itself. Outside the
+inspect view both answer an error and ask nothing.
+
+**The migration view.** With `migrate=1` beside `app=1` and `inspect=1`
+(`/a/<id>?app=1&inspect=1&migrate=1`; the first `app`, `inspect` and
+`migrate` of the query count) the inspect view is the migration view, in
+which the app runs a shared app's `migrate.js` (see "Sharing apps" below),
+on an update's draft or on the app itself. Everything the inspect view
+does holds there too. Its content frame is named `clax-migrate`, by the
+shell (`web/shell/src/view/frame-host.ts`) and by the daemon's boot
+(`frame_name` in `crates/clax-server/src/boot.rs`) alike; in the inspect
+view it is `clax-inspect`, elsewhere unnamed. In a framed document named
+`clax-migrate` that is still parsing, the bridge, the page's first
+script, writes `<plaintext hidden>`: the rest of the document parses as
+hidden text, so none of the page's own markup or scripts run, and only
+the migration writes its documents. The page still greets (`ready`).
+`runMigration({file, from, to, totalMs})` asks the bridge
+(`web/bridge/src/harness.ts`) to import `file` as a module, relative to
+the page, and call its default export with the page's
+`window.claude.use("db")` and `{from, to}`; the whole run, the load
+included, takes at most `totalMs` (30,000 by default, at most 120,000).
+`file` is a path in the app of at most 200 characters ending in `.js`,
+with no empty, `.` or `..` segment; `from` and `to` are integers of at
+least 1. It posts `migration`: `{ok: true}` once the call returns or its
+promise resolves, or `{ok: false, error}` (cut to 501 characters) when the file
+did not load, has no default export function, the page's `db` was not
+available, the call threw or rejected, or time ran out. Outside the
+migration view, with arguments of another shape, or before the page has
+greeted, it posts `{ok: false, error}` and asks nothing. The answer is
+taken as `tests` is: only from the content frame, only for the latest
+request, only in this shape. The bridge runs a migration only in a frame
+named `clax-migrate`. The app's `Inspector.runMigration` loads the
+view, calls `runMigration`, and on every outcome (an answer, its time
+running out, a cancel) loads the view once more and waits for its
+`ready` before it returns, so no code of the run still writes.
+With `journal: true` (an update's live run) every `db` write of the page,
+through any handle, first posts `journal` `{seq, path, before}` (`before`
+the document's data, null when there is none) and waits for the app's
+`journalAck({seq, ok})`; `ok: false`, or the run's answer coming first,
+fails the write, and once the run has answered every later write in that
+document fails. `restoreJournal({entries})` (the migration view only;
+at most 20,000 `{path, before}`) writes the entries back in reverse
+order as this viewer, `before` set last-writer-wins or the document
+deleted when `before` is null, and posts `journalRestored` `{ok: true}`
+or `{ok: false, error}`.
+
+**Drafts.** The app's agent works on a **draft**: an ordinary artifact,
+published, rendered and read like any other, but hidden. All of its routes
+need the token:
+
+- `POST /api/drafts` with `{of, title, capabilities, files, inherit_net?}`
+  (`inherit_net` false keeps the draft offline, see "Fetching from the
+  network"; `of` the app's ID, absent or `null` for a new app; each file a string or a
+  publish's `{content, encoding, content_type}`) answers 201 `{draft: {id,
+  of, version, docs_copied, docs_truncated}}`: its version 1 holds
+  `files`, and it starts with a copy of `of`'s documents as the owner reads
+  them, private `data/users/<id>/` subtrees left out, up to 2,000 documents
+  or 8 MiB (`docs_truncated` says the copy stopped, or that `of`'s rules
+  did not parse and nothing was copied). Writes its page makes land in the
+  copy only. 404 when `of` is missing, 400 `invalid_args` when `of` is a
+  draft, and a publish's validation errors otherwise.
+- Later versions are published as to any artifact (`POST
+  /api/artifacts/<draft>/versions`), without a session: one naming a
+  session is 403 `draft`.
+- `GET /api/drafts` answers `{drafts: [{id, of, created_at}]}`, oldest
+  first; `DELETE /api/drafts/<id>` removes a draft, its versions' files and
+  its documents for good (`{deleted: true}`; 404 when `id` is no draft).
+  The daemon deletes drafts older than an hour at start and hourly, and
+  the app deletes the ones an earlier run of it left when its agent first
+  registers.
+- `POST /api/drafts/<id>/renders` with `{digest, errors, failed_tests}`
+  records the app's render of the draft's files (403 `not_for_agents` to
+  the owner's agents): `digest` is `sha256:` and the hex SHA-256 of one
+  line `<path>\0<sha256 hex>\0<size>\n` per file but `icon.svg`, in byte
+  order of path (a version's `content_sha256` for the same files), and
+  the render is clean when `errors` (a list) is empty and `failed_tests`
+  is 0. A later render of the same digest replaces it. Answers `{render:
+  {draft_id, digest, clean}}`; 404 when `id` is no draft, 400
+  `invalid_args` for a malformed digest. A publish step naming the draft
+  needs a clean one (below).
+
+A draft is left out of `GET /api/artifacts`, the `gallery` topic, the
+`list` tool, inbox items, sessions' watches and feedback; `/api/events`
+carries its events only to a request with the token that names it in
+`artifact=`, and its `/api/stream` topics need the token or the events
+cookie (404 otherwise). A thread on it is 403 `draft`. Its documents are a
+copy of the app's at the owner's level, so whatever rules the draft
+declares, reading, listing or writing them without the token is 404, and
+no app reads a draft through `X-Clax-Reader`. A draft reads no other app's
+documents either, whatever its app may read (403 `not_granted`): what a
+render reads reaches the agent, and an app's grant is not the owner's
+consent to that. Its `net.fetch` alone uses its app's grants: a host is
+reachable while the draft declares it and the owner's grant to the live
+app stands (see "Fetching from the network"); nobody is asked, and a new
+app's draft reaches nothing.
+
+**Jobs.** The app's queue of makes and changes runs over jobs the core
+keeps: each job's row (`state`, `step`, `plan`, `carry`, `error`, its
+threads and questions, and `rev`, one more at every write) is the truth
+about it, and its steps are committed by key. Every route needs the
+token and refuses the owner's agents (403 `not_for_agents`); every write
+of a client's job also needs that client's **queue owner** token in
+`x-clax-jobs-owner`, else 409 `not_owner`. A write answers `{job: {job,
+steps, threads, questions}}`, the job after it; a final job (`cancelled`,
+`done`) refuses every write with 409 `job_moved` and the job.
+
+The queue owner: one claimant per client, kept in memory only (a crash, a
+close or a reopen of the core forgets every claim), tied to an
+`/api/stream` connection the claimant holds (its `ready` block names the
+stream). A claim while another claim's stream lives is 409 `owner_held`,
+and that stream is sent a keep-alive at once, so a holder whose reader is
+gone is noticed then; a claim by the stream that holds it answers its
+token again. The claim is released when its stream's connection ends, or
+by `DELETE /api/jobs/owner`. A release, or a claim that replaces one
+whose stream is gone, admits no write under the old token from then on.
+While writes admitted under the old one are still running (each ends with
+the store work it does, even when its request is dropped), the new claim
+answers 409 `owner_draining` at once, as does any later claim of its
+stream, and its token admits no write; `jobs_owner` `{client, held:
+true}` is published when the last of them ends, and the stream's next
+claim answers its token. That event may reach the stream before the
+claim's 409 does: a `held: true` for the client heard after the claim was
+sent counts, so on `owner_draining` a worker that has heard one claims
+again at once, and otherwise waits for it. So none of them lands after the new owner holds
+the queue, and no claim waits on a write. The owner-only `jobs`
+stream topic carries `job` `{id, client, state, step, rev}` after every
+committed write of a job, whichever path made it (a job route, a
+question's close, a delete that cancels the job), and `jobs_owner`
+`{client, held}` at each claim that holds the queue, each drain's end
+and each release. A claim first subscribes
+the claimant's stream to `jobs` (400 `no_such_stream` when the stream is
+not the caller's), so a worker refused with `owner_held` hears the
+`held: false` it waits for, however soon it comes, and claims again.
+
+A **step** is idempotent by its key: committing a key the job already has
+answers the step as recorded with `replayed: true` and changes nothing. A
+step's commit clears the job's `error`: a job retried keeps its error,
+naming the step refused before, until its next step commits. A
+publish step's version and a reply step's comments commit in one
+transaction with the step: either both exist, or neither does.
+
+| Route | Caller | Body | Answer |
+|---|---|---|---|
+| `POST /api/jobs/owner` | token | `{client, stream}` | `{owner}` (32 hex characters); 409 `owner_held`; 409 `owner_draining` while the old owner's writes run; 400 `no_such_stream` when the hub holds no connection of `stream` |
+| `DELETE /api/jobs/owner` | token, `x-clax-jobs-owner` | — | 204, the claim that token holds released |
+| `POST /api/jobs` | token, owner token | `{id, client, kind, artifact_id?, title?, input, plan?}` | 201 `{job}` in `queued`; the same `id` and body again 200; another body 409 `job_exists`; 400 `invalid_artifact` |
+| `GET /api/jobs?open=1&client=<c>` | token | — | `{jobs: [{job, steps, threads, questions}]}`, the client's jobs neither `cancelled` nor `done`, oldest first, each question `{question_id, tool_use_id, answer}`; 400 `invalid_query` without `open=1` and `client` |
+| `GET /api/jobs/<id>` | token | — | `{job}`; 404 |
+| `PATCH /api/jobs/<id>` | token, owner token | `{if_rev, state?, step?, title?, plan?, carry?, error?}` (`null` clears a field) | `{job}`; 409 `job_moved` with the job when it is not at `if_rev`; 400 `invalid_move` for `queued`, `waiting` or `done`; a move to `running` lands in `waiting` while a question it asked is open |
+| `PUT /api/jobs/<id>/threads/<tid>` | token, owner token | `{comment_id, stopped?}` | `{job}`; 400 `invalid_thread` |
+| `DELETE /api/jobs/<id>/threads/<tid>` | token, owner token | — | `{job}` |
+| `PUT /api/jobs/<id>/questions/<qid>` | token, owner token | — | `{job}`, a `running` job `waiting` while the question is open (its answer, decline or withdrawal, `job_end` when the job ends first, is stored in the job and moves it back); 400 `invalid_question` for a question not of the `ask` tool or another job's |
+| `POST /api/jobs/<id>/steps/<key>` | token, owner token | `{result?, publish?, reply?, state?}`, one of `result`, `publish` and `reply`; `state` only `"done"` | `{job, step: {key, result, version_n, created_at}, replayed, version?}`; 409 `version_moved` `{current}`, `doc_moved` `{path}`, `not_rendered_clean`, `job_moved`, `version_present`; 400 `invalid_step` |
+| `GET /api/agent-read-consents` | token | — | `{consents: [{reader, source}]}` |
+| `PUT /api/agent-read-consents/<reader>/<source>` | token | — | 204; 404 when either artifact is missing |
+| `DELETE /api/agent-read-consents/<reader>/<source>` | token | — | `{deleted}` |
+| `POST /api/client-imports/<key>` | token, owner token | `{client, files}` | `{import: {already, jobs, consents, skipped, left_out, done_at}}`; 400 `invalid_args` |
+
+**The app's JSON state, imported once.** `POST
+/api/client-imports/app-json-v1` with `{client: "app", files}` imports
+the state files the app kept before its queue ran on these jobs: `files`
+maps each of `pending-make.json`, `plans.json`, `unfinished.json`,
+`change-ledger.json`, `asked.json`, `stopped.json` and
+`agent-read-consent.json` the app holds to its text, as the app wrote it.
+In one transaction with the import's record, pending makes become
+`queued` make jobs; a plan becomes its make's `plan`, or, while it has
+features to build, a `stopped` make job holding it; an unfinished change
+becomes a `stopped` change job carrying it (a `build:<app>` entry, its
+make's carry); a ledger record becomes a change job with its
+`publish:<base>` step when version `base + 1` is the one it made, and its
+`reply` step, then `done`, when its documents and reply landed too, else
+`queued`; an asked question's entry becomes a change job holding the
+question, `waiting` while it is open; a stopped thread becomes a
+`cancelled` change job with the thread `stopped`; consents become read
+consents. Jobs are `json-` and 24 hex digits derived from the file and the
+entry. The rows' JSON is `input: {request, base, threads: {thread ID:
+comment ID}}`, `plan: {plan_rest, data}` and `carry: {stops,
+can_keep_going, data}`, `data` the entry as the file kept it. `skipped`
+names the files that did not parse; `left_out` the entries naming an app,
+thread or question the core no longer holds, and those the app would not
+run again (a question an earlier entry names, or one not of the `ask`
+tool, among them). A key imported before
+answers its summary with `already: true` and changes nothing, so the app
+may delete its files after any 200. Another key or client, or a file of
+another name, is 400 `invalid_args`.
+
+A **publish step** is `publish: {artifact_id (null: a new app), base,
+request, docs?, draft?, session_id?}`: `request` is a publish's body,
+`base` the version it was planned on (0 for a new app), `docs` document
+writes as `docs:batch` takes them (`{op, path, data?, if_version?}`), each
+pinned to the version it was planned on. The version's files are written
+first; then one transaction checks the artifact is still at `base` (409
+`version_moved` with `current` otherwise), records the version, applies
+the writes (a document that moved refuses the whole step, 409 `doc_moved`
+with its `path`), inserts the step with the version's number, and moves
+the job one `rev` on, setting its `artifact_id` to a new app's. With
+`draft: {id, digest}` (the draft the files were rendered from) the step is
+refused first, 409 `not_rendered_clean`, unless the draft has a clean
+render with `digest` and the version's files (the request's and those it
+carries from `base`) have that digest; a step without `draft` has no
+render gate. `version`
+and `step.result` (`{artifact_id, version, docs}`) name what it made. A
+new app's `request` needs a title (400 `invalid_args`). With
+`session_id` (a live session of the owner's, 400 `unknown_session`
+otherwise) the step does for that session what a publish from it does:
+the threads it was working on are linked to the version and its working
+records on the artifact end, its draft of the artifact ends, it watches
+the artifact, and the artifact's untargeted feedback is targeted to it. A
+**reply step** is `reply: {threads, body, resolve?, ack?, session_id?}`.
+It is made from the session that published the version of the job's last
+publish step, which the core keeps live while the job is open, so a
+worker relaunched under a new session still answers that session's
+feedback. When that session has ended (the person ended it, its grant was
+revoked) or the version names none (a change imported from the app's
+ledger), it is made from `session_id`, a live session of the owner's: the
+one the worker registered at its launch. A worker sends its own session
+in every reply step; the core uses it only then, but a `session_id` sent
+must name a live session of the owner's (400 `unknown_session`,
+`foreign_session` for an agent grant's). 400 `invalid_step` when the job
+has no publish step; `unknown_session` when the version names no live
+session and no `session_id` is sent. A key already committed answers as
+recorded whatever `session_id` names. In one
+transaction: that session's agent reply `body` on each thread (each a
+thread of the job's artifact, 400 `invalid_thread` otherwise), each thread
+resolved when `resolve`, the session's feedback on them and on the
+comments `ack` acknowledged, and the step (`result: {comments:
+[{thread_id, comment_id}], resolved}`). The `version`, `doc`, `comment`
+and `thread` events follow the commit.
+
+**Navigation.** The app lets the top level of its WebView be only the
+shell's app view on the shell's own origin: the path `/a/<id>[/v/<n>][/<file>]`
+with `app=1` in its query. Any other top-level navigation is refused,
+and a refused `http`, `https` or `mailto` link to a host off the device opens
+in the system browser. Frames inside the page navigate freely. A main frame
+that fails to load, or whose web content process ends, is loaded again once;
+a second failure within 10 s waits for the person's Reload.
+
+**The viewer's gesture in the Clax app.** On Android a finger on the
+cross-origin frame sends the shell no events, and a long-press may end with
+no click, so the shell would count no arrival of the finger on the frame and
+refuse the pick. In app mode the app attests each real finger press and
+release over the WebView (`attestPointer`). A press that lands on the frame
+itself (not on a shell control over it, and not within 24 px of a press the
+shell itself saw within the last second) counts as the pointer's arrival on the
+frame while that finger stays down (at most 30 s, `HELD_MAX_MS`), so a hold
+that then drags for seconds still picks, and its release counts for one second
+after it (`ATTEST_MS`); a release whose press did not count never does, and a
+`cancel` ends the press and counts as nothing. Only an attestation made after
+the viewer's latest input to the shell counts. The attestations arrive by
+`runJavaScript`, in no fixed order with the frame's messages, so a pick that
+finds no counted arrival while an attested press awaits its release waits
+briefly for that release and is judged again. The other conditions of "The
+viewer's gesture" still hold, and outside app mode no attestation exists.
+
+### Sharing apps
+
+The Clax app sends an app to another Clax install as one file, a
+**bundle** (`<slug>.clax`, MIME `application/vnd.empathic.clax+zip`), and
+installs and updates apps from such files. All of it is the app's own
+(`apps/clax_app/lib/bundle/`): the core adds no route for it, and a
+bundle's app is published, drafted, inspected and tested through the
+routes and views above. No server, directory or update check is involved:
+a bundle travels as a file, and an update is a later bundle the person
+opens.
+
+**What a bundle holds.** A zip (PKWARE APPNOTE 6.3: no zip64, encryption,
+directory entries, extra fields or comments; each entry `stored` or
+`deflate`d, every timestamp 1980-01-01 00:00) of exactly these entries, in
+this order:
+
+| Entry | Content |
+|---|---|
+| `manifest.json` | The manifest, UTF-8 JSON without a byte order mark. |
+| `manifest.sig` | The signature: 86 base64url characters, no padding, no newline. |
+| `files/<path>` | Each file of the app's live version, `index.html` included, in byte order of path. |
+| `seed.jsonl` | The sender's documents, only when they chose to include them. |
+
+The manifest's keys, all present, none other: `format` (1); `lineage`
+(`l_` and 16 random bytes in lower-case base32, 26 characters, fixed at
+the app's first export); `version` (an integer from 1); `title` (1 to 200
+characters); `icon` (`{svg, word}`: `svg` is `"icon.svg"` when the bundle
+carries that file, else null; `word` an icon word or null);
+`capabilities` (the version's declaration, as the daemon takes it);
+`kit` (the content hash of the files under `kit/`, or null; recorded
+only, since the kit travels as the app's own files); `files` (path to
+`{sha256, size, type}`, 1 to 512 files, each at most 16 MiB and 64 MiB in
+all, paths unique ignoring case); `content_sha256`; `seed` (null, or
+`{sha256, size, docs}` of `seed.jsonl`); `author` (`{key, name}`: the raw
+Ed25519 public key in base64url, and the sender's name for themselves or
+null, at most 64 characters); and `forked_from` (null, or `{lineage,
+version, key}` of the app a fork was made from). A path is relative and
+`/`-separated, at most 200 characters of ASCII letters, digits and `_ . -
+/`, starts with a letter, digit or `_`, and has no empty, `.` or `..`
+segment. The title and the name may hold no control or bidirectional
+characters.
+
+`content_sha256` is the version's content hash as the daemon reports it
+("Versions, seen marks and attention"): `sha256:` and the hex SHA-256 of
+one line `<path>\0<sha256 hex>\0<size>\n` per file in byte order of path.
+The signature is Ed25519 (RFC 8032, pure) by the author key over the 14
+bytes `clax-bundle/1\n` followed by the exact bytes of the `manifest.json`
+entry; the manifest holds every file's hash and the seed's, so it covers
+them all. `seed.jsonl` is one line per document, sorted by path in byte
+order, each `{"path": "<collection>/<doc>[/…]", "data": {…}}`: the
+app's documents at the owner's level, never under `data/users/`, at most
+2,000 documents and 8 MiB.
+
+A bundle never carries the person's API key, the bundle key, owner
+grants, comment threads, versions other than the live one, or another
+app's data. Cross-app reads are not shared: export removes `read` and
+`share` from the `db` declaration (the author's own app keeps them), and
+a bundle whose `db` declares either is refused. A page that calls
+`db.artifact(id)` then gets `not_declared` on the recipient's install.
+
+**Reading a bundle.** Nothing is written to disk while a bundle is read;
+checks run in this order, and the first that fails refuses the file with
+its code:
+
+1. The file is at most 32 MiB (`too_large`) and a zip of at most 515
+   entries of the names above, none repeated, each `stored` or `deflate`d,
+   with matching local and central headers and no bytes outside them
+   (`not_a_bundle`).
+2. `manifest.json` inflates to at most 256 KiB and follows the rules
+   above (`bad_manifest`); a `format` above 1 is `too_new`; a `db`
+   declaring `read` or `share` is `not_shareable`.
+3. `manifest.sig` is the author key's signature, verified strictly: a key
+   of small order, a non-canonical `S` or a non-canonical point encoding
+   fails (`bad_signature`).
+4. Each `files/<path>` entry is present for every manifest path and no
+   other, inflates to exactly its `size` (inflating stops past it,
+   whatever the zip header says), and matches its hash; the files' content
+   hash matches `content_sha256` (`bad_file`).
+5. `seed.jsonl` is present exactly when `seed` is not null, matches its
+   size, hash and line count, and each line is `{path, data}` with `data`
+   an object and a unique document path not under `data/users/`
+   (`bad_seed`).
+
+An `icon.svg` that cannot be drawn is shown as the app's tile face rather
+than refused.
+
+**Identity and trust.** Each install has its own Ed25519 key, made from
+a secure random seed at its first export and kept in the platform's
+secure storage (`bundle_signing_seed`); it never reaches the core, a
+WebView or a bundle. Its **fingerprint** is the first 10 bytes of the
+SHA-256 of the public key, in upper-case base32, as four groups of four
+(`7KQ2-M9XD-4FTA-QW3B`). Trust is first use per lineage: the key of the
+first bundle of a lineage an install takes is the only key that may update
+that app, and the sender's name is shown only beside the fingerprint, as
+their own claim. A bundle opened in Clax is answered by the first of these
+that applies:
+
+| Case | Answer |
+|---|---|
+| An app this install authors has the lineage, under the bundle's key | `own`: "This is your app <title>.", Open. |
+| An installed app has the lineage and key, and the bundle's version is higher | `update` (below). |
+| The same lineage and key at the same version, with the same content hash, title and capabilities | `current`: "You already have v<N>.", Open. |
+| The same version, any of those differing | `conflict`: not installed. |
+| The same lineage and key, the bundle's version lower | `older`: not installed; Versions goes back instead. |
+| A fork made here names the lineage and key as its original | `forked`: offered as a separate app. |
+| A local app has the lineage under another key | `foreign`: offered as a separate app. |
+| None of these | `install`. |
+
+A separate install is a new app with its own record of the bundle's
+lineage and key, so that key's later bundles update it; two local apps
+may then share a lineage under different keys. Deleting an app forgets
+its record, its kept bundle and any document snapshot (on the
+`artifact_deleted` event).
+
+**Installing.** The install sheet shows the icon, the title, `v<N>`,
+"From <name> · <fingerprint>" (or "From <fingerprint>", or "From you"
+for this install's own key), each declared capability in words with
+`net`'s hosts by name, and "Comes with <d> documents" when seeded. Install
+creates the app with the app session, so the recipient's agent can
+change it later, with the bundle's title, icon word, capabilities and
+files (each with its manifest type), labelled `v<N> from <who>`. The
+published version must report the manifest's `content_sha256`, else the
+app is deleted and the install fails. Seed documents are then written in
+`docs:batch` calls of 50. A failure at any step deletes the app. A 400
+`invalid_capabilities` (a capability this Clax does not know) is "This
+app needs a newer Clax". No check runs on a first install. Installing and
+using an app needs no API key; changing it, or `sample`, does.
+
+**Updating.** An installed app is **unmodified** when its live version's
+content hash is one this lineage released here and its capabilities equal
+the latest release's; restoring an earlier release keeps it unmodified,
+and any other change makes it modified. An unmodified app asks "Update
+<title> to v<N>?", listing what the new declaration adds (new
+capabilities, new `net` hosts); a modified one, or one whose updates were
+stopped, asks **Update (replaces your changes)** or **Keep mine (stop
+updates for this app)**, and a later bundle asks again, saying when the
+changes were kept. An update is refused while the app's agent is changing
+it, and runs these steps:
+
+1. A draft of the app with the update's files and a copy of the person's
+   documents (`POST /api/drafts`).
+2. When the bundle has `migrate.js`: the migration view runs it on the
+   draft with `from` the installed lineage version and `to` the bundle's,
+   for at most 30 s.
+3. The draft's page is inspected; any uncaught error fails.
+4. When the bundle has `tests/*.test.js`: they run on the draft; a failed
+   test fails, and so does one left unrun.
+5. The draft is deleted, pass or fail. On a failure nothing is
+   published: "v<N> didn't pass its checks on your data: <reason>. Your
+   app is unchanged.", with Details.
+6. When the bundle has `migrate.js`, every document of the app at the
+   owner's level is snapshotted to a file. The update is published over
+   the live version (`if_version`), with a `null` entry for each live file
+   the bundle lacks, labelled `Update v<N>`; a 409 is "<title> changed
+   while the update was checked".
+7. `migrate.js` runs once more, on the app itself, in the migration view,
+   while the app's screen shows an "Updating…" cover with no page running
+   and the agent is held off the app. If it fails, the documents are put
+   back from the snapshot (each document the snapshot lacks deleted, then
+   each snapshot document `set`) and the version before the update with
+   it: its files, title, icon and capabilities are published again: "<title> is back on v<M>
+   with your data as it was". The run is journaled (the token cannot
+   reach the person's private `data/users/<id>/` documents): each write
+   waits until the app has synced the document's prior value to disk,
+   and the rollback replays those of `data/users/` through the migration
+   view as the person. A snapshot still present when the
+   app starts (it ended during the run) is restored then, and the person
+   told once, when the update's version is still the live one and no
+   restore of it failed before; otherwise the person chooses Restore or
+   Discard, since the documents may have changed since. A kept snapshot
+   is never overwritten: the app takes no update until it is resolved.
+
+The person's documents stay through an update; seed documents in an
+update bundle are ignored. The earlier versions stay in Versions. A
+capability already allowed stays allowed; an added one asks at its first
+use, as any capability does.
+
+**`migrate.js`.** An app file at the root that `index.html` never loads,
+written by the agent when a change alters the shape of stored documents:
+
+```js
+export default async function migrate(db, { from, to }) {
+  // db is window.claude.use("db"). Upgrade documents of any earlier shape.
+}
+```
+
+Each run starts from documents no run has changed (the draft's fresh
+copy, or the live documents a failed run was rolled back from), so it
+need not be idempotent. In the migration view none of the page's own
+markup runs, so only the migration writes.
+
+**Sharing, re-sharing and forking.** Share app (on a phone, through the
+share sheet) or Export… (on the Mac, to a file) is on a tile's long press
+and on the inspector's Overview. For an app made here it shows the
+version the export carries, how many files and bytes go, and **Include my
+data** (off; disabled past the seed's caps). The first export mints the
+lineage at version 1; a later one carries the same version while the live
+content hash, title and capabilities are those last exported, else the
+next. An app installed from a bundle re-shares the bundle it came in, byte
+for byte, with its author's signature and seed choice and no data switch.
+A modified installed app offers that, or **Share my version as a new
+app**: a fork, with a new lineage under this install's key at version 1
+and `forked_from` naming the original. The fork no longer takes the
+original's updates; a later bundle of the original installs separately.
+
+**What the agent is told.** The app's agent is told that apps may be
+shared: it never writes the person's own data into an app's files (it
+keeps it in `db`), and it writes `migrate.js` when a change alters the
+shape of stored documents. For an app installed from someone else's
+bundle (or a fork of one) the agent sees no summaries of the person's
+other apps, and its data tools refuse to read another app ("This app came
+from someone else; it cannot read your other apps").
+
+**Opening files.** On Android an invisible activity takes `VIEW`
+(`content:` URIs) and `SEND` (the file in `EXTRA_STREAM`) intents of
+`application/vnd.empathic.clax+zip`, `application/zip` and
+`application/octet-stream`, refuses `file:` URIs and Clax's own
+providers, and hands the URI with its read grant to Clax's one main
+activity in its own task; the file is copied into Clax's cache (refused
+past 32 MiB) and read from there. On macOS the app declares the
+`dev.empathic.clax.bundle` type (extension `clax`, conforming to
+`public.data` and `public.zip-archive`) as its owner, and receives each
+opened file's path. Both platforms deliver files on the channel
+`dev.empathic.clax/bundles` (`initial`, then `opened` events), and the
+launcher's Import app… opens a file the person picks. A file that is not
+a bundle is refused by the reader.
 
 ### Tools
 
@@ -2495,7 +3370,12 @@ Where Clax keeps artifacts in git (the Cloudflare Worker; hosted design §9
 version, tagged `v1`, `v2` and so on, and `git_remote` hands the agent's
 session its remote with a token: `read` clones and fetches, `write` pushes
 as well, and a commit pushed to `main` becomes a version published by the
-session's person. The native daemon keeps versions as files and answers
+session's person. A pushed file a publish could not take (a path it
+refuses, a file over its size limits, anything but a regular file, or an
+`icon.svg` that breaks the icon rules of the "Page contract") is left out
+of that version, still in git, and the version's note names it; an
+`icon.svg` the commit does not change is kept as the version below holds
+it. The native daemon keeps versions as files and answers
 `not_available`.
 
 A `read` token needs the right to read the artifact (`clax-artifacts`
@@ -2571,7 +3451,7 @@ selector (`custom:<name>` for a custom anchor; `area in <selector> (<w>% ×
 <h>%)` for a drawn area, its share of the element's width and height in whole
 percent, `<1%` for a share under half a percent, e.g. `area in main >
 section:nth-of-type(2) (42% × 18%)`) and, when there is one, the
-quote with whitespace collapsed, `«` and `»` replaced by `"`, and cut to 120
+quote (the anchor's `label` when it has one) with whitespace collapsed, `«` and `»` replaced by `"`, and cut to 120
 characters followed by `…`. Author names lose control characters, `"` and `:`, and are cut to
 40 characters (`Viewer` when empty). A comment the page wrote through the
 `comments` capability, as the viewer, has ` (written by the page)` after the
@@ -2794,7 +3674,7 @@ delivery state" below):
 
 | State | Indicator |
 |---|---|
-| `sent` | "sent, waiting for the agent · <elapsed> · waiting on <the tier: its next clax tool call, the agent finishing its current work, Codex to pick up the queued message, Pi to take the message>" |
+| `sent` | "sent, waiting for the agent · <elapsed> · waiting on <the tier: its next clax tool call, the agent finishing its current work, Codex to pick up the queued message, Pi to take the message, its next feedback poll (the Clax app)>" |
 | `delivered` | "delivered via <tier> · <elapsed> ago · not yet acknowledged" (then "· resent once" or "· resent N times"); "delivered, not acknowledged" after three resends |
 | `acknowledged` | "seen by the agent" |
 | `agent_ended` | "agent session ended; waiting for a new one" |
@@ -3946,6 +4826,7 @@ router), and a test fails when it differs:
 | Route | Class | Refuses the owner's agents |
 |---|---|---|
 | `GET /` | Denied | no |
+| `GET /_blob/{aid}/{asset_id}` | Denied | yes: 403 `not_for_agents` |
 | `GET /_blob/{asset_id}` | Denied | yes: 403 `not_for_agents` |
 | `GET /_clax/{*path}` | Denied | no |
 | `GET /_clip/{aid}/{tid}` | Denied | no |
@@ -3956,6 +4837,9 @@ router), and a test fails when it differs:
 | `POST /api/admin/perf/calibrate` | Denied | no |
 | `GET /api/admin/perf/verify` | Denied | no |
 | `POST /api/admin/shutdown` | Denied | no |
+| `GET /api/agent-read-consents` | Denied | yes: 403 `not_for_agents` |
+| `DELETE /api/agent-read-consents/{reader}/{source}` | Denied | yes: 403 `not_for_agents` |
+| `PUT /api/agent-read-consents/{reader}/{source}` | Denied | yes: 403 `not_for_agents` |
 | `DELETE /api/agents/{handle}` | Denied | yes: 403 `not_for_agents` |
 | `PUT /api/agents/{handle}` | Denied | yes: 403 `not_for_agents` |
 | `DELETE /api/agents/{handle}/elevate` | Denied | yes: 403 `not_for_agents` |
@@ -3965,10 +4849,18 @@ router), and a test fails when it differs:
 | `POST /api/approvals/requests/{rid}/decide` | Denied | yes: 403 `browser_required` |
 | `DELETE /api/approvals/{id}` | Denied | yes: 403 `browser_required` |
 | `GET /api/artifacts/{aid}/approves-first` | Denied | yes: 403 `not_for_agents` |
+| `GET /api/artifacts/{aid}/db-grants` | Denied | no |
+| `DELETE /api/artifacts/{aid}/db-grants/{source}` | Denied | no |
+| `PUT /api/artifacts/{aid}/db-grants/{source}` | Denied | no |
+| `GET /api/artifacts/{aid}/docs:collections` | Denied | no |
 | `GET /api/artifacts/{aid}/drafts` | Denied | yes: 403 `not_for_agents` |
 | `GET /api/artifacts/{aid}/git-token` | Denied | no |
 | `POST /api/artifacts/{aid}/git-token` | Denied | no |
 | `GET /api/artifacts/{aid}/live` | Denied | yes: 403 `not_for_agents` |
+| `DELETE /api/artifacts/{aid}/net-grants` | Denied | no |
+| `GET /api/artifacts/{aid}/net-grants` | Denied | no |
+| `PUT /api/artifacts/{aid}/net-grants` | Denied | no |
+| `POST /api/artifacts/{aid}/net:fetch` | Denied | no |
 | `POST /api/artifacts/{aid}/push` | Denied | no |
 | `GET /api/artifacts/{aid}/remotes` | Denied | no |
 | `DELETE /api/artifacts/{aid}/remotes/{rid}` | Denied | no |
@@ -3977,10 +4869,20 @@ router), and a test fails when it differs:
 | `GET /api/artifacts/{aid}/room` | Denied | yes: 403 `not_for_agents` |
 | `GET /api/artifacts/{aid}/sample` | Denied | no |
 | `POST /api/artifacts/{aid}/sample` | Denied | yes: 403 `not_for_agents` |
+| `DELETE /api/artifacts/{aid}/sample-grant` | Denied | no |
+| `GET /api/artifacts/{aid}/sample-grant` | Denied | no |
+| `PUT /api/artifacts/{aid}/sample-grant` | Denied | no |
 | `POST /api/artifacts/{aid}/sample/{call}/tool_result` | Denied | no |
 | `GET /api/artifacts/{aid}/snapshot` | Denied | yes: 403 `not_for_agents` |
 | `POST /api/artifacts/{aid}/unsent:drop` | Denied | yes: 403 `not_for_agents` |
+| `POST /api/artifacts/{aid}/versions:restore` | Denied | no |
 | `POST /api/artifacts:new` | Denied | yes: 403 `not_for_agents` |
+| `POST /api/client-imports/{key}` | Denied | yes: 403 `not_for_agents` |
+| `POST /api/core/trim` | Denied | no |
+| `GET /api/drafts` | Denied | no |
+| `POST /api/drafts` | Denied | no |
+| `DELETE /api/drafts/{id}` | Denied | no |
+| `POST /api/drafts/{id}/renders` | Denied | yes: 403 `not_for_agents` |
 | `GET /api/events` | Denied | yes: 403 `not_for_agents` |
 | `GET /api/extension` | Denied | no |
 | `DELETE /api/extension/credentials` | Denied | no |
@@ -3999,6 +4901,16 @@ router), and a test fails when it differs:
 | `GET /api/inbox/{id}` | Denied | yes: 403 `not_for_agents` |
 | `POST /api/inbox/{id}/read` | Denied | yes: 403 `not_for_agents` |
 | `POST /api/inbox/{id}/unread` | Denied | yes: 403 `not_for_agents` |
+| `GET /api/jobs` | Denied | yes: 403 `not_for_agents` |
+| `POST /api/jobs` | Denied | yes: 403 `not_for_agents` |
+| `DELETE /api/jobs/owner` | Denied | yes: 403 `not_for_agents` |
+| `POST /api/jobs/owner` | Denied | yes: 403 `not_for_agents` |
+| `GET /api/jobs/{id}` | Denied | yes: 403 `not_for_agents` |
+| `PATCH /api/jobs/{id}` | Denied | yes: 403 `not_for_agents` |
+| `PUT /api/jobs/{id}/questions/{qid}` | Denied | yes: 403 `not_for_agents` |
+| `POST /api/jobs/{id}/steps/{key}` | Denied | yes: 403 `not_for_agents` |
+| `DELETE /api/jobs/{id}/threads/{tid}` | Denied | yes: 403 `not_for_agents` |
+| `PUT /api/jobs/{id}/threads/{tid}` | Denied | yes: 403 `not_for_agents` |
 | `GET /api/live/pages` | Denied | no |
 | `GET /api/live/rules` | Denied | no |
 | `POST /api/live/rules` | Denied | no |
@@ -4033,6 +4945,7 @@ router), and a test fails when it differs:
 | `DELETE /api/remotes/{id}` | Denied | yes: 403 `not_for_agents` |
 | `POST /api/remotes/{id}/poll` | Denied | yes: 403 `not_for_agents` |
 | `GET /api/sample` | Denied | no |
+| `PUT /api/sample/key` | Denied | no |
 | `DELETE /api/sessions/{id}/live-watches` | Denied | no |
 | `PUT /api/sessions/{id}/live-watches` | Denied | no |
 | `GET /api/stream` | Denied | yes: 403 `not_for_agents` |
@@ -4457,8 +5370,10 @@ versions is a snapshot of the page, taken when a comment is posted.
   the page or the page does not exist (it never creates a page). A viewer
   route, as `POST /api/live/threads` is.
 - **Serving a snapshot.** Every content response of a live page
-  (`/c/<id>/v/<n>/...` and `<id>.localhost`) carries, besides its usual
-  policy, a second `Content-Security-Policy`: `script-src
+  (`/c/<id>/v/<n>/...` and `<id>.localhost`) carries, besides its framing
+  policy (the sandbox or `frame-ancestors` alone: unlike an artifact's own
+  content, a snapshot is not kept to its own files), a second
+  `Content-Security-Policy`: `script-src
   http://<Host>/_clax/; object-src 'none'; base-uri 'none'; form-action
   'none'; frame-src 'none'; connect-src 'none'; worker-src 'none'`, where
   `<Host>` is the request's `Host` (the daemon's own host when that is not
@@ -4779,6 +5694,26 @@ dark mode, and on a phone:
   relative paths, for example `<link rel="stylesheet" href="style.css">`, and
   published under the same relative path in `files`. Do not use absolute
   `/...` paths or hard-coded hosts.
+- A page loads and fetches only its own files, its assets, `data:` and
+  `blob:` URLs: no scripts, styles, fonts or images from CDNs or other
+  sites, and no `fetch`, `XMLHttpRequest`, `WebSocket` or `EventSource` to
+  anywhere else. The daemon's content policy refuses the rest. Data from
+  the web comes through the `net` capability.
+- `icon.svg` at the top of the files is the app's icon, a square
+  full-bleed design. Every publish refuses one that breaks these rules
+  (`invalid_icon`), and a version a git push makes leaves it out, naming
+  it in the version's note; restoring or forking a version copies its icon
+  as it is. The rules: at most 32 KB of well-formed XML without a
+  `<!DOCTYPE>`, its elements nested at most 64 deep; an `<svg>` root with
+  a square `viewBox` of four numbers, such as `0 0 1024 1024`; only the
+  elements `svg`, `g`, `defs`, `title`, `desc`, `path`, `rect`, `circle`,
+  `ellipse`, `line`, `polyline`, `polygon`, `linearGradient`,
+  `radialGradient`, `stop`, `clipPath`, `mask`, `use`, `symbol`, `text`
+  and `tspan`; no `on*` attribute and no `filter` attribute; `href` (or
+  `xlink:href`, its prefix declared) only to `#id` within the file, and
+  every `url()` a `url(#id)`; no animation, filter or `@` rule in a
+  `style`; `<use>`s drawing at most 64 copies, nested at most 3 deep.
+  Other `.svg` files are ordinary files.
 
 Minimal skeleton:
 
@@ -4843,7 +5778,10 @@ capability first and light features up when it resolves.
   `{}` (not `{"composer_only": true}`) the page may also `create`, `reply`,
   `resolve`, `delete`, and `sendToClaude` as the viewer after one consent;
   `{"customAnchors": true}` lets a canvas-like page place pins itself.
-- `assets`: `upload`, `list`, `delete`, in the person's browser only.
+- `assets`: `upload`, `list`, `delete`, in the person's browser only. Use
+  an asset's `url` as given; to show an asset whose ID a page stored,
+  `claude.assetUrl(id)` (any viewer), never `"/_blob/" + id`: assets are
+  served per app, and a page loads only its own.
 - `room`: `emit`, `on`, `presence`, `peers`, `onPeers`, `join`, `connected`,
   and `onConnection` reach every view of the artifact that is open now;
   nothing is stored. Presence works for every viewer. A topic declared
@@ -4853,8 +5791,35 @@ capability first and light features up when it resolves.
 - `sample`: `sample(input, options)`, `sample.json`, and `sample.limits` ask
   Claude with the API key configured on the person's machine, and only in
   the person's own browser: everywhere else, and when no key is configured,
-  `use("sample")` resolves `null`. The first call in each view asks the
-  person to allow it.
+  `use("sample")` resolves `null`. The first call asks the person to allow
+  it, once per app: the daemon keeps the grant until the person revokes it.
+  Each app may spend up to `daily_cost_cap_usd` a day (default $0.50); past
+  it, calls reject `rate_limited`.
+- `net` (Clax's own): `fetch(url, {method, headers, body})` resolves
+  `{status, ok, url, headers, text(), json()}`, made by the daemon (the
+  page itself cannot connect). Declare every host,
+  `{"net": {"hosts": ["api.example.com"]}}`; only `https` URLs on those
+  hosts are fetched, at most 5 MB each way and 20 s. The person is asked
+  once per app for its host list. Only the person's own views get it:
+  elsewhere `use("net")` resolves `null`. Types:
+  `ClaxExtensions.Net` in `clax-extensions.d.ts`.
+- `notify`, `share`, `file`, `camera`, `location`: Clax's device
+  capabilities, served only in the Clax app and `null` everywhere else;
+  their types are `ClaxExtensions.Device` in `clax-extensions.d.ts`. Call
+  them from a click handler (all but `notify.list` and `notify.cancel`
+  reject `no_gesture` otherwise). `location.watch` follows the device only
+  while the app is on screen. See "Device capabilities in the Clax app"
+  below.
+- `home` (Clax's own): the Clax app's home screen. Declaring it grants
+  nothing: the app serves it to the one app it shows as its home screen,
+  and `use("home")` resolves `null` for every other app, in a browser and
+  in the draft preview. `apps()`, `makes()`, `unread()`, `needsKey()`, the
+  actions `open`, `openMake`, `newApp`, `menu`, `openInbox`,
+  `openSettings` and `importApp` (from a click handler, as for the device
+  capabilities), `shown()` once the home screen is drawn, `tiles(list)`
+  after each render that moves its tiles, `chrome()` (the window's form
+  and the pointer in use), and `on(name, fn)`. Types: `ClaxExtensions.Home` in
+  `clax-extensions.d.ts`. See "The home screen's capability" below.
 - `permissions`: `state()` and `request()`; the only prompt is the consent
   to the first page-written comment.
 
@@ -4915,9 +5880,10 @@ What a page written for claude.ai meets in Clax, beyond the gesture rules:
   the room: each view stays on its version until it reloads. A viewer's
   level is fixed per connection; entering a name reconnects at the new level.
 - `sample`: the person's own API key pays for every call, not the viewer's
-  account, so only their browser can call it. Allowing lasts for the view,
-  not for the artifact. Answers are cached per browser in the daemon and
-  forgotten, with the day's call counts, when it restarts. A daemon
+  account, so only their browser can call it. Allowing lasts for the app
+  until revoked, not for the view. Answers are cached per browser in the
+  daemon and forgotten, with the day's call counts, when it restarts; the
+  day's spend against the cost cap is stored and survives a restart. A daemon
   restart under an open tab ends its calls with `session_expired`.
 
 ## Runtime capabilities in detail
@@ -4953,8 +5919,17 @@ plan for:
   storing that value, and `set` rejects it `invalid_argument`. Who a viewer
   is for live updates is fixed when the browser's event stream opens; the
   shell opens a new one, for every tab, after the viewer enters a name.
+  Clax adds `db.artifact(id)`, read-only access to another app's documents
+  (see "Reading another app's documents" below).
 - `downloads`: `too_large` and `extension_not_enabled` are never returned.
-- `assets`: asset IDs are 26-character ULIDs, not 32 characters. SVG is
+- `assets`: asset IDs are 26-character ULIDs, not 32 characters. An
+  asset's `url` is `/_blob/<artifact ID>/<asset ID>`, served only for the
+  artifact that owns it; a page loads no other app's assets. A page
+  rebuilds a stored asset's URL with `claude.assetUrl(id)` (Clax's
+  addition, `clax-extensions.d.ts`), as `assets.d.ts` says; the
+  root-relative `"/_blob/" + id` of older pages still resolves to the
+  app's own asset on its own origin, but not in a sandboxed frame (the
+  main origin), where the content policy refuses it. SVG is
   checked to be an SVG document but not sanitised: it is stored as uploaded
   and served with `Content-Security-Policy: sandbox`. There is no quota, so
   `usage.maxFiles` and `usage.maxBytes` are `Number.MAX_SAFE_INTEGER`.
@@ -4964,6 +5939,322 @@ plan for:
   `<name> (written by the page): "…"`. A compose `label` is shown in the
   composer but never stored, and `detail` is dropped. Pins cannot be
   dragged, so `move` is never called.
+
+### Device capabilities in the Clax app
+
+In the Clax app (`apps/clax_app`), a page that declares them reaches the
+device: `{"notify": {}, "share": {}, "file": {}, "camera": {}, "location":
+{}}`. The types are `ClaxExtensions.Device` in
+`<daemon_url>/_clax/contract/clax-extensions.d.ts`. In a browser, in the
+app's draft preview (the inspect view), and when undeclared, `use()`
+resolves `null` for them.
+
+- `notify`: `schedule({id, title, body?, at | every: {hour, minute,
+  weekdays?}, route?})` (an ISO time in the future, or every day at a local
+  time, on weekdays 1 Monday to 7 Sunday when given; the same `id`
+  replaces; at most 64 an app), `cancel(id)`, `list()`. A tap on a reminder opens the app at
+  `route` (`#…`). Reminders are inexact alarms, so they may come a few
+  minutes late; they survive a reboot.
+- `share`: `text(text)`, `file({name, mime, data})` (base64), through the
+  system share sheet.
+- `file`: `pick({accept})` → `{name, mime, data}` (`accept`: extensions or
+  MIME types), `save({name, mime, data})` where the person chooses. At most
+  4 MB a file (`too_large`), for `share.file` too.
+- `camera`: `take()` and `pick()` → `{mime, data, width, height}`, a JPEG
+  downscaled to at most 1600 px a side. On the Mac `take()` shows Clax's
+  capture sheet on the window, a live preview with Cancel and Take Photo.
+- `location`: `current()` → `{lat, lon, accuracy, precise}` (degrees,
+  metres). `watch(onUpdate, {minDistance?, onError?})` → `stop()`: a
+  position at once, then at most once a second (the latest of a burst at
+  the second's end) and once per `minDistance` metres (10 when absent, 5
+  to 10000), at most 4 watches at once. One tap starts one location call
+  (`current` or `watch`); after a watch ends, a new tap is needed. A watch runs only
+  while the app is on screen: when the app screen is hidden (Clax in the
+  background, another screen or dialog over the app, the app closed) or
+  the page's document goes, it ends with `onError({code: "stopped"})`
+  and never starts again by itself; the page starts it again from a tap.
+  While one runs the app shows a small location pill in the status bar's
+  band (on the Mac also a Location item in the window's toolbar), and a
+  tap on it stops location (`stopped` too).
+
+Every call except `notify.list`, `notify.cancel` and stopping a watch
+must come from the person's tap or key press in the page (the shell's
+gesture rule, as for `openComposer`), or it rejects `no_gesture`. The
+shell forwards each call to the app (the `device` message and
+`deviceResult` above), under request IDs with a random prefix per load of
+the shell; a watch's updates and its end come back by `deviceEvent`, under
+a watch ID of the shell's own. The app asks the person once per app and
+capability ("Let “Plants” see where your device is?") and keeps the
+answer, Allow or Don't allow, until it is revoked in the app inspector's
+Permissions (revoking `notify` cancels that app's reminders, revoking
+`location` ends its running watches with `not_granted`; deleting the app
+does both). Closing the question without answering keeps nothing: the call
+rejects `dismissed` and the next one asks again. For location the answers are Precise, Approximate and
+Don't allow, and the inspector shows which. An app allowed Approximate,
+and any app while the system allows Clax only approximate location, gets the
+centre of a cell about 2 km across (on a grid shifted at random once per
+install and never redrawn), `accuracy` at least 2000 and `precise:
+false`; the same anywhere in the cell. After its first position, an
+approximate watch reports a new cell only once the device has been well
+inside it (a fifth of a cell from every edge) for 3 minutes, and at most
+once per 10 minutes, so an update marks neither when nor where an edge
+was crossed. Android and macOS ask
+their own permission on top (notifications, location, and on macOS the
+camera). Calls reject
+`{code, message}` with `not_granted` (not allowed, or the system
+permission refused), `cancelled` (the person closed the picker, sheet or
+camera), `unavailable` (no such feature here, such as a Mac with no
+camera), `bad_request`, `too_large`, `no_gesture`, and for location
+`system_denied` (Android or macOS will not ask again) and `location_off`
+(the device's location is off), for which the app shows a toast with
+Open settings, and `stopped` (a watch ended).
+
+### The home screen's capability
+
+The Clax app's home screen is an app like any other (an artifact installed
+on the first run from the bundle the app ships, `assets/home/home.clax`),
+changed by commenting on it. The app records its artifact ID in its own
+settings (`home.json` beside `device-grants.json`, not the daemon) and
+serves `home` to that app only: the shell asks the app once per view
+(`device {cap: "home", method: "available"}`), and only a yes makes
+`use("home")` resolve. Any other app that declares `{"home": {}}` gets
+`null`, and a call it makes anyway is refused. The calls travel as the
+device capabilities' do (`device` and `deviceResult`), and events come back
+as `deviceEvent {cap: "home", name, data}`.
+
+| Call | Answer |
+|---|---|
+| `apps()` | `[{id, title, updatedAt, icon, build}]`, newest first, the home app left out. `icon` is `{url}` (the app's own icon as a `data:image/svg+xml` URL), `{emoji}`, `{word}` or `{monogram, hue}`; `build` is `null` or `{done, total}` while a build goes. |
+| `makes()` | `[{id, request, state, progress}]`: `state` one of `making`, `offline`, `waiting`, `interrupted`, `failed`; `progress` `null` or `{done, total}`. |
+| `unread()` | The inbox's unread count. |
+| `needsKey()` | Whether the Claude API key is missing. |
+| `open(id)` | Opens app `id`, as a tap on its tile. |
+| `openMake(id)` | Shows make `id`'s build view, or asks "Make it again?" for an interrupted one. |
+| `newApp()` | Shows the New app sheet; the make then appears in `makes()`. |
+| `menu(id, {x, y, w, h}, {items})` | Shows app `id`'s menu anchored at that rectangle, in CSS pixels from the viewport's top left: the page's `items` (at most 4 `{id, label}`, labels plain text of at most 32 characters) first, above a divider, then Clax's own (Open, Inspect, Share app, Resume build). Resolves with the picked item's `id`, or `null` for one of Clax's own or a dismissal. `items` may be left out. |
+| `openInbox()`, `openSettings()`, `importApp()` | Opens the inbox, Settings, or the system picker for a `.clax` file. |
+| `shown()` | Says the page has drawn the home screen (its apps, the empty state or the load error). Clax keeps its own home screen over the page until then, and shows its own with Undo last change and Reset when no `shown()` comes within 10 s of the page loading. Call it once per load, from an effect after that render. Resolves `{opened: id}` when Clax opened app `id` from a tap on the image of the home screen it showed until then (an open from the home screen, as a tap on the tile), else `null`. |
+| `chrome()` | `{platform, form, toolbar, pointer, query?}`: `platform` `android`, `macos` or `ios`; `form` `phone` on a window narrower than 600 dp, else `wide`; `toolbar` whether the window's own toolbar carries the top bar, search and New app (the page then draws none of them); `pointer` `touch` or `mouse` (a mouse or a trackpad), the pointer in use, for "Tap" or "Click" in the page's words; with `toolbar`, `query` is the text in the toolbar's search field (`""` while it is empty), which the page searches its apps for as it would its own field's text (a `chrome` event comes with each change). A Clax without it rejects it (`unavailable`) or has no such member: read that as `{form: "phone", toolbar: false, pointer: "touch"}`; one whose `chrome()` has no `query` has no toolbar search. |
+| `tiles(list)` | Says where each app's tile is now: `list` is `[{id, rect: {x, y, w, h}}]` in CSS pixels from the viewport's top left, at most 512. Call it after each render that moves tiles, and on scroll and resize. Clax keeps the last list with an image of the page, shows that image at once on its next cold start until `shown()`, and then opens the app whose tile a tap on the image fell on, when that app is still in `apps()`. |
+
+`on(name, fn)` hears `apps`, `makes`, `unread`, `key` (the value of
+`needsKey()`) and `chrome` (the value of `chrome()`, when the window
+changes form or the pointer in use changes), each the topic's whole latest
+value, from the page's first `home` call on, and returns `stop`; a page
+that was covered hears only the latest value of each. The calls that open
+something must come from the person's tap or key press in the page
+(`no_gesture` otherwise); the reads, `chrome()`, `shown()` and `tiles()`
+need none. Calls reject `{code, message}` with `refused` (not the home
+app), `bad_request` (an unknown method, an ID not on the home screen, a
+malformed rectangle or menu items), `no_gesture` or `unavailable`.
+
+A Clax release may ship a new home bundle. At start the app compares it
+with the installed home app by the bundle trust rules ("Sharing apps"): an
+unmodified home app is updated silently, through the same check against a
+copy of its documents as any update; a home app the person changed is
+updated only when they choose "Update (replaces your changes)", and "Keep
+mine" is remembered for that release. The documents stay either way.
+
+### Reading another app's documents
+
+An artifact (app A) may read another artifact's (app B's) documents,
+read-only, once it declares the read and B or the owner consents.
+
+**Declaring.** A lists the artifacts it reads in `db.read`, B the
+artifacts it lets read it in `db.share.read`:
+
+```json
+{"db": {"read": ["8r4m0nay3c5v"]}}
+{"db": {"share": {"read": ["7q3k9mzx2b4t"]}}}
+```
+
+Each list holds at most 16 entries, repeats included (17 entries naming
+2 IDs are refused), never the artifact's own ID; a repeated ID is then
+kept once, and `db.share` holds only `read`. Anything else is
+400 `invalid_capabilities` on publish and `PATCH`. Declaring grants
+nothing alone.
+
+**Consent.** A may read B when, now, A's declaration lists B in `db.read`,
+B declares `db`, and either B's `db.share.read` lists A or the owner has
+granted it. The owner's grants are kept per pair of artifacts, with the
+token:
+
+- `PUT /api/artifacts/<A>/db-grants/<B>`: `{grant: {source_id, granted_at}}`;
+  granting again keeps the first grant.
+- `DELETE /api/artifacts/<A>/db-grants/<B>`: `{revoked}` (`false` when there
+  was none). A share B declares is not a grant and stays.
+- `GET /api/artifacts/<A>/db-grants`: `{grants: [{source_id, granted_at}]}`,
+  oldest first.
+
+Each is 404 for an unknown or deleted artifact and 400 `invalid_args` when
+A and B are one. A grant and its removal are recorded as `artifact.update`
+of A. A grant follows A's declaration: a publish or `PATCH` whose
+capabilities drop B from A's `db.read` (or do not parse) removes A's grant
+for B, recorded as its revoke, so a declaration that lists B again asks the
+owner again. Deleting either artifact removes its grants. A draft (see
+"Drafts" under "The Clax app") reads no other artifact, whatever grants or
+shares name it or its app.
+
+**Reading over HTTP.** B's document reads, `GET
+/api/artifacts/<B>/docs` and `GET /api/artifacts/<B>/docs/<path>`, take
+`X-Clax-Reader: <A>`. The request is then served for A: at `view` (or the
+caller's own level, if lower) with no viewer, so documents under
+`data/users/<id>/` and paths whose read rule needs more than `view` answer
+404 as missing ones do. Without A's consent it is 403 `not_granted`; with
+it (a share needs B's own declaration, so only an owner's grant can give
+it then), a B that does not declare `db` is 403 `not_declared`, the token
+included. So an ungranted B without `db` answers `not_granted`; in the owner's
+browser the page's `db.artifact(id)` checks B's declaration and reports
+`not_declared` for it itself. An unknown A or B
+is 404; a header that names no artifact, or is repeated, is
+400 `invalid_args`. The header is refused everywhere else, before any
+handler runs: on a method other than `GET` or `HEAD` with 403 `read_only`,
+and on any other route (B's threads, files, versions, assets, content, the
+room, `docs:collections`, `/api/events`) with 403 `not_granted`.
+
+**Following changes.** `GET /api/events?reader=<A>` (an artifact ID, else
+400 `invalid_args`) judges `doc` events at `view` with no viewer, and sends
+each only while A may read its artifact, checked as it is sent, so a
+revoked grant, a withdrawn share or a dropped declaration stops the next
+one; other events are unchanged. On `GET /api/stream`, A follows B through
+the topic `docs:<B>?reader=<A>` (never `docs:<B>`, whose events reach the
+stream at the stream's own level): subscribing needs A to exist and to be
+allowed to read B then (403 `not_granted` or `not_declared`), and the topic
+carries B's `doc` events that `view` with no viewer may read, each only
+while A may read B, checked as it is dispatched. Each event's `topic` names
+the reader's topic.
+
+**Collections.** `GET /api/artifacts/<aid>/docs:collections` (token)
+answers `{collections: [{path, count}]}`: every collection of the
+artifact's documents with its document count, sorted by path, without
+private `data/users/<id>/` ones. It ignores the read rules, so it is the
+owner's: with `X-Clax-Reader` it is 403 `not_granted`.
+
+**In the page.** `(await window.claude.use("db")).artifact(id)` returns
+read-only refs over app `id`'s documents: `doc(path)` with `get`,
+`onSnapshot` and `collection`, and `collection(path)` with `where`,
+`orderBy`, `limit`, `get`, `onSnapshot` and `doc` (no writes). A value that
+is not an artifact ID throws `TypeError`. The types are `ClaxExtensions.Db`
+in `<daemon_url>/_clax/contract/clax-extensions.d.ts`. The shell is the
+consent boundary: it names the page's own artifact in `X-Clax-Reader`
+(never anything the page sends), checks each path (no `.` or `..` segment),
+reads only B's document routes, and follows only `docs:<B>?reader=<A>`, so
+nothing else of B (threads, files, versions) reaches the page. Calls, and
+the `onSnapshot` error callback, reject with:
+
+- `not_declared`: A's `capabilities.db.read` does not list `id`, or app
+  `id` does not declare `db`. Nothing was asked.
+- `not_granted`: the owner said no, or a viewer who is not the owner has no
+  share or grant to use. Render without that app's data.
+
+In the owner's own browser, the first read of a source neither shared nor
+granted asks the owner once per source and page load ("Let “A” read “B”'s
+data?", Allow or Don't allow); Allow makes the grant and the read is tried
+again. A dismissed prompt (Escape, a click outside) refuses that read only:
+the next read asks again. A viewer who is not the owner is never asked. A page load holds at
+most 64 subscriptions of other apps. When the owner withdraws a grant while
+the page runs, a live listener stops receiving that app's changes at once;
+its error callback gets `not_granted` at its next refresh (after a reconnect
+of the event stream), and any later `get()` rejects `not_granted`.
+
+### Fetching from the network (`net`)
+
+An app page cannot connect anywhere itself, nor load anything from another
+site: its content security policy lets it fetch only its own files and
+assets, and load only those, `data:` and `blob:` (see "Security model"). It
+fetches from the web through the daemon instead, from hosts it declares and
+the owner allows.
+
+**Declaring.** `{"net": {"hosts": ["api.example.com", "cdn.example.com"]}}`:
+1 to 32 lowercase host names (at least two labels, the last not numeric;
+no scheme, port, path, wildcard, trailing dot or IP address). A repeated
+host is kept once. Anything else is 400 `invalid_capabilities` on publish
+and `PATCH`. Declaring grants nothing alone.
+
+**Consent.** The owner's grants are kept per artifact and host (migration
+26), with the token:
+
+- `PUT /api/artifacts/<id>/net-grants`, body `{hosts: [host]}` (the hosts
+  the owner was shown): grants each of them the live version declares,
+  ignoring the rest; hosts already granted keep their time. 400
+  `not_declared` when it declares none, `invalid_argument` without `hosts`.
+- `DELETE /api/artifacts/<id>/net-grants`: `{revoked}`, how many grants
+  there were.
+- `GET /api/artifacts/<id>/net-grants`: `{declared: [host], grants:
+  [{host, granted_at}], granted}`, `granted` true when every declared host
+  is granted.
+
+`PUT` and `GET` answer the same shape. Each is 404 for an unknown or
+deleted artifact. A grant and its removal are recorded as `artifact.update`
+of the artifact (`fields.net_grants`). A host is reachable while the live
+version declares it and a grant names it: a host a new version adds waits
+for consent; one it drops reaches nothing. Deleting the artifact removes
+its grants.
+
+A draft (see "Drafts") holds no grants: `PUT` and `DELETE` on one are 403
+`draft`. It uses its live app's grants, checked on each fetch: a host is
+reachable while the draft declares it, the live app's current version
+declares it, and the owner's grant to the live app names it, so revoking
+the app's grants refuses the draft's next fetch. A new app's draft has no
+live app and every fetch is `not_granted`, as is every fetch of a draft
+made with `inherit_net: false` (a bundle update's check). `GET` on a draft
+shows those inherited grants.
+
+**Fetching.** `POST /api/artifacts/<id>/net:fetch` (token), body `{url,
+method?, headers?, body?}` (`method` `GET` when absent, `headers` an object
+of strings, `body` a string), answers `{url, status, headers, body}`: the
+final URL, the status (4xx and 5xx included), the headers (lowercase
+names, repeats joined with `, `) and the body as text when it is UTF-8; a
+body that is not (an image, say) comes as `body_base64` instead, byte for
+byte. A request without a `User-Agent` carries `Clax/<version>
+(+https://github.com/empathic/clax)`. A `GET` whose only headers are
+`Accept`, `Accept-Language` and `User-Agent` may be answered from the
+daemon's HTTP cache, kept apart per artifact (a draft has its own), which keeps a `200` with a
+lifetime or validator and no `Set-Cookie`, `Vary: *`, `no-store` or
+`private`, serves it while fresh after the same host checks, and
+revalidates it when stale (at most 100 MiB under `CLAX_HOME/net-cache`).
+The daemon, for the first request and each redirect:
+
+- takes only `https` URLs without a user name or password;
+- takes only a host the live version declares and the owner granted;
+- resolves the host and refuses it if any address is not public unicast
+  (loopback, private, shared, link-local, multicast, unspecified,
+  documentation, benchmarking or reserved, IPv4 inside IPv6 judged as
+  IPv4), then connects only to those addresses, so a second DNS answer
+  cannot move the request;
+- follows at most 3 redirects (`301`, `302`, `303`, `307`, `308`), `303`
+  and a `301`/`302` after a `POST` continuing as `GET` without a body; a
+  redirect to another origin (host or port) keeps only the page's
+  `Accept`, `Accept-Language`, `Content-Type` and `User-Agent` headers;
+- drops the page's `Cookie`, `Host`, `Content-Length`, `Expect`,
+  `Proxy-*`, `Sec-*` and hop-by-hop headers, and the response's
+  `Set-Cookie` and hop-by-hop headers (with any `Connection` names); keeps
+  no cookies and uses no proxy.
+
+Bodies are capped at 5 MB each way, and the whole fetch at 20 s. Errors:
+404 for an unknown artifact; 403 `not_declared` (the URL's host is not
+declared, or nothing is), `not_granted` (not allowed by the owner),
+`redirect_refused`, `blocked_address`; 400 `invalid_argument` (a malformed
+URL, method, header or body) or `https_only`; 413 `too_large`; 504
+`timeout`; 502 `too_many_redirects` or `upstream_error` (resolution,
+connection, TLS).
+
+**In the page.** `const net = await window.claude.use("net")` resolves the
+namespace in the owner's views (the Clax app, or the owner's browser) when
+`net` is declared, and `null` elsewhere. `net.fetch(url, init)` resolves
+`{status, ok, url, headers, text(), json(), arrayBuffer(), blob()}` (a
+`blob()` of an image is shown with `URL.createObjectURL`, which the policy
+allows as `blob:`); the types are
+`ClaxExtensions.Net` in `clax-extensions.d.ts`. The shell refuses, before
+any request, a URL that is not `https` (`https_only`) or whose host is not
+declared (`not_declared`). The daemon's `not_granted` asks the owner once
+per view ("Let “A” use the internet?", naming every declared host, the
+text scrolling when long; Allow or Don't allow); Allow grants exactly the
+hosts shown and the fetch is tried again, and
+the grant stands in later views. The app's inspect view never asks: there
+a refusal stands. Other codes reach the page as the daemon answers them;
+the shell adds `unavailable` (the daemon could not be reached) and
+`session_expired`.
 
 ## Room protocol
 
@@ -5059,15 +6350,24 @@ reaches the next document.
 `sample` spends the API key configured on the person's machine, so only the
 person's own browser (the token and the owner cookie) can call it. The shell
 offers `sample` only when it holds the token, so `use("sample")` resolves
-`null` for a viewer on another machine, and every call waits on the consent
-given in that view. The frame never reaches these routes itself.
+`null` for a viewer on another machine. Consent is once per app, kept by the
+daemon until revoked: a view's first call reads the grant, the shell asks the
+person only when there is none, and Allow saves it (`PUT …/sample-grant`).
+Each app's spend is priced from the usage of every round it ran (the list
+prices of its model) and summed per local day. The frame never reaches these
+routes itself.
 
 | Route | Caller | Body | Answer |
 |---|---|---|---|
-| `GET /api/artifacts/<aid>/sample` | SameOrigin; the token decides | — | `{available, provider, limits, calls_today, daily_call_cap}`; without the token `available: false`, `provider: null` |
+| `GET /api/artifacts/<aid>/sample` | SameOrigin; the token decides | — | `{available, provider, limits, calls_today, daily_call_cap, granted, spent_today_usd, daily_cost_cap_usd}`; without the token `available: false`, `provider: null` |
 | `POST /api/artifacts/<aid>/sample` | SameOrigin, token, owner cookie | `{input, verb, model_tier, tools, images, cache}` | `text/event-stream` |
 | `POST /api/artifacts/<aid>/sample/<call_id>/tool_result` | SameOrigin, token, owner cookie | `{id, content, is_error}` | 204 |
 | `GET /api/sample` | token | — | `{available, provider, reason, detail, key_env, daily_call_cap}` (`clax doctor`) |
+| `PUT /api/sample/key` | token | `{key}` (a string, or `null` to clear it) | 204; the key is kept in memory only and never logged; 404 `not_found` on a daemon that takes its key from its environment (only an app's embedded core has a key slot); 400 `bad_request` for any other body |
+| `POST /api/core/trim` | token | — | `{trimmed: {wal_frames, checkpointed}}`: an app's embedded core released SQLite's caches and checkpointed its WAL (the app calls it when it leaves the screen or the OS asks for memory); 404 `not_found` on a daemon |
+| `GET /api/artifacts/<aid>/sample-grant` | token | — | `{granted, granted_at, spent_today_usd, daily_cost_cap_usd}` (`granted_at` null without a grant) |
+| `PUT /api/artifacts/<aid>/sample-grant` | token | — | as `GET`; 403 `not_declared` when the artifact does not declare `sample`; recorded as `artifact.update` (`fields.sample_grant: "grant"`) |
+| `DELETE /api/artifacts/<aid>/sample-grant` | token | — | `{revoked}` (`false` when there was none); the day's spend stays |
 
 `input` is a string or `[{role, content}]`; `verb` is `text` or `json`;
 `model_tier` is `quick`, `default` or `complex`; `tools` is
@@ -5082,10 +6382,14 @@ given in that view. The frame never reaches these routes itself.
 `unauthorized` (no token), 403 `forbidden` (no browser: neither the owner
 cookie nor a viewer cookie), 403
 `forbidden_origin`, 404 `not_found`, 403 `not_declared`, 403
-`sampling_disabled` (no provider), 400 `invalid_request`, 400
+`sampling_disabled` (no provider), 403 `not_granted` (the person has not
+allowed this app, or revoked it), 400 `invalid_request`, 400
 `prompt_too_large`, 400 `images_unavailable`, 400 `image_rejected`, and 429
-`rate_limited` (the browser's queue is full, or the artifact reached
-`daily_call_cap`).
+`rate_limited` (the browser's queue is full, the artifact reached
+`daily_call_cap`, or its spend today reached `daily_cost_cap_usd`; the
+message says which). A call that starts under the cost cap runs to its end,
+so a day's spend can pass the cap by one call; a cached answer costs nothing
+and is served past it.
 
 **SSE frames**, in order: one `start` `{call_id, cached, calls_today,
 daily_call_cap}`; then any number of `text` `{delta}` and `tool_call`
@@ -5146,6 +6450,9 @@ the fetch already reflects changes nothing. Checks run once, here:
 - each subscribed artifact exists (404 `not_found` otherwise);
 - `docs:<aid>` needs the artifact to declare `db` unless the caller holds
   the token (403 `not_declared`);
+- `docs:<B>?reader=<A>` needs A to exist (404 `not_found`) and to be
+  allowed to read B's documents now (403 `not_granted` or `not_declared`),
+  whatever the caller;
 - the request comes from the caller that opened the stream (the same token
   or none, in `Authorization` or as the events cookie, and the same
   viewer), or it is 404 `unknown_stream`, as it is for a stream that is not
@@ -5169,6 +6476,7 @@ except as noted:
 | `presence:<aid>` | Its `presence` changes, and `artifact_deleted`. |
 | `working:<aid>` | Its `working` list, and `artifact_deleted`. |
 | `docs:<aid>` | Its `doc` events the caller may see, and `artifact_deleted`; needs `db` declared, or the token. |
+| `docs:<B>?reader=<A>` | B's `doc` events that `view` with no viewer may read, each only while app A may read B (checked as it is dispatched); subscribing needs A to exist and to be allowed to read B then (403 `not_granted` or `not_declared`). See "Reading another app's documents". |
 | `agents` | `agents` (`{topic}`, naming nothing) whenever the agents roster may have changed: an agent started, ended, was renamed or got watches back, a thread's owner changed, or a working record, question or approval request changed. Refetch `GET /api/agents`. Only the owner's and connected people's streams take it (403 `forbidden` otherwise). |
 | `site:<origin>` | What `artifact:<aid>` carries, for every live page of the origin's site (every origin joined to it, those joined later too: see "Joined sites"), those made later included, and `site` when an origin joins the site or is split off. `<origin>` is written as the daemon normalizes it (`http://localhost:5173`: scheme, lowercased host, port unless the scheme's default, no path), else 400 `invalid_topic`. Only a stream that may see live pages takes it (404 `not_found` otherwise, as for a live page's topic), and only an owner's (403 `forbidden` otherwise). The `thread_deleted` a move sends for older clients is not on it. |
 
@@ -5712,6 +7020,7 @@ api_key_env = "ANTHROPIC_API_KEY"
 base_url = "https://api.anthropic.com"
 max_tokens = 16000
 daily_call_cap = 200            # optional; per artifact, per local day
+daily_cost_cap_usd = 0.5        # per artifact, per local day (the default)
 stub_images = false             # stub only
 stub_delay_ms = 40              # stub only
 
@@ -5722,9 +7031,14 @@ complex = "claude-opus-5-5"
 ```
 
 Without the table, the provider is `anthropic` with the key in
-`ANTHROPIC_API_KEY`, and there is no daily cap. A `[sample]` table that is
-invalid (not a table, an unknown key, another provider, `max_tokens = 0`, an
-empty model ID, or a `base_url` that is not `https://`, or `http://` on
+`ANTHROPIC_API_KEY`, there is no daily call cap, and the daily cost cap is
+$0.50 per artifact. The Clax app writes its core's `config.toml` at each
+launch with `quick` and `default` set to `claude-haiku-5-5` and `complex` to
+`claude-sonnet-5-5`, and puts the key saved in its settings into the core
+(`PUT /api/sample/key`) when the core opens and whenever the key changes,
+restarting nothing. A `[sample]`
+table that is invalid (not a table, an unknown key, another provider,
+`max_tokens = 0`, a negative `daily_cost_cap_usd`, an empty model ID, or a `base_url` that is not `https://`, or `http://` on
 `localhost`, `127.0.0.1` or `[::1]`) turns sample off and the daemon starts anyway; `clax doctor` prints it as a
 `warn` line. The key is read from the named environment variable once, when
 the daemon starts, and is sent only to `base_url`, in the `x-api-key` header;
@@ -5901,6 +7215,9 @@ ID>`. An artifact URL whose `#` fragment is neither is the artifact.
   limit (at most 1,048,576) when it starts, and logs both values; it turns
   off Nagle's delay on every connection and sends TCP keep-alive probes
   after a minute idle, so a peer that vanished frees its connection.
+  `clax serve --foreground --require-credential` answers only callers that
+  hold the token or a cookie carrying it (see "Security model"); the Clax
+  app's embedded core runs so.
 - `scripts/perf-clients.sh` (a quality gate) opens 1,000 `/api/stream`
   clients on a scratch release daemon, writes versions and comments at a
   steady rate, and judges delivery latency, cheap requests under that load,
@@ -5923,7 +7240,9 @@ thread's view in a `thread` event has no `feedback_state`, and each
 reader's own comes on `/api/stream`. The query narrows it:
 `artifact=<id>[,<id>...]` keeps the events of those artifacts, and
 `types=<name>[,<name>...]` the events of those names; `ready` and `resync`
-always come.
+always come. `reader=<A>` reads for app A (see "Reading another app's
+documents"): `doc` events are judged at `view` with no viewer, and each is
+sent only while A may read its artifact.
 
 - **Opening.** The stream opens with `event: ready` and data
   `{"resumed": <bool>}`. A `: keep-alive` comment comes every 15 s while it
@@ -6049,9 +7368,9 @@ the body below.
 | Kind | Body | Recorded at |
 |---|---|---|
 | `artifact.create` | `title, kind (html\|live), icon, capabilities, contract_version`; `forked_from{artifact_id, n}` on a fork | first publish, a fork, or a live page's creation |
-| `version.publish` | `n, label, note, title, files{path:{sha256,size,content_type}}, content_sha256, carried[paths], addresses[thread IDs], by_page`; `source{artifact_id, n}` on a fork's version 1 | every version write |
+| `version.publish` | `n, label, note, title, files{path:{sha256,size,content_type}}, content_sha256, carried[paths], addresses[thread IDs], by_page`; `source{artifact_id, n}` on a fork's version 1; `restored_from` (the version restored) for a restore | every version write, a restore (`versions:restore`) included; for a restore, `carried` names only the files (other than `index.html`) whose bytes equal the previous version's |
 | `version.push_refused` | `commit, person, session, reason (unknown_person\|person_revoked\|not_a_person\|no_right\|session_ended\|foreign_session\|grant_ended)` (`system:daemon`) | a commit pushed to an artifact's repository left unrecorded because its pusher may not publish the artifact, once per commit |
-| `artifact.update` | `fields{title?, description?, icon?, pinned?, capabilities?, tags?, share?{op (set\|remove), id, person, github_login, access?, reason? (owner)}}` | pin, unpin, metadata edits; a change to its tags (`tags`: the names it carries after); a share set or removed (`reason: owner` when a share is dropped because it reached the owner, at the owner's GitHub sign-in or a viewer folded into the owner) |
+| `artifact.update` | `fields{title?, description?, icon?, pinned?, capabilities?, db_read_grants?, tags?, share?{op (set\|remove), id, person, github_login, access?, reason? (owner)}}`; `db_read_grants` is `{"grant": <source ID>}` or `{"revoke": <source ID>}`, with the source as `artifact2_id` | pin, unpin, metadata edits, the owner's cross-app read grants (see "Reading another app's documents"); a change to its tags (`tags`: the names it carries after); a share set or removed (`reason: owner` when a share is dropped because it reached the owner, at the owner's GitHub sign-in or a viewer folded into the owner) |
 | `artifact.delete` | `title, current_version` | delete |
 | `asset.upload` | `asset_id, path, sha256, size, content_type` | asset store writes |
 | `asset.delete` | `asset_id, path, size, content_type` | asset deletes |
@@ -6084,7 +7403,7 @@ the body below.
 | `question.answer` | `answers, answered_via` | an answer (the owner) |
 | `question.decline` | none | a decline (the owner) |
 | `question.release` | `reason (owner\|timer\|created)` | a release to the terminal |
-| `question.withdraw` | `reason (explicit\|unwaited\|session_end\|daemon_start\|daemon_stop\|pulled\|lapsed)` | a withdrawal |
+| `question.withdraw` | `reason (explicit\|unwaited\|session_end\|daemon_start\|daemon_stop\|pulled\|lapsed\|job_end)` | a withdrawal |
 | `tool.call` | `call_id, tool, harness_tool?, args_sha256, started_at, ended_at, outcome (ok\|error), harness_call_id?, produced[seq]` | each Clax tool call's report (below) |
 | `tool.call_id` | `call_id (or null), harness_call_id, harness_tool, args_sha256` | Claude Code's PostToolUse report (below) |
 | `session.start` | `harness, harness_session_id, cwd, transcript_path, pid` (+ `git`) | a session's registration |
@@ -6529,7 +7848,9 @@ it with Ajv (draft 2020-12, formats asserted;
   of `localhost`, `127.0.0.1`, `::1`, or the daemon's own address and port.
 - Each artifact has its own origin, `http://<id>.localhost:<port>`. On that
   host the daemon serves only `/v/<n>/...` (that artifact's content),
-  `/healthz`, `/_clax/...` and `/_blob/...`; every other path, the API
+  `/healthz`, `/_clax/...` and `/_blob/...` (only that artifact's assets:
+  `/_blob/<asset>` and `/_blob/<id>/<asset>` are served as
+  `/_blob/<id>/<asset>`); every other path, the API
   included, is a 404. The host must be exactly a valid 12-character lowercase
   artifact ID followed by `.localhost` and an optional numeric port.
 - The viewer probes `http://<id>.localhost:<port>/healthz` (1 s timeout,
@@ -6547,8 +7868,46 @@ it with Ajv (draft 2020-12, formats asserted;
   (`/api/artifacts/<id>/versions/<n>/files/...`) carry
   `Content-Security-Policy: sandbox`, so opening any of them as a top-level
   page cannot reach the API same-origin. Content on an artifact's own origin
-  carries no CSP; the origin is the boundary. Supporting files and blobs are
-  sent with `X-Content-Type-Options: nosniff`.
+  carries `Content-Security-Policy: frame-ancestors 'self'
+  http://localhost<:port> http://127.0.0.1<:port>` (the request's port), so
+  only the artifact's own pages and the shell may frame it, and no sandbox:
+  the origin is the boundary. On either origin the same policy goes on to
+  keep the page to its own files: `default-src <own> <blobs> data: blob:;
+  script-src <own> 'unsafe-inline' 'unsafe-eval' data: blob:; style-src <own>
+  'unsafe-inline' data: blob:; connect-src <files> <blobs>; object-src
+  'none'; base-uri 'none'; form-action 'none'`. `<own>` is `'self'` on the
+  artifact's origin, and on the main origin, where the sandboxed page's
+  origin is opaque, `http://<Host>/c/<id>/ http://<Host>/_clax/bridge.js
+  http://<Host>/_clax/bridge/` (`<Host>` the request's, or the daemon's own
+  when that is not a plain host and port), so the API on that host is not
+  among them. `<files>` is `'self'` on the artifact's origin (which serves
+  only GET and HEAD of the artifact's content, `/_clax/...`, `/_blob/...`
+  and `/healthz`, and no API) and `http://<Host>/c/<id>/` on the main
+  origin. `<blobs>` is `http://<host>/_blob/<id>/`, the artifact's own
+  assets (`/_blob/<id>/<asset>` serves only the artifact that owns the
+  asset, 404 otherwise), for the request's host,
+  the daemon's own, and `localhost` and `127.0.0.1` on the request's port.
+  So a page loads its files, the bridge and its parts, its assets, and
+  `data:` and `blob:` URLs; it fetches (`fetch`, `XMLHttpRequest`,
+  `WebSocket`, `EventSource`, beacons, JSON modules) its own files and
+  assets and nothing else, and none of them takes a write; it loads no script,
+  style, font, image, media, frame or worker from another site; it posts
+  no form. Everything else it does goes through the shell by `postMessage`
+  (`db`, `comments`, `net`, `sample` and the other capabilities). Every
+  other response on an artifact's origin, and under `/c/<id>/` on the main
+  origin (a 404, `/healthz`, `/_clax/...`, `/_blob/...`, a redirect, a
+  refusal), carries the artifact's policy too, beside any of its own, so a
+  page that frames or opens one cannot use that window to escape; a `/c/`
+  path naming no artifact carries `sandbox; default-src 'none'`. A request
+  there for a service worker script (`Service-Worker: script`) is answered
+  with Clax's own script, which installs, unregisters itself and handles
+  no fetch: a page's own worker never runs, and one registered before is
+  removed at its next update check. A live
+  page's snapshot carries instead, on either origin, only the framing part
+  and a second policy that runs no script but Clax's own. Supporting files and blobs are
+  sent with `X-Content-Type-Options: nosniff`. Content, on either origin, and
+  blobs carry `Referrer-Policy: no-referrer`, so what a page loads from
+  another host names neither its artifact ID nor the daemon's port.
 - The viewer routes (creating a thread, commenting, sending to the agent,
   resolving, reopening, deleting, `GET`/`PUT /api/viewers/me`, `GET`/`PUT
   /api/viewers/me/seen`, `GET /api/viewers/me/attention` and `PUT
@@ -6634,6 +7993,44 @@ it with Ajv (draft 2020-12, formats asserted;
   same caller; the stream's ID, 128 random bits, keeps their streams
   apart); a stream's ID is sent only on that stream. Its `gallery` topic carries no comment text or
   author and no working message.
+- `X-Clax-Reader` only ever narrows: a request carrying it reads another
+  app's documents at `view` with no viewer, only with that app's share or
+  the owner's grant, and only on the document read routes; anywhere else,
+  or on a write, it is refused (see "Reading another app's documents").
+  Without the header, B's documents are read at the caller's own level, so
+  the web shell's `db.artifact(id)`, which always sends it with the page's
+  own artifact, is the boundary a page meets.
+- `clax serve --foreground --require-credential` serves only callers that
+  hold a credential, for a daemon on a loopback other programs share (and
+  the Clax app's embedded core runs under the same rule). Every
+  request without one answers 401 `unauthorized`, `GET /api/token`
+  included, so a program that can only reach the port never gets the
+  token. A credential is the bearer token, the owner or events cookie that
+  `GET /api/token` sets, or the **key cookie** `clax_key_<port>` (the port
+  from the request's `Host`), whose value is the token itself, compared in
+  constant time. No response sets the key cookie: the program that starts
+  the daemon puts it in its own browser's cookie store. Open without a
+  credential: `/healthz`, the web UI's static files (`/_clax/...`), and
+  content addressed by artifact ID (`/c/...`, artifact origins, and
+  `/_blob/...`), since a content frame on `<id>.localhost` is cross-site to
+  the shell and an Android WebView sends it no cookie; artifact and asset
+  IDs are random, and every route that lists or names them needs a
+  credential. A daemon started without the option is unchanged.
+- The Clax app runs its core inside its own process and listens on no
+  port, so no other app on the device can reach it. Its WebViews load from
+  a scheme the app answers (`https://app.clax.invalid` and
+  `https://<id>.c.clax.invalid` on Android, `clax://app` and
+  `clax://<id>.c` on Apple), so each artifact's content is its own origin,
+  apart from the shell's and every other artifact's. The app answers the
+  shell document only to the main frame's navigation; from the shell's
+  origin it forwards only `GET` and `HEAD`, and never `/api/`; a content
+  frame's requests carry no credential; every answer loses its
+  `Access-Control-*` headers; and only the shell's main frame reaches the
+  `ClaxHost` channel, over which the shell's owner calls go. Its
+  Claude API key lives in the platform's secure storage (Keychain on macOS
+  and iOS, Keystore-backed storage on Android) and is sent to the Claude
+  API and put into the core's memory (`PUT /api/sample/key`, for
+  `sample`), never to logs, the core's home or the WebView.
 - `artifact.publish` goes through the shell with the token, so only the
   owner's browser on this machine can republish a page, and only from the
   viewer's own gesture in the page (see "Runtime capabilities").

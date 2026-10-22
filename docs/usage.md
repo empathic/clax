@@ -428,6 +428,18 @@ touched. `just install` puts the working tree in front of your everyday agents
 uninstall` takes it away again.
 
 - `just help` (or bare `just`) lists every recipe with a description.
+- `just test-affected` (`scripts/affected-tests.sh`) runs the Bazel tests
+  downstream of your changes, chosen by the build graph: the working
+  tree's edits, staged or not, and new files, against `HEAD`. A base
+  (`just test-affected main`) adds every commit since its merge-base; a
+  range (`<sha>^..<sha>`) takes its commits alone, without the working
+  tree. Each changed file is its own label, a
+  changed BUILD file or a removed file selects its package, and the tests
+  are those that depend on them, less the `manual` ones. A change to the
+  build itself (`MODULE.bazel`, its lockfile and the files it names,
+  `.bazelrc`, a `.bzl` file, `bazel/`, `Cargo.lock`) runs every test. It
+  names the files no target uses, which select nothing; `--list` prints
+  the tests without running them, and other arguments go to `bazel test`.
 - `just check` formats the Rust code, then runs every quality gate.
 - `just ci` runs the same gates CI runs, without formatting.
 - `just perf` runs the perf benchmarks. Performance is measured on demand
@@ -443,16 +455,15 @@ one is. To run
 one file's tests: `cargo nextest run -p clax-server -E 'test(/^api_batch::/)'`,
 or `cargo test -p clax-server --test integration api_batch::`.
 
-`scripts/quality_gates.sh` runs every check CI runs: the justfile, plugin wrapper (`scripts/test-ensure-clax.sh`, `just wrapper-test`), release script, release command, release installer and dev script tests (`scripts/test-release.sh`, `scripts/test-release-script.sh` (`scripts/release.sh` against fakes of `gh`, `just` and Bazel), `scripts/test-install.sh` (`just install-test`), `scripts/test-dev.sh`), and plugin structure tests (`scripts/test-plugins.sh`, which also checks that the four skill copies and `docs/contract.md` share the page contract word for word, that the skill copies share the comment loop word for word, that the plugins wire their Stop and prompt hooks, that the workspace, the plugin manifests, the Pi package and the plugins' wrapper's `CLAX_VERSION` carry one version (`scripts/check-version.sh`), that the four plugins carry the same wrapper and pin the newest `v*` release tag, that the Rust and Pi tool descriptions match `plugins/pi/test/fixtures/contract.json`, and, through `scripts/sync-skill-tools.py --check`, that each skill's generated tool block and the tool lists in `docs/contract.md` and the READMEs name exactly that fixture's tools), the web lint (`oxlint`, configured in `web/.oxlintrc.json`), web typecheck and unit tests, the web build (before the Rust tests and the release build, which serve or embed it), `cargo fmt`, clippy with `-D warnings` over every target, the Rust tests (`cargo nextest`, or `cargo test` with a warning where nextest is not installed: `cargo install --locked cargo-nextest`), the comment-loop smoke (`scripts/smoke-comment-loop.sh`: a scripted Claude Code session, no model, through tiers 1, 2, 4 and 5 with a fake `codex`), the Pi extension's typecheck and tests, the Worker's checks (`crates/clax-worker`, its own workspace: `cargo fmt` over its own members (under Bazel, `//crates/clax-worker:rustfmt`, the rustfmt of the rest of the format check), its tests, among them the SQLite VFS's, and clippy, natively (`scripts/worker-checks.sh`; `just worker-test` runs them with the format check, `just worker-test-native` with `cargo fmt`), then `test-wasm.mjs`, which builds the wasm Worker, writes through it under `wrangler dev --local` on free ports with fresh state under `crates/clax-worker/target/wasm-test/`, restarts wrangler and checks the data and `PRAGMA integrity_check`; and, after the web e2e tests, `e2e.mjs`, which runs the Clax server in its Durable Object under `wrangler dev --local` with the web UI from `web/dist` and checks in two browsers that a published artifact shows in the gallery and opens, that a comment reaches the other browser live over the stream's WebSocket, also after the server is rebuilt as after hibernation, and that everything is there after a restart), and the Playwright end-to-end tests of the web UI. `just web-test` runs the web lint, typecheck, and unit tests.
+`scripts/quality_gates.sh` runs every check CI runs: the justfile, plugin wrapper (`scripts/test-ensure-clax.sh`, `just wrapper-test`), release script, release command, release installer and dev script tests (`scripts/test-release.sh`, `scripts/test-release-script.sh` (`scripts/release.sh` against fakes of `gh`, `just` and Bazel), `scripts/test-install.sh` (`just install-test`), `scripts/test-dev.sh`), the Clax app's build script test (`scripts/test-build-app-clax.sh`, a dry run with no build), and plugin structure tests (`scripts/test-plugins.sh`, which also checks that the four skill copies and `docs/contract.md` share the page contract word for word, that the skill copies share the comment loop word for word, that the plugins wire their Stop and prompt hooks, that the workspace, the plugin manifests, the Pi package and the plugins' wrapper's `CLAX_VERSION` carry one version (`scripts/check-version.sh`), that the four plugins carry the same wrapper and pin the newest `v*` release tag, that the Rust and Pi tool descriptions match `plugins/pi/test/fixtures/contract.json`, and, through `scripts/sync-skill-tools.py --check`, that each skill's generated tool block and the tool lists in `docs/contract.md` and the READMEs name exactly that fixture's tools), the web lint (`oxlint`, configured in `web/.oxlintrc.json`), web typecheck and unit tests, the web build (before the Rust tests and the release build, which serve or embed it), `cargo fmt`, clippy with `-D warnings` over every target, the Rust tests (`cargo nextest`, or `cargo test` with a warning where nextest is not installed: `cargo install --locked cargo-nextest`), the comment-loop smoke (`scripts/smoke-comment-loop.sh`: a scripted Claude Code session, no model, through tiers 1, 2, 4 and 5 with a fake `codex`), the Pi extension's typecheck and tests, the Worker's checks (`crates/clax-worker`, its own workspace: `cargo fmt` over its own members (under Bazel, `//crates/clax-worker:rustfmt`, the rustfmt of the rest of the format check), its tests, among them the SQLite VFS's, and clippy, natively (`scripts/worker-checks.sh`; `just worker-test` runs them with the format check, `just worker-test-native` with `cargo fmt`), then `test-wasm.mjs`, which builds the wasm Worker, writes through it under `wrangler dev --local` on free ports with fresh state under `crates/clax-worker/target/wasm-test/`, restarts wrangler and checks the data and `PRAGMA integrity_check`; and, after the web e2e tests, `e2e.mjs`, which runs the Clax server in its Durable Object under `wrangler dev --local` with the web UI from `web/dist` and checks in two browsers that a published artifact shows in the gallery and opens, that a comment reaches the other browser live over the stream's WebSocket, also after the server is rebuilt as after hibernation, and that everything is there after a restart), the Clax app's gate (`apps/clax_app/tool/check.sh`, skipped where `flutter` is not installed; see "The Clax app" below), and the Playwright end-to-end tests of the web UI. `just web-test` runs the web lint, typecheck, and unit tests.
 
-The web UI is built first (`scripts/build-web.sh`, which keeps the modification times of output it did not change, so an unchanged web UI does not rebuild the release binary that embeds it) and its unit tests run next, alone, since some are timing-sensitive. The other gates then run in concurrent lanes (web e2e then the Worker's e2e, the Rust tests, clippy and `cargo fmt`, web lint and typecheck, the release build, Pi, the scripts, the Worker, the wasm32 check), the longest first, each printing a line as it finishes; a failed gate prints its output. The Rust tests are built before clippy runs, so they start as soon as they can. `pnpm install --frozen-lockfile` runs in `web/` and `plugins/pi/` only when `node_modules` was not installed from the current `pnpm-lock.yaml` by the same Node and pnpm (a hash in `node_modules/.clax-install-stamp`; `CLAX_PNPM_INSTALL=always` ignores it), and `npm ci` in `crates/clax-worker/`, the one npm project, only when its `node_modules` was not installed from its `package-lock.json` by the same Node and npm (`node_modules/.clax-ci-stamp`; `CLAX_NPM_CI=always` ignores it). One debug `clax` is built for the whole run and given to the tests that cannot name it and to the browser tests' daemons as `CLAX_TEST_BIN` (`just test` does the same for the Rust tests), and one release `clax` to the perf gates as `CLAX_PERF_BIN`. The perf gates then run alone, one at a time. The run ends with each gate's time and the total; a slow gate is reported, never failed. On a warm build cache and an otherwise idle machine, the whole run takes under two minutes.
-
+The web UI is built first (`scripts/build-web.sh`, which keeps the modification times of output it did not change, so an unchanged web UI does not rebuild the release binary that embeds it) and its unit tests run next, alone, since some are timing-sensitive. The other gates then run in concurrent lanes (web e2e then the Worker's e2e, the Rust tests, clippy and `cargo fmt`, web lint and typecheck, the release build, Pi, the scripts, the Worker, the wasm32 check, the Clax app), the longest first, each printing a line as it finishes; a failed gate prints its output. The Rust tests are built before clippy runs, so they start as soon as they can. `pnpm install --frozen-lockfile` runs in `web/` and `plugins/pi/` only when `node_modules` was not installed from the current `pnpm-lock.yaml` by the same Node and pnpm (a hash in `node_modules/.clax-install-stamp`; `CLAX_PNPM_INSTALL=always` ignores it), and `npm ci` in `crates/clax-worker/`, the one npm project, only when its `node_modules` was not installed from its `package-lock.json` by the same Node and npm (`node_modules/.clax-ci-stamp`; `CLAX_NPM_CI=always` ignores it). One debug `clax` is built for the whole run and given to the tests that cannot name it and to the browser tests' daemons as `CLAX_TEST_BIN` (`just test` does the same for the Rust tests), and one release `clax` to the perf gates as `CLAX_PERF_BIN`. The perf gates then run alone, one at a time. The run ends with each gate's time and the total; a slow gate is reported, never failed. On a warm build cache and an otherwise idle machine, the whole run takes under two minutes.
 
 The perf benchmarks, run on demand by `just perf` and by no check: each prints its measures beside its budgets, scaled by the run's own idle latency, and reports a measure over budget without failing:
 
 - daemon latency (`scripts/perf-daemon.sh`): a release `clax` on a scratch home seeded with 300 artifacts, 2,400 threads and 7,200 comments by one viewer; while a gallery tab refreshes, ten galleries load, 12 MB `docs:batch` writes, long polls and event streams, and 16 MB publishes run in turn, `/healthz`, `/a/<id>`, `/c/<id>/v/1/` and `/api/artifacts/<id>` must keep a p95 of 50 ms and a max of 250 ms, and the gallery's list and attention requests alone, each timed against a fixed SQLite calibration read that the daemon runs on its own store workers, interleaved with it, must stay within about 1.4 times their measured ratios to it, so either query getting twice as slow fails on a fast machine, a slow one or a loaded one; medians over three rounds of 3 s windows per load (0.5 s in the quick mode), limits scaled by the run's own idle latency, and under the ten galleries to at least twice the galleries' own mean request latency; with two people connected by `clax connect` (6,000 comments by four authors, 50 approvals each), a person's agent's threads read and feedback poll (half the rows withheld) within 2 ms and 1 ms of the single-owner baseline that `scripts/perf-vis-baseline.sh <commit>` measures, the gateway's median signature verification within 150 µs, and a signed client polling beside every load; budgets in `scripts/perf-daemon-budget.json`;
 - realtime clients (`scripts/perf-clients.sh`): 1,000 `/api/stream` clients on one release daemon, judged on delivery latency, cheap requests under load, memory per client, idle CPU and a client that never reads; a 16 s idle and a 15 s load window (3 s and 9 s in the quick mode: the load makes at least 40 writes, so one write held up by its commit cannot set the delivery p95 alone), budgets in `scripts/perf-clients-budget.json`;
-- time to usable (`cd web && pnpm run perf`): link to first paint and to comment mode in a fresh tab, per frame mode, against `web/perf/budget.json`; the quick mode (`CLAX_PERF_QUICK=1`) takes 5 samples per mode instead of 9.
+- time to usable (`cd web && pnpm run perf`): link to first paint and to comment mode in a fresh tab, and link to the shell's first `ready` to the Clax app's host (`/a/<id>?app=1`, the end of the app's say → usable time), per frame mode, against `web/perf/budget.json`; the quick mode (`CLAX_PERF_QUICK=1`) takes 5 samples per mode instead of 9.
 
 The numbers are kept in a perf log, one JSON line per run: the commit and
 date, the runner, its CPU count and load average, and every measure (the
@@ -500,6 +511,741 @@ or a fresh `cargo build`, never your installed `clax`; it refuses to run when
 a scratch directory would fall inside your home, never reads or copies an
 auth file, and runs Clax on a scratch port. The Pi session check, which needs
 a model, runs only with `VERIFY_PI_SESSION=1` and a provider key you export.
+
+### The Clax app
+
+`apps/clax_app` is a Flutter app for Android, macOS, iPhone and iPad. It
+runs Clax's core, the store and router `clax serve` runs, as a library
+inside its own process (`crates/clax-embed`, behind four C functions the
+app calls by FFI), with a home of its own under the app's support
+directory (`clax-home/`): nothing listens on a port and no other program
+runs. It shows each app full screen in a WebView that loads from a scheme
+the app answers, and runs its own agent: the Claude API with your key,
+or, in a desktop debug build, Claude Code. What it relies on from the
+core and the shell is in `docs/contract.md` ("The Clax app's
+agent", "The Clax app", "Sharing apps", "Device capabilities in the Clax
+app", "Reading another app's documents", "Fetching from the network",
+"Security model").
+
+**Toolchains.** With Bazel (as for the rest of Clax) nothing needs
+installing but Bazelisk and, for macOS, Xcode: Bazel fetches Flutter
+3.47.7 and every pub package of `pubspec.lock`, the Android SDK (build
+tools 36.0.0, platform 36, platform tools), NDK r28c, a JDK, the Maven
+libraries the plugins need and the Rust targets, each by checksum, into
+the cache every worktree shares. `docs/bazel.md`, "The Clax app", says
+what builds what and how to upgrade each piece. The one input from this
+machine is the Android debug key, `~/.android/debug.keystore`, which signs
+the APK so it installs over one already on a phone.
+
+The `-native` twins use Flutter, Gradle and Xcode as installed: Flutter
+(stable; 3.47 is what it is built with), Xcode for macOS, and for Android a
+JDK 17, the Android SDK (platform 36, build tools, platform tools,
+command-line tools) and NDK 28.2.13676358. Point Flutter at them once, and
+accept the SDK licences:
+
+```
+flutter config --jdk-dir "$(ls -d ~/Library/Java/jdk-17*/Contents/Home | head -1)"
+flutter config --android-sdk ~/Library/Android/sdk
+flutter doctor --android-licenses
+flutter doctor
+```
+
+`scripts/build-app-clax.sh` (the native build of the embedded core)
+takes the NDK from `ANDROID_NDK_HOME`, else
+`~/Library/Android/sdk/ndk/28.2.13676358`, and adds the Rust targets
+`aarch64-linux-android` and `x86_64-linux-android` itself.
+
+**Recipes.** Each runs Bazel when it is installed and has a `-native` twin
+(`just app-test-native`, `just app-apk-native`, …) that runs the native
+tools as before; `scripts/run.sh --dry-run <recipe>` says what one would
+run.
+
+- `just app-test` runs the app's checks: `dart analyze` over the app's
+  Dart (`//apps/clax_app:dart_analyze`, by
+  `apps/clax_app/analysis_options.yaml`), each test file of `test/` as its
+  own target (`//apps/clax_app:<dir>_<file>`; the `*_real_test.dart` files
+  against the host's build of the embedded core), the prompt copies
+  (`//apps/clax_app:prompt_sync`, `scripts/sync-app-prompt.sh --check`,
+  which checks that the prompt assets in `apps/clax_app/assets/prompt`
+  still copy `docs/contract.md`'s "Page contract" and "Runtime
+  capabilities" sections and the served type definitions), the APK's and
+  the macOS app's contents (`:apk_test`, `:macos_app_test`) and the
+  version's (`:version_sync`). All of them are in `just ci`. After changing
+  either contract section, run `scripts/sync-app-prompt.sh` and commit the
+  assets with it. `just app-test-native` runs `apps/clax_app/tool/check.sh`
+  (`flutter analyze`, `flutter test`, and the prompt check); its
+  `*_real_test.dart` files run only when `CLAX_EMBED_LIB` names a host
+  build of the core, and skip otherwise.
+- `just app-integration` runs the integration tests on macOS, one app per
+  file of `integration_test/` (`//apps/clax_app:integration_<name>`): the
+  full loop (a scripted agent making and changing an app on the embedded
+  core and inspector), app bundles end to end, the scheme's origins
+  (`scheme_spike_test.dart`), and the Mac's window chrome (`mac_chrome_test.dart`: the toolbar, menus,
+  Settings and Inbox windows, alert and sheets captured in light and dark,
+  its menu text against `integration_test/goldens/main_menu.txt`, and
+  clicks, drags and keys sent as AppKit events). Each opens the app's
+  window and takes up to a few minutes, so they are not in `just ci`; run
+  it in the background. The chrome test writes its PNGs to
+  `$CLAX_MAC_SHOTS_DIR` (`--test_env=CLAX_MAC_SHOTS_DIR=$PWD/target/flutter-app/mac`)
+  or the test's outputs. It needs no Screen Recording permission: it reads
+  only Clax's own windows. On an unlocked, awake display with Clax able to
+  come to the front, its captures come from the screen and its keys and
+  clicks go through AppKit's event queue, and every check runs; on a locked
+  or sleeping display (an agent's session) the windows are drawn from their
+  layers instead (no materials or Liquid Glass, menus blank), events go to
+  the views directly, and the key checks are skipped, as its log says. `just app-integration-native`
+  runs `flutter test <file> -d macos` for each file, into
+  `apps/clax_app/build/macos`.
+- `just app-integration --ios` runs the simulator ones instead, the files
+  `integration_test/ios_*_test.dart` (`//apps/clax_app:integration_ios_<name>`):
+  a cold start with the core in the app's process, a cycle through the
+  background, a make paused when the background time is spent, and a
+  `.clax` opened in the app. Each installs its own debug app fresh on "Clax
+  iPhone" (`just app-ios` creates it), booting it when it is not running
+  and shutting it down after; `apps/clax_app/tool/ios-integration-run.sh`
+  takes the screenshots a test asks for into the test's outputs
+  (`bazel-testlogs/apps/clax_app/integration_ios_<name>/test.outputs/`).
+  Bazel only.
+- `just app-eval [--model ID] [--prompts a,b] [--max-spend USD] [--run
+  NAME]` is the live build eval, run by hand and never by a gate: each
+  prompt of `apps/clax_app/tool/eval/prompts.json` is built by the app's
+  own agent on the Messages API, on a scratch home of the embedded core, to the end of
+  its build. It needs `ANTHROPIC_API_KEY` and spends real money: up to $6 a
+  build, refused before anything runs when that times the prompts is over
+  `--max-spend` ($30 by default). Each run's files, screenshots, plan,
+  per-run costs and a results table go to `target/flutter-app/eval/<run>/`.
+  It builds the macOS debug app, so do not run it beside another macOS
+  build or `just app-integration`.
+- `just app-apk` builds the release APK, for arm64-v8a and x86_64 with the
+  embedded core (`libclax_embed.so`) of each, and prints its path (`//apps/clax_app:apk`,
+  `bazel-bin/apps/clax_app/apk.apk`). It is signed with the debug key,
+  which is enough to install it on your own phone.
+  `just app-apk-native` builds the core for Android with Cargo into
+  `jniLibs/` and the APK with Gradle, at
+  `apps/clax_app/build/app/outputs/flutter-apk/app-release.apk`.
+- `just app-phone` builds HEAD's APK and installs it on the plugged-in
+  phone (`scripts/app-phone.sh`, a dry run without
+  `--i-know-what-i-am-doing`), with the SDK's `adb` Bazel fetches; a
+  checkout with changes is built from a clean copy of HEAD. It then opens
+  the app and waits, up to `APP_PHONE_READY_WAIT` seconds (300; a first
+  launch after an upgrade may migrate and back up the store first), for
+  the core's `clax-core: ready pid=<PID>` line in `adb logcat --pid` (a
+  release build is not debuggable, so its `core.json` cannot be read with
+  `run-as`), and checks the app keeps that PID.
+- `just app-macos` builds the release (sandboxed) app, `Clax.app`, and
+  prints its path (`//apps/clax_app:macos_app`, a zip);
+  `just app-macos-native` builds it with Xcode, at
+  `apps/clax_app/build/macos/Build/Products/Release/Clax.app`.
+- `scripts/build-app-clax.sh [android|macos|all] [--debug]` builds the
+  embedded core natively, with Cargo, and places it where the native app
+  builds pick it up: `apps/clax_app/build-native/macos/libclax_embed.dylib`
+  (universal, arm64 and x86_64, joined with `lipo`, as Xcode builds a
+  Release app; with `--debug` the host CPU only), and stripped
+  `apps/clax_app/android/app/src/main/jniLibs/{arm64-v8a,x86_64}/libclax_embed.so`
+  (all git-ignored); the `-native` recipes run it first. With Bazel the
+  APK and the macOS app build it themselves
+  (`//crates/clax-embed:clax_embed_android_arm64`,
+  `:clax_embed_android_x86_64`, `:clax_embed_macos`). A release build (the
+  default) embeds `web/dist`, so it builds the web UI first. Each library
+  is renamed into place, never copied over one that may be in use.
+
+No test and no gate calls a model: the agent is tested against a scripted
+backend and a fake Messages API server. Runs against a live model are
+manual. A debug build given `--dart-define=CLAX_SCRIPTED_AGENT=<file>`
+answers with the scripted results in that file (a JSON array of edit
+results, or `{"error": "<message>"}` items) instead of a model, which drives
+the whole app without one.
+
+**The kit.** The agent's `add_kit` copies `apps/clax_app/assets/kit/`
+(see its `README.md`) into an app; `kitApi` in
+`lib/agent/tools/kit_tool.dart` describes it to the model, in the tool's
+result and in the system prompt. The map part (`map.js`) loads its tiles
+through `net`; `web/e2e/map.spec.ts` drives it in the app's view against
+tiles the test answers at the shell's `net:fetch` request, the consent
+dialog included.
+
+**The home app.** The home screen is an app of its own, built from
+`apps/clax_app/home/` (`index.html`, `home.js`, `home.css`, its tests, and
+`manifest.json` naming its title, capabilities, lineage, release key,
+release series and the kit files it carries) into the bundle the app
+ships, `assets/home/home.clax`, with its release record
+`assets/home/release.json`. On the first run the app installs it and
+records its ID in `home.json`; at each start it updates the installed home
+app from a newer shipped release (silently, unless the person changed it:
+then they choose Update or Keep mine, once per release). The `home`
+capability it uses is "The home screen's capability" in
+`docs/contract.md`; `assets/kit/fake-home.js` stands in for it in its
+tests (`add_kit` part `home`).
+
+The bundle is a build output: every build of the app packs it from the
+sources (`//apps/clax_app:home_bundle`, an asset of the APK and the macOS
+app; natively `scripts/build-home-bundle.sh`, which `app-apk`, `app-macos`
+and `app-test` run first), so `just app-phone`, `just app-apk` and `just
+app-macos` ship the current `home/` with nothing to pack or commit. Its
+version is chosen by the build (`apps/clax_app/tool/home-version.sh`):
+the same while `home/` and `assets/kit/` are unchanged, and higher than
+any earlier build's on this machine when they changed, so a phone given a
+new build updates its home app. The release is `<release>.<version>`, the
+manifest's `release` naming the series; `version` there is the floor the
+built versions start above.
+
+The bundle is signed by the home app's own key, and every release must be
+signed by the same one: an install treats a bundle under another key as a
+different app. Its seed is kept outside the repository, owner-only, at
+`~/.config/clax/home-bundle/key` on the owner's Mac (`CLAX_HOME_BUNDLE_KEY`
+names another file), beside `releases`, the ledger of the versions given;
+keep that directory backed up. The manifest's `key` is the key's public
+half, and a build with another key stops. A machine without the key (CI,
+or anyone else's) signs with the development key, `tool/home-dev.key`, on
+the development lineage: its app installs that home app as a different
+one, which a release never updates.
+
+```
+just home-bundle                 # builds the bundle alone and prints its path
+./scripts/build-home-bundle.sh   # natively, a dry run: says the version it would give
+```
+
+`test/home/home_bundle_test.dart` checks that the built bundle verifies,
+matches its release record and holds today's `home/` and kit files.
+
+**On an Android phone.** Turn on developer options and USB debugging, plug
+the phone in, and from the checkout run:
+
+```
+just app-phone   # builds HEAD's APK, installs it keeping the app's data, and checks its core opens and the app stays up
+```
+
+or by hand, with an `adb` on `PATH`:
+
+```
+adb devices    # lists the phone; accept the prompt on it if it says unauthorized
+adb install -r "$(just app-apk | tail -n 1)"
+```
+
+`flutter run --release -d <device>` from `apps/clax_app` builds, installs
+and starts it in one step, once `scripts/build-app-clax.sh android` has
+placed the core. The app needs Android 10 (API 29) or later on an arm64 or x86_64
+device. Open it, tap Settings on the launcher (a banner says so while no
+key is set), and paste a Claude API key into "Claude API key"; it is kept in
+the phone's Keystore-backed secure storage and sent only to the Claude API.
+Pick a model there too (Sonnet 5.5 by default; Haiku 5.5 is faster,
+Opus 5.5 stronger). Then New: say or type what
+you want. The app's core, its documents and every version stay on the
+phone; only the model call leaves it. The core listens on no port, so
+other apps on the phone have nothing to reach (see "Security model" in
+`docs/contract.md`).
+
+**On a Mac, with Claude Code instead of a key.** A sandboxed app cannot
+start `claude`, so the Claude Code backend is offered only in a debug
+build, which runs without the App Sandbox:
+
+```
+just app-macos-dev   # builds the embedded core and the home bundle, then flutter run -d macos
+```
+
+`just app-macos-dev` keeps you in `flutter run`, so `r` hot-reloads and `R`
+hot-restarts; run it again after changing Swift, the menus or
+`apps/clax_app/home`.
+
+In Settings choose "Claude Code on this Mac" (it uses your Claude Code
+login; set "Claude Code path" when `claude` is not on `PATH` or in
+`~/.local/bin`). Each change runs `claude -p` with tools off, at effort low,
+with `--safe-mode`, so your CLAUDE.md, memory, skills, plugins, hooks and
+MCP servers stay out of it. The release build (`just app-macos`) is
+sandboxed and offers only the Claude API with a key, kept in the login
+keychain.
+
+**Signing the Mac app, so the keychain stops asking.** By default the
+macOS app and its embedded core are signed ad hoc: each build is a new
+signature, the keychain item trusts only the build that saved it, and
+macOS asks "clax_app wants to use your confidential information stored in
+'flutter_secure_storage_service'" after every rebuild (once a launch: the
+app reads the key once a process). With a free Apple Development
+certificate (Xcode → Settings → Accounts → add your Apple Account →
+Manage Certificates → + Apple Development), sign with it instead:
+
+```
+security find-certificate -c "Apple Development" -p | openssl x509 -noout -subject   # OU= is your team ID
+sed 's/XXXXXXXXXX/<team ID>/' apps/clax_app/macos/Signing.xcconfig.example > apps/clax_app/macos/Signing.xcconfig
+just app-macos
+```
+
+`apps/clax_app/macos/Signing.xcconfig` is gitignored; without it builds
+stay ad hoc. On the first launch of a signed build the keychain asks once
+more, since the saved item still lists only the ad-hoc build: click Always
+Allow (or save the key again in Settings). After that, rebuilds keep the
+same signature and do not ask.
+
+**Using the app.**
+
+- **Home.** Your apps in a grid, each with the icon its agent designed;
+  the inbox button with its unread count; Settings; and New. A long press
+  on a tile offers Open, Inspect and, while its plan has features left,
+  Resume build. The home screen is itself an app: comment on it (Settings
+  › Home screen › Open) to change it, as any app, for example "sort my
+  apps alphabetically"; it never lists itself. When it cannot show (it
+  fails to load, or has not shown within 10 seconds of a load of its
+  page: the first at a start, and the reload after each Undo or Reset),
+  Clax's built-in home screen takes its place with "Your home screen
+  couldn't load", **Undo last change** and **Reset** (Clax's own home
+  screen again, as a new version, your data and threads kept). Undo
+  makes the version before the latest current again, as a new version;
+  each Undo in a row steps back one more (from versions 1, 2 and 3, Undo
+  restores 2, and Undo again 1), even across a restart, until there is
+  no earlier version. Any other change (a new version from a comment, a
+  Reset or an update) starts it again from the latest. Undo restores the
+  files only: the home app's capabilities stay as they are. Settings ›
+  Home screen has Open, Undo last change, Reset to Clax's home screen,
+  and Use the built-in home screen.
+- **Making an app.** New, then say or type what you want. The build view
+  shows the plan as a live checklist, what the agent is doing, and a live
+  preview of the page as it is written and rendered. Add, edit, drop or
+  reorder features while it builds. Open app is offered as soon as the
+  first version lands; the agent goes on building the rest of the plan,
+  a version at a time, until it is done, the build has spent $6, or you
+  Stop it (Resume carries on). Back to apps (Android's back, or Esc and
+  ⌘[ on macOS) leaves a make running: up to three run at once, each a
+  tile with its progress until it lands, and a tap shows its build view
+  again. While a make or a change runs with Clax in the background,
+  Android keeps a progress notification up, then posts "<title> is ready"
+  (or that it changed, or couldn't); its tap opens the app.
+- **When Claude can't be reached.** Comments and new apps are kept on the
+  device at once, whether or not the Claude API can be reached. A make, a
+  change, Keep going or Retry that cannot reach it waits instead of
+  failing: the make's tile reads "Can't reach Claude" and its build view
+  "Waiting for Claude", and a change says "Waiting for Claude" on the
+  Clax pill over the app (in a pane, its top app bar) and on its thread,
+  which offers Try now and Cancel (Cancel stops that comment alone; the
+  thread then reads Cancelled, with Send again). While something waits and
+  Clax is in front, it probes the API, every few seconds at first and less
+  often the longer it stays down, and at once when Clax comes back to the
+  front or you tap Try now; the work goes on by itself when it answers,
+  also after Clax restarts. A run that loses the connection part way
+  pauses and resumes from the turn it was on, without repeating what it
+  already did; waiting does not count against its time limit. A turn
+  whose connection breaks more than five times waits for Try now or for
+  Clax to come back to the front, and each broken attempt that reached the
+  API counts toward the run's turn and cost limits.
+- **Commenting.** Nothing of Clax's is drawn over an open app. On Android,
+  a silent notification named after the app stays up while it is open,
+  with **Comment** and **Threads**; on macOS, View › Comment (⇧⌘K) and View ›
+  Show Threads (⌘K). A two-finger swipe left opens the threads too, and when
+  notifications are off, or you swiped the notice away, a thin handle on
+  the right edge does. Comment mode frames the page and puts a bar under it: "Tap anything to comment
+  on it", **Comment on the whole app** (a comment on no element), Threads
+  (with the open count), Voice (whether a pick starts dictation) and ✕.
+  Tap what you want changed to comment there; hold, then drag, to select
+  text or draw an area. Clax's composer docks at the bottom (over the
+  page, which keeps its size, and above the keyboard) and shows what the
+  comment is on: the screenshot of what you picked beside its words, the
+  selected text, or a "Whole app" chip. Dictate or type, then Send (or
+  Cancel, or Add to plan while the app builds); the threads show each
+  comment's screenshot too. The page stays
+  usable while the change runs: the Working chip narrates it and folds
+  into a small pill at the top right, just under the status bar and any
+  camera cutout, and a tap opens the change in progress (its
+  comments, steps and latest render, Stop, and Open thread).
+- **New versions.** A new version of the open app (a change, a build's
+  next feature, an update) never replaces it by itself: a toast "New
+  version ready" offers **Reload**, which swaps it in place on the page
+  and route you are on, with your data and scroll kept. While you are
+  writing a comment the toast waits until you send or cancel it; if it
+  fades, it comes back the next time you return to the app. A new app you
+  just made opens on its first version directly. A toast says when Clax replied, and
+  View opens the thread at its reply; a thread's page takes replies, shows
+  Retry on a failed change and opens the version that addressed it.
+- **Big changes.** A change has one run of 10 steps, 3 checks and 2
+  minutes. A request too big for that (a new screen, several features)
+  becomes a short build plan instead: the reply says so and the Working
+  chip shows the build, as for a new app. A change that still runs out
+  says which limit it hit ("too big for one go — it needed more than 10
+  steps"), how often it stopped and what it cost, the files its draft
+  changed so far and the agent's latest notes, and offers **Keep going**:
+  it goes on from the stopped run's unfinished draft, notes and answers,
+  kept until the app changes under that draft. When the draft cannot be
+  used, Keep going starts again from the current app and its reply says
+  so. After a second stop, Keep going plans the rest as a build instead.
+  A change and its Keep goings may cost $6 together. A build
+  that spent its $6 waits; Resume on it starts a new $6.
+- **Questions.** When the agent asks you something while its app is on
+  screen, the question docks in a sheet at the bottom, with a light tap
+  (back or Esc closes it before anything else). Over another app a toast
+  says so, and View shows it; on the home screen, the build view or the
+  inbox it opens in a sheet; with Clax in the background a notification
+  "<title> has a question" shows it when tapped. A second question waits
+  for the first to close.
+- **Inbox.** Replies, new versions, new apps, questions and finished work
+  across your apps, newest first and live: Unread or All, filters by kind,
+  search, Mark all read; a tap opens the thread, version, app or
+  question.
+- **Versions.** The threads panel's Versions tab lists every version:
+  tap one to preview it, Restore (or Undo) to make an earlier one's files
+  current again; the app's capabilities stay as they are. A version's
+  page shows the threads it addressed and the files it changed, with a
+  line diff against the version before, or against the current one with
+  Compare with current.
+- **Inspector.** Inspect on a tile's long press shows what an app is made
+  of: Overview (title, ID, versions, size, capabilities, history), Files
+  (read-only), Data (collections and documents as JSON), Permissions
+  (reads of other apps, the agent's remembered read consents, device
+  capabilities, network hosts and AI use, each revocable) and Plan.
+- **Location.** The first time an app asks where you are, Clax offers
+  Precise, Approximate (only your area, about 2 km across) or Don't allow,
+  and keeps the answer until you revoke it in the inspector's Permissions.
+  An app may follow your location only while it is on screen: a small
+  location pill shows at the top left meanwhile, a tap on it stops it, and
+  leaving the app stops it for good until the app asks again from a tap.
+  On the Mac the window's toolbar also shows Location while an app follows
+  you, and a click on it stops it the same way. When Android or macOS will
+  not ask again, or the device's location is off, a toast offers Open
+  settings.
+- **Camera.** An app may take a photo when you let it: on the Mac Clax
+  shows a sheet with the camera's live picture, Cancel and Take Photo.
+- **Sharing an app.** Share app (Export… on the Mac) on a tile's long
+  press or on the inspector's Overview makes the app a `.clax` file and
+  hands it to the share sheet (on the Mac, a save panel). The sheet says
+  which version goes and how many files; **Include my data** (off by
+  default, and unavailable past 2,000 documents or 8 MiB) adds the app's
+  documents, so the other person starts with them. Never in the file: your
+  API key, your other apps or their data, comment threads, earlier
+  versions, or the permissions you granted. The first share of an app
+  makes your sharing key and calls it v1; sharing again after a change
+  makes the next version, and sharing an unchanged app again sends the
+  same version. Settings › Sharing holds **Your name**, shown to the
+  people you share with, and, once you have shared, your sharing key's
+  fingerprint (`7KQ2-M9XD-4FTA-QW3B`).
+- **Installing one.** Open a `.clax` file in Clax: from Files or a
+  message on Android (Open with, or Share to Clax), by double-clicking it
+  in Finder on the Mac, or with Import app… in the launcher's overflow
+  menu on either. The install sheet shows the app, who it is from (their
+  name as they gave it, which anyone can claim, beside their key's
+  fingerprint: check the fingerprint with them another way when it
+  matters), what it can ask for (each capability in words, the internet
+  hosts by name) and whether it comes with documents. Install, and the
+  app opens. It needs no API key to install or use; changing it, or an
+  app that uses Claude, does. A file that was damaged or changed after it
+  was signed, or that is not a Clax app, is refused with one sentence.
+- **Updates.** An update is a later file of the same app from the same
+  sender; there are no automatic checks. Opening it offers Update (with
+  what the new version also asks for), and the update is checked before it
+  lands: Clax runs it against a copy of your data (its data upgrade, its
+  page and its tests), and only when all pass does it become the app's
+  next version, with your documents kept and the earlier versions still
+  in Versions. When the check fails, "Your app is unchanged", and Details
+  says why. While an update runs, the app shows "Updating…"; if its data
+  upgrade then fails on your documents, the app goes back to the version
+  before (files, title, icon and permissions) with your documents as they
+  were, your own private ones included. An update cut short by Clax quitting is put back at the next
+  start, or, when the app changed since, Clax asks whether to Restore or
+  Discard. If you changed the app yourself, choose **Update (replaces
+  your changes)** or **Keep mine (stop updates for this app)** (for the
+  home app, **Keep mine (skip this update)**: the next release asks
+  again). A file of
+  an older or the same version is not installed; the same app signed by
+  someone else's key, or the original of an app you made your own,
+  installs as a separate app beside yours. Sharing an app you installed
+  sends the sender's file as you received it; if you changed it, you may
+  instead share **your version as a new app**, which you then update
+  yourself.
+- **Back.** In an app, back (Android's back gesture or button, Esc or ⌘[
+  on macOS) first closes what is over the page (the questions sheet, the
+  composer, the threads panel, the comment bar), then goes back through
+  the app's own pages and routes, and only from where the app started
+  returns to your apps. Elsewhere it goes back a screen. On macOS Esc in a
+  text field only leaves the field, and while an app's page has the
+  keyboard only ⌘[ goes back.
+
+The app keeps its own records in its application support directory
+(inside `~/Library/Containers/dev.empathic.clax` for the sandboxed macOS
+build): `settings.json`, `timings.jsonl` (say → usable, long-press →
+landed and home-usable times, also listed in Settings),
+`agent-timings.jsonl`,
+`lineages.json` (which apps were shared or installed as files, and under
+which key), `home.json` (the home app's ID, whether the built-in home
+screen is chosen, the shipped release the person kept their own home
+app over, and where Undo last change has stepped back to),
+`bundles/<ID>.clax` (each installed app's file as received, for sharing
+it on), `snapshots/` (an app's documents while an update
+upgrades them, put back if it fails or Clax ends part way), and
+`clax-home/`, the core's home. The sharing key is in the platform's
+secure storage beside the API key; uninstalling Clax loses it, and your
+later files then install on others' devices as separate apps. It never touches `~/.clax` or port 7480.
+
+A cold start shows the Clax mark while the core opens, then the home
+app's page under its loading cover. An app's page, the home app's
+included, is covered while it loads: the plain surface for 100 ms, then
+the working Clax mark at the centre, which once shown stays for at least
+one full breath (`AppCover` and `CoverTiming` in
+`apps/clax_app/lib/ui/app_cover.dart`); under reduced motion the still
+mark is not held. A new app handed over from its build view shows the
+same cover.
+
+**Measuring the home screen's start.** `home-usable` runs from the app's
+launch (its `main`) to the home app's first `shown()`. Each launch adds
+one line to `timings.jsonl`. On the phone:
+
+```sh
+just app-phone        # build and install the release APK
+adb shell am force-stop dev.empathic.clax
+adb shell am start -W -n dev.empathic.clax/dev.empathic.clax_app.MainActivity
+```
+
+Each `am start` after a `force-stop` is a cold start; Settings lists the
+last ten timings ("Launch → home usable").
+
+On macOS, `CLAX_APP_DIR=<dir inside the app's container>` in the
+environment of the app's executable (`Clax.app/Contents/MacOS/Clax`)
+gives it a scratch support and cache directory.
+
+`scripts/perf-app-launch.sh` does those cold starts and reports the
+median and p90 of `home-usable`; it gates nothing, and without
+`--i-know-what-i-am-doing` it prints its steps and changes nothing:
+
+```sh
+scripts/perf-app-launch.sh --macos --i-know-what-i-am-doing    # builds the macOS app
+scripts/perf-app-launch.sh --macos --app <Clax.app or its zip> --commit <sha> --runs 5 --i-know-what-i-am-doing
+scripts/perf-app-launch.sh --android --commit <sha> --i-know-what-i-am-doing  # the app installed on the phone
+```
+
+On macOS it never runs the build as `dev.empathic.clax`: it makes a copy
+of it once per build under `target/perf/clax-perf-<sha>`, sets the copy's
+`CFBundleIdentifier` to `dev.empathic.clax.perf` and signs it again ad
+hoc with its entitlements kept, so the copy runs in a sandbox container of
+its own, `~/Library/Containers/dev.empathic.clax.perf`, which the script
+removes before the first launch and at the end. Your installed app's
+container is never read or written. The login keychain is not kept per
+container, though, so each launch runs with `CLAX_APP_NO_KEY=1`: the app
+then reads no saved API key and saves none (no keychain access at all, as
+if none were saved), and its core opens with `sample()` off. Without
+it the copy would ask for the key item your installed app keeps, and
+macOS would ask you whether to let it, before the core opened. A build
+from before the variable was honoured still asks. On Android the
+installed app is measured, on its own home and with its own key (the
+variable does not reach an Android app, and a Keystore read asks
+nothing), and its timings are read from its log: the app says each
+`timings.jsonl` line in logcat after `clax-timing: `, which the script
+reads with `adb logcat -d --pid=<the launch's PID>`. A release build is not
+debuggable, so `run-as` cannot read its files.
+
+One launch more than `--runs` (default 9) is made and the first dropped.
+The run stops before the first launch
+while the Mac's screen is locked, and after a dropped launch that never
+reaches its home screen. The JSON names the build measured (`--commit`,
+the app, its digest and version). `just perf` runs the macOS measure
+after the other benchmarks; with `CLAX_PERF_JSON` set the figures and
+the missing launches go to the perf log (`scripts/perf-log.sh`), the p90
+beside its budget in `web/perf/app-budget.json`
+(`<platform>.app_home_usable_ms`), which
+`--record` writes for a platform that has none, the p90 rounded up to
+50 ms, and refuses to write from a run with any launch missing.
+
+Taking the launch baseline, the daemon's numbers before the app runs on
+the embedded core. An agent never makes a git worktree; you may.
+
+1. Name the build. It must include the commit that made the app honour
+   `CLAX_APP_NO_KEY` (else its launches wait on the keychain question
+   above), and come from before the app was put on the core: the branch
+   head while "Run the app on the embedded core" has not landed, else the
+   commit before it. The last command checks the first condition.
+
+   ```sh
+   C=$(git rev-parse HEAD)
+   # once "Run the app on the embedded core" has landed:
+   C=$(git rev-parse "$(git log -1 --format=%H --grep='^Run the app on the embedded core')^")
+   K=$(git log --reverse --format=%H -S CLAX_APP_NO_KEY -- apps/clax_app/lib/platform/secure_key.dart | head -1)
+   git merge-base --is-ancestor "$K" "$C" && echo "$C honours CLAX_APP_NO_KEY"
+   ```
+
+2. Build its macOS app in a checkout of `$C` that you make, and keep its
+   zip here (`just app-macos` prints the zip's path last):
+
+   ```sh
+   git worktree add ../clax-baseline "$C"
+   (cd ../clax-baseline && just app-macos)
+   mkdir -p target/perf && cp <the zip it printed> "target/perf/clax-macos-$C.zip"
+   git worktree remove ../clax-baseline
+   ```
+
+3. With the screen unlocked, from this checkout (each launch reads no
+   saved key, so nothing asks for the keychain):
+
+   ```sh
+   CLAX_PERF_JSON=target/perf/app-launch-before.json scripts/perf-app-launch.sh --macos \
+       --app "target/perf/clax-macos-$C.zip" --commit "$C" --runs 9 --record --i-know-what-i-am-doing
+   ```
+
+4. Log it under the measured build:
+
+   ```sh
+   PERF_COMMIT="$C" scripts/perf-log.sh record --append target/perf-log.jsonl target/perf/app-launch-before.json
+   ```
+
+5. On the phone, on the build installed now (not `just app-phone`: a
+   build of this branch is not installed on your devices before their
+   homes are checked), unlocked and awake, with `P` the commit that build
+   was made from. The script reads the launch timings from the app's log
+   (`clax-timing:` lines), which only builds that include "Log the core's
+   readiness and the launch timings to the platform log" write; a release
+   build from before it writes none, and its files cannot be read with
+   `run-as`, so on such a build every launch counts as missing:
+
+   ```sh
+   adb shell dumpsys package dev.empathic.clax | grep -m1 versionName
+   CLAX_PERF_JSON=target/perf/app-launch-before-phone.json scripts/perf-app-launch.sh --android \
+       --commit "$P" --record --i-know-what-i-am-doing
+   PERF_COMMIT="$P" scripts/perf-log.sh record --append target/perf-log.jsonl target/perf/app-launch-before-phone.json
+   ```
+
+6. Commit `web/perf/app-budget.json`, with both runs' medians and p90s in
+   the message.
+
+### Clax on iPhone and iPad
+
+On iPhone and iPad, as on Android and the Mac, the core runs inside the
+app's own process, and iOS lets an app start no other program, so everything in Clax that
+runs one is left out there. The core's code keeps each of those paths off
+on iOS when it is compiled (`//scripts:ios_spawns` checks that no new one
+appears unlisted).
+
+What runs on iOS: the app's own agent over the Messages API with your
+key, every artifact, version, thread and question route, `sample()`,
+rooms, and app bundles (`.clax` files).
+
+What does not:
+
+- local agents (Claude Code, Codex, Pi) and their hooks: there is
+  nothing to run them;
+- Codex tier-5 push;
+- "Claude Code on this Mac" as the app's agent;
+- the `clax` CLI and plugin installs;
+- parent-PID credential files;
+- the repository context of sessions (no git runs, so a session's
+  capture is `unavailable`);
+- MCP over HTTP (`/mcp`): the core in the app listens on no port.
+
+**On the iOS simulator.** With Xcode and its iOS simulator runtime
+installed (`xcodebuild -downloadPlatform iOS`, about 8.5 GB), from the
+checkout run:
+
+```
+just app-ios                      # "Clax iPhone"
+APP_IOS_DEVICE=ipad just app-ios  # "Clax iPad"
+scripts/app-ios.sh                # a dry run: prints each step's command
+```
+
+It builds the app for the simulator with Bazel (`//apps/clax_app:ios_app`
+in debug, the only build the simulator runs; uncommitted changes
+included), creates the simulator from the newest iOS runtime when it is
+missing, boots it, installs the app keeping its data, launches it, and
+waits for its core: a `core.json` in the app's data container
+(`Library/Application Support`) naming the launched PID with the state
+`ready` (one naming it `failed` ends the wait). It ends "Clax is up on
+Clax iPhone" and leaves the simulator running; `scripts/app-ios.sh
+--udid` prints its UDID (for `xcrun simctl io <udid> screenshot`). It
+touches no other simulator.
+
+#### Signing for a device and TestFlight
+
+The simulator app is unsigned and needs none of this. A build for a
+device (`//apps/clax_app:ipa_dev`) or for TestFlight
+(`//apps/clax_app:ipa_appstore`) is signed with your Apple Developer
+team's files, which stay on your Mac in one directory,
+`~/.config/clax/apple/` (`CLAX_APPLE_DIR` names another). Bazel reads it
+through `@clax_apple_signing` (`bazel/apple/signing.bzl`); the builds that
+use it run on this Mac and are never cached, locally or remotely, so no
+profile, key or signed app leaves it. Never commit these files.
+
+Without them, the simulator builds as before, and a device or TestFlight
+build stops before it starts, naming each file it lacks and this
+directory. A device build needs `team-id` and
+`clax-development.mobileprovision`; a TestFlight build needs `team-id`,
+`clax-appstore.mobileprovision`, and the API key with its two IDs.
+
+Make the directory owner-only, and keep every file in it so:
+
+```
+mkdir -m 700 ~/.config/clax/apple
+chmod 600 ~/.config/clax/apple/*
+```
+
+A directory or file the group or others can read is refused, with its
+path and mode. Bazel sees a change to a file at once, but not a change to
+the directory's own mode: after `chmod 700` on it, run
+`bazelisk fetch --force --repo=@clax_apple_signing`.
+
+| File | What it is | How to get it |
+|---|---|---|
+| `team-id` | your team's 10-character ID, on one line | developer.apple.com › Account › Membership details, "Team ID" |
+| `clax-development.mobileprovision` | the development provisioning profile: the App ID, the Apple Development certificate and your devices | developer.apple.com › Certificates, Identifiers & Profiles › Profiles › +, "iOS App Development" |
+| `clax-appstore.mobileprovision` | the App Store provisioning profile: the App ID and the Apple Distribution certificate | the same page, "App Store Connect" under Distribution |
+| `AuthKey_<KEYID>.p8` | the App Store Connect API key the upload uses | App Store Connect › Users and Access › Integrations › App Store Connect API › Team Keys, +, with the Developer role. Apple lets you download it once |
+| `api-key-id` | that key's Key ID (the `<KEYID>` of its file name), on one line | the key's row on the same page |
+| `api-issuer-id` | your team's Issuer ID, on one line | above the keys on the same page |
+
+Before the profiles:
+
+1. **The certificates.** "Apple Development" and "Apple Distribution"
+   live in your login keychain, not in this directory: `codesign` reads
+   them there, and rules_apple picks the identity the profile names.
+   Create each in Xcode › Settings › Accounts › Manage Certificates, or
+   on developer.apple.com › Certificates with a request made by Keychain
+   Access › Certificate Assistant.
+2. **The App ID.** Under Identifiers, an explicit App ID for the bundle
+   ID `dev.empathic.clax` (`IOS_BUNDLE_ID` in `bazel/flutter/ios.bzl`),
+   with no extra capabilities: the app's entitlements ask for none but the
+   keychain group every app has.
+3. **The devices.** Under Devices, each iPhone and iPad by its UDID
+   (`xcrun devicectl list devices` shows it for a connected or paired
+   one). A device added later needs the development profile made again.
+4. **The app record.** For TestFlight, an app in App Store Connect › Apps
+   with that bundle ID.
+
+Download each profile and save it under the name above. The entitlements
+are made from `team-id`: `<team>.dev.empathic.clax` as the
+`application-identifier` and the keychain group, the team, and
+`get-task-allow` on the development build only.
+
+To check the directory: `bazelisk test //bazel/apple:signing_test` builds
+every input from it and fails naming whatever is missing or refused. To
+build: `bazelisk build //apps/clax_app:ipa_dev -c opt
+--ios_multi_cpus=arm64` (or `:ipa_appstore`).
+
+**On a device, and to TestFlight.** From the checkout:
+
+```
+just app-iphone                   # build, install on the iPhone or iPad, launch
+just app-iphone-testflight        # build and upload to TestFlight
+scripts/app-iphone.sh             # a dry run: prints each step's command
+scripts/app-iphone.sh --testflight
+```
+
+Both build HEAD exactly: with uncommitted changes they build a clean copy
+of HEAD at `target/app-iphone/tree` (and say so). They stop before
+building when a file of this directory is missing, naming each one.
+
+`just app-iphone` builds the development-signed app (`:ipa_dev`, `-c opt
+--ios_multi_cpus=arm64`, stripped), then installs it with `xcrun devicectl
+device install app` on the connected or paired device, keeping the app's
+data, launches it and reads `core.json` from its data container until it
+names the launched PID ready. The device need not be connected until the build
+is done (it then waits up to 15 minutes, `APP_IPHONE_WAIT` seconds); with
+more than one, `APP_IPHONE_DEVICE` names the one to use (its name or
+UDID). The device must be in the development profile, trust this Mac, and
+have Developer Mode on (Settings › Privacy & Security).
+
+`just app-iphone-testflight` (or `just app-iphone --testflight`) builds
+the App Store-signed app (`:ipa_appstore`) with the next build number and
+uploads it with `xcrun altool --upload-package` and the API key above,
+then prints the build number and the App Store Connect link; the build
+shows in TestFlight once App Store Connect has processed it. The build
+numbers are this Mac's: `builds` in this directory holds one line per
+marketing version (`pubspec.yaml`'s version name), `<version> <last
+number>`. Each upload takes the next number and writes it there before
+uploading, so no number is given twice, even after a failed upload;
+nothing is committed. Keep the file with the rest of the directory: a
+Mac without it starts each version at 1 again, which App Store Connect
+refuses once that number is uploaded. When `altool` refuses an upload,
+Transporter (the app) uploads the same `.ipa`, whose path it prints.
 
 ## Releasing
 

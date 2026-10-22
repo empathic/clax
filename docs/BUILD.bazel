@@ -5,7 +5,10 @@ load("@bazel_lib//lib:copy_to_bin.bzl", "copy_to_bin")
 filegroup(
     name = "contract",
     srcs = ["contract.md"],
-    visibility = ["//crates:__subpackages__"],
+    visibility = [
+        "//apps/clax_app:__pkg__",
+        "//crates:__subpackages__",
+    ],
 )
 
 # The Terms of Service and Privacy Policy, which the web build renders
