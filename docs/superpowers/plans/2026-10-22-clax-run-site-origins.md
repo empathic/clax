@@ -46,6 +46,13 @@ Node (`deploy.mjs`, `e2e-hosted.mjs`, `smoke-remote.mjs`).
   native is needed), `qualifier threads <path>` before editing a file.
 - No deploy of a state where a private artifact is readable without the
   right: tasks 1–6 land together before any deploy.
+- Test commands: Bazel is on PATH, so run tests through Bazel targets
+  (`docs/bazel.md`): e.g. `bazelisk test //crates/clax-server:integration
+  --test_arg=api_site`, `bazelisk test //crates/clax-http:clax-http_lib_test`,
+  `just web-test`, `just web-e2e`, `just worker-test`. A `just test-native …`
+  in a task below means the equivalent Bazel target, never native Cargo.
+- Migration numbers are fixed across the parallel branches: 42
+  `legacy_paths`, 43 site sessions and `site_access`, 44 `app_data_moved`.
 
 ## Review Focus
 
