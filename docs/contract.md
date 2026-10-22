@@ -8701,12 +8701,19 @@ it starts, the runs a previous process left. A build without the
   asks, and either change holds from the next request: a page, an asset
   or an API call of a visitor is refused right after.
 - On a site open to the world, a request with no site session of a holder
-  who may read it is a visitor's: the first response without the visitor
-  cookie sets it (`clax_visitor`, on `https` `__Host-clax_visitor`;
-  host-only, `HttpOnly`, `Path=/`, `SameSite=Lax`, a year). It holds a
-  secret; the visitor's ID, `v_` and 22 hex characters, is derived from it
+  who may read it is a visitor's: the first navigation or `/_clax/api/`
+  response without the visitor cookie sets it (`clax_visitor`, on `https`
+  `__Host-clax_visitor`; host-only, `HttpOnly`, `Path=/`, `SameSite=Lax`,
+  a year), as `private, no-store`; a file or an asset never sets it. It
+  holds a secret the daemon minted and signed (any other value is
+  replaced); the visitor's ID, `v_` and 22 hex characters, is a MAC of it
   and the artifact, so it is stable per browser and site, and no ID a page
-  shows can be replayed as a cookie. A site cookie of a holder still makes
+  shows can be replayed as a cookie. Two first requests at once each set
+  one, and the browser keeps the last. A visitor's answers carry no
+  `Access-Control-Allow-Origin` and are cached for a minute at most
+  (`public, no-cache`, or `public, max-age=60, must-revalidate` for a
+  version's files and assets), so closing the site holds at a shared cache
+  within a minute. A site cookie of a holder still makes
   its request theirs, so the shell's "Open site" (through `/site-signin`)
   acts as the person there.
 - `/_clax/api/` on a site host is the page runtime's backend for that

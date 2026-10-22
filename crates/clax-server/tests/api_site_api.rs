@@ -296,6 +296,43 @@ async fn a_visitor_has_a_self_subtree() {
 }
 
 #[tokio::test]
+async fn a_patch_with_an_invalid_field_opens_nothing() {
+    let ts = TestServer::spawn().await;
+    let aid = artifact(&ts, json!({"db": {}})).await;
+    let patch = |body: Value| {
+        ts.authed(
+            ts.client
+                .patch(format!("{}/api/artifacts/{aid}", ts.base))
+                .json(&body),
+        )
+        .send()
+    };
+    for bad in [
+        json!({"site_access": "world", "capabilities": {"db": {"rules": "no"}}}),
+        json!({"site_access": "world", "title": ""}),
+        json!({"site_access": "world", "nope": 1}),
+    ] {
+        let res = patch(bad.clone()).await.unwrap();
+        assert_eq!(res.status(), 400, "{bad}");
+        assert!(
+            !ts.store
+                .site_open_to_world(&ArtifactId::parse(&aid).unwrap())
+                .unwrap(),
+            "{bad}"
+        );
+    }
+    let res = patch(json!({"site_access": "world", "title": "Board 2"}))
+        .await
+        .unwrap();
+    assert_eq!(res.status(), 200);
+    let v: Value = res.json().await.unwrap();
+    assert_eq!(
+        (&v["artifact"]["site_access"], &v["artifact"]["title"]),
+        (&json!("world"), &json!("Board 2"))
+    );
+}
+
+#[tokio::test]
 async fn a_write_from_another_origin_is_refused() {
     let ts = TestServer::spawn().await;
     let a = artifact(&ts, json!({"db": {}})).await;

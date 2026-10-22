@@ -1177,15 +1177,14 @@ pub async fn patch(
         a.require_credential()?;
     }
     person_agent_session(&a.caller)?;
-    if let Some(v) = b.site_access.take() {
-        let world = super::world::parse(&v)?;
-        let qid = b.question_id.take();
-        if let super::world::Change::Pending(body) =
-            super::world::change(&s, &a.caller, deferred, &id, world, qid).await?
-        {
-            return Ok((StatusCode::ACCEPTED, Json(body)).into_response());
-        }
-    } else if b.question_id.is_some() {
+    // Every field is checked before any is applied.
+    let world = b
+        .site_access
+        .take()
+        .map(|v| super::world::parse(&v))
+        .transpose()?;
+    let qid = b.question_id.take();
+    if world.is_none() && qid.is_some() {
         return Err(ApiError::bad_request(
             "invalid_args",
             "question_id goes with site_access",
@@ -1210,6 +1209,13 @@ pub async fn patch(
         b.icon.as_deref(),
     )?;
     admin_change(&s, &a.caller, &id, b.pinned, b.capabilities.clone()).await?;
+    if let Some(world) = world
+        && let super::world::Change::Pending(body) =
+            super::world::change(&s, &a.caller, deferred, &id, world, qid).await?
+    {
+        // Waiting on the person: nothing of the patch is applied.
+        return Ok((StatusCode::ACCEPTED, Json(body)).into_response());
+    }
     let vf = VisFor::of(&a.caller, &s);
     let host = headers
         .get(header::HOST)
