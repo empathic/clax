@@ -23,6 +23,10 @@ rust.toolchain(
         "llvm-tools-1.94.0-aarch64-unknown-linux-gnu.tar.xz": "d9780dbef8b58bf544b255785a420aec64378bc496adb770a628670a0f18171c",
         "llvm-tools-1.94.0-x86_64-apple-darwin.tar.xz": "3f692b525f98bfd070b32303e00a95f2d5bc1d45e82c4a5b17403ecf6fbe9360",
         "llvm-tools-1.94.0-x86_64-unknown-linux-gnu.tar.xz": "cf6b8e1d3e48ffa4db37aa59f55382b991f0d347d9b62eebc9ef1d80dffabef4",
+        "rust-std-1.94.0-aarch64-linux-android.tar.xz": "402c80df672a4b9fc948b6dc8bde21a63e1093eb1c8a2c2bd42221c309d9eba2",
+        "rust-std-1.94.0-x86_64-linux-android.tar.xz": "488c8a581612ac4779a05f05967b76a96e0ff0bdd1ab8d99c13a859c19056b01",
+        "rust-std-1.94.0-aarch64-apple-ios.tar.xz": "41ec1d18f4762f85231a19cf8aba3385da78fece2ff900a435c62881a3a3b44b",
+        "rust-std-1.94.0-aarch64-apple-ios-sim.tar.xz": "b4d16842b8f98ff2f431d6ab4aced298f4028ca00f0f5d588bc6efc94faa0680",
         "rust-std-1.94.0-aarch64-apple-darwin.tar.xz": "d3293668128b0a7838ef2544ae341eadd4437460ca22098af723349885a10ba2",
         "rust-std-1.94.0-aarch64-unknown-linux-gnu.tar.xz": "c781b3ef4fefa5508fbe05820eddc95e46351d905a30921cc020febd9c596a2e",
         "rust-std-1.94.0-x86_64-apple-darwin.tar.xz": "cf716b5a5fab007398ce76536a85a3449df074b66e7c762c0f5de1d6c56a1342",
@@ -36,6 +40,15 @@ rust.toolchain(
         "rustfmt-1.94.0-x86_64-apple-darwin.tar.xz": "e58601a10ee85e956611ea2814bf26de88934a8224c1663bb11aa23f727663ec",
         "rustfmt-1.94.0-x86_64-unknown-linux-gnu.tar.xz": "903e768f7626f78ed2d6cb82c1820b93bd339afec8575102e847fd3a379d33e5",
     },
+    # The Clax app's embedded core (crates/clax-embed), for its two Android
+    # CPUs (bazel/android/BUILD.bazel), and for iPhone and the simulator on
+    # Apple silicon.
+    extra_target_triples = [
+        "aarch64-apple-ios",
+        "aarch64-apple-ios-sim",
+        "aarch64-linux-android",
+        "x86_64-linux-android",
+    ],
     # rustfmt from the same release, so the format check agrees with
     # `cargo fmt`.
     rustfmt_version = "1.94.0",
@@ -54,11 +67,46 @@ crate.from_cargo(
     manifests = ["//:Cargo.toml"],
     supported_platform_triples = [
         "aarch64-apple-darwin",
+        "aarch64-apple-ios",
+        "aarch64-apple-ios-sim",
+        "aarch64-linux-android",
         "aarch64-unknown-linux-gnu",
         "x86_64-apple-darwin",
+        "x86_64-linux-android",
         "x86_64-unknown-linux-gnu",
     ],
 )
+
+# The Android NDK, fetched by checksum (no ANDROID_NDK_HOME): its C
+# toolchain links the Android clax and compiles its C dependencies (bundled
+# SQLite, ring). rules_android_ndk reads a local NDK only; the patch lets it
+# fetch one (docs/bazel.md, "The Clax app").
+bazel_dep(name = "platforms", version = "1.1.0")
+bazel_dep(name = "rules_android_ndk", version = "0.1.5")
+single_version_override(
+    module_name = "rules_android_ndk",
+    patch_strip = 1,
+    patches = ["//bazel/android:rules_android_ndk.patch"],
+)
+
+android_ndk = use_extension("@rules_android_ndk//:extension.bzl", "android_ndk_repository_extension")
+android_ndk.configure(
+    # Android 10, the first to run executables only from nativeLibraryDir
+    # (apps/clax_app/android/app/build.gradle.kts minSdk).
+    api_level = 29,
+    sha256s = {
+        "darwin": "0d4599e8bbf1a1668a0d51a541729b2246360f350018a2081d0b302dbb594f2a",
+        "linux": "dfb20d396df28ca02a8c708314b814a4d961dc9074f9a161932746f815aa552f",
+    },
+    strip_prefix = "android-ndk-r28c",
+    urls = {
+        "darwin": "https://dl.google.com/android/repository/android-ndk-r28c-darwin.zip",
+        "linux": "https://dl.google.com/android/repository/android-ndk-r28c-linux.zip",
+    },
+)
+use_repo(android_ndk, "androidndk")
+
+register_toolchains("@androidndk//:all")
 
 # A Bazel debug build of clax embeds its web UI, extension and plugins.
 crate.annotation(
@@ -112,3 +160,173 @@ use_repo(npm, "npm_pi", "npm_web")
 # (bazel/playwright/repo.bzl).
 playwright = use_extension("//bazel/playwright:repo.bzl", "playwright")
 use_repo(playwright, "chromium")
+
+# The Clax app (apps/clax_app): rules_flutter fetches the Flutter SDK and
+# engine it pins, and each pub package from the app's pubspec.lock by its
+# checksum (docs/bazel.md, "The Clax app").
+bazel_dep(name = "rules_flutter", version = "0.0.6")
+bazel_dep(name = "rules_dart", version = "0.7.3")
+single_version_override(
+    module_name = "rules_flutter",
+    patch_strip = 1,
+    patches = ["//bazel/flutter:rules_flutter.patch"],
+)
+
+flutter = use_extension("@rules_flutter//flutter:extensions.bzl", "flutter")
+flutter.toolchain(flutter_version = "3.47.7")
+flutter.pub(
+    name = "clax_app_pub",
+    lock = "//apps/clax_app:pubspec.lock",
+)
+flutter.plugin_overlays(roots = ["//bazel/flutter/plugin_overlays:BUILD.bazel"])
+use_repo(
+    flutter,
+    "clax_app_pub",
+    "flutter_android_engine_arm64",
+    "flutter_android_engine_x64",
+    "flutter_macos_engine",
+    "flutter_sky_engine",
+    "flutter_toolchains",
+)
+
+register_toolchains("@flutter_toolchains//:all")
+
+# The Swift package speech_to_text's Apple code needs
+# (bazel/flutter/plugin_overlays/speech_to_text).
+bazel_dep(name = "rules_apple", version = "5.2.0")
+# Apple's platforms (@apple_support//platforms:ios_arm64, :ios_sim_arm64)
+# and the C toolchain that compiles ring's and SQLite's C for iOS at
+# --ios_minimum_os (crates/clax-embed); the version rules_flutter asks for.
+bazel_dep(name = "apple_support", version = "2.9.1")
+bazel_dep(name = "rules_cc", version = "0.2.26")
+bazel_dep(name = "rules_swift", version = "4.1.2")
+
+http_archive = use_repo_rule("@bazel_tools//tools/build_defs/repo:http.bzl", "http_archive")
+
+http_archive(
+    name = "cwl_catch_exception",
+    build_file = "//bazel/flutter/third_party:cwl_catch_exception.BUILD",
+    sha256 = "96817f62023ec665e08e76149e6bd90e830c1b83fbd450eb25e6c4984fad6187",
+    strip_prefix = "CwlCatchException-07b2ba21d361c223e25e3c1e924288742923f08c",
+    url = "https://github.com/mattgallagher/CwlCatchException/archive/07b2ba21d361c223e25e3c1e924288742923f08c.tar.gz",
+)
+
+# The AndroidX and Kotlin libraries the Flutter engine and the app's plugins
+# need, from Maven (rules_flutter's own list, which this extends).
+bazel_dep(name = "rules_jvm_external", version = "7.1")
+
+maven = use_extension("@rules_jvm_external//:extensions.bzl", "maven")
+maven.install(
+    name = "rules_android_maven",
+    # What the app's plugins' Gradle builds declare (each plugin's
+    # android/build.gradle in apps/clax_app/pubspec.lock's versions), and
+    # what the runner's own build.gradle.kts adds.
+    artifacts = [
+        "androidx.activity:activity:1.13.0",
+        "androidx.annotation:annotation:1.10.0",
+        "androidx.core:core-ktx:1.18.0",
+        # The runner's splash screen on API 29-30 (MainActivity.kt's
+        # installSplashScreen), not a plugin's.
+        "androidx.core:core-splashscreen:1.2.0",
+        "androidx.core:core:1.18.0",
+        "androidx.exifinterface:exifinterface:1.4.2",
+        "androidx.media:media:1.7.1",
+        "androidx.webkit:webkit:1.15.0",
+        "com.google.android.gms:play-services-location:21.2.0",
+        "com.google.code.gson:gson:2.12.0",
+        "com.google.crypto.tink:tink-android:1.23.0",
+        "org.jetbrains.kotlinx:kotlinx-coroutines-android:1.11.0",
+    ],
+    # Every artifact pinned by its checksum; after changing the list:
+    # REPIN=1 bazelisk run @rules_android_maven//:pin
+    lock_file = "//bazel/android:maven_install.json",
+    repositories = [
+        "https://maven.google.com",
+        "https://repo1.maven.org/maven2",
+    ],
+)
+use_repo(maven, "rules_android_maven")
+
+bazel_dep(name = "bazel_skylib", version = "1.9.2")
+bazel_dep(name = "rules_java", version = "9.9.0")
+bazel_dep(name = "rules_kotlin", version = "2.4.20")
+
+register_toolchains("//bazel/android:kotlin_toolchain")
+
+# rules_android builds its Go tools with the Go toolchain the root module
+# registers; its own Go 1.22 is older than its Gazelle needs.
+bazel_dep(name = "rules_go", version = "0.64.2")
+
+go_sdk = use_extension("@rules_go//go:extensions.bzl", "go_sdk")
+go_sdk.download(version = "1.25.3")
+
+# The Android SDK the app's APK is built with: build tools 36.0.0 and the
+# android-36 platform, fetched by checksum (no ANDROID_HOME). rules_android
+# reads a local SDK only; the patch lets it fetch one.
+bazel_dep(name = "rules_android", version = "0.8.0")
+single_version_override(
+    module_name = "rules_android",
+    patch_strip = 1,
+    patches = ["//bazel/android:rules_android.patch"],
+)
+
+android_sdk = use_extension("@rules_android//rules/android_sdk_repository:rule.bzl", "android_sdk_repository_extension")
+android_sdk.configure(
+    api_level = 36,
+    # "<directory> <archive's top directory> <host> <url> <sha256>"
+    archives = [
+        "platforms/android-36 android-36 any https://dl.google.com/android/repository/platform-36_r02.zip 37607369a28c5b640b3a7998868d45898ebcb777565a0e85f9acf36f29631d2e",
+        "build-tools/36.0.0 android-16 darwin https://dl.google.com/android/repository/build-tools_r36_macosx.zip 04e7f3a72044de4926fa038fa0e251a37bba1e1c3fb8beab6f8401bfd9eb4bf3",
+        "build-tools/36.0.0 android-16 linux https://dl.google.com/android/repository/build-tools_r36_linux.zip 5d9ac77fb6ff43d9da518a337b4fcf8f9097113df531d99ccefe80ef7ce8250b",
+        "platform-tools platform-tools darwin https://dl.google.com/android/repository/platform-tools_r37.0.1-darwin.zip ee39ad5967e95c2a07f04dbcbde96b1a0c916ba376096db5d2f498b7727a5d1d",
+        "platform-tools platform-tools linux https://dl.google.com/android/repository/platform-tools_r37.0.1-linux.zip d230f13842f60f782a8645f9c813f8f845bf36089ea7289f28c48f17979313f1",
+    ],
+    build_tools_version = "36.0.0",
+)
+use_repo(android_sdk, "androidsdk")
+
+# The Android emulator and the system image the app's Android integration
+# tests boot (scripts/app-android-emulator.sh; docs/bazel.md, "The Clax
+# app"), fetched by checksum, for macOS on Apple silicon. They are their own
+# repositories rather than @androidsdk's archives so that only those manual
+# tests fetch them: the image unpacks to 4.4 GB, which no APK build needs.
+# The newest stable emulator for macOS aarch64 in
+# https://dl.google.com/android/repository/repository2-3.xml, and android-36
+# google_apis arm64-v8a in
+# https://dl.google.com/android/repository/sys-img/google_apis/sys-img2-3.xml
+# (whose SHA-1s these archives match).
+http_archive(
+    name = "android_emulator",
+    build_file_content = 'exports_files(["emulator", "source.properties"])',
+    sha256 = "f4c4a142bda54fcec064bdb32b51f19e25bae0a45ad019197ef968bf7a48979b",
+    strip_prefix = "emulator",
+    url = "https://dl.google.com/android/repository/emulator-darwin_aarch64-16428233.zip",
+)
+
+http_archive(
+    name = "android_system_image",
+    build_file_content = 'exports_files(["system.img", "source.properties"])',
+    sha256 = "fb47d861d6f87230ee0fe70f610d579935ca77f41a0eefbf391595d3dc4b5ee2",
+    strip_prefix = "arm64-v8a",
+    url = "https://dl.google.com/android/repository/sys-img/google_apis/arm64-v8a-36_r07.zip",
+)
+
+# The machine's Android debug key, which signs the app's APK as Gradle does
+# (bazel/android/debug_keystore.bzl).
+debug_keystore = use_extension("//bazel/android:debug_keystore.bzl", "debug_keystore")
+use_repo(debug_keystore, "android_debug_keystore")
+
+# The home app's bundle version and signing key on this machine
+# (bazel/flutter/home_release.bzl).
+home_release = use_extension("//bazel/flutter:home_release.bzl", "home_release")
+use_repo(home_release, "clax_home_release")
+
+# The Clax app's Dart targets, derived from its imports at load time
+# (bazel/flutter/dart_graph.bzl).
+dart_graph = use_extension("//bazel/flutter:dart_graph.bzl", "dart_graph")
+use_repo(dart_graph, "clax_app_dart_graph")
+
+# The iOS app's signing inputs on this machine, from ~/.config/clax/apple
+# (bazel/apple/signing.bzl): only the device and TestFlight builds use them.
+signing = use_extension("//bazel/apple:signing.bzl", "signing")
+use_repo(signing, "clax_apple_signing")

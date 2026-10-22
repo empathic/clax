@@ -116,6 +116,37 @@ _expect "bazelisk: ci is the script CI runs" 0 "1xwould run: ./scripts/bazel-tes
 _try -- which
 _expect "bazelisk: which says bazel" 0 "1x^bazel: Bazelisk found"
 
+# The Clax app's tasks: Bazel targets with Bazelisk; Flutter natively, and
+# refused without it.
+mkdir -p "$repo/apps/clax_app/integration_test"
+touch "$repo/apps/clax_app/integration_test/one_test.dart" "$repo/apps/clax_app/integration_test/rig.dart" \
+    "$repo/apps/clax_app/integration_test/ios_two_test.dart" \
+    "$repo/apps/clax_app/integration_test/android_three_test.dart"
+_try -- --dry-run app-test
+_expect "bazelisk: app-test tests the app's package" 0 "1xwould run: .*bazelisk test --lockfile_mode=error //apps/clax_app/...$"
+_try -- --dry-run app-integration
+_expect "bazelisk: app-integration runs a target per macOS test file" 0 \
+    "1xwould run: .*bazelisk test --lockfile_mode=error //apps/clax_app:integration_one$"
+_try -- --dry-run app-integration --ios
+_expect "bazelisk: app-integration --ios runs a target per iOS test file" 0 \
+    "1xwould run: .*bazelisk test --lockfile_mode=error //apps/clax_app:integration_ios_two$"
+_try -- --dry-run app-integration --android
+_expect "bazelisk: app-integration --android runs a target per Android test file" 0 \
+    "1xwould run: .*bazelisk test --lockfile_mode=error //apps/clax_app:integration_android_three$"
+_try -- --dry-run app-apk
+_expect "bazelisk: app-apk builds the APK and names it" 0 \
+    "1xwould run: .*bazelisk build --lockfile_mode=error //apps/clax_app:apk$" "1x<the output of //apps/clax_app:apk>"
+_try -- --dry-run home-bundle
+_expect "bazelisk: home-bundle builds the bundle and names it" 0 \
+    "1xwould run: .*bazelisk build --lockfile_mode=error //apps/clax_app:home_bundle$" "1x<the output of //apps/clax_app:home_bundle>"
+_try CLAX_BUILD=native -- --dry-run app-test
+_expect "native without flutter: app-test is refused" 2 "1xflutter (the Clax app"
+_stubs "${native[@]}" flutter
+_try CLAX_BUILD=native -- --dry-run app-apk
+_expect "native: app-apk is Cargo's core, the home bundle and Gradle" 0 \
+    "1xwould run: ./scripts/build-app-clax.sh android$" \
+    "1xwould run: ./scripts/build-home-bundle.sh --i-know-what-i-am-doing$" "1xflutter build apk --release"
+
 # 2. Bazelisk alone, no native tools: fine, and nothing is said.
 _stubs bazelisk
 _try -- web-test

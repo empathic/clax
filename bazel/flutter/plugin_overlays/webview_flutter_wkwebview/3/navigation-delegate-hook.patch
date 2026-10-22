@@ -1,0 +1,29 @@
+--- a/darwin/webview_flutter_wkwebview/Sources/webview_flutter_wkwebview/WebViewFlutterWKWebViewExternalAPI.swift
++++ b/darwin/webview_flutter_wkwebview/Sources/webview_flutter_wkwebview/WebViewFlutterWKWebViewExternalAPI.swift
+@@ -25,6 +25,13 @@
+   /// such as a `WKURLSchemeHandler`.
+   public static var configurationHook: ((WKWebViewConfiguration) -> Void)?
+ 
++  /// Called with a `WKWebView` and each navigation delegate the plugin
++  /// sets on it; the delegate it returns is set instead, so the app can
++  /// keep a delegate of its own in front of the plugin's whenever the
++  /// plugin's changes.
++  public static var navigationDelegateHook:
++    ((WKWebView, WKNavigationDelegate) -> WKNavigationDelegate)?
++
+   /// Retrieves the `WKWebView` that is associated with `identifier`.
+   ///
+   /// See the Dart method `WebKitWebViewController.webViewIdentifier` to get the identifier of an
+--- a/darwin/webview_flutter_wkwebview/Sources/webview_flutter_wkwebview/WebViewProxyAPIDelegate.swift
++++ b/darwin/webview_flutter_wkwebview/Sources/webview_flutter_wkwebview/WebViewProxyAPIDelegate.swift
+@@ -123,7 +123,9 @@
+   func setNavigationDelegate(
+     pigeonApi: PigeonApiUIViewWKWebView, pigeonInstance: WKWebView, delegate: WKNavigationDelegate
+   ) throws {
+-    pigeonInstance.navigationDelegate = delegate
++    pigeonInstance.navigationDelegate =
++      FWFWebViewFlutterWKWebViewExternalAPI.navigationDelegateHook?(pigeonInstance, delegate)
++      ?? delegate
+   }
+ 
+   func setNavigationDelegate(

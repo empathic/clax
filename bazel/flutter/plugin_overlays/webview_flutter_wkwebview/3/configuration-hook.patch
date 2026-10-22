@@ -1,0 +1,24 @@
+--- a/darwin/webview_flutter_wkwebview/Sources/webview_flutter_wkwebview/WebViewFlutterWKWebViewExternalAPI.swift
++++ b/darwin/webview_flutter_wkwebview/Sources/webview_flutter_wkwebview/WebViewFlutterWKWebViewExternalAPI.swift
+@@ -20,6 +20,11 @@
+ /// conventions, so app or plugin clients should not use any other native APIs.
+ @objc(FWFWebViewFlutterWKWebViewExternalAPI)
+ public class FWFWebViewFlutterWKWebViewExternalAPI: NSObject {
++  /// Called with each `WKWebViewConfiguration` before the plugin makes a
++  /// `WKWebView` with it, for what must be set before the view exists,
++  /// such as a `WKURLSchemeHandler`.
++  public static var configurationHook: ((WKWebViewConfiguration) -> Void)?
++
+   /// Retrieves the `WKWebView` that is associated with `identifier`.
+   ///
+   /// See the Dart method `WebKitWebViewController.webViewIdentifier` to get the identifier of an
+--- a/darwin/webview_flutter_wkwebview/Sources/webview_flutter_wkwebview/WebViewProxyAPIDelegate.swift
++++ b/darwin/webview_flutter_wkwebview/Sources/webview_flutter_wkwebview/WebViewProxyAPIDelegate.swift
+@@ -80,6 +80,7 @@
+   func pigeonDefaultConstructor(
+     pigeonApi: PigeonApiUIViewWKWebView, initialConfiguration: WKWebViewConfiguration
+   ) throws -> WKWebView {
++    FWFWebViewFlutterWKWebViewExternalAPI.configurationHook?(initialConfiguration)
+     return WebViewImpl(
+       api: pigeonApi.pigeonApiWKWebView, registrar: pigeonApi.pigeonRegistrar as! ProxyAPIRegistrar,
+       frame: CGRect(), configuration: initialConfiguration)

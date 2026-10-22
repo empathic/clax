@@ -1,0 +1,14 @@
+load("@rules_dart//dart:defs.bzl", "dart_binary")
+
+exports_files([
+    "dart_graph.py",
+    "flutter_proguard_rules.pro",
+    "rules_flutter.patch",
+])
+
+# Writes a Flutter app's NOTICES (notices.bzl, flutter_notices).
+dart_binary(
+    name = "notices_tool",
+    main = "notices_tool.dart",
+    visibility = ["//visibility:public"],
+)

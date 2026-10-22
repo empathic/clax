@@ -4,11 +4,11 @@
 #
 # The web UI is built and its unit tests run first, alone. The other
 # independent gates then run concurrently in lanes (browser e2e, Rust,
-# web, the release build, Pi, scripts, the Worker, wasm32), each printing a
-# line per gate as it finishes; the lanes that take longest start first. At
-# the end a table gives each gate's time and the total; times are reported,
-# never judged. Performance is measured on demand and gates nothing: `just
-# perf` runs the benchmarks.
+# web, the release build, Pi, scripts, the Worker, wasm32, the Flutter
+# app), each printing a line per gate as it finishes; the lanes that take
+# longest start first. At the end a table gives each gate's time and the
+# total; times are reported, never judged. Performance is measured on
+# demand and gates nothing: `just perf` runs the benchmarks.
 #
 # The script is functions and one call at its end, so bash reads all of it
 # before running any of it: editing this file during a run cannot break that
@@ -66,7 +66,8 @@ lane_scripts() {
     run "extension signing"     scripts/test-extension-signing.sh &&
     run "stable bin"            scripts/test-stable-bin.sh &&
     run "checkout lock"         scripts/test-checkout-lock.sh &&
-    run "fake exe"              scripts/test-fake-exe.sh
+    run "fake exe"              scripts/test-fake-exe.sh &&
+    run "build app clax"        bash scripts/test-build-app-clax.sh
 }
 lane_installer() {
     run "release installer"     scripts/test-install.sh
@@ -149,6 +150,14 @@ lane_worker() {
 lane_wasm() {
     run "wasm32 check"          scripts/check-wasm.sh
 }
+# The Flutter app's analysis and tests (apps/clax_app/tool/check.sh).
+# Skipped where Flutter is not installed.
+lane_app() {
+    if ! command -v flutter >/dev/null 2>&1; then
+        echo "app: skipped (flutter not found)"; return 0
+    fi
+    run "app (flutter analyze + test)" bash -c 'cd apps/clax_app && tool/check.sh'
+}
 lane_release() {
     run "release build"         cargo build -q --release -p clax-cli &&
     mark release-built
@@ -164,7 +173,7 @@ run "web unit"              bash -c 'cd web && pnpm run test --reporter=dot' || 
 
 # Web e2e runs beside the other lanes: they wait mostly on processes and
 # sockets, not the CPU, while the browser tests need the CPU.
-echo "quality gates: concurrent lanes (browser e2e, Rust, web, Pi, scripts, the Worker, wasm32, release build)"
+echo "quality gates: concurrent lanes (browser e2e, Rust, web, Pi, scripts, the Worker, wasm32, release build, app)"
 lane e2e lane_e2e
 lane rust lane_rust
 lane installer lane_installer
@@ -178,6 +187,7 @@ lane worker lane_worker
 lane lint lane_lint
 lane wasm lane_wasm
 lane release lane_release
+lane app lane_app
 FAILED=""
 for entry in $LANES; do
     if ! wait "${entry%%:*}"; then FAILED="$FAILED ${entry#*:}"; fi

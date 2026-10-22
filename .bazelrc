@@ -12,6 +12,36 @@ startup --host_jvm_args=-Xmx3g
 # unless told not to.
 common --repo_env=DO_NOT_TRACK=1
 
+# rules_flutter's Java tools (rules_jvm_external, rules_android) are compiled
+# for Java 21 and later; Bazel's own tool JDK is older.
+common --tool_java_language_version=25
+common --tool_java_runtime_version=remotejdk_25
+# The app's own Java and Kotlin compile for Java 17, as its Gradle build
+# does, with a JDK rules_java fetches by checksum (never a local one).
+common --java_language_version=17
+common --java_runtime_version=remotejdk_21
+
+# An APK's native libraries, which reach it as Java resources
+# (bazel/flutter/android.bzl), are compressed, and the platform extracts
+# them at install (the manifest leaves extractNativeLibs unset). Gradle's
+# APK differs: AGP stores them uncompressed and page-aligned and sets
+# extractNativeLibs="false".
+build --experimental_android_compress_java_resources
+
+# rules_apple's iOS CPU: the simulator on Apple silicon. A device build
+# passes --ios_multi_cpus=arm64.
+build --ios_multi_cpus=sim_arm64
+# The oldest iOS the Clax app runs on. Every iOS configuration, the app's
+# and //crates/clax-embed:clax_embed_ios_builds' alike, compiles for it, the
+# C of ring and the bundled SQLite included (bazel/apple/ios_rust.bzl passes
+# it to rustc); //crates/clax-embed:ios_build_test fails on an object built
+# for a newer iOS.
+build --ios_minimum_os=17.0
+# An imported framework's module map is an input of Objective-C compiles,
+# so a plugin's `@import Flutter;` (image_picker_ios) finds the engine's
+# module in the sandbox. rules_apple keeps it out unless told.
+build --define=apple.incompatible.objc_framework_propagate_modulemap=true
+
 # Actions see a fixed environment, so their results can be shared.
 build --incompatible_strict_action_env
 
@@ -40,6 +70,10 @@ test --test_env=CLAX_PORT=
 test --test_env=PATH=/usr/bin:/bin:/usr/sbin:/sbin
 
 test --test_output=errors
+
+# The options `dart analyze` checks the Clax app's Dart against
+# (//apps/clax_app:dart_analyze, a dart_analysis_test).
+common --@rules_dart//dart:analysis_config=//apps/clax_app:analysis_config
 
 # --config=clippy: lint instead of only compiling, as `cargo clippy
 # --all-targets -- -D warnings` does. A lint is a build failure.

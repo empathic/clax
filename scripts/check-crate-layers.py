@@ -57,6 +57,9 @@ ALLOWED = {
     "clax-server": HTTP | MCP,
     "clax-commands": STORE | MCP | HOOKS,
     "clax-cli": SERVER | COMMANDS | {"clax-embedded"},
+    # The core inside the Clax app's process, behind four C functions:
+    # what `clax serve` runs, without its listener, and no command.
+    "clax-embed": SERVER | {"clax-embedded"},
     "clax-testkit": SERVER | {"clax-fake-exe"},
 }
 

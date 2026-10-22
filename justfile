@@ -77,6 +77,81 @@ stop:
 doctor:
     CLAX_HOME="${CLAX_HOME:-$HOME/.clax-dev}" ./scripts/run.sh clax doctor
 
+# The Clax app (apps/clax_app). With Bazel each builds or checks from the
+# shared cache (docs/bazel.md, "The Clax app"); each has a `-native` twin
+# (Flutter, Gradle, Xcode and Cargo, as before).
+
+# Run the Clax app's checks: Dart analysis, its tests, the prompt copies, its APK and macOS app's contents
+app-test *ARGS:
+    ./scripts/run.sh app-test {{ARGS}}
+
+# Run the Clax app's checks natively (flutter analyze and test) against a kept debug clax
+app-test-native:
+    CLAX_BUILD=native ./scripts/run.sh app-test
+
+# Run the Clax app's macOS integration tests, one app per file; each opens the app's window (--ios: the simulator ones, on "Clax iPhone"; --android: the emulator ones, on "Clax Pixel")
+app-integration *ARGS:
+    ./scripts/run.sh app-integration {{ARGS}}
+
+# Run the Clax app's macOS integration tests natively (flutter test -d macos)
+app-integration-native:
+    CLAX_BUILD=native ./scripts/run.sh app-integration
+
+# Build each eval prompt into an app with the in-app agent on a live model, results in target/flutter-app/eval/<run>/ (needs ANTHROPIC_API_KEY; up to $6 a build, refused over --max-spend, $30 by default): [--model ID] [--prompts a,b] [--max-spend USD] [--run NAME]
+[positional-arguments]
+app-eval *ARGS:
+    apps/clax_app/tool/eval/run.sh "$@"
+
+# Build the Clax app's release APK (arm64 and x86_64, the ABIs clax is built for) and print its path
+app-apk:
+    ./scripts/run.sh app-apk
+
+# Build the Clax app's release APK natively (Gradle)
+app-apk-native:
+    CLAX_BUILD=native ./scripts/run.sh app-apk
+
+# Build HEAD's release APK and install it on the plugged-in phone, keeping the app's data
+app-phone:
+    ./scripts/app-phone.sh --i-know-what-i-am-doing
+
+# Build HEAD's release APK natively (Gradle, in a clean copy) and install it on the plugged-in phone
+app-phone-native:
+    CLAX_BUILD=native ./scripts/app-phone.sh --i-know-what-i-am-doing
+
+# Build the Clax app for the iOS simulator and run it on "Clax iPhone" (APP_IOS_DEVICE=ipad for "Clax iPad"), keeping its data
+app-ios:
+    ./scripts/app-ios.sh --i-know-what-i-am-doing
+
+# Build HEAD's iOS app signed for a device and install it on the plugged-in or paired iPhone or iPad (APP_IPHONE_DEVICE picks one), keeping its data; --testflight uploads instead
+[positional-arguments]
+app-iphone *ARGS:
+    ./scripts/app-iphone.sh --i-know-what-i-am-doing "$@"
+
+# Build HEAD's iOS app signed for the App Store and upload it to TestFlight, with the next build number of ~/.config/clax/apple/builds
+app-iphone-testflight:
+    ./scripts/app-iphone.sh --testflight --i-know-what-i-am-doing
+
+# Build the home app's bundle (apps/clax_app/home), as every app build does, and print its path
+home-bundle:
+    ./scripts/run.sh home-bundle
+
+# Pack the home app's bundle natively (dart run) into apps/clax_app/assets/home
+home-bundle-native:
+    CLAX_BUILD=native ./scripts/run.sh home-bundle
+
+# Build the Clax app's macOS app and print its path
+app-macos:
+    ./scripts/run.sh app-macos
+
+# Build the Clax app's macOS app natively (Xcode)
+app-macos-native:
+    CLAX_BUILD=native ./scripts/run.sh app-macos
+
+# Run the Clax app on this Mac with hot reload (r) and hot restart (R): builds the embedded core and the home bundle natively, then flutter run -d macos (extra args go to flutter run)
+[positional-arguments]
+app-macos-dev *ARGS:
+    ./scripts/app-macos-dev.sh --i-know-what-i-am-doing "$@"
+
 # Try rooms and sample() in a scratch daemon (the stub provider unless ANTHROPIC_API_KEY is set)
 demo-room-sample:
     scripts/demo-room-sample.sh
@@ -133,6 +208,11 @@ pi-test *ARGS:
 # Run the Pi extension tests with pnpm
 pi-test-native *ARGS:
     CLAX_BUILD=native ./scripts/run.sh pi-test "$@"
+
+# Run the Bazel tests downstream of your changes (scripts/affected-tests.sh: [--list] [BASE] [bazel args])
+[positional-arguments]
+test-affected *ARGS:
+    ./scripts/affected-tests.sh "$@"
 
 # Run the Rust workspace tests
 test *ARGS:

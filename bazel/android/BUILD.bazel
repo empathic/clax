@@ -1,0 +1,40 @@
+load("@rules_kotlin//kotlin:core.bzl", "define_kt_toolchain")
+
+# The Android targets the Clax app's embedded clax is built for, one per
+# CPU the app ships (apps/clax_app/android/app/build.gradle.kts abiFilters).
+# rules_rust maps each to its triple (aarch64-linux-android,
+# x86_64-linux-android); the NDK's toolchain (@androidndk) compiles and
+# links for them at API level 29.
+
+exports_files([
+    "maven_install.json",
+    "proguard-android-optimize.txt",
+    "rules_android.patch",
+    "rules_android_ndk.patch",
+])
+
+platform(
+    name = "android_arm64",
+    constraint_values = [
+        "@platforms//os:android",
+        "@platforms//cpu:arm64",
+    ],
+    visibility = ["//visibility:public"],
+)
+
+platform(
+    name = "android_x86_64",
+    constraint_values = [
+        "@platforms//os:android",
+        "@platforms//cpu:x86_64",
+    ],
+    visibility = ["//visibility:public"],
+)
+
+# The Kotlin toolchain for the app's and its plugins' Android code: Java 17
+# bytecode, as their Gradle builds compile it (the rules' default, 1.8, is
+# older than the plugins' Java sources accept).
+define_kt_toolchain(
+    name = "kotlin_toolchain",
+    jvm_target = "17",
+)

@@ -1,0 +1,129 @@
+"""The macOS app's embedded files, named and signed as the app's Xcode build does.
+
+`macos_dylib` places the embedded core, libclax_embed.dylib, for the
+bundle's Contents/Frameworks, signed ad hoc without entitlements, as the
+Runner's "Embed core" build phase (macos/Runner.xcodeproj) does for the
+Xcode build; the app loads it into its own process. It signs ad hoc (the
+app's bundle is ad-hoc signed by rules_apple too), using the system's
+`codesign`, which no toolchain provides.
+"""
+
+def _macos_dylib_impl(ctx):
+    libs = [f for f in ctx.attr.lib[DefaultInfo].files.to_list() if f.extension == "dylib"]
+    if len(libs) != 1:
+        fail("%s: expected one dylib, got %s" % (ctx.attr.lib.label, libs))
+
+    # At the package's top: rules_apple places a file by its package path.
+    out = ctx.actions.declare_file(ctx.attr.filename)
+    ctx.actions.run_shell(
+        command = 'cat "$1" > "$2" && chmod 644 "$2" && /usr/bin/codesign --force --sign - "$2"',
+        arguments = [libs[0].path, out.path],
+        inputs = [libs[0]],
+        outputs = [out],
+        mnemonic = "MacosDylibSign",
+        progress_message = "Signing %s for the app's Frameworks" % ctx.attr.filename,
+        execution_requirements = {"no-remote": "1"},
+    )
+    return [DefaultInfo(files = depset([out]))]
+
+macos_dylib = rule(
+    implementation = _macos_dylib_impl,
+    attrs = {
+        "filename": attr.string(mandatory = True),
+        "lib": attr.label(mandatory = True, doc = "A target giving one .dylib (a rust_shared_library, or an opt_library over one)."),
+    },
+    doc = """A shared library for a macOS app's Contents/Frameworks, named
+    `filename` and signed ad hoc without entitlements (a library runs in the
+    app's own process and sandbox), as the bundle is: the embedded core,
+    which the app loads with DynamicLibrary.open.""",
+)
+
+def _dbg_transition_impl(_settings, _attr):
+    return {"//command_line_option:compilation_mode": "dbg"}
+
+_dbg_transition = transition(
+    implementation = _dbg_transition_impl,
+    inputs = [],
+    outputs = ["//command_line_option:compilation_mode"],
+)
+
+def _debug_app_impl(ctx):
+    app = ctx.attr.app[0]
+    zips = [f for f in app[DefaultInfo].files.to_list() if f.extension == "zip"]
+    if len(zips) != 1:
+        fail("%s gives %d zips" % (app.label, len(zips)))
+    out = ctx.actions.declare_file(ctx.label.name + ".zip")
+    ctx.actions.symlink(output = out, target_file = zips[0])
+    return [DefaultInfo(files = depset([out]))]
+
+debug_app = rule(
+    implementation = _debug_app_impl,
+    attrs = {"app": attr.label(mandatory = True, cfg = _dbg_transition)},
+    doc = """A macOS app built as Flutter's debug build (-c dbg: JIT, the
+    Runner's `#if DEBUG` code, DebugProfile.entitlements), as `<name>.zip`;
+    what `flutter test integration_test/... -d macos` runs.""",
+)
+
+def _integration_main_impl(ctx):
+    out = ctx.outputs.main
+
+    # The test and the files beside it, linked next to the entry point: a
+    # generated `main` is compiled from its output directory
+    # (`org-dartlang-app:///`), where a relative import of a source file
+    # would not resolve.
+    files = [out]
+    test = None
+    for src in ctx.files.srcs:
+        rel = src.short_path[len(ctx.label.package) + 1:] if ctx.label.package else src.short_path
+        link = ctx.actions.declare_file("%s/%s" % (ctx.label.name, rel))
+        ctx.actions.symlink(output = link, target_file = src)
+        files.append(link)
+        if src == ctx.file.test:
+            test = "%s/%s" % (ctx.label.name, rel)
+    if not test:
+        fail("%s: srcs do not include %s" % (ctx.label, ctx.file.test.short_path))
+    ctx.actions.write(out, """\
+// Generated (bazel/flutter/macos.bzl): runs {short} in the app, as
+// `flutter test` does on a device, then prints CLAX_INTEGRATION_RESULT=0
+// (every test passed) or =1, which the iOS runner reads from the console
+// and the Android one from the log, and exits with that status.
+import 'dart:io';
+
+import 'package:integration_test/integration_test.dart';
+
+import '{test}' as t;
+
+Future<void> main() async {{
+  final binding = IntegrationTestWidgetsFlutterBinding.ensureInitialized();
+  t.main();
+  final passed = await binding.allTestsPassed.future;
+  // Android sends an app's stdout and stderr nowhere: there each line goes
+  // to the log (tag flutter), where tool/android-integration-run.sh reads it.
+  void out(IOSink sink, String line) {{
+    if (Platform.isAndroid) {{
+      print(line);
+    }} else {{
+      sink.writeln(line);
+    }}
+  }}
+  for (final f in binding.failureMethodsDetails) {{
+    out(stderr, 'FAIL: ${{f.methodName}}\\n${{f.details}}');
+  }}
+  out(stdout, passed ? 'integration_test: all tests passed' : 'integration_test: tests failed');
+  out(stdout, 'CLAX_INTEGRATION_RESULT=${{passed ? 0 : 1}}');
+  await stdout.flush();
+  exit(passed ? 0 : 1);
+}}
+""".format(test = test, short = ctx.file.test.short_path))
+    return [DefaultInfo(files = depset(files))]
+
+integration_main = rule(
+    implementation = _integration_main_impl,
+    attrs = {
+        "srcs": attr.label_list(allow_files = [".dart"], doc = "The test and the files it imports, from integration_test/."),
+        "test": attr.label(mandatory = True, allow_single_file = [".dart"]),
+    },
+    # The entry point by its own label, `:<name>.dart`, for an app's `main`.
+    outputs = {"main": "%{name}.dart"},
+    doc = "An app entry point that runs an integration test, prints CLAX_INTEGRATION_RESULT=<0|1> and exits with it.",
+)

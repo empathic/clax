@@ -472,6 +472,7 @@ dependencies = [
  "nix",
  "rand 0.9.5",
  "ring",
+ "roxmltree",
  "rusqlite",
  "ryu-js",
  "schemars",
@@ -488,6 +489,32 @@ dependencies = [
  "unicode-security",
  "url",
  "web-time",
+]
+
+[[package]]
+name = "clax-embed"
+version = "0.6.0"
+dependencies = [
+ "anyhow",
+ "axum",
+ "bytes",
+ "clax-core",
+ "clax-embedded",
+ "clax-http",
+ "clax-realtime",
+ "clax-sample",
+ "clax-server",
+ "clax-store",
+ "futures",
+ "http-body-util",
+ "rusqlite",
+ "serde",
+ "serde_json",
+ "tempfile",
+ "tokio",
+ "tower",
+ "tracing",
+ "tracing-subscriber",
 ]
 
 [[package]]
@@ -2193,6 +2220,12 @@ dependencies = [
  "serde_json",
  "syn 3.0.6",
 ]
+
+[[package]]
+name = "roxmltree"
+version = "0.20.0"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "6c20b6793b5c2fa6553b250154b78d6d0db37e72700ae35fad9387a46f487c97"
 
 [[package]]
 name = "rsqlite-vfs"

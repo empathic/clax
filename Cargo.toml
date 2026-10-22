@@ -17,6 +17,7 @@ members = [
     "crates/clax-git",
     "crates/clax-rt",
     "crates/clax-content-git",
+    "crates/clax-embed",
 ]
 # The Cloudflare Worker is a workspace of its own (wasm32 only, rusqlite 0.40).
 exclude = ["crates/clax-worker"]
@@ -40,6 +41,8 @@ base64 = "0.22"
 bytes = "1"
 chrono = { version = "0.4", features = ["serde"] }
 clap = { version = "4", features = ["derive", "env"] }
+futures = "0.3"
+http-body-util = "0.1"
 nix = { version = "0.31", default-features = false }
 mime_guess = "2"
 rand = "0.9"
@@ -53,7 +56,10 @@ semver = "1"
 # `fallible_uint` keeps `u64`/`usize` as SQL integers, checked against the
 # `i64` range, as rusqlite before 0.33 had them by default.
 rusqlite = { version = "0.40", features = ["bundled", "hooks", "fallible_uint"] }
-rust-embed = { version = "8", features = ["include-exclude", "interpolate-folder-path"] }
+# `deterministic-timestamps`: an embedded file's times are 0, not its
+# file's, so the same inputs compile to the same crate whenever they were
+# last rewritten (crates/clax-embedded/src/web.rs).
+rust-embed = { version = "8", features = ["deterministic-timestamps", "include-exclude", "interpolate-folder-path"] }
 schemars = "1"
 serde = { version = "1", features = ["derive"] }
 serde_json = { version = "1", features = ["float_roundtrip"] }

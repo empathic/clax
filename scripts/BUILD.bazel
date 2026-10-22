@@ -8,6 +8,28 @@ exports_files(
     visibility = ["//crates:__subpackages__"],
 )
 
+# The Clax app's prompt copies' check (//apps/clax_app:prompt_sync), the
+# simulator lookup of its iOS integration tests (app-ios.sh --udid), and
+# the emulator of its Android ones (app-android-emulator.sh).
+exports_files(
+    [
+        "app-android-emulator.sh",
+        "app-ios.sh",
+        "sync-app-prompt.sh",
+    ],
+    visibility = ["//apps/clax_app:__pkg__"],
+)
+
+# The brand's token generator and the app icons' renderer, which
+# //design:tokens_sync and //design:icons_sync run with --check.
+exports_files(
+    [
+        "build-app-icons.sh",
+        "sync-tokens.py",
+    ],
+    visibility = ["//design:__pkg__"],
+)
+
 # clax-embedded's compile inputs include generated directories (the web
 # builds), so rules_rust places its sources in bazel-bin, and its
 # include_str!s of files outside the crate resolve there: these are those
@@ -66,6 +88,7 @@ RUST_SOURCES = [
     "//crates/clax-commands:rust_sources",
     "//crates/clax-content-git:rust_sources",
     "//crates/clax-core:rust_sources",
+    "//crates/clax-embed:rust_sources",
     "//crates/clax-embedded:rust_sources",
     "//crates/clax-fake-exe:rust_sources",
     "//crates/clax-git:rust_sources",
@@ -86,6 +109,7 @@ CRATE_MANIFESTS = [
     "//crates/clax-commands:manifest",
     "//crates/clax-content-git:manifest",
     "//crates/clax-core:manifest",
+    "//crates/clax-embed:manifest",
     "//crates/clax-embedded:manifest",
     "//crates/clax-fake-exe:manifest",
     "//crates/clax-git:manifest",
@@ -128,6 +152,22 @@ sh_test(
 sh_test(
     name = "tool_hook",
     srcs = ["test-tool-hook.sh"],
+    data = [":all"],
+)
+
+# scripts/build-app-clax.sh's dry runs (the native build of the Clax app's
+# embedded core).
+sh_test(
+    name = "build_app_clax",
+    srcs = ["test-build-app-clax.sh"],
+    data = [":all"],
+)
+
+# scripts/perf-app-launch.sh's dry runs, its median and p90 over a
+# timings.jsonl, and on a Mac its launch loop over a fake app.
+sh_test(
+    name = "perf_app_launch_test",
+    srcs = ["test-perf-app-launch.sh"],
     data = [":all"],
 )
 
@@ -186,10 +226,57 @@ sh_test(
     env = {"CARGO": "$(rootpath @rules_rust//rust/toolchain:current_cargo_files)"},
 )
 
+# scripts/sync-tokens.py on a copy of its inputs: in step, stale, low
+# contrast, drifted app-mode colours.
+sh_test(
+    name = "sync_tokens",
+    srcs = ["test-sync-tokens.sh"],
+    data = [
+        ":all",
+        "//apps/clax_app:token_outputs",
+        "//design:tokens",
+        "//web:token_inputs",
+    ],
+)
+
+# scripts/check-copy.py on its fixtures, then on the app's copy: no straight
+# apostrophes or quotes, no "..." and no raw errors in its UI strings.
+sh_test(
+    name = "check_copy",
+    srcs = ["test-check-copy.sh"],
+    args = ["$(rootpaths //apps/clax_app:copy_sources)"],
+    data = [
+        ":all",
+        "//apps/clax_app:copy_sources",
+    ],
+)
+
+# scripts/build-app-icons.sh on a copy of its sources and outputs: in step,
+# a stale mark or colour, a hand-edited output, a missing renderer, and
+# every PNG rendered at its size.
+sh_test(
+    name = "build_app_icons",
+    srcs = ["test-build-app-icons.sh"],
+    data = [
+        ":all",
+        "//apps/clax_app:icon_outputs",
+        "//design:tokens",
+    ],
+)
+
+# No `unsafe` but the exception AGENTS.md names (clax-embed's exported C
+# functions), and every other crate on the
+# workspace's lints; and the check's own test.
 sh_test(
     name = "no_unsafe",
     srcs = ["check-no-unsafe.sh"],
-    data = RUST_SOURCES,
+    data = RUST_SOURCES + CRATE_MANIFESTS + ["//:Cargo.toml"],
+)
+
+sh_test(
+    name = "no_unsafe_test",
+    srcs = ["test-check-no-unsafe.sh"],
+    data = [":all"],
 )
 
 # The checks' own tests; the scans of every tracked file read git and run
@@ -203,6 +290,21 @@ sh_test(
 sh_test(
     name = "pipefail_pipes",
     srcs = ["test-check-pipefail-pipes.sh"],
+    data = [":all"],
+)
+
+# No process launch in the crates the iOS app's core links unless
+# scripts/ios-spawns.allow names it (iOS lets an app start no other
+# program), and the check's own test.
+sh_test(
+    name = "ios_spawns",
+    srcs = ["check-ios-spawns.sh"],
+    data = RUST_SOURCES + ["ios-spawns.allow"],
+)
+
+sh_test(
+    name = "ios_spawns_test",
+    srcs = ["test-check-ios-spawns.sh"],
     data = [":all"],
 )
 
@@ -232,6 +334,34 @@ PERF_ENV = {"CLAX_PERF_BIN": "$(rootpath //crates/clax-cli:clax_opt)"}
     ("perf_clients", "perf-clients.sh"),
 ]]
 
+# scripts/app-ios.sh (just app-ios) on a PATH of stub xcrun and bazelisk:
+# its dry run, its steps in order and its wait for the launched daemon.
+sh_test(
+    name = "app_ios",
+    srcs = ["test-app-ios.sh"],
+    data = ["app-ios.sh"],
+)
+
+# scripts/app-android-emulator.sh on a stub emulator, adb and lsof: its dry
+# runs, the AVD it writes, its read-only boot and its stop by PID, a reused
+# PID it neither reports nor stops, the cleanup of a failed or interrupted
+# boot, and --clean.
+sh_test(
+    name = "app_android_emulator_test",
+    srcs = ["test-app-android-emulator.sh"],
+    data = ["app-android-emulator.sh"],
+)
+
+# scripts/app-iphone.sh (just app-iphone) on a PATH of stub xcrun and
+# bazelisk: its dry run, its device steps in order, and the TestFlight
+# build-number ledger. It reads devicectl's JSON with plutil, so macOS only.
+sh_test(
+    name = "app_iphone",
+    srcs = ["test-app-iphone.sh"],
+    data = ["app-iphone.sh"],
+    target_compatible_with = ["@platforms//os:macos"],
+)
+
 # scripts/run.sh's choice of build system, on a PATH of stub tools.
 sh_test(
     name = "run_choice",
@@ -248,4 +378,16 @@ sh_test(
     name = "bazel_gc",
     srcs = ["bazel-gc.test.sh"],
     data = [":all"],
+)
+
+# scripts/affected-tests.sh on a scratch checkout and a stub bazelisk: the
+# files it queries and as what, every test for a change to the build, the
+# manual tests left out, removed files and the base-ref mode.
+sh_test(
+    name = "affected_tests",
+    srcs = ["test-affected-tests.sh"],
+    data = [
+        "affected-tests.sh",
+        "lib/bazel-test-flags.sh",
+    ],
 )

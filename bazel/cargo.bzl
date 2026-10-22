@@ -1,7 +1,8 @@
 """Builds a Cargo package's targets the way Cargo does.
 
 A package's BUILD.bazel calls cargo_package(). The package's facts (version,
-targets, default features, path dependencies, its build script) come from bazel/workspace.bzl, which
+targets, default features, path dependencies, its build script, its own
+lints) come from bazel/workspace.bzl, which
 scripts/bazel-sync.sh derives from `cargo metadata`; its third-party
 dependencies come from its Cargo.toml through crate_universe; and its sources
 are globbed. So a BUILD file changes only for what Cargo knows by convention
@@ -10,7 +11,7 @@ and Bazel must be told: which files outside `src/` a target reads.
 
 load("@crates//:defs.bzl", "aliases", "all_crate_deps")
 load("@rules_rust//cargo:defs.bzl", "cargo_build_script")
-load("@rules_rust//rust:defs.bzl", "rust_binary", "rust_library", "rust_test")
+load("@rules_rust//rust:defs.bzl", "rust_binary", "rust_library", "rust_shared_library", "rust_static_library", "rust_test")
 load(":workspace.bzl", "CRATES", "WORKSPACE_RUSTC_FLAGS")
 
 _CLAX = "//crates/clax-cli:clax"
@@ -27,6 +28,9 @@ def cargo_package(
         split_tests = {},
         build_script_env = {},
         build_script_data = [],
+        staticlib = False,
+        cdylib = False,
+        disable_pipelining = False,
         visibility = ["//visibility:public"]):
     """Declares the library, binaries, build script and tests of the Cargo
     package here.
@@ -39,6 +43,11 @@ def cargo_package(
       <bin>_bin_test        each binary's unit tests
       <test>                each [[test]] target, under its name
       build_script          the build script, when there is one
+      <lib>_static          with `staticlib`: the library as a C static
+                            library (lib<lib>.a: the crate and every
+                            dependency in one archive)
+      <lib>_shared          with `cdylib`: the library as a C shared
+                            library (lib<lib>.so or .dylib)
 
     Args:
       compile_data: files outside `src/` that the library and binaries read
@@ -63,6 +72,19 @@ def cargo_package(
         dependencies' generics, and a link.
       build_script_env: environment for the build script ($(execpath) works).
       build_script_data: files the build script reads.
+      staticlib: also declare `<lib>_static`, a rust_static_library of the
+        library's sources and dependencies, for a host app to link
+        (crates/clax-embed, on iOS).
+      cdylib: also declare `<lib>_shared`, a rust_shared_library of the
+        library's sources and dependencies, for a host app to load
+        (crates/clax-embed).
+      disable_pipelining: build the library's metadata and its rlib in one
+        action, not two. For a crate whose compile reads paths under the
+        action's own sandbox (crates/clax-embedded: rust-embed's folders
+        come from its build script's absolute paths, which differ in every
+        sandbox): its two actions would give it two crate hashes, and a
+        library compiled against the metadata could not be linked with the
+        rlib ("can't find crate").
       visibility: the library's and binaries' visibility.
     """
     package = native.package_name()
@@ -109,7 +131,10 @@ def cargo_package(
         "--check-cfg=cfg(docsrs,test)",
         "--check-cfg=cfg(feature,values(%s))" % ",".join(['"%s"' % f for f in crate["features"]]),
     ]
-    rustc_flags = WORKSPACE_RUSTC_FLAGS + check_cfg + ["--cfg", "clax_embedded"] + select({
+    # The workspace's lints, or the crate's own [lints.rust] when it has
+    # one (only crates/clax-embed: scripts/check-no-unsafe.sh).
+    lint_flags = crate.get("lint_flags", WORKSPACE_RUSTC_FLAGS)
+    rustc_flags = lint_flags + check_cfg + ["--cfg", "clax_embedded"] + select({
         # Cargo's dev profile keeps line tables, which panics and
         # backtraces use (docs/bazel.md, "Differences from Cargo").
         "//bazel:fastbuild": ["-Cdebuginfo=line-tables-only"],
@@ -133,7 +158,7 @@ def cargo_package(
             edition = crate["edition"],
             deps = all_crate_deps(build = True),
             proc_macro_deps = all_crate_deps(build_proc_macro = True),
-            rustc_flags = WORKSPACE_RUSTC_FLAGS + check_cfg,
+            rustc_flags = lint_flags + check_cfg,
             version = crate["version"],
         )
         build_deps = [":build_script"]
@@ -194,11 +219,38 @@ def cargo_package(
             crate_features = features,
             crate_name = lib,
             crate_root = crate["lib_root"],
+            disable_pipelining = disable_pipelining,
             proc_macro_deps = macros,
             visibility = visibility,
             deps = normal_deps,
             **common
         )
+        if staticlib:
+            rust_static_library(
+                name = lib + "_static",
+                srcs = srcs,
+                compile_data = src_data,
+                crate_features = features,
+                crate_name = lib,
+                crate_root = crate["lib_root"],
+                proc_macro_deps = macros,
+                visibility = visibility,
+                deps = normal_deps,
+                **common
+            )
+        if cdylib:
+            rust_shared_library(
+                name = lib + "_shared",
+                srcs = srcs,
+                compile_data = src_data,
+                crate_features = features,
+                crate_name = lib,
+                crate_root = crate["lib_root"],
+                proc_macro_deps = macros,
+                visibility = visibility,
+                deps = normal_deps,
+                **common
+            )
         _test(
             name = lib + "_lib_test",
             crate = ":" + lib,

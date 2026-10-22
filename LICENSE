@@ -9,10 +9,12 @@ whose full texts are in the LICENSES/ directory:
                    (LICENSES/GPL-2.0-only.txt)
   AGPL-3.0-only    GNU Affero General Public License, version 3 only
                    (LICENSES/AGPL-3.0-only.txt)
+  0BSD             Zero-Clause BSD License
+                   (LICENSES/0BSD.txt)
 
-"Only" means what it says: no later version of either license applies, and
-"any later version" wording in the license texts themselves does not apply
-to Clax.
+"Only" means what it says: no later version of the GNU licenses applies,
+and "any later version" wording in the license texts themselves does not
+apply to Clax.
 
 Which license covers which part:
 
@@ -25,6 +27,9 @@ Which license covers which part:
     crates/clax-fake-exe
     plugins/                      the agent plugins, including plugins/pi
     web/extension/                the browser extension
+    apps/clax_app                 the Clax app, including its home app
+                                  (apps/clax_app/home), except its
+                                  starter kit (below)
     scripts/, demo/, docs/, and every file not listed below
 
   GPL-2.0-only OR AGPL-3.0-only   Code shared by the local programs and the
@@ -46,9 +51,20 @@ Which license covers which part:
     crates/clax-worker            (including crates/clax-worker/vfs)
     web/                          except web/extension/
 
+  0BSD                            The Clax app's starter kit, which the app
+                                  copies into the apps people make with it,
+                                  so they carry no obligation from it:
+    apps/clax_app/assets/kit      Clax's own files in it; its vendored
+                                  third-party files (preact.js, dates.js,
+                                  icons.js) keep their own licenses, which
+                                  apps/clax_app/assets/kit/LICENSES.txt
+                                  holds
+
 A package's own metadata (the `license` field of its Cargo.toml or
 package.json) names the same license as this list. web/package.json covers
-both web/ and web/extension/, so it names both licenses.
+both web/ and web/extension/, so it names both licenses. A Dart package's
+pubspec.yaml has no license field (pub reads the package's LICENSE file):
+apps/clax_app/LICENSE carries the app's license.
 
 This program is distributed in the hope that it will be useful, but WITHOUT
 ANY WARRANTY; without even the implied warranty of MERCHANTABILITY or FITNESS

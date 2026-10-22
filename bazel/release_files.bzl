@@ -12,6 +12,7 @@ RELEASE_FILES = [
     "//crates/clax-commands:Cargo.toml",
     "//crates/clax-content-git:Cargo.toml",
     "//crates/clax-core:Cargo.toml",
+    "//crates/clax-embed:Cargo.toml",
     "//crates/clax-embedded:Cargo.toml",
     "//crates/clax-fake-exe:Cargo.toml",
     "//crates/clax-git:Cargo.toml",
