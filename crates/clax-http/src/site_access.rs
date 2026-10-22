@@ -8,10 +8,10 @@
 //!   ([`clax_store::site_sessions`]) of this artifact whose holder may read
 //!   it now ([`holder_reads`]): a share removed, a link turned off or a
 //!   browser signed out refuses the very next request.
-//! - Without one, a top-level navigation is sent to the public host's
-//!   `/site-signin?host=<host>&next=<path>`, which makes a session when the
-//!   browser may read the artifact; anything else answers 401
-//!   `site_session_required`.
+//! - Without one, a navigation (top-level, or of a frame) is sent to the
+//!   public host's `/site-signin?host=<host>&next=<path>`, which makes a
+//!   session when the browser may read the artifact (partitioned for a
+//!   frame); anything else answers 401 `site_session_required`.
 //!
 //! The cookie is host-only, `HttpOnly` and `Path=/`, and lasts as long as
 //! the browser's session; its session row lasts an hour from its last use.
@@ -140,18 +140,30 @@ pub fn safe_next(next: &str) -> String {
     if ok { next.to_string() } else { "/".into() }
 }
 
-/// Whether `req` is a top-level navigation (`Sec-Fetch-Mode: navigate`
-/// with `Sec-Fetch-Dest: document`; without Fetch metadata, a `GET` that
-/// accepts `text/html`).
+/// Whether `req` is a navigation of a document, top-level or framed
+/// (`Sec-Fetch-Mode: navigate` with `Sec-Fetch-Dest: document`, `iframe` or
+/// `frame`; without Fetch metadata, a `GET` that accepts `text/html`).
 fn navigation(method: &Method, headers: &HeaderMap) -> bool {
     if method != Method::GET && method != Method::HEAD {
         return false;
     }
     let h = |n: &str| headers.get(n).and_then(|v| v.to_str().ok());
     match (h("sec-fetch-mode"), h("sec-fetch-dest")) {
-        (Some(mode), dest) => mode == "navigate" && dest.is_none_or(|d| d == "document"),
+        (Some(mode), dest) => {
+            mode == "navigate" && dest.is_none_or(|d| matches!(d, "document" | "iframe" | "frame"))
+        }
         (None, _) => h("accept").is_some_and(|a| a.contains("text/html")),
     }
+}
+
+/// Whether `headers` are a framed navigation's (`Sec-Fetch-Dest: iframe` or
+/// `frame`): a site session made for it is partitioned, a frame being a
+/// third-party context on a site domain of its own.
+pub fn framed(headers: &HeaderMap) -> bool {
+    headers
+        .get("sec-fetch-dest")
+        .and_then(|v| v.to_str().ok())
+        .is_some_and(|d| d == "iframe" || d == "frame")
 }
 
 /// The public host's sign-in for site `host` that returns to `next`.
@@ -322,8 +334,10 @@ mod tests {
         h.insert("sec-fetch-mode", HeaderValue::from_static("navigate"));
         h.insert("sec-fetch-dest", HeaderValue::from_static("document"));
         assert!(navigation(&Method::GET, &h));
+        h.insert("sec-fetch-dest", HeaderValue::from_static("iframe"));
+        assert!(navigation(&Method::GET, &h) && framed(&h));
         h.insert("sec-fetch-dest", HeaderValue::from_static("image"));
-        assert!(!navigation(&Method::GET, &h));
+        assert!(!navigation(&Method::GET, &h) && !framed(&h));
         assert!(!navigation(&Method::GET, &HeaderMap::new()));
     }
 }

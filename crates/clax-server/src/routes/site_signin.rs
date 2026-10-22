@@ -7,11 +7,12 @@
 //!   "partitioned": true}`): the shell's frame. Answers `{"src":
 //!   "<site origin>/_clax/session?code=<code>&next=<path>"}`, 404 when the
 //!   caller may not read the artifact.
-//! - `GET /site-signin?host=<site host>&next=<path>`: a top-level visit the
-//!   site sent here. An unknown host is 404; with no session and no link
-//!   to the artifact, the sign-in page, which returns here; without the
-//!   right, the artifact's page, which tells them; else an unpartitioned
-//!   code and on to the site's `/_clax/session`.
+//! - `GET /site-signin?host=<site host>&next=<path>`: a visit the site sent
+//!   here, top-level or in a frame. An unknown host is 404; with no session
+//!   and no link to the artifact, the sign-in page, which returns here;
+//!   without the right, the artifact's page, which tells them; else a code
+//!   (partitioned for a frame, `Sec-Fetch-Dest: iframe`) and on to the
+//!   site's `/_clax/session`.
 //!
 //! Both answer `no-store` and `Referrer-Policy: no-referrer`: the code is
 //! in the address they hand out.
@@ -178,7 +179,10 @@ pub async fn page(
         }
     }
     let src = match holder {
-        Some(h) => mint(&s, &headers, &sees, aid.clone(), h, &next, false).await?,
+        Some(h) => {
+            let partitioned = clax_http::site_access::framed(&headers);
+            mint(&s, &headers, &sees, aid.clone(), h, &next, partitioned).await?
+        }
         None => None,
     };
     match src {

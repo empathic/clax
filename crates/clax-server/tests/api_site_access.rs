@@ -578,3 +578,68 @@ async fn a_local_daemons_owner_holds_the_site_and_no_one_else() {
         .unwrap();
     assert_eq!(r.status(), 404, "only the owner's credential mints a code");
 }
+
+#[tokio::test]
+async fn a_local_shells_frame_signs_itself_in_through_site_signin_partitioned() {
+    let ts = TestServer::spawn().await;
+    let aid = ts.publish("Doc", &[("index.html", "<p>doc")]).await["artifact"]["id"]
+        .as_str()
+        .unwrap()
+        .to_string();
+    let raw = reqwest::Client::builder()
+        .redirect(reqwest::redirect::Policy::none())
+        .build()
+        .unwrap();
+    // The frame's first load carries no site session: to the sign-in.
+    let r = raw
+        .get(format!("{}/_clax/v/1/", ts.base))
+        .header(HOST, ts.site_host(&aid))
+        .header("sec-fetch-mode", "navigate")
+        .header("sec-fetch-dest", "iframe")
+        .send()
+        .await
+        .unwrap();
+    assert_eq!(r.status(), 302);
+    let to = r.headers()[LOCATION].to_str().unwrap().to_string();
+    let path = &to[to.find("/site-signin").expect("the sign-in")..];
+    assert!(path.ends_with("&next=%2F_clax%2Fv%2F1%2F"), "{to}");
+    // The owner's browser, framed: a partitioned session.
+    let r = raw
+        .get(format!("{}{path}", ts.base))
+        .header(COOKIE, ts.owner_cookie())
+        .header("sec-fetch-dest", "iframe")
+        .send()
+        .await
+        .unwrap();
+    assert_eq!(r.status(), 302);
+    let src = r.headers()[LOCATION].to_str().unwrap().to_string();
+    assert!(src.contains("/_clax/session?code="), "{src}");
+    let r = raw
+        .get(format!(
+            "{}{}",
+            ts.base,
+            &src[src.find("/_clax/session").unwrap()..]
+        ))
+        .header(HOST, ts.site_host(&aid))
+        .send()
+        .await
+        .unwrap();
+    assert_eq!(r.headers()[LOCATION], "/_clax/v/1/");
+    let set = r.headers()[SET_COOKIE].to_str().unwrap();
+    assert!(
+        set.contains("Partitioned") && set.contains("SameSite=None"),
+        "{set}"
+    );
+    let cookie = set.split(';').next().unwrap();
+    let r = raw
+        .get(format!("{}/_clax/v/1/", ts.base))
+        .header(HOST, ts.site_host(&aid))
+        .header(COOKIE, cookie)
+        .send()
+        .await
+        .unwrap();
+    assert_eq!(r.status(), 200);
+    // A browser that is not the owner's is sent to the artifact's page.
+    let r = raw.get(format!("{}{path}", ts.base)).send().await.unwrap();
+    assert_eq!(r.headers()[LOCATION], format!("/a/{aid}"));
+}

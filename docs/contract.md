@@ -8651,7 +8651,7 @@ it starts, the runs a previous process left. A build without the
   `Path=/`, for the browser's session), naming a site session of that
   artifact whose holder may read it now: removing a share, turning a link
   off or signing out refuses the very next request. Without one, a
-  top-level navigation is sent (302) to the main origin's
+  navigation (top-level, or a frame's) is sent (302) to the main origin's
   `/site-signin?host=<site host>&next=<path>`, and anything else answers
   401 `site_session_required`. A session is made from a one-use code good
   for 60 s: the shell asks `POST /api/artifacts/<id>/site-code` (`{"next":
@@ -8659,7 +8659,8 @@ it starts, the runs a previous process left. A build without the
   daemon, the browser's session on a hosted Clax, 404 for who may not read
   it) for `{"src": "<site origin>/_clax/session?code=<code>&next=<path>"}`;
   `/site-signin` signs the browser in when it must, sends one without the
-  right to the artifact's page, and else to the same address. The site's
+  right to the artifact's page, and else to the same address (partitioned
+  for a frame, `Sec-Fetch-Dest: iframe`). The site's
   `/_clax/session` sets the cookie (`SameSite=None; Secure; Partitioned`
   for the shell's frame, else `SameSite=Lax`) and redirects to `next`, a
   path on that host (anything else is `/`). A session lasts an hour from
