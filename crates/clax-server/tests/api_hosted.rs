@@ -1509,6 +1509,20 @@ impl Site {
         (b, pid)
     }
 
+    /// An artifact `b` starts from a brief in their browser: theirs, or
+    /// the owner's for the owner's browser.
+    async fn made_by(&self, b: &Browser, title: &str) -> String {
+        let (s, v) = self
+            .post(
+                b,
+                "/api/artifacts:new",
+                json!({"title": title, "brief": "x"}),
+            )
+            .await;
+        assert_eq!(s, 201, "{v}");
+        v["artifact"]["id"].as_str().unwrap().to_string()
+    }
+
     async fn titled(&self, title: &str) -> String {
         self.ts
             .publish(title, &[("index.html", "<h1>x</h1>")])
@@ -1531,7 +1545,7 @@ fn listed(v: &Value) -> Vec<String> {
 }
 
 #[tokio::test]
-async fn a_persons_rights_limit_their_browser_and_the_owner_sees_everything() {
+async fn a_persons_rights_limit_their_browser_and_the_owner_reads_only_their_reach() {
     let site = Site::new().await;
     let owner = site.owner().await;
     let plan = site.titled("Plan").await;
@@ -1548,13 +1562,16 @@ async fn a_persons_rights_limit_their_browser_and_the_owner_sees_everything() {
         )
         .await;
     let mia = site.person(&owner, "Mia").await;
+    let mias = site.made_by(&mia, "Mia's").await;
     let mut both = vec![plan.clone(), budget.clone()];
     both.sort();
-    // Listings filter.
+    let mut mias_reach = vec![plan.clone(), budget.clone(), mias.clone()];
+    mias_reach.sort();
+    // Listings filter: the owner's holds what the owner made, not Mia's.
     let (_, v) = site.get(&owner, "/api/artifacts").await;
     assert_eq!(listed(&v), both);
     let (_, v) = site.get(&mia, "/api/artifacts").await;
-    assert_eq!(listed(&v), both);
+    assert_eq!(listed(&v), mias_reach);
     let (_, v) = site.get(&sam, "/api/artifacts").await;
     assert_eq!(listed(&v), vec![budget.clone()]);
     let (_, v) = site
@@ -1575,7 +1592,29 @@ async fn a_persons_rights_limit_their_browser_and_the_owner_sees_everything() {
         assert_eq!((s, code(&v)), (404, "not_found"), "{p}: {v}");
         let (s, _) = site.get(&mia, &p).await;
         assert_eq!(s, 200, "Mia: {p}");
+        // The owner reads no further than their reach: Mia's artifact is
+        // not there for them.
+        let at_mias = p.replace(&plan, &mias);
+        let (s, v) = site.get(&owner, &at_mias).await;
+        assert_eq!((s, code(&v)), (404, "not_found"), "owner: {at_mias}: {v}");
     }
+    let (s, _) = site.thread(&owner, &mias, "let me in").await;
+    assert_eq!(s, 404);
+    // Mia shares it with the owner as a viewer: the owner reads it, at a
+    // viewer's access alone.
+    let owner_pid = site.pid(&owner).await;
+    let (s, v) = site
+        .put(
+            &mia,
+            &format!("/api/hosted/artifacts/{mias}/shares"),
+            json!({"person": owner_pid, "access": "viewer"}),
+        )
+        .await;
+    assert_eq!(s, 200, "{v}");
+    let (s, v) = site.get(&owner, &format!("/api/artifacts/{mias}")).await;
+    assert_eq!(s, 200, "{v}");
+    let (s, v) = site.thread(&owner, &mias, "a viewer").await;
+    assert_eq!((s, code(&v)), (403, "not_permitted"), "{v}");
     let (s, _) = site.thread(&sam, &plan, "let me in").await;
     assert_eq!(s, 404);
     let (s, _) = site
@@ -1652,6 +1691,142 @@ async fn a_persons_rights_limit_their_browser_and_the_owner_sees_everything() {
     assert_eq!(s, 201);
     let (_, v) = site.get(&sam, "/api/artifacts").await;
     assert_eq!(listed(&v), vec![budget.clone()]);
+}
+
+/// A request as an agent of this machine makes it: the daemon token, at a
+/// local name.
+fn daemon_token_get(site: &Site, path: &str) -> reqwest::RequestBuilder {
+    site.ts
+        .client
+        .get(site.url(path))
+        .header(HOST, format!("localhost:{}", site.ts.addr.port()))
+        .bearer_auth(&site.ts.token)
+}
+
+#[tokio::test]
+async fn the_daemon_token_on_hosted_reaches_only_the_owners_reach() {
+    let site = Site::new().await;
+    let owner = site.owner().await;
+    let plan = site.titled("Plan").await;
+    let mia = site.person(&owner, "Mia").await;
+    let mias = site.made_by(&mia, "Mia's").await;
+    let (s, v) = json_of(
+        daemon_token_get(&site, "/api/artifacts")
+            .send()
+            .await
+            .unwrap(),
+    )
+    .await;
+    assert_eq!(s, 200, "{v}");
+    assert_eq!(listed(&v), vec![plan.clone()]);
+    let (s, v) = json_of(
+        daemon_token_get(&site, &format!("/api/artifacts/{mias}"))
+            .send()
+            .await
+            .unwrap(),
+    )
+    .await;
+    assert_eq!((s, code(&v)), (404, "not_found"), "{v}");
+    let (s, v) = json_of(
+        daemon_token_get(&site, &format!("/api/artifacts/{plan}"))
+            .send()
+            .await
+            .unwrap(),
+    )
+    .await;
+    assert_eq!(s, 200, "{v}");
+}
+
+#[tokio::test]
+async fn a_person_granted_any_reads_the_owners_and_their_own_alone() {
+    let site = Site::new().await;
+    let owner = site.owner().await;
+    let plan = site.titled("Plan").await;
+    let budget = site.titled("Budget").await;
+    let sam = site.person(&owner, "Sam").await;
+    let mia = site.person(&owner, "Mia").await;
+    let sams = site.made_by(&sam, "Sam's").await;
+    let mias = site.made_by(&mia, "Mia's").await;
+    let mut want = vec![plan, budget, sams];
+    want.sort();
+    let (_, v) = site.get(&sam, "/api/artifacts").await;
+    assert_eq!(listed(&v), want);
+    let (s, v) = site.get(&sam, &format!("/api/artifacts/{mias}")).await;
+    assert_eq!((s, code(&v)), (404, "not_found"), "{v}");
+}
+
+#[tokio::test]
+async fn a_grant_at_any_reaches_another_persons_artifact_only_through_its_share() {
+    let site = Site::new().await;
+    let owner = site.owner().await;
+    let sam = site.person(&owner, "Sam").await;
+    let sam_pid = site.pid(&sam).await;
+    let mia = site.person(&owner, "Mia").await;
+    let mias = site.made_by(&mia, "Mia's").await;
+    let (s, t) = site.thread(&mia, &mias, "Mia's thread").await;
+    assert_eq!(s, 201, "{t}");
+    let tid = t["thread"]["id"].as_str().unwrap().to_string();
+    // Sam's agent token holds Sam's rights: every artifact (`*`).
+    let (s, v) = site
+        .post(&sam, "/api/hosted/agent-tokens", json!({"label": "laptop"}))
+        .await;
+    assert_eq!(s, 201, "{v}");
+    let token = v["token"].as_str().unwrap().to_string();
+    let api = |method: reqwest::Method, path: &str| {
+        site.ts
+            .client
+            .request(method, site.url(path))
+            .header(HOST, format!("localhost:{}", site.ts.addr.port()))
+            .bearer_auth(&token)
+    };
+    let read = async || {
+        json_of(
+            api(reqwest::Method::GET, &format!("/api/artifacts/{mias}"))
+                .send()
+                .await
+                .unwrap(),
+        )
+        .await
+    };
+    let (s, v) = read().await;
+    assert_eq!((s, code(&v)), (404, "not_found"), "{v}");
+    let (s, v) = site
+        .put(
+            &mia,
+            &format!("/api/hosted/artifacts/{mias}/shares"),
+            json!({"person": sam_pid, "access": "commenter"}),
+        )
+        .await;
+    assert_eq!(s, 200, "{v}");
+    let (s, v) = read().await;
+    assert_eq!(s, 200, "{v}");
+    let (s, v) = json_of(
+        api(
+            reqwest::Method::POST,
+            &format!("/api/artifacts/{mias}/threads/{tid}/resolve"),
+        )
+        .json(&json!({}))
+        .send()
+        .await
+        .unwrap(),
+    )
+    .await;
+    assert_eq!((s, code(&v)), (403, "not_permitted"), "{v}");
+}
+
+#[tokio::test]
+async fn the_daemon_wide_event_stream_is_no_one_s_on_hosted() {
+    let site = Site::new().await;
+    let owner = site.owner().await;
+    // The status alone: a stream served would never end its body.
+    let r = site
+        .req(&owner, reqwest::Method::GET, "/api/events")
+        .send()
+        .await
+        .unwrap();
+    assert_eq!(r.status(), 403);
+    let r = daemon_token_get(&site, "/api/events").send().await.unwrap();
+    assert_eq!(r.status(), 403);
 }
 
 #[tokio::test]
@@ -2867,9 +3042,10 @@ async fn a_member_forks_what_they_may_read_into_their_own_artifact() {
     let (s, got) = site.get(&mia, &format!("/api/artifacts/{fid}")).await;
     assert_eq!(s, 200, "{got}");
     assert_eq!(got["artifact"]["forked_from"]["title"], json!("Plan"));
+    // Mia's fork is hers: out of the owner's reach, so not in their listing.
     let (s, people) = site.get(&owner, "/api/artifacts").await;
     assert_eq!(s, 200);
-    assert!(listed(&people).contains(&fid));
+    assert!(!listed(&people).contains(&fid));
     let st = site.ts.store.clone();
     let (fork_id, mia_id2) = (fid.clone(), mia_id.clone());
     assert!(
@@ -3809,19 +3985,6 @@ impl Site {
             r = r.json(&body);
         }
         json_of(r.send().await.unwrap()).await
-    }
-
-    /// An artifact `b` (a member) makes from a brief: theirs.
-    async fn made_by(&self, b: &Browser, title: &str) -> String {
-        let (s, v) = self
-            .post(
-                b,
-                "/api/artifacts:new",
-                json!({"title": title, "brief": "a page"}),
-            )
-            .await;
-        assert_eq!(s, 201, "{v}");
-        v["artifact"]["id"].as_str().unwrap().to_string()
     }
 }
 
@@ -6023,19 +6186,11 @@ async fn a_member_who_may_not_send_attaches_no_agent_and_agent_tokens_start_noth
         watching.iter().all(|w| w.artifact_id != aid),
         "{watching:?}"
     );
-    // The owner, who may send anywhere, may name it there.
+    // Nia's artifact is out of the owner's reach: not there for them.
     let (s, v) = site
         .get(&owner, &format!("/api/agents?artifact={aid}"))
         .await;
-    assert_eq!(s, 200, "{v}");
-    // The session (and ClaxBot, built in, listed first).
-    let sessions = v["agents"]
-        .as_array()
-        .unwrap()
-        .iter()
-        .filter(|a| a["builtin"] != true);
-    assert_eq!(sessions.count(), 1, "{v}");
-    assert_eq!(v["agents"][0]["handle"], "claxbot", "{v}");
+    assert_eq!((s, code(&v)), (404, "not_found"), "{v}");
     // An agent token of a member who creates starts nothing from a brief.
     let mia = site.member(&owner, "Mia").await;
     let (s, t) = site

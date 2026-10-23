@@ -478,10 +478,7 @@ pub fn reads_artifact(
         Caller::Owner { .. } => Ok(true),
         _ if live => Ok(false),
         Caller::Person { viewer } => {
-            let m = clax_http::hosted::MemberRights {
-                rights: std::sync::Arc::new(st.person_rights(&viewer.public_id)?),
-                person: viewer.public_id.clone(),
-            };
+            let m = clax_http::hosted::MemberRights::of_person(st, &viewer.public_id)?;
             m.allows_at(st, (clax_core::rights::RightType::Artifacts, "read"), aid)
         }
         Caller::Viewer { .. } if hosted => Ok(st.link_access(aid)?.is_some()),

@@ -1608,9 +1608,10 @@ impl SourceReader {
         }
     }
 
-    /// Whether they may read artifact `src`: the owner and the owner's
-    /// agents always; a person's agent and a hosted daemon's signed-in
-    /// person by their rights (the person's also by `src`'s link); a local
+    /// Whether they may read artifact `src`: a hosted daemon's scoped
+    /// caller by their reach (also by `src`'s link); the owner and the
+    /// owner's agents of a local daemon always; a person's agent by its
+    /// rights (on a hosted daemon within its reach); a local
     /// daemon's connected person by their person rights; on a hosted daemon
     /// a guest or no session only when `src` is shared by link, and on a
     /// local daemon, whose browsers read every artifact, always.
@@ -1622,6 +1623,10 @@ impl SourceReader {
         }
         Ok(match &self.caller {
             Caller::Owner { .. } | Caller::OwnerAgent { .. } => true,
+            Caller::PersonAgent { person, rights, .. } if self.hosted => {
+                clax_http::agent::grant_at(st, true, rights, person.as_deref(), read, &src.id)?
+                    .unwrap_or(false)
+            }
             Caller::PersonAgent { person, rights, .. } => {
                 rights.allows(RightType::Artifacts, "read", Some(&src.id), &|x| {
                     x == src.id && src.authors.creator == *person

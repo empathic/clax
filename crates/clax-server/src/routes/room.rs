@@ -1058,6 +1058,18 @@ pub async fn reopen(
             {
                 return Err(CoreError::NotFound);
             }
+            // The token on a hosted daemon is the owner's, scoped as the
+            // owner's session is.
+            if hosted
+                && session.is_none()
+                && !clax_http::hosted::MemberRights::owner(st)?.allows_at(
+                    st,
+                    (clax_core::rights::RightType::Artifacts, "read"),
+                    &a,
+                )?
+            {
+                return Err(CoreError::NotFound);
+            }
             let caller = who.caller(st, None).ok();
             if caller
                 .as_ref()

@@ -690,33 +690,55 @@ pub async fn resolve(
         .map_err(ApiError::from)?
 }
 
+/// What [`resolve_allowed`] read beside a person's agent: whether its
+/// rights allow the route's right at the path's artifact ([`grant_at`]'s
+/// answer, when asked), and on a hosted daemon its person's share rights.
+#[derive(Default)]
+struct GrantRead {
+    allowed: Option<Option<bool>>,
+    shared: Option<Arc<clax_core::rights::Rights>>,
+}
+
 /// [`resolve`], and for a person's agent whether its rights allow `right`
-/// at that artifact (`own`: one its person created), read in the same
-/// store call; `None` when not asked or not a person's agent.
+/// at that artifact (`own`: one its person created) and, on a hosted
+/// daemon, its person's share rights, read in the same store call.
 async fn resolve_allowed(
     s: &AppState,
     id: Identity,
     path_session: Option<String>,
     right: Option<((RightType, &'static str), ArtifactId)>,
-) -> Result<(Caller, Option<bool>), ApiError> {
+) -> Result<(Caller, GrantRead), ApiError> {
     if let Some(c) = id.quick_caller(path_session.as_deref()) {
-        return Ok((c, None));
+        return Ok((c, GrantRead::default()));
     }
+    let hosted = s.hosted.is_some();
     s.store
         .call(move |st| {
-            Ok(id.caller(st, path_session.as_deref()).map(|c| {
-                let allowed = match (&c, &right) {
-                    (Caller::PersonAgent { person, rights, .. }, Some(((kind, action), aid))) => {
-                        let own = |x: &str| {
-                            st.artifact_created_by(x, person.as_deref())
-                                .unwrap_or(false)
-                        };
-                        Some(rights.allows(*kind, action, Some(aid.as_str()), &own))
-                    }
-                    _ => None,
-                };
-                (c, allowed)
-            }))
+            let c = match id.caller(st, path_session.as_deref()) {
+                Ok(c) => c,
+                Err(e) => return Ok(Err(e)),
+            };
+            let read = match &c {
+                Caller::PersonAgent { person, rights, .. } => GrantRead {
+                    allowed: match &right {
+                        Some((r, aid)) => Some(grant_at(
+                            st,
+                            hosted,
+                            rights,
+                            person.as_deref(),
+                            *r,
+                            aid.as_str(),
+                        )?),
+                        None => None,
+                    },
+                    shared: match hosted {
+                        true => Some(Arc::new(crate::hosted::shares_of(st, person.as_deref())?)),
+                        false => None,
+                    },
+                },
+                _ => GrantRead::default(),
+            };
+            Ok(Ok((c, read)))
         })
         .await
         .map_err(ApiError::from)?
@@ -751,9 +773,13 @@ pub struct Agent<N: Need> {
     raw_artifact: Option<String>,
     /// The request carried the daemon token.
     token: bool,
-    /// A hosted daemon's signed-in person: their rights, which limit their
-    /// browser as a person's agent's limit it ([`crate::hosted::MemberRights`]).
+    /// A hosted daemon's scoped caller (a person's browser, the owner's,
+    /// the daemon token): their reach, which limits them as a person's
+    /// agent's rights limit it ([`crate::hosted::MemberRights`]).
     member: Option<crate::hosted::MemberRights>,
+    /// On a hosted daemon, a person's agent's person's share rights: all
+    /// that reaches an artifact another person made ([`grant_at`]).
+    shared: Option<Arc<clax_core::rights::Rights>>,
     _n: PhantomData<N>,
 }
 
@@ -795,7 +821,8 @@ impl<N: Need> Agent<N> {
     }
 
     /// An artifact the request names outside its path (its query or body):
-    /// for a person's agent, 404 for a live page or one that does not exist
+    /// 404 for one out of a scoped caller's reach; for a person's agent, 404
+    /// for a live page, one that does not exist or one out of its reach,
     /// and 403 `not_permitted` unless its rights allow reading it; for any
     /// other caller, just the parse.
     ///
@@ -815,21 +842,23 @@ impl<N: Need> Agent<N> {
                 return Err(ApiError::not_found());
             }
             let right = (RightType::Artifacts, "read");
-            if !allowed_at(s, rights, person, right, &id).await? {
-                return Err(not_permitted(right));
+            match allowed_at(s, rights, person, right, &id).await? {
+                Some(true) => {}
+                Some(false) => return Err(not_permitted(right)),
+                None => return Err(ApiError::not_found()),
             }
         }
         Ok(id)
     }
 
-    /// A hosted daemon's signed-in person's rights, which limit this
+    /// A hosted daemon's scoped caller's granted rights, which limit this
     /// request as a person's agent's limit it; `None` for any other caller.
     pub fn member_rights(&self) -> Option<Arc<clax_core::rights::Rights>> {
         self.member.as_ref().map(|m| m.rights.clone())
     }
 
-    /// A hosted daemon's signed-in person, with their rights; `None` for
-    /// any other caller.
+    /// A hosted daemon's scoped caller (a person's browser, the owner's,
+    /// the daemon token), with their reach; `None` for any other caller.
     pub fn member(&self) -> Option<&crate::hosted::MemberRights> {
         self.member.as_ref()
     }
@@ -848,16 +877,19 @@ impl<N: Need> Agent<N> {
                 _,
             ) => ReadRights {
                 rights: Some((rights.clone(), person.clone())),
+                shared: self.shared.clone(),
                 agent: true,
                 generation: *generation,
             },
             (_, Some(m)) => ReadRights {
-                rights: Some((m.rights.clone(), Some(m.person.clone()))),
+                rights: Some((m.rights.clone(), m.person.clone())),
+                shared: Some(m.shared.clone()),
                 agent: false,
                 generation: 0,
             },
             _ => ReadRights {
                 rights: None,
+                shared: None,
                 agent: false,
                 generation: 0,
             },
@@ -868,17 +900,20 @@ impl<N: Need> Agent<N> {
     /// as well (a route whose right depends on what the request does).
     ///
     /// # Errors
-    /// 403 `not_permitted` naming `right`.
+    /// 403 `not_permitted` naming `right`; 404 for an artifact out of a
+    /// person's agent's reach.
     pub async fn also_needs(
         &self,
         s: &AppState,
         right: (RightType, &'static str),
         id: &ArtifactId,
     ) -> Result<(), ApiError> {
-        if let Caller::PersonAgent { person, rights, .. } = &self.caller
-            && !allowed_at(s, rights, person, right, id).await?
-        {
-            return Err(not_permitted(right));
+        if let Caller::PersonAgent { person, rights, .. } = &self.caller {
+            match allowed_at(s, rights, person, right, id).await? {
+                Some(true) => {}
+                Some(false) => return Err(not_permitted(right)),
+                None => return Err(ApiError::not_found()),
+            }
         }
         if let Some(m) = &self.member
             && !m.allows(s, right, id.as_str()).await?
@@ -891,12 +926,17 @@ impl<N: Need> Agent<N> {
 
 /// Which artifacts a caller may read ([`Agent::read_rights`]): a person's
 /// agent's rights and person, with the visibility generation read before
-/// they were, or a hosted daemon's signed-in person's
+/// they were, or a hosted daemon's scoped caller's
 /// ([`crate::hosted::MemberRights`]); every other caller reads every
-/// artifact.
+/// artifact. On a hosted daemon the reach rule applies: the rights reach
+/// only artifacts the owner or the person made, and the share rights
+/// another person's.
 #[derive(Clone)]
 pub struct ReadRights {
     rights: Option<(Arc<clax_core::rights::Rights>, Option<String>)>,
+    /// On a hosted daemon, the person's share rights: what reaches an
+    /// artifact another person made.
+    shared: Option<Arc<clax_core::rights::Rights>>,
     /// The rights are a person's agent's.
     agent: bool,
     /// The visibility generation a person's agent's rights were read at.
@@ -905,14 +945,20 @@ pub struct ReadRights {
 
 impl ReadRights {
     /// Whether the caller may read artifact `a` (`own`: one its person
-    /// created).
+    /// created); on a hosted daemon, one another person made only when its
+    /// share with the caller's person reads it too.
     pub fn allows(&self, a: &clax_core::model::Artifact) -> bool {
+        let read = |r: &clax_core::rights::Rights, own: &dyn Fn(&str) -> bool| {
+            r.allows(RightType::Artifacts, "read", Some(&a.id), own)
+        };
         match &self.rights {
             None => true,
             Some((rights, person)) => {
-                rights.allows(RightType::Artifacts, "read", Some(&a.id), &|x| {
-                    x == a.id && a.authors.creator == *person
-                })
+                let theirs = a.authors.creator.is_none() || a.authors.creator == *person;
+                match &self.shared {
+                    Some(shared) if !theirs => read(shared, &|_| false) && read(rights, &|_| false),
+                    _ => read(rights, &|x| x == a.id && a.authors.creator == *person),
+                }
             }
         }
     }
@@ -946,8 +992,16 @@ impl ReadRights {
         match grant {
             Some(g) if self.is_person_agent() && self.generation != seen => {
                 let gc = st.grant_caller(g, Some(session))?;
+                let shared = match self.shared {
+                    Some(_) => Some(Arc::new(crate::hosted::shares_of(
+                        st,
+                        gc.person.as_deref(),
+                    )?)),
+                    None => None,
+                };
                 Ok(ReadRights {
                     rights: Some((Arc::new(gc.rights), gc.person)),
+                    shared,
                     agent: true,
                     generation: seen,
                 })
@@ -1031,24 +1085,58 @@ pub fn page_marker(c: &Caller, headers: &HeaderMap) -> Result<bool, ApiError> {
     Ok(page)
 }
 
-/// Whether `rights` allow `right` at artifact `id`, `own` meaning created
-/// by `person` (read from the store).
+/// Whether a grant's `rights` (its person `person`, `None` the owner's
+/// row) allow `(kind, action)` at artifact `aid`, `own` meaning created by
+/// `person`. On a hosted daemon (`hosted`) the reach rule applies: `None`
+/// for an artifact out of reach (gone, or another person's not shared with
+/// `person`), which the caller answers as one that does not exist; at
+/// another person's artifact shared with `person`, the rights and the
+/// share's must both allow it.
+///
+/// # Errors
+/// The store's.
+pub fn grant_at(
+    st: &clax_store::Store,
+    hosted: bool,
+    rights: &clax_core::rights::Rights,
+    person: Option<&str>,
+    (kind, action): (RightType, &str),
+    aid: &str,
+) -> clax_core::Result<Option<bool>> {
+    use clax_store::reach::Reach;
+    let own = |x: &str| st.artifact_created_by(x, person).unwrap_or(false);
+    if !hosted {
+        return Ok(Some(rights.allows(kind, action, Some(aid), &own)));
+    }
+    let none = |_: &str| false;
+    match st.reach(aid, person)? {
+        Reach::Gone => Ok(None),
+        Reach::Within => Ok(Some(rights.allows(kind, action, Some(aid), &own))),
+        Reach::Beyond => {
+            let shared = crate::hosted::shares_of(st, person)?;
+            if !shared.allows(RightType::Artifacts, "read", Some(aid), &none) {
+                return Ok(None);
+            }
+            Ok(Some(
+                rights.allows(kind, action, Some(aid), &none)
+                    && shared.allows(kind, action, Some(aid), &none),
+            ))
+        }
+    }
+}
+
+/// [`grant_at`] on the blocking pool, on this daemon.
 async fn allowed_at(
     s: &AppState,
     rights: &Arc<clax_core::rights::Rights>,
     person: &Option<String>,
-    (kind, action): (RightType, &'static str),
+    right: (RightType, &'static str),
     id: &ArtifactId,
-) -> Result<bool, ApiError> {
+) -> Result<Option<bool>, ApiError> {
     let (rights, person, aid) = (rights.clone(), person.clone(), id.as_str().to_string());
-    s.store_call(move |st| {
-        let own = |x: &str| {
-            st.artifact_created_by(x, person.as_deref())
-                .unwrap_or(false)
-        };
-        Ok(rights.allows(kind, action, Some(&aid), &own))
-    })
-    .await
+    let hosted = s.hosted.is_some();
+    s.store_call(move |st| grant_at(st, hosted, &rights, person.as_deref(), right, &aid))
+        .await
 }
 
 /// A route that refuses a person's agent (spec §7.5, `Denied`): 403
@@ -1196,7 +1284,7 @@ impl<N: Need> FromRequestParts<AppState> for Agent<N> {
                 .as_deref()
                 .and_then(|a| ArtifactId::parse(a).ok()),
         );
-        let (caller, allowed) = resolve_allowed(s, id, ps, right).await?;
+        let (caller, read) = resolve_allowed(s, id, ps, right).await?;
         if let Caller::PersonAgent { person, rights, .. } = &caller {
             if !N::GRANTS {
                 return Err(crate::auth::grants_refused());
@@ -1215,34 +1303,41 @@ impl<N: Need> FromRequestParts<AppState> for Agent<N> {
             }
             if let Some((kind, action)) = N::RIGHT {
                 let allowed = match &artifact {
-                    Some(a) => match allowed {
+                    Some(a) => match read.allowed {
                         Some(b) => b,
                         None => allowed_at(s, rights, person, (kind, action), a).await?,
                     },
-                    None if action == "create" => rights.allows(kind, action, None, &|_| false),
-                    None => rights.allows_somewhere(kind, action),
+                    None if action == "create" => {
+                        Some(rights.allows(kind, action, None, &|_| false))
+                    }
+                    None => Some(rights.allows_somewhere(kind, action)),
                 };
-                if !allowed {
-                    return Err(not_permitted((kind, action)));
+                match allowed {
+                    Some(true) => {}
+                    Some(false) => return Err(not_permitted((kind, action))),
+                    // Out of its reach: as one that does not exist.
+                    None => return Err(ApiError::not_found()),
                 }
             }
             if N::CLASS == Class::Filtered && !FILTERED_LIVE.contains(&N::NAME) {
                 return Err(not_yet());
             }
         }
-        // A hosted daemon's signed-in person: their rights limit their
-        // browser, and their own device, as a person's agent's limit it.
+        // A hosted daemon's scoped caller (a person's browser, the owner's,
+        // the daemon token, a person's own device or the owner's): their
+        // reach limits them as a person's agent's rights limit it. A
+        // person's agent carries its own (above).
         let member = match (&caller, parts.extensions.get::<PersonDevice>()) {
-            (Caller::Person { .. }, Some(d)) => {
+            (Caller::PersonAgent { .. }, _) => None,
+            (_, Some(d)) => {
                 let who = d.who.clone();
                 s.store_call(move |st| crate::hosted::MemberRights::of_session(st, &who))
                     .await?
             }
-            (Caller::Person { .. }, None) => parts
+            _ => parts
                 .extensions
                 .get::<crate::hosted::HostedRequest>()
                 .and_then(|h| h.member.clone()),
-            _ => None,
         };
         if let (Some(m), Some((kind, action))) = (&member, N::RIGHT) {
             let artifact = raw_artifact
@@ -1263,6 +1358,7 @@ impl<N: Need> FromRequestParts<AppState> for Agent<N> {
             raw_artifact,
             token,
             member,
+            shared: read.shared,
             _n: PhantomData,
         })
     }

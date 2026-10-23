@@ -155,11 +155,8 @@ fn reads_comments(
         return Ok(true);
     };
     if !rights.contains_key(pid) {
-        let member = match st.person_rights(pid) {
-            Ok(r) => Some(crate::hosted::MemberRights {
-                person: pid.to_string(),
-                rights: std::sync::Arc::new(r),
-            }),
+        let member = match crate::hosted::MemberRights::of_person(st, pid) {
+            Ok(m) => Some(m),
             Err(clax_core::CoreError::Invalid {
                 code: "not_a_person",
                 ..

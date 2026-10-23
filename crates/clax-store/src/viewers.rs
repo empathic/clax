@@ -405,7 +405,7 @@ fn fold(
     }
     fold_authorship(st, ctx, tx, old, new, into_owner)?;
     fold_hosted(tx, from, into, from_owner)?;
-    super::shares::fold_shares(st, ctx, tx, (&from.id, old), (&into.id, new))?;
+    super::shares::fold_shares(tx, (&from.id, old), (&into.id, new))?;
     tx.execute(
         "UPDATE comments SET author_public_id = ?2 WHERE author_public_id = ?1",
         params![old, new],
@@ -1479,8 +1479,9 @@ mod tests {
             ),
             1
         );
-        // The owner holds no share; one made by the folded viewer is now
-        // the owner's.
+        // The folded viewer's share moves to the owner, as to anyone (the
+        // owner reads another person's artifact only through a share); one
+        // made by the folded viewer is now the owner's.
         let shares: Vec<_> = [aid.as_str(), other.as_str()]
             .iter()
             .flat_map(|a| st.artifact_shares(a).unwrap())
@@ -1488,7 +1489,10 @@ mod tests {
             .collect();
         assert_eq!(
             shares,
-            vec![("sh2".to_string(), None, Some(owner.public_id.clone()))]
+            vec![
+                ("sh1".to_string(), Some(owner.public_id.clone()), None),
+                ("sh2".to_string(), None, Some(owner.public_id.clone()))
+            ]
         );
     }
 

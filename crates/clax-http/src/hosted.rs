@@ -47,14 +47,20 @@
 //!   that redirect and nothing else. A thread's clip is read with the
 //!   reader's own credential ([`clip_link`]);
 //! - the shell's static files and `/healthz` are open;
-//! - a request with `Authorization` (the daemon token, a grant, an agent
-//!   token) is as on a local daemon, and so is the owner's session; any
-//!   other `Authorization` answers 401 `unauthorized`;
-//! - a person's session is limited by the person's rights, as their agents
-//!   are ([`MemberRights`]): an artifact they may not read (by their rights,
-//!   or its link's) answers 404 wherever a route names it, listings leave it
-//!   out, a route's action needs its right (`crate::agent::Agent`), and the
-//!   gallery's stream topic is theirs only when they read every artifact;
+//! - a request with `Authorization` speaks for its credential (the daemon
+//!   token, a grant, an agent token); any other `Authorization` answers 401
+//!   `unauthorized`;
+//! - every caller is scoped to their reach, the owner included: a person's
+//!   session by the person's rights, the owner's session (its cookie or
+//!   its shell token) and the daemon token by the owner's
+//!   ([`MemberRights`]), and a grant or agent token by its rights narrowed
+//!   the same way (`crate::agent::Agent`). Granted rights apply only at
+//!   artifacts the owner made or the person made; an artifact another
+//!   person made is reached only through its share with them, or its link.
+//!   An artifact out of reach answers 404 wherever a route names it,
+//!   listings leave it out, a route's action needs its right
+//!   (`crate::agent::Agent`), and no one holds the gallery's stream topic
+//!   or the daemon-wide event stream (`/api/events`, 403);
 //! - anyone else (a guest, or no session) reaches only the routes of pages
 //!   shared by link ([`guest_need`]), within the page's
 //!   [`LinkAccess::rights`] (a guest's) or its viewer rights (no session);
@@ -704,8 +710,10 @@ pub struct HostedRequest {
     pub session: Option<SessionViewer>,
     /// The request's `Origin` is the public origin.
     pub origin_checked: bool,
-    /// A person's session (a member who is not the owner): their rights,
-    /// which limit their browser as they limit their agents.
+    /// The scope of whoever the request speaks for, on every request of a
+    /// signed-in person, of the owner's browser (its cookie or its shell
+    /// token) and of the daemon token: their reach ([`MemberRights`]),
+    /// which limits their browser as it limits their agents.
     pub member: Option<MemberRights>,
     /// The session cookie's SHA-256 (lowercase hex), with a live session:
     /// what a socket's host keeps to check the session again when it
@@ -713,20 +721,76 @@ pub struct HostedRequest {
     pub cookie_sha256: Option<String>,
 }
 
-/// A signed-in person's rights in their browser: the person's multi-person
-/// rights ([`clax_store::Store::person_rights`]), and at an artifact shared
-/// by link, its [`LinkAccess::rights`] too. The owner's browser holds every
-/// right and carries none of this.
+/// A person's scope on a hosted daemon, the owner's included (the reach
+/// rule): their granted rights apply only at artifacts the owner made or
+/// they made, an artifact another person made is reached only through its
+/// share with them, and at an artifact shared by link its
+/// [`LinkAccess::rights`] apply too. Anything else is out of reach.
 #[derive(Clone, Debug)]
 pub struct MemberRights {
-    /// The person's public ID: what `own` locations are resolved by.
-    pub person: String,
+    /// The person's public ID, what `own` locations are resolved by; `None`
+    /// for the owner (`own`: what the owner made).
+    pub person: Option<String>,
+    /// Their granted rights: the person's multi-person rights
+    /// ([`clax_store::Store::person_rights`]), every right for the owner.
+    /// They apply only within the person's reach.
     pub rights: std::sync::Arc<clax_core::rights::Rights>,
+    /// The rights the artifacts shared with them hold
+    /// ([`clax_store::Store::share_rights_of`]): all that reaches an
+    /// artifact another person made.
+    pub shared: std::sync::Arc<clax_core::rights::Rights>,
+}
+
+/// The share rights of `person` (a public ID; `None` the owner, by the
+/// owner's viewer row); none without such a row.
+///
+/// # Errors
+/// The store's.
+pub fn shares_of(
+    st: &clax_store::Store,
+    person: Option<&str>,
+) -> clax_core::Result<clax_core::rights::Rights> {
+    let pid = match person {
+        Some(p) => Some(p.to_string()),
+        None => st.owner_public_id()?,
+    };
+    match pid.map(|p| st.share_rights_of(&p)) {
+        None | Some(Err(clax_core::CoreError::NotFound)) => Ok(Default::default()),
+        Some(r) => r,
+    }
 }
 
 impl MemberRights {
-    /// Whether these rights allow `action` of `kind` at artifact `aid` in
-    /// `st` (the person's rights, or the artifact's link's).
+    /// Person `public_id`'s scope.
+    ///
+    /// # Errors
+    /// The store's ([`clax_store::Store::person_rights`]).
+    pub fn of_person(st: &clax_store::Store, public_id: &str) -> clax_core::Result<MemberRights> {
+        Ok(MemberRights {
+            person: Some(public_id.to_string()),
+            rights: std::sync::Arc::new(st.person_rights(public_id)?),
+            shared: std::sync::Arc::new(shares_of(st, Some(public_id))?),
+        })
+    }
+
+    /// The owner's scope: every right at what the owner made, and the
+    /// shares of the owner's viewer row elsewhere.
+    ///
+    /// # Errors
+    /// The store's.
+    pub fn owner(st: &clax_store::Store) -> clax_core::Result<MemberRights> {
+        Ok(MemberRights {
+            person: None,
+            rights: std::sync::Arc::new(clax_core::rights::Rights::full()),
+            shared: std::sync::Arc::new(shares_of(st, None)?),
+        })
+    }
+
+    /// Whether this scope allows `action` of `kind` at artifact `aid` in
+    /// `st`: nothing at an artifact that is gone
+    /// ([`clax_store::reach::Reach::Gone`]); within the person's reach their
+    /// granted rights, beyond it their share rights; then the artifact's
+    /// link's.
     ///
     /// # Errors
     /// The store's.
@@ -736,14 +800,22 @@ impl MemberRights {
         (kind, action): (RightType, &str),
         aid: &str,
     ) -> clax_core::Result<bool> {
-        let own = |x: &str| {
-            st.artifact_created_by(x, Some(&self.person))
-                .unwrap_or(false)
+        use clax_store::reach::Reach;
+        let none = |_: &str| false;
+        let granted = match st.reach(aid, self.person.as_deref())? {
+            Reach::Gone => return Ok(false),
+            Reach::Within => {
+                let own = |x: &str| {
+                    st.artifact_created_by(x, self.person.as_deref())
+                        .unwrap_or(false)
+                };
+                self.rights.allows(kind, action, Some(aid), &own)
+            }
+            Reach::Beyond => self.shared.allows(kind, action, Some(aid), &none),
         };
-        if self.rights.allows(kind, action, Some(aid), &own) {
+        if granted {
             return Ok(true);
         }
-        let none = |_: &str| false;
         Ok(st
             .link_access(aid)?
             .is_some_and(|a| a.rights(aid).allows(kind, action, Some(aid), &none)))
@@ -765,9 +837,9 @@ impl MemberRights {
 }
 
 impl MemberRights {
-    /// The rights of session `who` when it is a person's who is not the
-    /// owner (as the gate gives a request of theirs); `None` for the owner,
-    /// a guest and anyone else.
+    /// The scope of session `who` (as the gate gives a request of theirs):
+    /// the owner's for the owner, a person's for a person; `None` for a
+    /// guest and anyone else.
     ///
     /// # Errors
     /// The store's.
@@ -775,22 +847,21 @@ impl MemberRights {
         st: &clax_store::Store,
         who: &SessionViewer,
     ) -> clax_core::Result<Option<MemberRights>> {
-        if who.owner || !who.member() {
+        if who.owner {
+            return MemberRights::owner(st).map(Some);
+        }
+        if !who.member() {
             return Ok(None);
         }
-        let pid = who.viewer.public_id.clone();
-        Ok(Some(MemberRights {
-            rights: std::sync::Arc::new(st.person_rights(&pid)?),
-            person: pid,
-        }))
+        MemberRights::of_person(st, &who.viewer.public_id).map(Some)
     }
 }
 
 /// Whether `member` may read the comments on artifact `aid` (`clax-comments`
-/// `read`, by their rights or the page's link), as `GET
-/// /api/artifacts/<aid>/threads` asks; `None` (the owner, a guest, a
-/// visitor, a local daemon's browser) is not limited here: a guest's and a
-/// visitor's link always reads comments ([`LinkAccess::rights`]).
+/// `read`, by their scope or the page's link), as `GET
+/// /api/artifacts/<aid>/threads` asks; `None` (a guest, a visitor, a local
+/// daemon's caller) is not limited here: a guest's and a visitor's link
+/// always reads comments ([`LinkAccess::rights`]).
 ///
 /// # Errors
 /// The store's.
@@ -806,9 +877,9 @@ pub fn reads_comments(
 }
 
 /// Whether session `who` may read artifact `aid` now, as the gate decides
-/// a route under it: the owner always; a person by their rights or the
-/// page's link ([`MemberRights::allows_at`]); a guest while the page is
-/// shared by link. What a host reopening a socket of `aid` checks again.
+/// a route under it: the owner and a person by their scope or the page's
+/// link ([`MemberRights::allows_at`]); a guest while the page is shared by
+/// link. What a host reopening a socket of `aid` checks again.
 ///
 /// # Errors
 /// The store's.
@@ -817,18 +888,10 @@ pub fn session_reads(
     who: &SessionViewer,
     aid: &str,
 ) -> clax_core::Result<bool> {
-    if who.owner {
-        return Ok(true);
+    match MemberRights::of_session(st, who)? {
+        Some(m) => m.allows_at(st, (RightType::Artifacts, "read"), aid),
+        None => Ok(st.link_access(aid)?.is_some()),
     }
-    if who.member() {
-        let pid = who.viewer.public_id.clone();
-        let m = MemberRights {
-            rights: std::sync::Arc::new(st.person_rights(&pid)?),
-            person: pid,
-        };
-        return m.allows_at(st, (RightType::Artifacts, "read"), aid);
-    }
-    Ok(st.link_access(aid)?.is_some())
 }
 
 /// What a person's request needs before its route ([`gate`]); the route
@@ -843,7 +906,7 @@ enum MemberNeed {
     MarkBody,
     /// A stream's subscriptions, in the body.
     StreamBody,
-    /// The daemon-wide event stream (`/api/events`): the owner's here.
+    /// The daemon-wide event stream (`/api/events`): no one's here.
     Refused,
 }
 
@@ -879,11 +942,12 @@ fn member_need(method: &Method, path: &str, query: Option<&str>) -> MemberNeed {
     }
 }
 
-/// A person's request through the gate: what [`member_need`] says, an
-/// artifact they may not read answering 404 as one that does not exist.
-/// A stream subscription's artifact topics need reading their artifact
-/// (`docs:` its db), and the gallery's topic, which carries every
-/// artifact's titles, is left out unless their rights read every artifact.
+/// A scoped request through the gate (a person's, the owner's, the daemon
+/// token's): what [`member_need`] says, an artifact out of their scope
+/// answering 404 as one that does not exist. A stream subscription's
+/// artifact topics need reading their artifact (`docs:` its db), and the
+/// gallery's topic, which carries every artifact's titles, is left out:
+/// no one's scope reads every artifact.
 async fn member_gate(s: &AppState, m: &MemberRights, req: Request, next: Next) -> Response {
     let query = req.uri().query().map(str::to_string);
     let need = member_need(req.method(), req.uri().path(), query.as_deref());
@@ -897,7 +961,7 @@ async fn member_gate(s: &AppState, m: &MemberRights, req: Request, next: Next) -
         MemberNeed::Pass => next.run(req).await,
         MemberNeed::Refused => ApiError::forbidden(
             "forbidden",
-            "the daemon's event stream is the owner's here: follow topics on /api/stream",
+            "the daemon's event stream is no one's here: follow topics on /api/stream",
         )
         .into_response(),
         MemberNeed::Read(aid) => match check(&aid, read).await {
@@ -938,13 +1002,10 @@ async fn member_gate(s: &AppState, m: &MemberRights, req: Request, next: Next) -
                         .collect()
                 })
                 .unwrap_or_default();
-            let every = m
-                .rights
-                .allows(RightType::Artifacts, "read", None, &|_| false);
             let mut kept = Vec::new();
             for t in topics {
                 match clax_realtime::stream::Topic::parse(&t) {
-                    Ok(clax_realtime::stream::Topic::Gallery) if !every => continue,
+                    Ok(clax_realtime::stream::Topic::Gallery) => continue,
                     Ok(clax_realtime::stream::Topic::Docs(aid)) => {
                         if let Err(r) = check(&aid, (RightType::Db, "read")).await {
                             return r;
@@ -1474,13 +1535,21 @@ pub async fn gate(State(s): State<AppState>, mut req: Request, next: Next) -> Re
             .as_ref()
             .and(cookie.as_deref())
             .map(clax_core::secret::sha256_hex);
+        // The owner's scope, as on the cookie's own requests.
+        let member = match s.store_call(MemberRights::owner).await {
+            Ok(m) => m,
+            Err(e) => return e.into_response(),
+        };
         req.extensions_mut().insert(HostedRequest {
             session,
             origin_checked,
-            member: None,
+            member: Some(member.clone()),
             cookie_sha256,
         });
-        return next.run(req).await;
+        if own_route(&path, h.serves_legal()) {
+            return next.run(req).await;
+        }
+        return member_gate(&s, &member, req, next).await;
     }
     let headers = req.headers();
     let authz = headers.contains_key(header::AUTHORIZATION);
@@ -1519,20 +1588,23 @@ pub async fn gate(State(s): State<AppState>, mut req: Request, next: Next) -> Re
     if path == "/api/token" {
         return token_for(&s, session.as_ref(), cookie.as_deref());
     }
-    // A person's rights limit their browser ([`MemberRights`]).
-    let member = match session.as_ref().filter(|v| v.member() && !v.owner) {
+    // Whoever the request speaks for is scoped to their reach
+    // ([`MemberRights`]): a person's browser, the owner's, and the daemon
+    // token, which is the owner's. A grant's request carries its own
+    // ([`crate::agent::Agent`]).
+    let token = authz && crate::auth::has_token(req.headers(), &s.token);
+    let scoped = match session.as_ref() {
+        _ if token => s.store_call(|st| MemberRights::owner(st).map(Some)).await,
         Some(who) => {
-            let pid = who.viewer.public_id.clone();
-            let lookup = pid.clone();
-            match s.store_call(move |st| st.person_rights(&lookup)).await {
-                Ok(r) => Some(MemberRights {
-                    person: pid,
-                    rights: std::sync::Arc::new(r),
-                }),
-                Err(e) => return e.into_response(),
-            }
+            let who = who.clone();
+            s.store_call(move |st| MemberRights::of_session(st, &who))
+                .await
         }
-        None => None,
+        None => Ok(None),
+    };
+    let member = match scoped {
+        Ok(m) => m,
+        Err(e) => return e.into_response(),
     };
     req.extensions_mut().insert(HostedRequest {
         session: session.clone(),

@@ -446,10 +446,7 @@ pub(crate) fn site_hosted_request(
                     owner: false,
                     guest: false,
                 }),
-                Some(MemberRights {
-                    person: pid.clone(),
-                    rights: std::sync::Arc::new(st.person_rights(pid)?),
-                }),
+                Some(MemberRights::of_person(st, pid)?),
             ),
             None => (None, None),
         },
@@ -494,10 +491,7 @@ async fn whoami(s: &AppState, aid: &ArtifactId, caller: &SiteCaller) -> Result<R
                     ("owner", Some(v.public_id), v.display_name, true)
                 }
                 SiteCaller::Holder(Holder::Person(pid)) => {
-                    let m = MemberRights {
-                        person: pid.clone(),
-                        rights: std::sync::Arc::new(st.person_rights(pid)?),
-                    };
+                    let m = MemberRights::of_person(st, pid)?;
                     let edits = m.allows_at(st, (RightType::Artifacts, "update"), aid.as_str())?;
                     ("person", Some(pid.clone()), viewer(pid)?, edits)
                 }

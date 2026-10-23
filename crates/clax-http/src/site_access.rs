@@ -402,18 +402,14 @@ pub fn holder_reads(
     match holder {
         Holder::Owner => Ok(true),
         Holder::Person(pid) => {
-            let rights = match st.person_rights(pid) {
-                Ok(r) => r,
+            let member = match MemberRights::of_person(st, pid) {
+                Ok(m) => m,
                 Err(clax_core::CoreError::NotFound | clax_core::CoreError::Invalid { .. }) => {
                     return Ok(false);
                 }
                 Err(e) => return Err(e),
             };
-            MemberRights {
-                person: pid.clone(),
-                rights: std::sync::Arc::new(rights),
-            }
-            .allows_at(st, (RightType::Artifacts, "read"), aid.as_str())
+            member.allows_at(st, (RightType::Artifacts, "read"), aid.as_str())
         }
         Holder::Guest(_) | Holder::Link => Ok(st.link_access(aid.as_str())?.is_some()),
     }

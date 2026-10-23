@@ -93,7 +93,6 @@
 //! may not see, an approval withdrawn, rights at one artifact dropped.
 
 use crate::error::ApiError;
-use crate::hosted::MemberRights;
 use crate::state::AppState;
 use axum::http::StatusCode;
 use clax_core::rights::Rights;
@@ -336,11 +335,15 @@ fn person_allows(st: &Store, p: &str, scope: Scope, aid: &str) -> clax_core::Res
     let Ok(rights) = st.person_rights(p) else {
         return Ok(false);
     };
-    MemberRights {
-        person: p.to_string(),
-        rights: Arc::new(rights),
+    let (kind, action) = scope.right();
+    let own = |x: &str| st.artifact_created_by(x, Some(p)).unwrap_or(false);
+    if rights.allows(kind, action, Some(aid), &own) {
+        return Ok(true);
     }
-    .allows_at(st, scope.right(), aid)
+    let none = |_: &str| false;
+    Ok(st
+        .link_access(aid)?
+        .is_some_and(|a| a.rights(aid).allows(kind, action, Some(aid), &none)))
 }
 
 /// The authors of `aid`'s repository history that agents of `reader` may

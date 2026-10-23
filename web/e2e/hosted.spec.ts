@@ -612,15 +612,19 @@ test("a member starts an artifact from a brief in their browser, and a reader is
     await who.getByRole("button", { name: "Open the artifact" }).click();
     await expect(mia).toHaveURL(new RegExp(`${origin}/a/[a-z0-9]+$`));
     await expect(mia.frameLocator("iframe.frame").locator("h1")).toHaveText("Mia's plan");
-    // The owner sees it, Mia's.
+    // It is Mia's: out of the owner's reach, and of Sam's, who may read
+    // everything the owner made and creates nothing.
+    const titles = (p: typeof owner) => p.evaluate(async () => {
+      const res = await fetch("/api/artifacts");
+      return ((await res.json()).artifacts as { title: string }[]).map((a) => a.title);
+    });
     await owner.goto(`${origin}/`);
-    await expect(owner.locator("a.card")).toContainText("Mia's plan");
-    // Sam may read, and create nothing.
+    expect(await titles(owner)).not.toContain("Mia's plan");
     const sam = await page(browser);
     await sam.goto(await invite("Sam", ["clax:reader"]));
     await sam.getByRole("button", { name: "Join as Sam" }).click();
     await sam.waitForURL(`${origin}/`);
-    await expect(sam.locator("a.card")).toContainText("Mia's plan");
+    expect(await titles(sam)).not.toContain("Mia's plan");
     await expect(sam.getByRole("button", { name: "New artifact" })).toHaveCount(0);
   } finally {
     await d.stop();

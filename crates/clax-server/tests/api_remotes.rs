@@ -113,12 +113,13 @@ async fn a_push_publishes_every_version_with_its_authorship_and_later_ones_follo
         ),
         (Some(3), Some(3))
     );
-    // On the public instance: three versions, their labels, notes and files.
+    // On the public instance: three versions, their labels, notes and files,
+    // as Sam reads them (the artifact is Sam's: out of the owner's reach).
     let (s, pv) = public
-        .cli(
+        .browser(
             reqwest::Method::GET,
             &format!("/api/artifacts/{rid}/versions"),
-            None,
+            json!(null),
         )
         .await;
     assert_eq!(s, 200, "{pv}");
@@ -149,7 +150,11 @@ async fn a_push_publishes_every_version_with_its_authorship_and_later_ones_follo
     assert_eq!(names[0].as_deref(), Some("planner"));
     assert_eq!(names[1].as_deref(), Some("planner"));
     let (_, pa) = public
-        .cli(reqwest::Method::GET, &format!("/api/artifacts/{rid}"), None)
+        .browser(
+            reqwest::Method::GET,
+            &format!("/api/artifacts/{rid}"),
+            json!(null),
+        )
         .await;
     assert_eq!(pa["artifact"]["owner_harness"], Value::Null, "{pa}");
     assert_eq!(pa["versions"][0]["agent_harness"], Value::Null, "{pa}");
@@ -189,7 +194,11 @@ async fn a_push_publishes_every_version_with_its_authorship_and_later_ones_follo
     assert_eq!(s, 200, "{v}");
     assert_eq!(v["pushed"], json!([{"n": 4, "remote_n": 4}]));
     let (_, pv) = public
-        .cli(reqwest::Method::GET, &format!("/api/artifacts/{rid}"), None)
+        .browser(
+            reqwest::Method::GET,
+            &format!("/api/artifacts/{rid}"),
+            json!(null),
+        )
         .await;
     assert_eq!(pv["artifact"]["current_version"], 4);
 }

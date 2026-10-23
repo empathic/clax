@@ -6888,7 +6888,8 @@ one of `SampleErrorCode`'s to itself, and any other code (such as `forbidden`,
 `GET /api/stream` is one Server-Sent Events stream per client that carries
 any number of topics; the client subscribes and unsubscribes while it stays
 open, and a dropped connection resumes where it left off. `GET /api/events`
-is still served, unchanged, beside it.
+is still served, unchanged, beside it, except on a hosted Clax, where it is
+403 `forbidden` to every caller (see "Security model").
 
 **Opening.** `GET /api/stream` with the viewer's cookies and, for the
 owner, `Authorization: Bearer <token>` or the events cookie (see "The event
@@ -8615,6 +8616,23 @@ it starts, the runs a previous process left. A build without the
   agents never to. Clax traffic on the LAN is not encrypted: use a
   trusted LAN. A connected person's browser cookie, sniffed, acts as that
   person in the browser.
+- On a hosted Clax no caller reads every artifact, the owner included.
+  Every caller is scoped to its person's reach: the owner's browser (its
+  session cookie, or the shell token beside it) and the daemon token
+  (`CLAX_TOKEN`, from any host, the in-process MCP adapter's requests
+  included) as the owner; a person's browser as that person; a grant or
+  agent token as its person, within its own rights. Granted rights (a
+  person's rights, the owner's every right, a grant's) apply only at
+  artifacts the owner made or the person made, so a location of `*` means
+  "what the owner made, and mine". An artifact another person made is
+  reached only through its share with the person (a grant's rights and
+  that share must both allow the action) or its link, and not at all
+  while its maker is revoked. A maker may share an artifact with the
+  owner as with anyone. An artifact out of reach answers 404 `not_found`
+  wherever a route names it, never 403, and listings leave it out; within
+  reach, an action the caller's rights lack is 403 `not_permitted`. No
+  caller holds the `gallery` stream topic, and `GET /api/events` is 403
+  `forbidden` to every caller: follow topics on `/api/stream`.
 - Live pages (see "Live pages") are visible only to a loopback peer or a
   request with the token; to anyone else they do not exist (404, left out
   of lists and of the stream), and their snapshots are served with a policy

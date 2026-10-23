@@ -928,8 +928,8 @@ struct ShareBody {
 /// with that person, or changes the access of their share. → 200
 /// `{share}`. A login no one has signed in with yet waits for its first
 /// GitHub sign-in (`pending`). 400 `invalid_args` for no subject, both, or
-/// another access; 400 `invalid_login`, `unknown_person` or
-/// `already_owner`; 404 for no such artifact or one the caller may not
+/// another access; 400 `invalid_login` or `unknown_person` (the owner is
+/// someone to share with); 404 for no such artifact or one the caller may not
 /// read; 403 `forbidden` for anyone else who may not share it.
 async fn put_share(
     State(s): State<AppState>,
