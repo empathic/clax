@@ -392,3 +392,64 @@ async fn an_asset_is_served_only_under_its_own_artifact() {
     // On B's site, A's asset is not there.
     assert_eq!(ts.site_get(&b, &blob).await.status(), 404);
 }
+
+/// On an artifact's site, `/_blob/<its ID>/<asset ID>`, the address a local
+/// daemon gave its pages (and their documents) for their own assets before
+/// each artifact had a site, serves the asset there, legacy artifact or
+/// not; another artifact's ID there names no asset.
+#[tokio::test]
+async fn a_site_serves_its_own_assets_at_their_earlier_scoped_address() {
+    let ts = TestServer::spawn().await;
+    let a = ts.publish("A", &[("index.html", "<p>")]).await["artifact"]["id"]
+        .as_str()
+        .unwrap()
+        .to_string();
+    let b = ts.publish("B", &[("index.html", "<p>")]).await["artifact"]["id"]
+        .as_str()
+        .unwrap()
+        .to_string();
+    let bytes = vec![137, 80, 78, 71, 9];
+    let asset = ts
+        .upload_asset(&a, "logo.png", "image/png", bytes.clone())
+        .await["asset"]["id"]
+        .as_str()
+        .unwrap()
+        .to_string();
+    let b_asset = ts
+        .upload_asset(&b, "b.png", "image/png", vec![137, 80, 78, 71])
+        .await["asset"]["id"]
+        .as_str()
+        .unwrap()
+        .to_string();
+    let check = |legacy: bool| {
+        let (ts, a, b, asset, b_asset, bytes) = (&ts, &a, &b, &asset, &b_asset, &bytes);
+        async move {
+            let res = ts.site_get(a, &format!("/_blob/{a}/{asset}")).await;
+            assert_eq!(res.status(), 200, "legacy {legacy}");
+            assert_eq!(res.headers()["content-type"], "image/png");
+            assert_eq!(res.headers()["content-security-policy"], "sandbox");
+            assert_eq!(&res.bytes().await.unwrap().to_vec(), bytes);
+            // Another artifact's ID, with its asset or this one's: nothing.
+            for path in [
+                format!("/_blob/{b}/{b_asset}"),
+                format!("/_blob/{b}/{asset}"),
+            ] {
+                let res = ts.site_get(a, &path).await;
+                assert_eq!(res.status(), 404, "legacy {legacy}: {path}");
+            }
+            // This artifact's ID with another's asset: nothing.
+            let res = ts.site_get(a, &format!("/_blob/{a}/{b_asset}")).await;
+            assert_eq!(res.status(), 404, "legacy {legacy}");
+        }
+    };
+    check(false).await;
+    rusqlite::Connection::open(ts.home.db_path())
+        .unwrap()
+        .execute("UPDATE artifacts SET legacy_paths = 1 WHERE id = ?1", [&a])
+        .unwrap();
+    check(true).await;
+    // A legacy artifact's pages also name its assets as `/_blob/<asset ID>`.
+    let res = ts.site_get(&a, &format!("/_blob/{asset}")).await;
+    assert_eq!(res.status(), 200);
+    assert_eq!(res.bytes().await.unwrap().to_vec(), bytes);
+}

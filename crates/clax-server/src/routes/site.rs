@@ -11,7 +11,8 @@
 //! - `/_clax/healthz`: health, on any well-formed site host, whether or not
 //!   its artifact exists: it says nothing of the artifact.
 //! - `/_clax/session?code=&next=`: redeems a site code for a site session
-//!   ([`clax_http::site_access`]).
+//!   beside the browser's state cookie ([`clax_http::site_access`]);
+//!   `/_clax/session/start?next=` begins a frame's handshake with a state.
 //! - `/_clax/api/…`: the page runtime's backend, on this artifact alone
 //!   ([`super::site_api`]).
 //! - `/_clax/…`: the UI's files and the bridge (`crate::shell::static_file`);
@@ -19,6 +20,11 @@
 //! - On a legacy artifact (`Artifact::legacy_paths`) `/_blob/<asset ID>` is
 //!   its assets' too, as its pages name them; on any other, `_blob/` is the
 //!   artifact's own path.
+//! - `/_blob/<this artifact's ID>/<asset ID>`, the address a local daemon
+//!   gave a page for its own asset before each artifact had a site (and
+//!   pages and their documents keep): this artifact's asset, as
+//!   `/_clax/blob/<asset ID>`. With another artifact's ID it is 404 on a
+//!   legacy artifact and the current version's file on any other.
 //!
 //! Every route but health, the session's and the UI's files is decided by the
 //! artifact's access (`clax_http::site_access::site_access_layer`); before
@@ -57,6 +63,7 @@ pub fn site_routes(state: &AppState) -> Router<AppState> {
         .route("/_clax/draft/{agent}/{token}/{*path}", get(draft_file))
         .route("/_clax/blob/{asset_id}", get(blob))
         .route("/_blob/{asset_id}", get(legacy_blob))
+        .route("/_blob/{asset_id}/{asset}", get(scoped_blob))
         .route("/{*path}", get(current_file))
         .merge(super::site_api::routes(state))
         .route_layer(axum::middleware::from_fn_with_state(
@@ -393,4 +400,31 @@ async fn legacy_blob(
         return assets::serve_blob(&s, sees, asset_id, site.artifact.clone()).await;
     }
     serve_current(&s, &site, format!("_blob/{asset_id}"), &req).await
+}
+
+/// `/_blob/<artifact ID>/<asset ID>`: with this site's artifact's ID, its
+/// asset's bytes, as [`blob`]. With any other, 404 on a legacy artifact
+/// (whose site reserves `/_blob/`), else the current version's file
+/// `_blob/<artifact ID>/<asset ID>`.
+async fn scoped_blob(
+    State(s): State<AppState>,
+    d: DeniedToGrants,
+    sees: SeesLive,
+    site: Extension<SiteRequest>,
+    req: HeaderMap,
+    p: Result<Path<(String, String)>, PathRejection>,
+) -> Result<Response, ApiError> {
+    d.refuse_agents()?;
+    let (aid, asset_id) = param(p)?;
+    if aid == site.artifact.as_str() {
+        return assets::serve_blob(&s, sees, asset_id, site.artifact.clone()).await;
+    }
+    let id = site.artifact.clone();
+    let legacy = s
+        .store_call(move |st| Ok(st.get_artifact(&id)?.is_some_and(|a| a.legacy_paths)))
+        .await?;
+    if legacy {
+        return Err(ApiError::not_found());
+    }
+    serve_current(&s, &site, format!("_blob/{aid}/{asset_id}"), &req).await
 }

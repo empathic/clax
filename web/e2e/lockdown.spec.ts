@@ -7,6 +7,7 @@
 import { existsSync, readFileSync } from "node:fs";
 import { createServer, type Server } from "node:http";
 import type { AddressInfo } from "node:net";
+import { join } from "node:path";
 import { type Browser, type Frame, chromium, webkit } from "@playwright/test";
 import { test, expect, type Daemon, api, colorStats, last, openArtifact, publish, record } from "./fixtures";
 
@@ -267,6 +268,22 @@ async function uploadAsset(id: string, fill: string): Promise<{ id: string; url:
   return { id: body.asset.id, url: body.url };
 }
 
+/** The site origin of artifact `id` on the daemon at `d.base`. */
+const siteOf = (id: string) => `http://${id}.localhost:${new URL(d.base).port}`;
+
+/** Marks artifact `id` as made before sites (`artifacts.legacy_paths`, as the
+ * migration that brought sites sets it on every artifact it finds). */
+async function makeLegacy(id: string): Promise<void> {
+  const { DatabaseSync } = await import("node:sqlite");
+  const db = new DatabaseSync(join(d.home, "clax.db"));
+  try {
+    db.exec("PRAGMA busy_timeout = 5000");
+    db.prepare("UPDATE artifacts SET legacy_paths = 1 WHERE id = ?").run(id);
+  } finally { db.close(); }
+}
+
+const loadedIn = (f: Frame) => (k: string) => f.locator(`#${k}`).evaluate(i => (i as HTMLImageElement).complete ? (i as HTMLImageElement).naturalWidth > 0 : null);
+
 test("a page loads its own site's assets and not another app's", async ({ page: p }) => {
   const mk = async (title: string) => (await publish(d.base, d.token, title, { "index.html": "<p>" })).artifact.id as string;
   const [a, b] = [await mk("Mine"), await mk("Theirs")];
@@ -275,28 +292,65 @@ test("a page loads its own site's assets and not another app's", async ({ page: 
   expect(mine.url).toBe(`/_clax/blob/${mine.id}`);
   const imgs = {
     mineRel: mine.url,
+    // The address a local daemon gave pages for their own assets before
+    // each artifact had a site, which pages and their documents keep.
+    mineAbs: `${siteOf(a)}/_blob/${a}/${mine.id}`,
+    mineScoped: `/_blob/${a}/${mine.id}`,
     theirsRel: `/_clax/blob/${theirs.id}`,
     theirsAbs: `${d.base}/_clax/blob/${theirs.id}`,
     theirsUnderMine: `${d.base}/_blob/${a}/${theirs.id}`,
+    theirsScoped: `/_blob/${b}/${theirs.id}`,
     theirsOld: `${d.base}/_blob/${theirs.id}`,
   };
   const html = `<!doctype html><title>Assets</title>${Object.entries(imgs).map(([k, u]) => `<img id="${k}" src="${u}" alt="">`).join("")}`
     + `<img id="viaHelper" alt=""><script>document.getElementById("viaHelper").src = claude.assetUrl(${JSON.stringify(mine.id)});</script>`;
   await publish(d.base, d.token, "Mine", { "index.html": html }, 1, a);
   const f = await openArtifact(p, d.base, a, 2);
-  const loaded = (k: string) => f.locator(`#${k}`).evaluate(i => (i as HTMLImageElement).complete ? (i as HTMLImageElement).naturalWidth > 0 : null);
-  // Its own asset, by the URL the assets API returns and by
-  // `claude.assetUrl(id)`, its site's address.
-  await expect.poll(() => loaded("mineRel")).toBe(true);
-  await expect.poll(() => loaded("viaHelper")).toBe(true);
+  const loaded = loadedIn(f);
+  // Its own asset, by the URL the assets API returns, by
+  // `claude.assetUrl(id)` (its site's address) and by the earlier address.
+  for (const k of ["mineRel", "viaHelper", "mineAbs", "mineScoped"]) await expect.poll(() => loaded(k), { message: k }).toBe(true);
   const origin = await f.evaluate(() => location.origin);
+  expect(origin).toBe(siteOf(a));
   expect(await f.locator("#viaHelper").getAttribute("src")).toBe(`${origin}${mine.url}`);
   // Another app's: not on this site, and refused off it by the policy.
-  for (const k of ["theirsRel", "theirsAbs", "theirsUnderMine", "theirsOld"]) await expect.poll(() => loaded(k), { message: k }).toBe(false);
+  for (const k of ["theirsRel", "theirsAbs", "theirsUnderMine", "theirsScoped", "theirsOld"]) await expect.poll(() => loaded(k), { message: k }).toBe(false);
   // `"/_blob/" + id` names a file of this artifact's, made after sites: none.
   const old = await f.evaluate(id => new Promise<boolean>(r => { const i = new Image(); i.onload = () => r(true); i.onerror = () => r(false); i.src = "/_blob/" + id; }), mine.id);
   expect(old).toBe(false);
   // Fetching: its own asset, never another's.
-  const got = await f.evaluate(async u => Promise.all(u.map(x => fetch(x).then(r => `status:${r.status}`, () => "refused"))), [imgs.mineRel, imgs.theirsAbs, imgs.theirsRel]);
-  expect(got).toEqual(["status:200", "refused", "status:404"]);
+  const got = await f.evaluate(async u => Promise.all(u.map(x => fetch(x).then(r => `status:${r.status}`, () => "refused"))),
+    [imgs.mineRel, imgs.mineAbs, imgs.mineScoped, imgs.theirsAbs, imgs.theirsRel, imgs.theirsScoped]);
+  expect(got).toEqual(["status:200", "status:200", "status:200", "refused", "status:404", "status:404"]);
+});
+
+test("a legacy artifact's page loads its assets at the addresses it was given, and not another app's", async ({ page: p }) => {
+  const mk = async (title: string) => (await publish(d.base, d.token, title, { "index.html": "<p>" })).artifact.id as string;
+  const [a, b] = [await mk("Legacy mine"), await mk("Legacy theirs")];
+  await makeLegacy(a);
+  await makeLegacy(b);
+  const mine = await uploadAsset(a, "green");
+  const theirs = await uploadAsset(b, "blue");
+  // A legacy artifact's uploads are named as its pages name them.
+  expect(mine.url).toBe(`/_blob/${mine.id}`);
+  const imgs = {
+    mineRel: mine.url,
+    mineAbs: `${siteOf(a)}/_blob/${a}/${mine.id}`,
+    mineScoped: `/_blob/${a}/${mine.id}`,
+    mineSite: `/_clax/blob/${mine.id}`,
+    theirsRel: `/_blob/${theirs.id}`,
+    theirsScoped: `/_blob/${b}/${theirs.id}`,
+    theirsUnderMine: `/_blob/${a}/${theirs.id}`,
+    theirsAbs: `${siteOf(b)}/_blob/${theirs.id}`,
+  };
+  const html = `<!doctype html><title>Legacy assets</title>${Object.entries(imgs).map(([k, u]) => `<img id="${k}" src="${u}" alt="">`).join("")}`
+    + `<img id="viaHelper" alt=""><script>document.getElementById("viaHelper").src = claude.assetUrl(${JSON.stringify(mine.id)});</script>`;
+  await publish(d.base, d.token, "Legacy mine", { "index.html": html }, 1, a);
+  const f = await openArtifact(p, d.base, a, 2);
+  const loaded = loadedIn(f);
+  for (const k of ["mineRel", "mineAbs", "mineScoped", "mineSite", "viaHelper"]) await expect.poll(() => loaded(k), { message: k }).toBe(true);
+  for (const k of ["theirsRel", "theirsScoped", "theirsUnderMine", "theirsAbs"]) await expect.poll(() => loaded(k), { message: k }).toBe(false);
+  const got = await f.evaluate(async u => Promise.all(u.map(x => fetch(x).then(r => `status:${r.status}`, () => "refused"))),
+    [imgs.mineRel, imgs.mineScoped, imgs.theirsRel, imgs.theirsScoped, imgs.theirsAbs]);
+  expect(got).toEqual(["status:200", "status:200", "status:404", "status:404", "refused"]);
 });
