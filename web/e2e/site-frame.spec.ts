@@ -36,7 +36,10 @@ test("no other origin can frame a site page", async ({ page }) => {
   await page.goto(`${d.base}/a/${artifact.id}`);
   await contentFrame(page, artifact.id, 1);
   const port = new URL(d.base).port;
-  expect((await served).headers()["content-security-policy"]).toBe(`frame-ancestors 'self' http://localhost:${port} http://127.0.0.1:${port}`);
+  // Its policy names those framers first, then the site's lockdown.
+  const policy = (await served).headers()["content-security-policy"];
+  expect(policy.split("; ")[0]).toBe(`frame-ancestors 'self' http://localhost:${port} http://127.0.0.1:${port}`);
+  expect(policy).toContain("; connect-src 'self';");
   // …but another site's frame of them is refused, whatever it asks for.
   const refused = [`${site}/`, `${site}/_clax/v/1/`, `${site}/_clax/session/start?next=%2F`];
   const shown = "/shown";

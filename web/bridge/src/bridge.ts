@@ -91,6 +91,9 @@ const FOCUS_FLASH_MS = 1800;
 /** How often, at most, anchors are resolved again while the page scrolls or resizes. */
 const REFLOW_MS = 50;
 
+/** The most the inspect view's tests wait for the page's use() calls. */
+const USES_MS = 5000;
+
 type Mode = InstanceType<CommentPart["CommentMode"]>;
 type Cache = InstanceType<CommentPart["AnchorCache"]>;
 type Hook = InstanceType<CommentPart["LiveHook"]>;
@@ -164,9 +167,27 @@ type PartName = keyof Parts;
   const rpc = new Rpc(m => post(m));
   // The origin's capabilities load the `origin` part, framed or not; the
   // shell's load the `caps` part, framed only: unframed they are null at once.
-  const use = makeUse(name => ORIGIN_CAPABILITIES.includes(name)
+  const resolveUse = (name: string) => ORIGIN_CAPABILITIES.includes(name)
     ? parts.origin().then(o => o.originUse(name, framed && rpc, parts.room, undefined, () => post({ type: "clax:no-cookie" })))
-    : framed ? parts.caps().then(c => c.resolveUse(name, { rpc, sample: parts.sample, env: { ctx: commentsContext, clip: clips } })) : null);
+    : framed ? parts.caps().then(c => c.resolveUse(name, { rpc, sample: parts.sample, env: { ctx: commentsContext, clip: clips } })) : null;
+  // The page's claude.use() calls not yet answered: the inspect view's tests
+  // start once they have (`usesSettled`), as a page that wires its controls
+  // after its first use() is ready only then.
+  const using = new Set<Promise<unknown>>();
+  const use = makeUse(name => {
+    const p = resolveUse(name);
+    if (p) {
+      const kept: Promise<unknown> = p.then(() => {}, () => {}).finally(() => { using.delete(kept); });
+      using.add(kept);
+    }
+    return p;
+  });
+  /** Once every use() asked so far has answered and the page has had a
+   * turn after, or `ms` passed. */
+  const usesSettled = (ms: number) => Promise.race([
+    Promise.all([...using]).then(() => new Promise(r => setTimeout(r, 0))),
+    new Promise(r => setTimeout(r, ms)),
+  ]);
 
   // The URL of this artifact's asset `id`, as `assets` gives it: assets are
   // served per artifact, and a page loads only its own.
@@ -412,7 +433,7 @@ type PartName = keyof Parts;
       // (`harness.ts`), with the test part, only in the frame it named.
       case "clax:test": if (inspectFrame && typeof m.requestId === "string") {
         const requestId = m.requestId;
-        void parts.test().then(t => t.test(window, m, post, clock), err => post({ type: "clax:tests", requestId, error: `the test harness did not load: ${err instanceof Error ? err.message : String(err)}` }));
+        void usesSettled(USES_MS).then(() => parts.test()).then(t => t.test(window, m, post, clock), err => post({ type: "clax:tests", requestId, error: `the test harness did not load: ${err instanceof Error ? err.message : String(err)}` }));
       } break;
       // And, only in the migration view's frame, an app bundle's migration
       // (`harness.ts`), the same way.
