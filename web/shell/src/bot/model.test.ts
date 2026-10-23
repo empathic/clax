@@ -1,6 +1,6 @@
 import { describe, expect, it } from "vitest";
 import { meBot, run, week } from "./fixtures";
-import { actorLabel, after, applyEvent, availability, banner, credits, fromText, margins, meter, money, parseEvent, perUnitMilli, percent, rangeFrom, resetDay, runCost, runStatus, sections, tokens, unavailableText } from "./model";
+import { actorLabel, after, applyEvent, availability, banner, credits, fromText, margins, meter, money, parseEvent, perUnitMilli, percent, rangeFrom, resetDay, runCost, runStatus, sections, tokens, unavailableFix, unavailableText } from "./model";
 
 describe("ClaxBot's numbers", () => {
   it("shows milli-credits as credits, micro-USD as dollars and basis points as percentages", () => {
@@ -65,6 +65,16 @@ describe("the Send menu's ClaxBot line", () => {
     expect(availability(false, "no_credits", meBot())).toBe("Weekly credits used · resets Mon Oct 26");
     expect(availability(false, "no_flag", null)).toBe(unavailableText("no_flag"));
     expect(availability(false, "not_configured", null)).toBe("Not set up on this Clax yet");
+  });
+
+  it("sends an admin to the Admin tab that fixes why it cannot run, anyone else to what is theirs", () => {
+    expect(unavailableFix("not_configured", true)).toEqual({ text: "Set a model key under Admin → Provider", href: "/admin?tab=provider" });
+    expect(unavailableFix("not_configured", false)).toEqual({ text: "Use your own Anthropic key under You", href: "/me" });
+    expect(unavailableFix("model_not_priced", true)?.href).toBe("/admin?tab=pricing");
+    expect(unavailableFix("no_flag", true)?.href).toBe("/admin?tab=people");
+    expect(unavailableFix("no_credits", true)?.href).toBe("/admin?tab=people");
+    expect(unavailableFix("no_credits", false)?.href).toBe("/me");
+    expect([unavailableFix("model_not_priced", false), unavailableFix("no_flag", false), unavailableFix(null, true)]).toEqual([null, null, null]);
   });
 });
 

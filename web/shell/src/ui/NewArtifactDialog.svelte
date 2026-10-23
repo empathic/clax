@@ -7,9 +7,11 @@
   // with a placeholder page and the description as its first thread. Where
   // ClaxBot is on for this person (`GET /api/me/bot`), the switch "ClaxBot
   // builds it now" follows, on by default while ClaxBot is available (else
-  // off, disabled, saying why): on, Create has ClaxBot build it and lands on
-  // the artifact with the run panel open. Off, then who builds it: the live agents this browser may send to,
-  // grouped as the Send menu groups them; picking one sends it the brief,
+  // off, disabled, saying why and linking to the page that fixes it for
+  // this person's role): on, Create has ClaxBot build it and lands on the
+  // artifact with the run panel open. Off, then who builds it: the live
+  // agents this browser may send to, grouped as the Send menu groups them;
+  // picking one sends it the brief,
   // which gives it a watch on the artifact (another person's agent waits
   // for that person's approval). With no live agent, a prompt to paste into
   // one, and the list appears as soon as an agent connects. Every way out
@@ -19,8 +21,8 @@
   import { onMount } from "svelte";
   import { nav } from "../nav";
   import type { MeBot } from "../bot/api";
-  import { myBot } from "../bot/me";
-  import { credits, meter, unavailableText } from "../bot/model";
+  import { isAdmin, myBot, myRole } from "../bot/me";
+  import { credits, meter, unavailableFix, unavailableText } from "../bot/model";
   import { connectPrompt, formProblem, liveAgents, newKey, personNames, pickGroups, Refused, sendBrief, start, withRun, type Me, type PickGroup, type Started } from "../view/new-artifact";
   import { inertOutside, trapTab } from "./modal";
   import Switch from "../bot/Switch.svelte";
@@ -53,7 +55,17 @@
   // The typical cost of one run, when the daemon says (`estimate_milli`), then what is left this week.
   const estimate = $derived(bot?.estimate_milli ? `Usually ${credits(bot.estimate_milli.low)}–${credits(bot.estimate_milli.high)} credits${bot.key.use_own && bot.key.own?.set ? " on your own key" : ""}. ` : "");
   const botLine = $derived(!bot ? "" : bot.available ? `${estimate}You have ${credits(meter(bot.week).left)} credits left this week${bot.unenforced ? " (not enforced)" : ""}.` : `${unavailableText(bot.unavailable_reason, bot.week)}.`);
-  void myBot().then(b => { if (destroyed || !b?.enabled) return; bot = b; build = b.available; });
+  // Unavailable, the page and step that fix it for this person's role.
+  let fix = $state<{ text: string; href: string } | null>(null);
+  void myBot().then(async b => {
+    if (destroyed || !b?.enabled) return;
+    bot = b;
+    build = b.available;
+    if (!b.available) {
+      const admin = isAdmin(await myRole(b));
+      if (!destroyed) fix = unavailableFix(b.unavailable_reason, admin);
+    }
+  });
   const problem = $derived(formProblem(title, brief));
   const prompt = $derived(started ? connectPrompt(new URL(started.url, location.origin).href, started.artifact.title) : "");
   const focus = (el: HTMLElement) => { el.focus(); };
@@ -167,6 +179,7 @@
           <div class="bot">
             <Switch checked={build} label="ClaxBot builds it now" describedby="na-bot-l" disabled={!bot.available} onchange={on => { build = on; }} />
             <p id="na-bot-l">{bot.available ? "ClaxBot starts as soon as you create it. You can watch it work beside the page." : "Create it, then pick an agent to build it."} {botLine}</p>
+            {#if fix}<a class="bot-fix" href={fix.href}>{fix.text} →</a>{/if}
           </div>
         {/if}
         {#if error}<p class="error" role="alert">{error}</p>{:else if tried && problem}<p class="error" role="alert">{problem}</p>{/if}
@@ -252,6 +265,8 @@
   .error { margin: 8px 0 0; font-size: 12.5px; color: var(--danger); }
   .bot { display: grid; gap: 4px; margin-top: 12px; padding: 10px 12px; border: 1px solid var(--border); border-radius: var(--radius-sm); background: var(--bg); }
   .bot p { margin: 0; font-size: 12.5px; color: var(--muted); line-height: 1.5; }
+  .bot-fix { justify-self: start; font: 600 12.5px/1.5 var(--font); color: var(--accent-ink); }
+  @media (pointer: coarse) { .bot-fix { padding: 10px 0; } }
   .sr { position: absolute; width: 1px; height: 1px; overflow: hidden; clip-path: inset(50%); }
   @media (max-width: 700px) {
     .na-panel { padding: 14px 14px 16px; }

@@ -81,6 +81,20 @@ export function unavailableText(reason: Unavailable | null | undefined, week?: W
   }
 }
 
+/** What this person can do about why ClaxBot cannot run, and the page to
+ * do it on: an admin is sent to the Admin tab that fixes it, anyone else
+ * to You for what is theirs to change (their own key, their usage); null
+ * when only an admin can help. */
+export function unavailableFix(reason: Unavailable | null | undefined, admin: boolean): { text: string; href: string } | null {
+  switch (reason) {
+    case "not_configured": return admin ? { text: "Set a model key under Admin → Provider", href: "/admin?tab=provider" } : { text: "Use your own Anthropic key under You", href: "/me" };
+    case "model_not_priced": return admin ? { text: "Price it under Admin → Pricing", href: "/admin?tab=pricing" } : null;
+    case "no_flag": return admin ? { text: "Turn it on under Admin → People & flags", href: "/admin?tab=people" } : null;
+    case "no_credits": return admin ? { text: "Give a lift under Admin → People & flags", href: "/admin?tab=people" } : { text: "See your usage under You", href: "/me" };
+    default: return null;
+  }
+}
+
 /** The Send menu's line under ClaxBot: where it runs, whose key and the
  * credits left, or why it is unavailable. */
 export function availability(live: boolean, reason: Unavailable | null | undefined, me: MeBot | null): string {

@@ -282,6 +282,23 @@ describe("the New dialog with ClaxBot", () => {
     await settle();
     expect(m.root.querySelector('[role="switch"]')).toBeNull();
   });
+
+  it("unavailable, links to the page that fixes it for this person's role", async () => {
+    const fixOf = async (reason: "not_configured" | "model_not_priced", role: "owner" | "member") => {
+      forget();
+      stubFetch({ "GET /api/me/bot": meBot({ available: false, unavailable_reason: reason, role }) });
+      const m = mount(NewArtifactDialog, { me: { owner: role === "owner" }, onClose: vi.fn() });
+      await settle();
+      const a = m.root.querySelector<HTMLAnchorElement>(".bot-fix");
+      const got = a && [a.textContent, a.getAttribute("href")];
+      m.unmount();
+      return got;
+    };
+    expect(await fixOf("not_configured", "owner")).toEqual(["Set a model key under Admin → Provider →", "/admin?tab=provider"]);
+    expect(await fixOf("not_configured", "member")).toEqual(["Use your own Anthropic key under You →", "/me"]);
+    expect(await fixOf("model_not_priced", "owner")).toEqual(["Price it under Admin → Pricing →", "/admin?tab=pricing"]);
+    expect(await fixOf("model_not_priced", "member")).toBeNull();
+  });
 });
 
 describe("the New artifact tile", () => {
