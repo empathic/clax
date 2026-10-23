@@ -2285,7 +2285,7 @@ async fn no_owner_path_reads_a_members_page() {
     let job = |m: reqwest::Method, p: &str| token(m, p).header("x-clax-jobs-owner", &queue);
     let new_job = |id: &str, artifact: Option<&str>| {
         json!({"id": id, "client": "app", "kind": "edit", "artifact_id": artifact,
-            "title": "Mia's", "input": {}})
+            "title": "A job", "input": {}})
     };
     let (s, v) = json_of(
         job(reqwest::Method::POST, "/api/jobs")
@@ -2373,6 +2373,72 @@ async fn no_owner_path_reads_a_members_page() {
         .get(&mia, &format!("/api/artifacts/{mias}/threads"))
         .await;
     assert!(!v.to_string().contains("a job's reply"), "{v}");
+    // A question her agent asked about her page is no job's, and the app's
+    // state import holds nothing of hers: what it names of hers is left
+    // out as gone.
+    let r = as_agent(
+        reqwest::Method::POST,
+        &format!("/api/sessions/{}/questions", agent.sid()),
+    )
+    .json(
+        &json!({"source": "ask", "artifact_id": mias, "questions": [{"question": "Which?",
+        "header": "Pick", "options": [{"label": "A"}, {"label": "B"}]}]}),
+    )
+    .send()
+    .await
+    .unwrap();
+    let (s, v) = json_of(r).await;
+    assert_eq!(s, 201, "{v}");
+    let mia_qid = v["question"]["id"].as_str().unwrap().to_string();
+    let (s, v) = json_of(
+        job(
+            reqwest::Method::PUT,
+            &format!("/api/jobs/j-none/questions/{mia_qid}"),
+        )
+        .send()
+        .await
+        .unwrap(),
+    )
+    .await;
+    assert_eq!((s, code(&v)), (400, "invalid_question"), "{v}");
+    let mia_cid = t["thread"]["comments"][0]["id"]
+        .as_str()
+        .unwrap_or("c")
+        .to_string();
+    let mut stopped = json!({"stops": {}});
+    stopped["stops"][&mia_tid] = json!(mia_cid);
+    let asked = json!({"entries": [{"question_id": mia_qid, "artifact_id": mias,
+        "thread_ids": [mia_tid], "comment_ids": []}]});
+    let (s, v) = json_of(
+        job(reqwest::Method::POST, "/api/client-imports/app-json-v1")
+            .json(&json!({"client": "app", "files": {
+                "stopped.json": stopped.to_string(), "asked.json": asked.to_string(),
+            }}))
+            .send()
+            .await
+            .unwrap(),
+    )
+    .await;
+    assert_eq!(s, 200, "{v}");
+    assert_eq!(v["import"]["jobs"], 0, "{v}");
+    assert_eq!(
+        v["import"]["left_out"],
+        json!([
+            format!("asked.json: the question {mia_qid} lost its app"),
+            format!("stopped.json: the thread {mia_tid} is gone"),
+        ]),
+        "{v}"
+    );
+    // The approvals of the owner's browser name nothing of hers.
+    for (scope, field, id, code_) in [
+        ("artifact", "artifact_id", &mias, "unknown_artifact"),
+        ("thread", "thread_id", &mia_tid, "unknown_thread"),
+    ] {
+        let mut b = json!({"author": mia_pid, "scope": scope});
+        b[field] = json!(id);
+        let (s, v) = site.post(&owner, "/api/approvals", b).await;
+        assert_eq!((s, code(&v)), (400, code_), "{v}");
+    }
     drop(jobs_stream);
     // Mia's own listings still name it.
     let (_, v) = site.get(&mia, "/api/inbox").await;
@@ -2503,6 +2569,82 @@ async fn the_daemon_tokens_own_routes_at_a_page_shared_with_the_owner_hold_to_th
     )
     .await;
     assert_eq!((s, code(&v)), (403, "not_permitted"), "{v}");
+    // Nor does a draft of it copy its documents, which it makes at the
+    // owner's level.
+    let (s, v) = json_of(
+        token(reqwest::Method::POST, "/api/drafts")
+            .json(&json!({"of": mias, "title": "Draft",
+                "files": {"index.html": "<h1>draft</h1>"}}))
+            .send()
+            .await
+            .unwrap(),
+    )
+    .await;
+    assert_eq!((s, code(&v)), (403, "not_permitted"), "{v}");
+    // The app's jobs at it hold to the share: a viewer replies to none of
+    // its threads.
+    let (s, t) = site.thread(&mia, &mias, "Mia's thread").await;
+    assert_eq!(s, 201, "{t}");
+    let mia_tid = t["thread"]["id"].as_str().unwrap().to_string();
+    let owner_sid = site.ts.register_session("claude", "h1").await["id"]
+        .as_str()
+        .unwrap()
+        .to_string();
+    let res = token(reqwest::Method::GET, "/api/stream")
+        .send()
+        .await
+        .unwrap();
+    let mut jobs_stream = clax_testkit::EventReader::from_response(res);
+    let stream = jobs_stream.next_named("ready").await["stream"]
+        .as_str()
+        .unwrap()
+        .to_string();
+    let (s, v) = json_of(
+        token(reqwest::Method::POST, "/api/jobs/owner")
+            .json(&json!({"client": "app", "stream": stream}))
+            .send()
+            .await
+            .unwrap(),
+    )
+    .await;
+    assert_eq!(s, 200, "{v}");
+    let queue = v["owner"].as_str().unwrap().to_string();
+    let job = |m: reqwest::Method, p: &str| token(m, p).header("x-clax-jobs-owner", &queue);
+    let (s, v) = json_of(
+        job(reqwest::Method::POST, "/api/jobs")
+            .json(&json!({"id": "j1", "client": "app", "kind": "edit",
+                "artifact_id": mias, "input": {}}))
+            .send()
+            .await
+            .unwrap(),
+    )
+    .await;
+    assert_eq!(s, 201, "{v}");
+    let (s, v) = json_of(
+        job(reqwest::Method::PATCH, "/api/jobs/j1")
+            .json(&json!({"if_rev": 1, "state": "running"}))
+            .send()
+            .await
+            .unwrap(),
+    )
+    .await;
+    assert_eq!(s, 200, "{v}");
+    let step = async |key: &str, body: Value| {
+        json_of(
+            job(reqwest::Method::POST, &format!("/api/jobs/j1/steps/{key}"))
+                .json(&body)
+                .send()
+                .await
+                .unwrap(),
+        )
+        .await
+    };
+    let reply = |resolve: bool| {
+        json!({"reply": {"threads": [mia_tid], "body": "a job's reply", "resolve": resolve,
+            "session_id": owner_sid}})
+    };
+    let (s, v) = step("r1", reply(false)).await;
+    assert_eq!((s, code(&v)), (403, "not_permitted"), "{v}");
     // As an editor the owner restores a version, but changes no
     // capability with it: that is the maker's.
     let (s, v) = site
@@ -2531,6 +2673,41 @@ async fn the_daemon_tokens_own_routes_at_a_page_shared_with_the_owner_hold_to_th
     let (s, v) = restore(json!({"version": 1, "if_version": 1})).await;
     assert_eq!(s, 201, "{v}");
     assert_eq!(v["artifact"]["capabilities"], json!({"db": {}}), "{v}");
+    // A job's publish there changes no capability either, and writes no
+    // document at the owner's level.
+    let publish = |capabilities: Option<Value>, docs: Value| {
+        let mut p = json!({"artifact_id": mias, "base": 2, "docs": docs,
+            "request": {"title": "Mia's", "files":
+                {"index.html": {"content": "<h1>edited</h1>", "encoding": "utf8"}}}});
+        if let Some(c) = capabilities {
+            p["request"]["capabilities"] = c;
+        }
+        json!({"publish": p})
+    };
+    let (s, v) = step("p1", publish(Some(json!({})), json!([]))).await;
+    assert_eq!((s, code(&v)), (403, "admin_only"), "{v}");
+    let docs = json!([{"op": "set", "path": "notes/a", "data": {"x": 1}}]);
+    let (s, v) = step("p2", publish(None, docs)).await;
+    assert_eq!((s, code(&v)), (403, "not_permitted"), "{v}");
+    assert_eq!(site.ts.store.list_versions(&id).unwrap().len(), 2);
+    let (s, v) = step("p3", publish(None, json!([]))).await;
+    assert_eq!(s, 200, "{v}");
+    // A commenter replies after it, and resolves nothing.
+    let (s, v) = site
+        .put(
+            &mia,
+            &format!("/api/hosted/artifacts/{mias}/shares"),
+            json!({"person": owner_pid, "access": "commenter"}),
+        )
+        .await;
+    assert_eq!(s, 200, "{v}");
+    let (s, v) = step("r2", reply(true)).await;
+    assert_eq!((s, code(&v)), (403, "not_permitted"), "{v}");
+    let (_, v) = site
+        .get(&mia, &format!("/api/artifacts/{mias}/threads"))
+        .await;
+    assert!(!v.to_string().contains("a job's reply"), "{v}");
+    drop(jobs_stream);
 }
 
 #[tokio::test]

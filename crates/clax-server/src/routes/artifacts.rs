@@ -1072,7 +1072,7 @@ pub async fn get(
 /// ([`clax_http::agent::administers`]): an editor changes contents alone. A
 /// value equal to the stored one is no change, so an editor's publish that
 /// sends the page's capabilities as they are passes.
-async fn admin_change(
+pub(crate) async fn admin_change(
     s: &AppState,
     caller: &clax_http::auth::Caller,
     id: &ArtifactId,

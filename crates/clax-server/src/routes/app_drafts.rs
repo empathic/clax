@@ -56,7 +56,8 @@ struct CreateBody {
 /// with a copy of `of`'s documents. Its fetches use `of`'s network grants
 /// unless `inherit_net` is false. 201 `{draft: {id, of, version, docs_copied,
 /// docs_truncated}}`; 404 when `of` is missing (or, on a hosted daemon, out
-/// of the caller's reach), 400 `invalid_args` when it is a draft, and a
+/// of the caller's reach; 403 `not_permitted` there for one the owner did
+/// not make), 400 `invalid_args` when it is a draft, and a
 /// publish's validation errors.
 pub async fn create(
     State(s): State<AppState>,
@@ -95,6 +96,18 @@ pub async fn create(
     .await?;
     if let Some(of) = &of {
         clax_http::hosted::require_reach(&s, hosted.as_deref(), of.as_str()).await?;
+        // Its documents are copied at the owner's level: on hosted, only
+        // where the token keeps it, at an app the owner made.
+        let (on, at) = (s.hosted.is_some(), of.clone());
+        if !s
+            .store_call(move |st| clax_http::db_caller::token_at(st, on, true, at.as_str()))
+            .await?
+        {
+            return Err(ApiError::forbidden(
+                "not_permitted",
+                "a draft copies its app's documents at the owner's level: only of an app the owner made",
+            ));
+        }
     }
     let ctx = audit.clone();
     let mut d = {

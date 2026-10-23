@@ -517,17 +517,48 @@ pub async fn delete_thread(
 /// `PUT /api/jobs/{id}/questions/{qid}`: records question `qid` (one of
 /// the `ask` tool's, which no other job asked; 400 `invalid_question`
 /// otherwise) as the job's, moving a `running` job to `waiting` while it
-/// is open, in one transaction.
+/// is open, in one transaction. On a hosted daemon the question must be
+/// one the owner's agents asked, about no artifact or one in the owner's
+/// reach: any other is 400 `invalid_question`, as one that does not exist.
 pub async fn put_question(
     State(s): State<AppState>,
     d: DeniedToGrants,
     _t: RequireToken,
+    hosted: Option<axum::Extension<HostedRequest>>,
     headers: HeaderMap,
     p: Result<Path<(String, String)>, PathRejection>,
 ) -> Result<Json<Value>, ApiError> {
     d.refuse_agents()?;
     let (id, qid) = path(p)?;
     let guard = require_owner(&s, &headers, &client_of(&s, &id).await?)?;
+    if s.hosted.is_some() {
+        let q = qid.clone();
+        // The owner's agents' question: its artifact, if any.
+        let of = s
+            .store_call(move |st| match st.question_of(&q, None) {
+                Ok(row) => Ok(Some(row.artifact_id)),
+                Err(CoreError::NotFound) => Ok(None),
+                Err(e) => Err(e),
+            })
+            .await?;
+        let mine = match of {
+            None => false,
+            Some(None) => true,
+            Some(Some(aid)) => {
+                match clax_http::hosted::require_reach(&s, hosted.as_deref(), &aid).await {
+                    Ok(()) => true,
+                    Err(e) if e.code == "not_found" => false,
+                    Err(e) => return Err(e),
+                }
+            }
+        };
+        if !mine {
+            return Err(ApiError::bad_request(
+                "invalid_question",
+                format!("no question {qid} of the ask tool"),
+            ));
+        }
+    }
     write(&s, guard, move |st| st.ask_job_question(&id, &qid)).await
 }
 
@@ -699,8 +730,10 @@ fn parse_step(b: StepBody) -> Result<Step, ApiError> {
 /// ([`clax_http::hosted::require_right`]: 404 out of it, 403
 /// `not_permitted` within it): a publish to an artifact needs
 /// `clax-artifacts` `update` there, and its document writes, made at the
-/// owner's level, an artifact the owner made; a reply needs
-/// `clax-comments` `reply` at the job's artifact.
+/// owner's level, an artifact the owner made, and a change of its
+/// capabilities the owner's administering it (403 `admin_only`); a reply
+/// needs `clax-comments` `reply` at the job's artifact, and `resolve` too
+/// when it resolves.
 pub async fn commit(
     State(s): State<AppState>,
     d: DeniedToGrants,
@@ -716,7 +749,7 @@ pub async fn commit(
     let step = parse_body(req, "the publish limit", parse_step).await?;
     let guard = require_owner(&s, &headers, &client_of(&s, &id).await?)?;
     if s.hosted.is_some() {
-        step_in_reach(&s, hosted.as_deref(), &id, &step).await?;
+        step_in_reach(&s, hosted.as_deref(), &d, &id, &step).await?;
     }
     let events = s.events.clone();
     let ctx = s.feedback_ctx();
@@ -869,10 +902,12 @@ pub async fn commit(
 }
 
 /// On a hosted daemon, that step `step` of job `id` stays within the
-/// reach of the request's caller (`h`), as [`commit`] describes.
+/// reach of the request's caller (`h`, who is `d`'s), as [`commit`]
+/// describes.
 async fn step_in_reach(
     s: &AppState,
     h: Option<&HostedRequest>,
+    d: &DeniedToGrants,
     id: &str,
     step: &Step,
 ) -> Result<(), ApiError> {
@@ -885,6 +920,13 @@ async fn step_in_reach(
             };
             let right = (RightType::Artifacts, "update");
             clax_http::hosted::require_right(s, h, right, &aid).await?;
+            // A change of its capabilities is its maker's, as a publish's.
+            if p.request.capabilities.is_some() {
+                let caller = d.caller(s).await?;
+                let id = ArtifactId::parse(&aid)?;
+                let caps = p.request.capabilities.clone();
+                super::artifacts::admin_change(s, &caller, &id, None, caps).await?;
+            }
             let hosted = s.hosted.is_some();
             let owners = s
                 .store_call(move |st| clax_http::db_caller::token_at(st, hosted, true, &aid))
@@ -897,7 +939,7 @@ async fn step_in_reach(
             }
             Ok(())
         }
-        Step::Reply(_) => {
+        Step::Reply(r) => {
             let job = id.to_string();
             let of = s
                 .store_call(move |st| Ok(st.job(&job)?.and_then(|j| j.job.artifact_id)))
@@ -905,7 +947,12 @@ async fn step_in_reach(
             match of {
                 Some(aid) => {
                     let right = (RightType::Comments, "reply");
-                    clax_http::hosted::require_right(s, h, right, &aid).await
+                    clax_http::hosted::require_right(s, h, right, &aid).await?;
+                    if r.resolve {
+                        let right = (RightType::Comments, "resolve");
+                        clax_http::hosted::require_right(s, h, right, &aid).await?;
+                    }
+                    Ok(())
                 }
                 // The store refuses a reply on a job of no artifact.
                 None => Ok(()),

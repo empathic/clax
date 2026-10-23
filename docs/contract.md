@@ -2991,7 +2991,9 @@ need the token:
   did not parse and nothing was copied). Writes its page makes land in the
   copy only. 404 when `of` is missing, 400 `invalid_args` when `of` is a
   draft, and a publish's validation errors otherwise. On a hosted Clax an
-  `of` out of the caller's reach is 404 too.
+  `of` out of the caller's reach is 404 too, and one the owner did not
+  make 403 `not_permitted` (its documents are copied at the owner's
+  level).
 - Later versions are published as to any artifact (`POST
   /api/artifacts/<draft>/versions`), without a session: one naming a
   session is 403 `draft`.
@@ -3085,12 +3087,12 @@ transaction with the step: either both exist, or neither does.
 | `PATCH /api/jobs/<id>` | token, owner token | `{if_rev, state?, step?, title?, plan?, carry?, error?}` (`null` clears a field) | `{job}`; 409 `job_moved` with the job when it is not at `if_rev`; 400 `invalid_move` for `queued`, `waiting` or `done`; a move to `running` lands in `waiting` while a question it asked is open |
 | `PUT /api/jobs/<id>/threads/<tid>` | token, owner token | `{comment_id, stopped?}` | `{job}`; 400 `invalid_thread` (on a hosted Clax also for a thread of an artifact out of the caller's reach) |
 | `DELETE /api/jobs/<id>/threads/<tid>` | token, owner token | — | `{job}` |
-| `PUT /api/jobs/<id>/questions/<qid>` | token, owner token | — | `{job}`, a `running` job `waiting` while the question is open (its answer, decline or withdrawal, `job_end` when the job ends first, is stored in the job and moves it back); 400 `invalid_question` for a question not of the `ask` tool or another job's |
-| `POST /api/jobs/<id>/steps/<key>` | token, owner token | `{result?, publish?, reply?, state?}`, one of `result`, `publish` and `reply`; `state` only `"done"` | `{job, step: {key, result, version_n, created_at}, replayed, version?}`; 409 `version_moved` `{current}`, `doc_moved` `{path}`, `not_rendered_clean`, `job_moved`, `version_present`; 400 `invalid_step`; on a hosted Clax a publish needs `clax-artifacts` `update` at its artifact and a reply `clax-comments` `reply` at the job's (404 out of the caller's reach, 403 `not_permitted` within it), and a publish's `docs` an artifact the owner made (403 `not_permitted`) |
+| `PUT /api/jobs/<id>/questions/<qid>` | token, owner token | — | `{job}`, a `running` job `waiting` while the question is open (its answer, decline or withdrawal, `job_end` when the job ends first, is stored in the job and moves it back); 400 `invalid_question` for a question not of the `ask` tool or another job's, and on a hosted Clax for one no agent of the owner's asked or about an artifact out of the caller's reach |
+| `POST /api/jobs/<id>/steps/<key>` | token, owner token | `{result?, publish?, reply?, state?}`, one of `result`, `publish` and `reply`; `state` only `"done"` | `{job, step: {key, result, version_n, created_at}, replayed, version?}`; 409 `version_moved` `{current}`, `doc_moved` `{path}`, `not_rendered_clean`, `job_moved`, `version_present`; 400 `invalid_step`; on a hosted Clax a publish needs `clax-artifacts` `update` at its artifact and a reply `clax-comments` `reply` at the job's (404 out of the caller's reach, 403 `not_permitted` within it), a publish's `docs` an artifact the owner made (403 `not_permitted`), a publish that changes the artifact's capabilities its administering it (403 `admin_only`), and a reply with `resolve` `clax-comments` `resolve` too |
 | `GET /api/agent-read-consents` | token | — | `{consents: [{reader, source}]}`; on a hosted Clax those whose two artifacts are in the caller's reach |
 | `PUT /api/agent-read-consents/<reader>/<source>` | token | — | 204; 404 when either artifact is missing, or on a hosted Clax out of the caller's reach |
 | `DELETE /api/agent-read-consents/<reader>/<source>` | token | — | `{deleted}`; on a hosted Clax 404 when either artifact is out of the caller's reach |
-| `POST /api/client-imports/<key>` | token, owner token | `{client, files}` | `{import: {already, jobs, consents, skipped, left_out, done_at}}`; 400 `invalid_args` |
+| `POST /api/client-imports/<key>` | token, owner token | `{client, files}` | `{import: {already, jobs, consents, skipped, left_out, done_at}}`; 400 `invalid_args`; on a hosted Clax an entry naming an artifact another person made, a thread or comment of one, or a question no agent of the owner's asked is left out as one that is gone |
 
 **The app's JSON state, imported once.** `POST
 /api/client-imports/app-json-v1` with `{client: "app", files}` imports
@@ -5559,7 +5561,10 @@ Approvals are per person, not per agent.
   decline), `POST /api/approvals/requests/<rid>/decide {scope: "thread" |
   "artifact" | "everywhere" | "decline"}` (409 `request_closed`, 400
   `invalid_scope`), or People's "Always allow", `POST /api/approvals
-  {author, scope, artifact_id?, thread_id?}`. `DELETE /api/approvals/<id>`
+  {author, scope, artifact_id?, thread_id?}` (on a hosted Clax an
+  artifact out of the approver's reach, or a thread of one, is 400
+  `unknown_artifact` or `unknown_thread`, as one that does not exist).
+  `DELETE /api/approvals/<id>`
   revokes: from the next take or read, what it covered is withheld again;
   what was delivered stays delivered.
 - **Reading.** `GET /api/approvals` and `GET
@@ -8694,9 +8699,11 @@ it starts, the runs a previous process left. A build without the
   out of reach (`/api/sessions/<sid>/git-token/<aid>`,
   `…/drafts/<aid>`, `…/working/<aid>`) is 404. The token's own routes
   that act on an artifact keep to the same reach: `versions:restore`
-  needs `update` there, `docs:collections` answers only at an artifact
-  the owner made, and the app's jobs name, publish to and reply at only
-  what the owner reaches (see "Jobs").
+  needs `update` there, `docs:collections` and a draft's copy of an
+  app's documents only an artifact the owner made, the app's jobs, its
+  state import and their questions name, publish to and reply at only
+  what the owner reaches (see "Jobs"), and an approval's scope names only
+  an artifact in the approver's reach.
 - Live pages (see "Live pages") are visible only to a loopback peer or a
   request with the token; to anyone else they do not exist (404, left out
   of lists and of the stream), and their snapshots are served with a policy

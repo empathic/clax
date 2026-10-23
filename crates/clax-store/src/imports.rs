@@ -113,6 +113,23 @@ impl Store {
         client: &str,
         files: &BTreeMap<String, String>,
     ) -> Result<ImportSummary> {
+        self.import_client_state_of(key, client, files, false)
+    }
+
+    /// [`Store::import_client_state`], on a hosted daemon (`owners`) within
+    /// the owner's reach alone: an entry naming an artifact another person
+    /// made, a thread or comment of one, or a question no agent of the
+    /// owner's asked is left out as one the core no longer holds.
+    ///
+    /// # Errors
+    /// As [`Store::import_client_state`].
+    pub fn import_client_state_of(
+        &self,
+        key: &str,
+        client: &str,
+        files: &BTreeMap<String, String>,
+        owners: bool,
+    ) -> Result<ImportSummary> {
         if key != APP_JSON_V1 {
             return Err(CoreError::invalid(
                 "invalid_args",
@@ -143,6 +160,7 @@ impl Store {
             }
             let mut imp = Import {
                 tx,
+                owners,
                 now: &now,
                 jobs: Vec::new(),
                 consents: 0,
@@ -244,6 +262,8 @@ fn job_id(file: &str, index: usize, entry: &Value) -> String {
 /// An import in progress, in its transaction.
 struct Import<'a, 't> {
     tx: &'a Transaction<'t>,
+    /// Only what the owner made counts as there (a hosted daemon's import).
+    owners: bool,
     now: &'a str,
     jobs: Vec<Planned>,
     consents: usize,
@@ -287,20 +307,24 @@ impl Import<'_, '_> {
             .tx
             .query_row(
                 "SELECT title, current_version FROM artifacts
-                 WHERE id = ?1 AND deleted_at IS NULL AND hidden = 0",
-                params![id],
+                 WHERE id = ?1 AND deleted_at IS NULL AND hidden = 0
+                   AND (?2 = 0 OR person IS NULL)",
+                params![id, self.owners],
                 |r| Ok((r.get(0)?, r.get(1)?)),
             )
             .optional()?)
     }
 
-    /// Thread `tid`'s artifact, when the thread is there.
+    /// Thread `tid`'s artifact, when the thread is there (for `owners`, on
+    /// an artifact the owner made).
     fn thread_artifact(&self, tid: &str) -> Result<Option<String>> {
         Ok(self
             .tx
             .query_row(
-                "SELECT artifact_id FROM threads WHERE id = ?1",
-                params![tid],
+                "SELECT t.artifact_id FROM threads t
+                   LEFT JOIN artifacts a ON a.id = t.artifact_id
+                  WHERE t.id = ?1 AND (?2 = 0 OR (a.id IS NOT NULL AND a.person IS NULL))",
+                params![tid, self.owners],
                 |r| r.get(0),
             )
             .optional()?)
@@ -350,13 +374,14 @@ impl Import<'_, '_> {
             .unwrap_or_default())
     }
 
-    /// The body of comment `id`, or `""`.
-    fn comment_body(&self, id: &str) -> Result<String> {
+    /// The body of comment `id`, or `""`; for `owners`, only a comment of
+    /// thread `tid`.
+    fn comment_body(&self, tid: &str, id: &str) -> Result<String> {
         Ok(self
             .tx
             .query_row(
-                "SELECT body FROM comments WHERE id = ?1",
-                params![id],
+                "SELECT body FROM comments WHERE id = ?1 AND (?3 = 0 OR thread_id = ?2)",
+                params![id, tid, self.owners],
                 |r| r.get(0),
             )
             .optional()?
@@ -373,7 +398,7 @@ impl Import<'_, '_> {
         threads: &[(String, Vec<String>)],
     ) -> Result<(BTreeMap<String, String>, String)> {
         let mut out = BTreeMap::new();
-        let mut newest: Option<(String, String)> = None;
+        let mut newest: Option<(String, String, String)> = None;
         for (tid, comments) in threads {
             if self.thread_artifact(tid)?.as_deref() != Some(aid) {
                 continue;
@@ -385,14 +410,14 @@ impl Import<'_, '_> {
                     params![c],
                     |r| r.get(0),
                 )?;
-                if newest.as_ref().is_none_or(|(b, _)| at >= *b) {
-                    newest = Some((at, c.clone()));
+                if newest.as_ref().is_none_or(|(b, _, _)| at >= *b) {
+                    newest = Some((at, tid.clone(), c.clone()));
                 }
             }
             out.insert(tid.clone(), c);
         }
         let request = match newest {
-            Some((_, c)) => self.comment_body(&c)?,
+            Some((_, tid, c)) => self.comment_body(&tid, &c)?,
             None => String::new(),
         };
         Ok((out, request))
@@ -790,8 +815,12 @@ impl Import<'_, '_> {
                 .query_row(
                     "SELECT status, taken_at IS NOT NULL FROM questions q WHERE id = ?1
                          AND q.source = 'ask'
-                         AND NOT EXISTS (SELECT 1 FROM job_questions WHERE question_id = q.id)",
-                    params![q],
+                         AND NOT EXISTS (SELECT 1 FROM job_questions WHERE question_id = q.id)
+                         AND (?2 = 0 OR (
+                             (SELECT person FROM sessions WHERE id = q.session_id) IS NULL
+                             AND (q.artifact_id IS NULL OR EXISTS (SELECT 1 FROM artifacts a
+                                  WHERE a.id = q.artifact_id AND a.person IS NULL))))",
+                    params![q, self.owners],
                     |r| Ok((r.get(0)?, r.get(1)?)),
                 )
                 .optional()?;
@@ -877,7 +906,7 @@ impl Import<'_, '_> {
                 state: JobState::Cancelled,
                 title: Some(title),
                 input: json!({
-                    "request": self.comment_body(cid)?,
+                    "request": self.comment_body(tid, cid)?,
                     "base": n,
                     "threads": BTreeMap::from([(tid.clone(), cid.to_string())]),
                 }),

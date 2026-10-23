@@ -22,6 +22,7 @@ use axum::extract::rejection::{JsonRejection, PathRejection, QueryRejection};
 use axum::extract::{Path, Query, State};
 use axum::http::StatusCode;
 use clax_core::CoreError;
+use clax_core::rights::RightType;
 use clax_core::visibility::UNCONNECTED;
 use clax_http::agent::{Agent, DeniedToGrants, TokenOrAgent};
 use clax_http::audit::DeferredAudit;
@@ -264,11 +265,13 @@ pub struct AllowBody {
 /// `{approval}`, or 200 with the live one that already says it. It closes
 /// the approver's open requests it covers and lets their held rows
 /// through. 400 `invalid_scope`, `invalid_author`, `unknown_artifact`,
-/// `unknown_thread`.
+/// `unknown_thread` (on a hosted daemon also for an artifact out of the
+/// approver's reach, or a thread of one).
 pub async fn create(
     State(s): State<AppState>,
     _d: DeniedToGrants,
     _o: SameOrigin,
+    hosted: Option<axum::Extension<clax_http::hosted::HostedRequest>>,
     caller: Caller,
     who: Identity,
     audit: DeferredAudit,
@@ -287,6 +290,37 @@ pub async fn create(
             ));
         }
     };
+    // On hosted, a scope naming an artifact out of the approver's reach (or
+    // a thread of one) is answered as one that does not exist.
+    if s.hosted.is_some() {
+        let member = hosted.and_then(|h| h.0.member);
+        let sc = scope.clone();
+        let refusal = s
+            .store_call(move |st| {
+                let reads = |aid: &str| -> clax_core::Result<bool> {
+                    match &member {
+                        Some(m) => m.allows_at(st, (RightType::Artifacts, "read"), aid),
+                        None => Ok(false),
+                    }
+                };
+                Ok(match &sc {
+                    Scope::Everywhere => None,
+                    Scope::Artifact(a) => {
+                        (!reads(a)?).then_some(("unknown_artifact", "the scope names no artifact"))
+                    }
+                    Scope::Thread(t) => match st.get_thread(t)? {
+                        Some(th) if !reads(&th.artifact_id)? => {
+                            Some(("unknown_thread", "the scope names no thread"))
+                        }
+                        _ => None,
+                    },
+                })
+            })
+            .await?;
+        if let Some((code, message)) = refusal {
+            return Err(ApiError::bad_request(code, message));
+        }
+    }
     let via = via(&who);
     let ctx = s.feedback_ctx();
     let (made, v) = s

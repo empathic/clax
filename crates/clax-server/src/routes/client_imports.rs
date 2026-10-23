@@ -31,7 +31,9 @@ struct ImportBody {
 /// imported before answers its summary with `already: true` and changes
 /// nothing. 200 `{import: {already, jobs, consents, skipped, left_out,
 /// done_at}}`: `skipped` names the files that did not parse, `left_out`
-/// the entries naming what the core no longer holds. 400 `invalid_args`
+/// the entries naming what the core no longer holds (on a hosted daemon,
+/// also what another person made, a thread or comment of it, or a
+/// question no agent of the owner's asked). 400 `invalid_args`
 /// for another key or client, or a file of another name.
 pub async fn import(
     State(s): State<AppState>,
@@ -51,10 +53,12 @@ pub async fn import(
         ));
     }
     let guard = require_owner(&s, &headers, &b.client)?;
+    // On hosted, only what the owner made is imported.
+    let owners = s.hosted.is_some();
     let summary = s
         .store_call(move |st| {
             let _guard = guard;
-            st.import_client_state(&key, &b.client, &b.files)
+            st.import_client_state_of(&key, &b.client, &b.files, owners)
         })
         .await?;
     Ok(Json(json!({ "import": summary })))
