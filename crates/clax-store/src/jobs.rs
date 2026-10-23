@@ -1365,12 +1365,27 @@ impl Store {
     /// publishes, under `ctx`: the version's content is written first, as
     /// [`Store::publish_version`] writes it, and then one transaction
     /// checks the artifact is at `s.base`, records the version (or the new
-    /// artifact), applies `s.docs`, inserts the step with the version's
-    /// number, and moves the job one `rev` on with `step` set to `key` (and
-    /// `artifact_id` to a new artifact's), ending it `done` when `s.done`.
-    /// Either the step and the version exist together, or neither does. A
-    /// key the job already has answers its step as recorded, replayed, and
-    /// writes nothing.
+    /// artifact), inserts the step with the version's number, and moves the
+    /// job one `rev` on with `step` set to `key` (and `artifact_id` to a new
+    /// artifact's), ending it `done` when `s.done`. Either the step and the
+    /// version exist together, or neither does.
+    ///
+    /// `s.docs` are written to the artifact's own store through `docs`
+    /// under the step's operation ID ([`step_op`]), which is no part of
+    /// that transaction: for an artifact that exists, once it is found at
+    /// `s.base` and before the transaction, so a pinned write that finds
+    /// its document moved refuses the step with nothing recorded; for a
+    /// new one, once the transaction made it (a write pinned to a version,
+    /// or an update, could only find no document, and refuses the step
+    /// first). A new artifact's writes are recorded in the step's
+    /// transaction (`job_step_docs`) until they land. A key the job
+    /// already has answers its step as recorded, replayed, and writes none
+    /// of the replay's documents (they may differ: a write pinned to a
+    /// version planned again): only the writes its step recorded as still
+    /// to land are written, under the operation ID. A retry after a crash
+    /// between the documents and the step, either way round, so applies
+    /// each once; a step committed before its documents were written
+    /// apart from it has none still to land.
     ///
     /// # Errors
     /// [`StepError::VersionMoved`]; [`StepError::DocMoved`];
@@ -1412,7 +1427,7 @@ impl Store {
         cut: impl FnOnce(&Transaction<'_>) -> clax_core::Result<()>,
     ) -> StepResult<Published> {
         if let Some(done) = self.replay(id, key)? {
-            return Ok(done);
+            return self.docs_left(id, key, writer, done).await;
         }
         let PublishStep {
             artifact_id,
@@ -1450,7 +1465,7 @@ impl Store {
         let aid = begun.artifact_id;
         let mut cutting = None;
         let then = |tx: &Transaction<'_>, n: u32| {
-            let made = publish_step_tx(self, tx, ctx, id, key, &aid, n, docs, done);
+            let made = publish_step_tx(self, tx, id, key, &aid, n, n_docs, &after, done);
             match made.and_then(|m| match cut(tx) {
                 Ok(()) => Ok(m),
                 Err(e) => Err(Cut::Refused(e.into())),
@@ -1475,16 +1490,25 @@ impl Store {
             }
         };
         match (out, cutting) {
-            (Ok((artifact, version, (step, job, docs))), _) => Ok(StepCommit {
-                step,
-                job,
-                replayed: false,
-                made: Some(Published {
-                    artifact,
-                    version,
-                    docs,
-                }),
-            }),
+            (Ok((artifact, version, (step, job))), _) => {
+                if !after.is_empty() {
+                    written = writer
+                        .write(&aid, op, after)
+                        .await
+                        .map_err(StepError::Store)?;
+                    self.docs_landed(id, key)?;
+                }
+                Ok(StepCommit {
+                    step,
+                    job,
+                    replayed: false,
+                    made: Some(Published {
+                        artifact,
+                        version,
+                        docs: written,
+                    }),
+                })
+            }
             (Err(_), Some(Cut::Refused(e))) => Err(e),
             (Err(_), Some(Cut::Replayed)) => self
                 .replay(id, key)?
@@ -1834,6 +1858,62 @@ impl Store {
     /// # Errors
     /// [`JobError::NotFound`] when there is no job `id`; [`JobError::Moved`]
     /// when it has no such step and is final.
+    /// A replayed publish step `done` (job `id`'s step `key`), as recorded:
+    /// the replay's own documents are never written. Only the writes the
+    /// step recorded as still to land (`job_step_docs`: a new artifact's,
+    /// which a crash kept from landing after its step committed) are
+    /// written now, to the artifact it recorded, under the step's
+    /// operation ID, so each applies once.
+    async fn docs_left(
+        &self,
+        id: &str,
+        key: &str,
+        writer: &dyn StepDocs,
+        done: StepCommit<Published>,
+    ) -> StepResult<Published> {
+        let left: Option<String> = self.with_read(|c| {
+            Ok(c.query_row(
+                "SELECT writes_json FROM job_step_docs WHERE job_id = ?1 AND key = ?2",
+                params![id, key],
+                |r| r.get(0),
+            )
+            .optional()?)
+        })?;
+        let Some(left) = left else {
+            return Ok(done);
+        };
+        let named = done.step.result["artifact_id"]
+            .as_str()
+            .unwrap_or_default()
+            .to_string();
+        let corrupt = || CoreError::Corrupt {
+            artifact_id: named.clone(),
+            column: "job_step_docs.writes_json",
+            version: done.step.version_n.and_then(|n| u32::try_from(n).ok()),
+        };
+        let aid = ArtifactId::parse(&named).map_err(|_| corrupt())?;
+        let docs: Vec<BatchWrite> = serde_json::from_str(&left).map_err(|_| corrupt())?;
+        let op = step_op(id, key, &docs);
+        writer
+            .write(&aid, op, docs)
+            .await
+            .map_err(StepError::Store)?;
+        self.docs_landed(id, key)?;
+        Ok(done)
+    }
+
+    /// Forgets the writes job `id`'s step `key` still had to land: they did.
+    fn docs_landed(&self, id: &str, key: &str) -> Result<(), StepError> {
+        self.with_write(|c| {
+            c.execute(
+                "DELETE FROM job_step_docs WHERE job_id = ?1 AND key = ?2",
+                params![id, key],
+            )?;
+            Ok(())
+        })?;
+        Ok(())
+    }
+
     fn replay<T>(&self, id: &str, key: &str) -> Result<Option<StepCommit<T>>, StepError> {
         let (row, step) = self.with_read(|c| Ok((job_row(c, id)?, step_row(c, id, key)?)))?;
         let row = row.ok_or(StepError::Job(JobError::NotFound))?;
@@ -1945,7 +2025,10 @@ fn insert_step(
 }
 
 /// The body of a publish step's transaction, once version `n` of its
-/// artifact is recorded: the document writes, then the step.
+/// artifact is recorded: the step, whose result counts its `n_docs`
+/// document writes (the artifact's own store takes them,
+/// [`Store::commit_publish_step`]), and the writes still to land after it
+/// (`deferred`, a new artifact's) in `job_step_docs`.
 #[allow(clippy::too_many_arguments)]
 fn publish_step_tx(
     st: &Store,
@@ -1955,7 +2038,8 @@ fn publish_step_tx(
     key: &str,
     aid: &ArtifactId,
     n: u32,
-    docs: Vec<BatchWrite>,
+    n_docs: usize,
+    deferred: &[BatchWrite],
     done: bool,
 ) -> Result<(StepRow, JobRow, Vec<Written>), Cut> {
     let aid_id = aid;
@@ -1994,7 +2078,15 @@ fn publish_step_tx(
         params![id, key],
     )
     .map_err(|e| Cut::Refused(e.into()))?;
-    Ok((step, row, written))
+    if !deferred.is_empty() {
+        let writes = serde_json::to_string(deferred).expect("writes serialise");
+        tx.execute(
+            "INSERT INTO job_step_docs (job_id, key, writes_json) VALUES (?1, ?2, ?3)",
+            params![id, key, writes],
+        )
+        .map_err(|e| Cut::Refused(e.into()))?;
+    }
+    Ok((step, row))
 }
 
 /// The body of a reply step's transaction.
@@ -2336,19 +2428,116 @@ mod tests {
         let aid = ArtifactId::parse(job.job.artifact_id.as_deref().unwrap()).unwrap();
         assert_eq!(job.steps.len(), 1);
         assert_eq!(note_of(&st, &aid), None);
-        // The retry replays the step and lands its documents, once.
+        // The retry replays the step and lands the documents it recorded,
+        // once, whatever the retry carries.
         let c = st
-            .commit_publish_step(DAEMON, "j1", "publish:0", step(note(1)), &FileDocs::of(&st))
+            .commit_publish_step(DAEMON, "j1", "publish:0", step(note(2)), &FileDocs::of(&st))
             .unwrap();
         assert!(c.replayed);
         assert_eq!(note_of(&st, &aid), Some((json!({"t": 1}), 1)));
-        st.commit_publish_step(DAEMON, "j1", "publish:0", step(note(1)), &FileDocs::of(&st))
+        st.commit_publish_step(DAEMON, "j1", "publish:0", step(note(3)), &FileDocs::of(&st))
             .unwrap();
         assert_eq!(
             note_of(&st, &aid),
             Some((json!({"t": 1}), 1)),
             "applied once"
         );
+    }
+
+    /// A replay of a committed step answers the step as recorded and writes
+    /// none of its documents, though they were planned again (another
+    /// version pinned, other data): no `key_reused`, nothing applied twice.
+    #[test]
+    fn a_replayed_step_answers_as_recorded_and_writes_none_of_its_documents() {
+        let (_d, st) = store();
+        let aid = crate::test_util::artifact_with_caps(&st, json!({"db": {}}));
+        change(&st, "j1", &aid);
+        let step = |docs: Vec<BatchWrite>, html: &str| PublishStep {
+            docs,
+            ..publish_step(Some(&aid), 1, html, false)
+        };
+        let first = st
+            .commit_publish_step(
+                DAEMON,
+                "j1",
+                "publish:1",
+                step(note(1), "<p>v2"),
+                &FileDocs::of(&st),
+            )
+            .unwrap();
+        assert_eq!(note_of(&st, &aid), Some((json!({"t": 1}), 1)));
+        // Planned again on the document as it now stands.
+        let again = vec![BatchWrite {
+            if_version: Some(1),
+            ..note(2).remove(0)
+        }];
+        let c = st
+            .commit_publish_step(
+                DAEMON,
+                "j1",
+                "publish:1",
+                step(again, "<p>v3"),
+                &FileDocs::of(&st),
+            )
+            .unwrap();
+        assert!(c.replayed);
+        assert_eq!((c.step, c.job), (first.step, first.job));
+        assert_eq!(note_of(&st, &aid), Some((json!({"t": 1}), 1)));
+        assert_eq!(versions(&st, &aid), vec![1, 2]);
+    }
+
+    /// A step committed before a step's documents were written apart from
+    /// it (by a build that wrote them in the step's transaction) has no
+    /// operation recorded in the artifact's store and nothing left to land:
+    /// its replay applies none of its documents again.
+    #[test]
+    fn a_step_committed_before_the_upgrade_is_replayed_without_its_documents() {
+        let (_d, st) = store();
+        let aid = crate::test_util::artifact_with_caps(&st, json!({"db": {}}));
+        change(&st, "j1", &aid);
+        // As that build left it: the document written with no operation
+        // ID, the version, and the step's row.
+        crate::app_data::shim::Docs::of(&st)
+            .data(&aid)
+            .unwrap()
+            .doc_batch(
+                &crate::app_data::WriteCtx::of(DAEMON),
+                &clax_core::db::Rules::from_capabilities(&st.doc_capabilities(&aid).unwrap())
+                    .unwrap(),
+                note(1),
+                false,
+                &Caller::new(Level::Owner, None),
+            )
+            .unwrap();
+        st.publish_version(DAEMON, &aid, request("<p>v2", Some(1)), None)
+            .unwrap();
+        st.with_write(|c| {
+            c.execute(
+                "INSERT INTO job_steps (job_id, key, result_json, version_n, created_at)
+                 VALUES ('j1', 'publish:1', ?1, 2, '2026-10-01T00:00:00Z')",
+                params![json!({"artifact_id": aid.as_str(), "version": 2, "docs": 1}).to_string()],
+            )?;
+            Ok(())
+        })
+        .unwrap();
+        for docs in [note(1), note(2)] {
+            let c = st
+                .commit_publish_step(
+                    DAEMON,
+                    "j1",
+                    "publish:1",
+                    PublishStep {
+                        docs,
+                        ..publish_step(Some(&aid), 1, "<p>v2", false)
+                    },
+                    &FileDocs::of(&st),
+                )
+                .unwrap();
+            assert!(c.replayed);
+            assert_eq!(c.step.version_n, Some(2));
+            assert_eq!(note_of(&st, &aid), Some((json!({"t": 1}), 1)));
+        }
+        assert_eq!(versions(&st, &aid), vec![1, 2]);
     }
 
     /// A publish step of `html` on `aid` at `base` (a new app for `None`).

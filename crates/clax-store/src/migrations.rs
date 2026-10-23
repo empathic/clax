@@ -1230,14 +1230,409 @@ pub const MIGRATIONS: &[&str] = &[
         PRIMARY KEY (artifact_id, tag_id)
     );
     CREATE INDEX artifact_tags_by_tag ON artifact_tags (tag_id, artifact_id);",
-    // 42: each artifact's app data in a store of its own (`crate::app_data`).
+    // 42: cross-app read grants: the
+    // owner let `reader_id` read `source_id`'s documents. Deleting either
+    // artifact removes the row: the foreign keys on a row delete, the trigger
+    // on the soft delete (`deleted_at` set), which is how artifacts are deleted.
+    "CREATE TABLE db_read_grants (
+        reader_id TEXT NOT NULL REFERENCES artifacts(id) ON DELETE CASCADE,
+        source_id TEXT NOT NULL REFERENCES artifacts(id) ON DELETE CASCADE,
+        granted_at TEXT NOT NULL,
+        PRIMARY KEY (reader_id, source_id)
+    ) WITHOUT ROWID;
+    CREATE INDEX db_read_grants_by_source ON db_read_grants(source_id);
+    CREATE TRIGGER db_read_grants_on_delete AFTER UPDATE OF deleted_at ON artifacts
+    WHEN NEW.deleted_at IS NOT NULL
+    BEGIN
+        DELETE FROM db_read_grants WHERE reader_id = NEW.id OR source_id = NEW.id;
+    END;",
+    // 43: draft artifacts:
+    // an agent's work in progress, rendered but never listed. `hidden` keeps
+    // a row out of every listing; `draft_of` names the app a draft changes
+    // (NULL for a new app's draft), whose documents it copies.
+    "ALTER TABLE artifacts ADD COLUMN draft_of TEXT;
+    ALTER TABLE artifacts ADD COLUMN hidden INTEGER NOT NULL DEFAULT 0;
+    CREATE INDEX artifacts_hidden ON artifacts(hidden, created_at) WHERE hidden = 1;",
+    // 44: network grants: the
+    // owner let `artifact_id` fetch from `host`, one of the hosts its
+    // `capabilities.net.hosts` declared when the owner allowed it. Deleting
+    // the artifact removes its rows (the foreign key on a row delete, the
+    // trigger on the soft delete).
+    "CREATE TABLE net_grants (
+        artifact_id TEXT NOT NULL REFERENCES artifacts(id) ON DELETE CASCADE,
+        host TEXT NOT NULL,
+        granted_at TEXT NOT NULL,
+        PRIMARY KEY (artifact_id, host)
+    ) WITHOUT ROWID;
+    CREATE TRIGGER net_grants_on_delete AFTER UPDATE OF deleted_at ON artifacts
+    WHEN NEW.deleted_at IS NOT NULL
+    BEGIN
+        DELETE FROM net_grants WHERE artifact_id = NEW.id;
+    END;",
+    // 45: model use by apps:
+    // the owner let `artifact_id` call `sample()` (kept until revoked), and
+    // what its calls cost each local day, in millionths of a US dollar, for
+    // the daily cost cap. Deleting the artifact removes its rows (the
+    // foreign keys on a row delete, the trigger on the soft delete).
+    "CREATE TABLE sample_grants (
+        artifact_id TEXT PRIMARY KEY REFERENCES artifacts(id) ON DELETE CASCADE,
+        granted_at TEXT NOT NULL
+    ) WITHOUT ROWID;
+    CREATE TABLE sample_spend (
+        artifact_id TEXT NOT NULL REFERENCES artifacts(id) ON DELETE CASCADE,
+        day TEXT NOT NULL,
+        micro_usd INTEGER NOT NULL DEFAULT 0,
+        PRIMARY KEY (artifact_id, day)
+    ) WITHOUT ROWID;
+    CREATE TRIGGER sample_grants_on_delete AFTER UPDATE OF deleted_at ON artifacts
+    WHEN NEW.deleted_at IS NOT NULL
+    BEGIN
+        DELETE FROM sample_grants WHERE artifact_id = NEW.id;
+        DELETE FROM sample_spend WHERE artifact_id = NEW.id;
+    END;",
+    // 46: whether a draft fetches under its live app's network grants: 1 for the agent's
+    // drafts, 0 for a bundle update's check draft, which stays offline.
+    // Meaningless for an artifact that is no draft.
+    "ALTER TABLE artifacts ADD COLUMN draft_inherit_net INTEGER NOT NULL DEFAULT 1;",
+    // 47: the app's jobs, their steps, and the agent's read consents: each make or change the
+    // app's queue runs, the steps it committed, the threads it answers and
+    // the questions it asked; the agent's remembered read consents; the
+    // render gate's renders of drafts; one row per one-time import of the
+    // app's JSON state; and each publish step's mark. Every foreign key
+    // cascades: a hard delete of an artifact or a thread takes the rows
+    // naming it, after the store's delete paths have cancelled the open
+    // jobs among them (`crate::jobs`'s `artifact_going_tx`,
+    // `thread_going_tx`).
+    //
+    // A step's mark is minted by the store when the step first writes its
+    // version and carried in that version's content (git's `Clax-Step`
+    // trailer, the home's `versions/<n>.step`): only a mark
+    // `job_step_marks` holds, for the artifact and version it names, is a
+    // step's, so a mark copied into a pushed commit's message counts for
+    // nothing. A new app's ID is minted with it, so a step resumed after a
+    // kill writes the same artifact. No foreign key: a mark outlives its
+    // job, so the content a killed step left is still known as a step's
+    // once the job is gone. The row goes when its step commits or its
+    // content is removed.
+    "CREATE TABLE jobs (
+        id TEXT PRIMARY KEY,
+        client TEXT NOT NULL,              -- 'app' (who runs it)
+        kind TEXT NOT NULL,                -- 'make' | 'change' (opaque to the core)
+        artifact_id TEXT REFERENCES artifacts(id) ON DELETE CASCADE,
+        state TEXT NOT NULL CHECK (state IN ('queued','running','waiting','paused','stopped','failed','cancelled','done')),
+        step TEXT,                         -- the current step's key
+        title TEXT,
+        input_json TEXT NOT NULL CHECK (json_valid(input_json)),  -- the request, the threads and comments answered
+        plan_json TEXT CHECK (json_valid(plan_json)),  -- a make's plan (was plans.json)
+        carry_json TEXT CHECK (json_valid(carry_json)),  -- Keep going's carried draft and notes (was unfinished.json)
+        error_json TEXT CHECK (json_valid(error_json)),
+        rev INTEGER NOT NULL DEFAULT 1 CHECK (rev >= 1),
+        created_at TEXT NOT NULL,
+        updated_at TEXT NOT NULL
+    );
+    CREATE INDEX jobs_open ON jobs(state) WHERE state NOT IN ('cancelled','done');
+    CREATE INDEX jobs_by_artifact ON jobs(artifact_id) WHERE artifact_id IS NOT NULL;
+    CREATE TABLE job_steps (
+        job_id TEXT NOT NULL REFERENCES jobs(id) ON DELETE CASCADE,
+        key TEXT NOT NULL,
+        result_json TEXT NOT NULL CHECK (json_valid(result_json)),
+        version_n INTEGER,                 -- the version a publish step made
+        created_at TEXT NOT NULL,
+        PRIMARY KEY (job_id, key)
+    );
+    CREATE TABLE job_threads (            -- was the ledger's answered and stopped.json
+        job_id TEXT NOT NULL REFERENCES jobs(id) ON DELETE CASCADE,
+        thread_id TEXT NOT NULL REFERENCES threads(id) ON DELETE CASCADE,
+        comment_id TEXT NOT NULL,          -- the newest comment the job answers
+        stopped INTEGER NOT NULL DEFAULT 0 CHECK (stopped IN (0, 1)),
+        PRIMARY KEY (job_id, thread_id)
+    );
+    CREATE INDEX job_threads_by_thread ON job_threads(thread_id);
+    CREATE TABLE job_questions (          -- was asked.json
+        job_id TEXT NOT NULL REFERENCES jobs(id) ON DELETE CASCADE,
+        question_id TEXT NOT NULL UNIQUE REFERENCES questions(id),
+        outcome TEXT CHECK (outcome IN ('answered','declined','withdrawn')),  -- NULL until the question closes
+        answers_json TEXT CHECK (json_valid(answers_json)),  -- the answers, as the question keeps them
+        PRIMARY KEY (job_id, question_id),
+        CHECK ((outcome IS 'answered') = (answers_json IS NOT NULL))
+    );
+    CREATE TABLE agent_read_consents (    -- was agent-read-consent.json
+        reader TEXT NOT NULL REFERENCES artifacts(id) ON DELETE CASCADE,
+        source TEXT NOT NULL REFERENCES artifacts(id) ON DELETE CASCADE,
+        created_at TEXT NOT NULL,
+        PRIMARY KEY (reader, source)
+    );
+    CREATE INDEX agent_read_consents_by_source ON agent_read_consents(source);
+    CREATE TABLE draft_renders (          -- the render gate (§8.2)
+        draft_id TEXT NOT NULL REFERENCES artifacts(id) ON DELETE CASCADE,
+        digest TEXT NOT NULL,
+        clean INTEGER NOT NULL CHECK (clean IN (0, 1)),
+        created_at TEXT NOT NULL,
+        PRIMARY KEY (draft_id, digest)
+    );
+    CREATE TABLE client_imports (         -- one row per one-time import (§9)
+        key TEXT PRIMARY KEY,
+        done_at TEXT NOT NULL,
+        summary_json TEXT NOT NULL CHECK (json_valid(summary_json))
+    );
+    CREATE TABLE job_step_marks (         -- each publish step's mark
+        nonce TEXT PRIMARY KEY,            -- 32 hex characters from the operating system's random source
+        job_id TEXT NOT NULL,
+        key TEXT NOT NULL,                 -- the step's key
+        artifact_id TEXT NOT NULL,         -- the artifact it writes
+        version_n INTEGER NOT NULL CHECK (version_n >= 1),  -- the version it writes
+        session_id TEXT,                   -- the session it publishes from
+        created_at TEXT NOT NULL,
+        UNIQUE (job_id, key)
+    );",
+    // 48: apps pushed from the Clax app to a hosted Clax and pulled from it.
+    // `app_bundles` keeps, per public version published from the app, the
+    // one `.clax` bundle it carries (its bytes in the content store as the
+    // artifact's asset `bundle-<sha256>.clax`): the bundle's lineage and
+    // release counter (`bundle_version`), the hash of the files it holds
+    // (equal to the version's `content_sha256`), the bundle's own hash and
+    // size, and the publishing account's public ID (NULL for the owner).
+    // `artifacts.comments` is the Comments switch, on for every existing
+    // artifact. `device_codes.client_kind` is what a device sign-in named
+    // itself (`clax-app` for the Clax app); `grants.person_device` marks the
+    // token such a sign-in made as the person's own device. `app_installs`
+    // counts distinct installs of an app by an opaque hash of the
+    // installing device. Deleting the artifact removes its bundle and
+    // install rows (the foreign keys on a row delete, the trigger on the
+    // soft delete). `linked_comments.author_key` is a mirrored comment's
+    // author on the public Clax (`clax_core::visibility::remote_author`),
+    // NULL for one by the person this Clax is signed in there as: what the
+    // local agents' approvals are checked against.
+    "CREATE TABLE app_bundles (
+        artifact_id TEXT NOT NULL REFERENCES artifacts(id) ON DELETE CASCADE,
+        version INTEGER NOT NULL,
+        lineage TEXT NOT NULL,
+        bundle_version INTEGER NOT NULL,
+        content_sha256 TEXT NOT NULL,
+        sha256 TEXT NOT NULL,
+        size INTEGER NOT NULL,
+        person TEXT,
+        created_at TEXT NOT NULL,
+        PRIMARY KEY (artifact_id, version)
+    ) WITHOUT ROWID;
+    ALTER TABLE artifacts ADD COLUMN comments INTEGER NOT NULL DEFAULT 1;
+    ALTER TABLE device_codes ADD COLUMN client_kind TEXT;
+    ALTER TABLE grants ADD COLUMN person_device INTEGER NOT NULL DEFAULT 0;
+    ALTER TABLE linked_comments ADD COLUMN author_key TEXT;
+    CREATE INDEX linked_comments_by_author ON linked_comments(author_key)
+        WHERE author_key IS NOT NULL;
+    CREATE TABLE app_installs (
+        artifact_id TEXT NOT NULL REFERENCES artifacts(id) ON DELETE CASCADE,
+        install_sha256 TEXT NOT NULL,
+        created_at TEXT NOT NULL,
+        PRIMARY KEY (artifact_id, install_sha256)
+    ) WITHOUT ROWID;
+    CREATE TRIGGER app_bundles_on_delete AFTER UPDATE OF deleted_at ON artifacts
+    WHEN NEW.deleted_at IS NOT NULL
+    BEGIN
+        DELETE FROM app_bundles WHERE artifact_id = NEW.id;
+        DELETE FROM app_installs WHERE artifact_id = NEW.id;
+    END;",
+    // 49: what each remote's token reads threads as. `remotes.client_kind`
+    // is the kind its sign-in named: `clax-app` for the Clax app (the
+    // remote's token is its person's device, which reads threads as the
+    // person's browser, unfiltered), `agent` for a sign-in that named none
+    // (an agent token, whose reads the remote already filtered by the
+    // person's approvals there); NULL for a remote signed in before this
+    // migration, until the sync asks the remote. Its Rust step also adds
+    // `linked_comments.author_key` and its index where a database at 48
+    // lacks them (builds that ran migration 48 before it made them).
+    "ALTER TABLE remotes ADD COLUMN client_kind TEXT;",
+    // 50: ClaxBot (spec 2026-10-21-claxbot-design §4.2, §5, §7, §8.1).
+    // Every `person` column here holds a person key: a public ID, or
+    // `*owner` for the owner, so the owner's rows survive a claim that
+    // rewrites the owner's public ID.
+    //
+    // - `person_roles`: the admins the owner granted (`crate::roles`); the
+    //   owner is an admin without a row, and no row names `*owner`.
+    // - `person_flags`: per-person flags, generic, their names checked in
+    //   Rust (`crate::flags`); a missing row is the flag's default.
+    // - `bot_settings`: instance settings the admin pages edit, one JSON
+    //   value per known key (`crate::credits::Setting`), so the hosted
+    //   Worker, which has no config file, reads them as the daemon does.
+    // - `sealed_secrets`: the instance model key (`scope` `instance`,
+    //   `person` '') and people's own keys (`own`), XChaCha20-Poly1305
+    //   under a key-encryption key the store is handed (`crate::secrets`).
+    // - `cost_lines`, `usage_rows`, `credit_lifts`: what credits cost and
+    //   what was spent (`crate::credits`), integers only: milli-credits,
+    //   micro-USD and basis points; a usage row snapshots the exact inputs
+    //   of its charge (cost, margin, fixed credits, credit price, base),
+    //   and names its week (Monday 00:00 UTC) for the week's sums.
+    //   `cost_lines` is seeded by this migration's Rust step.
+    // - `bot_runs`, `bot_steps`, `bot_draft_files`: ClaxBot's runs, each
+    //   step committed before the next starts, and each run's draft as an
+    //   overlay on the version it was based on (`crate::bot_runs`).
+    // - `bot_follow_ups`: the people waiting, in arrival order and once
+    //   each, for a follow-up run of a thread a run works on.
+    //
+    // `audit_events_kind` serves the audit view's kind groups.
+    "CREATE TABLE person_roles (
+        person TEXT PRIMARY KEY,
+        role TEXT NOT NULL CHECK (role IN ('admin')),
+        set_by TEXT NOT NULL,
+        set_at TEXT NOT NULL
+    );
+    CREATE TABLE person_flags (
+        person TEXT NOT NULL,
+        flag TEXT NOT NULL,
+        value INTEGER NOT NULL CHECK (value IN (0, 1)),
+        set_by TEXT NOT NULL,
+        set_at TEXT NOT NULL,
+        PRIMARY KEY (person, flag)
+    );
+    CREATE TABLE bot_settings (
+        key TEXT PRIMARY KEY,
+        value_json TEXT NOT NULL,
+        set_by TEXT NOT NULL,
+        set_at TEXT NOT NULL
+    );
+    CREATE TABLE sealed_secrets (
+        scope TEXT NOT NULL CHECK (scope IN ('instance', 'own')),
+        person TEXT NOT NULL,
+        nonce BLOB NOT NULL,
+        sealed BLOB NOT NULL,
+        last4 TEXT NOT NULL,
+        use_own INTEGER NOT NULL DEFAULT 1,
+        set_by TEXT NOT NULL,
+        set_at TEXT NOT NULL,
+        last_ok_at TEXT,
+        host TEXT,
+        PRIMARY KEY (scope, person)
+    );
+    CREATE TABLE cost_lines (
+        id TEXT PRIMARY KEY,
+        label TEXT NOT NULL,
+        unit TEXT NOT NULL CHECK (unit IN
+            ('mtok_input', 'mtok_cached_input', 'mtok_cache_write', 'mtok_output', 'cpu_gb_s', 'mreq',
+             'gb_month', 'run')),
+        cost_micro_usd INTEGER NOT NULL CHECK (cost_micro_usd >= 0),
+        margin_bp INTEGER NOT NULL CHECK (margin_bp >= 0),
+        fixed_credits_milli INTEGER CHECK (fixed_credits_milli >= 0),
+        applies TEXT NOT NULL CHECK (applies IN ('instance_key', 'always')),
+        source TEXT NOT NULL,
+        model TEXT,
+        updated_by TEXT NOT NULL,
+        updated_at TEXT NOT NULL
+    );
+    CREATE TABLE usage_rows (
+        id INTEGER PRIMARY KEY AUTOINCREMENT,
+        person TEXT NOT NULL,
+        run_id TEXT,
+        step_n INTEGER,
+        line TEXT NOT NULL,
+        unit TEXT NOT NULL,
+        qty INTEGER NOT NULL CHECK (qty >= 0),
+        rate_cost_micro_usd INTEGER NOT NULL,
+        margin_bp INTEGER NOT NULL,
+        fixed_credits_milli INTEGER,
+        credit_price_micro_usd INTEGER NOT NULL,
+        base_qty INTEGER NOT NULL CHECK (base_qty > 0),
+        cost_micro_usd INTEGER NOT NULL CHECK (cost_micro_usd >= 0),
+        credits_milli INTEGER NOT NULL CHECK (credits_milli >= 0),
+        free_milli INTEGER NOT NULL CHECK (free_milli >= 0 AND free_milli <= credits_milli),
+        key_source TEXT NOT NULL CHECK (key_source IN ('instance', 'own')),
+        absorbed INTEGER NOT NULL DEFAULT 0 CHECK (absorbed IN (0, 1)),
+        estimated INTEGER NOT NULL DEFAULT 0 CHECK (estimated IN (0, 1)),
+        week TEXT NOT NULL,
+        at TEXT NOT NULL
+    );
+    CREATE INDEX usage_by_person ON usage_rows(person, week);
+    CREATE INDEX usage_by_week ON usage_rows(week, line);
+    CREATE INDEX usage_by_run ON usage_rows(run_id, step_n) WHERE run_id IS NOT NULL;
+    CREATE TABLE credit_lifts (
+        person TEXT PRIMARY KEY,
+        lift_milli INTEGER NOT NULL CHECK (lift_milli >= 0),
+        reason TEXT,
+        set_by TEXT NOT NULL,
+        set_at TEXT NOT NULL
+    );
+    CREATE TABLE bot_runs (
+        id TEXT PRIMARY KEY,
+        artifact_id TEXT NOT NULL,
+        person TEXT NOT NULL,
+        request TEXT NOT NULL CHECK (request IN ('thread', 'brief')),
+        thread_ids_json TEXT NOT NULL,
+        status TEXT NOT NULL CHECK (status IN
+            ('queued', 'running', 'stopping', 'finished', 'gave_up', 'stopped', 'failed')),
+        reason TEXT,
+        model TEXT NOT NULL,
+        key_source TEXT NOT NULL CHECK (key_source IN ('instance', 'own')),
+        base_version INTEGER NOT NULL,
+        credits_milli INTEGER NOT NULL DEFAULT 0 CHECK (credits_milli >= 0),
+        agent_grant TEXT,
+        claimed_by TEXT,
+        claimed_at TEXT,
+        created_at TEXT NOT NULL,
+        updated_at TEXT NOT NULL,
+        ended_at TEXT,
+        due_at TEXT
+    );
+    CREATE INDEX bot_runs_by_artifact ON bot_runs(artifact_id, created_at, id);
+    CREATE INDEX bot_runs_by_person ON bot_runs(person, created_at, id);
+    CREATE INDEX bot_runs_live ON bot_runs(created_at, id)
+        WHERE status IN ('queued', 'running', 'stopping');
+    CREATE TABLE bot_follow_ups (
+        seq INTEGER PRIMARY KEY AUTOINCREMENT,
+        thread_id TEXT NOT NULL,
+        person TEXT NOT NULL,
+        queued_at TEXT NOT NULL,
+        UNIQUE (thread_id, person)
+    );
+    CREATE TABLE bot_steps (
+        run_id TEXT NOT NULL,
+        n INTEGER NOT NULL,
+        kind TEXT NOT NULL CHECK (kind IN
+            ('turn', 'script', 'finish', 'give_up', 'stopped', 'failed')),
+        started_at TEXT NOT NULL,
+        attempt INTEGER NOT NULL DEFAULT 1,
+        committed_at TEXT,
+        payload_json TEXT,
+        observed_json TEXT,
+        failures INTEGER NOT NULL DEFAULT 0,
+        PRIMARY KEY (run_id, n)
+    );
+    CREATE TABLE bot_calls (
+        run_id TEXT NOT NULL,
+        step_n INTEGER NOT NULL,
+        seq INTEGER NOT NULL,
+        attempt INTEGER NOT NULL,
+        op TEXT NOT NULL,
+        args_hash TEXT NOT NULL,
+        ok INTEGER NOT NULL CHECK (ok IN (0, 1)),
+        result_json TEXT NOT NULL,
+        at TEXT NOT NULL,
+        PRIMARY KEY (run_id, step_n, seq)
+    );
+    CREATE TABLE bot_draft_files (
+        run_id TEXT NOT NULL,
+        path TEXT NOT NULL,
+        content BLOB,
+        content_type TEXT,
+        PRIMARY KEY (run_id, path)
+    );
+    CREATE INDEX audit_events_kind ON audit_events(kind, seq);",
+    // 51: legacy paths (`clax_core::publish::check_path_for`). Every
+    // artifact made before site hosts keeps `/_blob/<id>` for its assets on
+    // its site host, where its pages and documents name them; one made
+    // after owns `_blob/` (only `/_clax/` is Clax's there).
+    "ALTER TABLE artifacts ADD COLUMN legacy_paths INTEGER NOT NULL DEFAULT 0;
+    UPDATE artifacts SET legacy_paths = 1;",
+    // 52: each artifact's app data in a store of its own (`crate::app_data`).
     // `app_data_moved` names the artifacts whose documents, authors and
     // leases moved there, and the newest of the store's audit records the
     // instance's history holds a copy of (`audit_seq`); the `docs`,
     // `doc_authors` and `leases` tables keep the others' until each moves.
     // The viewer folds since (`crate::viewers`) are logged in
     // `app_data_folds` with their audit envelope, for every store to apply
-    // once, by `seq`.
+    // once, by `seq`. A job's publish step that made a new artifact writes
+    // its documents there after the step commits: `job_step_docs` keeps
+    // them, recorded in the step's transaction, until they land
+    // (`crate::jobs`).
     "CREATE TABLE app_data_moved (
         artifact_id TEXT PRIMARY KEY,
         audit_seq INTEGER NOT NULL DEFAULT 0
@@ -1248,8 +1643,14 @@ pub const MIGRATIONS: &[&str] = &[
         new TEXT NOT NULL,
         into_owner INTEGER NOT NULL,
         audit TEXT NOT NULL
+    );
+    CREATE TABLE job_step_docs (
+        job_id TEXT NOT NULL REFERENCES jobs(id) ON DELETE CASCADE,
+        key TEXT NOT NULL,
+        writes_json TEXT NOT NULL,
+        PRIMARY KEY (job_id, key)
     );",
-    // 44: site sessions (`crate::site_sessions`). A one-use code, made for
+    // 53: site sessions (`crate::site_sessions`). A one-use code, made for
     // someone who may read an artifact, is redeemed on the artifact's site
     // host for a session there; only each one's SHA-256 is kept. Each is
     // bound to one artifact, to the state its browser holds in a cookie of
@@ -1279,12 +1680,12 @@ pub const MIGRATIONS: &[&str] = &[
     CREATE INDEX site_sessions_by_browser ON site_sessions(browser_session);
     ALTER TABLE artifacts ADD COLUMN site_access TEXT NOT NULL DEFAULT 'private'
         CHECK (site_access IN ('private','world'));",
-    // 45: an asset's ID names it within its artifact (`crate::assets`): a
+    // 54: an asset's ID names it within its artifact (`crate::assets`): a
     // site host serves only its own artifact's assets, so a fork copies
     // the assets its version names under the same IDs and its pages'
     // addresses keep working. `assets` is keyed by (artifact_id, id); an
     // asset's page authors are kept under `<artifact ID>/<asset ID>`.
-    "CREATE TABLE assets_45 (
+    "CREATE TABLE assets_54 (
         id TEXT NOT NULL,
         artifact_id TEXT NOT NULL REFERENCES artifacts(id),
         content_type TEXT NOT NULL,
@@ -1294,10 +1695,10 @@ pub const MIGRATIONS: &[&str] = &[
         person TEXT,
         PRIMARY KEY (artifact_id, id)
     );
-    INSERT INTO assets_45 (id, artifact_id, content_type, size, ext, created_at, person)
+    INSERT INTO assets_54 (id, artifact_id, content_type, size, ext, created_at, person)
         SELECT id, artifact_id, content_type, size, ext, created_at, person FROM assets ORDER BY rowid;
     DROP TABLE assets;
-    ALTER TABLE assets_45 RENAME TO assets;
+    ALTER TABLE assets_54 RENAME TO assets;
     CREATE INDEX assets_by_id ON assets(id);
     DELETE FROM page_authors WHERE kind = 'asset'
         AND NOT EXISTS (SELECT 1 FROM assets a WHERE a.id = page_authors.id);
@@ -1307,8 +1708,25 @@ pub const MIGRATIONS: &[&str] = &[
 
 /// The ClaxBot migration, as a schema version (spec
 /// 2026-10-21-claxbot-design §4.1), the one after
-/// [`REMOTE_KIND_MIGRATION`] and this build's last.
+/// [`REMOTE_KIND_MIGRATION`].
 pub const CLAXBOT_MIGRATION: u32 = REMOTE_KIND_MIGRATION + 1;
+
+/// The migration that marks every artifact made before site hosts as
+/// keeping its legacy `/_blob/<id>` paths (`artifacts.legacy_paths`), as a
+/// schema version: the one after [`CLAXBOT_MIGRATION`].
+pub const LEGACY_PATHS_MIGRATION: u32 = CLAXBOT_MIGRATION + 1;
+
+/// The migration that gives each artifact's app data a store of its own
+/// (`app_data_moved`, `app_data_folds`), as a schema version.
+pub const APP_DATA_MIGRATION: u32 = LEGACY_PATHS_MIGRATION + 1;
+
+/// The migration that adds site sessions (`site_codes`, `site_sessions`,
+/// `artifacts.site_access`), as a schema version.
+pub const SITE_SESSIONS_MIGRATION: u32 = APP_DATA_MIGRATION + 1;
+
+/// The migration that keys assets by artifact and asset ID, as a schema
+/// version, and this build's last.
+pub const ASSET_KEYS_MIGRATION: u32 = SITE_SESSIONS_MIGRATION + 1;
 
 /// The audit journal's migration, as a schema version (the
 /// `user_version` it leaves).
@@ -1404,9 +1822,6 @@ pub(crate) enum Mark<'a> {
     /// A column the migration adds: the table, then the column.
     Column(&'a str, &'a str),
     /// An index the migration makes.
-    // No main migration above 38 is marked by an index or a marker yet;
-    // the tests' simulated ones are.
-    #[cfg_attr(not(test), allow(dead_code))]
     Index(&'a str),
     /// For a migration that changes only rows, which a backfill that may
     /// change nothing cannot otherwise be told apart from its absence: the
@@ -1470,11 +1885,18 @@ const APP_MIGRATION_MARKS: [Mark<'static>; 8] = [
 ];
 
 /// What each migration after the app's leaves in the schema, in order:
-/// ClaxBot's ([`CLAXBOT_MIGRATION`]). They follow the app's in every
+/// ClaxBot's ([`CLAXBOT_MIGRATION`]), then [`LEGACY_PATHS_MIGRATION`] to
+/// [`ASSET_KEYS_MIGRATION`]. They follow the app's in every
 /// numbering, so a later numbering that takes a main migration below the
 /// app's moves them with the app's, and adoption tells how many of them a
 /// database holds by these marks, as it does the app's.
-const MARKS_AFTER_APP: [Mark<'static>; 1] = [Mark::Table("person_roles")];
+const MARKS_AFTER_APP: [Mark<'static>; 5] = [
+    Mark::Table("person_roles"),
+    Mark::Column("artifacts", "legacy_paths"),
+    Mark::Table("app_data_moved"),
+    Mark::Table("site_codes"),
+    Mark::Index("assets_by_id"),
+];
 
 /// Brings a database written by an earlier `flutter-app` build, which
 /// numbered the app's migrations differently, into this numbering, in
@@ -2806,18 +3228,18 @@ mod tests {
         .unwrap();
     }
 
-    /// Migration 45 keys assets by artifact and asset ID, keeping every
-    /// row, and moves each asset's page authors to `<artifact>/<asset>`,
-    /// dropping those of no asset.
+    /// The asset keys migration ([`ASSET_KEYS_MIGRATION`]) keys assets by
+    /// artifact and asset ID, keeping every row, and moves each asset's
+    /// page authors to `<artifact>/<asset>`, dropping those of no asset.
     #[test]
-    fn migration_45_names_each_asset_within_its_artifact() {
+    fn the_asset_keys_migration_names_each_asset_within_its_artifact() {
         let dir = tempfile::tempdir().unwrap();
         let home = Home::at(dir.path().join("ax"));
         home.ensure_dirs().unwrap();
         {
             let c = Connection::open(home.db_path()).unwrap();
-            let before = 44;
-            assert!(MIGRATIONS[before].contains("assets_45"));
+            let before = ASSET_KEYS_MIGRATION as usize - 1;
+            assert!(MIGRATIONS[before].contains("assets_54"));
             for sql in &MIGRATIONS[..before] {
                 c.execute_batch(sql).unwrap();
             }
@@ -4395,12 +4817,17 @@ mod tests {
         assert_eq!(super::REMOTE_KIND_MIGRATION, APP_MIGRATION + 7);
         assert!(MIGRATIONS[first + 7].contains("ADD COLUMN client_kind"));
         assert_eq!(super::CLAXBOT_MIGRATION, super::REMOTE_KIND_MIGRATION + 1);
-        assert_eq!(MIGRATIONS.len() as u32, super::CLAXBOT_MIGRATION);
         assert!(MIGRATIONS[first + 8].contains("CREATE TABLE person_roles ("));
+        assert_eq!(super::LEGACY_PATHS_MIGRATION, super::CLAXBOT_MIGRATION + 1);
+        assert!(MIGRATIONS[first + 9].contains("ADD COLUMN legacy_paths"));
+        assert!(MIGRATIONS[first + 10].contains("CREATE TABLE app_data_moved ("));
+        assert!(MIGRATIONS[first + 11].contains("CREATE TABLE site_codes ("));
+        assert!(MIGRATIONS[first + 12].contains("CREATE INDEX assets_by_id"));
+        assert_eq!(MIGRATIONS.len() as u32, ASSET_KEYS_MIGRATION);
     }
 
     #[test]
-    fn a_fresh_database_reaches_50() {
+    fn a_fresh_database_reaches_54() {
         let dir = tempfile::tempdir().unwrap();
         let home = Home::at(dir.path().join("ax"));
         drop(Store::open(&home).unwrap());
@@ -4409,7 +4836,11 @@ mod tests {
         assert_eq!(super::APP_PUSH_MIGRATION, 48);
         assert_eq!(super::REMOTE_KIND_MIGRATION, 49);
         assert_eq!(super::CLAXBOT_MIGRATION, 50);
-        assert_eq!(user_version(&c), super::CLAXBOT_MIGRATION);
+        assert_eq!(super::LEGACY_PATHS_MIGRATION, 51);
+        assert_eq!(super::APP_DATA_MIGRATION, 52);
+        assert_eq!(super::SITE_SESSIONS_MIGRATION, 53);
+        assert_eq!(ASSET_KEYS_MIGRATION, 54);
+        assert_eq!(user_version(&c), ASSET_KEYS_MIGRATION);
         assert!(super::JOBS_TABLES.contains(&"job_step_marks"));
         for table in super::JOBS_TABLES {
             assert_eq!(table_count(&c, table), 1, "{table}");
@@ -5151,7 +5582,7 @@ mod tests {
 
         drop(Store::open(&home).unwrap());
         let c = Connection::open(home.db_path()).unwrap();
-        assert_eq!(user_version(&c), super::CLAXBOT_MIGRATION);
+        assert_eq!(user_version(&c), ASSET_KEYS_MIGRATION);
         assert_eq!(user_version(&c), MIGRATIONS.len() as u32);
         for table in [
             "legal_agreements",
