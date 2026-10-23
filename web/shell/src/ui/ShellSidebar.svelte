@@ -10,7 +10,10 @@
   // live agent (`ownTarget`), chosen for it as it sends; a LAN viewer's, to
   // the owner's (`sendsFor`). ClaxBot leads the Send menu where the
   // daemon lists it (`bot/send.svelte.ts`); a Send to it starts a run of
-  // the threads sent and opens its panel.
+  // the threads sent and opens its panel. A thread sent to the agent that
+  // no agent is running to take gets ClaxBot's offer above its card, which
+  // asks before spending credits; "Always here" chooses ClaxBot, and then
+  // this viewer's later such threads go to it without asking.
   // In the Clax app, whose scheme answers nothing under `/api/`, a thread's
   // clip is fetched over the transport and shown by object URL
   // (`api-image.ts`, loaded only there); a browser loads `clip_url` itself.
@@ -45,6 +48,25 @@
     send();
   };
   const choose = (h: string) => { botView.choose(ctl.id, h === BOT); if (h !== BOT) ctl.chooseTarget(h); };
+  // A thread sent to the agent that no agent is running to take, and that
+  // ClaxBot has not taken: ClaxBot offers to, where it is available to
+  // this viewer (`BotOffer`).
+  const stranded = (t: Thread) => t.status === "open" && t.sent_to_agent && t.feedback_state?.state === "agent_ended" && !botView.claimed.includes(t.id);
+  const offered = (t: Thread) => !!botView.agent?.live && !s.spectator && stranded(t);
+  const always = (t: Thread) => { botView.choose(ctl.id, true); void sendToBot(ctl, [t.id]); };
+  // With ClaxBot chosen here ("Always here", or the Send menu), this
+  // viewer's own threads written since the view opened that end up with
+  // no agent to take them go to ClaxBot without asking, once each.
+  const opened = new Date().toISOString();
+  const tried = new Set<string>();
+  $effect(() => {
+    if (!botView.chosen || !botView.agent?.live || !s.me) return;
+    for (const t of s.threads) {
+      if (tried.has(t.id) || t.created_at < opened || !stranded(t) || t.comments[0]?.author_public_id !== s.me.public_id) continue;
+      tried.add(t.id);
+      void sendToBot(ctl, [t.id]);
+    }
+  });
   const clip = onHost() ? async (t: Thread) => (t.clip_url ? (await import("../api-image")).apiImageSrc(t.clip_url) : null) : undefined;
 </script>
 
@@ -53,6 +75,9 @@
 {/snippet}
 
 {#snippet above(t: Thread, now: Date)}
+  {#if offered(t)}
+    {#await import("../bot/BotOffer.svelte") then { default: BotOffer }}<BotOffer onSend={() => void sendToBot(ctl, [t.id])} onAlways={() => always(t)} />{/await}
+  {/if}
   {#if t.status === "open" && t.sent_to_agent && (s.me?.owner || s.me?.person)}
     {#await import("./ThreadApproval.svelte") then { default: ThreadApproval }}<ThreadApproval {t} {now} />{/await}
   {/if}
