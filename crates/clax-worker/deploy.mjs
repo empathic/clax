@@ -31,7 +31,9 @@
 //    again without it);
 // 6. builds the web UI and then the Worker (release), unless `--no-build`;
 // 7. runs `wrangler deploy` (with `--dry-run`, `wrangler deploy --dry-run`)
-//    and reports the upload size against the Workers Paid limit;
+//    and reports the upload size against the Workers Paid limit; when it
+//    fails only because the triggers (custom domains) were left partially
+//    updated, it runs the same deploy once more, without rebuilding;
 // 8. waits for `/healthz` on the public host, naming what it is waiting
 //    on (DNS, the certificate, the Worker), and prints the setup URL and
 //    the next steps.
@@ -64,6 +66,7 @@ import { homedir } from "node:os";
 import { createInterface } from "node:readline/promises";
 import { join, resolve } from "node:path";
 import { fileURLToPath } from "node:url";
+import { partialTriggerUpdate } from "./deploy-lib.mjs";
 import { HERE, baseConfig, embedsWebUi } from "./harness.mjs";
 
 const WRANGLER = join(HERE, "node_modules/.bin/wrangler");
@@ -583,13 +586,21 @@ async function main() {
     args.push("--secrets-file", secretsFile);
   }
   let r;
+  let retried = false;
   try {
     r = await wrangler(args, { account, show: true });
+    if (r.code !== 0 && !o.dryRun && partialTriggerUpdate(r.out + r.err)) {
+      retried = true;
+      // The upload went through and only the routes or custom domains were
+      // left half-done; the same deploy again finishes them.
+      info("wrangler deploy left the triggers (custom domains) only partially updated: deploying once more, without rebuilding");
+      r = await wrangler(args, { account, show: true });
+    }
   } finally {
     if (secretsFile) rmSync(secretsFile, { force: true });
   }
   const size = uploadSize(r.out + r.err);
-  if (r.code !== 0) throw new Error(`wrangler deploy failed: ${lastError(r)}`);
+  if (r.code !== 0) throw new Error(`wrangler deploy failed${retried ? " again, after its one retry" : ""}: ${lastError(r)}`);
   if (size) {
     const pct = Math.round((size.gzip / PAID_LIMIT_KIB) * 100);
     info(`upload ${(size.total / 1024).toFixed(2)} MiB, ${(size.gzip / 1024).toFixed(2)} MiB gzipped: ${pct}% of Workers Paid's 10 MiB`);

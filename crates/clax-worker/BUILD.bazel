@@ -1,3 +1,5 @@
+load("@aspect_rules_js//js:defs.bzl", "js_test")
+load("@bazel_lib//lib:copy_to_bin.bzl", "copy_to_bin")
 load("@rules_shell//shell:sh_test.bzl", "sh_test")
 
 # crates/clax-worker is a Cargo workspace of its own (the Worker and its
@@ -32,4 +34,19 @@ sh_test(
         "@rules_rust//rust/settings:rustfmt.toml",
         "@rules_rust//rust/toolchain:current_rustfmt_files",
     ] + RUST_SOURCES,
+)
+
+# What deploy.mjs decides from what it reads (deploy-lib.mjs):
+# node --test crates/clax-worker/deploy-lib.test.mjs, as a Bazel test.
+copy_to_bin(
+    name = "deploy_lib",
+    srcs = ["deploy-lib.mjs"],
+)
+
+js_test(
+    name = "deploy_lib_test",
+    data = [":deploy_lib"],
+    entry_point = "deploy-lib.test.mjs",
+    node_options = ["--test"],
+    patch_node_fs = False,
 )
