@@ -654,7 +654,8 @@ async fn revoke_own_token(
 
 /// `GET /api/hosted/links` (a member) → `{links: [{artifact_id, title,
 /// access, url}]}`: the pages shared by link that the caller shares (the
-/// owner every one, a person those they made, as [`set_link`] allows).
+/// owner those within the owner's reach, [`owner_reaches`]; a person those
+/// they made, as [`set_link`] allows).
 /// A link is the capability to its page, so a member is handed none they
 /// could not have made.
 async fn list_links(
@@ -673,7 +674,11 @@ async fn list_links(
                 let Ok(id) = clax_core::ArtifactId::parse(&aid) else {
                     continue;
                 };
-                if !who.owner && !st.artifact_created_by(&aid, Some(&who.viewer.public_id))? {
+                let shares = match who.owner {
+                    true => owner_reaches(st, &aid)?,
+                    false => st.artifact_created_by(&aid, Some(&who.viewer.public_id))?,
+                };
+                if !shares {
                     continue;
                 }
                 if let Some(a) = st.get_artifact(&id)? {
@@ -792,16 +797,42 @@ pub fn may_share(
     Ok(who.member() && (who.owner || st.artifact_created_by(aid, Some(&who.viewer.public_id))?))
 }
 
+/// Whether the owner reaches artifact `aid` other than by its link: the
+/// owner made it, or its maker shared it with the owner (the reach rule).
+/// What the owner's sharing routes need before [`may_share`], whose owner
+/// arm holds at any artifact: a page shared by link opens to anyone, so
+/// its link is no reach to share it or to read who it is shared with.
+///
+/// # Errors
+/// The store's.
+fn owner_reaches(st: &clax_store::Store, aid: &str) -> clax_core::Result<bool> {
+    use clax_store::reach::Reach;
+    Ok(match st.reach(aid, None)? {
+        Reach::Within => true,
+        Reach::Gone => false,
+        Reach::Beyond => clax_http::hosted::shares_of(st, None)?.allows(
+            RightType::Artifacts,
+            "read",
+            Some(aid),
+            &|_| false,
+        ),
+    })
+}
+
 /// `NotFound` without live artifact `aid`, or when `who` may not read it
 /// ([`session_reads`]: an artifact they may not read is not there, as at
-/// its own routes); `forbidden` when `who` reads it but may not share it
-/// ([`may_share`]).
+/// its own routes), or for the owner when it is out of the owner's reach
+/// but for its link ([`owner_reaches`]); `forbidden` when `who` reads it
+/// but may not share it ([`may_share`]).
 fn sharer(
     st: &clax_store::Store,
     who: &SessionViewer,
     aid: &clax_core::ArtifactId,
 ) -> clax_core::Result<()> {
-    if st.get_artifact(aid)?.is_none() || !session_reads(st, who, aid.as_str())? {
+    if st.get_artifact(aid)?.is_none()
+        || !session_reads(st, who, aid.as_str())?
+        || (who.owner && !owner_reaches(st, aid.as_str())?)
+    {
         return Err(CoreError::NotFound);
     }
     if !may_share(st, who, aid.as_str())? {
@@ -853,7 +884,9 @@ fn share_view(sh: &clax_store::shares::Share) -> Value {
 /// open to the world (`world` or `private`, `PATCH /api/artifacts/<aid>`
 /// changes it); for another member who may
 /// read it, `{artifact_id, can_share: false}`. 404 for an artifact the
-/// caller may not read, 401 without a session, 403 for a guest.
+/// caller may not read, and for the owner one out of the owner's reach but
+/// for its link ([`owner_reaches`]); 401 without a session, 403 for a
+/// guest.
 async fn get_sharing(
     State(s): State<AppState>,
     headers: HeaderMap,
@@ -877,6 +910,11 @@ async fn get_sharing(
                 return Err(CoreError::NotFound);
             }
             let id = aid.as_str();
+            // Out of the owner's reach, the owner's arm of `may_share`
+            // does not hold: not there for them.
+            if who.owner && !owner_reaches(st, id)? {
+                return Err(CoreError::NotFound);
+            }
             if !may_share(st, &who, id)? {
                 if !session_reads(st, &who, id)? {
                     return Err(CoreError::NotFound);

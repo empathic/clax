@@ -1600,6 +1600,38 @@ async fn a_persons_rights_limit_their_browser_and_the_owner_reads_only_their_rea
     }
     let (s, _) = site.thread(&owner, &mias, "let me in").await;
     assert_eq!(s, 404);
+    // Nor are its sharing details, nor its link, the owner's: not even
+    // while it is shared by link, which anyone may open.
+    let sharing = format!("/api/hosted/artifacts/{mias}/sharing");
+    let (s, v) = site.get(&owner, &sharing).await;
+    assert_eq!((s, code(&v)), (404, "not_found"), "{v}");
+    let link = format!("/api/hosted/artifacts/{mias}/link");
+    let (s, v) = site.put(&mia, &link, json!({"access": "viewer"})).await;
+    assert_eq!(s, 200, "{v}");
+    let (s, v) = site.get(&owner, "/api/hosted/links").await;
+    assert_eq!(s, 200, "{v}");
+    assert!(
+        v["links"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .all(|l| l["artifact_id"] != json!(mias)),
+        "{v}"
+    );
+    let (s, v) = site.get(&owner, &sharing).await;
+    assert_eq!((s, code(&v)), (404, "not_found"), "{v}");
+    let (s, v) = site.put(&owner, &link, json!({"access": null})).await;
+    assert_eq!((s, code(&v)), (404, "not_found"), "{v}");
+    let (s, v) = site
+        .put(
+            &owner,
+            &format!("/api/hosted/artifacts/{mias}/shares"),
+            json!({"github_login": "someone", "access": "viewer"}),
+        )
+        .await;
+    assert_eq!((s, code(&v)), (404, "not_found"), "{v}");
+    let (s, v) = site.put(&mia, &link, json!({"access": null})).await;
+    assert_eq!(s, 200, "{v}");
     // Mia shares it with the owner as a viewer: the owner reads it, at a
     // viewer's access alone.
     let owner_pid = site.pid(&owner).await;
