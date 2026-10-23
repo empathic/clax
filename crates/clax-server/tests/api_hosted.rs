@@ -21,6 +21,10 @@ fn code(v: &Value) -> &str {
     v["error"]["code"].as_str().unwrap_or_default()
 }
 
+/// One credential's requests: a method and a path to a request carrying
+/// it.
+type MakeRequest<'a> = Box<dyn Fn(reqwest::Method, &str) -> reqwest::RequestBuilder + 'a>;
+
 /// A hosted daemon on a stopped clock, and the browser-side helpers.
 struct Site {
     ts: TestServer,
@@ -2107,10 +2111,7 @@ async fn no_owner_path_reads_a_members_page() {
         .await;
     assert_eq!(s, 200, "{v}");
     // As the owner's browser (its shell token) and as the daemon token.
-    let callers: [(
-        &str,
-        Box<dyn Fn(reqwest::Method, &str) -> reqwest::RequestBuilder + '_>,
-    ); 2] = [
+    let callers: [(&str, MakeRequest<'_>); 2] = [
         (
             "browser",
             Box::new(|m: reqwest::Method, p: &str| site.req(&owner, m, p).bearer_auth(&shell)),
@@ -3085,10 +3086,7 @@ async fn a_page_shared_with_the_owner_gives_them_its_shares_level_alone() {
     let (s, q) = json_of(r).await;
     assert!(s == 200 || s == 201, "{s} {q}");
     let qid = q["question"]["id"].as_str().unwrap().to_string();
-    let callers: [(
-        &str,
-        Box<dyn Fn(reqwest::Method, &str) -> reqwest::RequestBuilder + '_>,
-    ); 2] = [
+    let callers: [(&str, MakeRequest<'_>); 2] = [
         (
             "browser",
             Box::new(|m: reqwest::Method, p: &str| site.req(&owner, m, p).bearer_auth(&shell)),

@@ -750,7 +750,7 @@ async fn owner_close(
     s.store_call(move |db| {
         let q = db.question_of(&qid, me.as_deref())?;
         if !clax_http::views::question::in_reach(&st, db, me.as_deref(), &q)? {
-            return Err(CoreError::NotFound.into());
+            return Err(CoreError::NotFound);
         }
         let ctx = audit.resolve(db)?;
         close(&st, db, &ctx, &qid, c)

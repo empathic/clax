@@ -206,16 +206,15 @@ fn via(who: &Identity) -> Via {
 /// when it is not open; 400 `invalid_scope`.
 pub async fn decide(
     State(s): State<AppState>,
-    _d: DeniedToGrants,
+    d: DeniedToGrants,
     _o: SameOrigin,
     hosted: Option<axum::Extension<clax_http::hosted::HostedRequest>>,
-    caller: Caller,
     who: Identity,
     audit: DeferredAudit,
     p: Result<Path<String>, PathRejection>,
     req: Result<Json<DecideBody>, JsonRejection>,
 ) -> Result<Json<Value>, ApiError> {
-    let me = browser_approver(&caller, "deciding an approval")?;
+    let me = browser_approver(&d.caller(&s).await?, "deciding an approval")?;
     let rid = path(p)?;
     let b = body(req)?;
     let Some(decision) = Decision::parse(&b.scope) else {
@@ -229,10 +228,7 @@ pub async fn decide(
     // On hosted, a request about a page out of the approver's reach now
     // (its share ended, say) is answered as one that does not exist: it
     // lets nothing through and names nothing of the page.
-    let member = match s.hosted {
-        Some(_) => Some(hosted.and_then(|h| h.0.member)),
-        None => None,
-    };
+    let member = s.hosted.as_ref().map(|_| hosted.and_then(|h| h.0.member));
     let v = s
         .store_call(move |st| {
             // The request first, so a request of no one's makes no audit row.
