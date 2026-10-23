@@ -241,7 +241,6 @@ pub(crate) async fn serve_blob(
             (header::CONTENT_LENGTH, len.as_str()),
             (header::CACHE_CONTROL, "public, max-age=31536000, immutable"),
             (header::X_CONTENT_TYPE_OPTIONS, "nosniff"),
-            (header::ACCESS_CONTROL_ALLOW_ORIGIN, "*"),
             (header::CONTENT_SECURITY_POLICY, "sandbox"),
             (header::REFERRER_POLICY, "no-referrer"),
         ],

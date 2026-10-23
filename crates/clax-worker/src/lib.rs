@@ -368,18 +368,16 @@ async fn queue(batch: worker::MessageBatch<Value>, env: Env, _ctx: worker::Conte
 /// the daemon serves it with; `None` for a path the server answers, or a
 /// file the assets lack.
 async fn static_asset(env: &Env, path: &str, app_host: bool) -> Result<Option<HttpResponse>> {
-    let (file, cache, any_origin, entry) = match path {
-        "/" | "/inbox" | "/people" | "/tags" | "/admin" | "/settings" | "/me" | "/audit"
-            if app_host =>
-        {
-            ("/index.html".to_string(), "no-cache", false, true)
+    let (file, cache, entry) = match path {
+        "/" | "/inbox" | "/people" | "/tags" if app_host => {
+            ("/index.html".to_string(), "no-cache", true)
         }
         _ => match path
             .strip_prefix("/_clax/")
             .and_then(clax_server::shell::asset_cache)
         {
-            Some((cache, any)) if !path.split('/').any(|c| c.starts_with('.')) => {
-                (path.to_string(), cache, any, false)
+            Some(cache) if !path.split('/').any(|c| c.starts_with('.')) => {
+                (path.to_string(), cache, false)
             }
             _ => return Ok(None),
         },
@@ -395,12 +393,6 @@ async fn static_asset(env: &Env, path: &str, app_host: bool) -> Result<Option<Ht
     }
     let h = res.headers_mut();
     h.insert(header::CACHE_CONTROL, HeaderValue::from_static(cache));
-    if any_origin {
-        h.insert(
-            header::ACCESS_CONTROL_ALLOW_ORIGIN,
-            HeaderValue::from_static("*"),
-        );
-    }
     if entry {
         h.insert(
             header::CONTENT_SECURITY_POLICY,
@@ -419,9 +411,8 @@ async fn static_asset(env: &Env, path: &str, app_host: bool) -> Result<Option<Ht
 
 /// Marks a static file served on site host `host` as the site layer marks
 /// every site response (`clax_http::site_access::site_headers`), with no
-/// `Access-Control-Allow-Origin` (the bridge's parts carry one on the app
-/// host): `public` is a hosted instance's public origin, `None` on one that
-/// is not hosted.
+/// `Access-Control-Allow-Origin` whatever the static assets sent: `public`
+/// is a hosted instance's public origin, `None` on one that is not hosted.
 fn site_static_headers(h: &mut axum::http::HeaderMap, public: Option<&str>, host: &str) {
     h.remove(header::ACCESS_CONTROL_ALLOW_ORIGIN);
     let secure = public.is_some_and(|o| o.starts_with("https://"));

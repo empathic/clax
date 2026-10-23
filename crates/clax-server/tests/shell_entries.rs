@@ -43,11 +43,11 @@ async fn each_route_gets_its_own_entry() {
     assert_eq!(res.headers()["cache-control"], "private, no-cache");
     assert!(res.headers().contains_key("etag"));
 
-    // A lazy part of the bridge: readable from an opaque-origin sandbox, and
+    // A lazy part of the bridge: read by the page beside it alone, and
     // immutable at its content-hashed name outside a debug build.
     let res = ts.get("/_clax/bridge/comment-abc.js").await;
     assert_eq!(res.status(), 200);
-    assert_eq!(res.headers()["access-control-allow-origin"], "*");
+    assert!(!res.headers().contains_key("access-control-allow-origin"));
     assert_eq!(res.headers()["content-type"], "text/javascript");
     let cc = if cfg!(debug_assertions) {
         "no-cache"
@@ -65,13 +65,12 @@ async fn each_route_gets_its_own_entry() {
         .await
         .unwrap();
     assert_eq!(again.status(), 304);
-    assert_eq!(again.headers()["access-control-allow-origin"], "*");
 
     // A part that is not there (an older bridge's, after an upgrade) is a
-    // 404 a sandboxed page can read; a build manifest is never served.
+    // 404; a build manifest is never served.
     let gone = ts.get("/_clax/bridge/comment-old.js").await;
     assert_eq!(gone.status(), 404);
-    assert_eq!(gone.headers()["access-control-allow-origin"], "*");
+    assert!(!gone.headers().contains_key("access-control-allow-origin"));
     std::fs::create_dir_all(dist.path().join("_clax/bridge/.vite")).unwrap();
     std::fs::write(dist.path().join("_clax/bridge/.vite/manifest.json"), "{}").unwrap();
     assert_eq!(

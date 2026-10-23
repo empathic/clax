@@ -101,14 +101,13 @@ pub(crate) fn percent_decoded(seg: &str) -> Option<String> {
 }
 
 /// The artifact a path names: `/api/artifacts/<aid>…`,
-/// `/api/hosted/artifacts/<aid>…` (hosted mode's sharing routes),
-/// `/c/<aid>/…`, `/a/<aid>…`, decoded as the handlers decode it (so `%37…`
-/// names the same artifact as `7…`).
+/// `/api/hosted/artifacts/<aid>…` (hosted mode's sharing routes) or
+/// `/a/<aid>…`, decoded as the handlers decode it (so `%37…` names the
+/// same artifact as `7…`).
 pub fn artifact_in(path: &str) -> Option<String> {
     let rest = path
         .strip_prefix("/api/artifacts/")
         .or_else(|| path.strip_prefix("/api/hosted/artifacts/"))
-        .or_else(|| path.strip_prefix("/c/"))
         .or_else(|| path.strip_prefix("/a/"))?;
     let seg = percent_decoded(rest.split('/').next().unwrap_or(""))?;
     Some(seg.split(':').next().unwrap_or("").to_string())
@@ -153,7 +152,7 @@ mod tests {
                 Some("7q3k9mzx2b4t"),
             ),
             ("/api/artifacts/7q3k9mzx2b4t:x", Some("7q3k9mzx2b4t")),
-            ("/c/7q3k9mzx2b4t/v/1/", Some("7q3k9mzx2b4t")),
+            ("/c/7q3k9mzx2b4t/v/1/", None),
             ("/a/7q3k9mzx2b4t", Some("7q3k9mzx2b4t")),
             (
                 "/api/hosted/artifacts/7q3k9mzx2b4t/link",
@@ -166,12 +165,12 @@ mod tests {
                 "/api/artifacts/%37q3k9mzx2b4t/threads",
                 Some("7q3k9mzx2b4t"),
             ),
-            ("/c/%37%71%33k9mzx2b4t/v/1/", Some("7q3k9mzx2b4t")),
+            ("/a/%37%71%33k9mzx2b4t", Some("7q3k9mzx2b4t")),
             ("/a/7q3k9mzx2b4t%3Ax", Some("7q3k9mzx2b4t")),
         ] {
             assert_eq!(artifact_in(p).as_deref(), want, "{p}");
         }
-        assert_eq!(artifact_in("/c/%ff/v/1/"), None);
+        assert_eq!(artifact_in("/a/%ff"), None);
     }
 
     #[test]

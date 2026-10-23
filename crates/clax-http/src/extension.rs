@@ -625,7 +625,6 @@ mod tests {
             (&g, "//api/live/pages", None),
             (&g, "api/live/pages", None),
             (&p, "/api/live/pages", None),
-            (&g, "/c/A/v/1/", None),
         ] {
             assert_eq!(rule(m, path), want, "{m} {path}");
         }

@@ -408,20 +408,12 @@ pub async fn static_file(
             .into_response());
     }
     let file = format!("_clax/{path}");
-    // A missing part answers so that a sandboxed page can read the failure
-    // (its import is a CORS request); build files whose names start with a
-    // dot (a bundler's manifest) are never served.
+    // Build files whose names start with a dot (a bundler's manifest) are
+    // never served.
     let part = path.starts_with("bridge/");
     let hidden = path.split('/').any(|c| c.starts_with('.'));
     let Some(f) = (!hidden).then(|| s.web.get(&file)).flatten() else {
-        let mut res = ApiError::not_found().into_response();
-        if part {
-            res.headers_mut().insert(
-                header::ACCESS_CONTROL_ALLOW_ORIGIN,
-                header::HeaderValue::from_static("*"),
-            );
-        }
-        return Ok(res);
+        return Ok(ApiError::not_found().into_response());
     };
     let ct = if path.ends_with(".js") {
         "text/javascript".to_string()
@@ -436,25 +428,20 @@ pub async fn static_file(
             ([(header::CONTENT_TYPE, ct)], f.data.clone().into_owned()).into_response()
         }));
     }
-    // The bridge's lazy parts: content-hashed ES modules that pages import,
-    // from sandboxed frames too (an opaque origin, so the import is a CORS
-    // request). They hold no data, so any origin may read them. A debug
-    // build's parts keep one name while `just watch` rebuilds them, so there
-    // they are revalidated (with an `ETag`, a `304`).
+    // The bridge's lazy parts: content-hashed ES modules that a page imports
+    // from the host that served it the bridge, its own site's, so no other
+    // origin reads them. A debug build's parts keep one name while `just
+    // watch` rebuilds them, so there they are revalidated (with an `ETag`, a
+    // `304`).
     if part {
         let cc = if cfg!(debug_assertions) {
             REVALIDATE
         } else {
             IMMUTABLE
         };
-        let mut res = http_cache::tagged(&req, &f.data, cc, || {
+        return Ok(http_cache::tagged(&req, &f.data, cc, || {
             ([(header::CONTENT_TYPE, ct)], f.data.clone().into_owned()).into_response()
-        });
-        res.headers_mut().insert(
-            header::ACCESS_CONTROL_ALLOW_ORIGIN,
-            header::HeaderValue::from_static("*"),
-        );
-        return Ok(res);
+        }));
     }
     // The shell's bundles are named by a hash of their bytes. A debug build
     // reads them from disk, where a rebuild may replace them, so it revalidates.
@@ -479,12 +466,11 @@ pub async fn static_file(
 }
 
 /// How [`static_file`] caches `/_clax/<path>` when another host serves the
-/// web UI's files (a Worker's static assets): the `Cache-Control`, and
-/// whether any origin may read it (`Access-Control-Allow-Origin: *`).
-/// `None` for the paths only the server answers: the bridge and the
-/// transport, whose URLs are immutable only at the version they serve, and
-/// the contract's type definitions, which are built in.
-pub fn asset_cache(path: &str) -> Option<(&'static str, bool)> {
+/// web UI's files (a Worker's static assets): the `Cache-Control`. `None`
+/// for the paths only the server answers: the bridge and the transport,
+/// whose URLs are immutable only at the version they serve, and the
+/// contract's type definitions, which are built in.
+pub fn asset_cache(path: &str) -> Option<&'static str> {
     if path == "bridge.js" || path == "transport.js" || path.starts_with("contract/") {
         return None;
     }
@@ -493,13 +479,10 @@ pub fn asset_cache(path: &str) -> Option<(&'static str, bool)> {
     } else {
         IMMUTABLE
     };
-    if path.starts_with("bridge/") {
-        return Some((fixed, true));
+    if path.starts_with("bridge/") || (path.starts_with("shell/") && hashed_name(path)) {
+        return Some(fixed);
     }
-    if path.starts_with("shell/") && hashed_name(path) {
-        return Some((fixed, false));
-    }
-    Some(("public, max-age=3600", false))
+    Some("public, max-age=3600")
 }
 
 /// Whether the file name ends in a bundler's content hash: `<name>-<8 of
@@ -671,9 +654,6 @@ mod tests {
     fn another_host_never_serves_the_files_named_by_version() {
         assert_eq!(asset_cache("bridge.js"), None);
         assert_eq!(asset_cache("transport.js"), None);
-        assert_eq!(
-            asset_cache("mark.svg"),
-            Some(("public, max-age=3600", false))
-        );
+        assert_eq!(asset_cache("mark.svg"), Some("public, max-age=3600"));
     }
 }

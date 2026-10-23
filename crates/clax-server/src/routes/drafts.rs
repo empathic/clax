@@ -455,7 +455,6 @@ pub(crate) async fn serve(
             (header::CONTENT_TYPE, content_type),
             (header::CACHE_CONTROL, "no-store".to_string()),
             (header::X_CONTENT_TYPE_OPTIONS, "nosniff".to_string()),
-            (header::ACCESS_CONTROL_ALLOW_ORIGIN, "*".to_string()),
             (header::REFERRER_POLICY, "no-referrer".to_string()),
         ],
         body,

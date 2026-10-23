@@ -254,7 +254,6 @@ pub(crate) async fn serve_version(
                 [
                     (header::CONTENT_TYPE, ct),
                     (header::X_CONTENT_TYPE_OPTIONS, "nosniff".to_string()),
-                    (header::ACCESS_CONTROL_ALLOW_ORIGIN, "*".to_string()),
                 ],
                 body,
             )
@@ -268,7 +267,6 @@ pub(crate) async fn serve_version(
             (header::CONTENT_TYPE, meta.content_type.as_str()),
             (header::CACHE_CONTROL, http_cache::IMMUTABLE),
             (header::X_CONTENT_TYPE_OPTIONS, "nosniff"),
-            (header::ACCESS_CONTROL_ALLOW_ORIGIN, "*"),
         ],
         body,
     )
